@@ -32,6 +32,9 @@ pub enum ActCase {
     /// `app-files` (P4 task 5): the agent changes files, the Files window shows
     /// each state, and `undo` puts them back.
     AppFiles,
+    /// `app-monitor` (P4 task 9): the agent sorts the Monitor by memory, and
+    /// stopping a process asks.
+    AppMonitor,
     /// `app-models` (P4 task 10): the agent lists, imports and uses a model,
     /// and `undo` puts the one before back.
     AppModels,
@@ -334,6 +337,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=app-route" => Some(SelfTest::Act(ActCase::AppRoute)),
             "test=app-terminal" => Some(SelfTest::Act(ActCase::AppTerminal)),
             "test=app-files" => Some(SelfTest::Act(ActCase::AppFiles)),
+            "test=app-monitor" => Some(SelfTest::Act(ActCase::AppMonitor)),
             "test=app-models" => Some(SelfTest::Act(ActCase::AppModels)),
             "test=profile-switch" => Some(SelfTest::Act(ActCase::Profile)),
             "test=fs-undo-reboot" => Some(SelfTest::Act(
@@ -710,6 +714,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push('\n');
                 plan.push_str(&crate::app_files_tests::plan());
                 kabi::plan::SHELL_DESK_FILES
+            }
+            SelfTest::Act(ActCase::AppMonitor) => {
+                plan.push('\n');
+                plan.push_str(&crate::app_monitor_tests::plan());
+                kabi::plan::SHELL_DESK
             }
             SelfTest::DeskAgent | SelfTest::DeskTakeover | SelfTest::DeskStandingRefused => {
                 plan.push('\n');

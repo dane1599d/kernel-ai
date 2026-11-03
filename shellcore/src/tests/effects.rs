@@ -282,6 +282,37 @@ fn grant_call(name: &str, app: &str, row: &str) -> Call {
     llmproto::act::parse(&json).unwrap()
 }
 
+/// The `app-settings` boot case's session with its fixture's row, in the shell's
+/// words: the app's read runs, Settings' click withholds the row and the next
+/// read is refused, `undo` gives the row back (the reads between are not entries
+/// `undo` could take) so the next read runs, `undo` again withholds it, and the
+/// restore click that follows is a change again.
+#[test]
+fn undo_of_a_revoke_click_gives_the_row_back_and_undo_again_withholds_it() {
+    let host = host();
+    let mut shell = shell(&host);
+    let app = crate::settings::SETTINGS_APP;
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_ok());
+    assert_eq!(
+        shell
+            .settings(app, "grants-revoke files fs_list", true)
+            .as_deref(),
+        Ok("files fs_list withheld")
+    );
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_err());
+    assert_eq!(shell.eval("undo"), ok("Undone: files may call fs_list"));
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_ok());
+    assert_eq!(shell.eval("undo"), ok("Undone: files may not call fs_list"));
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_err());
+    assert_eq!(
+        shell
+            .settings(app, "grants-restore files fs_list", true)
+            .as_deref(),
+        Ok("files fs_list allowed")
+    );
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_ok());
+}
+
 #[test]
 fn a_withheld_row_is_refused_as_an_undeclared_one_until_undo_gives_it_back() {
     let host = host();

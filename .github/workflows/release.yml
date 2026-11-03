@@ -28,6 +28,7 @@ on:
       - .github/workflows/release.yml
       - .github/release/**
       - xtask/src/release_image.rs
+      - xtask/src/image/slots.rs
   workflow_dispatch:
 
 permissions:
@@ -85,13 +86,16 @@ jobs:
       - run: rustup show active-toolchain || rustup toolchain install
       - run: rustup target add wasm32-unknown-unknown
       - run: cargo xtask release-image --out "$OUT/kernel-ai.img" | tee "$OUT/build.log"
+      # The image is gigabytes, most of them kai-data's free space: it travels
+      # compressed, and the same zstd on the same bytes writes the same file.
+      - run: zstd -19 --single-thread -q --rm "$OUT/kernel-ai.img" -o "$OUT/kernel-ai.img.zst"
       - name: The build left the tree clean
         run: test -z "$(git status --porcelain)"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: build-${{ matrix.runner }}
           path: |
-            ${{ env.OUT }}/kernel-ai.img
+            ${{ env.OUT }}/kernel-ai.img.zst
             ${{ env.OUT }}/NOTICES.txt
             ${{ env.OUT }}/build.log
 
@@ -144,7 +148,8 @@ jobs:
             -v "$PWD/home/.cargo:/home/runner/.cargo" -v "$HOME/.rustup:/home/runner/.rustup" \
             -v "$PWD/src:$ws" -v "$PWD/src/vendor:$REGISTRY_SRC:ro" -w "$ws" buildpack-deps:noble \
             cargo xtask release-image --out offline.img | tee offline.log
-          mkdir out && mv src/offline.img src/NOTICES.txt offline.log out/
+          zstd -19 --single-thread -q --rm src/offline.img -o src/offline.img.zst
+          mkdir out && mv src/offline.img.zst src/NOTICES.txt offline.log out/
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: offline
@@ -159,14 +164,18 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
       - name: Both clean builds and the offline rebuild made the same image
         run: |
-          sha256sum build-a/kernel-ai.img build-b/kernel-ai.img offline/offline.img | tee hashes.txt
+          sha256sum build-a/kernel-ai.img.zst build-b/kernel-ai.img.zst offline/offline.img.zst | tee hashes.txt
           test "$(cut -d' ' -f1 hashes.txt | sort -u | wc -l)" -eq 1
+          # The image's own hash, as each build printed it.
+          grep -h '^xtask: sha256 ' build-a/build.log build-b/build.log offline/offline.log | tee image-hashes.txt
+          test "$(wc -l < image-hashes.txt)" -eq 3
+          test "$(sort -u image-hashes.txt | wc -l)" -eq 1
           cmp build-a/NOTICES.txt build-b/NOTICES.txt
           cmp build-a/NOTICES.txt offline/NOTICES.txt
       - name: The assets
         run: |
           mkdir release-assets
-          zstd -19 --single-thread -q build-a/kernel-ai.img -o "release-assets/kernel-ai-$VERSION-x86_64.img.zst"
+          cp build-a/kernel-ai.img.zst "release-assets/kernel-ai-$VERSION-x86_64.img.zst"
           cp build-a/NOTICES.txt release-assets/NOTICES.txt
           cp "source/kernel-ai-$VERSION-source.tar.zst" release-assets/
           python3 - "$VERSION" > release-assets/RELEASE-NOTES.md <<'EOF'
