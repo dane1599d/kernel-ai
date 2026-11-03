@@ -157,7 +157,7 @@ fn the_list_example_keeps_what_was_typed() {
     .unwrap();
     let after = names(&mut app);
     assert!(after.contains("|milk"), "{after}");
-    in_call(&mut app, |a| a.ui_events(window, &[UiEvent::Pressed(3)])).unwrap();
+    in_call(&mut app, |a| a.ui_events(window, &[UiEvent::Pressed(2)])).unwrap();
     assert!(!names(&mut app).contains("|milk"));
 }
 
@@ -265,6 +265,10 @@ fn the_cards_calls_are_kaiapp_hs() {
 #[test]
 fn the_card_fits_its_budget() {
     let card = capp1::render();
-    let estimate = pack::estimate_tokens(&card);
-    assert!(estimate < pack::PACK_ALARM, "{estimate} estimated tokens");
+    let estimate = capp1::estimate_tokens(&card);
+    assert!(
+        estimate < pack::PACK_ALARM,
+        "{estimate} estimated tokens, {} bytes",
+        card.len()
+    );
 }

@@ -13,59 +13,47 @@ use core::fmt::Write;
 
 /// The rules before the template.
 const RULES: &str = concat!(
-    "You write small window apps in Kai C for ",
+    "You write window apps in Kai C for ",
     kabi::product_name!(),
-    ", a small operating system.\n\
+    ".\n\
      Answer JSON only: {\"script\": \"...\", \"summary\": \"...\"}. script: the whole main.c. \
-     summary: one sentence under 100 characters on what the app does.\n\
-     Not an app request (a greeting, a question): empty script; the summary answers.\n\
-     Fill in the template: TITLE, struct state, init, on_event and view. kaiapp.h and <string.h> are \
-     included, so never declare their functions. I64 is 64-bit; whole numbers only.\n\
-     At most 120 characters a line, at most 80 lines.\n\
-     struct state holds plain values and fixed arrays, no pointers, at most 4096 bytes. init sets it; on_event changes it; \
-     view draws the whole window from it every time.\n\
-     A node id is a number from 1 to 128, each once. A parent is 0 (the window) or a ui_column or ui_row \
-     made before it.\n\
-     An event: e->node is the node. e->kind is KAI_PRESSED (a button), KAI_CHANGED (a field's new text \
-     in e->text, a toggle's 1 or 0 in e->number) or KAI_SUBMITTED (Enter in a field).\n\
-     Copy e->text before keeping it: Format(s->text, 64, \"%s\", e->text). Text from numbers: Format.\n\
-     If an app cannot do it with these calls, make it show why.\n\
+     summary: under 100 characters on what the app does.\n\
+     Fill in the template. Never declare what kaiapp.h or <string.h> declares. Whole numbers \
+     only (I64). At most 80 lines of 120 characters.\n\
+     struct state: plain values and fixed arrays, no pointers, at most 4096 bytes. init sets it, \
+     on_event changes it, view draws the whole window from it.\n\
+     Node ids are 1 to 128, each once; a parent is 0 (the window) or an earlier ui_column or ui_row.\n\
+     e->kind is KAI_PRESSED (a button), KAI_CHANGED (a field's text in e->text, a toggle's 1 or 0 \
+     in e->number) or KAI_SUBMITTED (Enter in a field).\n\
+     To keep e->text, copy it with Format; Format also makes text from numbers.\n\
+     If the calls cannot do it, make the app show why.\n\
      Calls:\n",
 );
 
 /// The calls `view` and the app may make, as `kaiapp.h` declares them.
 pub const CALLS: &[(&str, &str)] = &[
-    (
-        "void ui_column(I64 node, I64 parent);",
-        "children top to bottom",
-    ),
-    (
-        "void ui_row(I64 node, I64 parent);",
-        "children left to right",
-    ),
-    (
-        "void ui_label(I64 node, I64 parent, const char *text);",
-        "text",
-    ),
+    ("void ui_column(I64 node, I64 parent);", "top to bottom"),
+    ("void ui_row(I64 node, I64 parent);", "left to right"),
+    ("void ui_label(I64 node, I64 parent, const char *text);", ""),
     (
         "void ui_heading(I64 node, I64 parent, const char *text);",
-        "large text",
+        "",
     ),
     (
         "void ui_button(I64 node, I64 parent, const char *text);",
-        "KAI_PRESSED",
+        "",
     ),
     (
         "void ui_field(I64 node, I64 parent, const char *label, const char *value);",
-        "a text box: KAI_CHANGED, KAI_SUBMITTED",
+        "a text box",
     ),
     (
         "void ui_toggle(I64 node, I64 parent, const char *label, I64 on);",
-        "KAI_CHANGED",
+        "",
     ),
     (
         "I64 Format(char *out, I64 cap, const char *fmt, ...);",
-        "printf into out: %lld, %s, %c",
+        "printf: %lld %s %c",
     ),
 ];
 
@@ -106,30 +94,44 @@ pub const EXAMPLES: &[(&str, &str, &str)] = &[(
     "#include <kaiapp.h>
 const char TITLE[] = \"Shopping\";
 struct state { char draft[64]; char items[8][64]; I64 n; };
-void init(struct state *s) { s->n = 0; s->draft[0] = 0; }
+void init(struct state *s) { s->n = 0; }
 void on_event(struct state *s, const struct kai_event *e) {
     if (e->kind == KAI_CHANGED && e->node == 1) Format(s->draft, 64, \"%s\", e->text);
-    if ((e->kind == KAI_PRESSED && e->node == 2) || e->kind == KAI_SUBMITTED) {
-        if (s->n < 8 && s->draft[0]) { Format(s->items[s->n], 64, \"%s\", s->draft); s->n++; }
+    if (e->kind == KAI_SUBMITTED && s->n < 8 && s->draft[0]) {
+        Format(s->items[s->n], 64, \"%s\", s->draft);
+        s->n++;
         s->draft[0] = 0;
     }
-    if (e->kind == KAI_PRESSED && e->node == 3) s->n = 0;
+    if (e->kind == KAI_PRESSED && e->node == 2) s->n = 0;
 }
 void view(const struct state *s) {
     ui_field(1, 0, \"Item\", s->draft);
-    ui_button(2, 0, \"Add\");
-    ui_button(3, 0, \"Clear all\");
+    ui_button(2, 0, \"Clear all\");
     for (I64 i = 0; i < s->n; i++) ui_label(10 + i, 0, s->items[i]);
 }
 ",
-    "A shopping list: type an item and add it, or clear them all.",
+    "A shopping list: type an item, press Enter, or clear them all.",
 )];
+
+/// Bytes a token for this card. C and its JSON escapes take more tokens a
+/// byte than the dsl-1 pack's prose: the first card was 3,244 bytes in 1,088
+/// real tokens, 2.98 a token (token-count run 41705507721).
+const BYTES_PER_TOKEN: f32 = 2.8;
+
+/// A token count of the card, at its measured rate, above the real count. The
+/// token-count workflow checks the real count.
+pub fn estimate_tokens(card: &str) -> usize {
+    (card.len() as f32 / BYTES_PER_TOKEN) as usize + 1
+}
 
 /// The card.
 pub fn render() -> String {
     let mut card = String::from(RULES);
     for (call, doc) in CALLS {
-        let _ = writeln!(card, "{call} // {doc}");
+        let _ = match *doc {
+            "" => writeln!(card, "{call}"),
+            _ => writeln!(card, "{call} // {doc}"),
+        };
     }
     let _ = write!(card, "Template:\n{TEMPLATE}");
     card.push_str("Example:\n");

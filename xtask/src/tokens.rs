@@ -132,7 +132,7 @@ fn check_budget(tok: &Tokenizer) -> Result<(), String> {
 fn check_app_card(tok: &Tokenizer) -> Result<(), String> {
     let card = pack::capp1::render();
     let real = count(tok, &card);
-    let estimate = pack::estimate_tokens(&card);
+    let estimate = pack::capp1::estimate_tokens(&card);
     match (real <= PACK_ALARM, estimate >= real) {
         (true, true) => Ok(()),
         (false, _) => Err(format!(
@@ -249,27 +249,9 @@ pub fn report(tok: &Tokenizer, chat: &Chat) -> String {
 
     // Plan "Kai builds apps", piece 2: the app card, by section.
     let app = pack::capp1::render();
-    let (a_rules, a_rest) = app
-        .split_once(
-            "
-Calls:
-",
-        )
-        .unwrap_or((&app, ""));
-    let (a_calls, a_rest) = a_rest
-        .split_once(
-            "
-Template:
-",
-        )
-        .unwrap_or((a_rest, ""));
-    let (a_template, a_example) = a_rest
-        .split_once(
-            "
-Example:
-",
-        )
-        .unwrap_or((a_rest, ""));
+    let (a_rules, a_rest) = app.split_once("\nCalls:\n").unwrap_or((&app, ""));
+    let (a_calls, a_rest) = a_rest.split_once("\nTemplate:\n").unwrap_or((a_rest, ""));
+    let (a_template, a_example) = a_rest.split_once("\nExample:\n").unwrap_or((a_rest, ""));
     let mut app_card = Table::new("`c-app-1` Kai C app card (app requests only)");
     app_card.part(tok, "rules", a_rules);
     app_card.part(tok, "calls (kaiapp.h)", a_calls);
