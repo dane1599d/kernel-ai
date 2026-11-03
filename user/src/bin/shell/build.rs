@@ -99,6 +99,23 @@ pub fn app_source(files: &Files, name: &str, text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// App `name`'s `main.c` as it is now; `None` if it or its folder is not there.
+pub fn app_source_read(files: &Files, name: &str) -> Result<Option<String>, String> {
+    let path = format!("{}/{name}/main.c", folder(APPS_DIR));
+    match files::open(files.home_dir()?, &path, How::Existing, Rights::READ) {
+        Ok(file) => {
+            let text = read_whole(file, MAX_SOURCE);
+            files::close(file);
+            let bytes = text.map_err(|why| format!("/home/user/{path} cannot be read: {why}"))?;
+            String::from_utf8(bytes)
+                .map(Some)
+                .map_err(|_| format!("/home/user/{path} is not text"))
+        }
+        Err(why) if why.ends_with("NotFound") => Ok(None),
+        Err(why) => Err(format!("/home/user/{path} cannot be read: {why}")),
+    }
+}
+
 /// The `.c` and `.h` files in the folder at `path` beneath `home`, read whole.
 fn sources(home: Handle, path: &str) -> Result<Vec<(String, Vec<u8>)>, String> {
     let dir = files::open(home, path, How::Existing, Rights::READ | Rights::ENUMERATE)

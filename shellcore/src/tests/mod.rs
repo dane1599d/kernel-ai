@@ -809,6 +809,15 @@ impl Host for FakeHost {
         Ok(())
     }
 
+    fn app_source_read(&self, name: &str) -> Result<Option<String>, String> {
+        let sources = self.app_sources.borrow();
+        Ok(sources
+            .iter()
+            .rev()
+            .find(|(n, _)| n == name)
+            .map(|(_, text)| text.clone()))
+    }
+
     fn pkg_local(&self, name: &str, path: &str) -> Result<String, String> {
         self.pkg(&format!("local {name} {path}"))
     }

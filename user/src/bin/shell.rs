@@ -488,6 +488,10 @@ impl Host for System {
         build::app_source(&self.files, name, text)
     }
 
+    fn app_source_read(&self, name: &str) -> Result<Option<String>, String> {
+        build::app_source_read(&self.files, name)
+    }
+
     fn pkg_local(&self, name: &str, path: &str) -> Result<String, String> {
         build::install(pkg_route()?, name, path)
     }
