@@ -405,6 +405,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::AppEditorFiles => run_case(app_editor_files_tests::check),
         SelfTest::AppEditorBuild => run_case(app_editor_build_tests::check),
         SelfTest::UiMonitor => run_case(app_window_tests::monitor_check),
+        SelfTest::UiFiles => run_case(app_window_tests::files_check),
         SelfTest::UiModels => run_case(app_window_tests::models_check),
         SelfTest::DeskNap => run_case(nap_tests::check),
         SelfTest::KeepRunning { reread } => run_case(|| keep_tests::check(reread)),
