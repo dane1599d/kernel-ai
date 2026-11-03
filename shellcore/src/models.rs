@@ -9,6 +9,12 @@
 //!   It always asks once: gigabytes of new bytes, and no undo yet.
 //!
 //! What `updated` answers is the OS's own state, so it is the reply as it is.
+//!
+//! A person types the same rows, before Rhai and with no model running, as a
+//! package line is typed ([`parse_line`]): `models` lists, `models use <id>`
+//! switches and is logged with its undo, and `models import` asks once, as the
+//! AI's `model_fetch` does. On a fresh image no model runs yet, so this is how
+//! the first one gets in.
 
 use crate::actions::{How, Pending};
 use crate::actlog::{Change, Entry, Form, State};
@@ -58,7 +64,7 @@ impl Shell {
                 Ok(models) => Reply::ok(listed(&models)),
                 Err(why) => Reply::err(why),
             },
-            "model_use" => self.model_use(id, request, name, decision),
+            "model_use" => self.model_use(id, request, name, decision, "asked"),
             "model_fetch" => {
                 let call = canonical("model_fetch", "disk");
                 let why = match decision.why {
@@ -71,7 +77,15 @@ impl Shell {
         }
     }
 
-    fn model_use(&mut self, id: u64, request: &str, name: &str, decision: Decision) -> Reply {
+    /// `model_use` of `name`; a switch that runs is logged with `consent`.
+    fn model_use(
+        &mut self,
+        id: u64,
+        request: &str,
+        name: &str,
+        decision: Decision,
+        consent: &str,
+    ) -> Reply {
         let models = match self.models_now() {
             Ok(models) => models,
             Err(why) => return Reply::err(why),
@@ -98,7 +112,7 @@ impl Shell {
                 let how = How {
                     form: Form::Call,
                     tier: Tier::Run,
-                    consent: String::from("asked"),
+                    consent: String::from(consent),
                 };
                 self.model_switch(id, request, &call, to, back, how)
             }
@@ -247,6 +261,54 @@ impl Shell {
         match answer.starts_with("ok ") {
             true => Ok(String::from("the model before, from the next restart")),
             false => Err(Refused::Failed(answer)),
+        }
+    }
+}
+
+/// A typed `models` line: what it asks for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Line {
+    List,
+    Import,
+    Use(String),
+}
+
+/// Reads `text` as a `models` line. `None` when its first word is not
+/// `models`, so the line goes on to Rhai or the AI; `Some(Err)` when it starts
+/// like one but is not right.
+pub(crate) fn parse_line(text: &str) -> Option<Result<Line, String>> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    Some(match words.as_slice() {
+        ["models"] => Ok(Line::List),
+        ["models", "import"] => Ok(Line::Import),
+        ["models", "use", name] => Ok(Line::Use(String::from(*name))),
+        ["models", ..] => Err(String::from(
+            "models, models import, or models use <id> (models lists the ids)",
+        )),
+        _ => return None,
+    })
+}
+
+impl Shell {
+    /// A typed `models` line, held as a typed `install` is: the person's own
+    /// line names what it does, through the rows the AI calls. The list
+    /// answers; a switch runs, logged as typed, with its undo; an import asks
+    /// once, since it has no undo.
+    pub(crate) fn models_line(&mut self, request: &str, parsed: Result<Line, String>) -> Reply {
+        let line = match parsed {
+            Ok(line) => line,
+            Err(why) => return Reply::err(why),
+        };
+        let id = self.next_id;
+        self.next_id += 1;
+        let typed = |why| Decision {
+            tier: Tier::Run,
+            why,
+        };
+        match line {
+            Line::List => self.model_call(id, request, "model_list", &[], typed(Why::Read)),
+            Line::Import => self.model_call(id, request, "model_fetch", &[], typed(Why::NoUndo)),
+            Line::Use(name) => self.model_use(id, request, &name, typed(Why::Asked), "typed"),
         }
     }
 }

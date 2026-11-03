@@ -264,3 +264,99 @@ fn a_model_inverse_reads_back_from_its_word() {
         assert_eq!(parse_inverse(&word), Some(Some(inverse)), "{word}");
     }
 }
+
+// A person's typed `models` lines (P4 task 19): the same rows, with no model.
+
+#[test]
+fn a_typed_models_lists_without_asking_the_model() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let reply = shell.eval("models");
+    assert!(
+        reply.ok && reply.text.contains("Qwen3-0.6B Q8_0 (qwen3-0.6b): stored"),
+        "{reply:?}"
+    );
+    assert_eq!(*host.model_requests.borrow(), ["models"]);
+    assert!(host.calls.borrow().is_empty(), "no model was asked");
+}
+
+#[test]
+fn a_typed_switch_runs_is_logged_as_typed_and_undo_puts_the_model_back() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let reply = shell.eval("models use qwen3-0.6b");
+    assert!(
+        reply.ok && reply.text.starts_with("Done: the next restart uses it"),
+        "{reply:?}"
+    );
+    assert_eq!(host.models.borrow().store.next, Some(SMALL));
+    let log = shell.eval("log actlog").text;
+    assert!(log.contains("form=call tier=run consent=typed"), "{log}");
+    assert!(
+        log.contains(&format!("res=model before={}", hex(&QWEN))),
+        "{log}"
+    );
+    assert_eq!(
+        shell.eval("undo"),
+        ok("Undone: the model before, from the next restart")
+    );
+    assert_eq!(host.models.borrow().store.next, None);
+    // A model the role does not take is refused, as for the AI.
+    let reply = shell.eval("models use fixture");
+    assert!(
+        !reply.ok
+            && reply
+                .text
+                .contains("not a stored model the signed role takes"),
+        "{reply:?}"
+    );
+}
+
+#[test]
+fn a_typed_import_asks_once_and_runs_only_on_an_allow() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let reply = shell.eval("models import");
+    assert!(reply.text.contains("model_fetch"), "{reply:?}");
+    let imported = |host: &FakeHost| {
+        host.model_requests
+            .borrow()
+            .contains(&"models import".into())
+    };
+    assert!(!imported(&host), "nothing before the answer");
+    shell.eval("n");
+    assert!(!imported(&host), "a Deny imports nothing");
+    shell.eval("models import");
+    let once = host.mint(2, "model_fetch(\"disk\")");
+    let answered = shell.eval(&format!("answer 2 allow once={once}"));
+    assert!(
+        answered.text.starts_with("Importing fixture"),
+        "{answered:?}"
+    );
+    assert!(imported(&host));
+    assert!(host.calls.borrow().is_empty(), "no model was asked");
+}
+
+#[test]
+fn a_models_line_that_is_not_right_says_what_is_and_a_variable_stays_rhai() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    for text in [
+        "models delete qwen3-0.6b",
+        "models use",
+        "models import now",
+    ] {
+        let reply = shell.eval(text);
+        assert!(
+            !reply.ok
+                && reply
+                    .text
+                    .starts_with("models, models import, or models use <id>"),
+            "{text}: {reply:?}"
+        );
+    }
+    assert!(host.model_requests.borrow().is_empty());
+    shell.eval("let models = 3");
+    assert_eq!(shell.eval("models"), ok("3"));
+    assert!(host.model_requests.borrow().is_empty());
+}

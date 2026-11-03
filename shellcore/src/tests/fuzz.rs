@@ -1,8 +1,8 @@
 //! Odd and hostile lines through the shell (P1 hardening): seeded random lines
 //! from fragments of real requests, other scripts, control characters, nested
 //! quotes and very long text. Nothing panics, every reply is a reply, and the
-//! package-line parser reads every line as a package line or not, without
-//! panicking.
+//! package-line and `models`-line parsers read every line as one or not,
+//! without panicking.
 
 use super::*;
 use crate::pkg::line;
@@ -22,6 +22,9 @@ impl Rng {
 }
 
 const FRAGMENTS: &[&str] = &[
+    "models",
+    "import",
+    "use",
     "switch",
     "to",
     "round",
@@ -137,6 +140,25 @@ fn the_package_line_parser_reads_any_line() {
                     "{text:?}: {name:?}"
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn the_models_line_parser_reads_any_line_and_takes_one_word_as_the_model() {
+    let mut rng = Rng(0x30de_15);
+    for _ in 0..20_000 {
+        let text = line(&mut rng);
+        match crate::models::parse_line(&text) {
+            Some(Ok(crate::models::Line::Use(name))) => {
+                assert!(
+                    !name.is_empty() && !name.contains(char::is_whitespace),
+                    "{text:?}: {name:?}"
+                );
+                assert_eq!(text.split_whitespace().nth(2), Some(name.as_str()));
+            }
+            Some(_) => assert_eq!(text.split_whitespace().next(), Some("models"), "{text:?}"),
+            None => assert_ne!(text.split_whitespace().next(), Some("models"), "{text:?}"),
         }
     }
 }
