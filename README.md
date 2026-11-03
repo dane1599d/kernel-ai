@@ -16,7 +16,7 @@
 
 ## Status
 
-Kernel AI is a **proof of concept**, complete through milestone M10. It runs in a VM only (QEMU or VirtualBox). It has no GUI, no browser, no writable disk and no real-hardware drivers yet.
+Kernel AI is working towards **v0.1, "an AI-native OS you can try"**, in a VM (QEMU or VirtualBox). It boots to a desktop with seven built-in apps (Terminal, Files, Notes, Settings, System Monitor, Models and an editor), each a signed package whose actions the AI calls by name, a writable disk with undo, and TempleOS's idea of a `c>` prompt that runs C as you press Enter. It has no browser, no internet installs and no real-hardware drivers yet. v0.1 is not tagged: [the P4 plan](docs/plans/p4-apps.md#35-the-v01-checklist) lists what is left.
 
 The next goal is a production-grade OS people have a reason to use, with the local AI able to operate everything in it. That plan is the [product roadmap](docs/roadmap.md#3b-product-roadmap-draft-for-founder-approval-2026-10-20): a desktop, files, networking, existing apps and real hardware. It is a draft and a multi-year program.
 
@@ -25,7 +25,7 @@ The next goal is a production-grade OS people have a reason to use, with the loc
 ### Requirements
 
 - **CPU:** x86_64 with AVX2, FMA and F16C (most PCs from the last ten years). AVX-512 is used when present.
-- **RAM:** 8 GB or more for Qwen3-4B (the VM gets about 3.5-6 GB). With 4 GB, `setup` offers the smaller Qwen3-1.7B.
+- **Memory for the VM:** 4 GiB at least, 6 GiB or more recommended. Qwen3-4B, the default, needs a guest of about 4.1 GiB, so a host with 8 GB of RAM or more; with 4 GiB, `setup` offers the smaller Qwen3-1.7B.
 - **Disk:** about 2.5 GB for the model, plus a few GB for the build.
 - **Software:** Rust through [rustup](https://rustup.rs) (the pinned nightly in `rust-toolchain.toml` installs itself), `curl` and `tar`, and either VirtualBox 7 or QEMU with OVMF.
 
@@ -35,11 +35,13 @@ The tooling is developed on Windows; the QEMU path also runs on Linux. First, ch
 cargo xtask doctor
 ```
 
-Then download the model. `setup` recommends the largest model your RAM can run, asks, downloads it with resume and checks its SHA-256:
+Then download the model. The image holds none. `setup` recommends the largest model your RAM can run, asks, downloads it with resume and checks its SHA-256:
 
 ```bash
 cargo xtask setup
 ```
+
+The models are pinned in [`xtask/models.json`](xtask/models.json): each one's Hugging Face repository, revision, file, size and SHA-256. `setup` downloads only those bytes. In the OS, Models checks a model it imports against the same SHA-256, in the image's signed `models` role, and refuses any other file.
 
 ### VirtualBox (simplest on Windows)
 
@@ -59,6 +61,16 @@ cargo xtask run --accel kvm --local qwen3-4b-2507   # Linux
 cargo xtask run --accel wsl --local qwen3-4b-2507   # Windows, QEMU in WSL2
 cargo xtask run --accel kvm --local qwen3-4b-2507 --workload A   # with the demo workload for `tune editor`
 ```
+
+### From a release image, in QEMU
+
+A release (from `v0.1.0-rc.1`) has the image, `kernel-ai-<version>-x86_64.img.zst`, with `SHA256SUMS` and notes naming the model. Unpack it with `zstd -d`, download the model the notes name (or run `cargo xtask setup`), and boot with the model as a read-only disk with the serial `kai-import`. `kai-data`, the writable disk, is not in the image yet, so make one with `cargo xtask fs mkfs kai-data.img --size 8192`. For example, on Linux with KVM:
+
+```bash
+qemu-system-x86_64 -machine q35 -accel kvm -cpu max -smp 4 -m 6G -drive if=pflash,format=raw,readonly=on,file=OVMF_CODE.fd -drive if=pflash,format=raw,file=OVMF_VARS.fd -drive if=none,id=boot,format=raw,file=kernel-ai-0.1.0-x86_64.img -device virtio-blk-pci,drive=boot,serial=kai-boot,bootindex=0 -drive if=none,id=data,format=raw,file=kai-data.img -device virtio-blk-pci,drive=data -drive if=none,id=import,format=raw,readonly=on,file=Qwen3-4B-Instruct-2507-Q4_K_M.gguf -device virtio-blk-pci,drive=import,serial=kai-import
+```
+
+Then ask Kai to import the model, or open Models and import it there. Use your own copy of `OVMF_VARS.fd`, which the firmware writes to. VirtualBox needs a VDI made with `VBoxManage convertfromraw`; `cargo xtask vbox` above sets up the same VM from source.
 
 ### Things to type at `kai>`
 
