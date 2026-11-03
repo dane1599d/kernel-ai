@@ -3,9 +3,12 @@
 //! script envelope. The entry goes to the shell at `c>`, which hands it to the
 //! real `cc` service (`ccserve`, cc.wasm on the host) with the OS's rows as
 //! `kai` imports, so each call goes through the one door to the stand-in OS
-//! ([`GateHost`]). A program that does not compile goes back once with wcc's
-//! message, as a refused script does; a program that compiled and failed is
-//! not repaired, as a script's run error is not. The tasks, their checks and
+//! ([`GateHost`]). The re-run (2026-11-03) checks each answer first
+//! (`llmproto::precheck`: a missing include added, a variable named after a
+//! call or a `Print` that does not fit its values refused), and repairs up to
+//! [`MAX_REPAIRS`] times, each round on a fresh stand-in, with what went
+//! wrong: the check's problems, wcc's message, the run's failure, or what it
+//! printed (never the expected answer). The tasks, their checks and
 //! the judge are the Rhai gate's ([`super::tasks::TASKS`], [`judge`]); only the reference
 //! answers are C ([`REFERENCES`]), and the unit tests run them through the
 //! same path.
@@ -120,6 +123,8 @@ struct Ran {
     output: String,
     /// It stopped before running: wcc refused it.
     refused: bool,
+    /// wcc's warnings for a program it compiled.
+    warnings: Vec<String>,
 }
 
 /// Runs `program` at `c>`, saying yes to a call that asks.
@@ -145,10 +150,19 @@ fn run(host: &GateHost, shell: &mut Shell, program: &str) -> Ran {
                 Record::Out(_) | Record::Need { .. } | Record::Trap { .. }
             )
         });
+    let warnings = records
+        .iter()
+        .filter_map(|r| match r {
+            Record::Err { text, .. } => Some(String::from_utf8_lossy(text).into_owned()),
+            _ => None,
+        })
+        .filter(|text| text.contains("warning"))
+        .collect();
     Ran {
         ok: reply.ok,
         output: without_value(&reply.text),
         refused,
+        warnings,
     }
 }
 
@@ -163,22 +177,18 @@ fn without_value(text: &str) -> String {
     }
 }
 
-/// One task through the C path: the program request, at most one repair for
-/// a program wcc refused, and the judge.
-pub fn attempt(task: &Task, transport: &Transport) -> Outcome {
-    let (host, mut shell) = match c_shell() {
-        Ok(started) => started,
-        Err(why) => {
-            return Outcome {
-                rounds: 0,
-                script: None,
-                output: why.clone(),
-                failure: Some((Failure::Server, why)),
-            };
-        }
-    };
+/// Repairs after the first answer: each takes what went wrong, as exactly as
+/// the run knows it.
+pub const MAX_REPAIRS: usize = 3;
+
+/// One task through the C path, and whether it passed only after being told
+/// what a working program printed (the one repair a user would have to start,
+/// as nothing failed but the output).
+pub fn attempt(task: &Task, transport: &Transport) -> (Outcome, bool) {
+    let calls: Vec<&str> = agentabi::SCRIPT_API.iter().map(|row| row.name).collect();
     let mut repair = None;
-    for round in 1..=2 {
+    let mut told_wrong = false;
+    for round in 1..=MAX_REPAIRS + 1 {
         let request = ScriptRequest {
             request: task.request.to_string(),
             repair: repair.take(),
@@ -186,37 +196,99 @@ pub fn attempt(task: &Task, transport: &Transport) -> Outcome {
         };
         let answer = match transport(&request) {
             Ok(answer) => answer,
-            Err(error) if error.repairable() && round == 1 => {
+            Err(error) if error.repairable() && round <= MAX_REPAIRS => {
                 repair = Some((String::new(), error.describe()));
                 continue;
             }
             Err(error) => {
                 let text = error.describe();
-                return Outcome {
+                let outcome = Outcome {
                     rounds: round,
                     script: None,
                     failure: no_proposal(task, Some(&Err(error)), &text),
                     output: text,
                 };
+                return (outcome, told_wrong);
             }
         };
-        let ran = run(&host, &mut shell, &answer.script);
-        if ran.refused && round == 1 {
-            repair = Some((answer.script, ran.output));
-            continue;
+        let (outcome, feedback, wrong) = round_of(task, round, answer.script, &calls);
+        match (outcome.failure.is_some(), feedback) {
+            (true, Some(feedback)) if round <= MAX_REPAIRS => {
+                told_wrong |= wrong;
+                repair = Some((outcome.script.unwrap_or_default(), feedback));
+            }
+            _ => {
+                let passed = outcome.failure.is_none();
+                return (outcome, told_wrong && passed);
+            }
         }
-        let failure = match ran.refused {
-            true => Some((Failure::Refused, ran.output.clone())),
-            false => judge(task, ran.ok, &ran.output, &host.changes.borrow()),
-        };
-        return Outcome {
-            rounds: round,
-            script: Some(answer.script),
-            output: ran.output,
-            failure,
-        };
     }
-    unreachable!("the second round returns")
+    unreachable!("the last round returns")
+}
+
+/// One answer on a fresh stand-in: the pre-check, `c>`, and the judge. The
+/// feedback is for a repair, and says whether it only reports wrong output.
+fn round_of(
+    task: &Task,
+    round: usize,
+    script: String,
+    calls: &[&str],
+) -> (Outcome, Option<String>, bool) {
+    let outcome = |output: String, failure| Outcome {
+        rounds: round,
+        script: Some(script.clone()),
+        output,
+        failure,
+    };
+    let prepared = llmproto::precheck::prepare(&script, calls);
+    if !prepared.problems.is_empty() {
+        let why = prepared.problems.join("\n");
+        let feedback = format!("That program was refused before compiling:\n{why}");
+        return (
+            outcome(why.clone(), Some((Failure::Refused, why))),
+            Some(feedback),
+            false,
+        );
+    }
+    let (host, mut shell) = match c_shell() {
+        Ok(started) => started,
+        Err(why) => {
+            return (
+                outcome(why.clone(), Some((Failure::Server, why))),
+                None,
+                false,
+            );
+        }
+    };
+    let ran = run(&host, &mut shell, &prepared.source);
+    if ran.refused {
+        let feedback = format!("wcc refused that program:\n{}", ran.output);
+        let failure = Some((Failure::Refused, ran.output.clone()));
+        return (outcome(ran.output, failure), Some(feedback), false);
+    }
+    let failure = judge(task, ran.ok, &ran.output, &host.changes.borrow());
+    let warned = match ran.warnings.is_empty() {
+        true => String::new(),
+        false => format!("\nwcc warned:\n{}", ran.warnings.join("\n")),
+    };
+    let (feedback, wrong) = match (&failure, ran.ok) {
+        (None, _) => (None, false),
+        (Some(_), false) => (
+            Some(format!(
+                "That program failed when it ran:\n{}{warned}",
+                ran.output
+            )),
+            false,
+        ),
+        (Some(_), true) => (
+            Some(format!(
+                "That program ran and printed:\n{}\nThat is not what was asked.{warned}",
+                ran.output
+            )),
+            warned.is_empty(),
+        ),
+    };
+    (outcome(ran.output, failure), feedback, wrong)
 }
 
 /// Every task's reference program through [`attempt`], answered as given.
@@ -232,7 +304,7 @@ fn references() -> Vec<(usize, Outcome)> {
                 script: program.to_string(),
             };
             let transport: Transport = Box::new(move |_| Ok(answer.clone()));
-            (n, attempt(task, &transport))
+            (n, attempt(task, &transport).0)
         })
         .collect()
 }
@@ -270,26 +342,100 @@ mod tests {
                 script: script.into(),
             })
         });
-        let outcome = attempt(&super::super::tasks::TASKS[0], &transport);
+        let (outcome, told_wrong) = attempt(&super::super::tasks::TASKS[0], &transport);
         assert!(outcome.failure.is_none(), "{outcome:?}");
         assert_eq!(outcome.rounds, 2);
+        assert!(!told_wrong);
         let asked = asked.borrow();
         let (refused, why) = asked[1].as_ref().expect("a repair");
         assert!(refused.contains("cpus(n, n, n)"));
-        assert!(why.contains("line 2"), "{why}");
+        assert!(
+            why.starts_with("wcc refused") && why.contains("line 2"),
+            "{why}"
+        );
     }
 
     #[test]
-    fn a_wrong_value_is_wrong_output_and_not_repaired() {
-        let transport: Transport = Box::new(|_| {
+    fn a_variable_named_after_a_call_goes_back_before_compiling() {
+        let asked = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = asked.clone();
+        let transport: Transport = Box::new(move |request: &ScriptRequest| {
+            seen.borrow_mut().push(request.repair.clone());
+            let script = match request.repair {
+                None => "I64 cpus;\ncpus(&cpus);\nPrint(\"%d\\n\", cpus);",
+                Some(_) => REFERENCES[0],
+            };
+            Ok(llmproto::script::Answer {
+                summary: String::new(),
+                script: script.into(),
+            })
+        });
+        let (outcome, _) = attempt(&super::super::tasks::TASKS[0], &transport);
+        assert!(outcome.failure.is_none(), "{outcome:?}");
+        let asked = asked.borrow();
+        let (_, why) = asked[1].as_ref().expect("a repair");
+        assert!(why.contains("line 1: `cpus` is a function"), "{why}");
+        assert!(why.contains("line 3: Print's %d"), "{why}");
+    }
+
+    #[test]
+    fn a_wrong_value_goes_back_with_what_it_printed_up_to_three_times() {
+        let asked = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = asked.clone();
+        let transport: Transport = Box::new(move |request: &ScriptRequest| {
+            seen.borrow_mut().push(request.repair.clone());
             Ok(llmproto::script::Answer {
                 summary: String::new(),
                 script: "Print(\"8\\n\");".into(),
             })
         });
-        let outcome = attempt(&super::super::tasks::TASKS[0], &transport);
-        assert_eq!(outcome.rounds, 1);
+        let (outcome, told_wrong) = attempt(&super::super::tasks::TASKS[0], &transport);
+        assert_eq!(outcome.rounds, MAX_REPAIRS + 1);
         assert!(matches!(outcome.failure, Some((Failure::WrongOutput, _))));
+        assert!(!told_wrong, "it never passed");
+        let asked = asked.borrow();
+        let (_, why) = asked[1].as_ref().expect("a repair");
+        assert_eq!(
+            why,
+            "That program ran and printed:\n8\nThat is not what was asked."
+        );
+    }
+
+    #[test]
+    fn a_pass_after_wrong_output_is_marked() {
+        let transport: Transport = Box::new(|request: &ScriptRequest| {
+            let script = match request.repair {
+                None => "Print(\"8\\n\");",
+                Some(_) => REFERENCES[0],
+            };
+            Ok(llmproto::script::Answer {
+                summary: String::new(),
+                script: script.into(),
+            })
+        });
+        let (outcome, told_wrong) = attempt(&super::super::tasks::TASKS[0], &transport);
+        assert!(outcome.failure.is_none(), "{outcome:?}");
+        assert!(told_wrong);
+    }
+
+    /// Each call's Use line on the card runs as written.
+    #[test]
+    fn the_c1_cards_use_lines_run() {
+        for row in agentabi::SCRIPT_API.iter() {
+            let line = llmproto::pack::c1::use_line(row);
+            let (host, mut shell) = c_shell().expect("a c> prompt");
+            let ran = run(&host, &mut shell, &line);
+            assert!(ran.ok && ran.warnings.is_empty(), "{line}: {}", ran.output);
+        }
+    }
+
+    /// The card stays well under the 980-token bar (the token-count job has
+    /// the real count).
+    #[test]
+    fn the_c1_card_fits_its_budget() {
+        let card = llmproto::pack::render(llmproto::pack::Format::C1);
+        // About 3.3 bytes a token on this card (S12-2's count): about 740 tokens.
+        assert!(card.len() < 2_500, "{} bytes", card.len());
     }
 
     #[test]

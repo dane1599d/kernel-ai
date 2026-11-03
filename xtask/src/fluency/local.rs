@@ -13,7 +13,7 @@
 
 use super::host::Transport;
 use infer::Next;
-use infer::chat::Engine;
+use infer::chat::{Engine, Step};
 use llmproto::script::{self, ScriptRequest};
 use quant::Tier;
 use std::cell::RefCell;
@@ -66,12 +66,59 @@ pub fn program_transport(engine: Shared) -> Transport {
     Box::new(move |request: &ScriptRequest| {
         let limit = Duration::from_millis(request.timeout_ms.min(script::SERVICE_TIMEOUT_MS));
         let started = Instant::now();
-        llmproto::local::program(&mut engine.borrow_mut(), request, |_| {
+        let (mut first, mut last, mut tokens) = (None, started, 0u32);
+        let answer = llmproto::local::program(&mut engine.borrow_mut(), request, |step| {
+            if let Step::Token(_) = step {
+                last = Instant::now();
+                first.get_or_insert(last);
+                tokens += 1;
+            }
             match started.elapsed() >= limit {
                 true => Next::Stop,
                 false => Next::Continue,
             }
-        })
+        });
+        if let Some(first) = first {
+            SPEED.with_borrow_mut(|speed| {
+                speed.first_ms.push((first - started).as_millis());
+                speed.decode_tokens += tokens.saturating_sub(1);
+                speed.decode_secs += (last - first).as_secs_f64();
+            });
+        }
+        answer
+    })
+}
+
+/// What the program requests measured: each request's time to its first
+/// token (the uncached prompt included) and the decode rate after it.
+#[derive(Default)]
+struct Speed {
+    first_ms: Vec<u128>,
+    decode_tokens: u32,
+    decode_secs: f64,
+}
+
+thread_local! {
+    static SPEED: RefCell<Speed> = RefCell::new(Speed::default());
+}
+
+/// A line with the program requests' median time to first token and their
+/// decode rate, once any answered.
+pub fn speed_line() -> Option<String> {
+    SPEED.with_borrow(|speed| {
+        let mut first = speed.first_ms.clone();
+        first.sort_unstable();
+        let median = *first.get(first.len() / 2)?;
+        let rate = match speed.decode_secs > 0.0 {
+            true => f64::from(speed.decode_tokens) / speed.decode_secs,
+            false => 0.0,
+        };
+        Some(format!(
+            "time to first token: median {median} ms over {} requests (min {}, max {}); decode {rate:.1} tokens/s",
+            first.len(),
+            first[0],
+            first[first.len() - 1],
+        ))
     })
 }
 

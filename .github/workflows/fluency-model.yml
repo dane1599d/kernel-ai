@@ -15,19 +15,24 @@ on:
         type: choice
         options: [rhai, c]
         default: rhai
+      model:
+        description: "Catalog model (spike S12-2 compares qwen3-8b)"
+        type: choice
+        options: [qwen3-4b-2507, qwen3-8b]
+        default: qwen3-4b-2507
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  MODEL_ID: qwen3-4b-2507
+  MODEL_ID: ${{ inputs.model || 'qwen3-4b-2507' }}
 
 jobs:
   fluency:
-    name: Fluency gate (qwen3-4b-2507, local engine)
+    name: Fluency gate (${{ inputs.model || 'qwen3-4b-2507' }}, local engine)
     runs-on: ubuntu-24.04
-    timeout-minutes: 240
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
       - name: Show the runner's CPU count, vector features and memory
@@ -68,7 +73,14 @@ jobs:
         env:
           KAI_MODELS: ${{ runner.temp }}/kai-models
           C_FLAG: ${{ inputs.language == 'c' && '--c' || '' }}
-        run: cargo xtask fluency --local "$MODEL_ID" $C_FLAG
+        # Built first, so the peak memory GNU time reports is the gate's own.
+        run: |
+          cargo build --quiet -p xtask
+          set +e
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" cargo xtask fluency --local "$MODEL_ID" $C_FLAG
+          status=$?
+          grep -E "Maximum resident|Elapsed" "$RUNNER_TEMP/time.txt" | sed 's/^/xtask: peak memory: /'
+          exit $status
       - name: Upload the run
         if: always()
         uses: actions/upload-artifact@v4

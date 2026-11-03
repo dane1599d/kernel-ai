@@ -232,7 +232,9 @@ mod tests {
              23749fefcc72300e3a2ad315e1317431b06b590a/Qwen3-0.6B-Q8_0.gguf"
         );
         // The 4B from 8 GB up, the 1.7B from 4 GB; the 0.6B only when named.
-        assert_eq!(catalog.recommend(32).unwrap().id, "qwen3-4b-2507");
+        // Spike S12-2's branch (never merged) pins the 8B from 12 GB.
+        assert_eq!(catalog.recommend(32).unwrap().id, "qwen3-8b");
+        assert_eq!(catalog.recommend(11).unwrap().id, "qwen3-4b-2507");
         assert_eq!(catalog.recommend(8).unwrap().id, "qwen3-4b-2507");
         assert_eq!(catalog.recommend(7).unwrap().id, "qwen3-1.7b");
         assert_eq!(catalog.recommend(4).unwrap().id, "qwen3-1.7b");

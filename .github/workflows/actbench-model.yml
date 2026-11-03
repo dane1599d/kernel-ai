@@ -36,6 +36,9 @@ on:
       options:
         description: "More actbench options, such as --no-m8"
         default: ""
+      model:
+        description: "Catalog model (spike S12-2 compares qwen3-8b)"
+        default: "qwen3-4b-2507"
   pull_request:
     types: [labeled]
 
@@ -51,7 +54,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  MODEL_ID: qwen3-4b-2507
+  MODEL_ID: ${{ inputs.model || 'qwen3-4b-2507' }}
 
 jobs:
   # One job a seed: arm act takes about 100 minutes a seed (its M8 50 go
@@ -88,7 +91,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 240
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
       - name: Show the runner's CPU count, vector features and memory

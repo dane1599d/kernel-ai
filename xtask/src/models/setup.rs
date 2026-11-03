@@ -127,7 +127,8 @@ mod tests {
         let catalog = Catalog::load().unwrap();
         let none = ModelArgs::default();
         assert_eq!(
-            choose(&catalog, &none, Some(32)).unwrap().id,
+            // Spike S12-2's branch (never merged) pins the 8B from 12 GB.
+            choose(&catalog, &none, Some(11)).unwrap().id,
             "qwen3-4b-2507"
         );
         assert_eq!(choose(&catalog, &none, Some(6)).unwrap().id, "qwen3-1.7b");

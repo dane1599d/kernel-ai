@@ -379,10 +379,10 @@ fn record(
 }
 
 fn show(number: usize, task: &Task, outcome: &Outcome, ms: u128) {
-    let rounds = if outcome.rounds == 2 {
-        ", repaired"
-    } else {
-        ""
+    let rounds = match outcome.rounds {
+        0 | 1 => String::new(),
+        2 => ", repaired".into(),
+        n => format!(", {} repairs", n - 1),
     };
     match &outcome.failure {
         None => println!(
@@ -460,11 +460,16 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
         options.repeat,
     );
     let mut outcomes = Vec::new();
+    let mut told_wrong = 0;
     for repeat in 0..options.repeat {
         for (number, task) in TASKS.iter().enumerate() {
             let clock = Instant::now();
             let (outcome, reference) = match options.c {
-                true => (c::attempt(task, &transport()), c::REFERENCES[number]),
+                true => {
+                    let (outcome, wrong) = c::attempt(task, &transport());
+                    told_wrong += usize::from(wrong);
+                    (outcome, c::REFERENCES[number])
+                }
                 false => (attempt(task, transport()), task.reference),
             };
             let ms = clock.elapsed().as_millis();
@@ -507,6 +512,28 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
         summary.runs,
         percent(summary.passed, summary.runs),
     );
+    if options.c {
+        let mut by_repairs = String::new();
+        for repairs in 1..=c::MAX_REPAIRS {
+            let passed = outcomes
+                .iter()
+                .filter(|o| o.failure.is_none() && o.rounds <= repairs + 1)
+                .count();
+            let _ = write!(
+                by_repairs,
+                "; after {repairs}: {passed}/{} ({}%)",
+                summary.runs,
+                percent(passed, summary.runs)
+            );
+        }
+        println!(
+            "xtask: fluency (C) by repairs: first try {}/{}{by_repairs}; {told_wrong} passed only after being told what they printed was wrong",
+            summary.first_try, summary.runs,
+        );
+        if let Some(line) = local::speed_line() {
+            println!("xtask: speed: {line}");
+        }
+    }
     if !failures.is_empty() {
         println!("xtask: failures:{failures}");
     }

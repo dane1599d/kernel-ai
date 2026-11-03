@@ -154,6 +154,64 @@
       "revision": "a06e946bb6b655725eafa393f4a9745d460374c9",
       "sha256": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
       "size": 2497281120
+    },
+    {
+      "decode": {
+        "embedding": "Q4_K",
+        "layers": [
+          {
+            "count": 18,
+            "groups": [
+              [
+                "Q4_K 4096x4096",
+                "Q4_K 4096x1024",
+                "Q6_K 4096x1024"
+              ],
+              [
+                "Q4_K 4096x4096"
+              ],
+              [
+                "Q4_K 4096x12288",
+                "Q4_K 4096x12288"
+              ],
+              [
+                "Q6_K 12288x4096"
+              ]
+            ]
+          },
+          {
+            "count": 18,
+            "groups": [
+              [
+                "Q4_K 4096x4096",
+                "Q4_K 4096x1024",
+                "Q4_K 4096x1024"
+              ],
+              [
+                "Q4_K 4096x4096"
+              ],
+              [
+                "Q4_K 4096x12288",
+                "Q4_K 4096x12288"
+              ],
+              [
+                "Q4_K 12288x4096"
+              ]
+            ]
+          }
+        ],
+        "output": "Q6_K 4096x151936"
+      },
+      "file": "Qwen3-8B-Q4_K_M.gguf",
+      "id": "qwen3-8b",
+      "license": "Apache-2.0",
+      "min_ram_gb": 12,
+      "name": "Qwen3-8B Q4_K_M",
+      "note": "Spike S12-2 comparison only (draft, never merged): the first 7-8B model the engine runs.",
+      "repo": "Qwen/Qwen3-8B-GGUF",
+      "revision": "7c41481f57cb95916b40956ab2f0b139b296d974",
+      "sha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
+      "size": 5027783488
     }
   ]
 }
