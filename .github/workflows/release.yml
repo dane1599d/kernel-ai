@@ -285,17 +285,20 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: build-a
-          path: build-a
+          # Outside the checkout, as every output here: an untracked file marks
+          # the build -dirty, which the slot record, the kernel and NOTICES carry.
+          path: ${{ runner.temp }}/build-a
       - name: The test-root build, which differs from build-a's only beneath pkgrepo/
         run: |
+          test -z "$(git status --porcelain)"
           cargo xtask release-image --test-root --out "$RUNNER_TEMP/test-root.img" | tee "$RUNNER_TEMP/test-root.log"
           # Every boot module but the test root's repository, and every ESP part
           # but the bundle that carries it.
           same() { grep -E '^xtask: (module|part) ' "$1" | grep -v -E '^xtask: (module pkgrepo/|part boot/kai.bundle )'; }
-          same build-a/build.log > release.parts
-          same "$RUNNER_TEMP/test-root.log" > test-root.parts
-          test -s release.parts
-          diff release.parts test-root.parts
+          same "$RUNNER_TEMP/build-a/build.log" > "$RUNNER_TEMP/release.parts"
+          same "$RUNNER_TEMP/test-root.log" > "$RUNNER_TEMP/test-root.parts"
+          test -s "$RUNNER_TEMP/release.parts"
+          diff "$RUNNER_TEMP/release.parts" "$RUNNER_TEMP/test-root.parts"
           grep -E '^xtask: module pkgrepo/' "$RUNNER_TEMP/test-root.log"
       - name: Boot it with qwen3-0.6b as the import disk; models import, allowed
         env:
