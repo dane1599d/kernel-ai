@@ -146,7 +146,7 @@ fn the_package_line_parser_reads_any_line() {
 
 #[test]
 fn the_models_line_parser_reads_any_line_and_takes_one_word_as_the_model() {
-    let mut rng = Rng(0x30de_15);
+    let mut rng = Rng(0x0030_de15);
     for _ in 0..20_000 {
         let text = line(&mut rng);
         match crate::models::parse_line(&text) {
