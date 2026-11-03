@@ -70,7 +70,7 @@ pub fn serve(component: &str, shm: &[u8], host: &dyn Host) -> Result<String, Str
     let app = match wasmhost::load_live_granted(&artifact, limits(), None, Grants::default()) {
         Ok(LiveInstance::V2(app)) => app,
         Ok(LiveInstance::V1(_)) => return Err(internal("it is not a lifecycle 2 app")),
-        Err(fault) => return Err(failed("loading it", &fault)),
+        Err(fault) => return Err(refused(&fault)),
     };
     let mut trial = Trial::new(host, app)?;
     trial.init()?;
@@ -139,10 +139,17 @@ fn button(frame: &Frame) -> Option<(u32, String)> {
         .map(|node| (node.id, node.name.clone()))
 }
 
-/// `what` failed with `fault`: the program's fault unless wasmhost refused it
-/// for a reason of its own.
+/// `what` failed with `fault`, the program's fault: a call's fault is, even a
+/// host one, such as a string it passed that is not UTF-8.
 fn failed(what: &str, fault: &Fault) -> String {
-    let text = format!("{what} failed ({}): {}", fault.reason.name(), fault.detail);
+    format!("{what} failed ({}): {}", fault.reason.name(), fault.detail)
+}
+
+/// wasmhost did not load the artifact: internal when it refused it for a
+/// reason of its own, the program's when it ran out of memory or fuel
+/// instantiating it.
+fn refused(fault: &Fault) -> String {
+    let text = failed("loading it", fault);
     match fault.reason {
         Reason::Host | Reason::Manifest | Reason::Compile | Reason::Link => internal(&text),
         _ => text,
@@ -295,10 +302,21 @@ mod tests {
             Reason::Compile,
             Reason::Link,
         ] {
-            let text = failed("loading it", &Fault::new(reason, "no"));
+            let text = refused(&Fault::new(reason, "no"));
             assert!(text.starts_with(INTERNAL), "{text}");
         }
-        for reason in [Reason::Trap, Reason::Fuel, Reason::Memory, Reason::Abi] {
+        for reason in [Reason::Memory, Reason::Fuel] {
+            let text = refused(&Fault::new(reason, "no"));
+            assert!(text.starts_with("loading it failed ("), "{text}");
+        }
+        // A call's fault is the program's, a host one included.
+        for reason in [
+            Reason::Trap,
+            Reason::Fuel,
+            Reason::Memory,
+            Reason::Abi,
+            Reason::Host,
+        ] {
             let text = failed("init", &Fault::new(reason, "no"));
             assert!(text.starts_with("init failed ("), "{text}");
         }

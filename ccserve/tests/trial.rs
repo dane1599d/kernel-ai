@@ -121,6 +121,18 @@ fn a_trap_in_an_event_is_named_with_its_step() {
     );
 }
 
+/// A host fault in a call is the program's to repair, not `internal`: here a
+/// notice whose text is not UTF-8.
+#[test]
+fn a_bad_string_the_app_passes_is_its_own_fault() {
+    let bad = APP.replace(
+        "app_string_set(&notice.val.notify, \"started\");",
+        "notice.val.notify.ptr = (uint8_t *)\"\\xff\\xfe\";\n    notice.val.notify.len = 2;",
+    );
+    let got = trial(&bad);
+    assert!(got.starts_with("err 0 started failed (host): "), "{got}");
+}
+
 #[test]
 fn a_trial_takes_only_the_apps_own_artifact() {
     let mut cc = Cc::open();
