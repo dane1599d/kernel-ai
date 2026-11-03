@@ -14,7 +14,7 @@ pub mod session;
 pub mod trial;
 
 pub use compiler::{CompileError, Compiler};
-pub use service::{Effects, Service};
+pub use service::{Effects, Service, Shm, writes_shm};
 pub use session::Session;
 
 /// xcc's compiler, SHA-256 pinned (third_party/xcc/cc.wasm.sha256).

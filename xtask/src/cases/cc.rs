@@ -46,6 +46,8 @@ pub(super) const CASES: &[TestCase] = &[
             "hello from C, built in the OS",
             "c-build: cc build hello built 0.0.1, and pkg installed it from local as generation 2",
             "c-build: hello 0.0.1 runs as p-",
+            "c-build: cc tried hello through a read-only Shm: trial ok: init, started; 0 window(s), 0 frame(s); 0 effect(s) queued, none run",
+            "c-build: a build through a read-only Shm is refused: internal: cc cannot map the Shm read-write",
             "pkg: switched back from generation 2 to 1's packages as generation 3",
             "pkg: ended, undone: hello as p-",
             "c-build: undo switched back to generation 1, and the next build is 0.0.2",

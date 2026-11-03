@@ -67,6 +67,34 @@ pub fn kai_h(effects: &dyn Effects) -> String {
     )
 }
 
+/// The `Shm` a request came with, as cc mapped it: read-write only for the
+/// one request that writes it ([`writes_shm`]).
+pub enum Shm<'a> {
+    /// A `build`'s: its sources in, and the artifact back over them.
+    Write(&'a mut [u8]),
+    /// Any other request's, read and never written: a `trial`'s artifact.
+    Read(&'a [u8]),
+}
+
+impl Shm<'_> {
+    /// The bytes, however they were mapped.
+    pub fn bytes(&self) -> &[u8] {
+        match self {
+            Shm::Write(bytes) => bytes,
+            Shm::Read(bytes) => bytes,
+        }
+    }
+}
+
+/// Whether `message` is a request that writes its `Shm`. Only a `build` does,
+/// so cc maps every other request's read-only.
+pub fn writes_shm(message: &[u8]) -> bool {
+    let request = core::str::from_utf8(message)
+        .ok()
+        .and_then(|text| Request::parse(text).ok());
+    matches!(request, Some(Request::Build { .. }))
+}
+
 pub struct Service<E> {
     compiler: Compiler,
     kairt: Vec<u8>,
@@ -130,13 +158,8 @@ impl<E: Effects> Service<E> {
     }
 
     /// Answers one message, given the `Shm` it came with, mapped: a `build`'s
-    /// sources ([`crate::build::shm`]).
-    pub fn handle_with(
-        &mut self,
-        message: &[u8],
-        shm: Option<&mut [u8]>,
-        host: &dyn Host,
-    ) -> Vec<u8> {
+    /// sources ([`crate::build::shm`]) or a `trial`'s artifact.
+    pub fn handle_with(&mut self, message: &[u8], shm: Option<Shm>, host: &dyn Host) -> Vec<u8> {
         let mut reply = Reply::new(REPLY_CAP);
         let request = core::str::from_utf8(message)
             .map_err(|_| "a request is text")
@@ -148,13 +171,7 @@ impl<E: Effects> Service<E> {
         reply.into_bytes()
     }
 
-    fn serve(
-        &mut self,
-        request: Request,
-        shm: Option<&mut [u8]>,
-        host: &dyn Host,
-        reply: &mut Reply,
-    ) {
+    fn serve(&mut self, request: Request, shm: Option<Shm>, host: &dyn Host, reply: &mut Reply) {
         if let Request::Open { origin, .. } = request {
             return self.open(origin, reply);
         }
@@ -166,7 +183,7 @@ impl<E: Effects> Service<E> {
             return self.build(component, version, shm, host, reply);
         }
         if let Request::Trial { component } = request {
-            return trial(component, shm.as_deref(), host, reply);
+            return trial(component, shm.as_ref().map(Shm::bytes), host, reply);
         }
         let Some(open) = self.open.as_mut() else {
             return error(reply, 0, "no session is open");
@@ -233,12 +250,20 @@ impl<E: Effects> Service<E> {
         &self,
         component: &str,
         version: &str,
-        shm: Option<&mut [u8]>,
+        shm: Option<Shm>,
         host: &dyn Host,
         reply: &mut Reply,
     ) {
-        let Some(shm) = shm else {
-            return error(reply, 0, "build brings its sources in an Shm");
+        let shm = match shm {
+            Some(Shm::Write(shm)) => shm,
+            Some(Shm::Read(_)) => {
+                let why = format!(
+                    "{}build writes its artifact into the Shm, which came read-only",
+                    crate::trial::INTERNAL
+                );
+                return error(reply, 0, &why);
+            }
+            None => return error(reply, 0, "build brings its sources in an Shm"),
         };
         let budget = &mut Budget::new(host, host.line_ns().saturating_mul(BUILD_LINES));
         match crate::build::shm::serve(&self.compiler, component, version, shm, budget) {
