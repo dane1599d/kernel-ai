@@ -13,6 +13,8 @@
 //!   loop takes input before it draws; a key that changes nothing is timed to
 //!   whatever frame comes next, so it can only read long, never short.
 //! - `perf drag`: (b) again, for (f) under the load the kernel starts.
+//! - `perf reference`: `kabi::perf`'s fixed reference work, timed
+//!   [`REFERENCE_ROUNDS`] times, which tells the kernel how fast the runner is.
 //!
 //! S05-1's (d) is the sheet's spring, and this desktop has none: a card shows
 //! in one frame. Between timed frames it sleeps 1 ms, outside the timing, so
@@ -27,12 +29,14 @@ use deskcore::geom::Rect;
 use gfx2d::term::{self, Layout};
 use gfx2d::{Image, Text};
 use kabi::input::{InputEvent, Kind};
-use kabi::perf::OVER_BUDGET;
+use kabi::perf::{OVER_BUDGET, REFERENCE, REFERENCE_WORDS};
 use termcore::style::Kind as Row;
 use user::{println, sys};
 
 /// Cold text pages: each starts from an empty atlas, as S05-1's did.
 const COLD_PAGES: usize = 10;
+/// Times the reference work runs; its median is the runner's speed.
+const REFERENCE_ROUNDS: usize = 21;
 /// How far (b) drags: right, then back.
 const DRAG_PX: i32 = 200;
 /// The terminal page S05-1 timed.
@@ -122,6 +126,7 @@ pub fn request(state: &mut State, screen: &Screen, bytes: &[u8], pid: u64) -> Op
             return Some(String::from("ok"));
         }
         ["drag"] => drag(state, screen, "(f) drag under load, render+flush", true),
+        ["reference"] => Vec::from([reference()]),
         _ => return Some(String::from("err unknown perf request")),
     };
     // The kernel says which misses count: only under KVM.
@@ -258,6 +263,32 @@ fn text_page(frames: usize) -> Vec<String> {
             Pick::Max,
         ),
     ])
+}
+
+/// `kabi::perf::reference_work` timed [`REFERENCE_ROUNDS`] times, as
+/// `reference p50 <ns> ns: ...`; a pause after each, outside the timing.
+fn reference() -> String {
+    let mut words = alloc::vec![0u32; REFERENCE_WORDS];
+    let mut samples: Vec<u64> = (0..REFERENCE_ROUNDS)
+        .map(|round| {
+            let start = sys::time_ns();
+            core::hint::black_box(kabi::perf::reference_work(
+                core::hint::black_box(&mut words),
+                round as u32,
+            ));
+            let took = sys::time_ns() - start;
+            sys::sleep_ms(1);
+            took
+        })
+        .collect();
+    samples.sort_unstable();
+    let (p50, max) = (samples[samples.len() / 2], samples[samples.len() - 1]);
+    format!(
+        "{REFERENCE}{p50} ns: n={} p50 {} max {} ms",
+        samples.len(),
+        ms(p50),
+        ms(max)
+    )
 }
 
 /// Shell-like text using every printable ASCII byte, as S05-1's page did.

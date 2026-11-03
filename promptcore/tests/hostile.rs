@@ -180,7 +180,7 @@ const REQUESTS: [&str; 7] = [
     "replay 3\nI64 x;",
     "resume 12 ok\n{\"status\":0}",
     "dis Sq",
-    "build hello",
+    "build hello 0.0.1",
     "undo",
 ];
 

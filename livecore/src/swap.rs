@@ -1,7 +1,8 @@
 //! `ctl swap`: stage a candidate, move the state into it, check it, then put it on
-//! probation (or commit it at once when probation is off). Every attempt that gets
-//! as far as the kernel's BEGIN ends in a COMMIT or a ROLLBACK naming the step that
-//! failed; the active version is only ever asked to export.
+//! probation (or commit it at once when probation is off, or the caller wants
+//! none). Every attempt that gets as far as the kernel's BEGIN ends in a COMMIT or
+//! a ROLLBACK naming the step that failed; the active version is only ever asked
+//! to export.
 
 use crate::host::{Core, Env, Exit, Mode, Probation, Report, Version, export_own, text};
 use crate::{Fault, Instance, Reason};
@@ -18,6 +19,7 @@ pub(crate) fn swap<E: Env>(
     mut active: Version<E::Instance>,
     label: &str,
     force: bool,
+    probation: bool,
 ) -> Step<E::Instance> {
     if active.label == label {
         return Ok((
@@ -114,7 +116,7 @@ pub(crate) fn swap<E: Env>(
         Err(fault) => return refused(core, active, label, &fault, 0),
     };
     let settings = &core.settings;
-    if settings.probation_calls == 0 && settings.probation_ms == 0 {
+    if !probation || (settings.probation_calls == 0 && settings.probation_ms == 0) {
         commit(core, &candidate, &candidate_blob, 0, 0)?;
         return Ok((
             Mode::Serving(candidate),

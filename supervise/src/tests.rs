@@ -90,6 +90,50 @@ fn the_plan_the_kernel_sends_parses() {
     );
 }
 
+/// The shell finds each route after `updated` by the name `routes=` gives it, so
+/// every shell line's `routes=` must name exactly those routes, in `uses=`'s
+/// order: a route added anywhere but last, or named wrong, fails here.
+#[test]
+fn every_shell_lines_routes_are_named_in_order() {
+    for line in kabi::plan::SHELL_LINES {
+        let text = alloc::format!(
+            "llm caps=serve\ndesktop caps=serve\npkg caps=serve\n{}\n{}",
+            kabi::plan::CC,
+            kabi::plan::with_updated(line, "")
+        );
+        let plan = parse_plan(&text);
+        assert_eq!(plan.errors, Vec::<String>::new(), "{line}");
+        let shell = plan.services.iter().find(|s| s.name == "shell").unwrap();
+        assert_eq!(
+            &shell.uses[..kabi::plan::SHELL_ROUTES.len()],
+            ["llm", SUPERVISOR, "cc", "updated"]
+        );
+        let routes = shell
+            .args
+            .split_whitespace()
+            .find_map(|word| word.strip_prefix("routes="))
+            .unwrap_or("");
+        let after: Vec<&str> = shell.uses[kabi::plan::SHELL_ROUTES.len()..]
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let named: Vec<&str> = routes.split('+').filter(|w| !w.is_empty()).collect();
+        assert_eq!(named, after, "{line}");
+        for (at, name) in after.iter().enumerate() {
+            assert_eq!(
+                kabi::plan::named_route(routes, name),
+                Some(kabi::plan::SHELL_ROUTES.len() + at)
+            );
+        }
+    }
+    assert_eq!(kabi::plan::named_route("desktop+pkg", "pkg"), Some(5));
+    assert_eq!(kabi::plan::named_route("desktop", "pkg"), None);
+    assert_eq!(kabi::plan::named_route("", ""), None);
+    assert_eq!(kabi::plan::named_route("+", ""), None);
+    assert_eq!(kabi::plan::named_route("desktop++pkg", "pkg"), Some(5));
+    assert_eq!(kabi::plan::named_route("+desktop", "desktop"), Some(4));
+}
+
 #[test]
 fn a_bad_line_skips_only_its_service() {
     let plan = parse_plan("llm caps=serve+net\nshell caps=serve+teleport\nhog pages=64");

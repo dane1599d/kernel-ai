@@ -178,6 +178,7 @@ dependencies = [
  "agentabi",
  "kabi",
  "kailink",
+ "kaipkg",
  "livecore",
  "promptcore",
  "serde_json",

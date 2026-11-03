@@ -64,6 +64,9 @@ pub enum SelfTest {
     Shell,
     /// P4 task 12: the `c>` prompt through the shell and `cc` (ADR 0012).
     CPrompt,
+    /// `c-build` (P4 task 13): `cc build` installs a C app from `local`, and
+    /// `undo` switches back.
+    CBuild,
     /// M8b: LLM-written scripts are checked and run by their tier.
     Scripts,
     /// P1 task 7: one tagged call through the one door. `act-plain`: plain
@@ -304,6 +307,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=terminal" => Some(SelfTest::Terminal),
             "test=shell" => Some(SelfTest::Shell),
             "test=c-prompt" => Some(SelfTest::CPrompt),
+            "test=c-build" => Some(SelfTest::CBuild),
             "test=scripts" => Some(SelfTest::Scripts),
             "test=act-plain" => Some(SelfTest::Act(ActCase::Plain)),
             "test=act-run" => Some(SelfTest::Act(ActCase::Run)),
@@ -498,6 +502,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Terminal
             | SelfTest::Shell
             | SelfTest::CPrompt
+            | SelfTest::CBuild
             | SelfTest::Scripts
             | SelfTest::Act(_)
             | SelfTest::Live
@@ -615,6 +620,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
         }
         SelfTest::PkgStore(step) => crate::pkg_tests::plan(step),
         SelfTest::DeskCatalog => crate::catalog_tests::plan(),
+        SelfTest::CBuild => crate::cc_build_tests::plan(),
         SelfTest::Edit | SelfTest::Manifest | SelfTest::ManifestGood => {
             let mut plan = match test {
                 SelfTest::Edit => String::from(kabi::plan::NOTES_EDIT_TEST),
@@ -652,6 +658,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::FilesChurn { .. }
             | SelfTest::PkgStore(_)
             | SelfTest::DeskCatalog
+            | SelfTest::CBuild
     ) {
         // The file system service starts before the shell, once there is a
         // `kai-data` partition for it (ADR 0004).
