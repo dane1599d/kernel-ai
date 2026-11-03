@@ -185,6 +185,9 @@ pub enum SelfTest {
     /// The System monitor's window on the desktop, given a sample of the machine
     /// and closed from its control (P4 task 9).
     UiMonitor,
+    /// The model manager's window on the desktop, given `updated`'s model list
+    /// and closed from its control (P4 task 10).
+    UiModels,
     /// An unused app naps and a click wakes it (P3 task 12b).
     DeskNap,
     /// A saved appearance repaints `desktop` at once and holds across its
@@ -398,6 +401,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=app-editor-files" => Some(SelfTest::AppEditorFiles),
             "test=app-editor-build" => Some(SelfTest::AppEditorBuild),
             "test=ui-monitor" => Some(SelfTest::UiMonitor),
+            "test=ui-models" => Some(SelfTest::UiModels),
             "test=desk-nap" => Some(SelfTest::DeskNap),
             "test=desk-appearance" => Some(SelfTest::DeskAppearance),
             "test=keep-running" => Some(SelfTest::KeepRunning {
@@ -458,10 +462,10 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
 /// model request, except in `update`, which runs a step of the update service
 /// at boot (`updated=`, `check` by default; a refusal restarts into the
 /// running slot) and takes any `updated.<word>` as a word, as `restart=window`.
-/// The default boot starts it at boot (`kabi::plan::system`), and so does
-/// `app-models`, whose first list would otherwise wait on its start.
+/// The default boot starts it at boot (`kabi::plan::system`), and so do the
+/// cases in [`updated_at_boot`].
 fn updated_words(test: SelfTest) -> String {
-    if test == SelfTest::Act(ActCase::AppModels) {
+    if updated_at_boot(test) {
         return String::new();
     }
     if test != SelfTest::Update {
@@ -480,6 +484,12 @@ fn updated_words(test: SelfTest) -> String {
         words.push_str(word);
     }
     words
+}
+
+/// The cases whose first model list would otherwise wait on `updated`'s start:
+/// the agent's (`app-models`) and the window's (`ui-models`).
+fn updated_at_boot(test: SelfTest) -> bool {
+    matches!(test, SelfTest::Act(ActCase::AppModels) | SelfTest::UiModels)
 }
 
 /// The service plan for this boot, or None for the boots that run no user space.
@@ -534,6 +544,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::AppEditorFiles
             | SelfTest::AppEditorBuild
             | SelfTest::UiMonitor
+            | SelfTest::UiModels
             | SelfTest::DeskNap
             | SelfTest::KeepRunning { .. }
             | SelfTest::DeskAppearance
@@ -786,6 +797,11 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::UiMonitor {
         plan.push('\n');
         plan.push_str(&crate::app_window_tests::monitor_plan());
+    }
+    // After the shell, whose `updated` is the window's second route.
+    if test == SelfTest::UiModels {
+        plan.push('\n');
+        plan.push_str(&crate::app_window_tests::models_plan());
     }
     if test == SelfTest::DeskNap {
         plan.push('\n');

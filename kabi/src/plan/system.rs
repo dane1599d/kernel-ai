@@ -13,7 +13,9 @@
 //! - `updated`, the model channel, started at boot, so a model trial the last
 //!   boot left is judged then ([`super::with_updated`]; P4 task 10);
 //! - the shell, with its routes to `updated`, `desktop` and, with `kai-data`,
-//!   `pkg`, where the editor's builds of a C component install.
+//!   `pkg`, where the editor's builds of a C component install;
+//! - with `kai-data`, the model manager's window, on demand, after `updated`,
+//!   its second route (P4 task 10).
 //!
 //! With a build service (`build=`), the kernel adds the boot manifest's headless
 //! `notes` and the edit service after these; a boot without one runs neither.
@@ -75,6 +77,12 @@ pub const APPS: [&str; 5] = [
 /// `files`, and a boot with no build service has no source for it to edit.
 pub const EDITOR_APP: &str = app!("editor", "desktop", "+edit");
 
+/// The model manager's window ([`super::MODELS_WINDOW`], started on demand). Its
+/// second route is `updated`, so it is planned after `updated` and the shell,
+/// not with [`APPS`]; and only with `kai-data`, since without it `updated` has
+/// no model store to list.
+pub const MODELS_APP: &str = app!("models-window", "desktop+updated");
+
 /// The system's lines after `llm`'s and before `updated`'s and the shell's, in
 /// plan order; `files` when the disk has a `kai-data` partition, so `fs` and
 /// `pkg` run.
@@ -101,7 +109,8 @@ pub fn shell(files: bool) -> &'static str {
 }
 
 /// The whole system plan: `llm`'s line, [`lines`], then the shell with
-/// `updated` just before it, started at boot.
+/// `updated` just before it, started at boot, then with `kai-data`
+/// [`MODELS_APP`].
 pub fn plan(llm: &str, files: bool) -> String {
     let mut plan = String::from(llm);
     for line in lines(files) {
@@ -110,6 +119,10 @@ pub fn plan(llm: &str, files: bool) -> String {
     }
     plan.push('\n');
     plan.push_str(&super::with_updated(shell(files), ""));
+    if files {
+        plan.push('\n');
+        plan.push_str(MODELS_APP);
+    }
     plan
 }
 
@@ -167,5 +180,27 @@ mod tests {
         assert_eq!(EDITOR_APP, on_demand);
         assert!(lines(true).contains(&EDITOR_APP));
         assert!(!lines(false).contains(&EDITOR_APP));
+    }
+
+    /// [`MODELS_APP`] is [`super::super::MODELS_WINDOW`] started on demand,
+    /// planned last and only with `kai-data`; and no other line of the plan but
+    /// the shell's has a route to `updated`.
+    #[test]
+    fn the_models_window_is_last_with_kai_data_and_the_only_app_routed_to_updated() {
+        let on_demand = alloc::format!("{} start=demand", super::super::MODELS_WINDOW);
+        assert_eq!(MODELS_APP, on_demand);
+        let llm = "llm caps=serve+net";
+        assert_eq!(plan(llm, true).lines().last(), Some(MODELS_APP));
+        assert!(!plan(llm, false).contains("models-window"));
+        for line in plan(llm, true).lines() {
+            let name = line.split(' ').next().unwrap_or_default();
+            let routes = line
+                .split_whitespace()
+                .find_map(|w| w.strip_prefix("uses="))
+                .unwrap_or_default();
+            if routes.split('+').any(|r| r == "updated") {
+                assert!(["shell", "models-window"].contains(&name), "{line}");
+            }
+        }
     }
 }

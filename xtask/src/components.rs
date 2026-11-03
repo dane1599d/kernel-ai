@@ -85,6 +85,17 @@ const MONITOR_DIRS: &[&str] = &[
 const MONITOR_WINDOW_WIT: &str = "apps/monitor-window/wit";
 /// `app:monitor/actions`, which the window exports.
 const MONITOR_WIT: &str = "apps/monitor/wit";
+/// The model manager (P4 task 10): its window, list, tree, the list format it
+/// reads (`modelchan`) and the shared `kai:ui` glue. It exports no actions.
+const MODELS_WINDOW: &str = "apps/models-window";
+const MODELS_DIRS: &[&str] = &[
+    MODELS_WINDOW,
+    "apps/models",
+    "apps/models-ui",
+    "apps/ui-bind",
+    "modelchan",
+];
+const MODELS_WINDOW_WIT: &str = "apps/models-window/wit";
 
 /// `notes` from `components/notes`: version 2, and every upload the edit loop
 /// builds.
@@ -150,6 +161,16 @@ pub const MONITOR_WINDOW_RECIPE: Recipe = Recipe {
         "wit/kai-system",
         MONITOR_WIT,
     ],
+};
+
+/// The model manager (P4 task 10), a window over the model list that reads
+/// only: a switch or an import is Kai's row.
+pub const MODELS_WINDOW_RECIPE: Recipe = Recipe {
+    component: "models-window",
+    krate: "comp-models-window",
+    dirs: MODELS_DIRS,
+    feature: None,
+    wit: &[MODELS_WINDOW_WIT, "wit/kai-ui", "wit/kai-models"],
 };
 
 /// The editor (P4 task 11), a window over the edit service and the person's
@@ -227,6 +248,10 @@ pub const VERSIONS: &[Version] = &[
     Version {
         label: WINDOW_LABEL,
         recipe: MONITOR_WINDOW_RECIPE,
+    },
+    Version {
+        label: WINDOW_LABEL,
+        recipe: MODELS_WINDOW_RECIPE,
     },
 ];
 
@@ -652,6 +677,27 @@ mod tests {
     }
 
     /// The Settings fixture packs with a window and its one effect row.
+    /// The model manager's build packs under its world with no action rows: the
+    /// model rows are the OS's, and the window reads only.
+    #[test]
+    fn the_models_build_packs_with_no_action_rows() {
+        let models = VERSIONS
+            .iter()
+            .find(|v| v.recipe.component == "models-window")
+            .unwrap();
+        let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+        let root = crate::workspace_root();
+        let source = artifact::bundle(&[("apps/models-window/src/lib.rs", b"//")]);
+        let bytes = pack(&root, &models.recipe, models.label, module, &source).unwrap();
+        let parsed = artifact::parse(&bytes).unwrap();
+        assert_eq!(
+            parsed.manifest.world,
+            "app:models-window/models-window@1.0.0"
+        );
+        let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
+        assert!(actions.rows.is_empty());
+    }
+
     #[test]
     fn the_settings_fixture_packs_with_its_one_effect_row() {
         let fixture = TEST_ONLY

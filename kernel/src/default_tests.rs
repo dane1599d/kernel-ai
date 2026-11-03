@@ -1,10 +1,10 @@
 //! `test=desk-default`: the v0.1 system as the default boot plans it
 //! (`kabi::plan::system`, no plan line of the case's own), on a disk with
 //! `kai-data`. `desktop` claims the screen and draws; `pkg` seeds the image's
-//! signed repository and serves its catalogue, the image's six apps installed
+//! signed repository and serves its catalogue, the image's seven apps installed
 //! (`pkg` loads none: each app's plan line runs the image's own version); the
 //! case types Ctrl+Space, `apps` and Enter, and the Apps sheet lists them by
-//! name. Down three times, past `editor`, `files` and `monitor`, and Enter on
+//! name. Down four times, past `editor`, `files`, `models` and `monitor`, and Enter on
 //! `notes` sends `open notes` as a panel line, the shell takes it, the model's
 //! `ui_open` starts `notes-window` on demand, and its window opens. The host
 //! checks `desktop`'s and the supervisor's lines.
@@ -30,19 +30,20 @@ const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
 const APPS_ENTER: [u8; 10] = [0x1E, 0x9E, 0x19, 0x99, 0x19, 0x99, 0x1F, 0x9F, 0x1C, 0x9C];
 const DOWN: [u8; 4] = [0xE0, 0x50, 0xE0, 0xD0];
 const ENTER: [u8; 2] = [0x1C, 0x9C];
-/// The catalogue `pkg` serves: the image's six apps, installed, by name.
-const CATALOGUE: [&str; 7] = [
+/// The catalogue `pkg` serves: the image's seven apps, installed, by name.
+const CATALOGUE: [&str; 8] = [
     "kai-catalog 1",
     "installed\teditor\t1.0.0\tapp\t",
     "installed\tfiles\t1.0.0\tapp\t",
+    "installed\tmodels\t1.0.0\tapp\t",
     "installed\tmonitor\t1.0.0\tapp\t",
     "installed\tnotes\t1.0.0\tapp\t",
     "installed\tsettings\t1.0.0\tapp\t",
     "installed\tterminal\t1.0.0\tapp\t",
 ];
-/// The app the sheet's fourth row opens, and the Downs that reach it.
+/// The app the sheet's fifth row opens, and the Downs that reach it.
 const APP: &str = "notes-window";
-const APP_ROW: usize = 3;
+const APP_ROW: usize = 4;
 /// `pkg` answers once it has seeded the store, so its first answer can wait on
 /// that under TCG.
 const CALL_MS: u64 = 60_000;
@@ -67,7 +68,7 @@ fn system_up() -> Result<(), &'static str> {
             .all(|(row, start)| row.starts_with(start));
     if !listed {
         log!("desk-default: pkg's catalogue is {text:?}");
-        return Err("desk-default: the catalogue is not the image's six apps");
+        return Err("desk-default: the catalogue is not the image's seven apps");
     }
     if !process::named(APP).is_empty() {
         return Err("desk-default: an app started before it was opened");
@@ -95,7 +96,7 @@ pub fn check() -> Result<(), &'static str> {
     // comphost starts the app and paints its first frame, slowly under TCG.
     threads::sleep_ms(10_000);
     log!(
-        "desk-default: the desktop came up, the Apps sheet listed the image's six apps, and Enter on Notes opened notes-window"
+        "desk-default: the desktop came up, the Apps sheet listed the image's seven apps, and Enter on Notes opened notes-window"
     );
     Ok(())
 }

@@ -15,6 +15,10 @@ const DATA: Data = Data {
     gpt: true,
 };
 
+/// `fs` on the data disk, `desktop` and a window together pass the page budget
+/// (half the free memory) of the default 512 MiB guest (`keep-running`'s).
+const WINDOW_AND_FS_MIB: u64 = 1024;
+
 pub(super) const CASES: &[TestCase] = &[
     // P4 task 4: the AI types into the Terminal app, a person's Enter runs the line
     // (the harness's one key), and the AI reads the rows.
@@ -37,6 +41,23 @@ pub(super) const CASES: &[TestCase] = &[
             "ui-monitor: the Monitor's window was shown, and its close control pressed",
         ],
         ..case("ui-monitor", "test=ui-monitor")
+    },
+    // P4 task 10: the model manager's window on the desktop, given updated's
+    // list by comphost (granted by the plan line's name, and answered by
+    // updated for that name alone), then closed. kai-data gives updated its
+    // store, which holds no model here, so the list is the role's.
+    TestCase {
+        expect: &[
+            "comphost: window 1 \"Models\" shown at 640x460",
+            "desktop: window 1 \"Models\" opened at 48,52 size 642x494",
+            "comphost: the first model list reached the window (",
+            "comphost: window 1 closed",
+            "desktop: window 1 closed",
+            "ui-models: the model manager's window was shown, and its close control pressed",
+        ],
+        data: Some(DATA),
+        memory_mib: Some(WINDOW_AND_FS_MIB),
+        ..case("ui-models", "test=ui-models")
     },
     // P4 task 10: the agent manages the models through the `model_*` rows. The
     // store holds `fixture` as the model in use; the import disk holds
