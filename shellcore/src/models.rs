@@ -283,7 +283,8 @@ pub(crate) fn parse_line(text: &str) -> Option<Result<Line, String>> {
         ["models", "import"] => Ok(Line::Import),
         ["models", "use", name] => Ok(Line::Use(String::from(*name))),
         ["models", ..] => Err(String::from(
-            "models, models import, or models use <id> (models lists the ids)",
+            "models, models import, or models use <id> (models lists the ids); \
+             to ask Kai about models, start with ask",
         )),
         _ => return None,
     })
