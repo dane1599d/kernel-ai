@@ -20,8 +20,8 @@ mod bind;
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use comp_monitor::Monitor;
 use comp_monitor::sample::Sample;
-use comp_monitor::{Monitor, Sort};
 use comp_ui_bind::{OnUi, Shown, Sink};
 use compsdk::app::{Event, Events};
 use compsdk::{Component, ImportError};
@@ -31,15 +31,13 @@ use uikit::widget::{UiError, UiEvent};
 /// The component's state schema.
 pub const SCHEMA: u32 = 1;
 
-/// What the checkpoint keeps: how the table was sorted, so a restart comes back
-/// to it. The numbers are read again.
+/// What the checkpoint keeps: nothing. The sort order is only what is drawn, and
+/// the host refuses a read-only row (`monitor_sort`, `monitor_select`) that
+/// changes the checkpoint, so it is not in it; the numbers are read again. A
+/// restart or a version swap starts on the default order. A state the last
+/// version saved, with its sort in it, still imports: the sort is dropped.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
-pub struct V1 {
-    #[n(0)]
-    pub sort: String,
-    #[n(1)]
-    pub flipped: bool,
-}
+pub struct V1 {}
 
 pub struct MonitorWindow {
     pub monitor: Monitor,
@@ -169,33 +167,20 @@ impl Component for MonitorWindow {
         app
     }
 
-    /// The sort the last version showed; anything else starts as new.
+    /// A state it can read starts the window over, on the default order.
     fn import(state: &[u8], from_schema: u32) -> Result<Self, ImportError> {
         if from_schema != SCHEMA {
             return Err(ImportError::Unsupported);
         }
-        let v1: V1 = compsdk::state::decode(state, SCHEMA).ok_or(ImportError::Bad)?;
-        let mut monitor = Monitor::new();
-        if let Some(sort) = Sort::parse(&v1.sort) {
-            monitor.set_sort(sort);
-            if v1.flipped {
-                monitor.press_sort(sort);
-            }
-        }
-        let mut app = Self::new(monitor);
+        let _: V1 = compsdk::state::decode(state, SCHEMA).ok_or(ImportError::Bad)?;
+        let mut app = Self::new(Monitor::new());
         app.present_logged();
         app.ask();
         Ok(app)
     }
 
     fn export(&self, schema: u32) -> Option<Vec<u8>> {
-        (schema == SCHEMA).then(|| {
-            let v1 = V1 {
-                sort: String::from(self.monitor.sort().word()),
-                flipped: self.monitor.flipped(),
-            };
-            compsdk::state::encode(SCHEMA, &v1)
-        })
+        (schema == SCHEMA).then(|| compsdk::state::encode(SCHEMA, &V1 {}))
     }
 
     fn health(&self) -> u32 {

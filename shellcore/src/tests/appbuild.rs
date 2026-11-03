@@ -142,6 +142,66 @@ fn a_repaired_build_is_kept_once_it_builds() {
     assert_eq!(kept.source, crate::appbuild::sha256(SOURCE));
 }
 
+/// C on #609: a call the line did not plainly ask for (no "app" cue: the
+/// model added it, or read a vague line as it) asks once, and only an Allow
+/// writes and builds.
+#[test]
+fn a_build_the_line_did_not_ask_for_asks_first_and_runs_on_an_allow() {
+    let (host, mut shell) = asked(vec![app(SOURCE)]);
+    let reply = shell.eval("I'd like a countdown timer");
+    assert!(reply.to_wire().starts_with("menu 1 "), "{reply:?}");
+    assert!(host.script_requests.borrow().is_empty(), "nothing yet");
+    assert!(host.app_sources.borrow().is_empty());
+    host.pkg_answers
+        .borrow_mut()
+        .push_back(Ok(String::from("0.0.1")));
+    host.cc_builds.borrow_mut().push_back(Ok(built()));
+    let once = host.mint(1, "app_build(\"timer\", \"a countdown timer\")");
+    let done = shell.eval(&format!("answer 1 allow once={once}"));
+    assert!(
+        done.ok && done.text.contains("Built timer 0.0.1"),
+        "{done:?}"
+    );
+    assert_eq!(host.app_sources.borrow().len(), 1);
+    assert!(shell.eval("log actlog").text.contains("consent=yes"));
+}
+
+/// C on #609: a main.c Kai did not write is the person's, and is never
+/// overwritten; one Kai wrote is built again.
+#[test]
+fn a_hand_edited_source_is_never_overwritten() {
+    let (host, mut shell) = asked(vec![app(SOURCE)]);
+    host.app_sources
+        .borrow_mut()
+        .push((String::from("timer"), String::from("/* mine */\n")));
+    let reply = shell.eval("make me a countdown timer app");
+    assert!(
+        !reply.ok && reply.text.contains("was changed since Kai wrote it"),
+        "{reply:?}"
+    );
+    assert!(host.script_requests.borrow().is_empty());
+    assert_eq!(host.app_sources.borrow().len(), 1, "left as it was");
+    // Kai's own source is rebuilt, here and after a restart (from the log).
+    let (host, mut shell) = asked(vec![app(SOURCE)]);
+    host.pkg_answers
+        .borrow_mut()
+        .push_back(Ok(String::from("0.0.1")));
+    host.cc_builds.borrow_mut().push_back(Ok(built()));
+    assert!(shell.eval("make me a countdown timer app").ok);
+    host.calls.borrow_mut().push_back(call(TIMER));
+    host.answers.borrow_mut().push_back(app(SOURCE));
+    host.pkg_answers
+        .borrow_mut()
+        .push_back(Ok(String::from("0.0.2")));
+    host.cc_builds.borrow_mut().push_back(Ok(built()));
+    shell.app_written.clear();
+    let again = shell.eval("make me a countdown timer app");
+    assert!(
+        again.ok && again.text.contains("Built timer 0.0.2"),
+        "{again:?}"
+    );
+}
+
 #[test]
 fn a_bad_name_or_no_card_builds_nothing() {
     let bad = r#"{"name":"app_build","arguments":{"name":"Timer!","request":"a timer"}}"#;

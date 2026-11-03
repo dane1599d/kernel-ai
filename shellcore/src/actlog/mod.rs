@@ -205,7 +205,7 @@ impl ActLog {
         self.records.push_back(record);
     }
 
-    fn entries(&self) -> impl DoubleEndedIterator<Item = &Entry> {
+    pub(crate) fn entries(&self) -> impl DoubleEndedIterator<Item = &Entry> {
         self.records.iter().filter_map(|r| match r {
             Record::Entry(e) => Some(e),
             Record::System(_) => None,

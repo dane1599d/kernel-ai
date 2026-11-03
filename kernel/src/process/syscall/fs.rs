@@ -24,6 +24,7 @@ const CALLS: &[u64] = &[
     call::PART_FLUSH,
     call::ENDPOINT_MINT,
     call::PART_PEER_ALIVE,
+    call::PART_PEER_NAME,
     call::MODEL_FILL,
 ];
 
@@ -35,6 +36,7 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
         call::PART_WRITE => write(slot, a[0], a[1], a[2], a[3]),
         call::PART_FLUSH => flush(slot, a[0]),
         call::PART_PEER_ALIVE => peer_alive(slot, a[0], a[1]),
+        call::PART_PEER_NAME => peer_name(slot, a[0], a[1], a[2], a[3]),
         call::MODEL_FILL => model_fill(slot, a[0], a[1], a[2], a[3]),
         _ => mint(slot, a[0], a[1], a[2], a[3]),
     })
@@ -189,6 +191,20 @@ fn peer_alive(slot: usize, raw: u64, pid: u64) -> Result<u64, Error> {
         true => Ok(0),
         false => Err(Error::NotFound),
     }
+}
+
+/// PART_PEER_NAME: live process `pid`'s name from the table, under its lock,
+/// so `fs` matches a `/system/apps` open to the caller exactly however many
+/// processes run (`kabi::Metrics` lists only the first few).
+fn peer_name(slot: usize, raw: u64, pid: u64, ptr: u64, cap: u64) -> Result<u64, Error> {
+    partition(slot, raw, Rights::empty())?;
+    let (name, _) = crate::process::name_of(pid).ok_or(Error::NotFound)?;
+    let (bytes, len) = name.bytes();
+    if cap < len as u64 {
+        return Err(Error::TooBig);
+    }
+    copy_to_user(slot, ptr, &bytes[..len])?;
+    Ok(len as u64)
 }
 
 /// MODEL_FILL: the model store's model, from `kai-data` block runs the caller

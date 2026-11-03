@@ -12,10 +12,17 @@
 //! "private", and the model's `ui_act` on a node it never saw reaches the card
 //! and, after a yes, is refused by `desktop`. Each step shows in `desktop`'s and
 //! comphost's log lines, which the host checks.
+//!
+//! `undo` is typed at the shell twice, as a person would, between the stages:
+//! once to take the agent's theme back before Settings opens (it then reads the
+//! theme before, and the log lists the undo), and once to take Settings' revoke
+//! back (the fixture's next press runs), then again to withhold the row for the
+//! restore click that follows.
 
 use crate::agent_desk_tests::{KEYS_MS, OPEN_MS, START, click, terminal_keys, wait};
 use crate::display::claim;
-use crate::{ask_box, log, process, terminal, threads};
+use crate::{ask_box, ipc, log, process, terminal, threads};
+use alloc::string::String;
 
 /// `desktop`'s shell with a state directory as well (`SHELL_DESK_FILES`), planned
 /// after the `fs` service the case's data disk starts: the theme the case sets is
@@ -54,6 +61,45 @@ fn keys_in(case: &str, at: &mut (i32, i32), title: (i32, i32), settle_ms: u64) {
     keys_here(case, settle_ms);
 }
 
+/// How long the shell may take to answer a line, and how long the log may take
+/// to list the agent's change, asked again each [`POLL_MS`], under TCG.
+const LINE_MS: u64 = 30_000;
+const LOG_MS: u64 = 60_000;
+const POLL_MS: u64 = 1_000;
+
+/// The shell's wire reply to `line`, typed as a person would.
+fn shell(line: &str) -> Result<String, &'static str> {
+    let reply = ipc::call("shell", line.as_bytes(), LINE_MS)
+        .map_err(|_| "app-settings: the shell did not answer")?;
+    Ok(String::from_utf8_lossy(&reply).into_owned())
+}
+
+/// The shell's log once it lists `text`: the agent's call is in it only when it
+/// has run, and the line it was typed as is not a signal.
+fn log_until(case: &str, text: &str) -> Result<String, &'static str> {
+    let mut last = String::new();
+    for _ in 0..LOG_MS / POLL_MS {
+        last = shell("log")?;
+        if last.contains(text) {
+            return Ok(last);
+        }
+        threads::sleep_ms(POLL_MS);
+    }
+    log!("{case}: the log never listed {text:?}: {last:?}");
+    Err("app-settings: the agent's change was not logged")
+}
+
+/// `undo` at the shell, which must answer `want`: the change it took back, in
+/// the shell's words.
+fn undo(case: &str, want: &str) -> Result<(), &'static str> {
+    let said = shell("undo")?;
+    if said != want {
+        log!("{case}: undo answered {said:?}, not {want:?}");
+        return Err("app-settings: undo took back something else");
+    }
+    Ok(())
+}
+
 pub fn check() -> Result<(), &'static str> {
     const CASE: &str = "app-settings";
     let mut at = START;
@@ -71,6 +117,15 @@ pub fn check() -> Result<(), &'static str> {
     terminal_keys(CASE, &mut at)?;
     threads::sleep_ms(KEYS_MS);
     log!("{CASE}: the theme was set before Settings opened");
+    // The person takes the change back: `undo` puts the theme before it back,
+    // and the log lists the undo. Settings reads the theme when it starts, so
+    // its first read, from the app's log, shows the theme before.
+    log_until(CASE, "light")?;
+    undo(CASE, "ok Undone: theme dark (was light)")?;
+    if !shell("log")?.contains("undo of #") {
+        return Err("app-settings: the log did not list the undo of the theme");
+    }
+    log!("{CASE}: undo put the theme back to dark and the log lists it");
     // "rules_add on time(22:00) -> app_suspend(game)": a standing instruction,
     // asked on `desktop`'s card; `y` allows it. Settings lists it when it starts.
     terminal_keys(CASE, &mut at)?;
@@ -100,8 +155,9 @@ pub fn check() -> Result<(), &'static str> {
     // agent's: a key in the fixture queues its one `fs_list` and the OS runs it;
     // in Settings, `tab right right tab ret` removes the rule from the Rules
     // page; `tab left tab tab ret` revokes that row (the page has chosen the
-    // first app) and the next key in the fixture is refused; `tab tab tab ret`
-    // restores it and the one after runs;
+    // first app) and the next key in the fixture is refused; after `undo` the one
+    // after runs, and after `undo` again `tab tab tab ret` restores it and the
+    // one after that runs;
     // `tab left tab ret` presses the Theme button; and `tab tab tab right right
     // right right tab spc` goes round to the Updates page and its switch, which
     // turns the restart window on. Each change is read back from the shell
@@ -116,6 +172,12 @@ pub fn check() -> Result<(), &'static str> {
     keys_in(CASE, &mut at, SETTINGS_TITLE, SETTLE_MS);
     keys_in(CASE, &mut at, SETTINGS_TITLE, SETTLE_MS);
     keys_in(CASE, &mut at, FIXTURE_TITLE, SETTLE_MS);
+    // The revoke is a click, logged as one: `undo` gives the row back, so the
+    // next press runs, and `undo` again withholds it for the restore click.
+    undo(CASE, "ok Undone: fixture-window may call fs_list")?;
+    keys_in(CASE, &mut at, FIXTURE_TITLE, SETTLE_MS);
+    undo(CASE, "ok Undone: fixture-window may not call fs_list")?;
+    log!("{CASE}: undo gave the revoked row back and undo again withheld it");
     keys_in(CASE, &mut at, SETTINGS_TITLE, SETTLE_MS);
     keys_in(CASE, &mut at, FIXTURE_TITLE, SETTLE_MS);
     keys_in(CASE, &mut at, SETTINGS_TITLE, SETTLE_MS);

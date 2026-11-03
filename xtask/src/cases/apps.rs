@@ -29,6 +29,16 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("app-terminal", "test=app-terminal")
     },
+    // P4 task 9's exit case: the agent sorts the Monitor by memory and it names
+    // the top process, the Monitor lists a spinner, and stopping that asks.
+    TestCase {
+        expect: &[
+            "app-monitor: \"sort the monitor by memory\" answered ",
+            "app-monitor: \"select spin-a in the monitor\" answered ",
+            "app-monitor: the agent sorted the Monitor by memory and it named its top process, it found spin-a, and stopping spin-a asked and ended on Deny",
+        ],
+        ..case("app-monitor", "test=app-monitor")
+    },
     // P4 task 9: the System monitor's window on the desktop, given a sample of
     // the machine by comphost (granted by the plan line's name), then closed.
     TestCase {
@@ -42,6 +52,18 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("ui-monitor", "test=ui-monitor")
     },
+    // P4 task 5: the Files window on the desktop, shown and closed from its
+    // control. No shell runs, so what it asks the OS for waits unanswered.
+    TestCase {
+        expect: &[
+            "comphost: window 1 \"Files\" shown at 720x460",
+            "desktop: window 1 \"Files\" opened at 48,52 size 722x494",
+            "comphost: window 1 closed",
+            "desktop: window 1 closed",
+            "ui-files: the Files window was shown, and its close control pressed",
+        ],
+        ..case("ui-files", "test=ui-files")
+    },
     // P4 task 10: the model manager's window on the desktop, given updated's
     // list by comphost (granted by the plan line's name, and answered by
     // updated for that name alone), then closed. kai-data gives updated its
@@ -54,10 +76,28 @@ pub(super) const CASES: &[TestCase] = &[
             "comphost: window 1 closed",
             "desktop: window 1 closed",
             "ui-models: the model manager's window was shown, and its close control pressed",
+            // Off a slot image there is no lever, so updated serves at once.
+            "updated: the boot record answered at once",
         ],
         data: Some(DATA),
         memory_mib: Some(WINDOW_AND_FS_MIB),
         ..case("ui-models", "test=ui-models")
+    },
+    // P4 task 5: the agent makes, moves and trashes a file, the Files window shows
+    // each state, and `undo` puts both back. The OS's rows run at once (a move and
+    // a trash have an undo, so they do not ask); the log shows each change.
+    TestCase {
+        expect: &[
+            "app-files: the Files window lists the file the agent made",
+            "app-files: after the move the window lists plan.txt and no longer notes.txt",
+            "app-files: after the trash the window lists neither file",
+            "app-files: undo put the move back, and the window lists notes.txt and not plan.txt",
+            "app-files: the window went to a second folder and came back to the home folder",
+            "app-files: the agent made, moved and trashed a file at once, the Files window showed each state and a second folder, and undo put each back; the log showed each change and each undo",
+        ],
+        data: Some(DATA),
+        memory_mib: Some(WINDOW_AND_FS_MIB),
+        ..case("app-files", "test=app-files")
     },
     // P4 task 10: the agent manages the models through the `model_*` rows. The
     // store holds `fixture` as the model in use; the import disk holds
@@ -68,6 +108,8 @@ pub(super) const CASES: &[TestCase] = &[
             "block: kai-import disk holds a GGUF file; a disk with a role is never the model",
             "updated: imported fixture-2 (cc73ee264158), 2105341 bytes",
             "app-models: the agent listed the models, imported fixture-2 checked against the signed role, used it, and undo put fixture back",
+            // Off a slot image there is no lever, so updated serves at once.
+            "updated: the boot record answered at once",
         ],
         data: Some(DATA),
         store: Some(Fixture::Gguf),

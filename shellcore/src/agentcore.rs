@@ -396,6 +396,7 @@ impl Shell {
             pkg: None,
             standing: None,
             model: None,
+            app: None,
         });
         // The highlight starts on Allow only for a call the line plainly asked for.
         let origin = match why {

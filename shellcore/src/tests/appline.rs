@@ -262,3 +262,29 @@ fn the_consoles_answer_finishes_a_c_entry_after_an_app_line() {
     assert!(allowed.text.ends_with("= 0"), "{allowed:?}");
     assert!(host.procs.borrow().is_empty());
 }
+
+#[test]
+fn a_typed_models_import_is_refused_here_and_a_switch_runs_logged() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let said = typed(&mut shell, "models import").unwrap();
+    assert!(said.starts_with("err it asks first"), "{said}");
+    assert!(
+        !host
+            .model_requests
+            .borrow()
+            .contains(&"models import".into())
+    );
+    let said = typed(&mut shell, "models use qwen3-0.6b").unwrap();
+    assert!(
+        said.starts_with("ok Done: the next restart uses it"),
+        "{said}"
+    );
+    assert!(shell.eval("log actlog").text.contains("consent=typed"));
+    let undone = typed(&mut shell, "undo").unwrap();
+    assert!(
+        undone.starts_with("ok Undone: the model before"),
+        "{undone}"
+    );
+    assert_eq!(host.models.borrow().store.next, None);
+}
