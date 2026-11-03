@@ -14,7 +14,7 @@
 /// request is its own file rows (`fs_read`, `fs_create`, `fs_write`), so tiers,
 /// the action log and undo are the OS's; a request it refuses comes back as the
 /// reason.
-package kai:files@0.1.0;
+package kai:files@0.1.1;
 
 interface files {
     /// Queues a read of the whole file at `path` and returns its ticket. A path
@@ -32,14 +32,28 @@ interface files {
     /// when `path` is not a path (as for `read`), when `data` is longer, or when
     /// 2 requests are waiting for the host already.
     write: func(path: string, data: list<u8>, create: bool) -> u32;
+
+    /// Queues a build of the C component `name` from the sources in
+    /// `/home/user/c/<name>/` and returns its ticket: what the OS does for a typed
+    /// `cc build <name>` (an app is installed as the next version of its package,
+    /// a component is built only), logged and undone the same way. `name` is a
+    /// package's name: 2 to 12 of a-z, 0-9 and `-`, starting with a letter. A
+    /// build is passed on only when the call that sent it was started by a real
+    /// key or click from the person at the desktop; one from `init`, an answer, a
+    /// timer or an action the AI synthesised is refused with an error answer. It
+    /// builds what is saved on disk, not what the app holds. Traps when `name` is
+    /// not a name, or when 2 requests are waiting for the host already.
+    @since(version = 0.1.1)
+    build: func(name: string) -> u32;
 }
 
 /// What the OS answered.
 interface replies {
     /// The answer to the request with this ticket: for a read, the file's bytes;
-    /// for a write, no bytes. Or why there is none: a reason in words for the
-    /// person, starting `missing` when a read's path is not there. Tickets are not
-    /// reused while the app runs.
+    /// for a write, no bytes; for a build, its report as text, `ok ` or `err `
+    /// and a headline, then `cc`'s lines if there are any. Or why there is none:
+    /// a reason in words for the person, starting `missing` when a read's path is
+    /// not there. Tickets are not reused while the app runs.
     on-done: func(ticket: u32, outcome: result<list<u8>, string>);
 }
 

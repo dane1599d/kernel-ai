@@ -20,12 +20,16 @@ const LIMITS: Limits = Limits {
 /// A guest whose `health` reads `/home/user/a.txt` and returns its ticket; whose
 /// `on-ui` writes "hi" there with `create` (window 1), reads a relative path
 /// (window 9), writes with a length over the limit (window 8) or reads a path
-/// with `..` (window 7); and whose `on-done` keeps the ticket, the result's case
-/// and the payload's length, which `self-test` reads back as one number.
+/// with `..` (window 7), builds `hello` (window 5) or `../x` (window 6); and whose
+/// `on-done` keeps the ticket, the result's case and the payload's length, which
+/// `self-test` reads back as one number.
 const GUEST: &str = r#"(module
   (import "kai:files/files@0.1.0" "read" (func $read (param i32 i32) (result i32)))
   (import "kai:files/files@0.1.0" "write" (func $write (param i32 i32 i32 i32 i32) (result i32)))
+  (import "kai:files/files@0.1.1" "build" (func $build (param i32 i32) (result i32)))
   (memory (export "memory") 1)
+  (data (i32.const 112) "hello")
+  (data (i32.const 128) "../x")
   (data (i32.const 32) "/home/user/a.txt")
   (data (i32.const 64) "hi")
   (data (i32.const 80) "a.txt")
@@ -44,6 +48,20 @@ const GUEST: &str = r#"(module
     global.set $top
     local.get $at)
   (func (export "kai:ui/input@0.1.0#on-ui") (param i32 i32 i32 i32 i32 i32)
+    local.get 0
+    i32.const 5
+    i32.eq
+    if
+      (drop (call $build (i32.const 112) (i32.const 5)))
+      return
+    end
+    local.get 0
+    i32.const 6
+    i32.eq
+    if
+      (drop (call $build (i32.const 128) (i32.const 4)))
+      return
+    end
     local.get 0
     i32.const 9
     i32.eq
@@ -194,6 +212,57 @@ fn a_request_says_whether_a_person_was_at_the_keys() {
     // The flag does not stay up after the person's call.
     in_call(&mut app, |a| a.ui_events(1, &PRESS)).unwrap();
     assert!(!app.take_files()[0].user);
+}
+
+#[test]
+fn a_build_queues_a_request_that_says_whether_a_person_was_at_the_keys() {
+    let mut app = app();
+    in_call(&mut app, |a| a.ui_events_user(5, &PRESS)).unwrap();
+    in_call(&mut app, |a| a.ui_events(5, &PRESS)).unwrap();
+    let sent = app.take_files();
+    assert_eq!(sent.len(), 2);
+    for request in &sent {
+        assert_eq!(
+            request.op,
+            FileOp::Build {
+                name: String::from("hello")
+            }
+        );
+    }
+    // The tickets go on from the reads and writes', and only the person's is one.
+    assert_eq!((sent[0].ticket, sent[0].user), (0, true));
+    assert_eq!((sent[1].ticket, sent[1].user), (1, false));
+    // Builds count against the same queue.
+    in_call(&mut app, |a| a.ui_events(5, &PRESS)).unwrap();
+    in_call(&mut app, |a| a.ui_events(5, &PRESS)).unwrap();
+    let fault = in_call(&mut app, |a| a.ui_events(5, &PRESS)).expect_err("over the queue");
+    assert!(fault.detail.contains("queued"), "{}", fault.detail);
+}
+
+#[test]
+fn a_name_that_is_not_a_components_is_a_fault_and_queues_nothing() {
+    let mut app = app();
+    let fault = in_call(&mut app, |a| a.ui_events(6, &PRESS)).expect_err("a bad name");
+    assert!(fault.detail.contains("not a component"), "{}", fault.detail);
+    assert!(app.take_files().is_empty());
+    for good in ["hello", "h2", "my-app-1", "abcdefghijkl"] {
+        assert!(crate::files::check_name(good).is_ok(), "{good}");
+    }
+    for bad in [
+        "",
+        "h",
+        "Hello",
+        "1abc",
+        "-ab",
+        "a b",
+        "a/b",
+        "../x",
+        "abcdefghijklm",
+        "héllo",
+        "a\u{0}b",
+    ] {
+        assert!(crate::files::check_name(bad).is_err(), "{bad:?}");
+    }
 }
 
 #[test]

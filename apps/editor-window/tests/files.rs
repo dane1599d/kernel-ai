@@ -7,7 +7,7 @@ use comp_editor_window::{EditorWindow, Host, keys};
 use comp_ui_bind::Sink;
 use comp_ui_bind::tree::Entry;
 use compsdk::Component;
-use editcore::file::{MAX_BYTES, NOTHING_TO_BUILD};
+use editcore::file::MAX_BYTES;
 use std::collections::BTreeMap;
 use uikit::widget::{NodeId, UiError, Widget};
 
@@ -22,6 +22,7 @@ enum Req {
         data: Vec<u8>,
         create: bool,
     },
+    Build,
 }
 
 #[derive(Default)]
@@ -38,6 +39,8 @@ struct Os {
     refuse: Option<&'static str>,
     /// The `create` flag and length of every write that was done.
     writes: Vec<(bool, usize)>,
+    /// What the OS answers a build with.
+    build_answer: Option<Result<String, String>>,
 }
 
 impl Sink for Os {
@@ -101,6 +104,10 @@ impl Host for Os {
             },
         )
     }
+
+    fn build_component(&mut self, name: &str) -> u32 {
+        self.ask(format!("build {name}"), Req::Build)
+    }
 }
 
 impl Os {
@@ -147,6 +154,11 @@ impl Os {
                 self.disk.insert(path, data);
                 Ok(Vec::new())
             }
+            Req::Build => self
+                .build_answer
+                .clone()
+                .expect("a build answer")
+                .map(String::into_bytes),
         }
     }
 }
@@ -345,16 +357,144 @@ fn the_door_failing_or_a_file_that_is_not_text_says_so() {
     assert_eq!(os.status(), "the OS has no file door");
 }
 
+const SOURCE: &str = "/home/user/c/hello/hello.c";
+
+fn ctrl_b(app: &mut EditorWindow, os: &mut Os) {
+    press(app, os, "b", "", keys::CTRL);
+    serve(app, os);
+}
+
 #[test]
-fn ctrl_b_in_a_file_builds_nothing() {
+fn ctrl_b_in_a_file_that_is_not_in_a_components_folder_says_where_a_component_is() {
     let (mut app, mut os) = window();
-    os.disk.insert(PATH.into(), todo());
-    open_path(&mut app, &mut os, PATH);
+    for path in [
+        PATH,
+        "/home/user/c/hello.c",
+        "/home/user/c/Hello/a.c",
+        "/home/user/c/h/a.c",
+        "/home/user/c/hello/src/a.c",
+        "/home/user/c/hello-world-12/a.c",
+        "/home/user/d/hello/a.c",
+    ] {
+        os.disk.insert(
+            path.into(),
+            b"int x;
+"
+            .to_vec(),
+        );
+        open_path(&mut app, &mut os, path);
+        os.log.clear();
+        ctrl_b(&mut app, &mut os);
+        assert!(os.log.is_empty(), "{path}: {:?}", os.log);
+        assert!(
+            os.status().starts_with("Ctrl-B builds a C component")
+                || os.status().contains("is not a component's name"),
+            "{path}: {}",
+            os.status()
+        );
+    }
+}
+
+#[test]
+fn ctrl_b_builds_the_c_component_the_saved_file_is_in_and_shows_the_report() {
+    let (mut app, mut os) = window();
+    os.disk.insert(
+        SOURCE.into(),
+        b"int x;
+"
+        .to_vec(),
+    );
+    open_path(&mut app, &mut os, SOURCE);
     os.log.clear();
+    os.build_answer = Some(Ok(String::from(
+        "ok built hello 0.0.1 (5120 bytes) and installed it as generation 2. undo",
+    )));
     press(&mut app, &mut os, "b", "", keys::CTRL);
+    assert_eq!(os.status(), "building hello...");
     serve(&mut app, &mut os);
-    assert_eq!(os.status(), NOTHING_TO_BUILD);
-    assert!(os.log.is_empty());
+    assert_eq!(os.log, ["build hello"]);
+    assert_eq!(
+        os.status(),
+        "built hello 0.0.1 (5120 bytes) and installed it as generation 2. undo"
+    );
+    // The edit service was not asked, and the file is untouched.
+    assert!(os.writes.is_empty());
+}
+
+#[test]
+fn ctrl_b_wants_the_file_saved_first_because_the_os_builds_what_is_on_disk() {
+    let (mut app, mut os) = window();
+    os.disk.insert(
+        SOURCE.into(),
+        b"int x;
+"
+        .to_vec(),
+    );
+    open_path(&mut app, &mut os, SOURCE);
+    type_text(&mut app, &mut os, "y");
+    os.log.clear();
+    ctrl_b(&mut app, &mut os);
+    assert!(os.log.is_empty(), "{:?}", os.log);
+    assert!(
+        os.status().contains("Ctrl-S saves first"),
+        "{}",
+        os.status()
+    );
+    // A new file that is not on disk yet is no source either.
+    save(&mut app, &mut os);
+    os.log.clear();
+    os.build_answer = Some(Ok(String::from("ok built hello 0.0.1")));
+    ctrl_b(&mut app, &mut os);
+    assert_eq!(os.log, ["build hello"]);
+    open_path(&mut app, &mut os, "/home/user/c/hello/new.c");
+    os.log.clear();
+    ctrl_b(&mut app, &mut os);
+    assert!(os.log.is_empty(), "{:?}", os.log);
+    assert!(
+        os.status().contains("Ctrl-S saves first"),
+        "{}",
+        os.status()
+    );
+}
+
+#[test]
+fn a_failed_build_shows_the_compilers_lines_in_the_pager_and_a_refused_one_says_why() {
+    let (mut app, mut os) = window();
+    os.disk.insert(
+        SOURCE.into(),
+        b"int x;
+"
+        .to_vec(),
+    );
+    open_path(&mut app, &mut os, SOURCE);
+    os.build_answer = Some(Ok(String::from(
+        "err cc build hello: hello.c:3:5: error: x
+hello.c:7:1: error: z",
+    )));
+    ctrl_b(&mut app, &mut os);
+    assert_eq!(os.status(), "cc build hello: hello.c:3:5: error: x");
+    let shown = os.rows().join(
+        "
+",
+    );
+    assert!(shown.contains("hello.c:7:1: error: z"), "{shown}");
+    // Any key closes the pager, and the file is as it was.
+    press(&mut app, &mut os, "esc", "", 0);
+    assert_eq!(&os.rows()[..1], ["int x;"]);
+    // A one-line failure stays in the status row only.
+    os.build_answer = Some(Ok(String::from("err cc build hello: pkg: no pkg here")));
+    ctrl_b(&mut app, &mut os);
+    assert_eq!(os.status(), "cc build hello: pkg: no pkg here");
+    assert_eq!(&os.rows()[..1], ["int x;"]);
+    // The OS refused before it built anything.
+    os.build_answer = Some(Err(String::from(
+        "a build needs a key or click of the person at the editor",
+    )));
+    ctrl_b(&mut app, &mut os);
+    assert_eq!(
+        os.status(),
+        "hello was not built: a build needs a key or click of the person at the editor"
+    );
 }
 
 #[test]

@@ -400,3 +400,169 @@ fn a_job_line_reads_back_as_the_job_the_shell_does() {
     assert_eq!(parse_job("job 1 editor write maybe user 3 /a"), None);
     assert_eq!(parse_job("err busy"), None);
 }
+
+#[test]
+fn a_build_goes_from_the_editor_to_the_shell_which_answers_with_a_report() {
+    let mut files = Files::default();
+    let started = files
+        .request(DOOR_APP, b"files start 9 build user hello", 0)
+        .unwrap();
+    assert!(
+        started.wake,
+        "a build needs no pieces: the shell wakes at once"
+    );
+    assert_eq!(
+        shell(&mut files, "files take"),
+        "job 0 editor build user hello"
+    );
+    assert_eq!(shell(&mut files, "files take"), "none", "taken once");
+    assert_eq!(app(&mut files, "files poll 9"), "pending");
+    // A build carries nothing in, so there is nothing for the shell to fetch.
+    assert_eq!(
+        shell(&mut files, "files fetch 0 0"),
+        "err there is nothing to fetch"
+    );
+    // The report is several pieces, as many lines as the compiler said.
+    let report = format!("err cc build hello: hello.c:3: error\n{}", text(CHUNK + 40));
+    let total = report.len();
+    for (i, piece) in report.as_bytes().chunks(CHUNK).enumerate() {
+        let piece = String::from_utf8_lossy(piece);
+        let sent = shell(
+            &mut files,
+            &format!("files fill 0 {} {total}\n{piece}", i * CHUNK),
+        );
+        assert_eq!(sent, "ok");
+    }
+    assert_eq!(shell(&mut files, "files done 0 ok"), "ok");
+    assert_eq!(app(&mut files, "files poll 9"), format!("ok {total}"));
+    let mut got = String::new();
+    for offset in (0..total).step_by(CHUNK) {
+        let reply = app(&mut files, &format!("files get 9 {offset}"));
+        let (head, piece) = reply.split_once('\n').unwrap();
+        assert_eq!(head, format!("ok {total}"));
+        got.push_str(piece);
+    }
+    assert_eq!(got, report);
+    assert_eq!(files.running(), 0, "gone with its last piece");
+}
+
+#[test]
+fn a_build_the_shell_refuses_reaches_the_editor_as_the_reason() {
+    let mut files = Files::default();
+    app(&mut files, "files start 1 build - hello");
+    assert_eq!(
+        shell(&mut files, "files take"),
+        "job 0 editor build - hello"
+    );
+    shell(
+        &mut files,
+        "files done 0 err a build needs a key or click of the person at the editor",
+    );
+    assert_eq!(
+        app(&mut files, "files poll 1"),
+        "err a build needs a key or click of the person at the editor"
+    );
+    assert_eq!(files.running(), 0);
+}
+
+#[test]
+fn a_build_that_says_it_is_done_without_all_its_report_is_an_error() {
+    let mut files = Files::default();
+    app(&mut files, "files start 1 build user hello");
+    shell(&mut files, "files take");
+    shell(&mut files, "files fill 0 0 10\nok built");
+    shell(&mut files, "files done 0 ok");
+    assert_eq!(
+        app(&mut files, "files poll 1"),
+        "err the file was not all there"
+    );
+}
+
+#[test]
+fn only_a_component_s_name_is_a_build() {
+    let mut files = Files::default();
+    for name in [
+        "../x",
+        "a/b",
+        "Hello",
+        "h",
+        "hello-world-12",
+        "x y",
+        "1abc",
+        "a:b",
+        "-ab",
+        "héllo",
+        "/home/user/c/hello",
+    ] {
+        let reply = app(&mut files, &format!("files start 1 build user {name}"));
+        assert!(reply.starts_with("err "), "{name}: {reply}");
+    }
+    // Not a build's words: the user mark, or a missing name.
+    for text in [
+        "files start 1 build hello",
+        "files start 1 build maybe hello",
+        "files start 1 build user",
+        "files start 1 build user hello extra",
+    ] {
+        assert_eq!(app(&mut files, text), "err not a file request", "{text}");
+    }
+    assert_eq!(files.running(), 0);
+    for name in ["hello", "h2", "my-app-1", "abcdefghijkl"] {
+        assert_eq!(
+            app(&mut files, &format!("files start 1 build user {name}")),
+            "ok",
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_build_holds_one_of_the_two_places_and_only_the_editor_may_ask() {
+    let mut files = Files::with_apps(&["editor", "files"]);
+    assert_eq!(
+        ask(&mut files, "editor", "files start 1 build user hello", 0),
+        "ok"
+    );
+    assert_eq!(
+        ask(
+            &mut files,
+            "files",
+            &format!("files start 1 read {PATH}"),
+            0
+        ),
+        "ok"
+    );
+    let busy = ask(&mut files, "editor", "files start 2 read /home/user/a", 0);
+    // The editor's new start replaces its old build, so it is not busy.
+    assert_eq!(busy, "ok");
+    assert_eq!(files.running(), 2);
+    let refused = ask(&mut files, "notes", "files start 1 build user hello", 0);
+    assert!(refused.starts_with("err only the editor and the shell"));
+    assert_eq!(
+        shell(&mut files, "files start 1 build user hello"),
+        "err not a file request",
+        "the shell cannot start one"
+    );
+}
+
+#[test]
+fn a_build_job_line_reads_back_as_the_job_the_shell_does() {
+    let mut files = Files::default();
+    app(&mut files, "files start 3 build user hello");
+    let job = parse_job(&shell(&mut files, "files take")).unwrap();
+    assert_eq!(
+        (
+            job.app.as_str(),
+            job.op,
+            job.user,
+            job.total,
+            job.path.as_str()
+        ),
+        ("editor", Op::Build, true, 0, "hello")
+    );
+    app(&mut files, "files start 4 build - hello");
+    let job = parse_job(&shell(&mut files, "files take")).unwrap();
+    assert_eq!((job.op, job.user), (Op::Build, false));
+    assert_eq!(parse_job("job 1 editor build maybe hello"), None);
+    assert_eq!(parse_job("job 1 editor build user"), None);
+}

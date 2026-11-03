@@ -16,7 +16,10 @@
 //!
 //! The editor also opens a file of the person's own: Ctrl-O asks for its path and
 //! Ctrl-S saves it, through the OS's file door ([`files`]). The file's lines are
-//! then edited here and the edit service is not asked about them.
+//! then edited here and the edit service is not asked about them. A file in a C
+//! component's folder, `/home/user/c/<name>/`, is built with Ctrl-B: the OS does
+//! what a typed `cc build <name>` does, from the saved files, and the report
+//! comes back to the status row and, for a failure, the pager.
 
 #![cfg_attr(target_family = "wasm", no_std)]
 
@@ -69,6 +72,9 @@ pub trait Host: Sink {
     /// Queues `data` as the whole text of the file at `path`, made when `create`
     /// and replaced otherwise: the ticket the answer comes back under.
     fn write_file(&mut self, path: &str, data: &[u8], create: bool) -> u32;
+    /// Queues a build of the C component `name` from its saved sources
+    /// (`kai:files`): the ticket the report, as text, comes back under.
+    fn build_component(&mut self, name: &str) -> u32;
 }
 
 pub struct EditorWindow {
@@ -188,18 +194,22 @@ impl EditorWindow {
         settled
     }
 
-    /// Ctrl-O's path and Ctrl-S, which the screen only notes: the file is the
-    /// window's to open and save. Whether either was asked for.
+    /// Ctrl-O's path, Ctrl-S and Ctrl-B in a file, which the screen only notes: the
+    /// file is the window's to open, save and build. Whether any was asked for.
     fn take_file_wishes(&mut self, host: &mut dyn Host) -> bool {
         let open = self.screen.take_open();
         let save = self.screen.take_save();
+        let build = self.screen.take_build();
         if let Some(path) = &open {
             self.files.ask_open(host, &mut self.screen, path);
         }
         if save {
             self.files.ask_save(host, &mut self.screen);
         }
-        open.is_some() || save
+        if build {
+            self.files.ask_build(host, &mut self.screen);
+        }
+        open.is_some() || save || build
     }
 
     /// A click at row `row` and text cell `cell` of the code view.
