@@ -1,5 +1,6 @@
-//! `kai:files@0.1.0` for `lifecycle 2` (P4): a granted interface through which the
-//! editor reads and writes a file of the person's own. `read` and `write` only
+//! `kai:files@0.1.1` for `lifecycle 2` (P4): a granted interface through which the
+//! editor reads and writes a file of the person's own, and builds a C component
+//! from its folder. `read`, `write` and `build` only
 //! queue the request, as `kai:edit` queues its messages, because an app's call is
 //! transactional and can run on two versions. comphost takes the queue after the
 //! call ([`CoreInstance::take_files`]), has the OS do each and gives the app the
@@ -10,7 +11,7 @@
 //! The interface names a whole file and says nothing of how it travels. A request
 //! says whether a person's key or click was being handled when the app sent it
 //! ([`FilesRequest::user`]), which comphost and the OS read before they pass a
-//! write on.
+//! write or a build on.
 //!
 //! The interface is linked only for an instance loaded with the `files` grant
 //! ([`Grants`]); without it the import fails to link, and the version does not
@@ -51,6 +52,9 @@ pub enum FileOp {
         data: Vec<u8>,
         create: bool,
     },
+    /// `cc build` of the C component `name`, from `/home/user/c/<name>/`: the
+    /// answer is the build's report as text.
+    Build { name: String },
 }
 
 /// A request the app sent, waiting for comphost.
@@ -61,8 +65,8 @@ pub struct FilesRequest {
     pub op: FileOp,
     /// Whether a person's key or click was being handled when the app sent it
     /// ([`CoreInstance::ui_input`], [`CoreInstance::ui_events_user`]), and not an
-    /// answer, an event, the agent's `ui_act` or a timer. A write is passed on
-    /// only for a request that is.
+    /// answer, an event, the agent's `ui_act` or a timer. A write or a build is
+    /// passed on only for a request that is.
     pub user: bool,
 }
 
@@ -83,6 +87,23 @@ pub fn check_path(path: &str) -> Result<(), String> {
         return Err(alloc::format!("the path is over {MAX_PATH} bytes"));
     }
     livecore::artifact::valid_path(plain).map_err(|why| alloc::format!("{path}: {why}"))
+}
+
+/// Why `name` is not a component a build names: 2-12 of a-z, 0-9 and `-`,
+/// starting with a letter, a package's name (the OS checks it again).
+pub fn check_name(name: &str) -> Result<(), String> {
+    let shaped = (2..=12).contains(&name.len())
+        && name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if shaped {
+        Ok(())
+    } else {
+        Err(alloc::format!(
+            "{name:?} is not a component's name: 2-12 of a-z, 0-9 and -, starting with a letter"
+        ))
+    }
 }
 
 /// A string of `len` bytes at `ptr` in the app's memory.
@@ -166,6 +187,15 @@ pub(crate) fn write(
         create: create != 0,
     };
     queue(&mut caller, "write", op)
+}
+
+/// `files.build(name) -> u32`: the request's ticket.
+pub(crate) fn build(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) -> Result<i32, Error> {
+    let bytes = bytes_at(&mut caller, ptr, len)?;
+    let name = String::from_utf8(bytes)
+        .map_err(|_| Error::new(alloc::format!("{FILES} build: the name is not text")))?;
+    check_name(&name).map_err(|why| Error::new(alloc::format!("{FILES} build: {why}")))?;
+    queue(&mut caller, "build", FileOp::Build { name })
 }
 
 impl CoreInstance {

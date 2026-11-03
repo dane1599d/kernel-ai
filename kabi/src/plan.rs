@@ -40,16 +40,23 @@ pub const SHELL_DESK: &str = "shell caps=serve+call+policy+stop+script uses=llm+
 /// Settings): the same routes, and `files` and `state` added to the caps (a
 /// test holds the two lines together).
 pub const SHELL_DESK_FILES: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc+updated+desktop routes=desktop pages=4096 stack_pages=512 burst_ms=5000";
+/// [`SHELL_DESK_FILES`] with a route to `pkg` after the one to `desktop`, for the
+/// system's shell: the editor's Ctrl-B on a C component (`cc build`'s
+/// `local-next`, `local` and its undo) comes to the shell through `desktop`, and
+/// the shell reaches `pkg` by `routes=` as for [`SHELL_BUILD`]. Planned when `pkg`
+/// is, after it, which `system::lines` does with `kai-data`.
+pub const SHELL_DESK_BUILD: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc+updated+desktop+pkg routes=desktop+pkg pages=4096 stack_pages=512 burst_ms=5000";
 /// [`SHELL_FILES`] with a route to `pkg`, for `cc build`'s `local-next`, `local`
 /// and its undo (P4 task 13): planned when `pkg` is, after it.
 pub const SHELL_BUILD: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc+updated+pkg routes=pkg pages=4096 stack_pages=512 burst_ms=5000";
 /// Every shell line the kernel plans, for the checks that each starts with
 /// [`SHELL_ROUTES`] and names the routes after them in `routes=`.
-pub const SHELL_LINES: [&str; 5] = [
+pub const SHELL_LINES: [&str; 6] = [
     SHELL,
     SHELL_FILES,
     SHELL_DESK,
     SHELL_DESK_FILES,
+    SHELL_DESK_BUILD,
     SHELL_BUILD,
 ];
 
@@ -184,6 +191,21 @@ mod tests {
         assert_eq!(with_updated(SHELL_DESK, "").lines().next(), Some(UPDATED));
         let demand = with_updated(SHELL_DESK, ON_DEMAND);
         assert!(demand.lines().next().unwrap().ends_with(" start=demand"));
+    }
+
+    /// The system's shell is the desktop shell with files and one route more, to
+    /// `pkg` after `desktop`'s, word for word.
+    #[test]
+    fn the_desk_shell_with_build_is_the_desk_shell_with_files_and_a_route_to_pkg() {
+        assert_eq!(
+            SHELL_DESK_BUILD,
+            SHELL_DESK_FILES
+                .replacen("+desktop ", "+desktop+pkg ", 1)
+                .replacen("routes=desktop ", "routes=desktop+pkg ", 1)
+                .as_str()
+        );
+        assert_eq!(named_route("desktop+pkg", "desktop"), Some(4));
+        assert_eq!(named_route("desktop+pkg", "pkg"), Some(5));
     }
 
     #[test]

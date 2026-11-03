@@ -521,6 +521,15 @@ pub const IMPORTS: &[WitFunc] = &[
         result: || Some(Ty::U32),
     },
     WitFunc {
+        interface: "kai:files/files",
+        version: "0.1",
+        name: "build",
+        core_params: &[CoreTy::I32, CoreTy::I32],
+        core_results: &[CoreTy::I32],
+        params: || vec![Ty::String],
+        result: || Some(Ty::U32),
+    },
+    WitFunc {
         interface: "kai:code/code",
         version: "0.1",
         name: "put",

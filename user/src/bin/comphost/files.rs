@@ -8,7 +8,10 @@
 //! The relay never waits for the shell: it makes the call that moves a transfer
 //! one step, and goes on being polled by comphost's loop (20 ms while the window
 //! is open) until the shell has answered. One transfer runs at a time; a request
-//! sent while one runs waits its turn. A standby version, rehearsed beside the
+//! sent while one runs waits its turn. A build (`FileOp::Build`) is such a transfer
+//! that carries nothing in: the shell builds the component's C sources as it does
+//! for a typed `cc build`, which takes a while, and its report comes back as a
+//! read's bytes do. A standby version, rehearsed beside the
 //! active one during probation, has its queue emptied and dropped.
 
 use crate::started::shown_serial;
@@ -28,6 +31,10 @@ const STEPS: usize = 16;
 const MAX_WAITING: usize = 4;
 /// Milliseconds between two polls for the shell's answer.
 const POLL_EVERY_MS: u64 = 40;
+/// How long a build may take before the relay gives up on the shell: cc's wait for
+/// the build (150 s) and `pkg`'s for the install (60 s) in the shell, and a margin.
+/// `desktop` keeps the transfer for as long as these polls touch it.
+const BUILD_WAIT_MS: u64 = 300_000;
 /// How long one call to `desktop` may take.
 const CALL_MS: u64 = 5_000;
 /// Why a request is answered with an error when there is no desktop to go to.
@@ -96,6 +103,7 @@ fn verb(op: &FileOp) -> (&'static str, &str) {
     match op {
         FileOp::Read { path } => ("read", path),
         FileOp::Write { path, .. } => ("write", path),
+        FileOp::Build { name } => ("build", name),
     }
 }
 
@@ -227,6 +235,11 @@ impl Relay {
                         let why = "a save needs a key or click of the person";
                         return Next::Done(active, Err(String::from(why)));
                     }
+                    FileOp::Build { .. } if !active.request.user => {
+                        let why = "a build needs a key or click of the person";
+                        return Next::Done(active, Err(String::from(why)));
+                    }
+                    FileOp::Build { name } => format!("files start {ticket} build user {name}"),
                     FileOp::Write { path, data, create } => format!(
                         "files start {ticket} write {} user {} {path}",
                         if *create { "new" } else { "old" },
@@ -267,7 +280,11 @@ impl Relay {
                     active.step = Step::Poll { last_ms };
                     return Next::Wait(active);
                 }
-                if now.saturating_sub(active.began_ms) > IDLE_MS {
+                let patience = match active.request.op {
+                    FileOp::Build { .. } => BUILD_WAIT_MS,
+                    FileOp::Read { .. } | FileOp::Write { .. } => IDLE_MS,
+                };
+                if now.saturating_sub(active.began_ms) > patience {
                     return Next::Done(active, Err(String::from("the shell did not answer")));
                 }
                 let reply = match self.call(format!("files poll {ticket}").as_bytes()) {
@@ -275,14 +292,18 @@ impl Relay {
                     Err(why) => return Next::Done(active, Err(why)),
                 };
                 let reply = String::from_utf8_lossy(&reply).into_owned();
-                let is_read = matches!(active.request.op, FileOp::Read { .. });
+                // A read's bytes and a build's report come back; a write's answer is `ok`.
+                let answers_bytes = matches!(
+                    active.request.op,
+                    FileOp::Read { .. } | FileOp::Build { .. }
+                );
                 match reply.as_str() {
                     "pending" => {
                         active.step = Step::Poll { last_ms: now };
                         Next::Wait(active)
                     }
-                    "ok" if !is_read => Next::Done(active, Ok(Vec::new())),
-                    _ if is_read && reply.starts_with("ok ") => {
+                    "ok" if !answers_bytes => Next::Done(active, Ok(Vec::new())),
+                    _ if answers_bytes && reply.starts_with("ok ") => {
                         active.step = Step::Get { got: Vec::new() };
                         Next::Again(active)
                     }

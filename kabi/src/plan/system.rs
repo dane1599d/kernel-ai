@@ -12,7 +12,8 @@
 //!   with `kai-data`, the editor too, which opens and saves the person's files;
 //! - `updated`, the model channel, started at boot, so a model trial the last
 //!   boot left is judged then ([`super::with_updated`]; P4 task 10);
-//! - the shell, with its routes to `updated` and `desktop`;
+//! - the shell, with its routes to `updated`, `desktop` and, with `kai-data`,
+//!   `pkg`, where the editor's builds of a C component install;
 //! - with `kai-data`, the model manager's window, on demand, after `updated`,
 //!   its second route (P4 task 10).
 //!
@@ -37,6 +38,9 @@ pub const PKG: &str =
 /// The shell on a desktop with `fs`: [`super::SHELL_FILES`]'s caps and
 /// [`super::SHELL_DESK`]'s routes, the one line [`super::SHELL_DESK_FILES`].
 pub const SHELL_DESK_FILES: &str = super::SHELL_DESK_FILES;
+/// The shell with `fs` and `pkg`, which run together: [`SHELL_DESK_FILES`] and a
+/// route to `pkg`, the one line [`super::SHELL_DESK_BUILD`].
+pub const SHELL_DESK_BUILD: &str = super::SHELL_DESK_BUILD;
 
 /// What every app's line shares: the shared host, its window on `desktop`, and
 /// any caps beyond an app's own.
@@ -99,7 +103,7 @@ pub fn lines(files: bool) -> Vec<&'static str> {
 /// The system's shell line.
 pub fn shell(files: bool) -> &'static str {
     match files {
-        true => SHELL_DESK_FILES,
+        true => SHELL_DESK_BUILD,
         false => super::SHELL_DESK,
     }
 }
@@ -147,6 +151,25 @@ mod tests {
         let (_, files) = split(super::super::SHELL_FILES);
         assert_eq!(files_desk, desk);
         assert_eq!(files_caps, files);
+    }
+
+    /// With `kai-data` the system's shell has the route to `pkg` that the editor's
+    /// builds need, and without it, which plans no `pkg`, none.
+    #[test]
+    fn the_system_shell_has_a_route_to_pkg_with_kai_data_and_only_then() {
+        assert_eq!(shell(true), SHELL_DESK_BUILD);
+        assert_eq!(shell(false), super::super::SHELL_DESK);
+        assert!(shell(true).contains("routes=desktop+pkg "));
+        assert!(lines(true).iter().any(|line| line.starts_with("pkg ")));
+        assert!(!shell(false).contains("pkg"));
+        // `pkg` is planned before the shell, as its route needs.
+        let plan = plan("llm caps=serve", true);
+        let order: Vec<&str> = plan
+            .lines()
+            .map(|l| l.split(' ').next().unwrap_or(""))
+            .collect();
+        let at = |name| order.iter().position(|n| *n == name).unwrap();
+        assert!(at("pkg") < at("shell") && at("desktop") < at("shell"));
     }
 
     /// [`EDITOR_APP`] is the line `app-editor` boots, [`super::super::EDITOR`],

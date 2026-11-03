@@ -21,6 +21,7 @@ mod act_tests;
 mod agent_desk_tests;
 mod allow;
 mod apic;
+mod app_editor_build_tests;
 mod app_editor_files_tests;
 mod app_editor_tests;
 mod app_models_tests;
@@ -402,6 +403,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::UiWindow => run_case(ui_tests::check),
         SelfTest::AppEditor => run_case(app_editor_tests::check),
         SelfTest::AppEditorFiles => run_case(app_editor_files_tests::check),
+        SelfTest::AppEditorBuild => run_case(app_editor_build_tests::check),
         SelfTest::UiMonitor => run_case(app_window_tests::monitor_check),
         SelfTest::UiModels => run_case(app_window_tests::models_check),
         SelfTest::DeskNap => run_case(nap_tests::check),
@@ -455,6 +457,12 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetFallback => run_case(net_tests::fallback_check),
         SelfTest::NetStatic => run_case(net_tests::static_check),
         SelfTest::Slot => {
+            // A slot boot holds `updated`'s record calls until its lever has
+            // written: the guard is closed here, before the lever runs.
+            if slots::lever_done() {
+                fail("slots: a slot boot let updated at the record before its lever ran");
+            }
+            log!("slots: the record waits for this boot's lever");
             slots::on_boot(true);
             test_exit(ExitCode::Success)
         }

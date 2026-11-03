@@ -39,14 +39,14 @@ const START: (i32, i32) = (640, 400);
 const CODE: (i32, i32) = (48 + 300, 52 + 100);
 
 /// The shell's wire reply to `line`, as a typed line.
-fn shell(line: &str) -> Result<String, &'static str> {
+pub(crate) fn shell(line: &str) -> Result<String, &'static str> {
     let reply = ipc::call("shell", line.as_bytes(), CALL_MS)
         .map_err(|_| "app-editor-files: the shell did not answer")?;
     Ok(String::from_utf8_lossy(&reply).into_owned())
 }
 
 /// Waits for `desktop` to take the screen and the editor to run.
-fn desktop_and_editor() -> Result<(), &'static str> {
+pub(crate) fn desktop_and_editor() -> Result<(), &'static str> {
     for _ in 0..WAIT_MS / 50 {
         let desktop = process::named("desktop").first().map(|&(pid, _)| pid);
         let shows = desktop.and_then(|pid| {
@@ -65,15 +65,15 @@ fn desktop_and_editor() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Whether the editor shows a file of its own: its reply is `kai-reply 1` and a `result` that
-/// starts with the title `file disk: <path>`.
-fn showing_file(said: &str) -> bool {
-    said.contains("result \"file disk: ") && said.contains("todo.txt")
+/// Whether the editor shows the file called `name` of its own: its reply is `kai-reply 1` and a
+/// `result` that starts with the title `file disk: <path>`.
+pub(crate) fn showing_file(said: &str, name: &str) -> bool {
+    said.contains("result \"file disk: ") && said.contains(name)
 }
 
 /// A click into the code view gives it the keys: the window has the focus from the start, but
 /// a key goes to the node that has it, and nothing has until one is clicked.
-fn click_into_the_code() {
+pub(crate) fn click_into_the_code() {
     report(CODE.0 - START.0, CODE.1 - START.1, 0);
     report(0, 0, 1);
     report(0, 0, 0);
@@ -82,7 +82,7 @@ fn click_into_the_code() {
 }
 
 /// Ctrl-O and the path: two stages of the host's keys, sent in order.
-fn ask_to_open() {
+pub(crate) fn ask_to_open() {
     log!("app-editor-files: ready for keys");
     log!("app-editor-files: ready for keys");
 }
@@ -92,7 +92,7 @@ fn open_new() -> Result<(), &'static str> {
     click_into_the_code();
     ask_to_open();
     until("a new file to open in the editor", WAIT_MS, |said| {
-        showing_file(said) && cursor(said) == Some((1, 0))
+        showing_file(said, "todo.txt") && cursor(said) == Some((1, 0))
     })?;
     log!("app-editor-files: Ctrl-O on a path that is not there opened a new file");
     Ok(())
@@ -123,7 +123,7 @@ fn undo_and_reopen() -> Result<(), &'static str> {
     ask_to_open();
     // The new screen starts at line 1, column 0; the old one was at the end of the text.
     until("the file to be read again", WAIT_MS, |said| {
-        showing_file(said) && cursor(said) == Some((1, 0))
+        showing_file(said, "todo.txt") && cursor(said) == Some((1, 0))
     })?;
     log!("app-editor-files: the file read again is the first save's");
     Ok(())

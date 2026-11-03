@@ -33,7 +33,7 @@ use kabi::handle::Rights;
 /// The built app's name: its component, process and service.
 const NAME: &str = "hello";
 /// The built app's plan line: started by `pkg`, run by comphost like notes.
-const HELLO: &str = "hello program=comphost caps=serve+component pages=8192 stack_pages=512 burst_ms=20000 start=pkg";
+pub(crate) const HELLO: &str = "hello program=comphost caps=serve+component pages=8192 stack_pages=512 burst_ms=20000 start=pkg";
 /// An app that asks for nothing: what `local` installs. Its `init` logs.
 const SOURCE: &str = "#include <app.h>
 #include <stdlib.h>
@@ -68,10 +68,10 @@ void exports_kai_app_events_on_event(exports_kai_app_events_event_t *e) {
 }
 ";
 /// Time for `pkg` to sync its marker.
-const SYNC_MS: u64 = 1_000;
+pub(crate) const SYNC_MS: u64 = 1_000;
 /// A build's line: cc.wasm's translation on the first, the build itself, and
 /// `pkg`'s publish, check and install, under TCG too.
-const BUILD_MS: u64 = 280_000;
+pub(crate) const BUILD_MS: u64 = 280_000;
 /// Longest wait for the app to run the version `pkg` started, under TCG too.
 const UP_MS: u64 = 120_000;
 const POLL_MS: u64 = 50;
@@ -123,7 +123,7 @@ pub fn check() -> Result<(), &'static str> {
 /// Waits until `hello` serves on the package version of `version`, which the
 /// ledger names active only after its `init` and a state it saved, so its line
 /// is out; that version's label.
-fn wait_up(version: &str) -> Result<String, &'static str> {
+pub(crate) fn wait_up(version: &str) -> Result<String, &'static str> {
     let world = format!("app:{NAME}/{NAME}@{version}");
     for _ in 0..UP_MS / POLL_MS {
         let label = components::component(NAME).and_then(|component| {
@@ -153,7 +153,7 @@ fn line(text: &str) -> Result<String, &'static str> {
 }
 
 /// `/home/user/c/hello/hello.c`, in one action.
-fn write_sources() -> Result<(), &'static str> {
+pub(crate) fn write_sources() -> Result<(), &'static str> {
     let home = kabi::fs::HOME_USER;
     let done = |reply: Reply| match reply {
         Reply::Done => Ok(()),

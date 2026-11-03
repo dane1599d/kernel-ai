@@ -193,6 +193,9 @@ pub struct Screen {
     pub(crate) file_mode: bool,
     /// Ctrl-S was pressed and the draft line sent; the app saves, once.
     pub(crate) save: bool,
+    /// Ctrl-B was pressed in a file of the person's own: the app builds the C
+    /// component it is in, once. The edit service builds a component's source.
+    pub(crate) build: bool,
     /// The path typed at the open-file prompt, until the app takes it.
     pub(crate) open: Option<String>,
     /// Counts the times the screen changed lines it already shows. An answer
@@ -231,6 +234,7 @@ impl Screen {
             quit: false,
             file_mode: false,
             save: false,
+            build: false,
             open: None,
             epoch: 0,
         }
@@ -256,6 +260,12 @@ impl Screen {
     /// sent with it, so once its answer is in the file has the text. Told once.
     pub fn take_save(&mut self) -> bool {
         core::mem::take(&mut self.save)
+    }
+
+    /// Whether Ctrl-B (or `build` at the prompt) asked for a build in a file of the
+    /// person's own since the last look. Told once.
+    pub fn take_build(&mut self) -> bool {
+        core::mem::take(&mut self.build)
     }
 
     /// The path typed at the open-file prompt (Ctrl-O, in a file or with nothing

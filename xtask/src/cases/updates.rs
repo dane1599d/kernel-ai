@@ -37,6 +37,8 @@ const A_AGAIN: TestCase = boot(
     "slot-ab (10: back on kai-a)",
     "test=slot panic=reset",
     &[
+        // A slot boot holds updated's record calls until its lever has run.
+        "slots: the record waits for this boot's lever",
         "slots: booted kai-a (record read)",
         "slots: up in kai-a (committed, 0 tries left)",
         "slots: the last boot of kai-b faulted (kind 1)",
@@ -490,6 +492,8 @@ pub(super) const CASES: &[TestCase] = &[
             "updated: ok importing fixture 2101245",
             "updated: imported fixture (73174ba39c9a), 2101245 bytes",
             "updated: model_use fixture: the next restart uses it, on trial",
+            // Off a slot image there is no lever, so no wait for one.
+            "updated: the boot record answered at once",
         ],
         server: false,
         ..case("model-import", "test=update updated=models")

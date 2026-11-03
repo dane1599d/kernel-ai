@@ -173,13 +173,88 @@ fn typed_text_reaches_the_file_when_ctrl_s_asks_for_a_save() {
 }
 
 #[test]
-fn ctrl_b_in_a_file_says_there_is_nothing_to_build() {
+fn ctrl_b_in_a_file_asks_the_app_to_build_once_and_the_service_is_not_asked() {
     let mut rig = Rig::new("x\n");
+    assert!(!rig.screen.take_build());
     rig.screen.input(Input::Key(Key::Ctrl('b')));
     rig.pump();
+    assert!(rig.screen.take_build());
+    assert!(!rig.screen.take_build(), "a build is asked for once");
+    // Nothing went to the file's service: it has nothing to build.
     let view = rig.screen.view();
-    assert_eq!(view.status, NOTHING_TO_BUILD);
+    assert_ne!(view.status, NOTHING_TO_BUILD);
+    assert!(!view.status_error, "{}", view.status);
+    // `build` typed at the prompt is the same wish.
+    rig.screen.input(Input::Key(Key::Ctrl('e')));
+    rig.type_text("build");
+    rig.screen.input(Input::Key(Key::Enter));
+    rig.pump();
+    assert!(rig.screen.take_build());
+}
+
+#[test]
+fn ctrl_b_with_a_component_s_source_open_still_goes_to_the_service() {
+    let mut screen = Screen::new(10, 60);
+    screen.input(Input::Key(Key::Ctrl('b')));
+    assert!(
+        !screen.take_build(),
+        "only a file of the person's own asks the app"
+    );
+    assert!(
+        screen.next_request().is_some(),
+        "the service is asked to build"
+    );
+}
+
+#[test]
+fn a_build_report_goes_to_the_status_row_and_a_failed_ones_lines_to_the_pager() {
+    let mut rig = Rig::new("x\n");
+    rig.screen
+        .build_report("ok built hello 0.0.1 (5120 bytes). undo");
+    let view = rig.screen.view();
+    assert_eq!(view.status, "built hello 0.0.1 (5120 bytes). undo");
+    assert!(!view.status_error);
+    rig.screen
+        .build_report("err cc build hello: a.c:3: error\na.c:7: error");
+    let view = rig.screen.view();
+    assert_eq!(view.status, "cc build hello: a.c:3: error");
     assert!(view.status_error);
+    assert_eq!(view.mode, "pager", "the lines are in the pager");
+    // A one-line failure, and a report in no known shape, are failures in the row.
+    rig.screen.input(Input::Key(Key::Esc));
+    rig.screen
+        .build_report("err cc build hello: pkg: no pkg here");
+    assert_eq!(rig.screen.view().mode, "edit");
+    assert!(rig.screen.view().status_error);
+    rig.screen.build_report("it built");
+    let view = rig.screen.view();
+    assert_eq!(
+        (view.status.as_str(), view.status_error),
+        ("it built", true)
+    );
+}
+
+#[test]
+fn a_file_names_the_c_component_it_is_in_only_in_its_own_folder() {
+    use crate::file::component_of;
+    assert_eq!(component_of("/home/user/c/hello/hello.c"), Ok("hello"));
+    assert_eq!(component_of("/home/user/c/my-app-1/a.h"), Ok("my-app-1"));
+    for path in [
+        "/home/user/todo.txt",
+        "/home/user/c/hello.c",
+        "/home/user/c/hello/",
+        "/home/user/c/hello/src/a.c",
+        "/home/user/c//a.c",
+        "/home/user/c/Hello/a.c",
+        "/home/user/c/h/a.c",
+        "/home/user/c/hello-world-12/a.c",
+        "/home/user/c/1abc/a.c",
+        "/home/user/c/-ab/a.c",
+        "/home/user/d/hello/a.c",
+        "/system/c/hello/a.c",
+    ] {
+        assert!(component_of(path).is_err(), "{path}");
+    }
 }
 
 #[test]
