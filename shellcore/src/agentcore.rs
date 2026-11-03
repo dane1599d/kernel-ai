@@ -266,6 +266,10 @@ impl Shell {
             let reply = self.model_call(id, request, row.name, &args.values, decision);
             return outcome(decision.tier, decision.why, reply);
         }
+        if agentabi::APP_ROWS.iter().any(|r| r.name == row.name) {
+            let reply = self.app_call(id, request, &args.values, decision);
+            return outcome(decision.tier, decision.why, reply);
+        }
         // A file or window row's one-line script is found among its own rows,
         // every other row's among the bound ones.
         let own = |rows: &[Action]| rows.iter().any(|r| r.name == row.name);
@@ -392,6 +396,7 @@ impl Shell {
             pkg: None,
             standing: None,
             model: None,
+            app: None,
         });
         // The highlight starts on Allow only for a call the line plainly asked for.
         let origin = match why {

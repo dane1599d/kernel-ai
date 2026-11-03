@@ -278,27 +278,50 @@ fn the_agents_sort_and_select_reach_the_same_model() {
 }
 
 #[test]
-fn it_comes_back_sorted_the_way_it_was_and_reads_again() {
+fn the_sort_is_not_state_so_a_read_only_sort_changes_nothing_and_a_restart_starts_over() {
     let Some(mut g) = load() else { return };
     let (w, _) = frame(&mut g);
     g.take_system();
     sample(&mut g, 0, Ok(usual(1)));
     sample(&mut g, 1, Ok(usual(2)));
+    g.take_ui();
+    let before = Instance::export(&mut g, 0).unwrap().unwrap();
+    // `monitor_sort` is declared read-only, and the host refuses a read-only row
+    // that changes the checkpoint: the order it sets is not in it.
+    let r = call(&mut g, |g| {
+        Instance::call(g, &action("sort"), &[Val::String("name".into())])
+    });
+    assert!(matches!(r.0.unwrap().unwrap(), Val::Result(Ok(_))));
+    let (_, f) = frame(&mut g);
+    let list = shown(&f);
+    assert!(list.find("desktop") < list.find("llm"), "{list}");
+    assert_eq!(Instance::export(&mut g, 0).unwrap().unwrap(), before);
+    // Nor does the person's own press on a sort button, or a selection.
     call(&mut g, |g| g.ui_events(w, &[UiEvent::Pressed(SORT_NAME)]))
         .0
         .unwrap();
+    g.take_ui();
+    let r = call(&mut g, |g| {
+        Instance::call(g, &action("select"), &[Val::String("llm".into())])
+    });
+    assert!(matches!(r.0.unwrap().unwrap(), Val::Result(Ok(_))));
+    g.take_ui();
     let saved = Instance::export(&mut g, 0).unwrap().unwrap();
+    assert_eq!(saved, before);
 
+    // A restart reads again and starts on the default order: by CPU, so `llm`,
+    // which used the most, is above `desktop`.
     let Some(mut h) = load() else { return };
     assert_eq!(h.import(&saved, 1), Ok(0));
     frame(&mut h);
     // `load` ran `init` first, which asked for ticket 0; the import asked again.
     assert_eq!(h.take_system(), [0, 1]);
     sample(&mut h, 1, Ok(usual(1)));
+    sample(&mut h, 2, Ok(usual(2)));
     let (_, f) = frame(&mut h);
     let list = shown(&f);
-    assert!(list.find("desktop") < list.find("llm"), "{list}");
-    // A state it cannot read is refused, not guessed at.
+    assert!(list.find("llm") < list.find("desktop"), "{list}");
+    // A state it cannot read and another schema are refused, not guessed at.
     assert_eq!(h.import(b"junk", 1), Ok(2));
     assert_eq!(h.import(&saved, 9), Ok(1));
 }

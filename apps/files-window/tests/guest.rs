@@ -213,40 +213,119 @@ fn a_folder_of_three_files_shows_all_three_and_says_three_files() {
     assert!(n.iter().any(|t| t == "0 folders, 3 files"), "{n:?}");
 }
 
+/// The host refuses a read-only row that changes the checkpoint, and `files_open`
+/// and `files_reveal` are read-only rows that move the folder shown, so the folder
+/// is not in the checkpoint: "open my Documents folder" would be refused otherwise.
 #[test]
-fn it_comes_back_to_the_folder_it_was_showing() {
+fn the_folder_shown_is_not_state_so_opening_one_changes_nothing_and_a_restart_starts_at_home() {
     let Some(mut g) = load() else { return };
     let (w, _) = frame(&mut g);
     call(&mut g, |g| g.deliver_event(&AppEvent::Started))
         .0
         .unwrap();
-    done(&mut g, 1, Ok("docs/\n"));
+    done(
+        &mut g,
+        1,
+        Ok("docs/
+notes.txt
+"),
+    );
+    let before = Instance::export(&mut g, 0).unwrap().unwrap();
+
+    // The agent's files_open moves the window to another folder.
+    let (r, txn) = call(&mut g, |g| {
+        Instance::call(g, &action("open"), &[Val::String("docs".into())])
+    });
+    assert!(matches!(r.unwrap().unwrap(), Val::Result(Ok(_))));
+    assert_eq!(effects(&txn), [r#"fs_list {path: "docs"}"#]);
+    assert_eq!(Instance::export(&mut g, 0).unwrap().unwrap(), before);
+    done(
+        &mut g,
+        2,
+        Ok("a.txt
+b.txt"),
+    );
+    let (_, f) = frame(&mut g);
+    assert!(
+        names(&f).contains(&String::from("Home / docs")),
+        "{:?}",
+        names(&f)
+    );
+    assert_eq!(Instance::export(&mut g, 0).unwrap().unwrap(), before);
+
+    // files_reveal goes back to the home folder with a name selected.
+    let (r, txn) = call(&mut g, |g| {
+        Instance::call(g, &action("reveal"), &[Val::String("notes.txt".into())])
+    });
+    assert!(matches!(r.unwrap().unwrap(), Val::Result(Ok(_))));
+    assert_eq!(effects(&txn), [r#"fs_list {path: ""}"#]);
+    assert_eq!(Instance::export(&mut g, 0).unwrap().unwrap(), before);
+    done(
+        &mut g,
+        3,
+        Ok("docs/
+notes.txt
+"),
+    );
+    let (_, f) = frame(&mut g);
+    assert!(names(&f).contains(&String::from("Home")), "{:?}", names(&f));
+    assert_eq!(Instance::export(&mut g, 0).unwrap().unwrap(), before);
+
+    // A person's click on the folder and Open moves it too, and changes nothing.
+    // (The reveal's own preview read is ticket 4, unanswered.)
     call(&mut g, |g| {
         g.ui_act(w, LIST, Action::SetValue, Some(Value::Index(0)))
     })
     .0
     .unwrap()
     .unwrap();
-    done(&mut g, 2, Ok("a.txt"));
+    done(&mut g, 5, Ok("a.txt"));
     call(&mut g, |g| {
         g.ui_events(w, &[UiEvent::Pressed(comp_files_ui::OPEN)])
             .unwrap()
     });
-    done(&mut g, 3, Ok("a.txt\nb.txt"));
-    // Its checkpoint names the folder; a new instance imports it.
-    let saved = Instance::export(&mut g, 0).unwrap().unwrap();
-    let Some(mut h) = load() else { return };
-    assert_eq!(h.import(&saved, 1), Ok(0));
-    let (_, f) = frame(&mut h);
+    done(
+        &mut g,
+        6,
+        Ok("a.txt
+b.txt"),
+    );
+    let (_, f) = frame(&mut g);
     assert!(
         names(&f).contains(&String::from("Home / docs")),
         "{:?}",
         names(&f)
     );
-    // And it asks for that folder when it starts.
+    let saved = Instance::export(&mut g, 0).unwrap().unwrap();
+    assert_eq!(saved, before);
+
+    // A restart starts at home, and asks for the home folder when it starts.
+    let Some(mut h) = load() else { return };
+    assert_eq!(h.import(&saved, 1), Ok(0));
+    let (_, f) = frame(&mut h);
+    assert!(names(&f).contains(&String::from("Home")), "{:?}", names(&f));
     let (_, txn) = call(&mut h, |h| h.deliver_event(&AppEvent::Started));
-    assert_eq!(effects(&txn), [r#"fs_list {path: "docs"}"#]);
-    // A state it cannot read is refused, not guessed at.
+    assert_eq!(effects(&txn), [r#"fs_list {path: ""}"#]);
+    // A state it cannot read and another schema are refused, not guessed at.
     assert_eq!(h.import(b"junk", 1), Ok(2));
     assert_eq!(h.import(&saved, 9), Ok(1));
+    // The state the last version saved, with a folder in it, still imports (a
+    // live update from it): the folder is dropped and the window starts at home.
+    #[derive(minicbor::Encode)]
+    struct Old {
+        #[n(0)]
+        dir: String,
+    }
+    let old = compsdk::state::encode(
+        1,
+        &Old {
+            dir: String::from("docs"),
+        },
+    );
+    let Some(mut j) = load() else { return };
+    assert_eq!(j.import(&old, 1), Ok(0));
+    let (_, f) = frame(&mut j);
+    assert!(names(&f).contains(&String::from("Home")), "{:?}", names(&f));
+    let (_, txn) = call(&mut j, |j| j.deliver_event(&AppEvent::Started));
+    assert_eq!(effects(&txn), [r#"fs_list {path: ""}"#]);
 }

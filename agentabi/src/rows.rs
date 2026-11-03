@@ -388,6 +388,31 @@ pub const MODEL_FETCH: Action = Action {
 /// Rows `updated` answers through the shell (`shellcore::models`).
 pub const MODEL_ROWS: [Action; 3] = [MODEL_LIST, MODEL_USE, MODEL_FETCH];
 
+/// `app_build(name, request)` (P4, "Kai builds apps" piece 3): Kai writes an
+/// app for `request` with the `c-app-1` card, keeps its source in
+/// `/home/user/apps/<name>/`, and builds and tries it. Nothing is installed:
+/// the install card asks for that, so the build itself runs.
+pub const APP_BUILD: Action = Action {
+    name: "app_build",
+    doc: "writes and builds an app for the request; installing it asks",
+    args: &[
+        arg("name", ArgType::Text { max: 12 }, Role::Target),
+        arg("request", ArgType::Text { max: 300 }, Role::Payload),
+    ],
+    facts: Facts::LOCAL_CHANGE,
+    inverse: Inverse::Compensate("nothing is installed until its card's Yes"),
+    cues: &["app", "program"],
+    returns: Returns::System,
+    ret: RetType::Unit,
+    owner: Owner::Service("cc"),
+    needs: 0,
+    min_tier: Tier::Run,
+    old_name: None,
+};
+
+/// Rows the shell carries out with `cc` (`shellcore::appbuild`).
+pub const APP_ROWS: [Action; 1] = [APP_BUILD];
+
 /// The functions LLM-written scripts may call, in the order the prompt lists them.
 pub const SCRIPT_API: [Action; 7] = [
     CPUS, MEMORY, UPTIME_MS, PROCESSES, THREADS, GET_POLICY, SET_POLICY,
@@ -463,7 +488,7 @@ pub const RULES_REMOVE: Action = Action {
 pub const TYPED_ONLY: [Action; 2] = [RULES, RULES_REMOVE];
 
 /// Every OS row.
-pub const ROWS: [Action; 42] = [
+pub const ROWS: [Action; 43] = [
     CPUS,
     MEMORY,
     UPTIME_MS,
@@ -506,4 +531,5 @@ pub const ROWS: [Action; 42] = [
     MODEL_LIST,
     MODEL_USE,
     MODEL_FETCH,
+    APP_BUILD,
 ];

@@ -316,6 +316,28 @@ const ACTS: &[(&str, &str)] = &[
         "add a note saying buy milk",
         r#"{"name":"notes_add","arguments":{"text":"buy milk"}}"#,
     ),
+    // `app-files` (P4 task 5): the Files window shows the folder, and answers a
+    // select only for a name it lists. The changes are the OS's `fs_*` rows above.
+    (
+        "show notes.txt in the files app",
+        r#"{"name":"files_reveal","arguments":{"path":"notes.txt"}}"#,
+    ),
+    (
+        "pick notes.txt in the files app",
+        r#"{"name":"files_select","arguments":{"name":"notes.txt"}}"#,
+    ),
+    (
+        "pick plan.txt in the files app",
+        r#"{"name":"files_select","arguments":{"name":"plan.txt"}}"#,
+    ),
+    (
+        "pick todo.txt in the files app",
+        r#"{"name":"files_select","arguments":{"name":"todo.txt"}}"#,
+    ),
+    (
+        "open the docs folder in the files app",
+        r#"{"name":"files_open","arguments":{"path":"docs"}}"#,
+    ),
     // `app-terminal` (P4 task 4): the AI types into the Terminal app, and reads.
     (
         "type 1 + 2 in the terminal",
@@ -324,6 +346,15 @@ const ACTS: &[(&str, &str)] = &[
     (
         "show what the terminal says",
         r#"{"name":"terminal_window_read","arguments":{"since":0}}"#,
+    ),
+    // `app-monitor` (P4 task 9): the agent sorts the Monitor and selects a process in it.
+    (
+        "sort the monitor by memory",
+        r#"{"name":"monitor_sort","arguments":{"by":"memory"}}"#,
+    ),
+    (
+        "select spin-a in the monitor",
+        r#"{"name":"monitor_select","arguments":{"name":"spin-a"}}"#,
     ),
     // `desk-agent` and `desk-takeover` (P3 task 10): the window rows.
     (

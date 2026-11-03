@@ -4,8 +4,9 @@
 //! is never rewritten: the kernel picks the next boot with Limine's one-shot
 //! variable (`kernel/src/slots.rs`), and no one-shot boots R.
 //!
-//! `kai-data` (partition 5) joins once `fs` mounts it from the boot disk; until
-//! then, cases attach it as a disk of its own, as today.
+//! The release disk adds `kai-data` as partition 5 ([`build_release`]), which
+//! `fs` finds by its type as it finds a disk of its own; the boot cases attach
+//! `kai-data` as a disk of its own.
 
 use super::fat32::{self, Node};
 use super::{MIB, SECTOR, gpt, volume_mib};
@@ -109,9 +110,19 @@ pub fn slot_image(esp: &Path, record: &str) -> Result<Vec<u8>, String> {
     fat32::volume(sectors, 0, VOLUME_IDS[2], &tree)
 }
 
-/// The disk for the directory ESP `esp`, whose kernel and bundle every slot
-/// gets, with `record` as each slot's `boot/slot`.
-pub fn disk(esp: &Path, cmdline: &str, record: &str) -> Result<Vec<u8>, String> {
+/// A slot disk laid out: its size in sectors, its GPT's sectors, each
+/// partition's volume by its first LBA, and `kai-data`'s place if it has one.
+struct Plan {
+    sectors: u64,
+    gpt: Vec<(u64, Vec<u8>)>,
+    volumes: Vec<(u64, Vec<u8>)>,
+    data: Option<(u64, u64)>,
+}
+
+/// The layout for the directory ESP `esp`, whose kernel and bundle every slot
+/// gets, with `record` as each slot's `boot/slot`, and after the slots a
+/// `kai-data` partition of `data_mib` MiB if asked for.
+fn plan(esp: &Path, cmdline: &str, record: &str, data_mib: Option<u64>) -> Result<Plan, String> {
     let boot = esp.join("boot");
     let mut esp_files = vec![
         dir(
@@ -158,6 +169,12 @@ pub fn disk(esp: &Path, cmdline: &str, record: &str) -> Result<Vec<u8>, String> 
         specs.push((kind, name, first, first + count - 1));
         first = (first + count).next_multiple_of(2048);
     }
+    // Partition 5 (ADR 0004): starts on a MiB, so on a kaifs block too.
+    let data = data_mib.map(|mib| (first, mib * MIB / u64::from(SECTOR)));
+    if let Some((at, count)) = data {
+        specs.push((diskmap::KAI_DATA_TYPE, DATA_NAME, at, at + count - 1));
+        first = at + count;
+    }
     let parts: Vec<diskmap::Spec<'_>> = specs
         .iter()
         .map(|&(kind, name, first, last)| diskmap::Spec {
@@ -169,10 +186,25 @@ pub fn disk(esp: &Path, cmdline: &str, record: &str) -> Result<Vec<u8>, String> 
         })
         .collect();
     let sectors = gpt::disk_sectors(first - gpt::FIRST_LBA);
-    let mut disk = gpt::laid_out(sectors, &gpt::guid(&format!("{DISK_NAME} disk")), &parts);
-    for (lba, volume) in volumes {
+    let disk_guid = diskmap::Guid(gpt::guid(&format!("{DISK_NAME} disk")));
+    let gpt = diskmap::layout(sectors, disk_guid, &parts)
+        .map_err(|e| format!("the slot disk does not lay out: {e:?}"))?;
+    Ok(Plan {
+        sectors,
+        gpt,
+        volumes,
+        data,
+    })
+}
+
+/// The disk for the directory ESP `esp`, whose kernel and bundle every slot
+/// gets, with `record` as each slot's `boot/slot`.
+pub fn disk(esp: &Path, cmdline: &str, record: &str) -> Result<Vec<u8>, String> {
+    let plan = plan(esp, cmdline, record, None)?;
+    let mut disk = vec![0u8; (plan.sectors * u64::from(SECTOR)) as usize];
+    for (lba, bytes) in plan.gpt.iter().chain(&plan.volumes) {
         let at = (lba * u64::from(SECTOR)) as usize;
-        disk[at..at + volume.len()].copy_from_slice(&volume);
+        disk[at..at + bytes.len()].copy_from_slice(bytes);
     }
     Ok(disk)
 }
@@ -182,6 +214,39 @@ pub fn build(esp: &Path, out: &Path, cmdline: &str, record: &str) -> Result<u64,
     let disk = disk(esp, cmdline, record)?;
     fs::write(out, &disk).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
     Ok(disk.len() as u64)
+}
+
+/// `kai-data`'s GPT name, which is also its type GUID's label.
+const DATA_NAME: &str = "kai-data";
+/// The release image's `kai-data`, in MiB: room for Qwen3-4B (2.5 GB) and a
+/// second model beside it, with the home folder.
+pub const RELEASE_DATA_MIB: u64 = 8192;
+
+/// Writes the release disk to `out`: the slot disk with an empty command line,
+/// then `kai-data` as partition 5, formatted with a fixed volume id, so every
+/// build of a commit writes the same bytes. `updated` never writes it: it
+/// writes only `kai-a` and `kai-b`. The disk is written a piece at a time and
+/// left sparse where the system allows, never held in memory. Its size.
+pub fn build_release(esp: &Path, out: &Path, record: &str, data_mib: u64) -> Result<u64, String> {
+    use std::io::{Seek, SeekFrom, Write};
+    let plan = plan(esp, "", record, Some(data_mib))?;
+    let shown = out.display();
+    let len = plan.sectors * u64::from(SECTOR);
+    let mut file = fs::File::create(out).map_err(|e| format!("cannot write {shown}: {e}"))?;
+    file.set_len(len)
+        .map_err(|e| format!("cannot size {shown}: {e}"))?;
+    for (lba, bytes) in plan.gpt.iter().chain(&plan.volumes) {
+        file.seek(SeekFrom::Start(lba * u64::from(SECTOR)))
+            .and_then(|_| file.write_all(bytes))
+            .map_err(|e| format!("cannot write {shown}: {e}"))?;
+    }
+    file.sync_all()
+        .map_err(|e| format!("cannot write {shown}: {e}"))?;
+    drop(file);
+    let (first, sectors) = plan.data.ok_or("the release disk has no kai-data")?;
+    let uuid = gpt::guid(&format!("{DISK_NAME} kai-data volume"));
+    crate::fs_tool::format_partition(out, first, sectors, uuid)?;
+    Ok(len)
 }
 
 #[cfg(test)]
@@ -211,28 +276,71 @@ mod tests {
         assert_eq!((file.release_seq, file.epoch, file.channel), (5, 1, "dev"));
     }
 
-    #[test]
-    fn the_disk_has_four_partitions_in_order_with_the_slot_types() {
-        let esp = std::env::temp_dir().join(format!("kai-slots-test-{}", std::process::id()));
+    const RECORD: &str = "kai-slot 1\nrelease_seq 1\nepoch 1\n";
+
+    /// A directory ESP with stand-in files, under the system's temp directory.
+    fn fake_esp(name: &str) -> std::path::PathBuf {
+        let esp = std::env::temp_dir().join(format!("kai-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&esp);
         fs::create_dir_all(esp.join("EFI/BOOT")).unwrap();
         fs::create_dir_all(esp.join("boot")).unwrap();
         fs::write(esp.join("EFI/BOOT/BOOTX64.EFI"), b"efi").unwrap();
         fs::write(esp.join("boot/kernel"), b"kernel").unwrap();
         fs::write(esp.join("boot/kai.bundle"), b"bundle").unwrap();
-        let disk = disk(&esp, "", "kai-slot 1\nrelease_seq 1\nepoch 1\n").unwrap();
-        fs::remove_dir_all(&esp).unwrap();
-        struct Mem(Vec<u8>);
-        impl diskmap::Disk for Mem {
-            fn sectors(&self) -> u64 {
-                self.0.len() as u64 / 512
-            }
-            fn read(&mut self, lba: u64, out: &mut [u8]) -> Result<(), diskmap::Error> {
-                let at = lba as usize * 512;
-                out.copy_from_slice(&self.0[at..at + out.len()]);
-                Ok(())
-            }
+        esp
+    }
+
+    struct Mem(Vec<u8>);
+    impl diskmap::Disk for Mem {
+        fn sectors(&self) -> u64 {
+            self.0.len() as u64 / 512
         }
+        fn read(&mut self, lba: u64, out: &mut [u8]) -> Result<(), diskmap::Error> {
+            let at = lba as usize * 512;
+            out.copy_from_slice(&self.0[at..at + out.len()]);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_release_disk_adds_a_kai_data_that_checks_and_builds_the_same_bytes_twice() {
+        let esp = fake_esp("release-disk");
+        let (one, two) = (esp.join("one.img"), esp.join("two.img"));
+        let len = build_release(&esp, &one, RECORD, 32).unwrap();
+        build_release(&esp, &two, RECORD, 32).unwrap();
+        let bytes = fs::read(&one).unwrap();
+        assert_eq!(bytes.len() as u64, len);
+        assert!(bytes == fs::read(&two).unwrap(), "two builds differ");
+        // Its first four partitions hold the slot disk's own bytes.
+        let slots = disk(&esp, "", RECORD).unwrap();
+        let parts = diskmap::read(&mut Mem(bytes.clone())).unwrap().partitions;
+        let names: Vec<&str> = parts.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "EFI system partition",
+                "kai-r",
+                "kai-a",
+                "kai-b",
+                "kai-data"
+            ]
+        );
+        assert_eq!(parts[4].kind, diskmap::KAI_DATA_TYPE);
+        assert_eq!(parts[4].sectors(), 32 * 2048);
+        let (from, to) = (2048 * 512, (parts[3].last + 1) as usize * 512);
+        assert!(bytes[from..to] == slots[from..to]);
+        // kaifs on it mounts and checks, with its first folders.
+        let path = one.display().to_string();
+        crate::fs_tool::main(&["check".into(), path.clone()]).unwrap();
+        crate::fs_tool::main(&["ls".into(), path, "/home/user".into()]).unwrap();
+        fs::remove_dir_all(&esp).unwrap();
+    }
+
+    #[test]
+    fn the_disk_has_four_partitions_in_order_with_the_slot_types() {
+        let esp = fake_esp("slots-test");
+        let disk = disk(&esp, "", RECORD).unwrap();
+        fs::remove_dir_all(&esp).unwrap();
         let parts = diskmap::read(&mut Mem(disk)).unwrap().partitions;
         let names: Vec<&str> = parts.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["EFI system partition", "kai-r", "kai-a", "kai-b"]);

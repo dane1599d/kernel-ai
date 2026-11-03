@@ -49,12 +49,16 @@ macro_rules! app {
         app!($name, $uses, "")
     };
     ($name:literal, $uses:literal, $caps:literal) => {
+        app!($name, $uses, $caps, "")
+    };
+    ($name:literal, $uses:literal, $caps:literal, $more:literal) => {
         concat!(
             $name,
             " program=comphost caps=serve+component+call",
             $caps,
             " uses=",
             $uses,
+            $more,
             " pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand"
         )
     };
@@ -70,6 +74,14 @@ pub const APPS: [&str; 5] = [
     app!("settings-window", "desktop"),
     app!("monitor-window", "desktop+llm"),
 ];
+
+/// Notes with `kai-data`: [`APPS`]' first line with its folder of
+/// `/system/apps` (`dir=apps`), where comphost keeps its saved state, so a note
+/// survives a reboot. `fs` opens only `notes-window`'s own folder through it
+/// (`fsserve`'s `own_folder_only`). Without `kai-data` there is no `fs`, and a
+/// `dir=` line could not start, so Notes then keeps what the kernel keeps. It
+/// is the one image app with `kai:app/storage`.
+pub const NOTES_SAVED: &str = app!("notes-window", "desktop", "", " dir=apps");
 
 /// The editor ([`super::EDITOR`], started on demand), with `edit`, which the
 /// kernel grants comphost under this name alone. It is planned only with
@@ -93,7 +105,10 @@ pub fn lines(files: bool) -> Vec<&'static str> {
     }
     lines.push(CC);
     lines.push(if files { DESKTOP_PKG } else { DESKTOP });
-    lines.extend(APPS);
+    lines.extend(APPS.map(|app| match files && app == APPS[0] {
+        true => NOTES_SAVED,
+        false => app,
+    }));
     if files {
         lines.push(EDITOR_APP);
     }
@@ -170,6 +185,32 @@ mod tests {
             .collect();
         let at = |name| order.iter().position(|n| *n == name).unwrap();
         assert!(at("pkg") < at("shell") && at("desktop") < at("shell"));
+    }
+
+    /// With `kai-data`, Notes keeps its saved state on disk: its line is
+    /// [`APPS`]' first plus ` dir=apps` and nothing else, and no other line of
+    /// the plan has a `dir=apps`. Without `kai-data`, no line has a `dir=`
+    /// that `fs` would have to serve.
+    #[test]
+    fn notes_alone_has_its_apps_folder_and_only_with_kai_data() {
+        assert!(APPS[0].starts_with("notes-window "));
+        assert_eq!(
+            NOTES_SAVED.replacen(" dir=apps", "", 1),
+            APPS[0],
+            "{NOTES_SAVED}"
+        );
+        let with = plan("llm caps=serve", true);
+        let with: Vec<&str> = with.lines().collect();
+        let saved: Vec<&str> = with
+            .iter()
+            .copied()
+            .filter(|line| line.split_whitespace().any(|w| w == "dir=apps"))
+            .collect();
+        assert_eq!(saved, [NOTES_SAVED]);
+        assert!(!with.contains(&APPS[0]));
+        let without = plan("llm caps=serve", false);
+        assert!(without.lines().any(|line| line == APPS[0]));
+        assert!(!without.contains("dir=apps"));
     }
 
     /// [`EDITOR_APP`] is the line `app-editor` boots, [`super::super::EDITOR`],

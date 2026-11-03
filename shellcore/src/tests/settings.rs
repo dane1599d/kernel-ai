@@ -136,6 +136,22 @@ fn appearance_set_by_click_saves_the_setting_is_logged_as_the_click_and_undoes()
     assert_eq!(theme(&host), "light");
 }
 
+/// The `app-settings` boot case's theme: `undo` says the theme before and the
+/// log lists the undo, and `undo` again says the theme the change set.
+#[test]
+fn undo_of_a_theme_change_says_the_theme_before_and_the_log_lists_it() {
+    let host = host();
+    let mut shell = shell(&host);
+    shell
+        .settings(SETTINGS_APP, "appearance-set theme light", true)
+        .unwrap();
+    assert_eq!(shell.eval("undo"), ok("Undone: theme dark (was light)"));
+    assert_eq!(crate::appearance::current(host.as_ref()).theme, "dark");
+    assert!(shell.eval("log").text.contains("undo of #"));
+    assert_eq!(shell.eval("undo"), ok("Undone: theme light (was dark)"));
+    assert_eq!(crate::appearance::current(host.as_ref()).theme, "light");
+}
+
 #[test]
 fn a_restart_window_by_click_is_saved_for_updated_and_read_back_as_its_file() {
     let host = host();

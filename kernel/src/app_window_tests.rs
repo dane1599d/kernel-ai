@@ -30,6 +30,16 @@ pub fn monitor_plan() -> String {
     )
 }
 
+/// The plan lines `test=ui-files` adds: `desktop`, then the Files app with its
+/// route to it. No shell runs, so the listing the app asks for waits unanswered;
+/// the case shows the window, not the files in it.
+pub fn files_plan() -> String {
+    format!(
+        "desktop caps=display+input+serve pages=8192 stack_pages=512\n{}",
+        kabi::plan::FILES_WINDOW
+    )
+}
+
 /// The plan lines `test=ui-models` adds after the shell, whose `updated` is
 /// planned just before it: `desktop` first, then the app, whose routes are
 /// `desktop` and `updated`.
@@ -96,10 +106,16 @@ pub fn monitor_check() -> Result<(), &'static str> {
     )
 }
 
+pub fn files_check() -> Result<(), &'static str> {
+    window_check(
+        "files-window",
+        720,
+        "ui-files: the desktop never took the screen",
+        "ui-files: the Files window was shown, and its close control pressed",
+    )
+}
+
 pub fn models_check() -> Result<(), &'static str> {
-    // The boot lever first, as the default boot runs it: until it has, `updated`
-    // waits (up to 2 minutes) before it serves the window's list.
-    crate::slots::on_boot(false);
     window_check(
         "models-window",
         640,

@@ -82,6 +82,11 @@ impl Server {
             script::Lang::C => {
                 llmproto::program::chat_request(&self.model, &request.request, repair)
             }
+            // The model lane's piece 2 brings the card.
+            script::Lang::App => {
+                let error = script::AnswerError::NoScript(String::from(script::NO_APP_CARD));
+                return Err(script::encode_error(&error));
+            }
         };
         let timeout = request.timeout_ms.min(script::SERVICE_TIMEOUT_MS);
         self.post(&body, timeout, response)
