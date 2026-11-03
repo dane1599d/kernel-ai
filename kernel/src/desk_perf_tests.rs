@@ -17,7 +17,7 @@
 //! fewer frames.
 //!
 //! First `desktop` times `kabi::perf`'s fixed reference work. Under KVM a
-//! median over twice its recorded baseline is a runner too slow for any
+//! median over 3.5 times its recorded baseline is a runner too slow for any
 //! budget: every figure is still measured and logged, once each, and the case
 //! passes as `runner too slow: figures reported, not gated`.
 
@@ -175,8 +175,8 @@ fn too_slow() -> Result<(u64, bool), &'static str> {
         "desk-perf: the reference work's median is {p50} ns, baseline {} ns: {}",
         kabi::perf::REFERENCE_BASELINE_NS,
         match slow {
-            true => "over twice it",
-            false => "within twice it",
+            true => "over 3.5 times it",
+            false => "within 3.5 times it",
         }
     );
     Ok((p50, slow))
