@@ -3,57 +3,17 @@
 //! as comphost starts them, each call the card shows is `kaiapp.h`'s, and the
 //! card fits its budget.
 
-use ccserve::build::{self, Build, Built, KAIAPP_H, Kind};
-use ccserve::{Budget, Compiler, Host};
+use super::app_run::{self, in_call};
+use ccserve::build::{self, Built, KAIAPP_H, Kind};
 use livecore::Instance;
-use livecore::txn::{Inputs, Storage};
 use llmproto::pack::{self, capp1};
-use std::sync::OnceLock;
 use uikit::widget::{UiEvent, Value};
-use wasmhost::{CoreInstance, Limits, LiveInstance, Update};
-
-/// What comphost gives a version by default (`livecore::settings::Settings::DEFAULT`),
-/// so what runs here runs in the OS.
-fn limits() -> Limits {
-    let os = livecore::settings::Settings::DEFAULT;
-    Limits {
-        fuel_call: os.fuel_call,
-        fuel_life: os.fuel_life,
-        memory_bytes: os.memory_kib as usize * 1024,
-    }
-}
-
-struct Clock;
-
-impl Host for Clock {
-    fn now_ns(&self) -> u64 {
-        0
-    }
-
-    fn interrupted(&self) -> bool {
-        false
-    }
-}
-
-fn compiler() -> &'static Compiler {
-    static COMPILER: OnceLock<Compiler> = OnceLock::new();
-    COMPILER.get_or_init(|| {
-        let cc = Compiler::new(ccserve::CC_WASM, &[]).expect("cc.wasm");
-        build::compiler(&cc).expect("headers")
-    })
-}
+use wasmhost::CoreInstance;
 
 fn try_build(main: &str) -> Result<Built, build::BuildError> {
-    let files = [("main.c", main.as_bytes())];
-    assert_eq!(Kind::of(&files), Kind::Window);
-    let mut budget = Budget::new(&Clock, u64::MAX / 4);
-    let build = Build {
-        name: "kaiapp",
-        version: "0.0.1",
-        kind: Kind::Window,
-        files: &files,
-    };
-    build::build(compiler(), &build, &mut budget)
+    let (kind, built) = app_run::build_main("kaiapp", "0.0.1", main)?;
+    assert_eq!(kind, Kind::Window);
+    Ok(built)
 }
 
 /// `main` built as the app cc would build it, as the shell sends it.
@@ -61,55 +21,24 @@ fn built(main: &str) -> Built {
     try_build(main).unwrap_or_else(|e| panic!("{e:?}\n{main}"))
 }
 
-fn in_call<R>(app: &mut CoreInstance, f: impl FnOnce(&mut CoreInstance) -> R) -> R {
-    let inputs = Inputs {
-        now_ms: 0,
-        seed: 0,
-        first_ticket: 0,
-    };
-    app.begin(&Storage::new(), inputs);
-    let result = f(app);
-    app.finish();
-    result
-}
-
 fn loaded(main: &str) -> CoreInstance {
-    match wasmhost::load_live(&built(main).artifact, limits(), None).expect("it loads") {
-        LiveInstance::V2(app) => app,
-        LiveInstance::V1(_) => panic!("a lifecycle 2 artifact"),
-    }
+    app_run::load(&built(main).artifact).unwrap()
 }
 
 /// The app's own state, as comphost exports it.
 fn saved(app: &mut CoreInstance) -> Vec<u8> {
-    app.export(0).unwrap().expect("a state")
+    app_run::saved(app).unwrap()
 }
 
-/// The app, started as comphost starts a version: `init` outside any call's
-/// transaction, then its own state exported and its schema read
-/// (`livecore::host::export_own`). Its window's id.
+/// The app, started as comphost starts a version. Its window's id.
 fn started(main: &str) -> (CoreInstance, u32) {
-    let mut app = loaded(main);
-    assert_eq!(app.init(), Ok(0));
-    assert_eq!(livecore::state::schema_of(&saved(&mut app)), Some(1));
-    let windows = app.ui_windows();
-    assert_eq!(windows.len(), 1, "one window");
-    (app, windows[0])
+    app_run::start(&built(main).artifact).unwrap_or_else(|why| panic!("{why}\n{main}"))
 }
 
 /// The names the last frame shows, in node order.
 fn shown(app: &mut CoreInstance) -> Vec<String> {
-    let frame = app
-        .take_ui()
-        .into_iter()
-        .filter_map(|u| match u {
-            Update::Frame { frame, .. } => Some(frame),
-            _ => None,
-        })
-        .next_back()
-        .expect("a frame");
-    frame
-        .a11y
+    app_run::last_frame(app)
+        .expect("a frame")
         .iter()
         .map(|n| match &n.value {
             Some(value) => format!("{}={value}", n.name),
