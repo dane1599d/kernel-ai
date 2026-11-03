@@ -331,6 +331,14 @@ const ACTS: &[(&str, &str)] = &[
         r#"{"name":"files_select","arguments":{"name":"plan.txt"}}"#,
     ),
     (
+        "pick todo.txt in the files app",
+        r#"{"name":"files_select","arguments":{"name":"todo.txt"}}"#,
+    ),
+    (
+        "open the docs folder in the files app",
+        r#"{"name":"files_open","arguments":{"path":"docs"}}"#,
+    ),
+    (
         "trash plan.txt",
         r#"{"name":"fs_trash","arguments":{"path":"plan.txt"}}"#,
     ),
