@@ -124,6 +124,43 @@ fn effects_past_the_limit_are_refused() {
     assert!(done[MAX_EFFECTS].outcome.is_err());
 }
 
+/// An effect a call's reply carried is run by the shell after the call, and what
+/// came of it is kept for the host to hand back to the app: a Files window that
+/// the agent opened a folder in is told the listing.
+#[test]
+fn what_a_calls_effects_came_to_is_kept_for_the_app() {
+    let host = host();
+    host.files
+        .borrow_mut()
+        .insert("notes.txt".into(), "milk".into());
+    let mut shell = shell(&host);
+    let list = r#"effect 1 call({name: "fs_list", args: "{path: \"\"}"})"#;
+    let undeclared = r#"effect 2 call({name: "set_policy", args: "{name: \"round-robin\"}"})"#;
+    host.apps
+        .borrow_mut()
+        .effects
+        .push((String::from("files"), [list, undeclared].join("\n")));
+    shell.run_app_effects();
+    let kept = shell.take_effect_results();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].0, "files");
+    assert_eq!(kept[0].1.len(), 2);
+    assert_eq!(kept[0].1[0].ticket, 1);
+    assert_eq!(
+        kept[0].1[0].outcome,
+        Ok(String::from(
+            "notes.txt
+"
+        ))
+    );
+    assert_eq!(kept[0].1[1].ticket, 2);
+    assert!(kept[0].1[1].outcome.is_err(), "{:?}", kept[0].1[1]);
+    // Taken once, and nothing queued means nothing to give back.
+    assert!(shell.take_effect_results().is_empty());
+    shell.run_app_effects();
+    assert!(shell.take_effect_results().is_empty());
+}
+
 #[test]
 fn a_file_read_comes_back_to_the_app_and_a_move_undoes() {
     let host = host();
