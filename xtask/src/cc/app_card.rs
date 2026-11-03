@@ -242,14 +242,16 @@ fn a_state_too_big_is_refused_at_build() {
     assert_eq!(kept, [("main.c", capp1::TEMPLATE.as_bytes())]);
 }
 
-/// The names the pre-check keeps variables from are kaiapp.h's calls.
+/// The names the pre-check keeps variables from are kaiapp.h's calls and
+/// the size the build defines.
 #[test]
 fn the_calls_list_names_every_call() {
     for (call, _) in capp1::CALLS {
         let name = call.split('(').next().unwrap().rsplit(' ').next().unwrap();
         assert!(capp1::KAIAPP_CALLS.contains(&name), "{name}");
     }
-    assert_eq!(capp1::KAIAPP_CALLS.len(), capp1::CALLS.len());
+    assert!(capp1::KAIAPP_CALLS.contains(&"kai_state_size"));
+    assert_eq!(capp1::KAIAPP_CALLS.len(), capp1::CALLS.len() + 1);
 }
 
 /// Each call the card shows is declared so in kaiapp.h, and the card gives

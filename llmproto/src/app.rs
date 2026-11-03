@@ -68,9 +68,9 @@ mod tests {
     #[test]
     fn the_card_states_the_app_limits() {
         let card = system_prompt();
-        assert!(card.contains(&format!("at most {} lines", script::APP_MAX_LINES)));
         assert!(card.contains(&format!(
-            "{} characters a line",
+            "At most {} lines of {} characters",
+            script::APP_MAX_LINES,
             script::SCRIPT_MAX_LINE_CHARS
         )));
     }
