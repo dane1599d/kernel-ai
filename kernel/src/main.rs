@@ -47,6 +47,7 @@ mod card_tests;
 mod catalog_tests;
 mod cc_build_tests;
 mod cc_tests;
+mod cc_trial_tests;
 mod claim_tests;
 mod clock;
 mod compute_tests;
