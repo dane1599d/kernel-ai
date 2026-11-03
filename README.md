@@ -64,13 +64,13 @@ cargo xtask run --accel kvm --local qwen3-4b-2507 --workload A   # with the demo
 
 ### From a release image, in QEMU
 
-A release (from `v0.1.0-rc.1`) has the image, `kernel-ai-<version>-x86_64.img.zst`, with `SHA256SUMS` and notes naming the model. Unpack it with `zstd -d`, download the model the notes name (or run `cargo xtask setup`), and boot with the model as a read-only disk with the serial `kai-import`. `kai-data`, the writable disk, is not in the image yet, so make one with `cargo xtask fs mkfs kai-data.img --size 8192`. For example, on Linux with KVM:
+A release (from `v0.1.0-rc.1`) has the image, `kernel-ai-<version>-x86_64.img.zst`, with `SHA256SUMS` and notes naming the model. Unpack it with `zstd -d`, download the model the notes name (or run `cargo xtask setup`), and boot with the model as a read-only disk with the serial `kai-import`. The image carries its own writable `kai-data` (partition 5, 8 GiB), so no other disk is needed. For example, on Linux with KVM:
 
 ```bash
-qemu-system-x86_64 -machine q35 -accel kvm -cpu max -smp 4 -m 6G -drive if=pflash,format=raw,readonly=on,file=OVMF_CODE.fd -drive if=pflash,format=raw,file=OVMF_VARS.fd -drive if=none,id=boot,format=raw,file=kernel-ai-0.1.0-x86_64.img -device virtio-blk-pci,drive=boot,serial=kai-boot,bootindex=0 -drive if=none,id=data,format=raw,file=kai-data.img -device virtio-blk-pci,drive=data -drive if=none,id=import,format=raw,readonly=on,file=Qwen3-4B-Instruct-2507-Q4_K_M.gguf -device virtio-blk-pci,drive=import,serial=kai-import
+qemu-system-x86_64 -machine q35 -accel kvm -cpu max -smp 4 -m 6G -drive if=pflash,format=raw,readonly=on,file=OVMF_CODE.fd -drive if=pflash,format=raw,file=OVMF_VARS.fd -drive if=none,id=boot,format=raw,file=kernel-ai-0.1.0-x86_64.img -device virtio-blk-pci,drive=boot,serial=kai-boot,bootindex=0 -drive if=none,id=import,format=raw,readonly=on,file=Qwen3-4B-Instruct-2507-Q4_K_M.gguf -device virtio-blk-pci,drive=import,serial=kai-import
 ```
 
-Then ask Kai to import the model, or open Models and import it there. Use your own copy of `OVMF_VARS.fd`, which the firmware writes to. VirtualBox needs a VDI made with `VBoxManage convertfromraw`; `cargo xtask vbox` above sets up the same VM from source.
+No model runs yet, so import it yourself: press Ctrl+Alt+F12 for the console, type `models import` and press `y` to allow it. `models` shows when it is stored; then `models use qwen3-4b-2507` makes it the model from the next restart. A release imports only a model its signed `models` role names, and that role comes with task 18, so until `v0.1.0-rc.1` no release image can import one. Use your own copy of `OVMF_VARS.fd`, which the firmware writes to. VirtualBox needs a VDI made with `VBoxManage convertfromraw`; `cargo xtask vbox` above sets up the same VM from source.
 
 ### Things to type at `kai>`
 
