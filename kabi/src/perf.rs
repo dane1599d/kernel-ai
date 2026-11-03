@@ -10,7 +10,7 @@
 //! can be met. So under KVM the kernel first has `desktop` time a fixed
 //! reference work ([`reference_work`]), which shares no code with the desk, so
 //! a slower desk never makes the runner look slow. A median over
-//! [`SLOW_FACTOR`] times [`REFERENCE_BASELINE_NS`] ([`too_slow`]) means the
+//! [`SLOW_FACTOR_TENTHS`] tenths of [`REFERENCE_BASELINE_NS`] ([`too_slow`]) means the
 //! figures are reported and not gated.
 
 use alloc::vec::Vec;
@@ -23,8 +23,9 @@ pub const REFERENCE: &str = "reference p50 ";
 /// The reference work's median on GitHub's runners under KVM, in ns, as
 /// recorded in `docs/decisions.md`.
 pub const REFERENCE_BASELINE_NS: u64 = 16_000_000;
-/// A median this many times the baseline is a runner too slow to judge.
-pub const SLOW_FACTOR: u64 = 2;
+/// A median over this many tenths of the baseline, 3.5 times it (56 ms), is a
+/// runner too slow to judge; `docs/decisions.md` says why.
+pub const SLOW_FACTOR_TENTHS: u64 = 35;
 /// The reference work's buffer, in 32-bit words: 2 MiB.
 pub const REFERENCE_WORDS: usize = 512 * 1024;
 /// How many times one reference work fills and reads its buffer.
@@ -59,7 +60,7 @@ pub fn reference_ns(reply: &str) -> Option<u64> {
 
 /// Whether a reference median of `p50_ns` is a runner too slow to judge.
 pub fn too_slow(p50_ns: u64) -> bool {
-    p50_ns > REFERENCE_BASELINE_NS.saturating_mul(SLOW_FACTOR)
+    p50_ns.saturating_mul(10) > REFERENCE_BASELINE_NS.saturating_mul(SLOW_FACTOR_TENTHS)
 }
 
 /// The figures over budget in `reply`, by name: `(c) text page 160x45 warm`
@@ -71,6 +72,13 @@ pub fn misses(reply: &str) -> Vec<&str> {
         .filter_map(|l| l.split_once(" ms (budget")?.0.rsplit_once(' '))
         .map(|(name, _)| name)
         .collect()
+}
+
+/// How many times the baseline a reference median of `p50_ns` is, to a
+/// tenth: `2.8` for 44.56 ms against 16.
+pub fn times_baseline(p50_ns: u64) -> alloc::string::String {
+    let tenths = p50_ns.saturating_mul(10) / REFERENCE_BASELINE_NS;
+    alloc::format!("{}.{}", tenths / 10, tenths % 10)
 }
 
 /// The figures over budget in both runs of one scene, by name.
@@ -125,10 +133,19 @@ mod tests {
     }
 
     #[test]
-    fn a_runner_is_too_slow_only_past_twice_the_baseline() {
+    fn a_runner_is_too_slow_only_past_three_and_a_half_times_the_baseline() {
         assert!(!too_slow(REFERENCE_BASELINE_NS));
-        assert!(!too_slow(REFERENCE_BASELINE_NS * SLOW_FACTOR));
-        assert!(too_slow(REFERENCE_BASELINE_NS * SLOW_FACTOR + 1));
+        assert!(!too_slow(56_000_000));
+        assert!(too_slow(56_000_001));
+        // The slowest in-budget runner seen, 48.09 ms, is gated.
+        assert!(!too_slow(48_087_560));
         assert!(!too_slow(0));
+    }
+
+    #[test]
+    fn slowness_is_told_in_tenths_of_the_baseline() {
+        assert_eq!(times_baseline(REFERENCE_BASELINE_NS), "1.0");
+        assert_eq!(times_baseline(REFERENCE_BASELINE_NS * 28 / 10), "2.8");
+        assert_eq!(times_baseline(REFERENCE_BASELINE_NS * 2 + 1), "2.0");
     }
 }

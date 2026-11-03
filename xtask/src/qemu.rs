@@ -379,7 +379,7 @@ pub fn run_test(
     let (ready_tx, ready_rx) = mpsc::channel();
     let (cut_tx, cut_rx) = mpsc::channel();
     let cut_at = run.cut.clone();
-    let all = (expect.clone(), exact.clone(), None);
+    let all = (expect.clone(), exact.clone(), None, Vec::new());
     // The echo runs apart from the reader, as in icount.rs: printing to a slow CI
     // log must never stop QEMU's output being read. A full pipe makes QEMU hold
     // the serial port busy, and the guest then waits for it with interrupts off,
@@ -395,10 +395,14 @@ pub fn run_test(
         let mut stage = 0;
         let (mut missing, mut unseen) = (expect, exact);
         let mut cpu_line = None;
+        let mut warnings = Vec::new();
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             let _ = echo_tx.send(line.clone());
             missing.retain(|text| !line.contains(text.as_str()));
             unseen.retain(|text| line.trim_end_matches('\r') != text);
+            if let Some(text) = ci_warning(&line) {
+                warnings.push(text.to_string());
+            }
             if cpu_line.is_none() && !from_programs(&line) && line.contains(CPU_LINE) {
                 cpu_line = Some(line.trim_end_matches('\r').to_string());
             }
@@ -433,7 +437,7 @@ pub fn run_test(
                 );
             }
         }
-        (missing, unseen, cpu_line)
+        (missing, unseen, cpu_line, warnings)
     });
     let mut cut_seen = None;
     let status = loop {
@@ -467,9 +471,12 @@ pub fn run_test(
         }
         thread::sleep(Duration::from_millis(50));
     };
-    let (missing, unseen, cpu_line) = reader.join().unwrap_or(all);
+    let (missing, unseen, cpu_line, warnings) = reader.join().unwrap_or(all);
     // Every echoed line is out before the verdict.
     let _ = echo.join();
+    for text in warnings {
+        println!("::warning::{text}");
+    }
     if let Some(line) = cpu_line {
         println!("xtask: guest {}", &line[line.find(CPU_LINE).unwrap_or(0)..]);
     }
@@ -497,6 +504,21 @@ pub fn run_test(
 /// The kernel's boot line naming the guest's vector features and XCR0, which a
 /// test repeats at its end.
 const CPU_LINE: &str = "cpu: vector features:";
+
+/// A kernel line that a case passed with something a person should see, such
+/// as `desk-perf` left ungated on a slow runner: xtask repeats its text as a
+/// GitHub `::warning::`, which the run's summary shows.
+const CI_WARNING: &str = "ci-warning: ";
+
+/// The text of a kernel's [`CI_WARNING`] line; a program's never counts.
+fn ci_warning(line: &str) -> Option<&str> {
+    let line = line.trim_end_matches('\r');
+    if from_programs(line) {
+        return None;
+    }
+    line.strip_prefix(CI_WARNING)
+        .filter(|text| !text.is_empty())
+}
 
 /// Whether a console line was written for a ring-3 program rather than by the
 /// kernel: `[name] ...` from a program's own output, `= ...`, `! ...` and `? ...` from
@@ -558,7 +580,7 @@ fn strip_confirm_prompt(line: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{from_programs, model_sizing};
+    use super::{ci_warning, from_programs, model_sizing};
     use crate::Accel;
     use crate::options::Sizing;
 
@@ -584,6 +606,18 @@ mod tests {
         assert!(!from_programs(
             "start trial 2? yes/no> tune-demo: ready for keys"
         ));
+    }
+
+    #[test]
+    fn only_a_kernel_line_becomes_a_ci_warning() {
+        assert_eq!(
+            ci_warning("ci-warning: desk-perf ungated (runner 2.8x slow)\r"),
+            Some("desk-perf ungated (runner 2.8x slow)")
+        );
+        assert_eq!(ci_warning("[desktop] ci-warning: anything"), None);
+        assert_eq!(ci_warning("kai> = ci-warning: anything"), None);
+        assert_eq!(ci_warning("desk-perf: ci-warning: not at the start"), None);
+        assert_eq!(ci_warning("ci-warning: "), None);
     }
 
     #[test]

@@ -17,7 +17,7 @@
 //! fewer frames.
 //!
 //! First `desktop` times `kabi::perf`'s fixed reference work. Under KVM a
-//! median over twice its recorded baseline is a runner too slow for any
+//! median over 3.5 times its recorded baseline is a runner too slow for any
 //! budget: every figure is still measured and logged, once each, and the case
 //! passes as `runner too slow: figures reported, not gated`.
 
@@ -165,8 +165,8 @@ fn loaded_drag() -> Result<Vec<u8>, &'static str> {
     loaded
 }
 
-/// Whether the runner is too slow to judge, from the reference work's median.
-fn too_slow() -> Result<bool, &'static str> {
+/// The reference work's median, and whether it is a runner too slow to judge.
+fn too_slow() -> Result<(u64, bool), &'static str> {
     let reply = perf("perf reference")?;
     let p50 = kabi::perf::reference_ns(&String::from_utf8_lossy(&reply))
         .ok_or("desk-perf: desktop's reference line did not parse")?;
@@ -175,11 +175,11 @@ fn too_slow() -> Result<bool, &'static str> {
         "desk-perf: the reference work's median is {p50} ns, baseline {} ns: {}",
         kabi::perf::REFERENCE_BASELINE_NS,
         match slow {
-            true => "over twice it",
-            false => "within twice it",
+            true => "over 3.5 times it",
+            false => "within 3.5 times it",
         }
     );
-    Ok(slow)
+    Ok((p50, slow))
 }
 
 pub fn check() -> Result<(), &'static str> {
@@ -188,7 +188,7 @@ pub fn check() -> Result<(), &'static str> {
     })?;
     threads::sleep_ms(SETTLE_MS);
     let kvm = under_kvm();
-    let slow = too_slow()?;
+    let (reference, slow) = too_slow()?;
     let gated = kvm && !slow;
     let frames = if kvm { KVM_FRAMES } else { TCG_FRAMES };
     let request = format!("perf scenes {frames}");
@@ -204,6 +204,11 @@ pub fn check() -> Result<(), &'static str> {
     }
     if slow {
         log!("desk-perf: runner too slow: figures reported, not gated");
+        // xtask repeats it as a GitHub warning, so the run's summary shows it.
+        log!(
+            "ci-warning: desk-perf ungated (runner {}x slow)",
+            kabi::perf::times_baseline(reference)
+        );
         return Ok(());
     }
     for miss in &misses {
