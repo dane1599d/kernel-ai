@@ -214,6 +214,11 @@ pub enum SelfTest {
     /// The keyboard reaches an app's widgets (key input for uikit apps).
     UiKeys,
     DeskTerm,
+    /// `app-notes` (P4): Kai makes notes in Notes' window, they are saved, and
+    /// `undo` takes one back; boot 2 (`reread`) finds them on disk.
+    AppNotes {
+        reread: bool,
+    },
     /// `desk-agent` (P3 task 10): the agent opens Notes and acts inside it.
     DeskAgent,
     /// The v0.1 system as the default boot plans it: the desktop, the Apps
@@ -415,6 +420,9 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-profile-floor" => Some(SelfTest::DeskProfileFloor),
             "test=ui-keys" => Some(SelfTest::UiKeys),
             "test=desk-term" => Some(SelfTest::DeskTerm),
+            "test=app-notes" => Some(SelfTest::AppNotes {
+                reread: cmdline.split_whitespace().any(|w| w == "reread"),
+            }),
             "test=desk-agent" => Some(SelfTest::DeskAgent),
             "test=desk-default" => Some(SelfTest::DeskDefault),
             "test=desk-no-memory" => Some(SelfTest::DeskNoMemory),
@@ -556,6 +564,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskProfileFloor
             | SelfTest::UiKeys
             | SelfTest::DeskTerm
+            | SelfTest::AppNotes { .. }
             | SelfTest::DeskAgent
             | SelfTest::DeskDefault
             | SelfTest::DeskNoMemory
@@ -696,6 +705,12 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push_str(crate::app_terminal_tests::PLAN);
                 kabi::plan::SHELL_DESK
             }
+            // Notes saves its state through `fs`, so the shell has `files` too.
+            SelfTest::AppNotes { .. } => {
+                plan.push('\n');
+                plan.push_str(crate::agent_desk_tests::DESK);
+                kabi::plan::SHELL_DESK_FILES
+            }
             SelfTest::DeskAgent | SelfTest::DeskTakeover | SelfTest::DeskStandingRefused => {
                 plan.push('\n');
                 plan.push_str(crate::agent_desk_tests::DESK);
@@ -834,6 +849,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::DeskTerm {
         plan.push('\n');
         plan.push_str(crate::term_tests::PLAN);
+    }
+    if matches!(test, SelfTest::AppNotes { .. }) {
+        plan.push('\n');
+        plan.push_str(crate::app_notes_tests::NOTES);
     }
     if matches!(test, SelfTest::DeskAgent | SelfTest::DeskTakeover) {
         plan.push('\n');
