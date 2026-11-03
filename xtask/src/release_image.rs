@@ -1,6 +1,7 @@
 //! `cargo xtask release-image [--out PATH]` (ADR 0009 D7, ADR 0008 section 8;
 //! measured by spike S09-1 with S08-2): the release-profile slot disk a `v*`
-//! tag ships (ESP, `kai-r`, `kai-a`, `kai-b`, `image/slots.rs`), with no model
+//! tag ships (ESP, `kai-r`, `kai-a`, `kai-b` and an empty `kai-data`,
+//! `image/slots.rs`), with no model
 //! and an empty command line, each slot holding release `release/seq`, and its
 //! size and SHA-256. Two runners that print the same hash have built the same
 //! image. `release/seq` is the committed `release_seq` (ADR 0008 §2): it only
@@ -56,14 +57,15 @@ pub fn main(args: &[String]) -> Result<(), String> {
     let efi = crate::ensure_limine(&target_dir)?;
     let esp_dir = target_dir.join("release-esp");
     esp::make_esp(&esp_dir, &kernel, &modules, &efi, "")?;
-    let bytes = image::slots::build(&esp_dir, &out, "", &record)?;
+    let data_mib = image::slots::RELEASE_DATA_MIB;
+    let bytes = image::slots::build_release(&esp_dir, &out, &record, data_mib)?;
     println!("xtask: release_seq {release_seq}");
-    let disk = fs::read(&out).map_err(|e| format!("cannot read {}: {e}", out.display()))?;
+    println!("xtask: kai-data {data_mib} MiB, partition 5");
     let notices = out.with_file_name(crate::notices::FILE);
     esp::copy(&esp_dir.join(crate::notices::FILE), &notices)?;
     println!("xtask: release image {}", out.display());
     println!("xtask: size {bytes} bytes ({} MiB)", bytes >> 20);
-    println!("xtask: sha256 {}", crate::sha256_hex(&disk));
+    println!("xtask: sha256 {}", sha256_file(&out)?);
     // Each part's hash, so a mismatch between runners names the part that moved.
     for part in [
         "boot/kernel",
@@ -80,4 +82,25 @@ pub fn main(args: &[String]) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// The SHA-256 of the file at `path`, read a piece at a time: the image is
+/// gigabytes, most of them `kai-data`'s free space.
+fn sha256_file(path: &std::path::Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let shown = path.display();
+    let mut file = fs::File::open(path).map_err(|e| format!("cannot read {shown}: {e}"))?;
+    let mut hash = Sha256::new();
+    let mut piece = vec![0u8; 1 << 20];
+    loop {
+        let n = file
+            .read(&mut piece)
+            .map_err(|e| format!("cannot read {shown}: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&piece[..n]);
+    }
+    Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
