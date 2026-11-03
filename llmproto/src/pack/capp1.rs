@@ -22,7 +22,7 @@ const RULES: &str = concat!(
      Fill in the template: TITLE, struct state, init, on_event and view. kaiapp.h and <string.h> are \
      included, so never declare their functions. I64 is 64-bit; whole numbers only.\n\
      At most 120 characters a line, at most 80 lines.\n\
-     struct state holds plain values and fixed arrays, no pointers. init sets it; on_event changes it; \
+     struct state holds plain values and fixed arrays, no pointers, at most 4096 bytes. init sets it; on_event changes it; \
      view draws the whole window from it every time.\n\
      A node id is a number from 1 to 128, each once. A parent is 0 (the window) or a ui_column or ui_row \
      made before it.\n\

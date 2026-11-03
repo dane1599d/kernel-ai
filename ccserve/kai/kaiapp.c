@@ -57,15 +57,59 @@ static void say(const char *text) {
     kai_app_log_write(&line);
 }
 
+/* n, or less so that s cut at it does not end inside a UTF-8 character. */
+static size_t whole_chars(const char *s, size_t n) {
+    while (n > 0 && ((unsigned char)s[n] & 0xC0) == 0x80)
+        n--;
+    return n;
+}
+
+/* How long the UTF-8 character at s is, or 0 when it is not one: no overlong
+ * form, surrogate or code point past U+10FFFF. A NUL ends any character. */
+static int char_len(const unsigned char *s) {
+    unsigned char a = s[0], b = s[1];
+    int n;
+    if (a < 0x80)
+        return 1;
+    if (a < 0xC2)
+        return 0;
+    if (a < 0xE0)
+        n = 2;
+    else if (a < 0xF0)
+        n = 3;
+    else if (a < 0xF5)
+        n = 4;
+    else
+        return 0;
+    if ((a == 0xE0 && b < 0xA0) || (a == 0xED && b >= 0xA0) || (a == 0xF0 && b < 0x90) ||
+        (a == 0xF4 && b >= 0x90))
+        return 0;
+    for (int i = 1; i < n; i++)
+        if ((s[i] & 0xC0) != 0x80)
+            return 0;
+    return n;
+}
+
+/* text in the frame, cut at a character and at most TEXT_MAX bytes; a byte
+ * that is not UTF-8 is kept as '?', since the view takes only UTF-8. */
 static unsigned short keep(struct frame *f, const char *text) {
     size_t n = strlen(text);
     if (n > TEXT_MAX)
-        n = TEXT_MAX;
+        n = whole_chars(text, TEXT_MAX);
     if (f->used + (int)n + 1 > FRAME_TEXT)
         return FRAME_TEXT;
     unsigned short at = (unsigned short)f->used;
-    memcpy(f->text + at, text, n);
-    f->text[at + n] = 0;
+    char *out = f->text + at;
+    memcpy(out, text, n);
+    out[n] = 0;
+    for (size_t i = 0; i < n;) {
+        int len = char_len((const unsigned char *)out + i);
+        if (len == 0 || i + (size_t)len > n) {
+            out[i++] = '?';
+        } else {
+            i += (size_t)len;
+        }
+    }
     f->used += (int)n + 1;
     return at;
 }
@@ -165,9 +209,9 @@ static int put(const struct frame *f, const struct node *n) {
     return kai_ui_view_put(window_id, n->id, n->parent, &layout, &w, &err);
 }
 
-/* Sends the frame view makes now, and commits. A refused call closes the
- * window, so the next render opens it again with the whole tree. */
-static void render(void) {
+/* Sends the frame view makes now and commits; whether the window took every
+ * change. It opens the window first if it is closed. */
+static int show(void) {
     kai_ui_types_ui_error_t err;
     struct frame *shown = &frames[shown_at];
     struct frame *next = &frames[1 - shown_at];
@@ -176,7 +220,7 @@ static void render(void) {
         window_string_set(&title, TITLE);
         if (!kai_ui_view_open(&title, WIDTH, HEIGHT, &window_id, &err)) {
             say("kaiapp: the window did not open");
-            return;
+            return 1;
         }
         is_open = 1;
         shown->count = 0;
@@ -205,38 +249,64 @@ static void render(void) {
     }
     ok &= kai_ui_view_commit(window_id, &err);
     shown_at = 1 - shown_at;
-    if (!ok) {
-        say("kaiapp: the window refused a change; it opens again");
-        kai_ui_view_close(window_id, &err);
-        is_open = 0;
-    }
+    return ok;
+}
+
+/* show, and when the window refused a change, the window opened again with
+ * the whole tree at once. If that is refused too, the window stays open
+ * without the refused nodes. */
+static void render(void) {
+    if (show())
+        return;
+    kai_ui_types_ui_error_t err;
+    say("kaiapp: the window refused a change; it opens again");
+    kai_ui_view_close(window_id, &err);
+    is_open = 0;
+    if (!show())
+        say("kaiapp: the window refused a change again; it shows the rest");
 }
 
 uint32_t exports_kai_live_lifecycle_schema(void) { return 1; }
 
-bool exports_kai_live_lifecycle_init(exports_kai_live_lifecycle_start_error_t *err) {
+/* The saved state is CBOR [1, bytes], as livecore reads a schema: 0x82, the
+ * schema 1, then struct state's bytes as a byte string with a 2-byte length. */
+#define HEADER 5
+
+static void fresh(void) {
     memset(state, 0, sizeof state);
     init(the_state());
+}
+
+bool exports_kai_live_lifecycle_init(exports_kai_live_lifecycle_start_error_t *err) {
+    fresh();
     render();
     return true;
 }
 
+/* A state of another size is another version's struct state, which this one
+ * cannot read: it starts afresh instead of reading those bytes as its own. */
 bool exports_kai_live_lifecycle_migrate(window_list_u8_t *saved, uint32_t from_schema,
                                         exports_kai_live_lifecycle_start_error_t *err) {
-    int fits = saved->len <= sizeof state;
-    if (from_schema == 1 && fits) {
+    const uint8_t *b = saved->ptr;
+    size_t len = saved->len;
+    int framed = len >= HEADER && b[0] == 0x82 && b[1] == 0x01 && b[2] == 0x59 &&
+                 ((size_t)b[3] << 8 | b[4]) == len - HEADER;
+    int ours = framed && len - HEADER == (size_t)kai_state_size;
+    if (from_schema == 1 && ours) {
         memset(state, 0, sizeof state);
-        memcpy(state, saved->ptr, saved->len);
+        memcpy(state, b + HEADER, len - HEADER);
     }
     window_list_u8_free(saved);
     if (from_schema != 1) {
         *err = EXPORTS_KAI_LIVE_LIFECYCLE_START_ERROR_UNSUPPORTED_SCHEMA;
         return false;
     }
-    if (!fits) {
+    if (!framed) {
         *err = EXPORTS_KAI_LIVE_LIFECYCLE_START_ERROR_BAD_STATE;
         return false;
     }
+    if (!ours)
+        fresh();
     render();
     return true;
 }
@@ -244,13 +314,20 @@ bool exports_kai_live_lifecycle_migrate(window_list_u8_t *saved, uint32_t from_s
 bool exports_kai_live_lifecycle_save(uint32_t to_schema, window_list_u8_t *ret) {
     ret->ptr = NULL;
     ret->len = 0;
-    if (to_schema != 0 && to_schema != 1)
+    size_t n = (size_t)kai_state_size;
+    if ((to_schema != 0 && to_schema != 1) || n > sizeof state)
         return false;
-    ret->ptr = malloc(sizeof state);
-    if (ret->ptr == NULL)
+    uint8_t *out = malloc(HEADER + n);
+    if (out == NULL)
         return false;
-    memcpy(ret->ptr, state, sizeof state);
-    ret->len = sizeof state;
+    out[0] = 0x82;
+    out[1] = 0x01;
+    out[2] = 0x59;
+    out[3] = (uint8_t)(n >> 8);
+    out[4] = (uint8_t)n;
+    memcpy(out + HEADER, state, n);
+    ret->ptr = out;
+    ret->len = HEADER + n;
     return true;
 }
 
@@ -278,8 +355,11 @@ void exports_kai_ui_input_on_ui(exports_kai_ui_input_window_id_t window,
         event.kind = KAI_CHANGED;
         event.node = e->val.changed.f0;
         if (v->tag == EXPORTS_KAI_UI_INPUT_VALUE_TEXT) {
-            size_t n = v->val.text.len < EVENT_TEXT - 1 ? v->val.text.len : EVENT_TEXT - 1;
-            memcpy(event_text, v->val.text.ptr, n);
+            const char *text = (const char *)v->val.text.ptr;
+            size_t n = v->val.text.len;
+            if (n > EVENT_TEXT - 1)
+                n = whole_chars(text, EVENT_TEXT - 1);
+            memcpy(event_text, text, n);
             event_text[n] = 0;
             event.text = event_text;
         } else if (v->tag == EXPORTS_KAI_UI_INPUT_VALUE_ON) {
@@ -308,8 +388,10 @@ void exports_kai_ui_input_on_ui(exports_kai_ui_input_window_id_t window,
     render();
 }
 
+/* Writes c at *at while it is in out: the byte at cap - 1 too, which the
+ * NUL replaces, so the cut can tell whether it splits a character. */
 static void emit(char *out, I64 cap, I64 *at, char c) {
-    if (*at + 1 < cap)
+    if (*at < cap)
         out[*at] = c;
     (*at)++;
 }
@@ -353,6 +435,8 @@ I64 Format(char *out, I64 cap, const char *fmt, ...) {
     va_end(ap);
     if (cap <= 0)
         return 0;
-    out[at < cap ? at : cap - 1] = 0;
-    return at < cap ? at : cap - 1;
+    /* A cut text ends at a whole character. */
+    I64 end = at < cap ? at : (I64)whole_chars(out, (size_t)(cap - 1));
+    out[end] = 0;
+    return end;
 }

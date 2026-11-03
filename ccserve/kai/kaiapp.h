@@ -9,7 +9,8 @@
  *   void view(const struct state *s);     the window, with the ui_ calls
  *
  * After init and after each event the runtime calls view, sends what changed
- * and commits. The state is saved as its bytes, so a restart keeps it. */
+ * and commits. The state is saved as its bytes, so a restart keeps it; a
+ * version whose struct state has another size starts afresh from init. */
 #pragma once
 
 #include <stddef.h>
@@ -37,6 +38,8 @@ struct kai_event {
 
 struct state;
 extern const char TITLE[];
+/* sizeof(struct state): `cc build` defines it after the app's first file. */
+extern const I64 kai_state_size;
 void init(struct state *s);
 void on_event(struct state *s, const struct kai_event *e);
 void view(const struct state *s);
