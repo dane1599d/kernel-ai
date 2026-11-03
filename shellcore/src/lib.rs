@@ -248,6 +248,15 @@ pub trait Host {
     ) -> Result<ccbuild::CcBuilt, String> {
         Err(String::from("cc build needs the files and cc here"))
     }
+    /// `cc`'s `trial` of the app the last [`Host::cc_build`] built, on stub
+    /// imports: its one-line report, or why it failed. A failure that is not
+    /// the program's fault starts [`appbuild::INTERNAL`].
+    fn cc_trial(&self, _name: &str) -> Result<String, String> {
+        Err(format!(
+            "{}there is no cc to try the app on here",
+            appbuild::INTERNAL
+        ))
+    }
     /// Writes `text` as the whole of `/home/user/apps/<name>/main.c`, making the
     /// folders if they are new (`app_build`). The source is kept whatever comes
     /// of its build, so it is no undo of its own.

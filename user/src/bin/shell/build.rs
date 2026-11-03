@@ -29,7 +29,10 @@ use user::sys;
 
 /// cc's wait for a build: its deadline is ten line budgets (20 s, or 120 s
 /// when QEMU emulates the CPU), and its first request translates cc.wasm.
-const BUILD_CALL_MS: u64 = 150_000;
+/// `app_build` reserves the same in each round.
+const BUILD_CALL_MS: u64 = shellcore::appbuild::CC_BUILD_WAIT_MS;
+/// cc's wait for a trial, which `app_build` reserves too.
+const TRIAL_CALL_MS: u64 = shellcore::appbuild::CC_TRIAL_WAIT_MS;
 /// `pkg`'s wait for `local`: it signs, checks, installs and starts the app.
 const PKG_CALL_MS: u64 = 60_000;
 /// `pkg` reads requests into 64 bytes, and answers in a few hundred.
@@ -225,6 +228,42 @@ fn ask_cc(
         let artifact = shm::take(bytes, MAX_ARTIFACT).map_err(String::from)?;
         Ok((text, artifact.to_vec()))
     })
+}
+
+/// `trial <name>` to `cc` with the `Shm` the last build left its artifact in:
+/// the trial's report, or why it failed (`internal: ` first when that is no
+/// fault of the program's).
+pub fn trial(cc: Handle, name: &str) -> Result<String, String> {
+    let internal = shellcore::appbuild::INTERNAL;
+    let Some(shm) = *SHM.lock() else {
+        return Err(format!("{internal}no build left an artifact to try"));
+    };
+    // cc maps and reads it, and nothing more.
+    let rights = Rights::MAP | Rights::READ | Rights::TRANSFER;
+    let copy = sys::handle_dup(shm, rights).map_err(|e| format!("{internal}the Shm ({e:?})"))?;
+    let request = promptcore::wire::Request::Trial { component: name }.text();
+    let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+    let len = match sys::call_h(
+        cc,
+        request.as_bytes(),
+        &mut reply,
+        TRIAL_CALL_MS,
+        &[copy],
+        &mut [],
+    ) {
+        Ok((len, _)) => len.min(reply.len()),
+        Err(e) => {
+            let _ = sys::handle_close(copy);
+            return Err(format!("{internal}cc did not answer the trial ({e:?})"));
+        }
+    };
+    // Only `err`'s text can be the program's fault; cc says when it is not.
+    let records = parse_reply(&reply[..len]).map_err(|e| format!("{internal}cc's answer: {e}"))?;
+    match records.last() {
+        Some(Record::Text(text)) => Ok(String::from_utf8_lossy(text).into_owned()),
+        Some(Record::Err { text, .. }) => Err(String::from_utf8_lossy(text).into_owned()),
+        _ => Err(format!("{internal}cc's answer was not a trial's")),
+    }
 }
 
 /// Runs `f` on `shm`, mapped read-write.

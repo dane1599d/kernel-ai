@@ -1,7 +1,7 @@
 //! `app_build` ("Kai builds apps", piece 3) against a fake model, `pkg` and
 //! `cc`: the source kept in `/home/user/apps/<name>/`, built at `local-next`'s
-//! version, repaired with `cc`'s exact errors, logged with its hash and
-//! provenance, and never installed.
+//! version, tried on stub imports, repaired with `cc`'s or the trial's exact
+//! errors, logged with its hash, provenance and trial, and never installed.
 
 use super::*;
 use crate::ccbuild::CcBuilt;
@@ -70,7 +70,11 @@ fn an_app_is_written_built_and_logged_with_its_source_hash_but_not_installed() {
     );
     assert_eq!(
         *host.pkg_sent.borrow(),
-        ["local-next timer", "cc_build /home/user/apps/timer 0.0.1"]
+        [
+            "local-next timer",
+            "cc_build /home/user/apps/timer 0.0.1",
+            "cc_trial timer"
+        ]
     );
     // Logged with the source's hash and cc's provenance; nothing went to local.
     let actlog = shell.eval("log actlog").text;
@@ -78,6 +82,7 @@ fn an_app_is_written_built_and_logged_with_its_source_hash_but_not_installed() {
     assert!(actlog.contains(&hash), "{actlog}");
     assert!(actlog.contains(PROVENANCE), "{actlog}");
     assert!(actlog.contains("not_installed"), "{actlog}");
+    assert!(actlog.contains("trial init, started"), "{actlog}");
     assert!(
         !host
             .pkg_sent
@@ -223,4 +228,108 @@ fn a_bad_name_or_no_card_builds_nothing() {
         "{reply:?}"
     );
     assert!(host.app_sources.borrow().is_empty());
+}
+
+/// The trial is the program's test: a failing one is repaired with exactly
+/// what it said, and a passing one is kept.
+#[test]
+fn a_build_whose_trial_fails_is_repaired_with_the_trial_s_words() {
+    let (host, mut shell) = asked(vec![app(SOURCE), app(SOURCE)]);
+    for version in ["0.0.1", "0.0.1"] {
+        host.pkg_answers
+            .borrow_mut()
+            .push_back(Ok(String::from(version)));
+        host.cc_builds.borrow_mut().push_back(Ok(built()));
+    }
+    host.cc_trials
+        .borrow_mut()
+        .push_back(Err(String::from("init: its state does not say its schema")));
+    let reply = shell.eval("make me a countdown timer app");
+    assert!(reply.ok && reply.text.contains("Built timer"), "{reply:?}");
+    let asked = host.script_requests.borrow().clone();
+    assert_eq!(asked.len(), 2);
+    assert_eq!(
+        asked[1].repair,
+        Some((
+            String::from(SOURCE),
+            String::from(
+                "its trial failed:
+init: its state does not say its schema"
+            )
+        ))
+    );
+}
+
+/// A trial that failed through no fault of the program's spends no repair on
+/// it, and nothing waits to be installed.
+#[test]
+fn a_trial_cc_could_not_run_is_reported_and_not_repaired() {
+    let (host, mut shell) = asked(vec![app(SOURCE)]);
+    host.pkg_answers
+        .borrow_mut()
+        .push_back(Ok(String::from("0.0.1")));
+    host.cc_builds.borrow_mut().push_back(Ok(built()));
+    host.cc_trials
+        .borrow_mut()
+        .push_back(Err(String::from("internal: the trial's artifact: no Shm")));
+    let reply = shell.eval("make me a countdown timer app");
+    assert!(
+        !reply.ok
+            && reply
+                .text
+                .contains("cc could not try it: the trial's artifact: no Shm"),
+        "{reply:?}"
+    );
+    assert_eq!(host.script_requests.borrow().len(), 1);
+    assert!(shell.app_built.is_none());
+}
+
+#[test]
+fn internal_is_said_as_cc_says_it() {
+    assert_eq!(crate::appbuild::INTERNAL, ccserve::trial::INTERNAL);
+}
+
+/// C on #609: only an `app_build` entry's own source line and change make a
+/// `main.c` Kai's, not another entry that quotes the line.
+#[test]
+fn a_source_line_in_another_entry_does_not_make_a_main_c_kai_s() {
+    let mine = "/* mine */
+";
+    let (host, mut shell) = asked(vec![app(SOURCE)]);
+    host.app_sources
+        .borrow_mut()
+        .push((String::from("timer"), String::from(mine)));
+    let line = format!(
+        "source /home/user/apps/timer/main.c sha256 {}",
+        crate::appbuild::sha256(mine)
+    );
+    shell.log.push(crate::actlog::Entry {
+        id: 90,
+        t_ns: 0,
+        form: crate::actlog::Form::Call,
+        of: None,
+        tier: None,
+        pack: None,
+        consent: String::from("asked"),
+        state: crate::actlog::State::Done,
+        request: String::from("note it"),
+        script: format!(
+            "app_build(\"timer\", \"x\")
+{line}"
+        ),
+        outcome: String::from("ran"),
+        changes: vec![crate::actlog::Change {
+            action: String::from("fs_write"),
+            owner: String::from("fs"),
+            res: String::from("/home/user/notes.txt"),
+            before: String::new(),
+            after: line.clone(),
+            inverse: None,
+        }],
+    });
+    let reply = shell.eval("make me a countdown timer app");
+    assert!(
+        !reply.ok && reply.text.contains("was changed since Kai wrote it"),
+        "{reply:?}"
+    );
 }

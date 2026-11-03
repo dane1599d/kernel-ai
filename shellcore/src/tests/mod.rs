@@ -10,6 +10,9 @@ use llmproto::act::{ActError, ActRequest, Call};
 use llmproto::script::{Answer, AnswerError, ScriptRequest};
 use std::collections::VecDeque;
 
+/// What the fake `cc_trial` answers past its queue.
+const TRIAL_REPORT: &str = "init, started, a key and a click ran; 1 window";
+
 mod act;
 mod actions;
 mod apart;
@@ -128,6 +131,8 @@ struct FakeHost {
     /// Builds `cc_build` answers in turn, before `cc_built` (`app_build`'s
     /// repairs).
     pub cc_builds: RefCell<VecDeque<Result<crate::ccbuild::CcBuilt, String>>>,
+    /// `cc_trial`'s answers in turn; past them, the trial passes.
+    pub cc_trials: RefCell<VecDeque<Result<String, String>>>,
     /// Each app's source `app_source` wrote, in order.
     pub app_sources: RefCell<Vec<(String, String)>>,
     /// The `fs` server's files, and each transaction's files before and after.
@@ -300,6 +305,7 @@ impl FakeHost {
             pkg_answers: RefCell::new(VecDeque::new()),
             cc_built: RefCell::new(None),
             cc_builds: RefCell::new(VecDeque::new()),
+            cc_trials: RefCell::new(VecDeque::new()),
             app_sources: RefCell::new(Vec::new()),
             files: RefCell::new(Files::new()),
             txns: RefCell::new(Vec::new()),
@@ -800,6 +806,12 @@ impl Host for FakeHost {
         }
         let built = self.cc_built.borrow_mut().take();
         built.unwrap_or_else(|| Err(String::from("no cc here")))
+    }
+
+    fn cc_trial(&self, name: &str) -> Result<String, String> {
+        self.pkg_sent.borrow_mut().push(format!("cc_trial {name}"));
+        let next = self.cc_trials.borrow_mut().pop_front();
+        next.unwrap_or_else(|| Ok(String::from(TRIAL_REPORT)))
     }
 
     fn app_source(&self, name: &str, text: &str) -> Result<(), String> {
