@@ -64,8 +64,6 @@ pub trait Host: Sink {
     /// Queues `message` for the edit service; the ticket its answer comes under.
     fn send(&mut self, message: &[u8]) -> u32;
     fn now_ms(&self) -> u64;
-    /// A line for the log.
-    fn note(&mut self, _text: &str) {}
     /// Queues a read of the whole file at `path` (`kai:files`): the ticket the
     /// file's bytes, or why not, come back under.
     fn read_file(&mut self, path: &str) -> u32;
@@ -169,27 +167,12 @@ impl EditorWindow {
         text: &str,
         mods: u8,
     ) -> Result<(), UiError> {
-        let input = keys::key_input(name, text, mods);
-        // A modified key is rare, and says nothing of what was typed.
-        if mods != 0 {
-            let busy = self.screen.busy();
-            host.note(&format!(
-                "editor: key {name} with {mods} is {input:?} (busy {busy})"
-            ));
-        }
-        if let Some(input) = input {
+        if let Some(input) = keys::key_input(name, text, mods) {
             self.screen.input(input);
         }
         let mut settled = self.settle(host);
         if self.take_file_wishes(host) {
             settled = settled.and(self.settle(host));
-        }
-        if mods != 0 {
-            let busy = self.screen.busy();
-            let sent = self.tickets.len();
-            host.note(&format!(
-                "editor: after it busy {busy}, {sent} sent and unanswered"
-            ));
         }
         settled
     }
