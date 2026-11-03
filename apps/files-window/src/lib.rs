@@ -45,12 +45,27 @@ pub struct Effects;
 
 impl Os for Effects {
     fn request(&mut self, call: &Call) -> u32 {
-        compsdk::app::request(Effect::Call {
+        let ticket = compsdk::app::request(Effect::Call {
             name: String::from(call.name),
             args: call.args.clone(),
-        })
+        });
+        note(&alloc::format!(
+            "files window: asked the OS for {} (ticket {ticket})",
+            call.name
+        ));
+        ticket
     }
 }
+
+/// A line in the boot log of what the window asked the OS for and what came back,
+/// so a window that never shows a folder says where it stopped.
+#[cfg(target_family = "wasm")]
+fn note(text: &str) {
+    compsdk::log(text);
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn note(_text: &str) {}
 
 pub struct FilesWindow {
     pub files: Files,
@@ -119,6 +134,10 @@ impl Events for FilesWindow {
         match event {
             Event::Started => self.files.refresh(&mut Effects),
             Event::EffectDone { ticket, outcome } => {
+                note(&alloc::format!(
+                    "files window: ticket {ticket} came back {}",
+                    if outcome.is_ok() { "ok" } else { "refused" }
+                ));
                 self.files.done(&mut Effects, ticket, outcome);
             }
         }

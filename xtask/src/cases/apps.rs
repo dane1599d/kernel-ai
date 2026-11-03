@@ -83,6 +83,21 @@ pub(super) const CASES: &[TestCase] = &[
         memory_mib: Some(WINDOW_AND_FS_MIB),
         ..case("ui-models", "test=ui-models")
     },
+    // P4 task 5: the agent makes, moves and trashes a file, the Files window shows
+    // each state, and `undo` puts both back. The OS's rows run at once (a move and
+    // a trash have an undo, so they do not ask); the log shows each change.
+    TestCase {
+        expect: &[
+            "app-files: the Files window lists the file the agent made",
+            "app-files: after the move the window lists plan.txt and no longer notes.txt",
+            "app-files: after the trash the window lists neither file",
+            "app-files: undo put the move back, and the window lists notes.txt and not plan.txt",
+            "app-files: the agent made, moved and trashed a file at once, the Files window showed each state, and undo put each back; the log showed each change and each undo",
+        ],
+        data: Some(DATA),
+        memory_mib: Some(WINDOW_AND_FS_MIB),
+        ..case("app-files", "test=app-files")
+    },
     // P4 task 10: the agent manages the models through the `model_*` rows. The
     // store holds `fixture` as the model in use; the import disk holds
     // `fixture-2`, the image's role's other test target, which the import
