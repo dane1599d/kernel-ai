@@ -23,10 +23,12 @@ livecore = { path = "../livecore" }
 promptcore = { path = "../promptcore" }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
 wasihost = { path = "../wasihost" }
+# `trial`'s app runs on wasmhost, as comphost runs one, and its windows on uikit.
+uikit = { path = "../uikit" }
+wasmhost = { path = "../wasmhost" }
 wasmi = { version = "2.0.0", default-features = false, features = ["validate", "portable-dispatch"] }
 wasmparser = { version = "0.228.0", default-features = false }
 sha2 = { version = "0.11.1", default-features = false }
 
 [dev-dependencies]
 kaipkg = { path = "../kaipkg" }
-wasmhost = { path = "../wasmhost" }
