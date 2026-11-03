@@ -479,17 +479,31 @@ impl Local {
     /// A script for the shell's `request`, within the time the shell gives one
     /// round and at most `script::SERVICE_TIMEOUT_MS`.
     pub fn script(&mut self, request: &ScriptRequest) -> Result<Answer, AnswerError> {
+        self.script_until(request, || false)
+    }
+
+    /// [`Self::script`], with `stop` asked at every step: an app job's round
+    /// answers the requests that come meanwhile there, and ends when it says.
+    pub fn script_until(
+        &mut self,
+        request: &ScriptRequest,
+        mut stop: impl FnMut() -> bool,
+    ) -> Result<Answer, AnswerError> {
         self.engine.use_slot(SLOTS.script);
         let mut clock = Clock::new(
             request.timeout_ms.min(script::SERVICE_TIMEOUT_MS),
             self.prefill_rate,
         );
+        let mut step = |step| match stop() {
+            true => Next::Stop,
+            false => clock.step(step),
+        };
         let answer = match request.lang {
-            script::Lang::Rhai => local::script(&mut self.engine, request, |step| clock.step(step)),
+            script::Lang::Rhai => local::script(&mut self.engine, request, &mut step),
             // The c-1 and c-app-1 cards in the same slot; llm warms the Rhai
             // prompt back after.
-            script::Lang::C => local::program(&mut self.engine, request, |step| clock.step(step)),
-            script::Lang::App => local::app(&mut self.engine, request, |step| clock.step(step)),
+            script::Lang::C => local::program(&mut self.engine, request, &mut step),
+            script::Lang::App => local::app(&mut self.engine, request, &mut step),
         };
         self.prefill_rate = clock.rate().or(self.prefill_rate);
         let forced = self.engine.forced();
