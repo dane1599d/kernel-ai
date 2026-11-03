@@ -199,7 +199,7 @@ Where each item stands on 2026-11-03 (task 19). "Done" is on main; "missing" nam
 | Item | Status | Where, and what is left |
 |---|---|---|
 | Section 1's exit cases, KVM and TCG | Missing | 9 of the 12 boot cases are on main and pass (run [41656046125](https://github.com/dane1599d/kernel-ai/actions/runs/41656046125), all six shards). Missing: `app-files` (no PR; #454 is the window only), `app-notes` (no PR) and `app-monitor` (#494, draft). Section 11 has each case |
-| P1, P2 and P3 closed; M10a's exit test | Missing | P1 is closed (decisions, 2026-10-27) and M10a passes (#7). P3's exit cases are all on main (section 10 of `p3-desktop.md`, #436), but the roadmap carries no P3 status line yet. P2 is "closing": files through kaifs moved at 12 MB/s, under S04-2's bar (the roadmap's P2 status) |
+| P1, P2 and P3 closed; M10a's exit test | Missing | P1 is closed (decisions, 2026-10-27) and M10a passes (#7). P3 is done: its exit cases are all on main (section 10 of `p3-desktop.md`, #436), and the roadmap now has its status. P2 is "closing": files through kaifs moved at 12 MB/s, under S04-2's bar (the roadmap's P2 status) |
 | A/B slots, rollback, offline updates | Done | Lane U, P2: `slot-ab`, `slot-probation`, `update-disk`, `update-tampered` and `update-rollback` |
 | Built-ins as signed packages; `install` from the image and a mirror | Done | `pkg-image` and `pkg-image-tampered` (task 1), `pkg-install` and its five tamper cases (task 2), `desk-catalog` (task 3) |
 | ADR 0009 D1-D8 | Missing | Done: MPL-2.0 with the DCO (founder, 2026-10-27), `NOTICES.txt` byte-identical in the image and the release, the offline source rebuild (S09-1), the `dco` job (task 16). Yours: clearing both names, "Kernel AI" and "Kai" (the trademark search) |

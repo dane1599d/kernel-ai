@@ -178,6 +178,12 @@ The cases are act-plain, act-run, act-ask, act-rule, act-undo, act-rollback, act
 
 The P2 close row in `docs/decisions.md` has each case and gap.
 
+**P3 status (2026-11-03):** **done**: every exit case of `docs/plans/p3-desktop.md` section 1 is a boot case in `ci.yml`'s shards and passes under KVM and TCG (that plan's section 10, #436).
+- **Built:** virtio-gpu 2D, the `desktop` compositor with windows, fonts and focus, the `kai>` panel and its ask card, standing rules and profiles, and app windows on `uikit`.
+- **The cases:** desk-boot, desk-windows, desk-agent, display-claim, desk-panel, desk-ask, desk-takeover, desk-restart, desk-standing, desk-standing-refused, desk-profile, desk-profile-floor and desk-perf.
+- **Performance:** `desk-perf` is a gate under KVM, within S05-1's budgets at 1920x1080 (#476). A runner more than 3.5 times slower than the reference reports its figures without gating them (#584).
+- **Not checked in a boot, by design:** parts of `desk-panel` and `desk-standing`, which host tests cover, and `desk-perf`'s (d) and 2560x1440.
+
 **P4 status (2026-11-03):** **closing, not yet done**. Tasks 1-15 are merged.
 - **Built:** the seven built-in apps (Terminal, Files, Notes, Settings, System Monitor, Models and the Editor) on `uikit`, each with its actions; the built-ins as signed packages from the image's TUF repository, installs from a local mirror with `undo`, and the Apps sheet; the `c>` prompt, `cc build`, and Kai writing C at `c>` after S12-2 passed; themes; the release terms (MPL-2.0 with the DCO); and `release.yml`, dry-run on a throwaway tag.
 - **On main:** `app-terminal`, `app-settings`, `app-models`, `app-editor`, `pkg-image`, `pkg-install`, `desk-catalog`, `c-prompt` and `c-build`, under KVM and TCG.
