@@ -28,7 +28,10 @@
 //! `/home/user/c/<name>/` (`shellcore::ccbuild`), as it builds for a typed
 //! `cc build`. It carries no bytes in; its answer is the report the shell fills,
 //! like a read's. It waits for the shell as long as the build takes, and the shell
-//! passes it on only if the `user` mark says a person's key started it.
+//! passes it on only if the `user` mark says a person's key started it. A build
+//! the shell has taken is not stopped when the editor stops asking: a transfer
+//! dropped as idle, or an editor that gave up or closed, leaves the build to
+//! finish and install in the shell, and its report finds the transfer gone.
 //!
 //! Which app a transfer is for is `desktop`'s own record of the caller (the
 //! kernel's name for its process), never anything in the message, and only the
