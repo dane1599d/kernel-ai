@@ -88,3 +88,27 @@ fn the_users_own_line_shows_its_first_result_line() {
         PanelResult::Refused("answers go in the terminal".into())
     );
 }
+
+#[test]
+fn a_typed_models_import_is_refused_at_the_panel_and_a_switch_runs_logged() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let shown = shell.eval_panel("models import");
+    assert!(matches!(shown, PanelResult::Refused(_)), "{shown:?}");
+    assert!(
+        !host
+            .model_requests
+            .borrow()
+            .contains(&"models import".into())
+    );
+    let shown = shell.eval_panel("models use qwen3-0.6b");
+    assert!(
+        matches!(&shown, PanelResult::Done(line) if line.contains("next restart")),
+        "{shown:?}"
+    );
+    assert!(shell.eval("log actlog").text.contains("consent=typed"));
+    assert_eq!(
+        shell.eval("undo"),
+        ok("Undone: the model before, from the next restart")
+    );
+}

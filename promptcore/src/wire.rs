@@ -13,7 +13,7 @@
 //! reset                               err <line> <n>\n<text>      line 0: not in the entry
 //! build <component> <version>         trap <reason> <function>|-
 //! back                                undone <seq>
-//!                                     text <n>\n<text>            for dis and defs
+//! trial <component>                   text <n>\n<text>            for dis, defs, build and trial
 //!                                     ok
 //! ```
 //!
@@ -23,6 +23,9 @@
 //!
 //! `build` comes with an `Shm` that holds the component's source bundle; cc
 //! writes the artifact over it and answers `text` (see `ccserve::build::shm`).
+//! `trial` comes with that `Shm` again: cc runs the artifact in it on stub
+//! imports and answers `text` with its report, or `err` with why it failed
+//! (see `ccserve::trial`).
 //!
 //! Every reply header ends in a newline; a record that carries text gives its
 //! byte count last, and the bytes follow the newline. So output and wcc's
@@ -97,6 +100,11 @@ pub enum Request<'a> {
         component: &'a str,
         version: &'a str,
     },
+    /// A built app's trial on stub imports: its artifact comes in the `Shm`
+    /// its `build` wrote it to.
+    Trial {
+        component: &'a str,
+    },
 }
 
 impl<'a> Request<'a> {
@@ -144,6 +152,9 @@ impl<'a> Request<'a> {
                 component: word(component, 32)?,
                 version: version(v)?,
             },
+            (["trial", component], None) => Request::Trial {
+                component: word(component, 32)?,
+            },
             _ => return Err(WireError("not a request")),
         };
         Ok(request)
@@ -171,6 +182,7 @@ impl<'a> Request<'a> {
             Request::Reset => "reset".into(),
             Request::Back => "back".into(),
             Request::Build { component, version } => format!("build {component} {version}"),
+            Request::Trial { component } => format!("trial {component}"),
         }
     }
 }

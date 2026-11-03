@@ -298,6 +298,9 @@ fn main() -> i32 {
                 };
                 note_heap(&mut reply, heap_before);
                 reply.truncate(kabi::MAX_MESSAGE);
+                if let Some(ui) = windows.as_mut() {
+                    ui.expect_results(&reply);
+                }
                 if let Err(error) = sys::svc_reply(&reply) {
                     println!("svc_reply failed: {error:?}");
                 }

@@ -52,6 +52,8 @@ pub(crate) struct Pending {
     pub standing: Option<crate::standing::grammar::Draft>,
     /// For a `model_*` row, what waits on the answer.
     pub model: Option<crate::models::Waiting>,
+    /// For `app_build`, the build that waits on the answer.
+    pub app: Option<crate::appbuild::Asked>,
 }
 
 /// `y`, `n`, `yes` or `no`, any case.
@@ -184,6 +186,7 @@ impl Shell {
             pkg: None,
             standing: None,
             model: None,
+            app: None,
         });
         Reply {
             ok: true,
@@ -459,6 +462,9 @@ impl Shell {
         }
         if pending.model.is_some() && !is_show(text) {
             return self.answer_model(pending, text);
+        }
+        if pending.app.is_some() && !is_show(text) {
+            return self.answer_app(pending, text);
         }
         if pending.standing.is_some() && !is_show(text) {
             return self.answer_instruction(pending, text);
