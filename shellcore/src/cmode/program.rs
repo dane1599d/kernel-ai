@@ -89,7 +89,9 @@ impl Shell {
                     "Kai's program did not work after {MAX_REPAIRS} repairs:\n{why}"
                 ));
             }
-            repair = Some((answer.script, why));
+            // The problems and wcc's lines count the prepared source: the
+            // model gets that, an added include and all.
+            repair = Some((prepared.source, why));
         }
         Reply::err("Kai wrote no program")
     }

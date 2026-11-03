@@ -86,7 +86,7 @@ pub fn use_line(row: &Action) -> String {
             args.push(format!("&{name}_now"));
             (format!("struct kai_{name} {name}_now; "), String::new())
         }
-        RetType::List(_) => {
+        RetType::List(RetType::Record(_)) => {
             args.push(format!("{name}_list, 16"));
             (
                 format!("struct kai_{name}_item {name}_list[16]; "),

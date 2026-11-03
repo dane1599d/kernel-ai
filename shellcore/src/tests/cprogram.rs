@@ -83,6 +83,20 @@ fn a_refused_program_goes_back_with_exactly_why() {
     assert_eq!(asked[3].repair.clone().unwrap().0, "I64 z = 0;\nz = 1 / z;");
 }
 
+/// Lane T's review of #588: with `<string.h>` added, the repair's program is
+/// the one the line numbers count.
+#[test]
+fn a_repair_sends_the_program_its_line_numbers_count() {
+    let host = FakeHost::new();
+    let mut shell = c_shell(&host);
+    answers(&host, &["I64 cpus;\nI64 n = strlen(\"ab\");", CPUS]);
+    assert!(shell.eval("? how many cpus").ok);
+    let asked = host.script_requests.borrow();
+    let (program, why) = asked[1].repair.clone().expect("a repair");
+    assert!(why.contains("line 2: `cpus` is a function"), "{why}");
+    assert_eq!(program.lines().nth(1), Some("I64 cpus;"), "{program}");
+}
+
 #[test]
 fn three_repairs_are_the_most() {
     let host = FakeHost::new();

@@ -232,6 +232,20 @@ fn another_request_drops_a_waiting_run() {
     assert_eq!(cc.send("resume 3 ok\n2"), ["err 0 no run is waiting"]);
 }
 
+/// Lane T's review of #588: a model's `open` drops the user's waiting run, as
+/// any other request does, so a late `resume` cannot finish it after `back`.
+#[test]
+fn a_model_open_drops_the_users_waiting_run() {
+    let mut cc = Cc::open();
+    cc.ok(DECLARE);
+    let asked = cc.eval("I64 Kept() { return 1; }\nadd_one(1);");
+    assert!(asked[0].starts_with("need 1 "), "{asked:?}");
+    assert_eq!(cc.send("open trial origin=model"), ["ok"]);
+    assert_eq!(cc.send("back"), ["ok"]);
+    assert_eq!(cc.send("resume 1 ok\n2"), ["err 0 no run is waiting"]);
+    assert!(cc.eval("Kept()")[0].starts_with("err "));
+}
+
 /// Review findings: effects answered by cc itself still meet the deadline and
 /// Ctrl-C, and a reply always ends however many effects a run makes.
 #[test]

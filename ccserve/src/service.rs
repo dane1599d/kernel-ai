@@ -248,26 +248,38 @@ impl<E: Effects> Service<E> {
     /// user's aside (a model's earlier one is dropped), so the model's program
     /// sees nothing the user defined and the user's globals survive it (D5).
     fn open(&mut self, origin: Origin, reply: &mut Reply) {
+        // What this open replaces goes first, so cc never holds more than the
+        // two sessions its budget counts. The user's session is set aside, its
+        // waiting run dropped as any other request drops it, and comes back if
+        // the model's cannot start.
+        match origin {
+            Origin::User => {
+                self.open = None;
+                self.parked = None;
+            }
+            Origin::Model => {
+                if let Some(mut user) = self.open.take().filter(|o| o.origin == Origin::User) {
+                    if user.waiting.take().is_some() {
+                        user.session.abort();
+                    }
+                    self.parked = Some(user);
+                }
+            }
+        }
         let session = match Session::new(&self.kairt, self.effects.imports()) {
             Ok(session) => session,
-            Err(why) => return error(reply, 0, &why),
+            Err(why) => {
+                self.open = self.parked.take();
+                return error(reply, 0, &why);
+            }
         };
-        let fresh = Open {
+        self.open = Some(Open {
             origin,
             defs: Defs::new(),
             session,
             waiting: None,
             needs: 0,
-        };
-        match origin {
-            Origin::User => self.parked = None,
-            Origin::Model => {
-                if let Some(user) = self.open.take().filter(|o| o.origin == Origin::User) {
-                    self.parked = Some(user);
-                }
-            }
-        }
-        self.open = Some(fresh);
+        });
         end(reply, &Record::Ok);
     }
 
