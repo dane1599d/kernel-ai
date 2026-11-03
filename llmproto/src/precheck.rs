@@ -78,14 +78,17 @@ fn shadowed(tokens: &[Token], calls: &[&str]) -> Vec<(u32, String)> {
         };
         let function =
             calls.contains(&name.as_str()) || STRING_H.contains(&name.as_str()) || name == "Print";
-        if function && !tokens.get(j + 1).is_some_and(|t| t.is_punct('(')) {
-            found.push((
-                *line,
-                format!(
-                    "`{name}` is a function, so a variable may not take its name; call it {name}_n or another name"
-                ),
-            ));
+        if !function {
+            continue;
         }
+        let text = match tokens.get(j + 1).is_some_and(|t| t.is_punct('(')) {
+            // `I64 uptime_ms(I64 *out);` again: kai.h's import is lost.
+            true => format!("kai.h declares `{name}` already; call it without declaring it"),
+            false => format!(
+                "`{name}` is a function, so a variable may not take its name; call it {name}_n or another name"
+            ),
+        };
+        found.push((*line, text));
     }
     found
 }
@@ -327,6 +330,15 @@ mod tests {
             &CALLS,
         );
         assert_eq!(fine.problems, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_call_declared_again_is_a_problem() {
+        let out = prepare("I64 cpus(I64 *out);\nI64 n;\ncpus(&n);", &CALLS);
+        assert_eq!(out.problems.len(), 1, "{:?}", out.problems);
+        assert!(out.problems[0].starts_with("line 1: kai.h declares `cpus` already"));
+        let call = prepare("I64 n = processes(list, 16);", &CALLS);
+        assert_eq!(call.problems, Vec::<String>::new());
     }
 
     #[test]

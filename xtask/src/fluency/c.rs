@@ -434,8 +434,8 @@ mod tests {
     #[test]
     fn the_c1_card_fits_its_budget() {
         let card = llmproto::pack::render(llmproto::pack::Format::C1);
-        // About 3.3 bytes a token on this card (S12-2's count): about 740 tokens.
-        assert!(card.len() < 2_500, "{} bytes", card.len());
+        // About 3.3 bytes a token on this card (S12-2's count): about 780 tokens.
+        assert!(card.len() < 2_600, "{} bytes", card.len());
     }
 
     #[test]

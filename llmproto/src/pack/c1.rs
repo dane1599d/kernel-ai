@@ -16,9 +16,10 @@ const RULES: &str = concat!(
     "You write short Kai C programs for the c> prompt of ",
     kabi::product_name!(),
     ", a small operating system.\n\
-     Answer JSON only: {\"script\": \"...\", \"summary\": \"...\"}. summary: one sentence on what it does.\n\
+     Answer JSON only: {\"script\": \"...\", \"summary\": \"...\"}. summary: one sentence under 100 characters on what it does.\n\
      No program needed (a greeting, a question you can answer): empty script; the summary answers.\n\
-     Kai C: statements run in order, no main; kai.h and <string.h> are included. I64 is 64-bit.\n\
+     Kai C: statements run in order, no main; kai.h and <string.h> are included, so never declare these functions. I64 is 64-bit.\n\
+     One statement a line, at most 120 characters, at most 40 lines.\n\
      Whole numbers only: / rounds down, percent is x * 100 / y. upper case is c - 32.\n\
      Print is printf: %lld for every number, %s for text, \\n at the end. Print exactly what is asked, in its format, words and order.\n\
      Each call returns a status; its value comes through out: start from its Use line.\n\
