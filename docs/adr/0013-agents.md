@@ -358,6 +358,77 @@ None runs a model on the founder's PC. Real-model runs are on GitHub runners, as
 
 No new crates are proposed for the shipped graph. The embedding model is pinned like the others (Apache-2.0, `xtask/models.json`). hnsw_rs or instant-distance would be listed in their PR under the 2026-10-21 rule only if a flat scan stops sufficing.
 
+## Addendum A (draft, 2026-11-03): model packs by task
+
+The founder asked for downloadable model packs that Kai delegates to by task: a small model for actions and questions, and a bigger coding model for "write me a program". This is a design draft for approval and builds nothing. Its figures come from the spike S12-2 re-run (draft #577), which ran on GitHub runners only; the row for it is in `docs/decisions.md`.
+
+### A1. What the comparison found
+
+Every C run below used the same harness, `c-1` card and three repair rounds.
+
+| Model (Q4_K_M) | Licence, origin | Runs on our engine | C first try / after repairs | Rhai fluency (floor 47) | actbench act | Peak RAM | First token, median | Decode |
+|---|---|---|---|---|---|---|---|---|
+| Qwen3-4B-Instruct-2507 (today) | Apache-2.0, Alibaba (China) | yes | **39/50 (78%) / 46/50 (92%)** | **48/50** | passes (seeds 42, 1, 2, #428) | 2.78 GB | 2.6 s | 4.8 tokens/s |
+| Qwen3-8B | Apache-2.0, Alibaba (China) | yes | 37/50 (74%) / 40/50 (80%) | 44/50 | seed 42: M8 fluency 40/50 fails (bar 45); every other bar passes | 5.25 GB | 3.3-4.1 s | 3.0-3.6 tokens/s |
+| Qwen2.5-Coder-7B-Instruct | Apache-2.0, Alibaba (China) | no: `qwen2` (q/k/v biases, no QK norm); about 1 day of engine work (est.) | not run | not run | not run | 4.68 GB file | – | – |
+| Granite 4.0 Micro (3B) | Apache-2.0, IBM (US) | no: `granite` (four scale factors) and the `dbrx` pretokenizer; about 2 days (est.) | not run | not run | not run | 2.10 GB file | – | – |
+| Phi-4-mini-instruct (3.8B) | MIT, Microsoft (US) | no: `phi3` (fused projections, partial rotary, LongRoPE), a Q5_K kernel and the `gpt-4o` pretokenizer; about 3-4 days (est.) | not run | not run | not run | 2.49 GB file | – | – |
+| Ministral 3 8B Instruct 2512 | Apache-2.0, Mistral AI (France) | no: `mistral3` (YaRN, attention temperature) and the `tekken` pretokenizer; about 2-3 days (est.) | not run | not run | not run | 5.20 GB file | – | – |
+| Granite 8B Code Instruct 4K | Apache-2.0, IBM (US), 2024 | no: llama with biases and the `refact` pretokenizer, 4K context; about 2 days (est.) | not run | not run | not run | 4.88 GB file | – | – |
+
+- **Peak RAM** is the gate process on the runner, with the GGUF held in RAM, measured by GNU time. "File" means the file size where the model did not run.
+- **Speeds** are from the C runs. The runners differed: avx2 for the 4B, avx512 and avx2 for the 8B's two runs.
+- **Pack budget fit:** the Qwen models share one tokenizer, so the act pack is 960 of the 980 alarm and `c-1` is 736 for both. Every other model has its own tokenizer and needs a recount, a new `bpe` pretokenizer and new golden token ids.
+- **Not run:** no model outside the qwen3 architecture was built or run. The engine-work estimates come from each file's header, read with range requests.
+- **Licences:** each model's licence and current version were checked on its Hugging Face page on 2026-11-02.
+
+**Recommendation**
+
+| Role | Keep or switch | Why |
+|---|---|---|
+| Act and chat | **Keep Qwen3-4B** | It is the only model measured above every bar, at 2.8 GB. |
+| Code | **Keep Qwen3-4B** (no separate code model in v0.1) | It passes S12-2. Qwen3-8B is worse at C and at Rhai, at twice the memory, and would raise the minimum to 8 GiB and the recommendation to 12 GiB (today 4 and 6; the founder's VM has 6). |
+| Non-Chinese option | **Port Granite 4.0 Micro first** (about 2 days), then measure it on the same gates. Ministral 3 8B is the non-Chinese candidate for code if a bigger model is wanted later | Granite is small enough for a 6 GiB machine, permissively licensed and from the US. Phi-4-mini needs the most engine work. |
+
+### A2. Design, for when a second model earns its place
+
+1. **Roles.** Each target in the signed `models` role gains `custom.kai.roles`, a list drawn from `act`, `chat` and `code`. A model may serve a role only after it passes that role's gate on GitHub:
+   - `act`: actbench act and Rhai fluency;
+   - `code`: the S12-2 bars.
+   
+   The gate run is recorded in the target's `source` notes. The import refuses a role the role metadata does not sign.
+2. **Routing.** Kai never classifies with a second model call.
+   - A program request is the act model's own `script(lang=c)` or `app_build` call, so the hand-off is the call itself: `llm` answers that call with the `code` model when one is installed.
+   - With no `code` model installed, the act model writes the program, as today.
+   - The shell never guesses from words.
+3. **Memory.** Only one model is resident at a time on a machine under 12 GiB (est.: 2.8 GB + 5.3 GB for the 4B and 8B, plus the OS).
+   - **Switch latency:** a switch unloads one model and loads the other from disk. That took 88-179 s on the runners, with warm-up and the system prompt's prefill included.
+   - **Mapping the weights:** `infer` maps the weights instead of reading them, so a load becomes page faults while it runs. That cuts the switch to the system prompt's prefill plus the first touches (est. 5-15 s). It is engine work of about 2 days (est.).
+   - **Waiting:** the user sees "switching to the code model" while it happens, and the act model's KV is saved through `kai-kv 1` so its conversation resumes exactly.
+   - **KV budget:** the KV cache is per model and not shared. Both Qwen sizes have 36 layers, 8 KV heads and a head width of 128, about 300 MB at 2,048 positions (est.).
+4. **Packs.**
+   - **Format:** a pack is today's signed `models` target plus its `roles`.
+   - **v0.1:** pack import is v0.1's import from an attached disk (P4 task 10), unchanged except for the roles.
+   - **Downloads:** they come after P5's networking, through the same TUF role, so a download and a disk import are checked the same way.
+5. **Safety.** A code model's output goes through the same path as the act model's:
+   - the pre-check, `cc build` and the trial;
+   - the tiers;
+   - the install ask card;
+   - undo.
+   
+   A role tag selects which model answers. It never widens rows, grants or tiers, and the log names the model that wrote each program.
+6. **Costs and order.**
+
+   | # | Piece | Size (est.) |
+   |---|---|---|
+   | 1 | `roles` in the `models` role and the model manager | S |
+   | 2 | `llm` routes `script(lang=c)` and `app_build` to a `code` model | S |
+   | 3 | Mapped weights and the saved-KV switch | M, about 2 days |
+   | 4 | Per-model engine ports, each with goldens: Granite 4.0 Micro first | 1-4 days each |
+   | 5 | Downloads | after P5 |
+   
+   Pieces 1-3 are worth building only once a model beats Qwen3-4B at its role on the gates. Today none does, so the order is to port and measure first, and build the routing second.
+
 ## Sources
 
 Repo, main at 1f54d4a: `user/src/bin/llm/local.rs:314-394`; `user/src/bin/llm/kvfile.rs`; `infer/src/segments.rs` (#114); PR #119's results (run 40421455925); `docs/roadmap.md` §3 (L6 status, M10 status) and §3b (principles, Releases); `docs/adr/0000-execution-plan.md` §3, §6; `docs/adr/0001-capabilities.md` D2-D3; `docs/adr/0002-agent-actions.md` D7 and the labels; `docs/adr/0004-storage.md`; `docs/adr/0010-skill-pack.md` §5, §7; `docs/adr/0011-packages.md` §2, §10, §11; `docs/plans/p3-desktop.md` and #153; `docs/plans/p4-apps.md` (#158).
@@ -368,3 +439,4 @@ External, read 2026-10-27:
 - Steve, Walturn: https://www.walturn.com/insights/steve-the-first-ai-operating-system (vendor post; claims only)
 - Qwen3-Embedding-0.6B-GGUF: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF (Apache-2.0; Q8_0 639 MB; 32-1,024 dimensions; last-token pooling)
 - all-MiniLM-L6-v2: https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2 (Apache-2.0; 22.7M parameters; 384 dimensions)
+- S12-2 re-run, 2026-11-02/03: draft #577, runs 41636178447, 41636182097, 41555919676, 41555925361, 41555928324; model cards on Hugging Face (Qwen/Qwen3-8B-GGUF, Qwen/Qwen2.5-Coder-7B-Instruct-GGUF, ibm-granite/granite-4.0-micro-GGUF, unsloth/Phi-4-mini-instruct-GGUF, mistralai/Ministral-3-8B-Instruct-2512-GGUF, ibm-granite/granite-8b-code-instruct-4k-GGUF), read 2026-11-02
