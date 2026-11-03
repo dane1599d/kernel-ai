@@ -232,5 +232,5 @@ pub fn begin_fatal_report() {
         }
         Err(_) => crate::halt_forever(),
     }
-    crate::serial::break_line_lock();
+    crate::serial::take_line_for_report();
 }
