@@ -13,7 +13,14 @@
 //! 2. "move notes.txt to plan.txt": it lists `plan.txt` and no longer `notes.txt`;
 //! 3. `undo`: `notes.txt` is back, and `plan.txt` is not;
 //! 4. "trash notes.txt": it lists neither;
-//! 5. `undo`: `notes.txt` is back.
+//! 5. `undo`: `notes.txt` is back;
+//! 6. "open the docs folder": a second folder, which the case made before the agent
+//!    started (the agent has no row that makes one), and the window lists its
+//!    `todo.txt` and not `notes.txt`; showing `notes.txt` again brings home back.
+//!
+//! The sixth step is a row that moves the folder shown (`files_open`): the host
+//! refuses a read-only row that changes the app's checkpoint, so the folder is not in
+//! the app's (see `apps/files-window`), and this step proves it on a boot.
 //!
 //! Each change is undone right after it: a plain `undo` reverts the newest live
 //! entry and is an entry of its own, so `undo` again would redo it (ADR 0002 D7).
@@ -22,9 +29,12 @@
 //! polling adds some.
 
 use crate::display::claim;
+use crate::files_tests::ask;
 use crate::{console, ipc, log, process, threads};
 use alloc::format;
 use alloc::string::String;
+use fsproto::{How, Reply, Request};
+use kabi::handle::Rights;
 
 const NAME: &str = "files-window";
 
@@ -56,6 +66,8 @@ const TRASH: &str = "trash notes.txt";
 const SHOW: &str = "show notes.txt in the files app";
 const PICK_NOTES: &str = "pick notes.txt in the files app";
 const PICK_PLAN: &str = "pick plan.txt in the files app";
+const OPEN_DOCS: &str = "open the docs folder in the files app";
+const PICK_TODO: &str = "pick todo.txt in the files app";
 
 /// The shell's raw reply to `line`.
 fn reply_to(line: &str) -> Result<String, &'static str> {
@@ -147,6 +159,61 @@ fn describe(notes: bool, plan: bool) -> &'static str {
     }
 }
 
+/// `/home/user/docs/todo.txt`, in one action of the kernel's own: the agent has no
+/// row that makes a folder.
+fn make_docs() -> Result<(), &'static str> {
+    let home = kabi::fs::HOME_USER;
+    let done = |reply: Reply| match reply {
+        Reply::Done => Ok(()),
+        _ => Err("app-files: fs refused a request"),
+    };
+    done(ask(home, Request::Begin { action: 9_000 })?)?;
+    let open = Request::Open {
+        path: "docs".into(),
+        rights: (Rights::READ | Rights::ENUMERATE).bits(),
+        how: How::Mkdir,
+    };
+    if !matches!(ask(home, open)?, Reply::Opened(..)) {
+        return Err("app-files: the docs folder cannot be made");
+    }
+    let open = Request::Open {
+        path: "docs/todo.txt".into(),
+        rights: (Rights::READ | Rights::WRITE).bits(),
+        how: How::CreateFile,
+    };
+    let Reply::Opened(_, file) = ask(home, open)? else {
+        return Err("app-files: docs/todo.txt cannot be made");
+    };
+    let write = Request::Write {
+        off: 0,
+        data: b"todo".to_vec(),
+    };
+    done(ask(file, write)?)?;
+    match ask(home, Request::Commit)? {
+        Reply::Committed { .. } => Ok(()),
+        _ => Err("app-files: the docs folder did not commit"),
+    }
+}
+
+/// The agent opens the second folder: the row moves the folder shown, which only a
+/// row that is read-only and leaves the checkpoint alone may do. The window then
+/// lists the folder's file and not the home folder's.
+fn visits_docs() -> Result<(), &'static str> {
+    let said = reply_to(OPEN_DOCS)?;
+    if !(said.starts_with("ok ") && said.contains("Opening docs")) {
+        log!("app-files: {OPEN_DOCS:?} answered {said:?}");
+        return Err("app-files: the Files app did not open a second folder");
+    }
+    for _ in 0..SHOW_MS / POLL_MS {
+        if lists(PICK_TODO)? && !lists(PICK_NOTES)? {
+            log!("app-files: the window lists docs/todo.txt and not notes.txt");
+            return Ok(());
+        }
+        threads::sleep_ms(POLL_MS);
+    }
+    Err("app-files: the window never listed the second folder")
+}
+
 pub fn check() -> Result<(), &'static str> {
     for _ in 0..WAIT_MS / 50 {
         let desktop = process::named("desktop").first().map(|&(pid, _)| pid);
@@ -162,6 +229,7 @@ pub fn check() -> Result<(), &'static str> {
         return Err("app-files: the desktop never took the screen");
     }
     threads::sleep_ms(OPEN_MS);
+    make_docs()?;
 
     does(CREATE, "ok Done: file notes.txt created (was absent). undo")?;
     shows(
@@ -213,8 +281,19 @@ pub fn check() -> Result<(), &'static str> {
         false,
         "app-files: the window did not list the restored file",
     )?;
+
+    visits_docs()?;
+    shows(
+        true,
+        false,
+        "app-files: the window did not come back to the home folder",
+    )?;
+    if lists(PICK_TODO)? {
+        return Err("app-files: the window still lists the second folder's file");
+    }
+    log!("app-files: the window went to a second folder and came back to the home folder");
     log!(
-        "app-files: the agent made, moved and trashed a file at once, the Files window showed each state, and undo put each back; the log showed each change and each undo"
+        "app-files: the agent made, moved and trashed a file at once, the Files window showed each state and a second folder, and undo put each back; the log showed each change and each undo"
     );
     Ok(())
 }
