@@ -4,6 +4,11 @@
 //! and `state.1` in turn ([`livecore::saved`]), and starts from the newer one
 //! when the kernel has none. Without `dir=apps`, or without `fs`, the app
 //! simply keeps what the kernel keeps, as before.
+//!
+//! The startup `Dir` names all of `/system/apps`, but `fs` answers it only for
+//! an open of the caller's own folder, by its exact process name
+//! (`fsserve::Server::set_name_of`): a sibling's saved state is out of reach
+//! of any comphost, whatever app it runs.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -83,7 +88,7 @@ impl Disk {
     pub fn open(app: &str) -> Option<Self> {
         let apps = startup_dir()?;
         let folder = open(apps, app, How::Existing).or_else(|_| open(apps, app, How::Mkdir));
-        // Only its own folder is kept, not all of `/system/apps`.
+        // The root opens nothing else (`fs` checks the name); drop it anyway.
         let _ = sys::handle_close(apps);
         let folder = folder
             .map_err(|why| println!("comphost: no folder for {app}'s saved state: {why}"))

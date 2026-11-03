@@ -161,9 +161,12 @@ impl<E: Effects> Service<E> {
         if let Request::Back = request {
             return self.back(reply);
         }
-        // A build needs no session and leaves a waiting run waiting.
+        // A build or a trial needs no session and leaves a waiting run waiting.
         if let Request::Build { component, version } = request {
             return self.build(component, version, shm, host, reply);
+        }
+        if let Request::Trial { component } = request {
+            return trial(component, shm.as_deref(), host, reply);
         }
         let Some(open) = self.open.as_mut() else {
             return error(reply, 0, "no session is open");
@@ -173,7 +176,10 @@ impl<E: Effects> Service<E> {
         }
         let effects = &self.effects;
         match request {
-            Request::Open { .. } | Request::Build { .. } | Request::Back => {}
+            Request::Open { .. }
+            | Request::Build { .. }
+            | Request::Trial { .. }
+            | Request::Back => {}
             Request::Eval { seq, entry } => eval(
                 &self.compiler,
                 effects,
@@ -521,6 +527,22 @@ fn error(reply: &mut Reply, line: u32, text: &str) {
             text: &text.as_bytes()[..cut],
         },
     );
+}
+
+/// A built app's trial on stub imports (`crate::trial`): its report, or why it
+/// failed, for the repair loop.
+fn trial(component: &str, shm: Option<&[u8]>, host: &dyn Host, reply: &mut Reply) {
+    let Some(shm) = shm else {
+        let why = format!(
+            "{}trial brings the artifact in an Shm",
+            crate::trial::INTERNAL
+        );
+        return error(reply, 0, &why);
+    };
+    match crate::trial::serve(component, shm, host) {
+        Ok(report) => end(reply, &Record::Text(capped(&report).as_bytes())),
+        Err(why) => error(reply, 0, &why),
+    }
 }
 
 fn trap(reply: &mut Reply, reason: &'static str) {

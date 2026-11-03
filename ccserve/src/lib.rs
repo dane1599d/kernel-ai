@@ -11,6 +11,7 @@ mod engine;
 pub mod rows;
 pub mod service;
 pub mod session;
+pub mod trial;
 
 pub use compiler::{CompileError, Compiler};
 pub use service::{Effects, Service};
@@ -65,8 +66,9 @@ pub const XCC_HEADERS: [(&str, &[u8]); 9] = [
 pub mod budget {
     use crate::{build, compiler, session};
 
-    /// The `cc` program as loaded: 3.1 MiB in a dev build.
-    pub const IMAGE: u64 = 4 << 20;
+    /// The `cc` program as loaded: 4.73 MiB in a dev build, 1.26 MiB of it
+    /// the trial's wasmhost and uikit.
+    pub const IMAGE: u64 = 5 << 20;
     /// `stack_pages=512`.
     pub const STACK: u64 = 2 << 20;
     /// cc.wasm translated, eagerly: about 1.4 MiB in S12-1.
@@ -79,17 +81,25 @@ pub mod budget {
     pub const BUILD: u64 = 2 * build::MAX_OBJECTS as u64
         + livecore::artifact::MAX_SOURCE as u64
         + 3 * kabi::live::MAX_ARTIFACT as u64;
+    /// The memory a trial's app may grow to: comphost's default `memory_kib`
+    /// (`trial::limits`, which a test holds to this).
+    pub const TRIAL_MEMORY: u64 = 2 << 20;
+    /// A `trial` at its height: the artifact's copy, its module compiled
+    /// (estimated at three times the artifact), the app's memory, and its
+    /// windows' trees and frames (estimated).
+    pub const TRIAL: u64 = 4 * kabi::live::MAX_ARTIFACT as u64 + TRIAL_MEMORY + (256 << 10);
 
     /// The whole: the fixed parts, one compile, two sessions (the user's set
     /// aside while a model's program runs, D5) with every kept entry, and a
-    /// build.
+    /// build or a trial, which never run at once.
     pub const fn total() -> u64 {
+        let last = if BUILD > TRIAL { BUILD } else { TRIAL };
         IMAGE
             + STACK
             + COMPILER
             + compiler::MAX_MEMORY as u64
             + 2 * (session::SESSION_MEMORY as u64 + ENTRY * session::MAX_ENTRIES as u64)
-            + BUILD
+            + last
     }
 }
 

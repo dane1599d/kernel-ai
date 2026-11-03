@@ -183,6 +183,9 @@ static TABLE: Mutex<[Process; MAX_PROCESSES]> = Mutex::new([Process::FREE; MAX_P
 static SPACES: [Mutex<Option<UserSpace>>; MAX_PROCESSES] =
     [const { Mutex::new(None) }; MAX_PROCESSES];
 
+/// The next pid: only ever counted up, so a pid is never reused, which `fs`
+/// relies on when it matches a caller to its own folder of `/system/apps`
+/// (PART_PEER_NAME) and an action's owner to its process (PART_PEER_ALIVE).
 static NEXT_PID: AtomicU64 = AtomicU64::new(1);
 /// Pages all live processes together may be granted; set at start-up.
 static PAGE_BUDGET: AtomicU64 = AtomicU64::new(0);

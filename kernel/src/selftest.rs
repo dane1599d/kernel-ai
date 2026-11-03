@@ -29,6 +29,9 @@ pub enum ActCase {
     /// `app-terminal` (P4 task 4): the agent types into the Terminal app and a
     /// person's Enter runs the line.
     AppTerminal,
+    /// `app-monitor` (P4 task 9): the agent sorts the Monitor by memory, and
+    /// stopping a process asks.
+    AppMonitor,
     /// `app-models` (P4 task 10): the agent lists, imports and uses a model,
     /// and `undo` puts the one before back.
     AppModels,
@@ -185,6 +188,8 @@ pub enum SelfTest {
     /// The System monitor's window on the desktop, given a sample of the machine
     /// and closed from its control (P4 task 9).
     UiMonitor,
+    /// The Files window on the desktop, shown and closed from its control (P4 task 5).
+    UiFiles,
     /// The model manager's window on the desktop, given `updated`'s model list
     /// and closed from its control (P4 task 10).
     UiModels,
@@ -328,6 +333,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=fs-trash" => Some(SelfTest::Act(ActCase::FsTrash)),
             "test=app-route" => Some(SelfTest::Act(ActCase::AppRoute)),
             "test=app-terminal" => Some(SelfTest::Act(ActCase::AppTerminal)),
+            "test=app-monitor" => Some(SelfTest::Act(ActCase::AppMonitor)),
             "test=app-models" => Some(SelfTest::Act(ActCase::AppModels)),
             "test=profile-switch" => Some(SelfTest::Act(ActCase::Profile)),
             "test=fs-undo-reboot" => Some(SelfTest::Act(
@@ -401,6 +407,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=app-editor-files" => Some(SelfTest::AppEditorFiles),
             "test=app-editor-build" => Some(SelfTest::AppEditorBuild),
             "test=ui-monitor" => Some(SelfTest::UiMonitor),
+            "test=ui-files" => Some(SelfTest::UiFiles),
             "test=ui-models" => Some(SelfTest::UiModels),
             "test=desk-nap" => Some(SelfTest::DeskNap),
             "test=desk-appearance" => Some(SelfTest::DeskAppearance),
@@ -544,6 +551,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::AppEditorFiles
             | SelfTest::AppEditorBuild
             | SelfTest::UiMonitor
+            | SelfTest::UiFiles
             | SelfTest::UiModels
             | SelfTest::DeskNap
             | SelfTest::KeepRunning { .. }
@@ -696,6 +704,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push_str(crate::app_terminal_tests::PLAN);
                 kabi::plan::SHELL_DESK
             }
+            SelfTest::Act(ActCase::AppMonitor) => {
+                plan.push('\n');
+                plan.push_str(&crate::app_monitor_tests::plan());
+                kabi::plan::SHELL_DESK
+            }
             SelfTest::DeskAgent | SelfTest::DeskTakeover | SelfTest::DeskStandingRefused => {
                 plan.push('\n');
                 plan.push_str(crate::agent_desk_tests::DESK);
@@ -797,6 +810,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::UiMonitor {
         plan.push('\n');
         plan.push_str(&crate::app_window_tests::monitor_plan());
+    }
+    if test == SelfTest::UiFiles {
+        plan.push('\n');
+        plan.push_str(&crate::app_window_tests::files_plan());
     }
     // After the shell, whose `updated` is the window's second route.
     if test == SelfTest::UiModels {

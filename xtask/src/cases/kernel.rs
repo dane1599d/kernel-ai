@@ -457,12 +457,15 @@ pub(super) const CASES: &[TestCase] = &[
             // sequences are pinned in `apps/settings-ui/tests/keys.rs`): Alt+Tab
             // raises the fixture, under the Terminal until then, and the
             // fixture's button is pressed; remove the rule on the Rules page;
-            // revoke the fixture's row; press (refused); restore the row; press
-            // (runs); then the Theme button, and the Updates page's switch for
-            // the restart window.
+            // revoke the fixture's row; press (refused); the test types `undo`
+            // at the shell, which gives the row back; press (runs); the test
+            // types `undo` again, which withholds it; restore the row from
+            // Settings; press (runs); then the Theme button, and the Updates
+            // page's switch for the restart window.
             &["alt-tab", "tab", "ret"],
             &["tab", "right", "right", "tab", "ret"],
             &["tab", "left", "tab", "tab", "ret"],
+            &["tab", "ret"],
             &["tab", "ret"],
             &["tab", "tab", "tab", "ret"],
             &["tab", "ret"],
@@ -481,7 +484,11 @@ pub(super) const CASES: &[TestCase] = &[
             "\"Settings\" opened at ",
             "comphost: the first settings answer reached the app",
             "app-settings: the theme was set before Settings opened",
-            "settings: appearance theme light",
+            // The agent's theme taken back with `undo` (the test checks the
+            // shell's words and that its log lists the undo), so Settings, which
+            // reads it when it starts, shows the theme before.
+            "app-settings: undo put the theme back to dark and the log lists it",
+            "settings: appearance theme dark",
             "app-settings: a standing rule was added before Settings opened",
             // The rule Settings lists, and gone once it is removed by key and
             // the rules are read again.
@@ -491,16 +498,20 @@ pub(super) const CASES: &[TestCase] = &[
             "app-settings: keys were pressed in Settings' window",
             // The revoke, held end to end: the fixture's `fs_list` runs, is
             // refused after Settings revokes the row (and Settings reads back
-            // that the shell now holds it withheld), and runs again once it is
-            // restored.
+            // that the shell now holds it withheld), runs again when `undo`
+            // gives the row back (typed by the test at the shell, which checks
+            // its words, and again to withhold it), and runs once more when the
+            // restore click gives it back.
             "fixture: fs_list ok #1",
             "settings: grants fixture-window 1 rows, 1 withheld",
             "fixture: fs_list refused #2",
             "fixture: fs_list ok #3",
-            // The theme after light, set by the key press and read back from the
-            // shell, and the restart window set from the page and read back
-            // through `file updates`.
-            "settings: appearance theme high-contrast",
+            "app-settings: undo gave the revoked row back and undo again withheld it",
+            "fixture: fs_list ok #4",
+            // The theme the key press sets, from the theme before (`dark`), read
+            // back from the shell, and the restart window set from the page and
+            // read back through `file updates`.
+            "settings: appearance theme light",
             "settings: restart window 02:00-05:00",
             // What each other page was given, from the app's log (its window is
             // private to the agent): the rules, the apps with rows, About, the
