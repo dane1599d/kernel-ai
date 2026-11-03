@@ -14,12 +14,13 @@ use alloc::string::String;
 
 const NAME: &str = "monitor-window";
 /// The plan lines this case adds, after the shell's `cc` and before the shell,
-/// which has a route to `desktop` (`SHELL_DESK`): the Monitor's own line, and a
-/// spinner for it to list and for a stop to ask about.
+/// which has a route to `desktop` (`SHELL_DESK`): `desktop` as the other agent
+/// cases run it, the Monitor's own line, and a spinner for it to list and for a
+/// stop to ask about.
 pub fn plan() -> String {
     format!(
-        "desktop caps=display+input+serve+ask pages=8192 stack_pages=512\n{}\n\
-         spin-a program=spinner burst_ms=3600000 unsupervised",
+        "{}\n{}\nspin-a program=spinner burst_ms=3600000 unsupervised",
+        crate::agent_desk_tests::DESK,
         kabi::plan::MONITOR_WINDOW
     )
 }
