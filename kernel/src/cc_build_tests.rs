@@ -16,7 +16,9 @@
 //!   slowly when QEMU emulates the CPU.
 //!
 //! `undo` switches back to generation 1, which ends the running app, and the
-//! next build is 0.0.2. The host checks `pkg`'s and the app's lines.
+//! next build is 0.0.2. The ledger still names 0.0.1 active, so its new host
+//! swaps to 0.0.2, which `pkg` named (#572), and the case waits until it runs
+//! it. The host checks `pkg`'s and the app's lines.
 
 use crate::files_tests::ask;
 use crate::pkg_tests::{Step, wait_for};
@@ -113,8 +115,8 @@ pub fn check() -> Result<(), &'static str> {
         return Err("c-build: the second build was not 0.0.2");
     }
     log!("c-build: undo switched back to generation 1, and the next build is 0.0.2");
-    // TODO: wait for 0.0.2 to run too, once an app restarted on another
-    // package version runs it; today the ledger restores the withdrawn one.
+    let label = wait_up("0.0.2")?;
+    log!("c-build: hello 0.0.2 runs as {label}");
     Ok(())
 }
 
