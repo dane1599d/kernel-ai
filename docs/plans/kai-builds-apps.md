@@ -1,6 +1,6 @@
 # Plan: Kai builds apps on request
 
-Proposed for founder approval, 2026-11-03, after spike S12-2 passed on Qwen3-4B. That run scored 78% first try and 92% after one repair; the figures are in `docs/decisions.md`. Nothing here is built until the founder approves it. "Est." marks a judgement, not a measurement.
+Approved by the founder 2026-11-03, with the defaults. It was proposed after spike S12-2 passed on Qwen3-4B, which scored 78% first try and 92% after one repair; the figures are in `docs/decisions.md`. Qwen3-4B stays the model, with no Granite port. These pieces run beside P4 close and don't gate rc.1. "Est." marks a judgement, not a measurement.
 
 **The goal.** A user asks for a program in plain words: "make me a timer app", say. There is no extra button. Kai writes it, builds it, asks once whether to install it, then opens it. One undo removes it.
 
@@ -49,6 +49,8 @@ Proposed for founder approval, 2026-11-03, after spike S12-2 passed on Qwen3-4B.
 That comes to about 2,900 lines with tests (est.). Pieces 1 and 2 can start at once, and pieces 3 and 4 follow piece 1. Nothing runs a model on the founder's PC.
 
 ## Questions for the founder
+
+Answered 2026-11-03: all three defaults stand.
 
 1. **Install tier.** Always ask before installing a model-written app? **Default: yes, always ask.**
 2. **Where the source lives.** **Default: `/home/user/apps/<name>/`, shown by "Show code" and kept after removal.**
