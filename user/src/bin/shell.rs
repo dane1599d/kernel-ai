@@ -211,6 +211,24 @@ fn take_panel(shell: &mut Shell) {
     }
 }
 
+/// Goes on with an `app_build` in the background, and shows on the panel what
+/// one came to when it ends, so it is seen without another line.
+fn give_app_build(shell: &mut Shell) {
+    use deskcore::panel::State;
+    use deskcore::panel_wire;
+    let shown = match shell.app_poll() {
+        Some(PanelResult::Done(line)) => State::Done { line },
+        Some(PanelResult::Refused(reason)) => State::Refused { reason },
+        None => return,
+    };
+    let (Some(route), Some(request)) = (desktop(), panel_wire::encode_state(&shown)) else {
+        return;
+    };
+    if let Err(why) = ask_desktop(route, &request) {
+        println!("the panel's state was not set: {why}");
+    }
+}
+
 // A Terminal line's answer, with its `…`, fits what the transport carries of a
 // person's result.
 const _: () =
@@ -973,6 +991,7 @@ fn main() -> i32 {
         take_effects(&mut shell);
         take_files(&mut shell);
         take_settings(&mut shell);
+        give_app_build(&mut shell);
         give_appearance(&system);
         shell.retry_keep();
         let mut caller = u64::MAX;

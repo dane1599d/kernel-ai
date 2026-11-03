@@ -17,6 +17,7 @@ mod act;
 mod actions;
 mod apart;
 mod appbuild;
+mod appjob;
 mod appline;
 mod apps;
 mod ccbuild;
@@ -131,6 +132,15 @@ struct FakeHost {
     /// Builds `cc_build` answers in turn, before `cc_built` (`app_build`'s
     /// repairs).
     pub cc_builds: RefCell<VecDeque<Result<crate::ccbuild::CcBuilt, String>>>,
+    /// Whether `script_start` asks off the line, as the OS's shell does.
+    pub background: Cell<bool>,
+    /// The ticket of the answer `script_start` is waiting for, and the last.
+    pub in_flight: Cell<Option<u64>>,
+    pub tickets: Cell<u64>,
+    /// The tickets `script_stop` was given. The model may still be answering.
+    pub stops: RefCell<Vec<u64>>,
+    /// Set to let `script_take` hand over the answer in flight.
+    pub answered: Cell<bool>,
     /// `cc_trial`'s answers in turn; past them, the trial passes.
     pub cc_trials: RefCell<VecDeque<Result<String, String>>>,
     /// Each app's source `app_source` wrote, in order.
@@ -306,6 +316,11 @@ impl FakeHost {
             cc_built: RefCell::new(None),
             cc_builds: RefCell::new(VecDeque::new()),
             cc_trials: RefCell::new(VecDeque::new()),
+            background: Cell::new(false),
+            in_flight: Cell::new(None),
+            tickets: Cell::new(0),
+            answered: Cell::new(false),
+            stops: RefCell::new(Vec::new()),
             app_sources: RefCell::new(Vec::new()),
             files: RefCell::new(Files::new()),
             txns: RefCell::new(Vec::new()),
@@ -411,6 +426,38 @@ impl Host for FakeHost {
             .borrow_mut()
             .pop_front()
             .unwrap_or(Err(AnswerError::Server(String::from("no more answers"))))
+    }
+
+    fn script_start(&self, request: &ScriptRequest) -> crate::appjob::Started {
+        use crate::appjob::Started;
+        if !self.background.get() {
+            return Started::Inline;
+        }
+        if self.in_flight.get().is_some() {
+            return Started::Busy(String::from("the model is still answering"));
+        }
+        self.script_requests.borrow_mut().push(request.clone());
+        let ticket = self.tickets.get() + 1;
+        self.tickets.set(ticket);
+        self.in_flight.set(Some(ticket));
+        Started::Ticket(ticket)
+    }
+
+    fn script_stop(&self, ticket: u64) {
+        self.stops.borrow_mut().push(ticket);
+    }
+
+    /// The answer comes once a test lets it ([`FakeHost::answered`]).
+    fn script_take(&self) -> Option<(u64, Result<Answer, AnswerError>)> {
+        if !self.answered.replace(false) {
+            return None;
+        }
+        let ticket = self.in_flight.take()?;
+        let answer = self.answers.borrow_mut().pop_front();
+        Some((
+            ticket,
+            answer.unwrap_or(Err(AnswerError::Server(String::from("no more answers")))),
+        ))
     }
 
     fn remember(&self, line: &str, call: &str, result: &str) {
