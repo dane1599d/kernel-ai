@@ -24,6 +24,7 @@ mod apic;
 mod app_editor_build_tests;
 mod app_editor_files_tests;
 mod app_editor_tests;
+mod app_files_tests;
 mod app_models_tests;
 mod app_route_tests;
 mod app_settings_tests;
