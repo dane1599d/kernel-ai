@@ -21,6 +21,9 @@ use alloc::string::{String, ToString};
 /// Where components' folders are: `<component>/` holds its sources, and
 /// `<component>.kai` the artifact a build writes.
 pub const DIR: &str = "/home/user/c";
+/// Where Kai's apps' folders are (`app_build`): `<name>/main.c`, kept after the
+/// app is removed, and `<name>.kai`.
+pub const APPS_DIR: &str = "/home/user/apps";
 /// How the host's `pkg_local` begins its error when `pkg` gave no answer at
 /// all, so the install may have happened.
 pub const NO_ANSWER: &str = "pkg did not answer";
@@ -83,7 +86,7 @@ fn source_of(line: &str) -> Option<&str> {
 
 /// `text`, from `cc` or `pkg`, as a reply or the log shows it: printable
 /// ASCII, anything else as `?`, cut at [`MAX_SHOWN`] characters.
-fn shown(text: &str) -> String {
+pub(crate) fn shown(text: &str) -> String {
     text.chars()
         .take(MAX_SHOWN)
         .map(|c| {
@@ -113,7 +116,7 @@ fn shown_lines(text: &str) -> String {
 
 /// Whether `version`, `local-next`'s answer, is `x.y.z` in digits, as cc
 /// takes it.
-fn valid_version(version: &str) -> bool {
+pub(crate) fn valid_version(version: &str) -> bool {
     let parts: alloc::vec::Vec<&str> = version.split('.').collect();
     version.len() <= 32
         && parts.len() == 3
@@ -180,7 +183,7 @@ impl Shell {
             }
             Err(why) => return Reply::err(format!("cc build {name}: pkg: {}", shown(&why))),
         };
-        let built = match self.host.cc_build(name, &version) {
+        let built = match self.host.cc_build(DIR, name, &version) {
             Ok(built) => built,
             Err(why) => {
                 let why = if asker.lines {

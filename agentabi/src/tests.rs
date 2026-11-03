@@ -23,7 +23,8 @@ fn the_lists_cover_every_row_once() {
         .chain(&FS_ROWS)
         .chain(&UI_ROWS)
         .chain(&GRANT_ROWS)
-        .chain(&MODEL_ROWS);
+        .chain(&MODEL_ROWS)
+        .chain(&APP_ROWS);
     assert_eq!(listed.clone().count(), ROWS.len());
     for row in listed {
         assert!(ROWS.iter().any(|r| r.name == row.name), "{}", row.name);
@@ -72,6 +73,8 @@ fn derived_tiers_match_the_seamless_actions_table() {
     assert_eq!(derive(&MODEL_LIST), Tier::Run);
     assert_eq!(derive(&MODEL_USE), Tier::Run);
     assert_eq!(derive(&MODEL_FETCH), Tier::Ask);
+    // A build installs nothing, so it runs; its install card asks.
+    assert_eq!(derive(&APP_BUILD), Tier::Run);
 }
 
 #[test]
