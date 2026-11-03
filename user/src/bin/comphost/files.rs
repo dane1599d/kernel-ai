@@ -11,7 +11,11 @@
 //! sent while one runs waits its turn. A build (`FileOp::Build`) is such a transfer
 //! that carries nothing in: the shell builds the component's C sources as it does
 //! for a typed `cc build`, which takes a while, and its report comes back as a
-//! read's bytes do. A standby version, rehearsed beside the
+//! read's bytes do. Once the shell has taken a build nothing stops it: if the relay
+//! gives up waiting ([`BUILD_WAIT_MS`]), or the window closes or the version that
+//! asked is swapped out, the build still finishes and installs, logged and undone
+//! by `undo` like any other, and the app is told "the shell did not answer", or
+//! nothing. A standby version, rehearsed beside the
 //! active one during probation, has its queue emptied and dropped.
 
 use crate::started::shown_serial;

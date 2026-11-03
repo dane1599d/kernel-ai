@@ -41,8 +41,12 @@ interface files {
     /// build is passed on only when the call that sent it was started by a real
     /// key or click from the person at the desktop; one from `init`, an answer, a
     /// timer or an action the AI synthesised is refused with an error answer. It
-    /// builds what is saved on disk, not what the app holds. Traps when `name` is
-    /// not a name, or when 2 requests are waiting for the host already.
+    /// builds what is saved on disk, not what the app holds. Once the OS has
+    /// started a build it is not stopped: if the app is closed or reloaded, or its
+    /// wait runs out, the build can still finish and install, logged and undone
+    /// like any other, and the app is told the wait ran out, or nothing. Traps
+    /// when `name` is not a name, or when 2 requests are waiting for the host
+    /// already.
     @since(version = 0.1.1)
     build: func(name: string) -> u32;
 }
