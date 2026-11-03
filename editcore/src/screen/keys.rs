@@ -63,6 +63,7 @@ impl Screen {
         self.commit();
         match c {
             'z' => self.reload("undo"),
+            'b' if self.file_mode => self.build = true,
             'b' => self.push(Kind::Build, Request::Cmd("build".into())),
             'd' => self.show("diff", "diff"),
             't' => self.show("try", "try"),
@@ -71,7 +72,11 @@ impl Screen {
             'f' => self.mode = Mode::Prompt(PromptKind::Find, String::new()),
             'g' => self.mode = Mode::Prompt(PromptKind::Goto, String::new()),
             'e' => self.mode = Mode::Prompt(PromptKind::Command, String::new()),
+            'o' if self.file_mode || self.place.is_none() => {
+                self.mode = Mode::Prompt(PromptKind::OpenPath, String::new());
+            }
             'o' => self.files_pager(),
+            's' => self.save = true,
             'q' => self.quit = true,
             _ => {}
         }
@@ -149,6 +154,7 @@ impl Screen {
                 _ => self.say(format!("{text:?} is not a line number"), true),
             },
             PromptKind::Command => self.command(text),
+            PromptKind::OpenPath => self.open = Some(String::from(text)),
         }
     }
 
@@ -157,6 +163,7 @@ impl Screen {
         let word = text.split(' ').next().unwrap_or("");
         let request = Request::Cmd(text.into());
         match word {
+            "build" if self.file_mode => self.build = true,
             "build" => self.push(Kind::Build, request),
             "open" => self.push(Kind::OpenFile(1), request),
             "undo" | "reset" | "s" | "c" | "i" | "a" | "d" | "split" | "join" => {

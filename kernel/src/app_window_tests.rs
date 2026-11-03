@@ -9,6 +9,11 @@
 //! window and one to `llm` for `health`; the app, granted `kai:system` by its name
 //! in the plan line, opens its window and asks for a sample, and comphost reads
 //! `METRICS` and gives it one (it says so once in its log).
+//!
+//! `ui-models`: comphost runs `models-window` with a route to `desktop` for its
+//! window and one to `updated`, which this boot starts at boot on `kai-data`;
+//! the app, granted `kai:models` by its name, opens its window and asks for the
+//! list, and comphost gives it `updated`'s (it says so once in its log).
 
 use crate::display::claim;
 use crate::ui_tests::report;
@@ -32,6 +37,16 @@ pub fn files_plan() -> String {
     format!(
         "desktop caps=display+input+serve pages=8192 stack_pages=512\n{}",
         kabi::plan::FILES_WINDOW
+    )
+}
+
+/// The plan lines `test=ui-models` adds after the shell, whose `updated` is
+/// planned just before it: `desktop` first, then the app, whose routes are
+/// `desktop` and `updated`.
+pub fn models_plan() -> String {
+    format!(
+        "desktop caps=display+input+serve pages=8192 stack_pages=512\n{}",
+        kabi::plan::MODELS_WINDOW
     )
 }
 
@@ -97,5 +112,17 @@ pub fn files_check() -> Result<(), &'static str> {
         720,
         "ui-files: the desktop never took the screen",
         "ui-files: the Files window was shown, and its close control pressed",
+    )
+}
+
+pub fn models_check() -> Result<(), &'static str> {
+    // The boot lever first, as the default boot runs it: until it has, `updated`
+    // waits (up to 2 minutes) before it serves the window's list.
+    crate::slots::on_boot(false);
+    window_check(
+        "models-window",
+        640,
+        "ui-models: the desktop never took the screen",
+        "ui-models: the model manager's window was shown, and its close control pressed",
     )
 }

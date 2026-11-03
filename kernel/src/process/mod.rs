@@ -226,6 +226,12 @@ pub fn set_page_budget(pages: u64) {
     PAGE_BUDGET.store(pages, Ordering::Relaxed);
 }
 
+/// The global admission rule's budget (free / 2 at boot): what every live
+/// process's quota adds up to at most.
+pub(crate) fn page_budget() -> u64 {
+    PAGE_BUDGET.load(Ordering::Relaxed)
+}
+
 fn slot_of(tid: Tid) -> Option<usize> {
     SLOT_OF_TID
         .get(tid)

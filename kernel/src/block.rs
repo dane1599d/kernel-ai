@@ -158,18 +158,30 @@ pub fn with_disk<R>(serial: &str, f: impl FnOnce(&mut dyn Device) -> R) -> Optio
 }
 
 /// Runs `f` on the model disk: the one with serial `kai-model`, or else the first
-/// whose first sector starts with the GGUF magic. VirtualBox gives NVMe disks a
-/// serial of its own, so there the content is what tells the model disk apart.
+/// whose first sector starts with the GGUF magic and whose serial gives it no
+/// other role (`kabi::model::may_be_model`): an import disk's GGUF file is only
+/// ever imported. VirtualBox gives NVMe disks a serial of its own, so there the
+/// content is what tells the model disk apart.
 pub fn with_model_disk<R>(f: impl FnOnce(&mut dyn Device) -> R) -> Option<R> {
     let serial = kabi::model::SERIAL;
     let disk = match find(serial) {
         Some(disk) => disk,
         None => {
-            let disks: Vec<_> = DISKS.lock().iter().map(|e| e.disk.clone()).collect();
-            let disk = disks.into_iter().find(|disk| {
-                disk.lock()
-                    .read(0, 1)
-                    .is_ok_and(|first| first.starts_with(&kabi::model::MAGIC))
+            let disks: Vec<_> = DISKS
+                .lock()
+                .iter()
+                .map(|e| (e.serial.clone(), e.disk.clone()))
+                .collect();
+            let (_, disk) = disks.into_iter().find(|(serial, disk)| {
+                let mut locked = disk.lock();
+                let Ok(first) = locked.read(0, 1) else {
+                    return false;
+                };
+                let model = kabi::model::may_be_model(serial, first);
+                if !model && first.starts_with(&kabi::model::MAGIC) {
+                    log!("block: {serial} disk holds a GGUF file; a disk with a role is never the model");
+                }
+                model
             })?;
             let locked = disk.lock();
             log!(
@@ -197,7 +209,7 @@ static PARTITIONS: Mutex<Vec<Found>> = Mutex::new(Vec::new());
 
 /// The partition types the kernel looks for, and their names for log lines.
 const KNOWN: [(diskmap::Guid, &str); 5] = [
-    (diskmap::KAI_DATA_TYPE, "kai-data"),
+    (diskmap::KAI_DATA_TYPE, kabi::fs::DATA_SERIAL),
     (diskmap::KAI_CACHE_TYPE, "kai-cache"),
     // The slots (ADR 0008 §1), reached only through `updated`'s SLOT_* calls.
     (diskmap::KAI_R_TYPE, "kai-r"),

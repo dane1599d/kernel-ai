@@ -230,6 +230,13 @@ impl Desk {
         Rect::new(0, 0, self.width, TOP_BAR)
     }
 
+    /// What the top bar's tabs show changed: a window came or went, rose, was
+    /// renamed, minimized or restored, or the focus moved.
+    pub(super) fn tabs_changed(&mut self) {
+        let bar = self.top_bar();
+        self.damage.add(bar);
+    }
+
     pub fn panel(&self) -> Rect {
         Rect::new(0, self.height - PANEL, self.width, PANEL)
     }
@@ -245,6 +252,16 @@ impl Desk {
 
     pub fn focus(&self) -> Focus {
         self.focus
+    }
+
+    /// The window being moved or resized, until it is let go. It is drawn
+    /// without its shadow meanwhile (ADR 0005's fail rule for a drag under
+    /// load, `desk-perf`'s (f)).
+    pub fn dragged(&self) -> Option<WindowId> {
+        match self.grab {
+            Some(Grab::Move { window, .. } | Grab::Resize { window, .. }) => Some(window),
+            None => None,
+        }
     }
 
     pub fn pointer(&self) -> Point {
@@ -297,6 +314,7 @@ impl Desk {
         };
         self.damage.add(window.frame);
         self.windows.push(window);
+        self.tabs_changed();
         let mut effects = Vec::new();
         if activated {
             self.set_focus(Focus::Window(id), &mut effects);
@@ -312,6 +330,7 @@ impl Desk {
         };
         let window = self.windows.remove(at);
         self.damage.add(window.frame);
+        self.tabs_changed();
         if self.over == Some(id) {
             self.over = None;
         }
@@ -331,6 +350,7 @@ impl Desk {
             w.title = String::from(title);
             let bar = chrome::title_bar(w.frame);
             self.damage.add(bar);
+            self.tabs_changed();
         }
     }
 
@@ -393,6 +413,16 @@ impl Desk {
         } else {
             Hit::Desktop
         }
+    }
+
+    /// The keys went to the kernel's terminal (INPUT_TO_CONSOLE): the releases
+    /// of keys down now go there too, so the desk forgets them, or a key the
+    /// desk still thinks held could not answer the next ask card. Modifiers
+    /// stay, as they track what the panel's shortcuts see.
+    pub fn keys_lent(&mut self) {
+        let modifier = |k: &u16| (usage::LEFT_CTRL..=usage::RIGHT_GUI).contains(k);
+        self.down.retain(modifier);
+        self.held.retain(modifier);
     }
 
     pub fn input(&mut self, input: Input) -> Vec<Effect> {
@@ -475,7 +505,12 @@ impl Desk {
 
     fn button(&mut self, button: Button, down: bool, effects: &mut Vec<Effect>) {
         if !down {
-            if self.grab.take().is_some() {
+            if let Some(id) = self.dragged() {
+                // Let go: its shadow comes back, so its place is drawn again.
+                if let Some(frame) = self.window(id).map(|w| w.frame) {
+                    self.damage.add(frame);
+                }
+                self.grab = None;
                 return;
             }
             if let Some(window) = self.over
@@ -608,6 +643,7 @@ impl Desk {
             self.damage.add(panel);
         }
         self.focus = focus;
+        self.tabs_changed();
         effects.push(Effect::Focus(focus));
     }
 }

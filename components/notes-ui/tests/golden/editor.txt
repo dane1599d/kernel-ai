@@ -18,11 +18,11 @@ node 5 clip 0,0 220x420
   fill 13,105 191x24 raised r0
   fill 13,105 2x24 accent r0
 node 1000 clip 10,102 197x308
-  text 13,105 body text "Groceries"
+  text 21,105 body text "Groceries"
 node 1001 clip 10,102 197x308
-  text 13,129 body text "Ideas for the desktop: a launcher"
+  text 21,129 body text "Ideas for the desktop: a launcher"
 node 1002 clip 10,102 197x308
-  text 13,153 body text "Call the plumber about the kitchen sink …"
+  text 21,153 body text "Call the plumber about the kitchen sink …"
 node 7 clip 215,0 425x420
   text 230,12 small muted "Note"
   fill 230,32 398x352 desk r6

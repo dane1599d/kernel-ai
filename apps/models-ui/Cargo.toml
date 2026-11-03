@@ -13,4 +13,5 @@ doctest = false
 
 [dependencies]
 comp-models = { path = "../models" }
+comp-ui-bind = { path = "../ui-bind" }
 uikit = { path = "../../uikit" }

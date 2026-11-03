@@ -93,20 +93,30 @@ impl Shell {
         }
         if self.asked_model {
             return match reply.ok {
-                true => PanelResult::Done(
-                    self.done_line
+                true => PanelResult::Done(without_undo(
+                    &self
+                        .done_line
                         .take()
                         .unwrap_or_else(|| String::from("Done.")),
-                ),
+                )),
                 false => refused(FAILED),
             };
         }
         // The user's own line: its result is what they asked to see.
         let first = reply.text.lines().find(|line| !line.trim().is_empty());
         match (reply.ok, first) {
-            (true, first) => PanelResult::Done(String::from(first.unwrap_or("Done."))),
+            (true, first) => PanelResult::Done(without_undo(first.unwrap_or("Done."))),
             (false, Some(why)) => PanelResult::Refused(String::from(why)),
             (false, None) => refused(FAILED),
         }
+    }
+}
+
+/// A done line as the panel shows it: desktop draws its own undo control
+/// beside it, so the console's trailing `. undo` goes.
+fn without_undo(line: &str) -> String {
+    match line.strip_suffix(". undo") {
+        Some(said) => alloc::format!("{said}."),
+        None => String::from(line),
     }
 }

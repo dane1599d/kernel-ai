@@ -29,12 +29,19 @@ pub mod edit;
 #[cfg(test)]
 mod edit_tests;
 mod effects;
+pub mod files;
+#[cfg(test)]
+mod files_tests;
 pub mod grants;
 #[cfg(test)]
 mod grants_tests;
 mod instance;
 pub mod linear;
 pub mod link;
+pub mod models;
+#[cfg(test)]
+mod models_tests;
+mod reads;
 pub mod settings;
 pub mod settings_ledger;
 #[cfg(test)]
@@ -63,6 +70,7 @@ use alloc::format;
 use alloc::string::ToString;
 pub use canonical::{CoreInstance, load_core, load_core_granted};
 pub use edit::EditRequest;
+pub use files::{FileOp, FilesRequest};
 pub use grants::Grants;
 pub use instance::WasmInstance;
 use livecore::{Fault, Reason};

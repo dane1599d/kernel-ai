@@ -216,6 +216,17 @@ pub fn report(tok: &Tokenizer, chat: &Chat) -> String {
     }
     out.push_str(&api.text);
 
+    // Spike S12-2: the Kai C card for program requests, by section.
+    let c1 = pack::render(Format::C1);
+    let (c_rules, c_rest) = c1.split_once("\nFunctions:\n").unwrap_or((&c1, ""));
+    let (c_cards, c_examples) = c_rest.split_once("\nExamples:\n").unwrap_or((c_rest, ""));
+    let mut card = Table::new("`c-1` Kai C card (program requests only, spike S12-2)");
+    card.part(tok, "rules", c_rules);
+    card.part(tok, "prototypes (7 rows, as kai.h declares them)", c_cards);
+    card.part(tok, "examples", c_examples);
+    card.row("**whole card**", c1.len(), count(tok, &c1));
+    out.push_str(&card.text);
+
     let dsl1 = pack::render(Format::Dsl1);
     // The template: what the chat turns add around their text.
     let user = format!("Request: {REQUEST}\n/no_think");

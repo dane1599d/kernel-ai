@@ -356,11 +356,3 @@ int32_t __wasm_export_exports_kai_live_lifecycle_self_test(void) {
   uint32_t ret = exports_kai_live_lifecycle_self_test();
   return (int32_t) (ret);
 }
-
-// Ensure that the *_component_type.o object is linked in
-
-extern void __component_type_object_force_link_app(void);
-__attribute__((used))
-void __component_type_object_force_link_app_public_use_in_this_compilation_unit(void) {
-  __component_type_object_force_link_app();
-}

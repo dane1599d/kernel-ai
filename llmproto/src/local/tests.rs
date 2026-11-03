@@ -54,6 +54,7 @@ fn requests() -> Vec<ScriptRequest> {
         request: String::from(request),
         repair: repair.map(|(script, why)| (String::from(script), String::from(why))),
         timeout_ms: 70_000,
+        lang: Default::default(),
     };
     vec![
         ask("how many cpus are there", None),

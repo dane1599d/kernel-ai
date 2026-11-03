@@ -307,6 +307,18 @@ fn plain_words_go_to_the_llm_and_near_miss_code_does_not() {
     assert!(reads_like_words("what can u do"));
     assert!(!reads_like_words("let x be 5"));
     assert!(!reads_like_words("print hello world"));
+    // A sentence that starts with a Rhai keyword is still words (app-models).
+    assert!(reads_like_words("import the model on the attached disk"));
+    assert!(reads_like_words("if the disk is full, tell me"));
+    assert!(reads_like_words(
+        "for each app that's running, show its memory"
+    ));
+    assert!(reads_like_words("while I'm away keep notes running"));
+    // Short, or with a digit or an operator, it is Rhai with a typo.
+    assert!(!reads_like_words("while true loop"));
+    assert!(!reads_like_words("let x == 5 ;"));
+    assert!(!reads_like_words("for i in 0..3"));
+    assert!(!reads_like_words("if x > y then"));
     assert!(!reads_like_words("x + y + z"));
     assert!(!reads_like_words("foo(1)"));
     let (host, mut shell) = with_answers(vec![answer("set_policy(\"rr\");", "Switches.")]);
@@ -314,6 +326,29 @@ fn plain_words_go_to_the_llm_and_near_miss_code_does_not() {
     assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
     assert!(shell.eval("let x be 5").text.starts_with("syntax error"));
     assert_eq!(host.script_requests.borrow().len(), 1);
+}
+
+/// app-models typed "import the model on the attached disk" and got Rhai's
+/// "'import' is a reserved keyword": a sentence led by a keyword reaches the
+/// model, while real Rhai runs and Rhai with a typo shows its syntax error.
+#[test]
+fn a_sentence_led_by_a_rhai_keyword_goes_to_the_llm() {
+    let said = |text: &str| Err(AnswerError::NoScript(String::from(text)));
+    let (host, mut shell) = with_answers(vec![said("Importing."), said("It is not full.")]);
+    let reply = shell.eval("import the model on the attached disk");
+    assert!(!reply.text.contains("syntax error"), "{reply:?}");
+    let reply = shell.eval("if the disk is full, tell me");
+    assert!(!reply.text.contains("syntax error"), "{reply:?}");
+    assert_eq!(host.script_requests.borrow().len(), 2);
+    assert_eq!(shell.eval("let n = 2; if n > 1 { n * 3 }"), ok("6"));
+    assert!(
+        shell
+            .eval("if n > 1 { n * 3 } else")
+            .text
+            .starts_with("syntax error")
+    );
+    assert!(shell.eval("import").text.starts_with("syntax error"));
+    assert_eq!(host.script_requests.borrow().len(), 2);
 }
 
 #[test]

@@ -15,4 +15,3 @@ doctest = false
 [dependencies]
 kaiprofile = { path = "../../kaiprofile" }
 look = { path = "../../look" }
-minicbor = { version = "2.3.0", default-features = false, features = ["alloc"] }

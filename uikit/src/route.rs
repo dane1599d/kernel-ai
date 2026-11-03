@@ -306,15 +306,21 @@ impl Window {
                     .unwrap_or_default();
                 if let Some(i) = kids
                     .iter()
-                    .position(|k| self.rect(*k).is_some_and(|r| r.contains(at)))
+                    // A row is hit across the list's width, its padding too.
+                    .position(|k| {
+                        self.rect(*k)
+                            .is_some_and(|k| at.y >= k.y && at.y < k.y + k.h && r.contains(at))
+                    })
                 {
                     out.extend(self.change(t, Value::Index(i as u32)).ok().flatten());
                 }
             }
-            Widget::Table { .. } => {
+            Widget::Table { rows, selected, .. } => {
+                let (first, shown) = crate::layout::table_window(rows.len(), selected, r.h);
                 let row = (at.y - r.y - 1) / metric::ROW_H - 1;
-                if row >= 0 {
-                    out.extend(self.change(t, Value::Index(row as u32)).ok().flatten());
+                if row >= 0 && (row as usize) < shown {
+                    let row = (first + row as usize) as u32;
+                    out.extend(self.change(t, Value::Index(row)).ok().flatten());
                 }
             }
             Widget::Tabs { labels, .. } => {

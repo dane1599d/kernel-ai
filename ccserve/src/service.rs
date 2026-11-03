@@ -35,6 +35,8 @@ const END_ROOM: usize = MAX_CALL + 64;
 pub const E2BIG: i64 = -7;
 /// Longest error text sent back.
 const MAX_ERR: usize = 2048;
+/// A whole `cc build`'s deadline, in line budgets: ten entries' worth.
+pub const BUILD_LINES: u64 = 10;
 
 /// kai.h's fixed part, and kairt's source (D1, D2).
 pub const KAI_H: &str = include_str!("../kai/kai.h");
@@ -70,9 +72,13 @@ pub struct Service<E> {
     kairt: Vec<u8>,
     effects: E,
     open: Option<Open>,
+    /// The user's session, set aside while a model's program runs in a fresh
+    /// one (D5); `back` brings it back.
+    parked: Option<Open>,
 }
 
 struct Open {
+    origin: Origin,
     defs: Defs,
     session: Session,
     waiting: Option<Waiting>,
@@ -114,25 +120,50 @@ impl<E: Effects> Service<E> {
             kairt,
             effects,
             open: None,
+            parked: None,
         })
     }
 
     /// Answers one message.
     pub fn handle(&mut self, message: &[u8], host: &dyn Host) -> Vec<u8> {
+        self.handle_with(message, None, host)
+    }
+
+    /// Answers one message, given the `Shm` it came with, mapped: a `build`'s
+    /// sources ([`crate::build::shm`]).
+    pub fn handle_with(
+        &mut self,
+        message: &[u8],
+        shm: Option<&mut [u8]>,
+        host: &dyn Host,
+    ) -> Vec<u8> {
         let mut reply = Reply::new(REPLY_CAP);
         let request = core::str::from_utf8(message)
             .map_err(|_| "a request is text")
             .and_then(|text| Request::parse(text).map_err(|e| e.0));
         match request {
-            Ok(request) => self.serve(request, host, &mut reply),
+            Ok(request) => self.serve(request, shm, host, &mut reply),
             Err(why) => error(&mut reply, 0, why),
         }
         reply.into_bytes()
     }
 
-    fn serve(&mut self, request: Request, host: &dyn Host, reply: &mut Reply) {
+    fn serve(
+        &mut self,
+        request: Request,
+        shm: Option<&mut [u8]>,
+        host: &dyn Host,
+        reply: &mut Reply,
+    ) {
         if let Request::Open { origin, .. } = request {
             return self.open(origin, reply);
+        }
+        if let Request::Back = request {
+            return self.back(reply);
+        }
+        // A build needs no session and leaves a waiting run waiting.
+        if let Request::Build { component, version } = request {
+            return self.build(component, version, shm, host, reply);
         }
         let Some(open) = self.open.as_mut() else {
             return error(reply, 0, "no session is open");
@@ -142,7 +173,7 @@ impl<E: Effects> Service<E> {
         }
         let effects = &self.effects;
         match request {
-            Request::Open { .. } => {}
+            Request::Open { .. } | Request::Build { .. } | Request::Back => {}
             Request::Eval { seq, entry } => eval(
                 &self.compiler,
                 effects,
@@ -183,29 +214,86 @@ impl<E: Effects> Service<E> {
                 reply,
                 &Record::Text(capped(&open.defs.listing()).as_bytes()),
             ),
-            Request::Reset => self.open(Origin::User, reply),
-            Request::Build(_) => error(reply, 0, "cc build comes with P4 task 13"),
+            // A model's session starts again on its own; the user's stays aside.
+            Request::Reset => {
+                let origin = open.origin;
+                self.open(origin, reply)
+            }
         }
     }
 
+    /// `cc build` (D7), in [`BUILD_LINES`] line budgets.
+    fn build(
+        &self,
+        component: &str,
+        version: &str,
+        shm: Option<&mut [u8]>,
+        host: &dyn Host,
+        reply: &mut Reply,
+    ) {
+        let Some(shm) = shm else {
+            return error(reply, 0, "build brings its sources in an Shm");
+        };
+        let budget = &mut Budget::new(host, host.line_ns().saturating_mul(BUILD_LINES));
+        match crate::build::shm::serve(&self.compiler, component, version, shm, budget) {
+            Ok(text) => end(reply, &Record::Text(text.as_bytes())),
+            Err(e) => match e.text() {
+                Ok(why) => error(reply, 0, &why),
+                Err(stop) => trap(reply, stop.word()),
+            },
+        }
+    }
+
+    /// A fresh session. The user's drops every other; a model's sets the
+    /// user's aside (a model's earlier one is dropped), so the model's program
+    /// sees nothing the user defined and the user's globals survive it (D5).
     fn open(&mut self, origin: Origin, reply: &mut Reply) {
-        if origin == Origin::Model {
-            // A model's program runs in its own session after a trial run on
-            // stub imports (D5); that is P4 task 14, after spike S12-2.
-            return error(reply, 0, "model-written C is not enabled");
-        }
-        match Session::new(&self.kairt, self.effects.imports()) {
-            Ok(session) => {
-                self.open = Some(Open {
-                    defs: Defs::new(),
-                    session,
-                    waiting: None,
-                    needs: 0,
-                });
-                end(reply, &Record::Ok);
+        // What this open replaces goes first, so cc never holds more than the
+        // two sessions its budget counts. The user's session is set aside, its
+        // waiting run dropped as any other request drops it, and comes back if
+        // the model's cannot start.
+        match origin {
+            Origin::User => {
+                self.open = None;
+                self.parked = None;
             }
-            Err(why) => error(reply, 0, &why),
+            Origin::Model => {
+                if let Some(mut user) = self.open.take().filter(|o| o.origin == Origin::User) {
+                    if user.waiting.take().is_some() {
+                        user.session.abort();
+                    }
+                    self.parked = Some(user);
+                }
+            }
         }
+        let session = match Session::new(&self.kairt, self.effects.imports()) {
+            Ok(session) => session,
+            Err(why) => {
+                self.open = self.parked.take();
+                return error(reply, 0, &why);
+            }
+        };
+        self.open = Some(Open {
+            origin,
+            defs: Defs::new(),
+            session,
+            waiting: None,
+            needs: 0,
+        });
+        end(reply, &Record::Ok);
+    }
+
+    /// `back`: drops the model's session and brings the user's back as it was.
+    fn back(&mut self, reply: &mut Reply) {
+        if !self
+            .open
+            .as_ref()
+            .is_some_and(|o| o.origin == Origin::Model)
+        {
+            return error(reply, 0, "no model session is open");
+        }
+        self.open = self.parked.take();
+        end(reply, &Record::Ok);
     }
 }
 

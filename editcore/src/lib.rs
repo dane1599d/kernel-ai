@@ -12,6 +12,7 @@
 extern crate alloc;
 
 pub mod command;
+pub mod file;
 pub mod gate;
 pub mod ipc;
 pub mod journal;

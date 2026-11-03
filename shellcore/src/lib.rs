@@ -30,14 +30,17 @@ mod appearance;
 pub mod appline;
 pub mod apps;
 mod brackets;
+pub mod ccbuild;
 mod centry;
 mod cmode;
 mod commands;
 pub mod data;
+pub mod door;
 mod effects;
 mod engine;
 pub mod grants;
 mod instructions;
+mod models;
 mod packages;
 mod panel;
 mod pkg;
@@ -64,6 +67,8 @@ use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 pub use centry::CallValue;
+/// Repairs a Kai C program at `c>` gets after its first answer (P4 task 14).
+pub use cmode::C_REPAIRS;
 pub use effects::EffectDone;
 pub use engine::Exec;
 use engine::Line;
@@ -100,6 +105,9 @@ pub enum Proof {
 pub enum FsRead<'a> {
     List(&'a str),
     Read(&'a str),
+    /// The whole file or an error, for the editor's door: no cut at a few
+    /// messages (`Read` hands a script a prefix), and it must be text.
+    Whole(&'a str),
     History(&'a str),
     Changes,
 }
@@ -198,6 +206,12 @@ pub trait Host {
     fn app_call(&self, _app: &str, _request: &str) -> Result<String, String> {
         Err(String::from("there are no apps here"))
     }
+    /// One of `updated`'s model requests (`models`, `models import`, `models
+    /// progress`, `models use <64 hex>`; P4 task 10): its answer, or why there
+    /// is none.
+    fn models(&self, _request: &str) -> Result<String, String> {
+        Err(String::from("there is no model channel here"))
+    }
     /// The user's appearance as `kai-appearance 1` text (P4 task 8).
     fn appearance_read(&self) -> Option<String> {
         None
@@ -215,6 +229,22 @@ pub trait Host {
     /// the `c>` prompt).
     fn cc(&self, _request: &[u8]) -> Result<Vec<u8>, String> {
         Err(String::from("there is no c> service here"))
+    }
+    /// One request to `pkg` through the shell's route to it: the text after
+    /// its `ok`, or why not (P4 task 13).
+    fn pkg(&self, _request: &str) -> Result<String, String> {
+        Err(String::from("there is no pkg service here"))
+    }
+    /// `cc build`'s work outside the shell's logic: component `name`'s
+    /// sources, read from [`ccbuild::DIR`], built by `cc` at `version`, and the
+    /// artifact written beside them.
+    fn cc_build(&self, _name: &str, _version: &str) -> Result<ccbuild::CcBuilt, String> {
+        Err(String::from("cc build needs the files and cc here"))
+    }
+    /// Hands the artifact at `path` to `pkg`'s `local` as a read-only File:
+    /// the text after its `ok`.
+    fn pkg_local(&self, _name: &str, _path: &str) -> Result<String, String> {
+        Err(String::from("there is no pkg service here"))
     }
     /// A read of the user's files: its text, or why there is none.
     fn fs_read(&self, _read: FsRead) -> Result<String, String> {
@@ -269,6 +299,14 @@ pub trait Host {
     /// `keep <app> on|off` to the supervisor: app `app` naps or is kept running.
     fn keep_running(&self, _app: &str, _on: bool) -> Result<(), String> {
         Err(String::from("apps cannot be kept running here"))
+    }
+    /// The restart window as `/system/state/restart/window` holds it
+    /// (`kai-updates 1`), which `updated` follows.
+    fn restart_read(&self) -> Option<String> {
+        None
+    }
+    fn restart_write(&self, _text: &str) -> Result<(), String> {
+        Err(String::from("there is no /system/state here"))
     }
     /// The rows taken back from apps' effects, as `/system/state/withheld`
     /// holds them (`kai-withheld 1`, P4 task 7).
@@ -895,6 +933,7 @@ impl Shell {
                 request: request.to_string(),
                 repair: repair.take(),
                 timeout_ms: SCRIPT_ROUND_MS,
+                lang: llmproto::script::Lang::Rhai,
             };
             let failure = match self.host.script(&ask) {
                 // No script: the model answered in words.
@@ -984,10 +1023,12 @@ impl Shell {
 }
 
 /// A line that does not run as Rhai is sent to the LLM if it reads like words: mostly
-/// letters, no code punctuation, and not starting with a Rhai keyword.
+/// letters and no code punctuation. One starting with a Rhai keyword is Rhai with a
+/// typo unless it is a sentence: "import the model on the attached disk" is words,
+/// "let x be 5" and "print hello world" are code.
 pub fn reads_like_words(line: &str) -> bool {
     let words: Vec<&str> = line.split_whitespace().collect();
-    if words.is_empty() || RHAI_WORDS.contains(&words[0]) {
+    if words.is_empty() || (RHAI_WORDS.contains(&words[0]) && !is_sentence(&words)) {
         return false;
     }
     if line.chars().any(|c| "(){}[];=\"`#$".contains(c)) {
@@ -999,6 +1040,24 @@ pub fn reads_like_words(line: &str) -> bool {
         .filter(|c| !c.is_alphabetic() && !c.is_whitespace())
         .count();
     letters >= 4 * others
+}
+
+/// The fewest words a line led by a Rhai keyword needs to read as a sentence.
+const SENTENCE_WORDS: usize = 4;
+
+/// Whether `words` are a sentence: at least [`SENTENCE_WORDS`] of them, each
+/// letters with at most an inner `'` or `-` and a trailing `,` `.` `?` or `!`.
+/// A digit or an operator anywhere makes it code.
+fn is_sentence(words: &[&str]) -> bool {
+    words.len() >= SENTENCE_WORDS
+        && words.iter().all(|word| {
+            let word = word.trim_end_matches([',', '.', '?', '!']);
+            !word.is_empty()
+                && word.starts_with(char::is_alphabetic)
+                && word
+                    .chars()
+                    .all(|c| c.is_alphabetic() || c == '\'' || c == '-')
+        })
 }
 
 /// A name that reads as a word, not as code: two or more letters and nothing else.

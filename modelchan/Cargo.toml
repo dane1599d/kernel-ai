@@ -1,0 +1,17 @@
+[package]
+name = "modelchan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The model channel's logic (ADR 0008 §6; P4 task 10): the import from an
+# attached disk and the trial a new model is on, apart from `updated`'s handles,
+# so the host tests run the same code. `no_std` + `alloc`.
+[lib]
+doctest = false
+
+[dependencies]
+comp-models = { path = "../apps/models" }
+kabi = { path = "../kabi" }
+sha2 = { version = "0.11.1", default-features = false }

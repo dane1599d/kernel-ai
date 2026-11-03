@@ -11,6 +11,7 @@ mod kernel;
 mod network;
 mod pkg;
 mod storage;
+mod tour;
 mod updates;
 
 use crate::buildsvc::BuildService;
@@ -83,6 +84,9 @@ pub struct TestCase {
     /// An update disk (`image/update_disk.rs`) of the next release, attached
     /// read-only as `kai-update`.
     pub update: Option<UpdateDisk>,
+    /// A fixture attached read-only as the import disk, `kai-import` (P4 task
+    /// 10): a GGUF file the model manager imports, never the boot model.
+    pub import: Option<Fixture>,
     /// Power cuts (P2 task 9, plan section 4.2): boot `n` of `cuts` adds
     /// `boot=n` to the command line, waits for `files: boot n:` and kills QEMU
     /// a seeded moment later; boot `cuts + 1` adds `last` and must pass.
@@ -135,6 +139,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         then: None,
         slots: false,
         update: None,
+        import: None,
         cuts: 0,
         store: None,
         store_bad_fnv: false,
@@ -168,6 +173,11 @@ pub fn test_cases() -> Vec<&'static TestCase> {
 
 /// The M5 exit test: a 10-minute spawn, exit and sleep storm.
 pub const SOAK_CASES: &[TestCase] = &[case("storm-10min", "test=storm-600")];
+
+/// Cases booted only when `XTASK_CASE` names one: the screenshot tour.
+pub fn named_only() -> Vec<&'static TestCase> {
+    tour::CASES.iter().collect()
+}
 
 #[cfg(test)]
 mod tests {

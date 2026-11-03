@@ -246,7 +246,11 @@ fn main() -> i32 {
         };
         let text = core::str::from_utf8(&request[..len]).unwrap_or("");
         let command = text.split([' ', '\n']).next();
-        cold |= matches!(command, Some("ask" | "explain" | "model" | "tune"));
+        // A C program request takes the script slot with the c-1 card.
+        cold |= matches!(
+            command,
+            Some("ask" | "explain" | "model" | "tune" | "program")
+        );
         stale |= matches!(command, Some("remember" | "new"));
         backends.warming = local_warmable(&backends, stale, cold);
         let mut reply = match command {
@@ -347,7 +351,7 @@ fn handle(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<St
             |server, response| server.explain(rest, response),
             response,
         ),
-        "script" => script(backends, text, response),
+        "script" | "program" => script(backends, text, response),
         "act" => act(backends, text, response),
         "remember" => {
             let turn = history::decode_remember(text).ok_or("malformed remember request")?;

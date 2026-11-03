@@ -20,7 +20,7 @@ const CALL_MS: u64 = 10_000;
 /// The most of a file `fs_read` hands a script: a few messages' worth.
 const READ_MAX: usize = 4 * fsproto::MAX_DATA;
 /// The most names `fs_list` gives.
-const LIST_MAX: usize = 200;
+pub(crate) const LIST_MAX: usize = 200;
 
 /// `/home/user`, if the shell was started with `files`.
 pub struct Files {
@@ -55,6 +55,48 @@ impl Files {
         self.home.ok_or_else(|| String::from(shellcore::NO_FILES))
     }
 
+    /// `/home/user`'s `Dir`, for `cc build`'s reads (`build.rs`).
+    pub fn home_dir(&self) -> Result<Handle, String> {
+        self.home()
+    }
+
+    /// Writes `bytes` as the whole of the file at `path`, made if it is new,
+    /// in an action of its own that is committed at once: `cc build`'s
+    /// artifact, which `pkg` reads before the line's log is written. Any
+    /// action still open lands first. The File handle it was written
+    /// through, with READ and WRITE.
+    pub fn put_whole(&self, path: &str, bytes: &[u8]) -> Result<Handle, String> {
+        let home = self.home()?;
+        self.commit()?;
+        let action = self.next_action();
+        expect_done(home, Request::Begin { action })?;
+        let rights = Rights::READ | Rights::WRITE;
+        let file = match open(home, path, How::Existing, rights)
+            .or_else(|_| open(home, path, How::CreateFile, rights))
+        {
+            Ok(file) => file,
+            Err(why) => {
+                let _ = ask(home, Request::Abort);
+                return Err(why);
+            }
+        };
+        let wrote =
+            expect_done(file, Request::Truncate { size: 0 }).and_then(|()| write_all(file, bytes));
+        if let Err(why) = wrote {
+            close(file);
+            let _ = ask(home, Request::Abort);
+            return Err(why);
+        }
+        let committed = ask(home, Request::Commit).and_then(|(reply, _)| match reply {
+            Reply::Committed { .. } => Ok(file),
+            other => Err(unexpected(&other)),
+        });
+        if committed.is_err() {
+            close(file);
+        }
+        committed
+    }
+
     pub fn read(&self, read: FsRead) -> Result<String, String> {
         let home = self.home()?;
         match read {
@@ -69,6 +111,12 @@ impl Files {
             FsRead::Read(path) => {
                 let file = open(home, path, How::Existing, Rights::READ)?;
                 let text = read_all(file);
+                close(file);
+                text
+            }
+            FsRead::Whole(path) => {
+                let file = open(home, path, How::Existing, Rights::READ)?;
+                let text = read_whole(file);
                 close(file);
                 text
             }
@@ -301,6 +349,28 @@ pub const KEEP: &str = "keep";
 pub const APPEARANCE: &str = "appearance";
 /// The rows withheld from apps' effects (`kai-withheld 1`, P4 task 7).
 pub const WITHHELD: &str = "withheld";
+/// The restart window (`kai-updates 1`), in the folder `updated`'s read-only
+/// `dir=restart` gives it alone.
+pub const RESTART: &str = "restart/window";
+const _: () = {
+    let (path, folder, file) = (
+        RESTART.as_bytes(),
+        bootslot::window::FOLDER.as_bytes(),
+        bootslot::window::FILE.as_bytes(),
+    );
+    assert!(path.len() == folder.len() + 1 + file.len());
+    let mut i = 0;
+    while i < folder.len() {
+        assert!(path[i] == folder[i]);
+        i += 1;
+    }
+    assert!(path[folder.len()] == b'/');
+    let mut j = 0;
+    while j < file.len() {
+        assert!(path[folder.len() + 1 + j] == file[j]);
+        j += 1;
+    }
+};
 
 impl State {
     /// File `name` as `/system/state` holds it; `None` with no such file or no
@@ -349,7 +419,7 @@ impl State {
 }
 
 /// One request on `on`; the reply and the handle it moved, if any.
-fn ask(on: Handle, request: Request) -> Result<(Reply, Option<Handle>), String> {
+pub(crate) fn ask(on: Handle, request: Request) -> Result<(Reply, Option<Handle>), String> {
     let bytes = fsproto::encode_request(&request);
     let mut reply = vec![0u8; fsproto::MAX_MESSAGE];
     let mut moved = [Handle::NONE; MAX_TRANSFER];
@@ -367,7 +437,7 @@ fn expect_done(on: Handle, request: Request) -> Result<(), String> {
     }
 }
 
-fn open(dir: Handle, path: &str, how: How, rights: Rights) -> Result<Handle, String> {
+pub(crate) fn open(dir: Handle, path: &str, how: How, rights: Rights) -> Result<Handle, String> {
     let request = Request::Open {
         path: path.to_string(),
         rights: rights.bits(),
@@ -398,11 +468,11 @@ fn in_dir<T>(
     }
 }
 
-fn close(handle: Handle) {
+pub(crate) fn close(handle: Handle) {
     let _ = sys::handle_close(handle);
 }
 
-fn list(dir: Handle) -> Result<Vec<String>, String> {
+pub(crate) fn list(dir: Handle) -> Result<Vec<String>, String> {
     let mut names = Vec::new();
     let mut after = None;
     loop {
@@ -457,6 +527,37 @@ fn read_all(file: Handle) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// A whole file as text, for the editor's door: never cut short, so a file over
+/// [`shellcore::door::MAX_BYTES`] is an error, not a prefix, and one that is not
+/// text is an error, not a lossy copy that a save would then write over it.
+fn read_whole(file: Handle) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    loop {
+        let request = Request::Read {
+            off: bytes.len() as u64,
+            len: fsproto::MAX_DATA as u32,
+        };
+        match ask(file, request)?.0 {
+            Reply::Data(data) if data.is_empty() => break,
+            Reply::Data(data) => {
+                let short = data.len() < fsproto::MAX_DATA;
+                bytes.extend_from_slice(&data);
+                if bytes.len() > shellcore::door::MAX_BYTES {
+                    return Err(format!(
+                        "the file is over {} KiB, which the editor opens",
+                        shellcore::door::MAX_BYTES / 1024
+                    ));
+                }
+                if short {
+                    break;
+                }
+            }
+            other => return Err(unexpected(&other)),
+        }
+    }
+    String::from_utf8(bytes).map_err(|_| String::from("the file is not text"))
+}
+
 fn write_all(file: Handle, bytes: &[u8]) -> Result<(), String> {
     for (i, chunk) in bytes.chunks(fsproto::MAX_DATA).enumerate() {
         let request = Request::Write {
@@ -468,7 +569,7 @@ fn write_all(file: Handle, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn unexpected(reply: &Reply) -> String {
+pub(crate) fn unexpected(reply: &Reply) -> String {
     match reply {
         Reply::Failed(error) => describe(*error),
         other => format!("the fs service answered {other:?}"),

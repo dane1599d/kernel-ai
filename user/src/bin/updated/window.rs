@@ -1,21 +1,20 @@
 //! The restart window (ADR 0008 question 3, P4 plan question 10): once a
 //! release is staged, `updated` restarts into it by itself only inside the
-//! window the Settings app keeps in `/system/settings/updates.cbor`, which its
-//! plan line's read-only `dir=settings` gives it, after a heads-up. With no
-//! window, the default, the staged slot waits for the user's "restart"; its
+//! window the shell saves from a Settings click, `kai-updates 1` text in
+//! `/system/state/restart/window`, which its plan line's read-only
+//! `dir=restart` gives it, after a heads-up. With no window, the default, or a
+//! file out of shape, the staged slot waits for the user's "restart"; its
 //! one-shot is already set, so any restart boots it. Times are UTC.
 
 use crate::folders::{self, Folders};
 use crate::{idle, record, slot_of};
 use alloc::format;
 use alloc::string::String;
-use bootslot::window::{DAY_MINUTES, allows, minute_of_day, restart_window, window};
+use bootslot::window::{DAY_MINUTES, FILE, HEADER, allows, minute_of_day, restart_window, window};
 use bootslot::{Slot, Trial};
 use kabi::handle::Handle;
 use user::{println, sys};
 
-/// The Settings app's file for updates.
-const FILE: &str = "updates.cbor";
 /// How often the window is looked at again.
 const CHECK_MS: u64 = 30_000;
 /// The heads-up before a restart in the window.
@@ -39,12 +38,18 @@ pub fn wait(handle: Handle, staged: Staged, args: &str) -> ! {
         .and_then(|n| n.parse().ok())
         .unwrap_or(HEADS_UP_S);
     let test_now = word("window=") == Some("now");
-    let settings = Folders::from_startup().ok().and_then(|f| f.settings);
-    match settings.map(|d| folders::read(d, FILE)) {
-        None => println!("updated: no /system/settings here"),
-        Some(Ok(Some(b))) => println!("updated: /system/settings/{FILE} is {} bytes", b.len()),
-        Some(Ok(None)) => println!("updated: /system/settings has no {FILE}"),
-        Some(Err(why)) => println!("updated: /system/settings/{FILE}: {why}"),
+    let saved = Folders::from_startup().ok().and_then(|f| f.restart);
+    match saved.map(|d| folders::read(d, FILE)) {
+        None => println!("updated: no /system/state/restart here"),
+        Some(Ok(Some(b))) => {
+            let text = core::str::from_utf8(&b).unwrap_or("");
+            match restart_window(text).is_none() && text.trim_end() != HEADER {
+                true => println!("updated: the saved restart window is out of shape; none is used"),
+                false => println!("updated: the restart window's {FILE} is {} bytes", b.len()),
+            }
+        }
+        Some(Ok(None)) => println!("updated: no restart window is saved"),
+        Some(Err(why)) => println!("updated: the restart window's {FILE}: {why}"),
     }
     let (release, slot) = (staged.release_seq, staged.slot);
     let mut said = None;
@@ -55,7 +60,7 @@ pub fn wait(handle: Handle, staged: Staged, args: &str) -> ! {
         };
         let w = match test_now {
             true => window(now, (now + TEST_MINUTES) % DAY_MINUTES),
-            false => settings.and_then(read),
+            false => saved.and_then(read),
         };
         if said != Some(w) {
             match w {
@@ -80,10 +85,11 @@ pub fn wait(handle: Handle, staged: Staged, args: &str) -> ! {
     }
 }
 
-/// The window in `/system/settings/updates.cbor`, if it holds one.
-fn read(settings: Handle) -> Option<(u16, u16)> {
-    let bytes = folders::read(settings, FILE).ok()??;
-    restart_window(&bytes)
+/// The window the saved text holds, if it holds one; text out of shape is
+/// none, so an update never fails over it.
+fn read(folder: Handle) -> Option<(u16, u16)> {
+    let bytes = folders::read(folder, FILE).ok()??;
+    restart_window(core::str::from_utf8(&bytes).ok()?)
 }
 
 /// Restarts into the staged slot, if it is still the one waiting.

@@ -19,4 +19,4 @@
 [15] button "Rename" runs fs_move
 [16] button "Trash" runs fs_trash
 [17] button "Restore" runs fs_restore
-[18] label "1 folders, 1 files"
+[18] label "1 folder, 1 file"

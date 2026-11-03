@@ -59,7 +59,7 @@ fn the_plan_the_kernel_sends_parses() {
     let text = alloc::format!(
         "llm caps=serve+net burst_ms=10000 pages=1024 host=10.0.2.2:8080 model=org/model-7b\n{}\n{}",
         kabi::plan::CC,
-        kabi::plan::SHELL
+        kabi::plan::with_updated(kabi::plan::SHELL, "")
     );
     let plan = parse_plan(&text);
     assert_eq!(plan.errors, Vec::<String>::new());
@@ -69,19 +69,69 @@ fn the_plan_the_kernel_sends_parses() {
     assert!(cc.uses.is_empty());
     // It starts when the shell first calls it, not at boot.
     assert_eq!(cc.start, Start::Demand);
-    let shell = &plan.services[2];
+    // `updated`, the model channel, comes just before the shell: its one
+    // route is to llm, and it alone holds the model store.
+    let updated = &plan.services[2];
+    assert_eq!(updated.name, "updated");
+    assert_eq!(updated.uses, ["llm"]);
+    assert!(updated.dirs.contains(&Folder::Models));
+    let shell = &plan.services[3];
     assert_eq!(shell.name, "shell");
     assert_eq!(
         shell.limits.caps,
         cap::SERVE | cap::CALL | cap::POLICY | cap::STOP | cap::SCRIPT
     );
-    assert_eq!(shell.uses, ["llm", SUPERVISOR, "cc"]);
+    assert_eq!(shell.uses, ["llm", SUPERVISOR, "cc", "updated"]);
     assert_eq!(shell.limits.stack_pages, 512);
     assert!(shell.limits.stack_pages < shell.limits.max_pages);
     assert_eq!(
         plan.services[0].args,
         "host=10.0.2.2:8080 model=org/model-7b"
     );
+}
+
+/// The shell finds each route after `updated` by the name `routes=` gives it, so
+/// every shell line's `routes=` must name exactly those routes, in `uses=`'s
+/// order: a route added anywhere but last, or named wrong, fails here.
+#[test]
+fn every_shell_lines_routes_are_named_in_order() {
+    for line in kabi::plan::SHELL_LINES {
+        let text = alloc::format!(
+            "llm caps=serve\ndesktop caps=serve\npkg caps=serve\n{}\n{}",
+            kabi::plan::CC,
+            kabi::plan::with_updated(line, "")
+        );
+        let plan = parse_plan(&text);
+        assert_eq!(plan.errors, Vec::<String>::new(), "{line}");
+        let shell = plan.services.iter().find(|s| s.name == "shell").unwrap();
+        assert_eq!(
+            &shell.uses[..kabi::plan::SHELL_ROUTES.len()],
+            ["llm", SUPERVISOR, "cc", "updated"]
+        );
+        let routes = shell
+            .args
+            .split_whitespace()
+            .find_map(|word| word.strip_prefix("routes="))
+            .unwrap_or("");
+        let after: Vec<&str> = shell.uses[kabi::plan::SHELL_ROUTES.len()..]
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let named: Vec<&str> = routes.split('+').filter(|w| !w.is_empty()).collect();
+        assert_eq!(named, after, "{line}");
+        for (at, name) in after.iter().enumerate() {
+            assert_eq!(
+                kabi::plan::named_route(routes, name),
+                Some(kabi::plan::SHELL_ROUTES.len() + at)
+            );
+        }
+    }
+    assert_eq!(kabi::plan::named_route("desktop+pkg", "pkg"), Some(5));
+    assert_eq!(kabi::plan::named_route("desktop", "pkg"), None);
+    assert_eq!(kabi::plan::named_route("", ""), None);
+    assert_eq!(kabi::plan::named_route("+", ""), None);
+    assert_eq!(kabi::plan::named_route("desktop++pkg", "pkg"), Some(5));
+    assert_eq!(kabi::plan::named_route("+desktop", "desktop"), Some(4));
 }
 
 #[test]
@@ -125,6 +175,24 @@ fn a_lines_folders_go_only_to_its_own_program() {
     assert_eq!(
         apps.grants("notes", "comphost").unwrap().dirs,
         [Folder::Apps]
+    );
+    // The model store is `updated`'s alone, as the trust store and updates are.
+    let updated = parse_plan("updated caps=update dir=trust+updates+settings+models");
+    assert!(updated.errors.is_empty(), "{:?}", updated.errors);
+    let dirs = [
+        Folder::Trust,
+        Folder::Updates,
+        Folder::Settings,
+        Folder::Models,
+    ];
+    assert_eq!(updated.grants("updated", "updated").unwrap().dirs, dirs);
+    assert_eq!(Folder::Models.badge(), kabi::fs::MODELS_ROOT);
+    assert!(!Folder::Models.read_only());
+    let other = parse_plan("pkg dir=models");
+    assert!(
+        !other.errors.is_empty() || other.grants("pkg", "pkg").is_err(),
+        "{:?}",
+        other.errors
     );
     // A line's `program=` is the program its folder goes to, not its name.
     assert_eq!(plan.grants("store", "pkgd").unwrap().dirs, [Folder::Pkg]);
@@ -626,11 +694,12 @@ fn program_names_the_program_and_is_not_passed_on() {
 {}
 {}",
         kabi::plan::CC,
-        kabi::plan::SHELL
+        kabi::plan::with_updated(kabi::plan::SHELL, "")
     ));
     assert_eq!(plan.errors, Vec::<String>::new());
     assert_eq!(plan.services[1].program, "cc");
-    let shell = &plan.services[2];
+    assert_eq!(plan.services[2].program, "updated");
+    let shell = &plan.services[3];
     assert_eq!(shell.program, "shell");
 }
 
@@ -890,6 +959,26 @@ fn only_the_store_holder_may_run_a_package_version() {
 }
 
 #[test]
+fn may_run_asks_what_a_run_would_get_and_starts_nothing() {
+    let plan = parse_plan(&format!(
+        "{RUN_PLAN}\nnotes-window program=comphost caps=serve+component start=demand"
+    ));
+    let pids = [Some(10), Some(11), None, Some(13), None];
+    let held: Vec<(&ServiceSpec, Option<u64>)> = plan.services.iter().zip(pids).collect();
+    assert_eq!(parse_may_run("may-run notes"), Some("notes"));
+    assert_eq!(encode_may_run("notes"), "may-run notes");
+    assert_eq!(check_run_name("notes", &held, 11), Ok(2));
+    // A window the plan runs from the image's version: pkg adds no version of it.
+    assert_eq!(check_run_name("notes-window", &held, 11), Err(NOT_FROM_PKG));
+    assert_eq!(check_run_name("files-window", &held, 11), Err(NOT_PLANNED));
+    // Only the store's holder asks.
+    assert!(check_run_name("notes", &held, 13).is_err());
+    for bad in ["may-run", "may-run notes x", "may-run no/tes", "may notes"] {
+        assert_eq!(parse_may_run(bad), None, "{bad}");
+    }
+}
+
+#[test]
 fn a_withdraw_reads_as_a_run_and_is_gated_as_one() {
     let plan = parse_plan(RUN_PLAN);
     let pids = [Some(10), Some(11), None, Some(13)];
@@ -910,6 +999,80 @@ fn a_withdraw_reads_as_a_run_and_is_gated_as_one() {
         None
     );
     assert_eq!(Run::parse_withdraw("withdraw notes"), None);
+}
+
+/// The v0.1 system (`kabi::plan::system`), the default boot's and
+/// `desk-default`'s: with and without `kai-data`, every line parses, every
+/// route names a service planned before it, and every app starts on demand.
+#[test]
+fn the_v0_1_system_plan_parses_and_its_routes_come_first() {
+    let llm = "llm caps=serve+net burst_ms=10000 pages=1024 host=10.0.2.2:8080 model=org/model-7b";
+    for files in [true, false] {
+        let plan = parse_plan(&kabi::plan::system::plan(llm, files));
+        assert_eq!(plan.errors, Vec::<String>::new(), "files={files}");
+        for (at, service) in plan.services.iter().enumerate() {
+            for target in &service.uses {
+                let earlier = plan.services[..at].iter().any(|s| s.name == *target);
+                assert!(
+                    earlier || target == "supervisor",
+                    "{}'s route to {target} (files={files})",
+                    service.name
+                );
+            }
+        }
+        let named = |name: &str| plan.services.iter().find(|s| s.name == name);
+        for app in kabi::plan::system::APPS {
+            let name = app.split(' ').next().unwrap_or_default();
+            let service = named(name).expect("every app is planned");
+            assert_eq!(service.start, Start::Demand, "{name}");
+            assert_eq!(service.program, "comphost", "{name}");
+        }
+        // The shell's routes after `updated`: `desktop`, and with `pkg` (where the
+        // editor's builds install) `pkg` after it.
+        let shell = named("shell").expect("the shell is planned");
+        let tail: &[&str] = if files {
+            &["desktop", "pkg"]
+        } else {
+            &["desktop"]
+        };
+        assert_eq!(shell.uses[shell.uses.len() - tail.len()..], *tail);
+        assert_eq!(named("pkg").is_some(), files);
+        assert_eq!(named("fs").is_some(), files);
+        let desktop = named("desktop").expect("the desktop is planned");
+        assert_eq!(desktop.uses.contains(&String::from("pkg")), files);
+        // The model manager's window, with `kai-data` only, on demand.
+        let models = named("models-window");
+        assert_eq!(models.is_some(), files);
+        if let Some(models) = models {
+            assert_eq!(models.start, Start::Demand);
+            assert_eq!(models.uses, ["desktop", "updated"]);
+        }
+    }
+    // The System monitor's line is main's own, started on demand.
+    assert!(
+        kabi::plan::system::APPS
+            .contains(&alloc::format!("{} start=demand", kabi::plan::MONITOR_WINDOW).as_str())
+    );
+}
+
+#[test]
+fn the_editor_holds_the_edit_capability_by_name_and_routes_to_desktop() {
+    let plan = parse_plan(&alloc::format!(
+        "desktop caps=display+input+serve\n{}",
+        kabi::plan::EDITOR
+    ));
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let editor = &plan.services[1];
+    // The kernel pins `cap::EDIT` to the service of this name running comphost.
+    assert_eq!(editor.name, "editor");
+    assert_eq!(editor.program, "comphost");
+    assert_eq!(editor.uses, ["desktop"]);
+    assert_eq!(
+        editor.limits.caps,
+        cap::SERVE | cap::COMPONENT | cap::CALL | cap::EDIT
+    );
+    // Without `desktop` before it the line is an error, not a route elsewhere.
+    assert!(!parse_plan(kabi::plan::EDITOR).errors.is_empty());
 }
 
 #[test]
@@ -933,4 +1096,22 @@ fn the_monitor_s_routes_are_desktop_then_llm_and_the_name_is_the_grant() {
     assert_eq!(plan.services[2].uses, ["llm", "desktop"]);
     // Without the services before it the line is an error, not a route elsewhere.
     assert!(!parse_plan(kabi::plan::MONITOR_WINDOW).errors.is_empty());
+}
+
+#[test]
+fn the_models_window_s_routes_are_desktop_then_updated_and_the_name_is_the_grant() {
+    let plan = parse_plan(&alloc::format!(
+        "desktop caps=display+input+serve\nupdated caps=update+serve+call\n{}",
+        kabi::plan::MODELS_WINDOW
+    ));
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let models = &plan.services[2];
+    // comphost grants `kai:models` and `updated` answers `models` by this name.
+    assert_eq!(models.name, "models-window");
+    assert_eq!(models.program, "comphost");
+    // comphost reads the first route as desktop's and the second as updated's.
+    assert_eq!(models.uses, ["desktop", "updated"]);
+    assert_eq!(models.limits.caps, cap::SERVE | cap::COMPONENT | cap::CALL);
+    // Without the services before it the line is an error, not a route elsewhere.
+    assert!(!parse_plan(kabi::plan::MODELS_WINDOW).errors.is_empty());
 }

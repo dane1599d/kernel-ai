@@ -65,6 +65,10 @@ pub enum Told {
     /// One of the app's windows took the keyboard focus (`seat.focus_in`): a
     /// click on it, or Alt+Tab to it.
     Focus(u32),
+    /// The desktop's theme, by name (`surfabi`'s `Theme`): at connect and
+    /// after each change. The app's windows paint in it; a name the app does
+    /// not know leaves them as they are.
+    Theme(String),
 }
 
 struct Window {
@@ -298,6 +302,16 @@ impl Desk {
         let mut greeting = false;
         while let Ok((header, args, next)) = wire::split(reply) {
             reply = next;
+            // Only `Global` (opcode 0) is a greeting; the registry's other
+            // events (the theme) are no new desktop.
+            if header.object == REGISTRY && header.opcode != 0 {
+                if let Ok(Event::Theme(name)) =
+                    Event::decode(Interface::Registry, header.opcode, args)
+                {
+                    out.push(Told::Theme(String::from(name)));
+                }
+                continue;
+            }
             if header.object == REGISTRY {
                 // A greeting's globals come together: the first greeting is
                 // this connection's own, any later one another desktop's.
