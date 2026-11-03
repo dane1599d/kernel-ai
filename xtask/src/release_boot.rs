@@ -5,6 +5,12 @@
 //! shell's answer to `models import` and `updated`'s import line
 //! ([`crate::cases::release::RELEASE_BOOT`]). With no `test=` mode the kernel
 //! never exits by itself, so QEMU is stopped then. `release.yml` runs it.
+//!
+//! A fresh image's first boot is the recovery install: R finds no boot record,
+//! installs the release in `kai-a` and `kai-b` as trials, arms `kai-a` and
+//! resets. So this boot, unlike the cases', runs without `-no-reboot`: the
+//! same QEMU, disk and firmware variables go on into `kai-a`, as a person's
+//! VM does, and the desk and the keys come on that boot.
 
 use crate::cases::release::RELEASE_BOOT;
 use crate::options::{Accel, Sizing};
@@ -83,6 +89,8 @@ pub fn main(args: &[String]) -> Result<(), String> {
     let firmware = crate::find_firmware(&qemu, &target_dir)?;
     let accel = crate::resolve_accel(args.accel);
     let mut qemu_args = qemu::args(&firmware, accel, true, None, Sizing::default());
+    // The first boot's reset, after the recovery install, restarts the VM.
+    qemu_args.retain(|arg| arg != "-no-reboot");
     qemu::boot_from_disk(&mut qemu_args, &image.to_string_lossy())?;
     qemu_args.extend(qemu::import_disk_args(&model.to_string_lossy()));
     let monitor = qemu::free_port()?;

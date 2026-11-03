@@ -3,7 +3,9 @@
 //! partition 5 is it) and no `test=` mode, so no "ready for keys" and no
 //! isa-debug-exit. `release_boot.rs` boots it; `cargo xtask test` never does.
 //!
-//! A person's first steps on a fresh install: the desk comes up, Ctrl+Alt+F12
+//! A person's first steps on a fresh install: R installs the release in
+//! `kai-a` and `kai-b` and resets (`release_boot.rs` lets the VM restart),
+//! then on `kai-a` the desk comes up, Ctrl+Alt+F12
 //! gives the console the screen, `models import` asks once, and `y` allows
 //! it. The import line, with the model's id, hash and length, is added by
 //! `release_boot.rs` from the catalog.
@@ -22,7 +24,11 @@ pub const RELEASE_BOOT: TestCase = TestCase {
         "desktop: lost the screen to the console",
         "1 Allow",
     ],
-    expect: &["desktop: claimed", "Importing qwen3-0.6b ("],
+    expect: &[
+        "slots: in R with no record: installed release ",
+        "desktop: claimed",
+        "Importing qwen3-0.6b (",
+    ],
     stops: true,
     server: false,
     ..case("release-boot", "")
