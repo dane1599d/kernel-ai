@@ -1027,8 +1027,15 @@ fn the_v0_1_system_plan_parses_and_its_routes_come_first() {
             assert_eq!(service.start, Start::Demand, "{name}");
             assert_eq!(service.program, "comphost", "{name}");
         }
+        // The shell's routes after `updated`: `desktop`, and with `pkg` (where the
+        // editor's builds install) `pkg` after it.
         let shell = named("shell").expect("the shell is planned");
-        assert_eq!(shell.uses.last().map(String::as_str), Some("desktop"));
+        let tail: &[&str] = if files {
+            &["desktop", "pkg"]
+        } else {
+            &["desktop"]
+        };
+        assert_eq!(shell.uses[shell.uses.len() - tail.len()..], *tail);
         assert_eq!(named("pkg").is_some(), files);
         assert_eq!(named("fs").is_some(), files);
         let desktop = named("desktop").expect("the desktop is planned");

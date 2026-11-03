@@ -298,26 +298,38 @@ fn take_files(shell: &mut Shell) {
     }
 }
 
-/// One transfer: a write fetches its pieces and saves; a read reads and fills.
+/// Fills a read's bytes, or a build's report, into the transfer in pieces.
+fn fill_job(route: kabi::handle::Handle, id: u32, bytes: &[u8]) -> Result<(), String> {
+    use deskcore::files::CHUNK;
+    let total = bytes.len();
+    for (i, piece) in bytes.chunks(CHUNK).enumerate() {
+        let head = format!("files fill {id} {} {total}\n", i * CHUNK);
+        let mut message = head.into_bytes();
+        message.extend_from_slice(piece);
+        if ask_desktop_bytes(route, &message)? != b"ok" {
+            return Err(String::from("desktop did not take the file"));
+        }
+    }
+    Ok(())
+}
+
+/// One transfer: a write fetches its pieces and saves; a read reads and fills; a
+/// build builds the component's C sources as a typed `cc build` does and fills its
+/// report, which takes as long as the build.
 fn do_file_job(
     shell: &mut Shell,
     route: kabi::handle::Handle,
     job: &deskcore::files::Job,
 ) -> Result<(), String> {
-    use deskcore::files::{CHUNK, Op};
+    use deskcore::files::Op;
     match job.op {
         Op::Read => {
             let bytes = shell.door_read(&job.app, &job.path)?;
-            let total = bytes.len();
-            for (i, piece) in bytes.chunks(CHUNK).enumerate() {
-                let head = format!("files fill {} {} {total}\n", job.id, i * CHUNK);
-                let mut message = head.into_bytes();
-                message.extend_from_slice(piece);
-                if ask_desktop_bytes(route, &message)? != b"ok" {
-                    return Err(String::from("desktop did not take the file"));
-                }
-            }
-            Ok(())
+            fill_job(route, job.id, &bytes)
+        }
+        Op::Build => {
+            let report = shell.door_build(&job.app, &job.path, job.user)?;
+            fill_job(route, job.id, report.as_bytes())
         }
         Op::Write { create } => {
             let mut bytes: Vec<u8> = Vec::with_capacity(job.total);

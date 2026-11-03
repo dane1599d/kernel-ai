@@ -3,23 +3,32 @@
 //! effects (`effects`). It keeps a transfer only while it runs. One request a
 //! call, as text, a piece of a file after a first line:
 //!
-//! - from the editor, `files start <ticket> read <path>` or
-//!   `files start <ticket> write <new|old> <user|-> <total> <path>` → `ok`, or
+//! - from the editor, `files start <ticket> read <path>`,
+//!   `files start <ticket> write <new|old> <user|-> <total> <path>` or
+//!   `files start <ticket> build <user|-> <name>` → `ok`, or
 //!   `err busy ...` when [`MAX_TRANSFERS`] are running already, or why not;
 //! - from the editor, `files data <ticket> <offset>\n<bytes>` → `ok`: the next
 //!   piece of a write, at most [`CHUNK`] bytes, in order;
 //! - from the editor, `files poll <ticket>` → `pending`, `ok` (a write is done;
-//!   a read has its bytes: `ok <total>`) or `err <why>`; and
-//!   `files get <ticket> <offset>` → `ok <total>\n<bytes>`, a read's piece. A
-//!   write's transfer is gone once its `ok` is told, a read's with its last piece
-//!   or any `err`;
+//!   a read has its bytes, and so has a build, its report: `ok <total>`) or
+//!   `err <why>`; and
+//!   `files get <ticket> <offset>` → `ok <total>\n<bytes>`, a read's or a build's
+//!   piece. A write's transfer is gone once its `ok` is told, a read's or a
+//!   build's with its last piece or any `err`;
 //! - from the shell, `files take` → `none`, or `job <id> <app> read <path>` /
-//!   `job <id> <app> write <new|old> <user|-> <total> <path>`: the oldest
-//!   transfer that is complete;
+//!   `job <id> <app> write <new|old> <user|-> <total> <path>` /
+//!   `job <id> <app> build <user|-> <name>`: the oldest transfer that is
+//!   complete;
 //! - from the shell, `files fetch <id> <offset>` → `ok\n<bytes>` (a write's
-//!   piece), `files fill <id> <offset> <total>\n<bytes>` → `ok` (a read's
-//!   piece, in order) and `files done <id> ok` or `files done <id> err <why>` →
-//!   `ok`.
+//!   piece), `files fill <id> <offset> <total>\n<bytes>` → `ok` (a read's piece
+//!   or a build's report, in order) and `files done <id> ok` or
+//!   `files done <id> err <why>` → `ok`.
+//!
+//! A build asks the shell to build the C component `<name>` from
+//! `/home/user/c/<name>/` (`shellcore::ccbuild`), as it builds for a typed
+//! `cc build`. It carries no bytes in; its answer is the report the shell fills,
+//! like a read's. It waits for the shell as long as the build takes, and the shell
+//! passes it on only if the `user` mark says a person's key started it.
 //!
 //! Which app a transfer is for is `desktop`'s own record of the caller (the
 //! kernel's name for its process), never anything in the message, and only the
@@ -62,6 +71,15 @@ pub enum Op {
     Write {
         create: bool,
     },
+    /// `cc build` of the component the job's `path` names; the answer is a report.
+    Build,
+}
+
+impl Op {
+    /// Whether the transfer's answer is bytes the shell fills and the app gets.
+    fn answers_bytes(&self) -> bool {
+        matches!(self, Op::Read | Op::Build)
+    }
 }
 
 /// A complete transfer, as the shell takes it.
@@ -71,8 +89,9 @@ pub struct Job {
     pub app: String,
     pub op: Op,
     /// Whether a person's key or click caused the request (the app's word,
-    /// carried by its `comphost`); the shell passes a write on only if so.
+    /// carried by its `comphost`); the shell passes a write or a build on only if so.
     pub user: bool,
+    /// The file's path; a build's component name.
     pub path: String,
     /// A write's bytes, or what a read's answer is to be.
     pub total: usize,
@@ -158,13 +177,34 @@ pub fn check_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// A job line as `files take` gives it (`job <id> <app> read <path>` or
-/// `job <id> <app> write <new|old> <user|-> <total> <path>`); `None` for `none`
-/// or anything else.
+/// Why `name` is not a component a build names: 2-12 of a-z, 0-9 and `-`, starting
+/// with a letter (a package's name; `cc` and `pkg` check it again, and the shell
+/// before them).
+pub fn check_name(name: &str) -> Result<(), String> {
+    let shaped = (2..=12).contains(&name.len())
+        && name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if shaped {
+        Ok(())
+    } else {
+        Err(format!(
+            "{name:?} is not a component's name: 2-12 of a-z, 0-9 and -, starting with a letter"
+        ))
+    }
+}
+
+/// A job line as `files take` gives it (`job <id> <app> read <path>`,
+/// `job <id> <app> write <new|old> <user|-> <total> <path>` or
+/// `job <id> <app> build <user|-> <name>`); `None` for `none` or anything else.
 pub fn parse_job(line: &str) -> Option<Job> {
     let words: Vec<&str> = line.split(' ').collect();
     let (id, app, op, user, total, path) = match words.as_slice() {
         ["job", id, app, "read", path] => (id, app, Op::Read, false, 0, path),
+        ["job", id, app, "build", user @ ("user" | "-"), name] => {
+            (id, app, Op::Build, *user == "user", 0, name)
+        }
         [
             "job",
             id,
@@ -278,6 +318,10 @@ impl Files {
                 }
                 (Err(e), _) | (_, Err(e)) => e,
             },
+            ["start", t, "build", user @ ("user" | "-"), name] => match ticket(t) {
+                Ok(t) => self.start(app, t, Op::Build, *user == "user", 0, name, now_ms),
+                Err(e) => e,
+            },
             ["data", t, offset] => match (ticket(t), number(offset)) {
                 (Ok(t), Ok(offset)) => self.data(app, t, offset, body, now_ms),
                 (Err(e), _) | (_, Err(e)) => e,
@@ -305,7 +349,12 @@ impl Files {
         path: &str,
         now_ms: u64,
     ) -> Reply {
-        if let Err(why) = check_path(path) {
+        // A build's `path` is the component's name.
+        let named = match op {
+            Op::Build => check_name(path),
+            Op::Read | Op::Write { .. } => check_path(path),
+        };
+        if let Err(why) = named {
             return err(why);
         }
         if total > MAX_BYTES {
@@ -321,7 +370,7 @@ impl Files {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
         let phase = match op {
-            Op::Read => Phase::Waiting,
+            Op::Read | Op::Build => Phase::Waiting,
             Op::Write { .. } if total == 0 => Phase::Waiting,
             Op::Write { .. } => Phase::Receiving,
         };
@@ -382,7 +431,7 @@ impl Files {
                 self.drop_ticket(app, ticket);
                 err(why)
             }
-            Phase::Answered(Ok(())) if transfer.job.op == Op::Read => {
+            Phase::Answered(Ok(())) if transfer.job.op.answers_bytes() => {
                 text(format!("ok {}", transfer.bytes.len()))
             }
             Phase::Answered(Ok(())) => {
@@ -398,7 +447,7 @@ impl Files {
             Ok(t) => t,
             Err(e) => return e,
         };
-        if transfer.phase != Phase::Answered(Ok(())) || transfer.job.op != Op::Read {
+        if transfer.phase != Phase::Answered(Ok(())) || !transfer.job.op.answers_bytes() {
             return err("there is nothing to get");
         }
         let total = transfer.bytes.len();
@@ -457,6 +506,13 @@ impl Files {
         let job = &transfer.job;
         let line = match job.op {
             Op::Read => format!("job {} {} read {}", job.id, job.app, job.path),
+            Op::Build => format!(
+                "job {} {} build {} {}",
+                job.id,
+                job.app,
+                if job.user { "user" } else { "-" },
+                job.path
+            ),
             Op::Write { create } => format!(
                 "job {} {} write {} {} {} {}",
                 job.id,
@@ -475,7 +531,7 @@ impl Files {
             Ok(t) => t,
             Err(e) => return e,
         };
-        if transfer.phase != Phase::Running || transfer.job.op == Op::Read {
+        if transfer.phase != Phase::Running || transfer.job.op.answers_bytes() {
             return err("there is nothing to fetch");
         }
         let total = transfer.bytes.len();
@@ -498,7 +554,7 @@ impl Files {
             Err(e) => return e,
         };
         let bad = transfer.phase != Phase::Running
-            || transfer.job.op != Op::Read
+            || !transfer.job.op.answers_bytes()
             || body.len() > CHUNK
             || total > MAX_BYTES
             || offset != transfer.bytes.len()
@@ -521,7 +577,7 @@ impl Files {
         if transfer.phase != Phase::Running {
             return err("that transfer is not running");
         }
-        let short = transfer.job.op == Op::Read
+        let short = transfer.job.op.answers_bytes()
             && outcome.is_ok()
             && transfer.bytes.len() != transfer.job.total;
         transfer.phase = if short {
@@ -530,7 +586,7 @@ impl Files {
             Phase::Answered(outcome)
         };
         // A write's bytes are not needed any more.
-        if transfer.job.op != Op::Read {
+        if !transfer.job.op.answers_bytes() {
             transfer.bytes = Vec::new();
         }
         transfer.touched_ms = now_ms;

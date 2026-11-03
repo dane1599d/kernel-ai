@@ -90,6 +90,49 @@ pub(super) const CASES: &[TestCase] = &[
         memory_mib: Some(1024),
         ..case("app-editor-files", "test=app-editor-files")
     },
+    // P4 task 11, C components from the editor: the editor opens a C source the case
+    // wrote into `/home/user/c/hello/` (Ctrl-O and its path), and Ctrl-B builds the
+    // component through the file door and the shell as a typed `cc build hello` does:
+    // `pkg` installs it from `local` as generation 2 and starts it. After `undo`, typed
+    // at the shell, packages are back at generation 1. Minutes when QEMU emulates the
+    // CPU, as `c-build`'s two builds are.
+    TestCase {
+        data: Some(crate::blklog::Data {
+            nvme: false,
+            log: None,
+            gpt: true,
+        }),
+        keys: &[
+            // Ctrl-O asks for a path: the first half of /home/user/c/hello/hello.c, then
+            // the rest and Enter, which opens the file the case wrote.
+            &[
+                "ctrl-o", "slash", "h", "o", "m", "e", "slash", "u", "s", "e", "r",
+            ],
+            &[
+                "slash", "c", "slash", "h", "e", "l", "l", "o", "slash", "h", "e", "l", "l", "o",
+                "dot", "c", "ret",
+            ],
+            // Ctrl-B builds the component the open file is in.
+            &["ctrl-b"],
+        ],
+        expect: &[
+            "pkg: generation 1 starts no app from a package",
+            "app-editor-build: Ctrl-O opened /home/user/c/hello/hello.c",
+            "comphost: files: build hello (person true) answered ",
+            "app-editor-build: Ctrl-B built hello 0.0.1 from the editor, and pkg installed it as generation 2",
+            "pkg: started from local: hello 0.0.1 as p-",
+            "hello from C, built in the OS",
+            "app-editor-build: hello 0.0.1 runs as p-",
+            "pkg: switched back from generation 2 to 1's packages as generation 3",
+            "pkg: ended, undone: hello as p-",
+            "app-editor-build: undo took the editor's build back to generation 1",
+        ],
+        min_timeout: Some(Duration::from_secs(600)),
+        // fs, pkg, the model, the shell, cc, desktop, the editor and the built app
+        // together pass the default 512 MiB guest's page budget, as `c-build`'s do.
+        memory_mib: Some(1024),
+        ..case("app-editor-build", "test=app-editor-build")
+    },
     TestCase {
         build: true,
         prepare: Some(crate::boot_smoke::prepare_manifest),

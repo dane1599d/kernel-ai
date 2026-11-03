@@ -63,6 +63,7 @@ impl Screen {
         self.commit();
         match c {
             'z' => self.reload("undo"),
+            'b' if self.file_mode => self.build = true,
             'b' => self.push(Kind::Build, Request::Cmd("build".into())),
             'd' => self.show("diff", "diff"),
             't' => self.show("try", "try"),
@@ -162,6 +163,7 @@ impl Screen {
         let word = text.split(' ').next().unwrap_or("");
         let request = Request::Cmd(text.into());
         match word {
+            "build" if self.file_mode => self.build = true,
             "build" => self.push(Kind::Build, request),
             "open" => self.push(Kind::OpenFile(1), request),
             "undo" | "reset" | "s" | "c" | "i" | "a" | "d" | "split" | "join" => {
