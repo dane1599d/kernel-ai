@@ -20,7 +20,7 @@ What the founder sees at the end of P4, in a VM (QEMU or VirtualBox) booted from
 | Boot case | Shows |
 |---|---|
 | `app-terminal` | The agent opens the terminal app, runs a command in it through its actions, and reads the typed output spans back |
-| `app-files` | The agent moves a file (run: it is logged, and `undo` puts it back), trashes one (run), and `undo` restores both; the Files window shows each state |
+| `app-files` | The agent moves a file and trashes one (run: each is logged, and `undo` puts it back); the Files window shows each state |
 | `app-notes` | The agent makes a note; it survives a reboot through `kai:app` storage |
 | `app-settings` | The agent switches the theme (`appearance_set`, run, with undo); Settings shows what each app may do, and a revoked grant leaves the app refused until `undo` |
 | `app-monitor` | The agent sorts by memory and names the top process; stopping a process asks |

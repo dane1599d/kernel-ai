@@ -330,10 +330,6 @@ const ACTS: &[(&str, &str)] = &[
         "pick plan.txt in the files app",
         r#"{"name":"files_select","arguments":{"name":"plan.txt"}}"#,
     ),
-    (
-        "trash plan.txt",
-        r#"{"name":"fs_trash","arguments":{"path":"plan.txt"}}"#,
-    ),
     // `app-terminal` (P4 task 4): the AI types into the Terminal app, and reads.
     (
         "type 1 + 2 in the terminal",

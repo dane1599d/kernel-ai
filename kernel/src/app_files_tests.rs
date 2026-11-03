@@ -11,11 +11,15 @@
 //!
 //! 1. "create notes.txt saying hello": the window lists `notes.txt`;
 //! 2. "move notes.txt to plan.txt": it lists `plan.txt` and no longer `notes.txt`;
-//! 3. "trash plan.txt": it lists neither;
-//! 4. `undo`: `plan.txt` is back; `undo` again: `notes.txt` is, and `plan.txt` is not.
+//! 3. `undo`: `notes.txt` is back, and `plan.txt` is not;
+//! 4. "trash notes.txt": it lists neither;
+//! 5. `undo`: `notes.txt` is back.
 //!
-//! The shell's log (`log`) shows the move, the trash and each undo, asked right
-//! after each: it keeps its last 64 entries, and the polling adds some.
+//! Each change is undone right after it: a plain `undo` reverts the newest live
+//! entry and is an entry of its own, so `undo` again would redo it (ADR 0002 D7).
+//! The shell's log (`log`) shows the move, the trash and each undo (`undo of #N`, N
+//! the entry undone), asked right after each: it keeps its last 64 entries, and the
+//! polling adds some.
 
 use crate::display::claim;
 use crate::{console, ipc, log, process, threads};
@@ -48,7 +52,7 @@ const POLL_MS: u64 = 1_000;
 /// The requests the mock model answers (`xtask/src/mock_llm.rs`).
 const CREATE: &str = "create notes.txt saying hello";
 const MOVE: &str = "move notes.txt to plan.txt";
-const TRASH: &str = "trash plan.txt";
+const TRASH: &str = "trash notes.txt";
 const SHOW: &str = "show notes.txt in the files app";
 const PICK_NOTES: &str = "pick notes.txt in the files app";
 const PICK_PLAN: &str = "pick plan.txt in the files app";
@@ -71,20 +75,29 @@ fn does(line: &str, done: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The shell's log (`log`) has an entry with `needed` in it. It keeps only its
-/// last entries, and the agent's polling adds some, so this is asked right after
-/// the change it shows.
-fn logged(needed: &str) -> Result<(), &'static str> {
+/// The shell's log (`log`) has an entry with `needed` in it, and its number
+/// (`#12 move notes.txt to plan.txt: ran`). It keeps only its last entries, and the
+/// agent's polling adds some, so this is asked right after the change it shows.
+fn logged(needed: &str) -> Result<u64, &'static str> {
     let history = reply_to("log")?;
-    if !history.contains(needed) {
+    let number = history
+        .lines()
+        .rev()
+        .find(|line| line.contains(needed))
+        .and_then(|line| line.strip_prefix('#'))
+        .and_then(|line| {
+            let digits: String = line.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse().ok()
+        });
+    let Some(number) = number else {
         log!(
             "app-files: the log has no {needed:?}: {:?}",
             history.replace('\n', "; ")
         );
         return Err("app-files: the log does not show a change or its undo");
-    }
-    log!("app-files: the log shows {needed:?}");
-    Ok(())
+    };
+    log!("app-files: the log shows {needed:?} as #{number}");
+    Ok(number)
 }
 
 /// Whether the window lists the name `pick` selects: `files_select` is `ok` for a
@@ -158,11 +171,13 @@ pub fn check() -> Result<(), &'static str> {
     )?;
     log!("app-files: the Files window lists the file the agent made");
 
+    // A plain `undo` reverts the newest live entry, and is an entry of its own, so
+    // a second `undo` would redo the first: each change is undone right after it.
     does(
         MOVE,
         "ok Done: file notes.txt moved to plan.txt (was there). undo",
     )?;
-    logged("move notes.txt to plan.txt: ran")?;
+    let moved = logged("move notes.txt to plan.txt: ran")?;
     shows(
         false,
         true,
@@ -170,11 +185,20 @@ pub fn check() -> Result<(), &'static str> {
     )?;
     log!("app-files: after the move the window lists plan.txt and no longer notes.txt");
 
+    does("undo", "ok Undone: files back as they were")?;
+    logged(&format!("undo of #{moved}"))?;
+    shows(
+        true,
+        false,
+        "app-files: the window did not list the moved-back file",
+    )?;
+    log!("app-files: undo put the move back, and the window lists notes.txt and not plan.txt");
+
     does(
         TRASH,
-        "ok Done: file plan.txt in the trash (was there). undo",
+        "ok Done: file notes.txt in the trash (was there). undo",
     )?;
-    logged("trash plan.txt: ran")?;
+    let trashed = logged("trash notes.txt: ran")?;
     shows(
         false,
         false,
@@ -183,21 +207,14 @@ pub fn check() -> Result<(), &'static str> {
     log!("app-files: after the trash the window lists neither file");
 
     does("undo", "ok Undone: files back as they were")?;
-    logged("undo of #")?;
+    logged(&format!("undo of #{trashed}"))?;
     shows(
-        false,
         true,
+        false,
         "app-files: the window did not list the restored file",
     )?;
-    does("undo", "ok Undone: files back as they were")?;
-    logged("undo of #")?;
-    shows(
-        true,
-        false,
-        "app-files: the window did not list the moved-back file",
-    )?;
     log!(
-        "app-files: the agent made, moved and trashed a file at once, the Files window showed each state, and undo put both back; the log showed each change and each undo"
+        "app-files: the agent made, moved and trashed a file at once, the Files window showed each state, and undo put each back; the log showed each change and each undo"
     );
     Ok(())
 }
