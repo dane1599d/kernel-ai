@@ -320,15 +320,41 @@ fn reset_and_sessions() {
     cc.ok("I64 Sq(I64 x) { return x * x; }");
     assert_eq!(cc.send("reset"), ["ok"]);
     assert!(cc.eval("Sq(2)")[0].starts_with("err 1 "));
-    assert_eq!(
-        cc.send("open trial origin=model"),
-        ["err 0 model-written C is not enabled"]
-    );
+    assert_eq!(cc.send("back"), ["err 0 no model session is open"]);
     assert_eq!(
         cc.send("build hello 0.0.1"),
         ["err 0 build brings its sources in an Shm"]
     );
     assert_eq!(cc.send("nonsense"), ["err 0 not a request"]);
+}
+
+/// A model's program runs in a fresh session (D5): it sees nothing the user
+/// defined, and `back` brings the user's session back with its globals.
+#[test]
+fn a_model_session_sets_the_users_aside() {
+    let mut cc = Cc::open();
+    cc.ok("I64 Sq(I64 x) { return x * x; }");
+    cc.ok("I64 kept = 7;");
+    assert_eq!(cc.send("open trial origin=model"), ["ok"]);
+    assert!(
+        cc.eval("Sq(2)")[0].starts_with("err 1 "),
+        "the model sees Sq"
+    );
+    cc.ok("I64 Cube(I64 x) { return x * x * x; }");
+    // A second program gets a fresh session again; the user's stays aside.
+    assert_eq!(cc.send("open trial origin=model"), ["ok"]);
+    assert!(cc.eval("Cube(2)")[0].starts_with("err 1 "));
+    assert_eq!(cc.send("reset"), ["ok"]);
+    assert_eq!(cc.send("back"), ["ok"]);
+    assert_eq!(cc.value("kept"), "i64 7");
+    assert_eq!(cc.value("Sq(3)"), "i64 9");
+    assert!(cc.eval("Cube(2)")[0].starts_with("err 1 "));
+    assert_eq!(cc.send("back"), ["err 0 no model session is open"]);
+    // A user's open drops a model's session and the one set aside.
+    assert_eq!(cc.send("open trial origin=model"), ["ok"]);
+    assert_eq!(cc.send("open main origin=user"), ["ok"]);
+    assert_eq!(cc.send("back"), ["err 0 no model session is open"]);
+    assert!(cc.eval("Sq(2)")[0].starts_with("err 1 "));
 }
 
 /// cc's plan line covers everything it may hold at once.

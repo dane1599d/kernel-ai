@@ -245,6 +245,7 @@ fn options_need_a_server_and_a_model() {
                 model: "qwen3-8b".into(),
             },
             repeat: 3,
+            c: false,
         })
     );
     assert!(parse(&args(&["--llm", "192.168.1.50:8080"])).is_err());
@@ -265,6 +266,7 @@ fn local_options_name_a_catalog_model_and_maybe_a_store() {
                 store: Some("E:\\models".into()),
             },
             repeat: 1,
+            c: false,
         })
     );
     assert!(parse(&args(&["--local", "qwen3-0.6b", "--llm", "h:1"])).is_err());
@@ -441,6 +443,7 @@ fn the_gate_sends_the_request_the_llm_service_would() {
         request: String::from("Tell me the number of processors."),
         repair: Some((String::from("print(1);"), "e".repeat(5000))),
         timeout_ms: 500_000,
+        lang: Default::default(),
     };
     let (body, timeout) = service_request("m", &long).unwrap();
     assert_eq!(timeout, Duration::from_millis(script::SERVICE_TIMEOUT_MS));
@@ -465,6 +468,7 @@ fn a_host_name_reaches_a_server_on_any_of_its_addresses() {
         request: String::from("Tell me the number of processors."),
         repair: None,
         timeout_ms: 5_000,
+        lang: Default::default(),
     };
     // The mock answers an unknown request with prose: the exchange itself worked.
     assert_eq!(transport(&request), Err(AnswerError::NoEnvelope));

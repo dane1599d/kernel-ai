@@ -77,7 +77,12 @@ impl Server {
             .repair
             .as_ref()
             .map(|(script, error)| script::Repair { script, error });
-        let body = script::chat_request(&self.model, &request.request, repair);
+        let body = match request.lang {
+            script::Lang::Rhai => script::chat_request(&self.model, &request.request, repair),
+            script::Lang::C => {
+                llmproto::program::chat_request(&self.model, &request.request, repair)
+            }
+        };
         let timeout = request.timeout_ms.min(script::SERVICE_TIMEOUT_MS);
         self.post(&body, timeout, response)
             .map_err(script::AnswerError::Server)

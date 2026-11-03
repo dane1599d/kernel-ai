@@ -6,6 +6,8 @@
 //! too, so the shell's one door runs as in the OS (actbench's gate); without one
 //! the shell asks for scripts only, as the fluency gate measures.
 
+use ccserve::Service;
+use ccserve::rows::Rows;
 use kabi::{Metrics, policy};
 use llmproto::act::{ActError, ActRequest, Call};
 use llmproto::script::{Answer, AnswerError, ScriptRequest};
@@ -20,6 +22,9 @@ pub type ActTransport = Box<dyn Fn(&ActRequest) -> Result<Call, ActError>>;
 /// The services `processes()` lists, as (pid, name).
 pub const SERVICES: &[(u64, &str)] = &[(12, "shell"), (25, "llm"), (19, "crasher")];
 
+/// A `cc` service and the clock it runs on.
+type Cc = (Service<Rows>, Box<dyn ccserve::Host>);
+
 pub struct GateHost {
     started: Instant,
     policy: Cell<u64>,
@@ -31,6 +36,10 @@ pub struct GateHost {
     pub calls: RefCell<Vec<Result<Call, ActError>>>,
     transport: Transport,
     act: Option<ActTransport>,
+    /// A `cc` service for `c>` entries (spike S12-2, [`super::c`]), and its clock.
+    cc: RefCell<Option<Cc>>,
+    /// Every reply `cc` gave.
+    pub cc_replies: RefCell<Vec<Vec<u8>>>,
 }
 
 impl GateHost {
@@ -43,7 +52,14 @@ impl GateHost {
             calls: RefCell::new(Vec::new()),
             transport,
             act: None,
+            cc: RefCell::new(None),
+            cc_replies: RefCell::new(Vec::new()),
         }
+    }
+
+    /// Gives `c>` entries to `service`.
+    pub fn start_cc(&self, service: Service<Rows>, clock: Box<dyn ccserve::Host>) {
+        *self.cc.borrow_mut() = Some((service, clock));
     }
 
     /// A host that answers `act` requests with `act` as well.
@@ -112,6 +128,16 @@ impl shellcore::Host for GateHost {
         let call = act(request);
         self.calls.borrow_mut().push(call.clone());
         call
+    }
+
+    fn cc(&self, request: &[u8]) -> Result<Vec<u8>, String> {
+        let mut cc = self.cc.borrow_mut();
+        let Some((service, clock)) = cc.as_mut() else {
+            return Err(String::from("cc is not running"));
+        };
+        let reply = service.handle(request, clock.as_ref());
+        self.cc_replies.borrow_mut().push(reply.clone());
+        Ok(reply)
     }
 
     fn audit(&self, _: &str) {}

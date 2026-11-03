@@ -36,6 +36,9 @@ pub(crate) struct CEntry {
     request: String,
     /// The source of the first content a call returned, if any did.
     pub(crate) seen: Option<&'static str>,
+    /// Kai's program, when the entry is one (`cmode::program`): the log
+    /// records it in place of the calls' one-line scripts.
+    pub(crate) program: Option<String>,
 }
 
 /// What a call of an entry came to, for `ccserve`'s `resume`.
@@ -61,6 +64,7 @@ impl Shell {
             start,
             request: request.to_string(),
             seen: None,
+            program: None,
         });
         start
     }
@@ -130,10 +134,13 @@ impl Shell {
             of: None,
             tier,
             pack: None,
-            consent: String::from("c-entry"),
+            consent: String::from(match entry.program {
+                Some(_) => "c-program",
+                None => "c-entry",
+            }),
             state,
             request: entry.request,
-            script: script.join("\n"),
+            script: entry.program.unwrap_or_else(|| script.join("\n")),
             outcome: outcome.join("; "),
             changes,
         });

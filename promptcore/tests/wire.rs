@@ -18,6 +18,7 @@ fn requests_read_and_write_back() {
         "dis Sq",
         "defs",
         "reset",
+        "back",
         "build hello-app 0.0.12",
         "eval 0\n",
     ] {

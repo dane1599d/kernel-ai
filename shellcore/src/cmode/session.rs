@@ -21,6 +21,8 @@ pub(super) struct Ran {
     pub(super) defined: Option<String>,
     /// The log entry its calls' changes joined.
     pub(super) logged: Option<u64>,
+    /// It is in cc's journal of the user's session: Kai's program is not.
+    pub(super) cc: bool,
 }
 
 impl Shell {
@@ -56,6 +58,7 @@ impl Shell {
                     seq,
                     defined: Some(text),
                     logged: None,
+                    cc: true,
                 });
             }
         }
@@ -143,7 +146,7 @@ impl Shell {
             }
             text = reverted.text;
         }
-        let steps = self.c.ran.len() - at;
+        let steps = self.c.ran[at..].iter().filter(|r| r.cc).count();
         self.c.ran.truncate(at);
         let mut cc_ok = !self.c.open;
         for _ in 0..steps {

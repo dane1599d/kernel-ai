@@ -18,6 +18,7 @@ mod apps;
 mod ccbuild;
 mod centry;
 mod cmode;
+mod cprogram;
 mod door;
 mod effects;
 mod files;

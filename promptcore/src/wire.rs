@@ -12,10 +12,14 @@
 //! defs                                done <compile_us> <link_us> <run_us>
 //! reset                               err <line> <n>\n<text>      line 0: not in the entry
 //! build <component> <version>         trap <reason> <function>|-
-//!                                     undone <seq>
+//! back                                undone <seq>
 //!                                     text <n>\n<text>            for dis and defs
 //!                                     ok
 //! ```
+//!
+//! `open <session> origin=model` sets the user's session aside and starts a
+//! fresh one for a model-written program (D5, P4 task 14); `back` drops it and
+//! brings the user's session back as it was. `origin=user` drops both.
 //!
 //! `build` comes with an `Shm` that holds the component's source bundle; cc
 //! writes the artifact over it and answers `text` (see `ccserve::build::shm`).
@@ -61,7 +65,8 @@ pub enum Origin {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Request<'a> {
-    /// Starts a session, dropping any other.
+    /// Starts a session. `origin=user` drops any other; `origin=model` sets the
+    /// user's session aside until [`Request::Back`].
     Open {
         session: &'a str,
         origin: Origin,
@@ -85,6 +90,8 @@ pub enum Request<'a> {
     Dis(&'a str),
     Defs,
     Reset,
+    /// Drops the model's session and brings the user's back.
+    Back,
     /// `cc build`: the sources come in an `Shm`, not in the message.
     Build {
         component: &'a str,
@@ -131,6 +138,7 @@ impl<'a> Request<'a> {
             (["undo"], None) => Request::Undo,
             (["defs"], None) => Request::Defs,
             (["reset"], None) => Request::Reset,
+            (["back"], None) => Request::Back,
             (["dis", name], None) => Request::Dis(ident(name)?),
             (["build", component, v], None) => Request::Build {
                 component: word(component, 32)?,
@@ -161,6 +169,7 @@ impl<'a> Request<'a> {
             Request::Dis(name) => format!("dis {name}"),
             Request::Defs => "defs".into(),
             Request::Reset => "reset".into(),
+            Request::Back => "back".into(),
             Request::Build { component, version } => format!("build {component} {version}"),
         }
     }
