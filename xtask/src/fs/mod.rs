@@ -48,6 +48,28 @@ mod tests;
 use crate::blklog::Expect;
 use std::path::{Path, PathBuf};
 
+/// Formats kaifs over the `sectors` from `first` (an LBA) of the image file at
+/// `image`, which already holds its GPT, with the volume id `uuid` and the clock
+/// at 0, so the same arguments always write the same bytes (a release image's
+/// `kai-data`, `image/slots.rs`); the generation it commits.
+pub(crate) fn format_partition(
+    image: &Path,
+    first: u64,
+    sectors: u64,
+    uuid: [u8; 16],
+) -> Result<u64, String> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(image)
+        .map_err(|e| format!("{}: {e}", image.display()))?;
+    let region = disk::Region {
+        offset: first * 512,
+        blocks: sectors * 512 / kaifs::BLOCK as u64,
+    };
+    ops::format(disk::FileDev::new(file, region), uuid, "kai-data", 0)
+}
+
 const USAGE: &str = "usage: cargo xtask fs mkfs IMAGE [--size MIB] [--label TEXT] [--force]
        cargo xtask fs import IMAGE HOST_PATH GUEST_PATH
        cargo xtask fs import --model IMAGE FILE
