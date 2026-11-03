@@ -183,6 +183,7 @@ dependencies = [
  "promptcore",
  "serde_json",
  "sha2",
+ "uikit",
  "wasihost",
  "wasmhost",
  "wasmi",
