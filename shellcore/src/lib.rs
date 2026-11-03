@@ -26,6 +26,7 @@ pub mod actlog;
 mod agentcore;
 pub mod analyse;
 pub mod apart;
+pub mod appbuild;
 mod appearance;
 pub mod appline;
 pub mod apps;
@@ -236,10 +237,26 @@ pub trait Host {
         Err(String::from("there is no pkg service here"))
     }
     /// `cc build`'s work outside the shell's logic: component `name`'s
-    /// sources, read from [`ccbuild::DIR`], built by `cc` at `version`, and the
-    /// artifact written beside them.
-    fn cc_build(&self, _name: &str, _version: &str) -> Result<ccbuild::CcBuilt, String> {
+    /// sources, read from `dir/name/` ([`ccbuild::DIR`], or [`ccbuild::APPS_DIR`]
+    /// for `app_build`), built by `cc` at `version`, and the artifact written
+    /// beside them.
+    fn cc_build(
+        &self,
+        _dir: &str,
+        _name: &str,
+        _version: &str,
+    ) -> Result<ccbuild::CcBuilt, String> {
         Err(String::from("cc build needs the files and cc here"))
+    }
+    /// Writes `text` as the whole of `/home/user/apps/<name>/main.c`, making the
+    /// folders if they are new (`app_build`). The source is kept whatever comes
+    /// of its build, so it is no undo of its own.
+    fn app_source(&self, _name: &str, _text: &str) -> Result<(), String> {
+        Err(String::from("there are no files here"))
+    }
+    /// `/home/user/apps/<name>/main.c` as it is now: `None` if there is none.
+    fn app_source_read(&self, _name: &str) -> Result<Option<String>, String> {
+        Ok(None)
     }
     /// Hands the artifact at `path` to `pkg`'s `local` as a read-only File:
     /// the text after its `ok`.
@@ -514,6 +531,11 @@ pub struct Shell {
     keep_waiting: settings::KeepWaiting,
     /// Each standing instruction's last profile switch, which its "until" puts back.
     fired_profiles: Vec<(u64, u64)>,
+    /// What `app_build` built last and has not installed ("Kai builds apps").
+    app_built: Option<appbuild::Built>,
+    /// Each app's `main.c` this session wrote, by its SHA-256: overwritten
+    /// again only while it is still that.
+    app_written: Vec<(String, String)>,
     /// Installed software: the image's repository and its generations.
     pkgs: pkg::Store,
     /// Whether the `sudo` note was said already.
@@ -598,6 +620,8 @@ impl Shell {
             keep: Vec::new(),
             keep_waiting: settings::KeepWaiting::default(),
             fired_profiles: Vec::new(),
+            app_built: None,
+            app_written: Vec::new(),
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
             shown: None,
