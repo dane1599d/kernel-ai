@@ -282,6 +282,20 @@ impl Ui {
         }
     }
 
+    /// Notes the effects a call's reply carries (`effect <ticket> <WAVE>`), so
+    /// what comes of them is taken when it is there: the shell runs them after
+    /// the call and hands each result to `desktop` (`give_call_results`), and a
+    /// result reaches the app only for a ticket sent. Any other reply carries
+    /// none.
+    pub(crate) fn expect_results(&mut self, reply: &[u8]) {
+        if !reply.starts_with(livecore::call::REPLY_HEADER.as_bytes()) {
+            return;
+        }
+        if let Ok(text) = core::str::from_utf8(reply) {
+            self.sent.record(text);
+        }
+    }
+
     /// Gives the app what came of its effects, one `effect-done` each, for
     /// tickets it sent only; what it queues in answer goes out the same way.
     fn deliver<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) {

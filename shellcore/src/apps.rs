@@ -36,12 +36,34 @@ const LIST_MAX: u8 = 32;
 pub struct Apps {
     pub rows: AppRows,
     pub effects: Vec<(String, String)>,
+    /// What those effects came to, by app, for the host to hand back to the app
+    /// as `effect-done`.
+    pub results: Vec<(String, Vec<crate::effects::EffectDone>)>,
 }
+
+/// Batches of results kept for the host to hand back: past this the oldest go.
+const MAX_RESULT_BATCHES: usize = 16;
 
 impl Apps {
     /// What the runs queued since the last take, as (app, effect lines).
     pub fn take_effects(&mut self) -> Vec<(String, String)> {
         core::mem::take(&mut self.effects)
+    }
+
+    /// Keeps what `app`'s effects came to, until the host takes it.
+    pub fn keep_results(&mut self, app: &str, done: Vec<crate::effects::EffectDone>) {
+        if done.is_empty() {
+            return;
+        }
+        if self.results.len() == MAX_RESULT_BATCHES {
+            self.results.remove(0);
+        }
+        self.results.push((app.to_string(), done));
+    }
+
+    /// What the effects run since the last take came to, as (app, results).
+    pub fn take_results(&mut self) -> Vec<(String, Vec<crate::effects::EffectDone>)> {
+        core::mem::take(&mut self.results)
     }
 }
 
