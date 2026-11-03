@@ -454,6 +454,12 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetFallback => run_case(net_tests::fallback_check),
         SelfTest::NetStatic => run_case(net_tests::static_check),
         SelfTest::Slot => {
+            // A slot boot holds `updated`'s record calls until its lever has
+            // written: the guard is closed here, before the lever runs.
+            if slots::lever_done() {
+                fail("slots: a slot boot let updated at the record before its lever ran");
+            }
+            log!("slots: the record waits for this boot's lever");
             slots::on_boot(true);
             test_exit(ExitCode::Success)
         }
