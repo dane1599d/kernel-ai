@@ -168,10 +168,6 @@ impl Host for Os {
         compsdk::app::now_ms()
     }
 
-    fn note(&mut self, text: &str) {
-        compsdk::log(text);
-    }
-
     fn read_file(&mut self, path: &str) -> u32 {
         files::read(path)
     }
