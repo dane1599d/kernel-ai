@@ -257,6 +257,9 @@ fn give_call_results(shell: &mut Shell) {
         return;
     }
     let Some(route) = desktop() else {
+        for (app, _) in &batches {
+            println!("{app}'s effect results were dropped: there is no desktop");
+        }
         return;
     };
     for (app, done) in batches {

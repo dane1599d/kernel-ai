@@ -155,8 +155,14 @@ impl Shell {
             }
             // The call's reply carried these effects, so no desktop queue knows
             // them: what came of each goes back to the app through the host.
-            if let Some(apps) = self.host.apps() {
-                apps.borrow_mut().keep_results(&app, done);
+            let dropped = self
+                .host
+                .apps()
+                .and_then(|apps| apps.borrow_mut().keep_results(&app, done));
+            if let Some(dropped) = dropped {
+                self.host.audit(&format!(
+                    "{dropped}'s effect results were dropped: the queue is full"
+                ));
             }
         }
     }
