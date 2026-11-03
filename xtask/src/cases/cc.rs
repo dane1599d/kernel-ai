@@ -36,7 +36,9 @@ pub(super) const CASES: &[TestCase] = &[
     // by the device key it makes, installs it as generation 2 and starts it,
     // and its `init` logs; the kernel waits until the app runs 0.0.1. `undo`
     // switches back and ends it, which only a running app can be, and the
-    // next build is 0.0.2. Two builds take minutes when QEMU emulates the CPU.
+    // next build is 0.0.2, which the app's new host swaps to from the
+    // withdrawn 0.0.1 (#572). Two builds take minutes when QEMU emulates the
+    // CPU.
     TestCase {
         expect: &[
             "pkg: generation 1 starts no app from a package",
@@ -47,6 +49,8 @@ pub(super) const CASES: &[TestCase] = &[
             "pkg: switched back from generation 2 to 1's packages as generation 3",
             "pkg: ended, undone: hello as p-",
             "c-build: undo switched back to generation 1, and the next build is 0.0.2",
+            "pkg: started from local: hello 0.0.2 as p-",
+            "c-build: hello 0.0.2 runs as p-",
         ],
         data: Some(VIRTIO),
         memory_mib: Some(C_BUILD_MIB),
