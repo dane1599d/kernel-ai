@@ -17,7 +17,8 @@
 //!   program. Then cc brings the user's session back as it was (`back`).
 //! - **`:keep`**: shows the last program's definitions and copies them into
 //!   the user's session, where they replay after a restart like the user's
-//!   own.
+//!   own. A kept function's calls are then decided against the user's later
+//!   entry, as typed code's are, so a change with a literal argument asks.
 
 use super::{MAX_CALLS, ModelRun, Ran, resume};
 use crate::{Reply, SCRIPT_ROUND_MS, Shell};
@@ -264,7 +265,7 @@ fn stub_answer(call: &[u8]) -> Result<Value, String> {
 }
 
 /// A value of type `ret`: numbers are non-zero, text is as long as its type
-/// allows and lists are [`STUB_ITEMS`] long, so what works here can work on
+/// allows up to 64 characters and lists are [`STUB_ITEMS`] long, so what works here can work on
 /// the real system.
 fn stub(ret: &RetType) -> Value {
     match ret {

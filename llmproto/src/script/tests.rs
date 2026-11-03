@@ -235,8 +235,11 @@ fn script_requests_frame_exactly_whatever_they_contain() {
     };
     assert_eq!(ScriptRequest::decode(&plain.encode()), Some(plain.clone()));
     // Rhai's framing is unchanged; a C program request says so in its word.
-    assert!(tricky.encode().starts_with("script 60000 11 "));
-    assert!(plain.encode().starts_with("program 1 14 0 0\n"));
+    assert_eq!(
+        tricky.encode(),
+        "script 60000 11 25 12\nshow memoryprint(1);\nscript 1 2 3 4\nSyntax error"
+    );
+    assert_eq!(plain.encode(), "program 1 14 0 0\nhow many CPUs?");
     let mut damaged = plain.encode();
     damaged.push('x');
     assert_eq!(ScriptRequest::decode(&damaged), None);
