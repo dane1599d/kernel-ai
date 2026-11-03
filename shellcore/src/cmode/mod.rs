@@ -20,7 +20,11 @@
 //!   content read that asked labels the rest of the entry as one that ran
 //!   at once does (ADR 0002 D6).
 //! - `undo`, `:dis`, `:defs`, `:reset` and a restarted cc: `session.rs`.
+//! - `? <request>` and `:keep`, Kai's own C programs: `program.rs`.
 
+mod program;
+
+pub use program::MAX_REPAIRS as C_REPAIRS;
 mod session;
 
 use crate::{CANCEL_ENTRY, Reply, Shell};
@@ -30,6 +34,14 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use promptcore::wire::{Record, Request, parse_reply};
 use session::{Ran, no_session, resume};
+
+/// Kai's program running in its own session (`program.rs`).
+#[derive(Clone, Debug)]
+struct ModelRun {
+    program: String,
+    /// What it defined, for `:keep`.
+    names: Vec<String>,
+}
 
 /// Most `kai` calls one entry may make: each goes through the one door and
 /// into the log.
@@ -63,6 +75,10 @@ pub(crate) struct CMode {
     partial: Option<String>,
     /// `kai` calls the running entry has made.
     calls: u32,
+    /// Kai's program holds cc's session: the user's is set aside.
+    model: Option<ModelRun>,
+    /// Kai's last program that defined something, for `:keep`.
+    kept: Option<program::Kept>,
 }
 
 /// What the shell says on `:c`.
@@ -119,12 +135,16 @@ impl Shell {
             "undo" => self.c_undo(),
             ":defs" => self.c_command(&Request::Defs),
             ":reset" => self.c_reset(),
+            ":keep" => self.c_keep(),
             _ => match line.strip_prefix(":dis ") {
                 Some(name) => self.c_command(&Request::Dis(name.trim())),
-                None if line.starts_with(':') => {
-                    Reply::err("at c> the commands are :dis f, :defs, :reset, undo and :rhai")
-                }
-                None => self.c_entry(input.trim_end()),
+                None if line.starts_with(':') => Reply::err(
+                    "at c> the commands are ? <request>, :keep, :dis f, :defs, :reset, undo and :rhai",
+                ),
+                None => match line.strip_prefix('?') {
+                    Some(request) => self.c_program(request.trim()),
+                    None => self.c_entry(input.trim_end()),
+                },
             },
         })
     }
@@ -192,7 +212,12 @@ impl Shell {
             for record in &records {
                 match *record {
                     Record::Out(bytes) => shown.push_str(&String::from_utf8_lossy(bytes)),
-                    Record::Def { .. } => defined = true,
+                    Record::Def { name, .. } => {
+                        defined = true;
+                        if let Some(run) = self.c.model.as_mut() {
+                            run.names.push(name.to_string());
+                        }
+                    }
                     Record::Retyped(name) => shown.push_str(&format!(
                         "{name} changed type; code that already called it keeps the old one\n"
                     )),
@@ -206,12 +231,17 @@ impl Shell {
                     Record::Need { id, call } => next = Some((id, call.to_vec())),
                     Record::Done { .. } => {
                         let logged = self.entry_end(true);
-                        let defined = defined.then(|| text.to_string());
+                        // Kai's program is in no session of the user's: `undo`
+                        // reverts its log entry only, and `:keep` its definitions.
+                        let model = self.c.model.is_some();
+                        let defined = (defined && !model).then(|| text.to_string());
                         self.c.ran.push(Ran {
                             seq,
                             defined,
                             logged,
+                            cc: !model,
                         });
+                        self.c_model_end(true);
                         if !value.is_empty() && !shown.is_empty() && !shown.ends_with('\n') {
                             shown.push('\n');
                         }
@@ -338,6 +368,7 @@ impl Shell {
         if let Some(waiting) = self.c.waiting.take() {
             self.value_rets.retain(|(id, _)| *id != waiting.ask);
         }
+        self.c_model_end(false);
         if let Some(pending) = self.pending.take() {
             let outcome = format!("discarded: {why}");
             self.record(
@@ -355,6 +386,7 @@ impl Shell {
             self.value_rets.retain(|(id, _)| *id != waiting.ask);
         }
         self.entry_end(false);
+        self.c_model_end(false);
         let mut text = String::from(shown);
         if !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');

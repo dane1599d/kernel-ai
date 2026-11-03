@@ -89,9 +89,10 @@ pub fn with_updated(shell: &str, words: &str) -> String {
 /// sessions, on wasmi, holding no authority. Planned before the shell, which
 /// calls it, and started on demand: the first `c>` entry's call starts it, so
 /// it holds no memory before then. Its pages cover `ccserve::budget`: the
-/// program, its stack, the compiler and one compile, one session and the
-/// modules it keeps, and a `cc build` (P4 plan's 3,680 counted the heap alone).
-pub const CC: &str = "cc start=demand caps=serve pages=8192 stack_pages=512 burst_ms=5000";
+/// program, its stack, the compiler and one compile, two sessions (the user's,
+/// set aside while a model's program runs: P4 task 14) and the modules they
+/// keep, and a `cc build` (P4 plan's 3,680 counted the heap alone).
+pub const CC: &str = "cc start=demand caps=serve pages=10240 stack_pages=512 burst_ms=5000";
 /// The file system service (ADR 0004): the only holder of the `kai-data`
 /// partition. Planned before the shell, and only when the disk has `kai-data`.
 /// Its pages hold a 16 MiB block cache and kaifs's working state. `kai-fs 1`'s

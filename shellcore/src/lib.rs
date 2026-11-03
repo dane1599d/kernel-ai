@@ -67,6 +67,8 @@ use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 pub use centry::CallValue;
+/// Repairs a Kai C program at `c>` gets after its first answer (P4 task 14).
+pub use cmode::C_REPAIRS;
 pub use effects::EffectDone;
 pub use engine::Exec;
 use engine::Line;
@@ -931,6 +933,7 @@ impl Shell {
                 request: request.to_string(),
                 repair: repair.take(),
                 timeout_ms: SCRIPT_ROUND_MS,
+                lang: llmproto::script::Lang::Rhai,
             };
             let failure = match self.host.script(&ask) {
                 // No script: the model answered in words.
