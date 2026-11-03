@@ -23,7 +23,7 @@ use kabi::handle::{Handle, Rights};
 use kabi::live::MAX_ARTIFACT;
 use livecore::artifact::MAX_SOURCE;
 use promptcore::wire::{Record, parse_reply};
-use shellcore::ccbuild::{CcBuilt, DIR, NO_ANSWER};
+use shellcore::ccbuild::{APPS_DIR, CcBuilt, NO_ANSWER};
 use spin::Mutex;
 use user::sys;
 
@@ -40,15 +40,22 @@ static SHM: Mutex<Option<Handle>> = Mutex::new(None);
 /// The last artifact written, and the File handle it was written through.
 static WRITTEN: Mutex<Option<(String, Handle)>> = Mutex::new(None);
 
-/// [`DIR`] beneath `/home/user`, where the shell's `Dir` is.
-fn folder() -> &'static str {
-    DIR.strip_prefix("/home/user/").unwrap_or("c")
+/// `dir` beneath `/home/user`, where the shell's `Dir` is.
+fn folder(dir: &str) -> &str {
+    dir.strip_prefix("/home/user/").unwrap_or(dir)
 }
 
-/// Builds component `name` at `version` through `cc`, and writes its artifact.
-pub fn build(files: &Files, cc: Handle, name: &str, version: &str) -> Result<CcBuilt, String> {
+/// Builds component `name` at `version` through `cc` from `dir/name/`, and
+/// writes its artifact as `dir/name.kai`.
+pub fn build(
+    files: &Files,
+    cc: Handle,
+    dir: &str,
+    name: &str,
+    version: &str,
+) -> Result<CcBuilt, String> {
     let home = files.home_dir()?;
-    let mut sources = sources(home, &format!("{}/{name}", folder()))?;
+    let mut sources = sources(home, &format!("{}/{name}", folder(dir)))?;
     // cc bundles the files sorted by name, so the shell does too: the artifact
     // then carries this very bundle, which `shm::check` compares.
     sources.sort_by(|a, b| a.0.cmp(&b.0));
@@ -61,7 +68,7 @@ pub fn build(files: &Files, cc: Handle, name: &str, version: &str) -> Result<CcB
         return Err(format!("the sources pass {} KiB", MAX_SOURCE >> 10));
     }
     let (text, artifact) = ask_cc(cc, name, version, &bundle)?;
-    let built = CcBuilt::from_reply(&text, format!("{DIR}/{name}.kai"))?;
+    let built = CcBuilt::from_reply(&text, format!("{dir}/{name}.kai"))?;
     shm::check(
         &artifact,
         &bundle,
@@ -70,14 +77,26 @@ pub fn build(files: &Files, cc: Handle, name: &str, version: &str) -> Result<CcB
         built.bytes,
         built.source(),
     )?;
-    let path = format!("{}/{name}.kai", folder());
+    let path = format!("{}/{name}.kai", folder(dir));
     let file = files
         .put_whole(&path, &artifact)
-        .map_err(|why| format!("{DIR}/{name}.kai cannot be written: {why}"))?;
+        .map_err(|why| format!("{dir}/{name}.kai cannot be written: {why}"))?;
     if let Some((_, old)) = WRITTEN.lock().replace((built.path.clone(), file)) {
         files::close(old);
     }
     Ok(built)
+}
+
+/// Writes app `name`'s source as `apps/<name>/main.c`, making the folders if
+/// they are new, in an action committed at once (`app_build`).
+pub fn app_source(files: &Files, name: &str, text: &str) -> Result<(), String> {
+    let apps = folder(APPS_DIR);
+    let own = format!("{apps}/{name}");
+    let file = files
+        .put_whole_in(&[apps, &own], &format!("{own}/main.c"), text.as_bytes())
+        .map_err(|why| format!("{APPS_DIR}/{name}/main.c cannot be written: {why}"))?;
+    files::close(file);
+    Ok(())
 }
 
 /// The `.c` and `.h` files in the folder at `path` beneath `home`, read whole.

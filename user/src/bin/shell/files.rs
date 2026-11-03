@@ -66,10 +66,33 @@ impl Files {
     /// action still open lands first. The File handle it was written
     /// through, with READ and WRITE.
     pub fn put_whole(&self, path: &str, bytes: &[u8]) -> Result<Handle, String> {
+        self.put_whole_in(&[], path, bytes)
+    }
+
+    /// [`Files::put_whole`], first making each of `folders` (paths beneath
+    /// `/home/user`, outermost first) that is missing, in the same action:
+    /// an app's source in `apps/<name>/` (`app_build`).
+    pub fn put_whole_in(
+        &self,
+        folders: &[&str],
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<Handle, String> {
         let home = self.home()?;
         self.commit()?;
         let action = self.next_action();
         expect_done(home, Request::Begin { action })?;
+        for folder in folders {
+            let made = open(home, folder, How::Existing, Rights::ENUMERATE)
+                .or_else(|_| open(home, folder, How::Mkdir, Rights::ENUMERATE));
+            match made {
+                Ok(dir) => close(dir),
+                Err(why) => {
+                    let _ = ask(home, Request::Abort);
+                    return Err(format!("/home/user/{folder}/ cannot be made: {why}"));
+                }
+            }
+        }
         let rights = Rights::READ | Rights::WRITE;
         let file = match open(home, path, How::Existing, rights)
             .or_else(|_| open(home, path, How::CreateFile, rights))

@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 mod act;
 mod actions;
 mod apart;
+mod appbuild;
 mod appline;
 mod apps;
 mod ccbuild;
@@ -124,6 +125,11 @@ struct FakeHost {
     pkg_sent: RefCell<Vec<String>>,
     pkg_answers: RefCell<VecDeque<Result<String, String>>>,
     cc_built: RefCell<Option<Result<crate::ccbuild::CcBuilt, String>>>,
+    /// Builds `cc_build` answers in turn, before `cc_built` (`app_build`'s
+    /// repairs).
+    pub cc_builds: RefCell<VecDeque<Result<crate::ccbuild::CcBuilt, String>>>,
+    /// Each app's source `app_source` wrote, in order.
+    pub app_sources: RefCell<Vec<(String, String)>>,
     /// The `fs` server's files, and each transaction's files before and after.
     files: RefCell<std::collections::BTreeMap<String, String>>,
     txns: RefCell<Vec<(Files, Files)>>,
@@ -293,6 +299,8 @@ impl FakeHost {
             pkg_sent: RefCell::new(Vec::new()),
             pkg_answers: RefCell::new(VecDeque::new()),
             cc_built: RefCell::new(None),
+            cc_builds: RefCell::new(VecDeque::new()),
+            app_sources: RefCell::new(Vec::new()),
             files: RefCell::new(Files::new()),
             txns: RefCell::new(Vec::new()),
             one_action: Cell::new(false),
@@ -774,12 +782,31 @@ impl Host for FakeHost {
         answer.unwrap_or_else(|| Err(String::from("no pkg here")))
     }
 
-    fn cc_build(&self, name: &str, version: &str) -> Result<crate::ccbuild::CcBuilt, String> {
+    fn cc_build(
+        &self,
+        dir: &str,
+        name: &str,
+        version: &str,
+    ) -> Result<crate::ccbuild::CcBuilt, String> {
+        let at = match dir == crate::ccbuild::DIR {
+            true => String::from(name),
+            false => format!("{dir}/{name}"),
+        };
         self.pkg_sent
             .borrow_mut()
-            .push(format!("cc_build {name} {version}"));
+            .push(format!("cc_build {at} {version}"));
+        if let Some(built) = self.cc_builds.borrow_mut().pop_front() {
+            return built;
+        }
         let built = self.cc_built.borrow_mut().take();
         built.unwrap_or_else(|| Err(String::from("no cc here")))
+    }
+
+    fn app_source(&self, name: &str, text: &str) -> Result<(), String> {
+        self.app_sources
+            .borrow_mut()
+            .push((String::from(name), String::from(text)));
+        Ok(())
     }
 
     fn pkg_local(&self, name: &str, path: &str) -> Result<String, String> {

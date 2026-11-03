@@ -475,8 +475,17 @@ impl Host for System {
         build::ask_pkg(pkg_route()?, request)
     }
 
-    fn cc_build(&self, name: &str, version: &str) -> Result<shellcore::ccbuild::CcBuilt, String> {
-        build::build(&self.files, cc_route(), name, version)
+    fn cc_build(
+        &self,
+        dir: &str,
+        name: &str,
+        version: &str,
+    ) -> Result<shellcore::ccbuild::CcBuilt, String> {
+        build::build(&self.files, cc_route(), dir, name, version)
+    }
+
+    fn app_source(&self, name: &str, text: &str) -> Result<(), String> {
+        build::app_source(&self.files, name, text)
     }
 
     fn pkg_local(&self, name: &str, path: &str) -> Result<String, String> {

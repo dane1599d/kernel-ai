@@ -22,7 +22,7 @@
 //! - `undo`, `:dis`, `:defs`, `:reset` and a restarted cc: `session.rs`.
 //! - `? <request>` and `:keep`, Kai's own C programs: `program.rs`.
 
-mod program;
+pub(crate) mod program;
 
 pub use program::MAX_REPAIRS as C_REPAIRS;
 mod session;
