@@ -16,7 +16,10 @@
 //! and its clock is fixed. Each step must end within one line budget, and
 //! Ctrl-C stops the trial between steps. An app that imports `kai:ui/view` but
 //! opens no window fails. A failure's text names the step first, for the
-//! repair loop.
+//! repair loop, within `err`'s 2 KiB. One that is not the program's fault
+//! (the `Shm`, the artifact cc wrote, wasmhost refusing it for a reason of its
+//! own, or Ctrl-C) starts [`INTERNAL`], so the shell reports it instead of
+//! spending a repair on it.
 
 use crate::Host;
 use crate::build::shm;
@@ -26,7 +29,7 @@ use alloc::vec::Vec;
 use kabi::live::MAX_ARTIFACT;
 use livecore::settings::Settings;
 use livecore::txn::{Inputs, Storage};
-use livecore::{Fault, Instance};
+use livecore::{Fault, Instance, Reason};
 use uikit::Frame;
 use uikit::a11y::{Action, Role};
 use uikit::input::{Input, Key, Mods};
@@ -45,6 +48,9 @@ pub fn limits() -> Limits {
     }
 }
 
+/// How a failure that is not the program's fault starts.
+pub const INTERNAL: &str = "internal: ";
+
 /// The interface a window app imports.
 const VIEW: &str = "kai:ui/view@";
 /// HID usage 0x04, the A key.
@@ -58,12 +64,12 @@ const SEED: u64 = 0x6b61_6974_7269_616c;
 pub fn serve(component: &str, shm: &[u8], host: &dyn Host) -> Result<String, String> {
     // A copy: the shell could write the `Shm` while cc reads it.
     let artifact = shm::take(shm, MAX_ARTIFACT)
-        .map_err(|why| format!("the trial's artifact: {why}"))?
+        .map_err(|why| internal(&format!("the trial's artifact: {why}")))?
         .to_vec();
-    check(&artifact, component)?;
+    check(&artifact, component).map_err(|why| internal(&why))?;
     let app = match wasmhost::load_live_granted(&artifact, limits(), None, Grants::default()) {
         Ok(LiveInstance::V2(app)) => app,
-        Ok(LiveInstance::V1(_)) => return Err(String::from("it is not a lifecycle 2 app")),
+        Ok(LiveInstance::V1(_)) => return Err(internal("it is not a lifecycle 2 app")),
         Err(fault) => return Err(failed("loading it", &fault)),
     };
     let mut trial = Trial::new(host, app)?;
@@ -133,9 +139,19 @@ fn button(frame: &Frame) -> Option<(u32, String)> {
         .map(|node| (node.id, node.name.clone()))
 }
 
-/// `what` failed with `fault`.
+/// `what` failed with `fault`: the program's fault unless wasmhost refused it
+/// for a reason of its own.
 fn failed(what: &str, fault: &Fault) -> String {
-    format!("{what} failed ({}): {}", fault.reason.name(), fault.detail)
+    let text = format!("{what} failed ({}): {}", fault.reason.name(), fault.detail);
+    match fault.reason {
+        Reason::Host | Reason::Manifest | Reason::Compile | Reason::Link => internal(&text),
+        _ => text,
+    }
+}
+
+/// `text`, marked as no fault of the program's.
+fn internal(text: &str) -> String {
+    format!("{INTERNAL}{text}")
 }
 
 /// One app's trial: what it ran and what it saw.
@@ -246,7 +262,7 @@ fn timed<R>(
     step: impl FnOnce() -> Result<R, Fault>,
 ) -> Result<R, String> {
     if host.interrupted() {
-        return Err(format!("the trial was stopped before {what}"));
+        return Err(internal(&format!("the trial was stopped before {what}")));
     }
     let start = host.now_ns();
     let out = step().map_err(|fault| failed(what, &fault))?;
@@ -269,6 +285,23 @@ mod tests {
     #[test]
     fn the_budget_counts_the_memory_a_trial_gives() {
         assert_eq!(limits().memory_bytes as u64, crate::budget::TRIAL_MEMORY);
+    }
+
+    #[test]
+    fn only_wasmhosts_own_refusals_are_internal() {
+        for reason in [
+            Reason::Host,
+            Reason::Manifest,
+            Reason::Compile,
+            Reason::Link,
+        ] {
+            let text = failed("loading it", &Fault::new(reason, "no"));
+            assert!(text.starts_with(INTERNAL), "{text}");
+        }
+        for reason in [Reason::Trap, Reason::Fuel, Reason::Memory, Reason::Abi] {
+            let text = failed("init", &Fault::new(reason, "no"));
+            assert!(text.starts_with("init failed ("), "{text}");
+        }
     }
 
     #[test]

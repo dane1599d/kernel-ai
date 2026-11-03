@@ -533,7 +533,11 @@ fn error(reply: &mut Reply, line: u32, text: &str) {
 /// failed, for the repair loop.
 fn trial(component: &str, shm: Option<&[u8]>, host: &dyn Host, reply: &mut Reply) {
     let Some(shm) = shm else {
-        return error(reply, 0, "trial brings the artifact in an Shm");
+        let why = format!(
+            "{}trial brings the artifact in an Shm",
+            crate::trial::INTERNAL
+        );
+        return error(reply, 0, &why);
     };
     match crate::trial::serve(component, shm, host) {
         Ok(report) => end(reply, &Record::Text(capped(&report).as_bytes())),

@@ -126,33 +126,33 @@ fn a_trial_takes_only_the_apps_own_artifact() {
     let mut cc = Cc::open();
     assert_eq!(
         send(&mut cc, "trial timer", None),
-        ["err 0 trial brings the artifact in an Shm"]
+        ["err 0 internal: trial brings the artifact in an Shm"]
     );
     // Built as another app.
     let mut shm = built(&mut cc, "clock", APP);
     let got = send(&mut cc, "trial timer", Some(&mut shm));
     assert_eq!(
         got,
-        ["err 0 the artifact is app:clock/clock@0.0.1, not timer's"]
+        ["err 0 internal: the artifact is app:clock/clock@0.0.1, not timer's"]
     );
     // Not an artifact, a length past the end, and one over the largest.
     let mut junk = vec![0u8; shm::BYTES];
     shm::put(&mut junk, b"\0asm not really").unwrap();
     let got = send(&mut cc, "trial timer", Some(&mut junk));
     assert!(
-        got[0].starts_with("err 0 the trial's artifact does not load"),
+        got[0].starts_with("err 0 internal: the trial's artifact does not load"),
         "{got:?}"
     );
     junk[..8].copy_from_slice(&u64::MAX.to_le_bytes());
     let got = send(&mut cc, "trial timer", Some(&mut junk));
     assert!(
-        got[0].starts_with("err 0 the trial's artifact: "),
+        got[0].starts_with("err 0 internal: the trial's artifact: "),
         "{got:?}"
     );
     let mut short = vec![0u8; 4];
     let got = send(&mut cc, "trial timer", Some(&mut short));
     assert!(
-        got[0].starts_with("err 0 the trial's artifact: "),
+        got[0].starts_with("err 0 internal: the trial's artifact: "),
         "{got:?}"
     );
     // A bad name never reaches the trial.
@@ -166,7 +166,7 @@ fn a_trial_stops_at_ctrl_c_and_past_a_line_budget() {
     let mut shm = built(&mut cc, "timer", APP);
     cc.clock.interrupted.set(true);
     let got = send(&mut cc, "trial timer", Some(&mut shm));
-    assert_eq!(got, ["err 0 the trial was stopped before init"]);
+    assert_eq!(got, ["err 0 internal: the trial was stopped before init"]);
     cc.clock.interrupted.set(false);
     // Each clock read moves on by more than a line's budget.
     cc.clock.step_ns.set(3 * ccserve::LINE_NS);
