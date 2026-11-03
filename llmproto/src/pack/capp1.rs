@@ -69,6 +69,18 @@ pub const CALLS: &[(&str, &str)] = &[
     ),
 ];
 
+/// The calls' names, for `precheck::prepare`: a variable may not take one.
+pub const KAIAPP_CALLS: &[&str] = &[
+    "ui_column",
+    "ui_row",
+    "ui_label",
+    "ui_heading",
+    "ui_button",
+    "ui_field",
+    "ui_toggle",
+    "Format",
+];
+
 /// The template, filled in for a counter.
 pub const TEMPLATE: &str = "#include <kaiapp.h>
 const char TITLE[] = \"Counter\";

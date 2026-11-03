@@ -309,11 +309,46 @@ fn compile(
     if kind == Kind::Window {
         one(&[("kaiapp.c", KAIAPP.as_bytes())], "kaiapp.c", budget)?;
     }
-    for (name, _) in files.iter().filter(|(n, _)| n.ends_with(".c")) {
-        one(files, name, budget)?;
+    for (name, text) in files.iter().filter(|(n, _)| n.ends_with(".c")) {
+        match kind == Kind::Window && defines_state(text) {
+            // Compiled with the size check after it; `kai.source` keeps the
+            // file as it was.
+            true => {
+                let checked = [text, STATE_CHECK.as_bytes()].concat();
+                let sources: Vec<(&str, &[u8])> = files
+                    .iter()
+                    .map(|&(n, t)| {
+                        if n == *name {
+                            (n, checked.as_slice())
+                        } else {
+                            (n, t)
+                        }
+                    })
+                    .collect();
+                one(&sources, name, budget)?;
+            }
+            false => one(files, name, budget)?,
+        }
     }
     let imports = module::world_imports(&objects.list[0]).map_err(BuildError::Module)?;
     Ok((objects.list, imports))
+}
+
+/// What a window app's file that defines `struct state` is compiled with
+/// after its last line: the runtime saves the state as `KAI_STATE_MAX` bytes.
+/// wcc has no `_Static_assert`, so an array of size -1 fails the compile, and
+/// its name says why.
+pub const STATE_CHECK: &str = "\ntypedef char struct_state_is_over_KAI_STATE_MAX_bytes\
+     [sizeof(struct state) <= KAI_STATE_MAX ? 1 : -1];\n";
+
+/// Whether `text` defines `struct state`: `struct state` and then `{`.
+fn defines_state(text: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(text);
+    text.match_indices("struct state").any(|(at, word)| {
+        let before = text[..at].chars().next_back();
+        !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+            && text[at + word.len()..].trim_start().starts_with('{')
+    })
 }
 
 /// wcc's link of `objects`, exporting the world's symbols and [`module::TRAP`].

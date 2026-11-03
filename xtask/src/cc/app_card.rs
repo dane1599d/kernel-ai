@@ -159,6 +159,44 @@ fn the_state_is_saved_and_started_from() {
     assert_eq!(in_call(&mut next, |a| a.import(&[0; 4097], 1)), Ok(2));
 }
 
+/// A state over `KAI_STATE_MAX` does not build, and says why; the sources
+/// the artifact keeps are the app's own.
+#[test]
+fn a_state_too_big_is_refused_at_build() {
+    let big = capp1::TEMPLATE.replace(
+        "struct state { I64 count; };",
+        "struct state { I64 count; char pad[4096]; };",
+    );
+    let files = [("main.c", big.as_bytes())];
+    let mut budget = Budget::new(&Clock, u64::MAX / 4);
+    let build = Build {
+        name: "kaiapp",
+        version: "0.0.1",
+        kind: Kind::Window,
+        files: &files,
+    };
+    let refused = build::build(compiler(), &build, &mut budget).expect_err("too big");
+    let why = refused.text().unwrap();
+    assert!(
+        why.contains("struct_state_is_over_KAI_STATE_MAX_bytes"),
+        "{why}"
+    );
+    let built = built(capp1::TEMPLATE);
+    let parsed = livecore::artifact::parse(&built.artifact).unwrap();
+    let kept = livecore::artifact::source_files(parsed.source).unwrap();
+    assert_eq!(kept, [("main.c", capp1::TEMPLATE.as_bytes())]);
+}
+
+/// The names the pre-check keeps variables from are kaiapp.h's calls.
+#[test]
+fn the_calls_list_names_every_call() {
+    for (call, _) in capp1::CALLS {
+        let name = call.split('(').next().unwrap().rsplit(' ').next().unwrap();
+        assert!(capp1::KAIAPP_CALLS.contains(&name), "{name}");
+    }
+    assert_eq!(capp1::KAIAPP_CALLS.len(), capp1::CALLS.len());
+}
+
 /// Each call the card shows is declared so in kaiapp.h.
 #[test]
 fn the_cards_calls_are_kaiapp_hs() {
