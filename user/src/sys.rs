@@ -1223,6 +1223,23 @@ pub fn part_peer_alive(handle: Handle, pid: u64) -> Result<u64, Error> {
     )
 }
 
+/// Live process `pid`'s name, into `out`; its length. Needs a `Partition`
+/// handle (`fs`).
+pub fn part_peer_name(handle: Handle, pid: u64, out: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::PART_PEER_NAME,
+        [
+            u64::from(handle.0),
+            pid,
+            out.as_mut_ptr() as u64,
+            out.len() as u64,
+            0,
+            0,
+        ],
+    )
+    .map(|n| n as usize)
+}
+
 /// Hands the kernel the model store's model, `extents` (first block, blocks) of
 /// the partition from byte `offset` of the file (P2 task 10); the bytes filled.
 pub fn model_fill(partition: Handle, extents: &[(u64, u64)], offset: u64) -> Result<u64, Error> {
