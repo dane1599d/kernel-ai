@@ -11,6 +11,8 @@
 //! section-by-section comparison: at the pinned commit only the `name` custom
 //! section differs (S12-1).
 
+#[cfg(test)]
+mod app_card;
 pub mod bind;
 
 use sha2::{Digest, Sha256};

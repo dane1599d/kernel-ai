@@ -25,6 +25,11 @@ use sha2::{Digest, Sha256};
 
 /// The runtime every build links: the allocator, `abort` and `<string.h>`.
 pub const BUILDRT: &str = include_str!("../../kai/buildrt.c");
+/// What a [`Kind::Window`] build links besides: `<kaiapp.h>`'s runtime, which
+/// owns the world's exports around the app's `init`, `on_event` and `view`.
+pub const KAIAPP: &str = include_str!("../../kai/kaiapp.c");
+/// The header a window app includes.
+pub const KAIAPP_H: &[u8] = include_bytes!("../../kai/kaiapp.h");
 /// An app's ADR 0001 D9 section, which a plain component lacks.
 pub const APP_SECTION: &str = "kai.app";
 /// Third-party notices (ADR 0009).
@@ -56,6 +61,9 @@ pub enum Kind {
     Component,
     /// `kai:app/app` with an empty `actions`, which `pkg` installs from `local`.
     App,
+    /// `kai:ui/app` with an empty `actions`: an app with a window, which `pkg`
+    /// installs as it does an [`App`](Kind::App).
+    Window,
 }
 
 impl Kind {
@@ -63,32 +71,22 @@ impl Kind {
         match self {
             Kind::Component => &bind::COMPONENT,
             Kind::App => &bind::APP,
+            Kind::Window => &bind::WINDOW,
         }
     }
 
-    /// What `files` build: an app if one of them includes the app world's
-    /// header (`#include <app.h>` or `"app.h"`), else a component.
+    /// What `files` build: a window app if one of them includes `kaiapp.h`,
+    /// whose runtime owns the window world's exports, else an app if one
+    /// includes the app world's header (`#include <app.h>` or `"app.h"`), else
+    /// a component.
     pub fn of(files: &[(&str, &[u8])]) -> Kind {
-        let header = bind::APP.header_name;
-        let includes_app = |text: &[u8]| {
-            let text = String::from_utf8_lossy(text);
-            text.lines().any(|line| {
-                let Some(rest) = line.trim_start().strip_prefix('#') else {
-                    return false;
-                };
-                let Some(name) = rest.trim_start().strip_prefix("include") else {
-                    return false;
-                };
-                // Bytes, not a str slice: a split character must not panic.
-                let name = name.trim().as_bytes();
-                name.len() == header.len() + 2
-                    && matches!(name[0], b'<' | b'"')
-                    && &name[1..name.len() - 1] == header.as_bytes()
-            })
-        };
-        match files.iter().any(|(_, text)| includes_app(text)) {
-            true => Kind::App,
-            false => Kind::Component,
+        let includes = |header: &str| files.iter().any(|(_, text)| includes(text, header));
+        if includes(KAIAPP_HEADER) {
+            Kind::Window
+        } else if includes(bind::APP.header_name) {
+            Kind::App
+        } else {
+            Kind::Component
         }
     }
 
@@ -96,8 +94,27 @@ impl Kind {
         match self {
             Kind::Component => "component",
             Kind::App => "app",
+            Kind::Window => "window",
         }
     }
+}
+
+/// Whether `text` has an `#include` line for `header`, in `<>` or `""`.
+fn includes(text: &[u8], header: &str) -> bool {
+    let text = String::from_utf8_lossy(text);
+    text.lines().any(|line| {
+        let Some(rest) = line.trim_start().strip_prefix('#') else {
+            return false;
+        };
+        let Some(name) = rest.trim_start().strip_prefix("include") else {
+            return false;
+        };
+        // Bytes, not a str slice: a split character must not panic.
+        let name = name.trim().as_bytes();
+        name.len() == header.len() + 2
+            && matches!(name[0], b'<' | b'"')
+            && &name[1..name.len() - 1] == header.as_bytes()
+    })
 }
 
 /// What to build.
@@ -173,9 +190,10 @@ impl BuildError {
 pub fn compiler(cc: &Compiler) -> Result<Compiler, String> {
     let mut headers: Vec<(&str, &[u8])> = XCC_HEADERS.to_vec();
     headers.push(("stdlib.h", bind::STDLIB_H));
-    for world in [&bind::COMPONENT, &bind::APP] {
+    for world in [&bind::COMPONENT, &bind::APP, &bind::WINDOW] {
         headers.push((world.header_name, world.header));
     }
+    headers.push(("kaiapp.h", KAIAPP_H));
     cc.with_headers(&headers)
 }
 
@@ -183,7 +201,7 @@ pub fn compiler(cc: &Compiler) -> Result<Compiler, String> {
 pub fn build(compiler: &Compiler, build: &Build, budget: &mut Budget) -> Result<Built, BuildError> {
     let request = Request::check(build)?;
     let world = build.kind.world();
-    let (objects, imports) = compile(compiler, world, &request.files, budget)?;
+    let (objects, imports) = compile(compiler, build.kind, &request.files, budget)?;
     let linked = link(compiler, world, &objects, budget)?;
     let module = module::finish(&linked, &imports, world.exports).map_err(BuildError::Module)?;
     // As wasmhost will load it. wcc's linker keeps one type per import, so a
@@ -267,11 +285,12 @@ impl Objects {
     }
 }
 
-/// The objects to link, the world's glue first, then [`BUILDRT`] and each
-/// `.c`; and the world's imports, read from the glue's object.
+/// The objects to link, the world's glue first, then [`BUILDRT`], a window
+/// app's [`KAIAPP`] and each `.c`; and the world's imports, read from the
+/// glue's object.
 fn compile(
     compiler: &Compiler,
-    world: &World,
+    kind: Kind,
     files: &[(&str, &[u8])],
     budget: &mut Budget,
 ) -> Result<(Vec<Vec<u8>>, Vec<module::Import>), BuildError> {
@@ -282,14 +301,56 @@ fn compile(
             .map_err(|e| BuildError::Compile(name.to_string(), e))?;
         objects.hold(name, object)
     };
-    one(&[("glue.c", world.glue.as_bytes())], "glue.c", budget)?;
+    one(
+        &[("glue.c", kind.world().glue.as_bytes())],
+        "glue.c",
+        budget,
+    )?;
     one(&[("buildrt.c", BUILDRT.as_bytes())], "buildrt.c", budget)?;
-    for (name, _) in files.iter().filter(|(n, _)| n.ends_with(".c")) {
-        one(files, name, budget)?;
+    if kind == Kind::Window {
+        one(&[("kaiapp.c", KAIAPP.as_bytes())], "kaiapp.c", budget)?;
+    }
+    let mut sized = false;
+    for (name, text) in files.iter().filter(|(n, _)| n.ends_with(".c")) {
+        match kind == Kind::Window && includes(text, KAIAPP_HEADER) {
+            // Compiled with the size check after it, and the first such file
+            // with the state's size; `kai.source` keeps the files as they were.
+            true => {
+                let size = if sized { "" } else { STATE_SIZE };
+                sized = true;
+                let checked = [text, STATE_CHECK.as_bytes(), size.as_bytes()].concat();
+                let sources: Vec<(&str, &[u8])> = files
+                    .iter()
+                    .map(|&(n, t)| {
+                        if n == *name {
+                            (n, checked.as_slice())
+                        } else {
+                            (n, t)
+                        }
+                    })
+                    .collect();
+                one(&sources, name, budget)?;
+            }
+            false => one(files, name, budget)?,
+        }
     }
     let imports = module::world_imports(&objects.list[0]).map_err(BuildError::Module)?;
     Ok((objects.list, imports))
 }
+
+/// The header a window app includes.
+const KAIAPP_HEADER: &str = "kaiapp.h";
+
+/// What each file of a window app that includes `kaiapp.h` is compiled with
+/// after its last line: the runtime saves at most `KAI_STATE_MAX` bytes of
+/// state, so `struct state` must be complete there and fit. wcc has no
+/// `_Static_assert`, so an array of size -1 fails the compile, and its name
+/// says why.
+pub const STATE_CHECK: &str = "\ntypedef char struct_state_is_over_KAI_STATE_MAX_bytes\
+     [sizeof(struct state) <= KAI_STATE_MAX ? 1 : -1];\n";
+/// What the first of those files gets after it besides: the size the runtime
+/// saves, so a version whose `struct state` differs starts afresh.
+pub const STATE_SIZE: &str = "const I64 kai_state_size = sizeof(struct state);\n";
 
 /// wcc's link of `objects`, exporting the world's symbols and [`module::TRAP`].
 fn link(
@@ -341,7 +402,7 @@ fn write(mut module: Vec<u8>, kind: Kind, request: &Request) -> Result<Built, Bu
     append_custom_section(&mut module, SOURCE_SECTION, &request.bundle);
     let actions = format!("kai-actions 1\nworld {}\n", request.world);
     append_custom_section(&mut module, ACTIONS_SECTION, actions.as_bytes());
-    if kind == Kind::App {
+    if matches!(kind, Kind::App | Kind::Window) {
         let app = format!("kai-app 1\nid {name}\nabi 1.0\n");
         append_custom_section(&mut module, APP_SECTION, app.as_bytes());
     }
@@ -502,5 +563,9 @@ mod tests {
         assert_eq!(of(b"#include <\xff\xfeapp.h>\n"), Kind::Component);
         assert_eq!(of(b"// #include <app.h>\n"), Kind::Component);
         assert_eq!(of(b"#include <app.hh>\n"), Kind::Component);
+        assert_eq!(of(b"#include <kaiapp.h>\n"), Kind::Window);
+        // The window world's own header is no window app: kaiapp.c owns the
+        // exports, and it is linked only for kaiapp.h.
+        assert_eq!(of(b"#include \"window.h\"\n#include <app.h>\n"), Kind::App);
     }
 }

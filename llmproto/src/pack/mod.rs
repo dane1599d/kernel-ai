@@ -17,6 +17,7 @@
 
 pub mod apps;
 pub mod c1;
+pub mod capp1;
 mod dsl1;
 
 pub use dsl1::INDEX_HEADING;
