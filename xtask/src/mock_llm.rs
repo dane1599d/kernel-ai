@@ -338,10 +338,6 @@ const ACTS: &[(&str, &str)] = &[
         "open the docs folder in the files app",
         r#"{"name":"files_open","arguments":{"path":"docs"}}"#,
     ),
-    (
-        "trash plan.txt",
-        r#"{"name":"fs_trash","arguments":{"path":"plan.txt"}}"#,
-    ),
     // `app-terminal` (P4 task 4): the AI types into the Terminal app, and reads.
     (
         "type 1 + 2 in the terminal",
