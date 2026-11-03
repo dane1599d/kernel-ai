@@ -80,15 +80,15 @@ pub mod budget {
         + livecore::artifact::MAX_SOURCE as u64
         + 3 * kabi::live::MAX_ARTIFACT as u64;
 
-    /// The whole: the fixed parts, one compile, one session, every kept entry,
-    /// and a build.
+    /// The whole: the fixed parts, one compile, two sessions (the user's set
+    /// aside while a model's program runs, D5) with every kept entry, and a
+    /// build.
     pub const fn total() -> u64 {
         IMAGE
             + STACK
             + COMPILER
             + compiler::MAX_MEMORY as u64
-            + session::SESSION_MEMORY as u64
-            + ENTRY * session::MAX_ENTRIES as u64
+            + 2 * (session::SESSION_MEMORY as u64 + ENTRY * session::MAX_ENTRIES as u64)
             + BUILD
     }
 }

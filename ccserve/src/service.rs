@@ -72,9 +72,13 @@ pub struct Service<E> {
     kairt: Vec<u8>,
     effects: E,
     open: Option<Open>,
+    /// The user's session, set aside while a model's program runs in a fresh
+    /// one (D5); `back` brings it back.
+    parked: Option<Open>,
 }
 
 struct Open {
+    origin: Origin,
     defs: Defs,
     session: Session,
     waiting: Option<Waiting>,
@@ -116,6 +120,7 @@ impl<E: Effects> Service<E> {
             kairt,
             effects,
             open: None,
+            parked: None,
         })
     }
 
@@ -153,6 +158,9 @@ impl<E: Effects> Service<E> {
         if let Request::Open { origin, .. } = request {
             return self.open(origin, reply);
         }
+        if let Request::Back = request {
+            return self.back(reply);
+        }
         // A build needs no session and leaves a waiting run waiting.
         if let Request::Build { component, version } = request {
             return self.build(component, version, shm, host, reply);
@@ -165,7 +173,7 @@ impl<E: Effects> Service<E> {
         }
         let effects = &self.effects;
         match request {
-            Request::Open { .. } | Request::Build { .. } => {}
+            Request::Open { .. } | Request::Build { .. } | Request::Back => {}
             Request::Eval { seq, entry } => eval(
                 &self.compiler,
                 effects,
@@ -206,7 +214,11 @@ impl<E: Effects> Service<E> {
                 reply,
                 &Record::Text(capped(&open.defs.listing()).as_bytes()),
             ),
-            Request::Reset => self.open(Origin::User, reply),
+            // A model's session starts again on its own; the user's stays aside.
+            Request::Reset => {
+                let origin = open.origin;
+                self.open(origin, reply)
+            }
         }
     }
 
@@ -232,24 +244,56 @@ impl<E: Effects> Service<E> {
         }
     }
 
+    /// A fresh session. The user's drops every other; a model's sets the
+    /// user's aside (a model's earlier one is dropped), so the model's program
+    /// sees nothing the user defined and the user's globals survive it (D5).
     fn open(&mut self, origin: Origin, reply: &mut Reply) {
-        if origin == Origin::Model {
-            // A model's program runs in its own session after a trial run on
-            // stub imports (D5); that is P4 task 14, after spike S12-2.
-            return error(reply, 0, "model-written C is not enabled");
-        }
-        match Session::new(&self.kairt, self.effects.imports()) {
-            Ok(session) => {
-                self.open = Some(Open {
-                    defs: Defs::new(),
-                    session,
-                    waiting: None,
-                    needs: 0,
-                });
-                end(reply, &Record::Ok);
+        // What this open replaces goes first, so cc never holds more than the
+        // two sessions its budget counts. The user's session is set aside, its
+        // waiting run dropped as any other request drops it, and comes back if
+        // the model's cannot start.
+        match origin {
+            Origin::User => {
+                self.open = None;
+                self.parked = None;
             }
-            Err(why) => error(reply, 0, &why),
+            Origin::Model => {
+                if let Some(mut user) = self.open.take().filter(|o| o.origin == Origin::User) {
+                    if user.waiting.take().is_some() {
+                        user.session.abort();
+                    }
+                    self.parked = Some(user);
+                }
+            }
         }
+        let session = match Session::new(&self.kairt, self.effects.imports()) {
+            Ok(session) => session,
+            Err(why) => {
+                self.open = self.parked.take();
+                return error(reply, 0, &why);
+            }
+        };
+        self.open = Some(Open {
+            origin,
+            defs: Defs::new(),
+            session,
+            waiting: None,
+            needs: 0,
+        });
+        end(reply, &Record::Ok);
+    }
+
+    /// `back`: drops the model's session and brings the user's back as it was.
+    fn back(&mut self, reply: &mut Reply) {
+        if !self
+            .open
+            .as_ref()
+            .is_some_and(|o| o.origin == Origin::Model)
+        {
+            return error(reply, 0, "no model session is open");
+        }
+        self.open = self.parked.take();
+        end(reply, &Record::Ok);
     }
 }
 

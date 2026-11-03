@@ -322,6 +322,29 @@ pub struct ScriptRequest {
     pub repair: Option<(String, String)>,
     /// How long the service may spend on this request.
     pub timeout_ms: u64,
+    /// The language asked for: Rhai, or a Kai C program for `c>` (ADR 0012
+    /// D8, P4 task 14).
+    pub lang: Lang,
+}
+
+/// The language of a script request's answer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Lang {
+    #[default]
+    Rhai,
+    /// Kai C with the `c-1` card (`crate::program`).
+    C,
+}
+
+impl Lang {
+    /// The request's first word: `script` for Rhai, as it always was, and
+    /// `program` for C.
+    pub fn command(self) -> &'static str {
+        match self {
+            Lang::Rhai => "script",
+            Lang::C => "program",
+        }
+    }
 }
 
 /// Cuts `text` to at most `max` bytes at a character boundary (for error text only).
@@ -332,14 +355,15 @@ fn clip(text: &str, max: usize) -> &str {
 impl ScriptRequest {
     /// `script <timeout> <request len> <script len> <error len>`, a newline, then
     /// the three texts back to back. Lengths make the framing exact whatever the
-    /// texts contain.
+    /// texts contain. A C request starts `program` instead.
     pub fn encode(&self) -> String {
         let request = clip(&self.request, REQUEST_MAX_BYTES);
         let (script, error) = self.repair.as_ref().map_or(("", ""), |(script, error)| {
             (script.as_str(), clip(error, ERROR_MAX_BYTES))
         });
         format!(
-            "script {} {} {} {}\n{request}{script}{error}",
+            "{} {} {} {} {}\n{request}{script}{error}",
+            self.lang.command(),
             self.timeout_ms,
             request.len(),
             script.len(),
@@ -349,7 +373,11 @@ impl ScriptRequest {
 
     pub fn decode(text: &str) -> Option<Self> {
         let (header, body) = text.split_once('\n')?;
-        let mut words = header.strip_prefix("script ")?.split(' ');
+        let (lang, header) = match header.strip_prefix("script ") {
+            Some(rest) => (Lang::Rhai, rest),
+            None => (Lang::C, header.strip_prefix("program ")?),
+        };
+        let mut words = header.split(' ');
         let mut number = || words.next()?.parse::<usize>().ok();
         let (timeout, request_len, script_len, error_len) =
             (number()?, number()?, number()?, number()?);
@@ -366,6 +394,7 @@ impl ScriptRequest {
             request: request.to_string(),
             repair: (script_len > 0).then(|| (script.to_string(), error.to_string())),
             timeout_ms: timeout as u64,
+            lang,
         })
     }
 }

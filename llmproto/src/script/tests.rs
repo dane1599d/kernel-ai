@@ -221,14 +221,25 @@ fn script_requests_frame_exactly_whatever_they_contain() {
             String::from("Syntax error"),
         )),
         timeout_ms: 60_000,
+        lang: Lang::Rhai,
     };
-    assert_eq!(ScriptRequest::decode(&tricky.encode()), Some(tricky));
+    assert_eq!(
+        ScriptRequest::decode(&tricky.encode()),
+        Some(tricky.clone())
+    );
     let plain = ScriptRequest {
         request: String::from("how many CPUs?"),
         repair: None,
         timeout_ms: 1,
+        lang: Lang::C,
     };
     assert_eq!(ScriptRequest::decode(&plain.encode()), Some(plain.clone()));
+    // Rhai's framing is unchanged; a C program request says so in its word.
+    assert_eq!(
+        tricky.encode(),
+        "script 60000 11 25 12\nshow memoryprint(1);\nscript 1 2 3 4\nSyntax error"
+    );
+    assert_eq!(plain.encode(), "program 1 14 0 0\nhow many CPUs?");
     let mut damaged = plain.encode();
     damaged.push('x');
     assert_eq!(ScriptRequest::decode(&damaged), None);

@@ -484,7 +484,11 @@ impl Local {
             request.timeout_ms.min(script::SERVICE_TIMEOUT_MS),
             self.prefill_rate,
         );
-        let answer = local::script(&mut self.engine, request, |step| clock.step(step));
+        let answer = match request.lang {
+            script::Lang::Rhai => local::script(&mut self.engine, request, |step| clock.step(step)),
+            // The c-1 card in the same slot; llm warms the Rhai prompt back after.
+            script::Lang::C => local::program(&mut self.engine, request, |step| clock.step(step)),
+        };
         self.prefill_rate = clock.rate().or(self.prefill_rate);
         let forced = self.engine.forced();
         self.last = clock
