@@ -12,7 +12,6 @@ extern crate alloc;
 mod check;
 mod dev;
 
-use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use fsserve::{Call, Server, Started};
@@ -30,16 +29,12 @@ fn alive(pid: u64) -> bool {
     sys::part_peer_alive(part, pid) != Err(Error::NotFound)
 }
 
-/// A caller's process name, as the kernel lists it: the one folder of
-/// `/system/apps` it may open (`Server::set_name_of`). Names are unique among
-/// live processes, and pids are never reused.
-fn name_of(pid: u64) -> Option<String> {
-    let metrics = sys::metrics().ok()?;
-    let count = (metrics.process_count as usize).min(metrics.processes.len());
-    metrics.processes[..count]
-        .iter()
-        .find(|p| p.pid == pid)
-        .map(|p| String::from(p.name()))
+/// A caller's process name, from the kernel's table (PART_PEER_NAME): the one
+/// folder of `/system/apps` it may open (`Server::set_name_of`). Names are
+/// unique among live processes, and pids are never reused.
+fn name_of(pid: u64, out: &mut [u8; kabi::MAX_NAME]) -> Option<usize> {
+    let part = Handle(PARTITION.load(Ordering::Relaxed));
+    sys::part_peer_name(part, pid, out).ok()
 }
 
 user::entry!(main);

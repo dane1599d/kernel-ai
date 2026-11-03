@@ -62,6 +62,11 @@ fn read_only(badge: u64) -> bool {
     matches!(badge, SYSTEM_SETTINGS | SYSTEM_RESTART)
 }
 
+/// How `fs` learns a caller's process name ([`Server::set_name_of`]): it writes
+/// the name into the buffer and gives its length, or `None` for a pid that is
+/// not running.
+pub type NameOf = fn(u64, &mut [u8; kabi::MAX_NAME]) -> Option<usize>;
+
 /// The most a read-only folder's handle may use, however it was made.
 const SETTINGS_RIGHTS: Rights = Rights::READ.union(Rights::ENUMERATE).union(BASE);
 
@@ -172,7 +177,7 @@ pub struct Server<D: BlockDev> {
     alive: fn(u64) -> bool,
     /// A caller's process name, for the one folder of `/system/apps` it may
     /// open ([`Server::set_name_of`]).
-    name_of: fn(u64) -> Option<String>,
+    name_of: NameOf,
     /// The model store's blob being written in the open action ([`models`]).
     sealing: Option<models::Sealing>,
 }
@@ -212,7 +217,7 @@ impl<D: BlockDev> Server<D> {
             pending: None,
             cache: None,
             alive: |_| true,
-            name_of: |_| None,
+            name_of: |_, _| None,
             sealing: None,
         };
         let fixed = server.prepare(&uuid)?;
@@ -245,7 +250,7 @@ impl<D: BlockDev> Server<D> {
     /// caller may only open its own folder, the one named exactly as it is
     /// ([`Server::own_folder_only`]); until this is set, no name is known and
     /// the folder opens nothing.
-    pub fn set_name_of(&mut self, name_of: fn(u64) -> Option<String>) {
+    pub fn set_name_of(&mut self, name_of: NameOf) {
         self.name_of = name_of;
     }
 
@@ -259,8 +264,10 @@ impl<D: BlockDev> Server<D> {
         let Request::Open { path, .. } = request else {
             return Err(Error::Permission);
         };
-        match (self.name_of)(caller) {
-            Some(name) if *path == name && kaifs::items::valid_name(&name) => Ok(()),
+        let mut name = [0; kabi::MAX_NAME];
+        let len = (self.name_of)(caller, &mut name).ok_or(Error::Permission)?;
+        match core::str::from_utf8(name.get(..len).ok_or(Error::Permission)?) {
+            Ok(name) if path == name && kaifs::items::valid_name(name) => Ok(()),
             _ => Err(Error::Permission),
         }
     }

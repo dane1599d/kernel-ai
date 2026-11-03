@@ -491,12 +491,14 @@ fn an_aborted_action_drops_its_pending_writes() {
 }
 
 /// ALICE runs as `notes-window`, BOB as `files-window`; no one else has a name.
-fn app_name(pid: u64) -> Option<String> {
-    match pid {
-        ALICE => Some("notes-window".into()),
-        BOB => Some("files-window".into()),
-        _ => None,
-    }
+fn app_name(pid: u64, out: &mut [u8; kabi::MAX_NAME]) -> Option<usize> {
+    let name: &[u8] = match pid {
+        ALICE => b"notes-window",
+        BOB => b"files-window",
+        _ => return None,
+    };
+    out[..name.len()].copy_from_slice(name);
+    Some(name.len())
 }
 
 fn open_in(c: &mut Client, caller: u64, dir: u64, path: &str, how: How) -> (Reply, Option<Mint>) {
