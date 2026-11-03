@@ -120,7 +120,11 @@ fn every_example_builds_and_opens() {
         let (mut app, _) = started(main);
         assert!(!shown(&mut app).is_empty(), "{request}");
         assert!(summary.len() < llmproto::script::SUMMARY_MAX_CHARS);
-        assert!(llmproto::script::check_text(main).is_ok(), "{request}");
+        let limits = llmproto::script::APP_LIMITS;
+        assert!(
+            llmproto::script::check_text_within(main, limits).is_ok(),
+            "{request}"
+        );
     }
 }
 

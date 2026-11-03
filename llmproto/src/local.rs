@@ -13,7 +13,7 @@
 //! after a yes otherwise (ADR 0002 D2).
 
 use crate::chat::{self, Completion, Role};
-use crate::script::{self, Answer, AnswerError, ScriptRequest};
+use crate::script::{self, Answer, AnswerError, ScriptRequest, TextLimits};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -26,24 +26,30 @@ use infer::{Next, Sampler};
 /// ends: the longer of the summary's two limits, since the field cannot know yet
 /// whether the script was empty. [`script::answer`] holds a script's summary to
 /// the shorter one.
-const SCRIPT_FIELDS: [Field; 2] = [
-    Field {
-        name: "script",
-        max_chars: script::SCRIPT_MAX_BYTES,
-        max_lines: script::SCRIPT_MAX_LINES,
-        max_line_chars: script::SCRIPT_MAX_LINE_CHARS,
-        trim_start: false,
-        hard: false,
-    },
-    Field {
-        name: "summary",
-        max_chars: script::REPLY_MAX_CHARS,
-        max_lines: 1,
-        max_line_chars: script::REPLY_MAX_CHARS,
-        trim_start: true,
-        hard: false,
-    },
-];
+const SCRIPT_FIELDS: [Field; 2] = fields(script::SCRIPT_LIMITS);
+/// [`SCRIPT_FIELDS`] with an app's script limits.
+const APP_FIELDS: [Field; 2] = fields(script::APP_LIMITS);
+
+const fn fields(limits: TextLimits) -> [Field; 2] {
+    [
+        Field {
+            name: "script",
+            max_chars: limits.bytes,
+            max_lines: limits.lines,
+            max_line_chars: limits.line_chars,
+            trim_start: false,
+            hard: false,
+        },
+        Field {
+            name: "summary",
+            max_chars: script::REPLY_MAX_CHARS,
+            max_lines: 1,
+            max_line_chars: script::REPLY_MAX_CHARS,
+            trim_start: true,
+            hard: false,
+        },
+    ]
+}
 
 /// `{"script":"...","summary":"..."}`, script first so the summary is written
 /// knowing the code, as [`script::response_format`] asks a server.
@@ -54,6 +60,13 @@ pub const SCRIPT_SHAPE: Shape<'static> = Shape {
     // tokenizer's own split, which may differ from the model's picks, so an
     // answer can differ from step decoding's; it is the same from a warm cache or
     // a fresh one and on every tier. S02-1 measures the effect on accuracy.
+    jump_forward: true,
+};
+
+/// [`SCRIPT_SHAPE`] for an app's `main.c`.
+pub const APP_SHAPE: Shape<'static> = Shape {
+    fields: &APP_FIELDS,
+    choices: &[],
     jump_forward: true,
 };
 
@@ -176,10 +189,37 @@ pub fn program(
     enveloped(engine, &asked, on_step)
 }
 
+/// A window app's `main.c` for `request` (plan "Kai builds apps"): the
+/// `c-app-1` card's conversation ([`crate::app::request`]), under
+/// [`APP_SHAPE`], and checked under [`script::APP_LIMITS`].
+pub fn app(
+    engine: &mut Engine<'_>,
+    request: &ScriptRequest,
+    on_step: impl FnMut(Step) -> Next,
+) -> Result<Answer, AnswerError> {
+    let repair = request
+        .repair
+        .as_ref()
+        .map(|(script, error)| script::Repair { script, error });
+    let asked = crate::app::request(&request.request, repair);
+    enveloped_within(engine, &asked, &APP_SHAPE, script::APP_LIMITS, on_step)
+}
+
 /// `asked`'s answer in the script envelope, seeded, under [`SCRIPT_SHAPE`].
 fn enveloped(
     engine: &mut Engine<'_>,
     asked: &chat::Request,
+    on_step: impl FnMut(Step) -> Next,
+) -> Result<Answer, AnswerError> {
+    enveloped_within(engine, asked, &SCRIPT_SHAPE, script::SCRIPT_LIMITS, on_step)
+}
+
+/// [`enveloped`] under `shape`, its script held to `limits`.
+fn enveloped_within(
+    engine: &mut Engine<'_>,
+    asked: &chat::Request,
+    shape: &Shape<'_>,
+    limits: TextLimits,
     on_step: impl FnMut(Step) -> Next,
 ) -> Result<Answer, AnswerError> {
     let mut sampler = Sampler::seeded(script::TEMPERATURE, script::SEED);
@@ -188,7 +228,7 @@ fn enveloped(
             &turns(asked),
             asked.max_tokens as usize,
             &mut sampler,
-            Some(&SCRIPT_SHAPE),
+            Some(shape),
             on_step,
         )
         .map_err(|error| AnswerError::Local(describe(&error)))?;
@@ -196,16 +236,19 @@ fn enveloped(
         Ending::Stopped => Err(AnswerError::Local(String::from(
             "it ran out of time before the script was complete",
         ))),
-        Ending::Overflow(overflow) => Err(AnswerError::Rejected(past(&overflow))),
+        Ending::Overflow(overflow) => Err(AnswerError::Rejected(past(&overflow, limits))),
         // A repair of a long script can leave the answer too little of the
         // context; that is no token limit, so it is said as it is.
         Ending::ContextFull => Err(AnswerError::Local(String::from(
             "the conversation filled the model's context",
         ))),
-        _ => script::answer(&Completion {
-            text: reply.text(),
-            cut_off: reply.cut_off(),
-        }),
+        _ => script::answer_within(
+            &Completion {
+                text: reply.text(),
+                cut_off: reply.cut_off(),
+            },
+            limits,
+        ),
     }
 }
 
@@ -300,20 +343,13 @@ pub fn tune(
 /// Why an answer that went past a limit is refused, in [`script::check_text`]'s
 /// and [`script::check_summary`]'s words where they can be: the counts they
 /// quote are not known when the answer stops.
-fn past(overflow: &Overflow) -> String {
+fn past(overflow: &Overflow, limits: TextLimits) -> String {
     match (overflow.field, overflow.limit) {
-        (0, Limit::Chars) => format!(
-            "the script is longer than {} bytes",
-            script::SCRIPT_MAX_BYTES
-        ),
-        (0, Limit::Lines) => format!(
-            "the script has more than {} lines",
-            script::SCRIPT_MAX_LINES
-        ),
+        (0, Limit::Chars) => format!("the script is longer than {} bytes", limits.bytes),
+        (0, Limit::Lines) => format!("the script has more than {} lines", limits.lines),
         (0, Limit::LineChars) => format!(
             "line {} is longer than {} characters",
-            overflow.line,
-            script::SCRIPT_MAX_LINE_CHARS
+            overflow.line, limits.line_chars
         ),
         (_, Limit::Lines) => String::from("the summary must be one line of plain text"),
         _ => format!(
