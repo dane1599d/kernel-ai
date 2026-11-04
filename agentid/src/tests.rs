@@ -324,6 +324,9 @@ fn only_hardware_makes_a_persons_mark() {
 
 const WORDS: &str = "switch to round robin, yes, y, answer 1 y";
 
+/// A question as shown, for the tests of questions.
+const SHOWN: &str = "fs_list(\"old.log\")";
+
 #[test]
 fn consent_words_go_only_to_kai_and_only_from_a_person() {
     let (mut roster, id) = roster_with_notes();
@@ -357,22 +360,22 @@ fn only_the_persons_key_answers_and_only_for_the_agent_and_row_that_asked() {
     let list = roster.admit(&notes, "fs_list").unwrap();
     let read = roster.admit(&notes, "fs_read").unwrap();
     let mut asks = Asks::new();
-    asks.ask(&roster, 7, &list).unwrap();
+    asks.ask(&roster, 7, &list, SHOWN).unwrap();
     assert!(asks.is_open(7) && asks.len() == 1);
     let yes = asks.answer(7, true, Mark::of(person())).unwrap();
     assert_eq!(yes.entry(), 7);
     assert!(yes.yes() && asks.is_empty());
-    assert!(yes.spend(&roster, &list));
+    assert!(yes.spend(&roster, &list, 7, SHOWN));
     // The same yes is not good for another row, nor for another agent's call.
     for (entry, other) in [(8, &read), (9, &roster.admit(&kai, "fs_list").unwrap())] {
-        asks.ask(&roster, entry, &list).unwrap();
+        asks.ask(&roster, entry, &list, SHOWN).unwrap();
         let yes = asks.answer(entry, true, Mark::of(person())).unwrap();
-        assert!(!yes.spend(&roster, other), "{entry}");
+        assert!(!yes.spend(&roster, other, entry, SHOWN), "{entry}");
     }
     // A no runs nothing.
-    asks.ask(&roster, 10, &list).unwrap();
+    asks.ask(&roster, 10, &list, SHOWN).unwrap();
     let no = asks.answer(10, false, Mark::of(person())).unwrap();
-    assert!(!no.yes() && !no.spend(&roster, &list));
+    assert!(!no.yes() && !no.spend(&roster, &list, 10, SHOWN));
 }
 
 #[test]
@@ -381,11 +384,11 @@ fn an_agent_cannot_answer_a_question_and_learns_nothing_by_trying() {
     let notes = roster.caller(id.badge()).unwrap();
     let door = roster.admit(&notes, "fs_list").unwrap();
     let mut asks = Asks::new();
-    asks.ask(&roster, 7, &door).unwrap();
-    for source in [Source::agent(notes.id()), Source::agent(Builtin::Kai.id())] {
+    asks.ask(&roster, 7, &door, SHOWN).unwrap();
+    for id in [notes.id(), Builtin::Kai.id()] {
         for yes in [true, false] {
             for entry in [7, 8] {
-                let mark = Mark::of(source);
+                let mark = Mark::of(Source::agent(id));
                 let got = asks.answer(entry, yes, mark);
                 assert_eq!(got, Err(AnswerError::NotThePerson));
             }
@@ -395,7 +398,7 @@ fn an_agent_cannot_answer_a_question_and_learns_nothing_by_trying() {
     let nothing = asks.answer(8, true, Mark::of(person()));
     assert_eq!(nothing, Err(AnswerError::NothingAsked));
     let yes = asks.answer(7, true, Mark::of(person())).unwrap();
-    assert!(yes.spend(&roster, &door));
+    assert!(yes.spend(&roster, &door, 7, SHOWN));
     // Answered once.
     let twice = asks.answer(7, true, Mark::of(person()));
     assert_eq!(twice, Err(AnswerError::NothingAsked));
@@ -407,23 +410,23 @@ fn a_yes_for_an_agent_retired_since_runs_nothing_and_it_cannot_ask_again() {
     let notes = roster.caller(id.badge()).unwrap();
     let door = roster.admit(&notes, "fs_list").unwrap();
     let mut asks = Asks::new();
-    asks.ask(&roster, 7, &door).unwrap();
+    asks.ask(&roster, 7, &door, SHOWN).unwrap();
     roster.retire(id).unwrap();
     // Neither the question's answer nor a later agent of the same name revives it.
     let yes = asks.answer(7, true, Mark::of(person())).unwrap();
     roster.install(manifest("notes-agent")).unwrap();
-    assert!(!yes.spend(&roster, &door));
-    assert_eq!(asks.ask(&roster, 8, &door), Err(AskError::Retired));
+    assert!(!yes.spend(&roster, &door, 7, SHOWN));
+    assert_eq!(asks.ask(&roster, 8, &door, SHOWN), Err(AskError::Retired));
     // A grant taken away by an upgrade stops a yes the same way.
     let (mut roster, id) = roster_with_notes();
     let notes = roster.caller(id.badge()).unwrap();
     let door = roster.admit(&notes, "fs_list").unwrap();
-    asks.ask(&roster, 9, &door).unwrap();
+    asks.ask(&roster, 9, &door, SHOWN).unwrap();
     let mut narrower = manifest("notes-agent");
     narrower.actions = manifest_with("fs_read").actions;
     roster.upgrade(id, narrower).unwrap();
     let yes = asks.answer(9, true, Mark::of(person())).unwrap();
-    assert!(!yes.spend(&roster, &door));
+    assert!(!yes.spend(&roster, &door, 9, SHOWN));
 }
 
 #[test]
@@ -447,20 +450,26 @@ fn questions_are_unique_bounded_per_agent_and_leave_room_for_kai() {
     // Three agents fill their own shares, which is all agents together may hold.
     for door in &doors[..3] {
         for _ in 0..asks::MAX_PER_AGENT {
-            asks.ask(&roster, next(), door).unwrap();
+            asks.ask(&roster, next(), door, SHOWN).unwrap();
         }
-        assert_eq!(asks.ask(&roster, next(), door), Err(AskError::TooMany));
+        assert_eq!(
+            asks.ask(&roster, next(), door, SHOWN),
+            Err(AskError::TooMany)
+        );
     }
     assert_eq!(asks.len(), asks::MAX_OPEN - asks::KAI_ROOM);
-    assert_eq!(asks.ask(&roster, next(), &doors[3]), Err(AskError::Full));
+    assert_eq!(
+        asks.ask(&roster, next(), &doors[3], SHOWN),
+        Err(AskError::Full)
+    );
     // kai still gets asked, up to the whole book.
     for _ in 0..asks::KAI_ROOM {
-        asks.ask(&roster, next(), &kai).unwrap();
+        asks.ask(&roster, next(), &kai, SHOWN).unwrap();
     }
-    assert_eq!(asks.ask(&roster, next(), &kai), Err(AskError::Full));
+    assert_eq!(asks.ask(&roster, next(), &kai, SHOWN), Err(AskError::Full));
     assert_eq!(asks.len(), asks::MAX_OPEN);
     // An entry asks once.
-    assert_eq!(asks.ask(&roster, 1, &kai), Err(AskError::Duplicate));
+    assert_eq!(asks.ask(&roster, 1, &kai, SHOWN), Err(AskError::Duplicate));
     // Withdrawing makes room.
     assert!(asks.withdraw(1) && !asks.withdraw(1));
     asks.withdraw_agent(doors[1].caller().id());
@@ -524,4 +533,36 @@ fn errors_say_what_went_wrong_in_words() {
     ]);
     assert!(said.iter().all(|s| !s.is_empty()));
     assert!(said[0].contains("notes-agent") && said[5].contains('9'));
+}
+
+#[test]
+fn a_yes_is_for_the_call_it_answered_and_not_the_next_one_that_looks_like_it() {
+    let (roster, id) = roster_with_notes();
+    let notes = roster.caller(id.badge()).unwrap();
+    let door = roster.admit(&notes, "fs_list").unwrap();
+    let mut asks = Asks::new();
+    let (old, thesis) = ("fs_list(\"old.log\")", "fs_list(\"thesis.txt\")");
+    let answer = |asks: &mut Asks, entry| asks.answer(entry, true, Mark::of(person())).unwrap();
+    // The same agent, row and entry, other arguments.
+    asks.ask(&roster, 7, &door, old).unwrap();
+    assert!(!answer(&mut asks, 7).spend(&roster, &door, 7, thesis));
+    // The same words, another entry (a later request that shows the same question).
+    asks.ask(&roster, 8, &door, old).unwrap();
+    assert!(!answer(&mut asks, 8).spend(&roster, &door, 9, old));
+    // Only the call it answered.
+    asks.ask(&roster, 10, &door, old).unwrap();
+    assert!(answer(&mut asks, 10).spend(&roster, &door, 10, old));
+}
+
+#[test]
+fn a_digest_tells_the_entry_the_row_and_the_words_apart() {
+    use crate::digest::Digest;
+    let base = Digest::of(1, "fs_list", "x");
+    assert_eq!(base, Digest::of(1, "fs_list", "x"));
+    assert_ne!(base, Digest::of(2, "fs_list", "x"));
+    assert_ne!(base, Digest::of(1, "fs_read", "x"));
+    assert_ne!(base, Digest::of(1, "fs_list", "y"));
+    // Length-prefixed: text moved from one field to the other is another digest.
+    assert_ne!(Digest::of(1, "ab", "c"), Digest::of(1, "a", "bc"));
+    assert_ne!(Digest::of(1, "", "abc"), Digest::of(1, "abc", ""));
 }

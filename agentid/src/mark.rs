@@ -15,8 +15,9 @@
 
 use crate::roster::AgentId;
 
-/// Where a key, a click or a line came from, as the code that took it knows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Where a key, a click or a line came from, as the code that took it knows. It is
+/// not `Clone`: a claim is spent on one input.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Source(Origin);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

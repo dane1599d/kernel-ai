@@ -26,6 +26,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod asks;
+mod digest;
 pub mod door;
 pub mod mark;
 pub mod name;

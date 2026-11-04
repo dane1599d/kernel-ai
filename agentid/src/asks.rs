@@ -7,17 +7,21 @@
 //! and tells the agent nothing about which questions are: the mark is checked first,
 //! and the entry numbers are the log's, which no agent chooses.
 //!
-//! A yes is for one call: the agent that asked, the row it asked about, once, and only
-//! while that agent is still on the roster with grants for the row. (The arguments the
-//! person saw are bound by the `ONCE` handle's digest, ADR 0001 D6, as before.)
+//! A yes is for the one call it answered, once: the agent that asked, the row, the log
+//! entry and the question exactly as it was shown (the arguments are in it), and only
+//! while that agent is still on the roster with grants for the row. A question
+//! records a digest of the entry, the row and the shown text, in `digest.rs`; the
+//! call that wants to run on the yes recomputes it from what it is about to do, so a
+//! yes for `fs_trash("old.log")` cannot be spent on the same agent's next
+//! `fs_trash("thesis.txt")`, nor on a later entry that shows the same words.
 //!
 //! Questions are bounded so that no agent can keep the person from being asked: at
 //! most [`MAX_PER_AGENT`] each, and [`KAI_ROOM`] places that only `kai` may use.
 
+use crate::digest::Digest;
 use crate::door::Admission;
 use crate::mark::Mark;
 use crate::roster::{AgentId, Roster};
-use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 /// The most questions open at once.
@@ -32,7 +36,7 @@ struct Open {
     entry: u64,
     by: AgentId,
     kai: bool,
-    row: String,
+    call: Digest,
 }
 
 /// The open questions.
@@ -68,7 +72,7 @@ pub enum AnswerError {
 pub struct Answered {
     entry: u64,
     by: AgentId,
-    row: String,
+    call: Digest,
     yes: bool,
 }
 
@@ -82,13 +86,16 @@ impl Answered {
         self.yes
     }
 
-    /// Spends the answer on the call `admission` admitted: whether it may run now. It
-    /// may if the answer was a yes, the call is the agent's that asked and for the row
-    /// that was asked about, and the agent is still on the roster with grants for it.
-    pub fn spend(self, roster: &Roster, admission: &Admission) -> bool {
+    /// Spends the answer on the call `admission` admitted for log entry `entry`, whose
+    /// question reads `shown` (rendered from the call about to run, as the question
+    /// was): whether it may run now. It may if the answer was a yes, the call is the
+    /// asking agent's, for the row, entry and words asked about, and the agent is
+    /// still on the roster with grants for the row.
+    pub fn spend(self, roster: &Roster, admission: &Admission, entry: u64, shown: &str) -> bool {
         self.yes
             && admission.caller().id() == self.by
-            && admission.row() == self.row
+            && entry == self.entry
+            && Digest::of(entry, admission.row(), shown) == self.call
             && roster.revalidate(admission).is_ok()
     }
 }
@@ -111,12 +118,13 @@ impl Asks {
     }
 
     /// Opens the question that log entry `entry` asks, for the call `admission`
-    /// admitted.
+    /// admitted; `shown` is the question exactly as the person is shown it.
     pub fn ask(
         &mut self,
         roster: &Roster,
         entry: u64,
         admission: &Admission,
+        shown: &str,
     ) -> Result<(), AskError> {
         let by = admission.caller();
         if !roster.is_live(by) {
@@ -143,7 +151,7 @@ impl Asks {
             entry,
             by: by.id(),
             kai: by.is_kai(),
-            row: admission.row().to_string(),
+            call: Digest::of(entry, admission.row(), shown),
         });
         Ok(())
     }
@@ -162,7 +170,7 @@ impl Asks {
         Ok(Answered {
             entry,
             by: open.by,
-            row: open.row,
+            call: open.call,
             yes,
         })
     }
