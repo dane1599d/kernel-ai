@@ -194,6 +194,22 @@ v0.1 is tagged when all of these hold, and not before:
 - `release/seq` is bumped in the release PR, above the last release's: `release.yml`'s `seq` job refuses a tag otherwise (ADR 0008 §2, decided 2026-10-27).
 - Fluency at least 47/50 and actbench pass on the tag's model input.
 
+Where each item stands on 2026-11-04 (task 19). "Done" is on main; "missing" names the PR or the work still to come; "yours" waits on the founder.
+
+| Item | Status | Where, and what is left |
+|---|---|---|
+| Section 1's exit cases, KVM and TCG | Done | All 12 boot cases are on main, each merged through a batch that boots every case under KVM and TCG. The last ones: `app-monitor` (#494), `app-files` (#599, #604; the window is #454), `app-notes` (#600, #602) and `app-settings`' undo (#601). They pass again on the tag's commit. Section 11 has each case |
+| P1, P2 and P3 closed; M10a's exit test | Missing | P1 is closed (decisions, 2026-10-27) and M10a passes (#7). P3 is done: its exit cases are all on main (section 10 of `p3-desktop.md`, #436), and the roadmap now has its status. P2 is "closing": files through kaifs moved at 12 MB/s, under S04-2's bar (the roadmap's P2 status) |
+| A/B slots, rollback, offline updates | Done | Lane U, P2: `slot-ab`, `slot-probation`, `update-disk`, `update-tampered` and `update-rollback` |
+| Built-ins as signed packages; `install` from the image and a mirror | Done | `pkg-image` and `pkg-image-tampered` (task 1), `pkg-install` and its five tamper cases (task 2), `desk-catalog` (task 3) |
+| ADR 0009 D1-D8 | Missing | Done: MPL-2.0 with the DCO (founder, 2026-10-27), `NOTICES.txt` byte-identical in the image and the release, the offline source rebuild (S09-1), the `dco` job (task 16). Yours: clearing both names, "Kernel AI" and "Kai" (the trademark search) |
+| The release a TUF target signed by your root, in `kernel-ai-updates` | Yours | Task 18: the root ceremony on your three YubiKeys (`docs/release/root-ceremony.md`). It also closes `release-dry`'s gap: the VM's update disk carries xtask's own slot image, not the assembled release image's. And it signs the release's `models` role (the `models.json` catalogue), which the image does not carry yet, so it gates rc.1: without it a release imports no model |
+| `release/seq` above the last release's | Yours | `release/seq` is 1 and no release exists yet, so `v0.1.0-rc.1` may ship with 1; every later tag's PR bumps it, and the `seq` job refuses a tag that does not |
+| Fluency at least 47/50 and actbench on the tag's input | Missing | Fluency 48/50 on task 14's input (run 41647096587). Both re-run on the tag's commit, with task 15's per-app actbench tasks |
+| The release image tried by hand | Done in CI | Not a checklist line above, but the README's "try it" depends on it. On main: the release image carries its own `kai-data` as partition 5 (#603), and a person types `models import` (#608). `release.yml`'s `release-boot` job (#614) boots the release's bytes plus a test-root `models` role naming qwen3-0.6b, with no second disk, follows the first start's recovery install and restart, and imports it; it passed on #614's Release run. **Task 18 gates rc.1 here too**: the shipping image has no `models` role until your founder-signed one, so a real release cannot import a model until then (decisions, 2026-11-03). Nobody has booted a release asset outside CI |
+
+**Left for the tag:** the founder's three items, which are clearing the names, task 18's root ceremony (which gates rc.1) and `release/seq` in the release PR. Then fluency and actbench re-run on the tag's commit, and P2 closes (its kaifs throughput, above).
+
 ### 3.6 What v0.1 does not wait for
 
 - **P5 networking** (v0.2): TLS, verified resumable downloads, the online repository and internet `install`, in-OS model setup (L7). In v0.1 the model is downloaded on the host and imported (question 5).
@@ -286,3 +302,25 @@ You deferred this to before v0.1 (decisions row "The OS licence", 2026-10-22). W
 - **P7 (v0.3):** the same image on a USB stick; S12-1's numbers re-measured on the founder's PC.
 - **P8 (v1.0):** third-party publishers, hashed-bin delegations, a KMS for the online keys, Secure Boot, an SBOM, fuzzing `kaipkg`, `kaituf`, `promptcore`, `kailink` and `wasihost` at scale, a security review of the `cc` and `pkg` boundaries, and the native-code question (ADR 0012 D10).
 - **Waiting on the founder:** section 2's questions, the licence first.
+
+## 11. Close status (task 19, 2026-11-04)
+
+Section 1's exit cases against `main` on 2026-11-04. "On main" means the case is in `xtask/src/cases`, and so in `ci.yml`'s boot shards under KVM and TCG. Each was merged through a batch that boots every case. Main's run [41656046125](https://github.com/dane1599d/kernel-ai/actions/runs/41656046125) passed all six shards before the last four landed.
+
+| Exit case | Status | Where, and what is left |
+|---|---|---|
+| `app-terminal` | On main | The AI types a line, a person's Enter runs it, and the AI reads the reply |
+| `app-files` | On main | #599 and #604. The agent makes, moves and trashes a file at once (a move and a trash have an undo, so neither asks). The Files window shows each state and a second folder, and `undo` puts each back. `ui-files` (#454) is the window alone |
+| `app-notes` | On main | #600 and #602. Kai's `notes_add` runs at once, Notes' window shows the note, the agent reads it back, and `undo` takes a second note back. Boot 2's window shows the note from the saved state |
+| `app-settings` | On main | The agent's `appearance_set` runs before Settings opens, and `undo` puts the theme back. A revoked row is refused end to end, runs again once restored by key, and `undo` gives it back and withholds it again (#601). The agent sees Settings only as private |
+| `app-monitor` | On main | #494. The agent sorts by memory and names the top process, finds a spinner, and stopping it asks and ends on Deny. `ui-monitor` is the window alone |
+| `app-models` | On main | List, import of a second fixture checked against the signed `models` role, `model_use`, and `undo` back |
+| `app-editor` | On main | Opens a source at a line, builds an edit in the background, Ctrl-click on a source link; `app-editor-files` and `app-editor-build` add the file door and Ctrl-B |
+| `pkg-image` | On main | With `pkg-image-tampered` |
+| `pkg-install` | On main | With `pkg-install-flipped`, `-expired`, `-rollback`, `-unknown-key` and `-header`, each refused by name |
+| `desk-catalog` | On main | Enter on `extra` installs it with a typed `install`'s consent; its summary, written as an instruction, is shown as text |
+| `c-prompt` | On main | `:c`, definitions, a redefinition that switches its caller, `:dis`, a `kai` call and its `undo`, `:rhai` |
+| `c-build` | On main | `cc build hello` installs from `local` and runs; `undo` goes back a generation, and the next build is 0.0.2 |
+| `release-dry` | Done, with a gap | Run 40627897825. The update disk carries xtask's own slot image; task 18 closes it |
+
+**Gaps to close before the tag:** none among the exit cases. Section 3.5 lists what is left: the founder's three items, and fluency and actbench on the tag's commit.
