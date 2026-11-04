@@ -63,6 +63,11 @@ fn lexes_words_literals_and_directives() {
 fn lex_refuses_with_lines() {
     assert_eq!(lex("x;\n/* never"), Err(LexError::OpenComment { line: 2 }));
     assert_eq!(lex("\n\"abc\nx"), Err(LexError::OpenQuote { line: 2 }));
+    // It names the fix (the app gate's `words` miss).
+    assert_eq!(
+        LexError::OpenQuote { line: 2 }.to_string(),
+        r"a string or character is not closed on its line: write \n for a newline in it"
+    );
     assert_eq!(
         lex("x;\n\nx @ y;"),
         Err(LexError::Stray {
