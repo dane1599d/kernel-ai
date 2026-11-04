@@ -57,6 +57,8 @@ pub fn q8_0_matmul(tier: Tier, w: &[u8], xs: &[QVec], y: &mut [f32]) {
 /// each token.
 pub fn q4_k_matmul(tier: Tier, w: &[u8], xs: &[Q8KVec], y: &mut [f32]) {
     let row = q4_k::row_bytes(shape(xs.iter().map(Q8KVec::len), w, y, q4_k::row_bytes));
+    let done = fours_of_two(tier, KFormat::Q4K, w, row, xs, y);
+    let (w, y) = (&w[done * row..], &mut y[done * xs.len()..]);
     for_rows(w, row, xs.len(), y, |w, y| {
         groups!(xs, y, |xs, y| {
             let mut totals = xs.each_ref().map(|_| Total(0.0));
@@ -68,10 +70,70 @@ pub fn q4_k_matmul(tier: Tier, w: &[u8], xs: &[Q8KVec], y: &mut [f32]) {
     });
 }
 
+/// The K-quant formats [`fours_of_two`] takes.
+#[derive(Clone, Copy)]
+enum KFormat {
+    Q4K,
+    Q6K,
+}
+
+/// The format's kernel for four rows against two tokens
+/// ([`crate::kquant_avx2::q4_k_dot4_n`] or [`crate::kquant_avx2::q6_k_dot4_n`]).
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+type Dot4x2 = unsafe fn([&[u8]; 4], [&Q8KVec; 2]) -> [[f32; 4]; 2];
+
+/// Two tokens' K-quant products four rows at a time in the SIMD tiers, the bits
+/// one token's matvec gives each, as a batch of two decode steps runs them (ADR
+/// 0013 spike S13-2): the group kernels would pay each row's sums and float
+/// tail alone. How many rows it did; none for other batches.
+#[cfg_attr(
+    not(all(target_arch = "x86_64", target_feature = "sse2")),
+    expect(unused_variables, reason = "only the baseline tier is compiled")
+)]
+fn fours_of_two(
+    tier: Tier,
+    format: KFormat,
+    w: &[u8],
+    row: usize,
+    xs: &[Q8KVec],
+    y: &mut [f32],
+) -> usize {
+    if xs.len() != 2 || row == 0 || tier.0 == Kind::Baseline {
+        return 0;
+    }
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+    {
+        let dot: Dot4x2 = match format {
+            KFormat::Q4K => crate::kquant_avx2::q4_k_dot4_n::<2>,
+            KFormat::Q6K => crate::kquant_avx2::q6_k_dot4_n::<2>,
+        };
+        let rows = y.len() / 2 / 4 * 4;
+        for (w, y) in w
+            .chunks_exact(4 * row)
+            .zip(y[..2 * rows].as_chunks_mut::<8>().0)
+        {
+            let four = core::array::from_fn(|r| &w[r * row..(r + 1) * row]);
+            // SAFETY: every SIMD tier exists only when the CPU has AVX2, FMA and
+            // F16C and the OS saves ymm state (`tier::kinds`).
+            let out = unsafe { dot(four, [&xs[0], &xs[1]]) };
+            for r in 0..4 {
+                for t in 0..2 {
+                    y[r * 2 + t] = canonical(out[t][r]);
+                }
+            }
+        }
+        rows
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2")))]
+    0
+}
+
 /// As [`q8_0_matmul`], for Q6_K weights: the bits [`crate::q6_k_matvec`] gives
 /// each token.
 pub fn q6_k_matmul(tier: Tier, w: &[u8], xs: &[Q8KVec], y: &mut [f32]) {
     let row = q6_k::row_bytes(shape(xs.iter().map(Q8KVec::len), w, y, q6_k::row_bytes));
+    let done = fours_of_two(tier, KFormat::Q6K, w, row, xs, y);
+    let (w, y) = (&w[done * row..], &mut y[done * xs.len()..]);
     for_rows(w, row, xs.len(), y, |w, y| {
         groups!(xs, y, |xs, y| {
             let mut totals = xs.each_ref().map(|_| Total(0.0));
