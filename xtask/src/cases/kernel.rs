@@ -3,7 +3,26 @@
 use super::{KAI, TestCase, case};
 use crate::disk::Fixture;
 
+/// The second boot of `entropy-boots`.
+const ENTROPY_BOOT_2: TestCase = TestCase {
+    expect: &["entropy: virtio-rng mixed in", "entropy-boots: sample "],
+    server: false,
+    differs: Some("entropy-boots: sample "),
+    rng: true,
+    ..case("entropy-boots (boot 2)", "test=entropy-boots")
+};
+
 pub(super) const CASES: &[TestCase] = &[
+    // P5 task 3: ENTROPY mixes RDSEED, RDRAND and a virtio-rng, and two boots
+    // draw different bytes.
+    TestCase {
+        expect: &["entropy: virtio-rng mixed in", "entropy-boots: sample "],
+        server: false,
+        differs: Some("entropy-boots: sample "),
+        rng: true,
+        then: Some(&ENTROPY_BOOT_2),
+        ..case("entropy-boots", "test=entropy-boots")
+    },
     case("boot", "test"),
     case("page-fault", "test=page-fault"),
     case("double-fault", "test=double-fault"),

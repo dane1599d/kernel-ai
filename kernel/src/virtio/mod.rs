@@ -38,6 +38,9 @@ pub fn init(platform: &acpitables::Platform, cmdline: &str) {
             Err(message) => log!("{message}; staying on GOP"),
         }
     }
+    if let Some(transport) = found.rng {
+        crate::entropy::attach(transport);
+    }
     blk::init(found.disks);
     crate::nvme::init(found.nvme);
     crate::block::scan();
