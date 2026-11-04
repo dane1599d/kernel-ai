@@ -1,11 +1,18 @@
 //! HPET main counter: the kernel's reference clock.
 //!
-//! With `clock=tsc` on the command line, `nanos` reads the TSC instead, scaled by
-//! a rate measured against the HPET at boot. Every timer tick reads the clock a
-//! few times; under VirtualBox on Hyper-V each HPET read is a trip to VirtualBox's
-//! device emulation, and with 8 vCPUs ticking at 1 kHz those trips take all the
-//! CPU time there is. `cargo xtask vbox` boots with `clock=tsc`; QEMU keeps the
-//! HPET.
+//! With the TSC as the clock, `nanos` reads it instead, scaled by a rate measured
+//! against the HPET at boot. Every timer tick reads the clock a few times, and
+//! every HPET read is a trip to the hypervisor: under VirtualBox on Hyper-V, with
+//! 8 vCPUs ticking at 1 kHz, those trips take all the CPU time there is, and
+//! under KVM they held a download to 18 MB/s where the TSC gives 29 (spike P5-S2).
+//! Which clock (the boot log says which, and why):
+//! - `clock=tsc`: the TSC wherever it calibrates (`cargo xtask vbox` boots so);
+//! - `clock=hpet`: the HPET always;
+//! - neither: the TSC under KVM when it is invariant or the hypervisor reports its
+//!   rate ([`cpufeat::default_clock`]); the HPET everywhere else, TCG included.
+//!
+//! The TSC is kept only if it calibrates, and then agrees with the HPET within
+//! [`DRIFT_PPM`] over [`DRIFT_WINDOW_NS`]; otherwise the HPET stays the clock.
 //!
 //! With `clock=icount`, `nanos` reads the TSC at exactly 1 GHz, unmeasured: under
 //! QEMU's `-icount` the TSC is the virtual clock in nanoseconds, a fixed number per
@@ -45,6 +52,11 @@ const WINDOW_NS: u64 = 25_000_000;
 const WINDOWS: u32 = 200;
 /// TSC ticks spun between two HPET reads while calibrating.
 const SPIN_TICKS: u64 = 1 << 20;
+/// After calibrating, the TSC must keep its rate against the HPET within this
+/// over this long, or the HPET stays the clock. 100 ms keeps an HPET read's few
+/// microseconds of jitter to about 10 ppm of it.
+pub const DRIFT_PPM: u64 = 100;
+pub const DRIFT_WINDOW_NS: u64 = 100_000_000;
 
 /// The last main-counter value read without tearing, by any CPU.
 static LAST_TICKS: AtomicU64 = AtomicU64::new(0);
@@ -128,9 +140,14 @@ fn tsc() -> u64 {
 
 /// The TSC's rate in Hz over one window of about [`WINDOW_NS`] of HPET time.
 fn measure() -> u64 {
+    measure_over(WINDOW_NS)
+}
+
+/// The TSC's rate in Hz over about `window_ns` of HPET time.
+fn measure_over(window_ns: u64) -> u64 {
     let (start_ns, start_tsc) = (hpet_nanos(), tsc());
     let mut now = start_ns;
-    while now - start_ns < WINDOW_NS {
+    while now - start_ns < window_ns {
         // Spin on the TSC between HPET reads: under VirtualBox a vCPU's TSC
         // stalls while an HPET read is emulated, so back-to-back reads would
         // measure the stalls, not the TSC.
@@ -152,37 +169,67 @@ fn settled(rate: u64, last: u64, reported_hz: Option<u64>) -> bool {
     steady && reported_hz.is_none_or(|hz| rate.abs_diff(hz) * 100 < hz)
 }
 
-/// Switches `nanos` to the TSC if the command line says `clock=tsc` and the TSC
-/// keeps the right rate against the HPET, and logs the outcome. VirtualBox runs a
-/// guest's TSC slow, and steadily so, for a while after power-on, so a rate counts
-/// only once two windows in a row agree and, when the hypervisor reports the TSC's
-/// rate, match it; with none in [`WINDOWS`] the HPET stays the clock. Runs on the
+/// Picks the clock (see the module's docs) and logs which, and why. Runs on the
 /// boot CPU before the others start.
 pub fn select_clock(cmdline: &str) {
-    if cmdline
-        .split_whitespace()
-        .any(|word| word == "clock=icount")
-    {
+    let said = |word: &str| cmdline.split_whitespace().any(|w| w == word);
+    if said("clock=icount") {
         set_zero(0);
         TSC_MULT.store(1 << 32, Ordering::Release);
-        log!("clock: the TSC at 1 GHz, as QEMU's icount runs it");
+        log!("clock: the TSC at 1 GHz, as QEMU's icount runs it (clock=icount)");
         return;
     }
-    if !cmdline.split_whitespace().any(|word| word == "clock=tsc") {
+    if said("clock=hpet") {
+        log!("clock: the HPET (clock=hpet)");
         return;
     }
+    let why = match said("clock=tsc") {
+        true => "clock=tsc",
+        false => match cpufeat::default_clock(
+            cpufeat::hypervisor_signature(),
+            cpufeat::invariant_tsc(),
+            cpufeat::hypervisor_tsc_khz(),
+        ) {
+            cpufeat::DefaultClock::Tsc(why) => why,
+            cpufeat::DefaultClock::Hpet(why) => {
+                log!("clock: the HPET ({why})");
+                return;
+            }
+        },
+    };
+    try_tsc(why);
+}
+
+/// Switches `nanos` to the TSC if it keeps the right rate against the HPET, and
+/// logs the outcome with `why` it was tried. VirtualBox runs a guest's TSC slow,
+/// and steadily so, for a while after power-on, so a rate counts only once two
+/// windows in a row agree and, when the hypervisor reports the TSC's rate, match
+/// it; with none in [`WINDOWS`] the HPET stays the clock. A settled rate must
+/// then hold within [`DRIFT_PPM`] over [`DRIFT_WINDOW_NS`].
+fn try_tsc(why: &str) {
     let reported_hz = cpufeat::hypervisor_tsc_khz().map(|khz| u64::from(khz) * 1000);
     let mut last = measure();
     for window in 2..=WINDOWS {
         let rate = measure();
         if settled(rate, last, reported_hz) {
-            let mult = (((1_000_000_000u128) << 32) / u128::from(rate)) as u64;
+            let check = measure_over(DRIFT_WINDOW_NS);
+            let ppm = cpufeat::drift_ppm(rate, check);
+            if ppm > DRIFT_PPM {
+                log!(
+                    "clock: the HPET: the TSC settled at {} MHz but then drifted {ppm} ppm against the HPET over {} ms, over {DRIFT_PPM} ({why})",
+                    rate / 1_000_000,
+                    DRIFT_WINDOW_NS / 1_000_000
+                );
+                return;
+            }
+            let mult = (((1_000_000_000u128) << 32) / u128::from(check)) as u64;
             set_zero(0);
             // Last, so a reader that sees the rate also sees the zero points.
             TSC_MULT.store(mult.max(1), Ordering::Release);
             log!(
-                "clock: the TSC, {} MHz, settled after {window} windows (hypervisor says {} MHz)",
-                rate / 1_000_000,
+                "clock: the TSC, {} MHz, settled after {window} windows and within {ppm} ppm of the HPET over {} ms ({why}; hypervisor says {} MHz)",
+                check / 1_000_000,
+                DRIFT_WINDOW_NS / 1_000_000,
                 reported_hz.map_or(0, |hz| hz / 1_000_000)
             );
             return;
@@ -190,7 +237,7 @@ pub fn select_clock(cmdline: &str) {
         last = rate;
     }
     log!(
-        "clock: the TSC never settled (last {} MHz); the HPET stays the clock",
+        "clock: the HPET: the TSC never settled (last {} MHz) ({why})",
         last / 1_000_000
     );
 }

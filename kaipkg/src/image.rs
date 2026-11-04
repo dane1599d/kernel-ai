@@ -140,8 +140,19 @@ pub fn listed(files: &mut dyn Files, role: &str) -> Result<Listed, String> {
     let mut updater = Updater::new(&mut remote, &mut cache, UNEXPIRED).map_err(tuf)?;
     updater.refresh().map_err(tuf)?;
     let (mut targets, mut refused) = (Vec::new(), Vec::new());
-    for path in updater.listed(role, "targets").map_err(tuf)? {
+    let paths = updater.listed(role, "targets").map_err(tuf)?;
+    // TUF's search asks the top-level `targets` first: a path it names too
+    // would resolve to its entry, not `role`'s. Only `role`'s own is kept.
+    let own = updater
+        .trusted()
+        .targets(role)
+        .map(|meta| meta.signed.targets.clone())
+        .unwrap_or_default();
+    for path in paths {
         match updater.target(&path) {
+            Ok(Some(target)) if own.get(&path) != Some(&target) => {
+                refused.push((path, alloc::format!("another role names it before {role}")))
+            }
             Ok(Some(target)) => targets.push(target),
             Ok(None) => refused.push((path, "no trusted role names it".into())),
             Err(why) => refused.push((path, why.to_string())),

@@ -38,6 +38,7 @@ mod logdisk;
 mod look;
 mod models;
 mod more;
+mod netgrant;
 mod packages;
 mod panel;
 mod profiles;
