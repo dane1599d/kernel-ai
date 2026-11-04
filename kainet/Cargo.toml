@@ -16,6 +16,8 @@ doctest = false
 server = ["p256/pkcs8"]
 # The test certificate authority, for the host only: rcgen needs std.
 testca = ["server", "dep:rcgen"]
+# Mozilla's root certificates (webpki-roots, CDLA-Permissive-2.0; P5 question 2).
+roots = ["dep:webpki-roots"]
 
 [dependencies]
 rustls = { version = "=0.23.46", default-features = false }
@@ -35,7 +37,8 @@ httparse = { version = "1.10.1", default-features = false }
 
 # Feature `testca` only: never in the OS.
 rcgen = { version = "0.14.10", default-features = false, optional = true }
+webpki-roots = { version = "1.0.11", optional = true }
 
 [dev-dependencies]
 getrandom = "0.3"
-kainet = { path = ".", features = ["testca"] }
+kainet = { path = ".", features = ["testca", "roots"] }
