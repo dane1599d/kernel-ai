@@ -18,6 +18,7 @@ gguf = { path = "../gguf" }
 infer = { path = "../infer" }
 diskmap = { path = "../diskmap" }
 kaifs = { path = "../kaifs" }
+kaimem = { path = "../kaimem" }
 kaipkg = { path = "../kaipkg", features = ["online"] }
 # The HTTPS mock (mock_https/): its TLS server and test CA (plan p5-networking, task 7).
 kainet = { path = "../kainet", features = ["testca"] }

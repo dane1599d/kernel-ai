@@ -3155,6 +3155,7 @@ dependencies = [
  "kabi",
  "kaibundle",
  "kaifs",
+ "kaimem",
  "kainet",
  "kaipkg",
  "kaituf",

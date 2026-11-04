@@ -1,8 +1,10 @@
 //! `cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]`, or
-//! `cargo xtask fluency --local ID [--store DIR] [--c]`
+//! `cargo xtask fluency --local ID [--store DIR] [--c] [--memories]`
 //!
 //! With `--c` (spike S12-2, ADR 0012) the same 50 tasks ask for Kai C
 //! programs instead of Rhai scripts, run by the real `cc` service ([`c`]).
+//! With `--memories` (spike S13-4, ADR 0013) every request carries a memory
+//! section of fixed memories, some of them bait ([`memories`]).
 //!
 //! The M8b gate: does the model write scripts the shell accepts, and do they do
 //! what was asked? Each task goes through the OS's own path: the same chat
@@ -21,6 +23,7 @@ mod grain;
 pub(crate) mod host;
 mod judge;
 pub(crate) mod local;
+pub(crate) mod memories;
 pub(crate) mod tasks;
 #[cfg(test)]
 mod tests;
@@ -271,11 +274,13 @@ struct Options {
     repeat: u32,
     /// Kai C programs instead of Rhai scripts (spike S12-2).
     c: bool,
+    /// Every request with a memory section (spike S13-4).
+    memories: bool,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
     let (mut server, mut model, mut local, mut store, mut repeat) = (None, None, None, None, 1);
-    let mut c = false;
+    let (mut c, mut memories) = (false, false);
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let mut value = |what: &str| rest.next().cloned().ok_or(format!("{arg} expects {what}"));
@@ -285,6 +290,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--local" => local = Some(value("a catalog model id")?),
             "--store" => store = Some(value("a directory")?),
             "--c" => c = true,
+            "--memories" => memories = true,
             "--repeat" => {
                 repeat = value("a count")?
                     .parse()
@@ -315,7 +321,15 @@ fn parse(args: &[String]) -> Result<Options, String> {
     if c && !matches!(backend, Backend::Local { .. }) {
         return Err("--c goes with --local".into());
     }
-    Ok(Options { backend, repeat, c })
+    if c && memories {
+        return Err("--memories goes with Rhai scripts, not --c".into());
+    }
+    Ok(Options {
+        backend,
+        repeat,
+        c,
+        memories,
+    })
 }
 
 /// Pass counts over a set of runs.
@@ -448,6 +462,7 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
         "server": server,
         "repeat": options.repeat,
         "language": if options.c { "c" } else { "rhai" },
+        "memories": options.memories,
         "tasks": TASKS.len(),
         // Normalised, so CRLF and LF checkouts of one commit record the same hash.
         "tasks_sha256": crate::sha256_hex(tasks_text().as_bytes()),
@@ -468,6 +483,10 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
             let clock = Instant::now();
             let (outcome, reference) = match options.c {
                 true => (c::attempt(task, transport()), c::REFERENCES[number]),
+                false if options.memories => (
+                    attempt(task, memories::transport(transport())),
+                    task.reference,
+                ),
                 false => (attempt(task, transport()), task.reference),
             };
             let ms = clock.elapsed().as_millis();
