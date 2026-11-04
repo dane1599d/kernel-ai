@@ -203,6 +203,13 @@ impl Reference {
     /// and now and then rounds a value to neighbouring halves; this keeps one
     /// such tie from moving every later token.
     pub fn forward_on(&mut self, token: u32, kv: Option<&crate::KvCache>) -> Vec<f32> {
+        let xn = self.hidden_on(token, kv);
+        times(&self.output, &xn)
+    }
+
+    /// [`Reference::forward_on`]'s last hidden state, after the final norm:
+    /// what last-token pooling reads.
+    pub fn hidden_on(&mut self, token: u32, kv: Option<&crate::KvCache>) -> Vec<f32> {
         let c = self.c;
         let hd = c.head_dim;
         let pos = self.keys[0].len();
@@ -282,7 +289,6 @@ impl Reference {
             let d = times(&w.w_down, &h);
             x.iter_mut().zip(&d).for_each(|(x, d)| *x += d);
         }
-        let xn = rms_norm(&x, &self.output_norm, c.rms_eps);
-        times(&self.output, &xn)
+        rms_norm(&x, &self.output_norm, c.rms_eps)
     }
 }
