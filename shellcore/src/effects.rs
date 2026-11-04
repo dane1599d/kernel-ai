@@ -22,12 +22,16 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use appabi::{Ty, Val, wave};
+use kabi::live::NOTICE_FILES;
 use llmproto::act::Call;
 use llmproto::script::Answer;
 use serde_json::{Map, Value};
 
 /// Most effects one reply may carry (livecore's `MAX_EFFECTS`).
 pub(crate) const MAX_EFFECTS: usize = 8;
+
+/// The row whose declaring apps are told the files changed.
+const FS_LIST: &str = "fs_list";
 
 /// What one effect came to, for the app's `effect-done`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,6 +163,38 @@ impl Shell {
                 .host
                 .apps()
                 .and_then(|apps| apps.borrow_mut().keep_results(&app, done));
+            if let Some(dropped) = dropped {
+                self.host.audit(&format!(
+                    "{dropped}'s effect results were dropped: the queue is full"
+                ));
+            }
+        }
+    }
+
+    /// The person's files changed (made, moved, trashed or restored, by the AI,
+    /// the Terminal, an app or an undo): tells each app that lists them, one whose
+    /// package declares `fs_list` among its effects and has not been denied it,
+    /// so it can ask again for what it shows. The notice goes back to the app as
+    /// any result does ([`Shell::take_effect_results`]), once however many
+    /// changes came. It carries no path and grants nothing: the app asks for the
+    /// folder it shows with the `fs_list` it already holds.
+    pub fn fs_changed(&mut self) {
+        let Some(apps) = self.host.apps() else {
+            return;
+        };
+        let watchers: Vec<String> = {
+            let apps = apps.borrow();
+            let rows = &apps.rows;
+            rows.apps()
+                .filter(|app| rows.may_effect(app, FS_LIST))
+                .map(String::from)
+                .collect()
+        };
+        for app in watchers {
+            if crate::grants::is_withheld(self.host.as_ref(), &app, FS_LIST) {
+                continue;
+            }
+            let dropped = apps.borrow_mut().keep_notice(&app, NOTICE_FILES);
             if let Some(dropped) = dropped {
                 self.host.audit(&format!(
                     "{dropped}'s effect results were dropped: the queue is full"
