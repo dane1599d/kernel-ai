@@ -1,0 +1,20 @@
+[package]
+name = "semindex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The `search` service's index (ADR 0013 section 4), in the parts that need no
+# embedding model: the chunker, `kai-index 1` with its crash-safe append, the
+# keyword and time-filter search the ADR falls back to, what is indexed, and a
+# vector slot behind a trait for S13-3's embedder. `no_std` + `alloc`, so the
+# service and the host tests run the same code; no OS wiring yet.
+[lib]
+doctest = false
+
+[dependencies]
+# The IEEE CRC-32 each frame of the index file carries.
+diskmap = { path = "../diskmap" }
+# `logf` for BM25's IDF and `sqrtf` for a vector's length, with no `std`.
+libm = "0.2.16"
