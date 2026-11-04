@@ -166,7 +166,7 @@ impl Shell {
         self.app_install_ask(id, request, &name)
     }
 
-    fn take_id(&mut self) -> u64 {
+    pub(crate) fn take_id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         id
@@ -206,7 +206,11 @@ impl Shell {
     }
 
     /// Asks to install `name` on the trusted path's card.
-    fn app_install_ask(&mut self, id: u64, request: &str, name: &str) -> Reply {
+    pub(crate) fn app_install_ask(&mut self, id: u64, request: &str, name: &str) -> Reply {
+        // Asked now, its card does not also open by itself.
+        if self.card.as_deref() == Some(name) {
+            self.card = None;
+        }
         let built = match self.installable(name) {
             Ok(built) => built,
             Err(why) => {

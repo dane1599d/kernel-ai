@@ -218,6 +218,15 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-panel-shell", "test=desk-panel-shell")
     },
+    // Kai builds apps, follow-up 2: the prompt wakes for the shell's waiting
+    // card, holds it while another ask is up, then asks the shell for it.
+    TestCase {
+        expect: &[
+            "card: the terminal asked the shell for its waiting card",
+            "desk-card-wake: the prompt woke for the shell's card, waited while another ask was up, then asked the shell",
+        ],
+        ..case("desk-card-wake", "test=desk-card-wake")
+    },
     // P3 task 9: an app's kai:ui window on the desktop, closed from its control.
     TestCase {
         expect: &[
