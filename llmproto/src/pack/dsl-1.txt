@@ -52,3 +52,4 @@ ui (open, close, switch to or type in apps): ui_windows ui_view ui_open ui_focus
 appearance (theme, text size, motion or legible type): appearance_set
 models (list, import or switch the AI model): model_list model_fetch model_use
 apps (build or install a new app): app_build app_install
+net (fetch pages, ping hosts): net_fetch net_resolve net_ping

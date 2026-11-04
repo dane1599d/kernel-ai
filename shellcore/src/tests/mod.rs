@@ -37,6 +37,7 @@ mod logdisk;
 mod look;
 mod models;
 mod more;
+mod netrows;
 mod packages;
 mod panel;
 mod profiles;
@@ -80,6 +81,8 @@ struct FakeHost {
     act_apps: RefCell<Vec<String>>,
     /// What the shell asked `desktop`, and how `desktop` answers.
     ui_calls: RefCell<Vec<crate::ui::UiCall>>,
+    /// The hosts the network rows reached, as `row host`.
+    net_seen: RefCell<Vec<String>>,
     ui_answer: RefCell<Option<UiAnswer>>,
     state: RefCell<crate::state::State>,
     /// Turns sent to the conversation memory, and how often it was forgotten.
@@ -287,6 +290,7 @@ impl FakeHost {
             act_reads: RefCell::new(Vec::new()),
             act_apps: RefCell::new(Vec::new()),
             ui_calls: RefCell::new(Vec::new()),
+            net_seen: RefCell::new(Vec::new()),
             ui_answer: RefCell::new(None),
             state: RefCell::new(crate::state::State::default()),
             remembered: RefCell::new(Vec::new()),
@@ -606,6 +610,25 @@ impl Host for FakeHost {
     fn withheld_write(&self, text: &str) -> Result<(), String> {
         *self.withheld_disk.borrow_mut() = Some(text.into());
         Ok(())
+    }
+
+    fn net_fetch(&self, host: &str, path: &str) -> Result<String, String> {
+        self.net_seen
+            .borrow_mut()
+            .push(format!("net_fetch {host}{path}"));
+        Ok(format!("<p>the page at {host}</p>"))
+    }
+
+    fn net_resolve(&self, host: &str) -> Result<Vec<String>, String> {
+        self.net_seen
+            .borrow_mut()
+            .push(format!("net_resolve {host}"));
+        Ok(alloc::vec![String::from("93.184.215.14")])
+    }
+
+    fn net_ping(&self, host: &str) -> Result<i64, String> {
+        self.net_seen.borrow_mut().push(format!("net_ping {host}"));
+        Ok(12)
     }
 
     fn fs_read(&self, read: FsRead) -> Result<String, String> {

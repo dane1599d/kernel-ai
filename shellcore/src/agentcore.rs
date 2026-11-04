@@ -283,6 +283,8 @@ impl Shell {
             &agentabi::UI_ROWS
         } else if own(&agentabi::GRANT_ROWS) {
             &agentabi::GRANT_ROWS
+        } else if own(&agentabi::NET_ROWS) {
+            &agentabi::NET_ROWS
         } else {
             self.rows_for(row, &agentabi::BOUND)
         };

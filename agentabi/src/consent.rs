@@ -17,6 +17,7 @@
 
 use crate::{Action, ArgType, Inverse, Role, Tier, derive, find};
 use alloc::vec::Vec;
+use nethosts::{Bytes, Grounding, LineWord, NoGrants, Origin, Table, Verdict};
 
 /// Where a value came from (ADR 0002 D6). Ordered: the least trusted is greatest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,12 +89,10 @@ impl Decision {
     }
 }
 
-/// Request words that name a site, and the host each one means. A host is grounded
-/// only when the line types it or names it here; a label match is not enough.
-pub const HOSTS: &[(&str, &str)] = &[
-    ("youtube", "www.youtube.com"),
-    ("wikipedia", "en.wikipedia.org"),
-];
+/// Request words that name a site, and the host each one means: the curated
+/// host table (`nethosts::CURATED`, P5 task 11). An installed app's own word
+/// joins it through [`decide_net`]'s [`Grounding`].
+pub const HOSTS: &[(&str, &str)] = nethosts::CURATED;
 
 /// Words that turn off every cue after them in their clause.
 const NEGATIONS: &[&str] = &[
@@ -155,14 +154,29 @@ const DETERMINERS: &[&str] = &[
     "the", "a", "an", "my", "your", "our", "its", "some", "any", "that", "this",
 ];
 
-/// Decides every call of `plan`, made for the user's `line`, against `rows`.
+/// Decides every call of `plan`, made for the user's `line`, against `rows`,
+/// with the curated host table and no grants.
 pub fn decide(line: &str, plan: &[Call], rows: &[Action]) -> Vec<Decision> {
+    let table = Table::curated();
+    let net = Grounding {
+        table: &table,
+        granted: &NoGrants,
+        sources: &[],
+    };
+    decide_net(line, plan, rows, &net)
+}
+
+/// [`decide`] with the shell's own host grounding (P5 task 11): its table with
+/// the installed apps' words, the hosts the user allowed before, and the OS's
+/// checked sources. An open-world read runs only when its host is grounded.
+pub fn decide_net(line: &str, plan: &[Call], rows: &[Action], net: &Grounding) -> Vec<Decision> {
     let words = words(line);
+    let hosts = Hosts { line, net };
     let english = is_english(line);
     let named_any = rows.iter().any(|row| cued(&words, row).is_some());
     let decisions: Vec<Decision> = plan
         .iter()
-        .map(|call| decide_one(&words, english, call, rows))
+        .map(|call| decide_one(&words, &hosts, english, call, rows))
         .collect();
     let changes = plan
         .iter()
@@ -196,7 +210,19 @@ pub fn decide(line: &str, plan: &[Call], rows: &[Action]) -> Vec<Decision> {
     decisions
 }
 
-fn decide_one(words: &[Word], english: bool, call: &Call, rows: &[Action]) -> Decision {
+/// The line and the grounding rule an open-world read is checked with.
+struct Hosts<'a> {
+    line: &'a str,
+    net: &'a Grounding<'a>,
+}
+
+fn decide_one(
+    words: &[Word],
+    hosts: &Hosts,
+    english: bool,
+    call: &Call,
+    rows: &[Action],
+) -> Decision {
     let Some(row) = find(rows, call.name) else {
         return Decision::new(Tier::Never, Why::Unknown);
     };
@@ -213,7 +239,7 @@ fn decide_one(words: &[Word], english: bool, call: &Call, rows: &[Action]) -> De
         if !row.facts.open_world {
             return Decision::new(derive(row).max(Tier::Run), Why::Read);
         }
-        return match hosts_grounded(words, row, call) {
+        return match hosts_grounded(words, hosts, row, call) {
             true => Decision::new(row.min_tier.max(Tier::Run), Why::Grounded),
             false => Decision::new(Tier::Ask, Why::Ungrounded),
         };
@@ -315,13 +341,7 @@ fn cued(words: &[Word], row: &Action) -> Option<bool> {
                 continue;
             }
             let clause = words[at].clause;
-            let before = &words[..at];
-            let negated = before.iter().enumerate().any(|(i, w)| {
-                w.clause == clause
-                    && (NEGATIONS.contains(&w.text.as_str())
-                        // "stop using round robin"
-                        || (w.text == "stop" && before.get(i + 1).is_some_and(|n| n.text == "using")))
-            });
+            let negated = negated(words, at);
             let off = off_counts
                 && words
                     .iter()
@@ -333,6 +353,19 @@ fn cued(words: &[Word], row: &Action) -> Option<bool> {
         }
     }
     found
+}
+
+/// Whether a negation before word `at` in its clause turns it off: "don't",
+/// "never", "stop using" and the rest of [`NEGATIONS`].
+fn negated(words: &[Word], at: usize) -> bool {
+    let clause = words[at].clause;
+    let before = &words[..at];
+    before.iter().enumerate().any(|(i, w)| {
+        w.clause == clause
+            && (NEGATIONS.contains(&w.text.as_str())
+                // "stop using round robin"
+                || (w.text == "stop" && before.get(i + 1).is_some_and(|n| n.text == "using")))
+    })
 }
 
 /// Every `from_request` argument is literal in the line, an alias it uses, or a
@@ -355,20 +388,30 @@ fn arguments_in_line(words: &[Word], row: &Action, call: &Call) -> bool {
     })
 }
 
-/// Every host argument is typed in the line, or is what the host table gives for a
-/// word of it, and none came from content.
-fn hosts_grounded(words: &[Word], row: &Action, call: &Call) -> bool {
+/// Every host argument is grounded (`nethosts::Grounding::decide`): typed in
+/// the line, a host-table word of it, granted before, or the OS's checked
+/// source, and none came from content. A word in a clause that negates counts
+/// for nothing, so "don't fetch weather" grounds no host; a question counts,
+/// since a read is asked as one ("what's the weather in Leeds?").
+fn hosts_grounded(words: &[Word], hosts: &Hosts, row: &Action, call: &Call) -> bool {
+    let marked: Vec<LineWord> = (0..words.len())
+        .map(|at| LineWord::new(&words[at].text, !negated(words, at)))
+        .collect();
     row.args
         .iter()
         .filter(|arg| matches!(arg.ty, ArgType::Host))
         .all(|arg| {
             value_of(call, arg.name).is_some_and(|value| {
-                !matches!(value.label, Label::Content(_))
-                    && ((names_a_thing(value.text)
-                        && !matches(words, value.text, false).is_empty())
-                        || HOSTS.iter().any(|(word, host)| {
-                            *host == value.text && words.iter().any(|w| w.text == *word)
-                        }))
+                let origin = match value.label {
+                    Label::Content(_) => Origin::Content,
+                    _ => Origin::Line,
+                };
+                matches!(
+                    hosts
+                        .net
+                        .decide(hosts.line, &marked, value.text, origin, Bytes::Unchecked),
+                    Verdict::Run(_)
+                )
             })
         })
 }
