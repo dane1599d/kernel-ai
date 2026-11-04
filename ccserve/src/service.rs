@@ -13,6 +13,7 @@
 
 use crate::compiler::CompileError;
 use crate::dis::MAX_TEXT;
+use crate::hints::{self, Library};
 use crate::session::{Done, Failure, Step};
 use crate::{Budget, Compiler, Host, Session};
 use alloc::format;
@@ -347,6 +348,7 @@ fn eval(
     let object = match compile(compiler, &prepared, host) {
         Ok(object) => object,
         Err(CompileError::Source(text)) => {
+            let text = hints::add(&text, Library::Session);
             let (line, text) = wcc_messages(&text, &prepared.lines);
             return error(reply, line, &text);
         }

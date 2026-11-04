@@ -319,6 +319,54 @@ pub fn hypervisor_signature() -> Option<[u8; 12]> {
     None
 }
 
+/// Whether CPUID says the TSC runs at a constant rate in every power state
+/// (0x80000007 EDX bit 8, "invariant TSC").
+#[cfg(target_arch = "x86_64")]
+pub fn invariant_tsc() -> bool {
+    cpuid(0x8000_0000, 0).0 >= 0x8000_0007 && cpuid(0x8000_0007, 0).3 & (1 << 8) != 0
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn invariant_tsc() -> bool {
+    false
+}
+
+/// What the kernel's clock is when the command line names none: the TSC is
+/// tried only under KVM, whose every HPET read exits to the host, and only when
+/// the TSC can be trusted not to drift; everywhere else the HPET. Each with the
+/// reason, for the boot log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefaultClock {
+    /// Try the TSC, calibrated against the HPET.
+    Tsc(&'static str),
+    Hpet(&'static str),
+}
+
+/// How far a second measured TSC rate `check` is from the first, `rate`, in
+/// parts per million: the kernel's drift check after calibrating.
+pub fn drift_ppm(rate: u64, check: u64) -> u64 {
+    (u128::from(rate.abs_diff(check)) * 1_000_000 / u128::from(rate.max(1))) as u64
+}
+
+/// [`DefaultClock`] from the hypervisor's signature, CPUID's invariant-TSC bit
+/// and the TSC rate the hypervisor reports.
+pub fn default_clock(
+    signature: Option<[u8; 12]>,
+    invariant: bool,
+    reported_khz: Option<u32>,
+) -> DefaultClock {
+    match signature {
+        None => DefaultClock::Hpet("no hypervisor"),
+        Some(sig) if &sig == b"KVMKVMKVM\0\0\0" => match (invariant, reported_khz) {
+            (true, _) => DefaultClock::Tsc("KVM, invariant TSC"),
+            (false, Some(_)) => DefaultClock::Tsc("KVM, the hypervisor reports the TSC's rate"),
+            (false, None) => DefaultClock::Hpet("KVM, but no invariant or reported TSC rate"),
+        },
+        Some(sig) if &sig == b"TCGTCGTCGTCG" => DefaultClock::Hpet("TCG, which emulates the TSC"),
+        Some(_) => DefaultClock::Hpet("a hypervisor other than KVM; clock=tsc tries the TSC"),
+    }
+}
+
 /// The TSC's rate in kHz as the hypervisor reports it (CPUID 0x40000010, the
 /// timing leaf VMware and VirtualBox fill), when a hypervisor offers that leaf.
 #[cfg(target_arch = "x86_64")]
@@ -382,6 +430,47 @@ mod tests {
 
     use super::*;
     use std::vec::Vec;
+
+    #[test]
+    fn the_tsc_is_the_default_only_under_kvm_with_a_trustworthy_rate() {
+        let kvm = Some(*b"KVMKVMKVM\0\0\0");
+        assert_eq!(
+            default_clock(kvm, true, None),
+            DefaultClock::Tsc("KVM, invariant TSC")
+        );
+        assert!(matches!(
+            default_clock(kvm, false, Some(2_400_000)),
+            DefaultClock::Tsc(_)
+        ));
+        assert!(matches!(
+            default_clock(kvm, false, None),
+            DefaultClock::Hpet(_)
+        ));
+        for other in [
+            *b"TCGTCGTCGTCG",
+            *b"Microsoft Hv",
+            *b"VBoxVBoxVBox",
+            *b"VMwareVMware",
+        ] {
+            assert!(matches!(
+                default_clock(Some(other), true, Some(1)),
+                DefaultClock::Hpet(_)
+            ));
+        }
+        assert_eq!(
+            default_clock(None, true, None),
+            DefaultClock::Hpet("no hypervisor")
+        );
+    }
+
+    #[test]
+    fn drift_is_parts_per_million_either_way() {
+        assert_eq!(drift_ppm(2_400_000_000, 2_400_000_000), 0);
+        assert_eq!(drift_ppm(2_400_000_000, 2_400_240_000), 100);
+        assert_eq!(drift_ppm(2_400_000_000, 2_399_760_000), 100);
+        assert_eq!(drift_ppm(2_400_000_000, 2_400_250_000), 104);
+        assert_eq!(drift_ppm(0, 5), 5_000_000);
+    }
 
     #[test]
     fn usable_sets_need_the_os_to_save_their_registers() {
