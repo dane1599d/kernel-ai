@@ -8,7 +8,7 @@ mod scope;
 mod search;
 mod units;
 
-use crate::embed::{Embedder, EmbedderId};
+use crate::embed::{EmbedError, Embedder, EmbedderId};
 use crate::format::{Batch, Header, fresh, open};
 use crate::index::{Index, prepare};
 use crate::scope::Scope;
@@ -100,9 +100,9 @@ pub fn modified(doc: &Doc) -> u64 {
 /// vectors if one is given. The object id of a file is its place in
 /// [`CORPUS`] plus 1; each file is a batch of its own, generation 10 plus its
 /// place.
-pub fn corpus_index(embedder: Option<&dyn Embedder>) -> (Index, Vec<u8>) {
+pub fn corpus_index(mut embedder: Option<&mut (dyn Embedder + '_)>) -> (Index, Vec<u8>) {
     let header = Header {
-        embedder: embedder.map(|e| e.id()),
+        embedder: embedder.as_ref().map(|e| e.id()),
     };
     let mut bytes = fresh(&header).unwrap();
     for (i, doc) in CORPUS.iter().enumerate() {
@@ -114,7 +114,7 @@ pub fn corpus_index(embedder: Option<&dyn Embedder>) -> (Index, Vec<u8>) {
             modified(doc),
             doc.text.as_bytes(),
             &Estimate,
-            embedder,
+            embedder.as_deref_mut(),
         )
         .unwrap();
         let mut batch = Batch::new();
@@ -163,15 +163,15 @@ impl Embedder for Topics {
         }
     }
 
-    fn document(&self, text: &str) -> Result<Vec<f32>, String> {
+    fn embed_document(&mut self, text: &str, out: &mut [f32]) -> Result<(), EmbedError> {
         let words = crate::terms::words(text);
-        Ok(TOPICS
-            .iter()
-            .map(|topic| words.iter().filter(|w| topic.contains(&w.as_str())).count() as f32)
-            .collect())
+        for (value, topic) in out.iter_mut().zip(TOPICS) {
+            *value = words.iter().filter(|w| topic.contains(&w.as_str())).count() as f32;
+        }
+        Ok(())
     }
 
-    fn query(&self, text: &str) -> Result<Vec<f32>, String> {
-        self.document(text)
+    fn embed_query(&mut self, text: &str, out: &mut [f32]) -> Result<(), EmbedError> {
+        self.embed_document(text, out)
     }
 }

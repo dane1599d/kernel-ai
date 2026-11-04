@@ -3,7 +3,7 @@
 //! the embedder agree.
 
 use super::{NOW_NS, Topics, corpus_index};
-use crate::embed::{Embedder, EmbedderId};
+use crate::embed::{EmbedError, Embedder, EmbedderId};
 use crate::scope::{Scope, Skip};
 use crate::search::{MAX_HITS, Query, search};
 use crate::since;
@@ -152,13 +152,13 @@ fn the_limit_caps_the_results_and_ties_go_by_path() {
 
 #[test]
 fn with_vectors_a_query_finds_files_by_meaning_as_well_as_by_word() {
-    let (index, _) = corpus_index(Some(&Topics));
+    let (index, _) = corpus_index(Some(&mut Topics));
     let scope = Scope::new();
     // No file holds "eat" or "food", but the groceries and the cake are about
     // food, and the stand-in embedder says so.
     let keyword = search(&index, &scope, &ask("what can I eat"), None).unwrap();
     assert!(keyword.is_empty());
-    let meant = search(&index, &scope, &ask("what can I eat"), Some(&Topics)).unwrap();
+    let meant = search(&index, &scope, &ask("what can I eat"), Some(&mut Topics)).unwrap();
     let found = paths(&meant);
     assert!(
         found.contains(&"/home/user/notes/groceries.txt"),
@@ -173,7 +173,7 @@ fn with_vectors_a_query_finds_files_by_meaning_as_well_as_by_word() {
 
 #[test]
 fn an_embedder_that_did_not_make_the_index_is_not_used_and_search_falls_back() {
-    let (index, _) = corpus_index(Some(&Topics));
+    let (index, _) = corpus_index(Some(&mut Topics));
     struct Other;
     impl Embedder for Other {
         fn id(&self) -> EmbedderId {
@@ -183,19 +183,21 @@ fn an_embedder_that_did_not_make_the_index_is_not_used_and_search_falls_back() {
                 dims: 4,
             }
         }
-        fn document(&self, _: &str) -> Result<alloc::vec::Vec<f32>, String> {
-            Ok(alloc::vec![1.0, 0.0, 0.0, 0.0])
+        fn embed_document(&mut self, _: &str, out: &mut [f32]) -> Result<(), EmbedError> {
+            out.fill(0.0);
+            out[0] = 1.0;
+            Ok(())
         }
-        fn query(&self, _: &str) -> Result<alloc::vec::Vec<f32>, String> {
-            Ok(alloc::vec![1.0, 0.0, 0.0, 0.0])
+        fn embed_query(&mut self, _: &str, out: &mut [f32]) -> Result<(), EmbedError> {
+            self.embed_document("", out)
         }
     }
     let scope = Scope::new();
-    let hits = search(&index, &scope, &ask("what can I eat"), Some(&Other)).unwrap();
+    let hits = search(&index, &scope, &ask("what can I eat"), Some(&mut Other)).unwrap();
     assert!(
         hits.is_empty(),
         "no keyword, and Other's vectors are not used"
     );
-    let keyword = search(&index, &scope, &ask("lisbon"), Some(&Other)).unwrap();
+    let keyword = search(&index, &scope, &ask("lisbon"), Some(&mut Other)).unwrap();
     assert_eq!(paths(&keyword), ["/home/user/notes/trip.md"]);
 }

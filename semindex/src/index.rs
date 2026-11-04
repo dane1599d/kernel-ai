@@ -63,6 +63,8 @@ pub struct FileEntry {
 pub struct Index {
     pub header: Header,
     files: BTreeMap<u64, FileEntry>,
+    /// Each indexed path's object: one path is one file.
+    paths: BTreeMap<String, u64>,
     /// The kaifs generation the index is complete up to: the next
     /// `changes(since)` starts here.
     pub generation: u64,
@@ -73,6 +75,7 @@ impl Index {
         Self {
             header,
             files: BTreeMap::new(),
+            paths: BTreeMap::new(),
             generation: 0,
         }
     }
@@ -90,9 +93,11 @@ impl Index {
         self.files.values().map(|f| f.chunks.len()).sum()
     }
 
-    /// Takes one record, or says why it does not hold: a chunk of a file not
-    /// indexed, one past the file's end, or a vector the header does not
-    /// promise.
+    /// Takes one record, or says why it does not hold: a path that is not
+    /// clean or that another file holds, a chunk of a file not indexed, one
+    /// past the file's end, or a vector the header does not promise or with a
+    /// value that is not finite. A file moved to a path another file held
+    /// comes after that file's `Remove`, as `changes(since)` reports them.
     pub fn apply(&mut self, record: Record) -> Result<(), &'static str> {
         match record {
             Record::File {
@@ -105,6 +110,13 @@ impl Index {
                 if !scope::clean(&path) {
                     return Err("a file's path is not clean");
                 }
+                if self.paths.get(&path).is_some_and(|o| *o != object) {
+                    return Err("two files with one path");
+                }
+                if let Some(old) = self.files.get(&object) {
+                    self.paths.remove(&old.path);
+                }
+                self.paths.insert(path.clone(), object);
                 let entry = FileEntry {
                     object,
                     path,
@@ -129,12 +141,18 @@ impl Index {
                     Some(v) if v.len() != usize::from(dims) || dims == 0 => {
                         return Err("a vector the header does not promise");
                     }
+                    // An f16 with every exponent bit set is an infinity or NaN.
+                    Some(v) if v.iter().any(|h| h & 0x7c00 == 0x7c00) => {
+                        return Err("a vector with a value that is not finite");
+                    }
                     _ => {}
                 }
                 file.chunks.push(chunk);
             }
             Record::Remove { object } => {
-                self.files.remove(&object);
+                if let Some(old) = self.files.remove(&object) {
+                    self.paths.remove(&old.path);
+                }
             }
         }
         Ok(())
@@ -163,7 +181,7 @@ pub fn prepare(
     modified_ns: u64,
     bytes: &[u8],
     tokens: &dyn Tokens,
-    embedder: Option<&dyn Embedder>,
+    mut embedder: Option<&mut (dyn Embedder + '_)>,
 ) -> Result<Prepared, Skip> {
     scope.check(path)?;
     if bytes.len() as u64 > MAX_FILE {
@@ -177,15 +195,21 @@ pub fn prepare(
         modified_ns,
         length: bytes.len() as u64,
     }];
-    let dims = embedder.map(|e| usize::from(e.id().dims));
+    let dims = embedder.as_ref().map_or(0, |e| usize::from(e.id().dims));
+    let mut out = alloc::vec![0.0f32; dims];
     let mut unembedded = 0;
     for c in chunk::chunk(text, tokens) {
         let words = c.of(text);
-        let vector = embedder
-            .zip(dims)
-            .and_then(|(e, dims)| e.document(words).ok().filter(|v| v.len() == dims))
-            .and_then(|v| embed::unit(&v))
-            .map(|v| v.into_iter().map(half::narrow).collect());
+        let vector = match embedder.as_deref_mut() {
+            Some(e) if dims > 0 => {
+                out.fill(0.0);
+                e.embed_document(words, &mut out)
+                    .ok()
+                    .and_then(|()| embed::unit(&out))
+                    .map(|v| v.into_iter().map(half::narrow).collect())
+            }
+            _ => None,
+        };
         if embedder.is_some() && vector.is_none() {
             unembedded += 1;
         }

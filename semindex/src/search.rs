@@ -71,7 +71,7 @@ pub fn search(
     index: &Index,
     scope: &Scope,
     query: &Query<'_>,
-    embedder: Option<&dyn Embedder>,
+    embedder: Option<&mut (dyn Embedder + '_)>,
 ) -> Result<Vec<Hit>, Skip> {
     if let Some(folder) = query.folder {
         if !scope::clean(folder) {
@@ -162,7 +162,7 @@ pub fn search(
 fn asked<'a>(
     index: &Index,
     text: &str,
-    embedder: Option<&dyn Embedder>,
+    embedder: Option<&mut (dyn Embedder + '_)>,
     chunks: impl Iterator<Item = &'a ChunkEntry>,
 ) -> Asked {
     let mut held: BTreeMap<String, usize> = terms::counted(text)
@@ -176,11 +176,12 @@ fn asked<'a>(
             }
         }
     }
-    let vector = embedder
-        .filter(|e| index.header.embedder.as_ref() == Some(&e.id()))
-        .and_then(|e| e.query(text).ok())
-        .filter(|v| Some(v.len()) == index.header.embedder.as_ref().map(|e| usize::from(e.dims)))
-        .and_then(|v| embed::unit(&v));
+    let own = index.header.embedder.as_ref();
+    let vector = embedder.filter(|e| own == Some(&e.id())).and_then(|e| {
+        let mut out = alloc::vec![0.0f32; own.map_or(0, |id| usize::from(id.dims))];
+        e.embed_query(text, &mut out).ok()?;
+        embed::unit(&out)
+    });
     Asked {
         terms: held.into_iter().collect(),
         vector,
@@ -204,7 +205,8 @@ fn bm25(chunk: &ChunkEntry, terms: &[(String, usize)], chunks: usize, average: f
         .sum()
 }
 
-/// The cosine of `chunk`'s vector and the query's, when both have one.
+/// The cosine of `chunk`'s vector and the query's, when both have one, held
+/// to [-1, 1]: f16 rounding can take two unit vectors' dot product just past it.
 fn cosine(chunk: &ChunkEntry, query: Option<&[f32]>) -> Option<f32> {
     let query = query?;
     let vector: Vec<f32> = chunk
@@ -213,5 +215,5 @@ fn cosine(chunk: &ChunkEntry, query: Option<&[f32]>) -> Option<f32> {
         .iter()
         .map(|h| half::widen(*h))
         .collect();
-    Some(embed::dot(&vector, query))
+    Some(embed::dot(&vector, query).clamp(-1.0, 1.0))
 }

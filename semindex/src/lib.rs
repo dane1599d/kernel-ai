@@ -45,7 +45,7 @@ pub mod terms;
 mod tests;
 
 pub use chunk::{Chunk, Estimate, Tokens, chunk};
-pub use embed::{Embedder, EmbedderId};
+pub use embed::{EmbedError, Embedder, EmbedderId};
 pub use format::{Batch, Header, Opened, Record, Refused, fresh, open};
 pub use index::{ChunkEntry, FileEntry, Index, Prepared, prepare};
 pub use scope::{Scope, Skip};

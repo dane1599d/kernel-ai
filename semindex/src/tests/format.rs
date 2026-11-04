@@ -3,7 +3,7 @@
 //! means rebuild.
 
 use super::{CORPUS, Topics, corpus_index};
-use crate::embed::{Embedder, EmbedderId};
+use crate::embed::{EmbedError, Embedder, EmbedderId};
 use crate::format::{self, Batch, Header, MAGIC, Record, Refused};
 use crate::index::ChunkEntry;
 use alloc::string::String;
@@ -142,7 +142,7 @@ fn another_format_or_embedder_means_rebuild() {
         embedder: Some(Topics.id()),
     };
     assert_eq!(format::open(&bytes, &topics), Err(Refused::Embedder));
-    let (_, with_vectors) = corpus_index(Some(&Topics));
+    let (_, with_vectors) = corpus_index(Some(&mut Topics));
     assert!(format::open(&with_vectors, &topics).is_ok());
     let newer = Header {
         embedder: Some(EmbedderId {
@@ -241,4 +241,101 @@ fn the_writer_refuses_what_the_reader_would_not_read() {
     );
     assert_eq!(format::fresh(&named("e", 0)), Err(Refused::Header));
     assert!(format::fresh(&named("e", 256)).is_ok());
+}
+
+#[test]
+fn one_path_is_one_file_and_a_rename_frees_the_old_path() {
+    let base = format::fresh(&keyword_only()).unwrap();
+    let mut two = base.clone();
+    two.extend(batch(
+        &[
+            file(1, "/home/user/a.txt", 4),
+            file(2, "/home/user/a.txt", 4),
+        ],
+        1,
+    ));
+    assert_eq!(
+        format::open(&two, &keyword_only()),
+        Err(Refused::Corrupt("two files with one path"))
+    );
+    // Object 1 moves to b.txt, and then object 2 may take a.txt.
+    let mut moved = base.clone();
+    moved.extend(batch(&[file(1, "/home/user/a.txt", 4)], 1));
+    moved.extend(batch(
+        &[
+            file(1, "/home/user/b.txt", 4),
+            file(2, "/home/user/a.txt", 4),
+        ],
+        2,
+    ));
+    let index = format::open(&moved, &keyword_only()).unwrap().index;
+    assert_eq!(index.file(1).unwrap().path, "/home/user/b.txt");
+    assert_eq!(index.file(2).unwrap().path, "/home/user/a.txt");
+    // A removed file frees its path too.
+    let mut removed = base;
+    removed.extend(batch(&[file(1, "/home/user/a.txt", 4)], 1));
+    removed.extend(batch(
+        &[Record::Remove { object: 1 }, file(3, "/home/user/a.txt", 4)],
+        2,
+    ));
+    assert!(format::open(&removed, &keyword_only()).is_ok());
+}
+
+#[test]
+fn a_vector_with_a_value_that_is_not_finite_means_rebuild() {
+    let topics = Header {
+        embedder: Some(Topics.id()),
+    };
+    let base = format::fresh(&topics).unwrap();
+    // 0x7c00 is +infinity, 0x7e00 a NaN, as f16.
+    for bad in [0x7c00u16, 0x7e00, 0xfc00] {
+        let mut bytes = base.clone();
+        let chunk = Record::Chunk {
+            object: 1,
+            chunk: ChunkEntry {
+                offset: 0,
+                len: 4,
+                terms: vec![],
+                vector: Some(vec![0x3c00, bad, 0, 0]),
+            },
+        };
+        bytes.extend(batch(&[file(1, "/home/user/a.txt", 4), chunk], 1));
+        assert_eq!(
+            format::open(&bytes, &topics),
+            Err(Refused::Corrupt("a vector with a value that is not finite")),
+            "{bad:#06x}"
+        );
+    }
+}
+
+#[test]
+fn a_chunk_the_embedder_could_not_embed_is_kept_for_keyword_search() {
+    struct Failing;
+    impl Embedder for Failing {
+        fn id(&self) -> EmbedderId {
+            Topics.id()
+        }
+        fn embed_document(&mut self, _: &str, _: &mut [f32]) -> Result<(), EmbedError> {
+            Err(EmbedError::TooLong)
+        }
+        fn embed_query(&mut self, _: &str, _: &mut [f32]) -> Result<(), EmbedError> {
+            Err(EmbedError::Model)
+        }
+    }
+    let prepared = crate::index::prepare(
+        &crate::Scope::new(),
+        "/home/user/a.txt",
+        1,
+        1,
+        0,
+        b"lisbon hotel",
+        &crate::Estimate,
+        Some(&mut Failing),
+    )
+    .unwrap();
+    assert_eq!(prepared.unembedded, 1);
+    let Record::Chunk { chunk, .. } = &prepared.records[1] else {
+        panic!("{:?}", prepared.records);
+    };
+    assert_eq!((chunk.vector.as_ref(), chunk.count("lisbon")), (None, 1));
 }

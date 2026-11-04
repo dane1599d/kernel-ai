@@ -21,14 +21,28 @@ pub struct EmbedderId {
     pub dims: u16,
 }
 
-/// Turns text into a vector, as S13-3's embedder will. A document and a query
-/// are embedded apart because Qwen3-Embedding gives a query its instruction.
-/// Each answer must have [`EmbedderId::dims`] values; it is made unit length
-/// before it is kept, so the scan's dot product is the cosine.
+/// Why an embedder gave no vector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmbedError {
+    /// The text is longer than the model takes.
+    TooLong,
+    /// The model failed.
+    Model,
+}
+
+/// Turns text into a vector, as S13-3's embedder does on `infer` (the shape
+/// agreed with the P5 spikes lane): it needs `&mut self` for the engine's
+/// state, and writes into the caller's buffer. A document and a query are
+/// embedded apart because Qwen3-Embedding gives a query its instruction. `out`
+/// has [`EmbedderId::dims`] values; what is written is made unit length again
+/// before it is kept, so the scan's dot product is the cosine. A chunk with no
+/// vector is found by keyword, and a query with none falls back to keyword.
+/// Tokens are counted apart, by [`crate::Tokens`], so the chunker borrows the
+/// tokenizer while the engine is borrowed to embed.
 pub trait Embedder {
     fn id(&self) -> EmbedderId;
-    fn document(&self, text: &str) -> Result<Vec<f32>, String>;
-    fn query(&self, text: &str) -> Result<Vec<f32>, String>;
+    fn embed_document(&mut self, text: &str, out: &mut [f32]) -> Result<(), EmbedError>;
+    fn embed_query(&mut self, text: &str, out: &mut [f32]) -> Result<(), EmbedError>;
 }
 
 /// `v` at unit length, or `None` for one of zero length or with a value that

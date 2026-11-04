@@ -13,10 +13,18 @@
 //! only when its commit frame is read and counts its frames, so a crash in the
 //! middle of an append loses that batch alone: the reader stops at the first
 //! frame that is cut short or fails its checksum, keeps what was committed
-//! before it ([`Opened::committed`]), and the writer appends from there. The
-//! batch lost is found again by `changes(since)` from the generation the last
-//! commit marked. Each batch also commits in one kaifs transaction, as the ADR
-//! has it; the framing makes the file safe however it is written.
+//! before it ([`Opened::committed`]), and the writer truncates the file there
+//! before it appends the next batch, so a torn tail is never read between two
+//! good batches. The batch lost is found again by `changes(since)` from the
+//! generation the last commit marked. Each batch also commits in one kaifs
+//! transaction, as the ADR has it; the framing makes the file safe however it
+//! is written.
+//!
+//! A checksum that fails is read as a tear wherever it is, not as a reason to
+//! rebuild: everything from that frame on is dropped, and `changes(since)`
+//! finds those files again from the last good commit's generation. So a byte
+//! flipped in an old batch costs the batches after it a re-index, never a
+//! wrong read.
 //!
 //! Anything else wrong is a reason to rebuild ([`Refused`]), never to read on:
 //! another magic or embedder, or a frame that passed its checksum but does not
@@ -95,8 +103,9 @@ impl Refused {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Opened {
     pub index: Index,
-    /// Bytes of the file up to the end of its last commit: the next batch is
-    /// appended here, over any torn tail.
+    /// Bytes of the file up to the end of its last commit. The writer truncates
+    /// the file to this length, dropping any torn tail, and then appends the
+    /// next batch.
     pub committed: usize,
     /// Whether anything followed the last commit: a batch a crash cut short.
     pub torn: bool,
