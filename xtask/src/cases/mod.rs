@@ -184,9 +184,22 @@ pub fn test_cases() -> Vec<&'static TestCase> {
 /// The M5 exit test: a 10-minute spawn, exit and sleep storm.
 pub const SOAK_CASES: &[TestCase] = &[case("storm-10min", "test=storm-600")];
 
-/// Cases booted only when `XTASK_CASE` names one: the screenshot tour.
+/// Spike P5-S2: download speed from a plain HTTP server the spike's workflow
+/// starts on the host at port 8765, serving `/blob`. Never in `LANES`.
+pub const NET_THROUGHPUT: TestCase = TestCase {
+    expect: &["net-throughput: 18 downloads measured"],
+    server: false,
+    min_timeout: Some(Duration::from_secs(900)),
+    ..case("net-throughput", "test=net-throughput")
+};
+
+/// Cases booted only when `XTASK_CASE` names one: the screenshot tour and the
+/// throughput spike.
 pub fn named_only() -> Vec<&'static TestCase> {
-    tour::CASES.iter().collect()
+    tour::CASES
+        .iter()
+        .chain(core::iter::once(&NET_THROUGHPUT))
+        .collect()
 }
 
 #[cfg(test)]

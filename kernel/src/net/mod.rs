@@ -6,6 +6,7 @@
 //! the DHCP client's news to `setup`, so a lease is never missed whoever polled.
 //! Between those, the `net` thread polls it on its own.
 
+pub mod bulk;
 mod device;
 pub mod ping;
 pub mod resolve;
@@ -19,6 +20,7 @@ use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 use core::sync::atomic::{AtomicU16, Ordering};
 use device::NicDevice;
+pub use device::set_tx_delay_ms;
 use smoltcp::iface::{Config, Interface, SocketSet, SocketStorage};
 use smoltcp::socket::tcp;
 use smoltcp::time::{Duration, Instant};
@@ -53,7 +55,9 @@ unsafe impl Send for Net {}
 impl Net {
     /// Moves frames both ways and applies whatever the DHCP client learned.
     fn poll(&mut self) {
+        self.device.send_due();
         self.iface.poll(now(), &mut self.device, &mut self.sockets);
+        self.device.send_due();
         self.setup
             .after_poll(&mut self.iface, &mut self.sockets, hpet::nanos());
     }
