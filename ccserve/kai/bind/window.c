@@ -5,6 +5,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Imported Functions from `kai:app/clock@0.1.0`
+
+__attribute__((import_module("kai:app/clock@0.1.0"), import_name("now-ms")))
+extern int64_t __wasm_import_kai_app_clock_now_ms(void);
+
+__attribute__((import_module("kai:app/clock@0.1.0"), import_name("seed")))
+extern int64_t __wasm_import_kai_app_clock_seed(void);
+
 // Imported Functions from `kai:ui/view@0.1.1`
 
 __attribute__((import_module("kai:ui/view@0.1.1"), import_name("open")))
@@ -391,6 +399,16 @@ void window_string_free(window_string_t *ret) {
 }
 
 // Component Adapters
+
+uint64_t kai_app_clock_now_ms(void) {
+  int64_t ret = __wasm_import_kai_app_clock_now_ms();
+  return (uint64_t) (ret);
+}
+
+uint64_t kai_app_clock_seed(void) {
+  int64_t ret = __wasm_import_kai_app_clock_seed();
+  return (uint64_t) (ret);
+}
 
 bool kai_ui_view_open(window_string_t *title, uint16_t width, uint16_t height, kai_ui_view_window_id_t *ret, kai_ui_view_ui_error_t *err) {
   __attribute__((__aligned__(4)))
