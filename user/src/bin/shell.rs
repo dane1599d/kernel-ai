@@ -322,6 +322,11 @@ const _: () = assert!(same(
     shellcore::SETTINGS_APP,
     deskcore::settings_wire::SETTINGS_APP
 ));
+// The same for the Models window's switches (#556).
+const _: () = assert!(same(
+    shellcore::MODELS_APP,
+    deskcore::models_wire::MODELS_APP
+));
 // The same for the editor's file door.
 const _: () = assert!(same(shellcore::door::DOOR_APP, deskcore::files::DOOR_APP));
 
@@ -433,15 +438,20 @@ const fn same(a: &str, b: &str) -> bool {
     true
 }
 
-/// Answers the Settings app's waiting `kai:settings` requests, which `desktop`
-/// holds (`deskcore::settings_wire`): the app is `desktop`'s record of the
-/// caller, and `Shell::settings` checks it again.
-fn take_settings(shell: &mut Shell) {
+/// What the shell does with one app's request: `Shell::settings` for the
+/// Settings app's, `Shell::models_change` for the Models window's switches.
+type Answering = fn(&mut Shell, &str, &str, bool) -> Result<String, String>;
+
+/// Answers one app's waiting requests, which `desktop` holds under `words`
+/// (`deskcore::settings_wire`): the Settings app's `kai:settings` requests, or
+/// the Models window's switches (`deskcore::models_wire`). The app is
+/// `desktop`'s record of the caller, and `answering` checks it again.
+fn take_changes(shell: &mut Shell, words: &deskcore::settings_wire::Words, answering: Answering) {
     use deskcore::settings_wire::{self as wire, Answer};
     let Some(route) = desktop() else {
         return;
     };
-    let Ok(answer) = ask_desktop(route, wire::TAKE) else {
+    let Ok(answer) = ask_desktop(route, words.take) else {
         return;
     };
     let Some(Some((app, requests))) = wire::parse_take(&answer) else {
@@ -449,11 +459,14 @@ fn take_settings(shell: &mut Shell) {
     };
     let answers: Vec<Answer> = requests
         .iter()
-        .map(|r| Answer::new(r.ticket, shell.settings(app, &r.text, r.user)))
+        .map(|r| Answer::new(r.ticket, answering(shell, app, &r.text, r.user)))
         .collect();
-    for done in wire::encode_done_chunks(app, &answers, kabi::MAX_MESSAGE) {
+    for done in wire::encode_done_chunks_for(words, app, &answers, kabi::MAX_MESSAGE) {
         if let Err(why) = ask_desktop(route, &done) {
-            println!("{app}'s settings answers were not sent: {why}");
+            println!(
+                "{app}'s {} answers were not sent: {why}",
+                words.word.trim_end()
+            );
         }
     }
 }
@@ -1199,8 +1212,17 @@ fn main() -> i32 {
         }
         give_call_results(&mut shell);
         take_files(&mut shell);
-        take_settings(&mut shell);
         take_net(&mut shell);
+        take_changes(
+            &mut shell,
+            &deskcore::settings_wire::SETTINGS,
+            Shell::settings,
+        );
+        take_changes(
+            &mut shell,
+            &deskcore::models_wire::MODELS,
+            Shell::models_change,
+        );
         give_app_build(&mut shell);
         // An install card waits: the kernel's terminal takes it when it may.
         // Said again each pass, so a desktop that shows later still gets it.

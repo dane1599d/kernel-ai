@@ -48,6 +48,7 @@ mod models;
 mod netask;
 pub mod netgrant;
 pub use netask::Connect as NetConnect;
+pub use models::MODELS_APP;
 mod packages;
 mod panel;
 mod pkg;

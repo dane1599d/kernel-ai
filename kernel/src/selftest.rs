@@ -208,6 +208,9 @@ pub enum SelfTest {
     /// The model manager's window on the desktop, given `updated`'s model list
     /// and closed from its control (P4 task 10).
     UiModels,
+    /// A person's keys in the Models window switch the model through the
+    /// shell's `model_use` row, and `undo` switches it back (#556).
+    UiModelsUse,
     /// An unused app naps and a click wakes it (P3 task 12b).
     DeskNap,
     /// A saved appearance repaints `desktop` at once and holds across its
@@ -453,6 +456,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=ui-monitor" => Some(SelfTest::UiMonitor),
             "test=ui-files" => Some(SelfTest::UiFiles),
             "test=ui-models" => Some(SelfTest::UiModels),
+            "test=ui-models-use" => Some(SelfTest::UiModelsUse),
             "test=desk-nap" => Some(SelfTest::DeskNap),
             "test=desk-appearance" => Some(SelfTest::DeskAppearance),
             "test=keep-running" => Some(SelfTest::KeepRunning {
@@ -551,9 +555,12 @@ fn updated_words(test: SelfTest) -> String {
 }
 
 /// The cases whose first model list would otherwise wait on `updated`'s start:
-/// the agent's (`app-models`) and the window's (`ui-models`).
+/// the agent's (`app-models`) and the window's (`ui-models`, `ui-models-use`).
 fn updated_at_boot(test: SelfTest) -> bool {
-    matches!(test, SelfTest::Act(ActCase::AppModels) | SelfTest::UiModels)
+    matches!(
+        test,
+        SelfTest::Act(ActCase::AppModels) | SelfTest::UiModels | SelfTest::UiModelsUse
+    )
 }
 
 /// The service plan for this boot, or None for the boots that run no user space.
@@ -612,6 +619,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::UiMonitor
             | SelfTest::UiFiles
             | SelfTest::UiModels
+            | SelfTest::UiModelsUse
             | SelfTest::DeskNap
             | SelfTest::KeepRunning { .. }
             | SelfTest::DeskAppearance
@@ -816,6 +824,13 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push_str(crate::keep_tests::PLAN);
                 crate::keep_tests::SHELL
             }
+            // The window's switches reach the shell through `desktop`, so the
+            // shell has its route to it; the window comes after the shell.
+            SelfTest::UiModelsUse => {
+                plan.push('\n');
+                plan.push_str(crate::models_window_tests::DESKTOP);
+                kabi::plan::SHELL_DESK_FILES
+            }
             // The desktop with its card, before the shell with `files` and
             // `state` (the appearance is saved in `/system/state`) and its
             // route to `desktop`.
@@ -902,6 +917,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::UiModels {
         plan.push('\n');
         plan.push_str(&crate::app_window_tests::models_plan());
+    }
+    if test == SelfTest::UiModelsUse {
+        plan.push('\n');
+        plan.push_str(kabi::plan::MODELS_WINDOW);
     }
     if test == SelfTest::DeskNap {
         plan.push('\n');

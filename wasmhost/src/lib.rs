@@ -44,6 +44,8 @@ mod models_tests;
 pub mod net;
 #[cfg(test)]
 mod net_tests;
+#[cfg(test)]
+mod models_use_tests;
 mod reads;
 pub mod settings;
 pub mod settings_ledger;
