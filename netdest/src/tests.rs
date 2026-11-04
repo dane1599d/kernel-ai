@@ -148,3 +148,33 @@ fn bad_text_is_refused() {
     }
     assert!(Dest::parse(&"a".repeat(MAX_TEXT + 1)).is_err());
 }
+
+#[test]
+fn an_exact_destination_names_only_its_hosts() {
+    let exact = dest("proto:tcp,ports:443,hosts:api.weather.example,match:exact");
+    assert!(exact.exact);
+    assert!(exact.allows_name("api.weather.example"));
+    assert!(exact.allows_name("API.weather.example."));
+    assert!(!exact.allows_name("x.api.weather.example"));
+    assert!(!exact.allows_name("weather.example"));
+    let suffix = dest("proto:tcp,ports:443,hosts:weather.example");
+    assert!(!suffix.exact);
+    // An exact host under a suffix is narrower; the other way widens.
+    assert!(exact.within(&suffix));
+    assert!(!suffix.within(&exact));
+    let sub_suffix = dest("proto:tcp,ports:443,hosts:api.weather.example");
+    assert!(
+        !sub_suffix.within(&exact),
+        "a suffix is wider than its exact host"
+    );
+    let other = dest("proto:tcp,ports:443,hosts:www.weather.example,match:exact");
+    assert!(!other.within(&exact));
+    // Its text reads back; `match:suffix` is the default and is not written.
+    assert_eq!(dest(&exact.to_string()), exact);
+    assert_eq!(
+        dest("hosts:kai.test,match:suffix").to_string(),
+        "proto:tcp,addrs:none,ports:none,hosts:kai.test"
+    );
+    assert!(Dest::parse("hosts:kai.test,match:prefix").is_err());
+    assert!(Dest::parse("hosts:kai.test,match:exact,match:exact").is_err());
+}
