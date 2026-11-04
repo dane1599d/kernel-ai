@@ -25,6 +25,9 @@ use std::sync::OnceLock;
 
 /// The target an update disk carries, as `updated` looks it up.
 pub const TARGET: &str = "slot.img";
+/// An online release's chunk list, a sibling target (`updatenet::plan`).
+#[cfg(test)]
+pub const CHUNKS_TARGET: &str = "slot.img.chunks";
 const DAY: u64 = 86_400;
 
 /// This run's throwaway test root: four keys and the time the metadata counts
@@ -80,23 +83,10 @@ impl TestRoot {
         tuf::envelope(&root, &self.root)
     }
 
-    /// The update disk carrying `image` as release `release_seq`. With
-    /// `tampered`, one byte of the image on the disk is flipped after signing.
-    pub fn disk(&self, image: &[u8], release_seq: u32, tampered: bool) -> Result<Vec<u8>, String> {
-        let sha = crate::sha256_hex(image);
-        let targets = json!({
-            "_type": "targets",
-            "spec_version": SPEC_VERSION,
-            "version": 1,
-            "expires": self.expires(365),
-            "targets": {
-                TARGET: {
-                    "length": image.len(),
-                    "hashes": { "sha256": sha },
-                    "custom": { "kai": { "release_seq": release_seq } },
-                },
-            },
-        });
+    /// The four metadata files of a repository whose `targets` role is `targets`
+    /// (version 1): `metadata/1.root.json`, `1.targets.json`, `1.snapshot.json`
+    /// and `timestamp.json`, signed by this root.
+    fn metadata(&self, targets: &serde_json::Value) -> Result<Vec<(String, Vec<u8>)>, String> {
         let snapshot = json!({
             "_type": "snapshot",
             "spec_version": SPEC_VERSION,
@@ -118,25 +108,85 @@ impl TestRoot {
                 },
             },
         });
-        let mut body = image.to_vec();
-        if tampered {
-            let middle = body.len() / 2;
-            body[middle] ^= 0xFF;
-        }
-        let target_path = format!("targets/{TARGET}");
-        let files: Vec<(String, Vec<u8>)> = vec![
+        Ok(vec![
             ("metadata/1.root.json".into(), self.root_json()?),
             (
                 "metadata/1.targets.json".into(),
-                tuf::envelope(&targets, &self.targets)?,
+                tuf::envelope(targets, &self.targets)?,
             ),
             ("metadata/1.snapshot.json".into(), snapshot),
             (
                 "metadata/timestamp.json".into(),
                 tuf::envelope(&timestamp, &self.timestamp)?,
             ),
-            (target_path, body),
-        ];
+        ])
+    }
+
+    /// The seconds since 1970 the metadata counts its expiry from, and a moment
+    /// inside its validity: what a device's clock reads in a test.
+    #[cfg(test)]
+    pub fn clock(&self) -> u64 {
+        self.now.0 + 60
+    }
+
+    /// An online repository's metadata for release `release_seq`: `slot.img`, a
+    /// release asset of GitHub Release `tag`, and its sibling `slot.img.chunks`
+    /// holding `list`. The files are `(path, bytes)`: the four metadata files, as
+    /// the Pages host serves them. The targets are served as release assets
+    /// named `<sha256>.<name>` (consistent snapshots); a test builds those from
+    /// the bytes it signs.
+    #[cfg(test)]
+    pub fn repository(
+        &self,
+        image: &[u8],
+        list: &[u8],
+        release_seq: u32,
+        tag: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>, String> {
+        let targets = json!({
+            "_type": "targets",
+            "spec_version": SPEC_VERSION,
+            "version": 1,
+            "expires": self.expires(365),
+            "targets": {
+                TARGET: {
+                    "length": image.len(),
+                    "hashes": { "sha256": crate::sha256_hex(image) },
+                    "custom": { "kai": { "release_seq": release_seq, "tag": tag } },
+                },
+                CHUNKS_TARGET: {
+                    "length": list.len(),
+                    "hashes": { "sha256": crate::sha256_hex(list) },
+                },
+            },
+        });
+        self.metadata(&targets)
+    }
+
+    /// The update disk carrying `image` as release `release_seq`. With
+    /// `tampered`, one byte of the image on the disk is flipped after signing.
+    pub fn disk(&self, image: &[u8], release_seq: u32, tampered: bool) -> Result<Vec<u8>, String> {
+        let sha = crate::sha256_hex(image);
+        let targets = json!({
+            "_type": "targets",
+            "spec_version": SPEC_VERSION,
+            "version": 1,
+            "expires": self.expires(365),
+            "targets": {
+                TARGET: {
+                    "length": image.len(),
+                    "hashes": { "sha256": sha },
+                    "custom": { "kai": { "release_seq": release_seq } },
+                },
+            },
+        });
+        let mut body = image.to_vec();
+        if tampered {
+            let middle = body.len() / 2;
+            body[middle] ^= 0xFF;
+        }
+        let mut files = self.metadata(&targets)?;
+        files.push((format!("targets/{TARGET}"), body));
         let refs: Vec<(&str, &[u8])> = files
             .iter()
             .map(|(p, b)| (p.as_str(), b.as_slice()))

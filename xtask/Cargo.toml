@@ -58,6 +58,7 @@ modelchan = { path = "../modelchan" }
 comp-models = { path = "../apps/models" }
 # The update disk's test reads its metadata back.
 kaituf = { path = "../kaituf" }
+updatenet = { path = "../updatenet" }
 # The slot disk's tests read its kai-slot 1 back.
 bootslot = { path = "../bootslot" }
 wat = "1.262.0"
