@@ -76,7 +76,14 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
         }
         call::HANDLE_CLOSE => {
             let handle = handle_arg(a[0])?;
-            handle::with(slot, |handles| handles.table.close(handle))?.map_err(Error::from)?;
+            let entry =
+                handle::with(slot, |handles| handles.table.close(handle))?.map_err(Error::from)?;
+            // A stream's handle is the stream: closing it closes the socket, so
+            // it neither stays open nor counts against the limits (lane C).
+            if entry.kind == kabi::handle::Kind::Stream {
+                let pid = crate::process::identity(slot).pid;
+                let _ = crate::net::stream::close(pid, entry.object);
+            }
             Ok(0)
         }
         call::GRANT_NEW => grant_new(slot, a[0], a[1], a[2], a[3]),

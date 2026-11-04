@@ -627,8 +627,9 @@ pub const PART_PEER_NAME: u64 = 191;
 /// `Stream` handle; [`NET_POLL`] says when it is connected or failed.
 /// `flags`: [`super::net::STREAM_BULK`]. Permission where the destination
 /// does not allow it; Busy past [`super::net::STREAMS_PER_PROCESS`],
-/// [`super::net::STREAMS_MAX`] or 4 bulk streams; Unavailable with no address
-/// yet. Numbered at merge (P5 task 2).
+/// [`super::net::STREAMS_MAX`], or 4 bulk streams in all or 2 of one
+/// process's; Unavailable with no address yet. Closing the handle closes the
+/// stream. Numbered at merge (P5 task 2).
 pub const NET_CONNECT: u64 = 192;
 /// `net_send(stream, ptr, len) -> sent`: queues up to `len` bytes, at most
 /// [`super::net::STREAM_MAX_CALL`] (TooBig over it); 0 while the send buffer

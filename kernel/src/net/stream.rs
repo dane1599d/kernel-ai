@@ -6,7 +6,8 @@
 //! - **Where it may go** is the `NetDest`'s to say ([`super::dest::may_connect`]).
 //! - **Limits:** [`MAX_PER_PROCESS`] streams a process and [`MAX_STREAMS`] in
 //!   all, [`MAX_CALL`] bytes a send or a receive, and [`MAX_BULK`] bulk streams
-//!   at once.
+//!   at once, [`MAX_BULK_PER_PROCESS`] of them one process's.
+//! - **Closing the handle** (HANDLE_CLOSE) closes the stream, as NET_CLOSE does.
 //! - **Buffers** (spike P5-S2): a stream receives into [`RX_BUFFER`], a bulk one
 //!   into [`BULK_RX_BUFFER`]; smoltcp offers the peer a window scaled to fit.
 //! - **A process that ends** has every stream it held aborted ([`on_exit`]). A
@@ -35,8 +36,10 @@ pub const RX_BUFFER: usize = 256 * 1024;
 /// A bulk stream's: about 50 MB/s at a 20 ms round trip, once the window is
 /// scaled (P5-S2).
 pub const BULK_RX_BUFFER: usize = 1024 * 1024;
-/// Bulk streams at once, in all.
+/// Bulk streams at once, in all, and for one process: no one process takes
+/// every bulk buffer.
 pub const MAX_BULK: usize = 4;
+pub const MAX_BULK_PER_PROCESS: usize = 2;
 const TX_BUFFER: usize = 64 * 1024;
 /// Closed streams whose close is still going out; the oldest is aborted past it.
 const MAX_CLOSING: usize = 32;
@@ -86,11 +89,17 @@ pub fn connect(owner: u64, addr: Ipv4Addr, port: u16, bulk: bool) -> Result<u64,
     }
     let mut streams = STREAMS.lock();
     let live = streams.open.iter().flatten();
-    let (mine, bulks) = live.fold((0, 0), |(m, b), s| {
-        (m + usize::from(s.owner == owner), b + usize::from(s.bulk))
+    let (mine, bulks, my_bulks) = live.fold((0, 0, 0), |(m, b, mb), s| {
+        let own = s.owner == owner;
+        (
+            m + usize::from(own),
+            b + usize::from(s.bulk),
+            mb + usize::from(own && s.bulk),
+        )
     });
     let total = streams.open.iter().flatten().count();
-    if mine >= MAX_PER_PROCESS || total >= MAX_STREAMS || (bulk && bulks >= MAX_BULK) {
+    let bulk_full = bulks >= MAX_BULK || my_bulks >= MAX_BULK_PER_PROCESS;
+    if mine >= MAX_PER_PROCESS || total >= MAX_STREAMS || (bulk && bulk_full) {
         return Err(Error::Busy);
     }
     let rx_len = if bulk { BULK_RX_BUFFER } else { RX_BUFFER };

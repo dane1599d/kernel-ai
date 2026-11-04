@@ -191,8 +191,30 @@ fn stream_echo(dest: Handle, port: u16) -> Result<(), String> {
         Err(Error::Busy) => println!("16 streams open; the 17th was Busy"),
         other => return Err(format!("the 17th stream gave {other:?}")),
     }
-    for stream in streams {
-        sys::net_close(stream).map_err(|e| format!("close: {e:?}"))?;
+    // Half by NET_CLOSE, half by closing the handle: either frees the stream.
+    for (i, stream) in streams.into_iter().enumerate() {
+        match i % 2 {
+            0 => sys::net_close(stream).map_err(|e| format!("close: {e:?}"))?,
+            _ => sys::handle_close(stream).map_err(|e| format!("handle close: {e:?}"))?,
+        }
+    }
+    let mut again = alloc::vec::Vec::new();
+    for _ in 0..kabi::net::STREAMS_PER_PROCESS {
+        again.push(
+            sys::net_connect(dest, SERVER, port, 0)
+                .map_err(|e| format!("reopening stream {}: {e:?}", again.len() + 1))?,
+        );
+    }
+    println!("after closing them, by NET_CLOSE or by the handle, 16 more opened");
+    for stream in again {
+        sys::handle_close(stream).map_err(|e| format!("handle close: {e:?}"))?;
+    }
+    let bulks: alloc::vec::Vec<_> = (0..3)
+        .map(|_| sys::net_connect(dest, SERVER, port, kabi::net::STREAM_BULK))
+        .collect();
+    match bulks.as_slice() {
+        [Ok(_), Ok(_), Err(Error::Busy)] => println!("a third bulk stream of one process was Busy"),
+        other => return Err(format!("three bulk streams gave {other:?}")),
     }
     Ok(())
 }

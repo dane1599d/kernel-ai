@@ -75,6 +75,8 @@ pub(super) const CASES: &[TestCase] = &[
             "[netstream-a] a bulk stream echoed 8192 and 20 bytes, refused 8193 in one send, and closed",
             "is not on the handle: refused",
             "[netstream-a] 16 streams open; the 17th was Busy",
+            "[netstream-a] after closing them, by NET_CLOSE or by the handle, 16 more opened",
+            "[netstream-a] a third bulk stream of one process was Busy",
             "net-stream: streams echoed through the handle, kept to its port and to 16, and closed",
             "[netstream-b] holding 3 streams",
             "net-stream: a process killed with 3 streams open left none",
