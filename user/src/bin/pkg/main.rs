@@ -158,7 +158,7 @@ static KNOWN: spin::Mutex<(Vec<Index>, Vec<Index>)> = spin::Mutex::new((Vec::new
 /// once it is answered, and an answer is at most one message. With no `serve`
 /// in its plan line it idles.
 fn serve(mut answer: impl FnMut(&str, &[Handle], u64) -> String) -> ! {
-    let mut request = [0u8; 64];
+    let mut request = [0u8; kaipkg::local::MAX_REQUEST];
     loop {
         let mut info = RecvInfo::default();
         match sys::recv_h(&mut request, 60_000, &mut info) {
@@ -166,7 +166,12 @@ fn serve(mut answer: impl FnMut(&str, &[Handle], u64) -> String) -> ! {
                 let text = core::str::from_utf8(&request[..len.min(request.len())]).unwrap_or("");
                 let count = (info.handle_count as usize).min(MAX_TRANSFER);
                 let moved: Vec<Handle> = info.handles[..count].iter().map(|h| Handle(*h)).collect();
-                let mut reply = answer(text, &moved, info.caller_pid);
+                // The kernel copies what fits and gives the whole length: a
+                // longer request is refused, never answered cut short.
+                let mut reply = match len > request.len() {
+                    true => String::from("err request too long"),
+                    false => answer(text, &moved, info.caller_pid),
+                };
                 for handle in moved {
                     let _ = sys::handle_close(handle);
                 }

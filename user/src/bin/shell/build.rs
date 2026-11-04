@@ -350,7 +350,11 @@ pub fn install(
     // pkg signs and installs the bytes it reads only if they are the ones cc
     // built, by this hash.
     let mut reply = [0u8; PKG_REPLY];
-    let request = format!("local {name} sha256 {sha}");
+    let request = kaipkg::local::install_request(name, &sha);
+    if request.len() > kaipkg::local::MAX_REQUEST {
+        let _ = sys::handle_close(read_only);
+        return Err(format!("the install request for {name} is too long"));
+    }
     let len = match sys::call_h(
         pkg,
         request.as_bytes(),
