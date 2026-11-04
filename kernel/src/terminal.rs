@@ -46,6 +46,10 @@ const MAX_REPLY_LINES: usize = 64;
 static REPLIES_SHOWN: AtomicU64 = AtomicU64::new(0);
 /// Set while the terminal waits for the answer to a confirmation, for the self-test.
 static AWAITING_ANSWER: AtomicBool = AtomicBool::new(false);
+/// When the console's menu takes keys, in HPET milliseconds: its gate's
+/// opening, set once the keys typed before it were dropped; 0 while no menu
+/// waits. For the cases that answer it.
+static MENU_OPEN_MS: AtomicU64 = AtomicU64::new(0);
 /// Typed lines Ctrl-C dropped, for the self-test.
 static LINES_CLEARED: AtomicU64 = AtomicU64::new(0);
 /// When the last line was entered and when the last shell reply was on screen, in
@@ -70,6 +74,13 @@ pub fn replies_shown() -> u64 {
 /// Whether the terminal shows a confirmation and waits for its answer.
 pub fn awaiting_answer() -> bool {
     AWAITING_ANSWER.load(Ordering::Acquire)
+}
+
+/// Whether the console's menu waits and a key typed now counts: past the drop
+/// of earlier keys and the gate's settle.
+pub fn menu_takes_keys() -> bool {
+    let open = MENU_OPEN_MS.load(Ordering::Acquire);
+    open != 0 && now_ms() >= open
 }
 
 const HELP: &[(&str, &str)] = &[
@@ -341,7 +352,9 @@ pub(crate) fn answer_on_console(decoder: &mut Decoder, menu: &mut Menu) -> Answe
     let (prompt, text) = menu.input();
     console::show_input(prompt, &text, text.chars().count());
     decoder.discard_pending();
-    menu.arm(Gate::new(now_ms(), decoder.held()));
+    let gate = Gate::new(now_ms(), decoder.held());
+    MENU_OPEN_MS.store(gate.open_at_ms(), Ordering::Release);
+    menu.arm(gate);
     let answer = loop {
         match menu.press(&decoder.read_stroke(), now_ms()) {
             Step::Ignored => {}
@@ -352,6 +365,7 @@ pub(crate) fn answer_on_console(decoder: &mut Decoder, menu: &mut Menu) -> Answe
             Step::Chosen(answer) => break answer,
         }
     };
+    MENU_OPEN_MS.store(0, Ordering::Release);
     AWAITING_ANSWER.store(false, Ordering::Release);
     claim::give_back(took);
     answer

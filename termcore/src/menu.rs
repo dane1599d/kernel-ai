@@ -55,6 +55,11 @@ impl Gate {
         }
     }
 
+    /// When keys may start to count, if every key held at show time is up.
+    pub fn open_at_ms(&self) -> u64 {
+        self.open_at_ms
+    }
+
     /// Whether `stroke` at `now_ms` counts: a fresh press, past the settle,
     /// with every key held at show time released.
     pub fn pass(&mut self, stroke: &Stroke, now_ms: u64) -> bool {
