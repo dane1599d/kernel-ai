@@ -28,7 +28,7 @@ map: keys() values() contains(k) len()   int: to_string() abs()   floor(n) is n
 const CALLS: &str = "\
 ## Calls (no mark: reads; [undo]: runs, undo puts it back; [ask]: asks first)
 say(text: string)  // answer in words: a greeting, chat, or a question you can answer
-clarify(question: string, options: [string])  // the request has two readings
+clarify(question: string, options: [string])  // the request has two readings, or leaves out what to act on
 script()  // a Rhai program, written next, for what the functions below can read or compute
 undo(steps: int 1..1)  // puts back the last change made; undo again redoes it
 ";

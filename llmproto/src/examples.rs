@@ -51,15 +51,19 @@ const SCRIPT_CALL: &str = r#"{"name":"script","arguments":{}}"#;
 /// The act pack's examples: (request, the tagged call answering it).
 pub const ACT: &[(&str, &str)] = &[
     ("how many CPUs are there?", SCRIPT_CALL),
-    ("what percentage of memory is free?", SCRIPT_CALL),
+    (
+        // A short command names its row's argument: the call, not a question.
+        "install nano",
+        r#"{"name":"pkg_install","arguments":{"name":"nano"}}"#,
+    ),
     (
         "switch to round robin",
         r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
     ),
     ("print the names of all services", SCRIPT_CALL),
     (
-        "how long has it been up, in minutes and seconds?",
-        SCRIPT_CALL,
+        "start logd",
+        r#"{"name":"service_start","arguments":{"name":"logd"}}"#,
     ),
     (
         "hello",
