@@ -19,6 +19,15 @@ fn names_resolve_only_under_a_suffix() {
     assert!(!d.allows_name("10.0.2.99"));
     assert!(!d.allows_name(""));
     assert!(!d.allows_name("bad..kai.test"));
+    assert!(!d.allows_name("kai.test.."));
+}
+
+#[test]
+fn the_name_looked_up_is_the_name_checked() {
+    assert_eq!(normalize("API.Kai.Test.").as_deref(), Some("api.kai.test"));
+    assert_eq!(normalize("kai.test"), Some("kai.test".to_string()));
+    assert_eq!(normalize("kai.test.."), None);
+    assert_eq!(normalize("10.0.2.2"), None);
 }
 
 #[test]

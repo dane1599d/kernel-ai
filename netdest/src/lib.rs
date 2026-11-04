@@ -58,14 +58,10 @@ pub struct Dest {
 }
 
 impl Dest {
-    /// Whether a resolve of `name` may be answered.
+    /// Whether a resolve of `name` may be answered: its [`normalize`]d form
+    /// is under one of the suffixes. The caller looks up that same form.
     pub fn allows_name(&self, name: &str) -> bool {
-        let name = name.trim_end_matches('.');
-        if !valid_host(name) {
-            return false;
-        }
-        let name = name.to_ascii_lowercase();
-        self.hosts.iter().any(|suffix| under(&name, suffix))
+        normalize(name).is_some_and(|name| self.hosts.iter().any(|suffix| under(&name, suffix)))
     }
 
     /// Whether a connect to `addr`:`port` is in the literal ranges.
@@ -172,6 +168,13 @@ fn under(name: &str, suffix: &str) -> bool {
         || name
             .strip_suffix(suffix)
             .is_some_and(|head| head.ends_with('.'))
+}
+
+/// `name` as it is checked and looked up: one trailing dot dropped, lower
+/// case, and a valid host name ([`valid_host`]); None otherwise.
+pub fn normalize(name: &str) -> Option<String> {
+    let name = name.strip_suffix('.').unwrap_or(name);
+    valid_host(name).then(|| name.to_ascii_lowercase())
 }
 
 /// A DNS host name: labels of 1-63 letters, digits and `-` (not at either end),

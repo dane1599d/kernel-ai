@@ -183,10 +183,12 @@ fn resolve(
     uaccess::copy_from_user(slot, host_ptr, &mut host[..host_len])?;
     let host = core::str::from_utf8(&host[..host_len]).map_err(|_| Error::Invalid)?;
     // A name the record does not name is never looked up, so nothing it
-    // carries leaves in a query.
-    if !net::dest::allows_name(object, host) {
+    // carries leaves in a query; the form checked is the form looked up.
+    let host = netdest::normalize(host).ok_or(Error::Permission)?;
+    if !net::dest::allows_name(object, &host) {
         return Err(Error::Permission);
     }
+    let host = host.as_str();
     let cancel = || crate::process::killed(slot) || crate::process::interrupt_pending(slot);
     let found =
         net::resolve::resolve(host, kabi::net::RESOLVE_TIMEOUT_MS, cancel).map_err(|error| {

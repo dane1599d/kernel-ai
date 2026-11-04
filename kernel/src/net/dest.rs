@@ -8,7 +8,9 @@
 //!   the record itself resolved, within that answer's TTL ([`may_connect`]).
 //! - A record is never widened: a narrower one is made from it, and both stay
 //!   ([`narrow`]). Records live until the table fills; then those no handle
-//!   names any more are dropped ([`create`]).
+//!   names any more are dropped ([`create`]), and their ids are used again.
+//!   That is safe because no handle names a dropped one: a handle closed
+//!   since can never come back to the new record.
 
 use crate::hpet;
 use alloc::vec::Vec;
