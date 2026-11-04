@@ -12,8 +12,13 @@
 //! - [`Grounding::decide`]: the rule. A fetch runs from a host the user typed, one
 //!   a word of the line means, one the user said yes to before, or one on the OS's
 //!   own list whose bytes are checked against signed metadata; any other asks.
-//!   Read content never grounds a host. [`Ground::names_destination`] is what P-F
-//!   means by a destination the line names.
+//!   Read content never grounds a host. The caller passes the line's words as
+//!   consent reads them ([`LineWord`]), each marked as counting or not: a word in
+//!   a clause that negates ("don't use weather") grounds nothing, and a host the
+//!   line names only there asks even if the user allowed it before. A question
+//!   counts unless the caller marks it, since a read is asked as one.
+//!   [`Ground::names_destination`] is what P-F means by a destination the line
+//!   names.
 //! - [`texts`]: the ask, the note on why a fetch ran, and the result line.
 
 #![no_std]
@@ -33,7 +38,7 @@ mod tests;
 pub use ground::{
     Bytes, Granted, Grants, Ground, Grounding, NoGrants, Origin, Source, Ungrounded, Verdict,
 };
-pub use host::{Host, HostError, MAX_HOST, MAX_TYPED, typed_hosts};
+pub use host::{Host, HostError, LineWord, MAX_HOST, MAX_TYPED, typed_hosts};
 pub use table::{
     CURATED, Entry, MAX_APP_HOSTS, MAX_ENTRIES, MAX_WORD, MIN_WORD, Provider, Table, TableError,
 };

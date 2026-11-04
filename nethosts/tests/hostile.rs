@@ -4,8 +4,8 @@
 //! says is grounded.
 
 use nethosts::{
-    Bytes, Grants, Ground, Grounding, Host, MAX_TYPED, NoGrants, Origin, Source, Table, Ungrounded,
-    Verdict, typed_hosts,
+    Bytes, Grants, Ground, Grounding, Host, LineWord, MAX_TYPED, NoGrants, Origin, Source, Table,
+    Ungrounded, Verdict, typed_hosts,
 };
 
 /// A small deterministic generator, so a failure repeats.
@@ -157,7 +157,13 @@ fn with_nothing_known_only_a_typed_host_runs() {
             granted: &NoGrants,
             sources: &[],
         }
-        .decide(&line, &written, Origin::Line, Bytes::Checked);
+        .decide(
+            &line,
+            &LineWord::all(&line),
+            &written,
+            Origin::Line,
+            Bytes::Checked,
+        );
         match verdict {
             Verdict::Run(Ground::Typed) => {
                 ran += 1;
@@ -218,7 +224,13 @@ fn a_host_content_gave_asks_whatever_the_data_holds() {
             granted: &grants,
             sources: &sources,
         }
-        .decide(&line, &written, Origin::Content, Bytes::Checked);
+        .decide(
+            &line,
+            &LineWord::all(&line),
+            &written,
+            Origin::Content,
+            Bytes::Checked,
+        );
         assert!(
             matches!(
                 verdict,
@@ -243,7 +255,13 @@ fn a_lookalike_of_a_grounded_host_asks() {
         };
         let runs = |written: &str| {
             matches!(
-                grounded.decide(line, written, Origin::Line, Bytes::Unchecked),
+                grounded.decide(
+                    line,
+                    &LineWord::all(line),
+                    written,
+                    Origin::Line,
+                    Bytes::Unchecked
+                ),
                 Verdict::Run(_)
             )
         };
@@ -286,5 +304,37 @@ fn a_lookalike_of_a_grounded_host_asks() {
             let same = Host::parse(&changed).is_ok_and(|h| h == own);
             assert_eq!(runs(&changed), same, "{changed}");
         }
+    }
+}
+
+/// A line that says not to, every word of it, grounds nothing by naming it: no
+/// typed host and no table word runs, whatever the line and the host.
+#[test]
+fn a_line_that_says_not_to_never_grounds_a_host_by_naming_it() {
+    let table = table();
+    let mut rng = Rng(0x5eed_5eed_5eed_5eed);
+    let hosts = [
+        "www.youtube.com",
+        "api.weather.example",
+        "a.example",
+        "10.0.0.1",
+    ];
+    for _ in 0..10_000 {
+        let written = hosts[rng.below(hosts.len())];
+        let line = format!("{} {written} youtube weather {}", rng.text(8), rng.text(8));
+        let words: Vec<LineWord> = LineWord::all(&line)
+            .into_iter()
+            .map(|w| LineWord::new(&w.text, false))
+            .collect();
+        let verdict = Grounding {
+            table: &table,
+            granted: &NoGrants,
+            sources: &[],
+        }
+        .decide(&line, &words, written, Origin::Line, Bytes::Unchecked);
+        assert!(
+            matches!(verdict, Verdict::Ask(_)),
+            "{line:?} / {written}: {verdict:?}"
+        );
     }
 }

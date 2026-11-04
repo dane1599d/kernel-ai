@@ -13,8 +13,8 @@
 //! gave, that the model did not take from the line, is never grounded, whatever
 //! else is true of it, and nor is a host that is not plainly one.
 
-use crate::host::{Host, HostError, typed_hosts, words};
-use crate::table::Table;
+use crate::host::{Host, HostError, LineWord, host_words, typed_hosts};
+use crate::table::{Table, counted};
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -121,6 +121,9 @@ pub enum Ungrounded {
     NotNamed,
     /// Read content gave it, not the line.
     FromContent,
+    /// The line names it only in a clause that says not to ("don't use weather"),
+    /// so it grounds nothing, a grant included.
+    Negated,
     /// It is not a plain host name.
     BadHost(HostError),
 }
@@ -142,7 +145,22 @@ pub struct Grounding<'a> {
 impl Grounding<'_> {
     /// Whether a fetch from `host`, which the model wrote as a call argument
     /// (`origin` says from where), runs for the request `line`.
-    pub fn decide(&self, line: &str, host: &str, origin: Origin, bytes: Bytes) -> Verdict {
+    ///
+    /// `words` are the line's words as the agent core's consent reads them, each
+    /// marked as counting or not: a word in a clause that negates ("don't use
+    /// weather", "never fetch youtube.com") does not count, so it grounds nothing,
+    /// and a host the line names only there asks even if the user allowed it
+    /// before: the line says no. Whether a question clause counts is the caller's
+    /// word to mark; a read is naturally asked as a question ("what's the weather
+    /// in Leeds?"), so the P5 plan's example needs it to.
+    pub fn decide(
+        &self,
+        line: &str,
+        words: &[LineWord],
+        host: &str,
+        origin: Origin,
+        bytes: Bytes,
+    ) -> Verdict {
         let host = match Host::parse(host) {
             Ok(host) => host,
             Err(why) => return Verdict::Ask(Ungrounded::BadHost(why)),
@@ -150,11 +168,26 @@ impl Grounding<'_> {
         if origin == Origin::Content {
             return Verdict::Ask(Ungrounded::FromContent);
         }
-        if typed_hosts(line).contains(&host) {
+        // A typed host counts when every word it is written with does. Typed but
+        // not counting means a word of it sits in a clause that negates (or the
+        // caller left it out): the line names it only to say no.
+        let typed = typed_hosts(line).contains(&host);
+        let counts = host_words(&host)
+            .iter()
+            .all(|text| counted(words.iter().filter(|w| w.text == *text)) == Some(true));
+        if typed && counts {
             return Verdict::Run(Ground::Typed);
         }
-        if let Some(word) = self.table.word_for(&words(line), &host) {
-            return Verdict::Run(Ground::Table(String::from(word)));
+        let mut barred = typed;
+        for (word, held) in self.table.words_in(words, &host) {
+            match held {
+                Some(true) => return Verdict::Run(Ground::Table(String::from(word))),
+                Some(false) => barred = true,
+                None => {}
+            }
+        }
+        if barred {
+            return Verdict::Ask(Ungrounded::Negated);
         }
         if self.granted.granted(&host) {
             return Verdict::Run(Ground::Granted);

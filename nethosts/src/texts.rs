@@ -45,6 +45,7 @@ impl Ungrounded {
         match self {
             Self::NotNamed => String::from("the request did not name that site"),
             Self::FromContent => String::from("a page or file gave that address, not your request"),
+            Self::Negated => String::from("the request says not to use that site"),
             Self::BadHost(why) => format!("that is not a plain host name: {}", why.words()),
         }
     }

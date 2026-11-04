@@ -7,7 +7,7 @@
 //! The table gives a host only for a word the line holds, and only that host: a
 //! word never grounds a lookalike (`youtube.xyz`), a subdomain or a parent.
 
-use crate::host::{Host, HostError};
+use crate::host::{Host, HostError, LineWord};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -204,11 +204,32 @@ impl Table {
         before - self.entries.len()
     }
 
-    /// The word of the line that means `host`, if the line holds one.
-    pub(crate) fn word_for<'a>(&'a self, words: &[String], host: &Host) -> Option<&'a str> {
+    /// The words that mean `host`, each with whether the line holds it counting
+    /// (`Some(true)`), only in a negated clause (`Some(false)`), or not at all.
+    pub(crate) fn words_in<'a>(
+        &'a self,
+        line: &[LineWord],
+        host: &Host,
+    ) -> impl Iterator<Item = (&'a str, Option<bool>)> {
         self.entries
             .iter()
-            .find(|entry| entry.host == *host && words.contains(&entry.word))
-            .map(|entry| entry.word.as_str())
+            .filter(move |entry| entry.host == *host)
+            .map(|entry| {
+                let holds = line.iter().filter(|w| w.text == entry.word);
+                (entry.word.as_str(), counted(holds))
+            })
     }
+}
+
+/// Whether a word the line holds counts: `Some(true)` if any place of it does,
+/// `Some(false)` if it is there only in negated clauses, `None` if it is not there.
+pub(crate) fn counted<'a>(mut holds: impl Iterator<Item = &'a LineWord>) -> Option<bool> {
+    let mut found = None;
+    for word in holds.by_ref() {
+        if word.counts {
+            return Some(true);
+        }
+        found = Some(false);
+    }
+    found
 }

@@ -226,13 +226,49 @@ pub fn typed_hosts(line: &str) -> Vec<Host> {
     out
 }
 
-/// The words of a line, lowercase, split at anything that is not a letter or a
-/// digit: "what's the weather in Leeds?" is `what`, `s`, `the`, `weather`, `in`,
-/// `leeds`. At most 256.
-pub(crate) fn words(line: &str) -> Vec<String> {
-    line.split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|w| !w.is_empty())
+/// One word of the user's line, and whether it counts. The agent core's consent
+/// reads the line in clauses and knows which words sit in one that negates
+/// ("don't use weather", "never fetch youtube.com", "without weather"): those
+/// words do not count, and a host they name is not grounded by them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineWord {
+    /// Lowercase, as consent writes its words: letters, digits and apostrophes.
+    pub text: String,
+    /// False for a word in a negated clause.
+    pub counts: bool,
+}
+
+impl LineWord {
+    pub fn new(text: &str, counts: bool) -> Self {
+        Self {
+            text: text.to_lowercase(),
+            counts,
+        }
+    }
+
+    /// Every word of `line`, all counting: for a caller that applies no clause
+    /// rules.
+    pub fn all(line: &str) -> Vec<Self> {
+        split_words(line)
+            .into_iter()
+            .map(|text| Self { text, counts: true })
+            .collect()
+    }
+}
+
+/// The words of a line as consent reads them: letters, digits and apostrophes,
+/// lowercase, everything else a separator ("what's the weather in Leeds?" is
+/// `what's`, `the`, `weather`, `in`, `leeds`). At most 256.
+fn split_words(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '\''))
+        .map(|word| word.trim_matches('\''))
+        .filter(|word| !word.is_empty())
         .take(256)
-        .map(|w| w.to_ascii_lowercase())
+        .map(str::to_lowercase)
         .collect()
+}
+
+/// The words a host is written with: its labels, split at hyphens too.
+pub(crate) fn host_words(host: &Host) -> Vec<String> {
+    split_words(host.as_str())
 }
