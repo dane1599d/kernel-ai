@@ -308,3 +308,12 @@ fn errors_cross_between_services_with_their_kind() {
         "LLM server: no LLM server configured (boot with llm=IP:PORT)"
     );
 }
+
+#[test]
+fn an_app_round_gets_minutes_and_scripts_keep_their_limit() {
+    assert_eq!(Lang::Rhai.service_timeout_ms(), SERVICE_TIMEOUT_MS);
+    assert_eq!(Lang::C.service_timeout_ms(), SERVICE_TIMEOUT_MS);
+    // A full c-app-1 answer takes minutes; it runs as a job between requests.
+    assert_eq!(Lang::App.service_timeout_ms(), APP_SERVICE_TIMEOUT_MS);
+    assert!(APP_SERVICE_TIMEOUT_MS > SERVICE_TIMEOUT_MS);
+}
