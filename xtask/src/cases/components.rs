@@ -93,6 +93,9 @@ pub(super) const CASES: &[TestCase] = &[
                 "ctrl-o", "slash", "h", "o", "m", "e", "slash", "u", "s", "e", "r", "slash", "t",
                 "o", "d", "o", "dot", "t", "x", "t", "ret",
             ],
+            // One key moves the cursor off the top; the agent's action then reads the file
+            // again and the cursor is back.
+            &["right"],
         ],
         expect: &[
             "comphost: files: read /home/user/todo.txt (person true) failed: missing: /home/user/todo.txt is not there",
@@ -103,6 +106,9 @@ pub(super) const CASES: &[TestCase] = &[
             "app-editor-files: undo took the second save back",
             "comphost: files: read /home/user/todo.txt (person true) answered 4 bytes",
             "app-editor-files: the file read again is the first save's",
+            // The agent's `editor_open_file`: a read with no person's key behind it.
+            "comphost: files: read /home/user/todo.txt (person false) answered 4 bytes",
+            "app-editor-files: the agent's action opened the file by its path",
         ],
         min_timeout: Some(Duration::from_secs(300)),
         // The file system service, the shell, the desktop and the editor (32 MiB of
