@@ -4,7 +4,7 @@
 
 extern crate std;
 
-use crate::models::{MAX_REPLY, MAX_USES, SHA256_HEX, USE, sha256_ok};
+use crate::models::{MAX_REPLY, MAX_USES, SHA256_HEX, SWITCH, is_sha256_hex};
 use crate::settings::{Kind, SettingsRequest};
 use crate::{CoreInstance, Grants, Limits, load_core_granted};
 use alloc::format;
@@ -110,7 +110,7 @@ fn requests(sent: &[SettingsRequest]) -> Vec<&str> {
 
 #[test]
 fn a_sha256_is_64_lowercase_hex_digits_and_nothing_else() {
-    assert!(sha256_ok(SHA));
+    assert!(is_sha256_hex(SHA));
     assert_eq!(SHA.len(), SHA256_HEX);
     for bad in [
         "",
@@ -120,7 +120,7 @@ fn a_sha256_is_64_lowercase_hex_digits_and_nothing_else() {
         &format!("{}g", &SHA[..63]),
         &format!("{} ", &SHA[..63]),
     ] {
-        assert!(!sha256_ok(bad), "{bad:?}");
+        assert!(!is_sha256_hex(bad), "{bad:?}");
     }
 }
 
@@ -132,7 +132,7 @@ fn a_switch_queues_a_change_naming_the_model_and_taking_empties_the_queue() {
     let sent = app.take_model_uses();
     assert_eq!(
         requests(&sent),
-        [format!("{USE}{SHA}"), format!("{USE}{SHA}")]
+        [format!("{SWITCH}{SHA}"), format!("{SWITCH}{SHA}")]
     );
     assert!(sent.iter().all(|r| r.kind == Kind::Change));
     assert_eq!((sent[0].ticket, sent[1].ticket), (0, 1));
