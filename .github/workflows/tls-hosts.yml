@@ -4,6 +4,8 @@
 # release-assets.githubusercontent.com and huggingface.co) and sends each a
 # HEAD request. It prints the suite and group each chose and the algorithms
 # its certificates use, and fails if any host does not handshake on TLS 1.3.
+# Then it follows the pinned Qwen3-4B resolve URL by HEAD and prints each
+# hop's host: the storage hosts modelchan::fetch::HUGGING_FACE pins.
 # It runs here, on a GitHub runner, never on a developer's PC; read-only. It
 # runs on pull requests that change kainet's handshake, and by hand (Actions
 # tab, "TLS hosts", Run workflow). Then the host bench, for comparison.

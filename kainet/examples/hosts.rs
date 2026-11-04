@@ -4,6 +4,12 @@
 //! request. It prints what each host chose (suite, group) and what its
 //! certificates hold (key and signature algorithms), and fails if any host
 //! does not handshake.
+//!
+//! Then it follows the pinned Qwen3-4B source's resolve URL by HEAD, hop by
+//! hop, and prints each hop's host and status and the `Location` host it
+//! redirects to: the storage hosts a model download reaches, which
+//! `modelchan::fetch::HUGGING_FACE` pins (AP-2's ask on #672). It fails if a
+//! hop does not handshake.
 
 use kainet::tls::{Session, Transport};
 use kainet::{client, provider};
@@ -25,6 +31,16 @@ const HOSTS: &[&str] = &[
     "release-assets.githubusercontent.com",
     "huggingface.co",
 ];
+
+/// The pinned Qwen3-4B source, as `xtask/models.json` names it.
+const MODEL_HOST: &str = "huggingface.co";
+const MODEL_PATH: &str = "/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf";
+/// `kainet::http`'s redirect limit.
+const MAX_HOPS: usize = 5;
+/// The most bytes of a response head read.
+const MAX_HEAD: usize = 16 * 1024;
+
+type Tls13 = Session<UnbufferedClientConnection, Tcp>;
 
 #[derive(Debug)]
 struct HostRandom;
@@ -104,7 +120,9 @@ fn algorithms(der: &[u8]) -> Vec<&'static str> {
         .collect()
 }
 
-fn check(host: &str, config: &Arc<ClientConfig>) -> Result<(), String> {
+/// A TLS 1.3 session with `host` on 443, its handshake done, and how long
+/// the handshake took.
+fn open(host: &str, config: &Arc<ClientConfig>) -> Result<(Tls13, Duration), String> {
     let stream = TcpStream::connect((host, 443)).map_err(|e| format!("connect: {e}"))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -116,7 +134,77 @@ fn check(host: &str, config: &Arc<ClientConfig>) -> Result<(), String> {
     session
         .handshake()
         .map_err(|e| format!("handshake: {e:?}"))?;
-    let took = start.elapsed();
+    Ok((session, start.elapsed()))
+}
+
+/// A HEAD of `path` on `host`: the response head, up to its blank line, at
+/// most [`MAX_HEAD`] bytes.
+fn head(session: &mut Tls13, host: &str, path: &str) -> Result<String, String> {
+    let request = format!("HEAD {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    session
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("write: {e:?}"))?;
+    let mut got = Vec::new();
+    let mut buf = [0u8; 2048];
+    while !got.windows(4).any(|w| w == b"\r\n\r\n") && got.len() < MAX_HEAD {
+        match session.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+            // A server may close without close_notify once it has answered.
+            Err(_) if got.starts_with(b"HTTP/") => break,
+            Err(e) => return Err(format!("read: {e:?}")),
+        }
+    }
+    Ok(String::from_utf8_lossy(&got).into_owned())
+}
+
+/// Where a `Location` sends the next request: its host and path. A relative
+/// one stays on `host`.
+fn next(host: &str, location: &str) -> Result<(String, String), String> {
+    if let Some(rest) = location.strip_prefix("https://") {
+        return Ok(match rest.split_once('/') {
+            Some((to, path)) => (to.to_string(), format!("/{path}")),
+            None => (rest.to_string(), "/".to_string()),
+        });
+    }
+    if location.starts_with('/') {
+        return Ok((host.to_string(), location.to_string()));
+    }
+    let shown = location.split('?').next().unwrap_or("");
+    Err(format!("{host}: a Location that is not https: {shown:?}"))
+}
+
+/// Follows the pinned model's resolve URL by HEAD, hop by hop, printing each
+/// hop's host, path and status and the `Location` host. A query string is
+/// never printed: a signed storage URL's holds a short-lived signature.
+fn follow(config: &Arc<ClientConfig>) -> Result<(), String> {
+    let (mut host, mut path) = (MODEL_HOST.to_string(), MODEL_PATH.to_string());
+    for hop in 0..=MAX_HOPS {
+        let (mut session, took) = open(&host, config).map_err(|e| format!("{host}: {e}"))?;
+        let version = session.tls().connection().protocol_version();
+        let head = head(&mut session, &host, &path).map_err(|e| format!("{host}: {e}"))?;
+        let status = head.lines().next().unwrap_or("").to_string();
+        let shown = path.split('?').next().unwrap_or("");
+        println!(
+            "model hop {hop}: {host}{shown}: {version:?}, handshake {} ms, {status:?}",
+            took.as_millis()
+        );
+        let location = head.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("location")
+                .then(|| value.trim().to_string())
+        });
+        let Some(location) = location else {
+            return Ok(());
+        };
+        (host, path) = next(&host, &location)?;
+        println!("  Location host: {host}");
+    }
+    Err(format!("more than {MAX_HOPS} redirects"))
+}
+
+fn check(host: &str, config: &Arc<ClientConfig>) -> Result<(), String> {
+    let (mut session, took) = open(host, config)?;
     let conn = session.tls().connection();
     let suite = conn.negotiated_cipher_suite().map(|s| s.suite());
     let group = conn.negotiated_key_exchange_group().map(|g| g.name());
@@ -127,13 +215,7 @@ fn check(host: &str, config: &Arc<ClientConfig>) -> Result<(), String> {
         .iter()
         .map(|cert| algorithms(cert))
         .collect();
-    let request = format!("HEAD / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
-    session
-        .write_all(request.as_bytes())
-        .map_err(|e| format!("write: {e:?}"))?;
-    let mut buf = [0u8; 512];
-    let n = session.read(&mut buf).map_err(|e| format!("read: {e:?}"))?;
-    let status = String::from_utf8_lossy(&buf[..n])
+    let status = head(&mut session, host, "/")?
         .lines()
         .next()
         .unwrap_or("")
@@ -164,7 +246,11 @@ fn main() {
         HOSTS.len() - failed,
         HOSTS.len()
     );
-    if failed > 0 {
+    let model = follow(&config);
+    if let Err(why) = &model {
+        println!("the model's resolve URL: FAILED: {why}");
+    }
+    if failed > 0 || model.is_err() {
         std::process::exit(1);
     }
 }
