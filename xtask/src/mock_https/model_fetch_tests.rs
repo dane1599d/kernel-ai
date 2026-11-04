@@ -13,7 +13,7 @@ use super::*;
 use comp_models::{Signed, Store};
 use kainet::chunks::{CHUNK, Chunks};
 use kainet::client::{self, Wall};
-use kainet::download::{DownloadError, Partial, Report, download};
+use kainet::download::{Answer, DownloadError, Partial, Report, download};
 use kainet::http::{Dial, Fetch, HttpError, Limits, Method, Range, TlsConnect, Url};
 use modelchan::fetch::{self, Hosts, Job, MODEL_CHUNK, Machine, Refused};
 use rustls::RootCertStore;
@@ -211,11 +211,9 @@ fn run(
     };
     let url = Url::parse(&job.source.url()).map_err(|_| DownloadError::Store("the URL"))?;
     download(list, volume, &mut |range: Range, sink| {
+        // A status other than 206 is kainet's to refuse (`DownloadError::Status`).
         let got = fetch.run(&mut connect, Method::Get, &url, Some(range), sink)?;
-        match got.head.status {
-            206 => Ok(got.received),
-            _ => Err(HttpError::Head("not a 206")),
-        }
+        Ok(Answer::from(&got))
     })
 }
 
