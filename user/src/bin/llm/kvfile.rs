@@ -5,6 +5,7 @@
 //! sectors, up to [`KV_IO_BYTES`] at a time, so the reader and writer here buffer
 //! what the engine streams.
 
+use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 use kabi::model::{KV_IO_BYTES, KV_REGION_BYTES, KV_SECTOR};
@@ -106,5 +107,36 @@ impl Writer {
             }
         }
         !self.failed
+    }
+}
+
+/// Where S13-1's measurement (`infer::preempt`) spills a slot: one region of the
+/// `kai-cache` partition, through the same writer and reader the KV files use.
+pub struct RegionSpill {
+    region: u64,
+    writer: Option<Writer>,
+}
+
+impl RegionSpill {
+    pub fn new(region: u64) -> Self {
+        Self {
+            region,
+            writer: None,
+        }
+    }
+}
+
+impl infer::preempt::Spill for RegionSpill {
+    fn writer(&mut self) -> infer::preempt::Write<'_> {
+        let writer = self.writer.insert(Writer::new(self.region));
+        Box::new(move |bytes| writer.write(bytes))
+    }
+
+    fn finish(&mut self) -> bool {
+        self.writer.take().is_some_and(Writer::finish)
+    }
+
+    fn reader(&mut self) -> infer::preempt::Read<'_> {
+        Box::new(reader(self.region))
     }
 }

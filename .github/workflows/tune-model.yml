@@ -10,7 +10,11 @@ name: tune with the real model
 # needs (`cargo xtask tune record`); commit its decisions.json after reading it.
 # Mode `latency` is spike S02-2's baseline (`cargo xtask latency`): it types five
 # plain requests at the terminal and reports, by the guest's clock, Enter to the
-# busy sign and Enter to the reply, in the run's summary. Mode `bench` downloads
+# busy sign and Enter to the reply, in the run's summary. Mode `kv-preempt` is spike
+# S13-1's guest half (`cargo xtask kv-preempt`): llm snapshots a KV slot into RAM,
+# restores it, and spills it to kai-cache and back at 512, 1,024 and 1,950 positions,
+# by the guest's clock, and checks the restored slot answers as the live one did.
+# Mode `bench` downloads
 # nothing: it runs `cargo xtask bench quant` on the runner itself (generated
 # weights with the catalog models' shapes), so a guest's decode rate can be read
 # against the runner's own memory read rate and products.
@@ -21,7 +25,7 @@ on:
         description: Catalog id from xtask/models.json
         default: qwen3-4b-2507
       mode:
-        description: demo, record, latency or bench
+        description: demo, record, latency, kv-preempt or bench
         default: demo
 
 permissions:
@@ -92,6 +96,21 @@ jobs:
             echo
             echo '```'
             grep -E 'latency: |\[llm\] (local|act): ' transcript.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: KV preempt — snapshot, restore and spill a KV slot in the guest (S13-1)
+        if: inputs.mode == 'kv-preempt'
+        run: |
+          set -o pipefail
+          cargo xtask kv-preempt --local "${{ inputs.model }}" --store "$RUNNER_TEMP/models" --accel kvm 2>&1 | tee transcript.txt
+      - name: KV preempt — the guest's figures in the summary
+        if: always() && inputs.mode == 'kv-preempt'
+        run: |
+          {
+            echo "S13-1 kv-preempt, ${{ inputs.model }}, commit $GITHUB_SHA, $(nproc) CPUs:"
+            echo
+            echo '```'
+            grep -E 'kv-preempt: |local: KV slot' transcript.txt || echo "no kv-preempt lines in the transcript"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Convert the screendump

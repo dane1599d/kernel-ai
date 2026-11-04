@@ -409,6 +409,45 @@ impl Local {
         (restored[0], restored[1])
     }
 
+    /// **Spike S13-1** (`kvbench=on` in llm's plan line, test images only): the
+    /// guest's measurement of snapshotting a slot into RAM, restoring it, and
+    /// spilling it to `kai-cache` and back, at each of `sizes` positions
+    /// (`infer::preempt`), one line a size. It takes the script slot, which its next
+    /// warm-up fills again.
+    pub fn kv_bench(&mut self, sizes: &[usize]) -> String {
+        let slot = SLOTS.script;
+        self.engine.use_slot(slot);
+        let key = self.kv_key(slot);
+        let mut spill = crate::kvfile::RegionSpill::new(slot as u64);
+        // The prompts are computed here, not by a request that sleeps now and then,
+        // so the model's steps pace themselves.
+        let slept = core::cell::Cell::new(sys::time_ns());
+        let pace = || {
+            if sys::time_ns() - slept.get() >= SLEEP_EVERY_NS {
+                sys::sleep_ms(1);
+                slept.set(sys::time_ns());
+            }
+        };
+        let rows = infer::preempt::measure(
+            &mut self.engine,
+            &key,
+            sizes,
+            &mut spill,
+            &sys::time_ns,
+            &pace,
+        );
+        let mut report = String::new();
+        for (size, row) in sizes.iter().zip(rows) {
+            let line = match row {
+                Ok(row) => row.line(),
+                Err(why) => format!("{size} positions: {why}"),
+            };
+            println!("kv-preempt: {line}");
+            report.push_str(&format!("kv-preempt: {line}\n"));
+        }
+        report
+    }
+
     /// **Interim** (S10-3): writes KV slot `slot` as its `kai-kv 1` file, logging
     /// it; a failure (no `kai-cache`, a read-only disk) only costs the next
     /// boot its prefill.

@@ -71,18 +71,26 @@ pub fn target() -> Option<(Ipv4Addr, u16, &'static str)> {
 /// command-line word, so it holds no whitespace and cannot add arguments of its
 /// own; control characters are refused as well.
 pub fn plan_line() -> String {
+    plan_line_with(0, "")
+}
+
+/// [`plan_line`] for a test image that needs more: `extra_pages` more pages for llm,
+/// and `args` (each word with its space before it) among its arguments, ahead of the
+/// model's hash. Spike S13-1's `kv-preempt` asks for room for a snapshot and a
+/// `kvbench=on` that no other image has.
+pub fn plan_line_with(extra_pages: u64, args: &str) -> String {
     let model = crate::model::get().is_some() || crate::model::fill::pending();
     let mut line = match model {
         true => format!(
             "llm caps=serve+net+model+threads burst_ms=10000 pages={}",
-            crate::model::holder_pages()
+            crate::model::holder_pages() + extra_pages
         ),
         false => format!(
             "llm caps=serve+net burst_ms=10000 pages={}",
             crate::model::HOLDER_PAGES
         ),
     };
-    let mut passed = String::new();
+    let mut passed = String::from(args);
     if let Some((ip, port, model)) = target() {
         passed.push_str(&format!(" host={ip}:{port}"));
         if model.chars().all(|c| !c.is_whitespace() && !c.is_control()) {
@@ -120,6 +128,14 @@ fn request(text: &str, timeout_ms: u64) -> Result<String, String> {
         ("err", text) => Err(text.to_string()),
         _ => Err("llm service: malformed reply".to_string()),
     }
+}
+
+/// Spike S13-1's guest measurement (`kvbench=on` in llm's plan line): llm snapshots,
+/// restores and spills its script slot at each of `sizes` (positions, separated by
+/// commas) and replies with a line for each size. It takes minutes: the prompts are
+/// computed by the model in the guest.
+pub fn kv_bench(sizes: &str, timeout_ms: u64) -> Result<String, String> {
+    request(&format!("kv-bench {sizes}"), timeout_ms)
 }
 
 /// Whether llm has the act prefix and the script prompt in their KV slots, so a

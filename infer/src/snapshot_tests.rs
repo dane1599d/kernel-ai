@@ -236,3 +236,88 @@ fn a_snapshot_whose_tokens_do_not_start_the_prompt_is_refused() {
     assert_eq!(again.as_deref(), Ok(tokens));
     assert_eq!(kv.len(), tokens.len());
 }
+
+/// A spill file in a buffer, for the guest's measurement run on a fixture.
+struct Buffer {
+    bytes: Vec<u8>,
+    /// Whether writes succeed.
+    works: bool,
+}
+
+impl crate::preempt::Spill for Buffer {
+    fn writer(&mut self) -> crate::preempt::Write<'_> {
+        self.bytes.clear();
+        let works = self.works;
+        let bytes = &mut self.bytes;
+        alloc::boxed::Box::new(move |part| {
+            bytes.extend_from_slice(part);
+            works
+        })
+    }
+
+    fn finish(&mut self) -> bool {
+        self.works
+    }
+
+    fn reader(&mut self) -> crate::preempt::Read<'_> {
+        let (bytes, mut at) = (&self.bytes, 0);
+        alloc::boxed::Box::new(move |buf| match bytes.get(at..at + buf.len()) {
+            Some(part) => {
+                buf.copy_from_slice(part);
+                at += buf.len();
+                true
+            }
+            None => false,
+        })
+    }
+}
+
+#[test]
+fn the_guests_measurement_finds_a_restored_slot_equal_and_says_what_it_could_not_do() {
+    let bytes = fixture::build(&Spec::tiny());
+    let tier = Tier::best();
+    let mut engine = Engine::load(&bytes, tier, 256, ROOMY).unwrap();
+    let mut spill = Buffer {
+        bytes: Vec::new(),
+        works: true,
+    };
+    let now = core::cell::Cell::new(0u64);
+    let clock = || {
+        now.set(now.get() + 1_000_000);
+        now.get()
+    };
+    // Sizes that fit the slot (256, less the room the follow-up needs), and one that
+    // does not.
+    let rows = crate::preempt::measure(
+        &mut engine,
+        &key(tier),
+        &[60, 130, 250],
+        &mut spill,
+        &clock,
+        &|| (),
+    );
+    assert_eq!(rows.len(), 3);
+    let (small, large) = (rows[0].as_ref().unwrap(), rows[1].as_ref().unwrap());
+    assert!(
+        small.positions > 20 && small.positions < large.positions,
+        "{small:?} {large:?}"
+    );
+    assert!(small.equal() && large.equal(), "{small:?} {large:?}");
+    // The fake clock moves a millisecond a reading, so every step takes a few.
+    assert!(small.restore_ns >= 1_000_000 && small.spill_save_ns >= 1_000_000);
+    assert!(
+        small
+            .line()
+            .contains("equal after restore: snapshot true, spill true")
+    );
+    assert!(rows[2].as_ref().unwrap_err().contains("do not fit"));
+    // A spill target that cannot be written says so rather than reporting a row.
+    spill.works = false;
+    let rows = crate::preempt::measure(&mut engine, &key(tier), &[60], &mut spill, &clock, &|| ());
+    assert!(
+        rows[0]
+            .as_ref()
+            .unwrap_err()
+            .contains("spill file was not written")
+    );
+}

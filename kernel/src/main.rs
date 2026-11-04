@@ -92,6 +92,7 @@ mod irq;
 mod keep_tests;
 mod keyboard;
 mod keys_tests;
+mod kv_preempt_tests;
 mod latency_tests;
 mod lines;
 mod live_commands;
@@ -387,6 +388,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::LocalAsk => run_case(|| local_tests::check(cmdline())),
         SelfTest::LocalScript => run_case(|| local_tests::check_script(cmdline())),
         SelfTest::Latency => run_case(latency_tests::check),
+        SelfTest::KvPreempt => run_case(kv_preempt_tests::check),
         SelfTest::ProcStop => run_case(stop_tests::check),
         SelfTest::ProcUsage => run_case(usage_tests::check),
         SelfTest::Shm => run_case(shm_tests::check),
