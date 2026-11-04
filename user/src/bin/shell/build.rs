@@ -23,13 +23,17 @@ use kabi::handle::{Handle, Rights};
 use kabi::live::MAX_ARTIFACT;
 use livecore::artifact::MAX_SOURCE;
 use promptcore::wire::{Record, parse_reply};
+use shellcore::appbuild::INTERNAL;
 use shellcore::ccbuild::{APPS_DIR, CcBuilt, NO_ANSWER};
 use spin::Mutex;
 use user::sys;
 
 /// cc's wait for a build: its deadline is ten line budgets (20 s, or 120 s
 /// when QEMU emulates the CPU), and its first request translates cc.wasm.
-const BUILD_CALL_MS: u64 = 150_000;
+/// `app_build` reserves the same in each round.
+const BUILD_CALL_MS: u64 = shellcore::appbuild::CC_BUILD_WAIT_MS;
+/// cc's wait for a trial, which `app_build` reserves too.
+const TRIAL_CALL_MS: u64 = shellcore::appbuild::CC_TRIAL_WAIT_MS;
 /// `pkg`'s wait for `local`: it signs, checks, installs and starts the app.
 const PKG_CALL_MS: u64 = 60_000;
 /// `pkg` reads requests into 64 bytes, and answers in a few hundred.
@@ -46,7 +50,8 @@ fn folder(dir: &str) -> &str {
 }
 
 /// Builds component `name` at `version` through `cc` from `dir/name/`, and
-/// writes its artifact as `dir/name.kai`.
+/// writes its artifact as `dir/name.kai`; `internal: ` starts why not when
+/// that is no fault of the sources'.
 pub fn build(
     files: &Files,
     cc: Handle,
@@ -190,7 +195,7 @@ fn ask_cc(
             Some(shm) => shm,
             None => {
                 let made = sys::shm_create(shm::PAGES as u64)
-                    .map_err(|e| format!("no Shm for the sources ({e:?})"))?;
+                    .map_err(|e| format!("{INTERNAL}no Shm for the sources ({e:?})"))?;
                 *held = Some(made);
                 made
             }
@@ -200,7 +205,8 @@ fn ask_cc(
         shm::put(bytes, bundle).map_err(String::from)?;
         // cc maps and writes it, and nothing more.
         let rights = Rights::MAP | Rights::READ | Rights::WRITE | Rights::TRANSFER;
-        let copy = sys::handle_dup(shm, rights).map_err(|e| format!("the Shm ({e:?})"))?;
+        let copy =
+            sys::handle_dup(shm, rights).map_err(|e| format!("{INTERNAL}the Shm ({e:?})"))?;
         let request = promptcore::wire::Request::Build {
             component: name,
             version,
@@ -218,7 +224,7 @@ fn ask_cc(
             Ok((len, _)) => len.min(reply.len()),
             Err(e) => {
                 let _ = sys::handle_close(copy);
-                return Err(format!("cc did not answer the build ({e:?})"));
+                return Err(format!("{INTERNAL}cc did not answer the build ({e:?})"));
             }
         };
         let text = cc_text(&reply[..len])?;
@@ -227,9 +233,44 @@ fn ask_cc(
     })
 }
 
+/// `trial <name>` to `cc` with the `Shm` the last build left its artifact in:
+/// the trial's report, or why it failed (`internal: ` first when that is no
+/// fault of the program's).
+pub fn trial(cc: Handle, name: &str) -> Result<String, String> {
+    let Some(shm) = *SHM.lock() else {
+        return Err(format!("{INTERNAL}no build left an artifact to try"));
+    };
+    // cc maps and reads it, and nothing more.
+    let rights = Rights::MAP | Rights::READ | Rights::TRANSFER;
+    let copy = sys::handle_dup(shm, rights).map_err(|e| format!("{INTERNAL}the Shm ({e:?})"))?;
+    let request = promptcore::wire::Request::Trial { component: name }.text();
+    let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+    let len = match sys::call_h(
+        cc,
+        request.as_bytes(),
+        &mut reply,
+        TRIAL_CALL_MS,
+        &[copy],
+        &mut [],
+    ) {
+        Ok((len, _)) => len.min(reply.len()),
+        Err(e) => {
+            let _ = sys::handle_close(copy);
+            return Err(format!("{INTERNAL}cc did not answer the trial ({e:?})"));
+        }
+    };
+    // Only `err`'s text can be the program's fault; cc says when it is not.
+    let records = parse_reply(&reply[..len]).map_err(|e| format!("{INTERNAL}cc's answer: {e}"))?;
+    match records.last() {
+        Some(Record::Text(text)) => Ok(String::from_utf8_lossy(text).into_owned()),
+        Some(Record::Err { text, .. }) => Err(String::from_utf8_lossy(text).into_owned()),
+        _ => Err(format!("{INTERNAL}cc's answer was not a trial's")),
+    }
+}
+
 /// Runs `f` on `shm`, mapped read-write.
 fn with_shm<T>(shm: Handle, f: impl FnOnce(&mut [u8]) -> Result<T, String>) -> Result<T, String> {
-    let address = sys::shm_map(shm, true).map_err(|e| format!("the Shm ({e:?})"))?;
+    let address = sys::shm_map(shm, true).map_err(|e| format!("{INTERNAL}the Shm ({e:?})"))?;
     // SAFETY: the kernel mapped the Shm, `shm::PAGES` long, read-write at
     // `address`; this slice is its only reference here, and it ends before the
     // unmap.
@@ -241,12 +282,12 @@ fn with_shm<T>(shm: Handle, f: impl FnOnce(&mut [u8]) -> Result<T, String>) -> R
 
 /// cc's `build` reply: its `text`, or why there is none.
 fn cc_text(reply: &[u8]) -> Result<String, String> {
-    let records = parse_reply(reply).map_err(|e| format!("cc's answer: {e}"))?;
+    let records = parse_reply(reply).map_err(|e| format!("{INTERNAL}cc's answer: {e}"))?;
     match records.last() {
         Some(Record::Text(text)) => Ok(String::from_utf8_lossy(text).into_owned()),
         Some(Record::Err { text, .. }) => Err(String::from_utf8_lossy(text).into_owned()),
         Some(Record::Trap { reason, .. }) => Err(format!("the build stopped: {reason}")),
-        _ => Err(String::from("cc's answer was not a build's")),
+        _ => Err(format!("{INTERNAL}cc's answer was not a build's")),
     }
 }
 

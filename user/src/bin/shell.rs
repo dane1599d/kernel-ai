@@ -514,6 +514,10 @@ impl Host for System {
         build::build(&self.files, cc_route(), dir, name, version)
     }
 
+    fn cc_trial(&self, name: &str) -> Result<String, String> {
+        build::trial(cc_route(), name)
+    }
+
     fn app_source(&self, name: &str, text: &str) -> Result<(), String> {
         build::app_source(&self.files, name, text)
     }

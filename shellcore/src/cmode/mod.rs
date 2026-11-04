@@ -114,6 +114,11 @@ impl Shell {
         {
             return Some(self.cc_build(line, name.trim()));
         }
+        if let Some(name) = line.strip_prefix("cc trial")
+            && (name.is_empty() || name.starts_with(' '))
+        {
+            return Some(self.cc_trial_line(name.trim()));
+        }
         if !self.c.on {
             return match line.strip_prefix(":c") {
                 Some("") => {

@@ -167,6 +167,21 @@ impl Shell {
         self.cc_build_as(&asker, name)
     }
 
+    /// `cc trial <name>`: the last build, which must be `name`'s, tried once on
+    /// stub imports as `app_build` tries each ([`crate::Host::cc_trial`]). It
+    /// runs nothing for real and changes nothing, so nothing is logged.
+    pub(crate) fn cc_trial_line(&mut self, name: &str) -> Reply {
+        if !valid_name(name) {
+            return Reply::err(format!(
+                "cc trial takes a component's name: 2-12 of a-z, 0-9 and -, starting with a letter, not {name:?}"
+            ));
+        }
+        match self.host.cc_trial(name) {
+            Ok(report) => Reply::ok(format!("{name}: {}", shown(&report))),
+            Err(why) => Reply::err(format!("cc trial {name}: {}", shown(&why))),
+        }
+    }
+
     pub(crate) fn cc_build_as(&mut self, asker: &Asker<'_>, name: &str) -> Reply {
         if !valid_name(name) {
             return Reply::err(format!(

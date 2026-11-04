@@ -15,8 +15,9 @@
 //!   says only after `init`, since comphost starts it after `pkg`'s reply,
 //!   slowly when QEMU emulates the CPU.
 //!
-//! Then `cc` tries that build through a read-only `Shm`, as the shell's trial
-//! moves one ([`crate::cc_trial_tests`]).
+//! Then the shell's `cc trial hello` tries that build through the handle the
+//! shell really moves cc (#617), and `cc` tries it through a read-only `Shm`
+//! of the case's own ([`crate::cc_trial_tests`]).
 //!
 //! `undo` switches back to generation 1, which ends the running app, and the
 //! next build is 0.0.2. The ledger still names 0.0.1 active, so its new host
@@ -107,6 +108,13 @@ pub fn check() -> Result<(), &'static str> {
     log!("c-build: cc build hello built 0.0.1, and pkg installed it from local as generation 2");
     let label = wait_up("0.0.1")?;
     log!("c-build: hello 0.0.1 runs as {label}");
+    // The shell's own trial of that build, through the rights it really moves.
+    let tried = line("cc trial hello")?;
+    if !tried.starts_with("ok hello: trial ok: init, started; ") {
+        log!("c-build: cc trial hello: {tried:?}");
+        return Err("c-build: the shell's trial of the build did not pass");
+    }
+    log!("c-build: the shell tried hello through its own handle: {tried}");
     crate::cc_trial_tests::check()?;
     let undone = line("undo")?;
     if !undone.contains("packages back to generation 1") {

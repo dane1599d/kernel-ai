@@ -8,12 +8,16 @@
 //!    the folder "Show code" opens and removal leaves;
 //! 4. builds it with `cc build` from there, at the version `pkg`'s `local-next`
 //!    proposes ([`crate::Host::cc_build`]);
-//! 5. repairs a refused or failed one at most [`MAX_REPAIRS`] times, each with
-//!    exactly why: the check's problems or `cc`'s diagnostics.
+//! 5. tries the build once on stub imports with `cc`'s `trial`
+//!    ([`crate::Host::cc_trial`]);
+//! 6. repairs a refused, failed or failing one at most [`MAX_REPAIRS`] times,
+//!    each with exactly why: the check's problems, `cc`'s diagnostics or the
+//!    trial's. A build or trial that failed through no fault of the program's
+//!    ([`INTERNAL`]) is reported, and no repair is spent on it.
 //!
 //! Nothing is installed: the install card asks for that (piece 4), so the
-//! build runs. The log records the request, the source's SHA-256 and `cc`'s
-//! `built-by cc` line, which `:why` shows.
+//! build runs. The log records the request, the source's SHA-256, `cc`'s
+//! `built-by cc` line and the trial's report, which `:why` shows.
 
 use crate::actions::{How, Pending};
 use crate::actlog::{Change, Entry, Form, State};
@@ -34,6 +38,15 @@ pub const LINE_WAIT_MS: u64 = 310_000;
 /// The longest the host waits for `cc build` (`shell/build.rs`), which a round
 /// reserves beside the model's.
 pub const CC_BUILD_WAIT_MS: u64 = 150_000;
+/// The longest the host waits for `cc`'s `trial`: its four steps and the
+/// app's load, each within a line budget (12 s when QEMU emulates the CPU),
+/// with room to spare.
+pub const CC_TRIAL_WAIT_MS: u64 = 90_000;
+/// How a trial's failure that is not the program's fault starts, as
+/// `ccserve::trial::INTERNAL` says it.
+pub const INTERNAL: &str = "internal: ";
+/// What one round reserves: the model's answer, the build and the trial.
+const ROUND_MS: u64 = SCRIPT_ROUND_MS + CC_BUILD_WAIT_MS + CC_TRIAL_WAIT_MS;
 /// The longest request the card gets, as the row takes it.
 const MAX_REQUEST: usize = 300;
 
@@ -54,6 +67,16 @@ pub struct Built {
     /// The SHA-256 of `main.c`, in hex.
     pub source: String,
     pub built: CcBuilt,
+    /// The trial's one-line report.
+    pub trial: String,
+}
+
+/// Why a round's build did not come to be.
+enum Unbuilt {
+    /// The program's fault, which a repair gets.
+    Repair(String),
+    /// No fault of the program's: reported, with no repair spent on it.
+    Final(String),
 }
 
 /// The log's line for app `name`'s `main.c` at `sha`.
@@ -175,10 +198,11 @@ impl Shell {
         let started = self.host.now_ns();
         let mut repair: Option<(String, String)> = None;
         for round in 0..=MAX_REPAIRS {
-            // A round is the model's answer and cc's build: each starts only
-            // if both fit in what is left of the terminal's wait.
+            // A round is the model's answer, cc's build and its trial: each
+            // starts only if all three fit in what is left of the terminal's
+            // wait.
             let spent_ms = self.host.now_ns().saturating_sub(started) / 1_000_000;
-            if round > 0 && spent_ms + SCRIPT_ROUND_MS + CC_BUILD_WAIT_MS > LINE_WAIT_MS {
+            if round > 0 && spent_ms + ROUND_MS > LINE_WAIT_MS {
                 let why = repair.map(|(_, why)| why).unwrap_or_default();
                 return Err(format!(
                     "Kai's app {name} did not build in time, after {round} tries:\n{why}"
@@ -211,16 +235,18 @@ impl Shell {
                     prepared.problems.join("\n")
                 ),
                 true => match self.app_compile(name, &prepared.source) {
-                    Ok((version, built)) => {
+                    Ok((version, built, trial)) => {
                         return Ok(Built {
                             name: name.to_string(),
                             version,
                             summary: answer.summary,
                             source: sha256(&prepared.source),
                             built,
+                            trial,
                         });
                     }
-                    Err(why) => why,
+                    Err(Unbuilt::Repair(why)) => why,
+                    Err(Unbuilt::Final(why)) => return Err(why),
                 },
             };
             if round == MAX_REPAIRS {
@@ -233,36 +259,68 @@ impl Shell {
         Err(format!("Kai wrote no app {name}"))
     }
 
-    /// Keeps `source` as the app's `main.c` and builds it: the version and
-    /// what `cc` built, or why not, as the repair gets it.
-    fn app_compile(&mut self, name: &str, source: &str) -> Result<(String, CcBuilt), String> {
+    /// Keeps `source` as the app's `main.c`, builds it and tries it: the
+    /// version, what `cc` built and the trial's report, or why not.
+    fn app_compile(
+        &mut self,
+        name: &str,
+        source: &str,
+    ) -> Result<(String, CcBuilt, String), Unbuilt> {
+        let fail = |why: String| Unbuilt::Final(why);
         self.host
             .app_source(name, source)
-            .map_err(|why| format!("the app's source was not kept: {}", shown(&why)))?;
+            .map_err(|why| fail(format!("the app's source was not kept: {}", shown(&why))))?;
         self.app_written.retain(|(n, _)| n != name);
         self.app_written.push((name.to_string(), sha256(source)));
         let version = match self.host.pkg(&format!("local-next {name}")) {
             Ok(version) if valid_version(&version) => version,
-            Ok(other) => return Err(format!("pkg's next version is not one: {}", shown(&other))),
-            Err(why) => return Err(format!("pkg: {}", shown(&why))),
+            Ok(other) => {
+                let why = format!("pkg's next version is not one: {}", shown(&other));
+                return Err(fail(why));
+            }
+            Err(why) => return Err(fail(format!("pkg: {}", shown(&why)))),
         };
         let built = self
             .host
             .cc_build(APPS_DIR, name, &version)
-            .map_err(|why| format!("cc build refused it:\n{why}"))?;
-        Ok((version, built))
+            .map_err(|why| match why.strip_prefix(INTERNAL) {
+                Some(why) => fail(format!(
+                    "cc could not build Kai's app {name}: {}",
+                    shown(why)
+                )),
+                None => Unbuilt::Repair(format!("cc build refused it:\n{why}")),
+            })?;
+        let trial = match self.host.cc_trial(name) {
+            Ok(report) => report,
+            Err(why) => {
+                return Err(match why.strip_prefix(INTERNAL) {
+                    Some(why) => fail(format!(
+                        "Kai's app {name} built, but cc could not try it: {}",
+                        shown(why)
+                    )),
+                    None => Unbuilt::Repair(format!("its trial failed:\n{why}")),
+                });
+            }
+        };
+        Ok((version, built, trial))
     }
 
     /// Whether `sha` is a `main.c` this shell wrote for app `name`: this
     /// session's last, or one an `app_build` entry of the log records.
     fn app_wrote(&self, name: &str, sha: &str) -> bool {
         let line = source_line(name, sha);
+        let res = format!("{APPS_DIR}/{name}");
+        // The entry must be app_build's own, for this app: its script's
+        // source line, and its change.
+        let logged = |e: &Entry| {
+            e.script.starts_with("app_build(")
+                && e.script.lines().any(|l| l == line)
+                && e.changes
+                    .iter()
+                    .any(|c| c.action == "app_build" && c.res == res)
+        };
         self.app_written.iter().any(|(n, s)| n == name && s == sha)
-            || self
-                .log
-                .entries()
-                .rev()
-                .any(|e| e.script.starts_with("app_build(") && e.script.contains(&line))
+            || self.log.entries().rev().any(logged)
     }
 
     /// Logs a build: the request, the source's hash and `cc`'s provenance.
@@ -280,11 +338,13 @@ impl Shell {
             summary,
             source,
             built: cc,
+            trial,
         } = &built;
         let script = format!(
-            "app_build(\"{name}\", {wanted:?})\n{}\n{}",
+            "app_build(\"{name}\", {wanted:?})\n{}\n{}\ntrial {}",
             source_line(name, source),
-            cc.provenance
+            cc.provenance,
+            shown(trial)
         );
         let change = Change {
             action: String::from("app_build"),
