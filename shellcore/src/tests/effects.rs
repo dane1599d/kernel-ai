@@ -195,6 +195,65 @@ fn each_apps_results_go_back_to_the_app_that_queued_them() {
     assert_eq!(gallery[0].outcome, Ok(String::from("milk\n")));
 }
 
+/// The person's files changed: an app that lists them (its package declares
+/// `fs_list`) is told, once however many changes came; one that declares no
+/// effects is not.
+#[test]
+fn a_change_to_the_files_is_told_once_to_the_apps_that_list_them() {
+    let host = host();
+    let mut shell = shell(&host);
+    shell.fs_changed();
+    shell.fs_changed();
+    let kept = shell.take_effect_results();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0].0, "files");
+    let notice = EffectDone {
+        ticket: kabi::live::NOTICE_TICKET,
+        outcome: Ok(String::from(kabi::live::NOTICE_FILES)),
+    };
+    assert_eq!(kept[0].1, std::slice::from_ref(&notice));
+    // Taken, so the next change is told again.
+    shell.fs_changed();
+    assert_eq!(shell.take_effect_results()[0].1, [notice]);
+}
+
+/// A notice waits beside the answers an app is owed, and is not one of them: the
+/// answer to its effect keeps its own ticket.
+#[test]
+fn a_notice_waits_beside_the_answers_the_app_is_owed() {
+    let host = host();
+    let mut shell = shell(&host);
+    host.apps
+        .borrow_mut()
+        .effects
+        .push((String::from("files"), LIST.into()));
+    shell.run_app_effects();
+    shell.fs_changed();
+    let kept = shell.take_effect_results();
+    assert_eq!(kept.len(), 2, "{kept:?}");
+    assert_eq!(kept[0].1[0].ticket, 1);
+    assert_eq!(kept[1].1[0].ticket, kabi::live::NOTICE_TICKET);
+}
+
+/// A row the user withheld is not told of what it would list.
+#[test]
+fn an_app_denied_the_listing_is_not_told_the_files_changed() {
+    let host = host();
+    let mut shell = shell(&host);
+    let app = crate::settings::SETTINGS_APP;
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_ok());
+    assert!(
+        shell
+            .settings(app, "grants-revoke files fs_list", true)
+            .is_ok()
+    );
+    shell.fs_changed();
+    assert!(shell.take_effect_results().is_empty());
+    assert!(shell.eval("undo").text.starts_with("Undone: "));
+    shell.fs_changed();
+    assert_eq!(shell.take_effect_results().len(), 1);
+}
+
 /// What the shell cannot hand back is dropped oldest first and said, not kept
 /// without end and not lost silently: at most eight batches an app, sixteen in all.
 #[test]

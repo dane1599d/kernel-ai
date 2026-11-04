@@ -149,6 +149,29 @@ fn every_example_builds_and_opens() {
     }
 }
 
+/// `cc`'s `trial` (#606), as `app_build` runs it on each build: the template
+/// and every example pass its window steps, a key and a click on their first
+/// button, within comphost's limits.
+#[test]
+fn the_template_and_every_example_pass_the_trial() {
+    let mains = std::iter::once(("the template", capp1::TEMPLATE)).chain(
+        capp1::EXAMPLES
+            .iter()
+            .map(|(request, main, _)| (*request, *main)),
+    );
+    for (what, main) in mains {
+        let mut shm = vec![0u8; build::shm::BYTES];
+        build::shm::put(&mut shm, &built(main).artifact).unwrap();
+        let report = ccserve::trial::serve("kaiapp", &shm, &Clock)
+            .unwrap_or_else(|why| panic!("{what}: {why}"));
+        assert!(
+            report.starts_with("trial ok: init, started, a key, a click on node "),
+            "{what}: {report}"
+        );
+        assert!(report.contains("; 1 window(s), "), "{what}: {report}");
+    }
+}
+
 /// The shopping list keeps a field's text, adds it on Enter and clears.
 #[test]
 fn the_list_example_keeps_what_was_typed() {

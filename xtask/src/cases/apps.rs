@@ -85,7 +85,9 @@ pub(super) const CASES: &[TestCase] = &[
     },
     // P4 task 5: the agent makes, moves and trashes a file, the Files window shows
     // each state, and `undo` puts both back. The OS's rows run at once (a move and
-    // a trash have an undo, so they do not ask); the log shows each change.
+    // a trash have an undo, so they do not ask); the log shows each change. Then a
+    // move and an `undo` made outside the window show in it with no one asking it
+    // (the OS's notice that the files changed).
     TestCase {
         expect: &[
             "app-files: the Files window lists the file the agent made",
@@ -93,6 +95,8 @@ pub(super) const CASES: &[TestCase] = &[
             "app-files: after the trash the window lists neither file",
             "app-files: undo put the move back, and the window lists notes.txt and not plan.txt",
             "app-files: the window went to a second folder and came back to the home folder",
+            "app-files: after a move the window listed plan.txt on its own, with no files_reveal",
+            "app-files: after undo the window listed notes.txt on its own, with no files_reveal",
             "app-files: the agent made, moved and trashed a file at once, the Files window showed each state and a second folder, and undo put each back; the log showed each change and each undo",
         ],
         data: Some(DATA),

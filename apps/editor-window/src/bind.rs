@@ -201,6 +201,13 @@ impl actions::Guest for Bound {
         }
     }
 
+    fn open_file(path: String) -> Result<String, String> {
+        match started(|app| app.act_open_file(&mut Os, &path)) {
+            Some(result) => result,
+            None => panic!("the editor was called before it started"),
+        }
+    }
+
     fn status() -> String {
         match started(|app| app.status(&mut Os)) {
             Some(text) => text,

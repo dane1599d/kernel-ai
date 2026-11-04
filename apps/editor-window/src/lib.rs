@@ -10,9 +10,10 @@
 //! app has no timer, so a build that finishes while nobody types is shown at the
 //! next touch.
 //!
-//! The agent's two actions only move the editor and say where it is; an edit is
-//! typed, and a build starts from a key or a click in the window, never from an
-//! action (comphost's build gate, on `wasmhost`'s `user` flag).
+//! The agent's three actions only move the editor (to a component's source, or to
+//! one of the person's files by path) and say where it is; an edit is typed, and a
+//! save or a build starts from a key or a click in the window, never from an action
+//! (comphost's write and build gates, on `wasmhost`'s `user` flag).
 //!
 //! The editor also opens a file of the person's own: Ctrl-O asks for its path and
 //! Ctrl-S saves it, through the OS's file door ([`files`]). The file's lines are
@@ -183,8 +184,10 @@ impl EditorWindow {
         let open = self.screen.take_open();
         let save = self.screen.take_save();
         let build = self.screen.take_build();
-        if let Some(path) = &open {
-            self.files.ask_open(host, &mut self.screen, path);
+        if let Some(path) = &open
+            && let Err(why) = self.files.ask_open(host, &mut self.screen, path)
+        {
+            self.screen.note(why, true);
         }
         if save {
             self.files.ask_save(host, &mut self.screen);
@@ -255,6 +258,17 @@ impl EditorWindow {
         self.settle(host)
             .map_err(|e| format!("the window: {e:?}"))?;
         Ok(format!("Opening {component} at {path}:{line}."))
+    }
+
+    /// `editor_open_file`: one of the person's own files, by path. The OS reads it
+    /// as it does for Ctrl-O, in a later call, and the window shows it then. The
+    /// answer says only that it is on its way; the file's text never goes to the
+    /// agent.
+    pub fn act_open_file(&mut self, host: &mut dyn Host, path: &str) -> Result<String, String> {
+        self.files.ask_open(host, &mut self.screen, path)?;
+        self.settle(host)
+            .map_err(|e| format!("the window: {e:?}"))?;
+        Ok(format!("Opening {path}."))
     }
 
     /// `editor_status`: the file and line, the edits made and how the last build

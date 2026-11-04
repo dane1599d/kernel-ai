@@ -5,9 +5,6 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-/// Longest package name (ADR 0011 §2).
-pub const MAX_NAME: usize = 12;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     Install(Vec<String>),
@@ -59,11 +56,7 @@ const UPGRADE: &[&[&str]] = &[
 /// `@` and a version range after it.
 fn is_name(name: &str) -> bool {
     let (base, range) = name.split_once('@').unwrap_or((name, ""));
-    let base_ok = (2..=MAX_NAME).contains(&base.len())
-        && base.starts_with(|c: char| c.is_ascii_lowercase())
-        && base
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    let base_ok = kabi::pkgname::is_valid(base);
     let range_ok = !name.contains('@')
         || (!range.is_empty()
             && range.bytes().all(|b| {
