@@ -11,6 +11,7 @@ extern crate alloc;
 
 pub mod act;
 pub mod app;
+pub mod appjob;
 pub mod chat;
 pub mod examples;
 pub mod explain;

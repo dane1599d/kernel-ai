@@ -43,7 +43,7 @@ use llmproto::health::{State, Status};
 use llmproto::script::{self, AnswerError, ScriptRequest};
 use llmproto::text::printable;
 use llmproto::tune::{self, TuneRequest, replay};
-use llmproto::{explain, http};
+use llmproto::{appjob, explain, http};
 use user::{arg, args, println, sys};
 
 user::entry!(main);
@@ -188,6 +188,8 @@ fn main() -> i32 {
     };
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     let mut response = vec![0u8; http::MAX_RESPONSE];
+    // App rounds the shell starts and comes back for (`llmproto::appjob`).
+    let mut jobs = appjob::Jobs::new(restart.parse().unwrap_or(0));
     // Whether the script system prompt may be missing from the engine's cache:
     // at first, and after a request with another prompt.
     let mut cold = true;
@@ -249,11 +251,22 @@ fn main() -> i32 {
         // A C program or app request takes the script slot with its card.
         cold |= matches!(
             command,
-            Some("ask" | "explain" | "model" | "tune" | "program" | "app")
+            Some("ask" | "explain" | "model" | "tune" | "program" | "app" | "app-start")
         );
         stale |= matches!(command, Some("remember" | "new"));
         backends.warming = local_warmable(&backends, stale, cold);
+        let rest = text.split_once(' ').map_or("", |(_, rest)| rest);
+        let mut job = None;
         let mut reply = match command {
+            Some("app-start") => match jobs.start(rest, matches!(backends.local, Some(Ok(_)))) {
+                appjob::Start::Run(ticket, asked) => {
+                    job = Some((ticket, asked));
+                    format!("ok {ticket}")
+                }
+                appjob::Start::Reply(reply) => reply,
+            },
+            Some("app-take") => jobs.take(rest),
+            Some("app-stop") => jobs.stop(rest),
             // `warm`: whether both slots hold their prompts (S02-2 waits for it).
             Some("warm") => match local_warmable(&backends, stale, cold) {
                 true => String::from("ok no"),
@@ -269,7 +282,43 @@ fn main() -> i32 {
         if let Err(error) = sys::svc_reply(reply.as_bytes()) {
             println!("svc_reply failed: {error:?}");
         }
+        if let (Some((ticket, asked)), Some(Ok(local))) = (job, &mut backends.local) {
+            run_job(local, &mut jobs, ticket, &asked, &mut request);
+        }
     }
+}
+
+/// App job `ticket`'s round on the local engine, answering each request that
+/// comes meanwhile as [`appjob::Jobs::while_running`] says, and keeping its
+/// reply for `app-take`.
+fn run_job(
+    local: &mut local::Local,
+    jobs: &mut appjob::Jobs,
+    ticket: u64,
+    asked: &ScriptRequest,
+    request: &mut [u8],
+) {
+    let mut caller = 0;
+    let answer = local.script_until(asked, || {
+        let Ok(len) = sys::svc_recv(request, 0, &mut caller) else {
+            return false;
+        };
+        let text = core::str::from_utf8(&request[..len.min(request.len())]).unwrap_or("");
+        let (mut reply, stop) = jobs.while_running(text);
+        reply.truncate(reply.floor_char_boundary(kabi::MAX_MESSAGE));
+        if let Err(error) = sys::svc_reply(reply.as_bytes()) {
+            println!("svc_reply failed: {error:?}");
+        }
+        stop
+    });
+    let reply = match answer {
+        Ok(answer) => format!("ok {}", script::encode_answer(&answer)),
+        Err(error) => format!(
+            "err {}",
+            printable(&script::encode_error(&error), MAX_ERROR_CHARS, 1)
+        ),
+    };
+    jobs.finish(ticket, reply);
 }
 
 /// Starts the engine on the mapped model, on one worker per CPU, logging how it
