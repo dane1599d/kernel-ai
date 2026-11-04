@@ -36,6 +36,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentsched"
+version = "0.0.0"
+dependencies = [
+ "kaiagent",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
