@@ -48,6 +48,49 @@ fn the_os_reads_every_model_the_role_signs() {
 }
 
 #[test]
+fn each_model_has_its_chunk_list_signed_beside_it() {
+    let signed = models::for_image().unwrap();
+    let repo = tuf::build_with_models(&[notes()], &signed, &keys(1), NOW).unwrap();
+    let file = |path: &str| repo.files.iter().find(|(p, _)| p == path).map(|(_, b)| b);
+    let role: Value = serde_json::from_slice(file("metadata/1.models.json").unwrap()).unwrap();
+    let mut lists = 0;
+    for model in &signed {
+        let Some(list) = &model.chunks else {
+            continue;
+        };
+        let name = format!("{}.chunks", model.sha256);
+        let target = &role["signed"]["targets"][&name];
+        let sha = crate::sha256_hex(list.as_bytes());
+        assert_eq!(target["length"], list.len(), "{}", model.id);
+        assert_eq!(target["hashes"]["sha256"], sha, "{}", model.id);
+        assert_eq!(
+            file(&format!("targets/{sha}.{name}")),
+            Some(&list.clone().into_bytes())
+        );
+        super::chunks::check(list, model.length, &model.sha256).unwrap();
+        lists += 1;
+    }
+    // At least the two fixtures, whose lists are made from their bytes.
+    assert!(lists >= 2, "{lists} lists");
+    // The OS still offers every model and refuses none.
+    let checked = read(repo).unwrap();
+    assert_eq!(checked.refused, []);
+    assert_eq!(checked.models.len(), signed.len());
+}
+
+#[test]
+fn every_catalog_model_has_its_committed_chunk_list() {
+    for model in models::catalog().unwrap() {
+        assert!(
+            model.chunks.is_some(),
+            "{} has no list in {}: run the model-chunks workflow and commit its lists",
+            model.id,
+            super::chunks::DIR
+        );
+    }
+}
+
+#[test]
 fn the_packages_still_verify_beside_the_models() {
     let signed = models::for_image().unwrap();
     let repo = tuf::build_with_models(&[notes()], &signed, &keys(1), NOW).unwrap();

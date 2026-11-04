@@ -9,7 +9,7 @@ P4 task 18 (ADR 0008 §7). This is the founder's runbook. It sets up the TUF rep
 | `root` | 3 YubiKeys (PIV, ECC P-256), one kept off-site | 2 of 3 | 365 days, re-signed from 60 days before | the other roles' keys |
 | `targets` | 2 YubiKeys | 1 of 2 | 365 days | slot images, R images, `SHA256SUMS`; delegates the two below |
 | `packages` | 2 YubiKeys | 1 of 2 | 365 days | `*.kpkg` (ADR 0011), terminating |
-| `models` | 2 YubiKeys | 1 of 2 | 365 days | `*.gguf` and their `kai-chunks 1` lists |
+| `models` | 2 YubiKeys | 1 of 2 | 365 days | `*.gguf` and their `kai-chunks 1` lists, `<sha256>.chunks` |
 | `snapshot`, `timestamp` | one online key in a cloud KMS, reached through GitHub OIDC | 1 | 30 and 7 days, re-signed by CI | the repository's current state |
 
 The same three YubiKeys can hold the root key and the `targets`, `packages` and `models` keys, each in its own PIV slot. ADR 0008 asks only that root needs 2 of 3 and that one key stays off-site.
@@ -90,7 +90,7 @@ On WSL, attach the YubiKey to Linux with `usbipd-win` first.
 3. **Targets' second key:** `tuf-on-ci-delegate sign/targets-1of2 targets`. Use two signers, with threshold 1.
 4. **The two delegations,** each 1 of 2, with expiry 365 days:
    - `tuf-on-ci-delegate sign/packages packages`, paths `*.kpkg`, terminating;
-   - `tuf-on-ci-delegate sign/models models`, paths `*.gguf` and `*.kai-chunks`.
+   - `tuf-on-ci-delegate sign/models models`, paths `*.gguf` and `*.chunks`.
 5. **Check the result:** a fresh python-tuf or `kaituf` client, given only `1.root.json`, refreshes from Pages and lands on the newest root, which needs 2 of 3 signatures.
 6. **Close the issue** tuf-on-ci opened for the scheduled runs that failed before there was metadata. From now on, those runs keep snapshot and timestamp fresh, open re-signing events and test what Pages serves.
 
