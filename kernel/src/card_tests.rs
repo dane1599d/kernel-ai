@@ -5,7 +5,8 @@
 //!   the screen stays `desktop`'s, and `y` answers it Allow.
 //! - A letter and Enter do not answer a card; `n` then answers it Deny.
 //! - With a card up, `desktop` is killed: the kernel takes the ask back and
-//!   asks it on the console, where `n` answers it.
+//!   asks it on the console, where `n`, typed once its menu takes keys,
+//!   answers it.
 
 use crate::display::claim;
 use crate::keyboard::Decoder;
@@ -102,10 +103,11 @@ pub fn check() -> Result<(), &'static str> {
         .first()
         .ok_or("desk-card: desktop is gone")?;
     process::kill(pid, kabi::ExitReason::Killed).map_err(|_| "desk-card: cannot kill desktop")?;
+    // Typed only once the console's menu takes keys: it drops those typed
+    // before, and on TCG the asker may reach it well after the screen came back.
     wait("the ask back on the console", || {
-        !claim::showing() && !ask_box::shown()
+        !claim::showing() && !ask_box::shown() && terminal::menu_takes_keys()
     })?;
-    threads::sleep_ms(KEY_MS);
     crate::claim_tests::type_keys(&[0x31, 0xB1]);
     if answered()? != code(Answer::Deny) {
         return Err("desk-card: the ask did not come back to the console");
