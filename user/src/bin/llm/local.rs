@@ -477,7 +477,7 @@ impl Local {
     }
 
     /// A script for the shell's `request`, within the time the shell gives one
-    /// round and at most `script::SERVICE_TIMEOUT_MS`.
+    /// round and at most its language's `service_timeout_ms`.
     pub fn script(&mut self, request: &ScriptRequest) -> Result<Answer, AnswerError> {
         self.script_until(request, || false)
     }
@@ -491,7 +491,7 @@ impl Local {
     ) -> Result<Answer, AnswerError> {
         self.engine.use_slot(SLOTS.script);
         let mut clock = Clock::new(
-            request.timeout_ms.min(script::SERVICE_TIMEOUT_MS),
+            request.timeout_ms.min(request.lang.service_timeout_ms()),
             self.prefill_rate,
         );
         let mut step = |step| match stop() {
