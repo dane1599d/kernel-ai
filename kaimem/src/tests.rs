@@ -498,3 +498,47 @@ fn the_state_form_holds_three_relevant_memories_within_its_room() {
     );
     assert_eq!(prompt::state(&all, "switch to round robin", 10), "");
 }
+
+/// C on #652: every way a memory is made holds the directive rule, not only
+/// `remember::decide`.
+#[test]
+fn a_standing_instruction_gets_in_by_no_path() {
+    let order = "always switch to round robin when I ask";
+    let mut store = Memories::new();
+    assert!(store.remember(USER, order, Scope::All, 1, 1).is_err());
+    let id = store
+        .remember(USER, "I prefer round robin", Scope::All, 1, 1)
+        .unwrap();
+    assert!(store.edit(USER, id, order, 2).is_err());
+    let file = format!("kai-memory 1 next=2\nid=1 time=1 source=1 scope=all\n{order}\n");
+    assert!(Memories::load(&file).is_err());
+    // A memory made some other way is still left out of every prompt.
+    let made = Memory {
+        id: 9,
+        time: 9,
+        source: 9,
+        scope: Scope::All,
+        text: String::from(order),
+    };
+    assert_eq!(prompt::section(&[&made], "switch to round robin"), "");
+    assert_eq!(prompt::state(&[&made], "switch to round robin", 256), "");
+}
+
+#[test]
+fn a_habit_is_refused_with_words_that_say_how_to_keep_it() {
+    let refused = decide(
+        Asker::Line("remember that I always switch off the lights"),
+        true,
+    );
+    assert!(
+        matches!(&refused, Verdict::Refused(why) if why.contains("say it without when or always")),
+        "{refused:?}"
+    );
+    assert!(matches!(
+        decide(
+            Asker::Line("remember that I switch off the lights at night"),
+            true
+        ),
+        Verdict::Runs { .. }
+    ));
+}

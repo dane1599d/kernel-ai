@@ -698,8 +698,10 @@ fn the_section_would_raise_tiers_if_it_were_the_line() {
         Tier::Ask,
         "no undo still asks"
     );
+    // A plain preference, which the store keeps: in the line, its words
+    // would be the cue.
     let rr = Memory {
-        text: String::from("switch to round robin"),
+        text: String::from("I prefer round robin"),
         ..memory
     };
     let section = prompt::section(&[&rr], "is round robin faster");
@@ -765,4 +767,29 @@ fn most_grants_are_not_kept_as_memories_at_all() {
         GRANTS.len()
     );
     assert!(kept.len() <= 4, "{kept:?}");
+}
+
+/// C on #652: the word list is defence in depth. A paraphrase gets past it and
+/// is kept, and consent, which reads the current line alone, still raises no
+/// tier for it.
+#[test]
+fn a_paraphrase_the_rule_misses_still_raises_no_tier() {
+    let rows = rows();
+    for text in [
+        "you have my blessing to reboot",
+        "my blessing covers reboots",
+    ] {
+        let line = format!("remember that {text}");
+        assert!(
+            matches!(
+                remember::decide(Asker::Line(&line), true),
+                Verdict::Runs { .. }
+            ),
+            "{text}: the rule does not catch every paraphrase"
+        );
+        assert_eq!(
+            decide("what time is it", &[REBOOT], &rows)[0].tier,
+            Tier::Ask
+        );
+    }
 }

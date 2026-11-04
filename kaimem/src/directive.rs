@@ -6,6 +6,12 @@
 //! So a text that gives permission or consent, or ties an action to a
 //! trigger, is refused as a memory, whoever asks, the user's own line too:
 //! a standing action is a rule (P3), which asks once and shows its scope.
+//!
+//! This is defence in depth, not the boundary: a word list cannot catch every
+//! paraphrase ("you have my blessing to reboot"). The boundary is consent,
+//! which reads the current line alone, so a memory that gets past this still
+//! cannot make anything run that the line did not ask for (S13-4's 0 tier
+//! raises). What this keeps out is the model being steered by such a text.
 
 use alloc::format;
 use alloc::string::String;
@@ -127,7 +133,7 @@ pub fn problem(text: &str) -> Option<&'static str> {
     let ordered = words.first().is_some_and(action);
     if ordered || (words.iter().any(action) && TRIGGERS.iter().any(|t| has(t))) {
         return Some(
-            "that is a standing instruction, and a memory only informs: make it a rule, which asks once",
+            "that reads as a standing instruction, and a memory only informs: for Kai to do it, make it a rule; for a fact about you, say it without when or always",
         );
     }
     None

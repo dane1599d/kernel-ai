@@ -88,7 +88,7 @@ fn from_content(label: Label) -> Verdict {
 
 fn checked(text: &str, scope: Scope, asks: bool) -> Verdict {
     let text = text.trim();
-    if let Some(why) = text_problem(text).or_else(|| crate::directive::problem(text)) {
+    if let Some(why) = text_problem(text) {
         return Verdict::Refused(String::from(why));
     }
     match asks {
