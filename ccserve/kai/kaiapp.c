@@ -401,7 +401,7 @@ static void emit(char *out, I64 cap, I64 *at, char c) {
 static uint64_t rand_seed;
 static uint64_t rand_state;
 
-I64 rand(void) {
+int rand(void) {
     uint64_t seed = kai_app_clock_seed();
     if (seed != rand_seed) {
         rand_seed = seed;
@@ -412,7 +412,8 @@ I64 rand(void) {
     z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
     z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
     z ^= z >> 31;
-    return (I64)(z >> 33);
+    /* The top 31 bits: 0 to RAND_MAX. */
+    return (int)(z >> 33);
 }
 
 I64 Format(char *out, I64 cap, const char *fmt, ...) {

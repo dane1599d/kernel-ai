@@ -46,20 +46,60 @@ void view(const struct state *s) {{
     )
 }
 
-/// Why the build of [`app`] with `body` was refused, as the shell shows it.
-fn refused(body: &str) -> String {
-    let source = app(body);
+/// A component, which has no `<kaiapp.h>` and so no `rand`, whose health
+/// runs `body` first.
+fn component(body: &str) -> String {
+    format!(
+        "#include <component.h>
+#include <stdlib.h>
+uint32_t exports_kai_live_lifecycle_schema(void) {{ return 1; }}
+bool exports_kai_live_lifecycle_init(exports_kai_live_lifecycle_start_error_t *err) {{ return true; }}
+bool exports_kai_live_lifecycle_migrate(component_list_u8_t *state, uint32_t from_schema,
+                                        exports_kai_live_lifecycle_start_error_t *err) {{ return true; }}
+bool exports_kai_live_lifecycle_save(uint32_t to_schema, component_list_u8_t *ret) {{
+    ret->ptr = NULL;
+    ret->len = 0;
+    return true;
+}}
+uint32_t exports_kai_live_lifecycle_health(void) {{
+    {body}
+    return 0;
+}}
+uint32_t exports_kai_live_lifecycle_self_test(void) {{ return 0; }}
+"
+    )
+}
+
+/// The build of `source` as `kind`: what it made, or why it was refused, as
+/// the shell shows it.
+fn build_as(kind: Kind, source: &str) -> Result<(), String> {
     let files: Vec<(&str, &[u8])> = vec![("main.c", source.as_bytes())];
     let request = Build {
         name: "words",
         version: "0.1.0",
-        kind: Kind::Window,
+        kind,
         files: &files,
     };
     let mut budget = Budget::new(&Clock, u64::MAX);
     match build::build(compiler(), &request, &mut budget) {
-        Ok(_) => panic!("{body:?} built"),
-        Err(error) => error.text().expect("not stopped"),
+        Ok(_) => Ok(()),
+        Err(error) => Err(error.text().expect("not stopped")),
+    }
+}
+
+/// Why the build of [`app`] with `body` was refused, as the shell shows it.
+fn refused(body: &str) -> String {
+    match build_as(Kind::Window, &app(body)) {
+        Ok(()) => panic!("{body:?} built"),
+        Err(why) => why,
+    }
+}
+
+/// Why the build of [`component`] with `body` was refused.
+fn component_refused(body: &str) -> String {
+    match build_as(Kind::Component, &component(body)) {
+        Ok(()) => panic!("{body:?} built"),
+        Err(why) => why,
     }
 }
 
@@ -120,9 +160,23 @@ fn a_missing_semicolon_is_looked_for_before_where_wcc_stopped() {
     );
 }
 
+/// A window app has `<kaiapp.h>`'s `rand()` (#701), declared as C's own, so
+/// a call builds, and so does an app's own `int rand(void);` with it: an
+/// `I64 rand(void)` would link the call's i32 against an i64 definition.
 #[test]
-fn a_call_to_rand_gets_one_hint_with_a_generator() {
-    let why = refused("Format(buf, 64, \"%lld\", (I64)(rand() % 6));");
+fn a_window_apps_rand_builds_with_its_own_declaration_too() {
+    for body in [
+        "Format(buf, 64, \"%lld\", (I64)(rand() % 6));",
+        "int rand(void);\n    Format(buf, 64, \"%lld\", (I64)(rand() % 6));",
+    ] {
+        assert_eq!(build_as(Kind::Window, &app(body)), Ok(()), "{body}");
+    }
+}
+
+/// A component has no `rand`: a call gets one hint, with a generator.
+#[test]
+fn a_components_rand_gets_one_hint_with_a_generator() {
+    let why = component_refused("int roll = rand() % 6;");
     assert!(why.contains("`rand' undeclared"), "{why}");
     assert_eq!(why.matches("hint: ").count(), 1, "{why}");
     assert!(
@@ -134,7 +188,7 @@ fn a_call_to_rand_gets_one_hint_with_a_generator() {
 
 #[test]
 fn rand_declared_but_undefined_is_named_by_the_link() {
-    let why = refused("int rand(void);\n    Format(buf, 64, \"%lld\", (I64)rand());");
+    let why = component_refused("int rand(void);\n    int roll = rand() % 6;");
     assert!(
         why.starts_with("the link: Unresolved: env.rand\nhint: there is no rand() here"),
         "{why}"
