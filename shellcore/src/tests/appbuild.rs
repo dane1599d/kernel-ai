@@ -284,6 +284,36 @@ fn a_trial_cc_could_not_run_is_reported_and_not_repaired() {
     assert!(shell.app_built.is_none());
 }
 
+/// T on #617: a build cc could not run (`internal: `, such as a read-only
+/// `Shm`) is reported, and no repair is spent on it.
+#[test]
+fn a_build_cc_could_not_run_is_reported_and_not_repaired() {
+    let (host, mut shell) = asked(vec![app(SOURCE)]);
+    host.pkg_answers
+        .borrow_mut()
+        .push_back(Ok(String::from("0.0.1")));
+    host.cc_builds.borrow_mut().push_back(Err(String::from(
+        "internal: cc cannot map the Shm read-write: Denied",
+    )));
+    let reply = shell.eval("make me a countdown timer app");
+    assert!(
+        !reply.ok
+            && reply.text.contains(
+                "cc could not build Kai's app timer: cc cannot map the Shm read-write: Denied"
+            ),
+        "{reply:?}"
+    );
+    assert_eq!(host.script_requests.borrow().len(), 1);
+    assert!(
+        !host
+            .pkg_sent
+            .borrow()
+            .iter()
+            .any(|s| s.starts_with("cc_trial"))
+    );
+    assert!(shell.app_built.is_none());
+}
+
 #[test]
 fn internal_is_said_as_cc_says_it() {
     assert_eq!(crate::appbuild::INTERNAL, ccserve::trial::INTERNAL);
