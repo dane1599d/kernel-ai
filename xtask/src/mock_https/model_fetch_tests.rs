@@ -1,10 +1,13 @@
 //! The host half of P5's `model-download` case (task 9): Models' job, planned
 //! by `modelchan::fetch` from the signed `models` role, run by `kainet`'s
-//! verified download from the mock's Hugging Face-shaped host. The chunk list
-//! is held to the role's target before a byte is fetched; the bytes wait in
-//! `.partial/` and move into the store only once every chunk and the whole
-//! SHA-256 have matched. The mock cuts the connection twice, flips a byte, or
-//! is given a list for other bytes.
+//! verified download from the mock's Hugging Face-shaped host. As Hugging
+//! Face's do, the resolve URL redirects to a storage host, which serves the
+//! bytes; the job reaches those two hosts and no other. The chunk list, the
+//! role's sibling target, is held to the role's target before a byte is
+//! fetched; the bytes wait in `.partial/` and move into the store only once
+//! every chunk and the whole SHA-256 have matched. The mock cuts the
+//! connection twice, flips a byte, redirects off the job's hosts, or is given a
+//! list for other bytes.
 
 use super::*;
 use comp_models::{Signed, Store};
@@ -12,7 +15,7 @@ use kainet::chunks::{CHUNK, Chunks};
 use kainet::client::{self, Wall};
 use kainet::download::{DownloadError, Partial, Report, download};
 use kainet::http::{Dial, Fetch, HttpError, Limits, Method, Range, TlsConnect, Url};
-use modelchan::fetch::{self, Job, Machine, Refused};
+use modelchan::fetch::{self, Hosts, Job, MODEL_CHUNK, Machine, Refused};
 use rustls::RootCertStore;
 use rustls::pki_types::CertificateDer;
 use sha2::{Digest, Sha256};
@@ -26,6 +29,11 @@ const HF_REPO: &str = "kernel-ai/fixture-GGUF";
 const REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
 const FILE: &str = "fixture.gguf";
 const SIZE: usize = 6 * CHUNK as usize + 4_321;
+/// The mock's model host, and the storage host its resolve URL redirects to.
+const MOCK_HOSTS: &[Hosts] = &[Hosts {
+    source: MODELS,
+    storage: &[ASSETS],
+}];
 
 /// The model's bytes: a GGUF magic, then a deterministic stream.
 fn model() -> Vec<u8> {
@@ -42,8 +50,25 @@ fn model() -> Vec<u8> {
     bytes
 }
 
-fn model_path() -> String {
+fn resolve_path() -> String {
     format!("/{HF_REPO}/resolve/{REVISION}/{FILE}")
+}
+
+/// Where the storage host keeps the bytes.
+fn storage_path() -> String {
+    format!("/xet/{REVISION}/{FILE}")
+}
+
+/// The mock as Hugging Face is: the resolve URL redirects, the storage host
+/// serves.
+fn content(bytes: Vec<u8>) -> Content {
+    Content::new()
+        .redirect(
+            MODELS,
+            &resolve_path(),
+            &format!("https://{ASSETS}{}", storage_path()),
+        )
+        .file(ASSETS, &storage_path(), bytes)
 }
 
 /// The role's one target: the model at the mock's pinned revision.
@@ -54,19 +79,30 @@ fn role(bytes: &[u8]) -> Vec<Signed> {
         length: bytes.len() as u64,
         sha256: Sha256::digest(bytes).into(),
         licence: "MIT".into(),
-        source: format!("https://{MODELS}{}", model_path()),
+        source: format!("https://{MODELS}{}", resolve_path()),
     }]
 }
 
-fn machine() -> Machine {
+static EMPTY: Store = Store {
+    blobs: Vec::new(),
+    running: None,
+    next: None,
+    on_trial: false,
+    rolled_back: None,
+};
+
+fn machine() -> Machine<'static> {
     Machine {
         memory_mib: 6 * 1024,
         free_bytes: 8 << 30,
+        store: &EMPTY,
+        partials: &[],
+        hosts: MOCK_HOSTS,
     }
 }
 
 fn job(bytes: &[u8]) -> Job {
-    fetch::plan(&role(bytes), &Store::default(), &machine(), "fixture-dl").unwrap()
+    fetch::plan(&role(bytes), &machine(), "fixture-dl").unwrap()
 }
 
 struct Local(u16);
@@ -144,7 +180,8 @@ impl Partial for Volume<'_> {
     }
 }
 
-/// One run of `job` from `mock`, reaching only the hosts the job does.
+/// One run of `job` from `mock`, reaching only the hosts the job does, on
+/// every hop of the redirect.
 fn run(
     mock: &Mock,
     job: &Job,
@@ -182,25 +219,31 @@ fn run(
     })
 }
 
+/// Ranges the storage host served.
 fn served(mock: &Mock) -> usize {
     mock.served()
         .into_iter()
-        .filter(|s| s.host == MODELS && s.path == model_path())
+        .filter(|s| s.host == ASSETS && s.path == storage_path())
         .count()
 }
 
 #[test]
-fn two_cuts_resume_and_the_model_moves_into_the_store_whole() {
+fn models_chunk_is_kainets() {
+    assert_eq!(MODEL_CHUNK, CHUNK);
+}
+
+#[test]
+fn two_cuts_resume_through_the_redirect_and_the_model_moves_into_the_store_whole() {
     let bytes = model();
     let job = job(&bytes);
     // The role's sibling target `<sha256>.chunks`, read back as Models reads
     // it before any range is fetched.
     let signed = Chunks::of(&bytes, CHUNK).render();
     let list = Chunks::parse(signed.as_bytes()).unwrap();
-    job.check_list(&list.blob, list.size).unwrap();
-    let mock = start(Content::new().model(HF_REPO, REVISION, FILE, bytes.clone())).unwrap();
+    job.check_list(&list.blob, list.size, list.chunk).unwrap();
+    let mock = start(content(bytes.clone())).unwrap();
     let mut cuts = vec![SIZE * 8 / 10, SIZE * 4 / 10];
-    mock.set_fault(MODELS, &model_path(), Fault::CutOnce(cuts.pop().unwrap()));
+    mock.set_fault(ASSETS, &storage_path(), Fault::CutOnce(cuts.pop().unwrap()));
     let mut volume = Volume::new(&job);
     let mut resumes = 0;
     let report = loop {
@@ -213,7 +256,7 @@ fn two_cuts_resume_and_the_model_moves_into_the_store_whole() {
                     "nothing in the store yet"
                 );
                 if let Some(cut) = cuts.pop() {
-                    mock.set_fault(MODELS, &model_path(), Fault::CutOnce(cut));
+                    mock.set_fault(ASSETS, &storage_path(), Fault::CutOnce(cut));
                 }
             }
             Err(other) => panic!("{other:?}"),
@@ -237,16 +280,38 @@ fn two_cuts_resume_and_the_model_moves_into_the_store_whole() {
 }
 
 #[test]
-fn a_list_for_other_bytes_is_refused_before_any_byte_is_fetched() {
+fn a_redirect_off_the_jobs_hosts_is_refused_and_nothing_is_stored() {
+    let bytes = model();
+    let job = job(&bytes);
+    let list = Chunks::of(&bytes, CHUNK);
+    let mock = start(content(bytes)).unwrap();
+    mock.set_fault(MODELS, &resolve_path(), Fault::RedirectOff);
+    let mut volume = Volume::new(&job);
+    assert_eq!(
+        run(&mock, &job, &list, &mut volume),
+        Err(DownloadError::Fetch(HttpError::Refused(OFF.into())))
+    );
+    assert_eq!(volume.done, 0);
+    assert!(volume.files.is_empty());
+    assert_eq!(served(&mock), 0);
+}
+
+#[test]
+fn a_list_for_other_bytes_or_other_chunks_is_refused_before_any_byte_is_fetched() {
     let bytes = model();
     let job = job(&bytes);
     let mut other = bytes.clone();
     other[100] ^= 1;
     let list = Chunks::of(&other, CHUNK);
-    let mock = start(Content::new().model(HF_REPO, REVISION, FILE, bytes)).unwrap();
+    let mock = start(content(bytes.clone())).unwrap();
     assert_eq!(
-        job.check_list(&list.blob, list.size),
+        job.check_list(&list.blob, list.size, list.chunk),
         Err(Refused::List("the chunk list is for another blob"))
+    );
+    let wide = Chunks::of(&bytes, 4 * CHUNK);
+    assert_eq!(
+        job.check_list(&wide.blob, wide.size, wide.chunk),
+        Err(Refused::List("the chunk list's chunks are not 2 MiB"))
     );
     assert_eq!(served(&mock), 0);
 }
@@ -256,8 +321,8 @@ fn a_flipped_byte_is_refused_by_its_chunk_and_nothing_reaches_the_store() {
     let bytes = model();
     let job = job(&bytes);
     let list = Chunks::of(&bytes, CHUNK);
-    let mock = start(Content::new().model(HF_REPO, REVISION, FILE, bytes)).unwrap();
-    mock.set_fault(MODELS, &model_path(), Fault::Flip(2 * CHUNK as usize + 9));
+    let mock = start(content(bytes)).unwrap();
+    mock.set_fault(ASSETS, &storage_path(), Fault::Flip(2 * CHUNK as usize + 9));
     let mut volume = Volume::new(&job);
     assert_eq!(
         run(&mock, &job, &list, &mut volume),
@@ -271,9 +336,10 @@ fn a_flipped_byte_is_refused_by_its_chunk_and_nothing_reaches_the_store() {
 fn the_one_ask_names_the_mock_host_and_the_size() {
     let bytes = model();
     let role = role(&bytes);
-    let offers = fetch::offers(&role, &Store::default(), &machine());
+    let offers = fetch::offers(&role, &machine());
     assert!(offers[0].recommended);
     let job = job(&bytes);
+    assert_eq!(job.hosts, [MODELS, ASSETS]);
     assert_eq!(
         fetch::ask(&role[0], &job.source),
         format!(
