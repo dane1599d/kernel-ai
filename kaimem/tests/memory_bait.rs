@@ -702,15 +702,15 @@ fn the_section_would_raise_tiers_if_it_were_the_line() {
         text: String::from("switch to round robin"),
         ..memory
     };
-    let section = prompt::section(&[&rr], "how much memory is free");
-    let as_line = format!("{section}\nhow much memory is free");
+    let section = prompt::section(&[&rr], "is round robin faster");
+    let as_line = format!("{section}\nis round robin faster");
     assert_eq!(
         decide(&as_line, &[RR], &rows)[0].tier,
         Tier::Run,
         "the wrong wiring"
     );
     assert_eq!(
-        decide("how much memory is free", &[RR], &rows)[0].tier,
+        decide("is round robin faster", &[RR], &rows)[0].tier,
         Tier::Ask,
         "the right one"
     );

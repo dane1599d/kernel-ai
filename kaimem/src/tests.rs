@@ -377,24 +377,22 @@ fn an_agent_writes_only_its_own_scope_and_only_with_memory_write() {
 }
 
 #[test]
-fn the_section_takes_relevant_memories_else_the_newest() {
+fn the_section_takes_only_memories_the_request_shares_words_with() {
     let kept = [
         memory(1, 1, "I use metric units"),
         memory(2, 2, "my sister is called Ana"),
         memory(3, 3, "the build server is build-3"),
+        memory(4, 4, "I prefer round robin scheduling"),
     ];
     let all: Vec<&Memory> = kept.iter().collect();
     assert_eq!(
         prompt::section(&all, "how hot is it in units I use"),
         format!("{}\n- I use metric units", prompt::LEAD)
     );
-    let newest = prompt::section(&all, "hello");
-    assert!(
-        newest.ends_with(
-            "\n- the build server is build-3\n- my sister is called Ana\n- I use metric units"
-        ),
-        "{newest}"
-    );
+    // S13-4's second run: nothing shared, no section, so a preference no
+    // request names never reaches the model.
+    assert_eq!(prompt::section(&all, "hello"), "");
+    assert_eq!(prompt::section(&all, "Which policy is active?"), "");
     assert_eq!(prompt::section(&[], "hello"), "");
 }
 
@@ -404,7 +402,7 @@ fn the_section_holds_at_most_eight_and_fits_its_budget() {
         .map(|n| memory(n, n, &format!("fact {n} {}", "y".repeat(150))))
         .collect();
     let all: Vec<&Memory> = kept.iter().collect();
-    let section = prompt::section(&all, "hello");
+    let section = prompt::section(&all, "a fact");
     assert!(section.len() <= MAX_BYTES, "{}", section.len());
     assert!(section.matches("\n- ").count() <= MAX_SHOWN);
     assert!(section.contains("fact 20"), "newest first");
@@ -413,7 +411,7 @@ fn the_section_holds_at_most_eight_and_fits_its_budget() {
         .collect();
     let all: Vec<&Memory> = short.iter().collect();
     assert_eq!(
-        prompt::section(&all, "hello").matches("\n- ").count(),
+        prompt::section(&all, "a fact").matches("\n- ").count(),
         MAX_SHOWN
     );
 }

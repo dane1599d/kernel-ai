@@ -1,7 +1,13 @@
 //! The memory section of a request's prompt (ADR 0013 §3): up to
 //! [`MAX_SHOWN`] memories relevant to the request, within [`MAX_BYTES`],
 //! marked as the user's earlier words. Relevance is by shared words until the
-//! embedding model lands (S13-3); with none shared, the newest go in.
+//! embedding model lands (S13-3). A memory the request shares nothing with
+//! goes in no prompt: ADR 0013's "else most recent" put all of them into every
+//! request, and S13-4's second run (41870657691, 37/50) showed the 4B model
+//! then acting on a preference no request named ("I prefer round robin"
+//! switched the policy on "Which policy is active?") and printing memories as
+//! its answer. So a request with nothing in common with any memory gets no
+//! section.
 //!
 //! The section is State, not the line: consent is decided on the current line
 //! alone (`agentabi::consent::decide`), so nothing a memory says can make an
@@ -26,10 +32,7 @@ pub fn section(memories: &[&Memory], request: &str) -> String {
         .iter()
         .map(|m| (shared(&words, &m.text), *m))
         .collect();
-    let any_shared = ranked.iter().any(|(score, _)| *score > 0);
-    if any_shared {
-        ranked.retain(|(score, _)| *score > 0);
-    }
+    ranked.retain(|(score, _)| *score > 0);
     ranked.sort_by(|(sa, a), (sb, b)| sb.cmp(sa).then(b.time.cmp(&a.time)).then(b.id.cmp(&a.id)));
     let mut out = String::new();
     for (_, memory) in ranked.into_iter().take(MAX_SHOWN) {

@@ -91,11 +91,15 @@ mod tests {
     }
 
     #[test]
-    fn every_request_carries_the_section_and_still_fits_the_wire() {
+    fn a_request_carries_the_memories_it_shares_words_with_and_fits_the_wire() {
+        let mut with = Vec::new();
         for task in super::super::tasks::TASKS {
             let shown = with_section(task.request);
-            assert!(shown.starts_with(prompt::LEAD), "{shown}");
             assert!(shown.ends_with(task.request));
+            if shown != task.request {
+                assert!(shown.starts_with(prompt::LEAD), "{shown}");
+                with.push(task.request);
+            }
             let request = ScriptRequest {
                 request: shown.clone(),
                 repair: None,
@@ -105,5 +109,13 @@ mod tests {
             let back = ScriptRequest::decode(&request.encode()).expect("it encodes");
             assert_eq!(back.request, shown, "not clipped");
         }
+        println!(
+            "S13-4: {} of 50 requests carry a memory section: {with:?}",
+            with.len()
+        );
+        assert!(
+            !with.is_empty(),
+            "the run must show the model some memories"
+        );
     }
 }
