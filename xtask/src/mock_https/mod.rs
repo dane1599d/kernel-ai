@@ -30,6 +30,8 @@
 #[cfg(test)]
 mod download_tests;
 mod http;
+#[cfg(test)]
+mod model_fetch_tests;
 mod pki;
 
 /// kainet's provider, as the mock's server and its clients' tests use it.
