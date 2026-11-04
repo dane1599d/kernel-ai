@@ -1046,6 +1046,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kaimem"
+version = "0.1.0-dev"
+dependencies = [
+ "agentabi",
+]
+
+[[package]]
 name = "kaipkg"
 version = "0.1.0-dev"
 dependencies = [
