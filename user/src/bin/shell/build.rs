@@ -37,7 +37,8 @@ const BUILD_CALL_MS: u64 = shellcore::appbuild::CC_BUILD_WAIT_MS;
 const TRIAL_CALL_MS: u64 = shellcore::appbuild::CC_TRIAL_WAIT_MS;
 /// `pkg`'s wait for `local`: it signs, checks, installs and starts the app.
 const PKG_CALL_MS: u64 = 60_000;
-/// `pkg` reads requests into 64 bytes, and answers in a few hundred.
+/// `pkg` takes requests up to `kaipkg::local::MAX_REQUEST` bytes, and answers
+/// in a few hundred.
 const PKG_REPLY: usize = 512;
 
 /// The `Shm` every build uses, made by the first.
