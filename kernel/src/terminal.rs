@@ -177,7 +177,7 @@ impl Confirm {
 /// CARD_READY: the shell has a card waiting. The prompt wakes, and takes it
 /// once it may ([`card_may_open`]).
 pub fn card_ready() {
-    CARD_WAITING.store(true, Ordering::Release);
+    CARD_WAITING.store(true, Ordering::SeqCst);
     crate::i8042::wake_reader();
 }
 
@@ -190,18 +190,25 @@ pub fn cards_taken() -> (u64, u64) {
     )
 }
 
+/// Whether the shell has said a card waits: an atomic, as the prompt's wait
+/// needs ([`crate::i8042::wait_unless`]). SeqCst pairs with the waiter's
+/// store before it blocks.
+fn card_armed() -> bool {
+    CARD_WAITING.load(Ordering::SeqCst)
+}
+
 /// Whether the shell's waiting card may open now: on `desktop`'s card only,
 /// so while `desktop` shows and its trusted layer reads, and never while
 /// another ask is posted. The console holding the screen opens none: a card
 /// is not a question the console was asked.
 fn card_may_open() -> bool {
-    CARD_WAITING.load(Ordering::Acquire) && claim::showing() && ask_box::alive() && ask_box::empty()
+    card_armed() && claim::showing() && ask_box::alive() && ask_box::empty()
 }
 
 /// Takes the shell's waiting card: what its `menu` reply waits for, or
 /// nothing when the shell has none now (a bare `ok`).
 fn take_card() -> Option<Waiting> {
-    CARD_WAITING.store(false, Ordering::Release);
+    CARD_WAITING.store(false, Ordering::SeqCst);
     let reply = shell_reply(termcore::menu::TAKE_CARD)?;
     CARD_ASKS.fetch_add(1, Ordering::Relaxed);
     log!("card: the terminal asked the shell for its waiting card");
@@ -448,7 +455,7 @@ fn read_line(decoder: &mut Decoder, prompt: &str, card: bool) -> Read {
     let mut line = Line::new(MAX_LINE);
     loop {
         let key = match card && line.text().is_empty() {
-            true => match decoder.read_key_unless(&card_may_open) {
+            true => match decoder.read_key_unless(&card_armed, &card_may_open) {
                 Some(key) => key,
                 None => return Read::Card,
             },
