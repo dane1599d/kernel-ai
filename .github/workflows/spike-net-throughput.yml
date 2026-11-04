@@ -19,7 +19,7 @@ env:
 
 jobs:
   throughput:
-    name: net-throughput (${{ matrix.accel }}, tx ${{ matrix.tx }}, clock ${{ matrix.clock }})
+    name: net-throughput (${{ matrix.accel }}, queue ${{ matrix.queue }}, clock ${{ matrix.clock }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -30,8 +30,11 @@ jobs:
         # virtio-drivers' `send` does, against sends queued and reclaimed later;
         # the HPET, whose every read exits to the host under KVM, against the TSC.
         burst: [0]
-        tx: [sync, async]
-        clock: [hpet, tsc]
+        # The TSC took 20 ms from 18.3 to 29.3 MB/s (run 41881225812); queued
+        # sends did not help. Now the receive queue's depth, at build time.
+        tx: [sync]
+        clock: [tsc]
+        queue: [16, 64, 256]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/qemu
@@ -68,6 +71,7 @@ jobs:
           XTASK_NET_DUMP: ${{ runner.temp }}/net.pcap
           XTASK_CMDLINE: net_burst=${{ matrix.burst }} ip=static net_tx=${{ matrix.tx }} clock=${{ matrix.clock }}
           XTASK_NETDEV: tap,id=net0,ifname=kaitap0,script=no,downscript=no
+          KAI_NET_QUEUE: ${{ matrix.queue }}
         run: |
           flag=""
           if [ "${{ matrix.build }}" = release ]; then flag=--release; fi

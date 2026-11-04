@@ -35,7 +35,22 @@ const MAX_POLL_GAP_MS: u64 = 2;
 const FIRST_EPHEMERAL_PORT: u16 = 49152;
 /// Receive and transmit queue depth: a power of two, kept small because the driver
 /// builds its queue arrays on the stack.
-pub(super) const QUEUE_SIZE: usize = 16;
+pub(super) const QUEUE_SIZE: usize = match option_env!("KAI_NET_QUEUE") {
+    // Spike P5-S2: the queue depth, set at build time, a power of two.
+    Some(text) => parse_queue(text.as_bytes()),
+    None => 16,
+};
+
+const fn parse_queue(text: &[u8]) -> usize {
+    let mut value = 0;
+    let mut i = 0;
+    while i < text.len() {
+        value = value * 10 + (text[i] - b'0') as usize;
+        i += 1;
+    }
+    assert!(value.is_power_of_two() && value <= 256);
+    value
+}
 /// Per-packet buffer: at least 1526 bytes and a multiple of 8.
 pub(super) const BUFFER_LEN: usize = 2048;
 
