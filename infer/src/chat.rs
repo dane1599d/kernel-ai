@@ -325,6 +325,41 @@ impl<'a> Engine<'a> {
         Ok(shared.min(prompt.len() - 1))
     }
 
+    /// Copies the slot in use, its computed positions and the tokens behind them,
+    /// into `into` ([`crate::segments::Snapshot`]): a preempted agent's state kept in
+    /// RAM, for [`Engine::restore_snapshot`]. Whatever `into` held is replaced, and
+    /// its buffers are kept. It copies the slot in use, so a caller that keeps
+    /// several agents' slots calls [`Engine::use_slot`] for the agent's own first.
+    pub fn snapshot_slot(
+        &self,
+        key: &crate::segments::Key,
+        into: &mut crate::segments::Snapshot,
+    ) -> Result<(), Error> {
+        crate::segments::snapshot(key, &self.kv, &self.cached, into)
+    }
+
+    /// Fills the slot in use from a snapshot, for a prompt of `turns`: how many
+    /// positions that prompt will reuse, as [`Engine::restore_slot`] says. The
+    /// checks are the file's, but for the hash of the keys and values (RAM does not
+    /// need one). The slot is emptied first, and on any refusal it stays empty.
+    pub fn restore_snapshot(
+        &mut self,
+        key: &crate::segments::Key,
+        turns: &[Turn<'_>],
+        from: &crate::segments::Snapshot,
+    ) -> Result<usize, crate::segments::Refused> {
+        let prompt = self.chat.conversation(&self.tok, turns);
+        self.cached.clear();
+        let tokens = crate::segments::restore_snapshot(key, &mut self.kv, &prompt, from)?;
+        self.cached.extend_from_slice(&tokens);
+        let shared = tokens
+            .iter()
+            .zip(&prompt)
+            .take_while(|(a, b)| a == b)
+            .count();
+        Ok(shared.min(prompt.len() - 1))
+    }
+
     /// The KV slot in use.
     pub fn slot(&self) -> usize {
         self.slot

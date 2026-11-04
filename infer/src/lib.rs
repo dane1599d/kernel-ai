@@ -33,6 +33,8 @@ mod json_tests;
 #[cfg(test)]
 mod kquant_tests;
 #[cfg(test)]
+mod preempt_tests;
+#[cfg(test)]
 mod prefill_tests;
 #[cfg(test)]
 mod reference;
@@ -40,6 +42,8 @@ mod reference;
 mod reply_tests;
 #[cfg(test)]
 mod segments_tests;
+#[cfg(test)]
+mod snapshot_tests;
 #[cfg(test)]
 mod tests;
 
