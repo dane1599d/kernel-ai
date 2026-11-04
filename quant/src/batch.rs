@@ -88,7 +88,7 @@ fn q4_k_fours_of_two(tier: Tier, w: &[u8], row: usize, xs: &[Q8KVec], y: &mut [f
         let rows = y.len() / 2 / 4 * 4;
         for (w, y) in w
             .chunks_exact(4 * row)
-            .zip(y[..2 * rows].chunks_exact_mut(8))
+            .zip(y[..2 * rows].as_chunks_mut::<8>().0)
         {
             let four = core::array::from_fn(|r| &w[r * row..(r + 1) * row]);
             // SAFETY: every SIMD tier exists only when the CPU has AVX2, FMA and
