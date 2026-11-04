@@ -197,6 +197,13 @@ opt-level = 2
 [profile.dev.package.ccserve]
 opt-level = 2
 
+# TLS: kainet instantiates the RustCrypto ciphers' generics (AES-GCM,
+# ChaCha20-Poly1305, the curves), so they are compiled at kainet's level, and
+# unoptimised AES-128-GCM sealed 3 MB/s in ring 3 under KVM (P5-S1, #654).
+# Level 2 as the ciphers themselves.
+[profile.dev.package.kainet]
+opt-level = 2
+
 # The inference engine crates at the same level: unoptimised, the Q8_0 matvec runs
 # about 100x slower in its AVX2 tier and 15-20x in its baseline, so the
 # generated-model tests and `model chat` would crawl. Level 2 matches wasmhost and
