@@ -28,7 +28,7 @@ use alloc::vec::Vec;
 use kabi::sched::{SchedStats, TrialRequest};
 use llmproto::act::{self, ActError, ActRequest, Call};
 use llmproto::chat::Completion;
-use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
+use llmproto::script::{self, Answer, AnswerError, Lang, ScriptRequest};
 use llmproto::tune::{self, TuneRequest};
 use shellcore::targets::Service;
 use shellcore::{DEFAULT_CONFIG, Host, PanelResult, Proof, SCRIPT_ROUND_MS, Shell};
@@ -706,6 +706,16 @@ impl Host for System {
         let _ = APP_TICKET.compare_exchange(ticket, 0, Ordering::Relaxed, Ordering::Relaxed);
         if let Err(error) = app_job(&alloc::format!("app-stop {ticket}")) {
             println!("app-stop {ticket}: {error:?}");
+        }
+    }
+
+    fn model_warm(&self, lang: Lang) {
+        let word = match lang {
+            Lang::C => "c",
+            Lang::Rhai | Lang::App => "rhai",
+        };
+        if let Err(error) = app_job(&alloc::format!("warm-lang {word}")) {
+            println!("warm-lang {word}: {error:?}");
         }
     }
 

@@ -54,6 +54,10 @@ fn modes_switch_and_kai_lines_stay_rhai() {
     assert!(!shell.at_c());
     assert_eq!(shell.eval("1 + 2").text, "3");
     assert!(!shell.eval(":nope").text.contains("c>"));
+    // The model keeps C's card warm at c>, and Rhai's again at kai>; a single
+    // entry from kai> changes neither.
+    use llmproto::script::Lang;
+    assert_eq!(host.warms.borrow().as_slice(), [Lang::C, Lang::Rhai]);
 }
 
 #[test]
