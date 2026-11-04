@@ -21,7 +21,7 @@
 
 use crate::actions::{How, Pending};
 use crate::actlog::{Change, Entry, Form, State};
-use crate::ccbuild::{APPS_DIR, CcBuilt, shown, valid_name, valid_version};
+use crate::ccbuild::{APPS_DIR, Artifact, CcBuilt, shown, valid_name, valid_version};
 use crate::cmode::program::MAX_REPAIRS;
 use crate::script::Checked;
 use crate::tiers::Tier;
@@ -71,6 +71,8 @@ pub struct Built {
     pub trial: String,
     /// The log entry that built it, which its install card names.
     pub id: u64,
+    /// The artifact's hash and imports, as the host wrote it.
+    pub artifact: Artifact,
 }
 
 /// Where an `app_build` is in its rounds.
@@ -115,7 +117,7 @@ impl Rounds {
 pub(crate) enum Next {
     /// Another round: the model's repair.
     Ask,
-    Built(Built),
+    Built(alloc::boxed::Box<Built>),
     Failed(String),
 }
 
@@ -130,6 +132,12 @@ enum Unbuilt {
 /// The log's line for app `name`'s `main.c` at `sha`.
 pub(crate) fn source_line(name: &str, sha: &str) -> String {
     format!("source {APPS_DIR}/{name}/main.c sha256 {sha}")
+}
+
+/// The log's line for the artifact a build of app `name` wrote, at `sha`:
+/// the bytes its install card installs.
+pub(crate) fn artifact_line(name: &str, sha: &str) -> String {
+    format!("artifact {APPS_DIR}/{name}.kai sha256 {sha}")
 }
 
 /// The SHA-256 of `text`, in hex.
@@ -269,7 +277,7 @@ impl Shell {
             let answer = self.host.script(&ask);
             match self.app_answer(&mut rounds, answer) {
                 Next::Ask => {}
-                Next::Built(built) => return Ok(built),
+                Next::Built(built) => return Ok(*built),
                 Next::Failed(why) => return Err(why),
             }
         }
@@ -304,8 +312,8 @@ impl Shell {
                 prepared.problems.join("\n")
             ),
             true => match self.app_compile(&name, &prepared.source) {
-                Ok((version, built, trial)) => {
-                    return Next::Built(Built {
+                Ok((version, built, trial, artifact)) => {
+                    return Next::Built(alloc::boxed::Box::new(Built {
                         name,
                         version,
                         summary: answer.summary,
@@ -313,7 +321,8 @@ impl Shell {
                         built,
                         trial,
                         id: 0,
-                    });
+                        artifact,
+                    }));
                 }
                 Err(Unbuilt::Repair(why)) => why,
                 Err(Unbuilt::Final(why)) => return Next::Failed(why),
@@ -333,7 +342,7 @@ impl Shell {
         &mut self,
         name: &str,
         source: &str,
-    ) -> Result<(String, CcBuilt, String), Unbuilt> {
+    ) -> Result<(String, CcBuilt, String, Artifact), Unbuilt> {
         let fail = |why: String| Unbuilt::Final(why);
         // Between rounds in the background the person may have edited it.
         self.app_check_source(name).map_err(fail)?;
@@ -372,7 +381,12 @@ impl Shell {
                 });
             }
         };
-        Ok((version, built, trial))
+        let artifact = self.host.cc_artifact(name).ok_or_else(|| {
+            fail(format!(
+                "Kai's app {name} built, but the artifact cc wrote cannot be read back"
+            ))
+        })?;
+        Ok((version, built, trial, artifact))
     }
 
     /// Whether `sha` is a `main.c` this shell wrote for app `name`: this
@@ -409,12 +423,14 @@ impl Shell {
             source,
             built: cc,
             trial,
+            artifact,
             ..
         } = &built;
         let script = format!(
-            "app_build(\"{name}\", {wanted:?})\n{}\n{}\ntrial {}",
+            "app_build(\"{name}\", {wanted:?})\n{}\n{}\n{}\ntrial {}",
             source_line(name, source),
             cc.provenance,
+            artifact_line(name, &artifact.sha256),
             shown(trial)
         );
         let change = Change {

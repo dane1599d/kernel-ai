@@ -32,6 +32,16 @@ const MAX_SHOWN: usize = 300;
 /// Most characters of `cc`'s diagnostics the editor's pager gets, lines kept.
 const MAX_DIAGNOSTICS: usize = 4_000;
 
+/// The artifact a build wrote, as the host holds it: what an install card
+/// shows, and the bytes `pkg` must install.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Artifact {
+    /// The SHA-256 of the artifact's bytes, in hex.
+    pub sha256: String,
+    /// The interfaces it imports (`kai:ui/view@0.1.0`), each once.
+    pub imports: alloc::vec::Vec<String>,
+}
+
 /// What `cc` built, from its `build` reply: `<kind> <bytes> <provenance>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CcBuilt {
@@ -218,7 +228,7 @@ impl Shell {
                 built.bytes, built.path
             ));
         }
-        let answer = match self.host.pkg_local(name, &built.path) {
+        let answer = match self.host.pkg_local(name, &built.path, None) {
             Ok(answer) => answer,
             // No answer at all: pkg may have installed it, so the attempt is
             // logged, with nothing `undo` could switch back.

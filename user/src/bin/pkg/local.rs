@@ -3,8 +3,10 @@
 //!
 //! - `local-next <component>`: the version the next build takes, `ok <version>`;
 //!   read-only, from any caller.
-//! - `local <component>`, from the shell only, with the artifact's File handle
-//!   moved by CALL_H, and nothing else: published into `local`, signed by the
+//! - `local <component> sha256 <hex>`, from the shell only, with the
+//!   artifact's File handle moved by CALL_H, and nothing else: refused unless
+//!   the bytes read are the ones `cc` built, by that hash (C on #626), then
+//!   published into `local`, signed by the
 //!   device key, checked, installed as a new generation and started; `ok <name>
 //!   <version> generation <n> from <parent>`, which the shell's undo switches
 //!   back to. `pkg` reads that one file through its handle and no other.
@@ -25,6 +27,7 @@ use kaipkg::fsvol::FsVolume;
 use kaipkg::local;
 use kaipkg::sign::Key;
 use kaipkg::store::{self, Ctx, Store};
+use sha2::{Digest, Sha256};
 use user::{println, sys};
 
 /// The action a `local` install or a switch back is, until `pkg` holds
@@ -74,13 +77,15 @@ fn next(vol: &mut FsVolume<Calls>, component: &str) -> Result<String, String> {
     Ok(format!("ok {version}"))
 }
 
-/// `local <component>`: the artifact through its File handle, at most 1 MiB,
-/// named `component` by its own manifest.
-fn install(
-    vol: &mut FsVolume<Calls>,
-    component: &str,
-    handles: &[Handle],
-) -> Result<String, String> {
+/// `local <component> sha256 <hex>`: the artifact through its File handle, at
+/// most 1 MiB, named `component` by its own manifest, whose SHA-256 is `hex`.
+fn install(vol: &mut FsVolume<Calls>, rest: &str, handles: &[Handle]) -> Result<String, String> {
+    let Some((component, sha)) = rest
+        .split_once(' ')
+        .and_then(|(component, rest)| Some((component, rest.strip_prefix("sha256 ")?)))
+    else {
+        return Err("local takes <component> sha256 <hex>".into());
+    };
     let [file] = handles else {
         return Err("local takes the artifact's File handle and nothing else".into());
     };
@@ -89,6 +94,16 @@ fn install(
         return Err("local takes a File handle, not another kind".into());
     }
     let artifact = vol.read_handle(*file, kabi::live::MAX_ARTIFACT as u64)?;
+    // These bytes, and only these, are signed and installed: the ones cc built.
+    let read: String = Sha256::digest(&artifact)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if read != sha {
+        return Err(format!(
+            "the artifact is not the one cc built (sha256 {read}, not {sha}), so it is not installed"
+        ));
+    }
     let manifest = livecore::artifact::parse(&artifact)?.manifest;
     if manifest.component != component {
         return Err(format!(

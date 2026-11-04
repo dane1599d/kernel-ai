@@ -11,6 +11,8 @@ use llmproto::script::{Answer, AnswerError, ScriptRequest};
 use std::collections::VecDeque;
 
 /// What the fake `cc_trial` answers past its queue.
+/// The SHA-256 of the artifact the fake `cc` wrote.
+const ARTIFACT_SHA: &str = "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5";
 const TRIAL_REPORT: &str = "init, started, a key and a click ran; 1 window";
 
 mod act;
@@ -143,8 +145,8 @@ struct FakeHost {
     /// Set to let `script_take` hand over the answer in flight.
     pub answered: Cell<bool>,
     /// `cc_trial`'s answers in turn; past them, the trial passes.
-    /// What `cc_imports` gives for the app built last.
-    pub cc_imports: RefCell<Vec<String>>,
+    /// What `cc_artifact` gives for the app built last.
+    pub cc_artifact: RefCell<Option<crate::ccbuild::Artifact>>,
     pub cc_trials: RefCell<VecDeque<Result<String, String>>>,
     /// Each app's source `app_source` wrote, in order.
     pub app_sources: RefCell<Vec<(String, String)>>,
@@ -319,7 +321,13 @@ impl FakeHost {
             cc_built: RefCell::new(None),
             cc_builds: RefCell::new(VecDeque::new()),
             cc_trials: RefCell::new(VecDeque::new()),
-            cc_imports: RefCell::new(Vec::new()),
+            cc_artifact: RefCell::new(Some(crate::ccbuild::Artifact {
+                sha256: String::from(ARTIFACT_SHA),
+                imports: alloc::vec![
+                    String::from("kai:app/log@0.1.0"),
+                    String::from("kai:ui/view@0.1.0"),
+                ],
+            })),
             background: Cell::new(false),
             in_flight: Cell::new(None),
             tickets: Cell::new(0),
@@ -865,8 +873,8 @@ impl Host for FakeHost {
         next.unwrap_or_else(|| Ok(String::from(TRIAL_REPORT)))
     }
 
-    fn cc_imports(&self, _name: &str) -> Vec<String> {
-        self.cc_imports.borrow().clone()
+    fn cc_artifact(&self, _name: &str) -> Option<crate::ccbuild::Artifact> {
+        self.cc_artifact.borrow().clone()
     }
 
     fn app_source(&self, name: &str, text: &str) -> Result<(), String> {
@@ -885,8 +893,11 @@ impl Host for FakeHost {
             .map(|(_, text)| text.clone()))
     }
 
-    fn pkg_local(&self, name: &str, path: &str) -> Result<String, String> {
-        self.pkg(&format!("local {name} {path}"))
+    fn pkg_local(&self, name: &str, path: &str, sha256: Option<&str>) -> Result<String, String> {
+        match sha256 {
+            Some(sha) => self.pkg(&format!("local {name} {path} sha256 {sha}")),
+            None => self.pkg(&format!("local {name} {path}")),
+        }
     }
 
     fn cc(&self, request: &[u8]) -> Result<Vec<u8>, String> {

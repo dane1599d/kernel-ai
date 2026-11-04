@@ -271,10 +271,11 @@ pub trait Host {
             appbuild::INTERNAL
         ))
     }
-    /// The interfaces app `name`'s last build imports (`kai:ui/view@0.1.0`),
-    /// which its install card lists; empty where the host cannot read them.
-    fn cc_imports(&self, _name: &str) -> Vec<String> {
-        Vec::new()
+    /// The artifact app `name`'s build wrote, its hash and imports: `None`
+    /// unless it is the last one the host wrote, so an install card never
+    /// shows a list, or installs bytes, it does not have.
+    fn cc_artifact(&self, _name: &str) -> Option<ccbuild::Artifact> {
+        None
     }
     /// Writes `text` as the whole of `/home/user/apps/<name>/main.c`, making the
     /// folders if they are new (`app_build`). The source is kept whatever comes
@@ -287,8 +288,9 @@ pub trait Host {
         Ok(None)
     }
     /// Hands the artifact at `path` to `pkg`'s `local` as a read-only File:
-    /// the text after its `ok`.
-    fn pkg_local(&self, _name: &str, _path: &str) -> Result<String, String> {
+    /// the text after its `ok`. `pkg` installs only the bytes `cc` built, and
+    /// with `sha256`, only if that is their hash.
+    fn pkg_local(&self, _name: &str, _path: &str, _sha256: Option<&str>) -> Result<String, String> {
         Err(String::from("there is no pkg service here"))
     }
     /// A read of the user's files: its text, or why there is none.

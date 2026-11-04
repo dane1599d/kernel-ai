@@ -4,7 +4,8 @@
 //! - **Asking:** a typed `install it` or `install <name>`, or the act model's
 //!   `app_install(name)`, answers with the Allow / Deny menu, which the kernel
 //!   posts to `desktop`'s card or asks on the console. The card shows the app's
-//!   name, size and what it imports, and the call its `ONCE` names:
+//!   size and every interface it imports, or, when they do not fit, how many
+//!   and `show uses <name>`, which lists them; and the call its `ONCE` names:
 //!   `app_install("timer", "0.0.1", "<source>")`, where `<source>` begins
 //!   `main.c`'s SHA-256. The menu's id is a new log entry's, so the `ONCE`
 //!   names this card alone. The model's one-line summary and `show code` are
@@ -12,8 +13,11 @@
 //!   characters, the call included.
 //! - **Checking:** the ask and the Allow both refuse a build that is not the
 //!   last one, one whose `main.c` changed since it was built (stale or
-//!   edited), or one installed already, each with why.
-//! - **Installing:** `pkg`'s `local` publishes it, signs it with the device key
+//!   edited), or one installed already, each with why. The ask refuses one
+//!   whose artifact the host no longer holds, so its imports are known.
+//! - **Installing:** `pkg`'s `local`, given the artifact's SHA-256 the build
+//!   logged, installs exactly those bytes or refuses; it publishes them, signs
+//!   them with the device key
 //!   and installs it as a new generation, and the app starts, as any installed
 //!   app does. Nothing installs without the Allow.
 //! - **Undo:** `undo` switches back to the generation before, which removes the
@@ -25,7 +29,7 @@
 
 use crate::actions::{How, Pending};
 use crate::actlog::{Change, Entry, Form, State};
-use crate::appbuild::{Built, sha256, source_line};
+use crate::appbuild::{Built, artifact_line, sha256, source_line};
 use crate::ccbuild::{APPS_DIR, NO_ANSWER, installed, shown, valid_name};
 use crate::script::Checked;
 use crate::tiers::Tier;
@@ -71,8 +75,8 @@ fn install_call(built: &Built) -> Option<String> {
     )
 }
 
-/// What an app's imports come to on the card: `app/log, ui/view`, each once.
-fn uses(imports: &[String]) -> String {
+/// What an app's imports come to on the card: `app/log`, `ui/view`, each once.
+fn uses(imports: &[String]) -> Vec<&str> {
     let mut short: Vec<&str> = Vec::new();
     for import in imports {
         let name = import.strip_prefix(KAI).unwrap_or(import);
@@ -81,21 +85,28 @@ fn uses(imports: &[String]) -> String {
             short.push(name);
         }
     }
-    match short.is_empty() {
-        true => String::from("nothing"),
-        false => short.join(", "),
-    }
+    short
 }
 
-/// The card's question for `call`: as much as fits of the size and imports,
-/// then the call whole.
-fn question(built: &Built, uses: &str, call: &str) -> String {
+/// The card's question for `call`: its size, every import and the call whole;
+/// when the imports do not fit, how many there are and the line that lists
+/// them. It never names fewer than the app uses (C on #626).
+fn question(built: &Built, uses: &[&str], call: &str) -> Option<String> {
     let size = built.built.bytes.div_ceil(1024);
-    let full = format!("Install Kai's app, {size} KiB, using {uses}, with {call}?");
-    match full.len() <= MENU_TEXT {
-        true => full,
-        false => format!("Install Kai's app, {size} KiB, with {call}?"),
-    }
+    let listed = match uses.is_empty() {
+        true => String::from("nothing"),
+        false => uses.join(", "),
+    };
+    let forms = [
+        format!("Install Kai's app, {size} KiB, using {listed}, with {call}?"),
+        format!("Install {size} KiB using {}: {call}?", uses.join(",")),
+        format!(
+            "Install {size} KiB, uses {} interfaces (show uses {}): {call}?",
+            uses.len(),
+            built.name
+        ),
+    ];
+    forms.into_iter().find(|form| form.len() <= MENU_TEXT)
 }
 
 impl Shell {
@@ -111,6 +122,14 @@ impl Shell {
                 _ => return None,
             };
             return Some(self.app_code(&name));
+        }
+        if let Some(rest) = input.strip_prefix("show uses") {
+            let name = match rest.trim() {
+                "" => built?,
+                name if rest.starts_with(' ') => name.to_string(),
+                _ => return None,
+            };
+            return Some(self.app_uses(&name));
         }
         let name = input.strip_prefix("install ")?.trim();
         match name {
@@ -198,15 +217,27 @@ impl Shell {
         let Some(call) = install_call(&built) else {
             return Reply::err("the install's call cannot be shown");
         };
-        let uses = uses(&self.host.cc_imports(name));
-        let question = question(&built, &uses, &call);
-        let menu = Menu::new(id, &question, None, None, Origin::Added)
+        // The card names what the artifact cc built imports, or asks nothing:
+        // the host must still hold that very artifact.
+        if self.host.cc_artifact(name).as_ref() != Some(&built.artifact) {
+            let why = format!(
+                "what Kai's app {name} imports cannot be read, since the artifact cc built for it is no longer the last one written: ask Kai to build it again"
+            );
+            self.record(id, request, &call, &format!("refused: {}", shown(&why)));
+            return Reply::err(why);
+        }
+        let question = question(&built, &uses(&built.artifact.imports), &call);
+        let menu = question
+            .as_deref()
+            .map_or(Err(termcore::menu::Refused::Unshowable), |question| {
+                Menu::new(id, question, None, None, Origin::Added)
+            })
             .and_then(|menu| menu.with_call(&call));
-        if menu.is_err() {
+        let (Some(question), Ok(_)) = (question, menu) else {
             return Reply::err(format!(
                 "Kai's app {name} cannot be asked about on the card: its call is too long"
             ));
-        }
+        };
         self.host.audit(&format!("request {id}: {call} asks"));
         let checked = Checked::shown_only(&call);
         self.shown = Some(format!(
@@ -279,16 +310,19 @@ impl Shell {
         let name = &built.name;
         let version = &built.version;
         let script = format!(
-            "{}\n{}\n{}",
+            "{}\n{}\n{}\n{}",
             pending.checked.script,
             source_line(name, &built.source),
-            built.built.provenance
+            built.built.provenance,
+            artifact_line(name, &built.artifact.sha256)
         );
         let how = How {
             consent: String::from("yes"),
             ..pending.how.clone()
         };
-        let answer = match self.host.pkg_local(name, &built.built.path) {
+        // pkg signs and installs exactly the bytes the build recorded.
+        let sha = Some(built.artifact.sha256.as_str());
+        let answer = match self.host.pkg_local(name, &built.built.path, sha) {
             Ok(answer) => answer,
             Err(why) => {
                 let why = shown(&why);
@@ -370,6 +404,26 @@ impl Shell {
         })
     }
 
+    /// `show uses`: every interface the last build of app `name` imports, as
+    /// its artifact holds them; the card names them, or how many and this line.
+    fn app_uses(&self, name: &str) -> Reply {
+        match &self.app_built {
+            Some(built) if built.name == name => {
+                let imports = &built.artifact.imports;
+                let list = match imports.is_empty() {
+                    true => String::from("nothing"),
+                    false => imports.join("\n"),
+                };
+                Reply::ok(format!(
+                    "Kai's app {name} {} imports {} interface(s):\n{list}",
+                    built.version,
+                    imports.len()
+                ))
+            }
+            _ => Reply::err(format!("Kai has not built an app called {name}")),
+        }
+    }
+
     /// `show code`: app `name`'s `main.c`, as it is now.
     fn app_code(&self, name: &str) -> Reply {
         match self.host.app_source_read(name) {
@@ -404,7 +458,7 @@ mod tests {
             String::from("kai:ui/view@0.1.0"),
             String::from("kai:ui/view@0.1.0"),
         ];
-        assert_eq!(uses(&imports), "app/log, ui/view");
-        assert_eq!(uses(&[]), "nothing");
+        assert_eq!(uses(&imports), ["app/log", "ui/view"]);
+        assert!(uses(&[]).is_empty());
     }
 }

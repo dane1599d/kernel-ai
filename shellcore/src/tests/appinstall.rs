@@ -22,7 +22,15 @@ fn app() -> Result<Answer, AnswerError> {
 
 /// A shell that has built the timer, as entry 1.
 fn built() -> (Rc<FakeHost>, Shell) {
+    built_with(&["app/log", "ui/view"])
+}
+
+/// A shell that has built the timer, whose artifact imports `imports`.
+fn built_with(imports: &[&str]) -> (Rc<FakeHost>, Shell) {
     let host = FakeHost::new();
+    if let Some(artifact) = host.cc_artifact.borrow_mut().as_mut() {
+        artifact.imports = imports.iter().map(|i| format!("kai:{i}@0.1.0")).collect();
+    }
     host.calls
         .borrow_mut()
         .push_back(Ok(llmproto::act::parse(TIMER).unwrap()));
@@ -38,10 +46,6 @@ fn built() -> (Rc<FakeHost>, Shell) {
         ),
         path: String::from("/home/user/apps/timer.kai"),
     }));
-    *host.cc_imports.borrow_mut() = vec![
-        String::from("kai:app/log@0.1.0"),
-        String::from("kai:ui/view@0.1.0"),
-    ];
     let mut shell = shell(&host);
     let done = shell.eval("make me a countdown timer app");
     assert!(
@@ -94,9 +98,12 @@ fn install_timer_asks_on_the_card_and_an_allow_installs_it_with_its_undo() {
     );
     assert_eq!(
         host.pkg_sent.borrow().last().unwrap(),
-        "local timer /home/user/apps/timer.kai"
+        &format!("local timer /home/user/apps/timer.kai sha256 {ARTIFACT_SHA}")
     );
     let log = shell.eval("log actlog").text;
+    // Both entries record the artifact's hash: the bytes pkg installed.
+    let artifact = format!("artifact /home/user/apps/timer.kai sha256 {ARTIFACT_SHA}");
+    assert_eq!(log.matches(&artifact).count(), 2, "{log}");
     assert!(log.contains("app_install owner=pkg"), "{log}");
     assert!(log.contains("inv=local:5:4"), "{log}");
     assert!(log.contains("consent=yes"), "{log}");
@@ -226,4 +233,84 @@ fn show_code_shows_main_c_as_it_is_now() {
     assert_eq!(shell.eval("show code timer"), shown);
     assert!(!shell.eval("show code clock").ok);
     assert_eq!(host.app_sources.borrow().len(), 1);
+}
+
+/// C on #626: the card names every import the artifact has, or how many and
+/// the line that lists them; it never names fewer.
+#[test]
+fn the_card_names_every_import_or_how_many_and_show_uses_lists_them() {
+    let three = ["app/log", "ui/view", "ui/input"];
+    let (host, mut shell) = built_with(&three);
+    let call = call_for(&host);
+    let card = shell.eval("install timer");
+    let menu = termcore::menu::Menu::decode(&card.to_wire()).expect("a menu");
+    assert_eq!(
+        menu.question(),
+        format!("Install Kai's app, 9 KiB, using app/log, ui/view, ui/input, with {call}?")
+    );
+    let four = ["app/log", "ui/view", "ui/input", "app/events"];
+    let (host, mut shell) = built_with(&four);
+    let card = shell.eval("install timer");
+    let menu = termcore::menu::Menu::decode(&card.to_wire()).expect("a menu");
+    assert_eq!(
+        menu.question(),
+        format!(
+            "Install 9 KiB using app/log,ui/view,ui/input,app/events: {}?",
+            call_for(&host)
+        )
+    );
+    let six = [
+        "app/log",
+        "ui/view",
+        "ui/input",
+        "app/events",
+        "app/storage",
+        "app/clock",
+    ];
+    let (host, mut shell) = built_with(&six);
+    let card = shell.eval("install timer");
+    let menu = termcore::menu::Menu::decode(&card.to_wire()).expect("a menu");
+    assert_eq!(
+        menu.question(),
+        format!(
+            "Install 9 KiB, uses 6 interfaces (show uses timer): {}?",
+            call_for(&host)
+        )
+    );
+    // Denied, then listed in full before the next card.
+    shell.eval(&format!("answer {} deny", menu.id));
+    let uses = shell.eval("show uses timer");
+    assert_eq!(
+        uses,
+        ok("Kai's app timer 0.0.1 imports 6 interface(s):\n\
+            kai:app/log@0.1.0\nkai:ui/view@0.1.0\nkai:ui/input@0.1.0\n\
+            kai:app/events@0.1.0\nkai:app/storage@0.1.0\nkai:app/clock@0.1.0")
+    );
+    assert_eq!(shell.eval("show uses"), uses);
+    assert!(!shell.eval("show uses clock").ok);
+    assert_eq!(locals(&host), 0);
+}
+
+/// C on #626: when the host no longer holds the artifact the build wrote, what
+/// it imports cannot be read, and the card is not asked.
+#[test]
+fn an_artifact_the_host_no_longer_holds_is_not_asked_about() {
+    let (host, mut shell) = built();
+    *host.cc_artifact.borrow_mut() = None;
+    let gone = shell.eval("install timer");
+    assert!(
+        !gone.ok && !gone.text.starts_with("menu ") && gone.text.contains("imports cannot be read"),
+        "{gone:?}"
+    );
+    // Another build's artifact, written since, is not this one.
+    *host.cc_artifact.borrow_mut() = Some(crate::ccbuild::Artifact {
+        sha256: String::from("b6"),
+        imports: Vec::new(),
+    });
+    let other = shell.eval("install timer");
+    assert!(
+        !other.ok && other.text.contains("imports cannot be read"),
+        "{other:?}"
+    );
+    assert_eq!(locals(&host), 0);
 }
