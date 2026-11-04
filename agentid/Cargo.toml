@@ -1,0 +1,17 @@
+[package]
+name = "agentid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Agents and identity (ADR 0013 section 1): the roster that binds each agent's badge to
+# its name and its `kaiagent` manifest, the identity the one door and the action log
+# carry, and the rules that keep an agent from taking the person's consent words or
+# key marks. `no_std` + `alloc`, host-tested only; nothing in the OS uses it yet.
+[lib]
+doctest = false
+
+[dependencies]
+agentabi = { path = "../agentabi" }
+kaiagent = { path = "../kaiagent" }
