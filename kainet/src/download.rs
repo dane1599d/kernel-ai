@@ -28,6 +28,10 @@ pub enum DownloadError {
     Whole,
     /// Chunk `i` came back shorter or longer than its range.
     Length(usize),
+    /// The server answered a chunk's range with this status, not 206, and
+    /// with this `Retry-After` in seconds if it gave one (a 429 or a 503
+    /// says when to come back).
+    Status(u16, Option<u32>),
     /// The fetch failed: a cut, a refused certificate, a timeout.
     Fetch(HttpError),
     /// The store failed.
@@ -48,9 +52,34 @@ pub trait Partial {
     fn finish(&mut self) -> Result<(), DownloadError>;
 }
 
-/// Fetches `range` of the target, passing its bytes on; how many came.
-pub type Fetcher<'a> =
-    dyn FnMut(Range, &mut dyn FnMut(&[u8]) -> Result<(), HttpError>) -> Result<u64, HttpError> + 'a;
+/// How the server answered a range: [`crate::http::Fetched`] gives it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Answer {
+    pub status: u16,
+    pub retry_after: Option<u32>,
+}
+
+impl Answer {
+    /// What a 206 says.
+    pub const PARTIAL: Answer = Answer {
+        status: 206,
+        retry_after: None,
+    };
+}
+
+impl From<&crate::http::Fetched> for Answer {
+    fn from(got: &crate::http::Fetched) -> Self {
+        Answer {
+            status: got.head.status,
+            retry_after: got.head.retry_after,
+        }
+    }
+}
+
+/// Fetches `range` of the target, passing its bytes on: how the server
+/// answered. Only a 206's bytes are taken.
+pub type Fetcher<'a> = dyn FnMut(Range, &mut dyn FnMut(&[u8]) -> Result<(), HttpError>) -> Result<Answer, HttpError>
+    + 'a;
 
 /// What a download did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,7 +123,7 @@ pub fn download(
             first: start,
             last: Some(end - 1),
         };
-        fetch(range, &mut |bytes| {
+        let answer = fetch(range, &mut |bytes| {
             if got.len() + bytes.len() > want {
                 return Err(HttpError::TooLarge);
             }
@@ -105,6 +134,9 @@ pub fn download(
             HttpError::TooLarge => DownloadError::Length(i),
             e => DownloadError::Fetch(e),
         })?;
+        if answer.status != 206 {
+            return Err(DownloadError::Status(answer.status, answer.retry_after));
+        }
         if got.len() != want {
             return Err(DownloadError::Length(i));
         }

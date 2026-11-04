@@ -8,7 +8,7 @@
 use super::*;
 use kainet::chunks::{CHUNK, Chunks};
 use kainet::client::{self, Wall};
-use kainet::download::{DownloadError, Partial, Report, download};
+use kainet::download::{Answer, DownloadError, Partial, Report, download};
 use kainet::http::{Dial, Fetch, HttpError, Limits, Method, Range, TlsConnect, Url};
 use rustls::RootCertStore;
 use rustls::pki_types::CertificateDer;
@@ -131,10 +131,7 @@ fn run(
     let url = download_url();
     download(list, partial, &mut |range: Range, sink| {
         let got = fetch.run(&mut connect, Method::Get, &url, Some(range), sink)?;
-        match got.head.status {
-            206 => Ok(got.received),
-            _ => Err(HttpError::Head("not a 206")),
-        }
+        Ok(Answer::from(&got))
     })
 }
 
@@ -223,4 +220,18 @@ fn a_caller_that_does_not_name_the_assets_host_never_reaches_it() {
         Err(DownloadError::Fetch(HttpError::Refused(ASSETS.into())))
     );
     assert!(served_ranges(&mock).is_empty());
+}
+
+#[test]
+fn a_busy_server_says_when_to_come_back() {
+    let target = target();
+    let list = Chunks::of(&target, CHUNK);
+    let mock = start(Content::new().release_asset(TAG, NAME, target)).unwrap();
+    mock.set_fault(ASSETS, &asset_path(), Fault::TooMany(5));
+    let mut partial = Memory::default();
+    assert_eq!(
+        run(&mock, &list, &mut partial, &github),
+        Err(DownloadError::Status(429, Some(5)))
+    );
+    assert_eq!(partial.done, 0);
 }
