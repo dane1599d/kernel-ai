@@ -84,6 +84,24 @@ fn an_app_fetches_from_its_granted_host() {
     assert_eq!(got.status, 200);
     assert_eq!(got.body, b"{\"layers\":36}");
     assert_eq!(got.url, format!("https://{MODELS}{MODEL}"));
+    assert_eq!(
+        got.content_type.as_deref(),
+        Some("application/octet-stream")
+    );
+    assert_eq!(got.retry_after, None);
+}
+
+/// A 429 is a response, with when to come back, not an error (C's review).
+#[test]
+fn a_busy_host_answers_with_when_to_come_back() {
+    let mock = mock();
+    mock.set_fault(MODELS, MODEL, Fault::TooMany(7));
+    let grant = Grant::new(&["models.kai.test"]).unwrap();
+    let got = serve(&mock, &grant, &get(&format!("https://{MODELS}{MODEL}"))).unwrap();
+    assert_eq!(
+        (got.status, got.retry_after, got.body.len()),
+        (429, Some(7), 0)
+    );
 }
 
 #[test]
