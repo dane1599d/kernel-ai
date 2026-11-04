@@ -213,6 +213,38 @@ pub fn free_port() -> Result<u16, String> {
         .map_err(|e| format!("cannot find a free port for the QEMU monitor: {e}"))
 }
 
+/// The stages of a case's keys, typed in the order the guest announced them.
+/// The monitor serves one client at a time, so two stages started together would
+/// take turns in whatever order their connections landed (a Ctrl-O and the path
+/// that follows it, the path first): each stage waits for the one before it.
+struct Typist {
+    monitor: u16,
+    qmp: Option<u16>,
+    last: Option<thread::JoinHandle<()>>,
+}
+
+impl Typist {
+    fn new(monitor: u16, qmp: Option<u16>) -> Self {
+        Self {
+            monitor,
+            qmp,
+            last: None,
+        }
+    }
+
+    /// Types `keys` once the stages sent before have been typed.
+    fn send(&mut self, keys: &'static [&'static str]) {
+        let before = self.last.take();
+        let (monitor, qmp) = (self.monitor, self.qmp);
+        self.last = Some(thread::spawn(move || {
+            if let Some(before) = before {
+                let _ = before.join();
+            }
+            type_keys(monitor, qmp, keys);
+        }));
+    }
+}
+
 /// Types keys into the guest through the QEMU monitor: a key name with
 /// `sendkey`, a `!` line as the monitor command after the `!`, an `@` line
 /// as a QMP command on `qmp`, and `~` and a number as a wait of that many ms.
@@ -403,6 +435,7 @@ pub fn run_test(
     let reader = thread::spawn(move || {
         let mut measure_start = None;
         let mut stage = 0;
+        let mut typist = Typist::new(monitor, qmp);
         let (mut missing, mut unseen) = (expect, exact);
         let mut cpu_line = None;
         let mut warnings = Vec::new();
@@ -418,7 +451,7 @@ pub fn run_test(
                 && line.contains(on)
             {
                 stage += 1;
-                thread::spawn(move || type_keys(monitor, qmp, keys));
+                typist.send(keys);
             }
             if let Some(text) = ci_warning(&line) {
                 warnings.push(text.to_string());
@@ -444,7 +477,7 @@ pub fn run_test(
             } else if keys_on.is_empty() && line.contains("ready for keys") {
                 if let Some(&keys) = stages.get(stage) {
                     stage += 1;
-                    thread::spawn(move || type_keys(monitor, qmp, keys));
+                    typist.send(keys);
                 }
             } else if line.contains("measure-start") {
                 measure_start = Some(Instant::now());
@@ -609,9 +642,47 @@ fn strip_confirm_prompt(line: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ci_warning, from_programs, model_sizing};
+    use super::{Typist, ci_warning, from_programs, model_sizing};
     use crate::Accel;
     use crate::options::Sizing;
+    use std::io::{BufRead, BufReader};
+    use std::net::TcpListener;
+    use std::thread;
+
+    /// A monitor that serves one client at a time, as QEMU's does: stages sent
+    /// together arrive in order, and the second does not even connect while the
+    /// first is typing.
+    #[test]
+    fn stages_sent_together_are_typed_in_order_and_one_at_a_time() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let monitor = thread::spawn(move || {
+            let (mut seen, mut early, mut waiting) = (Vec::new(), false, None);
+            for _ in 0..2 {
+                let client = match waiting.take() {
+                    Some(client) => client,
+                    None => listener.accept().unwrap().0,
+                };
+                let mut lines = BufReader::new(client).lines().map_while(Result::ok);
+                seen.extend(lines.next());
+                // The first key is in: nobody else may be waiting to be served.
+                listener.set_nonblocking(true).unwrap();
+                if let Ok((other, _)) = listener.accept() {
+                    other.set_nonblocking(false).unwrap();
+                    (early, waiting) = (true, Some(other));
+                }
+                listener.set_nonblocking(false).unwrap();
+                seen.extend(lines);
+            }
+            (seen, early)
+        });
+        let mut typist = Typist::new(port, None);
+        typist.send(&["a", "b"]);
+        typist.send(&["c"]);
+        let (seen, early) = monitor.join().unwrap();
+        assert_eq!(seen, ["sendkey a", "sendkey b", "sendkey c"]);
+        assert!(!early, "the second stage connected during the first");
+    }
 
     #[test]
     fn program_output_is_told_apart_from_kernel_lines() {

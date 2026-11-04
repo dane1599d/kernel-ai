@@ -77,12 +77,12 @@ pub(super) const CASES: &[TestCase] = &[
             gpt: true,
         }),
         keys: &[
-            // Ctrl-O asks for a path; the first half of /home/user/todo.txt, then the rest
-            // and Enter: the path is not there, so a new file opens.
+            // Ctrl-O asks for a path, which is typed with Enter in the same stage so that
+            // they arrive in order: /home/user/todo.txt is not there, so a new file opens.
             &[
-                "ctrl-o", "slash", "h", "o", "m", "e", "slash", "u", "s", "e", "r",
+                "ctrl-o", "slash", "h", "o", "m", "e", "slash", "u", "s", "e", "r", "slash", "t",
+                "o", "d", "o", "dot", "t", "x", "t", "ret",
             ],
-            &["slash", "t", "o", "d", "o", "dot", "t", "x", "t", "ret"],
             // Four letters, then Ctrl-S makes the file; one more and Ctrl-S replaces it.
             &["a", "b", "c", "d"],
             &["ctrl-s"],
@@ -90,9 +90,9 @@ pub(super) const CASES: &[TestCase] = &[
             &["ctrl-s"],
             // After `undo`, the same path again: the file is read back.
             &[
-                "ctrl-o", "slash", "h", "o", "m", "e", "slash", "u", "s", "e", "r",
+                "ctrl-o", "slash", "h", "o", "m", "e", "slash", "u", "s", "e", "r", "slash", "t",
+                "o", "d", "o", "dot", "t", "x", "t", "ret",
             ],
-            &["slash", "t", "o", "d", "o", "dot", "t", "x", "t", "ret"],
         ],
         expect: &[
             "comphost: files: read /home/user/todo.txt (person true) failed: missing: /home/user/todo.txt is not there",
@@ -138,14 +138,12 @@ pub(super) const CASES: &[TestCase] = &[
             gpt: true,
         }),
         keys: &[
-            // Ctrl-O asks for a path: the first half of /home/user/c/hello/hello.c, then
-            // the rest and Enter, which opens the file the case wrote.
+            // Ctrl-O asks for a path, typed with Enter in the same stage so that they
+            // arrive in order: /home/user/c/hello/hello.c, the file the case wrote.
             &[
-                "ctrl-o", "slash", "h", "o", "m", "e", "slash", "u", "s", "e", "r",
-            ],
-            &[
-                "slash", "c", "slash", "h", "e", "l", "l", "o", "slash", "h", "e", "l", "l", "o",
-                "dot", "c", "ret",
+                "ctrl-o", "slash", "h", "o", "m", "e", "slash", "u", "s", "e", "r", "slash", "c",
+                "slash", "h", "e", "l", "l", "o", "slash", "h", "e", "l", "l", "o", "dot", "c",
+                "ret",
             ],
             // Ctrl-B builds the component the open file is in.
             &["ctrl-b"],
