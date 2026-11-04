@@ -26,6 +26,8 @@ pub struct Plan<'a> {
     pub window_ms: u64,
     /// Give up if no byte came by then.
     pub timeout_ms: u64,
+    /// smoltcp's delayed ACK: its default 10 ms, or off.
+    pub ack_delay: bool,
 }
 
 /// What one download moved.
@@ -51,6 +53,9 @@ pub fn download(plan: &Plan) -> Result<Moved, &'static str> {
         );
         socket.set_timeout(Some(Duration::from_millis(plan.timeout_ms)));
         socket.set_nagle_enabled(false);
+        if !plan.ack_delay {
+            socket.set_ack_delay(None);
+        }
         socket
             .connect(
                 net.iface.context(),

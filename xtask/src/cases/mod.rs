@@ -187,7 +187,7 @@ pub const SOAK_CASES: &[TestCase] = &[case("storm-10min", "test=storm-600")];
 /// Spike P5-S2: download speed from a plain HTTP server the spike's workflow
 /// starts on the host at port 8765, serving `/blob`. Never in `LANES`.
 pub const NET_THROUGHPUT: TestCase = TestCase {
-    expect: &["net-throughput: 18 downloads measured"],
+    expect: &["net-throughput: 36 downloads measured"],
     server: false,
     min_timeout: Some(Duration::from_secs(900)),
     ..case("net-throughput", "test=net-throughput")

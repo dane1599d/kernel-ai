@@ -25,7 +25,7 @@ jobs:
       fail-fast: false
       matrix:
         accel: [kvm, tcg]
-        build: [release, debug]
+        build: [release]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/qemu
@@ -51,6 +51,7 @@ jobs:
       - name: Boot net-throughput
         env:
           XTASK_CASE: net-throughput
+          XTASK_NET_DUMP: ${{ runner.temp }}/net.pcap
         run: |
           flag=""
           if [ "${{ matrix.build }}" = release ]; then flag=--release; fi
@@ -58,4 +59,11 @@ jobs:
       - name: The figures
         if: always()
         run: grep -h "net-throughput:" "$RUNNER_TEMP/boot.log" || true
+      - name: The first download's frames (TCP to port 8765)
+        if: always()
+        run: |
+          sudo apt-get install -y --no-install-recommends tcpdump > /dev/null
+          tcpdump -nn -tt -v -r "$RUNNER_TEMP/net.pcap" 'tcp port 8765' 2>/dev/null | head -120 || true
+          echo "== window fields of the guest's segments, first 2000"
+          tcpdump -nn -r "$RUNNER_TEMP/net.pcap" 'tcp port 8765 and src host 10.0.2.15' 2>/dev/null | head -2000 | grep -o 'win [0-9]*' | sort | uniq -c | sort -rn | head -20 || true
     timeout-minutes: 60
