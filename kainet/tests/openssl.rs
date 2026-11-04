@@ -244,8 +244,10 @@ fn talk(ca: &[u8], port: u16) -> Result<(CipherSuite, NamedGroup, String), TlsEr
     Ok((suite, group, first))
 }
 
-fn scratch() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("kainet-openssl-{}", std::process::id()));
+/// A directory of test `name`'s own. The tests run in parallel, and each
+/// removes its directory when done, so none may hold another's.
+fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("kainet-openssl-{}-{name}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -256,7 +258,7 @@ fn our_client_and_openssl_s_server_agree() {
         eprintln!("openssl is not installed here: nothing checked");
         return;
     }
-    let dir = scratch();
+    let dir = scratch("agree");
     let ca = certificates(&dir);
     let cases: [(&str, &[&str], CipherSuite, NamedGroup); 5] = [
         (
@@ -338,8 +340,7 @@ fn a_tls12_only_server_and_a_1024_bit_key_are_refused() {
         eprintln!("openssl is not installed here: nothing checked");
         return;
     }
-    let dir = scratch().join("refused");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch("refused");
     let ca = certificates(&dir);
     // openssl says TLS 1.2 is all it has; our check refuses the short key's
     // handshake signature.
