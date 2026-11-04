@@ -292,6 +292,78 @@ pub fn q6_k_dot(row: &[u8], x: &Q8KVec, sink: &mut impl Sink) {
     }
 }
 
+/// [`q6_k_dot`] for four rows against each of `xs` at once: each block's codes
+/// are loaded and unpacked once for all the tokens, and each (row, token) gets
+/// the integers [`q6_k_dot`] gives it and the same float tail in the same block
+/// order ([`crate::kquant::Total`]'s), so its bits. For a few tokens at once:
+/// a batch of decode steps, or a prompt's last short block.
+#[target_feature(enable = "avx2,fma,f16c")]
+pub fn q6_k_dot4_n<const N: usize>(rows: [&[u8]; 4], xs: [&Q8KVec; N]) -> [[f32; 4]; N] {
+    let nibble = _mm256_set1_epi8(15);
+    let blocks = rows.map(|r| r.as_chunks::<{ q6_k::BLOCK_BYTES }>().0);
+    let xq = xs.map(|x| x.qs.as_chunks::<SUPER_LEN>().0);
+    let sums = xs.map(|x| x.sums.as_chunks::<16>().0);
+    let mut total = [[0.0f32; 4]; N];
+    for i in 0..blocks[0].len() {
+        prefetch_next(rows[0], q6_k::BLOCK_BYTES, i);
+        let mut acc = [[_mm256_setzero_si256(); 4]; N];
+        let mut offsets = [[_mm256_setzero_si256(); 4]; N];
+        let mut d = [0.0f32; 4];
+        for (r, block) in blocks.iter().map(|b| &b[i]).enumerate() {
+            d[r] = half(u16::from_le_bytes([block[q6_k::D], block[q6_k::D + 1]]));
+            let scales = load128(block[q6_k::SCALES..q6_k::D].try_into().unwrap());
+            let scales = _mm256_cvtepi8_epi16(scales);
+            let low = block[..q6_k::HIGH].as_chunks::<32>().0;
+            let high = block[q6_k::HIGH..q6_k::SCALES].as_chunks::<32>().0;
+            for n in 0..2 {
+                let (l0, l1, h) = (load(&low[2 * n]), load(&low[2 * n + 1]), load(&high[n]));
+                let sc = if n == 0 {
+                    _mm256_permute2x128_si256::<0x00>(scales, scales)
+                } else {
+                    _mm256_permute2x128_si256::<0x11>(scales, scales)
+                };
+                let codes = [
+                    _mm256_or_si256(
+                        _mm256_and_si256(l0, nibble),
+                        _mm256_slli_epi16::<4>(_mm256_and_si256(h, _mm256_set1_epi8(0x03))),
+                    ),
+                    _mm256_or_si256(
+                        _mm256_and_si256(l1, nibble),
+                        _mm256_slli_epi16::<2>(_mm256_and_si256(h, _mm256_set1_epi8(0x0c))),
+                    ),
+                    _mm256_or_si256(
+                        _mm256_and_si256(_mm256_srli_epi16::<4>(l0), nibble),
+                        _mm256_and_si256(h, _mm256_set1_epi8(0x30)),
+                    ),
+                    _mm256_or_si256(
+                        _mm256_and_si256(_mm256_srli_epi16::<4>(l1), nibble),
+                        _mm256_srli_epi16::<2>(_mm256_and_si256(h, _mm256_set1_epi8(0xc0u8 as i8))),
+                    ),
+                ];
+                for (k, q) in codes.into_iter().enumerate() {
+                    let scale = _mm256_shuffle_epi8(sc, lane_of(2 * k, 2 * k + 1));
+                    for t in 0..N {
+                        let xq = xq[t][i].as_chunks::<32>().0;
+                        let pairs = _mm256_maddubs_epi16(q, load_i8(&xq[4 * n + k]));
+                        acc[t][r] = _mm256_add_epi32(acc[t][r], _mm256_madd_epi16(pairs, scale));
+                    }
+                }
+            }
+            for t in 0..N {
+                offsets[t][r] = _mm256_madd_epi16(scales, load_sums(&sums[t][i]));
+            }
+        }
+        for t in 0..N {
+            let dx = xs[t].scales[i];
+            for r in 0..4 {
+                let (dot, offset) = hsum2(acc[t][r], offsets[t][r]);
+                total[t][r] += (d[r] * dx) * (dot - 32 * offset) as f32;
+            }
+        }
+    }
+    total
+}
+
 /// The lanes' exact sums of four rows' two vectors each: `a[r]`'s in lane r of
 /// the first result, `b[r]`'s in lane r of the second (no partial sum can
 /// overflow: see the bounds in the callers).
