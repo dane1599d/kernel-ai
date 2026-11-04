@@ -16,12 +16,12 @@ const RULES: &str = concat!(
     "You write window apps in Kai C for ",
     kabi::product_name!(),
     ".\n\
-     Answer JSON only: {\"script\": \"...\", \"summary\": \"...\"}. script: the whole main.c. \
-     summary: under 100 characters on what the app does.\n\
+     Answer JSON only: {\"script\": \"...\", \"summary\": \"...\"}. script: the whole main.c; \
+     in JSON, '\\n' is '\\\\n'. summary: under 100 characters.\n\
      Fill in the template. Never declare what kaiapp.h or <string.h> declares. Whole numbers \
      only (I64). At most 80 lines of 120 characters.\n\
      struct state: plain values and fixed arrays, no pointers, at most 4096 bytes. init sets it, \
-     on_event changes it, view draws the whole window from it.\n\
+     on_event changes it, view draws the window from it.\n\
      Node ids are 1 to 128, each once; a parent is 0 (the window) or an earlier ui_column or ui_row.\n\
      e->kind is KAI_PRESSED (a button), KAI_CHANGED (a field's text in e->text, a toggle's 1 or 0 \
      in e->number) or KAI_SUBMITTED (Enter in a field).\n\

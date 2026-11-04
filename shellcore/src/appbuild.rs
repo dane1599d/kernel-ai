@@ -49,6 +49,13 @@ pub const INTERNAL: &str = "internal: ";
 const ROUND_MS: u64 = SCRIPT_ROUND_MS + CC_BUILD_WAIT_MS + CC_TRIAL_WAIT_MS;
 /// The longest request the card gets, as the row takes it.
 const MAX_REQUEST: usize = 300;
+/// The array cc's `STATE_CHECK` declares, which its error names when
+/// `struct state` is too big for the runtime to save.
+pub const STATE_CHECK_NAME: &str = "struct_state_is_over_KAI_STATE_MAX_bytes";
+/// What a repair says first when cc names [`STATE_CHECK_NAME`]: cc's own
+/// error says only that an array's size is -1.
+pub const STATE_HINT: &str =
+    "struct state is over KAI_STATE_MAX, 4096 bytes: make its arrays smaller.\n";
 
 /// An `app_build` waiting on its menu's answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -367,7 +374,13 @@ impl Shell {
                     "cc could not build Kai's app {name}: {}",
                     shown(why)
                 )),
-                None => Unbuilt::Repair(format!("cc build refused it:\n{why}")),
+                None => {
+                    let hint = match why.contains(STATE_CHECK_NAME) {
+                        true => STATE_HINT,
+                        false => "",
+                    };
+                    Unbuilt::Repair(format!("cc build refused it:\n{hint}{why}"))
+                }
             })?;
         let trial = match self.host.cc_trial(name) {
             Ok(report) => report,
