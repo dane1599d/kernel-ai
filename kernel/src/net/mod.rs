@@ -20,7 +20,7 @@ use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 use core::sync::atomic::{AtomicU16, Ordering};
 use device::NicDevice;
-pub use device::set_tx_delay_ms;
+pub use device::{set_burst, set_tx_delay_ms};
 use smoltcp::iface::{Config, Interface, SocketSet, SocketStorage};
 use smoltcp::socket::tcp;
 use smoltcp::time::{Duration, Instant};

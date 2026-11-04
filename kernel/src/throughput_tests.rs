@@ -14,8 +14,9 @@ const REQUEST: &[u8] = b"GET /blob HTTP/1.0\r\nHost: 10.0.2.2\r\n\r\n";
 const RTTS_MS: [u64; 3] = [0, 20, 80];
 const BUFFERS: [usize; 3] = [64 * 1024, 1024 * 1024, 4 * 1024 * 1024];
 const GAPS_MS: [u64; 2] = [2, 0];
-/// smoltcp's delayed ACK on (its default 10 ms) and off.
-const ACK_DELAYS: [bool; 2] = [true, false];
+/// smoltcp's window cap in segments (`max_burst_size`): 1 as shipped, the
+/// receive queue's 16, and none.
+const BURSTS: [u64; 3] = [1, 16, 0];
 /// The blob is 256 MiB; a run stops at this many bytes or after the window.
 const LIMIT: u64 = 128 * 1024 * 1024;
 const WINDOW_MS: u64 = 4_000;
@@ -27,10 +28,11 @@ pub fn check() -> Result<(), &'static str> {
     let mut failed = 0;
     for rtt in RTTS_MS {
         for rx_buffer in BUFFERS {
-            for (gap_ms, ack_delay) in GAPS_MS
+            for (gap_ms, burst) in GAPS_MS
                 .into_iter()
-                .flat_map(|gap| ACK_DELAYS.map(|ack| (gap, ack)))
+                .flat_map(|gap| BURSTS.map(|burst| (gap, burst)))
             {
+                net::set_burst(burst);
                 net::set_tx_delay_ms(rtt);
                 let plan = Plan {
                     server: SERVER,
@@ -40,20 +42,24 @@ pub fn check() -> Result<(), &'static str> {
                     limit: LIMIT,
                     window_ms: WINDOW_MS,
                     timeout_ms: TIMEOUT_MS,
-                    ack_delay,
+                    ack_delay: true,
                 };
                 let moved = bulk::download(&plan);
                 net::set_tx_delay_ms(0);
+                net::set_burst(1);
                 threads::sleep_ms(SETTLE_MS);
                 let kib = rx_buffer / 1024;
-                let ack = if ack_delay { "10" } else { "0" };
+                let burst = match burst {
+                    0 => "none".into(),
+                    n => alloc::format!("{n}"),
+                };
                 match moved {
                     Ok(m) => {
                         let ms = (m.elapsed_ns / 1_000_000).max(1);
                         // MB/s to a tenth: bytes per ms is kB/s.
                         let tenths = m.bytes * 10 / ms / 1000;
                         log!(
-                            "net-throughput: rtt {rtt} ms, rx {kib} KiB, gap {gap_ms} ms, ack delay {ack} ms: {} bytes in {ms} ms = {}.{} MB/s, first byte {} ms, {} polls",
+                            "net-throughput: rtt {rtt} ms, rx {kib} KiB, gap {gap_ms} ms, burst {burst}: {} bytes in {ms} ms = {}.{} MB/s, first byte {} ms, {} polls",
                             m.bytes,
                             tenths / 10,
                             tenths % 10,
@@ -64,7 +70,7 @@ pub fn check() -> Result<(), &'static str> {
                     Err(why) => {
                         failed += 1;
                         log!(
-                            "net-throughput: rtt {rtt} ms, rx {kib} KiB, gap {gap_ms} ms, ack delay {ack} ms: failed: {why}"
+                            "net-throughput: rtt {rtt} ms, rx {kib} KiB, gap {gap_ms} ms, burst {burst}: failed: {why}"
                         );
                     }
                 }
@@ -74,6 +80,6 @@ pub fn check() -> Result<(), &'static str> {
     if failed != 0 {
         return Err("net-throughput: a download failed");
     }
-    log!("net-throughput: 36 downloads measured");
+    log!("net-throughput: 54 downloads measured");
     Ok(())
 }

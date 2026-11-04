@@ -23,6 +23,14 @@ const DELAYED_MAX: usize = 8192;
 
 /// The added one-way delay on sent frames, in ns: 0 sends at once.
 static TX_DELAY_NS: AtomicU64 = AtomicU64::new(0);
+/// `max_burst_size` as smoltcp sees it: it caps every window this socket
+/// advertises at that many segments. 0 is no cap. 1 is what ships today.
+static BURST: AtomicU64 = AtomicU64::new(1);
+
+/// Sets the burst smoltcp's window cap uses; 0 removes the cap.
+pub fn set_burst(frames: u64) {
+    BURST.store(frames, Ordering::Release);
+}
 
 /// Holds every frame sent from now on for `ms` before the card gets it.
 pub fn set_tx_delay_ms(ms: u64) {
@@ -123,7 +131,10 @@ impl Device for NicDevice {
         let mut capabilities = DeviceCapabilities::default();
         capabilities.medium = Medium::Ethernet;
         capabilities.max_transmission_unit = FRAME_MTU;
-        capabilities.max_burst_size = Some(1);
+        capabilities.max_burst_size = match BURST.load(Ordering::Acquire) {
+            0 => None,
+            frames => Some(frames as usize),
+        };
         capabilities
     }
 }
