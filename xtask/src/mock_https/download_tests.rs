@@ -106,7 +106,7 @@ fn run(
     mock: &Mock,
     list: &Chunks,
     partial: &mut Memory,
-    allow: &dyn Fn(&str) -> bool,
+    allow: &dyn Fn(&str, u16) -> bool,
 ) -> Result<Report, DownloadError> {
     let mut roots = RootCertStore::empty();
     roots
@@ -138,8 +138,8 @@ fn run(
     })
 }
 
-fn github(host: &str) -> bool {
-    host == RELEASES || host == ASSETS
+fn github(host: &str, port: u16) -> bool {
+    port == 443 && (host == RELEASES || host == ASSETS)
 }
 
 /// The ranges the assets host served, in order.
@@ -216,7 +216,7 @@ fn a_caller_that_does_not_name_the_assets_host_never_reaches_it() {
     let target = target();
     let list = Chunks::of(&target, CHUNK);
     let mock = start(Content::new().release_asset(TAG, NAME, target)).unwrap();
-    let only_releases = |host: &str| host == RELEASES;
+    let only_releases = |host: &str, _: u16| host == RELEASES;
     let mut partial = Memory::default();
     assert_eq!(
         run(&mock, &list, &mut partial, &only_releases),
