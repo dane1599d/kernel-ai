@@ -62,6 +62,8 @@ mod local_ask;
 mod local_script;
 mod mock_dns;
 mod mock_echo;
+#[allow(dead_code)] // The P5 cases that start it come with N-k's tasks.
+mod mock_https;
 mod mock_llm;
 mod models;
 mod notices;

@@ -17,6 +17,7 @@ livecore = { path = "../livecore" }
 look = { path = "../look" }
 llmproto = { path = "../llmproto" }
 modelchan = { path = "../modelchan" }
+netdest = { path = "../netdest" }
 promptcore = { path = "../promptcore" }
 sched = { path = "../sched" }
 termcore = { path = "../termcore" }

@@ -70,7 +70,9 @@ impl fmt::Display for LexError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LexError::OpenComment { .. } => f.write_str("a /* comment is not closed"),
-            LexError::OpenQuote { .. } => f.write_str("a string or character is not closed"),
+            LexError::OpenQuote { .. } => f.write_str(
+                r"a string or character is not closed on its line: write \n for a newline in it",
+            ),
             LexError::Stray { byte, .. } if byte.is_ascii_graphic() => {
                 write!(f, "'{}' is not C", *byte as char)
             }

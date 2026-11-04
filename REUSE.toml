@@ -17,7 +17,7 @@ SPDX-License-Identifier = "MPL-2.0"
 # compiles into components and apps with its runtime, buildrt.c, and a window
 # app with kaiapp.h and its runtime, kaiapp.c.
 [[annotations]]
-path = ["kabi/**", "compsdk/**", "wit/**", "ccserve/kai/bind/**", "ccserve/kai/stdlib.h", "ccserve/kai/buildrt.c", "ccserve/kai/kaiapp.h", "ccserve/kai/kaiapp.c"]
+path = ["kabi/**", "compsdk/**", "wit/**", "kainet/wit/**", "ccserve/kai/bind/**", "ccserve/kai/stdlib.h", "ccserve/kai/buildrt.c", "ccserve/kai/kaiapp.h", "ccserve/kai/kaiapp.c"]
 precedence = "closest"
 SPDX-FileCopyrightText = "The Kernel AI contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"

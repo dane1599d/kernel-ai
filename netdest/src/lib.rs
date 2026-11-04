@@ -16,6 +16,8 @@
 //! one subnet or up to eight addresses, and ports one range or up to eight ports.
 //! `any` and `none` stand for every or no address or port. A field left out is
 //! `none` (hosts: no names), so a destination allows only what it names.
+//! `match:exact` makes each host name only itself, not the names under it, as a
+//! per-host grant needs (P5 task 13); it is left out for suffixes.
 
 #![no_std]
 
@@ -55,13 +57,25 @@ pub struct Dest {
     /// Lower-case host names; a name is under one if it is it, or ends with
     /// `.` and it.
     pub hosts: Vec<String>,
+    /// The hosts name only themselves (`match:exact`), not the names under
+    /// them: a per-app grant of one host (P5 task 13).
+    pub exact: bool,
 }
 
 impl Dest {
     /// Whether a resolve of `name` may be answered: its [`normalize`]d form
     /// is under one of the suffixes. The caller looks up that same form.
     pub fn allows_name(&self, name: &str) -> bool {
-        normalize(name).is_some_and(|name| self.hosts.iter().any(|suffix| under(&name, suffix)))
+        normalize(name).is_some_and(|name| self.names(&name))
+    }
+
+    /// Whether the normalised `name` is one of the hosts, or (unless
+    /// [`Dest::exact`]) under one.
+    fn names(&self, name: &str) -> bool {
+        self.hosts.iter().any(|host| match self.exact {
+            true => name == host,
+            false => under(name, host),
+        })
     }
 
     /// Whether a connect to `addr`:`port` is in the literal ranges.
@@ -83,10 +97,10 @@ impl Dest {
         self.protocol == outer.protocol
             && outer.addrs.covers(&self.addrs)
             && outer.ports.covers(&self.ports)
-            && self
-                .hosts
-                .iter()
-                .all(|host| outer.hosts.iter().any(|suffix| under(host, suffix)))
+            // An exact outer covers only exact hosts it names; a suffix outer
+            // covers any host or suffix under it.
+            && (self.exact || !outer.exact)
+            && self.hosts.iter().all(|host| outer.names(host))
     }
 
     /// Reads the text form (see the crate's docs).
@@ -99,6 +113,7 @@ impl Dest {
             addrs: AddrRange::NoAddrs,
             ports: PortRange::NoPorts,
             hosts: Vec::new(),
+            exact: false,
         };
         let mut seen: Vec<&str> = Vec::new();
         for field in text.split(',') {
@@ -112,7 +127,14 @@ impl Dest {
                 "addrs" => dest.addrs = parse_addrs(value)?,
                 "ports" => dest.ports = parse_ports(value)?,
                 "hosts" => dest.hosts = parse_hosts(value)?,
-                _ => return Err("netdest: unknown field (proto, addrs, ports, hosts)"),
+                "match" => {
+                    dest.exact = match value {
+                        "exact" => true,
+                        "suffix" => false,
+                        _ => return Err("netdest: match is exact or suffix"),
+                    }
+                }
+                _ => return Err("netdest: unknown field (proto, addrs, ports, hosts, match)"),
             }
         }
         Ok(dest)
@@ -143,8 +165,12 @@ impl fmt::Display for Dest {
         }
         f.write_str(",hosts:")?;
         match self.hosts.is_empty() {
-            true => f.write_str("none"),
-            false => join(f, self.hosts.iter()),
+            true => f.write_str("none")?,
+            false => join(f, self.hosts.iter())?,
+        }
+        match self.exact {
+            true => f.write_str(",match:exact"),
+            false => Ok(()),
         }
     }
 }
