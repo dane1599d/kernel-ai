@@ -20,7 +20,7 @@ use nvme::prp;
 use spin::Mutex;
 
 /// One disk's staging buffer, and so the most one read moves: 512 KiB.
-const STAGING_BYTES: u64 = 512 * 1024;
+pub(crate) const STAGING_BYTES: u64 = 512 * 1024;
 /// BAR0 bytes mapped: the registers and the first doorbells.
 const BAR_MAP_BYTES: u64 = 16 * 1024;
 /// Namespaces taken from one controller at most.
