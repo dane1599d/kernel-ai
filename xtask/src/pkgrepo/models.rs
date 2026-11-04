@@ -86,6 +86,21 @@ fn signed(disk: Fixture, id: &str, name: &str) -> Model {
     }
 }
 
+/// The model the release-boot case imports: the catalog's smallest.
+pub const RELEASE_TEST: &str = "qwen3-0.6b";
+
+/// What `release-image --test-root`'s repository signs: [`RELEASE_TEST`] alone.
+pub fn release_test() -> Result<Vec<Model>, String> {
+    let models: Vec<Model> = catalog()?
+        .into_iter()
+        .filter(|model| model.id == RELEASE_TEST)
+        .collect();
+    match models.len() {
+        1 => Ok(models),
+        _ => Err(format!("the catalog has no {RELEASE_TEST}")),
+    }
+}
+
 /// What an image's repository signs: the catalog, then [`fixture`] and
 /// [`fixture_2`].
 pub fn for_image() -> Result<Vec<Model>, String> {

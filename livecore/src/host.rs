@@ -483,8 +483,8 @@ impl<E: Env> Core<E> {
 
 /// Checks what a call did against the limits: over them is the version's fault.
 /// `reply_len` is the length of the reply the effects ride in, 0 for a call that
-/// has none.
-pub(crate) fn check_txn(txn: &Txn, inputs: Inputs, reply_len: usize) -> Result<(), Fault> {
+/// has none. cc's trial of a built app checks its calls with it too.
+pub fn check_txn(txn: &Txn, inputs: Inputs, reply_len: usize) -> Result<(), Fault> {
     if txn.effects.len() > txn::MAX_EFFECTS {
         return Err(Fault::new(
             Reason::Abi,

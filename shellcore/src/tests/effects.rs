@@ -124,6 +124,122 @@ fn effects_past_the_limit_are_refused() {
     assert!(done[MAX_EFFECTS].outcome.is_err());
 }
 
+/// An effect a call's reply carried is run by the shell after the call, and what
+/// came of it is kept for the host to hand back to the app: a Files window that
+/// the agent opened a folder in is told the listing.
+#[test]
+fn what_a_calls_effects_came_to_is_kept_for_the_app() {
+    let host = host();
+    host.files
+        .borrow_mut()
+        .insert("notes.txt".into(), "milk".into());
+    let mut shell = shell(&host);
+    let list = r#"effect 1 call({name: "fs_list", args: "{path: \"\"}"})"#;
+    let undeclared = r#"effect 2 call({name: "set_policy", args: "{name: \"round-robin\"}"})"#;
+    host.apps
+        .borrow_mut()
+        .effects
+        .push((String::from("files"), [list, undeclared].join("\n")));
+    shell.run_app_effects();
+    let kept = shell.take_effect_results();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].0, "files");
+    assert_eq!(kept[0].1.len(), 2);
+    assert_eq!(kept[0].1[0].ticket, 1);
+    assert_eq!(kept[0].1[0].outcome, Ok(String::from("notes.txt\n")));
+    assert_eq!(kept[0].1[1].ticket, 2);
+    assert!(kept[0].1[1].outcome.is_err(), "{:?}", kept[0].1[1]);
+    // Taken once, and nothing queued means nothing to give back.
+    assert!(shell.take_effect_results().is_empty());
+    shell.run_app_effects();
+    assert!(shell.take_effect_results().is_empty());
+}
+
+/// Two apps number their effects alike (`comphost` starts each at 1), so what
+/// came of each goes back under the app that queued it, never another window.
+#[test]
+fn each_apps_results_go_back_to_the_app_that_queued_them() {
+    let host = host();
+    host.files
+        .borrow_mut()
+        .insert("notes.txt".into(), "milk".into());
+    let gallery = FILES
+        .replace("app:files/", "app:gallery/")
+        .replace("files_open", "gallery_open");
+    host.apps
+        .borrow_mut()
+        .rows
+        .load("gallery", &gallery)
+        .unwrap();
+    let mut shell = shell(&host);
+    let list = r#"effect 1 call({name: "fs_list", args: "{path: \"\"}"})"#;
+    let read = r#"effect 1 call({name: "fs_read", args: "{path: \"notes.txt\"}"})"#;
+    {
+        let mut apps = host.apps.borrow_mut();
+        apps.effects.push((String::from("files"), list.into()));
+        apps.effects.push((String::from("gallery"), read.into()));
+    }
+    shell.run_app_effects();
+    let kept = shell.take_effect_results();
+    let of = |app: &str| {
+        let mine: Vec<_> = kept.iter().filter(|(name, _)| name == app).collect();
+        assert_eq!(mine.len(), 1, "{app}: {kept:?}");
+        mine[0].1.clone()
+    };
+    assert_eq!(kept.len(), 2);
+    let files = of("files");
+    assert_eq!((files.len(), files[0].ticket), (1, 1));
+    assert_eq!(files[0].outcome, Ok(String::from("notes.txt\n")));
+    let gallery = of("gallery");
+    assert_eq!((gallery.len(), gallery[0].ticket), (1, 1));
+    assert_eq!(gallery[0].outcome, Ok(String::from("milk\n")));
+}
+
+/// What the shell cannot hand back is dropped oldest first and said, not kept
+/// without end and not lost silently: at most eight batches an app, sixteen in all.
+#[test]
+fn results_past_the_cap_are_dropped_oldest_first_and_said() {
+    let host = host();
+    let mut shell = shell(&host);
+    let list = r#"effect 1 call({name: "fs_list", args: "{path: \"\"}"})"#;
+    let queue = |app: &str| {
+        host.apps
+            .borrow_mut()
+            .effects
+            .push((String::from(app), list.into()));
+    };
+    let said = || {
+        host.audit
+            .borrow()
+            .iter()
+            .filter(|line| line.contains("effect results were dropped: the queue is full"))
+            .count()
+    };
+    // Eight batches of one app fit; a ninth drops that app's oldest.
+    for _ in 0..8 {
+        queue("files");
+        shell.run_app_effects();
+    }
+    assert_eq!(said(), 0);
+    queue("files");
+    shell.run_app_effects();
+    assert_eq!(said(), 1);
+    // Sixteen in all: eight of another app fill it, and a third app's drops the
+    // oldest of them all.
+    for _ in 0..8 {
+        queue("monitor");
+        shell.run_app_effects();
+    }
+    assert_eq!(said(), 1);
+    queue("gallery");
+    shell.run_app_effects();
+    assert_eq!(said(), 2);
+    let kept = shell.take_effect_results();
+    assert_eq!(kept.len(), 16);
+    assert_eq!(kept.iter().filter(|(app, _)| app == "files").count(), 7);
+    assert_eq!(kept.last().map(|(app, _)| app.as_str()), Some("gallery"));
+}
+
 #[test]
 fn a_file_read_comes_back_to_the_app_and_a_move_undoes() {
     let host = host();
@@ -164,6 +280,37 @@ const LIST: &str = r#"effect 1 call({name: "fs_list", args: "{path: \"\"}"})"#;
 fn grant_call(name: &str, app: &str, row: &str) -> Call {
     let json = format!(r#"{{"name":"{name}","arguments":{{"app":"{app}","row":"{row}"}}}}"#);
     llmproto::act::parse(&json).unwrap()
+}
+
+/// The `app-settings` boot case's session with its fixture's row, in the shell's
+/// words: the app's read runs, Settings' click withholds the row and the next
+/// read is refused, `undo` gives the row back (the reads between are not entries
+/// `undo` could take) so the next read runs, `undo` again withholds it, and the
+/// restore click that follows is a change again.
+#[test]
+fn undo_of_a_revoke_click_gives_the_row_back_and_undo_again_withholds_it() {
+    let host = host();
+    let mut shell = shell(&host);
+    let app = crate::settings::SETTINGS_APP;
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_ok());
+    assert_eq!(
+        shell
+            .settings(app, "grants-revoke files fs_list", true)
+            .as_deref(),
+        Ok("files fs_list withheld")
+    );
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_err());
+    assert_eq!(shell.eval("undo"), ok("Undone: files may call fs_list"));
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_ok());
+    assert_eq!(shell.eval("undo"), ok("Undone: files may not call fs_list"));
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_err());
+    assert_eq!(
+        shell
+            .settings(app, "grants-restore files fs_list", true)
+            .as_deref(),
+        Ok("files fs_list allowed")
+    );
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_ok());
 }
 
 #[test]

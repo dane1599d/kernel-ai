@@ -19,7 +19,6 @@ mod bind;
 use alloc::string::String;
 use alloc::vec::Vec;
 use comp_files::calls::Call;
-use comp_files::names::path_ok;
 use comp_files::{Files, Os};
 use comp_ui_bind::{OnUi, Shown, Sink};
 use compsdk::app::{Effect, Event, Events};
@@ -32,25 +31,40 @@ pub const SCHEMA: u32 = 1;
 /// The window's title.
 pub const TITLE: &str = "Files";
 
-/// What the checkpoint keeps: the folder the window shows, so a restart comes
-/// back to it. Everything else is read again.
+/// What the checkpoint keeps: nothing. The folder shown is only what is drawn,
+/// and the host refuses a read-only row (`files_open`, `files_reveal`) that
+/// changes the checkpoint, so it is not in it; everything is read again. A
+/// restart or a version swap starts at the home folder. A state the last version
+/// saved, with a folder in it, still imports: the folder is dropped.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
-pub struct V1 {
-    #[n(0)]
-    pub dir: String,
-}
+pub struct V1 {}
 
 /// The effect queue: `kai:app/effects`.
 pub struct Effects;
 
 impl Os for Effects {
     fn request(&mut self, call: &Call) -> u32 {
-        compsdk::app::request(Effect::Call {
+        let ticket = compsdk::app::request(Effect::Call {
             name: String::from(call.name),
             args: call.args.clone(),
-        })
+        });
+        note(&alloc::format!(
+            "files window: asked the OS for {} (ticket {ticket})",
+            call.name
+        ));
+        ticket
     }
 }
+
+/// A line in the boot log of what the window asked the OS for and what came back,
+/// so a window that never shows a folder says where it stopped.
+#[cfg(target_family = "wasm")]
+fn note(text: &str) {
+    compsdk::log(text);
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn note(_text: &str) {}
 
 pub struct FilesWindow {
     pub files: Files,
@@ -119,6 +133,10 @@ impl Events for FilesWindow {
         match event {
             Event::Started => self.files.refresh(&mut Effects),
             Event::EffectDone { ticket, outcome } => {
+                note(&alloc::format!(
+                    "files window: ticket {ticket} came back {}",
+                    if outcome.is_ok() { "ok" } else { "refused" }
+                ));
                 self.files.done(&mut Effects, ticket, outcome);
             }
         }
@@ -137,29 +155,19 @@ impl Component for FilesWindow {
         app
     }
 
-    /// The folder the last version showed; anything else is home.
+    /// A state it can read starts the window over, at home.
     fn import(state: &[u8], from_schema: u32) -> Result<Self, ImportError> {
         if from_schema != SCHEMA {
             return Err(ImportError::Unsupported);
         }
-        let v1: V1 = compsdk::state::decode(state, SCHEMA).ok_or(ImportError::Bad)?;
-        let dir = if path_ok(&v1.dir) {
-            v1.dir
-        } else {
-            String::new()
-        };
-        let mut app = Self::new(Files::at(&dir));
+        let _: V1 = compsdk::state::decode(state, SCHEMA).ok_or(ImportError::Bad)?;
+        let mut app = Self::new(Files::new());
         app.present_logged();
         Ok(app)
     }
 
     fn export(&self, schema: u32) -> Option<Vec<u8>> {
-        (schema == SCHEMA).then(|| {
-            let v1 = V1 {
-                dir: String::from(self.files.dir()),
-            };
-            compsdk::state::encode(SCHEMA, &v1)
-        })
+        (schema == SCHEMA).then(|| compsdk::state::encode(SCHEMA, &V1 {}))
     }
 
     fn health(&self) -> u32 {

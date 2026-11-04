@@ -235,6 +235,22 @@ pub fn image(root: &Path, versions: &[Module]) -> Result<Image, String> {
     })
 }
 
+/// The repository `release-image --test-root` adds (P4 plan decision 3): no
+/// packages, and [`models::release_test`] in the `models` role, signed by a
+/// fresh test root. The shipping image has no repository until task 18's
+/// founder-signed one; this one is only for the case that boots the release.
+pub fn release_test() -> Result<Vec<Module>, String> {
+    let models = models::release_test()?;
+    let keys = Keys::generate()?;
+    let repository = tuf::build_with_models(&[], &models, &keys, unix_now()?)?;
+    println!(
+        "xtask: test-root repository: {} models signed by test root {}, never the release's",
+        models.len(),
+        &keys.root.id()[..12]
+    );
+    as_modules(image_layout(repository)?)
+}
+
 /// Serves the `kind` mirror for `image` on a free port until xtask exits; the
 /// port, which a guest reaches at 10.0.2.2.
 pub fn serve_mirror(image: &Image, kind: mirrors::MirrorKind) -> Result<u16, String> {

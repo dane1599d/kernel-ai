@@ -271,6 +271,7 @@ const PERMS: &[(&str, &str)] = &[
     ("model_list", "model.read"),
     ("model_use", "model.use"),
     ("model_fetch", "model.fetch"),
+    ("app_build", "app.build"),
     ("rules_remove", "grants.narrow"),
     ("grant_revoke", "grants.narrow"),
     ("grant_restore", "grants.widen"),

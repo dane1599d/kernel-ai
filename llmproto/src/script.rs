@@ -28,6 +28,9 @@ pub const REQUEST_MAX_BYTES: usize = 512;
 pub const ERROR_MAX_BYTES: usize = 512;
 /// Longest the llm service spends on one script request, whatever the shell asks.
 pub const SERVICE_TIMEOUT_MS: u64 = 90_000;
+/// What the llm service answers an `app` request until the `c-app-1` card is
+/// there (the model lane's piece 2 of "Kai builds apps").
+pub const NO_APP_CARD: &str = "the c-app-1 card is not here yet";
 pub const SCRIPT_MAX_TOKENS: u32 = 1024;
 /// Sampling: low temperature and a fixed seed, so gate runs can be repeated. The
 /// local model (`crate::local`) draws with the same two.
@@ -334,6 +337,8 @@ pub enum Lang {
     Rhai,
     /// Kai C with the `c-1` card (`crate::program`).
     C,
+    /// A Kai C app with the `c-app-1` card, for `app_build` ("Kai builds apps").
+    App,
 }
 
 impl Lang {
@@ -343,6 +348,7 @@ impl Lang {
         match self {
             Lang::Rhai => "script",
             Lang::C => "program",
+            Lang::App => "app",
         }
     }
 }
@@ -373,9 +379,11 @@ impl ScriptRequest {
 
     pub fn decode(text: &str) -> Option<Self> {
         let (header, body) = text.split_once('\n')?;
-        let (lang, header) = match header.strip_prefix("script ") {
-            Some(rest) => (Lang::Rhai, rest),
-            None => (Lang::C, header.strip_prefix("program ")?),
+        let (lang, header) = match header.split_once(' ')? {
+            ("script", rest) => (Lang::Rhai, rest),
+            ("program", rest) => (Lang::C, rest),
+            ("app", rest) => (Lang::App, rest),
+            _ => return None,
         };
         let mut words = header.split(' ');
         let mut number = || words.next()?.parse::<usize>().ok();
@@ -392,7 +400,10 @@ impl ScriptRequest {
         let error = body.get(request_len + script_len..)?;
         Some(Self {
             request: request.to_string(),
-            repair: (script_len > 0).then(|| (script.to_string(), error.to_string())),
+            // A refused answer with no script (no envelope, a refusal) still
+            // says why, so the repair round carries the reason.
+            repair: (script_len > 0 || error_len > 0)
+                .then(|| (script.to_string(), error.to_string())),
             timeout_ms: timeout as u64,
             lang,
         })

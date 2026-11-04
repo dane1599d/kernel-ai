@@ -240,6 +240,23 @@ fn script_requests_frame_exactly_whatever_they_contain() {
         "script 60000 11 25 12\nshow memoryprint(1);\nscript 1 2 3 4\nSyntax error"
     );
     assert_eq!(plain.encode(), "program 1 14 0 0\nhow many CPUs?");
+    // An answer refused with no script keeps its reason for the repair.
+    let unscripted = ScriptRequest {
+        repair: Some((String::new(), String::from("no JSON envelope"))),
+        ..plain.clone()
+    };
+    assert_eq!(
+        ScriptRequest::decode(&unscripted.encode()),
+        Some(unscripted.clone())
+    );
+    // An app request ("Kai builds apps") says so in its word too.
+    let app = ScriptRequest {
+        lang: Lang::App,
+        ..plain.clone()
+    };
+    assert_eq!(app.encode(), "app 1 14 0 0\nhow many CPUs?");
+    assert_eq!(ScriptRequest::decode(&app.encode()), Some(app));
+    assert_eq!(ScriptRequest::decode("apps 1 14 0 0\nhow many CPUs?"), None);
     let mut damaged = plain.encode();
     damaged.push('x');
     assert_eq!(ScriptRequest::decode(&damaged), None);

@@ -10,6 +10,7 @@ mod devices;
 mod kernel;
 mod network;
 mod pkg;
+pub mod release;
 mod storage;
 mod tour;
 mod updates;
@@ -30,8 +31,15 @@ pub struct TestCase {
     /// in stages: stage N is sent when the kernel logs "ready for keys" for the
     /// Nth time.
     pub keys: &'static [&'static [&'static str]],
+    /// When not empty, stage N is sent when a console line, a program's
+    /// included, contains entry N, in place of "ready for keys": a boot with no
+    /// `test=` mode logs no such line (the release boot, `release_boot.rs`).
+    pub keys_on: &'static [&'static str],
     /// Texts that must all appear on the serial console for the case to pass.
     pub expect: &'static [&'static str],
+    /// The case passes once every expected text is on the console, and QEMU is
+    /// then stopped: a boot with no `test=` mode never reaches isa-debug-exit.
+    pub stops: bool,
     /// Boot with a build service (`build=` and `build_token=`) on a fresh snapshot
     /// of the working tree.
     pub build: bool,
@@ -119,7 +127,9 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         name,
         cmdline,
         keys: &[],
+        keys_on: &[],
         expect: &[],
+        stops: false,
         build: false,
         after: None,
         prepare: None,
