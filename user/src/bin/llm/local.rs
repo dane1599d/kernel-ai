@@ -486,10 +486,10 @@ impl Local {
         );
         let answer = match request.lang {
             script::Lang::Rhai => local::script(&mut self.engine, request, |step| clock.step(step)),
-            // The c-1 card in the same slot; llm warms the Rhai prompt back after.
+            // The c-1 and c-app-1 cards in the same slot; llm warms the Rhai
+            // prompt back after.
             script::Lang::C => local::program(&mut self.engine, request, |step| clock.step(step)),
-            // The model lane's piece 2 brings the card.
-            script::Lang::App => Err(AnswerError::NoScript(String::from(script::NO_APP_CARD))),
+            script::Lang::App => local::app(&mut self.engine, request, |step| clock.step(step)),
         };
         self.prefill_rate = clock.rate().or(self.prefill_rate);
         let forced = self.engine.forced();

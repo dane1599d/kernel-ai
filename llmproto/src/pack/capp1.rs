@@ -57,7 +57,8 @@ pub const CALLS: &[(&str, &str)] = &[
     ),
 ];
 
-/// The calls' names, for `precheck::prepare`: a variable may not take one.
+/// The calls' names and the runtime's `kai_state_size`, for
+/// `precheck::prepare`: a variable may not take one.
 pub const KAIAPP_CALLS: &[&str] = &[
     "ui_column",
     "ui_row",
@@ -67,6 +68,7 @@ pub const KAIAPP_CALLS: &[&str] = &[
     "ui_field",
     "ui_toggle",
     "Format",
+    "kai_state_size",
 ];
 
 /// The template, filled in for a counter.

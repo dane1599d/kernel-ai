@@ -82,17 +82,13 @@ impl Server {
             script::Lang::C => {
                 llmproto::program::chat_request(&self.model, &request.request, repair)
             }
-            // The model lane's piece 2 brings the card.
-            script::Lang::App => {
-                let error = script::AnswerError::NoScript(String::from(script::NO_APP_CARD));
-                return Err(script::encode_error(&error));
-            }
+            script::Lang::App => llmproto::app::chat_request(&self.model, &request.request, repair),
         };
         let timeout = request.timeout_ms.min(script::SERVICE_TIMEOUT_MS);
         self.post(&body, timeout, response)
             .map_err(script::AnswerError::Server)
             .and_then(|reply| openai::completion(&reply).map_err(script::server_error))
-            .and_then(|completion| script::answer(&completion))
+            .and_then(|completion| script::answer_within(&completion, request.lang.limits()))
             .map(|answer| script::encode_answer(&answer))
             .map_err(|error| script::encode_error(&error))
     }

@@ -19,6 +19,35 @@ use serde::Deserialize;
 pub const SCRIPT_MAX_LINES: usize = 40;
 pub const SCRIPT_MAX_LINE_CHARS: usize = 120;
 pub const SCRIPT_MAX_BYTES: usize = 3 * 1024;
+/// An app's whole `main.c` (plan "Kai builds apps"): the `c-app-1` card's
+/// limits, lines as long as a script's.
+pub const APP_MAX_LINES: usize = 80;
+pub const APP_MAX_BYTES: usize = 4 * 1024;
+/// Room for [`APP_MAX_BYTES`] of C at about 3.5 bytes a token. A local model
+/// with a 2,048-token context stops before it, with the card in front: the
+/// engine says the context is full.
+pub const APP_MAX_TOKENS: u32 = 1280;
+
+/// The size limits a script's text is checked against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextLimits {
+    pub bytes: usize,
+    pub lines: usize,
+    pub line_chars: usize,
+}
+
+/// A Rhai script's, and a Kai C program's.
+pub const SCRIPT_LIMITS: TextLimits = TextLimits {
+    bytes: SCRIPT_MAX_BYTES,
+    lines: SCRIPT_MAX_LINES,
+    line_chars: SCRIPT_MAX_LINE_CHARS,
+};
+/// An app's.
+pub const APP_LIMITS: TextLimits = TextLimits {
+    bytes: APP_MAX_BYTES,
+    lines: APP_MAX_LINES,
+    line_chars: SCRIPT_MAX_LINE_CHARS,
+};
 /// Short enough that `model says: <summary>` fits one row of the console.
 pub const SUMMARY_MAX_CHARS: usize = 100;
 /// Longest reply when the model answers in words (an empty script): the summary
@@ -218,6 +247,11 @@ struct Envelope {
 /// must be printable ASCII or a newline, and the size limits must hold. Returns the
 /// normalised text, which is what is shown, checked and run.
 pub fn check_text(script: &str) -> Result<String, AnswerError> {
+    check_text_within(script, SCRIPT_LIMITS)
+}
+
+/// [`check_text`] under `limits`, such as an app's.
+pub fn check_text_within(script: &str, limits: TextLimits) -> Result<String, AnswerError> {
     let normal = script.replace("\r\n", "\n").replace('\t', "    ");
     let normal = normal.trim_end().to_string();
     if let Some(bad) = normal
@@ -229,26 +263,29 @@ pub fn check_text(script: &str) -> Result<String, AnswerError> {
             u32::from(bad)
         )));
     }
-    if normal.len() > SCRIPT_MAX_BYTES {
+    if normal.len() > limits.bytes {
         return Err(AnswerError::Rejected(format!(
-            "the script is {} bytes; the limit is {SCRIPT_MAX_BYTES}",
-            normal.len()
+            "the script is {} bytes; the limit is {}",
+            normal.len(),
+            limits.bytes
         )));
     }
     let lines = normal.lines().count();
-    if lines > SCRIPT_MAX_LINES {
+    if lines > limits.lines {
         return Err(AnswerError::Rejected(format!(
-            "the script has {lines} lines; the limit is {SCRIPT_MAX_LINES}"
+            "the script has {lines} lines; the limit is {}",
+            limits.lines
         )));
     }
     if let Some((number, _)) = normal
         .lines()
         .enumerate()
-        .find(|(_, line)| line.len() > SCRIPT_MAX_LINE_CHARS)
+        .find(|(_, line)| line.len() > limits.line_chars)
     {
         return Err(AnswerError::Rejected(format!(
-            "line {} is longer than {SCRIPT_MAX_LINE_CHARS} characters",
-            number + 1
+            "line {} is longer than {} characters",
+            number + 1,
+            limits.line_chars
         )));
     }
     Ok(normal)
@@ -281,6 +318,11 @@ fn check_line(text: &str, max_chars: usize) -> Result<String, AnswerError> {
 
 /// Reads a completion as a script answer.
 pub fn answer(completion: &Completion) -> Result<Answer, AnswerError> {
+    answer_within(completion, SCRIPT_LIMITS)
+}
+
+/// [`answer`], its script held to `limits`, such as an app's.
+pub fn answer_within(completion: &Completion, limits: TextLimits) -> Result<Answer, AnswerError> {
     if completion.cut_off {
         return Err(AnswerError::CutOff);
     }
@@ -297,7 +339,7 @@ pub fn answer(completion: &Completion) -> Result<Answer, AnswerError> {
         content = fenced.trim().strip_suffix("```").unwrap_or(fenced).trim();
     }
     let envelope: Envelope = serde_json::from_str(content).map_err(|_| AnswerError::NoEnvelope)?;
-    let script = check_text(&envelope.script)?;
+    let script = check_text_within(&envelope.script, limits)?;
     if script.trim().is_empty() {
         return Err(AnswerError::NoScript(check_reply(&envelope.summary)?));
     }
@@ -351,6 +393,14 @@ impl Lang {
             Lang::App => "app",
         }
     }
+
+    /// The limits its answer is held to.
+    pub fn limits(self) -> TextLimits {
+        match self {
+            Lang::Rhai | Lang::C => SCRIPT_LIMITS,
+            Lang::App => APP_LIMITS,
+        }
+    }
 }
 
 /// Cuts `text` to at most `max` bytes at a character boundary (for error text only).
@@ -392,7 +442,10 @@ impl ScriptRequest {
         let total = request_len
             .checked_add(script_len)?
             .checked_add(error_len)?;
-        if body.len() != total || request_len > REQUEST_MAX_BYTES || script_len > SCRIPT_MAX_BYTES {
+        if body.len() != total
+            || request_len > REQUEST_MAX_BYTES
+            || script_len > lang.limits().bytes
+        {
             return None;
         }
         let request = body.get(..request_len)?;
