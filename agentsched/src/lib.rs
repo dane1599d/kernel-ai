@@ -35,7 +35,9 @@
 //! sequences, and the foreground decodes alone unless [`Config::batch_foreground`].
 //! Only sequences already resident and ready to decode join, so a batch forms among
 //! agents the round robin has served in turn; the others ride along without paying
-//! the visit's deficit.
+//! the visit's deficit. Whether it pays is S13-2's measurement (on the runners, 1.00x
+//! the throughput with 2 sequences and 1.60x with 4), which is why serial is the
+//! default.
 //!
 //! **Starvation.** A lower class runs whenever every higher class is empty. Within
 //! the classes below the foreground, a request waits at most [`AGING_MS`] plus a

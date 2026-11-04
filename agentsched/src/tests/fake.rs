@@ -6,13 +6,18 @@ use crate::{
 use kaiagent::Budgets;
 use std::vec::Vec;
 
-/// A prefill block of 32 tokens, in ms (ADR 0013 section 2: about 350 ms at
-/// 91 tokens/s).
+/// A prefill block of 32 tokens, in ms: the ADR's estimate (about 350 ms at 91
+/// tokens/s). The CI runners take about 1.2 s a block (26.3 tokens/s), so this is a
+/// figure for the policy's bounds, not a measurement; the rules do not depend on it.
 pub const PREFILL_MS: u64 = 350;
-/// One decode step, in ms (about 100 ms at 10 tokens/s).
+/// One decode step of one sequence, in ms (about 100 ms at 10 tokens/s; the runners
+/// measure 10.8).
 pub const DECODE_MS: u64 = 100;
-/// Each sequence beyond the first in a batch adds this to a decode step.
-pub const BATCH_MS: u64 = 15;
+/// One decode step for a batch of 1 to 4 sequences, in ms. S13-2 measured the
+/// runners' total throughput at 1.00x with 2 sequences and 1.60x with 4 (1.79x with
+/// 8), so a step for n sequences takes about n steps divided by that gain: 100, 200,
+/// 225 (between) and 250. Each extra sequence costs about 100, 50 and 50 ms.
+pub const DECODE_BATCH_MS: [u64; 4] = [DECODE_MS, 200, 225, 250];
 /// A move between a slot and the RAM pool, and one to or from a spill file.
 pub const RAM_MOVE_MS: u64 = 40;
 pub const SPILL_MOVE_MS: u64 = 900;
@@ -111,7 +116,7 @@ impl Engine {
             Decision::Run(quanta) => {
                 let decoding = quanta.iter().all(|q| q.kind == Kind::Decode);
                 self.ms += match decoding {
-                    true => DECODE_MS + BATCH_MS * (quanta.len() as u64 - 1),
+                    true => DECODE_BATCH_MS[quanta.len() - 1],
                     false => quanta
                         .iter()
                         .map(|q| (PREFILL_MS * u64::from(q.tokens) / 32).max(1))
