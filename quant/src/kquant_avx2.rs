@@ -306,10 +306,12 @@ pub fn q6_k_dot4_n<const N: usize>(rows: [&[u8]; 4], xs: [&Q8KVec; N]) -> [[f32;
     let mut total = [[0.0f32; 4]; N];
     for i in 0..blocks[0].len() {
         prefetch_next(rows[0], q6_k::BLOCK_BYTES, i);
-        let mut acc = [[_mm256_setzero_si256(); 4]; N];
-        let mut offsets = [[_mm256_setzero_si256(); 4]; N];
+        // Each row's integers for each token: a row's lanes are summed as soon
+        // as the row is done, so only one row's accumulators stay in registers.
+        let mut s = [[0i32; 4]; N];
         let mut d = [0.0f32; 4];
         for (r, block) in blocks.iter().map(|b| &b[i]).enumerate() {
+            let mut acc = [_mm256_setzero_si256(); N];
             d[r] = half(u16::from_le_bytes([block[q6_k::D], block[q6_k::D + 1]]));
             let scales = load128(block[q6_k::SCALES..q6_k::D].try_into().unwrap());
             let scales = _mm256_cvtepi8_epi16(scales);
@@ -345,19 +347,20 @@ pub fn q6_k_dot4_n<const N: usize>(rows: [&[u8]; 4], xs: [&Q8KVec; N]) -> [[f32;
                     for t in 0..N {
                         let xq = xq[t][i].as_chunks::<32>().0;
                         let pairs = _mm256_maddubs_epi16(q, load_i8(&xq[4 * n + k]));
-                        acc[t][r] = _mm256_add_epi32(acc[t][r], _mm256_madd_epi16(pairs, scale));
+                        acc[t] = _mm256_add_epi32(acc[t], _mm256_madd_epi16(pairs, scale));
                     }
                 }
             }
             for t in 0..N {
-                offsets[t][r] = _mm256_madd_epi16(scales, load_sums(&sums[t][i]));
+                let offsets = _mm256_madd_epi16(scales, load_sums(&sums[t][i]));
+                let (dot, offset) = hsum2(acc[t], offsets);
+                s[t][r] = dot - 32 * offset;
             }
         }
         for t in 0..N {
             let dx = xs[t].scales[i];
             for r in 0..4 {
-                let (dot, offset) = hsum2(acc[t][r], offsets[t][r]);
-                total[t][r] += (d[r] * dx) * (dot - 32 * offset) as f32;
+                total[t][r] += (d[r] * dx) * s[t][r] as f32;
             }
         }
     }
