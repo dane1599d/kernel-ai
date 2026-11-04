@@ -57,3 +57,10 @@ void ui_toggle(I64 node, I64 parent, const char *label, I64 on);
 /* Writes fmt into out, at most cap bytes with its NUL: %lld, %s, %c, %%.
  * Returns the length written. */
 I64 Format(char *out, I64 cap, const char *fmt, ...);
+
+/* A random number from 0 to RAND_MAX: a fresh one each time, from the seed
+ * the OS gives the call, so a call replayed on another version sees the same
+ * ones. rand() % n is 0 to n - 1. It needs no srand. Declared as C's own, so
+ * an app's `int rand(void);` agrees with it. */
+#define RAND_MAX 2147483647
+int rand(void);

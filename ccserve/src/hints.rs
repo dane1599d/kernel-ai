@@ -170,7 +170,7 @@ fn undeclared(message: &str) -> Option<&str> {
 fn missing(name: &str, library: Library) -> Option<String> {
     if RANDOM.contains(&name) {
         return Some(format!(
-            "there is no {name}() here: keep an unsigned long long seed (an app keeps it in struct state) and step it, seed = seed * 6364136223846793005 + 1442695040888963407; then (seed >> 33) % n is below n."
+            "there is no {name}() here: keep an unsigned long long seed and step it, seed = seed * 6364136223846793005 + 1442695040888963407; then (seed >> 33) % n is below n."
         ));
     }
     if !PRINTING.contains(&name) {
