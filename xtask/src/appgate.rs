@@ -300,7 +300,7 @@ fn clicked(app: &mut wasmhost::CoreInstance, window: u32) -> Result<(), String> 
 fn transport(engine: Shared) -> Transport {
     Box::new(move |request: &ScriptRequest| {
         let limit =
-            Duration::from_millis(request.timeout_ms.min(llmproto::script::SERVICE_TIMEOUT_MS));
+            Duration::from_millis(request.timeout_ms.min(request.lang.service_timeout_ms()));
         let started = Instant::now();
         let mut tokens = 0u32;
         let answer = llmproto::local::app(&mut engine.borrow_mut(), request, |step| {
