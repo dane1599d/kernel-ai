@@ -19,7 +19,7 @@
 //! | 110-119 | A-core | |
 //! | 120-129 | model lane | |
 //! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH |
-//! | 140-149 | C, components | EDIT_CALL (lane E) |
+//! | 140-149 | C, components | EDIT_CALL (lane E), CARD_READY |
 //! | 150-159 | V, virtual machines (P6) | |
 //! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
@@ -460,6 +460,14 @@ pub const PKG_TIME: u64 = 103;
 /// [`super::MAX_MESSAGE`]; `reply_cap` below that is Invalid. NotFound when
 /// the edit service is not running. Numbered at merge, the first of C's block.
 pub const EDIT_CALL: u64 = 140;
+/// `card_ready() -> 0`: the shell has a card waiting for the trusted path
+/// (the install card of an app Kai built in the background). The kernel's
+/// terminal, when it waits at an empty prompt, `desktop`'s card can take an
+/// ask and none is up, sends the shell `termcore::menu::TAKE_CARD` for it,
+/// and asks the menu the reply holds as it asks any other. Only the process
+/// serving `shell` may call it (Permission otherwise); calling it again before
+/// the card is taken changes nothing.
+pub const CARD_READY: u64 = 141;
 
 // ---- V, 150-159 ----
 

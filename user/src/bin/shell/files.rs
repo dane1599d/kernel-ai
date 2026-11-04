@@ -32,6 +32,9 @@ pub struct Files {
     /// An open action dropped by a failed run's rollback or by `fs`: its
     /// generation, which is nothing to restore.
     dropped: Cell<Option<u64>>,
+    /// Files changed (a change, an undo's restore or a whole-file write) since
+    /// [`Files::take_changed`]: the apps that list them are told.
+    changed: Cell<bool>,
 }
 
 impl Files {
@@ -44,6 +47,7 @@ impl Files {
             action: Cell::new(1),
             open: Cell::new(None),
             dropped: Cell::new(None),
+            changed: Cell::new(false),
         };
         let state = State {
             dir: dirs.get(1).copied(),
@@ -114,10 +118,18 @@ impl Files {
             Reply::Committed { .. } => Ok(file),
             other => Err(unexpected(&other)),
         });
-        if committed.is_err() {
-            close(file);
+        match committed {
+            Ok(_) => self.changed.set(true),
+            Err(_) => close(file),
         }
         committed
+    }
+
+    /// Whether files changed since the last call and every change is committed,
+    /// so a listing now shows them. A change whose log line is still to be written
+    /// waits for the next call.
+    pub fn take_changed(&self) -> bool {
+        self.changed.get() && !self.is_open() && self.changed.replace(false)
     }
 
     pub fn read(&self, read: FsRead) -> Result<String, String> {
@@ -189,6 +201,7 @@ impl Files {
                 self.dropped.set(Some(generation));
             }
         })?;
+        self.changed.set(true);
         Ok(generation)
     }
 
@@ -251,6 +264,9 @@ impl Files {
             Reply::Restored { rows, generation } => {
                 // `fs` never restores over a later change; it leaves those.
                 let left = rows.iter().filter(|(_, o)| *o == Outcome::Left).count();
+                if rows.iter().any(|(_, o)| *o != Outcome::Left) {
+                    self.changed.set(true);
+                }
                 match (left, anyway) {
                     (0, _) => Ok(generation),
                     (n, false) => Err(FsRefused::Later(format!(

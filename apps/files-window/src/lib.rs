@@ -8,6 +8,11 @@
 //! Effects and the app's reply to them run in a transaction (`Host::serve_with`
 //! for a window's input, a request for an action), so only calls can queue them:
 //! the window opens in `init`, and the first listing waits for `started`.
+//!
+//! When the OS changes the person's files (the AI, the Terminal or an undo), it
+//! tells the app with a notice (`effect-done` under `NOTICE_TICKET`, with the
+//! text `NOTICE_FILES`), and the window lists its folder again: it holds
+//! `fs_list` already, so the notice grants it nothing.
 
 #![cfg_attr(target_family = "wasm", no_std)]
 
@@ -21,7 +26,7 @@ use alloc::vec::Vec;
 use comp_files::calls::Call;
 use comp_files::{Files, Os};
 use comp_ui_bind::{OnUi, Shown, Sink};
-use compsdk::app::{Effect, Event, Events};
+use compsdk::app::{Effect, Event, Events, NOTICE_FILES, NOTICE_TICKET};
 use compsdk::{Component, ImportError};
 use minicbor::{Decode, Encode};
 use uikit::widget::{UiError, UiEvent};
@@ -132,6 +137,19 @@ impl Events for FilesWindow {
     fn on_event(&mut self, event: Event) {
         match event {
             Event::Started => self.files.refresh(&mut Effects),
+            // The OS says the person's files changed (the AI, the Terminal or an
+            // undo made, moved or trashed one): list the folder shown again,
+            // keeping what is selected. No effect of ours has this ticket.
+            Event::EffectDone {
+                ticket: NOTICE_TICKET,
+                outcome,
+            } => match outcome.as_deref() {
+                Ok(NOTICE_FILES) => {
+                    note("files window: the files changed; listing the folder again");
+                    self.files.refresh(&mut Effects);
+                }
+                _ => return,
+            },
             Event::EffectDone { ticket, outcome } => {
                 note(&alloc::format!(
                     "files window: ticket {ticket} came back {}",

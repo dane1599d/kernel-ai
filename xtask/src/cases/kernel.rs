@@ -3,7 +3,26 @@
 use super::{KAI, TestCase, case};
 use crate::disk::Fixture;
 
+/// The second boot of `entropy-boots`.
+const ENTROPY_BOOT_2: TestCase = TestCase {
+    expect: &["entropy: virtio-rng mixed in", "entropy-boots: sample "],
+    server: false,
+    differs: Some("entropy-boots: sample "),
+    rng: true,
+    ..case("entropy-boots (boot 2)", "test=entropy-boots")
+};
+
 pub(super) const CASES: &[TestCase] = &[
+    // P5 task 3: ENTROPY mixes RDSEED, RDRAND and a virtio-rng, and two boots
+    // draw different bytes.
+    TestCase {
+        expect: &["entropy: virtio-rng mixed in", "entropy-boots: sample "],
+        server: false,
+        differs: Some("entropy-boots: sample "),
+        rng: true,
+        then: Some(&ENTROPY_BOOT_2),
+        ..case("entropy-boots", "test=entropy-boots")
+    },
     case("boot", "test"),
     case("page-fault", "test=page-fault"),
     case("double-fault", "test=double-fault"),
@@ -217,6 +236,15 @@ pub(super) const CASES: &[TestCase] = &[
             "desk-panel-shell: typed \"hi\" in the panel",
         ],
         ..case("desk-panel-shell", "test=desk-panel-shell")
+    },
+    // Kai builds apps, follow-up 2: the prompt wakes for the shell's waiting
+    // card, holds it while another ask is up, then asks the shell for it.
+    TestCase {
+        expect: &[
+            "card: the terminal asked the shell for its waiting card",
+            "desk-card-wake: the prompt woke for the shell's card, waited while another ask was up, then asked the shell",
+        ],
+        ..case("desk-card-wake", "test=desk-card-wake")
     },
     // P3 task 9: an app's kai:ui window on the desktop, closed from its control.
     TestCase {

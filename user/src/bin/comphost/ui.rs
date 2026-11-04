@@ -11,6 +11,7 @@ use deskcore::effects;
 use gfx2d::Canvas;
 use gfx2d::text::{Fonts, Text};
 use kabi::handle::{Handle, Rights};
+use kabi::live::NOTICE_TICKET;
 use livecore::host::{Env, Exit, Host};
 use livecore::{Fault, Performed};
 use uikit::Frame;
@@ -27,6 +28,9 @@ pub(crate) const CALL_MS: u64 = 5_000;
 const SIZE_ROUNDS: usize = 4;
 /// How often an app with windows asks `desktop` for its events.
 pub const POLL_MS: u64 = 20;
+/// Every how many pumps an open window asks `desktop` for a notice (a fifth of a
+/// second): the OS says that files changed, and a window shows it within that.
+const NOTICE_EVERY: u8 = 10;
 
 /// The fonts ADR 0005 §8 names, built in until P2's files carry them, as
 /// `desktop`'s are: the one place a switch to `/system` fonts changes.
@@ -79,6 +83,8 @@ pub struct Ui {
     /// The tickets sent to `desktop` with no result yet: only then does a poll
     /// ask for results, and only theirs reach the app.
     sent: effects::Sent,
+    /// Pumps so far, to ask for a notice only every [`NOTICE_EVERY`]th.
+    pumps: u8,
     /// The `kai:settings` requests' way to the shell, for the Settings app only.
     settings: Option<crate::kai_settings::Forward>,
     /// The desktop's theme, by name, and the colours its windows paint in.
@@ -105,6 +111,7 @@ impl Ui {
             later: Vec::new(),
             reply: alloc::vec![0u8; kabi::MAX_MESSAGE],
             sent: effects::Sent::default(),
+            pumps: 0,
             settings: None,
             theme: String::from(look::DARK.name),
             palette: look::DARK,
@@ -296,10 +303,20 @@ impl Ui {
         }
     }
 
+    /// Whether this pump asks `desktop` for results: always while one is
+    /// awaited, and every [`NOTICE_EVERY`]th pump of an open window, for a notice
+    /// from the OS that something the app shows has changed.
+    fn asks_for_results(&mut self) -> bool {
+        self.pumps = self.pumps.wrapping_add(1);
+        self.sent.awaits() || (self.has_windows() && self.pumps.is_multiple_of(NOTICE_EVERY))
+    }
+
     /// Gives the app what came of its effects, one `effect-done` each, for
-    /// tickets it sent only; what it queues in answer goes out the same way.
+    /// tickets it sent only; what it queues in answer goes out the same way. A
+    /// notice from the OS (ticket [`NOTICE_TICKET`], which no effect has) comes
+    /// last, once, whatever the app sent: it answers nothing.
     fn deliver<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) {
-        if !self.sent.awaits() {
+        if !self.asks_for_results() {
             return;
         }
         let Ok(len) = sys::call_route(
@@ -311,10 +328,15 @@ impl Ui {
             return;
         };
         let text = String::from_utf8_lossy(&self.reply[..len.min(self.reply.len())]).into_owned();
-        let (accepted, stray) = self.sent.accept(effects::parse_results(&text));
+        let (results, notice) = effects::split_notice(effects::parse_results(&text));
+        let (mut accepted, stray) = self.sent.accept(results);
         for ticket in stray {
             println!("comphost: dropped a result for ticket {ticket}, which it did not send");
         }
+        accepted.extend(notice.map(|text| effects::Done {
+            ticket: NOTICE_TICKET,
+            outcome: Ok(text),
+        }));
         for done in accepted {
             let ticket = done.ticket;
             let event = AppEvent::EffectDone {
