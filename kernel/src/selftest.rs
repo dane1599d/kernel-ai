@@ -295,6 +295,8 @@ pub enum SelfTest {
     NetFallback,
     /// P5: `ip=static` at boot.
     NetStatic,
+    /// P5 task 1: what a `NetDest` handle allows.
+    NetDest,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -468,6 +470,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net-setup" => Some(SelfTest::NetSetup),
             "test=net-fallback" => Some(SelfTest::NetFallback),
             "test=net-static" => Some(SelfTest::NetStatic),
+            "test=net-dest" => Some(SelfTest::NetDest),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))

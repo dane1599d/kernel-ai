@@ -13,7 +13,7 @@
 //! | 66-70 | S-io (P2) | PART_INFO, PART_READ, PART_WRITE, PART_FLUSH; ENDPOINT_MINT |
 //! | 71-72 | K | PROC_STOP_ONCE, RULE_CHECK |
 //! | 73-79 | G-core (P3) | DISPLAY_CLAIM, DISPLAY_FLUSH, DISPLAY_CURSOR, DISPLAY_CURSOR_MOVE, INPUT_READ, TERM_READ, INPUT_TO_CONSOLE |
-//! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; ENTROPY 83; P2 task 12's grants |
+//! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; ENTROPY 83; RESOLVE_ON 84 and NETDEST_NARROW 85 (P5 task 1); P2 task 12's grants |
 //! | 90-99 | S-engine (P2) | |
 //! | 100-109 | P, packages (P2) | BOOT_READ, COMP_ADD, PKG_FETCH, PKG_TIME |
 //! | 110-119 | A-core | |
@@ -162,7 +162,9 @@ pub const BUILD_POLL: u64 = 36;
 /// [`super::net::MAX_ADDRESSES`]) is returned. Invalid for a malformed name or one
 /// longer than [`super::net::MAX_HOST`], NotFound for a host with no IPv4 address,
 /// Unavailable with no DNS server, TimedOut after
-/// [`super::net::RESOLVE_TIMEOUT_MS`], Interrupted on Ctrl-C. Needs [`super::cap::RESOLVE`].
+/// [`super::net::RESOLVE_TIMEOUT_MS`], Interrupted on Ctrl-C. Retired with
+/// [`super::cap::RESOLVE`] (P5 task 1): Permission always; [`RESOLVE_ON`] takes
+/// its place.
 pub const RESOLVE: u64 = 37;
 /// `abi_info(&mut handle::AbiInfo) -> 0`: the ABI version, the highest call
 /// number and the handle table's size (ADR 0001 D10). Needs nothing.
@@ -365,6 +367,21 @@ pub const ONCE_CHECK_FOR: u64 = 82;
 pub const ENTROPY: u64 = 83;
 /// The most bytes one [`ENTROPY`] call returns.
 pub const ENTROPY_MAX: usize = 256;
+/// `resolve_on(dest, host_ptr, host_len, out_ptr, out_cap) -> addresses`:
+/// [`RESOLVE`]'s answer, on the `NetDest` handle `dest`, which needs the
+/// RESOLVE right and names a per-app record (ADR 0001 D2, P5 task 1). Only a
+/// name under one of the record's host suffixes is looked up (Permission
+/// otherwise, and for a dotted address, which needs no lookup), so a name the
+/// app was not given never leaves in a query. The record keeps the addresses
+/// for its connects until their TTL runs out. Numbered at merge, K's block.
+pub const RESOLVE_ON: u64 = 84;
+/// `netdest_narrow(dest, spec_ptr, spec_len, rights) -> handle`: a new
+/// `NetDest` handle, with `rights` (each held by `dest`), to a new record that
+/// allows no more than `dest`'s: the `netdest` crate's text form at
+/// `spec_ptr`. `dest` needs DUPLICATE. Permission if the new one would allow
+/// any address, port, protocol or host `dest`'s does not; Invalid for bad
+/// text or rights. A handle only shrinks. Numbered at merge, K's block.
+pub const NETDEST_NARROW: u64 = 85;
 
 // ---- G-core, 73-79 ----
 

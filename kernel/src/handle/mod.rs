@@ -41,6 +41,26 @@ const BASE: Rights = Rights::DUPLICATE
     .union(Rights::INSPECT)
     .union(Rights::TRANSFER);
 
+/// A plan line's `netdest=` handle (P5 task 1): resolve and connect on its
+/// record, which it may narrow and pass on.
+pub const NETDEST_RIGHTS: Rights = BASE.union(Rights::RESOLVE).union(Rights::CONNECT);
+
+/// Whether any process's table holds a handle of `kind` naming `object`.
+pub fn names(kind: Kind, object: u64) -> bool {
+    HANDLES.iter().any(|handles| {
+        handles.lock().as_ref().is_some_and(|h| {
+            h.table
+                .iter()
+                .any(|(_, entry)| entry.kind == kind && entry.object == object)
+        })
+    })
+}
+
+/// The entry `handle` names in `slot`'s table.
+pub fn entry(slot: usize, handle: kabi::handle::Handle) -> Result<Entry, kabi::Error> {
+    with(slot, |h| h.table.get(handle).copied())?.map_err(kabi::Error::from)
+}
+
 /// Services routes can name: the id of a route's service is its index here, plus 1.
 const MAX_ROUTE_NAMES: usize = 32;
 static ROUTE_NAMES: Mutex<[Option<Name>; MAX_ROUTE_NAMES]> =
@@ -73,7 +93,7 @@ pub fn route_name(id: u64) -> Option<Name> {
 /// The startup handles for capability bits `caps` (ADR 0001 D3's table), for the
 /// process `pid`. CALL gives a route only through `uses=`, so none here.
 pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
-    let rows: [(u64, Kind, Rights, u64); 20] = [
+    let rows: [(u64, Kind, Rights, u64); 19] = [
         // MINT under the `system` root, which is never revoked (ADR 0001 D3).
         (
             cap::SUPERVISE,
@@ -127,12 +147,6 @@ pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
         (cap::PUBLISH, Kind::Build, Rights::CONNECT, 0),
         (cap::MODEL, Kind::Model, Rights::MAP, 0),
         (cap::THREADS, Kind::Process, Rights::THREADS, pid),
-        (
-            cap::RESOLVE,
-            Kind::NetDest,
-            Rights::RESOLVE,
-            netdest::RESOLVER,
-        ),
         // `kai-data` only: no handle names the ESP or the system slots (ADR 0004 §7).
         (
             cap::PARTITION,
@@ -223,7 +237,6 @@ pub fn required(bit: u64) -> Option<(Kind, Rights)> {
         cap::PUBLISH => (Kind::Store, Rights::WRITE),
         cap::MODEL => (Kind::Model, Rights::MAP),
         cap::THREADS => (Kind::Process, Rights::THREADS),
-        cap::RESOLVE => (Kind::NetDest, Rights::RESOLVE),
         cap::STOP => (Kind::Job, Rights::STOP),
         cap::SCRIPT => (Kind::Job, Rights::CREATE),
         cap::PARTITION => (Kind::Partition, Rights::READ),
@@ -251,7 +264,7 @@ pub fn ceiling_allows(caps: u64, kind: Kind) -> bool {
         (Kind::Build, cap::PUBLISH),
         (Kind::Model, cap::MODEL),
         (Kind::Process, cap::THREADS),
-        (Kind::NetDest, cap::NET | cap::RESOLVE),
+        (Kind::NetDest, cap::NET),
         (Kind::Partition, cap::PARTITION),
         (Kind::Dir, cap::FILES | cap::SYSTEM_STATE),
         (Kind::File, cap::FILES | cap::SYSTEM_STATE),
