@@ -1,0 +1,14 @@
+[package]
+name = "nethosts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Hosts and grounding for the agent's network rows (P5 task 11's host half; ADR
+# 0002 D3): one normal form for a host name, the hosts a request names, the curated
+# host table, and the rule that a fetch from a grounded host runs and any other
+# asks. `no_std` + `alloc` with no OS in it, so the agent core and the host tests
+# share it.
+[lib]
+doctest = false

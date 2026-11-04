@@ -36,6 +36,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentsched"
+version = "0.0.0"
+dependencies = [
+ "kaiagent",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1287,6 +1294,10 @@ name = "netdest"
 version = "0.1.0-dev"
 
 [[package]]
+name = "nethosts"
+version = "0.1.0-dev"
+
+[[package]]
 name = "no-std-compat"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1582,6 +1593,14 @@ dependencies = [
  "hybrid-array",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "semindex"
+version = "0.1.0-dev"
+dependencies = [
+ "diskmap",
+ "libm",
 ]
 
 [[package]]
