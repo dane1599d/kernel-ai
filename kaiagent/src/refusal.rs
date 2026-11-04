@@ -58,8 +58,9 @@ pub enum Refusal {
     GroupHoldsNever(String),
     /// A memory word that is unknown, repeated or out of order.
     Memory(String),
-    /// A net line other than `none`: destinations wait for P5's `NetDest`.
-    Net(String),
+    /// A net line that is not `none` or a destination an agent may hold: the
+    /// value, and why.
+    Net(String, &'static str),
 }
 
 impl fmt::Display for Refusal {
@@ -100,7 +101,7 @@ impl fmt::Display for Refusal {
                 write!(f, "{g}_*: the group holds a row an agent may never call")
             }
             Self::Memory(w) => write!(f, "memory is none, read, write or read write, not {w:?}"),
-            Self::Net(n) => write!(f, "net is none until P5's per-app destinations, not {n:?}"),
+            Self::Net(n, why) => write!(f, "net {n:?}: {why}"),
         }
     }
 }

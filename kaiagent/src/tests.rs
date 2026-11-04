@@ -196,14 +196,16 @@ fn the_id_is_a_package_name_that_is_not_an_os_group_a_window_or_a_built_in_agent
 
 #[test]
 fn the_abi_is_the_oldest_this_agent_needs_and_not_newer_than_the_os() {
-    assert_eq!(kabi::handle::ABI, (1, 0));
+    // P5 task 1 (#666) made it 1.1: RESOLVE became a right on a NetDest.
+    assert_eq!(kabi::handle::ABI, (1, 1));
     assert!(Manifest::parse(&with("abi", "1.0")).is_ok());
+    assert!(Manifest::parse(&with("abi", "1.1")).is_ok());
     for abi in [
         "1", "1.", ".0", "a.b", "1.0.0", "01.0", "1.00", "-1.0", "+1.0", "1 .0", "99999.0",
     ] {
         assert_eq!(refused(&with("abi", abi)), Refusal::BadAbi, "{abi}");
     }
-    for abi in ["1.1", "2.0", "0.0", "0.9"] {
+    for abi in ["1.2", "2.0", "0.0", "0.9"] {
         assert_eq!(refused(&with("abi", abi)), Refusal::AbiUnsupported, "{abi}");
     }
 }
@@ -529,23 +531,48 @@ fn memory_is_none_read_write_or_both_in_that_order() {
 }
 
 #[test]
-fn the_net_line_is_none_until_p5() {
-    assert!(Manifest::parse(&with("net", "none")).is_ok());
-    for word in [
-        "any",
-        "-",
-        "example.com",
-        "host:example.com:443",
-        "none none",
-        "None",
-        "llm",
+fn the_net_line_is_none_or_a_destination_an_agent_may_hold() {
+    assert_eq!(Manifest::parse(&with("net", "none")).unwrap().net, None);
+    let weather = "proto:tcp,ports:443,hosts:api.weather.example";
+    let parsed = Manifest::parse(&with("net", weather)).unwrap();
+    let dest = parsed.net.clone().expect("a destination");
+    assert_eq!(dest.hosts, ["api.weather.example"]);
+    // It reads back as it was written.
+    assert_eq!(Manifest::parse(&parsed.format()).unwrap(), parsed);
+    for (value, why) in [
+        ("any", "netdest"),
+        ("example.com", "netdest"),
+        ("proto:udp,ports:53,hosts:dns.example", "tcp"),
+        (
+            "proto:tcp,addrs:10.0.0.1,ports:443,hosts:a.example",
+            "never addresses",
+        ),
+        (
+            "proto:tcp,addrs:any,ports:443,hosts:a.example",
+            "never addresses",
+        ),
+        ("proto:tcp,ports:any,hosts:a.example", "ports"),
+        ("proto:tcp,hosts:a.example", "ports"),
+        ("proto:tcp,ports:443", "at least one host"),
+        ("proto:tcp,ports:443,hosts:com", "netdest"),
+        ("None", "netdest"),
     ] {
-        assert_eq!(
-            refused(&with("net", word)),
-            Refusal::Net(word.into()),
-            "{word}"
-        );
+        let refusal = refused(&with("net", value));
+        let Refusal::Net(got, words) = &refusal else {
+            panic!("{value}: {refusal:?}");
+        };
+        assert_eq!(got, value);
+        assert!(why == "netdest" || words.contains(why), "{value}: {words}");
     }
+}
+
+#[test]
+fn a_manifest_with_net_always_asks_at_install() {
+    let net = with("net", "proto:tcp,ports:443,hosts:api.weather.example");
+    let interactive = net.replace("class background", "class interactive");
+    let manifest = Manifest::parse(&interactive).unwrap();
+    assert_eq!(manifest.class, Class::Interactive);
+    assert!(manifest.asks_at_install());
 }
 
 #[test]
