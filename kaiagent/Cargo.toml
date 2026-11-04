@@ -16,3 +16,4 @@ doctest = false
 agentabi = { path = "../agentabi" }
 kabi = { path = "../kabi" }
 kaipkg = { path = "../kaipkg" }
+netdest = { path = "../netdest" }

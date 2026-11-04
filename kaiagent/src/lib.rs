@@ -39,7 +39,10 @@
 //!   when it is installed.
 //! - **Memory.** `none`, `read`, `write` or `read write`: its own scope, never
 //!   another's.
-//! - **Net.** `none`, until P5's per-app destinations.
+//! - **Net.** `none`, or the most its network handle may reach, in `netdest`'s
+//!   text form ([`net`]): TCP to named ports and named hosts, never addresses.
+//!   It is a ceiling: each host still asks once, and a manifest with any asks
+//!   at install.
 //!
 //! This crate is `no_std` + `alloc`: `pkg` and the host tests run the same code.
 
@@ -51,6 +54,7 @@ extern crate std;
 
 mod actions;
 mod budgets;
+pub mod net;
 mod refusal;
 #[cfg(test)]
 mod tests;
@@ -140,6 +144,8 @@ pub struct Manifest {
     pub budgets: Budgets,
     pub actions: Vec<Pattern>,
     pub memory: Memory,
+    /// The most its network handle may reach, or `None` for `net none`.
+    pub net: Option<netdest::Dest>,
 }
 
 impl Manifest {
@@ -187,10 +193,7 @@ impl Manifest {
         let budgets = Budgets::parse(field("model")?)?;
         let actions = actions::parse(field("actions")?, rows)?;
         let memory = Memory::parse(field("memory")?)?;
-        match field("net")? {
-            "none" => {}
-            other => return Err(Refusal::Net(other.to_string())),
-        }
+        let net = net::parse(field("net")?)?;
         if let Some(extra) = lines.next() {
             return Err(Refusal::Trailing(extra.to_string()));
         }
@@ -201,6 +204,7 @@ impl Manifest {
             budgets,
             actions,
             memory,
+            net,
         })
     }
 
@@ -217,7 +221,7 @@ impl Manifest {
                 .join(" "),
         };
         alloc::format!(
-            "kai-app 1\nid {}\nabi {}.{}\nagent 1\nclass {}\nmodel {}\nactions {}\nmemory {}\nnet none\n",
+            "kai-app 1\nid {}\nabi {}.{}\nagent 1\nclass {}\nmodel {}\nactions {}\nmemory {}\nnet {}\n",
             self.id,
             self.abi.0,
             self.abi.1,
@@ -225,15 +229,17 @@ impl Manifest {
             self.budgets.format(),
             actions,
             self.memory.name(),
+            net::format(&self.net),
         )
     }
 
     /// Whether installing it always asks, whatever else it asks: a `background`
-    /// agent will act while the user is away (ADR 0013 section 6). The ask lists
-    /// its actions, budgets and memory use; the other installs follow ADR 0011
+    /// agent will act while the user is away, and one with a `net` line can
+    /// reach out of the machine (ADR 0013 section 6). The ask lists its actions,
+    /// budgets, memory use and hosts; the other installs follow ADR 0011
     /// section 10.
     pub fn asks_at_install(&self) -> bool {
-        self.class == Class::Background
+        self.class == Class::Background || self.net.is_some()
     }
 
     /// Whether the manifest lets the agent call the row `name`. Whether it may in
