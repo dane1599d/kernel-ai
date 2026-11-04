@@ -184,16 +184,12 @@ pub fn check_path(path: &str) -> Result<(), String> {
 /// with a letter (a package's name; `cc` and `pkg` check it again, and the shell
 /// before them).
 pub fn check_name(name: &str) -> Result<(), String> {
-    let shaped = (2..=12).contains(&name.len())
-        && name.starts_with(|c: char| c.is_ascii_lowercase())
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-    if shaped {
+    if kabi::pkgname::is_valid(name) {
         Ok(())
     } else {
         Err(format!(
-            "{name:?} is not a component's name: 2-12 of a-z, 0-9 and -, starting with a letter"
+            "{name:?} is not a component's name: {}",
+            kabi::pkgname::RULE
         ))
     }
 }

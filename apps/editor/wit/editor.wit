@@ -1,7 +1,11 @@
 /// The editor (ADR 0003 section 1, P4 task 11): a full-screen window over the edit
 /// service. Its actions only move the editor to a place and say where it is: an
-/// edit is typed in the window, and a build starts from a key or a click there,
-/// never from an action (`wasmhost`'s `user` flag, comphost's build gate).
+/// edit is typed in the window, and a save or a build starts from a key or a click
+/// there, never from an action (`wasmhost`'s `user` flag, comphost's write and build
+/// gates). `open-file` takes an absolute path under /home/user and reads the file as
+/// Ctrl-O does, through the OS's file door, so the OS says no to a file it will not
+/// read; its answer is only that the file is on its way, and the text is shown in the
+/// window, which the agent does not see.
 package app:editor@1.0.0;
 
 interface actions {
@@ -12,13 +16,18 @@ interface actions {
     /// kai: arg line min=1 max=99999 role=target from-request
     open: func(component: string, path: string, line: u32) -> result<string, string>;
 
+    /// Open one of the person's files in the editor by its path.
+    /// kai: read-only=yes destructive=no idempotent=yes open-world=no inverse=none cues=editor,open,file,path,text
+    /// kai: arg path max=255 role=target from-request
+    open-file: func(path: string) -> result<string, string>;
+
     /// Say where the editor is and how its last build went.
     /// kai: read-only=yes destructive=no idempotent=yes open-world=no inverse=none cues=editor,where,status
     status: func() -> string;
 }
 
 /// The editor as its manifest names it: a live component with its window, its
-/// code view and its two actions, and the granted `kai:edit` interface through
+/// code view and its three actions, and the granted `kai:edit` interface through
 /// which it reaches the edit service. It has no storage or effects of its own.
 world editor {
     include kai:app/component@0.1.0;

@@ -117,8 +117,13 @@ struct State {
     draws_cursor: bool,
     /// The first frame is on the screen.
     drawn: bool,
-    /// A key has been logged since the claim: only the first is, so what the
-    /// user types never reaches the serial log, and a frame never waits on it.
+    /// The plan line asks for the first key to be logged (`key_log=on`), which only
+    /// a test image's does: the `display-claim` case reads it to know keys reach
+    /// `desktop`. No other plan logs a key, so what a person types never reaches
+    /// the serial log.
+    log_first_key: bool,
+    /// The first key has been logged since the claim: only it is, and a frame never
+    /// waits on it.
     key_logged: bool,
     /// The AI panel's line and the state the shell reports.
     panel: Panel,
@@ -187,6 +192,7 @@ fn main() -> i32 {
             extra: Vec::new(),
             draws_cursor: screen.info.cursor == 0,
             drawn: false,
+            log_first_key: logs_first_key(),
             key_logged: false,
             panel: Panel::new(),
             sheet: None,
@@ -357,7 +363,7 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
             })
         }
         Kind::Key => {
-            if !state.key_logged {
+            if state.log_first_key && !state.key_logged {
                 state.key_logged = true;
                 println!("desktop: key {:#x} {}", event.code, event.value);
             }
@@ -1070,6 +1076,12 @@ fn arrow(palette: &Palette) -> [u32; 64 * 64] {
         *pixel = paint::arrow(x, y, palette).unwrap_or(0);
     }
     image
+}
+
+/// Whether the plan line has `key_log=on`: the first key's code is logged once.
+fn logs_first_key() -> bool {
+    let args = user::args();
+    user::arg(&args, "key_log") == Some("on")
 }
 
 /// The appearance the plan line's arguments set, one `appearance_set` setting
