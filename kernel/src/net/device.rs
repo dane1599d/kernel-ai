@@ -34,6 +34,19 @@ static TX_DELAY_NS: AtomicU64 = AtomicU64::new(0);
 static BURST: AtomicU64 = AtomicU64::new(0);
 /// Send as virtio-drivers' `send` does, waiting for the card each time.
 static SYNC_TX: AtomicBool = AtomicBool::new(false);
+/// Kick the card for each receive buffer given back (`net_refill=each`), as
+/// virtio-drivers does, rather than once a poll for the batch.
+static REFILL_EACH: AtomicBool = AtomicBool::new(false);
+
+/// Each receive buffer kicks the card as it goes back (`net_refill=each`), or
+/// they go back in a batch with one kick a poll.
+pub fn set_refill_each(each: bool) {
+    REFILL_EACH.store(each, Ordering::Release);
+}
+
+pub fn refill_each() -> bool {
+    REFILL_EACH.load(Ordering::Acquire)
+}
 
 /// Sets the burst smoltcp's window cap uses; 0 removes the cap. Only before
 /// the interface is made: smoltcp reads it once then.
@@ -72,6 +85,9 @@ struct Card {
     rx: [Option<Vec<u8>>; QUEUE_SIZE],
     /// The frames the card is sending, header first, by token.
     tx: [Option<Vec<u8>>; QUEUE_SIZE],
+    /// Receive buffers given back and not yet added: they go to the card in a
+    /// batch ([`Card::refill`]).
+    stash: Vec<Vec<u8>>,
 }
 
 impl Card {
@@ -98,27 +114,19 @@ impl Card {
     fn transmit(&mut self, frame: &[u8]) {
         let _span = Span::start(Phase::CardTx);
         prof::TX_FRAMES.fetch_add(1, Ordering::Relaxed);
-        if SYNC_TX.load(Ordering::Acquire) {
-            if let Err(error) = self.nic.send(frame) {
-                log!("net: transmit error {error:?}");
-            }
-            return;
-        }
         self.reclaim();
-        let mut buffer = vec![0u8; BUFFER_LEN];
-        let header = match self.nic.fill_buffer_header(&mut buffer) {
-            Ok(header) => header,
-            Err(error) => {
-                log!("net: transmit error {error:?}");
-                return;
-            }
-        };
-        buffer.truncate(header + frame.len());
+        let header = super::virtio_net::HEADER;
+        let mut buffer = vec![0u8; header + frame.len()];
         buffer[header..].copy_from_slice(frame);
         // SAFETY: the buffer is kept in `tx` until the card gives its token back.
         match unsafe { self.nic.transmit_begin(&buffer) } {
             Ok(token) => self.tx[usize::from(token)] = Some(buffer),
             Err(error) => log!("net: transmit error {error:?}"),
+        }
+        // `net_tx=sync`: wait for the card, as virtio-drivers' `send` does.
+        while SYNC_TX.load(Ordering::Acquire) && self.tx.iter().any(Option::is_some) {
+            self.reclaim();
+            core::hint::spin_loop();
         }
     }
 
@@ -139,14 +147,34 @@ impl Card {
         }
     }
 
-    /// Hands a receive buffer back to the card.
-    fn give_rx(&mut self, mut buffer: Vec<u8>) {
-        let _span = Span::start(Phase::CardRefill);
-        // SAFETY: the buffer is kept in `rx` until the card gives its token back.
-        match unsafe { self.nic.receive_begin(&mut buffer) } {
-            Ok(token) => self.rx[usize::from(token)] = Some(buffer),
-            Err(error) => log!("net: cannot give back a receive buffer: {error:?}"),
+    /// Hands a receive buffer back: into the stash, for the next [`Card::refill`],
+    /// or at once with its own kick (`net_refill=each`).
+    fn give_rx(&mut self, buffer: Vec<u8>) {
+        self.stash.push(buffer);
+        if REFILL_EACH.load(Ordering::Acquire) {
+            self.refill();
         }
+    }
+
+    /// Adds every stashed receive buffer, then kicks the card once for all of
+    /// them, if it asked.
+    fn refill(&mut self) {
+        if self.stash.is_empty() {
+            return;
+        }
+        let _span = Span::start(Phase::CardRefill);
+        while let Some(mut buffer) = self.stash.pop() {
+            // SAFETY: the buffer is kept in `rx` until the card gives its token back.
+            match unsafe { self.nic.add_receive(&mut buffer) } {
+                Ok(token) => self.rx[usize::from(token)] = Some(buffer),
+                Err(error) => {
+                    log!("net: cannot give back a receive buffer: {error:?}");
+                    self.stash.push(buffer);
+                    break;
+                }
+            }
+        }
+        self.nic.kick_receive();
     }
 }
 
@@ -162,10 +190,12 @@ impl NicDevice {
             nic,
             rx: [const { None }; QUEUE_SIZE],
             tx: [const { None }; QUEUE_SIZE],
+            stash: Vec::with_capacity(QUEUE_SIZE),
         };
         for _ in 0..QUEUE_SIZE {
-            card.give_rx(vec![0u8; BUFFER_LEN]);
+            card.stash.push(vec![0u8; BUFFER_LEN]);
         }
+        card.refill();
         Self {
             card: RefCell::new(card),
             delayed: RefCell::new(VecDeque::new()),
@@ -174,6 +204,12 @@ impl NicDevice {
 
     pub fn mac(&self) -> [u8; 6] {
         self.card.borrow().nic.mac_address()
+    }
+
+    /// Gives the card every receive buffer handed back since the last time,
+    /// with one kick: after each poll.
+    pub fn refill(&mut self) {
+        self.card.get_mut().refill();
     }
 
     /// Gives the card every held frame whose time has come, in order.

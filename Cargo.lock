@@ -1081,6 +1081,7 @@ name = "kernel"
 version = "0.1.0-dev"
 dependencies = [
  "acpitables",
+ "bitflags 2.13.2",
  "bootslot",
  "captable",
  "cpufeat",

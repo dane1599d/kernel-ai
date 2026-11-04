@@ -41,6 +41,7 @@ pub fn configure(cmdline: &str) {
         super::set_burst(frames);
     }
     super::set_sync_tx(cmdline.split_whitespace().any(|w| w == "net_tx=sync"));
+    super::set_refill_each(cmdline.split_whitespace().any(|w| w == "net_refill=each"));
     for why in ignored {
         log!("{why}");
     }

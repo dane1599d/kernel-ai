@@ -12,6 +12,7 @@ pub mod ping;
 pub mod prof;
 pub mod resolve;
 pub mod setup;
+mod virtio_net;
 
 use crate::virtio::hal::KernelHal;
 use crate::virtio::split::SplitTransport;
@@ -21,13 +22,14 @@ use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 use core::sync::atomic::{AtomicU16, Ordering};
 use device::NicDevice;
-pub use device::{burst, set_burst, set_sync_tx, set_tx_delay_ms, sync_tx};
+pub use device::{
+    burst, refill_each, set_burst, set_refill_each, set_sync_tx, set_tx_delay_ms, sync_tx,
+};
 use smoltcp::iface::{Config, Interface, SocketSet, SocketStorage};
 use smoltcp::socket::tcp;
 use smoltcp::time::{Duration, Instant};
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress};
 use spin::Mutex;
-use virtio_drivers::device::net::VirtIONetRaw;
 
 const RX_BUFFER: usize = 64 * 1024;
 const TX_BUFFER: usize = 16 * 1024;
@@ -55,7 +57,7 @@ const fn parse_queue(text: &[u8]) -> usize {
 /// Per-packet buffer: at least 1526 bytes and a multiple of 8.
 pub(super) const BUFFER_LEN: usize = 2048;
 
-type Nic = VirtIONetRaw<KernelHal, SplitTransport, QUEUE_SIZE>;
+type Nic = virtio_net::VirtioNet<KernelHal, SplitTransport, QUEUE_SIZE>;
 
 struct Net {
     device: NicDevice,
@@ -75,6 +77,7 @@ impl Net {
         self.device.send_due();
         self.iface.poll(now(), &mut self.device, &mut self.sockets);
         self.device.send_due();
+        self.device.refill();
         self.setup
             .after_poll(&mut self.iface, &mut self.sockets, hpet::nanos());
     }

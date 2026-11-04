@@ -19,7 +19,7 @@ env:
 
 jobs:
   throughput:
-    name: net-throughput profile (${{ matrix.accel }}, ${{ matrix.runner }})
+    name: net-throughput refill (${{ matrix.accel }}, ${{ matrix.runner }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -34,8 +34,9 @@ jobs:
         # sends did not help. Now the receive queue's depth, at build time.
         tx: [sync]
         clock: [tsc]
-        # The profile: one queue depth, on two runners to see their spread.
-        queue: [16]
+        # A 256-deep receive queue, refilled in a batch with one kick against a
+        # kick for each buffer, both on the same runner; two runners.
+        queue: [256]
         runner: [a, b]
     steps:
       - uses: actions/checkout@v4
@@ -67,7 +68,7 @@ jobs:
           python3 -m http.server 8765 --bind 0.0.0.0 --directory "$RUNNER_TEMP/www" > "$RUNNER_TEMP/http.log" 2>&1 &
           sleep 1
           curl -sS -o /dev/null -w 'host curl: %{size_download} bytes at %{speed_download} B/s\n' http://127.0.0.1:8765/blob
-      - name: Boot net-throughput
+      - name: Boot net-throughput, refilled in a batch
         env:
           XTASK_CASE: net-throughput
           XTASK_NET_DUMP: ${{ runner.temp }}/net.pcap
@@ -78,9 +79,19 @@ jobs:
           flag=""
           if [ "${{ matrix.build }}" = release ]; then flag=--release; fi
           cargo xtask test $flag --accel ${{ matrix.accel }} --timeout 900 2>&1 | tee "$RUNNER_TEMP/boot.log"
+      - name: Boot net-throughput, a kick for each buffer
+        env:
+          XTASK_CASE: net-throughput
+          XTASK_CMDLINE: net_burst=${{ matrix.burst }} ip=static net_tx=${{ matrix.tx }} clock=${{ matrix.clock }} net_refill=each
+          XTASK_NETDEV: tap,id=net0,ifname=kaitap0,script=no,downscript=no
+          KAI_NET_QUEUE: ${{ matrix.queue }}
+        run: |
+          flag=""
+          if [ "${{ matrix.build }}" = release ]; then flag=--release; fi
+          cargo xtask test $flag --accel ${{ matrix.accel }} --timeout 900 2>&1 | tee "$RUNNER_TEMP/boot-each.log"
       - name: The figures
         if: always()
-        run: grep -h "net-throughput:" "$RUNNER_TEMP/boot.log" || true
+        run: grep -h "net-throughput:" "$RUNNER_TEMP/boot.log" "$RUNNER_TEMP/boot-each.log" || true
       - name: The first download's frames (TCP to port 8765)
         if: always()
         run: |
