@@ -29,6 +29,7 @@ pub mod modelhint;
 pub mod net;
 pub mod part;
 pub mod perf;
+pub mod pkgname;
 pub mod pkgrepo;
 pub mod plan;
 pub mod policy;

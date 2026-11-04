@@ -526,3 +526,86 @@ fn the_agent_s_open_leaves_a_saved_file_for_a_component_and_not_an_edited_one() 
         os.log
     );
 }
+
+/// The agent's `editor_open_file`: the same door as Ctrl-O, and an answer that says only
+/// that the file is on its way.
+fn open_file(app: &mut EditorWindow, os: &mut Os, path: &str) -> Result<String, String> {
+    app.act_open_file(os, path)
+}
+
+#[test]
+fn the_agents_open_file_reads_through_the_door_and_never_returns_the_text() {
+    let (mut app, mut os) = window();
+    os.disk.insert(PATH.into(), todo());
+    let answer = open_file(&mut app, &mut os, PATH).unwrap();
+    assert_eq!(answer, format!("Opening {PATH}."));
+    assert_eq!(os.log, [format!("read {PATH}")]);
+    assert_eq!(os.status(), format!("opening {PATH}..."));
+    serve(&mut app, &mut os);
+    assert!(os.title().starts_with("file disk: home/user/todo.txt"));
+    assert_eq!(&os.rows()[..3], ["buy milk", "call Ann", "sleep"]);
+    // What it says afterwards is where it is, never the file's text.
+    let said = app.status(&mut os);
+    assert!(said.starts_with("file disk: home/user/todo.txt"), "{said}");
+    assert!(!said.contains("milk"), "{said}");
+    // A write is still the person's: nothing in the action saved anything.
+    assert!(os.writes.is_empty());
+}
+
+#[test]
+fn the_agents_open_file_replaces_a_file_that_is_saved_and_a_path_not_there_is_new() {
+    let (mut app, mut os) = window();
+    os.disk.insert(PATH.into(), todo());
+    open_path(&mut app, &mut os, PATH);
+    press(&mut app, &mut os, "down", "", 0);
+    assert!(app.status(&mut os).contains("line 2,"));
+    open_file(&mut app, &mut os, PATH).unwrap();
+    serve(&mut app, &mut os);
+    assert!(app.status(&mut os).contains("line 1,"), "back at the top");
+    open_file(&mut app, &mut os, "/home/user/new.txt").unwrap();
+    serve(&mut app, &mut os);
+    assert!(os.title().contains("new.txt"), "{}", os.title());
+}
+
+#[test]
+fn the_agents_open_file_is_refused_with_its_reason_and_asks_the_door_nothing() {
+    let (mut app, mut os) = window();
+    os.disk.insert(PATH.into(), todo());
+    os.disk.insert("/home/user/b.txt".into(), b"b\n".to_vec());
+    for path in [
+        "todo.txt",
+        "/home/../etc/passwd",
+        "/home/user/a b",
+        "/system/log",
+        "",
+    ] {
+        assert!(open_file(&mut app, &mut os, path).is_err(), "{path:?}");
+    }
+    assert!(os.log.is_empty(), "{:?}", os.log);
+    // Edits that are not saved are not opened over.
+    open_path(&mut app, &mut os, PATH);
+    type_text(&mut app, &mut os, "x");
+    os.log.clear();
+    let why = open_file(&mut app, &mut os, "/home/user/b.txt").unwrap_err();
+    assert!(why.contains("not saved"), "{why}");
+    assert!(os.log.is_empty(), "{:?}", os.log);
+    assert!(os.title().contains("todo.txt"));
+    // One request at a time.
+    save(&mut app, &mut os);
+    open_file(&mut app, &mut os, "/home/user/b.txt").unwrap();
+    let why = open_file(&mut app, &mut os, PATH).unwrap_err();
+    assert!(why.contains("still on its way"), "{why}");
+    serve(&mut app, &mut os);
+    assert!(os.title().contains("b.txt"), "{}", os.title());
+}
+
+#[test]
+fn the_doors_reason_for_the_agents_file_shows_in_the_status_row() {
+    let (mut app, mut os) = window();
+    open_file(&mut app, &mut os, "/home/user/c.txt").unwrap();
+    let (ticket, _) = os.pending.remove(0);
+    app.on_reply(&mut os, ticket, Err("the OS has no file door".into()))
+        .unwrap();
+    assert_eq!(os.status(), "the OS has no file door");
+    assert!(app.status(&mut os).ends_with("the OS has no file door"));
+}

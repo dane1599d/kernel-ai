@@ -61,6 +61,8 @@ mod lines;
 mod local_ask;
 mod local_script;
 mod mock_dns;
+#[allow(dead_code)] // The P5 cases that start it come with N-k's tasks.
+mod mock_https;
 mod mock_llm;
 mod models;
 mod notices;
@@ -87,6 +89,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::sync::{Arc, Mutex};
 
 use std::{env, fs};
 
@@ -271,6 +274,8 @@ fn execute(options: &Options) -> Result<(), String> {
         // once the first has passed (P2 plan section 4.2).
         let (mut next, mut fresh) = (Some(first), true);
         let mut boot = 1;
+        // The first boot's `differs` line, for the `then` boot to differ from.
+        let mut sample: Option<String> = None;
         while let Some(case) = next.take() {
             let service = match case.build {
                 true => Some(edit_smoke::service(&root, case.name)?),
@@ -419,6 +424,9 @@ fn execute(options: &Options) -> Result<(), String> {
             if case.gpu {
                 args.extend(screen::gpu_args());
             }
+            if case.rng {
+                args.extend(["-device".to_string(), "virtio-rng-pci".to_string()]);
+            }
             if case.bridge {
                 qemu::net_behind_bridge(&mut args);
             }
@@ -445,6 +453,7 @@ fn execute(options: &Options) -> Result<(), String> {
                     .as_ref()
                     .map_or_else(Vec::new, disk::ModelDisk::console_text),
                 cut: cutting.then(|| (format!("files: boot {boot}:"), cut_delay(case.name, boot))),
+                capture: case.differs.map(|text| (text, Arc::new(Mutex::new(None)))),
             };
             let requests = mock.requests();
             let after = |service: &Option<buildsvc::BuildService>| match (case.after, service) {
@@ -457,6 +466,7 @@ fn execute(options: &Options) -> Result<(), String> {
                 false => result,
             };
             let result = result
+                .and_then(|()| differs(&run, &mut sample))
                 .and_then(|()| after(&service))
                 .and_then(|()| match case.data {
                     Some(
@@ -681,6 +691,31 @@ fn update_disk(
 const SLOT_RELEASE_SEQ: u32 = 1;
 /// Where a chained slot case keeps the variable store between its boots.
 const SLOT_VARS: &str = "slot-vars.fd";
+
+/// A case's `differs` line: kept from its first boot, and on the next boot it
+/// must not be the same (two boots' ENTROPY samples).
+fn differs(run: &qemu::TestRun, sample: &mut Option<String>) -> Result<(), String> {
+    let Some((text, slot)) = &run.capture else {
+        return Ok(());
+    };
+    let got = slot
+        .lock()
+        .map_err(|_| "the capture lock was poisoned")?
+        .take();
+    let Some(got) = got else {
+        return Err(format!("FAIL: no kernel line contained {text:?}"));
+    };
+    match sample.replace(got.clone()) {
+        Some(previous) if previous == got => Err(format!(
+            "FAIL: both boots printed {text:?} with the same {got:?}"
+        )),
+        Some(previous) => {
+            println!("xtask: {text:?} differed between the boots: {previous} then {got}");
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
 
 /// UEFI firmware: a read-only code image plus a fresh writable copy of the variable store.
 struct Firmware {

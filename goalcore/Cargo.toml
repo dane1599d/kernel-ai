@@ -1,0 +1,13 @@
+[package]
+name = "goalcore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Proactive goals (ADR 0013 section 5): the goal record with its approved scope and
+# budget, the step state machine, check-in rules and the step log, as host-tested
+# code with no OS wiring. `no_std` + `alloc`, so the `goals` agent and the host
+# tests share it.
+[lib]
+doctest = false
