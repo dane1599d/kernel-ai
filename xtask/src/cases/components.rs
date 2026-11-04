@@ -187,6 +187,13 @@ pub(super) const CASES: &[TestCase] = &[
         server: false,
         ..case("appbench", "test=appbench")
     },
+    // Spike P5-S1: kainet's TLS 1.3 in hard-float ring 3, a client and a
+    // server in memory, its figures reported in the log.
+    TestCase {
+        expect: &["tlsbench: fastest of 10 full handshakes", "tlsbench: done"],
+        server: false,
+        ..case("tls-bench", "test=tls-bench")
+    },
     // The live scenario with the model on the disk and no server: `:why` is
     // answered by the local model.
     TestCase {

@@ -8,6 +8,8 @@ extern crate alloc;
 #[cfg(feature = "testca")]
 extern crate std;
 
+#[cfg(feature = "server")]
+pub mod bench;
 pub mod chunks;
 pub mod client;
 pub mod download;

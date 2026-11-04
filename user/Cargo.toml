@@ -44,6 +44,8 @@ sha2 = { version = "0.11.1", default-features = false }
 supervise = { path = "../supervise" }
 systemabi = { path = "../systemabi" }
 kaiprofile = { path = "../kaiprofile" }
+kainet = { path = "../kainet", features = ["server"] }
+rustls = { version = "=0.23.46", default-features = false }
 shellcore = { path = "../shellcore" }
 termcore = { path = "../termcore" }
 spin = "0.12.3"
