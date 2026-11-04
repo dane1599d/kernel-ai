@@ -184,10 +184,10 @@ The P2 close row in `docs/decisions.md` has each case and gap.
 - **Performance:** `desk-perf` is a gate under KVM, within S05-1's budgets at 1920x1080 (#476). A runner more than 3.5 times slower than the reference reports its figures without gating them (#584).
 - **Not checked in a boot, by design:** parts of `desk-panel` and `desk-standing`, which host tests cover, and `desk-perf`'s (d) and 2560x1440.
 
-**P4 status (2026-11-03):** **closing, not yet done**. Tasks 1-15 are merged.
+**P4 status (2026-11-04):** **every exit case passes; the tag waits on the founder**. Tasks 1-15 are merged.
 - **Built:** the seven built-in apps (Terminal, Files, Notes, Settings, System Monitor, Models and the Editor) on `uikit`, each with its actions; the built-ins as signed packages from the image's TUF repository, installs from a local mirror with `undo`, and the Apps sheet; the `c>` prompt, `cc build`, and Kai writing C at `c>` after S12-2 passed; themes; the release terms (MPL-2.0 with the DCO); and `release.yml`, dry-run on a throwaway tag.
-- **On main:** `app-terminal`, `app-settings`, `app-models`, `app-editor`, `pkg-image`, `pkg-install`, `desk-catalog`, `c-prompt` and `c-build`, under KVM and TCG.
-- **Not met yet:** the `app-files`, `app-notes` and `app-monitor` boot cases (#494 is the last); the root ceremony and `kernel-ai-updates` (task 18, with the founder); clearing the names "Kernel AI" and "Kai"; and fluency and actbench on the tag's input.
+- **On main:** all 12 exit cases, under KVM and TCG: `app-terminal`, `app-files`, `app-notes`, `app-settings`, `app-monitor`, `app-models`, `app-editor`, `pkg-image`, `pkg-install`, `desk-catalog`, `c-prompt` and `c-build`. `release-boot` imports a model into the release image in CI.
+- **Not met yet:** the root ceremony and `kernel-ai-updates` (task 18, with the founder), which gates rc.1; clearing the names "Kernel AI" and "Kai"; `release/seq` in the release PR; and fluency and actbench on the tag's input.
 
 The P4 plan's sections 3.5 and 11 have the v0.1 checklist and each case.
 
