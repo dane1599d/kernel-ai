@@ -18,7 +18,7 @@ mod chat;
 mod check;
 mod decode;
 mod fetch;
-mod hostpool;
+pub(crate) mod hostpool;
 mod inventory;
 mod machine;
 mod pin;

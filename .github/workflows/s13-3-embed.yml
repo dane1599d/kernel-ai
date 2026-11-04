@@ -1,0 +1,132 @@
+# Spike S13-3 `embed` (ADR 0013), not for merge: Qwen3-Embedding-0.6B Q8_0
+# through `infer` with last-token pooling, on GitHub's runner only (a real
+# model; never the founder's PC). llama.cpp is built at the goldens job's pin
+# and embeds the 100 strings with `--pooling last`; `cargo xtask embed check`
+# compares our vectors and token ids (bar: cosine at least 0.999), and
+# `cargo xtask embed bench` measures recall@5 on the generated corpus (bar
+# 0.8), the host's indexing tokens/s, and a query over 10,000 chunks.
+name: s13-3-embed
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - infer/src/model.rs
+      - infer/src/config.rs
+      - xtask/src/embed/**
+      - .github/workflows/s13-3-embed.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Qwen/Qwen3-Embedding-0.6B-GGUF (Apache-2.0), read from Hugging Face's API on 2026-11-04.
+  MODEL_URL: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/370f27d7550e0def9b39c1f16d3fbaa13aa67728/Qwen3-Embedding-0.6B-Q8_0.gguf
+  MODEL_SHA256: 06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439
+  # llama.cpp b11399, 2026-10-04, as llama-goldens.yml.
+  LLAMA_TAG: b11399
+  LLAMA_COMMIT: 2ca15f5404760548c39e7b92bd43116a09414a1a
+
+concurrency:
+  group: s13-3-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  embed:
+    name: S13-3 embed (cosine against llama.cpp, recall@5, host speed)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: The runner's CPU
+        run: |
+          nproc
+          grep -m1 '^model name' /proc/cpuinfo
+      - name: Reuse the model file from an earlier run
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/model
+          key: s13-3-model-${{ env.MODEL_SHA256 }}
+      - name: Download the pinned model and check its SHA-256
+        run: |
+          mkdir -p "$RUNNER_TEMP/model"
+          f="$RUNNER_TEMP/model/embed.gguf"
+          [ -f "$f" ] || curl -fL --retry 5 -o "$f" "$MODEL_URL"
+          echo "$MODEL_SHA256  $f" | sha256sum -c -
+      - name: Reuse the llama.cpp build
+        id: llama
+        uses: actions/cache@v4
+        with:
+          path: build/bin
+          key: s13-3-llama-server-${{ env.LLAMA_COMMIT }}
+      - name: Build llama-server at the pinned tag
+        if: steps.llama.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "$LLAMA_TAG" https://github.com/ggml-org/llama.cpp
+          test "$(git -C llama.cpp rev-parse HEAD)" = "$LLAMA_COMMIT"
+          cmake -S llama.cpp -B build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_BUILD_TESTS=OFF -DBUILD_SHARED_LIBS=OFF
+          cmake --build build --target llama-server -j "$(nproc)"
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: s13-3
+      - name: Build xtask (release, so the scan is timed optimised)
+        run: cargo build --release -p xtask
+      - name: llama.cpp's --pooling last vectors and token ids for the 100 strings
+        run: |
+          target/release/xtask embed strings --out strings.json
+          # An f32 KV cache and no flash attention, as the goldens job; a batch
+          # that holds any one string whole, as pooling needs.
+          ./build/bin/llama-server -m "$RUNNER_TEMP/model/embed.gguf" --embeddings --pooling last \
+            --port 8080 -c 4096 -b 4096 -ub 4096 -np 1 -t "$(nproc)" -ctk f32 -ctv f32 -fa off &
+          for i in $(seq 120); do curl -sf localhost:8080/health && break; sleep 2; done
+          python3 - <<'EOF'
+          import json, os, urllib.request
+
+          def post(path, body):
+              req = urllib.request.Request(
+                  "http://localhost:8080" + path,
+                  data=json.dumps(body).encode(),
+                  headers={"Content-Type": "application/json"},
+              )
+              with urllib.request.urlopen(req, timeout=600) as r:
+                  return json.load(r)
+
+          strings = json.load(open("strings.json"))
+          tokens, embeddings = [], []
+          for text in strings:
+              tokens.append(post("/tokenize", {"content": text, "add_special": True,
+                                               "parse_special": True})["tokens"])
+              data = post("/v1/embeddings", {"input": text, "encoding_format": "float"})
+              embeddings.append(data["data"][0]["embedding"])
+          out = {"llama_cpp": os.environ["LLAMA_TAG"], "pooling": "last",
+                 "sha256": os.environ["MODEL_SHA256"], "tokens": tokens,
+                 "embeddings": embeddings}
+          json.dump(out, open("llama.json", "w"))
+          print(len(strings), "strings;", len(embeddings[0]), "dimensions; first ids", tokens[0][:8], "...", tokens[0][-3:])
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s13-3-llama
+          path: |
+            strings.json
+            llama.json
+      - name: Cosine against llama.cpp (bar 0.999)
+        run: |
+          set -o pipefail
+          target/release/xtask embed check --file "$RUNNER_TEMP/model/embed.gguf" --llama llama.json | tee check.log
+      - name: Recall@5, indexing speed and a query over 10,000 chunks
+        if: always()
+        run: |
+          set -o pipefail
+          target/release/xtask embed bench --file "$RUNNER_TEMP/model/embed.gguf" | tee bench.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '```'
+            grep -h "S13-3\|xtask: missed\|xtask: lowest\|xtask: the 200" check.log bench.log 2>/dev/null
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
