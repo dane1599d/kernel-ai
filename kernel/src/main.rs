@@ -46,6 +46,7 @@ mod bootfiles;
 mod build_job;
 mod build_service;
 mod card_tests;
+mod card_wake_tests;
 mod catalog_tests;
 mod cc_build_tests;
 mod cc_tests;
@@ -72,6 +73,7 @@ mod edit_tests;
 mod efi;
 mod efi_tests;
 mod entropy;
+mod entropy_tests;
 mod entry;
 mod event_box;
 mod fault;
@@ -403,6 +405,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskBoot => run_case(desk_tests::boot_check),
         SelfTest::DeskPanel => run_case(desk_tests::panel_check),
         SelfTest::DeskPanelShell => run_case(desk_tests::panel_shell_check),
+        SelfTest::DeskCardWake => run_case(card_wake_tests::check),
         SelfTest::DeskCatalog => run_case(catalog_tests::check),
         SelfTest::UiWindow => run_case(ui_tests::check),
         SelfTest::AppEditor => run_case(app_editor_tests::check),
@@ -463,6 +466,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetFallback => run_case(net_tests::fallback_check),
         SelfTest::NetStatic => run_case(net_tests::static_check),
         SelfTest::NetDest => run_case(net_tests::dest_check),
+        SelfTest::EntropyBoots => run_case(entropy_tests::check),
         SelfTest::Slot => {
             // A slot boot holds `updated`'s record calls until its lever has
             // written: the guard is closed here, before the lever runs.

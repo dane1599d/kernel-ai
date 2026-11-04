@@ -23,12 +23,16 @@ pub mod bindings {
     });
 }
 
+pub use kabi::live::{NOTICE_FILES, NOTICE_TICKET};
+
 /// What the OS tells an app (`kai:app/events`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     /// The app started.
     Started,
-    /// The effect with this ticket finished: its result or why not.
+    /// The effect with this ticket finished: its result or why not. With ticket
+    /// [`NOTICE_TICKET`] it answers no effect but is a notice from the OS, whose
+    /// outcome is `Ok` of [`NOTICE_FILES`]: the person's files changed.
     EffectDone {
         ticket: u32,
         outcome: Result<String, String>,
