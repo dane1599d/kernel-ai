@@ -40,7 +40,7 @@ use llmproto::act::{ActError, ActRequest, History, history};
 use llmproto::chat::Completion;
 use llmproto::chat::{self, NO_MODEL};
 use llmproto::health::{State, Status};
-use llmproto::script::{self, AnswerError, ScriptRequest};
+use llmproto::script::{self, AnswerError, Lang, ScriptRequest};
 use llmproto::text::printable;
 use llmproto::tune::{self, TuneRequest, replay};
 use llmproto::{appjob, explain, http};
@@ -193,6 +193,9 @@ fn main() -> i32 {
     // Whether the script system prompt may be missing from the engine's cache:
     // at first, and after a request with another prompt.
     let mut cold = true;
+    // The prompt the script slot keeps warm: Rhai's, or the `c-1` card's
+    // while the person is at `c>` (`warm-lang`).
+    let mut warm_lang = Lang::Rhai;
     // Whether the `act` prefix changed (a remembered turn, `new`): compacted,
     // that is computed again, while no request waits.
     let mut stale = true;
@@ -225,9 +228,10 @@ fn main() -> i32 {
                 came
             }
             Some(local) if cold => {
-                let came = warm(local, &mut request, &mut caller);
+                let came = warm(local, warm_lang, &mut request, &mut caller);
                 cold = came.is_some();
-                if !cold && core::mem::take(&mut save_script) {
+                // The saved prefix is the Rhai prompt's.
+                if !cold && warm_lang == Lang::Rhai && core::mem::take(&mut save_script) {
                     local.save(local::SLOTS.script);
                 }
                 came
@@ -248,11 +252,14 @@ fn main() -> i32 {
         };
         let text = core::str::from_utf8(&request[..len]).unwrap_or("");
         let command = text.split([' ', '\n']).next();
-        // A C program or app request takes the script slot with its card.
-        cold |= matches!(
-            command,
-            Some("ask" | "explain" | "model" | "tune" | "program" | "app" | "app-start")
-        );
+        // A request with another prompt than the warm one takes the script
+        // slot: a C program's card, unless `c>` keeps it warm, and every other.
+        cold |= match command {
+            Some("script") => warm_lang != Lang::Rhai,
+            Some("program") => warm_lang != Lang::C,
+            Some("ask" | "explain" | "model" | "tune" | "app" | "app-start") => true,
+            _ => false,
+        };
         stale |= matches!(command, Some("remember" | "new"));
         backends.warming = local_warmable(&backends, stale, cold);
         let rest = text.split_once(' ').map_or("", |(_, rest)| rest);
@@ -266,6 +273,23 @@ fn main() -> i32 {
                 appjob::Start::Reply(reply) => reply,
             },
             Some("app-take") => jobs.take(rest),
+            // `warm-lang c|rhai`: the shell at `c>` and back at `kai>`.
+            Some("warm-lang") => {
+                let lang = match rest.trim() {
+                    "c" => Some(Lang::C),
+                    "rhai" => Some(Lang::Rhai),
+                    _ => None,
+                };
+                match lang {
+                    Some(lang) => {
+                        cold |= lang != warm_lang;
+                        warm_lang = lang;
+                        backends.warming = local_warmable(&backends, stale, cold);
+                        String::from("ok")
+                    }
+                    None => format!("err warm-lang takes c or rhai, not {:?}", rest.trim()),
+                }
+            }
             Some("app-stop") => jobs.stop(rest),
             // `warm`: whether both slots hold their prompts (S02-2 waits for it).
             Some("warm") => match local_warmable(&backends, stale, cold) {
@@ -357,16 +381,22 @@ fn warm_act(local: &mut local::Local, request: &mut [u8], caller: &mut u64) -> O
 /// Warms `local` for scripts until done or until a request comes, which is then
 /// in `request`: its length is returned. Waiting for one takes 1 ms, so the
 /// check ends the burst as the sleep it replaces would.
-fn warm(local: &mut local::Local, request: &mut [u8], caller: &mut u64) -> Option<usize> {
+fn warm(
+    local: &mut local::Local,
+    lang: Lang,
+    request: &mut [u8],
+    caller: &mut u64,
+) -> Option<usize> {
     let started = sys::time_ns();
     let mut came = None;
-    let warmed = local.warm(|| {
+    let warmed = local.warm(lang, || {
         came = sys::svc_recv(request, 1, caller).ok();
         came.is_some()
     });
     let ms = (sys::time_ns() - started) / 1_000_000;
     match (warmed, came) {
         (Err(why), _) => println!("local: the script prompt was not cached: {why}"),
+        (Ok(()), None) if lang == Lang::C => println!("local: the C card cached in {ms} ms"),
         (Ok(()), None) => println!("local: script prompt cached in {ms} ms"),
         (Ok(()), Some(_)) => {}
     }

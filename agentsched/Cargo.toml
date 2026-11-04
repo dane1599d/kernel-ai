@@ -1,0 +1,17 @@
+[package]
+name = "agentsched"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The model scheduler's policy (ADR 0013 section 2): a pure decision crate, with no
+# engine, no clock and no `llm` wiring. Given the queue, the budgets and the time,
+# it says what runs next and where each agent's state goes. `no_std` + `alloc`, so
+# `llm` can run the same code later; the tests drive it with a fake clock and a
+# fake engine, as `sched`'s policies are.
+[lib]
+doctest = false
+
+[dependencies]
+kaiagent = { path = "../kaiagent" }
