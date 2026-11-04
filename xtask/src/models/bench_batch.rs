@@ -24,7 +24,7 @@ const STEPS: usize = 8;
 const SHORT: usize = 32;
 const LONG: usize = 1024;
 /// Sequences decoded together.
-const BATCHES: [usize; 3] = [1, 2, 4];
+const BATCHES: [usize; 4] = [1, 2, 4, 8];
 /// S13-2's bar at 2 sequences.
 const PASS: f64 = 1.6;
 
@@ -86,6 +86,34 @@ fn step(
     Ok((per_layer * REAL_LAYERS as f64 + rest) / STEPS as f64)
 }
 
+/// Tokens a second through one prompt block of `infer::PREFILL_TOKENS`, scaled
+/// to the 4B's layers without the output projection: what the products run at
+/// when 32 tokens share each row read, the most a batch's layers could reach.
+fn prefill(
+    fewer: &gguf::Gguf<'_>,
+    more: &gguf::Gguf<'_>,
+    pool: &dyn Parallel,
+) -> Result<f64, String> {
+    let block = |file: &gguf::Gguf<'_>| -> Result<f64, String> {
+        let mut model = infer::Model::new(file, Tier::best(), SHORT + infer::PREFILL_TOKENS)
+            .map_err(|e| e.to_string())?;
+        model.set_parallel(pool);
+        let mut kv = model.kv_cache().map_err(|e| e.to_string())?;
+        let prompt: Vec<u32> = (0..infer::PREFILL_TOKENS as u32)
+            .map(|i| i * 31 + 7)
+            .collect();
+        Ok(sample(|| {
+            kv.clear();
+            model
+                .forward_batch(&mut kv, &prompt, None)
+                .expect("a block");
+        })[0]
+            .as_secs_f64())
+    };
+    let per_layer = ((block(more)? - block(fewer)?) / (LAYERS - FEWER) as f64).max(1e-9);
+    Ok(infer::PREFILL_TOKENS as f64 / (per_layer * REAL_LAYERS as f64))
+}
+
 pub fn run() -> Result<(), String> {
     let build = |layers| infer::fixture::build(&infer::fixture::Spec::qwen3_4b_layers(layers));
     let (fewer, more) = (build(FEWER), build(LAYERS));
@@ -119,6 +147,12 @@ pub fn run() -> Result<(), String> {
                 cells.push(format!(
                     "{n} seq: {total:.1} tokens/s total, {:.1} each ({gain:.2}x)",
                     total / n as f64
+                ));
+            }
+            if cached == SHORT {
+                cells.push(format!(
+                    "prefill block, layers only: {:.1} tokens/s",
+                    prefill(&fewer, &more, pool.as_ref())?
                 ));
             }
             println!(
