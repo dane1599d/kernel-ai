@@ -7,8 +7,8 @@
 //! host consent grounds. So the line is held to what an agent's network use
 //! needs and no more:
 //!
-//! - TCP only, to named ports: an agent fetches over TLS, and `ports:any` or
-//!   none names nothing it can use.
+//! - TCP only, to named ports: an agent fetches over TLS, and `ports:any`,
+//!   none, or a range of [`MAX_RANGE`] ports or more names nothing it can use.
 //! - Host names, never literal addresses: what an agent reaches is what a
 //!   person can read in the install ask, and connect follows resolve.
 //! - At least one host, each a name of two labels or more, so no suffix is a
@@ -17,6 +17,10 @@
 use crate::Refusal;
 use alloc::string::ToString;
 use netdest::{AddrRange, Dest, PortRange, Protocol};
+
+/// The widest port range that still names ports (C on #695: `1-65535` is
+/// `any` written out).
+pub const MAX_RANGE: u16 = 16;
 
 /// The `net` line's value: `None` for `none`, or the destination.
 pub fn parse(value: &str) -> Result<Option<Dest>, Refusal> {
@@ -31,7 +35,8 @@ pub fn parse(value: &str) -> Result<Option<Dest>, Refusal> {
     if dest.addrs != AddrRange::NoAddrs {
         return Err(refuse("an agent names hosts, never addresses"));
     }
-    if matches!(dest.ports, PortRange::Any | PortRange::NoPorts) {
+    let wide = matches!(dest.ports, PortRange::Range(low, high) if high - low >= MAX_RANGE);
+    if wide || matches!(dest.ports, PortRange::Any | PortRange::NoPorts) {
         return Err(refuse("an agent names the ports it uses"));
     }
     if dest.hosts.is_empty() {

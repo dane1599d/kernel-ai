@@ -542,6 +542,11 @@ fn the_net_line_is_none_or_a_destination_an_agent_may_hold() {
     assert_eq!(dest.hosts, ["api.weather.example"]);
     // It reads back as it was written.
     assert_eq!(Manifest::parse(&parsed.format()).unwrap(), parsed);
+    let few = with("net", "proto:tcp,ports:8000-8015,hosts:a.example");
+    assert!(
+        Manifest::parse(&few).is_ok(),
+        "a range of 16 ports is named"
+    );
     for (value, why) in [
         ("any", "netdest"),
         ("example.com", "netdest"),
@@ -556,6 +561,8 @@ fn the_net_line_is_none_or_a_destination_an_agent_may_hold() {
         ),
         ("proto:tcp,ports:any,hosts:a.example", "ports"),
         ("proto:tcp,hosts:a.example", "ports"),
+        ("proto:tcp,ports:1-65535,hosts:a.example", "ports"),
+        ("proto:tcp,ports:8000-8016,hosts:a.example", "ports"),
         ("proto:tcp,ports:443", "at least one host"),
         ("proto:tcp,ports:443,hosts:com", "netdest"),
         ("None", "netdest"),
