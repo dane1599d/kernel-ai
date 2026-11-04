@@ -119,7 +119,9 @@ impl<H: Hal, T: Transport, const SIZE: usize> VirtioNet<H, T, SIZE> {
     }
 
     /// Takes back the receive buffer for `token`: the header's and the
-    /// frame's lengths in it.
+    /// frame's lengths in it. The length is the device's word, so one that does
+    /// not fit `buffer`, or leaves no frame past the header, is an error and
+    /// the frame is dropped (lane C's review).
     ///
     /// # Safety
     /// `buffer` must be the one [`Self::add_receive`] got for `token`.
@@ -130,7 +132,10 @@ impl<H: Hal, T: Transport, const SIZE: usize> VirtioNet<H, T, SIZE> {
     ) -> Result<(usize, usize), Error> {
         // SAFETY: the caller passes the same buffer the token was given for.
         let len = unsafe { self.rx.pop_used(token, &[], &mut [buffer])? } as usize;
-        Ok((HEADER, len.saturating_sub(HEADER)))
+        if len <= HEADER || len > buffer.len() {
+            return Err(Error::IoError);
+        }
+        Ok((HEADER, len - HEADER))
     }
 
     /// Whether a frame can be sent now.

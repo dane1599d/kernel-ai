@@ -11,24 +11,32 @@
 
 use super::{BUFFER_LEN, Nic, QUEUE_SIZE};
 use crate::log;
+use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::time::Instant;
 
 /// Ethernet frame size including the 14-byte header: a 1500-byte IP MTU.
 const FRAME_MTU: usize = 1514;
 
+/// Set once the card filled a receive buffer it was never given, so that is
+/// logged once, not on every poll after.
+static STALLED: AtomicBool = AtomicBool::new(false);
+
 /// A received frame: its buffer, and where the frame lies in it.
 type Received = (Vec<u8>, usize, usize);
 
 struct Card {
-    nic: Nic,
+    /// On the heap with the tables below: 256 slots each would be tens of
+    /// kilobytes on the stack that builds them (lane C's review).
+    nic: Box<Nic>,
     /// The receive buffers the card holds, by token.
-    rx: [Option<Vec<u8>>; QUEUE_SIZE],
+    rx: Vec<Option<Vec<u8>>>,
     /// The frames the card is sending, header first, by token.
-    tx: [Option<Vec<u8>>; QUEUE_SIZE],
+    tx: Vec<Option<Vec<u8>>>,
     /// Receive buffers handed back and not yet given to the card.
     stash: Vec<Vec<u8>>,
 }
@@ -69,7 +77,14 @@ impl Card {
     /// The next frame the card received.
     fn receive(&mut self) -> Option<Received> {
         let token = self.nic.poll_receive()?;
-        let mut buffer = self.rx.get_mut(usize::from(token))?.take()?;
+        let Some(mut buffer) = self.rx.get_mut(usize::from(token)).and_then(Option::take) else {
+            // The device names a buffer it was never given: nothing can be
+            // popped safely, so receiving stops, and the log says why.
+            if !STALLED.swap(true, Ordering::Relaxed) {
+                log!("net: the card filled receive buffer {token}, which it was never given");
+            }
+            return None;
+        };
         // SAFETY: `buffer` is the one `add_receive` got for `token`.
         match unsafe { self.nic.receive_complete(token, &mut buffer) } {
             Ok((header, len)) => Some((buffer, header, len)),
@@ -108,9 +123,9 @@ impl NicDevice {
     /// The card with every receive buffer given to it.
     pub fn new(nic: Nic) -> Self {
         let mut card = Card {
-            nic,
-            rx: [const { None }; QUEUE_SIZE],
-            tx: [const { None }; QUEUE_SIZE],
+            nic: Box::new(nic),
+            rx: (0..QUEUE_SIZE).map(|_| None).collect(),
+            tx: (0..QUEUE_SIZE).map(|_| None).collect(),
             stash: Vec::with_capacity(QUEUE_SIZE),
         };
         card.stash
