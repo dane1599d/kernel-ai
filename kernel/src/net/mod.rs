@@ -6,6 +6,7 @@
 //! the DHCP client's news to `setup`, so a lease is never missed whoever polled.
 //! Between those, the `net` thread polls it on its own.
 
+pub mod bulk;
 mod device;
 pub mod ping;
 pub mod resolve;
@@ -19,12 +20,13 @@ use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 use core::sync::atomic::{AtomicU16, Ordering};
 use device::NicDevice;
+pub use device::{burst, set_burst, set_sync_tx, set_tx_delay_ms, sync_tx};
 use smoltcp::iface::{Config, Interface, SocketSet, SocketStorage};
 use smoltcp::socket::tcp;
 use smoltcp::time::{Duration, Instant};
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress};
 use spin::Mutex;
-use virtio_drivers::device::net::VirtIONet;
+use virtio_drivers::device::net::VirtIONetRaw;
 
 const RX_BUFFER: usize = 64 * 1024;
 const TX_BUFFER: usize = 16 * 1024;
@@ -33,11 +35,26 @@ const MAX_POLL_GAP_MS: u64 = 2;
 const FIRST_EPHEMERAL_PORT: u16 = 49152;
 /// Receive and transmit queue depth: a power of two, kept small because the driver
 /// builds its queue arrays on the stack.
-const QUEUE_SIZE: usize = 16;
-/// Per-packet buffer: at least 1526 bytes and a multiple of 8.
-const BUFFER_LEN: usize = 2048;
+pub(super) const QUEUE_SIZE: usize = match option_env!("KAI_NET_QUEUE") {
+    // Spike P5-S2: the queue depth, set at build time, a power of two.
+    Some(text) => parse_queue(text.as_bytes()),
+    None => 16,
+};
 
-type Nic = VirtIONet<KernelHal, SplitTransport, QUEUE_SIZE>;
+const fn parse_queue(text: &[u8]) -> usize {
+    let mut value = 0;
+    let mut i = 0;
+    while i < text.len() {
+        value = value * 10 + (text[i] - b'0') as usize;
+        i += 1;
+    }
+    assert!(value.is_power_of_two() && value <= 256);
+    value
+}
+/// Per-packet buffer: at least 1526 bytes and a multiple of 8.
+pub(super) const BUFFER_LEN: usize = 2048;
+
+type Nic = VirtIONetRaw<KernelHal, SplitTransport, QUEUE_SIZE>;
 
 struct Net {
     device: NicDevice,
@@ -53,7 +70,9 @@ unsafe impl Send for Net {}
 impl Net {
     /// Moves frames both ways and applies whatever the DHCP client learned.
     fn poll(&mut self) {
+        self.device.send_due();
         self.iface.poll(now(), &mut self.device, &mut self.sockets);
+        self.device.send_due();
         self.setup
             .after_poll(&mut self.iface, &mut self.sockets, hpet::nanos());
     }
@@ -69,7 +88,7 @@ fn now() -> Instant {
 /// Brings up the network card the PCI probe found, polled, and starts setting up
 /// its address the way the command line said (see [`setup::configure`]).
 pub fn init(transport: SplitTransport) -> Result<(), &'static str> {
-    let mut nic = Nic::new(transport, BUFFER_LEN).map_err(|_| "net: virtio-net setup failed")?;
+    let mut nic = Nic::new(transport).map_err(|_| "net: virtio-net setup failed")?;
     nic.disable_interrupts();
     let mut device = NicDevice::new(nic);
     let mac = device.mac();

@@ -147,6 +147,7 @@ mod term_tests;
 mod terminal;
 mod thread_tests;
 mod threads;
+mod throughput_tests;
 mod timer;
 mod tufbench_tests;
 mod tune_ab_tests;
@@ -462,6 +463,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetSetup => run_case(net_tests::setup_check),
         SelfTest::NetFallback => run_case(net_tests::fallback_check),
         SelfTest::NetStatic => run_case(net_tests::static_check),
+        SelfTest::NetThroughput => run_case(throughput_tests::check),
         SelfTest::Slot => {
             // A slot boot holds `updated`'s record calls until its lever has
             // written: the guard is closed here, before the lever runs.
