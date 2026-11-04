@@ -9,15 +9,24 @@
 //! trial ([`bootslot::stage_end`]), written to the boot variable last.
 //!
 //! A stop is one of two things. [`Stop::Retry`] is the network's: a cut, a
-//! timeout, a 429 or a 5xx. Nothing is wrong with what was written, the slot stays
-//! Updating, and calling [`stage`] again resumes. [`Stop::Bad`] is a refusal of
-//! what the server sent (or of the server): a chunk that is not the signed one, a
-//! chunk of the wrong length, a whole image that is not the signed one, an answer
-//! that is not a 206, a refused certificate or redirect. The slot stays
-//! unbootable, nothing after it is written, and a bad whole forgets the checkpoint
-//! (the list was wrong, so nothing written under it is trusted).
+//! timeout, a connection or TLS transport that failed, a 429 or a 5xx. Nothing is
+//! wrong with what was written, the slot stays Updating, and calling [`stage`]
+//! again resumes. [`Stop::Bad`] is a refusal of what the server sent (or of the
+//! server): a chunk that is not the signed one, a chunk of the wrong length, a
+//! whole image that is not the signed one, an answer that is not a 206, a refused
+//! certificate or redirect. The slot stays unbootable, nothing after it is
+//! written, and a bad whole forgets the checkpoint (the list was wrong, so nothing
+//! written under it is trusted).
+//!
+//! A download can span a long time and many retries, so once every chunk and the
+//! read-back have checked out, and before the slot becomes a trial, the signed
+//! metadata is asked again ([`stage`]'s `recheck`): the release must still be the
+//! one the repository signs. If a newer release is signed, or this one was pulled,
+//! that is [`Bad::Superseded`]; if the metadata cannot be confirmed (the repository
+//! cannot be reached, or its metadata has expired), a [`Stop::Retry`], and the next
+//! call finds every chunk written and goes straight to the check.
 
-use crate::plan::Job;
+use crate::plan::{Job, Refused};
 use crate::slot::{READ_BACK, SlotPartial};
 use alloc::format;
 use alloc::string::String;
@@ -25,6 +34,8 @@ use bootslot::{Nv, Slot};
 use kainet::chunks::Chunks;
 use kainet::download::{DownloadError, Fetcher, Report, download};
 use kainet::http::HttpError;
+use kainet::tls::TlsError;
+use kaituf::meta::TargetFile;
 
 /// The boot variable, which `stage` changes through the stage events and writes
 /// back. A `set` is durable when it returns.
@@ -57,6 +68,9 @@ pub enum Bad {
     /// The fetch was refused: a certificate, a host off the repository's, a
     /// malformed answer.
     Fetch(String),
+    /// The image checked out, and the signed metadata no longer names this release
+    /// (a newer one is signed, or this one was pulled): it is not made a trial.
+    Superseded,
 }
 
 /// Why `stage` stopped.
@@ -98,6 +112,9 @@ impl Stop {
             Self::Bad(Bad::Fetch(why)) => {
                 format!("the download was refused ({why}); the slot stays unbootable")
             }
+            Self::Bad(Bad::Superseded) => String::from(
+                "the repository no longer signs this release; the slot stays unbootable",
+            ),
             Self::Store(why) => String::from(*why),
         }
     }
@@ -121,12 +138,34 @@ fn stop_of(error: DownloadError) -> Stop {
         DownloadError::Store(READ_BACK) => Stop::Bad(Bad::ReadBack),
         DownloadError::Store(why) => Stop::Store(why),
         DownloadError::Fetch(error) => match error {
-            HttpError::Truncated | HttpError::Timeout | HttpError::Connect(_) => Stop::Retry {
+            // A transport that failed under TLS (in the handshake or a record) is
+            // the network's, like a cut; what rustls itself refuses (a certificate,
+            // a record that does not decrypt, a downgrade) is not.
+            HttpError::Truncated
+            | HttpError::Timeout
+            | HttpError::Connect(_)
+            | HttpError::Tls(TlsError::Transport(_) | TlsError::Truncated) => Stop::Retry {
                 after_s: None,
                 why: format!("{error:?}"),
             },
             error => Stop::Bad(Bad::Fetch(format!("{error:?}"))),
         },
+    }
+}
+
+/// The metadata asked again, now the image has checked out: whether the repository
+/// still signs this release.
+fn confirm(
+    job: &Job,
+    recheck: &mut dyn FnMut() -> Result<(TargetFile, TargetFile), Refused>,
+) -> Result<(), Stop> {
+    match recheck() {
+        Ok((image, list)) if job.still_signed(&image, &list) => Ok(()),
+        Err(Refused::Repository(why)) => Err(Stop::Retry {
+            after_s: None,
+            why: format!("the signed metadata could not be confirmed: {why}"),
+        }),
+        Ok(_) | Err(_) => Err(Stop::Bad(Bad::Superseded)),
     }
 }
 
@@ -138,12 +177,18 @@ fn stop_of(error: DownloadError) -> Stop {
 /// crash resumes at the first unchecked chunk; after a [`Stop::Bad`] it starts the
 /// image's download again from the checkpoint, which a bad chunk leaves where it
 /// was. On success the slot is a trial of the release, at the boot variable.
+///
+/// `recheck` refreshes the signed metadata again ([`crate::plan::refresh`]) and
+/// gives the pair it names. It is called once, after every chunk and the read-back
+/// have checked out and before the slot becomes a trial; the pair must be the
+/// job's (see [`Job::still_signed`]).
 pub fn stage(
     job: &Job,
     list: &Chunks,
     nv: &mut Nv,
     boot: &mut dyn Boot,
     partial: &mut SlotPartial<'_>,
+    recheck: &mut dyn FnMut() -> Result<(TargetFile, TargetFile), Refused>,
     fetch: &mut Fetcher<'_>,
 ) -> Result<Staged, Stop> {
     bootslot::stage_begin(nv, job.slot);
@@ -157,6 +202,7 @@ pub fn stage(
             return Err(stop_of(error));
         }
     };
+    confirm(job, recheck)?;
     bootslot::stage_end(nv, job.slot, job.release.seq);
     boot.set(nv).map_err(Stop::Store)?;
     Ok(Staged {

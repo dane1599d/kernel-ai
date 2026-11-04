@@ -113,6 +113,17 @@ fn release(chunks: usize, salt: u8) -> Release7 {
     }
 }
 
+/// The metadata refreshed again, as it signs `r`: nothing has changed since.
+fn signed(r: &Release7) -> impl FnMut() -> Result<(TargetFile, TargetFile), Refused> {
+    let pair = (
+        image_target(&r.bytes, u64::from(SEQ), TAG),
+        list_target(&r.text),
+    );
+    move || Ok(pair.clone())
+}
+
+mod recheck;
+
 // ---- the plan
 
 #[test]
@@ -514,6 +525,7 @@ impl World {
             &mut self.nv,
             &mut self.var,
             &mut partial,
+            &mut signed(r),
             &mut |range, sink| server.fetch(range, sink),
         )
     }
@@ -705,6 +717,7 @@ fn a_certificate_or_host_refusal_is_a_refusal_and_a_dropped_connection_is_a_retr
         &mut world.nv,
         &mut world.var,
         &mut partial,
+        &mut signed(&r),
         &mut refused,
     )
     .unwrap_err();
@@ -724,6 +737,7 @@ fn a_certificate_or_host_refusal_is_a_refusal_and_a_dropped_connection_is_a_retr
             &mut world.nv,
             &mut world.var,
             &mut partial,
+            &mut signed(&r),
             &mut fails,
         )
         .unwrap_err();
@@ -746,6 +760,7 @@ fn a_list_whose_chunks_do_not_make_the_signed_image_forgets_the_mark() {
         &mut world.nv,
         &mut world.var,
         &mut partial,
+        &mut signed(&r),
         &mut |range, sink| server.fetch(range, sink),
     )
     .unwrap_err();
@@ -850,6 +865,7 @@ fn the_slot_is_flushed_before_a_mark_says_a_chunk_is_in_it() {
         &mut nv,
         &mut var,
         &mut partial,
+        &mut signed(&r),
         &mut |range, sink| server.fetch(range, sink),
     )
     .unwrap_err();

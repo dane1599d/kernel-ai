@@ -296,12 +296,21 @@ fn run(mock: &Mock, device: &mut Device) -> Result<Staged, Failed> {
     let chunks = job.chunks(&bytes).map_err(Failed::Refused)?;
     let url = Url::parse(&job.image_url).map_err(|e| Failed::Fetch(e.into()))?;
     let mut partial = SlotPartial::new(&mut device.slot, &mut device.memo, &job.release);
+    // The metadata again, from its own connection, once the image has checked out.
+    let mut recheck = || {
+        let mut again = self::online(mock);
+        let mut cache = TufCache {
+            vol: &mut device.trust,
+        };
+        plan::refresh(&mut again, &mut cache, now)
+    };
     stage(
         &job,
         &chunks,
         &mut device.nv,
         &mut device.var,
         &mut partial,
+        &mut recheck,
         &mut |range, sink| over.range(&url, range, sink),
     )
     .map_err(Failed::Stop)

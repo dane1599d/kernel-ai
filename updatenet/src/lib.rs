@@ -21,7 +21,10 @@
 //!   first unchecked chunk. A bad chunk, a bad whole, a short chunk, a refused
 //!   certificate or redirect, or any other answer stops with [`stage::Stop::Bad`]:
 //!   the slot stays unbootable and nothing after it is written. Only a release
-//!   that checks out end to end becomes a trial slot ([`bootslot::stage_end`]).
+//!   that checks out end to end becomes a trial slot ([`bootslot::stage_end`]),
+//!   and only if the signed metadata, refreshed again just before
+//!   ([`plan::Job::still_signed`]), still names it: a long download can span a newer
+//!   release, a pulled one or metadata that has expired.
 //! - [`net::Over`]: the transport, over `kainet`'s HTTPS, held to the repository's
 //!   hosts on 443 for every hop of a redirect.
 //!

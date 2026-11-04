@@ -266,6 +266,12 @@ impl Job {
         Ok(list)
     }
 
+    /// Whether the metadata, refreshed again, still signs this job's release: the
+    /// same `slot.img` (sequence, tag, length and hash) and the same chunk list.
+    pub fn still_signed(&self, image: &TargetFile, list: &TargetFile) -> bool {
+        release_of(image).is_ok_and(|release| release == self.release) && *list == self.list
+    }
+
     /// Whether the update may reach `host` on `port`: the repository's hosts on 443.
     pub fn reaches(&self, host: &str, port: u16) -> bool {
         self.hosts.allows(host, port)
