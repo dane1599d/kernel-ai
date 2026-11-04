@@ -1,0 +1,15 @@
+[package]
+name = "kaimem"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Long-term memory (ADR 0013 §3): `kai-memory 1` records, the store with its
+# forget window, the rule for who may make a memory, and the prompt's memory
+# section. `no_std` + `alloc`, host-tested only; nothing in the OS uses it yet.
+[lib]
+doctest = false
+
+[dependencies]
+agentabi = { path = "../agentabi" }

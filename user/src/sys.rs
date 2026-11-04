@@ -899,6 +899,12 @@ pub fn pkg_fetch(request: &HttpRequest) -> Result<usize, Error> {
     .map(|len| len as usize)
 }
 
+/// Says the shell has a card waiting for the trusted path (CARD_READY): the
+/// kernel's terminal asks for it with `termcore::menu::TAKE_CARD` when it may.
+pub fn card_ready() -> Result<(), Error> {
+    call(call::CARD_READY, [0; 6]).map(|_| ())
+}
+
 /// Sends the edit service one open or command for an app that holds the `edit`
 /// grant, through the kernel's journal; its answer goes into `reply`, which must
 /// hold [`kabi::MAX_MESSAGE`] bytes, and its length comes back (needs EDIT).

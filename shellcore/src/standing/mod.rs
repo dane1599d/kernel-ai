@@ -401,11 +401,7 @@ fn runnable(action: &str) -> Option<&'static str> {
 
 /// A package name (ADR 0011 §2): `[a-z][a-z0-9-]{1,11}`.
 fn is_app(name: &str) -> bool {
-    (2..=12).contains(&name.len())
-        && name.starts_with(|c: char| c.is_ascii_lowercase())
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    kabi::pkgname::is_valid(name)
 }
 
 fn when_text(when: &When) -> String {

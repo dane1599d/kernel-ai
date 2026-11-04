@@ -19,6 +19,7 @@ mod act;
 mod actions;
 mod apart;
 mod appbuild;
+mod appcard;
 mod appinstall;
 mod appjob;
 mod appline;

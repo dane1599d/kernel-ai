@@ -115,6 +115,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
             signed.length
         )],
         cut: None,
+        capture: None,
     };
     qemu::run_test(&qemu, &qemu_args, &target_dir, &run)
 }
