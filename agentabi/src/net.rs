@@ -5,7 +5,7 @@
 //! A word in a clause that says not to ("don't fetch weather") grounds
 //! nothing. What a fetch reads is `Data`, so P-F holds for what follows:
 //! read content may go out only to a host the line names. `:resolve` and
-//! `:ping` are read rows too, since a resolve and a ping reach the network.
+//! `:ping` are one read row, `net_lookup`, since both reach the network.
 
 use crate::{Action, Arg, ArgType, Facts, Inverse, Owner, RetType, Returns, Role, Tier};
 
@@ -69,30 +69,18 @@ pub const NET_FETCH: Action = Action {
     )
 };
 
-pub const NET_RESOLVE: Action = Action {
-    cues: &["resolve", "dns", "address"],
+/// `:resolve` and `:ping` as one read row, to keep the pack in its budget
+/// (Token counts run 41881793165: three rows put it 9 tokens over).
+pub const NET_LOOKUP: Action = Action {
+    cues: &["resolve", "dns", "address", "ping", "reachable", "latency"],
     ..read(
-        "net_resolve",
-        "the addresses a host name resolves to",
+        "net_lookup",
+        "a host's addresses, and how many ms it takes to answer",
         &[HOST],
         Returns::Content("dns"),
         RetType::Data,
     )
 };
 
-pub const NET_PING: Action = Action {
-    cues: &["ping", "reachable", "latency"],
-    ..read(
-        "net_ping",
-        "whether a host answers, and in how many ms",
-        &[HOST],
-        Returns::System,
-        RetType::Of(ArgType::Int {
-            min: -1,
-            max: 60_000,
-        }),
-    )
-};
-
 /// The network rows, in `ROWS` order.
-pub const NET_ROWS: [Action; 3] = [NET_FETCH, NET_RESOLVE, NET_PING];
+pub const NET_ROWS: [Action; 2] = [NET_FETCH, NET_LOOKUP];

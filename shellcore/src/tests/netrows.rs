@@ -67,23 +67,23 @@ fn a_lookalike_host_matches_nothing() {
 }
 
 #[test]
-fn resolve_and_ping_are_read_rows_on_a_grounded_host() {
+fn a_lookup_is_a_read_row_on_a_grounded_host() {
     let (host, mut shell) = with_calls(vec![
-        call(r#"{"name":"net_resolve","arguments":{"host":"example.com"}}"#),
-        call(r#"{"name":"net_ping","arguments":{"host":"example.com"}}"#),
-        call(r#"{"name":"net_ping","arguments":{"host":"example.org"}}"#),
+        call(r#"{"name":"net_lookup","arguments":{"host":"example.com"}}"#),
+        call(r#"{"name":"net_lookup","arguments":{"host":"example.org"}}"#),
     ]);
-    let resolved = shell.eval("resolve example.com");
+    let found = shell.eval("ping example.com");
     assert!(
-        resolved.ok && resolved.text.contains("93.184.215.14"),
-        "{resolved:?}"
+        found.ok
+            && found
+                .text
+                .contains("example.com: 93.184.215.14; answers in 12 ms"),
+        "{found:?}"
     );
-    let pinged = shell.eval("ping example.com");
-    assert!(pinged.ok && pinged.confirm.is_none(), "{pinged:?}");
-    let other = shell.eval("ping example.com");
+    let other = shell.eval("resolve example.com");
     assert_eq!(
         other.confirm,
-        Some(3),
+        Some(2),
         "example.org was not named: {other:?}"
     );
     assert_eq!(
