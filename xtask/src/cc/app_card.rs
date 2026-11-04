@@ -6,6 +6,7 @@
 use super::app_run::{self, in_call};
 use ccserve::build::{self, Built, KAIAPP_H, Kind};
 use livecore::Instance;
+use livecore::txn::{Inputs, Storage};
 use llmproto::pack::{self, capp1};
 use uikit::widget::{UiEvent, Value};
 use wasmhost::CoreInstance;
@@ -89,9 +90,7 @@ fn the_template_and_every_example_pass_the_trial() {
             .map(|(request, main, _)| (*request, *main)),
     );
     for (what, main) in mains {
-        let mut shm = vec![0u8; build::shm::BYTES];
-        build::shm::put(&mut shm, &built(main).artifact).unwrap();
-        let report = ccserve::trial::serve("kaiapp", &shm, &Clock)
+        let report = app_run::trial("kaiapp", &built(main).artifact)
             .unwrap_or_else(|why| panic!("{what}: {why}"));
         assert!(
             report.starts_with("trial ok: init, started, a key, a click on node "),
