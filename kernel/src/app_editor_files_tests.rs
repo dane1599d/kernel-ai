@@ -81,9 +81,10 @@ pub(crate) fn click_into_the_code() {
     threads::sleep_ms(CLICK_MS);
 }
 
-/// Ctrl-O and the path: two stages of the host's keys, sent in order.
+/// Ctrl-O and the path: one stage of the host's keys. Two stages announced together are typed
+/// by threads that race for the monitor, so the path could arrive before Ctrl-O and land in the
+/// buffer as text.
 pub(crate) fn ask_to_open() {
-    log!("app-editor-files: ready for keys");
     log!("app-editor-files: ready for keys");
 }
 
