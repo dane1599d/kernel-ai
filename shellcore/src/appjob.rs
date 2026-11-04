@@ -26,8 +26,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 /// The longest the model may take over one app answer off the line: a full
-/// answer at about 4.8 tokens a second, with room for a slower guest.
-pub const APP_ROUND_MS: u64 = 300_000;
+/// answer at about 4.8 tokens a second, with room for a slower guest. llm
+/// gives an app round as long.
+pub const APP_ROUND_MS: u64 = llmproto::script::APP_SERVICE_TIMEOUT_MS;
 /// The lines that ask after a build in the background.
 pub const STATUS_LINE: &str = "build status";
 pub const STOP_LINE: &str = "stop building";
