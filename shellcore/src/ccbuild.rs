@@ -50,7 +50,7 @@ impl CcBuilt {
         let bad = || format!("cc's build reply is not one: {}", shown(text));
         let mut words = text.splitn(3, ' ');
         let app = match words.next() {
-            Some("app") => true,
+            Some("app" | "window") => true,
             Some("component") => false,
             _ => return Err(bad()),
         };

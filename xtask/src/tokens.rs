@@ -9,6 +9,7 @@
 //! the estimate undercounts them. It also counts S05-2's agent views (ADR 0005):
 //! each P4 app's mock window as `ui_view` shows it, which fails past
 //! `deskcore::view::MAX_TOKENS` or when the view's estimate undercounts it.
+//! The `c-app-1` card is held to the same alarm on its own.
 //! The token-count workflow runs it on GitHub's runner.
 
 use bpe::Tokenizer;
@@ -46,6 +47,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
     print!("{}", report(&tok, &chat));
     print!("{}", views(&tok));
     check_budget(&tok)?;
+    check_app_card(&tok)?;
     check_views(&tok)
 }
 
@@ -120,6 +122,24 @@ fn check_budget(tok: &Tokenizer) -> Result<(), String> {
         )),
         (true, false) => Err(format!(
             "the pack estimate ({estimate}) undercounts the real {real} tokens"
+        )),
+    }
+}
+
+/// The `c-app-1` card on its own within the alarm in real tokens (plan "Kai
+/// builds apps", piece 2), and its estimate, which the host test uses, not
+/// under them.
+fn check_app_card(tok: &Tokenizer) -> Result<(), String> {
+    let card = pack::capp1::render();
+    let real = count(tok, &card);
+    let estimate = pack::capp1::estimate_tokens(&card);
+    match (real <= PACK_ALARM, estimate >= real) {
+        (true, true) => Ok(()),
+        (false, _) => Err(format!(
+            "the c-app-1 card takes {real} tokens, over the {PACK_ALARM} bar"
+        )),
+        (true, false) => Err(format!(
+            "the c-app-1 estimate ({estimate}) undercounts the real {real} tokens"
         )),
     }
 }
@@ -226,6 +246,19 @@ pub fn report(tok: &Tokenizer, chat: &Chat) -> String {
     card.part(tok, "examples", c_examples);
     card.row("**whole card**", c1.len(), count(tok, &c1));
     out.push_str(&card.text);
+
+    // Plan "Kai builds apps", piece 2: the app card, by section.
+    let app = pack::capp1::render();
+    let (a_rules, a_rest) = app.split_once("\nCalls:\n").unwrap_or((&app, ""));
+    let (a_calls, a_rest) = a_rest.split_once("\nTemplate:\n").unwrap_or((a_rest, ""));
+    let (a_template, a_example) = a_rest.split_once("\nExample:\n").unwrap_or((a_rest, ""));
+    let mut app_card = Table::new("`c-app-1` Kai C app card (app requests only)");
+    app_card.part(tok, "rules", a_rules);
+    app_card.part(tok, "calls (kaiapp.h)", a_calls);
+    app_card.part(tok, "template", a_template);
+    app_card.part(tok, "example", a_example);
+    app_card.row("**whole card**", app.len(), count(tok, &app));
+    out.push_str(&app_card.text);
 
     let dsl1 = pack::render(Format::Dsl1);
     // The template: what the chat turns add around their text.

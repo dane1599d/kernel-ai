@@ -221,6 +221,9 @@ fn ccs_reply_is_read_strictly() {
     let path = || String::from("/home/user/c/hello.kai");
     let good = format!("app 5120 {PROVENANCE}");
     assert_eq!(CcBuilt::from_reply(&good, path()), Ok(built(true)));
+    // A window app installs as an app does.
+    let window = format!("window 5120 {PROVENANCE}");
+    assert_eq!(CcBuilt::from_reply(&window, path()), Ok(built(true)));
     for bad in [
         "",
         "app",

@@ -2375,6 +2375,7 @@ dependencies = [
  "shellcore",
  "supervise",
  "uelf",
+ "uikit",
  "wasmhost",
  "wat",
  "wit-bindgen-c",

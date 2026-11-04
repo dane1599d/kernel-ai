@@ -6,6 +6,11 @@
 //! - `component`: the world `kai:app/component`.
 //! - `app`: [`CC_APP`], `kai:app/app` with an empty `actions` export, as
 //!   ADR 0003 section 5 requires of every app world.
+//! - `window`: [`CC_APP`]'s `window`, for `<kaiapp.h>` (plan "Kai builds
+//!   apps", piece 2): `kai:app/component`, `kai:ui/view` and `input`, the app
+//!   world's `events` and the same empty `actions`. Less than a hand-written
+//!   window app gets: no storage, clock or effects, since the state is saved
+//!   through the lifecycle and the app has no actions to queue.
 //!
 //! wcc reads `import_module` and `import_name` but not wit-bindgen's
 //! `__import_module__` spelling, and no `export_name` at all (S12-1 (h),
@@ -23,7 +28,7 @@ use wit_bindgen_core::Files;
 /// Where the bindings live.
 pub const OUTPUT: &str = "ccserve/kai/bind";
 
-/// The world of an app `cc build` makes: no actions of its own.
+/// The worlds of the apps `cc build` makes: no actions of their own.
 pub const CC_APP: &str = "package kai:cc@0.1.0;
 
 /// What an app built at the `c>` prompt exports: no actions of its own.
@@ -31,6 +36,15 @@ interface actions {}
 
 world app {
     include kai:app/app@0.1.0;
+    export actions;
+}
+
+/// An app with a window, and nothing outside it.
+world window {
+    include kai:app/component@0.1.0;
+    import kai:ui/view@0.1.1;
+    export kai:ui/input@0.1.1;
+    export kai:app/events@0.1.0;
     export actions;
 }
 ";
@@ -84,7 +98,7 @@ pub fn generate(wit_root: &Path) -> Result<Vec<(String, String)>, String> {
         .push_str("kai-cc.wit", CC_APP)
         .map_err(|e| format!("kai:cc: {e:#}"))?;
     let mut out = Vec::new();
-    for (package, world) in [(app, "component"), (cc, "app")] {
+    for (package, world) in [(app, "component"), (cc, "app"), (cc, "window")] {
         let id = resolve
             .select_world(&[package], Some(world))
             .map_err(|e| format!("{world}: {e:#}"))?;
@@ -184,6 +198,22 @@ mod tests {
         }
         let app = &files.iter().find(|(n, _)| n == "app.c").unwrap().1;
         assert!(app.contains("import_module(\"kai:app/effects@0.1.0\")"));
+    }
+
+    /// A model-written app gets no grant a hand-written one could not: its
+    /// window world imports the log and the view, nothing else.
+    #[test]
+    fn the_window_world_imports_only_the_log_and_the_view() {
+        let files = generate(&crate::workspace_root().join("wit")).unwrap();
+        let glue = &files.iter().find(|(n, _)| n == "window.c").unwrap().1;
+        let mut modules: Vec<&str> = glue
+            .split("import_module(\"")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next())
+            .collect();
+        modules.sort();
+        modules.dedup();
+        assert_eq!(modules, ["kai:app/log@0.1.0", "kai:ui/view@0.1.1"]);
     }
 
     #[test]
