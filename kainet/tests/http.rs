@@ -406,6 +406,26 @@ fn head_has_no_body_and_a_206_must_be_for_the_range_asked() {
     assert!(matches!(got, Err(HttpError::Head(_))), "{got:?}");
 }
 
+/// A `Content-Type` is kept when it is at most 128 printable bytes, and only
+/// then (C's review of #671).
+#[test]
+fn a_content_type_is_kept_only_when_short_and_printable() {
+    let long = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: 0\r\n\r\n",
+        "a".repeat(129)
+    );
+    for (reply, kept) in [
+        (&b"HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: 0\r\n\r\n"[..], Some("application/json; charset=utf-8")),
+        (b"HTTP/1.1 200 OK\r\nContent-Type: text/\tplain\r\nContent-Length: 0\r\n\r\n", None),
+        (long.as_bytes(), None),
+        (b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", None),
+    ] {
+        let mut server = Server::new(&[("a.test", reply)]);
+        let got = get(&mut server, "https://a.test/").0.unwrap();
+        assert_eq!(got.head.content_type.as_deref(), kept);
+    }
+}
+
 /// A server that ignores a range and sends the whole target must not have it
 /// passed on as the range: a resumed download would take the target's first
 /// bytes for the range's (C's review of #658).

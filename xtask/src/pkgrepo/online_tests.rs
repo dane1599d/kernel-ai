@@ -257,3 +257,27 @@ fn githubs_hosts_are_the_fixed_destination() {
         assert!(!github.allows(host, 443), "{host}");
     }
 }
+
+/// A role the Pages host does not serve is named with where it was looked
+/// for (C's review of #675); a numbered root it does not serve only means
+/// there is no newer root, so listing still works without one.
+#[test]
+fn a_missing_timestamp_says_where_it_was_looked_for() {
+    let repo = tuf::build(&[big()], &keys(1), NOW).unwrap();
+    let without = Repository {
+        files: repo
+            .files
+            .iter()
+            .filter(|(p, _)| p != "metadata/timestamp.json")
+            .cloned()
+            .collect(),
+    };
+    let mock = served(&without);
+    let err = listing(&mut device(&repo), &mock, NOW).unwrap_err();
+    let looked = format!("https://{REPO}/metadata/timestamp.json");
+    assert!(
+        err.contains("timestamp.json: the repository's metadata host answered 404"),
+        "{err}"
+    );
+    assert!(err.contains(&looked), "{err}");
+}

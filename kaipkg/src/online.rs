@@ -116,12 +116,24 @@ fn words(error: HttpError) -> String {
     format!("the repository: {error:?}")
 }
 
+/// Whether `name` is a numbered root, `<n>.root.json`, which `kaituf` asks
+/// for until the repository has none: there, a 404 means no newer root.
+fn is_numbered_root(name: &str) -> bool {
+    name.strip_suffix(".root.json")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 impl<C: Connect> Remote for Online<'_, C> {
     fn fetch(&mut self, name: &str, max: u64) -> Result<Option<Vec<u8>>, kaituf::Error> {
         let url = format!("{}{name}", self.hosts.metadata);
         match self.get(&url, None, max) {
             Ok((200, body)) => Ok(Some(body)),
-            Ok((403 | 404, _)) => Ok(None),
+            Ok((403 | 404, _)) if is_numbered_root(name) => Ok(None),
+            // Every other role must be there: say where it was looked for (C's
+            // review of #675), not only that it was not found.
+            Ok((status @ (403 | 404), _)) => Err(kaituf::Error::NotFound(format!(
+                "{name}: the repository's metadata host answered {status} for {url}"
+            ))),
             Ok((status, _)) => Err(kaituf::Error::Io(format!(
                 "the repository answered {status} for {name}"
             ))),
