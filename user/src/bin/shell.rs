@@ -1113,6 +1113,11 @@ fn main() -> i32 {
         take_events(&mut shell, &mut events);
         take_panel(&mut shell);
         take_effects(&mut shell);
+        // Files the AI, the Terminal, an app, an editor save or an undo changed:
+        // the apps that list them are told, along with the results given next.
+        if system.files.take_changed() {
+            shell.fs_changed();
+        }
         give_call_results(&mut shell);
         take_files(&mut shell);
         take_settings(&mut shell);

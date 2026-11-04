@@ -19,6 +19,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use appabi::Ty;
+use kabi::live::NOTICE_TICKET;
 use livecore::actions::{self as declared, ActionRow, ArgKind};
 
 /// Most rows one app version may declare.
@@ -75,6 +76,27 @@ impl Apps {
         let dropped = oldest.map(|at| self.results.remove(at).0);
         self.results.push((app.to_string(), done));
         dropped
+    }
+
+    /// Keeps a notice (ticket [`NOTICE_TICKET`], outcome `text`) for `app`, unless
+    /// one that says the same waits already: it says only that something changed,
+    /// so a burst of changes is one notice. Past the caps, as [`Apps::keep_results`].
+    pub fn keep_notice(&mut self, app: &str, text: &str) -> Option<String> {
+        let told = |done: &crate::effects::EffectDone| {
+            done.ticket == NOTICE_TICKET && done.outcome.as_deref() == Ok(text)
+        };
+        if self
+            .results
+            .iter()
+            .any(|(name, batch)| name == app && batch.iter().any(told))
+        {
+            return None;
+        }
+        let notice = crate::effects::EffectDone {
+            ticket: NOTICE_TICKET,
+            outcome: Ok(text.to_string()),
+        };
+        self.keep_results(app, alloc::vec![notice])
     }
 
     /// What the effects run since the last take came to, as (app, results).
