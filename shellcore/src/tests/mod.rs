@@ -36,6 +36,7 @@ mod log;
 mod logdisk;
 mod look;
 mod models;
+mod models_window;
 mod more;
 mod packages;
 mod panel;

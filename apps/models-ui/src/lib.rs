@@ -9,6 +9,10 @@
 //! In v0.1 the window reads only ([`View::read_only`]): its list comes from
 //! `updated`, which has no disks in it, and a choice is shown as what to ask
 //! Kai ([`ask_kai`]), whose rows are the one way to switch or import a model.
+//! Since #556 a read-only window may switch the model itself
+//! ([`View::switches`]): its Use button is the switch, which the component
+//! sends to the shell's `model_use` row, while an import is still what to ask
+//! Kai.
 
 #![no_std]
 
@@ -50,6 +54,8 @@ pub const MAX_ROWS: usize = 256;
 /// Most characters of a name or a source a cell or line shows: the role's text
 /// is the role's, and the tree has a size cap (ADR 0005 section 3).
 pub const MAX_CHARS: usize = 64;
+/// Most characters of the note under the table that the shell's words make.
+pub const MAX_NOTE: usize = 200;
 /// The window's size.
 pub const SIZE: (u16, u16) = (640, 460);
 pub const COLUMNS: [&str; 4] = ["Model", "Size", "Licence", "State"];
@@ -62,8 +68,11 @@ pub struct View {
     /// The window reads only: its choices are bound to no row, it has a
     /// Refresh button, and it does not list disks, which its list never holds.
     pub read_only: bool,
-    /// A line under the table: what to ask Kai for the last choice, or why
-    /// there is no list.
+    /// A window that reads only may still switch the model on a person's key
+    /// or click (#556): its Use button says so and is the switch.
+    pub switches: bool,
+    /// A line under the table: what to ask Kai for the last choice, what came
+    /// of a switch, or why there is no list.
     pub note: Option<String>,
 }
 
@@ -91,6 +100,35 @@ pub fn ask_kai(models: &Models, intent: &Intent) -> String {
         Intent::Import(_) => String::from(
             "To import a model, ask Kai: \"fetch the model from the attached disk\". It is kept only if the signed role names it.",
         ),
+    }
+}
+
+/// The note while a switch the window sent waits for the shell's answer.
+pub fn switching(models: &Models, sha256: &Sha256) -> String {
+    let name = models
+        .row(sha256)
+        .map_or_else(|| name_of(models, sha256), |r| r.name());
+    format!("Switching to {} from the next restart…", clip(&name))
+}
+
+/// The note for what came of a switch: the shell's own words, or why not.
+pub fn switched(outcome: Result<String, String>) -> String {
+    match outcome {
+        Ok(words) => clip_line(&words),
+        Err(why) => clip_line(&format!("Not switched: {why}")),
+    }
+}
+
+/// `text` as one line of at most [`MAX_NOTE`] characters: the shell's words
+/// are data, and a note is one line.
+fn clip_line(text: &str) -> String {
+    let line: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    match line.char_indices().nth(MAX_NOTE) {
+        Some((at, _)) => format!("{}…", &line[..at]),
+        None => line,
     }
 }
 
@@ -248,10 +286,11 @@ fn detail(m: &Models, r: &Row<'_>, view: &View, tree: &mut Vec<Entry>) {
     }
     if m.use_model(&r.sha256).is_some() {
         // A window that reads only binds the button to no row: it says what
-        // to ask Kai.
-        let (text, action) = match view.read_only {
-            true => ("How to use it", None),
-            false => ("Use from the next restart", Some(String::from("model_use"))),
+        // to ask Kai, or, if it switches, is the person's own switch.
+        let (text, action) = match (view.read_only, view.switches) {
+            (true, false) => ("How to use it", None),
+            (true, true) => ("Use from the next restart", None),
+            (false, _) => ("Use from the next restart", Some(String::from("model_use"))),
         };
         tree.push(entry(
             USE,

@@ -200,7 +200,7 @@ fn main() -> i32 {
     env.grants.shell_line = name == TERMINAL_APP;
     env.grants.files = name == EDITOR_APP;
     if let (true, Some(ui)) = (env.grants.settings, windows.as_mut()) {
-        ui.carry_settings();
+        ui.carry(kai_settings::Channel::Settings);
     }
     // The editor's rules for what it may send; none for an app without the grant.
     let mut edits = env.grants.edit.then(editcore::gate::Gate::new);
@@ -216,6 +216,11 @@ fn main() -> i32 {
     // Each holds its own route at index 1, so no app may hold both.
     debug_assert!(!(env.grants.system && env.grants.models));
     let mut lister = env.grants.models.then(models::Lister::new);
+    // Its switches go to the shell as Settings' changes do (#556); no app is
+    // both, since each grant is a plan line's name.
+    if let (true, Some(ui)) = (env.grants.models, windows.as_mut()) {
+        ui.carry(kai_settings::Channel::Models);
+    }
     let mut napper = Napper::new(Nap::new(settings.nap_ms, now_ms()));
     napper.nap.keep_running(settings.keep_running);
     let mut host = match Host::start(env, &name, settings) {
@@ -322,9 +327,9 @@ fn main() -> i32 {
                     println!("{}", exit.why);
                     return exit.code;
                 }
-                // A settings request or a file waiting for its answer is use: the
-                // app does not nap until it has it.
-                let busy = windows.as_ref().is_some_and(ui::Ui::settings_busy)
+                // A change or a file waiting for its answer is use: the app does
+                // not nap until it has it.
+                let busy = windows.as_ref().is_some_and(ui::Ui::changes_busy)
                     || relay.as_ref().is_some_and(files::Relay::busy);
                 if busy != settings_leased {
                     napper.nap.lease(busy);

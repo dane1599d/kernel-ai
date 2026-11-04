@@ -1,13 +1,16 @@
-//! The model manager in the OS (P4 task 10), read-only for v0.1:
-//! [`ModelsWindow`] is the model list (`comp-models`) with the window
-//! `comp-models-ui` builds from it. It opens its window when it starts and asks
-//! the host for the list (`kai:models`, granted to this app alone); each list
-//! that comes back is drawn, and Refresh asks again.
+//! The model manager in the OS (P4 task 10, #556): [`ModelsWindow`] is the
+//! model list (`comp-models`) with the window `comp-models-ui` builds from it.
+//! It opens its window when it starts and asks the host for the list
+//! (`kai:models`, granted to this app alone); each list that comes back is
+//! drawn, and Refresh asks again.
 //!
-//! It changes nothing and queues no effect. A choice is shown as what to ask
-//! Kai (`comp_models_ui::ask_kai`), whose `model_use` and `model_fetch` rows
-//! are the one way to switch or import a model, logged and undoable. The
-//! window carrying a choice out itself is #556, after v0.1.
+//! It queues no effect. Use asks the host to switch to the chosen model
+//! (`use-model`), which the shell carries out through Kai's `model_use` row,
+//! logged and undoable, but only when a person's key or click pressed it: the
+//! agent pressing it through `ui_act` is answered with why not. What the shell
+//! answered is the note under the table, and the list is read again. An import
+//! is still shown as what to ask Kai (`comp_models_ui::ask_kai`), since it asks
+//! on the trusted path, which a window cannot reach.
 //!
 //! When the window is closed the app stops reading, so nothing waits on the
 //! host and the app can nap like any other. A list that arrives after that
@@ -23,7 +26,7 @@ mod bind;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use comp_models::{Models, hex};
+use comp_models::{Intent, Models, Sha256, hex};
 use comp_models_ui::{REFRESH, View};
 use comp_ui_bind::{OnUi, Shown, Sink};
 use compsdk::app::{Event, Events};
@@ -61,6 +64,7 @@ impl ModelsWindow {
             models: Models::default(),
             view: View {
                 read_only: true,
+                switches: true,
                 ..view
             },
             shown: Shown::new(),
@@ -116,6 +120,40 @@ impl ModelsWindow {
         }
     }
 
+    /// Asks the host to switch to `sha256` from the next restart. Whether the
+    /// shell runs it is the host's and the shell's call: a press the person
+    /// did not make is answered with why not.
+    #[cfg(target_family = "wasm")]
+    fn send_use(&mut self, sha256: &Sha256) {
+        bind::use_model(&hex(sha256));
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn send_use(&mut self, _sha256: &Sha256) {}
+
+    /// What came of a switch: the shell's words, or why it did not run. The
+    /// list is read again, so the table shows what the next restart uses.
+    pub fn used(&mut self, outcome: Result<String, String>) {
+        self.view.note = Some(comp_models_ui::switched(outcome));
+        self.present_logged();
+        self.ask();
+    }
+
+    /// A choice from the window: a switch is sent, and the note says it waits;
+    /// an import is what to ask Kai.
+    fn chose(&mut self, intent: &Intent) -> String {
+        match intent {
+            Intent::Use(sha256) => {
+                self.send_use(sha256);
+                comp_models_ui::switching(&self.models, sha256)
+            }
+            // An import has no undo, so a click alone never runs it. TODO: once
+            // the shell can open the trusted Allow / Deny card itself (lane C's
+            // install-card follow-up 2), an Import click may raise that card.
+            Intent::Import(_) => comp_models_ui::ask_kai(&self.models, intent),
+        }
+    }
+
     /// A list came back for a read, or the reason there is none. What is not a
     /// list is one the window does not show, and it says so.
     pub fn listed(&mut self, outcome: Result<String, String>) {
@@ -152,8 +190,7 @@ impl OnUi for ModelsWindow {
             _ => {}
         }
         let (redraw, intent) = comp_models_ui::on_ui(&self.models, &mut self.view, event);
-        // A choice is never carried out here: it is what to ask Kai.
-        let said = intent.map(|i| comp_models_ui::ask_kai(&self.models, &i));
+        let said = intent.map(|i| self.chose(&i));
         let told = said.is_some();
         if told {
             self.view.note = said;

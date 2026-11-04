@@ -59,6 +59,8 @@ pub struct CoreInstance {
     pub(crate) on_system_sample: Option<String>,
     /// The `kai:models/listing` `on-listing` export, when the module has one.
     pub(crate) on_models_listing: Option<String>,
+    /// The `kai:models/listing` `on-used` export, when the module has one.
+    pub(crate) on_models_used: Option<String>,
     /// The `kai:edit/replies` `on-reply` export, when the module has one.
     pub(crate) on_edit_reply: Option<String>,
     /// The `kai:files/replies` `on-done` export, when the module has one.
@@ -154,6 +156,7 @@ pub fn load_core_granted(
         settings: Default::default(),
         system: Default::default(),
         models: Default::default(),
+        model_uses: Default::default(),
         edit: Default::default(),
         files: Default::default(),
         memory: None,
@@ -201,6 +204,10 @@ pub fn load_core_granted(
         .iter()
         .find(|f| f.interface == crate::models::LISTING && f.name == "on-listing")
         .and_then(|f| export_for(&module, f));
+    let on_models_used = tables::EXPORTS
+        .iter()
+        .find(|f| f.interface == crate::models::LISTING && f.name == "on-used")
+        .and_then(|f| export_for(&module, f));
     let on_edit_reply = tables::EXPORTS
         .iter()
         .find(|f| f.interface == crate::edit::REPLIES && f.name == "on-reply")
@@ -228,6 +235,7 @@ pub fn load_core_granted(
         grants,
         on_system_sample,
         on_models_listing,
+        on_models_used,
         on_edit_reply,
         on_files_reply,
     })
@@ -319,6 +327,9 @@ fn link_imports(
             }
             (crate::models::MODELS, "read") => {
                 linker.func_wrap(qualified, name, crate::models::read)
+            }
+            (crate::models::MODELS, "use-model") => {
+                linker.func_wrap(qualified, name, crate::models::use_model)
             }
             (crate::edit::EDIT, _) if !grants.edit => {
                 return Err(link_err(format!(
