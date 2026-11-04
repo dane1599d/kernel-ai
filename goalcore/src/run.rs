@@ -134,7 +134,7 @@ fn held_note(pause: Pause) -> String {
 }
 
 /// A step the log can keep: a row name, and printable paths.
-fn step_ok(step: &Step) -> Result<(), Refusal> {
+fn step_ok<C>(step: &Step<C>) -> Result<(), Refusal> {
     if !valid::row_name_ok(&step.row) {
         return Err(Refusal::BadProposal("the row is not a row name"));
     }
@@ -227,7 +227,12 @@ impl Goal {
 
     /// Why this step has to ask, if it does. Scope first: a step that needs more
     /// scope than was approved is an ask however safe its row is.
-    fn ask_for(&self, p: &Proposal, person: Presence) -> Option<(AskKind, String)> {
+    fn ask_for(
+        &self,
+        p: &Proposal,
+        reason: Option<String>,
+        person: Presence,
+    ) -> Option<(AskKind, String)> {
         if !valid::row_in(&self.scope.rows, &p.row) {
             let why = format!("{} is outside what you approved", p.row);
             return Some((AskKind::Scope, valid::clean(&why)));
@@ -241,7 +246,7 @@ impl Goal {
             return Some((AskKind::Scope, valid::clean(&why)));
         }
         if p.tier == Tier::Ask {
-            let why = format!("{} has no undo, so it asks", p.row);
+            let why = reason.unwrap_or_else(|| format!("{} has no undo, so it asks", p.row));
             return Some((AskKind::Tier, valid::clean(&why)));
         }
         if person == Presence::Away && !self.away_ok {
@@ -270,14 +275,16 @@ impl Goal {
     /// budget or the deadline pauses the goal ([`Verdict::Over`]). Every proposal
     /// that is not refused outright is logged.
     ///
-    /// The step carries no tier: `door` decides it, so nothing the model wrote
-    /// can mark a step with no undo as one that runs.
-    pub fn propose(
+    /// The step carries no tier: `door` decides it from the whole step, `call`
+    /// included, so nothing the model wrote can mark a step with no undo, or one
+    /// that content steers, as one that runs. `C` is the runner's record of the
+    /// call (see [`Step`]).
+    pub fn propose<C>(
         &mut self,
         now: u64,
-        step: Step,
+        step: Step<C>,
         person: Presence,
-        door: &dyn Door,
+        door: &dyn Door<C>,
     ) -> Result<Verdict, Refusal> {
         if self.state != State::Active {
             return Err(Refusal::NotActive(self.state));
@@ -289,8 +296,13 @@ impl Goal {
             return Err(Refusal::LogFull);
         }
         step_ok(&step)?;
+        let tier = door.tier(&step);
+        let reason = match tier {
+            Tier::Ask => door.reason(&step),
+            Tier::Run => None,
+        };
         let p = Proposal {
-            tier: door.tier(&step.row, &step.targets),
+            tier,
             row: step.row,
             targets: step.targets,
             tokens_est: step.tokens_est,
@@ -301,7 +313,7 @@ impl Goal {
             return Ok(Verdict::Over(pause));
         }
         let n = self.log.len() as u32 + 1;
-        match self.ask_for(&p, person) {
+        match self.ask_for(&p, reason, person) {
             Some((kind, why)) => {
                 let ask = Ask {
                     kind,
@@ -331,6 +343,10 @@ impl Goal {
     /// The person said yes to the step that waits: it runs, this once. The scope
     /// stays as it was approved, so another step outside it asks again. If a budget
     /// ran out while it waited, the goal pauses instead ([`Verdict::Over`]).
+    ///
+    /// **Only the trusted path's answer to the ask, its ONCE checked (ADR 0002),
+    /// may call this or [`Goal::deny`]**: nothing a model, an app or a page wrote
+    /// is a yes. goalcore cannot tell who is calling.
     pub fn approve(&mut self, now: u64) -> Result<Verdict, Refusal> {
         let tokens_est = match (&self.state, &self.waiting) {
             (
@@ -369,7 +385,8 @@ impl Goal {
     }
 
     /// The person said no to the step that waits: it is dropped, and the goal is
-    /// free to propose another.
+    /// free to propose another. Only the trusted path's answer may call it, as
+    /// for [`Goal::approve`].
     pub fn deny(&mut self) -> Result<(), Refusal> {
         match (&self.state, &self.waiting) {
             (

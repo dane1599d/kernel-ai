@@ -33,8 +33,8 @@ fn spec() -> Spec {
 struct FakeDoor;
 
 impl Door for FakeDoor {
-    fn tier(&self, row: &str, _targets: &[String]) -> Tier {
-        match row {
+    fn tier(&self, step: &Step) -> Tier {
+        match step.row.as_str() {
             "fs_trash" => Tier::Ask,
             _ => Tier::Run,
         }
@@ -46,6 +46,7 @@ fn step(row: &str, targets: &[&str]) -> Step {
         row: row.to_string(),
         targets: strings(targets),
         tokens_est: 100,
+        call: (),
     }
 }
 

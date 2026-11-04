@@ -15,15 +15,21 @@
 //!   asks, or is held back by the budget or the deadline. A step names every path
 //!   it acts on (`fs_move` has two) and all of them must lie in the scope. Its
 //!   tier is the one door's, never the model's: a [`Step`] carries none, and
-//!   [`Goal::propose`] asks the runner's [`Door`] (the registry's
-//!   `agentabi::derive` of the row, or `consent::decide` on the goal's approved
-//!   line), so a step steered toward a row with no undo cannot arrive marked as
-//!   one that runs. A run-tier step inside the scope runs even while the person is
-//!   away (question 7's default, a flag per goal turns it off). A step that asks,
-//!   or needs more scope than was approved, pauses the goal ([`State::Waiting`])
-//!   until the person answers: [`Goal::approve`] runs that one step, with the
-//!   scope unchanged, and [`Goal::deny`] drops it. Nothing outside the scope runs
-//!   without a yes.
+//!   [`Goal::propose`] asks the runner's [`Door`] with the whole step, including
+//!   the runner's own record of the call (`Step::call`, which goalcore never looks
+//!   inside), so the door can apply ADR 0002 D6 from the argument labels (a step
+//!   that writes text read from a note, or sends to an address a page gave, asks)
+//!   as well as the row's own tier (`agentabi::derive`, or `consent::decide` on
+//!   the goal's approved line). A step steered toward a row with no undo, or by
+//!   content, cannot arrive marked as one that runs. **The runner must put every
+//!   path argument of the call in `Step::targets`**: goalcore checks the paths it
+//!   is given and cannot see one that is missing. A run-tier step inside the scope
+//!   runs even while the person is away (question 7's default, a flag per goal
+//!   turns it off). A step that asks, or needs more scope than was approved,
+//!   pauses the goal ([`State::Waiting`]) until the person answers:
+//!   [`Goal::approve`] runs that one step, with the scope unchanged, and
+//!   [`Goal::deny`] drops it. **Only the trusted path's answer, its ONCE checked,
+//!   may call either.** Nothing outside the scope runs without a yes.
 //! - **Questions and "done".** The planner's `clarify` is [`Goal::clarify`]: the
 //!   goal waits with the question (an [`AskKind::Question`], no step to approve)
 //!   until [`Goal::answered`]. The planner's `say` is [`Goal::complete`] only when

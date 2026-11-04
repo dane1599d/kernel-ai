@@ -42,8 +42,8 @@ fn goal() -> Goal {
 struct FakeDoor;
 
 impl Door for FakeDoor {
-    fn tier(&self, row: &str, _targets: &[String]) -> Tier {
-        match row {
+    fn tier(&self, step: &Step) -> Tier {
+        match step.row.as_str() {
             "fs_trash" | "service_stop" | "process_stop" => Tier::Ask,
             _ => Tier::Run,
         }
@@ -57,6 +57,7 @@ fn step(row: &str, targets: &[&str]) -> Step {
         row: row.to_string(),
         targets: strings(targets),
         tokens_est: 100,
+        call: (),
     }
 }
 
@@ -953,6 +954,78 @@ fn a_goal_runs_its_plan_while_the_person_is_away_and_waits_only_for_the_one_ask(
     assert_eq!(statuses, vec![StepStatus::Ran; 4]);
 }
 
+// ---- a door that reads the call's labels (ADR 0002 D6)
+
+/// The runner's record of a call: where its text came from, if read content.
+#[derive(Clone, Copy)]
+struct Call {
+    text_from: Option<&'static str>,
+}
+
+/// A door that asks for a step content steers, though its row runs.
+struct Labels;
+
+impl Door<Call> for Labels {
+    fn tier(&self, step: &Step<Call>) -> Tier {
+        match step.call.text_from {
+            Some(_) => Tier::Ask,
+            None => Tier::Run,
+        }
+    }
+
+    fn reason(&self, step: &Step<Call>) -> Option<String> {
+        step.call
+            .text_from
+            .map(|source| format!("the text came from {source}"))
+    }
+}
+
+fn write(text_from: Option<&'static str>) -> Step<Call> {
+    Step {
+        row: String::from("fs_write"),
+        targets: strings(&["reports/q1.txt"]),
+        tokens_est: 100,
+        call: Call { text_from },
+    }
+}
+
+#[test]
+fn a_door_that_reads_the_calls_labels_asks_for_a_step_content_steers_even_when_away() {
+    let mut goal = goal();
+    goal.scope.rows.push(String::from("fs_write"));
+    // The row alone runs: a write the person's own words asked for.
+    assert_eq!(
+        goal.propose(T0, write(None), Presence::Away, &Labels),
+        Ok(Verdict::Run)
+    );
+    goal.finish_step(done(1, 10)).unwrap();
+    // The same row and the same path, with text read from a note: it asks, the
+    // person away or not, and says where the text came from.
+    let Ok(Verdict::Ask(ask)) =
+        goal.propose(T0, write(Some("note \"todo\"")), Presence::Away, &Labels)
+    else {
+        panic!("a steered step should ask");
+    };
+    assert_eq!(ask.kind, AskKind::Tier);
+    assert_eq!(ask.why, "the text came from note \"todo\"");
+    assert_eq!(goal.state, State::Waiting);
+    assert_eq!(goal.log[1].proposal.tier, Tier::Ask);
+    assert_eq!(
+        goal.waiting_line().as_deref(),
+        Some(
+            "Goal 'draft the quarterly report' is waiting for you: the text came from note \"todo\""
+        )
+    );
+    // Nothing ran: only the unsteered write did.
+    assert_eq!((goal.steps_run, goal.flight), (1, None));
+    // A door that says nothing about why leaves the row's own words.
+    goal.deny().unwrap();
+    let verdict = goal.propose(T0, run_step("fs_trash"), Presence::Here, &DOOR);
+    assert!(
+        matches!(verdict, Ok(Verdict::Ask(ref a)) if a.why == "fs_trash has no undo, so it asks")
+    );
+}
+
 // ---- more than one path, the door's tier, a question, and "met"
 
 fn mover() -> Goal {
@@ -1002,7 +1075,7 @@ fn a_move_names_both_paths_and_both_must_lie_in_the_scope() {
 fn the_tier_is_the_doors_and_a_step_carries_none() {
     struct Strict;
     impl Door for Strict {
-        fn tier(&self, _row: &str, _targets: &[String]) -> Tier {
+        fn tier(&self, _step: &Step) -> Tier {
             Tier::Ask
         }
     }

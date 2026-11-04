@@ -46,22 +46,42 @@ pub enum Presence {
 /// nothing the model could use to say how safe the step is: its tier is the
 /// door's to decide ([`Door`]), never the model's, so a step a note or a web page
 /// steered toward a row with no undo cannot arrive marked as one that runs.
+///
+/// `C` is the runner's own record of the call, which goalcore never looks inside:
+/// the door reads it. A step that writes text read from a note, or sends to an
+/// address a page gave, is decided by the call's argument labels (ADR 0002 D6:
+/// `Content(source)` for a value read from content), which the row and the paths
+/// alone do not show. The runner puts there whatever its door needs: the call with
+/// its labels, or an id into its plan record.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Step {
+pub struct Step<C = ()> {
     pub row: String,
     /// Every path the step acts on, from the home folder: `fs_move` has two, the
     /// one it moves and the one it moves to, and both must lie in the scope. At
-    /// most [`crate::MAX_TARGETS`].
+    /// most [`crate::MAX_TARGETS`]. **The runner must put every path argument of
+    /// the call here**: goalcore checks the paths it is given against the scope and
+    /// cannot see one that is missing.
     pub targets: Vec<String>,
     /// What the step is expected to cost, in tokens.
     pub tokens_est: u64,
+    /// The runner's record of the call, for its [`Door`].
+    pub call: C,
 }
 
 /// The one door's decision about a step's tier, which the runner supplies: the
 /// registry's `agentabi::derive` of the row, or `consent::decide` on the goal's
-/// approved line, with the goal's own labels, never anything the model wrote.
-pub trait Door {
-    fn tier(&self, row: &str, targets: &[String]) -> Tier;
+/// approved line, with the call's argument labels, never anything the model wrote.
+/// It gets the whole step, `call` included, so it can ask for a step that content
+/// steers (ADR 0002 D6's P-T and P-F) as well as for a row with no undo.
+pub trait Door<C = ()> {
+    fn tier(&self, step: &Step<C>) -> Tier;
+
+    /// Words for why the step asks, when the door knows ("the text came from note
+    /// 'todo'"), shown with "Goal '...' is waiting for you:". None: the row's own,
+    /// that it has no undo.
+    fn reason(&self, _step: &Step<C>) -> Option<String> {
+        None
+    }
 }
 
 /// A step as the log keeps it: what was proposed, and the tier the door decided.
