@@ -31,6 +31,10 @@
 mod download_tests;
 mod http;
 mod pki;
+
+/// kainet's provider, as the mock's server and its clients' tests use it.
+#[cfg(test)]
+pub use pki::provider;
 #[cfg(test)]
 mod tests;
 

@@ -25,6 +25,8 @@ mod mirror_tests;
 #[cfg(test)]
 mod model_tests;
 #[cfg(test)]
+mod online_tests;
+#[cfg(test)]
 mod tests;
 
 pub use tuf::{Keys, Repository};

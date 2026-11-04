@@ -1361,6 +1361,7 @@ dependencies = [
  "fsserve",
  "kabi",
  "kaifs",
+ "kainet",
  "kaituf",
  "livecore",
  "llmproto",
