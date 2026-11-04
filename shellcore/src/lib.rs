@@ -44,6 +44,7 @@ mod engine;
 pub mod grants;
 mod instructions;
 mod models;
+pub mod netgrant;
 mod packages;
 mod panel;
 mod pkg;
