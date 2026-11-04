@@ -47,7 +47,9 @@ pub const MODEL_CHUNK: u64 = 2 << 20;
 const MAX_HOST: usize = 253;
 
 /// A host models come from, and the hosts its resolve URLs redirect to for
-/// the bytes.
+/// the bytes. A storage entry is a host name, or a suffix starting with `.`
+/// that any name ending in it on a label boundary matches (`.cdn.hf.co`
+/// matches `us.aws.cdn.hf.co`, not `evilcdn.hf.co` or `cdn.hf.co` itself).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hosts {
     pub source: &'static str,
@@ -55,17 +57,25 @@ pub struct Hosts {
 }
 
 /// Hugging Face: `huggingface.co`'s resolve URLs redirect to its file storage.
-/// The storage hosts are pinned here, not taken from the redirect, and are to
-/// be confirmed by a HEAD of the pinned Qwen3-4B URL from a GitHub runner (T's
-/// review of #672).
+/// From a GitHub runner the pinned Qwen3-4B URL answered 302 to
+/// `us.aws.cdn.hf.co` (#654's tls-hosts job, run 41878520332), a regional
+/// name, so the storage is pinned as the `.cdn.hf.co` suffix rather than a name
+/// another region would not get (the manager's call: this suffix, for the model
+/// download's `NetDest` alone). The bytes are checked against the signed chunk
+/// list whichever host serves them; the hosts limit where a download may go.
 pub const HUGGING_FACE: Hosts = Hosts {
     source: "huggingface.co",
-    storage: &[
-        "cas-bridge.xethub.hf.co",
-        "cdn-lfs.hf.co",
-        "cdn-lfs-us-1.hf.co",
-    ],
+    storage: &[".cdn.hf.co"],
 };
+
+/// Whether `host` is `entry`: the same name, or, for an entry starting with
+/// `.`, a DNS name under it.
+fn matches(entry: &str, host: &str) -> bool {
+    match entry.strip_prefix('.') {
+        Some(_) => host.ends_with(entry) && host_ok(host),
+        None => host == entry,
+    }
+}
 
 /// What this machine has for a model.
 #[derive(Clone, Copy, Debug)]
@@ -382,9 +392,10 @@ impl Job {
     }
 
     /// Whether the download may reach `host` on `port`: the source's host or
-    /// one of its storage hosts, on 443 only, since a pinned source is plain
-    /// `https` with no port. `kainet` asks for every hop of a redirect.
+    /// one its storage entries match ([`Hosts`]), on 443 only, since a pinned
+    /// source is plain `https` with no port. `kainet` asks for every hop of a
+    /// redirect.
     pub fn reaches(&self, host: &str, port: u16) -> bool {
-        port == HTTPS_PORT && self.hosts.iter().any(|h| h == host)
+        port == HTTPS_PORT && self.hosts.iter().any(|h| matches(h, host))
     }
 }

@@ -217,11 +217,27 @@ fn a_job_reaches_its_source_and_storage_hosts_on_443_and_lands_in_the_store() {
     assert_eq!(job.partial, format!("{PARTIAL_DIR}/{name}.gguf"));
     assert_eq!(job.path, format!("/system/models/{name}.gguf"));
     assert_eq!(job.chunks, format!("{name}.chunks"));
-    for host in core::iter::once(HUGGING_FACE.source).chain(HUGGING_FACE.storage.iter().copied()) {
+    // The resolve host, and the storage host a runner saw (run 41878520332)
+    // with another region's name under the same suffix.
+    for host in [HUGGING_FACE.source, "us.aws.cdn.hf.co", "eu.aws.cdn.hf.co"] {
         assert!(job.reaches(host, 443), "{host}");
         assert!(!job.reaches(host, 8443), "{host}");
     }
-    assert!(!job.reaches("elsewhere.example", 443));
+    // Not the suffix itself, not a name that only ends the same way, not
+    // other hf.co hosts the manager did not allow, and no other host.
+    for host in [
+        "cdn.hf.co",
+        "evilcdn.hf.co",
+        "cdn.hf.co.evil.test",
+        "us.aws.cdn.hf.co.evil.test",
+        "cdn-lfs.hf.co",
+        "hf.co",
+        "elsewhere.example",
+        "a..cdn.hf.co",
+        "-a.cdn.hf.co",
+    ] {
+        assert!(!job.reaches(host, 443), "{host}");
+    }
     // Each reason not to start, in words.
     let cases = [
         ("qwen3-8b", Refused::NotSigned("qwen3-8b".into())),
