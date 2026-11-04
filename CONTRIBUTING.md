@@ -29,7 +29,7 @@ Every commit has a human author, who answers for the code (ADR 0009 D3). If an A
 
 ## Decisions
 
-A decision goes in the log as a file of its own, `docs/decisions/rows/<date>-<slug>.md`, not as a row appended to the table in `docs/decisions.md`: a row at the end of that one table conflicts with every other pull request that adds one. `cargo xtask decisions new <slug>` makes the file; [its README](docs/decisions/rows/README.md) has the format. Do not edit `docs/decisions/ROWS.md`, which the batch writes. `cargo xtask decisions check` must pass.
+A decision goes in the log as a file of its own, `docs/decisions/rows/<date>-<slug>.md`, not as a row appended to the table in `docs/decisions.md`: a row at the end of that one table conflicts with every other pull request that adds one. `cargo xtask decisions new <slug>` makes the file; [its README](docs/decisions/rows/README.md) has the format. `cargo xtask decisions` prints the table of all the row files. `cargo xtask decisions check` must pass.
 
 ## Dependencies
 

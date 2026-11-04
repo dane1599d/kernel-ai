@@ -4,7 +4,8 @@ A new decision is a file here, not a row appended to the table in [decisions.md]
 
 ```bash
 cargo xtask decisions new my-slug     # docs/decisions/rows/<today>-my-slug.md, from the template
-cargo xtask decisions check           # what CI runs
+cargo xtask decisions check           # the format check CI runs on every row file
+cargo xtask decisions                 # prints the table of all the row files
 ```
 
 A row file is two fields, a `---` line, then the detail:
@@ -20,5 +21,5 @@ Write \| for a literal pipe.
 - The name is `YYYY-MM-DD-slug.md`: the day you wrote it, and a slug of `a-z`, `0-9` and hyphens. Rows sort by name.
 - `needed-by:` and `decision:` may run on to more lines; either order is fine. These are the table's first two columns, and the detail is the third.
 - Save with LF line endings, and end the file with a newline.
-- Do not edit `ROWS.md` or the rows of `decisions.md`. `ROWS.md` is the table of every row file, written by `cargo xtask decisions write` in the batch that merges the rows; a pull request that wrote it would conflict with every other one that adds a row. The lint refuses a row in `ROWS.md` that no file here has.
-- Rows already in `decisions.md` stay where they are, and a correction to one of them is an ordinary edit there. Only a *new* row goes in a file; `docs/decisions/LEGACY` says how many rows `decisions.md` may have, and the lint warns (later: fails) when it has more.
+- Nothing generated is committed: the table of all the rows is `cargo xtask decisions`, printed when you want it. A shared generated file would be one more place every pull request conflicts.
+- Rows already in `decisions.md` stay where they are, and a correction to one of them is an ordinary edit there. Only a *new* row goes in a file. On a pull request, CI compares `decisions.md` with its base and warns when it gained a row (it fails once `--deny-new-rows` is added to the CI step).
