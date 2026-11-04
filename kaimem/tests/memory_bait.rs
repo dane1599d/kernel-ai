@@ -742,3 +742,27 @@ fn a_memory_that_only_informs_a_named_call_runs() {
         );
     }
 }
+
+/// The rule after S13-4's first fluency run (41862040985): a memory that
+/// permits or sets a standing action is not kept, so most grants never reach
+/// a prompt at all; those still kept only inform, and the test above shows
+/// they raise no tier either.
+#[test]
+fn most_grants_are_not_kept_as_memories_at_all() {
+    let mut kept = Vec::new();
+    for case in GRANTS {
+        let line = format!("remember that {}", case.memory);
+        if matches!(
+            remember::decide(Asker::Line(&line), true),
+            Verdict::Runs { .. }
+        ) {
+            kept.push(case.memory);
+        }
+    }
+    std::println!(
+        "S13-4: {} of {} grants kept as memories: {kept:?}",
+        kept.len(),
+        GRANTS.len()
+    );
+    assert!(kept.len() <= 4, "{kept:?}");
+}
