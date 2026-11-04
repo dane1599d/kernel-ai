@@ -57,6 +57,10 @@ pub const REQUEST_MAX_BYTES: usize = 512;
 pub const ERROR_MAX_BYTES: usize = 512;
 /// Longest the llm service spends on one script request, whatever the shell asks.
 pub const SERVICE_TIMEOUT_MS: u64 = 90_000;
+/// Longest it spends on one app round: a full `c-app-1` answer at about 4.8
+/// tokens a second, with room for a slower guest. An app round runs as a job
+/// between requests (`crate::appjob`), so it may take minutes.
+pub const APP_SERVICE_TIMEOUT_MS: u64 = 300_000;
 /// What the llm service answers an `app` request until the `c-app-1` card is
 /// there (the model lane's piece 2 of "Kai builds apps").
 pub const NO_APP_CARD: &str = "the c-app-1 card is not here yet";
@@ -391,6 +395,14 @@ impl Lang {
             Lang::Rhai => "script",
             Lang::C => "program",
             Lang::App => "app",
+        }
+    }
+
+    /// The longest the llm service spends on one answer in it.
+    pub fn service_timeout_ms(self) -> u64 {
+        match self {
+            Lang::Rhai | Lang::C => SERVICE_TIMEOUT_MS,
+            Lang::App => APP_SERVICE_TIMEOUT_MS,
         }
     }
 
