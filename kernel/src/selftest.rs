@@ -86,6 +86,8 @@ pub enum SelfTest {
     Edit,
     /// P1 lane C: S03-1's view rebuild and layout figures in hard-float ring 3.
     AppBench,
+    /// Spike S13-3 (not for merge): the embedding model's figures in hard-float ring 3.
+    EmbedBench,
     /// P4 lane U: spikes S08-3 and S11-1's `kaituf` figures in soft-float ring 3.
     TufBench,
     /// M9d: notes swaps to the version the boot manifest names.
@@ -354,6 +356,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=live" => Some(SelfTest::Live),
             "test=edit" => Some(SelfTest::Edit),
             "test=appbench" => Some(SelfTest::AppBench),
+            "test=embed-bench" => Some(SelfTest::EmbedBench),
             "test=tuf-bench" => Some(SelfTest::TufBench),
             "test=manifest" => Some(SelfTest::Manifest),
             "test=manifest-good" => Some(SelfTest::ManifestGood),

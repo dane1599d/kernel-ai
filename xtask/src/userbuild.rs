@@ -42,6 +42,7 @@ const USER_FLOAT_PROGRAMS: &[&str] = &[
     "comphost",
     "appbench",
     "term",
+    "embedbench",
     "cc",
 ];
 /// The view guest `appbench` embeds, built first.

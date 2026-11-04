@@ -19,6 +19,10 @@ appabi = { path = "../appabi" }
 bootslot = { path = "../bootslot" }
 cpufeat = { path = "../cpufeat" }
 infer = { path = "../infer" }
+# Spike S13-3 (not for merge): embedbench tokenizes and reads the GGUF itself.
+bpe = { path = "../bpe" }
+gguf = { path = "../gguf" }
+libm = "0.2.16"
 kabi = { path = "../kabi" }
 deskcore = { path = "../deskcore" }
 gfx2d = { path = "../gfx2d" }
