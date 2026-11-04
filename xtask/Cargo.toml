@@ -54,6 +54,7 @@ semver = "1.0.28"
 [dev-dependencies]
 # The update disk's test reads its metadata back.
 kaituf = { path = "../kaituf" }
+updatenet = { path = "../updatenet" }
 # The slot disk's tests read its kai-slot 1 back.
 bootslot = { path = "../bootslot" }
 wat = "1.262.0"
