@@ -226,6 +226,15 @@ impl Shell {
         let Some(name) = self.card.take() else {
             return Reply::ok("");
         };
+        // No one typed this line: a card that may not open (its build edited
+        // or replaced since it ended) is a notice, not an error or a log entry
+        // of a request no one made (A-core on #647).
+        if let Some(why) = self.card_refusal(&name) {
+            self.notices.push(format!(
+                "Kai's app {name}'s install card did not open: {why}"
+            ));
+            return Reply::ok("");
+        }
         let id = self.take_id();
         let request = format!("install {name} (the card opened when the build ended)");
         self.app_install_ask(id, &request, &name)
