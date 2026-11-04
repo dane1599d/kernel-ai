@@ -595,15 +595,23 @@ impl Local {
         warmed.map_err(|error| local::describe(&error))
     }
 
-    /// Computes the script system prompt into the cache while no request waits
-    /// (`llmproto::local::warm`). It asks `waiting` whether a request came at
+    /// Computes the script system prompt of `lang` into the cache while no
+    /// request waits (`llmproto::local::warm`, or `warm_program` for C). It asks `waiting` whether a request came at
     /// the start and then once a second of compute, in place of the 1 ms sleep;
     /// if one did, it stops, and the request carries on from what was computed.
-    pub fn warm(&mut self, mut waiting: impl FnMut() -> bool) -> Result<(), String> {
+    pub fn warm(
+        &mut self,
+        lang: script::Lang,
+        mut waiting: impl FnMut() -> bool,
+    ) -> Result<(), String> {
         self.engine.use_slot(SLOTS.script);
         let mut slept = 0;
         let mut meter = Meter::new();
-        let warmed = local::warm(&mut self.engine, |step| {
+        let warm = match lang {
+            script::Lang::C => local::warm_program,
+            script::Lang::Rhai | script::Lang::App => local::warm,
+        };
+        let warmed = warm(&mut self.engine, |step| {
             meter.step(&step);
             if sys::time_ns() - slept < SLEEP_EVERY_NS {
                 return Next::Continue;

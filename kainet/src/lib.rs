@@ -11,6 +11,7 @@ extern crate std;
 pub mod chunks;
 pub mod client;
 pub mod download;
+pub mod fetch;
 pub mod http;
 pub mod provider;
 #[cfg(feature = "testca")]

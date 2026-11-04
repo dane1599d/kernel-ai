@@ -29,7 +29,11 @@
 
 #[cfg(test)]
 mod download_tests;
+#[cfg(test)]
+mod fetch_tests;
 mod http;
+#[cfg(test)]
+mod model_fetch_tests;
 mod pki;
 #[cfg(test)]
 mod update_fetch_tests;

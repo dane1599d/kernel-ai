@@ -71,6 +71,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentsched"
+version = "0.0.0"
+dependencies = [
+ "kaiagent",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1133,6 +1140,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "goalcore"
+version = "0.1.0-dev"
+
+[[package]]
 name = "group"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1595,6 +1606,10 @@ version = "0.1.0-dev"
 dependencies = [
  "smoltcp",
 ]
+
+[[package]]
+name = "nethosts"
+version = "0.1.0-dev"
 
 [[package]]
 name = "no-std-compat"
@@ -2126,6 +2141,14 @@ dependencies = [
  "hybrid-array",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "semindex"
+version = "0.1.0-dev"
+dependencies = [
+ "diskmap",
+ "libm",
 ]
 
 [[package]]
@@ -3124,6 +3147,7 @@ dependencies = [
  "bootslot",
  "bpe",
  "ccserve",
+ "comp-models",
  "cpufeat",
  "deskcore",
  "diskmap",
@@ -3142,6 +3166,7 @@ dependencies = [
  "linetable",
  "livecore",
  "llmproto",
+ "modelchan",
  "netcore",
  "object",
  "promptcore",

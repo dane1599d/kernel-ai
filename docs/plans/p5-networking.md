@@ -199,6 +199,7 @@ None runs a model on the founder's PC, and none runs QEMU there.
 ## 6. Tests
 
 - **Host tests** for `kainet` (TLS, HTTP, chunks) and `netcore`. Hostile tests and a fuzz target cover every parser of server bytes.
+- **Fuzz targets** live in `fuzz/`, outside the workspace, because libFuzzer builds C++. Their bodies, `fuzz/harness.rs`, also run in `kainet`'s host tests over hostile mutations, so CI builds and checks them on every change. libFuzzer itself runs only from `.github/workflows/fuzz.yml`, on demand on a GitHub runner, never on a developer's PC. The targets are `tls_client`, `tls_records`, `http_response`, `kai_chunks` and `url`; the certificate path goes through rustls-webpki under `tls_client`.
 - **A second TLS implementation.** `kainet` handshakes with `openssl s_server` on the CI host as well as with the mock. That catches an implementation that is only consistent with itself. openssl runs on the CI host and never ships.
 - **Boot cases** against xtask's HTTPS mock, under KVM and TCG, with the faults of task 7. No CI boot case reaches the real internet. P5-S1's one job reaches the four real hosts, read-only.
 - **Real-model runs** only at task 11, on GitHub: fluency, actbench and S02-1's bait probes.

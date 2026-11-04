@@ -8,6 +8,7 @@ pub mod build;
 pub mod compiler;
 mod dis;
 mod engine;
+pub mod hints;
 pub mod rows;
 pub mod service;
 pub mod session;

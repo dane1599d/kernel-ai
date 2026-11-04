@@ -52,6 +52,9 @@ wit-bindgen-core = "=0.63.0"
 semver = "1.0.28"
 
 [dev-dependencies]
+# The model download's test plans its job as Models will (P5 task 9).
+modelchan = { path = "../modelchan" }
+comp-models = { path = "../apps/models" }
 # The update disk's test reads its metadata back.
 kaituf = { path = "../kaituf" }
 updatenet = { path = "../updatenet" }

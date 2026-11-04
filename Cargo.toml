@@ -1,8 +1,11 @@
 [workspace]
 resolver = "3"
+# libFuzzer targets, built only by .github/workflows/fuzz.yml (fuzz/Cargo.toml).
+exclude = ["fuzz"]
 members = [
     "acpitables",
     "agentabi",
+    "agentsched",
     "appabi",
     "apps/editor-ui",
     "apps/editor-window",
@@ -46,6 +49,7 @@ members = [
     "gfx2d",
     "gfxcore",
     "gguf",
+    "goalcore",
     "infer",
     "kabi",
     "kaiagent",
@@ -66,11 +70,13 @@ members = [
     "mm",
     "modelchan",
     "netcore",
+    "nethosts",
     "nvme",
     "pci",
     "promptcore",
     "quant",
     "sched",
+    "semindex",
     "shellcore",
     "spikes/rhai",
     "spikes/wasmi",
@@ -92,6 +98,7 @@ members = [
 default-members = [
     "acpitables",
     "agentabi",
+    "agentsched",
     "appabi",
     "apps/editor-ui",
     "apps/editor-window",
@@ -135,6 +142,7 @@ default-members = [
     "gfx2d",
     "gfxcore",
     "gguf",
+    "goalcore",
     "infer",
     "kabi",
     "kaiagent",
@@ -154,11 +162,13 @@ default-members = [
     "mm",
     "modelchan",
     "netcore",
+    "nethosts",
     "nvme",
     "pci",
     "promptcore",
     "quant",
     "sched",
+    "semindex",
     "shellcore",
     "supervise",
     "surfabi",

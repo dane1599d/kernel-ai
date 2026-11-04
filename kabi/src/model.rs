@@ -98,6 +98,23 @@ pub const ENGINE_OTHER_BYTES: u64 = 32 << 20;
 /// Pages the llm plan line adds for the engine when a model is loaded.
 pub const ENGINE_PAGES: u64 = (KV_BYTES + ENGINE_OTHER_BYTES) / 4096;
 
+/// Guest memory with no model, in MiB.
+pub const GUEST_BASE_MIB: u64 = 512;
+/// A model's share of guest memory is rounded up to a multiple of this, in MiB.
+pub const GUEST_STEP_MIB: u64 = 64;
+
+/// The guest memory, in MiB, a model file of `len` bytes needs: the usual
+/// amount, room for the copy the kernel keeps, and twice the pages llm's
+/// engine gets with a model, since processes may hold half of what is free; so
+/// every other service gets as much as without it. xtask sizes its VMs by it,
+/// and the OS's Models says by it which models this machine can run (P5 task 9).
+pub const fn guest_mib(len: u64) -> u64 {
+    const MIB: u64 = 1024 * 1024;
+    let engine_mib = ENGINE_PAGES * 4096 / MIB;
+    let extra = len.div_ceil(MIB) + 2 * engine_mib;
+    GUEST_BASE_MIB + extra.next_multiple_of(GUEST_STEP_MIB)
+}
+
 /// **Interim** (S10-3; removed at P2 task 10): llm's KV slots saved in the
 /// `kai-cache` partition, one fixed region each, as `kai-kv 1` files
 /// (`infer::segments`), through MODEL_KV_LOAD and MODEL_KV_SAVE.
