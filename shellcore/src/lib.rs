@@ -28,6 +28,7 @@ pub mod analyse;
 pub mod apart;
 pub mod appbuild;
 mod appearance;
+pub mod appjob;
 pub mod appline;
 pub mod apps;
 mod brackets;
@@ -157,6 +158,18 @@ pub trait Host {
     fn ask(&self, prompt: &str) -> Result<String, String>;
     /// Asks the LLM for a script.
     fn script(&self, request: &ScriptRequest) -> Result<Answer, AnswerError>;
+    /// Starts asking the LLM for `request` off the line, for an app's round
+    /// (`appjob`); its answer comes from [`Host::script_take`]. A host that
+    /// cannot says so, and the line asks with [`Host::script`] instead.
+    fn script_start(&self, _request: &ScriptRequest) -> appjob::Started {
+        appjob::Started::Inline
+    }
+    /// The answer to a [`Host::script_start`] that has come, with its ticket.
+    fn script_take(&self) -> Option<(u64, Result<Answer, AnswerError>)> {
+        None
+    }
+    /// Stops the [`Host::script_start`] with `ticket`, if it is still asking.
+    fn script_stop(&self, _ticket: u64) {}
     /// Asks the LLM for one tagged call (ADR 0002 D4). Without one, the shell asks
     /// for a script instead.
     fn act(&self, _request: &ActRequest) -> Result<Call, ActError> {
@@ -545,6 +558,10 @@ pub struct Shell {
     /// Each app's `main.c` this session wrote, by its SHA-256: overwritten
     /// again only while it is still that.
     app_written: Vec<(String, String)>,
+    /// The `app_build` going on between lines, if one is.
+    app_job: Option<appjob::Job>,
+    /// What builds in the background came to, not yet shown.
+    notices: Vec<String>,
     /// Installed software: the image's repository and its generations.
     pkgs: pkg::Store,
     /// Whether the `sudo` note was said already.
@@ -631,6 +648,8 @@ impl Shell {
             fired_profiles: Vec::new(),
             app_built: None,
             app_written: Vec::new(),
+            app_job: None,
+            notices: Vec::new(),
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
             shown: None,
@@ -739,6 +758,23 @@ impl Shell {
         reply
     }
 
+    /// [`Shell::eval`] for the terminal's own line: a build's notice goes
+    /// ahead of a plain reply, and a question keeps it for the next. The
+    /// panel's and apps' lines go through `eval`, so their result stays
+    /// theirs (C on #621).
+    pub fn eval_console(&mut self, input: &str) -> Reply {
+        let mut reply = self.eval(input);
+        if reply.confirm.is_none() && !reply.more && !self.notices.is_empty() {
+            let mut text = self.take_notices().join("\n");
+            if !reply.text.is_empty() {
+                text.push('\n');
+                text.push_str(&reply.text);
+            }
+            reply.text = text;
+        }
+        reply
+    }
+
     fn eval_line(&mut self, input: &str) -> Reply {
         // An open Rhai entry takes the next line first, `:c` included.
         if let Some(entry) = self.partial.take() {
@@ -749,6 +785,9 @@ impl Shell {
         }
         let input = input.trim();
         self.last_output = None;
+        if let Some(reply) = self.app_job_line(input) {
+            return reply;
+        }
         // `answer <id> <text>` comes from the terminal's confirm prompt. A line such as
         // `answer + 1` is Rhai about a variable, so the id must be a number.
         if let Some(rest) = input.strip_prefix("answer ")

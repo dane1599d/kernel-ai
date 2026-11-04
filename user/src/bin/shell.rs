@@ -42,6 +42,15 @@ const ASK_TIMEOUT_MS: u64 = 140_000;
 const SCRIPT_CALL_MS: u64 = SCRIPT_ROUND_MS + 5_000;
 /// How long `remember` and `new` wait for llm, which only stores the turn.
 const MEMORY_CALL_MS: u64 = 5_000;
+/// llm's wait for an app job's `app-start`, `app-take` or `app-stop`, which it
+/// answers between the steps of the job's answer.
+const APP_JOB_CALL_MS: u64 = 10_000;
+/// The app job (`app-start`) the shell waits for, 0 for none; `app-take` is
+/// asked only while there is one.
+static APP_TICKET: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// When `app-take` was last asked, and the least time between two.
+static APP_TAKEN_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+const APP_TAKE_GAP_NS: u64 = 2_000_000_000;
 
 /// How long a script's child may run: the line budget its engine keeps, and a
 /// margin for the child's own check before it.
@@ -91,6 +100,13 @@ use kabi::plan::shell_route;
 /// The route to the llm service.
 fn llm() -> kabi::handle::Handle {
     user::route(shell_route::LLM).unwrap_or(kabi::handle::Handle::NONE)
+}
+
+/// One app-job request to llm (#618): its reply as text.
+fn app_job(request: &str) -> Result<String, kabi::Error> {
+    let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+    let len = sys::call_route(llm(), request.as_bytes(), &mut reply, APP_JOB_CALL_MS)?;
+    Ok(String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned())
 }
 
 /// The route to the supervisor.
@@ -196,6 +212,11 @@ fn take_panel(shell: &mut Shell) {
                 PanelResult::Refused(reason) => State::Refused { reason },
             }
         }
+        // Esc while Kai builds an app in the background stops the build.
+        Some(Some(Request::Stop)) => match shell.stop_app_build() {
+            Some(reply) => State::Done { line: reply.text },
+            None => return,
+        },
         // Esc after the shell took the line: it has run already, one line at
         // a time, and its result stays shown. Esc before is desktop's own: the
         // line never came here.
@@ -208,6 +229,24 @@ fn take_panel(shell: &mut Shell) {
         Ok(answer) if answer == "ok" => {}
         Ok(answer) => println!("the panel's state was not set: {answer}"),
         Err(why) => println!("the panel's state was not set: {why}"),
+    }
+}
+
+/// Goes on with an `app_build` in the background, and shows on the panel what
+/// one came to when it ends, so it is seen without another line.
+fn give_app_build(shell: &mut Shell) {
+    use deskcore::panel::State;
+    use deskcore::panel_wire;
+    let shown = match shell.app_poll() {
+        Some(PanelResult::Done(line)) => State::Done { line },
+        Some(PanelResult::Refused(reason)) => State::Refused { reason },
+        None => return,
+    };
+    let (Some(route), Some(request)) = (desktop(), panel_wire::encode_state(&shown)) else {
+        return;
+    };
+    if let Err(why) = ask_desktop(route, &request) {
+        println!("the panel's state was not set: {why}");
     }
 }
 
@@ -594,6 +633,75 @@ impl Host for System {
             }
             ("err", why) => Err(script::decode_error(why)),
             _ => Err(server("malformed reply")),
+        }
+    }
+
+    /// `app-start` to llm (#618): a ticket, `inline` where rounds are not
+    /// jobs, or `busy`. An llm that does not know the request builds inline.
+    fn script_start(&self, request: &ScriptRequest) -> shellcore::appjob::Started {
+        use core::sync::atomic::Ordering;
+        use shellcore::appjob::Started;
+        let asked = alloc::format!("app-start {}", request.encode());
+        let text = match app_job(&asked) {
+            Ok(text) => text,
+            // llm may have taken the job and be slow to say so.
+            Err(kabi::Error::TimedOut) => {
+                return Started::Busy(String::from("the model did not answer in time"));
+            }
+            Err(_) => return Started::Inline,
+        };
+        match text.split_once(' ').unwrap_or((text.as_str(), "")) {
+            ("ok", ticket) => match ticket.parse::<u64>() {
+                Ok(ticket) if ticket != 0 => {
+                    APP_TICKET.store(ticket, Ordering::Relaxed);
+                    Started::Ticket(ticket)
+                }
+                _ => Started::Inline,
+            },
+            ("busy", why) => Started::Busy(why.to_string()),
+            _ => Started::Inline,
+        }
+    }
+
+    /// `app-take` for the job the shell waits for: nothing while it is
+    /// `pending`, else its round's answer, or why it ended.
+    fn script_take(&self) -> Option<(u64, Result<Answer, AnswerError>)> {
+        use core::sync::atomic::Ordering;
+        let ticket = APP_TICKET.load(Ordering::Relaxed);
+        if ticket == 0 {
+            return None;
+        }
+        // At most one app-take a pass of APP_TAKE_GAP_NS, however often
+        // desktop events wake the loop.
+        let now = sys::time_ns();
+        if now.saturating_sub(APP_TAKEN_NS.load(Ordering::Relaxed)) < APP_TAKE_GAP_NS {
+            return None;
+        }
+        APP_TAKEN_NS.store(now, Ordering::Relaxed);
+        let gone = |why: &str| AnswerError::Unavailable(alloc::format!("llm service: {why}"));
+        let answer = match app_job(&alloc::format!("app-take {ticket}")) {
+            Ok(text) if text == "pending" => return None,
+            Ok(text) => match text.split_once(' ').unwrap_or((text.as_str(), "")) {
+                ("ok", answer) => {
+                    script::decode_answer(answer).ok_or_else(|| gone("malformed answer"))
+                }
+                ("err", why) => Err(script::decode_error(why)),
+                ("ended", why) => Err(gone(&alloc::format!("the build's job ended: {why}"))),
+                _ => Err(gone("malformed reply")),
+            },
+            // A slow answer to app-take is asked again; a gone llm ends it.
+            Err(kabi::Error::TimedOut) => return None,
+            Err(error) => Err(gone(&alloc::format!("{error:?}"))),
+        };
+        APP_TICKET.store(0, Ordering::Relaxed);
+        Some((ticket, answer))
+    }
+
+    fn script_stop(&self, ticket: u64) {
+        use core::sync::atomic::Ordering;
+        let _ = APP_TICKET.compare_exchange(ticket, 0, Ordering::Relaxed, Ordering::Relaxed);
+        if let Err(error) = app_job(&alloc::format!("app-stop {ticket}")) {
+            println!("app-stop {ticket}: {error:?}");
         }
     }
 
@@ -1004,6 +1112,7 @@ fn main() -> i32 {
         give_call_results(&mut shell);
         take_files(&mut shell);
         take_settings(&mut shell);
+        give_app_build(&mut shell);
         give_appearance(&system);
         shell.retry_keep();
         let mut caller = u64::MAX;
@@ -1026,7 +1135,7 @@ fn main() -> i32 {
             if !text.starts_with("answer ") {
                 ui::begin();
             }
-            shell.eval(text).to_wire()
+            shell.eval_console(text).to_wire()
         } else {
             String::from("err the shell answers only the terminal")
         };

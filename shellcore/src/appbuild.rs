@@ -29,7 +29,7 @@ use crate::{Reply, SCRIPT_ROUND_MS, Shell};
 use agentabi::consent::{Decision, Why};
 use alloc::format;
 use alloc::string::{String, ToString};
-use llmproto::script::{AnswerError, Lang, ScriptRequest};
+use llmproto::script::{Answer, AnswerError, Lang, ScriptRequest};
 use sha2::{Digest, Sha256};
 
 /// The terminal's wait for one line's answer: every round of `app_build` must
@@ -69,6 +69,52 @@ pub struct Built {
     pub built: CcBuilt,
     /// The trial's one-line report.
     pub trial: String,
+}
+
+/// Where an `app_build` is in its rounds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Rounds {
+    pub(crate) name: String,
+    pub(crate) wanted: String,
+    /// 0 for the first answer, then one more for each repair.
+    pub(crate) round: usize,
+    /// The source the next round repairs, and why.
+    repair: Option<(String, String)>,
+}
+
+impl Rounds {
+    pub(crate) fn new(name: &str, wanted: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            wanted: wanted.to_string(),
+            round: 0,
+            repair: None,
+        }
+    }
+
+    /// The model's request for this round, with what it repairs.
+    pub(crate) fn ask(&mut self, timeout_ms: u64) -> ScriptRequest {
+        ScriptRequest {
+            request: format!("{}\n{}", self.name, self.wanted),
+            repair: self.repair.take(),
+            timeout_ms,
+            lang: Lang::App,
+        }
+    }
+
+    fn again(&mut self, source: String, why: String) -> Next {
+        self.repair = Some((source, why));
+        self.round += 1;
+        Next::Ask
+    }
+}
+
+/// What comes after a round's answer.
+pub(crate) enum Next {
+    /// Another round: the model's repair.
+    Ask,
+    Built(Built),
+    Failed(String),
 }
 
 /// Why a round's build did not come to be.
@@ -171,6 +217,9 @@ impl Shell {
     }
 
     fn app_run(&mut self, id: u64, request: &str, name: &str, wanted: &str, how: How) -> Reply {
+        if let Some(reply) = self.app_start(id, request, name, wanted, &how) {
+            return reply;
+        }
         match self.app_build(name, wanted) {
             Ok(built) => self.log_app_build(id, request, wanted, how, built),
             Err(why) => {
@@ -180,83 +229,99 @@ impl Shell {
         }
     }
 
-    /// The write, check, build and repair loop: what was built, or why not.
-    fn app_build(&mut self, name: &str, wanted: &str) -> Result<Built, String> {
-        // A main.c that app_build did not write is the person's: never
-        // overwritten, since nothing would bring it back.
+    /// Refuses a `main.c` that `app_build` did not write: it is the person's,
+    /// never overwritten, since nothing would bring it back.
+    pub(crate) fn app_check_source(&self, name: &str) -> Result<(), String> {
         let now = self
             .host
             .app_source_read(name)
             .map_err(|why| format!("{APPS_DIR}/{name}/main.c: {}", shown(&why)))?;
-        if let Some(text) = now
-            && !self.app_wrote(name, &sha256(&text))
-        {
-            return Err(format!(
+        match now {
+            Some(text) if !self.app_wrote(name, &sha256(&text)) => Err(format!(
                 "{APPS_DIR}/{name}/main.c was changed since Kai wrote it, so it is left as it is: give the app another name"
-            ));
+            )),
+            _ => Ok(()),
         }
+    }
+
+    /// The write, check, build and repair loop within one line: what was
+    /// built, or why not. A host that builds in the background does not
+    /// come here ([`Shell::app_start`]).
+    fn app_build(&mut self, name: &str, wanted: &str) -> Result<Built, String> {
+        self.app_check_source(name)?;
         let started = self.host.now_ns();
-        let mut repair: Option<(String, String)> = None;
-        for round in 0..=MAX_REPAIRS {
+        let mut rounds = Rounds::new(name, wanted);
+        loop {
             // A round is the model's answer, cc's build and its trial: each
             // starts only if all three fit in what is left of the terminal's
             // wait.
             let spent_ms = self.host.now_ns().saturating_sub(started) / 1_000_000;
-            if round > 0 && spent_ms + ROUND_MS > LINE_WAIT_MS {
-                let why = repair.map(|(_, why)| why).unwrap_or_default();
+            if rounds.round > 0 && spent_ms + ROUND_MS > LINE_WAIT_MS {
+                let why = rounds.repair.map(|(_, why)| why).unwrap_or_default();
                 return Err(format!(
-                    "Kai's app {name} did not build in time, after {round} tries:\n{why}"
+                    "Kai's app {name} did not build in time, after {} tries:\n{why}",
+                    rounds.round
                 ));
             }
-            let ask = ScriptRequest {
-                request: format!("{name}\n{wanted}"),
-                repair: repair.take(),
-                timeout_ms: SCRIPT_ROUND_MS,
-                lang: Lang::App,
-            };
-            let answer = match self.host.script(&ask) {
-                Ok(answer) => answer,
-                Err(AnswerError::NoScript(why)) => {
-                    return Err(format!("Kai wrote no app: {}", shown(&why)));
-                }
-                Err(error) if error.repairable() && round < MAX_REPAIRS => {
-                    repair = Some((String::new(), error.describe()));
-                    continue;
-                }
-                Err(error) => return Err(error.describe()),
-            };
-            if answer.script.trim().is_empty() {
-                return Err(format!("Kai wrote no app: {}", shown(&answer.summary)));
+            let ask = rounds.ask(SCRIPT_ROUND_MS);
+            let answer = self.host.script(&ask);
+            match self.app_answer(&mut rounds, answer) {
+                Next::Ask => {}
+                Next::Built(built) => return Ok(built),
+                Next::Failed(why) => return Err(why),
             }
-            let prepared = llmproto::precheck::prepare(&answer.script, &[]);
-            let why = match prepared.problems.is_empty() {
-                false => format!(
-                    "That app was refused before compiling:\n{}",
-                    prepared.problems.join("\n")
-                ),
-                true => match self.app_compile(name, &prepared.source) {
-                    Ok((version, built, trial)) => {
-                        return Ok(Built {
-                            name: name.to_string(),
-                            version,
-                            summary: answer.summary,
-                            source: sha256(&prepared.source),
-                            built,
-                            trial,
-                        });
-                    }
-                    Err(Unbuilt::Repair(why)) => why,
-                    Err(Unbuilt::Final(why)) => return Err(why),
-                },
-            };
-            if round == MAX_REPAIRS {
-                return Err(format!(
-                    "Kai's app {name} did not build after {MAX_REPAIRS} repairs:\n{why}"
-                ));
-            }
-            repair = Some((prepared.source, why));
         }
-        Err(format!("Kai wrote no app {name}"))
+    }
+
+    /// One round's answer: checked, kept, built and tried. What the next
+    /// step is: another round with its repair, the build, or why there is none.
+    pub(crate) fn app_answer(
+        &mut self,
+        rounds: &mut Rounds,
+        answer: Result<Answer, AnswerError>,
+    ) -> Next {
+        let name = rounds.name.clone();
+        let last = rounds.round >= MAX_REPAIRS;
+        let answer = match answer {
+            Ok(answer) => answer,
+            Err(AnswerError::NoScript(why)) => {
+                return Next::Failed(format!("Kai wrote no app: {}", shown(&why)));
+            }
+            Err(error) if error.repairable() && !last => {
+                return rounds.again(String::new(), error.describe());
+            }
+            Err(error) => return Next::Failed(error.describe()),
+        };
+        if answer.script.trim().is_empty() {
+            return Next::Failed(format!("Kai wrote no app: {}", shown(&answer.summary)));
+        }
+        let prepared = llmproto::precheck::prepare(&answer.script, &[]);
+        let why = match prepared.problems.is_empty() {
+            false => format!(
+                "That app was refused before compiling:\n{}",
+                prepared.problems.join("\n")
+            ),
+            true => match self.app_compile(&name, &prepared.source) {
+                Ok((version, built, trial)) => {
+                    return Next::Built(Built {
+                        name,
+                        version,
+                        summary: answer.summary,
+                        source: sha256(&prepared.source),
+                        built,
+                        trial,
+                    });
+                }
+                Err(Unbuilt::Repair(why)) => why,
+                Err(Unbuilt::Final(why)) => return Next::Failed(why),
+            },
+        };
+        if last {
+            return Next::Failed(format!(
+                "Kai's app {name} did not build after {MAX_REPAIRS} repairs:\n{why}"
+            ));
+        }
+        rounds.again(prepared.source, why)
     }
 
     /// Keeps `source` as the app's `main.c`, builds it and tries it: the
@@ -267,6 +332,8 @@ impl Shell {
         source: &str,
     ) -> Result<(String, CcBuilt, String), Unbuilt> {
         let fail = |why: String| Unbuilt::Final(why);
+        // Between rounds in the background the person may have edited it.
+        self.app_check_source(name).map_err(fail)?;
         self.host
             .app_source(name, source)
             .map_err(|why| fail(format!("the app's source was not kept: {}", shown(&why))))?;
@@ -324,7 +391,7 @@ impl Shell {
     }
 
     /// Logs a build: the request, the source's hash and `cc`'s provenance.
-    fn log_app_build(
+    pub(crate) fn log_app_build(
         &mut self,
         id: u64,
         request: &str,
@@ -368,14 +435,14 @@ impl Shell {
         let reply = format!(
             "Built {name} {version} ({} bytes): {}. Its source is in {APPS_DIR}/{name}/.",
             cc.bytes,
-            shown(summary)
+            shown(summary).trim_end_matches('.')
         );
         self.app_built = Some(built);
         Reply::ok(reply)
     }
 
     /// Logs a build that did not come to be, with why.
-    fn log_app_failed(
+    pub(crate) fn log_app_failed(
         &mut self,
         id: u64,
         request: &str,
