@@ -16,8 +16,10 @@ use infer::chat::Step;
 use llmproto::act::{ActError, ActRequest, Call};
 use llmproto::script::{Answer, AnswerError, ScriptRequest};
 use serde_json::{Value as Json, json};
-use shellcore::ccbuild::CcBuilt;
-use shellcore::{DEFAULT_CONFIG, Shell};
+use sha2::{Digest, Sha256};
+use shellcore::appjob::Started;
+use shellcore::ccbuild::{Artifact, CcBuilt};
+use shellcore::{DEFAULT_CONFIG, PanelResult, Shell};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
@@ -69,12 +71,16 @@ pub struct Round {
 /// Script requests answered by the model, and the tokens each answer took.
 pub type Transport = Box<dyn Fn(&ScriptRequest) -> (Result<Answer, AnswerError>, u32)>;
 
-/// The stand-in OS for one request: the model, `pkg`'s next version, the
-/// app's folder and `cc build`, each recorded.
+/// The stand-in OS for one request: the model, asked off the line as llm's
+/// app jobs ask it, `pkg`'s next version, the app's folder and `cc build` and
+/// `trial`, each recorded.
 pub struct AppHost {
     started: Instant,
     transport: Transport,
     call: RefCell<Option<Call>>,
+    /// The job's answer, with its ticket, until the shell takes it.
+    answered: RefCell<Option<(u64, Result<Answer, AnswerError>)>>,
+    tickets: RefCell<u64>,
     sources: RefCell<HashMap<String, String>>,
     pub rounds: RefCell<Vec<Round>>,
     pub artifact: RefCell<Option<Vec<u8>>>,
@@ -88,6 +94,8 @@ impl AppHost {
             started: Instant::now(),
             transport,
             call: RefCell::new(llmproto::act::parse(&call.to_string()).ok()),
+            answered: RefCell::new(None),
+            tickets: RefCell::new(0),
             sources: RefCell::new(HashMap::new()),
             rounds: RefCell::new(Vec::new()),
             artifact: RefCell::new(None),
@@ -132,6 +140,22 @@ impl shellcore::Host for AppHost {
             context_full,
         });
         answer
+    }
+
+    /// The round runs at once, as an llm job would run it between lines.
+    fn script_start(&self, request: &ScriptRequest) -> Started {
+        let answer = self.script(request);
+        let ticket = {
+            let mut tickets = self.tickets.borrow_mut();
+            *tickets += 1;
+            *tickets
+        };
+        *self.answered.borrow_mut() = Some((ticket, answer));
+        Started::Ticket(ticket)
+    }
+
+    fn script_take(&self) -> Option<(u64, Result<Answer, AnswerError>)> {
+        self.answered.borrow_mut().take()
     }
 
     fn act(&self, _: &ActRequest) -> Result<Call, ActError> {
@@ -179,6 +203,27 @@ impl shellcore::Host for AppHost {
         })
     }
 
+    fn cc_trial(&self, name: &str) -> Result<String, String> {
+        let artifact = self.artifact.borrow();
+        let artifact = artifact
+            .as_deref()
+            .ok_or_else(|| format!("{}no build to try", shellcore::appbuild::INTERNAL))?;
+        app_run::trial(name, artifact)
+    }
+
+    fn cc_artifact(&self, _: &str) -> Option<Artifact> {
+        let artifact = self.artifact.borrow();
+        let artifact = artifact.as_deref()?;
+        let sha256 = Sha256::digest(artifact)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        Some(Artifact {
+            sha256,
+            imports: ccserve::trial::imports(artifact),
+        })
+    }
+
     fn audit(&self, _: &str) {}
 }
 
@@ -203,6 +248,16 @@ pub fn attempt(name: &str, words: &str, transport: Transport) -> Outcome {
     let host = Rc::new(AppHost::new(name, words, transport));
     let mut shell = Shell::new(host.clone(), DEFAULT_CONFIG);
     let reply = shell.eval(&format!("make me an app: {words}"));
+    // The build goes on between lines, as the terminal polls it.
+    let mut ended = None;
+    while reply.ok && ended.is_none() && host.answered.borrow().is_some() {
+        ended = shell.app_poll();
+    }
+    let built = matches!(ended, Some(PanelResult::Done(_)));
+    let why = match &ended {
+        Some(PanelResult::Refused(why)) => why.clone(),
+        _ => reply.text.clone(),
+    };
     let rounds = host.rounds.borrow().clone();
     let artifact = host.artifact.borrow_mut().take();
     let outcome = |built, opened, failure: Option<String>| Outcome {
@@ -211,8 +266,8 @@ pub fn attempt(name: &str, words: &str, transport: Transport) -> Outcome {
         failure,
         rounds: rounds.clone(),
     };
-    let Some(artifact) = artifact.filter(|_| reply.ok) else {
-        return outcome(false, false, Some(format!("not built: {}", reply.text)));
+    let Some(artifact) = artifact.filter(|_| built) else {
+        return outcome(false, false, Some(format!("not built: {why}")));
     };
     match app_run::start(&artifact) {
         Err(why) => outcome(true, false, Some(format!("does not open: {why}"))),
@@ -309,8 +364,11 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
         let tokens: Vec<u32> = outcome.rounds.iter().map(|r| r.tokens).collect();
         let full = outcome.rounds.iter().filter(|r| r.context_full).count();
         println!(
-            "xtask: {:>2} {name}: {} in {} s, {} rounds, tokens {tokens:?}, context full {full}",
+            "xtask: {:>2} {name}: built {} opened {} clicks {}; {} in {} s, {} rounds, tokens {tokens:?}, context full {full}",
             number + 1,
+            outcome.built,
+            outcome.opened,
+            outcome.passed(),
             outcome.failure.as_deref().unwrap_or("passes"),
             ms / 1000,
             outcome.rounds.len(),
@@ -377,7 +435,10 @@ mod tests {
 
     #[test]
     fn an_app_that_traps_on_a_click_fails_the_click_test() {
-        let trap = capp1::TEMPLATE.replace("s->count++;", "s->count = 1 / (s->count - s->count);");
+        let trap = capp1::TEMPLATE.replace(
+            "e->node == 4) s->count = 0;",
+            "e->node == 4) s->count = 1 / (s->count - s->count);",
+        );
         let outcome = attempt("counter", "a counter", canned(vec![app(&trap)]));
         assert!(outcome.built && outcome.opened, "{outcome:?}");
         assert!(outcome.failure.unwrap().contains("stopped it"));

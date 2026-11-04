@@ -57,6 +57,14 @@ pub fn build_main(name: &str, version: &str, main: &str) -> Result<(Kind, Built)
     build::build(compiler(), &build, &mut budget).map(|built| (kind, built))
 }
 
+/// `cc trial` of `artifact` as component `name`: its one-line report, or why
+/// it failed, its step first.
+pub fn trial(name: &str, artifact: &[u8]) -> Result<String, String> {
+    let mut shm = vec![0u8; build::shm::BYTES];
+    build::shm::put(&mut shm, artifact).map_err(|why| format!("internal: the Shm: {why}"))?;
+    ccserve::trial::serve(name, &shm, &Clock)
+}
+
 /// `f` inside a call's transaction, as comphost runs an event.
 pub fn in_call<R>(app: &mut CoreInstance, f: impl FnOnce(&mut CoreInstance) -> R) -> R {
     let inputs = Inputs {
