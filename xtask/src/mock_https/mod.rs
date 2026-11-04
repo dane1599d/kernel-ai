@@ -27,6 +27,8 @@
 //! adds them there with the first case that resolves them (P5 tasks 1 and 2),
 //! and until then a guest reaches the mock at 10.0.2.2 ([`Mock::cmdline`]).
 
+#[cfg(test)]
+mod download_tests;
 mod http;
 mod pki;
 #[cfg(test)]
@@ -85,6 +87,10 @@ pub enum Fault {
     Slow(usize),
     /// 302 to the same path on [`OFF`].
     RedirectOff,
+    /// The first response whose range holds the file's byte `n` is cut just
+    /// before it, with no close_notify; then the fault is gone. So a
+    /// download in ranges is cut once, at that point of the file.
+    CutOnce(usize),
 }
 
 impl Fault {
@@ -411,7 +417,14 @@ fn answer(request: &http::Request, sni: &str, content: &Content, faults: &Faults
     answer.body = file[start..end].to_vec();
     answer.range = Some((start, end));
     answer.offset = start;
-    answer.fault = fault;
+    answer.fault = match fault {
+        Some(Fault::CutOnce(at)) if (start..end).contains(&at) => {
+            lock(faults).remove(&key);
+            Some(Fault::CutAt(at - start))
+        }
+        Some(Fault::CutOnce(_)) => None,
+        other => other,
+    };
     answer
 }
 
