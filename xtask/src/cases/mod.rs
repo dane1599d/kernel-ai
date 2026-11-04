@@ -85,6 +85,11 @@ pub struct TestCase {
     pub data: Option<crate::blklog::Data>,
     /// A second boot, once this one has passed, on the same data disk.
     pub then: Option<&'static TestCase>,
+    /// With `then`: the rest of the first console line containing this text
+    /// must differ between the two boots (ENTROPY's sample).
+    pub differs: Option<&'static str>,
+    /// Attach a virtio-rng (`-device virtio-rng-pci`).
+    pub rng: bool,
     /// Boot from the slot disk (`image/slots.rs`, ADR 0008) with a `kai.slot`
     /// in the bundle; a `then` boot keeps the firmware's variable store, so the
     /// boot lever's record and one-shot carry over.
@@ -147,6 +152,8 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         resets: false,
         data: None,
         then: None,
+        differs: None,
+        rng: false,
         slots: false,
         update: None,
         import: None,

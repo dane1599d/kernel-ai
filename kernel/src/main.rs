@@ -72,6 +72,7 @@ mod edit_tests;
 mod efi;
 mod efi_tests;
 mod entropy;
+mod entropy_tests;
 mod entry;
 mod event_box;
 mod fault;
@@ -462,6 +463,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetSetup => run_case(net_tests::setup_check),
         SelfTest::NetFallback => run_case(net_tests::fallback_check),
         SelfTest::NetStatic => run_case(net_tests::static_check),
+        SelfTest::EntropyBoots => run_case(entropy_tests::check),
         SelfTest::Slot => {
             // A slot boot holds `updated`'s record calls until its lever has
             // written: the guard is closed here, before the lever runs.
