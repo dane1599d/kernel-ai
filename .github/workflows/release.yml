@@ -23,8 +23,16 @@
 # `models` role until P4 task 18's founder-signed one, so it imports nothing
 # until then.
 #
+# The `sign` job also uploads the committed `kai-chunks 1` lists in
+# xtask/models/chunks as `models-chunks-<version>`, before any build runs, for
+# the `models` role to sign beside each `<id>.gguf` as `<sha256>.chunks` (P5
+# tasks 6 and 9). It then downloads every pinned model of xtask/models.json
+# (.github/release/fetch_models.py), requires each list to be its file's own
+# (`cargo xtask pkgrepo chunks`), and holds the upload to the commit's blobs.
+# The models are only hashed, never run.
+#
 # Stubbed until P4 task 18: tuf-on-ci's signing event for the founder's
-# YubiKeys, and the publish to `dane1599d/kernel-ai-updates`. No model, no LLM.
+# YubiKeys, and the publish to `dane1599d/kernel-ai-updates`. No LLM runs.
 # Every action is pinned by commit SHA.
 name: Release
 
@@ -323,9 +331,41 @@ jobs:
           "$RUNNER_TEMP/venv/bin/pip" install --quiet tuf==6.0.0 'securesystemslib[crypto]==1.3.0'
           "$RUNNER_TEMP/venv/bin/python" .github/release/tuf_test_target.py "$RUNNER_TEMP/tuf" \
             "release-assets/kernel-ai-$VERSION-x86_64.img.zst" release-assets/SHA256SUMS
+      - name: The committed chunk lists, as the commit holds them, before any build runs
+        run: |
+          mkdir -p "$RUNNER_TEMP/models-chunks"
+          cp xtask/models/chunks/*.chunks "$RUNNER_TEMP/models-chunks/"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: models-chunks-${{ env.VERSION }}
+          path: ${{ runner.temp }}/models-chunks
+      - name: Reuse the pinned models from an earlier run
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/kai-models
+          key: model-chunks-${{ hashFiles('xtask/models.json') }}
+      - name: Download every pinned model and check its SHA-256 (hashed, never run)
+        run: python3 -I .github/release/fetch_models.py "$RUNNER_TEMP/kai-models"
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: The committed chunk lists are the pinned files' own, 2 MiB chunk by chunk
+        run: cargo xtask pkgrepo chunks --models "$RUNNER_TEMP/kai-models"
+      - name: The uploaded lists are the commit's own blobs, one for each catalog model
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/models-chunks"
+          committed=$(git ls-tree --name-only "$GITHUB_SHA" xtask/models/chunks/ | wc -l)
+          models=$(python3 -I -c 'import json; print(len(json.load(open("xtask/models.json"))["models"]))')
+          uploaded=$(ls "$dir" | wc -l)
+          [ "$committed" = "$models" ] && [ "$uploaded" = "$models" ] || {
+            echo "$models models, $committed committed lists, $uploaded uploaded"; exit 1; }
+          for f in "$dir"/*.chunks; do
+            git cat-file -p "$GITHUB_SHA:xtask/models/chunks/$(basename "$f")" | cmp - "$f"
+          done
+          echo "the $uploaded lists in models-chunks-$VERSION are the commit's, and the pinned files' own" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: The founder's YubiKey signing event (stub until P4 task 18)
         run: |
           echo "stub: tuf-on-ci opens the signing event in dane1599d/kernel-ai-updates once the root ceremony is done"
+          echo "stub: the models role signs each <id>.gguf and its <sha256>.chunks from models-chunks-$VERSION"
 
   publish:
     name: Attest and draft the release

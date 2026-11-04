@@ -9,10 +9,18 @@ P4 task 18 (ADR 0008 §7). This is the founder's runbook. It sets up the TUF rep
 | `root` | 3 YubiKeys (PIV, ECC P-256), one kept off-site | 2 of 3 | 365 days, re-signed from 60 days before | the other roles' keys |
 | `targets` | 2 YubiKeys | 1 of 2 | 365 days | slot images, R images, `SHA256SUMS`; delegates the two below |
 | `packages` | 2 YubiKeys | 1 of 2 | 365 days | `*.kpkg` (ADR 0011), terminating |
-| `models` | 2 YubiKeys | 1 of 2 | 365 days | `*.gguf` and their `kai-chunks 1` lists |
+| `models` | 2 YubiKeys | 1 of 2 | 365 days | `*.gguf` and their `kai-chunks 1` lists, `<sha256>.chunks` |
 | `snapshot`, `timestamp` | one online key in a cloud KMS, reached through GitHub OIDC | 1 | 30 and 7 days, re-signed by CI | the repository's current state |
 
 The same three YubiKeys can hold the root key and the `targets`, `packages` and `models` keys, each in its own PIV slot. ADR 0008 asks only that root needs 2 of 3 and that one key stays off-site.
+
+**A model's chunk list** (P5 tasks 6 and 9). Beside each `<id>.gguf`, the `models` role signs the target `<sha256 of the GGUF>.chunks`, in lower-case hex. It has the list's length and SHA-256, and no `custom` fields. The GGUF's bytes are never in the repository, but the list's are. With consistent snapshots, Pages serves a list at:
+
+```text
+https://<Pages host>/targets/<sha256 of the list>.<sha256 of the GGUF>.chunks
+```
+
+The list's SHA-256 is the one the `models` role signs. `kaituf` verifies only metadata and forms no target URL, so `updated` builds this URL itself. It holds the bytes to the signed length and SHA-256, then to the model: the same blob SHA-256 and size, and 2 MiB chunks. The lists come from `release.yml`'s `models-chunks-<version>` artifact, which checks them against the pinned GGUFs, and are signed with the models in the same event.
 
 ## Before you start: two decisions
 
@@ -90,7 +98,7 @@ On WSL, attach the YubiKey to Linux with `usbipd-win` first.
 3. **Targets' second key:** `tuf-on-ci-delegate sign/targets-1of2 targets`. Use two signers, with threshold 1.
 4. **The two delegations,** each 1 of 2, with expiry 365 days:
    - `tuf-on-ci-delegate sign/packages packages`, paths `*.kpkg`, terminating;
-   - `tuf-on-ci-delegate sign/models models`, paths `*.gguf` and `*.kai-chunks`.
+   - `tuf-on-ci-delegate sign/models models`, paths `*.gguf` and `*.chunks`, terminating, as xtask's test repositories delegate it.
 5. **Check the result:** a fresh python-tuf or `kaituf` client, given only `1.root.json`, refreshes from Pages and lands on the newest root, which needs 2 of 3 signatures.
 6. **Close the issue** tuf-on-ci opened for the scheduled runs that failed before there was metadata. From now on, those runs keep snapshot and timestamp fresh, open re-signing events and test what Pages serves.
 

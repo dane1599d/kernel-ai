@@ -65,8 +65,28 @@ def header(package: bytes) -> dict[str, list[str]]:
     return fields
 
 
+CHUNK = 2 * 1024 * 1024
+
+
+def check_list(updater: Updater, model: dict) -> None:
+    """The model's kai-chunks 1 list, the sibling target <sha256>.chunks the
+    `models` role signs: downloaded, and naming the pinned file in 2 MiB chunks."""
+    name = f"{model['sha256']}.chunks"
+    info = updater.get_targetinfo(name)
+    if info is None:
+        sys.exit(f"python-tuf finds no {name} beside {model['id']}.gguf")
+    lines = Path(updater.download_target(info)).read_text().split("\n")
+    want = ["kai-chunks 1", f"blob {model['sha256']} {model['size']}", f"chunk {CHUNK}"]
+    if lines[:3] != want:
+        sys.exit(f"{name} begins {lines[:3]}, not {want}")
+    count = len([line for line in lines[3:] if line])
+    if count != -(-model["size"] // CHUNK):
+        sys.exit(f"{name} has {count} chunk hashes for {model['size']} bytes")
+    print(f"python-tuf: {name} signed by the models role beside {model['id']}.gguf, {count} chunks")
+
+
 def check_models(updater: Updater) -> None:
-    """Each model of the catalog as the `models` role signs it."""
+    """Each model of the catalog as the `models` role signs it, with its chunk list."""
     catalog = Path(__file__).resolve().parents[2] / "models.json"
     for model in json.loads(catalog.read_text())["models"]:
         target = f"{model['id']}.gguf"
@@ -81,14 +101,17 @@ def check_models(updater: Updater) -> None:
         if model["revision"] not in kai["source"]:
             sys.exit(f"{target}: its source {kai['source']} is not at the pinned revision")
         print(f"python-tuf: {target} signed by the models role, {info.length} bytes, {kai['licence']}")
+        check_list(updater, model)
 
 
 def main() -> None:
     repo = Path(sys.argv[1])
     root = repo / "metadata" / "1.root.json"
     files = sorted((repo / "targets").iterdir())
-    # A consistent snapshot's file is <sha256>.<target path>.
+    # A consistent snapshot's file is <sha256>.<target path>. The models'
+    # chunk lists are checked with the models; the rest are packages.
     targets = [f.name.split(".", 1)[1] for f in files]
+    targets = [t for t in targets if not t.endswith(".chunks")]
     if not targets:
         sys.exit("the repository has no packages")
     server = serve(repo)
