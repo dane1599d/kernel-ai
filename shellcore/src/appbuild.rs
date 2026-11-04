@@ -12,7 +12,7 @@
 //!    ([`crate::Host::cc_trial`]);
 //! 6. repairs a refused, failed or failing one at most [`MAX_REPAIRS`] times,
 //!    each with exactly why: the check's problems, `cc`'s diagnostics or the
-//!    trial's. A trial that failed through no fault of the program's
+//!    trial's. A build or trial that failed through no fault of the program's
 //!    ([`INTERNAL`]) is reported, and no repair is spent on it.
 //!
 //! Nothing is installed: the install card asks for that (piece 4), so the
@@ -350,7 +350,13 @@ impl Shell {
         let built = self
             .host
             .cc_build(APPS_DIR, name, &version)
-            .map_err(|why| Unbuilt::Repair(format!("cc build refused it:\n{why}")))?;
+            .map_err(|why| match why.strip_prefix(INTERNAL) {
+                Some(why) => fail(format!(
+                    "cc could not build Kai's app {name}: {}",
+                    shown(why)
+                )),
+                None => Unbuilt::Repair(format!("cc build refused it:\n{why}")),
+            })?;
         let trial = match self.host.cc_trial(name) {
             Ok(report) => report,
             Err(why) => {

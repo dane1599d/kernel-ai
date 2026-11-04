@@ -242,3 +242,29 @@ fn ccs_reply_is_read_strictly() {
         "5e1f5e1f5e1f5e1f5e1f5e1f5e1f5e1f5e1f5e1f5e1f5e1f5e1f5e1f5e1f5e1f"
     );
 }
+
+/// `cc trial` tries the last build through the host's trial, logs nothing,
+/// and says why when cc could not.
+#[test]
+fn cc_trial_tries_the_last_build_and_changes_nothing() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let tried = shell.eval("cc trial hello");
+    assert!(
+        tried == Reply::ok(format!("hello: {TRIAL_REPORT}")),
+        "{tried:?}"
+    );
+    host.cc_trials.borrow_mut().push_back(Err(String::from(
+        "internal: no build left an artifact to try",
+    )));
+    assert_eq!(
+        shell.eval("cc trial hello"),
+        Reply::err("cc trial hello: internal: no build left an artifact to try")
+    );
+    assert!(!shell.eval("cc trial ../x").ok);
+    assert_eq!(
+        *host.pkg_sent.borrow(),
+        ["cc_trial hello", "cc_trial hello"]
+    );
+    assert_eq!(shell.eval("undo"), Reply::err("nothing to undo"));
+}

@@ -848,6 +848,12 @@ impl Shell {
         {
             return self.pkg_line(input, parsed);
         }
+        // So do `models` lines: with no model yet, a person imports the first.
+        if !self.scope.contains("models")
+            && let Some(parsed) = models::parse_line(input)
+        {
+            return self.models_line(input, parsed);
+        }
         if let Some(which) = input.strip_prefix("rules_remove ")
             && !self.scope.contains("rules_remove")
         {

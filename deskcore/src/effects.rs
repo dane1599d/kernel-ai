@@ -658,6 +658,31 @@ mod tests {
         assert!(!sent.awaits());
     }
 
+    /// A call's whole reply (`kai-reply 1`, its result, its effects, its undo) is
+    /// what comphost notes for an agent's `files_open`: only the effect lines'
+    /// tickets are awaited, and the shell's results for them are then taken.
+    #[test]
+    fn the_effects_in_a_calls_reply_are_awaited_and_nothing_else() {
+        let mut sent = Sent::default();
+        let reply = format!(
+            "kai-reply 1\nresult ok(\"Opening docs.\")\n{}\n{}\nundo 3\n",
+            line(7),
+            line(8)
+        );
+        sent.record(&reply);
+        let done = |ticket| Done {
+            ticket,
+            outcome: Ok(String::from("a.txt\nb.txt")),
+        };
+        let (accepted, stray) = sent.accept(alloc::vec![done(7), done(3), done(8)]);
+        assert_eq!(accepted, [done(7), done(8)]);
+        assert_eq!(stray, [3]);
+        assert!(!sent.awaits());
+        // A reply with no effects awaits nothing.
+        sent.record("kai-reply 1\nresult ok(1)\n");
+        assert!(!sent.awaits());
+    }
+
     #[test]
     fn the_record_is_bounded() {
         let mut sent = Sent::default();

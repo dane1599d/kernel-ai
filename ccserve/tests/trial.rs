@@ -4,6 +4,7 @@
 
 mod common;
 
+use ccserve::Shm;
 use ccserve::build::shm;
 use common::Cc;
 use promptcore::wire::parse_reply;
@@ -42,7 +43,7 @@ void exports_kai_app_events_on_event(exports_kai_app_events_event_t *e) {
 ";
 
 /// `message` with `shm`: the reply's records as strings.
-fn send(cc: &mut Cc, message: &str, shm: Option<&mut [u8]>) -> Vec<String> {
+fn send(cc: &mut Cc, message: &str, shm: Option<Shm>) -> Vec<String> {
     let reply = cc.service.handle_with(message.as_bytes(), shm, &cc.clock);
     parse_reply(&reply)
         .unwrap()
@@ -56,7 +57,11 @@ fn built(cc: &mut Cc, name: &str, source: &str) -> Vec<u8> {
     let mut shm = vec![0u8; shm::BYTES];
     let bundle = livecore::artifact::bundle(&[("main.c", source.as_bytes())]);
     shm::put(&mut shm, &bundle).unwrap();
-    let reply = send(cc, &format!("build {name} 0.0.1"), Some(&mut shm));
+    let reply = send(
+        cc,
+        &format!("build {name} 0.0.1"),
+        Some(Shm::Write(&mut shm)),
+    );
     assert!(reply[0].starts_with("text "), "{reply:?}");
     shm
 }
@@ -64,8 +69,8 @@ fn built(cc: &mut Cc, name: &str, source: &str) -> Vec<u8> {
 /// `source`'s trial as `name`: the one record of the reply.
 fn trial(source: &str) -> String {
     let mut cc = Cc::open();
-    let mut shm = built(&mut cc, "timer", source);
-    let reply = send(&mut cc, "trial timer", Some(&mut shm));
+    let shm = built(&mut cc, "timer", source);
+    let reply = send(&mut cc, "trial timer", Some(Shm::Read(&shm)));
     let [record] = &reply[..] else {
         panic!("{reply:?}")
     };
@@ -77,6 +82,25 @@ fn a_good_app_passes_and_what_it_queues_is_not_run() {
     assert_eq!(
         trial(APP),
         "text trial ok: init, started; 0 window(s), 0 frame(s); 1 effect(s) queued, none run"
+    );
+}
+
+/// c-build's `hello`, whose `init` logs and whose events queue nothing: what
+/// the boot case tries through a read-only `Shm` passes, its line dropped.
+#[test]
+fn an_app_that_logs_passes() {
+    let hello = APP
+        .replace(
+            "start_error_t *err) {\n    return true;",
+            "start_error_t *err) {\n    app_string_t text;\n    \
+             app_string_set(&text, \"hello from C, built in the OS\");\n    \
+             kai_app_log_write(&text);\n    return true;",
+        )
+        .replace("    kai_app_effects_request(&notice);\n", "");
+    assert!(hello.contains("kai_app_log_write"));
+    assert_eq!(
+        trial(&hello),
+        "text trial ok: init, started; 0 window(s), 0 frame(s); 0 effect(s) queued, none run"
     );
 }
 
@@ -141,8 +165,8 @@ fn a_trial_takes_only_the_apps_own_artifact() {
         ["err 0 internal: trial brings the artifact in an Shm"]
     );
     // Built as another app.
-    let mut shm = built(&mut cc, "clock", APP);
-    let got = send(&mut cc, "trial timer", Some(&mut shm));
+    let shm = built(&mut cc, "clock", APP);
+    let got = send(&mut cc, "trial timer", Some(Shm::Read(&shm)));
     assert_eq!(
         got,
         ["err 0 internal: the artifact is app:clock/clock@0.0.1, not timer's"]
@@ -150,39 +174,39 @@ fn a_trial_takes_only_the_apps_own_artifact() {
     // Not an artifact, a length past the end, and one over the largest.
     let mut junk = vec![0u8; shm::BYTES];
     shm::put(&mut junk, b"\0asm not really").unwrap();
-    let got = send(&mut cc, "trial timer", Some(&mut junk));
+    let got = send(&mut cc, "trial timer", Some(Shm::Read(&junk)));
     assert!(
         got[0].starts_with("err 0 internal: the trial's artifact does not load"),
         "{got:?}"
     );
     junk[..8].copy_from_slice(&u64::MAX.to_le_bytes());
-    let got = send(&mut cc, "trial timer", Some(&mut junk));
+    let got = send(&mut cc, "trial timer", Some(Shm::Read(&junk)));
     assert!(
         got[0].starts_with("err 0 internal: the trial's artifact: "),
         "{got:?}"
     );
-    let mut short = vec![0u8; 4];
-    let got = send(&mut cc, "trial timer", Some(&mut short));
+    let short = vec![0u8; 4];
+    let got = send(&mut cc, "trial timer", Some(Shm::Read(&short)));
     assert!(
         got[0].starts_with("err 0 internal: the trial's artifact: "),
         "{got:?}"
     );
     // A bad name never reaches the trial.
-    let got = send(&mut cc, "trial ../timer", Some(&mut shm));
+    let got = send(&mut cc, "trial ../timer", Some(Shm::Read(&shm)));
     assert_eq!(got, ["err 0 not a name"]);
 }
 
 #[test]
 fn a_trial_stops_at_ctrl_c_and_past_a_line_budget() {
     let mut cc = Cc::open();
-    let mut shm = built(&mut cc, "timer", APP);
+    let shm = built(&mut cc, "timer", APP);
     cc.clock.interrupted.set(true);
-    let got = send(&mut cc, "trial timer", Some(&mut shm));
+    let got = send(&mut cc, "trial timer", Some(Shm::Read(&shm)));
     assert_eq!(got, ["err 0 internal: the trial was stopped before init"]);
     cc.clock.interrupted.set(false);
     // Each clock read moves on by more than a line's budget.
     cc.clock.step_ns.set(3 * ccserve::LINE_NS);
-    let got = send(&mut cc, "trial timer", Some(&mut shm));
+    let got = send(&mut cc, "trial timer", Some(Shm::Read(&shm)));
     assert!(got[0].starts_with("err 0 init took "), "{got:?}");
     // The session is untouched.
     cc.clock.step_ns.set(0);
