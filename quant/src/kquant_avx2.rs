@@ -115,6 +115,88 @@ pub fn q4_k_dot4(rows: [&[u8]; 4], x: &Q8KVec) -> [f32; 4] {
     out
 }
 
+/// [`q4_k_dot4`] against each of `xs` at once (ADR 0013 spike S13-2): every
+/// block's codes are loaded and unpacked once for all the tokens, and each
+/// token's lanes take exactly the ops [`q4_k_dot4`] gives them, in its order,
+/// so each token gets its bits. For a batch of a few decode tokens, where
+/// [`crate::batch`]'s one-row group kernels lose the four rows' shared work.
+#[target_feature(enable = "avx2,fma,f16c")]
+pub fn q4_k_dot4_n<const N: usize>(rows: [&[u8]; 4], xs: [&Q8KVec; N]) -> [[f32; 4]; N] {
+    let [r0, r1, r2, r3] = rows.map(|r| r.as_chunks::<{ q4_k::BLOCK_BYTES }>().0);
+    let xq = xs.map(|x| x.qs.as_chunks::<SUPER_LEN>().0);
+    let sums = xs.map(|x| x.sums.as_chunks::<16>().0);
+    let split = _mm256_setr_epi32(0, 2, 4, 6, 1, 3, 5, 7);
+    let nibble = _mm256_set1_epi8(15);
+    let mut total = [_mm_setzero_ps(); N];
+    for i in 0..r0.len() {
+        let blocks = [&r0[i], &r1[i], &r2[i], &r3[i]];
+        prefetch_next(rows[0], q4_k::BLOCK_BYTES, i);
+        let mut sc = [_mm256_setzero_si256(); 4];
+        let mut mins = [[_mm256_setzero_si256(); 4]; N];
+        for (r, block) in blocks.iter().enumerate() {
+            let (s, m) = q4_k::packed_scales(block[4..q4_k::CODES].try_into().unwrap());
+            sc[r] = _mm256_broadcastsi128_si256(_mm_cvtepu8_epi16(_mm_cvtsi64_si128(s as i64)));
+            let m = _mm_cvtsi64_si128(m as i64);
+            let m = _mm256_cvtepu8_epi16(_mm_unpacklo_epi8(m, m));
+            for t in 0..N {
+                mins[t][r] = _mm256_madd_epi16(m, load_sums(&sums[t][i]));
+            }
+        }
+        let mut acc = [[_mm256_setzero_si256(); 4]; N];
+        for g in 0..4 {
+            let x: [(__m256i, __m256i); N] = core::array::from_fn(|t| {
+                let xq = xq[t][i].as_chunks::<32>().0;
+                (load_i8(&xq[2 * g]), load_i8(&xq[2 * g + 1]))
+            });
+            let (plo, phi) = (lane_of(2 * g, 2 * g), lane_of(2 * g + 1, 2 * g + 1));
+            for (r, block) in blocks.iter().enumerate() {
+                let q = load(block[q4_k::CODES + 32 * g..][..32].try_into().unwrap());
+                let lo_q = _mm256_and_si256(q, nibble);
+                let hi_q = _mm256_and_si256(_mm256_srli_epi16::<4>(q), nibble);
+                let (slo, shi) = (
+                    _mm256_shuffle_epi8(sc[r], plo),
+                    _mm256_shuffle_epi8(sc[r], phi),
+                );
+                for t in 0..N {
+                    let (xlo, xhi) = x[t];
+                    let lo = _mm256_madd_epi16(_mm256_maddubs_epi16(lo_q, xlo), slo);
+                    let hi = _mm256_madd_epi16(_mm256_maddubs_epi16(hi_q, xhi), shi);
+                    acc[t][r] = _mm256_add_epi32(acc[t][r], _mm256_add_epi32(lo, hi));
+                }
+            }
+        }
+        let word =
+            |block: &[u8; q4_k::BLOCK_BYTES]| i32::from_le_bytes(*block.first_chunk().unwrap());
+        let scales = _mm256_cvtph_ps(_mm_setr_epi32(
+            word(&r0[i]),
+            word(&r1[i]),
+            word(&r2[i]),
+            word(&r3[i]),
+        ));
+        let scales = _mm256_permutevar8x32_ps(scales, split);
+        let (d, dmin) = (
+            _mm256_castps256_ps128(scales),
+            _mm256_extractf128_ps::<1>(scales),
+        );
+        for t in 0..N {
+            let (a, b) = sums4(acc[t], mins[t]);
+            let (a, b) = (_mm_cvtepi32_ps(a), _mm_cvtepi32_ps(b));
+            let dx = _mm_set1_ps(xs[t].scales[i]);
+            let terms = _mm_sub_ps(
+                _mm_mul_ps(_mm_mul_ps(d, dx), a),
+                _mm_mul_ps(_mm_mul_ps(dmin, dx), b),
+            );
+            total[t] = _mm_add_ps(total[t], terms);
+        }
+    }
+    total.map(|total| {
+        let mut out = [0.0; 4];
+        // SAFETY: 16 writable bytes; storeu has no alignment rule.
+        unsafe { _mm_storeu_ps(out.as_mut_ptr(), total) };
+        out
+    })
+}
+
 /// One Q4_K super-block's lanes against `xq`: the codes times x by sub-block
 /// scale, the minimums times x's sums, and `[d, dmin]`.
 #[target_feature(enable = "avx2,fma,f16c")]

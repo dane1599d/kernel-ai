@@ -57,6 +57,8 @@ pub fn q8_0_matmul(tier: Tier, w: &[u8], xs: &[QVec], y: &mut [f32]) {
 /// each token.
 pub fn q4_k_matmul(tier: Tier, w: &[u8], xs: &[Q8KVec], y: &mut [f32]) {
     let row = q4_k::row_bytes(shape(xs.iter().map(Q8KVec::len), w, y, q4_k::row_bytes));
+    let done = q4_k_fours_of_two(tier, w, row, xs, y);
+    let (w, y) = (&w[done * row..], &mut y[done * xs.len()..]);
     for_rows(w, row, xs.len(), y, |w, y| {
         groups!(xs, y, |xs, y| {
             let mut totals = xs.each_ref().map(|_| Total(0.0));
@@ -66,6 +68,42 @@ pub fn q4_k_matmul(tier: Tier, w: &[u8], xs: &[Q8KVec], y: &mut [f32]) {
             }
         })
     });
+}
+
+/// Two tokens' Q4_K products four rows at a time in the SIMD tiers
+/// ([`crate::kquant_avx2::q4_k_dot4_n`], the bits one token's
+/// [`crate::q4_k_matvec`] gives each), as a batch of two decode steps runs them
+/// (ADR 0013 spike S13-2): the group kernels would pay each row's sums and
+/// float tail alone. How many rows it did; none for other batches.
+#[cfg_attr(
+    not(all(target_arch = "x86_64", target_feature = "sse2")),
+    expect(unused_variables, reason = "only the baseline tier is compiled")
+)]
+fn q4_k_fours_of_two(tier: Tier, w: &[u8], row: usize, xs: &[Q8KVec], y: &mut [f32]) -> usize {
+    if xs.len() != 2 || row == 0 || tier.0 == Kind::Baseline {
+        return 0;
+    }
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+    {
+        let rows = y.len() / 2 / 4 * 4;
+        for (w, y) in w
+            .chunks_exact(4 * row)
+            .zip(y[..2 * rows].chunks_exact_mut(8))
+        {
+            let four = core::array::from_fn(|r| &w[r * row..(r + 1) * row]);
+            // SAFETY: every SIMD tier exists only when the CPU has AVX2, FMA and
+            // F16C and the OS saves ymm state (`tier::kinds`).
+            let out = unsafe { crate::kquant_avx2::q4_k_dot4_n(four, [&xs[0], &xs[1]]) };
+            for r in 0..4 {
+                for t in 0..2 {
+                    y[r * 2 + t] = canonical(out[t][r]);
+                }
+            }
+        }
+        rows
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2")))]
+    0
 }
 
 /// As [`q8_0_matmul`], for Q6_K weights: the bits [`crate::q6_k_matvec`] gives
