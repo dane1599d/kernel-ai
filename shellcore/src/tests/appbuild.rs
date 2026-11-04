@@ -388,3 +388,23 @@ fn an_app_shadowing_a_kaiapp_call_is_refused_before_compiling_and_repaired() {
         "built once, after the repair"
     );
 }
+
+#[test]
+fn a_state_too_big_for_the_runtime_is_repaired_with_its_limit_named() {
+    use crate::appbuild::{STATE_CHECK_NAME, STATE_HINT};
+    // cc's check names the array the hint looks for.
+    assert!(ccserve::build::STATE_CHECK.contains(STATE_CHECK_NAME));
+    let (host, mut shell) = asked(vec![app(SOURCE), app(SOURCE)]);
+    let refused =
+        format!("main.c(17): array size must be greater than 0, but -1 {STATE_CHECK_NAME}");
+    let mut pkg = host.pkg_answers.borrow_mut();
+    pkg.push_back(Ok(String::from("0.0.1")));
+    pkg.push_back(Ok(String::from("0.0.1")));
+    drop(pkg);
+    host.cc_builds.borrow_mut().push_back(Err(refused.clone()));
+    let _ = shell.eval("make me a notes app");
+    let asked = host.script_requests.borrow().clone();
+    let (_, why) = asked[1].repair.clone().unwrap();
+    assert_eq!(why, format!("cc build refused it:\n{STATE_HINT}{refused}"));
+    assert!(STATE_HINT.contains("4096 bytes"));
+}
