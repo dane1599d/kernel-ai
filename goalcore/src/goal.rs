@@ -11,8 +11,8 @@ pub struct Scope {
     /// Row names, each exact (`fs_list`) or a whole group (`notes_*`): the
     /// `actions` syntax of an agent's manifest (ADR 0013 section 6).
     pub rows: Vec<String>,
-    /// Folders under the home folder; a step's path must lie in one. Empty means
-    /// the goal's steps name no path to check, or any: the rows are its limit.
+    /// Folders under the home folder; every path a step names must lie in one. A
+    /// goal with none may touch no path: a step with a path asks.
     pub folders: Vec<String>,
 }
 
@@ -42,36 +42,61 @@ pub enum Presence {
     Away,
 }
 
-/// One step the goals agent proposes: one request through the one door.
+/// One step the goals agent proposes: one request through the one door. It holds
+/// nothing the model could use to say how safe the step is: its tier is the
+/// door's to decide ([`Door`]), never the model's, so a step a note or a web page
+/// steered toward a row with no undo cannot arrive marked as one that runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Proposal {
+pub struct Step {
     pub row: String,
-    /// The path the step acts on, from the home folder, when its row has one.
-    pub target: Option<String>,
-    pub tier: Tier,
+    /// Every path the step acts on, from the home folder: `fs_move` has two, the
+    /// one it moves and the one it moves to, and both must lie in the scope. At
+    /// most [`crate::MAX_TARGETS`].
+    pub targets: Vec<String>,
     /// What the step is expected to cost, in tokens.
     pub tokens_est: u64,
 }
 
-/// Why a step waits for the person.
+/// The one door's decision about a step's tier, which the runner supplies: the
+/// registry's `agentabi::derive` of the row, or `consent::decide` on the goal's
+/// approved line, with the goal's own labels, never anything the model wrote.
+pub trait Door {
+    fn tier(&self, row: &str, targets: &[String]) -> Tier;
+}
+
+/// A step as the log keeps it: what was proposed, and the tier the door decided.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Proposal {
+    pub row: String,
+    pub targets: Vec<String>,
+    pub tier: Tier,
+    pub tokens_est: u64,
+}
+
+/// Why a goal waits for the person.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AskKind {
     /// Its row asks: it has no undo.
     Tier,
-    /// Its row or its path is outside the approved scope: a step that needs more
-    /// scope is an ask.
+    /// Its row or one of its paths is outside the approved scope: a step that
+    /// needs more scope is an ask.
     Scope,
     /// The person is away and this goal does not run steps unattended.
     Away,
+    /// The planner needs an answer before it can plan the next step (its
+    /// `clarify`): there is no step to approve, see [`Goal::answered`].
+    Question,
 }
 
-/// A step waiting for an answer, and why.
+/// What a goal waits on, and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ask {
     pub kind: AskKind,
-    /// What the panel shows after "Goal '...' is waiting for you:".
+    /// What the panel shows after "Goal '...' is waiting for you:": why the step
+    /// asks, or the planner's question.
     pub why: String,
-    pub proposal: Proposal,
+    /// The step that waits for a yes or a no; none for a question.
+    pub proposal: Option<Proposal>,
 }
 
 /// What ran out.
@@ -113,7 +138,9 @@ pub enum State {
     /// A step asks: see [`Goal::waiting`].
     Waiting,
     Paused(Pause),
-    /// Met.
+    /// The planner says it is finished. That is its claim, not a fact: whether the
+    /// goal is met is for the runner to check against the world, and to record
+    /// with [`Goal::record_met`].
     Done,
     /// Given up, with the reason in [`Goal::note`].
     Failed,
@@ -270,7 +297,11 @@ pub struct Goal {
     pub steps_ok: u32,
     pub failed: u32,
     pub denied: u32,
+    /// Times the goal waited for the person: a step that asked, or a question.
+    pub asked: u32,
     pub tokens_spent: u64,
+    /// Whether the runner checked the goal was met, once it is [`State::Done`].
+    pub met: Option<bool>,
     pub waiting: Option<Ask>,
     /// The step running now: at most one at a time.
     pub flight: Option<u32>,

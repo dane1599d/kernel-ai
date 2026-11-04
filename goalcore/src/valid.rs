@@ -49,12 +49,10 @@ pub(crate) fn scope_row_ok(row: &str) -> bool {
 }
 
 /// A path under the home folder: relative, with no empty, `.` or `..` part, so it
-/// cannot leave the folder it is checked against. `-` is how a record says "no
-/// path", so it is not one.
+/// cannot leave the folder it is checked against.
 pub(crate) fn path_ok(path: &str) -> bool {
     !path.is_empty()
         && path.len() <= 255
-        && path != "-"
         && printable(path)
         && !path.starts_with('/')
         && !path.contains('\\')

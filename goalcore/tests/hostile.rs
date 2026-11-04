@@ -2,7 +2,7 @@
 //! or written by someone else, so anything out of shape refuses the whole file, and
 //! anything accepted writes back as it was read.
 
-use goalcore::{Budget, Goals, MAX_GOALS, Presence, Proposal, Scope, Spec, StepDone, Tier};
+use goalcore::{Budget, Door, Goals, MAX_GOALS, Presence, Scope, Spec, Step, StepDone, Tier};
 
 const T0: u64 = 1_000_000;
 const HOUR: u64 = 3_600_000;
@@ -16,8 +16,8 @@ fn spec() -> Spec {
         text: String::from("tidy the reports folder"),
         by_ms: Some(T0 + 8 * HOUR),
         scope: Scope {
-            rows: strings(&["fs_list", "fs_trash", "notes_*"]),
-            folders: strings(&["reports"]),
+            rows: strings(&["fs_list", "fs_trash", "fs_move", "notes_*"]),
+            folders: strings(&["reports", "archive"]),
         },
         budget: Budget {
             steps: 6,
@@ -29,11 +29,22 @@ fn spec() -> Spec {
     }
 }
 
-fn step(row: &str, target: Option<&str>, tier: Tier) -> Proposal {
-    Proposal {
+/// The one door: a row with no undo asks.
+struct FakeDoor;
+
+impl Door for FakeDoor {
+    fn tier(&self, row: &str, _targets: &[String]) -> Tier {
+        match row {
+            "fs_trash" => Tier::Ask,
+            _ => Tier::Run,
+        }
+    }
+}
+
+fn step(row: &str, targets: &[&str]) -> Step {
+    Step {
         row: row.to_string(),
-        target: target.map(str::to_string),
-        tier,
+        targets: strings(targets),
         tokens_est: 100,
     }
 }
@@ -44,31 +55,36 @@ fn good() -> String {
     let finished = goals.set(spec(), T0).unwrap();
     let waiting = goals.set(spec(), T0).unwrap();
     let running = goals.set(spec(), T0).unwrap();
+    let asking = goals.set(spec(), T0).unwrap();
     let declined = goals.set(spec(), T0).unwrap();
     let _proposed = goals.set(spec(), T0).unwrap();
-    for id in [finished, waiting, running] {
+    for id in [finished, waiting, running, asking] {
         goals.approve(id, T0 + 1).unwrap();
     }
     let goal = goals.get_mut(finished).unwrap();
-    goal.plan(2, "list it");
-    goal.propose(
-        T0 + 2,
-        step("fs_list", Some("reports"), Tier::Run),
-        Presence::Away,
-    )
-    .unwrap();
+    goal.plan(2, "move it");
+    let moved = step("fs_move", &["reports/a b.txt", "archive/a b.txt"]);
+    goal.propose(T0 + 2, moved, Presence::Away, &FakeDoor)
+        .unwrap();
     goal.finish_step(StepDone {
         entry: Some(7),
         tokens: 300,
         failed: None,
     })
     .unwrap();
-    goal.complete(T0 + 3, "listed").unwrap();
+    goal.complete(T0 + 3, "moved").unwrap();
+    goal.record_met(true).unwrap();
     let goal = goals.get_mut(waiting).unwrap();
-    let ask = step("fs_trash", Some("reports/old.txt"), Tier::Ask);
-    goal.propose(T0 + 4, ask, Presence::Away).unwrap();
+    let ask = step("fs_trash", &["reports/old.txt"]);
+    goal.propose(T0 + 4, ask, Presence::Away, &FakeDoor)
+        .unwrap();
     let goal = goals.get_mut(running).unwrap();
-    goal.propose(T0 + 5, step("notes_add", None, Tier::Run), Presence::Here)
+    goal.propose(T0 + 5, step("notes_add", &[]), Presence::Here, &FakeDoor)
+        .unwrap();
+    goals
+        .get_mut(asking)
+        .unwrap()
+        .clarify("Which folder holds the notes?")
         .unwrap();
     goals.get_mut(declined).unwrap().cancel(T0 + 6).unwrap();
     goals.to_text()
@@ -85,6 +101,15 @@ fn refused(text: &str) -> String {
 fn the_good_file_reads_and_writes_back_the_same() {
     let text = good();
     assert_eq!(Goals::parse(&text).unwrap().to_text(), text);
+    // The shapes this file is meant to hold are all in it.
+    for needed in [
+        "\nwaiting\ttier\t",
+        "\nwaiting\tquestion\t",
+        "\nmet\t1\n",
+        "\t2\treports/a b.txt\tarchive/a b.txt\t",
+    ] {
+        assert!(text.contains(needed), "{needed:?}");
+    }
 }
 
 #[test]
@@ -104,61 +129,90 @@ fn a_file_out_of_shape_is_refused_whole() {
 #[test]
 fn a_record_that_does_not_add_up_is_refused_with_its_line() {
     let text = good();
-    let cases: [(&str, &str, &str); 14] = [
+    let paths = "\t2\treports/a b.txt\tarchive/a b.txt\t";
+    let cases: [(&str, String, &str); 19] = [
         // Counts that are not the log's.
         (
-            "spent\t1\t1\t0\t0\t300",
-            "spent\t2\t1\t0\t0\t300",
+            "spent\t1\t1\t0\t0\t0\t300",
+            "spent\t2\t1\t0\t0\t0\t300".into(),
             "step counts",
         ),
         (
-            "spent\t1\t1\t0\t0\t300",
-            "spent\t1\t0\t1\t0\t300",
+            "spent\t1\t1\t0\t0\t0\t300",
+            "spent\t1\t0\t1\t0\t0\t300".into(),
             "step counts",
         ),
         (
-            "spent\t1\t1\t0\t0\t300",
-            "spent\t1\t1\t0\t0\t299",
+            "spent\t1\t1\t0\t0\t0\t300",
+            "spent\t1\t1\t0\t0\t0\t299".into(),
             "fewer tokens",
         ),
-        // A budget out of range, or already passed by the log.
+        // A goal that waited has been asked at least once.
+        (
+            "spent\t0\t0\t0\t0\t1\t0",
+            "spent\t0\t0\t0\t0\t0\t0".into(),
+            "fewer asks",
+        ),
+        // A budget out of range.
         (
             "budget\t6\t20000\t36000000",
-            "budget\t0\t20000\t36000000",
+            "budget\t0\t20000\t36000000".into(),
             "budget",
         ),
         (
             "budget\t6\t20000\t36000000",
-            "budget\t65\t20000\t36000000",
+            "budget\t65\t20000\t36000000".into(),
             "budget",
         ),
         (
             "budget\t6\t20000\t36000000",
-            "budget\t6\t0\t36000000",
+            "budget\t6\t0\t36000000".into(),
             "budget",
         ),
         // A scope that is not allowed.
-        ("folders\treports", "folders\t../etc", "scope"),
-        ("folders\treports", "folders\t/home/user", "scope"),
-        ("folders\treports", "folders\treports\treports", "scope"),
         (
-            "rows\tfs_list\tfs_trash\tnotes_*",
-            "rows\tfs_list\tFS",
+            "folders\treports\tarchive",
+            "folders\t../etc".into(),
             "scope",
         ),
-        // States that need lines they do not have.
-        ("goal\t3\tactive", "goal\t3\twaiting", "waiting step"),
+        (
+            "folders\treports\tarchive",
+            "folders\t/home/user".into(),
+            "scope",
+        ),
+        (
+            "folders\treports\tarchive",
+            "folders\treports\treports".into(),
+            "scope",
+        ),
+        (
+            "rows\tfs_list\tfs_trash\tfs_move\tnotes_*",
+            "rows\tfs_list\tFS".into(),
+            "scope",
+        ),
+        // States that need lines they do not have, or have lines they cannot.
+        ("goal\t3\tactive", "goal\t3\twaiting".into(), "waiting step"),
         (
             "goal\t2\twaiting",
-            "goal\t2\tactive",
+            "goal\t2\tactive".into(),
             "state does not match",
         ),
-        ("ended\t-", "ended\t5", "end"),
-        ("goal\t1\tdone", "goal\t0\tdone", "ascending"),
+        ("ended\t-", "ended\t5".into(), "end"),
+        ("goal\t1\tdone", "goal\t0\tdone".into(), "ascending"),
+        // A `met` only a done goal has.
+        ("met\t-", "met\t1".into(), "met"),
+        // A question that says nothing, and a count that is not the paths.
+        (
+            "waiting\tquestion\tWhich folder holds the notes?",
+            "waiting\tquestion".into(),
+            "fields",
+        ),
+        (paths, paths.replacen("\t2\t", "\t1\t", 1), "too many"),
+        (paths, paths.replacen("\t2\t", "\t5\t", 1), "paths"),
     ];
     for (from, to, expected) in cases {
         assert!(text.contains(from), "{from:?} is not in the good file");
-        let why = refused(&text.replacen(from, to, 1));
+        let why = refused(&text.replacen(from, &to, 1));
         assert!(why.starts_with("line "), "{why}");
         assert!(why.contains(expected), "{expected:?} is not in {why:?}");
     }
@@ -183,11 +237,13 @@ fn words_and_numbers_the_log_could_not_hold_are_refused() {
         ("by\t29800000", "by\t18446744073709551616"),
         ("away\t1", "away\t2"),
         ("goal\t1\tdone", "goal\t1\tsleeping"),
+        ("met\t1", "met\ttrue"),
         ("budget\t6\t20000\t36000000", "budget\t6\t20000"),
         (
             "budget\t6\t20000\t36000000",
             "budget\t6\t20000\t36000000\t1",
         ),
+        ("waiting\ttier\t", "waiting\tmaybe\t"),
     ] {
         assert!(text.contains(from), "{from:?}");
         refused(&text.replacen(from, to, 1));
@@ -197,10 +253,10 @@ fn words_and_numbers_the_log_could_not_hold_are_refused() {
 #[test]
 fn a_waiting_or_running_step_that_is_not_the_last_is_refused() {
     let text = good();
-    // The waiting goal's ask names a row its last step does not.
+    // The waiting goal's ask names a path its last step does not.
     let waiting = text
         .lines()
-        .find(|line| line.starts_with("waiting\t"))
+        .find(|line| line.starts_with("waiting\ttier\t"))
         .unwrap();
     let other = waiting.replace("reports/old.txt", "reports/other.txt");
     assert!(refused(&text.replacen(waiting, &other, 1)).contains("waits on a step"));
@@ -280,7 +336,17 @@ fn damaging_any_line_is_refused_or_reads_back_unchanged() {
         // A field damaged: dropped, added, emptied, or made garbage.
         let fields: Vec<&str> = base[at].split('\t').collect();
         for field in 1..fields.len() {
-            for new in ["", "x", "-", "0", "99999999999", "a b", "\u{e9}", "../x"] {
+            for new in [
+                "",
+                "x",
+                "-",
+                "0",
+                "1",
+                "99999999999",
+                "a b",
+                "\u{e9}",
+                "../x",
+            ] {
                 let mut damaged = base.clone();
                 let mut parts: Vec<String> = fields.iter().map(|f| (*f).to_string()).collect();
                 parts[field] = new.to_string();
@@ -297,7 +363,7 @@ fn damaging_any_line_is_refused_or_reads_back_unchanged() {
         added[at] = format!("{}\textra", base[at]);
         check(join(&added));
     }
-    assert!(tried > 500, "only {tried} tried");
+    assert!(tried > 600, "only {tried} tried");
     // A few harmless ones are accepted: a text, a note or a path swapped for other
     // good words. Nearly all are not.
     assert!(accepted * 4 < tried, "{accepted} of {tried} accepted");

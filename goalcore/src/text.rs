@@ -11,17 +11,18 @@
 //! made|1790000000000
 //! started|1790000001000
 //! ended|-
+//! met|-
 //! note|
 //! rows|fs_list|fs_read|notes_*
 //! folders|reports
 //! budget|8|60000|3600000
 //! checkins|1795000000000
 //! plan|4|write the summary
-//! spent|1|1|0|0|1200
+//! spent|1|1|0|0|1|1200
 //! posted|0|0|0
-//! waiting|tier|fs_trash has no undo, so it asks|fs_trash|reports/old.txt|ask|200
-//! step|1|1790000002000|ran|41|1200|run|900|fs_list|reports
-//! step|2|1790000009000|asked|-|0|ask|200|fs_trash|reports/old.txt|fs_trash has no undo, so it asks
+//! waiting|tier|fs_trash has no undo, so it asks|fs_trash|ask|200|1|reports/old.txt
+//! step|1|1790000002000|ran|41|1200|run|900|fs_list|1|reports|
+//! step|2|1790000009000|asked|-|0|ask|200|fs_trash|1|reports/old.txt|fs_trash has no undo, so it asks
 //! end
 //! ```
 //!
@@ -36,8 +37,8 @@ use crate::goal::{
 use crate::goals::Goals;
 use crate::valid;
 use crate::{
-    MAX_ACTIVE, MAX_CHECKINS, MAX_FOLDERS, MAX_GOALS, MAX_LOG, MAX_ROWS, MAX_STEPS, MAX_TEXT,
-    MAX_TOKENS, MAX_WALL_MS,
+    MAX_ACTIVE, MAX_CHECKINS, MAX_FOLDERS, MAX_GOALS, MAX_LOG, MAX_ROWS, MAX_STEPS, MAX_TARGETS,
+    MAX_TEXT, MAX_TOKENS, MAX_WALL_MS,
 };
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -61,6 +62,7 @@ fn kind_word(kind: AskKind) -> &'static str {
         AskKind::Tier => "tier",
         AskKind::Scope => "scope",
         AskKind::Away => "away",
+        AskKind::Question => "question",
     }
 }
 
@@ -68,8 +70,21 @@ fn number(value: Option<u64>) -> String {
     value.map_or_else(|| String::from("-"), |n| n.to_string())
 }
 
-fn target(path: &Option<String>) -> &str {
-    path.as_deref().unwrap_or("-")
+fn flag_or_dash(value: Option<bool>) -> &'static str {
+    match value {
+        None => "-",
+        Some(false) => "0",
+        Some(true) => "1",
+    }
+}
+
+/// `<count>` and then each path, one field each.
+fn push_targets(out: &mut String, targets: &[String]) {
+    let _ = write!(out, "\t{}", targets.len());
+    for path in targets {
+        out.push('\t');
+        out.push_str(path);
+    }
 }
 
 impl Goals {
@@ -96,6 +111,7 @@ fn write_goal(out: &mut String, g: &Goal) {
     let _ = writeln!(out, "made\t{}", g.made_ms);
     let _ = writeln!(out, "started\t{}", number(g.started_ms));
     let _ = writeln!(out, "ended\t{}", number(g.ended_ms));
+    let _ = writeln!(out, "met\t{}", flag_or_dash(g.met));
     let _ = writeln!(out, "note\t{}", g.note);
     for (key, items) in [("rows", &g.scope.rows), ("folders", &g.scope.folders)] {
         out.push_str(key);
@@ -115,8 +131,8 @@ fn write_goal(out: &mut String, g: &Goal) {
     let _ = writeln!(out, "plan\t{}\t{}", g.planned, g.next);
     let _ = writeln!(
         out,
-        "spent\t{}\t{}\t{}\t{}\t{}",
-        g.steps_run, g.steps_ok, g.failed, g.denied, g.tokens_spent
+        "spent\t{}\t{}\t{}\t{}\t{}\t{}",
+        g.steps_run, g.steps_ok, g.failed, g.denied, g.asked, g.tokens_spent
     );
     let p = &g.posted;
     let _ = writeln!(
@@ -127,25 +143,20 @@ fn write_goal(out: &mut String, g: &Goal) {
         u8::from(p.wont_finish)
     );
     if let Some(ask) = &g.waiting {
-        let p = &ask.proposal;
-        let _ = writeln!(
-            out,
-            "waiting\t{}\t{}\t{}\t{}\t{}\t{}",
-            kind_word(ask.kind),
-            ask.why,
-            p.row,
-            target(&p.target),
-            tier_word(p.tier),
-            p.tokens_est
-        );
+        let _ = write!(out, "waiting\t{}\t{}", kind_word(ask.kind), ask.why);
+        if let Some(p) = &ask.proposal {
+            let _ = write!(out, "\t{}\t{}\t{}", p.row, tier_word(p.tier), p.tokens_est);
+            push_targets(out, &p.targets);
+        }
+        out.push('\n');
     }
     if let Some(n) = g.flight {
         let _ = writeln!(out, "flight\t{n}");
     }
     for s in &g.log {
-        let _ = writeln!(
+        let _ = write!(
             out,
-            "step\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "step\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             s.n,
             s.at_ms,
             s.status.word(),
@@ -153,10 +164,10 @@ fn write_goal(out: &mut String, g: &Goal) {
             s.tokens,
             tier_word(s.proposal.tier),
             s.proposal.tokens_est,
-            s.proposal.row,
-            target(&s.proposal.target),
-            s.note
+            s.proposal.row
         );
+        push_targets(out, &s.proposal.targets);
+        let _ = writeln!(out, "\t{}", s.note);
     }
     out.push_str("end\n");
 }
@@ -263,14 +274,30 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn path(&self, field: &str) -> Result<Option<String>, String> {
+    fn flag_or_dash(&self, field: &str) -> Result<Option<bool>, String> {
         match field {
             "-" => Ok(None),
-            _ if valid::printable(field) && !field.is_empty() && field.len() <= 255 => {
-                Ok(Some(String::from(field)))
-            }
-            _ => Err(format!("line {}: that is not a path", self.at)),
+            _ => self.flag(field).map(Some),
         }
+    }
+
+    /// The count and paths at `fields[at..]`: the paths a step names, and how many
+    /// fields they took in all.
+    fn targets(&self, fields: &[&str], at: usize) -> Result<Vec<String>, String> {
+        let count = self.num32(fields.get(at).copied().unwrap_or(""))? as usize;
+        if count > MAX_TARGETS {
+            return Err(format!("line {}: a step names too many paths", self.at));
+        }
+        let paths = fields.get(at + 1..at + 1 + count).unwrap_or(&[]);
+        if paths.len() != count {
+            return Err(format!("line {}: fewer paths than the count", self.at));
+        }
+        for path in paths {
+            if path.is_empty() || path.len() > 255 || !valid::printable(path) {
+                return Err(format!("line {}: that is not a path", self.at));
+            }
+        }
+        Ok(paths.iter().map(|path| String::from(*path)).collect())
     }
 
     fn tier(&self, field: &str) -> Result<Tier, String> {
@@ -281,13 +308,19 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn proposal(&self, row: &str, path: &str, tier: &str, est: u64) -> Result<Proposal, String> {
+    fn proposal(
+        &self,
+        row: &str,
+        tier: &str,
+        est: u64,
+        targets: Vec<String>,
+    ) -> Result<Proposal, String> {
         if !valid::row_name_ok(row) {
             return Err(format!("line {}: `{row}` is not a row", self.at));
         }
         Ok(Proposal {
             row: String::from(row),
-            target: self.path(path)?,
+            targets,
             tier: self.tier(tier)?,
             tokens_est: est,
         })
@@ -339,6 +372,8 @@ impl<'a> Reader<'a> {
         let started_ms = self.maybe(started)?;
         let ended = self.one("ended")?;
         let ended_ms = self.maybe(ended)?;
+        let met = self.one("met")?;
+        let met = self.flag_or_dash(met)?;
         let note = self.one("note")?;
         let note = self.words(note, true)?;
         let rows = self.take("rows", 1, MAX_ROWS)?;
@@ -359,14 +394,15 @@ impl<'a> Reader<'a> {
         let plan = self.take("plan", 2, 2)?;
         let planned = self.num32(plan[0])?;
         let next = self.words(plan[1], true)?;
-        let spent = self.take("spent", 5, 5)?;
+        let spent = self.take("spent", 6, 6)?;
         let counts = [
             self.num32(spent[0])?,
             self.num32(spent[1])?,
             self.num32(spent[2])?,
             self.num32(spent[3])?,
+            self.num32(spent[4])?,
         ];
-        let tokens_spent = self.num(spent[4])?;
+        let tokens_spent = self.num(spent[5])?;
         let posted = self.take("posted", 3, 3)?;
         let posted = Posted {
             scheduled: self.num32(posted[0])?,
@@ -411,7 +447,9 @@ impl<'a> Reader<'a> {
             steps_ok: counts[1],
             failed: counts[2],
             denied: counts[3],
+            asked: counts[4],
             tokens_spent,
+            met,
             waiting,
             flight,
             posted,
@@ -421,40 +459,60 @@ impl<'a> Reader<'a> {
         Ok(goal)
     }
 
+    /// `waiting|question|<words>`, or `waiting|<kind>|<why>|<row>|<tier>|<est>|<count>|<paths>`.
     fn waiting(&mut self) -> Result<Ask, String> {
-        let f = self.take("waiting", 6, 6)?;
+        let f = self.take("waiting", 2, 6 + MAX_TARGETS)?;
+        let why = self.words(f[1], false)?;
         let kind = match f[0] {
+            "question" if f.len() == 2 => {
+                return Ok(Ask {
+                    kind: AskKind::Question,
+                    why,
+                    proposal: None,
+                });
+            }
             "tier" => AskKind::Tier,
             "scope" => AskKind::Scope,
             "away" => AskKind::Away,
             _ => return Err(format!("line {}: not a kind of ask", self.at)),
         };
-        let why = self.words(f[1], false)?;
-        let est = self.num(f[5])?;
+        if f.len() < 6 {
+            return Err(format!("line {}: `waiting` is missing fields", self.at));
+        }
+        let targets = self.targets(&f, 5)?;
+        if f.len() != 6 + targets.len() {
+            return Err(format!("line {}: `waiting` has fields too many", self.at));
+        }
+        let est = self.num(f[4])?;
         Ok(Ask {
             kind,
             why,
-            proposal: self.proposal(f[2], f[3], f[4], est)?,
+            proposal: Some(self.proposal(f[2], f[3], est, targets)?),
         })
     }
 
     fn step(&mut self, n: u32) -> Result<StepLog, String> {
-        let f = self.take("step", 10, 10)?;
+        let f = self.take("step", 10, 10 + MAX_TARGETS)?;
         if self.num32(f[0])? != n {
             return Err(format!("line {}: steps are not numbered from 1", self.at));
         }
         let Some(status) = StepStatus::from_word(f[2]) else {
             return Err(format!("line {}: not a step status", self.at));
         };
+        let targets = self.targets(&f, 8)?;
+        if f.len() != 10 + targets.len() {
+            return Err(format!("line {}: `step` has fields too many", self.at));
+        }
         let est = self.num(f[6])?;
+        let note = f[9 + targets.len()];
         Ok(StepLog {
             n,
             at_ms: self.num(f[1])?,
-            proposal: self.proposal(f[7], f[8], f[5], est)?,
+            proposal: self.proposal(f[7], f[5], est, targets)?,
             status,
             entry: self.maybe(f[3])?,
             tokens: self.num(f[4])?,
-            note: self.words(f[9], true)?,
+            note: self.words(note, true)?,
         })
     }
 
@@ -504,6 +562,15 @@ impl<'a> Reader<'a> {
         if g.denied != denied || g.steps_run > g.budget.steps {
             return fail("has denials that are not its log's, or ran past its budget");
         }
+        // Every denied step and every step that waits was asked about, and a
+        // question that waits was asked.
+        let waiting_now = u32::from(g.waiting.is_some());
+        if g.asked < denied + asked || g.asked < waiting_now {
+            return fail("has fewer asks than its denied and waiting steps");
+        }
+        if g.met.is_some() && g.state != State::Done {
+            return fail("has a met that only a done goal has");
+        }
         let spent: u64 = g.log.iter().map(|s| s.tokens).sum();
         if g.tokens_spent < spent {
             return fail("has spent fewer tokens than its steps did");
@@ -511,17 +578,25 @@ impl<'a> Reader<'a> {
         // The waiting step and the running one are the last, and match the state.
         let last = g.log.last();
         match (&g.waiting, g.flight, g.state) {
-            (Some(ask), None, State::Waiting) => {
-                let matches = last.is_some_and(|s| {
-                    s.status == StepStatus::Asked
-                        && s.proposal.row == ask.proposal.row
-                        && s.proposal.target == ask.proposal.target
-                        && s.proposal.tier == ask.proposal.tier
-                });
-                if !matches || asked != 1 || running != 0 {
-                    return fail("waits on a step that is not its last");
+            (Some(ask), None, State::Waiting) => match &ask.proposal {
+                Some(p) => {
+                    let matches = last.is_some_and(|s| {
+                        s.status == StepStatus::Asked
+                            && s.proposal.row == p.row
+                            && s.proposal.targets == p.targets
+                            && s.proposal.tier == p.tier
+                    });
+                    if !matches || asked != 1 || running != 0 {
+                        return fail("waits on a step that is not its last");
+                    }
                 }
-            }
+                // A question has no step: none is asked or running.
+                None => {
+                    if asked != 0 || running != 0 {
+                        return fail("waits on a question with a step asked or running");
+                    }
+                }
+            },
             (None, flight, state) if state != State::Waiting => {
                 let wanted = flight.map(|n| n as usize);
                 let at_last = last.map(|s| (s.n as usize, s.status == StepStatus::Running));

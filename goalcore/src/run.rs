@@ -11,11 +11,11 @@
 //! ```
 
 use crate::goal::{
-    Ask, AskKind, Budget, Goal, Pause, Posted, Presence, Proposal, Resource, Spec, State, StepLog,
-    StepStatus, Tier,
+    Ask, AskKind, Budget, Door, Goal, Pause, Posted, Presence, Proposal, Resource, Spec, State,
+    Step, StepLog, StepStatus, Tier,
 };
 use crate::valid;
-use crate::{MAX_LOG, MAX_STEPS, MAX_TOKENS, MAX_WALL_MS};
+use crate::{MAX_LOG, MAX_STEPS, MAX_TARGETS, MAX_TOKENS, MAX_WALL_MS};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -68,6 +68,12 @@ pub enum Refusal {
     Finished(State),
     /// It is not over: only a finished goal is forgotten.
     NotFinished(State),
+    /// What it waits on is a question, not a step to say yes or no to.
+    NotAStep,
+    /// What it waits on is a step to say yes or no to, not a question.
+    NotAQuestion,
+    /// Only a goal the planner finished has a "met" to record.
+    NotDone(State),
     /// [`crate::MAX_ACTIVE`] goals are active: pause or finish one first.
     TooManyActive,
     /// [`crate::MAX_GOALS`] are kept: forget a finished one first.
@@ -110,6 +116,9 @@ impl Refusal {
                 "{} goals are kept; forget a finished one first",
                 crate::MAX_GOALS
             ),
+            Self::NotAStep => String::from("the goal asks a question; answer it"),
+            Self::NotAQuestion => String::from("the goal waits for a yes or no to a step"),
+            Self::NotDone(state) => format!("the goal is {}, not done", state.word()),
             Self::NoSuchGoal(id) => format!("there is no goal #{id}"),
             Self::BadSpec(why) => why.clone(),
         }
@@ -124,20 +133,37 @@ fn held_note(pause: Pause) -> String {
     }
 }
 
-/// A step the log can keep: a row name, and a printable path.
-fn proposal_ok(p: &Proposal) -> Result<(), Refusal> {
-    if !valid::row_name_ok(&p.row) {
+/// A step the log can keep: a row name, and printable paths.
+fn step_ok(step: &Step) -> Result<(), Refusal> {
+    if !valid::row_name_ok(&step.row) {
         return Err(Refusal::BadProposal("the row is not a row name"));
     }
-    match &p.target {
-        Some(path) if path.is_empty() || path.len() > 255 || path == "-" => {
-            Err(Refusal::BadProposal("the path is empty, too long or `-`"))
-        }
-        Some(path) if !valid::printable(path) => Err(Refusal::BadProposal(
-            "the path has a character that is not printable",
-        )),
-        _ => Ok(()),
+    if step.targets.len() > MAX_TARGETS {
+        return Err(Refusal::BadProposal("the step names too many paths"));
     }
+    for path in &step.targets {
+        if path.is_empty() || path.len() > 255 {
+            return Err(Refusal::BadProposal("a path is empty or too long"));
+        }
+        if !valid::printable(path) {
+            return Err(Refusal::BadProposal(
+                "a path has a character that is not printable",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The paths of a step in words: `reports/a.txt` or `inbox/a.txt, archive/a.txt`.
+pub(crate) fn paths(targets: &[String]) -> String {
+    let mut out = String::new();
+    for (at, path) in targets.iter().enumerate() {
+        if at > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(path);
+    }
+    out
 }
 
 impl Goal {
@@ -161,7 +187,9 @@ impl Goal {
             steps_ok: 0,
             failed: 0,
             denied: 0,
+            asked: 0,
             tokens_spent: 0,
+            met: None,
             waiting: None,
             flight: None,
             posted: Posted::default(),
@@ -204,8 +232,10 @@ impl Goal {
             let why = format!("{} is outside what you approved", p.row);
             return Some((AskKind::Scope, valid::clean(&why)));
         }
-        if let Some(path) = &p.target
-            && !valid::path_in(&self.scope.folders, path)
+        if let Some(path) = p
+            .targets
+            .iter()
+            .find(|path| !valid::path_in(&self.scope.folders, path))
         {
             let why = format!("{path} is outside the folders you approved");
             return Some((AskKind::Scope, valid::clean(&why)));
@@ -239,7 +269,16 @@ impl Goal {
     /// or needs more scope, waits for the person ([`Verdict::Ask`]); one past the
     /// budget or the deadline pauses the goal ([`Verdict::Over`]). Every proposal
     /// that is not refused outright is logged.
-    pub fn propose(&mut self, now: u64, p: Proposal, person: Presence) -> Result<Verdict, Refusal> {
+    ///
+    /// The step carries no tier: `door` decides it, so nothing the model wrote
+    /// can mark a step with no undo as one that runs.
+    pub fn propose(
+        &mut self,
+        now: u64,
+        step: Step,
+        person: Presence,
+        door: &dyn Door,
+    ) -> Result<Verdict, Refusal> {
         if self.state != State::Active {
             return Err(Refusal::NotActive(self.state));
         }
@@ -249,7 +288,13 @@ impl Goal {
         if self.log.len() >= MAX_LOG {
             return Err(Refusal::LogFull);
         }
-        proposal_ok(&p)?;
+        step_ok(&step)?;
+        let p = Proposal {
+            tier: door.tier(&step.row, &step.targets),
+            row: step.row,
+            targets: step.targets,
+            tokens_est: step.tokens_est,
+        };
         if let Some(pause) = self.over(now, p.tokens_est) {
             self.state = State::Paused(pause);
             self.push_log(p, now, StepStatus::Held, held_note(pause));
@@ -261,9 +306,10 @@ impl Goal {
                 let ask = Ask {
                     kind,
                     why: why.clone(),
-                    proposal: p.clone(),
+                    proposal: Some(p.clone()),
                 };
                 self.state = State::Waiting;
+                self.asked += 1;
                 self.waiting = Some(ask.clone());
                 self.push_log(p, now, StepStatus::Asked, why);
                 Ok(Verdict::Ask(ask))
@@ -286,13 +332,20 @@ impl Goal {
     /// stays as it was approved, so another step outside it asks again. If a budget
     /// ran out while it waited, the goal pauses instead ([`Verdict::Over`]).
     pub fn approve(&mut self, now: u64) -> Result<Verdict, Refusal> {
-        if self.state != State::Waiting {
-            return Err(Refusal::NothingWaiting);
-        }
+        let tokens_est = match (&self.state, &self.waiting) {
+            (
+                State::Waiting,
+                Some(Ask {
+                    proposal: Some(p), ..
+                }),
+            ) => p.tokens_est,
+            (State::Waiting, Some(_)) => return Err(Refusal::NotAStep),
+            _ => return Err(Refusal::NothingWaiting),
+        };
         let Some(ask) = self.waiting.take() else {
             return Err(Refusal::NothingWaiting);
         };
-        if let Some(pause) = self.over(now, ask.proposal.tokens_est) {
+        if let Some(pause) = self.over(now, tokens_est) {
             self.state = State::Paused(pause);
             let note = held_note(pause);
             if let Some(step) = self.last_step() {
@@ -318,14 +371,71 @@ impl Goal {
     /// The person said no to the step that waits: it is dropped, and the goal is
     /// free to propose another.
     pub fn deny(&mut self) -> Result<(), Refusal> {
-        if self.state != State::Waiting || self.waiting.take().is_none() {
-            return Err(Refusal::NothingWaiting);
+        match (&self.state, &self.waiting) {
+            (
+                State::Waiting,
+                Some(Ask {
+                    proposal: Some(_), ..
+                }),
+            ) => {}
+            (State::Waiting, Some(_)) => return Err(Refusal::NotAStep),
+            _ => return Err(Refusal::NothingWaiting),
         }
+        self.waiting = None;
         if let Some(step) = self.last_step() {
             step.status = StepStatus::Denied;
         }
         self.denied += 1;
         self.state = State::Active;
+        Ok(())
+    }
+
+    /// The planner needs an answer before it can plan the next step (its
+    /// `clarify`): the goal waits, and the panel shows the question. It counts as
+    /// a time the goal waited for the person ([`Goal::asked`]). It is not a step,
+    /// so it is not logged as one.
+    pub fn clarify(&mut self, question: &str) -> Result<(), Refusal> {
+        if self.state != State::Active {
+            return Err(Refusal::NotActive(self.state));
+        }
+        if self.flight.is_some() {
+            return Err(Refusal::StepInFlight);
+        }
+        let why = match valid::clean(question) {
+            empty if empty.is_empty() => String::from("the agent has a question"),
+            why => why,
+        };
+        self.waiting = Some(Ask {
+            kind: AskKind::Question,
+            why,
+            proposal: None,
+        });
+        self.state = State::Waiting;
+        self.asked += 1;
+        Ok(())
+    }
+
+    /// The person answered the planner's question (the runner gives the answer to
+    /// the planner): the goal is free to plan its next step.
+    pub fn answered(&mut self) -> Result<(), Refusal> {
+        match (&self.state, &self.waiting) {
+            (State::Waiting, Some(Ask { proposal: None, .. })) => {
+                self.waiting = None;
+                self.state = State::Active;
+                Ok(())
+            }
+            (State::Waiting, Some(_)) => Err(Refusal::NotAQuestion),
+            _ => Err(Refusal::NothingWaiting),
+        }
+    }
+
+    /// The runner checked the world and says whether the goal that the planner
+    /// called done is met: `Done` is the planner's claim, this is the check.
+    pub fn record_met(&mut self, met: bool) -> Result<(), Refusal> {
+        if self.state != State::Done {
+            return Err(Refusal::NotDone(self.state));
+        }
+        self.met = Some(met);
         Ok(())
     }
 
@@ -379,7 +489,11 @@ impl Goal {
     /// Ends the goal in `state`, closing the step that was running or waiting.
     fn end(&mut self, state: State, now: u64, note: &str) {
         let closing = match self.waiting.take() {
-            Some(_) => Some(StepStatus::Held),
+            Some(Ask {
+                proposal: Some(_), ..
+            }) => Some(StepStatus::Held),
+            // A question is no step: nothing in the log to close.
+            Some(_) => None,
             None => self.flight.take().map(|_| StepStatus::Failed),
         };
         if let (Some(status), Some(step)) = (closing, self.last_step()) {

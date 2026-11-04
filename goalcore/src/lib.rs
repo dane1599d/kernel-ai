@@ -12,12 +12,24 @@
 //!   the check-in times. Only an approved goal runs ([`Goals::approve`]), and only
 //!   inside what was approved.
 //! - **Steps.** One at a time per goal. [`Goal::propose`] says whether a step runs,
-//!   asks, or is held back by the budget or the deadline. A run-tier step inside
-//!   the scope runs even while the person is away (question 7's default, a flag
-//!   per goal turns it off). A step that asks, or needs more scope than was
-//!   approved, pauses the goal ([`State::Waiting`]) until the person answers:
-//!   [`Goal::approve`] runs that one step, with the scope unchanged, and
-//!   [`Goal::deny`] drops it. Nothing outside the scope runs unasked.
+//!   asks, or is held back by the budget or the deadline. A step names every path
+//!   it acts on (`fs_move` has two) and all of them must lie in the scope. Its
+//!   tier is the one door's, never the model's: a [`Step`] carries none, and
+//!   [`Goal::propose`] asks the runner's [`Door`] (the registry's
+//!   `agentabi::derive` of the row, or `consent::decide` on the goal's approved
+//!   line), so a step steered toward a row with no undo cannot arrive marked as
+//!   one that runs. A run-tier step inside the scope runs even while the person is
+//!   away (question 7's default, a flag per goal turns it off). A step that asks,
+//!   or needs more scope than was approved, pauses the goal ([`State::Waiting`])
+//!   until the person answers: [`Goal::approve`] runs that one step, with the
+//!   scope unchanged, and [`Goal::deny`] drops it. Nothing outside the scope runs
+//!   without a yes.
+//! - **Questions and "done".** The planner's `clarify` is [`Goal::clarify`]: the
+//!   goal waits with the question (an [`AskKind::Question`], no step to approve)
+//!   until [`Goal::answered`]. The planner's `say` is [`Goal::complete`] only when
+//!   it says the goal is finished; [`State::Done`] is that claim, and whether the
+//!   goal is met is for the runner to check and record ([`Goal::record_met`]).
+//!   [`Goal::asked`] counts every time the goal waited for the person.
 //! - **Budget.** At the budget the goal pauses and asks for more
 //!   ([`Goals::raise`]); at the deadline it pauses and asks for a later one
 //!   ([`Goals::extend`]).
@@ -52,8 +64,8 @@ mod tests;
 
 pub use checkin::{CheckIn, CheckKind};
 pub use goal::{
-    Ask, AskKind, Budget, Goal, Pause, Posted, Presence, Proposal, Resource, Scope, Spec, State,
-    StepLog, StepStatus, Tier,
+    Ask, AskKind, Budget, Door, Goal, Pause, Posted, Presence, Proposal, Resource, Scope, Spec,
+    State, Step, StepLog, StepStatus, Tier,
 };
 pub use goals::Goals;
 pub use run::{Refusal, StepDone, Verdict};
@@ -64,6 +76,8 @@ pub const MAX_TEXT: usize = 200;
 /// Most rows a scope names, and most folders.
 pub const MAX_ROWS: usize = 16;
 pub const MAX_FOLDERS: usize = 8;
+/// Most paths one step names (`fs_move` has two).
+pub const MAX_TARGETS: usize = 4;
 /// Longest row name.
 pub const ROW_CHARS: usize = 48;
 /// Most check-in times a goal sets.

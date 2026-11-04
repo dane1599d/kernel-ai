@@ -38,17 +38,30 @@ fn goal() -> Goal {
     goal
 }
 
-fn step(row: &str, target: Option<&str>, tier: Tier) -> Proposal {
-    Proposal {
+/// The one door, as the registry decides tiers: a row with no undo asks.
+struct FakeDoor;
+
+impl Door for FakeDoor {
+    fn tier(&self, row: &str, _targets: &[String]) -> Tier {
+        match row {
+            "fs_trash" | "service_stop" | "process_stop" => Tier::Ask,
+            _ => Tier::Run,
+        }
+    }
+}
+
+const DOOR: FakeDoor = FakeDoor;
+
+fn step(row: &str, targets: &[&str]) -> Step {
+    Step {
         row: row.to_string(),
-        target: target.map(str::to_string),
-        tier,
+        targets: strings(targets),
         tokens_est: 100,
     }
 }
 
-fn run_step(row: &str) -> Proposal {
-    step(row, None, Tier::Run)
+fn run_step(row: &str) -> Step {
+    step(row, &[])
 }
 
 fn done(entry: u64, tokens: u64) -> StepDone {
@@ -60,8 +73,11 @@ fn done(entry: u64, tokens: u64) -> StepDone {
 }
 
 /// Proposes `p` and finishes it ok at `now`, as the runner does for a `Run`.
-fn ran(goal: &mut Goal, now: u64, p: Proposal, entry: u64, tokens: u64) {
-    assert_eq!(goal.propose(now, p, Presence::Here), Ok(Verdict::Run));
+fn ran(goal: &mut Goal, now: u64, p: Step, entry: u64, tokens: u64) {
+    assert_eq!(
+        goal.propose(now, p, Presence::Here, &DOOR),
+        Ok(Verdict::Run)
+    );
     goal.finish_step(done(entry, tokens)).unwrap();
 }
 
@@ -74,7 +90,7 @@ fn a_goal_takes_no_step_until_the_person_approves_it() {
     let proposed = goals.get_mut(id).unwrap();
     assert_eq!(proposed.state, State::Proposed);
     assert_eq!(
-        proposed.propose(T0, run_step("fs_list"), Presence::Here),
+        proposed.propose(T0, run_step("fs_list"), Presence::Here, &DOOR),
         Err(Refusal::NotActive(State::Proposed))
     );
     assert!(proposed.log.is_empty());
@@ -101,9 +117,9 @@ fn the_ask_shows_the_scope_the_budget_and_the_check_ins() {
 #[test]
 fn a_run_tier_step_in_scope_runs_and_is_logged_with_its_entry_and_tokens() {
     let mut goal = goal();
-    let p = step("fs_create", Some("reports/q1.txt"), Tier::Run);
+    let p = step("fs_create", &["reports/q1.txt"]);
     assert_eq!(
-        goal.propose(T0 + 10, p.clone(), Presence::Here),
+        goal.propose(T0 + 10, p.clone(), Presence::Here, &DOOR),
         Ok(Verdict::Run)
     );
     assert_eq!(goal.flight, Some(1));
@@ -116,7 +132,13 @@ fn a_run_tier_step_in_scope_runs_and_is_logged_with_its_entry_and_tokens() {
     let log = &goal.log[0];
     assert_eq!(log.n, 1);
     assert_eq!(log.at_ms, T0 + 10);
-    assert_eq!(log.proposal, p);
+    let logged = Proposal {
+        row: p.row,
+        targets: p.targets,
+        tier: Tier::Run,
+        tokens_est: p.tokens_est,
+    };
+    assert_eq!(log.proposal, logged);
     assert_eq!(
         (log.status, log.entry, log.tokens),
         (StepStatus::Ran, Some(41), 900)
@@ -127,7 +149,7 @@ fn a_run_tier_step_in_scope_runs_and_is_logged_with_its_entry_and_tokens() {
 #[test]
 fn a_run_tier_step_runs_while_the_person_is_away() {
     let mut goal = goal();
-    let verdict = goal.propose(T0, run_step("fs_list"), Presence::Away);
+    let verdict = goal.propose(T0, run_step("fs_list"), Presence::Away, &DOOR);
     assert_eq!(verdict, Ok(Verdict::Run));
 }
 
@@ -135,7 +157,7 @@ fn a_run_tier_step_runs_while_the_person_is_away() {
 fn a_goal_that_does_not_run_unattended_waits_for_the_person_to_return() {
     let mut goal = goal();
     goal.away_ok = false;
-    let Ok(Verdict::Ask(ask)) = goal.propose(T0, run_step("fs_list"), Presence::Away) else {
+    let Ok(Verdict::Ask(ask)) = goal.propose(T0, run_step("fs_list"), Presence::Away, &DOOR) else {
         panic!("it should ask");
     };
     assert_eq!(ask.kind, AskKind::Away);
@@ -143,7 +165,7 @@ fn a_goal_that_does_not_run_unattended_waits_for_the_person_to_return() {
     // Back at the machine, the same step runs without a word.
     goal.deny().unwrap();
     assert_eq!(
-        goal.propose(T0, run_step("fs_list"), Presence::Here),
+        goal.propose(T0, run_step("fs_list"), Presence::Here, &DOOR),
         Ok(Verdict::Run)
     );
 }
@@ -152,11 +174,11 @@ fn a_goal_that_does_not_run_unattended_waits_for_the_person_to_return() {
 fn only_one_step_runs_at_a_time() {
     let mut goal = goal();
     assert_eq!(
-        goal.propose(T0, run_step("fs_list"), Presence::Here),
+        goal.propose(T0, run_step("fs_list"), Presence::Here, &DOOR),
         Ok(Verdict::Run)
     );
     assert_eq!(
-        goal.propose(T0, run_step("fs_read"), Presence::Here),
+        goal.propose(T0, run_step("fs_read"), Presence::Here, &DOOR),
         Err(Refusal::StepInFlight)
     );
     assert_eq!(goal.log.len(), 1);
@@ -166,8 +188,8 @@ fn only_one_step_runs_at_a_time() {
 #[test]
 fn a_step_that_asks_pauses_the_goal_until_the_person_answers() {
     let mut goal = goal();
-    let p = step("fs_trash", Some("reports/old.txt"), Tier::Ask);
-    let Ok(Verdict::Ask(ask)) = goal.propose(T0, p, Presence::Here) else {
+    let p = step("fs_trash", &["reports/old.txt"]);
+    let Ok(Verdict::Ask(ask)) = goal.propose(T0, p, Presence::Here, &DOOR) else {
         panic!("it should ask");
     };
     assert_eq!(ask.kind, AskKind::Tier);
@@ -181,7 +203,7 @@ fn a_step_that_asks_pauses_the_goal_until_the_person_answers() {
     assert_eq!(goal.log[0].status, StepStatus::Asked);
     // Nothing else runs while it waits.
     assert_eq!(
-        goal.propose(T0, run_step("fs_list"), Presence::Here),
+        goal.propose(T0, run_step("fs_list"), Presence::Here, &DOOR),
         Err(Refusal::NotActive(State::Waiting))
     );
     // A yes runs that one step.
@@ -196,9 +218,9 @@ fn a_step_that_asks_pauses_the_goal_until_the_person_answers() {
 #[test]
 fn a_no_drops_the_step_and_the_goal_goes_on() {
     let mut goal = goal();
-    let p = step("fs_trash", Some("reports/old.txt"), Tier::Ask);
+    let p = step("fs_trash", &["reports/old.txt"]);
     assert!(matches!(
-        goal.propose(T0, p, Presence::Here),
+        goal.propose(T0, p, Presence::Here, &DOOR),
         Ok(Verdict::Ask(_))
     ));
     goal.deny().unwrap();
@@ -208,7 +230,7 @@ fn a_no_drops_the_step_and_the_goal_goes_on() {
     assert_eq!(goal.deny(), Err(Refusal::NothingWaiting));
     assert_eq!(goal.approve(T0), Err(Refusal::NothingWaiting));
     assert_eq!(
-        goal.propose(T0, run_step("fs_list"), Presence::Here),
+        goal.propose(T0, run_step("fs_list"), Presence::Here, &DOOR),
         Ok(Verdict::Run)
     );
 }
@@ -217,7 +239,7 @@ fn a_no_drops_the_step_and_the_goal_goes_on() {
 fn a_step_outside_the_scope_asks_whatever_its_tier_and_a_yes_does_not_widen_it() {
     let mut goal = goal();
     let outside = run_step("service_restart");
-    let Ok(Verdict::Ask(ask)) = goal.propose(T0, outside.clone(), Presence::Here) else {
+    let Ok(Verdict::Ask(ask)) = goal.propose(T0, outside.clone(), Presence::Here, &DOOR) else {
         panic!("it should ask");
     };
     assert_eq!(ask.kind, AskKind::Scope);
@@ -227,7 +249,7 @@ fn a_step_outside_the_scope_asks_whatever_its_tier_and_a_yes_does_not_widen_it()
     assert_eq!(goal.scope, spec().scope);
     // The same step asks again.
     assert!(matches!(
-        goal.propose(T0, outside, Presence::Here),
+        goal.propose(T0, outside, Presence::Here, &DOOR),
         Ok(Verdict::Ask(_))
     ));
 }
@@ -251,7 +273,7 @@ fn nothing_outside_the_scope_runs_unasked() {
     ];
     for row in rows {
         let mut goal = goal();
-        let verdict = goal.propose(T0, run_step(row), Presence::Here);
+        let verdict = goal.propose(T0, run_step(row), Presence::Here, &DOOR);
         assert!(
             matches!(verdict, Ok(Verdict::Ask(ref a)) if a.kind == AskKind::Scope),
             "{row}"
@@ -259,8 +281,8 @@ fn nothing_outside_the_scope_runs_unasked() {
     }
     for path in paths {
         let mut goal = goal();
-        let p = step("fs_create", Some(path), Tier::Run);
-        let verdict = goal.propose(T0, p, Presence::Here);
+        let p = step("fs_create", &[path]);
+        let verdict = goal.propose(T0, p, Presence::Here, &DOOR);
         let outside = matches!(verdict, Ok(Verdict::Ask(ref a)) if a.kind == AskKind::Scope);
         // An empty path cannot be logged at all; the others are outside.
         assert!(
@@ -274,9 +296,9 @@ fn nothing_outside_the_scope_runs_unasked() {
 fn a_path_inside_an_approved_folder_runs_and_the_folder_itself_does_too() {
     for path in ["reports", "reports/q1.txt", "reports/2026/q1.txt"] {
         let mut goal = goal();
-        let p = step("fs_list", Some(path), Tier::Run);
+        let p = step("fs_list", &[path]);
         assert_eq!(
-            goal.propose(T0, p, Presence::Here),
+            goal.propose(T0, p, Presence::Here, &DOOR),
             Ok(Verdict::Run),
             "{path}"
         );
@@ -287,14 +309,14 @@ fn a_path_inside_an_approved_folder_runs_and_the_folder_itself_does_too() {
 fn a_goal_with_no_folders_may_touch_no_path_but_a_step_with_none_runs() {
     let mut goal = goal();
     goal.scope.folders.clear();
-    let with_path = step("fs_list", Some("reports"), Tier::Run);
+    let with_path = step("fs_list", &["reports"]);
     assert!(matches!(
-        goal.propose(T0, with_path, Presence::Here),
+        goal.propose(T0, with_path, Presence::Here, &DOOR),
         Ok(Verdict::Ask(_))
     ));
     goal.deny().unwrap();
     assert_eq!(
-        goal.propose(T0, run_step("fs_list"), Presence::Here),
+        goal.propose(T0, run_step("fs_list"), Presence::Here, &DOOR),
         Ok(Verdict::Run)
     );
 }
@@ -304,7 +326,7 @@ fn a_group_in_the_scope_covers_its_rows_only() {
     let mut goal = goal();
     ran(&mut goal, T0, run_step("notes_add"), 1, 10);
     assert!(matches!(
-        goal.propose(T0, run_step("notesx_add"), Presence::Here),
+        goal.propose(T0, run_step("notesx_add"), Presence::Here, &DOOR),
         Ok(Verdict::Ask(_))
     ));
 }
@@ -315,11 +337,12 @@ fn a_step_the_log_cannot_keep_is_refused_and_not_logged() {
     for bad in [
         run_step("Fs List"),
         run_step(""),
-        step("fs_list", Some("tab\there"), Tier::Run),
-        step("fs_list", Some("-"), Tier::Run),
+        step("fs_list", &[""]),
+        step("fs_list", &["a", "b", "c", "d", "e"]),
+        step("fs_list", &["tab\there"]),
     ] {
         assert!(matches!(
-            goal.propose(T0, bad, Presence::Here),
+            goal.propose(T0, bad, Presence::Here, &DOOR),
             Err(Refusal::BadProposal(_))
         ));
     }
@@ -337,7 +360,7 @@ fn a_goal_whose_log_is_full_takes_no_more_steps() {
         goal.steps_run = 0;
     }
     assert_eq!(
-        goal.propose(T0, run_step("fs_list"), Presence::Here),
+        goal.propose(T0, run_step("fs_list"), Presence::Here, &DOOR),
         Err(Refusal::LogFull)
     );
 }
@@ -359,7 +382,7 @@ fn at_the_step_budget_the_goal_pauses_and_a_raise_resumes_it() {
         );
     }
     let goal = goals.get_mut(id).unwrap();
-    let verdict = goal.propose(T0 + 9, run_step("fs_list"), Presence::Here);
+    let verdict = goal.propose(T0 + 9, run_step("fs_list"), Presence::Here, &DOOR);
     assert_eq!(verdict, Ok(Verdict::Over(Pause::Budget(Resource::Steps))));
     assert_eq!(goal.state, State::Paused(Pause::Budget(Resource::Steps)));
     assert_eq!(goal.log.last().unwrap().status, StepStatus::Held);
@@ -378,7 +401,7 @@ fn at_the_step_budget_the_goal_pauses_and_a_raise_resumes_it() {
     let goal = goals.get_mut(id).unwrap();
     assert_eq!(goal.budget.steps, 6);
     assert_eq!(
-        goal.propose(T0 + 11, run_step("fs_list"), Presence::Here),
+        goal.propose(T0 + 11, run_step("fs_list"), Presence::Here, &DOOR),
         Ok(Verdict::Run)
     );
 }
@@ -387,7 +410,7 @@ fn at_the_step_budget_the_goal_pauses_and_a_raise_resumes_it() {
 fn a_step_that_would_pass_the_token_budget_pauses_the_goal() {
     let mut goal = goal();
     ran(&mut goal, T0, run_step("fs_list"), 1, 9_950);
-    let verdict = goal.propose(T0, run_step("fs_list"), Presence::Here);
+    let verdict = goal.propose(T0, run_step("fs_list"), Presence::Here, &DOOR);
     assert_eq!(verdict, Ok(Verdict::Over(Pause::Budget(Resource::Tokens))));
 }
 
@@ -395,7 +418,7 @@ fn a_step_that_would_pass_the_token_budget_pauses_the_goal() {
 fn planning_tokens_count_against_the_budget_too() {
     let mut goal = goal();
     goal.charge(9_990);
-    let verdict = goal.propose(T0, run_step("fs_list"), Presence::Here);
+    let verdict = goal.propose(T0, run_step("fs_list"), Presence::Here, &DOOR);
     assert_eq!(verdict, Ok(Verdict::Over(Pause::Budget(Resource::Tokens))));
 }
 
@@ -403,7 +426,7 @@ fn planning_tokens_count_against_the_budget_too() {
 fn past_the_wall_time_budget_the_goal_pauses() {
     let mut goal = goal();
     goal.budget.wall_ms = HOUR;
-    let verdict = goal.propose(T0 + HOUR, run_step("fs_list"), Presence::Here);
+    let verdict = goal.propose(T0 + HOUR, run_step("fs_list"), Presence::Here, &DOOR);
     assert_eq!(verdict, Ok(Verdict::Over(Pause::Budget(Resource::Wall))));
 }
 
@@ -413,10 +436,11 @@ fn a_raise_that_still_leaves_it_short_keeps_it_paused() {
     let id = goals.set(spec(), T0).unwrap();
     goals.approve(id, T0).unwrap();
     goals.get_mut(id).unwrap().charge(10_000);
-    let verdict = goals
-        .get_mut(id)
-        .unwrap()
-        .propose(T0, run_step("fs_list"), Presence::Here);
+    let verdict =
+        goals
+            .get_mut(id)
+            .unwrap()
+            .propose(T0, run_step("fs_list"), Presence::Here, &DOOR);
     assert!(matches!(verdict, Ok(Verdict::Over(_))));
     let tiny = Budget {
         steps: 0,
@@ -434,7 +458,7 @@ fn at_the_deadline_the_goal_pauses_and_a_later_one_resumes_it() {
     goals.approve(id, T0).unwrap();
     let by = T0 + 8 * HOUR;
     let goal = goals.get_mut(id).unwrap();
-    let verdict = goal.propose(by, run_step("fs_list"), Presence::Here);
+    let verdict = goal.propose(by, run_step("fs_list"), Presence::Here, &DOOR);
     assert_eq!(verdict, Ok(Verdict::Over(Pause::Deadline)));
     assert_eq!(goals.resume(id), Err(Refusal::NeedsRaise(Pause::Deadline)));
     // Not later than the old one, or than now: refused.
@@ -442,7 +466,7 @@ fn at_the_deadline_the_goal_pauses_and_a_later_one_resumes_it() {
     assert_eq!(goals.extend(id, by, by + HOUR), Ok(State::Active));
     let goal = goals.get_mut(id).unwrap();
     assert_eq!(
-        goal.propose(by + 1, run_step("fs_list"), Presence::Here),
+        goal.propose(by + 1, run_step("fs_list"), Presence::Here, &DOOR),
         Ok(Verdict::Run)
     );
 }
@@ -451,9 +475,9 @@ fn at_the_deadline_the_goal_pauses_and_a_later_one_resumes_it() {
 fn a_budget_that_ran_out_while_a_step_waited_holds_the_step_back() {
     let mut goal = goal();
     goal.budget.wall_ms = HOUR;
-    let p = step("fs_trash", Some("reports/old.txt"), Tier::Ask);
+    let p = step("fs_trash", &["reports/old.txt"]);
     assert!(matches!(
-        goal.propose(T0, p, Presence::Here),
+        goal.propose(T0, p, Presence::Here, &DOOR),
         Ok(Verdict::Ask(_))
     ));
     // The person answers after the time ran out.
@@ -472,14 +496,14 @@ fn the_person_can_pause_and_resume_and_a_running_step_still_finishes() {
     goals.approve(id, T0).unwrap();
     let goal = goals.get_mut(id).unwrap();
     assert_eq!(
-        goal.propose(T0, run_step("fs_list"), Presence::Here),
+        goal.propose(T0, run_step("fs_list"), Presence::Here, &DOOR),
         Ok(Verdict::Run)
     );
     goal.pause().unwrap();
     assert_eq!(goal.state, State::Paused(Pause::User));
     goal.finish_step(done(2, 10)).unwrap();
     assert_eq!(
-        goal.propose(T0, run_step("fs_list"), Presence::Here),
+        goal.propose(T0, run_step("fs_list"), Presence::Here, &DOOR),
         Err(Refusal::NotActive(State::Paused(Pause::User)))
     );
     assert_eq!(goals.resume(id), Ok(()));
@@ -490,7 +514,7 @@ fn the_person_can_pause_and_resume_and_a_running_step_still_finishes() {
 fn a_failed_step_counts_against_the_budget_and_is_logged_with_why() {
     let mut goal = goal();
     assert_eq!(
-        goal.propose(T0, run_step("fs_read"), Presence::Here),
+        goal.propose(T0, run_step("fs_read"), Presence::Here, &DOOR),
         Ok(Verdict::Run)
     );
     let failed = StepDone {
@@ -517,8 +541,8 @@ fn complete_fail_and_cancel_end_the_goal_and_close_what_was_open() {
     assert_eq!(goal.fail(T0, "x"), Err(Refusal::Finished(State::Done)));
 
     let mut waiting = self::goal();
-    let p = step("fs_trash", Some("reports/old.txt"), Tier::Ask);
-    waiting.propose(T0, p, Presence::Here).unwrap();
+    let p = step("fs_trash", &["reports/old.txt"]);
+    waiting.propose(T0, p, Presence::Here, &DOOR).unwrap();
     waiting.cancel(T0 + 1).unwrap();
     assert_eq!(waiting.state, State::Cancelled);
     assert_eq!(waiting.log[0].status, StepStatus::Held);
@@ -526,7 +550,7 @@ fn complete_fail_and_cancel_end_the_goal_and_close_what_was_open() {
 
     let mut running = self::goal();
     running
-        .propose(T0, run_step("fs_list"), Presence::Here)
+        .propose(T0, run_step("fs_list"), Presence::Here, &DOOR)
         .unwrap();
     running.fail(T0 + 2, "the model gave up").unwrap();
     assert_eq!((running.state, running.flight), (State::Failed, None));
@@ -550,7 +574,7 @@ fn every_entry_a_goal_made_is_there_to_undo_newest_first() {
     ran(&mut goal, T0, run_step("fs_create"), 11, 10);
     ran(&mut goal, T0, run_step("fs_create"), 12, 10);
     assert!(matches!(
-        goal.propose(T0, run_step("service_restart"), Presence::Here),
+        goal.propose(T0, run_step("service_restart"), Presence::Here, &DOOR),
         Ok(Verdict::Ask(_))
     ));
     goal.deny().unwrap();
@@ -595,8 +619,8 @@ fn a_line_says_what_is_done_what_is_next_and_what_it_waits_on() {
         goal.progress_line(),
         "Goal 'draft the quarterly report': 2 of 4 steps done; next: write reports/q1.txt; waiting on: nothing"
     );
-    let p = step("fs_trash", Some("reports/old.txt"), Tier::Ask);
-    goal.propose(T0, p, Presence::Here).unwrap();
+    let p = step("fs_trash", &["reports/old.txt"]);
+    goal.propose(T0, p, Presence::Here, &DOOR).unwrap();
     assert_eq!(
         goal.progress_line(),
         "Goal 'draft the quarterly report': 2 of 4 steps done; next: fs_trash reports/old.txt; waiting on: fs_trash has no undo, so it asks"
@@ -821,11 +845,11 @@ fn a_waiting_goal_counts_as_active() {
     for id in &ids[..4] {
         goals.approve(*id, T0).unwrap();
     }
-    let p = step("fs_trash", Some("reports/a"), Tier::Ask);
+    let p = step("fs_trash", &["reports/a"]);
     goals
         .get_mut(ids[0])
         .unwrap()
-        .propose(T0, p, Presence::Here)
+        .propose(T0, p, Presence::Here, &DOOR)
         .unwrap();
     assert_eq!(goals.live(), 4);
     assert_eq!(goals.approve(ids[4], T0), Err(Refusal::TooManyActive));
@@ -864,13 +888,13 @@ fn a_tick_pauses_a_goal_past_its_deadline_unless_a_step_runs_and_posts_check_ins
     goals
         .get_mut(b)
         .unwrap()
-        .propose(T0, run_step("fs_list"), Presence::Here)
+        .propose(T0, run_step("fs_list"), Presence::Here, &DOOR)
         .unwrap();
-    let p = step("fs_trash", Some("reports/a"), Tier::Ask);
+    let p = step("fs_trash", &["reports/a"]);
     goals
         .get_mut(c)
         .unwrap()
-        .propose(T0, p, Presence::Here)
+        .propose(T0, p, Presence::Here, &DOOR)
         .unwrap();
     let posted = goals.tick(T0 + 9 * HOUR);
     assert_eq!(goals.get(a).unwrap().state, State::Paused(Pause::Deadline));
@@ -901,15 +925,15 @@ fn a_goal_runs_its_plan_while_the_person_is_away_and_waits_only_for_the_one_ask(
     ] {
         now += 10_000;
         entry += 1;
-        let verdict = goal.propose(now, step(row, Some(path), Tier::Run), Presence::Away);
+        let verdict = goal.propose(now, step(row, &[path]), Presence::Away, &DOOR);
         assert_eq!(verdict, Ok(Verdict::Run), "{row}");
         goal.finish_step(done(entry, 800)).unwrap();
     }
     // The fourth has no undo: it waits, and nothing else runs.
     now += 10_000;
-    let p = step("fs_trash", Some("reports/old.txt"), Tier::Ask);
+    let p = step("fs_trash", &["reports/old.txt"]);
     assert!(matches!(
-        goal.propose(now, p, Presence::Away),
+        goal.propose(now, p, Presence::Away, &DOOR),
         Ok(Verdict::Ask(_))
     ));
     assert_eq!(goal.state, State::Waiting);
@@ -929,6 +953,146 @@ fn a_goal_runs_its_plan_while_the_person_is_away_and_waits_only_for_the_one_ask(
     assert_eq!(statuses, vec![StepStatus::Ran; 4]);
 }
 
+// ---- more than one path, the door's tier, a question, and "met"
+
+fn mover() -> Goal {
+    let mut goal = goal();
+    goal.scope.rows.push(String::from("fs_move"));
+    goal.scope.folders = strings(&["inbox", "archive"]);
+    goal
+}
+
+#[test]
+fn a_move_names_both_paths_and_both_must_lie_in_the_scope() {
+    let mut goal = mover();
+    let both = step("fs_move", &["inbox/a.txt", "archive/a.txt"]);
+    assert_eq!(
+        goal.propose(T0, both, Presence::Here, &DOOR),
+        Ok(Verdict::Run)
+    );
+    assert_eq!(
+        goal.log[0].proposal.targets,
+        strings(&["inbox/a.txt", "archive/a.txt"])
+    );
+    goal.finish_step(done(1, 10)).unwrap();
+    // Either path outside the folders makes it an ask that names that path.
+    for (paths, outside) in [
+        (["inbox/a.txt", "elsewhere/a.txt"], "elsewhere/a.txt"),
+        (["../secret", "archive/a.txt"], "../secret"),
+        (["inbox/../../x", "archive/a.txt"], "inbox/../../x"),
+    ] {
+        let verdict = goal.propose(T0, step("fs_move", &paths), Presence::Here, &DOOR);
+        let Ok(Verdict::Ask(ask)) = verdict else {
+            panic!("{paths:?} should ask: {verdict:?}");
+        };
+        assert_eq!(ask.kind, AskKind::Scope);
+        assert_eq!(
+            ask.why,
+            format!("{outside} is outside the folders you approved")
+        );
+        goal.deny().unwrap();
+    }
+    assert_eq!(
+        goal.progress_line(),
+        "Goal 'draft the quarterly report': 1 steps done; next: not planned yet; waiting on: nothing"
+    );
+}
+
+#[test]
+fn the_tier_is_the_doors_and_a_step_carries_none() {
+    struct Strict;
+    impl Door for Strict {
+        fn tier(&self, _row: &str, _targets: &[String]) -> Tier {
+            Tier::Ask
+        }
+    }
+    let mut goal = goal();
+    let trash = step("fs_trash", &["reports/a.txt"]);
+    let Ok(Verdict::Ask(ask)) = goal.propose(T0, trash, Presence::Here, &DOOR) else {
+        panic!("a row with no undo asks");
+    };
+    assert_eq!(ask.kind, AskKind::Tier);
+    assert_eq!(ask.proposal.map(|p| p.tier), Some(Tier::Ask));
+    goal.deny().unwrap();
+    // The same step under a door that asks of everything asks too, and the log
+    // keeps the tier the door gave.
+    let verdict = goal.propose(T0, run_step("fs_list"), Presence::Here, &Strict);
+    assert!(matches!(verdict, Ok(Verdict::Ask(_))));
+    assert_eq!(goal.log[1].proposal.tier, Tier::Ask);
+    goal.deny().unwrap();
+    ran(&mut goal, T0, run_step("fs_list"), 1, 10);
+    assert_eq!(goal.log[2].proposal.tier, Tier::Run);
+}
+
+#[test]
+fn a_question_waits_for_an_answer_and_is_no_step() {
+    let mut goal = goal();
+    goal.plan(3, "next");
+    goal.clarify("Which folder holds the Q1 notes?").unwrap();
+    assert_eq!((goal.state, goal.asked), (State::Waiting, 1));
+    assert!(goal.log.is_empty());
+    assert_eq!(
+        goal.waiting_line().as_deref(),
+        Some(
+            "Goal 'draft the quarterly report' is waiting for you: Which folder holds the Q1 notes?"
+        )
+    );
+    assert!(
+        goal.progress_line()
+            .ends_with("next: your answer; waiting on: Which folder holds the Q1 notes?")
+    );
+    // There is no step to say yes or no to, and nothing else is asked meanwhile.
+    assert_eq!(goal.approve(T0), Err(Refusal::NotAStep));
+    assert_eq!(goal.deny(), Err(Refusal::NotAStep));
+    assert_eq!(
+        goal.propose(T0, run_step("fs_list"), Presence::Here, &DOOR),
+        Err(Refusal::NotActive(State::Waiting))
+    );
+    assert_eq!(
+        goal.clarify("again?"),
+        Err(Refusal::NotActive(State::Waiting))
+    );
+    goal.answered().unwrap();
+    assert_eq!((goal.state, goal.waiting.is_none()), (State::Active, true));
+    assert_eq!(goal.answered(), Err(Refusal::NothingWaiting));
+    // A step that asks is a different wait, and counts as another.
+    let trash = step("fs_trash", &["reports/a.txt"]);
+    goal.propose(T0, trash, Presence::Here, &DOOR).unwrap();
+    assert_eq!(goal.answered(), Err(Refusal::NotAQuestion));
+    assert_eq!(goal.asked, 2);
+}
+
+#[test]
+fn a_question_with_no_words_still_says_the_agent_has_one_and_cancel_closes_it() {
+    let mut goal = goal();
+    goal.clarify("\n\u{7f}").unwrap();
+    assert_eq!(goal.waiting.as_ref().unwrap().why, "??");
+    goal.answered().unwrap();
+    goal.clarify("").unwrap();
+    assert_eq!(
+        goal.waiting.as_ref().unwrap().why,
+        "the agent has a question"
+    );
+    goal.cancel(T0).unwrap();
+    assert_eq!(
+        (goal.state, goal.waiting.is_none()),
+        (State::Cancelled, true)
+    );
+    assert!(goal.log.is_empty());
+}
+
+#[test]
+fn done_is_the_planners_claim_and_met_is_the_runners_check() {
+    let mut goal = goal();
+    assert_eq!(goal.record_met(true), Err(Refusal::NotDone(State::Active)));
+    goal.complete(T0, "the report is written").unwrap();
+    assert_eq!((goal.state, goal.met), (State::Done, None));
+    goal.record_met(false).unwrap();
+    assert_eq!(goal.met, Some(false));
+    goal.record_met(true).unwrap();
+    assert_eq!(goal.met, Some(true));
+}
+
 // ---- the text form
 
 fn busy_goals() -> Goals {
@@ -937,6 +1101,7 @@ fn busy_goals() -> Goals {
     let waiting_id = goals.set(spec(), T0).unwrap();
     let running_id = goals.set(spec(), T0).unwrap();
     let paused_id = goals.set(spec(), T0).unwrap();
+    let asking_id = goals.set(spec(), T0).unwrap();
     let _proposed = goals.set(spec(), T0).unwrap();
     for id in [done_id, waiting_id, running_id, paused_id] {
         goals.approve(id, T0 + 1).unwrap();
@@ -946,25 +1111,30 @@ fn busy_goals() -> Goals {
     ran(
         goal,
         T0 + 2,
-        step("fs_create", Some("reports/a b.txt"), Tier::Run),
+        step("fs_create", &["reports/a b.txt"]),
         5,
         300,
     );
     goal.charge(25);
     goal.complete(T0 + 3, "wrote it").unwrap();
+    goal.record_met(true).unwrap();
     let goal = goals.get_mut(waiting_id).unwrap();
     goal.plan(3, "trash the old one");
     ran(goal, T0 + 2, run_step("fs_list"), 6, 10);
-    let p = step("fs_trash", Some("reports/old.txt"), Tier::Ask);
-    goal.propose(T0 + 4, p, Presence::Away).unwrap();
+    let p = step("fs_trash", &["reports/old.txt"]);
+    goal.propose(T0 + 4, p, Presence::Away, &DOOR).unwrap();
     let goal = goals.get_mut(running_id).unwrap();
-    goal.propose(T0 + 5, run_step("notes_add"), Presence::Here)
+    goal.propose(T0 + 5, run_step("notes_add"), Presence::Here, &DOOR)
         .unwrap();
     let goal = goals.get_mut(paused_id).unwrap();
-    let denied = step("service_restart", None, Tier::Run);
-    goal.propose(T0 + 6, denied, Presence::Here).unwrap();
+    let denied = step("service_restart", &[]);
+    goal.propose(T0 + 6, denied, Presence::Here, &DOOR).unwrap();
     goal.deny().unwrap();
     goal.pause().unwrap();
+    goals.approve(asking_id, T0 + 1).unwrap();
+    let goal = goals.get_mut(asking_id).unwrap();
+    goal.plan(2, "after the answer");
+    goal.clarify("Which folder holds the Q1 notes?").unwrap();
     goals.tick(T0 + 2 * HOUR);
     goals
 }
@@ -976,7 +1146,11 @@ fn goals_read_back_as_they_were_written_byte_for_byte() {
     let back = Goals::parse(&text).unwrap();
     assert_eq!(back, goals);
     assert_eq!(back.to_text(), text);
-    assert!(text.starts_with("kai-goals 1\nids\t6\ngoal\t1\tdone\n"));
+    assert!(text.starts_with("kai-goals 1\nids\t7\ngoal\t1\tdone\n"));
+    // A question that waits is a `waiting` line with no step, and a goal the
+    // runner checked has its `met`.
+    assert!(text.contains("\nwaiting\tquestion\tWhich folder holds the Q1 notes?\n"));
+    assert!(text.contains("\nmet\t1\n"));
 }
 
 #[test]
@@ -1001,13 +1175,14 @@ away\t1
 made\t1000000
 started\t1000000
 ended\t-
+met\t-
 note\t
 rows\tfs_list\tfs_read\tfs_create\tfs_trash\tnotes_*
 folders\treports
 budget\t4\t10000\t36000000
 checkins\t8200000\t15400000
 plan\t0\t
-spent\t0\t0\t0\t0\t0
+spent\t0\t0\t0\t0\t0\t0
 posted\t0\t0\t0
 end
 ";

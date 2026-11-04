@@ -3,7 +3,8 @@
 //! it says so before its deadline, not after. Each is one line for the panel: what
 //! is done, what is next, what it waits on.
 
-use crate::goal::{Goal, Pause, State};
+use crate::goal::{Ask, Goal, Pause, State};
+use crate::run::paths;
 use alloc::format;
 use alloc::string::String;
 
@@ -38,10 +39,16 @@ impl Goal {
             planned => format!("{} of {planned} steps done", self.steps_ok),
         };
         let next = match (&self.waiting, self.next.is_empty()) {
-            (Some(ask), _) => match &ask.proposal.target {
-                Some(target) => format!("{} {target}", ask.proposal.row),
-                None => ask.proposal.row.clone(),
+            (
+                Some(Ask {
+                    proposal: Some(p), ..
+                }),
+                _,
+            ) => match p.targets.is_empty() {
+                true => p.row.clone(),
+                false => format!("{} {}", p.row, paths(&p.targets)),
             },
+            (Some(_), _) => String::from("your answer"),
             (None, true) => String::from("not planned yet"),
             (None, false) => self.next.clone(),
         };
