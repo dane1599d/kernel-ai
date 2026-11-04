@@ -90,6 +90,9 @@ fn checked(text: &str, scope: Scope, asks: bool) -> Verdict {
         return Verdict::Refused(String::from(why));
     }
     match asks {
+        true if question(text).chars().count() > MAX_QUESTION => Verdict::Refused(String::from(
+            "that memory is too long to ask about on the card; say \"remember …\" yourself",
+        )),
         true => Verdict::Asks {
             text: text.to_string(),
             question: question(text),
@@ -107,38 +110,44 @@ pub fn question(text: &str) -> String {
     format!("Remember \"{text}\"? y/n")
 }
 
+/// The longest question a proposal may ask: the trusted card's text
+/// (`termcore::menu::MAX_TEXT`). A longer one is refused, never cut, so the
+/// card always shows the whole text that is kept (C on #650).
+pub const MAX_QUESTION: usize = 120;
+
 /// Words that may come before "remember" in a line that asks.
 const LEADS: &[&str] = &[
-    "please", "kai", "hey", "ok", "okay", "can", "could", "would", "will", "you",
+    "please", "kai", "hey", "ok", "okay", "can", "could", "would", "will",
 ];
+/// Words after which "you" may lead too: "can you remember …".
+const POLITE: &[&str] = &["can", "could", "would", "will"];
 
 /// The memory a line asks for: what follows "remember" (and "that"), in the
 /// user's own words. `None` for a line that does not ask, such as "do you
 /// remember my units?", "don't remember that" or "I remember it".
 pub fn from_line(line: &str) -> Option<&str> {
     let mut rest = line.trim();
-    let polite = loop {
+    // Whether the lead so far is "can/could/would/will", then whether "you"
+    // followed it: only that may end in a question mark. "remember my
+    // units?" and "do you remember …?" ask, they do not tell, and "you
+    // remember …" alone is a statement.
+    let (mut polite, mut request) = (false, false);
+    loop {
         let (word, after) = rest.split_once(' ')?;
         let bare = word.trim_end_matches([',', ':']).to_ascii_lowercase();
         match bare.as_str() {
-            "remember" => break rest.len() != line.trim().len(),
-            lead if LEADS.contains(&lead) => rest = after.trim_start(),
+            "remember" => break,
+            "you" if polite => request = true,
+            lead if LEADS.contains(&lead) => polite |= POLITE.contains(&lead),
             _ => return None,
         }
-    };
-    // Only "can/could/would/will you remember …?" may end in a question mark;
-    // "remember my units?" and "do you remember …?" ask, they do not tell.
-    let led = line.trim()[..line.trim().len() - rest.len()].to_ascii_lowercase();
-    let request = polite
-        && led.split([' ', ',']).any(|w| w == "you")
-        && led
-            .split([' ', ','])
-            .any(|w| ["can", "could", "would", "will"].contains(&w));
+        rest = after.trim_start();
+    }
     let mut text = rest["remember".len()..].trim_start();
     if text.ends_with('?') && !request {
         return None;
     }
-    for lead in ["that ", "this: ", "this "] {
+    for lead in ["that: ", "that ", "this: ", "this "] {
         if let Some(after) = strip_prefix_fold(text, lead) {
             text = after;
             break;

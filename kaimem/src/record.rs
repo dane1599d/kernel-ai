@@ -1,8 +1,9 @@
-//! One memory, and `kai-memory 1`: a header line, then one record per line
-//! pair, the fields and then the text.
+//! One memory, and `kai-memory 1`: a header line with the next id, then one
+//! record per line pair, the fields and then the text. The next id is kept so
+//! a forgotten memory's id is never handed out again (C on #650).
 //!
 //! ```text
-//! kai-memory 1
+//! kai-memory 1 next=4
 //! id=3 time=1762300000000000000 source=41 scope=all
 //! I use metric units
 //! ```
@@ -62,8 +63,22 @@ pub struct Memory {
     pub text: String,
 }
 
+/// Characters that change how text shows without showing themselves: the
+/// bidi controls and the zero-width ones (C on #650), so a question cannot
+/// show text other than what is kept.
+fn invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
+}
+
 /// Why a text cannot be a memory, or `None` when it can: not empty, at most
-/// [`MAX_TEXT`] bytes, one line of printable characters.
+/// [`MAX_TEXT`] bytes, one line of characters that show.
 pub fn text_problem(text: &str) -> Option<&'static str> {
     if text.trim().is_empty() {
         return Some("a memory needs some text");
@@ -71,7 +86,7 @@ pub fn text_problem(text: &str) -> Option<&'static str> {
     if text.len() > MAX_TEXT {
         return Some("a memory is at most 200 bytes");
     }
-    if text.chars().any(char::is_control) {
+    if text.chars().any(|c| c.is_control() || invisible(c)) {
         return Some("a memory is one line of printable text");
     }
     None
@@ -108,9 +123,10 @@ impl Memory {
     }
 }
 
-/// `memories` as a `kai-memory 1` file.
-pub fn encode(memories: &[Memory]) -> String {
-    let mut out = format!("{HEADER}\n");
+/// `memories` as a `kai-memory 1` file, with `next`, the id the next memory
+/// gets.
+pub fn encode(next: u64, memories: &[Memory]) -> String {
+    let mut out = format!("{HEADER} next={next}\n");
     for memory in memories {
         out.push_str(&memory.fields());
         out.push('\n');
@@ -120,13 +136,20 @@ pub fn encode(memories: &[Memory]) -> String {
     out
 }
 
-/// A `kai-memory 1` file's memories, or why it is not one. Strict: a bad
-/// record, or two with one id, refuses the whole file.
-pub fn decode(file: &str) -> Result<Vec<Memory>, String> {
+/// A `kai-memory 1` file's next id and memories, or why it is not one.
+/// Strict: a bad record, two with one id, or an id not below the next one
+/// refuses the whole file.
+pub fn decode(file: &str) -> Result<(u64, Vec<Memory>), String> {
     let mut lines = file.lines();
-    if lines.next() != Some(HEADER) {
-        return Err(String::from("not a kai-memory 1 file"));
-    }
+    let next = lines
+        .next()
+        .and_then(|line| {
+            line.strip_prefix(HEADER)?
+                .strip_prefix(" next=")?
+                .parse::<u64>()
+                .ok()
+        })
+        .ok_or_else(|| String::from("not a kai-memory 1 file"))?;
     let mut memories: Vec<Memory> = Vec::new();
     let mut at = 2;
     while let Some(fields) = lines.next() {
@@ -138,8 +161,14 @@ pub fn decode(file: &str) -> Result<Vec<Memory>, String> {
         if memories.iter().any(|m| m.id == memory.id) {
             return Err(format!("line {at}: id {} twice", memory.id));
         }
+        if memory.id >= next {
+            return Err(format!(
+                "line {at}: id {} is not below next={next}",
+                memory.id
+            ));
+        }
         memories.push(memory);
         at += 2;
     }
-    Ok(memories)
+    Ok((next, memories))
 }
