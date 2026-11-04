@@ -8,6 +8,14 @@
 //! rises, and `release.yml` refuses a tag whose number is not above the last.
 //! `NOTICES.txt` is written beside it, byte-identical to the image's copy, as
 //! the release's second asset. `release.yml` runs it.
+//!
+//! `--test-root` builds the same image with one difference: a `pkgrepo/` whose
+//! `models` role, signed by a fresh test root, names only `qwen3-0.6b`
+//! (`pkgrepo::release_test`). It exists for the case that boots the release and
+//! imports that model (`release_boot.rs`); the shipping image has no `models`
+//! role until task 18's founder-signed one, so a real release imports nothing
+//! until then. Each boot module's hash is printed, so `release.yml` can check
+//! that the two builds differ only beneath `pkgrepo/`.
 
 use crate::{components, esp, floatguard, image, options, userbuild};
 use std::fs;
@@ -33,10 +41,18 @@ fn release_seq(root: &std::path::Path) -> Result<u32, String> {
 
 pub fn main(args: &[String]) -> Result<(), String> {
     let root = crate::workspace_root();
+    let (test_root, args) = match args {
+        [flag, rest @ ..] if flag == "--test-root" => (true, rest),
+        _ => (false, args),
+    };
+    let name = match test_root {
+        true => "kernel-ai-test-root.img",
+        false => "kernel-ai.img",
+    };
     let out = match args {
-        [] => root.join("target").join("kernel-ai.img"),
+        [] => root.join("target").join(name),
         [flag, path] if flag == "--out" => PathBuf::from(path),
-        _ => return Err("usage: cargo xtask release-image [--out PATH]".into()),
+        _ => return Err(USAGE.into()),
     };
     let options = options::parse_args(&["build".into(), "--release".into()])?;
     let kernel = crate::build_kernel(&root, &options)?;
@@ -54,8 +70,15 @@ pub fn main(args: &[String]) -> Result<(), String> {
         path: "kai.slot".into(),
         bytes: record.clone().into_bytes(),
     });
+    if test_root {
+        modules.extend(crate::pkgrepo::release_test()?);
+    }
+    print_modules(&modules);
     let efi = crate::ensure_limine(&target_dir)?;
-    let esp_dir = target_dir.join("release-esp");
+    let esp_dir = target_dir.join(match test_root {
+        true => "release-esp-test-root",
+        false => "release-esp",
+    });
     esp::make_esp(&esp_dir, &kernel, &modules, &efi, "")?;
     let data_mib = image::slots::RELEASE_DATA_MIB;
     let bytes = image::slots::build_release(&esp_dir, &out, &record, data_mib)?;
@@ -82,6 +105,24 @@ pub fn main(args: &[String]) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+const USAGE: &str = "usage: cargo xtask release-image [--test-root] [--out PATH]";
+
+/// Each boot module's path, length and SHA-256, in path order: two builds
+/// that differ only beneath `pkgrepo/` print the same lines but those.
+fn print_modules(modules: &[esp::Module]) {
+    let mut lines: Vec<String> = modules
+        .iter()
+        .map(|m| {
+            let sha = crate::sha256_hex(&m.bytes);
+            format!("xtask: module {} {} {sha}", m.path, m.bytes.len())
+        })
+        .collect();
+    lines.sort();
+    for line in lines {
+        println!("{line}");
+    }
 }
 
 /// The SHA-256 of the file at `path`, read a piece at a time: the image is

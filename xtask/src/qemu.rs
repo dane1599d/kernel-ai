@@ -151,13 +151,18 @@ pub fn boot_from_slots(
 ) -> Result<(), String> {
     let bytes = crate::image::slots::build(esp, &target_dir.join(SLOTS_IMAGE), cmdline, record)?;
     println!("xtask: slot disk {SLOTS_IMAGE}, {} MiB", bytes >> 20);
-    // On virtio-blk, so the kernel reaches the slots (`updated`'s SLOT_* calls)
-    // as an installed system reaches its one disk.
+    boot_from_disk(args, SLOTS_IMAGE)
+}
+
+/// Boots from the disk image `name` (relative to `target/`, or absolute) in
+/// place of the directory ESP, on virtio-blk, so the kernel reaches the slots
+/// (`updated`'s SLOT_* calls) as an installed system reaches its one disk.
+pub fn boot_from_disk(args: &mut Vec<String>, name: &str) -> Result<(), String> {
     let at = args
         .iter()
         .position(|arg| arg == ESP_DRIVE)
         .ok_or("no directory ESP drive to replace")?;
-    args[at] = format!("if=none,id=slots,format=raw,file={SLOTS_IMAGE}");
+    args[at] = format!("if=none,id=slots,format=raw,file={name}");
     args.splice(
         at + 1..at + 1,
         [
@@ -209,14 +214,18 @@ pub fn free_port() -> Result<u16, String> {
 }
 
 /// Types keys into the guest through the QEMU monitor: a key name with
-/// `sendkey`, a `!` line as the monitor command after the `!`, and an `@` line
-/// as a QMP command on `qmp`.
+/// `sendkey`, a `!` line as the monitor command after the `!`, an `@` line
+/// as a QMP command on `qmp`, and `~` and a number as a wait of that many ms.
 fn type_keys(port: u16, qmp: Option<u16>, keys: &[&str]) {
     let mut qmp = qmp.map(Qmp::new);
     for _ in 0..50 {
         if let Ok(mut monitor) = TcpStream::connect(("127.0.0.1", port)) {
             thread::sleep(Duration::from_millis(200));
             for key in keys {
+                if let Some(ms) = key.strip_prefix('~').and_then(|ms| ms.parse().ok()) {
+                    thread::sleep(Duration::from_millis(ms));
+                    continue;
+                }
                 let sent = match (key.strip_prefix('!'), key.strip_prefix('@')) {
                     (Some(command), _) => writeln!(monitor, "{command}"),
                     (_, Some(command)) => match qmp.as_mut() {
@@ -359,7 +368,7 @@ pub fn run_test(
     run: &TestRun,
 ) -> Result<(), String> {
     let (accel, timeout, monitor, qmp) = (run.accel, run.timeout, run.monitor, run.qmp);
-    let stages = run.case.keys;
+    let (stages, keys_on, stops) = (run.case.keys, run.case.keys_on, run.case.stops);
     let expect: Vec<String> = run
         .case
         .expect
@@ -378,6 +387,7 @@ pub fn run_test(
     let stdout = child.stdout.take().ok_or("QEMU stdout was not captured")?;
     let (ready_tx, ready_rx) = mpsc::channel();
     let (cut_tx, cut_rx) = mpsc::channel();
+    let (seen_tx, seen_rx) = mpsc::channel();
     let cut_at = run.cut.clone();
     let all = (expect.clone(), exact.clone(), None, Vec::new());
     // The echo runs apart from the reader, as in icount.rs: printing to a slow CI
@@ -400,6 +410,16 @@ pub fn run_test(
             let _ = echo_tx.send(line.clone());
             missing.retain(|text| !line.contains(text.as_str()));
             unseen.retain(|text| line.trim_end_matches('\r') != text);
+            if stops && missing.is_empty() && unseen.is_empty() {
+                let _ = seen_tx.send(());
+            }
+            // A named line sends the next stage, whoever printed it.
+            if let (Some(&on), Some(&keys)) = (keys_on.get(stage), stages.get(stage))
+                && line.contains(on)
+            {
+                stage += 1;
+                thread::spawn(move || type_keys(monitor, qmp, keys));
+            }
             if let Some(text) = ci_warning(&line) {
                 warnings.push(text.to_string());
             }
@@ -421,7 +441,7 @@ pub fn run_test(
                 let _ = ready_tx.send(started.elapsed());
             } else if line.contains("skip keys") {
                 stage += 1;
-            } else if line.contains("ready for keys") {
+            } else if keys_on.is_empty() && line.contains("ready for keys") {
                 if let Some(&keys) = stages.get(stage) {
                     stage += 1;
                     thread::spawn(move || type_keys(monitor, qmp, keys));
@@ -440,12 +460,19 @@ pub fn run_test(
         (missing, unseen, cpu_line, warnings)
     });
     let mut cut_seen = None;
+    let mut stopped = false;
     let status = loop {
         if let Some(status) = child
             .try_wait()
             .map_err(|e| format!("waiting on QEMU: {e}"))?
         {
             break status;
+        }
+        if seen_rx.try_recv().is_ok() {
+            // Every expected line is in: nothing more is waited for.
+            let _ = child.kill();
+            stopped = true;
+            break child.wait().map_err(|e| format!("waiting on QEMU: {e}"))?;
         }
         cut_seen = cut_seen.or_else(|| cut_rx.try_recv().ok());
         if let (Some(seen), Some((_, delay))) = (cut_seen, &run.cut)
@@ -488,7 +515,9 @@ pub fn run_test(
         );
     }
     let reset = run.case.resets && status.code() == Some(0);
-    if status.code() != Some(QEMU_PASS) && !reset {
+    if stopped {
+        println!("xtask: every expected line seen; QEMU stopped");
+    } else if status.code() != Some(QEMU_PASS) && !reset {
         return Err(format!("FAIL: QEMU exited with {status}"));
     }
     if !missing.is_empty() {

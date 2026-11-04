@@ -15,6 +15,9 @@
 //!   says only after `init`, since comphost starts it after `pkg`'s reply,
 //!   slowly when QEMU emulates the CPU.
 //!
+//! Then `cc` tries that build through a read-only `Shm`, as the shell's trial
+//! moves one ([`crate::cc_trial_tests`]).
+//!
 //! `undo` switches back to generation 1, which ends the running app, and the
 //! next build is 0.0.2. The ledger still names 0.0.1 active, so its new host
 //! swaps to 0.0.2, which `pkg` named (#572), and the case waits until it runs
@@ -104,6 +107,7 @@ pub fn check() -> Result<(), &'static str> {
     log!("c-build: cc build hello built 0.0.1, and pkg installed it from local as generation 2");
     let label = wait_up("0.0.1")?;
     log!("c-build: hello 0.0.1 runs as {label}");
+    crate::cc_trial_tests::check()?;
     let undone = line("undo")?;
     if !undone.contains("packages back to generation 1") {
         log!("c-build: undo: {undone:?}");

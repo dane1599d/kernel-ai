@@ -144,15 +144,36 @@ impl Shell {
             return;
         };
         for (app, lines) in queued {
-            for done in self.run_effects(&app, &lines) {
-                if let Err(why) = done.outcome {
+            let done = self.run_effects(&app, &lines);
+            for done in &done {
+                if let Err(why) = &done.outcome {
                     self.host.audit(&format!(
                         "{app}'s effect {} did not run: {why}",
                         done.ticket
                     ));
                 }
             }
+            // The call's reply carried these effects, so no desktop queue knows
+            // them: what came of each goes back to the app through the host.
+            let dropped = self
+                .host
+                .apps()
+                .and_then(|apps| apps.borrow_mut().keep_results(&app, done));
+            if let Some(dropped) = dropped {
+                self.host.audit(&format!(
+                    "{dropped}'s effect results were dropped: the queue is full"
+                ));
+            }
         }
+    }
+
+    /// What the effects the apps' calls queued came to, as (app, results), for
+    /// the host to give back to each app as `effect-done`; taken once.
+    pub fn take_effect_results(&mut self) -> Vec<(String, Vec<EffectDone>)> {
+        self.host
+            .apps()
+            .map(|apps| apps.borrow_mut().take_results())
+            .unwrap_or_default()
     }
 
     /// Runs app `app`'s effect lines, oldest first: what each came to. `app` is

@@ -4,6 +4,7 @@
 
 mod common;
 
+use ccserve::Shm;
 use ccserve::build::shm;
 use common::{Cc, DECLARE};
 use kabi::live::MAX_ARTIFACT;
@@ -42,7 +43,9 @@ fn shm_of(files: &[(&str, &[u8])]) -> Vec<u8> {
 
 /// `message` with `shm`: the reply's records as strings.
 fn build(cc: &mut Cc, message: &str, shm: Option<&mut [u8]>) -> Vec<String> {
-    let reply = cc.service.handle_with(message.as_bytes(), shm, &cc.clock);
+    let reply = cc
+        .service
+        .handle_with(message.as_bytes(), shm.map(Shm::Write), &cc.clock);
     parse_reply(&reply)
         .unwrap()
         .iter()
@@ -194,6 +197,36 @@ fn a_build_without_its_shm_or_with_a_bad_one_is_refused() {
     let mut version = shm_of(&[("main.c", APP.as_bytes())]);
     let reply = build(&mut cc, "build greeter 01.0.1", Some(&mut version));
     assert!(reply[0].starts_with("err 0 "), "{reply:?}");
+}
+
+/// cc maps a build's `Shm` read-write and every other request's read-only, so
+/// a build handed a read-only one is no fault of the program's.
+#[test]
+fn only_a_build_writes_its_shm() {
+    assert!(ccserve::writes_shm(b"build greeter 0.0.1"));
+    for other in [
+        &b"trial greeter"[..],
+        b"eval 1 1 + 1",
+        b"build greeter",
+        b"build ../greeter 0.0.1",
+        b"\xffbuild greeter 0.0.1",
+        b"",
+    ] {
+        assert!(!ccserve::writes_shm(other), "{other:?}");
+    }
+    let mut cc = Cc::open();
+    let sources = shm_of(&[("main.c", APP.as_bytes())]);
+    let reply =
+        cc.service
+            .handle_with(b"build greeter 0.0.1", Some(Shm::Read(&sources)), &cc.clock);
+    assert_eq!(
+        parse_reply(&reply)
+            .unwrap()
+            .iter()
+            .map(common::show)
+            .collect::<Vec<_>>(),
+        ["err 0 internal: build writes its artifact into the Shm, which came read-only"]
+    );
 }
 
 #[test]

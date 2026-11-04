@@ -7,7 +7,8 @@
 //! at boot: until someone types `:c`, cc only waits. It holds no authority
 //! (`caps=serve`): a session reaches only its imports, and an effect goes back
 //! to the shell as a `need`. A `cc build` brings its sources in an `Shm`,
-//! which cc maps for that request alone and writes the artifact into.
+//! which cc maps for that request alone and writes the artifact into. A
+//! `trial` brings the artifact in one, which cc maps read-only.
 
 #![no_std]
 #![no_main]
@@ -19,7 +20,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use ccserve::build::shm;
 use ccserve::rows::Rows;
-use ccserve::{Host, Service};
+use ccserve::{Host, Service, Shm};
 use kabi::Error;
 use kabi::handle::{Handle, Kind, RecvInfo};
 use promptcore::wire::{Record, Reply};
@@ -108,7 +109,9 @@ fn main() -> i32 {
     }
 }
 
-/// `request`'s reply. A `build` brings one `Shm`, mapped read-write for it.
+/// `request`'s reply. A `build` brings one `Shm`, mapped read-write for it; a
+/// `trial`'s, and any other request's, is mapped read-only
+/// ([`ccserve::writes_shm`]).
 fn answer(
     service: &mut Service<Rows>,
     request: &[u8],
@@ -124,28 +127,43 @@ fn answer(
     if !is_shm {
         return refusal("a request brings an Shm, not another kind");
     }
-    let address = match sys::shm_map(shm, true) {
+    let write = ccserve::writes_shm(request);
+    let address = match sys::shm_map(shm, write) {
         Ok(address) => address,
-        Err(error) => return refusal(&format!("cc cannot map the Shm: {error:?}")),
+        Err(error) => {
+            let how = if write { "read-write" } else { "read-only" };
+            return refusal(&format!("cc cannot map the Shm {how}: {error:?}"));
+        }
     };
-    // SAFETY: the kernel mapped the Shm read-write at `address`, in a slot of
-    // its own (`kabi::layout::SHM_SLOT`, 1 GiB), and the shell makes it
-    // `shm::BYTES` long. Past a shorter one's pages the slot is unmapped, so it
-    // faults cc and reaches no other memory. The shell maps it too, but it is
-    // blocked in `call_h` until this reply, and cc copies the bundle out
-    // before it reads it all the same (`shm::serve`). The slice is not used
-    // after the unmap.
+    // SAFETY: the kernel mapped the Shm at `address`, read-write only when
+    // `write`, in a slot of its own (`kabi::layout::SHM_SLOT`, 1 GiB), and the
+    // shell makes it `shm::BYTES` long. Past a shorter one's pages the slot is
+    // unmapped, so it faults cc and reaches no other memory. The shell maps it
+    // too, but it is blocked in `call_h` until this reply, and cc copies the
+    // bundle or artifact out before it reads it all the same (`shm::serve`,
+    // `trial::serve`). The slice is mutable only when the mapping is, and is
+    // not used after the unmap.
     // TODO: refuse a short Shm once HANDLE_INFO reports an Shm's pages.
-    let bytes = unsafe { core::slice::from_raw_parts_mut(address as *mut u8, shm::BYTES) };
-    let reply = service.handle_with(request, Some(bytes), host);
+    let mapped = match write {
+        true => {
+            Shm::Write(unsafe { core::slice::from_raw_parts_mut(address as *mut u8, shm::BYTES) })
+        }
+        false => {
+            Shm::Read(unsafe { core::slice::from_raw_parts(address as *const u8, shm::BYTES) })
+        }
+    };
+    let reply = service.handle_with(request, Some(mapped), host);
     if let Err(error) = sys::shm_unmap(address) {
         println!("shm_unmap failed: {error:?}");
     }
     reply
 }
 
-/// An `err` reply.
+/// An `err` reply for what stops cc before the service answers. It is never
+/// the program's fault, so it starts `internal: ` (`ccserve::trial::INTERNAL`),
+/// which the shell tells from the program's own errors.
 fn refusal(text: &str) -> Vec<u8> {
+    let text = format!("{}{text}", ccserve::trial::INTERNAL);
     let mut reply = Reply::new(kabi::MAX_MESSAGE);
     let _ = reply.push(&Record::Err {
         line: 0,
