@@ -43,6 +43,7 @@ pub fn check() -> Result<(), &'static str> {
                 threads::sleep_ms(SETTLE_MS);
                 let kib = rx_buffer / 1024;
                 // `net_burst=` on the command line: smoltcp's window cap.
+                let tx = if net::sync_tx() { "sync" } else { "async" };
                 let burst = match net::burst() {
                     0 => "none".into(),
                     n => alloc::format!("{n}"),
@@ -53,7 +54,7 @@ pub fn check() -> Result<(), &'static str> {
                         // MB/s to a tenth: bytes per ms is kB/s.
                         let tenths = m.bytes * 10 / ms / 1000;
                         log!(
-                            "net-throughput: rtt {rtt} ms, rx {kib} KiB, gap {gap_ms} ms, burst {burst}: {} bytes in {ms} ms = {}.{} MB/s, first byte {} ms, {} polls",
+                            "net-throughput: rtt {rtt} ms, rx {kib} KiB, gap {gap_ms} ms, burst {burst}, tx {tx}: {} bytes in {ms} ms = {}.{} MB/s, first byte {} ms, {} polls",
                             m.bytes,
                             tenths / 10,
                             tenths % 10,
@@ -64,7 +65,7 @@ pub fn check() -> Result<(), &'static str> {
                     Err(why) => {
                         failed += 1;
                         log!(
-                            "net-throughput: rtt {rtt} ms, rx {kib} KiB, gap {gap_ms} ms, burst {burst}: failed: {why}"
+                            "net-throughput: rtt {rtt} ms, rx {kib} KiB, gap {gap_ms} ms, burst {burst}, tx {tx}: failed: {why}"
                         );
                     }
                 }

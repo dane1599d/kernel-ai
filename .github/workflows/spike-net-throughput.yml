@@ -19,16 +19,19 @@ env:
 
 jobs:
   throughput:
-    name: net-throughput (${{ matrix.accel }}, burst ${{ matrix.burst }})
+    name: net-throughput (${{ matrix.accel }}, tx ${{ matrix.tx }}, clock ${{ matrix.clock }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        accel: [kvm, tcg]
+        accel: [kvm]
         build: [release]
-        # smoltcp's window cap in segments: the receive queue's 16, and none (0).
-        # 1, as shipped, was measured on slirp: one segment per round trip.
-        burst: [16, 0]
+        # No window cap (#673). Sends that wait for the card each time, as
+        # virtio-drivers' `send` does, against sends queued and reclaimed later;
+        # the HPET, whose every read exits to the host under KVM, against the TSC.
+        burst: [0]
+        tx: [sync, async]
+        clock: [hpet, tsc]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/qemu
@@ -63,7 +66,7 @@ jobs:
         env:
           XTASK_CASE: net-throughput
           XTASK_NET_DUMP: ${{ runner.temp }}/net.pcap
-          XTASK_CMDLINE: net_burst=${{ matrix.burst }} ip=static
+          XTASK_CMDLINE: net_burst=${{ matrix.burst }} ip=static net_tx=${{ matrix.tx }} clock=${{ matrix.clock }}
           XTASK_NETDEV: tap,id=net0,ifname=kaitap0,script=no,downscript=no
         run: |
           flag=""

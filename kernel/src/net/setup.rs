@@ -40,6 +40,7 @@ pub fn configure(cmdline: &str) {
     if let Some(frames) = burst {
         super::set_burst(frames);
     }
+    super::set_sync_tx(cmdline.split_whitespace().any(|w| w == "net_tx=sync"));
     for why in ignored {
         log!("{why}");
     }
