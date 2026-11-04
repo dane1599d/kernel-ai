@@ -115,6 +115,88 @@ pub fn q4_k_dot4(rows: [&[u8]; 4], x: &Q8KVec) -> [f32; 4] {
     out
 }
 
+/// [`q4_k_dot4`] against each of `xs` at once (ADR 0013 spike S13-2): every
+/// block's codes are loaded and unpacked once for all the tokens, and each
+/// token's lanes take exactly the ops [`q4_k_dot4`] gives them, in its order,
+/// so each token gets its bits. For a batch of a few decode tokens, where
+/// [`crate::batch`]'s one-row group kernels lose the four rows' shared work.
+#[target_feature(enable = "avx2,fma,f16c")]
+pub fn q4_k_dot4_n<const N: usize>(rows: [&[u8]; 4], xs: [&Q8KVec; N]) -> [[f32; 4]; N] {
+    let [r0, r1, r2, r3] = rows.map(|r| r.as_chunks::<{ q4_k::BLOCK_BYTES }>().0);
+    let xq = xs.map(|x| x.qs.as_chunks::<SUPER_LEN>().0);
+    let sums = xs.map(|x| x.sums.as_chunks::<16>().0);
+    let split = _mm256_setr_epi32(0, 2, 4, 6, 1, 3, 5, 7);
+    let nibble = _mm256_set1_epi8(15);
+    let mut total = [_mm_setzero_ps(); N];
+    for i in 0..r0.len() {
+        let blocks = [&r0[i], &r1[i], &r2[i], &r3[i]];
+        prefetch_next(rows[0], q4_k::BLOCK_BYTES, i);
+        let mut sc = [_mm256_setzero_si256(); 4];
+        let mut mins = [[_mm256_setzero_si256(); 4]; N];
+        for (r, block) in blocks.iter().enumerate() {
+            let (s, m) = q4_k::packed_scales(block[4..q4_k::CODES].try_into().unwrap());
+            sc[r] = _mm256_broadcastsi128_si256(_mm_cvtepu8_epi16(_mm_cvtsi64_si128(s as i64)));
+            let m = _mm_cvtsi64_si128(m as i64);
+            let m = _mm256_cvtepu8_epi16(_mm_unpacklo_epi8(m, m));
+            for t in 0..N {
+                mins[t][r] = _mm256_madd_epi16(m, load_sums(&sums[t][i]));
+            }
+        }
+        let mut acc = [[_mm256_setzero_si256(); 4]; N];
+        for g in 0..4 {
+            let x: [(__m256i, __m256i); N] = core::array::from_fn(|t| {
+                let xq = xq[t][i].as_chunks::<32>().0;
+                (load_i8(&xq[2 * g]), load_i8(&xq[2 * g + 1]))
+            });
+            let (plo, phi) = (lane_of(2 * g, 2 * g), lane_of(2 * g + 1, 2 * g + 1));
+            for (r, block) in blocks.iter().enumerate() {
+                let q = load(block[q4_k::CODES + 32 * g..][..32].try_into().unwrap());
+                let lo_q = _mm256_and_si256(q, nibble);
+                let hi_q = _mm256_and_si256(_mm256_srli_epi16::<4>(q), nibble);
+                let (slo, shi) = (
+                    _mm256_shuffle_epi8(sc[r], plo),
+                    _mm256_shuffle_epi8(sc[r], phi),
+                );
+                for t in 0..N {
+                    let (xlo, xhi) = x[t];
+                    let lo = _mm256_madd_epi16(_mm256_maddubs_epi16(lo_q, xlo), slo);
+                    let hi = _mm256_madd_epi16(_mm256_maddubs_epi16(hi_q, xhi), shi);
+                    acc[t][r] = _mm256_add_epi32(acc[t][r], _mm256_add_epi32(lo, hi));
+                }
+            }
+        }
+        let word =
+            |block: &[u8; q4_k::BLOCK_BYTES]| i32::from_le_bytes(*block.first_chunk().unwrap());
+        let scales = _mm256_cvtph_ps(_mm_setr_epi32(
+            word(&r0[i]),
+            word(&r1[i]),
+            word(&r2[i]),
+            word(&r3[i]),
+        ));
+        let scales = _mm256_permutevar8x32_ps(scales, split);
+        let (d, dmin) = (
+            _mm256_castps256_ps128(scales),
+            _mm256_extractf128_ps::<1>(scales),
+        );
+        for t in 0..N {
+            let (a, b) = sums4(acc[t], mins[t]);
+            let (a, b) = (_mm_cvtepi32_ps(a), _mm_cvtepi32_ps(b));
+            let dx = _mm_set1_ps(xs[t].scales[i]);
+            let terms = _mm_sub_ps(
+                _mm_mul_ps(_mm_mul_ps(d, dx), a),
+                _mm_mul_ps(_mm_mul_ps(dmin, dx), b),
+            );
+            total[t] = _mm_add_ps(total[t], terms);
+        }
+    }
+    total.map(|total| {
+        let mut out = [0.0; 4];
+        // SAFETY: 16 writable bytes; storeu has no alignment rule.
+        unsafe { _mm_storeu_ps(out.as_mut_ptr(), total) };
+        out
+    })
+}
+
 /// One Q4_K super-block's lanes against `xq`: the codes times x by sub-block
 /// scale, the minimums times x's sums, and `[d, dmin]`.
 #[target_feature(enable = "avx2,fma,f16c")]
@@ -208,6 +290,81 @@ pub fn q6_k_dot(row: &[u8], x: &Q8KVec, sink: &mut impl Sink) {
         let (dot, offset) = hsum2(acc, offsets);
         sink.q6_k(d, dx, dot - 32 * offset);
     }
+}
+
+/// [`q6_k_dot`] for four rows against each of `xs` at once: each block's codes
+/// are loaded and unpacked once for all the tokens, and each (row, token) gets
+/// the integers [`q6_k_dot`] gives it and the same float tail in the same block
+/// order ([`crate::kquant::Total`]'s), so its bits. For a few tokens at once:
+/// a batch of decode steps, or a prompt's last short block.
+#[target_feature(enable = "avx2,fma,f16c")]
+pub fn q6_k_dot4_n<const N: usize>(rows: [&[u8]; 4], xs: [&Q8KVec; N]) -> [[f32; 4]; N] {
+    let nibble = _mm256_set1_epi8(15);
+    let blocks = rows.map(|r| r.as_chunks::<{ q6_k::BLOCK_BYTES }>().0);
+    let xq = xs.map(|x| x.qs.as_chunks::<SUPER_LEN>().0);
+    let sums = xs.map(|x| x.sums.as_chunks::<16>().0);
+    let mut total = [[0.0f32; 4]; N];
+    for i in 0..blocks[0].len() {
+        prefetch_next(rows[0], q6_k::BLOCK_BYTES, i);
+        // Each row's integers for each token: a row's lanes are summed as soon
+        // as the row is done, so only one row's accumulators stay in registers.
+        let mut s = [[0i32; 4]; N];
+        let mut d = [0.0f32; 4];
+        for (r, block) in blocks.iter().map(|b| &b[i]).enumerate() {
+            let mut acc = [_mm256_setzero_si256(); N];
+            d[r] = half(u16::from_le_bytes([block[q6_k::D], block[q6_k::D + 1]]));
+            let scales = load128(block[q6_k::SCALES..q6_k::D].try_into().unwrap());
+            let scales = _mm256_cvtepi8_epi16(scales);
+            let low = block[..q6_k::HIGH].as_chunks::<32>().0;
+            let high = block[q6_k::HIGH..q6_k::SCALES].as_chunks::<32>().0;
+            for n in 0..2 {
+                let (l0, l1, h) = (load(&low[2 * n]), load(&low[2 * n + 1]), load(&high[n]));
+                let sc = if n == 0 {
+                    _mm256_permute2x128_si256::<0x00>(scales, scales)
+                } else {
+                    _mm256_permute2x128_si256::<0x11>(scales, scales)
+                };
+                let codes = [
+                    _mm256_or_si256(
+                        _mm256_and_si256(l0, nibble),
+                        _mm256_slli_epi16::<4>(_mm256_and_si256(h, _mm256_set1_epi8(0x03))),
+                    ),
+                    _mm256_or_si256(
+                        _mm256_and_si256(l1, nibble),
+                        _mm256_slli_epi16::<2>(_mm256_and_si256(h, _mm256_set1_epi8(0x0c))),
+                    ),
+                    _mm256_or_si256(
+                        _mm256_and_si256(_mm256_srli_epi16::<4>(l0), nibble),
+                        _mm256_and_si256(h, _mm256_set1_epi8(0x30)),
+                    ),
+                    _mm256_or_si256(
+                        _mm256_and_si256(_mm256_srli_epi16::<4>(l1), nibble),
+                        _mm256_srli_epi16::<2>(_mm256_and_si256(h, _mm256_set1_epi8(0xc0u8 as i8))),
+                    ),
+                ];
+                for (k, q) in codes.into_iter().enumerate() {
+                    let scale = _mm256_shuffle_epi8(sc, lane_of(2 * k, 2 * k + 1));
+                    for t in 0..N {
+                        let xq = xq[t][i].as_chunks::<32>().0;
+                        let pairs = _mm256_maddubs_epi16(q, load_i8(&xq[4 * n + k]));
+                        acc[t] = _mm256_add_epi32(acc[t], _mm256_madd_epi16(pairs, scale));
+                    }
+                }
+            }
+            for t in 0..N {
+                let offsets = _mm256_madd_epi16(scales, load_sums(&sums[t][i]));
+                let (dot, offset) = hsum2(acc[t], offsets);
+                s[t][r] = dot - 32 * offset;
+            }
+        }
+        for t in 0..N {
+            let dx = xs[t].scales[i];
+            for r in 0..4 {
+                total[t][r] += (d[r] * dx) * s[t][r] as f32;
+            }
+        }
+    }
+    total
 }
 
 /// The lanes' exact sums of four rows' two vectors each: `a[r]`'s in lane r of

@@ -28,9 +28,37 @@ fn the_local_llm_line_names_the_model_capability() {
     assert_eq!(plan[0].args, "");
     let plan = parse_plan("llm caps=serve+model+threads").services;
     assert_eq!(plan[0].limits.caps, cap::SERVE | cap::MODEL | cap::THREADS);
-    let plan = parse_plan("netcheck caps=resolve").services;
-    assert_eq!(plan[0].limits.caps, cap::RESOLVE);
-    assert_ne!(cap::GRANTABLE & cap::RESOLVE, 0);
+    // P5 task 1: RESOLVE is a right on a netdest= handle, no longer a cap word.
+    let plan = parse_plan("netcheck caps=resolve");
+    assert!(plan.services.is_empty());
+    assert_eq!(cap::GRANTABLE & cap::RESOLVE, 0);
+}
+
+#[test]
+fn a_netdest_line_names_its_destination_and_is_bound_to_its_program() {
+    let plan = parse_plan("weather netdest=proto:tcp,ports:443,hosts:api.weather.example");
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let dest = plan.services[0].netdest.as_ref().unwrap();
+    assert!(dest.allows_name("api.weather.example"));
+    assert!(!dest.allows_name("weather.example"));
+    let grants = plan.grants("weather", "weather").unwrap();
+    assert_eq!(grants.netdest.as_ref(), Some(dest));
+    assert!(plan.grants("weather", "other").is_err());
+    assert_eq!(plan.grants("nobody", "nobody").unwrap().netdest, None);
+}
+
+#[test]
+fn a_bad_or_doubled_netdest_fails_its_line() {
+    for line in [
+        "a netdest=hosts:com",
+        "a netdest=proto:sctp",
+        "a netdest=hosts:a.example netdest=hosts:b.example",
+        "a netdest=hosts:a.example unsupervised",
+    ] {
+        let plan = parse_plan(line);
+        assert!(plan.services.is_empty(), "{line}");
+        assert_eq!(plan.errors.len(), 1, "{line}");
+    }
 }
 
 #[test]

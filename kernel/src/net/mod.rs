@@ -6,6 +6,7 @@
 //! the DHCP client's news to `setup`, so a lease is never missed whoever polled.
 //! Between those, the `net` thread polls it on its own.
 
+pub mod dest;
 mod device;
 pub mod ping;
 pub mod resolve;

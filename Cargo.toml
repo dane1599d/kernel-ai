@@ -1,9 +1,12 @@
 [workspace]
 resolver = "3"
+# libFuzzer targets, built only by .github/workflows/fuzz.yml (fuzz/Cargo.toml).
+exclude = ["fuzz"]
 members = [
     "acpitables",
     "agentabi",
     "agentid",
+    "agentsched",
     "appabi",
     "apps/editor-ui",
     "apps/editor-window",
@@ -47,6 +50,7 @@ members = [
     "gfx2d",
     "gfxcore",
     "gguf",
+    "goalcore",
     "infer",
     "kabi",
     "kaiagent",
@@ -57,6 +61,7 @@ members = [
     "kaimem",
     "kaipkg",
     "kaiprofile",
+    "kainet",
     "kaituf",
     "kernel",
     "linetable",
@@ -66,11 +71,14 @@ members = [
     "mm",
     "modelchan",
     "netcore",
+    "netdest",
+    "nethosts",
     "nvme",
     "pci",
     "promptcore",
     "quant",
     "sched",
+    "semindex",
     "shellcore",
     "spikes/rhai",
     "spikes/wasmi",
@@ -92,6 +100,7 @@ default-members = [
     "acpitables",
     "agentabi",
     "agentid",
+    "agentsched",
     "appabi",
     "apps/editor-ui",
     "apps/editor-window",
@@ -135,6 +144,7 @@ default-members = [
     "gfx2d",
     "gfxcore",
     "gguf",
+    "goalcore",
     "infer",
     "kabi",
     "kaiagent",
@@ -145,6 +155,7 @@ default-members = [
     "kaimem",
     "kaipkg",
     "kaiprofile",
+    "kainet",
     "kaituf",
     "linetable",
     "livecore",
@@ -153,11 +164,14 @@ default-members = [
     "mm",
     "modelchan",
     "netcore",
+    "netdest",
+    "nethosts",
     "nvme",
     "pci",
     "promptcore",
     "quant",
     "sched",
+    "semindex",
     "shellcore",
     "supervise",
     "surfabi",
@@ -195,6 +209,13 @@ opt-level = 2
 
 # The same for `cc`'s logic, the other crate that defines wasmi host functions.
 [profile.dev.package.ccserve]
+opt-level = 2
+
+# TLS: kainet instantiates the RustCrypto ciphers' generics (AES-GCM,
+# ChaCha20-Poly1305, the curves), so they are compiled at kainet's level, and
+# unoptimised AES-128-GCM sealed 3 MB/s in ring 3 under KVM (P5-S1, #654).
+# Level 2 as the ciphers themselves.
+[profile.dev.package.kainet]
 opt-level = 2
 
 # The inference engine crates at the same level: unoptimised, the Q8_0 matvec runs

@@ -7,6 +7,8 @@
 //!   restart, and the probation that keeps it or goes back to the model before;
 //! - [`listing`]: `kai-models 1`, the list `updated` answers `models` with;
 //! - [`asker`]: who may ask `updated` what.
+//! - [`fetch`]: a model downloaded in the OS (P5 task 9): which targets fit,
+//!   the one ask, and the job `kainet`'s verified download runs.
 //!
 //! All are pure: `updated` reads the disk, writes the store through `fs`, and
 //! asks `llm` for its health, and hands what it got to these.
@@ -16,6 +18,7 @@
 extern crate alloc;
 
 pub mod asker;
+pub mod fetch;
 pub mod import;
 pub mod listing;
 pub mod trial;

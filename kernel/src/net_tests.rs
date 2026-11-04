@@ -5,11 +5,12 @@
 //! - `test=net-setup`: DHCP gives 10.0.2.15/24 via 10.0.2.2 with DNS 10.0.2.3; the
 //!   gateway answers pings; names resolve, CNAMEs too, from the cache within their
 //!   TTL and from the server after it; NXDOMAIN and silence fail the right way;
-//!   ring 3 resolves through RESOLVE with the RESOLVE capability and is refused
-//!   without it; and the lease, capped at 4 s, is renewed rather than lost.
+//!   ring 3 resolves through RESOLVE_ON on a `NetDest` handle and is refused
+//!   without one; and the lease, capped at 4 s, is renewed rather than lost.
 //! - `test=net-fallback`: with DHCP sent to a port nobody serves, the fallback
 //!   address comes after `dhcp_wait_ms` and the gateway answers on it.
 //! - `test=net-static`: `ip=static` is used at once, with no DHCP.
+//! - `test=net-dest` (P5 task 1): what a `NetDest` handle allows ([`dest_check`]).
 
 use crate::fpu_tests::wait_exit;
 use crate::net::ping::{self, Outcome};
@@ -18,7 +19,7 @@ use crate::net::setup::{Source, Status};
 use crate::process::{self, SpawnRequest};
 use crate::{hpet, log, net, net_commands, threads};
 use core::net::Ipv4Addr;
-use kabi::{ExitReason, Limits, cap};
+use kabi::{ExitReason, Limits};
 use netcore::config::{FALLBACK, FALLBACK_DNS};
 use netcore::fixture;
 
@@ -192,36 +193,124 @@ fn resolve_checks() -> Result<(), &'static str> {
 const NETCHECK_LIMITS: Limits = Limits {
     max_pages: 256,
     max_burst_ms: 10_000,
-    caps: cap::RESOLVE,
+    caps: 0,
     stack_pages: 0,
 };
 
-/// `netcheck` resolves kai.test through RESOLVE with its own capability, and is
-/// refused without it, NET alone included: NET is for HTTP to the one server.
+/// What the `netcheck` runs' handle allows: names under kai.test, and
+/// 10.0.2.2:8000 by address.
+const KAI_TEST: &str = "proto:tcp,addrs:10.0.2.2,ports:8000,hosts:kai.test";
+
+/// A new record for `spec`, and a `NetDest` handle's entry for it.
+fn netdest(spec: &str) -> Result<(u64, captable::Entry), &'static str> {
+    let dest = netdest::Dest::parse(spec).map_err(|_| "net: a bad test destination")?;
+    let live = |object| crate::handle::names(kabi::handle::Kind::NetDest, object);
+    let object = net::dest::create(dest, live).ok_or("net: no room for a NetDest record")?;
+    let entry = captable::Entry::new(
+        kabi::handle::Kind::NetDest,
+        crate::handle::NETDEST_RIGHTS,
+        object,
+    );
+    Ok((object, entry))
+}
+
+/// Runs `netcheck` as `name` with `args`, holding `dest` if given; whether it
+/// got what it expected.
+fn netcheck(name: &str, args: &str, dest: Option<captable::Entry>) -> Result<(), &'static str> {
+    let request = SpawnRequest {
+        name,
+        program: "netcheck",
+        args: args.as_bytes(),
+        limits: NETCHECK_LIMITS,
+        spawner: 0,
+        supervisor: false,
+        uses: &[],
+    };
+    let pid = process::spawn_with(&request, dest.into_iter().collect(), false)
+        .map_err(|_| "net: cannot start netcheck")?;
+    match wait_exit(pid)? {
+        (ExitReason::Exited, 0) => Ok(()),
+        _ => Err("net: netcheck did not get what it expected"),
+    }
+}
+
+/// `netcheck` resolves kai.test on a `NetDest` handle that names it, and is
+/// refused without one, NET alone included: NET is for HTTP to the one server.
 fn ring3_checks() -> Result<(), &'static str> {
-    let runs = [
-        ("netcheck", cap::RESOLVE, "host=kai.test expect=10.0.2.99"),
-        ("netcheck-nocap", 0, "host=kai.test expect=permission"),
-        ("netcheck-net", cap::NET, "host=kai.test expect=permission"),
+    let (_, entry) = netdest(KAI_TEST)?;
+    netcheck("netcheck", "host=kai.test expect=10.0.2.99", Some(entry))?;
+    netcheck("netcheck-nocap", "host=kai.test expect=permission", None)?;
+    log!("net-setup: ring 3 resolved kai.test on its NetDest handle and was refused with none");
+    Ok(())
+}
+
+/// `test=net-dest` (P5 task 1): what a `NetDest` handle allows.
+/// - A name under its suffixes resolves, and its addresses then count for a
+///   connect on their ports while their TTL lasts; other addresses and ports
+///   do not, but the literal range does.
+/// - A name under none is refused before any query leaves.
+/// - A narrower handle may be made, and allows only what it names; a wider
+///   one is refused.
+/// - The retired RESOLVE call refuses everyone.
+pub fn dest_check() -> Result<(), &'static str> {
+    use netdest::Protocol::Tcp;
+    wait_for(|s| s.address.is_some())?;
+    let (object, entry) = netdest(KAI_TEST)?;
+    netcheck(
+        "netdest-a",
+        "host=alias.kai.test expect=10.0.2.99",
+        Some(entry),
+    )?;
+    let resolved = Ipv4Addr::new(10, 0, 2, 99);
+    let connects = [
+        (resolved, 8000, true),
+        (resolved, 22, false),
+        (GATEWAY, 8000, true),
+        (Ipv4Addr::new(10, 0, 2, 3), 8000, false),
     ];
-    for (name, caps, args) in runs {
-        let pid = process::spawn(&SpawnRequest {
-            name,
-            program: "netcheck",
-            args: args.as_bytes(),
-            limits: Limits {
-                caps,
-                ..NETCHECK_LIMITS
-            },
-            spawner: 0,
-            supervisor: false,
-            uses: &[],
-        })
-        .map_err(|_| "net-setup: cannot start netcheck")?;
-        if !matches!(wait_exit(pid)?, (ExitReason::Exited, 0)) {
-            return Err("net-setup: netcheck did not get what it expected");
+    for (addr, port, want) in connects {
+        if net::dest::may_connect(object, Tcp, addr, port) != want {
+            log!("net-dest: a connect to {addr}:{port} was not {want}");
+            return Err("net-dest: a connect check went the wrong way");
         }
     }
-    log!("net-setup: ring 3 resolved kai.test with RESOLVE and was refused with NET alone or none");
+    log!(
+        "net-dest: alias.kai.test resolved on the handle, and only its address and the literal range may be connected to, on port 8000"
+    );
+    let (queries, _) = resolve::counts();
+    let (_, entry) = netdest(KAI_TEST)?;
+    netcheck(
+        "netdest-b",
+        "host=leak.attacker.example expect=permission",
+        Some(entry),
+    )?;
+    if resolve::counts().0 != queries {
+        return Err("net-dest: a refused name was still looked up");
+    }
+    log!("net-dest: a name under none of its hosts was refused, and no query left");
+    let (_, entry) = netdest(KAI_TEST)?;
+    let narrow = "narrow=proto:tcp,hosts:alias.kai.test";
+    netcheck(
+        "netdest-c",
+        &alloc::format!("{narrow} host=alias.kai.test expect=10.0.2.99"),
+        Some(entry),
+    )?;
+    let (_, entry) = netdest(KAI_TEST)?;
+    netcheck(
+        "netdest-d",
+        &alloc::format!("{narrow} host=kai.test expect=permission"),
+        Some(entry),
+    )?;
+    let (_, entry) = netdest(KAI_TEST)?;
+    let wider = "narrow=proto:tcp,ports:any,hosts:kai.test host=kai.test expect=narrow-refused";
+    netcheck("netdest-e", wider, Some(entry))?;
+    log!("net-dest: a narrower handle allowed only its own host, and a wider one was refused");
+    let (_, entry) = netdest(KAI_TEST)?;
+    netcheck(
+        "netdest-f",
+        "legacy host=kai.test expect=permission",
+        Some(entry),
+    )?;
+    log!("net-dest: the retired RESOLVE refused even a holder of a NetDest");
     Ok(())
 }

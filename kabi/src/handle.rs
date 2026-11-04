@@ -9,7 +9,14 @@ use bitflags::bitflags;
 /// The ABI version (ADR 0001 D10): additions bump the minor, a removal or a
 /// changed meaning bumps the major. Every in-tree ELF carries it in a "KAI" note,
 /// and the loader refuses another major or a newer minor.
-pub const ABI: (u32, u32) = (1, 0);
+///
+/// One written exception: 1.1 retired RESOLVE (37) and `cap::RESOLVE` for
+/// RESOLVE_ON on a `NetDest` handle without a major bump (decisions, P5 task 1).
+/// Its only callers were programs built into the image, which update with the
+/// kernel; apps reach the OS through WIT, never raw calls; and no outside
+/// package exists before v1.0. Any later change to an existing call's meaning
+/// bumps the major.
+pub const ABI: (u32, u32) = (1, 1);
 
 /// The name of the ELF note that carries [`ABI`], and its type.
 pub const NOTE_NAME: &[u8; 4] = b"KAI\0";

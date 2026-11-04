@@ -37,6 +37,8 @@ pub struct ServiceSpec {
     pub dirs: Vec<Folder>,
     /// The boot files it may read with BOOT_READ, from `bootfiles=`.
     pub boot: Option<BootFiles>,
+    /// Its own network destination, from `netdest=` (P5 task 1).
+    pub netdest: Option<netdest::Dest>,
     /// When the supervisor starts it, from `start=`.
     pub start: Start,
     /// Restart policy; the plan may change `max_backoff_ms` and `max_restarts`.
@@ -356,6 +358,8 @@ pub struct Grants {
     pub dirs: Vec<Folder>,
     /// Its boot files, from `bootfiles=`.
     pub boot: Option<BootFiles>,
+    /// Its network destination, from `netdest=`.
+    pub netdest: Option<netdest::Dest>,
 }
 
 /// Names nothing may stop: the shell, the supervisor and the model service (as
@@ -602,6 +606,7 @@ impl Plan {
         let bound = [
             (!service.dirs.is_empty(), "dir="),
             (service.boot.is_some(), "bootfiles="),
+            (service.netdest.is_some(), "netdest="),
         ];
         if let Some((_, key)) = bound.iter().find(|(held, _)| *held)
             && service.program != program
@@ -615,13 +620,14 @@ impl Plan {
             uses: service.uses.clone(),
             dirs: service.dirs.clone(),
             boot: service.boot,
+            netdest: service.netdest.clone(),
         })
     }
 }
 
 /// Reads the plan: one service per line, `name [program=P] [pages=N] [stack_pages=N]
-/// [burst_ms=N] [caps=serve+net+call+policy+component+publish+model+threads+resolve+stop+script]
-/// [uses=A+B] [dir=pkg] [bootfiles=pkgrepo] [start=pkg|demand] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
+/// [burst_ms=N] [caps=serve+net+call+policy+component+publish+model+threads+stop+script]
+/// [uses=A+B] [dir=pkg] [bootfiles=pkgrepo] [netdest=proto:tcp,hosts:example.org] [start=pkg|demand] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
 /// routes, folders and policy; everything else is passed to the program. A bad line skips only
 /// that service, so one typo cannot keep every other service down.
 pub fn parse_plan(text: &str) -> Plan {
@@ -656,6 +662,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     let mut uses = Vec::new();
     let mut dirs: Option<Vec<Folder>> = None;
     let mut boot: Option<BootFiles> = None;
+    let mut netdest: Option<netdest::Dest> = None;
     let mut start: Option<Start> = None;
     let mut unsupervised = false;
     for word in words {
@@ -701,6 +708,14 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
                     .ok_or_else(|| format!("{name}: no boot files {value:?} for bootfiles="))?;
                 boot = Some(files);
             }
+            Some(("netdest", value)) => {
+                if netdest.is_some() {
+                    return Err(format!("{name}: netdest= given twice"));
+                }
+                let dest = netdest::Dest::parse(value)
+                    .map_err(|why| format!("{name}: netdest={value} is refused: {why}"))?;
+                netdest = Some(dest);
+            }
             Some(("start", value)) => {
                 if start.is_some() {
                     return Err(format!("{name}: start= given twice"));
@@ -733,10 +748,15 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
         ));
     }
     // The kernel starts it with no supervisor to answer for it: no capabilities.
-    if unsupervised && (limits.caps != 0 || !uses.is_empty() || !dirs.is_empty() || boot.is_some())
+    if unsupervised
+        && (limits.caps != 0
+            || !uses.is_empty()
+            || !dirs.is_empty()
+            || boot.is_some()
+            || netdest.is_some())
     {
         return Err(format!(
-            "{name}: an unsupervised process takes no caps=, uses=, dir= or bootfiles="
+            "{name}: an unsupervised process takes no caps=, uses=, dir=, bootfiles= or netdest="
         ));
     }
     let start = start.unwrap_or_default();
@@ -755,6 +775,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
         uses,
         dirs,
         boot,
+        netdest,
         start,
         policy,
         unsupervised,
@@ -826,7 +847,6 @@ fn caps(service: &str, value: &str) -> Result<u64, String> {
         "publish" => Ok(bits | cap::PUBLISH),
         "model" => Ok(bits | cap::MODEL),
         "threads" => Ok(bits | cap::THREADS),
-        "resolve" => Ok(bits | cap::RESOLVE),
         "stop" => Ok(bits | cap::STOP),
         "script" => Ok(bits | cap::SCRIPT),
         "partition" => Ok(bits | cap::PARTITION),

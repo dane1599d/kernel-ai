@@ -162,17 +162,14 @@ pub struct Listing {
     pub indexes: Vec<Index>,
 }
 
-/// The mirror's packages at `now` (seconds since 1970 UTC): its metadata
+/// The repository's packages at `now` (seconds since 1970 UTC): its metadata
 /// refreshed from `cache`, which must hold a trusted root, then every target of
 /// [`ROLE`] as an index entry. An error means the metadata did not verify, and
 /// nothing is listed; a target whose entry does not parse is refused by name.
-pub fn index<E: Exchange>(
-    mirror: &mut Mirror<E>,
-    cache: &mut dyn Cache,
-    now: u64,
-) -> Result<Listing, String> {
+/// `remote` is a [`Mirror`], or the online repository (`crate::online`).
+pub fn index(remote: &mut dyn Remote, cache: &mut dyn Cache, now: u64) -> Result<Listing, String> {
     let tuf = |e: kaituf::Error| e.to_string();
-    let mut updater = Updater::new(mirror, cache, now).map_err(tuf)?;
+    let mut updater = Updater::new(remote, cache, now).map_err(tuf)?;
     updater.refresh().map_err(tuf)?;
     let mut listing = Listing::default();
     for path in updater.listed(ROLE, "targets").map_err(tuf)? {

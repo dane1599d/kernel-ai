@@ -27,6 +27,8 @@ mod cache_tests;
 #[cfg(test)]
 mod chat_tests;
 #[cfg(test)]
+mod embed_tests;
+#[cfg(test)]
 mod forward_tests;
 #[cfg(test)]
 mod json_tests;
@@ -43,7 +45,7 @@ mod segments_tests;
 #[cfg(test)]
 mod tests;
 
-pub use config::{Config, MAX_VOCAB};
+pub use config::{Config, MAX_VOCAB, Pooling};
 pub use generate::{Ended, Next, argmax, generate};
 pub use kv::{KvCache, Rope};
 pub use model::{Model, PREFILL_TOKENS};
@@ -78,6 +80,8 @@ pub enum Error {
     EmptyPrompt,
     /// A logits buffer that is not one value per vocabulary entry.
     Logits,
+    /// An embedding buffer that is not one value per residual-stream width.
+    Embedding,
     /// A token id past the vocabulary.
     Token(u32),
     /// A JSON shape that cannot be decoded, or a vocabulary that cannot spell it.
@@ -104,6 +108,7 @@ impl core::fmt::Display for Error {
             Self::CacheShape => f.write_str("the KV cache was made for another model"),
             Self::EmptyPrompt => f.write_str("the prompt is empty"),
             Self::Logits => f.write_str("the logits buffer does not match the vocabulary"),
+            Self::Embedding => f.write_str("the embedding buffer does not match the model's width"),
             Self::Token(id) => write!(f, "token {id} is past the vocabulary"),
             Self::Shape(problem) => write!(f, "the JSON shape {problem}"),
             Self::NoRoom => {

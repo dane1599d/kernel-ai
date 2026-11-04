@@ -32,6 +32,7 @@ use agentabi::{RetType, Returns};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use llmproto::script::Lang;
 use promptcore::wire::{Record, Request, parse_reply};
 use session::{Ran, no_session, resume};
 
@@ -123,6 +124,7 @@ impl Shell {
             return match line.strip_prefix(":c") {
                 Some("") => {
                     self.c.on = true;
+                    self.host.model_warm(Lang::C);
                     Some(Reply::ok(ENTERED))
                 }
                 Some(rest) if rest.starts_with(' ') => Some(self.c_entry(rest.trim())),
@@ -133,6 +135,7 @@ impl Shell {
         Some(match line {
             ":rhai" => {
                 self.c.on = false;
+                self.host.model_warm(Lang::Rhai);
                 Reply::ok("back at kai>")
             }
             ":c" => Reply::ok("already in C mode"),

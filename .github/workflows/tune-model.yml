@@ -21,7 +21,7 @@ on:
         description: Catalog id from xtask/models.json
         default: qwen3-4b-2507
       mode:
-        description: demo, record, latency or bench
+        description: demo, record, latency, bench or bench-ab
         default: demo
 
 permissions:
@@ -53,8 +53,19 @@ jobs:
           set -o pipefail
           cargo xtask bench quant 2>&1 | tee transcript.txt
           { echo "bench quant, commit $GITHUB_SHA, $(nproc) CPUs:"; echo; echo '```'; grep -vE '^\s*(Compiling|Finished|Running|Downloaded|Downloading)' transcript.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Bench A/B — bench quant on main's engine crates, then on this commit's, in one job
+        if: inputs.mode == 'bench-ab'
+        run: |
+          set -o pipefail
+          git fetch --no-tags --depth=1 origin main
+          git checkout FETCH_HEAD -- quant infer
+          cargo xtask bench quant 2>&1 | tee main.txt
+          git checkout HEAD -- quant infer
+          cargo xtask bench quant 2>&1 | tee head.txt
+          { echo "bench quant A/B, $(nproc) CPUs: main, then $GITHUB_SHA"; echo; echo '```'; grep -E 'Check: the engine' main.txt; grep -E 'Check: the engine' head.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          grep -E 'Check: the engine' main.txt head.txt
       - name: Look up the catalog entry
-        if: inputs.mode != 'bench'
+        if: inputs.mode != 'bench' && inputs.mode != 'bench-ab'
         id: entry
         env:
           MODEL: ${{ inputs.model }}
@@ -64,7 +75,7 @@ jobs:
           echo "sha=$(jq -r .sha256 entry.json)" >> "$GITHUB_OUTPUT"
           echo "file=$(jq -r .file entry.json)" >> "$GITHUB_OUTPUT"
       - name: Download the pinned model into a model store and check its SHA-256
-        if: inputs.mode != 'bench'
+        if: inputs.mode != 'bench' && inputs.mode != 'bench-ab'
         run: |
           mkdir -p "$RUNNER_TEMP/models"
           curl -fL --retry 5 -o "$RUNNER_TEMP/models/${{ steps.entry.outputs.file }}" "${{ steps.entry.outputs.url }}"
