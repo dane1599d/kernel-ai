@@ -26,7 +26,22 @@ pub struct Config {
     pub context_length: usize,
     pub rope_theta: f32,
     pub rms_eps: f32,
+    /// How an embedding model pools its hidden states (`qwen3.pooling_type`);
+    /// [`Pooling::None`] for a chat model.
+    pub pooling: Pooling,
 }
+
+/// llama.cpp's pooling types that the engine honours: none, and the last
+/// token's hidden state, which Qwen3-Embedding is trained for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pooling {
+    None,
+    Last,
+}
+
+/// `qwen3.pooling_type`'s values in llama.cpp (`enum llama_pooling_type`).
+const POOLING_NONE: u64 = 0;
+const POOLING_LAST: u64 = 3;
 
 impl Config {
     /// Reads `qwen3.*` metadata and the vocabulary size from `token_embd.weight`.
@@ -90,6 +105,7 @@ impl Config {
             context_length: int("qwen3.context_length", 1 << 24)?,
             rope_theta: float("qwen3.rope.freq_base", Some(10_000.0))?,
             rms_eps: float("qwen3.attention.layer_norm_rms_epsilon", None)?,
+            pooling: pooling(header)?,
         };
         config.check()?;
         Ok(config)
@@ -141,7 +157,7 @@ impl Config {
 }
 
 /// The qwen3 keys the engine reads or checks.
-const QWEN3_KEYS: [&str; 15] = [
+const QWEN3_KEYS: [&str; 16] = [
     "qwen3.block_count",
     "qwen3.context_length",
     "qwen3.embedding_length",
@@ -157,6 +173,7 @@ const QWEN3_KEYS: [&str; 15] = [
     "qwen3.rope.scaling.factor",
     "qwen3.rope.scaling.attn_factor",
     "qwen3.rope.scale_linear",
+    "qwen3.pooling_type",
 ];
 
 /// Metadata the engine reads, checks or may ignore: descriptions (`general.*`),
@@ -168,6 +185,17 @@ fn known_key(key: &str) -> bool {
         .iter()
         .any(|prefix| key.starts_with(prefix))
         || QWEN3_KEYS.contains(&key)
+}
+
+/// An embedding model's pooling: none when the key is absent; mean, CLS and
+/// rank pooling are refused.
+fn pooling(header: &Header<'_>) -> Result<Pooling, Error> {
+    match header.get("qwen3.pooling_type").map(|v| v.as_u64()) {
+        None | Some(Some(POOLING_NONE)) => Ok(Pooling::None),
+        Some(Some(POOLING_LAST)) => Ok(Pooling::Last),
+        Some(Some(_)) => Err(Error::Unsupported("pooling other than the last token's")),
+        Some(None) => Err(Error::BadValue("qwen3.pooling_type")),
+    }
 }
 
 /// Refuses RoPE scaling in any form llama.cpp would apply: a scaling type other

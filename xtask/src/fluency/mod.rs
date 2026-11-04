@@ -430,6 +430,9 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
                 let (engine, line) = local::load(id, store.as_deref())?;
                 println!("xtask: fluency: local model {line}");
                 let c = options.c;
+                if c {
+                    local::warm_c(&engine)?;
+                }
                 (
                     Box::new(move || match c {
                         true => local::program_transport(engine.clone()),

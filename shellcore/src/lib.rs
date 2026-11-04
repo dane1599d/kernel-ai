@@ -79,7 +79,7 @@ use engine::Line;
 use kabi::sched::{SchedStats, TrialRequest};
 use llmproto::act::{ActError, ActRequest, Call};
 use llmproto::chat::Completion;
-use llmproto::script::{Answer, AnswerError, ScriptRequest};
+use llmproto::script::{Answer, AnswerError, Lang, ScriptRequest};
 use llmproto::tune::TuneRequest;
 pub use panel::PanelResult;
 use rhai::{AST, Dynamic, Engine, EvalAltResult, Scope};
@@ -172,6 +172,9 @@ pub trait Host {
     }
     /// Stops the [`Host::script_start`] with `ticket`, if it is still asking.
     fn script_stop(&self, _ticket: u64) {}
+    /// Which script prompt the model should keep warm: C's at `c>`, Rhai's at
+    /// `kai>`. A hint, so nothing comes back.
+    fn model_warm(&self, _lang: Lang) {}
     /// Asks the LLM for one tagged call (ADR 0002 D4). Without one, the shell asks
     /// for a script instead.
     fn act(&self, _request: &ActRequest) -> Result<Call, ActError> {

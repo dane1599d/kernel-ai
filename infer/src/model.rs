@@ -159,26 +159,10 @@ impl<'a> Model<'a> {
         logits: Option<&mut [f32]>,
     ) -> Result<(), Error> {
         let c = self.config;
-        if tokens.is_empty() {
-            return Err(Error::EmptyPrompt);
-        }
-        if let Some(&bad) = tokens.iter().find(|&&t| t as usize >= c.vocab) {
-            return Err(Error::Token(bad));
-        }
         if logits.as_deref().is_some_and(|l| l.len() != c.vocab) {
             return Err(Error::Logits);
         }
-        if !self.fits(kv) {
-            return Err(Error::CacheShape);
-        }
-        if tokens.len() > kv.capacity() - kv.len() {
-            return Err(Error::ContextFull);
-        }
-        let mut last = 0;
-        for block in tokens.chunks(PREFILL_TOKENS) {
-            self.block(kv, block);
-            last = block.len() - 1;
-        }
+        let last = self.run_blocks(kv, tokens)?;
         if let Some(logits) = logits {
             let e = c.n_embd;
             let (w, s) = (&self.weights, &mut self.s);
@@ -193,6 +177,64 @@ impl<'a> Model<'a> {
             run(self.par, self.tier, &s.q_embd, 1, &mut s.rows, jobs);
         }
         Ok(())
+    }
+
+    /// Runs `tokens` at the next positions of `kv` and writes the last token's
+    /// hidden state, after the final norm and scaled to unit length, into
+    /// `embedding` (one value per residual-stream width): last-token pooling,
+    /// what Qwen3-Embedding is trained for (`qwen3.pooling_type` 3). The caller
+    /// ends a text with the end-of-text token, as llama.cpp does for a file that
+    /// sets `add_eos_token`. No output projection runs. The checks and the bits
+    /// are those of [`Model::forward_batch`].
+    pub fn embed(
+        &mut self,
+        kv: &mut KvCache,
+        tokens: &[u32],
+        embedding: &mut [f32],
+    ) -> Result<(), Error> {
+        let e = self.config.n_embd;
+        if embedding.len() != e {
+            return Err(Error::Embedding);
+        }
+        let last = self.run_blocks(kv, tokens)?;
+        let (w, c) = (&self.weights, &self.config);
+        rms_norm(
+            &self.s.x[last * e..][..e],
+            &w.output_norm,
+            c.rms_eps,
+            embedding,
+        );
+        let norm = libm::sqrt(embedding.iter().map(|&v| f64::from(v) * f64::from(v)).sum());
+        if norm > 0.0 {
+            let scale = (1.0 / norm) as f32;
+            embedding.iter_mut().for_each(|v| *v *= scale);
+        }
+        Ok(())
+    }
+
+    /// Checks `tokens` and `kv`, then runs the tokens in blocks; the index of
+    /// the last token within the last block, whose row of the residual stream
+    /// the caller reads. Every check comes before the cache changes.
+    fn run_blocks(&mut self, kv: &mut KvCache, tokens: &[u32]) -> Result<usize, Error> {
+        let c = self.config;
+        if tokens.is_empty() {
+            return Err(Error::EmptyPrompt);
+        }
+        if let Some(&bad) = tokens.iter().find(|&&t| t as usize >= c.vocab) {
+            return Err(Error::Token(bad));
+        }
+        if !self.fits(kv) {
+            return Err(Error::CacheShape);
+        }
+        if tokens.len() > kv.capacity() - kv.len() {
+            return Err(Error::ContextFull);
+        }
+        let mut last = 0;
+        for block in tokens.chunks(PREFILL_TOKENS) {
+            self.block(kv, block);
+            last = block.len() - 1;
+        }
+        Ok(last)
     }
 
     /// Whether `kv` was made for this model: its shape, and no more positions
