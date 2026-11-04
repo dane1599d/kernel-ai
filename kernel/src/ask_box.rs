@@ -54,6 +54,11 @@ pub fn shown() -> bool {
     })
 }
 
+/// Whether no ask is posted, answered or not.
+pub fn empty() -> bool {
+    with(|b| b.posted.is_none())
+}
+
 /// Whether `desktop`'s trusted layer read the box lately.
 pub fn alive() -> bool {
     let read = with(|b| b.read_ns);

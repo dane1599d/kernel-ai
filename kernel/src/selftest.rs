@@ -175,6 +175,9 @@ pub enum SelfTest {
     DeskPanel,
     /// `desk-panel-shell` (P3 task 7): the shell takes the panel's line.
     DeskPanelShell,
+    /// `desk-card-wake` (Kai builds apps, follow-up 2): the terminal's prompt
+    /// wakes for the shell's waiting card, and waits while another ask is up.
+    DeskCardWake,
     /// `desk-catalog` (P4 task 3): the Apps sheet lists `pkg`'s catalogue.
     DeskCatalog,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
@@ -299,6 +302,8 @@ pub enum SelfTest {
     NetDest,
     /// P5 task 2: TCP streams on a `NetDest`.
     NetStream,
+    /// P5 task 3: ENTROPY's sample, which two boots must not share.
+    EntropyBoots,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -414,6 +419,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=desk-panel" => Some(SelfTest::DeskPanel),
             "test=desk-panel-shell" => Some(SelfTest::DeskPanelShell),
+            "test=desk-card-wake" => Some(SelfTest::DeskCardWake),
             "test=desk-catalog" => Some(SelfTest::DeskCatalog),
             "test=ui-window" => Some(SelfTest::UiWindow),
             "test=app-editor" => Some(SelfTest::AppEditor),
@@ -474,6 +480,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net-static" => Some(SelfTest::NetStatic),
             "test=net-dest" => Some(SelfTest::NetDest),
             "test=net-stream" => Some(SelfTest::NetStream),
+            "test=entropy-boots" => Some(SelfTest::EntropyBoots),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))
@@ -563,6 +570,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskBoot
             | SelfTest::DeskPanel
             | SelfTest::DeskPanelShell
+            | SelfTest::DeskCardWake
             | SelfTest::DeskCatalog
             | SelfTest::UiWindow
             | SelfTest::AppEditor
@@ -711,7 +719,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
         // On the desktop the shell has a route to `desktop`, for the panel:
         // `desktop` is planned first, as a route's target must be.
         let shell = match test {
-            SelfTest::DeskPanelShell => {
+            SelfTest::DeskPanelShell | SelfTest::DeskCardWake => {
                 plan.push('\n');
                 plan.push_str(crate::desk_tests::BOOT_PLAN);
                 kabi::plan::SHELL_DESK
