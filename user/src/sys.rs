@@ -994,6 +994,71 @@ pub fn netdest_narrow(dest: Handle, spec: &str, rights: u32) -> Result<Handle, E
     .map(|h| Handle(h as u32))
 }
 
+/// A TCP stream to `addr`:`port` on the `NetDest` handle `dest` (NET_CONNECT);
+/// `flags` may hold `kabi::net::STREAM_BULK`. It connects in the background:
+/// [`net_poll`] says when.
+pub fn net_connect(dest: Handle, addr: [u8; 4], port: u16, flags: u64) -> Result<Handle, Error> {
+    call(
+        call::NET_CONNECT,
+        [
+            u64::from(dest.0),
+            u64::from(u32::from_be_bytes(addr)),
+            u64::from(port),
+            flags,
+            0,
+            0,
+        ],
+    )
+    .map(|h| Handle(h as u32))
+}
+
+/// Queues up to 8 KiB of `data` on `stream` (NET_SEND); how much it took.
+pub fn net_send(stream: Handle, data: &[u8]) -> Result<usize, Error> {
+    call(
+        call::NET_SEND,
+        [
+            u64::from(stream.0),
+            data.as_ptr() as u64,
+            data.len() as u64,
+            0,
+            0,
+            0,
+        ],
+    )
+    .map(|n| n as usize)
+}
+
+/// Up to 8 KiB from `stream` into `out` (NET_RECV): 0 once it is closed and
+/// read, Busy while nothing has come.
+pub fn net_recv(stream: Handle, out: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::NET_RECV,
+        [
+            u64::from(stream.0),
+            out.as_mut_ptr() as u64,
+            out.len() as u64,
+            0,
+            0,
+            0,
+        ],
+    )
+    .map(|n| n as usize)
+}
+
+/// Waits up to `timeout_ms` until `stream` is any of `want` or failed
+/// (NET_POLL); its `kabi::net::STREAM_*` state.
+pub fn net_poll(stream: Handle, want: u64, timeout_ms: u64) -> Result<u64, Error> {
+    call(
+        call::NET_POLL,
+        [u64::from(stream.0), want, timeout_ms, 0, 0, 0],
+    )
+}
+
+/// Closes `stream` and its handle (NET_CLOSE).
+pub fn net_close(stream: Handle) -> Result<(), Error> {
+    call(call::NET_CLOSE, [u64::from(stream.0), 0, 0, 0, 0, 0]).map(|_| ())
+}
+
 /// The kernel's ABI version, highest call number and handle table size.
 pub fn abi_info() -> Result<AbiInfo, Error> {
     let mut info = AbiInfo::default();

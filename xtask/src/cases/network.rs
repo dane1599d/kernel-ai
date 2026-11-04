@@ -65,4 +65,20 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("net-dest", "test=net-dest")
     },
+    // P5 task 2: TCP streams on the NetDest to xtask's echo server: echo,
+    // the 8 KiB and 16-stream limits, a port off the handle, and a kill.
+    TestCase {
+        echo: true,
+        server: false,
+        expect: &[
+            "[netstream-a] a stream echoed 8192 and 20 bytes, refused 8193 in one send, and closed",
+            "[netstream-a] a bulk stream echoed 8192 and 20 bytes, refused 8193 in one send, and closed",
+            "is not on the handle: refused",
+            "[netstream-a] 16 streams open; the 17th was Busy",
+            "net-stream: streams echoed through the handle, kept to its port and to 16, and closed",
+            "[netstream-b] holding 3 streams",
+            "net-stream: a process killed with 3 streams open left none",
+        ],
+        ..case("net-stream", "test=net-stream")
+    },
 ];

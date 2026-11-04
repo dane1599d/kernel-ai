@@ -118,11 +118,24 @@ pub fn may_connect(object: u64, protocol: Protocol, addr: Ipv4Addr, port: u16) -
         };
         record.dest.allows_literal(protocol, addr, port)
             || (record.dest.allows_resolved_port(protocol, port)
+                && !special(addr)
                 && record
                     .resolved
                     .iter()
                     .any(|(a, ends)| *a == addr && *ends > now))
     })
+}
+
+/// An address a name's answer must not lead to unless the record names it
+/// literally (lane C's review of task 1): this machine, the link, nothing,
+/// everyone or a group. An answer pointing there is how DNS rebinding reaches
+/// what the app was never given.
+fn special(addr: Ipv4Addr) -> bool {
+    addr.is_loopback()
+        || addr.is_link_local()
+        || addr.is_unspecified()
+        || addr.is_broadcast()
+        || addr.is_multicast()
 }
 
 /// A record for `narrower`, made from `object`'s, if `object`'s covers it:

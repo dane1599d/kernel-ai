@@ -11,6 +11,7 @@ mod device;
 pub mod ping;
 pub mod resolve;
 pub mod setup;
+pub mod stream;
 
 use crate::virtio::hal::KernelHal;
 use crate::virtio::split::SplitTransport;
@@ -57,6 +58,7 @@ impl Net {
         self.iface.poll(now(), &mut self.device, &mut self.sockets);
         self.setup
             .after_poll(&mut self.iface, &mut self.sockets, hpet::nanos());
+        stream::reap(self);
     }
 }
 

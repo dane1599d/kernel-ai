@@ -297,6 +297,8 @@ pub enum SelfTest {
     NetStatic,
     /// P5 task 1: what a `NetDest` handle allows.
     NetDest,
+    /// P5 task 2: TCP streams on a `NetDest`.
+    NetStream,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -471,6 +473,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net-fallback" => Some(SelfTest::NetFallback),
             "test=net-static" => Some(SelfTest::NetStatic),
             "test=net-dest" => Some(SelfTest::NetDest),
+            "test=net-stream" => Some(SelfTest::NetStream),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))

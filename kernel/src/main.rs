@@ -463,6 +463,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetFallback => run_case(net_tests::fallback_check),
         SelfTest::NetStatic => run_case(net_tests::static_check),
         SelfTest::NetDest => run_case(net_tests::dest_check),
+        SelfTest::NetStream => run_case(|| net_tests::stream_check(cmdline())),
         SelfTest::Slot => {
             // A slot boot holds `updated`'s record calls until its lever has
             // written: the guard is closed here, before the lever runs.
