@@ -195,6 +195,67 @@ impl<'a> Model<'a> {
         Ok(())
     }
 
+    /// One decode step of several sequences at once (ADR 0013 spike S13-2):
+    /// `tokens[i]` at the next position of `kvs[i]`, each matrix row read once
+    /// for all of them, each attending over its own cache. `logits` holds one
+    /// vocabulary's logits per sequence, in order. The bits are those of
+    /// [`Model::forward`] on each sequence alone.
+    pub fn decode_batch(
+        &mut self,
+        kvs: &mut [&mut KvCache],
+        tokens: &[u32],
+        logits: &mut [f32],
+    ) -> Result<(), Error> {
+        let c = self.config;
+        let n = tokens.len();
+        if n == 0 || n > PREFILL_TOKENS || kvs.len() != n {
+            return Err(Error::EmptyPrompt);
+        }
+        if let Some(&bad) = tokens.iter().find(|&&t| t as usize >= c.vocab) {
+            return Err(Error::Token(bad));
+        }
+        if logits.len() != n * c.vocab {
+            return Err(Error::Logits);
+        }
+        if kvs.iter().any(|kv| !self.fits(kv)) {
+            return Err(Error::CacheShape);
+        }
+        if kvs.iter().any(|kv| kv.len() >= kv.capacity()) {
+            return Err(Error::ContextFull);
+        }
+        let e = c.n_embd;
+        let embd = self.weights.token_embd;
+        for (&token, x) in tokens.iter().zip(self.s.x.chunks_exact_mut(e)) {
+            embd.dequantize_row(token as usize, x);
+        }
+        let seqs: Vec<(usize, usize)> = kvs
+            .iter()
+            .enumerate()
+            .map(|(i, kv)| (i, kv.len()))
+            .collect();
+        for layer in 0..c.n_layer {
+            self.attention(kvs, &seqs, layer);
+            self.feed_forward(layer, n);
+        }
+        for kv in kvs.iter_mut() {
+            kv.advance(1);
+        }
+        let (w, s) = (&self.weights, &mut self.s);
+        norm_all(
+            self.par,
+            &s.x[..n * e],
+            &w.output_norm,
+            c.rms_eps,
+            &mut s.xn[..n * e],
+        );
+        s.q_embd.quantize_all(few(self.par, n), &s.xn[..n * e], n);
+        // The output matrix is the widest by far: its products get their own rows.
+        let mut rows = vec![0.0; n * c.vocab];
+        let jobs = &mut [(&w.output, logits)];
+        run(self.par, self.tier, &s.q_embd, n, &mut rows, jobs);
+        Ok(())
+    }
+
     /// Whether `kv` was made for this model: its shape, and no more positions
     /// than the RoPE table covers.
     pub fn fits(&self, kv: &KvCache) -> bool {
@@ -208,14 +269,21 @@ impl<'a> Model<'a> {
         for (&token, x) in tokens.iter().zip(self.s.x.chunks_exact_mut(e)) {
             embd.dequantize_row(token as usize, x);
         }
+        let pos = kv.len();
+        let seqs: Vec<(usize, usize)> = (0..tokens.len()).map(|t| (0, pos + t)).collect();
         for layer in 0..self.config.n_layer {
-            self.attention(kv, layer, tokens.len());
+            self.attention(&mut [&mut *kv], &seqs, layer);
             self.feed_forward(layer, tokens.len());
         }
         kv.advance(tokens.len());
     }
 
-    fn attention(&mut self, kv: &mut KvCache, layer: usize, n: usize) {
+    /// Attention of `layer` for the block's tokens: token `t` is at position
+    /// `seqs[t].1` of cache `kvs[seqs[t].0]`, and attends over that cache up to
+    /// and including itself. A prompt block's tokens share one cache; a batch
+    /// decode's ([`Model::decode_batch`]) each have their own.
+    fn attention(&mut self, kvs: &mut [&mut KvCache], seqs: &[(usize, usize)], layer: usize) {
+        let n = seqs.len();
         let Self {
             config: c,
             weights,
@@ -227,7 +295,6 @@ impl<'a> Model<'a> {
         } = self;
         let (e, hd, qd, kvd) = (c.n_embd, c.head_dim, c.q_dim(), c.kv_dim());
         let w = &weights.layers[layer];
-        let pos = kv.len();
         norm_all(
             *par,
             &s.x[..n * e],
@@ -235,7 +302,7 @@ impl<'a> Model<'a> {
             c.rms_eps,
             &mut s.xn[..n * e],
         );
-        s.q_embd.quantize_all(*par, &s.xn[..n * e], n);
+        s.q_embd.quantize_all(few(*par, n), &s.xn[..n * e], n);
         let qkv = &mut [
             (&w.wq, &mut s.q[..n * qd]),
             (&w.wk, &mut s.k[..n * kvd]),
@@ -247,16 +314,16 @@ impl<'a> Model<'a> {
             (&mut s.q[..n * qd], &w.q_norm, qd),
             (&mut s.k[..n * kvd], &w.k_norm, kvd),
         ] {
-            for_each_chunk(*par, heads, width, &|t, heads| {
+            for_each_chunk(few(*par, n), heads, width, &|t, heads| {
                 for head in heads.chunks_exact_mut(hd) {
                     rms_norm_in_place(head, norm, c.rms_eps);
-                    rope.apply(head, pos + t);
+                    rope.apply(head, seqs[t].1);
                 }
             });
         }
-        for t in 0..n {
+        for (t, &(seq, pos)) in seqs.iter().enumerate() {
             let k = &s.k[t * kvd..][..kvd];
-            let (k_slot, v_slot) = kv.slot_mut(layer, pos + t);
+            let (k_slot, v_slot) = kvs[seq].slot_mut(layer, pos);
             for (slot, &k) in k_slot.iter_mut().zip(k) {
                 *slot = quant::f16::from_f32(k);
             }
@@ -264,13 +331,13 @@ impl<'a> Model<'a> {
                 *slot = quant::f16::from_f32(v);
             }
         }
-        let cache = kv.layer(layer, pos + n - 1);
-        for t in 0..n {
+        for (t, &(seq, pos)) in seqs.iter().enumerate() {
+            let cache = kvs[seq].layer(layer, pos);
             let (q, att) = (&s.q[t * qd..][..qd], &mut s.att[t * qd..][..qd]);
             let heads = (&mut s.heads[..], *context);
-            attend(*par, *tier, c, q, cache, pos + t + 1, heads, att);
+            attend(*par, *tier, c, q, cache, pos + 1, heads, att);
         }
-        s.q_att.quantize_all(*par, &s.att[..n * qd], n);
+        s.q_att.quantize_all(few(*par, n), &s.att[..n * qd], n);
         run(
             *par,
             *tier,
@@ -295,19 +362,19 @@ impl<'a> Model<'a> {
             c.rms_eps,
             &mut s.xn[..n * e],
         );
-        s.q_embd.quantize_all(par, &s.xn[..n * e], n);
+        s.q_embd.quantize_all(few(par, n), &s.xn[..n * e], n);
         let gate_up = &mut [
             (&w.w_gate, &mut s.gate[..n * ff]),
             (&w.w_up, &mut s.up[..n * ff]),
         ];
         run(par, self.tier, &s.q_embd, n, &mut s.rows, gate_up);
         let up = &s.up;
-        for_each_chunk(par, &mut s.gate[..n * ff], ff, &|t, gate| {
+        for_each_chunk(few(par, n), &mut s.gate[..n * ff], ff, &|t, gate| {
             for (g, u) in gate.iter_mut().zip(&up[t * ff..]) {
                 *g = *g / (1.0 + libm::expf(-*g)) * u;
             }
         });
-        s.q_ff.quantize_all(par, &s.gate[..n * ff], n);
+        s.q_ff.quantize_all(few(par, n), &s.gate[..n * ff], n);
         let down = &mut [(&w.w_down, &mut s.out[..n * e])];
         run(par, self.tier, &s.q_ff, n, &mut s.rows, down);
         for (x, o) in s.x[..n * e].iter_mut().zip(&s.out) {
@@ -366,7 +433,7 @@ fn run<const N: usize>(
     matvec_parallel(par, tier, &mut items);
     for ((m, y), part) in jobs.iter_mut().zip(&parts) {
         let part: &[f32] = part;
-        for_each_chunk(par, &mut y[..m.rows * n], m.rows, &|t, y| {
+        for_each_chunk(few(par, n), &mut y[..m.rows * n], m.rows, &|t, y| {
             for (r, v) in y.iter_mut().enumerate() {
                 *v = part[r * n + t];
             }
@@ -374,10 +441,26 @@ fn run<const N: usize>(
     }
 }
 
+/// Tokens up to which a block's work token by token (norms, RoPE, SwiGLU,
+/// quantising, laying products out) runs on the caller: for a batch of a few
+/// decode steps (ADR 0013 S13-2) a worker's handoff costs more than one
+/// token's share, measured as no gain at 2 sequences on 4 threads against 1.40x
+/// on one. The matrix products and attention heads still use the pool.
+const FEW_TOKENS: usize = 4;
+
+/// The pool for work done token by token over `n` tokens: the caller alone for
+/// a few. Any pool gives the same bits.
+fn few(par: &dyn Parallel, n: usize) -> &dyn Parallel {
+    match n <= FEW_TOKENS {
+        true => &Serial,
+        false => par,
+    }
+}
+
 /// [`rms_norm`] of each token's vector in `x` into `out`, a token to a worker.
 fn norm_all(par: &dyn Parallel, x: &[f32], weight: &[f32], eps: f32, out: &mut [f32]) {
     let e = weight.len();
-    for_each_chunk(par, out, e, &|t, out| {
+    for_each_chunk(few(par, x.len() / e), out, e, &|t, out| {
         rms_norm(&x[t * e..][..e], weight, eps, out)
     });
 }
