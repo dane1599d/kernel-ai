@@ -174,6 +174,20 @@ impl Shell {
 
     /// The build `name` is, if it may be installed now: the last one built,
     /// not installed, and its `main.c` still what was built.
+    /// Why `name`'s install card may not open now, if it may not: the checks
+    /// [`Shell::app_install_ask`] makes before it asks, with nothing logged.
+    pub(crate) fn card_refusal(&self, name: &str) -> Option<String> {
+        let built = match self.installable(name) {
+            Ok(built) => built,
+            Err(why) => return Some(why),
+        };
+        (self.host.cc_artifact(name).as_ref() != Some(&built.artifact)).then(|| {
+            format!(
+                "what Kai's app {name} imports cannot be read, since the artifact cc built for it is no longer the last one written: ask Kai to build it again"
+            )
+        })
+    }
+
     fn installable(&self, name: &str) -> Result<Built, String> {
         let built = match &self.app_built {
             Some(built) if built.name == name => built.clone(),

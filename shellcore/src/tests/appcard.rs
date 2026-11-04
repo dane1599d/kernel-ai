@@ -112,15 +112,42 @@ fn the_card_waits_while_another_ask_is_up_and_a_typed_install_takes_its_place() 
 }
 
 #[test]
-fn a_card_whose_build_was_edited_since_is_refused_with_why() {
+fn a_card_whose_build_was_edited_since_drops_quietly_with_a_notice() {
     let (host, mut shell) = built_in_background();
+    // The build's own Done notice, taken now so only the card's is left.
+    let _ = shell.take_notices();
     host.app_sources.borrow_mut().push((
         String::from("timer"),
         String::from("int main(void) { return 1; }"),
     ));
+    let log_before = shell.eval("log actlog").text;
+    // No one typed the line: no error, and no refused request in the log.
     let card = shell.eval_console(TAKE_CARD);
-    assert!(!card.ok && card.text.contains("was changed"), "{card:?}");
+    assert_eq!(card.to_wire(), "ok ");
     assert!(!shell.card_waiting());
+    assert_eq!(shell.eval("log actlog").text, log_before);
+    // Why is said once, ahead of the person's next reply.
+    let next = shell.eval_console("1 + 1");
+    assert!(
+        next.text
+            .starts_with("Kai's app timer's install card did not open:")
+            && next.text.contains("was changed"),
+        "{next:?}"
+    );
+    assert!(shell.take_notices().is_empty());
+}
+
+#[test]
+fn a_card_whose_artifact_was_replaced_since_drops_quietly_too() {
+    let (host, mut shell) = built_in_background();
+    let _ = shell.take_notices();
+    *host.cc_artifact.borrow_mut() = None;
+    assert_eq!(shell.eval_console(TAKE_CARD).to_wire(), "ok ");
+    let notices = shell.take_notices();
+    assert!(
+        notices.len() == 1 && notices[0].contains("is no longer the last one written"),
+        "{notices:?}"
+    );
 }
 
 #[test]
