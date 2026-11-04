@@ -113,6 +113,9 @@ fn one(root: &Path, models: &Path, entry: &Entry, write: bool) -> Result<String,
         ));
     }
     let text = list.render();
+    // Read back as `modelchan`'s Job::check_list will: the same blob, size
+    // and 2 MiB chunk as the pin, before the list is kept or compared.
+    check(&text, entry.size, &entry.sha256)?;
     let path = committed(root, &entry.sha256);
     if write {
         fs::create_dir_all(root.join(DIR)).map_err(|e| e.to_string())?;

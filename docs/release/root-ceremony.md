@@ -14,6 +14,14 @@ P4 task 18 (ADR 0008 §7). This is the founder's runbook. It sets up the TUF rep
 
 The same three YubiKeys can hold the root key and the `targets`, `packages` and `models` keys, each in its own PIV slot. ADR 0008 asks only that root needs 2 of 3 and that one key stays off-site.
 
+**A model's chunk list** (P5 tasks 6 and 9). Beside each `<id>.gguf`, the `models` role signs the target `<sha256 of the GGUF>.chunks`, in lower-case hex. It has the list's length and SHA-256, and no `custom` fields. The GGUF's bytes are never in the repository, but the list's are. With consistent snapshots, Pages serves a list at:
+
+```text
+https://<Pages host>/targets/<sha256 of the list>.<sha256 of the GGUF>.chunks
+```
+
+The list's SHA-256 is the one the `models` role signs. `kaituf` verifies only metadata and forms no target URL, so `updated` builds this URL itself. It holds the bytes to the signed length and SHA-256, then to the model: the same blob SHA-256 and size, and 2 MiB chunks. The lists come from `release.yml`'s `models-chunks-<version>` artifact, which checks them against the pinned GGUFs, and are signed with the models in the same event.
+
 ## Before you start: two decisions
 
 1. **The online key needs a cloud KMS.** tuf-on-ci 0.21.0 signs snapshot and timestamp with a key in Google Cloud KMS, AWS KMS or Azure Key Vault, or with Sigstore. It has no file keys. The P4 plan's default for question 3 (Ed25519 file keys in a protected GitHub environment) therefore does not work with tuf-on-ci. Sigstore needs no account, but it is experimental, and `kaituf` checks only Ed25519 and ECDSA P-256 signatures, so devices could not verify it. **Pick one KMS account.** The key should be ECDSA P-256 with SHA-256, which `kaituf` checks; on Google Cloud that is `EC_SIGN_P256_SHA256`.
