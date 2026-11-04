@@ -3,8 +3,9 @@
 //! the chosen model's details, and the attached disks a model can be imported
 //! from. As Notes' window does, it rebuilds the tree whole from the model after
 //! each event and [`diff`]s it against the last one. A choice comes back from
-//! [`on_ui`] as the model's [`Intent`], which the component carries out through
-//! the agent's rows, so the window itself changes nothing in the OS.
+//! [`on_ui`] as the model's [`Intent`], which the component carries out only
+//! through Kai's rows: a switch as the shell's `model_use`, an import as what
+//! to ask Kai. Nothing here touches the OS.
 //!
 //! In v0.1 the window reads only ([`View::read_only`]): its list comes from
 //! `updated`, which has no disks in it, and a choice is shown as what to ask

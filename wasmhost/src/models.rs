@@ -53,10 +53,9 @@ pub const MAX_REPLY: usize = kabi::MAX_MESSAGE;
 
 /// Most switches waiting for comphost; a call that makes more traps.
 pub const MAX_USES: usize = 4;
-/// The length of a SHA-256 as `use-model` takes it: 64 lowercase hex digits.
-pub const SHA256_HEX: usize = 64;
-/// The word a switch's request starts with, before its SHA-256.
-pub const USE: &str = "use ";
+/// The SHA-256 `use-model` takes, its length, and the word its request starts
+/// with: the shell reads the same ones.
+pub use kabi::model::{SHA256_HEX, SWITCH, is_sha256_hex};
 
 /// The switches not yet taken, and the next ticket.
 #[derive(Default)]
@@ -66,11 +65,6 @@ pub(crate) struct Uses {
     /// Where this call's switches start in the queue, and how many it made.
     call_start: usize,
     in_call: u32,
-}
-
-/// Whether `text` is a SHA-256 as `use-model` takes it.
-pub fn sha256_ok(text: &str) -> bool {
-    text.len() == SHA256_HEX && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// `models.read() -> u32`: the read's ticket.
@@ -103,7 +97,7 @@ pub(crate) fn use_model(
         .ok_or_else(|| Error::new("bytes outside memory"))?;
     let sha256 = String::from_utf8(bytes)
         .ok()
-        .filter(|text| sha256_ok(text))
+        .filter(|text| is_sha256_hex(text))
         .ok_or_else(|| {
             Error::new(format!(
                 "{MODELS} use-model: not {SHA256_HEX} lowercase hex digits"
@@ -131,7 +125,7 @@ pub(crate) fn use_model(
         .ok_or_else(|| Error::new(format!("{MODELS} use-model: tickets used up")))?;
     uses.queue.push(SettingsRequest {
         ticket,
-        request: format!("{USE}{sha256}"),
+        request: format!("{SWITCH}{sha256}"),
         kind: Kind::Change,
         user,
     });

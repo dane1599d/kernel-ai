@@ -41,19 +41,12 @@ pub const MODELS_APP: &str = modelchan::asker::WINDOW;
 /// The consent a switch from the Models window is logged with: a person's key
 /// or click in it.
 const CLICK: &str = "user-click:models";
-/// What a switch from the window says: `use `, then the model's SHA-256.
-const USE: &str = "use ";
 
 /// What waits on an asked model row's answer.
 #[derive(Clone, Debug)]
 pub(crate) enum Waiting {
     Use { to: Sha256, back: Option<Sha256> },
     Fetch,
-}
-
-/// Whether `text` is a SHA-256 as the window sends it: 64 lowercase hex digits.
-fn sha256_hex(text: &str) -> bool {
-    text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 impl Shell {
@@ -71,7 +64,10 @@ impl Shell {
         if app != MODELS_APP {
             return Err(String::from("only the Models window switches the model"));
         }
-        let Some(sha) = request.strip_prefix(USE).filter(|s| sha256_hex(s)) else {
+        let Some(sha) = request
+            .strip_prefix(kabi::model::SWITCH)
+            .filter(|s| kabi::model::is_sha256_hex(s))
+        else {
             return Err(String::from("not a model switch"));
         };
         if !user {
