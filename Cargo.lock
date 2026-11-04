@@ -1435,6 +1435,7 @@ dependencies = [
  "look",
  "mm",
  "netcore",
+ "netdest",
  "noto-sans-mono-bitmap",
  "nvme",
  "pci",
@@ -1606,6 +1607,10 @@ version = "0.1.0-dev"
 dependencies = [
  "smoltcp",
 ]
+
+[[package]]
+name = "netdest"
+version = "0.1.0-dev"
 
 [[package]]
 name = "nethosts"
@@ -2414,6 +2419,7 @@ name = "supervise"
 version = "0.1.0-dev"
 dependencies = [
  "kabi",
+ "netdest",
  "termcore",
 ]
 

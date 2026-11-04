@@ -35,6 +35,7 @@ llmproto = { path = "../llmproto" }
 look = { path = "../look" }
 mm = { path = "../mm" }
 netcore = { path = "../netcore" }
+netdest = { path = "../netdest" }
 nvme = { path = "../nvme" }
 pci = { path = "../pci" }
 sched = { path = "../sched" }

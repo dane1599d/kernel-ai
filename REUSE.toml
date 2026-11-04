@@ -50,6 +50,14 @@ precedence = "closest"
 SPDX-FileCopyrightText = "2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)"
 SPDX-License-Identifier = "OFL-1.1"
 
+# NetDest's address and port ranges, ported from Tock's network_capabilities.rs
+# (P5 task 1; ADR 0001 D2), with Tock's header kept and our changes noted in it.
+[[annotations]]
+path = "netdest/src/ranges.rs"
+precedence = "closest"
+SPDX-FileCopyrightText = ["Tock Contributors 2022", "The Kernel AI contributors"]
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
 # xcc's compiler and headers, unchanged (ADR 0012 D2; third_party/xcc/UPSTREAM.toml).
 [[annotations]]
 path = "third_party/xcc/**"

@@ -1,0 +1,13 @@
+[package]
+name = "netdest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# What a `NetDest` handle names (ADR 0001 D2, P5 task 1): address and port
+# ranges ported from Tock's network_capabilities.rs (Apache-2.0 OR MIT, header
+# kept in `ranges.rs`), a protocol and host-name suffixes. `no_std` and no
+# dependencies, so the kernel and `supervise` share it.
+[lib]
+doctest = false
