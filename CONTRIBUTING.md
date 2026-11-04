@@ -27,6 +27,10 @@ Signed-off-by: Your Name <you@example.org>
 
 Every commit has a human author, who answers for the code (ADR 0009 D3). If an AI tool helped, say so with a `Co-Authored-By: <model>` or `Assisted-by: <model>` trailer. AI tools never add `Signed-off-by:`, and neither trailer counts as a sign-off: only you can certify the DCO.
 
+## Decisions
+
+A decision goes in the log as a file of its own, `docs/decisions/rows/<date>-<slug>.md`, not as a row appended to the table in `docs/decisions.md`: a row at the end of that one table conflicts with every other pull request that adds one. `cargo xtask decisions new <slug>` makes the file; [its README](docs/decisions/rows/README.md) has the format. Do not edit `docs/decisions/ROWS.md`, which the batch writes. `cargo xtask decisions check` must pass.
+
 ## Dependencies
 
 A new crate under MIT, Apache-2.0, BSD, ISC, Zlib or the other free licences in `deny.toml` may be added without asking; list it with its licence in the pull request. Anything else (MPL-2.0 dependencies, GPL, LGPL, AGPL, unlicensed or custom terms) needs the maintainer's approval first (ADR 0009 D4). `cargo xtask licences check` and `cargo xtask notices --check` must pass.

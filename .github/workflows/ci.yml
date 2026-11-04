@@ -39,6 +39,8 @@ jobs:
           cargo deny check licenses advisories
       - name: Every licence in the tree and graph is allowed and has its text (ADR 0009 D5)
         run: cargo xtask licences check
+      - name: Decision rows are well formed and decisions.md has no new row
+        run: cargo xtask decisions check
       - name: NOTICES.txt is up to date (ADR 0009 D6)
         run: |
           cargo install --locked cargo-about --version 0.9.2 --features cli

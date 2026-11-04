@@ -1,2 +1,5 @@
 # decisions.md is append-only: concurrent rows from two branches both stay.
+# This only helps our own merges (the batch's merge-tree); GitHub's mergeability check ignores
+# it, so a new row is a file in docs/decisions/rows/ instead (see its README). Keep the line until
+# the pull requests that still append a row have landed. Never use merge=union on code.
 docs/decisions.md merge=union

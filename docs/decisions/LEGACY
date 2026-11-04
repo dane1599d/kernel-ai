@@ -1,0 +1,6 @@
+# How many rows docs/decisions.md had when a new row became a file in docs/decisions/rows/.
+# `mode transition`: a row added to decisions.md is a warning. `mode strict`: it fails the lint.
+# `cargo xtask decisions check` reads this. When the pull requests that still append a row have
+# landed, set `rows` to the count then (the warning prints it) and `mode` to strict.
+rows 341
+mode transition
