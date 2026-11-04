@@ -11,6 +11,7 @@
   "linker-flavor": "gnu-lld",
   "llvm-target": "x86_64-unknown-none-elf",
   "max-atomic-width": 64,
+  "os": "kai",
   "panic-strategy": "abort",
   "plt-by-default": false,
   "position-independent-executables": false,
