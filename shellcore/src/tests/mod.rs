@@ -17,6 +17,7 @@ mod act;
 mod actions;
 mod apart;
 mod appbuild;
+mod appinstall;
 mod appjob;
 mod appline;
 mod apps;
@@ -142,6 +143,8 @@ struct FakeHost {
     /// Set to let `script_take` hand over the answer in flight.
     pub answered: Cell<bool>,
     /// `cc_trial`'s answers in turn; past them, the trial passes.
+    /// What `cc_imports` gives for the app built last.
+    pub cc_imports: RefCell<Vec<String>>,
     pub cc_trials: RefCell<VecDeque<Result<String, String>>>,
     /// Each app's source `app_source` wrote, in order.
     pub app_sources: RefCell<Vec<(String, String)>>,
@@ -316,6 +319,7 @@ impl FakeHost {
             cc_built: RefCell::new(None),
             cc_builds: RefCell::new(VecDeque::new()),
             cc_trials: RefCell::new(VecDeque::new()),
+            cc_imports: RefCell::new(Vec::new()),
             background: Cell::new(false),
             in_flight: Cell::new(None),
             tickets: Cell::new(0),
@@ -859,6 +863,10 @@ impl Host for FakeHost {
         self.pkg_sent.borrow_mut().push(format!("cc_trial {name}"));
         let next = self.cc_trials.borrow_mut().pop_front();
         next.unwrap_or_else(|| Ok(String::from(TRIAL_REPORT)))
+    }
+
+    fn cc_imports(&self, _name: &str) -> Vec<String> {
+        self.cc_imports.borrow().clone()
     }
 
     fn app_source(&self, name: &str, text: &str) -> Result<(), String> {

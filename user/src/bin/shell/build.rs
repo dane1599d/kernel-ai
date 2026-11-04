@@ -43,6 +43,8 @@ const PKG_REPLY: usize = 512;
 static SHM: Mutex<Option<Handle>> = Mutex::new(None);
 /// The last artifact written, and the File handle it was written through.
 static WRITTEN: Mutex<Option<(String, Handle)>> = Mutex::new(None);
+/// What the last artifact written imports, by its path: its install card's list.
+static IMPORTS: Mutex<Option<(String, Vec<String>)>> = Mutex::new(None);
 
 /// `dir` beneath `/home/user`, where the shell's `Dir` is.
 fn folder(dir: &str) -> &str {
@@ -89,7 +91,18 @@ pub fn build(
     if let Some((_, old)) = WRITTEN.lock().replace((built.path.clone(), file)) {
         files::close(old);
     }
+    let imports = ccserve::trial::imports(&artifact);
+    *IMPORTS.lock() = Some((built.path.clone(), imports));
     Ok(built)
+}
+
+/// What the last build of `dir/name.kai` imports, if it was the last built.
+pub fn imports(dir: &str, name: &str) -> Vec<String> {
+    let path = format!("{dir}/{name}.kai");
+    match &*IMPORTS.lock() {
+        Some((built, imports)) if *built == path => imports.clone(),
+        _ => Vec::new(),
+    }
 }
 
 /// Writes app `name`'s source as `apps/<name>/main.c`, making the folders if

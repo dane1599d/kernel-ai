@@ -410,8 +410,25 @@ pub const APP_BUILD: Action = Action {
     old_name: None,
 };
 
-/// Rows the shell carries out with `cc` (`shellcore::appbuild`).
-pub const APP_ROWS: [Action; 1] = [APP_BUILD];
+/// `app_install(name)` (P4, "Kai builds apps" piece 4): installs the app Kai
+/// built last as `name`, from the local repository, after the trusted path's
+/// card. It always asks: a new app is a new program on the machine. `undo`
+/// switches back and keeps the source.
+pub const APP_INSTALL: Action = Action {
+    name: "app_install",
+    doc: "installs the app Kai built; it always asks, and undo removes it",
+    args: &[arg("name", ArgType::Text { max: 12 }, Role::Target)],
+    facts: Facts::LOCAL_CHANGE,
+    inverse: Inverse::Restore,
+    cues: &["install"],
+    owner: Owner::Service("pkg"),
+    min_tier: Tier::Ask,
+    ..APP_BUILD
+};
+
+/// Rows the shell carries out with `cc` and `pkg` (`shellcore::appbuild`,
+/// `shellcore::appinstall`).
+pub const APP_ROWS: [Action; 2] = [APP_BUILD, APP_INSTALL];
 
 /// The functions LLM-written scripts may call, in the order the prompt lists them.
 pub const SCRIPT_API: [Action; 7] = [
@@ -488,7 +505,7 @@ pub const RULES_REMOVE: Action = Action {
 pub const TYPED_ONLY: [Action; 2] = [RULES, RULES_REMOVE];
 
 /// Every OS row.
-pub const ROWS: [Action; 43] = [
+pub const ROWS: [Action; 44] = [
     CPUS,
     MEMORY,
     UPTIME_MS,
@@ -532,4 +549,5 @@ pub const ROWS: [Action; 43] = [
     MODEL_USE,
     MODEL_FETCH,
     APP_BUILD,
+    APP_INSTALL,
 ];

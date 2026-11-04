@@ -557,6 +557,10 @@ impl Host for System {
         build::trial(cc_route(), name)
     }
 
+    fn cc_imports(&self, name: &str) -> Vec<String> {
+        build::imports(shellcore::ccbuild::APPS_DIR, name)
+    }
+
     fn app_source(&self, name: &str, text: &str) -> Result<(), String> {
         build::app_source(&self.files, name, text)
     }

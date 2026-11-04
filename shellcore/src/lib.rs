@@ -28,6 +28,7 @@ pub mod analyse;
 pub mod apart;
 pub mod appbuild;
 mod appearance;
+mod appinstall;
 pub mod appjob;
 pub mod appline;
 pub mod apps;
@@ -269,6 +270,11 @@ pub trait Host {
             "{}there is no cc to try the app on here",
             appbuild::INTERNAL
         ))
+    }
+    /// The interfaces app `name`'s last build imports (`kai:ui/view@0.1.0`),
+    /// which its install card lists; empty where the host cannot read them.
+    fn cc_imports(&self, _name: &str) -> Vec<String> {
+        Vec::new()
     }
     /// Writes `text` as the whole of `/home/user/apps/<name>/main.c`, making the
     /// folders if they are new (`app_build`). The source is kept whatever comes
@@ -840,6 +846,14 @@ impl Shell {
                 "show" | "why" => return self.show_last(),
                 _ => {}
             }
+        }
+        // Installing Kai's last app, or showing its code, comes before a
+        // package line of the same words.
+        if !self.scope.contains("install")
+            && !self.scope.contains("show")
+            && let Some(reply) = self.app_install_line(input)
+        {
+            return reply;
         }
         // Package lines come before Rhai, unless their first word is a variable.
         if let Some(word) = pkg::line::first_word(input)

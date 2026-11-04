@@ -137,7 +137,7 @@ pub fn valid_name(name: &str) -> bool {
 
 /// `pkg`'s `local` answer, `<name> <version> generation <n> from <parent>`,
 /// for the build of `name` at `version`: the generation it made and its parent.
-fn installed(text: &str, name: &str, version: &str) -> Option<(u64, u64)> {
+pub(crate) fn installed(text: &str, name: &str, version: &str) -> Option<(u64, u64)> {
     match text.split(' ').collect::<alloc::vec::Vec<_>>()[..] {
         [got, v, "generation", n, "from", parent] if got == name && v == version => {
             Some((n.parse().ok()?, parent.parse().ok()?))

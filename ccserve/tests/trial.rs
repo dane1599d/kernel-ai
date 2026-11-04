@@ -212,3 +212,20 @@ fn a_trial_stops_at_ctrl_c_and_past_a_line_budget() {
     cc.clock.step_ns.set(0);
     assert_eq!(cc.value("1 + 1"), "i64 2");
 }
+
+/// What an install card lists: each interface the app imports, once.
+#[test]
+fn imports_lists_each_interface_once() {
+    let mut cc = Cc::open();
+    let shm = built(&mut cc, "timer", APP);
+    let artifact = shm::take(&shm, kabi::live::MAX_ARTIFACT).unwrap();
+    let imports = ccserve::trial::imports(artifact);
+    assert!(
+        imports.iter().any(|i| i.starts_with("kai:app/effects@")),
+        "{imports:?}"
+    );
+    for (i, import) in imports.iter().enumerate() {
+        assert!(!imports[..i].contains(import), "{imports:?}");
+    }
+    assert!(ccserve::trial::imports(b"not wasm").is_empty());
+}

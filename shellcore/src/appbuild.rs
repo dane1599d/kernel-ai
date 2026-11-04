@@ -69,6 +69,8 @@ pub struct Built {
     pub built: CcBuilt,
     /// The trial's one-line report.
     pub trial: String,
+    /// The log entry that built it, which its install card names.
+    pub id: u64,
 }
 
 /// Where an `app_build` is in its rounds.
@@ -126,7 +128,7 @@ enum Unbuilt {
 }
 
 /// The log's line for app `name`'s `main.c` at `sha`.
-fn source_line(name: &str, sha: &str) -> String {
+pub(crate) fn source_line(name: &str, sha: &str) -> String {
     format!("source {APPS_DIR}/{name}/main.c sha256 {sha}")
 }
 
@@ -310,6 +312,7 @@ impl Shell {
                         source: sha256(&prepared.source),
                         built,
                         trial,
+                        id: 0,
                     });
                 }
                 Err(Unbuilt::Repair(why)) => why,
@@ -406,6 +409,7 @@ impl Shell {
             source,
             built: cc,
             trial,
+            ..
         } = &built;
         let script = format!(
             "app_build(\"{name}\", {wanted:?})\n{}\n{}\ntrial {}",
@@ -433,11 +437,11 @@ impl Shell {
         self.host
             .audit(&format!("app_build {name} {version}: {}", cc.provenance));
         let reply = format!(
-            "Built {name} {version} ({} bytes): {}. Its source is in {APPS_DIR}/{name}/.",
+            "Built {name} {version} ({} bytes): {}. Its source is in {APPS_DIR}/{name}/: `show code` shows it, and `install {name}` asks to install it.",
             cc.bytes,
             shown(summary).trim_end_matches('.')
         );
-        self.app_built = Some(built);
+        self.app_built = Some(Built { id, ..built });
         Reply::ok(reply)
     }
 

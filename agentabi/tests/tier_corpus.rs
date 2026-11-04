@@ -272,6 +272,8 @@ const PERMS: &[(&str, &str)] = &[
     ("model_use", "model.use"),
     ("model_fetch", "model.fetch"),
     ("app_build", "app.build"),
+    // An app Kai built installs as a package does.
+    ("app_install", "pkg.install"),
     ("rules_remove", "grants.narrow"),
     ("grant_revoke", "grants.narrow"),
     ("grant_restore", "grants.widen"),

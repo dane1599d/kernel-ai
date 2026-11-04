@@ -118,6 +118,24 @@ fn check(artifact: &[u8], component: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The interfaces the module in `artifact` imports, each once, in order
+/// (`kai:ui/view@0.1.0`): what an app's install card lists. Empty for one that
+/// does not parse.
+pub fn imports(artifact: &[u8]) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for payload in Parser::new(0).parse_all(artifact) {
+        let Ok(Payload::ImportSection(reader)) = payload else {
+            continue;
+        };
+        for import in reader.into_iter().flatten() {
+            if !seen.iter().any(|s| s == import.module) {
+                seen.push(import.module.to_string());
+            }
+        }
+    }
+    seen
+}
+
 /// Whether the module imports `kai:ui/view`: a window app.
 fn imports_view(artifact: &[u8]) -> bool {
     Parser::new(0)

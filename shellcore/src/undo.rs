@@ -275,7 +275,7 @@ fn revert_one(
             .map(|_| format!("packages back to generation {to}"))
             .map_err(Refused::Failed),
         Inverse::Local { .. } => Err(Refused::Failed(String::from(
-            "a cc build is installed again by cc build",
+            "a local build is installed again by cc build, or by Kai's install card",
         ))),
         Inverse::Generation { .. } => Err(Refused::Failed(String::from(
             "a package switch is put back by the shell's store",

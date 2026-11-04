@@ -266,6 +266,10 @@ impl Shell {
             let reply = self.model_call(id, request, row.name, &args.values, decision);
             return outcome(decision.tier, decision.why, reply);
         }
+        if row.name == agentabi::APP_INSTALL.name {
+            let reply = self.app_install_call(id, request, &args.values, decision);
+            return outcome(decision.tier, decision.why, reply);
+        }
         if agentabi::APP_ROWS.iter().any(|r| r.name == row.name) {
             let reply = self.app_call(id, request, &args.values, decision);
             return outcome(decision.tier, decision.why, reply);
@@ -397,6 +401,7 @@ impl Shell {
             standing: None,
             model: None,
             app: None,
+            install: None,
         });
         // The highlight starts on Allow only for a call the line plainly asked for.
         let origin = match why {
