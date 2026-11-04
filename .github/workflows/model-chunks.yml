@@ -1,11 +1,12 @@
 # The `kai-chunks 1` lists the `models` role signs beside each catalog model
 # (P5 tasks 6 and 9, ADR 0008 §9): `xtask/models/chunks/<sha256>.chunks`,
 # committed like the goldens. This job downloads every pinned GGUF of
-# xtask/models.json, checks its SHA-256, and requires each committed list to be
-# the file's own, 2 MiB chunk by chunk (`cargo xtask pkgrepo chunks`). When a
-# list is missing or differs it writes them all and uploads them as the
-# `model-chunks` artifact to commit. The models are only hashed, never run, and
-# this runs on GitHub's runner only, never on the founder's PC.
+# xtask/models.json, checks its SHA-256 (.github/release/fetch_models.py), and
+# requires each committed list to be the file's own, 2 MiB chunk by chunk
+# (`cargo xtask pkgrepo chunks`). When a list is missing or differs it writes
+# them all and uploads them as the `model-chunks` artifact to commit. The
+# models are only hashed, never run, and this runs on GitHub's runner only,
+# never on the founder's PC. Every action is pinned by commit SHA.
 name: model-chunks
 
 on:
@@ -15,6 +16,7 @@ on:
       - xtask/models.json
       - xtask/models/chunks/**
       - xtask/src/pkgrepo/chunks.rs
+      - .github/release/fetch_models.py
       - .github/workflows/model-chunks.yml
 
 permissions:
@@ -33,32 +35,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Reuse the model files from an earlier run
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ runner.temp }}/kai-models
           key: model-chunks-${{ hashFiles('xtask/models.json') }}
       - name: Download every pinned model and check its SHA-256
-        run: |
-          mkdir -p "$RUNNER_TEMP/kai-models"
-          python3 - <<'EOF'
-          import json, os, subprocess
-          catalog = json.load(open("xtask/models.json"))
-          out = os.path.join(os.environ["RUNNER_TEMP"], "kai-models")
-          for m in catalog["models"]:
-              path = os.path.join(out, m["file"])
-              url = f"https://huggingface.co/{m['repo']}/resolve/{m['revision']}/{m['file']}"
-              if not os.path.exists(path):
-                  subprocess.run(["curl", "-fL", "--retry", "5", "-o", path, url], check=True)
-              subprocess.run(["sha256sum", "-c", "-"], input=f"{m['sha256']}  {path}\n",
-                             text=True, check=True)
-          EOF
+        run: python3 -I .github/release/fetch_models.py "$RUNNER_TEMP/kai-models"
       - name: Install pinned toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: model-chunks
       - name: The committed lists are the files' own
         id: check
         continue-on-error: true
@@ -66,7 +52,7 @@ jobs:
       - name: Otherwise, write the lists to commit
         if: steps.check.outcome == 'failure'
         run: cargo xtask pkgrepo chunks --models "$RUNNER_TEMP/kai-models" --write
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: steps.check.outcome == 'failure'
         with:
           name: model-chunks

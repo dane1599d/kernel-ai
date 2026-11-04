@@ -98,7 +98,7 @@ On WSL, attach the YubiKey to Linux with `usbipd-win` first.
 3. **Targets' second key:** `tuf-on-ci-delegate sign/targets-1of2 targets`. Use two signers, with threshold 1.
 4. **The two delegations,** each 1 of 2, with expiry 365 days:
    - `tuf-on-ci-delegate sign/packages packages`, paths `*.kpkg`, terminating;
-   - `tuf-on-ci-delegate sign/models models`, paths `*.gguf` and `*.chunks`.
+   - `tuf-on-ci-delegate sign/models models`, paths `*.gguf` and `*.chunks`, terminating, as xtask's test repositories delegate it.
 5. **Check the result:** a fresh python-tuf or `kaituf` client, given only `1.root.json`, refreshes from Pages and lands on the newest root, which needs 2 of 3 signatures.
 6. **Close the issue** tuf-on-ci opened for the scheduled runs that failed before there was metadata. From now on, those runs keep snapshot and timestamp fresh, open re-signing events and test what Pages serves.
 
