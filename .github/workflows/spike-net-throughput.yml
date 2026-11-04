@@ -26,9 +26,9 @@ jobs:
       matrix:
         accel: [kvm, tcg]
         build: [release]
-        # smoltcp's window cap in segments: 1 as shipped, the receive queue's
-        # 16, and none (0).
-        burst: [1, 16, 0]
+        # smoltcp's window cap in segments: the receive queue's 16, and none (0).
+        # 1, as shipped, was measured on slirp: one segment per round trip.
+        burst: [16, 0]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/qemu
@@ -44,18 +44,27 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: qemu-${{ matrix.build }}
+      # A TAP device, not slirp: the host's own TCP, which scales its window,
+      # at 10.0.2.2 as slirp's gateway was; the guest uses ip=static.
+      - name: A TAP device at 10.0.2.2 for the guest
+        run: |
+          sudo ip tuntap add dev kaitap0 mode tap user "$USER"
+          sudo ip addr add 10.0.2.2/24 dev kaitap0
+          sudo ip link set kaitap0 up
+          sysctl net.ipv4.tcp_window_scaling net.core.wmem_max net.ipv4.tcp_wmem
       - name: Serve a 256 MiB blob on port 8765
         run: |
           mkdir -p "$RUNNER_TEMP/www"
           head -c 268435456 /dev/zero > "$RUNNER_TEMP/www/blob"
-          python3 -m http.server 8765 --bind 127.0.0.1 --directory "$RUNNER_TEMP/www" > "$RUNNER_TEMP/http.log" 2>&1 &
+          python3 -m http.server 8765 --bind 0.0.0.0 --directory "$RUNNER_TEMP/www" > "$RUNNER_TEMP/http.log" 2>&1 &
           sleep 1
           curl -sS -o /dev/null -w 'host curl: %{size_download} bytes at %{speed_download} B/s\n' http://127.0.0.1:8765/blob
       - name: Boot net-throughput
         env:
           XTASK_CASE: net-throughput
           XTASK_NET_DUMP: ${{ runner.temp }}/net.pcap
-          XTASK_CMDLINE: net_burst=${{ matrix.burst }}
+          XTASK_CMDLINE: net_burst=${{ matrix.burst }} ip=static
+          XTASK_NETDEV: tap,id=net0,ifname=kaitap0,script=no,downscript=no
         run: |
           flag=""
           if [ "${{ matrix.build }}" = release ]; then flag=--release; fi
