@@ -36,7 +36,7 @@ fn a_new_host_asks_once_naming_the_app_and_the_host() {
         format!("{ACTION}(\"weather\", \"api.weather.example\")")
     );
     let id = grants
-        .answer(&asked, Answer::Allow, 12, 1_000)
+        .answer(&asked, &ceiling(), Answer::Allow, 12, 1_000)
         .unwrap()
         .unwrap();
     // Asked once: the next connection is granted.
@@ -87,10 +87,16 @@ fn allow_lasts_the_session_and_always_persists() {
     let mut grants = NetGrants::new();
     let a = ask(&grants, "a.weather.example");
     let b = ask(&grants, "b.weather.example");
-    grants.answer(&a, Answer::Allow, 1, 1).unwrap();
-    grants.answer(&b, Answer::AlwaysTarget, 2, 2).unwrap();
-    assert_eq!(grants.answer(&a, Answer::Deny, 3, 3), Ok(None));
-    assert!(grants.answer(&a, Answer::AlwaysKind, 3, 3).is_err());
+    grants.answer(&a, &ceiling(), Answer::Allow, 1, 1).unwrap();
+    grants
+        .answer(&b, &ceiling(), Answer::AlwaysTarget, 2, 2)
+        .unwrap();
+    assert_eq!(grants.answer(&a, &ceiling(), Answer::Deny, 3, 3), Ok(None));
+    assert!(
+        grants
+            .answer(&a, &ceiling(), Answer::AlwaysKind, 3, 3)
+            .is_err()
+    );
     let lives: Vec<Life> = grants.of("weather").iter().map(|g| g.life).collect();
     assert_eq!(lives, [Life::Session, Life::Persistent]);
     // A boot keeps only the persistent one.
@@ -103,7 +109,9 @@ fn allow_lasts_the_session_and_always_persists() {
         .collect();
     assert_eq!(hosts, ["b.weather.example"]);
     // "Always" on a session grant makes it persistent, under the same id.
-    let again = grants.answer(&a, Answer::AlwaysTarget, 4, 4).unwrap();
+    let again = grants
+        .answer(&a, &ceiling(), Answer::AlwaysTarget, 4, 4)
+        .unwrap();
     assert_eq!(again, Some(grants.of("weather")[0].id));
     assert_eq!(grants.of("weather")[0].life, Life::Persistent);
 }
@@ -112,7 +120,10 @@ fn allow_lasts_the_session_and_always_persists() {
 fn a_deny_keeps_nothing_and_asks_again() {
     let mut grants = NetGrants::new();
     let asked = ask(&grants, "api.weather.example");
-    assert_eq!(grants.answer(&asked, Answer::Deny, 1, 1), Ok(None));
+    assert_eq!(
+        grants.answer(&asked, &ceiling(), Answer::Deny, 1, 1),
+        Ok(None)
+    );
     assert!(grants.of("weather").is_empty());
     assert!(matches!(
         grants.decide("weather", "api.weather.example", &ceiling()),
@@ -125,7 +136,9 @@ fn the_apps_netdest_narrows_to_its_granted_hosts() {
     let mut grants = NetGrants::new();
     assert_eq!(grants.dest_for("weather", &ceiling()), None);
     let asked = ask(&grants, "api.weather.example");
-    grants.answer(&asked, Answer::Allow, 1, 1).unwrap();
+    grants
+        .answer(&asked, &ceiling(), Answer::Allow, 1, 1)
+        .unwrap();
     let dest = grants.dest_for("weather", &ceiling()).unwrap();
     assert!(dest.within(&ceiling()));
     assert!(dest.allows_name("api.weather.example"));
@@ -144,7 +157,10 @@ fn the_apps_netdest_narrows_to_its_granted_hosts() {
 fn a_revoke_gives_the_grant_back_for_undo() {
     let mut grants = NetGrants::new();
     let asked = ask(&grants, "api.weather.example");
-    let id = grants.answer(&asked, Answer::Allow, 7, 7).unwrap().unwrap();
+    let id = grants
+        .answer(&asked, &ceiling(), Answer::Allow, 7, 7)
+        .unwrap()
+        .unwrap();
     let revoked = grants.revoke(id).unwrap();
     // Revoked: the next connection asks again.
     assert!(matches!(
@@ -162,7 +178,10 @@ fn a_revoke_gives_the_grant_back_for_undo() {
     // Granted again since the revoke: the undo is refused, not doubled.
     let back = grants.revoke(id).unwrap();
     let fresh = ask(&grants, "api.weather.example");
-    let new_id = grants.answer(&fresh, Answer::Allow, 8, 8).unwrap().unwrap();
+    let new_id = grants
+        .answer(&fresh, &ceiling(), Answer::Allow, 8, 8)
+        .unwrap()
+        .unwrap();
     assert_ne!(new_id, id, "ids are not reused while the shell runs");
     assert!(grants.restore(back).is_err());
 }
@@ -172,7 +191,13 @@ fn the_file_is_read_as_hostile_and_holds_only_host_grants() {
     let mut grants = NetGrants::new();
     let asked = ask(&grants, "api.weather.example");
     grants
-        .answer(&asked, Answer::AlwaysTarget, 3, 1_762_300_000_000_000_000)
+        .answer(
+            &asked,
+            &ceiling(),
+            Answer::AlwaysTarget,
+            3,
+            1_762_300_000_000_000_000,
+        )
         .unwrap();
     let text = grants.text().unwrap();
     assert_eq!(NetGrants::load(&text).unwrap(), grants);
@@ -202,8 +227,62 @@ fn the_store_is_bounded() {
     let mut grants = NetGrants::new();
     for i in 0..MAX_GRANTS {
         let asked = ask(&grants, &format!("h{i}.weather.example"));
-        grants.answer(&asked, Answer::Allow, 1, 1).unwrap();
+        grants
+            .answer(&asked, &ceiling(), Answer::Allow, 1, 1)
+            .unwrap();
     }
     let one_more = ask(&grants, "last.weather.example");
-    assert!(grants.answer(&one_more, Answer::Allow, 1, 1).is_err());
+    assert!(
+        grants
+            .answer(&one_more, &ceiling(), Answer::Allow, 1, 1)
+            .is_err()
+    );
+}
+
+#[test]
+fn a_grant_names_its_host_exactly_and_no_address() {
+    let mut grants = NetGrants::new();
+    // A ceiling with literal addresses too: a host grant opens none of them.
+    let wide = Dest::parse("proto:tcp,addrs:10.0.2.0/24,ports:443,hosts:weather.example").unwrap();
+    let asked = match grants.decide("weather", "api.weather.example", &wide) {
+        Decision::Ask(ask) => ask,
+        other => panic!("{other:?}"),
+    };
+    grants.answer(&asked, &wide, Answer::Allow, 1, 1).unwrap();
+    let dest = grants.dest_for("weather", &wide).unwrap();
+    assert!(dest.exact);
+    assert!(dest.allows_name("api.weather.example"));
+    assert!(
+        !dest.allows_name("x.api.weather.example"),
+        "no names under it"
+    );
+    assert!(!dest.allows_literal(dest.protocol, "10.0.2.2".parse().unwrap(), 443));
+    assert!(dest.within(&wide));
+}
+
+#[test]
+fn a_grant_the_package_dropped_leaves_the_others() {
+    let mut grants = NetGrants::new();
+    for host in ["api.weather.example", "maps.weather.example"] {
+        let asked = ask(&grants, host);
+        grants
+            .answer(&asked, &ceiling(), Answer::Allow, 1, 1)
+            .unwrap();
+    }
+    let narrower = Dest::parse("proto:tcp,addrs:any,ports:443,hosts:api.weather.example").unwrap();
+    let dest = grants.dest_for("weather", &narrower).unwrap();
+    assert_eq!(dest.hosts, ["api.weather.example"]);
+}
+
+#[test]
+fn an_answer_is_checked_against_the_ceiling_again() {
+    let mut grants = NetGrants::new();
+    let asked = ask(&grants, "api.weather.example");
+    let changed = Dest::parse("proto:tcp,addrs:any,ports:443,hosts:other.example").unwrap();
+    assert!(
+        grants
+            .answer(&asked, &changed, Answer::Allow, 1, 1)
+            .is_err()
+    );
+    assert!(grants.of("weather").is_empty());
 }

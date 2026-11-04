@@ -13,8 +13,10 @@
 //!   at boot; "Always allow on <host>" keeps a `persistent` one (ADR 0001 D7: a
 //!   persistent grant needs an explicit "always"). A grant is per host, never a
 //!   suffix, so `api.weather.example` grants nothing under it.
-//! - **The handle.** The app's `NetDest` is narrowed to its granted hosts
-//!   ([`NetGrants::dest_for`]), so the kernel enforces each grant.
+//! - **The handle.** The app's `NetDest` is exactly its granted hosts
+//!   (`match:exact`), on the package's protocol and ports, with no literal
+//!   address ([`NetGrants::dest_for`]), so the kernel enforces each grant and
+//!   nothing more.
 //! - **Settings and undo.** [`NetGrants::revoke`] removes a grant and gives it
 //!   back for `undo`, which [`NetGrants::restore`] puts back under its own id.
 //!
@@ -171,10 +173,13 @@ impl NetGrants {
 
     /// What the menu's answer to `ask` keeps: the grant's id, or `None` for a
     /// Deny. Only the trusted path's answer, its `ONCE` checked, may come here.
-    /// "Always allow" is offered for the host alone, never for every host.
+    /// "Always allow" is offered for the host alone, never for every host. The
+    /// host is checked against `ceiling` again, since the package may have
+    /// changed while the card was up.
     pub fn answer(
         &mut self,
         ask: &Ask,
+        ceiling: &Dest,
         answer: Answer,
         request: u64,
         now_ns: u64,
@@ -185,6 +190,9 @@ impl NetGrants {
             Answer::AlwaysTarget => Life::Persistent,
             Answer::AlwaysKind => return Err("a grant for every host was not offered"),
         };
+        if !ceiling.allows_name(&ask.host) {
+            return Err("the app's package no longer names that host");
+        }
         if let Some(grant) = self
             .grants
             .iter_mut()
@@ -215,19 +223,28 @@ impl NetGrants {
         Ok(Some(id))
     }
 
-    /// App `app`'s `NetDest`: `ceiling` narrowed to the hosts it was granted,
-    /// or `None` when it has none (the app reaches no host by name).
+    /// App `app`'s `NetDest`: exactly the hosts it was granted that `ceiling`
+    /// still names, on the ceiling's protocol and ports, and no literal
+    /// address (A-core on #679). `None` when no grant is left. `match:exact`,
+    /// so a grant of `api.weather.example` resolves nothing under it, and a
+    /// grant the package no longer names is left out on its own.
     pub fn dest_for(&self, app: &str, ceiling: &Dest) -> Option<Dest> {
-        let hosts: Vec<String> = self.of(app).iter().map(|g| g.object.clone()).collect();
+        let hosts: Vec<String> = self
+            .of(app)
+            .iter()
+            .filter(|g| ceiling.allows_name(&g.object))
+            .map(|g| g.object.clone())
+            .collect();
         if hosts.is_empty() {
             return None;
         }
         let narrowed = Dest {
+            protocol: ceiling.protocol,
+            addrs: netdest::AddrRange::NoAddrs,
+            ports: ceiling.ports.clone(),
             hosts,
-            ..ceiling.clone()
+            exact: true,
         };
-        // Each grant was within the ceiling when it was made; one that is not
-        // now (the package changed) gives nothing.
         narrowed.within(ceiling).then_some(narrowed)
     }
 
