@@ -5,10 +5,11 @@
 //! certificates hold (key and signature algorithms), and fails if any host
 //! does not handshake.
 //!
-//! Then it follows the pinned Qwen3-4B source's resolve URL by HEAD, hop by
-//! hop, and prints each hop's host and status and the `Location` host it
-//! redirects to: the storage hosts a model download reaches, which
-//! `modelchan::fetch::HUGGING_FACE` pins (AP-2's ask on #672). It fails if a
+//! Then it follows each pinned model source's resolve URL by HEAD (Qwen3-4B,
+//! 1.7B and 0.6B, as `xtask/models.json` pins them), hop by hop, and prints
+//! each hop's host and status and the `Location` host it redirects to: the
+//! storage hosts a model download reaches, which
+//! `modelchan::fetch::HUGGING_FACE` pins (AP-2's asks on #672). It fails if a
 //! hop does not handshake.
 
 use kainet::tls::{Session, Transport};
@@ -32,9 +33,23 @@ const HOSTS: &[&str] = &[
     "huggingface.co",
 ];
 
-/// The pinned Qwen3-4B source, as `xtask/models.json` names it.
+/// The host of the pinned model sources.
 const MODEL_HOST: &str = "huggingface.co";
-const MODEL_PATH: &str = "/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf";
+/// The pinned model sources, by `xtask/models.json`'s ids.
+const MODELS: &[(&str, &str)] = &[
+    (
+        "qwen3-4b-2507",
+        "/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+    ),
+    (
+        "qwen3-1.7b",
+        "/unsloth/Qwen3-1.7B-GGUF/resolve/d7f544eead698dbd1f15126ef60b45a1e1933222/Qwen3-1.7B-Q4_K_M.gguf",
+    ),
+    (
+        "qwen3-0.6b",
+        "/Qwen/Qwen3-0.6B-GGUF/resolve/23749fefcc72300e3a2ad315e1317431b06b590a/Qwen3-0.6B-Q8_0.gguf",
+    ),
+];
 /// `kainet::http`'s redirect limit.
 const MAX_HOPS: usize = 5;
 /// The most bytes of a response head read.
@@ -174,11 +189,13 @@ fn next(host: &str, location: &str) -> Result<(String, String), String> {
     Err(format!("{host}: a Location that is not https: {shown:?}"))
 }
 
-/// Follows the pinned model's resolve URL by HEAD, hop by hop, printing each
-/// hop's host, path and status and the `Location` host. A query string is
-/// never printed: a signed storage URL's holds a short-lived signature.
-fn follow(config: &Arc<ClientConfig>) -> Result<(), String> {
-    let (mut host, mut path) = (MODEL_HOST.to_string(), MODEL_PATH.to_string());
+/// Follows model `id`'s resolve URL, `path` on [`MODEL_HOST`], by HEAD, hop
+/// by hop, printing each hop's host, path and status and the `Location` host.
+/// A query string is never printed: a signed storage URL's holds a
+/// short-lived signature.
+fn follow(id: &str, path: &str, config: &Arc<ClientConfig>) -> Result<(), String> {
+    let (mut host, mut path) = (MODEL_HOST.to_string(), path.to_string());
+    println!("model {id}:");
     for hop in 0..=MAX_HOPS {
         let (mut session, took) = open(&host, config).map_err(|e| format!("{host}: {e}"))?;
         let version = session.tls().connection().protocol_version();
@@ -246,11 +263,14 @@ fn main() {
         HOSTS.len() - failed,
         HOSTS.len()
     );
-    let model = follow(&config);
-    if let Err(why) = &model {
-        println!("the model's resolve URL: FAILED: {why}");
+    let mut models_failed = 0;
+    for (id, path) in MODELS {
+        if let Err(why) = follow(id, path, &config) {
+            println!("model {id}'s resolve URL: FAILED: {why}");
+            models_failed += 1;
+        }
     }
-    if failed > 0 || model.is_err() {
+    if failed > 0 || models_failed > 0 {
         std::process::exit(1);
     }
 }
