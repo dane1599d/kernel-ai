@@ -199,7 +199,7 @@ Where each item stands on 2026-11-04 (task 19). "Done" is on main; "missing" nam
 | Item | Status | Where, and what is left |
 |---|---|---|
 | Section 1's exit cases, KVM and TCG | Done | All 12 boot cases are on main, each merged through a batch that boots every case under KVM and TCG. The last ones: `app-monitor` (#494), `app-files` (#599, #604; the window is #454), `app-notes` (#600, #602) and `app-settings`' undo (#601). They pass again on the tag's commit. Section 11 has each case |
-| P1, P2 and P3 closed; M10a's exit test | Missing | P1 is closed (decisions, 2026-10-27) and M10a passes (#7). P3 is done: its exit cases are all on main (section 10 of `p3-desktop.md`, #436), and the roadmap now has its status. P2 is "closing": files through kaifs moved at 12 MB/s, under S04-2's bar (the roadmap's P2 status) |
+| P1, P2 and P3 closed; M10a's exit test | Done | P1 is closed (decisions, 2026-10-27) and M10a passes (#7). P2 closed on 2026-11-04 with its kaifs throughput miss (25-26 MB/s against S04-2's 50 MB/s) accepted for v0.1 by you; the speed work comes after v0.1 (decisions, 2026-11-04). P3 is done: its exit cases are all on main (section 10 of `p3-desktop.md`, #436) |
 | A/B slots, rollback, offline updates | Done | Lane U, P2: `slot-ab`, `slot-probation`, `update-disk`, `update-tampered` and `update-rollback` |
 | Built-ins as signed packages; `install` from the image and a mirror | Done | `pkg-image` and `pkg-image-tampered` (task 1), `pkg-install` and its five tamper cases (task 2), `desk-catalog` (task 3) |
 | ADR 0009 D1-D8 | Missing | Done: MPL-2.0 with the DCO (founder, 2026-10-27), `NOTICES.txt` byte-identical in the image and the release, the offline source rebuild (S09-1), the `dco` job (task 16). Yours: clearing both names, "Kernel AI" and "Kai" (the trademark search) |
@@ -208,7 +208,7 @@ Where each item stands on 2026-11-04 (task 19). "Done" is on main; "missing" nam
 | Fluency at least 47/50 and actbench on the tag's input | Missing | Fluency 48/50 on task 14's input (run 41647096587). Both re-run on the tag's commit, with task 15's per-app actbench tasks |
 | The release image tried by hand | Done in CI | Not a checklist line above, but the README's "try it" depends on it. On main: the release image carries its own `kai-data` as partition 5 (#603), and a person types `models import` (#608). `release.yml`'s `release-boot` job (#614) boots the release's bytes plus a test-root `models` role naming qwen3-0.6b, with no second disk, follows the first start's recovery install and restart, and imports it; it passed on #614's Release run. **Task 18 gates rc.1 here too**: the shipping image has no `models` role until your founder-signed one, so a real release cannot import a model until then (decisions, 2026-11-03). Nobody has booted a release asset outside CI |
 
-**Left for the tag:** the founder's three items, which are clearing the names, task 18's root ceremony (which gates rc.1) and `release/seq` in the release PR. Then fluency and actbench re-run on the tag's commit, and P2 closes (its kaifs throughput, above).
+**Left for the tag:** the founder's three items, which are clearing the names, task 18's root ceremony (which gates rc.1) and `release/seq` in the release PR. Then fluency and actbench re-run on the tag's commit.
 
 ### 3.6 What v0.1 does not wait for
 
