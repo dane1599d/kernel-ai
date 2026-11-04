@@ -37,8 +37,9 @@ pub struct VirtioNet<H: Hal, T: Transport, const SIZE: usize> {
     rx: VirtQueue<H, SIZE>,
     tx: VirtQueue<H, SIZE>,
     mac: [u8; 6],
-    /// Receive buffers added since the last kick.
+    /// Receive buffers and frames to send added since each queue's last kick.
     unkicked: usize,
+    unkicked_tx: usize,
 }
 
 impl<H: Hal, T: Transport, const SIZE: usize> fmt::Debug for VirtioNet<H, T, SIZE> {
@@ -73,6 +74,7 @@ impl<H: Hal, T: Transport, const SIZE: usize> VirtioNet<H, T, SIZE> {
             tx,
             mac,
             unkicked: 0,
+            unkicked_tx: 0,
         })
     }
 
@@ -97,11 +99,15 @@ impl<H: Hal, T: Transport, const SIZE: usize> VirtioNet<H, T, SIZE> {
         Ok(token)
     }
 
-    /// Kicks the device for the receive buffers added since the last kick, if
-    /// it asked to be: one exit for the whole batch. How many there were.
+    /// Kicks the device for the receive buffers added since the last kick: one
+    /// exit for the whole batch. How many there were. Always, when any were
+    /// added: `VirtQueue::should_notify` compares the 16-bit ring indexes
+    /// without their wrap (`avail_idx >= avail_event + 1`), so once a batch
+    /// crosses 65,536 adds it says no, the device never hears, and receiving
+    /// stops (P5-S2, run 41896431110).
     pub fn kick_receive(&mut self) -> usize {
         let added = core::mem::take(&mut self.unkicked);
-        if added != 0 && self.rx.should_notify() {
+        if added != 0 {
             self.transport.notify(RECEIVE);
         }
         added
@@ -132,8 +138,8 @@ impl<H: Hal, T: Transport, const SIZE: usize> VirtioNet<H, T, SIZE> {
         self.tx.available_desc() >= 1
     }
 
-    /// Gives the device `buffer` (a zero header, then the frame) to send, and
-    /// kicks it if it asked: its token.
+    /// Gives the device `buffer` (a zero header, then the frame) to send,
+    /// without a kick: [`Self::kick_transmit`] sends the batch. Its token.
     ///
     /// # Safety
     /// `buffer` must not be touched, moved or freed until its token comes back
@@ -141,10 +147,18 @@ impl<H: Hal, T: Transport, const SIZE: usize> VirtioNet<H, T, SIZE> {
     pub unsafe fn transmit_begin(&mut self, buffer: &[u8]) -> Result<u16, Error> {
         // SAFETY: the caller keeps `buffer` for the device until it is popped.
         let token = unsafe { self.tx.add(&[buffer], &mut [])? };
-        if self.tx.should_notify() {
+        self.unkicked_tx += 1;
+        Ok(token)
+    }
+
+    /// Kicks the device for the frames queued since the last kick, always
+    /// when there are any, for the wrap [`Self::kick_receive`] describes.
+    pub fn kick_transmit(&mut self) -> usize {
+        let added = core::mem::take(&mut self.unkicked_tx);
+        if added != 0 {
             self.transport.notify(TRANSMIT);
         }
-        Ok(token)
+        added
     }
 
     /// The token of the next sent buffer, if any.

@@ -123,7 +123,10 @@ impl Card {
             Ok(token) => self.tx[usize::from(token)] = Some(buffer),
             Err(error) => log!("net: transmit error {error:?}"),
         }
-        // `net_tx=sync`: wait for the card, as virtio-drivers' `send` does.
+        // `net_tx=sync`: kick and wait for the card, as virtio-drivers' `send` does.
+        if SYNC_TX.load(Ordering::Acquire) {
+            self.nic.kick_transmit();
+        }
         while SYNC_TX.load(Ordering::Acquire) && self.tx.iter().any(Option::is_some) {
             self.reclaim();
             core::hint::spin_loop();
@@ -176,6 +179,12 @@ impl Card {
         }
         self.nic.kick_receive();
     }
+
+    /// Kicks the card once for every frame queued to send since the last time.
+    fn kick_transmit(&mut self) {
+        let _span = Span::start(Phase::CardTx);
+        self.nic.kick_transmit();
+    }
 }
 
 pub struct NicDevice {
@@ -209,7 +218,9 @@ impl NicDevice {
     /// Gives the card every receive buffer handed back since the last time,
     /// with one kick: after each poll.
     pub fn refill(&mut self) {
-        self.card.get_mut().refill();
+        let card = self.card.get_mut();
+        card.refill();
+        card.kick_transmit();
     }
 
     /// Gives the card every held frame whose time has come, in order.
