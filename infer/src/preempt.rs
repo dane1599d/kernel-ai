@@ -58,7 +58,8 @@ pub struct Row {
     pub positions: usize,
     /// The prompt's prefill, and the one token after it.
     pub prefill_ns: u64,
-    /// The first snapshot, which takes its memory, and the median of the next two.
+    /// The first snapshot, which touches the reserved memory first, and the better of
+    /// the next two.
     pub snapshot_first_ns: u64,
     pub snapshot_ns: u64,
     /// Median of [`RUNS`] restores from the snapshot.
@@ -136,7 +137,12 @@ fn conversation(engine: &Engine<'_>, positions: usize) -> String {
 /// Runs the measurement at each of `sizes` (positions the prompt fills, each at
 /// most the slot's context less [`ROOM`]) in the slot in use, which it empties and
 /// leaves holding something else. A size that cannot be measured says why instead of
-/// a row.
+/// a row. `done` is told each size's outcome as soon as it is known, so a run that
+/// dies later still has the rows before it.
+///
+/// The snapshot's memory is taken once, for the largest size, and every size reuses
+/// it: a buffer made and dropped per size fragments a heap that never gives pages
+/// back, and a guest's quota is for one snapshot, not for each size's.
 pub fn measure(
     engine: &mut Engine<'_>,
     key: &Key,
@@ -144,10 +150,28 @@ pub fn measure(
     spill: &mut dyn Spill,
     clock: &dyn Fn() -> u64,
     pace: &dyn Fn(),
+    done: &mut dyn FnMut(usize, &Result<Row, String>),
 ) -> Vec<Result<Row, String>> {
+    let mut snapshot = Snapshot::new();
+    let most = sizes
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .saturating_add(ROOM);
+    let reserved = engine
+        .reserve_snapshot(&mut snapshot, most)
+        .map_err(|e| format!("snapshot memory: {e}"));
     sizes
         .iter()
-        .map(|&size| one(engine, key, size, spill, clock, pace))
+        .map(|&size| {
+            let row = match &reserved {
+                Ok(()) => one(engine, key, size, &mut snapshot, spill, clock, pace),
+                Err(why) => Err(why.clone()),
+            };
+            done(size, &row);
+            row
+        })
         .collect()
 }
 
@@ -170,6 +194,7 @@ fn one(
     engine: &mut Engine<'_>,
     base: &Key,
     size: usize,
+    snapshot: &mut Snapshot,
     spill: &mut dyn Spill,
     clock: &dyn Fn() -> u64,
     pace: &dyn Fn(),
@@ -195,17 +220,16 @@ fn one(
     let filled = ask(engine, &turns, 1, pace)?;
     let prefill_ns = clock() - start;
     let positions = filled.prompt_tokens;
-    // RAM: the first snapshot takes the memory, the others reuse it.
-    let mut snapshot = Snapshot::new();
+    // RAM: the first snapshot touches the reserved memory first, the others reuse it.
     let mut times = Vec::new();
     for _ in 0..RUNS {
         let start = clock();
         engine
-            .snapshot_slot(&key, &mut snapshot)
+            .snapshot_slot(&key, snapshot)
             .map_err(|e| format!("snapshot: {e}"))?;
         times.push(clock() - start);
     }
-    // The first takes the memory; the pooled time is the better of the others.
+    // The first pays for the memory's first touch; the pooled time is the better of the others.
     let snapshot_first_ns = times[0];
     let snapshot_ns = times[1..].iter().copied().min().unwrap_or(0);
     // The spill file, written whole and made durable.
@@ -230,7 +254,7 @@ fn one(
     for _ in 0..RUNS {
         let start = clock();
         let reused = engine
-            .restore_snapshot(&key, &follow, &snapshot)
+            .restore_snapshot(&key, &follow, snapshot)
             .map_err(|why| format!("snapshot restore refused: {why:?}"))?;
         restore_times.push(clock() - start);
         let again = ask(engine, &follow, ANSWER, pace)?;

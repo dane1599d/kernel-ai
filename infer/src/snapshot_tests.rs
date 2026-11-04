@@ -175,6 +175,32 @@ fn a_snapshot_keeps_its_buffers_when_it_is_saved_over_or_cleared() {
 }
 
 #[test]
+fn a_reserved_snapshot_serves_every_size_from_one_buffer() {
+    let bytes = fixture::build(&Spec::tiny());
+    let tier = Tier::best();
+    let mut engine = Engine::load(&bytes, tier, 256, ROOMY).unwrap();
+    let mut snapshot = Snapshot::new();
+    engine.reserve_snapshot(&mut snapshot, 200).unwrap();
+    let reserved = snapshot.capacities();
+    assert!(reserved.0 > 0 && reserved.1 >= 200 && snapshot.positions() == 0);
+    // A short state, then a longer one, saved into it: the memory never moves.
+    reply(&mut engine, &[Turn::new(Role::User, "hi")], 1);
+    engine.snapshot_slot(&key(tier), &mut snapshot).unwrap();
+    let short = snapshot.positions();
+    assert_eq!(snapshot.capacities(), reserved);
+    reply(&mut engine, &saved(), 1);
+    engine.snapshot_slot(&key(tier), &mut snapshot).unwrap();
+    assert!(snapshot.positions() > short);
+    assert_eq!(snapshot.capacities(), reserved);
+    // More than a slot holds is capped at the slot's capacity, and what was held is
+    // forgotten.
+    engine.reserve_snapshot(&mut snapshot, 10_000).unwrap();
+    assert_eq!(snapshot.positions(), 0);
+    let tokens = snapshot.capacities().1;
+    assert!((256..10_000).contains(&tokens), "{tokens}");
+}
+
+#[test]
 fn one_agents_state_is_refused_for_another() {
     let a = spill_pack_id(7, 1);
     assert_ne!(a, 0);
@@ -286,6 +312,7 @@ fn the_guests_measurement_finds_a_restored_slot_equal_and_says_what_it_could_not
         now.set(now.get() + 1_000_000);
         now.get()
     };
+    let mut told = Vec::new();
     // Sizes that fit the slot (256, less the room the follow-up needs), and one that
     // does not.
     let rows = crate::preempt::measure(
@@ -295,8 +322,11 @@ fn the_guests_measurement_finds_a_restored_slot_equal_and_says_what_it_could_not
         &mut spill,
         &clock,
         &|| (),
+        &mut |size, row| told.push((size, row.is_ok())),
     );
     assert_eq!(rows.len(), 3);
+    // Each size was told as it was done, in order, the last one as not measured.
+    assert_eq!(told, [(60, true), (130, true), (250, false)]);
     let (small, large) = (rows[0].as_ref().unwrap(), rows[1].as_ref().unwrap());
     assert!(
         small.positions > 20 && small.positions < large.positions,
@@ -313,7 +343,15 @@ fn the_guests_measurement_finds_a_restored_slot_equal_and_says_what_it_could_not
     assert!(rows[2].as_ref().unwrap_err().contains("do not fit"));
     // A spill target that cannot be written says so rather than reporting a row.
     spill.works = false;
-    let rows = crate::preempt::measure(&mut engine, &key(tier), &[60], &mut spill, &clock, &|| ());
+    let rows = crate::preempt::measure(
+        &mut engine,
+        &key(tier),
+        &[60],
+        &mut spill,
+        &clock,
+        &|| (),
+        &mut |_, _| (),
+    );
     assert!(
         rows[0]
             .as_ref()

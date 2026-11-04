@@ -428,23 +428,38 @@ impl Local {
                 slept.set(sys::time_ns());
             }
         };
-        let rows = infer::preempt::measure(
+        // Each size's line goes to the log as soon as it is known, with what the heap
+        // has taken since the bench began (it never gives pages back, and llm's quota
+        // kills it past its grant), so a run that dies later still shows its rows.
+        let heap_start = sys::brk(0).unwrap_or(0);
+        println!(
+            "kv-preempt: the bench starts with {} MiB of heap in use",
+            user::heap_bytes() >> 20
+        );
+        let mut report = String::new();
+        let mut done = |size: usize, row: &Result<infer::preempt::Row, String>| {
+            let line = match row {
+                Ok(row) => row.line(),
+                Err(why) => format!("{size} positions: {why}"),
+            };
+            let grown = sys::brk(0).unwrap_or(0).saturating_sub(heap_start);
+            println!("kv-preempt: {line}");
+            println!(
+                "kv-preempt: heap has grown {} MiB since the bench began, {} MiB in use",
+                grown >> 20,
+                user::heap_bytes() >> 20
+            );
+            report.push_str(&format!("kv-preempt: {line}\n"));
+        };
+        infer::preempt::measure(
             &mut self.engine,
             &key,
             sizes,
             &mut spill,
             &sys::time_ns,
             &pace,
+            &mut done,
         );
-        let mut report = String::new();
-        for (size, row) in sizes.iter().zip(rows) {
-            let line = match row {
-                Ok(row) => row.line(),
-                Err(why) => format!("{size} positions: {why}"),
-            };
-            println!("kv-preempt: {line}");
-            report.push_str(&format!("kv-preempt: {line}\n"));
-        }
         report
     }
 

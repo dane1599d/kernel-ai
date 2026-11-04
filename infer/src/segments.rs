@@ -299,6 +299,20 @@ impl Snapshot {
         (self.halves.capacity(), self.tokens.capacity())
     }
 
+    /// Forgets what it holds and takes the memory for `positions` positions of a
+    /// slot of `shape` (layers, KV width), so that every snapshot up to that size
+    /// reuses it: a pool takes its memory in one piece, at its start, and never
+    /// fragments the heap with buffers of other sizes.
+    pub(crate) fn reserve(&mut self, shape: (usize, usize), positions: usize) -> Result<(), Error> {
+        self.clear();
+        self.halves
+            .try_reserve_exact(2 * shape.0 * shape.1 * positions)
+            .map_err(|_| Error::OutOfMemory)?;
+        self.tokens
+            .try_reserve_exact(positions)
+            .map_err(|_| Error::OutOfMemory)
+    }
+
     /// Forgets what it holds and keeps its buffers.
     pub fn clear(&mut self) {
         self.key = None;

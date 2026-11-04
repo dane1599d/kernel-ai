@@ -25,10 +25,12 @@ use crate::{ipc, llm, log, model, threads};
 /// The positions asked for; the third is what fits, with a margin, beside the
 /// follow-up in a slot of 2,048.
 const SIZES: &str = "512,1024,1950";
-/// Extra pages for llm: room for one snapshot of the largest size (281 MiB) and a
-/// margin, beside the two KV slots. The holder's ceiling is raised to hold them
-/// (`kabi::model::MAX_PAGES_HOLDER`).
-pub const EXTRA_PAGES: u64 = (320 << 20) / 4096;
+/// Extra pages for llm: room for the one snapshot of the largest size, taken once for
+/// every size (281 MiB), and a margin of 71 MiB, beside the two KV slots. The holder's
+/// ceiling is raised to hold them (`kabi::model::MAX_PAGES_HOLDER`).
+pub const EXTRA_PAGES: u64 = (352 << 20) / 4096;
+// What llm is granted with it must fit what its holder may hold.
+const _: () = assert!(crate::model::holder_pages() + EXTRA_PAGES <= kabi::model::MAX_PAGES_HOLDER);
 /// How long the services get to come up.
 const START_WAIT_MS: u64 = 120_000;
 /// How long llm gets to cache both prompts: about 2,000 tokens at the runners'
