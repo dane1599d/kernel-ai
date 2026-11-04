@@ -23,8 +23,9 @@ use kabi::handle::{Handle, Rights};
 use kabi::live::MAX_ARTIFACT;
 use livecore::artifact::MAX_SOURCE;
 use promptcore::wire::{Record, parse_reply};
+use sha2::{Digest, Sha256};
 use shellcore::appbuild::INTERNAL;
-use shellcore::ccbuild::{APPS_DIR, CcBuilt, NO_ANSWER};
+use shellcore::ccbuild::{APPS_DIR, Artifact, CcBuilt, NO_ANSWER};
 use spin::Mutex;
 use user::sys;
 
@@ -41,8 +42,16 @@ const PKG_REPLY: usize = 512;
 
 /// The `Shm` every build uses, made by the first.
 static SHM: Mutex<Option<Handle>> = Mutex::new(None);
-/// The last artifact written, and the File handle it was written through.
-static WRITTEN: Mutex<Option<(String, Handle)>> = Mutex::new(None);
+/// The last artifact written: what `pkg`'s `local` may install, and only that.
+static WRITTEN: Mutex<Option<Written>> = Mutex::new(None);
+
+struct Written {
+    path: String,
+    /// The File handle it was written through.
+    file: Handle,
+    /// The SHA-256 of the bytes cc built and what they import.
+    artifact: Artifact,
+}
 
 /// `dir` beneath `/home/user`, where the shell's `Dir` is.
 fn folder(dir: &str) -> &str {
@@ -86,10 +95,32 @@ pub fn build(
     let file = files
         .put_whole(&path, &artifact)
         .map_err(|why| format!("{dir}/{name}.kai cannot be written: {why}"))?;
-    if let Some((_, old)) = WRITTEN.lock().replace((built.path.clone(), file)) {
-        files::close(old);
+    let written = Written {
+        path: built.path.clone(),
+        file,
+        artifact: Artifact {
+            sha256: Sha256::digest(&artifact)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+            imports: ccserve::trial::imports(&artifact),
+        },
+    };
+    if let Some(old) = WRITTEN.lock().replace(written) {
+        files::close(old.file);
     }
     Ok(built)
+}
+
+/// `dir/name.kai`'s hash and imports, if it is the last artifact written:
+/// `None` once another build wrote one since, so a card never shows a list,
+/// or installs bytes, it does not have.
+pub fn artifact(dir: &str, name: &str) -> Option<Artifact> {
+    let path = format!("{dir}/{name}.kai");
+    match &*WRITTEN.lock() {
+        Some(written) if written.path == path => Some(written.artifact.clone()),
+        _ => None,
+    }
 }
 
 /// Writes app `name`'s source as `apps/<name>/main.c`, making the folders if
@@ -293,22 +324,37 @@ fn cc_text(reply: &[u8]) -> Result<String, String> {
 
 /// Hands the artifact at `path` to `pkg`'s `local` as a File that can only be
 /// read: the text after its `ok`.
-pub fn install(pkg: Handle, name: &str, path: &str) -> Result<String, String> {
-    let file = match WRITTEN.lock().take() {
-        Some((written, file)) if written == path => file,
+pub fn install(
+    pkg: Handle,
+    name: &str,
+    path: &str,
+    sha256: Option<&str>,
+) -> Result<String, String> {
+    let (file, sha) = match WRITTEN.lock().take() {
+        Some(written) if written.path == path => (written.file, written.artifact.sha256),
         // Only what this build wrote goes to pkg, never a file found by path.
         other => {
-            if let Some((_, old)) = other {
-                files::close(old);
+            if let Some(old) = other {
+                files::close(old.file);
             }
             return Err(format!("{path} is not the artifact this build wrote"));
         }
     };
+    if sha256.is_some_and(|wanted| wanted != sha) {
+        files::close(file);
+        return Err(format!("{path} is not the artifact the card asked about"));
+    }
     let read_only = sys::handle_dup(file, Rights::READ | Rights::TRANSFER);
     files::close(file);
     let read_only = read_only.map_err(|e| format!("the artifact's File ({e:?})"))?;
+    // pkg signs and installs the bytes it reads only if they are the ones cc
+    // built, by this hash.
     let mut reply = [0u8; PKG_REPLY];
-    let request = format!("local {name}");
+    let request = kaipkg::local::install_request(name, &sha);
+    if request.len() > kaipkg::local::MAX_REQUEST {
+        let _ = sys::handle_close(read_only);
+        return Err(format!("the install request for {name} is too long"));
+    }
     let len = match sys::call_h(
         pkg,
         request.as_bytes(),

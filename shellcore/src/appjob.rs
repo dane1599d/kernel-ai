@@ -127,7 +127,7 @@ impl Shell {
                     }
                 }
             }
-            Next::Built(built) => Some(self.app_finish(job, Ok(built))),
+            Next::Built(built) => Some(self.app_finish(job, Ok(*built))),
             Next::Failed(why) => Some(self.app_finish(job, Err(why))),
         };
         self.save_log();

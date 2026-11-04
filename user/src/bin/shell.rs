@@ -557,6 +557,10 @@ impl Host for System {
         build::trial(cc_route(), name)
     }
 
+    fn cc_artifact(&self, name: &str) -> Option<shellcore::ccbuild::Artifact> {
+        build::artifact(shellcore::ccbuild::APPS_DIR, name)
+    }
+
     fn app_source(&self, name: &str, text: &str) -> Result<(), String> {
         build::app_source(&self.files, name, text)
     }
@@ -565,8 +569,8 @@ impl Host for System {
         build::app_source_read(&self.files, name)
     }
 
-    fn pkg_local(&self, name: &str, path: &str) -> Result<String, String> {
-        build::install(pkg_route()?, name, path)
+    fn pkg_local(&self, name: &str, path: &str, sha256: Option<&str>) -> Result<String, String> {
+        build::install(pkg_route()?, name, path, sha256)
     }
 
     fn models(&self, request: &str) -> Result<String, String> {

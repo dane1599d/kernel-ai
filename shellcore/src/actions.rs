@@ -54,6 +54,8 @@ pub(crate) struct Pending {
     pub model: Option<crate::models::Waiting>,
     /// For `app_build`, the build that waits on the answer.
     pub app: Option<crate::appbuild::Asked>,
+    /// For `app_install`, the build its card asks to install.
+    pub install: Option<crate::appinstall::Installing>,
 }
 
 /// `y`, `n`, `yes` or `no`, any case.
@@ -187,6 +189,7 @@ impl Shell {
             standing: None,
             model: None,
             app: None,
+            install: None,
         });
         Reply {
             ok: true,
@@ -465,6 +468,9 @@ impl Shell {
         }
         if pending.app.is_some() && !is_show(text) {
             return self.answer_app(pending, text);
+        }
+        if pending.install.is_some() && !is_show(text) {
+            return self.answer_install(pending, text);
         }
         if pending.standing.is_some() && !is_show(text) {
             return self.answer_instruction(pending, text);

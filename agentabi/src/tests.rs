@@ -73,14 +73,15 @@ fn derived_tiers_match_the_seamless_actions_table() {
     assert_eq!(derive(&MODEL_LIST), Tier::Run);
     assert_eq!(derive(&MODEL_USE), Tier::Run);
     assert_eq!(derive(&MODEL_FETCH), Tier::Ask);
-    // A build installs nothing, so it runs; its install card asks.
+    // A build installs nothing, so it runs; its install card always asks.
     assert_eq!(derive(&APP_BUILD), Tier::Run);
+    assert_eq!(derive(&APP_INSTALL), Tier::Ask);
     // Only a tagged call reaches it: no script or c> program may build an app.
     assert!(
         !SCRIPT_API
             .iter()
             .chain(&CALL_ONLY)
-            .any(|r| r.name == APP_BUILD.name)
+            .any(|r| r.name == APP_BUILD.name || r.name == APP_INSTALL.name)
     );
 }
 

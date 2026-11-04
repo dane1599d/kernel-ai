@@ -414,6 +414,16 @@ impl Source for Held<'_> {
     }
 }
 
+/// The longest request `pkg` takes on its endpoint, `local`'s included: a
+/// longer one is refused whole, never cut short (C on #626).
+pub const MAX_REQUEST: usize = 128;
+
+/// `local <component> sha256 <hex>`: the shell's ask to install the artifact
+/// it moves, only if its bytes have that SHA-256.
+pub fn install_request(component: &str, sha256: &str) -> String {
+    format!("local {component} sha256 {sha256}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,5 +770,18 @@ mod tests {
         assert_eq!(installed(&mut vol, 4), ["hello 0.0.1"]);
         let shas = shas(&mut vol, &key, PROVIDED).unwrap();
         assert_eq!(shas.len(), 1, "local holds its one build of hello");
+    }
+
+    /// The longest `local` and `switch-back` lines fit [`MAX_REQUEST`].
+    #[test]
+    fn the_longest_requests_fit_the_limit() {
+        let name = "abcdefghijkl";
+        assert!(valid_name(name).is_ok());
+        let local = install_request(name, &"f".repeat(64));
+        assert_eq!(local.len(), 90);
+        assert!(local.len() <= MAX_REQUEST);
+        let back = format!("switch-back {} {}", u64::MAX, u64::MAX);
+        assert!(back.len() <= MAX_REQUEST);
+        assert!(format!("local-next {name}").len() <= MAX_REQUEST);
     }
 }

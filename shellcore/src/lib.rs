@@ -28,6 +28,7 @@ pub mod analyse;
 pub mod apart;
 pub mod appbuild;
 mod appearance;
+mod appinstall;
 pub mod appjob;
 pub mod appline;
 pub mod apps;
@@ -270,6 +271,12 @@ pub trait Host {
             appbuild::INTERNAL
         ))
     }
+    /// The artifact app `name`'s build wrote, its hash and imports: `None`
+    /// unless it is the last one the host wrote, so an install card never
+    /// shows a list, or installs bytes, it does not have.
+    fn cc_artifact(&self, _name: &str) -> Option<ccbuild::Artifact> {
+        None
+    }
     /// Writes `text` as the whole of `/home/user/apps/<name>/main.c`, making the
     /// folders if they are new (`app_build`). The source is kept whatever comes
     /// of its build, so it is no undo of its own.
@@ -281,8 +288,9 @@ pub trait Host {
         Ok(None)
     }
     /// Hands the artifact at `path` to `pkg`'s `local` as a read-only File:
-    /// the text after its `ok`.
-    fn pkg_local(&self, _name: &str, _path: &str) -> Result<String, String> {
+    /// the text after its `ok`. `pkg` installs only the bytes `cc` built, and
+    /// with `sha256`, only if that is their hash.
+    fn pkg_local(&self, _name: &str, _path: &str, _sha256: Option<&str>) -> Result<String, String> {
         Err(String::from("there is no pkg service here"))
     }
     /// A read of the user's files: its text, or why there is none.
@@ -840,6 +848,14 @@ impl Shell {
                 "show" | "why" => return self.show_last(),
                 _ => {}
             }
+        }
+        // Installing Kai's last app, or showing its code, comes before a
+        // package line of the same words.
+        if !self.scope.contains("install")
+            && !self.scope.contains("show")
+            && let Some(reply) = self.app_install_line(input)
+        {
+            return reply;
         }
         // Package lines come before Rhai, unless their first word is a variable.
         if let Some(word) = pkg::line::first_word(input)
