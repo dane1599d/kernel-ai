@@ -25,6 +25,9 @@ use crate::{ipc, llm, log, model, threads};
 /// The positions asked for; the third is what fits, with a margin, beside the
 /// follow-up in a slot of 2,048.
 const SIZES: &str = "512,1024,1950";
+/// The spill variants llm measures after the sizes (`SPILL_VARIANTS` in
+/// `user/src/bin/llm/local.rs`), each one more row.
+const VARIANTS: usize = 4;
 /// Extra pages for llm: room for the one snapshot of the largest size, taken once for
 /// every size (281 MiB), and a margin of 71 MiB, beside the two KV slots. The holder's
 /// ceiling is raised to hold them (`kabi::model::MAX_PAGES_HOLDER`).
@@ -71,7 +74,7 @@ pub fn check() -> Result<(), &'static str> {
         wrong |= line.contains("equal after restore:") && line.contains("false");
         wrong |= !line.contains(" positions: prefill ");
     }
-    if rows != SIZES.split(',').count() || wrong {
+    if rows != SIZES.split(',').count() + VARIANTS || wrong {
         return Err("kv-preempt: a size was not measured, or a restored slot answered differently");
     }
     log!("kv-preempt: done");

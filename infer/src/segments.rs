@@ -88,6 +88,14 @@ impl Fnv {
     }
 }
 
+/// FNV-1a 64 of `bytes`, the hash a `kai-kv 1` file carries over its keys and values,
+/// for S13-1's split of what a spill costs.
+pub fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut fnv = Fnv::new();
+    fnv.update(bytes);
+    fnv.0
+}
+
 /// A tier's name in the header's 16 bytes.
 fn tier_bytes(tier: Tier) -> [u8; 16] {
     let mut out = [0; 16];

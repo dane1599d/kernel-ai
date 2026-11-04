@@ -104,8 +104,11 @@ pub const ENGINE_PAGES: u64 = (KV_BYTES + ENGINE_OTHER_BYTES) / 4096;
 pub const KV_REGIONS: u64 = KV_SLOTS as u64;
 /// Bytes of one region: room for a full slot's file.
 pub const KV_REGION_BYTES: u64 = 320 << 20;
-/// The most one MODEL_KV_LOAD or MODEL_KV_SAVE moves.
+/// What llm moves with one MODEL_KV_LOAD or MODEL_KV_SAVE unless it asks for more.
 pub const KV_IO_BYTES: u64 = 64 << 10;
+/// The most one MODEL_KV_LOAD or MODEL_KV_SAVE moves: a disk's staging buffer
+/// (512 KiB), so one call is one request to the disk (spike S13-1).
+pub const KV_IO_MAX_BYTES: u64 = 512 << 10;
 /// What offsets and lengths come in.
 pub const KV_SECTOR: u64 = 512;
 
@@ -277,6 +280,9 @@ mod tests {
         assert!(file <= super::KV_REGION_BYTES, "{file}");
         assert_eq!(super::KV_REGION_BYTES % super::KV_SECTOR, 0);
         assert_eq!(super::KV_IO_BYTES % super::KV_SECTOR, 0);
+        assert_eq!(super::KV_IO_MAX_BYTES % super::KV_SECTOR, 0);
+        const { assert!(super::KV_IO_BYTES <= super::KV_IO_MAX_BYTES) };
+        assert_eq!(super::KV_REGION_BYTES % super::KV_IO_MAX_BYTES, 0);
     }
 
     #[test]
