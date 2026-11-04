@@ -1113,10 +1113,20 @@ fn main() -> i32 {
         take_events(&mut shell, &mut events);
         take_panel(&mut shell);
         take_effects(&mut shell);
+        // Files the AI, the Terminal, an app, an editor save or an undo changed:
+        // the apps that list them are told, along with the results given next.
+        if system.files.take_changed() {
+            shell.fs_changed();
+        }
         give_call_results(&mut shell);
         take_files(&mut shell);
         take_settings(&mut shell);
         give_app_build(&mut shell);
+        // An install card waits: the kernel's terminal takes it when it may.
+        // Said again each pass, so a desktop that shows later still gets it.
+        if shell.card_waiting() {
+            let _ = sys::card_ready();
+        }
         give_appearance(&system);
         shell.retry_keep();
         let mut caller = u64::MAX;

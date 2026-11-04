@@ -267,6 +267,51 @@ pub fn wait() -> Input {
     }
 }
 
+/// How often a reader that is [`wait_unless`]'s `armed` looks at its `stop()`
+/// again: `stop()` can turn true with no event that wakes it, such as
+/// `desktop` taking the screen back.
+const ARMED_POLL_NS: u64 = 250_000_000;
+
+/// [`wait`], but returns `None` once `stop()` holds instead of blocking on: for
+/// a reader that something other than a key may need, such as the terminal's
+/// prompt when the shell has a card waiting ([`wake_reader`]). While `armed()`
+/// (an atomic load: it runs under the scheduler's lock) it sleeps at most
+/// [`ARMED_POLL_NS`] at a time; otherwise it blocks until a key or a
+/// [`wake_reader`]. `stop()` runs only between waits.
+pub fn wait_unless(armed: &dyn Fn() -> bool, stop: &dyn Fn() -> bool) -> Option<Input> {
+    loop {
+        if let Some(input) = next() {
+            return Some(input);
+        }
+        if stop() {
+            return None;
+        }
+        WAITER.store(crate::threads::current(), Ordering::SeqCst);
+        match armed() {
+            true => {
+                let deadline = hpet::nanos().saturating_add(ARMED_POLL_NS);
+                crate::threads::sleep_until_unless(deadline, has_input);
+            }
+            false => {
+                crate::threads::block_unless(|| has_input() || armed());
+            }
+        }
+    }
+}
+
+/// Wakes the thread blocked in [`wait`] or [`wait_unless`], if one is, so it
+/// looks at its `stop()` again. A [`wait`] sees no key and blocks again.
+/// WAITER is a single slot: it holds the thread that waited last, so a
+/// console asker blocked in [`wait`] may be the one woken (and blocks again);
+/// the terminal's card needs `desktop` to show, when no console asker waits.
+pub fn wake_reader() {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        if let Some(tid) = take_waiter() {
+            crate::threads::wake(tid);
+        }
+    });
+}
+
 /// Number of measured wake-ups and the worst interrupt-to-running latency in ns.
 pub fn wake_latency() -> (u64, u64) {
     (
