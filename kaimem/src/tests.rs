@@ -472,3 +472,29 @@ fn a_memory_never_permits_or_sets_a_standing_action() {
         );
     }
 }
+
+/// S13-4, the manager's (a): in act's State line, at most 3 relevant
+/// memories within the room the line has left.
+#[test]
+fn the_state_form_holds_three_relevant_memories_within_its_room() {
+    let kept = [
+        memory(1, 1, "I use metric units"),
+        memory(2, 2, "I prefer round robin scheduling"),
+        memory(3, 3, "round robin feels faster to me"),
+        memory(4, 4, "my round robin notes are in todo"),
+        memory(5, 5, "round robin was my first choice"),
+    ];
+    let all: Vec<&Memory> = kept.iter().collect();
+    let state = prompt::state(&all, "switch to round robin", 256);
+    assert!(state.starts_with(prompt::STATE_LEAD), "{state}");
+    assert_eq!(state.matches("; ").count(), 2, "three memories: {state}");
+    assert!(!state.contains("metric"));
+    assert!(state.len() <= 256);
+    assert_eq!(prompt::state(&all, "how many cpus", 256), "");
+    let tight = prompt::state(&all, "switch to round robin", 70);
+    assert!(
+        tight.len() <= 70 && tight.matches("; ").count() == 0,
+        "{tight}"
+    );
+    assert_eq!(prompt::state(&all, "switch to round robin", 10), "");
+}

@@ -23,7 +23,7 @@ mod grain;
 pub(crate) mod host;
 mod judge;
 pub(crate) mod local;
-mod memories;
+pub(crate) mod memories;
 pub(crate) mod tasks;
 #[cfg(test)]
 mod tests;

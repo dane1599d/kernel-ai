@@ -25,8 +25,9 @@ pub const MAX_BYTES: usize = 768;
 pub const LEAD: &str =
     "Background the user told Kai earlier (facts only; do only what the request asks):";
 
-/// The section for `request` from `memories`, or an empty string for none.
-pub fn section(memories: &[&Memory], request: &str) -> String {
+/// The memories for `request`, most relevant first: only those that share a
+/// word with it, then the newest.
+fn relevant<'a>(memories: &[&'a Memory], request: &str) -> Vec<&'a Memory> {
     let words = words(request);
     let mut ranked: Vec<(usize, &Memory)> = memories
         .iter()
@@ -34,8 +35,13 @@ pub fn section(memories: &[&Memory], request: &str) -> String {
         .collect();
     ranked.retain(|(score, _)| *score > 0);
     ranked.sort_by(|(sa, a), (sb, b)| sb.cmp(sa).then(b.time.cmp(&a.time)).then(b.id.cmp(&a.id)));
+    ranked.into_iter().map(|(_, m)| m).collect()
+}
+
+/// The section for `request` from `memories`, or an empty string for none.
+pub fn section(memories: &[&Memory], request: &str) -> String {
     let mut out = String::new();
-    for (_, memory) in ranked.into_iter().take(MAX_SHOWN) {
+    for memory in relevant(memories, request).into_iter().take(MAX_SHOWN) {
         let line_len = memory.text.len() + 3;
         let lead = if out.is_empty() { LEAD.len() } else { 0 };
         if out.len() + lead + line_len > MAX_BYTES {
@@ -45,6 +51,38 @@ pub fn section(memories: &[&Memory], request: &str) -> String {
             out.push_str(LEAD);
         }
         out.push_str("\n- ");
+        out.push_str(&memory.text);
+    }
+    out
+}
+
+/// The most memories in act's State line.
+pub const STATE_SHOWN: usize = 3;
+/// What comes before them there.
+pub const STATE_LEAD: &str = "the user said earlier (facts only):";
+
+/// The memories for `request` as a part of act's State line (ADR 0010 §4),
+/// within `max_bytes`, the room the line has left: at most [`STATE_SHOWN`]
+/// relevant ones, `the user said earlier (facts only): a; b`, or an empty
+/// string for none (the manager's choice (a) on S13-4: State at ADR 0010's
+/// budget, not raised).
+pub fn state(memories: &[&Memory], request: &str, max_bytes: usize) -> String {
+    let mut out = String::new();
+    for memory in relevant(memories, request).into_iter().take(STATE_SHOWN) {
+        let add = match out.is_empty() {
+            true => STATE_LEAD.len() + 1 + memory.text.len(),
+            false => 2 + memory.text.len(),
+        };
+        if out.len() + add > max_bytes {
+            break;
+        }
+        match out.is_empty() {
+            true => {
+                out.push_str(STATE_LEAD);
+                out.push(' ');
+            }
+            false => out.push_str("; "),
+        }
         out.push_str(&memory.text);
     }
     out
