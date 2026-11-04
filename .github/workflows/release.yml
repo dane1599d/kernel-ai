@@ -15,6 +15,14 @@
 # same disk with one byte of the image flipped (boot cases `update-disk` and
 # `update-tampered`, ADR 0008 §12).
 #
+# The `release-boot` job builds the same image with `--test-root`: a `pkgrepo/`
+# whose `models` role, signed by a throwaway root, names only qwen3-0.6b. It
+# checks that every other boot module and part hashes as build-a's did, then
+# boots those bytes with no second disk, types `models import` and passes on
+# the import line (`cargo xtask release-boot`). The shipping image has no
+# `models` role until P4 task 18's founder-signed one, so it imports nothing
+# until then.
+#
 # Stubbed until P4 task 18: tuf-on-ci's signing event for the founder's
 # YubiKeys, and the publish to `dane1599d/kernel-ai-updates`. No model, no LLM.
 # Every action is pinned by commit SHA.
@@ -28,6 +36,9 @@ on:
       - .github/workflows/release.yml
       - .github/release/**
       - xtask/src/release_image.rs
+      - xtask/src/image/slots.rs
+      - xtask/src/release_boot.rs
+      - xtask/src/cases/release.rs
   workflow_dispatch:
 
 permissions:
@@ -85,13 +96,16 @@ jobs:
       - run: rustup show active-toolchain || rustup toolchain install
       - run: rustup target add wasm32-unknown-unknown
       - run: cargo xtask release-image --out "$OUT/kernel-ai.img" | tee "$OUT/build.log"
+      # The image is gigabytes, most of them kai-data's free space: it travels
+      # compressed, and the same zstd on the same bytes writes the same file.
+      - run: zstd -19 --single-thread -q --rm "$OUT/kernel-ai.img" -o "$OUT/kernel-ai.img.zst"
       - name: The build left the tree clean
         run: test -z "$(git status --porcelain)"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: build-${{ matrix.runner }}
           path: |
-            ${{ env.OUT }}/kernel-ai.img
+            ${{ env.OUT }}/kernel-ai.img.zst
             ${{ env.OUT }}/NOTICES.txt
             ${{ env.OUT }}/build.log
 
@@ -144,7 +158,8 @@ jobs:
             -v "$PWD/home/.cargo:/home/runner/.cargo" -v "$HOME/.rustup:/home/runner/.rustup" \
             -v "$PWD/src:$ws" -v "$PWD/src/vendor:$REGISTRY_SRC:ro" -w "$ws" buildpack-deps:noble \
             cargo xtask release-image --out offline.img | tee offline.log
-          mkdir out && mv src/offline.img src/NOTICES.txt offline.log out/
+          zstd -19 --single-thread -q --rm src/offline.img -o src/offline.img.zst
+          mkdir out && mv src/offline.img.zst src/NOTICES.txt offline.log out/
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: offline
@@ -159,14 +174,18 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
       - name: Both clean builds and the offline rebuild made the same image
         run: |
-          sha256sum build-a/kernel-ai.img build-b/kernel-ai.img offline/offline.img | tee hashes.txt
+          sha256sum build-a/kernel-ai.img.zst build-b/kernel-ai.img.zst offline/offline.img.zst | tee hashes.txt
           test "$(cut -d' ' -f1 hashes.txt | sort -u | wc -l)" -eq 1
+          # The image's own hash, as each build printed it.
+          grep -h '^xtask: sha256 ' build-a/build.log build-b/build.log offline/offline.log | tee image-hashes.txt
+          test "$(wc -l < image-hashes.txt)" -eq 3
+          test "$(sort -u image-hashes.txt | wc -l)" -eq 1
           cmp build-a/NOTICES.txt build-b/NOTICES.txt
           cmp build-a/NOTICES.txt offline/NOTICES.txt
       - name: The assets
         run: |
           mkdir release-assets
-          zstd -19 --single-thread -q build-a/kernel-ai.img -o "release-assets/kernel-ai-$VERSION-x86_64.img.zst"
+          cp build-a/kernel-ai.img.zst "release-assets/kernel-ai-$VERSION-x86_64.img.zst"
           cp build-a/NOTICES.txt release-assets/NOTICES.txt
           cp "source/kernel-ai-$VERSION-source.tar.zst" release-assets/
           python3 - "$VERSION" > release-assets/RELEASE-NOTES.md <<'EOF'
@@ -214,6 +233,80 @@ jobs:
             XTASK_CASE="$case" cargo xtask test --accel kvm --timeout 300
           done
 
+  release-boot:
+    name: The release with a test-root models role boots and imports qwen3-0.6b
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      MODEL_ID: qwen3-0.6b
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/qemu
+          key: qemu-11.0.5-ubuntu-24.04-v1
+          fail-on-cache-miss: true
+      - name: OVMF, QEMU's runtime libraries, and KVM for the runner user
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ovmf libpixman-1-0 libslirp0 libglib2.0-0t64 libfdt1
+          echo "$HOME/qemu/bin" >> "$GITHUB_PATH"
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup target add wasm32-unknown-unknown
+      - name: Read the pinned file from the catalog
+        id: pin
+        run: |
+          jq -e --arg id "$MODEL_ID" '.models[] | select(.id == $id)' xtask/models.json > "$RUNNER_TEMP/entry.json"
+          {
+            echo "file=$(jq -r .file "$RUNNER_TEMP/entry.json")"
+            echo "sha256=$(jq -r .sha256 "$RUNNER_TEMP/entry.json")"
+            echo "url=https://huggingface.co/$(jq -r .repo "$RUNNER_TEMP/entry.json")/resolve/$(jq -r .revision "$RUNNER_TEMP/entry.json")/$(jq -r .file "$RUNNER_TEMP/entry.json")"
+          } >> "$GITHUB_OUTPUT"
+      - name: Reuse the model file from an earlier run
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/kai-models
+          key: model-${{ steps.pin.outputs.sha256 }}
+      - name: Download the model and check its SHA-256
+        env:
+          FILE: ${{ steps.pin.outputs.file }}
+          SHA256: ${{ steps.pin.outputs.sha256 }}
+          URL: ${{ steps.pin.outputs.url }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/kai-models"
+          if [ ! -f "$RUNNER_TEMP/kai-models/$FILE" ]; then
+            curl -fL --retry 3 -o "$RUNNER_TEMP/kai-models/$FILE" "$URL"
+          fi
+          echo "$SHA256  $RUNNER_TEMP/kai-models/$FILE" | sha256sum -c -
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: build-a
+          # Outside the checkout, as every output here: an untracked file marks
+          # the build -dirty, which the slot record, the kernel and NOTICES carry.
+          path: ${{ runner.temp }}/build-a
+      - name: The test-root build, which differs from build-a's only beneath pkgrepo/
+        run: |
+          test -z "$(git status --porcelain)"
+          cargo xtask release-image --test-root --out "$RUNNER_TEMP/test-root.img" | tee "$RUNNER_TEMP/test-root.log"
+          # Every boot module but the test root's repository, and every ESP part
+          # but the bundle that carries it.
+          same() { grep -E '^xtask: (module|part) ' "$1" | grep -v -E '^xtask: (module pkgrepo/|part boot/kai.bundle )'; }
+          same "$RUNNER_TEMP/build-a/build.log" > "$RUNNER_TEMP/release.parts"
+          same "$RUNNER_TEMP/test-root.log" > "$RUNNER_TEMP/test-root.parts"
+          test -s "$RUNNER_TEMP/release.parts"
+          diff "$RUNNER_TEMP/release.parts" "$RUNNER_TEMP/test-root.parts"
+          grep -E '^xtask: module pkgrepo/' "$RUNNER_TEMP/test-root.log"
+      - name: Boot it with qwen3-0.6b as the import disk; models import, allowed
+        env:
+          FILE: ${{ steps.pin.outputs.file }}
+        run: |
+          cargo xtask release-boot --image "$RUNNER_TEMP/test-root.img" \
+            --model "$RUNNER_TEMP/kai-models/$FILE" --accel kvm --timeout 1200
+
   sign:
     name: Sign as TUF targets (test root), accept and refuse
     needs: assemble
@@ -237,7 +330,7 @@ jobs:
   publish:
     name: Attest and draft the release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [seq, sign, vm]
+    needs: [seq, sign, vm, release-boot]
     runs-on: ubuntu-24.04
     environment: release
     permissions:

@@ -453,7 +453,10 @@ impl ScriptRequest {
         let error = body.get(request_len + script_len..)?;
         Some(Self {
             request: request.to_string(),
-            repair: (script_len > 0).then(|| (script.to_string(), error.to_string())),
+            // A refused answer with no script (no envelope, a refusal) still
+            // says why, so the repair round carries the reason.
+            repair: (script_len > 0 || error_len > 0)
+                .then(|| (script.to_string(), error.to_string())),
             timeout_ms: timeout as u64,
             lang,
         })

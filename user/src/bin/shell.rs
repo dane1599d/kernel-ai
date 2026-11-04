@@ -246,6 +246,36 @@ fn take_effects(shell: &mut Shell) {
     }
 }
 
+/// Hands each app what came of the effects its calls queued: the call's reply
+/// carried them, so `desktop` never held them, and without this the app is never
+/// told (a Files window the agent opened a folder in would show nothing). They go
+/// as `take_effects`' results do, and `desktop` gives them to the app's `comphost`.
+fn give_call_results(shell: &mut Shell) {
+    use deskcore::effects::{self, Done};
+    let batches = shell.take_effect_results();
+    if batches.is_empty() {
+        return;
+    }
+    let Some(route) = desktop() else {
+        for (app, _) in &batches {
+            println!("{app}'s effect results were dropped: there is no desktop");
+        }
+        return;
+    };
+    for (app, done) in batches {
+        let results: Vec<Done> = done
+            .into_iter()
+            .map(|done| Done {
+                ticket: done.ticket,
+                outcome: done.outcome,
+            })
+            .collect();
+        if let Err(why) = ask_desktop(route, &effects::encode_done_as(&app, false, &results)) {
+            println!("{app}'s effect results were not sent: {why}");
+        }
+    }
+}
+
 // The shell and `desktop` name the one process that may ask alike.
 const _: () = assert!(same(
     shellcore::SETTINGS_APP,
@@ -486,6 +516,10 @@ impl Host for System {
 
     fn app_source(&self, name: &str, text: &str) -> Result<(), String> {
         build::app_source(&self.files, name, text)
+    }
+
+    fn app_source_read(&self, name: &str) -> Result<Option<String>, String> {
+        build::app_source_read(&self.files, name)
     }
 
     fn pkg_local(&self, name: &str, path: &str) -> Result<String, String> {
@@ -963,6 +997,7 @@ fn main() -> i32 {
         take_events(&mut shell, &mut events);
         take_panel(&mut shell);
         take_effects(&mut shell);
+        give_call_results(&mut shell);
         take_files(&mut shell);
         take_settings(&mut shell);
         give_appearance(&system);

@@ -20,6 +20,7 @@ fn requests_read_and_write_back() {
         "reset",
         "back",
         "build hello-app 0.0.12",
+        "trial hello-app",
         "eval 0\n",
     ] {
         let request = Request::parse(text).unwrap_or_else(|e| panic!("{text}: {e}"));
@@ -52,6 +53,10 @@ fn requests_read_and_write_back() {
         "build hello 0.0.1 x",
         "build hello 1.0-rc",
         "build hello 0.0.1\nint x;",
+        "trial",
+        "trial ../x",
+        "trial hello 0.0.1",
+        "trial hello\nint x;",
         too_long.as_str(),
     ] {
         assert!(Request::parse(text).is_err(), "{text:?}");

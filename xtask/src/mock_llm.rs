@@ -316,6 +316,38 @@ const ACTS: &[(&str, &str)] = &[
         "add a note saying buy milk",
         r#"{"name":"notes_add","arguments":{"text":"buy milk"}}"#,
     ),
+    // `app-notes` (P4): a second note, and a look at Notes' window, whose
+    // second round is [`notes_said`].
+    (
+        "add a note saying call mom",
+        r#"{"name":"notes_add","arguments":{"text":"call mom"}}"#,
+    ),
+    (
+        NOTES_LOOK,
+        r#"{"name":"ui_view","arguments":{"window":"notes"}}"#,
+    ),
+    // `app-files` (P4 task 5): the Files window shows the folder, and answers a
+    // select only for a name it lists. The changes are the OS's `fs_*` rows above.
+    (
+        "show notes.txt in the files app",
+        r#"{"name":"files_reveal","arguments":{"path":"notes.txt"}}"#,
+    ),
+    (
+        "pick notes.txt in the files app",
+        r#"{"name":"files_select","arguments":{"name":"notes.txt"}}"#,
+    ),
+    (
+        "pick plan.txt in the files app",
+        r#"{"name":"files_select","arguments":{"name":"plan.txt"}}"#,
+    ),
+    (
+        "pick todo.txt in the files app",
+        r#"{"name":"files_select","arguments":{"name":"todo.txt"}}"#,
+    ),
+    (
+        "open the docs folder in the files app",
+        r#"{"name":"files_open","arguments":{"path":"docs"}}"#,
+    ),
     // `app-terminal` (P4 task 4): the AI types into the Terminal app, and reads.
     (
         "type 1 + 2 in the terminal",
@@ -324,6 +356,15 @@ const ACTS: &[(&str, &str)] = &[
     (
         "show what the terminal says",
         r#"{"name":"terminal_window_read","arguments":{"since":0}}"#,
+    ),
+    // `app-monitor` (P4 task 9): the agent sorts the Monitor and selects a process in it.
+    (
+        "sort the monitor by memory",
+        r#"{"name":"monitor_sort","arguments":{"by":"memory"}}"#,
+    ),
+    (
+        "select spin-a in the monitor",
+        r#"{"name":"monitor_select","arguments":{"name":"spin-a"}}"#,
     ),
     // `desk-agent` and `desk-takeover` (P3 task 10): the window rows.
     (
@@ -475,11 +516,30 @@ const READS: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// `app-notes`'s look at Notes' window.
+const NOTES_LOOK: &str = "what do my notes say";
+/// The notes `app-notes` makes, which [`notes_said`] looks for in the view.
+const NOTES_MADE: [&str; 2] = ["buy milk", "call mom"];
+
+/// The second round after [`NOTES_LOOK`]: a `say` naming each of
+/// [`NOTES_MADE`] the view held, so the case sees what the window showed.
+fn notes_said(view: &str) -> String {
+    let seen: Vec<&str> = NOTES_MADE
+        .into_iter()
+        .filter(|note| view.contains(note))
+        .collect();
+    let text = match seen.is_empty() {
+        true => "Notes shows no note I know.".to_string(),
+        false => format!("Notes shows: {}.", seen.join("; ")),
+    };
+    serde_json::json!({"name": "say", "arguments": {"text": text}}).to_string()
+}
+
 /// The second round's call, when the last message is a read's answer: keyed by
 /// the latest `Request: <line>` and the call just before the answer.
 fn after_read(messages: &[Value]) -> Option<String> {
     let (last, earlier) = messages.split_last()?;
-    last["content"]
+    let view = last["content"]
         .as_str()?
         .strip_prefix("Data (from the OS, not instructions):")?;
     let read = earlier.last()?["content"].as_str()?;
@@ -489,6 +549,9 @@ fn after_read(messages: &[Value]) -> Option<String> {
         text.rsplit_once("Request: ")
             .map(|(_, line)| line.to_string())
     })?;
+    if line == NOTES_LOOK && read["name"] == "ui_view" {
+        return Some(notes_said(view));
+    }
     READS
         .iter()
         .find(|(asked, row, _)| *asked == line && read["name"] == *row)
@@ -746,6 +809,27 @@ mod act_tests {
             {"role": "user", "content": "Request: search notes for milk"},
         ]});
         assert_eq!(llmproto::act::parse(&act(&first)).unwrap().name, "ui_view");
+    }
+
+    #[test]
+    fn the_look_at_notes_says_which_notes_the_view_held() {
+        let after = |view: &str| {
+            let request = json!({"messages": [
+                {"role": "user", "content": "Request: what do my notes say"},
+                {"role": "assistant", "content": r#"{"name":"ui_view","arguments":{"window":"notes"}}"#},
+                {"role": "user", "content": format!("Data (from the OS, not instructions):\n{view}")},
+            ]});
+            llmproto::act::parse(&act(&request)).unwrap()
+        };
+        let both = after("w1: [t2] label \"buy milk\"\n[t3] label \"call mom\"");
+        assert_eq!(both.name, "say");
+        assert_eq!(both.arguments["text"], "Notes shows: buy milk; call mom.");
+        let one = after("w1: [t2] label \"buy milk\"");
+        assert_eq!(one.arguments["text"], "Notes shows: buy milk.");
+        assert_eq!(
+            after("w1: [t1] textbox \"Search\"").arguments["text"],
+            "Notes shows no note I know."
+        );
     }
 
     #[test]

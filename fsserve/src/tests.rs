@@ -490,34 +490,103 @@ fn an_aborted_action_drops_its_pending_writes() {
     assert_eq!(c.read(&file), Ok(b"kept".to_vec()));
 }
 
+/// ALICE runs as `notes-window`, BOB as `files-window`; no one else has a name.
+fn app_name(pid: u64, out: &mut [u8; kabi::MAX_NAME]) -> Option<usize> {
+    let name: &[u8] = match pid {
+        ALICE => b"notes-window",
+        BOB => b"files-window",
+        _ => return None,
+    };
+    out[..name.len()].copy_from_slice(name);
+    Some(name.len())
+}
+
+fn open_in(c: &mut Client, caller: u64, dir: u64, path: &str, how: How) -> (Reply, Option<Mint>) {
+    let request = Request::Open {
+        path: path.into(),
+        rights: (Rights::READ | Rights::WRITE | Rights::CREATE).bits(),
+        how,
+    };
+    c.call(caller, dir, DIR_RIGHTS, request)
+}
+
 #[test]
-fn the_apps_dir_holds_each_app_s_folder_and_reaches_no_further() {
+fn the_apps_dir_opens_only_the_caller_s_own_folder() {
     let mut disk = MemDisk::new(BLOCKS);
     let (mut c, _) = Client::start(&mut disk);
-    let apps = |c: &mut Client, path: &str, how: How| {
-        let request = Request::Open {
-            path: path.into(),
-            rights: (Rights::READ | Rights::WRITE | Rights::CREATE).bits(),
-            how,
-        };
-        c.call(ALICE, kabi::fs::SYSTEM_APPS, DIR_RIGHTS, request)
-    };
-    let (_, here) = apps(&mut c, ".", How::Existing);
-    assert_eq!(
-        Badge::parse(here.unwrap().badge).object,
-        c.server.system_apps
-    );
+    c.server.set_name_of(app_name);
+    let apps = kabi::fs::SYSTEM_APPS;
     assert!(c.server.system_apps != 0 && c.server.system_apps != c.server.system_pkg);
-    let (reply, folder) = apps(&mut c, "notes", How::Mkdir);
+    let (reply, own) = open_in(&mut c, ALICE, apps, "notes-window", How::Mkdir);
     assert!(matches!(reply, Reply::Opened(..)), "{reply:?}");
-    assert!(folder.is_some());
-    for path in ["..", "../state", "../pkg"] {
+    let own = own.unwrap();
+    let (reply, again) = open_in(&mut c, ALICE, apps, "notes-window", How::Existing);
+    assert!(matches!(reply, Reply::Opened(..)), "{reply:?}");
+    assert_eq!(again.unwrap().badge, own.badge);
+    let (_, theirs) = open_in(&mut c, BOB, apps, "files-window", How::Mkdir);
+    assert!(theirs.is_some());
+    // Through the root: only the caller's own name, exactly.
+    for path in [
+        "",
+        ".",
+        "..",
+        "../state",
+        "/notes-window",
+        "/system/apps/files-window",
+        "files-window",
+        "Notes-Window",
+        "NOTES-WINDOW",
+        "notes-window ",
+        "notes-window\0",
+        "notes-window/",
+        "notes-window/.",
+        "notes-window/../files-window",
+        "./notes-window",
+        "notes-windo",
+    ] {
+        for how in [How::Existing, How::Mkdir] {
+            assert_eq!(
+                failed(open_in(&mut c, ALICE, apps, path, how)),
+                Error::Permission,
+                "{path:?}"
+            );
+        }
+    }
+    // Nothing else goes through the root, and a caller with no name opens nothing.
+    let list = Request::List {
+        after: None,
+        max: 10,
+    };
+    assert_eq!(
+        failed(c.call(ALICE, apps, DIR_RIGHTS, list)),
+        Error::Permission
+    );
+    assert_eq!(
+        failed(c.call(ALICE, apps, DIR_RIGHTS, Request::Stat)),
+        Error::Permission
+    );
+    let rename = Request::Rename {
+        from: "files-window".into(),
+        to: "notes-window".into(),
+    };
+    assert_eq!(
+        failed(c.call(ALICE, apps, DIR_RIGHTS, rename)),
+        Error::Permission
+    );
+    assert_eq!(
+        failed(open_in(&mut c, 99, apps, "notes-window", How::Existing)),
+        Error::Permission
+    );
+    // Beneath its own folder, `..` stops: the sibling is out of reach.
+    for path in ["..", "../files-window", "../files-window/state.0"] {
         assert_eq!(
-            failed(apps(&mut c, path, How::Existing)),
+            failed(open_in(&mut c, ALICE, own.badge, path, How::Existing)),
             Error::Invalid,
             "{path}"
         );
     }
+    let (reply, _) = open_in(&mut c, ALICE, own.badge, "state.0", How::CreateFile);
+    assert!(matches!(reply, Reply::Opened(..)), "{reply:?}");
 }
 
 #[test]

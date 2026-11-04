@@ -62,6 +62,11 @@ fn read_only(badge: u64) -> bool {
     matches!(badge, SYSTEM_SETTINGS | SYSTEM_RESTART)
 }
 
+/// How `fs` learns a caller's process name ([`Server::set_name_of`]): it writes
+/// the name into the buffer and gives its length, or `None` for a pid that is
+/// not running.
+pub type NameOf = fn(u64, &mut [u8; kabi::MAX_NAME]) -> Option<usize>;
+
 /// The most a read-only folder's handle may use, however it was made.
 const SETTINGS_RIGHTS: Rights = Rights::READ.union(Rights::ENUMERATE).union(BASE);
 
@@ -170,6 +175,9 @@ pub struct Server<D: BlockDev> {
     /// Whether a caller (a pid) still runs: a dead owner's action is aborted
     /// ([`Server::set_alive`]).
     alive: fn(u64) -> bool,
+    /// A caller's process name, for the one folder of `/system/apps` it may
+    /// open ([`Server::set_name_of`]).
+    name_of: NameOf,
     /// The model store's blob being written in the open action ([`models`]).
     sealing: Option<models::Sealing>,
 }
@@ -209,6 +217,7 @@ impl<D: BlockDev> Server<D> {
             pending: None,
             cache: None,
             alive: |_| true,
+            name_of: |_, _| None,
             sealing: None,
         };
         let fixed = server.prepare(&uuid)?;
@@ -235,6 +244,32 @@ impl<D: BlockDev> Server<D> {
     /// every later change.
     pub fn set_alive(&mut self, alive: fn(u64) -> bool) {
         self.alive = alive;
+    }
+
+    /// How `fs` learns a caller's process name. Through [`SYSTEM_APPS`] a
+    /// caller may only open its own folder, the one named exactly as it is
+    /// ([`Server::own_folder_only`]); until this is set, no name is known and
+    /// the folder opens nothing.
+    pub fn set_name_of(&mut self, name_of: NameOf) {
+        self.name_of = name_of;
+    }
+
+    /// `/system/apps` is every app's saved state, one folder an app, and the
+    /// plan line's `dir=apps` hands the root (its badge is fixed): through it
+    /// the one request allowed is an open of the caller's own folder, by its
+    /// exact process name. A sibling, `..`, a longer path, a listing or a
+    /// rename is refused, so the handle that open mints, beneath which `..`
+    /// stops, is all an app ever reaches.
+    fn own_folder_only(&self, caller: u64, request: &Request) -> Result<(), Error> {
+        let Request::Open { path, .. } = request else {
+            return Err(Error::Permission);
+        };
+        let mut name = [0; kabi::MAX_NAME];
+        let len = (self.name_of)(caller, &mut name).ok_or(Error::Permission)?;
+        match core::str::from_utf8(name.get(..len).ok_or(Error::Permission)?) {
+            Ok(name) if path == name && kaifs::items::valid_name(name) => Ok(()),
+            _ => Err(Error::Permission),
+        }
     }
 
     /// Aborts the open action if its owner is dead; the kernel (0) never dies.
@@ -434,6 +469,9 @@ impl<D: BlockDev> Server<D> {
             false => call,
         };
         let request = fsproto::decode_request(call.request)?;
+        if call.badge == SYSTEM_APPS {
+            self.own_folder_only(call.caller, &request)?;
+        }
         let changes = changes(&request);
         if changes && read_only(call.badge) {
             return Err(Error::Permission);

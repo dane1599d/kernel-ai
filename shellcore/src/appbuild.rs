@@ -15,10 +15,11 @@
 //! build runs. The log records the request, the source's SHA-256 and `cc`'s
 //! `built-by cc` line, which `:why` shows.
 
-use crate::actions::How;
+use crate::actions::{How, Pending};
 use crate::actlog::{Change, Entry, Form, State};
 use crate::ccbuild::{APPS_DIR, CcBuilt, shown, valid_name, valid_version};
 use crate::cmode::program::MAX_REPAIRS;
+use crate::script::Checked;
 use crate::tiers::Tier;
 use crate::{Reply, SCRIPT_ROUND_MS, Shell};
 use agentabi::consent::{Decision, Why};
@@ -27,11 +28,21 @@ use alloc::string::{String, ToString};
 use llmproto::script::{AnswerError, Lang, ScriptRequest};
 use sha2::{Digest, Sha256};
 
-/// The most time one `app_build` spends asking the model and building, so the
-/// whole of it answers within the terminal's wait for a line (310 s).
-pub const BUILD_BUDGET_MS: u64 = 280_000;
+/// The terminal's wait for one line's answer: every round of `app_build` must
+/// fit in it whole.
+pub const LINE_WAIT_MS: u64 = 310_000;
+/// The longest the host waits for `cc build` (`shell/build.rs`), which a round
+/// reserves beside the model's.
+pub const CC_BUILD_WAIT_MS: u64 = 150_000;
 /// The longest request the card gets, as the row takes it.
 const MAX_REQUEST: usize = 300;
+
+/// An `app_build` waiting on its menu's answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Asked {
+    name: String,
+    wanted: String,
+}
 
 /// What `app_build` built and has not installed: what the install card shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,6 +54,11 @@ pub struct Built {
     /// The SHA-256 of `main.c`, in hex.
     pub source: String,
     pub built: CcBuilt,
+}
+
+/// The log's line for app `name`'s `main.c` at `sha`.
+fn source_line(name: &str, sha: &str) -> String {
+    format!("source {APPS_DIR}/{name}/main.c sha256 {sha}")
 }
 
 /// The SHA-256 of `text`, in hex.
@@ -78,15 +94,60 @@ impl Shell {
         if wanted.is_empty() || wanted.len() > MAX_REQUEST || wanted.chars().any(char::is_control) {
             return Reply::err("app_build takes what the app should do, in one line");
         }
-        let consent = match decision.why {
-            Why::TakenAs => "taken-as",
-            _ => "asked",
-        };
+        let call = termcore::once::call_text(
+            "app_build",
+            &[
+                termcore::once::CallArg::Text(name),
+                termcore::once::CallArg::Text(wanted),
+            ],
+        )
+        .unwrap_or_else(|| String::from("app_build"));
+        // It runs when the line asked for it; a vague line's reading, a call
+        // the model added, or one read content steered asks once (D6).
+        if (decision.tier, decision.why) != (Tier::Run, Why::Asked) {
+            self.host.audit(&format!("request {id}: {call} asks"));
+            let checked = Checked::shown_only(&call);
+            let reply = self.ask_call(id, request, checked, decision.why, None, None);
+            if let Some(pending) = &mut self.pending {
+                pending.app = Some(Asked {
+                    name: name.to_string(),
+                    wanted: wanted.to_string(),
+                });
+            }
+            return reply;
+        }
         let how = How {
             form: Form::Call,
             tier: Tier::Run,
-            consent: String::from(consent),
+            consent: String::from("asked"),
         };
+        self.app_run(id, request, name, wanted, how)
+    }
+
+    /// The answer to an `app_build`'s menu: an Allow whose ONCE checks runs it.
+    pub(crate) fn answer_app(&mut self, pending: Pending, text: &str) -> Reply {
+        let Some(asked) = pending.app.clone() else {
+            return Reply::err("nothing to confirm");
+        };
+        if let Err(reply) = self.allowed(&pending, text) {
+            return reply;
+        }
+        let how = How {
+            consent: String::from("yes"),
+            ..pending.how.clone()
+        };
+        let reply = self.app_run(
+            pending.id,
+            &pending.request,
+            &asked.name,
+            &asked.wanted,
+            how,
+        );
+        self.remember(&pending, &reply.text);
+        reply
+    }
+
+    fn app_run(&mut self, id: u64, request: &str, name: &str, wanted: &str, how: How) -> Reply {
         match self.app_build(name, wanted) {
             Ok(built) => self.log_app_build(id, request, wanted, how, built),
             Err(why) => {
@@ -98,11 +159,26 @@ impl Shell {
 
     /// The write, check, build and repair loop: what was built, or why not.
     fn app_build(&mut self, name: &str, wanted: &str) -> Result<Built, String> {
+        // A main.c that app_build did not write is the person's: never
+        // overwritten, since nothing would bring it back.
+        let now = self
+            .host
+            .app_source_read(name)
+            .map_err(|why| format!("{APPS_DIR}/{name}/main.c: {}", shown(&why)))?;
+        if let Some(text) = now
+            && !self.app_wrote(name, &sha256(&text))
+        {
+            return Err(format!(
+                "{APPS_DIR}/{name}/main.c was changed since Kai wrote it, so it is left as it is: give the app another name"
+            ));
+        }
         let started = self.host.now_ns();
         let mut repair: Option<(String, String)> = None;
         for round in 0..=MAX_REPAIRS {
+            // A round is the model's answer and cc's build: each starts only
+            // if both fit in what is left of the terminal's wait.
             let spent_ms = self.host.now_ns().saturating_sub(started) / 1_000_000;
-            if round > 0 && spent_ms + SCRIPT_ROUND_MS > BUILD_BUDGET_MS {
+            if round > 0 && spent_ms + SCRIPT_ROUND_MS + CC_BUILD_WAIT_MS > LINE_WAIT_MS {
                 let why = repair.map(|(_, why)| why).unwrap_or_default();
                 return Err(format!(
                     "Kai's app {name} did not build in time, after {round} tries:\n{why}"
@@ -163,6 +239,8 @@ impl Shell {
         self.host
             .app_source(name, source)
             .map_err(|why| format!("the app's source was not kept: {}", shown(&why)))?;
+        self.app_written.retain(|(n, _)| n != name);
+        self.app_written.push((name.to_string(), sha256(source)));
         let version = match self.host.pkg(&format!("local-next {name}")) {
             Ok(version) if valid_version(&version) => version,
             Ok(other) => return Err(format!("pkg's next version is not one: {}", shown(&other))),
@@ -173,6 +251,18 @@ impl Shell {
             .cc_build(APPS_DIR, name, &version)
             .map_err(|why| format!("cc build refused it:\n{why}"))?;
         Ok((version, built))
+    }
+
+    /// Whether `sha` is a `main.c` this shell wrote for app `name`: this
+    /// session's last, or one an `app_build` entry of the log records.
+    fn app_wrote(&self, name: &str, sha: &str) -> bool {
+        let line = source_line(name, sha);
+        self.app_written.iter().any(|(n, s)| n == name && s == sha)
+            || self
+                .log
+                .entries()
+                .rev()
+                .any(|e| e.script.starts_with("app_build(") && e.script.contains(&line))
     }
 
     /// Logs a build: the request, the source's hash and `cc`'s provenance.
@@ -192,7 +282,8 @@ impl Shell {
             built: cc,
         } = &built;
         let script = format!(
-            "app_build(\"{name}\", {wanted:?})\nsource {APPS_DIR}/{name}/main.c sha256 {source}\n{}",
+            "app_build(\"{name}\", {wanted:?})\n{}\n{}",
+            source_line(name, source),
             cc.provenance
         );
         let change = Change {
@@ -233,7 +324,15 @@ impl Shell {
         how: How,
         why: &str,
     ) {
-        let script = format!("app_build(\"{name}\", {wanted:?})");
+        // The source it last wrote stays, and may be built again.
+        let written = self.app_written.iter().find(|(n, _)| n == name);
+        let script = match written {
+            Some((_, sha)) => format!(
+                "app_build(\"{name}\", {wanted:?})\n{}",
+                source_line(name, sha)
+            ),
+            None => format!("app_build(\"{name}\", {wanted:?})"),
+        };
         let change = Change {
             action: String::from("app_build"),
             owner: String::from("cc"),

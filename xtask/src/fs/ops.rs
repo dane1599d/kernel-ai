@@ -84,7 +84,6 @@ pub fn mkfs(image: &Path, bytes: u64, label: &str, force: bool) -> Result<String
         .write(true)
         .open(image)
         .map_err(|e| format!("{}: {e}", image.display()))?;
-    let dev = FileDev::new(file, region);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos() as u64);
@@ -93,18 +92,25 @@ pub fn mkfs(image: &Path, bytes: u64, label: &str, force: bool) -> Result<String
     seed.update(now.to_le_bytes());
     let mut uuid = [0u8; 16];
     uuid.copy_from_slice(&seed.finalize()[..16]);
+    let generation = format(FileDev::new(file, region), uuid, label, now)?;
+    Ok(format!(
+        "{}: kaifs format 1, {} MiB of kai-data at 2 MiB, generation {generation}, volumes system, home and models",
+        image.display(),
+        (region.blocks * 4096) >> 20
+    ))
+}
+
+/// Formats kaifs over `dev` with `uuid`, `label` and the clock `now` (ns), and
+/// makes its first folders; the generation it commits. A release image's
+/// `kai-data` passes a fixed `uuid` and `now`, so two builds make the same bytes.
+pub fn format(dev: FileDev, uuid: [u8; 16], label: &str, now: u64) -> Result<u64, String> {
     let mut fs = Fs::mkfs(dev, uuid, label).map_err(fail("mkfs"))?;
     fs.clock = now;
     for (vol, path) in FOLDERS {
         fs.set_volume(vol).map_err(fail(path))?;
         fs.mkdir(ROOT, &path[1..]).map_err(fail(path))?;
     }
-    let generation = fs.commit().map_err(fail("commit"))?;
-    Ok(format!(
-        "{}: kaifs format 1, {} MiB of kai-data at 2 MiB, generation {generation}, volumes system, home and models",
-        image.display(),
-        (region.blocks * 4096) >> 20
-    ))
+    fs.commit().map_err(fail("commit"))
 }
 
 /// The inode at an inner path of the active volume.
