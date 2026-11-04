@@ -19,7 +19,7 @@ env:
 
 jobs:
   throughput:
-    name: net-throughput (${{ matrix.accel }}, queue ${{ matrix.queue }}, clock ${{ matrix.clock }})
+    name: net-throughput profile (${{ matrix.accel }}, ${{ matrix.runner }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -34,7 +34,9 @@ jobs:
         # sends did not help. Now the receive queue's depth, at build time.
         tx: [sync]
         clock: [tsc]
-        queue: [16, 64, 256]
+        # The profile: one queue depth, on two runners to see their spread.
+        queue: [16]
+        runner: [a, b]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/qemu

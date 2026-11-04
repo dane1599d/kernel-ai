@@ -11,6 +11,7 @@
 //! - `net_tx=sync` sends as virtio-drivers' `send` does: kick and wait for the
 //!   card on every frame.
 
+use super::prof::{self, Phase, Span};
 use super::{BUFFER_LEN, Nic, QUEUE_SIZE};
 use crate::{hpet, log};
 use alloc::collections::VecDeque;
@@ -95,6 +96,8 @@ impl Card {
 
     /// Gives the card `frame`, without waiting for it, or with (`net_tx=sync`).
     fn transmit(&mut self, frame: &[u8]) {
+        let _span = Span::start(Phase::CardTx);
+        prof::TX_FRAMES.fetch_add(1, Ordering::Relaxed);
         if SYNC_TX.load(Ordering::Acquire) {
             if let Err(error) = self.nic.send(frame) {
                 log!("net: transmit error {error:?}");
@@ -121,7 +124,9 @@ impl Card {
 
     /// The next frame the card received.
     fn receive(&mut self) -> Option<Received> {
+        let _span = Span::start(Phase::CardRx);
         let token = self.nic.poll_receive()?;
+        prof::RX_FRAMES.fetch_add(1, Ordering::Relaxed);
         let mut buffer = self.rx.get_mut(usize::from(token))?.take()?;
         // SAFETY: `buffer` is the one `receive_begin` got for `token`.
         match unsafe { self.nic.receive_complete(token, &mut buffer) } {
@@ -136,6 +141,7 @@ impl Card {
 
     /// Hands a receive buffer back to the card.
     fn give_rx(&mut self, mut buffer: Vec<u8>) {
+        let _span = Span::start(Phase::CardRefill);
         // SAFETY: the buffer is kept in `rx` until the card gives its token back.
         match unsafe { self.nic.receive_begin(&mut buffer) } {
             Ok(token) => self.rx[usize::from(token)] = Some(buffer),
@@ -175,10 +181,16 @@ impl NicDevice {
         let now = hpet::nanos();
         let delayed = self.delayed.get_mut();
         let card = self.card.get_mut();
-        while delayed.front().is_some_and(|(due, _)| *due <= now) && card.can_send() {
+        loop {
+            // The queue's own work only: the send it releases is the card's.
+            let span = Span::start(Phase::Delay);
+            if !(delayed.front().is_some_and(|(due, _)| *due <= now) && card.can_send()) {
+                break;
+            }
             let Some((_, frame)) = delayed.pop_front() else {
                 break;
             };
+            drop(span);
             card.transmit(&frame);
         }
     }
@@ -273,6 +285,7 @@ impl TxToken for NicTx<'_> {
         let result = f(&mut frame);
         let delay = TX_DELAY_NS.load(Ordering::Acquire);
         if delay != 0 || !self.delayed.borrow().is_empty() {
+            let _span = Span::start(Phase::Delay);
             // Behind the held frames, so the order on the wire stays.
             let due = hpet::nanos().saturating_add(delay);
             self.delayed.borrow_mut().push_back((due, frame));

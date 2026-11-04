@@ -11,9 +11,9 @@ use core::net::Ipv4Addr;
 
 const SERVER: (Ipv4Addr, u16) = (Ipv4Addr::new(10, 0, 2, 2), 8765);
 const REQUEST: &[u8] = b"GET /blob HTTP/1.0\r\nHost: 10.0.2.2\r\n\r\n";
-const RTTS_MS: [u64; 3] = [0, 20, 80];
-const BUFFERS: [usize; 3] = [64 * 1024, 1024 * 1024, 4 * 1024 * 1024];
-const GAPS_MS: [u64; 2] = [2, 0];
+const RTTS_MS: [u64; 2] = [0, 20];
+const BUFFERS: [usize; 2] = [1024 * 1024, 4 * 1024 * 1024];
+const GAPS_MS: [u64; 2] = [0, 2];
 
 /// The blob is 256 MiB; a run stops at this many bytes or after the window.
 const LIMIT: u64 = 128 * 1024 * 1024;
@@ -38,7 +38,11 @@ pub fn check() -> Result<(), &'static str> {
                     timeout_ms: TIMEOUT_MS,
                     ack_delay: true,
                 };
+                net::prof::reset();
+                let start_tsc = net::prof::tsc();
                 let moved = bulk::download(&plan);
+                let total_tsc = net::prof::tsc().wrapping_sub(start_tsc);
+                let phases = net::prof::ticks();
                 net::set_tx_delay_ms(0);
                 threads::sleep_ms(SETTLE_MS);
                 let kib = rx_buffer / 1024;
@@ -50,6 +54,7 @@ pub fn check() -> Result<(), &'static str> {
                 };
                 match moved {
                     Ok(m) => {
+                        profile(&phases, total_tsc, m.elapsed_ns + m.first_byte_ns);
                         let ms = (m.elapsed_ns / 1_000_000).max(1);
                         // MB/s to a tenth: bytes per ms is kB/s.
                         let tenths = m.bytes * 10 / ms / 1000;
@@ -75,6 +80,34 @@ pub fn check() -> Result<(), &'static str> {
     if failed != 0 {
         return Err("net-throughput: a download failed");
     }
-    log!("net-throughput: 18 downloads measured");
+    log!("net-throughput: 8 downloads measured");
     Ok(())
+}
+
+/// One download's time by phase: each phase's share of the whole and its cost
+/// per received frame in ns; smoltcp's own share is `poll` less what it called.
+fn profile(phases: &[u64; net::prof::PHASES], total: u64, wall_ns: u64) {
+    use core::sync::atomic::Ordering::Relaxed;
+    use net::prof::{NAMES, RX_FRAMES, TX_FRAMES};
+    let rx = RX_FRAMES.load(Relaxed).max(1);
+    let tx = TX_FRAMES.load(Relaxed);
+    let total = total.max(1);
+    // ns per tick from the download's wall time; a share needs no rate.
+    let ns = |ticks: u64| (u128::from(ticks) * u128::from(wall_ns) / u128::from(total)) as u64;
+    let inner = phases[2] + phases[3] + phases[4] + phases[5];
+    let smoltcp = phases[1].saturating_sub(inner);
+    let mut line =
+        alloc::format!("net-throughput: profile: {rx} frames in, {tx} out; per frame in:");
+    let shares = NAMES
+        .iter()
+        .zip(phases.iter())
+        .chain(core::iter::once((&"smoltcp itself", &smoltcp)));
+    for (name, &ticks) in shares {
+        line.push_str(&alloc::format!(
+            " {name} {}% {} ns,",
+            ticks * 100 / total,
+            ns(ticks) / rx
+        ));
+    }
+    log!("{line} total {} ns", ns(total) / rx);
 }

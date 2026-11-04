@@ -9,6 +9,7 @@
 pub mod bulk;
 mod device;
 pub mod ping;
+pub mod prof;
 pub mod resolve;
 pub mod setup;
 
@@ -70,6 +71,7 @@ unsafe impl Send for Net {}
 impl Net {
     /// Moves frames both ways and applies whatever the DHCP client learned.
     fn poll(&mut self) {
+        let _span = prof::Span::start(prof::Phase::Poll);
         self.device.send_due();
         self.iface.poll(now(), &mut self.device, &mut self.sockets);
         self.device.send_due();

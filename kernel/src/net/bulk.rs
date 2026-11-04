@@ -2,6 +2,7 @@
 //! away, timed from its first byte, over a receive buffer of a given size and
 //! the polled driver with a given gap between polls.
 
+use super::prof::{Phase, Span};
 use super::{NET, next_port, wait_for_address};
 use crate::{hpet, threads};
 use alloc::vec;
@@ -75,8 +76,11 @@ pub fn download(plan: &Plan) -> Result<Moved, &'static str> {
     };
     let mut first = 0;
     let mut connected = false;
+    let mut chunk = vec![0u8; 8 * 1024];
     let result = loop {
+        let lock = Span::start(Phase::Lock);
         let mut guard = NET.lock();
+        drop(lock);
         let net = guard.as_mut().ok_or("net: no network card")?;
         net.poll();
         moved.polls += 1;
@@ -91,7 +95,8 @@ pub fn download(plan: &Plan) -> Result<Moved, &'static str> {
             sent += socket.send_slice(&plan.request[sent..]).unwrap_or(0);
         }
         while socket.can_recv() {
-            match socket.recv(|data| (data.len(), data.len())) {
+            let _copy = Span::start(Phase::Copy);
+            match socket.recv_slice(&mut chunk) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     if first == 0 {
@@ -120,6 +125,7 @@ pub fn download(plan: &Plan) -> Result<Moved, &'static str> {
             break Err("net: no byte came in time");
         }
         drop(guard);
+        let _wait = Span::start(Phase::Wait);
         match plan.gap_ms {
             0 => threads::yield_now(),
             gap => threads::sleep_ms(gap),
