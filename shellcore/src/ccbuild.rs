@@ -138,11 +138,7 @@ pub(crate) fn valid_version(version: &str) -> bool {
 /// Whether `name` may be built: a package's name, 2-12 of a-z, 0-9 and `-`,
 /// starting with a letter. `cc` and `pkg` check it again.
 pub fn valid_name(name: &str) -> bool {
-    (2..=12).contains(&name.len())
-        && name.starts_with(|c: char| c.is_ascii_lowercase())
-        && name
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+    kabi::pkgname::is_valid(name)
 }
 
 /// `pkg`'s `local` answer, `<name> <version> generation <n> from <parent>`,

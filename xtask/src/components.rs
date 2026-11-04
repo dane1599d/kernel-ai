@@ -716,7 +716,7 @@ mod tests {
         assert!(parsed.actions.unwrap().contains("fs_list"));
     }
 
-    /// The editor build carries its two action rows, under its world.
+    /// The editor build carries its three action rows, under its world.
     #[test]
     fn the_editor_build_packs_with_the_editor_actions() {
         let editor = VERSIONS
@@ -733,6 +733,17 @@ mod tests {
         let open = actions.by_name("editor_open").unwrap();
         assert_eq!(open.export, "app:editor/actions@1.0.0#open");
         assert!(actions.by_name("editor_status").is_some());
+        // Opening a file by path is a read the request names: read-only, undoable
+        // by nothing, and a path that must come from the request.
+        let file = actions.by_name("editor_open_file").unwrap();
+        assert_eq!(file.export, "app:editor/actions@1.0.0#open-file");
+        assert_eq!(file.facts.read_only, Some(true));
+        assert_eq!(file.facts.destructive, Some(false));
+        assert_eq!(file.facts.open_world, Some(false));
+        assert_eq!(file.args.len(), 1);
+        assert_eq!(file.args[0].name, "path");
+        assert_eq!(file.args[0].max, Some(255));
+        assert!(file.args[0].from_request);
     }
 
     /// The Terminal build carries its three rows, under its world.

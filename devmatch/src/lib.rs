@@ -56,6 +56,7 @@ const fn kernel(key: Key, driver: &'static str) -> Row {
 pub const TABLE: &[Row] = &[
     kernel(Key::Virtio(1), "virtio-net"),
     kernel(Key::Virtio(2), "virtio-blk"),
+    kernel(Key::Virtio(4), "virtio-rng"),
     kernel(Key::Virtio(16), "virtio-gpu"),
     kernel(Key::Class(0x01, 0x08, 0x02), "nvme"),
     Row {
@@ -165,6 +166,14 @@ mod tests {
         assert_eq!(driver(ids(0x1af4, 0x1001, (1, 0, 0))), Some("virtio-blk"));
         assert_eq!(driver(ids(0x1af4, 0x1042, (1, 0, 0))), Some("virtio-blk"));
         assert_eq!(
+            driver(ids(0x1af4, 0x1044, (0xff, 0, 0))),
+            Some("virtio-rng")
+        );
+        assert_eq!(
+            driver(ids(0x1af4, 0x1005, (0xff, 0, 0))),
+            Some("virtio-rng")
+        );
+        assert_eq!(
             driver(ids(0x1af4, 0x1050, (3, 0x80, 0))),
             Some("virtio-gpu")
         );
@@ -182,7 +191,7 @@ mod tests {
         assert_eq!(driver(ids(0x8086, 0x29c0, (6, 0, 0))), None);
         // A virtio device type we have no driver for, and a non-virtio vendor
         // with a virtio-like device ID.
-        assert_eq!(driver(ids(0x1af4, 0x1044, (0xff, 0, 0))), None);
+        assert_eq!(driver(ids(0x1af4, 0x1043, (0x07, 0x80, 0))), None);
         assert_eq!(driver(ids(0x10ec, 0x1041, (2, 0, 0))), None);
         // An xHCI-like class with another programming interface (EHCI).
         assert_eq!(driver(ids(0x8086, 0x293a, (0x0c, 3, 0x20))), None);

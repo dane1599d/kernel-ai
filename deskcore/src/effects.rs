@@ -25,6 +25,7 @@ use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use kabi::live::NOTICE_TICKET;
 
 pub const PUT: &str = "effects put\n";
 pub const PUT_USER: &str = "effects put user\n";
@@ -140,9 +141,14 @@ impl Queue {
         })
     }
 
-    /// Records what came of one of `app`'s effects.
+    /// Records what came of one of `app`'s effects, or a notice for it (ticket
+    /// [`NOTICE_TICKET`]): one waits at a time, as it says only that something
+    /// changed, so an app that was napping is told once on waking.
     pub fn finish(&mut self, app: &str, done: Done) {
         let results = entry(&mut self.results, app);
+        if done.ticket == NOTICE_TICKET && results.iter().any(|d| *d == done) {
+            return;
+        }
         if results.len() == MAX_RESULTS {
             results.pop_front();
         }
@@ -221,6 +227,29 @@ impl Sent {
         }
         (accepted, stray)
     }
+}
+
+/// Splits the notices off `results`: the notice the OS sent (`Ok` with ticket
+/// [`NOTICE_TICKET`]; the first, however many came), and the rest, which answer
+/// effects. A refusal under the notice's ticket is dropped: only the shell sends
+/// a notice, and an app that queues a line with ticket 0 gets such a refusal for
+/// it, which must not read as a notice.
+pub fn split_notice(results: Vec<Done>) -> (Vec<Done>, Option<String>) {
+    let mut notice = None;
+    let mut rest = Vec::new();
+    for done in results {
+        match (done.ticket == NOTICE_TICKET, done.outcome) {
+            (false, outcome) => rest.push(Done {
+                ticket: done.ticket,
+                outcome,
+            }),
+            (true, Ok(text)) => {
+                notice.get_or_insert(text);
+            }
+            (true, Err(_)) => {}
+        }
+    }
+    (rest, notice)
 }
 
 /// The ticket of an `effect <ticket> <WAVE>` line.
@@ -883,5 +912,62 @@ mod tests {
             // What is kept ends where a line ends, or is all there is.
             assert!(got == text || got.ends_with('\n') || !got.contains('\n'));
         }
+    }
+
+    fn notice() -> Done {
+        Done {
+            ticket: NOTICE_TICKET,
+            outcome: Ok(String::from(kabi::live::NOTICE_FILES)),
+        }
+    }
+
+    fn answer(ticket: u32) -> Done {
+        Done {
+            ticket,
+            outcome: Ok(String::from("list")),
+        }
+    }
+
+    #[test]
+    fn a_notice_waits_once_however_many_came_and_beside_the_results() {
+        let mut queue = Queue::default();
+        queue.finish("files-window", notice());
+        queue.finish("files-window", answer(3));
+        queue.finish("files-window", notice());
+        queue.finish("monitor-window", notice());
+        let waiting = queue.results("files-window", MESSAGE_BUDGET);
+        let notices = waiting.iter().filter(|d| d.ticket == NOTICE_TICKET);
+        assert_eq!(notices.count(), 1);
+        assert_eq!(waiting.len(), 2);
+        // Another app's notice is its own.
+        assert_eq!(queue.results("monitor-window", MESSAGE_BUDGET), [notice()]);
+        // Once taken, the next change is told again.
+        queue.finish("files-window", notice());
+        assert_eq!(queue.results("files-window", MESSAGE_BUDGET), [notice()]);
+    }
+
+    #[test]
+    fn a_notice_is_split_from_the_results_and_a_refusal_under_its_ticket_is_not_one() {
+        let refused = Done {
+            ticket: NOTICE_TICKET,
+            outcome: Err(String::from("the effect is too long")),
+        };
+        let (rest, told) = split_notice(alloc::vec![answer(2), notice(), notice()]);
+        assert_eq!(rest, [answer(2)]);
+        assert_eq!(told.as_deref(), Some(kabi::live::NOTICE_FILES));
+        let (rest, told) = split_notice(alloc::vec![refused, answer(2)]);
+        assert_eq!(rest, [answer(2)]);
+        assert_eq!(told, None);
+    }
+
+    #[test]
+    fn a_notice_is_no_answer_to_a_ticket_the_app_sent() {
+        let mut sent = Sent::default();
+        sent.record(&line(5));
+        let (rest, _) = split_notice(alloc::vec![notice(), answer(5)]);
+        let (accepted, stray) = sent.accept(rest);
+        assert_eq!(accepted, [answer(5)]);
+        assert!(stray.is_empty());
+        assert!(!sent.awaits());
     }
 }
