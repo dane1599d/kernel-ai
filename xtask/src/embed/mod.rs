@@ -34,6 +34,8 @@ const CHUNK_TOKENS: usize = 400;
 const CONTEXT: usize = 512;
 const TOP: usize = 5;
 const COSINE_BAR: f32 = 0.999;
+/// Prompt blocks of 128 tokens rather than 32: same bits, measured faster.
+const BLOCK: usize = 128;
 
 pub fn main(args: &[String]) -> Result<(), String> {
     let flag = |name: &str| {
@@ -59,7 +61,8 @@ pub fn main(args: &[String]) -> Result<(), String> {
             let file = flag("--file").ok_or("usage: cargo xtask embed bench --file GGUF")?;
             bench(file)
         }
-        _ => Err("usage: cargo xtask embed strings|check|bench ...".into()),
+        Some("synth") => synth(),
+        _ => Err("usage: cargo xtask embed strings|check|bench|synth ...".into()),
     }
 }
 
@@ -84,8 +87,8 @@ struct Embedder<'a> {
 
 impl<'a> Embedder<'a> {
     fn new(file: &gguf::Gguf<'a>, pool: &'a dyn Parallel) -> Result<Self, String> {
-        let mut model =
-            infer::Model::new(file, Tier::best(), CONTEXT).map_err(|e| e.to_string())?;
+        let mut model = infer::Model::with_block(file, Tier::best(), CONTEXT, BLOCK)
+            .map_err(|e| e.to_string())?;
         if model.config().pooling != infer::Pooling::Last {
             return Err("the file is not a last-token-pooling embedding model".into());
         }
@@ -341,6 +344,65 @@ fn bench(file: PathBuf) -> Result<(), String> {
     );
 
     latency(&mut embedder, &corpus)
+}
+
+/// `embed synth`: indexing speed on a generated model with
+/// Qwen3-Embedding-0.6B's shapes and Q8_0 weights (random values, not the
+/// real model, so it may run anywhere), on a 400-token chunk by thread count.
+fn synth() -> Result<(), String> {
+    let spec = infer::fixture::Spec {
+        n_layer: 28,
+        n_embd: 1024,
+        n_ff: 3072,
+        n_head: 16,
+        n_head_kv: 8,
+        head_dim: 128,
+        context_length: CONTEXT,
+        pooling_type: Some(3),
+        seed: 13,
+        ..infer::fixture::Spec::tiny()
+    };
+    let started = Instant::now();
+    let bytes = infer::fixture::build(&spec);
+    println!(
+        "xtask: generated {} MB of Qwen3-Embedding-0.6B-shaped Q8_0 weights in {} ms",
+        bytes.len() / 1_000_000,
+        started.elapsed().as_millis()
+    );
+    let file = gguf::Gguf::parse(&bytes).map_err(|e| e.to_string())?;
+    let logical = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let runs = [1, 2, 4, 8, 16]
+        .into_iter()
+        .filter(|&n| n <= logical)
+        .flat_map(|threads| [32, 128, CHUNK_TOKENS].map(|len| (threads, len)));
+    for (threads, len) in runs {
+        let ids: Vec<u32> = (0..len).map(|i| (i * 7 % spec.vocab) as u32).collect();
+        let pool: Box<dyn Parallel> = match threads {
+            1 => Box::new(Serial),
+            n => Box::new(HostPool::new(n)),
+        };
+        let mut model =
+            infer::Model::new(&file, Tier::best(), CONTEXT).map_err(|e| e.to_string())?;
+        model.set_parallel(pool.as_ref());
+        let mut kv = model.kv_cache().map_err(|e| e.to_string())?;
+        let mut out = vec![0.0f32; spec.n_embd];
+        let mut best = Duration::MAX;
+        for _ in 0..3 {
+            kv.clear();
+            let start = Instant::now();
+            model
+                .embed(&mut kv, &ids, &mut out)
+                .map_err(|e| e.to_string())?;
+            best = best.min(start.elapsed());
+        }
+        println!(
+            "xtask: {threads} threads, tier {}: a {len}-token chunk in {} ms, {:.0} tokens/s",
+            Tier::best().name(),
+            best.as_millis(),
+            len as f64 / best.as_secs_f64()
+        );
+    }
+    Ok(())
 }
 
 /// A query against 10,000 stored chunks: embed it, scan them all with the time

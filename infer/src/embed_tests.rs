@@ -92,6 +92,12 @@ fn the_bits_do_not_depend_on_how_the_tokens_are_fed() {
     model.forward_batch(&mut kv, head, None).unwrap();
     model.embed(&mut kv, tail, &mut split).unwrap();
     assert_eq!(whole, split);
+    // Larger blocks give the same bits too (spike S13-3 measures 128).
+    let mut big = Model::with_block(&file, Tier::best(), spec.context_length, 128).unwrap();
+    let mut kv = big.kv_cache().unwrap();
+    let mut again = vec![0.0f32; spec.n_embd];
+    big.embed(&mut kv, &ids, &mut again).unwrap();
+    assert_eq!(whole, again, "128-token blocks");
     // Every tier gives the same bits, as the logits do.
     for tier in Tier::all() {
         let mut model = Model::new(&file, tier, spec.context_length).unwrap();

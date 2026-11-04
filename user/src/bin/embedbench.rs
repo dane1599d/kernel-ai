@@ -22,6 +22,9 @@ use user::{println, sys};
 user::entry!(main);
 
 const CONTEXT: usize = 512;
+/// Prompt blocks of 128 tokens, against `infer::PREFILL_TOKENS` (32) for chat:
+/// the cheap speed lever the manager asked to measure.
+const BLOCK: usize = 128;
 const CHUNK_TOKENS: usize = 400;
 const CHUNKS_TIMED: usize = 6;
 const STORED: usize = 10_000;
@@ -88,7 +91,7 @@ fn main() -> i32 {
         return 1;
     };
     let tier = Tier::best();
-    let mut model = match infer::Model::new(&file, tier, CONTEXT) {
+    let mut model = match infer::Model::with_block(&file, tier, CONTEXT, BLOCK) {
         Ok(model) => model,
         Err(error) => {
             println!("embed-bench: the engine refuses the model: {error}");
@@ -137,19 +140,25 @@ fn main() -> i32 {
     let mut chunk: Vec<u32> = prose[..CHUNK_TOKENS - 1].to_vec();
     chunk.push(eos);
     right &= embed(&chunk, &mut vector);
-    let started = sys::time_ns();
-    for c in 0..CHUNKS_TIMED {
-        let mut chunk: Vec<u32> = prose[c * (CHUNK_TOKENS - 1)..][..CHUNK_TOKENS - 1].to_vec();
-        chunk.push(eos);
-        right &= embed(&chunk, &mut vector);
+    // ADR 0013's 400-token chunks (the bar), then shorter ones: attention's
+    // cost grows with a chunk's length, so the chunk size is a lever too.
+    for size in [CHUNK_TOKENS, 128] {
+        let count = CHUNKS_TIMED * CHUNK_TOKENS / size;
+        let started = sys::time_ns();
+        for c in 0..count {
+            let mut chunk: Vec<u32> = prose[c * (size - 1)..][..size - 1].to_vec();
+            chunk.push(eos);
+            right &= embed(&chunk, &mut vector);
+        }
+        let ns = sys::time_ns() - started;
+        let tokens = (count * size) as u64;
+        println!(
+            "embed-bench: indexing {count} chunks of {size} tokens in {} ms: {} tokens/s, prefill blocks of {} (bar 150 under KVM, at {CHUNK_TOKENS})",
+            ns / 1_000_000,
+            tokens * 1_000_000_000 / ns.max(1),
+            BLOCK
+        );
     }
-    let ns = sys::time_ns() - started;
-    let tokens = (CHUNKS_TIMED * CHUNK_TOKENS) as u64;
-    println!(
-        "embed-bench: indexing {CHUNKS_TIMED} chunks of {CHUNK_TOKENS} tokens in {} ms: {} tokens/s (bar 150 under KVM)",
-        ns / 1_000_000,
-        tokens * 1_000_000_000 / ns.max(1)
-    );
 
     // A query against 10,000 stored chunks of random unit vectors, half of them
     // inside the time window: embed, filtered scan, the best five.
