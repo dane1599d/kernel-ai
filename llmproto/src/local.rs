@@ -268,6 +268,20 @@ pub fn warm(
         .map(|_| ())
 }
 
+/// [`warm`] for C programs: the `c-1` card's system prompt into the cache, so
+/// the next [`program`] computes only its request. The shell asks for it at
+/// `c>` (`warm-lang c`).
+pub fn warm_program(
+    engine: &mut Engine<'_>,
+    on_step: impl FnMut(Step) -> Next,
+) -> Result<(), infer::Error> {
+    let system = crate::program::system_prompt();
+    let turns = [Turn::new(infer::chat::Role::System, &system)];
+    engine
+        .reply(&turns, 1, &mut Sampler::greedy(), None, on_step)
+        .map(|_| ())
+}
+
 /// Fills the slot in use from a `kai-kv 1` file read from `input`, for the
 /// script system prompt [`warm`] computes: the positions a script request will
 /// reuse, or why the file was refused (the slot is then empty).
