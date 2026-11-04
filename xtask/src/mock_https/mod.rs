@@ -424,6 +424,9 @@ fn answer(request: &http::Request, sni: &str, content: &Content, faults: &Faults
         ));
     }
     answer.headers.push(("Accept-Ranges", "bytes".into()));
+    answer
+        .headers
+        .push(("Content-Type", "application/octet-stream".into()));
     answer.body = file[start..end].to_vec();
     answer.range = Some((start, end));
     answer.offset = start;

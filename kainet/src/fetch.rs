@@ -13,19 +13,25 @@
 //!   a short list of our own ([`SHARED`]) such as `co.uk` or `github.io`,
 //!   under which unrelated parties hold names (P5 question 3: no Public
 //!   Suffix List in v0.2).
-//! - **A response** is its status, final URL and body, at most [`MAX_BODY`];
-//!   errors keep their names for the app.
+//! - **A response** is its status, final URL, `Content-Type` and
+//!   `Retry-After` if the server gave them, and body, at most [`MAX_BODY`].
+//!   A status other than 2xx is a response too, not an error. Errors keep
+//!   their names for the app, each with at most [`MAX_WHY`] printable bytes
+//!   of why.
+//! - **No request body or headers yet**: GET and HEAD, with a byte range.
 //! - **A call only queues** ([`Queue`]), as `kai:models` does: at most
 //!   [`MAX_WAITING`] requests wait, and each answer comes in a later call.
 
 use crate::http::{Connect, Fetch, HttpError, Limits, Method, Range, Url};
 use alloc::collections::VecDeque;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// The longest body an app is given.
 pub const MAX_BODY: usize = 64 * 1024;
+/// The most bytes of why an error gives the app.
+pub const MAX_WHY: usize = 200;
 /// The most requests one app instance may have waiting.
 pub const MAX_WAITING: usize = 4;
 /// The most suffixes one grant may hold.
@@ -63,6 +69,9 @@ pub const SHARED: &[&str] = &[
     "azurewebsites.net",
     "s3.amazonaws.com",
     "fly.dev",
+    // Parents under which every customer's names sit (C's review of #671).
+    "amazonaws.com",
+    "googleusercontent.com",
 ];
 
 /// Why a grant was refused.
@@ -132,6 +141,10 @@ pub struct Response {
     pub status: u16,
     /// The URL that answered, after any redirects.
     pub url: String,
+    /// At most 128 printable bytes (`http::head::MAX_CONTENT_TYPE`).
+    pub content_type: Option<String>,
+    /// When to come back, in seconds, as a 429 or 503 says.
+    pub retry_after: Option<u32>,
     pub body: Vec<u8>,
 }
 
@@ -150,18 +163,31 @@ pub enum Error {
 impl From<HttpError> for Error {
     fn from(error: HttpError) -> Self {
         match error {
-            HttpError::Refused(host) => Error::Refused(host),
-            HttpError::Url(why) => Error::BadUrl(why.to_string()),
-            HttpError::Tls(tls) => Error::Tls(format!("{tls:?}")),
-            HttpError::Connect(why) => Error::Tls(why.to_string()),
+            HttpError::Refused(host) => Error::Refused(why(&host)),
+            HttpError::Url(text) => Error::BadUrl(why(text)),
+            HttpError::Tls(tls) => Error::Tls(why(&format!("{tls:?}"))),
+            HttpError::Connect(text) => Error::Tls(why(text)),
             HttpError::TooLarge => Error::TooLarge,
             HttpError::Timeout => Error::Timeout,
             HttpError::Truncated => Error::Truncated,
-            HttpError::Head(why) | HttpError::Body(why) => Error::Http(why.to_string()),
-            HttpError::TooManyRedirects => Error::Http("more than five redirects".to_string()),
-            HttpError::RangeIgnored => Error::Http("the server ignored the range".to_string()),
+            HttpError::Head(text) | HttpError::Body(text) => Error::Http(why(text)),
+            HttpError::TooManyRedirects => Error::Http(why("more than five redirects")),
+            HttpError::RangeIgnored => Error::Http(why("the server ignored the range")),
         }
     }
+}
+
+/// `text` as an app is given it: printable ASCII, anything else as `?`, at
+/// most [`MAX_WHY`] bytes.
+pub fn why(text: &str) -> String {
+    text.bytes()
+        .take(MAX_WHY)
+        .map(|b| match b {
+            b' ' => ' ',
+            b if b.is_ascii_graphic() => b as char,
+            _ => '?',
+        })
+        .collect()
 }
 
 /// Makes `request` for an app holding `grant`, through `connect`, by
@@ -173,9 +199,9 @@ pub fn serve(
     clock: &dyn Fn() -> u64,
     deadline_ns: u64,
 ) -> Result<Response, Error> {
-    let url = Url::parse(&request.url).map_err(|why| Error::BadUrl(why.to_string()))?;
+    let url = Url::parse(&request.url).map_err(|text| Error::BadUrl(why(text)))?;
     if !grant.allows(&url.host, url.port) {
-        return Err(Error::Refused(url.host));
+        return Err(Error::Refused(why(&url.host)));
     }
     let allow = |host: &str, port: u16| grant.allows(host, port);
     let fetch = Fetch {
@@ -191,26 +217,33 @@ pub fn serve(
     Ok(Response {
         status: got.head.status,
         url: format!("https://{}{}", got.url.authority(), got.url.path),
+        content_type: got.head.content_type,
+        retry_after: got.head.retry_after,
         body,
     })
 }
 
-/// One app instance's waiting requests, by ticket.
+/// One app instance's waiting requests, by ticket. A ticket is never given
+/// twice: once the last `u32` is given, every later call traps.
 #[derive(Debug, Default)]
 pub struct Queue {
     next: u32,
+    spent: bool,
     waiting: VecDeque<(u32, Request)>,
 }
 
 impl Queue {
-    /// Queues `request`; its ticket, or `None` when [`MAX_WAITING`] wait (the
-    /// call then traps).
+    /// Queues `request`; its ticket, or `None` when [`MAX_WAITING`] wait or
+    /// the tickets are spent (the call then traps).
     pub fn push(&mut self, request: Request) -> Option<u32> {
-        if self.waiting.len() >= MAX_WAITING {
+        if self.waiting.len() >= MAX_WAITING || self.spent {
             return None;
         }
         let ticket = self.next;
-        self.next = self.next.wrapping_add(1);
+        match self.next.checked_add(1) {
+            Some(next) => self.next = next,
+            None => self.spent = true,
+        }
         self.waiting.push_back((ticket, request));
         Some(ticket)
     }
@@ -274,6 +307,37 @@ mod tests {
         let tickets: Vec<_> = (0..5).map(|_| queue.push(request.clone())).collect();
         assert_eq!(tickets, [Some(0), Some(1), Some(2), Some(3), None]);
         assert_eq!(queue.take().map(|(t, _)| t), Some(0));
-        assert_eq!(queue.push(request), Some(4));
+        assert_eq!(queue.push(request.clone()), Some(4));
+        // The last ticket is given once, and then the queue is spent.
+        let mut last = Queue {
+            next: u32::MAX - 1,
+            ..Queue::default()
+        };
+        assert_eq!(last.push(request.clone()), Some(u32::MAX - 1));
+        assert_eq!(last.push(request.clone()), Some(u32::MAX));
+        last.take();
+        last.take();
+        assert_eq!(last.push(request), None);
+    }
+
+    #[test]
+    fn an_apps_why_is_printable_and_short() {
+        assert_eq!(why("a bad\ncertificate\u{e9}"), "a bad?certificate??");
+        assert_eq!(why(&"x".repeat(500)).len(), MAX_WHY);
+        assert_eq!(
+            Error::from(HttpError::Head("a protocol switch")),
+            Error::Http("a protocol switch".into())
+        );
+    }
+
+    #[test]
+    fn a_grant_may_not_name_a_hosting_parent() {
+        for parent in ["amazonaws.com", "googleusercontent.com"] {
+            assert_eq!(
+                Grant::new(&[parent]),
+                Err(GrantError::Shared(parent.into()))
+            );
+        }
+        assert!(Grant::new(&["my-bucket.s3.amazonaws.com"]).is_ok());
     }
 }

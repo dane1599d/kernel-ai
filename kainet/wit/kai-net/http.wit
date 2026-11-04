@@ -17,6 +17,9 @@
 /// `fetch` only queues. The host takes the queue after the call, makes the
 /// request, and tells the app the answer in a later call, so a call never
 /// waits on the network.
+///
+/// It takes no request body and no request headers yet: GET and HEAD, with a
+/// byte range. A status other than 2xx is a `response`, not an `error`.
 package kai:net@0.1.0;
 
 interface http {
@@ -51,11 +54,17 @@ interface responses {
         /// The URL that answered, after at most five redirects, each within
         /// the grant.
         url: string,
+        /// The server's `Content-Type`, when it is at most 128 printable
+        /// ASCII bytes.
+        content-type: option<string>,
+        /// When to come back, in seconds, as a 429 or a 503 says.
+        retry-after: option<u32>,
         /// At most 64 KiB; a longer body is `too-large`. Large downloads are
         /// the system's (Models, packages), checked against signed lists.
         body: list<u8>,
     }
 
+    /// Each string here is at most 200 printable ASCII bytes.
     variant error {
         /// The host (named) is not under the app's grant: the URL's, or a
         /// redirect's.
