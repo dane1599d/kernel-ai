@@ -259,7 +259,9 @@ pub(crate) fn restore(
 /// conversion and no hash, since they never leave memory (a spill file carries the
 /// hash, for the disk). A snapshot's buffers are kept when it is cleared or saved
 /// over, so a pool of them takes its memory once and a switch pays the copy and
-/// nothing else.
+/// nothing else. A snapshot of a full slot of Qwen3-4B (2,048 positions, 144 KiB
+/// each) is about 288 MiB, and it counts against the pool's `pool_mib` from its
+/// first use, since its buffers are kept.
 #[derive(Default)]
 pub struct Snapshot {
     key: Option<Key>,

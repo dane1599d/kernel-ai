@@ -328,7 +328,8 @@ impl<'a> Engine<'a> {
     /// Copies the slot in use, its computed positions and the tokens behind them,
     /// into `into` ([`crate::segments::Snapshot`]): a preempted agent's state kept in
     /// RAM, for [`Engine::restore_snapshot`]. Whatever `into` held is replaced, and
-    /// its buffers are kept.
+    /// its buffers are kept. It copies the slot in use, so a caller that keeps
+    /// several agents' slots calls [`Engine::use_slot`] for the agent's own first.
     pub fn snapshot_slot(
         &self,
         key: &crate::segments::Key,
