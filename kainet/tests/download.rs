@@ -6,7 +6,7 @@
 mod hostile;
 
 use kainet::chunks::{CHUNK, Chunks, MIN_CHUNK};
-use kainet::download::{DownloadError, Partial, Report, download};
+use kainet::download::{Answer, DownloadError, Partial, Report, download};
 use kainet::http::{HttpError, Range};
 use std::cell::Cell;
 
@@ -169,7 +169,7 @@ impl Server {
         &mut self,
         range: Range,
         sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
-    ) -> Result<u64, HttpError> {
+    ) -> Result<Answer, HttpError> {
         let first = range.first;
         let last = range.last.unwrap_or(self.target.len() as u64 - 1);
         self.served.push((first, last + 1));
@@ -183,7 +183,7 @@ impl Server {
             return Err(HttpError::Truncated);
         }
         sink(&bytes)?;
-        Ok(bytes.len() as u64)
+        Ok(Answer::PARTIAL)
     }
 }
 
@@ -329,7 +329,7 @@ fn a_server_that_sends_too_much_or_too_little_is_refused() {
     let mut long = |_: Range, sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>| {
         calls.set(calls.get() + 1);
         sink(&vec![0; MIN_CHUNK as usize + 1])?;
-        Ok(0)
+        Ok(Answer::PARTIAL)
     };
     assert_eq!(
         download(&list, &mut Memory::default(), &mut long),
@@ -337,11 +337,31 @@ fn a_server_that_sends_too_much_or_too_little_is_refused() {
     );
     let mut short = |_: Range, sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>| {
         sink(&[1, 2, 3])?;
-        Ok(3)
+        Ok(Answer::PARTIAL)
     };
     assert_eq!(
         download(&list, &mut Memory::default(), &mut short),
         Err(DownloadError::Length(0))
     );
     assert_eq!(calls.get(), 1);
+}
+
+/// A status other than 206 comes back as itself, with when to come back,
+/// and nothing is written (C's review of #662).
+#[test]
+fn a_status_other_than_206_is_passed_through_with_its_retry_after() {
+    let target = blob(2 * MIN_CHUNK as usize);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let mut busy = |_: Range, _: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>| {
+        Ok(Answer {
+            status: 429,
+            retry_after: Some(30),
+        })
+    };
+    let mut partial = Memory::default();
+    assert_eq!(
+        download(&list, &mut partial, &mut busy),
+        Err(DownloadError::Status(429, Some(30)))
+    );
+    assert_eq!((partial.done, partial.bytes.len()), (0, 0));
 }
