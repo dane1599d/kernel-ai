@@ -10,6 +10,11 @@ publish = false
 # run only in .github/workflows/fuzz.yml on a GitHub runner, never on a
 # developer's PC. Their bodies are ../fuzz/harness.rs, which kainet's host
 # tests also run (kainet/tests/fuzz_harness.rs).
+#
+# Being outside the workspace, this crate is outside `cargo deny`'s graph, so
+# its one dependency the workspace lacks is listed here (C's review of #677):
+# libfuzzer-sys is "(MIT OR Apache-2.0) AND NCSA", NCSA being libFuzzer's own
+# BSD-style licence. It is a test tool on a GitHub runner and never ships.
 [package.metadata]
 cargo-fuzz = true
 
