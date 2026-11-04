@@ -196,16 +196,19 @@ fn the_id_is_a_package_name_that_is_not_an_os_group_a_window_or_a_built_in_agent
 
 #[test]
 fn the_abi_is_the_oldest_this_agent_needs_and_not_newer_than_the_os() {
-    // P5 task 1 (#666) made it 1.1: RESOLVE became a right on a NetDest.
-    assert_eq!(kabi::handle::ABI, (1, 1));
+    // Against the OS's own ABI, so a minor bump on main needs no edit here.
+    let (major, minor) = kabi::handle::ABI;
+    assert_eq!(major, 1);
     assert!(Manifest::parse(&with("abi", "1.0")).is_ok());
-    assert!(Manifest::parse(&with("abi", "1.1")).is_ok());
+    let now = std::format!("{major}.{minor}");
+    assert!(Manifest::parse(&with("abi", &now)).is_ok(), "{now}");
     for abi in [
         "1", "1.", ".0", "a.b", "1.0.0", "01.0", "1.00", "-1.0", "+1.0", "1 .0", "99999.0",
     ] {
         assert_eq!(refused(&with("abi", abi)), Refusal::BadAbi, "{abi}");
     }
-    for abi in ["1.2", "2.0", "0.0", "0.9"] {
+    let next = std::format!("{major}.{}", minor + 1);
+    for abi in [next.as_str(), "2.0", "0.0", "0.9"] {
         assert_eq!(refused(&with("abi", abi)), Refusal::AbiUnsupported, "{abi}");
     }
 }
