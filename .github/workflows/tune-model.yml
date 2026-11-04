@@ -21,7 +21,7 @@ on:
         description: Catalog id from xtask/models.json
         default: qwen3-4b-2507
       mode:
-        description: demo, record, latency or bench
+        description: demo, record, latency, bench or batch
         default: demo
 
 permissions:
@@ -53,8 +53,14 @@ jobs:
           set -o pipefail
           cargo xtask bench quant 2>&1 | tee transcript.txt
           { echo "bench quant, commit $GITHUB_SHA, $(nproc) CPUs:"; echo; echo '```'; grep -vE '^\s*(Compiling|Finished|Running|Downloaded|Downloading)' transcript.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Batch — spike S13-2, decode steps of 1, 2 and 4 sequences together, no model
+        if: inputs.mode == 'batch'
+        run: |
+          set -o pipefail
+          cargo xtask bench batch 2>&1 | tee transcript.txt
+          { echo "bench batch, commit $GITHUB_SHA, $(nproc) CPUs:"; echo; echo '```'; grep -vE '^\s*(Compiling|Finished|Running|Downloaded|Downloading)' transcript.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Look up the catalog entry
-        if: inputs.mode != 'bench'
+        if: inputs.mode != 'bench' && inputs.mode != 'batch'
         id: entry
         env:
           MODEL: ${{ inputs.model }}
@@ -64,7 +70,7 @@ jobs:
           echo "sha=$(jq -r .sha256 entry.json)" >> "$GITHUB_OUTPUT"
           echo "file=$(jq -r .file entry.json)" >> "$GITHUB_OUTPUT"
       - name: Download the pinned model into a model store and check its SHA-256
-        if: inputs.mode != 'bench'
+        if: inputs.mode != 'bench' && inputs.mode != 'batch'
         run: |
           mkdir -p "$RUNNER_TEMP/models"
           curl -fL --retry 5 -o "$RUNNER_TEMP/models/${{ steps.entry.outputs.file }}" "${{ steps.entry.outputs.url }}"

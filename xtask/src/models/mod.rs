@@ -11,6 +11,7 @@
 
 mod bench;
 mod bench_4b;
+mod bench_batch;
 mod bench_prefill;
 mod bench_project;
 pub(crate) mod catalog;
@@ -32,7 +33,7 @@ use std::fs;
 use std::path::PathBuf;
 pub use store::ENV as STORE_ENV;
 
-const USAGE: &str = "expected setup, model chat|check|pin or bench quant";
+const USAGE: &str = "expected setup, model chat|check|pin, bench quant or bench batch";
 
 pub fn main(args: &[String]) -> Result<(), String> {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -42,6 +43,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
         ["model", "check", rest @ ..] => check::run(&ModelArgs::parse(rest)?),
         ["model", "pin", rest @ ..] => pin::run(&ModelArgs::parse(rest)?),
         ["bench", "quant"] => bench::run(),
+        ["bench", "batch"] => bench_batch::run(),
         _ => Err(USAGE.into()),
     }
 }

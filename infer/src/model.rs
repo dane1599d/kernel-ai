@@ -195,6 +195,67 @@ impl<'a> Model<'a> {
         Ok(())
     }
 
+    /// One decode step of several sequences at once (ADR 0013 spike S13-2):
+    /// `tokens[i]` at the next position of `kvs[i]`, each matrix row read once
+    /// for all of them, each attending over its own cache. `logits` holds one
+    /// vocabulary's logits per sequence, in order. The bits are those of
+    /// [`Model::forward`] on each sequence alone.
+    pub fn decode_batch(
+        &mut self,
+        kvs: &mut [&mut KvCache],
+        tokens: &[u32],
+        logits: &mut [f32],
+    ) -> Result<(), Error> {
+        let c = self.config;
+        let n = tokens.len();
+        if n == 0 || n > PREFILL_TOKENS || kvs.len() != n {
+            return Err(Error::EmptyPrompt);
+        }
+        if let Some(&bad) = tokens.iter().find(|&&t| t as usize >= c.vocab) {
+            return Err(Error::Token(bad));
+        }
+        if logits.len() != n * c.vocab {
+            return Err(Error::Logits);
+        }
+        if kvs.iter().any(|kv| !self.fits(kv)) {
+            return Err(Error::CacheShape);
+        }
+        if kvs.iter().any(|kv| kv.len() >= kv.capacity()) {
+            return Err(Error::ContextFull);
+        }
+        let e = c.n_embd;
+        let embd = self.weights.token_embd;
+        for (&token, x) in tokens.iter().zip(self.s.x.chunks_exact_mut(e)) {
+            embd.dequantize_row(token as usize, x);
+        }
+        let seqs: Vec<(usize, usize)> = kvs
+            .iter()
+            .enumerate()
+            .map(|(i, kv)| (i, kv.len()))
+            .collect();
+        for layer in 0..c.n_layer {
+            self.attention(kvs, &seqs, layer);
+            self.feed_forward(layer, n);
+        }
+        for kv in kvs.iter_mut() {
+            kv.advance(1);
+        }
+        let (w, s) = (&self.weights, &mut self.s);
+        norm_all(
+            self.par,
+            &s.x[..n * e],
+            &w.output_norm,
+            c.rms_eps,
+            &mut s.xn[..n * e],
+        );
+        s.q_embd.quantize_all(self.par, &s.xn[..n * e], n);
+        // The output matrix is the widest by far: its products get their own rows.
+        let mut rows = vec![0.0; n * c.vocab];
+        let jobs = &mut [(&w.output, logits)];
+        run(self.par, self.tier, &s.q_embd, n, &mut rows, jobs);
+        Ok(())
+    }
+
     /// Whether `kv` was made for this model: its shape, and no more positions
     /// than the RoPE table covers.
     pub fn fits(&self, kv: &KvCache) -> bool {
@@ -208,14 +269,21 @@ impl<'a> Model<'a> {
         for (&token, x) in tokens.iter().zip(self.s.x.chunks_exact_mut(e)) {
             embd.dequantize_row(token as usize, x);
         }
+        let pos = kv.len();
+        let seqs: Vec<(usize, usize)> = (0..tokens.len()).map(|t| (0, pos + t)).collect();
         for layer in 0..self.config.n_layer {
-            self.attention(kv, layer, tokens.len());
+            self.attention(&mut [&mut *kv], &seqs, layer);
             self.feed_forward(layer, tokens.len());
         }
         kv.advance(tokens.len());
     }
 
-    fn attention(&mut self, kv: &mut KvCache, layer: usize, n: usize) {
+    /// Attention of `layer` for the block's tokens: token `t` is at position
+    /// `seqs[t].1` of cache `kvs[seqs[t].0]`, and attends over that cache up to
+    /// and including itself. A prompt block's tokens share one cache; a batch
+    /// decode's ([`Model::decode_batch`]) each have their own.
+    fn attention(&mut self, kvs: &mut [&mut KvCache], seqs: &[(usize, usize)], layer: usize) {
+        let n = seqs.len();
         let Self {
             config: c,
             weights,
@@ -227,7 +295,6 @@ impl<'a> Model<'a> {
         } = self;
         let (e, hd, qd, kvd) = (c.n_embd, c.head_dim, c.q_dim(), c.kv_dim());
         let w = &weights.layers[layer];
-        let pos = kv.len();
         norm_all(
             *par,
             &s.x[..n * e],
@@ -250,13 +317,13 @@ impl<'a> Model<'a> {
             for_each_chunk(*par, heads, width, &|t, heads| {
                 for head in heads.chunks_exact_mut(hd) {
                     rms_norm_in_place(head, norm, c.rms_eps);
-                    rope.apply(head, pos + t);
+                    rope.apply(head, seqs[t].1);
                 }
             });
         }
-        for t in 0..n {
+        for (t, &(seq, pos)) in seqs.iter().enumerate() {
             let k = &s.k[t * kvd..][..kvd];
-            let (k_slot, v_slot) = kv.slot_mut(layer, pos + t);
+            let (k_slot, v_slot) = kvs[seq].slot_mut(layer, pos);
             for (slot, &k) in k_slot.iter_mut().zip(k) {
                 *slot = quant::f16::from_f32(k);
             }
@@ -264,11 +331,11 @@ impl<'a> Model<'a> {
                 *slot = quant::f16::from_f32(v);
             }
         }
-        let cache = kv.layer(layer, pos + n - 1);
-        for t in 0..n {
+        for (t, &(seq, pos)) in seqs.iter().enumerate() {
+            let cache = kvs[seq].layer(layer, pos);
             let (q, att) = (&s.q[t * qd..][..qd], &mut s.att[t * qd..][..qd]);
             let heads = (&mut s.heads[..], *context);
-            attend(*par, *tier, c, q, cache, pos + t + 1, heads, att);
+            attend(*par, *tier, c, q, cache, pos + 1, heads, att);
         }
         s.q_att.quantize_all(*par, &s.att[..n * qd], n);
         run(

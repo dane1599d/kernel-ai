@@ -23,6 +23,8 @@ pub mod tagged;
 mod weights;
 
 #[cfg(test)]
+mod batch_decode_tests;
+#[cfg(test)]
 mod cache_tests;
 #[cfg(test)]
 mod chat_tests;
