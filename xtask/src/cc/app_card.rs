@@ -274,7 +274,8 @@ fn the_calls_list_names_every_call() {
         assert!(capp1::KAIAPP_CALLS.contains(&name), "{name}");
     }
     assert!(capp1::KAIAPP_CALLS.contains(&"kai_state_size"));
-    assert_eq!(capp1::KAIAPP_CALLS.len(), capp1::CALLS.len() + 1);
+    assert!(capp1::KAIAPP_CALLS.contains(&"rand"));
+    assert_eq!(capp1::KAIAPP_CALLS.len(), capp1::CALLS.len() + 2);
 }
 
 /// Each call the card shows is declared so in kaiapp.h, and the card gives
@@ -300,4 +301,70 @@ fn the_card_fits_its_budget() {
         "{estimate} estimated tokens, {} bytes",
         card.len()
     );
+}
+
+/// The template with its press set to two of `rand`'s draws.
+fn drawing() -> String {
+    capp1::TEMPLATE.replace(
+        "s->count++;",
+        "s->count = rand() % 1000 * 1000 + rand() % 1000;",
+    )
+}
+
+/// What `app` shows after its button is pressed once in a call with `seed`.
+fn press(app: &mut CoreInstance, window: u32, seed: u64) -> String {
+    let inputs = Inputs {
+        now_ms: 0,
+        seed,
+        first_ticket: 0,
+    };
+    app.begin(&Storage::new(), inputs);
+    app.ui_events(window, &[UiEvent::Pressed(3)]).unwrap();
+    app.finish();
+    names(app)
+}
+
+/// What [`drawing`] shows on a fresh instance after a press in a call with
+/// `seed`.
+fn drawn(seed: u64) -> String {
+    let (mut app, window) = started(&drawing());
+    press(&mut app, window, seed)
+}
+
+/// A replayed call draws the same on a version that has served calls as on a
+/// fresh one: `ctl try` replays each kept request on both copies with the same
+/// inputs (`Inputs::default()`, here twice in a row), and on probation both
+/// versions get the call's one seed.
+#[test]
+fn a_replayed_call_draws_the_same_on_a_version_with_history() {
+    let main = drawing();
+    let (mut old, old_window) = started(&main);
+    for seed in [5, 9, 0x1234_5678] {
+        press(&mut old, old_window, seed);
+    }
+    let (mut fresh, fresh_window) = started(&main);
+    for seed in [0, 0, 77] {
+        assert_eq!(
+            press(&mut old, old_window, seed),
+            press(&mut fresh, fresh_window, seed),
+            "seed {seed}"
+        );
+    }
+}
+
+/// `rand` (not on the card; the model writes it unasked) gives numbers from the
+/// call's seed alone: the same on another instance, others for another seed,
+/// and a fresh one at each draw.
+#[test]
+fn rand_draws_from_the_calls_seed() {
+    let (one, again, other) = (drawn(7), drawn(7), drawn(8));
+    assert_eq!(one, again);
+    assert_ne!(one, other);
+    let count: i64 = one
+        .split("Count: ")
+        .nth(1)
+        .and_then(|rest| rest.split('|').next())
+        .and_then(|n| n.parse().ok())
+        .expect(&one);
+    assert_ne!(count / 1000, count % 1000, "two draws in one call: {one}");
 }
