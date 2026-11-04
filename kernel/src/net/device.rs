@@ -73,7 +73,11 @@ impl Device for NicDevice {
         let mut capabilities = DeviceCapabilities::default();
         capabilities.medium = Medium::Ethernet;
         capabilities.max_transmission_unit = FRAME_MTU;
-        capabilities.max_burst_size = Some(1);
+        // No burst: smoltcp caps every window it advertises at burst x MSS
+        // (`iface/packet.rs`), and 1 held a download to one segment per round
+        // trip, 0.1 MB/s (spike P5-S2). The card's queue is QEMU's to fill; a
+        // frame it cannot take waits there, and TCP recovers any lost on a NIC.
+        capabilities.max_burst_size = None;
         capabilities
     }
 }
