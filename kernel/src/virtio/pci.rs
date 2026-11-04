@@ -123,6 +123,8 @@ pub struct Found {
     pub disks: Vec<PciTransport>,
     /// The first virtio-gpu; any other is left alone.
     pub gpu: Option<SplitTransport>,
+    /// The first virtio-rng, for ENTROPY; any other is left alone.
+    pub rng: Option<PciTransport>,
     /// Every NVMe controller, in bus order.
     pub nvme: Vec<crate::nvme::Function>,
     /// Every xHCI controller, in bus order.
@@ -141,6 +143,7 @@ pub fn probe(platform: &acpitables::Platform, cmdline: &str) -> Result<Found, &'
         net_failed: false,
         disks: Vec::new(),
         gpu: None,
+        rng: None,
         nvme: Vec::new(),
         usb: Vec::new(),
     };
@@ -253,6 +256,7 @@ fn bind(
         "virtio-net" => DeviceType::Network,
         "virtio-gpu" => DeviceType::GPU,
         "virtio-blk" => DeviceType::Block,
+        "virtio-rng" => DeviceType::EntropySource,
         _ => {
             log!("pci: no kernel driver called {driver} for {at}");
             return None;
@@ -260,6 +264,10 @@ fn bind(
     };
     if kind == DeviceType::Network && found.net.is_some() {
         log!("pci: ignoring a second virtio network card at {at}");
+        return None;
+    }
+    if kind == DeviceType::EntropySource && found.rng.is_some() {
+        log!("pci: ignoring a second virtio-rng at {at}");
         return None;
     }
     if kind == DeviceType::GPU && found.gpu.is_some() {
@@ -277,6 +285,10 @@ fn bind(
     };
     let split = match kind {
         DeviceType::Network | DeviceType::GPU => split_transport(access, at, transport),
+        DeviceType::EntropySource => {
+            found.rng = Some(transport);
+            return Some(Outcome::Running(None));
+        }
         _ => {
             found.disks.push(transport);
             return Some(Outcome::Running(None));

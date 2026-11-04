@@ -94,6 +94,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
         exact: Vec::new(),
         contains: Vec::new(),
         cut: None,
+        capture: None,
     };
     for boot in 1..=BOOTS {
         println!("xtask: latency: boot {boot} of {BOOTS}");

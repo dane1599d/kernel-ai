@@ -329,3 +329,46 @@ b.txt"),
     let (_, txn) = call(&mut j, |j| j.deliver_event(&AppEvent::Started));
     assert_eq!(effects(&txn), [r#"fs_list {path: ""}"#]);
 }
+
+/// The OS tells the app its files changed (the AI, the Terminal or an undo made,
+/// moved or trashed one) with an `effect-done` under the notice ticket, and the
+/// window lists the folder it shows again: the new file appears with no one
+/// asking for it. A notice is no answer to an effect, so any other text, or a
+/// refusal under its ticket, does nothing.
+#[test]
+fn a_notice_that_the_files_changed_lists_the_folder_shown_again() {
+    use compsdk::app::{NOTICE_FILES, NOTICE_TICKET};
+    let Some(mut g) = load() else { return };
+    frame(&mut g);
+    call(&mut g, |g| g.deliver_event(&AppEvent::Started))
+        .0
+        .unwrap();
+    done(&mut g, 1, Ok("docs/\nnotes.txt\n"));
+    let (_, f) = frame(&mut g);
+    assert!(!names(&f).iter().any(|t| t == "plan.txt"));
+
+    // The home folder is listed again, and the new file shows.
+    assert_eq!(
+        done(&mut g, NOTICE_TICKET, Ok(NOTICE_FILES)),
+        [r#"fs_list {path: ""}"#]
+    );
+    done(&mut g, 2, Ok("docs/\nnotes.txt\nplan.txt\n"));
+    let (_, f) = frame(&mut g);
+    assert!(names(&f).iter().any(|t| t == "plan.txt"), "{:?}", names(&f));
+
+    // Not the notice it knows, and a refusal under its ticket: nothing is asked.
+    assert!(done(&mut g, NOTICE_TICKET, Ok("something else")).is_empty());
+    assert!(done(&mut g, NOTICE_TICKET, Err("the effect is too long")).is_empty());
+
+    // In another folder, that folder is listed again, not home.
+    let (r, txn) = call(&mut g, |g| {
+        Instance::call(g, &action("open"), &[Val::String("docs".into())])
+    });
+    assert!(matches!(r.unwrap().unwrap(), Val::Result(Ok(_))));
+    assert_eq!(effects(&txn), [r#"fs_list {path: "docs"}"#]);
+    done(&mut g, 3, Ok("a.txt\n"));
+    assert_eq!(
+        done(&mut g, NOTICE_TICKET, Ok(NOTICE_FILES)),
+        [r#"fs_list {path: "docs"}"#]
+    );
+}

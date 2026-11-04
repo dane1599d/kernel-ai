@@ -1,0 +1,18 @@
+[package]
+name = "kaiagent"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# An agent package's manifest (ADR 0013 section 6; the host crate before the v0.1
+# tag, with no OS wiring): the package's `kai-app 1` text plus its `agent` block,
+# parsed strictly and held to ADR 0011's package rules. `no_std` + `alloc`, so
+# `pkg` and the host tests can share one parser.
+[lib]
+doctest = false
+
+[dependencies]
+agentabi = { path = "../agentabi" }
+kabi = { path = "../kabi" }
+kaipkg = { path = "../kaipkg" }

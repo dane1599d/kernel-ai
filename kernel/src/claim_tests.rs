@@ -11,8 +11,9 @@ use crate::display::claim;
 use crate::{console, input, ipc, log, process, threads};
 use x86_64::instructions::interrupts::without_interrupts;
 
-/// The plan lines this case adds.
-pub const PLAN: &str = "desktop caps=display+input+serve+ask pages=8192 stack_pages=512\nfakedesk program=desktop caps=display+input";
+/// The plan lines this case adds. `desktop` logs the first key it is given (`key_log=on`,
+/// which only a test image's plan has), and the case's expected lines read it.
+pub const PLAN: &str = "desktop caps=display+input+serve+ask pages=8192 stack_pages=512 key_log=on\nfakedesk program=desktop caps=display+input";
 const WAIT_MS: u64 = 60_000;
 /// Ctrl, Alt, F12 down; F12, Alt, Ctrl up: set 1 make and break codes.
 const CTRL_ALT_F12: [u8; 6] = [0x1D, 0x38, 0x58, 0xD8, 0xB8, 0x9D];
