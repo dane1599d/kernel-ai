@@ -248,7 +248,7 @@ impl<'a> Model<'a> {
             c.rms_eps,
             &mut s.xn[..n * e],
         );
-        s.q_embd.quantize_all(self.par, &s.xn[..n * e], n);
+        s.q_embd.quantize_all(few(self.par, n), &s.xn[..n * e], n);
         // The output matrix is the widest by far: its products get their own rows.
         let mut rows = vec![0.0; n * c.vocab];
         let jobs = &mut [(&w.output, logits)];
@@ -302,7 +302,7 @@ impl<'a> Model<'a> {
             c.rms_eps,
             &mut s.xn[..n * e],
         );
-        s.q_embd.quantize_all(*par, &s.xn[..n * e], n);
+        s.q_embd.quantize_all(few(*par, n), &s.xn[..n * e], n);
         let qkv = &mut [
             (&w.wq, &mut s.q[..n * qd]),
             (&w.wk, &mut s.k[..n * kvd]),
@@ -314,7 +314,7 @@ impl<'a> Model<'a> {
             (&mut s.q[..n * qd], &w.q_norm, qd),
             (&mut s.k[..n * kvd], &w.k_norm, kvd),
         ] {
-            for_each_chunk(*par, heads, width, &|t, heads| {
+            for_each_chunk(few(*par, n), heads, width, &|t, heads| {
                 for head in heads.chunks_exact_mut(hd) {
                     rms_norm_in_place(head, norm, c.rms_eps);
                     rope.apply(head, seqs[t].1);
@@ -337,7 +337,7 @@ impl<'a> Model<'a> {
             let heads = (&mut s.heads[..], *context);
             attend(*par, *tier, c, q, cache, pos + 1, heads, att);
         }
-        s.q_att.quantize_all(*par, &s.att[..n * qd], n);
+        s.q_att.quantize_all(few(*par, n), &s.att[..n * qd], n);
         run(
             *par,
             *tier,
@@ -362,19 +362,19 @@ impl<'a> Model<'a> {
             c.rms_eps,
             &mut s.xn[..n * e],
         );
-        s.q_embd.quantize_all(par, &s.xn[..n * e], n);
+        s.q_embd.quantize_all(few(par, n), &s.xn[..n * e], n);
         let gate_up = &mut [
             (&w.w_gate, &mut s.gate[..n * ff]),
             (&w.w_up, &mut s.up[..n * ff]),
         ];
         run(par, self.tier, &s.q_embd, n, &mut s.rows, gate_up);
         let up = &s.up;
-        for_each_chunk(par, &mut s.gate[..n * ff], ff, &|t, gate| {
+        for_each_chunk(few(par, n), &mut s.gate[..n * ff], ff, &|t, gate| {
             for (g, u) in gate.iter_mut().zip(&up[t * ff..]) {
                 *g = *g / (1.0 + libm::expf(-*g)) * u;
             }
         });
-        s.q_ff.quantize_all(par, &s.gate[..n * ff], n);
+        s.q_ff.quantize_all(few(par, n), &s.gate[..n * ff], n);
         let down = &mut [(&w.w_down, &mut s.out[..n * e])];
         run(par, self.tier, &s.q_ff, n, &mut s.rows, down);
         for (x, o) in s.x[..n * e].iter_mut().zip(&s.out) {
@@ -433,7 +433,7 @@ fn run<const N: usize>(
     matvec_parallel(par, tier, &mut items);
     for ((m, y), part) in jobs.iter_mut().zip(&parts) {
         let part: &[f32] = part;
-        for_each_chunk(par, &mut y[..m.rows * n], m.rows, &|t, y| {
+        for_each_chunk(few(par, n), &mut y[..m.rows * n], m.rows, &|t, y| {
             for (r, v) in y.iter_mut().enumerate() {
                 *v = part[r * n + t];
             }
@@ -441,10 +441,26 @@ fn run<const N: usize>(
     }
 }
 
+/// Tokens up to which a block's work token by token (norms, RoPE, SwiGLU,
+/// quantising, laying products out) runs on the caller: for a batch of a few
+/// decode steps (ADR 0013 S13-2) a worker's handoff costs more than one
+/// token's share, measured as no gain at 2 sequences on 4 threads against 1.40x
+/// on one. The matrix products and attention heads still use the pool.
+const FEW_TOKENS: usize = 4;
+
+/// The pool for work done token by token over `n` tokens: the caller alone for
+/// a few. Any pool gives the same bits.
+fn few(par: &dyn Parallel, n: usize) -> &dyn Parallel {
+    match n <= FEW_TOKENS {
+        true => &Serial,
+        false => par,
+    }
+}
+
 /// [`rms_norm`] of each token's vector in `x` into `out`, a token to a worker.
 fn norm_all(par: &dyn Parallel, x: &[f32], weight: &[f32], eps: f32, out: &mut [f32]) {
     let e = weight.len();
-    for_each_chunk(par, out, e, &|t, out| {
+    for_each_chunk(few(par, x.len() / e), out, e, &|t, out| {
         rms_norm(&x[t * e..][..e], weight, eps, out)
     });
 }
