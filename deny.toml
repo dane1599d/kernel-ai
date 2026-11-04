@@ -52,4 +52,9 @@ license-files = [{ path = "LICENSE", hash = 0xe4fab402 }]
 [advisories]
 ignore = [
     { id = "RUSTSEC-2026-0249", reason = "smartstring is unmaintained but required by Rhai; ADR 0012 owns the Rhai upgrade. Review by 2027-01-31." },
+    # kainet's rsa only verifies certificate and handshake signatures with
+    # public keys; Marvin is timing in private-key operations (decryption and
+    # signing), which kainet never does (plan p5-networking §7; the manager
+    # accepted this 2026-11-04). P5 task 4 weighs rsa 0.10.
+    { id = "RUSTSEC-2023-0071", reason = "Marvin hits rsa's private-key operations; kainet only verifies with public keys. Review by 2027-01-31." },
 ]
