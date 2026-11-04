@@ -8,6 +8,7 @@ extern crate alloc;
 #[cfg(feature = "testca")]
 extern crate std;
 
+pub mod http;
 pub mod provider;
 #[cfg(feature = "testca")]
 pub mod testca;
