@@ -38,6 +38,11 @@ const PROMPT: &str = "allow? ";
 /// How long after it shows a menu takes no key: a key already on its way, or
 /// typed for something else, cannot answer it.
 pub const SETTLE_MS: u64 = 400;
+/// The line the kernel's terminal sends the shell for the card it said is
+/// waiting (`kabi::call::CARD_READY`): the reply is that card's `menu`, or a
+/// bare `ok` when none waits now. It starts with a control character, so no
+/// typed line is it.
+pub const TAKE_CARD: &str = "\u{1}card";
 
 /// When keys start to count: [`SETTLE_MS`] after the menu showed, and once every
 /// key held then has come up.

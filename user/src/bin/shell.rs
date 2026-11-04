@@ -1117,6 +1117,11 @@ fn main() -> i32 {
         take_files(&mut shell);
         take_settings(&mut shell);
         give_app_build(&mut shell);
+        // An install card waits: the kernel's terminal takes it when it may.
+        // Said again each pass, so a desktop that shows later still gets it.
+        if shell.card_waiting() {
+            let _ = sys::card_ready();
+        }
         give_appearance(&system);
         shell.retry_keep();
         let mut caller = u64::MAX;

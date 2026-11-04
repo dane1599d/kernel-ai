@@ -71,6 +71,15 @@ impl Decoder {
         }
     }
 
+    /// [`Decoder::read_key`], or `None` once `stop()` holds with no key queued.
+    pub fn read_key_unless(&mut self, stop: &dyn Fn() -> bool) -> Option<Key> {
+        loop {
+            if let Some(key) = self.decode(i8042::wait_unless(stop)?) {
+                return Some(key);
+            }
+        }
+    }
+
     /// Blocks the calling thread until a key comes.
     pub fn read_key(&mut self) -> Key {
         loop {

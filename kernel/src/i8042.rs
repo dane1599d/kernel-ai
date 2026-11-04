@@ -267,6 +267,32 @@ pub fn wait() -> Input {
     }
 }
 
+/// [`wait`], but returns `None` once `stop()` holds instead of blocking on: for
+/// a reader that something other than a key may need, such as the terminal's
+/// prompt when the shell has a card waiting ([`wake_reader`]).
+pub fn wait_unless(stop: &dyn Fn() -> bool) -> Option<Input> {
+    loop {
+        if let Some(input) = next() {
+            return Some(input);
+        }
+        if stop() {
+            return None;
+        }
+        WAITER.store(crate::threads::current(), Ordering::SeqCst);
+        crate::threads::block_unless(|| has_input() || stop());
+    }
+}
+
+/// Wakes the thread blocked in [`wait`] or [`wait_unless`], if one is, so it
+/// looks at its `stop()` again. A [`wait`] sees no key and blocks again.
+pub fn wake_reader() {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        if let Some(tid) = take_waiter() {
+            crate::threads::wake(tid);
+        }
+    });
+}
+
 /// Number of measured wake-ups and the worst interrupt-to-running latency in ns.
 pub fn wake_latency() -> (u64, u64) {
     (
