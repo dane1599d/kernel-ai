@@ -1,0 +1,549 @@
+//! A manifest is read as hostile: each refusal has its test, and the ADR's own
+//! example parses.
+
+use super::*;
+use agentabi::{ROWS, Tier};
+use alloc::format;
+use std::string::String;
+
+/// ADR 0013 section 6's example, with an id.
+const GOOD: &str = "kai-app 1\nid notes-agent\nabi 1.0\nagent 1\nclass background\n\
+    model tokens/day=50000 kv=1024 pool=64m\nactions fs_list fs_read notes_*\n\
+    memory read write\nnet none\n";
+
+/// `GOOD` with the line for `key` holding `value` instead.
+fn with(key: &str, value: &str) -> String {
+    let mut out = String::new();
+    for line in GOOD.split_inclusive('\n') {
+        match line.strip_prefix(key).and_then(|r| r.strip_prefix(' ')) {
+            Some(_) => out.push_str(&format!("{key} {value}\n")),
+            None => out.push_str(line),
+        }
+    }
+    out
+}
+
+/// Why `text` is refused.
+fn refused(text: &str) -> Refusal {
+    Manifest::parse(text).expect_err(text)
+}
+
+fn refused_with(text: &str, rows: &[Action]) -> Refusal {
+    Manifest::parse_with(text, rows).expect_err(text)
+}
+
+#[test]
+fn the_adrs_example_parses_and_writes_back_as_it_was() {
+    let m = Manifest::parse(GOOD).unwrap();
+    assert_eq!(m.id, "notes-agent");
+    assert_eq!(m.abi, (1, 0));
+    assert_eq!(m.class, Class::Background);
+    assert_eq!(
+        m.budgets,
+        Budgets {
+            tokens_per_day: 50_000,
+            kv_positions: 1_024,
+            pool_mib: 64
+        }
+    );
+    assert_eq!(m.budgets.pool_bytes(), 64 << 20);
+    assert_eq!(
+        m.actions,
+        [
+            Pattern::Row("fs_list".into()),
+            Pattern::Row("fs_read".into()),
+            Pattern::Group("notes".into())
+        ]
+    );
+    assert_eq!(
+        m.memory,
+        Memory {
+            read: true,
+            write: true
+        }
+    );
+    assert_eq!(m.format(), GOOD);
+    assert_eq!(Manifest::parse(&m.format()), Ok(m));
+}
+
+#[test]
+fn a_budget_left_out_is_question_tens_default() {
+    assert_eq!(DEFAULT_TOKENS_PER_DAY, 100_000);
+    assert_eq!(DEFAULT_KV_POSITIONS, 2_048);
+    assert_eq!(DEFAULT_POOL_MIB, 128);
+    let all = Manifest::parse(&with("model", "-")).unwrap();
+    assert_eq!(all.budgets, Budgets::DEFAULT);
+    assert_eq!(all.budgets.pool_bytes(), 128 << 20);
+    // Any of the three, in order, and the rest is the default.
+    let some = Manifest::parse(&with("model", "kv=512")).unwrap().budgets;
+    assert_eq!((some.tokens_per_day, some.kv_positions), (100_000, 512));
+    assert_eq!(some.pool_mib, 128);
+    let two = Manifest::parse(&with("model", "tokens/day=7 pool=1m"))
+        .unwrap()
+        .budgets;
+    assert_eq!(
+        (two.tokens_per_day, two.kv_positions, two.pool_mib),
+        (7, 2_048, 1)
+    );
+    // The ceilings themselves are allowed.
+    let top = format!(
+        "tokens/day={} kv={MAX_KV_POSITIONS} pool={MAX_POOL_MIB}m",
+        u32::MAX
+    );
+    assert!(Manifest::parse(&with("model", &top)).is_ok());
+}
+
+#[test]
+fn an_agent_with_no_actions_and_no_memory_is_a_model_client() {
+    let text = with("actions", "-").replace("memory read write", "memory none");
+    let m = Manifest::parse(&text).unwrap();
+    assert!(m.actions.is_empty() && m.memory == Memory::default());
+    assert!(!m.allows("fs_list"));
+    assert_eq!(Manifest::parse(&m.format()), Ok(m));
+}
+
+#[test]
+fn a_manifest_that_is_not_in_shape_is_refused() {
+    assert_eq!(refused(&GOOD[..GOOD.len() - 1]), Refusal::NoNewline);
+    assert_eq!(refused(&"x".repeat(MAX_BYTES + 1)), Refusal::TooLong);
+    assert_eq!(
+        refused(&GOOD.replace("notes-agent", "notes\u{0}x")),
+        Refusal::Control
+    );
+    assert_eq!(
+        refused(&GOOD.replace("notes-agent", "notes\ragent")),
+        Refusal::Control
+    );
+    assert_eq!(
+        refused(&GOOD.replace("kai-app 1", "kai-app 2")),
+        Refusal::NotKaiApp
+    );
+    assert_eq!(refused(""), Refusal::NoNewline);
+    assert_eq!(refused("\n"), Refusal::NotKaiApp);
+}
+
+#[test]
+fn each_key_is_needed_in_its_place_and_nothing_follows_the_last() {
+    for key in [
+        "id", "abi", "agent", "class", "model", "actions", "memory", "net",
+    ] {
+        // Missing.
+        let missing: String = GOOD
+            .split_inclusive('\n')
+            .filter(|l| !l.starts_with(&format!("{key} ")))
+            .collect();
+        assert!(matches!(refused(&missing), Refusal::Expected(_)), "{key}");
+        // Empty, or with no space before the value.
+        assert_eq!(
+            refused(&with(key, "")),
+            Refusal::Expected(static_key(key)),
+            "{key}"
+        );
+    }
+    // Out of order: class before agent.
+    let swapped = GOOD.replace("agent 1\nclass background\n", "class background\nagent 1\n");
+    assert_eq!(refused(&swapped), Refusal::Expected("agent"));
+    // Repeated, or anything after the last: a route is an app's.
+    let twice = format!("{GOOD}net none\n");
+    assert_eq!(refused(&twice), Refusal::Trailing("net none".into()));
+    let route = format!("{GOOD}use kai:files/types@0.1 scope=app-data\n");
+    assert!(matches!(refused(&route), Refusal::Trailing(_)));
+    let early = GOOD.replace("agent 1\n", "use kai:files/types@0.1\nagent 1\n");
+    assert_eq!(refused(&early), Refusal::Expected("agent"));
+}
+
+fn static_key(key: &str) -> &'static str {
+    [
+        "id", "abi", "agent", "class", "model", "actions", "memory", "net",
+    ]
+    .into_iter()
+    .find(|k| *k == key)
+    .unwrap()
+}
+
+#[test]
+fn the_id_is_a_package_name_that_is_not_an_os_group_a_window_or_a_built_in_agent() {
+    for id in [
+        "a",
+        "Notes",
+        "1notes",
+        "-notes",
+        "notes_agent",
+        "has space",
+        "waytoolongname1",
+        "näme",
+    ] {
+        assert!(
+            matches!(refused(&with("id", id)), Refusal::BadId(_)),
+            "{id}"
+        );
+    }
+    // An OS row group is a reserved package name, and `<x>-window` is an app's.
+    for id in ["fs", "pkg", "memory", "shell", "notes-window"] {
+        assert!(
+            matches!(refused(&with("id", id)), Refusal::BadId(_)),
+            "{id}"
+        );
+    }
+    for id in BUILTIN {
+        assert_eq!(
+            refused(&with("id", id)),
+            Refusal::BuiltinName(id.into()),
+            "{id}"
+        );
+    }
+    for id in ["ab", "a1", "twelve-chars", "pdf-view"] {
+        assert!(Manifest::parse(&with("id", id)).is_ok(), "{id}");
+    }
+}
+
+#[test]
+fn the_abi_is_the_oldest_this_agent_needs_and_not_newer_than_the_os() {
+    assert_eq!(kabi::handle::ABI, (1, 0));
+    assert!(Manifest::parse(&with("abi", "1.0")).is_ok());
+    for abi in [
+        "1", "1.", ".0", "a.b", "1.0.0", "01.0", "1.00", "-1.0", "+1.0", "1 .0", "99999.0",
+    ] {
+        assert_eq!(refused(&with("abi", abi)), Refusal::BadAbi, "{abi}");
+    }
+    for abi in ["1.1", "2.0", "0.0", "0.9"] {
+        assert_eq!(refused(&with("abi", abi)), Refusal::AbiUnsupported, "{abi}");
+    }
+}
+
+#[test]
+fn only_agent_one_with_a_known_class() {
+    assert_eq!(
+        refused(&with("agent", "2")),
+        Refusal::AgentVersion("2".into())
+    );
+    assert_eq!(
+        refused(&with("agent", "1 x")),
+        Refusal::AgentVersion("1 x".into())
+    );
+    assert!(Manifest::parse(&with("class", "interactive")).is_ok());
+    for class in [
+        "Background",
+        "foreground",
+        "daemon",
+        "background interactive",
+    ] {
+        assert_eq!(
+            refused(&with("class", class)),
+            Refusal::BadClass(class.into()),
+            "{class}"
+        );
+    }
+}
+
+#[test]
+fn a_budget_is_a_whole_number_above_zero_within_the_ceilings() {
+    for (value, key) in [
+        ("tokens/day=0", "tokens/day"),
+        ("kv=0", "kv"),
+        ("pool=0m", "pool"),
+    ] {
+        assert_eq!(
+            refused(&with("model", value)),
+            Refusal::BudgetZero(key),
+            "{value}"
+        );
+    }
+    for (value, key) in [
+        ("tokens/day=5x", "tokens/day"),
+        ("tokens/day=+5", "tokens/day"),
+        ("tokens/day=05", "tokens/day"),
+        ("tokens/day=", "tokens/day"),
+        ("tokens/day=-1", "tokens/day"),
+        ("tokens/day=1.5", "tokens/day"),
+        ("kv=99999999999", "kv"),
+        ("pool=m", "pool"),
+        ("pool=1_0m", "pool"),
+    ] {
+        assert_eq!(
+            refused(&with("model", value)),
+            Refusal::BudgetNumber(key),
+            "{value}"
+        );
+    }
+    // The pool's unit is MiB.
+    for value in ["pool=64", "pool=64g", "pool=64M", "pool=64k"] {
+        assert_eq!(
+            refused(&with("model", value)),
+            Refusal::BudgetUnit,
+            "{value}"
+        );
+    }
+    assert_eq!(
+        refused(&with("model", "tokens/day=4294967296")),
+        Refusal::BudgetOver {
+            key: "tokens/day",
+            max: u64::from(u32::MAX)
+        }
+    );
+    assert_eq!(
+        refused(&with("model", "kv=32769")),
+        Refusal::BudgetOver {
+            key: "kv",
+            max: u64::from(MAX_KV_POSITIONS)
+        }
+    );
+    assert_eq!(
+        refused(&with("model", "pool=513m")),
+        Refusal::BudgetOver {
+            key: "pool",
+            max: u64::from(MAX_POOL_MIB)
+        }
+    );
+}
+
+#[test]
+fn the_model_line_takes_each_key_once_in_order_and_no_other() {
+    for value in [
+        "kv=1 tokens/day=1",
+        "kv=1 kv=2",
+        "tokens/day=1 tokens/day=1",
+        "pool=1m kv=1",
+        "ctx=1",
+        "tokens=1",
+        "kv",
+        "kv=1  pool=1m",
+        "-1",
+        "- kv=1",
+        "default",
+    ] {
+        assert!(
+            matches!(refused(&with("model", value)), Refusal::BudgetKey(_)),
+            "{value}"
+        );
+    }
+}
+
+#[test]
+fn an_actions_entry_is_a_row_name_or_a_group_and_nothing_else() {
+    for entry in [
+        "*",
+        "_*",
+        "fs_*x",
+        "fs*",
+        "f*_list",
+        "FS_list",
+        "fs-list",
+        "fs_list_",
+        "_fs",
+        "1fs",
+        "notes_add_",
+        "fs_l!st",
+        "a_*",
+        "notes-agent_*",
+        "notes_window_*",
+        "fs_list,fs_read",
+    ] {
+        assert!(
+            matches!(refused(&with("actions", entry)), Refusal::ActionShape(_)),
+            "{entry}"
+        );
+    }
+    // A row name is at most 24 bytes, as the registry holds it.
+    let long = format!("notes_{}", "a".repeat(19));
+    assert!(matches!(
+        refused(&with("actions", &long)),
+        Refusal::ActionShape(_)
+    ));
+    let fits = format!("notes_{}", "a".repeat(18));
+    assert!(Manifest::parse(&with("actions", &fits)).is_ok());
+    // Two spaces make an empty entry.
+    assert!(matches!(
+        refused(&with("actions", "fs_list  fs_read")),
+        Refusal::ActionShape(_)
+    ));
+}
+
+#[test]
+fn a_row_or_group_listed_twice_is_refused_even_by_its_group() {
+    for value in [
+        "fs_list fs_list",
+        "notes_* notes_*",
+        "notes_add notes_*",
+        "notes_* notes_add",
+        "fs_* fs_list",
+        "fs_list fs_*",
+    ] {
+        assert!(
+            matches!(refused(&with("actions", value)), Refusal::ActionTwice(_)),
+            "{value}"
+        );
+    }
+    // `notes_*` does not hold `notesx_add`, nor `notes` as a prefix of another word.
+    assert!(Manifest::parse(&with("actions", "notes_* notesx_add")).is_ok());
+}
+
+#[test]
+fn at_most_thirty_two_actions() {
+    let many = |n: usize| {
+        (0..n)
+            .map(|i| format!("pkg{i}_x"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    assert!(Manifest::parse(&with("actions", &many(MAX_ACTIONS))).is_ok());
+    assert_eq!(
+        refused(&with("actions", &many(MAX_ACTIONS + 1))),
+        Refusal::TooManyActions
+    );
+}
+
+#[test]
+fn a_row_or_group_in_an_os_group_must_be_an_os_row() {
+    // The Terminal's `shell_line` is not a row, and no package `shell` can exist.
+    assert_eq!(
+        refused(&with("actions", "shell_line")),
+        Refusal::NoSuchOsRow("shell_line".into())
+    );
+    assert_eq!(
+        refused(&with("actions", "fs_nothing")),
+        Refusal::NoSuchOsRow("fs_nothing".into())
+    );
+    assert_eq!(
+        refused(&with("actions", "cpus_more")),
+        Refusal::NoSuchOsRow("cpus_more".into())
+    );
+    // Real rows, one-word ones and groups are in.
+    assert!(agentabi::find(&ROWS, "fs_list").is_some());
+    let m = Manifest::parse(&with("actions", "fs_list cpus fs_read notes_add")).unwrap();
+    assert_eq!(m.actions.len(), 4);
+    assert!(Manifest::parse(&with("actions", "fs_*")).is_ok());
+    // A registry without the group has no rows to name.
+    assert_eq!(
+        refused_with(&with("actions", "fs_*"), &[]),
+        Refusal::GroupWithoutRows("fs".into())
+    );
+    assert_eq!(
+        refused_with(&with("actions", "fs_list"), &[]),
+        Refusal::NoSuchOsRow("fs_list".into())
+    );
+    // A package's row or group is for install to check: nothing here to see.
+    assert!(Manifest::parse_with(&with("actions", "notes_add pdf_view_*"), &[]).is_ok());
+}
+
+#[test]
+fn a_row_an_agent_may_never_call_is_refused_alone_and_by_its_group() {
+    let mut never = *agentabi::find(&ROWS, "fs_list").unwrap();
+    never.min_tier = Tier::Never;
+    let rows = [never];
+    assert_eq!(
+        refused_with(&with("actions", "fs_list"), &rows),
+        Refusal::NeverRow("fs_list".into())
+    );
+    assert_eq!(
+        refused_with(&with("actions", "fs_*"), &rows),
+        Refusal::GroupHoldsNever("fs".into())
+    );
+    // The same registry, with the row as it is, takes both.
+    assert!(
+        Manifest::parse_with(
+            &with("actions", "fs_list"),
+            &[*agentabi::find(&ROWS, "fs_list").unwrap()]
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn what_the_manifest_allows_is_a_row_listed_or_inside_a_group_listed() {
+    let m = Manifest::parse(GOOD).unwrap();
+    for row in ["fs_list", "fs_read", "notes_add", "notes_remove", "notes"] {
+        assert!(m.allows(row), "{row}");
+    }
+    for row in [
+        "fs_write",
+        "fs_listx",
+        "notesx_add",
+        "note_add",
+        "",
+        "pkg_install",
+    ] {
+        assert!(!m.allows(row), "{row}");
+    }
+}
+
+#[test]
+fn memory_is_none_read_write_or_both_in_that_order() {
+    for (word, read, write) in [
+        ("none", false, false),
+        ("read", true, false),
+        ("write", false, true),
+        ("read write", true, true),
+    ] {
+        let m = Manifest::parse(&with("memory", word)).unwrap();
+        assert_eq!((m.memory.read, m.memory.write), (read, write), "{word}");
+    }
+    for word in [
+        "write read",
+        "read  write",
+        "read read",
+        "all",
+        "read, write",
+        "none read",
+        "Read",
+        "forget",
+        "-",
+    ] {
+        assert_eq!(
+            refused(&with("memory", word)),
+            Refusal::Memory(word.into()),
+            "{word}"
+        );
+    }
+}
+
+#[test]
+fn the_net_line_is_none_until_p5() {
+    assert!(Manifest::parse(&with("net", "none")).is_ok());
+    for word in [
+        "any",
+        "-",
+        "example.com",
+        "host:example.com:443",
+        "none none",
+        "None",
+        "llm",
+    ] {
+        assert_eq!(
+            refused(&with("net", word)),
+            Refusal::Net(word.into()),
+            "{word}"
+        );
+    }
+}
+
+#[test]
+fn a_background_agent_always_asks_at_install_and_an_interactive_one_follows_the_package_rules() {
+    assert!(
+        Manifest::parse(&with("class", "background"))
+            .unwrap()
+            .asks_at_install()
+    );
+    assert!(
+        !Manifest::parse(&with("class", "interactive"))
+            .unwrap()
+            .asks_at_install()
+    );
+}
+
+#[test]
+fn every_refusal_says_one_sentence() {
+    for text in [
+        with("id", "fs"),
+        with("abi", "2.0"),
+        with("class", "x"),
+        with("model", "kv=0"),
+        with("actions", "fs_nothing"),
+        with("memory", "x"),
+        with("net", "x"),
+        format!("{GOOD}x\n"),
+    ] {
+        let why = refused(&text).to_string();
+        assert!(!why.is_empty() && !why.contains('\n'), "{why}");
+    }
+}
