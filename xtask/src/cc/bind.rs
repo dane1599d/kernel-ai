@@ -7,10 +7,12 @@
 //! - `app`: [`CC_APP`], `kai:app/app` with an empty `actions` export, as
 //!   ADR 0003 section 5 requires of every app world.
 //! - `window`: [`CC_APP`]'s `window`, for `<kaiapp.h>` (plan "Kai builds
-//!   apps", piece 2): `kai:app/component`, `kai:ui/view` and `input`, the app
-//!   world's `events` and the same empty `actions`. Less than a hand-written
-//!   window app gets: no storage, clock or effects, since the state is saved
-//!   through the lifecycle and the app has no actions to queue.
+//!   apps", piece 2): `kai:app/component`, `kai:app/clock`, `kai:ui/view` and
+//!   `input`, the app world's `events` and the same empty `actions`. Less than
+//!   a hand-written window app gets: no storage or effects, since the state is
+//!   saved through the lifecycle and the app has no actions to queue. The
+//!   clock is the call's own time and seed, fixed for the call and the same on
+//!   replay, which `<kaiapp.h>`'s `rand` draws from; it grants nothing.
 //!
 //! wcc reads `import_module` and `import_name` but not wit-bindgen's
 //! `__import_module__` spelling, and no `export_name` at all (S12-1 (h),
@@ -39,9 +41,10 @@ world app {
     export actions;
 }
 
-/// An app with a window, and nothing outside it.
+/// An app with a window, and nothing outside it but the call's clock.
 world window {
     include kai:app/component@0.1.0;
+    import kai:app/clock@0.1.0;
     import kai:ui/view@0.1.1;
     export kai:ui/input@0.1.1;
     export kai:app/events@0.1.0;
@@ -201,9 +204,10 @@ mod tests {
     }
 
     /// A model-written app gets no grant a hand-written one could not: its
-    /// window world imports the log and the view, nothing else.
+    /// window world imports the log, the call's clock and the view, nothing
+    /// else; no storage or effects.
     #[test]
-    fn the_window_world_imports_only_the_log_and_the_view() {
+    fn the_window_world_imports_only_the_log_the_clock_and_the_view() {
         let files = generate(&crate::workspace_root().join("wit")).unwrap();
         let glue = &files.iter().find(|(n, _)| n == "window.c").unwrap().1;
         let mut modules: Vec<&str> = glue
@@ -213,7 +217,14 @@ mod tests {
             .collect();
         modules.sort();
         modules.dedup();
-        assert_eq!(modules, ["kai:app/log@0.1.0", "kai:ui/view@0.1.1"]);
+        assert_eq!(
+            modules,
+            [
+                "kai:app/clock@0.1.0",
+                "kai:app/log@0.1.0",
+                "kai:ui/view@0.1.1"
+            ]
+        );
     }
 
     #[test]

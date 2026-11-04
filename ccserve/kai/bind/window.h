@@ -370,6 +370,13 @@ typedef struct {
   window_list_u8_t val;
 } window_option_list_u8_t;
 
+// Imported Functions from `kai:app/clock@0.1.0`
+// Milliseconds since the Unix epoch, fixed for the whole call.
+extern uint64_t kai_app_clock_now_ms(void);
+// A random seed, fixed for the whole call, so two versions given the same
+// call compute the same thing.
+extern uint64_t kai_app_clock_seed(void);
+
 // Imported Functions from `kai:ui/view@0.1.1`
 // Opens a window of `width` by `height` logical px. It shows at the next
 // `commit`.

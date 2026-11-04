@@ -69,6 +69,8 @@ pub const KAIAPP_CALLS: &[&str] = &[
     "ui_toggle",
     "Format",
     "kai_state_size",
+    // Not on the card: the model writes rand() unasked (S12 app gate, guess).
+    "rand",
 ];
 
 /// The template, filled in for a counter.

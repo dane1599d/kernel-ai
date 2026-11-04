@@ -46,8 +46,18 @@ const MAX_REPLY_LINES: usize = 64;
 static REPLIES_SHOWN: AtomicU64 = AtomicU64::new(0);
 /// Set while the terminal waits for the answer to a confirmation, for the self-test.
 static AWAITING_ANSWER: AtomicBool = AtomicBool::new(false);
+/// When the console's menu takes keys, in HPET milliseconds: its gate's
+/// opening, set once the keys typed before it were dropped; 0 while no menu
+/// waits. For the cases that answer it.
+static MENU_OPEN_MS: AtomicU64 = AtomicU64::new(0);
 /// Typed lines Ctrl-C dropped, for the self-test.
 static LINES_CLEARED: AtomicU64 = AtomicU64::new(0);
+/// The shell said it has a card waiting (CARD_READY), not yet taken.
+static CARD_WAITING: AtomicBool = AtomicBool::new(false);
+/// Cards taken from the shell at an empty prompt, and the shell's answers to
+/// [`termcore::menu::TAKE_CARD`], for the boot case.
+static CARDS_TAKEN: AtomicU64 = AtomicU64::new(0);
+static CARD_ASKS: AtomicU64 = AtomicU64::new(0);
 /// When the last line was entered and when the last shell reply was on screen, in
 /// HPET nanoseconds, for the latency case.
 static ENTERED_NS: AtomicU64 = AtomicU64::new(0);
@@ -70,6 +80,13 @@ pub fn replies_shown() -> u64 {
 /// Whether the terminal shows a confirmation and waits for its answer.
 pub fn awaiting_answer() -> bool {
     AWAITING_ANSWER.load(Ordering::Acquire)
+}
+
+/// Whether the console's menu waits and a key typed now counts: past the drop
+/// of earlier keys and the gate's settle.
+pub fn menu_takes_keys() -> bool {
+    let open = MENU_OPEN_MS.load(Ordering::Acquire);
+    open != 0 && now_ms() >= open
 }
 
 const HELP: &[(&str, &str)] = &[
@@ -157,6 +174,61 @@ impl Confirm {
     }
 }
 
+/// CARD_READY: the shell has a card waiting. The prompt wakes, and takes it
+/// once it may ([`card_may_open`]).
+pub fn card_ready() {
+    CARD_WAITING.store(true, Ordering::SeqCst);
+    crate::i8042::wake_reader();
+}
+
+/// Cards the terminal has taken from the shell, and the times the shell
+/// answered its ask for one, for the boot case.
+pub fn cards_taken() -> (u64, u64) {
+    (
+        CARDS_TAKEN.load(Ordering::Relaxed),
+        CARD_ASKS.load(Ordering::Relaxed),
+    )
+}
+
+/// Whether the shell has said a card waits: an atomic, as the prompt's wait
+/// needs ([`crate::i8042::wait_unless`]). SeqCst pairs with the waiter's
+/// store before it blocks.
+fn card_armed() -> bool {
+    CARD_WAITING.load(Ordering::SeqCst)
+}
+
+/// Whether the shell's waiting card may open now: on `desktop`'s card only,
+/// so while `desktop` shows and its trusted layer reads, and never while
+/// another ask is posted. The console holding the screen opens none: a card
+/// is not a question the console was asked.
+fn card_may_open() -> bool {
+    card_armed() && claim::showing() && ask_box::alive() && ask_box::empty()
+}
+
+/// Takes the shell's waiting card: what its `menu` reply waits for, or
+/// nothing when the shell has none now (a bare `ok`).
+fn take_card() -> Option<Waiting> {
+    CARD_WAITING.store(false, Ordering::SeqCst);
+    let reply = shell_reply(termcore::menu::TAKE_CARD)?;
+    CARD_ASKS.fetch_add(1, Ordering::Relaxed);
+    log!("card: the terminal asked the shell for its waiting card");
+    if matches!(reply.as_slice(), b"ok" | b"ok ") {
+        return None;
+    }
+    CARDS_TAKEN.fetch_add(1, Ordering::Relaxed);
+    log!("card: the shell's waiting card goes to desktop");
+    show_shell_reply(&reply)
+}
+
+/// What [`read_line`] read.
+enum Read {
+    Line(String),
+    /// Ctrl-C cleared it.
+    Cleared,
+    /// The shell's card may open, and nothing was typed.
+    Card,
+}
+
 /// Runs the terminal on the calling thread, forever.
 pub fn run(_: usize) {
     console::status::start();
@@ -192,16 +264,27 @@ pub fn run(_: usize) {
         if asks {
             decoder.discard_pending();
         }
-        let line = read_line(&mut decoder, &prompt);
+        // Only a plain prompt, with nothing waiting and nothing typed, gives
+        // way to a card.
+        let card = waiting.is_none() && edit_mode::editing().is_none();
+        let line = read_line(&mut decoder, &prompt, card);
         AWAITING_ANSWER.store(false, Ordering::Release);
         claim::give_back(took);
-        // Ctrl-C: prompt again, with a pending question still asked; an open entry
-        // is dropped.
-        let Some(line) = line else {
-            if let Some(Waiting::More) = waiting {
-                waiting = shell_line(CANCEL_ENTRY);
+        let line = match line {
+            Read::Line(line) => line,
+            Read::Card => {
+                console::hide_input();
+                waiting = take_card();
+                continue;
             }
-            continue;
+            // Ctrl-C: prompt again, with a pending question still asked; an
+            // open entry is dropped.
+            Read::Cleared => {
+                if let Some(Waiting::More) = waiting {
+                    waiting = shell_line(CANCEL_ENTRY);
+                }
+                continue;
+            }
         };
         let line = line.trim();
         match waiting.take() {
@@ -341,7 +424,9 @@ pub(crate) fn answer_on_console(decoder: &mut Decoder, menu: &mut Menu) -> Answe
     let (prompt, text) = menu.input();
     console::show_input(prompt, &text, text.chars().count());
     decoder.discard_pending();
-    menu.arm(Gate::new(now_ms(), decoder.held()));
+    let gate = Gate::new(now_ms(), decoder.held());
+    MENU_OPEN_MS.store(gate.open_at_ms(), Ordering::Release);
+    menu.arm(gate);
     let answer = loop {
         match menu.press(&decoder.read_stroke(), now_ms()) {
             Step::Ignored => {}
@@ -352,6 +437,7 @@ pub(crate) fn answer_on_console(decoder: &mut Decoder, menu: &mut Menu) -> Answe
             Step::Chosen(answer) => break answer,
         }
     };
+    MENU_OPEN_MS.store(0, Ordering::Release);
     AWAITING_ANSWER.store(false, Ordering::Release);
     claim::give_back(took);
     answer
@@ -364,22 +450,29 @@ fn now_ms() -> u64 {
 
 /// Reads a line into the input region after `prompt`, edited at the cursor. Typed
 /// keys go only to the screen; serial gets the whole line, with its prompt, on Enter.
-/// None when Ctrl-C clears it.
-fn read_line(decoder: &mut Decoder, prompt: &str) -> Option<String> {
+/// With `card`, an empty line gives way to the shell's card once it may open.
+fn read_line(decoder: &mut Decoder, prompt: &str, card: bool) -> Read {
     let mut line = Line::new(MAX_LINE);
     loop {
-        match line.apply(decoder.read_key()) {
+        let key = match card && line.text().is_empty() {
+            true => match decoder.read_key_unless(&card_armed, &card_may_open) {
+                Some(key) => key,
+                None => return Read::Card,
+            },
+            false => decoder.read_key(),
+        };
+        match line.apply(key) {
             Outcome::Unchanged => {}
             Outcome::Changed => console::show_input(prompt, line.text(), line.cursor()),
             Outcome::Submitted(text) => {
                 ENTERED_NS.store(hpet::nanos(), Ordering::Relaxed);
                 finish_line(prompt, &text, "");
-                return Some(text);
+                return Read::Line(text);
             }
             Outcome::Cleared(text) => {
                 LINES_CLEARED.fetch_add(1, Ordering::Relaxed);
                 finish_line(prompt, &text, "^C");
-                return None;
+                return Read::Cleared;
             }
         }
     }

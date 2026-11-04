@@ -22,6 +22,12 @@
 //! refuses a read-only row that changes the app's checkpoint, so the folder is not in
 //! the app's (see `apps/files-window`), and this step proves it on a boot.
 //!
+//! 7. "move notes.txt to plan.txt" and `undo` again, but now nobody asks the window
+//!    to list the folder (no `files_reveal`): it lists `plan.txt`, then `notes.txt`
+//!    again, on its own. The OS tells an app that lists files when they change (a
+//!    notice, `kabi::live::NOTICE_FILES`), whoever changed them: the AI, the
+//!    Terminal or an undo all go through the shell.
+//!
 //! Each change is undone right after it: a plain `undo` reverts the newest live
 //! entry and is an entry of its own, so `undo` again would redo it (ADR 0002 D7).
 //! The shell's log (`log`) shows the move, the trash and each undo (`undo of #N`, N
@@ -136,6 +142,12 @@ fn shows(notes: bool, plan: bool, what: &'static str) -> Result<(), &'static str
         log!("app-files: {SHOW:?} answered {said:?}");
         return Err("app-files: the Files app did not show the folder");
     }
+    waits(notes, plan, what)
+}
+
+/// Waits until the window lists `notes` and `plan` as given, asking it only what
+/// it lists: a change nobody told the window of shows only if the OS did.
+fn waits(notes: bool, plan: bool, what: &'static str) -> Result<(), &'static str> {
     for _ in 0..SHOW_MS / POLL_MS {
         if lists(PICK_NOTES)? == notes && lists(PICK_PLAN)? == plan {
             log!("app-files: the window lists {}", describe(notes, plan));
@@ -212,6 +224,31 @@ fn visits_docs() -> Result<(), &'static str> {
         threads::sleep_ms(POLL_MS);
     }
     Err("app-files: the window never listed the second folder")
+}
+
+/// A change made outside the window, then an undo of it, show in the window with
+/// no `files_reveal`: the shell tells the OS's apps that list files when the
+/// files change, and the window lists its folder again. Starts and ends with the
+/// window at home listing `notes.txt` alone.
+fn shows_without_being_asked() -> Result<(), &'static str> {
+    does(
+        MOVE,
+        "ok Done: file notes.txt moved to plan.txt (was there). undo",
+    )?;
+    waits(
+        false,
+        true,
+        "app-files: the window never listed the move on its own",
+    )?;
+    log!("app-files: after a move the window listed plan.txt on its own, with no files_reveal");
+    does("undo", "ok Undone: files back as they were")?;
+    waits(
+        true,
+        false,
+        "app-files: the window never listed the undo on its own",
+    )?;
+    log!("app-files: after undo the window listed notes.txt on its own, with no files_reveal");
+    Ok(())
 }
 
 pub fn check() -> Result<(), &'static str> {
@@ -292,6 +329,7 @@ pub fn check() -> Result<(), &'static str> {
         return Err("app-files: the window still lists the second folder's file");
     }
     log!("app-files: the window went to a second folder and came back to the home folder");
+    shows_without_being_asked()?;
     log!(
         "app-files: the agent made, moved and trashed a file at once, the Files window showed each state and a second folder, and undo put each back; the log showed each change and each undo"
     );

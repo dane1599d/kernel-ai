@@ -38,6 +38,11 @@ const PROMPT: &str = "allow? ";
 /// How long after it shows a menu takes no key: a key already on its way, or
 /// typed for something else, cannot answer it.
 pub const SETTLE_MS: u64 = 400;
+/// The line the kernel's terminal sends the shell for the card it said is
+/// waiting (`kabi::call::CARD_READY`): the reply is that card's `menu`, or a
+/// bare `ok` when none waits now. It starts with a control character, so no
+/// typed line is it.
+pub const TAKE_CARD: &str = "\u{1}card";
 
 /// When keys start to count: [`SETTLE_MS`] after the menu showed, and once every
 /// key held then has come up.
@@ -53,6 +58,11 @@ impl Gate {
             open_at_ms: shown_ms.saturating_add(SETTLE_MS),
             held: held.collect(),
         }
+    }
+
+    /// When keys may start to count, if every key held at show time is up.
+    pub fn open_at_ms(&self) -> u64 {
+        self.open_at_ms
     }
 
     /// Whether `stroke` at `now_ms` counts: a fresh press, past the settle,

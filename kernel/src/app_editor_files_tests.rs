@@ -13,7 +13,10 @@
 //! 3. one more letter and Ctrl-S: the file is replaced (`fs_write`, 5 bytes);
 //! 4. `undo`, typed at the shell: the second save is taken back;
 //! 5. Ctrl-O and the path again: the editor reads the file, and comphost's log says it
-//!    came back as the 4 bytes of the first save.
+//!    came back as the 4 bytes of the first save;
+//! 6. a key moves the cursor off the top, and the agent's `editor_open_file` action
+//!    (called as `comphost` is, with no key of the person's) reads the file again:
+//!    comphost's log says the read had no person's mark, and the cursor is back at the top.
 //!
 //! Each step of the host's keys (a stage in the case's table, sent when this test logs
 //! `ready for keys`) is waited for in the editor's own status, so a slow guest (TCG)
@@ -81,9 +84,10 @@ pub(crate) fn click_into_the_code() {
     threads::sleep_ms(CLICK_MS);
 }
 
-/// Ctrl-O and the path: two stages of the host's keys, sent in order.
+/// Ctrl-O and the path: one stage of the host's keys. Two stages announced together are typed
+/// by threads that race for the monitor, so the path could arrive before Ctrl-O and land in the
+/// buffer as text.
 pub(crate) fn ask_to_open() {
-    log!("app-editor-files: ready for keys");
     log!("app-editor-files: ready for keys");
 }
 
@@ -129,6 +133,31 @@ fn undo_and_reopen() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// The agent's `editor_open_file`, as `comphost` is called with it: the file by its path.
+const OPEN_FILE: &str =
+    "kai-call 1\nfunc app:editor/actions@1.0.0#open-file\nargs {path: \"/home/user/todo.txt\"}\n";
+
+/// The action opens the file by its path, with no key of the person's: the OS reads it as it
+/// does for Ctrl-O. A key moved the cursor off the top, and the file read again puts it back.
+fn open_by_action() -> Result<(), &'static str> {
+    log!("app-editor-files: ready for keys");
+    until("the cursor to move off the top", WAIT_MS, |said| {
+        cursor(said) == Some((1, 1))
+    })?;
+    let reply = ipc::call(NAME, OPEN_FILE.as_bytes(), CALL_MS)
+        .map(|reply| String::from_utf8_lossy(&reply).into_owned())
+        .map_err(|_| "app-editor-files: the editor did not answer the action")?;
+    if !reply.contains("Opening /home/user/todo.txt.") {
+        log!("app-editor-files: the action answered {reply:?}");
+        return Err("app-editor-files: the action did not open the file");
+    }
+    until("the action's file to be read", WAIT_MS, |said| {
+        showing_file(said, "todo.txt") && cursor(said) == Some((1, 0))
+    })?;
+    log!("app-editor-files: the agent's action opened the file by its path");
+    Ok(())
+}
+
 pub fn check() -> Result<(), &'static str> {
     desktop_and_editor()?;
     log!(
@@ -138,5 +167,6 @@ pub fn check() -> Result<(), &'static str> {
     open_new()?;
     type_and_save(4, "4", "Ctrl-S made the file")?;
     type_and_save(5, "5", "Ctrl-S replaced the file")?;
-    undo_and_reopen()
+    undo_and_reopen()?;
+    open_by_action()
 }

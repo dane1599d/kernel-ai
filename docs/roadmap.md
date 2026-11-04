@@ -171,12 +171,12 @@ Production grade is a multi-year program. The long poles are P6 (a browser) and 
 
 The cases are act-plain, act-run, act-ask, act-rule, act-undo, act-rollback, act-inject, act-never, act-vague, act-convo and pkg-local. Fluency: 48/50 (run 40458081415). actbench on main, seeds 42, 1 and 2 (run 40458077413): seeds 42 and 1 each: exact single calls 57/60, false runs 0 (bait and negation) and 0 from State, false asks on plain requests 2 (bar 6 or fewer), ambiguous clarified or asked 17/20 and 16/20 (bar 16), median free tokens per single call 6 (bar 12 or fewer), two-turn memory 19/20 (bar 18), M8 fluency through the script 47/50 (bar 45); pack_id 5cb3671b050b730e, mock pack 1,632 tokens. Seed 2, run by itself on main (run 40486461241) after the first job's 240 minutes ran out, matches them, with ambiguous 16/20; all three seeds pass. The plan and its 19 tasks are in `docs/plans/p1-agent-core.md`.
 
-**P2 status (2026-10-29):** **closing, not yet done**.
+**P2 status (2026-11-04):** **closed**, with the kaifs throughput miss accepted for v0.1 by the founder.
 - **Built:** a writable `kai-data` disk on virtio-blk and NVMe; kaifs format 1 with volumes, snapshots, undo, trash, retention and the GC; the ring-3 `fs` service over `kai-fs 1`, with `Dir` and `File` handles; and the model store with MODEL_FILL.
 - **On main:** `blk-write`, `fs-reboot`, `fs-restart`, `fs-dead-client`, the power cut (`fs-actions`, `fs-powercut`, VirtualBox 20/20), the file rows and undo (`fs-act`, `fs-undo`, `fs-undo-reboot`), the trash with restore-by-name and empty-trash (`fs-trash`), `pkg-store`, and the model store (`model-store`, `model-store-bad`, and `llm` mapping the store's model; #236, #261, #314).
-- **Not met yet:** files moved through kaifs at 12 MB/s in a release build under KVM, under S04-2's bar (the IPC alone passed). One disk call per 4 KiB block is now batched (#325), not re-measured since (#262 open); slow IPC round trips remain.
+- **Accepted miss:** files move through kaifs at 25 MB/s write and 26 MB/s read in a release build under KVM (main 8a30277, 2026-10-31, after #325), under S04-2's 50 MB/s bar; the IPC alone passed. About 80% of the time is IPC round trips and the client. The speed work comes after v0.1.
 
-The P2 close row in `docs/decisions.md` has each case and gap.
+The P2 close rows in `docs/decisions.md` have each case and the accepted miss.
 
 **P3 status (2026-11-03):** **done**: every exit case of `docs/plans/p3-desktop.md` section 1 is a boot case in `ci.yml`'s shards and passes under KVM and TCG (that plan's section 10, #436).
 - **Built:** virtio-gpu 2D, the `desktop` compositor with windows, fonts and focus, the `kai>` panel and its ask card, standing rules and profiles, and app windows on `uikit`.

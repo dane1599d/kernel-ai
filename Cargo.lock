@@ -1018,6 +1018,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kaiagent"
+version = "0.0.0"
+dependencies = [
+ "agentabi",
+ "kabi",
+ "kaipkg",
+]
+
+[[package]]
 name = "kaibundle"
 version = "0.1.0-dev"
 dependencies = [
@@ -1043,6 +1052,13 @@ dependencies = [
  "wasm-encoder",
  "wasmi",
  "wasmparser 0.228.0",
+]
+
+[[package]]
+name = "kaimem"
+version = "0.1.0-dev"
+dependencies = [
+ "agentabi",
 ]
 
 [[package]]
