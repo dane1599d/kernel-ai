@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "acpitables",
     "agentabi",
+    "agentsched",
     "appabi",
     "apps/editor-ui",
     "apps/editor-window",
@@ -91,6 +92,7 @@ members = [
 default-members = [
     "acpitables",
     "agentabi",
+    "agentsched",
     "appabi",
     "apps/editor-ui",
     "apps/editor-window",
