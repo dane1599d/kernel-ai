@@ -363,3 +363,28 @@ fn a_source_line_in_another_entry_does_not_make_a_main_c_kai_s() {
         "{reply:?}"
     );
 }
+
+/// An app that names a variable after a kaiapp.h call is refused before
+/// compiling, and the repair has why.
+#[test]
+fn an_app_shadowing_a_kaiapp_call_is_refused_before_compiling_and_repaired() {
+    let shadowing = "#include <kaiapp.h>\nstruct state { I64 left; };\nchar Format[32];\n";
+    let (host, mut shell) = asked(vec![app(shadowing), app(SOURCE)]);
+    host.pkg_answers
+        .borrow_mut()
+        .push_back(Ok(String::from("0.0.1")));
+    host.cc_builds.borrow_mut().push_back(Ok(built()));
+    let reply = shell.eval("make me a countdown timer app");
+    assert!(reply.ok, "{reply:?}");
+    let asked = host.script_requests.borrow().clone();
+    assert_eq!(asked.len(), 2);
+    let (_, why) = asked[1].repair.clone().expect("a repair");
+    assert!(
+        why.contains("That app was refused before compiling:\nline 3: `Format` is a function"),
+        "{why}"
+    );
+    assert!(
+        host.cc_builds.borrow().is_empty(),
+        "built once, after the repair"
+    );
+}

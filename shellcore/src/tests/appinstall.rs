@@ -201,7 +201,7 @@ fn an_edited_or_replaced_build_is_refused_with_why() {
 
 /// The `main.c` Kai wrote, as the build recorded it.
 fn kai_source() -> String {
-    llmproto::precheck::prepare(SOURCE, &[]).source
+    llmproto::precheck::prepare_app(SOURCE).source
 }
 
 #[test]

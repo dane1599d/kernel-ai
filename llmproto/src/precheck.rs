@@ -31,6 +31,17 @@ pub struct Prepared {
 
 /// Fixes and checks `source`, where `calls` are the kai.h functions it may call.
 pub fn prepare(source: &str, calls: &[&str]) -> Prepared {
+    checked(source, calls, "kai.h")
+}
+
+/// [`prepare`] for a Kai app's `main.c`, whose calls are kaiapp.h's
+/// ([`crate::pack::capp1::KAIAPP_CALLS`]).
+pub fn prepare_app(source: &str) -> Prepared {
+    checked(source, crate::pack::capp1::KAIAPP_CALLS, "kaiapp.h")
+}
+
+/// `source` fixed and checked against `calls`, which `header` declares.
+fn checked(source: &str, calls: &[&str], header: &str) -> Prepared {
     let tokens = lex(source);
     let needs_string_h = tokens
         .iter()
@@ -42,7 +53,7 @@ pub fn prepare(source: &str, calls: &[&str]) -> Prepared {
         true => (format!("#include <string.h>\n{source}"), 1),
         false => (source.to_string(), 0),
     };
-    let mut problems = shadowed(&tokens, calls);
+    let mut problems = shadowed(&tokens, calls, header);
     problems.extend(formats(&tokens));
     problems.sort_by_key(|(line, _)| *line);
     Prepared {
@@ -55,7 +66,7 @@ pub fn prepare(source: &str, calls: &[&str]) -> Prepared {
 }
 
 /// Declarations that name a variable after a function.
-fn shadowed(tokens: &[Token], calls: &[&str]) -> Vec<(u32, String)> {
+fn shadowed(tokens: &[Token], calls: &[&str], header: &str) -> Vec<(u32, String)> {
     let mut found = Vec::new();
     for (i, token) in tokens.iter().enumerate() {
         let Kind::Ident(word) = &token.kind else {
@@ -83,7 +94,7 @@ fn shadowed(tokens: &[Token], calls: &[&str]) -> Vec<(u32, String)> {
         }
         let text = match tokens.get(j + 1).is_some_and(|t| t.is_punct('(')) {
             // `I64 uptime_ms(I64 *out);` again: kai.h's import is lost.
-            true => format!("kai.h declares `{name}` already; call it without declaring it"),
+            true => format!("{header} declares `{name}` already; call it without declaring it"),
             false => format!(
                 "`{name}` is a function, so a variable may not take its name; call it {name}_n or another name"
             ),
@@ -373,5 +384,19 @@ mod tests {
             &CALLS,
         );
         assert_eq!(out.problems, Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_app_may_not_name_a_variable_after_a_kaiapp_call() {
+        let out = prepare_app(
+            "struct state { I64 count; };\nchar Format[32];\nI64 ui_row(I64 node, I64 parent);",
+        );
+        assert_eq!(out.problems.len(), 2, "{:?}", out.problems);
+        assert!(out.problems[0].starts_with("line 2: `Format` is a function"));
+        assert!(out.problems[1].starts_with("line 3: kaiapp.h declares `ui_row` already"));
+        let state = prepare_app("I64 kai_state_size = 8;");
+        assert_eq!(state.problems.len(), 1, "{:?}", state.problems);
+        let fine = prepare_app(crate::pack::capp1::TEMPLATE);
+        assert_eq!(fine.problems, Vec::<String>::new());
     }
 }

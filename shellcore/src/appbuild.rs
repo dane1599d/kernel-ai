@@ -305,7 +305,7 @@ impl Shell {
         if answer.script.trim().is_empty() {
             return Next::Failed(format!("Kai wrote no app: {}", shown(&answer.summary)));
         }
-        let prepared = llmproto::precheck::prepare(&answer.script, &[]);
+        let prepared = llmproto::precheck::prepare_app(&answer.script);
         let why = match prepared.problems.is_empty() {
             false => format!(
                 "That app was refused before compiling:\n{}",
