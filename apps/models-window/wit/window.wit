@@ -3,13 +3,14 @@
 /// storage.
 package app:models-window@1.0.0;
 
-/// It declares no action and queues no effect: a switch or an import is Kai's
-/// `model_use` or `model_fetch`, logged and undoable, and the window says so.
+/// It declares no action and queues no effect. A person's key or click on Use
+/// switches the model through the shell's `model_use` row (`kai:models` 0.1.1),
+/// logged and undoable; an import is Kai's `model_fetch`, and the window says so.
 world models-window {
     include kai:app/component@0.1.0;
     import kai:ui/view@0.1.1;
-    import kai:models/models@0.1.0;
+    import kai:models/models@0.1.1;
     export kai:ui/input@0.1.1;
     export kai:app/events@0.1.0;
-    export kai:models/listing@0.1.0;
+    export kai:models/listing@0.1.1;
 }

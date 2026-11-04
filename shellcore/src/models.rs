@@ -15,6 +15,12 @@
 //! switches and is logged with its undo, and `models import` asks once, as the
 //! AI's `model_fetch` does. On a fresh image no model runs yet, so this is how
 //! the first one gets in.
+//!
+//! The Models window switches through the same row (#556): a person's key or
+//! click on Use comes from `desktop` as `use <sha256>` ([`Shell::models_change`]),
+//! held as a Settings change is, and is logged with the window's click as its
+//! consent and the same undo. An import is not taken from the window: it asks,
+//! and only a line on the trusted path can answer.
 
 use crate::actions::{How, Pending};
 use crate::actlog::{Change, Entry, Form, State};
@@ -29,11 +35,57 @@ use alloc::vec::Vec;
 use comp_models::{Models, Sha256, hex, size};
 use modelchan::listing;
 
+/// The one app whose switches the shell takes: the model manager's window, by
+/// its plan line's name, the one the image grants `kai:models`.
+pub const MODELS_APP: &str = modelchan::asker::WINDOW;
+/// The consent a switch from the Models window is logged with: a person's key
+/// or click in it.
+const CLICK: &str = "user-click:models";
+
 /// What waits on an asked model row's answer.
 #[derive(Clone, Debug)]
 pub(crate) enum Waiting {
     Use { to: Sha256, back: Option<Sha256> },
     Fetch,
+}
+
+impl Shell {
+    /// Answers a switch from app `app` (#556): `use <sha256>`, made by a
+    /// person's key or click (`user`), run as Kai's `model_use` row with that
+    /// consent and logged with its undo. The answer's text, or why not. The
+    /// app and `user` are checked here again, whatever `desktop` and
+    /// `comphost` did.
+    pub fn models_change(
+        &mut self,
+        app: &str,
+        request: &str,
+        user: bool,
+    ) -> Result<String, String> {
+        if app != MODELS_APP {
+            return Err(String::from("only the Models window switches the model"));
+        }
+        let Some(sha) = request
+            .strip_prefix(kabi::model::SWITCH)
+            .filter(|s| kabi::model::is_sha256_hex(s))
+        else {
+            return Err(String::from("not a model switch"));
+        };
+        if !user {
+            return Err(String::from("a switch needs a key or a click"));
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        let decision = Decision {
+            tier: Tier::Run,
+            why: Why::Asked,
+        };
+        let reply = self.model_use(id, &format!("models: {request}"), sha, decision, CLICK);
+        self.save_log();
+        match reply.ok {
+            true => Ok(reply.text),
+            false => Err(reply.text),
+        }
+    }
 }
 
 impl Shell {

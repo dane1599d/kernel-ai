@@ -50,6 +50,9 @@ pub(crate) struct HostState {
     /// The reads of the model list the app made and comphost has not taken
     /// (`kai:models`).
     pub(crate) models: crate::reads::Reads,
+    /// The model switches the app made and comphost has not taken
+    /// (`kai:models` `use-model`).
+    pub(crate) model_uses: crate::models::Uses,
     /// The edit messages the app sent and comphost has not taken (`kai:edit`).
     pub(crate) edit: crate::edit::EditHost,
     /// The file requests the app sent and comphost has not taken (`kai:files`).
@@ -188,6 +191,7 @@ impl WasmInstance {
             settings: Default::default(),
             system: Default::default(),
             models: Default::default(),
+            model_uses: Default::default(),
             edit: Default::default(),
             files: Default::default(),
         };

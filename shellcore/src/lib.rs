@@ -44,6 +44,7 @@ mod engine;
 pub mod grants;
 mod instructions;
 mod models;
+pub use models::MODELS_APP;
 mod packages;
 mod panel;
 mod pkg;

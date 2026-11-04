@@ -8,28 +8,90 @@
 //! Only an app the system image grants `kai:settings` reaches here: its plan
 //! line is named [`SETTINGS_APP`], and `desktop` and the shell check that name
 //! again.
+//!
+//! The Models window's switches (`kai:models` `use-model`, #556) travel the
+//! same way on their own [`Channel`]: the same ledger, which answers a switch
+//! no key or click made with why not, under `deskcore::models_wire`'s words.
+//! Only the app the image grants `kai:models` carries them.
 
 use crate::started::shown_serial;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use deskcore::settings_wire::{self as wire, MAX_WAITING};
+use deskcore::settings_wire::{self as wire, MAX_WAITING, Words};
 use kabi::handle::Handle;
+use livecore::Fault;
 use livecore::host::{Env, Host};
 use user::{println, sys};
-use wasmhost::LiveInstance;
 use wasmhost::settings_ledger::{Ledger, Owed};
+use wasmhost::{CoreInstance, LiveInstance, SettingsRequest};
 
 pub use deskcore::settings_wire::SETTINGS_APP;
 
-#[derive(Default)]
+/// Whose changes a [`Forward`] carries: the Settings app's requests, or the
+/// Models window's switches. They differ only in what the host queued them in,
+/// their words to `desktop` and the export their answers go to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Channel {
+    Settings,
+    Models,
+}
+
+impl Channel {
+    fn words(self) -> &'static Words {
+        match self {
+            Self::Settings => &wire::SETTINGS,
+            Self::Models => &deskcore::models_wire::MODELS,
+        }
+    }
+
+    /// What the log calls its requests.
+    fn what(self) -> &'static str {
+        match self {
+            Self::Settings => "settings",
+            Self::Models => "model switch",
+        }
+    }
+
+    fn take(self, core: &mut CoreInstance) -> Vec<SettingsRequest> {
+        match self {
+            Self::Settings => core.take_settings(),
+            Self::Models => core.take_model_uses(),
+        }
+    }
+
+    fn reply(
+        self,
+        core: &mut CoreInstance,
+        ticket: u32,
+        outcome: Result<Vec<u8>, String>,
+    ) -> Result<(), Fault> {
+        match self {
+            Self::Settings => core.settings_reply(ticket, outcome),
+            Self::Models => {
+                let words = outcome.map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+                core.models_used(ticket, words)
+            }
+        }
+    }
+}
+
 pub struct Forward {
+    channel: Channel,
     ledger: Ledger,
     /// Whether an answer has reached the app yet, for the one line that says so.
     told: bool,
 }
 
 impl Forward {
+    pub fn new(channel: Channel) -> Self {
+        Self {
+            channel,
+            ledger: Ledger::default(),
+            told: false,
+        }
+    }
+
     /// Whether a request waits for its answer: the app is in use, so it does
     /// not nap, and comphost keeps asking `desktop`.
     pub fn busy(&self) -> bool {
@@ -48,10 +110,13 @@ impl Forward {
         owed.extend(self.send(route, reply));
         owed.extend(self.results(route, reply));
         let any = !owed.is_empty();
-        let given = give(host, owed);
+        let given = give(host, self.channel, owed);
         if given && !self.told {
             self.told = true;
-            println!("comphost: the first settings answer reached the app");
+            println!(
+                "comphost: the first {} answer reached the app",
+                self.channel.what()
+            );
         }
         any
     }
@@ -60,9 +125,10 @@ impl Forward {
     /// version never sends twice.
     fn take<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) -> Vec<Owed> {
         let mut owed = Vec::new();
+        let channel = self.channel;
         host.each_instance(|instance, _, shown| {
             if let LiveInstance::V2(core) = instance {
-                let taken = core.take_settings();
+                let taken = channel.take(core);
                 if shown {
                     owed.extend(self.ledger.queue(core.serial(), taken));
                 }
@@ -89,13 +155,13 @@ impl Forward {
                 })
             })
             .collect();
-        let put = format!("{}{}", wire::PUT, lines.join("\n"));
+        let put = format!("{}{}", self.channel.words().put, lines.join("\n"));
         let why = match call(route, put.as_bytes(), reply) {
             Ok(text) if text == "ok" => return Vec::new(),
             Ok(text) => format!("desktop refused it: {text}"),
             Err(why) => why,
         };
-        println!("comphost: settings requests not sent: {why}");
+        println!("comphost: {} requests not sent: {why}", self.channel.what());
         let wires: Vec<u32> = out.iter().map(|o| o.wire).collect();
         self.ledger.refused(&wires, &why)
     }
@@ -106,15 +172,16 @@ impl Forward {
         if self.ledger.in_flight() == 0 {
             return Vec::new();
         }
-        let text = match call(route, wire::RESULTS.as_bytes(), reply) {
+        let what = self.channel.what();
+        let text = match call(route, self.channel.words().results.as_bytes(), reply) {
             Ok(text) => text,
             Err(why) => {
-                println!("comphost: settings answers not read: {why}");
+                println!("comphost: {what} answers not read: {why}");
                 return Vec::new();
             }
         };
         let Some(answers) = wire::parse_answers(&text) else {
-            println!("comphost: settings answers out of shape");
+            println!("comphost: {what} answers out of shape");
             return Vec::new();
         };
         let mut owed = Vec::new();
@@ -122,7 +189,7 @@ impl Forward {
             let outcome = answer.outcome.map(String::into_bytes);
             match self.ledger.answered(answer.ticket, outcome) {
                 Some(found) => owed.push(found),
-                None => println!("comphost: dropped a settings answer it did not ask for"),
+                None => println!("comphost: dropped a {what} answer it did not ask for"),
             }
         }
         owed
@@ -133,17 +200,22 @@ impl Forward {
 /// each is a transaction, like a window's input. One for an instance that is
 /// gone is dropped: its successor never asked, and a suspended app is not
 /// woken for it. Whether any reached the app.
-fn give<E: Env<Instance = LiveInstance>>(host: &mut Host<E>, owed: Vec<Owed>) -> bool {
+fn give<E: Env<Instance = LiveInstance>>(
+    host: &mut Host<E>,
+    channel: Channel,
+    owed: Vec<Owed>,
+) -> bool {
+    let what = channel.what();
     let mut given = false;
     for answer in owed {
         let ticket = answer.ticket;
         if !answer.is_for(shown_serial(host)) {
-            println!("comphost: dropped the settings answer to ticket {ticket}: its asker is gone");
+            println!("comphost: dropped the {what} answer to ticket {ticket}: its asker is gone");
             continue;
         }
         let outcome = answer.outcome;
-        if crate::ui::serve_shown(host, |core| core.settings_reply(ticket, outcome)).is_none() {
-            println!("comphost: the settings answer to ticket {ticket} did not reach the app");
+        if crate::ui::serve_shown(host, |core| channel.reply(core, ticket, outcome)).is_none() {
+            println!("comphost: the {what} answer to ticket {ticket} did not reach the app");
         } else {
             given = true;
         }
