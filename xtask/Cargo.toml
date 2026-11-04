@@ -19,6 +19,9 @@ infer = { path = "../infer" }
 diskmap = { path = "../diskmap" }
 kaifs = { path = "../kaifs" }
 kaipkg = { path = "../kaipkg" }
+# The HTTPS mock (mock_https/): its TLS server and test CA (plan p5-networking, task 7).
+kainet = { path = "../kainet", features = ["testca"] }
+rustls = { version = "=0.23.46", default-features = false }
 kabi = { path = "../kabi" }
 kaibundle = { path = "../kaibundle", features = ["alloc"] }
 livecore = { path = "../livecore" }
