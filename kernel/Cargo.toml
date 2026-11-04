@@ -53,5 +53,6 @@ xhci = { path = "../xhci" }
 x86_64 = "0.15.5"
 # Already in the tree through virtio-drivers; named for the Transport trait's bounds.
 zerocopy = { version = "0.8.40", default-features = false }
+bitflags = { version = "2.13.2", default-features = false }
 spike-rhai = { path = "../spikes/rhai", optional = true }
 spike-wasmi = { path = "../spikes/wasmi", optional = true }
