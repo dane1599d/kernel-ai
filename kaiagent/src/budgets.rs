@@ -13,9 +13,12 @@ pub const DEFAULT_KV_POSITIONS: u32 = 2_048;
 pub const DEFAULT_POOL_MIB: u32 = 128;
 /// The whole snapshot pool (section 2, question 4): no share is more.
 pub const MAX_POOL_MIB: u32 = 512;
-/// The most KV positions: Qwen3's native context window (est.), which no request
-/// can fill past.
-pub const MAX_KV_POSITIONS: u32 = 32_768;
+/// The most KV positions: `llm`'s slot (`kabi::model::CONTEXT_CAP`), which no
+/// request can hold more than.
+pub const MAX_KV_POSITIONS: u32 = kabi::model::CONTEXT_CAP as u32;
+/// The most tokens a day: about five days of the engine's decoding at the 415,000 a
+/// day it manages (est.), so a request for more is not a budget but no limit.
+pub const MAX_TOKENS_PER_DAY: u32 = 2_000_000;
 
 /// What `llm` holds an agent to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,7 +71,9 @@ impl Budgets {
             next = at + 1;
             let key = KEYS[at];
             match key {
-                "tokens/day" => budgets.tokens_per_day = whole(key, number, u32::MAX.into())?,
+                "tokens/day" => {
+                    budgets.tokens_per_day = whole(key, number, MAX_TOKENS_PER_DAY.into())?
+                }
                 "kv" => budgets.kv_positions = whole(key, number, MAX_KV_POSITIONS.into())?,
                 _ => {
                     let mib = number.strip_suffix('m').ok_or(Refusal::BudgetUnit)?;

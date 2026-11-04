@@ -86,10 +86,7 @@ fn a_budget_left_out_is_question_tens_default() {
         (7, 2_048, 1)
     );
     // The ceilings themselves are allowed.
-    let top = format!(
-        "tokens/day={} kv={MAX_KV_POSITIONS} pool={MAX_POOL_MIB}m",
-        u32::MAX
-    );
+    let top = format!("tokens/day={MAX_TOKENS_PER_DAY} kv={MAX_KV_POSITIONS} pool={MAX_POOL_MIB}m");
     assert!(Manifest::parse(&with("model", &top)).is_ok());
 }
 
@@ -274,15 +271,23 @@ fn a_budget_is_a_whole_number_above_zero_within_the_ceilings() {
             "{value}"
         );
     }
+    // A day's tokens have a ceiling: a number that large is no budget at all.
+    for value in [
+        "tokens/day=2000001",
+        "tokens/day=4294967295",
+        "tokens/day=4294967296",
+    ] {
+        assert_eq!(
+            refused(&with("model", value)),
+            Refusal::BudgetOver {
+                key: "tokens/day",
+                max: u64::from(MAX_TOKENS_PER_DAY)
+            },
+            "{value}"
+        );
+    }
     assert_eq!(
-        refused(&with("model", "tokens/day=4294967296")),
-        Refusal::BudgetOver {
-            key: "tokens/day",
-            max: u64::from(u32::MAX)
-        }
-    );
-    assert_eq!(
-        refused(&with("model", "kv=32769")),
+        refused(&with("model", "kv=2049")),
         Refusal::BudgetOver {
             key: "kv",
             max: u64::from(MAX_KV_POSITIONS)
@@ -295,6 +300,32 @@ fn a_budget_is_a_whole_number_above_zero_within_the_ceilings() {
             max: u64::from(MAX_POOL_MIB)
         }
     );
+}
+
+// A default is within its ceiling.
+const _: () = assert!(DEFAULT_TOKENS_PER_DAY < MAX_TOKENS_PER_DAY);
+const _: () = assert!(DEFAULT_POOL_MIB < MAX_POOL_MIB);
+const _: () = assert!(DEFAULT_KV_POSITIONS <= MAX_KV_POSITIONS);
+
+/// The ceilings are the engine's, not a number of ours: `llm` holds 2,048 positions a
+/// slot, and a day of its decoding is far under two million tokens.
+#[test]
+fn the_ceilings_are_the_engines() {
+    assert_eq!(MAX_KV_POSITIONS as usize, kabi::model::CONTEXT_CAP);
+    assert_eq!(MAX_KV_POSITIONS, DEFAULT_KV_POSITIONS);
+    assert_eq!(MAX_TOKENS_PER_DAY, 2_000_000);
+    // One under a ceiling is allowed, and one over is not.
+    let under = format!(
+        "tokens/day={} kv={}",
+        MAX_TOKENS_PER_DAY - 1,
+        MAX_KV_POSITIONS - 1
+    );
+    assert!(Manifest::parse(&with("model", &under)).is_ok());
+    let kv = format!("kv={}", MAX_KV_POSITIONS + 1);
+    assert!(matches!(
+        refused(&with("model", &kv)),
+        Refusal::BudgetOver { key: "kv", .. }
+    ));
 }
 
 #[test]

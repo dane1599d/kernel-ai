@@ -31,7 +31,8 @@
 //! - **Budgets.** `model` holds tokens a day, KV positions and a pool share in MiB.
 //!   Each is a whole number above zero; what it leaves out is question 10's
 //!   default (100,000, 2,048 and 128 MiB); the pool share is at most the pool (512
-//!   MiB) and the KV positions at most the model's window.
+//!   MiB), the KV positions at most `llm`'s slot (2,048) and the tokens a day at most
+//!   2,000,000.
 //! - **Actions.** Rows or `<group>_*`, at most 32; anything else is refused at the
 //!   one door, so it is refused here. A row or group of the OS's own must be in the
 //!   registry and none may be one an agent may never call; a package's are checked
@@ -57,7 +58,7 @@ mod tests;
 pub use actions::Pattern;
 pub use budgets::{
     Budgets, DEFAULT_KV_POSITIONS, DEFAULT_POOL_MIB, DEFAULT_TOKENS_PER_DAY, MAX_KV_POSITIONS,
-    MAX_POOL_MIB,
+    MAX_POOL_MIB, MAX_TOKENS_PER_DAY,
 };
 pub use refusal::Refusal;
 
