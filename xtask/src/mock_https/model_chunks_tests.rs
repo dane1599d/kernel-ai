@@ -9,7 +9,7 @@ use super::*;
 use crate::pkgrepo::{models, tuf};
 use kainet::chunks::{CHUNK, Chunks};
 use kainet::client::{self, Wall};
-use kainet::download::{DownloadError, Partial, download};
+use kainet::download::{Answer, DownloadError, Partial, download};
 use kainet::http::{Dial, Fetch, HttpError, Limits, Method, Range, TlsConnect, Url};
 use kaipkg::generation::Time;
 use kaituf::trusted::{ROOT, TrustedSet};
@@ -227,10 +227,7 @@ fn the_signed_list_beside_a_model_checks_its_download_chunk_by_chunk() {
     let mut connect = connect(&mock);
     download(&list, &mut partial, &mut |range: Range, sink| {
         let got = fetch.run(&mut connect, Method::Get, &url, Some(range), sink)?;
-        match got.head.status {
-            206 => Ok(got.received),
-            _ => Err(HttpError::Head("not a 206")),
-        }
+        Ok(Answer::from(&got))
     })
     .unwrap();
     assert!(partial.finished);

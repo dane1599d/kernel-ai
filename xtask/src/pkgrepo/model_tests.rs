@@ -200,25 +200,17 @@ fn a_model_or_chunk_list_that_top_level_targets_names_too_is_refused() {
     let repo = tuf::build_with_models(&[], &models::for_image().unwrap(), &keys, NOW).unwrap();
     let fixture = models::fixture();
     let list = format!("{}.chunks", fixture.sha256);
-    // `targets` delegates `*.chunks` to `models` as the founder's role does
-    // (root-ceremony.md), and `models` signs a chunk list beside the fixture ...
-    let repo = resigned(&repo, "metadata/1.targets.json", &keys.targets, |v| {
-        for role in v["delegations"]["roles"].as_array_mut().unwrap() {
-            if role["name"] == "models" {
-                role["paths"] = json!(["*.gguf", "*.chunks"]);
-            }
-        }
-    });
-    let entry = json!({ "length": 4096, "hashes": { "sha256": "cd".repeat(32) } });
-    let repo = resigned(&repo, "metadata/1.models.json", &keys.models, |v| {
-        v["targets"][&list] = entry.clone();
-    });
+    let sha = kaipkg::unhex(&fixture.sha256).unwrap();
+    // `models` signs each model's chunk list beside it, the fixture's too ...
+    let lists = models::for_image().unwrap();
+    let lists = lists.iter().filter(|m| m.chunks.is_some()).count();
     let checked = read(Repository {
         files: repo.files.clone(),
     })
     .unwrap();
     assert_eq!(checked.refused, []);
-    assert_eq!(checked.chunks.len(), 1);
+    assert_eq!(checked.chunks.len(), lists);
+    assert!(checked.chunks.iter().any(|(s, _)| *s == sha));
     // ... and top-level `targets`, which TUF's search asks first, names the
     // fixture and its list otherwise: neither resolves through `models`.
     let repo = resigned(&repo, "metadata/1.targets.json", &keys.targets, |v| {
@@ -240,7 +232,8 @@ fn a_model_or_chunk_list_that_top_level_targets_names_too_is_refused() {
         ]
     );
     assert!(checked.models.iter().all(|m| m.id != "fixture"));
-    assert!(checked.chunks.is_empty());
+    assert_eq!(checked.chunks.len(), lists - 1);
+    assert!(checked.chunks.iter().all(|(s, _)| *s != sha));
 }
 
 #[test]
@@ -251,8 +244,11 @@ fn a_malformed_target_is_refused_by_path_and_the_rest_kept() {
         v["targets"]["fixture.gguf"]["custom"]["kai"]["run"] = "this".into();
     });
     let checked = read(repo).unwrap();
-    assert_eq!(checked.refused.len(), 1);
-    assert_eq!(checked.refused[0].0, "fixture.gguf");
+    // The fixture is refused, and so its chunk list names no model.
+    let list = format!("{}.chunks", models::fixture().sha256);
+    let refused: Vec<&str> = checked.refused.iter().map(|(p, _)| p.as_str()).collect();
+    assert_eq!(refused, ["fixture.gguf", list.as_str()]);
+    assert_eq!(checked.refused[1].1, "it names no model the role signs");
     // The catalog and the other fixture are kept.
     assert_eq!(checked.models.len(), models::catalog().unwrap().len() + 1);
 }
