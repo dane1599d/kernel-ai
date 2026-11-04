@@ -14,9 +14,7 @@ const REQUEST: &[u8] = b"GET /blob HTTP/1.0\r\nHost: 10.0.2.2\r\n\r\n";
 const RTTS_MS: [u64; 3] = [0, 20, 80];
 const BUFFERS: [usize; 3] = [64 * 1024, 1024 * 1024, 4 * 1024 * 1024];
 const GAPS_MS: [u64; 2] = [2, 0];
-/// smoltcp's window cap in segments (`max_burst_size`): 1 as shipped, the
-/// receive queue's 16, and none.
-const BURSTS: [u64; 3] = [1, 16, 0];
+
 /// The blob is 256 MiB; a run stops at this many bytes or after the window.
 const LIMIT: u64 = 128 * 1024 * 1024;
 const WINDOW_MS: u64 = 4_000;
@@ -28,11 +26,7 @@ pub fn check() -> Result<(), &'static str> {
     let mut failed = 0;
     for rtt in RTTS_MS {
         for rx_buffer in BUFFERS {
-            for (gap_ms, burst) in GAPS_MS
-                .into_iter()
-                .flat_map(|gap| BURSTS.map(|burst| (gap, burst)))
-            {
-                net::set_burst(burst);
+            for gap_ms in GAPS_MS {
                 net::set_tx_delay_ms(rtt);
                 let plan = Plan {
                     server: SERVER,
@@ -46,10 +40,10 @@ pub fn check() -> Result<(), &'static str> {
                 };
                 let moved = bulk::download(&plan);
                 net::set_tx_delay_ms(0);
-                net::set_burst(1);
                 threads::sleep_ms(SETTLE_MS);
                 let kib = rx_buffer / 1024;
-                let burst = match burst {
+                // `net_burst=` on the command line: smoltcp's window cap.
+                let burst = match net::burst() {
                     0 => "none".into(),
                     n => alloc::format!("{n}"),
                 };
@@ -80,6 +74,6 @@ pub fn check() -> Result<(), &'static str> {
     if failed != 0 {
         return Err("net-throughput: a download failed");
     }
-    log!("net-throughput: 54 downloads measured");
+    log!("net-throughput: 18 downloads measured");
     Ok(())
 }

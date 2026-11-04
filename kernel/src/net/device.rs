@@ -27,9 +27,15 @@ static TX_DELAY_NS: AtomicU64 = AtomicU64::new(0);
 /// advertises at that many segments. 0 is no cap. 1 is what ships today.
 static BURST: AtomicU64 = AtomicU64::new(1);
 
-/// Sets the burst smoltcp's window cap uses; 0 removes the cap.
+/// Sets the burst smoltcp's window cap uses; 0 removes the cap. Only before
+/// the interface is made: smoltcp reads it once then.
 pub fn set_burst(frames: u64) {
     BURST.store(frames, Ordering::Release);
+}
+
+/// The burst the interface was made with.
+pub fn burst() -> u64 {
+    BURST.load(Ordering::Acquire)
 }
 
 /// Holds every frame sent from now on for `ms` before the card gets it.

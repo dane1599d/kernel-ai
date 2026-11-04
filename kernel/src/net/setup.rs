@@ -33,6 +33,13 @@ static CONFIG: Once<NetConfig> = Once::new();
 /// Reads the network words of the kernel command line (see `netcore::config`).
 pub fn configure(cmdline: &str) {
     let (config, ignored) = NetConfig::parse(cmdline);
+    // Spike P5-S2: smoltcp reads the card's burst once, when the interface is made.
+    let burst = cmdline
+        .split_whitespace()
+        .find_map(|w| w.strip_prefix("net_burst=")?.parse().ok());
+    if let Some(frames) = burst {
+        super::set_burst(frames);
+    }
     for why in ignored {
         log!("{why}");
     }

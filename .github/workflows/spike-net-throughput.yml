@@ -19,13 +19,16 @@ env:
 
 jobs:
   throughput:
-    name: net-throughput (${{ matrix.accel }}, ${{ matrix.build }})
+    name: net-throughput (${{ matrix.accel }}, burst ${{ matrix.burst }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         accel: [kvm, tcg]
         build: [release]
+        # smoltcp's window cap in segments: 1 as shipped, the receive queue's
+        # 16, and none (0).
+        burst: [1, 16, 0]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/qemu
@@ -52,6 +55,7 @@ jobs:
         env:
           XTASK_CASE: net-throughput
           XTASK_NET_DUMP: ${{ runner.temp }}/net.pcap
+          XTASK_CMDLINE: net_burst=${{ matrix.burst }}
         run: |
           flag=""
           if [ "${{ matrix.build }}" = release ]; then flag=--release; fi
