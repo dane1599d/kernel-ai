@@ -88,6 +88,14 @@ impl Fnv {
     }
 }
 
+/// FNV-1a 64 of `bytes`, the hash a `kai-kv 1` file carries over its keys and values,
+/// for S13-1's split of what a spill costs.
+pub fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut fnv = Fnv::new();
+    fnv.update(bytes);
+    fnv.0
+}
+
 /// A tier's name in the header's 16 bytes.
 fn tier_bytes(tier: Tier) -> [u8; 16] {
     let mut out = [0; 16];
@@ -297,6 +305,20 @@ impl Snapshot {
     #[cfg(test)]
     pub(crate) fn capacities(&self) -> (usize, usize) {
         (self.halves.capacity(), self.tokens.capacity())
+    }
+
+    /// Forgets what it holds and takes the memory for `positions` positions of a
+    /// slot of `shape` (layers, KV width), so that every snapshot up to that size
+    /// reuses it: a pool takes its memory in one piece, at its start, and never
+    /// fragments the heap with buffers of other sizes.
+    pub(crate) fn reserve(&mut self, shape: (usize, usize), positions: usize) -> Result<(), Error> {
+        self.clear();
+        self.halves
+            .try_reserve_exact(2 * shape.0 * shape.1 * positions)
+            .map_err(|_| Error::OutOfMemory)?;
+        self.tokens
+            .try_reserve_exact(positions)
+            .map_err(|_| Error::OutOfMemory)
     }
 
     /// Forgets what it holds and keeps its buffers.

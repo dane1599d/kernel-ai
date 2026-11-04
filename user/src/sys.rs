@@ -254,7 +254,7 @@ pub fn model_map() -> Result<u64, Error> {
 
 /// **Interim** (S10-3): fills `buf` from byte `offset` of KV region `region` of
 /// the `kai-cache` partition (MODEL_KV_LOAD); whole sectors, at most
-/// `kabi::model::KV_IO_BYTES`.
+/// `kabi::model::KV_IO_MAX_BYTES`.
 pub fn model_kv_load(region: u64, offset: u64, buf: &mut [u8]) -> Result<u64, Error> {
     let a = [
         region,

@@ -14,6 +14,7 @@
 //! cargo xtask tokens --gguf PATH   (S10-0: real token counts of the prompt parts; see tokens.rs)
 //! cargo xtask actbench --local ID [--arm act,..] [--seed N,..] [--limit N] [--gate]   (task 18 gate, S02-1, S10-1; GitHub only; see actbench/mod.rs)
 //! cargo xtask latency --local ID [--store DIR] [--accel kvm]   (S02-2: Enter to busy sign and to done, real model in the guest)
+//! cargo xtask kv-preempt --local ID [--store DIR] [--accel kvm] [--mem MIB]   (S13-1: KV snapshot, restore and spill, real model in the guest)
 //! cargo xtask doctor   (can this PC run Kernel AI in an accelerated VM, and what to fix; read-only)
 //! cargo xtask vbox [--start [--headless]]   (the VirtualBox VM "Kernel AI"; see vbox/mod.rs)
 //! cargo xtask wit-tables [--check]   (wasmhost/src/tables.rs from wit/: the host tables of the kai:app world)
@@ -55,6 +56,7 @@ mod httpd;
 mod icount;
 mod image;
 mod kai_actions;
+mod kv_preempt;
 mod latency;
 mod licences;
 mod lines;
@@ -103,6 +105,7 @@ fn main() -> ExitCode {
         Some("tune") => tune::main(&args[1..]),
         Some("tokens") => tokens::main(&args[1..]),
         Some("actbench") => actbench::main(&args[1..], &workspace_root().join("target")),
+        Some("kv-preempt") => kv_preempt::main(&args[1..]),
         Some("latency") => latency::main(&args[1..]),
         Some("doctor") => doctor::main(&args[1..]),
         Some("vbox") => vbox::main(&args[1..]),

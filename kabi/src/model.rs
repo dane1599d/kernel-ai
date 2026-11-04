@@ -104,17 +104,22 @@ pub const ENGINE_PAGES: u64 = (KV_BYTES + ENGINE_OTHER_BYTES) / 4096;
 pub const KV_REGIONS: u64 = KV_SLOTS as u64;
 /// Bytes of one region: room for a full slot's file.
 pub const KV_REGION_BYTES: u64 = 320 << 20;
-/// The most one MODEL_KV_LOAD or MODEL_KV_SAVE moves.
+/// What llm moves with one MODEL_KV_LOAD or MODEL_KV_SAVE unless it asks for more.
 pub const KV_IO_BYTES: u64 = 64 << 10;
+/// The most one MODEL_KV_LOAD or MODEL_KV_SAVE moves: a disk's staging buffer
+/// (512 KiB), so one call is one request to the disk (spike S13-1).
+pub const KV_IO_MAX_BYTES: u64 = 512 << 10;
 /// What offsets and lengths come in.
 pub const KV_SECTOR: u64 = 512;
 
 /// The one service, and program, that may map the model.
 pub const HOLDER: &str = "llm";
-/// Most pages the model's holder may be granted: 768 MiB, for the engine's two
-/// KV slots (608 MiB) and a pool of workers. Every other process keeps the
-/// kernel's per-process cap (512 MiB, ADR 0001 D4).
-pub const MAX_PAGES_HOLDER: u64 = 192 * 1024;
+/// Most pages the model's holder may be granted: 1.125 GiB, for the engine's two
+/// KV slots (608 MiB), a pool of workers, and (spike S13-1, which asks K to decide
+/// what the snapshot pool needs once the scheduler lands) a snapshot of a full slot
+/// (288 MiB). It was 768 MiB. Every other process keeps the kernel's per-process cap
+/// (512 MiB, ADR 0001 D4).
+pub const MAX_PAGES_HOLDER: u64 = 288 * 1024;
 
 /// The most pages a process named `name` running `program` may be granted:
 /// [`MAX_PAGES_HOLDER`] for the holder, `per_process` for anything else.
@@ -275,12 +280,15 @@ mod tests {
         assert!(file <= super::KV_REGION_BYTES, "{file}");
         assert_eq!(super::KV_REGION_BYTES % super::KV_SECTOR, 0);
         assert_eq!(super::KV_IO_BYTES % super::KV_SECTOR, 0);
+        assert_eq!(super::KV_IO_MAX_BYTES % super::KV_SECTOR, 0);
+        const { assert!(super::KV_IO_BYTES <= super::KV_IO_MAX_BYTES) };
+        assert_eq!(super::KV_REGION_BYTES % super::KV_IO_MAX_BYTES, 0);
     }
 
     #[test]
     fn only_the_holder_gets_the_holders_page_cap() {
         let per_process = 128 * 1024;
-        assert_eq!(super::max_pages("llm", "llm", per_process), 192 * 1024);
+        assert_eq!(super::max_pages("llm", "llm", per_process), 288 * 1024);
         for (name, program) in [("shell", "shell"), ("llm", "shell"), ("work", "llm")] {
             assert_eq!(super::max_pages(name, program, per_process), per_process);
         }

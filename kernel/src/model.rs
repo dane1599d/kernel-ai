@@ -449,7 +449,7 @@ pub fn check_test_window(runs: u64, source: impl Fn(u64) -> u64) -> Result<(), &
 /// MODEL_KV_SAVE. Moves `len` bytes between the caller's `buf` and byte `offset`
 /// of KV region `region` of the `kai-cache` partition. Only the model's holder
 /// may, `offset` and `len` are whole sectors, `len` at most
-/// `kabi::model::KV_IO_BYTES`, and the bytes stay inside the region; the
+/// `kabi::model::KV_IO_MAX_BYTES`, and the bytes stay inside the region; the
 /// partition must hold every region. The caller's memory is copied outside the
 /// disk's lock.
 pub fn kv_io(
@@ -460,7 +460,7 @@ pub fn kv_io(
     len: u64,
     flush: Option<bool>,
 ) -> Result<u64, Error> {
-    use kabi::model::{KV_IO_BYTES, KV_REGION_BYTES, KV_REGIONS, KV_SECTOR};
+    use kabi::model::{KV_IO_MAX_BYTES, KV_REGION_BYTES, KV_REGIONS, KV_SECTOR};
     if !may_map(slot) {
         return Err(Error::Permission);
     }
@@ -470,7 +470,7 @@ pub fn kv_io(
     if region >= KV_REGIONS
         || !in_region
         || len == 0
-        || len > KV_IO_BYTES
+        || len > KV_IO_MAX_BYTES
         || !offset.is_multiple_of(KV_SECTOR)
         || !len.is_multiple_of(KV_SECTOR)
     {

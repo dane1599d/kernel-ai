@@ -13,6 +13,7 @@
 
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 use infer::Next;
 use infer::chat::{Budget, Engine, Step};
 use llmproto::act::{self, ActError, ActRequest, Call, History, Turn};
@@ -32,6 +33,23 @@ const TEST_TOKENS: u32 = 32;
 /// Compute between two 1 ms sleeps: far under llm's 10 s burst limit, and a
 /// thousandth of the time.
 const SLEEP_EVERY_NS: u64 = 1_000_000_000;
+
+/// Spike S13-1's spill variants, each measured at [`VARIANT_POSITIONS`]: a name, the
+/// bytes one MODEL_KV_SAVE or MODEL_KV_LOAD moves, and whether the file is made
+/// durable. The first is what a spill costs today.
+const SPILL_VARIANTS: [(&str, usize, bool); 4] = [
+    ("64K flushed", 64 << 10, true),
+    ("64K unflushed", 64 << 10, false),
+    ("512K flushed", 512 << 10, true),
+    ("512K unflushed", 512 << 10, false),
+];
+/// How many positions the variants' prompt makes.
+const VARIANT_POSITIONS: usize = 1000;
+/// The call sizes of the region's raw I/O, and the bytes moved with each.
+const RAW_SIZES: [usize; 4] = [64 << 10, 128 << 10, 256 << 10, 512 << 10];
+const RAW_TOTAL: u64 = 128 << 20;
+/// Bytes the hash is timed over.
+const HASH_BYTES: usize = 16 << 20;
 
 /// How fast an answer came, and how much of its prompt the cache held.
 #[derive(Clone, Copy)]
@@ -407,6 +425,141 @@ impl Local {
             restored[i] = got.is_ok();
         }
         (restored[0], restored[1])
+    }
+
+    /// **Spike S13-1** (`kvbench=on` in llm's plan line, test images only): the
+    /// guest's measurement of snapshotting a slot into RAM, restoring it, and
+    /// spilling it to `kai-cache` and back, at each of `sizes` positions
+    /// (`infer::preempt`), one line a size. It takes the script slot, which its next
+    /// warm-up fills again.
+    pub fn kv_bench(&mut self, sizes: &[usize]) -> String {
+        let slot = SLOTS.script;
+        self.engine.use_slot(slot);
+        let key = self.kv_key(slot);
+        let mut spill = crate::kvfile::RegionSpill::new(slot as u64);
+        // The prompts are computed here, not by a request that sleeps now and then,
+        // so the model's steps pace themselves.
+        let slept = core::cell::Cell::new(sys::time_ns());
+        let pace = || {
+            if sys::time_ns() - slept.get() >= SLEEP_EVERY_NS {
+                sys::sleep_ms(1);
+                slept.set(sys::time_ns());
+            }
+        };
+        // Each size's line goes to the log as soon as it is known, with what the heap
+        // has taken since the bench began (it never gives pages back, and llm's quota
+        // kills it past its grant), so a run that dies later still shows its rows.
+        let heap_start = sys::brk(0).unwrap_or(0);
+        println!(
+            "kv-preempt: the bench starts with {} MiB of heap in use",
+            user::heap_bytes() >> 20
+        );
+        let mut report = String::new();
+        self.bench_rows(&key, sizes, &mut spill, "", &pace, heap_start, &mut report);
+        // Where the spill's time goes (S13-1): the same measurement at one size with
+        // each spill variant, then the pieces on their own.
+        for (name, size, durable) in SPILL_VARIANTS {
+            let mut spill = crate::kvfile::RegionSpill::with(slot as u64, size, durable);
+            let label = format!("spill {name}: ");
+            let sizes = [VARIANT_POSITIONS];
+            self.bench_rows(
+                &key,
+                &sizes,
+                &mut spill,
+                &label,
+                &pace,
+                heap_start,
+                &mut report,
+            );
+        }
+        self.bench_pieces(slot as u64, &key);
+        report
+    }
+
+    /// Measures `sizes` with `spill` and logs each row, with `label` before it, as it
+    /// is known; the rows go on `report`.
+    #[allow(clippy::too_many_arguments)]
+    fn bench_rows(
+        &mut self,
+        key: &infer::segments::Key,
+        sizes: &[usize],
+        spill: &mut crate::kvfile::RegionSpill,
+        label: &str,
+        pace: &dyn Fn(),
+        heap_start: u64,
+        report: &mut String,
+    ) {
+        let mut done = |size: usize, row: &Result<infer::preempt::Row, String>| {
+            let line = match row {
+                Ok(row) => row.line(),
+                Err(why) => format!("{size} positions: {why}"),
+            };
+            let grown = sys::brk(0).unwrap_or(0).saturating_sub(heap_start);
+            println!("kv-preempt: {label}{line}");
+            println!(
+                "kv-preempt: heap has grown {} MiB since the bench began, {} MiB in use",
+                grown >> 20,
+                user::heap_bytes() >> 20
+            );
+            report.push_str(&format!("kv-preempt: {label}{line}\n"));
+        };
+        infer::preempt::measure(
+            &mut self.engine,
+            key,
+            sizes,
+            spill,
+            &sys::time_ns,
+            pace,
+            &mut done,
+        );
+    }
+
+    /// What a spill's pieces cost on their own, logged: the file's bytes made with no
+    /// disk (the hash pass and the conversion), the hash alone, and the region's
+    /// raw I/O at each call size.
+    fn bench_pieces(&mut self, region: u64, key: &infer::segments::Key) {
+        let started = sys::time_ns();
+        let mut bytes = 0u64;
+        let saved = self.engine.save_slot(key, &mut |part| {
+            bytes += part.len() as u64;
+            true
+        });
+        println!(
+            "kv-preempt: the file with no disk: {} MiB made in {} ms ({})",
+            bytes >> 20,
+            (sys::time_ns() - started) / 1_000_000,
+            if saved.is_ok() { "ok" } else { "failed" }
+        );
+        let data: Vec<u8> = (0..HASH_BYTES).map(|i| (i % 251) as u8).collect();
+        let started = sys::time_ns();
+        let hash = infer::segments::hash_bytes(&data);
+        let ns = (sys::time_ns() - started).max(1);
+        println!(
+            "kv-preempt: fnv-1a 64 of {} MiB in {} ms, {} MB/s (hash {:08x})",
+            HASH_BYTES >> 20,
+            ns / 1_000_000,
+            HASH_BYTES as u64 * 1000 / ns,
+            hash as u32
+        );
+        drop(data);
+        for size in RAW_SIZES {
+            match crate::kvfile::raw_io(region, size, RAW_TOTAL) {
+                Some(io) => println!(
+                    "kv-preempt: raw {} KiB a call, {} calls: write {} ms ({} MB/s, {} us a \
+                     call), flush {} ms, read {} ms ({} MB/s, {} us a call)",
+                    size >> 10,
+                    io.calls,
+                    io.write_ns / 1_000_000,
+                    RAW_TOTAL * 1000 / io.write_ns.max(1),
+                    io.write_ns / io.calls.max(1) / 1000,
+                    io.flush_ns / 1_000_000,
+                    io.read_ns / 1_000_000,
+                    RAW_TOTAL * 1000 / io.read_ns.max(1),
+                    io.read_ns / io.calls.max(1) / 1000,
+                ),
+                None => println!("kv-preempt: raw {} KiB a call: a call failed", size >> 10),
+            }
+        }
     }
 
     /// **Interim** (S10-3): writes KV slot `slot` as its `kai-kv 1` file, logging

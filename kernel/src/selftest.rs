@@ -144,6 +144,7 @@ pub enum SelfTest {
     LocalScript,
     /// S02-2: Enter to the busy sign and to done, with the model on the disk.
     Latency,
+    KvPreempt,
     /// PROC_STOP and the supervisor's `stop` and `start` (P1 task 15).
     ProcStop,
     /// Each process's pages and CPU time through METRICS (for P4's Monitor).
@@ -399,6 +400,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=local-ask" => Some(SelfTest::LocalAsk),
             "test=local-script" => Some(SelfTest::LocalScript),
             "test=latency" => Some(SelfTest::Latency),
+            "test=kv-preempt" => Some(SelfTest::KvPreempt),
             "test=proc-stop" => Some(SelfTest::ProcStop),
             "test=proc-usage" => Some(SelfTest::ProcUsage),
             "test=shm" => Some(SelfTest::Shm),
@@ -545,6 +547,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::LocalAsk
             | SelfTest::LocalScript
             | SelfTest::Latency
+            | SelfTest::KvPreempt
             | SelfTest::ProcStop
             | SelfTest::ProcUsage
             | SelfTest::Part
@@ -671,6 +674,10 @@ pub fn plan(test: SelfTest) -> Option<String> {
             }
             plan
         }
+        // Spike S13-1: llm alone, with room for a snapshot and the bench command.
+        SelfTest::KvPreempt => {
+            crate::llm::plan_line_with(crate::kv_preempt_tests::EXTRA_PAGES, " kvbench=on")
+        }
         _ => crate::llm::plan_line(),
     };
     // The net case checks only the llm path, so it runs without the shell.
@@ -695,6 +702,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskCatalog
             | SelfTest::CBuild
             | SelfTest::AppEditorBuild
+            | SelfTest::KvPreempt
     ) {
         // The file system service starts before the shell, once there is a
         // `kai-data` partition for it (ADR 0004).

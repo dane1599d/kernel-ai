@@ -133,6 +133,9 @@ struct Backends {
     history: History,
     /// A slot's prompt is not cached yet: `health` says `warming`.
     warming: bool,
+    /// The plan line says `kvbench=on` (a test image's, for spike S13-1): `kv-bench`
+    /// is answered. No other image takes it.
+    kvbench: bool,
 }
 
 /// What a turn costs a server's history: about four bytes a token, as no
@@ -185,6 +188,7 @@ fn main() -> i32 {
         traced: 0,
         history: History::new(),
         warming: false,
+        kvbench: arg(&args, "kvbench") == Some("on"),
     };
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     let mut response = vec![0u8; http::MAX_RESPONSE];
@@ -373,10 +377,27 @@ fn warm(local: &mut local::Local, request: &mut [u8], caller: &mut u64) -> Optio
     came
 }
 
+/// The sizes `kv-bench` is asked for, positions separated by commas: at most 6.
+fn bench_sizes(text: &str) -> Result<Vec<usize>, String> {
+    let sizes: Vec<usize> = text
+        .split(',')
+        .map(|n| n.trim().parse().map_err(|_| format!("{n:?} is not a size")))
+        .collect::<Result<_, _>>()?;
+    match sizes.len() {
+        1..=6 => Ok(sizes),
+        _ => Err(String::from("kv-bench takes 1 to 6 sizes")),
+    }
+}
+
 fn handle(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<String, String> {
     let (command, rest) = text.split_once(' ').unwrap_or((text, ""));
     match command {
         "health" => health(backends, response),
+        "kv-bench" if backends.kvbench => match &mut backends.local {
+            Some(Ok(local)) => Ok(local.kv_bench(&bench_sizes(rest)?)),
+            Some(Err(why)) => Err(format!("the model cannot run: {why}")),
+            None => Err(String::from(NO_MODEL)),
+        },
         "model" if rest.is_empty() => match (&backends.model, &mut backends.local) {
             (Some(model), Some(Ok(local))) => Ok(local.report(model.len)),
             (_, Some(Err(why))) => Err(format!("the model cannot run: {why}")),

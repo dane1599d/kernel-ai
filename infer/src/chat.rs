@@ -338,6 +338,18 @@ impl<'a> Engine<'a> {
         crate::segments::snapshot(key, &self.kv, &self.cached, into)
     }
 
+    /// Takes `into`'s memory for snapshots of up to `positions` positions of this
+    /// engine's slots (at most a slot's capacity), in one piece: every later
+    /// [`Engine::snapshot_slot`] of that size or less reuses it. Whatever `into`
+    /// held is forgotten.
+    pub fn reserve_snapshot(
+        &self,
+        into: &mut crate::segments::Snapshot,
+        positions: usize,
+    ) -> Result<(), Error> {
+        into.reserve(self.kv.shape(), positions.min(self.kv.capacity()))
+    }
+
     /// Fills the slot in use from a snapshot, for a prompt of `turns`: how many
     /// positions that prompt will reuse, as [`Engine::restore_slot`] says. The
     /// checks are the file's, but for the hash of the keys and values (RAM does not

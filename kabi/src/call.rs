@@ -283,7 +283,7 @@ pub const THREAD_PIN: u64 = 63;
 /// `/system/models/cache/`). `model_kv_load(region, offset, buf, len) -> len`:
 /// reads `len` bytes at byte `offset` of KV region `region` of the `kai-cache`
 /// partition (see [`crate::model::KV_REGIONS`]) into `buf`. `offset` and `len`
-/// are whole sectors, `len` at most [`crate::model::KV_IO_BYTES`]. The model's
+/// are whole sectors, `len` at most [`crate::model::KV_IO_MAX_BYTES`]. The model's
 /// holder only (`cap::MODEL`); NotFound without a `kai-cache` partition that
 /// holds every region.
 pub const MODEL_KV_LOAD: u64 = 64;

@@ -17,6 +17,7 @@ mod generate;
 pub mod json;
 mod kv;
 mod model;
+pub mod preempt;
 mod sample;
 pub mod segments;
 pub mod tagged;
