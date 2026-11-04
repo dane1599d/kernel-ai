@@ -396,6 +396,25 @@ static void emit(char *out, I64 cap, I64 *at, char c) {
     (*at)++;
 }
 
+/* rand's state: splitmix64 from the call's seed, started again when a call
+ * with another seed comes, so the numbers depend on the call alone. */
+static uint64_t rand_seed;
+static uint64_t rand_state;
+
+I64 rand(void) {
+    uint64_t seed = kai_app_clock_seed();
+    if (seed != rand_seed) {
+        rand_seed = seed;
+        rand_state = seed;
+    }
+    rand_state += 0x9e3779b97f4a7c15ULL;
+    uint64_t z = rand_state;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    z ^= z >> 31;
+    return (I64)(z >> 33);
+}
+
 I64 Format(char *out, I64 cap, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
