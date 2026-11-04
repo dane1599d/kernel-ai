@@ -29,6 +29,8 @@
 
 #[cfg(test)]
 mod download_tests;
+#[cfg(test)]
+mod fetch_tests;
 mod http;
 mod pki;
 #[cfg(test)]
