@@ -14,7 +14,7 @@ pub(super) const CASES: &[TestCase] = &[
             "net-setup: kai.test resolved to 10.0.2.99 (TTL 300 s), then from the cache",
             "net-setup: silent.kai.test timed out after 1500 ms as asked",
             "[netcheck] resolved kai.test to 10.0.2.99",
-            "[netcheck-nocap] resolve kai.test refused: no NET capability",
+            "[netcheck-nocap] resolve kai.test refused: not under this handle's hosts",
             "net-setup: the 4 s lease was renewed: still leased after 10 s, none lost",
             "network: 10.0.2.15/24 via 10.0.2.2, from the DHCP server at 10.0.2.2",
             "lease: 4s, granted ",
@@ -45,5 +45,24 @@ pub(super) const CASES: &[TestCase] = &[
             "net-static: 3 of 3 pings to the gateway answered",
         ],
         ..case("net-static", "test=net-static ip=static")
+    },
+    // P5 task 1: a NetDest handle resolves only names under its hosts, a
+    // connect counts only for what it resolved or names, and it only shrinks.
+    TestCase {
+        dns: true,
+        server: false,
+        expect: &[
+            "[netdest-a] resolved alias.kai.test to 10.0.2.99",
+            "net-dest: alias.kai.test resolved on the handle, and only its address and the literal range may be connected to, on port 8000",
+            "[netdest-b] resolve leak.attacker.example refused: not under this handle's hosts",
+            "net-dest: a name under none of its hosts was refused, and no query left",
+            "[netdest-c] resolved alias.kai.test to 10.0.2.99",
+            "[netdest-d] resolve kai.test refused: not under this handle's hosts",
+            "[netdest-e] narrowing to proto:tcp,ports:any,hosts:kai.test refused: it would allow more",
+            "net-dest: a narrower handle allowed only its own host, and a wider one was refused",
+            "[netdest-f] resolve kai.test refused: not under this handle's hosts",
+            "net-dest: the retired RESOLVE refused even a holder of a NetDest",
+        ],
+        ..case("net-dest", "test=net-dest")
     },
 ];

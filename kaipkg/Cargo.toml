@@ -11,12 +11,19 @@ publish = false
 [lib]
 doctest = false
 
+[features]
+# The online repository over kainet's HTTPS (P5 task 8); `pkg` turns it on
+# once it holds TCP in ring 3 (task 2).
+online = ["dep:kainet"]
+
 [dependencies]
 agentabi = { path = "../agentabi" }
 ed25519-compact = { version = "2.6.0", default-features = false, features = ["opt_size"] }
 fsproto = { path = "../fsproto" }
 kabi = { path = "../kabi" }
 kaituf = { path = "../kaituf" }
+# Feature `online` only: the online repository over HTTPS (P5 task 8).
+kainet = { path = "../kainet", optional = true }
 livecore = { path = "../livecore" }
 llmproto = { path = "../llmproto" }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }

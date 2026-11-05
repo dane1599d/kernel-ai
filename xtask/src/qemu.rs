@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -391,6 +391,9 @@ pub struct TestRun<'a> {
     /// A power cut: once a kernel line containing this text appears, QEMU is
     /// killed this much later, and the boot counts as done.
     pub cut: Option<(String, Duration)>,
+    /// The case's `differs` text, and where the rest of the first kernel line
+    /// containing it is put.
+    pub capture: Option<(&'static str, Arc<Mutex<Option<String>>>)>,
 }
 
 pub fn run_test(
@@ -421,6 +424,7 @@ pub fn run_test(
     let (cut_tx, cut_rx) = mpsc::channel();
     let (seen_tx, seen_rx) = mpsc::channel();
     let cut_at = run.cut.clone();
+    let capture = run.capture.clone();
     let all = (expect.clone(), exact.clone(), None, Vec::new());
     // The echo runs apart from the reader, as in icount.rs: printing to a slow CI
     // log must never stop QEMU's output being read. A full pipe makes QEMU hold
@@ -464,6 +468,13 @@ pub fn run_test(
             // none of them counts as a kernel marker.
             if from_programs(&line) {
                 continue;
+            }
+            if let Some((text, slot)) = &capture
+                && let Some((_, rest)) = line.split_once(text)
+                && let Ok(mut slot) = slot.lock()
+                && slot.is_none()
+            {
+                *slot = Some(rest.trim_end_matches('\r').to_string());
             }
             if let Some((text, _)) = &cut_at
                 && line.contains(text.as_str())

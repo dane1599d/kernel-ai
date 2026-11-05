@@ -7,6 +7,8 @@
 //! - A memory whose text came from Content (a file, a note, a search result, a
 //!   page) is refused, whoever asks: read data can never plant one.
 //! - An agent writes only to its own scope, and only with `memory write`.
+//! - A text that gives permission or sets a standing action is no memory
+//!   ([`crate::directive`]): a memory informs, it never permits.
 
 use crate::record::{MAX_TEXT, Scope, text_problem};
 use agentabi::consent::Label;

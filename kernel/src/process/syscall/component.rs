@@ -17,6 +17,7 @@ const CALLS: &[u64] = &[
     call::BUILD_POLL,
     call::COMP_CONTROL,
     call::EDIT_CALL,
+    call::CARD_READY,
 ];
 
 /// One of [`CALLS`], or `None` for a number this area does not have.
@@ -66,8 +67,20 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
             need(slot, cap::EDIT)?;
             edit_call(slot, a[0], a[1], a[2], a[3])
         }
+        call::CARD_READY => card_ready(slot),
         _ => Err(Error::NotFound),
     }
+}
+
+/// CARD_READY: the shell has a card waiting; the terminal takes it when it
+/// may ([`crate::terminal::card_ready`]). For the process serving `shell` only.
+fn card_ready(slot: usize) -> Result<u64, Error> {
+    let pid = crate::process::identity(slot).pid;
+    if crate::ipc::server_of("shell") != Some(pid) {
+        return Err(Error::Permission);
+    }
+    crate::terminal::card_ready();
+    Ok(0)
 }
 
 /// EDIT_CALL: one open or command for the edit service, through the kernel's

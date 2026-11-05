@@ -14,13 +14,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Guest memory without a model disk, in MiB.
-pub const BASE_MEMORY_MIB: u64 = 512;
+pub const BASE_MEMORY_MIB: u64 = kabi::model::GUEST_BASE_MIB;
 /// The boot module the kernel takes the model from in place of the disk
 /// (`kernel/src/model.rs`).
 pub const MODEL_MODULE: &str = "kai.model";
 const MIB: u64 = 1024 * 1024;
-/// The model's share of guest memory is rounded up to a multiple of this.
-const MEMORY_STEP_MIB: u64 = 64;
 const RAW_LEN: usize = 3 * MIB as usize + 777;
 pub(crate) const GGUF_LEN: usize = 2 * MIB as usize + 4093;
 const GGUF_2_LEN: usize = 2 * MIB as usize + 8189;
@@ -191,9 +189,7 @@ impl ModelDisk {
 /// Guest memory, in MiB, for a VM with a model file of `len` bytes (see
 /// [`ModelDisk::memory_mib`]); `cargo xtask doctor` sizes WSL by it.
 pub const fn memory_mib_for(len: u64) -> u64 {
-    let engine_mib = kabi::model::ENGINE_PAGES * 4096 / MIB;
-    let extra = len.div_ceil(MIB) + 2 * engine_mib;
-    BASE_MEMORY_MIB + extra.next_multiple_of(MEMORY_STEP_MIB)
+    kabi::model::guest_mib(len)
 }
 
 /// The disk a test case attaches, written under `target/fixtures/`, if it has one.

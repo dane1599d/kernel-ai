@@ -64,6 +64,8 @@ pub struct Spec {
     pub name: &'static str,
     /// `general.license`, if any.
     pub license: Option<&'static str>,
+    /// `qwen3.pooling_type`, if any (3: last-token pooling, an embedding model).
+    pub pooling_type: Option<u32>,
     pub seed: u64,
 }
 
@@ -93,6 +95,7 @@ impl Spec {
             quant: Quant::Q8_0,
             name: "generated fixture",
             license: None,
+            pooling_type: None,
             seed: 1,
         }
     }
@@ -390,6 +393,9 @@ fn build_with(
         .string("general.name", spec.name);
     if let Some(license) = spec.license {
         w.string("general.license", license);
+    }
+    if let Some(pooling) = spec.pooling_type {
+        w.u32("qwen3.pooling_type", pooling);
     }
     w.u32("qwen3.block_count", u32_of(spec.n_layer))
         .u32("qwen3.context_length", u32_of(spec.context_length))

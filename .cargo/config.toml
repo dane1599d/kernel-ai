@@ -1,8 +1,19 @@
 [alias]
 xtask = "run --quiet -p xtask --"
 
+# The cipher crates' portable backends on the soft-float target: their AVX2,
+# AES-NI and SSE paths need vector registers, which neither the kernel nor the
+# soft-float programs may use (roadmap L2), and rustc stops on them there. The
+# hard-float user target keeps the fast paths (plan p5-networking §4, item 3).
 [target.x86_64-unknown-none]
-rustflags = ["-C", "relocation-model=static", "-C", "code-model=kernel", "-C", "force-frame-pointers=yes"]
+rustflags = [
+    "-C", "relocation-model=static", "-C", "code-model=kernel", "-C", "force-frame-pointers=yes",
+    "--cfg", 'aes_backend="soft"',
+    "--cfg", 'chacha20_backend="soft"',
+    "--cfg", 'poly1305_backend="soft"',
+    "--cfg", 'polyval_backend="soft"',
+    "--cfg", 'curve25519_dalek_backend="serial"',
+]
 
 # Live components: a 64 KiB stack. Memory has no declared maximum: the host's limit
 # (memory_kib) is the one that applies, and growing past it is reported as memory.

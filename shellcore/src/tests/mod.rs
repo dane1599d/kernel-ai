@@ -19,6 +19,7 @@ mod act;
 mod actions;
 mod apart;
 mod appbuild;
+mod appcard;
 mod appinstall;
 mod appjob;
 mod appline;
@@ -37,6 +38,7 @@ mod logdisk;
 mod look;
 mod models;
 mod more;
+mod netgrant;
 mod netrows;
 mod packages;
 mod panel;
@@ -145,6 +147,8 @@ struct FakeHost {
     pub tickets: Cell<u64>,
     /// The tickets `script_stop` was given. The model may still be answering.
     pub stops: RefCell<Vec<u64>>,
+    /// Each `model_warm` hint, in order.
+    pub warms: RefCell<Vec<llmproto::script::Lang>>,
     /// Set to let `script_take` hand over the answer in flight.
     pub answered: Cell<bool>,
     /// `cc_trial`'s answers in turn; past them, the trial passes.
@@ -337,6 +341,7 @@ impl FakeHost {
             tickets: Cell::new(0),
             answered: Cell::new(false),
             stops: RefCell::new(Vec::new()),
+            warms: RefCell::new(Vec::new()),
             app_sources: RefCell::new(Vec::new()),
             files: RefCell::new(Files::new()),
             txns: RefCell::new(Vec::new()),
@@ -461,6 +466,10 @@ impl Host for FakeHost {
 
     fn script_stop(&self, ticket: u64) {
         self.stops.borrow_mut().push(ticket);
+    }
+
+    fn model_warm(&self, lang: llmproto::script::Lang) {
+        self.warms.borrow_mut().push(lang);
     }
 
     /// The answer comes once a test lets it ([`FakeHost::answered`]).

@@ -899,6 +899,12 @@ pub fn pkg_fetch(request: &HttpRequest) -> Result<usize, Error> {
     .map(|len| len as usize)
 }
 
+/// Says the shell has a card waiting for the trusted path (CARD_READY): the
+/// kernel's terminal asks for it with `termcore::menu::TAKE_CARD` when it may.
+pub fn card_ready() -> Result<(), Error> {
+    call(call::CARD_READY, [0; 6]).map(|_| ())
+}
+
 /// Sends the edit service one open or command for an app that holds the `edit`
 /// grant, through the kernel's journal; its answer goes into `reply`, which must
 /// hold [`kabi::MAX_MESSAGE`] bytes, and its length comes back (needs EDIT).
@@ -943,7 +949,8 @@ pub fn build_poll(buf: &mut [u8]) -> Result<usize, Error> {
 }
 
 /// The IPv4 addresses of `host` from the kernel's resolver, as many as fit
-/// written into `out`; returns how many the answer had (needs NET).
+/// written into `out`; returns how many the answer had. Retired: always
+/// Permission now ([`resolve_on`] takes its place).
 pub fn resolve(host: &str, out: &mut [[u8; 4]]) -> Result<usize, Error> {
     call(
         call::RESOLVE,
@@ -957,6 +964,40 @@ pub fn resolve(host: &str, out: &mut [[u8; 4]]) -> Result<usize, Error> {
         ],
     )
     .map(|count| count as usize)
+}
+
+/// [`resolve`] on the `NetDest` handle `dest` (RESOLVE_ON): answered only for
+/// a name under its record's host suffixes.
+pub fn resolve_on(dest: Handle, host: &str, out: &mut [[u8; 4]]) -> Result<usize, Error> {
+    call(
+        call::RESOLVE_ON,
+        [
+            u64::from(dest.0),
+            host.as_ptr() as u64,
+            host.len() as u64,
+            out.as_mut_ptr() as u64,
+            out.len() as u64,
+            0,
+        ],
+    )
+    .map(|count| count as usize)
+}
+
+/// A new `NetDest` handle with `rights` to a record no wider than `dest`'s,
+/// from the `netdest` crate's text form (NETDEST_NARROW).
+pub fn netdest_narrow(dest: Handle, spec: &str, rights: u32) -> Result<Handle, Error> {
+    call(
+        call::NETDEST_NARROW,
+        [
+            u64::from(dest.0),
+            spec.as_ptr() as u64,
+            spec.len() as u64,
+            u64::from(rights),
+            0,
+            0,
+        ],
+    )
+    .map(|h| Handle(h as u32))
 }
 
 /// The kernel's ABI version, highest call number and handle table size.

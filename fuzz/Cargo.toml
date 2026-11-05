@@ -1,0 +1,65 @@
+[package]
+name = "kainet-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MPL-2.0"
+publish = false
+
+# libFuzzer targets for kainet's parsers of server bytes (plan p5-networking
+# §6). Outside the workspace: libfuzzer-sys builds libFuzzer's C++, so these
+# run only in .github/workflows/fuzz.yml on a GitHub runner, never on a
+# developer's PC. Their bodies are ../fuzz/harness.rs, which kainet's host
+# tests also run (kainet/tests/fuzz_harness.rs).
+#
+# Being outside the workspace, this crate is outside `cargo deny`'s graph, so
+# its one dependency the workspace lacks is listed here (C's review of #677):
+# libfuzzer-sys is "(MIT OR Apache-2.0) AND NCSA", NCSA being libFuzzer's own
+# BSD-style licence. It is a test tool on a GitHub runner and never ships.
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+kainet = { path = "../kainet", features = ["testca"] }
+rustls = { version = "=0.23.46", default-features = false }
+getrandom = "0.3"
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "tls_client"
+path = "fuzz_targets/tls_client.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tls_records"
+path = "fuzz_targets/tls_records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_response"
+path = "fuzz_targets/http_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kai_chunks"
+path = "fuzz_targets/kai_chunks.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "url"
+path = "fuzz_targets/url.rs"
+test = false
+doc = false
+bench = false

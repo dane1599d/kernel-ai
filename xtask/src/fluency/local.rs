@@ -44,6 +44,23 @@ pub fn load(id: &str, store: Option<&str>) -> Result<(Shared, String), String> {
     Ok((Rc::new(RefCell::new(engine)), line))
 }
 
+/// The `c-1` card's prompt into `engine`'s cache, outside any task's time, as
+/// llm computes it once the shell is at `c>` (`warm-lang c`).
+pub fn warm_c(engine: &Shared) -> Result<(), String> {
+    let started = Instant::now();
+    llmproto::local::warm_program(&mut engine.borrow_mut(), |_| Next::Continue).map_err(|e| {
+        format!(
+            "the c-1 card was not cached: {}",
+            llmproto::local::describe(&e)
+        )
+    })?;
+    println!(
+        "xtask: fluency: the c-1 card cached in {} ms",
+        started.elapsed().as_millis()
+    );
+    Ok(())
+}
+
 /// Script requests answered by `engine`, as the llm service answers them, within
 /// the same time limit.
 pub fn transport(engine: Shared) -> Transport {

@@ -103,26 +103,30 @@ impl Files {
         true
     }
 
-    /// Ctrl-O's path was typed: asks the OS for the file.
-    pub(crate) fn ask_open(&mut self, host: &mut dyn Host, screen: &mut Screen, path: &str) {
+    /// Ctrl-O's path was typed, or the agent's `editor_open_file` named one: asks
+    /// the OS for the file, or says why not (for the caller to show or answer).
+    pub(crate) fn ask_open(
+        &mut self,
+        host: &mut dyn Host,
+        screen: &mut Screen,
+        path: &str,
+    ) -> Result<(), String> {
         if self.job.is_some() {
-            return screen.note("a file is still on its way; wait for it", true);
+            return Err(String::from("a file is still on its way; wait for it"));
         }
         if self.unsaved(screen) {
-            return screen.note(
+            return Err(String::from(
                 "there are edits not saved or built: Ctrl-S saves a file, Ctrl-B builds a source",
-                true,
-            );
+            ));
         }
-        if let Err(why) = check_path(path) {
-            return screen.note(why, true);
-        }
+        check_path(path)?;
         let ticket = host.read_file(path);
         self.job = Some(Job::Read {
             path: String::from(path),
             ticket,
         });
         screen.note(format!("opening {path}..."), false);
+        Ok(())
     }
 
     /// Ctrl-S: sends the file whole.

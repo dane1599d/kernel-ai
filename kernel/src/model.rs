@@ -444,6 +444,10 @@ pub fn check_test_window(runs: u64, source: impl Fn(u64) -> u64) -> Result<(), &
     window::check(built, runs, source)
 }
 
+// One call is one request to the disk, so it must fit a disk's staging buffer.
+const _: () = assert!(kabi::model::KV_IO_BYTES <= crate::virtio::blk::STAGING_BYTES as u64);
+const _: () = assert!(kabi::model::KV_IO_BYTES <= crate::nvme::STAGING_BYTES);
+
 /// **Interim** (S10-3; removed at P2 task 10, when the KV files move to
 /// `/system/models/cache/`): MODEL_KV_LOAD (`flush` is `None`) and
 /// MODEL_KV_SAVE. Moves `len` bytes between the caller's `buf` and byte `offset`

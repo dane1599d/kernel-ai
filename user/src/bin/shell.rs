@@ -28,7 +28,7 @@ use alloc::vec::Vec;
 use kabi::sched::{SchedStats, TrialRequest};
 use llmproto::act::{self, ActError, ActRequest, Call};
 use llmproto::chat::Completion;
-use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
+use llmproto::script::{self, Answer, AnswerError, Lang, ScriptRequest};
 use llmproto::tune::{self, TuneRequest};
 use shellcore::targets::Service;
 use shellcore::{DEFAULT_CONFIG, Host, PanelResult, Proof, SCRIPT_ROUND_MS, Shell};
@@ -709,6 +709,16 @@ impl Host for System {
         }
     }
 
+    fn model_warm(&self, lang: Lang) {
+        let word = match lang {
+            Lang::C => "c",
+            Lang::Rhai | Lang::App => "rhai",
+        };
+        if let Err(error) = app_job(&alloc::format!("warm-lang {word}")) {
+            println!("warm-lang {word}: {error:?}");
+        }
+    }
+
     fn act(&self, request: &ActRequest) -> Result<Call, ActError> {
         let unavailable = |why: &str| ActError::Unavailable(alloc::format!("llm service: {why}"));
         let mut reply = vec![0u8; kabi::MAX_MESSAGE];
@@ -1113,10 +1123,20 @@ fn main() -> i32 {
         take_events(&mut shell, &mut events);
         take_panel(&mut shell);
         take_effects(&mut shell);
+        // Files the AI, the Terminal, an app, an editor save or an undo changed:
+        // the apps that list them are told, along with the results given next.
+        if system.files.take_changed() {
+            shell.fs_changed();
+        }
         give_call_results(&mut shell);
         take_files(&mut shell);
         take_settings(&mut shell);
         give_app_build(&mut shell);
+        // An install card waits: the kernel's terminal takes it when it may.
+        // Said again each pass, so a desktop that shows later still gets it.
+        if shell.card_waiting() {
+            let _ = sys::card_ready();
+        }
         give_appearance(&system);
         shell.retry_keep();
         let mut caller = u64::MAX;

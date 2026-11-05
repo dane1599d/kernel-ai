@@ -44,6 +44,7 @@ mod engine;
 pub mod grants;
 mod instructions;
 mod models;
+pub mod netgrant;
 mod packages;
 mod panel;
 mod pkg;
@@ -78,7 +79,7 @@ use engine::Line;
 use kabi::sched::{SchedStats, TrialRequest};
 use llmproto::act::{ActError, ActRequest, Call};
 use llmproto::chat::Completion;
-use llmproto::script::{Answer, AnswerError, ScriptRequest};
+use llmproto::script::{Answer, AnswerError, Lang, ScriptRequest};
 use llmproto::tune::TuneRequest;
 pub use panel::PanelResult;
 use rhai::{AST, Dynamic, Engine, EvalAltResult, Scope};
@@ -173,6 +174,9 @@ pub trait Host {
     }
     /// Stops the [`Host::script_start`] with `ticket`, if it is still asking.
     fn script_stop(&self, _ticket: u64) {}
+    /// Which script prompt the model should keep warm: C's at `c>`, Rhai's at
+    /// `kai>`. A hint, so nothing comes back.
+    fn model_warm(&self, _lang: Lang) {}
     /// Asks the LLM for one tagged call (ADR 0002 D4). Without one, the shell asks
     /// for a script instead.
     fn act(&self, _request: &ActRequest) -> Result<Call, ActError> {
@@ -585,6 +589,9 @@ pub struct Shell {
     app_job: Option<appjob::Job>,
     /// What builds in the background came to, not yet shown.
     notices: Vec<String>,
+    /// The app whose install card waits to open by itself, once a build in
+    /// the background built it ([`Shell::take_card`]).
+    card: Option<String>,
     /// Installed software: the image's repository and its generations.
     pkgs: pkg::Store,
     /// Whether the `sudo` note was said already.
@@ -673,6 +680,7 @@ impl Shell {
             app_written: Vec::new(),
             app_job: None,
             notices: Vec::new(),
+            card: None,
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
             shown: None,
@@ -786,6 +794,13 @@ impl Shell {
     /// panel's and apps' lines go through `eval`, so their result stays
     /// theirs (C on #621).
     pub fn eval_console(&mut self, input: &str) -> Reply {
+        // The terminal asks for the card the shell said waits: never a typed
+        // line, and never the panel's or an app's.
+        if input == termcore::menu::TAKE_CARD {
+            let reply = self.take_card();
+            self.save_log();
+            return reply;
+        }
         let mut reply = self.eval(input);
         if reply.confirm.is_none() && !reply.more && !self.notices.is_empty() {
             let mut text = self.take_notices().join("\n");
