@@ -1,10 +1,12 @@
 //! Two shapes a small model writes that the shell must not take at their word
 //! (the shipped-pack actbench, #715):
 //!
-//! - A placeholder argument, `pkg_remove("package_name")`: a call that names
-//!   nothing the user said. A direct call asks which one is meant; a script
-//!   that holds one is refused.
-//! - A claim, `print("Change applied.")`: a script with no OS call that only
+//! - A placeholder argument, `pkg_remove("package_name")`: a call whose target
+//!   names nothing the user said. A direct call asks which one is meant; a
+//!   script that holds one is refused. Only targets are checked: a payload
+//!   (`"<p>hi</p>"`, `"TODO"`) or an option is whatever the user wants written
+//!   (C on #716).
+//! - A claim, `print("Change applied.")`: a script that changed nothing but
 //!   prints success. Its output is shown with what the shell knows: nothing
 //!   was changed.
 //!
@@ -106,14 +108,23 @@ pub fn refused(call: &str, arg: &str, value: &str) -> String {
     format!("{call}'s {arg} \"{value}\" is a placeholder; use the name the request gives, or ask")
 }
 
-/// The first literal argument of `plan` that is a placeholder for `line`, as
+/// Whether `row`'s argument `arg` is what the call acts on.
+pub fn is_target(row: &agentabi::Action, arg: &str) -> bool {
+    row.args
+        .iter()
+        .any(|a| a.name == arg && matches!(a.role, agentabi::Role::Target))
+}
+
+/// The first literal target of `plan` that is a placeholder for `line`, as
 /// the reason to refuse the script.
 pub fn in_plan(plan: &crate::analyse::Plan, line: &str) -> Option<String> {
     plan.sites.iter().find_map(|site| {
+        let row = agentabi::find(&agentabi::ROWS, site.name)?;
         site.args.iter().find_map(|(arg, val)| {
             let text = val.text.as_deref()?;
             let literal = val.label == agentabi::consent::Label::Literal;
-            (literal && placeholder(text, line)).then(|| refused(site.name, arg, text))
+            let guarded = literal && is_target(row, arg) && placeholder(text, line);
+            guarded.then(|| refused(site.name, arg, text))
         })
     })
 }
@@ -129,25 +140,17 @@ const CLAIMS: &[&str] = &[
     "changed",
     "updated",
     "removed",
-    "installed",
-    "uninstalled",
-    "restarted",
-    "stopped",
-    "started",
     "deleted",
-    "enabled",
-    "disabled",
     "saved",
     "switched",
     "set to",
     "done",
-    "complete",
 ];
 
 /// The line a claim script's output gets.
-pub const NOTHING_CHANGED: &str = "Nothing was changed: the script made no OS call.";
+pub const NOTHING_CHANGED: &str = "Nothing was changed: the script made no change.";
 
-/// Whether `text` claims a change: said by a script that made no OS call, it
+/// Whether `text` claims a change: said by a script that changed nothing, it
 /// cannot be true.
 pub fn claims(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();

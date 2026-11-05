@@ -118,3 +118,43 @@ fn a_script_with_os_calls_keeps_its_own_lines() {
     let (_host, mut shell) = with_calls(vec![script("print(\"CPUs: \" + cpus());")]);
     assert_eq!(shell.eval("tell me the cpu count"), ok("CPUs: 4\n"));
 }
+
+#[test]
+fn a_read_then_a_fake_claim_still_says_nothing_was_changed() {
+    let (host, mut shell) = with_calls(vec![script(
+        "let n = cpus(); print(\"Policy has been set for \" + n + \" CPUs.\");",
+    )]);
+    let policy = host.policy.get();
+    assert_eq!(
+        shell.eval("switch to round robin"),
+        ok(&format!(
+            "Policy has been set for 4 CPUs.\n{NOTHING_CHANGED}"
+        ))
+    );
+    assert_eq!(host.policy.get(), policy);
+}
+
+#[test]
+fn a_payload_that_looks_like_a_placeholder_is_written_as_given() {
+    // Only targets are checked (C on #716): what goes in a file is the user's.
+    for (number, text) in ["[1, 2, 3]", "<p>hi</p>", "TODO"].into_iter().enumerate() {
+        let path = format!("note{number}.txt");
+        let created = serde_json::json!({
+            "name": "fs_create",
+            "arguments": {"path": path, "text": text},
+        });
+        let scripted = format!("fs_write({path:?}, {text:?});");
+        let (host, mut shell) = with_calls(vec![
+            Ok(llmproto::act::parse(&created.to_string()).unwrap()),
+            script(&scripted),
+        ]);
+        let reply = shell.eval(&format!("create {path}"));
+        assert!(reply.text.starts_with("Done: "), "{text}: {reply:?}");
+        assert_eq!(
+            host.files.borrow().get(&path).map(String::as_str),
+            Some(text)
+        );
+        let reply = shell.eval(&format!("write to {path}"));
+        assert!(!reply.text.contains("placeholder"), "{text}: {reply:?}");
+    }
+}

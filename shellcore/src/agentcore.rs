@@ -181,7 +181,8 @@ impl Shell {
 
     /// A call whose named argument is a placeholder (`pkg_remove("package_name")`)
     /// does not run: the shell asks which one, and the answer joins the request
-    /// as a `clarify` answer does. Enum arguments are checked by their type.
+    /// as a `clarify` answer does. Only a target is checked, and an enum one
+    /// is checked by its type.
     fn placeholder_question(
         &mut self,
         id: u64,
@@ -194,7 +195,7 @@ impl Shell {
             let free = named.is_some_and(|arg| {
                 !matches!(arg.ty, ArgType::Enum(_) | ArgType::Opt(ArgType::Enum(_)))
             });
-            free && crate::guard::placeholder(value, request)
+            free && crate::guard::is_target(row, name) && crate::guard::placeholder(value, request)
         })?;
         self.host.audit(&format!(
             "request {id}: {}'s {arg} is a placeholder; asking which",
