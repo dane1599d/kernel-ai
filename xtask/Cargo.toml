@@ -18,7 +18,11 @@ gguf = { path = "../gguf" }
 infer = { path = "../infer" }
 diskmap = { path = "../diskmap" }
 kaifs = { path = "../kaifs" }
-kaipkg = { path = "../kaipkg" }
+kaimem = { path = "../kaimem" }
+kaipkg = { path = "../kaipkg", features = ["online"] }
+# The HTTPS mock (mock_https/): its TLS server and test CA (plan p5-networking, task 7).
+kainet = { path = "../kainet", features = ["testca"] }
+rustls = { version = "=0.23.46", default-features = false }
 kabi = { path = "../kabi" }
 kaibundle = { path = "../kaibundle", features = ["alloc"] }
 livecore = { path = "../livecore" }
@@ -51,8 +55,12 @@ wit-bindgen-core = "=0.63.0"
 semver = "1.0.28"
 
 [dev-dependencies]
+# The model download's test plans its job as Models will (P5 task 9).
+modelchan = { path = "../modelchan" }
+comp-models = { path = "../apps/models" }
 # The update disk's test reads its metadata back.
 kaituf = { path = "../kaituf" }
+updatenet = { path = "../updatenet" }
 # The slot disk's tests read its kai-slot 1 back.
 bootslot = { path = "../bootslot" }
 wat = "1.262.0"

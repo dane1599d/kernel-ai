@@ -15,6 +15,15 @@ on:
         type: choice
         options: [rhai, c, app]
         default: rhai
+      memories:
+        description: "Every request with a memory section of fixed bait memories (spike S13-4, rhai only)"
+        type: boolean
+        default: false
+      wspace:
+        description: "Spike S-W1 (never merged): run on unsloth's F16 requantized here (control) instead of the pinned file"
+        type: choice
+        options: [none, control]
+        default: none
 
 permissions:
   contents: read
@@ -64,16 +73,25 @@ jobs:
       - name: Install pinned toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+      - name: S-W1 — requantize unsloth's F16 into a store of its own (the cached pinned file is untouched)
+        if: inputs.wspace == 'control'
+        run: |
+          S_W1_COMPARE=0 bash spikes/s-w1/control.sh b6100 "$RUNNER_TEMP/wspace"
+          mkdir -p "$RUNNER_TEMP/wspace-store"
+          mv "$RUNNER_TEMP/wspace/out.gguf" "$RUNNER_TEMP/wspace-store/$(jq -r --arg id "$MODEL_ID" '.models[] | select(.id == $id) | .file' xtask/models.json)"
+          rm -f "$RUNNER_TEMP/wspace/"*.gguf
+          echo "xtask: s-w1: the gate runs on the requantized control, $(sha256sum "$RUNNER_TEMP/wspace-store/"*.gguf | cut -c1-64)"
       - name: Run the gate's 50 tasks on the local engine
         env:
-          KAI_MODELS: ${{ runner.temp }}/kai-models
+          KAI_MODELS: ${{ inputs.wspace == 'control' && format('{0}/wspace-store', runner.temp) || format('{0}/kai-models', runner.temp) }}
           C_FLAG: ${{ inputs.language == 'c' && '--c' || '' }}
           GATE: ${{ inputs.language == 'app' && 'app-gate' || 'fluency' }}
+          MEM_FLAG: ${{ inputs.memories && '--memories' || '' }}
         # Built first, so the peak memory GNU time reports is the gate's own.
         run: |
           cargo build --quiet -p xtask
           set +e
-          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" cargo xtask "$GATE" --local "$MODEL_ID" $C_FLAG
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" cargo xtask "$GATE" --local "$MODEL_ID" $C_FLAG $MEM_FLAG
           status=$?
           grep -E "Maximum resident|Elapsed" "$RUNNER_TEMP/time.txt" | sed 's/^/xtask: peak memory: /'
           exit $status

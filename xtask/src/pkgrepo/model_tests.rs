@@ -152,6 +152,55 @@ fn neither_role_signs_for_the_others_paths() {
 }
 
 #[test]
+fn a_model_or_chunk_list_that_top_level_targets_names_too_is_refused() {
+    let keys = keys(1);
+    let repo = tuf::build_with_models(&[], &models::for_image().unwrap(), &keys, NOW).unwrap();
+    let fixture = models::fixture();
+    let list = format!("{}.chunks", fixture.sha256);
+    // `targets` delegates `*.chunks` to `models` as the founder's role does
+    // (root-ceremony.md), and `models` signs a chunk list beside the fixture ...
+    let repo = resigned(&repo, "metadata/1.targets.json", &keys.targets, |v| {
+        for role in v["delegations"]["roles"].as_array_mut().unwrap() {
+            if role["name"] == "models" {
+                role["paths"] = json!(["*.gguf", "*.chunks"]);
+            }
+        }
+    });
+    let entry = json!({ "length": 4096, "hashes": { "sha256": "cd".repeat(32) } });
+    let repo = resigned(&repo, "metadata/1.models.json", &keys.models, |v| {
+        v["targets"][&list] = entry.clone();
+    });
+    let checked = read(Repository {
+        files: repo.files.clone(),
+    })
+    .unwrap();
+    assert_eq!(checked.refused, []);
+    assert_eq!(checked.chunks.len(), 1);
+    // ... and top-level `targets`, which TUF's search asks first, names the
+    // fixture and its list otherwise: neither resolves through `models`.
+    let repo = resigned(&repo, "metadata/1.targets.json", &keys.targets, |v| {
+        v["targets"]["fixture.gguf"] =
+            json!({ "length": 1, "hashes": { "sha256": "00".repeat(32) } });
+        v["targets"][&list] = json!({ "length": 1, "hashes": { "sha256": "00".repeat(32) } });
+    });
+    let checked = read(repo).unwrap();
+    let refused: Vec<(&str, &str)> = checked
+        .refused
+        .iter()
+        .map(|(path, why)| (path.as_str(), why.as_str()))
+        .collect();
+    assert_eq!(
+        refused,
+        [
+            (list.as_str(), "another role names it before models"),
+            ("fixture.gguf", "another role names it before models"),
+        ]
+    );
+    assert!(checked.models.iter().all(|m| m.id != "fixture"));
+    assert!(checked.chunks.is_empty());
+}
+
+#[test]
 fn a_malformed_target_is_refused_by_path_and_the_rest_kept() {
     let keys = keys(1);
     let repo = tuf::build_with_models(&[], &models::for_image().unwrap(), &keys, NOW).unwrap();

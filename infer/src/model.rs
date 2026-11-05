@@ -159,26 +159,10 @@ impl<'a> Model<'a> {
         logits: Option<&mut [f32]>,
     ) -> Result<(), Error> {
         let c = self.config;
-        if tokens.is_empty() {
-            return Err(Error::EmptyPrompt);
-        }
-        if let Some(&bad) = tokens.iter().find(|&&t| t as usize >= c.vocab) {
-            return Err(Error::Token(bad));
-        }
         if logits.as_deref().is_some_and(|l| l.len() != c.vocab) {
             return Err(Error::Logits);
         }
-        if !self.fits(kv) {
-            return Err(Error::CacheShape);
-        }
-        if tokens.len() > kv.capacity() - kv.len() {
-            return Err(Error::ContextFull);
-        }
-        let mut last = 0;
-        for block in tokens.chunks(PREFILL_TOKENS) {
-            self.block(kv, block);
-            last = block.len() - 1;
-        }
+        let last = self.run_blocks(kv, tokens)?;
         if let Some(logits) = logits {
             let e = c.n_embd;
             let (w, s) = (&self.weights, &mut self.s);
@@ -193,6 +177,64 @@ impl<'a> Model<'a> {
             run(self.par, self.tier, &s.q_embd, 1, &mut s.rows, jobs);
         }
         Ok(())
+    }
+
+    /// Runs `tokens` at the next positions of `kv` and writes the last token's
+    /// hidden state, after the final norm and scaled to unit length, into
+    /// `embedding` (one value per residual-stream width): last-token pooling,
+    /// what Qwen3-Embedding is trained for (`qwen3.pooling_type` 3). The caller
+    /// ends a text with the end-of-text token, as llama.cpp does for a file that
+    /// sets `add_eos_token`. No output projection runs. The checks and the bits
+    /// are those of [`Model::forward_batch`].
+    pub fn embed(
+        &mut self,
+        kv: &mut KvCache,
+        tokens: &[u32],
+        embedding: &mut [f32],
+    ) -> Result<(), Error> {
+        let e = self.config.n_embd;
+        if embedding.len() != e {
+            return Err(Error::Embedding);
+        }
+        let last = self.run_blocks(kv, tokens)?;
+        let (w, c) = (&self.weights, &self.config);
+        rms_norm(
+            &self.s.x[last * e..][..e],
+            &w.output_norm,
+            c.rms_eps,
+            embedding,
+        );
+        let norm = libm::sqrt(embedding.iter().map(|&v| f64::from(v) * f64::from(v)).sum());
+        if norm > 0.0 {
+            let scale = (1.0 / norm) as f32;
+            embedding.iter_mut().for_each(|v| *v *= scale);
+        }
+        Ok(())
+    }
+
+    /// Checks `tokens` and `kv`, then runs the tokens in blocks; the index of
+    /// the last token within the last block, whose row of the residual stream
+    /// the caller reads. Every check comes before the cache changes.
+    fn run_blocks(&mut self, kv: &mut KvCache, tokens: &[u32]) -> Result<usize, Error> {
+        let c = self.config;
+        if tokens.is_empty() {
+            return Err(Error::EmptyPrompt);
+        }
+        if let Some(&bad) = tokens.iter().find(|&&t| t as usize >= c.vocab) {
+            return Err(Error::Token(bad));
+        }
+        if !self.fits(kv) {
+            return Err(Error::CacheShape);
+        }
+        if tokens.len() > kv.capacity() - kv.len() {
+            return Err(Error::ContextFull);
+        }
+        let mut last = 0;
+        for block in tokens.chunks(PREFILL_TOKENS) {
+            self.block(kv, block);
+            last = block.len() - 1;
+        }
+        Ok(last)
     }
 
     /// Whether `kv` was made for this model: its shape, and no more positions
@@ -235,7 +277,7 @@ impl<'a> Model<'a> {
             c.rms_eps,
             &mut s.xn[..n * e],
         );
-        s.q_embd.quantize_all(*par, &s.xn[..n * e], n);
+        s.q_embd.quantize_all(few(*par, n), &s.xn[..n * e], n);
         let qkv = &mut [
             (&w.wq, &mut s.q[..n * qd]),
             (&w.wk, &mut s.k[..n * kvd]),
@@ -247,7 +289,7 @@ impl<'a> Model<'a> {
             (&mut s.q[..n * qd], &w.q_norm, qd),
             (&mut s.k[..n * kvd], &w.k_norm, kvd),
         ] {
-            for_each_chunk(*par, heads, width, &|t, heads| {
+            for_each_chunk(few(*par, n), heads, width, &|t, heads| {
                 for head in heads.chunks_exact_mut(hd) {
                     rms_norm_in_place(head, norm, c.rms_eps);
                     rope.apply(head, pos + t);
@@ -270,7 +312,7 @@ impl<'a> Model<'a> {
             let heads = (&mut s.heads[..], *context);
             attend(*par, *tier, c, q, cache, pos + t + 1, heads, att);
         }
-        s.q_att.quantize_all(*par, &s.att[..n * qd], n);
+        s.q_att.quantize_all(few(*par, n), &s.att[..n * qd], n);
         run(
             *par,
             *tier,
@@ -295,19 +337,19 @@ impl<'a> Model<'a> {
             c.rms_eps,
             &mut s.xn[..n * e],
         );
-        s.q_embd.quantize_all(par, &s.xn[..n * e], n);
+        s.q_embd.quantize_all(few(par, n), &s.xn[..n * e], n);
         let gate_up = &mut [
             (&w.w_gate, &mut s.gate[..n * ff]),
             (&w.w_up, &mut s.up[..n * ff]),
         ];
         run(par, self.tier, &s.q_embd, n, &mut s.rows, gate_up);
         let up = &s.up;
-        for_each_chunk(par, &mut s.gate[..n * ff], ff, &|t, gate| {
+        for_each_chunk(few(par, n), &mut s.gate[..n * ff], ff, &|t, gate| {
             for (g, u) in gate.iter_mut().zip(&up[t * ff..]) {
                 *g = *g / (1.0 + libm::expf(-*g)) * u;
             }
         });
-        s.q_ff.quantize_all(par, &s.gate[..n * ff], n);
+        s.q_ff.quantize_all(few(par, n), &s.gate[..n * ff], n);
         let down = &mut [(&w.w_down, &mut s.out[..n * e])];
         run(par, self.tier, &s.q_ff, n, &mut s.rows, down);
         for (x, o) in s.x[..n * e].iter_mut().zip(&s.out) {
@@ -366,7 +408,7 @@ fn run<const N: usize>(
     matvec_parallel(par, tier, &mut items);
     for ((m, y), part) in jobs.iter_mut().zip(&parts) {
         let part: &[f32] = part;
-        for_each_chunk(par, &mut y[..m.rows * n], m.rows, &|t, y| {
+        for_each_chunk(few(par, n), &mut y[..m.rows * n], m.rows, &|t, y| {
             for (r, v) in y.iter_mut().enumerate() {
                 *v = part[r * n + t];
             }
@@ -374,10 +416,26 @@ fn run<const N: usize>(
     }
 }
 
+/// Tokens up to which a block's work token by token (norms, RoPE, SwiGLU,
+/// quantising, laying products out) runs on the caller: for a batch of a few
+/// tokens a worker's handoff costs more than one token's share (ADR 0013
+/// S13-2: two sequences decoded together gained nothing on 4 threads against
+/// 1.40x on one). The matrix products and attention heads still use the pool.
+const FEW_TOKENS: usize = 4;
+
+/// The pool for work done token by token over `n` tokens: the caller alone for
+/// a few. Any pool gives the same bits.
+fn few(par: &dyn Parallel, n: usize) -> &dyn Parallel {
+    match n <= FEW_TOKENS {
+        true => &Serial,
+        false => par,
+    }
+}
+
 /// [`rms_norm`] of each token's vector in `x` into `out`, a token to a worker.
 fn norm_all(par: &dyn Parallel, x: &[f32], weight: &[f32], eps: f32, out: &mut [f32]) {
     let e = weight.len();
-    for_each_chunk(par, out, e, &|t, out| {
+    for_each_chunk(few(par, x.len() / e), out, e, &|t, out| {
         rms_norm(&x[t * e..][..e], weight, eps, out)
     });
 }

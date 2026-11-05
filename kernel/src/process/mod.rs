@@ -479,6 +479,22 @@ pub fn spawn_in(
         return Err((error, moved));
     }
     crate::handle::give_at_start(slot, moved);
+    // A plan line's `netdest=`: a record of its own, made only now, so a
+    // refused spawn never hands it to the spawner with what it moved.
+    if let Some(dest) = &plan.netdest {
+        let live = |object| crate::handle::names(kabi::handle::Kind::NetDest, object);
+        let Some(object) = crate::net::dest::create(dest.clone(), live) else {
+            crate::handle::destroy(slot);
+            with_table(|table| table[slot] = Process::FREE);
+            return Err((Error::NoMemory, alloc::vec::Vec::new()));
+        };
+        let entry = captable::Entry::new(
+            kabi::handle::Kind::NetDest,
+            crate::handle::NETDEST_RIGHTS,
+            object,
+        );
+        crate::handle::give_at_start(slot, alloc::vec![entry]);
+    }
     if threads::spawn("user", process_main, slot).is_err() {
         crate::handle::destroy(slot);
         with_table(|table| table[slot] = Process::FREE);

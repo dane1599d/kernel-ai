@@ -246,6 +246,7 @@ fn options_need_a_server_and_a_model() {
             },
             repeat: 3,
             c: false,
+            memories: false,
         })
     );
     assert!(parse(&args(&["--llm", "192.168.1.50:8080"])).is_err());
@@ -267,8 +268,14 @@ fn local_options_name_a_catalog_model_and_maybe_a_store() {
             },
             repeat: 1,
             c: false,
+            memories: false,
         })
     );
+    assert!(matches!(
+        parse(&args(&["--local", "qwen3-0.6b", "--memories"])),
+        Ok(Options { memories: true, .. })
+    ));
+    assert!(parse(&args(&["--local", "qwen3-0.6b", "--memories", "--c"])).is_err());
     assert!(parse(&args(&["--local", "qwen3-0.6b", "--llm", "h:1"])).is_err());
     assert!(parse(&args(&["--local", "qwen3-0.6b", "--model", "m"])).is_err());
     assert!(parse(&args(&["--llm", "h:1", "--model", "m", "--store", "x"])).is_err());

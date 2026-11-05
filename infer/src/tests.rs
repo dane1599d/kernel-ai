@@ -358,6 +358,7 @@ fn the_kv_cache_is_sized_to_the_cap() {
         context_length: 40_960,
         rope_theta: 1e6,
         rms_eps: 1e-6,
+        pooling: Pooling::None,
     };
     assert_eq!(real.kv_bytes(512), Some(56 << 20));
     let four_b = Config {

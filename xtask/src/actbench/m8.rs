@@ -42,10 +42,21 @@ pub fn reference(engine: Shared, no_think: bool) -> Transport {
 /// answers it (`llmproto::local::act::routed` on the OS pack, through the wire
 /// both ways), and scripts (the fallback and repair rounds) as llm
 /// answers them today.
-pub fn shipping(engine: Shared, grammar: Rc<llmproto::local::act::Grammar>) -> GateHost {
+///
+/// With `memories` (spike S13-4), each request's State line also carries the
+/// fixed memories it shares words with (`fluency::memories`), at most 3,
+/// within the room ADR 0010's State budget leaves: where ADR 0013 puts them.
+pub fn shipping(
+    engine: Shared,
+    grammar: Rc<llmproto::local::act::Grammar>,
+    memories: bool,
+) -> GateHost {
     let act_engine = engine.clone();
     let act = Box::new(move |request: &ActRequest| {
-        let request = ActRequest::decode(&request.encode()).ok_or(ActError::NotACall)?;
+        let mut request = ActRequest::decode(&request.encode()).ok_or(ActError::NotACall)?;
+        if memories {
+            request.state = with_memories(&request.state, &request.line);
+        }
         // Each M8 task is one turn on a fresh host: no history.
         let call = local::act::routed(
             &mut act_engine.borrow_mut(),
@@ -59,6 +70,21 @@ pub fn shipping(engine: Shared, grammar: Rc<llmproto::local::act::Grammar>) -> G
         act::decode_answer(&act::encode_answer(&call))
     });
     GateHost::with_act(reference(engine, true), act)
+}
+
+/// `state` with the memories `line` shares words with after it, within
+/// [`act::STATE_MAX_BYTES`].
+pub fn with_memories(state: &str, line: &str) -> String {
+    let kept = crate::fluency::memories::kept();
+    let all: Vec<&kaimem::record::Memory> = kept.iter().collect();
+    let gap = if state.is_empty() { 0 } else { 2 };
+    let room = act::STATE_MAX_BYTES.saturating_sub(state.len() + gap);
+    let memories = kaimem::prompt::state(&all, line, room);
+    match (state.is_empty(), memories.is_empty()) {
+        (_, true) => state.to_string(),
+        (true, false) => memories,
+        (false, false) => format!("{state}; {memories}"),
+    }
 }
 
 /// A Rhai literal for an argument value.
@@ -175,5 +201,27 @@ mod tests {
         );
         let code = json!({"name":"script","arguments":{"code":"print(1);"}});
         assert_eq!(answer(&code).script, "print(1);");
+    }
+
+    /// Spike S13-4, (a): the M8 50's State lines with the memories they share
+    /// words with, within ADR 0010's budget, after whatever State the shell
+    /// gave.
+    #[test]
+    fn memories_join_the_state_line_within_its_budget() {
+        let mut with = 0;
+        for task in crate::fluency::tasks::TASKS {
+            let state = with_memories("", task.request);
+            assert!(state.len() <= act::STATE_MAX_BYTES, "{state}");
+            with += usize::from(!state.is_empty());
+            let after = with_memories("focused=build-3", task.request);
+            assert!(after.starts_with("focused=build-3") && after.len() <= act::STATE_MAX_BYTES);
+        }
+        println!("S13-4: {with} of 50 State lines carry memories");
+        assert!(with > 0);
+        let full = "x".repeat(act::STATE_MAX_BYTES);
+        assert_eq!(
+            with_memories(&full, "Switch the scheduler to round robin."),
+            full
+        );
     }
 }

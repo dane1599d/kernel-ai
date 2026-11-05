@@ -7,4 +7,5 @@ publish = false
 
 [dependencies]
 kabi = { path = "../kabi" }
+netdest = { path = "../netdest" }
 termcore = { path = "../termcore" }

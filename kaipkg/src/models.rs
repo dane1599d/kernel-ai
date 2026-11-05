@@ -13,6 +13,12 @@
 //! is drawn. The licence must have an SPDX expression's shape, as a package
 //! header's must, but which licences are taken is not judged here: the import
 //! refuses one the project does not take, and says so.
+//!
+//! From P5 the role also signs each downloadable model's `kai-chunks 1` list
+//! beside it, the target `<sha256 of the GGUF>.chunks` (P5 tasks 6 and 9). A
+//! list is not a model to offer: [`check`] sets each apart, by its model's
+//! hash, for the download that fetches and parses it, and refuses one whose
+//! name is not a model's hash or that names no model of the role.
 
 use crate::Sha;
 use crate::catalog::reorders;
@@ -29,6 +35,14 @@ use serde_json::Value;
 pub const ROLE: &str = "models";
 /// A target's path is its id and this.
 pub const EXTENSION: &str = ".gguf";
+/// A model's chunk list is the target `<sha256>.chunks`, named by the GGUF's
+/// hash in lower-case hex, so it pairs with that model alone.
+pub const CHUNKS_EXTENSION: &str = ".chunks";
+
+/// The target path of the chunk list for the model whose GGUF has `sha256`.
+pub fn chunks_path(sha256: &Sha) -> String {
+    format!("{}{CHUNKS_EXTENSION}", crate::hex(sha256))
+}
 /// `custom.kai`'s fields, all required.
 const FIELDS: [&str; 3] = ["name", "licence", "source"];
 /// Longest id, in bytes.
@@ -55,23 +69,58 @@ pub struct Model {
 pub struct Checked {
     pub models: Vec<Model>,
     pub refused: Vec<(String, String)>,
+    /// Each model's chunk list the role signs: the GGUF's SHA-256 and the
+    /// list's target, whose length and hash the fetched list is held to.
+    pub chunks: Vec<(Sha, TargetFile)>,
 }
 
 /// The `models` role in the image's repository `files`. An error means the
 /// metadata did not verify, and no model is kept.
 pub fn check(files: &mut dyn Files) -> Result<Checked, String> {
     let image::Listed { targets, refused } = image::listed(files, ROLE)?;
+    Ok(sort(targets, refused))
+}
+
+/// The role's verified `targets` as models and chunk lists, each malformed
+/// one added to `refused` by path.
+fn sort(targets: Vec<TargetFile>, refused: Vec<(String, String)>) -> Checked {
     let mut checked = Checked {
         refused,
         ..Checked::default()
     };
-    for target in targets {
+    let (lists, models): (Vec<_>, Vec<_>) = targets
+        .into_iter()
+        .partition(|t| t.path.ends_with(CHUNKS_EXTENSION));
+    for target in models {
         match parse(&target) {
             Ok(model) => checked.models.push(model),
             Err(why) => checked.refused.push((target.path, why)),
         }
     }
-    Ok(checked)
+    for list in lists {
+        match list_of(&list, &checked.models) {
+            Ok(sha) => checked.chunks.push((sha, list)),
+            Err(why) => checked.refused.push((list.path, why)),
+        }
+    }
+    checked
+}
+
+/// The SHA-256 of the model `list` is the chunk list of, among `models`.
+fn list_of(list: &TargetFile, models: &[Model]) -> Result<Sha, String> {
+    let sha = list
+        .path
+        .strip_suffix(CHUNKS_EXTENSION)
+        .and_then(crate::unhex)
+        .filter(|sha| chunks_path(sha) == list.path)
+        .ok_or("its path is not a model's SHA-256 in lower-case hex and .chunks")?;
+    if list.length == 0 || sha256(list).is_err() {
+        return Err("it has no length or no SHA-256".into());
+    }
+    match models.iter().any(|m| m.sha256 == sha) {
+        true => Ok(sha),
+        false => Err("it names no model the role signs".into()),
+    }
 }
 
 /// `target` as a model, parsed strictly.
@@ -147,6 +196,53 @@ mod tests {
             "licence": "Apache-2.0",
             "source": "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946/m.gguf",
         })
+    }
+
+    /// A chunk list's target at `path`.
+    fn list(path: String) -> TargetFile {
+        TargetFile {
+            path,
+            length: 77_000,
+            hashes: alloc::vec![("sha256".into(), alloc::vec![0xcd; 32])],
+            custom: json!({}),
+        }
+    }
+
+    #[test]
+    fn a_role_with_a_chunk_list_offers_only_the_model_and_keeps_the_list_apart() {
+        let model = target("qwen3-4b-2507.gguf", fields());
+        let beside = list(chunks_path(&[0xab; 32]));
+        assert_eq!(beside.path, alloc::format!("{}.chunks", "ab".repeat(32)));
+        let checked = sort(alloc::vec![beside.clone(), model], Vec::new());
+        let ids: Vec<&str> = checked.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["qwen3-4b-2507"]);
+        assert_eq!(checked.refused, []);
+        assert_eq!(checked.chunks, [([0xab; 32], beside)]);
+    }
+
+    #[test]
+    fn a_chunk_list_that_names_no_model_or_is_misnamed_is_refused_by_path() {
+        let orphan = list(chunks_path(&[0x12; 32]));
+        let upper = list(alloc::format!("{}.chunks", "AB".repeat(32)));
+        let short = list("abc.chunks".into());
+        let empty = TargetFile {
+            length: 0,
+            ..list(chunks_path(&[0xab; 32]))
+        };
+        let targets = alloc::vec![target("m.gguf", fields()), orphan, upper, short, empty];
+        let checked = sort(targets, Vec::new());
+        assert_eq!(checked.models.len(), 1);
+        assert!(checked.chunks.is_empty());
+        let why: Vec<&str> = checked.refused.iter().map(|(_, w)| w.as_str()).collect();
+        assert_eq!(
+            why,
+            [
+                "it names no model the role signs",
+                "its path is not a model's SHA-256 in lower-case hex and .chunks",
+                "its path is not a model's SHA-256 in lower-case hex and .chunks",
+                "it has no length or no SHA-256",
+            ]
+        );
     }
 
     #[test]

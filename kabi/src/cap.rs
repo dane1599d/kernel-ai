@@ -24,9 +24,10 @@ pub const MODEL: u64 = 1 << 7;
 /// Start worker threads (L6). The kernel grants it only to the service named
 /// `llm` running the `llm` program.
 pub const THREADS: u64 = 1 << 8;
-/// Look up host names through [`super::call::RESOLVE`] (ADR 0001). Apart from
-/// `NET`, so a process that may make HTTP requests to its one server cannot
-/// carry data out in the names it looks up (`<data>.attacker.example`).
+/// Retired (P5 task 1): a resolve goes on a `NetDest` handle with the RESOLVE
+/// right ([`super::call::RESOLVE_ON`]), from a plan line's `netdest=`, and
+/// answers only names under its host suffixes. The bit stays reserved; no plan
+/// grants it and no handle stands for it.
 pub const RESOLVE: u64 = 1 << 9;
 /// Stop processes the supervisor does not run, by name ([`super::call::PROC_STOP`]):
 /// a Job handle with STOP. The kernel grants it only to the service named `shell`.
@@ -89,7 +90,6 @@ pub const GRANTABLE: u64 = SERVE
     | PUBLISH
     | MODEL
     | THREADS
-    | RESOLVE
     | STOP
     | SCRIPT
     | PARTITION

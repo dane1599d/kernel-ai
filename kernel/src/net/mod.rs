@@ -6,10 +6,12 @@
 //! the DHCP client's news to `setup`, so a lease is never missed whoever polled.
 //! Between those, the `net` thread polls it on its own.
 
+pub mod dest;
 mod device;
 pub mod ping;
 pub mod resolve;
 pub mod setup;
+mod virtio_net;
 
 use crate::virtio::hal::KernelHal;
 use crate::virtio::split::SplitTransport;
@@ -24,20 +26,20 @@ use smoltcp::socket::tcp;
 use smoltcp::time::{Duration, Instant};
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress};
 use spin::Mutex;
-use virtio_drivers::device::net::VirtIONet;
 
 const RX_BUFFER: usize = 64 * 1024;
 const TX_BUFFER: usize = 16 * 1024;
 /// Longest wait between polls: without interrupts this bounds how late a frame is seen.
 const MAX_POLL_GAP_MS: u64 = 2;
 const FIRST_EPHEMERAL_PORT: u16 = 49152;
-/// Receive and transmit queue depth: a power of two, kept small because the driver
-/// builds its queue arrays on the stack.
-const QUEUE_SIZE: usize = 16;
+/// Receive and transmit queue depth: a power of two, at most QEMU's 256. A deep
+/// receive queue, refilled in batches, lets the host deliver frames without a
+/// kick for each one (spike P5-S2).
+const QUEUE_SIZE: usize = 256;
 /// Per-packet buffer: at least 1526 bytes and a multiple of 8.
 const BUFFER_LEN: usize = 2048;
 
-type Nic = VirtIONet<KernelHal, SplitTransport, QUEUE_SIZE>;
+type Nic = virtio_net::VirtioNet<KernelHal, SplitTransport, QUEUE_SIZE>;
 
 struct Net {
     device: NicDevice,
@@ -54,6 +56,7 @@ impl Net {
     /// Moves frames both ways and applies whatever the DHCP client learned.
     fn poll(&mut self) {
         self.iface.poll(now(), &mut self.device, &mut self.sockets);
+        self.device.refill();
         self.setup
             .after_poll(&mut self.iface, &mut self.sockets, hpet::nanos());
     }
@@ -69,7 +72,7 @@ fn now() -> Instant {
 /// Brings up the network card the PCI probe found, polled, and starts setting up
 /// its address the way the command line said (see [`setup::configure`]).
 pub fn init(transport: SplitTransport) -> Result<(), &'static str> {
-    let mut nic = Nic::new(transport, BUFFER_LEN).map_err(|_| "net: virtio-net setup failed")?;
+    let mut nic = Nic::new(transport).map_err(|_| "net: virtio-net setup failed")?;
     nic.disable_interrupts();
     let mut device = NicDevice::new(nic);
     let mac = device.mac();
