@@ -5,6 +5,7 @@ exclude = ["fuzz"]
 members = [
     "acpitables",
     "agentabi",
+    "agentid",
     "agentsched",
     "appabi",
     "apps/editor-ui",
@@ -99,6 +100,7 @@ members = [
 default-members = [
     "acpitables",
     "agentabi",
+    "agentid",
     "agentsched",
     "appabi",
     "apps/editor-ui",

@@ -534,23 +534,55 @@ fn memory_is_none_read_write_or_both_in_that_order() {
 }
 
 #[test]
-fn the_net_line_is_none_until_p5() {
-    assert!(Manifest::parse(&with("net", "none")).is_ok());
-    for word in [
-        "any",
-        "-",
-        "example.com",
-        "host:example.com:443",
-        "none none",
-        "None",
-        "llm",
+fn the_net_line_is_none_or_a_destination_an_agent_may_hold() {
+    assert_eq!(Manifest::parse(&with("net", "none")).unwrap().net, None);
+    let weather = "proto:tcp,ports:443,hosts:api.weather.example";
+    let parsed = Manifest::parse(&with("net", weather)).unwrap();
+    let dest = parsed.net.clone().expect("a destination");
+    assert_eq!(dest.hosts, ["api.weather.example"]);
+    // It reads back as it was written.
+    assert_eq!(Manifest::parse(&parsed.format()).unwrap(), parsed);
+    let few = with("net", "proto:tcp,ports:8000-8015,hosts:a.example");
+    assert!(
+        Manifest::parse(&few).is_ok(),
+        "a range of 16 ports is named"
+    );
+    for (value, why) in [
+        ("any", "netdest"),
+        ("example.com", "netdest"),
+        ("proto:udp,ports:53,hosts:dns.example", "tcp"),
+        (
+            "proto:tcp,addrs:10.0.0.1,ports:443,hosts:a.example",
+            "never addresses",
+        ),
+        (
+            "proto:tcp,addrs:any,ports:443,hosts:a.example",
+            "never addresses",
+        ),
+        ("proto:tcp,ports:any,hosts:a.example", "ports"),
+        ("proto:tcp,hosts:a.example", "ports"),
+        ("proto:tcp,ports:1-65535,hosts:a.example", "ports"),
+        ("proto:tcp,ports:8000-8016,hosts:a.example", "ports"),
+        ("proto:tcp,ports:443", "at least one host"),
+        ("proto:tcp,ports:443,hosts:com", "netdest"),
+        ("None", "netdest"),
     ] {
-        assert_eq!(
-            refused(&with("net", word)),
-            Refusal::Net(word.into()),
-            "{word}"
-        );
+        let refusal = refused(&with("net", value));
+        let Refusal::Net(got, words) = &refusal else {
+            panic!("{value}: {refusal:?}");
+        };
+        assert_eq!(got, value);
+        assert!(why == "netdest" || words.contains(why), "{value}: {words}");
     }
+}
+
+#[test]
+fn a_manifest_with_net_always_asks_at_install() {
+    let net = with("net", "proto:tcp,ports:443,hosts:api.weather.example");
+    let interactive = net.replace("class background", "class interactive");
+    let manifest = Manifest::parse(&interactive).unwrap();
+    assert_eq!(manifest.class, Class::Interactive);
+    assert!(manifest.asks_at_install());
 }
 
 #[test]
