@@ -15,6 +15,7 @@
 //! `target/pkgrepo` and serves it as a mirror ([`serve`]; P4 task 2's host
 //! half) until stopped.
 
+pub mod chunks;
 pub mod mirrors;
 pub mod models;
 mod serve;
@@ -174,7 +175,8 @@ impl Package {
     }
 }
 
-const USAGE: &str = "usage: cargo xtask pkgrepo build [DIR] | serve [--port PORT]";
+const USAGE: &str =
+    "usage: cargo xtask pkgrepo build [DIR] | serve [--port PORT] | chunks --models DIR [--write]";
 
 pub fn main(args: &[String]) -> Result<(), String> {
     let root = crate::workspace_root();
@@ -184,6 +186,8 @@ pub fn main(args: &[String]) -> Result<(), String> {
         ["build"] => build(&root, &default).map(drop),
         ["build", dir] => build(&root, Path::new(dir)).map(drop),
         ["serve"] => serve_on(&root, &default, 0),
+        ["chunks", "--models", dir] => chunks::run(&root, Path::new(dir), false),
+        ["chunks", "--models", dir, "--write"] => chunks::run(&root, Path::new(dir), true),
         ["serve", "--port", port] => {
             let port = port.parse().map_err(|_| format!("{port} is not a port"))?;
             serve_on(&root, &default, port)
@@ -272,6 +276,13 @@ pub fn image_layout(repository: Repository) -> Result<Repository, String> {
                 let (_, target) = file
                     .split_once('.')
                     .ok_or_else(|| format!("target {file} has no hash prefix"))?;
+                // A model's chunk list is for a download from the online
+                // repository, which serves it; the image only imports, and the
+                // role's metadata still signs the list. Its name, a 64-digit
+                // hash, is also past the bundle's path limit.
+                if target.ends_with(kaipkg::models::CHUNKS_EXTENSION) {
+                    continue;
+                }
                 format!("targets/{target}")
             }
             None => path,
