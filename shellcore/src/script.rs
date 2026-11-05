@@ -65,6 +65,7 @@ type RhaiResult<T> = Result<T, Box<EvalAltResult>>;
 mod apps;
 mod grants;
 mod look;
+mod net;
 mod windows;
 
 fn rhai_error(message: impl Into<String>) -> Box<EvalAltResult> {
@@ -170,6 +171,7 @@ fn register(engine: &mut Engine, granted: &[&'static str], tx: &Tx) {
         .chain(&agentabi::FS_ROWS)
         .chain(&agentabi::UI_ROWS)
         .chain(&agentabi::GRANT_ROWS)
+        .chain(&agentabi::NET_ROWS)
         .filter(|row| granted.contains(&row.name))
     {
         bind(engine, row.name, tx);
@@ -373,6 +375,9 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
             }
             name if agentabi::GRANT_ROWS.iter().any(|r| r.name == name) => {
                 return grants::bind(engine, name, h, tx);
+            }
+            name if agentabi::NET_ROWS.iter().any(|r| r.name == name) => {
+                return net::bind(engine, name, h, tx);
             }
             _ => return false,
         }
@@ -649,6 +654,16 @@ impl Host for Stub {
     }
     fn fs_change(&self, _: FsChange) -> Result<u64, String> {
         Ok(0)
+    }
+    // A trial reaches no host: the network rows answer as an empty network.
+    fn net_fetch(&self, _: &str, _: &str) -> Result<String, String> {
+        Ok(String::new())
+    }
+    fn net_resolve(&self, _: &str) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+    fn net_ping(&self, _: &str) -> Result<i64, String> {
+        Ok(-1)
     }
     fn apps(&self) -> Option<&core::cell::RefCell<crate::apps::Apps>> {
         self.0.apps()

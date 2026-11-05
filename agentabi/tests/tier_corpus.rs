@@ -279,6 +279,8 @@ const PERMS: &[(&str, &str)] = &[
     ("grant_restore", "grants.widen"),
     ("rules", "grants.read"),
     ("browser_open", "net.connect"),
+    ("net_fetch", "net.connect"),
+    ("net_lookup", "net.connect"),
     ("email_send", "net.send"),
     ("power_reboot", "power"),
     ("power_off", "power"),
