@@ -143,6 +143,8 @@ pub struct Consent {
     pub proof: Proof,
 }
 
+/// Why a network row cannot run on a host without the network.
+pub const NO_NET: &str = "the network rows need the OS network service here";
 /// What a host with no `kai-data` disk answers a file row: the guest's shell
 /// and the gates' stand-ins say the same, so their answers compare equal.
 pub const NO_FILES: &str = "there are no files here (no kai-data disk)";
@@ -296,6 +298,19 @@ pub trait Host {
     /// with `sha256`, only if that is their hash.
     fn pkg_local(&self, _name: &str, _path: &str, _sha256: Option<&str>) -> Result<String, String> {
         Err(String::from("there is no pkg service here"))
+    }
+    /// `net_fetch` (P5 task 11): the text of `path` on `host`, which consent
+    /// grounded. None here until kainet's HTTP client is wired in.
+    fn net_fetch(&self, _host: &str, _path: &str) -> Result<String, String> {
+        Err(String::from(NO_NET))
+    }
+    /// `net_resolve`: the addresses `host` resolves to.
+    fn net_resolve(&self, _host: &str) -> Result<Vec<String>, String> {
+        Err(String::from(NO_NET))
+    }
+    /// `net_ping`: how many ms `host` takes to answer, or -1 for none.
+    fn net_ping(&self, _host: &str) -> Result<i64, String> {
+        Err(String::from(NO_NET))
     }
     /// A read of the user's files: its text, or why there is none.
     fn fs_read(&self, _read: FsRead) -> Result<String, String> {
