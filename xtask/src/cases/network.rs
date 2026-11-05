@@ -78,7 +78,9 @@ pub(super) const CASES: &[TestCase] = &[
             "[netstream-a] after closing them, by NET_CLOSE or by the handle, 16 more opened",
             "[netstream-a] a third bulk stream of one process was Busy",
             "net-stream: streams echoed through the handle, kept to its port and to 16, and closed",
-            "[netstream-b] holding 3 streams",
+            // Not "[netstream-b] holding 3 streams": the kernel kills b once
+            // its own count shows 3 open, which can be before b's line reaches
+            // the console (run 41942359956). That count is the proof b held them.
             "net-stream: a process killed with 3 streams open left none",
         ],
         ..case("net-stream", "test=net-stream")
