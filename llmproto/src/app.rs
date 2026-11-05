@@ -31,7 +31,13 @@ pub fn user_turn(request: &str) -> String {
 pub fn request(request: &str, repair: Option<Repair<'_>>) -> chat::Request {
     let tag = "\n/no_think";
     let user = format!("{}{tag}", user_turn(request));
-    let mut asked = chat::Request::new(Some(&system_prompt()), &user, script::APP_MAX_TOKENS);
+    // A repair's card leaves out the example, so the refused source and a
+    // whole corrected main.c fit in the context with it.
+    let system = match repair {
+        Some(_) => capp1::render_repair(),
+        None => system_prompt(),
+    };
+    let mut asked = chat::Request::new(Some(&system), &user, script::APP_MAX_TOKENS);
     if let Some(repair) = repair {
         let previous = serde_json::json!({ "script": repair.script, "summary": "" }).to_string();
         let feedback = format!("{}\nWrite the corrected main.c.{tag}", repair.error);
@@ -75,6 +81,24 @@ mod tests {
         )));
     }
 
+    /// A repair keeps the card's rules, calls and template but not its
+    /// example, which frees the room a whole corrected main.c needs.
+    #[test]
+    fn a_repair_card_leaves_out_the_example() {
+        let first = request("guess\na guessing game", None);
+        let repair = Repair {
+            script: "int main;",
+            error: "cc build refused it",
+        };
+        let again = request("guess\na guessing game", Some(repair));
+        let (card, short) = (&first.messages[0].content, &again.messages[0].content);
+        assert!(card.contains("Example:") && !short.contains("Example:"));
+        assert!(card.starts_with(short.as_str()));
+        assert!(short.contains("Template:"));
+        assert!(capp1::estimate_tokens(card) - capp1::estimate_tokens(short) > 250);
+        assert_eq!(again.messages.len(), 4);
+    }
+
     #[test]
     fn the_name_and_the_words_are_their_own_lines() {
         assert_eq!(
@@ -94,7 +118,7 @@ mod tests {
             serde_json::from_slice(&chat_request("m", "timer\na timer", Some(repair))).unwrap();
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 4);
-        assert_eq!(messages[0]["content"], system_prompt());
+        assert_eq!(messages[0]["content"], capp1::render_repair());
         assert!(
             messages[1]["content"]
                 .as_str()
