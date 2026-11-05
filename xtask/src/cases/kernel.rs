@@ -354,11 +354,14 @@ pub(super) const CASES: &[TestCase] = &[
         ..case("ui-keys", "test=ui-keys")
     },
     // P3 task 8: the kernel's terminal in a window, and an ask typed there.
+    // "switch the scheduler to round robin", which the mock widens to
+    // `interactive`, so it asks; a question's added change is refused (#721).
     TestCase {
         keys: &[
             &[
-                "w", "h", "a", "t", "spc", "i", "s", "spc", "t", "h", "e", "spc", "s", "c", "h",
-                "e", "d", "u", "l", "i", "n", "g", "spc", "p", "o", "l", "i", "c", "y", "ret", "y",
+                "s", "w", "i", "t", "c", "h", "spc", "t", "h", "e", "spc", "s", "c", "h", "e", "d",
+                "u", "l", "e", "r", "spc", "t", "o", "spc", "r", "o", "u", "n", "d", "spc", "r",
+                "o", "b", "i", "n", "ret", "y",
             ],
             &["n"],
             &[
