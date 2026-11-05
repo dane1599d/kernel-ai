@@ -237,7 +237,7 @@ const STOPS: Facts = Facts {
 /// Stops a running process by name: no undo, so it asks once (ADR 0002 D2a).
 pub const PROCESS_STOP: Action = Action {
     name: "process_stop",
-    doc: "stops or kills processes by name",
+    doc: "stops or kills processes by name, not services",
     args: &[NAMED],
     facts: STOPS,
     inverse: Inverse::None("a stopped process cannot be resumed"),

@@ -23,7 +23,7 @@ __KAI_IMPORT("threads") I64 threads(struct kai_threads *out);
 __KAI_IMPORT("get_policy") I64 get_policy(char *out, I64 cap);
 /* switches every CPU to "interactive" or "round-robin" */
 __KAI_IMPORT("set_policy") I64 set_policy(const char *name);
-/* stops or kills processes by name */
+/* stops or kills processes by name, not services */
 __KAI_IMPORT("process_stop") I64 process_stop(const char *name);
 /* stays stopped until started */
 __KAI_IMPORT("service_stop") I64 service_stop(const char *name);

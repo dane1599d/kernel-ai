@@ -51,7 +51,6 @@ const SCRIPT_CALL: &str = r#"{"name":"script","arguments":{}}"#;
 /// The act pack's examples: (request, the tagged call answering it).
 pub const ACT: &[(&str, &str)] = &[
     ("how many CPUs are there?", SCRIPT_CALL),
-    ("what percentage of memory is free?", SCRIPT_CALL),
     (
         "switch to round robin",
         r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
