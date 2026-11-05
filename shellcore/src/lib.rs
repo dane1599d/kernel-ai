@@ -1035,12 +1035,16 @@ impl Shell {
                     return self.say(id, request, reply);
                 }
                 Ok(answer) => match script::check(&answer, &self.host, &self.config) {
-                    Ok(checked) => match self.tier_of(request, &checked) {
-                        (Tier::Never, at) => Some((
+                    Ok(checked) => match (
+                        self.told_only(request, &checked),
+                        self.tier_of(request, &checked),
+                    ) {
+                        (Some(why), _) => Some((answer.script, why)),
+                        (None, (Tier::Never, at)) => Some((
                             answer.script,
                             format!("{} may not be used in scripts here", at.join(", ")),
                         )),
-                        tier => return self.propose(id, request, checked, tier),
+                        (None, tier) => return self.propose(id, request, checked, tier),
                     },
                     Err(script::Refusal::Script(why)) => Some((answer.script, why)),
                     Err(refusal @ script::Refusal::Interrupted) => {

@@ -144,10 +144,15 @@ fn a_script_that_fails_only_on_the_real_values_is_a_run_error() {
 
 #[test]
 fn policy_changes_must_be_the_ones_asked_for() {
+    // A question answered by a change is refused by the shell (#721) and goes
+    // back for its one repair: a second wrong script fails, a read passes late.
     let read = task("Which scheduling policy is active?");
-    assert_eq!(
-        failure(read, &["set_policy(\"rr\");\nprint(\"interactive\");"]),
-        Some(Failure::WrongChange)
+    let wrong = "set_policy(\"rr\");\nprint(\"interactive\");";
+    assert_eq!(failure(read, &[wrong, wrong]), Some(Failure::Refused));
+    let repaired = attempt(read, canned(&[wrong, read.reference]));
+    assert!(
+        repaired.failure.is_none() && !repaired.first_try(),
+        "{repaired:?}"
     );
     let set = task("Switch the scheduler to round robin.");
     assert_eq!(
