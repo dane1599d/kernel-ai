@@ -455,19 +455,24 @@ const TELL_WORDS: &[&str] = &[
     "report",
 ];
 
-/// Whether `line` only asks to be told something: a question ("what is
-/// selected?", "how many cpus"), or a line led by a telling word ("describe
-/// this", "explain the policy"). A change consent [`Why::Added`] to such a line
+/// Question words that only ever ask to be told: not `do`, `can` or `will`,
+/// which also lead orders ("do the same for the editor").
+const WH_WORDS: &[&str] = &[
+    "how", "what", "which", "who", "whom", "whose", "when", "where", "why",
+];
+
+/// Whether `line` only asks to be told something: one ending in `?`, one led by
+/// a wh-word ("how many cpus"), or one led by a telling word ("describe this",
+/// "explain the policy"). A change consent [`Why::Added`] to such a line
 /// answers nothing it asked, whatever the State or a page says (#721).
 pub fn asks_to_be_told(line: &str) -> bool {
     let words = words(line);
     if wants(&words) {
         return false;
     }
-    is_question(line)
-        || words
-            .first()
-            .is_some_and(|w| TELL_WORDS.contains(&w.text.as_str()))
+    let first = words.first().map(|w| w.text.as_str());
+    line.trim().ends_with('?')
+        || first.is_some_and(|w| WH_WORDS.contains(&w) || TELL_WORDS.contains(&w))
 }
 
 /// Whether `text` names a thing: some word of it is neither a kind word nor a
@@ -884,6 +889,11 @@ mod tests {
             "it's sluggish",
             "do it again",
             "make it faster",
+            // Orders led by a word that can also start a question (C on #723).
+            "do the same for the editor",
+            "can you stop build-3",
+            "will you restart netd",
+            "have the editor closed",
         ] {
             assert!(!asks_to_be_told(line), "{line}");
         }

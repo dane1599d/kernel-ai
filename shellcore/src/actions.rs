@@ -82,7 +82,7 @@ fn decided(request: &str, checked: &Checked) -> Vec<(&'static str, Decision)> {
 /// The refusal for a change made for a line that only asks to be told (#721).
 pub(crate) fn told_why(names: &str) -> String {
     format!(
-        "{names} would make a change, but the request only asks to be told; nothing was changed"
+        "{names} would make a change, but the request only asks to be told; nothing was changed. To make a change, say which one"
     )
 }
 

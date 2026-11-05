@@ -49,6 +49,16 @@ fn an_order_for_the_change_still_runs() {
 }
 
 #[test]
+fn an_order_led_by_do_is_not_a_telling_line() {
+    // C on #723: "do" also leads orders, so the added stop asks as before.
+    let stop = r#"{"name":"process_stop","arguments":{"name":"editor"}}"#;
+    let (_host, mut shell) = with_calls(vec![call(stop)]);
+    let reply = shell.eval("do the same for the editor");
+    assert!(!refused(&reply), "{reply:?}");
+    assert!(reply.confirm.is_some(), "{reply:?}");
+}
+
+#[test]
 fn a_question_naming_the_change_still_asks_as_before() {
     // Consent cues the row, so this is not an added change: the guard stays out.
     let (host, mut shell) = with_calls(vec![call(RR)]);
