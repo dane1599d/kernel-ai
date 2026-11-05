@@ -19,6 +19,7 @@ imatrix_sha=9908ff45cd363230b05588f22150f62f1091459aa67ab4bd1376d23ef2d4781f
 pinned_sha=3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597
 pinned_size=2497281120
 
+here=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$work"
 cd "$work"
 
@@ -53,4 +54,8 @@ if [ "$got" = "$pinned_sha" ]; then
 else
   echo "s-w1: control: no byte match"
   echo "$got" > out.sha256
+  # Tell a header difference from a data one: the pinned file, tensor by tensor.
+  pinned=Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+  fetch "$pinned" "$pinned_sha"
+  python3 -I "$here/compare.py" "$pinned" out.gguf
 fi
