@@ -147,6 +147,8 @@ impl Shell {
         } = job;
         let (notice, shown) = match result {
             Ok(built) => {
+                // Its install card opens by itself when the terminal may.
+                self.card = Some(rounds.name.clone());
                 let text = self
                     .log_app_build(id, &request, &rounds.wanted, how, built)
                     .text;
@@ -204,6 +206,38 @@ impl Shell {
     pub fn stop_app_build(&mut self) -> Option<Reply> {
         self.app_job.as_ref()?;
         Some(self.app_stop())
+    }
+
+    /// Whether an install card waits to open by itself: the host then says so
+    /// to the kernel's terminal (CARD_READY), which asks for it with
+    /// [`termcore::menu::TAKE_CARD`] when it may.
+    pub fn card_waiting(&self) -> bool {
+        self.card.is_some()
+    }
+
+    /// The terminal's [`termcore::menu::TAKE_CARD`]: the waiting install
+    /// card, the same card `install <name>` opens, with its checks; a bare
+    /// `ok` when none waits, or while another ask is up (the card then
+    /// waits on).
+    pub(crate) fn take_card(&mut self) -> Reply {
+        if self.pending.is_some() {
+            return Reply::ok("");
+        }
+        let Some(name) = self.card.take() else {
+            return Reply::ok("");
+        };
+        // No one typed this line: a card that may not open (its build edited
+        // or replaced since it ended) is a notice, not an error or a log entry
+        // of a request no one made (A-core on #647).
+        if let Some(why) = self.card_refusal(&name) {
+            self.notices.push(format!(
+                "Kai's app {name}'s install card did not open: {why}"
+            ));
+            return Reply::ok("");
+        }
+        let id = self.take_id();
+        let request = format!("install {name} (the card opened when the build ended)");
+        self.app_install_ask(id, &request, &name)
     }
 
     /// What builds in the background came to since the last look, for the

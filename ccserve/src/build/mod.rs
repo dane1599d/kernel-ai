@@ -14,6 +14,7 @@ pub mod shm;
 
 use crate::bind::{self, World};
 use crate::compiler::{CompileError, Compiler};
+use crate::hints::{self, Library};
 use crate::{Budget, XCC_HEADERS};
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -96,6 +97,24 @@ impl Kind {
             Kind::App => "app",
             Kind::Window => "window",
         }
+    }
+
+    /// The C library its sources compile against, for wcc's hints.
+    fn library(self) -> Library {
+        match self {
+            Kind::Component | Kind::App => Library::Component,
+            Kind::Window => Library::Window,
+        }
+    }
+}
+
+/// `error`, with [`hints`] after wcc's messages for `kind`'s library.
+fn hinted(error: CompileError, kind: Kind) -> CompileError {
+    match error {
+        CompileError::Source(messages) => {
+            CompileError::Source(hints::add(&messages, kind.library()))
+        }
+        other => other,
     }
 }
 
@@ -202,7 +221,10 @@ pub fn build(compiler: &Compiler, build: &Build, budget: &mut Budget) -> Result<
     let request = Request::check(build)?;
     let world = build.kind.world();
     let (objects, imports) = compile(compiler, build.kind, &request.files, budget)?;
-    let linked = link(compiler, world, &objects, budget)?;
+    let linked = link(compiler, world, &objects, budget).map_err(|e| match e {
+        BuildError::Link(e) => BuildError::Link(hinted(e, build.kind)),
+        other => other,
+    })?;
     let module = module::finish(&linked, &imports, world.exports).map_err(BuildError::Module)?;
     // As wasmhost will load it. wcc's linker keeps one type per import, so a
     // call through a world import declared with another type fails here.
@@ -298,7 +320,7 @@ fn compile(
     let mut one = |sources: &[(&str, &[u8])], name: &str, budget: &mut Budget| {
         let object = compiler
             .compile_in(sources, name, budget)
-            .map_err(|e| BuildError::Compile(name.to_string(), e))?;
+            .map_err(|e| BuildError::Compile(name.to_string(), hinted(e, kind)))?;
         objects.hold(name, object)
     };
     one(

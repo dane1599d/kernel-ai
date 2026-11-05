@@ -98,14 +98,34 @@ pub const ENGINE_OTHER_BYTES: u64 = 32 << 20;
 /// Pages the llm plan line adds for the engine when a model is loaded.
 pub const ENGINE_PAGES: u64 = (KV_BYTES + ENGINE_OTHER_BYTES) / 4096;
 
+/// Guest memory with no model, in MiB.
+pub const GUEST_BASE_MIB: u64 = 512;
+/// A model's share of guest memory is rounded up to a multiple of this, in MiB.
+pub const GUEST_STEP_MIB: u64 = 64;
+
+/// The guest memory, in MiB, a model file of `len` bytes needs: the usual
+/// amount, room for the copy the kernel keeps, and twice the pages llm's
+/// engine gets with a model, since processes may hold half of what is free; so
+/// every other service gets as much as without it. xtask sizes its VMs by it,
+/// and the OS's Models says by it which models this machine can run (P5 task 9).
+pub const fn guest_mib(len: u64) -> u64 {
+    const MIB: u64 = 1024 * 1024;
+    let engine_mib = ENGINE_PAGES * 4096 / MIB;
+    let extra = len.div_ceil(MIB) + 2 * engine_mib;
+    GUEST_BASE_MIB + extra.next_multiple_of(GUEST_STEP_MIB)
+}
+
 /// **Interim** (S10-3; removed at P2 task 10): llm's KV slots saved in the
 /// `kai-cache` partition, one fixed region each, as `kai-kv 1` files
 /// (`infer::segments`), through MODEL_KV_LOAD and MODEL_KV_SAVE.
 pub const KV_REGIONS: u64 = KV_SLOTS as u64;
 /// Bytes of one region: room for a full slot's file.
 pub const KV_REGION_BYTES: u64 = 320 << 20;
-/// The most one MODEL_KV_LOAD or MODEL_KV_SAVE moves.
-pub const KV_IO_BYTES: u64 = 64 << 10;
+/// The most one MODEL_KV_LOAD or MODEL_KV_SAVE moves, and what llm moves with each:
+/// 512 KiB, a disk's whole staging buffer, so one call is one request to the disk. It
+/// was 64 KiB; a call costs about 100-130 us before it moves a byte, and S13-1 measured
+/// a 139 MiB file's restore and spill round trip 28-30% faster with the bigger call.
+pub const KV_IO_BYTES: u64 = 512 << 10;
 /// What offsets and lengths come in.
 pub const KV_SECTOR: u64 = 512;
 
@@ -275,6 +295,7 @@ mod tests {
         assert!(file <= super::KV_REGION_BYTES, "{file}");
         assert_eq!(super::KV_REGION_BYTES % super::KV_SECTOR, 0);
         assert_eq!(super::KV_IO_BYTES % super::KV_SECTOR, 0);
+        assert_eq!(super::KV_REGION_BYTES % super::KV_IO_BYTES, 0);
     }
 
     #[test]

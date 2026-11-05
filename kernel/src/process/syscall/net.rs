@@ -4,13 +4,19 @@ use super::{call_error, need};
 use crate::process::uaccess;
 use crate::{ipc, llm, log, net};
 use alloc::vec::Vec;
+use kabi::handle::{Handle, Kind, Rights};
 use kabi::{Error, HttpRequest, call, cap};
 
 const MAX_HTTP_REQUEST: usize = 64 * 1024;
 const MAX_HTTP_TIMEOUT_MS: u64 = 300_000;
 
 /// The calls this area serves.
-const CALLS: &[u64] = &[call::HTTP, call::RESOLVE];
+const CALLS: &[u64] = &[
+    call::HTTP,
+    call::RESOLVE,
+    call::RESOLVE_ON,
+    call::NETDEST_NARROW,
+];
 
 /// One of [`CALLS`], or `None` for a number this area does not have.
 pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u64, Error>> {
@@ -23,10 +29,13 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
             need(slot, cap::NET)?;
             exchange_to(slot, a[0], Destination::Llm)
         }
-        call::RESOLVE => {
-            need(slot, cap::RESOLVE)?;
-            resolve(slot, a[0], a[1], a[2], a[3])
+        // Retired with `cap::RESOLVE` (P5 task 1): a resolve goes on a handle.
+        call::RESOLVE => Err(Error::Permission),
+        call::RESOLVE_ON => {
+            let object = dest_object(slot, a[0], Rights::RESOLVE)?;
+            resolve(slot, object, a[1], a[2], a[3], a[4])
         }
+        call::NETDEST_NARROW => narrow(slot, a[0], a[1], a[2], a[3]),
         _ => Err(Error::NotFound),
     }
 }
@@ -109,8 +118,58 @@ pub(super) fn exchange_to(
 
 /// RESOLVE: the host name copied in (at most `kabi::net::MAX_HOST` bytes), looked up
 /// by the kernel's resolver, and its addresses copied out.
+/// The record `raw`, a `NetDest` handle with `rights`, names: Permission
+/// for another kind, a fixed destination or a right it lacks.
+fn dest_object(slot: usize, raw: u64, rights: Rights) -> Result<u64, Error> {
+    let handle = u32::try_from(raw)
+        .ok()
+        .filter(|&h| h != 0)
+        .ok_or(Error::BadHandle)?;
+    let entry = crate::handle::entry(slot, Handle(handle))?;
+    if entry.kind != Kind::NetDest
+        || !entry.rights.contains(rights)
+        || entry.object < net::dest::FIRST
+    {
+        return Err(Error::Permission);
+    }
+    Ok(entry.object)
+}
+
+/// NETDEST_NARROW: a new handle, with `rights` (within the old one's), to a
+/// record that allows no more than the one `raw` names, read from the text at
+/// `spec_ptr`. Permission if it would allow more.
+fn narrow(slot: usize, raw: u64, spec_ptr: u64, spec_len: u64, rights: u64) -> Result<u64, Error> {
+    let object = dest_object(slot, raw, Rights::DUPLICATE)?;
+    let held = crate::handle::entry(slot, Handle(raw as u32))?.rights;
+    let rights = u32::try_from(rights)
+        .ok()
+        .and_then(Rights::from_bits)
+        .ok_or(Error::Invalid)?;
+    if !held.contains(rights) {
+        return Err(Error::Permission);
+    }
+    let len = usize::try_from(spec_len).map_err(|_| Error::TooBig)?;
+    if len == 0 || len > netdest::MAX_TEXT {
+        return Err(Error::Invalid);
+    }
+    let mut text = alloc::vec![0u8; len];
+    uaccess::copy_from_user(slot, spec_ptr, &mut text)?;
+    let text = core::str::from_utf8(&text).map_err(|_| Error::Invalid)?;
+    let narrower = netdest::Dest::parse(text).map_err(|_| Error::Invalid)?;
+    let live = |object| crate::handle::names(Kind::NetDest, object);
+    let object = net::dest::narrow(object, narrower, live)?;
+    let entry = captable::Entry::new(Kind::NetDest, rights, object);
+    match crate::handle::give(slot, alloc::vec![entry]).first() {
+        Some(&handle) if handle != Handle::NONE => Ok(u64::from(handle.0)),
+        _ => Err(Error::NoMemory),
+    }
+}
+
+/// RESOLVE_ON: `host`'s addresses, if it is under the record `object`'s
+/// suffixes, which keeps them for its connects within their TTL.
 fn resolve(
     slot: usize,
+    object: u64,
     host_ptr: u64,
     host_len: u64,
     out: u64,
@@ -123,6 +182,13 @@ fn resolve(
     let mut host = [0u8; kabi::net::MAX_HOST + 1];
     uaccess::copy_from_user(slot, host_ptr, &mut host[..host_len])?;
     let host = core::str::from_utf8(&host[..host_len]).map_err(|_| Error::Invalid)?;
+    // A name the record does not name is never looked up, so nothing it
+    // carries leaves in a query; the form checked is the form looked up.
+    let host = netdest::normalize(host).ok_or(Error::Permission)?;
+    if !net::dest::allows_name(object, &host) {
+        return Err(Error::Permission);
+    }
+    let host = host.as_str();
     let cancel = || crate::process::killed(slot) || crate::process::interrupt_pending(slot);
     let found =
         net::resolve::resolve(host, kabi::net::RESOLVE_TIMEOUT_MS, cancel).map_err(|error| {
@@ -139,5 +205,6 @@ fn resolve(
         .flat_map(|ip| ip.octets())
         .collect();
     uaccess::copy_to_user(slot, out, &bytes)?;
+    net::dest::resolved(object, &found.addresses, found.ttl_s);
     Ok(found.addresses.len() as u64)
 }

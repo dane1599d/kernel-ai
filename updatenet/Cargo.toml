@@ -1,0 +1,26 @@
+[package]
+name = "updatenet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Updates over the network (P5 task 10, host half; ADR 0008 section 12): the next
+# release streamed into the idle slot by `Range`, each chunk checked against the
+# signed `kai-chunks 1` list before it is written, resumable, with the slot's
+# boot record kept as ADR 0008 section 4 has it. It reaches the slot, the boot
+# variable and the checkpoint through traits, so the host tests drive it over
+# memory and xtask's HTTPS mock, and the ring-3 `updated` wires the same code to
+# `SLOT_WRITE`, `BOOTREC_SET` and kaifs. `no_std` + `alloc`.
+[lib]
+doctest = false
+
+[dependencies]
+bootslot = { path = "../bootslot" }
+kainet = { path = "../kainet" }
+kaipkg = { path = "../kaipkg", features = ["online"] }
+kaituf = { path = "../kaituf" }
+sha2 = { version = "0.11.1", default-features = false }
+
+[dev-dependencies]
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }

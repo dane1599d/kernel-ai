@@ -72,14 +72,10 @@ pub fn component_of(path: &str) -> Result<&str, String> {
         .and_then(|rest| rest.split_once('/'))
         .filter(|(_, file)| !file.is_empty() && !file.contains('/'))
         .ok_or_else(not_in_one)?;
-    let shaped = (2..=12).contains(&name.len())
-        && name.starts_with(|c: char| c.is_ascii_lowercase())
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-    if !shaped {
+    if !kabi::pkgname::is_valid(name) {
         return Err(format!(
-            "{name:?} is not a component's name: 2-12 of a-z, 0-9 and -, starting with a letter"
+            "{name:?} is not a component's name: {}",
+            kabi::pkgname::RULE
         ));
     }
     Ok(name)

@@ -180,6 +180,16 @@ pub mod phase {
     pub const SWAPPING: u64 = 2;
 }
 
+/// The ticket of a notice: an `effect-done` the OS sends an app for no effect it
+/// queued, to say something it showed has changed. A host numbers an app's
+/// tickets from 1, so 0 never answers an effect; the outcome is the notice,
+/// [`NOTICE_FILES`] for now. A notice asks for nothing and grants nothing: an app
+/// that wants the new state asks for it with the effects it already holds.
+pub const NOTICE_TICKET: u32 = 0;
+/// The notice that the person's files changed (made, moved, trashed or restored
+/// by the OS, the AI, the Terminal or an undo): sent to an app whose package
+/// declares `fs_list` among its effects, once however many changes came.
+pub const NOTICE_FILES: &str = "files changed";
 /// Longest version label, `[a-z0-9-]{1,16}`.
 pub const MAX_LABEL: usize = 16;
 /// Largest artifact (module, manifest and source together).

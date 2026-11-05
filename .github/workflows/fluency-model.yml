@@ -15,6 +15,10 @@ on:
         type: choice
         options: [rhai, c]
         default: rhai
+      memories:
+        description: "Every request with a memory section of fixed bait memories (spike S13-4, rhai only)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -68,11 +72,12 @@ jobs:
         env:
           KAI_MODELS: ${{ runner.temp }}/kai-models
           C_FLAG: ${{ inputs.language == 'c' && '--c' || '' }}
+          MEM_FLAG: ${{ inputs.memories && '--memories' || '' }}
         # Built first, so the peak memory GNU time reports is the gate's own.
         run: |
           cargo build --quiet -p xtask
           set +e
-          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" cargo xtask fluency --local "$MODEL_ID" $C_FLAG
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" cargo xtask fluency --local "$MODEL_ID" $C_FLAG $MEM_FLAG
           status=$?
           grep -E "Maximum resident|Elapsed" "$RUNNER_TEMP/time.txt" | sed 's/^/xtask: peak memory: /'
           exit $status

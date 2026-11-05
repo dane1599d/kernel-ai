@@ -55,6 +55,14 @@
       "in": "the cc program: the c> prompt's compiler, cc.wasm, and the headers it includes"
     },
     {
+      "name": "Tock network capabilities",
+      "version": "dc7d3629c0a5 (capsules/extra/src/net/network_capabilities.rs)",
+      "licence": "Apache-2.0 OR MIT",
+      "crate": "netdest",
+      "copyright": ["Copyright Tock Contributors 2022"],
+      "in": "the kernel's NetDest address and port ranges, netdest/src/ranges.rs"
+    },
+    {
       "name": "Unicode Character Database",
       "version": "16.0",
       "licence": "Unicode-3.0",

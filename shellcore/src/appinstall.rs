@@ -166,10 +166,20 @@ impl Shell {
         self.app_install_ask(id, request, &name)
     }
 
-    fn take_id(&mut self) -> u64 {
+    pub(crate) fn take_id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+
+    /// Why `name`'s install card may not open now, if it may not: the checks
+    /// [`Shell::app_install_ask`] makes before it asks, with nothing logged.
+    pub(crate) fn card_refusal(&self, name: &str) -> Option<String> {
+        let built = match self.installable(name) {
+            Ok(built) => built,
+            Err(why) => return Some(why),
+        };
+        (self.host.cc_artifact(name).as_ref() != Some(&built.artifact)).then(|| artifact_gone(name))
     }
 
     /// The build `name` is, if it may be installed now: the last one built,
@@ -206,7 +216,11 @@ impl Shell {
     }
 
     /// Asks to install `name` on the trusted path's card.
-    fn app_install_ask(&mut self, id: u64, request: &str, name: &str) -> Reply {
+    pub(crate) fn app_install_ask(&mut self, id: u64, request: &str, name: &str) -> Reply {
+        // Asked now, its card does not also open by itself.
+        if self.card.as_deref() == Some(name) {
+            self.card = None;
+        }
         let built = match self.installable(name) {
             Ok(built) => built,
             Err(why) => {
@@ -220,9 +234,7 @@ impl Shell {
         // The card names what the artifact cc built imports, or asks nothing:
         // the host must still hold that very artifact.
         if self.host.cc_artifact(name).as_ref() != Some(&built.artifact) {
-            let why = format!(
-                "what Kai's app {name} imports cannot be read, since the artifact cc built for it is no longer the last one written: ask Kai to build it again"
-            );
+            let why = artifact_gone(name);
             self.record(id, request, &call, &format!("refused: {}", shown(&why)));
             return Reply::err(why);
         }
@@ -432,6 +444,13 @@ impl Shell {
             Err(why) => Reply::err(format!("{APPS_DIR}/{name}/main.c: {}", shown(&why))),
         }
     }
+}
+
+/// Why a card cannot ask about `name`: the artifact its build wrote is gone.
+fn artifact_gone(name: &str) -> String {
+    format!(
+        "what Kai's app {name} imports cannot be read, since the artifact cc built for it is no longer the last one written: ask Kai to build it again"
+    )
 }
 
 /// Records `pending` as refused with `why`, and says so.

@@ -269,13 +269,16 @@ struct Options {
     only_m8: bool,
     /// Task 18's gate: fail when any arm at any seed misses a bar.
     gate: bool,
+    /// Spike S13-4: the M8 50 through the one door carry the memories they
+    /// share words with in act's State ([`m8::shipping`]).
+    memories: bool,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
     let (mut id, mut store, mut limit) = (None, None, None);
     let mut arms = vec![Arm::parse("dsl-1")?];
     let mut seeds = SEEDS.to_vec();
-    let (mut m8, mut only_m8, mut gate) = (true, false, false);
+    let (mut m8, mut only_m8, mut gate, mut memories) = (true, false, false, false);
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let mut value = |what: &str| rest.next().cloned().ok_or(format!("{arg} expects {what}"));
@@ -304,6 +307,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--no-m8" => m8 = false,
             "--only-m8" => only_m8 = true,
             "--gate" => gate = true,
+            "--memories" => memories = true,
             other => return Err(format!("unknown actbench option {other}")),
         }
     }
@@ -316,6 +320,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         m8,
         only_m8,
         gate,
+        memories,
     })
 }
 
@@ -508,7 +513,7 @@ fn run_arm(
         "commit": std::env::var("GITHUB_SHA").ok(),
         "run_id": std::env::var("GITHUB_RUN_ID").ok(),
         "runner": std::env::var("RUNNER_NAME").ok(),
-        "context": CONTEXT, "started_unix": started,
+        "context": CONTEXT, "started_unix": started, "memories": options.memories,
         "tasks_sha256": crate::sha256_hex(include_str!("tasks.rs").replace("\r\n", "\n").as_bytes()),
     });
     let mut records = Vec::new();
@@ -618,11 +623,12 @@ fn run_arm(
             options.m8.then(|| {
                 if arm.ship {
                     let engine = loaded.engine.clone();
+                    let memories = options.memories;
                     // What ships: the OS rows and the shipped apps' turn.
                     let grammar = Rc::new(apps::grammar().expect("the shipped rows decode"));
                     return run_m8(
                         options.limit,
-                        &move || m8::shipping(engine.clone(), grammar.clone()),
+                        &move || m8::shipping(engine.clone(), grammar.clone(), memories),
                         &mut records,
                     );
                 }

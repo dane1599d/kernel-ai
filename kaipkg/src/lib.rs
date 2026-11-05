@@ -52,6 +52,8 @@ pub mod local;
 pub mod memvol;
 pub mod mirror;
 pub mod models;
+#[cfg(feature = "online")]
+pub mod online;
 pub mod resolve;
 pub mod sign;
 pub mod store;
