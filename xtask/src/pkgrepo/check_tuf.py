@@ -7,7 +7,8 @@ role, downloads it, and checks its length and SHA-256. Each package's header mus
 name what its `custom.kai` index entry says. It finds every model of
 xtask/models.json through the delegated `models` role, with the length, SHA-256,
 name and licence the catalog pins (ADR 0008 section 6; no model is downloaded).
-Then one byte of a package is changed, and a fresh client must refuse it.
+Then one byte of a package, and then of a chunk list, is changed in its own
+file, and a fresh client must refuse each.
 
 Usage: python check_tuf.py REPO_DIR
 """
@@ -104,16 +105,38 @@ def check_models(updater: Updater) -> None:
         check_list(updater, model)
 
 
+def refuses_a_changed_byte(base: str, root: Path, work: Path, file: Path, target: str) -> None:
+    """A fresh client must refuse `target` once one byte of `file`, the
+    consistent-snapshot file it downloads, is changed."""
+    original = file.read_bytes()
+    flipped = bytearray(original)
+    flipped[40] ^= 1
+    file.write_bytes(bytes(flipped))
+    try:
+        bad = client(base, root, work)
+        bad.refresh()
+        bad.download_target(bad.get_targetinfo(target))
+    except exceptions.RepositoryError as why:
+        print(f"python-tuf: {target} with a changed byte is refused: {why}")
+    else:
+        sys.exit(f"python-tuf accepted {target} with a changed byte")
+    finally:
+        file.write_bytes(original)
+
+
 def main() -> None:
     repo = Path(sys.argv[1])
     root = repo / "metadata" / "1.root.json"
-    files = sorted((repo / "targets").iterdir())
     # A consistent snapshot's file is <sha256>.<target path>. The models'
     # chunk lists are checked with the models; the rest are packages.
-    targets = [f.name.split(".", 1)[1] for f in files]
-    targets = [t for t in targets if not t.endswith(".chunks")]
+    files = [(f, f.name.split(".", 1)[1]) for f in sorted((repo / "targets").iterdir())]
+    packages = [(f, t) for f, t in files if not t.endswith(".chunks")]
+    lists = [(f, t) for f, t in files if t.endswith(".chunks")]
+    targets = [t for _, t in packages]
     if not targets:
         sys.exit("the repository has no packages")
+    if not lists:
+        sys.exit("the repository has no chunk lists")
     server = serve(repo)
     base = f"http://127.0.0.1:{server.server_port}"
     with tempfile.TemporaryDirectory() as tmp:
@@ -138,21 +161,9 @@ def main() -> None:
             print(f"python-tuf: {target} verified, {len(package)} bytes, actions {kai['actions']}")
         check_models(good)
 
-        changed = files[0]
-        original = changed.read_bytes()
-        flipped = bytearray(original)
-        flipped[40] ^= 1
-        changed.write_bytes(bytes(flipped))
-        try:
-            bad = client(base, root, Path(tmp) / "bad")
-            bad.refresh()
-            bad.download_target(bad.get_targetinfo(targets[0]))
-        except exceptions.RepositoryError as why:
-            print(f"python-tuf: {targets[0]} with a changed byte is refused: {why}")
-        else:
-            sys.exit(f"python-tuf accepted {targets[0]} with a changed byte")
-        finally:
-            changed.write_bytes(original)
+        # Each changed byte is in the very file the client downloads.
+        for i, (file, target) in enumerate([packages[0], lists[0]]):
+            refuses_a_changed_byte(base, root, Path(tmp) / f"bad-{i}", file, target)
     server.shutdown()
 
 
