@@ -37,6 +37,7 @@ mod os;
 mod registry;
 mod render;
 mod score;
+mod shipped;
 mod tasks;
 mod view;
 
@@ -92,6 +93,8 @@ enum Kind {
     View,
     /// The shipped apps' rows on llm's own `act` path ([`os::APP_TASKS`]).
     Apps,
+    /// The 190 tasks on the shipped pack, report only ([`shipped`]).
+    Shipped,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,6 +137,17 @@ impl Arm {
                     no_think: false,
                     rules: false,
                     m8script: true,
+                    ship: true,
+                    index: false,
+                });
+            }
+            "shipped" => {
+                return Ok(Self {
+                    kind: Kind::Shipped,
+                    rows: 0,
+                    no_think: false,
+                    rules: false,
+                    m8script: false,
                     ship: true,
                     index: false,
                 });
@@ -225,6 +239,7 @@ impl Arm {
             Kind::M8 if self.no_think => "m8".into(),
             Kind::M8 => "m8-a0".into(),
             Kind::Os => "os".into(),
+            Kind::Shipped => "shipped".into(),
             Kind::View => "view".into(),
             Kind::Apps => "apps".into(),
             Kind::Tagged(_) if self.ship => "act".into(),
@@ -484,6 +499,7 @@ fn run_arm(
 ) -> Result<(bool, String), String> {
     match arm.kind {
         Kind::Os => return os::run(loaded, seed, target_dir),
+        Kind::Shipped => return shipped::run(loaded, seed, target_dir),
         Kind::View => return view::run(loaded, seed, target_dir),
         Kind::Apps => return os::run_apps(loaded, seed, target_dir),
         _ => {}
@@ -503,7 +519,9 @@ fn run_arm(
     let mut records = Vec::new();
     let mut scored = Vec::new();
     let m8 = match arm.kind {
-        Kind::Os | Kind::View | Kind::Apps => unreachable!("arms os, view and apps returned above"),
+        Kind::Os | Kind::View | Kind::Apps | Kind::Shipped => {
+            unreachable!("arms os, view, apps and shipped returned above")
+        }
         Kind::M8 => {
             header["pack_id"] = json!(null);
             let engine = loaded.engine.clone();
@@ -633,7 +651,9 @@ fn run_arm(
         }
     };
     let gates = match arm.kind {
-        Kind::Os | Kind::View | Kind::Apps => unreachable!("arms os, view and apps returned above"),
+        Kind::Os | Kind::View | Kind::Apps | Kind::Shipped => {
+            unreachable!("arms os, view, apps and shipped returned above")
+        }
         Kind::M8 => score::gates(&[], m8).split_off(7),
         Kind::Tagged(_) if options.only_m8 => score::gates(&[], m8).split_off(7),
         Kind::Tagged(_) => score::gates(&scored, m8),
