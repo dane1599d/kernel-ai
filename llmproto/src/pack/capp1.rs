@@ -128,6 +128,20 @@ pub fn estimate_tokens(card: &str) -> usize {
 
 /// The card.
 pub fn render() -> String {
+    let mut card = render_repair();
+    card.push_str("Example:\n");
+    for (request, program, summary) in EXAMPLES {
+        let envelope = serde_json::json!({ "script": program, "summary": summary });
+        let _ = writeln!(card, "Request: {request}\n{envelope}");
+    }
+    card
+}
+
+/// The card without its worked example, for a repair round: the model's own
+/// last answer shows the shape, and the example's tokens (about a third of
+/// the card) are the room a whole repaired main.c needs at the OS's 2,048
+/// positions (spike S-W1's probe: guess's repair filled the context).
+pub fn render_repair() -> String {
     let mut card = String::from(RULES);
     for (call, doc) in CALLS {
         let _ = match *doc {
@@ -136,10 +150,5 @@ pub fn render() -> String {
         };
     }
     let _ = write!(card, "Template:\n{TEMPLATE}");
-    card.push_str("Example:\n");
-    for (request, program, summary) in EXAMPLES {
-        let envelope = serde_json::json!({ "script": program, "summary": summary });
-        let _ = writeln!(card, "Request: {request}\n{envelope}");
-    }
     card
 }
