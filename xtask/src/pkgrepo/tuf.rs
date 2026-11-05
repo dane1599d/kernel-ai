@@ -4,9 +4,10 @@
 //! The top-level roles are root, targets, snapshot and timestamp; targets
 //! delegates every `*.kpkg` to the role `packages`, which lists each package as
 //! a target `<name>-<version>.kpkg` with its length, SHA-256 and `custom.kai`
-//! index fields, and every `*.gguf` to the role `models` (ADR 0008 §6), which
-//! lists each model as `<id>.gguf` ([`super::models`]). A model's bytes are
-//! never in the repository. Snapshots are consistent, so the layout is:
+//! index fields, and every `*.gguf` and `*.chunks` to the role `models` (ADR
+//! 0008 §6), which lists each model as `<id>.gguf` ([`super::models`]) and its
+//! `kai-chunks 1` list as `<sha256>.chunks`. A model's bytes are never in the
+//! repository; its list's are. Snapshots are consistent, so the layout is:
 //!
 //! ```text
 //! metadata/1.root.json
@@ -16,6 +17,7 @@
 //! metadata/1.snapshot.json
 //! metadata/timestamp.json
 //! targets/<sha256>.notes-1.0.0.kpkg
+//! targets/<sha256 of the list>.<sha256 of the GGUF>.chunks
 //! ```
 //!
 //! Keys are Ed25519 (`ed25519-compact`), one per role, made fresh for each
@@ -108,6 +110,7 @@ pub fn build_with_models(
                 length: model.length,
                 sha256,
                 kai: model.index(),
+                chunks: model.chunks.as_ref().map(|list| list.clone().into_bytes()),
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
