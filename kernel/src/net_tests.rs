@@ -11,6 +11,7 @@
 //!   address comes after `dhcp_wait_ms` and the gateway answers on it.
 //! - `test=net-static`: `ip=static` is used at once, with no DHCP.
 //! - `test=net-dest` (P5 task 1): what a `NetDest` handle allows ([`dest_check`]).
+//! - `test=net-stream` (P5 task 2): TCP streams on one ([`stream_check`]).
 
 use crate::fpu_tests::wait_exit;
 use crate::net::ping::{self, Outcome};
@@ -312,5 +313,61 @@ pub fn dest_check() -> Result<(), &'static str> {
         Some(entry),
     )?;
     log!("net-dest: the retired RESOLVE refused even a holder of a NetDest");
+    Ok(())
+}
+
+/// `test=net-stream` (P5 task 2): TCP streams on a `NetDest` handle, to xtask's
+/// echo server (`echo=`), from `netcheck`'s stream modes.
+/// - A stream and a bulk one echo 8 KiB and a line; a send over 8 KiB is
+///   TooBig; a port the handle does not name is refused; the 17th stream of a
+///   process is Busy; each closes, and none is left open.
+/// - A process killed while it holds three streams leaves none open.
+pub fn stream_check(cmdline: &str) -> Result<(), &'static str> {
+    let (server, port) = cmdline
+        .split_whitespace()
+        .find_map(|w| net::parse_endpoint(w.strip_prefix("echo=")?))
+        .ok_or("net-stream: no echo= on the command line")?;
+    wait_for(|s| s.address.is_some())?;
+    let spec = alloc::format!("proto:tcp,addrs:{server},ports:{port}");
+    let (_, entry) = netdest(&spec)?;
+    netcheck(
+        "netstream-a",
+        &alloc::format!("stream=echo port={port}"),
+        Some(entry),
+    )?;
+    if net::stream::count(0).1 != 0 {
+        return Err("net-stream: a closed stream was left open");
+    }
+    log!("net-stream: streams echoed through the handle, kept to its port and to 16, and closed");
+    let (_, entry) = netdest(&spec)?;
+    let args = alloc::format!("stream=hold port={port}");
+    let request = SpawnRequest {
+        name: "netstream-b",
+        program: "netcheck",
+        args: args.as_bytes(),
+        limits: NETCHECK_LIMITS,
+        spawner: 0,
+        supervisor: false,
+        uses: &[],
+    };
+    let pid = process::spawn_with(&request, alloc::vec![entry], false)
+        .map_err(|_| "net-stream: cannot start netcheck")?;
+    let mut held = false;
+    for _ in 0..SETUP_WAIT_MS / 10 {
+        if net::stream::count(pid).0 == 3 {
+            held = true;
+            break;
+        }
+        threads::sleep_ms(10);
+    }
+    if !held {
+        return Err("net-stream: netcheck never held 3 streams");
+    }
+    process::kill(pid, ExitReason::Killed).map_err(|_| "net-stream: cannot kill netcheck")?;
+    wait_exit(pid)?;
+    if net::stream::count(pid) != (0, 0) {
+        return Err("net-stream: a killed process's streams stayed open");
+    }
+    log!("net-stream: a process killed with 3 streams open left none");
     Ok(())
 }

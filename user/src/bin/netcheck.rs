@@ -6,6 +6,13 @@
 //! - `narrow=SPEC`: first makes a narrower handle from it, and resolves on that;
 //!   `expect=narrow-refused` exits 0 if the kernel refuses to narrow;
 //! - `legacy`: uses the retired RESOLVE call instead, which always refuses.
+//!
+//! And for TCP streams on it (P5 task 2, the `net-stream` case), with
+//! `port=P` the echo server's port on 10.0.2.2:
+//! - `stream=echo`: a stream and a bulk one each echo 8 KiB and a short line;
+//!   9 KiB in one send is TooBig; port P+1, outside the handle, is refused; the
+//!   17th stream is Busy; each closes.
+//! - `stream=hold`: holds 3 connected streams and waits to be killed.
 
 #![no_std]
 #![no_main]
@@ -13,6 +20,7 @@
 extern crate alloc;
 
 use alloc::format;
+use alloc::string::String;
 use core::net::Ipv4Addr;
 use kabi::Error;
 use kabi::handle::{Handle, HandleInfo, Kind, Rights};
@@ -32,6 +40,25 @@ fn startup_dest() -> Option<Handle> {
 
 fn main() -> i32 {
     let args = args();
+    if let Some(mode) = arg(&args, "stream") {
+        let port = arg(&args, "port").and_then(|p| p.parse().ok()).unwrap_or(0);
+        let Some(dest) = startup_dest() else {
+            println!("stream: no NetDest handle");
+            return 1;
+        };
+        let result = match mode {
+            "echo" => stream_echo(dest, port),
+            "hold" => stream_hold(dest, port),
+            _ => Err(format!("no stream mode {mode}")),
+        };
+        return match result {
+            Ok(()) => 0,
+            Err(why) => {
+                println!("stream: {why}");
+                1
+            }
+        };
+    }
     let (Some(host), Some(expect)) = (arg(&args, "host"), arg(&args, "expect")) else {
         println!(
             "usage: netcheck host=NAME expect=A.B.C.D|permission|narrow-refused [narrow=SPEC] [legacy]"
@@ -80,5 +107,125 @@ fn main() -> i32 {
             println!("resolve {host}: unexpected {other:?}");
             1
         }
+    }
+}
+
+const SERVER: [u8; 4] = [10, 0, 2, 2];
+const WAIT_MS: u64 = 10_000;
+
+/// A stream to the echo server, connected.
+fn open(dest: Handle, port: u16, flags: u64) -> Result<Handle, String> {
+    let stream = sys::net_connect(dest, SERVER, port, flags)
+        .map_err(|e| format!("connect to port {port}: {e:?}"))?;
+    let state = sys::net_poll(stream, kabi::net::STREAM_CONNECTED, WAIT_MS)
+        .map_err(|e| format!("poll: {e:?}"))?;
+    match state & kabi::net::STREAM_CONNECTED != 0 {
+        true => Ok(stream),
+        false => Err(format!("port {port} did not connect (state {state:#x})")),
+    }
+}
+
+/// Sends all of `data` and reads the same number of bytes back.
+fn echo(stream: Handle, data: &[u8]) -> Result<alloc::vec::Vec<u8>, String> {
+    let mut sent = 0;
+    while sent < data.len() {
+        sys::net_poll(stream, kabi::net::STREAM_WRITABLE, WAIT_MS)
+            .map_err(|e| format!("poll: {e:?}"))?;
+        sent += sys::net_send(stream, &data[sent..]).map_err(|e| format!("send: {e:?}"))?;
+    }
+    let mut back = alloc::vec::Vec::new();
+    let mut chunk = [0u8; 4096];
+    while back.len() < data.len() {
+        let state = sys::net_poll(
+            stream,
+            kabi::net::STREAM_READABLE | kabi::net::STREAM_CLOSED,
+            WAIT_MS,
+        )
+        .map_err(|e| format!("poll: {e:?}"))?;
+        if state & kabi::net::STREAM_READABLE == 0 {
+            return Err(format!(
+                "{} of {} bytes came back (state {state:#x})",
+                back.len(),
+                data.len()
+            ));
+        }
+        let n = sys::net_recv(stream, &mut chunk).map_err(|e| format!("recv: {e:?}"))?;
+        back.extend_from_slice(&chunk[..n]);
+    }
+    Ok(back)
+}
+
+fn stream_echo(dest: Handle, port: u16) -> Result<(), String> {
+    let big: alloc::vec::Vec<u8> = (0..8192u32).map(|i| (i * 7 + 3) as u8).collect();
+    for (name, flags) in [("a stream", 0), ("a bulk stream", kabi::net::STREAM_BULK)] {
+        let stream = open(dest, port, flags)?;
+        for data in [&big[..], b"hello over a handle\n"] {
+            if echo(stream, data)? != data {
+                return Err(format!("{name} echoed other bytes"));
+            }
+        }
+        let over = alloc::vec![0u8; kabi::net::STREAM_MAX_CALL + 1];
+        if sys::net_send(stream, &over) != Err(Error::TooBig) {
+            return Err(format!("{name} took a send over 8 KiB"));
+        }
+        sys::net_close(stream).map_err(|e| format!("close: {e:?}"))?;
+        println!("{name} echoed 8192 and 20 bytes, refused 8193 in one send, and closed");
+    }
+    match sys::net_connect(dest, SERVER, port + 1, 0) {
+        Err(Error::Permission) => println!("port {} is not on the handle: refused", port + 1),
+        other => {
+            return Err(format!(
+                "port {} outside the handle gave {other:?}",
+                port + 1
+            ));
+        }
+    }
+    let mut streams = alloc::vec::Vec::new();
+    for _ in 0..kabi::net::STREAMS_PER_PROCESS {
+        streams.push(
+            sys::net_connect(dest, SERVER, port, 0)
+                .map_err(|e| format!("stream {}: {e:?}", streams.len() + 1))?,
+        );
+    }
+    match sys::net_connect(dest, SERVER, port, 0) {
+        Err(Error::Busy) => println!("16 streams open; the 17th was Busy"),
+        other => return Err(format!("the 17th stream gave {other:?}")),
+    }
+    // Half by NET_CLOSE, half by closing the handle: either frees the stream.
+    for (i, stream) in streams.into_iter().enumerate() {
+        match i % 2 {
+            0 => sys::net_close(stream).map_err(|e| format!("close: {e:?}"))?,
+            _ => sys::handle_close(stream).map_err(|e| format!("handle close: {e:?}"))?,
+        }
+    }
+    let mut again = alloc::vec::Vec::new();
+    for _ in 0..kabi::net::STREAMS_PER_PROCESS {
+        again.push(
+            sys::net_connect(dest, SERVER, port, 0)
+                .map_err(|e| format!("reopening stream {}: {e:?}", again.len() + 1))?,
+        );
+    }
+    println!("after closing them, by NET_CLOSE or by the handle, 16 more opened");
+    for stream in again {
+        sys::handle_close(stream).map_err(|e| format!("handle close: {e:?}"))?;
+    }
+    let bulks: alloc::vec::Vec<_> = (0..3)
+        .map(|_| sys::net_connect(dest, SERVER, port, kabi::net::STREAM_BULK))
+        .collect();
+    match bulks.as_slice() {
+        [Ok(_), Ok(_), Err(Error::Busy)] => println!("a third bulk stream of one process was Busy"),
+        other => return Err(format!("three bulk streams gave {other:?}")),
+    }
+    Ok(())
+}
+
+fn stream_hold(dest: Handle, port: u16) -> Result<(), String> {
+    let mut streams = alloc::vec::Vec::new();
+    for _ in 0..3 {
+        streams.push(open(dest, port, 0)?);
+    }
+    println!("holding 3 streams");
+    loop {
+        sys::sleep_ms(1_000);
     }
 }

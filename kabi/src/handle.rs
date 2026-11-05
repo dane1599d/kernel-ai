@@ -16,7 +16,7 @@ use bitflags::bitflags;
 /// kernel; apps reach the OS through WIT, never raw calls; and no outside
 /// package exists before v1.0. Any later change to an existing call's meaning
 /// bumps the major.
-pub const ABI: (u32, u32) = (1, 1);
+pub const ABI: (u32, u32) = (1, 2);
 
 /// The name of the ELF note that carries [`ABI`], and its type.
 pub const NOTE_NAME: &[u8; 4] = b"KAI\0";
@@ -105,10 +105,14 @@ pub enum Kind {
     /// only `comphost`'s, for the editor app's `edit` grant. Numbered at merge,
     /// after `Ask` (20, #268).
     Edit = 21,
+    /// A TCP stream on a `NetDest` ([`crate::call::NET_CONNECT`]): its
+    /// owner's only, never duplicated or moved. Numbered at merge, after
+    /// `Edit` (21).
+    Stream = 22,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 21] = [
+    pub const ALL: [Kind; 22] = [
         Kind::Process,
         Kind::Job,
         Kind::Endpoint,
@@ -130,6 +134,7 @@ impl Kind {
         Kind::Update,
         Kind::Ask,
         Kind::Edit,
+        Kind::Stream,
     ];
 
     pub fn from_raw(raw: u32) -> Option<Kind> {
@@ -159,6 +164,7 @@ impl Kind {
             Kind::Update => "update",
             Kind::Ask => "ask",
             Kind::Edit => "edit",
+            Kind::Stream => "stream",
         }
     }
 }
@@ -309,6 +315,6 @@ mod tests {
             assert_eq!(Kind::from_raw(kind as u32), Some(kind));
         }
         assert_eq!(Kind::from_raw(0), None);
-        assert_eq!(Kind::from_raw(22), None);
+        assert_eq!(Kind::from_raw(23), None);
     }
 }

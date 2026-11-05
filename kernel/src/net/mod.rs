@@ -11,6 +11,7 @@ mod device;
 pub mod ping;
 pub mod resolve;
 pub mod setup;
+pub mod stream;
 mod virtio_net;
 
 use crate::virtio::hal::KernelHal;
@@ -59,6 +60,7 @@ impl Net {
         self.device.refill();
         self.setup
             .after_poll(&mut self.iface, &mut self.sockets, hpet::nanos());
+        stream::reap(self);
     }
 }
 

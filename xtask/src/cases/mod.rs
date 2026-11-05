@@ -68,6 +68,8 @@ pub struct TestCase {
     /// Point the kernel at the mock DNS server (`dns=`), which answers the
     /// `netcore::fixture` zone.
     pub dns: bool,
+    /// Point the kernel at the TCP echo server (`echo=`), for the stream case.
+    pub echo: bool,
     /// Boot with a virtio-gpu (`-device virtio-gpu-pci`) and no VGA.
     pub gpu: bool,
     /// Check the screendump the keys take (`screen.rs`) once the case has passed.
@@ -145,6 +147,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         nvme: false,
         image: false,
         dns: false,
+        echo: false,
         gpu: false,
         screen: None,
         usb: &[],
