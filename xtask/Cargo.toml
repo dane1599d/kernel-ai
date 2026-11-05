@@ -18,6 +18,7 @@ gguf = { path = "../gguf" }
 infer = { path = "../infer" }
 diskmap = { path = "../diskmap" }
 kaifs = { path = "../kaifs" }
+kaimem = { path = "../kaimem" }
 kaipkg = { path = "../kaipkg", features = ["online"] }
 # The HTTPS mock (mock_https/): its TLS server and test CA (plan p5-networking, task 7).
 kainet = { path = "../kainet", features = ["testca"] }
@@ -57,6 +58,7 @@ modelchan = { path = "../modelchan" }
 comp-models = { path = "../apps/models" }
 # The update disk's test reads its metadata back.
 kaituf = { path = "../kaituf" }
+updatenet = { path = "../updatenet" }
 # The slot disk's tests read its kai-slot 1 back.
 bootslot = { path = "../bootslot" }
 wat = "1.262.0"

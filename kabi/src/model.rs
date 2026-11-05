@@ -121,8 +121,11 @@ pub const fn guest_mib(len: u64) -> u64 {
 pub const KV_REGIONS: u64 = KV_SLOTS as u64;
 /// Bytes of one region: room for a full slot's file.
 pub const KV_REGION_BYTES: u64 = 320 << 20;
-/// The most one MODEL_KV_LOAD or MODEL_KV_SAVE moves.
-pub const KV_IO_BYTES: u64 = 64 << 10;
+/// The most one MODEL_KV_LOAD or MODEL_KV_SAVE moves, and what llm moves with each:
+/// 512 KiB, a disk's whole staging buffer, so one call is one request to the disk. It
+/// was 64 KiB; a call costs about 100-130 us before it moves a byte, and S13-1 measured
+/// a 139 MiB file's restore and spill round trip 28-30% faster with the bigger call.
+pub const KV_IO_BYTES: u64 = 512 << 10;
 /// What offsets and lengths come in.
 pub const KV_SECTOR: u64 = 512;
 
@@ -292,6 +295,7 @@ mod tests {
         assert!(file <= super::KV_REGION_BYTES, "{file}");
         assert_eq!(super::KV_REGION_BYTES % super::KV_SECTOR, 0);
         assert_eq!(super::KV_IO_BYTES % super::KV_SECTOR, 0);
+        assert_eq!(super::KV_REGION_BYTES % super::KV_IO_BYTES, 0);
     }
 
     #[test]

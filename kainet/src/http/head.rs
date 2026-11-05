@@ -76,7 +76,13 @@ pub struct Head {
     pub content_range: Option<ContentRange>,
     /// `Retry-After` in seconds, as a 429 or 503 gives it.
     pub retry_after: Option<u32>,
+    /// `Content-Type`, when it is at most [`MAX_CONTENT_TYPE`] printable
+    /// ASCII bytes; otherwise none.
+    pub content_type: Option<String>,
 }
+
+/// The longest `Content-Type` kept.
+pub const MAX_CONTENT_TYPE: usize = 128;
 
 /// The response head at the start of `bytes`, and its length; `Ok(None)`
 /// if it has not all come yet.
@@ -98,6 +104,7 @@ pub fn parse(bytes: &[u8], method: Method) -> Result<Option<(Head, usize)>, Http
     let mut location = None;
     let mut content_range = None;
     let mut retry_after = None;
+    let mut content_type = None;
     for header in response.headers.iter() {
         let value = core::str::from_utf8(header.value)
             .map_err(|_| HttpError::Head("a header is not text"))?
@@ -127,6 +134,10 @@ pub fn parse(bytes: &[u8], method: Method) -> Result<Option<(Head, usize)>, Http
             content_range = Some(parse_content_range(value)?);
         } else if name.eq_ignore_ascii_case("retry-after") {
             retry_after = number(value).and_then(|n| u32::try_from(n).ok());
+        } else if name.eq_ignore_ascii_case("content-type") {
+            let printable = value.bytes().all(|b| b == b' ' || b.is_ascii_graphic());
+            content_type =
+                (value.len() <= MAX_CONTENT_TYPE && printable).then(|| String::from(value));
         }
     }
     if chunked && length.is_some() {
@@ -145,6 +156,7 @@ pub fn parse(bytes: &[u8], method: Method) -> Result<Option<(Head, usize)>, Http
         location,
         content_range,
         retry_after,
+        content_type,
     };
     Ok(Some((head, used)))
 }

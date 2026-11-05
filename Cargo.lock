@@ -1415,6 +1415,7 @@ name = "kernel"
 version = "0.1.0-dev"
 dependencies = [
  "acpitables",
+ "bitflags 2.13.2",
  "bootslot",
  "captable",
  "cpufeat",
@@ -2635,6 +2636,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
+name = "updatenet"
+version = "0.1.0-dev"
+dependencies = [
+ "bootslot",
+ "kainet",
+ "kaipkg",
+ "kaituf",
+ "serde_json",
+ "sha2 0.11.1",
+]
+
+[[package]]
 name = "user"
 version = "0.1.0-dev"
 dependencies = [
@@ -3155,6 +3168,7 @@ dependencies = [
  "kabi",
  "kaibundle",
  "kaifs",
+ "kaimem",
  "kainet",
  "kaipkg",
  "kaituf",
@@ -3176,6 +3190,7 @@ dependencies = [
  "supervise",
  "uelf",
  "uikit",
+ "updatenet",
  "wasmhost",
  "wat",
  "wit-bindgen-c",

@@ -35,6 +35,8 @@ mod http;
 #[cfg(test)]
 mod model_fetch_tests;
 mod pki;
+#[cfg(test)]
+mod update_fetch_tests;
 
 /// kainet's provider, as the mock's server and its clients' tests use it.
 #[cfg(test)]
@@ -422,6 +424,9 @@ fn answer(request: &http::Request, sni: &str, content: &Content, faults: &Faults
         ));
     }
     answer.headers.push(("Accept-Ranges", "bytes".into()));
+    answer
+        .headers
+        .push(("Content-Type", "application/octet-stream".into()));
     answer.body = file[start..end].to_vec();
     answer.range = Some((start, end));
     answer.offset = start;

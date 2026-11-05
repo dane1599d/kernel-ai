@@ -78,7 +78,9 @@ fn invisible(c: char) -> bool {
 }
 
 /// Why a text cannot be a memory, or `None` when it can: not empty, at most
-/// [`MAX_TEXT`] bytes, one line of characters that show.
+/// [`MAX_TEXT`] bytes, one line of characters that show, and no permission or
+/// standing action ([`crate::directive`]). Every way a memory is made checks
+/// it: `remember`, `edit` and a file read back (C on #652).
 pub fn text_problem(text: &str) -> Option<&'static str> {
     if text.trim().is_empty() {
         return Some("a memory needs some text");
@@ -89,7 +91,7 @@ pub fn text_problem(text: &str) -> Option<&'static str> {
     if text.chars().any(|c| c.is_control() || invisible(c)) {
         return Some("a memory is one line of printable text");
     }
-    None
+    crate::directive::problem(text)
 }
 
 impl Memory {
