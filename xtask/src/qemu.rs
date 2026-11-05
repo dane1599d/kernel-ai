@@ -93,6 +93,24 @@ pub fn args(
     ]
     .iter()
     .map(|s| s.to_string())
+    // Spike P5-S2: `XTASK_NETDEV=tap,...` in place of slirp, whose TCP to the
+    // guest has no window scaling.
+    .map(|arg| match (arg.as_str(), std::env::var("XTASK_NETDEV")) {
+        ("user,id=net0", Ok(netdev)) => netdev,
+        _ => arg,
+    })
+    // Spike P5-S2: `XTASK_NET_DUMP=<file>` records the card's frames as pcap.
+    .chain(
+        std::env::var("XTASK_NET_DUMP")
+            .ok()
+            .into_iter()
+            .flat_map(|file| {
+                [
+                    "-object".to_string(),
+                    format!("filter-dump,id=dump0,netdev=net0,file={file},maxlen=96"),
+                ]
+            }),
+    )
     .collect();
     args.push("-smp".into());
     args.push(vm_cpus(accel, sizing).to_string());

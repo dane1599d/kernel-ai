@@ -298,6 +298,8 @@ pub enum SelfTest {
     NetFallback,
     /// P5: `ip=static` at boot.
     NetStatic,
+    /// Spike P5-S2: download speed by round trip, receive buffer and poll gap.
+    NetThroughput,
     /// P5 task 1: what a `NetDest` handle allows.
     NetDest,
     /// P5 task 2: TCP streams on a `NetDest`.
@@ -478,6 +480,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net-setup" => Some(SelfTest::NetSetup),
             "test=net-fallback" => Some(SelfTest::NetFallback),
             "test=net-static" => Some(SelfTest::NetStatic),
+            "test=net-throughput" => Some(SelfTest::NetThroughput),
             "test=net-dest" => Some(SelfTest::NetDest),
             "test=net-stream" => Some(SelfTest::NetStream),
             "test=entropy-boots" => Some(SelfTest::EntropyBoots),

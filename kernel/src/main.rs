@@ -149,6 +149,7 @@ mod term_tests;
 mod terminal;
 mod thread_tests;
 mod threads;
+mod throughput_tests;
 mod timer;
 mod tufbench_tests;
 mod tune_ab_tests;
@@ -465,6 +466,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetSetup => run_case(net_tests::setup_check),
         SelfTest::NetFallback => run_case(net_tests::fallback_check),
         SelfTest::NetStatic => run_case(net_tests::static_check),
+        SelfTest::NetThroughput => run_case(throughput_tests::check),
         SelfTest::NetDest => run_case(net_tests::dest_check),
         SelfTest::NetStream => run_case(|| net_tests::stream_check(cmdline())),
         SelfTest::EntropyBoots => run_case(entropy_tests::check),

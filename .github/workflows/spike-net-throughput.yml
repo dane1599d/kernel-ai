@@ -1,0 +1,82 @@
+name: Spike P5-S2 net-throughput
+
+# Spike P5-S2 re-run on main (docs/plans/p5-networking.md section 5): download speed from a
+# plain HTTP server on the runner, through slirp, at 0, 20 and 80 ms of added
+# round trip (held in the guest's own transmit path), with receive buffers of
+# 64 KiB, 1 MiB and 4 MiB, under the polled driver. Runs on the spike branch
+# only and is never merged; the figures are read from the log.
+
+on:
+  push:
+    branches: [dane/s2-on-main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  throughput:
+    name: net-throughput on main (${{ matrix.accel }}, ${{ matrix.runner }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        accel: [kvm]
+        build: [release]
+        # Main as it ships after #704 and #683: the batched receive queue, 256
+        # deep, and the clock main picks under KVM. Three runners, as CPUs vary.
+        runner: [a, b, c]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/qemu
+      - name: Allow KVM for the runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: qemu-${{ matrix.build }}
+      # A TAP device, not slirp: the host's own TCP, which scales its window,
+      # at 10.0.2.2 as slirp's gateway was; the guest uses ip=static.
+      - name: A TAP device at 10.0.2.2 for the guest
+        run: |
+          sudo ip tuntap add dev kaitap0 mode tap user "$USER"
+          sudo ip addr add 10.0.2.2/24 dev kaitap0
+          sudo ip link set kaitap0 up
+          sysctl net.ipv4.tcp_window_scaling net.core.wmem_max net.ipv4.tcp_wmem
+      - name: Serve a 256 MiB blob on port 8765
+        run: |
+          mkdir -p "$RUNNER_TEMP/www"
+          head -c 268435456 /dev/zero > "$RUNNER_TEMP/www/blob"
+          python3 -m http.server 8765 --bind 0.0.0.0 --directory "$RUNNER_TEMP/www" > "$RUNNER_TEMP/http.log" 2>&1 &
+          sleep 1
+          curl -sS -o /dev/null -w 'host curl: %{size_download} bytes at %{speed_download} B/s\n' http://127.0.0.1:8765/blob
+      - name: Boot net-throughput on main
+        env:
+          XTASK_CASE: net-throughput
+          XTASK_NET_DUMP: ${{ runner.temp }}/net.pcap
+          XTASK_CMDLINE: ip=static
+          XTASK_NETDEV: tap,id=net0,ifname=kaitap0,script=no,downscript=no
+        run: |
+          flag=""
+          if [ "${{ matrix.build }}" = release ]; then flag=--release; fi
+          cargo xtask test $flag --accel ${{ matrix.accel }} --timeout 900 2>&1 | tee "$RUNNER_TEMP/boot.log"
+      - name: The figures
+        if: always()
+        run: grep -h "net-throughput:" "$RUNNER_TEMP/boot.log" || true
+      - name: The first download's frames (TCP to port 8765)
+        if: always()
+        run: |
+          sudo apt-get install -y --no-install-recommends tcpdump > /dev/null
+          tcpdump -nn -tt -v -r "$RUNNER_TEMP/net.pcap" 'tcp port 8765' 2>/dev/null | head -120 || true
+          echo "== window fields of the guest's segments, first 2000"
+          tcpdump -nn -r "$RUNNER_TEMP/net.pcap" 'tcp port 8765 and src host 10.0.2.15' 2>/dev/null | head -2000 | grep -o 'win [0-9]*' | sort | uniq -c | sort -rn | head -20 || true
+    timeout-minutes: 60

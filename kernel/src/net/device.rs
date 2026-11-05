@@ -8,19 +8,37 @@
 //! - **Send:** a frame is queued without waiting for the card and kicked with
 //!   the rest of its poll's frames; sent buffers are reclaimed before each
 //!   send.
+//!
+//! Spike P5-S2 (`net-throughput`) only: [`set_tx_delay_ms`] holds each frame
+//! the guest sends for that long before the card gets it, so every ACK comes
+//! late and the sender sees the added round trip.
 
 use super::{BUFFER_LEN, Nic, QUEUE_SIZE};
-use crate::log;
+use crate::{hpet, log};
 use alloc::boxed::Box;
+use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::time::Instant;
 
 /// Ethernet frame size including the 14-byte header: a 1500-byte IP MTU.
 const FRAME_MTU: usize = 1514;
+/// Frames held at most while a delay is set; past it smoltcp waits to send.
+const DELAYED_MAX: usize = 8192;
+
+/// The added one-way delay on sent frames, in ns: 0 sends at once.
+static TX_DELAY_NS: AtomicU64 = AtomicU64::new(0);
+
+/// Holds every frame sent from now on for `ms` before the card gets it.
+pub fn set_tx_delay_ms(ms: u64) {
+    TX_DELAY_NS.store(ms.saturating_mul(1_000_000), Ordering::Release);
+}
+
+/// A frame waiting for its time: when it may go, and its bytes.
+type Delayed = VecDeque<(u64, Vec<u8>)>;
 
 /// Set once the card filled a receive buffer it was never given, so that is
 /// logged once, not on every poll after.
@@ -117,6 +135,7 @@ impl Card {
 
 pub struct NicDevice {
     card: RefCell<Card>,
+    delayed: RefCell<Delayed>,
 }
 
 impl NicDevice {
@@ -133,6 +152,7 @@ impl NicDevice {
         card.refill();
         Self {
             card: RefCell::new(card),
+            delayed: RefCell::new(VecDeque::new()),
         }
     }
 
@@ -145,6 +165,19 @@ impl NicDevice {
     pub fn refill(&mut self) {
         self.card.get_mut().refill();
     }
+
+    /// Gives the card every held frame whose time has come, in order.
+    pub fn send_due(&mut self) {
+        let now = hpet::nanos();
+        let delayed = self.delayed.get_mut();
+        let card = self.card.get_mut();
+        while delayed.front().is_some_and(|(due, _)| *due <= now) && card.can_send() {
+            let Some((_, frame)) = delayed.pop_front() else {
+                break;
+            };
+            card.transmit(&frame);
+        }
+    }
 }
 
 pub struct NicRx<'a> {
@@ -154,6 +187,7 @@ pub struct NicRx<'a> {
 
 pub struct NicTx<'a> {
     card: &'a RefCell<Card>,
+    delayed: &'a RefCell<Delayed>,
 }
 
 impl Device for NicDevice {
@@ -173,15 +207,23 @@ impl Device for NicDevice {
                 card: &self.card,
                 buffer: Some(buffer),
             },
-            NicTx { card: &self.card },
+            NicTx {
+                card: &self.card,
+                delayed: &self.delayed,
+            },
         ))
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        self.card
-            .get_mut()
-            .can_send()
-            .then_some(NicTx { card: &self.card })
+        let held = self.delayed.get_mut().len();
+        let ready = match TX_DELAY_NS.load(Ordering::Acquire) {
+            0 if held == 0 => self.card.get_mut().can_send(),
+            _ => held < DELAYED_MAX,
+        };
+        ready.then_some(NicTx {
+            card: &self.card,
+            delayed: &self.delayed,
+        })
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
@@ -226,6 +268,13 @@ impl TxToken for NicTx<'_> {
     {
         let mut frame = vec![0u8; len];
         let result = f(&mut frame);
+        let delay = TX_DELAY_NS.load(Ordering::Acquire);
+        if delay != 0 || !self.delayed.borrow().is_empty() {
+            // Behind the held frames, so the order on the wire stays.
+            let due = hpet::nanos().saturating_add(delay);
+            self.delayed.borrow_mut().push_back((due, frame));
+            return result;
+        }
         self.card.borrow_mut().transmit(&frame);
         result
     }
