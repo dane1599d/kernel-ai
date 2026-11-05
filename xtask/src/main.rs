@@ -61,6 +61,7 @@ mod lines;
 mod local_ask;
 mod local_script;
 mod mock_dns;
+mod mock_echo;
 #[allow(dead_code)] // The P5 cases that start it come with N-k's tasks.
 mod mock_https;
 mod mock_llm;
@@ -246,6 +247,7 @@ fn execute(options: &Options) -> Result<(), String> {
     // 10.0.2.2 through QEMU's user-mode network.
     let mock = mock_llm::start()?;
     let mock_dns = mock_dns::start()?;
+    let mock_echo = mock_echo::start()?;
     let llm = format!("10.0.2.2:{}", mock.port);
     let llm_args = llm_cmdline(Some(&llm), Some(mock_llm::MODEL));
     let mut failures = Vec::new();
@@ -292,6 +294,9 @@ fn execute(options: &Options) -> Result<(), String> {
             if case.cuts > 0 {
                 let last = if cutting { "" } else { " last" };
                 cmdline = format!("{cmdline} boot={boot}{last}");
+            }
+            if case.echo {
+                cmdline = format!("{cmdline} {}", mock_echo.cmdline());
             }
             if case.dns {
                 cmdline = format!("{cmdline} {}", mock_dns.cmdline());

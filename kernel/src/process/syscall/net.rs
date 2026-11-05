@@ -16,6 +16,11 @@ const CALLS: &[u64] = &[
     call::RESOLVE,
     call::RESOLVE_ON,
     call::NETDEST_NARROW,
+    call::NET_CONNECT,
+    call::NET_SEND,
+    call::NET_RECV,
+    call::NET_POLL,
+    call::NET_CLOSE,
 ];
 
 /// One of [`CALLS`], or `None` for a number this area does not have.
@@ -36,6 +41,39 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
             resolve(slot, object, a[1], a[2], a[3], a[4])
         }
         call::NETDEST_NARROW => narrow(slot, a[0], a[1], a[2], a[3]),
+        call::NET_CONNECT => connect(slot, a[0], a[1], a[2], a[3]),
+        call::NET_SEND => {
+            let id = stream_object(slot, a[0], Rights::WRITE)?;
+            let len = usize::try_from(a[2]).map_err(|_| Error::TooBig)?;
+            if len > net::stream::MAX_CALL {
+                return Err(Error::TooBig);
+            }
+            let mut data = alloc::vec![0u8; len];
+            uaccess::copy_from_user(slot, a[1], &mut data)?;
+            net::stream::send(owner(slot), id, &data).map(|n| n as u64)
+        }
+        call::NET_RECV => {
+            let id = stream_object(slot, a[0], Rights::READ)?;
+            let cap = usize::try_from(a[2])
+                .unwrap_or(usize::MAX)
+                .min(net::stream::MAX_CALL);
+            let mut data = alloc::vec![0u8; cap];
+            let n = net::stream::recv(owner(slot), id, &mut data)?;
+            uaccess::copy_to_user(slot, a[1], &data[..n])?;
+            Ok(n as u64)
+        }
+        call::NET_POLL => {
+            let id = stream_object(slot, a[0], Rights::WAIT)?;
+            let cancel = || crate::process::killed(slot) || crate::process::interrupt_pending(slot);
+            net::stream::poll(owner(slot), id, a[1], a[2], cancel)
+        }
+        call::NET_CLOSE => {
+            let handle = handle_arg(a[0])?;
+            let id = stream_object(slot, a[0], Rights::empty())?;
+            net::stream::close(owner(slot), id)?;
+            crate::handle::with(slot, |h| h.table.close(handle))?.map_err(Error::from)?;
+            Ok(0)
+        }
         _ => Err(Error::NotFound),
     }
 }
@@ -118,6 +156,68 @@ pub(super) fn exchange_to(
 
 /// RESOLVE: the host name copied in (at most `kabi::net::MAX_HOST` bytes), looked up
 /// by the kernel's resolver, and its addresses copied out.
+fn owner(slot: usize) -> u64 {
+    crate::process::identity(slot).pid
+}
+
+/// A handle argument: 32 bits, never 0.
+fn handle_arg(raw: u64) -> Result<Handle, Error> {
+    u32::try_from(raw)
+        .ok()
+        .filter(|&h| h != 0)
+        .map(Handle)
+        .ok_or(Error::BadHandle)
+}
+
+/// What a `Stream` handle allows: its own data, to wait on it, and to look.
+/// Neither DUPLICATE nor TRANSFER: a stream stays with the process that made
+/// it, which is what [`net::stream::on_exit`] closes.
+const STREAM_RIGHTS: Rights = Rights::READ
+    .union(Rights::WRITE)
+    .union(Rights::WAIT)
+    .union(Rights::INSPECT);
+
+/// The stream `raw`, a `Stream` handle with `rights`, names.
+fn stream_object(slot: usize, raw: u64, rights: Rights) -> Result<u64, Error> {
+    let entry = crate::handle::entry(slot, handle_arg(raw)?)?;
+    if entry.kind != Kind::Stream {
+        return Err(Error::BadHandle);
+    }
+    if !entry.rights.contains(rights) {
+        return Err(Error::Permission);
+    }
+    Ok(entry.object)
+}
+
+/// NET_CONNECT: a stream to `addr`:`port` (the address in network order in
+/// the low 32 bits) on the `NetDest` `raw`, which needs CONNECT and must
+/// allow it ([`net::dest::may_connect`]). `flags` may ask for a bulk stream.
+fn connect(slot: usize, raw: u64, addr: u64, port: u64, flags: u64) -> Result<u64, Error> {
+    let object = dest_object(slot, raw, Rights::CONNECT)?;
+    let addr = u32::try_from(addr).map_err(|_| Error::Invalid)?;
+    let addr = core::net::Ipv4Addr::from(addr.to_be_bytes());
+    let port = u16::try_from(port)
+        .ok()
+        .filter(|&p| p != 0)
+        .ok_or(Error::Invalid)?;
+    if flags & !kabi::net::STREAM_BULK != 0 {
+        return Err(Error::Invalid);
+    }
+    if !net::dest::may_connect(object, netdest::Protocol::Tcp, addr, port) {
+        return Err(Error::Permission);
+    }
+    let bulk = flags & kabi::net::STREAM_BULK != 0;
+    let id = net::stream::connect(owner(slot), addr, port, bulk)?;
+    let entry = captable::Entry::new(Kind::Stream, STREAM_RIGHTS, id);
+    match crate::handle::give(slot, alloc::vec![entry]).first() {
+        Some(&handle) if handle != Handle::NONE => Ok(u64::from(handle.0)),
+        _ => {
+            let _ = net::stream::close(owner(slot), id);
+            Err(Error::NoMemory)
+        }
+    }
+}
+
 /// The record `raw`, a `NetDest` handle with `rights`, names: Permission
 /// for another kind, a fixed destination or a right it lacks.
 fn dest_object(slot: usize, raw: u64, rights: Rights) -> Result<u64, Error> {

@@ -25,6 +25,7 @@
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
 //! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL, APP_CALL |
 //! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE, PART_PEER_NAME |
+//! | 192-199 | N, network (P5) | NET_CONNECT, NET_SEND, NET_RECV, NET_POLL, NET_CLOSE (task 2) |
 
 /// `exit(code: i32) -> !`
 pub const EXIT: u64 = 0;
@@ -624,9 +625,40 @@ pub const PART_PEER_ALIVE: u64 = 190;
 /// at most [`super::MAX_NAME`].
 pub const PART_PEER_NAME: u64 = 191;
 
+// ---- N, network (P5), 192-199 ----
+
+/// `net_connect(dest, addr, port, flags) -> stream`: a TCP stream to
+/// `addr`:`port` (the IPv4 address as a big-endian `u32`), on the `NetDest`
+/// handle `dest`, which needs CONNECT and must allow it: in its literal
+/// ranges, or an address it resolved within the answer's TTL, on its ports
+/// (never a loopback, link-local or broadcast answer). Returns at once with a
+/// `Stream` handle; [`NET_POLL`] says when it is connected or failed.
+/// `flags`: [`super::net::STREAM_BULK`]. Permission where the destination
+/// does not allow it; Busy past [`super::net::STREAMS_PER_PROCESS`],
+/// [`super::net::STREAMS_MAX`], or 4 bulk streams in all or 2 of one
+/// process's; Unavailable with no address yet. Closing the handle closes the
+/// stream. Numbered at merge (P5 task 2).
+pub const NET_CONNECT: u64 = 192;
+/// `net_send(stream, ptr, len) -> sent`: queues up to `len` bytes, at most
+/// [`super::net::STREAM_MAX_CALL`] (TooBig over it); 0 while the send buffer
+/// is full. Busy before it connected, Dead once it can no longer send.
+pub const NET_SEND: u64 = 193;
+/// `net_recv(stream, ptr, cap) -> received`: up to `cap` bytes, at most
+/// [`super::net::STREAM_MAX_CALL`]; 0 once the peer closed and everything was
+/// read; Busy while nothing has come.
+pub const NET_RECV: u64 = 194;
+/// `net_poll(stream, want, timeout_ms) -> state`: waits up to `timeout_ms`
+/// (at most 60 s) until the stream is any of `want` (the `STREAM_*` bits of
+/// [`super::net`]) or has failed; its state then. Interrupted on Ctrl-C or a
+/// kill.
+pub const NET_POLL: u64 = 195;
+/// `net_close(stream) -> 0`: closes the stream and its handle; what was sent
+/// still goes out. A process that ends has its streams aborted.
+pub const NET_CLOSE: u64 = 196;
+
 /// The end of the reserved blocks (see the table above): the highest number a
 /// call may have. A call that is not there yet answers NotFound.
-pub const MAX: u64 = 191;
+pub const MAX: u64 = 199;
 
 #[cfg(test)]
 mod tests {
