@@ -179,6 +179,32 @@ impl Shell {
         outcome(Tier::Run, Why::Read, Reply::ok(text))
     }
 
+    /// A call whose named argument is a placeholder (`pkg_remove("package_name")`)
+    /// does not run: the shell asks which one, and the answer joins the request
+    /// as a `clarify` answer does. Enum arguments are checked by their type.
+    fn placeholder_question(
+        &mut self,
+        id: u64,
+        request: &str,
+        row: &'static Action,
+        args: &Arguments,
+    ) -> Option<Reply> {
+        let (arg, value) = args.values.iter().find(|(name, value)| {
+            let named = row.args.iter().find(|arg| arg.name == *name);
+            let free = named.is_some_and(|arg| {
+                !matches!(arg.ty, ArgType::Enum(_) | ArgType::Opt(ArgType::Enum(_)))
+            });
+            free && crate::guard::placeholder(value, request)
+        })?;
+        self.host.audit(&format!(
+            "request {id}: {}'s {arg} is a placeholder; asking which",
+            row.name
+        ));
+        self.record(id, request, "", "asked which: a placeholder argument");
+        self.clarifying = Some(request.to_string());
+        Some(Reply::ok(crate::guard::which(arg, value)))
+    }
+
     /// `undo`: what the typed `undo` does, compare-and-set and all, so it only
     /// puts back what the log holds. One step at a time: a second `undo` redoes,
     /// so more steps are refused with how to name an entry instead.
@@ -208,6 +234,10 @@ impl Shell {
                 return outcome(Tier::Never, Why::Unknown, Reply::err(why));
             }
         };
+        if let Some(why) = crate::guard::in_plan(&checked.plan, request) {
+            self.record(id, request, &checked.script, &format!("refused: {why}"));
+            return outcome(Tier::Never, Why::Unknown, Reply::err(why));
+        }
         let (tier, at) = self.tier_of(request, &checked);
         if tier == Tier::Never {
             let why = format!("{} may not be used in scripts here", at.join(", "));
@@ -228,6 +258,9 @@ impl Shell {
             Ok(args) => args,
             Err(why) => return self.refuse(id, request, call, Why::Unknown, &why),
         };
+        if let Some(reply) = self.placeholder_question(id, request, row, &args) {
+            return outcome(Tier::Run, Why::Read, reply);
+        }
         let values: Vec<(&str, Consented)> = args
             .values
             .iter()

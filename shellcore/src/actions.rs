@@ -274,6 +274,15 @@ impl Shell {
             let line = format!("{lead}: {}{tail}", what.join("; "));
             text.push_str(&line);
             self.done_line = Some(line);
+        } else if ran.ok && checked.plan.sites.is_empty() {
+            // A script with no OS call changed nothing, whatever it printed:
+            // a printed "Change applied." is a claim, not a result (#715).
+            if text.is_empty() || crate::guard::claims(&text) {
+                if !text.is_empty() && !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                text.push_str(crate::guard::NOTHING_CHANGED);
+            }
         } else if text.is_empty() && ran.ok {
             text = match checked.summary.is_empty() {
                 true => String::from("Done."),

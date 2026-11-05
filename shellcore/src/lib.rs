@@ -42,6 +42,7 @@ pub mod door;
 mod effects;
 mod engine;
 pub mod grants;
+mod guard;
 mod instructions;
 mod models;
 pub mod netgrant;
@@ -1050,12 +1051,15 @@ impl Shell {
                     return self.say(id, request, reply);
                 }
                 Ok(answer) => match script::check(&answer, &self.host, &self.config) {
-                    Ok(checked) => match self.tier_of(request, &checked) {
-                        (Tier::Never, at) => Some((
-                            answer.script,
-                            format!("{} may not be used in scripts here", at.join(", ")),
-                        )),
-                        tier => return self.propose(id, request, checked, tier),
+                    Ok(checked) => match guard::in_plan(&checked.plan, request) {
+                        Some(why) => Some((answer.script, why)),
+                        None => match self.tier_of(request, &checked) {
+                            (Tier::Never, at) => Some((
+                                answer.script,
+                                format!("{} may not be used in scripts here", at.join(", ")),
+                            )),
+                            tier => return self.propose(id, request, checked, tier),
+                        },
                     },
                     Err(script::Refusal::Script(why)) => Some((answer.script, why)),
                     Err(refusal @ script::Refusal::Interrupted) => {

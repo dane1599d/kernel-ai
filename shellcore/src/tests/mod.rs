@@ -33,6 +33,7 @@ mod door_build;
 mod effects;
 mod files;
 mod fuzz;
+mod guard;
 mod log;
 mod logdisk;
 mod look;
