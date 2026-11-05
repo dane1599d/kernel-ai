@@ -486,6 +486,38 @@ fn is_question(line: &str) -> bool {
                 .is_some_and(|w| QUESTION_WORDS.contains(&w.text.as_str()))
 }
 
+/// Words that start a line asking to be told something, not for a change.
+const TELL_WORDS: &[&str] = &[
+    "describe",
+    "explain",
+    "tell",
+    "show",
+    "list",
+    "summarize",
+    "summarise",
+    "report",
+];
+
+/// Question words that only ever ask to be told: not `do`, `can` or `will`,
+/// which also lead orders ("do the same for the editor").
+const WH_WORDS: &[&str] = &[
+    "how", "what", "which", "who", "whom", "whose", "when", "where", "why",
+];
+
+/// Whether `line` only asks to be told something: one ending in `?`, one led by
+/// a wh-word ("how many cpus"), or one led by a telling word ("describe this",
+/// "explain the policy"). A change consent [`Why::Added`] to such a line
+/// answers nothing it asked, whatever the State or a page says (#721).
+pub fn asks_to_be_told(line: &str) -> bool {
+    let words = words(line);
+    if wants(&words) {
+        return false;
+    }
+    let first = words.first().map(|w| w.text.as_str());
+    line.trim().ends_with('?')
+        || first.is_some_and(|w| WH_WORDS.contains(&w) || TELL_WORDS.contains(&w))
+}
+
 /// Whether `text` names a thing: some word of it is neither a kind word nor a
 /// determiner. "notes" and "the llm service" do; "the service" and "it" do not.
 fn names_a_thing(text: &str) -> bool {
@@ -879,6 +911,34 @@ mod tests {
         }
         for line in ["do you use round robin", "do it again?", "does it run"] {
             assert!(is_question(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn telling_lines_are_told_from_orders() {
+        for line in [
+            "describe this",
+            "Explain the policy",
+            "what is selected?",
+            "how many cpus",
+            "tell me about build-3",
+            "list the services",
+        ] {
+            assert!(asks_to_be_told(line), "{line}");
+        }
+        for line in [
+            "switch to round robin",
+            "stop build-3",
+            "it's sluggish",
+            "do it again",
+            "make it faster",
+            // Orders led by a word that can also start a question (C on #723).
+            "do the same for the editor",
+            "can you stop build-3",
+            "will you restart netd",
+            "have the editor closed",
+        ] {
+            assert!(!asks_to_be_told(line), "{line}");
         }
     }
 

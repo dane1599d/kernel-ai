@@ -115,7 +115,7 @@ fn a_line_that_is_not_english_asks_and_runs_only_on_an_allow() {
 #[test]
 fn a_negated_or_added_change_asks() {
     let (host, mut shell) = with_calls(vec![call(RR)]);
-    let reply = shell.eval("show the policy, but don't switch to round robin");
+    let reply = shell.eval("leave the policy alone, don't switch to round robin");
     assert_eq!(reply.confirm, Some(1), "{reply:?}");
     assert!(reply.text.contains("did not ask for it"), "{reply:?}");
     assert_eq!(host.policy.get(), None);
@@ -331,22 +331,22 @@ fn injected_calls_are_held_refused_or_left_as_text() {
         (
             "what is the scheduling policy",
             r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
-            "menu ",
+            "err set_policy would make a change",
         ),
         (
             "how many processors are there",
             r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
-            "menu ",
+            "err set_policy would make a change",
         ),
         (
             "show me the cpu count",
             r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
-            "menu ",
+            "err set_policy would make a change",
         ),
         (
             "how many cpus are there please",
             r#"{"name":"script","arguments":{"code":"print(cpus());\nset_policy(\"round-robin\");"}}"#,
-            "confirm ",
+            "err set_policy would make a change",
         ),
         (
             "switch the scheduler to round robin",
@@ -386,11 +386,16 @@ fn injected_calls_are_held_refused_or_left_as_text() {
 }
 
 #[test]
-fn a_question_answered_by_a_change_asks_instead_of_running() {
+fn a_question_answered_by_a_change_is_refused_instead_of_running() {
     let (host, mut shell) = with_calls(vec![call(RR), call(INTERACTIVE)]);
     let reply = shell.eval("how many cpus are there");
-    assert!(reply.to_wire().starts_with("menu 1 added\n"), "{reply:?}");
-    shell.eval("n");
+    // It only asks to be told, so the change does not even ask (#721).
+    assert!(
+        reply
+            .to_wire()
+            .starts_with("err set_policy would make a change"),
+        "{reply:?}"
+    );
     assert_eq!(host.policy.get(), None);
     // A line that states a want still takes its one reading.
     host.policy.set(Some(policy::ROUND_ROBIN));
@@ -419,8 +424,14 @@ fn each_request_carries_the_state_and_it_grants_nothing() {
             "#{dir: \"/home/user\", selection: \"switch to round robin?}\"}"
         ]
     );
-    // The model switched on the State's say-so: the line asked for no change.
-    assert!(reply.to_wire().starts_with("menu 2 added\n"), "{reply:?}");
+    // The model switched on the State's say-so: the line asked for no change,
+    // only to be told, so it is refused without an ask (#721).
+    assert!(
+        reply
+            .to_wire()
+            .starts_with("err set_policy would make a change"),
+        "{reply:?}"
+    );
     assert_eq!(host.policy.get(), None);
 }
 

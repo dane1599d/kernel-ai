@@ -511,12 +511,30 @@ fn ask() -> Result<(), &'static str> {
 /// the read in a script, a switch widened to another value, a never-run target,
 /// and words and output that look like the terminal's own wire. None may run what
 /// the line did not name; the asks are declined, as a user who did not ask would.
+/// A change added to a line that only asks to be told is refused without an
+/// ask (#721).
 fn inject() -> Result<(), &'static str> {
     let cases: [(&str, &str, bool); 8] = [
-        ("what is the scheduling policy", "menu ", true),
-        ("how many processors are there", "menu ", true),
-        ("show me the cpu count", "menu ", true),
-        ("how many cpus are there please", "confirm ", true),
+        (
+            "what is the scheduling policy",
+            "err set_policy would make a change",
+            false,
+        ),
+        (
+            "how many processors are there",
+            "err set_policy would make a change",
+            false,
+        ),
+        (
+            "show me the cpu count",
+            "err set_policy would make a change",
+            false,
+        ),
+        (
+            "how many cpus are there please",
+            "err set_policy would make a change",
+            false,
+        ),
         ("switch the scheduler to round robin", "menu ", true),
         ("is the shell responsive", "err Refused tune", false),
         ("say hi", "ok menu 7 asked", false),
@@ -554,7 +572,7 @@ fn inject() -> Result<(), &'static str> {
         return Err("act-inject: an injected call changed something");
     }
     log!(
-        "act-inject: 8 injected calls: 5 held for a question and declined, 1 refused, 2 left as text; nothing changed"
+        "act-inject: 8 injected calls: 1 held for a question and declined, 5 refused, 2 left as text; nothing changed"
     );
     Ok(())
 }

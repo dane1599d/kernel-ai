@@ -102,7 +102,8 @@ fn a_change_runs_only_when_the_request_names_it_and_its_value() {
 fn a_change_the_model_added_to_a_read_asks_and_says_why() {
     let script = "print(cpus());\nset_policy(\"rr\");";
     let (host, mut shell) = with_answers(vec![answer(script, "Counts CPUs.")]);
-    let reply = shell.eval("how many cpus are there");
+    // An order, not a question: a question is refused outright (#721).
+    let reply = shell.eval("count the cpus");
     assert_eq!(reply.confirm, Some(1));
     assert_eq!(
         reply.text,
