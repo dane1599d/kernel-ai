@@ -116,7 +116,7 @@ pub(super) const CASES: &[TestCase] = &[
     },
     TestCase {
         expect: &[
-            "act-inject: 8 injected calls: 5 held for a question and declined, 1 refused, 2 left as text; nothing changed",
+            "act-inject: 8 injected calls: 1 held for a question and declined, 5 refused, 2 left as text; nothing changed",
         ],
         ..case("act-inject", "test=act-inject")
     },

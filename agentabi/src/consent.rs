@@ -443,6 +443,33 @@ fn is_question(line: &str) -> bool {
                 .is_some_and(|w| QUESTION_WORDS.contains(&w.text.as_str()))
 }
 
+/// Words that start a line asking to be told something, not for a change.
+const TELL_WORDS: &[&str] = &[
+    "describe",
+    "explain",
+    "tell",
+    "show",
+    "list",
+    "summarize",
+    "summarise",
+    "report",
+];
+
+/// Whether `line` only asks to be told something: a question ("what is
+/// selected?", "how many cpus"), or a line led by a telling word ("describe
+/// this", "explain the policy"). A change consent [`Why::Added`] to such a line
+/// answers nothing it asked, whatever the State or a page says (#721).
+pub fn asks_to_be_told(line: &str) -> bool {
+    let words = words(line);
+    if wants(&words) {
+        return false;
+    }
+    is_question(line)
+        || words
+            .first()
+            .is_some_and(|w| TELL_WORDS.contains(&w.text.as_str()))
+}
+
 /// Whether `text` names a thing: some word of it is neither a kind word nor a
 /// determiner. "notes" and "the llm service" do; "the service" and "it" do not.
 fn names_a_thing(text: &str) -> bool {
@@ -836,6 +863,29 @@ mod tests {
         }
         for line in ["do you use round robin", "do it again?", "does it run"] {
             assert!(is_question(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn telling_lines_are_told_from_orders() {
+        for line in [
+            "describe this",
+            "Explain the policy",
+            "what is selected?",
+            "how many cpus",
+            "tell me about build-3",
+            "list the services",
+        ] {
+            assert!(asks_to_be_told(line), "{line}");
+        }
+        for line in [
+            "switch to round robin",
+            "stop build-3",
+            "it's sluggish",
+            "do it again",
+            "make it faster",
+        ] {
+            assert!(!asks_to_be_told(line), "{line}");
         }
     }
 

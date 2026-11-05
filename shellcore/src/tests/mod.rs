@@ -45,6 +45,7 @@ mod profiles;
 mod scripts;
 mod settings;
 mod standing;
+mod told;
 mod transaction;
 mod tune;
 mod ui;

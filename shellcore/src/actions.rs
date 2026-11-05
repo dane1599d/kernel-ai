@@ -79,6 +79,13 @@ fn decided(request: &str, checked: &Checked) -> Vec<(&'static str, Decision)> {
         .collect()
 }
 
+/// The refusal for a change made for a line that only asks to be told (#721).
+pub(crate) fn told_why(names: &str) -> String {
+    format!(
+        "{names} would make a change, but the request only asks to be told; nothing was changed"
+    )
+}
+
 fn is_show(text: &str) -> bool {
     matches!(text.trim(), "show" | "why")
 }
@@ -104,6 +111,23 @@ impl Shell {
             }
         }
         (tier, at)
+    }
+
+    /// Why a checked script written for `request` may not even ask (#721): the
+    /// line only asks to be told something, and the script would make a change
+    /// the line did not ask for. `None` when it may go on to its tier.
+    pub(crate) fn told_only(&self, request: &str, checked: &Checked) -> Option<String> {
+        if !agentabi::consent::asks_to_be_told(request) {
+            return None;
+        }
+        let mut added: Vec<&'static str> = Vec::new();
+        for (name, decision) in decided(request, checked) {
+            let change = agentabi::find(&agentabi::ROWS, name).is_some_and(|r| !r.facts.read_only);
+            if change && decision.why == Why::Added && !added.contains(&name) {
+                added.push(name);
+            }
+        }
+        (!added.is_empty()).then(|| told_why(&added.join(", ")))
     }
 
     /// The question for a script that asks about `asking`: the content that steers
