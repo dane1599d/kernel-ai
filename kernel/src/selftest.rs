@@ -300,6 +300,8 @@ pub enum SelfTest {
     NetStatic,
     /// P5 task 1: what a `NetDest` handle allows.
     NetDest,
+    /// P5 task 2: TCP streams on a `NetDest`.
+    NetStream,
     /// P5 task 3: ENTROPY's sample, which two boots must not share.
     EntropyBoots,
 }
@@ -477,6 +479,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net-fallback" => Some(SelfTest::NetFallback),
             "test=net-static" => Some(SelfTest::NetStatic),
             "test=net-dest" => Some(SelfTest::NetDest),
+            "test=net-stream" => Some(SelfTest::NetStream),
             "test=entropy-boots" => Some(SelfTest::EntropyBoots),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
