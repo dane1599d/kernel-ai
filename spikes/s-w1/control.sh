@@ -32,8 +32,11 @@ fetch() { # file, sha256
 fetch "$f16" "$f16_sha"
 fetch "$imatrix" "$imatrix_sha"
 
+# S_W1_COMPARE=0 skips the pinned file and its tensor compare (a gate job,
+# where the disk holds the F16 and the output only).
+compare=${S_W1_COMPARE:-1}
 pinned=Qwen3-4B-Instruct-2507-Q4_K_M.gguf
-fetch "$pinned" "$pinned_sha"
+if [ "$compare" = 1 ]; then fetch "$pinned" "$pinned_sha"; fi
 
 # Each tag in turn: the first whose output is the pinned file's bytes wins.
 for tag in $tags; do
@@ -55,6 +58,10 @@ for tag in $tags; do
     echo "s-w1: control: byte match with llama.cpp $tag"
     exit 0
   fi
-  python3 -I "$here/compare.py" "$pinned" out.gguf | grep -E "tensors byte-identical|key "
+  if [ "$compare" = 1 ]; then
+    python3 -I "$here/compare.py" "$pinned" out.gguf | grep -E "tensors byte-identical|key "
+  else
+    exit 0
+  fi
 done
 echo "s-w1: control: no tag gives the pinned bytes"
