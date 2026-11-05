@@ -21,6 +21,8 @@
 //! - `view`: view-then-act ([`view::TASKS`], ADR 0005 §6) in a desktop of
 //!   S05-2's mock windows: `ui_view`, then `ui_act` on the right control after
 //!   reading the view as `Data`. Reported, not gated yet.
+//! - `goals`: spike S13-5 (ADR 0013 §5), 20 multi-step goals over a mock OS,
+//!   each within its approved scope and step budget ([`goals`]). Reported.
 //!
 //! Code decides what each call would do ([`consent`]), so false runs and asks
 //! are counted, and [`score`] holds S02-1's thresholds. The layout is ADR
@@ -31,6 +33,8 @@
 
 mod apps;
 mod consent;
+mod goal_tasks;
+mod goals;
 mod grammar;
 mod m8;
 mod os;
@@ -95,6 +99,8 @@ enum Kind {
     Apps,
     /// The 190 tasks on the shipped pack, report only ([`shipped`]).
     Shipped,
+    /// Spike S13-5's multi-step goals on llm's own `act` path ([`goals`]).
+    Goals,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,6 +180,17 @@ impl Arm {
                     index: false,
                 });
             }
+            "goals" => {
+                return Ok(Self {
+                    kind: Kind::Goals,
+                    rows: 0,
+                    no_think: false,
+                    rules: false,
+                    m8script: false,
+                    ship: true,
+                    index: false,
+                });
+            }
             "view" => {
                 return Ok(Self {
                     kind: Kind::View,
@@ -241,6 +258,7 @@ impl Arm {
             Kind::Os => "os".into(),
             Kind::Shipped => "shipped".into(),
             Kind::View => "view".into(),
+            Kind::Goals => "goals".into(),
             Kind::Apps => "apps".into(),
             Kind::Tagged(_) if self.ship => "act".into(),
             Kind::Tagged(format) => format!(
@@ -501,6 +519,7 @@ fn run_arm(
         Kind::Os => return os::run(loaded, seed, target_dir),
         Kind::Shipped => return shipped::run(loaded, seed, target_dir),
         Kind::View => return view::run(loaded, seed, target_dir),
+        Kind::Goals => return goals::run(loaded, seed, target_dir),
         Kind::Apps => return os::run_apps(loaded, seed, target_dir),
         _ => {}
     }
@@ -519,8 +538,8 @@ fn run_arm(
     let mut records = Vec::new();
     let mut scored = Vec::new();
     let m8 = match arm.kind {
-        Kind::Os | Kind::View | Kind::Apps | Kind::Shipped => {
-            unreachable!("arms os, view, apps and shipped returned above")
+        Kind::Os | Kind::View | Kind::Apps | Kind::Shipped | Kind::Goals => {
+            unreachable!("arms os, view, apps, shipped and goals returned above")
         }
         Kind::M8 => {
             header["pack_id"] = json!(null);
@@ -651,8 +670,8 @@ fn run_arm(
         }
     };
     let gates = match arm.kind {
-        Kind::Os | Kind::View | Kind::Apps | Kind::Shipped => {
-            unreachable!("arms os, view, apps and shipped returned above")
+        Kind::Os | Kind::View | Kind::Apps | Kind::Shipped | Kind::Goals => {
+            unreachable!("arms os, view, apps, shipped and goals returned above")
         }
         Kind::M8 => score::gates(&[], m8).split_off(7),
         Kind::Tagged(_) if options.only_m8 => score::gates(&[], m8).split_off(7),
