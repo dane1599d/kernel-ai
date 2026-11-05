@@ -26,6 +26,9 @@ on:
       llama:
         description: "wspace-control: the llama.cpp release tag that requantizes"
         default: b6100
+      round:
+        description: "wspace-round: the round file under spikes/s-w1/rounds/, and the app requests it answers"
+        default: "r01_probe.py guess"
 
 permissions:
   contents: read
@@ -73,6 +76,20 @@ jobs:
           set -o pipefail
           bash spikes/s-w1/control.sh "${{ inputs.llama }}" "$RUNNER_TEMP/wspace" 2>&1 | tee transcript.txt
           { echo "S-W1 control, llama.cpp ${{ inputs.llama }}:"; echo; echo '```'; grep -E '^s-w1:' transcript.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: S-W1 round — the round's edit and app answers on Qwen's bf16 weights, CPU
+        if: inputs.mode == 'wspace-round'
+        env:
+          ROUND: ${{ inputs.round }}
+        run: |
+          set -o pipefail
+          python3 -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch==2.5.1
+          python3 -m pip install --quiet transformers==4.51.3 safetensors==0.5.3 huggingface_hub==0.30.2 accelerate==1.6.0
+          read -r file names <<< "$ROUND"
+          for name in $names; do
+            cargo xtask app-gate --request "$name" | jq -c --arg n "$name" '. + {name: $n}' >> requests.jsonl
+          done
+          python3 -I spikes/s-w1/round.py requests.jsonl "spikes/s-w1/rounds/$file" 2>&1 | tee transcript.txt
+          { echo "S-W1 round $ROUND:"; echo; echo '```'; grep -E '^s-w1:' transcript.txt | cut -c1-400; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Look up the catalog entry
         if: inputs.mode != 'bench' && inputs.mode != 'bench-ab' && !startsWith(inputs.mode, 'wspace')
         id: entry

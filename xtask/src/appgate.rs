@@ -344,7 +344,26 @@ fn parse(args: &[String]) -> Result<(String, Option<String>), String> {
     }
 }
 
+/// The first round's conversation for request `name`, as the shell's
+/// `app_build` asks the model for it (`llmproto::app::request`), as JSON: what
+/// spike S-W1's rounds feed the bf16 weights.
+fn print_request(name: &str) -> Result<(), String> {
+    let (name, words) = REQUESTS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .ok_or_else(|| format!("no app request {name}"))?;
+    let asked = llmproto::app::request(&format!("{name}\n{words}"), None);
+    let out = json!({"messages": asked.messages, "max_tokens": asked.max_tokens});
+    println!("{out}");
+    Ok(())
+}
+
 pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
+    if let [flag, name] = args
+        && flag == "--request"
+    {
+        return print_request(name);
+    }
     let (id, store) = parse(args)?;
     let (engine, line) = engine_local::load(&id, store.as_deref())?;
     println!(
