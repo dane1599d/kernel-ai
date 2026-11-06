@@ -44,7 +44,6 @@ const NOUNS: &[&str] = &[
 /// Whole values that name nothing.
 const WORDS: &[&str] = &[
     "placeholder",
-    "todo",
     "tbd",
     "xxx",
     "foo",
@@ -92,10 +91,19 @@ pub fn placeholder(value: &str, line: &str) -> bool {
     }
 }
 
-/// Whether the user's `line` holds `value`, ignoring case.
+/// Whether the user's `line` holds `value`, ignoring case and the joins a
+/// name is written with: "to-do" holds `todo`, "build 4" holds `build-4`.
 fn said(value: &str, line: &str) -> bool {
-    line.to_ascii_lowercase()
-        .contains(value.to_ascii_lowercase().as_str())
+    let value = squash(value);
+    !value.is_empty() && squash(line).contains(value.as_str())
+}
+
+/// `text` lowercased, without '-', '_' or spaces.
+fn squash(text: &str) -> String {
+    text.chars()
+        .filter(|c| !matches!(c, '-' | '_' | ' '))
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
 }
 
 /// The question a direct call with a placeholder gets instead of running.
