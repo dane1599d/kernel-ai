@@ -358,9 +358,9 @@ None runs a model on the founder's PC. Real-model runs are on GitHub runners, as
 
 No new crates are proposed for the shipped graph. The embedding model is pinned like the others (Apache-2.0, `xtask/models.json`). hnsw_rs or instant-distance would be listed in their PR under the 2026-10-21 rule only if a flat scan stops sufficing.
 
-## Addendum A (draft, 2026-11-03): model packs by task
+## Addendum A (accepted 2026-11-06, a record): model packs by task
 
-The founder asked for downloadable model packs that Kai delegates to by task: a small model for actions and questions, and a bigger coding model for "write me a program". This is a design draft for approval and builds nothing. Its figures come from the spike S12-2 re-run (draft #577), which ran on GitHub runners only; the row for it is in `docs/decisions.md`.
+The founder asked for downloadable model packs that Kai delegates to by task: a small model for actions and questions, and a bigger coding model for "write me a program". The founder accepted this addendum on 2026-11-06 as the plan for later. It builds nothing, and v0.1 does not change. Its figures come from the spike S12-2 re-run (draft #577), which ran on GitHub runners only; the row for it is in `docs/decisions.md`.
 
 ### A1. What the comparison found
 
@@ -388,7 +388,7 @@ Every C run below used the same harness, `c-1` card and three repair rounds.
 |---|---|---|
 | Act and chat | **Keep Qwen3-4B** | It is the only model measured above every bar, at 2.8 GB. |
 | Code | **Keep Qwen3-4B** (no separate code model in v0.1) | It passes S12-2. Qwen3-8B is worse at C and at Rhai, at twice the memory, and would raise the minimum to 8 GiB and the recommendation to 12 GiB (today 4 and 6; the founder's VM has 6). |
-| Non-Chinese option | **Port Granite 4.0 Micro first** (about 2 days), then measure it on the same gates. Ministral 3 8B is the non-Chinese candidate for code if a bigger model is wanted later | Granite is small enough for a 6 GiB machine, permissively licensed and from the US. Phi-4-mini needs the most engine work. |
+| Non-Chinese option | **None planned.** A port starts only when the founder asks for one, and is then measured on the same gates | No port was asked for (2026-11-03, #583). The ports' sizes are in the table above. |
 
 ### A2. Design, for when a second model earns its place
 
@@ -424,10 +424,10 @@ Every C run below used the same harness, `c-1` card and three repair rounds.
    | 1 | `roles` in the `models` role and the model manager | S |
    | 2 | `llm` routes `script(lang=c)` and `app_build` to a `code` model | S |
    | 3 | Mapped weights and the saved-KV switch | M, about 2 days |
-   | 4 | Per-model engine ports, each with goldens: Granite 4.0 Micro first | 1-4 days each |
+   | 4 | Per-model engine ports, each with goldens, when the founder asks for one | 1-4 days each |
    | 5 | Downloads | after P5 |
    
-   Pieces 1-3 are worth building only once a model beats Qwen3-4B at its role on the gates. Today none does, so the order is to port and measure first, and build the routing second.
+   Pieces 1-3 are worth building only once a model beats Qwen3-4B at its role on the gates. Today none does, so nothing here is built until a model is ported and measured, and the routing comes after that.
 
 ## Sources
 
