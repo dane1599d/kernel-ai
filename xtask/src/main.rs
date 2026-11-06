@@ -45,6 +45,7 @@ mod components;
 mod disk;
 mod doctor;
 mod edit_smoke;
+mod embed;
 mod esp;
 mod floatguard;
 mod fluency;
@@ -105,6 +106,7 @@ fn main() -> ExitCode {
         Some("setup" | "model" | "bench") => models::main(&args),
         Some("tune") => tune::main(&args[1..]),
         Some("tokens") => tokens::main(&args[1..]),
+        Some("embed") => embed::main(&args[1..]),
         Some("actbench") => actbench::main(&args[1..], &workspace_root().join("target")),
         Some("latency") => latency::main(&args[1..]),
         Some("doctor") => doctor::main(&args[1..]),

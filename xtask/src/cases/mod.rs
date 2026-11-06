@@ -106,6 +106,9 @@ pub struct TestCase {
     /// `boot=n` to the command line, waits for `files: boot n:` and kills QEMU
     /// a seeded moment later; boot `cuts + 1` adds `last` and must pass.
     pub cuts: u32,
+    /// Spike S13-3 (not for merge): attach the GGUF file this environment
+    /// variable names as the `kai-model` disk; the case fails without it.
+    pub real_model: Option<&'static str>,
     /// A model put in `kai-data`'s model store before the boot (`xtask fs mkfs`,
     /// then `import --model`), with its length and hash on the command line;
     /// needs `data`.
@@ -161,6 +164,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         update: None,
         import: None,
         cuts: 0,
+        real_model: None,
         store: None,
         store_bad_fnv: false,
         tampered: None,

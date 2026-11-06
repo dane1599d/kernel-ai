@@ -56,6 +56,9 @@ pub struct Model<'a> {
     par: &'a dyn Parallel,
     rope: Rope,
     context: usize,
+    /// Tokens a prompt block runs at once: [`PREFILL_TOKENS`], unless
+    /// [`Model::with_block`] chose another.
+    block: usize,
     s: Scratch,
 }
 
@@ -67,6 +70,20 @@ fn widest(c: &Config) -> usize {
 impl<'a> Model<'a> {
     /// Checks the file and sets it up for up to `context` tokens of context.
     pub fn new(file: &Gguf<'a>, tier: Tier, context: usize) -> Result<Self, Error> {
+        Self::with_block(file, tier, context, PREFILL_TOKENS)
+    }
+
+    /// [`Model::new`] with prompt blocks of `block` tokens; spike S13-3 (not for
+    /// merge) measures embedding chunks in larger blocks. The bits do not change.
+    pub fn with_block(
+        file: &Gguf<'a>,
+        tier: Tier,
+        context: usize,
+        block: usize,
+    ) -> Result<Self, Error> {
+        if block == 0 {
+            return Err(Error::Unsupported("a prompt block of no tokens"));
+        }
         let config = Config::from_gguf(file.header())?;
         if context == 0 || context > config.context_length {
             return Err(Error::Context);
@@ -79,7 +96,7 @@ impl<'a> Model<'a> {
             .iter()
             .flat_map(|l| [&l.wq, &l.wk, &l.wv, &l.w_gate, &l.w_up])
             .chain([&weights.output]);
-        let n = PREFILL_TOKENS;
+        let n = block;
         let s = Scratch {
             x: vec![0.0; n * e],
             xn: vec![0.0; n * e],
@@ -103,6 +120,7 @@ impl<'a> Model<'a> {
             par: &Serial,
             rope,
             context,
+            block,
             s,
         })
     }
@@ -230,7 +248,7 @@ impl<'a> Model<'a> {
             return Err(Error::ContextFull);
         }
         let mut last = 0;
-        for block in tokens.chunks(PREFILL_TOKENS) {
+        for block in tokens.chunks(self.block) {
             self.block(kv, block);
             last = block.len() - 1;
         }
@@ -265,6 +283,7 @@ impl<'a> Model<'a> {
             par,
             rope,
             context,
+            block: _,
             s,
         } = self;
         let (e, hd, qd, kvd) = (c.n_embd, c.head_dim, c.q_dim(), c.kv_dim());

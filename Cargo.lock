@@ -2664,6 +2664,7 @@ version = "0.1.0-dev"
 dependencies = [
  "appabi",
  "bootslot",
+ "bpe",
  "ccserve",
  "comp-models",
  "cpufeat",
@@ -2674,6 +2675,7 @@ dependencies = [
  "fsproto",
  "fsserve",
  "gfx2d",
+ "gguf",
  "infer",
  "kabi",
  "kaibundle",
@@ -2681,6 +2683,7 @@ dependencies = [
  "kaipkg",
  "kaiprofile",
  "kaituf",
+ "libm",
  "livecore",
  "llmproto",
  "look",

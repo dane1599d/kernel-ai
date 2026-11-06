@@ -197,6 +197,10 @@ pub fn for_case(
     case: &crate::cases::TestCase,
     target_dir: &Path,
 ) -> Result<Option<ModelDisk>, String> {
+    if let Some(var) = case.real_model {
+        let path = std::env::var(var).map_err(|_| format!("{var} names no model file"))?;
+        return ModelDisk::open(Path::new(&path)).map(Some);
+    }
     let disk = case
         .disk
         .map(|fixture| fixture.write(&target_dir.join("fixtures")))

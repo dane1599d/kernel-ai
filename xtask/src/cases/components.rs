@@ -193,6 +193,16 @@ pub(super) const CASES: &[TestCase] = &[
         server: false,
         ..case("appbench", "test=appbench")
     },
+    // Spike S13-3 (not for merge): the embedding model named by KAI_EMBED_MODEL
+    // through infer in hard-float ring 3: indexing tokens/s and a query over
+    // 10,000 chunks, reported in the log. Run by s13-3-embed.yml only.
+    TestCase {
+        expect: &["embed-bench: done"],
+        server: false,
+        real_model: Some("KAI_EMBED_MODEL"),
+        min_timeout: Some(Duration::from_secs(900)),
+        ..case("embed-bench", "test=embed-bench")
+    },
     // The live scenario with the model on the disk and no server: `:why` is
     // answered by the local model.
     TestCase {
