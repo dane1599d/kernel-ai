@@ -21,6 +21,7 @@
 //! cargo xtask cc-bind [--check]   (ccserve/kai/bind/: the C bindings `cc build` compiles against, from wit/; see cc/bind.rs)
 //! cargo xtask licences check   (every licence in the tree and the dependency graph is allowed and has its text; see licences.rs)
 //! cargo xtask notices [--check]   (writes or checks NOTICES.txt, the third-party notices the image carries; see notices.rs)
+//! cargo xtask decisions [render | check [--base REV [--deny-new-rows]] | new <slug>]   (new decision rows, one file each in docs/decisions/rows/; see decisions.rs)
 //! cargo xtask fs mkfs|import|ls|cat|check|replay ...   (kaifs data disks on the host, no WSL; see fs/mod.rs)
 //! cargo xtask release-image [--test-root] [--out PATH]   (the release image and its NOTICES.txt; release.yml runs it)
 //! cargo xtask release-boot --image PATH --model PATH [--accel kvm|tcg] [--timeout SECS]   (boots a --test-root image and imports the model; see release_boot.rs)
@@ -42,6 +43,7 @@ mod buildsvc;
 mod cases;
 mod cc;
 mod components;
+mod decisions;
 mod disk;
 mod doctor;
 mod edit_smoke;
@@ -113,6 +115,7 @@ fn main() -> ExitCode {
         Some("cc-bind") => cc::bind::main(&args[1..]),
         Some("licences") => licences::main(&args[1..]),
         Some("notices") => notices::main(&args[1..]),
+        Some("decisions") => decisions::main(&args[1..]),
         Some("wit-check") => wit::main(&args[1..]),
         Some("wit-tables") => wit_tables::main(&args[1..]),
         Some("fs") => fs_tool::main(&args[1..]),

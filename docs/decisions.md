@@ -2,7 +2,7 @@
 
 One place for every project decision. Founder decisions are settled. Open decisions carry a recommended default and the earliest milestone that needs them. Defaults are only recommendations. Each open decision is confirmed with the founder when its milestone starts.
 
-Sources: the five merged memos in `docs/research/`. Milestones are defined in `docs/roadmap.md`.
+Sources: the five merged memos in `docs/research/`. Milestones are defined in `docs/roadmap.md`. A new row is a file in [decisions/rows/](decisions/rows/README.md), not a row of the last table below; `cargo xtask decisions` prints the table of those files.
 
 ## Settled by the founder (2026-10-14)
 
