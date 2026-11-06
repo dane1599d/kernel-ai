@@ -27,7 +27,8 @@ fn placeholders_are_told_from_names() {
         "service name",
         "name_here",
         "/path/to/file",
-        "TODO",
+        "<path>",
+        "your_file",
         "example",
     ] {
         assert!(placeholder(value, line), "{value}");
@@ -39,12 +40,29 @@ fn placeholders_are_told_from_names() {
         "netd",
         "round-robin",
         "my-notes2",
+        "todo",
     ] {
         assert!(!placeholder(value, line), "{value}");
     }
     // What the user wrote is theirs, whatever it looks like.
     assert!(!placeholder("foo", "remove foo"));
     assert!(!placeholder("example", "Open the website example"));
+}
+
+#[test]
+fn a_name_written_with_other_joins_is_still_the_users() {
+    // The app gate's todo request (#730): "to-do" names `todo`.
+    assert!(!placeholder(
+        "todo",
+        "a to-do list where I can tick items off"
+    ));
+    assert!(!placeholder("build-4", "stop build 4"));
+    assert!(!placeholder("my_notes", "open my-notes"));
+    // A join is not a name: placeholders the line doesn't hold still refuse.
+    let line = "make me a to-do list app";
+    for value in ["package_name", "<path>", "your_file", "app_name"] {
+        assert!(placeholder(value, line), "{value}");
+    }
 }
 
 #[test]
