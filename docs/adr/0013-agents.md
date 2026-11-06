@@ -96,7 +96,7 @@ A higher class always runs before a lower one. Within a class, deficit round rob
 - **Where the state goes.** It is kept in this order:
   1. in its own KV slot, if memory allows; a switch is then `Engine::use_slot`, with no copy;
   2. else as a RAM snapshot in a bounded pool, using `save_slot`'s streaming format;
-  3. else spilled as a `kai-kv 1` file to `/system/models/cache/agents/`;
+  3. else spilled as a `kai-kv 1` image to the raw `kai-cache` region, not to a kaifs file (founder, 2026-11-06: a round trip of about 1,000 positions takes 0.91-1.30 s there against the 1.5 s bar, where kaifs at 25 MB/s would take about 5.7 s each way; #682, #690);
   4. else dropped, to be prefilled again on resume.
 - **Exact resume.** `restore_slot`'s checks apply unchanged, so a resumed agent continues from bit-identical state, or prefills from cold if a check fails. It never continues from wrong state.
 - **Eviction.** Least recently used per class, lowest class first. The pool holds at most 512 MiB (est.; question 4).
@@ -146,7 +146,7 @@ A user's raise is `agent_quota_set` (run when lowering, ask when raising), like 
 - **Cost.**
   - Indexing runs only in the `index` class, i.e. when the model is otherwise idle.
   - The embedding model's 639 MB is mapped while indexing or searching, and unmapped after 5 idle minutes (question 2).
-  - At an assumed 300 tokens/s prefill for the 0.6B on 8 vCPUs (est., S13-3 measures it), 1,000 files of 2,000 tokens take about 2 hours of idle time once, then minutes a day.
+  - S13-3 measured 75-96 tokens/s for the 0.6B (not the 300 assumed), so 1,000 files of 2,000 tokens take about 6 hours of idle time once, then minutes a day. The founder accepted slow background indexing on 2026-11-06: good and slow over bad and fast.
 - **Privacy.** The index, the embedding model and every query stay on the machine. `search` holds no `NetDest` and never will. Indexed text is data, never instructions; the model sees only result snippets, labelled as file content.
 
 ### 5. Proactive goals
@@ -283,7 +283,7 @@ None runs a model on the founder's PC. Real-model runs are on GitHub runners, as
   - tokens/s in the guest under KVM;
   - recall@5 on a fixed corpus: 200 generated documents and 50 queries with known answers, some with time filters;
   - a query's latency over 10,000 chunks.
-- **Pass:** cosine at least 0.999; recall@5 at least 0.8; a query in at most 300 ms; indexing at least 150 tokens/s.
+- **Pass:** cosine at least 0.999; recall@5 at least 0.8; a query in at most 300 ms. The indexing bar of 150 tokens/s was dropped by the founder on 2026-11-06: indexing may be slower as long as search works, so Qwen3-Embedding-0.6B stays and the MiniLM fallback is not taken.
 - **Fail:** all-MiniLM-L6-v2 with a BERT pass in `infer`; if that also fails, keyword search with time filters only.
 
 **S13-4 `memory-bait`** (about 1 week). Host corpus in the way of S01-2, plus one fluency run on GitHub.
@@ -336,7 +336,7 @@ None runs a model on the founder's PC. Real-model runs are on GitHub runners, as
 | Work | Change | Why |
 |---|---|---|
 | #114 `infer::segments` (merged) | None now. With S13-1: a RAM target for `save_slot` and `restore_slot` beside the file one, with the same checks | Snapshots in the pool use the tested format |
-| #119 `kai-cache` (merged, interim) | None. Agent spills go to `/system/models/cache/agents/` after P2 task 10 moves the cache | Same place as the pack's files |
+| #119 `kai-cache` (merged, interim) | None. Agent spills stay on a raw `kai-cache` region, not kaifs, also after P2 task 10 (founder, 2026-11-06) | kaifs's 25 MB/s would put a spill round trip near 11 s against the 1.5 s bar |
 | #143 `kaipkg` (open) | After v0.1: `kind agent` refused by name, as `tool` is | v0.1's `pkg` refuses agent packages cleanly |
 | #153 P3 standing instructions (open) | None. Goals build on its rule store and triggers | One trigger mechanism |
 | #158 P4 plan (open) | None. This ADR adds nothing to v0.1 | v0.1's path unchanged |
