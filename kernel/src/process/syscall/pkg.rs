@@ -50,9 +50,7 @@ fn pkg_fetch(slot: usize, request_ptr: u64) -> Result<u64, Error> {
 /// plan, for that line's own program), and only a plain path there
 /// (`supervise::BootFiles::allows`), looked up exactly.
 fn boot_read(slot: usize, path_ptr: u64, path_len: u64, buf: u64, cap: u64) -> Result<u64, Error> {
-    let files = crate::process::identity(slot)
-        .boot
-        .ok_or(Error::Permission)?;
+    let files = crate::process::identity(slot).boot;
     let len = usize::try_from(path_len).map_err(|_| Error::TooBig)?;
     if len > MAX_BOOT_PATH {
         return Err(Error::TooBig);
@@ -60,7 +58,11 @@ fn boot_read(slot: usize, path_ptr: u64, path_len: u64, buf: u64, cap: u64) -> R
     let mut path = [0u8; MAX_BOOT_PATH];
     copy_from_user(slot, path_ptr, &mut path[..len])?;
     let path = core::str::from_utf8(&path[..len]).map_err(|_| Error::Invalid)?;
-    if !files.allows(path) {
+    // The plan line's `bootfiles=`, or, for a holder of NET, the extra TLS
+    // roots (P5 task 12), which hold only public certificates.
+    let granted = files.is_some_and(|files| files.allows(path))
+        || (netroot(path) && super::need(slot, kabi::cap::NET).is_ok());
+    if !granted {
         return Err(Error::Permission);
     }
     let data = crate::bootfiles::exact(path).ok_or(Error::NotFound)?;
@@ -68,6 +70,15 @@ fn boot_read(slot: usize, path_ptr: u64, path_len: u64, buf: u64, cap: u64) -> R
         copy_to_user(slot, buf, data)?;
     }
     Ok(data.len() as u64)
+}
+
+/// Whether `path` is one of the extra TLS roots' files, `netroots/<n>.der` for
+/// `n` from 1 to [`kabi::net::MAX_NETROOTS`].
+fn netroot(path: &str) -> bool {
+    path.strip_prefix(kabi::net::NETROOTS)
+        .and_then(|rest| rest.strip_suffix(".der"))
+        .and_then(|n| n.parse::<usize>().ok().filter(|_| !n.starts_with('0')))
+        .is_some_and(|n| (1..=kabi::net::MAX_NETROOTS).contains(&n))
 }
 
 /// Whether the caller holds `/system/pkg`: spawned with the folder its plan line

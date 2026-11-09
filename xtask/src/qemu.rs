@@ -87,7 +87,7 @@ pub fn args(
         "-device",
         "isa-debug-exit,iobase=0xf4,iosize=0x04",
         "-netdev",
-        "user,id=net0",
+        USER_NET,
         "-device",
         NET_DEVICE,
     ]
@@ -326,8 +326,25 @@ impl Qmp {
 
 /// The network card's `-device` value.
 const NET_DEVICE: &str = "virtio-net-pci,netdev=net0";
+/// The user-mode network every VM gets.
+const USER_NET: &str = "user,id=net0";
 
 /// Moves the network card behind a PCIe root port of its own (bus 1).
+/// Forwards the guest's connections to `netcore::fixture::MOCK_ADDRESS` on
+/// port 443 to the HTTPS mock on the host's `port` (P5 task 12's harness):
+/// QEMU's user network starts `relay`, xtask's own `relay` subcommand, for each
+/// connection, so every mock host a case names is reached on 443, as the
+/// guest's TLS clients and `kai:net` require.
+pub fn forward_https(args: &mut [String], relay: &Path, port: u16) {
+    let [a, b, c, d] = netcore::fixture::MOCK_ADDRESS;
+    if let Some(netdev) = args.iter_mut().find(|arg| arg.as_str() == USER_NET) {
+        *netdev = format!(
+            "{USER_NET},guestfwd=tcp:{a}.{b}.{c}.{d}:443-cmd:{} relay 127.0.0.1:{port}",
+            relay.display()
+        );
+    }
+}
+
 pub fn net_behind_bridge(args: &mut Vec<String>) {
     if let Some(at) = args.iter().position(|arg| arg == NET_DEVICE) {
         args[at] = format!("{NET_DEVICE},bus=kai-rp0");
