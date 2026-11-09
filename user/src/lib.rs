@@ -9,9 +9,9 @@
 extern crate alloc;
 
 pub mod heap;
-pub mod net;
 pub mod pool;
 pub mod sys;
+pub mod tls;
 
 use core::fmt::{self, Write};
 

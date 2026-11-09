@@ -16,11 +16,11 @@
 //!   update snapshot of the system volume is taken, as `step=update` does for
 //!   the update disk; then the restart is set, at once or in the restart window.
 //!
-//! `step=online` takes `online=test:PORT` from the plan line, which names xtask's
-//! HTTPS mock (the same hosts as `pkg`'s `Hosts::mock`) and its test CA, a file in
-//! the image's repository folder (`bootfiles=pkgrepo`). In slot R (`:reinstall`)
-//! `into=A` or `into=B` names the slot to write. The shipping system's repository
-//! waits for the follow-up that gives `updated` a request for it.
+//! `step=online` takes `online=test` from the plan line, which names xtask's HTTPS
+//! mock (the same hosts as `pkg`'s `Hosts::mock`; its test CA is the bundle's
+//! `netroots/1.der`, which `user::tls` trusts). In slot R (`:reinstall`) `into=A`
+//! or `into=B` names the slot to write. The shipping system's repository waits
+//! for the follow-up that gives `updated` a request for it.
 
 use crate::disk::{Trusted, trusted};
 use crate::folders::{self, Folders};
@@ -31,7 +31,6 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use bootslot::{Nv, Record, Slot};
-use core::sync::atomic::{AtomicU32, Ordering};
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP};
 use kabi::update::{MAX_IO, SECTOR};
 use kainet::chunks::MAX_LIST;
@@ -41,34 +40,20 @@ use updatenet::net::Over;
 use updatenet::plan::{self, Job, Machine};
 use updatenet::slot::{Checkpoint, Mark, SlotIo, SlotPartial};
 use updatenet::stage::{self, Boot, Stop};
-use user::net::{NetDial, roots_of, tls_config};
+use user::tls::{self, NetDial};
 use user::{println, sys};
 
 /// How long one request may take, redirects included: a full handshake on an
 /// emulated CPU takes seconds.
 const REQUEST_NS: u64 = 120_000_000_000;
-/// The boot cases' test CA, a file of the image's repository folder.
-const TEST_CA: &str = "pkgrepo/tls-test-ca.der";
-/// The longest certificate read.
-const CA_MAX: usize = 4096;
 /// The record of the last chunk checked, in `/system/updates`.
 const MARK_FILE: &str = "online.mark";
 /// A mark is the image's SHA-256 and the number of chunks done.
 const MARK_BYTES: usize = 32 + 8;
 
-/// The `Update` handle, for the wall clock: `fn` pointers hold no state.
-static UPDATE: AtomicU32 = AtomicU32::new(0);
-
-fn now_s() -> Option<u64> {
-    sys::trust_time(Handle(UPDATE.load(Ordering::Relaxed))).ok()
-}
-
-/// The port in `online=test:PORT`.
-fn test_port(args: &str) -> Option<u16> {
-    args.split_whitespace()
-        .find_map(|w| w.strip_prefix("online=test:"))
-        .and_then(|port| port.parse().ok())
-        .filter(|port| *port > 0)
+/// Whether the plan line asks for xtask's HTTPS mock (`online=test`).
+fn test_repository(args: &str) -> bool {
+    args.split_whitespace().any(|w| w == "online=test")
 }
 
 /// In slot R, the slot `into=` names.
@@ -91,18 +76,6 @@ fn netdest() -> Option<Handle> {
         .iter()
         .find(|info| info.kind() == Some(Kind::NetDest))
         .map(|info| Handle(info.handle))
-}
-
-/// The test CA, read from the image's repository folder.
-fn test_ca() -> Result<Vec<u8>, String> {
-    let mut buf = vec![0u8; CA_MAX];
-    let len =
-        sys::boot_read(TEST_CA, &mut buf).map_err(|e| format!("BOOT_READ {TEST_CA}: {e:?}"))?;
-    if len > CA_MAX {
-        return Err(format!("{TEST_CA} is {len} bytes, over {CA_MAX}"));
-    }
-    buf.truncate(len);
-    Ok(buf)
 }
 
 /// The slot `slot`, as `updatenet` writes and reads it: by byte offset, on
@@ -264,8 +237,9 @@ fn machine(record: &Record, running: Slot, into: Option<Slot>, room: u64) -> Mac
 /// slot `into=` names), and restarts into it at once when `restart_now`;
 /// otherwise its one-shot is set and the restart waits (`window.rs`).
 pub fn update(handle: Handle, restart_now: bool, args: &str) -> Result<Staged, String> {
-    let port = test_port(args).ok_or("step=online takes online=test:PORT")?;
-    UPDATE.store(handle.0, Ordering::Relaxed);
+    if !test_repository(args) {
+        return Err(String::from("step=online takes online=test"));
+    }
     let Trusted {
         dirs,
         mut cache,
@@ -287,16 +261,12 @@ pub fn update(handle: Handle, restart_now: bool, args: &str) -> Result<Staged, S
         .sectors
         * SECTOR;
 
-    let ca = test_ca()?;
-    let roots = roots_of(&ca).map_err(|e| format!("the test CA is refused: {e:?}"))?;
-    let config = tls_config(roots, now_s).map_err(|e| format!("no TLS configuration: {e:?}"))?;
+    let config = tls::config().map_err(|e| format!("no TLS configuration: {e:?}"))?;
     let clock = || sys::time_ns();
     let hosts = Hosts::mock();
     let online = |hosts: &Hosts| {
-        let dial = NetDial {
-            dest,
-            https_port: port,
-        };
+        // The image is a download: bulk streams have the larger receive buffer.
+        let dial = NetDial { dest, bulk: true };
         let connect = TlsConnect {
             config: config.clone(),
             dial,

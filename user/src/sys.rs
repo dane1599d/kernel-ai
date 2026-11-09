@@ -1065,6 +1065,12 @@ pub fn net_close(stream: Handle) -> Result<(), Error> {
     call(call::NET_CLOSE, [u64::from(stream.0), 0, 0, 0, 0, 0]).map(|_| ())
 }
 
+/// The date, seconds since 1970 UTC, a TLS client checks certificates
+/// against (NET_TIME; needs NET).
+pub fn net_time() -> Result<u64, Error> {
+    call(call::NET_TIME, [0; 6])
+}
+
 /// The kernel's ABI version, highest call number and handle table size.
 pub fn abi_info() -> Result<AbiInfo, Error> {
     let mut info = AbiInfo::default();

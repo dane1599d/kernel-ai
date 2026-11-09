@@ -283,16 +283,14 @@ pub fn online_content(repository: &Repository) -> crate::mock_https::Content {
     content
 }
 
-/// The `kind` mirror for `image`, served by the HTTPS mock as GitHub serves the
-/// online repository: until xtask exits. The guest reaches it at 10.0.2.2 on
-/// the mock's port ([`crate::mock_https::Mock::cmdline`]), and trusts its test CA
-/// ([`crate::mock_https::Mock::ca`]).
-pub fn serve_online(
+/// The `kind` mirror for `image` as the HTTPS mock serves GitHub's online
+/// repository, for a case that asks `pkg` to install from it (P5 task 8).
+pub fn online_repository(
     image: &Image,
     kind: mirrors::MirrorKind,
-) -> Result<crate::mock_https::Mock, String> {
+) -> Result<crate::mock_https::Content, String> {
     let repository = mirrors::build(kind, &image.packages, &image.keys, image.now)?;
-    crate::mock_https::start(online_content(&repository))
+    Ok(online_content(&repository))
 }
 
 /// `repository` laid out as the image holds it (`kaipkg::image`): each target at

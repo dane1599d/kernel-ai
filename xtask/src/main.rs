@@ -72,6 +72,7 @@ mod notices;
 mod options;
 mod pkgrepo;
 mod qemu;
+mod relay;
 mod release_boot;
 mod release_image;
 mod reuse;
@@ -116,6 +117,7 @@ fn main() -> ExitCode {
         Some("licences") => licences::main(&args[1..]),
         Some("notices") => notices::main(&args[1..]),
         Some("decisions") => decisions::main(&args[1..]),
+        Some("relay") => relay::main(&args[1..]),
         Some("wit-check") => wit::main(&args[1..]),
         Some("wit-tables") => wit_tables::main(&args[1..]),
         Some("fs") => fs_tool::main(&args[1..]),
@@ -176,6 +178,15 @@ fn execute(options: &Options) -> Result<(), String> {
     }
     let target_dir = root.join("target");
     let mut modules = esp::boot_modules(&kernel, &programs, &root)?;
+    // Programs only the HTTPS cases run go on their boot drives alone: every
+    // byte of the bundle is memory the other cases' guests do not get, and the
+    // desktop cases had less than 2 MiB to spare (#753's first run).
+    let (https_programs, shared): (Vec<_>, Vec<_>) = modules.into_iter().partition(|m| {
+        cases::https::PROGRAMS
+            .iter()
+            .any(|p| cases::https::is_program_module(&m.path, p))
+    });
+    modules = shared;
     // The built-in apps as the image's signed repository (ADR 0011 §8).
     let mut image = pkgrepo::image(&root, &versions)?;
     modules.extend(versions);
@@ -256,8 +267,6 @@ fn execute(options: &Options) -> Result<(), String> {
     let mut failures = Vec::new();
     // Each kind of package mirror a case names, started once (P4 task 2).
     let mut mirrors: HashMap<pkgrepo::mirrors::MirrorKind, u16> = HashMap::new();
-    // Each kind of repository a case reaches over TLS, on the HTTPS mock (P5 task 8).
-    let mut onlines: HashMap<pkgrepo::mirrors::MirrorKind, mock_https::Mock> = HashMap::new();
     let cases = if options.task == Task::Soak {
         cases::SOAK_CASES.iter().collect()
     } else {
@@ -303,7 +312,8 @@ fn execute(options: &Options) -> Result<(), String> {
             if case.echo {
                 cmdline = format!("{cmdline} {}", mock_echo.cmdline());
             }
-            if case.dns {
+            // The HTTPS mock's names resolve through the mock DNS (P5 task 12).
+            if case.dns || case.https.is_some() {
                 cmdline = format!("{cmdline} {}", mock_dns.cmdline());
             }
             if let Some(kind) = case.mirror {
@@ -316,12 +326,6 @@ fn execute(options: &Options) -> Result<(), String> {
                     }
                 };
                 cmdline = format!("{cmdline} pkgrepo=10.0.2.2:{port}");
-            }
-            if let Some(kind) = case.online {
-                if let std::collections::hash_map::Entry::Vacant(started) = onlines.entry(kind) {
-                    started.insert(pkgrepo::serve_online(&image, kind)?);
-                }
-                cmdline = format!("{cmdline} {}", onlines[&kind].cmdline());
             }
             let disk = match disk::for_case(case, &target_dir) {
                 Ok(disk) => disk,
@@ -345,6 +349,28 @@ fn execute(options: &Options) -> Result<(), String> {
             }
             // The boot manifest's versions join the boot drive for this case only.
             let shared = modules.len();
+            // The HTTPS mock for this boot (P5 task 12's harness), and its test
+            // CA as the bundle's one extra root, which only this case's bundle
+            // has. The CA is one for the whole run ([`mock_https::shared_ca`]), so
+            // an image built below can carry it before its mock starts.
+            let mut https_content = None;
+            if let Some(https) = &case.https {
+                let mut content = (https.content)();
+                // The package repository the case also asks for, signed by the
+                // image's keys (P5 task 8).
+                if let Some(kind) = case.online {
+                    content = content.merged(pkgrepo::online_repository(&image, kind)?);
+                }
+                https_content = Some(content);
+                modules.push(esp::Module {
+                    path: format!("{}1.der", kabi::net::NETROOTS),
+                    bytes: mock_https::shared_ca()?,
+                });
+                modules.extend(https_programs.iter().map(|m| esp::Module {
+                    path: m.path.clone(),
+                    bytes: m.bytes.clone(),
+                }));
+            }
             if let Some(service) = &service {
                 let (versions, live) = boot_smoke::manifest_for(case, service)?;
                 modules.extend(versions);
@@ -368,23 +394,6 @@ fn execute(options: &Options) -> Result<(), String> {
                     bytes: image::update_disk::test_root()?.root_json()?,
                 });
             }
-            if let Some(kind) = case.online {
-                // The one root the guest trusts for the mock's hosts: `pkg` reads
-                // it from the image's repository folder, like the signed
-                // repository itself.
-                modules.push(esp::Module {
-                    path: format!("{}/tls-test-ca.der", pkgrepo::IMAGE_DIR),
-                    bytes: onlines[&kind].ca().to_vec(),
-                });
-            }
-            if case.online_release.is_some() {
-                // The one root every mock of this run serves under, known before
-                // the mock exists: the image the mock serves carries it too.
-                modules.push(esp::Module {
-                    path: format!("{}/tls-test-ca.der", pkgrepo::IMAGE_DIR),
-                    bytes: mock_https::shared_ca()?,
-                });
-            }
             let update_disk = match case.update {
                 Some(update) => Some(update_disk(
                     &root,
@@ -397,17 +406,29 @@ fn execute(options: &Options) -> Result<(), String> {
                 None => None,
             };
             if let Some(fault) = case.online_release {
-                // This build as the next release, served by the HTTPS mock as
+                // This build as the next release, which the HTTPS mock serves as
                 // GitHub serves the update repository (P5 task 10).
+                let content = https_content
+                    .as_mut()
+                    .ok_or_else(|| format!("{}: online_release needs https", case.name))?;
                 let (image, release) = update_image(&root, &target_dir, &kernel, &modules, &efi)?;
-                let mock =
-                    mock_https::start(image::update_online::content(&image, release, fault)?)?;
-                cmdline = format!("{cmdline} {}", mock.cmdline());
+                let release_content = image::update_online::content(&image, release, fault)?;
+                *content = std::mem::take(content).merged(release_content);
                 println!(
                     "xtask: online release {release}, {} MiB, on the HTTPS mock ({fault:?})",
                     image.len() >> 20
                 );
             }
+            let https_mock = match (&case.https, https_content) {
+                (Some(https), Some(content)) => {
+                    let mock = mock_https::start(content)?;
+                    for (host, path, fault) in https.faults {
+                        mock.set_fault(host, path, fault.clone());
+                    }
+                    Some(mock)
+                }
+                _ => None,
+            };
             if let Some(package) = case.tampered {
                 pkgrepo::flip(&mut modules, package)?;
             }
@@ -433,6 +454,10 @@ fn execute(options: &Options) -> Result<(), String> {
                 ..options.sizing
             };
             let mut args = qemu::args(&firmware, accel, true, disk.as_ref(), sizing);
+            if let Some(mock) = &https_mock {
+                let relay = env::current_exe().map_err(|e| format!("xtask's own path: {e}"))?;
+                qemu::forward_https(&mut args, &relay, mock.port);
+            }
             if let Some(data) = case.data {
                 if fresh {
                     blklog::prepare(&target_dir, data)?;

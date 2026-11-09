@@ -302,6 +302,8 @@ pub enum SelfTest {
     NetDest,
     /// P5 task 2: TCP streams on a `NetDest`.
     NetStream,
+    /// P5 task 12's harness: xtask's HTTPS mock reached from ring 3.
+    HttpsMock,
     /// P5 task 3: ENTROPY's sample, which two boots must not share.
     EntropyBoots,
 }
@@ -483,6 +485,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net-static" => Some(SelfTest::NetStatic),
             "test=net-dest" => Some(SelfTest::NetDest),
             "test=net-stream" => Some(SelfTest::NetStream),
+            "test=https-mock" => Some(SelfTest::HttpsMock),
             "test=entropy-boots" => Some(SelfTest::EntropyBoots),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
@@ -512,13 +515,12 @@ fn updated_words(test: SelfTest) -> String {
         .unwrap_or("check");
     let mut words = format!(" after=restart step={step}");
     if step == "online" {
-        // `updated` reaches the HTTPS mock's three hosts on its port through a
+        // `updated` reaches the HTTPS mock's three hosts on port 443 through a
         // `NetDest` of its own (P5 task 10). Its pages hold a 2 MiB chunk, the
         // read-back buffers and the TLS records on top of `kabi::plan::UPDATED`'s.
-        let port = crate::pkg_tests::https_port();
         let hosts = crate::pkg_tests::ONLINE_HOSTS;
         words.push_str(&format!(
-            " pages=6144 online=test:{port} netdest=proto:tcp,ports:{port},hosts:{hosts}"
+            " pages=6144 online=test netdest=proto:tcp,ports:443,hosts:{hosts}"
         ));
     }
     for word in crate::cmdline()

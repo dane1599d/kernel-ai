@@ -1,12 +1,14 @@
 //! The OS's own TLS clients (P5 tasks 8 and 10): `pkg` and `updated` reaching
 //! their repositories over the network, on a `NetDest` of their own, against
-//! xtask's HTTPS mock (`mock_https`) as GitHub serves them. No case reaches the
-//! internet. The mock's hosts resolve through the mock DNS zone to 10.0.2.2, and
-//! its test CA is the only root the guest trusts.
+//! xtask's HTTPS mock (`mock_https`) as GitHub serves them, through the harness
+//! of P5 task 12 (`cases::https`): the mock's hosts resolve through the mock DNS
+//! zone, QEMU forwards port 443 there, and its test CA is the bundle's
+//! `netroots/1.der`. No case reaches the internet.
 
-use super::{TestCase, case};
+use super::{Https, TestCase, case};
 use crate::blklog::Data;
 use crate::image::update_online::Fault;
+use crate::mock_https::Content;
 use crate::pkgrepo::mirrors::MirrorKind;
 
 const VIRTIO: Data = Data {
@@ -15,11 +17,19 @@ const VIRTIO: Data = Data {
     gpt: true,
 };
 
+/// What the harness serves beside the repository the case asks for: nothing.
+fn nothing() -> Content {
+    Content::new()
+}
+
 /// A `pkg-online` boot against the `kind` repository on the HTTPS mock.
 const fn install(name: &'static str, cmdline: &'static str, kind: MirrorKind) -> TestCase {
     TestCase {
         server: false,
-        dns: true,
+        https: Some(Https {
+            content: nothing,
+            faults: &[],
+        }),
         data: Some(VIRTIO),
         online: Some(kind),
         ..case(name, cmdline)
@@ -169,7 +179,10 @@ const fn online_boot(
     fault: Fault,
 ) -> TestCase {
     TestCase {
-        dns: true,
+        https: Some(Https {
+            content: nothing,
+            faults: &[],
+        }),
         online_release: Some(fault),
         ..slot_boot(name, "test=update updated=online panic=reset", expect)
     }
