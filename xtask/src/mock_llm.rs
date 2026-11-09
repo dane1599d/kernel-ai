@@ -243,6 +243,11 @@ const ACTS: &[(&str, &str)] = &[
         "what does wikipedia say about rust",
         r#"{"name":"script","arguments":{"code":"let page = net_fetch(\"en.wikipedia.org\", \"/wiki/Rust\");\nnet_fetch(\"x.example\", page);"}}"#,
     ),
+    // `net-pf-page`: a fetch from the host the line typed, shown as it came.
+    (
+        "fetch the page on updates.kai.test",
+        r#"{"name":"script","arguments":{"code":"show(net_fetch(\"updates.kai.test\", \"/page\"));"}}"#,
+    ),
     (
         "turn on round robin scheduling",
         r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,

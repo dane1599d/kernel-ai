@@ -178,6 +178,15 @@ fn execute(options: &Options) -> Result<(), String> {
     }
     let target_dir = root.join("target");
     let mut modules = esp::boot_modules(&kernel, &programs, &root)?;
+    // Programs only the HTTPS cases run go on their boot drives alone: every
+    // byte of the bundle is memory the other cases' guests do not get, and the
+    // desktop cases had less than 2 MiB to spare (#753's first run).
+    let (https_programs, shared): (Vec<_>, Vec<_>) = modules.into_iter().partition(|m| {
+        cases::https::PROGRAMS
+            .iter()
+            .any(|p| cases::https::is_program_module(&m.path, p))
+    });
+    modules = shared;
     // The built-in apps as the image's signed repository (ADR 0011 §8).
     let mut image = pkgrepo::image(&root, &versions)?;
     modules.extend(versions);
@@ -353,6 +362,10 @@ fn execute(options: &Options) -> Result<(), String> {
                         path: format!("{}1.der", kabi::net::NETROOTS),
                         bytes: mock.ca().to_vec(),
                     });
+                    modules.extend(https_programs.iter().map(|m| esp::Module {
+                        path: m.path.clone(),
+                        bytes: m.bytes.clone(),
+                    }));
                     Some(mock)
                 }
                 None => None,

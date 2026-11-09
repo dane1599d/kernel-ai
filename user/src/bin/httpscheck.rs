@@ -59,7 +59,11 @@ fn get(dest: Handle, url: &str) -> Result<(u16, Vec<u8>), HttpError> {
     let config = tls::config().map_err(|e| HttpError::Tls(TlsError::Tls(e)))?;
     let mut connect = TlsConnect {
         config,
-        dial: NetDial { dest, bulk: false },
+        dial: NetDial {
+            dest,
+            bulk: false,
+            deadline_ns: sys::time_ns().saturating_add(DEADLINE_NS),
+        },
     };
     let clock = || sys::time_ns();
     // The handle decides which hosts; the URL must still be https on 443.
@@ -187,8 +191,9 @@ fn fetch_script(dest: Handle) -> bool {
                     "httpscheck: fetch {request}: {} unfollowed, to {location}",
                     head.status
                 );
-                // As comphost does: a handle for the new host, and one hop taken.
-                let next = alloc::format!("get {location} hops=1");
+                // As comphost does: a handle for the new host, and one more
+                // hop than the answer counted.
+                let next = alloc::format!("get {location} hops={}", head.hops + 1);
                 match via_fetch(dest, "assets.kai.test", &next) {
                     Ok(Ok((head, body))) => {
                         println!(

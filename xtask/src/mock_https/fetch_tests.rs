@@ -182,33 +182,46 @@ fn the_service_follows_only_redirects_within_its_handle() {
         let request = get(&format!("https://{REPO}{path}"));
         fetch::serve_within(&request, hops, &only_repo, &mut connect, &zero, u64::MAX)
     };
-    let (got, location) = within("/old", 0).unwrap();
+    let served = within("/old", 1).unwrap();
+    let got = &served.response;
     assert_eq!(
-        (got.status, got.body.as_slice(), location),
-        (200, &b"hello"[..], None)
+        (
+            got.status,
+            got.body.as_slice(),
+            served.location.clone(),
+            served.hops
+        ),
+        (200, &b"hello"[..], None, 2)
     );
     assert_eq!(got.url, format!("https://{REPO}/hello"));
-    let (got, location) = within("/away", 0).unwrap();
+    let served = within("/away", 0).unwrap();
+    let got = &served.response;
     assert_eq!(
         (
             got.status,
             got.body.len(),
             got.url.as_str(),
-            location.as_deref()
+            served.location.as_deref(),
+            served.hops
         ),
         (
             302,
             0,
             format!("https://{REPO}/away").as_str(),
-            Some(format!("https://{ASSETS}/blob").as_str())
+            Some(format!("https://{ASSETS}/blob").as_str()),
+            0
         )
     );
+    // With every hop taken: neither a redirect within nor one handed back.
+    for path in ["/old", "/away"] {
+        assert_eq!(
+            within(path, fetch::MAX_HOPS).map(|s| s.response.status),
+            Err(Error::Http("more than five redirects".into())),
+            "{path}"
+        );
+    }
     assert_eq!(
-        within("/old", fetch::MAX_HOPS).map(|(r, _)| r.status),
-        Err(Error::Http("more than five redirects".into()))
-    );
-    assert_eq!(
-        within("/old", fetch::MAX_HOPS + 1).map(|(r, _)| r.status),
+        within("/old", fetch::MAX_HOPS + 1).map(|s| s.response.status),
         Err(Error::Http("more than five redirects".into()))
     );
 }

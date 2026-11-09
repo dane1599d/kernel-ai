@@ -41,6 +41,9 @@ pub fn may_run_apart(checked: &Checked) -> bool {
             !agentabi::CALL_ONLY.iter().any(|row| row.name == *name)
                 && !name.starts_with("fs_")
                 && !agentabi::UI_ROWS.iter().any(|row| row.name == *name)
+                // The network reads need the shell's route to `fetch` and
+                // its network handle; the child holds neither.
+                && !agentabi::NET_ROWS.iter().any(|row| row.name == *name)
                 // An app's row is the shell's to call: its rows and the
                 // supervisor's route are here, not in the child.
                 && crate::apps::is_os_row(name)

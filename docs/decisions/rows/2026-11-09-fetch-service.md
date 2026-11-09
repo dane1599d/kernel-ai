@@ -15,7 +15,7 @@ decision: The `fetch` service makes each request on the caller's own `NetDest`, 
 
 **The messages** (`kainet::wire`, one parser for `fetch`, comphost and the shell).
 - A request is one line: `get <url> [range=a-[b]] [hops=n]` or `head <url> [hops=n]`. https only, port 443, URL at most 2,048 bytes.
-- An answer is `err <kind> [why]`. The kinds are refused, bad-url, tls, http, too-large, timeout and truncated, with why at most 200 printable bytes. Otherwise it is `ok <status>` and one field a line: `len`, then `type` and `retry` when the server sent them, then `url`, and `location` on an unfollowed redirect. A Content-Type can hold spaces, so it gets a line of its own.
+- An answer is `err <kind> [why]`. The kinds are refused, bad-url, tls, http, too-large, timeout and truncated, with why at most 200 printable bytes. Otherwise it is `ok <status>` and one field a line: `len`; `hops`, the request's plus those followed within the handle, so one limit of 5 holds across calls (C's review); then `type` and `retry` when the server sent them, then `url`, and `location` on an unfollowed redirect. With no hop left, a redirect off the handle is `err http`, not handed back. Only a redirect the walk handed back carries a `location`, so a 304 or a 300 is an answer like any other. A Content-Type can hold spaces, so it gets a line of its own.
 
 **The body** (at most 64 KiB) comes in an `Shm` that `fetch` makes (16 pages) and moves back with the answer. `fetch` never writes into memory a caller sized: no call reports an `Shm`'s size, and a short one would fault the service.
 
