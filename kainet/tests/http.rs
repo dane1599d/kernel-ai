@@ -362,6 +362,47 @@ fn redirects_are_followed_only_to_allowed_hosts_keeping_the_range() {
     assert_eq!(got, Err(HttpError::Refused("assets.test".into())));
 }
 
+/// `run_within` (P5 task 12's `fetch`): a redirect to a host `allow` takes is
+/// followed, and one to another host comes back unfollowed, as the 3xx with
+/// its Location and no body, for the caller to ask about.
+#[test]
+fn run_within_hands_back_a_redirect_off_its_hosts() {
+    let mut server = Server::new(&[
+        ("releases.test", b"HTTP/1.1 302 Found\r\nLocation: https://assets.test/blob\r\nContent-Length: 0\r\n\r\n"),
+        ("old.releases.test", b"HTTP/1.1 301 Moved\r\nLocation: https://releases.test/d\r\nContent-Length: 0\r\n\r\n"),
+    ]);
+    let only_releases = |host: &str, port: u16| port == 443 && host.ends_with("releases.test");
+    let fetch = Fetch {
+        limits: Limits::new(MAX, u64::MAX),
+        allow: &only_releases,
+        clock: &zero,
+    };
+    let url = Url::parse("https://old.releases.test/d").unwrap();
+    let mut body = Vec::new();
+    let got = fetch
+        .run_within(&mut server, Method::Get, &url, None, &mut |d| {
+            body.extend_from_slice(d);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        (
+            got.head.status,
+            got.url.host.as_str(),
+            got.head.location.as_deref(),
+            got.received
+        ),
+        (302, "releases.test", Some("https://assets.test/blob"), 0)
+    );
+    assert!(body.is_empty());
+    // The first redirect was followed, the second not: two requests, none to
+    // assets.test.
+    assert_eq!(server.requests().len(), 2);
+    let elsewhere = Url::parse("https://assets.test/blob").unwrap();
+    let refused = fetch.run_within(&mut server, Method::Get, &elsewhere, None, &mut |_| Ok(()));
+    assert_eq!(refused, Err(HttpError::Refused("assets.test".into())));
+}
+
 #[test]
 fn more_than_five_redirects_stop() {
     let reply = b"HTTP/1.1 301 Moved\r\nLocation: /again\r\nContent-Length: 0\r\n\r\n";

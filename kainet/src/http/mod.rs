@@ -176,11 +176,40 @@ impl Fetch<'_> {
         range: Option<Range>,
         sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
     ) -> Result<Fetched, HttpError> {
+        self.walk(connect, method, url, range, sink, false)
+    }
+
+    /// As [`Fetch::run`], but a redirect to a host `allow` refuses is not
+    /// followed: it comes back as the 3xx, with no body read, for the caller
+    /// to decide (`fetch`, P5 task 12: its caller asks about the new host and
+    /// calls again with a handle for it). The first URL's host must still be
+    /// allowed, and redirects `allow` takes are followed as [`Fetch::run`]
+    /// follows them.
+    pub fn run_within(
+        &self,
+        connect: &mut impl Connect,
+        method: Method,
+        url: &Url,
+        range: Option<Range>,
+        sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
+    ) -> Result<Fetched, HttpError> {
+        self.walk(connect, method, url, range, sink, true)
+    }
+
+    fn walk(
+        &self,
+        connect: &mut impl Connect,
+        method: Method,
+        url: &Url,
+        range: Option<Range>,
+        sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
+        within: bool,
+    ) -> Result<Fetched, HttpError> {
         let mut url = url.clone();
+        if !(self.allow)(&url.host, url.port) {
+            return Err(HttpError::Refused(url.host));
+        }
         for _ in 0..=self.limits.max_redirects {
-            if !(self.allow)(&url.host, url.port) {
-                return Err(HttpError::Refused(url.host));
-            }
             self.in_time()?;
             let mut stream = connect.connect(&url)?;
             stream.send(&head::request(method, &url, range))?;
@@ -191,7 +220,18 @@ impl Fetch<'_> {
                     .location
                     .as_deref()
                     .ok_or(HttpError::Head("a redirect with no Location"))?;
-                url = url.join(location).map_err(HttpError::Url)?;
+                let next = url.join(location).map_err(HttpError::Url)?;
+                if !(self.allow)(&next.host, next.port) {
+                    if within {
+                        return Ok(Fetched {
+                            url,
+                            head,
+                            received: 0,
+                        });
+                    }
+                    return Err(HttpError::Refused(next.host));
+                }
+                url = next;
                 continue;
             }
             if !matches!(head.status, 200 | 206) {

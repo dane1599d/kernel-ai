@@ -163,3 +163,52 @@ fn the_kai_net_draft_parses() {
     assert_eq!(resolve.worlds[world].imports.len(), 1);
     assert_eq!(resolve.worlds[world].exports.len(), 1);
 }
+
+/// `serve_within`, as the `fetch` service runs a call (P5 task 12): on a
+/// handle for one host, a redirect within it is followed, one to another
+/// host comes back unfollowed with its Location made absolute, and a call
+/// with all five hops taken is refused.
+#[test]
+fn the_service_follows_only_redirects_within_its_handle() {
+    let content = Content::new()
+        .file(REPO, "/hello", b"hello".to_vec())
+        .redirect(REPO, "/old", "/hello")
+        .redirect(REPO, "/away", &format!("https://{ASSETS}/blob"));
+    let mock = start(content).unwrap();
+    let only_repo = |host: &str, port: u16| port == 443 && host == REPO;
+    let zero = || 0;
+    let within = |path: &str, hops: u8| {
+        let mut connect: TlsConnect<Local> = connector(&mock);
+        let request = get(&format!("https://{REPO}{path}"));
+        fetch::serve_within(&request, hops, &only_repo, &mut connect, &zero, u64::MAX)
+    };
+    let (got, location) = within("/old", 0).unwrap();
+    assert_eq!(
+        (got.status, got.body.as_slice(), location),
+        (200, &b"hello"[..], None)
+    );
+    assert_eq!(got.url, format!("https://{REPO}/hello"));
+    let (got, location) = within("/away", 0).unwrap();
+    assert_eq!(
+        (
+            got.status,
+            got.body.len(),
+            got.url.as_str(),
+            location.as_deref()
+        ),
+        (
+            302,
+            0,
+            format!("https://{REPO}/away").as_str(),
+            Some(format!("https://{ASSETS}/blob").as_str())
+        )
+    );
+    assert_eq!(
+        within("/old", fetch::MAX_HOPS).map(|(r, _)| r.status),
+        Err(Error::Http("more than five redirects".into()))
+    );
+    assert_eq!(
+        within("/old", fetch::MAX_HOPS + 1).map(|(r, _)| r.status),
+        Err(Error::Http("more than five redirects".into()))
+    );
+}
