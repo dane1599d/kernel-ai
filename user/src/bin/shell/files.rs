@@ -388,6 +388,8 @@ pub const KEEP: &str = "keep";
 pub const APPEARANCE: &str = "appearance";
 /// The rows withheld from apps' effects (`kai-withheld 1`, P4 task 7).
 pub const WITHHELD: &str = "withheld";
+/// The apps' network grants (`kai-grants 1` host lines, P5 task 13).
+pub const NETGRANTS: &str = "netgrants";
 /// The restart window (`kai-updates 1`), in the folder `updated`'s read-only
 /// `dir=restart` gives it alone.
 pub const RESTART: &str = "restart/window";

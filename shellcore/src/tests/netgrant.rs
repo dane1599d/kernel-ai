@@ -29,7 +29,7 @@ fn a_new_host_asks_once_naming_the_app_and_the_host() {
     assert_eq!(asked.host, "api.weather.example");
     assert_eq!(
         asked.question,
-        "Let weather connect to api.weather.example?"
+        "Let weather connect to api.weather.example: net_connect(\"weather\", \"api.weather.example\")?"
     );
     assert_eq!(
         asked.call,

@@ -449,6 +449,7 @@ impl Shell {
             model: None,
             app: None,
             install: None,
+            net: None,
         });
         // The highlight starts on Allow only for a call the line plainly asked for.
         let origin = match why {
