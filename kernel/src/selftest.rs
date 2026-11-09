@@ -304,6 +304,8 @@ pub enum SelfTest {
     NetStream,
     /// P5 task 12's harness: xtask's HTTPS mock reached from ring 3.
     HttpsMock,
+    /// P5 task 12: the `fetch` service on its caller's handles.
+    FetchService,
     /// P5 task 3: ENTROPY's sample, which two boots must not share.
     EntropyBoots,
 }
@@ -483,6 +485,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net-dest" => Some(SelfTest::NetDest),
             "test=net-stream" => Some(SelfTest::NetStream),
             "test=https-mock" => Some(SelfTest::HttpsMock),
+            "test=fetch-service" => Some(SelfTest::FetchService),
             "test=entropy-boots" => Some(SelfTest::EntropyBoots),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());

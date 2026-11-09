@@ -93,6 +93,12 @@ pub fn with_updated(shell: &str, words: &str) -> String {
 /// set aside while a model's program runs: P4 task 14) and the modules they
 /// keep, and a `cc build` (P4 plan's 3,680 counted the heap alone).
 pub const CC: &str = "cc start=demand caps=serve pages=10240 stack_pages=512 burst_ms=5000";
+/// The `fetch` service (P5 task 12): apps' and the agent's HTTPS requests, each
+/// on the caller's own `NetDest` moved in with the call. NET so the kernel lets
+/// it receive one (it closes NET's own handle at once); room for a TLS client
+/// and one 64 KiB body. A caller's line names it in `uses=`, after this line.
+pub const FETCH: &str =
+    "fetch start=demand caps=serve+net pages=4096 stack_pages=64 burst_ms=30000";
 /// The file system service (ADR 0004): the only holder of the `kai-data`
 /// partition. Planned before the shell, and only when the disk has `kai-data`.
 /// Its pages hold a 16 MiB block cache and kaifs's working state. `kai-fs 1`'s
