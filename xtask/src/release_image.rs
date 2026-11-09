@@ -73,6 +73,10 @@ pub fn main(args: &[String]) -> Result<(), String> {
     if test_root {
         modules.extend(crate::pkgrepo::release_test()?);
     }
+    // No extra TLS root ships: a file in `netroots/` would be trusted for
+    // every host by fetch and the model download, which have TLS alone
+    // (K's review of #753).
+    check_no_netroots(&modules)?;
     print_modules(&modules);
     let efi = crate::ensure_limine(&target_dir)?;
     let esp_dir = target_dir.join(match test_root {
@@ -109,6 +113,21 @@ pub fn main(args: &[String]) -> Result<(), String> {
 
 const USAGE: &str = "usage: cargo xtask release-image [--test-root] [--out PATH]";
 
+/// Fails an image with a module under `netroots/`: the extra TLS roots only
+/// a boot case's bundle may carry (`cases::Https`, the HTTPS mock's CA).
+fn check_no_netroots(modules: &[esp::Module]) -> Result<(), String> {
+    match modules
+        .iter()
+        .find(|m| m.path.starts_with(kabi::net::NETROOTS))
+    {
+        Some(module) => Err(format!(
+            "{} is an extra TLS root, which only a boot case's bundle may carry",
+            module.path
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Each boot module's path, length and SHA-256, in path order: two builds
 /// that differ only beneath `pkgrepo/` print the same lines but those.
 fn print_modules(modules: &[esp::Module]) {
@@ -144,4 +163,25 @@ fn sha256_file(path: &std::path::Path) -> Result<String, String> {
         hash.update(&piece[..n]);
     }
     Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn module(path: &str) -> esp::Module {
+        esp::Module {
+            path: path.into(),
+            bytes: b"x".to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_release_refuses_an_extra_tls_root() {
+        let clean = [module("user/fetch.elf"), module("pkgrepo/root.json")];
+        assert_eq!(check_no_netroots(&clean), Ok(()));
+        let with_root = [module("user/fetch.elf"), module("netroots/1.der")];
+        let refused = check_no_netroots(&with_root).unwrap_err();
+        assert!(refused.contains("netroots/1.der"), "{refused}");
+    }
 }

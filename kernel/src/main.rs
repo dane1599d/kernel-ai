@@ -85,6 +85,7 @@ mod gdt;
 mod handle;
 mod handle_tests;
 mod hpet;
+mod https_tests;
 mod i8042;
 mod icount_tests;
 mod idt;
@@ -468,6 +469,8 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetStatic => run_case(net_tests::static_check),
         SelfTest::NetDest => run_case(net_tests::dest_check),
         SelfTest::NetStream => run_case(|| net_tests::stream_check(cmdline())),
+        SelfTest::HttpsMock => run_case(https_tests::check),
+        SelfTest::FetchService => run_case(https_tests::fetch_check),
         SelfTest::EntropyBoots => run_case(entropy_tests::check),
         SelfTest::Slot => {
             // A slot boot holds `updated`'s record calls until its lever has

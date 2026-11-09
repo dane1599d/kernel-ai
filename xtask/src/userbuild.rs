@@ -43,6 +43,8 @@ const USER_FLOAT_PROGRAMS: &[&str] = &[
     "appbench",
     "term",
     "cc",
+    "httpscheck",
+    "fetch",
 ];
 /// The view guest `appbench` embeds, built first.
 const APPBENCH_GUEST: &str = "comp-viewbench";

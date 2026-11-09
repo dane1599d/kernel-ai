@@ -2,6 +2,13 @@
 
 /// The longest host name, without a trailing dot.
 pub const MAX_HOST: usize = 253;
+/// The boot bundle's folder of extra TLS roots (DER certificates), which a
+/// holder of `cap::NET` may read with BOOT_READ without a `bootfiles=`: xtask
+/// puts its HTTPS mock's test CA there for the boot cases that use it, and a
+/// release bundle has none (P5 task 12).
+pub const NETROOTS: &str = "netroots/";
+/// The extra roots' files, `netroots/1.der` up to this number.
+pub const MAX_NETROOTS: usize = 4;
 /// The most addresses one answer gives.
 pub const MAX_ADDRESSES: usize = 8;
 /// How long the kernel tries before the call times out.

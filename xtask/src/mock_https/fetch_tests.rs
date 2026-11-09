@@ -163,3 +163,65 @@ fn the_kai_net_draft_parses() {
     assert_eq!(resolve.worlds[world].imports.len(), 1);
     assert_eq!(resolve.worlds[world].exports.len(), 1);
 }
+
+/// `serve_within`, as the `fetch` service runs a call (P5 task 12): on a
+/// handle for one host, a redirect within it is followed, one to another
+/// host comes back unfollowed with its Location made absolute, and a call
+/// with all five hops taken is refused.
+#[test]
+fn the_service_follows_only_redirects_within_its_handle() {
+    let content = Content::new()
+        .file(REPO, "/hello", b"hello".to_vec())
+        .redirect(REPO, "/old", "/hello")
+        .redirect(REPO, "/away", &format!("https://{ASSETS}/blob"));
+    let mock = start(content).unwrap();
+    let only_repo = |host: &str, port: u16| port == 443 && host == REPO;
+    let zero = || 0;
+    let within = |path: &str, hops: u8| {
+        let mut connect: TlsConnect<Local> = connector(&mock);
+        let request = get(&format!("https://{REPO}{path}"));
+        fetch::serve_within(&request, hops, &only_repo, &mut connect, &zero, u64::MAX)
+    };
+    let served = within("/old", 1).unwrap();
+    let got = &served.response;
+    assert_eq!(
+        (
+            got.status,
+            got.body.as_slice(),
+            served.location.clone(),
+            served.hops
+        ),
+        (200, &b"hello"[..], None, 2)
+    );
+    assert_eq!(got.url, format!("https://{REPO}/hello"));
+    let served = within("/away", 0).unwrap();
+    let got = &served.response;
+    assert_eq!(
+        (
+            got.status,
+            got.body.len(),
+            got.url.as_str(),
+            served.location.as_deref(),
+            served.hops
+        ),
+        (
+            302,
+            0,
+            format!("https://{REPO}/away").as_str(),
+            Some(format!("https://{ASSETS}/blob").as_str()),
+            0
+        )
+    );
+    // With every hop taken: neither a redirect within nor one handed back.
+    for path in ["/old", "/away"] {
+        assert_eq!(
+            within(path, fetch::MAX_HOPS).map(|s| s.response.status),
+            Err(Error::Http("more than five redirects".into())),
+            "{path}"
+        );
+    }
+    assert_eq!(
+        within("/old", fetch::MAX_HOPS + 1).map(|s| s.response.status),
+        Err(Error::Http("more than five redirects".into()))
+    );
+}

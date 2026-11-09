@@ -32,6 +32,10 @@ fsserve = { path = "../fsserve" }
 kaifs = { path = "../kaifs", default-features = false }
 kaibundle = { path = "../kaibundle" }
 kaipkg = { path = "../kaipkg" }
+# TLS 1.3 and HTTP/1.1 for the programs that reach the network (P5 task 12):
+# `user::tls` gives them TCP on a NetDest, roots, randomness and the date.
+kainet = { path = "../kainet", features = ["roots"] }
+rustls = { version = "=0.23.46", default-features = false }
 kaituf = { path = "../kaituf" }
 modelchan = { path = "../modelchan" }
 comp-models = { path = "../apps/models" }
