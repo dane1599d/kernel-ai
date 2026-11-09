@@ -227,13 +227,26 @@ pub fn serve(
 /// service (task 5's limit).
 pub const MAX_HOPS: u8 = 5;
 
+/// What the `fetch` service gives its caller for a request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Served {
+    pub response: Response,
+    /// Where a redirect to a host the handle does not reach leads, made
+    /// absolute; `response` is that redirect's 3xx, with no body.
+    pub location: Option<String>,
+    /// The request's hops and the redirects followed within the handle: the
+    /// caller's next call, to `location`, says this many plus one.
+    pub hops: u8,
+}
+
 /// What the `fetch` service gives its caller for `request` (P5 task 12): as
 /// [`serve`], on the caller's own handle, whose `allow` says which hosts it
 /// reaches (in the OS, the kernel's RESOLVE_ON). The request's host must be
 /// one of them. A redirect to one of them is followed, at most [`MAX_HOPS`]
 /// less `hops` of them; a redirect to another comes back unfollowed, as its
 /// 3xx with no body and its Location made absolute, for the caller to ask
-/// about the new host and call again with a handle for it and `hops` + 1.
+/// about the new host and call again with a handle for it and
+/// [`Served::hops`] + 1 (C's review of #755: one limit of five across calls).
 pub fn serve_within(
     request: &Request,
     hops: u8,
@@ -241,7 +254,7 @@ pub fn serve_within(
     connect: &mut impl Connect,
     clock: &dyn Fn() -> u64,
     deadline_ns: u64,
-) -> Result<(Response, Option<String>), Error> {
+) -> Result<Served, Error> {
     let url = Url::parse(&request.url).map_err(|text| Error::BadUrl(why(text)))?;
     let Some(left) = MAX_HOPS.checked_sub(hops) else {
         return Err(Error::Http(why("more than five redirects")));
@@ -258,18 +271,11 @@ pub fn serve_within(
         body.extend_from_slice(bytes);
         Ok(())
     })?;
-    // A redirect that came back is one whose host `allow` refused.
-    let location = match got.head.status {
-        300..=399 => {
-            let location = got.head.location.as_deref().unwrap_or_default();
-            let next = got
-                .url
-                .join(location)
-                .map_err(|_| Error::Http(why("a redirect to a URL that is not https")))?;
-            Some(format!("https://{}{}", next.authority(), next.path))
-        }
-        _ => None,
-    };
+    // Only a redirect the walk handed back has a Location here: a 304, or a
+    // 300 with one, is a response like any other (C's review of #755).
+    let location = got
+        .unfollowed
+        .map(|next| format!("https://{}{}", next.authority(), next.path));
     let response = Response {
         status: got.head.status,
         url: format!("https://{}{}", got.url.authority(), got.url.path),
@@ -277,7 +283,11 @@ pub fn serve_within(
         retry_after: got.head.retry_after,
         body,
     };
-    Ok((response, location))
+    Ok(Served {
+        response,
+        location,
+        hops: hops.saturating_add(got.redirects),
+    })
 }
 
 /// One app instance's waiting requests, by ticket. A ticket is never given
