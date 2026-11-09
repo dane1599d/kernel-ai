@@ -377,6 +377,14 @@ fn execute(options: &Options) -> Result<(), String> {
                     bytes: onlines[&kind].ca().to_vec(),
                 });
             }
+            if case.online_release.is_some() {
+                // The one root every mock of this run serves under, known before
+                // the mock exists: the image the mock serves carries it too.
+                modules.push(esp::Module {
+                    path: format!("{}/tls-test-ca.der", pkgrepo::IMAGE_DIR),
+                    bytes: mock_https::shared_ca()?,
+                });
+            }
             let update_disk = match case.update {
                 Some(update) => Some(update_disk(
                     &root,
@@ -388,6 +396,18 @@ fn execute(options: &Options) -> Result<(), String> {
                 )?),
                 None => None,
             };
+            if let Some(fault) = case.online_release {
+                // This build as the next release, served by the HTTPS mock as
+                // GitHub serves the update repository (P5 task 10).
+                let (image, release) = update_image(&root, &target_dir, &kernel, &modules, &efi)?;
+                let mock =
+                    mock_https::start(image::update_online::content(&image, release, fault)?)?;
+                cmdline = format!("{cmdline} {}", mock.cmdline());
+                println!(
+                    "xtask: online release {release}, {} MiB, on the HTTPS mock ({fault:?})",
+                    image.len() >> 20
+                );
+            }
             if let Some(package) = case.tampered {
                 pkgrepo::flip(&mut modules, package)?;
             }
@@ -675,6 +695,30 @@ fn find_qemu() -> Result<PathBuf, String> {
     Err("QEMU not found: install qemu-system-x86_64 or set QEMU to its path".into())
 }
 
+/// This build as a slot image of the next release, and that release's number:
+/// what an update disk carries, and what the HTTPS mock serves as the online
+/// repository's `slot.img`. The image's bundle carries its own `kai.slot`
+/// naming that release.
+fn update_image(
+    root: &Path,
+    target_dir: &Path,
+    kernel: &Path,
+    modules: &[esp::Module],
+    efi: &Path,
+) -> Result<(Vec<u8>, u32), String> {
+    let release = SLOT_RELEASE_SEQ + 1;
+    let record = image::slots::slot_record(root, release);
+    let mut files: Vec<&esp::Module> = modules.iter().filter(|m| m.path != "kai.slot").collect();
+    let slot_file = esp::Module {
+        path: "kai.slot".into(),
+        bytes: record.clone().into_bytes(),
+    };
+    files.push(&slot_file);
+    let staging = target_dir.join("esp-update");
+    esp::make_esp(&staging, kernel, &files, efi, "")?;
+    Ok((image::slots::slot_image(&staging, &record)?, release))
+}
+
 /// Builds `target/update.img` for a case: this build as a slot image of the
 /// next release, signed by the run's test root (`image/update_disk.rs`). The
 /// image's bundle carries its own `kai.slot` naming that release.
@@ -686,17 +730,7 @@ fn update_disk(
     efi: &Path,
     update: cases::UpdateDisk,
 ) -> Result<String, String> {
-    let release = SLOT_RELEASE_SEQ + 1;
-    let record = image::slots::slot_record(root, release);
-    let mut files: Vec<&esp::Module> = modules.iter().filter(|m| m.path != "kai.slot").collect();
-    let slot_file = esp::Module {
-        path: "kai.slot".into(),
-        bytes: record.clone().into_bytes(),
-    };
-    files.push(&slot_file);
-    let staging = target_dir.join("esp-update");
-    esp::make_esp(&staging, kernel, &files, efi, "")?;
-    let image = image::slots::slot_image(&staging, &record)?;
+    let (image, release) = update_image(root, target_dir, kernel, modules, efi)?;
     let disk = image::update_disk::test_root()?.disk(&image, release, update.tampered)?;
     let name = String::from("update.img");
     fs::write(target_dir.join(&name), &disk).map_err(|e| format!("cannot write {name}: {e}"))?;

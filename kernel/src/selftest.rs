@@ -511,6 +511,16 @@ fn updated_words(test: SelfTest) -> String {
         .find_map(|w| w.strip_prefix("updated="))
         .unwrap_or("check");
     let mut words = format!(" after=restart step={step}");
+    if step == "online" {
+        // `updated` reaches the HTTPS mock's three hosts on its port through a
+        // `NetDest` of its own (P5 task 10). Its pages hold a 2 MiB chunk, the
+        // read-back buffers and the TLS records on top of `kabi::plan::UPDATED`'s.
+        let port = crate::pkg_tests::https_port();
+        let hosts = crate::pkg_tests::ONLINE_HOSTS;
+        words.push_str(&format!(
+            " pages=6144 online=test:{port} netdest=proto:tcp,ports:{port},hosts:{hosts}"
+        ));
+    }
     for word in crate::cmdline()
         .split_whitespace()
         .filter_map(|w| w.strip_prefix("updated."))

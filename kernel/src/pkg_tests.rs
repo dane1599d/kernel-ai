@@ -178,12 +178,12 @@ impl Step {
 /// The host names the online case's `NetDest` allows: xtask's HTTPS mock's
 /// three, the update repository's Pages host, GitHub's releases host and its
 /// release-assets host (`kaipkg::online::Hosts::mock`).
-const ONLINE_HOSTS: &str = "updates.kai.test+releases.kai.test+assets.kai.test";
+pub(crate) const ONLINE_HOSTS: &str = "updates.kai.test+releases.kai.test+assets.kai.test";
 
 /// The mock's port, from `https=IP:PORT` on the command line (xtask's HTTPS
 /// mock, which the guest reaches at 10.0.2.2); 0 if there is none, and `pkg`
 /// then fails by name.
-fn https_port() -> u16 {
+pub(crate) fn https_port() -> u16 {
     crate::cmdline()
         .split_whitespace()
         .find_map(|word| word.strip_prefix("https="))

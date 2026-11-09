@@ -22,7 +22,6 @@ const USER_PROGRAMS: &[&str] = &[
     "scriptrun",
     "fs",
     "filecheck",
-    "updated",
     "deskdemo",
     "tufbench",
 ];
@@ -31,8 +30,8 @@ const USER_PROGRAMS: &[&str] = &[
 /// `appbench`, which measures comphost's crates there; `desktop` and `term`, whose
 /// renderer (`gfx2d`) works in floats (ADR 0005 §1); `cc`, whose wasmi runs the
 /// compiler and the `c>` sessions (ADR 0012 D2); `pkg`, a TLS client (plan
-/// p5-networking §4, item 3: AES-NI and the vector paths run only here); and the
-/// tests that check the kernel keeps vector state apart.
+/// p5-networking §4, item 3: AES-NI and the vector paths run only here) and
+/// `updated`, the same; and the tests that check the kernel keeps vector state apart.
 const USER_FLOAT_PROGRAMS: &[&str] = &[
     "llm",
     "desktop",
@@ -44,6 +43,7 @@ const USER_FLOAT_PROGRAMS: &[&str] = &[
     "term",
     "cc",
     "pkg",
+    "updated",
 ];
 /// The view guest `appbench` embeds, built first.
 const APPBENCH_GUEST: &str = "comp-viewbench";

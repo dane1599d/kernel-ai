@@ -26,7 +26,6 @@ use std::sync::OnceLock;
 /// The target an update disk carries, as `updated` looks it up.
 pub const TARGET: &str = "slot.img";
 /// An online release's chunk list, a sibling target (`updatenet::plan`).
-#[cfg(test)]
 pub const CHUNKS_TARGET: &str = "slot.img.chunks";
 const DAY: u64 = 86_400;
 
@@ -60,8 +59,8 @@ pub fn test_root() -> Result<&'static TestRoot, String> {
 }
 
 impl TestRoot {
-    fn expires(&self, days: u64) -> String {
-        Time(self.now.0 + days * DAY).format()
+    fn expires(&self, days: i64) -> String {
+        Time(self.now.0.saturating_add_signed(days * DAY as i64)).format()
     }
 
     /// `1.root.json`: the device's trust anchor, `kai.root.json` in a slot's bundle.
@@ -87,6 +86,16 @@ impl TestRoot {
     /// (version 1): `metadata/1.root.json`, `1.targets.json`, `1.snapshot.json`
     /// and `timestamp.json`, signed by this root.
     fn metadata(&self, targets: &serde_json::Value) -> Result<Vec<(String, Vec<u8>)>, String> {
+        self.metadata_with(targets, 7)
+    }
+
+    /// [`Self::metadata`] with the timestamp expiring `timestamp_days` from now: a
+    /// negative number is metadata that has expired.
+    fn metadata_with(
+        &self,
+        targets: &serde_json::Value,
+        timestamp_days: i64,
+    ) -> Result<Vec<(String, Vec<u8>)>, String> {
         let snapshot = json!({
             "_type": "snapshot",
             "spec_version": SPEC_VERSION,
@@ -99,7 +108,7 @@ impl TestRoot {
             "_type": "timestamp",
             "spec_version": SPEC_VERSION,
             "version": 1,
-            "expires": self.expires(7),
+            "expires": self.expires(timestamp_days),
             "meta": {
                 "snapshot.json": {
                     "version": 1,
@@ -135,13 +144,35 @@ impl TestRoot {
     /// the Pages host serves them. The targets are served as release assets
     /// named `<sha256>.<name>` (consistent snapshots); a test builds those from
     /// the bytes it signs.
-    #[cfg(test)]
     pub fn repository(
         &self,
         image: &[u8],
         list: &[u8],
         release_seq: u32,
         tag: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>, String> {
+        self.repository_with(image, list, release_seq, tag, 7)
+    }
+
+    /// [`Self::repository`] with its timestamp already expired (a day ago): the
+    /// refresh refuses it by name.
+    pub fn repository_expired(
+        &self,
+        image: &[u8],
+        list: &[u8],
+        release_seq: u32,
+        tag: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>, String> {
+        self.repository_with(image, list, release_seq, tag, -1)
+    }
+
+    fn repository_with(
+        &self,
+        image: &[u8],
+        list: &[u8],
+        release_seq: u32,
+        tag: &str,
+        timestamp_days: i64,
     ) -> Result<Vec<(String, Vec<u8>)>, String> {
         let targets = json!({
             "_type": "targets",
@@ -160,7 +191,7 @@ impl TestRoot {
                 },
             },
         });
-        self.metadata(&targets)
+        self.metadata_with(&targets, timestamp_days)
     }
 
     /// The update disk carrying `image` as release `release_seq`. With

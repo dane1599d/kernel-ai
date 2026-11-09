@@ -79,6 +79,15 @@ fn seed(n: u8) -> [u8; 32] {
     seed
 }
 
+/// The one PKI of this xtask run, made on first use: every mock started in the
+/// run shares its CA, so a boot case can carry the CA it trusts in the image
+/// before its own mock exists (the update cases build the image the mock serves,
+/// with the CA already in it).
+pub fn shared() -> Result<Arc<Pki>, String> {
+    static SHARED: OnceLock<Result<Arc<Pki>, String>> = OnceLock::new();
+    SHARED.get_or_init(|| Pki::new().map(Arc::new)).clone()
+}
+
 impl Pki {
     pub fn new() -> Result<Self, String> {
         let key = |n| Key::new(KeyKind::P256, seed(n));

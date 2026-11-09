@@ -6,6 +6,7 @@
 
 use super::{TestCase, case};
 use crate::blklog::Data;
+use crate::image::update_online::Fault;
 use crate::pkgrepo::mirrors::MirrorKind;
 
 const VIRTIO: Data = Data {
@@ -126,4 +127,128 @@ pub(super) const CASES: &[TestCase] = &[
             MirrorKind::HeaderDiffers,
         )
     },
+    TestCase {
+        then: Some(&A_FROM_NET),
+        ..slot_boot("update-online", "test=slot panic=reset", INSTALL)
+    },
+    TestCase {
+        then: Some(&A_REFUSES_FLIP),
+        ..slot_boot("update-online-flipped", "test=slot panic=reset", INSTALL)
+    },
+    TestCase {
+        then: Some(&A_REFUSES_EXPIRED),
+        ..slot_boot("update-online-expired", "test=slot panic=reset", INSTALL)
+    },
 ];
+
+// ---- updates over the network (P5 task 10)
+
+/// A slot boot: ends in a reset, which QEMU reports as status 0 under
+/// `-no-reboot`. On the `kai-data` disk, so `updated` has `/system/trust` and
+/// `/system/updates`.
+const fn slot_boot(
+    name: &'static str,
+    cmdline: &'static str,
+    expect: &'static [&'static str],
+) -> TestCase {
+    TestCase {
+        expect,
+        server: false,
+        resets: true,
+        slots: true,
+        data: Some(VIRTIO),
+        ..case(name, cmdline)
+    }
+}
+
+/// A slot boot where `updated` reaches the HTTPS mock, which serves this build
+/// as release 2 with `fault`.
+const fn online_boot(
+    name: &'static str,
+    expect: &'static [&'static str],
+    fault: Fault,
+) -> TestCase {
+    TestCase {
+        dns: true,
+        online_release: Some(fault),
+        ..slot_boot(name, "test=update updated=online panic=reset", expect)
+    }
+}
+
+/// The first boot of a chain: a fresh install in R, which arms A.
+const INSTALL: &[&str] = &[
+    "slots: booted recovery (record missing)",
+    "slots: in R with no record: installed release 1 in kai-a and kai-b as trials",
+    "slots: R arms kai-a (trial)",
+    "slots: next boot kai-a",
+];
+
+/// `update-online` boot 3: B boots release 2, and the same repository offered
+/// again is refused, now from the root `/system/trust` kept.
+const B_FROM_NET: TestCase = online_boot(
+    "update-online (3: kai-b boots release 2)",
+    &[
+        "slots: booted kai-b (record read)",
+        "slots: up in kai-b (trial, 2 tries left)",
+        "updated: reconciled: OnTrial",
+        "updated: the trusted root is /system/trust's",
+        "updated: FAIL refused: release 2 is not newer than 2 (anti-rollback)",
+        "updated: restarting into the running slot",
+    ],
+    Fault::None,
+);
+
+/// `update-online` boot 2: `updated` in A reads the repository's metadata over
+/// TLS, streams release 2 into B in checked 2 MiB chunks, and restarts into it.
+const A_FROM_NET: TestCase = TestCase {
+    then: Some(&B_FROM_NET),
+    ..online_boot(
+        "update-online (2: updated writes kai-b over the network)",
+        &[
+            "updated: the trusted root is the slot's own",
+            "updated: the online repository verifies: slot.img is release 2, ",
+            "updated: took update snapshot ",
+            "updated: wrote release 2 into B over TLS and checked it: 0 chunks kept, ",
+            "updated: the verified metadata is in /system/trust",
+            "update: restarting into kai-b",
+        ],
+        Fault::None,
+    )
+};
+
+/// `update-online-flipped` boot 3: A again, and B, refused, cannot boot.
+const A_AFTER_FLIP: TestCase = slot_boot(
+    "update-online-flipped (3: still kai-a)",
+    "test=slot panic=reset",
+    &[
+        "slots: booted kai-a (record read)",
+        "slots: up in kai-a (trial, 1 tries left)",
+        "slots: kai-b cannot boot (Updating)",
+    ],
+);
+
+/// `update-online-flipped` boot 2: one byte of the image the mock serves is not
+/// the one the signed chunk list names, so its chunk is refused and not written.
+const A_REFUSES_FLIP: TestCase = TestCase {
+    then: Some(&A_AFTER_FLIP),
+    ..online_boot(
+        "update-online-flipped (2: updated refuses a chunk)",
+        &[
+            "updated: the online repository verifies: slot.img is release 2, ",
+            "is not the signed one; the slot stays unbootable",
+            "updated: restarting into the running slot",
+        ],
+        Fault::FlippedByte,
+    )
+};
+
+/// `update-online-expired` boot 2: the repository's timestamp lapsed, so its
+/// metadata is refused by name and nothing is written.
+const A_REFUSES_EXPIRED: TestCase = online_boot(
+    "update-online-expired (2: updated refuses the metadata)",
+    &[
+        "updated: FAIL refused: the repository was refused: expired: timestamp",
+        "updated: restarting into the running slot",
+    ],
+    Fault::Expired,
+);

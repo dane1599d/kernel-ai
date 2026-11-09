@@ -39,6 +39,7 @@ extern crate alloc;
 mod disk;
 mod folders;
 mod models;
+mod online;
 mod restore;
 mod window;
 
@@ -117,6 +118,15 @@ fn main() -> i32 {
         (Some("update"), _) => {
             let now = !args.split_whitespace().any(|w| w == "restart=window");
             disk::update(handle, now).map(|staged| {
+                if !now {
+                    window::wait(handle, staged, args);
+                }
+            })
+        }
+        // The same from the online repository, over TLS (P5 task 10).
+        (Some("online"), _) => {
+            let now = !args.split_whitespace().any(|w| w == "restart=window");
+            online::update(handle, now, args).map(|staged| {
                 if !now {
                     window::wait(handle, staged, args);
                 }

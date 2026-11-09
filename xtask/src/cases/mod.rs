@@ -126,6 +126,11 @@ pub struct TestCase {
     /// test CA added to the image's repository folder, the hosts in the mock DNS
     /// zone (`dns` is set with it).
     pub online: Option<crate::pkgrepo::mirrors::MirrorKind>,
+    /// The next release, served over TLS by the HTTPS mock as GitHub serves the
+    /// update repository (P5 task 10), with `fault`: this build as a slot image,
+    /// its metadata signed by the run's test root, the test CA in the image's
+    /// repository folder (`dns` is set with it).
+    pub online_release: Option<crate::image::update_online::Fault>,
 }
 
 /// What a case's update disk holds.
@@ -172,6 +177,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         tampered: None,
         mirror: None,
         online: None,
+        online_release: None,
     }
 }
 

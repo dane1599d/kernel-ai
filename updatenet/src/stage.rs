@@ -41,6 +41,15 @@ use kaituf::meta::TargetFile;
 /// back. A `set` is durable when it returns.
 pub trait Boot {
     fn set(&mut self, nv: &Nv) -> Result<(), &'static str>;
+
+    /// Called once, after every chunk, the read-back and the metadata check
+    /// have passed and before the slot becomes a trial: the place for what a
+    /// first boot that fails must be able to go back to (ADR 0008 §10's
+    /// snapshot of the system volume, taken while the slot still cannot boot).
+    /// An error stops the stage with [`Stop::Store`], the slot still Updating.
+    fn before_trial(&mut self, _job: &Job) -> Result<(), &'static str> {
+        Ok(())
+    }
 }
 
 /// What a staged update is.
@@ -203,6 +212,7 @@ pub fn stage(
         }
     };
     confirm(job, recheck)?;
+    boot.before_trial(job).map_err(Stop::Store)?;
     bootslot::stage_end(nv, job.slot, job.release.seq);
     boot.set(nv).map_err(Stop::Store)?;
     Ok(Staged {

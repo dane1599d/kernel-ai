@@ -141,6 +141,13 @@ impl Content {
         self
     }
 
+    /// The bytes at `path` on `host`, for a test of what a case would serve.
+    #[cfg(test)]
+    pub fn get(&self, host: &str, path: &str) -> Option<&[u8]> {
+        let file = self.files.get(&(host.to_string(), path.to_string()))?;
+        Some(file.as_slice())
+    }
+
     /// `path` on `host` answers 302 to `location`, a whole URL.
     pub fn redirect(mut self, host: &str, path: &str, location: &str) -> Self {
         self.redirects
@@ -229,9 +236,15 @@ fn fault_for(faults: &Faults, host: &str, path: &str) -> Option<Fault> {
         .cloned()
 }
 
+/// The test CA's certificate in DER, which every mock of this run serves under
+/// ([`pki::shared`]): the root a guest trusts, known before any mock starts.
+pub fn shared_ca() -> Result<Vec<u8>, String> {
+    Ok(pki::shared()?.ca_der().to_vec())
+}
+
 /// Starts the mock on a free local port. It runs until xtask exits.
 pub fn start(content: Content) -> Result<Mock, String> {
-    let pki = Arc::new(pki::Pki::new()?);
+    let pki = pki::shared()?;
     let faults: Faults = Arc::default();
     let served = Arc::new(Mutex::new(Vec::new()));
     let listener = TcpListener::bind(("127.0.0.1", 0))

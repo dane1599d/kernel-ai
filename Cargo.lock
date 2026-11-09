@@ -2702,6 +2702,7 @@ dependencies = [
  "termcore",
  "uikit",
  "uipaint",
+ "updatenet",
  "wasmhost",
 ]
 

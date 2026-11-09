@@ -32,6 +32,7 @@ fsserve = { path = "../fsserve" }
 kaifs = { path = "../kaifs", default-features = false }
 kaibundle = { path = "../kaibundle" }
 kaipkg = { path = "../kaipkg", features = ["online"] }
+updatenet = { path = "../updatenet" }
 kaituf = { path = "../kaituf" }
 kainet = { path = "../kainet", features = ["roots"] }
 rustls = { version = "=0.23.46", default-features = false }
