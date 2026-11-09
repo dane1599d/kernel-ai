@@ -40,6 +40,9 @@ pub enum ActCase {
     AppModels,
     /// `profile-switch` (P3 task 12): profiles through the supervisor.
     Profile,
+    /// `net-pf` (P5 task 11): read content goes out only to a host the line
+    /// names; any other asks and names the source.
+    NetPf,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -342,6 +345,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=act-rollback" => Some(SelfTest::Act(ActCase::Rollback)),
             "test=act-ask" => Some(SelfTest::Act(ActCase::Ask)),
             "test=act-inject" => Some(SelfTest::Act(ActCase::Inject)),
+            "test=net-pf" => Some(SelfTest::Act(ActCase::NetPf)),
             "test=act-rule" => Some(SelfTest::Act(ActCase::Rule)),
             "test=pkg-local" => Some(SelfTest::Act(ActCase::PkgLocal)),
             "test=act-convo" => Some(SelfTest::Act(ActCase::Convo)),

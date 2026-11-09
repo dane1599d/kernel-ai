@@ -856,6 +856,17 @@ It changes {}{why}. Go ahead? y/n, or show",
     )
 }
 
+/// The question for a script that would send read content out of the machine
+/// to a host the request did not name (P-F): `from` says where it was read.
+pub fn sends(id: u64, checked: &Checked, asking: &[&str], from: &str) -> String {
+    format!(
+        "script {id}: {}
+It would send what Kai read from {from} out of this machine with {}. Go ahead? y/n, or show",
+        checked.summary,
+        asking.join(", ")
+    )
+}
+
 /// A script as the user sees it: the shell's own account of what it uses first,
 /// then what the model says, then every line.
 pub fn shown(id: u64, checked: &Checked) -> String {

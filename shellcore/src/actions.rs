@@ -67,9 +67,14 @@ fn yes_or_no(text: &str) -> Option<bool> {
     }
 }
 
-/// Each call of `checked`'s plan with its consent for `request`.
-fn decided(request: &str, checked: &Checked) -> Vec<(&'static str, Decision)> {
-    let decisions = checked.plan.decide(request, &agentabi::ROWS);
+/// Each call of `checked`'s plan with its consent for `request`, with the
+/// shell's host words.
+fn decided(
+    request: &str,
+    checked: &Checked,
+    hosts: &nethosts::Table,
+) -> Vec<(&'static str, Decision)> {
+    let decisions = checked.plan.decide(request, &agentabi::ROWS, hosts);
     checked
         .plan
         .sites
@@ -95,7 +100,7 @@ impl Shell {
     /// the line and the labels of its values (ADR 0002 D3, D6), raised to its row's
     /// tier in the table, and the calls at that tier.
     pub(crate) fn tier_of(&self, request: &str, checked: &Checked) -> (Tier, Vec<&'static str>) {
-        let tiered: Vec<(&'static str, Tier)> = decided(request, checked)
+        let tiered: Vec<(&'static str, Tier)> = decided(request, checked, &self.hosts)
             .into_iter()
             .map(|(name, decision)| (name, decision.tier.max(tiers::of(self.tiers, name))))
             .collect();
@@ -121,7 +126,7 @@ impl Shell {
             return None;
         }
         let mut added: Vec<&'static str> = Vec::new();
-        for (name, decision) in decided(request, checked) {
+        for (name, decision) in decided(request, checked, &self.hosts) {
             let change = agentabi::find(&agentabi::ROWS, name).is_some_and(|r| !r.facts.read_only);
             if change && decision.why == Why::Added && !added.contains(&name) {
                 added.push(name);
@@ -134,13 +139,25 @@ impl Shell {
     /// a call, or added by the model if every one of them is run-tier in the table,
     /// or else for having no undo.
     fn question(&self, id: u64, request: &str, checked: &Checked, asking: &[&str]) -> String {
-        let steered =
-            decided(request, checked)
-                .into_iter()
-                .find_map(|(_, decision)| match decision.why {
-                    Why::Steered(source) | Why::Outbound(source) => Some(source),
-                    _ => None,
-                });
+        let decisions = decided(request, checked, &self.hosts);
+        // P-F: read content would leave the machine, which is no change but asks
+        // all the same; the question says where the data came from.
+        if let Some(source) = decisions
+            .iter()
+            .find_map(|(_, decision)| match decision.why {
+                Why::Outbound(source) => Some(source),
+                _ => None,
+            })
+        {
+            let sending = crate::agentcore::read_from(source);
+            return script::sends(id, checked, asking, &sending);
+        }
+        let steered = decisions
+            .into_iter()
+            .find_map(|(_, decision)| match decision.why {
+                Why::Steered(source) => Some(source),
+                _ => None,
+            });
         let added = asking
             .iter()
             .all(|name| tiers::of(self.tiers, name) == Tier::Run);
@@ -176,7 +193,7 @@ impl Shell {
             self.host
                 .audit(&format!("script {id} tier run; running it"));
             let taken_as = matches!(
-                decided(request, &checked).as_slice(),
+                decided(request, &checked, &self.hosts).as_slice(),
                 [(
                     _,
                     Decision {

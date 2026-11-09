@@ -24,11 +24,24 @@ pub(super) fn bind(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx:
                     .map(|text| data::Data::new("web", text))
                     .map_err(fail)
             });
+            let (h3, tx3) = (Rc::clone(&h), tx.clone());
             engine.register_fn(
                 name,
                 move |host: &str, path: &str| -> RhaiResult<data::Data> {
                     tx.approved(name, &[host, path])?;
                     h.net_fetch(host, path)
+                        .map(|text| data::Data::new("web", text))
+                        .map_err(fail)
+                },
+            );
+            // Read content as the path: the one way `Data` leaves the machine.
+            // Consent let it through only to a host the line names (P-F), or
+            // after the user said yes to an ask that named its source.
+            engine.register_fn(
+                name,
+                move |host: &str, path: data::Data| -> RhaiResult<data::Data> {
+                    tx3.approved(name, &[host, path.text()])?;
+                    h3.net_fetch(host, path.text())
                         .map(|text| data::Data::new("web", text))
                         .map_err(fail)
                 },

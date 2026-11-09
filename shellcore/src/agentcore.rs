@@ -289,9 +289,13 @@ impl Shell {
         let decision = match row.owner {
             agentabi::Owner::App(_) => {
                 let rows: Vec<Action> = agentabi::ROWS.iter().copied().chain([*row]).collect();
-                consent::decide(request, &planned, &rows)[0]
+                let net = crate::analyse::grounding(&self.hosts);
+                consent::decide_net(request, &planned, &rows, &net)[0]
             }
-            _ => consent::decide(request, &planned, &agentabi::ROWS)[0],
+            _ => {
+                let net = crate::analyse::grounding(&self.hosts);
+                consent::decide_net(request, &planned, &agentabi::ROWS, &net)[0]
+            }
         };
         if decision.tier == Tier::Never {
             return self.refuse(id, request, call, decision.why, "it is never run");
@@ -672,10 +676,12 @@ fn quote(s: &str) -> Option<String> {
 
 /// Where content a call was steered by came from, in words: a window's view,
 /// a file, or an app's answer, named as people know the app.
-fn read_from(source: &str) -> String {
+pub(crate) fn read_from(source: &str) -> String {
     match source {
         "ui" => String::from("what a window shows"),
         "fs" => String::from("a file"),
+        "web" => String::from("a web page"),
+        "dns" => String::from("a name lookup"),
         app => format!("what {} answered", crate::apps::title(app)),
     }
 }
