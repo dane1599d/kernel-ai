@@ -6,47 +6,41 @@
 //! (`step=mirror*`): metadata against the root the image carries, a package by
 //! its length and SHA-256 and then its header.
 //!
+//! The TLS client is `user::tls`'s, shared with the other programs that reach the
+//! network: the transport on the handle, Mozilla's roots and the boot bundle's
+//! `netroots/`, ENTROPY and NET_TIME.
+//!
 //! The plan line says which repository, because only a boot case reaches the
-//! mock: `online=test:PORT` is xtask's HTTPS mock (its hosts, `Hosts::mock`),
-//! reached at 10.0.2.2 on PORT, trusted through the one root certificate the
-//! case adds to the image's repository folder (`tls-test-ca.der`). The handle
-//! allows the mock's three hosts on PORT and nothing else. The shipping
-//! system's repository (`Hosts::github`, Mozilla's roots, port 443) is asked for
+//! mock: `online=test` is xtask's HTTPS mock (`Hosts::mock`), whose test CA is
+//! the bundle's one extra root. The handle allows its three hosts on port 443 and
+//! nothing else. The shipping system's repository (`Hosts::github`) is asked for
 //! by the follow-up that gives `pkg` an install request.
 //!
 //! - `online`: generation 1 from the image; a name off the repository's hosts is
 //!   refused by the handle before any query leaves; then [`FROM_MIRROR`] installs;
 //! - `online-again` (boot 2): undo, then the same install again, from the store;
-//! - `online-tampered`, `online-rollback`: the repository is tampered with (or a
-//!   certificate is wrong), and the install is refused by name.
+//! - `online-tampered`, `online-rollback`: the repository is tampered with, and
+//!   the install is refused by name.
 
-use super::{BootRepo, Calls, Repository, dated, image, install_from, seed_root};
+use super::{Calls, Repository, dated, image, install_from, seed_root};
 use alloc::format;
 use alloc::string::String;
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP};
 use kainet::http::{Dial, TlsConnect};
 use kaipkg::fsvol::FsVolume;
-use kaipkg::image::Files;
 use kaipkg::online::{Hosts, Online};
-use user::net::{NetDial, roots_of, tls_config};
+use user::tls::{self, NetDial};
 use user::{println, sys};
 
 /// How long one request may take, redirects included: a full handshake on an
 /// emulated CPU takes seconds.
 const REQUEST_NS: u64 = 120_000_000_000;
-/// The boot cases' test CA, a file of the image's repository folder.
-const TEST_CA: &str = "tls-test-ca.der";
-/// The longest certificate read.
-const CA_MAX: u64 = 4096;
 /// A name no repository host has, which the handle must refuse to resolve.
 const OFF_LIST: &str = "elsewhere.kai.test";
 
-/// The port in `online=test:PORT`.
-fn test_port(args: &str) -> Option<u16> {
-    args.split_whitespace()
-        .find_map(|w| w.strip_prefix("online=test:"))
-        .and_then(|port| port.parse().ok())
-        .filter(|port| *port > 0)
+/// Whether the plan line asks for xtask's HTTPS mock (`online=test`).
+fn test_repository(args: &str) -> bool {
+    args.split_whitespace().any(|w| w == "online=test")
 }
 
 /// The `NetDest` handle among the startup handles.
@@ -57,11 +51,6 @@ fn netdest() -> Option<Handle> {
         .iter()
         .find(|info| info.kind() == Some(Kind::NetDest))
         .map(|info| Handle(info.handle))
-}
-
-/// The date, for the certificates' validity: the same clock `kaituf` uses.
-fn now_s() -> Option<u64> {
-    sys::pkg_time().ok()
 }
 
 /// A host off the repository's is refused by the handle, so no query for it
@@ -77,13 +66,12 @@ fn off_list_refused(dial: &mut NetDial) -> Result<(), String> {
 }
 
 pub(crate) fn run(vol: &mut FsVolume<Calls>, step: &str, args: &str) -> Result<String, String> {
-    let port = test_port(args).ok_or("step=online takes online=test:PORT")?;
+    if !test_repository(args) {
+        return Err(String::from("step=online takes online=test"));
+    }
     image(vol, Some(step))?;
     let dest = netdest().ok_or("pkg has no NetDest handle")?;
-    let mut dial = NetDial {
-        dest,
-        https_port: port,
-    };
+    let mut dial = NetDial { dest, bulk: false };
     if step == "online" {
         off_list_refused(&mut dial)?;
     }
@@ -93,11 +81,7 @@ pub(crate) fn run(vol: &mut FsVolume<Calls>, step: &str, args: &str) -> Result<S
         Ok(time) => time,
         Err(why) => return Ok(format!("{what} is refused: {why}")),
     };
-    let ca = BootRepo
-        .file(TEST_CA, CA_MAX)?
-        .ok_or("the image's repository folder has no test CA")?;
-    let roots = roots_of(&ca).map_err(|e| format!("the test CA is refused: {e:?}"))?;
-    let config = tls_config(roots, now_s).map_err(|e| format!("no TLS configuration: {e:?}"))?;
+    let config = tls::config().map_err(|e| format!("no TLS configuration: {e:?}"))?;
     let connect = TlsConnect { config, dial };
     let clock = || sys::time_ns();
     let source = Online::new(Hosts::mock(), connect, &clock, REQUEST_NS);

@@ -180,17 +180,6 @@ impl Step {
 /// release-assets host (`kaipkg::online::Hosts::mock`).
 const ONLINE_HOSTS: &str = "updates.kai.test+releases.kai.test+assets.kai.test";
 
-/// The mock's port, from `https=IP:PORT` on the command line (xtask's HTTPS
-/// mock, which the guest reaches at 10.0.2.2); 0 if there is none, and `pkg`
-/// then fails by name.
-fn https_port() -> u16 {
-    crate::cmdline()
-        .split_whitespace()
-        .find_map(|word| word.strip_prefix("https="))
-        .and_then(crate::net::parse_endpoint)
-        .map_or(0, |(_, port)| port)
-}
-
 /// Plan lines: `fs`, then `pkg` with `/system/pkg`. For `pkg-image`, `pkg` also
 /// reads the image's repository and has a route to the supervisor. `pkg` needs a
 /// deeper stack than the 16-page default: fsproto's minicbor decoder recurses,
@@ -200,15 +189,12 @@ pub fn plan(step: Step) -> String {
     let fs = kabi::plan::FS;
     let step_name = step.name();
     match step.case() {
-        // `pkg` reaches the mock's three hosts on its port through a `NetDest` of
+        // `pkg` reaches the mock's three hosts on port 443 through a `NetDest` of
         // its own (P5 task 8), and holds no other way out. The heap is larger than
         // `pkg-install`'s: TLS records and the roots.
-        "pkg-online" => {
-            let port = https_port();
-            format!(
-                "{fs}\n{CLIENT} dir=pkg bootfiles=pkgrepo caps=call+serve uses=supervisor pages=4096 stack_pages=128 step={step_name} online=test:{port} netdest=proto:tcp,ports:{port},hosts:{ONLINE_HOSTS}"
-            )
-        }
+        "pkg-online" => format!(
+            "{fs}\n{CLIENT} dir=pkg bootfiles=pkgrepo caps=call+serve uses=supervisor pages=4096 stack_pages=128 step={step_name} online=test netdest=proto:tcp,ports:443,hosts:{ONLINE_HOSTS}"
+        ),
         "pkg-image" | "pkg-install" => format!(
             "{fs}\n{CLIENT} dir=pkg bootfiles=pkgrepo caps=call+serve uses=supervisor pages=2048 stack_pages=128 step={step_name}{}",
             match step.case() {

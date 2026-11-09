@@ -23,9 +23,10 @@
 //!   send its request within [`REQUEST_LIMIT`], and no read or write of it may
 //!   wait longer than that.
 //!
-//! The hosts' names are not in `netcore::fixture`'s DNS zone yet: lane N-k
-//! adds them there with the first case that resolves them (P5 tasks 1 and 2),
-//! and until then a guest reaches the mock at 10.0.2.2 ([`Mock::cmdline`]).
+//! In a boot case ([`crate::cases::Https`], P5 task 12's harness) the hosts'
+//! names are `netcore::fixture`'s `MOCK_*`, all at its `MOCK_ADDRESS`, whose
+//! port 443 QEMU forwards here through `cargo xtask relay`; the test CA goes in
+//! the boot bundle as `netroots/1.der`, the guest's one extra root.
 
 #[cfg(test)]
 mod download_tests;
@@ -138,6 +139,13 @@ impl Content {
     pub fn file(mut self, host: &str, path: &str, bytes: Vec<u8>) -> Self {
         self.files
             .insert((host.into(), path.into()), Arc::new(bytes));
+        self
+    }
+
+    /// This content and `other`'s: a path both give is `other`'s.
+    pub fn merged(mut self, other: Content) -> Self {
+        self.files.extend(other.files);
+        self.redirects.extend(other.redirects);
         self
     }
 
