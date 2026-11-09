@@ -13,8 +13,8 @@
 //!   since can never come back to the new record.
 //! - A `hosts:any` record (the shell's ceiling, from its plan line alone) stays
 //!   with the process it was made for: its narrowings name exact hosts only,
-//!   never a suffix or `hosts:any` ([`narrow`]), and no handle to it is moved ([`any_host`], which the move
-//!   checks without this table's lock).
+//!   never a suffix or `hosts:any` ([`narrow`]), and no handle to it is
+//!   moved ([`any_host`], which the move checks without this table's lock).
 
 use crate::hpet;
 use alloc::vec::Vec;
