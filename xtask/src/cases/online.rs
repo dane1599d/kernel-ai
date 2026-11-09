@@ -222,6 +222,10 @@ const A_FROM_NET: TestCase = TestCase {
             "updated: the online repository verifies: slot.img is release 2, ",
             "updated: took update snapshot ",
             "updated: wrote release 2 into B over TLS and checked it: 0 chunks kept, ",
+            // The figure the founder's throughput bars read: bytes fetched over the whole
+            // stage, kainet opening a TLS connection for each 2 MiB chunk.
+            "updated: downloaded ",
+            " chunks of up to 2 MiB, a TLS connection for each)",
             "updated: the verified metadata is in /system/trust",
             "update: restarting into kai-b",
         ],
