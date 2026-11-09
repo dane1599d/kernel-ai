@@ -399,6 +399,9 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=pkg-install" => Some(SelfTest::PkgStore(
                 crate::pkg_tests::Step::mirror_from_cmdline(cmdline),
             )),
+            "test=pkg-online" => Some(SelfTest::PkgStore(
+                crate::pkg_tests::Step::online_from_cmdline(cmdline),
+            )),
             "test=model" => Some(SelfTest::Model),
             "test=local-ask" => Some(SelfTest::LocalAsk),
             "test=local-script" => Some(SelfTest::LocalScript),

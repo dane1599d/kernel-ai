@@ -388,3 +388,18 @@ fn connections_past_the_cap_are_closed_at_once() {
         thread::sleep(Duration::from_millis(50));
     }
 }
+
+/// The guest reaches the mock by the names the DNS zone answers, and `pkg`
+/// asks for the hosts `Hosts::mock` names: three copies of one list.
+#[test]
+fn the_hosts_are_the_names_the_zone_and_pkg_use() {
+    let zone: Vec<&str> = netcore::fixture::MOCK_HOSTS.to_vec();
+    assert_eq!(zone, [REPO, RELEASES, ASSETS, MODELS]);
+    let hosts = kaipkg::online::Hosts::mock();
+    assert!(hosts.metadata.starts_with(&format!("https://{REPO}/")));
+    assert!(hosts.releases.starts_with(&format!("https://{RELEASES}/")));
+    assert_eq!(hosts.assets, ASSETS);
+    // The mock listens on 127.0.0.1, which slirp shows the guest as 10.0.2.2.
+    assert_eq!(netcore::fixture::MOCK_ADDRESS, [10, 0, 2, 2]);
+    assert!(!zone.contains(&OFF));
+}

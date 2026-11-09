@@ -21,6 +21,18 @@ pub const MISSING: &str = "missing.kai.test";
 /// Never answered, so the resolver times out.
 pub const SILENT: &str = "silent.kai.test";
 
+/// The hosts xtask's HTTPS mock answers for (`xtask/src/mock_https`, whose
+/// names these are; a host test there keeps the two equal): A records for the
+/// host running QEMU, as slirp shows it to the guest.
+pub const MOCK_HOSTS: [&str; 4] = [
+    "updates.kai.test",
+    "releases.kai.test",
+    "assets.kai.test",
+    "models.kai.test",
+];
+pub const MOCK_ADDRESS: [u8; 4] = [10, 0, 2, 2];
+pub const MOCK_TTL: u32 = 300;
+
 /// What an answer record holds.
 #[derive(Clone, Copy)]
 pub enum Data<'a> {
@@ -51,6 +63,7 @@ pub fn answer(query: &[u8]) -> Option<Vec<u8>> {
                 (KAI, KAI_TTL, Data::A(KAI_ADDRESS)),
             ],
         ),
+        mock if MOCK_HOSTS.contains(&mock) => (0, &[(mock, MOCK_TTL, Data::A(MOCK_ADDRESS))]),
         _ => (3, &[]),
     };
     Some(reply(query, &host, rcode, answers))
@@ -137,5 +150,21 @@ mod tests {
         );
         assert!(answer(&query(5, SILENT)).is_none());
         assert!(answer(b"not dns").is_none());
+    }
+
+    #[test]
+    fn the_mock_https_hosts_are_the_host_running_qemu() {
+        for (id, host) in MOCK_HOSTS.iter().enumerate() {
+            let reply = answer(&query(10 + id as u16, host)).unwrap();
+            let got = parse_reply(10 + id as u16, host, &reply).unwrap();
+            assert_eq!(got.addresses, [Ipv4Addr::from(MOCK_ADDRESS)], "{host}");
+            assert_eq!(got.ttl, MOCK_TTL);
+        }
+        // The mock's host no handle names stays unknown to the zone.
+        let off = "elsewhere.kai.test";
+        assert_eq!(
+            parse_reply(20, off, &answer(&query(20, off)).unwrap()),
+            Err(ReplyError::NoSuchHost)
+        );
     }
 }

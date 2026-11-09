@@ -55,6 +55,10 @@ pub enum Step {
     MirrorAgain,
     MirrorTampered,
     MirrorRollback,
+    Online,
+    OnlineAgain,
+    OnlineTampered,
+    OnlineRollback,
 }
 
 impl Step {
@@ -100,6 +104,21 @@ impl Step {
         }
     }
 
+    /// The word after `test=pkg-online`: none for boot 1. Before the heap, as
+    /// [`Step::from_cmdline`], so it allocates nothing.
+    pub fn online_from_cmdline(cmdline: &str) -> Self {
+        let has = |word| cmdline.split_whitespace().any(|w| w == word);
+        if has("tampered") {
+            Step::OnlineTampered
+        } else if has("rollback") {
+            Step::OnlineRollback
+        } else if has("again") {
+            Step::OnlineAgain
+        } else {
+            Step::Online
+        }
+    }
+
     pub(crate) fn name(self) -> &'static str {
         match self {
             Step::Install => "install",
@@ -112,6 +131,10 @@ impl Step {
             Step::MirrorAgain => "mirror-again",
             Step::MirrorTampered => "mirror-tampered",
             Step::MirrorRollback => "mirror-rollback",
+            Step::Online => "online",
+            Step::OnlineAgain => "online-again",
+            Step::OnlineTampered => "online-tampered",
+            Step::OnlineRollback => "online-rollback",
         }
     }
 
@@ -121,6 +144,9 @@ impl Step {
             Step::Image | Step::ImageAgain | Step::ImageTampered => "pkg-image",
             Step::Mirror | Step::MirrorAgain | Step::MirrorTampered | Step::MirrorRollback => {
                 "pkg-install"
+            }
+            Step::Online | Step::OnlineAgain | Step::OnlineTampered | Step::OnlineRollback => {
+                "pkg-online"
             }
         }
     }
@@ -140,8 +166,29 @@ impl Step {
             Step::MirrorTampered => (1, 1),
             // Boot 2 of the older-snapshot case: boot 1 installed from the newer.
             Step::MirrorRollback => (2, 2),
+            // The same, over the network.
+            Step::Online => (1, 2),
+            Step::OnlineAgain => (2, 4),
+            Step::OnlineTampered => (1, 1),
+            Step::OnlineRollback => (2, 2),
         }
     }
+}
+
+/// The host names the online case's `NetDest` allows: xtask's HTTPS mock's
+/// three, the update repository's Pages host, GitHub's releases host and its
+/// release-assets host (`kaipkg::online::Hosts::mock`).
+const ONLINE_HOSTS: &str = "updates.kai.test+releases.kai.test+assets.kai.test";
+
+/// The mock's port, from `https=IP:PORT` on the command line (xtask's HTTPS
+/// mock, which the guest reaches at 10.0.2.2); 0 if there is none, and `pkg`
+/// then fails by name.
+fn https_port() -> u16 {
+    crate::cmdline()
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("https="))
+        .and_then(crate::net::parse_endpoint)
+        .map_or(0, |(_, port)| port)
 }
 
 /// Plan lines: `fs`, then `pkg` with `/system/pkg`. For `pkg-image`, `pkg` also
@@ -153,6 +200,15 @@ pub fn plan(step: Step) -> String {
     let fs = kabi::plan::FS;
     let step_name = step.name();
     match step.case() {
+        // `pkg` reaches the mock's three hosts on its port through a `NetDest` of
+        // its own (P5 task 8), and holds no other way out. The heap is larger than
+        // `pkg-install`'s: TLS records and the roots.
+        "pkg-online" => {
+            let port = https_port();
+            format!(
+                "{fs}\n{CLIENT} dir=pkg bootfiles=pkgrepo caps=call+serve uses=supervisor pages=4096 stack_pages=128 step={step_name} online=test:{port} netdest=proto:tcp,ports:{port},hosts:{ONLINE_HOSTS}"
+            )
+        }
         "pkg-image" | "pkg-install" => format!(
             "{fs}\n{CLIENT} dir=pkg bootfiles=pkgrepo caps=call+serve uses=supervisor pages=2048 stack_pages=128 step={step_name}{}",
             match step.case() {
@@ -179,8 +235,10 @@ pub fn check(step: Step) -> Result<(), &'static str> {
         Step::Install => only_its_folder()?,
         Step::Image | Step::ImageAgain | Step::ImageTampered => image_generation(step)?,
         Step::Mirror => mirror_installed()?,
+        Step::Online => online_installed()?,
         Step::Undo | Step::Check => {}
         Step::MirrorAgain | Step::MirrorTampered | Step::MirrorRollback => {}
+        Step::OnlineAgain | Step::OnlineTampered | Step::OnlineRollback => {}
     }
     log!("{case}: boot {boot}: fs shows generation {generation} current, as pkg left it");
     Ok(())
@@ -296,6 +354,39 @@ fn mirror_installed() -> Result<(), &'static str> {
     log!("pkg-install: generation 2 holds big from the mirror beside the image's notes");
     catalogue_lists_them()?;
     only_the_holder_calls()
+}
+
+/// Generation 2 holds `big`, from the online repository, beside the image's
+/// notes, and `pkg`'s way out is the one `NetDest` its plan line grants.
+fn online_installed() -> Result<(), &'static str> {
+    let second = read("gen/2")?;
+    let second = core::str::from_utf8(&second).map_err(|_| "pkg-online: gen/2 is not text")?;
+    let named = |name: &str| {
+        second
+            .lines()
+            .any(|l| l.starts_with(&format!("pkg {name} ")))
+    };
+    if !named("big") || !named("notes") {
+        log!("pkg-online: gen/2 is {second:?}");
+        return Err("pkg-online: generation 2 is not notes and big");
+    }
+    log!("pkg-online: generation 2 holds big from the online repository beside the image's notes");
+    let pid = process::named(CLIENT).first().map(|&(pid, _)| pid);
+    let slot = pid
+        .and_then(|pid| process::with_table(|t| t.iter().position(|p| p.live() && p.pid == pid)))
+        .ok_or("pkg-online: pkg has no slot")?;
+    let nets = handle::with(slot, |h| {
+        h.startup()
+            .filter(|info| info.kind() == Some(kabi::handle::Kind::NetDest))
+            .count()
+    })
+    .map_err(|_| "pkg-online: pkg has no table")?;
+    if nets != 1 {
+        log!("pkg-online: pkg starts with {nets} NetDest handles");
+        return Err("pkg-online: pkg does not hold exactly one NetDest");
+    }
+    log!("pkg-online: pkg starts with one NetDest handle, for the repository's three hosts");
+    Ok(())
 }
 
 /// `name`'s answer to `request`, asked again until it serves, or None.

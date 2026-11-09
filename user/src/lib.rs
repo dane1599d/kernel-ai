@@ -9,6 +9,7 @@
 extern crate alloc;
 
 pub mod heap;
+pub mod net;
 pub mod pool;
 pub mod sys;
 

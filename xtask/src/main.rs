@@ -256,6 +256,8 @@ fn execute(options: &Options) -> Result<(), String> {
     let mut failures = Vec::new();
     // Each kind of package mirror a case names, started once (P4 task 2).
     let mut mirrors: HashMap<pkgrepo::mirrors::MirrorKind, u16> = HashMap::new();
+    // Each kind of repository a case reaches over TLS, on the HTTPS mock (P5 task 8).
+    let mut onlines: HashMap<pkgrepo::mirrors::MirrorKind, mock_https::Mock> = HashMap::new();
     let cases = if options.task == Task::Soak {
         cases::SOAK_CASES.iter().collect()
     } else {
@@ -315,6 +317,12 @@ fn execute(options: &Options) -> Result<(), String> {
                 };
                 cmdline = format!("{cmdline} pkgrepo=10.0.2.2:{port}");
             }
+            if let Some(kind) = case.online {
+                if let std::collections::hash_map::Entry::Vacant(started) = onlines.entry(kind) {
+                    started.insert(pkgrepo::serve_online(&image, kind)?);
+                }
+                cmdline = format!("{cmdline} {}", onlines[&kind].cmdline());
+            }
             let disk = match disk::for_case(case, &target_dir) {
                 Ok(disk) => disk,
                 Err(message) => {
@@ -358,6 +366,15 @@ fn execute(options: &Options) -> Result<(), String> {
                 modules.push(esp::Module {
                     path: "kai.root.json".into(),
                     bytes: image::update_disk::test_root()?.root_json()?,
+                });
+            }
+            if let Some(kind) = case.online {
+                // The one root the guest trusts for the mock's hosts: `pkg` reads
+                // it from the image's repository folder, like the signed
+                // repository itself.
+                modules.push(esp::Module {
+                    path: format!("{}/tls-test-ca.der", pkgrepo::IMAGE_DIR),
+                    bytes: onlines[&kind].ca().to_vec(),
                 });
             }
             let update_disk = match case.update {

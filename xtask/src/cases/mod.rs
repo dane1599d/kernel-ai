@@ -9,6 +9,7 @@ mod components;
 mod devices;
 mod kernel;
 mod network;
+mod online;
 mod pkg;
 pub mod release;
 mod storage;
@@ -120,6 +121,11 @@ pub struct TestCase {
     /// The package mirror the guest reaches at `pkgrepo=` (P4 task 2), signed by
     /// the image's keys, or a tampered one.
     pub mirror: Option<crate::pkgrepo::mirrors::MirrorKind>,
+    /// The package repository the guest reaches over TLS (P5 task 8): the `kind`
+    /// mirror served by xtask's HTTPS mock as GitHub serves it, at `https=`, its
+    /// test CA added to the image's repository folder, the hosts in the mock DNS
+    /// zone (`dns` is set with it).
+    pub online: Option<crate::pkgrepo::mirrors::MirrorKind>,
 }
 
 /// What a case's update disk holds.
@@ -165,6 +171,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         store_bad_fnv: false,
         tampered: None,
         mirror: None,
+        online: None,
     }
 }
 
@@ -184,6 +191,7 @@ const LANES: &[&[TestCase]] = &[
     storage::CASES,
     updates::CASES,
     pkg::CASES,
+    online::CASES,
 ];
 
 /// The cases `cargo xtask test` boots.
@@ -222,6 +230,7 @@ mod tests {
             storage::CASES,
             updates::CASES,
             pkg::CASES,
+            online::CASES,
         ];
         assert_eq!(
             cases.len(),
