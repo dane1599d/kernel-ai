@@ -389,10 +389,11 @@ fn run_within_hands_back_a_redirect_off_its_hosts() {
         (
             got.head.status,
             got.url.host.as_str(),
-            got.head.location.as_deref(),
-            got.received
+            got.unfollowed.as_ref().map(|u| u.host.as_str()),
+            got.received,
+            got.redirects
         ),
-        (302, "releases.test", Some("https://assets.test/blob"), 0)
+        (302, "releases.test", Some("assets.test"), 0, 1)
     );
     assert!(body.is_empty());
     // The first redirect was followed, the second not: two requests, none to
@@ -401,6 +402,37 @@ fn run_within_hands_back_a_redirect_off_its_hosts() {
     let elsewhere = Url::parse("https://assets.test/blob").unwrap();
     let refused = fetch.run_within(&mut server, Method::Get, &elsewhere, None, &mut |_| Ok(()));
     assert_eq!(refused, Err(HttpError::Refused("assets.test".into())));
+    // With no hop left, handing the redirect back would take one more (C's
+    // review of #755).
+    let mut spent = fetch;
+    spent.limits.max_redirects = 1;
+    let over = spent.run_within(&mut server, Method::Get, &url, None, &mut |_| Ok(()));
+    assert_eq!(over, Err(HttpError::TooManyRedirects));
+}
+
+/// A 304, or a 300 with a Location, is a response like any other: only a
+/// redirect the walk handed back has a `location` (C's review of #755).
+#[test]
+fn serve_within_hands_back_only_a_real_redirect() {
+    let mut server = Server::new(&[
+        ("a.test", b"HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\n\r\n"),
+        ("b.test", b"HTTP/1.1 300 Multiple Choices\r\nLocation: https://c.test/\r\nContent-Length: 0\r\n\r\n"),
+    ]);
+    let zero = || 0;
+    for (host, status) in [("a.test", 304), ("b.test", 300)] {
+        let request = kainet::fetch::Request {
+            url: format!("https://{host}/"),
+            method: Method::Get,
+            range: None,
+        };
+        let served =
+            kainet::fetch::serve_within(&request, 1, &anyone, &mut server, &zero, u64::MAX)
+                .unwrap();
+        assert_eq!(
+            (served.response.status, served.location, served.hops),
+            (status, None, 1)
+        );
+    }
 }
 
 #[test]

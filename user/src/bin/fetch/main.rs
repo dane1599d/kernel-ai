@@ -115,7 +115,7 @@ fn serve(
         &clock,
         deadline,
     ) {
-        Ok((response, location)) => (Ok(Head::of(&response, location)), response.body),
+        Ok(served) => (Ok(Head::of(&served)), served.response.body),
         Err(error) => (Err(error), Vec::new()),
     }
 }

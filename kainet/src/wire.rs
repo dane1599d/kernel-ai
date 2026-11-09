@@ -7,13 +7,14 @@
 //! the caller already took.
 //!
 //! An answer is `err <kind>[ <why>]` on one line, or `ok <status>` and then
-//! one field a line ([`Head`]): `len <n>`; `type <content-type>` and
+//! one field a line ([`Head`]): `len <n>`; `hops <n>`, the request's and the
+//! redirects followed within its handle; `type <content-type>` and
 //! `retry <seconds>` when the server sent them; `url <the URL that
 //! answered>`; and `location <url>` when a redirect to a host the handle does
-//! not reach came back unfollowed. A body of `len` bytes comes in an `Shm`
+//! not reach came back unfollowed, which the caller follows with `hops` + 1. A body of `len` bytes comes in an `Shm`
 //! that `fetch` makes and moves back with the answer.
 
-use crate::fetch::{Error, MAX_HOPS, Request, Response, why};
+use crate::fetch::{Error, MAX_HOPS, Request, Served, why};
 use crate::http::{Method, Range};
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -122,6 +123,8 @@ pub struct Head {
     pub status: u16,
     /// The body's length, in the `Shm` moved with the answer.
     pub len: usize,
+    /// The request's hops and the redirects followed within its handle.
+    pub hops: u8,
     pub content_type: Option<String>,
     pub retry_after: Option<u32>,
     /// The URL that answered.
@@ -131,15 +134,17 @@ pub struct Head {
 }
 
 impl Head {
-    /// The head of `response`, and `location` if its redirect came back.
-    pub fn of(response: &Response, location: Option<String>) -> Self {
+    /// The head of what `fetch` served.
+    pub fn of(served: &Served) -> Self {
+        let response = &served.response;
         Self {
             status: response.status,
             len: response.body.len(),
+            hops: served.hops,
             content_type: response.content_type.clone(),
             retry_after: response.retry_after,
             url: response.url.clone(),
-            location,
+            location: served.location.clone(),
         }
     }
 }
@@ -165,7 +170,7 @@ pub fn answer(result: &Result<Head, Error>) -> String {
             (name, None) => format!("err {name}"),
         },
         Ok(head) => {
-            let mut text = format!("ok {}\nlen {}\n", head.status, head.len);
+            let mut text = format!("ok {}\nlen {}\nhops {}\n", head.status, head.len, head.hops);
             if let Some(content_type) = &head.content_type {
                 text += &format!("type {content_type}\n");
             }
@@ -210,13 +215,22 @@ pub fn parse_answer(text: &str) -> Result<Result<Head, Error>, &'static str> {
         .and_then(|n| n.parse::<u16>().ok())
         .filter(|n| (100..=599).contains(n))
         .ok_or("the answer is not ok <status> or err")?;
-    let (mut len, mut content_type, mut retry_after, mut url, mut location) =
-        (None, None, None, None, None);
+    let (mut len, mut hops, mut content_type, mut retry_after, mut url, mut location) =
+        (None, None, None, None, None, None);
     for line in lines {
         let (key, value) = line.split_once(' ').ok_or("a field with no value")?;
         let set = match key {
             "len" => len
                 .replace(value.parse::<usize>().map_err(|_| "len is not a number")?)
+                .is_none(),
+            "hops" => hops
+                .replace(
+                    value
+                        .parse::<u8>()
+                        .ok()
+                        .filter(|&n| n <= MAX_HOPS)
+                        .ok_or("hops is not 0 to 5")?,
+                )
                 .is_none(),
             "type" => content_type.replace(value.to_string()).is_none(),
             "retry" => retry_after
@@ -233,6 +247,7 @@ pub fn parse_answer(text: &str) -> Result<Result<Head, Error>, &'static str> {
     Ok(Ok(Head {
         status,
         len: len.ok_or("an answer with no len")?,
+        hops: hops.ok_or("an answer with no hops")?,
         content_type,
         retry_after,
         url: url.ok_or("an answer with no url")?,
@@ -308,6 +323,7 @@ mod tests {
         let head = Head {
             status: 302,
             len: 0,
+            hops: 2,
             content_type: Some("text/html; charset=utf-8".into()),
             retry_after: Some(7),
             url: "https://a.example/x".into(),
@@ -316,12 +332,13 @@ mod tests {
         let text = answer(&Ok(head.clone()));
         assert_eq!(
             text,
-            "ok 302\nlen 0\ntype text/html; charset=utf-8\nretry 7\nurl https://a.example/x\nlocation https://b.example/y\n"
+            "ok 302\nlen 0\nhops 2\ntype text/html; charset=utf-8\nretry 7\nurl https://a.example/x\nlocation https://b.example/y\n"
         );
         assert_eq!(parse_answer(&text), Ok(Ok(head)));
         let plain = Head {
             status: 200,
             len: 16,
+            hops: 0,
             content_type: None,
             retry_after: None,
             url: "https://a.example/".into(),
@@ -345,10 +362,12 @@ mod tests {
         for text in [
             "",
             "ok",
-            "ok 99\nlen 0\nurl https://a/",
-            "ok 200\nurl https://a/",
-            "ok 200\nlen 1\nlen 2\nurl https://a/",
-            "ok 200\nlen 1\nurl https://a/\ncookie x",
+            "ok 99\nlen 0\nhops 0\nurl https://a/",
+            "ok 200\nhops 0\nurl https://a/",
+            "ok 200\nlen 1\nurl https://a/",
+            "ok 200\nlen 1\nhops 6\nurl https://a/",
+            "ok 200\nlen 1\nlen 2\nhops 0\nurl https://a/",
+            "ok 200\nlen 1\nhops 0\nurl https://a/\ncookie x",
             "err nope",
         ] {
             assert!(parse_answer(text).is_err(), "{text:?}");

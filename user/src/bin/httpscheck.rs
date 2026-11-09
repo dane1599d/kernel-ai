@@ -191,8 +191,9 @@ fn fetch_script(dest: Handle) -> bool {
                     "httpscheck: fetch {request}: {} unfollowed, to {location}",
                     head.status
                 );
-                // As comphost does: a handle for the new host, and one hop taken.
-                let next = alloc::format!("get {location} hops=1");
+                // As comphost does: a handle for the new host, and one more
+                // hop than the answer counted.
+                let next = alloc::format!("get {location} hops={}", head.hops + 1);
                 match via_fetch(dest, "assets.kai.test", &next) {
                     Ok(Ok((head, body))) => {
                         println!(
