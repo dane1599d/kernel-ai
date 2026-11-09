@@ -11,10 +11,15 @@
 //!   names any more are dropped ([`create`]), and their ids are used again.
 //!   That is safe because no handle names a dropped one: a handle closed
 //!   since can never come back to the new record.
+//! - A `hosts:any` record (the shell's ceiling, from its plan line alone) stays
+//!   with the process it was made for: no narrowing makes another
+//!   ([`narrow`]), and no handle to it is moved ([`any_host`], which the move
+//!   checks without this table's lock).
 
 use crate::hpet;
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
+use core::sync::atomic::{AtomicU64, Ordering};
 use netdest::{Dest, Protocol};
 use spin::Mutex;
 use x86_64::instructions::interrupts::without_interrupts;
@@ -33,6 +38,27 @@ struct Record {
 }
 
 static RECORDS: Mutex<Vec<Option<Record>>> = Mutex::new(Vec::new());
+
+/// Which records are `hosts:any`, one bit each, kept beside [`RECORDS`] so a
+/// handle move can ask under the handle table's lock: [`create`] takes the
+/// handle tables' locks inside this table's, so the other order would deadlock.
+static ANY_HOST: [AtomicU64; MAX_RECORDS / 64] = [const { AtomicU64::new(0) }; MAX_RECORDS / 64];
+
+fn mark_any_host(at: usize, any: bool) {
+    let bit = 1u64 << (at % 64);
+    match any {
+        true => ANY_HOST[at / 64].fetch_or(bit, Ordering::SeqCst),
+        false => ANY_HOST[at / 64].fetch_and(!bit, Ordering::SeqCst),
+    };
+}
+
+/// Whether `object` is a `hosts:any` record: a handle to it is never moved to
+/// another process (`handle::take_for`).
+pub fn any_host(object: u64) -> bool {
+    index(object)
+        .filter(|&at| at < MAX_RECORDS)
+        .is_some_and(|at| ANY_HOST[at / 64].load(Ordering::SeqCst) & (1u64 << (at % 64)) != 0)
+}
 
 fn index(object: u64) -> Option<usize> {
     usize::try_from(object.checked_sub(FIRST)?).ok()
@@ -62,6 +88,7 @@ pub fn create(dest: Dest, live: impl Fn(u64) -> bool) -> Option<u64> {
                 records.iter().position(Option::is_none)?
             }
         };
+        mark_any_host(at, dest.any_host);
         records[at] = Some(Record {
             dest,
             resolved: Vec::new(),
@@ -142,7 +169,8 @@ fn special(addr: Ipv4Addr) -> bool {
 /// its id. The addresses `object` resolved do not carry over.
 pub fn narrow(object: u64, narrower: Dest, live: impl Fn(u64) -> bool) -> Result<u64, kabi::Error> {
     let wider = dest(object).ok_or(kabi::Error::Invalid)?;
-    if !narrower.within(&wider) {
+    // `hosts:any` is made only from the shell's plan line, never by narrowing.
+    if narrower.any_host || !narrower.within(&wider) {
         return Err(kabi::Error::Permission);
     }
     create(narrower, live).ok_or(kabi::Error::NoMemory)

@@ -18,7 +18,8 @@
 //! `none` (hosts: no names), so a destination allows only what it names.
 //! `match:exact` makes each host name only itself, not the names under it, as a
 //! per-host grant needs (P5 task 13); it is left out for suffixes.
-//! `hosts:any` names every host name of two labels or more, for one ceiling
+//! `hosts:any` names every host name of two labels or more whose last label is
+//! not all digits, for one ceiling
 //! only: the shell's plan line, on port 443 (the founder, 2026-11-09: Kai may
 //! reach any website the user names). It is never exact, and only a handle
 //! that has it can make another that has it; who may hold it is the plan
@@ -81,7 +82,7 @@ impl Dest {
     /// [`Dest::exact`]) under one.
     fn names(&self, name: &str) -> bool {
         if self.any_host {
-            return name.contains('.');
+            return website(name);
         }
         self.hosts.iter().any(|host| match self.exact {
             true => name == host,
@@ -215,6 +216,13 @@ fn under(name: &str, suffix: &str) -> bool {
         || name
             .strip_suffix(suffix)
             .is_some_and(|head| head.ends_with('.'))
+}
+
+/// A name `hosts:any` covers: two labels or more, and a last label that is not
+/// all digits (`1.2` is no website; a top-level domain is never numeric).
+fn website(name: &str) -> bool {
+    name.rsplit_once('.')
+        .is_some_and(|(_, tld)| !tld.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// `name` as it is checked and looked up: one trailing dot dropped, lower

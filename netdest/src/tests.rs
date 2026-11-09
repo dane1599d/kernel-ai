@@ -187,6 +187,12 @@ fn hosts_any_names_every_name_of_two_labels_and_only_it_covers_itself() {
     assert!(any.allows_name("a.b.example."));
     assert!(!any.allows_name("localhost"), "one label is no website");
     assert!(!any.allows_name("10.0.2.2"), "an address is not a name");
+    assert!(
+        !any.allows_name("1.2"),
+        "a numeric last label is no website"
+    );
+    assert!(!any.allows_name("host.123"));
+    assert!(any.allows_name("123.example"));
     // It narrows to one exact host, or a suffix, on its ports.
     let one = dest("proto:tcp,ports:443,hosts:en.wikipedia.org,match:exact");
     assert!(one.within(&any));
