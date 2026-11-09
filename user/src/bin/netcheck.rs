@@ -7,7 +7,8 @@
 //!   `expect=narrow-refused` exits 0 if the kernel refuses to narrow;
 //! - `legacy`: uses the retired RESOLVE call instead, which always refuses.
 //! - `any=pinned`: with a `hosts:any` handle (#760), exits 0 if narrowing it
-//!   to `hosts:any` again is refused and narrowing to one exact host is not.
+//!   to `hosts:any` again, or to a suffix, is refused and narrowing to one
+//!   exact host is not.
 //!
 //! And for TCP streams on it (P5 task 2, the `net-stream` case), with
 //! `port=P` the echo server's port on 10.0.2.2:
@@ -49,18 +50,19 @@ fn any_pinned() -> i32 {
     };
     let rights = (Rights::RESOLVE | Rights::CONNECT).bits();
     let again = sys::netdest_narrow(dest, "proto:tcp,ports:443,hosts:any", rights);
+    let suffix = sys::netdest_narrow(dest, "proto:tcp,ports:443,hosts:co.uk", rights);
     let one = sys::netdest_narrow(
         dest,
         "proto:tcp,ports:443,hosts:kai.test,match:exact",
         rights,
     );
-    match (again, one) {
-        (Err(Error::Permission), Ok(_)) => {
-            println!("hosts:any narrowed to one exact host, and not to hosts:any again");
+    match (again, suffix, one) {
+        (Err(Error::Permission), Err(Error::Permission), Ok(_)) => {
+            println!("hosts:any narrowed to one exact host, not to a suffix or hosts:any again");
             0
         }
-        (again, one) => {
-            println!("hosts:any narrowing gave {again:?} and {one:?}");
+        (again, suffix, one) => {
+            println!("hosts:any narrowing gave {again:?}, {suffix:?} and {one:?}");
             1
         }
     }

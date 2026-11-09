@@ -12,8 +12,8 @@
 //!   That is safe because no handle names a dropped one: a handle closed
 //!   since can never come back to the new record.
 //! - A `hosts:any` record (the shell's ceiling, from its plan line alone) stays
-//!   with the process it was made for: no narrowing makes another
-//!   ([`narrow`]), and no handle to it is moved ([`any_host`], which the move
+//!   with the process it was made for: its narrowings name exact hosts only,
+//!   never a suffix or `hosts:any` ([`narrow`]), and no handle to it is moved ([`any_host`], which the move
 //!   checks without this table's lock).
 
 use crate::hpet;
@@ -169,8 +169,11 @@ fn special(addr: Ipv4Addr) -> bool {
 /// its id. The addresses `object` resolved do not carry over.
 pub fn narrow(object: u64, narrower: Dest, live: impl Fn(u64) -> bool) -> Result<u64, kabi::Error> {
     let wider = dest(object).ok_or(kabi::Error::Invalid)?;
-    // `hosts:any` is made only from the shell's plan line, never by narrowing.
-    if narrower.any_host || !narrower.within(&wider) {
+    // `hosts:any` is made only from the shell's plan line, never by narrowing,
+    // and narrows only to exact hosts: a suffix such as `co.uk` would carry
+    // much of it away (C on #760).
+    let suffix_of_any = wider.any_host && !narrower.exact;
+    if narrower.any_host || suffix_of_any || !narrower.within(&wider) {
         return Err(kabi::Error::Permission);
     }
     create(narrower, live).ok_or(kabi::Error::NoMemory)

@@ -320,8 +320,8 @@ pub fn dest_check() -> Result<(), &'static str> {
 const ANY_HOST: &str = "proto:tcp,ports:443,hosts:any";
 
 /// A `hosts:any` record stays with the process it was made for: ring 3 cannot
-/// narrow another out of it, though it narrows to one exact host, and a
-/// handle to it never moves, though its exact narrowing does.
+/// narrow another out of it, or a suffix, though it narrows to one exact host,
+/// and a handle to it never moves, though its exact narrowing does.
 fn any_host_pinned() -> Result<(), &'static str> {
     let (object, entry) = netdest(ANY_HOST)?;
     if !net::dest::any_host(object) {
