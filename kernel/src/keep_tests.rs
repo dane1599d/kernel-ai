@@ -23,8 +23,8 @@ const SETTINGS: &str = "settings-window";
 /// [`kabi::plan::SHELL_DESK`] with its files and `/system/state` (the data
 /// disk): its route to `desktop`, after `updated` and named in `routes=`,
 /// takes the Settings app's requests. The routes are the shell binary's, so
-/// they follow SHELL_DESK.
-pub const SHELL: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc+updated+desktop routes=desktop pages=4096 stack_pages=512 burst_ms=5000";
+/// they follow SHELL_DESK: the line is kabi's own, `fetch` route and all.
+pub const SHELL: &str = kabi::plan::SHELL_DESK_FILES;
 /// The plan lines this case adds, before the shell, as a route's target must
 /// be; the stand-in only has to be alive.
 pub const PLAN: &str = "desktop caps=display+input+serve pages=8192 stack_pages=512\n\
