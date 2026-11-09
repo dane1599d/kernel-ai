@@ -10,6 +10,17 @@
 use super::{Https, TestCase, case};
 use crate::mock_https::{ASSETS, Content, Fault, OFF, RELEASES, REPO};
 
+/// The user programs only these cases run, put on their boot drives alone: the
+/// other cases' guests keep the memory their bundle would take.
+pub(crate) const PROGRAMS: &[&str] = &["httpscheck"];
+
+/// Whether boot module `path` is `program`'s ELF or its line table.
+pub(crate) fn is_program_module(path: &str, program: &str) -> bool {
+    path.strip_prefix("user/")
+        .and_then(|rest| rest.strip_prefix(program))
+        .is_some_and(|rest| rest == ".elf" || rest == ".lines")
+}
+
 /// What every host of the harness's own case serves at `/hello`.
 const HELLO: &[u8] = b"kai mock: hello\n";
 
@@ -48,6 +59,15 @@ pub const CASES: &[TestCase] = &[
 #[cfg(test)]
 mod tests {
     use crate::mock_https::HOSTS;
+
+    #[test]
+    fn a_program_module_is_its_elf_or_its_lines() {
+        use super::is_program_module;
+        assert!(is_program_module("user/httpscheck.elf", "httpscheck"));
+        assert!(is_program_module("user/httpscheck.lines", "httpscheck"));
+        assert!(!is_program_module("user/httpscheck2.elf", "httpscheck"));
+        assert!(!is_program_module("comp/httpscheck.elf", "httpscheck"));
+    }
 
     /// The guest resolves every name the mock serves, to the forwarded address.
     #[test]
