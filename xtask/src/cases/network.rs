@@ -62,6 +62,8 @@ pub(super) const CASES: &[TestCase] = &[
             "net-dest: a narrower handle allowed only its own host, and a wider one was refused",
             "[netdest-f] resolve kai.test refused: not under this handle's hosts",
             "net-dest: the retired RESOLVE refused even a holder of a NetDest",
+            "[netdest-g] http without the LLM's own handle refused, with 1 other NetDest held",
+            "net-dest: HTTP to the LLM needs the LLM's own handle, not any NetDest",
         ],
         ..case("net-dest", "test=net-dest")
     },
