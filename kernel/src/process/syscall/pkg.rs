@@ -77,7 +77,8 @@ fn boot_read(slot: usize, path_ptr: u64, path_len: u64, buf: u64, cap: u64) -> R
 fn netroot(path: &str) -> bool {
     path.strip_prefix(kabi::net::NETROOTS)
         .and_then(|rest| rest.strip_suffix(".der"))
-        .and_then(|n| n.parse::<usize>().ok().filter(|_| !n.starts_with('0')))
+        .filter(|n| !n.is_empty() && !n.starts_with('0') && n.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|n| n.parse::<usize>().ok())
         .is_some_and(|n| (1..=kabi::net::MAX_NETROOTS).contains(&n))
 }
 

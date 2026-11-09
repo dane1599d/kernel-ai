@@ -340,9 +340,16 @@ pub fn forward_https(args: &mut [String], relay: &Path, port: u16) {
     if let Some(netdev) = args.iter_mut().find(|arg| arg.as_str() == USER_NET) {
         *netdev = format!(
             "{USER_NET},guestfwd=tcp:{a}.{b}.{c}.{d}:443-cmd:{} relay 127.0.0.1:{port}",
-            relay.display()
+            command_word(&relay.display().to_string())
         );
     }
+}
+
+/// `word` as one word of a `cmd:` QEMU's user network splits as a shell
+/// does, in single quotes, and with each comma doubled, as QEMU's option
+/// parser reads a comma in a value (K's review of #753).
+fn command_word(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''")).replace(',', ",,")
 }
 
 pub fn net_behind_bridge(args: &mut Vec<String>) {
@@ -670,12 +677,26 @@ fn strip_confirm_prompt(line: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Typist, ci_warning, from_programs, model_sizing};
+    use super::{Typist, ci_warning, command_word, forward_https, from_programs, model_sizing};
     use crate::Accel;
     use crate::options::Sizing;
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
     use std::thread;
+
+    /// The relay's path is one shell word in the `cmd:`, and its commas are
+    /// doubled for QEMU's option parser (K's review of #753).
+    #[test]
+    fn the_relay_path_survives_quotes_and_commas() {
+        assert_eq!(command_word("/a b/x"), "'/a b/x'");
+        assert_eq!(command_word("/it's,here"), "'/it'\\''s,,here'");
+        let mut args = vec!["-netdev".to_string(), "user,id=net0".to_string()];
+        forward_https(&mut args, std::path::Path::new("/t/xtask"), 4321);
+        assert_eq!(
+            args[1],
+            "user,id=net0,guestfwd=tcp:10.0.2.100:443-cmd:'/t/xtask' relay 127.0.0.1:4321"
+        );
+    }
 
     /// A monitor that serves one client at a time, as QEMU's does: stages sent
     /// together arrive in order, and the second does not even connect while the
