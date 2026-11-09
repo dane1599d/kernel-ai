@@ -90,6 +90,10 @@ pub enum Inverse {
         row: Name,
         withheld: bool,
     },
+    /// Take network grant `id` back (`held`: the undo of the Allow that made
+    /// it), or put a revoked one back (the undo of a Settings revoke). The
+    /// shell's store does it (`Shell::revert_net_grant`), not the host.
+    NetGrant { id: u32, held: bool },
 }
 
 /// A service name held without the heap, so an inverse stays `Copy`.
@@ -172,6 +176,8 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Reclose { app, .. } => format!("{} closed", app.as_str()),
         Inverse::Grant { app, row, withheld } => grant_words(app, row, withheld),
         Inverse::Model { .. } => String::from("the model before, from the next restart"),
+        Inverse::NetGrant { id, held: true } => format!("network grant #{id} taken back"),
+        Inverse::NetGrant { id, held: false } => format!("network grant #{id}"),
     }
 }
 
@@ -300,6 +306,7 @@ fn revert_one(
         Inverse::Instruction { .. }
         | Inverse::Profile { .. }
         | Inverse::Keep { .. }
+        | Inverse::NetGrant { .. }
         | Inverse::Model { .. } => Err(Refused::Failed(String::from(
             "it is put back by the shell's own store",
         ))),
@@ -347,6 +354,7 @@ pub fn reverse(inverse: Inverse) -> Inverse {
         },
         Inverse::Instruction { id, made } => Inverse::Instruction { id, made: !made },
         Inverse::Keep { app, on } => Inverse::Keep { app, on: !on },
+        Inverse::NetGrant { id, held } => Inverse::NetGrant { id, held: !held },
         Inverse::Appearance {
             setting,
             before,
@@ -433,6 +441,7 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
             row.as_str(),
             u8::from(withheld)
         ),
+        Some(Inverse::NetGrant { id, held }) => format!("netgrant:{id}:{}", u8::from(held)),
         Some(Inverse::Model { back, from }) => format!(
             "model:{}:{}",
             back.map_or_else(|| String::from("none"), |b| comp_models::hex(&b)),
@@ -504,6 +513,10 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
             app: Name::new(parts.next()?)?,
             row: Name::new(parts.next()?)?,
             withheld: flag(parts.next())?,
+        },
+        "netgrant" => Inverse::NetGrant {
+            id: u32::try_from(number(parts.next())?).ok()?,
+            held: flag(parts.next())?,
         },
         "model" => {
             let sha = |part: Option<&str>| modelchan::listing::sha256(part?).ok();

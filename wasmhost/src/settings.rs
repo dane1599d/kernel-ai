@@ -9,7 +9,7 @@
 //!
 //! Each request is checked when it is sent ([`classify`]) against the whole
 //! grammar of its verb, not only the verb, and tagged [`Kind::Read`] or
-//! [`Kind::Change`]. A read is one of eight exact lines. A change is passed on
+//! [`Kind::Change`]. A read is one of nine exact lines. A change is passed on
 //! only for a real key or click: the request carries `user`, true only when it
 //! was queued during [`CoreInstance::ui_input`] or
 //! [`CoreInstance::ui_events_user`], and a call may send one change. A call
@@ -39,7 +39,7 @@ pub(crate) const REPLIES: &str = "kai:settings/replies";
 /// Longest request `send` takes, in bytes.
 pub const MAX_REQUEST: usize = 512;
 /// Most requests waiting for comphost; a call that sends more traps.
-pub const MAX_QUEUED: usize = 16;
+pub const MAX_QUEUED: usize = 20;
 /// Longest name sent (a profile, an app): `kabi::MAX_NAME`.
 pub const MAX_NAME: usize = 24;
 /// Longest value of `appearance-set`.
@@ -61,6 +61,7 @@ pub const READS: &[&str] = &[
     "file appearance",
     "file apps",
     "file updates",
+    "net",
 ];
 /// The settings `appearance-set` takes (`look::appearance`).
 pub const APPEARANCE_SETTINGS: &[&str] = &[
@@ -80,6 +81,7 @@ pub const CHANGES: &[&str] = &[
     "grants-restore",
     "keep-running",
     "restart-window",
+    "net-revoke",
 ];
 
 /// What a request does to the system.
@@ -214,6 +216,10 @@ pub fn classify(request: &str) -> Result<Kind, String> {
             .split_once(' ')
             .is_some_and(|(flag, app)| matches!(flag, "on" | "off") && name_ok(app, MAX_NAME)),
         "restart-window" => window(args),
+        // A network grant's number, as `net` lists it (P5 task 13).
+        "net-revoke" => {
+            !args.is_empty() && args.len() <= 9 && args.bytes().all(|b| b.is_ascii_digit())
+        }
         _ => return Err(alloc::format!("`{verb}` is not a request")),
     };
     if fits {
