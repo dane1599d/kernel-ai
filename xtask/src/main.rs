@@ -72,6 +72,7 @@ mod notices;
 mod options;
 mod pkgrepo;
 mod qemu;
+mod relay;
 mod release_boot;
 mod release_image;
 mod reuse;
@@ -116,6 +117,7 @@ fn main() -> ExitCode {
         Some("licences") => licences::main(&args[1..]),
         Some("notices") => notices::main(&args[1..]),
         Some("decisions") => decisions::main(&args[1..]),
+        Some("relay") => relay::main(&args[1..]),
         Some("wit-check") => wit::main(&args[1..]),
         Some("wit-tables") => wit_tables::main(&args[1..]),
         Some("fs") => fs_tool::main(&args[1..]),
@@ -176,6 +178,15 @@ fn execute(options: &Options) -> Result<(), String> {
     }
     let target_dir = root.join("target");
     let mut modules = esp::boot_modules(&kernel, &programs, &root)?;
+    // Programs only the HTTPS cases run go on their boot drives alone: every
+    // byte of the bundle is memory the other cases' guests do not get, and the
+    // desktop cases had less than 2 MiB to spare (#753's first run).
+    let (https_programs, shared): (Vec<_>, Vec<_>) = modules.into_iter().partition(|m| {
+        cases::https::PROGRAMS
+            .iter()
+            .any(|p| cases::https::is_program_module(&m.path, p))
+    });
+    modules = shared;
     // The built-in apps as the image's signed repository (ADR 0011 §8).
     let mut image = pkgrepo::image(&root, &versions)?;
     modules.extend(versions);
@@ -301,7 +312,8 @@ fn execute(options: &Options) -> Result<(), String> {
             if case.echo {
                 cmdline = format!("{cmdline} {}", mock_echo.cmdline());
             }
-            if case.dns {
+            // The HTTPS mock's names resolve through the mock DNS (P5 task 12).
+            if case.dns || case.https.is_some() {
                 cmdline = format!("{cmdline} {}", mock_dns.cmdline());
             }
             if let Some(kind) = case.mirror {
@@ -337,6 +349,27 @@ fn execute(options: &Options) -> Result<(), String> {
             }
             // The boot manifest's versions join the boot drive for this case only.
             let shared = modules.len();
+            // The HTTPS mock for this boot (P5 task 12's harness), and its test
+            // CA as the bundle's one extra root, which only this case's bundle
+            // has.
+            let https_mock = match &case.https {
+                Some(https) => {
+                    let mock = mock_https::start((https.content)())?;
+                    for (host, path, fault) in https.faults {
+                        mock.set_fault(host, path, fault.clone());
+                    }
+                    modules.push(esp::Module {
+                        path: format!("{}1.der", kabi::net::NETROOTS),
+                        bytes: mock.ca().to_vec(),
+                    });
+                    modules.extend(https_programs.iter().map(|m| esp::Module {
+                        path: m.path.clone(),
+                        bytes: m.bytes.clone(),
+                    }));
+                    Some(mock)
+                }
+                None => None,
+            };
             if let Some(service) = &service {
                 let (versions, live) = boot_smoke::manifest_for(case, service)?;
                 modules.extend(versions);
@@ -396,6 +429,10 @@ fn execute(options: &Options) -> Result<(), String> {
                 ..options.sizing
             };
             let mut args = qemu::args(&firmware, accel, true, disk.as_ref(), sizing);
+            if let Some(mock) = &https_mock {
+                let relay = env::current_exe().map_err(|e| format!("xtask's own path: {e}"))?;
+                qemu::forward_https(&mut args, &relay, mock.port);
+            }
             if let Some(data) = case.data {
                 if fresh {
                     blklog::prepare(&target_dir, data)?;
