@@ -142,7 +142,11 @@ fn body_shm(body: &[u8]) -> Result<Handle, kabi::Error> {
 }
 
 fn main() -> i32 {
-    close_own_destinations();
+    // The roots first: BOOT_READ of `netroots/` needs NET, which the kernel
+    // sees in a held `NetDest` with CONNECT, and once NET's own handle is
+    // closed `fetch` holds one only during a call (#755's first full-ci run:
+    // closed first, the test CA was never read). NET_TIME is asked during a
+    // call, on the caller's handle.
     let config = match tls::config() {
         Ok(config) => config,
         Err(error) => {
@@ -150,6 +154,7 @@ fn main() -> i32 {
             return 1;
         }
     };
+    close_own_destinations();
     println!("fetch: ready");
     let mut request = alloc::vec![0u8; wire::MAX_ASK + 1];
     loop {

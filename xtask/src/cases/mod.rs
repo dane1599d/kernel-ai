@@ -7,7 +7,7 @@ mod apps;
 mod cc;
 mod components;
 mod devices;
-mod https;
+pub(crate) mod https;
 mod kernel;
 mod netrows;
 mod network;
