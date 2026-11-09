@@ -59,7 +59,11 @@ fn get(dest: Handle, url: &str) -> Result<(u16, Vec<u8>), HttpError> {
     let config = tls::config().map_err(|e| HttpError::Tls(TlsError::Tls(e)))?;
     let mut connect = TlsConnect {
         config,
-        dial: NetDial { dest, bulk: false },
+        dial: NetDial {
+            dest,
+            bulk: false,
+            deadline_ns: sys::time_ns().saturating_add(DEADLINE_NS),
+        },
     };
     let clock = || sys::time_ns();
     // The handle decides which hosts; the URL must still be https on 443.
