@@ -39,6 +39,11 @@ pub fn parse(value: &str) -> Result<Option<Dest>, Refusal> {
     if wide || matches!(dest.ports, PortRange::Any | PortRange::NoPorts) {
         return Err(refuse("an agent names the ports it uses"));
     }
+    if dest.any_host {
+        return Err(refuse(
+            "an agent names its hosts; hosts:any is the shell's alone",
+        ));
+    }
     if dest.hosts.is_empty() {
         return Err(refuse("an agent's network names at least one host"));
     }

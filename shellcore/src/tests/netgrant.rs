@@ -83,6 +83,13 @@ fn nothing_outside_the_packages_netdest_is_asked_about() {
 }
 
 #[test]
+fn a_package_ceiling_of_any_host_asks_about_nothing() {
+    let any = Dest::parse("proto:tcp,ports:443,hosts:any").unwrap();
+    let decision = NetGrants::new().decide("weather", "api.weather.example", &any);
+    assert!(matches!(decision, Decision::Refused(why) if why.contains("no hosts of its own")));
+}
+
+#[test]
 fn allow_lasts_the_session_and_always_persists() {
     let mut grants = NetGrants::new();
     let a = ask(&grants, "a.weather.example");
