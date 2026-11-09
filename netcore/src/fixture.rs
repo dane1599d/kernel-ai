@@ -21,6 +21,24 @@ pub const MISSING: &str = "missing.kai.test";
 /// Never answered, so the resolver times out.
 pub const SILENT: &str = "silent.kai.test";
 
+/// xtask's HTTPS mock (P5 task 7): every host it serves is at one address,
+/// which QEMU forwards, on port 443, to the mock on the host (P5 task 12's
+/// harness, `xtask/src/cases/https.rs`). The names are the mock's own.
+pub const MOCK_ADDRESS: [u8; 4] = [10, 0, 2, 100];
+pub const MOCK_TTL: u32 = 300;
+/// The update repository's Pages host.
+pub const MOCK_REPO: &str = "updates.kai.test";
+/// GitHub's releases host, which redirects downloads to [`MOCK_ASSETS`].
+pub const MOCK_RELEASES: &str = "releases.kai.test";
+/// GitHub's release-assets host.
+pub const MOCK_ASSETS: &str = "assets.kai.test";
+/// A Hugging Face-shaped model host.
+pub const MOCK_MODELS: &str = "models.kai.test";
+/// A host no handle names, where the mock's off-host redirect leads.
+pub const MOCK_OFF: &str = "elsewhere.kai.test";
+/// Every host of the mock.
+pub const MOCK_HOSTS: &[&str] = &[MOCK_REPO, MOCK_RELEASES, MOCK_ASSETS, MOCK_MODELS, MOCK_OFF];
+
 /// What an answer record holds.
 #[derive(Clone, Copy)]
 pub enum Data<'a> {
@@ -51,6 +69,11 @@ pub fn answer(query: &[u8]) -> Option<Vec<u8>> {
                 (KAI, KAI_TTL, Data::A(KAI_ADDRESS)),
             ],
         ),
+        MOCK_REPO => (0, &[(MOCK_REPO, MOCK_TTL, Data::A(MOCK_ADDRESS))]),
+        MOCK_RELEASES => (0, &[(MOCK_RELEASES, MOCK_TTL, Data::A(MOCK_ADDRESS))]),
+        MOCK_ASSETS => (0, &[(MOCK_ASSETS, MOCK_TTL, Data::A(MOCK_ADDRESS))]),
+        MOCK_MODELS => (0, &[(MOCK_MODELS, MOCK_TTL, Data::A(MOCK_ADDRESS))]),
+        MOCK_OFF => (0, &[(MOCK_OFF, MOCK_TTL, Data::A(MOCK_ADDRESS))]),
         _ => (3, &[]),
     };
     Some(reply(query, &host, rcode, answers))
@@ -137,5 +160,17 @@ mod tests {
         );
         assert!(answer(&query(5, SILENT)).is_none());
         assert!(answer(b"not dns").is_none());
+    }
+
+    #[test]
+    fn every_mock_host_is_at_the_forwarded_address() {
+        for (id, host) in (10u16..).zip(MOCK_HOSTS) {
+            let got = parse_reply(id, host, &answer(&query(id, host)).unwrap()).unwrap();
+            assert_eq!(
+                (got.addresses[..].to_vec(), got.ttl),
+                (alloc::vec![Ipv4Addr::from(MOCK_ADDRESS)], MOCK_TTL),
+                "{host}"
+            );
+        }
     }
 }
