@@ -94,12 +94,19 @@ fn serve(
                 Err(kabi::Error::Permission)
             )
     };
-    let mut connect = TlsConnect {
-        config: Arc::clone(config),
-        dial: NetDial { dest, bulk: false },
-    };
     let clock = || sys::time_ns();
     let deadline = clock().saturating_add(DEADLINE_NS);
+    // Every wait on the network ends by the call's deadline too, so a peer
+    // that trickles bytes cannot hold `fetch`, and the callers behind it,
+    // past it (K's review).
+    let mut connect = TlsConnect {
+        config: Arc::clone(config),
+        dial: NetDial {
+            dest,
+            bulk: false,
+            deadline_ns: deadline,
+        },
+    };
     match fetch::serve_within(
         &ask.request,
         ask.hops,
