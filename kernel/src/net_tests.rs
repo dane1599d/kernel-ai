@@ -313,6 +313,11 @@ pub fn dest_check() -> Result<(), &'static str> {
         Some(entry),
     )?;
     log!("net-dest: the retired RESOLVE refused even a holder of a NetDest");
+    // Only the LLM's own handle reaches it: another NetDest with CONNECT does
+    // not (K's review of #755, where `fetch` holds callers' handles).
+    let (_, entry) = netdest(KAI_TEST)?;
+    netcheck("netdest-g", "http=refused", Some(entry))?;
+    log!("net-dest: HTTP to the LLM needs the LLM's own handle, not any NetDest");
     Ok(())
 }
 

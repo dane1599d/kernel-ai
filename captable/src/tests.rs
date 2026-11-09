@@ -44,6 +44,34 @@ fn check_wants_the_kind_and_every_right() {
     assert!(!table.holds(Kind::Sched, Rights::WRITE, &Always));
 }
 
+/// A handle to another object of the kind, even with every right, does not
+/// stand for the one asked about (`call::HTTP` wants the LLM's own `NetDest`).
+#[test]
+fn holds_object_wants_that_object_not_any_of_its_kind() {
+    let mut table = Table::new().unwrap();
+    let other = table
+        .insert(Entry::new(
+            Kind::NetDest,
+            Rights::CONNECT | Rights::RESOLVE,
+            16,
+        ))
+        .unwrap();
+    assert!(table.holds(Kind::NetDest, Rights::CONNECT, &Always));
+    assert!(!table.holds_object(Kind::NetDest, Rights::CONNECT, 1, &Always));
+    let llm = table
+        .insert(Entry::new(Kind::NetDest, Rights::RESOLVE, 1))
+        .unwrap();
+    assert!(!table.holds_object(Kind::NetDest, Rights::CONNECT, 1, &Always));
+    table.close(llm).unwrap();
+    table
+        .insert(Entry::new(Kind::NetDest, Rights::CONNECT, 1))
+        .unwrap();
+    assert!(table.holds_object(Kind::NetDest, Rights::CONNECT, 1, &Always));
+    assert!(!table.holds_object(Kind::Sched, Rights::CONNECT, 1, &Always));
+    table.close(other).unwrap();
+    assert!(table.holds_object(Kind::NetDest, Rights::CONNECT, 1, &Always));
+}
+
 #[test]
 fn a_closed_handle_never_resolves_even_after_its_slot_is_reused() {
     let mut table = Table::new().unwrap();
