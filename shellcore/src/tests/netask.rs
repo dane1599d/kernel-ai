@@ -202,3 +202,48 @@ fn the_wire_says_what_it_came_to() {
         "granted proto:tcp,addrs:none,ports:443,hosts:a.example,match:exact"
     );
 }
+
+/// Kai's `undo` call, answered for the next line it is asked about.
+fn kai_undo(host: &FakeHost) {
+    let undo = r#"{"name":"undo","arguments":{"steps":1}}"#;
+    host.calls
+        .borrow_mut()
+        .push_back(Ok(llmproto::act::parse(undo).unwrap()));
+}
+
+#[test]
+fn kai_s_own_undo_never_gives_a_grant_back() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    assert!(answered(&host, &mut shell, "allow").ok);
+    shell.settings(SETTINGS_APP, "net-revoke 1", true).unwrap();
+    // Kai may not undo the revoke (K on #750): the grant stays gone.
+    kai_undo(&host);
+    let refused = shell.eval("undo that");
+    assert!(
+        !refused.ok && refused.text.contains("only you may undo"),
+        "{refused:?}"
+    );
+    assert_eq!(connect(&mut shell), NetConnect::Asked);
+    // The person's typed `undo` may.
+    assert!(shell.eval("undo").ok);
+    assert!(matches!(connect(&mut shell), NetConnect::Granted(_)));
+    // Taking a grant back stays open to Kai: its undo of that restore
+    // revokes again.
+    kai_undo(&host);
+    let narrowed = shell.eval("undo that");
+    assert!(narrowed.ok, "{narrowed:?}");
+    assert_eq!(connect(&mut shell), NetConnect::Asked);
+}
+
+#[test]
+fn kai_s_undo_of_the_person_s_undo_of_an_allow_is_refused() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    assert!(answered(&host, &mut shell, "allow").ok);
+    assert!(shell.eval("undo").ok, "the person takes the Allow back");
+    kai_undo(&host);
+    let refused = shell.eval("undo that");
+    assert!(!refused.ok, "{refused:?}");
+    assert_eq!(connect(&mut shell), NetConnect::Asked);
+}

@@ -212,7 +212,12 @@ impl Shell {
     fn pseudo_undo(&mut self, call: &Call) -> Outcome {
         let steps = call.arguments.get("steps").and_then(Value::as_u64);
         let reply = match steps {
-            None | Some(1) => self.undo_command(""),
+            // Never one that gives an app back a network grant: only the
+            // person's typed `undo` or Settings may (K on #750).
+            None | Some(1) => match self.kai_undo_refusal() {
+                Some(why) => Reply::err(why),
+                None => self.undo_command(""),
+            },
             Some(_) => Reply::err(
                 "I undo one change at a time: `log` lists them, and `undo N` puts back entry N",
             ),

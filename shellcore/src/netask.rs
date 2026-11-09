@@ -382,6 +382,24 @@ impl Shell {
         Ok(grant)
     }
 
+    /// Why Kai's own `undo` may not revert the newest live entry: it would
+    /// give an app back a network grant (a revoke undone, or an undo of an
+    /// Allow undone), which only the card's Allow, the person's typed `undo`
+    /// or Settings may do. Taking a grant back stays open to it.
+    pub(crate) fn kai_undo_refusal(&self) -> Option<String> {
+        let entry = self.log.get(self.log.newest_live()?)?;
+        let widens = entry
+            .changes
+            .iter()
+            .any(|c| matches!(c.inverse, Some(Inverse::NetGrant { held: false, .. })));
+        widens.then(|| {
+            format!(
+                "#{} gives an app back a network grant, which only you may undo: type `undo`, or allow it again when the app asks",
+                entry.id
+            )
+        })
+    }
+
     /// `undo` of a network grant (`held`: it is taken back) or of a revoke
     /// (it is put back under its own id).
     pub(crate) fn revert_net_grant(&mut self, id: u32, held: bool) -> Result<String, String> {
