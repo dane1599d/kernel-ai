@@ -57,6 +57,7 @@ pub mod script;
 mod settings;
 pub use settings::{MAX_ANSWER as SETTINGS_MAX_ANSWER, SETTINGS_APP};
 mod show;
+mod sitewords;
 pub mod standing;
 pub mod state;
 pub mod targets;
@@ -612,6 +613,9 @@ pub struct Shell {
     pkgs: pkg::Store,
     /// Whether the `sudo` note was said already.
     said_no_sudo: bool,
+    /// The words that name a site for the agent's network rows: the curated host
+    /// table, and each installed app's word for its own hosts (P5 task 11).
+    hosts: nethosts::Table,
     /// The last script as `show` prints it.
     shown: Option<String>,
     /// What the script run by the last line printed.
@@ -701,6 +705,7 @@ impl Shell {
             net_revoked: Vec::new(),
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
+            hosts: nethosts::Table::curated(),
             shown: None,
             last_output: None,
             partial: None,
