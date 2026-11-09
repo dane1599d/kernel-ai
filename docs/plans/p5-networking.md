@@ -1,6 +1,6 @@
 # P5 plan: secure networking
 
-Status: DRAFT for founder approval, 2026-10-27. No P5 code lands on main until the founder approves this plan.
+Status: approved by the founder on 2026-10-27, with the defaults (#165). Tasks 1-7 are on main; tasks 8-14 have their host halves on main, and their OS wiring waits on the founder's OK for P5 OS merges beyond host crates and tasks 1-3. Task 15 (close) is not started.
 
 This plan covers the work that the accepted ADRs and the execution plan ([ADR 0000](../adr/0000-execution-plan.md) §3 and §5, P5 rows) put in P5:
 - [ADR 0001](../adr/0001-capabilities.md): `NetDest` per app;
