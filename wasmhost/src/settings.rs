@@ -217,7 +217,9 @@ pub fn classify(request: &str) -> Result<Kind, String> {
             .is_some_and(|(flag, app)| matches!(flag, "on" | "off") && name_ok(app, MAX_NAME)),
         "restart-window" => window(args),
         // A network grant's number, as `net` lists it (P5 task 13).
-        "net-revoke" => !args.is_empty() && args.len() <= 9 && args.bytes().all(|b| b.is_ascii_digit()),
+        "net-revoke" => {
+            !args.is_empty() && args.len() <= 9 && args.bytes().all(|b| b.is_ascii_digit())
+        }
         _ => return Err(alloc::format!("`{verb}` is not a request")),
     };
     if fits {
