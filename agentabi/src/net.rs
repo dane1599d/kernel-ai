@@ -51,7 +51,7 @@ const fn read(
         cues: &[],
         returns,
         ret,
-        owner: Owner::Service("netd"),
+        owner: Owner::Service("fetch"),
         needs: 0,
         min_tier: Tier::Run,
         old_name: None,

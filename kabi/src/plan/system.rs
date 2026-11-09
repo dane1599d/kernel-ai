@@ -174,7 +174,7 @@ mod tests {
     fn the_system_shell_has_a_route_to_pkg_with_kai_data_and_only_then() {
         assert_eq!(shell(true), SHELL_DESK_BUILD);
         assert_eq!(shell(false), super::super::SHELL_DESK);
-        assert!(shell(true).contains("routes=desktop+pkg "));
+        assert!(shell(true).contains("routes=desktop+pkg+fetch "));
         assert!(lines(true).iter().any(|line| line.starts_with("pkg ")));
         assert!(!shell(false).contains("pkg"));
         // `pkg` is planned before the shell, as its route needs.

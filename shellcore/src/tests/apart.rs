@@ -168,3 +168,26 @@ fn window_rows_stay_in_the_shell_which_alone_reaches_desktop() {
         assert!(!apart::may_run_apart(&checked), "{script}");
     }
 }
+
+#[test]
+fn network_reads_stay_in_the_shell_which_alone_reaches_fetch() {
+    let host = FakeHost::new();
+    let dyn_host: Rc<dyn Host> = host.clone();
+    for script in [
+        "show(net_fetch(\"en.wikipedia.org\"));",
+        "show(net_lookup(\"en.wikipedia.org\"));",
+    ] {
+        let call = Answer {
+            summary: String::new(),
+            script: String::from(script),
+        };
+        let checked = crate::script::check_against(
+            &call,
+            &dyn_host,
+            &DEFAULT_CONFIG,
+            &agentabi::SCRIPT_CALLS,
+        )
+        .unwrap();
+        assert!(!apart::may_run_apart(&checked), "{script}");
+    }
+}

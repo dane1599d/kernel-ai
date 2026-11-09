@@ -51,15 +51,13 @@ pub(super) fn bind(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx:
             engine.register_fn(name, move |host: &str| -> RhaiResult<data::Data> {
                 tx.approved(name, &[host])?;
                 let addrs = h.net_resolve(host).map_err(fail)?;
-                let ms = h.net_ping(host).map_err(fail)?;
-                let answer = match ms {
-                    ms if ms < 0 => String::from("no answer"),
-                    ms => format!("answers in {ms} ms"),
+                // Where no ping reaches (ring 3 has none), the addresses alone.
+                let text = match h.net_ping(host) {
+                    Ok(ms) if ms < 0 => format!("{host}: {}; no answer", addrs.join(", ")),
+                    Ok(ms) => format!("{host}: {}; answers in {ms} ms", addrs.join(", ")),
+                    Err(_) => format!("{host}: {}", addrs.join(", ")),
                 };
-                Ok(data::Data::new(
-                    "dns",
-                    format!("{host}: {}; {answer}", addrs.join(", ")),
-                ))
+                Ok(data::Data::new("dns", text))
             });
         }
         _ => return false,
