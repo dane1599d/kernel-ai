@@ -565,6 +565,7 @@ fn the_net_line_is_none_or_a_destination_an_agent_may_hold() {
         ("proto:tcp,ports:8000-8016,hosts:a.example", "ports"),
         ("proto:tcp,ports:443", "at least one host"),
         ("proto:tcp,ports:443,hosts:com", "netdest"),
+        ("proto:tcp,ports:443,hosts:any", "the shell's alone"),
         ("None", "netdest"),
     ] {
         let refusal = refused(&with("net", value));

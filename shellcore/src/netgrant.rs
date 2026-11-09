@@ -143,6 +143,10 @@ impl NetGrants {
         let Some(host) = netdest::normalize(host) else {
             return Decision::Refused(String::from("not a host name"));
         };
+        // A package names its hosts: `hosts:any` is the shell's alone.
+        if ceiling.any_host {
+            return Decision::Refused(format!("{app}'s package names no hosts of its own"));
+        }
         if !ceiling.allows_name(&host) {
             return Decision::Refused(format!("{app}'s package does not name {host}"));
         }
@@ -244,6 +248,7 @@ impl NetGrants {
             ports: ceiling.ports.clone(),
             hosts,
             exact: true,
+            any_host: false,
         };
         narrowed.within(ceiling).then_some(narrowed)
     }

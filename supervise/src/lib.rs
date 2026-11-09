@@ -759,6 +759,9 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
             "{name}: an unsupervised process takes no caps=, uses=, dir=, bootfiles= or netdest="
         ));
     }
+    if let Some(dest) = &netdest {
+        any_host_line(name, program, dest)?;
+    }
     let start = start.unwrap_or_default();
     if unsupervised && start != Start::Boot {
         return Err(format!("{name}: an unsupervised process takes no start="));
@@ -780,6 +783,36 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
         policy,
         unsupervised,
     })
+}
+
+/// The one plan line `netdest=...,hosts:any` may sit on: the shell's (the
+/// founder, 2026-11-09: Kai may reach any website the user names).
+pub const ANY_HOST_SERVICE: &str = "shell";
+/// The one port a `hosts:any` destination names: HTTPS.
+pub const ANY_HOST_PORT: u16 = 443;
+
+/// `hosts:any` is a ceiling for the shell alone, which narrows it to the one
+/// host consent grounded on each call: on the `shell` line running `shell`,
+/// TCP to port 443 only, and no literal addresses. Any other line with it
+/// fails, so no app's or package's line can name every host.
+fn any_host_line(name: &str, program: &str, dest: &netdest::Dest) -> Result<(), String> {
+    if !dest.any_host {
+        return Ok(());
+    }
+    if name != ANY_HOST_SERVICE || program != ANY_HOST_SERVICE {
+        return Err(format!(
+            "{name}: hosts:any is for the {ANY_HOST_SERVICE} line alone"
+        ));
+    }
+    let https_only = dest.protocol == netdest::Protocol::Tcp
+        && dest.addrs == netdest::AddrRange::NoAddrs
+        && dest.ports == netdest::PortRange::Port(ANY_HOST_PORT);
+    match https_only {
+        true => Ok(()),
+        false => Err(format!(
+            "{name}: hosts:any is tcp to port {ANY_HOST_PORT} only, with no addrs"
+        )),
+    }
 }
 
 /// The folders in `dir=A+B`: each one [`Folder`] names, and each once. Any other

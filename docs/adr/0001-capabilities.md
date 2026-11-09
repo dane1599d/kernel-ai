@@ -80,6 +80,8 @@ In design terms: base design A, with C's app-facing routes and B's user-facing w
 | `Input` | the kernel's one input queue. READ for `desktop`'s INPUT_READ. The key sink is an `Input` handle with WRITE, the push right for ADR 0007's INPUT_PUSH, given at spawn only to the service whose `devmatch` row has `input` (`usbd`) | READ; WRITE (key sink) | P3 | [ADR 0005](0005-graphics.md), [ADR 0007](0007-drivers.md) |
 | `Vm` | one micro-VM | per ADR 0006 | P6 | [ADR 0006](0006-existing-software.md) |
 
+`NetDest`'s host field may be `hosts:any` (every name of two labels or more) on one line only: the shell's, TCP to port 443, as its ceiling for the websites a user names (2026-11-09, [decision row](../decisions/rows/2026-11-09-netdest-hosts-any.md)). Every app, package and agent names its hosts. The shell narrows the ceiling to the one host consent grounded, exactly, for each call.
+
 Server-backed kinds (`Dir`, `File`, an app's action routes) point at the server's endpoint with a badge. The kernel enforces kind, rights, subset and revocation; the server reads the badge and the rights used, as seL4 badges work.
 
 ### D3. The bitmask becomes the kind ceiling
