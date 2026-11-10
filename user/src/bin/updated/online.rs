@@ -57,6 +57,16 @@ const MARK_FILE: &str = "online.mark";
 /// A mark is the image's SHA-256 and the number of chunks done.
 const MARK_BYTES: usize = 32 + 8;
 
+/// How many times a network stop is tried again: `retries=N` in the plan words
+/// (a case that wants the stop to end the run, as a reboot would, says 0),
+/// else [`MAX_RETRIES`].
+fn max_retries(args: &str) -> u32 {
+    args.split_whitespace()
+        .find_map(|w| w.strip_prefix("retries="))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(MAX_RETRIES)
+}
+
 /// Whether the plan line asks for xtask's HTTPS mock (`online=test`).
 fn test_repository(args: &str) -> bool {
     args.split_whitespace().any(|w| w == "online=test")
@@ -346,7 +356,7 @@ pub fn update(handle: Handle, restart_now: bool, args: &str) -> Result<Staged, S
     let started = sys::time_ns();
     // A stop that is the network's (a cut, a timeout, a busy server) is not the end:
     // the checked chunks are kept, and another call resumes at the first unchecked.
-    let mut retries = 0;
+    let (mut retries, max) = (0, max_retries(args));
     let staged = loop {
         let stopped_at = stage::stage(
             &job,
@@ -359,14 +369,14 @@ pub fn update(handle: Handle, restart_now: bool, args: &str) -> Result<Staged, S
         );
         match stopped_at {
             Ok(staged) => break staged,
-            Err(stop @ Stop::Retry { .. }) if retries < MAX_RETRIES => {
+            Err(stop @ Stop::Retry { .. }) if retries < max => {
                 retries += 1;
                 let wait_s = match &stop {
                     Stop::Retry { after_s, .. } => after_s.unwrap_or(RETRY_S).min(MAX_WAIT_S),
                     _ => RETRY_S,
                 };
                 println!(
-                    "updated: {}; trying again in {wait_s} s ({retries} of {MAX_RETRIES})",
+                    "updated: {}; trying again in {wait_s} s ({retries} of {max})",
                     stop.why()
                 );
                 sys::sleep_ms(u64::from(wait_s) * 1_000);

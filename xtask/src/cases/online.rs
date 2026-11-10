@@ -154,7 +154,11 @@ pub(super) const CASES: &[TestCase] = &[
         ..slot_boot("update-online-rollback", "test=slot panic=reset", INSTALL)
     },
     TestCase {
-        then: Some(&A_RESUMES),
+        then: Some(&A_RETRIES),
+        ..slot_boot("update-online-retry", "test=slot panic=reset", INSTALL)
+    },
+    TestCase {
+        then: Some(&A_CUT),
         ..slot_boot("update-online-resume", "test=slot panic=reset", INSTALL)
     },
 ];
@@ -186,13 +190,28 @@ const fn online_boot(
     expect: &'static [&'static str],
     fault: Fault,
 ) -> TestCase {
+    online_boot_with(
+        name,
+        "test=update updated=online panic=reset",
+        expect,
+        fault,
+    )
+}
+
+/// [`online_boot`] with its own command line.
+const fn online_boot_with(
+    name: &'static str,
+    cmdline: &'static str,
+    expect: &'static [&'static str],
+    fault: Fault,
+) -> TestCase {
     TestCase {
         https: Some(Https {
             content: nothing,
             faults: &[],
         }),
         online_release: Some(fault),
-        ..slot_boot(name, "test=update updated=online panic=reset", expect)
+        ..slot_boot(name, cmdline, expect)
     }
 }
 
@@ -310,21 +329,55 @@ const A_NEWER_METADATA: TestCase = TestCase {
     )
 };
 
-/// `update-online-resume` boot 2: the connection is cut once inside chunk 3, so
-/// chunks 0 to 2 were written and recorded; `updated` tries again, and the
-/// second call keeps those three after reading them back, and fetches the rest.
-/// (Across a reboot the slot disk of this harness is rebuilt from the boot's
-/// bundle, so a kept chunk could not read back; `update_fetch_tests` resumes
-/// after a reboot on the host, from the slot, the mark and the trust.)
-const A_RESUMES: TestCase = TestCase {
+/// `update-online-retry` boot 2: the connection is cut once inside chunk 3, so
+/// chunks 0 to 2 were written and recorded; `updated` tries again in the same
+/// boot, and the second call keeps those three after reading them back, and
+/// fetches the rest.
+const A_RETRIES: TestCase = TestCase {
     then: Some(&B_FROM_NET),
     ..online_boot(
-        "update-online-resume (2: updated resumes after a cut)",
+        "update-online-retry (2: updated tries again after a cut)",
         &[
             "updated: the online repository verifies: slot.img is release 2, ",
             "; it resumes where it was; trying again in 2 s (1 of 3)",
             "updated: wrote release 2 into B over TLS and checked it: 3 chunks kept, ",
             "update: restarting into kai-b",
+        ],
+        Fault::CutOnce,
+    )
+};
+
+/// `update-online-resume` boot 3: A again, after the reboot that ended boot 2.
+/// Slot B is as boot 2 left it, with chunks 0 to 2 of release 2 written, and
+/// the mark in `/system/updates` (the data disk carries over) says so: the
+/// run keeps those three after reading them back, and fetches the rest.
+const A_RESUMED: TestCase = TestCase {
+    then: Some(&B_FROM_NET),
+    keeps_slot_b: true,
+    ..online_boot(
+        "update-online-resume (3: updated resumes where it was stopped)",
+        &[
+            "updated: the online repository verifies: slot.img is release 2, ",
+            "updated: wrote release 2 into B over TLS and checked it: 3 chunks kept, ",
+            "update: restarting into kai-b",
+        ],
+        Fault::None,
+    )
+};
+
+/// `update-online-resume` boot 2: the connection is cut once inside chunk 3 and
+/// `updated` is told not to try again, so the run ends there, as a power cut
+/// would, with three chunks written and recorded (`updated`'s failure restarts
+/// into the running slot: the reboot).
+const A_CUT: TestCase = TestCase {
+    then: Some(&A_RESUMED),
+    ..online_boot_with(
+        "update-online-resume (2: the download is stopped mid-image)",
+        "test=update updated=online updated.retries=0 panic=reset",
+        &[
+            "updated: the online repository verifies: slot.img is release 2, ",
+            "; it resumes where it was",
+            "updated: restarting into the running slot",
         ],
         Fault::CutOnce,
     )

@@ -497,7 +497,14 @@ fn execute(options: &Options) -> Result<(), String> {
                 qemu::boot_from_image(&mut args, &esp, &target_dir)?;
             }
             if case.slots {
-                qemu::boot_from_slots(&mut args, &esp, &target_dir, &cmdline, &record)?;
+                qemu::boot_from_slots(
+                    &mut args,
+                    &esp,
+                    &target_dir,
+                    &cmdline,
+                    &record,
+                    case.keeps_slot_b,
+                )?;
             }
             if let Some(name) = &update_disk {
                 args.extend(qemu::update_disk_args(name));

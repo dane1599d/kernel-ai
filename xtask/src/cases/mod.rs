@@ -134,6 +134,10 @@ pub struct TestCase {
     /// its metadata signed by the run's test root, the test CA in the image's
     /// repository folder (`dns` is set with it).
     pub online_release: Option<crate::image::update_online::Fault>,
+    /// A second boot of a slot case keeps slot B as the boot before left it, so
+    /// a download that was stopped can resume from what it had written (P5
+    /// task 10); otherwise every boot makes the slots anew from its bundle.
+    pub keeps_slot_b: bool,
 }
 
 /// What the HTTPS mock serves a case: its hosts are `netcore::fixture`'s
@@ -197,6 +201,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         https: None,
         online: None,
         online_release: None,
+        keeps_slot_b: false,
     }
 }
 
