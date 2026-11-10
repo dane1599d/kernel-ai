@@ -71,11 +71,32 @@ pub(super) fn bind(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx:
                     query(h2.as_ref(), d, question, QueryKind::Short).map_err(fail)
                 },
             );
+            let (h3, tx3) = (Rc::clone(&h), tx.clone());
             engine.register_fn(
                 name,
                 move |d: data::Data, question: &str, answers: Array| -> RhaiResult<data::Data> {
                     let words = words(answers).map_err(fail)?;
-                    tx.approved(name, &[d.text(), question, &words.join(",")])?;
+                    tx3.approved(name, &[d.text(), question, &words.join(",")])?;
+                    query(h3.as_ref(), d, question, kind_of(words)).map_err(fail)
+                },
+            );
+            // Text the script wrote itself (a tagged call's arguments) is no
+            // one's content: its answer is labelled as the query's own.
+            let (h4, tx4) = (Rc::clone(&h), tx.clone());
+            engine.register_fn(
+                name,
+                move |text: &str, question: &str| -> RhaiResult<data::Data> {
+                    tx4.approved(name, &[text, question])?;
+                    let d = data::Data::new("query", text);
+                    query(h4.as_ref(), d, question, QueryKind::Short).map_err(fail)
+                },
+            );
+            engine.register_fn(
+                name,
+                move |text: &str, question: &str, answers: Array| -> RhaiResult<data::Data> {
+                    let words = words(answers).map_err(fail)?;
+                    tx.approved(name, &[text, question, &words.join(",")])?;
+                    let d = data::Data::new("query", text);
                     query(h.as_ref(), d, question, kind_of(words)).map_err(fail)
                 },
             );

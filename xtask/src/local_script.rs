@@ -145,6 +145,17 @@ impl Host for Acting {
         self.gate.script(request)
     }
 
+    /// As llm answers a quarantined read: through the wire, on the same
+    /// engine, under its kind's shape, checked against the kind.
+    fn query(&self, request: &llmproto::query::QueryRequest) -> Result<String, String> {
+        use llmproto::query::{self, QueryRequest};
+        let request = QueryRequest::decode(&request.encode()).ok_or("malformed query request")?;
+        let answer = local::query(&mut self.engine.borrow_mut(), &request, |_| Next::Continue)
+            .map_err(|error| local::describe(&error))
+            .and_then(|completion| query::answer(&request.kind, &completion));
+        query::decode_answer(&query::encode_answer(&answer)).ok_or("malformed answer")?
+    }
+
     fn act(&self, request: &ActRequest) -> Result<Call, ActError> {
         let Some(request) = ActRequest::decode(&request.encode()) else {
             return Err(ActError::NotACall);
@@ -240,9 +251,11 @@ mod tests {
         // follows the pack's bytes and the history, so the two need not match;
         // the same input twice must (above). A file read, which this guest,
         // with no kai-data disk, refuses in the shell's own words, shows `! `.
+        // So does a quarantined read the random weights answer out of shape.
         assert_eq!(outcome.rounds, [0, 0]);
         for reply in [&outcome.typed, &outcome.again] {
-            let lead = match reply.contains(shellcore::NO_FILES) {
+            let refused = reply.contains(shellcore::NO_FILES) || reply.contains("query_data: ");
+            let lead = match refused {
                 true => "! ",
                 false => "= ",
             };
