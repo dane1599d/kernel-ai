@@ -36,6 +36,7 @@ fn qwen3_4b() -> Config {
         context_length: 40_960,
         rope_theta: 1_000_000.0,
         rms_eps: 1e-6,
+        pooling: crate::config::Pooling::None,
     }
 }
 
