@@ -11,12 +11,12 @@ use crate::{Next, Sampler};
 use alloc::vec::Vec;
 use quant::Tier;
 
-const ROOMY: Budget = Budget {
+pub(crate) const ROOMY: Budget = Budget {
     kv_bytes: 64 << 20,
     other_bytes: 64 << 20,
 };
 
-fn key(tier: Tier) -> Key {
+pub(crate) fn key(tier: Tier) -> Key {
     Key {
         model_sha256: [7; 32],
         tier,
@@ -26,14 +26,14 @@ fn key(tier: Tier) -> Key {
 }
 
 /// The prompt a slot is saved for, then one that starts with it.
-fn saved() -> [Turn<'static>; 2] {
+pub(crate) fn saved() -> [Turn<'static>; 2] {
     [
         Turn::new(Role::System, "You run inside Kernel AI. Answer briefly."),
         Turn::new(Role::User, "hello there"),
     ]
 }
 
-fn later() -> [Turn<'static>; 4] {
+pub(crate) fn later() -> [Turn<'static>; 4] {
     [
         Turn::new(Role::System, "You run inside Kernel AI. Answer briefly."),
         Turn::new(Role::User, "hello there"),
@@ -43,7 +43,11 @@ fn later() -> [Turn<'static>; 4] {
 }
 
 /// A reply to `turns`, greedy, of at most `max_new` tokens.
-fn reply(engine: &mut Engine<'_>, turns: &[Turn<'_>], max_new: usize) -> crate::chat::Reply {
+pub(crate) fn reply(
+    engine: &mut Engine<'_>,
+    turns: &[Turn<'_>],
+    max_new: usize,
+) -> crate::chat::Reply {
     engine
         .reply(turns, max_new, &mut Sampler::greedy(), None, |_| {
             Next::Continue
@@ -52,7 +56,7 @@ fn reply(engine: &mut Engine<'_>, turns: &[Turn<'_>], max_new: usize) -> crate::
 }
 
 /// `turns`' prompt computed into `engine`, and its slot saved.
-fn file(engine: &mut Engine<'_>, key: &Key) -> Vec<u8> {
+pub(crate) fn file(engine: &mut Engine<'_>, key: &Key) -> Vec<u8> {
     // One token made and never run: the cache holds the prompt alone.
     reply(engine, &saved(), 1);
     let mut out = Vec::new();
@@ -65,7 +69,7 @@ fn file(engine: &mut Engine<'_>, key: &Key) -> Vec<u8> {
     out
 }
 
-fn reader(bytes: &[u8]) -> impl FnMut(&mut [u8]) -> bool + '_ {
+pub(crate) fn reader(bytes: &[u8]) -> impl FnMut(&mut [u8]) -> bool + '_ {
     let mut at = 0;
     move |buf| match bytes.get(at..at + buf.len()) {
         Some(part) => {

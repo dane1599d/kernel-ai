@@ -28,6 +28,12 @@ pub const HOME: u64 = 2;
 pub const MODELS: u64 = 3;
 /// The volumes `mkfs` makes, with their names.
 pub const VOLUMES: [(u64, &str); 3] = [(SYSTEM, "system"), (HOME, "home"), (MODELS, "models")];
+/// Volume names ADR 0013 takes for after the v0.1 tag: `memory` (long-term memory,
+/// §3) and `index` (the search index, §4). `mkfs` makes neither, and a volume entry
+/// that names one is refused, so an image of format 1 cannot hold a volume the
+/// agents track means differently; adding them is a format change (ADR 0004's
+/// compat bits), made then.
+pub const RESERVED_VOLUMES: [&str; 2] = ["memory", "index"];
 
 /// Volume-table item kinds.
 pub const K_VOLUME: u8 = 1;
@@ -203,6 +209,9 @@ pub fn decode_volume(id: u64, value: &[u8]) -> Result<VolEntry, Error> {
     };
     if key_id != 0 {
         return Err(Error::Unsupported("an encrypted volume"));
+    }
+    if RESERVED_VOLUMES.contains(&name.as_str()) {
+        return Err(Error::Unsupported("a volume named for a later format"));
     }
     Ok(VolEntry { live, name, key_id })
 }

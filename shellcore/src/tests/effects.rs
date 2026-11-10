@@ -470,3 +470,61 @@ files ../x
             .any(|line| line.contains("withheld grants on disk are out of shape"))
     );
 }
+
+/// Kai's `undo` call, answered for the next line it is asked about.
+fn kai_undo(host: &FakeHost) {
+    let undo = r#"{"name":"undo","arguments":{"steps":1}}"#;
+    host.calls
+        .borrow_mut()
+        .push_back(Ok(llmproto::act::parse(undo).unwrap()));
+}
+
+/// Kai's own `undo` never gives an app back a row Settings withheld (as for
+/// network grants, K on #750): the person's typed `undo` may, and Kai may
+/// still withhold it again.
+#[test]
+fn kai_s_own_undo_never_gives_a_withheld_row_back() {
+    let host = host();
+    let mut shell = shell(&host);
+    let app = crate::settings::SETTINGS_APP;
+    assert_eq!(
+        shell
+            .settings(app, "grants-revoke files fs_list", true)
+            .as_deref(),
+        Ok("files fs_list withheld")
+    );
+    kai_undo(&host);
+    let refused = shell.eval("undo that");
+    assert!(
+        !refused.ok && refused.text.contains("a row Settings withheld"),
+        "{refused:?}"
+    );
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_err());
+    assert_eq!(shell.eval("undo"), ok("Undone: files may call fs_list"));
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_ok());
+    // Narrowing stays open to Kai: its undo of the person's undo withholds
+    // the row again.
+    kai_undo(&host);
+    assert!(shell.eval("undo that").ok);
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_err());
+}
+
+/// Kai cannot redo a restore the person undid: the entry that undo made gives
+/// the row back, so it is refused, and the row stays withheld.
+#[test]
+fn kai_s_undo_cannot_redo_a_restore_the_person_undid() {
+    let host = host();
+    let mut shell = shell(&host);
+    let app = crate::settings::SETTINGS_APP;
+    for (line, now) in [
+        ("grants-revoke files fs_list", "files fs_list withheld"),
+        ("grants-restore files fs_list", "files fs_list allowed"),
+    ] {
+        assert_eq!(shell.settings(app, line, true).as_deref(), Ok(now));
+    }
+    assert_eq!(shell.eval("undo"), ok("Undone: files may not call fs_list"));
+    kai_undo(&host);
+    let refused = shell.eval("undo that");
+    assert!(!refused.ok, "{refused:?}");
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_err());
+}

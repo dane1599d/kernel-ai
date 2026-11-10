@@ -101,7 +101,7 @@ A higher class always runs before a lower one. Within a class, deficit round rob
 - **Exact resume.** `restore_slot`'s checks apply unchanged, so a resumed agent continues from bit-identical state, or prefills from cold if a check fails. It never continues from wrong state.
 - **Eviction.** Least recently used per class, lowest class first. The pool holds at most 512 MiB (est.; question 4).
 
-**Batching.** Decode is bound by memory reads (L6: the 4B's products ran at 19-20 tokens/s against 21-22 from the read rate alone), and `quant` already multiplies each row by up to 8 tokens at once. So agents of one class may decode together as a batch of up to 4 sequences, which could give up to 3-4 times their throughput (est.). The foreground request decodes alone unless S13-2 shows batching slows it by at most 10%.
+**Batching.** Decode is bound by memory reads (L6: the 4B's products ran at 19-20 tokens/s against 21-22 from the read rate alone), and `quant` already multiplies each row by up to 8 tokens at once. So agents of one class may decode together as a batch of up to 4 sequences, which could give up to 3-4 times their throughput (est.). The foreground request decodes alone unless S13-2 shows batching slows it by at most 10%. *S13-2 failed (2026-11-04, best 1.28x at 2 sequences against a 1.6x bar; row `2026-11-09-s13-2-batch-decode`): decode stays serial, one sequence at a time.*
 
 **Quotas,** in the agent's manifest (section 6) or set by the user, enforced in `llm` by badge:
 

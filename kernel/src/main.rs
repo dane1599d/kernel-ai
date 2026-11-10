@@ -114,6 +114,7 @@ mod model_tests;
 mod nap_tests;
 mod net;
 mod net_commands;
+mod net_download_tests;
 mod net_pf_tests;
 mod net_tests;
 mod nvme;
@@ -470,6 +471,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetDest => run_case(net_tests::dest_check),
         SelfTest::NetStream => run_case(|| net_tests::stream_check(cmdline())),
         SelfTest::HttpsMock => run_case(https_tests::check),
+        SelfTest::NetDownload { again, .. } => run_case(|| net_download_tests::check(again)),
         SelfTest::FetchService => run_case(https_tests::fetch_check),
         SelfTest::EntropyBoots => run_case(entropy_tests::check),
         SelfTest::Slot => {

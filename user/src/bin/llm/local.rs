@@ -18,6 +18,7 @@ use infer::chat::{Budget, Engine, Step};
 use llmproto::act::{self, ActError, ActRequest, Call, History, Turn};
 use llmproto::chat::{self, Completion};
 use llmproto::local;
+use llmproto::query::{self, QueryRequest};
 use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
 use llmproto::tune::{self, TuneRequest};
 use quant::{Parallel, Tier};
@@ -311,7 +312,7 @@ impl Clock {
 }
 
 /// Which KV slot each prompt uses: the act prefix stays in one, the script
-/// prompt (and `ask`, `explain`, `tune`, `:model`) in the other, so neither
+/// prompt (and `ask`, `explain`, `tune`, `query`, `:model`) in the other, so neither
 /// evicts the other (S02-2).
 pub const SLOTS: local::act::Slots = local::act::Slots::TWO;
 
@@ -647,6 +648,23 @@ impl Local {
             false => String::new(),
         };
         println!("tune: {timing}{limit}");
+        done.map_err(|error| format!("the local model failed: {}", local::describe(&error)))
+    }
+
+    /// The model's answer to a `query`, under its kind's shape, within
+    /// `query::SERVICE_TIMEOUT_MS`.
+    pub fn query(&mut self, request: &QueryRequest) -> Result<Completion, String> {
+        self.engine.use_slot(SLOTS.script);
+        let mut clock = Clock::new(query::SERVICE_TIMEOUT_MS, self.prefill_rate);
+        let done = local::query(&mut self.engine, request, |step| clock.step(step));
+        self.last = clock.speed().or(self.last);
+        self.prefill_rate = clock.rate().or(self.prefill_rate);
+        if clock.stopped {
+            return Err(format!(
+                "the model did not answer within {} s",
+                query::SERVICE_TIMEOUT_MS / 1000
+            ));
+        }
         done.map_err(|error| format!("the local model failed: {}", local::describe(&error)))
     }
 

@@ -40,6 +40,7 @@ use llmproto::act::{ActError, ActRequest, History, history};
 use llmproto::chat::Completion;
 use llmproto::chat::{self, NO_MODEL};
 use llmproto::health::{State, Status};
+use llmproto::query::{self, QueryRequest};
 use llmproto::script::{self, AnswerError, Lang, ScriptRequest};
 use llmproto::text::printable;
 use llmproto::tune::{self, TuneRequest, replay};
@@ -257,7 +258,7 @@ fn main() -> i32 {
         cold |= match command {
             Some("script") => warm_lang != Lang::Rhai,
             Some("program") => warm_lang != Lang::C,
-            Some("ask" | "explain" | "model" | "tune" | "app" | "app-start") => true,
+            Some("ask" | "explain" | "model" | "tune" | "query" | "app" | "app-start") => true,
             _ => false,
         };
         stale |= matches!(command, Some("remember" | "new"));
@@ -461,6 +462,7 @@ fn handle(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<St
             Ok(String::from("conversation cleared"))
         }
         "tune" => tune(backends, text, response),
+        "query" => query(backends, text, response),
         _ => Err(format!("unknown request {command:?}")),
     }
 }
@@ -549,6 +551,22 @@ fn tune_answer(
         (None, None) => return Err(String::from(NO_MODEL)),
     };
     Ok(completion)
+}
+
+/// A quarantined read: the model's answer to one typed question about the
+/// data, checked against its kind here, so the shell gets a word or one short
+/// line, or why there is none. It never touches the conversation, but it
+/// takes the script slot: the next script request prefills its prompt again.
+fn query(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<String, String> {
+    let request = QueryRequest::decode(text).ok_or("malformed query request")?;
+    let completion = match (&mut backends.local, &backends.server) {
+        (Some(Ok(local)), _) => local.query(&request),
+        (_, Some(server)) => server.query(&request, response),
+        (Some(Err(why)), None) => Err(format!("the model cannot run: {why}")),
+        (None, None) => Err(String::from(NO_MODEL)),
+    };
+    let answer = completion.and_then(|c| query::answer(&request.kind, &c));
+    Ok(query::encode_answer(&answer))
 }
 
 /// The server's health first, then the model's and the engine's; either side may
