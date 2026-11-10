@@ -43,6 +43,11 @@ fn a_netdest_line_names_its_destination_and_is_bound_to_its_program() {
     assert!(!dest.allows_name("weather.example"));
     let grants = plan.grants("weather", "weather").unwrap();
     assert_eq!(grants.netdest.as_ref(), Some(dest));
+    // The program is told it as an argument.
+    assert_eq!(
+        plan.services[0].args,
+        "netdest=proto:tcp,ports:443,hosts:api.weather.example"
+    );
     assert!(plan.grants("weather", "other").is_err());
     assert_eq!(plan.grants("nobody", "nobody").unwrap().netdest, None);
 }
