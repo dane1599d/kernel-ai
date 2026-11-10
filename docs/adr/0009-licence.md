@@ -142,6 +142,7 @@ The proposal: Kernel AI stays under MPL-2.0, the licence its workspace manifest 
 - One `PRODUCT_NAME` in `kabi`, which kernel, user, shellcore and xtask already depend on; llmproto gains the dependency. It is a `macro_rules!` name as well as a constant, so `concat!` keeps the prompts `const`. The banner, the boot entry, the VM name and the four prompts use it. A test checks that the prompt bytes do not change, so this refactor needs no fluency re-run; a later rename does.
 - The seeds `kernel-ai` (`image/mod.rs:20`, `.cargo/config.toml:19`) stay, because changing them changes every image hash.
 - No filing before counsel's clearance search, which comes before the v0.1 tag.
+- **Decided 2026-11-07 (the founder, [#745](https://github.com/dane1599d/kernel-ai/pull/745)):** both names stay. The first-pass trademark check of 2026-11-06 (aggregator sites, not counsel, and not legal advice) found no exact "Kernel AI" mark. It found registered KAI marks for conversational AI software (Kasisto, Inc.; KAI Conversations Ltd). Offered a rename of the assistant before the tag, the founder chose "Keep Kai", accepting the risk of a later objection. Nothing has been filed (`docs/decisions/rows/2026-11-07-keep-the-name-kai.md`).
 
 **D9. Rows.** One new `docs/decisions.md` row, "Licence and reuse terms (ADR 0009)":
 - supersedes `:30`, `:52`, the "no code is reused" clause of `:12`, and `:32` (replaced by D4 and the 2026-10-21 rule);
