@@ -39,6 +39,21 @@ pub const MOCK_OFF: &str = "elsewhere.kai.test";
 /// Every host of the mock.
 pub const MOCK_HOSTS: &[&str] = &[MOCK_REPO, MOCK_RELEASES, MOCK_ASSETS, MOCK_MODELS, MOCK_OFF];
 
+/// `net-download`'s release on the mock (P5 task 6's case): its job lists
+/// are downloaded from [`MOCK_RELEASES`] at this path, as GitHub serves a
+/// release's assets.
+pub const DOWNLOAD_RELEASE: &str = "/dane1599d/kernel-ai-updates/releases/download/net-download/";
+/// The job list a KVM boot runs, whose target is 32 chunks of 2 MiB, and its
+/// SHA-256: pinned here as signed metadata pins a target. xtask generates the
+/// targets from fixed seeds, and its tests check both pins.
+pub const DOWNLOAD_JOBS: &str = "jobs";
+pub const DOWNLOAD_JOBS_SHA256: &str =
+    "a1d863bbb8e8ec97bd9f4cd0578b4425b72bd4ea13d16973fd15d8c143cc39cd";
+/// The job list a TCG boot runs: the same 32 chunks at 64 KiB.
+pub const DOWNLOAD_JOBS_SMALL: &str = "jobs-small";
+pub const DOWNLOAD_JOBS_SMALL_SHA256: &str =
+    "87f58ca23334b15c245d4ba279625e523f02e57580436b7c47b3b00842ca8b4d";
+
 /// What an answer record holds.
 #[derive(Clone, Copy)]
 pub enum Data<'a> {

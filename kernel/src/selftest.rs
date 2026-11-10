@@ -310,6 +310,13 @@ pub enum SelfTest {
     NetStream,
     /// P5 task 12's harness: xtask's HTTPS mock reached from ring 3.
     HttpsMock,
+    /// P5 task 6, the roadmap's P5 exit: a download cut and resumed, across a
+    /// reboot (`again`), and bad certificates and hashes refused; `small`
+    /// under TCG (`accel=tcg`).
+    NetDownload {
+        again: bool,
+        small: bool,
+    },
     /// P5 task 12: the `fetch` service on its caller's handles.
     FetchService,
     /// P5 task 3: ENTROPY's sample, which two boots must not share.
@@ -493,6 +500,10 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net-dest" => Some(SelfTest::NetDest),
             "test=net-stream" => Some(SelfTest::NetStream),
             "test=https-mock" => Some(SelfTest::HttpsMock),
+            "test=net-download" => Some(SelfTest::NetDownload {
+                again: cmdline.split_whitespace().any(|w| w == "again"),
+                small: cmdline.split_whitespace().any(|w| w == "accel=tcg"),
+            }),
             "test=fetch-service" => Some(SelfTest::FetchService),
             "test=entropy-boots" => Some(SelfTest::EntropyBoots),
             other => other.strip_prefix("test=storm").map(|rest| {
@@ -575,6 +586,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::FilesRestart
             | SelfTest::FilesDeadClient
             | SelfTest::PkgStore(_)
+            | SelfTest::NetDownload { .. }
             | SelfTest::DisplayClaim
             | SelfTest::DeskWindows
             | SelfTest::DeskRestart
@@ -673,6 +685,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             crate::files_tests::plan(&alloc::format!("churn boot={boot}"))
         }
         SelfTest::PkgStore(step) => crate::pkg_tests::plan(step),
+        SelfTest::NetDownload { again, small } => crate::net_download_tests::plan(again, small),
         SelfTest::DeskCatalog => crate::catalog_tests::plan(),
         SelfTest::CBuild => crate::cc_build_tests::plan(),
         SelfTest::AppEditorBuild => crate::app_editor_build_tests::plan(),
@@ -712,6 +725,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::FilesActions
             | SelfTest::FilesChurn { .. }
             | SelfTest::PkgStore(_)
+            | SelfTest::NetDownload { .. }
             | SelfTest::DeskCatalog
             | SelfTest::CBuild
             | SelfTest::AppEditorBuild
