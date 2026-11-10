@@ -221,6 +221,11 @@ fn a_manifest_runs_through_admission_the_scheduler_and_a_goal() {
     asks.ask(&roster, 7, &read, shown).unwrap();
     let from_agent = asks.answer(7, true, Mark::of(Source::agent(id)));
     assert_eq!(from_agent, Err(AnswerError::NotThePerson));
+    // A yes is for that call only: the same agent's other call cannot spend one.
+    asks.ask(&roster, 8, &read, shown).unwrap();
+    let spare = asks.answer(8, true, Mark::of(person())).unwrap();
+    let list = roster.admit(&bot, "fs_list").unwrap();
+    assert!(!spare.spend(&roster, &list, 8, shown));
     let yes = asks.answer(7, true, Mark::of(person())).unwrap();
     assert!(yes.spend(&roster, &read, 7, shown));
     assert_eq!(goal.approve(now), Ok(Verdict::Run));

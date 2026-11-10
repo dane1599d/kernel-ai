@@ -61,6 +61,10 @@ pub enum Refusal {
     /// A net line that is not `none` or a destination an agent may hold: the
     /// value, and why.
     Net(String, &'static str),
+    /// The word after a net line's destination is not `bytes/day=Nm`.
+    NetBudgetKey(String),
+    /// The net budget is not in MiB, as `bytes/day=10m`.
+    NetBudgetUnit,
 }
 
 impl fmt::Display for Refusal {
@@ -102,6 +106,11 @@ impl fmt::Display for Refusal {
             }
             Self::Memory(w) => write!(f, "memory is none, read, write or read write, not {w:?}"),
             Self::Net(n, why) => write!(f, "net {n:?}: {why}"),
+            Self::NetBudgetKey(w) => write!(
+                f,
+                "after a destination the net line takes bytes/day=Nm and nothing else, not {w:?}"
+            ),
+            Self::NetBudgetUnit => f.write_str("the net budget is in MiB, as bytes/day=10m"),
         }
     }
 }

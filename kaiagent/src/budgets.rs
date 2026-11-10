@@ -1,6 +1,7 @@
-//! The `model` line: an agent's budgets, which `llm` enforces by badge (ADR 0013
-//! section 2). Each is a request the install card shows; a key left out takes
-//! the default, and `-` takes all three (question 10).
+//! An agent's budgets: the `model` line, which `llm` enforces by badge (ADR 0013
+//! section 2), and the bytes a day on the `net` line ([`NetBudget`], held by the
+//! network service). Each is a request the install card shows; a key left out takes
+//! the default, and `-` takes all three of the `model` line (question 10).
 
 use crate::Refusal;
 use alloc::string::String;
@@ -127,8 +128,8 @@ impl NetBudget {
     pub fn parse(word: &str) -> Result<Self, Refusal> {
         let number = word
             .strip_prefix(NET_KEY)
-            .ok_or_else(|| Refusal::BudgetKey(word.into()))?;
-        let mib = number.strip_suffix('m').ok_or(Refusal::BudgetUnit)?;
+            .ok_or_else(|| Refusal::NetBudgetKey(word.into()))?;
+        let mib = number.strip_suffix('m').ok_or(Refusal::NetBudgetUnit)?;
         Ok(Self {
             mib_per_day: whole("net bytes/day", mib, MAX_NET_MIB_PER_DAY.into())?,
         })

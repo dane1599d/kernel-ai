@@ -40,10 +40,6 @@ pub fn parse(value: &str) -> Result<(Option<Dest>, NetBudget), Refusal> {
             Some(_) => Err(refuse("a budget needs a destination")),
         };
     }
-    let budget = match word {
-        None => NetBudget::DEFAULT,
-        Some(word) => NetBudget::parse(word)?,
-    };
     let dest = Dest::parse(dest).map_err(refuse)?;
     if dest.protocol != Protocol::Tcp {
         return Err(refuse("an agent's network is tcp"));
@@ -66,6 +62,12 @@ pub fn parse(value: &str) -> Result<(Option<Dest>, NetBudget), Refusal> {
     if dest.hosts.iter().any(|host| !host.contains('.')) {
         return Err(refuse("a host is a name of two labels or more"));
     }
+    // The destination is judged first, so a bad destination is refused as it always was
+    // whatever follows it, and the budget word second.
+    let budget = match word {
+        None => NetBudget::DEFAULT,
+        Some(word) => NetBudget::parse(word)?,
+    };
     Ok((Some(dest), budget))
 }
 
