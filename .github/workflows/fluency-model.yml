@@ -11,9 +11,9 @@ on:
   workflow_dispatch:
     inputs:
       language:
-        description: "rhai (the M8 gate), c (Kai C at c>, S12-2's bars) or app (the app gate, Kai builds apps piece 5)"
+        description: "rhai (the M8 gate), c (Kai C at c>, S12-2's bars), app (the app gate, Kai builds apps piece 5) or query (the quarantined reads' eval, P5 task 11)"
         type: choice
-        options: [rhai, c, app]
+        options: [rhai, c, app, query]
         default: rhai
       memories:
         description: "Every request with a memory section of fixed bait memories (spike S13-4, rhai only)"
@@ -73,7 +73,7 @@ jobs:
           KAI_MODELS: ${{ runner.temp }}/kai-models
           C_FLAG: ${{ inputs.language == 'c' && '--c' || '' }}
           MEM_FLAG: ${{ inputs.memories && '--memories' || '' }}
-          GATE: ${{ inputs.language == 'app' && 'app-gate' || 'fluency' }}
+          GATE: ${{ inputs.language == 'app' && 'app-gate' || inputs.language == 'query' && 'query-eval' || 'fluency' }}
         # Built first, so the peak memory GNU time reports is the gate's own.
         run: |
           cargo build --quiet -p xtask
