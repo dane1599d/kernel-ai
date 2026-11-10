@@ -23,6 +23,9 @@ on:
       mode:
         description: demo, record, latency, bench or bench-ab
         default: demo
+      mix:
+        description: The workload mix a record is made on (A, or C, the bigger build)
+        default: A
 
 permissions:
   contents: read
@@ -90,9 +93,12 @@ jobs:
         run: cargo xtask tune check --log transcript.txt --local "${{ inputs.model }}" --store "$RUNNER_TEMP/models"
       - name: Record the decision for the exit test
         if: inputs.mode == 'record'
+        env:
+          MIX: ${{ inputs.mix }}
         run: |
           set -o pipefail
-          cargo xtask tune record --local "${{ inputs.model }}" --store "$RUNNER_TEMP/models" 2>&1 | tee transcript.txt
+          case "$MIX" in A|C) ;; *) echo "mix must be A or C"; exit 1 ;; esac
+          cargo xtask tune record --local "${{ inputs.model }}" --store "$RUNNER_TEMP/models" --mix "$MIX" 2>&1 | tee transcript.txt
       - name: Latency — five plain requests, Enter to busy sign and to done
         if: inputs.mode == 'latency'
         run: |
