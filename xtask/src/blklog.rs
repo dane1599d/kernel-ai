@@ -103,10 +103,12 @@ pub const DATA_SECTORS: u64 = 64 * 2048;
 /// smaller one; its contents are rebuildable and never hold user data.
 pub const CACHE_MIB: u64 = 1024;
 
-/// The partitions of a GPT data disk with a `cache_mib` `kai-cache` after
-/// `kai-data`, both on 2 MiB boundaries, and the disk's size in sectors.
-pub fn partitions(cache_mib: u64) -> ([diskmap::Spec<'static>; 2], u64) {
-    let cache_first = DATA_FIRST + DATA_SECTORS;
+/// The partitions of a GPT data disk with a `kai-data` of `data_sectors`
+/// ([`DATA_SECTORS`] unless a case stores more, as `net-download` does) and a
+/// `cache_mib` `kai-cache` after it, both on 2 MiB boundaries, and the disk's
+/// size in sectors.
+pub fn partitions(data_sectors: u64, cache_mib: u64) -> ([diskmap::Spec<'static>; 2], u64) {
+    let cache_first = DATA_FIRST + data_sectors;
     let cache_last = cache_first + cache_mib * 2048 - 1;
     // The backup array and header follow, then the disk ends on a whole MiB.
     let sectors = (cache_last + 1 + diskmap::ENTRY_SECTORS + 1).next_multiple_of(2048);
@@ -132,8 +134,14 @@ pub fn partitions(cache_mib: u64) -> ([diskmap::Spec<'static>; 2], u64) {
 
 /// Makes a zeroed (sparse) data disk and an empty log for QEMU to fill.
 pub fn prepare(target: &Path, data: Data) -> Result<(), String> {
+    prepare_sized(target, data, None)
+}
+
+/// [`prepare`], with a `kai-data` of `data_mib` on a GPT disk when given.
+pub fn prepare_sized(target: &Path, data: Data, data_mib: Option<u64>) -> Result<(), String> {
     let cache = data.gpt.then_some(CACHE_MIB);
-    make_disk(&target.join(IMAGE), cache)?;
+    let sectors = data_mib.map_or(DATA_SECTORS, |mib| mib * 2048);
+    make_disk_sized(&target.join(IMAGE), cache, sectors)?;
     fs::write(target.join(LOG), b"").map_err(|e| format!("{LOG}: {e}"))
 }
 
@@ -141,11 +149,16 @@ pub fn prepare(target: &Path, data: Data) -> Result<(), String> {
 /// `kai-data` and a `kai-cache` of that size; without, the raw 64 MiB disk
 /// S04-3's commits fill.
 pub fn make_disk(path: &Path, cache_mib: Option<u64>) -> Result<(), String> {
+    make_disk_sized(path, cache_mib, DATA_SECTORS)
+}
+
+/// [`make_disk`] with a GPT `kai-data` of `data_sectors`.
+fn make_disk_sized(path: &Path, cache_mib: Option<u64>, data_sectors: u64) -> Result<(), String> {
     use std::io::{Seek, SeekFrom, Write as _};
     let name = path.display();
     let mut image = fs::File::create(path).map_err(|e| format!("{name}: {e}"))?;
     let sectors = match cache_mib {
-        Some(mib) => partitions(mib).1,
+        Some(mib) => partitions(data_sectors, mib).1,
         None => DISK_BYTES / SECTOR as u64,
     };
     image
@@ -153,7 +166,8 @@ pub fn make_disk(path: &Path, cache_mib: Option<u64>) -> Result<(), String> {
         .map_err(|e| format!("{name}: {e}"))?;
     if let Some(mib) = cache_mib {
         let disk_guid = crate::image::gpt::guid("ci kai-data disk");
-        let layout = diskmap::layout(sectors, diskmap::Guid(disk_guid), &partitions(mib).0)
+        let parts = partitions(data_sectors, mib).0;
+        let layout = diskmap::layout(sectors, diskmap::Guid(disk_guid), &parts)
             .map_err(|e| format!("{name}: {e:?}"))?;
         for (lba, bytes) in layout {
             image
@@ -609,7 +623,7 @@ mod tests {
 
     #[test]
     fn a_gpt_data_disk_reads_back_with_both_partitions() {
-        let (parts, sectors) = partitions(CACHE_MIB);
+        let (parts, sectors) = partitions(DATA_SECTORS, CACHE_MIB);
         let mut disk = vec![0u8; (sectors as usize) * SECTOR];
         let layout = diskmap::layout(sectors, diskmap::Guid([7; 16]), &parts).unwrap();
         for (lba, bytes) in layout {

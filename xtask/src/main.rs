@@ -316,6 +316,12 @@ fn execute(options: &Options) -> Result<(), String> {
             if case.dns || case.https.is_some() {
                 cmdline = format!("{cmdline} {}", mock_dns.cmdline());
             }
+            // An HTTPS case may size what it moves by the accelerator:
+            // `net-download` takes its 32 chunks at 64 KiB under TCG, not 2 MiB.
+            if case.https.is_some() {
+                let tcg = accel == Accel::Tcg;
+                cmdline = format!("{cmdline} accel={}", if tcg { "tcg" } else { "kvm" });
+            }
             if let Some(kind) = case.mirror {
                 let port = match mirrors.get(&kind) {
                     Some(&port) => port,
@@ -435,7 +441,7 @@ fn execute(options: &Options) -> Result<(), String> {
             }
             if let Some(data) = case.data {
                 if fresh {
-                    blklog::prepare(&target_dir, data)?;
+                    blklog::prepare_sized(&target_dir, data, case.data_mib)?;
                     if let Some(model) = &store {
                         let image = target_dir.join(blklog::IMAGE);
                         store_model(&image, model.path())?;
