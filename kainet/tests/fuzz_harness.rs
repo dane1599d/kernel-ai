@@ -51,3 +51,19 @@ fn the_list_and_url_harnesses_return_for_mutated_input() {
         hostile::fuzz(sample.as_bytes(), 0x0_0e1, CASES, harness::url);
     }
 }
+
+#[test]
+fn the_wire_harness_returns_for_mutated_messages() {
+    for sample in [
+        "get https://releases.kai.test/a.kpkg range=0-2097151 hops=2",
+        "head https://updates.kai.test/metadata/timestamp.json",
+        "ok 200\nlen 5\nhops 1\ntype text/plain\nretry 30\nurl https://a.test/x\n",
+        "ok 302\nlen 0\nhops 0\nurl https://a.test/x\nlocation https://b.test/y\n",
+        "err refused elsewhere.kai.test",
+        "err truncated",
+    ] {
+        hostile::fuzz(sample.as_bytes(), 0x3_317e, CASES, harness::fetch_wire);
+        hostile::truncations(sample.as_bytes(), |_, bytes| harness::fetch_wire(bytes));
+    }
+    harness::fetch_wire(&[]);
+}
