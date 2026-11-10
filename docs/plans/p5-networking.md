@@ -1,6 +1,6 @@
 # P5 plan: secure networking
 
-Status: approved by the founder on 2026-10-27, with the defaults (#165). Tasks 1-7 are on main; tasks 8-14 have their host halves on main. The founder OK'd the OS wiring of tasks 8-13 and the close on 2026-11-09, and tasks 8-13 are landing on main. Task 14's OS wiring waits for the v0.1 tag. Task 15 (close) is not started.
+Status: approved by the founder on 2026-10-27, with the defaults (#165). Tasks 1-7 are on main. Tasks 8-14 have their host halves on main. The founder approved the OS wiring of tasks 8-13 on 2026-11-09, and it is landing. Task 14 waits for the v0.1 tag. Task 15 (close) is in progress: section 11 tracks each exit case.
 
 This plan covers the work that the accepted ADRs and the execution plan ([ADR 0000](../adr/0000-execution-plan.md) §3 and §5, P5 rows) put in P5:
 - [ADR 0001](../adr/0001-capabilities.md): `NetDest` per app;
@@ -277,3 +277,45 @@ Not adopted: aws-lc-rs and ring, rustls's default providers. Both build C or ass
 - **P8 (v1.0):** a second independent mirror; fuzzing of `kainet` at scale; a security review of the TLS provider and `fetch`; TLS client certificates if accounts need them.
 - **Later, on request:** TLS 1.2, IPv6, the Public Suffix List, an MCP bridge, `Hold` for sends, HTTP/2.
 - **Waiting on the founder:** section 2's questions, the crates (questions 1 and 2) first.
+
+## 11. Close status (task 15, draft of 2026-11-09)
+
+Section 1's exit cases, checked against `main` at 492cb755 on 2026-11-09. "On main" means the case is in `xtask/src/cases`, so it runs in `ci.yml`'s boot shards under KVM and TCG. Each one merged through a batch that boots every case. Main's run [42712760076](https://github.com/dane1599d/kernel-ai/actions/runs/42712760076) passed `https-mock`, `net-pf`, `net-dest` and `net-stream` under TCG; its one failure, `compute-keys` on TCG shard 1, is not a network case.
+
+| Exit case | Status | Where, and what is left |
+|---|---|---|
+| `net-download` | Missing | No PR yet, and no lane holds it. Parts are covered elsewhere: `update-online-flipped` (#754) refuses a flipped chunk, and `https-mock` refuses a wrong-name and an unknown-CA certificate. No boot case yet covers: cuts at 40% and 80% that each resume re-fetching at most one chunk, a reboot mid-download that resumes, a wrong whole-file hash, or an expired certificate |
+| `net-dest` | On main | #666, with `hosts:any` added in #760. The section's "a redirect to another host is refused" is shown in `fetch-service` (#755), which follows a redirect within the handle and hands back one off it |
+| `pkg-online` | In review | #752 (task 8), with ADR 0011's five tamper cases over the network |
+| `model-download` | Not started | Task 9 (AP-2) |
+| `update-online` | In review | #754 (task 10), with `update-online-flipped` and `update-online-expired`. Resuming across a reboot is host-tested only (`updatenet`) |
+| `net-grant` | Not started | Task 13 (C) |
+| `net-pf` | On main | #751. #757 adds `net-pf-page` on the HTTPS mock |
+
+The tasks' own exit checks:
+
+| Task | Case | Status |
+|---|---|---|
+| 2, streams | `net-stream` | On main |
+| 3, random numbers | `entropy-boots` (two boots differ) | On main |
+| 7, the HTTPS mock | `https-mock`; every P5 case uses its `TestCase::https` | On main (#753) |
+| 12, `kai:net` | `fetch-service` for the service; an app fetching from its host and refused another | `fetch-service` is in the merge queue (#755). The app case comes with C's comphost import (task 12's other half) |
+| 14, agents' budgets | an agent over its byte budget is refused | Waits for the v0.1 tag (ADR 0013's OS pieces) |
+
+**Real-model gates.** Task 11's first part (#751) passed fluency at 48/50 (at least 47), actbench's shipped arm at main's figures, the bait probes at 0 false runs, and the app gate at 19/20. Its later parts run the same gates when they change model input.
+
+**ADR 0002 against what shipped** (its P5 row: open-world rows, the host table, `Hold`, P-F, quarantined reads, `:resolve` and `:ping` as read rows, online `pkg_install`):
+- **Shipped as written:**
+  - P-F in consent (#751);
+  - the shell's host table (`shellcore/src/sitewords.rs`, #751);
+  - `net_fetch` and `net_lookup` as open-world read rows. `:resolve` and `:ping` are now one row, `net_lookup`;
+  - `fetch` on each call's exact-host `NetDest` (#757 with #755).
+- **Text to change at close:** D3 says a host is grounded if "the user said yes to it before (a grant record under ADR 0001)". What shipped grounds the agent's reuse with the shell's own per-host Always rule. An app's grant stays that app's, and agent grounding reads no app's grants (#751, agreed with C).
+- **Founder's decision of 2026-11-09:** Kai may reach any website the user names. The shell's ceiling is `hosts:any` on port 443 (#760). D3's "the user typed it" already grounds such a host, so its text holds. The close notes the ceiling.
+- **Not built yet:**
+  - quarantined reads (D6, FIDES's typed query);
+  - `Hold` as a held send. `Inverse::Hold` exists and derives Ask, as question 5's default says;
+  - online `pkg_install` (#752).
+- **Deferred by section 2:** the MCP client (question 8).
+
+**Left before P5 closes:** the four exit cases above that are not on main, task 12's app case, the rest of task 11 (quarantined reads, `Hold`), the D3 text change, the roadmap's P5 status, and a closing decisions row.
