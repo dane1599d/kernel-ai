@@ -2,6 +2,8 @@
 
 Approved by the founder 2026-11-03, with the defaults. It was proposed after spike S12-2 passed on Qwen3-4B, which scored 78% first try and 92% after one repair; the figures are in `docs/decisions.md`. Qwen3-4B stays the model, with no Granite port. These pieces run beside P4 close and don't gate rc.1. "Est." marks a judgement, not a measurement.
 
+**Status (2026-11-09):** all five pieces are on main. Piece 5's gate builds and opens 19 of 20 requests on main (run 42649186109; the bar is 16), with the Rhai and actbench gates unchanged. No boot case drives `app_build` with the mock model yet: host tests and the gate cover it.
+
 **The goal.** A user asks for a program in plain words: "make me a timer app", say. There is no extra button. Kai writes it, builds it, asks once whether to install it, then opens it. One undo removes it.
 
 ## The flow

@@ -188,6 +188,7 @@ The P2 close rows in `docs/decisions.md` have each case and the accepted miss.
 - **Built:** the seven built-in apps (Terminal, Files, Notes, Settings, System Monitor, Models and the Editor) on `uikit`, each with its actions; the built-ins as signed packages from the image's TUF repository, installs from a local mirror with `undo`, and the Apps sheet; the `c>` prompt, `cc build`, and Kai writing C at `c>` after S12-2 passed; themes; the release terms (MPL-2.0 with the DCO); and `release.yml`, dry-run on a throwaway tag.
 - **On main:** all 12 exit cases, under KVM and TCG: `app-terminal`, `app-files`, `app-notes`, `app-settings`, `app-monitor`, `app-models`, `app-editor`, `pkg-image`, `pkg-install`, `desk-catalog`, `c-prompt` and `c-build`. `release-boot` imports a model into the release image in CI.
 - **Not met yet:** the root ceremony and `kernel-ai-updates` (task 18, with the founder), which gates rc.1; clearing the names "Kernel AI" and "Kai"; `release/seq` in the release PR; and fluency and actbench on the tag's input.
+- **Kai builds apps** ([plan](plans/kai-builds-apps.md), beside P4, not gating rc.1): all five pieces are on main, and its 20-request gate builds and opens 19 (bar 16).
 
 The P4 plan's sections 3.5 and 11 have the v0.1 checklist and each case.
 
