@@ -40,6 +40,7 @@ const fn install(name: &'static str, cmdline: &'static str, kind: MirrorKind) ->
 const INSTALL_AGAIN: TestCase = TestCase {
     expect: &[
         "pkg: undo switched to generation 3; big installed from the online repository as generation 4, fetched in 0 pieces",
+        "pkg: undo took ",
         "pkg-online: boot 2: fs shows generation 4 current, as pkg left it",
     ],
     ..install(
@@ -75,6 +76,7 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &[
             "pkg: the destination refused elsewhere.kai.test, which is not the repository's",
             "pkg: big installed from the online repository as generation 2, fetched in 2 pieces",
+            "pkg: install of big took ",
             "pkg-online: generation 2 holds big from the online repository beside the image's notes",
             "pkg-online: pkg starts with one NetDest handle, for the repository's three hosts",
             "pkg-online: boot 1: fs shows generation 2 current, as pkg left it",
