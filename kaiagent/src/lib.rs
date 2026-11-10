@@ -42,7 +42,9 @@
 //! - **Net.** `none`, or the most its network handle may reach, in `netdest`'s
 //!   text form ([`net`]): TCP to named ports and named hosts, never addresses.
 //!   It is a ceiling: each host still asks once, and a manifest with any asks
-//!   at install.
+//!   at install. After a destination, `bytes/day=Nm` says how many MiB a day that
+//!   network may move, both ways (10 when it does not, at most 512; [`DayBytes`]
+//!   counts it).
 //!
 //! This crate is `no_std` + `alloc`: `pkg` and the host tests run the same code.
 
@@ -54,6 +56,7 @@ extern crate std;
 
 mod actions;
 mod budgets;
+mod meter;
 pub mod net;
 mod refusal;
 #[cfg(test)]
@@ -61,9 +64,11 @@ mod tests;
 
 pub use actions::Pattern;
 pub use budgets::{
-    Budgets, DEFAULT_KV_POSITIONS, DEFAULT_POOL_MIB, DEFAULT_TOKENS_PER_DAY, MAX_KV_POSITIONS,
-    MAX_POOL_MIB, MAX_TOKENS_PER_DAY,
+    Budgets, DEFAULT_KV_POSITIONS, DEFAULT_NET_MIB_PER_DAY, DEFAULT_POOL_MIB,
+    DEFAULT_TOKENS_PER_DAY, MAX_KV_POSITIONS, MAX_NET_MIB_PER_DAY, MAX_POOL_MIB,
+    MAX_TOKENS_PER_DAY, NetBudget,
 };
+pub use meter::{DayBytes, Over};
 pub use refusal::Refusal;
 
 use agentabi::Action;
@@ -146,6 +151,8 @@ pub struct Manifest {
     pub memory: Memory,
     /// The most its network handle may reach, or `None` for `net none`.
     pub net: Option<netdest::Dest>,
+    /// The bytes a day that network may move, both ways: [`NetBudget::NONE`] for `net none`.
+    pub net_budget: NetBudget,
 }
 
 impl Manifest {
@@ -193,7 +200,7 @@ impl Manifest {
         let budgets = Budgets::parse(field("model")?)?;
         let actions = actions::parse(field("actions")?, rows)?;
         let memory = Memory::parse(field("memory")?)?;
-        let net = net::parse(field("net")?)?;
+        let (net, net_budget) = net::parse(field("net")?)?;
         if let Some(extra) = lines.next() {
             return Err(Refusal::Trailing(extra.to_string()));
         }
@@ -205,6 +212,7 @@ impl Manifest {
             actions,
             memory,
             net,
+            net_budget,
         })
     }
 
@@ -229,7 +237,7 @@ impl Manifest {
             self.budgets.format(),
             actions,
             self.memory.name(),
-            net::format(&self.net),
+            net::format(&self.net, self.net_budget),
         )
     }
 
