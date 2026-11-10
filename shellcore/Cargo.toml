@@ -18,6 +18,7 @@ look = { path = "../look" }
 llmproto = { path = "../llmproto" }
 modelchan = { path = "../modelchan" }
 netdest = { path = "../netdest" }
+nethosts = { path = "../nethosts" }
 promptcore = { path = "../promptcore" }
 sched = { path = "../sched" }
 termcore = { path = "../termcore" }

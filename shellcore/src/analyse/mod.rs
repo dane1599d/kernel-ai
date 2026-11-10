@@ -120,7 +120,7 @@ impl Plan {
     /// order. A literal written as one of its argument's aliases (`"rr"`) counts as
     /// what it means, as a tagged call's does; a value whose text the walk does not
     /// know is not in any line.
-    pub fn decide(&self, line: &str, rows: &[Action]) -> Vec<Decision> {
+    pub fn decide(&self, line: &str, rows: &[Action], hosts: &nethosts::Table) -> Vec<Decision> {
         let values: Vec<Vec<(&str, consent::Value<'_>)>> = self
             .sites
             .iter()
@@ -157,7 +157,19 @@ impl Plan {
                 control: site.control,
             })
             .collect();
-        consent::decide(line, &calls, rows)
+        consent::decide_net(line, &calls, rows, &grounding(hosts))
+    }
+}
+
+/// The host grounding the agent's network rows are decided with (ADR 0002 D3):
+/// `hosts`' words, and no grants or sources. A host the user allowed before is
+/// the shell's per-host rule, which waives the ask after consent; the OS's own
+/// checked sources are its services' to fetch, not the agent's.
+pub fn grounding(hosts: &nethosts::Table) -> nethosts::Grounding<'_> {
+    nethosts::Grounding {
+        table: hosts,
+        granted: &nethosts::NoGrants,
+        sources: &[],
     }
 }
 

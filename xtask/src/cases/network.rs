@@ -64,6 +64,8 @@ pub(super) const CASES: &[TestCase] = &[
             "net-dest: the retired RESOLVE refused even a holder of a NetDest",
             "[netdest-g] http without the LLM's own handle refused, with 1 other NetDest held",
             "net-dest: HTTP to the LLM needs the LLM's own handle, not any NetDest",
+            "[netdest-h] hosts:any narrowed to one exact host, not to a suffix or hosts:any again",
+            "net-dest: hosts:any stays where it was made: no narrowing makes another and it never moves, while its one-host narrowing does",
         ],
         ..case("net-dest", "test=net-dest")
     },

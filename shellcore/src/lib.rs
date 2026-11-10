@@ -45,7 +45,9 @@ pub mod grants;
 mod guard;
 mod instructions;
 mod models;
+mod netask;
 pub mod netgrant;
+pub use netask::Connect as NetConnect;
 mod packages;
 mod panel;
 mod pkg;
@@ -55,6 +57,7 @@ pub mod script;
 mod settings;
 pub use settings::{MAX_ANSWER as SETTINGS_MAX_ANSWER, SETTINGS_APP};
 mod show;
+mod sitewords;
 pub mod standing;
 pub mod state;
 pub mod targets;
@@ -384,6 +387,15 @@ pub trait Host {
     fn withheld_write(&self, _text: &str) -> Result<(), String> {
         Err(String::from("grants cannot be revoked here"))
     }
+    /// The apps' network grants as `/system/state/netgrants` holds them
+    /// (`kai-grants 1` host lines, P5 task 13).
+    fn net_grants_read(&self) -> Option<String> {
+        None
+    }
+    /// Writes the whole network grants file, before a change is told.
+    fn net_grants_write(&self, _text: &str) -> Result<(), String> {
+        Err(String::from("network grants cannot be kept here"))
+    }
     /// The standing instructions as `/system/state/standing` holds them
     /// (`kai-standing 1`), read once at start (P3 task 11).
     fn standing_read(&self) -> Option<String> {
@@ -593,10 +605,17 @@ pub struct Shell {
     /// The app whose install card waits to open by itself, once a build in
     /// the background built it ([`Shell::take_card`]).
     card: Option<String>,
+    /// Apps' network asks waiting for the terminal's card (P5 task 13).
+    net_cards: Vec<netask::NetAsking>,
+    /// Network grants revoked, kept for their undo.
+    net_revoked: Vec<kaigrants::Grant>,
     /// Installed software: the image's repository and its generations.
     pkgs: pkg::Store,
     /// Whether the `sudo` note was said already.
     said_no_sudo: bool,
+    /// The words that name a site for the agent's network rows: the curated host
+    /// table, and each installed app's word for its own hosts (P5 task 11).
+    hosts: nethosts::Table,
     /// The last script as `show` prints it.
     shown: Option<String>,
     /// What the script run by the last line printed.
@@ -682,8 +701,11 @@ impl Shell {
             app_job: None,
             notices: Vec::new(),
             card: None,
+            net_cards: Vec::new(),
+            net_revoked: Vec::new(),
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
+            hosts: nethosts::Table::curated(),
             shown: None,
             last_output: None,
             partial: None,
@@ -712,6 +734,7 @@ impl Shell {
     /// The rows withheld from apps' effects, checked at boot.
     fn with_saved_withheld(self) -> Self {
         grants::check_saved(self.host.as_ref());
+        netask::at_boot(self.host.as_ref());
         self
     }
 

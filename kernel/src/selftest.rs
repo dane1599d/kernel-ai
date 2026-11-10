@@ -40,6 +40,9 @@ pub enum ActCase {
     AppModels,
     /// `profile-switch` (P3 task 12): profiles through the supervisor.
     Profile,
+    /// `net-pf` (P5 task 11): read content goes out only to a host the line
+    /// names; any other asks and names the source.
+    NetPf,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -302,6 +305,8 @@ pub enum SelfTest {
     NetDest,
     /// P5 task 2: TCP streams on a `NetDest`.
     NetStream,
+    /// P5 task 12's harness: xtask's HTTPS mock reached from ring 3.
+    HttpsMock,
     /// P5 task 3: ENTROPY's sample, which two boots must not share.
     EntropyBoots,
 }
@@ -342,6 +347,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=act-rollback" => Some(SelfTest::Act(ActCase::Rollback)),
             "test=act-ask" => Some(SelfTest::Act(ActCase::Ask)),
             "test=act-inject" => Some(SelfTest::Act(ActCase::Inject)),
+            "test=net-pf" => Some(SelfTest::Act(ActCase::NetPf)),
             "test=act-rule" => Some(SelfTest::Act(ActCase::Rule)),
             "test=pkg-local" => Some(SelfTest::Act(ActCase::PkgLocal)),
             "test=act-convo" => Some(SelfTest::Act(ActCase::Convo)),
@@ -480,6 +486,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net-static" => Some(SelfTest::NetStatic),
             "test=net-dest" => Some(SelfTest::NetDest),
             "test=net-stream" => Some(SelfTest::NetStream),
+            "test=https-mock" => Some(SelfTest::HttpsMock),
             "test=entropy-boots" => Some(SelfTest::EntropyBoots),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());

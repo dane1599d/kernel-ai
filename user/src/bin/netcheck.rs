@@ -9,6 +9,9 @@
 //! - `http=refused`: closes the LLM's own `NetDest` (NET's, with CONNECT and
 //!   no RESOLVE), keeps the moved-in one, and exits 0 if HTTP is refused:
 //!   only the LLM's handle reaches the LLM.
+//! - `any=pinned`: with a `hosts:any` handle (#760), exits 0 if narrowing it
+//!   to `hosts:any` again, or to a suffix, is refused and narrowing to one
+//!   exact host is not.
 //!
 //! And for TCP streams on it (P5 task 2, the `net-stream` case), with
 //! `port=P` the echo server's port on 10.0.2.2:
@@ -73,10 +76,40 @@ fn http_refused() -> i32 {
     }
 }
 
+/// `any=pinned`: no narrowing of a `hosts:any` handle keeps `hosts:any`; one
+/// exact host is fine.
+fn any_pinned() -> i32 {
+    let Some(dest) = startup_dest() else {
+        println!("any: no NetDest handle");
+        return 1;
+    };
+    let rights = (Rights::RESOLVE | Rights::CONNECT).bits();
+    let again = sys::netdest_narrow(dest, "proto:tcp,ports:443,hosts:any", rights);
+    let suffix = sys::netdest_narrow(dest, "proto:tcp,ports:443,hosts:co.uk", rights);
+    let one = sys::netdest_narrow(
+        dest,
+        "proto:tcp,ports:443,hosts:kai.test,match:exact",
+        rights,
+    );
+    match (again, suffix, one) {
+        (Err(Error::Permission), Err(Error::Permission), Ok(_)) => {
+            println!("hosts:any narrowed to one exact host, not to a suffix or hosts:any again");
+            0
+        }
+        (again, suffix, one) => {
+            println!("hosts:any narrowing gave {again:?}, {suffix:?} and {one:?}");
+            1
+        }
+    }
+}
+
 fn main() -> i32 {
     let args = args();
     if arg(&args, "http") == Some("refused") {
         return http_refused();
+    }
+    if arg(&args, "any") == Some("pinned") {
+        return any_pinned();
     }
     if let Some(mode) = arg(&args, "stream") {
         let port = arg(&args, "port").and_then(|p| p.parse().ok()).unwrap_or(0);

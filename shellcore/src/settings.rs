@@ -118,6 +118,7 @@ impl Shell {
                 | "rules-remove"
                 | "grants-revoke"
                 | "grants-restore"
+                | "net-revoke"
                 | "keep-running"
                 | "restart-window"
         );
@@ -138,6 +139,9 @@ impl Shell {
                     .ok_or_else(|| format!("{verb} takes an app and a row"))?;
                 self.grant_by_click(&logged, name, row, verb == "grants-revoke")
             }
+            // The hosts each app may reach, and their revoke (P5 task 13).
+            ("net", "") => self.net_lines(),
+            ("net-revoke", which) => self.net_revoke_by_click(&logged, which),
             ("about", "") => Ok(about()),
             ("profiles", "") => Ok(self.profile_lines()),
             ("apps", "") => self.app_names().map(|names| names.join("\n")),

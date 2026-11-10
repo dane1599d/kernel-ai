@@ -44,6 +44,7 @@ fn every_function_a_script_can_call_has_a_tier_and_no_row_names_a_missing_one() 
             .iter()
             .chain(&agentabi::FS_ROWS)
             .chain(&agentabi::UI_ROWS)
+            .chain(&agentabi::NET_ROWS)
             .map(|f| f.name)
             .chain(HELPERS.iter().copied())
     };
@@ -425,6 +426,9 @@ fn the_generated_tier_table_is_the_seamless_actions_one() {
         ("ui_focus", Tier::Run),
         ("window_close", Tier::Ask),
         ("ui_act", Tier::Ask),
+        // Run from a grounded host only: consent asks for any other (D3).
+        ("net_fetch", Tier::Run),
+        ("net_lookup", Tier::Run),
         ("fixed", Tier::Run),
         ("floor", Tier::Run),
     ];

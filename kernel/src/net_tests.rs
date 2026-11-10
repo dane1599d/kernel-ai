@@ -318,7 +318,54 @@ pub fn dest_check() -> Result<(), &'static str> {
     let (_, entry) = netdest(KAI_TEST)?;
     netcheck("netdest-g", "http=refused", Some(entry))?;
     log!("net-dest: HTTP to the LLM needs the LLM's own handle, not any NetDest");
-    Ok(())
+    any_host_pinned()
+}
+
+/// The shell's ceiling, `hosts:any` (#760), as its plan line would make it.
+const ANY_HOST: &str = "proto:tcp,ports:443,hosts:any";
+
+/// A `hosts:any` record stays with the process it was made for: ring 3 cannot
+/// narrow another out of it, or a suffix, though it narrows to one exact host,
+/// and a handle to it never moves, though its exact narrowing does.
+fn any_host_pinned() -> Result<(), &'static str> {
+    let (object, entry) = netdest(ANY_HOST)?;
+    if !net::dest::any_host(object) {
+        return Err("net-dest: a hosts:any record was not marked");
+    }
+    netcheck("netdest-h", "any=pinned", Some(entry))?;
+    // The move, from the kernel side in a spare slot's table, as
+    // `handle_tests` does: the receiver may hold a NetDest, so only the pin
+    // can refuse it.
+    let (object, ceiling) = netdest(ANY_HOST)?;
+    let exact = netdest::Dest::parse("proto:tcp,ports:443,hosts:kai.test,match:exact")
+        .map_err(|_| "net: a bad test destination")?;
+    let live = |object| crate::handle::names(kabi::handle::Kind::NetDest, object);
+    let narrowed = net::dest::narrow(object, exact, live)
+        .map_err(|_| "net-dest: the ceiling did not narrow to one exact host")?;
+    let one = captable::Entry::new(
+        kabi::handle::Kind::NetDest,
+        crate::handle::NETDEST_RIGHTS,
+        narrowed,
+    );
+    let slot = crate::process::MAX_PROCESSES - 1;
+    crate::handle::create(slot, kabi::cap::NET, 99, &[])
+        .map_err(|_| "net-dest: cannot make a spare table")?;
+    let given = crate::handle::give(slot, alloc::vec![ceiling, one]);
+    let moved = |handle| crate::handle::take_for(slot, &[handle], kabi::cap::NET);
+    let (whole, part) = match given.as_slice() {
+        [whole, part] => (moved(*whole), moved(*part)),
+        _ => (Ok(alloc::vec::Vec::new()), Err(kabi::Error::NoMemory)),
+    };
+    crate::handle::destroy(slot);
+    match (whole, part) {
+        (Err(kabi::Error::Permission), Ok(_)) => {
+            log!(
+                "net-dest: hosts:any stays where it was made: no narrowing makes another and it never moves, while its one-host narrowing does"
+            );
+            Ok(())
+        }
+        _ => Err("net-dest: a hosts:any handle moved, or its narrowing did not"),
+    }
 }
 
 /// `test=net-stream` (P5 task 2): TCP streams on a `NetDest` handle, to xtask's

@@ -7,7 +7,9 @@ mod apps;
 mod cc;
 mod components;
 mod devices;
+pub(crate) mod https;
 mod kernel;
+mod netrows;
 mod network;
 mod pkg;
 pub mod release;
@@ -120,6 +122,23 @@ pub struct TestCase {
     /// The package mirror the guest reaches at `pkgrepo=` (P4 task 2), signed by
     /// the image's keys, or a tampered one.
     pub mirror: Option<crate::pkgrepo::mirrors::MirrorKind>,
+    /// xtask's HTTPS mock for this boot (P5 task 12's harness, [`Https`]).
+    pub https: Option<Https>,
+}
+
+/// What the HTTPS mock serves a case: its hosts are `netcore::fixture`'s
+/// `MOCK_*` names (`dns=` is added), all reached on port 443 at
+/// `MOCK_ADDRESS` through QEMU's forward, and its test CA is the boot bundle's
+/// `netroots/1.der`, which a holder of NET reads with BOOT_READ
+/// (`user::tls::roots`). A release bundle has no such file.
+#[derive(Clone, Copy)]
+pub struct Https {
+    /// The files, redirects, release assets, models and repository the mock
+    /// serves.
+    pub content: fn() -> crate::mock_https::Content,
+    /// Faults set before the boot, as `(host, path, fault)`; a certificate
+    /// fault applies to the whole host, whatever its path.
+    pub faults: &'static [(&'static str, &'static str, crate::mock_https::Fault)],
 }
 
 /// What a case's update disk holds.
@@ -165,6 +184,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         store_bad_fnv: false,
         tampered: None,
         mirror: None,
+        https: None,
     }
 }
 
@@ -181,9 +201,11 @@ const LANES: &[&[TestCase]] = &[
     cc::CASES,
     components::CASES,
     network::CASES,
+    https::CASES,
     storage::CASES,
     updates::CASES,
     pkg::CASES,
+    netrows::CASES,
 ];
 
 /// The cases `cargo xtask test` boots.
@@ -219,9 +241,11 @@ mod tests {
             cc::CASES,
             components::CASES,
             network::CASES,
+            https::CASES,
             storage::CASES,
             updates::CASES,
             pkg::CASES,
+            netrows::CASES,
         ];
         assert_eq!(
             cases.len(),

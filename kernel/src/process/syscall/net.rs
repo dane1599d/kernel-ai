@@ -1,11 +1,11 @@
 //! The network: HTTP to the LLM server, and host names.
 
-use super::call_error;
+use super::{call_error, need};
 use crate::process::uaccess;
 use crate::{ipc, llm, log, net};
 use alloc::vec::Vec;
 use kabi::handle::{Handle, Kind, Rights};
-use kabi::{Error, HttpRequest, call};
+use kabi::{Error, HttpRequest, call, cap};
 
 const MAX_HTTP_REQUEST: usize = 64 * 1024;
 const MAX_HTTP_TIMEOUT_MS: u64 = 300_000;
@@ -21,6 +21,7 @@ const CALLS: &[u64] = &[
     call::NET_RECV,
     call::NET_POLL,
     call::NET_CLOSE,
+    call::NET_TIME,
 ];
 
 /// One of [`CALLS`], or `None` for a number this area does not have.
@@ -43,6 +44,10 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
         }
         // Retired with `cap::RESOLVE` (P5 task 1): a resolve goes on a handle.
         call::RESOLVE => Err(Error::Permission),
+        call::NET_TIME => {
+            need(slot, cap::NET)?;
+            crate::clock::unix_seconds().ok_or(Error::NotFound)
+        }
         call::RESOLVE_ON => {
             let object = dest_object(slot, a[0], Rights::RESOLVE)?;
             resolve(slot, object, a[1], a[2], a[3], a[4])

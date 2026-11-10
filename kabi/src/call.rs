@@ -657,6 +657,12 @@ pub const NET_POLL: u64 = 195;
 /// `net_close(stream) -> 0`: closes the stream and its handle; what was sent
 /// still goes out. A process that ends has its streams aborted.
 pub const NET_CLOSE: u64 = 196;
+/// `net_time() -> seconds since 1970 UTC`: the date a TLS client checks
+/// certificates against, Limine's date at boot plus the time since, as
+/// [`PKG_TIME`] and [`TRUST_TIME`] give it. NotFound when the firmware gave
+/// none. Needs `cap::NET` (P5 task 12: `fetch` and the other `kainet`
+/// clients).
+pub const NET_TIME: u64 = 197;
 
 /// The end of the reserved blocks (see the table above): the highest number a
 /// call may have. A call that is not there yet answers NotFound.
