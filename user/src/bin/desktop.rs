@@ -135,6 +135,8 @@ struct State {
     files: deskcore::files::Files,
     /// The Settings app's requests for the shell, and the shell's answers.
     settings: settings::Queue,
+    /// Apps' network asks for the shell, and its answers (P5 task 13).
+    net: deskcore::net_wire::Queue,
     /// The agent's views of windows, for its `ui` rows (P3 task 10).
     agent: deskcore::agent::Agent,
     /// When the panel's "thinking 4s" was last redrawn.
@@ -199,6 +201,7 @@ fn main() -> i32 {
             effects: effects::Queue::default(),
             files: deskcore::files::Files::default(),
             settings: settings::Queue::default(),
+            net: deskcore::net_wire::Queue::default(),
             agent: deskcore::agent::Agent::default(),
             ticked_ms: 0,
             card: None,
@@ -564,6 +567,10 @@ fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &RecvInfo) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
         return;
     }
+    if let Some(reply) = net_request(state, bytes, pid) {
+        let _ = sys::reply_h(reply.as_bytes(), &[]);
+        return;
+    }
     if let Some(reply) = agent::request(state, bytes, pid) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
         return;
@@ -800,6 +807,38 @@ fn settings_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String>
         }
         None => Some(String::from("err the answers are out of shape")),
     }
+}
+
+/// A `net ...` request (`deskcore::net_wire`): any app's process may ask
+/// about a host, known by the kernel's name for it; only the shell takes the
+/// asks and answers them. Anything else is not one, for the next handler.
+fn net_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
+    use deskcore::net_wire as wire;
+    let text = core::str::from_utf8(bytes).ok()?;
+    if !text.starts_with("net ") {
+        return None;
+    }
+    let caller = name_of(pid);
+    if let Some(ask) = text.strip_prefix(wire::ASK) {
+        let reply = state.net.ask(&caller, ask);
+        if reply == wire::WAIT {
+            wake_shell();
+        }
+        return Some(reply);
+    }
+    if caller != "shell" {
+        return Some(String::from("err only the shell answers network asks"));
+    }
+    if text == wire::TAKE {
+        return Some(wire::encode_take(state.net.take().as_ref()));
+    }
+    let Some(done) = text.strip_prefix(wire::DONE) else {
+        return Some(String::from("err not a network request"));
+    };
+    Some(match state.net.done(done) {
+        Ok(()) => String::from("ok"),
+        Err(why) => format!("err {why}"),
+    })
 }
 
 fn apply_need(state: &mut State, at: usize, pid: u64, need: Need, handle: Option<Handle>) {
