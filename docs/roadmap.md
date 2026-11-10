@@ -189,6 +189,7 @@ The P2 close rows in `docs/decisions.md` have each case and the accepted miss.
 - **On main:** all 12 exit cases, under KVM and TCG: `app-terminal`, `app-files`, `app-notes`, `app-settings`, `app-monitor`, `app-models`, `app-editor`, `pkg-image`, `pkg-install`, `desk-catalog`, `c-prompt` and `c-build`. `release-boot` imports a model into the release image in CI.
 - **Not met yet:** the root ceremony and `kernel-ai-updates` (task 18, with the founder), which gates rc.1; counsel's clearance search for the names (ADR 0009 D8, P4 question 4); `release/seq` in the release PR; and fluency and actbench on the tag's input.
 - **The names are kept:** "Kernel AI" since the P4 plan's approval on 2026-10-27, and "Kai" since 2026-11-07 (#745), when the founder accepted the risk of the registered KAI marks for AI assistants that a first-pass trademark check found.
+- **Kai builds apps** ([plan](plans/kai-builds-apps.md), beside P4, not gating rc.1): all five pieces are on main, and its 20-request gate builds and opens 19 (bar 16).
 
 The P4 plan's sections 3.5 and 11 have the v0.1 checklist and each case.
 
