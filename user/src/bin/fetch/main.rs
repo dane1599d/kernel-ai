@@ -12,18 +12,27 @@
 //! comes in an `Shm` of [`BODY_PAGES`] that `fetch` makes and moves back, so
 //! it never writes into memory a caller sized. One call is served at a time,
 //! each within [`DEADLINE_NS`]; the callers queue in the kernel.
+//!
+//! A caller that cannot wait that long (comphost, which runs an app on its one
+//! thread) starts a request instead (`kainet::later`): `fetch` answers
+//! `started` at once, makes the request, and keeps the answer for the caller's
+//! `take`. That costs `fetch` what it keeps: at most [`MAX_KEPT`] answers, one
+//! a caller, each with its body's `Shm` (64 KiB), for at most [`KEEP_NS`]
+//! unless taken. While it makes a started request, other calls wait in the
+//! kernel as they do for a plain one.
 
 #![no_std]
 #![no_main]
 
 extern crate alloc;
 
-use alloc::string::ToString;
+use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_TRANSFER, RecvInfo, Rights};
 use kainet::fetch::{self, Error, MAX_BODY};
 use kainet::http::TlsConnect;
+use kainet::later::{self, Message};
 use kainet::wire::{self, Ask, Head};
 use rustls::ClientConfig;
 use user::tls::{self, NetDial};
@@ -38,6 +47,12 @@ const PAGE: usize = 4096;
 const DEADLINE_NS: u64 = 30_000_000_000;
 /// How long a receive waits before it looks again.
 const IDLE_MS: u64 = 60_000;
+/// The room a start's `start <id> ` takes before its request line.
+const LATER_ROOM: usize = 32;
+/// Answers kept for takes, every caller together: a caller keeps one.
+const MAX_KEPT: usize = 8;
+/// How long an answer is kept for its take.
+const KEEP_NS: u64 = 60_000_000_000;
 
 /// Closes every `NetDest` this process started with: NET's own handle, for
 /// the LLM server, is not `fetch`'s to use.
@@ -141,6 +156,101 @@ fn body_shm(body: &[u8]) -> Result<Handle, kabi::Error> {
     Ok(shm)
 }
 
+/// What a request comes to, as `fetch` replies it: the answer's text and the
+/// body's `Shm`, if there is a body. The caller's handles are closed: they are
+/// used up with the request.
+fn made(config: &Arc<ClientConfig>, request: &[u8], moved: &[Handle]) -> (String, Option<Handle>) {
+    let (mut result, body) = match request.len() > wire::MAX_ASK {
+        true => (
+            Err(Error::BadUrl(fetch::why("the request is too long"))),
+            Vec::new(),
+        ),
+        false => serve(config, request, moved),
+    };
+    for handle in moved {
+        let _ = sys::handle_close(*handle);
+    }
+    let shm = match (&result, body.is_empty()) {
+        (Ok(_), false) => match body_shm(&body) {
+            Ok(shm) => Some(shm),
+            Err(error) => {
+                println!("fetch: no Shm for a body: {error:?}");
+                result = Err(Error::Http(fetch::why("fetch had no room for the body")));
+                None
+            }
+        },
+        _ => None,
+    };
+    (wire::answer(&result), shm)
+}
+
+/// Replies `answer`, moving `shm` with it; an `Shm` that did not move is let go.
+fn reply(answer: &str, shm: Option<Handle>) {
+    let sent = match shm {
+        Some(shm) => sys::reply_h(answer.as_bytes(), &[shm]),
+        None => sys::reply_h(answer.as_bytes(), &[]),
+    };
+    if let Err(error) = sent {
+        println!("fetch: a reply failed: {error:?}");
+        if let Some(shm) = shm {
+            let _ = sys::handle_close(shm);
+        }
+    }
+}
+
+/// An answer kept for a caller's take (`kainet::later`).
+struct Kept {
+    caller: u64,
+    id: u32,
+    answer: String,
+    shm: Option<Handle>,
+    at_ns: u64,
+}
+
+/// The answers kept for takes: at most [`MAX_KEPT`], one a caller, each for
+/// [`KEEP_NS`].
+#[derive(Default)]
+struct Keep {
+    kept: Vec<Kept>,
+}
+
+impl Keep {
+    fn drop_one(kept: Kept) {
+        if let Some(shm) = kept.shm {
+            let _ = sys::handle_close(shm);
+        }
+    }
+
+    /// Lets go of what is older than [`KEEP_NS`].
+    fn expire(&mut self, now_ns: u64) {
+        let (old, kept): (Vec<_>, Vec<_>) = core::mem::take(&mut self.kept)
+            .into_iter()
+            .partition(|k| now_ns.saturating_sub(k.at_ns) >= KEEP_NS);
+        self.kept = kept;
+        old.into_iter().for_each(Self::drop_one);
+    }
+
+    /// Keeps `kept`, in place of anything its caller had kept.
+    fn put(&mut self, kept: Kept) {
+        if let Some(at) = self.kept.iter().position(|k| k.caller == kept.caller) {
+            Self::drop_one(self.kept.remove(at));
+        }
+        if self.kept.len() >= MAX_KEPT {
+            Self::drop_one(self.kept.remove(0));
+        }
+        self.kept.push(kept);
+    }
+
+    /// The answer kept for `caller`'s request `id`, taken.
+    fn take(&mut self, caller: u64, id: u32) -> Option<Kept> {
+        let at = self
+            .kept
+            .iter()
+            .position(|k| k.caller == caller && k.id == id)?;
+        Some(self.kept.remove(at))
+    }
+}
+
 fn main() -> i32 {
     // The roots first: BOOT_READ of `netroots/` needs NET, which the kernel
     // sees in a held `NetDest` with CONNECT, and once NET's own handle is
@@ -156,52 +266,59 @@ fn main() -> i32 {
     };
     close_own_destinations();
     println!("fetch: ready");
-    let mut request = alloc::vec![0u8; wire::MAX_ASK + 1];
+    // Room for a start's `start <id> ` before its request line.
+    let mut request = alloc::vec![0u8; wire::MAX_ASK + LATER_ROOM + 1];
+    let mut keep = Keep::default();
     loop {
         let mut info = RecvInfo::default();
         let len = match sys::recv_h(&mut request, IDLE_MS, &mut info) {
             Ok(len) => len,
-            Err(kabi::Error::TimedOut) => continue,
+            Err(kabi::Error::TimedOut) => {
+                keep.expire(sys::time_ns());
+                continue;
+            }
             Err(error) => {
                 println!("fetch: a receive failed: {error:?}");
                 sys::sleep_ms(10);
                 continue;
             }
         };
+        keep.expire(sys::time_ns());
         let count = (info.handle_count as usize).min(MAX_TRANSFER);
         let moved: Vec<Handle> = info.handles[..count].iter().map(|&h| Handle(h)).collect();
-        let (mut result, body) = match len > wire::MAX_ASK {
-            true => (
-                Err(Error::BadUrl(fetch::why("the request is too long"))),
-                Vec::new(),
-            ),
-            false => serve(&config, &request[..len], &moved),
-        };
-        // The caller's handle is used up with its call.
-        for handle in &moved {
-            let _ = sys::handle_close(*handle);
-        }
-        let shm = match (&result, body.is_empty()) {
-            (Ok(_), false) => match body_shm(&body) {
-                Ok(shm) => Some(shm),
-                Err(error) => {
-                    println!("fetch: no Shm for a body: {error:?}");
-                    result = Err(Error::Http(fetch::why("fetch had no room for the body")));
-                    None
+        let text = core::str::from_utf8(&request[..len.min(request.len())]).unwrap_or("");
+        match Message::parse(text) {
+            // A plain request: answered when it is made.
+            None => {
+                let (answer, shm) = made(&config, &request[..len], &moved);
+                reply(&answer, shm);
+            }
+            // Started at once, made, and kept for the caller's take.
+            Some(Ok(Message::Start { id, ask })) => {
+                reply(later::STARTED, None);
+                let (answer, shm) = made(&config, ask.text().as_bytes(), &moved);
+                keep.put(Kept {
+                    caller: info.caller_pid,
+                    id,
+                    answer,
+                    shm,
+                    at_ns: sys::time_ns(),
+                });
+            }
+            Some(Ok(Message::Take { id })) => {
+                for handle in &moved {
+                    let _ = sys::handle_close(*handle);
                 }
-            },
-            _ => None,
-        };
-        let answer = wire::answer(&result);
-        let sent = match shm {
-            Some(shm) => sys::reply_h(answer.as_bytes(), &[shm]),
-            None => sys::reply_h(answer.as_bytes(), &[]),
-        };
-        if let Err(error) = sent {
-            println!("fetch: a reply failed: {error:?}");
-            // A body's `Shm` that did not move is still `fetch`'s: let it go.
-            if let Some(shm) = shm {
-                let _ = sys::handle_close(shm);
+                match keep.take(info.caller_pid, id) {
+                    Some(kept) => reply(&kept.answer, kept.shm),
+                    None => reply(later::NONE, None),
+                }
+            }
+            Some(Err(why)) => {
+                for handle in &moved {
+                    let _ = sys::handle_close(*handle);
+                }
+                reply(&wire::answer(&Err(Error::BadUrl(fetch::why(why)))), None);
             }
         }
     }
