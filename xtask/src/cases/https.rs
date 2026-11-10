@@ -11,10 +11,9 @@ use super::{Https, TestCase, case};
 use crate::mock_https::{ASSETS, Content, Fault, OFF, RELEASES, REPO};
 
 /// The user programs only these cases run, put on their boot drives alone: the
-/// other cases' guests keep the memory their bundle would take. `fetch` is
-/// here until a shipped plan line starts it (C's or A-core's first caller);
-/// then it joins every image, and the desktop cases need the room.
-pub(crate) const PROGRAMS: &[&str] = &["httpscheck", "fetch"];
+/// other cases' guests keep the memory their bundle would take. `fetch` is in
+/// every image: the shell's plan line routes to it (P5 task 11).
+pub(crate) const PROGRAMS: &[&str] = &["httpscheck"];
 
 /// Whether boot module `path` is `program`'s ELF or its line table.
 pub(crate) fn is_program_module(path: &str, program: &str) -> bool {
