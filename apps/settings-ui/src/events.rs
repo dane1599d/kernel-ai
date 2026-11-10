@@ -93,6 +93,9 @@ fn pressed(settings: &Settings, view: &View, id: NodeId) -> Option<Intent> {
         let app = view.app.as_deref()?;
         return settings.restore(app, view.shown.grants.get(slot)?);
     }
+    if let Some(slot) = nth(id, NET_REVOKE) {
+        return settings.revoke_net(*view.shown.net.get(slot)?);
+    }
     let rule = *view.shown.rules.get(nth(id, REMOVE)?)?;
     settings
         .rules

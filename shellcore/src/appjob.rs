@@ -212,7 +212,7 @@ impl Shell {
     /// to the kernel's terminal (CARD_READY), which asks for it with
     /// [`termcore::menu::TAKE_CARD`] when it may.
     pub fn card_waiting(&self) -> bool {
-        self.card.is_some()
+        self.card.is_some() || self.net_card_waiting()
     }
 
     /// The terminal's [`termcore::menu::TAKE_CARD`]: the waiting install
@@ -224,7 +224,8 @@ impl Shell {
             return Reply::ok("");
         }
         let Some(name) = self.card.take() else {
-            return Reply::ok("");
+            // An app's network ask waits as a card too (P5 task 13).
+            return self.take_net_card().unwrap_or_else(|| Reply::ok(""));
         };
         // No one typed this line: a card that may not open (its build edited
         // or replaced since it ended) is a notice, not an error or a log entry

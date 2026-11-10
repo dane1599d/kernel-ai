@@ -160,15 +160,21 @@ pub const FS_ROWS: [Action; 10] = [
 const _: () = assert!(crate::check(&FS_ROWS).is_ok(), "a file row is inconsistent");
 
 /// What a model's script may call: the script API, then the file rows, so a
-/// script's file changes are one transaction (P2 task 11).
-pub const SCRIPT_CALLS: [Action; crate::SCRIPT_API.len() + FS_ROWS.len()] = {
+/// script's file changes are one transaction (P2 task 11), then the network
+/// reads (P5 task 11), so a script can fetch what it reasons over and P-F
+/// decides where read content may go.
+pub const SCRIPT_CALLS: [Action; crate::SCRIPT_API.len() + FS_ROWS.len() + crate::NET_ROWS.len()] = {
     let api = crate::SCRIPT_API;
-    let mut out = [api[0]; crate::SCRIPT_API.len() + FS_ROWS.len()];
+    let files = api.len() + FS_ROWS.len();
+    let mut out = [api[0]; crate::SCRIPT_API.len() + FS_ROWS.len() + crate::NET_ROWS.len()];
     let mut i = 0;
     while i < out.len() {
-        out[i] = match i < api.len() {
-            true => api[i],
-            false => FS_ROWS[i - api.len()],
+        out[i] = if i < api.len() {
+            api[i]
+        } else if i < files {
+            FS_ROWS[i - api.len()]
+        } else {
+            crate::NET_ROWS[i - files]
         };
         i += 1;
     }

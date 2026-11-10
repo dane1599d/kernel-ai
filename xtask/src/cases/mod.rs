@@ -9,6 +9,7 @@ mod components;
 mod devices;
 pub(crate) mod https;
 mod kernel;
+mod netrows;
 mod network;
 mod online;
 mod pkg;
@@ -210,6 +211,7 @@ const LANES: &[&[TestCase]] = &[
     storage::CASES,
     updates::CASES,
     pkg::CASES,
+    netrows::CASES,
     online::CASES,
 ];
 
@@ -250,6 +252,7 @@ mod tests {
             storage::CASES,
             updates::CASES,
             pkg::CASES,
+            netrows::CASES,
             online::CASES,
         ];
         assert_eq!(

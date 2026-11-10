@@ -29,17 +29,21 @@ pub enum Page {
     Apps,
     /// The restart window.
     Updates,
+    /// The hosts each app may reach (P5 task 13).
+    Network,
     About,
 }
 
 impl Page {
-    pub const ALL: [Page; 6] = [
+    pub const ALL: [Page; 7] = [
         Page::Appearance,
         Page::Access,
         Page::Rules,
         Page::Apps,
         Page::Updates,
         Page::About,
+        // Last, so the tabs before keep their places.
+        Page::Network,
     ];
 
     pub fn title(self) -> &'static str {
@@ -49,6 +53,7 @@ impl Page {
             Page::Rules => "Rules and profiles",
             Page::Apps => "Keep running",
             Page::Updates => "Updates",
+            Page::Network => "Network",
             Page::About => "About",
         }
     }
@@ -102,6 +107,14 @@ pub struct RuleLine {
     pub text: String,
 }
 
+/// One line of `net`: a host an app may reach, by the grant's number.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetLine {
+    pub id: u32,
+    /// `weather: api.weather.example (this session)`.
+    pub text: String,
+}
+
 /// What Settings asks the OS to do for a choice. Each is one of the agent's
 /// rows, so it is logged and undoable.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,6 +133,8 @@ pub enum Intent {
     KeepRunning { app: String, on: bool },
     /// Writes `updates.cbor`.
     RestartWindow(Option<(u16, u16)>),
+    /// Takes network grant `n` back (`net-revoke <n>`, P5 task 13).
+    RevokeNet(u32),
 }
 
 /// Everything the pages show.
@@ -135,6 +150,8 @@ pub struct Settings {
     pub nappable: Vec<String>,
     pub apps: Apps,
     pub updates: Updates,
+    /// The hosts each app may reach.
+    pub net: Vec<NetLine>,
     pub about: About,
 }
 
@@ -183,6 +200,14 @@ impl Settings {
         })
     }
 
+    /// Taking network grant `id` back, if it is listed.
+    pub fn revoke_net(&self, id: u32) -> Option<Intent> {
+        self.net
+            .iter()
+            .any(|n| n.id == id)
+            .then_some(Intent::RevokeNet(id))
+    }
+
     /// Setting the restart window; `None` turns it off. Ends that are not
     /// minutes of a day, or the same minute, are refused.
     pub fn restart_window(&self, window: Option<(u16, u16)>) -> Option<Intent> {
@@ -217,6 +242,7 @@ impl Settings {
                 self.apps.set(app, *on);
             }
             Intent::RestartWindow(w) => self.updates.restart_window = *w,
+            Intent::RevokeNet(id) => self.net.retain(|n| n.id != *id),
         }
     }
 }

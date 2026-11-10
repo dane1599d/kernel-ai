@@ -212,7 +212,12 @@ impl Shell {
     fn pseudo_undo(&mut self, call: &Call) -> Outcome {
         let steps = call.arguments.get("steps").and_then(Value::as_u64);
         let reply = match steps {
-            None | Some(1) => self.undo_command(""),
+            // Never one that gives an app back a network grant: only the
+            // person's typed `undo` or Settings may (K on #750).
+            None | Some(1) => match self.kai_undo_refusal() {
+                Some(why) => Reply::err(why),
+                None => self.undo_command(""),
+            },
             Some(_) => Reply::err(
                 "I undo one change at a time: `log` lists them, and `undo N` puts back entry N",
             ),
@@ -289,9 +294,13 @@ impl Shell {
         let decision = match row.owner {
             agentabi::Owner::App(_) => {
                 let rows: Vec<Action> = agentabi::ROWS.iter().copied().chain([*row]).collect();
-                consent::decide(request, &planned, &rows)[0]
+                let net = crate::analyse::grounding(&self.hosts);
+                consent::decide_net(request, &planned, &rows, &net)[0]
             }
-            _ => consent::decide(request, &planned, &agentabi::ROWS)[0],
+            _ => {
+                let net = crate::analyse::grounding(&self.hosts);
+                consent::decide_net(request, &planned, &agentabi::ROWS, &net)[0]
+            }
         };
         if decision.tier == Tier::Never {
             return self.refuse(id, request, call, decision.why, "it is never run");
@@ -449,6 +458,7 @@ impl Shell {
             model: None,
             app: None,
             install: None,
+            net: None,
         });
         // The highlight starts on Allow only for a call the line plainly asked for.
         let origin = match why {
@@ -672,10 +682,12 @@ fn quote(s: &str) -> Option<String> {
 
 /// Where content a call was steered by came from, in words: a window's view,
 /// a file, or an app's answer, named as people know the app.
-fn read_from(source: &str) -> String {
+pub(crate) fn read_from(source: &str) -> String {
     match source {
         "ui" => String::from("what a window shows"),
         "fs" => String::from("a file"),
+        "web" => String::from("a web page"),
+        "dns" => String::from("a name lookup"),
         app => format!("what {} answered", crate::apps::title(app)),
     }
 }

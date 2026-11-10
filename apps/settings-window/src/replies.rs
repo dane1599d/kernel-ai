@@ -12,13 +12,14 @@
 //! | `profiles` | one name a line, the one in use marked `* ` |
 //! | `apps` | the names of the apps that can nap, one a line |
 //! | `file appearance`, `file apps`, `file updates` | the settings file's bytes |
+//! | `net` | one line a network grant: `#<n> <app> <host> <session or always>` |
 
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use comp_settings::access;
 use comp_settings::files::{Appearance, Apps, Updates};
-use comp_settings::{RuleLine, RuleRef, Settings};
+use comp_settings::{NetLine, RuleLine, RuleRef, Settings};
 use comp_settings_ui::clock;
 
 /// Most lines kept of a list.
@@ -41,11 +42,12 @@ pub enum Read {
     FileAppearance,
     FileApps,
     FileUpdates,
+    Net,
 }
 
 impl Read {
     /// All of them: no more than a call may queue (`wasmhost::settings::MAX_QUEUED`).
-    pub const ALL: [Read; 8] = [
+    pub const ALL: [Read; 9] = [
         Read::Rules,
         Read::Grants,
         Read::About,
@@ -54,6 +56,7 @@ impl Read {
         Read::FileAppearance,
         Read::FileApps,
         Read::FileUpdates,
+        Read::Net,
     ];
 
     /// The request that asks for it.
@@ -67,6 +70,7 @@ impl Read {
             Read::FileAppearance => "file appearance",
             Read::FileApps => "file apps",
             Read::FileUpdates => "file updates",
+            Read::Net => "net",
         }
     }
 
@@ -100,6 +104,7 @@ impl Read {
                         settings.profile = current;
                     }
                     Read::Apps => settings.nappable = names(text),
+                    Read::Net => settings.net = net(text),
                     _ => {}
                 }
             }
@@ -125,6 +130,7 @@ impl Read {
             Read::Apps => format!("apps {} can nap", settings.nappable.len()),
             Read::FileAppearance => format!("appearance theme {}", settings.appearance.theme),
             Read::FileApps => format!("keep running {}", settings.apps.keep_running.len()),
+            Read::Net => format!("net {} grants", settings.net.len()),
             Read::FileUpdates => match settings.updates.restart_window {
                 Some((start, end)) => format!("restart window {}-{}", clock(start), clock(end)),
                 None => String::from("restart window off"),
@@ -190,6 +196,40 @@ fn names(text: &str) -> Vec<String> {
     for found in text.lines().filter_map(name) {
         if out.len() < MAX_LINES && !out.contains(&found) {
             out.push(found);
+        }
+    }
+    out
+}
+
+/// `net`'s lines as the Network page shows them; a line out of shape is left
+/// out, so it offers no Revoke.
+fn net(text: &str) -> Vec<NetLine> {
+    let mut out: Vec<NetLine> = Vec::new();
+    for l in text.lines() {
+        let mut words = l.split(' ');
+        let (Some(id), Some(app), Some(host), Some(life), None) = (
+            words.next(),
+            words.next(),
+            words.next(),
+            words.next(),
+            words.next(),
+        ) else {
+            continue;
+        };
+        let id = id
+            .strip_prefix('#')
+            .filter(|d| d.bytes().all(|b| b.is_ascii_digit()));
+        let life = match life {
+            "session" => "this session",
+            "always" => "always",
+            _ => continue,
+        };
+        let (Some(id), true) = (id.and_then(|d| d.parse().ok()), access::app_ok(app)) else {
+            continue;
+        };
+        if out.len() < MAX_LINES && !out.iter().any(|n| n.id == id) {
+            let text = line(&format!("{app}: {host} ({life})"), MAX_LINE);
+            out.push(NetLine { id, text });
         }
     }
     out
@@ -261,6 +301,32 @@ mod tests {
         let mut s = Settings::default();
         read.apply(&mut s, text.as_bytes()).unwrap();
         s
+    }
+
+    #[test]
+    fn net_lines_become_the_network_page_and_bad_ones_are_left_out() {
+        let s = read(
+            Read::Net,
+            concat!(
+                "#1 weather api.weather.example session\n",
+                "#7 weather maps.weather.example always\n",
+                "#x weather a.example session\n",
+                "#2 Weather a.example session\n",
+                "#3 weather a.example forever\n",
+                "#4 weather a.example session extra\n",
+                "#1 weather again.example session\n",
+            ),
+        );
+        let texts: Vec<(u32, &str)> = s.net.iter().map(|n| (n.id, n.text.as_str())).collect();
+        assert_eq!(
+            texts,
+            [
+                (1, "weather: api.weather.example (this session)"),
+                (7, "weather: maps.weather.example (always)"),
+            ]
+        );
+        assert_eq!(Read::Net.summary(&s, 0), "net 2 grants");
+        assert_eq!(read(Read::Net, "").net, []);
     }
 
     #[test]

@@ -115,6 +115,10 @@ impl Shell {
                     .revert_profile(key)
                     .map(|(text, redo)| (text, undo::Inverse::Profile { key: redo }))
                     .map_err(Refused::Failed),
+                undo::Inverse::NetGrant { id: grant, held } => self
+                    .revert_net_grant(grant, held)
+                    .map(|text| (text, undo::reverse(inverse)))
+                    .map_err(Refused::Failed),
                 undo::Inverse::Model { back, from } => self
                     .model_back(back, from, anyway)
                     .map(|text| (text, undo::reverse(inverse))),

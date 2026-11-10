@@ -114,6 +114,7 @@ mod model_tests;
 mod nap_tests;
 mod net;
 mod net_commands;
+mod net_pf_tests;
 mod net_tests;
 mod nvme;
 mod part_tests;

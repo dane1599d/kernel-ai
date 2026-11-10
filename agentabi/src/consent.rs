@@ -232,7 +232,9 @@ fn decide_one(
     if let Some(source) = steered(row, call) {
         return Decision::new(Tier::Ask, Why::Steered(source));
     }
-    if let Some(source) = outbound(row, call) {
+    if let Some(source) = outbound(row, call)
+        && !line_names_destination(words, hosts, row, call)
+    {
         return Decision::new(Tier::Ask, Why::Outbound(source));
     }
     if row.facts.read_only {
@@ -394,6 +396,36 @@ fn arguments_in_line(words: &[Word], row: &Action, call: &Call) -> bool {
 /// for nothing, so "don't fetch weather" grounds no host; a question counts,
 /// since a read is asked as one ("what's the weather in Leeds?").
 fn hosts_grounded(words: &[Word], hosts: &Hosts, row: &Action, call: &Call) -> bool {
+    every_host(words, hosts, row, call, |verdict| {
+        matches!(verdict, Verdict::Run(_))
+    })
+}
+
+/// P-F: content goes out only to a destination the user's line names (ADR 0002
+/// D6): every host of the call is typed in the line, or is the table's host for
+/// a word of it. A grant or the OS's source list grounds a fetch, but is not the
+/// user saying where this data goes. A call with no host names none.
+fn line_names_destination(words: &[Word], hosts: &Hosts, row: &Action, call: &Call) -> bool {
+    row.args.iter().any(|arg| matches!(arg.ty, ArgType::Host))
+        && every_host(
+            words,
+            hosts,
+            row,
+            call,
+            |verdict| matches!(verdict, Verdict::Run(ground) if ground.names_destination()),
+        )
+}
+
+/// Whether `accept` takes the grounding verdict of every host argument of
+/// `call`. A word in a clause that negates counts for nothing, and a host that
+/// came from content is never grounded.
+fn every_host(
+    words: &[Word],
+    hosts: &Hosts,
+    row: &Action,
+    call: &Call,
+    accept: impl Fn(&Verdict) -> bool,
+) -> bool {
     let marked: Vec<LineWord> = (0..words.len())
         .map(|at| LineWord::new(&words[at].text, !negated(words, at)))
         .collect();
@@ -406,11 +438,10 @@ fn hosts_grounded(words: &[Word], hosts: &Hosts, row: &Action, call: &Call) -> b
                     Label::Content(_) => Origin::Content,
                     _ => Origin::Line,
                 };
-                matches!(
-                    hosts
+                accept(
+                    &hosts
                         .net
                         .decide(hosts.line, &marked, value.text, origin, Bytes::Unchecked),
-                    Verdict::Run(_)
                 )
             })
         })
