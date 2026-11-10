@@ -1,5 +1,5 @@
 needed-by: P5 tasks 12 and 13, built 2026-11-10 (lane C; K reviews)
-decision: An app's HTTPS is `kai:net/http`, granted by a `netdest=` ceiling on its plan line; comphost asks the shell per host through `desktop`, narrows the ceiling to the granted hosts and calls `fetch` from a worker thread
+decision: An app's HTTPS is `kai:net/http`, granted by a `netdest=` ceiling on its plan line; comphost asks the shell per host through `desktop`, narrows the ceiling to that one host for each call and calls `fetch` from a worker thread
 ---
 **The interface.** `kai:net@0.1.0` (`wit/kai-net/http.wit`, frozen) moves from the draft in `kainet/wit/`. It changes only in its words: grants are per host and asked by name, not suffixes.
 - `fetch` queues a request, as `kai:models`' `read` does.
@@ -24,17 +24,22 @@ Only the image's own versions get it, as with every grant until package grants e
 - The app is `desktop`'s record of the caller, never a word in the request.
 - While the answer is `wait` or `asked`, comphost asks again every 500 ms, for at most 120 s, then answers `timeout`.
 
-**A Deny.** The person's Deny refuses the app's next connection to that host once, naming the host, and a later one asks again. Otherwise the waiting request would raise the card again at once, every half second.
+**A Deny.** The person's Deny holds for a minute: the app's connections to that host are refused, naming it, with no card. After that the host may be asked about again.
+- An app that asks again at once does not raise the card again at once.
+- A grant comes first: a grant `undo` puts back is used even within the minute.
 
 **The call.**
-- comphost narrows its ceiling to the shell's `granted` destination (the app's granted hosts, `match:exact`) with RESOLVE, CONNECT and TRANSFER.
+- comphost narrows its ceiling, for each call, to that call's one host (`net_wire::call_dest`, `match:exact`), with RESOLVE, CONNECT and TRANSFER. It never narrows to the app's whole list of granted hosts (the audit of tasks 12 and 13).
 - It moves that handle to `fetch` with the request line. `fetch` takes one call at a time and blocks up to 30 s, so comphost makes the call from one worker thread (THREADS), and its main thread keeps serving the app.
-- A redirect `fetch` hands back is asked about by its new host's name and called again with the hops so far, so one limit of five holds across calls.
+- So a redirect to another host comes back even when the app holds a grant for that host. It is asked about by its new host's name and called again with the hops so far, so one limit of five holds across calls.
 
-**The case.** `net-grant` runs the headless test app `net-fixture` with a ceiling of `kai.test`. Keys answer four cards, each checked to name the app and its host:
+**The case.** `net-grant` runs the headless test app `net-fixture` with a ceiling of `kai.test`. Keys answer the cards, each checked to name the app and its host:
 - allow `updates`;
-- allow `releases`;
-- allow `assets`, the host the releases download redirects to;
+- allow `assets`;
+- allow `releases`, whose download redirects to `assets`: it comes back from the call and is granted with no card;
 - deny `elsewhere`.
 
-The app's lines show the bodies, the redirect, and the refusal. `other.example`, outside the ceiling, is refused with no card, and the first host again needs none.
+`other.example`, outside the ceiling, is refused with no card. Then:
+1. Settings starts and its keys revoke `updates` on the Network page.
+2. The app's next request asks again, and is denied.
+3. `undo`, typed at the shell, puts the grant back, and the app is answered with no card.

@@ -284,3 +284,38 @@ fn the_boot_cases_whole_session_in_settings_window() {
     ));
     assert_eq!(window, Intent::RestartWindow(Some(DEFAULT_WINDOW)));
 }
+
+/// The `net-grant` boot case's keys in a freshly started Settings: Tab to the
+/// page tabs, Right six times to Network (the last tab), Tab to the first
+/// grant's Revoke and Enter revokes that grant, the first listed.
+#[test]
+fn the_net_grant_cases_keys_revoke_the_first_network_grant() {
+    use comp_settings::NetLine;
+    let line = |id: u32, host: &str| NetLine {
+        id,
+        text: format!("net-fixture: {host} (this session)"),
+    };
+    let mut w = Keyed::new(Settings {
+        net: vec![
+            line(4, "updates.kai.test"),
+            line(7, "assets.kai.test"),
+            line(9, "releases.kai.test"),
+        ],
+        ..settings()
+    });
+    let mut sent = Vec::new();
+    for key in [
+        Key::Tab,
+        Key::Right,
+        Key::Right,
+        Key::Right,
+        Key::Right,
+        Key::Right,
+        Key::Right,
+        Key::Tab,
+        Key::Enter,
+    ] {
+        sent.extend(w.key(key));
+    }
+    assert_eq!(sent, [Intent::RevokeNet(4)]);
+}

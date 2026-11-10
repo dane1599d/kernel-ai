@@ -3,9 +3,15 @@
 //! of [`URLS`], and each time an answer comes it logs one line saying what the
 //! request came to ([`outcome_line`]) and asks for the next. The case answers
 //! the shell's cards for the hosts as they come up, so the lines show a host
-//! allowed, a redirect to another host asked about by its own name, a host
-//! denied, one outside the app's ceiling never asked about, and the first
-//! host again with no card.
+//! allowed, a redirect to a host the app holds a grant for still asked about
+//! by its own name (the call reached its one host alone), a host denied, and
+//! one outside the app's ceiling never asked about.
+//!
+//! Then it asks for [`AGAIN`] over and over, logging a line only when what it
+//! gets changes, while the case revokes that grant in Settings (the next ask
+//! raises a card, which the case denies: `refused`) and types `undo` (granted
+//! again with no card). Once a refusal has been followed by a response it says
+//! it is done.
 //!
 //! Only test images carry it (`xtask::components::TEST_ONLY`).
 
@@ -23,16 +29,20 @@ mod bind;
 
 /// The component's state schema.
 pub const SCHEMA: u32 = 1;
-/// What it asks for, in order: a host it is allowed; one whose download
-/// redirects to another host; one it is denied; one its ceiling leaves out;
-/// the first again, granted already.
+/// What it asks for, in order: a host it is allowed; a second; one whose
+/// download redirects to the second; one it is denied; one its ceiling
+/// leaves out.
 pub const URLS: &[&str] = &[
     "https://updates.kai.test/hello",
+    "https://assets.kai.test/hello",
     "https://releases.kai.test/dl",
     "https://elsewhere.kai.test/hello",
     "https://other.example/hello",
-    "https://updates.kai.test/hello",
 ];
+/// What it then asks for until a revoke and its undo are seen.
+pub const AGAIN: &str = "https://updates.kai.test/hello";
+/// The most requests for [`AGAIN`] before it gives up.
+pub const MAX_AGAIN: u32 = 1_000;
 /// The most body bytes logged.
 const MAX_SHOWN: usize = 80;
 
@@ -75,11 +85,21 @@ pub fn outcome_line(url: &str, outcome: &Outcome) -> String {
     }
 }
 
+/// Where the requests for [`AGAIN`] stand.
+#[derive(Default)]
+struct Again {
+    asked: u32,
+    /// Whether the last answer was a response, if there was one.
+    last_ok: Option<bool>,
+    refused: bool,
+}
+
 pub struct Fixture {
-    /// The index in [`URLS`] of the request on its way.
+    /// The index in [`URLS`] of the request on its way; past them, [`AGAIN`].
     at: usize,
     /// Its ticket.
     waiting: Option<u32>,
+    again: Again,
 }
 
 impl Fixture {
@@ -87,21 +107,28 @@ impl Fixture {
         Self {
             at: 0,
             waiting: None,
+            again: Again::default(),
         }
     }
 
-    /// Asks for the URL at `at`, or says it is done.
+    /// Asks for the URL at `at`, or for [`AGAIN`] past them.
     fn ask(&mut self) {
-        match URLS.get(self.at) {
-            Some(url) => self.waiting = Some(fetch(url)),
-            None => {
+        let url = match URLS.get(self.at) {
+            Some(url) => url,
+            None if self.again.asked >= MAX_AGAIN => {
                 self.waiting = None;
-                log("net-fixture: done");
+                log("net-fixture: gave up");
+                return;
             }
-        }
+            None => {
+                self.again.asked += 1;
+                AGAIN
+            }
+        };
+        self.waiting = Some(fetch(url));
     }
 
-    /// The answer to `ticket`: logged, and the next URL asked for.
+    /// The answer to `ticket`: logged, and the next request made.
     pub fn answered(&mut self, ticket: u32, outcome: Outcome) {
         if self.waiting != Some(ticket) {
             log(&format!(
@@ -109,11 +136,35 @@ impl Fixture {
             ));
             return;
         }
-        if let Some(url) = URLS.get(self.at) {
-            log(&outcome_line(url, &outcome));
+        self.waiting = None;
+        match URLS.get(self.at) {
+            Some(url) => {
+                log(&outcome_line(url, &outcome));
+                self.at += 1;
+            }
+            None if self.again_answered(&outcome) => return,
+            None => {}
         }
-        self.at += 1;
         self.ask();
+    }
+
+    /// An answer for [`AGAIN`], logged when it differs from the last; whether
+    /// it is the end: a response after a refusal.
+    fn again_answered(&mut self, outcome: &Outcome) -> bool {
+        let ok = matches!(outcome, Outcome::Response { .. });
+        if self.again.last_ok != Some(ok) {
+            log(&format!(
+                "net-fixture: again: {}",
+                outcome_line(AGAIN, outcome)
+            ));
+        }
+        self.again.last_ok = Some(ok);
+        self.again.refused |= !ok;
+        let done = ok && self.again.refused;
+        if done {
+            log("net-fixture: done");
+        }
+        done
     }
 }
 
@@ -181,12 +232,12 @@ mod tests {
             body: b"kai mock: hello\n".to_vec(),
         };
         assert_eq!(
-            outcome_line(URLS[1], &ok),
+            outcome_line(URLS[2], &ok),
             "net-fixture: https://releases.kai.test/dl: 200 from https://assets.kai.test/hello: kai mock: hello"
         );
         let refused = Outcome::Error(String::from("refused elsewhere.kai.test"));
         assert_eq!(
-            outcome_line(URLS[2], &refused),
+            outcome_line(URLS[3], &refused),
             "net-fixture: https://elsewhere.kai.test/hello: refused elsewhere.kai.test"
         );
         let long = Outcome::Error(format!("http {}\n", "x".repeat(500)));
@@ -204,6 +255,39 @@ mod tests {
             app.answered(0, Outcome::Error(String::from("timeout")));
             assert_eq!(app.at, at);
         }
+        // Then AGAIN, until a response follows a refusal.
+        let ok = || Outcome::Response {
+            status: 200,
+            url: String::from(AGAIN),
+            body: Vec::new(),
+        };
+        let refused = || Outcome::Error(String::from("refused updates.kai.test"));
+        for outcome in [ok(), ok(), refused(), refused()] {
+            app.answered(0, outcome);
+            assert_eq!(app.waiting, Some(0), "still asking");
+        }
+        app.answered(0, ok());
         assert_eq!(app.waiting, None, "done");
+        assert_eq!(app.again.asked, 5);
+    }
+
+    #[test]
+    fn it_gives_up_on_again_after_its_bound() {
+        let mut app = Fixture::init();
+        for _ in 0..URLS.len() {
+            app.answered(0, Outcome::Error(String::from("timeout")));
+        }
+        for _ in 0..MAX_AGAIN {
+            assert_eq!(app.waiting, Some(0));
+            app.answered(
+                0,
+                Outcome::Response {
+                    status: 200,
+                    url: String::from(AGAIN),
+                    body: Vec::new(),
+                },
+            );
+        }
+        assert_eq!(app.waiting, None, "gave up");
     }
 }
