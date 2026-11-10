@@ -864,6 +864,7 @@ dependencies = [
  "kabi",
  "libm",
  "look",
+ "netdest",
  "sha2 0.11.1",
  "surfabi",
  "termcore",
