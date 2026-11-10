@@ -1,6 +1,6 @@
 # P1 plan: the agent core
 
-Status: accepted by the founder, 2026-10-22. It plans the work that the accepted ADRs (`docs/adr/`, accepted 2026-10-22) and the execution plan ([ADR 0000](../adr/0000-execution-plan.md)) put in P1. It adds one design of its own, conversation memory (section 4), because no ADR covers it. Nothing here was built or run; sizes marked "est." are estimates.
+Status: accepted by the founder, 2026-10-22, and **closed 2026-10-27** (task 19): every exit case passes in `ci.yml`'s boot shards under KVM and TCG, and both real-model gates pass on GitHub runners (the roadmap's P1 status; the "P1 is done" row in `docs/decisions.md`). It plans the work that the accepted ADRs (`docs/adr/`, accepted 2026-10-22) and the execution plan ([ADR 0000](../adr/0000-execution-plan.md)) put in P1. It adds one design of its own, conversation memory (section 4), because no ADR covers it. Nothing here was built or run when it was written; sizes marked "est." are estimates.
 
 ## 1. Goal and exit
 

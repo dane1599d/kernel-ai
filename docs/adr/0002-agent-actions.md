@@ -318,12 +318,12 @@ Thresholds are relative or token-based on purpose: on the same runner a one-sent
 ## Open questions for the founder
 
 1. **Decided 2026-10-22:** a plainly asked action with no undo asks once, with an Allow / Deny menu and "always allow" choices that become standing rules (D2a).
-2. Network: roadmap.md:144 puts network actions in the ask tier. Proposal: opening or fetching a site you named runs; anything that sends your data out, or goes to a site you did not name, asks. "Named" means a host you typed, one from a shipped table of well-known names, or one you said yes to before. The OS's own signed sources (updates, models, packages, the Linux layer's mirrors) count as named (D3). Approve the change?
-3. Sending messages: always ask before sending, or send after a short hold (for example 10 s) with `undo`, like Gmail's undo-send?
+2. **Decided 2026-11-09:** opening or fetching a site you named runs; anything that sends your data out, or goes to a site you did not name, asks (D3, which the P5 plan's task 11 builds; the founder approved that plan with its defaults on 2026-10-27, [#165](https://github.com/dane1599d/kernel-ai/pull/165)). On 2026-11-09 the founder chose that Kai may reach any website you name, not only a curated list (`docs/decisions/rows/2026-11-09-netdest-hosts-any.md`).
+3. **Decided 2026-10-27:** always ask before sending in v0.2; the short hold with `undo` stays built but off. This is the P5 plan's question 5, which the founder approved with its default ([#165](https://github.com/dane1599d/kernel-ai/pull/165)).
 4. **Decided 2026-10-22:** a vague request runs the AI's best reading and says `Taken as: ... undo` (D3).
 5. **Decided 2026-10-22:** in v0.1, requests that are not in English always ask first (D3).
 6. **Decided 2026-10-22:** pasted text counts as your own request once you press Enter (D3).
-7. Is running existing MCP tools (from Linux software or other vendors) a product goal for v0.2? It decides how much of the bridge in D9 to build.
+7. **Decided 2026-10-27:** running existing MCP tools is not a goal for v0.2, which has no MCP client or bridge for third-party tools, so none of D9's bridge is built for it. This is the P5 plan's question 8, which the founder approved with its default ([#165](https://github.com/dane1599d/kernel-ai/pull/165)).
 8. The action log stores your requests on disk from P2. How long should it keep them, and should there be a `forget` command?
 9. **Decided 2026-10-27:** moves and overwrites you plainly ask for run at once, with undo. Ones the AI picks on its own still ask, and delete still goes through the trash. In P2 task 11, `fs_move` and `fs_write` over an existing file are run-tier with undo when plainly asked.
 10. **Decided 2026-10-22:** Rhai's required `smartstring` 1.0.1 dependency (MPL-2.0+; unmaintained per RUSTSEC-2026-0249, 2026-05-03) stays. Rhai 1.27.0 still requires it (`compact_str` is only an optional feature), so the upgrade does not remove it.
