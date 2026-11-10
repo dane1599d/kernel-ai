@@ -100,6 +100,17 @@ fn a_typed_allow_or_a_deny_grants_nothing() {
     let denied = answered(&host, &mut shell, "deny");
     assert!(denied.text.contains("not run"), "{denied:?}");
     assert!(host.net_disk.borrow().is_none(), "nothing written");
+    // The connection that asked is refused, once, naming the host; the next
+    // one asks again.
+    assert!(matches!(
+        connect(&mut shell),
+        NetConnect::Refused(why) if why.contains("did not allow weather to connect to api.weather.example")
+    ));
+    assert_eq!(connect(&mut shell), NetConnect::Asked);
+    // A typed Allow is no Deny: nothing is refused for it.
+    let menu = card(&mut shell);
+    shell.eval_console(&format!("answer {} allow", menu.id));
+    assert_eq!(connect(&mut shell), NetConnect::Asked);
 }
 
 #[test]

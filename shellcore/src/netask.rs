@@ -37,6 +37,8 @@ use termcore::menu::{Answer, Menu, Origin, read_answer};
 pub const MAX_CARDS: usize = 8;
 /// Most revoked grants kept for their undo.
 const MAX_REVOKED: usize = 32;
+/// Most Deny answers kept for their app's next connection.
+const MAX_DENIED: usize = MAX_CARDS;
 /// The consent a Settings change is logged with.
 const CLICK: &str = "user-click:settings";
 
@@ -122,6 +124,16 @@ impl Shell {
         let Ok(ceiling) = Dest::parse(ceiling) else {
             return Connect::Refused(format!("{app}'s package names no destination it may reach"));
         };
+        // The person said no to this host on the card: the connection that
+        // asked is refused, once; a later one asks again.
+        if let Some(at) = self
+            .net_denied
+            .iter()
+            .position(|(a, h)| a == app && h == host)
+        {
+            self.net_denied.remove(at);
+            return Connect::Refused(format!("you did not allow {app} to connect to {host}"));
+        }
         let grants = match read_store(self.host.as_ref()) {
             Ok(grants) => grants,
             Err(why) => return Connect::Refused(why),
@@ -229,10 +241,14 @@ impl Shell {
         let Some(asking) = pending.net.clone() else {
             return Reply::err("nothing to confirm");
         };
+        let answer = read_answer(text.trim()).map_or(Answer::Deny, |(answer, _)| answer);
         if let Err(reply) = self.allowed(&pending, text) {
+            // A Deny needs no proof: the app's waiting connection is refused.
+            if answer == Answer::Deny {
+                self.net_deny(&asking);
+            }
             return reply;
         }
-        let answer = read_answer(text.trim()).map_or(Answer::Deny, |(answer, _)| answer);
         let (app, host) = (asking.ask.app.as_str(), asking.ask.host.as_str());
         let made = self.write_net_grant(id, &asking, answer);
         let (outcome, change, reply) = match made {
@@ -281,6 +297,18 @@ impl Shell {
         });
         self.save_log();
         reply
+    }
+
+    /// Keeps the person's Deny of `asking` for its app's next connection.
+    fn net_deny(&mut self, asking: &NetAsking) {
+        let key = (asking.ask.app.clone(), asking.ask.host.clone());
+        if self.net_denied.contains(&key) {
+            return;
+        }
+        if self.net_denied.len() >= MAX_DENIED {
+            self.net_denied.remove(0);
+        }
+        self.net_denied.push(key);
     }
 
     /// Writes the grant `answer` makes for `asking`: the grant, and whether

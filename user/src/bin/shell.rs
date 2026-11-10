@@ -458,6 +458,30 @@ fn take_settings(shell: &mut Shell) {
     }
 }
 
+/// Answers the apps' waiting network asks, which `desktop` holds
+/// (`deskcore::net_wire`): the app is `desktop`'s record of the caller. A new
+/// host waits as a card, which the kernel's terminal takes; the app's host
+/// asks again until the answer is not `asked`.
+fn take_net(shell: &mut Shell) {
+    use deskcore::net_wire as wire;
+    let Some(route) = desktop() else {
+        return;
+    };
+    for _ in 0..wire::MAX_WAITING {
+        let Ok(answer) = ask_desktop(route, wire::TAKE) else {
+            return;
+        };
+        let Some(Some(ask)) = wire::parse_take(&answer) else {
+            return;
+        };
+        let connect = shell.net_connect(&ask.app, &ask.host, &ask.ceiling).wire();
+        let done = wire::encode_done(&ask.app, &ask.host, &connect);
+        if let Err(why) = ask_desktop(route, &done) {
+            println!("{}'s network answer was not sent: {why}", ask.app);
+        }
+    }
+}
+
 /// The supervisor's wait for a stop or a start: a stop waits for the process to end.
 const SUPERVISOR_CALL_MS: u64 = 10_000;
 
@@ -1155,6 +1179,7 @@ fn main() -> i32 {
         give_call_results(&mut shell);
         take_files(&mut shell);
         take_settings(&mut shell);
+        take_net(&mut shell);
         give_app_build(&mut shell);
         // An install card waits: the kernel's terminal takes it when it may.
         // Said again each pass, so a desktop that shows later still gets it.
