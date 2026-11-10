@@ -37,8 +37,12 @@ use termcore::menu::{Answer, Menu, Origin, read_answer};
 pub const MAX_CARDS: usize = 8;
 /// Most revoked grants kept for their undo.
 const MAX_REVOKED: usize = 32;
-/// Most Deny answers kept for their app's next connection.
+/// Most Deny answers kept.
 const MAX_DENIED: usize = MAX_CARDS;
+/// How long a Deny refuses the app's connections to that host with no card:
+/// the request that asked is told `refused`, and an app that asks again at
+/// once does not raise the card again at once.
+pub const DENY_HOLDS_NS: u64 = 60_000_000_000;
 /// The consent a Settings change is logged with.
 const CLICK: &str = "user-click:settings";
 
@@ -124,16 +128,6 @@ impl Shell {
         let Ok(ceiling) = Dest::parse(ceiling) else {
             return Connect::Refused(format!("{app}'s package names no destination it may reach"));
         };
-        // The person said no to this host on the card: the connection that
-        // asked is refused, once; a later one asks again.
-        if let Some(at) = self
-            .net_denied
-            .iter()
-            .position(|(a, h)| a == app && h == host)
-        {
-            self.net_denied.remove(at);
-            return Connect::Refused(format!("you did not allow {app} to connect to {host}"));
-        }
         let grants = match read_store(self.host.as_ref()) {
             Ok(grants) => grants,
             Err(why) => return Connect::Refused(why),
@@ -144,6 +138,12 @@ impl Shell {
                 None => Connect::Refused(String::from("the grant is outside the package")),
             },
             Decision::Refused(why) => Connect::Refused(why),
+            // The person said no to this host on the card lately: refused
+            // with no card until the Deny lapses. A grant, made since or put
+            // back by `undo`, comes first.
+            Decision::Ask(_) if self.net_denied_now(app, host) => {
+                Connect::Refused(format!("you did not allow {app} to connect to {host}"))
+            }
             Decision::Ask(ask) => self.queue_net_card(NetAsking { ask, ceiling }),
         }
     }
@@ -299,16 +299,25 @@ impl Shell {
         reply
     }
 
-    /// Keeps the person's Deny of `asking` for its app's next connection.
+    /// Keeps the person's Deny of `asking` for [`DENY_HOLDS_NS`].
     fn net_deny(&mut self, asking: &NetAsking) {
-        let key = (asking.ask.app.clone(), asking.ask.host.clone());
-        if self.net_denied.contains(&key) {
-            return;
-        }
+        let (app, host) = (&asking.ask.app, &asking.ask.host);
+        self.net_denied.retain(|(a, h, _)| !(a == app && h == host));
         if self.net_denied.len() >= MAX_DENIED {
             self.net_denied.remove(0);
         }
-        self.net_denied.push(key);
+        let now = self.host.now_ns();
+        self.net_denied.push((app.clone(), host.clone(), now));
+    }
+
+    /// Whether a Deny of `app`'s `host` still holds; one that lapsed goes.
+    fn net_denied_now(&mut self, app: &str, host: &str) -> bool {
+        let now = self.host.now_ns();
+        self.net_denied
+            .retain(|(_, _, at)| now.saturating_sub(*at) < DENY_HOLDS_NS);
+        self.net_denied
+            .iter()
+            .any(|(a, h, _)| a == app && h == host)
     }
 
     /// Writes the grant `answer` makes for `asking`: the grant, and whether
