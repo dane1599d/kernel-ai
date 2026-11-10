@@ -1,6 +1,6 @@
 # P2 plan: files and storage
 
-Status: approved by the founder on 2026-10-26 (#92), and **closed 2026-11-04**, with the kaifs throughput miss (S04-2 end to end) accepted for v0.1 by the founder (the roadmap's P2 status; the P2 close rows in `docs/decisions.md`). It plans the work that the accepted ADRs (`docs/adr/`, accepted 2026-10-22) and the execution plan ([ADR 0000](../adr/0000-execution-plan.md)) put in P2. Section 4 lists the few things it decides itself, because no ADR covers them. Nothing here was built or run for this plan; sizes marked "est." are estimates.
+Status: approved by the founder on 2026-10-26 (#92), and **closed 2026-11-04**, with the kaifs throughput miss (S04-2 end to end) accepted for v0.1 by the founder (the roadmap's P2 status; the P2 close rows in `docs/decisions.md`). It plans the work that the accepted ADRs (`docs/adr/`, accepted 2026-10-22) and the execution plan ([ADR 0000](../adr/0000-execution-plan.md)) put in P2. Section 4 lists the few things it decides itself, because no ADR covers them. Nothing here was built or run for this plan when it was written; sizes marked "est." are estimates.
 
 ## 1. Goal and exit
 

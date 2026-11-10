@@ -1,6 +1,6 @@
-needed-by: P3 host gate (the plan's sections 1 and 6), open; owner to be named by the manager
+needed-by: P3 host gate (the plan's sections 1 and 6), open; owner: lane C, before the v0.1 final tag
 decision: P3's fuzz gate is open, not waived: the plan asks for a fuzz target for every new P3 parser, and none exists
 ---
 `docs/plans/p3-desktop.md` lists, among P3's host gates in CI, "hostile tests through `testkit/hostile.rs`, and a fuzz target, for every new parser": `surfabi`'s message decoder, the header page, the tree records, and `kai-theme 1` (sections 1 and 6). The hostile tests exist (`surfabi/tests/hostile.rs`, `look/tests/hostile.rs`). The fuzz targets do not: `fuzz/` holds only kainet's five P5 targets (`tls_client`, `tls_records`, `http_response`, `kai_chunks`, `url`), which run in `.github/workflows/fuzz.yml` on a GitHub runner.
 
-So the gate stays open as of 2026-11-09, and P3's close (`2026-11-09-p3-close.md`) does not meet it. It is not waived. The plan's section 9 moves fuzzing of `surfabi`, the tree decoder and `kai-theme 1` at scale to P8, but that is fuzzing at scale, not the per-parser targets this gate asks for. The manager will name the owner.
+So the gate stays open as of 2026-11-09, and P3's close (`2026-11-09-p3-close.md`) does not meet it. It is not waived. The plan's section 9 moves fuzzing of `surfabi`, the tree decoder and `kai-theme 1` at scale to P8, but that is fuzzing at scale, not the per-parser targets this gate asks for. Owner: lane C; four targets in `fuzz/` (the `surfabi` decoder, the header page, the tree records, `kai-theme 1`), run by fuzz.yml on a GitHub runner, before the v0.1 final tag.

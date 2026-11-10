@@ -222,7 +222,7 @@ S02-2's pass marks: the busy sign appears within 100 ms of Enter, and masking co
   - open-world rows and the host table (named sites still default to ask until the founder answers ADR 0002's question 2);
   - `Hold`, P-F and quarantined reads;
   - online installs;
-  - an MCP bridge, if ADR 0002's question 7 says so.
+  - no MCP bridge in v0.2 (ADR 0002's question 7, answered by the P5 plan's question 8, #165).
 - **P6:** the browser and media rows, reserved in `agentabi` but disabled.
 - **Waiting on the founder:**
   - ADR 0002's question 9 (moves and overwrites run with undo; the default is ask);
