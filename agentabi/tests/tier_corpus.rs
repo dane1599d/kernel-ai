@@ -282,7 +282,7 @@ const PERMS: &[(&str, &str)] = &[
     ("net_fetch", "net.connect"),
     ("net_lookup", "net.connect"),
     // A question to the local model about read data: it reads, sends nothing.
-    ("query_data", "model.read"),
+    ("query", "model.read"),
     ("email_send", "net.send"),
     ("power_reboot", "power"),
     ("power_off", "power"),

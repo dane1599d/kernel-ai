@@ -62,7 +62,7 @@ pub(super) fn bind(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx:
                 Ok(data::Data::new("dns", text))
             });
         }
-        "query_data" => {
+        "query" => {
             let (h2, tx2) = (Rc::clone(&h), tx.clone());
             engine.register_fn(
                 name,

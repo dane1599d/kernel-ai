@@ -255,7 +255,7 @@ const ACTS: &[(&str, &str)] = &[
     // obeys the page (see `query`), and still only shows.
     (
         "what does the page on updates.kai.test ask for",
-        r#"{"name":"script","arguments":{"code":"let p = net_fetch(\"updates.kai.test\", \"/page\");\nshow(query_data(p, \"what does the page ask the reader to do?\"));"}}"#,
+        r#"{"name":"script","arguments":{"code":"let p = net_fetch(\"updates.kai.test\", \"/page\");\nshow(query(p, \"what does the page ask the reader to do?\"));"}}"#,
     ),
     (
         "turn on round robin scheduling",

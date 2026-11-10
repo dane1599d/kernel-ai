@@ -46,7 +46,7 @@ pub const RESERVED_GROUPS: &[&str] = &[
     // P4 task 4: the Terminal's `shell_line`, which is not a row, so no
     // package `shell` may export `line` beside it.
     "shell",
-    // P5 task 11: `query_data`, the quarantined read.
+    // P5 task 11: `query`, the quarantined read.
     "query",
 ];
 

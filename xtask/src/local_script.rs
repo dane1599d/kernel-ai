@@ -254,7 +254,7 @@ mod tests {
         // So does a quarantined read the random weights answer out of shape.
         assert_eq!(outcome.rounds, [0, 0]);
         for reply in [&outcome.typed, &outcome.again] {
-            let refused = reply.contains(shellcore::NO_FILES) || reply.contains("query_data: ");
+            let refused = reply.contains(shellcore::NO_FILES) || reply.contains("query: ");
             let lead = match refused {
                 true => "! ",
                 false => "= ",

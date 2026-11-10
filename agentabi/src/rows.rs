@@ -552,5 +552,5 @@ pub const ROWS: [Action; 47] = [
     APP_INSTALL,
     crate::NET_FETCH,
     crate::NET_LOOKUP,
-    crate::QUERY_DATA,
+    crate::QUERY,
 ];

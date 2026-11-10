@@ -118,8 +118,8 @@ const ANSWERS: Arg = Arg {
 /// its answer held to `answers` or one short line. The answer is `Data` with
 /// the data's label, so whatever the data said can pick at most an allowed
 /// answer, never a call. It stays on the machine: `llm` answers it.
-pub const QUERY_DATA: Action = Action {
-    name: "query_data",
+pub const QUERY: Action = Action {
+    name: "query",
     doc: "one answer about read data: one of answers, or one short line",
     args: &[DATA, QUESTION, ANSWERS],
     facts: Facts::LOCAL_READ,
@@ -135,4 +135,4 @@ pub const QUERY_DATA: Action = Action {
 
 /// P5 task 11's rows, in `ROWS` order: the network reads, then the question
 /// asked about what they read.
-pub const NET_ROWS: [Action; 3] = [NET_FETCH, NET_LOOKUP, QUERY_DATA];
+pub const NET_ROWS: [Action; 3] = [NET_FETCH, NET_LOOKUP, QUERY];

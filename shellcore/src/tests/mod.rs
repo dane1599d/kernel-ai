@@ -88,7 +88,7 @@ struct FakeHost {
     ui_calls: RefCell<Vec<crate::ui::UiCall>>,
     /// The hosts the network rows reached, as `row host`.
     net_seen: RefCell<Vec<String>>,
-    /// The questions `query_data` asked, and the model's answer to each.
+    /// The questions `query` asked, and the model's answer to each.
     queries: RefCell<Vec<llmproto::query::QueryRequest>>,
     query_answer: RefCell<Result<String, String>>,
     ui_answer: RefCell<Option<UiAnswer>>,
