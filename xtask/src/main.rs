@@ -10,6 +10,7 @@
 //! cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]   (M8b script gate, host only)
 //! cargo xtask fluency --local ID [--store DIR]   (the same gate on our own engine)
 //! cargo xtask app-gate --local ID [--store DIR]   (Kai builds apps, piece 5: 20 app requests)
+//! cargo xtask query-eval --local ID [--store DIR] (P5 task 11: 24 quarantined reads)
 //! cargo xtask setup | model chat|check|pin | bench quant   (the local LLM on the host; see models/mod.rs)
 //! cargo xtask tune --sim ... | demo | check | record | ab   (M10a; see tune/mod.rs)
 //! cargo xtask tokens --gguf PATH   (S10-0: real token counts of the prompt parts; see tokens.rs)
@@ -74,6 +75,7 @@ mod notices;
 mod options;
 mod pkgrepo;
 mod qemu;
+mod query_eval;
 mod relay;
 mod release_boot;
 mod release_image;
@@ -108,6 +110,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("fluency") => fluency::main(&args[1..], &workspace_root().join("target")),
         Some("app-gate") => appgate::main(&args[1..], &workspace_root().join("target")),
+        Some("query-eval") => query_eval::main(&args[1..]),
         Some("setup" | "model" | "bench") => models::main(&args),
         Some("tune") => tune::main(&args[1..]),
         Some("tokens") => tokens::main(&args[1..]),
