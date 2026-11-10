@@ -56,6 +56,8 @@ pub(crate) struct Pending {
     pub app: Option<crate::appbuild::Asked>,
     /// For `app_install`, the build its card asks to install.
     pub install: Option<crate::appinstall::Installing>,
+    /// For an app's first connection to a host, the ask its card shows.
+    pub net: Option<crate::netask::NetAsking>,
 }
 
 /// `y`, `n`, `yes` or `no`, any case.
@@ -231,6 +233,7 @@ impl Shell {
             model: None,
             app: None,
             install: None,
+            net: None,
         });
         Reply {
             ok: true,
@@ -523,6 +526,9 @@ impl Shell {
         }
         if pending.install.is_some() && !is_show(text) {
             return self.answer_install(pending, text);
+        }
+        if pending.net.is_some() && !is_show(text) {
+            return self.answer_net(pending, text);
         }
         if pending.standing.is_some() && !is_show(text) {
             return self.answer_instruction(pending, text);

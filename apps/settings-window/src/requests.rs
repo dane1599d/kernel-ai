@@ -10,6 +10,7 @@
 //! | `UseProfile` | `profile-set <name>` |
 //! | `RemoveRule` | `rules-remove <n>` or `rules-remove S<n>` |
 //! | `Revoke` | `grants-revoke <app> <row>` |
+//! | Network's `Revoke` | `net-revoke <n>` |
 //! | `Restore` | `grants-restore <app> <row>` |
 //! | `KeepRunning` | `keep-running on\|off <app>` |
 //! | `RestartWindow` | `restart-window <start> <end>` or `restart-window off` |
@@ -132,6 +133,7 @@ pub fn plan(before: &Appearance, intent: &Intent) -> Vec<Planned> {
         }
         Intent::RestartWindow(Some((start, end))) => one(format!("restart-window {start} {end}")),
         Intent::RestartWindow(None) => one(String::from("restart-window off")),
+        Intent::RevokeNet(id) => one(format!("net-revoke {id}")),
         Intent::UseProfile(_)
         | Intent::KeepRunning { .. }
         | Intent::Revoke { .. }
@@ -402,5 +404,12 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_network_revoke_is_net_revoke_with_its_number() {
+        let planned = plan(&Appearance::default(), &Intent::RevokeNet(12));
+        let sent: Vec<&str> = planned.iter().map(|p| p.request.as_str()).collect();
+        assert_eq!(sent, ["net-revoke 12"]);
     }
 }

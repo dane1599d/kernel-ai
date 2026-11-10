@@ -18,6 +18,12 @@
 //! `none` (hosts: no names), so a destination allows only what it names.
 //! `match:exact` makes each host name only itself, not the names under it, as a
 //! per-host grant needs (P5 task 13); it is left out for suffixes.
+//! `hosts:any` names every host name of two labels or more whose last label is
+//! not all digits, for one ceiling
+//! only: the shell's plan line, on port 443 (the founder, 2026-11-09: Kai may
+//! reach any website the user names). It is never exact, and only a handle
+//! that has it can make another that has it; who may hold it is the plan
+//! parser's rule (`supervise`), not this crate's.
 
 #![no_std]
 
@@ -60,6 +66,9 @@ pub struct Dest {
     /// The hosts name only themselves (`match:exact`), not the names under
     /// them: a per-app grant of one host (P5 task 13).
     pub exact: bool,
+    /// Every host name of two labels or more (`hosts:any`), in place of
+    /// [`Dest::hosts`], which is then empty. Never with [`Dest::exact`].
+    pub any_host: bool,
 }
 
 impl Dest {
@@ -72,6 +81,9 @@ impl Dest {
     /// Whether the normalised `name` is one of the hosts, or (unless
     /// [`Dest::exact`]) under one.
     fn names(&self, name: &str) -> bool {
+        if self.any_host {
+            return website(name);
+        }
         self.hosts.iter().any(|host| match self.exact {
             true => name == host,
             false => under(name, host),
@@ -100,7 +112,11 @@ impl Dest {
             // An exact outer covers only exact hosts it names; a suffix outer
             // covers any host or suffix under it.
             && (self.exact || !outer.exact)
-            && self.hosts.iter().all(|host| outer.names(host))
+            // Only `hosts:any` covers `hosts:any`.
+            && match self.any_host {
+                true => outer.any_host,
+                false => self.hosts.iter().all(|host| outer.names(host)),
+            }
     }
 
     /// Reads the text form (see the crate's docs).
@@ -114,6 +130,7 @@ impl Dest {
             ports: PortRange::NoPorts,
             hosts: Vec::new(),
             exact: false,
+            any_host: false,
         };
         let mut seen: Vec<&str> = Vec::new();
         for field in text.split(',') {
@@ -126,6 +143,7 @@ impl Dest {
                 "proto" => dest.protocol = parse_protocol(value)?,
                 "addrs" => dest.addrs = parse_addrs(value)?,
                 "ports" => dest.ports = parse_ports(value)?,
+                "hosts" if value == "any" => dest.any_host = true,
                 "hosts" => dest.hosts = parse_hosts(value)?,
                 "match" => {
                     dest.exact = match value {
@@ -136,6 +154,9 @@ impl Dest {
                 }
                 _ => return Err("netdest: unknown field (proto, addrs, ports, hosts, match)"),
             }
+        }
+        if dest.any_host && dest.exact {
+            return Err("netdest: hosts:any names no host exactly");
         }
         Ok(dest)
     }
@@ -164,9 +185,10 @@ impl fmt::Display for Dest {
             PortRange::PortSet(set) => join(f, set.iter())?,
         }
         f.write_str(",hosts:")?;
-        match self.hosts.is_empty() {
-            true => f.write_str("none")?,
-            false => join(f, self.hosts.iter())?,
+        match (self.any_host, self.hosts.is_empty()) {
+            (true, _) => f.write_str("any")?,
+            (false, true) => f.write_str("none")?,
+            (false, false) => join(f, self.hosts.iter())?,
         }
         match self.exact {
             true => f.write_str(",match:exact"),
@@ -194,6 +216,13 @@ fn under(name: &str, suffix: &str) -> bool {
         || name
             .strip_suffix(suffix)
             .is_some_and(|head| head.ends_with('.'))
+}
+
+/// A name `hosts:any` covers: two labels or more, and a last label that is not
+/// all digits (`1.2` is no website; a top-level domain is never numeric).
+fn website(name: &str) -> bool {
+    name.rsplit_once('.')
+        .is_some_and(|(_, tld)| !tld.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// `name` as it is checked and looked up: one trailing dot dropped, lower

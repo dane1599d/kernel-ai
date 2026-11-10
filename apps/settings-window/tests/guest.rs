@@ -171,7 +171,8 @@ fn it_reads_everything_its_pages_show_when_it_starts_and_fills_them_from_the_ans
             "apps",
             "file appearance",
             "file apps",
-            "file updates"
+            "file updates",
+            "net"
         ]
     );
     assert!(asked.len() * 2 <= MAX_QUEUED, "room is left for more");

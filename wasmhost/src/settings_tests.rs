@@ -291,6 +291,7 @@ fn every_change_takes_its_own_arguments_and_nothing_looser() {
         "restart-window 120 300",
         "restart-window 1380 60",
         "restart-window off",
+        "net-revoke 4",
     ];
     for text in changes {
         assert_eq!(classify(text), Ok(Kind::Change), "{text}");
@@ -406,7 +407,7 @@ fn too_many_requests_before_comphost_takes_them_is_a_fault() {
     let fault = app.health().expect_err("one more traps");
     assert!(fault.detail.contains("waiting"), "{}", fault.detail);
     assert_eq!(app.take_settings().len(), MAX_QUEUED);
-    // The start's eight reads leave room for more.
+    // The start's reads leave room for more.
     assert!(READS.len() * 2 <= MAX_QUEUED);
 }
 
@@ -462,4 +463,22 @@ fn the_instance_trait_reaches_the_same_queue() {
     let mut app = app_sending(&["profiles"]);
     assert!(Instance::health(&mut app).is_ok());
     assert_eq!(requests(&app.take_settings()), ["profiles"]);
+}
+
+#[test]
+fn net_lists_the_grants_and_net_revoke_takes_a_grant_number() {
+    assert_eq!(classify("net"), Ok(Kind::Read));
+    assert_eq!(classify("net-revoke 1"), Ok(Kind::Change));
+    assert_eq!(classify("net-revoke 123456789"), Ok(Kind::Change));
+    for bad in [
+        "net-revoke",
+        "net-revoke ",
+        "net-revoke #1",
+        "net-revoke -1",
+        "net-revoke 1 2",
+        "net-revoke 1234567890",
+        "net weather",
+    ] {
+        assert!(classify(bad).is_err(), "{bad:?}");
+    }
 }

@@ -39,6 +39,7 @@ mod logdisk;
 mod look;
 mod models;
 mod more;
+mod netask;
 mod netgrant;
 mod netrows;
 mod packages;
@@ -172,6 +173,7 @@ struct FakeHost {
     /// `/system/state/rules`.
     rules_disk: RefCell<Option<String>>,
     pub withheld_disk: RefCell<Option<String>>,
+    pub net_disk: RefCell<Option<String>>,
     /// `/system/state/standing`, and the event source and owners standing
     /// instructions run through, when `triggers_on` is set.
     standing_disk: RefCell<Option<String>>,
@@ -353,6 +355,7 @@ impl FakeHost {
             log_writes: Cell::new(0),
             rules_disk: RefCell::new(None),
             withheld_disk: RefCell::new(None),
+            net_disk: RefCell::new(None),
             standing_disk: RefCell::new(None),
             triggers_on: Cell::new(false),
             triggers: FakeTriggers::default(),
@@ -611,6 +614,15 @@ impl Host for FakeHost {
 
     fn rules_write(&self, text: &str) -> Result<(), String> {
         *self.rules_disk.borrow_mut() = Some(text.into());
+        Ok(())
+    }
+
+    fn net_grants_read(&self) -> Option<String> {
+        self.net_disk.borrow().clone()
+    }
+
+    fn net_grants_write(&self, text: &str) -> Result<(), String> {
+        *self.net_disk.borrow_mut() = Some(text.into());
         Ok(())
     }
 

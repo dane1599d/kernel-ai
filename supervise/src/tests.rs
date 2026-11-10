@@ -1146,3 +1146,32 @@ fn the_models_window_s_routes_are_desktop_then_updated_and_the_name_is_the_grant
     // Without the services before it the line is an error, not a route elsewhere.
     assert!(!parse_plan(kabi::plan::MODELS_WINDOW).errors.is_empty());
 }
+
+#[test]
+fn hosts_any_sits_on_the_shell_line_alone_and_only_for_https() {
+    let plan = parse_plan("shell caps=serve netdest=proto:tcp,ports:443,hosts:any");
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let dest = plan.services[0].netdest.as_ref().unwrap();
+    assert!(dest.any_host && dest.allows_name("en.wikipedia.org"));
+    for line in [
+        // Any other line: an app, a package, a service.
+        "weather netdest=proto:tcp,ports:443,hosts:any",
+        "fetch netdest=proto:tcp,ports:443,hosts:any",
+        "pkg start=pkg netdest=proto:tcp,ports:443,hosts:any",
+        // The shell's name on another program.
+        "shell program=notes netdest=proto:tcp,ports:443,hosts:any",
+        // Not HTTPS alone.
+        "shell netdest=proto:tcp,ports:any,hosts:any",
+        "shell netdest=proto:tcp,ports:80+443,hosts:any",
+        "shell netdest=proto:udp,ports:443,hosts:any",
+        "shell netdest=proto:tcp,addrs:any,ports:443,hosts:any",
+    ] {
+        let plan = parse_plan(line);
+        assert!(plan.services.is_empty(), "{line}");
+        assert!(
+            plan.errors[0].contains("hosts:any"),
+            "{line}: {:?}",
+            plan.errors
+        );
+    }
+}

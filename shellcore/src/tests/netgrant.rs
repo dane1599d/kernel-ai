@@ -29,7 +29,7 @@ fn a_new_host_asks_once_naming_the_app_and_the_host() {
     assert_eq!(asked.host, "api.weather.example");
     assert_eq!(
         asked.question,
-        "Let weather connect to api.weather.example?"
+        "Let weather connect to api.weather.example: net_connect(\"weather\", \"api.weather.example\")?"
     );
     assert_eq!(
         asked.call,
@@ -80,6 +80,13 @@ fn nothing_outside_the_packages_netdest_is_asked_about() {
         grants.decide("Weather!", "api.weather.example", &ceiling()),
         Decision::Refused(_)
     ));
+}
+
+#[test]
+fn a_package_ceiling_of_any_host_asks_about_nothing() {
+    let any = Dest::parse("proto:tcp,ports:443,hosts:any").unwrap();
+    let decision = NetGrants::new().decide("weather", "api.weather.example", &any);
+    assert!(matches!(decision, Decision::Refused(why) if why.contains("no hosts of its own")));
 }
 
 #[test]

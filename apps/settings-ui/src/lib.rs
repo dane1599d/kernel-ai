@@ -67,6 +67,12 @@ pub const KEEP: NodeId = 9000;
 pub const WINDOW_ON: NodeId = 40;
 pub const START: NodeId = 41;
 pub const END: NodeId = 42;
+// Network (P5 task 13): the hosts each app may reach, each with Revoke.
+pub const NO_NET: NodeId = 50;
+pub const MORE_NET: NodeId = 51;
+pub const NET: NodeId = 12_000;
+pub const NET_TEXT: NodeId = 13_000;
+pub const NET_REVOKE: NodeId = 14_000;
 // About.
 pub const ABOUT: NodeId = 10_000;
 
@@ -100,6 +106,8 @@ pub(crate) struct Shown {
     pub(crate) rules: Slots<RuleRef>,
     pub(crate) profiles: Vec<String>,
     pub(crate) keep: Slots<String>,
+    /// The network grants shown, by number.
+    pub(crate) net: Slots<u32>,
 }
 
 impl View {
@@ -154,6 +162,7 @@ pub fn build(settings: &Settings, view: &mut View) -> Vec<Entry> {
         Page::Rules => rules(settings, &mut view.shown, &mut tree),
         Page::Apps => apps(settings, &mut view.shown, &mut tree),
         Page::Updates => updates(settings, &mut tree),
+        Page::Network => network(settings, &mut view.shown, &mut tree),
         Page::About => about(settings, &mut tree),
     }
     tree
@@ -457,6 +466,52 @@ fn updates(s: &Settings, tree: &mut Vec<Entry>) {
         wide(),
         slider(format!("Until {}", clock(end)), end),
     ));
+}
+
+fn network(s: &Settings, shown: &mut Shown, tree: &mut Vec<Entry>) {
+    if s.net.is_empty() {
+        tree.push(entry(
+            NO_NET,
+            PAGE,
+            wide(),
+            label(
+                "No app may reach a host yet: each asks the first time.",
+                TypeStyle::Body,
+                Tone::Muted,
+            ),
+        ));
+    }
+    let ids: Vec<u32> = s.net.iter().map(|n| n.id).collect();
+    let slots = shown.net.place(&ids);
+    let mut room = Room::of(tree);
+    let mut fitted = 0;
+    for (n, slot) in s.net.iter().zip(slots) {
+        let at = NET + slot as u32;
+        let row = [
+            entry(at, PAGE, wide(), row()),
+            entry(
+                NET_TEXT + slot as u32,
+                at,
+                wide(),
+                label(&n.text, TypeStyle::Body, Tone::Normal),
+            ),
+            entry(
+                NET_REVOKE + slot as u32,
+                at,
+                Layout::FIT,
+                Widget::Button {
+                    text: String::from("Revoke"),
+                    action: Some(String::from("net_revoke")),
+                },
+            ),
+        ];
+        if !room.take(&row) {
+            break;
+        }
+        tree.extend(row);
+        fitted += 1;
+    }
+    more(tree, MORE_NET, s.net.len() - fitted);
 }
 
 fn about(s: &Settings, tree: &mut Vec<Entry>) {

@@ -969,6 +969,20 @@ impl Host for System {
         }
     }
 
+    fn net_grants_read(&self) -> Option<String> {
+        self.state.read(files::NETGRANTS)
+    }
+
+    /// As the rules are written: with the line's files, if it changed any.
+    fn net_grants_write(&self, text: &str) -> Result<(), String> {
+        match self.files.is_open() {
+            true => self.state.write_in(files::NETGRANTS, text),
+            false => self
+                .state
+                .write(files::NETGRANTS, text, self.files.next_action()),
+        }
+    }
+
     fn withheld_read(&self) -> Option<String> {
         self.state.read(files::WITHHELD)
     }
