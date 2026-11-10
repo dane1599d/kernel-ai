@@ -58,6 +58,9 @@ const CARD_MS: u64 = 120_000;
 /// Time with no card expected: the last list request and the first of the
 /// requests again; then the time the app's answers have after the `undo`.
 const QUIET_MS: u64 = 10_000;
+/// How long the Deny is left to reach the app before the `undo`: many of
+/// comphost's 500 ms asks, well inside the Deny's minute.
+const DENIED_MS: u64 = 5_000;
 /// Settings' start: comphost's, the component's compile, and its reads.
 const OPEN_MS: u64 = 60_000;
 const SETTINGS_READS_MS: u64 = 5_000;
@@ -131,6 +134,10 @@ pub fn check() -> Result<(), &'static str> {
     log!("net-grant: ready for keys");
     // The revoke holds: the app's next request asks again, and is denied.
     card(REVOKED, false)?;
+    // The Deny reaches the app at comphost's next ask (every 500 ms), and holds
+    // while the app asks again, with no card. Typed sooner, the `undo` would
+    // put the grant back before the app was told (#771's run 42839655660).
+    quiet(DENIED_MS)?;
     // The person's `undo` puts the revoked grant back.
     let undone = ipc::call("shell", b"undo", CARD_MS)
         .map_err(|_| "net-grant: the shell did not answer undo")?;
