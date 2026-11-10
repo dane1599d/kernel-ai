@@ -1,6 +1,6 @@
 # ADR 0013: Agents: several agents on one model, memory, search, goals and agent packages
 
-Proposed, for founder approval, 2026-10-27. The founder asked for this track on 2026-10-27: match and beat Steve ("AI OS") and AIOS (github.com/agiresearch/AIOS), placed so it does not delay v0.1. Until the founder approves it, nothing here is built. Questions below keep their stated default until the founder answers.
+Approved by the founder on 2026-10-27, with the defaults of the open questions below (recorded 2026-11-09; the answers the founder has given since are decisions rows, and the spike results are under "Spikes that settle it"). The founder asked for this track on 2026-10-27: match and beat Steve ("AI OS") and AIOS (github.com/agiresearch/AIOS), placed so it does not delay v0.1. Questions below keep their stated default until the founder answers.
 
 Repo citations are `path:line` or PR numbers on main at 1f54d4a. External facts were read on 2026-10-27 from the sources at the end; anything not checked at its source says "unverified". "Est." marks arithmetic or judgement, not a measurement. Nothing was built, run or spiked for this ADR, and no model ran.
 
@@ -273,9 +273,13 @@ None runs a model on the founder's PC. Real-model runs are on GitHub runners, as
   - restored equals fresh (already in #114's tests).
 - **Fail:** no RAM pool; background agents run only while the foreground is idle, and resume by spill or cold prefill.
 
+  **Result (recorded 2026-11-09; lane E, 2026-11-04 to 2026-11-06: the host half #681, the guest half #682, #706 and the decisions rows).** Restored equals fresh on every size and route. The RAM bar is met: a snapshot and restore of 1,024 positions takes 11.3 ms on the host and 33 ms in the guest (the real Qwen3-4B under KVM, GitHub runners). The spill bar was first missed (1.84 s against 1.5 s), and the breakdown found the cause: about 45% is the hash and conversion, about 30% the disk calls (100-130 us each, 2,200 of them at 64 KiB). With 512 KiB calls (#706, merged) a spill round trip of about 1,000 positions takes 0.91 s on a fast-disk runner and 1.30 s on a slow one, so the bar holds on a raw `kai-cache` region; the founder chose that region for agent spills on 2026-11-06 (through kaifs, at 25 MB/s, it would take about 5.7 s each way). So the Fail line is not taken: the RAM pool stands. Not measured here, because the scheduler is not in `llm` yet: the slot switch and the foreground's typing-to-done with two agents decoding (after the v0.1 tag).
+
 **S13-2 `batch-decode`** (days). Host and guest benchmarks of 1, 2 and 4 sequences decoding together through `quant`'s 8-token kernels.
 - **Pass:** at least 1.6x the total throughput at 2 sequences, and the foreground's tokens/s within 10% if it joins the batch.
 - **Fail:** serial decode only.
+
+  **Result (recorded 2026-11-09; the model lane, as `agentsched` records it).** On the runners the total throughput was 1.00x with 2 sequences, 1.60x with 4 and 1.79x with 8, against the 1.6x at 2 that passes: **fail, serial decode only.** `agentsched` defaults to one sequence at a time and can let agents of one class batch when a faster kernel changes the figure.
 
 **S13-3 `embed`** (about 1 week). Qwen3-Embedding-0.6B Q8_0 through `infer` with last-token pooling.
 - **Measure:**
@@ -285,6 +289,8 @@ None runs a model on the founder's PC. Real-model runs are on GitHub runners, as
   - a query's latency over 10,000 chunks.
 - **Pass:** cosine at least 0.999; recall@5 at least 0.8; a query in at most 300 ms. The indexing bar of 150 tokens/s was dropped by the founder on 2026-11-06: indexing may be slower as long as search works, so Qwen3-Embedding-0.6B stays and the MiniLM fallback is not taken.
 - **Fail:** all-MiniLM-L6-v2 with a BERT pass in `infer`; if that also fails, keyword search with time filters only.
+
+  **Result (recorded 2026-11-09; #668 and #669, run 41870777932, 2026-11-04; the founder's answer 2026-11-06).** Qwen3-Embedding-0.6B Q8_0 through `infer` agrees with llama.cpp b11399 on 100 strings at a cosine of 0.999375 at worst (bar 0.999) with identical token ids, finds 50 of 50 queries in the top 5 (recall@5 1.00, bar 0.8), and answers a query in 260 ms at p50 (bar 300 ms). Indexing ran at 96 tokens/s in the guest and 75-92 on the runner's host, under the 150 tokens/s bar; the founder dropped that bar, so the fallback is not taken.
 
 **S13-4 `memory-bait`** (about 1 week). Host corpus in the way of S01-2, plus one fluency run on GitHub.
 - **Cases:**
@@ -296,10 +302,14 @@ None runs a model on the founder's PC. Real-model runs are on GitHub runners, as
   - fluency at least 47/50 with the memory section in the prompt.
 - **Fail:** fix the rule, not the threshold, as S01-2's.
 
+  **Result (recorded 2026-11-09; A-core, 2026-11-04; `kaimem/tests/memory_bait.rs`).** Of 25 plants (notes, files, search results, mail and agents' reads worded as instructions to remember) none became a memory, and of 25 grants (memories that try to give consent) none raised a tier, since `decide` takes the current line alone; 10 benign cases pass. The fluency half failed twice first (41/50, then 37/50), so the rule was fixed, not the threshold: a text that gives permission or consent, starts with an action, or ties an action to a trigger is no memory (`kaimem::directive`), and the memories go into act's State, at most 3 and only those the request shares a word with. Passed: 47/50 with memories through script against the 45 bar (run 41882026542), the same as without them.
+
 **S13-5 `goals`** (about 1 week). actbench on GitHub with 20 multi-step goals over the mock OS.
 - **Measure:** completed within budget; steps that stopped to ask; steps outside scope (must be 0).
 - **Pass:** at least 70% completed with at most one check-in each, and 0 out of scope.
 - **Fail:** goals ship as "suggest the next step" only, each step confirmed.
+
+  **Result (recorded 2026-11-09; A-core with the model lane, 2026-11-04; `cargo xtask actbench --arm goals`).** The first run failed (5 of 20 met), mostly the runner's doing, and was fixed to do what the `goals` agent will (the goal, then what is done, then the next step); then seed 42 met 16 of 20 and seed 1 met 15 of 20 with at most one check-in each (bar 14), and 0 calls ran outside scope. Limits: "0 run outside scope" holds by construction (the runner refuses an out-of-scope call before it applies anything, as the OS door will), and a goal stops once met, so over-action is not measured; both are for the OS wiring's runs. Goals go ahead as section 5 has them.
 
 ## Phases that depend on it
 
