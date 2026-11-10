@@ -204,12 +204,12 @@ The P4 plan's sections 3.5 and 11 have the v0.1 checklist and each case.
   - P-F in consent.
 - **On main:** `net-dest`, `net-stream`, `entropy-boots`, `https-mock` and `net-pf`, under KVM and TCG.
 - **Not met yet:**
-  - `net-download`, the exit line above;
+  - `net-download`, the exit line above (#770);
   - `pkg-online` (#752) and `update-online` (#754);
   - `model-download` (task 9) and `net-grant` (task 13);
   - task 12's app case.
 
-  Task 14 waits for the v0.1 tag.
+  Task 14 is deferred to after the v0.1 tag, and P5 closes without it.
 
 The P5 plan's section 11 has each case.
 
