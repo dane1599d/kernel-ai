@@ -47,6 +47,11 @@ use user::{println, sys};
 /// How long one request may take, redirects included: a full handshake on an
 /// emulated CPU takes seconds.
 const REQUEST_NS: u64 = 120_000_000_000;
+/// How many times a network stop is tried again, and how long to wait when the
+/// server did not say (at most [`MAX_WAIT_S`] when it did).
+const MAX_RETRIES: u32 = 3;
+const RETRY_S: u32 = 2;
+const MAX_WAIT_S: u32 = 30;
 /// The record of the last chunk checked, in `/system/updates`.
 const MARK_FILE: &str = "online.mark";
 /// A mark is the image's SHA-256 and the number of chunks done.
@@ -339,16 +344,36 @@ pub fn update(handle: Handle, restart_now: bool, args: &str) -> Result<Staged, S
     // checked out: a long download can span a newer release.
     let mut recheck = || plan::refresh(&mut online(&hosts), &mut cache, now);
     let started = sys::time_ns();
-    let staged = stage::stage(
-        &job,
-        &chunks,
-        &mut nv,
-        &mut lever,
-        &mut partial,
-        &mut recheck,
-        &mut |range, sink| over.range(&url, range, sink),
-    )
-    .map_err(|stop| stopped(&stop))?;
+    // A stop that is the network's (a cut, a timeout, a busy server) is not the end:
+    // the checked chunks are kept, and another call resumes at the first unchecked.
+    let mut retries = 0;
+    let staged = loop {
+        let stopped_at = stage::stage(
+            &job,
+            &chunks,
+            &mut nv,
+            &mut lever,
+            &mut partial,
+            &mut recheck,
+            &mut |range, sink| over.range(&url, range, sink),
+        );
+        match stopped_at {
+            Ok(staged) => break staged,
+            Err(stop @ Stop::Retry { .. }) if retries < MAX_RETRIES => {
+                retries += 1;
+                let wait_s = match &stop {
+                    Stop::Retry { after_s, .. } => after_s.unwrap_or(RETRY_S).min(MAX_WAIT_S),
+                    _ => RETRY_S,
+                };
+                println!(
+                    "updated: {}; trying again in {wait_s} s ({retries} of {MAX_RETRIES})",
+                    stop.why()
+                );
+                sys::sleep_ms(u64::from(wait_s) * 1_000);
+            }
+            Err(stop) => return Err(stopped(&stop)),
+        }
+    };
     let elapsed_ns = sys::time_ns().saturating_sub(started);
     println!(
         "updated: wrote release {} into {:?} over TLS and checked it: {} chunks kept, {} fetched",

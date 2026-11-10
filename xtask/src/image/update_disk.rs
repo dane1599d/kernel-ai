@@ -29,6 +29,59 @@ pub const TARGET: &str = "slot.img";
 pub const CHUNKS_TARGET: &str = "slot.img.chunks";
 const DAY: u64 = 86_400;
 
+/// The versions and the lifetime of an online repository's timestamp and
+/// snapshot: what makes a repository newer, older or lapsed than the one a
+/// device trusts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stamp {
+    /// The timestamp's version.
+    pub timestamp: u64,
+    /// The snapshot's version, which the timestamp names.
+    pub snapshot: u64,
+    /// Days from now until the timestamp expires; negative is expired.
+    pub days: i64,
+}
+
+impl Default for Stamp {
+    /// Version 1 of both, valid for a week.
+    fn default() -> Self {
+        Self {
+            timestamp: 1,
+            snapshot: 1,
+            days: 7,
+        }
+    }
+}
+
+impl Stamp {
+    /// The timestamp lapsed a day ago.
+    pub fn expired() -> Self {
+        Self {
+            days: -1,
+            ..Self::default()
+        }
+    }
+
+    /// Version 2 of both: newer than [`Stamp::default`], which a device that
+    /// trusted this one then refuses to go back from.
+    pub fn newer() -> Self {
+        Self {
+            timestamp: 2,
+            snapshot: 2,
+            ..Self::default()
+        }
+    }
+
+    /// A timestamp at version 3 naming snapshot 1: older than [`Stamp::newer`]'s.
+    pub fn rolled_back() -> Self {
+        Self {
+            timestamp: 3,
+            snapshot: 1,
+            ..Self::default()
+        }
+    }
+}
+
 /// This run's throwaway test root: four keys and the time the metadata counts
 /// its expiry from, made once so every boot of a chained case shares them.
 pub struct TestRoot {
@@ -86,20 +139,20 @@ impl TestRoot {
     /// (version 1): `metadata/1.root.json`, `1.targets.json`, `1.snapshot.json`
     /// and `timestamp.json`, signed by this root.
     fn metadata(&self, targets: &serde_json::Value) -> Result<Vec<(String, Vec<u8>)>, String> {
-        self.metadata_with(targets, 7)
+        self.metadata_with(targets, Stamp::default())
     }
 
-    /// [`Self::metadata`] with the timestamp expiring `timestamp_days` from now: a
-    /// negative number is metadata that has expired.
+    /// [`Self::metadata`] as `stamp` says: the versions of the timestamp and the
+    /// snapshot, and when the timestamp expires.
     fn metadata_with(
         &self,
         targets: &serde_json::Value,
-        timestamp_days: i64,
+        stamp: Stamp,
     ) -> Result<Vec<(String, Vec<u8>)>, String> {
         let snapshot = json!({
             "_type": "snapshot",
             "spec_version": SPEC_VERSION,
-            "version": 1,
+            "version": stamp.snapshot,
             "expires": self.expires(30),
             "meta": { "targets.json": { "version": 1 } },
         });
@@ -107,11 +160,11 @@ impl TestRoot {
         let timestamp = json!({
             "_type": "timestamp",
             "spec_version": SPEC_VERSION,
-            "version": 1,
-            "expires": self.expires(timestamp_days),
+            "version": stamp.timestamp,
+            "expires": self.expires(stamp.days),
             "meta": {
                 "snapshot.json": {
-                    "version": 1,
+                    "version": stamp.snapshot,
                     "length": snapshot.len(),
                     "hashes": { "sha256": crate::sha256_hex(&snapshot) },
                 },
@@ -123,7 +176,10 @@ impl TestRoot {
                 "metadata/1.targets.json".into(),
                 tuf::envelope(targets, &self.targets)?,
             ),
-            ("metadata/1.snapshot.json".into(), snapshot),
+            (
+                format!("metadata/{}.snapshot.json", stamp.snapshot),
+                snapshot,
+            ),
             (
                 "metadata/timestamp.json".into(),
                 tuf::envelope(&timestamp, &self.timestamp)?,
@@ -150,29 +206,7 @@ impl TestRoot {
         list: &[u8],
         release_seq: u32,
         tag: &str,
-    ) -> Result<Vec<(String, Vec<u8>)>, String> {
-        self.repository_with(image, list, release_seq, tag, 7)
-    }
-
-    /// [`Self::repository`] with its timestamp already expired (a day ago): the
-    /// refresh refuses it by name.
-    pub fn repository_expired(
-        &self,
-        image: &[u8],
-        list: &[u8],
-        release_seq: u32,
-        tag: &str,
-    ) -> Result<Vec<(String, Vec<u8>)>, String> {
-        self.repository_with(image, list, release_seq, tag, -1)
-    }
-
-    fn repository_with(
-        &self,
-        image: &[u8],
-        list: &[u8],
-        release_seq: u32,
-        tag: &str,
-        timestamp_days: i64,
+        stamp: Stamp,
     ) -> Result<Vec<(String, Vec<u8>)>, String> {
         let targets = json!({
             "_type": "targets",
@@ -191,7 +225,7 @@ impl TestRoot {
                 },
             },
         });
-        self.metadata_with(&targets, timestamp_days)
+        self.metadata_with(&targets, stamp)
     }
 
     /// The update disk carrying `image` as release `release_seq`. With

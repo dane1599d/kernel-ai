@@ -6,7 +6,7 @@
 //! redirect. The metadata is signed by the run's test root, the same one the
 //! update disk's is (`update_disk.rs`), so the root a slot carries checks both.
 
-use super::update_disk::{CHUNKS_TARGET, TARGET, test_root};
+use super::update_disk::{CHUNKS_TARGET, Stamp, TARGET, test_root};
 use crate::mock_https::Content;
 use kainet::chunks::{CHUNK, Chunks};
 
@@ -20,6 +20,30 @@ pub enum Fault {
     FlippedByte,
     /// The timestamp expired a day ago.
     Expired,
+    /// Timestamp and snapshot at version 2: newer than [`Fault::None`]'s, which a
+    /// device that trusted them then refuses to go back from.
+    Newer,
+    /// A timestamp at version 3 naming snapshot 1, older than [`Fault::Newer`]'s.
+    RolledBack,
+    /// The connection is cut once, inside chunk 3 of the image ([`CUT_AT`]): the
+    /// three chunks before it are written and recorded, and the next run resumes.
+    CutOnce,
+}
+
+/// Where [`Fault::CutOnce`] cuts: a page into chunk 3, so chunks 0 to 2 were
+/// whole.
+pub const CUT_AT: usize = 3 * CHUNK as usize + 4096;
+
+impl Fault {
+    /// The versions and lifetime of the timestamp and snapshot this fault serves.
+    fn stamp(self) -> Stamp {
+        match self {
+            Fault::Expired => Stamp::expired(),
+            Fault::Newer => Stamp::newer(),
+            Fault::RolledBack => Stamp::rolled_back(),
+            _ => Stamp::default(),
+        }
+    }
 }
 
 /// The GitHub Release a release's assets are under.
@@ -27,15 +51,22 @@ pub fn tag(release_seq: u32) -> String {
     format!("os-{release_seq}")
 }
 
+/// The path of `image` on the release-assets host, where a fault on the file is
+/// set (`mock.set_fault`).
+pub fn image_path(image: &[u8], release_seq: u32) -> String {
+    format!(
+        "/assets/{}/{}.{TARGET}",
+        tag(release_seq),
+        crate::sha256_hex(image)
+    )
+}
+
 /// What the mock serves for `image` as release `release_seq`, with `fault`.
 pub fn content(image: &[u8], release_seq: u32, fault: Fault) -> Result<Content, String> {
     let root = test_root()?;
     let list = Chunks::of(image, CHUNK).render().into_bytes();
     let tag = tag(release_seq);
-    let files = match fault {
-        Fault::Expired => root.repository_expired(image, &list, release_seq, &tag)?,
-        _ => root.repository(image, &list, release_seq, &tag)?,
-    };
+    let files = root.repository(image, &list, release_seq, &tag, fault.stamp())?;
     let mut served = image.to_vec();
     if fault == Fault::FlippedByte {
         let middle = served.len() / 2;
@@ -121,6 +152,51 @@ mod tests {
         assert_eq!(
             served(&good, REPO, "/metadata/1.root.json"),
             served(&old, REPO, "/metadata/1.root.json")
+        );
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+    use crate::mock_https::REPO;
+
+    fn version(content: &Content, path: &str) -> u64 {
+        let bytes = content.get(REPO, path).expect(path);
+        let json: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        json["signed"]["version"].as_u64().unwrap()
+    }
+
+    fn image() -> Vec<u8> {
+        vec![7; 100]
+    }
+
+    #[test]
+    fn newer_and_rolled_back_metadata_name_the_versions_a_device_that_trusted_newer_refuses() {
+        let published = content(&image(), 2, Fault::None).unwrap();
+        assert_eq!(version(&published, "/metadata/timestamp.json"), 1);
+        assert_eq!(version(&published, "/metadata/1.snapshot.json"), 1);
+        let newer = content(&image(), 2, Fault::Newer).unwrap();
+        assert_eq!(version(&newer, "/metadata/timestamp.json"), 2);
+        assert_eq!(version(&newer, "/metadata/2.snapshot.json"), 2);
+        assert!(newer.get(REPO, "/metadata/1.snapshot.json").is_none());
+        // Version 3 of the timestamp, naming the snapshot at version 1: older than
+        // the 2 a device that took `Newer` holds.
+        let old = content(&image(), 2, Fault::RolledBack).unwrap();
+        assert_eq!(version(&old, "/metadata/timestamp.json"), 3);
+        assert_eq!(version(&old, "/metadata/1.snapshot.json"), 1);
+    }
+
+    #[test]
+    fn the_cut_lies_inside_chunk_three_and_the_image_path_is_where_the_mock_serves_it() {
+        assert_eq!(CUT_AT / CHUNK as usize, 3);
+        assert_eq!(CUT_AT % CHUNK as usize, 4096);
+        let image = image();
+        let content = content(&image, 2, Fault::CutOnce).unwrap();
+        let path = image_path(&image, 2);
+        assert_eq!(
+            content.get(crate::mock_https::ASSETS, &path),
+            Some(&image[..])
         );
     }
 }

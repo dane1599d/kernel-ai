@@ -267,6 +267,8 @@ fn execute(options: &Options) -> Result<(), String> {
     let mut failures = Vec::new();
     // Each kind of package mirror a case names, started once (P4 task 2).
     let mut mirrors: HashMap<pkgrepo::mirrors::MirrorKind, u16> = HashMap::new();
+    // The slot image of each online release a case serves, built once for the run.
+    let mut release_images: HashMap<u32, Vec<u8>> = HashMap::new();
     let cases = if options.task == Task::Soak {
         cases::SOAK_CASES.iter().collect()
     } else {
@@ -405,15 +407,30 @@ fn execute(options: &Options) -> Result<(), String> {
                 )?),
                 None => None,
             };
+            let mut cut_image = None;
             if let Some(fault) = case.online_release {
                 // This build as the next release, which the HTTPS mock serves as
                 // GitHub serves the update repository (P5 task 10).
                 let content = https_content
                     .as_mut()
                     .ok_or_else(|| format!("{}: online_release needs https", case.name))?;
-                let (image, release) = update_image(&root, &target_dir, &kernel, &modules, &efi)?;
+                // One image for every boot of a run: a resumed download must find the
+                // bytes the interrupted one was for, and the slot disk of each boot is
+                // rebuilt from its own bundle anyway.
+                let release = SLOT_RELEASE_SEQ + 1;
+                let image = match release_images.get(&release) {
+                    Some(image) => image.clone(),
+                    None => {
+                        let (image, _) = update_image(&root, &target_dir, &kernel, &modules, &efi)?;
+                        release_images.insert(release, image.clone());
+                        image
+                    }
+                };
                 let release_content = image::update_online::content(&image, release, fault)?;
                 *content = std::mem::take(content).merged(release_content);
+                if fault == image::update_online::Fault::CutOnce {
+                    cut_image = Some(image::update_online::image_path(&image, release));
+                }
                 println!(
                     "xtask: online release {release}, {} MiB, on the HTTPS mock ({fault:?})",
                     image.len() >> 20
@@ -424,6 +441,11 @@ fn execute(options: &Options) -> Result<(), String> {
                     let mock = mock_https::start(content)?;
                     for (host, path, fault) in https.faults {
                         mock.set_fault(host, path, fault.clone());
+                    }
+                    // The download of an online release is cut once, mid-image.
+                    if let Some(path) = &cut_image {
+                        let at = image::update_online::CUT_AT;
+                        mock.set_fault(mock_https::ASSETS, path, mock_https::Fault::CutOnce(at));
                     }
                     Some(mock)
                 }

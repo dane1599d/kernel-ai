@@ -149,6 +149,14 @@ pub(super) const CASES: &[TestCase] = &[
         then: Some(&A_REFUSES_EXPIRED),
         ..slot_boot("update-online-expired", "test=slot panic=reset", INSTALL)
     },
+    TestCase {
+        then: Some(&A_NEWER_METADATA),
+        ..slot_boot("update-online-rollback", "test=slot panic=reset", INSTALL)
+    },
+    TestCase {
+        then: Some(&A_RESUMES),
+        ..slot_boot("update-online-resume", "test=slot panic=reset", INSTALL)
+    },
 ];
 
 // ---- updates over the network (P5 task 10)
@@ -269,3 +277,55 @@ const A_REFUSES_EXPIRED: TestCase = online_boot(
     ],
     Fault::Expired,
 );
+
+/// `update-online-rollback` boot 3: B boots release 2, and the repository now
+/// serves a timestamp at a newer version that names an older snapshot than the
+/// one boot 2 trusted: refused by name, from the metadata `/system/trust` kept.
+const B_ROLLED_BACK: TestCase = online_boot(
+    "update-online-rollback (3: kai-b is offered older metadata)",
+    &[
+        "slots: booted kai-b (record read)",
+        "slots: up in kai-b (trial, 2 tries left)",
+        "updated: reconciled: OnTrial",
+        "updated: the trusted root is /system/trust's",
+        "updated: FAIL refused: the repository was refused: bad version: timestamp names an older snapshot",
+        "updated: restarting into the running slot",
+    ],
+    Fault::RolledBack,
+);
+
+/// `update-online-rollback` boot 2: the update is taken from metadata at version
+/// 2 of the timestamp and the snapshot, which `/system/trust` then keeps.
+const A_NEWER_METADATA: TestCase = TestCase {
+    then: Some(&B_ROLLED_BACK),
+    ..online_boot(
+        "update-online-rollback (2: updated takes metadata at version 2)",
+        &[
+            "updated: the online repository verifies: slot.img is release 2, ",
+            "updated: wrote release 2 into B over TLS and checked it: 0 chunks kept, ",
+            "updated: the verified metadata is in /system/trust",
+            "update: restarting into kai-b",
+        ],
+        Fault::Newer,
+    )
+};
+
+/// `update-online-resume` boot 2: the connection is cut once inside chunk 3, so
+/// chunks 0 to 2 were written and recorded; `updated` tries again, and the
+/// second call keeps those three after reading them back, and fetches the rest.
+/// (Across a reboot the slot disk of this harness is rebuilt from the boot's
+/// bundle, so a kept chunk could not read back; `update_fetch_tests` resumes
+/// after a reboot on the host, from the slot, the mark and the trust.)
+const A_RESUMES: TestCase = TestCase {
+    then: Some(&B_FROM_NET),
+    ..online_boot(
+        "update-online-resume (2: updated resumes after a cut)",
+        &[
+            "updated: the online repository verifies: slot.img is release 2, ",
+            "; it resumes where it was; trying again in 2 s (1 of 3)",
+            "updated: wrote release 2 into B over TLS and checked it: 3 chunks kept, ",
+            "update: restarting into kai-b",
+        ],
+        Fault::CutOnce,
+    )
+};

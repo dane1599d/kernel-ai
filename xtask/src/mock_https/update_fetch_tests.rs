@@ -11,7 +11,7 @@
 //! metadata that was changed after it was signed.
 
 use super::*;
-use crate::image::update_disk::test_root;
+use crate::image::update_disk::{Stamp, test_root};
 use bootslot::{Nv, Reason, Record, Slot, SlotState};
 use kainet::chunks::{CHUNK, Chunks, MAX_LIST};
 use kainet::client::{self, Wall};
@@ -98,7 +98,7 @@ impl Published {
         let list = Chunks::of(listed, CHUNK).render();
         let files = test_root()
             .unwrap()
-            .repository(&image, list.as_bytes(), seq, TAG)
+            .repository(&image, list.as_bytes(), seq, TAG, Stamp::default())
             .unwrap();
         Self { image, list, files }
     }
