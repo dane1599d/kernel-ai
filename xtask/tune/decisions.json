@@ -1,23 +1,25 @@
 {
   "cut_off": false,
-  "decision": "classes/firm:build-1,build-2,build-3,build-4",
+  "decision": "classes/firm:build-1,build-2,build-3,build-4,build-5,build-6,indexer,hog-1",
   "labelable": [
     "indexer",
+    "build-6",
     "build-2",
-    "build-1",
     "build-4",
+    "build-1",
     "build-3",
-    "hog-1",
-    "hog-2"
+    "build-5",
+    "hog-2",
+    "hog-1"
   ],
-  "mix": "A",
+  "mix": "C",
   "model": "qwen3-4b-2507",
   "model_sha256": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
-  "prompt_hash": "afb3fcb96e37d123",
-  "raw_output": "{\"reason\":\"The editor's latency is high due to background work competing for CPU.\",\"policy\":\"classes\",\"preset\":\"firm\",\"background\":[\"build-1\",\"build-2\",\"build-3\",\"build-4\"]}",
+  "prompt_hash": "204b69ccfbdc5a46",
+  "raw_output": "{\"reason\":\"The editor's latency is high due to background work competing for CPU.\",\"policy\":\"classes\",\"preset\":\"firm\",\"background\":[\"build-1\",\"build-2\",\"build-3\",\"build-4\",\"build-5\",\"build-6\",\"indexer\",\"hog-1\"]}",
   "seed": 0,
   "shift": 3,
-  "summary": "Goal: keep \"editor\" responsive; background work must progress.\nNow: interactive; trials: none; 1 CPU, 100% busy.\nname cpu% wakes/s burst-ms label\n\"editor\" 1.8 25 0.73 target\n\"indexer\" 18 270 0.67 normal\n\"build-2\" 15 39 3.8 normal\n\"build-1\" 14 36 3.8 normal\n\"build-4\" 13 35 3.7 normal\n\"build-3\" 13 35 3.8 normal\n\"hog-1\" 10 0 320 normal\n\"hog-2\" 9.9 0 310 normal\n\"shell\" 4.1 6 6.4 protected\n\"llm\" 0 0 0 protected\nFlags: \"editor\" waits 4.7 ms at p99 (p50 0, max 4.7).",
-  "summary_sha256": "3a7089462524243382ad8d635a2cee195856407dc12eb693040d8dad50a79303",
+  "summary": "Goal: keep \"editor\" responsive; background work must progress.\nNow: interactive; trials: none; 1 CPU, 100% busy.\nname cpu% wakes/s burst-ms label\n\"editor\" 2.9 25 1.2 target\n\"indexer\" 27 250 1.1 normal\n\"build-6\" 9.1 20 4.4 normal\n\"build-2\" 9 21 4.2 normal\n\"build-4\" 9 20 4.4 normal\n\"build-1\" 8.7 19 4.4 normal\n\"build-3\" 8.6 20 4.3 normal\n\"build-5\" 8.3 19 4.3 normal\n\"hog-2\" 6.7 0 210 normal\n\"hog-1\" 6.6 0 210 normal\n\"shell\" 3.8 5 7.6 protected\n\"llm\" 0 0 0 protected\nFlags: \"editor\" waits 4 ms at p99 (p50 0, max 4).",
+  "summary_sha256": "4b25212f0bf0ee4b0c37e77c792bd2f37de1babc76e6bccd60cc8c60907c8cfa",
   "target": "editor"
 }
