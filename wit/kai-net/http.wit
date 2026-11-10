@@ -1,0 +1,100 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The Kernel AI contributors
+
+/// HTTPS for apps (plan p5-networking, tasks 12 and 13).
+///
+/// Like `kai:models`, this is a granted interface, not part of `kai:app`. An
+/// app holds it only when its plan line names the hosts its package may reach
+/// (`netdest=`, its ceiling); without one the import does not link and the
+/// version does not stage. Within the ceiling each host is the person's to
+/// allow, once, by name: an app's first request to a host waits while the
+/// shell asks on the trusted path's card, naming the app and the host, and
+/// "Allow" keeps a per-host grant (`kai-grants 1`) that Settings lists and
+/// revokes. A host the ceiling leaves out is never asked about.
+///
+/// The app never sees a socket or a name lookup. The `fetch` service makes
+/// each request on a handle the kernel narrowed to exactly the granted host,
+/// so the kernel enforces where it goes, and TLS checks the server's
+/// certificate for that host. A redirect to another host is a request of its
+/// own: it is asked about by its own name, never covered by the first host's
+/// grant. At most five redirects are followed in all.
+///
+/// `fetch` only queues. The host takes the queue after the call, asks, makes
+/// the request, and tells the app the answer in a later call, so a call never
+/// waits on the network or on the person.
+///
+/// It takes no request body and no request headers yet: GET and HEAD, with a
+/// byte range. A status other than 2xx is a `response`, not an `error`.
+package kai:net@0.1.0;
+
+interface http {
+    enum method {
+        get,
+        head,
+    }
+
+    /// Bytes `first` to `last` inclusive, or to the end.
+    record byte-range {
+        first: u64,
+        last: option<u64>,
+    }
+
+    record request {
+        /// `https://<host>[:443]<path>`: a DNS name, at most 2 KiB. Nothing
+        /// else is fetched.
+        url: string,
+        method: method,
+        range: option<byte-range>,
+    }
+
+    /// Queues `req` and returns its ticket. Refused (the call traps) when 4
+    /// requests are waiting already.
+    fetch: func(req: request) -> u32;
+}
+
+/// What the network answered.
+interface responses {
+    record response {
+        status: u16,
+        /// The URL that answered, after at most five redirects.
+        url: string,
+        /// The server's `Content-Type`, when it is at most 128 printable
+        /// ASCII bytes.
+        content-type: option<string>,
+        /// When to come back, in seconds, as a 429 or a 503 says.
+        retry-after: option<u32>,
+        /// At most 64 KiB; a longer body is `too-large`. Large downloads are
+        /// the system's (Models, packages), checked against signed lists.
+        body: list<u8>,
+    }
+
+    /// Each string here is at most 200 printable ASCII bytes.
+    variant error {
+        /// The app may not reach the host (named): its package leaves it out,
+        /// or the person did not allow it. The URL's host, or a redirect's.
+        refused(string),
+        /// The URL is not one `fetch` takes.
+        bad-url(string),
+        /// The connection or its certificate was refused, and why.
+        tls(string),
+        /// The server's answer was not HTTP/1.1 as `fetch` takes it, or it
+        /// redirected more than five times.
+        http(string),
+        too-large,
+        /// The server, or the person's answer, took too long.
+        timeout,
+        /// The answer was cut short.
+        truncated,
+    }
+
+    /// The answer to the request with this ticket. A ticket is not reused
+    /// while this instance runs; a new instance starts again from 0.
+    on-response: func(ticket: u32, outcome: result<response, error>);
+}
+
+/// An app that fetches from the hosts it is allowed: the two halves of the
+/// grant.
+world http-client {
+    import http;
+    export responses;
+}

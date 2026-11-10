@@ -152,7 +152,7 @@ fn a_body_over_the_cap_and_a_bad_certificate_are_named() {
 /// The WIT draft is valid WIT, with the world the service will serve.
 #[test]
 fn the_kai_net_draft_parses() {
-    let path = crate::workspace_root().join("kainet/wit/kai-net/http.wit");
+    let path = crate::workspace_root().join("wit/kai-net/http.wit");
     let mut resolve = wit_parser::Resolve::default();
     let package = resolve.push_file(&path).unwrap();
     let name = &resolve.packages[package].name;
