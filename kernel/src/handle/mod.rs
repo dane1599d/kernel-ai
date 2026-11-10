@@ -377,6 +377,23 @@ pub fn need(slot: usize, bits: u64) -> Result<(), kabi::Error> {
     Ok(())
 }
 
+/// What a call on one fixed object needs: a live handle to that object itself,
+/// of `kind` with `rights`. Permission otherwise, whatever else of the kind
+/// `slot` holds.
+pub fn need_object(
+    slot: usize,
+    kind: Kind,
+    rights: Rights,
+    object: u64,
+) -> Result<(), kabi::Error> {
+    let guard = HANDLES[slot].lock();
+    let table = &guard.as_ref().ok_or(kabi::Error::Permission)?.table;
+    match table.holds_object(kind, rights, object, &grant::Kernel) {
+        true => Ok(()),
+        false => Err(kabi::Error::Permission),
+    }
+}
+
 /// Takes `handles` out of `slot`'s table to move them to a process with
 /// capability bits `to_caps`: each must be open (BadHandle), carry TRANSFER and be
 /// of a kind the receiver may hold (Permission), and appear once (Invalid). A

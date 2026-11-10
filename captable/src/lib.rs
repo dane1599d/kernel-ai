@@ -216,6 +216,18 @@ impl Table {
         self.find(kind, rights, live).is_some()
     }
 
+    /// As [`Table::holds`], for one object of `kind` only: a handle to another
+    /// object of the same kind does not count.
+    pub fn holds_object(&self, kind: Kind, rights: Rights, object: u64, live: &dyn Live) -> bool {
+        self.iter().any(|(_, entry)| {
+            entry.kind == kind
+                && entry.object == object
+                && entry.rights.contains(rights)
+                && !entry.flags.contains(Flags::ONCE)
+                && entry.grant.is_none_or(|grant| live.alive(grant))
+        })
+    }
+
     /// A second handle to `handle`'s object with `rights`, a subset of its own,
     /// under the same grant node.
     pub fn dup(
