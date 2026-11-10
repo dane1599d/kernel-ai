@@ -943,10 +943,9 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::app_settings_tests::APPS);
     }
-    // `fetch`, then the app whose routes are `desktop` and `fetch`.
+    // The app whose routes are `desktop` and `fetch`: `with_updated` planned
+    // `fetch` before the shell already.
     if test == SelfTest::NetGrant {
-        plan.push('\n');
-        plan.push_str(kabi::plan::FETCH);
         plan.push('\n');
         plan.push_str(crate::net_grant_tests::APPS);
     }
