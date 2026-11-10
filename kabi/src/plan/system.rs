@@ -168,6 +168,32 @@ mod tests {
         assert_eq!(files_caps, files);
     }
 
+    /// No line of the plan the OS ships names a host in the `.test` zone (RFC
+    /// 6761), as a destination or anywhere else: `kai.test` is the boot cases'
+    /// DNS and HTTPS mock, which a shipping system must never reach (P5 close,
+    /// task 15). #757 put `kai.test` in the shell's ceiling for the boot cases;
+    /// this fails until it moves to the test plans.
+    #[test]
+    fn no_shipping_plan_line_names_a_test_host() {
+        for files in [false, true] {
+            for line in plan("llm", files).lines() {
+                let hosts = line
+                    .split_whitespace()
+                    .filter_map(|word| word.strip_prefix("netdest="))
+                    .flat_map(|spec| spec.split(','))
+                    .filter_map(|field| field.strip_prefix("hosts:"))
+                    .flat_map(|hosts| hosts.split('+'));
+                for host in hosts {
+                    assert!(
+                        host != "test" && !host.ends_with(".test"),
+                        "{host} in {line}"
+                    );
+                }
+                assert!(!line.contains("kai.test"), "{line}");
+            }
+        }
+    }
+
     /// With `kai-data` the system's shell has the route to `pkg` that the editor's
     /// builds need, and without it, which plans no `pkg`, none.
     #[test]

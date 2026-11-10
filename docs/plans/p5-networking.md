@@ -299,10 +299,24 @@ The tasks' own exit checks:
 | 2, streams | `net-stream` | On main |
 | 3, random numbers | `entropy-boots` (two boots differ) | On main |
 | 7, the HTTPS mock | `https-mock`; every P5 case uses its `TestCase::https` | On main (#753) |
-| 12, `kai:net` | `fetch-service` for the service; an app fetching from its host and refused another | `fetch-service` is in the merge queue (#755). The app case comes with C's comphost import (task 12's other half) |
+| 12, `kai:net` | `fetch-service` for the service; an app fetching from its host and refused another | `fetch-service` is on main (#755). The app case comes with C's comphost import (task 12's other half) |
 | 14, agents' budgets | an agent over its byte budget is refused | Deferred: after the v0.1 tag, with ADR 0013's other OS pieces. P5 closes without it |
 
 **Real-model gates.** Task 11's first part (#751) passed fluency at 48/50 (at least 47), actbench's shipped arm at main's figures, the bait probes at 0 false runs, and the app gate at 19/20. Its later parts run the same gates when they change model input.
+
+**Section 5's spikes and their bars:**
+
+| Spike | Status | Where, and what it means for the close |
+|---|---|---|
+| P5-S1 `tls-nostd` | Run, passed | rustls 0.23.46 runs without std on our RustCrypto provider (#363, 2026-10-28), and again on `kainet` itself in ring 3 (spike #654, 2026-11-04). Both have decisions rows |
+| P5-S2 `net-throughput` | Run, passed under KVM | It missed its bar at first, at 18.2 MB/s. It has passed since K's virtio-net driver: about 34 MB/s at a 20 ms round trip (run 41962939272). Both have decisions rows |
+| S11-3 `model-mirror` | Not run: due before v0.2 | No result row on main, and no lane holds it. Task 9 (#772) downloads from the pinned Hugging Face revision, which S11-3's fail rule keeps as the source (ADR 0000), so P5 closes without it. The mirror is question 7's privacy step for v0.2 |
+| S10-2 groups and swap | Not run: due before v0.2 | No result row on main. It is the model lane's. It decides whether the index level ships in v0.2, not anything P5 closes on |
+
+**Checks this close adds:**
+- `kabi::plan::system`'s `no_shipping_plan_line_names_a_test_host`: no line of the shipping plan names a `.test` host, `kai.test` included. It fails until the mock zone leaves the shell's ceiling (#757 put it there; A-core's #767 takes it out).
+- `kainet/tests/openssl.rs` now fails on CI when openssl is missing, and warns elsewhere (#777).
+- `kainet::wire` has the fuzz target and hostile tests plan section 1 asks for (#777).
 
 **ADR 0002 against what shipped** (its P5 row: open-world rows, the host table, `Hold`, P-F, quarantined reads, `:resolve` and `:ping` as read rows, online `pkg_install`):
 - **Shipped as written:**
@@ -310,7 +324,7 @@ The tasks' own exit checks:
   - the shell's host table (`shellcore/src/sitewords.rs`, #751);
   - `net_fetch` and `net_lookup` as open-world read rows. `:resolve` and `:ping` are now one row, `net_lookup`;
   - `fetch` on each call's exact-host `NetDest` (#757 with #755).
-- **Text to change at close:** D3 says a host is grounded if "the user said yes to it before (a grant record under ADR 0001)". What shipped grounds the agent's reuse with the shell's own per-host Always rule. An app's grant stays that app's, and agent grounding reads no app's grants (#751, agreed with C).
+- **Needs the founder:** D3 says a host is grounded if "the user said yes to it before (a grant record under ADR 0001)". What shipped grounds the agent's reuse with the shell's own per-host Always rule. An app's grant stays that app's, and agent grounding reads no app's grants (#751, agreed with C). Changing D3 amends an ADR, so the founder decides. The old and new wording are in this close's PR; the ADR text changes only after the founder's answer.
 - **Founder's decision of 2026-11-09:** Kai may reach any website the user names. The shell's ceiling is `hosts:any` on port 443 (#760). D3's "the user typed it" already grounds such a host, so its text holds. The close notes the ceiling.
 - **Not built yet:**
   - quarantined reads (D6, FIDES's typed query);
@@ -319,9 +333,9 @@ The tasks' own exit checks:
 - **Deferred by section 2:** the MCP client (question 8).
 
 **Left before P5 closes.**
-- **To land:** #755, #757, #752, #754 and #770.
+- **To land:** #752, #754, #770, #777 and A-core's #767. #755 and #757 are on main.
+- **In progress:** `model-download` (task 9, AP-2; #772 is part 1).
 - **Not started:**
-  - `model-download` (task 9, AP-2);
   - `net-grant` (task 13, C);
   - task 12's app case (C, with its comphost import);
   - the rest of task 11 (quarantined reads, `Hold`).
