@@ -77,7 +77,10 @@ pub const LIST: u64 = 16;
 /// Retired: calling a service by name. The number stays taken and answers
 /// NotFound; [`CALL_H`] calls through a route handle instead (ADR 0001 D3).
 pub const CALL: u64 = 17;
-/// `metrics(&mut Metrics) -> 0`: scheduler, memory and process numbers.
+/// `metrics(&mut Metrics, size) -> 0`: scheduler, memory and process numbers,
+/// the first `size` bytes of [`crate::Metrics`], at most all of it. A `size`
+/// of 0 is ABI 1.3's, [`crate::METRICS_1_3_BYTES`], so a program built before
+/// `ram_frames` is never written past its buffer.
 pub const METRICS: u64 = 18;
 /// `policy(id, preset)`: installs scheduling policy [`super::policy`] `id` on every
 /// CPU, ending any trial (needs [`super::cap::POLICY`]); `preset` matters only for

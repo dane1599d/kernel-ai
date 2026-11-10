@@ -136,6 +136,25 @@ fn open(dir: Handle, name: &str, how: How, rights: Rights) -> Result<Option<Hand
     }
 }
 
+/// The size of `name` in `dir`, or `None` if there is no such object.
+pub(crate) fn size(dir: Handle, name: &str) -> Result<Option<u64>, String> {
+    let request = Request::Open {
+        path: name.into(),
+        rights: Rights::READ.bits(),
+        how: How::Existing,
+    };
+    match ask(dir, &request)? {
+        (Reply::Opened(stat, _), file) => {
+            if let Some(file) = file {
+                let _ = sys::handle_close(file);
+            }
+            Ok(Some(stat.size))
+        }
+        (Reply::Failed(fsproto::Error::NotFound), _) => Ok(None),
+        other => Err(format!("opening {name}: {other:?}")),
+    }
+}
+
 /// The whole of `name` in `dir`, or `None` if there is no such file.
 pub fn read(dir: Handle, name: &str) -> Result<Option<Vec<u8>>, String> {
     // READ only: the restart folder's Dir gives nothing more.

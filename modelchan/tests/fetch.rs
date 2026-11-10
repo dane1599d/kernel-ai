@@ -6,8 +6,8 @@
 use comp_models::{Signed, Store, Stored};
 use modelchan::Sha256;
 use modelchan::fetch::{
-    self, DISK_MARGIN, Fit, HUGGING_FACE, Hosts, MODEL_CHUNK, Machine, PARTIAL_DIR, Refused,
-    Source, ask, offers, plan,
+    self, DISK_MARGIN, FIXTURE, Fit, HUGGING_FACE, Hosts, MODEL_CHUNK, Machine, PARTIAL_DIR,
+    Refused, Source, ask, disk_need, guest_mib_of, offers, plan, subject,
 };
 
 const GIB: u64 = 1 << 30;
@@ -123,27 +123,45 @@ fn a_stored_model_is_not_offered_again_and_disk_counts_the_margin() {
     );
     assert_eq!(six[0].fit, Fit::Stored);
     assert_eq!(recommended(&six), Some("qwen3-1.7b"));
-    // Free disk for the target alone, but not its margin.
+    // Free disk for the partial file and the store's sealed copy of it, but
+    // not the margin.
     let tight = Machine {
-        free_bytes: QWEN_4B + DISK_MARGIN - 1,
+        free_bytes: 2 * QWEN_4B + DISK_MARGIN - 1,
         ..machine(6)
     };
     assert_eq!(
         offers(&role, &tight)[0].fit,
         Fit::Disk {
-            need: QWEN_4B + DISK_MARGIN,
+            need: 2 * QWEN_4B + DISK_MARGIN,
             free: tight.free_bytes
         }
     );
+    // Free disk for one copy and the margin is not enough either: the partial
+    // file stays until its copy is kept.
+    let one_copy = Machine {
+        free_bytes: QWEN_4B + DISK_MARGIN,
+        ..machine(6)
+    };
+    assert!(matches!(offers(&role, &one_copy)[0].fit, Fit::Disk { .. }));
+}
+
+#[test]
+fn a_whole_partial_file_needs_disk_only_for_its_copy() {
+    assert_eq!(disk_need(QWEN_4B, 0), 2 * QWEN_4B + DISK_MARGIN);
+    assert_eq!(disk_need(QWEN_4B, QWEN_4B), QWEN_4B + DISK_MARGIN);
+    // A partial file longer than its target counts as whole, never as more.
+    assert_eq!(disk_need(QWEN_4B, u64::MAX), QWEN_4B + DISK_MARGIN);
+    assert_eq!(disk_need(u64::MAX, 0), u64::MAX);
 }
 
 #[test]
 fn a_resume_needs_disk_only_for_what_is_still_to_come() {
     let role = role();
-    // 2 GB of the 4B are in `.partial/`; 600 MB are free, enough for the rest.
+    // 2 GB of the 4B are in `.partial/`; 3.3 GB are free, enough for the rest
+    // and the sealed copy.
     let held: &[(Sha256, u64)] = &[([0x40; 32], 2_000_000_000)];
     let resuming = Machine {
-        free_bytes: QWEN_4B - 2_000_000_000 + DISK_MARGIN,
+        free_bytes: QWEN_4B - 2_000_000_000 + QWEN_4B + DISK_MARGIN,
         partials: held,
         ..machine(6)
     };
@@ -205,6 +223,59 @@ fn the_one_ask_names_the_model_its_size_and_the_host() {
         ask(&role[2], &source),
         "Download Qwen3-4B-Instruct-2507 Q4_K_M (2.3 GiB) from huggingface.co? Each part is checked against the signed models role before it is kept."
     );
+    // The menu's subject: the size and the host, the call naming the model.
+    assert_eq!(
+        subject(&role[2], &source),
+        "Download 2.3 GiB from huggingface.co"
+    );
+}
+
+#[test]
+fn the_guest_reads_as_the_step_its_vm_was_sized_in() {
+    const MIB: u64 = 1 << 20;
+    // xtask's VM for Qwen3-4B, less a little the firmware keeps.
+    assert_eq!(guest_mib_of(4160 * MIB - 10 * MIB), 4160);
+    assert_eq!(guest_mib_of(4160 * MIB), 4160);
+    // 4 GiB, whole or less a little, is not 4,160.
+    assert_eq!(guest_mib_of(4096 * MIB), 4096);
+    assert_eq!(guest_mib_of(4096 * MIB - 640 * 1024), 4096);
+    assert_eq!(guest_mib_of(0), 0);
+    assert_eq!(
+        guest_mib_of(u64::MAX),
+        u64::MAX.div_ceil(MIB).next_multiple_of(64)
+    );
+    // So a VM sized for the 4B by xtask is offered it, and a 4 GiB one is not.
+    let role = role();
+    let sized = Machine {
+        memory_mib: guest_mib_of(4150 * MIB),
+        ..machine(6)
+    };
+    assert_eq!(fetch::fit(&role[2], &sized), Fit::Fits);
+    let four = Machine {
+        memory_mib: guest_mib_of(4096 * MIB - 640 * 1024),
+        ..machine(6)
+    };
+    assert!(matches!(fetch::fit(&role[2], &four), Fit::Memory { .. }));
+}
+
+#[test]
+fn the_mock_hosts_stand_for_hugging_face_only_where_asked() {
+    // `updated` takes FIXTURE only with the case's `fetch=test`: a role's
+    // source on the mock is not offered with Hugging Face's hosts.
+    let mut role = role();
+    role[0].source = String::from(
+        "https://models.kai.test/kernel-ai/fixture-GGUF/resolve/0123456789abcdef0123456789abcdef01234567/fixture.gguf",
+    );
+    let real = offers(&role, &machine(6));
+    assert!(real.iter().all(|o| o.target.id != "qwen3-0.6b"));
+    let mock = Machine {
+        hosts: &[FIXTURE],
+        ..machine(6)
+    };
+    let job = plan(&role, &mock, "qwen3-0.6b").unwrap();
+    assert_eq!(job.hosts, ["models.kai.test", "assets.kai.test"]);
+    assert!(job.reaches("assets.kai.test", 443));
+    assert!(!job.reaches("x.assets.kai.test", 443));
 }
 
 #[test]
