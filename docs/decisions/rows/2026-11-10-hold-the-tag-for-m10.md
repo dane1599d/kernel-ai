@@ -1,0 +1,4 @@
+needed-by: v0.1 tag, decided 2026-11-10 (founder, through the manager; model lane builds)
+decision: The founder held the v0.1 tag ("Hold the tag") until the M10a tuning proof passes again on a fresh real-model recording
+---
+The recorded M10 proof (`xtask/tune/decisions.json`, 2026-10-22) no longer matches what the guest observes, on main or on release/v0.1, so `tune-ab` has failed on every run since 2026-11-04. A fresh recording on the standard mix gets "keep" from Qwen3-4B on both branches (row `2026-11-10-m10-mix-a-keeps`), so nothing new is shown. The founder chose to hold the tag rather than ship with the proof recorded as not shown. The proof is to be made on a load where a scheduler change can help the editor. The founder's A/B rule of 2026-10-21 (`xtask/tune/ab.rs`) and the prompt stay as they are, and the model picks no numbers.
