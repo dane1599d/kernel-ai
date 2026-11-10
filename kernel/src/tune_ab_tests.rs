@@ -100,6 +100,11 @@ fn run(cmdline: &str, seed: &str, editor: u64) -> Result<(), &'static str> {
             .map_err(|_| "tune-ab: the candidate did not install")?;
     }
     let settle_ms = settle();
+    let mut pre = Fnv1a::new();
+    for slot in 0..crate::process::MAX_PROCESSES {
+        pre.update(&crate::process::burst::cpu_ns(slot).to_le_bytes());
+    }
+    log!("exp796: pre cpu {:016x} nanos {}", pre.finish(), crate::hpet::nanos());
     log!("measure-start");
     let (windows, pids, quiet_bytes) = trial::measure_only(editor, WINDOW_MS * 1_000_000, WINDOWS)
         .ok_or("tune-ab: the measurement was interrupted")?;

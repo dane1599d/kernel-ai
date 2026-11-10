@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [base, seed, zero]
+        variant: [base, seed]
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -32,11 +32,10 @@ jobs:
       - name: Boot five rounds
         run: |
           if [ "${{ matrix.variant }}" = seed ]; then export KAI_QEMU_SEED=1; fi
-          if [ "${{ matrix.variant }}" = zero ]; then export KAI_ICOUNT_ZERO=1; fi
           qemu-system-x86_64 --version | head -1
           for round in 1 2 3 4 5; do
             cargo xtask tune ab --mix C --spec classes/firm:build-1,build-2,build-3,build-4,build-5,build-6,indexer,hog-1 --timeout 900 2>&1 \
-              | grep -E "icount boot:|tune-ab: digest|exp796:|services start" | tee -a exp.log || true
+              | grep -E "icount boot:|^  \| " >> exp.log || true
           done
       - name: Distinct digests per cmdline
         if: always()
