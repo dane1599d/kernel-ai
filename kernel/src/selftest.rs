@@ -43,6 +43,9 @@ pub enum ActCase {
     /// `net-pf` (P5 task 11): read content goes out only to a host the line
     /// names; any other asks and names the source.
     NetPf,
+    /// `net-pf-page` (P5 task 11): a page fetched through `fetch` from a host
+    /// the line typed is shown, and what it says starts nothing.
+    NetPfPage,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -314,6 +317,8 @@ pub enum SelfTest {
         again: bool,
         small: bool,
     },
+    /// P5 task 12: the `fetch` service on its caller's handles.
+    FetchService,
     /// P5 task 3: ENTROPY's sample, which two boots must not share.
     EntropyBoots,
 }
@@ -355,6 +360,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=act-ask" => Some(SelfTest::Act(ActCase::Ask)),
             "test=act-inject" => Some(SelfTest::Act(ActCase::Inject)),
             "test=net-pf" => Some(SelfTest::Act(ActCase::NetPf)),
+            "test=net-pf-page" => Some(SelfTest::Act(ActCase::NetPfPage)),
             "test=act-rule" => Some(SelfTest::Act(ActCase::Rule)),
             "test=pkg-local" => Some(SelfTest::Act(ActCase::PkgLocal)),
             "test=act-convo" => Some(SelfTest::Act(ActCase::Convo)),
@@ -498,6 +504,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
                 again: cmdline.split_whitespace().any(|w| w == "again"),
                 small: cmdline.split_whitespace().any(|w| w == "accel=tcg"),
             }),
+            "test=fetch-service" => Some(SelfTest::FetchService),
             "test=entropy-boots" => Some(SelfTest::EntropyBoots),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());

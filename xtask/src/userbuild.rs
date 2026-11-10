@@ -44,6 +44,7 @@ const USER_FLOAT_PROGRAMS: &[&str] = &[
     "term",
     "cc",
     "httpscheck",
+    "fetch",
     "dlcheck",
 ];
 /// The view guest `appbench` embeds, built first.

@@ -14,6 +14,8 @@ mod apart;
 mod build;
 #[path = "shell/files.rs"]
 mod files;
+#[path = "shell/net.rs"]
+mod net;
 #[path = "shell/routes.rs"]
 mod routes;
 #[path = "shell/ui.rs"]
@@ -542,6 +544,14 @@ impl Host for System {
 
     fn pkg(&self, request: &str) -> Result<String, String> {
         build::ask_pkg(pkg_route()?, request)
+    }
+
+    fn net_fetch(&self, host: &str, path: &str) -> Result<String, String> {
+        net::fetch(host, path)
+    }
+
+    fn net_resolve(&self, host: &str) -> Result<Vec<String>, String> {
+        net::resolve(host)
     }
 
     fn cc_build(

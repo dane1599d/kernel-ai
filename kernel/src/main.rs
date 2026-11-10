@@ -472,6 +472,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetStream => run_case(|| net_tests::stream_check(cmdline())),
         SelfTest::HttpsMock => run_case(https_tests::check),
         SelfTest::NetDownload { again, .. } => run_case(|| net_download_tests::check(again)),
+        SelfTest::FetchService => run_case(https_tests::fetch_check),
         SelfTest::EntropyBoots => run_case(entropy_tests::check),
         SelfTest::Slot => {
             // A slot boot holds `updated`'s record calls until its lever has

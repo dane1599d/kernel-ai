@@ -143,6 +143,11 @@ pub struct Fetched {
     pub head: Head,
     /// Body bytes passed to the sink.
     pub received: u64,
+    /// Redirects followed to get here.
+    pub redirects: u8,
+    /// Where a redirect [`Fetch::run_within`] handed back leads, made
+    /// absolute; `head` is that redirect's.
+    pub unfollowed: Option<Url>,
 }
 
 /// The most 1xx interim heads skipped before the final one.
@@ -176,11 +181,42 @@ impl Fetch<'_> {
         range: Option<Range>,
         sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
     ) -> Result<Fetched, HttpError> {
+        self.walk(connect, method, url, range, sink, false)
+    }
+
+    /// As [`Fetch::run`], but a redirect to a host `allow` refuses is not
+    /// followed: it comes back as the 3xx, with no body read and
+    /// [`Fetched::unfollowed`] set, for the caller to decide (`fetch`, P5
+    /// task 12: its caller asks about the new host and calls again with a
+    /// handle for it). The caller takes that redirect as a hop, so with none
+    /// of `max_redirects` left it is [`HttpError::TooManyRedirects`]. The first
+    /// URL's host must still be allowed, and redirects `allow` takes are
+    /// followed as [`Fetch::run`] follows them.
+    pub fn run_within(
+        &self,
+        connect: &mut impl Connect,
+        method: Method,
+        url: &Url,
+        range: Option<Range>,
+        sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
+    ) -> Result<Fetched, HttpError> {
+        self.walk(connect, method, url, range, sink, true)
+    }
+
+    fn walk(
+        &self,
+        connect: &mut impl Connect,
+        method: Method,
+        url: &Url,
+        range: Option<Range>,
+        sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
+        within: bool,
+    ) -> Result<Fetched, HttpError> {
         let mut url = url.clone();
-        for _ in 0..=self.limits.max_redirects {
-            if !(self.allow)(&url.host, url.port) {
-                return Err(HttpError::Refused(url.host));
-            }
+        if !(self.allow)(&url.host, url.port) {
+            return Err(HttpError::Refused(url.host));
+        }
+        for followed in 0..=self.limits.max_redirects {
             self.in_time()?;
             let mut stream = connect.connect(&url)?;
             stream.send(&head::request(method, &url, range))?;
@@ -191,7 +227,24 @@ impl Fetch<'_> {
                     .location
                     .as_deref()
                     .ok_or(HttpError::Head("a redirect with no Location"))?;
-                url = url.join(location).map_err(HttpError::Url)?;
+                let next = url.join(location).map_err(HttpError::Url)?;
+                if !(self.allow)(&next.host, next.port) {
+                    if !within {
+                        return Err(HttpError::Refused(next.host));
+                    }
+                    // The caller follows it as a hop of its own: none left.
+                    if followed == self.limits.max_redirects {
+                        return Err(HttpError::TooManyRedirects);
+                    }
+                    return Ok(Fetched {
+                        url,
+                        head,
+                        received: 0,
+                        redirects: followed,
+                        unfollowed: Some(next),
+                    });
+                }
+                url = next;
                 continue;
             }
             if !matches!(head.status, 200 | 206) {
@@ -199,6 +252,8 @@ impl Fetch<'_> {
                     url,
                     head,
                     received: 0,
+                    redirects: followed,
+                    unfollowed: None,
                 });
             }
             match head.status {
@@ -215,6 +270,8 @@ impl Fetch<'_> {
                 url,
                 head,
                 received,
+                redirects: followed,
+                unfollowed: None,
             });
         }
         Err(HttpError::TooManyRedirects)

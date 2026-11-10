@@ -173,8 +173,9 @@ fn hex32(text: &str) -> Option<[u8; 32]> {
 fn get(net: &Net, url: &Url, max: u64) -> Result<Vec<u8>, String> {
     let clock = || sys::time_ns();
     let allow = |_: &str, port: u16| port == 443;
+    let deadline_ns = clock().saturating_add(REQUEST_NS);
     let fetch = Fetch {
-        limits: Limits::new(max, clock().saturating_add(REQUEST_NS)),
+        limits: Limits::new(max, deadline_ns),
         allow: &allow,
         clock: &clock,
     };
@@ -183,6 +184,7 @@ fn get(net: &Net, url: &Url, max: u64) -> Result<Vec<u8>, String> {
         dial: NetDial {
             dest: net.dest,
             bulk: false,
+            deadline_ns,
         },
     };
     let mut body = Vec::new();
@@ -302,22 +304,26 @@ fn once(
     let clock = || sys::time_ns();
     // The handle decides which hosts; the URL must still be https on 443.
     let allow = |_: &str, port: u16| port == 443;
-    let mut connect = TlsConnect {
-        config: Arc::clone(&net.config),
-        dial: NetDial {
-            dest: net.dest,
-            bulk: true,
-        },
-    };
     download(list, partial, &mut |range: Range, sink| {
         let index = (range.first / list.chunk) as usize;
         if let Some(asked) = got.asked.get_mut(index) {
             *asked = asked.saturating_add(1);
         }
+        // Each chunk is a request of its own, and no wait of it outlasts its
+        // deadline.
+        let deadline_ns = clock().saturating_add(REQUEST_NS);
         let fetch = Fetch {
-            limits: Limits::new(list.chunk, clock().saturating_add(REQUEST_NS)),
+            limits: Limits::new(list.chunk, deadline_ns),
             allow: &allow,
             clock: &clock,
+        };
+        let mut connect = TlsConnect {
+            config: Arc::clone(&net.config),
+            dial: NetDial {
+                dest: net.dest,
+                bulk: true,
+                deadline_ns,
+            },
         };
         let half = list.chunk / 2;
         let mut taken = 0u64;

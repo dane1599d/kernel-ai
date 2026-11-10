@@ -17,3 +17,4 @@ pub mod provider;
 #[cfg(feature = "testca")]
 pub mod testca;
 pub mod tls;
+pub mod wire;
