@@ -94,7 +94,7 @@ Server-backed kinds (`Dir`, `File`, an app's action routes) point at the server'
 | SUPERVISE | the root `Job`, and MINT on the `system` grant root |
 | SERVE | `Endpoint` for its own service name |
 | CALL | one `Service` route per name in the plan's new `uses=` word, which replaces call-by-name |
-| NET | `NetDest` for `llm=` (CONNECT) |
+| NET | `NetDest` for `llm=` (CONNECT). Since 2026-11-09 (after #756, which made HTTP need this handle itself), none: only a plan line that says `netdest=llm` gets it, and NET stays the ceiling for `NetDest` handles |
 | POLICY | `Sched` (READ, SET_POLICY) |
 | COMPONENT | `Component` for its own name |
 | PUBLISH | `Store` (READ, WRITE) and `Build` (the `build=` destination) |

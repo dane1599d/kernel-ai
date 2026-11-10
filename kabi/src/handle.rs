@@ -283,7 +283,8 @@ pub struct RecvInfo {
 /// Fixed network destinations (ADR 0001 D2 `NetDest`): the object a `NetDest`
 /// handle names.
 pub mod netdest {
-    /// The LLM server named on the command line, `llm=`.
+    /// The LLM server named on the command line, `llm=`: a handle to it, with
+    /// CONNECT only, starts in the process whose plan line says `netdest=llm`.
     pub const LLM: u64 = 1;
     /// The kernel's DNS resolver.
     pub const RESOLVER: u64 = 2;
