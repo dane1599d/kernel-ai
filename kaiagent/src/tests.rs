@@ -616,3 +616,77 @@ fn every_refusal_says_one_sentence() {
         assert!(!why.is_empty() && !why.contains('\n'), "{why}");
     }
 }
+
+const WEATHER: &str = "proto:tcp,ports:443,hosts:api.weather.example";
+
+#[test]
+fn a_net_line_says_the_bytes_a_day_or_takes_the_default_and_none_moves_nothing() {
+    use crate::{DEFAULT_NET_MIB_PER_DAY, MAX_NET_MIB_PER_DAY, NetBudget};
+    let none = Manifest::parse(&with("net", "none")).unwrap();
+    assert_eq!(none.net_budget, NetBudget::NONE);
+    assert_eq!(none.net_budget.bytes_per_day(), 0);
+    // A destination that says no more: 10 MiB.
+    let plain = Manifest::parse(&with("net", WEATHER)).unwrap();
+    assert_eq!(plain.net_budget, NetBudget::DEFAULT);
+    assert_eq!(plain.net_budget.mib_per_day, DEFAULT_NET_MIB_PER_DAY);
+    assert_eq!(plain.net_budget.bytes_per_day(), 10 << 20);
+    // One that says it, up to the ceiling.
+    for mib in [1, 64, MAX_NET_MIB_PER_DAY] {
+        let said = with("net", &format!("{WEATHER} bytes/day={mib}m"));
+        let parsed = Manifest::parse(&said).unwrap();
+        assert_eq!(parsed.net_budget.mib_per_day, mib);
+        assert_eq!(parsed.net_budget.bytes_per_day(), u64::from(mib) << 20);
+        // It reads back as it was written, and a written manifest always says it.
+        assert_eq!(Manifest::parse(&parsed.format()).unwrap(), parsed);
+        assert!(parsed.format().contains(&format!("bytes/day={mib}m\n")));
+    }
+    // The destination is written canonically, then the budget.
+    let dest = plain.net.clone().expect("a destination");
+    assert!(
+        plain
+            .format()
+            .contains(&format!("net {dest} bytes/day=10m\n"))
+    );
+}
+
+#[test]
+fn a_net_budget_is_held_to_the_same_shape_as_the_model_budgets() {
+    let net = |word: &str| with("net", &format!("{WEATHER} {word}"));
+    assert_eq!(
+        refused(&with("net", "none bytes/day=1m")),
+        Refusal::Net("none bytes/day=1m".into(), "a budget needs a destination")
+    );
+    assert_eq!(
+        refused(&net("megabytes/day=1m")),
+        Refusal::BudgetKey("megabytes/day=1m".into())
+    );
+    assert_eq!(refused(&net("bytes/day=1")), Refusal::BudgetUnit);
+    assert_eq!(refused(&net("bytes/day=1m x")), Refusal::BudgetUnit);
+    assert_eq!(
+        refused(&net("bytes/day=0m")),
+        Refusal::BudgetZero("net bytes/day")
+    );
+    assert_eq!(
+        refused(&net("bytes/day=01m")),
+        Refusal::BudgetNumber("net bytes/day")
+    );
+    assert_eq!(
+        refused(&net("bytes/day=-5m")),
+        Refusal::BudgetNumber("net bytes/day")
+    );
+    assert_eq!(
+        refused(&net("bytes/day=513m")),
+        Refusal::BudgetOver {
+            key: "net bytes/day",
+            max: 512
+        }
+    );
+    // A destination that is itself refused is refused first, whatever follows.
+    assert!(matches!(
+        refused(&with(
+            "net",
+            "proto:udp,ports:53,hosts:dns.example bytes/day=1m"
+        )),
+        Refusal::Net(..)
+    ));
+}

@@ -1,6 +1,9 @@
 //! The manifest's `net` line (ADR 0013 section 6, P5's per-app `NetDest`):
 //! `none`, or the destination the agent's network handle may at most reach,
-//! in `netdest`'s text form (`proto:tcp,ports:443,hosts:api.weather.example`).
+//! in `netdest`'s text form (`proto:tcp,ports:443,hosts:api.weather.example`),
+//! and after a destination, optionally, the bytes a day that network may move
+//! (`bytes/day=10m`, whole MiB: [`NetBudget`], 10 when the line does not say, at
+//! most 512).
 //!
 //! It is a ceiling, never a grant: each host the agent reaches still asks the
 //! person once (P5 task 13's per-app grant), and a fetch still runs only from a
@@ -15,6 +18,7 @@
 //!   whole top-level domain (`com`).
 
 use crate::Refusal;
+use crate::budgets::NetBudget;
 use alloc::string::ToString;
 use netdest::{AddrRange, Dest, PortRange, Protocol};
 
@@ -22,13 +26,25 @@ use netdest::{AddrRange, Dest, PortRange, Protocol};
 /// `any` written out).
 pub const MAX_RANGE: u16 = 16;
 
-/// The `net` line's value: `None` for `none`, or the destination.
-pub fn parse(value: &str) -> Result<Option<Dest>, Refusal> {
-    if value == "none" {
-        return Ok(None);
-    }
+/// The `net` line's value: `None` for `none`, or the destination, with the bytes a
+/// day it may move (the default when the line does not say, none for `none`).
+pub fn parse(value: &str) -> Result<(Option<Dest>, NetBudget), Refusal> {
+    let (dest, word) = match value.split_once(' ') {
+        Some((dest, word)) => (dest, Some(word)),
+        None => (value, None),
+    };
     let refuse = |why: &'static str| Refusal::Net(value.to_string(), why);
-    let dest = Dest::parse(value).map_err(refuse)?;
+    if dest == "none" {
+        return match word {
+            None => Ok((None, NetBudget::NONE)),
+            Some(_) => Err(refuse("a budget needs a destination")),
+        };
+    }
+    let budget = match word {
+        None => NetBudget::DEFAULT,
+        Some(word) => NetBudget::parse(word)?,
+    };
+    let dest = Dest::parse(dest).map_err(refuse)?;
     if dest.protocol != Protocol::Tcp {
         return Err(refuse("an agent's network is tcp"));
     }
@@ -50,13 +66,13 @@ pub fn parse(value: &str) -> Result<Option<Dest>, Refusal> {
     if dest.hosts.iter().any(|host| !host.contains('.')) {
         return Err(refuse("a host is a name of two labels or more"));
     }
-    Ok(Some(dest))
+    Ok((Some(dest), budget))
 }
 
-/// The line's value as it is written.
-pub fn format(net: &Option<Dest>) -> alloc::string::String {
+/// The line's value as it is written: the budget follows a destination.
+pub fn format(net: &Option<Dest>, budget: NetBudget) -> alloc::string::String {
     match net {
         None => "none".to_string(),
-        Some(dest) => dest.to_string(),
+        Some(dest) => alloc::format!("{dest} {}", budget.format()),
     }
 }
