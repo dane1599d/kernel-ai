@@ -8,6 +8,11 @@
 //! - a host the handle does not name is refused before anything is sent;
 //! - a certificate for another name, and one from a CA the client does not
 //!   trust, are refused in the handshake.
+//!
+//! `test=fetch-service` (P5 task 12): the `fetch` service, started with SERVE
+//! and NET and keeping no handle of its own, and `httpscheck` as its caller
+//! (`via=fetch`), with a route to it and a `NetDest` for three of the mock's
+//! hosts, narrowing one exact host a call as comphost and the shell will.
 
 use crate::fpu_tests::wait_exit;
 use crate::process::{self, SpawnRequest};
@@ -68,18 +73,65 @@ fn httpscheck(name: &str, args: &str) -> Result<(), &'static str> {
     }
 }
 
-pub fn check() -> Result<(), &'static str> {
-    let mut up = false;
+/// Waits for the network's address.
+fn wait_up() -> Result<(), &'static str> {
     for _ in 0..SETUP_WAIT_MS / 10 {
         if net::status().is_some_and(|s| s.address.is_some()) {
-            up = true;
-            break;
+            return Ok(());
         }
         threads::sleep_ms(10);
     }
-    if !up {
-        return Err("https-mock: the network was not set up in time");
+    Err("https: the network was not set up in time")
+}
+
+/// The `fetch` service's room: a TLS client, and a 64 KiB body at a time.
+const FETCH_LIMITS: Limits = Limits {
+    caps: cap::SERVE | cap::NET,
+    ..LIMITS
+};
+
+/// Its caller's: it narrows handles and calls, and needs no NET.
+const CALLER_LIMITS: Limits = Limits {
+    caps: cap::CALL,
+    ..LIMITS
+};
+
+pub fn fetch_check() -> Result<(), &'static str> {
+    wait_up()?;
+    let service = SpawnRequest {
+        name: "fetch",
+        program: "fetch",
+        args: b"",
+        limits: FETCH_LIMITS,
+        spawner: 0,
+        supervisor: false,
+        uses: &[],
+    };
+    process::spawn_with(&service, alloc::vec![], false)
+        .map_err(|_| "fetch-service: cannot start fetch")?;
+    let caller = SpawnRequest {
+        name: "fetch-caller",
+        program: "httpscheck",
+        args: b"via=fetch",
+        limits: CALLER_LIMITS,
+        spawner: 0,
+        supervisor: false,
+        uses: &["fetch"],
+    };
+    let pid = process::spawn_with(&caller, alloc::vec![netdest()?], false)
+        .map_err(|_| "fetch-service: cannot start its caller")?;
+    match wait_exit(pid)? {
+        (ExitReason::Exited, 0) => {}
+        _ => return Err("fetch-service: the caller did not get what it expected"),
     }
+    log!(
+        "fetch-service: fetch answered on each caller's handle: a body, a redirect within the host followed, one off it handed back and fetched on its own handle, and a host off the handle refused"
+    );
+    Ok(())
+}
+
+pub fn check() -> Result<(), &'static str> {
+    wait_up()?;
     let url = |host: &str| alloc::format!("https://{host}/hello");
     httpscheck(
         "https-get",

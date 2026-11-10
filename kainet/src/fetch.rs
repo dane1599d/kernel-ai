@@ -223,6 +223,73 @@ pub fn serve(
     })
 }
 
+/// The most redirects one request follows, across its calls to the `fetch`
+/// service (task 5's limit).
+pub const MAX_HOPS: u8 = 5;
+
+/// What the `fetch` service gives its caller for a request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Served {
+    pub response: Response,
+    /// Where a redirect to a host the handle does not reach leads, made
+    /// absolute; `response` is that redirect's 3xx, with no body.
+    pub location: Option<String>,
+    /// The request's hops and the redirects followed within the handle: the
+    /// caller's next call, to `location`, says this many plus one.
+    pub hops: u8,
+}
+
+/// What the `fetch` service gives its caller for `request` (P5 task 12): as
+/// [`serve`], on the caller's own handle, whose `allow` says which hosts it
+/// reaches (in the OS, the kernel's RESOLVE_ON). The request's host must be
+/// one of them. A redirect to one of them is followed, at most [`MAX_HOPS`]
+/// less `hops` of them; a redirect to another comes back unfollowed, as its
+/// 3xx with no body and its Location made absolute, for the caller to ask
+/// about the new host and call again with a handle for it and
+/// [`Served::hops`] + 1 (C's review of #755: one limit of five across calls).
+pub fn serve_within(
+    request: &Request,
+    hops: u8,
+    allow: &dyn Fn(&str, u16) -> bool,
+    connect: &mut impl Connect,
+    clock: &dyn Fn() -> u64,
+    deadline_ns: u64,
+) -> Result<Served, Error> {
+    let url = Url::parse(&request.url).map_err(|text| Error::BadUrl(why(text)))?;
+    let Some(left) = MAX_HOPS.checked_sub(hops) else {
+        return Err(Error::Http(why("more than five redirects")));
+    };
+    let mut limits = Limits::new(MAX_BODY as u64, deadline_ns);
+    limits.max_redirects = left;
+    let fetch = Fetch {
+        limits,
+        allow,
+        clock,
+    };
+    let mut body = Vec::new();
+    let got = fetch.run_within(connect, request.method, &url, request.range, &mut |bytes| {
+        body.extend_from_slice(bytes);
+        Ok(())
+    })?;
+    // Only a redirect the walk handed back has a Location here: a 304, or a
+    // 300 with one, is a response like any other (C's review of #755).
+    let location = got
+        .unfollowed
+        .map(|next| format!("https://{}{}", next.authority(), next.path));
+    let response = Response {
+        status: got.head.status,
+        url: format!("https://{}{}", got.url.authority(), got.url.path),
+        content_type: got.head.content_type,
+        retry_after: got.head.retry_after,
+        body,
+    };
+    Ok(Served {
+        response,
+        location,
+        hops: hops.saturating_add(got.redirects),
+    })
+}
+
 /// One app instance's waiting requests, by ticket. A ticket is never given
 /// twice: once the last `u32` is given, every later call traps.
 #[derive(Debug, Default)]
