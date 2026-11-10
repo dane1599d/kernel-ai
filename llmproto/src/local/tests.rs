@@ -321,4 +321,26 @@ fn every_query_answer_from_the_shape_is_its_kind_or_cut_off() {
         }
     }
     std::println!("{whole} whole query answers");
+    assert!(whole > 0, "no generated model closed a query answer");
+}
+
+#[test]
+fn data_of_digits_at_the_byte_cap_is_cut_to_fit_a_context_of_2048() {
+    use crate::query::{CUT_MARK, MAX_DATA_BYTES, QueryKind, QueryRequest};
+    let digits: String = (0..MAX_DATA_BYTES)
+        .map(|i| char::from(b'0' + (i % 10) as u8))
+        .collect();
+    let request = QueryRequest::new(&digits, "Which digit comes first?", QueryKind::Short).unwrap();
+    for bytes in models() {
+        let mut engine = Engine::load(&bytes, Tier::best(), 2048, ROOMY).unwrap();
+        let fitted = query_within(&engine, &request);
+        assert!(
+            fitted.data.ends_with(CUT_MARK),
+            "{} bytes kept",
+            fitted.data.len()
+        );
+        assert!(fitted.data.len() < request.data.len());
+        let completion = query(&mut engine, &request, |_| Next::Continue);
+        assert!(completion.is_ok(), "{completion:?}");
+    }
 }

@@ -366,13 +366,19 @@ const QUERY_FIELDS: [Field; 1] = [Field {
 }];
 
 /// The model's answer to a `query`, greedy, under its kind's shape: one of the
-/// words for `Bool` and `Enum`, one short line for `Short`. The caller checks
-/// it again with [`crate::query::answer`].
+/// words for `Bool` and `Enum`, one short line for `Short`. The data is cut to
+/// what the context holds with the answer's room (bytes are not tokens: a table
+/// of digits takes one a byte). The caller checks the answer again with
+/// [`crate::query::answer`].
 pub fn query(
     engine: &mut Engine<'_>,
     request: &crate::query::QueryRequest,
     on_step: impl FnMut(Step) -> Next,
 ) -> Result<Completion, infer::Error> {
+    request
+        .check()
+        .map_err(|_| infer::Error::Shape("a query that fails its own check"))?;
+    let request = &query_within(engine, request);
     let words = request.kind.words();
     let choice = words.as_deref().map(|words| Choice {
         field: 0,
@@ -396,6 +402,31 @@ pub fn query(
         text: reply.text(),
         cut_off: reply.cut_off() || matches!(reply.ending, Ending::Stopped),
     })
+}
+
+/// `request` with its data cut, on a character, to the most whose prompt
+/// leaves the answer its room in the engine's context.
+pub(crate) fn query_within(
+    engine: &Engine<'_>,
+    request: &crate::query::QueryRequest,
+) -> crate::query::QueryRequest {
+    let room = engine.about().context;
+    let fits = |r: &crate::query::QueryRequest| {
+        engine.conversation_tokens(&turns(&r.chat())) + r.chat().max_tokens as usize <= room
+    };
+    if fits(request) {
+        return request.clone();
+    }
+    // The most bytes that fit, by halving: the prompt's tokens grow with them.
+    let (mut lo, mut hi) = (0, request.data.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        match fits(&request.cut_to(mid)) {
+            true => lo = mid,
+            false => hi = mid - 1,
+        }
+    }
+    request.cut_to(lo)
 }
 
 /// Why an answer that went past a limit is refused, in [`script::check_text`]'s

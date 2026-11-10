@@ -555,7 +555,8 @@ fn tune_answer(
 
 /// A quarantined read: the model's answer to one typed question about the
 /// data, checked against its kind here, so the shell gets a word or one short
-/// line, or why there is none. It never touches the conversation.
+/// line, or why there is none. It never touches the conversation, but it
+/// takes the script slot: the next script request prefills its prompt again.
 fn query(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<String, String> {
     let request = QueryRequest::decode(text).ok_or("malformed query request")?;
     let completion = match (&mut backends.local, &backends.server) {
