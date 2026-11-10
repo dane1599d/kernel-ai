@@ -308,4 +308,17 @@ mod tests {
             assert!(Header::parse(case).is_err(), "{case:?}");
         }
     }
+
+    #[test]
+    fn the_reserved_kinds_are_refused_by_name() {
+        let swap = |to: &str| NOTES.replacen("kind app", to, 1);
+        assert_eq!(
+            Header::parse(&swap("kind tool")).unwrap_err(),
+            "kind tool is reserved in format 1"
+        );
+        assert_eq!(
+            Header::parse(&swap("kind agent")).unwrap_err(),
+            "kind agent is reserved in format 1 (ADR 0013)"
+        );
+    }
 }
