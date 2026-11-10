@@ -253,6 +253,14 @@ const A_FROM_NET: TestCase = TestCase {
             // stage, kainet opening a TLS connection for each 2 MiB chunk.
             "updated: downloaded ",
             " chunks of up to 2 MiB, a TLS connection for each)",
+            // Where that time went, summed over the stage: the redirect, the assets
+            // host's connect, the body, the hash, the slot write and its read-back.
+            "updated: split ms: redirect ",
+            ", assets-connect ",
+            ", body ",
+            ", hash ",
+            ", write ",
+            ", readback ",
             "updated: the verified metadata is in /system/trust",
             "update: restarting into kai-b",
         ],

@@ -41,6 +41,7 @@ mod folders;
 mod models;
 mod online;
 mod restore;
+mod split;
 mod window;
 
 use alloc::format;

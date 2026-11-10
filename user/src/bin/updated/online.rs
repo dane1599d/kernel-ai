@@ -24,6 +24,7 @@
 
 use crate::disk::{Trusted, trusted};
 use crate::folders::{self, Folders};
+use crate::split::{Split, Timed};
 use crate::window::Staged;
 use crate::{pause, record, restore, set, slot_of};
 use alloc::format;
@@ -96,19 +97,21 @@ fn netdest() -> Option<Handle> {
 
 /// The slot `slot`, as `updatenet` writes and reads it: by byte offset, on
 /// sectors, in the kernel's largest I/O.
-struct Slots {
+struct Slots<'a> {
     handle: Handle,
     slot: u64,
     buf: Vec<u8>,
+    split: &'a Split,
 }
 
-impl SlotIo for Slots {
+impl SlotIo for Slots<'_> {
     fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), &'static str> {
         if !offset.is_multiple_of(SECTOR) {
             return Err("a slot write starts on a sector");
         }
         let mut done = 0;
         while done < bytes.len() {
+            let began = sys::time_ns();
             let n = (bytes.len() - done).min(MAX_IO as usize);
             let padded = n.next_multiple_of(SECTOR as usize);
             // A last partial sector is written whole, zero past the image's end.
@@ -117,6 +120,8 @@ impl SlotIo for Slots {
             let sector = (offset + done as u64) / SECTOR;
             sys::slot_write(self.handle, self.slot, sector, &self.buf[..padded])
                 .map_err(|_| "SLOT_WRITE failed")?;
+            self.split
+                .wrote(began, sys::time_ns().saturating_sub(began));
             done += n;
             pause(sector + (n as u64).div_ceil(SECTOR));
         }
@@ -129,12 +134,14 @@ impl SlotIo for Slots {
         }
         let mut done = 0;
         while done < buf.len() {
+            let began = sys::time_ns();
             let n = (buf.len() - done).min(MAX_IO as usize);
             let padded = n.next_multiple_of(SECTOR as usize);
             let sector = (offset + done as u64) / SECTOR;
             sys::slot_read(self.handle, self.slot, sector, &mut self.buf[..padded])
                 .map_err(|_| "SLOT_READ failed")?;
             buf[done..done + n].copy_from_slice(&self.buf[..n]);
+            self.split.read(sys::time_ns().saturating_sub(began));
             done += n;
             pause(sector + (n as u64).div_ceil(SECTOR));
         }
@@ -142,20 +149,24 @@ impl SlotIo for Slots {
     }
 
     fn flush(&mut self) -> Result<(), &'static str> {
-        sys::slot_flush(self.handle, self.slot)
+        let began = sys::time_ns();
+        let flushed = sys::slot_flush(self.handle, self.slot)
             .map(|_| ())
-            .map_err(|_| "SLOT_FLUSH failed")
+            .map_err(|_| "SLOT_FLUSH failed");
+        self.split.flushed(sys::time_ns().saturating_sub(began));
+        flushed
     }
 }
 
 /// Where the last chunk checked is kept: a file in `/system/updates`, so a later
 /// run (after a cut, or a reboot) resumes there; in memory with no `kai-data`.
-struct Marks {
+struct Marks<'a> {
     dir: Option<Handle>,
     memory: Option<Mark>,
+    split: &'a Split,
 }
 
-impl Checkpoint for Marks {
+impl Checkpoint for Marks<'_> {
     fn load(&mut self) -> Result<Option<Mark>, &'static str> {
         let Some(dir) = self.dir else {
             return Ok(self.memory);
@@ -182,13 +193,17 @@ impl Checkpoint for Marks {
         let Some(dir) = self.dir else {
             return Ok(());
         };
+        let began = sys::time_ns();
         let bytes = mark.map_or_else(Vec::new, |mark| {
             let mut bytes = Vec::with_capacity(MARK_BYTES);
             bytes.extend_from_slice(&mark.sha256);
             bytes.extend_from_slice(&(mark.done as u64).to_le_bytes());
             bytes
         });
-        folders::write(dir, MARK_FILE, &bytes).map_err(|_| "the download's mark cannot be saved")
+        let saved = folders::write(dir, MARK_FILE, &bytes)
+            .map_err(|_| "the download's mark cannot be saved");
+        self.split.marked(sys::time_ns().saturating_sub(began));
+        saved
     }
 }
 
@@ -299,12 +314,17 @@ pub fn update(handle: Handle, restart_now: bool, args: &str) -> Result<Staged, S
     let config = tls::config().map_err(|e| format!("no TLS configuration: {e:?}"))?;
     let clock = || sys::time_ns();
     let hosts = Hosts::mock();
+    // Where the time goes, summed over the stage (`split.rs`).
+    let split = Split::default();
     let online = |hosts: &Hosts| {
         // The image is a download: bulk streams have the larger receive buffer.
         let dial = NetDial { dest, bulk: true };
-        let connect = TlsConnect {
-            config: config.clone(),
-            dial,
+        let connect = Timed {
+            inner: TlsConnect {
+                config: config.clone(),
+                dial,
+            },
+            split: &split,
         };
         Online::new(hosts.clone(), connect, &clock, REQUEST_NS)
     };
@@ -340,10 +360,12 @@ pub fn update(handle: Handle, restart_now: bool, args: &str) -> Result<Staged, S
         handle,
         slot: job.slot as u64,
         buf: vec![0u8; MAX_IO as usize],
+        split: &split,
     };
     let mut marks = Marks {
         dir: dirs.updates,
         memory: None,
+        split: &split,
     };
     let mut partial = SlotPartial::new(&mut slots, &mut marks, &job.release);
     let mut lever = Lever {
@@ -365,7 +387,12 @@ pub fn update(handle: Handle, restart_now: bool, args: &str) -> Result<Staged, S
             &mut lever,
             &mut partial,
             &mut recheck,
-            &mut |range, sink| over.range(&url, range, sink),
+            &mut |range, sink| {
+                split.begin_call();
+                let answer = over.range(&url, range, sink);
+                split.end_call();
+                answer
+            },
         );
         match stopped_at {
             Ok(staged) => break staged,
@@ -390,6 +417,7 @@ pub fn update(handle: Handle, restart_now: bool, args: &str) -> Result<Staged, S
         staged.release_seq, staged.slot, staged.report.kept, staged.report.fetched
     );
     println!("{}", speed_line(&job, &staged.report, elapsed_ns));
+    println!("{}", split.line(elapsed_ns));
     if dirs.trust.is_some() {
         println!("updated: the verified metadata is in /system/trust");
     }
