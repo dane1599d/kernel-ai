@@ -11,9 +11,9 @@ on:
   workflow_dispatch:
     inputs:
       language:
-        description: "rhai (the M8 gate) or c (Kai C at c>, S12-2's bars)"
+        description: "rhai (the M8 gate), c (Kai C at c>, S12-2's bars) or app (the app gate, Kai builds apps piece 5)"
         type: choice
-        options: [rhai, c]
+        options: [rhai, c, app]
         default: rhai
       memories:
         description: "Every request with a memory section of fixed bait memories (spike S13-4, rhai only)"
@@ -73,11 +73,12 @@ jobs:
           KAI_MODELS: ${{ runner.temp }}/kai-models
           C_FLAG: ${{ inputs.language == 'c' && '--c' || '' }}
           MEM_FLAG: ${{ inputs.memories && '--memories' || '' }}
+          GATE: ${{ inputs.language == 'app' && 'app-gate' || 'fluency' }}
         # Built first, so the peak memory GNU time reports is the gate's own.
         run: |
           cargo build --quiet -p xtask
           set +e
-          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" cargo xtask fluency --local "$MODEL_ID" $C_FLAG $MEM_FLAG
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" cargo xtask "$GATE" --local "$MODEL_ID" $C_FLAG $MEM_FLAG
           status=$?
           grep -E "Maximum resident|Elapsed" "$RUNNER_TEMP/time.txt" | sed 's/^/xtask: peak memory: /'
           exit $status
@@ -86,5 +87,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: fluency-${{ inputs.language }}-${{ env.MODEL_ID }}-${{ github.run_id }}
-          path: target/fluency/*.jsonl
+          path: |
+            target/fluency/*.jsonl
+            target/appgate/*.jsonl
           if-no-files-found: warn
