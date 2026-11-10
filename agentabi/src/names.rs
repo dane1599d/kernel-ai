@@ -46,6 +46,12 @@ pub const RESERVED_GROUPS: &[&str] = &[
     // P4 task 4: the Terminal's `shell_line`, which is not a row, so no
     // package `shell` may export `line` beside it.
     "shell",
+    // ADR 0013 (agents): the rows `agent_*`, `goal_*` and `search_*` come after the
+    // v0.1 tag, and `memory_*` is reserved above. The names are taken now, so no
+    // package of the v0.1 catalogue can be named like a group the OS adds later.
+    "agent",
+    "goal",
+    "search",
 ];
 
 /// Whether `package` is reserved: an OS row group.
@@ -101,6 +107,19 @@ mod tests {
                     .bytes()
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
             assert!(ok, "{name} is not a package name");
+        }
+    }
+
+    #[test]
+    fn adr_0013s_groups_are_taken_before_the_rows_exist() {
+        // `memory` was a group already (the `memory` row); the others are new names. A
+        // package of any of them is refused by `kaipkg`'s `valid_name`, which asks this.
+        for group in ["agent", "goal", "memory", "search"] {
+            assert!(is_reserved(group), "{group}");
+        }
+        // The built-in agents' own names are not groups.
+        for name in ["kai", "goals", "index", "maint"] {
+            assert!(!is_reserved(name), "{name}");
         }
     }
 
