@@ -74,6 +74,8 @@ impl Settings {
                 "nap_ms" => settings.nap_ms = number(0, 86_400_000)?,
                 "keep" => settings.keep_running = number(0, 1)? == 1,
                 "restart" => {}
+                // The app's ceiling (P5 task 13): comphost reads it itself.
+                "netdest" => {}
                 other => return Err(format!("unknown setting {other:?}")),
             }
         }

@@ -1,5 +1,5 @@
 //! The `fetch` service's logic (plan p5-networking, task 12, host half):
-//! an app's `kai:net/http` request (`kainet/wit/kai-net/http.wit`), made on
+//! an app's `kai:net/http` request (`wit/kai-net/http.wit`), made on
 //! the app's own grant. The OS wiring (the service, the app's `NetDest`
 //! handle passed with each call, the grant's ask) waits for tasks 1, 2 and
 //! 13; this is what it will run.

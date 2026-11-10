@@ -726,6 +726,11 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
                 }
                 let dest = netdest::Dest::parse(value)
                     .map_err(|why| format!("{name}: netdest={value} is refused: {why}"))?;
+                // The program is told its own destination too: it cannot read
+                // one back from the handle, and comphost names it to the shell
+                // as the app's ceiling (P5 task 13). The kernel holds it to the
+                // handle whatever it says.
+                args.push(word);
                 netdest = Some(dest);
             }
             Some(("start", value)) => {

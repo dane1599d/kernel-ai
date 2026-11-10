@@ -281,6 +281,19 @@ pub const TEST_ONLY: &[Version] = &[
             wit: &["apps/grant-fixture/wit", "wit/kai-ui"],
         },
     },
+    // The `net-grant` case's headless app: it fetches a fixed list of URLs
+    // through `kai:net`, and the case answers the shell's cards for their
+    // hosts (P5 task 13).
+    Version {
+        label: "1",
+        recipe: Recipe {
+            component: "net-fixture",
+            krate: "comp-net-fixture",
+            dirs: &["apps/net-fixture"],
+            feature: None,
+            wit: &["apps/net-fixture/wit", "wit/kai-net"],
+        },
+    },
 ];
 
 /// The test fixtures' directories: the window, and the shared `kai:ui` glue.
