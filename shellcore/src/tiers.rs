@@ -14,24 +14,28 @@ use agentabi::Action;
 pub use agentabi::Tier;
 
 /// The rows scripts can call: the bound rows, the file rows, the window rows,
-/// then the helpers.
+/// the network reads, then the helpers.
 const CALLABLE: usize = agentabi::BOUND.len()
     + agentabi::FS_ROWS.len()
     + agentabi::UI_ROWS.len()
+    + agentabi::NET_ROWS.len()
     + agentabi::HELPERS.len();
 
 const fn callable(i: usize) -> &'static Action {
     let api = agentabi::BOUND.len();
     let files = api + agentabi::FS_ROWS.len();
     let windows = files + agentabi::UI_ROWS.len();
+    let net = windows + agentabi::NET_ROWS.len();
     if i < api {
         &agentabi::BOUND[i]
     } else if i < files {
         &agentabi::FS_ROWS[i - api]
     } else if i < windows {
         &agentabi::UI_ROWS[i - files]
+    } else if i < net {
+        &agentabi::NET_ROWS[i - windows]
     } else {
-        &agentabi::HELPERS[i - windows]
+        &agentabi::HELPERS[i - net]
     }
 }
 
@@ -40,10 +44,21 @@ const fn table() -> [(&'static str, Tier); CALLABLE] {
     let mut i = 0;
     while i < CALLABLE {
         let row = callable(i);
-        out[i] = (row.name, agentabi::derive(row));
+        out[i] = (row.name, floor(row));
         i += 1;
     }
     out
+}
+
+/// A row's tier before consent. A network read's comes from its host, which only
+/// consent sees (ADR 0002 D3): a grounded one runs and any other asks, so its
+/// floor is the row's own minimum, not `derive`'s "ask until grounded".
+const fn floor(row: &Action) -> Tier {
+    if row.facts.read_only && row.facts.open_world {
+        row.min_tier
+    } else {
+        agentabi::derive(row)
+    }
 }
 
 const TABLE: [(&str, Tier); CALLABLE] = table();

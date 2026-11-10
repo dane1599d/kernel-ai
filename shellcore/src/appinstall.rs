@@ -280,6 +280,7 @@ impl Shell {
                 source: built.source.clone(),
                 built_by: built.id,
             }),
+            net: None,
         });
         Reply::menu(
             id,

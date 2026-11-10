@@ -178,3 +178,34 @@ fn an_exact_destination_names_only_its_hosts() {
     assert!(Dest::parse("hosts:kai.test,match:prefix").is_err());
     assert!(Dest::parse("hosts:kai.test,match:exact,match:exact").is_err());
 }
+
+#[test]
+fn hosts_any_names_every_name_of_two_labels_and_only_it_covers_itself() {
+    let any = dest("proto:tcp,ports:443,hosts:any");
+    assert!(any.any_host && any.hosts.is_empty());
+    assert!(any.allows_name("en.wikipedia.org"));
+    assert!(any.allows_name("a.b.example."));
+    assert!(!any.allows_name("localhost"), "one label is no website");
+    assert!(!any.allows_name("10.0.2.2"), "an address is not a name");
+    assert!(
+        !any.allows_name("1.2"),
+        "a numeric last label is no website"
+    );
+    assert!(!any.allows_name("host.123"));
+    assert!(any.allows_name("123.example"));
+    // It narrows to one exact host, or a suffix, on its ports.
+    let one = dest("proto:tcp,ports:443,hosts:en.wikipedia.org,match:exact");
+    assert!(one.within(&any));
+    assert!(dest("proto:tcp,ports:443,hosts:kai.test").within(&any));
+    assert!(!dest("proto:tcp,ports:80,hosts:kai.test").within(&any));
+    // Nothing but itself covers it: not a suffix, not an exact host.
+    assert!(any.within(&any));
+    assert!(!any.within(&dest(WIDE)));
+    assert!(!any.within(&one));
+    // Its text reads back; it is never exact.
+    assert_eq!(any.to_string(), "proto:tcp,addrs:none,ports:443,hosts:any");
+    assert_eq!(dest(&any.to_string()), any);
+    assert!(Dest::parse("proto:tcp,ports:443,hosts:any,match:exact").is_err());
+    assert!(Dest::parse("hosts:any,hosts:kai.test").is_err());
+    assert!(Dest::parse("hosts:any+kai.test").is_err());
+}

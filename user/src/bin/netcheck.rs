@@ -6,6 +6,9 @@
 //! - `narrow=SPEC`: first makes a narrower handle from it, and resolves on that;
 //!   `expect=narrow-refused` exits 0 if the kernel refuses to narrow;
 //! - `legacy`: uses the retired RESOLVE call instead, which always refuses.
+//! - `any=pinned`: with a `hosts:any` handle (#760), exits 0 if narrowing it
+//!   to `hosts:any` again, or to a suffix, is refused and narrowing to one
+//!   exact host is not.
 //!
 //! And for TCP streams on it (P5 task 2, the `net-stream` case), with
 //! `port=P` the echo server's port on 10.0.2.2:
@@ -38,8 +41,38 @@ fn startup_dest() -> Option<Handle> {
         .map(|info| Handle(info.handle))
 }
 
+/// `any=pinned`: no narrowing of a `hosts:any` handle keeps `hosts:any`; one
+/// exact host is fine.
+fn any_pinned() -> i32 {
+    let Some(dest) = startup_dest() else {
+        println!("any: no NetDest handle");
+        return 1;
+    };
+    let rights = (Rights::RESOLVE | Rights::CONNECT).bits();
+    let again = sys::netdest_narrow(dest, "proto:tcp,ports:443,hosts:any", rights);
+    let suffix = sys::netdest_narrow(dest, "proto:tcp,ports:443,hosts:co.uk", rights);
+    let one = sys::netdest_narrow(
+        dest,
+        "proto:tcp,ports:443,hosts:kai.test,match:exact",
+        rights,
+    );
+    match (again, suffix, one) {
+        (Err(Error::Permission), Err(Error::Permission), Ok(_)) => {
+            println!("hosts:any narrowed to one exact host, not to a suffix or hosts:any again");
+            0
+        }
+        (again, suffix, one) => {
+            println!("hosts:any narrowing gave {again:?}, {suffix:?} and {one:?}");
+            1
+        }
+    }
+}
+
 fn main() -> i32 {
     let args = args();
+    if arg(&args, "any") == Some("pinned") {
+        return any_pinned();
+    }
     if let Some(mode) = arg(&args, "stream") {
         let port = arg(&args, "port").and_then(|p| p.parse().ok()).unwrap_or(0);
         let Some(dest) = startup_dest() else {

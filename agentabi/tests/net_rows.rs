@@ -100,3 +100,73 @@ fn a_granted_host_runs_unless_the_line_says_not_to() {
     )[0];
     assert_eq!(refused.tier, Tier::Ask);
 }
+
+/// A fetch of `host` whose path carries a note's text: data going out.
+fn sending_note(host: &'static str) -> Vec<Call<'static>> {
+    let args: &'static [(&'static str, Value<'static>)] = Box::leak(Box::new([
+        (
+            "host",
+            Value {
+                text: host,
+                label: Label::Literal,
+            },
+        ),
+        (
+            "path",
+            Value {
+                text: "/?q=buy milk",
+                label: Label::Content("note \"todo\""),
+            },
+        ),
+    ]));
+    vec![Call {
+        name: "net_fetch",
+        args,
+        control: Label::Literal,
+    }]
+}
+
+#[test]
+fn read_content_goes_out_only_to_a_host_the_line_names() {
+    // P-F (ADR 0002 D6): the line names the destination, typed or by a table word.
+    let typed = sending_note("x.example");
+    assert_eq!(
+        tier("send my todo note to x.example", &typed),
+        (Tier::Run, Why::Grounded)
+    );
+    let wiki = sending_note("en.wikipedia.org");
+    assert_eq!(
+        tier("search wikipedia for my todo note", &wiki),
+        (Tier::Run, Why::Grounded)
+    );
+    // Any other host asks, and the ask names where the data came from.
+    assert_eq!(
+        tier("read my todo note", &typed),
+        (Tier::Ask, Why::Outbound("note \"todo\""))
+    );
+    assert_eq!(
+        tier("don't send my todo note to x.example", &typed),
+        (Tier::Ask, Why::Outbound("note \"todo\""))
+    );
+}
+
+#[test]
+fn a_grant_grounds_a_fetch_but_names_no_destination_for_data() {
+    let table = Table::curated();
+    let mut grants = Grants::new();
+    grants.allow(Host::parse("x.example").unwrap());
+    let net = Grounding {
+        table: &table,
+        granted: &grants,
+        sources: &[],
+    };
+    let plain = fetch("x.example", Label::Literal);
+    assert_eq!(
+        decide_net("check the status page", &plain, &ROWS, &net)[0].tier,
+        Tier::Run
+    );
+    let sending = sending_note("x.example");
+    let asked = decide_net("read my todo note", &sending, &ROWS, &net)[0];
+    assert_eq!(asked.tier, Tier::Ask);
+    assert_eq!(asked.why, Why::Outbound("note \"todo\""));
+}

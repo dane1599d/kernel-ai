@@ -379,14 +379,19 @@ pub fn need(slot: usize, bits: u64) -> Result<(), kabi::Error> {
 
 /// Takes `handles` out of `slot`'s table to move them to a process with
 /// capability bits `to_caps`: each must be open (BadHandle), carry TRANSFER and be
-/// of a kind the receiver may hold (Permission), and appear once (Invalid). On any
-/// refusal nothing is taken.
+/// of a kind the receiver may hold (Permission), and appear once (Invalid). A
+/// `NetDest` naming a `hosts:any` record (the shell's ceiling) never moves
+/// (Permission): only its narrowings do. On any refusal nothing is taken.
 pub fn take_for(slot: usize, handles: &[Handle], to_caps: u64) -> Result<Vec<Entry>, kabi::Error> {
     let mut guard = HANDLES[slot].lock();
     let table = &mut guard.as_mut().ok_or(kabi::Error::BadHandle)?.table;
     for (i, &handle) in handles.iter().enumerate() {
         let entry = table.get(handle).map_err(kabi::Error::from)?;
-        if !entry.rights.contains(Rights::TRANSFER) || !ceiling_allows(to_caps, entry.kind) {
+        let pinned = entry.kind == Kind::NetDest && crate::net::dest::any_host(entry.object);
+        if pinned
+            || !entry.rights.contains(Rights::TRANSFER)
+            || !ceiling_allows(to_caps, entry.kind)
+        {
             return Err(kabi::Error::Permission);
         }
         if handles[..i].contains(&handle) {

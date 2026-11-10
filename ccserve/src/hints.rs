@@ -35,6 +35,17 @@ const RANDOM: &[&str] = &["rand", "srand", "random", "srandom"];
 const PRINTING: &[&str] = &[
     "printf", "puts", "putchar", "sprintf", "snprintf", "fprintf",
 ];
+/// What reads a number from text, which no library here has either: an app
+/// reads a field's text, so the app gate's `guess` called `atoi`.
+const PARSING: &[&str] = &[
+    "atoi", "atol", "atoll", "strtol", "strtoll", "strtoul", "strtoull",
+];
+/// What seeds `rand` elsewhere: `srand(time(NULL))`. A window app's `rand`
+/// draws from the call's own seed (`<kaiapp.h>`), so it needs neither.
+const SEEDING: &[&str] = &["srand", "srandom", "time"];
+/// The hint for [`SEEDING`] in a window app.
+const NO_SRAND: &str =
+    "rand() needs no srand: it draws from the call's own seed. Remove srand and time.";
 
 /// wcc's messages that always get the same hint.
 const FIXED: &[(&str, &str)] = &[
@@ -168,9 +179,17 @@ fn undeclared(message: &str) -> Option<&str> {
 
 /// What to use in place of `name`, a function no library here has.
 fn missing(name: &str, library: Library) -> Option<String> {
+    if library == Library::Window && SEEDING.contains(&name) {
+        return Some(NO_SRAND.to_string());
+    }
     if RANDOM.contains(&name) {
         return Some(format!(
             "there is no {name}() here: keep an unsigned long long seed and step it, seed = seed * 6364136223846793005 + 1442695040888963407; then (seed >> 33) % n is below n."
+        ));
+    }
+    if PARSING.contains(&name) {
+        return Some(format!(
+            "there is no {name}() here: read the digits yourself, n = n * 10 + (c - '0') for each c from '0' to '9', after an optional '-'."
         ));
     }
     if !PRINTING.contains(&name) {
@@ -194,6 +213,46 @@ mod tests {
     const CHAR: &str = "/w/main.c(8): Character not closed\n    char c = '\n\n";
     const RAND: &str = "/w/main.c(8): `rand' undeclared\n    x = rand() % 6;\n        ^~~~\n\
         /w/main.c(8): cannot call except function\n    x = rand() % 6;\n        ^~~~\n";
+
+    /// `srand(time(NULL))` in a window app gets one hint: its `rand` needs no
+    /// seeding. Elsewhere `srand` is told to keep a seed, as `rand` is.
+    #[test]
+    fn a_window_apps_srand_and_time_are_told_to_go() {
+        let call = |name: &str| RAND.replace("rand", name);
+        let both = format!("{}{}", call("srand"), call("time"));
+        let got = add(&both, Library::Window);
+        assert_eq!(got.matches(HINT).count(), 1, "{got}");
+        // After srand's lines, and not again after time's.
+        assert!(got.contains(&format!("^~~~\n{HINT}{NO_SRAND}\n")), "{got}");
+        let session = add(&call("srand"), Library::Session);
+        assert!(
+            session.contains("there is no srand() here: keep an unsigned long long seed"),
+            "{session}"
+        );
+        let component = add(&call("time"), Library::Component);
+        assert!(
+            component.contains("`time' is called but not declared"),
+            "{component}"
+        );
+    }
+
+    #[test]
+    fn atoi_and_strtol_are_told_to_read_the_digits() {
+        for name in ["atoi", "strtol", "strtoull"] {
+            for library in [Library::Session, Library::Component, Library::Window] {
+                let got = add(&RAND.replace("rand", name), library);
+                assert_eq!(got.matches(HINT).count(), 1, "{got}");
+                assert!(
+                    got.contains(&format!(
+                        "hint: there is no {name}() here: read the digits yourself"
+                    )),
+                    "{got}"
+                );
+            }
+        }
+        let link = add("Unresolved: env.atoi\n", Library::Window);
+        assert!(link.contains("hint: there is no atoi() here"), "{link}");
+    }
 
     #[test]
     fn a_character_split_by_a_newline_is_told_to_write_backslash_n() {

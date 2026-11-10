@@ -204,6 +204,35 @@ fn an_apps_printf_is_told_to_format_and_label() {
     );
 }
 
+/// `srand(time(NULL))`, the usual way to seed `rand`, gets one hint: a window
+/// app's `rand` needs no seeding.
+#[test]
+fn an_apps_srand_and_time_are_told_to_go() {
+    let why = refused("srand(time(NULL));\n    Format(buf, 64, \"%lld\", s->count);");
+    assert!(why.contains("`srand' undeclared"), "{why}");
+    assert_eq!(
+        why.matches(
+            "hint: rand() needs no srand: it draws from the call's own seed. Remove srand and time."
+        )
+        .count(),
+        1,
+        "{why}"
+    );
+}
+
+/// The app gate's `guess` read its field with `atoi`.
+#[test]
+fn an_apps_atoi_is_told_to_read_the_digits() {
+    let why = refused("I64 n = atoi(\"42\");\n    Format(buf, 64, \"%lld\", n);");
+    assert!(why.contains("`atoi' undeclared"), "{why}");
+    assert!(
+        why.contains(
+            "hint: there is no atoi() here: read the digits yourself, n = n * 10 + (c - '0')"
+        ),
+        "{why}"
+    );
+}
+
 #[test]
 fn an_entrys_rand_and_printf_are_hinted_on_their_line() {
     let mut cc = Cc::open();

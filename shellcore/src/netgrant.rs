@@ -58,7 +58,7 @@ pub struct Ask {
     pub app: String,
     /// Normalised: lower case, no trailing dot.
     pub host: String,
-    /// The menu's question, which names both.
+    /// The menu's question, which names both and shows the call.
     pub question: String,
     /// The call the menu's `ONCE` names: `net_connect("weather", "api.weather.example")`.
     pub call: String,
@@ -143,20 +143,30 @@ impl NetGrants {
         let Some(host) = netdest::normalize(host) else {
             return Decision::Refused(String::from("not a host name"));
         };
+        // A package names its hosts: `hosts:any` is the shell's alone.
+        if ceiling.any_host {
+            return Decision::Refused(format!("{app}'s package names no hosts of its own"));
+        }
         if !ceiling.allows_name(&host) {
             return Decision::Refused(format!("{app}'s package does not name {host}"));
         }
         if let Some(grant) = self.find(app, &host) {
             return Decision::Granted(grant.id);
         }
-        let question = format!("Let {app} connect to {host}?");
         let call = call(app, &host);
-        // The menu shows the question and the call whole, or not at all.
-        if question.len() > MAX_TEXT || call.len() > MAX_TEXT {
+        // The menu shows the call word for word in its question, and the
+        // "Always allow on <host>" choice, whole or not at all.
+        let forms = [
+            format!("Let {app} connect to {host}: {call}?"),
+            format!("Allow {call}?"),
+        ];
+        let question = forms.into_iter().find(|q| q.len() <= MAX_TEXT);
+        let always = "Always allow on ".len() + host.len();
+        let Some(question) = question.filter(|_| always <= MAX_TEXT) else {
             return Decision::Refused(format!(
                 "{host} is too long a name to ask about on the card"
             ));
-        }
+        };
         Decision::Ask(Ask {
             app: app.to_string(),
             host,
@@ -244,6 +254,7 @@ impl NetGrants {
             ports: ceiling.ports.clone(),
             hosts,
             exact: true,
+            any_host: false,
         };
         narrowed.within(ceiling).then_some(narrowed)
     }

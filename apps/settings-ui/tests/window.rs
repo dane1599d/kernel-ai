@@ -4,10 +4,10 @@
 
 use comp_settings::access;
 use comp_settings::files::Apps;
-use comp_settings::{About, Intent, Page, RuleLine, RuleRef, Settings};
+use comp_settings::{About, Intent, NetLine, Page, RuleLine, RuleRef, Settings};
 use comp_settings_ui::{
-    APP_LIST, Change, END, Entry, KEEP, LEGIBLE, PROFILES, REMOVE, RESTORE, REVOKE, SIZE, START,
-    TABS, THEME, View, WINDOW_ON, build, clock, diff, on_ui, redraw,
+    APP_LIST, Change, END, Entry, KEEP, LEGIBLE, NET_REVOKE, PROFILES, REMOVE, RESTORE, REVOKE,
+    SIZE, START, TABS, THEME, View, WINDOW_ON, build, clock, diff, on_ui, redraw,
 };
 use uikit::layout::FixedAdvance;
 use uikit::widget::{UiEvent, Value, Widget};
@@ -75,7 +75,8 @@ fn every_page_is_a_tree_uikit_takes() {
             );
         }
     }
-    let about = names(&build(&s, &mut View::page(5)));
+    let at = Page::ALL.iter().position(|p| *p == Page::About).unwrap();
+    let about = names(&build(&s, &mut View::page(at)));
     assert!(about.iter().any(|n| n == "Licence: MPL-2.0"), "{about:?}");
 }
 
@@ -469,4 +470,37 @@ fn every_page_at_its_limit_has_unique_ids_and_fits_one_window() {
             );
         }
     }
+}
+
+#[test]
+fn the_network_page_lists_each_host_and_its_revoke_names_that_grant() {
+    let mut s = settings();
+    s.net = vec![
+        NetLine {
+            id: 4,
+            text: "weather: api.weather.example (this session)".into(),
+        },
+        NetLine {
+            id: 9,
+            text: "weather: maps.weather.example (always)".into(),
+        },
+    ];
+    let at = Page::ALL.iter().position(|p| *p == Page::Network).unwrap();
+    let mut view = View::page(at);
+    let shown = names(&build(&s, &mut view));
+    assert!(
+        shown
+            .iter()
+            .any(|n| n == "weather: maps.weather.example (always)"),
+        "{shown:?}"
+    );
+    let (_, intent) = on_ui(&s, &mut view, &UiEvent::Pressed(NET_REVOKE + 1));
+    assert_eq!(intent, Some(Intent::RevokeNet(9)));
+    // Once it is gone, a late press on its slot does nothing.
+    s.applied(&Intent::RevokeNet(9));
+    build(&s, &mut view);
+    let (_, intent) = on_ui(&s, &mut view, &UiEvent::Pressed(NET_REVOKE + 1));
+    assert_eq!(intent, None);
+    let (_, intent) = on_ui(&s, &mut view, &UiEvent::Pressed(NET_REVOKE));
+    assert_eq!(intent, Some(Intent::RevokeNet(4)));
 }

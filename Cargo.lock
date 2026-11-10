@@ -2266,6 +2266,7 @@ dependencies = [
  "look",
  "modelchan",
  "netdest",
+ "nethosts",
  "promptcore",
  "rhai",
  "sched",
