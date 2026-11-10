@@ -2687,6 +2687,7 @@ dependencies = [
  "llmproto",
  "look",
  "modelchan",
+ "netdest",
  "p256",
  "promptcore",
  "quant",
