@@ -402,8 +402,12 @@ fn blob(net: &Net, dir: Handle, job: &Job, first: bool) -> Result<(), String> {
                 got.stopped
             ));
         }
+        // Each line fits one console piece (`[dlcheck] ` and 150 characters).
         println!(
-            "dlcheck: boot 1: {middle} of {count} chunks checked and written, and the mark in kaifs says {middle}; the cut at chunk {cut} fetched again only that chunk; stopped inside chunk {middle} for the reboot"
+            "dlcheck: boot 1: {middle} of {count} chunks checked and written, and the mark in kaifs says {middle}"
+        );
+        println!(
+            "dlcheck: boot 1: the cut at chunk {cut} fetched again only that chunk; stopped inside chunk {middle} for the reboot"
         );
         return Ok(());
     }
@@ -417,8 +421,11 @@ fn blob(net: &Net, dir: Handle, job: &Job, first: bool) -> Result<(), String> {
         ));
     }
     println!(
-        "dlcheck: boot 2: resumed at the mark, chunk {middle} of {count}, re-checking chunks 0 to {} from kaifs without fetching them; the cut at chunk {cut} fetched again only that chunk; the whole target checked out and was moved in",
+        "dlcheck: boot 2: resumed at the mark, chunk {middle} of {count}, re-checking chunks 0 to {} from kaifs without fetching them",
         middle - 1
+    );
+    println!(
+        "dlcheck: boot 2: the cut at chunk {cut} fetched again only that chunk; the whole target checked out and was moved in"
     );
     Ok(())
 }

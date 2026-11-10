@@ -82,7 +82,8 @@ pub const CASES: &[TestCase] = &[
             faults: download::FIRST_FAULTS,
         }),
         expect: &[
-            "dlcheck: boot 1: 16 of 32 chunks checked and written, and the mark in kaifs says 16; the cut at chunk 12 fetched again only that chunk; stopped inside chunk 16 for the reboot",
+            "dlcheck: boot 1: 16 of 32 chunks checked and written, and the mark in kaifs says 16",
+            "dlcheck: boot 1: the cut at chunk 12 fetched again only that chunk; stopped inside chunk 16 for the reboot",
             "dlcheck: flipped: a flipped byte was refused by its chunk, 2, and none of that chunk was written: the mark says 2",
             "dlcheck: whole: every chunk matched and the whole-file hash did not, so it was refused and not moved in",
             "dlcheck: expired: an expired certificate was refused in the handshake, before a byte was stored",
@@ -131,7 +132,8 @@ const NET_DOWNLOAD_2: TestCase = TestCase {
         faults: download::SECOND_FAULTS,
     }),
     expect: &[
-        "dlcheck: boot 2: resumed at the mark, chunk 16 of 32, re-checking chunks 0 to 15 from kaifs without fetching them; the cut at chunk 25 fetched again only that chunk; the whole target checked out and was moved in",
+        "dlcheck: boot 2: resumed at the mark, chunk 16 of 32, re-checking chunks 0 to 15 from kaifs without fetching them",
+        "dlcheck: boot 2: the cut at chunk 25 fetched again only that chunk; the whole target checked out and was moved in",
         "net-download: boot 2: dlcheck resumed after the reboot and its target checked out whole",
     ],
     ..case("net-download (boot 2)", "test=net-download again")
@@ -154,6 +156,35 @@ mod tests {
     #[test]
     fn every_mock_host_is_in_the_dns_fixture() {
         assert_eq!(HOSTS, netcore::fixture::MOCK_HOSTS);
+    }
+
+    /// The kernel prints a program's line in pieces of `PIECE_CHARS` with its
+    /// `[name] ` (`process/syscall/core.rs`), so a longer expected line is cut
+    /// in two on the console and never seen whole: every program line these
+    /// cases expect fits one piece.
+    #[test]
+    fn every_expected_program_line_fits_one_console_piece() {
+        use crate::local_ask::PIECE_CHARS;
+        let lines = super::CASES
+            .iter()
+            .chain([&super::NET_DOWNLOAD_2])
+            .flat_map(|case| case.expect.iter());
+        for line in lines {
+            let named = line
+                .strip_prefix('[')
+                .and_then(|rest| rest.split_once("] "));
+            let program = super::PROGRAMS
+                .iter()
+                .find(|p| line.starts_with(&format!("{p}: ")));
+            let (name, text) = match (named, program) {
+                (Some((name, text)), _) => (name, text),
+                (None, Some(program)) => (*program, *line),
+                (None, None) => continue,
+            };
+            let room = PIECE_CHARS - name.chars().count() - 3;
+            let long = text.chars().count();
+            assert!(long <= room, "{long} > {room}: {line}");
+        }
     }
 
     /// The line a caller's plan puts before its own (P5 task 12) is one the

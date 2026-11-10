@@ -12,7 +12,7 @@ use quant::Tier;
 /// What the harness types after `ask`.
 pub const QUESTION: &str = "hi";
 /// Longest piece of a line the terminal prints in one go (`terminal::PIECE_CHARS`).
-const PIECE_CHARS: usize = 160;
+pub(crate) const PIECE_CHARS: usize = 160;
 
 /// The answer the guest must show for `ask hi` on the model in `bytes`.
 pub fn golden(bytes: &[u8]) -> Result<String, String> {
