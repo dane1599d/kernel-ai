@@ -48,12 +48,36 @@ fn a_netdest_line_names_its_destination_and_is_bound_to_its_program() {
 }
 
 #[test]
+fn only_a_line_that_says_netdest_llm_gets_the_llm_servers_destination() {
+    let plan = parse_plan(
+        "llm caps=serve+net netdest=llm
+web caps=serve+net
+net-free",
+    );
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let llm = plan.grants("llm", "llm").unwrap();
+    assert!(llm.llm_dest);
+    assert_eq!(llm.netdest, None);
+    assert!(
+        !plan.grants("web", "web").unwrap().llm_dest,
+        "caps=net alone"
+    );
+    assert!(!plan.grants("net-free", "net-free").unwrap().llm_dest);
+    // Bound to its program, as every netdest= is.
+    assert!(plan.grants("llm", "other").is_err());
+    assert_eq!(plan.services[0].args, "", "not passed on as an argument");
+}
+
+#[test]
 fn a_bad_or_doubled_netdest_fails_its_line() {
     for line in [
         "a netdest=hosts:com",
         "a netdest=proto:sctp",
         "a netdest=hosts:a.example netdest=hosts:b.example",
         "a netdest=hosts:a.example unsupervised",
+        "a netdest=llm netdest=hosts:a.example",
+        "a netdest=hosts:a.example netdest=llm",
+        "a netdest=llm unsupervised",
     ] {
         let plan = parse_plan(line);
         assert!(plan.services.is_empty(), "{line}");
