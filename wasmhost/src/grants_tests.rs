@@ -9,6 +9,7 @@ const SETTINGS: Grants = Grants {
     models: false,
     edit: false,
     files: false,
+    net: false,
 };
 
 #[test]
