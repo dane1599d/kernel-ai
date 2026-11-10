@@ -15,9 +15,13 @@
 //!   <netdest>`, `asked` (a card waits for the person: ask again) or
 //!   `refused <why>`. An ask that stays unanswered for [`ASK_LIMIT_MS`] is a
 //!   timeout.
-//! - **One request at a time.** A call to `fetch` blocks up to 30 s, so a
-//!   worker thread of comphost's makes it ([`Worker`]); the main thread goes
-//!   on serving the app and looks for the answer each pass.
+//! - **One request at a time, and no wait.** A plain call to `fetch` blocks
+//!   until the request is made, up to 30 s, and comphost runs the app on its
+//!   one thread. So it starts the request (`kainet::later`: `fetch` answers
+//!   `started` at once and keeps the answer) and takes the answer on a later
+//!   pass. Each of those calls waits at most [`CALL_MS`]: while `fetch` is
+//!   busy with a request, ours or another caller's, the call is withdrawn and
+//!   tried again [`LOOK_MS`] later.
 //! - **A redirect to another host** comes back unfollowed, with its
 //!   `location`: comphost asks about that host by its own name and calls
 //!   again with the hops so far, so one limit of five holds across calls.
@@ -25,16 +29,15 @@
 //!   serial of the version that queued it, and an answer for one no longer
 //!   shown is dropped.
 
-use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
 use deskcore::net_wire;
 use kabi::handle::{Handle, HandleInfo, Kind, Rights};
 use kainet::fetch::{Error as FetchError, MAX_BODY, Request};
 use kainet::http::{Method, Range, Url};
+use kainet::later::{self, Message};
 use kainet::wire::{self, Ask};
 use livecore::host::{Env, Host};
 use user::{println, sys};
@@ -47,126 +50,27 @@ const ASK_EVERY_MS: u64 = 500;
 const ASK_LIMIT_MS: u64 = 120_000;
 /// `desktop`'s wait for one ask.
 const DESKTOP_MS: u64 = 2_000;
-/// `fetch`'s wait: its own 30 s, and room to send the answer.
-const FETCH_MS: u64 = 35_000;
-/// How often the main thread looks for the worker's answer.
+/// The most one call to `fetch` waits, a start or a take: the app's next
+/// input is not held up longer.
+const CALL_MS: u64 = 20;
+/// How often a start or a take is tried again.
 pub const LOOK_MS: u64 = 50;
+/// How long a request may take from its first start to its answer: `fetch`'s
+/// own 30 s for it, and room for the calls ahead of it.
+const CALL_LIMIT_MS: u64 = 60_000;
 /// Requests taken from the app and not yet answered; the app's own queue
 /// holds the rest (`wasmhost::net::MAX_QUEUED`).
 const MAX_HELD: usize = 8;
-/// The worker's stack.
-const WORKER_STACK_PAGES: u64 = 8;
 
-/// The worker is idle, has a call to make, or has its answer.
-const IDLE: u32 = 0;
-const CALL: u32 = 1;
-const DONE: u32 = 2;
-
-/// What the worker's call to `fetch` came to: its answer text, and the body's
-/// `Shm` if one moved back.
-struct Called {
-    answer: Result<String, kabi::Error>,
-    body: Option<Handle>,
-}
-
-/// The one call at a time between the main thread and the worker. `state`
-/// says whose the slots are: the main thread writes `call` and sets
-/// [`CALL`]; the worker takes it, writes `done` and sets [`DONE`]; the main
-/// thread takes `done` and sets [`IDLE`].
-struct Mailbox {
-    state: AtomicU32,
-    fetch: Handle,
-    call: spin::Mutex<Option<(String, Handle)>>,
-    done: spin::Mutex<Option<Called>>,
-}
-
-extern "C" fn worker(arg: u64) -> ! {
-    // SAFETY: `arg` is the `&'static Mailbox` that `Worker::start` leaked for
-    // this thread; it is never freed.
-    let mailbox = unsafe { &*(arg as *const Mailbox) };
-    let mut reply = alloc::vec![0u8; wire::MAX_ANSWER];
-    loop {
-        // Sleeps on the word as it is: while an answer waits for the main
-        // thread (DONE) as much as while idle, until a call wakes it.
-        let state = mailbox.state.load(Ordering::Acquire);
-        if state != CALL {
-            let _ = sys::futex_wait(&mailbox.state, state, 60_000);
-            continue;
-        }
-        let Some((request, dest)) = mailbox.call.lock().take() else {
-            mailbox.state.store(IDLE, Ordering::Release);
-            continue;
-        };
-        let mut received = [Handle::NONE; 1];
-        let called = sys::call_h(
-            mailbox.fetch,
-            request.as_bytes(),
-            &mut reply,
-            FETCH_MS,
-            &[dest],
-            &mut received,
-        );
-        let done = match called {
-            Ok((len, came)) => Called {
-                answer: Ok(String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned()),
-                body: (came > 0).then_some(received[0]),
-            },
-            // A handle that did not move is still ours.
-            Err(error) => {
-                let _ = sys::handle_close(dest);
-                Called {
-                    answer: Err(error),
-                    body: None,
-                }
-            }
-        };
-        *mailbox.done.lock() = Some(done);
-        mailbox.state.store(DONE, Ordering::Release);
-    }
-}
-
-/// The worker thread, started with the first call.
-struct Worker {
-    mailbox: &'static Mailbox,
-    started: bool,
-}
-
-impl Worker {
-    fn new(fetch: Handle) -> Self {
-        let mailbox = Box::leak(Box::new(Mailbox {
-            state: AtomicU32::new(IDLE),
-            fetch,
-            call: spin::Mutex::new(None),
-            done: spin::Mutex::new(None),
-        }));
-        Self {
-            mailbox,
-            started: false,
-        }
-    }
-
-    /// Hands the worker `request` on `dest`.
-    fn call(&mut self, request: String, dest: Handle) -> Result<(), kabi::Error> {
-        if !self.started {
-            let arg = self.mailbox as *const Mailbox as u64;
-            sys::thread_spawn(worker, arg, 0, WORKER_STACK_PAGES)?;
-            self.started = true;
-        }
-        *self.mailbox.call.lock() = Some((request, dest));
-        self.mailbox.state.store(CALL, Ordering::Release);
-        let _ = sys::futex_wake(&self.mailbox.state, 1);
-        Ok(())
-    }
-
-    /// The call's answer, once the worker has it.
-    fn answer(&mut self) -> Option<Called> {
-        if self.mailbox.state.load(Ordering::Acquire) != DONE {
-            return None;
-        }
-        let done = self.mailbox.done.lock().take();
-        self.mailbox.state.store(IDLE, Ordering::Release);
-        done
-    }
+/// Where a request is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// Asking the shell about its host.
+    Ask,
+    /// Granted: starting it on `fetch`.
+    Start,
+    /// Started as `id`: taking its answer.
+    Take { id: u32 },
 }
 
 /// One request on its way.
@@ -177,11 +81,10 @@ struct Job {
     request: Request,
     /// Redirects followed so far, across calls.
     hops: u8,
-    /// When the next ask may go, and when the first went.
-    ask_at_ms: u64,
+    step: Step,
+    /// When the next try may go, and when this step's first did.
+    next_ms: u64,
     since_ms: u64,
-    /// Whether its call is with the worker.
-    calling: bool,
 }
 
 /// The `NetDest` the plan line's `netdest=` gave this process, its ceiling:
@@ -244,7 +147,9 @@ pub struct Net {
     ceiling: Handle,
     ceiling_text: String,
     desktop: Handle,
-    worker: Worker,
+    fetch: Handle,
+    /// The next start's id, comphost's own.
+    next_id: u32,
     jobs: VecDeque<Job>,
     reply: Vec<u8>,
     /// Whether the log has said that the first answer reached the app.
@@ -273,7 +178,8 @@ impl Net {
             ceiling,
             ceiling_text,
             desktop,
-            worker: Worker::new(fetch),
+            fetch,
+            next_id: 0,
             jobs: VecDeque::new(),
             reply: alloc::vec![0u8; kabi::MAX_MESSAGE],
             said: false,
@@ -292,10 +198,7 @@ impl Net {
             return Some(0);
         }
         let job = self.jobs.front()?;
-        Some(match job.calling {
-            true => LOOK_MS,
-            false => job.ask_at_ms.saturating_sub(now_ms),
-        })
+        Some(job.next_ms.saturating_sub(now_ms))
     }
 
     /// Takes the shown version's requests, moves the oldest on, and gives the
@@ -364,25 +267,23 @@ impl Net {
                     ticket,
                     request,
                     hops: 0,
-                    ask_at_ms: now_ms,
+                    step: Step::Ask,
+                    next_ms: now_ms,
                     since_ms: now_ms,
-                    calling: false,
                 }),
             }
         }
         answers
     }
 
-    /// Moves the oldest request on: its ask, its call or its answer.
+    /// Moves the oldest request on: its ask, its start or its take.
     fn step(&mut self, now_ms: u64) -> Option<(u64, u32, Result<NetResponse, NetError>)> {
         let mut job = self.jobs.pop_front()?;
-        let next = match job.calling {
-            true => match self.worker.answer() {
-                Some(called) => self.called(&mut job, called, now_ms),
-                None => Next::Wait,
-            },
-            false if now_ms < job.ask_at_ms => Next::Wait,
-            false => self.ask(&mut job, now_ms),
+        let next = match job.step {
+            _ if now_ms < job.next_ms => Next::Wait,
+            Step::Ask => self.ask(&mut job, now_ms),
+            Step::Start => self.start(&mut job, now_ms),
+            Step::Take { id } => self.take_answer(&mut job, id, now_ms),
         };
         match next {
             Next::Wait => {
@@ -393,8 +294,7 @@ impl Net {
         }
     }
 
-    /// Asks the shell about the job's host; on a grant, hands its call to the
-    /// worker.
+    /// Asks the shell about the job's host; on a grant, starts it.
     fn ask(&mut self, job: &mut Job, now_ms: u64) -> Next {
         let host = match host_of(&job.request.url) {
             Ok(host) => host,
@@ -410,7 +310,9 @@ impl Net {
         // The shell's answer names every host the app holds; the call is
         // made on this one alone.
         if answer.starts_with("granted ") {
-            return self.call(job, &host);
+            job.step = Step::Start;
+            job.since_ms = now_ms;
+            return self.start(job, now_ms);
         }
         if let Some(why) = answer.strip_prefix("refused ") {
             println!("comphost: the shell refused {host}: {why}");
@@ -421,64 +323,134 @@ impl Net {
             println!("comphost: no answer came for {host}");
             return Next::Answer(Err(NetError::Timeout));
         }
-        job.ask_at_ms = now_ms.saturating_add(ASK_EVERY_MS);
+        job.next_ms = now_ms.saturating_add(ASK_EVERY_MS);
         Next::Wait
     }
 
-    /// Narrows the ceiling to `host` alone (`net_wire::call_dest`) and hands
-    /// the call to the worker.
-    fn call(&mut self, job: &mut Job, host: &str) -> Next {
-        let rights = Rights::RESOLVE.bits() | Rights::CONNECT.bits() | Rights::TRANSFER.bits();
-        let dest = net_wire::call_dest(host);
-        let handle = match sys::netdest_narrow(self.ceiling, &dest, rights) {
-            Ok(handle) => handle,
-            Err(error) => {
-                println!("comphost: the ceiling does not reach {host} ({error:?})");
-                return Next::Answer(Err(NetError::Refused(host.to_string())));
-            }
+    /// One call to `fetch`, waiting at most [`CALL_MS`]: its reply, and the
+    /// handle that moved back with it. `send`, if the call did not take it,
+    /// is closed: each try narrows a handle of its own.
+    fn call_fetch(
+        &mut self,
+        text: &str,
+        send: Option<Handle>,
+    ) -> Result<(String, Option<Handle>), kabi::Error> {
+        let sending: &[Handle] = match &send {
+            Some(handle) => core::slice::from_ref(handle),
+            None => &[],
         };
-        let text = Ask {
-            request: job.request.clone(),
-            hops: job.hops,
-        }
-        .text();
-        match self.worker.call(text, handle) {
-            Ok(()) => {
-                job.calling = true;
-                Next::Wait
+        let mut received = [Handle::NONE; 1];
+        let called = sys::call_h(
+            self.fetch,
+            text.as_bytes(),
+            &mut self.reply,
+            CALL_MS,
+            sending,
+            &mut received,
+        );
+        match called {
+            Ok((len, came)) => {
+                let text = String::from_utf8_lossy(&self.reply[..len.min(self.reply.len())]);
+                Ok((text.into_owned(), (came > 0).then_some(received[0])))
             }
             Err(error) => {
-                let _ = sys::handle_close(handle);
-                Next::Answer(Err(NetError::Http(format!(
-                    "comphost could not call fetch ({error:?})"
-                ))))
+                // A call refused before it was sent leaves the handle here; one
+                // sent and withdrawn took it with it.
+                if let Some(handle) = send
+                    && sys::handle_info(handle).is_ok_and(|i| i.kind() == Some(Kind::NetDest))
+                {
+                    let _ = sys::handle_close(handle);
+                }
+                Err(error)
             }
         }
     }
 
-    /// What the worker's call came to: an answer, or, for a redirect to
-    /// another host, the same job again, to ask about that host.
-    fn called(&mut self, job: &mut Job, called: Called, now_ms: u64) -> Next {
-        job.calling = false;
-        let text = match called.answer {
-            Ok(text) => text,
+    /// Whether a job's calls to `fetch` have taken too long: its answer.
+    fn overdue(job: &Job, now_ms: u64) -> Option<Next> {
+        (now_ms.saturating_sub(job.since_ms) >= CALL_LIMIT_MS).then(|| {
+            println!("comphost: fetch did not answer in time");
+            Next::Answer(Err(NetError::Timeout))
+        })
+    }
+
+    /// Narrows the ceiling to the job's host alone (`net_wire::call_dest`)
+    /// and starts the request on `fetch`; tried again while `fetch` is busy.
+    fn start(&mut self, job: &mut Job, now_ms: u64) -> Next {
+        let host = match host_of(&job.request.url) {
+            Ok(host) => host,
+            Err(error) => return Next::Answer(Err(error)),
+        };
+        let rights = Rights::RESOLVE.bits() | Rights::CONNECT.bits() | Rights::TRANSFER.bits();
+        let handle = match sys::netdest_narrow(self.ceiling, &net_wire::call_dest(&host), rights) {
+            Ok(handle) => handle,
             Err(error) => {
-                if let Some(body) = called.body {
-                    let _ = sys::handle_close(body);
-                }
-                println!("comphost: fetch did not answer ({error:?})");
-                return Next::Answer(Err(match error {
-                    kabi::Error::TimedOut => NetError::Timeout,
-                    _ => NetError::Http(String::from("the fetch service did not answer")),
-                }));
+                println!("comphost: the ceiling does not reach {host} ({error:?})");
+                return Next::Answer(Err(NetError::Refused(host)));
             }
         };
-        let head = match wire::parse_answer(&text) {
-            Ok(Ok(head)) => head,
-            Ok(Err(error)) => return Next::Answer(Err(net_error(error))),
-            Err(why) => return Next::Answer(Err(NetError::Http(String::from(why)))),
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+        let ask = Ask {
+            request: job.request.clone(),
+            hops: job.hops,
         };
-        let body = match called.body {
+        let text = Message::Start { id, ask }.text();
+        match self.call_fetch(&text, Some(handle)) {
+            Ok((reply, body)) if reply == later::STARTED => {
+                if let Some(body) = body {
+                    let _ = sys::handle_close(body);
+                }
+                job.step = Step::Take { id };
+                job.next_ms = now_ms.saturating_add(LOOK_MS);
+                Next::Wait
+            }
+            // `fetch` refused the start itself: its answer says why.
+            Ok((reply, body)) => self.answered(job, &reply, body, now_ms),
+            Err(_) => Self::overdue(job, now_ms).unwrap_or_else(|| {
+                job.next_ms = now_ms.saturating_add(LOOK_MS);
+                Next::Wait
+            }),
+        }
+    }
+
+    /// Takes the answer to start `id`; tried again while `fetch` is busy.
+    fn take_answer(&mut self, job: &mut Job, id: u32, now_ms: u64) -> Next {
+        let text = Message::Take { id }.text();
+        match self.call_fetch(&text, None) {
+            Ok((reply, None)) if reply == later::NONE => {
+                Self::overdue(job, now_ms).unwrap_or_else(|| {
+                    job.next_ms = now_ms.saturating_add(LOOK_MS);
+                    Next::Wait
+                })
+            }
+            Ok((reply, body)) => self.answered(job, &reply, body, now_ms),
+            Err(_) => Self::overdue(job, now_ms).unwrap_or_else(|| {
+                job.next_ms = now_ms.saturating_add(LOOK_MS);
+                Next::Wait
+            }),
+        }
+    }
+
+    /// What `fetch`'s answer comes to: the app's, or, for a redirect to
+    /// another host, the same job again, to ask about that host.
+    fn answered(&mut self, job: &mut Job, text: &str, body: Option<Handle>, now_ms: u64) -> Next {
+        let head = match wire::parse_answer(text) {
+            Ok(Ok(head)) => head,
+            Ok(Err(error)) => {
+                if let Some(body) = body {
+                    let _ = sys::handle_close(body);
+                }
+                return Next::Answer(Err(net_error(error)));
+            }
+            Err(why) => {
+                if let Some(body) = body {
+                    let _ = sys::handle_close(body);
+                }
+                return Next::Answer(Err(NetError::Http(String::from(why))));
+            }
+        };
+        let body = match body {
             Some(shm) => match body_of(shm, head.len) {
                 Ok(body) => body,
                 Err(error) => return Next::Answer(Err(error)),
@@ -491,7 +463,8 @@ impl Net {
             println!("comphost: a redirect to {to} is asked about by its own name");
             job.request.url = location;
             job.hops = head.hops.saturating_add(1);
-            job.ask_at_ms = now_ms;
+            job.step = Step::Ask;
+            job.next_ms = now_ms;
             job.since_ms = now_ms;
             return Next::Wait;
         }

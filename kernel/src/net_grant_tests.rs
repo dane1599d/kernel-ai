@@ -34,12 +34,12 @@ use crate::{ask_box, ipc, log, terminal, threads};
 /// (`/system/state/netgrants`), and its route to `desktop`.
 pub const SHELL: &str = kabi::plan::SHELL_DESK_FILES;
 
-/// The test app: comphost with NET (to hold its ceiling) and THREADS (for the
-/// worker that calls `fetch`), its ceiling `kai.test` on 443, and routes to
+/// The test app: comphost with NET (to hold its ceiling), its ceiling
+/// `kai.test` on 443, and routes to
 /// `desktop` then `fetch`, after both. It starts at boot and asks at once.
 /// Then Settings, started on demand once the grants exist: it reads them when
 /// it starts.
-pub const APPS: &str = "net-fixture program=comphost caps=serve+component+call+net+threads uses=desktop+fetch netdest=proto:tcp,ports:443,hosts:kai.test pages=8192 stack_pages=512 burst_ms=20000 version=1\n\
+pub const APPS: &str = "net-fixture program=comphost caps=serve+component+call+net uses=desktop+fetch netdest=proto:tcp,ports:443,hosts:kai.test pages=8192 stack_pages=512 burst_ms=20000 version=1\n\
      settings-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand";
 
 /// The cards, in the order the app's requests raise them, and whether the
