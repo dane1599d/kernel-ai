@@ -386,18 +386,24 @@ impl Shell {
     /// give an app back a network grant (a revoke undone, or an undo of an
     /// Allow undone), which only the card's Allow, the person's typed `undo`
     /// or Settings may do. Taking a grant back stays open to it.
+    ///
+    /// Likewise a row Settings withheld from an app's effects: reverting an
+    /// entry whose inverse gives the row back (a withhold undone, or an undo of
+    /// a restore undone) is the person's, never Kai's.
     pub(crate) fn kai_undo_refusal(&self) -> Option<String> {
         let entry = self.log.get(self.log.newest_live()?)?;
-        let widens = entry
-            .changes
-            .iter()
-            .any(|c| matches!(c.inverse, Some(Inverse::NetGrant { held: false, .. })));
-        widens.then(|| {
-            format!(
-                "#{} gives an app back a network grant, which only you may undo: type `undo`, or allow it again when the app asks",
-                entry.id
-            )
-        })
+        let widens = |inverse: &Option<Inverse>| match inverse {
+            Some(Inverse::NetGrant { held: false, .. }) => Some("a network grant"),
+            Some(Inverse::Grant {
+                withheld: false, ..
+            }) => Some("a row Settings withheld"),
+            _ => None,
+        };
+        let what = entry.changes.iter().find_map(|c| widens(&c.inverse))?;
+        Some(format!(
+            "#{} gives an app back {what}, which only you may undo: type `undo`, or allow it again in Settings or when the app asks",
+            entry.id
+        ))
     }
 
     /// `undo` of a network grant (`held`: it is taken back) or of a revoke

@@ -31,8 +31,15 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
 
 fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
     match number {
+        // The LLM's own `NetDest`, which NET's startup handle is: a handle
+        // to any other destination does not reach the LLM (K's review of #755).
         call::HTTP => {
-            need(slot, cap::NET)?;
+            crate::handle::need_object(
+                slot,
+                Kind::NetDest,
+                Rights::CONNECT,
+                kabi::handle::netdest::LLM,
+            )?;
             exchange_to(slot, a[0], Destination::Llm)
         }
         // Retired with `cap::RESOLVE` (P5 task 1): a resolve goes on a handle.

@@ -43,7 +43,14 @@ fn ceiling() -> Result<Handle, String> {
     found.ok_or_else(|| String::from("the shell holds no network handle"))
 }
 
-/// A handle for exactly `host`, narrowed from the ceiling with `rights`.
+/// `host` as a host name alone, lower case: nothing that could add a field to
+/// the narrowing spec (`a.example,addrs:any`) or an authority to the URL.
+fn host_name(host: &str) -> Result<String, String> {
+    netdest::normalize(host).ok_or_else(|| format!("{host:?} is not a host name"))
+}
+
+/// A handle for exactly `host` (already [`host_name`]d), narrowed from the
+/// ceiling with `rights`.
 fn narrowed(host: &str, rights: u32) -> Result<Handle, String> {
     let spec = format!("proto:tcp,ports:443,hosts:{host},match:exact");
     sys::netdest_narrow(ceiling()?, &spec, rights)
@@ -53,11 +60,9 @@ fn narrowed(host: &str, rights: u32) -> Result<Handle, String> {
 /// GET `path` from `host` over HTTPS: the body, as text.
 pub fn fetch(host: &str, path: &str) -> Result<String, String> {
     let route = crate::routes::named("fetch").ok_or("the shell has no route to fetch")?;
-    let path = match path {
-        "" => "/",
-        path if path.starts_with('/') => path,
-        _ => return Err(String::from("a path starts with /")),
-    };
+    let host = host_name(host)?;
+    let host = host.as_str();
+    let path = path_of(path)?;
     let ask = Ask {
         request: Request {
             url: format!("https://{host}{path}"),
@@ -78,16 +83,29 @@ pub fn fetch(host: &str, path: &str) -> Result<String, String> {
         &[dest],
         &mut received,
     );
-    let (len, count) = called.map_err(|e| format!("fetch did not answer: {e:?}"))?;
-    let body = match count {
-        1 => take_body(received[0]),
-        _ => Vec::new(),
+    let (len, count) = match called {
+        Ok(answered) => answered,
+        Err(error) => {
+            // A call refused before the move (no route, bad arguments) leaves
+            // the handle here; one that was moved is gone, and this close
+            // finds nothing.
+            let _ = sys::handle_close(dest);
+            return Err(format!("fetch did not answer: {error:?}"));
+        }
     };
-    let text = core::str::from_utf8(&reply[..len.min(reply.len())])
-        .map_err(|_| String::from("fetch's answer is not text"))?;
-    let head = match wire::parse_answer(text).map_err(String::from)? {
+    let shm = (count == 1).then_some(received[0]);
+    let head = match answer_head(&reply[..len.min(reply.len())]) {
         Ok(head) => head,
-        Err(error) => return Err(failed(&error)),
+        Err(why) => {
+            if let Some(shm) = shm {
+                let _ = sys::handle_close(shm);
+            }
+            return Err(why);
+        }
+    };
+    let body = match shm {
+        Some(shm) => take_body(shm, head.len)?,
+        None => Vec::new(),
     };
     if let Some(location) = head.location {
         return Err(format!(
@@ -101,20 +119,53 @@ pub fn fetch(host: &str, path: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&body[..len]).into_owned())
 }
 
-/// The body `fetch` moved back in an `Shm`, copied out; the `Shm` is closed.
-fn take_body(shm: Handle) -> Vec<u8> {
-    let mut body = Vec::new();
-    if let Ok(address) = sys::shm_map(shm, false) {
-        // SAFETY: `fetch` made the `Shm` of MAX_BODY bytes and moved it here; it
-        // is mapped read-only at `address`, and the slice is copied out before
-        // the unmap.
-        body.extend_from_slice(unsafe {
-            core::slice::from_raw_parts(address as *const u8, kainet::fetch::MAX_BODY)
-        });
-        let _ = sys::shm_unmap(address);
+/// A URL path: "/" when empty, else from '/' on, with no space or control
+/// character (what follows is the server's to read, never the authority).
+fn path_of(path: &str) -> Result<&str, String> {
+    match path {
+        "" => Ok("/"),
+        path if !path.starts_with('/') => Err(String::from("a path starts with /")),
+        path if path.chars().any(|c| c.is_whitespace() || c.is_control()) => {
+            Err(String::from("a path has no spaces or control characters"))
+        }
+        path => Ok(path),
     }
+}
+
+/// `fetch`'s answer line, as a head or as its error in words.
+fn answer_head(reply: &[u8]) -> Result<wire::Head, String> {
+    let text =
+        core::str::from_utf8(reply).map_err(|_| String::from("fetch's answer is not text"))?;
+    match wire::parse_answer(text).map_err(String::from)? {
+        Ok(head) => Ok(head),
+        Err(error) => Err(failed(&error)),
+    }
+}
+
+/// The first `len` bytes of the body `fetch` moved back in an `Shm`, copied
+/// out; the `Shm` is closed. The kernel tells no `Shm`'s size, so the read
+/// stops at the length `fetch`'s answer gave, never past [`MAX_BODY`], the
+/// size `fetch` makes every body's `Shm`; and the handle must be an `Shm`.
+///
+/// [`MAX_BODY`]: kainet::fetch::MAX_BODY
+fn take_body(shm: Handle, len: usize) -> Result<Vec<u8>, String> {
+    let is_shm = sys::handle_info(shm).is_ok_and(|info| info.kind == Kind::Shm as u32);
+    let mapped = if is_shm {
+        sys::shm_map(shm, false).ok()
+    } else {
+        None
+    };
+    let body = mapped.map(|address| {
+        let len = len.min(kainet::fetch::MAX_BODY);
+        // SAFETY: `fetch` made the `Shm` of MAX_BODY bytes and moved it here; it
+        // is mapped read-only at `address`, `len` is at most MAX_BODY, and the
+        // slice is copied out before the unmap.
+        let body = unsafe { core::slice::from_raw_parts(address as *const u8, len) }.to_vec();
+        let _ = sys::shm_unmap(address);
+        body
+    });
     let _ = sys::handle_close(shm);
-    body
+    body.ok_or_else(|| String::from("fetch's body could not be read"))
 }
 
 /// `fetch`'s error, in words for the result line.
@@ -132,6 +183,8 @@ fn failed(error: &FetchError) -> String {
 
 /// The addresses `host` resolves to, on a handle for exactly it.
 pub fn resolve(host: &str) -> Result<Vec<String>, String> {
+    let host = host_name(host)?;
+    let host = host.as_str();
     let dest = narrowed(host, Rights::RESOLVE.bits())?;
     let mut addresses = [[0u8; 4]; kabi::net::MAX_ADDRESSES];
     let found = sys::resolve_on(dest, host, &mut addresses);

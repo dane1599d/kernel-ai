@@ -312,7 +312,7 @@ impl Clock {
 }
 
 /// Which KV slot each prompt uses: the act prefix stays in one, the script
-/// prompt (and `ask`, `explain`, `tune`, `:model`) in the other, so neither
+/// prompt (and `ask`, `explain`, `tune`, `query`, `:model`) in the other, so neither
 /// evicts the other (S02-2).
 pub const SLOTS: local::act::Slots = local::act::Slots::TWO;
 

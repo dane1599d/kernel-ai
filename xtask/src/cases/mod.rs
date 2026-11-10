@@ -87,6 +87,9 @@ pub struct TestCase {
     pub resets: bool,
     /// A fresh writable `kai-data` disk (ADR 0004).
     pub data: Option<crate::blklog::Data>,
+    /// With `data` on a GPT disk: `kai-data`'s size in MiB, when the case
+    /// stores more than the 64 MiB one holds (`net-download`).
+    pub data_mib: Option<u64>,
     /// A second boot, once this one has passed, on the same data disk.
     pub then: Option<&'static TestCase>,
     /// With `then`: the rest of the first console line containing this text
@@ -173,6 +176,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         bridge: false,
         resets: false,
         data: None,
+        data_mib: None,
         then: None,
         differs: None,
         rng: false,

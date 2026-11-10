@@ -14,6 +14,20 @@
 //! the slot is left empty and the next reply prefills. As with any cached tokens,
 //! the next reply then reuses only the positions its prompt shares with them. Bytes move through a small buffer in both
 //! directions, so a 150 MiB slot never needs a second copy in memory.
+//!
+//! **Preemption (ADR 0013 section 2, S13-1).** A preempted agent's state goes, in
+//! this order, to a resident slot of its own (no copy), a [`Snapshot`] in RAM, a spill
+//! file, or nowhere. The spill file is this file, with the version and the checksums
+//! it already has: the magic is the version (a reader of another is refused as
+//! [`Refused::Magic`]), the two hashes cover the token ids and the keys and values (a
+//! flipped bit or a stopped writer is refused, and the slot is left empty), and the
+//! key names the owner, for which [`spill_pack_id`] makes one agent's request a
+//! `pack_id` of its own, so a restore refuses another's file. A [`Snapshot`] is the
+//! file without the file: the same key, shape and tokens, checked the same way, and
+//! the keys and values copied as they are, with no hash, since RAM does not need one.
+//! On the host (release build, Qwen3-4B's shape, 144 KiB a position) a snapshot and
+//! restore of 1,024 positions take 11 ms together and a spill round trip, written
+//! durable, 1.2 s (`preempt_tests`).
 
 use crate::Error;
 use crate::kv::KvCache;
@@ -236,4 +250,140 @@ pub(crate) fn restore(
     }
     kv.set_len(n);
     Ok(tokens)
+}
+
+/// A slot's computed positions held in RAM (ADR 0013 section 2, S13-1): the state
+/// of an agent the foreground preempted, when the snapshot pool has room. It is the
+/// `kai-kv 1` file without the file: the same key, shape and tokens, checked as a
+/// file's are on restore, and the keys and values copied as they are, with no
+/// conversion and no hash, since they never leave memory (a spill file carries the
+/// hash, for the disk). A snapshot's buffers are kept when it is cleared or saved
+/// over, so a pool of them takes its memory once and a switch pays the copy and
+/// nothing else. A snapshot of a full slot of Qwen3-4B (2,048 positions, 144 KiB
+/// each) is about 288 MiB, and it counts against the pool's `pool_mib` from its
+/// first use, since its buffers are kept.
+#[derive(Default)]
+pub struct Snapshot {
+    key: Option<Key>,
+    shape: (usize, usize),
+    tokens: Vec<u32>,
+    /// For each layer, its keys then its values, `positions * width` halves each.
+    halves: Vec<u16>,
+}
+
+impl Snapshot {
+    pub const fn new() -> Self {
+        Self {
+            key: None,
+            shape: (0, 0),
+            tokens: Vec::new(),
+            halves: Vec::new(),
+        }
+    }
+
+    /// Positions held, 0 for an empty snapshot.
+    pub fn positions(&self) -> usize {
+        self.tokens.len()
+    }
+
+    /// Bytes of memory the snapshot holds: its tokens and its keys and values, as
+    /// the pool counts them.
+    pub fn bytes(&self) -> usize {
+        4 * self.tokens.len() + 2 * self.halves.len()
+    }
+
+    /// The memory reserved for the keys and values and for the tokens, in elements,
+    /// for the tests that a snapshot keeps it.
+    #[cfg(test)]
+    pub(crate) fn capacities(&self) -> (usize, usize) {
+        (self.halves.capacity(), self.tokens.capacity())
+    }
+
+    /// Forgets what it holds and keeps its buffers.
+    pub fn clear(&mut self) {
+        self.key = None;
+        self.shape = (0, 0);
+        self.tokens.clear();
+        self.halves.clear();
+    }
+}
+
+/// A pack id for the state of agent `agent`'s request `request` (their badge and
+/// request number): one agent's spill file or snapshot is then refused for any
+/// other's, since a restore checks the [`Key`]. FNV-1a 64 of both, never 0, which
+/// is the key of a prompt without a pack.
+pub fn spill_pack_id(agent: u32, request: u64) -> u64 {
+    let mut fnv = Fnv::new();
+    fnv.update(b"kai-agent");
+    fnv.update(&agent.to_le_bytes());
+    fnv.update(&request.to_le_bytes());
+    fnv.0.max(1)
+}
+
+/// The first `tokens.len()` positions of `kv`, which `tokens` produced, copied into
+/// `into`, whatever it held.
+pub(crate) fn snapshot(
+    key: &Key,
+    kv: &KvCache,
+    tokens: &[u32],
+    into: &mut Snapshot,
+) -> Result<(), Error> {
+    let n = tokens.len().min(kv.len());
+    let (layers, width) = kv.shape();
+    into.clear();
+    let halves = 2 * layers * width * n;
+    into.halves
+        .try_reserve_exact(halves)
+        .map_err(|_| Error::OutOfMemory)?;
+    into.tokens
+        .try_reserve_exact(n)
+        .map_err(|_| Error::OutOfMemory)?;
+    for layer in 0..layers {
+        let (keys, values) = kv.positions(layer, n);
+        into.halves.extend_from_slice(keys);
+        into.halves.extend_from_slice(values);
+    }
+    into.tokens.extend_from_slice(&tokens[..n]);
+    into.key = Some(*key);
+    into.shape = (layers, width);
+    Ok(())
+}
+
+/// Fills `kv`, emptied first, from `from`, for a prompt `prompt`: the tokens
+/// restored, which the caller counts as cached. The checks are a file's, except the
+/// hash of the keys and values: the key, the shape, the capacity, and a start the
+/// tokens share with the prompt. On any refusal `kv` stays empty.
+pub(crate) fn restore_snapshot(
+    key: &Key,
+    kv: &mut KvCache,
+    prompt: &[u32],
+    from: &Snapshot,
+) -> Result<Vec<u32>, Refused> {
+    kv.clear();
+    if from.key.as_ref() != Some(key) {
+        return Err(Refused::Key);
+    }
+    let (layers, width) = kv.shape();
+    let n = from.tokens.len();
+    if from.shape != (layers, width) || n > kv.capacity() || n == 0 {
+        return Err(Refused::Shape);
+    }
+    let shared = from
+        .tokens
+        .iter()
+        .zip(prompt)
+        .take_while(|(a, b)| a == b)
+        .count();
+    if shared.min(prompt.len().saturating_sub(1)) == 0 {
+        return Err(Refused::Tokens);
+    }
+    let per_half = n * width;
+    for layer in 0..layers {
+        let (keys, values) = kv.positions_mut(layer, n);
+        let at = 2 * layer * per_half;
+        keys.copy_from_slice(&from.halves[at..at + per_half]);
+        values.copy_from_slice(&from.halves[at + per_half..at + 2 * per_half]);
+    }
+    kv.set_len(n);
+    Ok(from.tokens.clone())
 }

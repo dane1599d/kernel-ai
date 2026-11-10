@@ -25,6 +25,23 @@ pub const MAX_URL: usize = 2048;
 pub const MAX_ASK: usize = MAX_URL + 64;
 /// The longest answer: two URLs, a content type and the numbers.
 pub const MAX_ANSWER: usize = 2 * MAX_URL + 512;
+/// What `fetch` answers when a response's head would not fit in
+/// [`MAX_ANSWER`]: a server's long content type, or a redirect's long URL.
+pub const TOO_LONG: &str = "err http the response's head is too long to pass on";
+
+/// Whether `value` may be a field's value in an answer: no control character,
+/// so it stays on its line and reads back the same.
+fn printable(value: &str) -> bool {
+    !value.chars().any(char::is_control)
+}
+
+/// `value` as a field's value: each control character as `?`.
+fn field(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
+}
 
 /// A request, as a caller sends it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,8 +179,16 @@ fn kind(error: &Error) -> (&'static str, Option<&str>) {
     }
 }
 
-/// The answer to send for `result`.
+/// The answer to send for `result`: [`TOO_LONG`] if it would not fit.
 pub fn answer(result: &Result<Head, Error>) -> String {
+    let text = render(result);
+    match text.len() > MAX_ANSWER {
+        true => String::from(TOO_LONG),
+        false => text,
+    }
+}
+
+fn render(result: &Result<Head, Error>) -> String {
     match result {
         Err(error) => match kind(error) {
             (name, Some(text)) => format!("err {name} {}", why(text)),
@@ -172,14 +197,14 @@ pub fn answer(result: &Result<Head, Error>) -> String {
         Ok(head) => {
             let mut text = format!("ok {}\nlen {}\nhops {}\n", head.status, head.len, head.hops);
             if let Some(content_type) = &head.content_type {
-                text += &format!("type {content_type}\n");
+                text += &format!("type {}\n", field(content_type));
             }
             if let Some(retry) = head.retry_after {
                 text += &format!("retry {retry}\n");
             }
-            text += &format!("url {}\n", head.url);
+            text += &format!("url {}\n", field(&head.url));
             if let Some(location) = &head.location {
-                text += &format!("location {location}\n");
+                text += &format!("location {}\n", field(location));
             }
             text
         }
@@ -197,14 +222,23 @@ pub fn parse_answer(text: &str) -> Result<Result<Head, Error>, &'static str> {
             Some((name, why)) => (name, why.to_string()),
             None => (rest, String::new()),
         };
+        // A why is what `fetch::why` makes: printable ASCII, at most its
+        // limit; an error with no why has none.
+        if why != crate::fetch::why(&why) {
+            return Err("an error's why is not printable text of at most 200 bytes");
+        }
+        let none = |error| match why.is_empty() {
+            true => Ok(error),
+            false => Err("this error has no why"),
+        };
         return Ok(Err(match name {
             "refused" => Error::Refused(why),
             "bad-url" => Error::BadUrl(why),
             "tls" => Error::Tls(why),
             "http" => Error::Http(why),
-            "too-large" => Error::TooLarge,
-            "timeout" => Error::Timeout,
-            "truncated" => Error::Truncated,
+            "too-large" => none(Error::TooLarge)?,
+            "timeout" => none(Error::Timeout)?,
+            "truncated" => none(Error::Truncated)?,
             _ => return Err("an error this answer does not name"),
         }));
     }
@@ -219,6 +253,9 @@ pub fn parse_answer(text: &str) -> Result<Result<Head, Error>, &'static str> {
         (None, None, None, None, None, None);
     for line in lines {
         let (key, value) = line.split_once(' ').ok_or("a field with no value")?;
+        if !printable(value) {
+            return Err("a field's value has a control character");
+        }
         let set = match key {
             "len" => len
                 .replace(value.parse::<usize>().map_err(|_| "len is not a number")?)
