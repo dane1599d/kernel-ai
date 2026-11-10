@@ -319,6 +319,8 @@ pub enum SelfTest {
     },
     /// P5 task 12: the `fetch` service on its caller's handles.
     FetchService,
+    /// P5 task 13: an app's HTTPS through `kai:net`, asked per host on the card.
+    NetGrant,
     /// P5 task 3: ENTROPY's sample, which two boots must not share.
     EntropyBoots,
 }
@@ -505,6 +507,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
                 small: cmdline.split_whitespace().any(|w| w == "accel=tcg"),
             }),
             "test=fetch-service" => Some(SelfTest::FetchService),
+            "test=net-grant" => Some(SelfTest::NetGrant),
             "test=entropy-boots" => Some(SelfTest::EntropyBoots),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
@@ -621,6 +624,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskDefault
             | SelfTest::DeskNoMemory
             | SelfTest::AppSettings
+            | SelfTest::NetGrant
             | SelfTest::DeskTour
             | SelfTest::DeskTakeover
             | SelfTest::TuneRevert
@@ -796,6 +800,13 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push_str(crate::agent_desk_tests::DESK);
                 crate::app_settings_tests::SHELL
             }
+            // The shell keeps the app's grants in `/system/state`, and asks
+            // about each host on `desktop`'s card.
+            SelfTest::NetGrant => {
+                plan.push('\n');
+                plan.push_str(crate::agent_desk_tests::DESK);
+                crate::net_grant_tests::SHELL
+            }
             SelfTest::KeepRunning { .. } => {
                 plan.push('\n');
                 plan.push_str(crate::keep_tests::PLAN);
@@ -931,6 +942,13 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::AppSettings {
         plan.push('\n');
         plan.push_str(crate::app_settings_tests::APPS);
+    }
+    // `fetch`, then the app whose routes are `desktop` and `fetch`.
+    if test == SelfTest::NetGrant {
+        plan.push('\n');
+        plan.push_str(kabi::plan::FETCH);
+        plan.push('\n');
+        plan.push_str(crate::net_grant_tests::APP);
     }
     Some(plan)
 }

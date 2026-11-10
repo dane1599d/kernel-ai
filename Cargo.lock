@@ -458,6 +458,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "comp-net-fixture"
+version = "0.1.0-dev"
+dependencies = [
+ "compsdk",
+ "livecore",
+ "wasmhost",
+ "wit-bindgen 0.63.0",
+]
+
+[[package]]
 name = "comp-notes"
 version = "0.1.0-dev"
 dependencies = [
