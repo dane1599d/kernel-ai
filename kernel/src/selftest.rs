@@ -948,7 +948,7 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(kabi::plan::FETCH);
         plan.push('\n');
-        plan.push_str(crate::net_grant_tests::APP);
+        plan.push_str(crate::net_grant_tests::APPS);
     }
     Some(plan)
 }

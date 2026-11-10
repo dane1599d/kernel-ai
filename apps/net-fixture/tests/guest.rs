@@ -95,14 +95,46 @@ fn it_asks_for_each_url_in_turn_and_logs_what_each_came_to() {
         assert_eq!(request.url, *url);
         let error = NetError::Refused(format!("host{at}.kai.test"));
         g.net_response(ticket, Err(error)).unwrap();
-        let mut said = lines();
         assert_eq!(
-            said.remove(0),
-            format!("net-fixture: {url}: refused host{at}.kai.test")
+            lines(),
+            [format!("net-fixture: {url}: refused host{at}.kai.test")]
         );
-        if at + 1 == URLS.len() {
-            assert_eq!(said, ["net-fixture: done"]);
-        }
     }
+    // Then the first URL again, a line only when what comes changes, until a
+    // response follows a refusal.
+    let again = |g: &mut CoreInstance, outcome| {
+        let (ticket, request) = taken(g);
+        assert_eq!(request.url, URLS[0]);
+        g.net_response(ticket, outcome).unwrap();
+        lines()
+    };
+    let ok = || {
+        Ok(NetResponse {
+            status: 200,
+            url: String::from(URLS[0]),
+            content_type: None,
+            retry_after: None,
+            body: b"kai mock: hello".to_vec(),
+        })
+    };
+    let refused = || Err(NetError::Refused(String::from("updates.kai.test")));
+    assert_eq!(
+        again(&mut g, ok()),
+        [
+            "net-fixture: again: net-fixture: https://updates.kai.test/hello: 200 from https://updates.kai.test/hello: kai mock: hello"
+        ]
+    );
+    assert!(again(&mut g, ok()).is_empty());
+    assert_eq!(
+        again(&mut g, refused()),
+        [
+            "net-fixture: again: net-fixture: https://updates.kai.test/hello: refused updates.kai.test"
+        ]
+    );
+    assert!(again(&mut g, refused()).is_empty());
+    assert_eq!(
+        again(&mut g, ok()).last().map(String::as_str),
+        Some("net-fixture: done")
+    );
     assert!(!g.net_waiting());
 }
