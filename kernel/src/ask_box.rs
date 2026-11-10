@@ -54,6 +54,17 @@ pub fn shown() -> bool {
     })
 }
 
+/// The question of the unanswered ask posted, for the boot cases that check
+/// what a card says; it marks nothing read.
+pub fn question() -> Option<String> {
+    with(|b| {
+        b.posted
+            .as_ref()
+            .filter(|p| p.answer.is_none())
+            .map(|p| p.question.clone())
+    })
+}
+
 /// Whether no ask is posted, answered or not.
 pub fn empty() -> bool {
     with(|b| b.posted.is_none())
