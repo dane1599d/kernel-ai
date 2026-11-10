@@ -1,0 +1,50 @@
+name: icount experiment (#796, throwaway)
+
+# Boots mix C's tune-ab cmdlines 60 times per variant and counts distinct
+# digests per cmdline: base, QEMU -seed (deterministic RDRAND/RDSEED), and the
+# icount clock starting at a constant (KAI_ICOUNT_ZERO). Not for merging.
+on:
+  push:
+    branches: [dane/icount-exp-796]
+
+permissions:
+  contents: read
+
+jobs:
+  exp:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [base, seed, zero]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install QEMU and OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Boot five rounds
+        run: |
+          if [ "${{ matrix.variant }}" = seed ]; then export KAI_QEMU_SEED=1; fi
+          if [ "${{ matrix.variant }}" = zero ]; then export KAI_ICOUNT_ZERO=1; fi
+          qemu-system-x86_64 --version | head -1
+          for round in 1 2 3 4 5; do
+            cargo xtask tune ab --mix C --spec classes/firm:build-1,build-2,build-3,build-4,build-5,build-6,indexer,hog-1 --timeout 900 2>&1 \
+              | grep -E "icount boot:|tune-ab: digest|exp796:|services start" | tee -a exp.log || true
+          done
+      - name: Distinct digests per cmdline
+        if: always()
+        run: |
+          awk '/icount boot:/ {sub(/.*icount boot: /,""); c=$0} /tune-ab: digest/ {print c " => " $NF}' exp.log | sort | uniq -c
+          echo "boots: $(grep -c 'tune-ab: digest' exp.log)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exp-${{ matrix.variant }}
+          path: exp.log

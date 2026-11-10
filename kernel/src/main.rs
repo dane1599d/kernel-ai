@@ -696,6 +696,12 @@ fn start_user_space(test: SelfTest) {
         let edge = timer::align_to_second();
         threads::resync_ticks();
         log!("tune-ab: services start at tick {edge}");
+        log!(
+            "exp796: edge nanos {} tsc {} hpet_at_select {}",
+            hpet::nanos(),
+            hpet::raw_tsc(),
+            hpet::HPET_AT_SELECT.load(core::sync::atomic::Ordering::Relaxed)
+        );
     }
     // Ctrl+Alt+F12 switches the screen between the console and `desktop`.
     if let Err(message) = display::claim::init() {

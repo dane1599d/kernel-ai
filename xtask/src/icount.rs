@@ -92,6 +92,10 @@ pub fn measure_args_with(firmware: &crate::Firmware, shift: u32, memory_mib: u64
         ]
         .map(String::from),
     );
+    // Experiment (#796): QEMU's deterministic guest RNG (RDRAND, RDSEED).
+    if let Ok(seed) = std::env::var("KAI_QEMU_SEED") {
+        args.extend(["-seed".to_string(), seed]);
+    }
     args
 }
 

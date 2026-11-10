@@ -44,6 +44,10 @@ static TSC_MULT: AtomicU64 = AtomicU64::new(0);
 /// vCPU's TSC when the vCPU first runs, so every CPU's TSC has its own zero.
 static TSC_ZERO: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static NANOS_ZERO: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+/// Experiment (#796): the icount TSC zero, when KAI_ICOUNT_ZERO was set at build.
+static ICOUNT_TSC_ZERO: AtomicU64 = AtomicU64::new(0);
+/// Experiment (#796): the HPET's reading when the clock was chosen.
+pub static HPET_AT_SELECT: AtomicU64 = AtomicU64::new(0);
 /// The latest time any CPU returned: an HPET read takes microseconds, so two CPUs'
 /// zero points can disagree by that much, and no caller may see time go back.
 static LATEST: AtomicU64 = AtomicU64::new(0);
@@ -174,6 +178,10 @@ fn settled(rate: u64, last: u64, reported_hz: Option<u64>) -> bool {
 pub fn select_clock(cmdline: &str) {
     let said = |word: &str| cmdline.split_whitespace().any(|w| w == word);
     if said("clock=icount") {
+        HPET_AT_SELECT.store(hpet_nanos(), Ordering::Relaxed);
+        if option_env!("KAI_ICOUNT_ZERO").is_some() {
+            ICOUNT_TSC_ZERO.store(tsc().max(1), Ordering::Relaxed);
+        }
         set_zero(0);
         TSC_MULT.store(1 << 32, Ordering::Release);
         log!("clock: the TSC at 1 GHz, as QEMU's icount runs it (clock=icount)");
@@ -243,9 +251,20 @@ fn try_tsc(why: &str) {
 }
 
 fn set_zero(cpu: usize) {
-    let nanos = hpet_nanos();
-    TSC_ZERO[cpu].store(tsc(), Ordering::Relaxed);
+    let (tsc, nanos) = match ICOUNT_TSC_ZERO.load(Ordering::Relaxed) {
+        0 => {
+            let nanos = hpet_nanos();
+            (tsc(), nanos)
+        }
+        zero => (zero, 1_000_000_000),
+    };
+    TSC_ZERO[cpu].store(tsc, Ordering::Relaxed);
     NANOS_ZERO[cpu].store(nanos, Ordering::Relaxed);
+}
+
+/// Experiment (#796): the raw TSC.
+pub fn raw_tsc() -> u64 {
+    tsc()
 }
 
 /// Gives CPU `cpu` its TSC zero point, if the TSC is the clock. Each CPU runs it
