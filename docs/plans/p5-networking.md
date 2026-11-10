@@ -284,7 +284,7 @@ Section 1's exit cases, checked against `main` at 492cb755 on 2026-11-09. "On ma
 
 | Exit case | Status | Where, and what is left |
 |---|---|---|
-| `net-download` | Missing | No PR yet, and no lane holds it. Parts are covered elsewhere: `update-online-flipped` (#754) refuses a flipped chunk, and `https-mock` refuses a wrong-name and an unknown-CA certificate. No boot case yet covers: cuts at 40% and 80% that each resume re-fetching at most one chunk, a reboot mid-download that resumes, a wrong whole-file hash, or an expired certificate |
+| `net-download` | In review | #770 (N-t, task 6's case). One 32-chunk target over two boots: it is cut at 40% and resumes, stops inside chunk 16 as a reboot would, resumes from the mark in kaifs, and is cut at 80% and resumes; each resume fetches again only the chunk in flight. It refuses a flipped chunk, a wrong whole-file hash, and an expired, wrong-name and unknown-CA certificate before a byte is stored. 64 MiB under KVM; the same 32 chunks at 64 KiB under TCG |
 | `net-dest` | On main | #666, with `hosts:any` added in #760. The section's "a redirect to another host is refused" is shown in `fetch-service` (#755), which follows a redirect within the handle and hands back one off it |
 | `pkg-online` | In review | #752 (task 8), with ADR 0011's five tamper cases over the network |
 | `model-download` | Not started | Task 9 (AP-2) |
@@ -300,7 +300,7 @@ The tasks' own exit checks:
 | 3, random numbers | `entropy-boots` (two boots differ) | On main |
 | 7, the HTTPS mock | `https-mock`; every P5 case uses its `TestCase::https` | On main (#753) |
 | 12, `kai:net` | `fetch-service` for the service; an app fetching from its host and refused another | `fetch-service` is in the merge queue (#755). The app case comes with C's comphost import (task 12's other half) |
-| 14, agents' budgets | an agent over its byte budget is refused | Waits for the v0.1 tag (ADR 0013's OS pieces) |
+| 14, agents' budgets | an agent over its byte budget is refused | Deferred: after the v0.1 tag, with ADR 0013's other OS pieces. P5 closes without it |
 
 **Real-model gates.** Task 11's first part (#751) passed fluency at 48/50 (at least 47), actbench's shipped arm at main's figures, the bait probes at 0 false runs, and the app gate at 19/20. Its later parts run the same gates when they change model input.
 
@@ -318,4 +318,13 @@ The tasks' own exit checks:
   - online `pkg_install` (#752).
 - **Deferred by section 2:** the MCP client (question 8).
 
-**Left before P5 closes:** the four exit cases above that are not on main, task 12's app case, the rest of task 11 (quarantined reads, `Hold`), the D3 text change, the roadmap's P5 status, and a closing decisions row.
+**Left before P5 closes.**
+- **To land:** #755, #757, #752, #754 and #770.
+- **Not started:**
+  - `model-download` (task 9, AP-2);
+  - `net-grant` (task 13, C);
+  - task 12's app case (C, with its comphost import);
+  - the rest of task 11 (quarantined reads, `Hold`).
+- **Then this close:** the D3 text change, the roadmap's P5 status, and the closing decisions row.
+
+Task 14 is deferred to after the v0.1 tag, and P5 closes without it.
