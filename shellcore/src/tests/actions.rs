@@ -429,6 +429,8 @@ fn the_generated_tier_table_is_the_seamless_actions_one() {
         // Run from a grounded host only: consent asks for any other (D3).
         ("net_fetch", Tier::Run),
         ("net_lookup", Tier::Run),
+        // A question to the local model: its answer is Data, so it steers nothing.
+        ("query_data", Tier::Run),
         ("fixed", Tier::Run),
         ("floor", Tier::Run),
     ];

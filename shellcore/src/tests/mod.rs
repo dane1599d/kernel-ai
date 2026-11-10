@@ -88,6 +88,9 @@ struct FakeHost {
     ui_calls: RefCell<Vec<crate::ui::UiCall>>,
     /// The hosts the network rows reached, as `row host`.
     net_seen: RefCell<Vec<String>>,
+    /// The questions `query_data` asked, and the model's answer to each.
+    queries: RefCell<Vec<llmproto::query::QueryRequest>>,
+    query_answer: RefCell<Result<String, String>>,
     ui_answer: RefCell<Option<UiAnswer>>,
     state: RefCell<crate::state::State>,
     /// Turns sent to the conversation memory, and how often it was forgotten.
@@ -299,6 +302,8 @@ impl FakeHost {
             act_apps: RefCell::new(Vec::new()),
             ui_calls: RefCell::new(Vec::new()),
             net_seen: RefCell::new(Vec::new()),
+            queries: RefCell::new(Vec::new()),
+            query_answer: RefCell::new(Ok(String::from("yes"))),
             ui_answer: RefCell::new(None),
             state: RefCell::new(crate::state::State::default()),
             remembered: RefCell::new(Vec::new()),
@@ -647,6 +652,11 @@ impl Host for FakeHost {
             .borrow_mut()
             .push(format!("net_resolve {host}"));
         Ok(alloc::vec![String::from("93.184.215.14")])
+    }
+
+    fn query(&self, request: &llmproto::query::QueryRequest) -> Result<String, String> {
+        self.queries.borrow_mut().push(request.clone());
+        self.query_answer.borrow().clone()
     }
 
     fn net_ping(&self, host: &str) -> Result<i64, String> {

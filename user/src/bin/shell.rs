@@ -1061,6 +1061,27 @@ impl Host for System {
             _ => Err("llm service: malformed reply".to_string()),
         }
     }
+
+    /// A quarantined read (P5 task 11): `llm` answers it apart from every
+    /// other request and checks the answer against its kind before replying.
+    fn query(&self, request: &llmproto::query::QueryRequest) -> Result<String, String> {
+        use llmproto::query;
+        let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+        let len = sys::call_route(
+            llm(),
+            request.encode().as_bytes(),
+            &mut reply,
+            query::CALL_TIMEOUT_MS,
+        )
+        .map_err(|error| alloc::format!("llm service: {error:?}"))?;
+        let text = String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned();
+        match text.split_once(' ').unwrap_or((text.as_str(), "")) {
+            ("ok", answer) => query::decode_answer(answer)
+                .unwrap_or_else(|| Err("llm service: malformed answer".to_string())),
+            ("err", why) => Err(why.to_string()),
+            _ => Err("llm service: malformed reply".to_string()),
+        }
+    }
 }
 
 /// Standing instructions' events and actions (P3 task 11). The kernel's event

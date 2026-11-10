@@ -312,6 +312,12 @@ pub trait Host {
     fn net_resolve(&self, _host: &str) -> Result<Vec<String>, String> {
         Err(String::from(NO_NET))
     }
+    /// `query_data` (P5 task 11): the model's answer to one typed question
+    /// about read data, asked apart from every other request and already
+    /// checked against `request.kind`.
+    fn query(&self, _request: &llmproto::query::QueryRequest) -> Result<String, String> {
+        Err(String::from("no model answers questions here"))
+    }
     /// `net_ping`: how many ms `host` takes to answer, or -1 for none.
     fn net_ping(&self, _host: &str) -> Result<i64, String> {
         Err(String::from(NO_NET))

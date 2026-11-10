@@ -11,7 +11,9 @@ use crate::{Host, data};
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::String;
-use rhai::Engine;
+use alloc::vec::Vec;
+use llmproto::query::{QueryKind, QueryRequest};
+use rhai::{Array, Engine};
 
 pub(super) fn bind(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx: Tx) -> bool {
     let fail = move |why: String| rhai_error(format!("{name}: {why}"));
@@ -60,7 +62,64 @@ pub(super) fn bind(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx:
                 Ok(data::Data::new("dns", text))
             });
         }
+        "query_data" => {
+            let (h2, tx2) = (Rc::clone(&h), tx.clone());
+            engine.register_fn(
+                name,
+                move |d: data::Data, question: &str| -> RhaiResult<data::Data> {
+                    tx2.approved(name, &[d.text(), question])?;
+                    query(h2.as_ref(), d, question, QueryKind::Short).map_err(fail)
+                },
+            );
+            engine.register_fn(
+                name,
+                move |d: data::Data, question: &str, answers: Array| -> RhaiResult<data::Data> {
+                    let words = words(answers).map_err(fail)?;
+                    tx.approved(name, &[d.text(), question, &words.join(",")])?;
+                    query(h.as_ref(), d, question, kind_of(words)).map_err(fail)
+                },
+            );
+        }
         _ => return false,
     }
     true
+}
+
+/// The answers a script offers, as text: each one a string.
+fn words(answers: Array) -> Result<Vec<String>, String> {
+    answers
+        .into_iter()
+        .map(|answer| {
+            answer
+                .into_immutable_string()
+                .map(|word| String::from(word.as_str()))
+                .map_err(|_| String::from("each answer is a string"))
+        })
+        .collect()
+}
+
+/// `["yes", "no"]` is a yes or no; any other list is a choice of its words.
+fn kind_of(words: Vec<String>) -> QueryKind {
+    match words.as_slice() {
+        [yes, no] if yes == "yes" && no == "no" => QueryKind::Bool,
+        _ => QueryKind::Enum(words),
+    }
+}
+
+/// One quarantined read: the question about `d`, asked apart, and the answer
+/// as `Data` that keeps `d`'s label, so what the data said steers nothing.
+fn query(
+    host: &dyn Host,
+    d: data::Data,
+    question: &str,
+    kind: QueryKind,
+) -> Result<data::Data, String> {
+    let request = QueryRequest {
+        data: String::from(d.text()),
+        question: String::from(question),
+        kind,
+    };
+    request.check()?;
+    host.query(&request)
+        .map(|answer| data::Data::new(d.source, answer))
 }
