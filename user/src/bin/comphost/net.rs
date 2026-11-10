@@ -1,7 +1,7 @@
 //! An app's `kai:net` requests (P5 tasks 12 and 13): comphost takes what the
 //! shown version's `fetch` queued, asks the shell whether the app may reach
-//! the URL's host, narrows the app's ceiling to the hosts the person allowed,
-//! and has the `fetch` service make the request on that handle. The answer
+//! the URL's host, narrows the app's ceiling to that one host, exactly, for
+//! the call, and has the `fetch` service make the request on that handle. The answer
 //! goes to the app through `responses.on-response`, a call of its own like a
 //! window's input.
 //!
@@ -407,8 +407,10 @@ impl Net {
                 String::from_utf8_lossy(&self.reply[..len.min(self.reply.len())]).into_owned()
             });
         let answer = answer.unwrap_or_else(|| String::from(net_wire::WAIT));
-        if let Some(dest) = answer.strip_prefix("granted ") {
-            return self.call(job, &host, dest);
+        // The shell's answer names every host the app holds; the call is
+        // made on this one alone.
+        if answer.starts_with("granted ") {
+            return self.call(job, &host);
         }
         if let Some(why) = answer.strip_prefix("refused ") {
             println!("comphost: the shell refused {host}: {why}");
@@ -423,10 +425,12 @@ impl Net {
         Next::Wait
     }
 
-    /// Narrows the ceiling to `dest` and hands the call to the worker.
-    fn call(&mut self, job: &mut Job, host: &str, dest: &str) -> Next {
+    /// Narrows the ceiling to `host` alone (`net_wire::call_dest`) and hands
+    /// the call to the worker.
+    fn call(&mut self, job: &mut Job, host: &str) -> Next {
         let rights = Rights::RESOLVE.bits() | Rights::CONNECT.bits() | Rights::TRANSFER.bits();
-        let handle = match sys::netdest_narrow(self.ceiling, dest, rights) {
+        let dest = net_wire::call_dest(host);
+        let handle = match sys::netdest_narrow(self.ceiling, &dest, rights) {
             Ok(handle) => handle,
             Err(error) => {
                 println!("comphost: the ceiling does not reach {host} ({error:?})");

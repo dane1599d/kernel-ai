@@ -120,6 +120,14 @@ impl Queue {
     }
 }
 
+/// The destination one call to `fetch` is made on, once the shell has
+/// granted `host`: that host alone, exactly, on 443 (the audit of tasks 12
+/// and 13). Never the app's whole list, so a redirect within a call reaches
+/// no other host, granted or not: it comes back to be asked about by name.
+pub fn call_dest(host: &str) -> String {
+    format!("proto:tcp,addrs:none,ports:443,hosts:{host},match:exact")
+}
+
 /// The request `comphost` sends for `host` under `ceiling`.
 pub fn encode_ask(host: &str, ceiling: &str) -> String {
     format!("{ASK}{host}\n{ceiling}")
@@ -194,6 +202,20 @@ mod tests {
             queue.ask("net-fixture", &format!("a.kai.test\n{CEILING}")),
             WAIT
         );
+    }
+
+    #[test]
+    fn a_calls_destination_is_its_one_host_and_no_other() {
+        let dest = netdest::Dest::parse(&call_dest("updates.kai.test")).unwrap();
+        assert!(dest.exact);
+        assert!(dest.allows_name("updates.kai.test"));
+        // Another host the app holds a grant for is out of reach in this call,
+        // as is a name under the host.
+        for other in ["assets.kai.test", "a.updates.kai.test", "kai.test"] {
+            assert!(!dest.allows_name(other), "{other}");
+        }
+        let ceiling = netdest::Dest::parse(CEILING).unwrap();
+        assert!(dest.within(&ceiling));
     }
 
     #[test]
