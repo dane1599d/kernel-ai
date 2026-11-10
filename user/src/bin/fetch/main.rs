@@ -39,8 +39,9 @@ const DEADLINE_NS: u64 = 30_000_000_000;
 /// How long a receive waits before it looks again.
 const IDLE_MS: u64 = 60_000;
 
-/// Closes every `NetDest` this process started with: NET's own handle, for
-/// the LLM server, is not `fetch`'s to use.
+/// Closes every `NetDest` this process started with. Since #779 NET brings
+/// none; kept so a plan line that adds one never leaves `fetch` a destination
+/// of its own.
 fn close_own_destinations() {
     let mut list = [HandleInfo::default(); 16];
     let count = sys::startup(&mut list).map_or(0, |n| n.min(list.len()));
@@ -142,11 +143,9 @@ fn body_shm(body: &[u8]) -> Result<Handle, kabi::Error> {
 }
 
 fn main() -> i32 {
-    // The roots first: BOOT_READ of `netroots/` needs NET, which the kernel
-    // sees in a held `NetDest` with CONNECT, and once NET's own handle is
-    // closed `fetch` holds one only during a call (#755's first full-ci run:
-    // closed first, the test CA was never read). NET_TIME is asked during a
-    // call, on the caller's handle.
+    // The roots first: BOOT_READ of `netroots/` needs NET in this line's
+    // ceiling (no handle: `fetch` holds a destination only during a call).
+    // NET_TIME is asked during a call, on the caller's handle.
     let config = match tls::config() {
         Ok(config) => config,
         Err(error) => {
