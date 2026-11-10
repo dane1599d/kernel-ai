@@ -6,9 +6,10 @@
 //! - `narrow=SPEC`: first makes a narrower handle from it, and resolves on that;
 //!   `expect=narrow-refused` exits 0 if the kernel refuses to narrow;
 //! - `legacy`: uses the retired RESOLVE call instead, which always refuses.
-//! - `http=refused`: closes the LLM's own `NetDest` (NET's, with CONNECT and
-//!   no RESOLVE), keeps the moved-in one, and exits 0 if HTTP is refused:
-//!   only the LLM's handle reaches the LLM.
+//! - `http=refused`: started with NET and a moved-in `NetDest`, but no
+//!   `netdest=llm`: exits 0 if it holds no handle like the LLM's (CONNECT
+//!   without RESOLVE) and HTTP is refused, since only the LLM's handle reaches
+//!   the LLM and NET alone does not give it.
 //! - `any=pinned`: with a `hosts:any` handle (#760), exits 0 if narrowing it
 //!   to `hosts:any` again, or to a suffix, is refused and narrowing to one
 //!   exact host is not.
@@ -44,29 +45,29 @@ fn startup_dest() -> Option<Handle> {
         .map(|info| Handle(info.handle))
 }
 
-/// `http=refused`: HTTP holding only a `NetDest` that is not the LLM's.
+/// `http=refused`: HTTP from a NET holder whose only `NetDest` is not the LLM's.
 fn http_refused() -> i32 {
     let mut list = [HandleInfo::default(); 16];
     let count = sys::startup(&mut list).map_or(0, |n| n.min(list.len()));
-    let mut kept = 0;
-    for info in &list[..count] {
-        if info.kind != Kind::NetDest as u32 {
-            continue;
-        }
+    let dests = list[..count]
+        .iter()
+        .filter(|info| info.kind == Kind::NetDest as u32);
+    let (mut kept, mut llm_like) = (0, 0);
+    for info in dests {
         match info.rights & Rights::RESOLVE.bits() {
-            0 => {
-                let _ = sys::handle_close(Handle(info.handle));
-            }
+            0 => llm_like += 1,
             _ => kept += 1,
         }
     }
-    if kept == 0 {
-        println!("http: no other NetDest was moved in");
+    if llm_like != 0 || kept == 0 {
+        println!("http: started with {llm_like} LLM-like and {kept} other NetDest handles");
         return 1;
     }
     match sys::http(&kabi::HttpRequest::default()) {
         Err(Error::Permission) => {
-            println!("http without the LLM's own handle refused, with {kept} other NetDest held");
+            println!(
+                "http without the LLM's own handle refused, with NET and {kept} other NetDest held"
+            );
             0
         }
         other => {
