@@ -187,8 +187,8 @@ The P2 close rows in `docs/decisions.md` have each case and the accepted miss.
 **P4 status (2026-11-04):** **every exit case passes; the tag waits on the founder**. Tasks 1-15 are merged.
 - **Built:** the seven built-in apps (Terminal, Files, Notes, Settings, System Monitor, Models and the Editor) on `uikit`, each with its actions; the built-ins as signed packages from the image's TUF repository, installs from a local mirror with `undo`, and the Apps sheet; the `c>` prompt, `cc build`, and Kai writing C at `c>` after S12-2 passed; themes; the release terms (MPL-2.0 with the DCO); and `release.yml`, dry-run on a throwaway tag.
 - **On main:** all 12 exit cases, under KVM and TCG: `app-terminal`, `app-files`, `app-notes`, `app-settings`, `app-monitor`, `app-models`, `app-editor`, `pkg-image`, `pkg-install`, `desk-catalog`, `c-prompt` and `c-build`. `release-boot` imports a model into the release image in CI.
-- **Not met yet:** the root ceremony and `kernel-ai-updates` (task 18, with the founder), which gates rc.1; `release/seq` in the release PR; and fluency and actbench on the tag's input.
-- **The names are decided (2026-11-07, #745):** "Kernel AI" and "Kai" stay. A first-pass trademark check found registered KAI marks for AI assistants, and the founder chose to keep "Kai", accepting that risk.
+- **Not met yet:** the root ceremony and `kernel-ai-updates` (task 18, with the founder), which gates rc.1; counsel's clearance search for the names (ADR 0009 D8, P4 question 4); `release/seq` in the release PR; and fluency and actbench on the tag's input.
+- **The names are kept:** "Kernel AI" since the P4 plan's approval on 2026-10-27, and "Kai" since 2026-11-07 (#745), when the founder accepted the risk of the registered KAI marks for AI assistants that a first-pass trademark check found.
 
 The P4 plan's sections 3.5 and 11 have the v0.1 checklist and each case.
 
