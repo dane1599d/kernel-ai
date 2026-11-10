@@ -354,6 +354,50 @@ pub fn tune(
     })
 }
 
+/// The `answer` field of a `query`: one line of at most
+/// [`crate::query::MAX_SHORT_CHARS`], whose limit steers, or a choice.
+const QUERY_FIELDS: [Field; 1] = [Field {
+    name: "answer",
+    max_chars: crate::query::MAX_SHORT_CHARS,
+    max_lines: 1,
+    max_line_chars: crate::query::MAX_SHORT_CHARS,
+    trim_start: true,
+    hard: true,
+}];
+
+/// The model's answer to a `query`, greedy, under its kind's shape: one of the
+/// words for `Bool` and `Enum`, one short line for `Short`. The caller checks
+/// it again with [`crate::query::answer`].
+pub fn query(
+    engine: &mut Engine<'_>,
+    request: &crate::query::QueryRequest,
+    on_step: impl FnMut(Step) -> Next,
+) -> Result<Completion, infer::Error> {
+    let words = request.kind.words();
+    let choice = words.as_deref().map(|words| Choice {
+        field: 0,
+        words,
+        list: None,
+    });
+    let shape = Shape {
+        fields: &QUERY_FIELDS,
+        choices: choice.as_slice(),
+        jump_forward: true,
+    };
+    let asked = request.chat();
+    let reply = engine.reply(
+        &turns(&asked),
+        asked.max_tokens as usize,
+        &mut Sampler::greedy(),
+        Some(&shape),
+        on_step,
+    )?;
+    Ok(Completion {
+        text: reply.text(),
+        cut_off: reply.cut_off() || matches!(reply.ending, Ending::Stopped),
+    })
+}
+
 /// Why an answer that went past a limit is refused, in [`script::check_text`]'s
 /// and [`script::check_summary`]'s words where they can be: the counts they
 /// quote are not known when the answer stops.
