@@ -46,6 +46,9 @@ pub enum ActCase {
     /// `net-pf-page` (P5 task 11): a page fetched through `fetch` from a host
     /// the line typed is shown, and what it says starts nothing.
     NetPfPage,
+    /// `net-pf-query` (P5 task 11): a quarantined read of that page, whose
+    /// answer obeys the page and is only shown.
+    NetPfQuery,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -354,6 +357,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=act-inject" => Some(SelfTest::Act(ActCase::Inject)),
             "test=net-pf" => Some(SelfTest::Act(ActCase::NetPf)),
             "test=net-pf-page" => Some(SelfTest::Act(ActCase::NetPfPage)),
+            "test=net-pf-query" => Some(SelfTest::Act(ActCase::NetPfQuery)),
             "test=act-rule" => Some(SelfTest::Act(ActCase::Rule)),
             "test=pkg-local" => Some(SelfTest::Act(ActCase::PkgLocal)),
             "test=act-convo" => Some(SelfTest::Act(ActCase::Convo)),
