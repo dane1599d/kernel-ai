@@ -521,11 +521,16 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
         .unwrap_or(SelfTest::None)
 }
 
+/// The `updated.<key>=` words an `update` boot passes on to `updated`'s line:
+/// those its window and restart read (`user/src/bin/updated`).
+const UPDATED_TEST_WORDS: [&str; 3] = ["restart", "window", "heads_up_s"];
+
 /// The words after `updated`'s plan line in a test boot: `start=demand`
 /// ([`kabi::plan::ON_DEMAND`]), so it holds no memory until the shell's first
 /// model request, except in `update`, which runs a step of the update service
 /// at boot (`updated=`, `check` by default; a refusal restarts into the
-/// running slot) and takes any `updated.<word>` as a word, as `restart=window`.
+/// running slot) and takes `updated.<word>` as a word for the keys in
+/// [`UPDATED_TEST_WORDS`], as `restart=window`.
 /// The default boot starts it at boot (`kabi::plan::system`), and so do the
 /// cases in [`updated_at_boot`].
 fn updated_words(test: SelfTest) -> String {
@@ -540,9 +545,16 @@ fn updated_words(test: SelfTest) -> String {
         .find_map(|w| w.strip_prefix("updated="))
         .unwrap_or("check");
     let mut words = format!(" after=restart step={step}");
+    // Only the words `updated` reads: a plan word such as `netdest=` or
+    // `caps=` from the command line would widen its line (the manager's review
+    // of #779).
     for word in crate::cmdline()
         .split_whitespace()
         .filter_map(|w| w.strip_prefix("updated."))
+        .filter(|w| {
+            w.split_once('=')
+                .is_some_and(|(key, _)| UPDATED_TEST_WORDS.contains(&key))
+        })
     {
         words.push(' ');
         words.push_str(word);

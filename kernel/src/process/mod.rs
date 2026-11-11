@@ -496,14 +496,22 @@ pub fn spawn_in(
         crate::handle::give_at_start(slot, alloc::vec![entry]);
     }
     // `netdest=llm`: the LLM server's destination, CONNECT only, to the line
-    // that asks for it and no other NET holder (K, after #756).
-    if plan.llm_dest {
+    // that asks for it and no other NET holder (K, after #756), and only within
+    // its ceiling: NET bounds this handle as it bounds every `NetDest`.
+    let llm_allowed =
+        crate::handle::ceiling_allows(request.limits.caps, kabi::handle::Kind::NetDest);
+    if plan.llm_dest && llm_allowed {
         let entry = captable::Entry::new(
             kabi::handle::Kind::NetDest,
             kabi::handle::Rights::CONNECT,
             kabi::handle::netdest::LLM,
         );
-        crate::handle::give_at_start(slot, alloc::vec![entry]);
+        if !crate::handle::give_at_start(slot, alloc::vec![entry]) {
+            crate::log!(
+                "process: {} started without the LLM's handle (its table is full)",
+                request.name
+            );
+        }
     }
     if threads::spawn("user", process_main, slot).is_err() {
         crate::handle::destroy(slot);

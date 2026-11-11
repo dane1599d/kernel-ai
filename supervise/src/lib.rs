@@ -777,6 +777,9 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     if let Some(dest) = &netdest {
         any_host_line(name, program, dest)?;
     }
+    if llm_dest {
+        llm_dest_line(name, program, limits.caps)?;
+    }
     // comphost is told its line's destination too: it cannot read one back
     // from the handle, and names it to the shell as the app's ceiling (P5
     // task 13). The kernel holds it to the handle whatever it says. Other
@@ -813,6 +816,24 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
 /// model service's client of it (K, after #756: `caps=net` alone no longer
 /// carries it).
 pub const LLM_DEST: &str = "llm";
+
+/// The one plan line `netdest=llm` may sit on: the model service's own.
+pub const LLM_DEST_SERVICE: &str = "llm";
+
+/// `netdest=llm` only on the `llm` line running `llm`, and only with `net` in
+/// its ceiling, so NET stays the ceiling for the LLM's handle as for any other
+/// `NetDest` (the manager's review of #779). Any other line with it fails.
+fn llm_dest_line(name: &str, program: &str, caps: u64) -> Result<(), String> {
+    if name != LLM_DEST_SERVICE || program != LLM_DEST_SERVICE {
+        return Err(format!(
+            "{name}: netdest={LLM_DEST} is for the {LLM_DEST_SERVICE} line alone"
+        ));
+    }
+    if caps & cap::NET == 0 {
+        return Err(format!("{name}: netdest={LLM_DEST} needs caps=net"));
+    }
+    Ok(())
+}
 
 /// The one program told its line's `netdest=` as an argument.
 pub const NETDEST_ARG_PROGRAM: &str = "comphost";

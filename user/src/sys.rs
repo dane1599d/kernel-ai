@@ -1066,7 +1066,7 @@ pub fn net_close(stream: Handle) -> Result<(), Error> {
 }
 
 /// The date, seconds since 1970 UTC, a TLS client checks certificates
-/// against (NET_TIME; needs NET).
+/// against (NET_TIME; needs NET, which takes a held `NetDest` with CONNECT).
 pub fn net_time() -> Result<u64, Error> {
     call(call::NET_TIME, [0; 6])
 }
