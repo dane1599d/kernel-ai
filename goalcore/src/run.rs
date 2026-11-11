@@ -511,7 +511,14 @@ impl Goal {
             }) => Some(StepStatus::Held),
             // A question is no step: nothing in the log to close.
             Some(_) => None,
-            None => self.flight.take().map(|_| StepStatus::Failed),
+            // The step ran as far as anyone knows and did not finish: the log calls it
+            // failed, so the counts do too (a record whose counts are not its log's is
+            // refused when it is read back).
+            None => self.flight.take().map(|_| {
+                self.steps_run += 1;
+                self.failed += 1;
+                StepStatus::Failed
+            }),
         };
         if let (Some(status), Some(step)) = (closing, self.last_step()) {
             step.status = status;
