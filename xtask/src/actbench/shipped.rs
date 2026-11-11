@@ -9,7 +9,8 @@
 //! is skipped and counted. A `script` call is scored on its routing: llm writes
 //! the code next with the script prompt, which the fluency gate measures. An
 //! ambiguous task passes on `clarify` or a row the OS asks before running, as
-//! the gated arm's does. History turns go in as llm's conversation memory.
+//! the gated arm's does, or on a call whose target is a placeholder, which the
+//! shell answers by asking which one (`shellcore::placeholder_target`). History turns go in as llm's conversation memory.
 
 use super::tasks::{self, Cat, Expect, Task};
 use super::{Loaded, Next};
@@ -72,10 +73,27 @@ fn asks(name: &str) -> bool {
         .is_some_and(|row| agentabi::derive(row) == agentabi::Tier::Ask)
 }
 
+/// Whether the shell asks which one instead of running `call`: a direct call
+/// whose target is a placeholder the line does not hold
+/// (`pkg_remove("package_name")` for "remove the package").
+fn asks_which(line: &str, call: &Value) -> bool {
+    let name = call["name"].as_str().unwrap_or("");
+    let Some(row) = agentabi::find(&agentabi::ROWS, name) else {
+        return false;
+    };
+    let Some(args) = call["arguments"].as_object() else {
+        return false;
+    };
+    let values = args
+        .iter()
+        .filter_map(|(arg, value)| Some((arg.as_str(), value.as_str()?)));
+    shellcore::placeholder_target(row, values, line).is_some()
+}
+
 fn passed(task: &Task, call: &Value) -> bool {
     let name = call["name"].as_str().unwrap_or("");
     match task.cat {
-        Cat::Ambiguous => name == "clarify" || asks(name),
+        Cat::Ambiguous => name == "clarify" || asks(name) || asks_which(task.line, call),
         _ => task.expect.iter().any(|e| matches(e, call)),
     }
 }
@@ -203,5 +221,16 @@ mod tests {
             ambiguous,
             &json!({"name": "cpus", "arguments": {}})
         ));
+    }
+
+    #[test]
+    fn a_placeholder_the_shell_asks_about_counts_as_clarifying() {
+        let task = tasks::TASKS
+            .iter()
+            .find(|t| t.line == "remove the package")
+            .unwrap();
+        let call = |name: &str| json!({"name": "pkg_remove", "arguments": {"name": name}});
+        assert!(passed(task, &call("package_name")));
+        assert!(!passed(task, &call("spell-en")));
     }
 }
