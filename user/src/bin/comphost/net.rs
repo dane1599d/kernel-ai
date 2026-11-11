@@ -424,6 +424,10 @@ impl Net {
                     Next::Wait
                 })
             }
+            // `fetch` let the answer go untaken: too many callers' answers
+            // were kept, or this one too long. The app is told at once, as a
+            // wait too long, not after polling to the call's limit.
+            Ok((reply, None)) if reply == later::GONE => Next::Answer(Err(NetError::Timeout)),
             Ok((reply, body)) => self.answered(job, &reply, body, now_ms),
             Err(_) => Self::overdue(job, now_ms).unwrap_or_else(|| {
                 job.next_ms = now_ms.saturating_add(LOOK_MS);
