@@ -9,6 +9,7 @@ mod components;
 mod devices;
 pub(crate) mod https;
 mod kernel;
+mod modelsuse;
 mod netgrant;
 mod netrows;
 mod network;
@@ -212,6 +213,7 @@ const LANES: &[&[TestCase]] = &[
     pkg::CASES,
     netrows::CASES,
     netgrant::CASES,
+    modelsuse::CASES,
 ];
 
 /// The cases `cargo xtask test` boots.
@@ -253,6 +255,7 @@ mod tests {
             pkg::CASES,
             netrows::CASES,
             netgrant::CASES,
+            modelsuse::CASES,
         ];
         assert_eq!(
             cases.len(),
