@@ -741,3 +741,41 @@ fn a_destination_is_judged_before_its_budget_word() {
         );
     }
 }
+
+/// A host of 251 bytes: four labels of 60 and `.example`.
+fn long_host(c: char) -> String {
+    let label = c.to_string().repeat(60);
+    format!("{label}.{label}.{label}.{label}.example")
+}
+
+#[test]
+fn a_destination_that_is_too_long_once_written_in_full_is_refused() {
+    // Short form: no `proto:` or `addrs:`, which a manifest may leave out, and which
+    // are 21 bytes when they are written.
+    let hosts = |n: usize| {
+        ['a', 'b', 'c', 'd', 'e']
+            .iter()
+            .take(n)
+            .map(|c| long_host(*c))
+            .collect::<Vec<_>>()
+            .join("+")
+    };
+    // Three hosts fit either way, and read back.
+    let three = format!("ports:443,hosts:{}", hosts(3));
+    let parsed = Manifest::parse(&with("net", &three)).unwrap();
+    assert_eq!(Manifest::parse(&parsed.format()).unwrap(), parsed);
+    // Four are under netdest's limit as written short (1,023 bytes) and over it once
+    // written in full (1,044): refused, not written as a manifest that cannot be read.
+    let four = format!("ports:443,hosts:{}", hosts(4));
+    assert!(four.len() <= netdest::MAX_TEXT, "{}", four.len());
+    assert!(netdest::Dest::parse(&four).is_ok());
+    let refusal = refused(&with("net", &four));
+    let Refusal::Net(got, why) = &refusal else {
+        panic!("{refusal:?}");
+    };
+    assert_eq!(got, &four);
+    assert!(why.contains("too long"), "{why}");
+    // The same four, written in full, are over the limit for netdest itself.
+    let full = format!("proto:tcp,addrs:none,{four}");
+    assert!(netdest::Dest::parse(&full).is_err());
+}
