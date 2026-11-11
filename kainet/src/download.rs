@@ -119,9 +119,12 @@ pub enum Step {
 
 /// A download run a chunk at a time, so that its caller can do other work
 /// between chunks, such as answering requests: `updated` steps one in its
-/// serve loop. The steps are [`download`]'s, in its order. After an error,
-/// start a new one to resume from the checkpoint. It holds one chunk's
-/// buffer for the run, for the read-backs and the fetches alike.
+/// serve loop. The steps are [`download`]'s, in its order. A step that fails
+/// leaves the run where it was, so stepping again tries the same chunk, or
+/// the same `finish`; only [`DownloadError::Whole`] is final, as the list is
+/// wrong. A new run, from the checkpoint, does as well after a restart. It
+/// holds one chunk's buffer for the run, for the read-backs and the fetches
+/// alike.
 pub struct Download {
     list: Chunks,
     whole: Sha256,
@@ -176,9 +179,11 @@ impl Download {
         if i < self.recorded {
             let (start, end) = self.list.range(i);
             let bytes = &mut self.buf[..(end - start) as usize];
-            partial.read(start, bytes)?;
+            // A chunk that cannot be read back, as one cut short by a crash,
+            // counts as one that no longer matches.
+            let read = partial.read(start, bytes).is_ok();
             let hash: [u8; 32] = Sha256::digest(&*bytes).into();
-            if hash == self.list.hashes[i] {
+            if read && hash == self.list.hashes[i] {
                 self.whole.update(&*bytes);
                 self.kept += 1;
                 self.next += 1;
@@ -194,7 +199,8 @@ impl Download {
             self.next += 1;
             return Ok(Step::Fetched(i));
         }
-        let blob: [u8; 32] = core::mem::take(&mut self.whole).finalize().into();
+        // A clone, so a `finish` that fails can be stepped again.
+        let blob: [u8; 32] = self.whole.clone().finalize().into();
         if blob != self.list.blob {
             return Err(DownloadError::Whole);
         }

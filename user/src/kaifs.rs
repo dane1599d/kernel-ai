@@ -211,11 +211,19 @@ impl Kaifs {
         Ok(())
     }
 
+    /// Commits the open action. If the commit fails or its answer is lost,
+    /// the action is aborted, so `fs` is never left holding one this side
+    /// thinks closed: the next chunk's write begins afresh, and the mark
+    /// still names only what was committed.
     fn commit(&mut self) -> Result<(), String> {
+        let got = ask(self.dir, Request::Commit);
         self.open = false;
-        match ask(self.dir, Request::Commit)? {
-            (Reply::Committed { .. }, _) => Ok(()),
-            (other, _) => Err(format!("a commit: {other:?}")),
+        match got {
+            Ok((Reply::Committed { .. }, _)) => Ok(()),
+            other => {
+                let _ = ask(self.dir, Request::Abort);
+                Err(format!("a commit: {other:?}"))
+            }
         }
     }
 

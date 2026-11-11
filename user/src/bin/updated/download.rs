@@ -13,7 +13,8 @@
 //!   `.partial/<sha256>.partial`, with its mark in the same `fs` action
 //!   (`user::kaifs`): a cut, a refused chunk or a restart goes on from the last
 //!   whole chunk. A failed step leaves the run where it was, so the next try
-//!   asks for that chunk again, after a wait.
+//!   asks for that chunk again, after a wait. A request waits behind at most
+//!   one step, whose fetch has [`CHUNK_NS`].
 //! - **Then the copy.** `fs` keeps only sealed blobs, which it hashes as they
 //!   are written, so the checked file is copied into the store in one action
 //!   (`SealedBegin`, `SealedPush`, `SealedFinish`), a chunk per tick, as an
@@ -44,10 +45,12 @@ use user::kaifs::{self, Kaifs};
 use user::tls::{self, NetDial};
 use user::{println, sys};
 
-/// How long one chunk's fetch may take, its connection included.
-const CHUNK_NS: u64 = 120_000_000_000;
+/// How long one chunk's fetch may take, its connection included: the most a
+/// request to `updated` waits behind a step. A chunk cut by it is asked for
+/// again from its start.
+const CHUNK_NS: u64 = 60_000_000_000;
 /// How long the list's fetch may take.
-const LIST_NS: u64 = 60_000_000_000;
+const LIST_NS: u64 = 30_000_000_000;
 /// Failed tries of one chunk in a row before the download is refused, and
 /// the first wait between them, doubled after each, at most `MAX_WAIT_NS`.
 const MAX_TRIES: u32 = 8;
@@ -105,6 +108,13 @@ impl dl::Partial for ModelPartial {
 }
 
 impl ModelPartial {
+    /// Closes the file, the mark and `.partial/`'s handle, which `start`
+    /// opened for this run.
+    fn close(&mut self) {
+        self.0.close();
+        let _ = sys::handle_close(self.0.dir());
+    }
+
     /// The last error, with what `kaifs` said.
     fn why(&self, error: &DownloadError) -> String {
         match &self.0.why {
@@ -170,7 +180,14 @@ pub fn start(
             .ok_or_else(|| format!("{PARTIAL_IN_STORE} was not made"))?,
     };
     let mut partial = ModelPartial(Kaifs::new(dir, &hex(&job.sha256)));
-    let run = Download::start(list, &mut partial).map_err(|e| partial.why(&e))?;
+    let run = match Download::start(list, &mut partial) {
+        Ok(run) => run,
+        Err(e) => {
+            let why = partial.why(&e);
+            partial.close();
+            return Err(why);
+        }
+    };
     Ok(Running {
         job,
         dest,
@@ -300,19 +317,35 @@ impl Running {
                 self.report = report;
                 self.begin_copy(store)
             }
-            Err(DownloadError::Whole) => Err(String::from(
-                "every chunk matched its list, but the whole model's SHA-256 did not",
-            )),
+            Err(DownloadError::Whole) => {
+                // The list is wrong, so nothing on disk is worth keeping: the
+                // mark goes back to none, and a later try starts afresh.
+                let _ = dl::Partial::record(&mut self.partial, 0);
+                Err(String::from(
+                    "every chunk matched its list, but the whole model's SHA-256 did not",
+                ))
+            }
             Err(error) => self.retry(&error),
         }
     }
 
     /// A failed step: the run stays where it was, so the next try asks for
     /// the same chunk again, after a wait that doubles, or as long as a 429
-    /// or 503 says.
+    /// or 503 says. A host the job may not reach, or a status that says the
+    /// file is not there, is not tried again.
     fn retry(&mut self, error: &DownloadError) -> Result<(), String> {
         self.tries += 1;
         let why = self.partial.why(error);
+        let lasting = match error {
+            DownloadError::Fetch(HttpError::Refused(_)) => true,
+            DownloadError::Status(status, _) => {
+                (400..500).contains(status) && !matches!(status, 408 | 429)
+            }
+            _ => false,
+        };
+        if lasting {
+            return Err(why);
+        }
         if self.tries > MAX_TRIES {
             return Err(format!("{MAX_TRIES} tries in a row failed: {why}"));
         }
@@ -410,12 +443,15 @@ impl Running {
             }
             let _ = sys::handle_close(file);
         }
-        for name in [partial, mark] {
+        // The mark first: a partial file with no mark is fetched afresh, never
+        // read back.
+        for name in [mark, partial] {
             match kaifs::ask(dir, Request::Trash { name: name.clone() }) {
                 Ok((Reply::Done, _)) => {}
                 other => println!("updated: {name} stays in {PARTIAL_IN_STORE}: {other:?}"),
             }
         }
+        let _ = sys::handle_close(dir);
     }
 
     /// How the download went, for the log and the case: the bytes fetched
@@ -445,6 +481,6 @@ impl Running {
         if matches!(self.phase, Phase::Copying(_)) {
             let _ = folders::ask(store, &Request::Abort);
         }
-        self.partial.0.close();
+        self.partial.close();
     }
 }

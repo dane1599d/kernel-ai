@@ -109,6 +109,8 @@ struct Memory {
     done: usize,
     finished: bool,
     records: Vec<usize>,
+    /// How many `finish` calls fail before one moves the target in.
+    failed_finishes: u32,
 }
 
 impl Partial for Memory {
@@ -141,6 +143,10 @@ impl Partial for Memory {
     }
 
     fn finish(&mut self) -> Result<(), DownloadError> {
+        if self.failed_finishes > 0 {
+            self.failed_finishes -= 1;
+            return Err(DownloadError::Store("the move failed"));
+        }
         self.finished = true;
         Ok(())
     }
@@ -418,4 +424,65 @@ fn a_stepped_download_does_what_download_does_a_chunk_at_a_time() {
     assert_eq!(run.step(&mut partial, &mut fetch), Ok(Step::Done(report)));
     assert!(!partial.finished);
     assert_eq!(run.list(), &list);
+}
+
+/// A failed step can be stepped again (`updated` tries the same chunk after a
+/// wait): a cut fetch, then the `finish` that failed, with the whole hash
+/// still the target's.
+#[test]
+fn a_step_that_failed_is_stepped_again_from_where_it_was() {
+    let target = blob(3 * MIN_CHUNK as usize);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let mut partial = Memory {
+        failed_finishes: 1,
+        ..Memory::default()
+    };
+    let mut server = Server::new(target.clone());
+    server.cuts = vec![MIN_CHUNK + 7];
+    let mut fetch =
+        |range, sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>| server.fetch(range, sink);
+    let mut run = Download::start(list, &mut partial).unwrap();
+    assert_eq!(run.step(&mut partial, &mut fetch), Ok(Step::Fetched(0)));
+    assert_eq!(
+        run.step(&mut partial, &mut fetch),
+        Err(DownloadError::Fetch(HttpError::Truncated))
+    );
+    assert_eq!(run.progress(), 1);
+    assert_eq!(run.step(&mut partial, &mut fetch), Ok(Step::Fetched(1)));
+    assert_eq!(run.step(&mut partial, &mut fetch), Ok(Step::Fetched(2)));
+    assert_eq!(
+        run.step(&mut partial, &mut fetch),
+        Err(DownloadError::Store("the move failed"))
+    );
+    assert!(!partial.finished);
+    let report = Report {
+        kept: 0,
+        fetched: 3,
+    };
+    assert_eq!(run.step(&mut partial, &mut fetch), Ok(Step::Done(report)));
+    assert!(partial.finished);
+    assert_eq!(partial.bytes, target);
+}
+
+/// A chunk the checkpoint names that cannot be read back, as a file cut short
+/// by a crash leaves it, is fetched again with the chunks after it.
+#[test]
+fn a_recorded_chunk_that_cannot_be_read_back_is_fetched_again() {
+    let target = blob(4 * MIN_CHUNK as usize);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let mut partial = Memory {
+        bytes: target[..2 * MIN_CHUNK as usize + 5].to_vec(),
+        done: 3,
+        ..Memory::default()
+    };
+    let mut server = Server::new(target.clone());
+    assert_eq!(
+        run(&list, &mut partial, &mut server),
+        Ok(Report {
+            kept: 2,
+            fetched: 2
+        })
+    );
+    assert_eq!(partial.records, [2, 3, 4]);
+    assert_eq!(partial.bytes, target);
 }
