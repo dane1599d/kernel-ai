@@ -218,11 +218,21 @@ fn netdest(spec: &str) -> Result<(u64, captable::Entry), &'static str> {
 /// Runs `netcheck` as `name` with `args`, holding `dest` if given; whether it
 /// got what it expected.
 fn netcheck(name: &str, args: &str, dest: Option<captable::Entry>) -> Result<(), &'static str> {
+    netcheck_with(name, args, dest, NETCHECK_LIMITS)
+}
+
+/// [`netcheck`] with `limits`: NET held, for `netdest-g`.
+fn netcheck_with(
+    name: &str,
+    args: &str,
+    dest: Option<captable::Entry>,
+    limits: Limits,
+) -> Result<(), &'static str> {
     let request = SpawnRequest {
         name,
         program: "netcheck",
         args: args.as_bytes(),
-        limits: NETCHECK_LIMITS,
+        limits,
         spawner: 0,
         supervisor: false,
         uses: &[],
@@ -313,6 +323,18 @@ pub fn dest_check() -> Result<(), &'static str> {
         Some(entry),
     )?;
     log!("net-dest: the retired RESOLVE refused even a holder of a NetDest");
+    // Only the LLM's own handle reaches it: another NetDest with CONNECT does
+    // not (K's review of #755, where `fetch` holds callers' handles), and NET
+    // alone gives no handle to it: only a plan line's `netdest=llm` does.
+    let (_, entry) = netdest(KAI_TEST)?;
+    let with_net = Limits {
+        caps: kabi::cap::NET,
+        ..NETCHECK_LIMITS
+    };
+    netcheck_with("netdest-g", "http=refused", Some(entry), with_net)?;
+    log!(
+        "net-dest: HTTP to the LLM needs the LLM's own handle, which NET alone does not give: a NET holder with another NetDest was refused"
+    );
     any_host_pinned()
 }
 

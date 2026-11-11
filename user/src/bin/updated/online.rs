@@ -318,7 +318,12 @@ pub fn update(handle: Handle, restart_now: bool, args: &str) -> Result<Staged, S
     let split = Split::default();
     let online = |hosts: &Hosts| {
         // The image is a download: bulk streams have the larger receive buffer.
-        let dial = NetDial { dest, bulk: true };
+        // No deadline of the dial's own: `Online` ends each request at `REQUEST_NS`.
+        let dial = NetDial {
+            dest,
+            bulk: true,
+            deadline_ns: u64::MAX,
+        };
         let connect = Timed {
             inner: TlsConnect {
                 config: config.clone(),

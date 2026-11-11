@@ -45,6 +45,8 @@ const USER_FLOAT_PROGRAMS: &[&str] = &[
     "pkg",
     "updated",
     "httpscheck",
+    "fetch",
+    "dlcheck",
 ];
 /// The view guest `appbench` embeds, built first.
 const APPBENCH_GUEST: &str = "comp-viewbench";

@@ -1,6 +1,6 @@
 # P1 plan: the agent core
 
-Status: accepted by the founder, 2026-10-22. It plans the work that the accepted ADRs (`docs/adr/`, accepted 2026-10-22) and the execution plan ([ADR 0000](../adr/0000-execution-plan.md)) put in P1. It adds one design of its own, conversation memory (section 4), because no ADR covers it. Nothing here was built or run; sizes marked "est." are estimates.
+Status: accepted by the founder, 2026-10-22, and **closed 2026-10-27** (task 19): every exit case passes in `ci.yml`'s boot shards under KVM and TCG, and both real-model gates pass on GitHub runners (the roadmap's P1 status; the "P1 is done" row in `docs/decisions.md`). It plans the work that the accepted ADRs (`docs/adr/`, accepted 2026-10-22) and the execution plan ([ADR 0000](../adr/0000-execution-plan.md)) put in P1. It adds one design of its own, conversation memory (section 4), because no ADR covers it. Nothing here was built or run when it was written; sizes marked "est." are estimates.
 
 ## 1. Goal and exit
 
@@ -222,7 +222,7 @@ S02-2's pass marks: the busy sign appears within 100 ms of Enter, and masking co
   - open-world rows and the host table (named sites still default to ask until the founder answers ADR 0002's question 2);
   - `Hold`, P-F and quarantined reads;
   - online installs;
-  - an MCP bridge, if ADR 0002's question 7 says so.
+  - no MCP bridge in v0.2 (ADR 0002's question 7, answered by the P5 plan's question 8, #165).
 - **P6:** the browser and media rows, reserved in `agentabi` but disabled.
 - **Waiting on the founder:**
   - ADR 0002's question 9 (moves and overwrites run with undo; the default is ask);

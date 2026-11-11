@@ -9,6 +9,7 @@ use kabi::HttpRequest;
 use llmproto::act::{self, ActError, ActRequest, Call, History};
 use llmproto::chat::Completion;
 use llmproto::openai::CompletionError;
+use llmproto::query::QueryRequest;
 use llmproto::script::{self, ScriptRequest};
 use llmproto::text::printable;
 use llmproto::tune::TuneRequest;
@@ -95,14 +96,12 @@ impl Server {
 
     /// The model's answer to a `tune` request, under `response_format`.
     pub fn tune(&self, request: &TuneRequest, response: &mut [u8]) -> Result<Completion, String> {
-        let reply = self.post(&request.chat_body(&self.model), CHAT_TIMEOUT_MS, response)?;
-        openai::completion(&reply).map_err(|error| match error {
-            CompletionError::Status(status, body) => format!(
-                "server answered HTTP {status}: {}",
-                printable(&body, MAX_ERROR_CHARS, 1)
-            ),
-            CompletionError::Reply(error) => format!("bad chat reply: {error:?}"),
-        })
+        self.completion(&request.chat_body(&self.model), response)
+    }
+
+    /// The model's answer to a `query`, under `response_format`.
+    pub fn query(&self, request: &QueryRequest, response: &mut [u8]) -> Result<Completion, String> {
+        self.completion(&request.chat_body(&self.model), response)
     }
 
     /// One tagged call: the `act` prompt after the conversation llm keeps for a
@@ -119,6 +118,18 @@ impl Server {
             .map_err(ActError::Unavailable)?;
         let completion = openai::completion(&reply).map_err(|_| ActError::NotACall)?;
         act::parse(completion.text.trim())
+    }
+
+    /// The completion a chat body gets, or why there is none in one row.
+    fn completion(&self, body: &[u8], response: &mut [u8]) -> Result<Completion, String> {
+        let reply = self.post(body, CHAT_TIMEOUT_MS, response)?;
+        openai::completion(&reply).map_err(|error| match error {
+            CompletionError::Status(status, body) => format!(
+                "server answered HTTP {status}: {}",
+                printable(&body, MAX_ERROR_CHARS, 1)
+            ),
+            CompletionError::Reply(error) => format!("bad chat reply: {error:?}"),
+        })
     }
 
     fn post(

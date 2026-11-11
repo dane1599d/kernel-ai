@@ -71,7 +71,12 @@ pub(crate) fn run(vol: &mut FsVolume<Calls>, step: &str, args: &str) -> Result<S
     }
     image(vol, Some(step))?;
     let dest = netdest().ok_or("pkg has no NetDest handle")?;
-    let mut dial = NetDial { dest, bulk: false };
+    // No deadline of the dial's own: `Online` ends each request at `REQUEST_NS`.
+    let mut dial = NetDial {
+        dest,
+        bulk: false,
+        deadline_ns: u64::MAX,
+    };
     if step == "online" {
         off_list_refused(&mut dial)?;
     }

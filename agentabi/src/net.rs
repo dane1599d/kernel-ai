@@ -51,7 +51,7 @@ const fn read(
         cues: &[],
         returns,
         ret,
-        owner: Owner::Service("netd"),
+        owner: Owner::Service("fetch"),
         needs: 0,
         min_tier: Tier::Run,
         old_name: None,
@@ -82,5 +82,57 @@ pub const NET_LOOKUP: Action = Action {
     )
 };
 
-/// The network rows, in `ROWS` order.
-pub const NET_ROWS: [Action; 2] = [NET_FETCH, NET_LOOKUP];
+/// What was read, which the question is about: data, never instructions.
+const DATA: Arg = Arg {
+    name: "data",
+    ty: ArgType::Text { max: 4096 },
+    role: Role::Payload,
+    from_request: false,
+    never: &[],
+    aliases: &[],
+};
+
+/// The one question asked about it.
+const QUESTION: Arg = Arg {
+    name: "question",
+    ty: ArgType::Text { max: 200 },
+    role: Role::Option,
+    from_request: false,
+    never: &[],
+    aliases: &[],
+};
+
+/// The answers allowed: none for one short line, or the words to pick from
+/// (`["yes", "no"]` for a yes or no).
+const ANSWERS: Arg = Arg {
+    name: "answers",
+    ty: ArgType::Opt(&ArgType::List(&ArgType::Text { max: 32 }, 8)),
+    role: Role::Option,
+    from_request: false,
+    never: &[],
+    aliases: &[],
+};
+
+/// A quarantined read (ADR 0002 D6, FIDES's typed query): one question about
+/// read data, asked of the model apart, with no tools, no pack and no history,
+/// its answer held to `answers` or one short line. The answer is `Data` with
+/// the data's label, so whatever the data said can pick at most an allowed
+/// answer, never a call. It stays on the machine: `llm` answers it.
+pub const QUERY: Action = Action {
+    name: "query",
+    doc: "one answer about read data: one of answers, or one short line",
+    args: &[DATA, QUESTION, ANSWERS],
+    facts: Facts::LOCAL_READ,
+    inverse: Inverse::Read,
+    cues: &[],
+    returns: Returns::Content("query"),
+    ret: RetType::Data,
+    owner: Owner::Service("llm"),
+    needs: 0,
+    min_tier: Tier::Run,
+    old_name: None,
+};
+
+/// P5 task 11's rows, in `ROWS` order: the network reads, then the question
+/// asked about what they read.
+pub const NET_ROWS: [Action; 3] = [NET_FETCH, NET_LOOKUP, QUERY];

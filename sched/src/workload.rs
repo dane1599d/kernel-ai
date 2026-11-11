@@ -87,7 +87,34 @@ pub const MIX_B: Mix = Mix {
     oracle: &[],
 };
 
-pub const MIXES: [Mix; 2] = [MIX_A, MIX_B];
+/// Mix C is mix A with a bigger build: six jobs instead of four (`make -j6`
+/// rather than `-j4` on the same CPU), with the same editor, indexer and hogs
+/// and every process's behaviour unchanged. On today's kernel mix A's editor
+/// waits little enough under Interactive that the real model keeps it
+/// (2026-11-10); two more jobs of the same kind are an ordinary heavier build,
+/// not one shaped for an answer. The designers' pick is still the builds and
+/// the indexer: 7 labels, under the 8 a decision may carry.
+pub const MIX_C: Mix = Mix {
+    name: "C",
+    procs: &[
+        proc("editor", EDITOR),
+        proc("build-1", BUILD),
+        proc("build-2", BUILD),
+        proc("build-3", BUILD),
+        proc("build-4", BUILD),
+        proc("build-5", BUILD),
+        proc("build-6", BUILD),
+        proc("indexer", INDEXER),
+        proc("hog-1", Behavior::Hog),
+        proc("hog-2", Behavior::Hog),
+    ],
+    target: 0,
+    oracle: &[
+        "build-1", "build-2", "build-3", "build-4", "build-5", "build-6", "indexer",
+    ],
+};
+
+pub const MIXES: [Mix; 3] = [MIX_A, MIX_B, MIX_C];
 
 impl Mix {
     pub fn by_name(name: &str) -> Option<Mix> {
