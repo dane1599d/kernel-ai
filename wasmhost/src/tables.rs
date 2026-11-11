@@ -618,6 +618,38 @@ pub const IMPORTS: &[WitFunc] = &[
             ))
         },
     },
+    WitFunc {
+        interface: "kai:net/http",
+        version: "0.1",
+        name: "fetch",
+        core_params: &[
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I64,
+            CoreTy::I32,
+            CoreTy::I64,
+        ],
+        core_results: &[CoreTy::I32],
+        params: || {
+            vec![Ty::Record(vec![
+                (String::from("url"), Ty::String),
+                (
+                    String::from("method"),
+                    Ty::Enum(vec![String::from("get"), String::from("head")]),
+                ),
+                (
+                    String::from("range"),
+                    Ty::Option(Box::new(Ty::Record(vec![
+                        (String::from("first"), Ty::U64),
+                        (String::from("last"), Ty::Option(Box::new(Ty::U64))),
+                    ]))),
+                ),
+            ])]
+        },
+        result: || Some(Ty::U32),
+    },
 ];
 
 pub const EXPORTS: &[WitFunc] = &[
@@ -914,6 +946,53 @@ pub const EXPORTS: &[WitFunc] = &[
                     (String::from("rows"), Ty::U16),
                     (String::from("cells"), Ty::U16),
                 ]),
+            ]
+        },
+        result: || None,
+    },
+    WitFunc {
+        interface: "kai:net/responses",
+        version: "0.1",
+        name: "on-response",
+        core_params: &[
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+        ],
+        core_results: &[],
+        params: || {
+            vec![
+                Ty::U32,
+                Ty::Result(
+                    Some(Box::new(Ty::Record(vec![
+                        (String::from("status"), Ty::U16),
+                        (String::from("url"), Ty::String),
+                        (
+                            String::from("content-type"),
+                            Ty::Option(Box::new(Ty::String)),
+                        ),
+                        (String::from("retry-after"), Ty::Option(Box::new(Ty::U32))),
+                        (String::from("body"), Ty::List(Box::new(Ty::U8))),
+                    ]))),
+                    Some(Box::new(Ty::Variant(vec![
+                        (String::from("refused"), Some(Ty::String)),
+                        (String::from("bad-url"), Some(Ty::String)),
+                        (String::from("tls"), Some(Ty::String)),
+                        (String::from("http"), Some(Ty::String)),
+                        (String::from("too-large"), None),
+                        (String::from("timeout"), None),
+                        (String::from("truncated"), None),
+                    ]))),
+                ),
             ]
         },
         result: || None,

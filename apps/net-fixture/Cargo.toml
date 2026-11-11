@@ -1,0 +1,25 @@
+[package]
+name = "comp-net-fixture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# A test fixture for the `net-grant` boot case (P5 task 13), never shipped: a
+# headless app that asks `kai:net` for a fixed list of URLs, one after the
+# other, and logs what each came to. The case answers the shell's cards for
+# their hosts. Only test images carry it (`xtask`'s `components::TEST_ONLY`);
+# a release image refuses to build with it in.
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+compsdk = { path = "../../compsdk" }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wit-bindgen = { version = "=0.63.0", default-features = false, features = ["macros", "realloc"] }
+
+[dev-dependencies]
+livecore = { path = "../../livecore" }
+wasmhost = { path = "../../wasmhost" }

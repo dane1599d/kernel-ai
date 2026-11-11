@@ -104,6 +104,10 @@ pub enum Fault {
     /// before it, with no close_notify; then the fault is gone. So a
     /// download in ranges is cut once, at that point of the file.
     CutOnce(usize),
+    /// [`Fault::CutOnce`] at each of these points in turn, given as percent
+    /// of the file, so one fault cuts a download several times: `net-download`
+    /// cuts at 40% and 80% whatever the file's size. The points rise.
+    CutsAt(&'static [u8]),
 }
 
 impl Fault {
@@ -446,9 +450,33 @@ fn answer(request: &http::Request, sni: &str, content: &Content, faults: &Faults
             Some(Fault::CutAt(at - start))
         }
         Some(Fault::CutOnce(_)) => None,
+        Some(Fault::CutsAt(points)) => next_cut(faults, &key, points, file.len(), start..end),
         other => other,
     };
     answer
+}
+
+/// The cut [`Fault::CutsAt`] makes in a response of the file's bytes `range`,
+/// if its next point falls there; that point is then gone, and the fault with
+/// it after the last.
+fn next_cut(
+    faults: &Faults,
+    key: &(String, String),
+    points: &'static [u8],
+    len: usize,
+    range: std::ops::Range<usize>,
+) -> Option<Fault> {
+    let (&percent, rest) = points.split_first()?;
+    let at = len * usize::from(percent) / 100;
+    if !range.contains(&at) {
+        return None;
+    }
+    let mut faults = lock(faults);
+    match rest.is_empty() {
+        true => faults.remove(key),
+        false => faults.insert(key.clone(), Fault::CutsAt(rest)),
+    };
+    Some(Fault::CutAt(at - range.start))
 }
 
 fn send(session: &mut Conn, request: &http::Request, answer: Answer) -> Result<(), ()> {

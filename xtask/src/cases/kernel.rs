@@ -389,6 +389,9 @@ pub(super) const CASES: &[TestCase] = &[
     // acts in it after a yes on desktop's card, then runs Notes' own
     // `notes_add`, which Notes' window fronts.
     TestCase {
+        // `fetch`, in every image since the shell routes to it, left the
+        // default 512 MiB too little to open Notes.
+        memory_mib: Some(1024),
         keys: &[
             &["o", "p", "e", "n", "spc", "n", "o", "t", "e", "s", "ret"],
             &[
@@ -573,6 +576,9 @@ pub(super) const CASES: &[TestCase] = &[
     // P3 task 10: a key in the window the agent drives stops it, and the panel
     // says so.
     TestCase {
+        // `fetch`, in every image since the shell routes to it, left the
+        // default 512 MiB too little to open Notes.
+        memory_mib: Some(1024),
         keys: &[
             &["o", "p", "e", "n", "spc", "n", "o", "t", "e", "s", "ret"],
             &[

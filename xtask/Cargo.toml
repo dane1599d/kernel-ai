@@ -45,6 +45,8 @@ sha2 = "0.11.1"
 # Grain on for the S12-3 comparison (fluency/grain.rs); the OS shell builds without it.
 shellcore = { path = "../shellcore", features = ["grain"] }
 supervise = { path = "../supervise" }
+# The app gate presses a window app's buttons (appgate.rs).
+uikit = { path = "../uikit" }
 wasmhost = { path = "../wasmhost" }
 wit-parser = { version = "=0.262.0", default-features = false, features = ["std"] }
 # wit-bindgen's C generator, for `cargo xtask cc-bind` (ADR 0012 D7).
@@ -62,5 +64,3 @@ updatenet = { path = "../updatenet" }
 # The slot disk's tests read its kai-slot 1 back.
 bootslot = { path = "../bootslot" }
 wat = "1.262.0"
-# The c-app-1 card's test presses a window app's button.
-uikit = { path = "../uikit" }

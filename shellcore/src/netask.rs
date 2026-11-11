@@ -37,6 +37,12 @@ use termcore::menu::{Answer, Menu, Origin, read_answer};
 pub const MAX_CARDS: usize = 8;
 /// Most revoked grants kept for their undo.
 const MAX_REVOKED: usize = 32;
+/// Most Deny answers kept.
+const MAX_DENIED: usize = MAX_CARDS;
+/// How long a Deny refuses the app's connections to that host with no card:
+/// the request that asked is told `refused`, and an app that asks again at
+/// once does not raise the card again at once.
+pub const DENY_HOLDS_NS: u64 = 60_000_000_000;
 /// The consent a Settings change is logged with.
 const CLICK: &str = "user-click:settings";
 
@@ -132,6 +138,12 @@ impl Shell {
                 None => Connect::Refused(String::from("the grant is outside the package")),
             },
             Decision::Refused(why) => Connect::Refused(why),
+            // The person said no to this host on the card lately: refused
+            // with no card until the Deny lapses. A grant, made since or put
+            // back by `undo`, comes first.
+            Decision::Ask(_) if self.net_denied_now(app, host) => {
+                Connect::Refused(format!("you did not allow {app} to connect to {host}"))
+            }
             Decision::Ask(ask) => self.queue_net_card(NetAsking { ask, ceiling }),
         }
     }
@@ -229,10 +241,14 @@ impl Shell {
         let Some(asking) = pending.net.clone() else {
             return Reply::err("nothing to confirm");
         };
+        let answer = read_answer(text.trim()).map_or(Answer::Deny, |(answer, _)| answer);
         if let Err(reply) = self.allowed(&pending, text) {
+            // A Deny needs no proof: the app's waiting connection is refused.
+            if answer == Answer::Deny {
+                self.net_deny(&asking);
+            }
             return reply;
         }
-        let answer = read_answer(text.trim()).map_or(Answer::Deny, |(answer, _)| answer);
         let (app, host) = (asking.ask.app.as_str(), asking.ask.host.as_str());
         let made = self.write_net_grant(id, &asking, answer);
         let (outcome, change, reply) = match made {
@@ -281,6 +297,27 @@ impl Shell {
         });
         self.save_log();
         reply
+    }
+
+    /// Keeps the person's Deny of `asking` for [`DENY_HOLDS_NS`].
+    fn net_deny(&mut self, asking: &NetAsking) {
+        let (app, host) = (&asking.ask.app, &asking.ask.host);
+        self.net_denied.retain(|(a, h, _)| !(a == app && h == host));
+        if self.net_denied.len() >= MAX_DENIED {
+            self.net_denied.remove(0);
+        }
+        let now = self.host.now_ns();
+        self.net_denied.push((app.clone(), host.clone(), now));
+    }
+
+    /// Whether a Deny of `app`'s `host` still holds; one that lapsed goes.
+    fn net_denied_now(&mut self, app: &str, host: &str) -> bool {
+        let now = self.host.now_ns();
+        self.net_denied
+            .retain(|(_, _, at)| now.saturating_sub(*at) < DENY_HOLDS_NS);
+        self.net_denied
+            .iter()
+            .any(|(a, h, _)| a == app && h == host)
     }
 
     /// Writes the grant `answer` makes for `asking`: the grant, and whether
@@ -386,18 +423,24 @@ impl Shell {
     /// give an app back a network grant (a revoke undone, or an undo of an
     /// Allow undone), which only the card's Allow, the person's typed `undo`
     /// or Settings may do. Taking a grant back stays open to it.
+    ///
+    /// Likewise a row Settings withheld from an app's effects: reverting an
+    /// entry whose inverse gives the row back (a withhold undone, or an undo of
+    /// a restore undone) is the person's, never Kai's.
     pub(crate) fn kai_undo_refusal(&self) -> Option<String> {
         let entry = self.log.get(self.log.newest_live()?)?;
-        let widens = entry
-            .changes
-            .iter()
-            .any(|c| matches!(c.inverse, Some(Inverse::NetGrant { held: false, .. })));
-        widens.then(|| {
-            format!(
-                "#{} gives an app back a network grant, which only you may undo: type `undo`, or allow it again when the app asks",
-                entry.id
-            )
-        })
+        let widens = |inverse: &Option<Inverse>| match inverse {
+            Some(Inverse::NetGrant { held: false, .. }) => Some("a network grant"),
+            Some(Inverse::Grant {
+                withheld: false, ..
+            }) => Some("a row Settings withheld"),
+            _ => None,
+        };
+        let what = entry.changes.iter().find_map(|c| widens(&c.inverse))?;
+        Some(format!(
+            "#{} gives an app back {what}, which only you may undo: type `undo`, or allow it again in Settings or when the app asks",
+            entry.id
+        ))
     }
 
     /// `undo` of a network grant (`held`: it is taken back) or of a revoke

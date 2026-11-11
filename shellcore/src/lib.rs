@@ -312,6 +312,12 @@ pub trait Host {
     fn net_resolve(&self, _host: &str) -> Result<Vec<String>, String> {
         Err(String::from(NO_NET))
     }
+    /// `query` (P5 task 11): the model's answer to one typed question
+    /// about read data, asked apart from every other request. `llm` checks it
+    /// against `request.kind`, and the script binding checks it again.
+    fn query(&self, _request: &llmproto::query::QueryRequest) -> Result<String, String> {
+        Err(String::from("no model answers questions here"))
+    }
     /// `net_ping`: how many ms `host` takes to answer, or -1 for none.
     fn net_ping(&self, _host: &str) -> Result<i64, String> {
         Err(String::from(NO_NET))
@@ -609,6 +615,9 @@ pub struct Shell {
     net_cards: Vec<netask::NetAsking>,
     /// Network grants revoked, kept for their undo.
     net_revoked: Vec<kaigrants::Grant>,
+    /// The app and host of each network card the person answered Deny, and
+    /// when: refused with no card for `netask::DENY_HOLDS_NS`.
+    net_denied: Vec<(String, String, u64)>,
     /// Installed software: the image's repository and its generations.
     pkgs: pkg::Store,
     /// Whether the `sudo` note was said already.
@@ -703,6 +712,7 @@ impl Shell {
             card: None,
             net_cards: Vec::new(),
             net_revoked: Vec::new(),
+            net_denied: Vec::new(),
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
             hosts: nethosts::Table::curated(),

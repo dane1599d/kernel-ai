@@ -137,8 +137,8 @@ fn merged(damage: Vec<Rect>, (w, h): (i32, i32)) -> Vec<Rect> {
 
 /// The guest seen from inside a host function: its memory, for lifting the
 /// arguments and storing the result.
-struct InCall<'a, 'b> {
-    caller: &'a mut Caller<'b, HostState>,
+pub(crate) struct InCall<'a, 'b> {
+    pub(crate) caller: &'a mut Caller<'b, HostState>,
 }
 
 impl InCall<'_, '_> {
@@ -182,7 +182,7 @@ impl Guest for InCall<'_, '_> {
     }
 }
 
-fn core_of(v: &wasmi::Val) -> Result<Core, Error> {
+pub(crate) fn core_of(v: &wasmi::Val) -> Result<Core, Error> {
     Ok(match v {
         wasmi::Val::I32(v) => Core::I32(*v),
         wasmi::Val::I64(v) => Core::I64(*v),

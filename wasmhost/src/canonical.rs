@@ -59,6 +59,8 @@ pub struct CoreInstance {
     pub(crate) on_system_sample: Option<String>,
     /// The `kai:models/listing` `on-listing` export, when the module has one.
     pub(crate) on_models_listing: Option<String>,
+    /// The `kai:net/responses` `on-response` export, when the module has one.
+    pub(crate) on_net_response: Option<String>,
     /// The `kai:edit/replies` `on-reply` export, when the module has one.
     pub(crate) on_edit_reply: Option<String>,
     /// The `kai:files/replies` `on-done` export, when the module has one.
@@ -154,6 +156,7 @@ pub fn load_core_granted(
         settings: Default::default(),
         system: Default::default(),
         models: Default::default(),
+        net: Default::default(),
         edit: Default::default(),
         files: Default::default(),
         memory: None,
@@ -201,6 +204,10 @@ pub fn load_core_granted(
         .iter()
         .find(|f| f.interface == crate::models::LISTING && f.name == "on-listing")
         .and_then(|f| export_for(&module, f));
+    let on_net_response = tables::EXPORTS
+        .iter()
+        .find(|f| f.interface == crate::net::RESPONSES && f.name == "on-response")
+        .and_then(|f| export_for(&module, f));
     let on_edit_reply = tables::EXPORTS
         .iter()
         .find(|f| f.interface == crate::edit::REPLIES && f.name == "on-reply")
@@ -228,6 +235,7 @@ pub fn load_core_granted(
         grants,
         on_system_sample,
         on_models_listing,
+        on_net_response,
         on_edit_reply,
         on_files_reply,
     })
@@ -320,6 +328,17 @@ fn link_imports(
             (crate::models::MODELS, "read") => {
                 linker.func_wrap(qualified, name, crate::models::read)
             }
+            (crate::net::NET, _) if !crate::net::granted(grants) => {
+                return Err(link_err(format!(
+                    "{qualified} needs the net grant: this app's plan line names no hosts it may reach"
+                )));
+            }
+            (crate::net::NET, "fetch") => linker.func_new(
+                qualified,
+                name,
+                ty.clone(),
+                move |caller, params, results| crate::net::fetch(caller, entry, params, results),
+            ),
             (crate::edit::EDIT, _) if !grants.edit => {
                 return Err(link_err(format!(
                     "{qualified} needs the edit grant, which this app's package does not hold"
@@ -398,6 +417,7 @@ impl CoreInstance {
         self.settings_call_begins();
         self.system_call_begins();
         self.models_call_begins();
+        self.net_call_begins();
         let result = appabi::call(self, func, args).map_err(|trap| {
             self.last
                 .take()
@@ -407,6 +427,7 @@ impl CoreInstance {
             self.settings_call_faulted();
             self.system_call_faulted();
             self.models_call_faulted();
+            self.net_call_faulted();
         }
         result
     }

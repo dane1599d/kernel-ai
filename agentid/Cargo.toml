@@ -16,3 +16,7 @@ doctest = false
 agentabi = { path = "../agentabi" }
 kaiagent = { path = "../kaiagent" }
 sha2 = { version = "0.11.1", default-features = false }
+
+[dev-dependencies]
+agentsched = { path = "../agentsched" }
+goalcore = { path = "../goalcore" }

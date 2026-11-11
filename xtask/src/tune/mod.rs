@@ -1,4 +1,4 @@
-//! `cargo xtask tune --sim [--mix A|B] [--seed N] (--local ID | --answer FILE)
+//! `cargo xtask tune --sim [--mix A|B|C] [--seed N] (--local ID | --answer FILE)
 //! [--store DIR] [--intent TEXT] [--yes] [--eval]`: the host rehearsal of M10a.
 //! In the OS (part 2): `tune demo` (the model at the terminal, [`demo`]), `tune
 //! check` (guest equals host, [`parity`]), `tune record` and `tune ab` (the
@@ -29,11 +29,11 @@ use llmproto::text;
 use llmproto::tune::{self, Decision, Summary};
 use sched::judge::{self, Choice, TrialPlan, Unloaded, Verdict};
 use sched::spec::{PolicyKind, PolicySpec, Preset};
-use sched::workload::{MIXES, Mix};
+use sched::workload::{MIX_A, MIX_B, Mix};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
-const USAGE: &str = "usage: cargo xtask tune --sim [--mix A|B] [--seed N] \
+const USAGE: &str = "usage: cargo xtask tune --sim [--mix A|B|C] [--seed N] \
                      (--local ID | --answer FILE) [--store DIR] [--intent TEXT] [--yes] [--eval]";
 const EVAL_SEEDS: [u64; 5] = [1, 2, 3, 4, 5];
 
@@ -68,7 +68,8 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             "--sim" => sim = true,
             "--mix" => {
                 let name = value("--mix")?;
-                mix = Mix::by_name(&name).ok_or(format!("--mix expects A or B, got {name:?}"))?;
+                mix =
+                    Mix::by_name(&name).ok_or(format!("--mix expects A, B or C, got {name:?}"))?;
             }
             "--seed" => {
                 let text = value("--seed")?;
@@ -334,7 +335,8 @@ fn evaluate(args: &Args, asker: &mut dyn Ask, out: &mut dyn Write) -> Result<(),
     };
     let (mut runs, mut tried, mut kept, mut invalid) = (0, 0, 0, 0);
     let mut provenance = None;
-    for mix in MIXES {
+    // The eval's two mixes, as M10a measured them; mix C is the exit test's.
+    for mix in [MIX_A, MIX_B] {
         let burst = Choice::new(PolicySpec::new(PolicyKind::Responsive, Preset::Gentle), 0);
         let oracle = mix.oracle_choice();
         let fixed = judge::evaluate(&mix, &EVAL_SEEDS, &[oracle, burst], &plan)

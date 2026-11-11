@@ -616,3 +616,128 @@ fn every_refusal_says_one_sentence() {
         assert!(!why.is_empty() && !why.contains('\n'), "{why}");
     }
 }
+
+const WEATHER: &str = "proto:tcp,ports:443,hosts:api.weather.example";
+
+#[test]
+fn a_net_line_says_the_bytes_a_day_or_takes_the_default_and_none_moves_nothing() {
+    use crate::{DEFAULT_NET_MIB_PER_DAY, MAX_NET_MIB_PER_DAY, NetBudget};
+    let none = Manifest::parse(&with("net", "none")).unwrap();
+    assert_eq!(none.net_budget, NetBudget::NONE);
+    assert_eq!(none.net_budget.bytes_per_day(), 0);
+    // A destination that says no more: 10 MiB.
+    let plain = Manifest::parse(&with("net", WEATHER)).unwrap();
+    assert_eq!(plain.net_budget, NetBudget::DEFAULT);
+    assert_eq!(plain.net_budget.mib_per_day, DEFAULT_NET_MIB_PER_DAY);
+    assert_eq!(plain.net_budget.bytes_per_day(), 10 << 20);
+    // One that says it, up to the ceiling.
+    for mib in [1, 64, MAX_NET_MIB_PER_DAY] {
+        let said = with("net", &format!("{WEATHER} bytes/day={mib}m"));
+        let parsed = Manifest::parse(&said).unwrap();
+        assert_eq!(parsed.net_budget.mib_per_day, mib);
+        assert_eq!(parsed.net_budget.bytes_per_day(), u64::from(mib) << 20);
+        // It reads back as it was written, and a written manifest always says it.
+        assert_eq!(Manifest::parse(&parsed.format()).unwrap(), parsed);
+        assert!(parsed.format().contains(&format!("bytes/day={mib}m\n")));
+    }
+    // The destination is written canonically, then the budget.
+    let dest = plain.net.clone().expect("a destination");
+    assert!(
+        plain
+            .format()
+            .contains(&format!("net {dest} bytes/day=10m\n"))
+    );
+}
+
+#[test]
+fn a_net_budget_is_held_to_the_same_shape_as_the_model_budgets() {
+    let net = |word: &str| with("net", &format!("{WEATHER} {word}"));
+    let key = |word: &str| Refusal::NetBudgetKey(word.into());
+    let over = |max| Refusal::BudgetOver {
+        key: "net bytes/day",
+        max,
+    };
+    let number = Refusal::BudgetNumber("net bytes/day");
+    assert_eq!(
+        refused(&with("net", "none bytes/day=1m")),
+        Refusal::Net("none bytes/day=1m".into(), "a budget needs a destination")
+    );
+    assert_eq!(
+        refused(&with("net", "none ")),
+        Refusal::Net("none ".into(), "a budget needs a destination")
+    );
+    // The word after the destination is `bytes/day=Nm` and nothing else.
+    for word in [
+        "megabytes/day=1m",
+        "BYTES/DAY=1m",
+        "bytes/day",
+        "bytes",
+        "tokens/day=1m",
+        "pool=1m",
+        "1m",
+        "x",
+        " bytes/day=1m",
+        "",
+    ] {
+        assert_eq!(refused(&net(word)), key(word), "{word:?}");
+    }
+    // The unit is a lower-case `m`, and the key is not repeated or followed.
+    for word in [
+        "bytes/day=1",
+        "bytes/day=5M",
+        "bytes/day=5mb",
+        "bytes/day=1g",
+        "bytes/day=",
+        "bytes/day=1m x",
+        "bytes/day=1m ",
+    ] {
+        assert_eq!(refused(&net(word)), Refusal::NetBudgetUnit, "{word:?}");
+    }
+    // The number is a whole number without a sign, a leading zero or a space.
+    for word in [
+        "bytes/day=m",
+        "bytes/day=+5m",
+        "bytes/day=-5m",
+        "bytes/day=01m",
+        "bytes/day=5.5m",
+        "bytes/day=5 m",
+        "bytes/day=\u{ff15}m",
+        "bytes/day=99999999999m",
+        "bytes/day=18446744073709551616m",
+        "bytes/day=1m bytes/day=2m",
+    ] {
+        assert_eq!(refused(&net(word)), number, "{word:?}");
+    }
+    assert_eq!(
+        refused(&net("bytes/day=0m")),
+        Refusal::BudgetZero("net bytes/day")
+    );
+    // A number that fits a u32 and is past the ceiling, and one at the ceiling.
+    for word in ["bytes/day=513m", "bytes/day=4294967296m"] {
+        assert_eq!(refused(&net(word)), over(512), "{word:?}");
+    }
+    assert!(Manifest::parse(&net("bytes/day=512m")).is_ok());
+    // A tab is a control character, refused before any line is read.
+    assert_eq!(
+        refused(&with("net", &format!("{WEATHER}\tbytes/day=1m"))),
+        Refusal::Control
+    );
+}
+
+#[test]
+fn a_destination_is_judged_before_its_budget_word() {
+    // A bad destination with a bad budget, and with a good one: the destination's
+    // refusal, as it was before the budget existed.
+    for value in [
+        "proto:udp,ports:53,hosts:dns.example bytes/day=0m",
+        "proto:udp,ports:53,hosts:dns.example bytes/day=1m",
+        "proto:tcp, ports:443,hosts:a.example",
+        "bytes/day=1m proto:tcp,ports:443,hosts:a.example",
+    ] {
+        let refusal = refused(&with("net", value));
+        assert!(
+            matches!(refusal, Refusal::Net(ref got, _) if got == value),
+            "{value}: {refusal:?}"
+        );
+    }
+}

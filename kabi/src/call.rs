@@ -67,7 +67,9 @@ pub const SVC_RECV: u64 = 13;
 pub const SVC_REPLY: u64 = 14;
 /// `http(&HttpRequest) -> response len`: sends the request bytes to the LLM
 /// server and returns what it sends back before closing the connection
-/// (needs [`super::cap::NET`]).
+/// (needs the `NetDest` [`crate::handle::netdest::LLM`] with CONNECT, which
+/// only a plan line's `netdest=llm` gives: a handle to another destination, or
+/// [`super::cap::NET`] alone, does not reach the LLM).
 pub const HTTP: u64 = 15;
 /// `list(buf, cap) -> len`: running services, one `pid name` per line, so a
 /// restarted supervisor can find the services it already started.
