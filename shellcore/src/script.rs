@@ -105,6 +105,9 @@ struct Tx {
     journal: Journal,
     plan: Rc<Plan>,
     outbox: Outbox,
+    /// The shell's line for the last app reply that failed its row's call
+    /// (`<row>: the app refused`), with none of the reply's words (#831).
+    app_failed: Rc<RefCell<Option<String>>>,
 }
 
 impl Tx {
@@ -115,6 +118,7 @@ impl Tx {
             journal: Journal::default(),
             plan: Rc::clone(plan),
             outbox: Outbox::default(),
+            app_failed: Rc::default(),
         }
     }
 
@@ -928,6 +932,10 @@ pub struct Ran {
     /// Why it failed, as the shell wrote it after the output: the engine's
     /// error or what was not sent. `None` when it did not fail, or from a child.
     pub failed: Option<String>,
+    /// It failed after an app's reply failed a row's call: `text` shows the
+    /// person the app's words, and `failed` is the shell's own line in their
+    /// place, the one a model turn is remembered by (#831).
+    pub withheld: bool,
 }
 
 /// Runs a script with the real OS, granted only the calls the plan found. Its
@@ -949,6 +957,7 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
     let mut text = line.take_output();
     let mut last = None;
     let mut failed = None;
+    let mut withheld = false;
     let mut ok = match result {
         Ok(value) => {
             if !value.is_unit() {
@@ -960,7 +969,12 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
         Err(error) => {
             let why = line.describe(&error, config);
             text.push_str(&why);
-            failed = Some(why);
+            // Whatever error ended a run after an app's reply failed it may
+            // carry that reply's words, even caught and thrown again: the
+            // shell's own line stands in for it (#831).
+            let app = tx.app_failed.take();
+            withheld = app.is_some();
+            failed = Some(app.unwrap_or(why));
             false
         }
     };
@@ -980,6 +994,7 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
         value: last,
         shown: line.take_shown(),
         failed,
+        withheld,
     }
 }
 
