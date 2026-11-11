@@ -17,9 +17,16 @@ use super::boot::{Booter, split};
 use crate::icount;
 use std::path::PathBuf;
 
-const USAGE: &str = "usage: cargo xtask tune ab [--spec SPEC | --decisions FILE] [--mix A|B] \
+const USAGE: &str = "usage: cargo xtask tune ab [--spec SPEC | --decisions FILE] [--mix A|B|C] \
                      [--seeds K] [--shift N] [--timeout SECS]";
 pub const DEFAULT_SEEDS: u64 = 5;
+
+/// The mix a recording names, if the file holds one.
+fn recorded_mix(path: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value["mix"].as_str().map(String::from)
+}
 
 /// One icount boot of `cmdline`; its console lines.
 pub fn icount_boot(booter: &Booter, cmdline: &str, shift: u32) -> Result<Vec<String>, String> {
@@ -51,8 +58,22 @@ pub fn main(args: &[String]) -> Result<(), String> {
         &["--spec", "--decisions", "--mix", "--seeds", "--shift"],
     );
     let value = |name: &str| own.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
-    let mix = value("--mix").unwrap_or_else(|| String::from("A"));
-    if !matches!(mix.as_str(), "A" | "B") {
+    let path = value("--decisions").map_or_else(super::record::default_path, PathBuf::from);
+    // A recorded decision is measured on the mix it was recorded on.
+    let recorded_mix = match value("--spec") {
+        Some(_) => None,
+        None => recorded_mix(&path),
+    };
+    let mix = match (value("--mix"), recorded_mix) {
+        (Some(asked), Some(recorded)) if asked != recorded => {
+            return Err(format!(
+                "the recording is of mix {recorded}, not {asked}: measure it on its own mix"
+            ));
+        }
+        (Some(mix), _) | (None, Some(mix)) => mix,
+        (None, None) => String::from("A"),
+    };
+    if !matches!(mix.as_str(), "A" | "B" | "C") {
         return Err(USAGE.into());
     }
     let seeds: u64 =
@@ -65,10 +86,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
     let booter = Booter::build(&icount_flags(rest))?;
     let (spec, recorded) = match value("--spec") {
         Some(spec) => (spec, false),
-        None => {
-            let path = value("--decisions").map_or_else(super::record::default_path, PathBuf::from);
-            (super::record::verified_spec(&booter, &path, shift)?, true)
-        }
+        None => (super::record::verified_spec(&booter, &path, shift)?, true),
     };
     if !recorded {
         println!(
