@@ -46,6 +46,16 @@ pub const DENY_HOLDS_NS: u64 = 60_000_000_000;
 /// The consent a Settings change is logged with.
 const CLICK: &str = "user-click:settings";
 
+/// A Deny the person answered on a network card, while it holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Denied {
+    app: String,
+    host: String,
+    at_ns: u64,
+    /// The app's connections to the host it has refused so far.
+    refused: u32,
+}
+
 /// One ask waiting for, or on, the card: the app's host and its ceiling, as
 /// its package named it when it asked.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -141,7 +151,7 @@ impl Shell {
             // The person said no to this host on the card lately: refused
             // with no card until the Deny lapses. A grant, made since or put
             // back by `undo`, comes first.
-            Decision::Ask(_) if self.net_denied_now(app, host) => {
+            Decision::Ask(_) if self.refused_by_deny(app, host) => {
                 Connect::Refused(format!("you did not allow {app} to connect to {host}"))
             }
             Decision::Ask(ask) => self.queue_net_card(NetAsking { ask, ceiling }),
@@ -302,22 +312,61 @@ impl Shell {
     /// Keeps the person's Deny of `asking` for [`DENY_HOLDS_NS`].
     fn net_deny(&mut self, asking: &NetAsking) {
         let (app, host) = (&asking.ask.app, &asking.ask.host);
-        self.net_denied.retain(|(a, h, _)| !(a == app && h == host));
+        self.net_denied
+            .retain(|d| !(&d.app == app && &d.host == host));
         if self.net_denied.len() >= MAX_DENIED {
             self.net_denied.remove(0);
         }
-        let now = self.host.now_ns();
-        self.net_denied.push((app.clone(), host.clone(), now));
+        let at_ns = self.host.now_ns();
+        self.net_denied.push(Denied {
+            app: app.clone(),
+            host: host.clone(),
+            at_ns,
+            refused: 0,
+        });
     }
 
-    /// Whether a Deny of `app`'s `host` still holds; one that lapsed goes.
-    fn net_denied_now(&mut self, app: &str, host: &str) -> bool {
+    /// Lets go of the Denies that lapsed.
+    fn lapse_denies(&mut self) {
         let now = self.host.now_ns();
         self.net_denied
-            .retain(|(_, _, at)| now.saturating_sub(*at) < DENY_HOLDS_NS);
-        self.net_denied
+            .retain(|d| now.saturating_sub(d.at_ns) < DENY_HOLDS_NS);
+    }
+
+    /// Whether a Deny of `app`'s `host` still holds, counting the connection
+    /// it refuses; one that lapsed goes.
+    fn refused_by_deny(&mut self, app: &str, host: &str) -> bool {
+        self.lapse_denies();
+        let held = self
+            .net_denied
+            .iter_mut()
+            .find(|d| d.app == app && d.host == host);
+        held.map(|d| d.refused = d.refused.saturating_add(1))
+            .is_some()
+    }
+
+    /// `net denied`: each Deny that holds, how many of the app's connections
+    /// it has refused, and how long it holds. It reads and changes nothing
+    /// else; `net-grant`'s case waits on it before its `undo`.
+    pub(crate) fn net_denied_line(&mut self) -> Reply {
+        self.lapse_denies();
+        if self.net_denied.is_empty() {
+            return Reply::ok("no network Deny holds");
+        }
+        let now = self.host.now_ns();
+        let lines: Vec<String> = self
+            .net_denied
             .iter()
-            .any(|(a, h, _)| a == app && h == host)
+            .map(|d| {
+                let left_s =
+                    DENY_HOLDS_NS.saturating_sub(now.saturating_sub(d.at_ns)) / 1_000_000_000;
+                format!(
+                    "{} to {}: refused {} connection(s), holds {left_s} s more",
+                    d.app, d.host, d.refused
+                )
+            })
+            .collect();
+        Reply::ok(lines.join("\n"))
     }
 
     /// Writes the grant `answer` makes for `asking`: the grant, and whether

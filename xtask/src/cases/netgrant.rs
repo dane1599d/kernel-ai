@@ -73,6 +73,7 @@ pub(super) const CASES: &[TestCase] = &[
             "settings: net 3 grants",
             "net-grant: the card names net-fixture and updates.kai.test; the key denies it",
             "net-fixture: again: net-fixture: https://updates.kai.test/hello: refused updates.kai.test",
+            "net-grant: the Deny refused the app's request: net-fixture to updates.kai.test: refused ",
             "net-grant: undo put the revoked grant back",
             "net-fixture: done",
             "net-grant: each card named net-fixture and its host; a redirect's host was asked about by its own name; Settings' revoke was asked about again and undo gave it back with no card",
