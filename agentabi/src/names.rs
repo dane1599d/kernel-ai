@@ -46,6 +46,8 @@ pub const RESERVED_GROUPS: &[&str] = &[
     // P4 task 4: the Terminal's `shell_line`, which is not a row, so no
     // package `shell` may export `line` beside it.
     "shell",
+    // P5 task 11: `query`, the quarantined read.
+    "query",
     // ADR 0013 (agents): the rows `agent_*`, `goal_*` and `search_*` come after the
     // v0.1 tag, and `memory_*` is reserved above. The names are taken now, so no
     // package of the v0.1 catalogue can be named like a group the OS adds later.

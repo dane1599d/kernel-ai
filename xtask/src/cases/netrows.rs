@@ -37,4 +37,17 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("net-pf-page", "test=net-pf-page")
     },
+    // A quarantined read of that page: the mock's answer obeys it, and is
+    // only shown, as data.
+    TestCase {
+        dns: true,
+        https: Some(Https {
+            content: page,
+            faults: &[],
+        }),
+        expect: &[
+            "net-pf-query: a question about a page was asked apart; the answer that obeyed the page was only shown",
+        ],
+        ..case("net-pf-query", "test=net-pf-query")
+    },
 ];

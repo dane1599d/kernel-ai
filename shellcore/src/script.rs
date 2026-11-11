@@ -665,6 +665,16 @@ impl Host for Stub {
     fn net_ping(&self, _: &str) -> Result<i64, String> {
         Ok(-1)
     }
+    /// An answer in the kind's shape, with no model asked: the trial checks
+    /// the script, not what the data says.
+    fn query(&self, request: &llmproto::query::QueryRequest) -> Result<String, String> {
+        use llmproto::query::QueryKind;
+        Ok(match &request.kind {
+            QueryKind::Bool => String::from("yes"),
+            QueryKind::Enum(words) => words.first().cloned().unwrap_or_default(),
+            QueryKind::Short => String::from("an answer"),
+        })
+    }
     fn apps(&self) -> Option<&core::cell::RefCell<crate::apps::Apps>> {
         self.0.apps()
     }
