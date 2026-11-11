@@ -277,6 +277,7 @@ impl Shell {
             (None, false) => Proof::None,
         };
         let ran = self.run(checked, Consent { entry: id, proof });
+        self.showed_from = ran.shown.clone();
         self.last_value = ran.value.clone();
         let result = match ran.ok {
             true => Ok(ran.value.clone()),
@@ -573,7 +574,11 @@ impl Shell {
             ..pending.how
         };
         let reply = self.finish(id, &pending.request, &pending.checked, how);
-        self.remember(&pending, &reply.text);
+        let showed = core::mem::take(&mut self.showed_from);
+        if let Some(call) = &pending.call {
+            let host = self.host.as_ref();
+            crate::agentcore::remember(host, &pending.request, call, &reply.text, &showed);
+        }
         Reply {
             text: format!("{lead}{}", reply.text),
             ..reply
@@ -657,7 +662,7 @@ impl Shell {
     /// Tells llm how a model turn that asked ended, for its conversation memory.
     pub(crate) fn remember(&self, pending: &Pending, result: &str) {
         if let Some(call) = &pending.call {
-            crate::agentcore::remember(self.host.as_ref(), &pending.request, call, result);
+            crate::agentcore::remember(self.host.as_ref(), &pending.request, call, result, &[]);
         }
     }
 

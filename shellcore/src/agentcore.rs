@@ -105,8 +105,10 @@ impl Shell {
                 return Some(reply);
             }
         };
+        self.showed_from.clear();
         let outcome = self.execute(id, request, &call);
         self.steered = None;
+        let showed = core::mem::take(&mut self.showed_from);
         // A turn that asked is remembered once it is answered (`actions`).
         match &mut self.pending {
             Some(pending) if outcome.reply.confirm == Some(id) => {
@@ -117,6 +119,7 @@ impl Shell {
                 request,
                 &call.text(),
                 &outcome.reply.text,
+                &showed,
             ),
         }
         Some(outcome.reply)
@@ -584,10 +587,29 @@ fn capitalised(text: &str) -> String {
 /// Longest result line llm keeps for a turn.
 const RESULT_MAX_BYTES: usize = 300;
 
+/// The remembered result of a turn that showed Content, before its sources.
+const SHOWED_LEAD: &str = "Showed what Kai read from ";
+
 /// Sends a finished model turn to llm's conversation memory: the user's line, the
 /// call as `act` returned it, and the result line, its last line of at most 300
 /// bytes (`Done: …`, `Taken as: …`, `Refused …`, `Not run: …`).
-pub(crate) fn remember(host: &dyn crate::Host, line: &str, call: &str, reply: &str) {
+///
+/// A reply that printed Content, from the sources in `showed`, is the person's
+/// to read: later prompts would carry it as an unlabelled `Result:` line, so a
+/// fixed line naming its sources stands in for it (#831).
+pub(crate) fn remember(
+    host: &dyn crate::Host,
+    line: &str,
+    call: &str,
+    reply: &str,
+    showed: &[&str],
+) {
+    if !showed.is_empty() {
+        let from: Vec<String> = showed.iter().map(|source| read_from(source)).collect();
+        let result = format!("{SHOWED_LEAD}{}", from.join(", "));
+        host.remember(line, call, &result);
+        return;
+    }
     let last = reply
         .lines()
         .rev()

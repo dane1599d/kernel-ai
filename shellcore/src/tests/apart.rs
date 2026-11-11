@@ -42,6 +42,7 @@ fn a_result_survives_the_wire_and_its_text_cannot_forge_a_change() {
             }),
         }],
         value: None,
+        shown: Vec::new(),
     };
     let decoded = apart::decode(&apart::encode(&ran)).unwrap();
     assert_eq!(
