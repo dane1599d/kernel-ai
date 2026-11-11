@@ -14,7 +14,7 @@ decision: An app's HTTPS is `kai:net/http`, granted by a `netdest=` ceiling on i
 Only the image's own versions get it, as with every grant until package grants exist. So the `kai-app` manifest's `net` line, which would put `netdest=` on a package's line, waits for package grants.
 
 **The ceiling's text.**
-- The supervisor now passes a line's `netdest=` to its program as an argument, because a process cannot read a handle's destination back.
+- The supervisor now passes a comphost line's `netdest=` to comphost as an argument, because a process cannot read a handle's destination back. Other programs are not told it: none reads it, and a long host list would crowd their arguments out of the kernel's 256 bytes.
 - comphost names that text to the shell as the app's ceiling. The kernel holds every narrowing to the handle whatever the text says.
 - NET also starts a process with NET's own handle to the LLM server (CONNECT only). comphost closes it and keeps the handle with RESOLVE.
 
