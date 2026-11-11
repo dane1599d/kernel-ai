@@ -609,6 +609,9 @@ pub struct Shell {
     net_cards: Vec<netask::NetAsking>,
     /// Network grants revoked, kept for their undo.
     net_revoked: Vec<kaigrants::Grant>,
+    /// The app and host of each network card the person answered Deny, and
+    /// when: refused with no card for `netask::DENY_HOLDS_NS`.
+    net_denied: Vec<(String, String, u64)>,
     /// Installed software: the image's repository and its generations.
     pkgs: pkg::Store,
     /// Whether the `sudo` note was said already.
@@ -703,6 +706,7 @@ impl Shell {
             card: None,
             net_cards: Vec::new(),
             net_revoked: Vec::new(),
+            net_denied: Vec::new(),
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
             hosts: nethosts::Table::curated(),

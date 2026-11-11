@@ -43,6 +43,16 @@ fn a_netdest_line_names_its_destination_and_is_bound_to_its_program() {
     assert!(!dest.allows_name("weather.example"));
     let grants = plan.grants("weather", "weather").unwrap();
     assert_eq!(grants.netdest.as_ref(), Some(dest));
+    // Only comphost is told it as an argument; others' arguments keep their room.
+    assert_eq!(plan.services[0].args, "");
+    let hosted = parse_plan(
+        "weather program=comphost netdest=proto:tcp,ports:443,hosts:api.weather.example other=1",
+    );
+    assert!(hosted.errors.is_empty(), "{:?}", hosted.errors);
+    assert_eq!(
+        hosted.services[0].args,
+        "other=1 netdest=proto:tcp,ports:443,hosts:api.weather.example"
+    );
     assert!(plan.grants("weather", "other").is_err());
     assert_eq!(plan.grants("nobody", "nobody").unwrap().netdest, None);
 }

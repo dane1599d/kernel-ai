@@ -100,6 +100,37 @@ fn a_typed_allow_or_a_deny_grants_nothing() {
     let denied = answered(&host, &mut shell, "deny");
     assert!(denied.text.contains("not run"), "{denied:?}");
     assert!(host.net_disk.borrow().is_none(), "nothing written");
+    // The connection that asked is refused, naming the host, and so is the
+    // next, with no card, until the Deny lapses; then it asks again.
+    for _ in 0..2 {
+        assert!(matches!(
+            connect(&mut shell),
+            NetConnect::Refused(why) if why.contains("did not allow weather to connect to api.weather.example")
+        ));
+        assert!(!shell.card_waiting());
+    }
+    host.clock
+        .set(host.clock.get() + crate::netask::DENY_HOLDS_NS);
+    assert_eq!(connect(&mut shell), NetConnect::Asked);
+    // A typed Allow is no Deny: nothing is refused for it.
+    let menu = card(&mut shell);
+    shell.eval_console(&format!("answer {} allow", menu.id));
+    assert_eq!(connect(&mut shell), NetConnect::Asked);
+}
+
+#[test]
+fn a_grant_put_back_by_undo_comes_before_a_deny() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    assert!(answered(&host, &mut shell, "allow").ok);
+    shell.settings(SETTINGS_APP, "net-revoke 1", true).unwrap();
+    // Asked again after the revoke, and denied.
+    let denied = answered(&host, &mut shell, "deny");
+    assert!(denied.text.contains("not run"), "{denied:?}");
+    assert!(matches!(connect(&mut shell), NetConnect::Refused(_)));
+    // The person's `undo` puts the revoked grant back: granted at once.
+    assert!(shell.eval("undo").ok);
+    assert!(matches!(connect(&mut shell), NetConnect::Granted(_)));
 }
 
 #[test]

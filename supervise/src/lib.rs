@@ -671,6 +671,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     let mut boot: Option<BootFiles> = None;
     let mut netdest: Option<netdest::Dest> = None;
     let mut llm_dest = false;
+    let mut netdest_word = None;
     let mut start: Option<Start> = None;
     let mut unsupervised = false;
     for word in words {
@@ -726,6 +727,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
                 }
                 let dest = netdest::Dest::parse(value)
                     .map_err(|why| format!("{name}: netdest={value} is refused: {why}"))?;
+                netdest_word = Some(word);
                 netdest = Some(dest);
             }
             Some(("start", value)) => {
@@ -775,6 +777,14 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     if let Some(dest) = &netdest {
         any_host_line(name, program, dest)?;
     }
+    // comphost is told its line's destination too: it cannot read one back
+    // from the handle, and names it to the shell as the app's ceiling (P5
+    // task 13). The kernel holds it to the handle whatever it says. Other
+    // programs are not told: none reads it, and a long host list would take
+    // room their arguments need under `kabi::MAX_ARGS` (`dlcheck`'s did).
+    if program == NETDEST_ARG_PROGRAM {
+        args.extend(netdest_word);
+    }
     let start = start.unwrap_or_default();
     if unsupervised && start != Start::Boot {
         return Err(format!("{name}: an unsupervised process takes no start="));
@@ -803,6 +813,9 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
 /// model service's client of it (K, after #756: `caps=net` alone no longer
 /// carries it).
 pub const LLM_DEST: &str = "llm";
+
+/// The one program told its line's `netdest=` as an argument.
+pub const NETDEST_ARG_PROGRAM: &str = "comphost";
 
 /// The one plan line `netdest=...,hosts:any` may sit on: the shell's (the
 /// founder, 2026-11-09: Kai may reach any website the user names).
