@@ -186,7 +186,7 @@ At approval, sessions 1-3 start, while P2 and P3 lanes are still running. Sessio
 v0.1 is tagged when all of these hold, and not before:
 
 - Section 1's exit criteria pass on the tag's commit, under KVM and TCG.
-- P1, P2 and P3 are closed, and M10a's exit test passes (it does: PR #7).
+- P1, P2 and P3 are closed, and M10a's exit test passes (it does: mix C, #797, after mix A stopped showing a gain).
 - A/B slots with rollback and offline updates from an update disk work (lane U, from P2).
 - The built-ins are signed packages; `install` reaches the image and a local mirror.
 - ADR 0009's D1-D8 are in place: the licence you chose, `NOTICES.txt` byte-identical in the image and the release, the source tarball rebuilding offline, the DCO job, both names cleared ("Kernel AI" and "Kai").
@@ -199,7 +199,7 @@ Where each item stands on 2026-11-04 (task 19). "Done" is on main; "missing" nam
 | Item | Status | Where, and what is left |
 |---|---|---|
 | Section 1's exit cases, KVM and TCG | Done | All 12 boot cases are on main, each merged through a batch that boots every case under KVM and TCG. The last ones: `app-monitor` (#494), `app-files` (#599, #604; the window is #454), `app-notes` (#600, #602) and `app-settings`' undo (#601). They pass again on the tag's commit. Section 11 has each case |
-| P1, P2 and P3 closed; M10a's exit test | Done | P1 is closed (decisions, 2026-10-27) and M10a passes (#7). P2 closed on 2026-11-04 with its kaifs throughput miss (25-26 MB/s against S04-2's 50 MB/s) accepted for v0.1 by you; the speed work comes after v0.1 (decisions, 2026-11-04). P3 is done: its exit cases are all on main (section 10 of `p3-desktop.md`, #436) |
+| P1, P2 and P3 closed; M10a's exit test | Done | P1 is closed (decisions, 2026-10-27) and M10a passes on mix C (#797: three runs on one recording, identical results, editor p99 0.50-0.67x, every background job at 92.7% or more; the founder held the tag for it on 2026-11-10). P2 closed on 2026-11-04 with its kaifs throughput miss (25-26 MB/s against S04-2's 50 MB/s) accepted for v0.1 by you; the speed work comes after v0.1 (decisions, 2026-11-04). P3 is done: its exit cases are all on main (section 10 of `p3-desktop.md`, #436) |
 | A/B slots, rollback, offline updates | Done | Lane U, P2: `slot-ab`, `slot-probation`, `update-disk`, `update-tampered` and `update-rollback` |
 | Built-ins as signed packages; `install` from the image and a mirror | Done | `pkg-image` and `pkg-image-tampered` (task 1), `pkg-install` and its five tamper cases (task 2), `desk-catalog` (task 3) |
 | ADR 0009 D1-D8 | Missing | Done: MPL-2.0 with the DCO (founder, 2026-10-27), `NOTICES.txt` byte-identical in the image and the release, the offline source rebuild (S09-1), the `dco` job (task 16). The names are kept: "Kernel AI" with this plan's approval on 2026-10-27, and "Kai" on 2026-11-07 (#745), when the founder accepted the risk of the registered KAI marks for AI assistants that a first-pass trademark check found on 2026-11-06 (it found no exact "Kernel AI" mark). Yours: counsel's clearance search (ADR 0009 D8, question 4) |
