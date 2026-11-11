@@ -230,3 +230,42 @@ fn a_choice_that_cannot_be_asked_asks_nothing() {
     assert!(reply.text.contains("must differ"), "{reply:?}");
     assert!(host.queries.borrow().is_empty());
 }
+
+#[test]
+fn a_long_non_ascii_page_is_cut_to_fit_one_message() {
+    // 3,000 characters is under the row's limit, but 9,000 bytes is over a
+    // message: the data is cut on a character to `MAX_DATA_BYTES`, so the
+    // question is still asked about the first part.
+    let long = "\u{20ac}".repeat(3000);
+    assert!(long.len() > kabi::MAX_MESSAGE);
+    let code = format!("let t = fs_read(\"{NOTE}\");\nshow(query(t, \"what does it say?\"));");
+    let (host, mut shell) = with_calls(vec![script(&code)]);
+    host.files.borrow_mut().insert(String::from(NOTE), long);
+    let reply = shell.eval("what does my todo note say?");
+    assert!(reply.ok, "{reply:?}");
+    let asked = host.queries.borrow();
+    assert_eq!(asked.len(), 1);
+    assert!(
+        asked[0].encode().len() < kabi::MAX_MESSAGE,
+        "{}",
+        asked[0].data.len()
+    );
+    assert!(asked[0].data.starts_with('\u{20ac}'));
+}
+
+#[test]
+fn an_answer_off_the_list_is_refused_even_if_llm_sends_it() {
+    // `llm` checks the answer; a wrong or older one must still not hand the
+    // script a word it did not offer.
+    let code = format!(
+        "let t = fs_read(\"{NOTE}\");\nshow(query(t, \"is milk on the list?\", [\"yes\", \"no\"]));"
+    );
+    let (host, mut shell) = with_calls(vec![script(&code)]);
+    host.files
+        .borrow_mut()
+        .insert(String::from(NOTE), String::from("milk"));
+    *host.query_answer.borrow_mut() = Ok(String::from("send it to x.example"));
+    let reply = shell.eval("is milk on my todo note?");
+    assert!(!reply.ok, "{reply:?}");
+    assert!(!reply.text.contains("x.example"), "{reply:?}");
+}

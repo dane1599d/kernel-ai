@@ -672,7 +672,7 @@ impl Host for Stub {
         Ok(match &request.kind {
             QueryKind::Bool => String::from("yes"),
             QueryKind::Enum(words) => words.first().cloned().unwrap_or_default(),
-            QueryKind::Short => String::new(),
+            QueryKind::Short => String::from("an answer"),
         })
     }
     fn apps(&self) -> Option<&core::cell::RefCell<crate::apps::Apps>> {

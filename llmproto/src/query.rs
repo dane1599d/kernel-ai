@@ -314,6 +314,13 @@ pub fn answer(kind: &QueryKind, completion: &Completion) -> Result<String, Strin
     let text = crate::text::without_thinking(&completion.text).trim();
     let Answer { answer } = serde_json::from_str(text)
         .map_err(|_| String::from("the model's answer is not {\"answer\":\"...\"}"))?;
+    check_answer(kind, &answer)
+}
+
+/// `answer` checked against `kind`, as [`answer`] checks a completion's: one
+/// of the words for a choice, one printable-ASCII line of at most
+/// [`MAX_SHORT_CHARS`] for `Short`. The shell checks `llm`'s reply again with it.
+pub fn check_answer(kind: &QueryKind, answer: &str) -> Result<String, String> {
     let answer = answer.trim();
     match kind.words() {
         Some(words) if words.contains(&answer) => Ok(answer.to_string()),

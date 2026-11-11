@@ -12,7 +12,7 @@ use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
-use llmproto::query::{QueryKind, QueryRequest};
+use llmproto::query::{self, QueryKind, QueryRequest};
 use rhai::{Array, Engine};
 
 pub(super) fn bind(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx: Tx) -> bool {
@@ -128,19 +128,19 @@ fn kind_of(words: Vec<String>) -> QueryKind {
 }
 
 /// One quarantined read: the question about `d`, asked apart, and the answer
-/// as `Data` that keeps `d`'s label, so what the data said steers nothing.
+/// (checked again against the kind) as `Data` that keeps `d`'s label, so what the data said steers nothing.
 fn query(
     host: &dyn Host,
     d: data::Data,
     question: &str,
     kind: QueryKind,
 ) -> Result<data::Data, String> {
-    let request = QueryRequest {
-        data: String::from(d.text()),
-        question: String::from(question),
-        kind,
-    };
-    request.check()?;
-    host.query(&request)
-        .map(|answer| data::Data::new(d.source, answer))
+    // `new` cuts the data to `MAX_DATA_BYTES` on a character, so a page of
+    // non-ASCII text under the row's character limit still fits a message.
+    let request = QueryRequest::new(d.text(), question, kind)?;
+    // `llm` checks the answer against the kind; a wrong or older one must not
+    // hand the script an off-list word or a long line, so check it again.
+    let answer = host.query(&request)?;
+    let answer = query::check_answer(&request.kind, &answer)?;
+    Ok(data::Data::new(d.source, answer))
 }

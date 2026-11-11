@@ -313,8 +313,8 @@ pub trait Host {
         Err(String::from(NO_NET))
     }
     /// `query` (P5 task 11): the model's answer to one typed question
-    /// about read data, asked apart from every other request and already
-    /// checked against `request.kind`.
+    /// about read data, asked apart from every other request. `llm` checks it
+    /// against `request.kind`, and the script binding checks it again.
     fn query(&self, _request: &llmproto::query::QueryRequest) -> Result<String, String> {
         Err(String::from("no model answers questions here"))
     }
