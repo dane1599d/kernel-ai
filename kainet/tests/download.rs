@@ -6,7 +6,9 @@
 mod hostile;
 
 use kainet::chunks::{CHUNK, Chunks, MIN_CHUNK};
-use kainet::download::{Answer, Direct, DownloadError, Get, Partial, Report, download};
+use kainet::download::{
+    Answer, Direct, DownloadError, Get, Partial, Progress, Report, download, download_on,
+};
 use kainet::http::{HttpError, Range, Url};
 use std::cell::{Cell, RefCell};
 
@@ -542,4 +544,180 @@ fn bytes_passed_on_before_a_status_are_not_asked_for_again() {
     assert_eq!(take(&mut direct, &mut get), Ok((200, 4)));
     assert_eq!(direct.url().host, "releases.kai.test");
     assert_eq!(*asked.borrow(), ["releases.kai.test", "assets.kai.test"]);
+}
+
+/// [`Memory`], counting the bytes read back.
+#[derive(Default)]
+struct Counted {
+    inner: Memory,
+    read: usize,
+}
+
+impl Partial for Counted {
+    fn checkpoint(&mut self) -> Result<usize, DownloadError> {
+        self.inner.checkpoint()
+    }
+    fn record(&mut self, done: usize) -> Result<(), DownloadError> {
+        self.inner.record(done)
+    }
+    fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), DownloadError> {
+        self.inner.write(offset, bytes)
+    }
+    fn read(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), DownloadError> {
+        self.read += buf.len();
+        self.inner.read(offset, buf)
+    }
+    fn finish(&mut self) -> Result<(), DownloadError> {
+        self.inner.finish()
+    }
+}
+
+/// Downloads with `progress` until it ends, resuming after each cut: the
+/// report, and the cuts.
+fn run_on(
+    list: &Chunks,
+    partial: &mut Counted,
+    server: &mut Server,
+    progress: &mut Progress,
+) -> (Result<Report, DownloadError>, usize) {
+    let mut cuts = 0;
+    loop {
+        match download_on(
+            list,
+            partial,
+            &mut |r, sink| server.fetch(r, sink),
+            progress,
+        ) {
+            Err(DownloadError::Fetch(HttpError::Truncated)) => cuts += 1,
+            other => return (other, cuts),
+        }
+    }
+}
+
+/// A cut in the same run reads nothing back: the whole target's hash is
+/// carried over, and the target checks out.
+#[test]
+fn a_resume_after_a_cut_in_the_same_run_reads_nothing_back() {
+    let target = blob(10 * MIN_CHUNK as usize);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let len = target.len() as u64;
+    let mut server = Server::new(target.clone());
+    server.cuts = vec![len * 4 / 10 + 100, len * 8 / 10 + 100];
+    let mut partial = Counted::default();
+    let mut progress = Progress::default();
+    let (report, cuts) = run_on(&list, &mut partial, &mut server, &mut progress);
+    assert_eq!(
+        (report, cuts),
+        (
+            Ok(Report {
+                kept: 8,
+                fetched: 2
+            }),
+            2
+        )
+    );
+    assert_eq!(partial.read, 0);
+    assert_eq!(partial.inner.bytes, target);
+    assert!(partial.inner.finished);
+    assert_eq!(progress.done(), 10);
+}
+
+/// The same cuts without a `Progress` read back everything written before
+/// each: what the carried hash saves.
+#[test]
+fn without_progress_each_resume_reads_back_what_was_written() {
+    let target = blob(10 * MIN_CHUNK as usize);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let len = target.len() as u64;
+    let mut server = Server::new(target.clone());
+    server.cuts = vec![len * 4 / 10 + 100, len * 8 / 10 + 100];
+    let mut partial = Counted::default();
+    let mut cuts = 0;
+    let report = loop {
+        match download(&list, &mut partial, &mut |r, sink| server.fetch(r, sink)) {
+            Err(DownloadError::Fetch(HttpError::Truncated)) => cuts += 1,
+            other => break other,
+        }
+    };
+    assert_eq!(
+        (report, cuts),
+        (
+            Ok(Report {
+                kept: 8,
+                fetched: 2
+            }),
+            2
+        )
+    );
+    assert_eq!(partial.read, (4 + 8) * MIN_CHUNK as usize);
+}
+
+/// A mark behind the progress (the store went back) starts it over: the
+/// chunks recorded are read back and checked, and the target still checks
+/// out.
+#[test]
+fn a_mark_behind_the_progress_starts_it_over() {
+    let target = blob(6 * MIN_CHUNK as usize);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let mut server = Server::new(target.clone());
+    server.cuts = vec![4 * MIN_CHUNK + 5];
+    let mut partial = Counted::default();
+    let mut progress = Progress::default();
+    let first = download_on(
+        &list,
+        &mut partial,
+        &mut |r, sink| server.fetch(r, sink),
+        &mut progress,
+    );
+    assert_eq!(first, Err(DownloadError::Fetch(HttpError::Truncated)));
+    assert_eq!(progress.done(), 4);
+    partial.inner.done = 2;
+    let (report, _) = run_on(&list, &mut partial, &mut server, &mut progress);
+    assert_eq!(
+        report,
+        Ok(Report {
+            kept: 2,
+            fetched: 4
+        })
+    );
+    assert_eq!(partial.read, 2 * MIN_CHUNK as usize);
+    assert_eq!(partial.inner.bytes, target);
+}
+
+/// Progress for another target is not carried over: the new target's chunks
+/// are read back from its own mark.
+#[test]
+fn progress_for_another_target_is_not_carried_over() {
+    let (one, two) = (
+        blob(4 * MIN_CHUNK as usize),
+        blob(4 * MIN_CHUNK as usize + 1),
+    );
+    let (list_one, list_two) = (Chunks::of(&one, MIN_CHUNK), Chunks::of(&two, MIN_CHUNK));
+    let mut progress = Progress::default();
+    let mut server = Server::new(one);
+    server.cuts = vec![2 * MIN_CHUNK + 5];
+    let mut first = Counted::default();
+    let cut = download_on(
+        &list_one,
+        &mut first,
+        &mut |r, sink| server.fetch(r, sink),
+        &mut progress,
+    );
+    assert_eq!(cut, Err(DownloadError::Fetch(HttpError::Truncated)));
+    assert_eq!(progress.done(), 2);
+    // Another target, two chunks of it already on disk.
+    let mut second = Counted::default();
+    second.inner.bytes = two[..2 * MIN_CHUNK as usize].to_vec();
+    second.inner.done = 2;
+    let mut server = Server::new(two.clone());
+    let (report, _) = run_on(&list_two, &mut second, &mut server, &mut progress);
+    assert_eq!(
+        report,
+        Ok(Report {
+            kept: 2,
+            fetched: 3
+        })
+    );
+    assert_eq!(second.read, 2 * MIN_CHUNK as usize);
+    assert_eq!(second.inner.bytes, two);
 }

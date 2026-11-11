@@ -47,7 +47,7 @@ use alloc::vec::Vec;
 use fsproto::How;
 use kabi::handle::{Handle, HandleInfo, Kind, Rights};
 use kainet::chunks::Chunks;
-use kainet::download::{Answer, Direct, DownloadError, Report, download};
+use kainet::download::{Answer, Direct, DownloadError, Progress, Report, download_on};
 use kainet::http::{Fetch, HttpError, Limits, Method, Range, TlsConnect, Url};
 use kainet::tls::TlsError;
 use rustls::{CertificateError, ClientConfig};
@@ -260,6 +260,9 @@ struct Runs {
     split: Split,
     /// Where the next chunk is asked: past the redirect after the first.
     direct: Direct,
+    /// The whole target's hash so far, so a resume after a cut reads back
+    /// nothing it wrote.
+    progress: Progress,
 }
 
 /// Downloads `job` into `partial`, resuming after each cut (at most
@@ -281,6 +284,7 @@ fn runs(
         ns: 0,
         split: Split::default(),
         direct: Direct::new(job.target.clone()),
+        progress: Progress::default(),
     };
     let started = sys::time_ns();
     loop {
@@ -316,72 +320,78 @@ fn once(
         inner: partial,
         split,
     };
-    download(list, &mut timed, &mut |range: Range, sink| {
-        let started = clock();
-        let index = (range.first / list.chunk) as usize;
-        if let Some(asked) = got.asked.get_mut(index) {
-            *asked = asked.saturating_add(1);
-        }
-        // Each chunk is a request of its own, and no wait of it outlasts its
-        // deadline.
-        let deadline_ns = started.saturating_add(REQUEST_NS);
-        let fetch = Fetch {
-            limits: Limits::new(list.chunk, deadline_ns),
-            allow: &allow,
-            clock: &clock,
-        };
-        let half = list.chunk / 2;
-        let mut taken = 0u64;
-        let stopping = stop == Some(index);
-        let stopped = &mut got.stopped;
-        let bytes = &mut got.bytes;
-        // From the first body bytes to the last passed on.
-        let mut first = None;
-        let mut last = 0u64;
-        let mut pass = |b: &[u8]| {
-            let now = clock();
-            first.get_or_insert(now);
-            last = now;
-            if stopping && taken + b.len() as u64 >= half {
-                *stopped = true;
-                return Err(HttpError::Connect(
-                    "stopped inside the chunk for the reboot",
-                ));
+    let progress = &mut got.progress;
+    download_on(
+        list,
+        &mut timed,
+        &mut |range: Range, sink| {
+            let started = clock();
+            let index = (range.first / list.chunk) as usize;
+            if let Some(asked) = got.asked.get_mut(index) {
+                *asked = asked.saturating_add(1);
             }
-            taken += b.len() as u64;
-            *bytes += b.len() as u64;
-            let passed = sink(b);
-            last = clock();
-            passed
-        };
-        // The release's redirect is taken once: later chunks ask the URL that
-        // answered, each on a connection of its own.
-        let answer = got.direct.range(range, &mut pass, &mut |url, range, sink| {
-            let mut connect = TimedConnect {
-                inner: TlsConnect {
-                    config: Arc::clone(&net.config),
-                    dial: TimedDial {
-                        inner: NetDial {
-                            dest: net.dest,
-                            bulk: true,
-                            deadline_ns,
-                        },
-                        split,
-                    },
-                },
-                split,
+            // Each chunk is a request of its own, and no wait of it outlasts its
+            // deadline.
+            let deadline_ns = started.saturating_add(REQUEST_NS);
+            let fetch = Fetch {
+                limits: Limits::new(list.chunk, deadline_ns),
+                allow: &allow,
+                clock: &clock,
             };
-            let fetched = fetch.run(&mut connect, Method::Get, url, Some(range), sink)?;
-            Ok((Answer::from(&fetched), fetched.url))
-        });
-        if let Some(first) = first {
-            split
-                .body
-                .set(split.body.get() + last.saturating_sub(first));
-        }
-        add(&split.fetch, started);
-        answer
-    })
+            let half = list.chunk / 2;
+            let mut taken = 0u64;
+            let stopping = stop == Some(index);
+            let stopped = &mut got.stopped;
+            let bytes = &mut got.bytes;
+            // From the first body bytes to the last passed on.
+            let mut first = None;
+            let mut last = 0u64;
+            let mut pass = |b: &[u8]| {
+                let now = clock();
+                first.get_or_insert(now);
+                last = now;
+                if stopping && taken + b.len() as u64 >= half {
+                    *stopped = true;
+                    return Err(HttpError::Connect(
+                        "stopped inside the chunk for the reboot",
+                    ));
+                }
+                taken += b.len() as u64;
+                *bytes += b.len() as u64;
+                let passed = sink(b);
+                last = clock();
+                passed
+            };
+            // The release's redirect is taken once: later chunks ask the URL that
+            // answered, each on a connection of its own.
+            let answer = got.direct.range(range, &mut pass, &mut |url, range, sink| {
+                let mut connect = TimedConnect {
+                    inner: TlsConnect {
+                        config: Arc::clone(&net.config),
+                        dial: TimedDial {
+                            inner: NetDial {
+                                dest: net.dest,
+                                bulk: true,
+                                deadline_ns,
+                            },
+                            split,
+                        },
+                    },
+                    split,
+                };
+                let fetched = fetch.run(&mut connect, Method::Get, url, Some(range), sink)?;
+                Ok((Answer::from(&fetched), fetched.url))
+            });
+            if let Some(first) = first {
+                split
+                    .body
+                    .set(split.body.get() + last.saturating_sub(first));
+            }
+            add(&split.fetch, started);
+            answer
+        },
+        progress,
+    )
 }
 
 /// Chunks fetched more than once, by index.

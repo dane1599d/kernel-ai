@@ -4,12 +4,13 @@
 //! after each, and the whole target's SHA-256 checked at the end before it is
 //! moved into place.
 //!
-//! A resume, after a cut or a reboot, reads back the chunks already written,
-//! checks each again and rebuilds the whole-target hash from them, then
-//! fetches from the first unchecked chunk: at most the chunk that was in
-//! flight is fetched again. A chunk on disk that no longer matches is fetched
-//! again too. Where the bytes live is the caller's ([`Partial`]): kaifs's
-//! `.partial/` in the OS (ADR 0011 §5), memory in tests.
+//! A resume after a reboot reads back the chunks already written, checks each
+//! again and rebuilds the whole-target hash from them, then fetches from the
+//! first unchecked chunk: at most the chunk that was in flight is fetched
+//! again. A chunk on disk that no longer matches is fetched again too. A
+//! resume after a cut in the same process carries the hash over instead
+//! ([`Progress`]). Where the bytes live is the caller's ([`Partial`]):
+//! kaifs's `.partial/` in the OS (ADR 0011 §5), memory in tests.
 
 use crate::chunks::Chunks;
 use crate::http::{HttpError, Range, Url};
@@ -151,37 +152,80 @@ impl Direct {
 /// What a download did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Report {
-    /// Chunks already on disk and checked again.
+    /// Chunks already on disk: read back and checked again, or carried in
+    /// a [`Progress`] from this process's run before.
     pub kept: usize,
     /// Chunks fetched this run.
     pub fetched: usize,
 }
 
+/// What a run of [`download_on`] keeps for the next run in the same process:
+/// how many chunks it checked and wrote, and the whole target's hash over
+/// them. A resume given it reads back only the chunks recorded past it, so a
+/// cut does not cost re-reading everything written before it.
+///
+/// It trusts what this process wrote no more than a run with no cut does,
+/// which hashes each chunk as fetched and never reads it back. A reboot has
+/// no `Progress`, so its resume reads back and checks every chunk recorded,
+/// and a mark behind the `Progress`, or another target's, starts it over.
+#[derive(Clone, Default)]
+pub struct Progress {
+    /// The target's signed SHA-256, which this progress is for.
+    blob: [u8; 32],
+    done: usize,
+    whole: Sha256,
+}
+
+impl Progress {
+    /// Chunks checked and written, as this process knows.
+    pub fn done(&self) -> usize {
+        self.done
+    }
+}
+
 /// Downloads the target `list` describes into `partial`, fetching with
-/// `fetch`. Call it again after an error to resume.
+/// `fetch`. Call it again after an error to resume; [`download_on`] resumes
+/// without reading back what this process wrote.
 pub fn download(
     list: &Chunks,
     partial: &mut impl Partial,
     fetch: &mut Fetcher,
 ) -> Result<Report, DownloadError> {
-    let mut whole = Sha256::new();
+    download_on(list, partial, fetch, &mut Progress::default())
+}
+
+/// [`download`], carrying `progress` from this process's run before.
+pub fn download_on(
+    list: &Chunks,
+    partial: &mut impl Partial,
+    fetch: &mut Fetcher,
+    progress: &mut Progress,
+) -> Result<Report, DownloadError> {
     let recorded = partial.checkpoint()?.min(list.count());
-    let mut buf = vec![0u8; usize::try_from(list.chunk).unwrap_or(usize::MAX)];
-    let mut kept = 0;
-    while kept < recorded {
-        let (start, end) = list.range(kept);
-        let bytes = &mut buf[..(end - start) as usize];
-        partial.read(start, bytes)?;
-        let hash: [u8; 32] = Sha256::digest(&*bytes).into();
-        if hash != list.hashes[kept] {
-            break;
+    if progress.blob != list.blob || progress.done > recorded {
+        *progress = Progress {
+            blob: list.blob,
+            ..Progress::default()
+        };
+    }
+    if progress.done < recorded {
+        let mut buf = vec![0u8; usize::try_from(list.chunk).unwrap_or(usize::MAX)];
+        while progress.done < recorded {
+            let (start, end) = list.range(progress.done);
+            let bytes = &mut buf[..(end - start) as usize];
+            partial.read(start, bytes)?;
+            let hash: [u8; 32] = Sha256::digest(&*bytes).into();
+            if hash != list.hashes[progress.done] {
+                break;
+            }
+            progress.whole.update(&*bytes);
+            progress.done += 1;
         }
-        whole.update(&*bytes);
-        kept += 1;
+        if progress.done < recorded {
+            partial.record(progress.done)?;
+        }
     }
-    if kept < recorded {
-        partial.record(kept)?;
-    }
+    let kept = progress.done;
     for i in kept..list.count() {
         let (start, end) = list.range(i);
         let want = (end - start) as usize;
@@ -213,9 +257,10 @@ pub fn download(
         }
         partial.write(start, &got)?;
         partial.record(i + 1)?;
-        whole.update(&got);
+        progress.whole.update(&got);
+        progress.done = i + 1;
     }
-    let blob: [u8; 32] = whole.finalize().into();
+    let blob: [u8; 32] = progress.whole.clone().finalize().into();
     if blob != list.blob {
         return Err(DownloadError::Whole);
     }
