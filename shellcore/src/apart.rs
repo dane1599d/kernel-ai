@@ -71,6 +71,7 @@ pub fn serve(request: &str, host: &Rc<dyn Host>, config: &Config) -> String {
             value: None,
             shown: Vec::new(),
             failed: None,
+            withheld: false,
         })
     };
     let Some((head, source)) = request.split_once('\n') else {
@@ -157,6 +158,7 @@ pub fn decode(text: &str) -> Option<Ran> {
         value: None,
         shown: Vec::new(),
         failed: None,
+        withheld: false,
     })
 }
 
@@ -189,6 +191,7 @@ pub fn killed(why: &str, before: Option<(u64, u64)>, host: &dyn Host) -> Ran {
         value: None,
         shown: Vec::new(),
         failed: Some(why.to_string()),
+        withheld: false,
     }
 }
 
