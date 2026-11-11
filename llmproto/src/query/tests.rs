@@ -234,3 +234,26 @@ fn the_server_schema_names_the_words_or_the_limit() {
         Some(2)
     );
 }
+
+#[test]
+fn each_malformed_reply_says_how() {
+    assert_eq!(decode_reply(b"ok =yes"), Ok("yes".to_string()));
+    assert_eq!(
+        decode_reply(b"ok !off the list"),
+        Err("off the list".to_string())
+    );
+    assert_eq!(decode_reply(b"err busy"), Err("busy".to_string()));
+    let why = |reply: &[u8]| decode_reply(reply).unwrap_err();
+    assert_eq!(why(b"ok"), "llm service: an ok reply with no answer");
+    assert_eq!(why(b"ok "), "llm service: an ok reply with no answer");
+    assert_eq!(
+        why(b"ok yes"),
+        "llm service: the answer starts with neither = nor !"
+    );
+    assert_eq!(why(b""), "llm service: an empty reply");
+    assert_eq!(
+        why(b"maybe =yes"),
+        "llm service: the reply is neither ok nor err"
+    );
+    assert_eq!(why(b"ok =\xff"), "llm service: the reply is not UTF-8");
+}
