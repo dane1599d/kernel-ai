@@ -12,7 +12,7 @@
 //! `.partial/` in the OS (ADR 0011 §5), memory in tests.
 
 use crate::chunks::Chunks;
-use crate::http::{HttpError, Range};
+use crate::http::{HttpError, Range, Url};
 use alloc::vec;
 use alloc::vec::Vec;
 use sha2::{Digest, Sha256};
@@ -80,6 +80,73 @@ impl From<&crate::http::Fetched> for Answer {
 /// answered. Only a 206's bytes are taken.
 pub type Fetcher<'a> = dyn FnMut(Range, &mut dyn FnMut(&[u8]) -> Result<(), HttpError>) -> Result<Answer, HttpError>
     + 'a;
+
+/// Fetches a URL's range, passing its bytes on: how the server answered, and
+/// the URL that answered, after any redirects ([`crate::http::Fetched`]'s
+/// `url`). [`Direct::range`] asks it.
+pub type Get<'a> = dyn FnMut(
+        &Url,
+        Range,
+        &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
+    ) -> Result<(Answer, Url), HttpError>
+    + 'a;
+
+/// A target's ranges, asked straight of the URL that answered the last one.
+///
+/// A release asset is reached through a redirect (GitHub's releases host to
+/// its assets host), so asking the target's own URL for each range costs the
+/// redirect's connection every chunk. Once a range is answered with a 206,
+/// [`Direct`] asks the URL that answered it for the next. That URL may stop
+/// answering, as GitHub signs its asset URLs for minutes:
+/// - a range it answers with anything but a 206, before a byte is passed on,
+///   is asked of the target's own URL again, once;
+/// - an error forgets it, so the next range, a resume's too, goes by the
+///   target's URL.
+///
+/// Nothing is trusted more for it: each hop is still checked against the
+/// caller's hosts by the fetch, and each chunk against the signed list.
+#[derive(Debug, Clone)]
+pub struct Direct {
+    target: Url,
+    answered: Option<Url>,
+}
+
+impl Direct {
+    pub fn new(target: Url) -> Self {
+        Self {
+            target,
+            answered: None,
+        }
+    }
+
+    /// Where the next range is asked.
+    pub fn url(&self) -> &Url {
+        self.answered.as_ref().unwrap_or(&self.target)
+    }
+
+    /// Fetches `range` with `get`, as [`download`]'s fetcher does.
+    pub fn range(
+        &mut self,
+        range: Range,
+        sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
+        get: &mut Get,
+    ) -> Result<Answer, HttpError> {
+        if let Some(url) = self.answered.take() {
+            let mut passed = false;
+            let (answer, at) = get(&url, range, &mut |bytes| {
+                passed = true;
+                sink(bytes)
+            })?;
+            if answer.status == 206 || passed {
+                self.answered = (answer.status == 206).then_some(at);
+                return Ok(answer);
+            }
+        }
+        let (answer, at) = get(&self.target, range, sink)?;
+        self.answered = (answer.status == 206).then_some(at);
+        Ok(answer)
+    }
+}
 
 /// What a download did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
