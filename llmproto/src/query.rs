@@ -357,5 +357,26 @@ pub fn decode_answer(wire: &str) -> Option<Result<String, String>> {
     }
 }
 
+/// `llm`'s whole reply to a query (`ok =answer`, `ok !why` or `err why`) as
+/// the shell takes it, with one reason for each way it can be malformed.
+pub fn decode_reply(reply: &[u8]) -> Result<String, String> {
+    let text = core::str::from_utf8(reply)
+        .map_err(|_| String::from("llm service: the reply is not UTF-8"))?;
+    let (status, rest) = text.split_once(' ').unwrap_or((text, ""));
+    match status {
+        "ok" => match rest.as_bytes().first() {
+            None => Err(String::from("llm service: an ok reply with no answer")),
+            Some(b'=') => Ok(rest[1..].to_string()),
+            Some(b'!') => Err(rest[1..].to_string()),
+            Some(_) => Err(String::from(
+                "llm service: the answer starts with neither = nor !",
+            )),
+        },
+        "err" => Err(rest.to_string()),
+        "" => Err(String::from("llm service: an empty reply")),
+        _ => Err(String::from("llm service: the reply is neither ok nor err")),
+    }
+}
+
 #[cfg(test)]
 mod tests;

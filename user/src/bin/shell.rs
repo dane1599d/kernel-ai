@@ -1098,13 +1098,7 @@ impl Host for System {
             query::CALL_TIMEOUT_MS,
         )
         .map_err(|error| alloc::format!("llm service: {error:?}"))?;
-        let text = String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned();
-        match text.split_once(' ').unwrap_or((text.as_str(), "")) {
-            ("ok", answer) => query::decode_answer(answer)
-                .unwrap_or_else(|| Err("llm service: malformed answer".to_string())),
-            ("err", why) => Err(why.to_string()),
-            _ => Err("llm service: malformed reply".to_string()),
-        }
+        query::decode_reply(&reply[..len.min(reply.len())])
     }
 }
 
