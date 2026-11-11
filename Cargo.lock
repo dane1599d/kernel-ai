@@ -2273,6 +2273,7 @@ dependencies = [
  "comp-models",
  "kabi",
  "kaigrants",
+ "kainet",
  "kaiprofile",
  "livecore",
  "llmproto",

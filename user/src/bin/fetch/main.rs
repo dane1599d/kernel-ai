@@ -47,8 +47,6 @@ const PAGE: usize = 4096;
 const DEADLINE_NS: u64 = 30_000_000_000;
 /// How long a receive waits before it looks again.
 const IDLE_MS: u64 = 60_000;
-/// The room a start's `start <id> ` takes before its request line.
-const LATER_ROOM: usize = 32;
 /// Answers kept for takes, every caller together: a caller keeps one.
 const MAX_KEPT: usize = 8;
 /// How long an answer is kept for its take.
@@ -75,6 +73,13 @@ fn destination(moved: &[Handle]) -> Option<Handle> {
     let info = sys::handle_info(*dest).ok()?;
     let needed = Rights::RESOLVE.bits() | Rights::CONNECT.bits();
     (info.kind() == Some(Kind::NetDest) && info.rights & needed == needed).then_some(*dest)
+}
+
+/// Lets go of the handles a call moved in.
+fn close_all(moved: &[Handle]) {
+    for handle in moved {
+        let _ = sys::handle_close(*handle);
+    }
 }
 
 /// What `request` comes to on the caller's `moved` handle: the head, and the
@@ -168,9 +173,7 @@ fn made(config: &Arc<ClientConfig>, request: &[u8], moved: &[Handle]) -> (String
         ),
         false => serve(config, request, moved),
     };
-    for handle in moved {
-        let _ = sys::handle_close(*handle);
-    }
+    close_all(moved);
     let shm = match (&result, body.is_empty()) {
         (Ok(_), false) => match body_shm(&body) {
             Ok(shm) => Some(shm),
@@ -265,8 +268,8 @@ fn main() -> i32 {
     };
     close_own_destinations();
     println!("fetch: ready");
-    // Room for a start's `start <id> ` before its request line.
-    let mut request = alloc::vec![0u8; wire::MAX_ASK + LATER_ROOM + 1];
+    // Room for the longest start, and a byte to spare.
+    let mut request = alloc::vec![0u8; later::MAX_MESSAGE + 1];
     let mut keep = Keep::default();
     loop {
         let mut info = RecvInfo::default();
@@ -285,7 +288,15 @@ fn main() -> i32 {
         keep.expire(sys::time_ns());
         let count = (info.handle_count as usize).min(MAX_TRANSFER);
         let moved: Vec<Handle> = info.handles[..count].iter().map(|&h| Handle(h)).collect();
-        let text = core::str::from_utf8(&request[..len.min(request.len())]).unwrap_or("");
+        // `recv_h` gives the message's whole length but copies only what the
+        // buffer holds: a longer message is refused whole, never read cut
+        // short (#831).
+        if len > later::MAX_MESSAGE {
+            close_all(&moved);
+            reply(&later::too_long(), None);
+            continue;
+        }
+        let text = core::str::from_utf8(&request[..len]).unwrap_or("");
         match Message::parse(text) {
             // A plain request: answered when it is made.
             None => {
@@ -305,18 +316,14 @@ fn main() -> i32 {
                 });
             }
             Some(Ok(Message::Take { id })) => {
-                for handle in &moved {
-                    let _ = sys::handle_close(*handle);
-                }
+                close_all(&moved);
                 match keep.take(info.caller_pid, id) {
                     Some(kept) => reply(&kept.answer, kept.shm),
                     None => reply(later::NONE, None),
                 }
             }
             Some(Err(why)) => {
-                for handle in &moved {
-                    let _ = sys::handle_close(*handle);
-                }
+                close_all(&moved);
                 reply(&wire::answer(&Err(Error::BadUrl(fetch::why(why)))), None);
             }
         }

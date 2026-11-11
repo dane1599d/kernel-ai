@@ -269,3 +269,23 @@ fn an_answer_off_the_list_is_refused_even_if_llm_sends_it() {
     assert!(!reply.ok, "{reply:?}");
     assert!(!reply.text.contains("x.example"), "{reply:?}");
 }
+
+#[test]
+fn a_fetch_whose_url_is_longer_than_fetch_takes_is_refused_and_nothing_is_sent() {
+    // A path read from a note: with `https://x.example`, 2,049 bytes, one over
+    // `kainet::wire::MAX_URL`, which `fetch` would refuse (#831).
+    let (sent, mut shell) = with_calls(vec![sends_note("x.example")]);
+    let path = format!("/{}", "x".repeat(2048 - "https://x.example".len()));
+    sent.files.borrow_mut().insert(String::from(NOTE), path);
+    let reply = shell.eval("send my todo note to x.example");
+    assert!(!reply.ok, "{reply:?}");
+    assert!(reply.text.contains("longer than 2048 bytes"), "{reply:?}");
+    assert!(sent.net_seen.borrow().is_empty());
+    // One byte shorter, it goes.
+    let (sent2, mut shell2) = with_calls(vec![sends_note("x.example")]);
+    let path = format!("/{}", "x".repeat(2047 - "https://x.example".len()));
+    sent2.files.borrow_mut().insert(String::from(NOTE), path);
+    let reply = shell2.eval("send my todo note to x.example");
+    assert!(reply.ok, "{reply:?}");
+    assert_eq!(sent2.net_seen.borrow().len(), 1, "{reply:?}");
+}
