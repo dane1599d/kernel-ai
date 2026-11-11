@@ -560,6 +560,78 @@ impl<'a> Engine<'a> {
         Ok(reply)
     }
 
+    /// Carries on an answer that `on_step` stopped, or that ran out of `max_new`
+    /// (ADR 0013 section 2: a background agent is paused mid-sentence and resumed
+    /// exactly): the next tokens, picked as the stopped reply would have picked them.
+    ///
+    /// `pending` is the last token that reply picked and the caller saw as
+    /// [`Step::Token`]: it is not in the cache yet, because a reply that stops (or
+    /// ends at `max_new`) does not run the model on the token it just picked. The
+    /// slot in use must hold what that reply left in it, which another prompt's
+    /// replies, in this slot after a [`Engine::restore_snapshot`] or in another one
+    /// after [`Engine::use_slot`] back, do not change: the logits are the one thing the
+    /// slot does not keep, and the model step on `pending` makes them again. The same
+    /// `sampler` carries the draw state on, so a seeded one continues its sequence.
+    ///
+    /// The tokens, the bytes and the ending are those of the new part only, and a
+    /// stop token ends it as in [`Engine::reply`]. A reply stopped during the prompt
+    /// is carried on by asking for the same reply again: the cache has what was run.
+    /// No shape: an answer under a grammar is not carried on here.
+    pub fn continue_reply(
+        &mut self,
+        pending: u32,
+        max_new: usize,
+        sampler: &mut Sampler,
+        mut on_step: impl FnMut(Step) -> Next,
+    ) -> Result<Reply, Error> {
+        if self.cached.is_empty() {
+            return Err(Error::EmptyPrompt);
+        }
+        if self.kv.len() + 1 > self.kv.capacity() {
+            return Err(Error::ContextFull);
+        }
+        self.forced = 0;
+        let mut reply = Reply {
+            bytes: Vec::new(),
+            prompt_tokens: self.cached.len(),
+            cached: self.cached.len(),
+            tokens: 0,
+            forced: 0,
+            ending: Ending::MaxTokens,
+        };
+        self.model
+            .forward(&mut self.kv, pending, Some(&mut self.logits))?;
+        self.cached.push(pending);
+        let mut made = 0;
+        while made < max_new {
+            let began = (self.clock)();
+            let token = sampler.pick(&self.logits);
+            if self.chat.is_stop(token) {
+                reply.ending = Ending::EndToken;
+                return Ok(reply);
+            }
+            self.picking += (self.clock)().wrapping_sub(began);
+            made += 1;
+            self.tok.decode(&[token], &mut reply.bytes);
+            reply.tokens += 1;
+            if on_step(Step::Token(token)) == Next::Stop {
+                reply.ending = Ending::Stopped;
+                return Ok(reply);
+            }
+            if made == max_new {
+                break;
+            }
+            if self.kv.len() + 1 > self.kv.capacity() {
+                reply.ending = Ending::ContextFull;
+                return Ok(reply);
+            }
+            self.model
+                .forward(&mut self.kv, token, Some(&mut self.logits))?;
+            self.cached.push(token);
+        }
+        Ok(reply)
+    }
+
     /// Jump-forward: the bytes `grammar` forces after `state`, as the tokenizer
     /// splits them, are taken as the answer's next tokens without asking the
     /// model, appended to `block` for one model step, and `state` moves past
