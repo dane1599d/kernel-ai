@@ -921,6 +921,10 @@ pub struct Ran {
     pub done: Vec<Done>,
     /// The script's last value, run in the shell; `None` from a child.
     pub value: Option<Dynamic>,
+    /// The sources of the Content it showed with `show`, each once: what it
+    /// printed from them is the person's to read, not the model's (#831). A
+    /// child shows none: the rows that read Content never run apart.
+    pub shown: Vec<&'static str>,
 }
 
 /// Runs a script with the real OS, granted only the calls the plan found. Its
@@ -964,6 +968,7 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
         text,
         done,
         value: last,
+        shown: line.take_shown(),
     }
 }
 
