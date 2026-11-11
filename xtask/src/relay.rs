@@ -15,6 +15,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
     let [target] = args else {
         return Err("usage: cargo xtask relay <addr:port>".into());
     };
+    no_delay_on_std();
     let stream =
         TcpStream::connect(target.as_str()).map_err(|e| format!("relay: {target}: {e}"))?;
     let _ = stream.set_nodelay(true);
@@ -35,6 +36,26 @@ pub fn main(args: &[String]) -> Result<(), String> {
     drop(sender);
     result.map_err(|e| format!("relay: {target}: {e}"))
 }
+
+/// QEMU's user network gives the relay its end of a loopback TCP pair as
+/// standard input and output (libslirp makes the pair over TCP for
+/// out-of-band data), with Nagle on: a response's body could wait for QEMU's
+/// delayed ACK of its head, about 40 ms a request (#816).
+#[cfg(unix)]
+fn no_delay_on_std() {
+    use std::mem::ManuallyDrop;
+    use std::os::fd::FromRawFd;
+    for fd in [0, 1] {
+        // SAFETY: standard input and output stay open for the process's life,
+        // and `ManuallyDrop` keeps this stream from closing them.
+        let stream = ManuallyDrop::new(unsafe { TcpStream::from_raw_fd(fd) });
+        // On a pipe or a terminal the call fails, and nothing changes.
+        let _ = stream.set_nodelay(true);
+    }
+}
+
+#[cfg(not(unix))]
+fn no_delay_on_std() {}
 
 /// Copies `from` to `to`, flushing each piece, until `from` ends.
 fn copy(from: &mut impl Read, to: &mut impl Write) -> io::Result<()> {
