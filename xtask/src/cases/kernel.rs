@@ -3,15 +3,6 @@
 use super::{KAI, TestCase, case};
 use crate::disk::Fixture;
 
-/// Guest memory for the desktop cases that failed with "Not enough memory to
-/// open Notes" once `pkg` (and then `updated`) linked rustls and the crypto,
-/// which are resident in every desktop boot (P5 tasks 8 and 10): the default
-/// 512 MiB and 8 MiB, over the 2 MiB `pkg` added and the 2 MiB `updated` adds.
-/// The decisions row `2026-11-09-p5-pkg-online-os` has the figures. Main's
-/// `fetch`, in every image since the shell routes to it, needs 1024 MiB on the
-/// same two cases (#757), which covers both.
-const DESK_TLS_MIB: u64 = 1024;
-
 /// The second boot of `entropy-boots`.
 const ENTROPY_BOOT_2: TestCase = TestCase {
     expect: &["entropy: virtio-rng mixed in", "entropy-boots: sample "],
@@ -392,6 +383,9 @@ pub(super) const CASES: &[TestCase] = &[
     // acts in it after a yes on desktop's card, then runs Notes' own
     // `notes_add`, which Notes' window fronts.
     TestCase {
+        // `fetch`, in every image since the shell routes to it, left the
+        // default 512 MiB too little to open Notes.
+        memory_mib: Some(1024),
         keys: &[
             &["o", "p", "e", "n", "spc", "n", "o", "t", "e", "s", "ret"],
             &[
@@ -414,7 +408,6 @@ pub(super) const CASES: &[TestCase] = &[
             "desk-agent: the agent opened Notes, read its view and typed in it after a yes",
             "desk-agent: Notes' notes_add, loaded from its window, added the note",
         ],
-        memory_mib: Some(DESK_TLS_MIB),
         ..case("desk-agent", "test=desk-agent")
     },
     // P4 task 7: the Settings app runs as the system image plans it, its reads
@@ -576,6 +569,9 @@ pub(super) const CASES: &[TestCase] = &[
     // P3 task 10: a key in the window the agent drives stops it, and the panel
     // says so.
     TestCase {
+        // `fetch`, in every image since the shell routes to it, left the
+        // default 512 MiB too little to open Notes.
+        memory_mib: Some(1024),
         keys: &[
             &["o", "p", "e", "n", "spc", "n", "o", "t", "e", "s", "ret"],
             &[
@@ -591,7 +587,6 @@ pub(super) const CASES: &[TestCase] = &[
             "the panel says: Stopped: you took over",
             "desk-takeover: a key in the window the agent drove stopped it",
         ],
-        memory_mib: Some(DESK_TLS_MIB),
         ..case("desk-takeover", "test=desk-takeover")
     },
     // P3 task 12: resource profiles' kernel half.

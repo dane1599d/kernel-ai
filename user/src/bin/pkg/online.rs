@@ -71,6 +71,7 @@ pub(crate) fn run(vol: &mut FsVolume<Calls>, step: &str, args: &str) -> Result<S
     }
     image(vol, Some(step))?;
     let dest = netdest().ok_or("pkg has no NetDest handle")?;
+    // No deadline of the dial's own: `Online` ends each request at `REQUEST_NS`.
     let mut dial = NetDial {
         dest,
         bulk: false,

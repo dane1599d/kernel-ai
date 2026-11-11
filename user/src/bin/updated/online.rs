@@ -318,6 +318,7 @@ pub fn update(handle: Handle, restart_now: bool, args: &str) -> Result<Staged, S
     let split = Split::default();
     let online = |hosts: &Hosts| {
         // The image is a download: bulk streams have the larger receive buffer.
+        // No deadline of the dial's own: `Online` ends each request at `REQUEST_NS`.
         let dial = NetDial {
             dest,
             bulk: true,
@@ -430,15 +431,14 @@ pub fn update(handle: Handle, restart_now: bool, args: &str) -> Result<Staged, S
     if restart_now {
         println!("updated: restarting into {other:?}");
     }
-    let restarted = set(handle, &nv, restart_now);
-    if restarted.is_err() {
-        // The slot stays a trial it is not restarted into; with the pending
-        // record cleared, nothing is restored later (as `step=update` does).
-        if let Some(updates) = dirs.updates {
-            let _ = folders::write(updates, restore::PENDING, b"");
-        }
-    }
-    restarted.map(|()| Staged {
+    // If this set fails the pending record stays as `before_trial` wrote it. `stage`
+    // stored `stage_end` already, so the slot is a trial with tries left (above the
+    // running slot) whether or not the restart was stored; `step=update` writes both
+    // in one set, which is why it can clear the record when that set fails. Here the
+    // next start's `reconcile` settles every outcome: the slot committed (held), it
+    // never booted (cleared, snapshot dropped) or it failed before it committed (the
+    // system volume goes back to the snapshot).
+    set(handle, &nv, restart_now).map(|()| Staged {
         slot: other,
         release_seq,
     })
