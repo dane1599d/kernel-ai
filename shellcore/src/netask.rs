@@ -98,18 +98,25 @@ fn life_word(life: Life) -> &'static str {
     }
 }
 
+/// What an undo's change names a grant by: `<app>'s network to <host>`.
+fn grant_res(app: &str, host: &str) -> String {
+    format!("{app}'s network to {host}")
+}
+
 /// Checks `/system/state/netgrants` at start and drops the `session` grants:
-/// a file out of shape is audited and left as it is.
-pub(crate) fn at_boot(host: &dyn Host) {
+/// a file out of shape is audited and left as it is. The highest id the file
+/// held before the drop, for the shell's high-water mark.
+pub(crate) fn at_boot(host: &dyn Host) -> u32 {
     let mut grants = match read_store(host) {
         Ok(grants) => grants,
         Err(why) => {
             host.audit(&format!(
                 "{why}; no app reaches a new host until it is put right"
             ));
-            return;
+            return 0;
         }
     };
+    let high = grants.high();
     let before = grants.clone();
     grants.at_boot();
     if grants != before
@@ -119,6 +126,7 @@ pub(crate) fn at_boot(host: &dyn Host) {
             "the session network grants were not dropped: {why}"
         ));
     }
+    high
 }
 
 impl Shell {
@@ -257,7 +265,7 @@ impl Shell {
                 let change = Change {
                     action: String::from("net_grant"),
                     owner: String::from("shell"),
-                    res: format!("{app}'s network to {host}"),
+                    res: grant_res(app, host),
                     before: String::from(if existed { "this session" } else { "asks" }),
                     after: String::from(life),
                     // Making a session grant lasting is not taken back alone.
@@ -330,6 +338,8 @@ impl Shell {
     ) -> Result<(Grant, bool), String> {
         let host = self.host.as_ref();
         let mut grants = read_store(host)?;
+        // Never an id this run gave before, though its grant is gone from the file.
+        grants.number_above(self.net_high);
         let (app, name) = (&asking.ask.app, &asking.ask.host);
         let existed = grants.of(app).iter().any(|g| &g.object == name);
         let made = grants
@@ -337,6 +347,7 @@ impl Shell {
             .map_err(String::from)?
             .ok_or_else(|| String::from("declined"))?;
         write_store(host, &grants)?;
+        self.net_high = self.net_high.max(made);
         let grant = grants
             .of(app)
             .into_iter()
@@ -376,7 +387,7 @@ impl Shell {
             .trim_start_matches('#')
             .parse::<u32>()
             .map_err(|_| String::from("net-revoke takes a grant number"))?;
-        let grant = self.take_net_grant(id)?;
+        let grant = self.take_net_grant(id, None)?;
         let words = format!("{} may not connect to {}", grant.app, grant.object);
         let entry = self.take_id();
         self.log.push(Entry {
@@ -394,7 +405,7 @@ impl Shell {
             changes: alloc::vec![Change {
                 action: String::from("net_revoke"),
                 owner: String::from("shell"),
-                res: format!("{}'s network to {}", grant.app, grant.object),
+                res: grant_res(&grant.app, &grant.object),
                 before: String::from(life_word(grant.life)),
                 after: String::from("asks"),
                 inverse: Some(Inverse::NetGrant { id, held: false }),
@@ -404,14 +415,21 @@ impl Shell {
         Ok(words)
     }
 
-    /// Removes grant `id` from the file and keeps it for its undo.
-    fn take_net_grant(&mut self, id: u32) -> Result<Grant, String> {
+    /// Removes grant `id` from the file and keeps it for its undo. With
+    /// `logged`, refused unless the grant is still that app's host.
+    fn take_net_grant(&mut self, id: u32, logged: Option<&str>) -> Result<Grant, String> {
         let host = self.host.as_ref();
         let mut grants = read_store(host)?;
         let grant = grants
             .revoke(id)
             .ok_or_else(|| format!("there is no network grant #{id}"))?;
+        if let Some(logged) = logged
+            && grant_res(&grant.app, &grant.object) != logged
+        {
+            return Err(format!("network grant #{id} is no longer {logged}"));
+        }
         write_store(host, &grants)?;
+        self.net_high = self.net_high.max(grant.id);
         if self.net_revoked.len() >= MAX_REVOKED {
             self.net_revoked.remove(0);
         }
@@ -444,17 +462,24 @@ impl Shell {
     }
 
     /// `undo` of a network grant (`held`: it is taken back) or of a revoke
-    /// (it is put back under its own id).
-    pub(crate) fn revert_net_grant(&mut self, id: u32, held: bool) -> Result<String, String> {
+    /// (it is put back under its own id). `res` is the logged change's
+    /// `<app>'s network to <host>`: a grant under that id for another app or
+    /// host is refused, never taken back or put back in its place.
+    pub(crate) fn revert_net_grant(
+        &mut self,
+        id: u32,
+        held: bool,
+        res: &str,
+    ) -> Result<String, String> {
         if held {
-            let grant = self.take_net_grant(id)?;
+            let grant = self.take_net_grant(id, Some(res))?;
             return Ok(format!("{} may not connect to {}", grant.app, grant.object));
         }
         let at = self
             .net_revoked
             .iter()
-            .position(|g| g.id == id)
-            .ok_or_else(|| format!("network grant #{id} is no longer kept to put back"))?;
+            .rposition(|g| g.id == id && grant_res(&g.app, &g.object) == res)
+            .ok_or_else(|| format!("network grant #{id} ({res}) is no longer kept to put back"))?;
         let host = self.host.as_ref();
         let mut grants = read_store(host)?;
         let grant = self.net_revoked[at].clone();
