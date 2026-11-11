@@ -25,4 +25,5 @@ termcore = { path = "../termcore" }
 mock = []
 
 [dev-dependencies]
+netdest = { path = "../netdest" }
 sha2 = "0.11.1"

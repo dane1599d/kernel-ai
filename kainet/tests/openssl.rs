@@ -1,7 +1,9 @@
 //! kainet's client against a second implementation, `openssl s_server`
 //! (plan p5-networking §6), on this host only: it catches a provider that is
-//! only consistent with itself. openssl runs here and never ships; where it
-//! is not installed the test says so and checks nothing.
+//! only consistent with itself. openssl runs here and never ships. On CI
+//! (`CI` set, as GitHub sets it) a missing openssl fails the test; on a
+//! developer's machine without it each test prints a warning that it checked
+//! nothing.
 //!
 //! Its certificates come from openssl too, so they hold what rcgen cannot
 //! make: an RSA CA (PKCS#1 v1.5 signatures on the chain) and RSA server keys
@@ -54,6 +56,23 @@ fn openssl_here() -> bool {
         .arg("version")
         .output()
         .is_ok_and(|out| out.status.success())
+}
+
+/// Whether openssl is here to check against. On CI it must be: a run that
+/// checked nothing would still pass. Elsewhere its absence is a skip that says
+/// so on stderr, which `cargo test` shows with `--nocapture` or on failure.
+fn openssl_or_skip(test: &str) -> bool {
+    if openssl_here() {
+        return true;
+    }
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "{test}: openssl is not installed on this CI runner, so the second implementation (plan p5-networking section 6) was not checked"
+    );
+    eprintln!(
+        "WARNING {test}: SKIPPED. openssl is not installed here, so nothing was checked against it; CI requires it"
+    );
+    false
 }
 
 fn run(dir: &Path, args: &[&str]) {
@@ -254,8 +273,7 @@ fn scratch(name: &str) -> PathBuf {
 
 #[test]
 fn our_client_and_openssl_s_server_agree() {
-    if !openssl_here() {
-        eprintln!("openssl is not installed here: nothing checked");
+    if !openssl_or_skip("our_client_and_openssl_s_server_agree") {
         return;
     }
     let dir = scratch("agree");
@@ -336,8 +354,7 @@ fn our_client_and_openssl_s_server_agree() {
 
 #[test]
 fn a_tls12_only_server_and_a_1024_bit_key_are_refused() {
-    if !openssl_here() {
-        eprintln!("openssl is not installed here: nothing checked");
+    if !openssl_or_skip("a_tls12_only_server_and_a_1024_bit_key_are_refused") {
         return;
     }
     let dir = scratch("refused");

@@ -13,7 +13,9 @@ pub mod client;
 pub mod download;
 pub mod fetch;
 pub mod http;
+pub mod later;
 pub mod provider;
 #[cfg(feature = "testca")]
 pub mod testca;
 pub mod tls;
+pub mod wire;

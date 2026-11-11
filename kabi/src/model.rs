@@ -79,8 +79,9 @@ pub const fn table_pages(len: u64) -> u64 {
 /// act slot holds the pack and its MODE turn (at most 1,024 tokens), conversation
 /// memory (at most 512), the State line (64), a request (160) and a call (256);
 /// the script slot holds today's script prompt (1,071 with its template, S10-0),
-/// a request and a script answer, and serves `tune`, `ask` and `explain` (whose
-/// prompts budget for 2,048). Two slots, so neither prompt evicts the other
+/// a request and a script answer, and serves `tune`, `ask`, `explain` and
+/// `query` (whose prompts budget for 2,048; a `query` evicts the script prompt,
+/// so the next script request prefills it again). Two slots, so neither prompt evicts the other
 /// (S02-2: one shared slot cost 53-67 s of prefill a request in the guest).
 pub const CONTEXT_CAP: usize = 2048;
 /// The llm service's KV slots: the act prefix's and the script prompt's.

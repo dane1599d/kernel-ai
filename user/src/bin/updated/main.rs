@@ -40,6 +40,7 @@ mod disk;
 mod folders;
 mod models;
 mod online;
+mod offers;
 mod restore;
 mod split;
 mod window;
@@ -103,9 +104,10 @@ fn main() -> i32 {
     // The model channel: a trial the last boot left is settled before anything
     // waits on `llm` (`models.rs`). The plan line's one route is to `llm`.
     let folders = folders::Folders::from_startup().ok();
+    let hosts = offers::hosts(args.split_whitespace().any(|w| w == "fetch=test"));
     let mut channel = folders
         .as_ref()
-        .and_then(|f| models::Channel::open(handle, f, user::route(0)));
+        .and_then(|f| models::Channel::open(handle, f, user::route(0), hosts));
     if let Some(channel) = &mut channel
         && let Err(why) = channel.at_boot()
     {

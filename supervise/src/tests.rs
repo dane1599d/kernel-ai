@@ -43,8 +43,39 @@ fn a_netdest_line_names_its_destination_and_is_bound_to_its_program() {
     assert!(!dest.allows_name("weather.example"));
     let grants = plan.grants("weather", "weather").unwrap();
     assert_eq!(grants.netdest.as_ref(), Some(dest));
+    // Only comphost is told it as an argument; others' arguments keep their room.
+    assert_eq!(plan.services[0].args, "");
+    let hosted = parse_plan(
+        "weather program=comphost netdest=proto:tcp,ports:443,hosts:api.weather.example other=1",
+    );
+    assert!(hosted.errors.is_empty(), "{:?}", hosted.errors);
+    assert_eq!(
+        hosted.services[0].args,
+        "other=1 netdest=proto:tcp,ports:443,hosts:api.weather.example"
+    );
     assert!(plan.grants("weather", "other").is_err());
     assert_eq!(plan.grants("nobody", "nobody").unwrap().netdest, None);
+}
+
+#[test]
+fn only_a_line_that_says_netdest_llm_gets_the_llm_servers_destination() {
+    let plan = parse_plan(
+        "llm caps=serve+net netdest=llm
+web caps=serve+net
+net-free",
+    );
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let llm = plan.grants("llm", "llm").unwrap();
+    assert!(llm.llm_dest);
+    assert_eq!(llm.netdest, None);
+    assert!(
+        !plan.grants("web", "web").unwrap().llm_dest,
+        "caps=net alone"
+    );
+    assert!(!plan.grants("net-free", "net-free").unwrap().llm_dest);
+    // Bound to its program, as every netdest= is.
+    assert!(plan.grants("llm", "other").is_err());
+    assert_eq!(plan.services[0].args, "", "not passed on as an argument");
 }
 
 #[test]
@@ -54,6 +85,9 @@ fn a_bad_or_doubled_netdest_fails_its_line() {
         "a netdest=proto:sctp",
         "a netdest=hosts:a.example netdest=hosts:b.example",
         "a netdest=hosts:a.example unsupervised",
+        "a netdest=llm netdest=hosts:a.example",
+        "a netdest=hosts:a.example netdest=llm",
+        "a netdest=llm unsupervised",
     ] {
         let plan = parse_plan(line);
         assert!(plan.services.is_empty(), "{line}");
@@ -97,19 +131,21 @@ fn the_plan_the_kernel_sends_parses() {
     assert!(cc.uses.is_empty());
     // It starts when the shell first calls it, not at boot.
     assert_eq!(cc.start, Start::Demand);
-    // `updated`, the model channel, comes just before the shell: its one
-    // route is to llm, and it alone holds the model store.
-    let updated = &plan.services[2];
+    // `fetch`, then `updated`, the model channel, just before the shell:
+    // `updated`'s one route is to llm, and it alone holds the model store.
+    let fetch = &plan.services[2];
+    assert_eq!((fetch.name.as_str(), fetch.start), ("fetch", Start::Demand));
+    let updated = &plan.services[3];
     assert_eq!(updated.name, "updated");
     assert_eq!(updated.uses, ["llm"]);
     assert!(updated.dirs.contains(&Folder::Models));
-    let shell = &plan.services[3];
+    let shell = &plan.services[4];
     assert_eq!(shell.name, "shell");
     assert_eq!(
         shell.limits.caps,
         cap::SERVE | cap::CALL | cap::POLICY | cap::STOP | cap::SCRIPT
     );
-    assert_eq!(shell.uses, ["llm", SUPERVISOR, "cc", "updated"]);
+    assert_eq!(shell.uses, ["llm", SUPERVISOR, "cc", "updated", "fetch"]);
     assert_eq!(shell.limits.stack_pages, 512);
     assert!(shell.limits.stack_pages < shell.limits.max_pages);
     assert_eq!(
@@ -726,8 +762,9 @@ fn program_names_the_program_and_is_not_passed_on() {
     ));
     assert_eq!(plan.errors, Vec::<String>::new());
     assert_eq!(plan.services[1].program, "cc");
-    assert_eq!(plan.services[2].program, "updated");
-    let shell = &plan.services[3];
+    assert_eq!(plan.services[2].program, "fetch");
+    assert_eq!(plan.services[3].program, "updated");
+    let shell = &plan.services[4];
     assert_eq!(shell.program, "shell");
 }
 
@@ -1059,15 +1096,23 @@ fn the_v0_1_system_plan_parses_and_its_routes_come_first() {
         // editor's builds install) `pkg` after it.
         let shell = named("shell").expect("the shell is planned");
         let tail: &[&str] = if files {
-            &["desktop", "pkg"]
+            &["desktop", "pkg", "fetch"]
         } else {
-            &["desktop"]
+            &["desktop", "fetch"]
         };
         assert_eq!(shell.uses[shell.uses.len() - tail.len()..], *tail);
         assert_eq!(named("pkg").is_some(), files);
         assert_eq!(named("fs").is_some(), files);
         let desktop = named("desktop").expect("the desktop is planned");
         assert_eq!(desktop.uses.contains(&String::from("pkg")), files);
+        // `updated` reaches Hugging Face's resolve host and its file storage
+        // by name on 443 for the model download (P5 task 9), and nothing else.
+        let updated = named("updated").expect("updated is planned");
+        let dest = updated.netdest.as_ref().expect("updated has a NetDest");
+        assert_eq!(
+            dest.to_string(),
+            "proto:tcp,addrs:none,ports:443,hosts:huggingface.co+cdn.hf.co"
+        );
         // The model manager's window, with `kai-data` only, on demand.
         let models = named("models-window");
         assert_eq!(models.is_some(), files);

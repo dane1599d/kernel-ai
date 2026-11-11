@@ -19,7 +19,10 @@ pub mod stack;
 pub mod user;
 
 use crate::log;
-use limine::memmap::{Entry, MEMMAP_USABLE};
+use limine::memmap::{
+    Entry, MEMMAP_ACPI_NVS, MEMMAP_ACPI_RECLAIMABLE, MEMMAP_BOOTLOADER_RECLAIMABLE,
+    MEMMAP_EXECUTABLE_AND_MODULES, MEMMAP_USABLE,
+};
 use mm::{FrameBitmap, PAGE_SIZE};
 use paging::Memory;
 use spin::Mutex;
@@ -53,6 +56,26 @@ static HHDM_OFFSET: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU6
 static KERNEL_CR3: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 /// End of the tracked physical memory, readable without the MEMORY lock.
 static PHYS_END: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// Frames of RAM in Limine's memory map, see [`ram_frames`].
+static RAM_FRAMES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// The memory map's kinds that are RAM, in use or not: usable, the kernel and
+/// its modules, what Limine and ACPI hand back, and ACPI's own. Reserved,
+/// bad, framebuffer and mapped-reserved ranges are left out, as most of
+/// them are not RAM.
+const RAM_KINDS: [u64; 5] = [
+    MEMMAP_USABLE,
+    MEMMAP_EXECUTABLE_AND_MODULES,
+    MEMMAP_BOOTLOADER_RECLAIMABLE,
+    MEMMAP_ACPI_RECLAIMABLE,
+    MEMMAP_ACPI_NVS,
+];
+
+/// Frames of RAM the machine has, without the holes [`phys_end`] spans: what
+/// the VM was given, less what the firmware keeps (`kabi::Metrics::ram_frames`).
+pub fn ram_frames() -> u64 {
+    RAM_FRAMES.load(core::sync::atomic::Ordering::Relaxed)
+}
 
 /// The page tables kernel threads run on.
 pub fn kernel_cr3() -> u64 {
@@ -124,14 +147,21 @@ pub fn init(entries: &[&Entry], hhdm: u64) -> Result<(), &'static str> {
     HHDM_OFFSET.store(hhdm, core::sync::atomic::Ordering::Relaxed);
     KERNEL_CR3.store(memory.kernel_cr3(), core::sync::atomic::Ordering::Relaxed);
     PHYS_END.store(frames * PAGE_SIZE, core::sync::atomic::Ordering::Relaxed);
+    let ram: u64 = entries
+        .iter()
+        .filter(|e| RAM_KINDS.contains(&e.type_))
+        .map(|e| e.length / PAGE_SIZE)
+        .sum();
+    RAM_FRAMES.store(ram, core::sync::atomic::Ordering::Relaxed);
     let prepared = memory.prepare_kernel_half()?;
     heap::map(&mut memory)?;
     let (free, total) = (memory.free_frames(), memory.total_frames());
     *MEMORY.lock() = Some(memory);
     log!(
-        "memory: {} MiB free of {} MiB tracked, {prepared} kernel-half tables prepared, heap {} MiB",
+        "memory: {} MiB free of {} MiB tracked, {} MiB of RAM, {prepared} kernel-half tables prepared, heap {} MiB",
         free * PAGE_SIZE / (1024 * 1024),
         total * PAGE_SIZE / (1024 * 1024),
+        ram * PAGE_SIZE / (1024 * 1024),
         heap::HEAP_SIZE / (1024 * 1024)
     );
     Ok(())

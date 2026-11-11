@@ -39,6 +39,10 @@ pub struct ServiceSpec {
     pub boot: Option<BootFiles>,
     /// Its own network destination, from `netdest=` (P5 task 1).
     pub netdest: Option<netdest::Dest>,
+    /// From `netdest=llm`: a handle to the LLM server's destination
+    /// (`kabi::handle::netdest::LLM`), the one HTTP reaches. Only a line that
+    /// asks gets it; `caps=net` alone does not.
+    pub llm_dest: bool,
     /// When the supervisor starts it, from `start=`.
     pub start: Start,
     /// Restart policy; the plan may change `max_backoff_ms` and `max_restarts`.
@@ -360,6 +364,8 @@ pub struct Grants {
     pub boot: Option<BootFiles>,
     /// Its network destination, from `netdest=`.
     pub netdest: Option<netdest::Dest>,
+    /// Its handle to the LLM server's destination, from `netdest=llm`.
+    pub llm_dest: bool,
 }
 
 /// Names nothing may stop: the shell, the supervisor and the model service (as
@@ -606,7 +612,7 @@ impl Plan {
         let bound = [
             (!service.dirs.is_empty(), "dir="),
             (service.boot.is_some(), "bootfiles="),
-            (service.netdest.is_some(), "netdest="),
+            (service.netdest.is_some() || service.llm_dest, "netdest="),
         ];
         if let Some((_, key)) = bound.iter().find(|(held, _)| *held)
             && service.program != program
@@ -621,13 +627,14 @@ impl Plan {
             dirs: service.dirs.clone(),
             boot: service.boot,
             netdest: service.netdest.clone(),
+            llm_dest: service.llm_dest,
         })
     }
 }
 
 /// Reads the plan: one service per line, `name [program=P] [pages=N] [stack_pages=N]
 /// [burst_ms=N] [caps=serve+net+call+policy+component+publish+model+threads+stop+script]
-/// [uses=A+B] [dir=pkg] [bootfiles=pkgrepo] [netdest=proto:tcp,hosts:example.org] [start=pkg|demand] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
+/// [uses=A+B] [dir=pkg] [bootfiles=pkgrepo] [netdest=proto:tcp,hosts:example.org|llm] [start=pkg|demand] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
 /// routes, folders and policy; everything else is passed to the program. A bad line skips only
 /// that service, so one typo cannot keep every other service down.
 pub fn parse_plan(text: &str) -> Plan {
@@ -663,6 +670,8 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     let mut dirs: Option<Vec<Folder>> = None;
     let mut boot: Option<BootFiles> = None;
     let mut netdest: Option<netdest::Dest> = None;
+    let mut llm_dest = false;
+    let mut netdest_word = None;
     let mut start: Option<Start> = None;
     let mut unsupervised = false;
     for word in words {
@@ -709,11 +718,16 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
                 boot = Some(files);
             }
             Some(("netdest", value)) => {
-                if netdest.is_some() {
+                if netdest.is_some() || llm_dest {
                     return Err(format!("{name}: netdest= given twice"));
+                }
+                if value == LLM_DEST {
+                    llm_dest = true;
+                    continue;
                 }
                 let dest = netdest::Dest::parse(value)
                     .map_err(|why| format!("{name}: netdest={value} is refused: {why}"))?;
+                netdest_word = Some(word);
                 netdest = Some(dest);
             }
             Some(("start", value)) => {
@@ -753,7 +767,8 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
             || !uses.is_empty()
             || !dirs.is_empty()
             || boot.is_some()
-            || netdest.is_some())
+            || netdest.is_some()
+            || llm_dest)
     {
         return Err(format!(
             "{name}: an unsupervised process takes no caps=, uses=, dir=, bootfiles= or netdest="
@@ -761,6 +776,14 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     }
     if let Some(dest) = &netdest {
         any_host_line(name, program, dest)?;
+    }
+    // comphost is told its line's destination too: it cannot read one back
+    // from the handle, and names it to the shell as the app's ceiling (P5
+    // task 13). The kernel holds it to the handle whatever it says. Other
+    // programs are not told: none reads it, and a long host list would take
+    // room their arguments need under `kabi::MAX_ARGS` (`dlcheck`'s did).
+    if program == NETDEST_ARG_PROGRAM {
+        args.extend(netdest_word);
     }
     let start = start.unwrap_or_default();
     if unsupervised && start != Start::Boot {
@@ -779,11 +802,20 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
         dirs,
         boot,
         netdest,
+        llm_dest,
         start,
         policy,
         unsupervised,
     })
 }
+
+/// `netdest=llm`: the LLM server's destination, for the line that runs the
+/// model service's client of it (K, after #756: `caps=net` alone no longer
+/// carries it).
+pub const LLM_DEST: &str = "llm";
+
+/// The one program told its line's `netdest=` as an argument.
+pub const NETDEST_ARG_PROGRAM: &str = "comphost";
 
 /// The one plan line `netdest=...,hosts:any` may sit on: the shell's (the
 /// founder, 2026-11-09: Kai may reach any website the user names).

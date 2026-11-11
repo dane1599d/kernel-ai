@@ -20,7 +20,7 @@ use crate::process::{MAX_PROCESSES, Name};
 use alloc::vec::Vec;
 use captable::{Entry, Table};
 use kabi::cap;
-use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, Rights, netdest};
+use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, Rights};
 use spin::Mutex;
 
 /// A process's table and the handles it started with.
@@ -93,7 +93,7 @@ pub fn route_name(id: u64) -> Option<Name> {
 /// The startup handles for capability bits `caps` (ADR 0001 D3's table), for the
 /// process `pid`. CALL gives a route only through `uses=`, so none here.
 pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
-    let rows: [(u64, Kind, Rights, u64); 19] = [
+    let rows: [(u64, Kind, Rights, u64); 18] = [
         // MINT under the `system` root, which is never revoked (ADR 0001 D3).
         (
             cap::SUPERVISE,
@@ -125,7 +125,6 @@ pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
             Rights::RECV.union(Rights::MINT),
             pid,
         ),
-        (cap::NET, Kind::NetDest, Rights::CONNECT, netdest::LLM),
         (
             cap::POLICY,
             Kind::Sched,
@@ -375,6 +374,23 @@ pub fn need(slot: usize, bits: u64) -> Result<(), kabi::Error> {
         }
     }
     Ok(())
+}
+
+/// What a call on one fixed object needs: a live handle to that object itself,
+/// of `kind` with `rights`. Permission otherwise, whatever else of the kind
+/// `slot` holds.
+pub fn need_object(
+    slot: usize,
+    kind: Kind,
+    rights: Rights,
+    object: u64,
+) -> Result<(), kabi::Error> {
+    let guard = HANDLES[slot].lock();
+    let table = &guard.as_ref().ok_or(kabi::Error::Permission)?.table;
+    match table.holds_object(kind, rights, object, &grant::Kernel) {
+        true => Ok(()),
+        false => Err(kabi::Error::Permission),
+    }
 }
 
 /// Takes `handles` out of `slot`'s table to move them to a process with

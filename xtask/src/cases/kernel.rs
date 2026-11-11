@@ -7,8 +7,10 @@ use crate::disk::Fixture;
 /// open Notes" once `pkg` (and then `updated`) linked rustls and the crypto,
 /// which are resident in every desktop boot (P5 tasks 8 and 10): the default
 /// 512 MiB and 8 MiB, over the 2 MiB `pkg` added and the 2 MiB `updated` adds.
-/// The decisions row `2026-11-09-p5-pkg-online-os` has the figures.
-const DESK_TLS_MIB: u64 = 520;
+/// The decisions row `2026-11-09-p5-pkg-online-os` has the figures. Main's
+/// `fetch`, in every image since the shell routes to it, needs 1024 MiB on the
+/// same two cases (#757), which covers both.
+const DESK_TLS_MIB: u64 = 1024;
 
 /// The second boot of `entropy-boots`.
 const ENTROPY_BOOT_2: TestCase = TestCase {
@@ -53,6 +55,7 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &[
             "entropy: seeded from RD",
             "[handles] handles: ENTROPY gave two different draws with no capability, and refused 257 bytes",
+            "[handles] handles: METRICS fills ABI 1.3's size when given none; ",
             "[handles] handles: every check passed",
             "[hcli] handles: a request and a handle went to the server and back through a route",
             "handles: CALL_H, RECV_H and REPLY_H moved a request and a handle there and back",

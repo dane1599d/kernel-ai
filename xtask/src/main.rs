@@ -9,6 +9,8 @@
 //! cargo xtask icount [--shift N] [--boots N] [--timeout SECS]   (icount determinism, M10a-2)
 //! cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]   (M8b script gate, host only)
 //! cargo xtask fluency --local ID [--store DIR]   (the same gate on our own engine)
+//! cargo xtask app-gate --local ID [--store DIR]   (Kai builds apps, piece 5: 20 app requests)
+//! cargo xtask query-eval --local ID [--store DIR] (P5 task 11: 24 quarantined reads)
 //! cargo xtask setup | model chat|check|pin | bench quant   (the local LLM on the host; see models/mod.rs)
 //! cargo xtask tune --sim ... | demo | check | record | ab   (M10a; see tune/mod.rs)
 //! cargo xtask tokens --gguf PATH   (S10-0: real token counts of the prompt parts; see tokens.rs)
@@ -37,6 +39,7 @@
 //! MMX, SSE or AVX instruction (see floatguard.rs).
 
 mod actbench;
+mod appgate;
 mod blklog;
 mod boot_smoke;
 mod buildsvc;
@@ -72,6 +75,7 @@ mod notices;
 mod options;
 mod pkgrepo;
 mod qemu;
+mod query_eval;
 mod relay;
 mod release_boot;
 mod release_image;
@@ -105,6 +109,8 @@ fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("fluency") => fluency::main(&args[1..], &workspace_root().join("target")),
+        Some("app-gate") => appgate::main(&args[1..], &workspace_root().join("target")),
+        Some("query-eval") => query_eval::main(&args[1..]),
         Some("setup" | "model" | "bench") => models::main(&args),
         Some("tune") => tune::main(&args[1..]),
         Some("tokens") => tokens::main(&args[1..]),
@@ -318,6 +324,12 @@ fn execute(options: &Options) -> Result<(), String> {
             if case.dns || case.https.is_some() {
                 cmdline = format!("{cmdline} {}", mock_dns.cmdline());
             }
+            // An HTTPS case may size what it moves by the accelerator:
+            // `net-download` takes its 32 chunks at 64 KiB under TCG, not 2 MiB.
+            if case.https.is_some() {
+                let tcg = accel == Accel::Tcg;
+                cmdline = format!("{cmdline} accel={}", if tcg { "tcg" } else { "kvm" });
+            }
             if let Some(kind) = case.mirror {
                 let port = match mirrors.get(&kind) {
                     Some(&port) => port,
@@ -482,7 +494,7 @@ fn execute(options: &Options) -> Result<(), String> {
             }
             if let Some(data) = case.data {
                 if fresh {
-                    blklog::prepare(&target_dir, data)?;
+                    blklog::prepare_sized(&target_dir, data, case.data_mib)?;
                     if let Some(model) = &store {
                         let image = target_dir.join(blklog::IMAGE);
                         store_model(&image, model.path())?;

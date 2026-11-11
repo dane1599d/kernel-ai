@@ -226,3 +226,27 @@ pub fn url(data: &[u8]) {
         let _ = url.join(text);
     }
 }
+
+/// `fetch`'s messages (`kainet::wire`): a request line and an answer, as the
+/// caller and `fetch` read each other's. One that reads, written again, fits
+/// its buffer and reads back the same; an answer too long to send becomes
+/// `wire::TOO_LONG`.
+pub fn fetch_wire(data: &[u8]) {
+    use kainet::wire;
+    let Ok(text) = core::str::from_utf8(data) else {
+        return;
+    };
+    if let Ok(ask) = wire::Ask::parse(text) {
+        let again = ask.text();
+        assert!(again.len() <= wire::MAX_ASK);
+        assert_eq!(wire::Ask::parse(&again), Ok(ask));
+    }
+    if let Ok(result) = wire::parse_answer(text) {
+        let again = wire::answer(&result);
+        assert!(again.len() <= wire::MAX_ANSWER);
+        let back = wire::parse_answer(&again).expect("an answer reads back");
+        if again != wire::TOO_LONG {
+            assert_eq!(back, result);
+        }
+    }
+}

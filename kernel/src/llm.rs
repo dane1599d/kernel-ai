@@ -74,11 +74,11 @@ pub fn plan_line() -> String {
     let model = crate::model::get().is_some() || crate::model::fill::pending();
     let mut line = match model {
         true => format!(
-            "llm caps=serve+net+model+threads burst_ms=10000 pages={}",
+            "llm caps=serve+net+model+threads netdest=llm burst_ms=10000 pages={}",
             crate::model::holder_pages()
         ),
         false => format!(
-            "llm caps=serve+net burst_ms=10000 pages={}",
+            "llm caps=serve+net netdest=llm burst_ms=10000 pages={}",
             crate::model::HOLDER_PAGES
         ),
     };

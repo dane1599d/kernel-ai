@@ -52,7 +52,10 @@ fn startup_handles() -> Result<(), &'static str> {
     let all = cap::GRANTABLE | cap::SUPERVISE;
     handle::create(slot, all, 99, &["llm"]).map_err(|_| "handles: cannot make a table")?;
     let result = (|| {
-        for bit in (0..64).map(|n| 1u64 << n).filter(|bit| all & bit != 0) {
+        // NET gives no handle of its own: it is the ceiling for the NetDest
+        // handles a plan line's `netdest=` gives (K, after #756).
+        let given = all & !cap::NET;
+        for bit in (0..64).map(|n| 1u64 << n).filter(|bit| given & bit != 0) {
             let (kind, rights) =
                 handle::required(bit).ok_or("handles: a capability bit has no handle")?;
             if !handle::holds(slot, kind, rights) {
@@ -62,8 +65,8 @@ fn startup_handles() -> Result<(), &'static str> {
         }
         let count = handle::with(slot, |handles| handles.startup().count()).unwrap_or(0);
         // PUBLISH and SUPERVISE give two handles each, CALL one route (to llm
-        // here), every other bit one handle.
-        if count != all.count_ones() as usize + 2 {
+        // here), NET none, every other bit one handle.
+        if count != given.count_ones() as usize + 2 {
             return Err("handles: the wrong number of startup handles");
         }
         Ok(())
@@ -76,11 +79,11 @@ fn startup_handles() -> Result<(), &'static str> {
     handle::create(slot, cap::NET, 99, &[]).map_err(|_| "handles: cannot make a table")?;
     let refused = handle::need(slot, cap::RESOLVE).is_err()
         && handle::need(slot, cap::NET | cap::POLICY).is_err()
-        && handle::need(slot, cap::NET).is_ok()
-        && !handle::holds(slot, Kind::NetDest, Rights::RESOLVE);
+        && handle::need(slot, cap::NET).is_err()
+        && !handle::holds(slot, Kind::NetDest, Rights::CONNECT);
     handle::destroy(slot);
     if !refused {
-        return Err("handles: NET alone granted more than CONNECT to llm=");
+        return Err("handles: NET alone gave a NetDest handle");
     }
     log!("handles: each capability bit gives its startup handle, and only that");
     Ok(())
@@ -107,8 +110,8 @@ fn ring3() -> Result<(), &'static str> {
 /// Task 12: `handles mode=client`, with a route to `hsrv`, sends a request and a
 /// handle to `handles mode=server` through CALL_H and gets both back.
 fn routes() -> Result<(), &'static str> {
-    let start = |name, args: &'static str, caps, uses: &'static [&'static str]| {
-        process::spawn(&SpawnRequest {
+    let start = |name, args: &'static str, caps, uses: &'static [&'static str], moved| {
+        let request = SpawnRequest {
             name,
             program: "handles",
             args: args.as_bytes(),
@@ -116,15 +119,30 @@ fn routes() -> Result<(), &'static str> {
             spawner: 0,
             supervisor: false,
             uses,
-        })
-        .map_err(|_| "handles: cannot start the route pair")
+        };
+        process::spawn_with(&request, moved, false)
+            .map_err(|_| "handles: cannot start the route pair")
     };
-    let server = start("hsrv", "mode=server", cap::SERVE | cap::POLICY, &[])?;
+    let server = start(
+        "hsrv",
+        "mode=server",
+        cap::SERVE | cap::POLICY,
+        &[],
+        Vec::new(),
+    )?;
+    // A NetDest the client may move but the server may not hold: NET gives no
+    // handle of its own (K, after #756), so the kernel moves one in.
+    let net = captable::Entry::new(
+        Kind::NetDest,
+        Rights::CONNECT | Rights::TRANSFER,
+        kabi::handle::netdest::LLM,
+    );
     let client = start(
         "hcli",
         "mode=client",
         cap::CALL | cap::POLICY | cap::NET,
         &["hsrv"],
+        alloc::vec![net],
     )?;
     for pid in [client, server] {
         if wait_exit(pid)? != (ExitReason::Exited, 0) {

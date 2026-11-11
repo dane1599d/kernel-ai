@@ -113,8 +113,6 @@ pub fn main(args: &[String]) -> Result<(), String> {
 
 const USAGE: &str = "usage: cargo xtask release-image [--test-root] [--out PATH]";
 
-/// Each boot module's path, length and SHA-256, in path order: two builds
-/// that differ only beneath `pkgrepo/` print the same lines but those.
 /// Fails an image with a module under `netroots/`: the extra TLS roots only
 /// a boot case's bundle may carry (`cases::Https`, the HTTPS mock's CA).
 fn check_no_netroots(modules: &[esp::Module]) -> Result<(), String> {
@@ -130,6 +128,8 @@ fn check_no_netroots(modules: &[esp::Module]) -> Result<(), String> {
     }
 }
 
+/// Each boot module's path, length and SHA-256, in path order: two builds
+/// that differ only beneath `pkgrepo/` print the same lines but those.
 fn print_modules(modules: &[esp::Module]) {
     let mut lines: Vec<String> = modules
         .iter()

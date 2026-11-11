@@ -495,6 +495,16 @@ pub fn spawn_in(
         );
         crate::handle::give_at_start(slot, alloc::vec![entry]);
     }
+    // `netdest=llm`: the LLM server's destination, CONNECT only, to the line
+    // that asks for it and no other NET holder (K, after #756).
+    if plan.llm_dest {
+        let entry = captable::Entry::new(
+            kabi::handle::Kind::NetDest,
+            kabi::handle::Rights::CONNECT,
+            kabi::handle::netdest::LLM,
+        );
+        crate::handle::give_at_start(slot, alloc::vec![entry]);
+    }
     if threads::spawn("user", process_main, slot).is_err() {
         crate::handle::destroy(slot);
         with_table(|table| table[slot] = Process::FREE);

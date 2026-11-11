@@ -1,0 +1,11 @@
+/// A test fixture, never shipped: a headless app that fetches a fixed list of
+/// URLs through `kai:net`, so the `net-grant` boot case can answer the shell's
+/// cards for their hosts and see what each request came to.
+package app:net-fixture@1.0.0;
+
+/// It queues no effect and draws no window.
+world net-fixture {
+    include kai:app/component@0.1.0;
+    import kai:net/http@0.1.0;
+    export kai:net/responses@0.1.0;
+}

@@ -701,11 +701,32 @@ pub fn dev_list(out: &mut [kabi::device::DeviceRecord]) -> Result<usize, Error> 
     Ok(len as usize / core::mem::size_of::<kabi::device::DeviceRecord>())
 }
 
+/// METRICS into `buf` with `size` as the caller's size (0: ABI 1.3's), for the
+/// `handles` case's check that a program built before `ram_frames` is never
+/// written past its buffer. Invalid when the kernel would fill more than `buf`.
+pub fn metrics_sized(buf: &mut [u8], size: u64) -> Result<(), Error> {
+    let filled = match size {
+        0 => kabi::METRICS_1_3_BYTES as u64,
+        size => size.min(core::mem::size_of::<Metrics>() as u64),
+    };
+    if filled > buf.len() as u64 {
+        return Err(Error::Invalid);
+    }
+    call(call::METRICS, [buf.as_mut_ptr() as u64, size, 0, 0, 0, 0]).map(|_| ())
+}
+
 pub fn metrics() -> Result<Metrics, Error> {
     let mut metrics = Metrics::empty();
     call(
         call::METRICS,
-        [&mut metrics as *mut Metrics as u64, 0, 0, 0, 0, 0],
+        [
+            &mut metrics as *mut Metrics as u64,
+            core::mem::size_of::<Metrics>() as u64,
+            0,
+            0,
+            0,
+            0,
+        ],
     )?;
     Ok(metrics)
 }

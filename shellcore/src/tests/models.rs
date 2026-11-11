@@ -276,7 +276,8 @@ fn a_typed_models_lists_without_asking_the_model() {
         reply.ok && reply.text.contains("Qwen3-0.6B Q8_0 (qwen3-0.6b): stored"),
         "{reply:?}"
     );
-    assert_eq!(*host.model_requests.borrow(), ["models"]);
+    // The list, then what may be downloaded (P5 task 9).
+    assert_eq!(*host.model_requests.borrow(), ["models", "models offers"]);
     assert!(host.calls.borrow().is_empty(), "no model was asked");
 }
 
@@ -338,6 +339,96 @@ fn a_typed_import_asks_once_and_runs_only_on_an_allow() {
 }
 
 #[test]
+fn the_typed_list_offers_the_signed_models_this_machine_may_download() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let reply = shell.eval("models");
+    assert!(reply.ok, "{reply:?}");
+    for line in [
+        "Fixture model (fixture): signed, not stored",
+        "To download one: models download <id>",
+        "  fixture-dl: fits, recommended",
+        "  qwen3-8b: it needs 6208 MiB of memory and this machine has 4096 MiB",
+    ] {
+        assert!(reply.text.contains(line), "{line} in {}", reply.text);
+    }
+    // A stored target is not offered again.
+    assert!(!reply.text.contains("  qwen3-4b-2507:"), "{}", reply.text);
+    assert_eq!(*host.model_requests.borrow(), ["models", "models offers"]);
+    // An `updated` that cannot say does not hide the list, and says why.
+    *host.model_answer.borrow_mut() = Some(String::from("err no data disk"));
+    let reply = shell.eval("models");
+    assert!(
+        reply.text.contains("Downloads: none listed (no data disk)") || !reply.ok,
+        "{reply:?}"
+    );
+}
+
+#[test]
+fn a_typed_download_asks_once_with_its_size_and_host_and_runs_only_on_an_allow() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let downloaded = |host: &FakeHost| {
+        host.model_requests
+            .borrow()
+            .contains(&"models download fixture-dl".into())
+    };
+    let reply = shell.eval("models download fixture-dl");
+    assert_eq!(reply.confirm, Some(1), "{reply:?}");
+    // Question 6: the size and the host, before the call that names the model.
+    assert!(
+        reply.text.contains(
+            "Download 12.0 MiB from models.kai.test with model_fetch(\"net\", \"fixture-dl\")? It has no undo."
+        ),
+        "{reply:?}"
+    );
+    assert!(!downloaded(&host), "nothing before the answer");
+    shell.eval("n");
+    assert!(!downloaded(&host), "a Deny downloads nothing");
+    shell.eval("models download fixture-dl");
+    let once = host.mint(2, "model_fetch(\"net\", \"fixture-dl\")");
+    let answered = shell.eval(&format!("answer 2 allow once={once}"));
+    assert!(
+        answered.ok
+            && answered.text.starts_with(
+                "Downloading fixture-dl, 12.0 MiB from models.kai.test; each 2 MiB part is checked"
+            ),
+        "{answered:?}"
+    );
+    assert!(downloaded(&host));
+    let log = shell.eval("log actlog").text;
+    assert!(
+        log.contains(
+            "model_fetch owner=updated res=model-store before=- after=fixture-dl inv=none"
+        ),
+        "{log}"
+    );
+    assert!(host.calls.borrow().is_empty(), "no model was asked");
+}
+
+#[test]
+fn a_download_updated_refuses_is_said_and_never_asked() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let reply = shell.eval("models download qwen3-99b");
+    assert!(
+        !reply.ok
+            && reply.text
+                == "qwen3-99b is not downloaded: the signed models role names no qwen3-99b",
+        "{reply:?}"
+    );
+    assert_eq!(reply.confirm, None);
+    assert!(
+        !host
+            .model_requests
+            .borrow()
+            .iter()
+            .any(|r| r.starts_with("models download")),
+        "nothing started"
+    );
+}
+
+#[test]
 fn a_models_line_that_is_not_right_says_what_is_and_a_variable_stays_rhai() {
     let host = FakeHost::new();
     let mut shell = shell(&host);
@@ -345,13 +436,15 @@ fn a_models_line_that_is_not_right_says_what_is_and_a_variable_stays_rhai() {
         "models delete qwen3-0.6b",
         "models use",
         "models import now",
+        "models download",
+        "models download a b",
     ] {
         let reply = shell.eval(text);
         assert!(
             !reply.ok
                 && reply
                     .text
-                    .starts_with("models, models import, or models use <id>"),
+                    .starts_with("models, models import, models download <id> or models use <id>"),
             "{text}: {reply:?}"
         );
     }

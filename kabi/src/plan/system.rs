@@ -124,8 +124,8 @@ pub fn shell(files: bool) -> &'static str {
 }
 
 /// The whole system plan: `llm`'s line, [`lines`], then the shell with
-/// `updated` just before it, started at boot, then with `kai-data`
-/// [`MODELS_APP`].
+/// `updated` just before it, started at boot with the model download's
+/// `NetDest` ([`super::UPDATED_NET`]), then with `kai-data` [`MODELS_APP`].
 pub fn plan(llm: &str, files: bool) -> String {
     let mut plan = String::from(llm);
     for line in lines(files) {
@@ -133,7 +133,7 @@ pub fn plan(llm: &str, files: bool) -> String {
         plan.push_str(line);
     }
     plan.push('\n');
-    plan.push_str(&super::with_updated(shell(files), ""));
+    plan.push_str(&super::with_updated(shell(files), super::UPDATED_NET));
     if files {
         plan.push('\n');
         plan.push_str(MODELS_APP);
@@ -174,7 +174,7 @@ mod tests {
     fn the_system_shell_has_a_route_to_pkg_with_kai_data_and_only_then() {
         assert_eq!(shell(true), SHELL_DESK_BUILD);
         assert_eq!(shell(false), super::super::SHELL_DESK);
-        assert!(shell(true).contains("routes=desktop+pkg "));
+        assert!(shell(true).contains("routes=desktop+pkg+fetch "));
         assert!(lines(true).iter().any(|line| line.starts_with("pkg ")));
         assert!(!shell(false).contains("pkg"));
         // `pkg` is planned before the shell, as its route needs.

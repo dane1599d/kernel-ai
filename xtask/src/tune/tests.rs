@@ -160,7 +160,7 @@ fn options_parse_and_need_a_source() {
     assert!(parse(&words(&["--sim"])).is_err());
     assert!(parse(&words(&["--sim", "--local", "x", "--answer", "a.json"])).is_err());
     assert!(parse(&words(&["--sim", "--answer", "a", "--store", "D:/m"])).is_err());
-    assert!(parse(&words(&["--sim", "--mix", "C", "--answer", "a"])).is_err());
+    assert!(parse(&words(&["--sim", "--mix", "D", "--answer", "a"])).is_err());
     assert!(parse(&words(&["--sim", "--model", "q", "--answer", "a"])).is_err());
     let eval = words(&["--sim", "--eval", "--answer", "a"]);
     assert!(parse(&eval).unwrap_err().contains("--yes"));
