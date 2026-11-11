@@ -1,9 +1,9 @@
 name: icount experiment (#796, throwaway)
 
-# v3: mix C's tune-ab cmdlines, 60 boots per job, on two runners each:
-# `trace` is the as-is cmdline with QEMU trace events (which threads emit
-# what); `strip` adds -monitor none -parallel none -vga none and a read-only
-# ESP. Not for merging.
+# v3b: mix C's tune-ab cmdlines, 60 boots per job, on two runners each, all
+# under -seed 1 (11/60 diverged in v2): `seed` as is; `trace` with QEMU trace
+# events and thread ids (which threads emit what); `strip` with -monitor none,
+# -parallel none and a read-only ESP. Not for merging.
 on:
   push:
     branches: [dane/icount-exp-796]
@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [trace, strip]
+        variant: [seed, trace, strip]
         runner: [1, 2]
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -36,21 +36,21 @@ jobs:
           qemu-system-x86_64 --version | head -1
           nproc; grep -m1 'model name' /proc/cpuinfo
           qemu-system-x86_64 -trace help > trace-help.txt 2>&1 || true
-          wc -l trace-help.txt
-          grep -E '^(thread_pool|aio_|ahci|ide_|pflash|apic_|ioapic|pic_|hpet|cmos|qemu_system|runstate|vm_state|ps2|pckbd|kbd|acpi|ich9|vga|vbe|qemu_co|blk_co|bdrv_co|timer_|cpu_reset|main_loop|poll_|run_poll|iothread|mc146818|rtc|pit|serial_ioport|ehci|uhci|usb_|fw_cfg|qemu_aio|pci_irq|pci_route|lpc|qemu_mutex)' \
+          grep -E '^(thread_pool|aio_|ahci|ide_|pflash|apic_|ioapic|pic_|hpet|cmos|qemu_system|runstate|vm_state|ps2|pckbd|kbd|acpi|ich9|vga|vbe|qemu_co|blk_co|bdrv_co|timer_|cpu_reset|main_loop|poll_|run_poll|iothread|mc146818|rtc|pit|serial_ioport|fw_cfg|qemu_aio|pci_irq|pci_route|lpc|qemu_mutex)' \
             trace-help.txt > events.txt || true
           wc -l events.txt
       - name: Boot five rounds
         run: |
-          mkdir -p "$PWD/traces"
-          if [ "${{ matrix.variant }}" = trace ]; then
-            export KAI_QEMU_TRACE="$PWD/events.txt" KAI_QEMU_TRACE_DIR="$PWD/traces"
-          else
-            export KAI_QEMU_STRIP=1
-          fi
+          export KAI_QEMU_SEED=1
+          if [ "${{ matrix.variant }}" = strip ]; then export KAI_QEMU_STRIP=1; fi
           for round in 1 2 3 4 5; do
-            cargo xtask tune ab --mix C --spec classes/firm:build-1,build-2,build-3,build-4,build-5,build-6,indexer,hog-1 --timeout 900 2>&1 \
-              | grep -E "icount boot:|^  \| |FAIL|error" >> exp.log || true
+            if [ "${{ matrix.variant }}" = trace ]; then
+              mkdir -p "$PWD/traces/r$round"
+              export KAI_QEMU_TRACE="$PWD/events.txt" KAI_QEMU_TRACE_DIR="$PWD/traces/r$round"
+            fi
+            cargo xtask tune ab --mix C --spec classes/firm:build-1,build-2,build-3,build-4,build-5,build-6,indexer,hog-1 --timeout 900 > round.log 2>&1 || true
+            grep -E "icount boot:|^  \| " round.log >> exp.log || true
+            grep -vE "^  \| |Compiling" round.log | tail -20 >> other.log || true
           done
       - name: Distinct digests per cmdline
         if: always()
@@ -58,19 +58,21 @@ jobs:
           awk '/icount boot:/ {sub(/.*icount boot: /,""); c=$0} /tune-ab: digest/ {print c " => " $NF}' exp.log | sort | uniq -c
           awk '/icount boot:/ {sub(/.*icount boot: /,""); c=$0} /exp796: pre/ {print c " => " $0}' exp.log | sort | uniq -c | sed 's/  | //'
           echo "boots: $(grep -c 'tune-ab: digest' exp.log)"
+          tail -20 other.log
       - name: Threads per trace
         if: always() && matrix.variant == 'trace'
         run: |
-          python3 .github/icount-exp-trace.py traces > threads.txt || true
+          head -3 traces/r1/trace-000.log || true
+          for r in traces/r*; do python3 .github/icount-exp-trace.py "$r"; done > threads.txt || true
           head -c 60000 threads.txt
-          gzip -9 traces/*.log || true
+          gzip -9 traces/r*/*.log || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: exp-${{ matrix.variant }}-${{ matrix.runner }}
           path: |
             exp.log
+            other.log
             threads.txt
             events.txt
-            trace-help.txt
             traces/

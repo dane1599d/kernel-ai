@@ -96,20 +96,21 @@ pub fn measure_args_with(firmware: &crate::Firmware, shift: u32, memory_mib: u64
     if let Ok(seed) = std::env::var("KAI_QEMU_SEED") {
         args.extend(["-seed".to_string(), seed]);
     }
-    // Experiment (#796) v3: no monitor, parallel port or VGA, read-only ESP.
+    // Experiment (#796) v3: no monitor or parallel port, read-only ESP.
     if std::env::var_os("KAI_QEMU_STRIP").is_some() {
         for arg in args.iter_mut() {
             if arg == "format=raw,file=fat:rw:esp" {
                 *arg = "format=raw,file=fat:esp,readonly=on".into();
             }
         }
-        args.extend(["-monitor", "none", "-parallel", "none", "-vga", "none"].map(String::from));
+        args.extend(["-monitor", "none", "-parallel", "none"].map(String::from));
     }
     // Experiment (#796) v3: QEMU trace events, one file per boot.
     if let Ok(events) = std::env::var("KAI_QEMU_TRACE") {
         static BOOT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = BOOT.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::var("KAI_QEMU_TRACE_DIR").unwrap_or_else(|_| ".".into());
+        args.extend(["-msg".to_string(), "timestamp=on".to_string()]);
         args.push("-trace".into());
         args.push(format!("events={events},file={dir}/trace-{n:03}.log"));
     }
