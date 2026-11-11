@@ -1,7 +1,7 @@
 //! Build and run tool for Kernel AI.
 //!
 //! cargo xtask build [--release] [--spikes]
-//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--cpus N] [--mem SIZE] [--llm IP:PORT] [--model NAME] [--edit] [--gpu] [--model-disk PATH | --local ID [--store DIR]] [--workload A|B [--seed N]]
+//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--cpus N] [--mem SIZE] [--llm IP:PORT] [--model NAME] [--edit] [--gpu] [--model-disk PATH | --local ID [--store DIR]] [--workload A|B|C [--seed N]]
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS] [--cpus N] [--mem SIZE] [--shard K/N]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //! (`--accel wsl` on Windows: QEMU with KVM inside WSL2; see wsl/launch.rs)
