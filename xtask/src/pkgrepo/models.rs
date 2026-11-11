@@ -9,10 +9,11 @@
 //! in [`super::chunks::DIR`] and held to the pin here.
 //!
 //! An image's repository also signs [`fixture`] and [`fixture_2`], the files
-//! the `model-import` and `app-models` cases store and attach: every image
-//! xtask builds is signed by a throwaway test root (P4 plan §4, item 3), and
-//! the release's role is signed apart from xtask (task 18), so no fixture is
-//! ever in it.
+//! the `model-import` and `app-models` cases store and attach, and
+//! [`fixture_dl`], which the `model-download` case downloads from the HTTPS
+//! mock's Hugging Face-shaped host: every image xtask builds is signed by a
+//! throwaway test root (P4 plan §4, item 3), and the release's role is signed
+//! apart from xtask (task 18), so no fixture is ever in it.
 
 use super::chunks;
 use crate::disk::Fixture;
@@ -125,10 +126,57 @@ pub fn release_test() -> Result<Vec<Model>, String> {
     }
 }
 
-/// What an image's repository signs: the catalog, then [`fixture`] and
-/// [`fixture_2`].
+/// What an image's repository signs: the catalog, then [`fixture`],
+/// [`fixture_2`] and [`fixture_dl`].
 pub fn for_image() -> Result<Vec<Model>, String> {
     let mut models = catalog()?;
-    models.extend([fixture(), fixture_2()]);
+    models.extend([fixture(), fixture_2(), fixture_dl()]);
     Ok(models)
+}
+
+/// The id [`fixture_dl`] has.
+pub const FIXTURE_DL: &str = "fixture-dl";
+/// Where the HTTPS mock keeps [`fixture_dl`] as Hugging Face keeps a model:
+/// a repository, a pinned revision and a file on `models.kai.test`, whose
+/// resolve URL redirects to the storage path on `assets.kai.test`.
+pub const FIXTURE_DL_REPO: &str = "kernel-ai/fixture-GGUF";
+pub const FIXTURE_DL_REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
+pub const FIXTURE_DL_FILE: &str = "fixture.gguf";
+pub const FIXTURE_DL_STORAGE: &str = "/xet/0123456789abcdef0123456789abcdef01234567/fixture.gguf";
+/// [`fixture_dl`]'s length: six 2 MiB chunks and a short seventh.
+pub const FIXTURE_DL_LEN: u64 = 6 * CHUNK + 4_321;
+
+/// [`fixture_dl`]'s bytes: the GGUF magic, then a deterministic stream that
+/// nothing runs.
+pub fn fixture_dl_bytes() -> Vec<u8> {
+    let mut x = 0x2545_f491_4f6c_dd1du64;
+    let mut bytes: Vec<u8> = (0..FIXTURE_DL_LEN)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect();
+    bytes[..4].copy_from_slice(b"GGUF");
+    bytes
+}
+
+/// The model the `model-download` case downloads (P5 task 9), for test images
+/// only: its source is the mock's pinned resolve URL, so `updated` offers it
+/// only with the mock's hosts (`fetch=test`).
+pub fn fixture_dl() -> Model {
+    let bytes = fixture_dl_bytes();
+    Model {
+        id: FIXTURE_DL.into(),
+        name: "Download fixture (test images only)".into(),
+        length: bytes.len() as u64,
+        sha256: crate::sha256_hex(&bytes),
+        licence: "MIT".into(),
+        source: format!(
+            "https://{}/{FIXTURE_DL_REPO}/resolve/{FIXTURE_DL_REVISION}/{FIXTURE_DL_FILE}",
+            crate::mock_https::MODELS
+        ),
+        chunks: Some(Chunks::of(&bytes, CHUNK).render()),
+    }
 }

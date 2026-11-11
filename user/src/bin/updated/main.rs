@@ -119,6 +119,7 @@ fn main() -> i32 {
         (_, Err(why)) => Err(why),
         (Some("check"), _) => check(handle),
         (Some("models"), _) => models_check(channel.as_mut()),
+        (Some("download"), _) => download_check(channel.as_mut()),
         (Some("probation"), _) => probation_check(channel.as_mut()),
         (Some("update"), _) => {
             let now = !args.split_whitespace().any(|w| w == "restart=window");
@@ -148,7 +149,7 @@ fn main() -> i32 {
     };
     // The model steps restart into no slot: the kernel's half of their case
     // ends the boot once this marker is there, after their lines.
-    if let (Ok(()), Some(step @ ("models" | "probation")), Some(channel)) =
+    if let (Ok(()), Some(step @ ("models" | "probation" | "download")), Some(channel)) =
         (&result, step, channel.as_ref())
         && let Err(why) = channel.mark_done(step)
     {
@@ -163,6 +164,45 @@ fn main() -> i32 {
         }
     }
     serve(channel)
+}
+
+/// The `model-download` case's step (P5 task 9): what is offered with the
+/// mock's hosts, the one ask, and the download of the role's `fixture-dl`
+/// through the mock's redirect and its cuts, stepped as the serve loop steps
+/// it, until the store holds it.
+fn download_check(channel: Option<&mut models::Channel>) -> Result<(), String> {
+    const ID: &str = "fixture-dl";
+    const TICK_MS: u64 = 1;
+    let channel = channel.ok_or("no model store")?;
+    let offers = channel.answer("models offers");
+    let lines: alloc::vec::Vec<&str> = offers.lines().skip(1).collect();
+    println!("updated: models offers: {}", lines.join(" | "));
+    println!(
+        "updated: models ask {ID}: {}",
+        channel.answer(&format!("models ask {ID}"))
+    );
+    let started = channel.answer(&format!("models download {ID}"));
+    println!("updated: {started}");
+    if !started.starts_with("ok downloading ") {
+        return Err(started);
+    }
+    while channel.downloading() {
+        channel.tick();
+        sys::sleep_ms(TICK_MS);
+    }
+    let end = channel.answer("models progress");
+    println!("updated: models progress: {end}");
+    if end != format!("ok downloaded {ID}") {
+        return Err(end);
+    }
+    let listed = channel.answer("models");
+    let models = modelchan::listing::parse(&listed)?;
+    let row = models.find(ID).ok_or("the list names no fixture-dl")?;
+    if !models.store.blobs.iter().any(|b| b.sha256 == row.sha256) {
+        return Err(String::from("the store does not hold fixture-dl"));
+    }
+    println!("updated: the store holds {ID}, as the role signs it");
+    Ok(())
 }
 
 /// The `models` case's second boot: the trial `at_boot` began, judged from

@@ -307,6 +307,11 @@ impl Channel {
         Ok(reply)
     }
 
+    /// Whether a model download is under way.
+    pub fn downloading(&self) -> bool {
+        self.download.is_some()
+    }
+
     /// Whether a model is on trial, its probation not yet decided.
     pub fn on_trial(&self) -> bool {
         self.probation.is_some()

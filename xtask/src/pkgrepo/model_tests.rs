@@ -249,8 +249,8 @@ fn a_malformed_target_is_refused_by_path_and_the_rest_kept() {
     let refused: Vec<&str> = checked.refused.iter().map(|(p, _)| p.as_str()).collect();
     assert_eq!(refused, ["fixture.gguf", list.as_str()]);
     assert_eq!(checked.refused[1].1, "it names no model the role signs");
-    // The catalog and the other fixture are kept.
-    assert_eq!(checked.models.len(), models::catalog().unwrap().len() + 1);
+    // The catalog and the other two fixtures are kept.
+    assert_eq!(checked.models.len(), models::catalog().unwrap().len() + 2);
 }
 
 #[test]
