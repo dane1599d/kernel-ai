@@ -134,6 +134,34 @@ fn a_grant_put_back_by_undo_comes_before_a_deny() {
 }
 
 #[test]
+fn net_denied_counts_what_each_deny_refused_until_it_lapses() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    assert_eq!(shell.eval("net denied").text, "no network Deny holds");
+    let denied = answered(&host, &mut shell, "deny");
+    assert!(denied.text.contains("not run"), "{denied:?}");
+    let line = shell.eval("net denied");
+    assert!(line.ok, "{line:?}");
+    assert!(
+        line.text
+            .starts_with("weather to api.weather.example: refused 0 connection(s), holds 5"),
+        "{line:?}"
+    );
+    for _ in 0..2 {
+        assert!(matches!(connect(&mut shell), NetConnect::Refused(_)));
+    }
+    host.clock.set(host.clock.get() + 10_000_000_000);
+    let line = shell.eval("net denied").text;
+    assert!(
+        line.starts_with("weather to api.weather.example: refused 2 connection(s), holds 4"),
+        "{line:?}"
+    );
+    host.clock
+        .set(host.clock.get() + crate::netask::DENY_HOLDS_NS);
+    assert_eq!(shell.eval("net denied").text, "no network Deny holds");
+}
+
+#[test]
 fn always_lasts_a_restart_and_allow_does_not() {
     let host = FakeHost::new();
     let mut shell = shell(&host);

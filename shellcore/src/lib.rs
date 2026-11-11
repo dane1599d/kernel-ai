@@ -619,9 +619,9 @@ pub struct Shell {
     /// The highest network grant id this run gave or saw: new grants are
     /// numbered above it, so an id is never reused while the shell runs.
     net_high: u32,
-    /// The app and host of each network card the person answered Deny, and
-    /// when: refused with no card for `netask::DENY_HOLDS_NS`.
-    net_denied: Vec<(String, String, u64)>,
+    /// Each network card the person answered Deny: refused with no card for
+    /// `netask::DENY_HOLDS_NS`.
+    net_denied: Vec<netask::Denied>,
     /// Installed software: the image's repository and its generations.
     pkgs: pkg::Store,
     /// Whether the `sudo` note was said already.
@@ -915,6 +915,7 @@ impl Shell {
                 "rules" => return Reply::ok(self.list_rules()),
                 "profile" => return self.list_profiles(),
                 "show" | "why" => return self.show_last(),
+                "net denied" => return self.net_denied_line(),
                 _ => {}
             }
         }
