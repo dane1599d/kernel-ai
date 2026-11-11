@@ -80,6 +80,7 @@ pub use cmode::C_REPAIRS;
 pub use effects::EffectDone;
 pub use engine::Exec;
 use engine::Line;
+pub use guard::placeholder_target;
 use kabi::sched::{SchedStats, TrialRequest};
 use llmproto::act::{ActError, ActRequest, Call};
 use llmproto::chat::Completion;

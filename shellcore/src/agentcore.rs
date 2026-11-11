@@ -190,13 +190,11 @@ impl Shell {
         row: &'static Action,
         args: &Arguments,
     ) -> Option<Reply> {
-        let (arg, value) = args.values.iter().find(|(name, value)| {
-            let named = row.args.iter().find(|arg| arg.name == *name);
-            let free = named.is_some_and(|arg| {
-                !matches!(arg.ty, ArgType::Enum(_) | ArgType::Opt(ArgType::Enum(_)))
-            });
-            free && crate::guard::is_target(row, name) && crate::guard::placeholder(value, request)
-        })?;
+        let values = args
+            .values
+            .iter()
+            .map(|(name, value)| (*name, value.as_str()));
+        let (arg, value) = crate::guard::placeholder_target(row, values, request)?;
         self.host.audit(&format!(
             "request {id}: {}'s {arg} is a placeholder; asking which",
             row.name
