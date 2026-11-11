@@ -866,6 +866,18 @@ impl Host for FakeHost {
         Ok(match words.as_slice() {
             ["models"] => modelchan::listing::encode(&m),
             ["models", "import"] => String::from("ok importing fixture 4096"),
+            // P5 task 9: the fixture may be downloaded; the 4B is too large
+            // for this machine's memory.
+            ["models", "offers"] => String::from(
+                "kai-offers 1\nqwen3-4b-2507 0 stored 0 0\nfixture-dl 1 fits 0 0\nqwen3-8b 0 memory 6208 4096\n",
+            ),
+            ["models", "ask", "fixture-dl"] => {
+                String::from("ok Download 12.0 MiB from models.kai.test")
+            }
+            ["models", "ask", id] => format!("err the signed models role names no {id}"),
+            ["models", "download", "fixture-dl"] => {
+                String::from("ok downloading fixture-dl 12587009 models.kai.test")
+            }
             ["models", "use", hex] => {
                 let sha = modelchan::listing::sha256(hex)?;
                 match (m.store.running == Some(sha), m.next() == Some(sha)) {

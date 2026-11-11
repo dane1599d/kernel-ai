@@ -564,6 +564,30 @@ fn client() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// ABI 1.4's METRICS: a caller that gives no size, as one built for 1.3 does,
+/// gets 1.3's bytes and nothing past them; one that gives the whole size gets
+/// `ram_frames`, which holds every free frame and more.
+fn metrics_sizes() -> Result<(), &'static str> {
+    const UNTOUCHED: u8 = 0xa5;
+    let mut old = [UNTOUCHED; kabi::METRICS_1_3_BYTES + 8];
+    sys::metrics_sized(&mut old, 0).map_err(|_| "METRICS with no size failed")?;
+    if old[kabi::METRICS_1_3_BYTES..]
+        .iter()
+        .any(|&b| b != UNTOUCHED)
+    {
+        return Err("METRICS with no size wrote past ABI 1.3's Metrics");
+    }
+    let now = sys::metrics().map_err(|_| "METRICS failed")?;
+    if now.ram_frames <= now.free_frames {
+        return Err("METRICS gives less RAM than the frames that are free");
+    }
+    println!(
+        "handles: METRICS fills ABI 1.3's size when given none; {} MiB of RAM",
+        now.ram_frames / 256
+    );
+    Ok(())
+}
+
 fn checks() -> Result<(), &'static str> {
     entropy::check()?;
     let abi = sys::abi_info().map_err(|_| "abi_info failed")?;
@@ -573,6 +597,7 @@ fn checks() -> Result<(), &'static str> {
     {
         return Err("abi_info reports another ABI");
     }
+    metrics_sizes()?;
 
     let mut list = [HandleInfo::default(); 4];
     let count = sys::startup(&mut list).map_err(|_| "startup failed")?;

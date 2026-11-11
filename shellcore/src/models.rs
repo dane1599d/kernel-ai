@@ -27,13 +27,22 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use comp_models::{Models, Sha256, hex, size};
-use modelchan::listing;
+use modelchan::fetch::{self, Fit};
+use modelchan::{listing, offered};
 
 /// What waits on an asked model row's answer.
 #[derive(Clone, Debug)]
 pub(crate) enum Waiting {
-    Use { to: Sha256, back: Option<Sha256> },
+    Use {
+        to: Sha256,
+        back: Option<Sha256>,
+    },
     Fetch,
+    /// A download of the signed target `id`, asked as `subject`.
+    Download {
+        id: String,
+        subject: String,
+    },
 }
 
 impl Shell {
@@ -71,10 +80,32 @@ impl Shell {
                     Why::TakenAs | Why::Grounded | Why::Read => Why::NoUndo,
                     why => why,
                 };
-                self.model_ask(id, request, &call, Waiting::Fetch, why)
+                self.model_ask(id, request, &call, Waiting::Fetch, why, None)
             }
             other => Reply::err(format!("{other} is typed at the prompt for now")),
         }
+    }
+
+    /// A download of the signed target `name` (P5 task 9): `updated` says
+    /// whether it may start and how large it is and from where, and the
+    /// shell asks once with that (P5 question 6). It brings gigabytes and has
+    /// no undo, so it always asks.
+    fn model_download(&mut self, id: u64, request: &str, name: &str) -> Reply {
+        let answer = match self.host.models(&format!("models ask {name}")) {
+            Ok(answer) => answer,
+            Err(why) => return Reply::err(why),
+        };
+        let Some(subject) = answer.strip_prefix("ok ") else {
+            let why = answer.strip_prefix("err ").unwrap_or(&answer);
+            return Reply::err(format!("{name} is not downloaded: {why}"));
+        };
+        let call = download_call(name);
+        let waiting = Waiting::Download {
+            id: String::from(name),
+            subject: String::from(subject),
+        };
+        let subject = Some(String::from(subject));
+        self.model_ask(id, request, &call, waiting, Why::NoUndo, subject)
     }
 
     /// `model_use` of `name`; a switch that runs is logged with `consent`.
@@ -105,9 +136,14 @@ impl Shell {
         let call = canonical("model_use", name);
         match (decision.tier, decision.why) {
             // A model the AI picked for a vague line asks once.
-            (Tier::Run, Why::TakenAs) => {
-                self.model_ask(id, request, &call, Waiting::Use { to, back }, Why::TakenAs)
-            }
+            (Tier::Run, Why::TakenAs) => self.model_ask(
+                id,
+                request,
+                &call,
+                Waiting::Use { to, back },
+                Why::TakenAs,
+                None,
+            ),
             (Tier::Run, _) => {
                 let how = How {
                     form: Form::Call,
@@ -116,10 +152,13 @@ impl Shell {
                 };
                 self.model_switch(id, request, &call, to, back, how)
             }
-            (_, why) => self.model_ask(id, request, &call, Waiting::Use { to, back }, why),
+            (_, why) => self.model_ask(id, request, &call, Waiting::Use { to, back }, why, None),
         }
     }
 
+    /// Asks once for a model row; `subject` puts what it does before the call
+    /// ("Download 2.3 GiB from huggingface.co with model_fetch(...)?"), also
+    /// when the question is too long for the menu and is asked as y/n.
     fn model_ask(
         &mut self,
         id: u64,
@@ -127,9 +166,17 @@ impl Shell {
         call: &str,
         waiting: Waiting,
         why: Why,
+        subject: Option<String>,
     ) -> Reply {
         self.host.audit(&format!("request {id}: {call} asks"));
-        let reply = self.ask_call(id, request, Checked::shown_only(call), why, None, None);
+        let checked = Checked::shown_only(call);
+        let mut reply = self.ask_call(id, request, checked, why, None, subject.clone());
+        if let Some(subject) = subject
+            && reply.confirm.is_some()
+            && reply.text.starts_with("Run ")
+        {
+            reply.text = format!("{subject}. {}", reply.text);
+        }
         if let Some(pending) = &mut self.pending {
             pending.model = Some(waiting);
         }
@@ -155,6 +202,9 @@ impl Shell {
                 self.model_switch(id, &pending.request, &call, to, back, how)
             }
             Waiting::Fetch => self.model_fetch(id, &pending.request, &call, how),
+            Waiting::Download { id: name, subject } => {
+                self.model_download_run(id, &pending.request, &call, how, &name, &subject)
+            }
         };
         self.remember(&pending, &reply.text);
         reply
@@ -218,6 +268,39 @@ impl Shell {
         ))
     }
 
+    /// The asked download, started in `updated` after an Allow, and logged:
+    /// it brings a new blob and has no undo yet.
+    fn model_download_run(
+        &mut self,
+        id: u64,
+        request: &str,
+        call: &str,
+        how: How,
+        name: &str,
+        subject: &str,
+    ) -> Reply {
+        let answer = match self.host.models(&format!("models download {name}")) {
+            Ok(answer) => answer,
+            Err(why) => return Reply::err(why),
+        };
+        if !answer.starts_with("ok downloading ") {
+            return Reply::err(answer.trim_start_matches("err ").to_string());
+        }
+        let change = Change {
+            action: String::from("model_fetch"),
+            owner: String::from("updated"),
+            res: String::from("model-store"),
+            before: String::new(),
+            after: String::from(name),
+            inverse: None,
+        };
+        self.log_change(id, request, call, how, change);
+        let what = subject.strip_prefix("Download ").unwrap_or(subject);
+        Reply::ok(format!(
+            "Downloading {name}, {what}; each 2 MiB part is checked against the signed models role before it is kept, and a cut download goes on where it stopped. model_list shows when it is stored"
+        ))
+    }
+
     fn log_change(&mut self, id: u64, request: &str, call: &str, how: How, change: Change) {
         self.log.push(Entry {
             id,
@@ -271,6 +354,7 @@ pub(crate) enum Line {
     List,
     Import,
     Use(String),
+    Download(String),
 }
 
 /// Reads `text` as a `models` line. `None` when its first word is not
@@ -282,9 +366,10 @@ pub(crate) fn parse_line(text: &str) -> Option<Result<Line, String>> {
         ["models"] => Ok(Line::List),
         ["models", "import"] => Ok(Line::Import),
         ["models", "use", name] => Ok(Line::Use(String::from(*name))),
+        ["models", "download", name] => Ok(Line::Download(String::from(*name))),
         ["models", ..] => Err(String::from(
-            "models, models import, or models use <id> (models lists the ids); \
-             to ask Kai about models, start with ask",
+            "models, models import, models download <id> or models use <id> (models lists \
+             the ids); to ask Kai about models, start with ask",
         )),
         _ => return None,
     })
@@ -293,7 +378,8 @@ pub(crate) fn parse_line(text: &str) -> Option<Result<Line, String>> {
 impl Shell {
     /// A typed `models` line, held as a typed `install` is: the person's own
     /// line names what it does, through the rows the AI calls. The list
-    /// answers; a switch runs, logged as typed, with its undo; an import asks
+    /// answers, with the signed models this machine may download; a switch
+    /// runs, logged as typed, with its undo; an import or a download asks
     /// once, since it has no undo.
     pub(crate) fn models_line(&mut self, request: &str, parsed: Result<Line, String>) -> Reply {
         let line = match parsed {
@@ -307,11 +393,67 @@ impl Shell {
             why,
         };
         match line {
-            Line::List => self.model_call(id, request, "model_list", &[], typed(Why::Read)),
+            Line::List => {
+                let mut reply = self.model_call(id, request, "model_list", &[], typed(Why::Read));
+                if reply.ok
+                    && let Some(offers) = self.offers_text()
+                {
+                    reply.text = format!("{}\n{offers}", reply.text);
+                }
+                reply
+            }
             Line::Import => self.model_call(id, request, "model_fetch", &[], typed(Why::NoUndo)),
             Line::Use(name) => self.model_use(id, request, &name, typed(Why::Asked), "typed"),
+            Line::Download(name) => self.model_download(id, request, &name),
         }
     }
+
+    /// The signed models not stored yet, each with whether this machine may
+    /// download it now (`updated`'s `models offers`); `None` when there are
+    /// none. Why `updated` could not say is said, not dropped.
+    fn offers_text(&self) -> Option<String> {
+        let parsed =
+            self.host
+                .models("models offers")
+                .and_then(|text| match text.strip_prefix("err ") {
+                    Some(why) => Err(String::from(why)),
+                    None => offered::parse(&text),
+                });
+        let offers = match parsed {
+            Ok(offers) => offers,
+            Err(why) => return Some(format!("Downloads: none listed ({why})")),
+        };
+        let lines: Vec<String> = offers
+            .iter()
+            .filter(|o| o.fit != Fit::Stored)
+            .map(|o| {
+                let fit = match o.fit {
+                    Fit::Fits if o.recommended => String::from("fits, recommended"),
+                    Fit::Memory { need_mib, have_mib } => {
+                        fetch::Refused::Memory { need_mib, have_mib }.why()
+                    }
+                    Fit::Disk { need, free } => fetch::Refused::Disk { need, free }.why(),
+                    Fit::Fits | Fit::Stored => String::from("fits"),
+                };
+                format!("  {}: {fit}", o.id)
+            })
+            .collect();
+        if lines.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "To download one: models download <id>\n{}",
+            lines.join("\n")
+        ))
+    }
+}
+
+/// The canonical call a typed `models download <id>` asks with and logs:
+/// `model_fetch("net", "qwen3-1.7b")`.
+fn download_call(name: &str) -> String {
+    use termcore::once::{CallArg, call_text};
+    call_text("model_fetch", &[CallArg::Text("net"), CallArg::Text(name)])
+        .unwrap_or_else(|| String::from("model_fetch"))
 }
 
 /// The canonical call for a model row: `model_use("qwen3-1.7b")`.

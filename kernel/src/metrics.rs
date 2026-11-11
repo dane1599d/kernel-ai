@@ -23,6 +23,7 @@ fn take() -> Metrics {
     let (free, total) = memory::with(|mem| (mem.free_frames(), mem.total_frames()));
     m.free_frames = free;
     m.total_frames = total;
+    m.ram_frames = memory::ram_frames();
     let (allocations, bytes) = memory::heap::live();
     m.heap_allocations = allocations as u64;
     m.heap_bytes = bytes as u64;
