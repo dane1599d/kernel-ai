@@ -7,7 +7,7 @@
 //! scope rule itself (C on #650): the user reads and writes every memory; an
 //! agent reads its own and those for all, and writes only its own.
 
-use crate::record::{self, Memory, Scope, text_problem};
+use crate::record::{self, Memory, Scope, is_agent_name, text_problem};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -96,6 +96,16 @@ impl Memories {
         if !who.writes(&scope) {
             return Err(String::from("an agent writes only its own memories"));
         }
+        // `all` is the file's word for memories that every agent sees: an agent so
+        // named would be read back as everyone's, and a scope the file cannot hold
+        // would make the whole file unreadable.
+        if let Scope::Agent(name) = &scope
+            && (!is_agent_name(name) || name == "all")
+        {
+            return Err(String::from(
+                "a memory is for all agents or for one agent by a name it can keep",
+            ));
+        }
         let text = text.trim();
         if let Some(why) = text_problem(text) {
             return Err(String::from(why));
@@ -174,6 +184,17 @@ impl Memories {
             return Err(String::from(why));
         }
         let at = self.writable(who, id)?;
+        // Nothing is kept twice: another memory of the scope that says the same is
+        // the one to keep (it is in the scope `who` can see, so naming it tells
+        // nothing).
+        let scope = &self.kept[at].scope;
+        if let Some(same) = self
+            .kept
+            .iter()
+            .find(|m| m.id != id && m.scope == *scope && m.text.eq_ignore_ascii_case(text))
+        {
+            return Err(format!("memory {} already says that", same.id));
+        }
         let memory = &mut self.kept[at];
         memory.time = time;
         Ok(core::mem::replace(&mut memory.text, text.to_string()))
@@ -209,8 +230,16 @@ impl Memories {
             .iter()
             .position(|(m, _)| m.id == id && who.writes(&m.scope))
             .ok_or_else(|| format!("memory {id} was not forgotten in the last 10 minutes"))?;
+        let (back, _) = &self.forgotten[at];
+        let kept_again = self.same(&back.scope, &back.text).is_some();
+        if !kept_again && self.kept.len() >= MAX_MEMORIES {
+            // Still forgotten, so it can be restored when there is room.
+            return Err(format!(
+                "Kai keeps at most {MAX_MEMORIES} memories; forget some first"
+            ));
+        }
         let (memory, _) = self.forgotten.remove(at);
-        if self.same(&memory.scope, &memory.text).is_none() {
+        if !kept_again {
             self.kept.push(memory);
         }
         Ok(())
