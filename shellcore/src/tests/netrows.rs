@@ -350,3 +350,69 @@ fn printed_text_is_remembered_as_before() {
     shell.eval("say again");
     assert_eq!(last_remembered(&host), "again");
 }
+
+#[test]
+fn a_shown_page_then_a_change_is_remembered_with_the_done_line() {
+    // The shell's own `Done: … undo` line comes after the fixed line, so a
+    // later "undo that" still knows what changed; the page's text does not.
+    let code = "show(net_fetch(\"example.com\"));\nset_policy(\"round-robin\");";
+    let (host, mut shell) = with_calls(vec![script(code)]);
+    let reply = shell.eval("fetch example.com and switch to round robin");
+    assert!(reply.ok && reply.confirm.is_none(), "{reply:?}");
+    assert!(reply.text.contains("the page at example.com"), "{reply:?}");
+    assert_eq!(
+        last_remembered(&host),
+        format!("{SHOWED_PAGE}. Done: policy round-robin (was interactive). undo")
+    );
+}
+
+#[test]
+fn a_shown_page_then_a_failure_is_remembered_with_the_shells_error() {
+    // The trial's stand-in has two CPUs; the fake host has four.
+    let code = "show(net_fetch(\"example.com\"));\nprint(10 / (cpus() - 4));";
+    let (host, mut shell) = with_calls(vec![script(code)]);
+    let reply = shell.eval("fetch example.com");
+    assert!(!reply.ok, "{reply:?}");
+    assert_eq!(
+        last_remembered(&host),
+        format!("{SHOWED_PAGE}. Division by zero: 10 / 0 (line 2, position 10)")
+    );
+}
+
+#[test]
+fn a_shown_page_then_a_change_that_failed_is_remembered_as_nothing_changed() {
+    let code = "show(net_fetch(\"example.com\"));\nset_policy(\"round-robin\");\nprint(10 / (cpus() - 4));";
+    let (host, mut shell) = with_calls(vec![script(code)]);
+    let reply = shell.eval("fetch example.com and switch to round robin");
+    assert!(!reply.ok, "{reply:?}");
+    assert_eq!(host.policy.get(), Some(policy::INTERACTIVE), "{reply:?}");
+    assert_eq!(
+        last_remembered(&host),
+        format!("{SHOWED_PAGE}. Nothing changed: Division by zero: 10 / 0 (line 3, position 10)")
+    );
+}
+
+#[test]
+fn a_query_over_the_scripts_own_text_is_not_named_as_an_app() {
+    let code = "show(query(\"milk and eggs\", \"is milk on it?\"));";
+    let (host, mut shell) = with_calls(vec![script(code)]);
+    let reply = shell.eval("is milk on the list milk and eggs?");
+    assert!(reply.ok, "{reply:?}");
+    assert_eq!(
+        last_remembered(&host),
+        "Showed what Kai read from an answer to a question about text it wrote"
+    );
+}
+
+#[test]
+fn the_fixed_line_is_cut_to_the_result_limit_on_a_character() {
+    let host = FakeHost::new();
+    let showed = crate::agentcore::Showed {
+        from: vec!["web"],
+        outcome: Some(format!("Done: {}", "é".repeat(400))),
+    };
+    crate::agentcore::remember(host.as_ref(), "line", "call", "reply", &showed);
+    let remembered = last_remembered(&host);
+    assert!(remembered.len() <= 300, "{}", remembered.len());
+    assert!(remembered.starts_with(&format!("{SHOWED_PAGE}. Done: é")));
+}

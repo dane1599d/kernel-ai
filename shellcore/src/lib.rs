@@ -633,9 +633,10 @@ pub struct Shell {
     shown: Option<String>,
     /// What the script run by the last line printed.
     last_output: Option<String>,
-    /// The sources of the Content the last finished script showed: a model turn
-    /// whose reply printed Content is remembered without its text (#831).
-    showed_from: Vec<&'static str>,
+    /// What the last finished script showed, and the shell's line after it: a
+    /// model turn whose reply printed Content is remembered without its text
+    /// (#831).
+    showed: agentcore::Showed,
     /// An entry with a brace, bracket or parenthesis still open, waiting for its
     /// next line.
     partial: Option<String>,
@@ -726,7 +727,7 @@ impl Shell {
             hosts: nethosts::Table::curated(),
             shown: None,
             last_output: None,
-            showed_from: Vec::new(),
+            showed: agentcore::Showed::default(),
             partial: None,
             clarifying: None,
             fronts: alloc::collections::BTreeMap::new(),
