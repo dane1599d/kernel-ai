@@ -3,13 +3,6 @@
 use super::{KAI, TestCase, case};
 use crate::disk::Fixture;
 
-/// Guest memory for the desktop cases that failed with "Not enough memory to
-/// open Notes" once `pkg` (and then `updated`) linked rustls and the crypto,
-/// which are resident in every desktop boot (P5 tasks 8 and 10): the default
-/// 512 MiB and 8 MiB, over the 2 MiB `pkg` added and the 2 MiB `updated` adds.
-/// The decisions row `2026-11-09-p5-pkg-online-os` has the figures.
-const DESK_TLS_MIB: u64 = 520;
-
 /// The second boot of `entropy-boots`.
 const ENTROPY_BOOT_2: TestCase = TestCase {
     expect: &["entropy: virtio-rng mixed in", "entropy-boots: sample "],
@@ -414,7 +407,6 @@ pub(super) const CASES: &[TestCase] = &[
             "desk-agent: the agent opened Notes, read its view and typed in it after a yes",
             "desk-agent: Notes' notes_add, loaded from its window, added the note",
         ],
-        memory_mib: Some(DESK_TLS_MIB),
         ..case("desk-agent", "test=desk-agent")
     },
     // P4 task 7: the Settings app runs as the system image plans it, its reads
@@ -594,7 +586,6 @@ pub(super) const CASES: &[TestCase] = &[
             "the panel says: Stopped: you took over",
             "desk-takeover: a key in the window the agent drove stopped it",
         ],
-        memory_mib: Some(DESK_TLS_MIB),
         ..case("desk-takeover", "test=desk-takeover")
     },
     // P3 task 12: resource profiles' kernel half.
