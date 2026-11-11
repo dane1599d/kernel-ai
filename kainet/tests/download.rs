@@ -6,7 +6,7 @@
 mod hostile;
 
 use kainet::chunks::{CHUNK, Chunks, MIN_CHUNK};
-use kainet::download::{Answer, DownloadError, Partial, Report, download};
+use kainet::download::{Answer, Download, DownloadError, Partial, Report, Step, download};
 use kainet::http::{HttpError, Range};
 use std::cell::Cell;
 
@@ -364,4 +364,58 @@ fn a_status_other_than_206_is_passed_through_with_its_retry_after() {
         Err(DownloadError::Status(429, Some(30)))
     );
     assert_eq!((partial.done, partial.bytes.len()), (0, 0));
+}
+
+/// A download a chunk at a time (`updated` steps one between requests): the
+/// same chunks in the same order as `download`, read-backs first, a chunk
+/// that went bad on disk fetched again, and done only once.
+#[test]
+fn a_stepped_download_does_what_download_does_a_chunk_at_a_time() {
+    let target = blob(6 * MIN_CHUNK as usize + 11);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let mut partial = Memory {
+        bytes: target[..4 * MIN_CHUNK as usize].to_vec(),
+        done: 4,
+        ..Memory::default()
+    };
+    partial.bytes[2 * MIN_CHUNK as usize + 3] ^= 0x40;
+    let mut server = Server::new(target.clone());
+    let mut fetch =
+        |range, sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>| server.fetch(range, sink);
+    let mut run = Download::start(list.clone(), &mut partial).unwrap();
+    let mut steps = Vec::new();
+    loop {
+        let step = run.step(&mut partial, &mut fetch).unwrap();
+        steps.push(step);
+        if matches!(step, Step::Done(_)) {
+            break;
+        }
+        assert_eq!(run.progress(), steps.len());
+    }
+    let report = Report {
+        kept: 2,
+        fetched: 5,
+    };
+    assert_eq!(
+        steps,
+        [
+            Step::Checked(0),
+            Step::Checked(1),
+            Step::Fetched(2),
+            Step::Fetched(3),
+            Step::Fetched(4),
+            Step::Fetched(5),
+            Step::Fetched(6),
+            Step::Done(report),
+        ]
+    );
+    // The bad chunk's checkpoint went back to 2 before it was fetched again.
+    assert_eq!(partial.records, [2, 3, 4, 5, 6, 7]);
+    assert_eq!(partial.bytes, target);
+    assert!(partial.finished);
+    // Done once: asked again, it answers the same and moves nothing in twice.
+    partial.finished = false;
+    assert_eq!(run.step(&mut partial, &mut fetch), Ok(Step::Done(report)));
+    assert!(!partial.finished);
+    assert_eq!(run.list(), &list);
 }
