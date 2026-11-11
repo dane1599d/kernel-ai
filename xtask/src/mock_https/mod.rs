@@ -261,6 +261,10 @@ pub fn start(content: Content) -> Result<Mock, String> {
             let open = Arc::clone(&open);
             thread::spawn(move || {
                 let _closes = Closes(open);
+                // A response is its head, then its body: with Nagle on, the
+                // body waits for the relay to ACK the head, a delayed ACK of
+                // up to 40 ms on each request (#810's split).
+                let _ = stream.set_nodelay(true);
                 let _ = stream.set_read_timeout(Some(REQUEST_LIMIT));
                 let _ = stream.set_write_timeout(Some(REQUEST_LIMIT));
                 let sni = pki::Sni::default();
