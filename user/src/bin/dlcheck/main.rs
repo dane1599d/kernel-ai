@@ -37,7 +37,7 @@
 
 extern crate alloc;
 
-mod store;
+use user::kaifs as store;
 
 use alloc::format;
 use alloc::string::String;
