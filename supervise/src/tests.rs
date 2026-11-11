@@ -1105,13 +1105,14 @@ fn the_v0_1_system_plan_parses_and_its_routes_come_first() {
         assert_eq!(named("fs").is_some(), files);
         let desktop = named("desktop").expect("the desktop is planned");
         assert_eq!(desktop.uses.contains(&String::from("pkg")), files);
-        // `updated` reaches Hugging Face's resolve host and its file storage
-        // by name on 443 for the model download (P5 task 9), and nothing else.
+        // `updated` reaches Hugging Face's resolve host and its file storage,
+        // and the repository's Pages host for the chunk lists, by name on 443
+        // for the model download (P5 task 9), and nothing else.
         let updated = named("updated").expect("updated is planned");
         let dest = updated.netdest.as_ref().expect("updated has a NetDest");
         assert_eq!(
             dest.to_string(),
-            "proto:tcp,addrs:none,ports:443,hosts:huggingface.co+cdn.hf.co"
+            "proto:tcp,addrs:none,ports:443,hosts:huggingface.co+cdn.hf.co+dane1599d.github.io"
         );
         // The model manager's window, with `kai-data` only, on demand.
         let models = named("models-window");

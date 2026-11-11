@@ -37,10 +37,11 @@
 extern crate alloc;
 
 mod disk;
+mod download;
 mod folders;
 mod models;
-mod online;
 mod offers;
+mod online;
 mod restore;
 mod split;
 mod window;
@@ -104,10 +105,11 @@ fn main() -> i32 {
     // The model channel: a trial the last boot left is settled before anything
     // waits on `llm` (`models.rs`). The plan line's one route is to `llm`.
     let folders = folders::Folders::from_startup().ok();
-    let hosts = offers::hosts(args.split_whitespace().any(|w| w == "fetch=test"));
+    let test = args.split_whitespace().any(|w| w == "fetch=test");
+    let (hosts, lists) = (offers::hosts(test), download::lists(test));
     let mut channel = folders
         .as_ref()
-        .and_then(|f| models::Channel::open(handle, f, user::route(0), hosts));
+        .and_then(|f| models::Channel::open(handle, f, user::route(0), hosts, lists));
     if let Some(channel) = &mut channel
         && let Err(why) = channel.at_boot()
     {

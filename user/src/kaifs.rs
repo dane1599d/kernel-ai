@@ -155,6 +155,11 @@ impl Kaifs {
         }
     }
 
+    /// The folder the partial target and its mark are in.
+    pub fn dir(&self) -> Handle {
+        self.dir
+    }
+
     pub fn partial_name(&self) -> String {
         format!("{}.partial", self.name)
     }

@@ -15,7 +15,7 @@
 //! about 357,000 pushes of 7 KiB.
 
 use crate::folders::{self, Folders};
-use crate::offers;
+use crate::{download, offers};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
@@ -26,6 +26,7 @@ use kabi::Error;
 use kabi::handle::Handle;
 use kabi::update::{IMPORT, MAX_IO, SECTOR};
 use kaipkg::image::Files;
+use kaituf::meta::TargetFile;
 use modelchan::fetch::Hosts;
 use modelchan::import::{self, Importing};
 use modelchan::listing;
@@ -69,6 +70,15 @@ impl Files for BootRepo {
 
 /// The signed `models` role, as the import and the list hold models to it.
 fn role() -> Result<Vec<Signed>, String> {
+    role_and_lists().map(|(signed, _)| signed)
+}
+
+/// The chunk lists the role signs, each by its model's SHA-256.
+type Lists = Vec<(Sha256, TargetFile)>;
+
+/// The role's models, and the chunk lists it signs beside them, each by its
+/// model's SHA-256 (the download fetches a list and holds it to its target).
+fn role_and_lists() -> Result<(Vec<Signed>, Lists), String> {
     let checked = kaipkg::models::check(&mut BootRepo)?;
     for (path, why) in &checked.refused {
         println!("updated: the models role's {path} is refused: {why}");
@@ -81,7 +91,7 @@ fn role() -> Result<Vec<Signed>, String> {
         licence: m.licence,
         source: m.source,
     });
-    Ok(signed.collect())
+    Ok((signed.collect(), checked.chunks))
 }
 
 /// The store's name for a blob: `<64 hex>.gguf`.
@@ -108,8 +118,13 @@ pub struct Channel {
     /// The trial this boot judges, and when it started.
     probation: Option<(Trial, u64)>,
     asked_ms: u64,
-    /// The hosts models are downloaded from (`offers::hosts`).
+    /// The hosts models are downloaded from (`offers::hosts`), and where the
+    /// role's chunk lists are (`download::lists`).
     hosts: &'static [Hosts],
+    lists: String,
+    download: Option<download::Running>,
+    /// The last download's end: the target it stored, or why it stopped.
+    downloaded: Option<Result<String, String>>,
 }
 
 fn now_ms() -> u64 {
@@ -124,6 +139,7 @@ impl Channel {
         folders: &Folders,
         llm: Option<Handle>,
         hosts: &'static [Hosts],
+        lists: String,
     ) -> Option<Channel> {
         Some(Channel {
             update,
@@ -135,6 +151,9 @@ impl Channel {
             probation: None,
             asked_ms: 0,
             hosts,
+            lists,
+            download: None,
+            downloaded: None,
         })
     }
 
@@ -194,8 +213,8 @@ impl Channel {
         Ok(())
     }
 
-    /// Work between requests: the probation's next look at `llm`, and the
-    /// running import's next read.
+    /// Work between requests: the probation's next look at `llm`, the
+    /// running import's next read, and the running download's next chunk.
     pub fn tick(&mut self) {
         if let Err(why) = self.judge() {
             println!("updated: model trial: {why}");
@@ -206,12 +225,86 @@ impl Channel {
                 self.end_import(Err(why));
             }
         }
+        if let Some(run) = &mut self.download {
+            match run.step(self.store) {
+                Ok(None) => {}
+                Ok(Some(done)) => {
+                    println!("{}", done.line);
+                    self.download = None;
+                    self.end_download(Ok(done.id));
+                }
+                Err(why) => {
+                    run.abandon(self.store);
+                    self.download = None;
+                    self.end_download(Err(why));
+                }
+            }
+        }
+    }
+
+    fn end_download(&mut self, end: Result<String, String>) {
+        if let Err(why) = &end {
+            println!("updated: model download stopped: {why}");
+        }
+        self.last = None;
+        self.downloaded = Some(end);
     }
 
     /// Whether there is work between requests, so the serve loop does not
     /// sleep long.
     pub fn busy(&self) -> bool {
-        self.import.is_some() || self.probation.is_some()
+        self.import.is_some() || self.download.is_some() || self.probation.is_some()
+    }
+
+    /// Why a change to the store must wait: an import or a download holds
+    /// it, or will hold `fs`'s one action for its copy.
+    fn store_busy(&self) -> Option<String> {
+        if self.import.is_some() {
+            return Some(String::from("an import is running; ask again once it ends"));
+        }
+        let run = self.download.as_ref()?;
+        Some(format!(
+            "{} is downloading; ask again once it ends",
+            run.id()
+        ))
+    }
+
+    /// `models download <id>`: the signed target `id` from its pinned
+    /// source (`download.rs`), once nothing else changes the store.
+    fn start_download(&mut self, id: &str) -> Result<String, String> {
+        if let Some(why) = self.store_busy() {
+            return Err(why);
+        }
+        // As for an import: a trial's verdict writes its record, which the
+        // copy's open action would block.
+        if self.probation.is_some() {
+            return Err(String::from(
+                "a model is on trial; ask again once it is kept or rolled back",
+            ));
+        }
+        let (signed, lists) = role_and_lists()?;
+        let store = Store {
+            blobs: self
+                .blobs()?
+                .iter()
+                .map(|&(sha256, length, _)| Stored { sha256, length })
+                .collect(),
+            ..Store::default()
+        };
+        let facts = offers::Facts::read(self.store, &signed)?;
+        let machine = facts.machine(&store, self.hosts);
+        let run = download::start(self.store, &signed, &lists, &machine, id, &self.lists)?;
+        let target = signed
+            .iter()
+            .find(|t| t.id == run.id())
+            .ok_or("the role changed")?;
+        let host = modelchan::fetch::Source::parse(&target.source)
+            .map(|s| s.host)
+            .unwrap_or_default();
+        let reply = format!("ok downloading {} {} {host}", target.id, target.length);
+        println!("updated: downloading {} from {host}", target.id);
+        self.download = Some(run);
+        Ok(reply)
     }
 
     /// Whether a model is on trial, its probation not yet decided.
@@ -271,10 +364,10 @@ impl Channel {
     }
 
     /// One request from the shell: `models`, `models import`, `models
-    /// progress`, `models use <64 hex>`, `models offers` or `models ask <id>`;
-    /// from the model manager's window, `models` alone (`serve` checks who
-    /// asked). Nothing in it is used as a path: an id is only looked up in the
-    /// signed role.
+    /// progress`, `models use <64 hex>`, `models offers`, `models ask <id>` or
+    /// `models download <id>`; from the model manager's window, `models` alone
+    /// (`serve` checks who asked). Nothing in it is used as a path: an id is
+    /// only looked up in the signed role.
     pub fn answer(&mut self, text: &str) -> String {
         let done = match text.split(' ').collect::<Vec<_>>().as_slice() {
             ["models"] => self.list(),
@@ -283,6 +376,7 @@ impl Channel {
             ["models", "use", sha] => listing::sha256(sha).and_then(|sha| self.use_model(&sha)),
             ["models", "offers"] => self.offers(None),
             ["models", "ask", id] => self.offers(Some(id)),
+            ["models", "download", id] => self.start_download(id),
             _ => Err(String::from("unknown request")),
         };
         done.unwrap_or_else(|why| format!("err {why}"))
@@ -387,9 +481,9 @@ impl Channel {
     fn use_model(&mut self, sha256: &Sha256) -> Result<String, String> {
         // The record and the hint are written outside an action, which the
         // import holds until its blob is whole (K's review of #447).
-        if self.import.is_some() {
-            println!("updated: models use refused: an import is running");
-            return Err(String::from("an import is running; ask again once it ends"));
+        if let Some(why) = self.store_busy() {
+            println!("updated: models use refused: {why}");
+            return Err(why);
         }
         let models = self.models()?;
         if models.use_model(sha256).is_none() && models.store.running != Some(*sha256) {
@@ -421,8 +515,8 @@ impl Channel {
     }
 
     fn start_import(&mut self) -> Result<String, String> {
-        if self.import.is_some() {
-            return Err(String::from("an import is running"));
+        if let Some(why) = self.store_busy() {
+            return Err(why);
         }
         // A trial's verdict writes its record, which an import's open action
         // would block, so an import waits for the trial to end.
@@ -521,11 +615,20 @@ impl Channel {
         if let Err(why) = &end {
             println!("updated: import refused: {why}");
         }
+        self.downloaded = None;
         self.last = Some(end);
     }
 
     /// `ok <read> <of>` while an import runs; then how the last one ended.
     fn progress(&self) -> String {
+        if let Some(run) = &self.download {
+            return run.progress();
+        }
+        match &self.downloaded {
+            Some(Ok(id)) if self.last.is_none() => return format!("ok downloaded {id}"),
+            Some(Err(why)) if self.last.is_none() => return format!("ok refused {why}"),
+            _ => {}
+        }
         match (&self.import, &self.last) {
             (Some(run), _) => format!("ok {} {}", run.at, run.importing.disk()),
             (None, Some(Ok(id))) => format!("ok imported {id}"),
