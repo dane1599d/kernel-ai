@@ -616,6 +616,9 @@ pub struct Shell {
     net_cards: Vec<netask::NetAsking>,
     /// Network grants revoked, kept for their undo.
     net_revoked: Vec<kaigrants::Grant>,
+    /// The highest network grant id this run gave or saw: new grants are
+    /// numbered above it, so an id is never reused while the shell runs.
+    net_high: u32,
     /// The app and host of each network card the person answered Deny, and
     /// when: refused with no card for `netask::DENY_HOLDS_NS`.
     net_denied: Vec<(String, String, u64)>,
@@ -713,6 +716,7 @@ impl Shell {
             card: None,
             net_cards: Vec::new(),
             net_revoked: Vec::new(),
+            net_high: 0,
             net_denied: Vec::new(),
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
@@ -743,9 +747,9 @@ impl Shell {
     }
 
     /// The rows withheld from apps' effects, checked at boot.
-    fn with_saved_withheld(self) -> Self {
+    fn with_saved_withheld(mut self) -> Self {
         grants::check_saved(self.host.as_ref());
-        netask::at_boot(self.host.as_ref());
+        self.net_high = netask::at_boot(self.host.as_ref());
         self
     }
 
