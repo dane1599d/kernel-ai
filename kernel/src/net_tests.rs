@@ -342,7 +342,7 @@ pub fn dest_check() -> Result<(), &'static str> {
 /// A plan line's `netdest=llm` grant, through `spawn_in` as the supervisor
 /// spawns: with NET in the ceiling the process starts with the LLM's handle,
 /// CONNECT exactly; without NET it starts with no `NetDest` (the manager's
-/// review of #779: NET stays the ceiling for this handle too).
+/// review of #779: NET bounds this handle as it bounds a moved-in one).
 fn llm_grant() -> Result<(), &'static str> {
     let grants = supervise::Grants {
         llm_dest: true,

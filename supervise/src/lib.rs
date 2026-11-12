@@ -821,8 +821,8 @@ pub const LLM_DEST: &str = "llm";
 pub const LLM_DEST_SERVICE: &str = "llm";
 
 /// `netdest=llm` only on the `llm` line running `llm`, and only with `net` in
-/// its ceiling, so NET stays the ceiling for the LLM's handle as for any other
-/// `NetDest` (the manager's review of #779). Any other line with it fails.
+/// its ceiling, so NET bounds the LLM's handle as it bounds a moved-in `NetDest`
+/// (the manager's review of #779). Any other line with it fails.
 fn llm_dest_line(name: &str, program: &str, caps: u64) -> Result<(), String> {
     if name != LLM_DEST_SERVICE || program != LLM_DEST_SERVICE {
         return Err(format!(

@@ -497,7 +497,8 @@ pub fn spawn_in(
     }
     // `netdest=llm`: the LLM server's destination, CONNECT only, to the line
     // that asks for it and no other NET holder (K, after #756), and only within
-    // its ceiling: NET bounds this handle as it bounds every `NetDest`.
+    // its ceiling: NET bounds this handle as it bounds a moved-in `NetDest`
+    // (a plan line's own `netdest=` record above is bounded by its line).
     let llm_allowed =
         crate::handle::ceiling_allows(request.limits.caps, kabi::handle::Kind::NetDest);
     if plan.llm_dest && llm_allowed {
