@@ -82,6 +82,10 @@ pub const MAX_ACTIONS: usize = 32;
 /// The built-in agents (ADR 0013 section 1): native services no package may take
 /// the name of.
 pub const BUILTIN: [&str; 4] = ["kai", "goals", "index", "maint"];
+/// Names that are no agent's, because the files that name agents use them for
+/// something else: `all` is `kai-memory 1`'s word for the memories every agent sees
+/// (`scope=all`), so an agent named `all` would be read back as everyone.
+pub const RESERVED: [&str; 1] = ["all"];
 
 /// When an agent may run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -261,6 +265,9 @@ impl Manifest {
 /// built-in agent has.
 fn valid_id(id: &str) -> Result<(), Refusal> {
     kaipkg::header::valid_name(id).map_err(Refusal::BadId)?;
+    if RESERVED.contains(&id) {
+        return Err(Refusal::ReservedName(id.to_string()));
+    }
     match BUILTIN.contains(&id) {
         true => Err(Refusal::BuiltinName(id.to_string())),
         false => Ok(()),

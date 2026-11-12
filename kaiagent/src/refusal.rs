@@ -24,6 +24,9 @@ pub enum Refusal {
     BadId(&'static str),
     /// The `id` is one of the built-in agents' names (ADR 0013 section 1).
     BuiltinName(String),
+    /// The `id` is a word other files give a meaning of their own, which no agent
+    /// may be named (`all`).
+    ReservedName(String),
     /// The `abi` is not `<major>.<minor>`.
     BadAbi,
     /// The `abi` is of another major, or a newer minor: this OS does not run it.
@@ -81,6 +84,7 @@ impl fmt::Display for Refusal {
             ),
             Self::BadId(why) => write!(f, "the id: {why}"),
             Self::BuiltinName(id) => write!(f, "{id} is a built-in agent's name"),
+            Self::ReservedName(id) => write!(f, "{id} is a reserved word, not an agent's name"),
             Self::BadAbi => f.write_str("the abi is not <major>.<minor>"),
             Self::AbiUnsupported => {
                 f.write_str("the abi is of another major or a newer minor than this OS runs")

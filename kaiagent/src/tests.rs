@@ -189,7 +189,14 @@ fn the_id_is_a_package_name_that_is_not_an_os_group_a_window_or_a_built_in_agent
             "{id}"
         );
     }
-    for id in ["ab", "a1", "twelve-chars", "pdf-view"] {
+    for id in RESERVED {
+        assert_eq!(
+            refused(&with("id", id)),
+            Refusal::ReservedName(id.into()),
+            "{id}"
+        );
+    }
+    for id in ["ab", "a1", "twelve-chars", "pdf-view", "all-in", "ally"] {
         assert!(Manifest::parse(&with("id", id)).is_ok(), "{id}");
     }
 }
