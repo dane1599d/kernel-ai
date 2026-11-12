@@ -6,7 +6,7 @@
 mod hostile;
 
 use kainet::chunks::{CHUNK, Chunks, MIN_CHUNK};
-use kainet::download::{Answer, DownloadError, Partial, Report, download};
+use kainet::download::{Answer, CHANGED_ON_DISK, DownloadError, Partial, Report, download};
 use kainet::http::{HttpError, Range};
 use std::cell::Cell;
 
@@ -364,4 +364,147 @@ fn a_status_other_than_206_is_passed_through_with_its_retry_after() {
         Err(DownloadError::Status(429, Some(30)))
     );
     assert_eq!((partial.done, partial.bytes.len()), (0, 0));
+}
+
+/// [`Memory`] as a store with other writers, or one held alone: it counts
+/// the bytes read back, and can have another writer flip a byte at `flip`
+/// after the `after`th write.
+#[derive(Default)]
+struct Watched {
+    inner: Memory,
+    alone: bool,
+    read: usize,
+    writes: usize,
+    flip: Option<(usize, usize)>,
+}
+
+impl Partial for Watched {
+    fn checkpoint(&mut self) -> Result<usize, DownloadError> {
+        self.inner.checkpoint()
+    }
+    fn record(&mut self, done: usize) -> Result<(), DownloadError> {
+        self.inner.record(done)
+    }
+    fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), DownloadError> {
+        self.inner.write(offset, bytes)?;
+        self.writes += 1;
+        if let Some((after, at)) = self.flip
+            && self.writes == after
+        {
+            self.inner.bytes[at] ^= 1;
+            self.flip = None;
+        }
+        Ok(())
+    }
+    fn read(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), DownloadError> {
+        self.read += buf.len();
+        self.inner.read(offset, buf)
+    }
+    fn finish(&mut self) -> Result<(), DownloadError> {
+        self.inner.finish()
+    }
+    fn held_alone(&self) -> bool {
+        self.alone
+    }
+}
+
+fn run_watched(
+    list: &Chunks,
+    partial: &mut Watched,
+    server: &mut Server,
+) -> Result<Report, DownloadError> {
+    download(list, partial, &mut |range, sink| server.fetch(range, sink))
+}
+
+/// A partial others could write is read back once, whole, before it moves
+/// in, even when nothing was cut.
+#[test]
+fn a_shared_partial_is_read_back_once_before_it_moves_in() {
+    let target = blob(5 * MIN_CHUNK as usize + 77);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let (mut partial, mut server) = (Watched::default(), Server::new(target.clone()));
+    assert_eq!(
+        run_watched(&list, &mut partial, &mut server),
+        Ok(Report {
+            kept: 0,
+            fetched: 6
+        })
+    );
+    assert!(partial.inner.finished);
+    assert_eq!(partial.read, target.len());
+}
+
+/// A partial held alone, as `updated`'s slot is, is not read back by
+/// `download`.
+#[test]
+fn a_partial_held_alone_is_not_read_back() {
+    let target = blob(5 * MIN_CHUNK as usize + 77);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let mut partial = Watched {
+        alone: true,
+        ..Watched::default()
+    };
+    let mut server = Server::new(target.clone());
+    assert_eq!(
+        run_watched(&list, &mut partial, &mut server),
+        Ok(Report {
+            kept: 0,
+            fetched: 6
+        })
+    );
+    assert!(partial.inner.finished);
+    assert_eq!(partial.read, 0);
+}
+
+/// Another writer flips a byte of chunk 1 after the last chunk is written:
+/// every chunk checked out as fetched, yet the target is not moved in. The
+/// mark goes back to chunk 1, and a resume fetches it again and finishes.
+#[test]
+fn a_chunk_changed_on_disk_after_its_check_is_never_moved_in() {
+    let target = blob(4 * MIN_CHUNK as usize);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let mut partial = Watched {
+        flip: Some((4, MIN_CHUNK as usize + 9)),
+        ..Watched::default()
+    };
+    let mut server = Server::new(target.clone());
+    assert_eq!(
+        run_watched(&list, &mut partial, &mut server),
+        Err(DownloadError::Store(CHANGED_ON_DISK))
+    );
+    assert!(!partial.inner.finished);
+    assert_eq!(partial.inner.records.last(), Some(&1));
+    assert_eq!(
+        run_watched(&list, &mut partial, &mut server),
+        Ok(Report {
+            kept: 1,
+            fetched: 3
+        })
+    );
+    assert!(partial.inner.finished);
+    assert_eq!(partial.inner.bytes, target);
+    let chunk_one = server.served.iter().filter(|r| r.0 == MIN_CHUNK).count();
+    assert_eq!(chunk_one, 2);
+}
+
+/// The same flip on a partial held alone is not looked for: the promise is
+/// the holder's. (`updated`'s slot hashes itself in `finish`.)
+#[test]
+fn a_partial_held_alone_is_trusted_to_be_its_holders() {
+    let target = blob(4 * MIN_CHUNK as usize);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let mut partial = Watched {
+        alone: true,
+        flip: Some((4, MIN_CHUNK as usize + 9)),
+        ..Watched::default()
+    };
+    let mut server = Server::new(target);
+    assert_eq!(
+        run_watched(&list, &mut partial, &mut server),
+        Ok(Report {
+            kept: 0,
+            fetched: 4
+        })
+    );
+    assert_eq!(partial.read, 0);
 }
