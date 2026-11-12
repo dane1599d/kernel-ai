@@ -10,7 +10,9 @@
 //!   once; [`GONE`] when `fetch` let it go untaken ([`Keep`]: too many
 //!   callers' answers were kept, or it was kept too long), so the caller can
 //!   say so at once; or [`NONE`] when it holds none for that caller and id,
-//!   not yet made.
+//!   not yet made. A take whose reply was lost to the caller's timeout after
+//!   `fetch` took it has used that answer (or that `gone`), so the caller's
+//!   next take is [`NONE`] until its own limit: a narrow case, told late.
 //!
 //! `fetch` serves one call at a time, so a call that comes while it makes a
 //! request waits in the kernel. The caller gives each call a short timeout:

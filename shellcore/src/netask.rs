@@ -354,8 +354,10 @@ impl Shell {
     }
 
     /// `net denied`: each Deny that holds, how many of the app's connections
-    /// it has refused, and how long it holds. It reads and changes nothing
-    /// else; `net-grant`'s case waits on it before its `undo`.
+    /// it has refused, and how long it holds. Answered as a status line
+    /// (`Shell::status_line`): it lets lapsed Denies go and changes nothing
+    /// else, a card that waits included. `net-grant`'s case waits on it
+    /// before its `undo`.
     pub(crate) fn net_denied_line(&mut self) -> Reply {
         self.lapse_denies();
         if self.net_denied.is_empty() {

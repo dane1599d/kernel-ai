@@ -64,6 +64,9 @@ const QUIET_MS: u64 = 10_000;
 const REFUSED_ONE: &str = "net-fixture to updates.kai.test: refused ";
 /// How often the case asks the shell, while no card may come.
 const DENIED_POLL_MS: u64 = 250;
+/// How long the case waits for that refusal: inside the Deny's minute
+/// (`shellcore::netask::DENY_HOLDS_NS`), after which the app would ask again.
+const DENIED_WAIT_MS: u64 = 50_000;
 /// Settings' start: comphost's, the component's compile, and its reads.
 const OPEN_MS: u64 = 60_000;
 const SETTINGS_READS_MS: u64 = 5_000;
@@ -101,7 +104,7 @@ fn card(host: &str, allow: bool) -> Result<(), &'static str> {
 /// Waits, with no card, until the shell's Deny of the revoked host has
 /// refused the app at least once (`net denied`), well inside its minute.
 fn denied_once() -> Result<(), &'static str> {
-    for _ in 0..CARD_MS / DENIED_POLL_MS {
+    for _ in 0..DENIED_WAIT_MS / DENIED_POLL_MS {
         let said = ipc::call("shell", b"net denied", CARD_MS)
             .map_err(|_| "net-grant: the shell did not answer net denied")?;
         let said = alloc::string::String::from_utf8_lossy(&said);
