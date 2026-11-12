@@ -186,9 +186,11 @@ pub fn download(
 
 /// Every chunk of the partial read back and checked against the list, and the
 /// whole target against its signed hash: what [`download`] does before
-/// [`Partial::finish`] for a partial not [`Partial::held_alone`]. A chunk that
-/// no longer matches sets the mark back to it ([`CHANGED_ON_DISK`]).
-fn read_back(
+/// [`Partial::finish`] for a partial not [`Partial::held_alone`], and what a
+/// caller that steps a download itself does at the same point. `buf` holds
+/// one chunk. A chunk that no longer matches sets the mark back to it
+/// ([`CHANGED_ON_DISK`]).
+pub fn read_back(
     list: &Chunks,
     partial: &mut impl Partial,
     buf: &mut [u8],
