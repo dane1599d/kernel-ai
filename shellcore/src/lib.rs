@@ -620,9 +620,9 @@ pub struct Shell {
     /// The highest network grant id this run gave or saw: new grants are
     /// numbered above it, so an id is never reused while the shell runs.
     net_high: u32,
-    /// The app and host of each network card the person answered Deny, and
-    /// when: refused with no card for `netask::DENY_HOLDS_NS`.
-    net_denied: Vec<(String, String, u64)>,
+    /// Each network card the person answered Deny: refused with no card for
+    /// `netask::DENY_HOLDS_NS`.
+    net_denied: Vec<netask::Denied>,
     /// Installed software: the image's repository and its generations.
     pkgs: pkg::Store,
     /// Whether the `sudo` note was said already.
@@ -824,6 +824,9 @@ impl Shell {
 
     /// Runs one line and returns what to show; the log goes to disk after it.
     pub fn eval(&mut self, input: &str) -> Reply {
+        if let Some(reply) = self.status_line(input) {
+            return reply;
+        }
         let reply = self.eval_line(input);
         self.save_log();
         reply
@@ -841,6 +844,9 @@ impl Shell {
             self.save_log();
             return reply;
         }
+        if let Some(reply) = self.status_line(input) {
+            return reply;
+        }
         let mut reply = self.eval(input);
         if reply.confirm.is_none() && !reply.more && !self.notices.is_empty() {
             let mut text = self.take_notices().join("\n");
@@ -851,6 +857,20 @@ impl Shell {
             reply.text = text;
         }
         reply
+    }
+
+    /// A line that only reports state: answered before any other line's
+    /// handling, so it never discards a pending card, a proposal or an undo
+    /// that waits, never takes queued notices, and writes no log. `net-grant`'s
+    /// case polls `net denied` while a card waits (#818's batch failures).
+    fn status_line(&mut self, input: &str) -> Option<Reply> {
+        if self.partial.is_some() || self.scope.contains("net") {
+            return None;
+        }
+        match input.trim() {
+            "net denied" => Some(self.net_denied_line()),
+            _ => None,
+        }
     }
 
     fn eval_line(&mut self, input: &str) -> Reply {
