@@ -9,7 +9,7 @@ use crate::blklog::Data;
 use crate::disk::Fixture;
 
 /// A fresh `kai-data` disk, for the model store.
-const DATA: Data = Data {
+pub(super) const DATA: Data = Data {
     nvme: false,
     log: None,
     gpt: true,
@@ -17,7 +17,7 @@ const DATA: Data = Data {
 
 /// `fs` on the data disk, `desktop` and a window together pass the page budget
 /// (half the free memory) of the default 512 MiB guest (`keep-running`'s).
-const WINDOW_AND_FS_MIB: u64 = 1024;
+pub(super) const WINDOW_AND_FS_MIB: u64 = 1024;
 
 pub(super) const CASES: &[TestCase] = &[
     // P4 task 4: the AI types into the Terminal app, a person's Enter runs the line
