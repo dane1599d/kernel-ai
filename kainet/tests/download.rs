@@ -6,7 +6,10 @@
 mod hostile;
 
 use kainet::chunks::{CHUNK, Chunks, MIN_CHUNK};
-use kainet::download::{Answer, CHANGED_ON_DISK, DownloadError, Partial, Report, download};
+use kainet::download::{
+    Answer, CHANGED_ON_DISK, DownloadError, LONGER_ON_DISK, NO_SIZE, Partial, Report, download,
+    read_back,
+};
 use kainet::http::{HttpError, Range};
 use std::cell::Cell;
 
@@ -143,6 +146,10 @@ impl Partial for Memory {
     fn finish(&mut self) -> Result<(), DownloadError> {
         self.finished = true;
         Ok(())
+    }
+
+    fn size(&mut self) -> Result<u64, DownloadError> {
+        Ok(self.bytes.len() as u64)
     }
 }
 
@@ -367,8 +374,9 @@ fn a_status_other_than_206_is_passed_through_with_its_retry_after() {
 }
 
 /// [`Memory`] as a store with other writers, or one held alone: it counts
-/// the bytes read back, and can have another writer flip a byte at `flip`
-/// after the `after`th write.
+/// the bytes read back. After the `after`th write another writer can flip a
+/// byte at `flip`, or `append` a byte; a read at `fail_read` fails once; and
+/// `says_size` can make it give a length other than its own.
 #[derive(Default)]
 struct Watched {
     inner: Memory,
@@ -376,6 +384,9 @@ struct Watched {
     read: usize,
     writes: usize,
     flip: Option<(usize, usize)>,
+    append: Option<usize>,
+    fail_read: Option<u64>,
+    says_size: Option<u64>,
 }
 
 impl Partial for Watched {
@@ -394,10 +405,18 @@ impl Partial for Watched {
             self.inner.bytes[at] ^= 1;
             self.flip = None;
         }
+        if self.append == Some(self.writes) {
+            self.inner.bytes.push(7);
+            self.append = None;
+        }
         Ok(())
     }
     fn read(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), DownloadError> {
         self.read += buf.len();
+        if self.fail_read == Some(offset) {
+            self.fail_read = None;
+            return Err(DownloadError::Store("a read failed"));
+        }
         self.inner.read(offset, buf)
     }
     fn finish(&mut self) -> Result<(), DownloadError> {
@@ -405,6 +424,9 @@ impl Partial for Watched {
     }
     fn held_alone(&self) -> bool {
         self.alone
+    }
+    fn size(&mut self) -> Result<u64, DownloadError> {
+        Ok(self.says_size.unwrap_or(self.inner.bytes.len() as u64))
     }
 }
 
@@ -507,4 +529,181 @@ fn a_partial_held_alone_is_trusted_to_be_its_holders() {
         })
     );
     assert_eq!(partial.read, 0);
+}
+
+/// How many times chunk `chunk` was fetched, by its first byte.
+fn fetches_of(server: &Server, chunk: u64) -> usize {
+    server
+        .served
+        .iter()
+        .filter(|r| r.0 == chunk * MIN_CHUNK)
+        .count()
+}
+
+/// A byte appended after the last write: every chunk still matches, but the
+/// partial is longer than the target, so it is not moved in, and its mark is
+/// left for the caller, who removes it.
+#[test]
+fn a_tail_appended_after_the_last_write_is_never_moved_in() {
+    let target = blob(3 * MIN_CHUNK as usize);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let mut partial = Watched {
+        append: Some(3),
+        ..Watched::default()
+    };
+    let mut server = Server::new(target);
+    assert_eq!(
+        run_watched(&list, &mut partial, &mut server),
+        Err(DownloadError::Store(LONGER_ON_DISK))
+    );
+    assert!(!partial.inner.finished);
+    assert_eq!(partial.inner.done, 3);
+}
+
+/// A zero-length target with a partial another holder planted: nothing is
+/// fetched or read, and the planted bytes are still not moved in. An empty
+/// partial for it is.
+#[test]
+fn a_planted_partial_for_an_empty_target_is_never_moved_in() {
+    let list = Chunks::of(&[], MIN_CHUNK);
+    assert_eq!(list.count(), 0);
+    let mut planted = Watched::default();
+    planted.inner.bytes = b"planted".to_vec();
+    let mut server = Server::new(Vec::new());
+    assert_eq!(
+        run_watched(&list, &mut planted, &mut server),
+        Err(DownloadError::Store(LONGER_ON_DISK))
+    );
+    assert!(!planted.inner.finished);
+    let mut empty = Watched::default();
+    assert_eq!(
+        run_watched(&list, &mut empty, &mut server),
+        Ok(Report {
+            kept: 0,
+            fetched: 0
+        })
+    );
+    assert!(empty.inner.finished);
+}
+
+/// A flip in the short last chunk is found too: the mark goes back to it,
+/// and a resume fetches only it again.
+#[test]
+fn a_flip_in_the_short_last_chunk_is_never_moved_in() {
+    let target = blob(4 * MIN_CHUNK as usize + 77);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let mut partial = Watched {
+        flip: Some((5, 4 * MIN_CHUNK as usize + 70)),
+        ..Watched::default()
+    };
+    let mut server = Server::new(target.clone());
+    assert_eq!(
+        run_watched(&list, &mut partial, &mut server),
+        Err(DownloadError::Store(CHANGED_ON_DISK))
+    );
+    assert_eq!(partial.inner.done, 4);
+    assert_eq!(
+        run_watched(&list, &mut partial, &mut server),
+        Ok(Report {
+            kept: 4,
+            fetched: 1
+        })
+    );
+    assert_eq!(partial.inner.bytes, target);
+    assert_eq!(fetches_of(&server, 4), 2);
+}
+
+/// A read that fails during the check counts as a chunk that changed: the
+/// mark goes back to it, and a resume fetches it and every chunk after it
+/// again, so a resume never fails the same way.
+#[test]
+fn a_read_error_during_the_check_fetches_from_that_chunk_again() {
+    let target = blob(4 * MIN_CHUNK as usize);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let mut partial = Watched {
+        fail_read: Some(2 * MIN_CHUNK),
+        ..Watched::default()
+    };
+    let mut server = Server::new(target.clone());
+    assert_eq!(
+        run_watched(&list, &mut partial, &mut server),
+        Err(DownloadError::Store(CHANGED_ON_DISK))
+    );
+    assert_eq!(partial.inner.done, 2);
+    assert_eq!(
+        run_watched(&list, &mut partial, &mut server),
+        Ok(Report {
+            kept: 2,
+            fetched: 2
+        })
+    );
+    assert!(partial.inner.finished);
+    let fetches: Vec<usize> = (0..4).map(|c| fetches_of(&server, c)).collect();
+    assert_eq!(fetches, [1, 1, 2, 2]);
+}
+
+/// A partial found shorter than the target after its chunks were read sets
+/// the mark back to the first chunk it no longer holds whole.
+#[test]
+fn a_partial_found_short_sets_the_mark_back() {
+    let target = blob(4 * MIN_CHUNK as usize);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let mut partial = Watched {
+        says_size: Some(2 * MIN_CHUNK + 5),
+        ..Watched::default()
+    };
+    let mut server = Server::new(target);
+    assert_eq!(
+        run_watched(&list, &mut partial, &mut server),
+        Err(DownloadError::Store(CHANGED_ON_DISK))
+    );
+    assert_eq!(partial.inner.done, 2);
+    assert!(!partial.inner.finished);
+}
+
+/// A partial that is not held alone and cannot give its length is never
+/// moved in: the default `size` refuses.
+#[test]
+fn a_shared_partial_that_cannot_give_its_length_is_never_moved_in() {
+    struct NoSize(Memory);
+    impl Partial for NoSize {
+        fn checkpoint(&mut self) -> Result<usize, DownloadError> {
+            self.0.checkpoint()
+        }
+        fn record(&mut self, done: usize) -> Result<(), DownloadError> {
+            self.0.record(done)
+        }
+        fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), DownloadError> {
+            self.0.write(offset, bytes)
+        }
+        fn read(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), DownloadError> {
+            self.0.read(offset, buf)
+        }
+        fn finish(&mut self) -> Result<(), DownloadError> {
+            self.0.finish()
+        }
+    }
+    let target = blob(2 * MIN_CHUNK as usize);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let mut partial = NoSize(Memory::default());
+    let mut server = Server::new(target);
+    assert_eq!(
+        download(&list, &mut partial, &mut |r, sink| server.fetch(r, sink)),
+        Err(DownloadError::Store(NO_SIZE))
+    );
+    assert!(!partial.0.finished);
+}
+
+/// `read_back` given a buffer shorter than a chunk does not panic: it takes
+/// one that fits.
+#[test]
+fn read_back_takes_a_buffer_that_fits_when_given_a_short_one() {
+    let target = blob(3 * MIN_CHUNK as usize);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let mut partial = Memory {
+        bytes: target,
+        done: 3,
+        ..Memory::default()
+    };
+    assert_eq!(read_back(&list, &mut partial, &mut [0u8; 4]), Ok(()));
 }
