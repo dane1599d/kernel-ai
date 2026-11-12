@@ -820,7 +820,7 @@ fn net_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     }
     let caller = name_of(pid);
     if let Some(ask) = text.strip_prefix(wire::ASK) {
-        let reply = state.net.ask(&caller, ask);
+        let reply = state.net.ask(&caller, ask, now_ms());
         if reply == wire::WAIT {
             wake_shell();
         }
@@ -835,7 +835,7 @@ fn net_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     let Some(done) = text.strip_prefix(wire::DONE) else {
         return Some(String::from("err not a network request"));
     };
-    Some(match state.net.done(done) {
+    Some(match state.net.done(done, now_ms()) {
         Ok(()) => String::from("ok"),
         Err(why) => format!("err {why}"),
     })
