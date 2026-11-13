@@ -23,6 +23,7 @@ pub mod files;
 pub mod geom;
 pub mod keymap;
 pub mod lease;
+pub mod models_wire;
 pub mod net_wire;
 pub mod paint;
 pub mod paint_card;

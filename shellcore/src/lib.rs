@@ -47,6 +47,7 @@ mod instructions;
 mod models;
 mod netask;
 pub mod netgrant;
+pub use models::MODELS_APP;
 pub use netask::Connect as NetConnect;
 mod packages;
 mod panel;

@@ -5,7 +5,9 @@
 pub const SUPERVISE: u64 = 1 << 0;
 /// Serve requests sent to the service named like the process.
 pub const SERVE: u64 = 1 << 1;
-/// Make HTTP requests.
+/// The ceiling for `NetDest` handles: a process uses the network only through
+/// one it holds, and NET gives none of its own (#779). HTTP to the LLM takes
+/// the LLM's handle, which only a plan line's `netdest=llm` gives.
 pub const NET: u64 = 1 << 2;
 /// Call other services.
 pub const CALL: u64 = 1 << 3;
