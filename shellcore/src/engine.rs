@@ -60,6 +60,8 @@ pub(crate) struct Line {
     pub stopped: Cell<Option<Stop>>,
     pub output: RefCell<String>,
     pub dropped: Cell<usize>,
+    /// The sources of the Content `show` printed this run, each once (#831).
+    pub shown: RefCell<alloc::vec::Vec<&'static str>>,
 }
 
 impl Line {
@@ -70,6 +72,7 @@ impl Line {
             stopped: Cell::new(None),
             output: RefCell::new(String::new()),
             dropped: Cell::new(0),
+            shown: RefCell::new(alloc::vec::Vec::new()),
         })
     }
 
@@ -77,6 +80,7 @@ impl Line {
     pub fn begin(&self, host: &dyn Host, config: &Config) {
         self.output.borrow_mut().clear();
         self.dropped.set(0);
+        self.shown.borrow_mut().clear();
         self.stopped.set(None);
         // A Ctrl-C meant for an earlier run must not stop this one.
         let _ = host.interrupted();
@@ -94,6 +98,11 @@ impl Line {
             text.push_str(&format!("(output truncated: {dropped} bytes dropped)\n"));
         }
         text
+    }
+
+    /// The sources of the Content the run showed, in the order first shown.
+    pub fn take_shown(&self) -> alloc::vec::Vec<&'static str> {
+        core::mem::take(&mut *self.shown.borrow_mut())
     }
 
     /// An error as the user sees it.

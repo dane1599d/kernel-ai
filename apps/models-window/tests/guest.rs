@@ -1,17 +1,17 @@
 //! The model manager component as built for wasm32, run in `wasmhost` with no
 //! OS: it opens its window when it starts and asks for the list, draws each list
-//! the host gives, shows a choice as what to ask Kai with no control bound to a
-//! row and no effect queued, and asks again on Refresh. It is skipped when
-//! `cargo build -p comp-models-window --target wasm32-unknown-unknown --profile
-//! component` has not run (CI runs it first).
+//! the host gives, sends a switch for Use with no control bound to a row and no
+//! effect queued, shows what came of it, and asks again on Refresh. It is
+//! skipped when `cargo build -p comp-models-window --target wasm32-unknown-unknown
+//! --profile component` has not run (CI runs it first).
 
-use comp_models::{Models, Sha256, Signed, Store, Stored};
+use comp_models::{Models, Sha256, Signed, Store, Stored, hex};
 use comp_models_ui::{REFRESH, TABLE, USE};
 use livecore::txn::{Effect, Inputs, Storage, Txn};
 use livecore::{Instance, Reason};
 use uikit::a11y::Action;
-use uikit::widget::Value;
-use wasmhost::{CoreInstance, Grants, Limits, Update, load_core, load_core_granted};
+use uikit::widget::{UiEvent, Value};
+use wasmhost::{CoreInstance, Grants, Limits, SettingsKind, Update, load_core, load_core_granted};
 
 const LIMITS: Limits = Limits {
     fuel_call: 5_000_000,
@@ -127,8 +127,28 @@ fn press(g: &mut CoreInstance, w: u32, node: u32) -> Vec<String> {
     effects(&txn)
 }
 
+/// The window with the list drawn and the stored fixture-2 chosen.
+fn chosen() -> Option<(CoreInstance, u32)> {
+    let mut g = load()?;
+    let (w, _) = frame(&mut g);
+    assert_eq!(g.take_models(), [0]);
+    listing(&mut g, 0, Ok(list()));
+    frame(&mut g);
+    let (r, _) = call(&mut g, |g| {
+        g.ui_act(w, TABLE, Action::SetValue, Some(Value::Index(1)))
+    });
+    assert_eq!(r, Ok(Ok(())));
+    frame(&mut g);
+    Some((g, w))
+}
+
+fn note(g: &mut CoreInstance) -> Vec<String> {
+    let (_, f) = frame(g);
+    names(&f)
+}
+
 #[test]
-fn the_window_reads_the_list_and_sends_a_switch_to_kai() {
+fn the_window_reads_the_list_and_sends_a_switch_for_use() {
     let Some(mut g) = load() else { return };
 
     // Its window is there at once, with no models in it, and one read waits.
@@ -146,28 +166,73 @@ fn the_window_reads_the_list_and_sends_a_switch_to_kai() {
     assert!(rows.starts_with("2 rows"), "{rows}");
     assert!(!g.models_waiting());
 
-    // Choosing the stored model and its button sends the user to Kai: no
+    // Choosing the stored model and its button sends a switch to it: no
     // effect, and no control in the window is bound to a row.
     let (r, txn) = call(&mut g, |g| {
         g.ui_act(w, TABLE, Action::SetValue, Some(Value::Index(1)))
     });
     assert_eq!(r, Ok(Ok(())));
     assert!(effects(&txn).is_empty());
-    frame(&mut g);
+    let (_, f) = frame(&mut g);
+    assert!(names(&f).iter().any(|n| n == "Use from the next restart"));
     assert!(press(&mut g, w, USE).is_empty());
     let (_, f) = frame(&mut g);
     assert!(
         names(&f)
             .iter()
-            .any(|n| n.contains("ask Kai: \"use the fixture-2 model\"")),
+            .any(|n| n == "Switching to Second fixture model from the next restart…"),
         "{:?}",
         names(&f)
     );
     assert!(f.a11y.iter().all(|n| n.bound.is_none()));
+    let sent = g.take_model_uses();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].request, format!("use {}", hex(&FIXTURE_2)));
 
     // Refresh asks for the list again.
     assert!(press(&mut g, w, REFRESH).is_empty());
     assert_eq!(g.take_models(), [1]);
+}
+
+#[test]
+fn only_a_persons_press_is_a_switch_the_host_passes_on_and_the_answer_is_shown() {
+    let Some((mut g, w)) = chosen() else { return };
+
+    // The agent's press, through `ui_act`, is sent marked as no person's.
+    press(&mut g, w, USE);
+    frame(&mut g);
+    let sent = g.take_model_uses();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].kind, SettingsKind::Change);
+    assert!(!sent[0].user, "the agent pressed it");
+    // comphost's ledger answers that one at once with why not.
+    let (r, _) = call(&mut g, |g| {
+        g.models_used(0, Err("a change needs your key or click".into()))
+    });
+    r.unwrap();
+    assert!(
+        note(&mut g)
+            .iter()
+            .any(|n| n == "Not switched: a change needs your key or click"),
+        "the refusal is the note"
+    );
+    assert_eq!(g.take_models(), [1], "and the list is read again");
+    listing(&mut g, 1, Ok(list()));
+    frame(&mut g);
+
+    // A person's click is passed on as theirs.
+    let (r, txn) = call(&mut g, |g| g.ui_events_user(w, &[UiEvent::Pressed(USE)]));
+    r.unwrap();
+    assert!(effects(&txn).is_empty());
+    frame(&mut g);
+    let sent = g.take_model_uses();
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].user, "a person's click");
+    let done = "Done: the next restart uses it, on trial; the model before comes back if it does not load. undo";
+    let (r, _) = call(&mut g, |g| g.models_used(1, Ok(done.into())));
+    r.unwrap();
+    assert!(note(&mut g).iter().any(|n| n == done));
+    assert_eq!(g.take_models(), [2]);
 }
 
 #[test]

@@ -75,10 +75,18 @@ pub fn wall() -> Wall {
 }
 
 /// A boot bundle file, if this process may read it and it is at most
-/// [`MAX_ROOT`] bytes.
+/// [`MAX_ROOT`] bytes. A refused read is printed, so a missing root shows on
+/// the console beside the handshake's `UnknownIssuer` (#792, #752, #754).
 fn boot_file(path: &str) -> Option<alloc::vec::Vec<u8>> {
     // A call with no room answers the length and copies nothing.
-    let len = sys::boot_read(path, &mut []).ok()?;
+    let len = match sys::boot_read(path, &mut []) {
+        Ok(len) => len,
+        Err(Error::NotFound) => return None,
+        Err(e) => {
+            crate::println!("tls: {path} refused: {e:?}");
+            return None;
+        }
+    };
     if len == 0 || len > MAX_ROOT {
         return None;
     }

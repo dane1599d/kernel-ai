@@ -59,13 +59,17 @@ fn boot_read(slot: usize, path_ptr: u64, path_len: u64, buf: u64, cap: u64) -> R
     let mut path = [0u8; MAX_BOOT_PATH];
     copy_from_user(slot, path_ptr, &mut path[..len])?;
     let path = core::str::from_utf8(&path[..len]).map_err(|_| Error::Invalid)?;
-    // The plan line's `bootfiles=`, or, for a process whose ceiling has NET,
-    // the extra TLS roots (P5 task 12), which hold only public certificates.
-    // The ceiling, not a held handle: `fetch` reads its roots at start, before
-    // any caller moves a destination in, and since #779 NET brings no handle
-    // of its own (the failed batch #792: `fetch` never read the test CA).
-    let granted = files.is_some_and(|files| files.allows(path))
-        || (netroot(path) && me.limits.caps & kabi::cap::NET != 0);
+    // The plan line's `bootfiles=`, or the extra TLS roots (P5 task 12),
+    // which hold only public certificates, for a process that may use the
+    // network either way:
+    // - NET in its ceiling: `fetch` reads its roots at start, before any
+    //   caller moves a destination in, and since #779 NET brings no handle of
+    //   its own (the failed batch #792: `fetch` never read the test CA);
+    // - a NetDest it holds: `pkg` and `updated` get theirs from the plan's
+    //   `netdest=` with no NET in the ceiling (#752 and #754 failed on the
+    //   NET-only rule).
+    let may_net = me.limits.caps & kabi::cap::NET != 0 || super::need(slot, kabi::cap::NET).is_ok();
+    let granted = files.is_some_and(|files| files.allows(path)) || (netroot(path) && may_net);
     if !granted {
         return Err(Error::Permission);
     }

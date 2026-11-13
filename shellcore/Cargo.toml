@@ -29,6 +29,8 @@ rhai = { version = "=1.27.0", default-features = false, features = ["no_std", "n
 [dev-dependencies]
 # The `c>` tests run the real `cc` service on the host.
 ccserve = { path = "../ccserve" }
+# A test holds `script::net::MAX_URL` equal to `kainet::wire::MAX_URL`.
+kainet = { path = "../kainet" }
 
 [features]
 # Rhai Grain, the bytecode VM, for `Exec::Grain` (ADR 0012 D9; off until S12-3 passes).

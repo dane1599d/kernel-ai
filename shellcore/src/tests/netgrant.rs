@@ -293,3 +293,22 @@ fn an_answer_is_checked_against_the_ceiling_again() {
     );
     assert!(grants.of("weather").is_empty());
 }
+
+#[test]
+fn new_ids_number_above_the_high_water_mark_and_it_never_drops() {
+    let mut grants = NetGrants::new();
+    grants.number_above(5);
+    assert_eq!(grants.high(), 5);
+    let a = ask(&grants, "a.weather.example");
+    assert_eq!(
+        grants.answer(&a, &ceiling(), Answer::Allow, 1, 1),
+        Ok(Some(6))
+    );
+    // A lower mark, as a reload of an older file gives, changes nothing.
+    grants.number_above(2);
+    let b = ask(&grants, "b.weather.example");
+    assert_eq!(
+        grants.answer(&b, &ceiling(), Answer::Allow, 2, 2),
+        Ok(Some(7))
+    );
+}

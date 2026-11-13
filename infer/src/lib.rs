@@ -43,6 +43,8 @@ mod reference;
 #[cfg(test)]
 mod reply_tests;
 #[cfg(test)]
+mod resume_tests;
+#[cfg(test)]
 mod segments_tests;
 #[cfg(test)]
 mod snapshot_tests;

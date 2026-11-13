@@ -59,7 +59,16 @@ pub struct Metrics {
     /// Processes left out because the list is full.
     pub processes_omitted: u64,
     pub processes: [ProcessInfo; MAX_METRIC_PROCESSES],
+    /// Frames of RAM in the firmware's memory map, in use or not, without the
+    /// holes `total_frames` spans: the machine's memory as it was given, less
+    /// what the firmware keeps for itself (ABI 1.4; P5 task 9, where Models
+    /// offers a model by it).
+    pub ram_frames: u64,
 }
+
+/// The bytes ABI 1.3's [`Metrics`] had, before `ram_frames`: what
+/// [`crate::call::METRICS`] fills when the caller gives no size.
+pub const METRICS_1_3_BYTES: usize = 13 * 8 + MAX_METRIC_PROCESSES * (32 + MAX_NAME);
 
 impl Metrics {
     pub const fn empty() -> Self {
@@ -78,6 +87,7 @@ impl Metrics {
             process_count: 0,
             processes_omitted: 0,
             processes: [ProcessInfo::empty(); MAX_METRIC_PROCESSES],
+            ram_frames: 0,
         }
     }
 }

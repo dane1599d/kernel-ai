@@ -134,6 +134,62 @@ fn a_grant_put_back_by_undo_comes_before_a_deny() {
 }
 
 #[test]
+fn net_denied_counts_what_each_deny_refused_until_it_lapses() {
+    let host = FakeHost::new();
+    // A clock that moves only when the test moves it.
+    host.step_ns.set(0);
+    let mut shell = shell(&host);
+    assert_eq!(shell.eval("net denied").text, "no network Deny holds");
+    let denied = answered(&host, &mut shell, "deny");
+    assert!(denied.text.contains("not run"), "{denied:?}");
+    let line = shell.eval("net denied");
+    assert!(line.ok, "{line:?}");
+    assert_eq!(
+        line.text,
+        "weather to api.weather.example: refused 0 connection(s), holds 60 s more"
+    );
+    for _ in 0..2 {
+        assert!(matches!(connect(&mut shell), NetConnect::Refused(_)));
+    }
+    host.clock.set(host.clock.get() + 10_000_000_000);
+    assert_eq!(
+        shell.eval("net denied").text,
+        "weather to api.weather.example: refused 2 connection(s), holds 50 s more"
+    );
+    host.clock
+        .set(host.clock.get() + crate::netask::DENY_HOLDS_NS);
+    assert_eq!(shell.eval("net denied").text, "no network Deny holds");
+}
+
+#[test]
+fn polling_net_denied_leaves_a_waiting_card_and_its_notices_alone() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    assert_eq!(connect(&mut shell), NetConnect::Asked);
+    let menu = card(&mut shell);
+    // The case polls while the person looks at the card, from the terminal's
+    // line as from the panel's.
+    for _ in 0..3 {
+        assert!(shell.eval_console("net denied").ok);
+        assert!(shell.eval("net denied").ok);
+    }
+    // The card still waits: its Deny is taken, and holds.
+    let once = host.mint(menu.id, menu.call());
+    let denied = shell.eval_console(&format!("answer {} deny once={once}", menu.id));
+    assert!(
+        denied.text.contains("not run") && !denied.text.contains("nothing to confirm"),
+        "{denied:?}"
+    );
+    assert!(matches!(connect(&mut shell), NetConnect::Refused(_)));
+    assert!(
+        shell
+            .eval_console("net denied")
+            .text
+            .starts_with("weather to api.weather.example: refused 1 connection(s)")
+    );
+}
+
+#[test]
 fn always_lasts_a_restart_and_allow_does_not() {
     let host = FakeHost::new();
     let mut shell = shell(&host);
@@ -277,4 +333,237 @@ fn kai_s_undo_of_the_person_s_undo_of_an_allow_is_refused() {
     let refused = shell.eval("undo that");
     assert!(!refused.ok, "{refused:?}");
     assert_eq!(connect(&mut shell), NetConnect::Asked);
+}
+
+/// Maps' package: TCP to 443, names under `maps.example`.
+const MAPS: &str = "proto:tcp,addrs:any,ports:443,hosts:maps.example";
+const TILES: &str = "tiles.maps.example";
+
+/// `app` asks for `name` under `ceiling`, and the person clicks Allow.
+fn allowed(host: &FakeHost, shell: &mut Shell, app: &str, name: &str, ceiling: &str) {
+    assert_eq!(shell.net_connect(app, name, ceiling), NetConnect::Asked);
+    let menu = card(shell);
+    let once = host.mint(menu.id, menu.call());
+    let done = shell.eval_console(&format!("answer {} allow once={once}", menu.id));
+    assert!(done.ok, "{done:?}");
+}
+
+#[test]
+fn undo_of_a_revoke_puts_back_only_the_app_s_host_it_took() {
+    // Issue #830, on an empty grants file.
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    // 1. Weather asks for its host, Allow: grant #1. 2. Revoked in Settings.
+    allowed(&host, &mut shell, "weather", API, CEILING);
+    shell.settings(SETTINGS_APP, "net-revoke 1", true).unwrap();
+    // 3. Maps asks for its host, Allow: a fresh id, never #1 again.
+    allowed(&host, &mut shell, "maps", TILES, MAPS);
+    assert_eq!(
+        shell.settings(SETTINGS_APP, "net", false).unwrap(),
+        "#2 maps tiles.maps.example session"
+    );
+    // 4. Revoked in Settings.
+    assert!(shell.settings(SETTINGS_APP, "net-revoke 1", true).is_err());
+    shell.settings(SETTINGS_APP, "net-revoke 2", true).unwrap();
+    // 5. `undo` puts back maps' host alone; weather's stays revoked.
+    let undone = shell.eval("undo");
+    assert!(
+        undone.ok
+            && undone
+                .text
+                .contains("maps may connect to tiles.maps.example"),
+        "{undone:?}"
+    );
+    assert_eq!(
+        shell.settings(SETTINGS_APP, "net", false).unwrap(),
+        "#2 maps tiles.maps.example session"
+    );
+    assert!(matches!(
+        shell.net_connect("maps", TILES, MAPS),
+        NetConnect::Granted(_)
+    ));
+    assert_eq!(connect(&mut shell), NetConnect::Asked);
+}
+
+#[test]
+fn a_reload_never_lowers_the_next_grant_id() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    allowed(&host, &mut shell, "weather", API, CEILING);
+    allowed(
+        &host,
+        &mut shell,
+        "weather",
+        "maps.weather.example",
+        CEILING,
+    );
+    // The newest grant goes: the file's highest id is #1 again.
+    shell.settings(SETTINGS_APP, "net-revoke 2", true).unwrap();
+    allowed(&host, &mut shell, "maps", TILES, MAPS);
+    assert_eq!(
+        shell.settings(SETTINGS_APP, "net", false).unwrap(),
+        "#1 weather api.weather.example session\n#3 maps tiles.maps.example session"
+    );
+}
+
+#[test]
+fn undo_of_an_allow_refuses_a_grant_now_for_another_host() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    allowed(&host, &mut shell, "weather", API, CEILING);
+    // Grant #1 on disk now names another host than the Allow logged.
+    let moved = host
+        .net_disk
+        .borrow()
+        .as_deref()
+        .unwrap()
+        .replace("object=api.weather.example", "object=www.weather.example");
+    *host.net_disk.borrow_mut() = Some(moved.clone());
+    let undone = shell.eval("undo");
+    assert!(!undone.ok, "{undone:?}");
+    assert_eq!(host.net_disk.borrow().as_deref(), Some(moved.as_str()));
+}
+
+#[test]
+fn a_restart_numbers_new_grants_above_the_session_grants_it_dropped() {
+    let host = FakeHost::new();
+    let mut first = shell(&host);
+    allowed(&host, &mut first, "weather", API, CEILING);
+    allowed(
+        &host,
+        &mut first,
+        "weather",
+        "maps.weather.example",
+        CEILING,
+    );
+    // A restart drops both session grants: the file holds no id at all.
+    let mut again = super::shell(&host);
+    assert_eq!(again.settings(SETTINGS_APP, "net", false).unwrap(), "");
+    // The mark was seeded at boot before the drop: #1 and #2 are not given again.
+    allowed(&host, &mut again, "maps", TILES, MAPS);
+    assert_eq!(
+        again.settings(SETTINGS_APP, "net", false).unwrap(),
+        "#3 maps tiles.maps.example session"
+    );
+}
+
+#[test]
+fn undo_then_redo_of_a_revoke_takes_the_same_grant_again() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    allowed(&host, &mut shell, "weather", API, CEILING);
+    allowed(&host, &mut shell, "maps", TILES, MAPS);
+    shell.settings(SETTINGS_APP, "net-revoke 1", true).unwrap();
+    assert!(shell.eval("undo").ok, "the revoke is undone");
+    assert!(matches!(connect(&mut shell), NetConnect::Granted(_)));
+    // `undo` again redoes the revoke: weather's #1 goes, maps' #2 stays.
+    let redone = shell.eval("undo");
+    assert!(
+        redone.ok
+            && redone
+                .text
+                .contains("weather may not connect to api.weather.example"),
+        "{redone:?}"
+    );
+    assert_eq!(
+        shell.settings(SETTINGS_APP, "net", false).unwrap(),
+        "#2 maps tiles.maps.example session"
+    );
+    assert_eq!(connect(&mut shell), NetConnect::Asked);
+    // And again puts weather's back under its own id (listed after maps').
+    let back = shell.eval("undo");
+    assert!(back.ok, "{back:?}");
+    assert_eq!(
+        shell.settings(SETTINGS_APP, "net", false).unwrap(),
+        "#2 maps tiles.maps.example session\n#1 weather api.weather.example session"
+    );
+}
+
+#[test]
+fn redo_of_a_revoke_refuses_a_grant_now_for_another_host() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    allowed(&host, &mut shell, "weather", API, CEILING);
+    shell.settings(SETTINGS_APP, "net-revoke 1", true).unwrap();
+    assert!(shell.eval("undo").ok, "the revoke is undone");
+    // Grant #1 on disk now names another host than the revoke logged.
+    let moved = host
+        .net_disk
+        .borrow()
+        .as_deref()
+        .unwrap()
+        .replace("object=api.weather.example", "object=www.weather.example");
+    *host.net_disk.borrow_mut() = Some(moved.clone());
+    let redone = shell.eval("undo");
+    assert!(!redone.ok, "{redone:?}");
+    assert_eq!(host.net_disk.borrow().as_deref(), Some(moved.as_str()));
+}
+
+#[test]
+fn redo_of_an_allow_s_undo_puts_the_grant_back_under_its_id() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    allowed(&host, &mut shell, "weather", API, CEILING);
+    assert!(shell.eval("undo").ok, "the person takes the Allow back");
+    assert_eq!(connect(&mut shell), NetConnect::Asked);
+    // `undo` again redoes the Allow: the same grant, #1, for the same host.
+    let redone = shell.eval("undo");
+    assert!(
+        redone.ok
+            && redone
+                .text
+                .contains("weather may connect to api.weather.example again"),
+        "{redone:?}"
+    );
+    assert!(matches!(connect(&mut shell), NetConnect::Granted(_)));
+    assert_eq!(
+        shell.settings(SETTINGS_APP, "net", false).unwrap(),
+        "#1 weather api.weather.example session"
+    );
+    // The next Allow is numbered above it.
+    allowed(&host, &mut shell, "maps", TILES, MAPS);
+    assert_eq!(
+        shell.settings(SETTINGS_APP, "net", false).unwrap(),
+        "#1 weather api.weather.example session\n#2 maps tiles.maps.example session"
+    );
+}
+
+#[test]
+fn a_put_back_picks_the_kept_grant_by_its_app_and_host_not_its_id_alone() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    allowed(&host, &mut shell, "weather", API, CEILING);
+    shell.settings(SETTINGS_APP, "net-revoke 1", true).unwrap();
+    // Kept after weather's #1: another app's host under the same id, newest.
+    let mut other = shell.net_revoked[0].clone();
+    other.app = String::from("maps");
+    other.object = String::from(TILES);
+    shell.net_revoked.push(other);
+    // Neither app and host: refused, both still kept.
+    assert!(
+        shell
+            .revert_net_grant(1, false, "mail's network to mail.example")
+            .is_err()
+    );
+    assert_eq!(shell.net_revoked.len(), 2);
+    // Weather's, though maps' is the newest kept under #1.
+    let back = shell
+        .revert_net_grant(1, false, "weather's network to api.weather.example")
+        .unwrap();
+    assert_eq!(back, "weather may connect to api.weather.example again");
+    assert_eq!(
+        shell.settings(SETTINGS_APP, "net", false).unwrap(),
+        "#1 weather api.weather.example session"
+    );
+    assert!(matches!(connect(&mut shell), NetConnect::Granted(_)));
+    // Maps' is still kept, and nothing of it reached the file.
+    assert_eq!(shell.net_revoked.len(), 1);
+    assert_eq!(
+        (
+            shell.net_revoked[0].app.as_str(),
+            shell.net_revoked[0].object.as_str()
+        ),
+        ("maps", TILES)
+    );
+    assert_eq!(shell.net_connect("maps", TILES, MAPS), NetConnect::Asked);
 }

@@ -85,8 +85,9 @@ pub struct Ui {
     sent: effects::Sent,
     /// Pumps so far, to ask for a notice only every [`NOTICE_EVERY`]th.
     pumps: u8,
-    /// The `kai:settings` requests' way to the shell, for the Settings app only.
-    settings: Option<crate::kai_settings::Forward>,
+    /// The way to the shell for the Settings app's `kai:settings` requests or
+    /// the Models window's switches: only an app the image grants one of them.
+    changes: Option<crate::kai_settings::Forward>,
     /// The desktop's theme, by name, and the colours its windows paint in.
     theme: String,
     palette: look::Palette,
@@ -112,21 +113,21 @@ impl Ui {
             reply: alloc::vec![0u8; kabi::MAX_MESSAGE],
             sent: effects::Sent::default(),
             pumps: 0,
-            settings: None,
+            changes: None,
             theme: String::from(look::DARK.name),
             palette: look::DARK,
         })
     }
 
-    /// Carries `kai:settings` requests for this app: only the Settings app's,
-    /// which the system image grants it.
-    pub fn carry_settings(&mut self) {
-        self.settings = Some(crate::kai_settings::Forward::default());
+    /// Carries this app's changes on `channel`: only the Settings app's or the
+    /// Models window's, which the system image grants it.
+    pub fn carry(&mut self, channel: crate::kai_settings::Channel) {
+        self.changes = Some(crate::kai_settings::Forward::new(channel));
     }
 
-    /// Whether a `kai:settings` request waits for its answer.
-    pub fn settings_busy(&self) -> bool {
-        self.settings
+    /// Whether a change waits for its answer.
+    pub fn changes_busy(&self) -> bool {
+        self.changes
             .as_ref()
             .is_some_and(crate::kai_settings::Forward::busy)
     }
@@ -138,7 +139,7 @@ impl Ui {
     /// Whether comphost should poll: a window is open, or an effect's result
     /// is still to come (one queued as the last window closed, too).
     pub fn wants_poll(&self) -> bool {
-        self.has_windows() || self.sent.awaits() || self.settings_busy()
+        self.has_windows() || self.sent.awaits() || self.changes_busy()
     }
 
     /// Whether one of its windows took focus since the last call: use, for
@@ -253,7 +254,7 @@ impl Ui {
             self.pump(host);
         }
         self.deliver(host);
-        if let Some(forward) = self.settings.as_mut()
+        if let Some(forward) = self.changes.as_mut()
             && forward.pump(host, self.route, &mut self.reply)
         {
             self.pump(host);

@@ -10,6 +10,9 @@
 //!   `netdest=llm`: exits 0 if it holds no handle like the LLM's (CONNECT
 //!   without RESOLVE) and HTTP is refused, since only the LLM's handle reaches
 //!   the LLM and NET alone does not give it.
+//! - `llm=held` / `llm=none`: started through a plan line's `netdest=llm`,
+//!   exits 0 if its only `NetDest` is CONNECT exactly (with NET), or if it
+//!   holds none (without NET in its ceiling).
 //! - `any=pinned`: with a `hosts:any` handle (#760), exits 0 if narrowing it
 //!   to `hosts:any` again, or to a suffix, is refused and narrowing to one
 //!   exact host is not.
@@ -77,6 +80,30 @@ fn http_refused() -> i32 {
     }
 }
 
+/// `llm=held`: started from a plan line's `netdest=llm` with NET, so its only
+/// `NetDest` is the LLM's, with exactly CONNECT. `llm=none`: the same grant
+/// without NET in the ceiling, so it holds no `NetDest` at all.
+fn llm_grant(expect: &str) -> i32 {
+    let mut list = [HandleInfo::default(); 16];
+    let count = sys::startup(&mut list).map_or(0, |n| n.min(list.len()));
+    let rights: alloc::vec::Vec<u32> = list[..count]
+        .iter()
+        .filter(|info| info.kind == Kind::NetDest as u32)
+        .map(|info| info.rights)
+        .collect();
+    let ok = match expect {
+        "held" => rights.as_slice() == [Rights::CONNECT.bits()],
+        "none" => rights.is_empty(),
+        _ => false,
+    };
+    if !ok {
+        println!("llm={expect}: started with NetDest rights {rights:?}");
+        return 1;
+    }
+    println!("llm={expect}: the startup NetDest handles were as the ceiling allows");
+    0
+}
+
 /// `any=pinned`: no narrowing of a `hosts:any` handle keeps `hosts:any`; one
 /// exact host is fine.
 fn any_pinned() -> i32 {
@@ -111,6 +138,9 @@ fn main() -> i32 {
     }
     if arg(&args, "any") == Some("pinned") {
         return any_pinned();
+    }
+    if let Some(expect) = arg(&args, "llm") {
+        return llm_grant(expect);
     }
     if let Some(mode) = arg(&args, "stream") {
         let port = arg(&args, "port").and_then(|p| p.parse().ok()).unwrap_or(0);

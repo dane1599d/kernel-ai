@@ -921,6 +921,13 @@ pub struct Ran {
     pub done: Vec<Done>,
     /// The script's last value, run in the shell; `None` from a child.
     pub value: Option<Dynamic>,
+    /// The sources of the Content it showed with `show`, each once: what it
+    /// printed from them is the person's to read, not the model's (#831). A
+    /// child shows none: the rows that read Content never run apart.
+    pub shown: Vec<&'static str>,
+    /// Why it failed, as the shell wrote it after the output: the engine's
+    /// error or what was not sent. `None` when it did not fail, or from a child.
+    pub failed: Option<String>,
 }
 
 /// Runs a script with the real OS, granted only the calls the plan found. Its
@@ -941,6 +948,7 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
     let result = engine::eval(&engine, &mut Scope::new(), &checked.ast, config.exec);
     let mut text = line.take_output();
     let mut last = None;
+    let mut failed = None;
     let mut ok = match result {
         Ok(value) => {
             if !value.is_unit() {
@@ -950,13 +958,19 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
             true
         }
         Err(error) => {
-            text.push_str(&line.describe(&error, config));
+            let why = line.describe(&error, config);
+            text.push_str(&why);
+            failed = Some(why);
             false
         }
     };
     let queued = core::mem::take(&mut *tx.outbox.borrow_mut());
     if ok {
+        let sent = text.len();
         ok = flush(queued, &mut text);
+        if !ok {
+            failed = Some(text[sent..].to_string());
+        }
     }
     let done = tx.journal.take();
     Ran {
@@ -964,6 +978,8 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
         text,
         done,
         value: last,
+        shown: line.take_shown(),
+        failed,
     }
 }
 
