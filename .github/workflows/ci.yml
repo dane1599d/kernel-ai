@@ -65,7 +65,7 @@ jobs:
       - name: Clippy for the engine crates on the soft-float kernel target
         run: cargo clippy -p gguf -p cpufeat -p quant -p bpe -p infer --target x86_64-unknown-none -- -D warnings
       - name: Clippy for the soft-float ring-3 programs
-        run: cargo clippy -p user --target x86_64-unknown-none --lib --bin supervisor --bin shell --bin crasher --bin spinner --bin hog --bin edit --bin work --bin netcheck --bin handles --bin scriptrun --bin fs --bin filecheck --bin updated --bin deskdemo --bin tufbench --bin pkg -- -D warnings
+        run: cargo clippy -p user --target x86_64-unknown-none --lib --bin supervisor --bin shell --bin crasher --bin spinner --bin hog --bin edit --bin work --bin netcheck --bin handles --bin scriptrun --bin fs --bin filecheck --bin updated --bin deskdemo --bin tufbench -- -D warnings
       - name: Clippy for the hard-float ring-3 programs
         run: |
           # appbench embeds the view guest; wasmhost's tests load Notes' window.
@@ -79,7 +79,7 @@ jobs:
           cargo build -p comp-monitor-window --target wasm32-unknown-unknown --profile component
           cargo build -p comp-models-window --target wasm32-unknown-unknown --profile component
           cargo build -p comp-editor-window --target wasm32-unknown-unknown --profile component
-          cargo clippy -Zjson-target-spec -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p user --target user/x86_64-kai-user.json --lib --bin llm --bin desktop --bin probe --bin vecstress --bin workers --bin comphost --bin appbench --bin term --bin cc --bin httpscheck --bin fetch --bin dlcheck -- -D warnings
+          cargo clippy -Zjson-target-spec -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p user --target user/x86_64-kai-user.json --lib --bin llm --bin desktop --bin probe --bin vecstress --bin workers --bin comphost --bin appbench --bin term --bin cc --bin pkg --bin httpscheck --bin fetch --bin dlcheck -- -D warnings
       # termcore and the Terminal app's model are no_std and build for wasm32 (P4 task 4; the model lane reviews).
       - run: cargo clippy -p compsdk -p comp-notes -p comp-notes-v1 -p comp-viewbench -p termcore -p comp-terminal --target wasm32-unknown-unknown -- -D warnings
       # Alone: with comp-notes in the same run its exports would be on.

@@ -46,6 +46,19 @@ impl Hosts {
         }
     }
 
+    /// The boot cases' repository: xtask's HTTPS mock laid out as GitHub's
+    /// (`xtask/src/mock_https`, whose host names these are; a host test there
+    /// keeps the two equal). Only a plan line that says `online=test:PORT`
+    /// asks `pkg` for it.
+    pub fn mock() -> Self {
+        Self {
+            metadata: "https://updates.kai.test/metadata/".into(),
+            releases: "https://releases.kai.test/dane1599d/kernel-ai-updates/releases/download/"
+                .into(),
+            assets: "assets.kai.test".into(),
+        }
+    }
+
     /// Whether `host` on `port` is one of the repository's: the fixed
     /// destination `pkg` may reach.
     pub fn allows(&self, host: &str, port: u16) -> bool {

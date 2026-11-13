@@ -10,7 +10,7 @@ use super::Repository;
 use super::mirrors::big;
 use super::tests::{NOW, hello, keys, notes};
 use super::tuf;
-use crate::mock_https::{self, ASSETS, Content, Fault, Mock, RELEASES, REPO};
+use crate::mock_https::{self, ASSETS, Fault, Mock, RELEASES, REPO};
 use kainet::client::{self, Wall};
 use kainet::http::{Dial, HttpError, TlsConnect};
 use kainet::tls::Transport;
@@ -63,29 +63,22 @@ impl Dial for Local {
     }
 }
 
-/// The mock's hosts laid out as GitHub's.
+/// The mock's hosts laid out as GitHub's: what `pkg` asks for with
+/// `online=test:PORT`, which names the hosts as `Hosts::mock` does.
 fn hosts() -> Hosts {
-    Hosts {
+    let hosts = Hosts {
         metadata: format!("https://{REPO}/metadata/"),
         releases: format!("https://{RELEASES}/dane1599d/kernel-ai-updates/releases/download/"),
         assets: ASSETS.into(),
-    }
+    };
+    assert_eq!(hosts, Hosts::mock());
+    hosts
 }
 
 /// `repo` as GitHub would serve it: metadata on Pages, each target as the
 /// asset `<name>-<version>.kpkg` of release `pkg-<name>-<version>`.
 fn served(repo: &Repository) -> Mock {
-    let mut content = Content::new();
-    for (path, bytes) in &repo.files {
-        if let Some(name) = path.strip_prefix("metadata/") {
-            content = content.file(REPO, &format!("/metadata/{name}"), bytes.clone());
-        } else if let Some(file) = path.strip_prefix("targets/") {
-            let (_, asset) = file.split_once('.').expect("a hash prefix");
-            let stem = asset.strip_suffix(".kpkg").expect("a .kpkg");
-            content = content.release_asset(&format!("pkg-{stem}"), asset, bytes.clone());
-        }
-    }
-    mock_https::start(content).unwrap()
+    mock_https::start(super::online_content(repo)).unwrap()
 }
 
 fn online(mock: &Mock) -> Online<'static, TlsConnect<Local>> {
