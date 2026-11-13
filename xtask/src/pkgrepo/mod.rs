@@ -264,6 +264,35 @@ pub fn serve_mirror(image: &Image, kind: mirrors::MirrorKind) -> Result<u16, Str
     serve::start(repository, 0, std::sync::Arc::new(|_: &str, _, _| {}))
 }
 
+/// `repository` as GitHub serves `kernel-ai-updates`: the metadata on the Pages
+/// host, and each target as the asset `<name>-<version>.kpkg` of release
+/// `pkg-<name>-<version>`, behind the releases host's redirect, on xtask's HTTPS
+/// mock (plan p5-networking, task 8).
+pub fn online_content(repository: &Repository) -> crate::mock_https::Content {
+    use crate::mock_https::{Content, REPO};
+    let mut content = Content::new();
+    for (path, bytes) in &repository.files {
+        if let Some(name) = path.strip_prefix("metadata/") {
+            content = content.file(REPO, &format!("/metadata/{name}"), bytes.clone());
+        } else if let Some(file) = path.strip_prefix("targets/") {
+            let (_, asset) = file.split_once('.').expect("a hash prefix");
+            let stem = asset.strip_suffix(".kpkg").expect("a .kpkg");
+            content = content.release_asset(&format!("pkg-{stem}"), asset, bytes.clone());
+        }
+    }
+    content
+}
+
+/// The `kind` mirror for `image` as the HTTPS mock serves GitHub's online
+/// repository, for a case that asks `pkg` to install from it (P5 task 8).
+pub fn online_repository(
+    image: &Image,
+    kind: mirrors::MirrorKind,
+) -> Result<crate::mock_https::Content, String> {
+    let repository = mirrors::build(kind, &image.packages, &image.keys, image.now)?;
+    Ok(online_content(&repository))
+}
+
 /// `repository` laid out as the image holds it (`kaipkg::image`): each target at
 /// `targets/<name>-<version>.kpkg`, its target path, without the SHA-256 prefix
 /// a mirror's consistent snapshots use, since a `kai-bundle 1` path is at most

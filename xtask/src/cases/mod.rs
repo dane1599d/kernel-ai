@@ -13,6 +13,7 @@ mod modelsuse;
 mod netgrant;
 mod netrows;
 mod network;
+mod online;
 mod pkg;
 pub mod release;
 mod storage;
@@ -129,6 +130,10 @@ pub struct TestCase {
     pub mirror: Option<crate::pkgrepo::mirrors::MirrorKind>,
     /// xtask's HTTPS mock for this boot (P5 task 12's harness, [`Https`]).
     pub https: Option<Https>,
+    /// With `https`: the package repository the mock also serves as GitHub does
+    /// (P5 task 8), the `kind` mirror signed by the image's keys, so `pkg`
+    /// installs from it over TLS.
+    pub online: Option<crate::pkgrepo::mirrors::MirrorKind>,
 }
 
 /// What the HTTPS mock serves a case: its hosts are `netcore::fixture`'s
@@ -191,6 +196,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         tampered: None,
         mirror: None,
         https: None,
+        online: None,
     }
 }
 
@@ -212,6 +218,7 @@ const LANES: &[&[TestCase]] = &[
     updates::CASES,
     pkg::CASES,
     netrows::CASES,
+    online::CASES,
     netgrant::CASES,
     modelsuse::CASES,
 ];
@@ -254,6 +261,7 @@ mod tests {
             updates::CASES,
             pkg::CASES,
             netrows::CASES,
+            online::CASES,
             netgrant::CASES,
             modelsuse::CASES,
         ];

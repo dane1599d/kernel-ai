@@ -53,10 +53,11 @@ use kaipkg::mirror::{self, Exchange, Mirror, TufCache};
 use kaipkg::resolve::{Entry, Want};
 use kaipkg::store::{self, Ctx, Ledger, Source, Store, Volume};
 use kaipkg::version::Version;
-use kaituf::updater::Cache;
+use kaituf::updater::{Cache, Remote};
 use user::{println, sys};
 
 mod local;
+mod online;
 
 user::entry!(main);
 
@@ -84,6 +85,9 @@ fn main() -> i32 {
         Some(step @ ("image" | "image-again" | "image-tampered")) => image(&mut vol, Some(step)),
         Some(step @ ("mirror" | "mirror-again" | "mirror-tampered" | "mirror-rollback")) => {
             mirror(&mut vol, step)
+        }
+        Some(step @ ("online" | "online-again" | "online-tampered" | "online-rollback")) => {
+            online::run(&mut vol, step, args)
         }
         // The system's boot: the image's repository, no case file.
         None => image(&mut vol, None),
@@ -455,24 +459,67 @@ fn mirror(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
     if step == "mirror" {
         bent_request_refused()?;
     }
+    let what = "the mirror";
+    seed_root(vol, what)?;
+    let time = match dated(vol) {
+        Ok(time) => time,
+        Err(why) => return Ok(format!("{what} is refused: {why}")),
+    };
+    install_from(
+        vol,
+        step,
+        Repository {
+            what,
+            time,
+            source: Mirror::new(Fetch),
+            requests: |source| source.requests,
+        },
+    )
+}
+
+/// The device's trust in a repository for the cases that install from one: the
+/// image's root, kept the first time.
+fn seed_root(vol: &mut FsVolume<Calls>, what: &str) -> Result<(), String> {
     let mut cache = TufCache { vol };
     if cache.load("root").map_err(|e| e.to_string())?.is_none() {
         let image_root = BootRepo
             .file(kaipkg::image::ROOT, kaituf::updater::ROOT_MAX)?
-            .ok_or("the image has no root for the mirror")?;
+            .ok_or_else(|| format!("the image has no root for {what}"))?;
         cache.save("root", &image_root).map_err(|e| e.to_string())?;
     }
-    let time = match dated(vol) {
-        Ok(time) => time,
-        Err(why) => return Ok(format!("the mirror is refused: {why}")),
-    };
-    let mut source = Mirror::new(Fetch);
+    Ok(())
+}
+
+/// Where the cases install from: the fixed `pkgrepo=` mirror, or the online
+/// repository over TLS. What it is called in the lines the cases expect, the
+/// date, the source itself and how many requests it has made.
+struct Repository<S> {
+    what: &'static str,
+    time: Time,
+    source: S,
+    requests: fn(&S) -> usize,
+}
+
+/// The listing, then [`FROM_MIRROR`] installed from `repository`, as `step`
+/// says (`mirror-again`: undo first). The source is checked as ever: metadata
+/// against the root the device holds, a package by its length and hash.
+fn install_from<S: Remote + Source>(
+    vol: &mut FsVolume<Calls>,
+    step: &str,
+    repository: Repository<S>,
+) -> Result<String, String> {
+    let Repository {
+        what,
+        time,
+        mut source,
+        requests,
+    } = repository;
     let listing = match mirror::index(&mut source, &mut TufCache { vol }, time.0) {
         Ok(listing) => listing,
-        Err(why) => return Ok(format!("the mirror's index is refused: {why}")),
+        Err(why) => return Ok(format!("{what}'s index is refused: {why}")),
     };
     for (path, why) in &listing.refused {
-        println!("pkg: the mirror's {path} is refused: {why}");
+        println!("pkg: {what}'s {path} is refused: {why}");
     }
     KNOWN.lock().1 = listing.indexes.clone();
     let store = Store::default();
@@ -484,7 +531,7 @@ fn mirror(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
         action: 2,
     };
     let mut undone = String::new();
-    if step == "mirror-again" {
+    if step.ends_with("-again") {
         let current = store::current(cx.vol)?;
         let parent = store::generation(cx.vol, current)?.parent;
         let n = store
@@ -496,7 +543,7 @@ fn mirror(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
         name: FROM_MIRROR,
         range: None,
     }];
-    let before = source.requests;
+    let before = requests(&source);
     let result = store.install(
         &mut cx,
         &mut source,
@@ -505,13 +552,13 @@ fn mirror(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
         &want,
         false,
     );
-    let pieces = source.requests - before;
+    let pieces = requests(&source) - before;
     let line = match result {
         Ok(n) => format!(
-            "{undone}{FROM_MIRROR} installed from the mirror as generation {n}, fetched in {pieces} pieces"
+            "{undone}{FROM_MIRROR} installed from {what} as generation {n}, fetched in {pieces} pieces"
         ),
         Err(store::Error::Refused(why)) => {
-            format!("the mirror's {FROM_MIRROR} is refused: {why:?}")
+            format!("{what}'s {FROM_MIRROR} is refused: {why:?}")
         }
         Err(why) => return Err(format!("{why:?}")),
     };

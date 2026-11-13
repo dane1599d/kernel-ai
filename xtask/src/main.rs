@@ -366,7 +366,13 @@ fn execute(options: &Options) -> Result<(), String> {
             // has.
             let https_mock = match &case.https {
                 Some(https) => {
-                    let mock = mock_https::start((https.content)())?;
+                    let mut content = (https.content)();
+                    // The package repository the case also asks for, signed by the
+                    // image's keys (P5 task 8).
+                    if let Some(kind) = case.online {
+                        content = content.merged(pkgrepo::online_repository(&image, kind)?);
+                    }
+                    let mock = mock_https::start(content)?;
                     for (host, path, fault) in https.faults {
                         mock.set_fault(host, path, fault.clone());
                     }

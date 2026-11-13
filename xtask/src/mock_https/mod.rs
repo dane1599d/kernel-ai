@@ -146,6 +146,13 @@ impl Content {
         self
     }
 
+    /// This content and `other`'s: a path both give is `other`'s.
+    pub fn merged(mut self, other: Content) -> Self {
+        self.files.extend(other.files);
+        self.redirects.extend(other.redirects);
+        self
+    }
+
     /// `path` on `host` answers 302 to `location`, a whole URL.
     pub fn redirect(mut self, host: &str, path: &str, location: &str) -> Self {
         self.redirects
