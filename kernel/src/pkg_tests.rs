@@ -178,7 +178,7 @@ impl Step {
 /// The host names the online case's `NetDest` allows: xtask's HTTPS mock's
 /// three, the update repository's Pages host, GitHub's releases host and its
 /// release-assets host (`kaipkg::online::Hosts::mock`).
-const ONLINE_HOSTS: &str = "updates.kai.test+releases.kai.test+assets.kai.test";
+pub(crate) const ONLINE_HOSTS: &str = "updates.kai.test+releases.kai.test+assets.kai.test";
 
 /// Plan lines: `fs`, then `pkg` with `/system/pkg`. For `pkg-image`, `pkg` also
 /// reads the image's repository and has a route to the supervisor. `pkg` needs a

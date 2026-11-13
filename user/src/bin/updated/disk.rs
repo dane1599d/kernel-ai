@@ -95,7 +95,7 @@ impl Remote for Repo {
 /// (ADR 0008 §7's cache, so the next refresh starts from the newest root and
 /// refuses replayed metadata), and this refresh's copies in memory. The root
 /// starts as the newer of `/system/trust`'s and the slot's own.
-struct Trust {
+pub(crate) struct Trust {
     memory: BTreeMap<String, Vec<u8>>,
     dir: Option<Handle>,
 }
@@ -153,16 +153,22 @@ impl Cache for Trust {
     }
 }
 
-/// `step=update`.
-/// `step=update`: stages the update disk's release into the other slot, and
-/// restarts into it at once when `restart_now`; otherwise its one-shot is set
-/// and the restart waits (`window.rs`).
-pub fn update(handle: Handle, restart_now: bool) -> Result<Staged, String> {
+/// What an update of either kind starts from: the date, the folders `updated`
+/// holds, and the cache of verified metadata with the newer of the slot's own
+/// root and `/system/trust`'s in it.
+pub(crate) struct Trusted {
+    pub dirs: Folders,
+    pub cache: Trust,
+    pub now: u64,
+}
+
+/// The slot's own root (TRUST_ROOT) and the date (TRUST_TIME), the folders, and
+/// the cache seeded as ADR 0008 §7 says.
+pub(crate) fn trusted(handle: Handle) -> Result<Trusted, String> {
     let mut root = vec![0u8; ROOT_MAX];
     let len = sys::trust_root(handle, &mut root).map_err(|e| format!("TRUST_ROOT: {e:?}"))?;
     root.truncate(len);
     let now = sys::trust_time(handle).map_err(|e| format!("TRUST_TIME: {e:?}"))?;
-    let mut repo = Repo::open(handle)?;
     let dirs = Folders::from_startup()?;
     let mut cache = Trust::open(dirs.trust)?;
     // The newer root wins (ADR 0008 §7): an older one would let keys a rotation
@@ -181,6 +187,20 @@ pub fn update(handle: Handle, restart_now: bool) -> Result<Staged, String> {
             cache.save("root", &root).map_err(|e| format!("{e}"))?;
         }
     }
+    Ok(Trusted { dirs, cache, now })
+}
+
+/// `step=update`.
+/// `step=update`: stages the update disk's release into the other slot, and
+/// restarts into it at once when `restart_now`; otherwise its one-shot is set
+/// and the restart waits (`window.rs`).
+pub fn update(handle: Handle, restart_now: bool) -> Result<Staged, String> {
+    let mut repo = Repo::open(handle)?;
+    let Trusted {
+        dirs,
+        mut cache,
+        now,
+    } = trusted(handle)?;
     let (target, file) = {
         let mut updater = Updater::new(&mut repo, &mut cache, now).map_err(|e| format!("{e}"))?;
         updater.refresh().map_err(|e| format!("refused: {e}"))?;

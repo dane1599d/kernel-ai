@@ -207,3 +207,43 @@ fn a_transport_that_failed_under_tls_is_a_retry_and_a_record_it_cannot_take_is_a
         assert!(server.served.is_empty());
     }
 }
+
+#[test]
+fn what_a_failed_first_boot_goes_back_to_is_made_after_the_checks_and_before_the_trial() {
+    let r = release(2, 48);
+    let mut world = World::new(&r);
+    let mut server = Server::new(&r.bytes);
+    let staged = stage_with(&mut world, &r, &mut server, &mut signed(&r)).unwrap();
+    assert_eq!(staged.release_seq, SEQ);
+    // Called once, with only the Updating mark written: the slot cannot boot yet.
+    assert_eq!(world.var.before_trial, [1]);
+    assert_eq!(world.var.sets.len(), 2);
+}
+
+#[test]
+fn a_snapshot_that_cannot_be_taken_leaves_the_slot_updating() {
+    let r = release(2, 49);
+    let mut world = World::new(&r);
+    world.var.fail_before_trial = true;
+    let mut server = Server::new(&r.bytes);
+    let stop = stage_with(&mut world, &r, &mut server, &mut signed(&r)).unwrap_err();
+    assert_eq!(stop, Stop::Store("the snapshot cannot be taken"));
+    assert_eq!(world.var.sets.len(), 1, "never a trial");
+    assert!(!bootslot::may_boot(&world.var.sets[0].record, Slot::B));
+}
+
+#[test]
+fn the_snapshot_is_not_taken_for_a_release_that_is_superseded_or_not_whole() {
+    let r = release(2, 50);
+    let other = release(2, 51);
+    let mut world = World::new(&r);
+    let mut server = Server::new(&r.bytes);
+    let mut replaced = || Ok(pair(&other, u64::from(SEQ) + 1, "os-8", &other.text));
+    let stop = stage_with(&mut world, &r, &mut server, &mut replaced).unwrap_err();
+    assert_eq!(stop, Stop::Bad(Bad::Superseded));
+    let mut world = World::new(&r);
+    let mut server = Server::new(&r.bytes).with(Fault::Flip(CHUNK as usize + 3));
+    let stop = stage_with(&mut world, &r, &mut server, &mut signed(&r)).unwrap_err();
+    assert_eq!(stop, Stop::Bad(Bad::Chunk(1)));
+    assert!(world.var.before_trial.is_empty());
+}

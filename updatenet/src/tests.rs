@@ -396,6 +396,10 @@ struct Var {
     sets: Vec<Nv>,
     /// Fails the `n`th `set` (from 1).
     fail_nth: Option<usize>,
+    /// How many `sets` there were each time `before_trial` was called.
+    before_trial: Vec<usize>,
+    /// Makes `before_trial` fail.
+    fail_before_trial: bool,
 }
 
 impl Boot for Var {
@@ -405,6 +409,14 @@ impl Boot for Var {
         }
         self.sets.push(*nv);
         Ok(())
+    }
+
+    fn before_trial(&mut self, _: &Job) -> Result<(), &'static str> {
+        self.before_trial.push(self.sets.len());
+        match self.fail_before_trial {
+            true => Err("the snapshot cannot be taken"),
+            false => Ok(()),
+        }
     }
 }
 

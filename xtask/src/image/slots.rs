@@ -200,13 +200,36 @@ fn plan(esp: &Path, cmdline: &str, record: &str, data_mib: Option<u64>) -> Resul
 /// The disk for the directory ESP `esp`, whose kernel and bundle every slot
 /// gets, with `record` as each slot's `boot/slot`.
 pub fn disk(esp: &Path, cmdline: &str, record: &str) -> Result<Vec<u8>, String> {
-    let plan = plan(esp, cmdline, record, None)?;
+    Ok(lay(&plan(esp, cmdline, record, None)?))
+}
+
+/// `plan`'s disk: the GPT and each partition's volume where the layout puts it.
+fn lay(plan: &Plan) -> Vec<u8> {
     let mut disk = vec![0u8; (plan.sectors * u64::from(SECTOR)) as usize];
     for (lba, bytes) in plan.gpt.iter().chain(&plan.volumes) {
         let at = (lba * u64::from(SECTOR)) as usize;
         disk[at..at + bytes.len()].copy_from_slice(bytes);
     }
-    Ok(disk)
+    disk
+}
+
+/// [`build`], but slot B keeps the bytes it holds in the disk already at `out`
+/// when that disk has the same layout. A machine that reboots between two runs
+/// of `updated` has the slot it was writing as it left it, so a resumed download
+/// finds the chunks the first run wrote; `build` makes every boot's slots anew.
+pub fn build_keeping_b(esp: &Path, out: &Path, cmdline: &str, record: &str) -> Result<u64, String> {
+    let plan = plan(esp, cmdline, record, None)?;
+    let mut disk = lay(&plan);
+    // The slots are the partitions after the ESP, in [`SLOTS`]' order: B is last.
+    let (lba, volume) = plan.volumes.last().ok_or("the slot disk has no slot B")?;
+    let (at, len) = ((lba * u64::from(SECTOR)) as usize, volume.len());
+    if let Ok(old) = fs::read(out)
+        && old.len() == disk.len()
+    {
+        disk[at..at + len].copy_from_slice(&old[at..at + len]);
+    }
+    fs::write(out, &disk).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
+    Ok(disk.len() as u64)
 }
 
 /// Writes the slot disk to `out`; its size.
@@ -333,6 +356,39 @@ mod tests {
         let path = one.display().to_string();
         crate::fs_tool::main(&["check".into(), path.clone()]).unwrap();
         crate::fs_tool::main(&["ls".into(), path, "/home/user".into()]).unwrap();
+        fs::remove_dir_all(&esp).unwrap();
+    }
+
+    #[test]
+    fn slot_b_keeps_what_a_run_of_updated_wrote_into_it_and_nothing_else_does() {
+        let esp = fake_esp("keep-b");
+        let out = esp.join("slots.img");
+        build_keeping_b(&esp, &out, "test=slot", RECORD).unwrap();
+        let fresh = fs::read(&out).unwrap();
+        let parts = diskmap::read(&mut Mem(fresh.clone())).unwrap().partitions;
+        let at = |p: usize| parts[p].first as usize * 512;
+        // The guest wrote a chunk into B and a byte into A.
+        let mut written = fresh.clone();
+        written[at(3) + 4096..at(3) + 4096 + 8].copy_from_slice(b"chunk-b!");
+        written[at(2) + 4096] = 0xAA;
+        fs::write(&out, &written).unwrap();
+        // The next boot's disk is rebuilt, B as the guest left it.
+        build_keeping_b(&esp, &out, "test=update", RECORD).unwrap();
+        let next = fs::read(&out).unwrap();
+        assert_eq!(&next[at(3) + 4096..at(3) + 4096 + 8], b"chunk-b!");
+        assert_eq!(next[at(2) + 4096], fresh[at(2) + 4096], "A is made anew");
+        // The command line is the new boot's, in the ESP.
+        assert!(next != written);
+        // `build` makes every slot anew.
+        build(&esp, &out, "test=update", RECORD).unwrap();
+        assert_eq!(
+            &fs::read(&out).unwrap()[at(3) + 4096..at(3) + 4096 + 8],
+            &fresh[at(3) + 4096..at(3) + 4096 + 8]
+        );
+        // A disk of another size is not carried over.
+        fs::write(&out, b"short").unwrap();
+        build_keeping_b(&esp, &out, "test=update", RECORD).unwrap();
+        assert_eq!(fs::read(&out).unwrap().len(), fresh.len());
         fs::remove_dir_all(&esp).unwrap();
     }
 

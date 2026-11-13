@@ -134,6 +134,15 @@ pub struct TestCase {
     /// (P5 task 8), the `kind` mirror signed by the image's keys, so `pkg`
     /// installs from it over TLS.
     pub online: Option<crate::pkgrepo::mirrors::MirrorKind>,
+    /// The next release, served over TLS by the HTTPS mock as GitHub serves the
+    /// update repository (P5 task 10), with `fault`: this build as a slot image,
+    /// its metadata signed by the run's test root, the test CA in the image's
+    /// repository folder (`dns` is set with it).
+    pub online_release: Option<crate::image::update_online::Fault>,
+    /// A second boot of a slot case keeps slot B as the boot before left it, so
+    /// a download that was stopped can resume from what it had written (P5
+    /// task 10); otherwise every boot makes the slots anew from its bundle.
+    pub keeps_slot_b: bool,
 }
 
 /// What the HTTPS mock serves a case: its hosts are `netcore::fixture`'s
@@ -197,6 +206,8 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         mirror: None,
         https: None,
         online: None,
+        online_release: None,
+        keeps_slot_b: false,
     }
 }
 
@@ -270,5 +281,44 @@ mod tests {
             tables.iter().map(|lane| lane.len()).sum::<usize>()
         );
         assert!(tables.iter().all(|lane| !lane.is_empty()));
+    }
+
+    /// The kernel drops an `updated.<key>=` word whose key is not in its
+    /// `UPDATED_TEST_WORDS`, so a case that passes one the list lacks boots
+    /// without it: `update-online-resume`'s `retries=0` was dropped that way and
+    /// `updated` tried the cut again.
+    #[test]
+    fn every_updated_word_a_case_passes_is_one_the_kernel_hands_on() {
+        let kernel = include_str!("../../../kernel/src/selftest.rs");
+        let list = kernel
+            .split("const UPDATED_TEST_WORDS")
+            .nth(1)
+            .and_then(|rest| rest.split_once("= [")?.1.split_once("];"))
+            .map(|(list, _)| list)
+            .expect("the kernel lists the updated.<key>= words it hands on");
+        let allowed: Vec<&str> = list.split('"').skip(1).step_by(2).collect();
+        let mut passed = 0;
+        for case in test_cases() {
+            let mut link = Some(case);
+            while let Some(boot) = link {
+                let keys = boot
+                    .cmdline
+                    .split_whitespace()
+                    .filter_map(|word| word.strip_prefix("updated."))
+                    .filter_map(|word| word.split_once('=').map(|(key, _)| key));
+                for key in keys {
+                    passed += 1;
+                    assert!(
+                        allowed.contains(&key),
+                        "{}: updated.{key}= is dropped by the kernel",
+                        boot.name
+                    );
+                }
+                link = boot.then;
+            }
+        }
+        // `update-window` passes three and `update-online-resume` one: the walk
+        // reaches both, so a rename of the prefix cannot leave it checking nothing.
+        assert!(passed >= 4, "only {passed} updated.<key>= words checked");
     }
 }

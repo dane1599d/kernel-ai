@@ -22,7 +22,6 @@ const USER_PROGRAMS: &[&str] = &[
     "scriptrun",
     "fs",
     "filecheck",
-    "updated",
     "deskdemo",
     "tufbench",
 ];
@@ -44,6 +43,7 @@ const USER_FLOAT_PROGRAMS: &[&str] = &[
     "term",
     "cc",
     "pkg",
+    "updated",
     "httpscheck",
     "fetch",
     "dlcheck",

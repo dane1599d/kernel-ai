@@ -141,15 +141,21 @@ pub fn boot_from_image(args: &mut [String], esp: &Path, target_dir: &Path) -> Re
 }
 
 /// The slot cases: builds the R/A/B disk of `esp` (ADR 0008) as
-/// `target/slots.img` and boots from it in place of the directory ESP.
+/// `target/slots.img` and boots from it in place of the directory ESP. With
+/// `keep_b`, slot B keeps what the last boot left in it (a resumed download).
 pub fn boot_from_slots(
     args: &mut Vec<String>,
     esp: &Path,
     target_dir: &Path,
     cmdline: &str,
     record: &str,
+    keep_b: bool,
 ) -> Result<(), String> {
-    let bytes = crate::image::slots::build(esp, &target_dir.join(SLOTS_IMAGE), cmdline, record)?;
+    let out = target_dir.join(SLOTS_IMAGE);
+    let bytes = match keep_b {
+        true => crate::image::slots::build_keeping_b(esp, &out, cmdline, record)?,
+        false => crate::image::slots::build(esp, &out, cmdline, record)?,
+    };
     println!("xtask: slot disk {SLOTS_IMAGE}, {} MiB", bytes >> 20);
     boot_from_disk(args, SLOTS_IMAGE)
 }
