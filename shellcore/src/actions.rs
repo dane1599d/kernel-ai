@@ -281,6 +281,7 @@ impl Shell {
         // Kept here and set last: the effects an app's reply queued run through
         // this method too, after the script, and must not stand in for it.
         let shown = ran.shown.clone();
+        let withheld = ran.withheld;
         self.last_value = ran.value.clone();
         let result = match ran.ok {
             true => Ok(ran.value.clone()),
@@ -302,6 +303,7 @@ impl Shell {
             self.showed = Showed {
                 from: shown,
                 outcome: Some(said),
+                withheld,
             };
             return reply;
         }
@@ -359,6 +361,7 @@ impl Shell {
         self.showed = Showed {
             from: shown,
             outcome: said,
+            withheld,
         };
         Reply {
             ok: ran.ok,
