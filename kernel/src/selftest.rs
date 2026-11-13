@@ -208,6 +208,9 @@ pub enum SelfTest {
     /// The model manager's window on the desktop, given `updated`'s model list
     /// and closed from its control (P4 task 10).
     UiModels,
+    /// A person's keys in the Models window switch the model through the
+    /// shell's `model_use` row, and `undo` switches it back (#556).
+    UiModelsUse,
     /// An unused app naps and a click wakes it (P3 task 12b).
     DeskNap,
     /// A saved appearance repaints `desktop` at once and holds across its
@@ -424,6 +427,9 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=pkg-install" => Some(SelfTest::PkgStore(
                 crate::pkg_tests::Step::mirror_from_cmdline(cmdline),
             )),
+            "test=pkg-online" => Some(SelfTest::PkgStore(
+                crate::pkg_tests::Step::online_from_cmdline(cmdline),
+            )),
             "test=model" => Some(SelfTest::Model),
             "test=local-ask" => Some(SelfTest::LocalAsk),
             "test=local-script" => Some(SelfTest::LocalScript),
@@ -453,6 +459,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=ui-monitor" => Some(SelfTest::UiMonitor),
             "test=ui-files" => Some(SelfTest::UiFiles),
             "test=ui-models" => Some(SelfTest::UiModels),
+            "test=ui-models-use" => Some(SelfTest::UiModelsUse),
             "test=desk-nap" => Some(SelfTest::DeskNap),
             "test=desk-appearance" => Some(SelfTest::DeskAppearance),
             "test=keep-running" => Some(SelfTest::KeepRunning {
@@ -521,11 +528,16 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
         .unwrap_or(SelfTest::None)
 }
 
+/// The `updated.<key>=` words an `update` boot passes on to `updated`'s line:
+/// those its window and restart read (`user/src/bin/updated`).
+const UPDATED_TEST_WORDS: [&str; 3] = ["restart", "window", "heads_up_s"];
+
 /// The words after `updated`'s plan line in a test boot: `start=demand`
 /// ([`kabi::plan::ON_DEMAND`]), so it holds no memory until the shell's first
 /// model request, except in `update`, which runs a step of the update service
 /// at boot (`updated=`, `check` by default; a refusal restarts into the
-/// running slot) and takes any `updated.<word>` as a word, as `restart=window`.
+/// running slot) and takes `updated.<word>` as a word for the keys in
+/// [`UPDATED_TEST_WORDS`], as `restart=window`.
 /// The default boot starts it at boot (`kabi::plan::system`), and so do the
 /// cases in [`updated_at_boot`].
 fn updated_words(test: SelfTest) -> String {
@@ -540,9 +552,16 @@ fn updated_words(test: SelfTest) -> String {
         .find_map(|w| w.strip_prefix("updated="))
         .unwrap_or("check");
     let mut words = format!(" after=restart step={step}");
+    // Only the words `updated` reads: a plan word such as `netdest=` or
+    // `caps=` from the command line would widen its line (the manager's review
+    // of #779).
     for word in crate::cmdline()
         .split_whitespace()
         .filter_map(|w| w.strip_prefix("updated."))
+        .filter(|w| {
+            w.split_once('=')
+                .is_some_and(|(key, _)| UPDATED_TEST_WORDS.contains(&key))
+        })
     {
         words.push(' ');
         words.push_str(word);
@@ -551,9 +570,12 @@ fn updated_words(test: SelfTest) -> String {
 }
 
 /// The cases whose first model list would otherwise wait on `updated`'s start:
-/// the agent's (`app-models`) and the window's (`ui-models`).
+/// the agent's (`app-models`) and the window's (`ui-models`, `ui-models-use`).
 fn updated_at_boot(test: SelfTest) -> bool {
-    matches!(test, SelfTest::Act(ActCase::AppModels) | SelfTest::UiModels)
+    matches!(
+        test,
+        SelfTest::Act(ActCase::AppModels) | SelfTest::UiModels | SelfTest::UiModelsUse
+    )
 }
 
 /// The service plan for this boot, or None for the boots that run no user space.
@@ -612,6 +634,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::UiMonitor
             | SelfTest::UiFiles
             | SelfTest::UiModels
+            | SelfTest::UiModelsUse
             | SelfTest::DeskNap
             | SelfTest::KeepRunning { .. }
             | SelfTest::DeskAppearance
@@ -816,6 +839,13 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push_str(crate::keep_tests::PLAN);
                 crate::keep_tests::SHELL
             }
+            // The window's switches reach the shell through `desktop`, so the
+            // shell has its route to it; the window comes after the shell.
+            SelfTest::UiModelsUse => {
+                plan.push('\n');
+                plan.push_str(crate::models_window_tests::DESKTOP);
+                kabi::plan::SHELL_DESK_FILES
+            }
             // The desktop with its card, before the shell with `files` and
             // `state` (the appearance is saved in `/system/state`) and its
             // route to `desktop`.
@@ -902,6 +932,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::UiModels {
         plan.push('\n');
         plan.push_str(&crate::app_window_tests::models_plan());
+    }
+    if test == SelfTest::UiModelsUse {
+        plan.push('\n');
+        plan.push_str(kabi::plan::MODELS_WINDOW);
     }
     if test == SelfTest::DeskNap {
         plan.push('\n');

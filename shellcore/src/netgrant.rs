@@ -22,9 +22,10 @@
 //!
 //! Until `powerbox` owns `/system/grants`, the shell keeps these lines in a file
 //! of its own, as it keeps its rules; the file is read as hostile and refused
-//! whole. A grant id is never reused while the shell runs. A reload numbers on
-//! from the highest id the file holds, so an id revoked last and not in the file
-//! can come back: `powerbox` keeps the high-water mark when it takes the file.
+//! whole. A grant id is never reused while the shell runs: a load numbers on
+//! from the highest id the file holds, and the shell keeps its own high-water
+//! mark ([`NetGrants::number_above`]), so an id revoked last and gone from the
+//! file is not given again. `powerbox` keeps that mark when it takes the file.
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -113,6 +114,18 @@ impl NetGrants {
             grants: read.grants,
             next,
         })
+    }
+
+    /// Numbers new grants above `high` as well as above every id the file
+    /// holds: the shell's high-water mark, so an id revoked since the last
+    /// grant is never given to another app's host.
+    pub fn number_above(&mut self, high: u32) {
+        self.next = self.next.max(high);
+    }
+
+    /// The highest id given or seen: new grants are numbered above it.
+    pub fn high(&self) -> u32 {
+        self.next
     }
 
     /// The grants as their file keeps them.

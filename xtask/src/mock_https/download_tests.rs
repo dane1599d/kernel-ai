@@ -98,6 +98,10 @@ impl Partial for Memory {
         self.finished = true;
         Ok(())
     }
+
+    fn size(&mut self) -> Result<u64, DownloadError> {
+        Ok(self.bytes.len() as u64)
+    }
 }
 
 /// One run of the download from `mock`, reaching only the hosts `allow`

@@ -31,8 +31,9 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
 
 fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
     match number {
-        // The LLM's own `NetDest`, which NET's startup handle is: a handle
-        // to any other destination does not reach the LLM (K's review of #755).
+        // The LLM's own `NetDest`, which only a plan line's `netdest=llm` gives
+        // (NET gives no handle since #779): a handle to any other destination
+        // does not reach the LLM (K's review of #755).
         call::HTTP => {
             crate::handle::need_object(
                 slot,

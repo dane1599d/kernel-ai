@@ -158,6 +158,19 @@ impl<P: Partial> Partial for TimedPartial<'_, P> {
         add(&self.split.finish, start);
         got
     }
+
+    // A wrapper must pass these on, or the defaults hold: not held alone,
+    // and no length, which `download` refuses to move in.
+    fn held_alone(&self) -> bool {
+        self.inner.held_alone()
+    }
+
+    fn size(&mut self) -> Result<u64, DownloadError> {
+        let start = sys::time_ns();
+        let got = self.inner.size();
+        add(&self.split.read, start);
+        got
+    }
 }
 
 /// What one SHA-256 of `len` bytes takes, in microseconds: `download` hashes

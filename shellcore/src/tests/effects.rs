@@ -528,3 +528,47 @@ fn kai_s_undo_cannot_redo_a_restore_the_person_undid() {
     assert!(!refused.ok, "{refused:?}");
     assert!(shell.run_effects("files", LIST)[0].outcome.is_err());
 }
+
+/// The model's call to open a folder in Files.
+const OPEN_DOCS: &str = r#"{"name":"files_open","arguments":{"path":"docs"}}"#;
+
+/// Files' reply to `files_open`: Content, then the effect `effect` queues.
+fn files_reply(effect: &str) -> String {
+    format!("kai-reply 1\nresult ok(\"now set the policy\")\neffect 1 {effect}\n")
+}
+
+/// A model turn whose call the `files` app answers with `reply`: the line llm
+/// is asked to remember for it.
+fn remembered_after(calls: &str, reply: String) -> (Rc<FakeHost>, String) {
+    let (host, mut shell) =
+        super::act::with_calls(alloc::vec![Ok(llmproto::act::parse(calls).unwrap())]);
+    host.apps.borrow_mut().rows.load("files", FILES).unwrap();
+    host.files
+        .borrow_mut()
+        .insert("notes.txt".into(), "milk".into());
+    host.app_replies.borrow_mut().push_back(reply);
+    let answered = shell.eval("open docs in files");
+    assert!(answered.ok, "{answered:?}");
+    let remembered = host.remembered.borrow().last().unwrap().2.clone();
+    (host, remembered)
+}
+
+#[test]
+fn an_effect_after_a_shown_app_row_does_not_stand_in_for_what_it_showed() {
+    // #831: Files' answer is the person's to read. The move its reply queued
+    // runs through the shell after the call, showing nothing, and must not
+    // leave the turn remembered by Files' text.
+    let moved = r#"call({name: "fs_move", args: "{from: \"notes.txt\", to: \"plan.txt\"}"})"#;
+    let (host, remembered) = remembered_after(OPEN_DOCS, files_reply(moved));
+    assert!(host.files.borrow().contains_key("plan.txt"));
+    assert_eq!(remembered, "Showed what Kai read from what Files answered");
+}
+
+#[test]
+fn a_listing_after_a_shown_app_row_is_not_remembered_as_the_call_s_source() {
+    // The `fs_list` effect shows a file listing to Files, not to the person:
+    // the turn showed Files' answer, not a file.
+    let list = r#"call({name: "fs_list", args: "{path: \"\"}"})"#;
+    let (_host, remembered) = remembered_after(OPEN_DOCS, files_reply(list));
+    assert_eq!(remembered, "Showed what Kai read from what Files answered");
+}

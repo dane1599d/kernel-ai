@@ -1,6 +1,7 @@
-//! `kai:models@0.1.0`'s bindings (`wit/kai-models/models.wit`, world
-//! `models-read`): the read the window asks for, and the list the host gives
-//! back, handed to the window.
+//! `kai:models@0.1.1`'s bindings (`wit/kai-models/models.wit`, world
+//! `models-read`): the read the window asks for and the list the host gives
+//! back, and the switch a person's key or click asks for and what the shell
+//! answered, each handed to the window.
 
 use crate::ModelsWindow;
 use alloc::string::String;
@@ -27,9 +28,19 @@ pub fn read() -> u32 {
     kai::models::models::read()
 }
 
+/// Asks for the stored model with `sha256` (64 lowercase hex digits) from the
+/// next restart; its ticket.
+pub fn use_model(sha256: &str) -> u32 {
+    kai::models::models::use_model(sha256)
+}
+
 impl Listing for Bound {
     fn on_listing(_ticket: u32, outcome: Result<String, String>) {
         started(|app| app.listed(outcome));
+    }
+
+    fn on_used(_ticket: u32, outcome: Result<String, String>) {
+        started(|app| app.used(outcome));
     }
 }
 

@@ -17,6 +17,10 @@
 //! `user` is `comphost`'s word that a real key or click made the request; the
 //! shell checks the app again and refuses a change without it. The ticket is
 //! `comphost`'s own and comes back as it went.
+//!
+//! The Models window's switches (#556) travel the same way under their own
+//! [`Words`] (`models put`, and so on; `crate::models_wire`), in a [`Queue`] of
+//! their own, so neither app can put the other's requests or read its answers.
 
 use alloc::collections::VecDeque;
 use alloc::format;
@@ -40,6 +44,33 @@ pub const MAX_REQUEST: usize = 512;
 /// The longest answer text: a longer one is `err too long`, never cut, since
 /// the app reads it as data.
 pub const MAX_ANSWER: usize = 4096;
+
+/// One app's words on this wire: what its requests start with, and the one
+/// process that may put them and read their answers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Words {
+    /// What every request on this wire starts with, `settings `.
+    pub word: &'static str,
+    pub put: &'static str,
+    pub results: &'static str,
+    pub take: &'static str,
+    pub done: &'static str,
+    /// The one process that may ask, by the kernel's name for it.
+    pub app: &'static str,
+    /// Why any other caller is refused.
+    pub refused: &'static str,
+}
+
+/// The Settings app's words.
+pub const SETTINGS: Words = Words {
+    word: "settings ",
+    put: PUT,
+    results: RESULTS,
+    take: TAKE,
+    done: DONE,
+    app: SETTINGS_APP,
+    refused: "not the settings app",
+};
 
 /// One request, as the shell takes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,8 +118,14 @@ impl Queue {
     /// Settings app. A line out of shape, too long or past [`MAX_WAITING`] is
     /// answered with an error at once, if it has a ticket to answer.
     pub fn put(&mut self, caller: &str, lines: &str) -> Result<(), &'static str> {
-        if caller != SETTINGS_APP {
-            return Err("not the settings app");
+        self.put_as(&SETTINGS, caller, lines)
+    }
+
+    /// [`Queue::put`] for the app `words` names: a caller that is not it is
+    /// refused with `words.refused`.
+    pub fn put_as(&mut self, words: &Words, caller: &str, lines: &str) -> Result<(), &'static str> {
+        if caller != words.app {
+            return Err(words.refused);
         }
         for line in lines.lines() {
             let refused = match parse_request(line) {
@@ -181,10 +218,15 @@ fn ticket_of(line: &str) -> Option<u32> {
 
 /// The answer to [`TAKE`].
 pub fn encode_take(taken: Option<&[Request]>) -> String {
+    encode_take_for(&SETTINGS, taken)
+}
+
+/// The answer to `words.take`.
+pub fn encode_take_for(words: &Words, taken: Option<&[Request]>) -> String {
     match taken {
         Some(requests) => {
             let lines: Vec<String> = requests.iter().map(encode_request).collect();
-            format!("app {SETTINGS_APP}\n{}", lines.join("\n"))
+            format!("app {}\n{}", words.app, lines.join("\n"))
         }
         None => String::from("none"),
     }
@@ -215,7 +257,17 @@ pub fn encode_done(app: &str, answers: &[Answer]) -> String {
 /// at most `budget` bytes: a taken batch of eight 4 KiB answers is larger than
 /// one message, and a lost `done` would leave its tickets unanswered.
 pub fn encode_done_chunks(app: &str, answers: &[Answer], budget: usize) -> Vec<String> {
-    let head = format!("{DONE}{app}\n");
+    encode_done_chunks_for(&SETTINGS, app, answers, budget)
+}
+
+/// [`encode_done_chunks`] under `words.done`.
+pub fn encode_done_chunks_for(
+    words: &Words,
+    app: &str,
+    answers: &[Answer],
+    budget: usize,
+) -> Vec<String> {
+    let head = format!("{}{app}\n", words.done);
     let mut out = Vec::new();
     let mut chunk = head.clone();
     for answer in answers {

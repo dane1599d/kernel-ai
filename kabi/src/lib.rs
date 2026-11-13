@@ -41,7 +41,7 @@ pub mod update;
 
 pub use error::Error;
 pub use ipc::{CallRequest, HttpRequest, MAX_MESSAGE};
-pub use metrics::{MAX_METRIC_PROCESSES, Metrics, ProcessInfo};
+pub use metrics::{MAX_METRIC_PROCESSES, METRICS_1_3_BYTES, Metrics, ProcessInfo};
 pub use process::{
     ExitReason, ExitRecord, JobSpawn, Limits, MAX_ARGS, MAX_PLAN, MAX_STATE, SpawnRequest,
 };
@@ -69,7 +69,8 @@ const _: () = {
     assert!(core::mem::size_of::<ExitRecord>() == 32 + MAX_NAME);
     assert!(core::mem::size_of::<SpawnRequest>() == 10 * 8);
     assert!(core::mem::size_of::<CallRequest>() == 5 * 8);
-    assert!(core::mem::size_of::<Metrics>() == 13 * 8 + MAX_METRIC_PROCESSES * (32 + MAX_NAME));
+    assert!(METRICS_1_3_BYTES == 13 * 8 + MAX_METRIC_PROCESSES * (32 + MAX_NAME));
+    assert!(core::mem::size_of::<Metrics>() == METRICS_1_3_BYTES + 8);
     assert!(HEAP_BASE + HEAP_MAX < STACK_TOP - MAX_STACK_PAGES * 4096);
     assert!(HEAP_BASE + HEAP_MAX <= MODEL_BASE && MODEL_BASE.is_multiple_of(MODEL_MAX));
     assert!(MODEL_MAX == 1 << 39 && MODEL_BASE + MODEL_MAX <= STACK_TOP - MAX_STACK_PAGES * 4096);

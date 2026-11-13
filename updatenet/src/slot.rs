@@ -107,6 +107,13 @@ impl Partial for SlotPartial<'_> {
         self.slot.read(offset, buf).map_err(DownloadError::Store)
     }
 
+    /// The idle slot is `updated`'s alone, and [`SlotPartial::finish`] reads
+    /// it all back and hashes it itself: `download`'s own read-back would read
+    /// it twice.
+    fn held_alone(&self) -> bool {
+        true
+    }
+
     /// Reads the whole slot back and hashes it: it must be the signed image.
     fn finish(&mut self) -> Result<(), DownloadError> {
         self.slot.flush().map_err(DownloadError::Store)?;

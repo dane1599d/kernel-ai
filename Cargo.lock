@@ -86,7 +86,9 @@ dependencies = [
 name = "agentsched"
 version = "0.0.0"
 dependencies = [
+ "infer",
  "kaiagent",
+ "quant",
 ]
 
 [[package]]
@@ -2273,6 +2275,7 @@ dependencies = [
  "comp-models",
  "kabi",
  "kaigrants",
+ "kainet",
  "kaiprofile",
  "livecore",
  "llmproto",

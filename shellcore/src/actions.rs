@@ -8,6 +8,7 @@
 //! reads never starts an action.
 
 use crate::actlog::{Entry, Form, State};
+use crate::agentcore::Showed;
 use crate::rules::Offer;
 use crate::script::{self, Checked};
 use crate::tiers::{self, Tier};
@@ -277,6 +278,10 @@ impl Shell {
             (None, false) => Proof::None,
         };
         let ran = self.run(checked, Consent { entry: id, proof });
+        // Kept here and set last: the effects an app's reply queued run through
+        // this method too, after the script, and must not stand in for it.
+        let shown = ran.shown.clone();
+        let withheld = ran.withheld;
         self.last_value = ran.value.clone();
         let result = match ran.ok {
             true => Ok(ran.value.clone()),
@@ -294,8 +299,16 @@ impl Shell {
         }
         self.last_output = Some(ran.text.clone());
         if !ran.ok && !ran.done.is_empty() {
-            return self.roll_back(id, request, checked, how, ran);
+            let (reply, said) = self.roll_back(id, request, checked, how, ran);
+            self.showed = Showed {
+                from: shown,
+                outcome: Some(said),
+                withheld,
+            };
+            return reply;
         }
+        // The line the shell writes after the output, if it writes one.
+        let mut said = ran.failed.clone();
         let outcome = match (ran.ok, checked.changes.is_empty()) {
             (true, true) => "ran read-only",
             (false, true) => "failed read-only",
@@ -317,6 +330,7 @@ impl Shell {
             let tail = if undoable { ". undo" } else { "" };
             let line = format!("{lead}: {}{tail}", what.join("; "));
             text.push_str(&line);
+            said = Some(line.clone());
             self.done_line = Some(line);
         } else if ran.ok && checked.changes.is_empty() && crate::guard::claims(&text) {
             // A run that changed nothing changed nothing, whatever it printed:
@@ -326,14 +340,17 @@ impl Shell {
                 text.push('\n');
             }
             text.push_str(crate::guard::NOTHING_CHANGED);
+            said = Some(String::from(crate::guard::NOTHING_CHANGED));
         } else if ran.ok && text.is_empty() && checked.plan.sites.is_empty() {
             // A script with no OS call and no output did nothing: not "Done."
             text.push_str(crate::guard::NOTHING_CHANGED);
+            said = Some(String::from(crate::guard::NOTHING_CHANGED));
         } else if text.is_empty() && ran.ok {
             text = match checked.summary.is_empty() {
                 true => String::from("Done."),
                 false => format!("Done: {}", checked.summary),
             };
+            said = Some(text.clone());
         }
         let state = match ran.ok {
             true => State::Done,
@@ -341,6 +358,11 @@ impl Shell {
         };
         self.log_entry(id, request, checked, how, state, outcome, ran.done);
         self.run_app_effects();
+        self.showed = Showed {
+            from: shown,
+            outcome: said,
+            withheld,
+        };
         Reply {
             ok: ran.ok,
             text,
@@ -350,7 +372,8 @@ impl Shell {
     }
 
     /// A run that failed after changing something: its changes go back, newest
-    /// first, so the script was all or nothing.
+    /// first, so the script was all or nothing. With the reply comes the line
+    /// the shell wrote for how it ended, from the run's own error, not its output.
     fn roll_back(
         &mut self,
         id: u64,
@@ -358,7 +381,7 @@ impl Shell {
         checked: &Checked,
         how: How,
         ran: script::Ran,
-    ) -> Reply {
+    ) -> (Reply, String) {
         let mut left = ran.done.clone();
         // The script's file changes share one transaction: one restore is enough.
         let mut restored = None;
@@ -379,6 +402,11 @@ impl Shell {
             left.pop();
         }
         let error = ran.text.lines().last().unwrap_or("it failed").to_string();
+        let failed = ran
+            .failed
+            .as_deref()
+            .and_then(|why| why.lines().rev().find(|l| !l.trim().is_empty()))
+            .unwrap_or("it failed");
         if left.is_empty() {
             self.host.audit(&format!("script {id} failed; rolled back"));
             self.log_entry(
@@ -400,15 +428,16 @@ impl Shell {
                 true => format!("Nothing changed: {error}"),
                 false => format!("{output}\nNothing changed: {error}"),
             };
-            return Reply::err(text);
+            return (Reply::err(text), format!("Nothing changed: {failed}"));
         }
         let what: Vec<String> = left.iter().map(Done::what).collect();
-        self.log_entry(id, request, checked, how, State::Done, "failed", left);
-        Reply::err(format!(
-            "{}\nChanged before the error, and could not be put back: {}. undo",
-            ran.text.trim_end(),
+        let kept = format!(
+            "Changed before the error, and could not be put back: {}. undo",
             what.join("; ")
-        ))
+        );
+        self.log_entry(id, request, checked, how, State::Done, "failed", left);
+        let reply = Reply::err(format!("{}\n{kept}", ran.text.trim_end()));
+        (reply, kept)
     }
 
     /// Logs a run with its changes.
@@ -573,7 +602,11 @@ impl Shell {
             ..pending.how
         };
         let reply = self.finish(id, &pending.request, &pending.checked, how);
-        self.remember(&pending, &reply.text);
+        let showed = core::mem::take(&mut self.showed);
+        if let Some(call) = &pending.call {
+            let host = self.host.as_ref();
+            crate::agentcore::remember(host, &pending.request, call, &reply.text, &showed);
+        }
         Reply {
             text: format!("{lead}{}", reply.text),
             ..reply
@@ -657,7 +690,8 @@ impl Shell {
     /// Tells llm how a model turn that asked ended, for its conversation memory.
     pub(crate) fn remember(&self, pending: &Pending, result: &str) {
         if let Some(call) = &pending.call {
-            crate::agentcore::remember(self.host.as_ref(), &pending.request, call, result);
+            let host = self.host.as_ref();
+            crate::agentcore::remember(host, &pending.request, call, result, &Showed::default());
         }
     }
 

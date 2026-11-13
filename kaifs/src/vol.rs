@@ -29,11 +29,24 @@ pub const MODELS: u64 = 3;
 /// The volumes `mkfs` makes, with their names.
 pub const VOLUMES: [(u64, &str); 3] = [(SYSTEM, "system"), (HOME, "home"), (MODELS, "models")];
 /// Volume names ADR 0013 takes for after the v0.1 tag: `memory` (long-term memory,
-/// §3) and `index` (the search index, §4). `mkfs` makes neither, and a volume entry
-/// that names one is refused, so an image of format 1 cannot hold a volume the
-/// agents track means differently; adding them is a format change (ADR 0004's
-/// compat bits), made then.
+/// §3) and `index` (the search index, §4). Nothing may make a volume with one:
+/// [`check_new_volume`] refuses it, and `mkfs` makes neither. Reading is not
+/// refused: a volume entry that names one loads like any other, and whether an older
+/// slot can mount such a disk is for the format's compat bits to say (ADR 0004), so
+/// a v0.1 slot is not locked out of a disk a later version wrote.
 pub const RESERVED_VOLUMES: [&str; 2] = ["memory", "index"];
+
+/// The refusal for making a volume with a name in [`RESERVED_VOLUMES`].
+pub const RESERVED_NAME: &str = "a volume named for ADR 0013's later volumes";
+
+/// Whether a volume may be made with `name`: not one ADR 0013 reserves. The one place
+/// volumes are made (`Fs::build`) asks it for every name.
+pub fn check_new_volume(name: &str) -> Result<(), Error> {
+    match RESERVED_VOLUMES.contains(&name) {
+        true => Err(Error::Unsupported(RESERVED_NAME)),
+        false => Ok(()),
+    }
+}
 
 /// Volume-table item kinds.
 pub const K_VOLUME: u8 = 1;
@@ -210,9 +223,6 @@ pub fn decode_volume(id: u64, value: &[u8]) -> Result<VolEntry, Error> {
     if key_id != 0 {
         return Err(Error::Unsupported("an encrypted volume"));
     }
-    if RESERVED_VOLUMES.contains(&name.as_str()) {
-        return Err(Error::Unsupported("a volume named for a later format"));
-    }
     Ok(VolEntry { live, name, key_id })
 }
 
@@ -315,4 +325,39 @@ pub fn decode_undo(txn: u64, parts: &[Vec<u8>]) -> Result<Undo, Error> {
         snapshot: word(first, 25),
         objects,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MemDisk;
+    use crate::fs::{Faults, Fs};
+
+    /// The one place volumes are made refuses a reserved name, before it writes.
+    #[test]
+    fn fs_build_refuses_to_make_a_reserved_volume_by_name() {
+        for reserved in RESERVED_VOLUMES {
+            let volumes = [(SYSTEM, "system"), (9, reserved)];
+            let made = Fs::build(
+                MemDisk::new(4096),
+                [0; 16],
+                "t",
+                Faults::default(),
+                &volumes,
+            );
+            assert_eq!(
+                made.err(),
+                Some(Error::Unsupported(RESERVED_NAME)),
+                "{reserved}"
+            );
+        }
+        let fine = Fs::build(
+            MemDisk::new(4096),
+            [0; 16],
+            "t",
+            Faults::default(),
+            &VOLUMES,
+        );
+        assert!(fine.is_ok());
+    }
 }

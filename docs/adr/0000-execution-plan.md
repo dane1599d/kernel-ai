@@ -135,6 +135,7 @@ A name below that is not on main at ec5ecff is a new crate or program an ADR nam
 | L Licence and release | P1, P4, P8 | `deny.toml`, `about.toml`, `xtask/src/notices.rs`, `xtask/notices.json`, `LICENSES/`, `.github/workflows/dco.yml` (new), `docs/third-party-notices.md` |
 | M Memory | P3-P4 | M10b: `mm/`, `kernel/src/memory/` |
 | R Research | any | `spikes/*` on `spike/*` branches only |
+| AG Agents ([ADR 0013](0013-agents.md), approved 2026-10-27) | beside P4 (host crates and spikes before the v0.1 tag), then the v0.2 window | `agentsched/`, `kaiagent/`, `agentid/`, `kaimem/` (the ADR's `memstore/`), `semindex/`, `goalcore/`, then `user/src/bin/{search,goals,maint}/` (new). It touches no running lane's files; the owning lanes take turns for the pieces in theirs: the model lane (the scheduler and pool in `user/src/bin/llm/`, pooling and the embedding model in `infer/`, the memory section of the pack in `llmproto/`), A-core (the `agent_*`, `memory_*`, `search_files` and `goal_*` rows, `actlog 2`, per-agent consent), K (the badge-minting route), S-engine (the two volumes), C (`kai:agent` in `wit/`), P (the `agent` kind), G-core (the panel's agent states) and L (the embedding model's pin) |
 
 ### 4.2 Shared hot files and how lanes take turns
 

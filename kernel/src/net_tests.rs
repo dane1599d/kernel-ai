@@ -246,7 +246,7 @@ fn netcheck_with(
 }
 
 /// `netcheck` resolves kai.test on a `NetDest` handle that names it, and is
-/// refused without one, NET alone included: NET is for HTTP to the one server.
+/// refused without one, NET alone included: NET is the ceiling, not a handle.
 fn ring3_checks() -> Result<(), &'static str> {
     let (_, entry) = netdest(KAI_TEST)?;
     netcheck("netcheck", "host=kai.test expect=10.0.2.99", Some(entry))?;
@@ -335,7 +335,42 @@ pub fn dest_check() -> Result<(), &'static str> {
     log!(
         "net-dest: HTTP to the LLM needs the LLM's own handle, which NET alone does not give: a NET holder with another NetDest was refused"
     );
+    llm_grant()?;
     any_host_pinned()
+}
+
+/// A plan line's `netdest=llm` grant, through `spawn_in` as the supervisor
+/// spawns: with NET in the ceiling the process starts with the LLM's handle,
+/// CONNECT exactly; without NET it starts with no `NetDest` (the manager's
+/// review of #779: NET bounds this handle as it bounds a moved-in one).
+fn llm_grant() -> Result<(), &'static str> {
+    let grants = supervise::Grants {
+        llm_dest: true,
+        ..supervise::Grants::default()
+    };
+    for (args, caps) in [("llm=held", kabi::cap::NET), ("llm=none", 0)] {
+        let request = SpawnRequest {
+            name: "netdest-l",
+            program: "netcheck",
+            args: args.as_bytes(),
+            limits: Limits {
+                caps,
+                ..NETCHECK_LIMITS
+            },
+            spawner: 0,
+            supervisor: false,
+            uses: &[],
+        };
+        let pid = process::spawn_in(&request, alloc::vec::Vec::new(), false, &grants)
+            .map_err(|_| "net: cannot start netcheck with netdest=llm")?;
+        if wait_exit(pid)? != (ExitReason::Exited, 0) {
+            return Err("net: netdest=llm did not grant as the ceiling allows");
+        }
+    }
+    log!(
+        "net-dest: netdest=llm gave the LLM's handle, CONNECT only, within NET, and nothing without it"
+    );
+    Ok(())
 }
 
 /// The shell's ceiling, `hosts:any` (#760), as its plan line would make it.

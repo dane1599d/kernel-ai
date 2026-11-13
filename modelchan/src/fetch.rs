@@ -20,7 +20,8 @@
 //! What fits is the same arithmetic xtask sizes its VMs by
 //! ([`kabi::model::guest_mib`]): Qwen3-4B needs a guest of 4,160 MiB, so a
 //! 4 GiB guest is offered Qwen3-1.7B and a 6 GiB one Qwen3-4B. The disk must
-//! hold what is still to come and [`DISK_MARGIN`] besides.
+//! hold what is still to come, then the store's sealed copy of the whole file,
+//! and [`DISK_MARGIN`] besides ([`disk_need`]).
 
 use crate::Sha256;
 use alloc::format;
@@ -32,6 +33,14 @@ use comp_models::{Signed, Store, hex, size};
 pub const MODELS_DIR: &str = "/system/models";
 /// Where a download's bytes wait until they are whole (ADR 0011 §5).
 pub const PARTIAL_DIR: &str = "/system/models/.partial";
+/// [`PARTIAL_DIR`] beneath the store's root, the `Dir` `updated` holds.
+pub const PARTIAL_IN_STORE: &str = ".partial";
+
+/// A target's partial file beneath the store's root:
+/// `.partial/<sha256>.gguf`.
+pub fn partial_name(sha256: &Sha256) -> String {
+    format!("{PARTIAL_IN_STORE}/{}.gguf", hex(sha256))
+}
 /// Disk left free after a download, so the volume never fills to its last
 /// byte: 256 MiB.
 pub const DISK_MARGIN: u64 = 256 << 20;
@@ -68,6 +77,27 @@ pub const HUGGING_FACE: Hosts = Hosts {
     storage: &[".cdn.hf.co"],
 };
 
+/// The HTTPS mock's model host and the storage host its resolve URLs redirect
+/// to (`netcore::fixture`'s `models.kai.test` and `assets.kai.test`), which
+/// `updated` takes in place of [`HUGGING_FACE`] only when the kernel's
+/// `model-download` case plans it with `fetch=test`.
+pub const FIXTURE: Hosts = Hosts {
+    source: "models.kai.test",
+    storage: &["assets.kai.test"],
+};
+
+/// The guest's memory in MiB, as [`kabi::model::guest_mib`] sizes it, from the
+/// bytes of RAM the kernel's memory map lists (`kabi::Metrics::ram_frames`):
+/// the firmware keeps a little of what the VM was given for itself, so it is
+/// rounded up to [`kabi::model::GUEST_STEP_MIB`], the step VMs are sized in. A
+/// VM of 4,160 MiB that lists 4,150 reads as 4,160 and is offered Qwen3-4B; a 4
+/// GiB one reads as 4,096 and is not.
+pub fn guest_mib_of(ram_bytes: u64) -> u64 {
+    ram_bytes
+        .div_ceil(1 << 20)
+        .next_multiple_of(kabi::model::GUEST_STEP_MIB)
+}
+
 /// Whether `host` is `entry`: the same name, or, for an entry starting with
 /// `.`, a DNS name under it.
 fn matches(entry: &str, host: &str) -> bool {
@@ -87,7 +117,7 @@ pub struct Machine<'a> {
     /// What the store holds.
     pub store: &'a Store,
     /// Bytes already in `.partial/` for a target, by its SHA-256: a resume
-    /// needs disk only for the rest.
+    /// needs disk for the rest and the copy, not for what is held.
     pub partials: &'a [(Sha256, u64)],
     /// The hosts models may come from.
     pub hosts: &'a [Hosts],
@@ -247,6 +277,18 @@ impl Source {
     }
 }
 
+/// The free disk a download of `length` bytes needs with `held` of them in
+/// `.partial/` already: the rest of the partial file, then a second copy of
+/// the whole, since the store keeps only sealed blobs, which `fs` hashes as it
+/// writes them, so the partial file is copied in, not renamed, and goes only
+/// once the copy is kept; and [`DISK_MARGIN`]. Once the partial file is whole,
+/// `disk_need(length, length)` is what the copy still needs.
+pub fn disk_need(length: u64, held: u64) -> u64 {
+    (length - held.min(length))
+        .saturating_add(length)
+        .saturating_add(DISK_MARGIN)
+}
+
 /// How `target` fits `machine`.
 pub fn fit(target: &Signed, machine: &Machine<'_>) -> Fit {
     if machine
@@ -264,8 +306,7 @@ pub fn fit(target: &Signed, machine: &Machine<'_>) -> Fit {
             have_mib: machine.memory_mib,
         };
     }
-    let held = machine.held(&target.sha256).min(target.length);
-    let need = (target.length - held).saturating_add(DISK_MARGIN);
+    let need = disk_need(target.length, machine.held(&target.sha256));
     if need > machine.free_bytes {
         return Fit::Disk {
             need,
@@ -317,6 +358,14 @@ pub fn ask(target: &Signed, source: &Source) -> String {
     )
 }
 
+/// The ask as the shell's Allow / Deny menu puts it before the call, which
+/// names the model: how large and from where, the two things question 6 asks
+/// to be shown, short enough that the question fits the menu's 120 characters
+/// ("Download 2.3 GiB from huggingface.co").
+pub fn subject(target: &Signed, source: &Source) -> String {
+    format!("Download {} from {}", size(target.length), source.host)
+}
+
 /// A download to run: what it fetches, from where, and where it lands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Job {
@@ -359,6 +408,7 @@ pub fn plan(signed: &[Signed], machine: &Machine<'_>, id: &str) -> Result<Job, R
         Fit::Disk { need, free } => return Err(Refused::Disk { need, free }),
     }
     let name = hex(&target.sha256);
+    let in_store = |name: &str| format!("{MODELS_DIR}/{name}");
     Ok(Job {
         id: target.id.clone(),
         sha256: target.sha256,
@@ -368,8 +418,8 @@ pub fn plan(signed: &[Signed], machine: &Machine<'_>, id: &str) -> Result<Job, R
             .map(String::from)
             .collect(),
         source,
-        partial: format!("{PARTIAL_DIR}/{name}.gguf"),
-        path: format!("{MODELS_DIR}/{name}.gguf"),
+        partial: in_store(&partial_name(&target.sha256)),
+        path: in_store(&format!("{name}.gguf")),
         chunks: format!("{name}{CHUNKS_SUFFIX}"),
     })
 }

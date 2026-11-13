@@ -1,7 +1,7 @@
 //! Build and run tool for Kernel AI.
 //!
 //! cargo xtask build [--release] [--spikes]
-//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--cpus N] [--mem SIZE] [--llm IP:PORT] [--model NAME] [--edit] [--gpu] [--model-disk PATH | --local ID [--store DIR]] [--workload A|B [--seed N]]
+//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--cpus N] [--mem SIZE] [--llm IP:PORT] [--model NAME] [--edit] [--gpu] [--model-disk PATH | --local ID [--store DIR]] [--workload A|B|C [--seed N]]
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS] [--cpus N] [--mem SIZE] [--shard K/N]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //! (`--accel wsl` on Windows: QEMU with KVM inside WSL2; see wsl/launch.rs)
@@ -366,7 +366,13 @@ fn execute(options: &Options) -> Result<(), String> {
             // has.
             let https_mock = match &case.https {
                 Some(https) => {
-                    let mock = mock_https::start((https.content)())?;
+                    let mut content = (https.content)();
+                    // The package repository the case also asks for, signed by the
+                    // image's keys (P5 task 8).
+                    if let Some(kind) = case.online {
+                        content = content.merged(pkgrepo::online_repository(&image, kind)?);
+                    }
+                    let mock = mock_https::start(content)?;
                     for (host, path, fault) in https.faults {
                         mock.set_fault(host, path, fault.clone());
                     }

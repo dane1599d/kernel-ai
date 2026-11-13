@@ -25,14 +25,14 @@ const USER_PROGRAMS: &[&str] = &[
     "updated",
     "deskdemo",
     "tufbench",
-    "pkg",
 ];
 /// Ring-3 programs built for the hard-float target: `llm`, whose engine needs SSE and
 /// AVX; `comphost`, whose wasmi runs guests' floats natively (ADR 0003 section 6);
 /// `appbench`, which measures comphost's crates there; `desktop` and `term`, whose
 /// renderer (`gfx2d`) works in floats (ADR 0005 §1); `cc`, whose wasmi runs the
-/// compiler and the `c>` sessions (ADR 0012 D2); and the tests that check the
-/// kernel keeps vector state apart.
+/// compiler and the `c>` sessions (ADR 0012 D2); `pkg`, a TLS client (plan
+/// p5-networking §4, item 3: AES-NI and the vector paths run only here); and the
+/// tests that check the kernel keeps vector state apart.
 const USER_FLOAT_PROGRAMS: &[&str] = &[
     "llm",
     "desktop",
@@ -43,6 +43,7 @@ const USER_FLOAT_PROGRAMS: &[&str] = &[
     "appbench",
     "term",
     "cc",
+    "pkg",
     "httpscheck",
     "fetch",
     "dlcheck",
