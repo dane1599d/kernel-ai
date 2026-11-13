@@ -279,6 +279,19 @@ impl Partial for Kaifs {
         result.map_err(|e| self.failed(e, "a read"))
     }
 
+    /// The partial's length, by `Stat` on its handle: what `download` holds
+    /// to the target's before it moves the partial in.
+    fn size(&mut self) -> Result<u64, DownloadError> {
+        let result = self.handle(false, false).and_then(|file| {
+            let file = file.ok_or_else(|| String::from("no partial"))?;
+            match ask(file, Request::Stat)? {
+                (Reply::Stat(stat), _) => Ok(stat.size),
+                (other, _) => Err(format!("the partial's stat: {other:?}")),
+            }
+        });
+        result.map_err(|e| self.failed(e, "the partial's length"))
+    }
+
     fn finish(&mut self) -> Result<(), DownloadError> {
         // The partial's handle goes first: a rename of an open file is fine
         // in kaifs, but nothing more is written through it.

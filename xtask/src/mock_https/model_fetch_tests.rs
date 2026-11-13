@@ -176,6 +176,11 @@ impl Partial for Volume<'_> {
         self.files.insert(self.job.path.clone(), whole);
         Ok(())
     }
+
+    fn size(&mut self) -> Result<u64, DownloadError> {
+        let file = self.files.get(&self.job.partial);
+        Ok(file.map_or(0, |bytes| bytes.len() as u64))
+    }
 }
 
 /// One run of `job` from `mock`, reaching only the hosts the job does, on
