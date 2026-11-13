@@ -61,7 +61,12 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
                     core::mem::size_of::<kabi::Metrics>(),
                 )
             };
-            uaccess::copy_to_user(slot, a[0], bytes)?;
+            // The caller's size; none is ABI 1.3's, before `ram_frames`.
+            let size = match usize::try_from(a[1]).unwrap_or(usize::MAX) {
+                0 => kabi::METRICS_1_3_BYTES,
+                size => size.min(bytes.len()),
+            };
+            uaccess::copy_to_user(slot, a[0], &bytes[..size])?;
             Ok(0)
         }
         call::INTERRUPTED => Ok(u64::from(crate::process::take_interrupt(slot))),

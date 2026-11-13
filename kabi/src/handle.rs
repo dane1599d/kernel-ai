@@ -16,7 +16,7 @@ use bitflags::bitflags;
 /// kernel; apps reach the OS through WIT, never raw calls; and no outside
 /// package exists before v1.0. Any later change to an existing call's meaning
 /// bumps the major.
-pub const ABI: (u32, u32) = (1, 3);
+pub const ABI: (u32, u32) = (1, 4);
 
 /// The name of the ELF note that carries [`ABI`], and its type.
 pub const NOTE_NAME: &[u8; 4] = b"KAI\0";

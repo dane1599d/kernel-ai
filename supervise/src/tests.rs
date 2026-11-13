@@ -88,6 +88,15 @@ fn a_bad_or_doubled_netdest_fails_its_line() {
         "a netdest=llm netdest=hosts:a.example",
         "a netdest=hosts:a.example netdest=llm",
         "a netdest=llm unsupervised",
+        // Only the `llm` line running `llm`, with net in its ceiling, may say
+        // netdest=llm, once and exactly so (the manager's review of #779).
+        "llm caps=serve+net netdest=llm netdest=llm",
+        "llm caps=serve+net netdest=LLM",
+        "llm caps=serve+net netdest=llm,ports:443",
+        "llm caps=serve netdest=llm",
+        "llm netdest=llm",
+        "web caps=serve+net netdest=llm",
+        "llm program=other caps=serve+net netdest=llm",
     ] {
         let plan = parse_plan(line);
         assert!(plan.services.is_empty(), "{line}");
@@ -1105,6 +1114,14 @@ fn the_v0_1_system_plan_parses_and_its_routes_come_first() {
         assert_eq!(named("fs").is_some(), files);
         let desktop = named("desktop").expect("the desktop is planned");
         assert_eq!(desktop.uses.contains(&String::from("pkg")), files);
+        // `updated` reaches Hugging Face's resolve host and its file storage
+        // by name on 443 for the model download (P5 task 9), and nothing else.
+        let updated = named("updated").expect("updated is planned");
+        let dest = updated.netdest.as_ref().expect("updated has a NetDest");
+        assert_eq!(
+            dest.to_string(),
+            "proto:tcp,addrs:none,ports:443,hosts:huggingface.co+cdn.hf.co"
+        );
         // The model manager's window, with `kai-data` only, on demand.
         let models = named("models-window");
         assert_eq!(models.is_some(), files);

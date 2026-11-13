@@ -16,9 +16,10 @@
 //! A caller that cannot wait that long (comphost, which runs an app on its one
 //! thread) starts a request instead (`kainet::later`): `fetch` answers
 //! `started` at once, makes the request, and keeps the answer for the caller's
-//! `take`. That costs `fetch` what it keeps: at most [`MAX_KEPT`] answers, one
-//! a caller, each with its body's `Shm` (64 KiB), for at most [`KEEP_NS`]
-//! unless taken. While it makes a started request, other calls wait in the
+//! `take`. That costs `fetch` what it keeps (`later::Keep`): at most
+//! `later::MAX_KEPT` answers, one a caller, each with its body's `Shm`
+//! (64 KiB), for at most `later::KEEP_NS` unless taken; a take of one let go
+//! is answered `gone`. While it makes a started request, other calls wait in the
 //! kernel as they do for a plain one.
 
 #![no_std]
@@ -47,12 +48,6 @@ const PAGE: usize = 4096;
 const DEADLINE_NS: u64 = 30_000_000_000;
 /// How long a receive waits before it looks again.
 const IDLE_MS: u64 = 60_000;
-/// The room a start's `start <id> ` takes before its request line.
-const LATER_ROOM: usize = 32;
-/// Answers kept for takes, every caller together: a caller keeps one.
-const MAX_KEPT: usize = 8;
-/// How long an answer is kept for its take.
-const KEEP_NS: u64 = 60_000_000_000;
 
 /// Closes every `NetDest` this process started with. Since #779 NET brings
 /// none; kept so a plan line that adds one never leaves `fetch` a destination
@@ -75,6 +70,13 @@ fn destination(moved: &[Handle]) -> Option<Handle> {
     let info = sys::handle_info(*dest).ok()?;
     let needed = Rights::RESOLVE.bits() | Rights::CONNECT.bits();
     (info.kind() == Some(Kind::NetDest) && info.rights & needed == needed).then_some(*dest)
+}
+
+/// Lets go of the handles a call moved in.
+fn close_all(moved: &[Handle]) {
+    for handle in moved {
+        let _ = sys::handle_close(*handle);
+    }
 }
 
 /// What `request` comes to on the caller's `moved` handle: the head, and the
@@ -168,9 +170,7 @@ fn made(config: &Arc<ClientConfig>, request: &[u8], moved: &[Handle]) -> (String
         ),
         false => serve(config, request, moved),
     };
-    for handle in moved {
-        let _ = sys::handle_close(*handle);
-    }
+    close_all(moved);
     let shm = match (&result, body.is_empty()) {
         (Ok(_), false) => match body_shm(&body) {
             Ok(shm) => Some(shm),
@@ -199,56 +199,15 @@ fn reply(answer: &str, shm: Option<Handle>) {
     }
 }
 
-/// An answer kept for a caller's take (`kainet::later`).
-struct Kept {
-    caller: u64,
-    id: u32,
-    answer: String,
-    shm: Option<Handle>,
-    at_ns: u64,
-}
+/// An answer kept for a caller's take (`kainet::later`): its line and body.
+type Kept = (String, Option<Handle>);
 
-/// The answers kept for takes: at most [`MAX_KEPT`], one a caller, each for
-/// [`KEEP_NS`].
-#[derive(Default)]
-struct Keep {
-    kept: Vec<Kept>,
-}
-
-impl Keep {
-    fn drop_one(kept: Kept) {
-        if let Some(shm) = kept.shm {
+/// Closes the bodies of answers let go untaken.
+fn close_let_go(dropped: Vec<Kept>) {
+    for (_, shm) in dropped {
+        if let Some(shm) = shm {
             let _ = sys::handle_close(shm);
         }
-    }
-
-    /// Lets go of what is older than [`KEEP_NS`].
-    fn expire(&mut self, now_ns: u64) {
-        let (old, kept): (Vec<_>, Vec<_>) = core::mem::take(&mut self.kept)
-            .into_iter()
-            .partition(|k| now_ns.saturating_sub(k.at_ns) >= KEEP_NS);
-        self.kept = kept;
-        old.into_iter().for_each(Self::drop_one);
-    }
-
-    /// Keeps `kept`, in place of anything its caller had kept.
-    fn put(&mut self, kept: Kept) {
-        if let Some(at) = self.kept.iter().position(|k| k.caller == kept.caller) {
-            Self::drop_one(self.kept.remove(at));
-        }
-        if self.kept.len() >= MAX_KEPT {
-            Self::drop_one(self.kept.remove(0));
-        }
-        self.kept.push(kept);
-    }
-
-    /// The answer kept for `caller`'s request `id`, taken.
-    fn take(&mut self, caller: u64, id: u32) -> Option<Kept> {
-        let at = self
-            .kept
-            .iter()
-            .position(|k| k.caller == caller && k.id == id)?;
-        Some(self.kept.remove(at))
     }
 }
 
@@ -265,15 +224,15 @@ fn main() -> i32 {
     };
     close_own_destinations();
     println!("fetch: ready");
-    // Room for a start's `start <id> ` before its request line.
-    let mut request = alloc::vec![0u8; wire::MAX_ASK + LATER_ROOM + 1];
-    let mut keep = Keep::default();
+    // Room for the longest start, and a byte to spare.
+    let mut request = alloc::vec![0u8; later::MAX_MESSAGE + 1];
+    let mut keep = later::Keep::<Kept>::default();
     loop {
         let mut info = RecvInfo::default();
         let len = match sys::recv_h(&mut request, IDLE_MS, &mut info) {
             Ok(len) => len,
             Err(kabi::Error::TimedOut) => {
-                keep.expire(sys::time_ns());
+                close_let_go(keep.expire(sys::time_ns()));
                 continue;
             }
             Err(error) => {
@@ -282,10 +241,18 @@ fn main() -> i32 {
                 continue;
             }
         };
-        keep.expire(sys::time_ns());
+        close_let_go(keep.expire(sys::time_ns()));
         let count = (info.handle_count as usize).min(MAX_TRANSFER);
         let moved: Vec<Handle> = info.handles[..count].iter().map(|&h| Handle(h)).collect();
-        let text = core::str::from_utf8(&request[..len.min(request.len())]).unwrap_or("");
+        // `recv_h` gives the message's whole length but copies only what the
+        // buffer holds: a longer message is refused whole, never read cut
+        // short (#831).
+        if len > later::MAX_MESSAGE {
+            close_all(&moved);
+            reply(&later::too_long(), None);
+            continue;
+        }
+        let text = core::str::from_utf8(&request[..len]).unwrap_or("");
         match Message::parse(text) {
             // A plain request: answered when it is made.
             None => {
@@ -296,27 +263,18 @@ fn main() -> i32 {
             Some(Ok(Message::Start { id, ask })) => {
                 reply(later::STARTED, None);
                 let (answer, shm) = made(&config, ask.text().as_bytes(), &moved);
-                keep.put(Kept {
-                    caller: info.caller_pid,
-                    id,
-                    answer,
-                    shm,
-                    at_ns: sys::time_ns(),
-                });
+                close_let_go(keep.put(info.caller_pid, id, (answer, shm), sys::time_ns()));
             }
             Some(Ok(Message::Take { id })) => {
-                for handle in &moved {
-                    let _ = sys::handle_close(*handle);
-                }
+                close_all(&moved);
                 match keep.take(info.caller_pid, id) {
-                    Some(kept) => reply(&kept.answer, kept.shm),
-                    None => reply(later::NONE, None),
+                    later::Taken::Answer((answer, shm)) => reply(&answer, shm),
+                    later::Taken::Gone => reply(later::GONE, None),
+                    later::Taken::None => reply(later::NONE, None),
                 }
             }
             Some(Err(why)) => {
-                for handle in &moved {
-                    let _ = sys::handle_close(*handle);
-                }
+                close_all(&moved);
                 reply(&wire::answer(&Err(Error::BadUrl(fetch::why(why)))), None);
             }
         }

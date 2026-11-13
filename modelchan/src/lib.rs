@@ -8,7 +8,9 @@
 //! - [`listing`]: `kai-models 1`, the list `updated` answers `models` with;
 //! - [`asker`]: who may ask `updated` what.
 //! - [`fetch`]: a model downloaded in the OS (P5 task 9): which targets fit,
-//!   the one ask, and the job `kainet`'s verified download runs.
+//!   the one ask, and the job `kainet`'s verified download runs;
+//! - [`offered`]: `kai-offers 1`, the targets `updated` answers `models
+//!   offers` with, and whether each fits.
 //!
 //! All are pure: `updated` reads the disk, writes the store through `fs`, and
 //! asks `llm` for its health, and hands what it got to these.
@@ -21,6 +23,7 @@ pub mod asker;
 pub mod fetch;
 pub mod import;
 pub mod listing;
+pub mod offered;
 pub mod trial;
 
 pub use comp_models::Sha256;

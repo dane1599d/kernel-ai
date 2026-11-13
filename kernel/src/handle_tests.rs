@@ -77,13 +77,18 @@ fn startup_handles() -> Result<(), &'static str> {
         return Err("handles: a destroyed table still grants a right");
     }
     handle::create(slot, cap::NET, 99, &[]).map_err(|_| "handles: cannot make a table")?;
-    let refused = handle::need(slot, cap::RESOLVE).is_err()
-        && handle::need(slot, cap::NET | cap::POLICY).is_err()
-        && handle::need(slot, cap::NET).is_err()
-        && !handle::holds(slot, Kind::NetDest, Rights::CONNECT);
+    // Two claims, failed apart: NET alone puts no NetDest in the table, and
+    // need() refuses NET (and anything naming it) without one.
+    let held = handle::holds(slot, Kind::NetDest, Rights::CONNECT);
+    let needed = handle::need(slot, cap::RESOLVE).is_ok()
+        || handle::need(slot, cap::NET | cap::POLICY).is_ok()
+        || handle::need(slot, cap::NET).is_ok();
     handle::destroy(slot);
-    if !refused {
+    if held {
         return Err("handles: NET alone gave a NetDest handle");
+    }
+    if needed {
+        return Err("handles: need() passed NET with no NetDest held");
     }
     log!("handles: each capability bit gives its startup handle, and only that");
     Ok(())

@@ -117,6 +117,24 @@ pub fn refused(call: &str, arg: &str, value: &str) -> String {
 }
 
 /// Whether `row`'s argument `arg` is what the call acts on.
+/// The first free target of a direct call to `row` whose value is a
+/// placeholder for `line`, as `(argument, value)`: the shell asks which one
+/// instead of running the call. An enum target is checked by its type.
+pub fn placeholder_target<'a>(
+    row: &agentabi::Action,
+    args: impl IntoIterator<Item = (&'a str, &'a str)>,
+    line: &str,
+) -> Option<(&'a str, &'a str)> {
+    use agentabi::ArgType;
+    args.into_iter().find(|(name, value)| {
+        let named = row.args.iter().find(|arg| arg.name == *name);
+        let free = named.is_some_and(|arg| {
+            !matches!(arg.ty, ArgType::Enum(_) | ArgType::Opt(ArgType::Enum(_)))
+        });
+        free && is_target(row, name) && placeholder(value, line)
+    })
+}
+
 pub fn is_target(row: &agentabi::Action, arg: &str) -> bool {
     row.args
         .iter()

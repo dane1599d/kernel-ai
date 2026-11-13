@@ -122,6 +122,12 @@ pub const FS: &str = "fs caps=serve+partition pages=8192 stack_pages=64 burst_ms
 /// `models` role from the image's repository (`bootfiles=pkgrepo`).
 pub const UPDATED: &str = "updated caps=update+serve+call uses=llm \
     dir=trust+updates+restart+models bootfiles=pkgrepo pages=2048 stack_pages=128 burst_ms=5000";
+/// `updated`'s words in the system plan beyond [`UPDATED`]'s (P5 task 9): the
+/// `NetDest` the model download reaches Hugging Face through, on 443, its
+/// resolve host and its file storage under `cdn.hf.co`, which
+/// `modelchan::fetch::HUGGING_FACE` narrows to the names under it. A test boot
+/// plans its own (`kernel/src/selftest.rs`), since a line takes one `netdest=`.
+pub const UPDATED_NET: &str = " netdest=proto:tcp,ports:443,hosts:huggingface.co+cdn.hf.co";
 /// The live `notes` component, run by the shared `comphost` program, without its
 /// arguments.
 const NOTES_BASE: &str =

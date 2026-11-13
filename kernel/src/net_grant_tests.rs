@@ -58,9 +58,15 @@ const CARD_MS: u64 = 120_000;
 /// Time with no card expected: the last list request and the first of the
 /// requests again; then the time the app's answers have after the `undo`.
 const QUIET_MS: u64 = 10_000;
-/// How long the Deny is left to reach the app before the `undo`: many of
-/// comphost's 500 ms asks, well inside the Deny's minute.
-const DENIED_MS: u64 = 5_000;
+/// What the shell's `net denied` says of the revoked host's Deny once it has
+/// refused the app's waiting request: that refusal is the app's answer, held
+/// for comphost's next ask, so an `undo` after it cannot overtake it.
+const REFUSED_ONE: &str = "net-fixture to updates.kai.test: refused ";
+/// How often the case asks the shell, while no card may come.
+const DENIED_POLL_MS: u64 = 250;
+/// How long the case waits for that refusal: inside the Deny's minute
+/// (`shellcore::netask::DENY_HOLDS_NS`), after which the app would ask again.
+const DENIED_WAIT_MS: u64 = 50_000;
 /// Settings' start: comphost's, the component's compile, and its reads.
 const OPEN_MS: u64 = 60_000;
 const SETTINGS_READS_MS: u64 = 5_000;
@@ -93,6 +99,28 @@ fn card(host: &str, allow: bool) -> Result<(), &'static str> {
     log!("net-grant: the card names net-fixture and {host}; the key {key} it");
     log!("net-grant: ready for keys");
     wait("the card's answer", || !ask_box::shown())
+}
+
+/// Waits, with no card, until the shell's Deny of the revoked host has
+/// refused the app at least once (`net denied`), well inside its minute.
+fn denied_once() -> Result<(), &'static str> {
+    for _ in 0..DENIED_WAIT_MS / DENIED_POLL_MS {
+        let said = ipc::call("shell", b"net denied", CARD_MS)
+            .map_err(|_| "net-grant: the shell did not answer net denied")?;
+        let said = alloc::string::String::from_utf8_lossy(&said);
+        // `elsewhere.kai.test`'s Deny may still hold too: its own line.
+        let line = said.lines().find(|line| line.starts_with(REFUSED_ONE));
+        let count = line
+            .and_then(|line| line[REFUSED_ONE.len()..].split(' ').next())
+            .and_then(|n| n.parse::<u32>().ok());
+        if let (Some(line), Some(1..)) = (line, count) {
+            log!("net-grant: the Deny refused the app's request: {line}");
+            return Ok(());
+        }
+        quiet(DENIED_POLL_MS)?;
+    }
+    log!("net-grant: timed out waiting for the Deny to refuse the app");
+    Err("net-grant: the Deny never refused the app")
 }
 
 /// No card comes for `ms`.
@@ -134,10 +162,11 @@ pub fn check() -> Result<(), &'static str> {
     log!("net-grant: ready for keys");
     // The revoke holds: the app's next request asks again, and is denied.
     card(REVOKED, false)?;
-    // The Deny reaches the app at comphost's next ask (every 500 ms), and holds
-    // while the app asks again, with no card. Typed sooner, the `undo` would
-    // put the grant back before the app was told (#771's run 42839655660).
-    quiet(DENIED_MS)?;
+    // The Deny holds while the app asks again, with no card, and its refusal
+    // is the app's answer once the shell has given it. Typed sooner, the
+    // `undo` would put the grant back before the app was told (#771's run
+    // 42839655660), so the case waits for that refusal, not for a time.
+    denied_once()?;
     // The person's `undo` puts the revoked grant back.
     let undone = ipc::call("shell", b"undo", CARD_MS)
         .map_err(|_| "net-grant: the shell did not answer undo")?;

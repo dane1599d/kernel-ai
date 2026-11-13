@@ -137,6 +137,9 @@ struct State {
     settings: settings::Queue,
     /// Apps' network asks for the shell, and its answers (P5 task 13).
     net: deskcore::net_wire::Queue,
+    /// The Models window's switches for the shell, and the shell's answers
+    /// (`deskcore::models_wire`, #556).
+    models: settings::Queue,
     /// The agent's views of windows, for its `ui` rows (P3 task 10).
     agent: deskcore::agent::Agent,
     /// When the panel's "thinking 4s" was last redrawn.
@@ -202,6 +205,7 @@ fn main() -> i32 {
             files: deskcore::files::Files::default(),
             settings: settings::Queue::default(),
             net: deskcore::net_wire::Queue::default(),
+            models: settings::Queue::default(),
             agent: deskcore::agent::Agent::default(),
             ticked_ms: 0,
             card: None,
@@ -563,7 +567,12 @@ fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &RecvInfo) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
         return;
     }
-    if let Some(reply) = settings_request(state, bytes, pid) {
+    if let Some(reply) = wire_request(&settings::SETTINGS, &mut state.settings, bytes, pid) {
+        let _ = sys::reply_h(reply.as_bytes(), &[]);
+        return;
+    }
+    let models = &deskcore::models_wire::MODELS;
+    if let Some(reply) = wire_request(models, &mut state.models, bytes, pid) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
         return;
     }
@@ -760,17 +769,24 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
     Some(String::from("ok"))
 }
 
-/// A `settings ...` request (`deskcore::settings_wire`): only the Settings
-/// app's process may put or read answers, and only the shell may take and
+/// A request on one app's wire (`deskcore::settings_wire`): `settings ...`
+/// for the Settings app, `models ...` for the Models window (`words`). Only
+/// that app's process may put or read answers, and only the shell may take and
 /// answer; anything else is not one, for the next handler.
-fn settings_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
+fn wire_request(
+    words: &settings::Words,
+    queue: &mut settings::Queue,
+    bytes: &[u8],
+    pid: u64,
+) -> Option<String> {
     let text = core::str::from_utf8(bytes).ok()?;
-    if !text.starts_with("settings ") {
+    if !text.starts_with(words.word) {
         return None;
     }
+    let what = words.word.trim_end();
     let caller = name_of(pid);
-    if let Some(lines) = text.strip_prefix(settings::PUT) {
-        return Some(match state.settings.put(&caller, lines) {
+    if let Some(lines) = text.strip_prefix(words.put) {
+        return Some(match queue.put_as(words, &caller, lines) {
             Ok(()) => {
                 wake_shell();
                 String::from("ok")
@@ -778,30 +794,30 @@ fn settings_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String>
             Err(why) => format!("err {why}"),
         });
     }
-    if text == settings::RESULTS {
-        return Some(match caller == settings::SETTINGS_APP {
-            true => state.settings.results(kabi::MAX_MESSAGE - 64),
-            false => String::from("err not the settings app"),
+    if text == words.results {
+        return Some(match caller == words.app {
+            true => queue.results(kabi::MAX_MESSAGE - 64),
+            false => format!("err {}", words.refused),
         });
     }
     if caller != "shell" {
-        return Some(String::from("err only the shell answers settings"));
+        return Some(format!("err only the shell answers {what}"));
     }
-    if text == settings::TAKE {
-        let taken = state.settings.take(kabi::MAX_MESSAGE - 64);
-        return Some(settings::encode_take(taken.as_deref()));
+    if text == words.take {
+        let taken = queue.take(kabi::MAX_MESSAGE - 64);
+        return Some(settings::encode_take_for(words, taken.as_deref()));
     }
     let Some(body) = text
-        .strip_prefix(settings::DONE)
-        .and_then(|rest| rest.strip_prefix(settings::SETTINGS_APP))
+        .strip_prefix(words.done)
+        .and_then(|rest| rest.strip_prefix(words.app))
         .and_then(|rest| rest.strip_prefix('\n'))
     else {
-        return Some(String::from("err not a settings request"));
+        return Some(format!("err not a {what} request"));
     };
     match settings::parse_answers(body) {
         Some(answers) => {
             for answer in answers {
-                state.settings.finish(answer);
+                queue.finish(answer);
             }
             Some(String::from("ok"))
         }
@@ -820,7 +836,7 @@ fn net_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     }
     let caller = name_of(pid);
     if let Some(ask) = text.strip_prefix(wire::ASK) {
-        let reply = state.net.ask(&caller, ask);
+        let reply = state.net.ask(&caller, ask, now_ms());
         if reply == wire::WAIT {
             wake_shell();
         }
@@ -835,7 +851,7 @@ fn net_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     let Some(done) = text.strip_prefix(wire::DONE) else {
         return Some(String::from("err not a network request"));
     };
-    Some(match state.net.done(done) {
+    Some(match state.net.done(done, now_ms()) {
         Ok(()) => String::from("ok"),
         Err(why) => format!("err {why}"),
     })

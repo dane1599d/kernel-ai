@@ -86,6 +86,20 @@ pub const fn table_pages(len: u64) -> u64 {
 pub const CONTEXT_CAP: usize = 2048;
 /// The llm service's KV slots: the act prefix's and the script prompt's.
 pub const KV_SLOTS: usize = 2;
+
+/// The length of a model's SHA-256 in hex, as the Models window names the model
+/// to switch to (`kai:models` `use-model`, #556) and the shell takes it.
+pub const SHA256_HEX: usize = 64;
+/// The word a switch from the Models window starts with, before the SHA-256:
+/// `use <sha256>`, as the host queues it and the shell reads it.
+pub const SWITCH: &str = "use ";
+
+/// Whether `text` is a SHA-256 as the window sends it: exactly
+/// [`SHA256_HEX`] lowercase hex digits. The host checks it when the app calls,
+/// and the shell again when the switch reaches it.
+pub fn is_sha256_hex(text: &str) -> bool {
+    text.len() == SHA256_HEX && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
 /// Bytes the engine's f16 KV caches may take (L6): [`KV_SLOTS`] slots of
 /// [`CONTEXT_CAP`] positions of Qwen3-4B (36 layers of 1,024 keys and 1,024
 /// values, 144 KiB a position), 576 MiB; the 0.6B and 1.7B (28 such layers) take
@@ -260,6 +274,19 @@ pub fn shape(text: &str) -> alloc::string::String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_switch_names_its_model_by_a_whole_lowercase_sha256() {
+        let sha = "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597";
+        assert!(super::is_sha256_hex(sha));
+        let upper = sha.to_ascii_uppercase();
+        let long = alloc::format!("{sha}0");
+        let spaced = alloc::format!(" {}", &sha[1..]);
+        for bad in ["", &sha[..63], &long, &upper, &spaced, "qwen3-4b-2507"] {
+            assert!(!super::is_sha256_hex(bad), "{bad:?}");
+        }
+        assert_eq!(super::SWITCH.len() + super::SHA256_HEX, 68);
+    }
+
     #[test]
     fn a_disk_with_a_role_is_never_the_model() {
         let gguf = b"GGUF\x03\0\0\0rest of the file";

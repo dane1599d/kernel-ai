@@ -35,6 +35,12 @@ pub(crate) fn register(engine: &mut Engine, line: &Rc<Line>, max_output: usize) 
     let line = Rc::clone(line);
     engine.register_fn("show", move |data: Data| {
         engine::capture_output(&line, max_output, &data.text);
+        // What was shown came from `data.source`: the reply is not remembered
+        // as text the model reads later (#831).
+        let mut shown = line.shown.borrow_mut();
+        if !shown.contains(&data.source) {
+            shown.push(data.source);
+        }
     });
 }
 
@@ -85,5 +91,19 @@ mod tests {
         let (result, output) = run("show(note_read());");
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(output, "rm -rf the secret\n");
+    }
+
+    #[test]
+    fn show_notes_each_source_once() {
+        let line = Line::new();
+        let mut engine = Engine::new();
+        register(&mut engine, &line, 4096);
+        engine.register_fn("note_read", || Data::new("note", "a"));
+        engine.register_fn("web_read", || Data::new("web", "b"));
+        engine
+            .run("show(note_read()); show(web_read()); show(note_read());")
+            .unwrap();
+        assert_eq!(line.take_shown(), ["note", "web"]);
+        assert!(line.take_shown().is_empty());
     }
 }

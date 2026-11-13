@@ -11,8 +11,10 @@
 //! Only the process the system image names [`MODELS_APP`] is granted
 //! `kai:models` (its plan line, never its package, and only for the image's
 //! own versions), and only it has a route to `updated`, which answers that
-//! process `models` and nothing else (`modelchan::asker`). The window changes
-//! nothing: a switch or an import is Kai's row.
+//! process `models` and nothing else (`modelchan::asker`). A switch never goes
+//! that way: the window's `use-model` goes to the shell through `desktop`, as
+//! Settings' changes do (`settings.rs`, [`crate::kai_settings::Channel`]), and
+//! the shell runs Kai's `model_use` row. An import is Kai's row alone.
 
 use alloc::format;
 use alloc::string::String;
