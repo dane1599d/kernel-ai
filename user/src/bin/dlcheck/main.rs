@@ -37,6 +37,8 @@
 
 extern crate alloc;
 
+mod split;
+
 use user::kaifs as store;
 
 use alloc::format;
@@ -51,6 +53,7 @@ use kainet::http::{Fetch, HttpError, Limits, Method, Range, TlsConnect, Url};
 use kainet::tls::TlsError;
 use rustls::{CertificateError, ClientConfig};
 use sha2::{Digest, Sha256};
+use split::{Split, TimedConnect, TimedDial, TimedPartial, add, ms};
 use store::Kaifs;
 use user::tls::{self, NetDial};
 use user::{arg, args, println, sys};
@@ -254,6 +257,8 @@ struct Runs {
     /// Body bytes taken, and the time it took.
     bytes: u64,
     ns: u64,
+    /// Where that time went.
+    split: Split,
 }
 
 /// Downloads `job` into `partial`, resuming after each cut (at most
@@ -273,6 +278,7 @@ fn runs(
         report: None,
         bytes: 0,
         ns: 0,
+        split: Split::default(),
     };
     let started = sys::time_ns();
     loop {
@@ -304,38 +310,56 @@ fn once(
     let clock = || sys::time_ns();
     // The handle decides which hosts; the URL must still be https on 443.
     let allow = |_: &str, port: u16| port == 443;
-    download(list, partial, &mut |range: Range, sink| {
+    let split = &got.split;
+    let mut timed = TimedPartial {
+        inner: partial,
+        split,
+    };
+    download(list, &mut timed, &mut |range: Range, sink| {
+        let started = clock();
         let index = (range.first / list.chunk) as usize;
         if let Some(asked) = got.asked.get_mut(index) {
             *asked = asked.saturating_add(1);
         }
         // Each chunk is a request of its own, and no wait of it outlasts its
         // deadline.
-        let deadline_ns = clock().saturating_add(REQUEST_NS);
+        let deadline_ns = started.saturating_add(REQUEST_NS);
         let fetch = Fetch {
             limits: Limits::new(list.chunk, deadline_ns),
             allow: &allow,
             clock: &clock,
         };
-        let mut connect = TlsConnect {
-            config: Arc::clone(&net.config),
-            dial: NetDial {
-                dest: net.dest,
-                bulk: true,
-                deadline_ns,
+        let mut connect = TimedConnect {
+            inner: TlsConnect {
+                config: Arc::clone(&net.config),
+                dial: TimedDial {
+                    inner: NetDial {
+                        dest: net.dest,
+                        bulk: true,
+                        deadline_ns,
+                    },
+                    split,
+                },
             },
+            split,
         };
         let half = list.chunk / 2;
         let mut taken = 0u64;
         let stopping = stop == Some(index);
         let stopped = &mut got.stopped;
         let bytes = &mut got.bytes;
+        // From the first body bytes to the last passed on.
+        let mut first = None;
+        let mut last = 0u64;
         let fetched = fetch.run(
             &mut connect,
             Method::Get,
             &job.target,
             Some(range),
             &mut |b| {
+                let now = clock();
+                first.get_or_insert(now);
+                last = now;
                 if stopping && taken + b.len() as u64 >= half {
                     *stopped = true;
                     return Err(HttpError::Connect(
@@ -344,10 +368,18 @@ fn once(
                 }
                 taken += b.len() as u64;
                 *bytes += b.len() as u64;
-                sink(b)
+                let passed = sink(b);
+                last = clock();
+                passed
             },
-        )?;
-        Ok(Answer::from(&fetched))
+        );
+        if let Some(first) = first {
+            split
+                .body
+                .set(split.body.get() + last.saturating_sub(first));
+        }
+        add(&split.fetch, started);
+        Ok(Answer::from(&fetched?))
     })
 }
 
@@ -394,6 +426,7 @@ fn blob(net: &Net, dir: Handle, job: &Job, first: bool) -> Result<(), String> {
         rate % 100,
         list.chunk
     );
+    print_split(&got, list.chunk);
     if first {
         let mark = store::marked(dir, &job.name)?;
         if !got.stopped || mark != middle || got.asked[middle] != 1 {
@@ -428,6 +461,42 @@ fn blob(net: &Net, dir: Handle, job: &Job, first: bool) -> Result<(), String> {
         "dlcheck: boot 2: the cut at chunk {cut} fetched again only that chunk; the whole target checked out and was moved in"
     );
     Ok(())
+}
+
+/// Where `got`'s time went ([`split`]), a line each for the network, kaifs,
+/// and the rest. Each fits one console piece.
+fn print_split(got: &Runs, chunk: u64) {
+    let s = &got.split;
+    // The bodies' own rate, in hundredths of a MB/s.
+    let body = got.bytes * 100_000 / s.body.get().max(1);
+    println!(
+        "dlcheck: split: fetches {} ms: {} connections, dns {}, tcp {}, tls {}; heads {}; bodies {} at {}.{:02} MB/s",
+        ms(s.fetch.get()),
+        s.connections.get(),
+        ms(s.dns.get()),
+        ms(s.tcp.get()),
+        ms(s.tls()),
+        ms(s.head()),
+        ms(s.body.get()),
+        body / 100,
+        body % 100
+    );
+    let rest = got.ns.saturating_sub(s.fetch.get() + s.kaifs());
+    println!(
+        "dlcheck: split: kaifs {} ms: {} writes {}, {} marks {}, re-reads {}, move-in {}; the rest {} ms",
+        ms(s.kaifs()),
+        s.writes.get(),
+        ms(s.write.get()),
+        s.marks.get(),
+        ms(s.mark.get()),
+        ms(s.read.get()),
+        ms(s.finish.get()),
+        ms(rest)
+    );
+    println!(
+        "dlcheck: split: the rest is hashes and copies; download hashes each chunk twice, and one SHA-256 of a chunk takes {} us",
+        split::sha256_us(usize::try_from(chunk).unwrap_or(usize::MAX))
+    );
 }
 
 /// `flipped`: refused at its flipped chunk, which is never written.

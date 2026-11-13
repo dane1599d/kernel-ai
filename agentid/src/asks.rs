@@ -143,7 +143,7 @@ impl Asks {
             if mine >= MAX_PER_AGENT {
                 return Err(AskError::TooMany);
             }
-            if others >= MAX_OPEN - KAI_ROOM {
+            if others >= MAX_OPEN - KAI_ROOM || self.open.len() >= MAX_OPEN {
                 return Err(AskError::Full);
             }
         }

@@ -88,6 +88,15 @@ fn a_bad_or_doubled_netdest_fails_its_line() {
         "a netdest=llm netdest=hosts:a.example",
         "a netdest=hosts:a.example netdest=llm",
         "a netdest=llm unsupervised",
+        // Only the `llm` line running `llm`, with net in its ceiling, may say
+        // netdest=llm, once and exactly so (the manager's review of #779).
+        "llm caps=serve+net netdest=llm netdest=llm",
+        "llm caps=serve+net netdest=LLM",
+        "llm caps=serve+net netdest=llm,ports:443",
+        "llm caps=serve netdest=llm",
+        "llm netdest=llm",
+        "web caps=serve+net netdest=llm",
+        "llm program=other caps=serve+net netdest=llm",
     ] {
         let plan = parse_plan(line);
         assert!(plan.services.is_empty(), "{line}");

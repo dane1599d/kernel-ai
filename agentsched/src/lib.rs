@@ -35,9 +35,11 @@
 //! sequences, and the foreground decodes alone unless [`Config::batch_foreground`].
 //! Only sequences already resident and ready to decode join, so a batch forms among
 //! agents the round robin has served in turn; the others ride along without paying
-//! the visit's deficit. Whether it pays is S13-2's measurement (on the runners, 1.00x
-//! the throughput with 2 sequences and 1.60x with 4), which is why serial is the
-//! default.
+//! the visit's deficit. Whether it pays is S13-2's measurement, and it failed: the best
+//! path measured is 1.28x the throughput with 2 sequences (avx2, 4 threads) against
+//! the 1.6x bar, and the plain kernels gave 1.00x (1.60x with 4 sequences, 1.79x with
+//! 8), which is why serial is the default (the row `2026-11-09-s13-2-batch-decode`
+//! has the runs).
 //!
 //! **Starvation.** A lower class runs whenever every higher class is empty. Within
 //! the classes below the foreground, a request waits at most [`AGING_MS`] plus a
@@ -161,7 +163,7 @@ impl Agent {
 /// Whether sequences decode together.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Batch {
-    /// One sequence at a time: S13-2's fail result, so the default until it passes.
+    /// One sequence at a time: S13-2 failed (best 1.28x at 2 sequences against 1.6x), so the default.
     Serial,
     /// Up to this many (2 to [`MAX_BATCH`]) of one class.
     Up(u8),

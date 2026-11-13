@@ -15,12 +15,27 @@ use alloc::vec::Vec;
 use llmproto::query::{self, QueryKind, QueryRequest};
 use rhai::{Array, Engine};
 
+/// The longest URL `fetch` takes: `kainet::wire::MAX_URL` (shellcore does not
+/// link kainet; a test holds the two equal).
+const MAX_URL: usize = 2048;
+
+/// Refuses a fetch whose URL, `https://<host><path>` (an empty path is `/`),
+/// is longer than `fetch` takes, before anything is asked or sent (#831).
+fn url_fits(host: &str, path: &str) -> Result<(), String> {
+    let len = "https://".len() + host.len() + path.len().max(1);
+    match len > MAX_URL {
+        true => Err(format!("the URL is longer than {MAX_URL} bytes")),
+        false => Ok(()),
+    }
+}
+
 pub(super) fn bind(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx: Tx) -> bool {
     let fail = move |why: String| rhai_error(format!("{name}: {why}"));
     match name {
         "net_fetch" => {
             let (h2, tx2) = (Rc::clone(&h), tx.clone());
             engine.register_fn(name, move |host: &str| -> RhaiResult<data::Data> {
+                url_fits(host, "").map_err(fail)?;
                 tx2.approved(name, &[host])?;
                 h2.net_fetch(host, "")
                     .map(|text| data::Data::new("web", text))
@@ -30,6 +45,7 @@ pub(super) fn bind(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx:
             engine.register_fn(
                 name,
                 move |host: &str, path: &str| -> RhaiResult<data::Data> {
+                    url_fits(host, path).map_err(fail)?;
                     tx.approved(name, &[host, path])?;
                     h.net_fetch(host, path)
                         .map(|text| data::Data::new("web", text))
@@ -42,6 +58,7 @@ pub(super) fn bind(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx:
             engine.register_fn(
                 name,
                 move |host: &str, path: data::Data| -> RhaiResult<data::Data> {
+                    url_fits(host, path.text()).map_err(fail)?;
                     tx3.approved(name, &[host, path.text()])?;
                     h3.net_fetch(host, path.text())
                         .map(|text| data::Data::new("web", text))
@@ -143,4 +160,24 @@ fn query(
     let answer = host.query(&request)?;
     let answer = query::check_answer(&request.kind, &answer)?;
     Ok(data::Data::new(d.source, answer))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_url_limit_is_fetchs_and_a_longer_url_is_refused() {
+        assert_eq!(MAX_URL, kainet::wire::MAX_URL);
+        // `https://example.com` is 19 bytes.
+        let fits = format!("/{}", "x".repeat(MAX_URL - 20));
+        assert_eq!(url_fits("example.com", &fits), Ok(()));
+        assert_eq!(url_fits("example.com", ""), Ok(()));
+        let long = format!("{fits}x");
+        assert_eq!(
+            url_fits("example.com", &long),
+            Err(String::from("the URL is longer than 2048 bytes"))
+        );
+        assert!(url_fits(&"a".repeat(MAX_URL), "").is_err());
+    }
 }

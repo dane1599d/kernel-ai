@@ -60,7 +60,7 @@ pub struct Options {
     /// `--accel wsl`: QEMU runs inside WSL2, started from Windows (`wsl/launch.rs`),
     /// and `accel` is KVM there.
     pub wsl: bool,
-    /// `run --workload A|B [--seed N]`: M10's mix, run as ring-3 `work` processes.
+    /// `run --workload A|B|C [--seed N]`: M10's mix, run as ring-3 `work` processes.
     pub workload: Option<(String, u64)>,
     /// `test --shard K/N`: boot only shard K (from 1) of N; CI splits the cases
     /// across parallel jobs this way.
@@ -207,8 +207,10 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                 options.local = Some(id.clone());
             }
             "--workload" if task == Task::Run => {
-                let mix = rest.next().filter(|mix| matches!(mix.as_str(), "A" | "B"));
-                let mix = mix.ok_or("--workload expects the mix A or B")?;
+                let mix = rest
+                    .next()
+                    .filter(|mix| matches!(mix.as_str(), "A" | "B" | "C"));
+                let mix = mix.ok_or("--workload expects the mix A, B or C")?;
                 options.workload = Some((mix.clone(), 1));
             }
             "--seed" if task == Task::Run && options.workload.is_some() => {
@@ -372,7 +374,9 @@ mod tests {
         let options = parse_args(&args(&["run", "--workload", "A", "--seed", "4"])).unwrap();
         assert_eq!(options.workload_args(), " workload=A seed=4");
         assert_eq!(parse_args(&args(&["run"])).unwrap().workload_args(), "");
-        assert!(parse_args(&args(&["run", "--workload", "C"])).is_err());
+        let mix_c = parse_args(&args(&["run", "--workload", "C"])).unwrap();
+        assert_eq!(mix_c.workload_args(), " workload=C seed=1");
+        assert!(parse_args(&args(&["run", "--workload", "D"])).is_err());
         assert!(parse_args(&args(&["run", "--seed", "4"])).is_err());
         assert!(parse_args(&args(&["test", "--workload", "A"])).is_err());
     }

@@ -62,6 +62,12 @@ pub fn parse(value: &str) -> Result<(Option<Dest>, NetBudget), Refusal> {
     if dest.hosts.iter().any(|host| !host.contains('.')) {
         return Err(refuse("a host is a name of two labels or more"));
     }
+    // What is written is the destination's canonical text, which can be up to 21 bytes
+    // longer than a compact one was (`proto:tcp,addrs:none,` is left out of a short
+    // form): over netdest's limit it would be refused on the next read.
+    if dest.to_string().len() > netdest::MAX_TEXT {
+        return Err(refuse("the destination is too long once written in full"));
+    }
     // The destination is judged first, so a bad destination is refused as it always was
     // whatever follows it, and the budget word second.
     let budget = match word {
