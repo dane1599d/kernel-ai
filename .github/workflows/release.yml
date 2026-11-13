@@ -60,9 +60,12 @@ defaults:
 jobs:
   # ADR 0008 §2: `release_seq` only rises. A tag's `release/seq` must be above the
   # highest published one. Until `kernel-ai-updates` publishes TUF metadata (P4
-  # task 18), that is the previous `v*` tag's `release/seq`.
+  # task 18), that is the previous `v*` tag's `release/seq`. Only a tag is a
+  # release: a dry run (a pull request, or on demand) is not, and once a tag
+  # exists its unbumped seq would fail every dry run (#754, after v0.1.0-rc.1).
   seq:
     name: release/seq is above the last release's
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
