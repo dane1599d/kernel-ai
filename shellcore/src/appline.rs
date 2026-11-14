@@ -6,11 +6,13 @@
 //!   question and the proposal are the app's, kept between lines, and the
 //!   console's are set aside while it runs, as the AI panel's are. A line typed
 //!   here neither answers nor continues the console's.
-//! - **It cannot ask.** What would wait for a yes (a script the model proposed,
-//!   an `undo` that needs confirming) is refused with a reason, and the proposal
-//!   is dropped, as the panel's is: an app cannot ask on its own behalf, and
-//!   only the console and the desktop's card answer (ADR 0005 section 7). What
-//!   runs at once, local and undoable, is logged and undone like any line.
+//! - **It does not answer.** A call the model proposed waits for the
+//!   desktop's trusted card, as the panel's does (`deskask`): the person
+//!   answers Run or Don't there, never in the window. What the card cannot
+//!   show (a Rhai script, an `undo` that needs confirming) is refused with a
+//!   reason and dropped: an app cannot ask on its own behalf, and only the
+//!   console and the desktop's card answer (ADR 0005 section 7). What runs at
+//!   once, local and undoable, is logged and undone like any line.
 //! - **Only the Terminal may send one**, and only for a person's key or click.
 //!   `shell_line` is not a registry row, so no tier decides it, and no package
 //!   may declare it: the grant is the process the image's plan line names
@@ -134,6 +136,13 @@ impl Shell {
         self.worded = false;
         self.done_line = None;
         let mut reply = self.eval(line);
+        // A question the trusted card can show waits for it (`deskask`).
+        if reply.confirm.is_some() && self.pending.is_some() {
+            reply = match self.wait_for_card(&reply) {
+                Ok(waits) => Reply::ok(waits),
+                Err(why) => Reply::err(why),
+            };
+        }
         if reply.confirm.is_some() || self.pending.is_some() || self.undo_asking.is_some() {
             if let Some(left) = self.pending.take() {
                 let outcome = "discarded: the terminal app cannot ask yet";

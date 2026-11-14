@@ -68,7 +68,7 @@ fn repin(old: Option<(String, String)>, new: Option<(String, String)>) {
 /// Sends one open or command to the edit service; its reply, made printable, or
 /// why there is none (as an `err` reply). The journal records what was answered.
 pub fn call(message: &[u8]) -> String {
-    match exchange(message, &|| false) {
+    match exchange(message, &|| false, &|| false) {
         Ok(reply) => {
             // The line saying a build moved the cursor is for the journal alone.
             let shown = editcore::ipc::split_moved(&reply).1;
@@ -86,9 +86,11 @@ pub fn call(message: &[u8]) -> String {
 /// service sent it, with the line a build moved the cursor (`#at path:line`), at
 /// most [`kabi::MAX_MESSAGE`] bytes. The service cleans what it sends, and the
 /// editor app draws it through `uikit`, which draws no control character.
-/// `cancel` ends the wait when the caller is killed or stopped.
-pub fn call_for_app(message: &[u8], cancel: &dyn Fn() -> bool) -> String {
-    match exchange(message, cancel) {
+/// `cancel` ends the wait when the caller is killed; `stop`, the person's Stop,
+/// ends it only before the service takes the message, so an edit it made is
+/// always journaled.
+pub fn call_for_app(message: &[u8], cancel: &dyn Fn() -> bool, stop: &dyn Fn() -> bool) -> String {
+    match exchange(message, cancel, stop) {
         Ok(reply) => {
             let mut text = String::from_utf8_lossy(&reply).into_owned();
             text.truncate(text.floor_char_boundary(kabi::MAX_MESSAGE));
@@ -133,20 +135,27 @@ impl Drop for Turn {
 
 /// The exchange itself: the service's reply, or why there is none. The journal
 /// records what was answered.
-fn exchange(message: &[u8], cancel: &dyn Fn() -> bool) -> Result<Vec<u8>, String> {
-    let Some(_turn) = Turn::take(cancel) else {
+fn exchange(
+    message: &[u8],
+    cancel: &dyn Fn() -> bool,
+    stop: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, String> {
+    // Before the message is sent, a Stop ends the wait as a kill does.
+    let waiting = || cancel() || stop();
+    let Some(_turn) = Turn::take(&waiting) else {
         return Err(String::from("err cancelled"));
     };
     // The supervisor restarts it within 1.6 s; longer means it is not coming back.
     let bound = hpet::nanos() + BIND_WAIT_NS;
-    if let Err(error) = ipc::wait_bound("edit", bound, cancel) {
+    if let Err(error) = ipc::wait_bound("edit", bound, waiting) {
         return Err(match error {
             ipc::CallError::Cancelled => String::from("err cancelled"),
             _ => String::from("err the edit service is not running (see :ps)"),
         });
     }
     restore_if_new(cancel);
-    let answered = ipc::call_from_unless("edit", message, edit_mode::EDIT_CALL_MS, cancel);
+    let answered =
+        ipc::call_from_unless_stop("edit", message, edit_mode::EDIT_CALL_MS, cancel, stop);
     let (reply, server) = match answered {
         Ok(answered) => answered,
         // No answer: not journaled, so a command that kills the service is never

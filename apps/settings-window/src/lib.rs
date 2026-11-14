@@ -141,8 +141,19 @@ fn log(text: &str) {
     let _ = text;
 }
 
-/// The words `settings_open` takes, in the order of [`Page::ALL`].
-const PAGE_WORDS: [&str; 6] = ["appearance", "access", "rules", "apps", "updates", "about"];
+/// The word `settings_open` takes for `page`. A match, so a page added to
+/// [`Page::ALL`] is a compile error here and not a page that cannot be named.
+fn page_word(page: Page) -> &'static str {
+    match page {
+        Page::Appearance => "appearance",
+        Page::Access => "access",
+        Page::Rules => "rules",
+        Page::Apps => "apps",
+        Page::Updates => "updates",
+        Page::Network => "network",
+        Page::About => "about",
+    }
+}
 
 pub struct SettingsWindow {
     pub settings: Settings,
@@ -299,9 +310,13 @@ impl SettingsWindow {
     /// `settings_open`: shows a page, by the word the agent uses for it.
     pub fn act_open(&mut self, word: &str) -> Result<String, String> {
         let word = word.trim().to_ascii_lowercase();
-        let at = PAGE_WORDS.iter().position(|w| *w == word).ok_or_else(|| {
-            String::from("Pages: appearance, access, rules, apps, updates, about.")
-        })?;
+        let at = Page::ALL
+            .iter()
+            .position(|page| page_word(*page) == word)
+            .ok_or_else(|| {
+                let words: Vec<&str> = Page::ALL.iter().map(|page| page_word(*page)).collect();
+                alloc::format!("Pages: {}.", words.join(", "))
+            })?;
         self.view = View::page(at);
         self.present_logged();
         Ok(alloc::format!("Showing {}.", Page::ALL[at].title()))
@@ -378,3 +393,22 @@ compsdk::component!(SettingsWindow);
 compsdk::events!(SettingsWindow);
 #[cfg(target_family = "wasm")]
 comp_ui_bind::input!(SettingsWindow);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_page_opens_by_its_word_and_a_wrong_word_lists_them_all() {
+        let mut app = SettingsWindow::new(0);
+        for page in Page::ALL {
+            let said = app.act_open(&page_word(page).to_ascii_uppercase());
+            assert_eq!(said, Ok(format!("Showing {}.", page.title())), "{page:?}");
+        }
+        let why = app.act_open("everything").unwrap_err();
+        for page in Page::ALL {
+            assert!(why.contains(page_word(page)), "{why}");
+        }
+        assert!(why.contains("network"), "{why}");
+    }
+}

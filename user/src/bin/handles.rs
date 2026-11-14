@@ -36,6 +36,8 @@
 //! counts the pages, and makes, maps and frees an object of its own.
 //!
 //! With `mode=reboot` it asks POWER_REBOOT for a restart (`handles/power.rs`).
+//! With `mode=stop`, started as `shell`, it checks that the person's Stop ends
+//! a call in flight as Interrupted (`handles/interrupt.rs`).
 //!
 //! With `mode=mem` (lane M) it serves the kernel's anonymous-memory case (see
 //! `handles/mem.rs`).
@@ -56,6 +58,8 @@ use user::{arg, args, println, sys};
 
 #[path = "handles/entropy.rs"]
 mod entropy;
+#[path = "handles/interrupt.rs"]
+mod interrupt;
 #[path = "handles/mem.rs"]
 mod mem;
 #[path = "handles/power.rs"]
@@ -77,6 +81,7 @@ fn main() -> i32 {
         Some("mem") => mem::mem,
         Some("idle") => idle,
         Some("reboot") => power::reboot,
+        Some("stop") => interrupt::stop,
         _ => checks,
     };
     match run() {
