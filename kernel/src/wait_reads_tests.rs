@@ -44,8 +44,11 @@ const IN_CALL_MS: u64 = 700;
 const TITLE: (i32, i32) = (150, 60);
 /// Time for comphost to start the app and paint its window under TCG.
 const OPEN_MS: u64 = 20_000;
-/// How often `seen` is asked.
-const SEEN_MS: u64 = 20;
+/// How often `seen` is asked. Well over comphost's `ui::POLL_MS` (20 ms):
+/// comphost looks at its windows, and takes its effects' results from
+/// `desktop`, only once `svc_recv` has waited that long with no request, so
+/// asked every 20 ms the app never got the answer it was asked about.
+const SEEN_MS: u64 = 100;
 /// How long the shell may take, once it has answered a line, to have the
 /// line's reply reach this case's thread: an answer seen in that time came
 /// at the line's end, not during it. A held request answered too early would
