@@ -196,8 +196,17 @@ fn serve(mut answer: impl FnMut(&str, &[Handle], u64) -> String) -> ! {
     }
 }
 
-/// `catalog` or `catalog <offset>`: one page of `kai-catalog 1`.
+/// `catalog` or `catalog <offset>`: one page of `kai-catalog 1`. `actions
+/// <package>`: an installed app's `kai-actions 1` rows, read from its stored
+/// artifact, so the shell can show them before the app first runs.
 fn answer(vol: &mut dyn Volume, text: &str) -> String {
+    if let Some(name) = text.strip_prefix("actions ") {
+        return match actions(vol, name.trim()) {
+            Ok(rows) if rows.starts_with("err ") => rows,
+            Ok(rows) => format!("ok {rows}"),
+            Err(why) => format!("err {why}"),
+        };
+    }
     let offset = match text.split_once(' ') {
         None if text == "catalog" => Some(0),
         Some(("catalog", n)) => n.parse::<usize>().ok(),
@@ -210,6 +219,34 @@ fn answer(vol: &mut dyn Volume, text: &str) -> String {
         Ok(rows) => catalog::page(&rows, offset, kabi::MAX_MESSAGE),
         Err(why) => format!("err {why}"),
     }
+}
+
+/// Installed package `name`'s rows, as comphost answers `kai-actions 1` for
+/// the artifact it loads (`livecore::rows::reply`): the same checked section,
+/// with the package's version as the label.
+fn actions(vol: &mut dyn Volume, name: &str) -> Result<String, String> {
+    let current = store::current(vol)?;
+    let package = store::generation(vol, current)?
+        .packages
+        .into_iter()
+        .find(|package| package.name == name)
+        .ok_or_else(|| format!("{name} is not installed"))?;
+    let object = vol
+        .read(&store::object_path(&package.sha))?
+        .ok_or_else(|| format!("{name}'s object is not in the store"))?;
+    let files = bundle::files(&object).map_err(String::from)?;
+    let header = files
+        .iter()
+        .find(|(file, _)| *file == bundle::HEADER)
+        .and_then(|(_, text)| core::str::from_utf8(text).ok())
+        .ok_or_else(|| format!("{name}: no header"))?;
+    let header = Header::parse(header)?;
+    let artifact = files
+        .iter()
+        .find(|(file, _)| *file == bundle::ARTIFACT)
+        .map(|(_, bytes)| *bytes)
+        .ok_or_else(|| format!("{name} is not an app"))?;
+    Ok(livecore::rows::reply(&header.version.to_string(), artifact))
 }
 
 /// The catalogue's rows: the current generation's packages, each with the index
@@ -534,16 +571,19 @@ fn install_from<S: Remote + Source>(
     if step.ends_with("-again") {
         let current = store::current(cx.vol)?;
         let parent = store::generation(cx.vol, current)?.parent;
+        let started = sys::time_ns();
         let n = store
             .rollback(&mut cx, parent)
             .map_err(|e| format!("{e:?}"))?;
         undone = format!("undo switched to generation {n}; ");
+        bar("undo", started, ROLLBACK_BAR_MS);
     }
     let want = [Want {
         name: FROM_MIRROR,
         range: None,
     }];
     let before = requests(&source);
+    let started = sys::time_ns();
     let result = store.install(
         &mut cx,
         &mut source,
@@ -553,6 +593,9 @@ fn install_from<S: Remote + Source>(
         false,
     );
     let pieces = requests(&source) - before;
+    if result.is_ok() {
+        bar("install of big", started, INSTALL_BAR_MS);
+    }
     let line = match result {
         Ok(n) => format!(
             "{undone}{FROM_MIRROR} installed from {what} as generation {n}, fetched in {pieces} pieces"
@@ -567,6 +610,26 @@ fn install_from<S: Remote + Source>(
         "{line} (store checks: current {})",
         summary.current
     ))
+}
+
+/// S11-2's bars (ADR 0011): under KVM an install takes at most 3 s and a rollback
+/// at most 100 ms.
+const INSTALL_BAR_MS: u64 = 3_000;
+const ROLLBACK_BAR_MS: u64 = 100;
+
+/// Prints how long `what` took since `started`, against its bar. It is a figure
+/// to read, not a check: the cases run under TCG too, which no bar is for.
+fn bar(what: &str, started: u64, bar_ms: u64) {
+    let ns = sys::time_ns().saturating_sub(started);
+    let verdict = match ns / 1_000_000 <= bar_ms {
+        true => "within",
+        false => "OVER",
+    };
+    println!(
+        "pkg: {what} took {}.{:03} ms: {verdict} the {bar_ms} ms bar",
+        ns / 1_000_000,
+        ns / 1_000 % 1_000
+    );
 }
 
 /// The supervisor's route, from the plan line's `uses=supervisor`.

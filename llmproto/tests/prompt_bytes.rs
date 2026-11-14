@@ -24,6 +24,8 @@ fn the_prompts_are_byte_for_byte_the_ones_measured() {
 const PINNED: [(&str, u64); 4] = [
     ("ask", 0x6cd7_a843_98fe_13ae),
     ("explain", 0x76f4_58c1_d4e9_9882),
-    ("script", 0x3261_1534_e912_013b),
+    // The script prompt changed with processes()'s mib and cpu_ms and the
+    // fs_find row (founder test 2), which the fluency gate re-measures.
+    ("script", 0x2768_9511_08ce_3f36),
     ("tune", 0xd0b5_b456_b542_4d74),
 ];

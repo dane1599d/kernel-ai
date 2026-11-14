@@ -78,7 +78,17 @@ fn napping() -> Result<bool, &'static str> {
 
 /// Uses Notes, so it is awake, then leaves it alone past its nap: whether it
 /// napped.
+/// A click on the panel, wherever the pointer is: a move far down and left
+/// pins it to the screen's bottom-left corner, which is the panel's. The
+/// focus leaves Notes' window, which kept it awake (#869).
+fn focus_the_panel() {
+    crate::ui_tests::report(-10_000, 10_000, 0);
+    crate::ui_tests::report(0, 0, 1);
+    crate::ui_tests::report(0, 0, 0);
+}
+
 fn naps_when_left() -> Result<bool, &'static str> {
+    focus_the_panel();
     let count = "kai-call 1\nfunc app:notes/actions@1.0.0#count\nargs {}\n";
     let counted = ipc::call(APP, count.as_bytes(), CALL_MS)
         .is_ok_and(|reply| String::from_utf8_lossy(&reply).contains("{notes: "));

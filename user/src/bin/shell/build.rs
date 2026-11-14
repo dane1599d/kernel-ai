@@ -374,6 +374,14 @@ pub fn install(
 }
 
 /// One request to `pkg`: the text after its `ok`.
+/// [`ask_pkg`] for an answer of up to one message: an app's rows.
+pub fn ask_pkg_long(pkg: Handle, request: &str) -> Result<String, String> {
+    let mut reply = alloc::vec![0u8; kabi::MAX_MESSAGE];
+    let len = sys::call_route(pkg, request.as_bytes(), &mut reply, PKG_CALL_MS)
+        .map_err(|e| format!("{NO_ANSWER} ({e:?})"))?;
+    pkg_answer(&reply[..len.min(reply.len())])
+}
+
 pub fn ask_pkg(pkg: Handle, request: &str) -> Result<String, String> {
     let mut reply = [0u8; PKG_REPLY];
     let len = sys::call_route(pkg, request.as_bytes(), &mut reply, PKG_CALL_MS)

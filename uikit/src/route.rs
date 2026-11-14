@@ -77,6 +77,22 @@ impl Window {
         marked.first().copied()
     }
 
+    /// The node a window focuses when it takes the keyboard with none
+    /// focused: the first that takes text, a code view, then a text line or
+    /// area. Never a button, toggle or menu, which a stray Space or Enter would
+    /// press (the Terminal's Clear): with none that takes text, nothing.
+    fn default_focus(&self) -> Option<NodeId> {
+        let ring = self.focus_ring();
+        let kind = |id: &NodeId| self.tree.get(*id).map(|n| &n.widget);
+        ring.iter()
+            .find(|id| matches!(kind(id), Some(Widget::Code(_))))
+            .or_else(|| {
+                ring.iter()
+                    .find(|id| matches!(kind(id), Some(Widget::TextLine(_) | Widget::TextArea(_))))
+            })
+            .copied()
+    }
+
     pub(crate) fn set_focus(&mut self, id: Option<NodeId>) {
         if self.st.focus != id {
             self.st.focus = id;
@@ -129,6 +145,14 @@ impl Window {
             Input::FocusIn | Input::FocusOut => {
                 self.st.window_focused = ev == Input::FocusIn;
                 self.dirty = true;
+                // A window that takes the keyboard with no node focused would
+                // drop every key (the Editor's Ctrl-O, typing after Notes'
+                // New): it focuses a default node.
+                let gone = self.st.focus.is_none_or(|f| self.tree.get(f).is_none());
+                if ev == Input::FocusIn && gone {
+                    let default = self.default_focus();
+                    self.set_focus(default);
+                }
             }
             Input::PointerMove(p) => self.pointer_move(p, m, &mut out),
             Input::Button {
