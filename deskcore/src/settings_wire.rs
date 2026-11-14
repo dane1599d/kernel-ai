@@ -15,7 +15,9 @@
 //! - from the shell, `settings done <name>\n<answers>` → `ok`;
 //! - from the shell, `settings back\n<lines>` → `ok`: requests it took and will
 //!   not run yet, in the put form, back at the front in their order (#890), so
-//!   a shell that dies mid-line loses none.
+//!   a shell that dies mid-line loses none. Only a request taken and not
+//!   answered or put back since goes back, as it was taken, so a back sent
+//!   twice queues nothing twice.
 //!
 //! `user` is `comphost`'s word that a real key or click made the request; the
 //! shell checks the app again and refuses a change without it. The ticket is
@@ -118,6 +120,9 @@ impl Answer {
 pub struct Queue {
     waiting: VecDeque<Request>,
     answers: VecDeque<Answer>,
+    /// Requests the shell took and has not answered or put back, oldest
+    /// first, at most [`MAX_ANSWERS`].
+    taken: VecDeque<Request>,
 }
 
 impl Queue {
@@ -164,14 +169,27 @@ impl Queue {
             used += len;
             taken.extend(self.waiting.pop_front());
         }
+        for request in &taken {
+            if self.taken.len() == MAX_ANSWERS {
+                self.taken.pop_front();
+            }
+            self.taken.push_back(request.clone());
+        }
         (!taken.is_empty()).then_some(taken)
     }
 
-    /// Puts requests the shell took back at the front, in their order: how
-    /// many. None is refused for [`MAX_WAITING`], as each waited once already.
+    /// Puts requests the shell took back at the front, in their order and as
+    /// they were taken: how many. Only one taken and not answered or put back
+    /// since goes back. None is refused for [`MAX_WAITING`], as each waited
+    /// once already (the limit still holds for new requests).
     pub fn put_back(&mut self, requests: Vec<Request>) -> usize {
-        let count = requests.len();
-        for request in requests.into_iter().rev() {
+        let mut back = Vec::new();
+        for request in requests {
+            let at = self.taken.iter().position(|t| t.ticket == request.ticket);
+            back.extend(at.and_then(|at| self.taken.remove(at)));
+        }
+        let count = back.len();
+        for request in back.into_iter().rev() {
             self.waiting.push_front(request);
         }
         count
@@ -179,6 +197,7 @@ impl Queue {
 
     /// Keeps what one request came to.
     pub fn finish(&mut self, answer: Answer) {
+        self.taken.retain(|t| t.ticket != answer.ticket);
         if self.answers.len() == MAX_ANSWERS {
             self.answers.pop_front();
         }
@@ -375,6 +394,11 @@ mod tests {
                 request(3, true, "page"),
             ])
         );
+        // Taken again: one answered does not go back, nor one sent twice.
+        let again = parse_back_for(&SETTINGS, &text).unwrap();
+        queue.finish(Answer::new(1, Ok(String::from("done"))));
+        assert_eq!(queue.put_back(again.clone()), 1, "1 was answered");
+        assert_eq!(queue.put_back(again), 0, "sent twice");
         assert_eq!(parse_back_for(&SETTINGS, "settings back\nnot a line"), None);
         assert_eq!(parse_back_for(&SETTINGS, TAKE), None);
     }

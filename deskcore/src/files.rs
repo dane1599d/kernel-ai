@@ -25,7 +25,10 @@
 //!   `files done <id> err <why>` → `ok`;
 //! - from the shell, `files back <id>` → `ok`: a transfer it took and will not
 //!   run yet waits again (#890), for the restarted shell if this one dies. Only
-//!   one it has not begun to answer: a read or build with no piece filled.
+//!   one it has not begun: a read or build with no piece filled, a write with
+//!   no piece fetched (one fetched may have been written);
+//! - from the shell, `files take but <app> <app>...` → as `files take`,
+//!   skipping those apps' transfers: ones whose requests it holds back.
 //!
 //! A build asks the shell to build the C component `<name>` from
 //! `/home/user/c/<name>/` (`shellcore::ccbuild`), as it builds for a typed
@@ -121,6 +124,8 @@ struct Transfer {
     bytes: Vec<u8>,
     phase: Phase,
     touched_ms: u64,
+    /// The shell has fetched a piece of the write since it took it.
+    fetched: bool,
 }
 
 /// What a request is answered with, and whether the shell should wake.
@@ -390,6 +395,7 @@ impl Files {
             bytes: Vec::new(),
             phase,
             touched_ms: now_ms,
+            fetched: false,
         });
         Reply {
             bytes: b"ok".to_vec(),
@@ -474,7 +480,8 @@ impl Files {
         let id = |word: &str| word.parse::<u32>().map_err(|_| err("not an id"));
         let number = |word: &str| word.parse::<usize>().map_err(|_| err("not a number"));
         match words {
-            ["take"] => self.take(now_ms),
+            ["take"] => self.take(&[], now_ms),
+            ["take", "but", apps @ ..] => self.take(apps, now_ms),
             ["back", i] => match id(i) {
                 Ok(i) => self.back(i, now_ms),
                 Err(e) => e,
@@ -499,16 +506,17 @@ impl Files {
         }
     }
 
-    fn take(&mut self, now_ms: u64) -> Reply {
+    fn take(&mut self, skip: &[&str], now_ms: u64) -> Reply {
         let Some(transfer) = self
             .transfers
             .iter_mut()
-            .find(|t| t.phase == Phase::Waiting)
+            .find(|t| t.phase == Phase::Waiting && !skip.contains(&t.job.app.as_str()))
         else {
             return text("none");
         };
         transfer.phase = Phase::Running;
         transfer.touched_ms = now_ms;
+        transfer.fetched = false;
         let job = &transfer.job;
         let line = match job.op {
             Op::Read => format!("job {} {} read {}", job.id, job.app, job.path),
@@ -537,7 +545,10 @@ impl Files {
             Ok(t) => t,
             Err(e) => return e,
         };
-        let begun = transfer.job.op.answers_bytes() && !transfer.bytes.is_empty();
+        let begun = match transfer.job.op.answers_bytes() {
+            true => !transfer.bytes.is_empty(),
+            false => transfer.fetched,
+        };
         if transfer.phase != Phase::Running || begun {
             return err("that transfer is not one the shell may give back");
         }
@@ -559,6 +570,7 @@ impl Files {
             return err("past the end of the file");
         }
         transfer.touched_ms = now_ms;
+        transfer.fetched = true;
         let end = total.min(offset + CHUNK);
         let mut out = b"ok\n".to_vec();
         out.extend_from_slice(&transfer.bytes[offset..end]);

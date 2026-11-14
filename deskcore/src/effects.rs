@@ -19,7 +19,9 @@
 //!   skipping those apps: ones whose requests it holds back for now;
 //! - from the shell, `effects back app <name>[ user]\n<effect lines>` → `ok`:
 //!   lines it took and will not run yet, in `effects take`'s form, back at the
-//!   front of that app's queue in their order (#890). A request the shell holds
+//!   front of that app's queue in their order (#890). Only a line taken and not
+//!   answered or put back since goes back, with the flag it was taken with, so
+//!   a back sent twice queues nothing twice. A request the shell holds
 //!   while the model thinks then stays in `desktop`, so a shell that dies
 //!   mid-line loses none: the restarted shell takes it.
 //!
@@ -43,6 +45,9 @@ pub const BACK: &str = "effects back ";
 const DONE: &str = "effects done ";
 /// Effects one app may have waiting for the shell.
 pub const MAX_QUEUED: usize = 16;
+/// Lines taken and not answered that may be put back; past it the oldest can
+/// no longer be (a shell that took them and died answers none).
+pub const MAX_TAKEN: usize = 64;
 /// Results one app may have waiting for its `comphost`; the oldest go first.
 pub const MAX_RESULTS: usize = 32;
 /// The longest effect line kept: livecore's limits fit well inside it.
@@ -85,6 +90,9 @@ pub struct Queue {
     /// Where the next take starts looking: round the apps in turn, so one
     /// busy app cannot keep the others waiting.
     next: usize,
+    /// Lines the shell took and has not answered or put back: app, ticket and
+    /// whether a person's input queued it, oldest first.
+    taken: VecDeque<(String, u32, bool)>,
 }
 
 impl Queue {
@@ -105,7 +113,7 @@ impl Queue {
             };
             let why = if line.len() > MAX_LINE {
                 "the effect is too long"
-            } else if waiting.len() == MAX_QUEUED {
+            } else if waiting.len() >= MAX_QUEUED {
                 "too many effects are waiting; try again"
             } else {
                 waiting.push_back((user, line.to_string()));
@@ -151,27 +159,40 @@ impl Queue {
             used += line.len() + 1;
             lines.extend(waiting.pop_front().map(|(_, line)| line));
         }
-        Some(Taken {
-            app: app.clone(),
-            user,
-            lines,
-        })
+        let app = app.clone();
+        for ticket in lines.iter().filter_map(|line| ticket_of(line)) {
+            if self.taken.len() == MAX_TAKEN {
+                self.taken.pop_front();
+            }
+            self.taken.push_back((app.clone(), ticket, user));
+        }
+        Some(Taken { app, user, lines })
     }
 
     /// Puts lines the shell took back at the front of their app's queue, in
-    /// their order and with their flag, ahead of anything queued since: how
-    /// many were kept. A line out of shape is dropped (it came from no take);
-    /// none is refused for the queue's limit, as each was queued once already.
+    /// their order and with the flag they were taken with, ahead of anything
+    /// queued since: how many were kept. Only a line taken and not answered
+    /// or put back since is kept, so a back sent twice queues nothing twice;
+    /// none is refused for the queue's limit, as each was queued once already
+    /// (the limit still holds for new lines: [`Queue::put_as`]).
     pub fn put_back(&mut self, taken: Taken) -> usize {
+        let mut back = Vec::new();
+        for line in taken.lines {
+            let Some(ticket) = ticket_of(&line) else {
+                continue;
+            };
+            let at = self
+                .taken
+                .iter()
+                .position(|(app, t, _)| *app == taken.app && *t == ticket);
+            if let Some((_, _, user)) = at.and_then(|at| self.taken.remove(at)) {
+                back.push((user, line));
+            }
+        }
+        let kept = back.len();
         let waiting = entry(&mut self.effects, &taken.app);
-        let lines = taken
-            .lines
-            .into_iter()
-            .filter(|line| line.len() <= MAX_LINE && ticket_of(line).is_some());
-        let mut kept = 0;
-        for line in lines.rev() {
-            waiting.push_front((taken.user, line));
-            kept += 1;
+        for line in back.into_iter().rev() {
+            waiting.push_front(line);
         }
         kept
     }
@@ -180,6 +201,8 @@ impl Queue {
     /// [`NOTICE_TICKET`]): one waits at a time, as it says only that something
     /// changed, so an app that was napping is told once on waking.
     pub fn finish(&mut self, app: &str, done: Done) {
+        self.taken
+            .retain(|(a, ticket, _)| !(a == app && *ticket == done.ticket));
         let results = entry(&mut self.results, app);
         if done.ticket == NOTICE_TICKET && results.iter().any(|d| *d == done) {
             return;
@@ -679,13 +702,19 @@ mod tests {
     #[test]
     fn a_persons_lines_put_back_keep_their_flag_and_bad_lines_are_dropped() {
         let mut queue = Queue::default();
+        queue.put_as("terminal-window", &line(1), true);
         queue.put("terminal-window", &line(2));
+        assert_eq!(
+            queue.take(4096),
+            Some(taken("terminal-window", true, &[line(1)]))
+        );
+        // Its flag is the one it was taken with, whatever the back says.
         let back = Taken {
             app: String::from("terminal-window"),
-            user: true,
-            lines: alloc::vec![line(1), String::from("not an effect")],
+            user: false,
+            lines: alloc::vec![line(1), String::from("not an effect"), line(7)],
         };
-        assert_eq!(queue.put_back(back), 1);
+        assert_eq!(queue.put_back(back), 1, "line 7 was never taken");
         assert_eq!(
             queue.take(4096),
             Some(taken("terminal-window", true, &[line(1)]))
@@ -694,6 +723,46 @@ mod tests {
             queue.take(4096),
             Some(taken("terminal-window", false, &[line(2)]))
         );
+    }
+
+    /// #913's review: a line put back twice, or after its result, is not
+    /// queued again.
+    #[test]
+    fn a_line_goes_back_once_and_never_after_its_result() {
+        let mut queue = Queue::default();
+        queue.put("files", &format!("{}\n{}", line(1), line(2)));
+        let held = queue.take(4096).unwrap();
+        queue.finish(
+            "files",
+            Done {
+                ticket: 2,
+                outcome: Ok(String::from("done")),
+            },
+        );
+        assert_eq!(queue.put_back(held.clone()), 1, "line 2 was answered");
+        assert_eq!(queue.put_back(held), 0, "sent twice");
+        assert_eq!(queue.take(4096), Some(taken("files", false, &[line(1)])));
+        assert_eq!(queue.take(4096), None);
+    }
+
+    /// #913's review: lines put back may fill a queue past its limit, and new
+    /// lines are refused until it is under it again.
+    #[test]
+    fn a_queue_full_after_a_put_back_still_refuses_new_lines() {
+        let mut queue = Queue::default();
+        let first: Vec<String> = (0..MAX_QUEUED as u32).map(line).collect();
+        assert_eq!(queue.put("files", &first.join("\n")), 0);
+        let held = queue.take(usize::MAX).unwrap();
+        let more: Vec<String> = (100..100 + MAX_QUEUED as u32).map(line).collect();
+        assert_eq!(queue.put("files", &more.join("\n")), 0);
+        assert_eq!(queue.put_back(held), MAX_QUEUED);
+        assert_eq!(queue.put("files", &line(500)), 1, "over the limit");
+        let refused = queue.results("files", MESSAGE_BUDGET);
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].ticket, 500);
+        let taken = queue.take(usize::MAX).unwrap();
+        assert_eq!(taken.lines.len(), 2 * MAX_QUEUED);
+        assert_eq!(queue.put("files", &line(501)), 0, "room again");
     }
 
     #[test]

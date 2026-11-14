@@ -137,6 +137,46 @@ fn the_shell_gives_back_a_transfer_it_has_not_begun_and_it_waits_again() {
     assert_eq!(app(&mut files, "files back 0"), "err not a file request");
 }
 
+/// #913's review: a write the shell has fetched a piece of may have been
+/// written, so it is not the shell's to give back.
+#[test]
+fn a_write_fetched_is_not_given_back() {
+    let mut files = Files::default();
+    app(
+        &mut files,
+        &format!("files start 2 write old user 3 {PATH}"),
+    );
+    app(&mut files, "files data 2 0\nabc");
+    shell(&mut files, "files take");
+    assert_eq!(shell(&mut files, "files fetch 0 0"), "ok\nabc");
+    assert_eq!(
+        shell(&mut files, "files back 0"),
+        "err that transfer is not one the shell may give back"
+    );
+}
+
+/// `files take but <app>` passes by a transfer the shell holds back.
+#[test]
+fn a_take_may_skip_an_apps_transfer() {
+    let mut files = Files::with_apps(&[DOOR_APP, "notes"]);
+    app(&mut files, &format!("files start 1 read {PATH}"));
+    ask(
+        &mut files,
+        "notes",
+        &format!("files start 4 read {PATH}"),
+        0,
+    );
+    assert_eq!(
+        shell(&mut files, "files take but editor"),
+        format!("job 1 notes read {PATH}")
+    );
+    assert_eq!(shell(&mut files, "files take but editor notes"), "none");
+    assert_eq!(
+        shell(&mut files, "files take"),
+        format!("job 0 editor read {PATH}")
+    );
+}
+
 /// A write keeps its bytes when given back, so the next take writes them all.
 #[test]
 fn a_write_given_back_keeps_its_bytes() {
@@ -152,6 +192,7 @@ fn a_write_given_back_keeps_its_bytes() {
         shell(&mut files, "files take"),
         format!("job 0 editor write old user 3 {PATH}")
     );
+    // Taken again: not fetched yet in this take.
     assert_eq!(shell(&mut files, "files fetch 0 0"), "ok\nabc");
 }
 
