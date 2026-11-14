@@ -132,6 +132,13 @@ pub fn main(args: &[String]) -> Result<(), String> {
     fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     let model = model_path(&args.model)?;
     let disk = model.as_deref().map(disk::ModelDisk::open).transpose()?;
+    // A catalog model's SHA-256 on the command line (`model_sha256=`), as
+    // `latency` gives QEMU: llm keys its KV files by it, where it would hash a
+    // sample of the file otherwise (founder test 2).
+    let disk = match (disk, catalog_id(&args.model)?) {
+        (Some(disk), Some(id)) => Some(disk.with_sha256(models::sha256(&id)?)),
+        (disk, _) => disk,
+    };
     let model_words = disk
         .as_ref()
         .map_or_else(String::new, disk::ModelDisk::cmdline);
@@ -185,6 +192,16 @@ fn vm_dir(name: &str) -> PathBuf {
             PathBuf::from(format!(r"D:\kai-vbox-{slug}"))
         }
     }
+}
+
+/// The catalog id `model` names, when it names one rather than a file or none.
+fn catalog_id(model: &Model) -> Result<Option<String>, String> {
+    Ok(match model {
+        Model::None | Model::Path(_) => None,
+        Model::Default => Some(models::default_id()?),
+        Model::Local { id, .. } if id.is_empty() => Some(models::default_id()?),
+        Model::Local { id, .. } => Some(id.clone()),
+    })
 }
 
 fn model_path(model: &Model) -> Result<Option<PathBuf>, String> {
@@ -424,6 +441,26 @@ fn path_str(path: &Path) -> Result<&str, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A catalog model is named by its id, so its SHA-256 goes on the command
+    /// line; a file or no model has none.
+    #[test]
+    fn a_catalog_model_is_named_for_its_sha256() {
+        let default = models::default_id().unwrap();
+        assert_eq!(catalog_id(&Model::Default).unwrap(), Some(default.clone()));
+        let local = |id: &str| Model::Local {
+            id: id.into(),
+            store: None,
+        };
+        assert_eq!(catalog_id(&local("")).unwrap(), Some(default));
+        assert_eq!(
+            catalog_id(&local("qwen3-0.6b")).unwrap().as_deref(),
+            Some("qwen3-0.6b")
+        );
+        assert_eq!(catalog_id(&Model::None).unwrap(), None);
+        assert_eq!(catalog_id(&Model::Path("m.gguf".into())).unwrap(), None);
+        assert!(models::sha256("qwen3-0.6b").is_ok());
+    }
 
     fn args(words: &[&str]) -> Result<Args, String> {
         parse(&words.iter().map(|w| w.to_string()).collect::<Vec<_>>())
