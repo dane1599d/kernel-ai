@@ -12,6 +12,9 @@ use spin::Mutex;
 use termcore::mouse::{Button, Buttons, Cursor, Decoder};
 
 static LOG: AtomicBool = AtomicBool::new(false);
+/// Set when the mouse stream changes hands (`input::set_taking`): the console's
+/// decoder drops its partial packet before its next byte.
+static HANDED_OVER: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy)]
 struct Click {
@@ -38,6 +41,11 @@ static POINTER: Mutex<Pointer> = Mutex::new(Pointer {
     clicks: [None; 2],
 });
 
+/// The mouse stream changed hands: see [`HANDED_OVER`]. Safe in any context.
+pub fn handed_over() {
+    HANDED_OVER.store(true, Ordering::Release);
+}
+
 pub fn configure(cmdline: &str) {
     let on = cmdline.split_whitespace().any(|arg| arg == "pointerlog");
     LOG.store(on, Ordering::Relaxed);
@@ -54,6 +62,10 @@ pub fn on_byte(byte: u8, ctrl: bool) {
     let log = LOG.load(Ordering::Relaxed);
     let (cell_width, cell_height) = console::cell();
     let mut pointer = POINTER.lock();
+    if HANDED_OVER.swap(false, Ordering::AcqRel) {
+        pointer.decoder.reset();
+    }
+    pointer.decoder.set_wheel(i8042::has_wheel());
     let Some(packet) = pointer.decoder.push(byte) else {
         return;
     };
@@ -63,6 +75,9 @@ pub fn on_byte(byte: u8, ctrl: bool) {
     let cell = cursor.cell(cell_width as u32, cell_height as u32);
     if moved && log {
         log!("pointer: at {x} {y} cell {} {}", cell.0, cell.1);
+    }
+    if packet.wheel != 0 && log {
+        log!("pointer: wheel {}", packet.wheel);
     }
     for button in packet.buttons.pressed_since(pointer.buttons) {
         if log {
@@ -83,6 +98,7 @@ pub fn on_byte(byte: u8, ctrl: bool) {
             dy: -i32::from(packet.dy),
         },
         buttons: held(Button::Left, 1) | held(Button::Right, 2) | held(Button::Middle, 4),
+        wheel: i32::from(packet.wheel),
     });
 }
 
@@ -170,6 +186,8 @@ pub struct Event {
     pub motion: Motion,
     /// Bit 0 left, bit 1 right, bit 2 middle.
     pub buttons: u8,
+    /// The vertical wheel's detents, positive toward the person (scroll down).
+    pub wheel: i32,
 }
 
 /// Events kept for a reader; older ones are dropped first.
@@ -203,7 +221,7 @@ pub fn push(event: Event) {
                 crate::input::Motion::Absolute { x, y, x_max, y_max }
             }
         };
-        crate::input::on_pointer(motion, event.buttons);
+        crate::input::on_pointer(motion, event.buttons, event.wheel);
         return;
     }
     let (width, height) = console::pixels().unwrap_or((1, 1));

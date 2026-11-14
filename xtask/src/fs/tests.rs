@@ -13,20 +13,44 @@ use kaifs::fs::{Faults, HOME, MODELS, SYSTEM};
 use kaifs::{BLOCK, Fs, Key, MemDisk, Op, ROOT, RecordingDisk};
 use std::path::{Path, PathBuf};
 
-/// A fresh folder for one test, under the workspace's `target/`.
-fn scratch(name: &str) -> PathBuf {
-    let dir = crate::workspace_root()
-        .join("target")
+/// A fresh folder for one test, removed when the test is done with it. It is
+/// under `CARGO_TARGET_DIR` when that is set (a build drive, on the founder's
+/// PC), else the OS's temp folder: never the checkout, which on the founder's
+/// PC is on the drive with the least room. A case disk alone is 67 MB, and
+/// these folders were once left behind, 740 MB in all.
+struct Scratch(PathBuf);
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn scratch(name: &str) -> Scratch {
+    let base = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let dir = base
         .join("xtask fs tests")
-        .join(name);
+        .join(format!("{name} {}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    Scratch(dir)
 }
+
+/// The smallest disk `mkfs` takes, which every test here fits in.
+const IMAGE_BYTES: u64 = disk::MIN_BYTES;
 
 fn made(dir: &Path) -> PathBuf {
     let image = dir.join("kai data.img");
-    ops::mkfs(&image, 24 << 20, "test", false).unwrap();
+    ops::mkfs(&image, IMAGE_BYTES, "test", false).unwrap();
     image
 }
 

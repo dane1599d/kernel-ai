@@ -215,6 +215,8 @@ pub fn check() -> Result<(), &'static str> {
     let shown = wait("the ask on the card", ask_box::shown);
     shot("09-kai-asks");
     if shown {
+        // Past the card's settle time, in which it takes no key (#864).
+        threads::sleep_ms(termcore::menu::SETTLE_MS + 300);
         type_keys(&NO);
         wait("the shell's answer", || DONE.load(Ordering::Acquire));
     }

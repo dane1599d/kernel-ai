@@ -166,6 +166,29 @@ impl FileEditor {
         self.session().current().bytes()
     }
 
+    /// The file as it stands with line `line` (from 1) read as `text`: the line
+    /// being typed, which the screen has not sent yet. The bytes as they stand
+    /// when the line cannot take the text.
+    pub fn bytes_with_line(&self, line: usize, text: &str) -> Vec<u8> {
+        let mut session = self.session().clone();
+        match session.change(line, text) {
+            Ok(()) => session.current().bytes(),
+            Err(_) => self.bytes(),
+        }
+    }
+
+    /// Takes `bytes` as the file's text, as one edit that undo takes back: what
+    /// the disk has stays what it was, so the file reads as changed unless they
+    /// are the same. Why not: it is not text, has too many lines, or is too big.
+    pub fn replace_text(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let session = self
+            .service
+            .session
+            .as_mut()
+            .expect("a file editor always has its session");
+        session.replace_current(bytes)
+    }
+
     /// Whether the file differs from the disk's (as opened or last saved).
     pub fn changed(&self) -> bool {
         self.session().changed()

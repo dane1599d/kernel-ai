@@ -12,6 +12,21 @@
 
 use super::{TestCase, case};
 
+/// What `pkg` would print had the image no packages to install: a release
+/// installs its built-in apps (`release_boot.rs` expects them kept).
+pub const NO_PACKAGES: &str = "generation 1 is its packages: no packages";
+
+/// The lines no release boot may print: every case's
+/// ([`super::FORBID`]), and [`NO_PACKAGES`].
+const FORBID: &[&str] = &[
+    "pkg: FAIL",
+    "cannot ask yet",
+    "dropped a result",
+    "did not reach the app",
+    "supervision: supervisor died",
+    NO_PACKAGES,
+];
+
 /// "models import" and Enter.
 const MODELS_IMPORT: &[&str] = &[
     "~2000", "m", "o", "d", "e", "l", "s", "spc", "i", "m", "p", "o", "r", "t", "ret",
@@ -31,5 +46,6 @@ pub const RELEASE_BOOT: TestCase = TestCase {
     ],
     stops: true,
     server: false,
+    forbid: FORBID,
     ..case("release-boot", "")
 };

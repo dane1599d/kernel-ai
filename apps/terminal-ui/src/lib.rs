@@ -198,14 +198,21 @@ pub fn build(term: &Terminal, view: &View) -> Vec<Entry> {
         },
     ));
     // Last, so it comes and goes without moving the others.
-    if matches!(term.phase(), Phase::Continuing | Phase::Asking(_)) {
+    // While a line runs it is Stop: the shell's line is interrupted.
+    let cancel = match term.phase() {
+        Phase::Continuing | Phase::Asking(_) => Some("Cancel"),
+        Phase::Waiting => Some("Stop"),
+        Phase::Ready => None,
+    };
+    if let Some(text) = cancel {
         tree.push(entry(
             CANCEL,
             FOOTER,
             Layout::FIT,
             Widget::Button {
-                text: String::from("Cancel"),
-                action: None,
+                text: String::from(text),
+                // Esc presses it, from anywhere in the window.
+                action: Some(uikit::escape::escape_action(None)),
             },
         ));
     }
@@ -214,6 +221,7 @@ pub fn build(term: &Terminal, view: &View) -> Vec<Entry> {
 
 /// The node that should take keyboard focus after `old` became `new`: the input
 /// line, when it has just appeared (the window opening, or a line answered).
+/// Never Stop: a key typed ahead, or a second Enter, must not stop the line.
 pub fn wants_focus(old: &[Entry], new: &[Entry]) -> Option<NodeId> {
     let has = |tree: &[Entry]| tree.iter().any(|e| e.id == INPUT);
     (has(new) && !has(old)).then_some(INPUT)
@@ -240,6 +248,12 @@ pub fn on_ui(term: &mut Terminal, os: &mut dyn Os, view: &mut View, e: &UiEvent)
         UiEvent::Pressed(CLEAR) => {
             term.clear();
             true
+        }
+        UiEvent::Pressed(CANCEL) if term.phase() == Phase::Waiting => {
+            // Its answer is the OS's; the line's own answer then says how
+            // it ended.
+            os.request(comp_terminal::os::SHELL_STOP, String::new());
+            false
         }
         UiEvent::Pressed(CANCEL) => {
             term.stop(os);

@@ -172,15 +172,15 @@ pub fn index(remote: &mut dyn Remote, cache: &mut dyn Cache, now: u64) -> Result
     let mut updater = Updater::new(remote, cache, now).map_err(tuf)?;
     updater.refresh().map_err(tuf)?;
     let mut listing = Listing::default();
-    for path in updater.listed(ROLE, "targets").map_err(tuf)? {
-        let parsed = match updater.target(&path) {
-            Ok(Some(target)) => Index::parse(&target).and_then(|index| {
+    // [`ROLE`]'s own entries, never TUF's search, which asks the top-level
+    // `targets` first: what another role says of a package never stands in.
+    for (path, found) in updater.own_targets(ROLE, "targets").map_err(tuf)? {
+        let parsed = found.and_then(|target| {
+            Index::parse(&target).and_then(|index| {
                 index.check_path(&target)?;
                 Ok((index.entry()?, index))
-            }),
-            Ok(None) => Err("no trusted role names it".into()),
-            Err(why) => Err(why.to_string()),
-        };
+            })
+        });
         match parsed {
             Ok((entry, index)) => {
                 listing.entries.push(entry);

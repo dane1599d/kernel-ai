@@ -8,6 +8,11 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 const OPENSSL: &str = "/usr/bin/openssl";
+
+/// This machine's clock: the script holds each expiry to it.
+fn clock() -> Time {
+    crate::pkgrepo::unix_now().unwrap()
+}
 const ROOT_PASS: &str = "root test passphrase";
 const RELEASE_PASS: &str = "release test passphrase";
 /// RFC 8032 §7.1's test 2: the release key's signature of the one byte 0x72.
@@ -87,7 +92,16 @@ fn stick(paths: &Paths) -> PathBuf {
     // The public halves, as setup step 6 leaves them beside the keys.
     fs::write(stick.join("root.pub"), pem(&key(ROOT_SEED))).unwrap();
     fs::write(stick.join("release.pub"), pem(&key(RELEASE_SEED))).unwrap();
+    // The ledger, empty, as setup makes it.
+    fs::write(stick.join("signed.log"), "").unwrap();
     stick
+}
+
+/// A round 1 line of the ledger, as the script writes it, for release `n` and
+/// a `snapshot.canon` of SHA-256 `snapshot`, the other files' hashes zeros.
+fn round_one(n: u64, snapshot: &str) -> String {
+    let zeros = "0".repeat(64);
+    format!("1 {n} models={zeros} packages={zeros} snapshot={snapshot} targets={zeros}\n")
 }
 
 /// Before any passphrase, the script names the stick's two keys and each
@@ -99,7 +113,7 @@ fn the_script_shows_every_key_before_a_passphrase() {
     }
     let paths = workspace("showkeys");
     let stick = stick(&paths);
-    prepare(&paths, &models::catalog().unwrap(), 1, NOW).unwrap();
+    prepare(&paths, &targets(), &models::catalog().unwrap(), 1, clock()).unwrap();
     // No passphrase given: it stops at the first prompt, having shown the keys.
     let out = sign_script(&stick, &paths.work, "");
     let shown = String::from_utf8(out.stdout).unwrap();
@@ -124,11 +138,501 @@ fn the_script_shows_every_key_before_a_passphrase() {
     assert_eq!(names("root"), both);
     assert_eq!(names("targets"), [release.as_str()]);
     assert!(names("snapshot").is_empty());
+    // Which round, and of which release.
+    let round = "round 1 of release 1: signs models packages root snapshot targets\n";
+    assert!(shown.contains(round), "{shown}");
+    // Each model and package it signs, as the prepare job lists them: a
+    // model with its name, licence and source, a package with its grants,
+    // actions and whether it is yanked.
+    let quoted = |text: &str| serde_json::to_string(text).unwrap();
+    for model in models::catalog().unwrap() {
+        let line = format!(
+            "models.canon signs {}, sha256 {}, length {}, name {}, licence {}, source {}\n",
+            model.target(),
+            model.sha256,
+            model.length,
+            quoted(&model.name),
+            quoted(&model.licence),
+            quoted(&model.source)
+        );
+        assert!(shown.contains(&line), "{line} in {shown}");
+    }
+    for (path, bytes) in packages::built(&targets()) {
+        let name = path.split('-').next().unwrap();
+        let line = format!(
+            "packages.canon signs {path}, sha256 {}, grants [], actions [\"{name}_find\"], yanked false\n",
+            crate::sha256_hex(&bytes)
+        );
+        assert!(shown.contains(&line), "{line} in {shown}");
+    }
+    // And when each expires, its full period from now.
+    for (role, days) in [("root", 365), ("targets", 365), ("snapshot", 30)] {
+        let line = format!(", in {days} days\n");
+        let found = shown.lines().any(|l| {
+            l.starts_with(&format!("{role}.canon expires ")) && format!("{l}\n").ends_with(&line)
+        });
+        assert!(found, "{role} expires in {days} days: {shown}");
+    }
 }
 
-/// RFC 8032 test 2 through the script, then a whole release in its two
-/// rounds: OpenSSL's raw signatures and `openssl pkey -pubout`'s keys are
-/// what `kaipkg::sign` makes, byte for byte.
+/// A `packages.canon` entry of another shape than xtask writes, a second
+/// hash or a field of its own, stops the script before any passphrase; a
+/// grant added shows on its line.
+#[test]
+fn the_script_refuses_a_package_entry_xtask_does_not_write() {
+    if !openssl_3() {
+        return;
+    }
+    let edits: [Edit; 3] = [
+        ("sha512", PACKAGES, |s| {
+            s["targets"]["notes-1.0.0.kpkg"]["hashes"]["sha512"] = json!("00")
+        }),
+        ("field", PACKAGES, |s| {
+            s["targets"]["notes-1.0.0.kpkg"]["mirror"] = json!("x")
+        }),
+        ("custom", PACKAGES, |s| {
+            s["targets"]["notes-1.0.0.kpkg"]["custom"]["extra"] = json!({})
+        }),
+    ];
+    for (name, role, edit) in edits {
+        let paths = workspace(&format!("script-{name}"));
+        let stick = stick(&paths);
+        prepare(&paths, &targets(), &models::catalog().unwrap(), 1, clock()).unwrap();
+        tamper(&paths.work, role, edit);
+        let out = sign_script(&stick, &paths.work, "");
+        let said = String::from_utf8(out.stderr).unwrap();
+        assert!(!out.status.success(), "{name}");
+        assert!(
+            said.contains("packages.canon is not what xtask writes"),
+            "{name}: {said}"
+        );
+        assert!(!said.contains("Passphrase"), "{name}: {said}");
+    }
+    let paths = workspace("script-grant");
+    let stick = stick(&paths);
+    prepare(&paths, &targets(), &models::catalog().unwrap(), 1, clock()).unwrap();
+    tamper(&paths.work, PACKAGES, |s| {
+        s["targets"]["notes-1.0.0.kpkg"]["custom"]["kai"]["grants"] = json!(["net"])
+    });
+    let shown = String::from_utf8(sign_script(&stick, &paths.work, "").stdout).unwrap();
+    assert!(
+        shown.contains(r#"packages.canon signs notes-1.0.0.kpkg, sha256 "#)
+            && shown.contains(r#", grants ["net"]"#),
+        "{shown}"
+    );
+}
+
+/// A way to hide an entry from the script's lines: an edit, then raw bytes
+/// swapped in the canonical file, and how the script refuses it.
+struct Hidden {
+    name: &'static str,
+    edit: fn(&mut Value),
+    from: &'static str,
+    to: &'static str,
+    refused: &'static str,
+}
+
+/// An honest copy of notes' entry in a top-level field that sorts before
+/// `targets`, while the real entry is granted `net`.
+fn decoy(s: &mut Value) {
+    let honest = s["targets"]["notes-1.0.0.kpkg"].clone();
+    s["a"] = json!({ "targets": { "notes-1.0.0.kpkg": honest } });
+    s["targets"]["notes-1.0.0.kpkg"]["custom"]["kai"]["grants"] = json!(["net"]);
+}
+
+/// A `packages.canon` that would show the founder honest lines while signing
+/// another entry stops the script before any passphrase, its lines unprinted:
+/// a decoy field before `targets`, a raw line feed in a key or a grant, or a
+/// line feed at the end.
+#[test]
+fn the_script_refuses_a_decoy_or_a_line_feed_in_packages() {
+    if !openssl_3() {
+        return;
+    }
+    const PRINTABLE: &str = "packages.canon is not one line of printable ASCII";
+    let cases = [
+        Hidden {
+            name: "decoy",
+            edit: decoy,
+            from: "",
+            to: "",
+            refused: "packages.canon is not what xtask writes",
+        },
+        Hidden {
+            name: "decoy-lf",
+            edit: decoy,
+            from: r#""a":{"targets":{"notes-1.0.0.kpkg""#,
+            to: "\"a\":{\"targets\":{\"notes-1.0.0.kp\nkg\"",
+            refused: PRINTABLE,
+        },
+        Hidden {
+            name: "grant-lf",
+            edit: |s| s["targets"]["notes-1.0.0.kpkg"]["custom"]["kai"]["grants"] = json!(["net"]),
+            from: r#"["net"]"#,
+            to: "[\"ne\nt\"]",
+            refused: PRINTABLE,
+        },
+        Hidden {
+            name: "end-lf",
+            edit: |_| {},
+            from: "",
+            to: "\n",
+            refused: PRINTABLE,
+        },
+    ];
+    for case in cases {
+        let name = case.name;
+        let paths = workspace(&format!("script-hidden-{name}"));
+        let stick = stick(&paths);
+        prepare(&paths, &targets(), &models::catalog().unwrap(), 1, clock()).unwrap();
+        tamper(&paths.work, PACKAGES, case.edit);
+        let path = paths.work.join("packages.canon");
+        let mut text = fs::read_to_string(&path).unwrap();
+        match case.from {
+            "" => text.push_str(case.to),
+            from => {
+                assert!(text.contains(from), "{name}: {text}");
+                text = text.replacen(from, case.to, 1);
+            }
+        }
+        fs::write(&path, text).unwrap();
+        let out = sign_script(&stick, &paths.work, "");
+        let said = String::from_utf8(out.stderr).unwrap();
+        let shown = String::from_utf8(out.stdout).unwrap();
+        assert!(!out.status.success(), "{name}");
+        assert!(said.contains(case.refused), "{name}: {said}");
+        assert!(!said.contains("Passphrase"), "{name}: {said}");
+        assert!(!shown.contains("packages.canon signs"), "{name}: {shown}");
+    }
+}
+
+/// `targets.canon` and `models.canon` are signed with release.key too, and
+/// the script prints no line of theirs to check, while the device's search
+/// would ask top-level `targets` first. So each must be exactly what xtask
+/// writes: a package in targets' own map, the delegations reordered with
+/// models first and taking `*.kpkg`, or a package in models' map stops the
+/// script before any passphrase.
+#[test]
+fn the_script_refuses_targets_or_models_that_could_speak_for_a_package() {
+    if !openssl_3() {
+        return;
+    }
+    let edits: [Edit; 3] = [
+        ("toplevel", "targets", |s| {
+            s["targets"]["notes-1.0.0.kpkg"] = sign::target_entry(&targets()[1])
+        }),
+        ("reordered", "targets", |s| {
+            let roles = s["delegations"]["roles"].as_array_mut().unwrap();
+            roles.reverse();
+            roles[0]["paths"] = json!(["*.kpkg", "*.gguf", "*.chunks"]);
+        }),
+        ("modelkpkg", MODELS, |s| {
+            s["targets"]["notes-1.0.0.kpkg"] = sign::target_entry(&targets()[1])
+        }),
+    ];
+    for (name, role, edit) in edits {
+        let paths = workspace(&format!("script-role-{name}"));
+        let stick = stick(&paths);
+        prepare(&paths, &targets(), &models::catalog().unwrap(), 1, clock()).unwrap();
+        tamper(&paths.work, role, edit);
+        let out = sign_script(&stick, &paths.work, "");
+        let said = String::from_utf8(out.stderr).unwrap();
+        let shown = String::from_utf8(out.stdout).unwrap();
+        assert!(!out.status.success(), "{name}");
+        let refused = format!("{role}.canon is not what xtask writes");
+        assert!(said.contains(&refused), "{name}: {said}");
+        assert!(!shown.contains("packages.canon signs"), "{name}: {shown}");
+        let sigs = fs::read_dir(&paths.work).unwrap().flatten();
+        let signed = sigs.filter(|e| e.path().extension().is_some_and(|x| x == "sig"));
+        assert_eq!(signed.count(), 0, "{name}");
+    }
+}
+
+/// A folder that holds something other than one round's own files, as xtask
+/// writes them, and how the script refuses it.
+struct Round {
+    name: &'static str,
+    /// The second round's folder: round 1 signed, then `prepare-timestamp`.
+    second: bool,
+    change: fn(&Path),
+    refused: &'static str,
+}
+
+/// `<role>.canon` in `work` with its first `from` replaced by `to`.
+fn swap(work: &Path, role: &str, from: &str, to: &str) {
+    let path = work.join(format!("{role}.canon"));
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains(from), "{role}.canon has no {from}");
+    fs::write(&path, text.replacen(from, to, 1)).unwrap();
+}
+
+/// The first key `root.canon` names, in hex.
+fn first_key(work: &Path) -> String {
+    let text = fs::read_to_string(work.join("root.canon")).unwrap();
+    let (_, rest) = text.split_once("\"public\":\"").unwrap();
+    rest[..64].to_string()
+}
+
+/// `<role>.canon` in `work` set to expire `days` from now.
+fn redate(work: &Path, role: &str, days: u64) {
+    let path = work.join(format!("{role}.canon"));
+    let text = fs::read_to_string(&path).unwrap();
+    let (head, rest) = text.split_once(r#""expires":""#).unwrap();
+    let at = Time(clock().0 + days * sign::DAY).format();
+    fs::write(&path, format!(r#"{head}"expires":"{at}{}"#, &rest[20..])).unwrap();
+}
+
+/// The key stick's `signed.log` beside `work`'s folder (`stick`) set to
+/// `lines`.
+fn ledger(work: &Path, lines: &str) {
+    fs::write(work.with_file_name("stick").join("signed.log"), lines).unwrap();
+}
+
+/// How many `.sig` files `work` holds.
+fn sigs(work: &Path) -> usize {
+    let entries = fs::read_dir(work).unwrap().flatten();
+    entries
+        .filter(|e| e.path().extension().is_some_and(|x| x == "sig"))
+        .count()
+}
+
+/// release.key signs every role but root, and the device tells roles apart
+/// by `_type` and by the snapshot's versions alone. So the script signs only a
+/// round's own files, each the text xtask writes at one release number, with
+/// plain keys: a targets role as `timestamp.canon`, beside round 1's files or
+/// as round 2's, a snapshot of another `_type`, a round missing a file, an
+/// upper-case or PEM key, a role at another version, and a model id the OS
+/// refuses each stop it before any passphrase, and nothing is signed.
+#[test]
+fn the_script_signs_only_a_rounds_own_files_as_xtask_writes_them() {
+    if !openssl_3() {
+        return;
+    }
+    const KEY: &str = "root.canon names a key that is not lower-case hex Ed25519";
+    const NOT_A_ROUND: &str = "not one round's files";
+    let timestamp_is_packages = |w: &Path| {
+        fs::copy(w.join("packages.canon"), w.join("timestamp.canon")).unwrap();
+    };
+    let cases = [
+        Round {
+            name: "extra",
+            second: false,
+            change: timestamp_is_packages,
+            refused: NOT_A_ROUND,
+        },
+        Round {
+            name: "typed",
+            second: true,
+            change: timestamp_is_packages,
+            refused: "timestamp.canon is not what xtask writes",
+        },
+        Round {
+            name: "snapshot-type",
+            second: false,
+            change: |w| {
+                swap(
+                    w,
+                    "snapshot",
+                    r#""_type":"snapshot""#,
+                    r#""_type":"targets""#,
+                )
+            },
+            refused: "is not a snapshot",
+        },
+        Round {
+            name: "missing",
+            second: false,
+            change: |w| fs::remove_file(w.join("models.canon")).unwrap(),
+            refused: NOT_A_ROUND,
+        },
+        Round {
+            name: "upper-key",
+            second: false,
+            change: |w| {
+                let key = first_key(w);
+                swap(w, "root", &key, &key.to_uppercase())
+            },
+            refused: KEY,
+        },
+        Round {
+            name: "pem-key",
+            second: false,
+            change: |w| {
+                let pem = "-----BEGIN PUBLIC KEY-----MCowBQYDK2VwAyEA-----END PUBLIC KEY-----";
+                swap(w, "root", &first_key(w), pem)
+            },
+            refused: KEY,
+        },
+        Round {
+            name: "version",
+            second: false,
+            change: |w| swap(w, "packages", r#","version":1}"#, r#","version":2}"#),
+            refused: "packages.canon is not what xtask writes",
+        },
+        Round {
+            name: "model-id",
+            second: false,
+            change: |w| swap(w, "models", r#""qwen3-0.6b.gguf""#, r#""Qwen3-0.6b.gguf""#),
+            refused: "models.canon is not what xtask writes",
+        },
+        Round {
+            name: "root-v2",
+            second: false,
+            change: |w| swap(w, "root", r#","version":1}"#, r#","version":2}"#),
+            refused: "root.canon is not what xtask writes",
+        },
+        Round {
+            name: "root-roles",
+            second: false,
+            change: |w| {
+                let text = fs::read_to_string(w.join("root.canon")).unwrap();
+                let root: Value = serde_json::from_str(&text).unwrap();
+                let ids = &root["roles"];
+                let (root_id, release_id) = (
+                    ids["root"]["keyids"][0].as_str().unwrap(),
+                    ids["targets"]["keyids"][0].as_str().unwrap(),
+                );
+                let targets = format!(r#""targets":{{"keyids":["{release_id}"]"#);
+                swap(w, "root", &targets, &targets.replace(release_id, root_id))
+            },
+            refused: "root.canon is not what xtask writes",
+        },
+        Round {
+            name: "root-keyid",
+            second: false,
+            change: |w| {
+                let text = fs::read_to_string(w.join("root.canon")).unwrap();
+                let root: Value = serde_json::from_str(&text).unwrap();
+                let id = root["roles"]["targets"]["keyids"][0]
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+                let fake = "f".repeat(64);
+                fs::write(w.join("root.canon"), text.replace(&id, &fake)).unwrap();
+            },
+            refused: "root.canon is not what xtask writes",
+        },
+        Round {
+            name: "far",
+            second: false,
+            change: |w| redate(w, "packages", 730),
+            refused: "packages.canon expires",
+        },
+        Round {
+            name: "near",
+            second: false,
+            change: |w| redate(w, "snapshot", 20),
+            refused: "not within a week of 30",
+        },
+        Round {
+            name: "timestamp-hash",
+            second: true,
+            change: |w| {
+                let text = fs::read_to_string(w.join("timestamp.canon")).unwrap();
+                let (_, rest) = text.split_once(r#""sha256":""#).unwrap();
+                swap(w, "timestamp", &rest[..64], &"0".repeat(64))
+            },
+            refused: "timestamp.canon is not what xtask writes",
+        },
+        Round {
+            name: "snapshot-sig",
+            second: true,
+            change: |w| {
+                let sig = fs::read_to_string(w.join("snapshot.sig")).unwrap();
+                let flipped = match sig.starts_with('0') {
+                    true => format!("1{}", &sig[1..]),
+                    false => format!("0{}", &sig[1..]),
+                };
+                fs::write(w.join("snapshot.sig"), flipped).unwrap();
+            },
+            refused: "snapshot.sig is not release.key's signature of snapshot.canon",
+        },
+        Round {
+            name: "spec",
+            second: false,
+            change: |w| {
+                swap(
+                    w,
+                    "snapshot",
+                    r#""spec_version":"1.0.37""#,
+                    r#""spec_version":"1.0.38""#,
+                )
+            },
+            refused: "snapshot.canon is not what xtask writes",
+        },
+        Round {
+            name: "not-a-date",
+            second: false,
+            change: |w| {
+                let text = fs::read_to_string(w.join("packages.canon")).unwrap();
+                let (_, rest) = text.split_once(r#""expires":""#).unwrap();
+                swap(w, "packages", &rest[..20], "2027-02-30T00:00:00Z")
+            },
+            refused: "packages.canon expires 2027-02-30T00:00:00Z, not a real date",
+        },
+        Round {
+            name: "signed-before",
+            second: false,
+            change: |w| ledger(w, &round_one(1, &"0".repeat(64))),
+            refused: "release 1 is not above 1, the last these keys signed",
+        },
+        Round {
+            name: "longer-number",
+            second: false,
+            change: |w| ledger(w, &round_one(10, &"0".repeat(64))),
+            refused: "release 1 is not above 10, the last these keys signed",
+        },
+        Round {
+            name: "no-ledger",
+            second: false,
+            change: |w| fs::remove_file(w.with_file_name("stick").join("signed.log")).unwrap(),
+            refused: "has no signed.log, made at setup",
+        },
+        Round {
+            name: "torn",
+            second: false,
+            change: |w| ledger(w, "1 1 models=00"),
+            refused: "signed.log's last line is torn",
+        },
+        Round {
+            name: "not-a-ledger-line",
+            second: false,
+            change: |w| ledger(w, "1 1 models=0\n"),
+            refused: "signed.log has a line this script does not write",
+        },
+        Round {
+            name: "no-round-one",
+            second: true,
+            change: |w| ledger(w, ""),
+            refused: "is not the last round these keys signed",
+        },
+    ];
+    for case in cases {
+        let name = case.name;
+        let paths = workspace(&format!("script-round-{name}"));
+        let stick = stick(&paths);
+        prepare(&paths, &targets(), &models::catalog().unwrap(), 1, clock()).unwrap();
+        if case.second {
+            sign_here(&paths.work);
+            prepare_timestamp(&paths, clock()).unwrap();
+            // What the script's round 1 would have logged on the stick.
+            let snapshot = crate::sha256_hex(&fs::read(paths.work.join("snapshot.canon")).unwrap());
+            ledger(&paths.work, &round_one(1, &snapshot));
+        }
+        (case.change)(&paths.work);
+        let before = sigs(&paths.work);
+        let out = sign_script(&stick, &paths.work, "");
+        let said = String::from_utf8(out.stderr).unwrap();
+        assert!(!out.status.success(), "{name}");
+        assert!(said.contains(case.refused), "{name}: {said}");
+        assert_eq!(sigs(&paths.work), before, "{name}: nothing is signed");
+    }
+}
+
+/// RFC 8032 test 2 through the script's own signing command (the script signs
+/// only a round's files), then a whole release in its two rounds through the
+/// script: OpenSSL's raw signatures and `openssl pkey -pubout`'s keys are what
+/// `kaipkg::sign` makes, byte for byte.
 #[test]
 fn the_script_signs_as_kaipkg_does() {
     if !openssl_3() {
@@ -136,21 +640,21 @@ fn the_script_signs_as_kaipkg_does() {
     }
     let paths = workspace("openssl");
     let stick = stick(&paths);
-    let vector = paths.work.with_file_name("vector");
-    fs::create_dir_all(&vector).unwrap();
-    fs::write(vector.join("targets.canon"), [0x72]).unwrap();
-    let out = sign_script(&stick, &vector, &format!("{RELEASE_PASS}\n"));
+    let message = paths.work.with_file_name("message");
+    fs::write(&message, [0x72]).unwrap();
+    let mut signing = Command::new(OPENSSL);
+    signing
+        .args(["pkeyutl", "-sign", "-rawin", "-passin", "stdin", "-inkey"])
+        .arg(stick.join("release.key"))
+        .arg("-in")
+        .arg(&message);
+    let raw = run(&mut signing, &format!("{RELEASE_PASS}\n"));
     assert!(
-        out.status.success(),
+        raw.status.success(),
         "{}",
-        String::from_utf8_lossy(&out.stderr)
+        String::from_utf8_lossy(&raw.stderr)
     );
-    assert_eq!(
-        fs::read_to_string(vector.join("targets.sig"))
-            .unwrap()
-            .trim(),
-        TEST_2_SIG
-    );
+    assert_eq!(sign::hex_bytes(&raw.stdout), TEST_2_SIG);
 
     let mut pubout = Command::new(OPENSSL);
     pubout
@@ -176,8 +680,57 @@ fn the_script_signs_as_kaipkg_does() {
             String::from_utf8_lossy(&out.stderr)
         );
     };
-    release(&paths, &models, 1, &script).unwrap();
-    assert_eq!(read_repository(&paths.repo).unwrap(), in_one_go(&models));
+    let now = clock();
+    release_at(&paths, &models, 1, &script, now).unwrap();
+    assert_eq!(
+        read_repository(&paths.repo).unwrap(),
+        in_one_go_at(&models, now)
+    );
+    // The stick's ledger has a line for each round: round 1 with each file's
+    // SHA-256, root's included, then round 2.
+    let log = fs::read_to_string(stick.join("signed.log")).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(lines.len(), 2, "{log}");
+    let sha = |role: &str| {
+        crate::sha256_hex(&fs::read(paths.work.join(format!("{role}.canon"))).unwrap())
+    };
+    let one =
+        ["models", "packages", "root", "snapshot", "targets"].map(|r| format!("{r}={}", sha(r)));
+    assert_eq!(lines[0], format!("1 1 {}", one.join(" ")));
+    assert_eq!(lines[1], format!("2 1 timestamp={}", sha("timestamp")));
+    // The same round 2 again signs the same bytes, and logs nothing new.
+    let first = fs::read_to_string(paths.work.join("timestamp.sig")).unwrap();
+    fs::remove_file(paths.work.join("timestamp.sig")).unwrap();
+    script(&paths.work);
+    assert_eq!(
+        fs::read_to_string(paths.work.join("timestamp.sig")).unwrap(),
+        first
+    );
+    assert_eq!(fs::read_to_string(stick.join("signed.log")).unwrap(), log);
+}
+
+/// A key file that is not the key its `.pub` names signs nothing, even with
+/// its own passphrase: the script holds each `.key` to the `.pub` it showed.
+#[test]
+fn a_key_that_is_not_its_pub_signs_nothing() {
+    if !openssl_3() {
+        return;
+    }
+    let paths = workspace("notpub");
+    let stick = stick(&paths);
+    prepare(&paths, &targets(), &models::catalog().unwrap(), 1, clock()).unwrap();
+    sign_here(&paths.work);
+    prepare_timestamp(&paths, clock()).unwrap();
+    let snapshot = crate::sha256_hex(&fs::read(paths.work.join("snapshot.canon")).unwrap());
+    ledger(&paths.work, &round_one(1, &snapshot));
+    // release.key is now root's key, under release's passphrase.
+    fs::remove_file(stick.join("release.key")).unwrap();
+    key_file(&stick.join("release.key"), ROOT_SEED, RELEASE_PASS);
+    let out = sign_script(&stick, &paths.work, &format!("{RELEASE_PASS}\n"));
+    let said = String::from_utf8(out.stderr).unwrap();
+    assert!(!out.status.success());
+    assert!(said.contains("is not the key its .pub names"), "{said}");
+    assert!(!paths.work.join("timestamp.sig").exists());
 }
 
 /// A wrong passphrase signs nothing.
@@ -188,17 +741,89 @@ fn a_wrong_passphrase_signs_nothing() {
     }
     let paths = workspace("wrongpass");
     let stick = stick(&paths);
-    prepare(&paths, &models::catalog().unwrap(), 1, NOW).unwrap();
-    let out = sign_script(
-        &stick,
-        &paths.work,
-        &format!("{RELEASE_PASS}\n{RELEASE_PASS}\n"),
+    prepare(&paths, &targets(), &models::catalog().unwrap(), 1, clock()).unwrap();
+    // A wrong root passphrase, and then root's right one but release's wrong:
+    // every key is unlocked before anything is logged or signed.
+    for input in [
+        format!("{RELEASE_PASS}\n{RELEASE_PASS}\n"),
+        format!("{ROOT_PASS}\n{ROOT_PASS}\n"),
+    ] {
+        let out = sign_script(&stick, &paths.work, &input);
+        assert!(!out.status.success());
+        assert_eq!(sigs(&paths.work), 0);
+        assert_eq!(fs::read_to_string(stick.join("signed.log")).unwrap(), "");
+    }
+}
+
+/// A failed first release's root is reused, with its root.sig, and never
+/// signed again: the script checks root.key's signature and the ledger's
+/// root, and refuses another root once these keys signed one.
+#[test]
+fn a_failed_first_releases_root_is_reused_not_signed_again() {
+    if !openssl_3() {
+        return;
+    }
+    let paths = workspace("reuse-root");
+    let stick = stick(&paths);
+    // Release 2, after release 1 failed past round 1's root.
+    prepare(&paths, &targets(), &models::catalog().unwrap(), 2, clock()).unwrap();
+    let root = fs::read(paths.work.join("root.canon")).unwrap();
+    let zeros = "0".repeat(64);
+    let logged = |root: &str| {
+        format!(
+            "1 1 models={zeros} packages={zeros} root={root} snapshot={zeros} targets={zeros}\n"
+        )
+    };
+    // Signed by root.key, logged: reused, and only release.key is asked for.
+    let sig = sign::hex_bytes(&key(ROOT_SEED).sign_bytes(&root));
+    fs::write(paths.work.join("root.sig"), format!("{sig}\n")).unwrap();
+    ledger(&paths.work, &logged(&crate::sha256_hex(&root)));
+    let out = sign_script(&stick, &paths.work, &format!("{RELEASE_PASS}\n"));
+    let shown = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    assert!(!out.status.success());
-    let sigs = fs::read_dir(&paths.work).unwrap().flatten();
+    assert!(
+        shown.contains("round 1 of release 2: signs models packages snapshot targets\n"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("root.canon is the root these keys signed before: not signed again\n"),
+        "{shown}"
+    );
     assert_eq!(
-        sigs.filter(|e| e.path().extension().is_some_and(|x| x == "sig"))
-            .count(),
-        0
+        fs::read_to_string(paths.work.join("root.sig")).unwrap(),
+        format!("{sig}\n")
+    );
+    // A root.sig that is not root.key's, or a root the ledger does not name,
+    // is refused.
+    let bad = "0".repeat(128);
+    for (sig, logged) in [
+        (bad.as_str(), logged(&crate::sha256_hex(&root))),
+        (sig.as_str(), logged(&zeros)),
+    ] {
+        for role in ["targets", "packages", "models", "snapshot"] {
+            let _ = fs::remove_file(paths.work.join(format!("{role}.sig")));
+        }
+        fs::write(paths.work.join("root.sig"), format!("{sig}\n")).unwrap();
+        ledger(&paths.work, &logged);
+        let out = sign_script(&stick, &paths.work, &format!("{RELEASE_PASS}\n"));
+        let said = String::from_utf8(out.stderr).unwrap();
+        assert!(
+            said.contains("root.sig is not root.key's signature of the root these keys signed"),
+            "{said}"
+        );
+        assert_eq!(sigs(&paths.work), 1, "root.sig alone");
+    }
+    // A second root to sign, when the ledger has another: refused.
+    fs::remove_file(paths.work.join("root.sig")).unwrap();
+    ledger(&paths.work, &logged(&zeros));
+    let out = sign_script(&stick, &paths.work, "");
+    let said = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        said.contains("these keys signed another root before"),
+        "{said}"
     );
 }

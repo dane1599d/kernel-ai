@@ -576,6 +576,37 @@ impl<E: Env> Host<E> {
         Ok(reply)
     }
 
+    /// [`kabi::live::SHOW`] for an app with no window open: the serving
+    /// version reloaded from its checkpoint, in place, so it shows its window
+    /// as it does at a start; a suspended one is resumed, which reloads it
+    /// too. Its state is the checkpoint's, so nothing it kept is lost.
+    pub fn reshow(&mut self) -> Result<Vec<u8>, Exit> {
+        let name = self.core.name.clone();
+        let mode = core::mem::replace(&mut self.mode, Mode::Moving);
+        let (mode, reply) = match mode {
+            Mode::Suspended(_) => match self.resume(mode) {
+                (mode, Ok(_)) => (mode, format!("ok shown {name}")),
+                (mode, Err(why)) => (mode, why),
+            },
+            Mode::Serving(mut version) => match self.core.reload(&version, true) {
+                Ok(instance) => {
+                    version.instance = instance;
+                    self.core
+                        .env
+                        .log(&format!("{name}: reloaded to show its window"));
+                    (Mode::Serving(version), format!("ok shown {name}"))
+                }
+                Err(fault) => (
+                    Mode::Serving(version),
+                    format!("err {name} could not show its window: {}", fault.detail),
+                ),
+            },
+            other => (other, format!("err {name} cannot show a window now")),
+        };
+        self.mode = mode;
+        Ok(text(reply))
+    }
+
     /// Called when no request came for [`Host::timeout_ms`]: checks a candidate.
     pub fn tick(&mut self) -> Result<(), Exit> {
         let mode = core::mem::replace(&mut self.mode, Mode::Moving);

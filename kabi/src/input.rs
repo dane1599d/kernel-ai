@@ -19,7 +19,9 @@ pub enum Kind {
     /// A button, `code` its usage on page 0x09 (1 left, 2 right, 3 middle);
     /// `value` 1 down, 0 up.
     Button = 4,
-    /// A wheel; `code` 0 vertical, 1 horizontal; `value` in detents.
+    /// A wheel; `code` 0 vertical, 1 horizontal; `value` in detents, positive
+    /// toward the person (scroll down) or to the right. A PS/2 IntelliMouse's and
+    /// a USB HID wheel both give `code` 0 (backlog item 10).
     Wheel = 5,
     /// Ours, not ADR 0007's: the screen changed hands. `value` 0 when
     /// Ctrl+Alt+F12 gave it to the console (the claim is revoked), 1 when a

@@ -20,8 +20,6 @@ undo(steps: int 1..1)  // puts back the last change made; undo again redoes it
 {"name":"script","arguments":{}}
 > switch to round robin
 {"name":"set_policy","arguments":{"name":"round-robin"}}
-> print the names of all services
-{"name":"script","arguments":{}}
 > how long has it been up, in minutes and seconds?
 {"name":"script","arguments":{}}
 > hello
@@ -35,7 +33,7 @@ type Policy = "interactive" | "round-robin"
 cpus() -> int  // CPUs online
 memory() -> #{free_mib: int, total_mib: int, heap_kib: int}  // MiB; kernel heap in KiB
 uptime_ms() -> int  // milliseconds since boot
-processes() -> [#{pid: int, name: string}]  // the running services
+processes() -> [#{pid: int, name: string, mib: int, cpu_ms: int}]  // running processes
 threads() -> #{switches: int, ejections: int, migrations: int}  // scheduler counters since boot
 get_policy() -> Policy  // the scheduling policy
 set_policy(name: Policy) [undo]  // every CPU
@@ -46,7 +44,7 @@ tune_undo() [undo]  // puts back the policy a kept trial replaced
 ## index (call one and its arguments are shown next)
 component (roll back a component): component_revert
 pkg (install, remove or find packages): pkg_install pkg_remove pkg_list pkg_search
-files (list or read files): fs_list fs_read fs_history fs_changes
+files (list, find or read files): fs_list fs_find fs_read fs_history fs_changes
 file_edits (write, rename, trash or restore files): fs_create fs_write fs_move fs_trash fs_restore fs_empty_trash
 ui (open, close, switch to or type in apps): ui_windows ui_view ui_open ui_focus ui_act window_close
 appearance (theme, text size or motion): appearance_set

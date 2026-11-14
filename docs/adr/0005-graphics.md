@@ -151,7 +151,7 @@ Crate `surfabi`: no_std, host-tested, fuzzed. It keeps Wayland's object model, s
 
 - `desktop`'s system layer holds 0001's USER right. It draws the panel, every ask card, the file picker, and the agent's 2 px outline and ghost pointer. No app surface can cover that layer, read it, or get keys while it has focus. Only system programs get the `panel` object.
 - Title bars are drawn by `desktop`: the kernel's process label, then the app's title. An app cannot pose as another app or as the system (Nitpicker's labels).
-- An ask card takes y, n or a click. Enter does nothing, and keys typed before the card appeared are dropped, as `:apply` does (docs/decisions.md:99). `y` mints 0001's `ONCE` handle for the action exactly as shown. A non-ASCII character in an argument shows as a `\u{...}` escape.
+- An ask card takes y, n or a click. Enter does nothing, and keys typed before the card appeared are dropped, as `:apply` does (docs/decisions.md:99). `y` mints 0001's `ONCE` handle for the action exactly as shown. A non-ASCII character in an argument shows as a `\u{...}` escape. On the desktop a card takes nothing for the menu's settle time after it shows, and `y` takes two fresh presses, the first arming it; a click on Run takes one (row `2026-11-14-desktop-lines-ask-on-the-card`).
 - `:apply` keeps its kernel-drawn confirmation (docs/decisions.md:94): the kernel revokes the display `Shm`, draws the card on its console, reads y or n before `desktop` sees input, then hands the screen back.
 - Calls go one way. The agent core (`shell` today) calls `desktop` to take the next panel request, to report states and to run its rows. `desktop` calls no service, so routes form no cycle (0001).
 
@@ -219,6 +219,8 @@ No blur, translucency or window-content animation, and nothing longer than 0.5 s
 | refused | an `error` bar and the reason |
 
 The panel reads its states from 0002's structured `Outcome` and `actlog 1` entries, never from reply text.
+
+**The panel's history** (the founder, 2026-11-14, after the first VirtualBox test; row `2026-11-14-panel-history`). Each panel line and what came of it shows above the bar on the desk's background, newest at the bottom, as a chat does, under every window. The bar's state line stays code's alone. The history alone shows the model's words and a model script's prints, sent by the shell as `panel said`. It draws them as the AI's, never in the system's look: a `Kai` label in `ai`, a 2 px `ai` rule down their left, sans `text`. The system's own words stay mono, in the bar, the cards and the history's notes. A line that asks first, or leaves a question open, still goes to the terminal, and the history's note says so. The history is bounded (40 entries, 4,000 bytes each) and drops control characters. It holds no input, takes no keys, and cannot cover the bar or a card, which are drawn after it.
 
 ### 9. Scale
 

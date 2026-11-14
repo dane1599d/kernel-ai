@@ -79,10 +79,12 @@ pub const UPTIME_MS: Action = read(
 
 pub const PROCESSES: Action = read(
     "processes",
-    "the running services",
+    "running processes",
     RetType::List(&RetType::Record(&[
         ("pid", RetType::Of(INT)),
         ("name", RetType::Of(STRING)),
+        ("mib", RetType::Of(INT)),
+        ("cpu_ms", RetType::Of(INT)),
     ])),
 );
 
@@ -365,14 +367,22 @@ pub const MODEL_USE: Action = Action {
     old_name: None,
 };
 
-/// `model_fetch disk`: the attached disk's model copied into the store, if the
-/// signed role names it by length and SHA-256. It asks once: it brings
-/// gigabytes of new bytes. The one source is the import disk until P5's
-/// downloads.
+/// `model_fetch(source, name)`: a model into the store, if the signed role
+/// names it by length and SHA-256. `disk` copies the attached disk's model;
+/// `net` downloads the signed model `name` (P5 task 9), or with no name the
+/// one the role recommends for this machine. It asks once: it brings
+/// gigabytes of new bytes.
 pub const MODEL_FETCH: Action = Action {
     name: "model_fetch",
-    doc: "imports a signed model from the attached disk",
-    args: &[arg("source", ArgType::Enum(&["disk"]), Role::Option)],
+    doc: "imports a signed model from disk, or downloads one (net) by id",
+    args: &[
+        arg("source", ArgType::Enum(&["disk", "net"]), Role::Option),
+        arg(
+            "name",
+            ArgType::Opt(&ArgType::Text { max: 64 }),
+            Role::Target,
+        ),
+    ],
     // No undo yet: an imported model stays until a later row removes it, so
     // it is marked destructive, and asks, as every row with no undo does.
     facts: Facts {
@@ -505,7 +515,7 @@ pub const RULES_REMOVE: Action = Action {
 pub const TYPED_ONLY: [Action; 2] = [RULES, RULES_REMOVE];
 
 /// Every OS row.
-pub const ROWS: [Action; 47] = [
+pub const ROWS: [Action; 48] = [
     CPUS,
     MEMORY,
     UPTIME_MS,
@@ -527,6 +537,7 @@ pub const ROWS: [Action; 47] = [
     PKG_LIST,
     PKG_SEARCH,
     crate::FS_LIST,
+    crate::FS_FIND,
     crate::FS_READ,
     crate::FS_HISTORY,
     crate::FS_CHANGES,

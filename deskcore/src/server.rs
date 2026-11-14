@@ -93,6 +93,8 @@ pub struct Client {
     mods: u32,
     /// Input for its windows, by the pool whose header ring takes it.
     posts: Vec<(u32, RingEvent)>,
+    /// Caps Lock, as the desk last said ([`Effect::Locks`]).
+    caps: bool,
     /// Its surface that has the keyboard focus, if one does: when the focus
     /// leaves it, the client is told (`focus_out`), so its host knows the
     /// window is no longer in use (the app nap).
@@ -118,6 +120,7 @@ impl Client {
             serial: 0,
             mods: 0,
             posts: Vec::new(),
+            caps: false,
             focused: None,
             shared: Vec::new(),
         };
@@ -225,7 +228,7 @@ impl Client {
         if kind == Kind::Key
             && value == 1
             && !command
-            && let Some(ch) = crate::keymap::char_of(code, self.mods & 1 != 0)
+            && let Some(ch) = crate::keymap::char_of(code, self.mods & 1 != 0, self.caps)
         {
             len = ch.encode_utf8(&mut text).len() as u8;
         }
@@ -559,6 +562,9 @@ impl Client {
     pub fn apply(&mut self, effects: &[Effect]) {
         for effect in effects {
             self.input(effect);
+            if let Effect::Locks { caps } = *effect {
+                self.caps = caps;
+            }
             match *effect {
                 Effect::Configure {
                     window,

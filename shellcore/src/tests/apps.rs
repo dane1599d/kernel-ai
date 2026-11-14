@@ -295,3 +295,92 @@ fn an_ordinary_engine_error_is_remembered_as_the_shell_shows_it() {
     );
     assert_eq!(remembered, shown.text.lines().last().unwrap());
 }
+
+#[test]
+fn an_installed_app_that_is_not_running_shows_its_rows_from_its_package() {
+    // Founder test 2, item 3: on a fresh boot "make a note called ideas" must
+    // see notes_add, without Notes being started only to be listed.
+    let none = || Err(ActError::Unavailable(String::from("no model")));
+    let (host, mut shell) = with_calls(vec![none(), none()]);
+    host.lists_services.set(true);
+    *host.services.borrow_mut() = vec![
+        (String::from("notes"), false),
+        (String::from("netd"), false),
+    ];
+    host.installed
+        .borrow_mut()
+        .push((String::from("notes"), String::from(NOTES)));
+    shell.eval("make a note called ideas");
+    shell.eval("add a note saying buy eggs");
+    for apps in host.act_apps.borrow().iter() {
+        assert_eq!(
+            llmproto::pack::apps::entries(apps),
+            Some(vec![("notes", NOTES)])
+        );
+    }
+    // Nothing was started, and each package was asked once.
+    assert!(host.app_requests.borrow().is_empty());
+    assert_eq!(*host.installed_asked.borrow(), ["notes", "netd"]);
+}
+
+const EDITOR: &str = "version 1
+kai-actions 1
+world app:editor/editor@1.0.0
+action editor_open_file
+export app:editor/actions@1.0.0#open-file
+doc Open one of your files.
+sig func(path: string) -> result<string, string>
+arg path text max=255 role=target from-request
+facts read-only=no destructive=no idempotent=yes open-world=no
+cues open
+inverse snapshot
+end
+";
+
+#[test]
+fn ui_open_with_a_file_runs_the_apps_own_open_row() {
+    // Founder test 2, item 6: "open ideas.txt in the editor".
+    let open = r#"{"name":"ui_open","arguments":{"app":"editor","arg":"ideas.txt"}}"#;
+    let (host, mut shell) = with_calls(vec![call(open)]);
+    host.apps.borrow_mut().rows.load("editor", EDITOR).unwrap();
+    host.app_replies
+        .borrow_mut()
+        .push_back(String::from("kai-reply 1\nresult ok(\"opened\")\nundo 2\n"));
+    let reply = shell.eval("open ideas.txt in the editor");
+    assert!(reply.ok && reply.confirm.is_none(), "{reply:?}");
+    let (app, request) = host.app_requests.borrow()[0].clone();
+    assert_eq!(app, "editor");
+    assert_eq!(
+        request,
+        "kai-call 1\nfunc app:editor/actions@1.0.0#open-file\nargs {path: \"/home/user/ideas.txt\"}\n"
+    );
+    assert!(host.ui_calls.borrow().is_empty());
+    // The path passes the editor's own check, as a real boot runs it.
+    assert_eq!(editcore::file::check_path("/home/user/ideas.txt"), Ok(()));
+}
+
+#[test]
+fn ui_open_never_forwards_a_path_that_goes_up() {
+    let open = r#"{"name":"ui_open","arguments":{"app":"editor","arg":"../system/plan"}}"#;
+    let (host, mut shell) = with_calls(vec![call(open)]);
+    host.apps.borrow_mut().rows.load("editor", EDITOR).unwrap();
+    let reply = shell.eval("open ../system/plan in the editor");
+    assert!(!reply.ok && reply.text.contains(".."), "{reply:?}");
+    assert!(host.app_requests.borrow().is_empty());
+}
+
+#[test]
+fn an_everyday_app_name_means_its_package() {
+    assert_eq!(crate::ui::canonical("file manager"), "files");
+    assert_eq!(crate::ui::canonical("Task Manager"), "monitor");
+    assert_eq!(crate::ui::canonical("notes"), "notes");
+}
+
+#[test]
+fn the_same_rows_under_another_label_load_once() {
+    let mut rows = crate::apps::AppRows::default();
+    rows.load("notes", NOTES).unwrap();
+    let relabelled = NOTES.replacen("version 2", "version 1.0.0", 1);
+    rows.load("notes", &relabelled).unwrap();
+    assert_eq!(rows.apps().count(), 1);
+}

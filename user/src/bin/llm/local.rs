@@ -33,6 +33,8 @@ const TEST_TOKENS: u32 = 32;
 /// Compute between two 1 ms sleeps: far under llm's 10 s burst limit, and a
 /// thousandth of the time.
 const SLEEP_EVERY_NS: u64 = 1_000_000_000;
+/// How often a request asks the kernel whether its caller pressed Stop.
+const STOP_CHECK_NS: u64 = 50_000_000;
 
 /// How fast an answer came, and how much of its prompt the cache held.
 #[derive(Clone, Copy)]
@@ -156,6 +158,9 @@ struct Clock {
     cached: usize,
     computed: usize,
     stopped: bool,
+    /// The caller pressed Stop (`sys::interrupted`): the answer ends early.
+    interrupted: bool,
+    checked: u64,
     slept: u64,
     /// Each decode, from its `Step::Cached`.
     phases: alloc::vec::Vec<Phase>,
@@ -210,6 +215,8 @@ impl Clock {
             cached: 0,
             computed: 0,
             stopped: false,
+            interrupted: false,
+            checked: started,
             slept: started,
             phases: alloc::vec::Vec::new(),
             known_rate,
@@ -253,7 +260,12 @@ impl Clock {
             sys::sleep_ms(1);
             self.slept = sys::time_ns();
         }
-        self.stopped = now >= self.deadline;
+        // Nobody will use an answer its caller stopped (#887): it ends here.
+        if now - self.checked >= STOP_CHECK_NS {
+            self.checked = now;
+            self.interrupted = self.interrupted || sys::interrupted();
+        }
+        self.stopped = now >= self.deadline || self.interrupted;
         match self.stopped {
             true => Next::Stop,
             false => Next::Continue,
@@ -541,6 +553,10 @@ impl Local {
         let clock = clock.into_inner();
         self.prefill_rate = clock.rate().or(self.prefill_rate);
         let forced = self.engine.forced();
+        let call = match clock.interrupted {
+            true => Err(ActError::Stopped),
+            false => call,
+        };
         self.last = clock
             .speed()
             .map(|speed| Speed { forced, ..speed })

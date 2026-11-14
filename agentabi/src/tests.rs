@@ -96,7 +96,7 @@ fn signatures_are_the_ones_the_prompt_shows() {
     );
     assert_eq!(
         shown(&PROCESSES),
-        "processes() -> [#{pid: int, name: string}]"
+        "processes() -> [#{pid: int, name: string, mib: int, cpu_ms: int}]"
     );
     assert_eq!(shown(&UPTIME_MS), "uptime_ms() -> int");
     assert_eq!(

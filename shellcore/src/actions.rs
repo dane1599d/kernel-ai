@@ -21,7 +21,7 @@ use alloc::vec::Vec;
 use termcore::menu::{Answer, read_answer};
 
 /// How long a question waits for its answer.
-const CONFIRM_EXPIRY_NS: u64 = 120_000_000_000;
+pub(crate) const CONFIRM_EXPIRY_NS: u64 = 120_000_000_000;
 
 /// How a run came to be, for its log entry.
 #[derive(Clone, Debug)]

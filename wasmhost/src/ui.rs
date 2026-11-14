@@ -57,6 +57,8 @@ pub enum Update {
 pub(crate) struct UiHost {
     pub(crate) ui: Ui,
     pub(crate) updates: Vec<Update>,
+    /// What comphost should log about the windows (`uikit`'s notes).
+    pub(crate) notes: Vec<String>,
     /// What each code view showed when last told, by (window, node).
     sizes: alloc::collections::BTreeMap<(u32, u32), (u16, u16)>,
     measure: Option<Box<dyn Measure>>,
@@ -338,6 +340,11 @@ impl CoreInstance {
         self.store.data_mut().ui.may_be_private = allowed;
     }
 
+    /// What comphost should log about the app's windows, oldest first.
+    pub fn take_ui_notes(&mut self) -> Vec<String> {
+        core::mem::take(&mut self.store.data_mut().ui.notes)
+    }
+
     /// What comphost shows next, oldest first; taking them empties the list.
     pub fn take_ui(&mut self) -> Vec<Update> {
         core::mem::take(&mut self.store.data_mut().ui.updates)
@@ -353,10 +360,14 @@ impl CoreInstance {
     pub fn ui_input(&mut self, window: u32, input: Input) -> Result<(), Fault> {
         let host = &mut self.store.data_mut().ui;
         let m = measure(&host.measure);
-        let events = host.ui.window(window).map(|w| w.input(input, m));
-        let Ok(events) = events else {
+        let events = host.ui.window(window).map(|w| {
+            let events = w.input(input, m);
+            (events, w.take_notes())
+        });
+        let Ok((events, notes)) = events else {
             return Ok(());
         };
+        host.notes.extend(notes);
         let result = self.ui_events_user(window, &events);
         // What the input changed in the window shows, whether or not the app
         // committed (the founder's VirtualBox test, 2026-11-14: typed text

@@ -485,6 +485,25 @@ impl Session {
         true
     }
 
+    /// Takes `bytes` as the current file's text, as one edit that `undo` takes
+    /// back. The version opened stays what it was, so [`Session::changed`] says
+    /// whether the text differs from it. Why not: it is not text, has too many
+    /// lines, or the bundle would pass its size.
+    pub fn replace_current(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let path = self.current().path.clone();
+        let file = File::parse(&path, bytes)?;
+        if file == *self.current() {
+            return Ok(());
+        }
+        let was = self.current().byte_len();
+        self.check_room(file.byte_len().saturating_sub(was))?;
+        self.edit(|current| {
+            *current = file;
+            1
+        });
+        Ok(())
+    }
+
     /// Takes the text as it stands for the version as opened (a file just saved):
     /// nothing is changed against it, and `reset` comes back to it. The edits
     /// already made cannot be undone any more.

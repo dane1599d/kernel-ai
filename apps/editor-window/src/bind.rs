@@ -157,6 +157,10 @@ impl Sink for Os {
     fn close(&mut self, window: u32) -> Result<(), UiError> {
         View.close(window)
     }
+
+    fn set_unsaved(&mut self, window: u32, unsaved: bool) -> Result<(), UiError> {
+        View.set_unsaved(window, unsaved)
+    }
 }
 
 impl Host for Os {
@@ -191,6 +195,23 @@ fn run(f: impl FnOnce(&mut EditorWindow, &mut Os) -> Result<(), UiError>) {
     if let Some(Err(e)) = started(|app| f(app, &mut Os)) {
         compsdk::log(&alloc::format!("editor window: {e:?}"));
     }
+}
+
+/// `kai:ui/input` with the editor's own [`Os`], not `comp-ui-bind`'s `input!`
+/// (which hands the app only `kai:ui/view`): the window's closing answers with a
+/// save, and the tree holds the code view, which `kai:ui/view` cannot draw.
+mod input {
+    use super::{Bound, run};
+    use comp_ui_bind::bind::exports::kai::ui::input::{Guest, UiEvent};
+
+    impl Guest for Bound {
+        fn on_ui(window: u32, e: UiEvent) {
+            let e = comp_ui_bind::bind::event(e);
+            run(|app, os| app.ui_event(os, window, &e));
+        }
+    }
+
+    comp_ui_bind::bind::export_input!(Bound with_types_in comp_ui_bind::bind);
 }
 
 impl actions::Guest for Bound {

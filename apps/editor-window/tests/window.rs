@@ -5,8 +5,8 @@
 
 use comp_editor_ui::{CODE, STATUS, TITLE};
 use comp_editor_window::{EditorWindow, Host, keys};
+use comp_ui_bind::Sink;
 use comp_ui_bind::tree::Entry;
-use comp_ui_bind::{OnUi, Sink};
 use compsdk::{Component, ImportError};
 use editcore::ipc::{At, Ipc, decode_ipc};
 use uikit::widget::{NodeId, UiError, UiEvent, Widget};
@@ -384,12 +384,12 @@ fn the_status_says_where_the_editor_is() {
 fn closing_the_window_forgets_it() {
     let (mut app, mut os) = opened();
     let id = app.window().unwrap();
-    app.on_ui(&mut os, id, &UiEvent::CloseRequested).unwrap();
+    app.ui_event(&mut os, id, &UiEvent::CloseRequested).unwrap();
     assert_eq!(os.closed, [id]);
     assert_eq!(app.window(), None);
     // Another window's close is not this one's.
     let (mut app, mut os) = opened();
-    app.on_ui(&mut os, 99, &UiEvent::CloseRequested).unwrap();
+    app.ui_event(&mut os, 99, &UiEvent::CloseRequested).unwrap();
     assert!(os.closed.is_empty());
 }
 
@@ -407,4 +407,20 @@ fn the_checkpoint_round_trips_and_an_unknown_schema_is_refused() {
         EditorWindow::import(&[0xff, 0x00], comp_editor_window::SCHEMA),
         Err(ImportError::Bad)
     ));
+}
+
+/// What the first version saved: the one reserved field and nothing else.
+#[derive(minicbor::Encode)]
+struct FirstV1 {
+    #[n(0)]
+    reserved: u32,
+}
+
+#[test]
+fn a_checkpoint_the_first_version_saved_still_imports() {
+    let old = compsdk::state::encode(comp_editor_window::SCHEMA, &FirstV1 { reserved: 0 });
+    assert!(EditorWindow::import(&old, comp_editor_window::SCHEMA).is_ok());
+    let kept: comp_editor_window::V1 =
+        compsdk::state::decode(&old, comp_editor_window::SCHEMA).unwrap();
+    assert_eq!(kept.path, None);
 }

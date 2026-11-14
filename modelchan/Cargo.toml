@@ -13,5 +13,6 @@ doctest = false
 
 [dependencies]
 comp-models = { path = "../apps/models" }
+fsproto = { path = "../fsproto" }
 kabi = { path = "../kabi" }
 sha2 = { version = "0.11.1", default-features = false }

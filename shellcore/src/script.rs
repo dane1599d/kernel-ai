@@ -248,6 +248,9 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
                         let mut map = Map::new();
                         map.insert("pid".into(), (p.pid as INT).into());
                         map.insert("name".into(), p.name().to_string().into());
+                        // Pages of 4 KiB, 256 to the MiB.
+                        map.insert("mib".into(), (p.pages.div_ceil(256) as INT).into());
+                        map.insert("cpu_ms".into(), ((p.cpu_ns / 1_000_000) as INT).into());
                         Dynamic::from_map(map)
                     });
                     Ok(list.collect())
@@ -404,6 +407,14 @@ fn bind_file(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx: Tx) -
                     _ => FsRead::History(path),
                 };
                 h.fs_read(read)
+                    .map(|text| data::Data::new("fs", text))
+                    .map_err(fail)
+            });
+        }
+        "fs_find" => {
+            engine.register_fn(name, move |word: &str| -> RhaiResult<data::Data> {
+                tx.approved(name, &[word])?;
+                h.fs_read(FsRead::Find(word))
                     .map(|text| data::Data::new("fs", text))
                     .map_err(fail)
             });

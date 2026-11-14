@@ -56,7 +56,8 @@ pub const ACT: &[(&str, &str)] = &[
         "switch to round robin",
         r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
     ),
-    ("print the names of all services", SCRIPT_CALL),
+    // "print the names of all services" went for fs_find and process memory
+    // (founder test 2): the CPU example already routes a read to `script`.
     (
         "how long has it been up, in minutes and seconds?",
         SCRIPT_CALL,

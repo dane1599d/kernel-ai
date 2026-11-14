@@ -4,11 +4,11 @@
 //! session that edited a `.canon` file before it was signed, as with a
 //! delegation to a key of its own or an expiry in 2999, is caught here.
 
-use super::{FileKeys, KEYS, REPO, plan};
+use super::{FileKeys, KEYS, REPO, packages, plan};
 use crate::pkgrepo::models::Model;
 use kaipkg::generation::Time;
 use kaipkg::image;
-use kaipkg::sign::{self, ADR_0008, MODELS, PACKAGES};
+use kaipkg::sign::{self, ADR_0008, MODELS, PACKAGES, Target};
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
@@ -27,9 +27,11 @@ const ROOT_MARGIN_DAYS: u64 = 60;
 #[derive(Clone, Copy)]
 pub(super) enum Mode {
     /// `assemble`'s, on roles just signed at `release_seq` `version`: each
-    /// expires within [`SIGNING_DAYS`] of its full period from now. A root
-    /// that is not `fresh`, the frozen one, is held as [`Mode::Committed`]'s.
-    Signed { version: u64, fresh: bool },
+    /// but root expires within [`SIGNING_DAYS`] of its full period from now.
+    /// Root is held as [`Mode::Committed`]'s: the frozen one, or the root a
+    /// failed first release signed and the next one reuses (it is signed
+    /// once, `scripts/release-sign.sh`'s ledger).
+    Signed { version: u64 },
     /// A committed repository's, at a version up to `release_seq`: no role
     /// expires past its period from now, and root lasts [`ROOT_MARGIN_DAYS`].
     Committed { most: u64 },
@@ -41,10 +43,14 @@ pub(super) enum Mode {
 /// - they verify as a device checks the image's (`kaipkg::image::listed`), with
 ///   no package and no model refused, and root carries its own key's signature;
 /// - each role's `signed` is what `prepare` writes for `models` and `keys` at
-///   that version, but its expiry, which is in the window `mode` sets.
+///   that version, but its expiry, which is in the window `mode` sets;
+/// - the `packages` role lists packages (`packages::check`): with `built`,
+///   exactly the entries `prepare` writes for those, each index included;
+///   with none, by shape only (`ci.yml`, which builds no components).
 pub(super) fn check_repository(
     files: &[(String, Vec<u8>)],
     models: &[Model],
+    built: Option<&[Target]>,
     keys: &FileKeys,
     now: Time,
     mode: Mode,
@@ -74,11 +80,19 @@ pub(super) fn check_repository(
     if let Some((path, why)) = listed.refused.first() {
         return Err(format!("{REPO}: {path} is refused: {why}"));
     }
-    if !image::listed(&mut repository, PACKAGES)?.targets.is_empty() {
-        return Err(format!("{REPO}: a release's packages role lists nothing"));
+    if let Some((path, why)) = image::listed(&mut repository, PACKAGES)?.refused.first() {
+        return Err(format!("{REPO}: {path} is refused: {why}"));
     }
+    let packages_role = parse(files, &roles[1])?;
+    packages::check(&packages_role["signed"]["targets"], built, REPO)?;
     root_signed(files, keys)?;
-    let plan = plan(keys, models, at, Time(0))?;
+    let plan = plan(keys, built.unwrap_or_default(), models, at, Time(0))?;
+    // With no build, the packages role but for its targets, which
+    // `packages::check` held by shape.
+    let mut packages_want = plan.packages.clone();
+    if built.is_none() {
+        packages_want["targets"] = packages_role["signed"]["targets"].clone();
+    }
     let snapshot = bytes(files, &sign::path("snapshot", at))?;
     let stamp = sign::timestamp(snapshot, at, Time(0), ADR_0008);
     let models_role = plan.models.as_ref().ok_or("the plan has no models role")?;
@@ -86,7 +100,7 @@ pub(super) fn check_repository(
     let expected = [
         (image::ROOT, &plan.root, p.root),
         (roles[0].as_str(), &plan.targets, p.targets),
-        (roles[1].as_str(), &plan.packages, p.targets),
+        (roles[1].as_str(), &packages_want, p.targets),
         (roles[2].as_str(), models_role, p.targets),
         (roles[3].as_str(), &plan.snapshot, p.snapshot),
         (sign::TIMESTAMP_PATH, &stamp, p.timestamp),
@@ -100,7 +114,7 @@ pub(super) fn check_repository(
             ));
         }
         let earliest = match (mode, path == image::ROOT) {
-            (Mode::Signed { fresh: false, .. } | Mode::Committed { .. }, true) => ROOT_MARGIN_DAYS,
+            (_, true) => ROOT_MARGIN_DAYS,
             (Mode::Signed { .. }, _) => days.saturating_sub(SIGNING_DAYS),
             (Mode::Committed { .. }, false) => 0,
         };
@@ -165,8 +179,9 @@ pub(super) fn root_signed(files: &[(String, Vec<u8>)], keys: &FileKeys) -> Resul
 }
 
 /// The committed repository, checked as [`check_repository`] does at `now`,
-/// its version not above `release_seq`, or none when nothing is committed.
-pub fn committed(root: &Path) -> Result<Option<RepoFiles>, String> {
+/// its version not above `release_seq`, its packages held to `built` when
+/// given, or none when nothing is committed.
+pub fn committed(root: &Path, built: Option<&[Target]>) -> Result<Option<RepoFiles>, String> {
     let repo = root.join(REPO);
     if !repo.join(image::ROOT).exists() {
         return Ok(None);
@@ -176,7 +191,7 @@ pub fn committed(root: &Path) -> Result<Option<RepoFiles>, String> {
     let most = crate::release_image::release_seq(root)?.into();
     let now = crate::pkgrepo::unix_now()?;
     let models = crate::pkgrepo::models::catalog()?;
-    check_repository(&files, &models, &keys, now, Mode::Committed { most })?;
+    check_repository(&files, &models, built, &keys, now, Mode::Committed { most })?;
     Ok(Some(files))
 }
 

@@ -18,6 +18,8 @@ struct Host {
     removes: u32,
     commits: u32,
     closed: u32,
+    /// How often the unsaved flag was set.
+    unsaved_calls: u32,
     /// The next put is refused.
     refuse_put: bool,
 }
@@ -52,6 +54,15 @@ impl Sink for Host {
     fn close(&mut self, _: u32) -> Result<(), UiError> {
         self.closed += 1;
         self.window = None;
+        Ok(())
+    }
+
+    fn set_unsaved(&mut self, _: u32, unsaved: bool) -> Result<(), UiError> {
+        self.unsaved_calls += 1;
+        self.window
+            .as_mut()
+            .ok_or(UiError::NoWindow)?
+            .set_unsaved(unsaved);
         Ok(())
     }
 }
@@ -135,6 +146,42 @@ fn a_refused_put_keeps_the_last_tree_so_the_next_present_sends_it_again() {
         .present(&mut fresh, "Demo", (200, 100), tree(1, "b"))
         .unwrap();
     assert_eq!(frame(&mut host).list, frame(&mut fresh).list);
+}
+
+#[test]
+fn the_unsaved_flag_is_sent_once_when_it_changes_and_a_new_window_is_told_again() {
+    let mut host = Host::default();
+    let mut shown = Shown::new();
+    let show = |shown: &mut Shown, host: &mut Host| {
+        shown
+            .present(host, "Demo", (200, 100), tree(1, "a"))
+            .unwrap();
+    };
+    // An app that never says sends nothing.
+    show(&mut shown, &mut host);
+    assert_eq!(host.unsaved_calls, 0);
+    assert!(!frame(&mut host).unsaved);
+
+    // Said once, and in the frame the same present commits.
+    shown.mark_unsaved(true);
+    show(&mut shown, &mut host);
+    show(&mut shown, &mut host);
+    assert_eq!(host.unsaved_calls, 1);
+    assert!(frame(&mut host).unsaved);
+
+    shown.mark_unsaved(false);
+    show(&mut shown, &mut host);
+    assert_eq!(host.unsaved_calls, 2);
+    assert!(!frame(&mut host).unsaved);
+
+    // A window opened again starts with none: it is told what the app wants.
+    shown.mark_unsaved(true);
+    show(&mut shown, &mut host);
+    let id = shown.id().unwrap();
+    assert!(shown.closed(&mut host, id).unwrap());
+    show(&mut shown, &mut host);
+    assert_eq!(host.unsaved_calls, 4);
+    assert!(frame(&mut host).unsaved);
 }
 
 /// A sink that does not say it can keep a window from the agent refuses, so an

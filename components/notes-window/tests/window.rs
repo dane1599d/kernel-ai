@@ -46,6 +46,11 @@ impl Sink for Host {
         self.calls.push("close");
         self.ui.close(window)
     }
+
+    fn focus(&mut self, window: u32, node: NodeId) -> Result<(), UiError> {
+        self.calls.push("focus");
+        self.ui.window(window)?.focus(node)
+    }
 }
 
 fn names(host: &mut Host, window: u32) -> Vec<String> {
@@ -78,6 +83,11 @@ fn a_click_adds_a_note_and_a_close_request_closes() {
     let w = app.window().unwrap();
     app.event(&mut host, w, &UiEvent::Pressed(NEW)).unwrap();
     assert_eq!(app.count().notes, 1);
+    // The new note's text has the keyboard: typing goes there.
+    assert_eq!(
+        host.ui.window(w).unwrap().focus_node(),
+        Some(comp_notes_ui::EDITOR)
+    );
     // Another window's events are not this one's.
     app.event(&mut host, w + 1, &UiEvent::Pressed(NEW)).unwrap();
     assert_eq!(app.count().notes, 1);

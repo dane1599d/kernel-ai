@@ -50,6 +50,49 @@ impl Window {
             .collect()
     }
 
+    /// The first shown button marked as the escape button
+    /// ([`crate::escape`]); a second marked one is noted, once.
+    fn escape_button(&mut self) -> Option<NodeId> {
+        let marked: Vec<NodeId> = self
+            .tree
+            .preorder()
+            .into_iter()
+            .filter(|id| self.places.contains_key(id))
+            .filter(|id| {
+                matches!(
+                    self.tree.get(*id).map(|n| &n.widget),
+                    Some(Widget::Button { action, .. })
+                        if crate::escape::split(action.as_deref()).0
+                )
+            })
+            .collect();
+        if marked.len() > 1 && !self.escapes_noted {
+            self.escapes_noted = true;
+            self.notes.push(alloc::format!(
+                "uikit: window {:?} marks {} escape buttons; Esc presses the first",
+                self.title,
+                marked.len()
+            ));
+        }
+        marked.first().copied()
+    }
+
+    /// The node a window focuses when it takes the keyboard with none
+    /// focused: the first that takes text, a code view, then a text line or
+    /// area. Never a button, toggle or menu, which a stray Space or Enter would
+    /// press (the Terminal's Clear): with none that takes text, nothing.
+    fn default_focus(&self) -> Option<NodeId> {
+        let ring = self.focus_ring();
+        let kind = |id: &NodeId| self.tree.get(*id).map(|n| &n.widget);
+        ring.iter()
+            .find(|id| matches!(kind(id), Some(Widget::Code(_))))
+            .or_else(|| {
+                ring.iter()
+                    .find(|id| matches!(kind(id), Some(Widget::TextLine(_) | Widget::TextArea(_))))
+            })
+            .copied()
+    }
+
     pub(crate) fn set_focus(&mut self, id: Option<NodeId>) {
         if self.st.focus != id {
             self.st.focus = id;
@@ -102,6 +145,14 @@ impl Window {
             Input::FocusIn | Input::FocusOut => {
                 self.st.window_focused = ev == Input::FocusIn;
                 self.dirty = true;
+                // A window that takes the keyboard with no node focused would
+                // drop every key (the Editor's Ctrl-O, typing after Notes'
+                // New): it focuses a default node.
+                let gone = self.st.focus.is_none_or(|f| self.tree.get(f).is_none());
+                if ev == Input::FocusIn && gone {
+                    let default = self.default_focus();
+                    self.set_focus(default);
+                }
             }
             Input::PointerMove(p) => self.pointer_move(p, m, &mut out),
             Input::Button {
@@ -400,6 +451,14 @@ impl Window {
         if key == Key::Escape && self.st.menu.take().is_some() {
             self.st.menu_hover = None;
             self.dirty = true;
+            return;
+        }
+        // Nothing else took it: the window's escape button, if it shows one.
+        if key == Key::Escape
+            && !mods.command()
+            && let Some(button) = self.escape_button()
+        {
+            out.push(UiEvent::Pressed(button));
             return;
         }
         let Some(f) = self.st.focus else {

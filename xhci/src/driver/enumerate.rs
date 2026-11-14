@@ -217,8 +217,13 @@ impl<H: Hal> Controller<H> {
                     .and_then(|bytes| hid::pointer_layout(&bytes))
             }
         };
+        // A mouse whose descriptor places a wheel is read by it, in the report
+        // protocol it starts in: the boot protocol defines no wheel byte.
         match layout {
             Some(layout) if layout.absolute() => Some(Decode::Report(DeviceKind::Tablet, layout)),
+            Some(layout) if layout.wheel.is_some() => {
+                Some(Decode::Report(DeviceKind::Mouse, layout))
+            }
             _ if interface.boot_mouse() => Some(Decode::BootMouse),
             Some(layout) => Some(Decode::Report(DeviceKind::Mouse, layout)),
             None => None,

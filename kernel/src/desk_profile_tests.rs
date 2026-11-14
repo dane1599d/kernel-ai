@@ -39,7 +39,8 @@ const START: (i32, i32) = (640, 400);
 const NOTES_TITLE: (i32, i32) = (300, 68);
 /// Ctrl down, Space down and up, Ctrl up; `y` down and up (scan code set 1).
 const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
-const YES: [u8; 2] = [0x15, 0x95];
+/// Y twice: a desktop card's first `y` arms it, the second runs it (#864).
+const YES: [u8; 4] = [0x15, 0x95, 0x15, 0x95];
 
 static ASKED: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicBool = AtomicBool::new(false);

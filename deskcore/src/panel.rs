@@ -55,9 +55,15 @@ pub struct Panel {
     focused: bool,
     shift: u8,
     ctrl: u8,
+    /// Caps Lock, as the desk says ([`Panel::set_caps`]).
+    caps: bool,
+    /// The log entry the done line's undo takes back ([`Panel::set_done`]).
+    entry: Option<u64>,
     waiting: VecDeque<Request>,
     /// [`APPS`] was sent and the sheet has not been opened for it yet.
     apps: bool,
+    /// Esc on a line the shell took: `desktop` interrupts the shell's line.
+    interrupt: bool,
 }
 
 impl Default for Panel {
@@ -74,8 +80,11 @@ impl Panel {
             focused: false,
             shift: 0,
             ctrl: 0,
+            caps: false,
+            entry: None,
             waiting: VecDeque::new(),
             apps: false,
+            interrupt: false,
         }
     }
 
@@ -107,11 +116,30 @@ impl Panel {
         changed
     }
 
+    /// Caps Lock turned on or off (`Effect::Locks`).
+    pub fn set_caps(&mut self, caps: bool) {
+        self.caps = caps;
+    }
+
     /// The shell's report of what it is doing.
     pub fn set_state(&mut self, state: State) -> bool {
         let changed = self.state != state;
         self.state = state;
+        self.entry = None;
         changed
+    }
+
+    /// The log entry the done line's undo takes back, with the state that
+    /// shows it: the panel draws its undo and show links only with one.
+    pub fn set_done(&mut self, state: State, entry: Option<u64>) -> bool {
+        let changed = self.set_state(state) || entry.is_some();
+        self.entry = entry.filter(|_| matches!(self.state, State::Done { .. }));
+        changed
+    }
+
+    /// The log entry the done line's undo takes back, if it names one.
+    pub fn entry(&self) -> Option<u64> {
+        self.entry
     }
 
     /// A key while the panel has focus, at `now_ms`; true when the panel
@@ -135,7 +163,7 @@ impl Panel {
             _ if !down => return false,
             _ => {}
         }
-        let Some(key) = keymap::key_of(code, self.shift > 0, self.ctrl > 0) else {
+        let Some(key) = keymap::key_of(code, self.shift > 0, self.ctrl > 0, self.caps) else {
             return false;
         };
         if key == Key::Esc {
@@ -177,7 +205,13 @@ impl Panel {
                 Some(Request::Line(_)) => {
                     self.waiting.pop_back();
                 }
-                _ => self.queue(Request::Stop),
+                // The shell took it: `desktop` interrupts it now
+                // ([`Panel::take_interrupt`]), and the Stop stays queued for
+                // a build in the background.
+                _ => {
+                    self.queue(Request::Stop);
+                    self.interrupt = true;
+                }
             }
             self.state = State::Idle;
             return true;
@@ -194,6 +228,11 @@ impl Panel {
             self.waiting.pop_front();
         }
         self.waiting.push_back(request);
+    }
+
+    /// Whether Esc asked to interrupt the line the shell took, once.
+    pub fn take_interrupt(&mut self) -> bool {
+        core::mem::take(&mut self.interrupt)
     }
 
     /// Requests the shell has not taken yet.
@@ -237,6 +276,21 @@ mod tests {
         assert_eq!(panel.take(), None);
         assert_eq!(panel.text(), "");
         assert_eq!(panel.state(), &State::Thinking { since_ms: 1_000 });
+    }
+
+    /// Esc on a line the shell took asks `desktop` to interrupt it, once;
+    /// on a line still waiting, nothing needs interrupting.
+    #[test]
+    fn esc_on_a_taken_line_asks_to_interrupt_the_shell() {
+        let mut panel = Panel::new();
+        tap(&mut panel, &[0x0B, 0x28]);
+        assert!(matches!(panel.take(), Some(Request::Line(_))));
+        tap(&mut panel, &[0x29]);
+        assert!(panel.take_interrupt());
+        assert!(!panel.take_interrupt());
+        let mut waiting = Panel::new();
+        tap(&mut waiting, &[0x0B, 0x28, 0x29]);
+        assert!(!waiting.take_interrupt());
     }
 
     #[test]

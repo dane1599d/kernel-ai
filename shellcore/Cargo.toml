@@ -31,6 +31,8 @@ rhai = { version = "=1.27.0", default-features = false, features = ["no_std", "n
 ccserve = { path = "../ccserve" }
 # A test holds `script::net::MAX_URL` equal to `kainet::wire::MAX_URL`.
 kainet = { path = "../kainet" }
+# ui_open's forwarded path passes the editor's own check (founder test 2, item 6).
+editcore = { path = "../editcore" }
 
 [features]
 # Rhai Grain, the bytecode VM, for `Exec::Grain` (ADR 0012 D9; off until S12-3 passes).
