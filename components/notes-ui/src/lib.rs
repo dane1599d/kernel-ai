@@ -44,9 +44,10 @@ pub struct View {
     pub search: String,
     /// The note in the editor, by id.
     pub selected: Option<u32>,
-    /// The note whose Delete was pressed once. The next press removes it; any
-    /// other event takes the question back.
-    pub delete_asked: Option<u32>,
+    /// The note whose Delete was pressed once, and when (the call's clock, in ms)
+    /// that button was last pressed. A press after a pause removes it; any other
+    /// event takes the question back.
+    pub delete_asked: Option<(u32, u64)>,
 }
 
 /// One node of the tree: its id, its parent, its layout and its widget.
@@ -211,7 +212,10 @@ pub fn build(notes: &Notes, view: &View) -> Vec<Entry> {
         ),
     });
     if open {
-        let asked = view.delete_asked.is_some() && view.delete_asked == view.selected;
+        let asked = view
+            .delete_asked
+            .map(|(id, _)| id)
+            .is_some_and(|id| Some(id) == view.selected);
         tree.push(entry(
             DELETE,
             MAIN,
@@ -304,16 +308,35 @@ pub fn set_text(notes: &mut Notes, id: u32, text: &str) -> bool {
     notes.replace(id, text).is_ok()
 }
 
-/// Handles one event from the window; whether the tree may have changed. Delete
-/// asks first: a person's click has no snapshot to undo, so the first press
-/// changes the button to "Press again to delete" and only the next, with
-/// nothing between, removes the note.
-pub fn on_ui(notes: &mut Notes, view: &mut View, e: &UiEvent) -> bool {
+/// The pause the second press of Delete needs after the press before it, in ms.
+/// A double click (two presses a few hundred ms apart) and a held key (a press
+/// every few tens of ms) are one press: each press inside the pause moves it on,
+/// so holding never confirms.
+pub const CONFIRM_PAUSE_MS: u64 = 600;
+
+/// Handles one event from the window at `now_ms` on the call's clock; whether the
+/// tree may have changed. Delete asks first: a person's click has no snapshot to
+/// undo, so the first press changes the button to "Press again to delete" and
+/// only a later press, after a pause and with nothing between, removes the note.
+pub fn on_ui(notes: &mut Notes, view: &mut View, e: &UiEvent, now_ms: u64) -> bool {
     let asked = view.delete_asked.take();
-    handle(notes, view, e, asked) || asked.is_some()
+    if let (UiEvent::Pressed(DELETE), Some((id, last))) = (e, asked)
+        && view.selected == Some(id)
+        && now_ms.saturating_sub(last) < CONFIRM_PAUSE_MS
+    {
+        view.delete_asked = Some((id, now_ms));
+        return false;
+    }
+    handle(notes, view, e, asked.map(|(id, _)| id), now_ms) || asked.is_some()
 }
 
-fn handle(notes: &mut Notes, view: &mut View, e: &UiEvent, asked: Option<u32>) -> bool {
+fn handle(
+    notes: &mut Notes,
+    view: &mut View,
+    e: &UiEvent,
+    asked: Option<u32>,
+    now_ms: u64,
+) -> bool {
     match e {
         UiEvent::Pressed(NEW) => match notes.add("") {
             Ok(id) => {
@@ -331,7 +354,7 @@ fn handle(notes: &mut Notes, view: &mut View, e: &UiEvent, asked: Option<u32>) -
                 true
             }
             Some(id) if notes.get(id).is_some() => {
-                view.delete_asked = Some(id);
+                view.delete_asked = Some((id, now_ms));
                 true
             }
             _ => false,

@@ -82,7 +82,7 @@ impl NotesWindow {
             self.window = None;
             return sink.close(window);
         }
-        if ui::on_ui(&mut self.notes, &mut self.view, e) {
+        if ui::on_ui(&mut self.notes, &mut self.view, e, compsdk::app::now_ms()) {
             // Storage is written in action calls only: the change waits.
             self.pending = true;
             return self.present(sink);

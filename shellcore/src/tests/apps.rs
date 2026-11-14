@@ -163,6 +163,37 @@ fn a_synonym_asks_only_for_the_row_it_means() {
 }
 
 #[test]
+fn a_line_that_asks_to_be_told_how_does_not_run_the_change() {
+    // "delete" is a cue of `remove`, but these lines ask for words (ADR 0002): no
+    // change runs on them, with the id in the line.
+    let remove = r#"{"name":"notes_remove","arguments":{"id":2}}"#;
+    let append = r#"{"name":"notes_append","arguments":{"id":2,"text":"eggs"}}"#;
+    for (line, json) in [
+        ("tell me how to delete note 2", remove),
+        ("can you explain how to remove note 2", remove),
+        ("describe how to add eggs to note 2", append),
+    ] {
+        let (host, mut shell) = with_calls(vec![call(json)]);
+        host.apps.borrow_mut().rows.load("notes", MANAGE).unwrap();
+        let reply = shell.eval(line);
+        // Refused or asked, never run.
+        assert!(!reply.ok || reply.confirm.is_some(), "{line}: {reply:?}");
+        assert!(host.app_requests.borrow().is_empty(), "{line}");
+    }
+    // An order that tells afterwards, and a plain order, still run.
+    let (host, mut shell) = with_calls(vec![call(remove)]);
+    host.apps.borrow_mut().rows.load("notes", MANAGE).unwrap();
+    host.app_replies.borrow_mut().push_back(String::from(
+        "kai-reply 1
+result ok(\"done\")
+undo 4
+",
+    ));
+    let reply = shell.eval("delete note 2 and tell me when it is done");
+    assert!(reply.ok && reply.confirm.is_none(), "{reply:?}");
+}
+
+#[test]
 fn an_apps_row_with_no_undo_asks_first() {
     let clear = r#"{"name":"notes_clear","arguments":{}}"#;
     let (host, mut shell) = with_notes(vec![call(clear)]);
