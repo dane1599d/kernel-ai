@@ -107,10 +107,15 @@ fn call_h(slot: usize, route: u64, args_ptr: u64) -> Result<u64, Error> {
     }
     // A call through a route given under a grant ends when the grant is revoked.
     let revoked = || entry.grant.is_some_and(|grant| !Kernel.alive(grant));
-    let cancel =
-        || crate::process::killed(slot) || crate::process::interrupt_pending(slot) || revoked();
-    ipc::wait_bound(name, deadline.min(now + MAX_BIND_WAIT_NS), cancel)
-        .map_err(|error| call_error(slot, error))?;
+    let cancel = || crate::process::killed(slot) || revoked();
+    // The person's Stop ends the call only before its server takes it: a
+    // server that took it may be changing something (an `fs` write), and its
+    // reply carries what the caller records to undo it (#887's review).
+    let stop = || crate::process::interrupt_pending(slot);
+    ipc::wait_bound(name, deadline.min(now + MAX_BIND_WAIT_NS), || {
+        cancel() || stop()
+    })
+    .map_err(|error| call_error(slot, error))?;
     // The handles go only to a server whose capability bits allow their kinds.
     let moved = match sending.is_empty() {
         true => Vec::new(),
@@ -125,7 +130,7 @@ fn call_h(slot: usize, route: u64, args_ptr: u64) -> Result<u64, Error> {
         handles: moved,
     };
     let tracked = entry.grant.and_then(grants::track);
-    let result = ipc::call_with(name, &request, me.pid, deadline, cancel, extra);
+    let result = ipc::call_with_stop(name, &request, me.pid, deadline, cancel, stop, extra);
     grants::untrack(tracked);
     drop(request);
     let (reply, _, came) = result.map_err(|error| match revoked() {

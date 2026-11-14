@@ -170,3 +170,17 @@ fn the_agents_look_at_an_apps_rows_neither_wakes_it_nor_counts_as_use() {
     n.request(&mut h, 9, b"kai-actions 1", NAP - 1).unwrap();
     assert_eq!(n.tick(&mut h, NAP), Ok(Some(Napped::Napped)));
 }
+
+/// The founder's second test (backlog item 1): a window that holds the focus
+/// never naps, however long; once it loses the focus it naps when unused.
+#[test]
+fn a_focused_window_never_naps_and_one_that_lost_the_focus_does() {
+    let k = kernel(&[V1]);
+    let mut h = host(&k);
+    let mut n = napper();
+    assert_eq!(n.focus(&mut h, true, 0), Ok(None));
+    assert_eq!(n.tick(&mut h, 10 * NAP), Ok(None), "focused, it napped");
+    assert_eq!(n.focus(&mut h, false, 10 * NAP), Ok(None));
+    assert_eq!(n.tick(&mut h, 11 * NAP - 1), Ok(None));
+    assert_eq!(n.tick(&mut h, 11 * NAP), Ok(Some(Napped::Napped)));
+}

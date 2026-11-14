@@ -44,16 +44,16 @@ pub(super) const CASES: &[TestCase] = &[
         // and two comphost apps, here with `fetch` too, outgrow 512 MiB.
         memory_mib: Some(1024),
         keys: &[
-            &["y"],
-            &["y"],
-            &["y"],
-            &["n"],
+            &["~600", "y", "y"],
+            &["~600", "y", "y"],
+            &["~600", "y", "y"],
+            &["~600", "n"],
             // Settings' page tabs, Right six times to Network, its first
             // Revoke (pinned in `apps/settings-ui/tests/keys.rs`).
             &[
                 "tab", "right", "right", "right", "right", "right", "right", "tab", "ret",
             ],
-            &["n"],
+            &["~600", "n"],
         ],
         expect: &[
             "fetch: ready",
