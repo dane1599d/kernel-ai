@@ -32,6 +32,12 @@ pub(crate) const SCRIPT: &str =
     "it asks first, and its script shows only in the console: ask there";
 /// What it is told when too many already wait.
 const FULL: &str = "it asks first, and other questions wait: answer those first";
+/// What it is told when its one call is too long, or not plain ASCII, for
+/// the card's menu, which then asks a y/n question only the console shows.
+pub(crate) const TOO_LONG: &str =
+    "it asks first, and its call is too long or not plain text for the card: ask in the console";
+/// The panel's line for a card answered Don't.
+const DECLINED: &str = "Not run: you said Don't.";
 
 /// A proposal from a desktop line, waiting for the card.
 pub(crate) struct Waiting {
@@ -52,6 +58,16 @@ fn as_added(id: u64, text: &str) -> Option<String> {
     }
 }
 
+/// Why a question that is not a menu cannot go on the card, and its log
+/// outcome: one call too long or not plain text for the menu asks a y/n
+/// question instead (`agentcore`'s fallback), anything else is a script.
+fn not_on_card(text: &str) -> (&'static str, &'static str) {
+    match text.starts_with("Run ") && text.ends_with("y/n, or show") {
+        true => (TOO_LONG, "discarded: the card cannot show the call"),
+        false => (SCRIPT, "discarded: only the console shows a script"),
+    }
+}
+
 impl Shell {
     /// Puts the proposal the last line left in [`Shell::pending`] in line for
     /// the card, if it is one the card can show; why not, otherwise. The
@@ -60,12 +76,13 @@ impl Shell {
         let Some(pending) = self.pending.take() else {
             return Err(SCRIPT);
         };
+        self.lapse_desk_asks();
         let menu = match (reply.confirm, &pending.menu) {
             (Some(id), Some(_)) if id == pending.id => as_added(id, &reply.text),
             _ => None,
         };
         let (why, outcome) = match menu {
-            None => (SCRIPT, "discarded: only the console shows a script"),
+            None => not_on_card(&reply.text),
             Some(_) if self.desk_asks.len() >= MAX_WAITING => {
                 (FULL, "discarded: other questions wait")
             }
@@ -94,15 +111,7 @@ impl Shell {
     /// The oldest desktop line's proposal, as the card's menu: it becomes the
     /// question the answer goes to, its two minutes counted from now.
     pub(crate) fn take_desk_ask(&mut self) -> Option<Reply> {
-        // One that waited past a question's two minutes lapses, as the
-        // console's does: what it would do may no longer be meant.
-        let now = self.host.now_ns();
-        while self.desk_asks.first().is_some_and(|w| {
-            now.saturating_sub(w.pending.created_ns) > crate::actions::CONFIRM_EXPIRY_NS
-        }) {
-            let old = self.desk_asks.remove(0).pending;
-            self.record(old.id, &old.request, &old.checked.script, "expired");
-        }
+        self.lapse_desk_asks();
         if self.desk_asks.is_empty() {
             return None;
         }
@@ -115,19 +124,43 @@ impl Shell {
         Some(Reply::menu(id, menu))
     }
 
+    /// Lets go of waiting questions older than a question's two minutes, as
+    /// the console's lapse: what they would do may no longer be meant.
+    fn lapse_desk_asks(&mut self) {
+        let now = self.host.now_ns();
+        while self.desk_asks.first().is_some_and(|w| {
+            now.saturating_sub(w.pending.created_ns) > crate::actions::CONFIRM_EXPIRY_NS
+        }) {
+            let old = self.desk_asks.remove(0).pending;
+            self.record(old.id, &old.request, &old.checked.script, "expired");
+        }
+    }
+
     /// Notes what the answer to a desktop line's card came to, for the
-    /// panel. `id` is the question answered.
-    pub(crate) fn desk_answered(&mut self, id: Option<u64>, reply: &Reply) {
-        if id.is_none() || id != self.card_for_desk || self.pending.is_some() {
+    /// panel: `answering` is the question answered and the answer's word.
+    /// Code's words only, as the panel's own results are: the run's result
+    /// line or "Done.", a fixed line for Don't, a fixed reason for a failure.
+    /// Never the reply's text, which can be an app's.
+    pub(crate) fn desk_answered(&mut self, answering: Option<(u64, &str)>, reply: &Reply) {
+        let Some((id, word)) = answering else {
+            return;
+        };
+        if Some(id) != self.card_for_desk || self.pending.is_some() {
             return;
         }
         self.card_for_desk = None;
-        let first = reply
-            .text
-            .lines()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or(if reply.ok { "Done." } else { "Not run." });
-        self.card_result = Some((reply.ok, String::from(first)));
+        let declined = word == termcore::menu::Answer::Deny.word();
+        self.card_result = Some(match (declined, reply.ok) {
+            (true, _) => (false, String::from(DECLINED)),
+            (false, true) => (
+                true,
+                self.done_line
+                    .take()
+                    .map(|line| crate::panel::without_undo(&line))
+                    .unwrap_or_else(|| String::from("Done.")),
+            ),
+            (false, false) => (false, String::from(crate::panel::FAILED)),
+        });
     }
 
     /// What the last answered desktop card came to, once: whether it ran,
@@ -139,7 +172,14 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
-    use super::as_added;
+    use super::{SCRIPT, TOO_LONG, as_added, not_on_card};
+
+    #[test]
+    fn a_call_too_long_for_the_menu_is_told_so_and_a_script_is_not() {
+        let long = "Run notes_add(\"a very long note\")? It asks first. y/n, or show";
+        assert_eq!(not_on_card(long).0, TOO_LONG);
+        assert_eq!(not_on_card("script 4:\nlet x = 1;\ny/n, or show").0, SCRIPT);
+    }
 
     #[test]
     fn a_menu_is_marked_added_and_anything_else_is_not_a_menu() {

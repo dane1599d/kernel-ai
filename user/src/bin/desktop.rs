@@ -389,6 +389,7 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
     };
     state.watch.input(now_ms());
     let before = state.desk.pointer();
+    state.desk.set_now(now_ms());
     let effects = state.desk.input(input);
     let at = state.desk.pointer();
     if at != before {
@@ -491,6 +492,7 @@ fn read_asks(state: &mut State) {
                 deliver(state, &effects);
             }
             println!("desktop: ask {id} shows on the card");
+            state.desk.set_now(now);
             let effects = state.desk.show_ask(id, lines);
             state.card = Some(card);
             deliver(state, &effects);

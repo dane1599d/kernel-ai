@@ -28,7 +28,7 @@ pub enum PanelResult {
 const ASKS: &str = "it asks first: ask in the terminal, which shows the script";
 const WORDS: &str = "it answered in words: ask in the terminal to read them";
 const OPEN: &str = "a bracket is still open: type the whole line in the terminal";
-const FAILED: &str = "it did not run: `show` in the terminal says why";
+pub(crate) const FAILED: &str = "it did not run: `show` in the terminal says why";
 const C_WAITS: &str = "a C entry waits for an answer: answer it in the terminal first";
 const C_LINE: &str = "C goes in the terminal";
 
@@ -122,7 +122,7 @@ impl Shell {
 
 /// A done line as the panel shows it: desktop draws its own undo control
 /// beside it, so the console's trailing `. undo` goes.
-fn without_undo(line: &str) -> String {
+pub(crate) fn without_undo(line: &str) -> String {
     match line.strip_suffix(". undo") {
         Some(said) => alloc::format!("{said}."),
         None => String::from(line),

@@ -189,6 +189,11 @@ pub struct Desk {
     down: Vec<u16>,
     /// The window the agent is acting on: it has the outline.
     agent: Option<WindowId>,
+    /// The clock `desktop` last gave ([`Desk::set_now`]).
+    now_ms: u64,
+    /// When the card up now may first be answered: [`termcore::menu::SETTLE_MS`]
+    /// after it showed.
+    ask_open_ms: u64,
 }
 
 impl Desk {
@@ -217,7 +222,15 @@ impl Desk {
             held: Vec::new(),
             down: Vec::new(),
             agent: None,
+            now_ms: 0,
+            ask_open_ms: 0,
         }
+    }
+
+    /// The clock, in ms, for the card's settle time: `desktop` gives it before
+    /// each input and each card.
+    pub fn set_now(&mut self, now_ms: u64) {
+        self.now_ms = now_ms;
     }
 
     /// Where windows open and maximize: the screen below the top bar and
@@ -427,6 +440,9 @@ impl Desk {
 
     pub fn input(&mut self, input: Input) -> Vec<Effect> {
         let mut effects = Vec::new();
+        // A key-down for a key already down is its repeat, never a fresh press.
+        let repeat =
+            matches!(input, Input::Key { usage, down: true } if self.down.contains(&usage));
         if let Input::Key { usage: code, down } = input {
             match down {
                 true if !self.down.contains(&code) => self.down.push(code),
@@ -435,7 +451,7 @@ impl Desk {
             }
         }
         if self.ask.is_some() {
-            self.ask_input(input, &mut effects);
+            self.ask_input(input, repeat, &mut effects);
             return effects;
         }
         self.takeover(input, &mut effects);

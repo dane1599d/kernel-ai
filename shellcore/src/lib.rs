@@ -863,10 +863,14 @@ impl Shell {
         if let Some(reply) = self.status_line(input) {
             return reply;
         }
-        let answering = input
-            .strip_prefix("answer ")
-            .and_then(|rest| rest.split(' ').next())
-            .and_then(|id| id.parse::<u64>().ok());
+        let answering = input.strip_prefix("answer ").and_then(|rest| {
+            let mut words = rest.split(' ');
+            let id = words.next()?.parse::<u64>().ok()?;
+            Some((id, words.next().unwrap_or("")))
+        });
+        if answering.is_some_and(|(id, _)| Some(id) == self.card_for_desk) {
+            self.done_line = None;
+        }
         let mut reply = self.eval(input);
         self.desk_answered(answering, &reply);
         if reply.confirm.is_none() && !reply.more && !self.notices.is_empty() {

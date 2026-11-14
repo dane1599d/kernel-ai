@@ -392,7 +392,7 @@ pub(super) const CASES: &[TestCase] = &[
                 "s", "e", "a", "r", "c", "h", "spc", "n", "o", "t", "e", "s", "spc", "f", "o", "r",
                 "spc", "m", "i", "l", "k", "ret",
             ],
-            &["y"],
+            &["~600", "y", "y"],
             &[
                 "a", "d", "d", "spc", "a", "spc", "n", "o", "t", "e", "spc", "s", "a", "y", "i",
                 "n", "g", "spc", "b", "u", "y", "spc", "m", "i", "l", "k", "ret",
@@ -481,7 +481,7 @@ pub(super) const CASES: &[TestCase] = &[
                 "shift-0",
                 "ret",
             ],
-            &["y"],
+            &["~600", "y", "y"],
             &[
                 "o", "p", "e", "n", "spc", "f", "i", "x", "t", "u", "r", "e", "ret",
             ],
@@ -512,7 +512,7 @@ pub(super) const CASES: &[TestCase] = &[
                 "l", "o", "o", "k", "spc", "a", "t", "spc", "s", "e", "t", "t", "i", "n", "g", "s",
                 "ret",
             ],
-            &["y"],
+            &["~600", "y", "y"],
         ],
         expect: &[
             "comphost: window 1 \"Settings\" shown at 640x460",

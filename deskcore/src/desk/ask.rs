@@ -1,6 +1,14 @@
 //! The trusted layer's rules (ADR 0005 §7): the ask card takes the keyboard
 //! and only y, n or a click on its buttons answers it; a key or click by the
 //! user in the agent's window takes over from the agent.
+//!
+//! A card on the desktop answers nothing for [`termcore::menu::SETTLE_MS`]
+//! after it shows, nor to a key held since before it, so someone still typing
+//! their next line cannot answer it. And no card here came from a line typed
+//! at the trusted terminal (a desktop line, an app's ask, the agent's call),
+//! so `y` takes two steps: the first arms the card, which then says so, and a
+//! second fresh `y` runs it. A click on Run runs it at once; `n` or a click on
+//! Don't declines at once (#864, the manager's review).
 
 use super::{Button, Desk, Effect, Focus, Hit, Input, WindowId, usage};
 use crate::geom::Point;
@@ -21,8 +29,13 @@ impl Desk {
             Some((_, back)) => back,
             None => self.focus,
         };
-        let ask = Ask { id, lines };
+        let ask = Ask {
+            id,
+            lines,
+            armed: false,
+        };
         self.ask = Some((ask, back));
+        self.ask_open_ms = self.now_ms.saturating_add(termcore::menu::SETTLE_MS);
         self.held = self.down.clone();
         self.grab = None;
         self.damage
@@ -61,10 +74,11 @@ impl Desk {
 
     /// Input while a card is up: y or n, or a click on its buttons. Nothing
     /// else goes anywhere, and the pointer still moves.
-    pub(super) fn ask_input(&mut self, input: Input, effects: &mut Vec<Effect>) {
+    pub(super) fn ask_input(&mut self, input: Input, repeat: bool, effects: &mut Vec<Effect>) {
         let Some((ask, _)) = self.ask else {
             return;
         };
+        let settled = self.now_ms >= self.ask_open_ms;
         let answer = match input {
             Input::Motion(p) => {
                 self.pointer = Point {
@@ -83,8 +97,12 @@ impl Desk {
             Input::Key {
                 usage: code,
                 down: true,
-            } if !self.held.contains(&code) => match code {
-                usage::Y => Some(true),
+            } if settled && !repeat && !self.held.contains(&code) => match code {
+                usage::Y if ask.armed => Some(true),
+                usage::Y => {
+                    self.arm();
+                    None
+                }
                 usage::N => Some(false),
                 _ => None,
             },
@@ -92,7 +110,7 @@ impl Desk {
             Input::Button {
                 button: Button::Left,
                 down: true,
-            } => {
+            } if settled => {
                 let (yes, no) = trusted::buttons(trusted::card(self.width, self.height, &ask));
                 if yes.contains(self.pointer) {
                     Some(true)
@@ -107,6 +125,16 @@ impl Desk {
         if let Some(yes) = answer {
             effects.push(Effect::Answer { id: ask.id, yes });
             self.end_ask(effects);
+        }
+    }
+
+    /// A first `y`: the card waits for a second, and says so.
+    fn arm(&mut self) {
+        if let Some((ask, _)) = &mut self.ask {
+            ask.armed = true;
+            let ask = *ask;
+            self.damage
+                .add(trusted::card(self.width, self.height, &ask));
         }
     }
 

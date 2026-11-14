@@ -70,7 +70,11 @@ fn a_question_the_panel_raises_waits_for_the_card_not_a_typed_yes() {
     let once = host.mint(menu.id, menu.call());
     shell.eval_console(&format!("answer {} deny once={once}", menu.id));
     assert_eq!(*host.procs.borrow(), vec![String::from("notes")]);
-    assert!(shell.take_card_result().is_some());
+    // The panel is told in code's words, as a refusal, not a Done.
+    assert_eq!(
+        shell.take_card_result(),
+        Some((false, String::from("Not run: you said Don't.")))
+    );
     assert!(!shell.card_waiting());
 }
 

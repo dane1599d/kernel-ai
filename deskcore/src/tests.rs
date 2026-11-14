@@ -426,7 +426,12 @@ fn an_ask_card_takes_only_y_n_or_a_click_and_drops_keys_held_before_it() {
     key(&mut desk, usage::SPACE, false);
     key(&mut desk, usage::LEFT_CTRL, false);
     assert_eq!(desk.focus(), Focus::Ask(7));
-    // y answers yes; focus goes back to the window.
+    // Once settled, a first y arms the card, and a second answers yes; focus
+    // goes back to the window.
+    desk.set_now(SETTLED);
+    assert!(key(&mut desk, usage::Y, true).is_empty());
+    key(&mut desk, usage::Y, false);
+    assert!(desk.ask().unwrap().armed);
     assert_eq!(
         key(&mut desk, usage::Y, true),
         [
@@ -447,6 +452,7 @@ fn a_y_held_before_the_card_cannot_answer_it_and_buttons_can() {
     assert!(key(&mut desk, usage::Y, false).is_empty());
     let card = crate::trusted::card(W, H, &desk.ask().unwrap());
     let (_, no) = crate::trusted::buttons(card);
+    desk.set_now(SETTLED);
     let effects = click(&mut desk, centre(no));
     assert!(effects.contains(&Effect::Answer { id: 9, yes: false }));
     // A card that times out goes without an answer.
@@ -460,12 +466,61 @@ fn a_y_held_before_the_card_cannot_answer_it_and_buttons_can() {
 fn a_key_whose_release_went_to_the_terminal_can_answer_the_next_card() {
     let (mut desk, _) = desk_with(1);
     desk.show_ask(1, 1);
+    desk.set_now(SETTLED);
+    key(&mut desk, usage::Y, true);
+    key(&mut desk, usage::Y, false);
     assert!(key(&mut desk, usage::Y, true).contains(&Effect::Answer { id: 1, yes: true }));
     // Focus is back on the terminal window: desktop lends the keys, and the
     // y's release goes to the console, never to the desk.
     desk.keys_lent();
     desk.show_ask(2, 1);
+    desk.set_now(2 * SETTLED);
+    key(&mut desk, usage::Y, true);
+    key(&mut desk, usage::Y, false);
     assert!(key(&mut desk, usage::Y, true).contains(&Effect::Answer { id: 2, yes: true }));
+}
+
+/// Past a card's settle time.
+const SETTLED: u64 = termcore::menu::SETTLE_MS;
+
+/// #864's review: a card that pops up while someone types their next line
+/// takes none of it, and `y` takes two steps; a click on Run, one.
+#[test]
+fn a_card_settles_before_it_answers_and_y_takes_two_steps() {
+    let (mut desk, _) = desk_with(1);
+    desk.set_now(1_000);
+    desk.show_ask(5, 1);
+    // Within the settle time, y, n and a click on Run do nothing.
+    desk.set_now(1_000 + SETTLED - 1);
+    for code in [usage::Y, usage::N] {
+        assert!(key(&mut desk, code, true).is_empty());
+        key(&mut desk, code, false);
+    }
+    let card = crate::trusted::card(W, H, &desk.ask().unwrap());
+    let (yes, _) = crate::trusted::buttons(card);
+    assert!(click(&mut desk, centre(yes)).is_empty());
+    assert!(!desk.ask().unwrap().armed);
+    // Settled: the first y arms it, with the card redrawn; the second runs it.
+    desk.set_now(1_000 + SETTLED);
+    desk.take_damage();
+    assert!(key(&mut desk, usage::Y, true).is_empty());
+    assert!(!desk.take_damage().is_empty(), "the armed card redraws");
+    // Its key repeat is not a second step: only a fresh key-down is.
+    assert!(key(&mut desk, usage::Y, true).is_empty());
+    assert!(desk.ask().is_some());
+    key(&mut desk, usage::Y, false);
+    assert!(key(&mut desk, usage::Y, true).contains(&Effect::Answer { id: 5, yes: true }));
+    assert_eq!(desk.ask(), None);
+}
+
+#[test]
+fn a_click_on_run_answers_at_once_once_settled() {
+    let (mut desk, _) = desk_with(1);
+    desk.show_ask(6, 1);
+    desk.set_now(SETTLED);
+    let card = crate::trusted::card(W, H, &desk.ask().unwrap());
+    let (yes, _) = crate::trusted::buttons(card);
+    assert!(click(&mut desk, centre(yes)).contains(&Effect::Answer { id: 6, yes: true }));
 }
 
 #[test]
