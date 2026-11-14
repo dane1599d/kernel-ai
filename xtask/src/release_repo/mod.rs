@@ -25,7 +25,7 @@
 
 use crate::pkgrepo::models::{self, Model};
 use crate::pkgrepo::tuf;
-use check::{Version, check_repository, read_repository};
+use check::{Mode, check_repository, read_repository};
 use kaipkg::generation::Time;
 use kaipkg::image;
 use kaipkg::sign::{self, ADR_0008, MODELS, PACKAGES, PublicKey, Roles};
@@ -262,10 +262,10 @@ fn prepare_timestamp(paths: &Paths, now: Time) -> Result<(), String> {
 /// non-root roles at `version`, and written to the committed repository.
 fn assemble(paths: &Paths, models: &[Model], version: u64, now: Time) -> Result<(), String> {
     let keys = FileKeys::read(&paths.keys)?;
-    let root = match fs::read(paths.repo.join(image::ROOT)) {
-        Ok(bytes) => bytes,
+    let (root, fresh) = match fs::read(paths.repo.join(image::ROOT)) {
+        Ok(bytes) => (bytes, false),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            signed_file(&paths.work, "root", &keys)?.0
+            (signed_file(&paths.work, "root", &keys)?.0, true)
         }
         Err(e) => return Err(format!("cannot read the committed root: {e}")),
     };
@@ -276,7 +276,7 @@ fn assemble(paths: &Paths, models: &[Model], version: u64, now: Time) -> Result<
     }
     let (timestamp, _) = signed_file(&paths.work, "timestamp", &keys)?;
     files.push((sign::TIMESTAMP_PATH.into(), timestamp));
-    check_repository(&files, models, &keys, now, Version::Exactly(version))?;
+    check_repository(&files, models, &keys, now, Mode::Signed { version, fresh })?;
     write_repository(&paths.repo, &files)
 }
 
@@ -313,11 +313,22 @@ fn signed_file(work: &Path, role: &str, keys: &FileKeys) -> Result<(Vec<u8>, u64
 }
 
 /// `files` as `repo`'s `metadata/`: every other role file there goes, and a
-/// committed root must be `files`' byte for byte.
+/// committed root must be `files`' byte for byte. Every root file is frozen,
+/// so a later root committed beside version 1 stops it: this signs version 1
+/// only, and the YubiKey root's tools are still to come.
 fn write_repository(repo: &Path, files: &[(String, Vec<u8>)]) -> Result<(), String> {
     let dir = repo.join(image::METADATA);
     fs::create_dir_all(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
-    for (path, _) in read_repository(repo)? {
+    let committed = read_repository(repo)?;
+    if let Some((path, _)) = committed
+        .iter()
+        .find(|(p, _)| p.ends_with(".root.json") && p != image::ROOT)
+    {
+        return Err(format!(
+            "{path} is committed: every root file is frozen, and this signs root version 1 only"
+        ));
+    }
+    for (path, _) in committed {
         if path != image::ROOT {
             fs::remove_file(repo.join(&path)).map_err(|e| format!("cannot remove {path}: {e}"))?;
         }

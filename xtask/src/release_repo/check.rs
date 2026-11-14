@@ -16,34 +16,44 @@ use std::path::Path;
 /// A repository's files, by path from its top.
 pub type RepoFiles = Vec<(String, Vec<u8>)>;
 
-/// The version the non-root roles may have.
+/// How long `prepare`, both signing rounds and `assemble` may take together:
+/// a role just signed expires no more than this short of its full period.
+const SIGNING_DAYS: u64 = 7;
+/// How long the committed root must still be valid for a release to carry it.
+/// Past this, root version 2 is due (root-ceremony.md), and releases stop.
+const ROOT_MARGIN_DAYS: u64 = 60;
+
+/// What is being checked, which sets the version and the expiry allowed.
 #[derive(Clone, Copy)]
-pub(super) enum Version {
-    /// `assemble`'s: the `release_seq` that `prepare` signs at.
-    Exactly(u64),
-    /// A committed repository's: one release's, not above `release_seq`.
-    AtMost(u64),
+pub(super) enum Mode {
+    /// `assemble`'s, on roles just signed at `release_seq` `version`: each
+    /// expires within [`SIGNING_DAYS`] of its full period from now. A root
+    /// that is not `fresh`, the frozen one, is held as [`Mode::Committed`]'s.
+    Signed { version: u64, fresh: bool },
+    /// A committed repository's, at a version up to `release_seq`: no role
+    /// expires past its period from now, and root lasts [`ROOT_MARGIN_DAYS`].
+    Committed { most: u64 },
 }
 
 /// The checks, on `files` and at `now`:
 /// - they are the six files a release writes, the non-root roles at one
-///   version that `version` allows;
+///   version that `mode` allows;
 /// - they verify as a device checks the image's (`kaipkg::image::listed`), with
 ///   no package and no model refused, and root carries its own key's signature;
 /// - each role's `signed` is what `prepare` writes for `models` and `keys` at
-///   that version, but its expiry, which is no later than `now` plus its period.
+///   that version, but its expiry, which is in the window `mode` sets.
 pub(super) fn check_repository(
     files: &[(String, Vec<u8>)],
     models: &[Model],
     keys: &FileKeys,
     now: Time,
-    version: Version,
+    mode: Mode,
 ) -> Result<(), String> {
     let timestamp = parse(files, sign::TIMESTAMP_PATH)?;
     let at = timestamp["signed"]["version"].as_u64().unwrap_or(0);
-    let allowed = match version {
-        Version::Exactly(want) => at == want,
-        Version::AtMost(most) => (1..=most).contains(&at),
+    let allowed = match mode {
+        Mode::Signed { version, .. } => at == version,
+        Mode::Committed { most } => (1..=most).contains(&at),
     };
     if !allowed {
         return Err(format!("{REPO}: version {at} is not this release's"));
@@ -89,7 +99,13 @@ pub(super) fn check_repository(
                  xtask/models.json: sign it again"
             ));
         }
-        expires_within(&got["signed"], now, days).map_err(|why| format!("{REPO}/{path}: {why}"))?;
+        let earliest = match (mode, path == image::ROOT) {
+            (Mode::Signed { fresh: false, .. } | Mode::Committed { .. }, true) => ROOT_MARGIN_DAYS,
+            (Mode::Signed { .. }, _) => days.saturating_sub(SIGNING_DAYS),
+            (Mode::Committed { .. }, false) => 0,
+        };
+        expires_in(&got["signed"], now, earliest, days)
+            .map_err(|why| format!("{REPO}/{path}: {why}"))?;
     }
     Ok(())
 }
@@ -106,13 +122,24 @@ pub(super) fn same_but_expiry(got: &Value, want: &Value) -> bool {
     without(got) == without(want)
 }
 
-/// `signed` expires no later than `days` after `now`.
-fn expires_within(signed: &Value, now: Time, days: u64) -> Result<(), String> {
-    let bound = Time(now.0 + days * sign::DAY).format();
-    match signed["expires"].as_str() {
-        Some(at) if at.len() == bound.len() && at <= bound.as_str() => Ok(()),
-        _ => Err(format!("it expires later than {days} days from now")),
+/// `signed` expires `earliest` to `latest` days after `now`. A committed
+/// role other than root has no earliest: model import never checks expiry.
+fn expires_in(signed: &Value, now: Time, earliest: u64, latest: u64) -> Result<(), String> {
+    let day = |days: u64| Time(now.0 + days * sign::DAY).format();
+    let (from, to) = (day(earliest), day(latest));
+    let at = signed["expires"]
+        .as_str()
+        .filter(|at| at.len() == to.len())
+        .ok_or("its expiry is not a date")?;
+    if at > to.as_str() {
+        return Err(format!("it expires later than {latest} days from now"));
     }
+    if earliest > 0 && at < from.as_str() {
+        return Err(format!(
+            "it expires sooner than {earliest} days from now ({at})"
+        ));
+    }
+    Ok(())
 }
 
 /// Root carries a signature by the root key over its own `signed`: the image
@@ -149,7 +176,7 @@ pub fn committed(root: &Path) -> Result<Option<RepoFiles>, String> {
     let most = crate::release_image::release_seq(root)?.into();
     let now = crate::pkgrepo::unix_now()?;
     let models = crate::pkgrepo::models::catalog()?;
-    check_repository(&files, &models, &keys, now, Version::AtMost(most))?;
+    check_repository(&files, &models, &keys, now, Mode::Committed { most })?;
     Ok(Some(files))
 }
 

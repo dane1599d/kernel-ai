@@ -50,15 +50,11 @@ fn key_file(path: &Path, seed: &str, pass: &str) {
     let pkcs8 = kaituf::unhex(&format!("302e020100300506032b657004220420{seed}")).unwrap();
     fs::write(&der, pkcs8).unwrap();
     let mut pkcs8 = Command::new(OPENSSL);
-    pkcs8.args([
-        "pkcs8",
-        "-topk8",
-        "-v2",
-        "aes-256-cbc",
-        "-scrypt",
-        "-inform",
-        "DER",
-    ]);
+    pkcs8.args(["pkcs8", "-topk8", "-v2", "aes-256-cbc", "-scrypt"]);
+    // The runbook's cost: N as high as OpenSSL's 32 MiB scrypt limit allows
+    // (2^20 is refused), and p for the rest.
+    pkcs8.args(["-scrypt_N", "16384", "-scrypt_r", "8", "-scrypt_p", "64"]);
+    pkcs8.args(["-inform", "DER"]);
     pkcs8
         .arg("-in")
         .arg(&der)

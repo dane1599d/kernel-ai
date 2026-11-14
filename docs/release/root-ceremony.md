@@ -17,53 +17,98 @@ You chose this on 2026-11-14. Two Ed25519 key files, each encrypted with its own
 
 **What it does not do.** The kernel boots any model disk attached as `kai-model`, or a disk that starts with the GGUF magic, without a signature. That is how `cargo xtask vbox` VMs get their model, and attaching `kai-model.vmdk` to a release VM works without any key. On VirtualBox no disk can be the import disk (`kai-import`), so the role matters there only for downloads.
 
+**Where to sign.** Sign on a machine no Claude session runs on: your Mac with Homebrew's `openssl@3`, or a live-USB Linux, such as Ubuntu's "Try Ubuntu" session booted from a stick. This PC is not that machine. Anything that runs as your Windows user, every Claude session included, can:
+
+- read a stick plugged into this PC;
+- run commands in any WSL distro as root without a password;
+- change a shell's startup files;
+- swap the script between its check and its run.
+
+A WSL distro of its own and `env -i` do not stop that. WSL2 also does not start on this PC at present.
+
+- **Fallback, only if neither is at hand:**
+  1. Close every Claude session and Claude Desktop, then restart Windows, so that nothing they started is still running.
+  2. Open a fresh Git Bash and sign there, with Git for Windows' `/usr/bin/openssl`.
+  3. Check the script against the SHA-256 on your paper, not against one any program shows you.
+
+  On this path you trust Windows, Git for Windows, and that nothing harmful already runs as your user: a keylogger planted earlier would get both passphrases. Prefer the Mac.
+
 **Rules that keep it safe.**
 
-- Two files on one PC under one person add nothing, so root is 1 of 1. The protection is the passphrase, a USB stick plugged in only to sign, and an encrypted copy kept in another building.
-- Sign only in a WSL distro of its own, which no Claude session uses. Sessions use `Ubuntu` for their sandbox and QEMU, and a planted `openssl` or `.bashrc` there could catch a passphrase. Run every command through `env -i /bin/bash --noprofile --norc` and call `/usr/bin/openssl` by its full path.
-- The sign script runs from the key stick, never from a checkout, which a session could change between your review and your run. Check its SHA-256 before each run. The script at the commit that added it has this SHA-256: `ea71c6a5a3ca98af417240ceacfca7709eb4b3b0561f3275602943488f213b4b`. A test in `xtask/src/release_repo/tests.rs` holds this page to the script, so a change to either shows in review.
-- `release/pkgrepo/metadata/1.root.json` is frozen once committed. `cargo xtask release-repo` reuses it and never signs root again. CI fails any pull request that changes or removes it, and any tag whose root differs from the last release's. Two different "version 1" roots would split devices, because `updated` keeps a cached root of the same version.
+- Two files on one machine under one person add nothing, so root is 1 of 1. The protection is the passphrase, a key stick plugged only into the signing machine, and an encrypted copy kept in another building.
+- The key stick never goes into this PC. Files move between this PC and the signing machine on a second stick, the transfer stick. What it carries is public.
+- The sign script runs from the key stick, never from a checkout, because a session could change a checkout between your review and your run.
+  - Check its SHA-256 before each run against the one you wrote down.
+  - The script at the commit that added it has this SHA-256: `23a4f5d326fa3e6f55cb097e6751c1a2b11764325e0b9d772f02a5eaebf92b82`.
+  - A test in `xtask/src/release_repo/tests.rs` holds this page to the script, so a change to either shows in review.
+  - It runs in macOS's bash 3.2 and with Linux's or Git for Windows' bash. It uses the first OpenSSL 3 it finds at `/usr/bin/openssl` or Homebrew's `openssl@3`.
+- Root files are frozen once committed. `cargo xtask release-repo` reuses `1.root.json` and never signs root again. CI fails a pull request or a push to main that changes or removes any committed `*.root.json`, and a tag whose root files differ from any earlier release's. Two different "version 1" roots would split devices, because `updated` keeps a cached root of the same version.
+- **The root key is pinned outside the repository.** In `kernel-ai`'s protected `release` environment you set `RELEASE_ROOT_KEY` to the root key's 64 hex digits (setup step 7). The `publish` job refuses a release whose root names another key. It also refuses one with no root once the pin is set. Until the pin exists, a pull request could bring keys and a repository of its own, and every other check would pass.
+- **CODEOWNERS** names you for `release/`, `scripts/release-sign.sh` and `.github/workflows/`.
+  - Requiring that review is a ruleset you set: Settings → Rules → Rulesets → a branch ruleset on `main` with "Require a pull request before merging" and "Require review from Code Owners".
+  - Sessions push as your account, and GitHub does not count an author's own approval. So with that ruleset on, pull requests that touch those paths wait for you to merge them yourself from the ruleset's bypass list, and the batcher cannot merge them.
 - Never put a key file under the OneDrive Desktop folder, where the main checkout lives. Never type a passphrase into a Claude chat, or into a terminal a session controls.
 
-### One-time setup (about 30 minutes)
+### One-time setup on the Mac (about 30 minutes)
 
-1. In your own PowerShell window, run `wsl --install -d Debian`. When it asks, pick a user name and password for it. This is the signing distro. Never ask a session to use it.
-2. In that Debian window, run `sudo apt update && sudo apt install -y openssl`, then `/usr/bin/openssl version`. It must start with `OpenSSL 3`.
-3. Plug in a USB stick kept only for these keys. If Windows shows it as `F:`, run `sudo mkdir -p /mnt/f && sudo mount -t drvfs F: /mnt/f`. Use the stick's own letter if it is not `F:`.
-4. Run `env -i /bin/bash --noprofile --norc`, then `cd /mnt/f && mkdir -p kai-keys && cd kai-keys`.
-5. Make the root key: `/usr/bin/openssl genpkey -algorithm ed25519 | /usr/bin/openssl pkcs8 -topk8 -v2 aes-256-cbc -scrypt -out root.key`. It asks for a new passphrase twice. Use six or more random words.
-6. Make the release key the same way, with a different passphrase: `/usr/bin/openssl genpkey -algorithm ed25519 | /usr/bin/openssl pkcs8 -topk8 -v2 aes-256-cbc -scrypt -out release.key`.
-7. Run `head -1 root.key release.key`. Both must say `-----BEGIN ENCRYPTED PRIVATE KEY-----`. If either does not, delete it and repeat its step.
-8. Write the public halves: `/usr/bin/openssl pkey -in root.key -pubout -out root.pub`, then `/usr/bin/openssl pkey -in release.key -pubout -out release.pub`. Each asks for its key's passphrase.
-9. Get the sign script at the commit the session names (this page's pull request, once merged): `/usr/bin/curl -fsSLo release-sign.sh https://raw.githubusercontent.com/dane1599d/kernel-ai/<commit>/scripts/release-sign.sh`. Read it: it is under 70 lines. Then run `/usr/bin/sha256sum release-sign.sh`. It must match the SHA-256 above. Write it down with the passphrases.
-10. Save both passphrases in your password manager, and on paper kept away from the stick.
-11. Copy `root.key`, `release.key` and `release-sign.sh` to a second stick. Check the copies open: `/usr/bin/openssl pkey -in <copy> -noout` for each key, with its passphrase. Keep that stick in another building, and check it again once a year: sticks fail without warning.
-12. Give the session `root.pub` and `release.pub`, the files or their text. They are public. The session commits them as `release/keys/`.
-13. Run `exit`, `cd /`, then `sudo umount /mnt/f`, and eject the stick in Windows.
+On a live-USB Linux, the steps are the same with three differences:
+- Use `O=/usr/bin/openssl`.
+- The sticks are under `/media/<user>/<name>`.
+- Run `sudo apt update && sudo apt install -y curl ca-certificates openssl` first.
+
+1. Install Homebrew if you do not have it (brew.sh), then run `brew install openssl@3`.
+2. In Terminal, run `env -i /bin/bash --noprofile --norc`, then `O=/opt/homebrew/opt/openssl@3/bin/openssl` (on an Intel Mac, `/usr/local/opt/openssl@3/bin/openssl`). Then run `$O version`: it must start with `OpenSSL 3`. Do every step below in this shell.
+3. Plug in the key stick. If Finder names it `KAIKEYS`, run `mkdir -p /Volumes/KAIKEYS/kai-keys && cd /Volumes/KAIKEYS/kai-keys`.
+4. Make the root key: `$O genpkey -algorithm ed25519 | $O pkcs8 -topk8 -v2 aes-256-cbc -scrypt -scrypt_N 16384 -scrypt_r 8 -scrypt_p 64 -out root.key`.
+   - It asks for a new passphrase twice. Use six or more words picked by dice (Diceware) or by your password manager's passphrase generator, not words you choose.
+   - Why these settings: OpenSSL cannot decrypt a key whose scrypt needs more than 32 MiB, so N cannot go higher than 16384. p=64 makes each guess 64 times as costly as the default instead, about 2 seconds a use.
+5. Make the release key the same way, with a different passphrase: `$O genpkey -algorithm ed25519 | $O pkcs8 -topk8 -v2 aes-256-cbc -scrypt -scrypt_N 16384 -scrypt_r 8 -scrypt_p 64 -out release.key`.
+6. Run `head -1 root.key release.key`. Both must say `-----BEGIN ENCRYPTED PRIVATE KEY-----`. If either does not, delete it and repeat its step. Then write the public halves: `$O pkey -in root.key -pubout -out root.pub`, then `$O pkey -in release.key -pubout -out release.pub`. Each asks for its key's passphrase.
+7. Pin the root key:
+   - Run `$O pkey -pubin -in root.pub -outform DER | tail -c 32 | od -An -v -tx1 | tr -d ' \n'; echo`. It prints 64 hex digits. Write them down.
+   - In a browser, open `kernel-ai` on GitHub, then Settings → Environments → `release` → Environment variables → Add variable. Name it `RELEASE_ROOT_KEY`, with those 64 digits as its value. Do this yourself, not through a session.
+8. Get the sign script at the commit the session names (this page's pull request, once merged): `/usr/bin/curl -fsSLo release-sign.sh https://raw.githubusercontent.com/dane1599d/kernel-ai/<commit>/scripts/release-sign.sh`.
+   - Read it: it is under 80 lines.
+   - Run `$O dgst -sha256 release-sign.sh`. It must match the SHA-256 above.
+   - Write it down with the passphrases.
+9. Save both passphrases in your password manager, and on paper kept away from the sticks.
+10. Copy `root.key`, `release.key` and `release-sign.sh` to a third stick. Check that each key copy opens: `$O pkey -in <copy> -noout`, with its passphrase. Keep that stick in another building, and check it again once a year: sticks fail without warning.
+11. Copy `root.pub` and `release.pub` to the transfer stick and give it to the session. It commits them as `release/keys/`.
+12. Run `exit`, then eject every stick in Finder.
 
 ### Each release
 
-The session prepares the files to sign in a folder it names, for example `E:\kai-release\rc2`, which Debian sees as `/mnt/e/kai-release/rc2`. Signing takes two rounds, because the timestamp holds the hash of the signed snapshot.
+Signing takes two rounds, because the timestamp holds the hash of the signed snapshot.
 
-1. The session runs `cargo xtask release-repo prepare --dir <folder>`. It tells you the folder and pastes the `sha256` line `prepare` printed for each file.
-2. Plug in the key stick and, in Debian, mount it as in setup step 3.
-3. Run `/usr/bin/sha256sum /mnt/f/kai-keys/release-sign.sh`. It must match the SHA-256 you wrote down. If it does not, stop.
-4. Run `env -i /bin/bash --noprofile --norc /mnt/f/kai-keys/release-sign.sh /mnt/f/kai-keys /mnt/e/kai-release/rc2`, using the folder the session named. Type each passphrase it asks for.
-   - Root's passphrase is asked only for the first release, the one that signs root. If it asks for root's on any later release, press Ctrl-C and stop: root is frozen, and a request for it means someone changed the folder.
+1. Plug the transfer stick into this PC. The session runs `cargo xtask release-repo prepare --dir <transfer stick>\kai-release\<version>`. It pastes the `sha256` line `prepare` printed for each file. Eject the transfer stick.
+2. On the Mac, plug in both sticks, open Terminal, and run `env -i /bin/bash --noprofile --norc`.
+3. Run `/opt/homebrew/opt/openssl@3/bin/openssl dgst -sha256 /Volumes/KAIKEYS/kai-keys/release-sign.sh`. It must match the SHA-256 on your paper. If it does not, stop.
+4. Run `/bin/bash --noprofile --norc /Volumes/KAIKEYS/kai-keys/release-sign.sh /Volumes/KAIKEYS/kai-keys /Volumes/<transfer stick>/kai-release/<version>`. Type each passphrase it asks for.
+   - Root's passphrase is asked only for the first release, the one that signs root. If it asks for root's on any later release, press Ctrl-C and stop. Root is frozen, so a request for it means someone changed the folder.
    - For each file it prints `signed <file> with <key>: sha256 <hash>`. Each hash must be the one the session pasted for that file. If one differs, the folder changed after `prepare`: tell the session, and nothing goes further.
-5. Run `sudo umount /mnt/f`, eject the stick, and tell the session "signed".
-6. The session runs `cargo xtask release-repo prepare-timestamp` and pastes its one `sha256` line. Repeat steps 2 to 5: this time it asks only for the release passphrase.
-7. The session runs `cargo xtask release-repo assemble`. It checks every signature, the repository as a device does, and that every signed byte is what `prepare` writes for `release/keys/` and `xtask/models.json`, with no expiry later than its period allows. Then it commits `release/pkgrepo/` and opens a pull request. CI checks the same on clean runners, and the release dry run boots the image and imports qwen3-0.6b under the role you signed.
+5. Run `exit`, eject both sticks, take the transfer stick back to this PC, and tell the session "signed".
+6. The session runs `cargo xtask release-repo prepare-timestamp` and pastes its one `sha256` line. Repeat steps 2 to 5. This time it asks only for the release passphrase.
+7. The session runs `cargo xtask release-repo assemble`, which checks:
+   - every signature;
+   - the repository, as a device checks it;
+   - that every signed byte is what `prepare` writes for `release/keys/` and `xtask/models.json`;
+   - that each expiry is within a week of its full period.
 
-The session never needs the stick or a passphrase. A model added to `xtask/models.json` makes a release fail until it is signed again this way.
+   Then it commits `release/pkgrepo/` and opens a pull request. CI checks the same on clean runners, on that pull request and on every later one. The release dry run boots the image and imports qwen3-0.6b under the role you signed.
 
-**What is still trusted:** you sign the bytes the session prepared. The checks above catch a repository that is not what xtask writes, and a folder changed after `prepare`. They cannot catch a session that prepares other bytes and lies about their hashes, then keeps the signatures instead of committing them. Your checks against that are the rule on root's passphrase in step 4, and signing only when a session asks for a release you expect.
+The session never needs the key stick or a passphrase. A change to `xtask/models.json` or its chunk lists fails CI until the repository is signed again this way. Allow a week from step 1 to step 7: past that, `assemble` refuses the expiries, and you start again at step 1.
+
+**What is still trusted:** you sign the bytes the session prepared.
+- The checks catch a repository that is not what xtask writes, and a folder changed after `prepare`.
+- They cannot catch a session that prepares other bytes, lies about their hashes, and keeps the signatures instead of committing them.
+- Your checks against that are the rule on root's passphrase in step 4, the pinned root key, and signing only when a session asks for a release you expect.
 
 ### Expiry and online updates
 
 - Model import never checks expiry, so the role in an image keeps working.
 - Update disks and the online repository are checked at the real time. A repository signed this way stops being accepted 7 days after its timestamp is signed. Until there is an online key, an online repository signed offline needs a longer timestamp expiry, for example 30 days, re-signed by hand.
-- Root expires 365 days after you sign it. After that, update disks and online updates stop until `2.root.json` is published. Set a reminder for month 10 to make the YubiKey root (below), or a root version 2 signed with `root.key`.
+- Root expires 365 days after you sign it. After that, update disks and online updates stop until `2.root.json` is published.
+- From 60 days before then, `release-repo check` refuses the committed repository, so release builds and CI fail until root version 2 is made: the YubiKey root (below), or a version 2 signed with `root.key`. Plan it for month 10.
 - rc.2's root names `release.key` for snapshot and timestamp. An online CI key therefore needs a root version 2 first.
 - rc.1 carries no `kai.root.json`, so an rc.1 install can never take an update. It must be reinstalled from rc.2 or later.
 

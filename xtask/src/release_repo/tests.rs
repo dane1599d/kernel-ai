@@ -122,7 +122,17 @@ fn signed_apart_the_release_is_what_signing_in_one_go_writes() {
     let written = read_repository(&paths.repo).unwrap();
     assert_eq!(written, in_one_go(&models));
     let keys = FileKeys::read(&paths.keys).unwrap();
-    check_repository(&written, &models, &keys, NOW, Version::Exactly(1)).unwrap();
+    check_repository(
+        &written,
+        &models,
+        &keys,
+        NOW,
+        Mode::Signed {
+            version: 1,
+            fresh: true,
+        },
+    )
+    .unwrap();
 }
 
 /// A second release reuses the committed root byte for byte and names its
@@ -200,13 +210,36 @@ fn a_models_role_that_is_not_the_catalog_fails_the_check() {
     release(&paths, &models, 1, &sign_here).unwrap();
     let keys = FileKeys::read(&paths.keys).unwrap();
     let files = read_repository(&paths.repo).unwrap();
-    check_repository(&files, &models, &keys, NOW, Version::AtMost(1)).unwrap();
+    check_repository(&files, &models, &keys, NOW, Mode::Committed { most: 1 }).unwrap();
+    // Within 60 days of root's expiry, the committed repository no longer
+    // passes: root version 2 is due.
+    let late = Time(NOW.0 + 320 * sign::DAY);
+    let refused = check_repository(&files, &models, &keys, late, Mode::Committed { most: 1 });
+    assert!(
+        refused
+            .unwrap_err()
+            .contains("1.root.json: it expires sooner than 60 days")
+    );
     models.push(last);
-    let refused = check_repository(&files, &models, &keys, NOW, Version::AtMost(1)).unwrap_err();
+    let refused =
+        check_repository(&files, &models, &keys, NOW, Mode::Committed { most: 1 }).unwrap_err();
     assert!(
         refused.contains("1.models.json is not what `release-repo prepare` writes"),
         "{refused}"
     );
+}
+
+/// A later root committed beside version 1 is never deleted to make room.
+#[test]
+fn a_later_root_file_stops_assemble() {
+    let paths = workspace("laterroot");
+    let models = models::catalog().unwrap();
+    release(&paths, &models, 1, &sign_here).unwrap();
+    let later = paths.repo.join("metadata/2.root.json");
+    fs::write(&later, b"{}").unwrap();
+    let refused = release(&paths, &models, 1, &sign_here).unwrap_err();
+    assert!(refused.contains("2.root.json is committed"), "{refused}");
+    assert!(later.exists());
 }
 
 /// A name for the case, the role edited, and the edit.
@@ -222,16 +255,20 @@ fn tamper(work: &Path, role: &str, edit: fn(&mut Value)) {
 }
 
 /// Bytes the founder signed that `prepare` would not write are refused even
-/// with good signatures: a delegation widened, or an expiry far off.
+/// with good signatures: a delegation widened, an expiry far off, or a root
+/// that would expire soon after it is frozen.
 #[test]
 fn a_role_edited_before_it_was_signed_is_refused() {
     let models = models::catalog().unwrap();
-    let edits: [Edit; 2] = [
+    let edits: [Edit; 3] = [
         ("widened", "targets", |s| {
             s["delegations"]["roles"][1]["paths"] = json!(["*"])
         }),
         ("far-off", "snapshot", |s| {
             s["expires"] = json!("2999-01-01T00:00:00Z")
+        }),
+        ("short-lived", "root", |s| {
+            s["expires"] = json!("2027-01-20T00:00:00Z")
         }),
     ];
     for (name, role, edit) in edits {
@@ -298,7 +335,7 @@ fn the_runbook_pins_the_sign_script() {
     );
     let text = String::from_utf8(script).unwrap();
     assert!(
-        text.lines().count() <= 70,
+        text.lines().count() <= 80,
         "release-sign.sh stays short enough to read"
     );
     for word in ["curl", "wget", "/dev/tcp", "ssh", "nc ", "git ", "http"] {

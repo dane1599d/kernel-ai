@@ -19,7 +19,11 @@
 # `cargo xtask release-repo`), the image carries it as `pkgrepo/`, its `models`
 # role signed with the founder's release key, and its root as `kai.root.json`.
 # `assemble` checks that the image holds that root in both places, and on a tag
-# `seq` checks the root is the last release's byte for byte: it is frozen.
+# `seq` checks every root file is each earlier release's byte for byte: they are
+# frozen. `publish` requires the root to name the key the founder pinned as
+# `RELEASE_ROOT_KEY` in the `release` environment, an anchor outside the
+# repository. `sign-script-macos` runs the sign script as the founder runs it,
+# on a Mac, with a test key.
 #
 # The `release-boot` job boots build-a's image itself, with qwen3-0.6b attached
 # as the import disk, types `models import` and passes on the import line
@@ -56,6 +60,12 @@ on:
       - release/keys/**
       - release/pkgrepo/**
       - scripts/release-sign.sh
+      # What the committed release repository is checked against.
+      - xtask/models.json
+      - xtask/models/chunks/**
+      - xtask/src/pkgrepo/**
+      - kaipkg/**
+      - kaituf/**
   workflow_dispatch:
 
 permissions:
@@ -103,13 +113,14 @@ jobs:
           fi
           # The founder-signed root never changes once released (root-ceremony.md):
           # every earlier release that carries one must carry these bytes.
-          root=release/pkgrepo/metadata/1.root.json
           for tag in $(git tag --list 'v*'); do
             [ "$tag" = "$VERSION" ] && continue
-            if git cat-file -e "$tag:$root" 2>/dev/null && ! git diff --quiet "$tag" HEAD -- "$root"; then
-              echo "$root differs from $tag's: the root is frozen"
-              exit 1
-            fi
+            for root in $(git ls-tree --name-only "$tag" release/pkgrepo/metadata/ | grep '\.root\.json$' || true); do
+              if ! git diff --quiet "$tag" HEAD -- "$root"; then
+                echo "$root differs from $tag's: root files are frozen"
+                exit 1
+              fi
+            done
           done
 
   build:
@@ -359,6 +370,28 @@ jobs:
           cargo xtask release-boot --image "$RUNNER_TEMP/boot.img" \
             --model "$RUNNER_TEMP/kai-models/$FILE" --accel kvm --timeout 1200
 
+  # The founder signs on a Mac (root-ceremony.md): the script runs there in
+  # /bin/bash 3.2 with BSD tools and Homebrew's openssl@3. A test key only.
+  sign-script-macos:
+    name: release-sign.sh on macOS signs RFC 8032 test 2 (bash 3.2, openssl@3)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: |
+          brew list openssl@3 > /dev/null 2>&1 || brew install openssl@3
+          o=/opt/homebrew/opt/openssl@3/bin/openssl
+          "$o" version
+          /bin/bash --version | head -1
+          t=$(mktemp -d) && mkdir "$t/keys" "$t/work"
+          printf '302e020100300506032b6570042204204ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb' |
+            xxd -r -p > "$t/seed.der"
+          printf 'test pass\n' | "$o" pkcs8 -topk8 -v2 aes-256-cbc -scrypt -scrypt_N 16384 -scrypt_r 8 \
+            -scrypt_p 64 -inform DER -in "$t/seed.der" -out "$t/keys/release.key" -passout stdin
+          printf '\x72' > "$t/work/targets.canon"
+          printf 'test pass\n' | env -i /bin/bash --noprofile --norc scripts/release-sign.sh "$t/keys" "$t/work"
+          test "$(cat "$t/work/targets.sig")" = \
+            92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00
+
   sign:
     name: Sign as TUF targets (test root), accept and refuse
     needs: assemble
@@ -417,7 +450,7 @@ jobs:
   publish:
     name: Attest and draft the release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [seq, sign, vm, release-boot]
+    needs: [seq, sign, vm, release-boot, sign-script-macos]
     runs-on: ubuntu-24.04
     environment: release
     permissions:
@@ -425,6 +458,25 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # The anchor outside the repository: the founder sets RELEASE_ROOT_KEY in
+      # this protected environment (root-ceremony.md), so a pull request that
+      # brings its own keys and repository cannot ship as the founder's.
+      - name: The release's root key is the one the founder pinned
+        env:
+          PINNED: ${{ vars.RELEASE_ROOT_KEY }}
+        run: |
+          root=release/pkgrepo/metadata/1.root.json
+          if [ ! -f "$root" ]; then
+            [ -z "$PINNED" ] || { echo "RELEASE_ROOT_KEY is pinned, but this release carries no root"; exit 1; }
+            exit 0
+          fi
+          [ -n "$PINNED" ] || { echo "no RELEASE_ROOT_KEY in the release environment (root-ceremony.md)"; exit 1; }
+          named=$(jq -r '.signed.roles.root as $r | if ($r.keyids | length) == 1 and $r.threshold == 1
+            then .signed.keys[$r.keyids[0]].keyval.public else "" end' "$root")
+          file=$(openssl pkey -pubin -in release/keys/root.pub -outform DER | tail -c 32 | od -An -v -tx1 | tr -d ' \n')
+          echo "pinned $PINNED; 1.root.json names $named; release/keys/root.pub is $file"
+          [ "$named" = "$PINNED" ] && [ "$file" = "$PINNED" ]
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-${{ env.VERSION }}
