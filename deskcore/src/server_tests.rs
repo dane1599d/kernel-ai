@@ -687,3 +687,39 @@ fn a_window_of_another_name_binds_its_apps_rows() {
     )]);
     assert_eq!(client.handle(&mut desk, &rows, false), Ok(vec![]));
 }
+
+/// A client's first window, opened and shown: its id.
+fn open_window(client: &mut Client, desk: &mut Desk) -> crate::desk::WindowId {
+    client.handle(desk, &setup(), true).unwrap();
+    let needs = client.handle(desk, &show(), false).unwrap();
+    let [Need::Show { window, .. }] = needs[..] else {
+        panic!("{needs:?}");
+    };
+    window
+}
+
+/// #869's review: a window a client opens takes the focus from another
+/// client's window, and that client hears its focus_out: the focus moves of
+/// a client's own requests are shared with every other client.
+#[test]
+fn a_window_opened_takes_the_focus_from_another_clients_window() {
+    let mut desk = Desk::new(1280, 800);
+    let mut a = Client::new(1, "a");
+    let mut b = Client::new(2, "b");
+    let first = open_window(&mut a, &mut desk);
+    events(&mut a);
+    assert!(
+        a.take_shared()
+            .contains(&Effect::Focus(Focus::Window(first)))
+    );
+    open_window(&mut b, &mut desk);
+    let shared = b.take_shared();
+    assert!(!shared.is_empty(), "the new window's focus is shared");
+    a.apply(&shared);
+    // seat.focus_out (opcode 1 on the seat, object 7).
+    let sent = events(&mut a);
+    assert!(
+        sent.iter().any(|(object, op, _)| *object == 7 && *op == 1),
+        "the first client heard its window lose the focus: {sent:?}"
+    );
+}

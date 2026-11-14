@@ -117,7 +117,6 @@ pub fn main(args: &[String]) -> Result<(), String> {
         )],
         cut: None,
         capture: None,
-        forbid: vec![String::from(PKG_FAIL)],
     };
     qemu::run_test(&qemu, &qemu_args, &target_dir, &run)
 }
@@ -125,7 +124,9 @@ pub fn main(args: &[String]) -> Result<(), String> {
 /// What `pkg` prints when the image's repository does not check out, which
 /// the release boot never shows (founder test 2, test 5): the image it boots
 /// always carries a repository, the founder's once it is committed and a test
-/// root's (`--test-root`) before.
+/// root's (`--test-root`) before. [`RELEASE_BOOT`]'s own `forbid` list holds
+/// it (`crate::cases::FORBID`).
+#[cfg(test)]
 const PKG_FAIL: &str = "pkg: FAIL";
 
 #[cfg(test)]
@@ -158,10 +159,11 @@ mod tests {
         assert!(RELEASE_BOOT.data.is_none() && RELEASE_BOOT.import.is_none());
     }
 
-    /// `pkg: FAIL` is forbidden on every release boot, so no expected line
-    /// may carry it.
+    /// `pkg: FAIL` is in the release boot's own `forbid` list, so no expected
+    /// line may carry it.
     #[test]
-    fn pkg_fail_is_never_an_expected_line() {
+    fn the_release_boot_forbids_pkg_fail() {
+        assert!(RELEASE_BOOT.forbid.contains(&PKG_FAIL));
         assert!(
             RELEASE_BOOT
                 .expect
