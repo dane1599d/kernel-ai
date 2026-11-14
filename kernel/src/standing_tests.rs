@@ -26,6 +26,7 @@
 
 use crate::display::claim;
 use crate::pointer::{self, Event, Motion, Source};
+use crate::ui_tests::{APP_FRAME_W, DESK};
 use crate::{ask_box, handle, hpet, ipc, log, process, terminal, threads};
 use alloc::string::String;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -55,11 +56,10 @@ const OPEN_MS: u64 = 10_000;
 /// A call to Notes or the supervisor: a suspend saves the app's state.
 const CALL_MS: u64 = 60_000;
 /// Where `desktop` starts the pointer: the middle of 1280x800.
-const START: (i32, i32) = (640, 400);
-/// The minimize control of the window at the first cascade spot (48,52, frame
-/// 642x454, as `ui-window` finds it): the third control from the right, 76 px
-/// in from the frame's right end, and 17 px down from its top.
-const MINIMIZE: (i32, i32) = (48 + 642 - 76, 52 + 17);
+const START: (i32, i32) = DESK.screen_centre();
+/// The minimize control of the window at the first cascade spot (Notes' 642 px
+/// frame, as `ui-window` finds it).
+const MINIMIZE: (i32, i32) = DESK.minimize(0, APP_FRAME_W);
 /// Alt down, Tab down and up, Alt up (scan code set 1).
 const ALT_TAB: [u8; 4] = [0x38, 0x0F, 0x8F, 0xB8];
 /// `y` down and up.

@@ -16,6 +16,7 @@
 //! list, and comphost gives it `updated`'s (it says so once in its log).
 
 use crate::display::claim;
+use crate::ui_tests::DESK;
 use crate::ui_tests::report;
 use crate::{console, log, process, threads};
 use alloc::format;
@@ -55,13 +56,11 @@ const WAIT_MS: u64 = 60_000;
 /// Monitor, give it a sample, under TCG.
 const OPEN_MS: u64 = 12_000;
 /// Where `desktop` starts the pointer: the middle of 1280x800.
-const START: (i32, i32) = (640, 400);
-/// An app window's close control: its frame is 642 wide at the first cascade
-/// spot, 48,52, the control 17 px in from the frame's right end and down from its
-/// top, as `ui-window` finds it for Notes. The width is the same for any app
-/// whose content is 640 wide; a wider one has it further right.
-fn close_at(content_width: i32) -> (i32, i32) {
-    (48 + content_width + 2 - 17, 52 + 17)
+const START: (i32, i32) = DESK.screen_centre();
+/// An app window's close control: the window is at the first cascade spot, as
+/// `ui-window` finds Notes'. A wider app has it further right.
+const fn close_at(content_width: i32) -> (i32, i32) {
+    DESK.close(0, content_width + 2 * deskgeom::FRAME)
 }
 
 /// Waits for the desktop to take the screen and the app `process` to run, gives

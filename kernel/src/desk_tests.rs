@@ -14,6 +14,7 @@
 
 use crate::display::claim;
 use crate::pointer::{self, Event, Motion, Source};
+use crate::ui_tests::DESK;
 use crate::{console, input, log, process, threads};
 
 /// The plan lines this case adds.
@@ -27,12 +28,12 @@ const STILL_MS: u64 = 1_000;
 /// Time for `desktop` to take each step in.
 const STEP_MS: u64 = 400;
 /// Where `desktop` starts the pointer: the middle of 1280x800.
-const START: (i32, i32) = (640, 400);
+const START: (i32, i32) = DESK.screen_centre();
 /// A point on Left's title bar, clear of Right.
-const LEFT_TITLE: (i32, i32) = (150, 60);
-/// Left's close control once it has moved 200 px right: its frame is at
-/// 248,52, the bar one px in, the control 2 px from the bar's right end.
-const LEFT_CLOSE: (i32, i32) = (533, 69);
+const LEFT_TITLE: (i32, i32) = DESK.window_title(0, 102);
+/// Left's close control once it has moved 200 px right: its 302 px frame
+/// opened at the first cascade spot.
+const LEFT_CLOSE: (i32, i32) = (DESK.close(0, 302).0 + 200, DESK.close(0, 302).1);
 
 /// A USB-style relative report with `buttons` held.
 pub(crate) fn report(dx: i32, dy: i32, buttons: u8) {

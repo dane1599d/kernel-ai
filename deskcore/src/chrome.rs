@@ -5,17 +5,11 @@
 
 use crate::geom::{Point, Rect};
 
-pub const TITLE_BAR: i32 = 32;
-pub const FRAME: i32 = 1;
-pub const CONTROL: i32 = 28;
-/// The gap from a control to the next and to the frame.
-pub const CONTROL_GAP: i32 = 2;
-pub const GRAB: i32 = 6;
-pub const CORNER: i32 = 16;
+pub use deskgeom::{
+    CONTROL, CONTROL_GAP, CORNER, FRAME, GRAB, PANEL, TITLE_BAR, TOP_BAR, content_of, frame_for,
+    title_bar,
+};
 pub const RADIUS: i32 = 6;
-/// The top bar and the AI panel along the bottom.
-pub const TOP_BAR: i32 = 28;
-pub const PANEL: i32 = 36;
 
 /// Which edges a resize moves.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -38,45 +32,13 @@ pub enum Part {
     Edge(Edges),
 }
 
-/// The outer frame for `content`: the title bar above it and the frame round
-/// both.
-pub fn frame_for(content: Rect) -> Rect {
-    Rect::new(
-        content.x - FRAME,
-        content.y - TITLE_BAR - FRAME,
-        content.w + 2 * FRAME,
-        content.h + TITLE_BAR + 2 * FRAME,
-    )
-}
-
-/// The content rectangle inside `frame`.
-pub fn content_of(frame: Rect) -> Rect {
-    Rect::new(
-        frame.x + FRAME,
-        frame.y + FRAME + TITLE_BAR,
-        frame.w - 2 * FRAME,
-        frame.h - TITLE_BAR - 2 * FRAME,
-    )
-}
-
-pub fn title_bar(frame: Rect) -> Rect {
-    Rect::new(
-        frame.x + FRAME,
-        frame.y + FRAME,
-        frame.w - 2 * FRAME,
-        TITLE_BAR,
-    )
-}
-
 /// The three controls, right to left: close, maximize, minimize.
 pub fn controls(frame: Rect) -> [(Part, Rect); 3] {
-    let bar = title_bar(frame);
-    let y = bar.y + (TITLE_BAR - CONTROL) / 2;
-    let at = |n: i32| bar.right() - CONTROL_GAP - (n + 1) * CONTROL - n * CONTROL_GAP;
+    let c = deskgeom::controls(frame);
     [
-        (Part::Close, Rect::new(at(0), y, CONTROL, CONTROL)),
-        (Part::Maximize, Rect::new(at(1), y, CONTROL, CONTROL)),
-        (Part::Minimize, Rect::new(at(2), y, CONTROL, CONTROL)),
+        (Part::Close, c.close),
+        (Part::Maximize, c.maximize),
+        (Part::Minimize, c.minimize),
     ]
 }
 
@@ -121,4 +83,19 @@ fn corners(frame: Rect, p: Point, mut edges: Edges) -> Edges {
         edges.right |= close(p.x, frame.right());
     }
     edges
+}
+
+#[cfg(test)]
+mod tests {
+    /// The stats the top bar paints are what the screendump goldens mask, so
+    /// the kernel and xtask read the mask from deskgeom.
+    #[test]
+    fn the_painted_stats_are_deskgeoms_tray_mask() {
+        for (w, h) in [(1920, 1080), (1280, 800), (1024, 768)] {
+            assert_eq!(
+                crate::paint::stats_area(w),
+                deskgeom::points(w, h).tray_mask()
+            );
+        }
+    }
 }
