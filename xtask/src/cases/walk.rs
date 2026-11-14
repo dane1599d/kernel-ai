@@ -36,7 +36,10 @@ macro_rules! walk {
                 " answered yes",
                 "founder-walk: the Terminal's line asked first, and Run on the card made its file",
                 "desktop: the panel shows what a card came to",
-                "desktop: the bar says \"",
+                // What Run on the panel's card came to: code's done line,
+                // without its undo (`shellcore::deskask`). `fs_create` never
+                // overwrites, so nothing made the file before the answer.
+                "desktop: the bar says \"Done: file walk-panel.txt created (was absent).\"",
                 "founder-walk: the panel's line asked first, and Run on the card made its file",
                 "founder-walk: the note reached Notes on a fresh boot",
                 // Notes is the desk's second window, its close control where

@@ -20,7 +20,7 @@
 use crate::claim_tests::{type_keys, type_text};
 use crate::desk_tests::{self, report};
 use crate::display::claim;
-use crate::{ask_box, display, ipc, log, process, threads};
+use crate::{ask_box, display, ipc, log, process, terminal, threads};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -35,10 +35,21 @@ const SETTLE_MS: u64 = 2_000;
 const REPLY_MS: u64 = 60_000;
 /// How often an answer is looked for.
 const POLL_MS: u64 = 1_000;
-/// Time for a key on the card to reach `desktop`.
-const KEY_MS: u64 = 1_000;
+/// `y` presses on the card, more than its quiet time apart: a press in that
+/// time only pushes it back, so the card counts from its draw, not its take.
+const YES_GAP_MS: u64 = termcore::menu::SETTLE_MS + 300;
+/// Most `y` presses the card may need: one arms Run and one answers it, and
+/// the rest cover a slow first draw.
+const MAX_YES: usize = 12;
+/// How often the card's answer and the typed line's pixels are looked for.
+const LOOK_MS: u64 = 50;
+/// How long the typed line may take to show in the Terminal's input row.
+const TYPED_MS: u64 = 10_000;
 /// Ctrl down, Space down and up, Ctrl up: the panel takes the keys.
 const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
+/// Backspace down and up, a few times: a `y` that reached the panel after
+/// its card was answered is taken back before the next line.
+const CLEAR: [u8; 6] = [0x0E, 0x8E, 0x0E, 0x8E, 0x0E, 0x8E];
 const ENTER: [u8; 2] = [0x1C, 0x9C];
 /// `y` down and up: on the card, once arms Run and once more answers it.
 const YES: [u8; 2] = [0x15, 0x95];
@@ -54,7 +65,9 @@ const COUNT_NOTES: &str = "kai-call 1\nfunc app:notes/actions@1.0.0#count\nargs 
 const CPUS_LINE: &str = "show me the cpus please";
 const ABILITIES_LINE: &str = "what can you do with the cpus";
 const CLARIFY_LINE: &str = "do more with the cpus";
-/// The model's clarify options: one a row backs, and one none does.
+/// The model's clarify question, and its options: one a row backs, and one
+/// none does.
+const CLARIFY_QUESTION: &str = "What should I do with the CPUs?";
 const BACKED: &str = "show the cpus";
 const UNBACKED: &str = "increase CPU frequency";
 /// Lines that name the change but not its file, so each asks first.
@@ -81,6 +94,19 @@ const STILL_TRIES: usize = 10;
 const NOTES_CLOSE: (i32, i32) = (48 + 32 + 642 - 17, 52 + 32 + 17);
 /// Farther than any screen is wide: `desktop` stops the pointer at the corner.
 const TO_CORNER: i32 = -4_000;
+
+/// The walk's plan: the default boot's `system`, with `log_bar=1` on
+/// `desktop`'s line, so it logs each new line of the panel's bar.
+pub fn plan(system: &str) -> String {
+    system
+        .lines()
+        .map(|line| match line.starts_with("desktop ") {
+            true => format!("{line} log_bar=1"),
+            false => String::from(line),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 /// A FNV-1a hash of each [`TILE`]-pixel square of the screen, row by row, and
 /// how many squares make a row.
@@ -135,6 +161,7 @@ fn still_screen() -> Result<(Vec<u64>, usize), &'static str> {
 fn panel_line(text: &str) {
     type_keys(&CTRL_SPACE);
     threads::sleep_ms(SETTLE_MS);
+    type_keys(&CLEAR);
     type_text(text);
     type_keys(&ENTER);
 }
@@ -169,6 +196,23 @@ fn rows_show(text: &str) -> Result<String, &'static str> {
     Err("founder-walk: the Terminal did not show the answer")
 }
 
+/// Waits for the typed line to change one row of the screen's squares from
+/// `before` by [`MIN_TYPED_TILES`] or more.
+fn typed_line_shows(before: &[u64], across: usize) -> Result<(), &'static str> {
+    let mut changed = 0;
+    for _ in 0..TYPED_MS / LOOK_MS {
+        let (typed, _) = signature()?;
+        changed = most_changed_in_a_row(before, &typed, across);
+        if changed >= MIN_TYPED_TILES {
+            log!("{CASE}: typing the line changed {changed} squares of one row of the screen");
+            return Ok(());
+        }
+        threads::sleep_ms(LOOK_MS);
+    }
+    log!("{CASE}: typing the line changed {changed} squares of one row at most");
+    Err("founder-walk: the Terminal's input row did not show the typed line")
+}
+
 /// Step 1: the Terminal from the panel; the typed line shows in its input
 /// row before Enter, and Enter runs it.
 fn terminal_runs_the_line() -> Result<(), &'static str> {
@@ -180,13 +224,7 @@ fn terminal_runs_the_line() -> Result<(), &'static str> {
     log!("{CASE}: the Terminal opened from the panel");
     let (before, across) = still_screen()?;
     type_text(CPUS_LINE);
-    threads::sleep_ms(SETTLE_MS);
-    let (typed, _) = signature()?;
-    let changed = most_changed_in_a_row(&before, &typed, across);
-    log!("{CASE}: typing the line changed {changed} squares of one row of the screen");
-    if changed < MIN_TYPED_TILES {
-        return Err("founder-walk: the Terminal's input row did not show the typed line");
-    }
+    typed_line_shows(&before, across)?;
     type_keys(&ENTER);
     rows_show("CPUs: ")?;
     log!("{CASE}: the Terminal ran the typed line and showed the CPUs");
@@ -200,41 +238,81 @@ fn abilities_and_clarify() -> Result<(), &'static str> {
     rows_show("With the cpu, I can:")?;
     log!("{CASE}: what Kai can do with the cpus came from the rows");
     window_line(CLARIFY_LINE);
-    let rows = rows_show(&format!("({BACKED})"))?;
+    let rows = rows_show(CLARIFY_QUESTION)?;
     if rows.contains(UNBACKED) {
         return Err("founder-walk: the clarify offered an option no row backs");
+    }
+    if !rows.contains(&format!("{CLARIFY_QUESTION} ({BACKED})")) {
+        log!("{CASE}: the clarify showed as {}", rows.replace('\n', "; "));
+        return Err("founder-walk: the clarify dropped the option a row backs");
     }
     log!("{CASE}: the model's clarify offered only what a row backs");
     Ok(())
 }
 
-/// Waits for the ask on the card, then past its settle time `y` arms Run and
-/// a second `y` answers it.
-fn yes_on_the_card() -> Result<(), &'static str> {
+/// What the shell's read of `path` in `fs` answers.
+fn file_text(path: &str) -> Result<String, &'static str> {
+    let read = format!("fs_read(\"{path}\")");
+    ipc::call("shell", read.as_bytes(), CALL_MS)
+        .map(|reply| String::from_utf8_lossy(&reply).into_owned())
+        .map_err(|_| "founder-walk: the shell did not answer the read")
+}
+
+/// Whether the card took its answer within `ms`.
+fn answered_within(ms: u64) -> bool {
+    for _ in 0..ms / LOOK_MS {
+        if !ask_box::shown() {
+            return true;
+        }
+        threads::sleep_ms(LOOK_MS);
+    }
+    !ask_box::shown()
+}
+
+/// Waits for the ask on the card, which must name `path`, then presses `y`
+/// [`YES_GAP_MS`] apart until the card takes its answer (one arms Run and the
+/// next answers it), and waits for the shell's answer to it: the run is over
+/// once the terminal shows one more of the shell's replies.
+///
+/// Nothing reads `path` while the card is up: any other console line would
+/// discard the proposal the card answers. That nothing made the file before
+/// Run shows in the run itself: `fs_create` never overwrites, and the host
+/// expects the panel's bar to say it created the file.
+fn yes_on_the_card(path: &str) -> Result<(), &'static str> {
     desk_tests::wait("founder-walk: the ask on the card", ask_box::shown)?;
-    threads::sleep_ms(termcore::menu::SETTLE_MS + 300);
-    type_keys(&YES);
-    threads::sleep_ms(KEY_MS);
-    type_keys(&YES);
-    desk_tests::wait("founder-walk: the card to take its answer", || {
-        !ask_box::shown()
+    let replies = terminal::replies_shown();
+    let question = ask_box::question().unwrap_or_default();
+    if !question.contains(path) {
+        log!("{CASE}: the card asks {question:?}");
+        return Err("founder-walk: the card does not name the file it makes");
+    }
+    let mut answered = false;
+    for _ in 0..MAX_YES {
+        type_keys(&YES);
+        if answered_within(YES_GAP_MS) {
+            answered = true;
+            break;
+        }
+    }
+    if !answered {
+        return Err("founder-walk: the card never took its answer");
+    }
+    desk_tests::wait("founder-walk: the shell's answer to the card", || {
+        terminal::replies_shown() > replies
     })
 }
 
-/// Waits for `path` in `fs` to hold [`FILE_TEXT`], read by the shell.
+/// Waits for `path` in `fs` to hold [`FILE_TEXT`].
 fn file_made(path: &str) -> Result<(), &'static str> {
-    let read = format!("fs_read(\"{path}\")");
     let mut text = String::new();
     for _ in 0..REPLY_MS / POLL_MS {
-        let reply = ipc::call("shell", read.as_bytes(), CALL_MS)
-            .map_err(|_| "founder-walk: the shell did not answer the read")?;
-        text = String::from_utf8_lossy(&reply).into_owned();
+        text = file_text(path)?;
         if text.contains(FILE_TEXT) {
             return Ok(());
         }
         threads::sleep_ms(POLL_MS);
     }
-    log!("{CASE}: {read} answered {text:?}");
+    log!("{CASE}: the read of {path} answered {text:?}");
     Err("founder-walk: the file the card allowed is not in fs")
 }
 
@@ -242,11 +320,13 @@ fn file_made(path: &str) -> Result<(), &'static str> {
 /// Terminal's is also the line after the clarify, a request of its own.
 fn lines_ask_first() -> Result<(), &'static str> {
     window_line(TERMINAL_ASK);
-    yes_on_the_card()?;
+    yes_on_the_card(TERMINAL_FILE)?;
+    // What the card came to goes to the Terminal's row, not the panel's bar.
+    rows_show(&format!("file {TERMINAL_FILE} created"))?;
     file_made(TERMINAL_FILE)?;
     log!("{CASE}: the Terminal's line asked first, and Run on the card made its file");
     panel_line(PANEL_ASK);
-    yes_on_the_card()?;
+    yes_on_the_card(PANEL_FILE)?;
     file_made(PANEL_FILE)?;
     log!("{CASE}: the panel's line asked first, and Run on the card made its file");
     Ok(())

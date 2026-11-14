@@ -636,18 +636,6 @@ fn updated_at_boot(test: SelfTest) -> bool {
 /// The service plan for this boot, or None for the boots that run no user space.
 /// Not for `test`: its exact frame and heap leak checks must not race processes
 /// starting up.
-/// `plan` with `log_bar=1` on `desktop`'s line: it logs each new line of the
-/// panel's bar, for the founder's walk to read.
-fn bar_logged(plan: &str) -> String {
-    plan.lines()
-        .map(|line| match line.starts_with("desktop ") {
-            true => format!("{line} log_bar=1"),
-            false => String::from(line),
-        })
-        .collect::<alloc::vec::Vec<_>>()
-        .join("\n")
-}
-
 pub fn plan(test: SelfTest) -> Option<String> {
     let wanted = matches!(
         test,
@@ -752,7 +740,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
         let files = crate::block::has_partition(diskmap::KAI_DATA_TYPE);
         let mut plan = kabi::plan::system::plan(&crate::llm::plan_line(), files);
         if matches!(test, SelfTest::FounderWalk) {
-            plan = bar_logged(&plan);
+            plan = crate::founder_walk_tests::plan(&plan);
         }
         if let Some(edit) = crate::build_service::plan_line() {
             plan.push('\n');
