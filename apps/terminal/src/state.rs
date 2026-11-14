@@ -95,6 +95,7 @@ impl Terminal {
             base,
             phase,
             in_flight: None,
+            stopping: None,
             staged: None,
         };
         if state.phase == WAITING {

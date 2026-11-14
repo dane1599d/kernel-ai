@@ -1,6 +1,6 @@
 //! The terminal's effect and the AI's three actions, against a recording OS.
 
-use comp_terminal::os::{MAX_ARGS, Os, Recorder, SHELL_LINE, shell_line_args};
+use comp_terminal::os::{MAX_ARGS, Os, Recorder, SHELL_LINE, SHELL_STOP, shell_line_args};
 use comp_terminal::{
     CANCEL_ENTRY, MAX_LINE, MAX_SENT_BYTES, Phase, Refusal, Source, Submitted, Terminal,
 };
@@ -39,6 +39,45 @@ fn only_the_ticket_in_flight_is_taken() {
     // Once answered, the same ticket is spent.
     assert!(!t.done(&mut os, ticket, Ok("ok again".into())));
     assert_eq!(t.spans().last().unwrap().text, "real");
+}
+
+/// #892's re-review: a Stop's own answer is the Terminal's. One the OS could
+/// not carry out says why, and the line still runs; one that worked says
+/// nothing, since the line's answer tells how it ended.
+#[test]
+fn a_stop_that_could_not_stop_says_why_and_the_line_runs_on() {
+    let (mut t, mut os, line) = started("mem");
+    assert!(t.ask_stop(&mut os));
+    let stop = os.last_ticket().unwrap();
+    assert_eq!(os.asked.last().unwrap().1, SHELL_STOP);
+    assert!(t.is_stopping());
+    assert!(!t.ask_stop(&mut os), "one Stop until its answer");
+    assert_eq!(os.asked.len(), 2);
+    assert!(t.done(&mut os, stop, Err("not running yet".into())));
+    assert!(!t.is_stopping());
+    assert_eq!(t.spans().last().unwrap().text, "Stop: not running yet");
+    assert_eq!(t.phase(), Phase::Waiting, "the line still runs");
+    // It may be pressed again, and the line's answer still ends it.
+    assert!(t.ask_stop(&mut os));
+    assert!(t.done(&mut os, line, Ok("ok free 12 MiB".into())));
+    assert!(!t.is_stopping(), "the line's answer ends the Stop too");
+    assert_eq!(t.phase(), Phase::Ready);
+}
+
+#[test]
+fn a_stop_that_worked_leaves_the_lines_answer_to_say_so() {
+    let (mut t, mut os, line) = started("mem");
+    assert!(t.ask_stop(&mut os));
+    let stop = os.last_ticket().unwrap();
+    let rows = t.spans().len();
+    assert!(t.done(&mut os, stop, Ok("stopped".into())));
+    assert_eq!(t.spans().len(), rows, "nothing said");
+    assert!(t.done(&mut os, line, Ok("ok stopped".into())));
+    assert_eq!(t.spans().last().unwrap().text, "stopped");
+    // A Stop answered late, after the line's own answer, is spent.
+    assert!(!t.done(&mut os, stop, Err("not running yet".into())));
+    // And there is nothing to stop at the prompt.
+    assert!(!t.ask_stop(&mut os));
 }
 
 #[test]

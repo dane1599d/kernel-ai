@@ -62,6 +62,9 @@ pub struct Panel {
     waiting: VecDeque<Request>,
     /// [`APPS`] was sent and the sheet has not been opened for it yet.
     apps: bool,
+    /// Whether the model is warm, as the shell last said; `None` before it
+    /// has said, as with no model.
+    ready: Option<bool>,
     /// Esc on a line the shell took: `desktop` interrupts the shell's line.
     interrupt: bool,
 }
@@ -84,6 +87,7 @@ impl Panel {
             entry: None,
             waiting: VecDeque::new(),
             apps: false,
+            ready: None,
             interrupt: false,
         }
     }
@@ -127,6 +131,19 @@ impl Panel {
         self.state = state;
         self.entry = None;
         changed
+    }
+
+    /// The shell's report of whether the model is warm; true when it changed.
+    pub fn set_ready(&mut self, ready: bool) -> bool {
+        let changed = self.ready != Some(ready);
+        self.ready = Some(ready);
+        changed
+    }
+
+    /// Whether the panel says "Kai is getting ready": the shell said the
+    /// model is not warm yet.
+    pub fn getting_ready(&self) -> bool {
+        self.ready == Some(false)
     }
 
     /// The log entry the done line's undo takes back, with the state that

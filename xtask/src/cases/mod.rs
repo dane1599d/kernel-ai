@@ -23,6 +23,7 @@ mod storage;
 mod tour;
 mod updates;
 mod walk;
+mod warming;
 
 use crate::buildsvc::BuildService;
 use crate::disk::Fixture;
@@ -256,6 +257,7 @@ const LANES: &[&[TestCase]] = &[
     modeldl::CASES,
     modelsuse::CASES,
     walk::CASES,
+    warming::CASES,
 ];
 
 /// The cases `cargo xtask test` boots.
@@ -303,6 +305,7 @@ mod tests {
             modeldl::CASES,
             modelsuse::CASES,
             walk::CASES,
+            warming::CASES,
         ];
         assert_eq!(
             cases.len(),
