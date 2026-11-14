@@ -281,3 +281,68 @@ fn a_dragged_window_has_no_shadow_until_it_is_let_go() {
     press(&mut desk, false);
     assert_eq!(paint("let-go", &desk, 1280, 800), shadowed);
 }
+
+#[test]
+fn the_input_view_keeps_the_cursor_in_its_columns() {
+    use crate::paint_panel::view;
+    // A line that fits, the cursor anywhere in it: nothing is skipped.
+    assert_eq!(view(10, 10, 20), 0);
+    assert_eq!(view(30, 5, 20), 0);
+    assert_eq!(view(30, 19, 20), 0);
+    // The cursor past the last column: the marker takes column 0 and the
+    // cursor sits in the last column, 19.
+    assert_eq!(view(30, 20, 20), 2);
+    assert_eq!(view(30, 30, 20), 12);
+    assert_eq!(30 - view(30, 30, 20) + 1, 19);
+    // A cursor past the end is the end; an input too narrow skips nothing.
+    assert_eq!(view(30, 99, 20), 12);
+    assert_eq!(view(30, 30, 1), 0);
+}
+
+/// Typed past the input's width, the line scrolls: the ember caret is drawn
+/// inside the input, not cut off past its right edge (the founder's
+/// VirtualBox test, 2026-11-14).
+#[test]
+fn a_long_line_keeps_the_caret_in_the_input() {
+    let desk = Desk::new(1280, 800);
+    let mut panel = Panel::new();
+    panel.set_focus(true);
+    // `a` .. `z`, five times: far past the left half's columns.
+    for _ in 0..5 {
+        for code in 0x04..=0x1D {
+            panel.key(code, true, 0);
+            panel.key(code, false, 0);
+        }
+    }
+    assert_eq!(panel.cursor(), 130);
+    let painter = Painter::new(FONTS).expect("the fonts parse");
+    let ember = painter.palette.ai;
+    let area = desk.panel();
+    // The input's right part, below the top rule: where the caret must be.
+    let (w, h) = (1280, 800);
+    let mut image = Image::new(w, h);
+    let mut canvas = image.canvas();
+    let scene = Scene {
+        desk: &desk,
+        bar: &BAR,
+        panel: &panel,
+        ask: None,
+        now_ms: 0,
+    };
+    let mut painter = painter;
+    painter.paint(
+        &mut canvas,
+        Rect::new(0, 0, w, h),
+        &scene,
+        &mut |_, _, _| false,
+    );
+    let (x0, x1) = (area.x + area.w / 4, area.x + area.w / 2);
+    let caret = (area.y + 3..area.y + area.h)
+        .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+        .filter(|&(x, y)| image.px[(y * w + x) as usize] & 0x00FF_FFFF == ember & 0x00FF_FFFF)
+        .count();
+    assert!(
+        caret > 20,
+        "the caret is not in the input: {caret} ember pixels"
+    );
+}
