@@ -88,6 +88,7 @@ fn report(dx: i32, dy: i32, buttons: u8) {
             source: Source::UsbMouse,
             motion: Motion::Relative { dx, dy },
             buttons,
+            wheel: 0,
         });
         crate::input::wake_pending();
     });

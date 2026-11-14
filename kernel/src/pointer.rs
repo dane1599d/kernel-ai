@@ -54,6 +54,7 @@ pub fn on_byte(byte: u8, ctrl: bool) {
     let log = LOG.load(Ordering::Relaxed);
     let (cell_width, cell_height) = console::cell();
     let mut pointer = POINTER.lock();
+    pointer.decoder.set_wheel(i8042::has_wheel());
     let Some(packet) = pointer.decoder.push(byte) else {
         return;
     };
@@ -63,6 +64,9 @@ pub fn on_byte(byte: u8, ctrl: bool) {
     let cell = cursor.cell(cell_width as u32, cell_height as u32);
     if moved && log {
         log!("pointer: at {x} {y} cell {} {}", cell.0, cell.1);
+    }
+    if packet.wheel != 0 && log {
+        log!("pointer: wheel {}", packet.wheel);
     }
     for button in packet.buttons.pressed_since(pointer.buttons) {
         if log {
@@ -83,6 +87,7 @@ pub fn on_byte(byte: u8, ctrl: bool) {
             dy: -i32::from(packet.dy),
         },
         buttons: held(Button::Left, 1) | held(Button::Right, 2) | held(Button::Middle, 4),
+        wheel: i32::from(packet.wheel),
     });
 }
 
@@ -170,6 +175,8 @@ pub struct Event {
     pub motion: Motion,
     /// Bit 0 left, bit 1 right, bit 2 middle.
     pub buttons: u8,
+    /// The vertical wheel's detents, positive toward the person (scroll down).
+    pub wheel: i32,
 }
 
 /// Events kept for a reader; older ones are dropped first.
@@ -203,7 +210,7 @@ pub fn push(event: Event) {
                 crate::input::Motion::Absolute { x, y, x_max, y_max }
             }
         };
-        crate::input::on_pointer(motion, event.buttons);
+        crate::input::on_pointer(motion, event.buttons, event.wheel);
         return;
     }
     let (width, height) = console::pixels().unwrap_or((1, 1));

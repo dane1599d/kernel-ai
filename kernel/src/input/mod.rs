@@ -138,11 +138,13 @@ fn route(byte: u8, aux: bool) -> (Route, bool) {
         if !taking {
             return (Route::Console, false);
         }
+        decoders.mouse.set_wheel(i8042::has_wheel());
         if let Some(packet) = decoders.mouse.push(byte) {
             drop(decoders);
             let now = mask(packet.buttons);
             let before = BUTTONS.swap(now, Ordering::Relaxed);
             relative(i32::from(packet.dx), -i32::from(packet.dy));
+            wheel(i32::from(packet.wheel));
             buttons(before, now);
         }
         return (Route::Taken, false);
@@ -199,8 +201,8 @@ fn route(byte: u8, aux: bool) -> (Route, bool) {
 
 /// A USB pointer report while `desktop` holds the screen: `motion` relative
 /// (dx, dy) or absolute (x, y within 0..=max), buttons as bits 0 left, 1 right,
-/// 2 middle.
-pub fn on_pointer(motion: Motion, buttons_now: u8) {
+/// 2 middle, and `detents` of the wheel, positive toward the person.
+pub fn on_pointer(motion: Motion, buttons_now: u8, detents: i32) {
     if !taking() {
         return;
     }
@@ -212,6 +214,7 @@ pub fn on_pointer(motion: Motion, buttons_now: u8) {
             push(Kind::Abs, 1, scale(y, y_max));
         }
     }
+    wheel(detents);
     let now = buttons_now & 7;
     buttons(BUTTONS.swap(now, Ordering::Relaxed), now);
 }
@@ -237,6 +240,14 @@ fn relative(dx: i32, dy: i32) {
     }
     if dy != 0 {
         push(Kind::Rel, 1, dy);
+    }
+}
+
+/// A wheel's turn as an event: `code` 0, the vertical wheel; `value` in detents,
+/// positive toward the person (scroll down), as `kabi::input::Kind::Wheel` says.
+fn wheel(detents: i32) {
+    if detents != 0 {
+        push(Kind::Wheel, 0, detents);
     }
 }
 
