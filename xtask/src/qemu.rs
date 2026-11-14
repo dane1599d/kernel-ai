@@ -434,6 +434,7 @@ pub fn run_test(
 ) -> Result<(), String> {
     let (accel, timeout, monitor, qmp) = (run.accel, run.timeout, run.monitor, run.qmp);
     let (stages, keys_on, stops) = (run.case.keys, run.case.keys_on, run.case.stops);
+    let forbid = run.case.forbid;
     let expect: Vec<String> = run
         .case
         .expect
@@ -455,7 +456,7 @@ pub fn run_test(
     let (seen_tx, seen_rx) = mpsc::channel();
     let cut_at = run.cut.clone();
     let capture = run.capture.clone();
-    let all = (expect.clone(), exact.clone(), None, Vec::new());
+    let all = (expect.clone(), exact.clone(), None, Vec::new(), None);
     // The echo runs apart from the reader, as in icount.rs: printing to a slow CI
     // log must never stop QEMU's output being read. A full pipe makes QEMU hold
     // the serial port busy, and the guest then waits for it with interrupts off,
@@ -473,8 +474,13 @@ pub fn run_test(
         let (mut missing, mut unseen) = (expect, exact);
         let mut cpu_line = None;
         let mut warnings = Vec::new();
+        let mut forbidden: Option<String> = None;
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             let _ = echo_tx.send(line.clone());
+            // A forbidden text fails the case from any program's line too.
+            if forbidden.is_none() && forbid.iter().any(|text| line.contains(text)) {
+                forbidden = Some(line.trim_end().to_string());
+            }
             missing.retain(|text| !line.contains(text.as_str()));
             unseen.retain(|text| line.trim_end_matches('\r') != text);
             if stops && missing.is_empty() && unseen.is_empty() {
@@ -531,7 +537,7 @@ pub fn run_test(
                 );
             }
         }
-        (missing, unseen, cpu_line, warnings)
+        (missing, unseen, cpu_line, warnings, forbidden)
     });
     let mut cut_seen = None;
     let mut stopped = false;
@@ -572,7 +578,7 @@ pub fn run_test(
         }
         thread::sleep(Duration::from_millis(50));
     };
-    let (missing, unseen, cpu_line, warnings) = reader.join().unwrap_or(all);
+    let (missing, unseen, cpu_line, warnings, forbidden) = reader.join().unwrap_or(all);
     // Every echoed line is out before the verdict.
     let _ = echo.join();
     for text in warnings {
@@ -593,6 +599,9 @@ pub fn run_test(
         println!("xtask: every expected line seen; QEMU stopped");
     } else if status.code() != Some(QEMU_PASS) && !reset {
         return Err(format!("FAIL: QEMU exited with {status}"));
+    }
+    if let Some(line) = forbidden {
+        return Err(format!("FAIL: a forbidden line was on the console: {line}"));
     }
     if !missing.is_empty() {
         return Err(format!("FAIL: never saw {missing:?} on the console"));
