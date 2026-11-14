@@ -175,6 +175,7 @@ impl Shell {
             .unwrap_or_default();
         self.record(id, request, "", "asked the user to clarify");
         self.clarifying = Some(request.to_string());
+        self.clarified_by_model = true;
         let text = match options.is_empty() {
             true => question,
             false => format!("{question} ({})", options.join(", ")),
