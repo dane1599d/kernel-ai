@@ -70,8 +70,12 @@ jobs:
             echo "The sign script prints each model, chunk list and package as below, grants included: each line must be here."
             echo
             echo '```'
-            jq -r '.targets | to_entries[] | "models.canon signs \(.key), sha256 \(.value.hashes.sha256), length \(.value.length)"' prepare-a/models.canon
-            jq -r '.targets | to_entries[] | "packages.canon signs \(.key), sha256 \(.value.hashes.sha256), grants \(.value.custom.kai.grants | tojson)"' prepare-a/packages.canon
+            jq -r '.targets | to_entries[] | "models.canon signs \(.key), sha256 \(.value.hashes.sha256), length \(.value.length)"
+              + (.value.custom.kai // null | if . then ", name \(.name | tojson), licence \(.licence | tojson), source \(.source | tojson)" else "" end)' \
+              prepare-a/models.canon
+            jq -r '.targets | to_entries[] | .value.custom.kai as $kai
+              | "packages.canon signs \(.key), sha256 \(.value.hashes.sha256), grants \($kai.grants | tojson), actions \($kai.actions | tojson), yanked \($kai.yanked)"' \
+              prepare-a/packages.canon
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
