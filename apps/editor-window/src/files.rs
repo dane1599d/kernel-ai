@@ -15,7 +15,7 @@ use crate::Host;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use editcore::file::{COMPONENT, FileEditor, check_path, component_of};
+use editcore::file::{COMPONENT, FileEditor, HOME, check_path, component_of};
 use editcore::screen::Screen;
 
 /// Most requests the screen is answered in one go: it asks for the lines on
@@ -200,8 +200,8 @@ impl Files {
     /// A checkpoint had `path` open, with `kept`: reads it again, and the text
     /// not saved is put back over what the disk has once the read comes.
     ///
-    /// When the file cannot be asked for, the text kept is shown as a new file at
-    /// the path, and says so, rather than lost with the file.
+    /// When the file cannot be asked for, the text kept is shown as a new file
+    /// beside it ([`Files::recovered`]), and says so, rather than lost with the file.
     pub(crate) fn ask_restore(
         &mut self,
         host: &mut dyn Host,
@@ -217,9 +217,7 @@ impl Files {
             }
             Err(why) if kept.text.is_some() => {
                 self.restore = Some(kept);
-                self.start(screen, grid, path, b"", true);
-                let shown = format!("{path} was not opened again ({why}); the text kept is shown");
-                self.say_after.get_or_insert(shown);
+                self.recovered(screen, grid, path, &why, host.now_ms());
                 Ok(())
             }
             Err(why) => Err(why),
@@ -281,28 +279,28 @@ impl Files {
         &mut self,
         screen: &mut Screen,
         grid: (usize, usize),
+        now_ms: u64,
         outcome: Result<Vec<u8>, String>,
     ) {
         let Some(job) = self.job.take() else {
             return;
         };
         match (job, outcome) {
-            (Job::Read { path, .. }, Ok(bytes)) => self.start(screen, grid, &path, &bytes, false),
-            (Job::Read { path, .. }, Err(why)) if why.starts_with(MISSING) => {
-                self.start(screen, grid, &path, b"", true);
+            (Job::Read { path, .. }, Ok(bytes)) => {
+                self.start(screen, grid, &path, &bytes, false, now_ms);
             }
-            // The text kept is shown as a new file, which a save refuses to
-            // write over a file that is there, rather than lost for a read.
+            (Job::Read { path, .. }, Err(why)) if why.starts_with(MISSING) => {
+                self.start(screen, grid, &path, b"", true, now_ms);
+            }
+            // The text kept is shown as a new file beside it, rather than lost
+            // for a read.
             (Job::Read { path, .. }, Err(why))
                 if self
                     .restore
                     .as_ref()
                     .is_some_and(|kept| kept.text.is_some()) =>
             {
-                self.start(screen, grid, &path, b"", true);
-                self.say_after = Some(format!(
-                    "{path} was not read again ({why}); the text kept is shown"
-                ));
+                self.recovered(screen, grid, &path, &why, now_ms);
             }
             (Job::Read { .. }, Err(why)) => {
                 self.restore = None;
@@ -331,6 +329,38 @@ impl Files {
         screen.note(format!("saved {path} ({} bytes)", bytes.len()), false);
     }
 
+    /// The name to save the text kept under when the file at `path` cannot be had:
+    /// beside it, as `<path>.recovered-<seconds>`, or in the person's folder when
+    /// that is not a path the editor takes. It is new, so a save creates it and
+    /// never writes over the file at `path`.
+    fn recovery_path(path: &str, now_ms: u64) -> String {
+        let secs = now_ms / 1000;
+        let beside = format!("{path}.recovered-{secs}");
+        if check_path(&beside).is_ok() && FileEditor::open(&beside, b"").is_ok() {
+            return beside;
+        }
+        format!("{HOME}recovered-{secs}.txt")
+    }
+
+    /// The file at `path` cannot be had again (`why`), and a checkpoint kept text
+    /// for it: the text is opened as a new file under [`Files::recovery_path`],
+    /// unsaved, and the status says where, so a save keeps it without touching
+    /// the file at `path`.
+    fn recovered(
+        &mut self,
+        screen: &mut Screen,
+        grid: (usize, usize),
+        path: &str,
+        why: &str,
+        now_ms: u64,
+    ) {
+        let there = Self::recovery_path(path, now_ms);
+        self.start(screen, grid, &there, b"", true, now_ms);
+        self.say_after = Some(format!(
+            "{path} could not be opened again ({why}); the text kept is open as {there}, which Ctrl-S saves"
+        ));
+    }
+
     /// Shows `bytes` as the file at `path`, on a fresh screen.
     fn start(
         &mut self,
@@ -339,18 +369,18 @@ impl Files {
         path: &str,
         bytes: &[u8],
         new: bool,
+        now_ms: u64,
     ) {
         let kept = self.restore.take().unwrap_or_default();
-        let mut new = new;
         let mut lost = None;
         let opened = match FileEditor::open(path, bytes) {
             Ok(editor) => Ok(editor),
             // A file that cannot be opened (not text, too big) must not take the
-            // text kept with it: it is shown as a new file at the path.
+            // text kept with it: it is shown as a new file beside it.
             Err(why) if kept.text.is_some() => {
-                new = true;
-                lost = Some(format!("{why}; the text kept is shown"));
-                FileEditor::open(path, b"")
+                self.restore = Some(kept);
+                self.recovered(screen, grid, path, &why, now_ms);
+                return;
             }
             Err(why) => Err(why),
         };
