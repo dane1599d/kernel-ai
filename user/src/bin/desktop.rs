@@ -875,6 +875,11 @@ fn interrupt_shell(
 /// taken for it.
 fn finish_stale(state: &mut State) {
     let stale = state.running.take_stale();
+    finish_lost(state, stale);
+}
+
+/// Finishes the Terminal line's tickets `stale`, whose result never came.
+fn finish_lost(state: &mut State, stale: Vec<u32>) {
     if stale.is_empty() {
         return;
     }
@@ -961,21 +966,19 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
     if !shell {
         return Some(String::from("err only the shell runs effects"));
     }
-    let skip = match text == effects::TAKE {
-        true => Some(Vec::new()),
-        false => effects::parse_take_but(text),
-    };
-    if let Some(skip) = skip {
-        let taken = state.effects.take_but(kabi::MAX_MESSAGE - 64, &skip);
-        if let Some(taken) = &taken {
-            println!("desktop: the shell took {}'s effects", taken.app);
-            finish_stale(state);
-            let tickets = taken.lines.iter().filter_map(|l| effects::ticket_of(l));
-            state
-                .running
-                .took_effects(&taken.app, taken.user, tickets.collect());
+    // A take starts new work, except one the shell makes while a line runs
+    // (#877): that line, and its tickets, stay the one running.
+    let budget = kabi::MAX_MESSAGE - 64;
+    if let Some(took) = state.running.take(&mut state.effects, text, budget) {
+        if let Some(taken) = &took.taken {
+            let during = match text == effects::TAKE_DURING {
+                true => " during a line",
+                false => "",
+            };
+            println!("desktop: the shell took {}'s effects{during}", taken.app);
         }
-        return Some(effects::encode_take(taken.as_ref()));
+        finish_lost(state, took.stale);
+        return Some(effects::encode_take(took.taken.as_ref()));
     }
     // #890: lines the shell took and holds back wait here again, so a shell
     // that dies mid-line loses none.

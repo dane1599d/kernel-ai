@@ -282,7 +282,8 @@ mod held {
     }
 
     /// An app has at most `MAX_HELD` requests held, an effect batch counting
-    /// its lines, the running one included; another app is not counted.
+    /// its lines; neither the one running nor an answer still to give is
+    /// counted, nor another app's.
     #[test]
     fn an_app_has_at_most_sixteen_held() {
         assert_eq!(MAX_HELD, 16);

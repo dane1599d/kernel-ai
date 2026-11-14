@@ -169,7 +169,8 @@ fn poll_effects(
     held: &RefCell<HeldRequests>,
     serve: &mut dyn FnMut(Waiting<'_>) -> Option<Served>,
 ) {
-    let Ok(answer) = ask_desktop(route, deskcore::effects::TAKE) else {
+    // Not a take of new work: `desktop` keeps the line running as it was.
+    let Ok(answer) = ask_desktop(route, deskcore::effects::TAKE_DURING) else {
         return;
     };
     let Some(Some((app, user, lines))) = deskcore::effects::parse_take(&answer) else {

@@ -17,6 +17,11 @@
 //! - from the shell, `effects done <name>\n<result lines>` → `ok`;
 //! - from the shell, `effects take but <name> <name>...` → as `effects take`,
 //!   skipping those apps: ones whose requests it holds back for now;
+//! - from the shell, `effects take during` → as `effects take`, while it runs
+//!   a line and answers the apps' reads meanwhile (#877). It starts no new
+//!   unit: the line `desktop` sees running, and its tickets, stay
+//!   (`running::Running::take`). A person's line in [`STOPS_FROM`] is not
+//!   handed out: it waits for a take after the line, which starts it;
 //! - from the shell, `effects back app <name>[ user]\n<effect lines>` → `ok`:
 //!   lines it took and will not run yet, in `effects take`'s form, back at the
 //!   front of that app's queue in their order (#890). Only a line taken and not
@@ -41,6 +46,7 @@ pub const PUT_USER: &str = "effects put user\n";
 pub const RESULTS: &str = "effects results";
 pub const TAKE: &str = "effects take";
 pub const TAKE_BUT: &str = "effects take but ";
+pub const TAKE_DURING: &str = "effects take during";
 pub const BACK: &str = "effects back ";
 const DONE: &str = "effects done ";
 /// Effects one app may have waiting for the shell.
@@ -154,6 +160,17 @@ impl Queue {
     /// nothing waits.
     pub fn take(&mut self, budget: usize) -> Option<Taken> {
         self.take_but(budget, &[])
+    }
+
+    /// [`Queue::take`] while the shell runs a line: a person's line queued in
+    /// [`STOPS_FROM`] (the front of its queue, a person's) is not handed out,
+    /// and waits for a take after the line.
+    pub fn take_during(&mut self, budget: usize) -> Option<Taken> {
+        let line_waits = self.effects.iter().any(|(app, waiting)| {
+            app == STOPS_FROM && waiting.front().is_some_and(|(user, _)| *user)
+        });
+        let skip: &[&str] = if line_waits { &[STOPS_FROM] } else { &[] };
+        self.take_but(budget, skip)
     }
 
     /// [`Queue::take`], skipping the apps in `skip`.

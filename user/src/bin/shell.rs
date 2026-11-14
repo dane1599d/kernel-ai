@@ -256,8 +256,9 @@ fn take_panel(shell: &mut Shell) {
             let result = shell.eval_panel(&line);
             let said = shell.take_panel_said().map(|s| panel_wire::encode_said(&s));
             let note = shell.take_panel_note().map(|n| panel_wire::encode_note(&n));
+            // After the line: an Esc pressed during it must not drop them.
             for request in said.iter().chain(note.iter()) {
-                match ask_desktop(route, request) {
+                match report_to_desktop(route, request) {
                     Ok(answer) if answer == "ok" => {}
                     Ok(answer) => println!("the panel's history was not given it: {answer}"),
                     Err(why) => println!("the panel's history was not given it: {why}"),
