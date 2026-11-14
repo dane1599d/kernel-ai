@@ -661,3 +661,51 @@ fn a_parked_pointer_cannot_click_run_and_other_buttons_restart_the_quiet() {
     desk.input(at(away));
     assert!(click(&mut desk, centre(yes)).contains(&Effect::Answer { id: 9, yes: true }));
 }
+
+/// #864's fourth review: a USB tablet sends the pointer's place with every
+/// report, the button's own included. A pointer parked on Run before the
+/// card was drawn, reported again and again, is no entry: its click runs
+/// nothing. Moved off and back on after the draw, it is.
+#[test]
+fn a_tablets_repeated_reports_are_no_entry_onto_run() {
+    let (mut desk, _) = desk_with(1);
+    desk.show_ask(11, 1);
+    let card = crate::trusted::card(W, H, &desk.ask().unwrap());
+    let (yes, _) = crate::trusted::buttons(card);
+    desk.set_now(0);
+    desk.input(at(centre(yes)));
+    desk.card_drawn(10);
+    // Reports at the same place after the draw, then the press with its own.
+    for t in [100, 3 * SETTLED, 3 * SETTLED + 1] {
+        desk.set_now(t);
+        desk.input(at(centre(yes)));
+    }
+    let press = Input::Button {
+        button: Button::Left,
+        down: true,
+    };
+    assert!(desk.input(press).is_empty(), "a parked click ran the card");
+    // Off Run and back on, after a quiet time: now it runs.
+    desk.set_now(5 * SETTLED);
+    desk.input(at((centre(yes).0 - 200, centre(yes).1)));
+    desk.set_now(5 * SETTLED + 1);
+    assert!(click(&mut desk, centre(yes)).contains(&Effect::Answer { id: 11, yes: true }));
+}
+
+/// The fourth review's form of the queued-press case: the card shown at
+/// 1,000 on desktop's clock, drawn at 550 by the presses' clock, presses
+/// stamped 100 and 600: still quiet.
+#[test]
+fn presses_at_100_and_600_with_the_card_drawn_at_550_do_not_open_it() {
+    let (mut desk, _) = desk_with(1);
+    desk.set_now(1_000);
+    desk.show_ask(12, 1);
+    desk.card_drawn(550);
+    assert!(press_at(&mut desk, 100, usage::Y).is_empty());
+    assert!(press_at(&mut desk, 600, usage::Y).is_empty());
+    assert!(!desk.ask().unwrap().armed);
+    let card = crate::trusted::card(W, H, &desk.ask().unwrap());
+    let (yes, _) = crate::trusted::buttons(card);
+    desk.set_now(601);
+    assert!(click(&mut desk, centre(yes)).is_empty());
+}

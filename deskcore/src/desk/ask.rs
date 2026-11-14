@@ -138,13 +138,19 @@ impl Desk {
         };
         let answer = match input {
             Input::Motion(p) => {
+                let before = self.pointer;
                 self.pointer = Point {
                     x: p.x.clamp(0, self.width - 1),
                     y: p.y.clamp(0, self.height - 1),
                 };
                 let (yes, _) = trusted::buttons(trusted::card(self.width, self.height, &ask));
                 let since_drawn = self.ask_drawn.is_some_and(|d| self.now_ms >= d);
-                if since_drawn && yes.contains(self.pointer) {
+                // A real entry only: a tablet reports where the pointer is
+                // with every report, the press's own included, so a report
+                // that stays on Run is no move onto it. Leaving clears it.
+                if !yes.contains(self.pointer) {
+                    self.ask_entered_run = false;
+                } else if since_drawn && !yes.contains(before) {
                     self.ask_entered_run = true;
                 }
                 None
