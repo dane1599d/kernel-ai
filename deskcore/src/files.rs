@@ -22,7 +22,10 @@
 //! - from the shell, `files fetch <id> <offset>` → `ok\n<bytes>` (a write's
 //!   piece), `files fill <id> <offset> <total>\n<bytes>` → `ok` (a read's piece
 //!   or a build's report, in order) and `files done <id> ok` or
-//!   `files done <id> err <why>` → `ok`.
+//!   `files done <id> err <why>` → `ok`;
+//! - from the shell, `files back <id>` → `ok`: a transfer it took and will not
+//!   run yet waits again (#890), for the restarted shell if this one dies. Only
+//!   one it has not begun to answer: a read or build with no piece filled.
 //!
 //! A build asks the shell to build the C component `<name>` from
 //! `/home/user/c/<name>/` (`shellcore::ccbuild`), as it builds for a typed
@@ -472,6 +475,10 @@ impl Files {
         let number = |word: &str| word.parse::<usize>().map_err(|_| err("not a number"));
         match words {
             ["take"] => self.take(now_ms),
+            ["back", i] => match id(i) {
+                Ok(i) => self.back(i, now_ms),
+                Err(e) => e,
+            },
             ["fetch", i, offset] => match (id(i), number(offset)) {
                 (Ok(i), Ok(offset)) => self.fetch(i, offset, now_ms),
                 (Err(e), _) | (_, Err(e)) => e,
@@ -523,6 +530,20 @@ impl Files {
             ),
         };
         text(line)
+    }
+
+    fn back(&mut self, id: u32, now_ms: u64) -> Reply {
+        let transfer = match self.by_id(id) {
+            Ok(t) => t,
+            Err(e) => return e,
+        };
+        let begun = transfer.job.op.answers_bytes() && !transfer.bytes.is_empty();
+        if transfer.phase != Phase::Running || begun {
+            return err("that transfer is not one the shell may give back");
+        }
+        transfer.phase = Phase::Waiting;
+        transfer.touched_ms = now_ms;
+        text("ok")
     }
 
     fn fetch(&mut self, id: u32, offset: usize, now_ms: u64) -> Reply {

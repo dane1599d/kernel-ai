@@ -14,7 +14,14 @@
 //! - from the shell, `effects take` → `none`, or `app <name>\n<effect lines>`
 //!   (`app <name> user\n...` for lines queued by a person's input): one app's
 //!   oldest effects, all of one kind;
-//! - from the shell, `effects done <name>\n<result lines>` → `ok`.
+//! - from the shell, `effects done <name>\n<result lines>` → `ok`;
+//! - from the shell, `effects take but <name> <name>...` → as `effects take`,
+//!   skipping those apps: ones whose requests it holds back for now;
+//! - from the shell, `effects back app <name>[ user]\n<effect lines>` → `ok`:
+//!   lines it took and will not run yet, in `effects take`'s form, back at the
+//!   front of that app's queue in their order (#890). A request the shell holds
+//!   while the model thinks then stays in `desktop`, so a shell that dies
+//!   mid-line loses none: the restarted shell takes it.
 //!
 //! Which app queued the lines is `desktop`'s own record of the caller (the
 //! kernel's name for its process), never anything in them. Each app may have
@@ -31,6 +38,8 @@ pub const PUT: &str = "effects put\n";
 pub const PUT_USER: &str = "effects put user\n";
 pub const RESULTS: &str = "effects results";
 pub const TAKE: &str = "effects take";
+pub const TAKE_BUT: &str = "effects take but ";
+pub const BACK: &str = "effects back ";
 const DONE: &str = "effects done ";
 /// Effects one app may have waiting for the shell.
 pub const MAX_QUEUED: usize = 16;
@@ -118,10 +127,18 @@ impl Queue {
     /// of lines (always at least one), the apps taking turns; `None` when
     /// nothing waits.
     pub fn take(&mut self, budget: usize) -> Option<Taken> {
+        self.take_but(budget, &[])
+    }
+
+    /// [`Queue::take`], skipping the apps in `skip`.
+    pub fn take_but(&mut self, budget: usize, skip: &[&str]) -> Option<Taken> {
         let count = self.effects.len();
         let at = (0..count)
             .map(|step| (self.next + step) % count)
-            .find(|&at| !self.effects[at].1.is_empty())?;
+            .find(|&at| {
+                let (app, waiting) = &self.effects[at];
+                !waiting.is_empty() && !skip.contains(&app.as_str())
+            })?;
         self.next = (at + 1) % count;
         let (app, waiting) = &mut self.effects[at];
         let user = waiting.front().is_some_and(|(user, _)| *user);
@@ -139,6 +156,24 @@ impl Queue {
             user,
             lines,
         })
+    }
+
+    /// Puts lines the shell took back at the front of their app's queue, in
+    /// their order and with their flag, ahead of anything queued since: how
+    /// many were kept. A line out of shape is dropped (it came from no take);
+    /// none is refused for the queue's limit, as each was queued once already.
+    pub fn put_back(&mut self, taken: Taken) -> usize {
+        let waiting = entry(&mut self.effects, &taken.app);
+        let lines = taken
+            .lines
+            .into_iter()
+            .filter(|line| line.len() <= MAX_LINE && ticket_of(line).is_some());
+        let mut kept = 0;
+        for line in lines.rev() {
+            waiting.push_front((taken.user, line));
+            kept += 1;
+        }
+        kept
     }
 
     /// Records what came of one of `app`'s effects, or a notice for it (ticket
@@ -266,6 +301,35 @@ pub fn encode_take(taken: Option<&Taken>) -> String {
             format!("app {app}{by}\n{}", lines.join("\n"))
         }
         None => String::from("none"),
+    }
+}
+
+/// The shell's [`BACK`] request for `taken`.
+pub fn encode_back(taken: &Taken) -> String {
+    format!("{BACK}{}", encode_take(Some(taken)))
+}
+
+/// [`encode_back`] read back.
+pub fn parse_back(text: &str) -> Option<Taken> {
+    let (app, user, lines) = parse_take(text.strip_prefix(BACK)?)??;
+    Some(Taken {
+        app: app.to_string(),
+        user,
+        lines: lines.lines().map(String::from).collect(),
+    })
+}
+
+/// The apps a [`TAKE_BUT`] request skips, or `None` for another request.
+pub fn parse_take_but(text: &str) -> Option<Vec<&str>> {
+    Some(text.strip_prefix(TAKE_BUT)?.split_whitespace().collect())
+}
+
+/// The shell's [`TAKE_BUT`] request skipping `apps`: a plain [`TAKE`] when
+/// none.
+pub fn encode_take_but(apps: &[&str]) -> String {
+    match apps.is_empty() {
+        true => String::from(TAKE),
+        false => format!("{TAKE_BUT}{}", apps.join(" ")),
     }
 }
 
@@ -586,6 +650,62 @@ mod tests {
             parse_take(&encode_take(Some(&sneaky))).map(|t| t.map(|(a, u, _)| (a, u))),
             Some(Some(("files", false)))
         );
+    }
+
+    /// #890: lines the shell took and puts back go to the front of their
+    /// app's queue, in order and with their flag, and a take skipping that
+    /// app passes it by.
+    #[test]
+    fn lines_put_back_come_first_and_a_take_may_skip_their_app() {
+        let mut queue = Queue::default();
+        queue.put("files", &format!("{}\n{}", line(1), line(2)));
+        queue.put("monitor", &line(9));
+        let held = queue.take(4096).unwrap();
+        assert_eq!(held, taken("files", false, &[line(1), line(2)]));
+        queue.put("files", &line(3));
+        let text = encode_back(&held);
+        assert_eq!(queue.put_back(parse_back(&text).unwrap()), 2);
+        assert_eq!(
+            queue.take_but(4096, &["files"]),
+            Some(taken("monitor", false, &[line(9)]))
+        );
+        assert_eq!(queue.take_but(4096, &["files"]), None);
+        assert_eq!(
+            queue.take(4096),
+            Some(taken("files", false, &[line(1), line(2), line(3)]))
+        );
+    }
+
+    #[test]
+    fn a_persons_lines_put_back_keep_their_flag_and_bad_lines_are_dropped() {
+        let mut queue = Queue::default();
+        queue.put("terminal-window", &line(2));
+        let back = Taken {
+            app: String::from("terminal-window"),
+            user: true,
+            lines: alloc::vec![line(1), String::from("not an effect")],
+        };
+        assert_eq!(queue.put_back(back), 1);
+        assert_eq!(
+            queue.take(4096),
+            Some(taken("terminal-window", true, &[line(1)]))
+        );
+        assert_eq!(
+            queue.take(4096),
+            Some(taken("terminal-window", false, &[line(2)]))
+        );
+    }
+
+    #[test]
+    fn take_but_and_back_read_back() {
+        assert_eq!(encode_take_but(&[]), TAKE);
+        let text = encode_take_but(&["files", "notes"]);
+        assert_eq!(parse_take_but(&text), Some(alloc::vec!["files", "notes"]));
+        assert_eq!(parse_take_but(TAKE), None);
+        let user = taken("terminal-window", true, &[line(1), line(2)]);
+        assert_eq!(parse_back(&encode_back(&user)), Some(user));
+        assert_eq!(parse_back("effects back none"), None);
+        assert_eq!(parse_back(TAKE), None);
     }
 
     #[test]

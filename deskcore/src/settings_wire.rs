@@ -12,7 +12,10 @@
 //!   message;
 //! - from the shell, `settings take` → `none`, or `app <name>\n<lines>` in the
 //!   put form;
-//! - from the shell, `settings done <name>\n<answers>` → `ok`.
+//! - from the shell, `settings done <name>\n<answers>` → `ok`;
+//! - from the shell, `settings back\n<lines>` → `ok`: requests it took and will
+//!   not run yet, in the put form, back at the front in their order (#890), so
+//!   a shell that dies mid-line loses none.
 //!
 //! `user` is `comphost`'s word that a real key or click made the request; the
 //! shell checks the app again and refuses a change without it. The ticket is
@@ -31,6 +34,7 @@ pub const PUT: &str = "settings put\n";
 pub const RESULTS: &str = "settings results";
 pub const TAKE: &str = "settings take";
 pub const DONE: &str = "settings done ";
+pub const BACK: &str = "settings back\n";
 /// The one process that may ask: the Settings app's `comphost` line, named
 /// after its component as Notes' window is (`shellcore`'s `SETTINGS_APP`).
 pub const SETTINGS_APP: &str = "settings-window";
@@ -55,6 +59,8 @@ pub struct Words {
     pub results: &'static str,
     pub take: &'static str,
     pub done: &'static str,
+    /// The shell's word for requests it puts back, `settings back\n`.
+    pub back: &'static str,
     /// The one process that may ask, by the kernel's name for it.
     pub app: &'static str,
     /// Why any other caller is refused.
@@ -68,6 +74,7 @@ pub const SETTINGS: Words = Words {
     results: RESULTS,
     take: TAKE,
     done: DONE,
+    back: BACK,
     app: SETTINGS_APP,
     refused: "not the settings app",
 };
@@ -160,6 +167,16 @@ impl Queue {
         (!taken.is_empty()).then_some(taken)
     }
 
+    /// Puts requests the shell took back at the front, in their order: how
+    /// many. None is refused for [`MAX_WAITING`], as each waited once already.
+    pub fn put_back(&mut self, requests: Vec<Request>) -> usize {
+        let count = requests.len();
+        for request in requests.into_iter().rev() {
+            self.waiting.push_front(request);
+        }
+        count
+    }
+
     /// Keeps what one request came to.
     pub fn finish(&mut self, answer: Answer) {
         if self.answers.len() == MAX_ANSWERS {
@@ -247,6 +264,21 @@ pub fn parse_take(text: &str) -> Option<Option<(&str, Vec<Request>)>> {
     Some(Some((app, requests)))
 }
 
+/// The shell's `words.back` request for `requests`, taken and not run yet.
+pub fn encode_back_for(words: &Words, requests: &[Request]) -> String {
+    let lines: Vec<String> = requests.iter().map(encode_request).collect();
+    format!("{}{}", words.back, lines.join("\n"))
+}
+
+/// [`encode_back_for`] read back: `None` for another request or a line out of
+/// shape.
+pub fn parse_back_for(words: &Words, text: &str) -> Option<Vec<Request>> {
+    text.strip_prefix(words.back)?
+        .lines()
+        .map(parse_request)
+        .collect()
+}
+
 /// The shell's [`DONE`] request for `answers`.
 pub fn encode_done(app: &str, answers: &[Answer]) -> String {
     let body: String = answers.iter().map(Answer::encode).collect();
@@ -320,6 +352,31 @@ mod tests {
             user,
             text: text.into(),
         }
+    }
+
+    /// #890: requests the shell took and puts back wait first, in order.
+    #[test]
+    fn requests_put_back_wait_first_in_their_order() {
+        let mut queue = Queue::default();
+        queue
+            .put(SETTINGS_APP, "1\t1\trules\n2\t0\tgrants")
+            .unwrap();
+        let held = queue.take(8192).unwrap();
+        queue.put(SETTINGS_APP, "3\t1\tpage").unwrap();
+        let text = encode_back_for(&SETTINGS, &held);
+        assert_eq!(text, "settings back\n1\t1\trules\n2\t0\tgrants");
+        let back = parse_back_for(&SETTINGS, &text).unwrap();
+        assert_eq!(queue.put_back(back), 2);
+        assert_eq!(
+            queue.take(8192),
+            Some(alloc::vec![
+                request(1, true, "rules"),
+                request(2, false, "grants"),
+                request(3, true, "page"),
+            ])
+        );
+        assert_eq!(parse_back_for(&SETTINGS, "settings back\nnot a line"), None);
+        assert_eq!(parse_back_for(&SETTINGS, TAKE), None);
     }
 
     #[test]

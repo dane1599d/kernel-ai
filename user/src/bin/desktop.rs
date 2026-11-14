@@ -818,12 +818,27 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
     if !shell {
         return Some(String::from("err only the shell runs effects"));
     }
-    if text == effects::TAKE {
-        let taken = state.effects.take(kabi::MAX_MESSAGE - 64);
+    let skip = match text == effects::TAKE {
+        true => Some(Vec::new()),
+        false => effects::parse_take_but(text),
+    };
+    if let Some(skip) = skip {
+        let taken = state.effects.take_but(kabi::MAX_MESSAGE - 64, &skip);
         if let Some(taken) = &taken {
             println!("desktop: the shell took {}'s effects", taken.app);
         }
         return Some(effects::encode_take(taken.as_ref()));
+    }
+    // #890: lines the shell took and holds back wait here again, so a shell
+    // that dies mid-line loses none.
+    if text.starts_with(effects::BACK) {
+        let Some(taken) = effects::parse_back(text) else {
+            return Some(String::from("err not an effects request"));
+        };
+        let app = taken.app.clone();
+        let kept = state.effects.put_back(taken);
+        println!("desktop: the shell put back {kept} of {app}'s effects");
+        return Some(String::from("ok"));
     }
     let Some((app, results)) = effects::parse_done(text) else {
         return Some(String::from("err not an effects request"));
@@ -871,6 +886,17 @@ fn wire_request(
     if text == words.take {
         let taken = queue.take(kabi::MAX_MESSAGE - 64);
         return Some(settings::encode_take_for(words, taken.as_deref()));
+    }
+    // #890: requests the shell took and holds back wait here again.
+    if text.starts_with(words.back) {
+        return Some(match settings::parse_back_for(words, text) {
+            Some(requests) => {
+                let kept = queue.put_back(requests);
+                println!("desktop: the shell put back {kept} {what} requests");
+                String::from("ok")
+            }
+            None => format!("err not a {what} request"),
+        });
     }
     let Some(body) = text
         .strip_prefix(words.done)

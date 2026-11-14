@@ -108,6 +108,53 @@ fn a_read_goes_from_the_shell_to_the_editor_in_pieces() {
     assert_eq!(files.running(), 0, "gone with its last piece");
 }
 
+/// #890: a transfer the shell took and gives back waits again, for the next
+/// take; one it has begun to answer, or has not taken, is not its to give.
+#[test]
+fn the_shell_gives_back_a_transfer_it_has_not_begun_and_it_waits_again() {
+    let mut files = Files::default();
+    app(&mut files, &format!("files start 1 read {PATH}"));
+    assert_eq!(
+        shell(&mut files, "files back 0"),
+        "err that transfer is not one the shell may give back",
+        "not taken yet"
+    );
+    let job = shell(&mut files, "files take");
+    assert_eq!(job, format!("job 0 editor read {PATH}"));
+    assert_eq!(shell(&mut files, "files back 0"), "ok");
+    assert_eq!(app(&mut files, "files poll 1"), "pending");
+    assert_eq!(shell(&mut files, "files take"), job, "it waits again");
+    assert_eq!(shell(&mut files, "files fill 0 0 2\nhi"), "ok");
+    assert_eq!(
+        shell(&mut files, "files back 0"),
+        "err that transfer is not one the shell may give back",
+        "begun"
+    );
+    assert_eq!(
+        shell(&mut files, "files back 9"),
+        "err that transfer is gone"
+    );
+    assert_eq!(app(&mut files, "files back 0"), "err not a file request");
+}
+
+/// A write keeps its bytes when given back, so the next take writes them all.
+#[test]
+fn a_write_given_back_keeps_its_bytes() {
+    let mut files = Files::default();
+    app(
+        &mut files,
+        &format!("files start 2 write old user 3 {PATH}"),
+    );
+    app(&mut files, "files data 2 0\nabc");
+    shell(&mut files, "files take");
+    assert_eq!(shell(&mut files, "files back 0"), "ok");
+    assert_eq!(
+        shell(&mut files, "files take"),
+        format!("job 0 editor write old user 3 {PATH}")
+    );
+    assert_eq!(shell(&mut files, "files fetch 0 0"), "ok\nabc");
+}
+
 #[test]
 fn an_empty_write_and_an_empty_read_need_no_pieces() {
     let mut files = Files::default();
