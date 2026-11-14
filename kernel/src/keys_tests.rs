@@ -42,13 +42,24 @@ fn now_ms() -> u64 {
     hpet::nanos() / 1_000_000
 }
 
+/// Whether `reply` is `count`'s answer: a `kai-reply` whose `result` line is
+/// Notes' record.
+fn counted(reply: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(reply);
+    let mut lines = text.lines();
+    lines
+        .next()
+        .is_some_and(|head| head.starts_with("kai-reply "))
+        && lines.any(|line| line.starts_with("result {notes: "))
+}
+
 /// Calls Notes every [`BUSY_MS`] until told to stop.
 fn hammer(_: usize) {
     let mut last = now_ms();
     while BUSY.load(Ordering::SeqCst) {
-        // `count` answers a record, `{notes: N, words: M}`.
+        // `count` answers `kai-reply 1`, then `result {notes: N, words: M}`.
         match ipc::call(NAME, COUNT.as_bytes(), CALL_MS) {
-            Ok(reply) if reply.starts_with(b"{notes: ") => {
+            Ok(reply) if counted(&reply) => {
                 CALLS.fetch_add(1, Ordering::SeqCst);
             }
             reply => {
