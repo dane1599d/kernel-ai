@@ -2,7 +2,8 @@
 //! redesign, PR 4). Each is path geometry on a 24-unit grid with a 2-unit safe
 //! margin, stroked 1.5 units (never under 1 px) with round caps and joins, or
 //! filled where a dot or a block reads better. The geometry is authored here
-//! and licensed with the OS; nothing is traced from another icon set.
+//! and licensed with the OS, not traced from another icon set; a shape as
+//! plain as a chevron or a cross is kept off the common sets' coordinates.
 //!
 //! An icon becomes a monochrome coverage [`Mask`] at a pixel size, which the
 //! caller tints with a `look` token's colour; [`Icons`] keeps the masks it has
@@ -157,7 +158,7 @@ impl Icon {
             Icon::Chat => g.bubble(),
             Icon::Memory => g.chip(),
             Icon::ChevronRight => g.lines(&[(10.0, 6.0), (16.0, 12.0), (10.0, 18.0)]),
-            Icon::ChevronDown => g.lines(&[(6.0, 9.0), (12.0, 15.0), (18.0, 9.0)]),
+            Icon::ChevronDown => g.lines(&[(6.0, 9.5), (12.0, 15.5), (18.0, 9.5)]),
             Icon::Check => g.lines(&[(5.0, 12.5), (10.0, 17.0), (19.0, 7.0)]),
             Icon::Stop => g.fill_round_rect(7.0, 7.0, 17.0, 17.0, 2.0),
             Icon::Send => {
@@ -180,8 +181,8 @@ impl Icon {
                 g.restore_back();
             }
             Icon::Close => {
-                g.lines(&[(6.0, 6.0), (18.0, 18.0)]);
-                g.lines(&[(18.0, 6.0), (6.0, 18.0)]);
+                g.lines(&[(6.5, 6.5), (17.5, 17.5)]);
+                g.lines(&[(17.5, 6.5), (6.5, 17.5)]);
             }
         }
         g.parts
@@ -206,6 +207,10 @@ impl Mask {
     /// Draws the mask with its top left at (`x`, `y`) in `color`
     /// (`0x00RRGGBB`; each pixel keeps its alpha byte), as far as `clip`.
     pub fn draw(&self, c: &mut Canvas<'_>, x: i32, y: i32, color: u32, clip: Rect) {
+        // A mask whose coverage is not `size` squared draws nothing.
+        if self.size <= 0 || self.coverage.len() != (self.size * self.size) as usize {
+            return;
+        }
         let area = Rect::new(x, y, self.size, self.size)
             .intersect(&clip)
             .intersect(&c.bounds());
@@ -227,7 +232,8 @@ impl Mask {
 fn raster(icon: Icon, px: i32, pad: i32) -> Vec<u8> {
     let side = (px + 2 * pad).max(1) as u32;
     let Some(mut pixmap) = Pixmap::new(side, side) else {
-        return Vec::new();
+        // No canvas: blank, but the right size, so a mask still draws safely.
+        return alloc::vec![0; (side * side) as usize];
     };
     let mut paint = Paint::default();
     paint.set_color_rgba8(255, 255, 255, 255);
@@ -263,24 +269,35 @@ fn raster(icon: Icon, px: i32, pad: i32) -> Vec<u8> {
         .collect()
 }
 
-/// `icon` as a coverage mask `px` x `px`.
+/// The largest size a mask is made at: a 32 px icon at 4x. A larger ask is
+/// drawn at this size.
+pub const MAX_PX: i32 = 128;
+
+/// The most masks [`Icons`] keeps: every glyph at the four desk sizes, with
+/// room for a second scale's. Past it the oldest is dropped.
+pub const MAX_MASKS: usize = 2 * SIZES.len() * Icon::ALL.len();
+
+/// `icon` as a coverage mask `px` x `px`, `px` held to 1..=[`MAX_PX`].
 pub fn render(icon: Icon, px: i32) -> Mask {
-    let size = px.max(1);
+    let size = px.clamp(1, MAX_PX);
     Mask {
         size,
         coverage: raster(icon, size, 0),
     }
 }
 
-/// The masks made so far, per (icon, px), so each is rasterised once.
+/// The masks made so far, per (icon, px), so each is rasterised once; at most
+/// [`MAX_MASKS`], the oldest dropped first.
 #[derive(Default)]
 pub struct Icons {
     masks: Vec<(Icon, i32, Mask)>,
 }
 
 impl Icons {
-    /// `icon`'s mask at `px`, made the first time it is asked for.
+    /// `icon`'s mask at `px` (held as [`render`] holds it), made the first
+    /// time it is asked for.
     pub fn get(&mut self, icon: Icon, px: i32) -> &Mask {
+        let px = px.clamp(1, MAX_PX);
         let found = self
             .masks
             .iter()
@@ -288,6 +305,9 @@ impl Icons {
         let at = match found {
             Some(at) => at,
             None => {
+                if self.masks.len() >= MAX_MASKS {
+                    self.masks.remove(0);
+                }
                 self.masks.push((icon, px, render(icon, px)));
                 self.masks.len() - 1
             }
