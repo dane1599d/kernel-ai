@@ -768,3 +768,36 @@ fn undo_stops_only_the_start_its_own_entry_made() {
     assert!(!shell.eval("undo").ok);
     assert!(host.services.borrow()[0].1, "notes still runs");
 }
+
+#[test]
+fn what_kai_can_do_with_something_comes_from_the_rows() {
+    // The founder's VirtualBox test (2026-11-14): no invented "CPU frequency"
+    // or GPU abilities, and no model asked.
+    let (host, mut shell) = with_calls(vec![]);
+    let cpus = shell.eval("what can you do with the cpus");
+    assert!(
+        cpus.ok && cpus.text.contains("- set_policy: switches every CPU"),
+        "{cpus:?}"
+    );
+    assert!(!cpus.text.contains("frequency"), "{cpus:?}");
+    let gpu = shell.eval("can you do anything with the gpu?");
+    assert_eq!(
+        gpu,
+        ok("None of my actions works with the gpu, so I can't do anything with it here.")
+    );
+    assert!(host.act_lines.borrow().is_empty());
+}
+
+#[test]
+fn only_a_question_about_abilities_is_answered_from_the_rows() {
+    use crate::abilities::answer;
+    assert!(answer("What can you do with files?").is_some());
+    for line in [
+        "what can you do",
+        "show me the cpus",
+        "what can you do with the cpus and then switch the policy to round robin",
+        "can you do anything",
+    ] {
+        assert_eq!(answer(line), None, "{line}");
+    }
+}
