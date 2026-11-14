@@ -79,10 +79,12 @@ pub const UPTIME_MS: Action = read(
 
 pub const PROCESSES: Action = read(
     "processes",
-    "the running services",
+    "running processes",
     RetType::List(&RetType::Record(&[
         ("pid", RetType::Of(INT)),
         ("name", RetType::Of(STRING)),
+        ("mib", RetType::Of(INT)),
+        ("cpu_ms", RetType::Of(INT)),
     ])),
 );
 
@@ -513,7 +515,7 @@ pub const RULES_REMOVE: Action = Action {
 pub const TYPED_ONLY: [Action; 2] = [RULES, RULES_REMOVE];
 
 /// Every OS row.
-pub const ROWS: [Action; 47] = [
+pub const ROWS: [Action; 48] = [
     CPUS,
     MEMORY,
     UPTIME_MS,
@@ -535,6 +537,7 @@ pub const ROWS: [Action; 47] = [
     PKG_LIST,
     PKG_SEARCH,
     crate::FS_LIST,
+    crate::FS_FIND,
     crate::FS_READ,
     crate::FS_HISTORY,
     crate::FS_CHANGES,

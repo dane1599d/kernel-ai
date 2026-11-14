@@ -51,7 +51,7 @@ pub const MAX_PROMPT: usize = 8;
 pub const CANCEL_ENTRY: &str = "\u{3}";
 /// What the terminal says when it starts.
 pub const GREETING: &str = "Kernel AI terminal. Talk to the AI or type Rhai (try help). \
-                            Kernel commands that start with ':' run on the console.";
+                            Kernel commands that start with ':' run on the console (Ctrl+Alt+F12).";
 /// Said under a question.
 pub const ANSWER_ELSEWHERE: &str = "Answer on the AI panel's card.";
 /// Most rows `terminal_window_read` returns, newest last.

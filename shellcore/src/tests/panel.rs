@@ -15,6 +15,20 @@ const STOP: &str = r#"{"name":"process_stop","arguments":{"name":"notes"}}"#;
 const SAY: &str =
     r#"{"name":"say","arguments":{"text":"Done: removed 3 files. Your data is safe."}}"#;
 
+/// #875's review: the panel's undo takes back the line beside it, by the
+/// log entry it made; a line that changed nothing names none.
+#[test]
+fn a_panel_line_names_the_entry_its_undo_takes_back() {
+    let (_host, mut shell) = with_calls(vec![call(RR), call(SAY)]);
+    shell.eval_panel("switch to round robin");
+    let entry = shell.take_panel_entry().expect("the change made an entry");
+    assert_eq!(shell.take_panel_entry(), None, "given once");
+    shell.eval_panel("hi");
+    assert_eq!(shell.take_panel_entry(), None, "words change nothing");
+    let undone = shell.eval(&format!("undo {entry}"));
+    assert!(undone.ok, "{undone:?}");
+}
+
 #[test]
 fn a_run_tier_request_shows_codes_line() {
     let (host, mut shell) = with_calls(vec![call(RR)]);
@@ -276,6 +290,18 @@ fn open_and_a_service_that_does_not_answer_or_is_down_is_still_opened() {
         "a stopped service was asked: {:?}",
         host.app_requests.borrow()
     );
+}
+
+#[test]
+fn the_panel_shows_the_time_from_the_clock() {
+    // #893: the bar shows the code-made line, not "answered above".
+    let (host, mut shell) = with_calls(vec![]);
+    host.wall_clock.set(Some(1_794_637_800));
+    assert_eq!(
+        shell.eval_panel("what time is it?"),
+        PanelResult::Done("It is 06:30 UTC on Saturday 14 November 2026.".into())
+    );
+    assert!(host.act_lines.borrow().is_empty());
 }
 
 #[test]

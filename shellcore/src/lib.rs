@@ -37,6 +37,7 @@ mod brackets;
 pub mod ccbuild;
 mod centry;
 mod clarify;
+mod clock;
 mod cmode;
 mod commands;
 pub mod data;
@@ -50,6 +51,7 @@ mod instructions;
 mod models;
 mod netask;
 pub mod netgrant;
+mod sound;
 pub use models::MODELS_APP;
 pub use netask::Connect as NetConnect;
 mod packages;
@@ -123,6 +125,8 @@ pub enum FsRead<'a> {
     Whole(&'a str),
     History(&'a str),
     Changes,
+    /// Paths under home whose last part holds this word, case aside.
+    Find(&'a str),
 }
 
 /// A change the `fs` server makes as one transaction, which `undo` restores.
@@ -264,6 +268,17 @@ pub trait Host {
     /// One request to `pkg` through the shell's route to it: the text after
     /// its `ok`, or why not (P4 task 13).
     fn pkg(&self, _request: &str) -> Result<String, String> {
+        Err(String::from("there is no pkg service here"))
+    }
+    /// Seconds since 1970 UTC from the kernel's clock (`CLOCK_NOW`), or `None`
+    /// where the firmware gave no date.
+    fn unix_seconds(&self) -> Option<u64> {
+        None
+    }
+
+    /// Installed package `package`'s `kai-actions 1` answer, read by `pkg`
+    /// from its stored artifact: an app's rows before it first runs.
+    fn installed_rows(&self, _package: &str) -> Result<String, String> {
         Err(String::from("there is no pkg service here"))
     }
     /// `cc build`'s work outside the shell's logic: component `name`'s
@@ -662,6 +677,9 @@ pub struct Shell {
     asked_model: bool,
     worded: bool,
     done_line: Option<String>,
+    /// The log entry the last panel line made, if it made one: what the
+    /// panel's undo link undoes ([`Shell::take_panel_entry`]).
+    panel_entry: Option<u64>,
     /// What the AI said to the last panel line, for the desk's history
     /// ([`Shell::take_panel_said`]): the model's words or a model script's
     /// prints, never the panel's own state line.
@@ -767,6 +785,7 @@ impl Shell {
             asked_model: false,
             worded: false,
             done_line: None,
+            panel_entry: None,
             panel_said: None,
             panel_clarifying: None,
             panel_note: None,
@@ -1177,6 +1196,18 @@ impl Shell {
             "script {id} requested: {}",
             show::truncate(request, 60)
         ));
+        // The time and the date come from the kernel's clock, never the model.
+        if let Some(text) = clock::answer(request, self.host.unix_seconds()) {
+            // Not `worded`: the panel shows this line itself (#893).
+            self.record(id, request, "", "answered from the clock");
+            return Reply::ok(text);
+        }
+        // Sound has one answer until there is an audio driver.
+        if let Some(text) = sound::answer(request) {
+            self.record(id, request, "", "answered: no sound yet");
+            self.worded = true;
+            return Reply::ok(text);
+        }
         // What Kai can do with something comes from the rows, never the model.
         if let Some(text) = abilities::answer(request) {
             self.record(id, request, "", "answered from the registry");

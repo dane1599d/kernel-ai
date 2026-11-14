@@ -123,7 +123,7 @@ impl Desk {
         self.tabs_changed();
     }
 
-    pub(super) fn minimize(&mut self, id: WindowId, effects: &mut Vec<Effect>) {
+    pub(crate) fn minimize(&mut self, id: WindowId, effects: &mut Vec<Effect>) {
         if let Some(w) = self.windows.iter_mut().find(|w| w.id == id) {
             w.minimized = true;
             let frame = w.frame;

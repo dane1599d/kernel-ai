@@ -59,3 +59,62 @@ pub fn check() -> Result<(), &'static str> {
     );
     Ok(())
 }
+
+/// `test=power-reboot` (backlog item 13): POWER_REBOOT from ring 3. The
+/// supervisor gives `cap::POWER` to the shell alone. `handles mode=reboot` with
+/// no capability is refused and exits 0; with `cap::POWER` (started by the
+/// kernel, past the supervisor's rule) it restarts the machine, so the case
+/// passes by the reset.
+pub fn power_check() -> Result<(), &'static str> {
+    use crate::process::supervision::power_allowed;
+    let power = kabi::cap::POWER;
+    let refused = [("handles", "handles"), ("shell", "handles"), ("x", "shell")];
+    if refused
+        .iter()
+        .any(|(name, program)| power_allowed(name, program, power))
+        || !power_allowed("shell", "shell", power)
+        || !power_allowed("handles", "handles", 0)
+    {
+        return Err("power: the supervisor's POWER rule is not the shell's alone");
+    }
+    let refused = start_reboot("hnopower", 0)?;
+    if crate::fpu_tests::wait_exit(refused)? != (kabi::ExitReason::Exited, 0) {
+        return Err("power: POWER_REBOOT without POWER was not refused");
+    }
+    log!(
+        "power: POWER_REBOOT without the power capability was refused; POWER is the shell's alone"
+    );
+    restart()
+}
+
+/// Starts `handles mode=reboot` as `name` with `caps`.
+fn start_reboot(name: &'static str, caps: u64) -> Result<u64, &'static str> {
+    crate::process::spawn(&crate::process::SpawnRequest {
+        name,
+        program: "handles",
+        args: b"mode=reboot",
+        limits: kabi::Limits {
+            max_pages: 256,
+            max_burst_ms: 10_000,
+            caps,
+            stack_pages: 0,
+        },
+        spawner: 0,
+        supervisor: false,
+        uses: &[],
+    })
+    .map_err(|_| "power: cannot start the handles program")
+}
+
+/// POWER_REBOOT from ring 3 (`hpower`, holding `cap::POWER`): returns only if
+/// the machine did not restart.
+pub fn restart() -> Result<(), &'static str> {
+    let held = start_reboot("hpower", kabi::cap::POWER)?;
+    let got = crate::fpu_tests::wait_exit(held)?;
+    log!(
+        "power: hpower ended {} ({}) instead of restarting",
+        got.0.name(),
+        got.1
+    );
+    Err("power: POWER_REBOOT with POWER did not restart the machine")
+}

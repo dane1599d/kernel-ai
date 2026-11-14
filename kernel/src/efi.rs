@@ -90,7 +90,8 @@ type SetVirtualAddressMap = extern "efiapi" fn(usize, usize, u32, *mut u8) -> us
 type GetVariable =
     extern "efiapi" fn(*const u16, *const Guid, *mut u32, *mut usize, *mut u8) -> usize;
 type SetVariable = extern "efiapi" fn(*const u16, *const Guid, u32, usize, *const u8) -> usize;
-type ResetSystem = extern "efiapi" fn(u32, usize, usize, *const u8) -> !;
+/// Typed as returning: a firmware that returns is not trusted to have reset.
+type ResetSystem = extern "efiapi" fn(u32, usize, usize, *const u8);
 
 struct Services {
     get: GetVariable,
@@ -304,12 +305,27 @@ pub fn set_variable(vendor: &Guid, name: &str, attributes: u32, data: &[u8]) -> 
 }
 
 /// Resets the machine through ResetSystem (a cold reset), or through
-/// `power::reboot` without runtime services.
+/// `power::reboot` without runtime services or if the firmware returns.
 pub fn reset() -> ! {
+    interrupts::disable();
+    reset_now()
+}
+
+/// [`reset`] once no firmware call is under way: one running on another CPU
+/// (a SetVariable, say) finishes first, and none starts after. Its holders run
+/// with interrupts off, so none is on this CPU.
+pub fn reset_after_calls() -> ! {
+    interrupts::disable();
+    core::mem::forget(CALL.lock());
+    reset_now()
+}
+
+/// With interrupts off.
+fn reset_now() -> ! {
     if let Some(services) = SERVICES.get() {
         log!("efi: resetting through ResetSystem");
-        interrupts::disable();
-        crate::fpu::around_firmware(|| (services.reset)(0, 0, 0, core::ptr::null()))
+        crate::fpu::around_firmware(|| (services.reset)(0, 0, 0, core::ptr::null()));
+        log!("efi: ResetSystem returned; resetting another way");
     }
     crate::power::reboot()
 }

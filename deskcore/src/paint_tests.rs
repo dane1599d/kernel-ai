@@ -356,6 +356,48 @@ fn a_long_line_keeps_the_caret_in_the_input() {
     );
 }
 
+/// Backlog item 9: a done line's undo and show are clickable where they are
+/// drawn, undo before show, and nothing else on the panel is a link.
+#[test]
+fn the_panels_undo_and_show_are_where_they_are_drawn() {
+    use crate::geom::Point;
+    let desk = Desk::new(1280, 800);
+    let painter = Painter::new(FONTS).expect("the fonts parse");
+    let area = desk.panel();
+    let mut done = Panel::new();
+    done.set_done(
+        State::Done {
+            line: "Done: policy round-robin (was interactive).".into(),
+        },
+        Some(7),
+    );
+    let y = area.y + area.h / 2;
+    let found: Vec<(i32, &str)> = (area.x..area.right())
+        .filter_map(|x| {
+            painter
+                .panel_link(area, &done, Point { x, y })
+                .map(|w| (x, w))
+        })
+        .collect();
+    let first = |word: &str| found.iter().find(|(_, w)| *w == word).map(|(x, _)| *x);
+    let (undo, show) = (first("undo").unwrap(), first("show").unwrap());
+    assert!(undo < show && undo > area.x + area.w / 2, "{undo} {show}");
+    assert!(found.iter().all(|(x, _)| *x >= area.x + area.w / 2));
+    // With no entry to act on, a done line has no links.
+    let mut bare = Panel::new();
+    bare.set_done(
+        State::Done {
+            line: "Done: policy round-robin (was interactive).".into(),
+        },
+        None,
+    );
+    assert_eq!(painter.panel_link(area, &bare, Point { x: show, y }), None);
+    assert_eq!(
+        painter.panel_link(area, &Panel::new(), Point { x: show, y }),
+        None
+    );
+}
+
 /// A history of a few panel lines, with a window open over part of it.
 fn chat_scene(chat: &crate::chat::Chat, name: &str) -> (Image, Desk) {
     let mut desk = Desk::new(1280, 800);

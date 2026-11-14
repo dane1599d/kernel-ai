@@ -194,8 +194,11 @@ fn neither_role_signs_for_the_others_paths() {
     assert!(packages.refused.iter().any(|(path, _)| path == "evil.gguf"));
 }
 
+/// Top-level `targets`, which TUF's search asks first, names a model and its
+/// list otherwise: the device reads each from the `models` role it is
+/// delegated to, and the top-level entries change nothing.
 #[test]
-fn a_model_or_chunk_list_that_top_level_targets_names_too_is_refused() {
+fn a_model_or_chunk_list_that_top_level_targets_names_too_is_read_from_models() {
     let keys = keys(1);
     let repo = tuf::build_with_models(&[], &models::for_image().unwrap(), &keys, NOW).unwrap();
     let fixture = models::fixture();
@@ -211,29 +214,17 @@ fn a_model_or_chunk_list_that_top_level_targets_names_too_is_refused() {
     assert_eq!(checked.refused, []);
     assert_eq!(checked.chunks.len(), lists);
     assert!(checked.chunks.iter().any(|(s, _)| *s == sha));
-    // ... and top-level `targets`, which TUF's search asks first, names the
-    // fixture and its list otherwise: neither resolves through `models`.
+    // ... and top-level `targets` names the fixture and its list otherwise.
+    let honest = checked;
     let repo = resigned(&repo, "metadata/1.targets.json", &keys.targets, |v| {
         v["targets"]["fixture.gguf"] =
             json!({ "length": 1, "hashes": { "sha256": "00".repeat(32) } });
         v["targets"][&list] = json!({ "length": 1, "hashes": { "sha256": "00".repeat(32) } });
     });
     let checked = read(repo).unwrap();
-    let refused: Vec<(&str, &str)> = checked
-        .refused
-        .iter()
-        .map(|(path, why)| (path.as_str(), why.as_str()))
-        .collect();
-    assert_eq!(
-        refused,
-        [
-            (list.as_str(), "another role names it before models"),
-            ("fixture.gguf", "another role names it before models"),
-        ]
-    );
-    assert!(checked.models.iter().all(|m| m.id != "fixture"));
-    assert_eq!(checked.chunks.len(), lists - 1);
-    assert!(checked.chunks.iter().all(|(s, _)| *s != sha));
+    assert_eq!(checked.refused, []);
+    assert_eq!(checked.models, honest.models);
+    assert_eq!(checked.chunks, honest.chunks);
 }
 
 #[test]
