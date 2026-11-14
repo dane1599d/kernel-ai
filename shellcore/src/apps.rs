@@ -247,11 +247,23 @@ fn installed(
             Ok(answer) => answer,
             // A service `pkg` did not install: asked, and that is the answer.
             Err(why) if why.ends_with(NOT_INSTALLED) => continue,
-            // `pkg` did not answer, or could not read the store: say so, and
-            // ask again on the next act turn.
+            // `pkg` gave no answer: asked again on a later act turn, up to
+            // [`INSTALLED_TRIES`] in all.
+            Err(why) if why.starts_with(crate::ccbuild::NO_ANSWER) => {
+                host.audit(&format!("{app}'s package rows were not read: {why}"));
+                let mut apps = apps.borrow_mut();
+                apps.rows.unanswered.push(app.to_string());
+                let tries = apps.rows.unanswered.iter().filter(|a| *a == app).count();
+                if tries < INSTALLED_TRIES {
+                    apps.rows.asked.retain(|(name, _)| name != app);
+                }
+                continue;
+            }
+            // Any answer of `pkg`'s, or no route to it, is final until reboot:
+            // it stays asked, so it is audited once. (Not `failed`, which
+            // would keep the app's own rows out once it runs.)
             Err(why) => {
                 host.audit(&format!("{app}'s package rows were not read: {why}"));
-                apps.borrow_mut().rows.asked.retain(|(name, _)| name != app);
                 continue;
             }
         };
@@ -275,6 +287,10 @@ const NOT_AN_APP: &str = "no such app";
 /// The end of `pkg`'s answer for a package it has not installed (`pkg`'s
 /// `actions`).
 const NOT_INSTALLED: &str = " is not installed";
+
+/// How many times an installed app's rows are asked of a `pkg` that gives no
+/// answer, each costing up to its call timeout, before the shell stops asking.
+const INSTALLED_TRIES: usize = 3;
 
 /// Loads app `app`'s rows, by its name, if they are not loaded yet: for its
 /// effects, which may come before any call to its rows.
@@ -409,6 +425,8 @@ pub struct AppRows {
     failed: Vec<String>,
     /// (app, pid) of each running instance [`wire`] asked for its rows.
     asked: Vec<(String, u64)>,
+    /// One entry per time `pkg` gave no answer for an installed app's rows.
+    unanswered: Vec<String>,
 }
 
 impl AppRows {

@@ -323,25 +323,35 @@ fn an_installed_app_that_is_not_running_shows_its_rows_from_its_package() {
     assert_eq!(*host.installed_asked.borrow(), ["notes", "netd"]);
 }
 
-#[test]
-fn an_unanswered_package_lookup_is_asked_again_next_turn() {
-    // #883's review: `pkg` not answering is not "not installed"; it is
-    // audited and asked again, so Notes' rows appear once `pkg` is up.
+/// Notes installed but resting, a model that is not there, and `pkg`'s
+/// rows lookup failing with `why`.
+fn notes_lookup_failing(why: &str, turns: usize) -> (Rc<FakeHost>, Shell) {
     let none = || Err(ActError::Unavailable(String::from("no model")));
-    let (host, mut shell) = with_calls(vec![none(), none()]);
+    let (host, shell) = with_calls((0..turns).map(|_| none()).collect());
     host.lists_services.set(true);
     *host.services.borrow_mut() = vec![(String::from("notes"), false)];
     host.installed
         .borrow_mut()
         .push((String::from("notes"), String::from(NOTES)));
-    *host.installed_down.borrow_mut() = Some(String::from("pkg did not answer"));
+    *host.installed_down.borrow_mut() = Some(String::from(why));
+    (host, shell)
+}
+
+fn lookup_audits(host: &FakeHost) -> usize {
+    let audit = host.audit.borrow();
+    audit
+        .iter()
+        .filter(|a| a.contains("notes's package rows were not read"))
+        .count()
+}
+
+#[test]
+fn a_package_lookup_pkg_did_not_answer_is_asked_again_next_turn() {
+    // #883's review: `pkg` not answering is not a lasting answer; it is
+    // audited and asked again, so Notes' rows appear once `pkg` is up.
+    let (host, mut shell) = notes_lookup_failing("pkg did not answer (Timeout)", 2);
     shell.eval("make a note called ideas");
-    assert!(
-        host.audit
-            .borrow()
-            .iter()
-            .any(|a| a.contains("notes's package rows were not read: pkg did not answer"))
-    );
+    assert_eq!(lookup_audits(&host), 1);
     *host.installed_down.borrow_mut() = None;
     shell.eval("add a note saying buy eggs");
     assert_eq!(*host.installed_asked.borrow(), ["notes", "notes"]);
@@ -350,6 +360,35 @@ fn an_unanswered_package_lookup_is_asked_again_next_turn() {
         llmproto::pack::apps::entries(&last),
         Some(vec![("notes", NOTES)])
     );
+}
+
+#[test]
+fn a_pkg_that_never_answers_is_asked_three_times_in_all() {
+    // #921's review: a hung `pkg` costs its timeout per try, so it is capped.
+    let (host, mut shell) = notes_lookup_failing("pkg did not answer (Timeout)", 5);
+    for _ in 0..5 {
+        shell.eval("make a note called ideas");
+    }
+    assert_eq!(host.installed_asked.borrow().len(), 3);
+    assert_eq!(lookup_audits(&host), 3);
+}
+
+#[test]
+fn a_lasting_pkg_answer_is_asked_and_audited_once() {
+    // #921's review: an answer of pkg's ("declares no actions", a bad
+    // artifact, no route) never clears, so it is never asked again.
+    for why in [
+        "it declares no actions",
+        "its artifact does not parse: bad header",
+        "this shell has no route to pkg",
+    ] {
+        let (host, mut shell) = notes_lookup_failing(why, 3);
+        for _ in 0..3 {
+            shell.eval("make a note called ideas");
+        }
+        assert_eq!(*host.installed_asked.borrow(), ["notes"], "{why}");
+        assert_eq!(lookup_audits(&host), 1, "{why}");
+    }
 }
 
 const EDITOR: &str = "version 1

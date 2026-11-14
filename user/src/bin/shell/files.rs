@@ -521,19 +521,26 @@ const FIND_MAX: usize = 40;
 /// `fs_find`: paths under home whose last part holds `word`, case aside,
 /// looking in home and the folders below it, breadth first, within
 /// [`FIND_DIRS`] folders and [`FIND_MAX`] paths. A folder it may not read is
-/// skipped, not the whole search; a last line says when it stopped early or
-/// skipped any (#899's review), so a short list is never taken as all there is.
+/// skipped, not the whole search; last lines say when more matched than it
+/// gives, when it left folders or names unvisited, and how many it skipped
+/// (#899's review), so a short list is never taken as all there is.
 fn find(home: Handle, word: &str) -> Result<Vec<String>, String> {
     let word = word.trim().to_lowercase();
     if word.is_empty() {
         return Err(String::from("say what the name holds"));
     }
     let mut dirs = alloc::collections::VecDeque::from([String::new()]);
-    let (mut seen, mut skipped, mut cut, mut found) = (0, 0, false, Vec::new());
+    let (mut seen, mut skipped, mut found) = (0, 0, Vec::new());
+    // More matched than FIND_MAX; folders left unvisited (FIND_DIRS, or a
+    // folder longer than LIST_MAX names).
+    let (mut more_matched, mut cut) = (false, false);
     while let Some(dir) = dirs.pop_front() {
         seen += 1;
-        let names = match in_dir(home, &dir, Rights::READ | Rights::ENUMERATE, list) {
-            Ok(names) => names,
+        let names = match in_dir(home, &dir, Rights::READ | Rights::ENUMERATE, list_cut) {
+            Ok((names, long)) => {
+                cut |= long;
+                names
+            }
             // Home itself unreadable is the search failing.
             Err(why) if dir.is_empty() => return Err(why),
             Err(_) => {
@@ -556,7 +563,7 @@ fn find(home: Handle, word: &str) -> Result<Vec<String>, String> {
                         "/home/user/{path}{}",
                         if folder { "/" } else { "" }
                     )),
-                    false => cut = true,
+                    false => more_matched = true,
                 }
             }
             if folder {
@@ -567,9 +574,12 @@ fn find(home: Handle, word: &str) -> Result<Vec<String>, String> {
             }
         }
     }
+    if more_matched {
+        found.push(format!("(the first {FIND_MAX} matches; more match)"));
+    }
     if cut {
         found.push(format!(
-            "(stopped early, after {seen} folders: more may match)"
+            "(stopped early after {seen} folders: more may match)"
         ));
     }
     if skipped > 0 {
@@ -579,6 +589,11 @@ fn find(home: Handle, word: &str) -> Result<Vec<String>, String> {
 }
 
 pub(crate) fn list(dir: Handle) -> Result<Vec<String>, String> {
+    list_cut(dir).map(|(names, _)| names)
+}
+
+/// [`list`], and whether it stopped at [`LIST_MAX`] names with more left.
+fn list_cut(dir: Handle) -> Result<(Vec<String>, bool), String> {
     let mut names = Vec::new();
     let mut after = None;
     loop {
@@ -601,8 +616,11 @@ pub(crate) fn list(dir: Handle) -> Result<Vec<String>, String> {
                         fsproto::Kind::File => name,
                     }
                 }));
-                if more.is_none() || names.len() >= LIST_MAX {
-                    return Ok(names);
+                if more.is_none() {
+                    return Ok((names, false));
+                }
+                if names.len() >= LIST_MAX {
+                    return Ok((names, true));
                 }
                 after = more;
             }
