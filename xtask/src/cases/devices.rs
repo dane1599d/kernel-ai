@@ -119,6 +119,20 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &["efi: resetting through ResetSystem"],
         ..case("efi-reset", "test=efi-reset")
     },
+    // Backlog item 13: POWER_REBOOT from ring 3, refused without `cap::POWER`,
+    // a restart through ResetSystem with it.
+    TestCase {
+        resets: true,
+        expect: &[
+            "[hnopower] power: POWER_REBOOT was refused without a Power handle",
+            "power: POWER_REBOOT without the power capability was refused",
+            "[hpower] power: asking for a restart",
+            "power: hpower (pid ",
+            ") asked for a restart",
+            "efi: resetting through ResetSystem",
+        ],
+        ..case("power-reboot", "test=power-reboot")
+    },
     // ADR 0007 section 3: a record per bound device, read by DEV_LIST from ring 3.
     TestCase {
         usb: &["usb-kbd"],

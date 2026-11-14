@@ -567,6 +567,16 @@ pub fn entropy(buf: &mut [u8]) -> Result<usize, Error> {
     .map(|n| n as usize)
 }
 
+/// Restarts the machine (POWER_REBOOT). Returns only with why it did not:
+/// Permission without a `Power` handle (`cap::POWER`). Commit what must be kept
+/// first.
+pub fn power_reboot() -> Error {
+    match call(call::POWER_REBOOT, [0; 6]) {
+        Ok(_) => Error::Invalid,
+        Err(error) => error,
+    }
+}
+
 /// `verb`'s `ctl` request to app `name`, sent by the kernel (APP_CTL); the
 /// app's reply goes into `reply`. For the supervisor.
 pub fn app_ctl(name: &str, verb: AppCtl, reply: &mut [u8]) -> Result<usize, Error> {
