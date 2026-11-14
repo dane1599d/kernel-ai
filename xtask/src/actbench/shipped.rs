@@ -192,7 +192,7 @@ pub fn run(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, Strin
     }
     // The founder's walkthrough, on a row of its own (report only).
     let mut founder = 0;
-    for task in tasks::FOUNDER {
+    for task in crate::actbench::founder::FOUNDER {
         let (ok, got) = answer(loaded, &grammar, task);
         founder += usize::from(ok);
         if !ok {
@@ -200,10 +200,13 @@ pub fn run(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, Strin
         }
         records.push(json!({"cat": "founder", "line": task.line, "got": got, "passed": ok}));
     }
-    println!("  shipped founder    {founder}/{}", tasks::FOUNDER.len());
+    println!(
+        "  shipped founder    {founder}/{}",
+        crate::actbench::founder::FOUNDER.len()
+    );
     rows.push_str(&format!(
         "| founder (its own set) | {founder}/{} | 0 |\n",
-        tasks::FOUNDER.len()
+        crate::actbench::founder::FOUNDER.len()
     ));
     let (passed, answered, skipped) = tally
         .iter()
@@ -287,7 +290,7 @@ mod tests {
     #[test]
     fn every_founder_line_names_rows_the_os_or_its_apps_have() {
         let apps = super::super::apps::shipped().unwrap();
-        for task in tasks::FOUNDER {
+        for task in crate::actbench::founder::FOUNDER {
             for name in task.expect.iter().flat_map(named) {
                 let ok =
                     os_row(&name) || apps.iter().any(|g| g.rows.iter().any(|r| r.name == name));
