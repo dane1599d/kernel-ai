@@ -17,8 +17,9 @@
 //! ceremony step 6.1): one root for both. With none committed, the image has
 //! neither, and imports nothing.
 //!
-//! `--test-root` builds the same image with one difference: a `pkgrepo/` whose
-//! `models` role, signed by a fresh test root, names only `qwen3-0.6b`
+//! `--test-root` builds the same image with one difference: a `pkgrepo/`
+//! signed by a fresh test root, whose `packages` role lists this build's
+//! packages and whose `models` role names only `qwen3-0.6b`
 //! (`pkgrepo::release_test`), in place of the committed one. `kai.root.json`
 //! stays the founder's. It exists for the case that boots the release and
 //! imports that model (`release_boot.rs`) while no repository is committed.
@@ -71,9 +72,10 @@ pub fn main(args: &[String]) -> Result<(), String> {
     let mut modules = esp::boot_modules(&kernel, &programs, &root)?;
     let versions = components::build(&root)?;
     // The built-in apps as packages, packed from this build's own components:
-    // the committed repository must sign exactly these bytes.
-    let packages = crate::release_repo::packages::pack(&root, &versions)?;
-    let packages = crate::release_repo::packages::built(&packages);
+    // the committed repository must sign exactly these entries, bytes and
+    // index.
+    let targets = crate::release_repo::packages::pack(&root, &versions)?;
+    let packages = crate::release_repo::packages::built(&targets);
     modules.extend(versions);
     // Nothing that exists to be driven by a boot case ships.
     components::check_no_test_only(&modules)?;
@@ -85,10 +87,10 @@ pub fn main(args: &[String]) -> Result<(), String> {
         bytes: record.clone().into_bytes(),
     });
     let test = match test_root {
-        true => Some(crate::pkgrepo::release_test()?),
+        true => Some(crate::pkgrepo::release_test(&targets)?),
         false => None,
     };
-    let signed = crate::release_repo::committed(&root, Some(&packages))?;
+    let signed = crate::release_repo::committed(&root, Some(&targets))?;
     let committed = signed.is_some();
     let repository = repository(signed, test, &packages)?;
     let modules = image::modules::image_modules(Image::Release { committed }, modules, repository)?;

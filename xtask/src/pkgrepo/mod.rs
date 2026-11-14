@@ -241,16 +241,18 @@ pub fn image(root: &Path, versions: &[Module]) -> Result<Image, String> {
     })
 }
 
-/// The repository `release-image --test-root` adds (P4 plan decision 3): no
-/// packages, and [`models::release_test`] in the `models` role, signed by a
-/// fresh test root. The shipping image has no repository until task 18's
-/// founder-signed one; this one is only for the case that boots the release.
-pub fn release_test() -> Result<Vec<Module>, String> {
+/// The repository `release-image --test-root` adds (P4 plan decision 3):
+/// `packages`, the built-in apps the image packs, and [`models::release_test`]
+/// in the `models` role, signed by a fresh test root. It is only for the case
+/// that boots the release while no founder-signed repository is committed, so
+/// that boot installs the packaged apps as a release's does.
+pub fn release_test(packages: &[kaipkg::sign::Target]) -> Result<Vec<Module>, String> {
     let models = models::release_test()?;
     let keys = Keys::generate()?;
-    let repository = tuf::build_with_models(&[], &models, &keys, unix_now()?)?;
+    let repository = tuf::build_listed(packages, &models, &keys, unix_now()?)?;
     println!(
-        "xtask: test-root repository: {} models signed by test root {}, never the release's",
+        "xtask: test-root repository: {} packages and {} models signed by test root {}, never the release's",
+        packages.len(),
         models.len(),
         &keys.root.id()[..12]
     );

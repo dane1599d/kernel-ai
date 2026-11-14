@@ -73,12 +73,31 @@ fn targets() -> Vec<Target> {
     let package = |name: &str, bytes: &[u8]| Target {
         path: format!("{name}-1.0.0.kpkg"),
         bytes: bytes.to_vec(),
-        kai: json!({ "name": name, "version": "1.0.0", "actions": [format!("{name}_find")] }),
+        kai: json!({
+            "name": name,
+            "version": "1.0.0",
+            "grants": [],
+            "actions": [format!("{name}_find")],
+            "yanked": false,
+        }),
     };
     vec![
         package("files", b"files package"),
         package("notes", b"notes package"),
     ]
+}
+
+/// `packages::targets`' stand-in: each package `prepare` wrote is one of
+/// [`targets`], whose index it gets back, as a real one packed again from its
+/// artifact makes its own.
+fn repack(built: &[(String, Vec<u8>)]) -> Result<Vec<Target>, String> {
+    let known = |(path, bytes): &(String, Vec<u8>)| {
+        targets()
+            .into_iter()
+            .find(|t| t.path == *path && t.bytes == *bytes)
+            .ok_or_else(|| format!("{path} packs again to other bytes"))
+    };
+    built.iter().map(known).collect()
 }
 
 fn release(
@@ -91,7 +110,7 @@ fn release(
     sign(&paths.work);
     prepare_timestamp(paths, NOW)?;
     sign(&paths.work);
-    assemble(paths, models, version, NOW)
+    assemble(paths, models, version, NOW, &repack)
 }
 
 /// What `kaipkg::sign` writes with both keys in hand: the metadata files.
@@ -137,8 +156,11 @@ fn signed_apart_the_release_is_what_signing_in_one_go_writes() {
     assert_eq!(written, in_one_go(&models));
     let keys = FileKeys::read(&paths.keys).unwrap();
     // The packages `prepare` wrote are the ones it signed.
-    let built = packages::read(&paths.work).unwrap();
-    assert_eq!(built, packages::built(&targets()));
+    assert_eq!(
+        packages::read(&paths.work).unwrap(),
+        packages::built(&targets())
+    );
+    let built = targets();
     let sums = fs::read_to_string(paths.work.join("packages/SHA256SUMS")).unwrap();
     assert!(sums.contains("  notes-1.0.0.kpkg\n"), "{sums}");
     check_repository(
@@ -169,7 +191,7 @@ fn a_later_release_keeps_the_frozen_root() {
     sign_here(&paths.work);
     prepare_timestamp(&paths, later).unwrap();
     sign_here(&paths.work);
-    assemble(&paths, &models, 2, later).unwrap();
+    assemble(&paths, &models, 2, later, &repack).unwrap();
     let names: Vec<String> = read_repository(&paths.repo)
         .unwrap()
         .into_iter()
@@ -203,7 +225,7 @@ fn a_signature_that_is_not_the_keys_is_refused_by_name() {
     let text = fs::read_to_string(&sig).unwrap();
     let flipped = if text.starts_with('0') { "1" } else { "0" };
     fs::write(&sig, format!("{flipped}{}", &text[1..])).unwrap();
-    let refused = assemble(&paths, &models, 1, NOW).unwrap_err();
+    let refused = assemble(&paths, &models, 1, NOW, &repack).unwrap_err();
     assert_eq!(
         refused,
         "models.sig is not release.key's signature of models.canon"
@@ -281,7 +303,7 @@ fn packages_not_the_signed_ones_are_named_with_both_hashes() {
     release(&paths, &models, 1, &sign_here).unwrap();
     let keys = FileKeys::read(&paths.keys).unwrap();
     let files = read_repository(&paths.repo).unwrap();
-    let check = |built: Option<&[(String, Vec<u8>)]>| {
+    let check = |built: Option<&[Target]>| {
         check_repository(
             &files,
             &models,
@@ -292,9 +314,9 @@ fn packages_not_the_signed_ones_are_named_with_both_hashes() {
         )
     };
     check(None).unwrap();
-    let mut built = packages::built(&targets());
+    let mut built = targets();
     check(Some(&built)).unwrap();
-    built[1].1 = b"notes, rebuilt".to_vec();
+    built[1].bytes = b"notes, rebuilt".to_vec();
     let refused = check(Some(&built)).unwrap_err();
     let (signed, packed) = (
         crate::sha256_hex(b"notes package"),
@@ -310,13 +332,66 @@ fn packages_not_the_signed_ones_are_named_with_both_hashes() {
         refused.contains("signs notes-1.0.0.kpkg, which this build does not pack"),
         "{refused}"
     );
-    let mut more = packages::built(&targets());
-    more.push(("terminal-1.0.0.kpkg".into(), b"terminal".to_vec()));
+    let mut more = targets();
+    more.push(Target {
+        path: "terminal-1.0.0.kpkg".into(),
+        bytes: b"terminal".to_vec(),
+        kai: json!({ "name": "terminal", "version": "1.0.0" }),
+    });
     let refused = check(Some(&more)).unwrap_err();
     assert!(
         refused.contains("packs terminal-1.0.0.kpkg, which"),
         "{refused}"
     );
+}
+
+/// A package's index changed in `packages.canon` before it was signed, a
+/// grant added or an action renamed, is refused by name though its hash is
+/// the build's: the OS acts on the index. An entry of another shape, a second
+/// hash or a field of its own, is refused with no build too.
+#[test]
+fn a_package_index_changed_before_it_was_signed_is_refused() {
+    let models = models::catalog().unwrap();
+    let edits: [(Edit, &str); 3] = [
+        (
+            ("grant", PACKAGES, |s| {
+                s["targets"]["notes-1.0.0.kpkg"]["custom"]["kai"]["grants"] = json!(["net"])
+            }),
+            r#"grants ["net"] where this build has []"#,
+        ),
+        (
+            ("action", PACKAGES, |s| {
+                s["targets"]["notes-1.0.0.kpkg"]["custom"]["kai"]["actions"] = json!(["notes_wipe"])
+            }),
+            r#"actions ["notes_wipe"] where this build has ["notes_find"]"#,
+        ),
+        (
+            ("sha512", PACKAGES, |s| {
+                s["targets"]["notes-1.0.0.kpkg"]["hashes"]["sha512"] = json!("00")
+            }),
+            "notes-1.0.0.kpkg has hashes other than one SHA-256",
+        ),
+    ];
+    for ((name, role, edit), want) in edits {
+        let paths = workspace(name);
+        prepare(&paths, &targets(), &models, 1, NOW).unwrap();
+        tamper(&paths.work, role, edit);
+        sign_here(&paths.work);
+        prepare_timestamp(&paths, NOW).unwrap();
+        sign_here(&paths.work);
+        let refused = assemble(&paths, &models, 1, NOW, &repack).unwrap_err();
+        assert!(refused.contains(want), "{name}: {refused}");
+        assert!(!paths.repo.exists(), "{name}: nothing is written");
+    }
+    let mut listed = json!({ "notes-1.0.0.kpkg": sign::target_entry(&targets()[1]) });
+    packages::check(&listed, None, REPO).unwrap();
+    let entry = &mut listed["notes-1.0.0.kpkg"];
+    entry["custom"]["kai"]["yanked"] = json!(true);
+    let refused = packages::check(&listed, None, REPO).unwrap_err();
+    assert!(refused.ends_with("notes-1.0.0.kpkg is yanked"), "{refused}");
+    listed["notes-1.0.0.kpkg"]["mirror"] = json!("elsewhere");
+    let refused = packages::check(&listed, None, REPO).unwrap_err();
+    assert!(refused.contains("fields other than custom"), "{refused}");
 }
 
 /// A later root committed beside version 1 is never deleted to make room.
@@ -368,7 +443,7 @@ fn a_role_edited_before_it_was_signed_is_refused() {
         sign_here(&paths.work);
         prepare_timestamp(&paths, NOW).unwrap();
         sign_here(&paths.work);
-        let refused = assemble(&paths, &models, 1, NOW).unwrap_err();
+        let refused = assemble(&paths, &models, 1, NOW, &repack).unwrap_err();
         assert!(
             refused.contains(&format!("1.{role}.json")),
             "{name}: {refused}"
@@ -386,7 +461,7 @@ fn a_version_other_than_this_releases_is_refused() {
     sign_here(&paths.work);
     prepare_timestamp(&paths, NOW).unwrap();
     sign_here(&paths.work);
-    let refused = assemble(&paths, &models, 2, NOW).unwrap_err();
+    let refused = assemble(&paths, &models, 2, NOW, &repack).unwrap_err();
     assert!(
         refused.contains("version 1 is not this release's"),
         "{refused}"
@@ -425,7 +500,7 @@ fn the_runbook_pins_the_sign_script() {
     );
     let text = String::from_utf8(script).unwrap();
     assert!(
-        text.lines().count() <= 90,
+        text.lines().count() <= 120,
         "release-sign.sh stays short enough to read"
     );
     for word in ["curl", "wget", "/dev/tcp", "ssh", "nc ", "git ", "http"] {

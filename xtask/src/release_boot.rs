@@ -109,15 +109,18 @@ pub fn main(args: &[String]) -> Result<(), String> {
         monitor,
         qmp: None,
         exact: Vec::new(),
-        contains: vec![format!(
-            "updated: imported {} ({}), {} bytes",
-            signed.id,
-            &signed.sha256[..12],
-            signed.length
-        )],
+        contains: vec![
+            format!(
+                "updated: imported {} ({}), {} bytes",
+                signed.id,
+                &signed.sha256[..12],
+                signed.length
+            ),
+            String::from(PACKAGES_KEPT),
+        ],
         cut: None,
         capture: None,
-        forbid: vec![String::from(PKG_FAIL)],
+        forbid: vec![String::from(PKG_FAIL), String::from(NO_PACKAGES)],
     };
     qemu::run_test(&qemu, &qemu_args, &target_dir, &run)
 }
@@ -127,6 +130,12 @@ pub fn main(args: &[String]) -> Result<(), String> {
 /// always carries a repository, the founder's once it is committed and a test
 /// root's (`--test-root`) before.
 const PKG_FAIL: &str = "pkg: FAIL";
+/// What `pkg` prints once the image's packages are checked and installed:
+/// every package the release signs is kept, none refused, so the built-in
+/// apps' rows are known before any app runs.
+const PACKAGES_KEPT: &str = " kept and 0 refused; generation 1 is its packages: ";
+/// And what it would print had the image no packages to install.
+const NO_PACKAGES: &str = "generation 1 is its packages: no packages";
 
 #[cfg(test)]
 mod tests {

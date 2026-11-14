@@ -59,13 +59,18 @@ jobs:
         run: |
           (cd prepare-a/packages && sha256sum -c SHA256SUMS)
           diff -r prepare-a/packages prepare-b/packages
+          # The packages role signs exactly those packages.
+          jq -r '.targets | to_entries[] | "\(.value.hashes.sha256)  \(.key)"' prepare-a/packages.canon |
+            sort | diff - <(sort prepare-a/packages/SHA256SUMS)
           {
-            echo "## The packages to sign, at $GITHUB_SHA"
+            echo "## The packages to sign"
             echo
-            echo "The sign script prints each as \`packages.canon signs <name>, sha256 <hash>\`: each must be here."
+            echo "Branch \`$GITHUB_REF\`, commit \`$GITHUB_SHA\`. The branch must be main or release/v…, and the commit the one the session named."
+            echo
+            echo "The sign script prints each package as below, grants included: each line must be here."
             echo
             echo '```'
-            cat prepare-a/packages/SHA256SUMS
+            jq -r '.targets | to_entries[] | "packages.canon signs \(.key), sha256 \(.value.hashes.sha256), grants \(.value.custom.kai.grants | tojson)"' prepare-a/packages.canon
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

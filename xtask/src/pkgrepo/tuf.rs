@@ -92,9 +92,18 @@ pub fn build_with_models(
     keys: &Keys,
     now: Time,
 ) -> Result<Repository, String> {
-    let targets = sign_targets(packages);
+    build_listed(&sign_targets(packages), models, keys, now)
+}
+
+/// [`build_with_models`] for packages the `packages` role already lists.
+pub fn build_listed(
+    targets: &[Target],
+    models: &[Model],
+    keys: &Keys,
+    now: Time,
+) -> Result<Repository, String> {
     let models = sign_models(models)?;
-    let files = sign::build_with_models(&targets, &models, &keys.roles(), now, ADR_0008)?;
+    let files = sign::build_with_models(targets, &models, &keys.roles(), now, ADR_0008)?;
     Ok(Repository { files })
 }
 

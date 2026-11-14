@@ -19,7 +19,9 @@
 //!    `timestamp.canon`. It holds the signed snapshot's length and SHA-256, so
 //!    it is signed in a second round.
 //! 4. `assemble` checks each signature with kaituf, then the whole repository
-//!    as a device does (`kaipkg::image`), and writes `release/pkgrepo/metadata/`.
+//!    as a device does (`kaipkg::image`), each package's entry against the
+//!    one its bytes make, packed again from the artifact inside them, and
+//!    writes `release/pkgrepo/metadata/`.
 //!
 //! `check` makes the last step's checks on what is committed. `release-image`
 //! makes them before it bundles the repository as `pkgrepo/`, and its root as
@@ -96,7 +98,8 @@ pub fn main(args: &[String]) -> Result<(), String> {
         }
         "assemble" => {
             let version = crate::release_image::release_seq(&root)?.into();
-            assemble(&paths, &models::catalog()?, version, now)?;
+            let repack = |built: &[(String, Vec<u8>)]| packages::targets(&root, built);
+            assemble(&paths, &models::catalog()?, version, now, &repack)?;
             println!("xtask: wrote {} (commit it)", paths.repo.display());
             Ok(())
         }
@@ -274,9 +277,20 @@ fn prepare_timestamp(paths: &Paths, now: Time) -> Result<(), String> {
     )
 }
 
+/// Packs `prepare`'s packages again from their bytes ([`packages::targets`]),
+/// or a test's stand-in, which has no components to pack.
+type Repack<'a> = &'a dyn Fn(&[(String, Vec<u8>)]) -> Result<Vec<Target>, String>;
+
 /// Every role signed, checked at `now` as [`check_repository`] does, the
-/// non-root roles at `version`, and written to the committed repository.
-fn assemble(paths: &Paths, models: &[Model], version: u64, now: Time) -> Result<(), String> {
+/// non-root roles at `version` and the packages' entries against `repack`'s,
+/// and written to the committed repository.
+fn assemble(
+    paths: &Paths,
+    models: &[Model],
+    version: u64,
+    now: Time,
+    repack: Repack,
+) -> Result<(), String> {
     let keys = FileKeys::read(&paths.keys)?;
     let (root, fresh) = match fs::read(paths.repo.join(image::ROOT)) {
         Ok(bytes) => (bytes, false),
@@ -292,7 +306,7 @@ fn assemble(paths: &Paths, models: &[Model], version: u64, now: Time) -> Result<
     }
     let (timestamp, _) = signed_file(&paths.work, "timestamp", &keys)?;
     files.push((sign::TIMESTAMP_PATH.into(), timestamp));
-    let built = packages::read(&paths.work)?;
+    let built = repack(&packages::read(&paths.work)?)?;
     let mode = Mode::Signed { version, fresh };
     check_repository(&files, models, Some(&built), &keys, now, mode)?;
     write_repository(&paths.repo, &files)

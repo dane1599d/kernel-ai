@@ -124,14 +124,63 @@ fn the_script_shows_every_key_before_a_passphrase() {
     assert_eq!(names("root"), both);
     assert_eq!(names("targets"), [release.as_str()]);
     assert!(names("snapshot").is_empty());
-    // And each package it signs, as the prepare job lists them.
+    // And each package it signs, as the prepare job lists them, with its
+    // grants.
     for (path, bytes) in packages::built(&targets()) {
         let line = format!(
-            "packages.canon signs {path}, sha256 {}",
+            "packages.canon signs {path}, sha256 {}, grants []
+",
             crate::sha256_hex(&bytes)
         );
         assert!(shown.contains(&line), "{line} in {shown}");
     }
+}
+
+/// A `packages.canon` entry of another shape than xtask writes, a second
+/// hash or a field of its own, stops the script before any passphrase; a
+/// grant added shows on its line.
+#[test]
+fn the_script_refuses_a_package_entry_xtask_does_not_write() {
+    if !openssl_3() {
+        return;
+    }
+    let edits: [Edit; 3] = [
+        ("sha512", PACKAGES, |s| {
+            s["targets"]["notes-1.0.0.kpkg"]["hashes"]["sha512"] = json!("00")
+        }),
+        ("field", PACKAGES, |s| {
+            s["targets"]["notes-1.0.0.kpkg"]["mirror"] = json!("x")
+        }),
+        ("custom", PACKAGES, |s| {
+            s["targets"]["notes-1.0.0.kpkg"]["custom"]["extra"] = json!({})
+        }),
+    ];
+    for (name, role, edit) in edits {
+        let paths = workspace(&format!("script-{name}"));
+        let stick = stick(&paths);
+        prepare(&paths, &targets(), &models::catalog().unwrap(), 1, NOW).unwrap();
+        tamper(&paths.work, role, edit);
+        let out = sign_script(&stick, &paths.work, "");
+        let said = String::from_utf8(out.stderr).unwrap();
+        assert!(!out.status.success(), "{name}");
+        assert!(
+            said.contains("packages.canon has an entry xtask does not write"),
+            "{name}: {said}"
+        );
+        assert!(!said.contains("Passphrase"), "{name}: {said}");
+    }
+    let paths = workspace("script-grant");
+    let stick = stick(&paths);
+    prepare(&paths, &targets(), &models::catalog().unwrap(), 1, NOW).unwrap();
+    tamper(&paths.work, PACKAGES, |s| {
+        s["targets"]["notes-1.0.0.kpkg"]["custom"]["kai"]["grants"] = json!(["net"])
+    });
+    let shown = String::from_utf8(sign_script(&stick, &paths.work, "").stdout).unwrap();
+    assert!(
+        shown.contains(r#"packages.canon signs notes-1.0.0.kpkg, sha256 "#)
+            && shown.contains(r#", grants ["net"]"#),
+        "{shown}"
+    );
 }
 
 /// RFC 8032 test 2 through the script, then a whole release in its two

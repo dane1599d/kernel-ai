@@ -8,7 +8,7 @@ use super::{FileKeys, KEYS, REPO, packages, plan};
 use crate::pkgrepo::models::Model;
 use kaipkg::generation::Time;
 use kaipkg::image;
-use kaipkg::sign::{self, ADR_0008, MODELS, PACKAGES};
+use kaipkg::sign::{self, ADR_0008, MODELS, PACKAGES, Target};
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
@@ -43,12 +43,12 @@ pub(super) enum Mode {
 /// - each role's `signed` is what `prepare` writes for `models` and `keys` at
 ///   that version, but its expiry, which is in the window `mode` sets;
 /// - the `packages` role lists packages (`packages::check`): with `built`,
-///   exactly those, each of its length and SHA-256; with none, by shape only
-///   (`ci.yml`, which builds no components).
+///   exactly the entries `prepare` writes for those, each index included;
+///   with none, by shape only (`ci.yml`, which builds no components).
 pub(super) fn check_repository(
     files: &[(String, Vec<u8>)],
     models: &[Model],
-    built: Option<&[(String, Vec<u8>)]>,
+    built: Option<&[Target]>,
     keys: &FileKeys,
     now: Time,
     mode: Mode,
@@ -84,10 +84,13 @@ pub(super) fn check_repository(
     let packages_role = parse(files, &roles[1])?;
     packages::check(&packages_role["signed"]["targets"], built, REPO)?;
     root_signed(files, keys)?;
-    let plan = plan(keys, &[], models, at, Time(0))?;
-    // The packages role but for its targets, which `packages::check` held.
+    let plan = plan(keys, built.unwrap_or_default(), models, at, Time(0))?;
+    // With no build, the packages role but for its targets, which
+    // `packages::check` held by shape.
     let mut packages_want = plan.packages.clone();
-    packages_want["targets"] = packages_role["signed"]["targets"].clone();
+    if built.is_none() {
+        packages_want["targets"] = packages_role["signed"]["targets"].clone();
+    }
     let snapshot = bytes(files, &sign::path("snapshot", at))?;
     let stamp = sign::timestamp(snapshot, at, Time(0), ADR_0008);
     let models_role = plan.models.as_ref().ok_or("the plan has no models role")?;
@@ -176,10 +179,7 @@ pub(super) fn root_signed(files: &[(String, Vec<u8>)], keys: &FileKeys) -> Resul
 /// The committed repository, checked as [`check_repository`] does at `now`,
 /// its version not above `release_seq`, its packages held to `built` when
 /// given, or none when nothing is committed.
-pub fn committed(
-    root: &Path,
-    built: Option<&[(String, Vec<u8>)]>,
-) -> Result<Option<RepoFiles>, String> {
+pub fn committed(root: &Path, built: Option<&[Target]>) -> Result<Option<RepoFiles>, String> {
     let repo = root.join(REPO);
     if !repo.join(image::ROOT).exists() {
         return Ok(None);
