@@ -189,6 +189,53 @@ fn a_typed_models_import_is_refused_at_the_panel_and_a_switch_runs_logged() {
     );
 }
 
+/// #885's review: the Apps sheet's `open <app>` runs as Kai's own `ui_open`,
+/// made by code with no model; a longer line is still the model's.
+#[test]
+fn open_and_one_app_runs_ui_open_with_no_model() {
+    let (host, mut shell) = with_calls(vec![]);
+    host.lists_services.set(true);
+    host.services
+        .borrow_mut()
+        .push((String::from("notes-window"), true));
+    let shown = shell.eval_panel("open notes");
+    assert!(host.act_lines.borrow().is_empty(), "the model was asked");
+    // The running apps' rows are loaded as a model request would load them,
+    // so Settings and the grants see the app opened (app-settings).
+    assert!(
+        host.app_requests
+            .borrow()
+            .iter()
+            .any(|(app, request)| app == "notes-window" && request == "kai-actions 1"),
+        "{:?}",
+        host.app_requests.borrow()
+    );
+    assert!(
+        shell.eval("log actlog").text.contains("ui_open"),
+        "{shown:?}"
+    );
+    // Not an app's name, or more than one word: not this line.
+    assert!(shell.open_line("open no tes").is_none());
+    assert!(shell.open_line("open").is_none());
+    assert!(shell.open_line("open ../x").is_none());
+}
+
+/// #885's review: `open <word>` that names no app the system has (a place, a
+/// file, a port) still goes to the model, and so does every one when the
+/// services cannot be listed.
+#[test]
+fn open_and_a_word_that_is_no_app_goes_to_the_model() {
+    let (host, mut shell) = with_calls(vec![]);
+    host.lists_services.set(true);
+    for line in ["open garage", "open ideas", "open port"] {
+        assert!(shell.open_line(line).is_none(), "{line} was taken");
+    }
+    // `notes` is a service here, so the code takes it.
+    assert!(shell.open_line("open notes").is_some());
+    host.lists_services.set(false);
+    assert!(shell.open_line("open notes").is_none(), "no list, no app");
+}
+
 #[test]
 fn a_question_left_past_two_minutes_lapses_before_its_card() {
     let (host, mut shell) = with_calls(vec![call(STOP)]);

@@ -54,6 +54,8 @@ fn facts(app: &App) -> String {
     let rest = format!("{} · {} · {grants}", app.size(), app.licence);
     let what = format!("{} {}", app.version, app.kind);
     match (app.source, &app.installed) {
+        // The image's own: no package, no version or size to tell.
+        (Source::BuiltIn, _) => String::from(Source::BuiltIn.label()),
         (Source::Installed, _) => format!("{what} · {rest}"),
         (offered, Some(installed)) => {
             format!(
