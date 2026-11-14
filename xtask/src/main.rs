@@ -486,14 +486,19 @@ fn execute(options: &Options) -> Result<(), String> {
                 esp::copy(&saved_vars, &firmware.vars)?;
             }
             let monitor = qemu::free_port()?;
+            // A store model needs the memory a kai-model disk would.
+            let model_mib = disk
+                .iter()
+                .chain(&store)
+                .map(disk::ModelDisk::memory_mib)
+                .max();
             let sizing = options::Sizing {
-                // A store model needs the memory a kai-model disk would.
                 mem_mib: options
                     .sizing
                     .mem_mib
                     .max(Some(cases::CASE_MEMORY_MIB))
                     .max(case.memory_mib)
-                    .max(store.as_ref().map(disk::ModelDisk::memory_mib)),
+                    .max(model_mib.map(cases::with_case_room)),
                 ..options.sizing
             };
             let mut args = qemu::args(&firmware, accel, true, disk.as_ref(), sizing);

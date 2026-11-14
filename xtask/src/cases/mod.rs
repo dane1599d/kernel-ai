@@ -197,6 +197,15 @@ pub const ROOM_WARNING: &str = "of the admission budget left for the plan";
 /// slightly bigger image refused the shell (#877). 1024 MiB leaves it hundreds.
 pub const CASE_MEMORY_MIB: u64 = 1024;
 
+/// Guest memory for a case that boots a model needing `model_mib`
+/// (`kabi::model::guest_mib`): the model's share on [`CASE_MEMORY_MIB`] rather
+/// than on the 512 MiB base. llm's quota is sized for the model and the base
+/// is left for the other services, so on 512 MiB a whole plan beside a model
+/// had about 1 MiB of room (`ui-models-use`, run 43627865986).
+pub const fn with_case_room(model_mib: u64) -> u64 {
+    model_mib - crate::disk::BASE_MEMORY_MIB + CASE_MEMORY_MIB
+}
+
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
     TestCase {
         name,
@@ -387,5 +396,17 @@ mod tests {
         // `update-window` passes three and `update-online-resume` one: the walk
         // reaches both, so a rename of the prefix cannot leave it checking nothing.
         assert!(passed >= 4, "only {passed} updated.<key>= words checked");
+    }
+
+    /// A model case keeps the model's share and gets the case floor, not the
+    /// 512 MiB base, beneath it: 512 MiB more than the model formula.
+    #[test]
+    fn a_model_case_gets_the_case_floor_under_its_model() {
+        let model = crate::disk::memory_mib_for(crate::disk::GGUF_LEN as u64);
+        assert_eq!(
+            with_case_room(model),
+            model + CASE_MEMORY_MIB - crate::disk::BASE_MEMORY_MIB
+        );
+        assert!(with_case_room(model) >= model + 512);
     }
 }
