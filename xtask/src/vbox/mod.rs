@@ -134,7 +134,9 @@ pub fn main(args: &[String]) -> Result<(), String> {
     let disk = model.as_deref().map(disk::ModelDisk::open).transpose()?;
     // A catalog model's SHA-256 on the command line (`model_sha256=`), as
     // `latency` gives QEMU: llm keys its KV files by it, where it would hash a
-    // sample of the file otherwise (founder test 2).
+    // sample of the file otherwise (founder test 2). `models::stored` found
+    // the file at its entry's pinned length; `cargo xtask model check` hashes
+    // it in full.
     let disk = match (disk, catalog_id(&args.model)?) {
         (Some(disk), Some(id)) => Some(disk.with_sha256(models::sha256(&id)?)),
         (disk, _) => disk,

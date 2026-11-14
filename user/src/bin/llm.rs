@@ -150,6 +150,11 @@ fn main() -> i32 {
     let args = args();
     let server = remote::Server::from_args(&args);
     let restart = arg(&args, "restart").unwrap_or("0");
+    // A test boot's `cold_ms=N` (the `desk-warming` case): `warm` says no for N
+    // ms after llm starts, as a local model filling its slots would.
+    let cold_until = arg(&args, "cold_ms")
+        .and_then(|ms| ms.parse::<u64>().ok())
+        .map(|ms| sys::time_ns().saturating_add(ms.saturating_mul(1_000_000)));
     match &server {
         Some(server) => println!(
             "up (restart {restart}); server {}, model {}",
@@ -293,6 +298,9 @@ fn main() -> i32 {
             }
             Some("app-stop") => jobs.stop(rest),
             // `warm`: whether both slots hold their prompts (S02-2 waits for it).
+            Some("warm") if cold_until.is_some_and(|until| sys::time_ns() < until) => {
+                String::from("ok no")
+            }
             Some("warm") => match local_warmable(&backends, stale, cold) {
                 true => String::from("ok no"),
                 false => String::from("ok yes"),

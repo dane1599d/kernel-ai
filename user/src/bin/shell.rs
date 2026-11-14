@@ -199,7 +199,7 @@ fn give_appearance(system: &System) {
 /// code's result line, or why not, never the model's words. The panel shows
 /// thinking from the Enter until then. A line that asks first is asked in the
 /// terminal for now; the panel says so.
-fn take_panel(shell: &mut Shell) {
+fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) {
     use deskcore::panel::{Request, State};
     use deskcore::panel_wire;
     let Some(route) = desktop() else {
@@ -211,10 +211,14 @@ fn take_panel(shell: &mut Shell) {
     let shown = match panel_wire::parse_take(&answer) {
         Some(Some(Request::Line(line))) => {
             ui::begin();
-            match shell.eval_panel(&line) {
+            // "Kai is getting ready" for a line that waits on llm's warm-up.
+            warmth.before_request();
+            let shown = match shell.eval_panel(&line) {
                 PanelResult::Done(line) => State::Done { line },
                 PanelResult::Refused(reason) => State::Refused { reason },
-            }
+            };
+            warmth.after_request();
+            shown
         }
         // Esc while Kai builds an app in the background stops the build.
         Some(Some(Request::Stop)) => match shell.stop_app_build() {
@@ -763,6 +767,7 @@ impl Host for System {
             Lang::C => "c",
             Lang::Rhai | Lang::App => "rhai",
         };
+        warmth::lang(word == "c");
         if let Err(error) = app_job(&alloc::format!("warm-lang {word}")) {
             println!("warm-lang {word}: {error:?}");
         }
@@ -802,6 +807,8 @@ impl Host for System {
     }
 
     fn forget(&self) {
+        // `new` empties llm's conversation, so it fills its slots again.
+        warmth::cooled();
         let mut reply = vec![0u8; 256];
         let _ = sys::call_route(llm(), b"new", &mut reply, MEMORY_CALL_MS);
     }
@@ -1200,7 +1207,7 @@ fn main() -> i32 {
         // the panel's line and the apps' effects. A post to the event box wakes
         // the wait at once, so a click's effect does not wait for a poll.
         take_events(&mut shell, &mut events);
-        take_panel(&mut shell);
+        take_panel(&mut shell, &mut warmth);
         take_effects(&mut shell);
         // Files the AI, the Terminal, an app, an editor save or an undo changed:
         // the apps that list them are told, along with the results given next.
@@ -1222,7 +1229,7 @@ fn main() -> i32 {
         );
         give_app_build(&mut shell);
         // "Kai is getting ready" on the panel until llm's prompt slots are warm.
-        warmth.report();
+        warmth.peek();
         // An install card waits: the kernel's terminal takes it when it may.
         // Said again each pass, so a desktop that shows later still gets it.
         if shell.card_waiting() {
