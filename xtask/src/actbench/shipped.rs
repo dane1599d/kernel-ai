@@ -128,6 +128,33 @@ fn history(task: &Task) -> History {
     history
 }
 
+/// `task` answered as llm answers `act` on the shipped pack: whether it
+/// passed, and the call (or why none came) as text.
+fn answer(loaded: &Loaded, grammar: &local_act::Grammar, task: &Task) -> (bool, String) {
+    let request = ActRequest {
+        line: task.line.into(),
+        state: task.state.into(),
+        timeout_ms: TIMEOUT_MS,
+        read: None,
+        apps: String::new(),
+    };
+    let call = local_act::routed(
+        &mut loaded.engine.borrow_mut(),
+        grammar,
+        &request,
+        &history(task),
+        Slots::ONE,
+        |_| true,
+        |_| Next::Continue,
+    );
+    let value = call
+        .as_ref()
+        .ok()
+        .and_then(|call| serde_json::from_str::<Value>(&call.text()).ok());
+    let ok = value.as_ref().is_some_and(|v| passed(task, v));
+    (ok, call.as_ref().map_or_else(|e| e.describe(), Call::text))
+}
+
 /// The arm at `seed`, reported: always "passes", and its Markdown rows.
 pub fn run(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, String), String> {
     let grammar = super::apps::grammar()?;
@@ -141,28 +168,7 @@ pub fn run(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, Strin
             records.push(json!({"cat": task.cat.name(), "line": task.line, "skipped": true}));
             continue;
         }
-        let request = ActRequest {
-            line: task.line.into(),
-            state: task.state.into(),
-            timeout_ms: TIMEOUT_MS,
-            read: None,
-            apps: String::new(),
-        };
-        let call = local_act::routed(
-            &mut loaded.engine.borrow_mut(),
-            &grammar,
-            &request,
-            &history(task),
-            Slots::ONE,
-            |_| true,
-            |_| Next::Continue,
-        );
-        let value = call
-            .as_ref()
-            .ok()
-            .and_then(|call| serde_json::from_str::<Value>(&call.text()).ok());
-        let ok = value.as_ref().is_some_and(|v| passed(task, v));
-        let got = call.as_ref().map_or_else(|e| e.describe(), Call::text);
+        let (ok, got) = answer(loaded, &grammar, task);
         tally[cat].0 += usize::from(ok);
         tally[cat].1 += 1;
         if !ok {
@@ -184,6 +190,21 @@ pub fn run(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, Strin
             cat.name()
         ));
     }
+    // The founder's walkthrough, on a row of its own (report only).
+    let mut founder = 0;
+    for task in tasks::FOUNDER {
+        let (ok, got) = answer(loaded, &grammar, task);
+        founder += usize::from(ok);
+        if !ok {
+            println!("  FAIL founder    {} -> {got}", task.line);
+        }
+        records.push(json!({"cat": "founder", "line": task.line, "got": got, "passed": ok}));
+    }
+    println!("  shipped founder    {founder}/{}", tasks::FOUNDER.len());
+    rows.push_str(&format!(
+        "| founder (its own set) | {founder}/{} | 0 |\n",
+        tasks::FOUNDER.len()
+    ));
     let (passed, answered, skipped) = tally
         .iter()
         .fold((0, 0, 0), |(p, a, s), t| (p + t.0, a + t.1, s + t.2));
@@ -261,5 +282,17 @@ mod tests {
         assert!(passed(task, &call("process_stop", "build-4")));
         assert!(!passed(task, &call("service_stop", "build-3")));
         assert!(!passed(task, &call("service_restart", "build-4")));
+    }
+
+    #[test]
+    fn every_founder_line_names_rows_the_os_or_its_apps_have() {
+        let apps = super::super::apps::shipped().unwrap();
+        for task in tasks::FOUNDER {
+            for name in task.expect.iter().flat_map(named) {
+                let ok =
+                    os_row(&name) || apps.iter().any(|g| g.rows.iter().any(|r| r.name == name));
+                assert!(ok, "{}: {name}", task.line);
+            }
+        }
     }
 }

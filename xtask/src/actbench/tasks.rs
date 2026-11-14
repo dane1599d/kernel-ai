@@ -110,6 +110,29 @@ const fn turn(line: &'static str, call: &'static str, result: &'static str) -> T
 use Cat::*;
 use Expect::{Call, Clarify, Name, Say, Script, Uses};
 
+/// The founder's walkthrough (founder test 2, test 6): lines a first-time user
+/// typed, report only for now, gated once stable. "what time is it", "what
+/// can you do with the cpus" and a long line after a question are answered by
+/// the shell's code before the model, so they are not here.
+pub const FOUNDER: &[Task] = &[
+    t(Single, "open terminal", &[Name("ui_open")]),
+    t(Single, "open the file manager", &[Name("ui_open")]),
+    t(
+        Single,
+        "make a note called ideas and type hello dane into it",
+        &[Name("notes_add")],
+    ),
+    t(Single, "add a note saying hello dane", &[Name("notes_add")]),
+    t(
+        Single,
+        "open ideas.txt in the editor",
+        &[Name("ui_open"), Name("editor_open_file")],
+    ),
+    t(Single, "dark mode please", &[Name("appearance_set")]),
+    t(Single, "remove the file ideas", &[Name("fs_trash")]),
+    t(Ambiguous, "sssssshd", &[Clarify]),
+];
+
 pub const TASKS: &[Task] = &[
     // 60 single plain requests.
     t(Single, "how many cpus are there", &[Uses("cpus")]),
