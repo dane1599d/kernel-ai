@@ -350,6 +350,17 @@ const ACTS: &[(&str, &str)] = &[
         NOTES_LOOK,
         r#"{"name":"ui_view","arguments":{"window":"notes"}}"#,
     ),
+    // `app-notes`: Notes' list, append and remove (the ids and the text are in the
+    // line, as a row's target and payload must be).
+    (
+        "add eggs to note 1",
+        r#"{"name":"notes_append","arguments":{"id":1,"text":"eggs"}}"#,
+    ),
+    ("list my notes", r#"{"name":"notes_list","arguments":{}}"#),
+    (
+        "delete note 1",
+        r#"{"name":"notes_remove","arguments":{"id":1}}"#,
+    ),
     // `app-files` (P4 task 5): the Files window shows the folder, and answers a
     // select only for a name it lists. The changes are the OS's `fs_*` rows above.
     (

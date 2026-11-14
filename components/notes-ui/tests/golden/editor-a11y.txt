@@ -9,4 +9,5 @@
 [1002] label "Call the plumber about the kitchen sink …"
 [6] group ""
 [7] multiline_text "Note" = "Groceries\nmilk and eggs"
+[9] button "Delete note"
 [8] label "3 notes, 20 words"

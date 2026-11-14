@@ -30,6 +30,27 @@ interface actions {
     /// kai: arg id min=1 max=1000000 role=target from-request
     get: func(id: u32) -> option<string>;
 
+    /// List every note by its id and first line, the first 100.
+    /// kai: read-only=yes destructive=no idempotent=yes open-world=no inverse=none cues=list,show,notes
+    %list: func() -> list<string>;
+
+    /// Remove a note by its id.
+    /// kai: read-only=no destructive=yes idempotent=no open-world=no inverse=snapshot cues=remove,delete,erase
+    /// kai: arg id min=1 max=1000000 role=target from-request
+    remove: func(id: u32) -> result<string, string>;
+
+    /// Add text to the end of a note, on a new line.
+    /// kai: read-only=no destructive=no idempotent=no open-world=no inverse=snapshot cues=append,add
+    /// kai: arg id min=1 max=1000000 role=target from-request
+    /// kai: arg text max=2000 role=payload from-request
+    append: func(id: u32, text: string) -> result<string, string>;
+
+    /// Replace the whole text of a note.
+    /// kai: read-only=no destructive=yes idempotent=yes open-world=no inverse=snapshot cues=edit,change,replace
+    /// kai: arg id min=1 max=1000000 role=target from-request
+    /// kai: arg text max=2000 role=payload from-request
+    edit: func(id: u32, text: string) -> result<string, string>;
+
     /// Which version of notes is running.
     /// kai: read-only=yes destructive=no idempotent=yes open-world=no inverse=none
     about: func() -> string;

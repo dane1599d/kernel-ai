@@ -13,7 +13,7 @@ extern crate alloc;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use comp_notes::{Actions, Notes, SCHEMA, state};
+use comp_notes::{Actions, Notes, state};
 use uikit::style::{Tone, TypeStyle};
 use uikit::widget::{Axis, Insets, Layout, NodeId, ROOT, Size, TextField, UiEvent, Value, Widget};
 
@@ -25,6 +25,8 @@ pub const LIST: NodeId = 5;
 pub const MAIN: NodeId = 6;
 pub const EDITOR: NodeId = 7;
 pub const STATUS: NodeId = 8;
+/// Removes the note in the editor; there only while one is open.
+pub const DELETE: NodeId = 9;
 /// List items are `ITEM + position` among the shown notes.
 pub const ITEM: NodeId = 1000;
 /// Longest a list item's label gets, in characters.
@@ -79,16 +81,7 @@ pub fn shown<'a>(notes: &'a Notes, view: &View) -> Vec<&'a state::Note> {
 
 /// A list item's label: the note's first line, cut to [`ITEM_CHARS`].
 pub fn title(text: &str) -> String {
-    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-    let line = line.trim();
-    if line.is_empty() {
-        return String::from("(empty)");
-    }
-    let mut out: String = line.chars().take(ITEM_CHARS).collect();
-    if line.chars().count() > ITEM_CHARS {
-        out.push('…');
-    }
-    out
+    comp_notes::first_line(text, ITEM_CHARS)
 }
 
 /// `n` and `noun`, plural but for one: "1 note", "2 notes".
@@ -193,6 +186,7 @@ pub fn build(notes: &Notes, view: &View) -> Vec<Entry> {
     let note = view
         .selected
         .and_then(|id| notes.state.notes.iter().find(|n| n.id == id));
+    let open = note.is_some();
     tree.push(match note {
         Some(n) => entry(
             EDITOR,
@@ -212,6 +206,17 @@ pub fn build(notes: &Notes, view: &View) -> Vec<Entry> {
             label(String::from("No note open"), TypeStyle::Body, Tone::Dim),
         ),
     });
+    if open {
+        tree.push(entry(
+            DELETE,
+            MAIN,
+            wide(),
+            Widget::Button {
+                text: String::from("Delete note"),
+                action: None,
+            },
+        ));
+    }
     let tally = notes.count();
     let status = match (shown.len(), view.search.trim().is_empty()) {
         (_, true) => format!(
@@ -287,23 +292,7 @@ pub fn diff(old: &[Entry], new: &[Entry]) -> Vec<Change> {
 /// Replaces a note's text from the editor; false if it is gone or the state
 /// has no room for the new text.
 pub fn set_text(notes: &mut Notes, id: u32, text: &str) -> bool {
-    let old = match notes.state.notes.iter().find(|n| n.id == id) {
-        Some(n) => n.text.len(),
-        None => return false,
-    };
-    let grow = text.len().saturating_sub(old);
-    let size = compsdk::state::encode(SCHEMA, &notes.state).len() + grow;
-    if grow > 0 && size > compsdk::MAX_STATE {
-        return false;
-    }
-    match notes.state.notes.iter_mut().find(|n| n.id == id) {
-        Some(n) => {
-            n.text = String::from(text);
-            n.words = state::words(text);
-            true
-        }
-        None => false,
-    }
+    notes.replace(id, text).is_ok()
 }
 
 /// Handles one event from the window; whether the tree may have changed.
@@ -316,6 +305,13 @@ pub fn on_ui(notes: &mut Notes, view: &mut View, e: &UiEvent) -> bool {
                 true
             }
             Err(_) => false,
+        },
+        UiEvent::Pressed(DELETE) => match view.selected {
+            Some(id) if notes.remove(id).is_ok() => {
+                view.selected = None;
+                true
+            }
+            _ => false,
         },
         UiEvent::Changed(SEARCH, Value::Text(t)) => {
             view.search.clone_from(t);

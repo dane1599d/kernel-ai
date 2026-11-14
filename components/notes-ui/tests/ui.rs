@@ -3,7 +3,7 @@
 //! to state. Set `UIKIT_BLESS=1` to rewrite the goldens, and review the diff.
 
 use comp_notes::{Actions, Notes};
-use comp_notes_ui::{self as ui, Change, EDITOR, Entry, LIST, NEW, SEARCH, View};
+use comp_notes_ui::{self as ui, Change, DELETE, EDITOR, Entry, LIST, NEW, SEARCH, View};
 use compsdk::Component;
 use std::path::PathBuf;
 use uikit::layout::FixedAdvance as M;
@@ -239,4 +239,34 @@ fn the_editor_refuses_text_past_the_state() {
     let huge = "y".repeat(compsdk::MAX_STATE);
     assert!(!ui::set_text(&mut notes, id, &huge));
     assert!(!ui::set_text(&mut notes, 99, "z"));
+}
+
+#[test]
+fn delete_removes_the_open_note_and_is_there_only_while_one_is_open() {
+    let mut notes = some_notes();
+    let mut view = View::default();
+    let has = |notes: &Notes, view: &View, id| ui::build(notes, view).iter().any(|e| e.id == id);
+    // No note open: no button, and a press does nothing.
+    assert!(!has(&notes, &view, DELETE));
+    assert!(!ui::on_ui(&mut notes, &mut view, &UiEvent::Pressed(DELETE)));
+    assert_eq!(notes.count().notes, 3);
+    // The second note open.
+    assert!(ui::on_ui(
+        &mut notes,
+        &mut view,
+        &UiEvent::Changed(LIST, Value::Index(1))
+    ));
+    assert!(has(&notes, &view, DELETE));
+    assert!(ui::on_ui(&mut notes, &mut view, &UiEvent::Pressed(DELETE)));
+    assert_eq!(notes.count().notes, 2);
+    assert_eq!(notes.get(2), None);
+    assert!(notes.get(3).is_some() && notes.get(1).is_some());
+    // The window is back to no note open, and the button went with it.
+    assert_eq!(view.selected, None);
+    assert!(!has(&notes, &view, DELETE));
+    assert!(!ui::on_ui(&mut notes, &mut view, &UiEvent::Pressed(DELETE)));
+    // A note that is gone from under the window (an action removed it) leaves
+    // the press with nothing to do, not a failure.
+    view.selected = Some(2);
+    assert!(!ui::on_ui(&mut notes, &mut view, &UiEvent::Pressed(DELETE)));
 }

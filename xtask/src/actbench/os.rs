@@ -81,6 +81,10 @@ pub const APP_TASKS: &[(&str, Want)] = &[
     ("find my notes that mention milk", Row("notes_find", "milk")),
     ("do I have any notes about eggs?", Row("notes_find", "eggs")),
     ("which version of notes is running?", Row("notes_about", "")),
+    ("show me all my notes", Row("notes_list", "")),
+    ("add eggs to note 1", Row("notes_append", "eggs")),
+    ("delete note 2", Row("notes_remove", "")),
+    ("change note 3 to buy bread", Row("notes_edit", "buy bread")),
     // The OS's rows still answer their own requests with the apps shown.
     ("show me what is in notes.txt", Row("fs_read", "notes.txt")),
     ("remove the notes package", Row("pkg_remove", "notes")),
