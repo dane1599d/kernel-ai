@@ -8,7 +8,8 @@
 //!   `err not the models app`;
 //! - from it, `models results` → its answers;
 //! - from the shell, `models take` → `none`, or `app models-window\n<lines>`;
-//! - from the shell, `models done models-window\n<answers>` → `ok`.
+//! - from the shell, `models done models-window\n<answers>` → `ok`;
+//! - from the shell, `models back\n<lines>` → `ok`: requests it puts back.
 //!
 //! The window is `desktop`'s own record of the caller, never anything in a
 //! request, and the shell checks the app and `user` again before it runs Kai's
@@ -27,6 +28,7 @@ pub const MODELS: Words = Words {
     results: "models results",
     take: "models take",
     done: "models done ",
+    back: "models back\n",
     app: MODELS_APP,
     refused: "not the models app",
 };
