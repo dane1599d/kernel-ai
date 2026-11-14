@@ -79,6 +79,24 @@ pub struct Queue {
 }
 
 impl Queue {
+    /// Takes back `app`'s lines a person queued that the shell has not taken
+    /// yet (a Stop before its line ran): each one's ticket, oldest first. Lines
+    /// not from a person stay.
+    pub fn withdraw_users(&mut self, app: &str) -> Vec<u32> {
+        let Some((_, waiting)) = self.effects.iter_mut().find(|(a, _)| a == app) else {
+            return Vec::new();
+        };
+        let mut tickets = Vec::new();
+        waiting.retain(|(user, line)| match (*user, ticket_of(line)) {
+            (true, Some(ticket)) => {
+                tickets.push(ticket);
+                false
+            }
+            _ => true,
+        });
+        tickets
+    }
+
     /// Queues `app`'s effect lines, not from a person's input.
     pub fn put(&mut self, app: &str, lines: &str) -> usize {
         self.put_as(app, lines, false)
@@ -459,6 +477,24 @@ fn one_line(text: &str, cap: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #892's review: a Stop before the shell took the person's line takes it
+    /// back; the app's other lines, and other apps', stay.
+    #[test]
+    fn a_persons_queued_lines_are_withdrawn_and_the_rest_stay() {
+        let mut queue = Queue::default();
+        queue.put("terminal-window", &line(1));
+        queue.put_as("terminal-window", &line(2), true);
+        queue.put_as("files", &line(3), true);
+        assert_eq!(queue.withdraw_users("terminal-window"), [2]);
+        assert!(queue.withdraw_users("terminal-window").is_empty());
+        assert!(queue.withdraw_users("monitor").is_empty());
+        assert_eq!(
+            queue.take(4096),
+            Some(taken("terminal-window", false, &[line(1)]))
+        );
+        assert_eq!(queue.take(4096), Some(taken("files", true, &[line(3)])));
+    }
 
     /// The Terminal's Stop is taken out of its lines; nothing else is.
     #[test]

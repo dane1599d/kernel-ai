@@ -788,8 +788,28 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
         let (stops, rest) = effects::split_stops(lines);
         let lines = match (caller == effects::STOPS_FROM && user, stops.is_empty()) {
             (true, false) => {
+                // A line still queued is taken back; one running is
+                // interrupted.
+                let queued = state.effects.withdraw_users(&caller);
                 let line = deskcore::running::Line::Terminal;
-                let stopped = interrupt_shell(state, line, "the Terminal's Stop");
+                let stopped = match queued.is_empty() {
+                    true => interrupt_shell(state, line, "the Terminal's Stop"),
+                    false => {
+                        println!("desktop: the Terminal's Stop took back its queued line");
+                        Ok(String::from("stopped"))
+                    }
+                };
+                // The line's own answer, as the shell's wire says it: the
+                // Terminal shows "stopped" and takes a new line.
+                for ticket in queued {
+                    state.effects.finish(
+                        &caller,
+                        effects::Done {
+                            ticket,
+                            outcome: Ok(String::from("ok stopped")),
+                        },
+                    );
+                }
                 for ticket in stops {
                     state.effects.finish(
                         &caller,
