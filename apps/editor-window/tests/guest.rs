@@ -6,7 +6,7 @@
 //! --profile component` has not run (CI runs it first).
 
 use appabi::{Func, Ty, Val};
-use comp_editor_ui::CODE;
+use comp_editor_ui::{CANCEL, CODE, DISCARD, SAVE};
 use comp_editor_window::keys::CTRL;
 use livecore::Instance;
 use livecore::txn::{Inputs, Storage};
@@ -397,4 +397,75 @@ fn a_new_instance_comes_back_to_an_empty_editor_from_a_checkpoint() {
     // A state it cannot read and another schema are refused, not guessed at.
     assert_eq!(h.import(b"junk", 1), Ok(2));
     assert_eq!(h.import(&saved, 9), Ok(1));
+}
+
+/// The window's last frame, whatever else was sent after it.
+fn last_frame(g: &mut CoreInstance) -> uikit::Frame {
+    g.take_ui()
+        .into_iter()
+        .rev()
+        .find_map(|u| match u {
+            Update::Frame { frame, .. } => Some(frame),
+            _ => None,
+        })
+        .expect("a frame")
+}
+
+#[test]
+fn a_window_with_text_not_kept_says_so_and_asks_before_it_closes() {
+    let Some(wasm) = wasm() else { return };
+    let mut g = start(&wasm);
+    let w = opened(&mut g);
+    // Nothing typed: the frame does not say unsaved, and a close is a close.
+    call(&mut g, |g| g.ui_events(w, &[key("down", "", 0)])).unwrap();
+    chain(&mut g);
+    assert!(!last_frame(&mut g).unsaved);
+
+    // Text typed into a source that is not built: it says so, to the host.
+    call(&mut g, |g| g.ui_events(w, &[key("x", "x", 0)])).unwrap();
+    chain(&mut g);
+    let f = last_frame(&mut g);
+    assert!(f.unsaved, "{}", text_of(&f));
+
+    // The close asks, with Discard and Cancel (a source has nothing to save).
+    call(&mut g, |g| g.ui_events(w, &[UiEvent::CloseRequested])).unwrap();
+    let updates = g.take_ui();
+    assert!(
+        !updates.iter().any(|u| matches!(u, Update::Closed(_))),
+        "the window closed with text not kept"
+    );
+    let asked = updates
+        .into_iter()
+        .rev()
+        .find_map(|u| match u {
+            Update::Frame { frame, .. } => Some(frame),
+            _ => None,
+        })
+        .expect("a frame");
+    let text = text_of(&asked);
+    assert!(
+        text.contains("Discard") && text.contains("Cancel"),
+        "{text}"
+    );
+    assert!(!text.contains("Save"), "{text}");
+    assert!(asked.unsaved);
+
+    // Cancel goes back to editing; Discard closes.
+    call(&mut g, |g| g.ui_events(w, &[UiEvent::Pressed(CANCEL)])).unwrap();
+    let back = last_frame(&mut g);
+    assert!(!text_of(&back).contains("Discard"), "{}", text_of(&back));
+    call(&mut g, |g| g.ui_events(w, &[UiEvent::CloseRequested])).unwrap();
+    g.take_ui();
+    call(&mut g, |g| g.ui_events(w, &[UiEvent::Pressed(SAVE)])).unwrap();
+    assert!(
+        !g.take_ui().iter().any(|u| matches!(u, Update::Closed(_))),
+        "there is nothing to save, so Save does nothing"
+    );
+    call(&mut g, |g| g.ui_events(w, &[UiEvent::Pressed(DISCARD)])).unwrap();
+    assert!(
+        g.take_ui()
+            .iter()
+            .any(|u| matches!(u, Update::Closed(id) if *id == w)),
+        "Discard closes the window"
+    );
 }

@@ -132,6 +132,13 @@ impl Ui {
             .is_some_and(crate::kai_settings::Forward::busy)
     }
 
+    /// Whether one of its windows holds changes not yet kept (`set-unsaved`): a
+    /// nap would take them with the app's state, so the app does not nap while
+    /// one does.
+    pub fn unsaved(&self) -> bool {
+        self.frames.iter().any(|(_, frame)| frame.unsaved)
+    }
+
     pub fn has_windows(&self) -> bool {
         !self.frames.is_empty()
     }

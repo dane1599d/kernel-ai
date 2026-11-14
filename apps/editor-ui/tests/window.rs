@@ -2,7 +2,10 @@
 //! one `uikit` takes, the code view carries the rows, the gutter, the links and
 //! the caret, and what the screen holds beyond the limits is cut.
 
-use comp_editor_ui::{CODE, Change, HINT, SIZE, STATUS, TITLE, build, diff, status};
+use comp_editor_ui::{
+    CANCEL, CHOICES, CODE, Change, DISCARD, HINT, SAVE, SIZE, STATUS, TITLE, build, build_closing,
+    closing_status, diff, status,
+};
 use editcore::screen::{Row, View};
 use uikit::layout::FixedAdvance;
 use uikit::style::Tone;
@@ -143,4 +146,42 @@ fn a_new_line_of_text_sends_only_the_code_view_and_the_status() {
         .collect();
     assert_eq!(ids, [CODE, STATUS]);
     assert!(diff(&before, &before).is_empty());
+}
+
+#[test]
+fn the_closing_question_adds_a_row_of_buttons_and_save_only_where_there_is_a_file() {
+    let with = build_closing(&view(), true);
+    let ids: Vec<u32> = with.iter().map(|e| e.id).collect();
+    assert_eq!(ids, [TITLE, CODE, STATUS, CHOICES, SAVE, DISCARD, CANCEL]);
+    let frame = put(&with).commit(&FixedAdvance);
+    let name = |id| frame.a11y.iter().find(|n| n.id == id).unwrap().name.clone();
+    assert_eq!(name(STATUS), closing_status(true));
+    assert_eq!(
+        [name(SAVE), name(DISCARD), name(CANCEL)],
+        ["Save", "Discard", "Cancel"]
+    );
+    // A component's source has nothing to save: the keys and the buttons say so.
+    let without = build_closing(&view(), false);
+    let ids: Vec<u32> = without.iter().map(|e| e.id).collect();
+    assert_eq!(ids, [TITLE, CODE, STATUS, CHOICES, DISCARD, CANCEL]);
+    assert!(!closing_status(false).contains("S saves"));
+    put(&without);
+
+    // The question comes as the status and one row, and goes as that row alone
+    // (its buttons go with it), so the code view is not sent again.
+    let plain = build(&view());
+    let asked: Vec<u32> = diff(&plain, &with)
+        .iter()
+        .map(|c| match c {
+            Change::Put(e) => e.id,
+            Change::Remove(id) => *id,
+        })
+        .collect();
+    assert_eq!(asked, [STATUS, CHOICES, SAVE, DISCARD, CANCEL]);
+    let answered = diff(&with, &plain);
+    assert!(
+        matches!(answered[0], Change::Remove(CHOICES)),
+        "{answered:?}"
+    );
+    assert_eq!(answered.len(), 2, "{answered:?}");
 }

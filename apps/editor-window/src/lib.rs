@@ -35,7 +35,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use comp_editor_ui as ui;
-use comp_ui_bind::{OnUi, Shown, Sink};
+use comp_ui_bind::{Shown, Sink};
 use compsdk::{Component, ImportError};
 use editcore::screen::{Input, Key, Screen};
 use files::Files;
@@ -51,12 +51,30 @@ const MAX_PENDING: usize = 8;
 /// What an editor with nothing open says, so a person who opens it knows what to do.
 const EMPTY: &str = "No file is open: Ctrl-O opens one by its path.";
 
-/// What the checkpoint keeps. Nothing yet: the session lives in the edit
-/// service, and a draft in storage is a later step.
+/// What the checkpoint keeps: the path of the file of the person's own that is
+/// open, so an editor that napped or came back from a swap opens it again from
+/// the disk. The session lives in the edit service, and a draft in storage is a
+/// later step: text not saved is not in it, which is why a window with any holds
+/// a nap lease (comphost) and says so (`set-unsaved`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
 pub struct V1 {
     #[n(0)]
     pub reserved: u32,
+    /// Absent in a checkpoint an earlier version saved.
+    #[n(1)]
+    pub path: Option<String>,
+}
+
+/// Where the window is in being closed with changes not saved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Closing {
+    /// Not being closed.
+    No,
+    /// Asked to close with changes not saved: the window says so and waits for
+    /// Save, Discard or Cancel.
+    Asking,
+    /// Save was chosen: the window closes when the file is written.
+    Saving,
 }
 
 /// What the editor needs of the OS besides drawing: `kai:edit/edit.send`, the
@@ -85,6 +103,7 @@ pub struct EditorWindow {
     files: Files,
     /// The screen's rows and columns as the code view last said, for a new screen.
     grid: (usize, usize),
+    closing: Closing,
 }
 
 impl EditorWindow {
@@ -97,6 +116,7 @@ impl EditorWindow {
             tickets: Vec::new(),
             files: Files::default(),
             grid: START,
+            closing: Closing::No,
         }
     }
 
@@ -109,9 +129,17 @@ impl EditorWindow {
         &self.screen
     }
 
-    /// Opens the window if it is closed and sends what changed.
+    /// Opens the window if it is closed and sends what changed: the tree, with the
+    /// question when the window waits to be told whether to close, and whether
+    /// the window holds changes not saved.
     pub fn present(&mut self, host: &mut dyn Host) -> Result<(), UiError> {
-        let tree = ui::build(&self.screen.view());
+        let view = self.screen.view();
+        let tree = match self.closing {
+            Closing::Asking => ui::build_closing(&view, self.files.can_save()),
+            _ => ui::build(&view),
+        };
+        let unsaved = self.files.unsaved(&self.screen);
+        self.shown.mark_unsaved(unsaved);
         self.shown.present(host, ui::WINDOW_TITLE, ui::SIZE, tree)
     }
 
@@ -147,6 +175,13 @@ impl EditorWindow {
     ) -> Result<(), UiError> {
         if self.files.owns(ticket) {
             self.files.reply(&mut self.screen, self.grid, outcome);
+            // Saved, so closed as asked; not saved, the window stays and says why.
+            if self.closing == Closing::Saving {
+                self.closing = Closing::No;
+                if !self.files.unsaved(&self.screen) {
+                    return self.close_window(host);
+                }
+            }
             return self.settle(host);
         }
         let Some(at) = self.tickets.iter().position(|(t, _)| *t == ticket) else {
@@ -162,6 +197,21 @@ impl EditorWindow {
 
     /// A key the code view had focus for.
     pub fn on_key(
+        &mut self,
+        host: &mut dyn Host,
+        name: &str,
+        text: &str,
+        mods: u8,
+    ) -> Result<(), UiError> {
+        if self.closing != Closing::No {
+            return self.closing_key(host, name, text, mods);
+        }
+        self.typed_key(host, name, text, mods)
+    }
+
+    /// A key for the screen: its input, what the screen asked for and what the
+    /// file door is asked to do about it.
+    fn typed_key(
         &mut self,
         host: &mut dyn Host,
         name: &str,
@@ -271,6 +321,102 @@ impl EditorWindow {
         Ok(format!("Opening {path}."))
     }
 
+    /// A key while the window waits to be told whether to close with changes not
+    /// saved: S saves, D discards, Esc keeps editing; the rest is not typed.
+    fn closing_key(
+        &mut self,
+        host: &mut dyn Host,
+        name: &str,
+        text: &str,
+        mods: u8,
+    ) -> Result<(), UiError> {
+        let plain = mods & (keys::CTRL | keys::ALT | keys::SUPER) == 0;
+        match (name, text.to_ascii_lowercase().as_str()) {
+            _ if self.closing == Closing::Saving => Ok(()),
+            ("esc", _) => self.cancel_close(host),
+            (_, "s") if plain && self.files.can_save() => self.save_and_close(host),
+            (_, "d") if plain => self.discard_and_close(host),
+            _ => Ok(()),
+        }
+    }
+
+    /// The window is asked to close: at once when nothing is unsaved, and when
+    /// something is, after the person says what to do with it.
+    fn close_requested(&mut self, host: &mut dyn Host) -> Result<(), UiError> {
+        if !self.files.unsaved(&self.screen) {
+            return self.close_window(host);
+        }
+        self.closing = Closing::Asking;
+        self.settle(host)
+    }
+
+    /// Closes the window, which the person or the question has finished with.
+    fn close_window(&mut self, host: &mut dyn Host) -> Result<(), UiError> {
+        self.closing = Closing::No;
+        match self.shown.id() {
+            Some(id) => self.shown.closed(host, id).map(|_| ()),
+            None => Ok(()),
+        }
+    }
+
+    /// Save: writes the file and closes when it is written.
+    fn save_and_close(&mut self, host: &mut dyn Host) -> Result<(), UiError> {
+        self.closing = Closing::Saving;
+        // Ctrl-S as typed: the screen lets go of the line it holds first.
+        let asked = self.typed_key(host, "s", "", keys::CTRL);
+        if !self.files.busy() {
+            // The save was refused and the status says why: the window stays.
+            self.closing = Closing::No;
+            return asked.and(self.settle(host));
+        }
+        asked
+    }
+
+    /// Discard: the changes go with the window, and a window opened again is an
+    /// editor with no file open.
+    fn discard_and_close(&mut self, host: &mut dyn Host) -> Result<(), UiError> {
+        self.files = Files::default();
+        self.tickets.clear();
+        self.screen = Screen::new(self.grid.0, self.grid.1);
+        self.screen.note(EMPTY, false);
+        self.close_window(host)
+    }
+
+    /// Cancel: back to editing.
+    fn cancel_close(&mut self, host: &mut dyn Host) -> Result<(), UiError> {
+        self.closing = Closing::No;
+        self.settle(host)
+    }
+
+    /// An event from the window: its closing, and the three answers to the
+    /// question a close with changes not saved asks.
+    pub fn ui_event(
+        &mut self,
+        host: &mut dyn Host,
+        window: u32,
+        event: &UiEvent,
+    ) -> Result<(), UiError> {
+        if self.shown.id() != Some(window) {
+            return Ok(());
+        }
+        match (event, self.closing) {
+            (UiEvent::CloseRequested, Closing::No) => self.close_requested(host),
+            (UiEvent::Pressed(ui::SAVE), Closing::Asking) if self.files.can_save() => {
+                self.save_and_close(host)
+            }
+            (UiEvent::Pressed(ui::DISCARD), Closing::Asking) => self.discard_and_close(host),
+            (UiEvent::Pressed(ui::CANCEL), Closing::Asking) => self.cancel_close(host),
+            _ => Ok(()),
+        }
+    }
+
+    /// Opens the file at `path` again, as a checkpoint says it was open. The
+    /// reply comes in a later call, as for Ctrl-O's.
+    pub fn reopen(&mut self, host: &mut dyn Host, path: &str) -> Result<(), String> {
+        self.files.ask_open(host, &mut self.screen, path)?;
+        self.settle(host).map_err(|e| format!("the window: {e:?}"))
+    }
+
     /// `editor_status`: the file and line, the edits made and how the last build
     /// went, from the screen alone (it asks nobody).
     pub fn status(&mut self, host: &mut dyn Host) -> String {
@@ -296,16 +442,6 @@ impl EditorWindow {
     }
 }
 
-impl OnUi for EditorWindow {
-    /// The window has no `kai:ui` controls: only its closing.
-    fn on_ui(&mut self, sink: &mut dyn Sink, window: u32, event: &UiEvent) -> Result<(), UiError> {
-        if self.shown.id() == Some(window) && *event == UiEvent::CloseRequested {
-            self.shown.closed(sink, window)?;
-        }
-        Ok(())
-    }
-}
-
 impl Component for EditorWindow {
     const SCHEMA: u32 = SCHEMA;
 
@@ -320,14 +456,23 @@ impl Component for EditorWindow {
         if from_schema != SCHEMA {
             return Err(ImportError::Unsupported);
         }
-        let _: V1 = compsdk::state::decode(state, SCHEMA).ok_or(ImportError::Bad)?;
+        let kept: V1 = compsdk::state::decode(state, SCHEMA).ok_or(ImportError::Bad)?;
         let mut app = Self::new();
         app.present_logged();
+        if let Some(path) = kept.path {
+            app.reopen_logged(&path);
+        }
         Ok(app)
     }
 
     fn export(&self, schema: u32) -> Option<Vec<u8>> {
-        (schema == SCHEMA).then(|| compsdk::state::encode(SCHEMA, &V1::default()))
+        (schema == SCHEMA).then(|| {
+            let kept = V1 {
+                reserved: 0,
+                path: self.files.path().map(String::from),
+            };
+            compsdk::state::encode(SCHEMA, &kept)
+        })
     }
 
     fn health(&self) -> u32 {
@@ -351,8 +496,18 @@ impl EditorWindow {
     /// There is no window on the host; tests draw through their own [`Host`].
     #[cfg(not(target_family = "wasm"))]
     fn present_logged(&mut self) {}
+
+    /// Opens the file the checkpoint had open, or logs why it could not.
+    #[cfg(target_family = "wasm")]
+    fn reopen_logged(&mut self, path: &str) {
+        if let Err(why) = self.reopen(&mut bind::Os, path) {
+            compsdk::log(&format!("editor window: not opened again: {why}"));
+        }
+    }
+
+    /// There is no OS on the host; tests call [`EditorWindow::reopen`] themselves.
+    #[cfg(not(target_family = "wasm"))]
+    fn reopen_logged(&mut self, _path: &str) {}
 }
 
 compsdk::component!(EditorWindow);
-#[cfg(target_family = "wasm")]
-comp_ui_bind::input!(EditorWindow);

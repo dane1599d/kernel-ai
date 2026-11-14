@@ -79,6 +79,21 @@ impl Files {
         edits || screen.typing()
     }
 
+    /// Whether there is a file to save, as opposed to a component's source.
+    pub(crate) fn can_save(&self) -> bool {
+        self.editor.is_some()
+    }
+
+    /// Whether a request is out.
+    pub(crate) fn busy(&self) -> bool {
+        self.job.is_some()
+    }
+
+    /// The path of the file open, if any.
+    pub(crate) fn path(&self) -> Option<&str> {
+        self.editor.as_ref().map(FileEditor::path)
+    }
+
     /// Leaves file mode for a component's source: a fresh screen of `grid`.
     pub(crate) fn close(&mut self, screen: &mut Screen, grid: (usize, usize)) {
         if self.editor.take().is_some() {
