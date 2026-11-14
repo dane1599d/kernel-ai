@@ -359,6 +359,42 @@ pub fn kill_check() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// The runaway-stall case's limit, how long its runaway computes before the
+/// clock moves on, and by how much: more than the limit, as the founder's
+/// VirtualBox test saw (2026-11-14).
+const STALL_LIMIT_MS: u64 = 2_000;
+const STALL_AFTER_MS: u64 = 300;
+const STALL_SKIP_MS: u64 = 5_000;
+
+/// `test=runaway-stall`: the clock moves on 5 s at once on every CPU while a
+/// runaway with a 2 s limit computes, as when a host stops the VM. The jump is
+/// not run time, so it is killed only once it has computed 2 s, not at the jump.
+pub fn stall_check() -> Result<(), &'static str> {
+    let caps = cap::SERVE | cap::THREADS;
+    let started = hpet::nanos();
+    let pid = start("stalled", "mode=runaway", caps, STALL_LIMIT_MS)?;
+    threads::sleep_ms(STALL_AFTER_MS);
+    hpet::skip_for_test(STALL_SKIP_MS * 1_000_000);
+    let got = wait_exit(pid)?;
+    let ran_ms = (hpet::nanos() - started) / 1_000_000 - STALL_SKIP_MS;
+    log!(
+        "runaway-stall: the runaway ended {} ({}) {ran_ms} ms after it started, the {STALL_SKIP_MS} ms jump not counted",
+        got.0.name(),
+        got.1
+    );
+    if got != (ExitReason::Runaway, STALL_LIMIT_MS) {
+        return Err("runaway-stall: the runaway ended the wrong way");
+    }
+    // Killed at the jump, it would have ended about STALL_AFTER_MS in.
+    if ran_ms < STALL_LIMIT_MS {
+        return Err("runaway-stall: the clock's jump was counted as run time");
+    }
+    log!(
+        "runaway-stall: a clock jump past the limit was not run time, and the runaway still died at its limit"
+    );
+    Ok(())
+}
+
 /// The `threads` case.
 pub fn check() -> Result<(), &'static str> {
     let slots = threads::in_use();

@@ -74,6 +74,14 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("thread-pin", "test=thread-pin")
     },
+    // A host stall: the clock jumps past a runaway's limit on every CPU at once.
+    TestCase {
+        expect: &[
+            "passed between two charges, not counted as run time (a host stall or a clock jump)",
+            "runaway-stall: a clock jump past the limit was not run time, and the runaway still died at its limit",
+        ],
+        ..case("runaway-stall", "test=runaway-stall")
+    },
     case("matvec", "test=matvec"),
     // The graft: the model window past 4 GiB, with RAM above 4 GiB for its copies.
     TestCase {
