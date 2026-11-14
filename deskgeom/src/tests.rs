@@ -32,9 +32,9 @@ fn todays_desk_keeps_todays_numbers() {
     assert_eq!(l.cascade(8), l.cascade(0));
     let frame = Rect::new(48, 52, NOTES_W, 454);
     let c = controls(frame);
-    assert_eq!(c.close, Rect::new(659, 55, 28, 28));
-    assert_eq!(c.maximize, Rect::new(629, 55, 28, 28));
-    assert_eq!(c.minimize, Rect::new(599, 55, 28, 28));
+    assert_eq!(c.close, Rect::new(649, 53, 40, 32));
+    assert_eq!(c.maximize, Rect::new(609, 53, 40, 32));
+    assert_eq!(c.minimize, Rect::new(569, 53, 40, 32));
     assert_eq!(content_of(frame), Rect::new(49, 85, 640, 420));
     assert_eq!(frame_for(content_of(frame)), frame);
 }
@@ -101,14 +101,19 @@ fn the_desk_point_is_clear_of_every_window_and_its_grabs() {
 }
 
 #[test]
-fn the_selftests_old_points_still_hit_what_they_hit() {
+fn the_selftests_points_hit_what_they_hit() {
     let p = points(1280, 800);
     assert_eq!(p.screen_centre(), (640, 400));
     assert_eq!(p.focus_kai(), (640, 782));
-    assert_eq!(p.close(0, NOTES_W), (48 + 642 - 17, 52 + 17));
+    // Kai Desk's 40x32 controls, flush: the close control's middle.
+    assert_eq!(p.close(0, NOTES_W), (48 + 642 - 1 - 20, 52 + 1 + 16));
+    // The old close point is still on close; the old minimize point is on
+    // maximize now, so the selftests click points' minimize, not a number.
+    let frame = p.frame(0, Size { w: NOTES_W, h: 454 });
+    assert!(hits(controls(frame).close, (48 + 642 - 17, 52 + 17)));
+    assert!(hits(controls(frame).maximize, (48 + 642 - 76, 52 + 17)));
     assert_eq!(p.content(0, 320, 211), (48 + 321, 52 + 34 + 210));
     assert_eq!(p.window_title(1, 60), (140, 92));
     assert_eq!(p.window_title(2, 388), (500, 124));
-    let minimize = controls(p.frame(0, Size { w: NOTES_W, h: 454 })).minimize;
-    assert!(hits(minimize, (48 + 642 - 76, 52 + 17)));
+    assert!(hits(controls(frame).minimize, p.minimize(0, NOTES_W)));
 }

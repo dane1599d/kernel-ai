@@ -49,6 +49,8 @@ mod tests;
 mod server_tests;
 
 #[cfg(test)]
+mod chrome_tests;
+#[cfg(test)]
 mod paint_sizes_tests;
 #[cfg(test)]
 mod paint_tests;

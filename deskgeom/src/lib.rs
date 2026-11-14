@@ -4,8 +4,9 @@
 //! [`points`], so a change to the layout moves the tests' points with it.
 //!
 //! The numbers here are today's desk: a 28 px top bar, the 36 px AI panel
-//! along the bottom, windows cascading from 48,52 in steps of 32, and 28x28
-//! title-bar controls 2 px apart. All sizes are physical px at scale 1.
+//! along the bottom, windows cascading from 48,52 in steps of 32, and 40x32
+//! title-bar controls flush in the bar's right end (Kai Desk PR 5). All sizes
+//! are physical px at scale 1.
 
 #![no_std]
 
@@ -23,10 +24,10 @@ pub const PANEL: i32 = 36;
 pub const TITLE_BAR: i32 = 32;
 /// A window's frame line.
 pub const FRAME: i32 = 1;
-/// A title-bar control's side.
-pub const CONTROL: i32 = 28;
-/// The gap from a control to the next and to the frame.
-pub const CONTROL_GAP: i32 = 2;
+/// A title-bar control's width (`look::metric::CONTROL_W`).
+pub const CONTROL_W: i32 = 40;
+/// A title-bar control's height: the whole bar (`look::metric::CONTROL_H`).
+pub const CONTROL_H: i32 = TITLE_BAR;
 /// How far a window's resize grabs reach outside its frame.
 pub const GRAB: i32 = 6;
 /// A corner grab's reach along each edge.
@@ -122,20 +123,20 @@ pub struct Controls {
 }
 
 /// The controls of the window whose frame is `frame`: right to left, close,
-/// maximize, minimize.
+/// maximize, minimize, side by side and flush with the bar's top and right.
 pub const fn controls(frame: Rect) -> Controls {
     let bar = title_bar(frame);
-    let y = bar.y + (TITLE_BAR - CONTROL) / 2;
+    let y = bar.y + (TITLE_BAR - CONTROL_H) / 2;
     Controls {
-        close: Rect::new(control_x(bar, 0), y, CONTROL, CONTROL),
-        maximize: Rect::new(control_x(bar, 1), y, CONTROL, CONTROL),
-        minimize: Rect::new(control_x(bar, 2), y, CONTROL, CONTROL),
+        close: Rect::new(control_x(bar, 0), y, CONTROL_W, CONTROL_H),
+        maximize: Rect::new(control_x(bar, 1), y, CONTROL_W, CONTROL_H),
+        minimize: Rect::new(control_x(bar, 2), y, CONTROL_W, CONTROL_H),
     }
 }
 
 /// The left edge of the `n`th control from the title bar's right end.
 const fn control_x(bar: Rect, n: i32) -> i32 {
-    bar.right() - CONTROL_GAP - (n + 1) * CONTROL - n * CONTROL_GAP
+    bar.right() - (n + 1) * CONTROL_W
 }
 
 #[cfg(test)]

@@ -1,15 +1,23 @@
 //! The window frame `desktop` draws around every window (ADR 0005 §8):
-//! a 32 px title bar, three 28x28 controls, a 1 px frame, and resize grabs
-//! reaching 6 px outside it, 16x16 at the corners. Only `desktop` draws it, so
+//! a 32 px title bar, three 40x32 controls flush in its right end, a 1 px
+//! frame, and resize grabs reaching 6 px outside it, 16x16 at the corners.
+//! Inside the frame the close control wins over the corner grab. Only `desktop` draws it, so
 //! an app cannot pose as another app or as the system.
 
 use crate::geom::{Point, Rect};
 
 pub use deskgeom::{
-    CONTROL, CONTROL_GAP, CORNER, FRAME, GRAB, PANEL, TITLE_BAR, TOP_BAR, content_of, frame_for,
+    CONTROL_H, CONTROL_W, CORNER, FRAME, GRAB, PANEL, TITLE_BAR, TOP_BAR, content_of, frame_for,
     title_bar,
 };
-pub const RADIUS: i32 = 6;
+/// A window's corner radius (`look::metric::RADIUS_MD`); a maximized one is
+/// square.
+pub const RADIUS: i32 = look::metric::RADIUS_MD as i32;
+
+/// `window`'s corner radius: [`RADIUS`], or none when maximized.
+pub const fn radius(maximized: bool) -> i32 {
+    look::metric::window_radius(maximized) as i32
+}
 
 /// Which edges a resize moves.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
