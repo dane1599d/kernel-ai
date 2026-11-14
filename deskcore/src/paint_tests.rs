@@ -10,12 +10,12 @@ use alloc::vec::Vec;
 use gfx2d::{Fonts, Image};
 use sha2::{Digest, Sha256};
 
-const FONTS: Fonts = Fonts {
+pub(crate) const FONTS: Fonts = Fonts {
     sans: include_bytes!("../../assets/fonts/InterVariable.ttf"),
     mono: include_bytes!("../../assets/fonts/JetBrainsMono-Variable.ttf"),
 };
 
-const BAR: Bar = Bar {
+pub(crate) const BAR: Bar = Bar {
     model: true,
     mem_used_mib: 412,
     mem_total_mib: 1763,

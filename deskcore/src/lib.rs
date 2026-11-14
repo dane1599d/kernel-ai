@@ -47,6 +47,8 @@ mod tests;
 mod server_tests;
 
 #[cfg(test)]
+mod paint_sizes_tests;
+#[cfg(test)]
 mod paint_tests;
 
 #[cfg(test)]
