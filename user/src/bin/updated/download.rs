@@ -105,6 +105,18 @@ impl dl::Partial for ModelPartial {
     fn finish(&mut self) -> Result<(), DownloadError> {
         Ok(())
     }
+
+    /// The model store's `.partial/` is opened only by a `dir=models` grant,
+    /// which no line but `updated`'s has, so `download` does not read the
+    /// partial back before `finish`: the sealed copy that follows hashes it
+    /// whole again on its way into the store.
+    fn held_alone(&self) -> bool {
+        true
+    }
+
+    fn size(&mut self) -> Result<u64, DownloadError> {
+        dl::Partial::size(&mut self.0)
+    }
 }
 
 impl ModelPartial {
