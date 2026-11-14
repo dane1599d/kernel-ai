@@ -7,8 +7,8 @@ mod hostile;
 
 use kainet::chunks::{CHUNK, Chunks, MIN_CHUNK};
 use kainet::download::{
-    Answer, CHANGED_ON_DISK, Direct, DownloadError, Get, LONGER_ON_DISK, NO_SIZE, Partial, Report,
-    download, read_back,
+    Answer, CHANGED_ON_DISK, Direct, Download, DownloadError, Get, LONGER_ON_DISK, NO_SIZE,
+    Partial, Report, Step, download, read_back,
 };
 use kainet::http::{HttpError, Range, Url};
 use std::cell::{Cell, RefCell};
@@ -112,6 +112,8 @@ struct Memory {
     done: usize,
     finished: bool,
     records: Vec<usize>,
+    /// How many `finish` calls fail before one moves the target in.
+    failed_finishes: u32,
 }
 
 impl Partial for Memory {
@@ -144,6 +146,10 @@ impl Partial for Memory {
     }
 
     fn finish(&mut self) -> Result<(), DownloadError> {
+        if self.failed_finishes > 0 {
+            self.failed_finishes -= 1;
+            return Err(DownloadError::Store("the move failed"));
+        }
         self.finished = true;
         Ok(())
     }
@@ -884,4 +890,168 @@ fn bytes_passed_on_before_a_status_are_not_asked_for_again() {
     assert_eq!(take(&mut direct, &mut get), Ok((200, 4)));
     assert_eq!(direct.url().host, "releases.kai.test");
     assert_eq!(*asked.borrow(), ["releases.kai.test", "assets.kai.test"]);
+}
+
+/// A download a chunk at a time (`updated` steps one between requests): the
+/// same chunks in the same order as `download`, read-backs first, a chunk
+/// that went bad on disk fetched again, and done only once.
+#[test]
+fn a_stepped_download_does_what_download_does_a_chunk_at_a_time() {
+    let target = blob(6 * MIN_CHUNK as usize + 11);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let mut partial = Memory {
+        bytes: target[..4 * MIN_CHUNK as usize].to_vec(),
+        done: 4,
+        ..Memory::default()
+    };
+    partial.bytes[2 * MIN_CHUNK as usize + 3] ^= 0x40;
+    let mut server = Server::new(target.clone());
+    let mut fetch =
+        |range, sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>| server.fetch(range, sink);
+    let mut run = Download::start(list.clone(), &mut partial).unwrap();
+    let mut steps = Vec::new();
+    loop {
+        let step = run.step(&mut partial, &mut fetch).unwrap();
+        steps.push(step);
+        if matches!(step, Step::Done(_)) {
+            break;
+        }
+        assert_eq!(run.progress(), steps.len());
+    }
+    let report = Report {
+        kept: 2,
+        fetched: 5,
+    };
+    assert_eq!(
+        steps,
+        [
+            Step::Checked(0),
+            Step::Checked(1),
+            Step::Fetched(2),
+            Step::Fetched(3),
+            Step::Fetched(4),
+            Step::Fetched(5),
+            Step::Fetched(6),
+            Step::Done(report),
+        ]
+    );
+    // The bad chunk's checkpoint went back to 2 before it was fetched again.
+    assert_eq!(partial.records, [2, 3, 4, 5, 6, 7]);
+    assert_eq!(partial.bytes, target);
+    assert!(partial.finished);
+    // Done once: asked again, it answers the same and moves nothing in twice.
+    partial.finished = false;
+    assert_eq!(run.step(&mut partial, &mut fetch), Ok(Step::Done(report)));
+    assert!(!partial.finished);
+    assert_eq!(run.list(), &list);
+}
+
+/// A failed step can be stepped again (`updated` tries the same chunk after a
+/// wait): a cut fetch, then the `finish` that failed, with the whole hash
+/// still the target's.
+#[test]
+fn a_step_that_failed_is_stepped_again_from_where_it_was() {
+    let target = blob(3 * MIN_CHUNK as usize);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let mut partial = Memory {
+        failed_finishes: 1,
+        ..Memory::default()
+    };
+    let mut server = Server::new(target.clone());
+    server.cuts = vec![MIN_CHUNK + 7];
+    let mut fetch =
+        |range, sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>| server.fetch(range, sink);
+    let mut run = Download::start(list, &mut partial).unwrap();
+    assert_eq!(run.step(&mut partial, &mut fetch), Ok(Step::Fetched(0)));
+    assert_eq!(
+        run.step(&mut partial, &mut fetch),
+        Err(DownloadError::Fetch(HttpError::Truncated))
+    );
+    assert_eq!(run.progress(), 1);
+    assert_eq!(run.step(&mut partial, &mut fetch), Ok(Step::Fetched(1)));
+    assert_eq!(run.step(&mut partial, &mut fetch), Ok(Step::Fetched(2)));
+    assert_eq!(
+        run.step(&mut partial, &mut fetch),
+        Err(DownloadError::Store("the move failed"))
+    );
+    assert!(!partial.finished);
+    let report = Report {
+        kept: 0,
+        fetched: 3,
+    };
+    assert_eq!(run.step(&mut partial, &mut fetch), Ok(Step::Done(report)));
+    assert!(partial.finished);
+    assert_eq!(partial.bytes, target);
+}
+
+/// A chunk the checkpoint names that cannot be read back, as a file cut short
+/// by a crash leaves it, is fetched again with the chunks after it.
+#[test]
+fn a_recorded_chunk_that_cannot_be_read_back_is_fetched_again() {
+    let target = blob(4 * MIN_CHUNK as usize);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let mut partial = Memory {
+        bytes: target[..2 * MIN_CHUNK as usize + 5].to_vec(),
+        done: 3,
+        ..Memory::default()
+    };
+    let mut server = Server::new(target.clone());
+    assert_eq!(
+        run(&list, &mut partial, &mut server),
+        Ok(Report {
+            kept: 2,
+            fetched: 2
+        })
+    );
+    assert_eq!(partial.records, [2, 3, 4]);
+    assert_eq!(partial.bytes, target);
+}
+
+/// A stepped run whose shared partial changed on disk after its check: the
+/// step that would move it in refuses, and the next steps start the run again
+/// from the mark it set back, chunk 0 read back and chunk 1 on fetched.
+#[test]
+fn a_stepped_run_starts_again_from_a_chunk_changed_on_disk() {
+    let target = blob(4 * MIN_CHUNK as usize);
+    let list = Chunks::of(&target, MIN_CHUNK);
+    let mut partial = Watched {
+        flip: Some((4, MIN_CHUNK as usize + 9)),
+        ..Watched::default()
+    };
+    let mut server = Server::new(target.clone());
+    let mut fetch =
+        |range, sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>| server.fetch(range, sink);
+    let mut run = Download::start(list, &mut partial).unwrap();
+    for i in 0..4 {
+        assert_eq!(run.step(&mut partial, &mut fetch), Ok(Step::Fetched(i)));
+    }
+    assert_eq!(
+        run.step(&mut partial, &mut fetch),
+        Err(DownloadError::Store(CHANGED_ON_DISK))
+    );
+    assert_eq!(run.progress(), 0);
+    let mut steps = Vec::new();
+    loop {
+        let step = run.step(&mut partial, &mut fetch).unwrap();
+        steps.push(step);
+        if matches!(step, Step::Done(_)) {
+            break;
+        }
+    }
+    let report = Report {
+        kept: 1,
+        fetched: 3,
+    };
+    assert_eq!(
+        steps,
+        [
+            Step::Checked(0),
+            Step::Fetched(1),
+            Step::Fetched(2),
+            Step::Fetched(3),
+            Step::Done(report),
+        ]
+    );
+    assert!(partial.inner.finished);
+    assert_eq!(partial.inner.bytes, target);
 }

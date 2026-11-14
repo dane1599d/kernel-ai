@@ -14,12 +14,18 @@
 //! - Runaway is decided on the timer tick, for the thread running. The switch that
 //!   takes a thread off its CPU only adds its time: a thread that is going to sleep
 //!   has already checked for a kill, and a kill set then would wake nobody.
+//! - Only time on the CPU counts: of the stretch between two charges on a CPU, at
+//!   most `sched::burst::MAX_STRETCH_NS`. A host that stops the VM, or a clock
+//!   that jumps forward, makes one long stretch on every CPU at once, which once
+//!   killed every service running then as a runaway (the founder's VirtualBox
+//!   test, 2026-11-14).
 
 use super::{MAX_PROCESSES, request_kill, slot_of};
-use crate::{hpet, percpu, threads};
+use crate::percpu::MAX_CPUS;
+use crate::{hpet, log, percpu, threads};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use kabi::ExitReason;
-use sched::{BurstTable, Tid};
+use sched::{BurstTable, Tid, burst};
 
 static BURSTS: BurstTable = BurstTable::new();
 /// Each process's burst limit (0 = none).
@@ -81,11 +87,29 @@ fn serving_until(slot: usize) -> u64 {
     }
 }
 
+/// Each CPU's stretches between charges not counted as run time since its last
+/// tick logged them (`sched::burst::MAX_STRETCH_NS`).
+static UNCOUNTED_NS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+/// Uncounted time this long is logged, as `threads::preempt` logs a late tick.
+const LOGGED_UNCOUNTED_NS: u64 = 100_000_000;
+
 /// Charges CPU time since the last charge on this CPU to `tid`, and on the tick
 /// (`decide`) kills its process once the burst is past the limit. Interrupts are off.
+///
+/// At most `MAX_STRETCH_NS` of one stretch counts, for METRICS too: a longer one
+/// is a host that did not run this vCPU, or a clock that jumped, not run time.
 fn charge(tid: Tid, decide: bool) {
     let now = hpet::nanos();
-    let since = percpu::this().charged_at_ns.swap(now, Ordering::Relaxed);
+    let cpu = percpu::this();
+    let last = cpu.charged_at_ns.swap(now, Ordering::Relaxed);
+    let since = burst::counted_since(last, now);
+    // A CPU's first charge has no stretch before it to speak of.
+    if last != 0 && since > last {
+        UNCOUNTED_NS[percpu::index()].fetch_add(since - last, Ordering::Relaxed);
+    }
+    if decide {
+        log_uncounted();
+    }
     let Some(slot) = slot_of(tid) else {
         return;
     };
@@ -95,6 +119,20 @@ fn charge(tid: Tid, decide: bool) {
     if decide && runaway {
         request_kill(slot, ExitReason::Runaway, limit / 1_000_000);
     }
+}
+
+/// On the tick: says how long this CPU's clock moved on without the thread
+/// running, once that is long enough to matter.
+fn log_uncounted() {
+    let me = percpu::index();
+    if UNCOUNTED_NS[me].load(Ordering::Relaxed) < LOGGED_UNCOUNTED_NS {
+        return;
+    }
+    let ns = UNCOUNTED_NS[me].swap(0, Ordering::Relaxed);
+    log!(
+        "burst: cpu {me}: {} ms passed between two charges, not counted as run time: the vCPU did not run, the clock jumped, or interrupts were off that long",
+        ns / 1_000_000
+    );
 }
 
 /// CPU time the process in `slot` has used since it started, in nanoseconds.

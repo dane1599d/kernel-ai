@@ -37,9 +37,10 @@ pub const PARTIAL_DIR: &str = "/system/models/.partial";
 pub const PARTIAL_IN_STORE: &str = ".partial";
 
 /// A target's partial file beneath the store's root:
-/// `.partial/<sha256>.gguf`.
+/// `.partial/<sha256>.partial`, beside its mark `<sha256>.mark`, as
+/// `user::kaifs` names a download it holds.
 pub fn partial_name(sha256: &Sha256) -> String {
-    format!("{PARTIAL_IN_STORE}/{}.gguf", hex(sha256))
+    format!("{PARTIAL_IN_STORE}/{}.partial", hex(sha256))
 }
 /// Disk left free after a download, so the volume never fills to its last
 /// byte: 256 MiB.

@@ -256,8 +256,22 @@ pub fn start_cpu(cpu: usize) {
     }
 }
 
+/// How far [`skip_for_test`] moved the clock on: added to every reading.
+static SKIPPED_NS: AtomicU64 = AtomicU64::new(0);
+
 /// Nanoseconds since the HPET was enabled.
 pub fn nanos() -> u64 {
+    clock_nanos() + SKIPPED_NS.load(Ordering::Relaxed)
+}
+
+/// Moves the clock on by `ns` on every CPU at once, as a host that stops the VM
+/// for that long does: the `runaway-stall` case. Each CPU's ticks then come at
+/// once until they catch up with it.
+pub fn skip_for_test(ns: u64) {
+    SKIPPED_NS.fetch_add(ns, Ordering::Relaxed);
+}
+
+fn clock_nanos() -> u64 {
     let mult = TSC_MULT.load(Ordering::Acquire);
     if mult == 0 {
         return hpet_nanos();

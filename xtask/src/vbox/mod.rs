@@ -26,7 +26,7 @@ pub mod manage;
 mod powercut;
 mod vmdk;
 
-use crate::{components, disk, esp, floatguard, image, models, options, userbuild};
+use crate::{components, disk, esp, floatguard, image, models, options, pkgrepo, userbuild};
 use manage::{CONTROLLER, step, vm};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -213,7 +213,13 @@ fn build_esp(cmdline: &str) -> Result<PathBuf, String> {
     let programs = userbuild::build_user(&root, &options)?;
     let target_dir = root.join("target");
     let mut modules = esp::boot_modules(&kernel, &programs, &root)?;
-    modules.extend(components::build(&root)?);
+    let versions = components::build(&root)?;
+    // The built-in apps as the image's signed repository (ADR 0011 §8), as
+    // `run` gives QEMU: without it `pkg` refuses the image and Models has no
+    // signed catalog.
+    let repository = pkgrepo::image(&root, &versions)?;
+    modules.extend(versions);
+    modules.extend(repository.modules);
     components::check_no_test_only(&modules)?;
     let efi = crate::ensure_limine(&target_dir)?;
     let esp = target_dir.join("vbox-esp");
@@ -369,7 +375,7 @@ fn modify(dir: &Path, memory: u64) -> Result<(), String> {
     let args = [
         "modifyvm", vm(),
         "--firmware", "efi", "--chipset", "ich9", "--hpet", "on", "--ioapic", "on",
-        "--x2apic", "off", "--apic", "on", "--cpus", &cpus, "--memory", &memory, "--vram", "16",
+        "--x2apic", "off", "--apic", "on", "--cpus", &cpus, "--memory", &memory, "--vram", VRAM_MB,
         "--graphicscontroller", "vmsvga", "--mouse", "usbtablet", "--keyboard", "usb",
         "--nic1", "nat", "--nictype1", "virtio", "--nat-localhostreachable1", "on",
         "--uart1", "0x3F8", "4", "--uartmode1", "file", path_str(&serial)?,
@@ -377,8 +383,23 @@ fn modify(dir: &Path, memory: u64) -> Result<(), String> {
         "--audio-enabled", "off", "--usbohci", "off", "--usbehci", "off", "--usbxhci", "on",
         "--paravirtprovider", "minimal", "--rtcuseutc", "on",
     ];
-    step(&args).map(|_| ())
+    step(&args)?;
+    // The firmware's GOP mode is what the desktop claims: without this,
+    // VirtualBox's EFI starts at 1024x768.
+    step(&[
+        "setextradata",
+        vm(),
+        "VBoxInternal2/EfiGraphicsResolution",
+        RESOLUTION,
+    ])
+    .map(|_| ())
 }
+
+/// The screen the VM's firmware sets up, and so the desktop's size.
+const RESOLUTION: &str = "1920x1080";
+/// Video memory for that screen: a 1920x1080 32-bit frame is 7.9 MiB, and
+/// VMSVGA wants room for more than one.
+const VRAM_MB: &str = "64";
 
 fn start(headless: bool, dir: &Path) -> Result<(), String> {
     let info = manage::vm_info()

@@ -1,0 +1,7 @@
+# The release's trust anchor and the CI that guards it (P4 task 18; see
+# docs/release/root-ceremony.md, "Interim: key files"). This file names the
+# owner; requiring that owner's review is a ruleset the founder sets.
+/release/ @dane1599d
+/scripts/release-sign.sh @dane1599d
+/.github/workflows/ @dane1599d
+/.github/CODEOWNERS @dane1599d

@@ -2,7 +2,9 @@
 //! placeholder, the ember block caret and a 2 px ember rule while it listens,
 //! and on the right what the shell reports: the model's dot when idle,
 //! "thinking 4s" with "Esc stops", the call being acted, the result line with
-//! undo, or a refusal under an `error` rule.
+//! undo, or a refusal under an `error` rule. A line longer than the input
+//! scrolls so the caret stays in view, a dim `<` marking text cut off on the
+//! left ([`view`]).
 
 use crate::geom::Rect;
 use crate::paint::{PAD, Painter, Scene, disc, fill, g};
@@ -16,6 +18,20 @@ const PROMPT: &str = "kai>";
 const PLACEHOLDER: &str = "ask, or type Rhai";
 /// The rule along the panel's top while it listens or refuses.
 const RULE: i32 = 2;
+/// Drawn in the input's first column while the line's start is scrolled off.
+const CUT: &str = "<";
+
+/// How many characters of a line `len` long to skip so the cursor (at most
+/// one past the end) stays in an input `cols` columns wide. Nothing is
+/// skipped while the cursor fits; once it does not, the first column is the
+/// [`CUT`] marker and the cursor sits in the last column.
+pub fn view(len: usize, cursor: usize, cols: usize) -> usize {
+    let cursor = cursor.min(len);
+    if cols < 2 || cursor < cols {
+        return 0;
+    }
+    cursor + 2 - cols
+}
 
 /// The panel's right half, where the shell's state is drawn: what a state
 /// change damages.
@@ -46,6 +62,25 @@ impl Painter {
         let input_x = x + advance;
         let input = Rect::new(input_x as i32, area.y, area.w / 2 - input_x as i32, area.h);
         let input_clip = input.intersect(&clip).unwrap_or_default();
+        let cols = libm::floorf(input.w.max(0) as f32 / advance) as usize;
+        let skip = view(panel.text().chars().count(), panel.cursor(), cols);
+        // The column the text starts in: after the marker when scrolled.
+        let text_x = match skip {
+            0 => input_x,
+            _ => {
+                self.text.draw_mono(
+                    c,
+                    g(input_clip),
+                    input_x,
+                    y,
+                    1.0,
+                    false,
+                    self.palette.dim,
+                    CUT,
+                );
+                input_x + advance
+            }
+        };
         if panel.text().is_empty() && !panel.focused() {
             self.draw_text(
                 c,
@@ -57,34 +92,37 @@ impl Painter {
                 PLACEHOLDER,
             );
         } else {
+            let shown: String = panel.text().chars().skip(skip).collect();
             self.text.draw_mono(
                 c,
                 g(input_clip),
-                input_x,
+                text_x,
                 y,
                 1.0,
                 false,
                 self.palette.text,
-                panel.text(),
+                &shown,
             );
         }
         if panel.focused() {
-            self.caret(c, input_clip, panel, input_x, advance, line_h);
+            let column = panel.cursor().saturating_sub(skip);
+            self.caret(c, input_clip, panel, text_x, column, (advance, line_h));
         }
         self.state(c, clip, area, scene);
     }
 
-    /// The ember block at the cursor, the character under it drawn in `window`.
+    /// The ember block at the cursor, `column` cells from `text_x`, the
+    /// character under it drawn in `window`.
     fn caret(
         &mut self,
         c: &mut Canvas<'_>,
         clip: Rect,
         panel: &Panel,
-        input_x: f32,
-        advance: f32,
-        line_h: i32,
+        text_x: f32,
+        column: usize,
+        (advance, line_h): (f32, i32),
     ) {
-        let x = input_x + advance * panel.cursor() as f32;
+        let x = text_x + advance * column as f32;
         let top = clip.y + (clip.h - line_h) / 2;
         let block = Rect::new(
             libm::roundf(x) as i32,

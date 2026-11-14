@@ -1,6 +1,7 @@
 //! `cargo xtask release-boot --image PATH --model PATH [--accel kvm|tcg]
-//! [--timeout SECS]`: boots a `release-image --test-root` image as it is, its
-//! one disk on virtio-blk, with the model file attached read-only as the
+//! [--timeout SECS]`: boots a release image as it is (the release itself
+//! once `release/pkgrepo` is committed, else a `release-image --test-root`
+//! one), its one disk on virtio-blk, with the model file attached read-only as the
 //! import disk (`kai-import`), and passes once the console shows the desk, the
 //! shell's answer to `models import` and `updated`'s import line
 //! ([`crate::cases::release::RELEASE_BOOT`]). With no `test=` mode the kernel

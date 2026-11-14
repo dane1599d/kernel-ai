@@ -200,7 +200,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
 /// reads it there with BOOT_READ, granted by its plan line's `bootfiles=pkgrepo`.
 pub const IMAGE_DIR: &str = "pkgrepo";
 
-fn unix_now() -> Result<Time, String> {
+pub(crate) fn unix_now() -> Result<Time, String> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?;
@@ -330,7 +330,7 @@ pub fn image_layout(repository: Repository) -> Result<Repository, String> {
 
 /// `repository`'s files, in the image's layout, as boot modules under
 /// [`IMAGE_DIR`].
-fn as_modules(repository: Repository) -> Result<Vec<Module>, String> {
+pub(crate) fn as_modules(repository: Repository) -> Result<Vec<Module>, String> {
     let modules = repository.files.into_iter().map(|(path, bytes)| Module {
         path: format!("{IMAGE_DIR}/{path}"),
         bytes,

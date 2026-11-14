@@ -285,7 +285,7 @@ fn a_job_reaches_its_source_and_storage_hosts_on_443_and_lands_in_the_store() {
     assert_eq!(job.source.host, "huggingface.co");
     assert_eq!(job.source.url(), role[2].source);
     let name = "40".repeat(32);
-    assert_eq!(job.partial, format!("{PARTIAL_DIR}/{name}.gguf"));
+    assert_eq!(job.partial, format!("{PARTIAL_DIR}/{name}.partial"));
     assert_eq!(job.path, format!("/system/models/{name}.gguf"));
     assert_eq!(job.chunks, format!("{name}.chunks"));
     // The resolve host, and the storage host a runner saw (run 41878520332)
