@@ -36,6 +36,7 @@ mod appbench_tests;
 mod appearance_tests;
 mod ask_box;
 mod ask_tests;
+mod async_tests;
 mod backtrace;
 mod bigmap_tests;
 mod blk_tests;
@@ -446,6 +447,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::TufBench => run_case(tufbench_tests::check),
         SelfTest::Handles => run_case(handle_tests::check),
         SelfTest::ShellInterrupt => run_case(interrupt_tests::check),
+        SelfTest::AsyncCall => run_case(async_tests::check),
         SelfTest::Threads => run_case(thread_tests::check),
         SelfTest::ThreadsKill => run_case(thread_tests::kill_check),
         SelfTest::ThreadPin => run_case(thread_tests::pin_check),

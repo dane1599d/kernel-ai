@@ -358,6 +358,36 @@ pub fn recv_h(buf: &mut [u8], timeout_ms: u64, info: &mut RecvInfo) -> Result<us
     .map(|len| len as usize)
 }
 
+/// Sends `request` through the `Service` route `route` without waiting
+/// (CALL_SUBMIT): one call in flight per process, collected by [`call_poll`].
+/// Busy while one is in flight. When it ends, a [`svc_recv`] or [`recv_h`] with
+/// no request queued returns Woken.
+pub fn call_submit(route: Handle, request: &[u8], timeout_ms: u64) -> Result<(), Error> {
+    call(
+        call::CALL_SUBMIT,
+        [
+            u64::from(route.0),
+            request.as_ptr() as u64,
+            request.len() as u64,
+            timeout_ms,
+            0,
+            0,
+        ],
+    )
+    .map(|_| ())
+}
+
+/// The reply to the call [`call_submit`] sent, into `reply` (CALL_POLL): its
+/// length. Busy while it is in flight, NotFound with none; otherwise
+/// [`call_h`]'s errors, and the call is gone.
+pub fn call_poll(reply: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::CALL_POLL,
+        [reply.as_mut_ptr() as u64, reply.len() as u64, 0, 0, 0, 0],
+    )
+    .map(|len| len as usize)
+}
+
 /// Starts the program `job` names (`scriptrun`) as a child, moving `handles` into
 /// it; its pid.
 pub fn job_spawn(job: Handle, args: &str, handles: &[Handle]) -> Result<u64, Error> {

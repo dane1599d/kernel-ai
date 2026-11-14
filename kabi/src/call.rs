@@ -405,6 +405,20 @@ pub const NETDEST_NARROW: u64 = 85;
 /// NotFound when no shell runs. Numbered at merge, K's block (86 is
 /// POWER_REBOOT, #879).
 pub const SHELL_INTERRUPT: u64 = 87;
+/// `call_submit(route, request_ptr, request_len, timeout_ms) -> 0`: sends a
+/// request through the `Service` route `route` as [`CALL_H`] does, but does not
+/// wait: one call per process may be in flight, and [`CALL_POLL`] collects it.
+/// No handles move either way. Busy while one is in flight. When it ends (its
+/// reply, its deadline, or the person's Stop) a wait in [`SVC_RECV`] or
+/// [`RECV_H`] with no request queued returns Woken. For the shell, which serves
+/// app reads while `llm` answers (no THREADS). Numbered at merge, K's block.
+pub const CALL_SUBMIT: u64 = 88;
+/// `call_poll(reply_ptr, reply_cap) -> len`: the call [`CALL_SUBMIT`] sent.
+/// Busy while it is in flight; once it ended, the reply's length (copied up to
+/// `reply_cap`) or [`CALL_H`]'s errors (TimedOut, Dead, Unavailable,
+/// Interrupted), and the call is gone. NotFound with none. Numbered at merge,
+/// K's block.
+pub const CALL_POLL: u64 = 89;
 
 // ---- G-core, 73-79 ----
 

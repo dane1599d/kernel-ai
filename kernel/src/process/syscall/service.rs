@@ -1,7 +1,8 @@
 //! Services: serving requests, and calling another service through a route
 //! handle (ADR 0001 D3, step 4). Calling by name is retired: CALL answers
 //! NotFound, and a process reaches only the services its plan line names in
-//! `uses=`, through the `Service` routes it got at spawn.
+//! `uses=`, through the `Service` routes it got at spawn. CALL_SUBMIT and
+//! CALL_POLL make one such call without waiting for it.
 
 use super::{MAX_BIND_WAIT_NS, MAX_CALL_MS, NESTED_MARGIN_NS, call_error, need};
 use crate::handle;
@@ -21,6 +22,8 @@ const CALLS: &[u64] = &[
     call::CALL_H,
     call::RECV_H,
     call::REPLY_H,
+    call::CALL_SUBMIT,
+    call::CALL_POLL,
 ];
 
 /// One of [`CALLS`], or `None` for a number this area does not have.
@@ -47,6 +50,8 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
             reply_h(slot, a[0], a[1], a[2], a[3])
         }
         call::CALL_H => call_h(slot, a[0], a[1]),
+        call::CALL_SUBMIT => submit(slot, a[0], a[1], a[2], a[3]),
+        call::CALL_POLL => poll(slot, a[0], a[1]),
         _ => Err(Error::NotFound),
     }
 }
@@ -197,4 +202,69 @@ fn reply_h(
         }
     };
     ipc::reply_with(slot, ptr, len, moved)
+}
+
+/// CALL_SUBMIT: [`call_h`]'s request through a `Service` route, not waited
+/// for (`crate::process::async_call`). Nothing moves with it, and the service
+/// must be up: the caller is not held while one starts.
+fn submit(
+    slot: usize,
+    route: u64,
+    request_ptr: u64,
+    request_len: u64,
+    timeout_ms: u64,
+) -> Result<u64, Error> {
+    let route = u32::try_from(route)
+        .ok()
+        .filter(|&r| r != 0)
+        .map(Handle)
+        .ok_or(Error::BadHandle)?;
+    let entry = handle::with(slot, |h| {
+        h.table.check(route, Kind::Service, Rights::CALL, &Kernel)
+    })
+    .map_err(|_| Error::BadHandle)?
+    .map_err(Error::from)?;
+    let name = handle::route_name(entry.object).ok_or(Error::NotFound)?;
+    let request_len = usize::try_from(request_len).map_err(|_| Error::TooBig)?;
+    if request_len > kabi::MAX_MESSAGE {
+        return Err(Error::TooBig);
+    }
+    let mut request = Vec::new();
+    request
+        .try_reserve_exact(request_len)
+        .map_err(|_| Error::NoMemory)?;
+    request.resize(request_len, 0);
+    uaccess::copy_from_user(slot, request_ptr, &mut request)?;
+    let me = crate::process::identity(slot);
+    let mut deadline = hpet::nanos() + timeout_ms.clamp(1, MAX_CALL_MS) * 1_000_000;
+    if let Some(served) = ipc::serving_deadline(me.pid) {
+        deadline = deadline.min(served.saturating_sub(NESTED_MARGIN_NS));
+    }
+    let extra = ipc::Extra {
+        badge: entry.badge,
+        rights: entry.rights.bits(),
+        handles: Vec::new(),
+    };
+    crate::process::async_call::submit(slot, name.as_str(), &request, me.pid, deadline, extra)
+        .map_err(|error| call_error(slot, error))?;
+    Ok(0)
+}
+
+/// CALL_POLL: the call CALL_SUBMIT sent, once it ended.
+fn poll(slot: usize, reply_ptr: u64, reply_cap: u64) -> Result<u64, Error> {
+    use crate::process::async_call::{self, Polled};
+    let stopped = crate::process::interrupt_pending(slot);
+    let (reply, _, came) = match async_call::poll(slot, stopped).ok_or(Error::NotFound)? {
+        Polled::InFlight => return Err(Error::Busy),
+        Polled::Ended(result) => result.map_err(|error| call_error(slot, error))?,
+    };
+    // Nothing was asked to move back: a handle the reply carried is closed.
+    for given in handle::give(slot, came) {
+        let _ = handle::with(slot, |h| h.table.close(given));
+    }
+    let len = reply
+        .len()
+        .min(usize::try_from(reply_cap).unwrap_or(usize::MAX));
+    uaccess::copy_to_user(slot, reply_ptr, &reply[..len])?;
+    Ok(reply.len() as u64)
 }

@@ -283,6 +283,11 @@ impl Pending {
             REPLIED | FAILED
         )
     }
+
+    /// Its call slot, for [`slot_done`] where a lock may not be taken.
+    pub fn index(&self) -> usize {
+        self.slot
+    }
 }
 
 /// Queues `request` for the bound service `name`.
@@ -296,7 +301,7 @@ pub fn submit(
 }
 
 /// [`submit`], with what a handle call carries.
-fn submit_with(
+pub(crate) fn submit_with(
     name: &str,
     request: &[u8],
     caller_pid: u64,
@@ -353,7 +358,7 @@ pub fn finish(pending: Pending) -> Result<(Vec<u8>, u64), CallError> {
 }
 
 /// [`finish`], with the handles the reply moved.
-fn finish_with(pending: Pending) -> Result<(Vec<u8>, u64, Vec<Entry>), CallError> {
+pub(crate) fn finish_with(pending: Pending) -> Result<(Vec<u8>, u64, Vec<Entry>), CallError> {
     let slot = pending.slot;
     let (call, state) = with_ipc(|ipc| {
         let call = ipc.calls[slot].take();
@@ -600,6 +605,8 @@ pub fn recv_with(
         timeout_ms.min(MAX_WAIT_MS)
     };
     let deadline = hpet::nanos().saturating_add(wait_ms * 1_000_000);
+    // A call in flight that runs out first ends the wait (Woken) then.
+    let wake_by = deadline.min(process::async_call::deadline(slot));
     loop {
         let (endpoint, taken, failed, opened, extra) = with_ipc(|ipc| {
             let endpoint = bind(ipc, &me)?;
@@ -671,8 +678,9 @@ pub fn recv_with(
             process::burst::serving(slot, opened);
             return Ok((request.len() as u64, caller_pid, extra));
         }
-        // No request: an event box this process reads may have woken it.
-        if crate::event_box::take_wake(me.pid) {
+        // No request: an event box this process reads may have woken it, or the
+        // call it has in flight (CALL_SUBMIT) may have ended.
+        if crate::event_box::take_wake(me.pid) || process::async_call::wakes(slot) {
             with_ipc(|ipc| {
                 if let Some(entry) = ipc.endpoints[endpoint].as_mut() {
                     entry.waiting = None;
@@ -684,9 +692,10 @@ pub fn recv_with(
             PENDING[endpoint].load(Ordering::SeqCst) > 0
                 || process::killed(slot)
                 || crate::event_box::woken(me.pid)
+                || process::async_call::wakes(slot)
         };
-        if !ready() && hpet::nanos() < deadline {
-            threads::sleep_until_unless(deadline, ready);
+        if !ready() && hpet::nanos() < wake_by {
+            threads::sleep_until_unless(wake_by, ready);
         }
         with_ipc(|ipc| {
             if let Some(entry) = ipc.endpoints[endpoint].as_mut() {
@@ -753,6 +762,12 @@ pub fn reply_with(slot: usize, ptr: u64, len: u64, handles: Vec<Entry>) -> Resul
     process::burst::serving(slot, None);
     wake(Some(caller));
     Ok(len as u64)
+}
+
+/// Whether the call in slot `c` has its reply or failed. Lock-free, for a
+/// wait's wake-up test ([`crate::process::async_call`]).
+pub fn slot_done(c: usize) -> bool {
+    c < MAX_CALLS && matches!(CALL_STATE[c].load(Ordering::SeqCst), REPLIED | FAILED)
 }
 
 /// Whether call slot `c` still holds call `id`, taken by its server and not yet

@@ -37,6 +37,8 @@
 //!
 //! With `mode=stop`, started as `shell`, it checks that the person's Stop ends
 //! a call in flight as Interrupted (`handles/interrupt.rs`).
+//! With `mode=async` and `mode=slow` a pair checks CALL_SUBMIT and CALL_POLL
+//! (`handles/async_call.rs`).
 //!
 //! With `mode=mem` (lane M) it serves the kernel's anonymous-memory case (see
 //! `handles/mem.rs`).
@@ -55,6 +57,8 @@ use kabi::handle::{ABI, Handle, HandleInfo, Kind, RecvInfo, Rights, TABLE_MAX};
 use kabi::sched::SchedStats;
 use user::{arg, args, println, sys};
 
+#[path = "handles/async_call.rs"]
+mod async_call;
 #[path = "handles/entropy.rs"]
 mod entropy;
 #[path = "handles/interrupt.rs"]
@@ -78,6 +82,8 @@ fn main() -> i32 {
         Some("mem") => mem::mem,
         Some("idle") => idle,
         Some("stop") => interrupt::stop,
+        Some("slow") => async_call::slow,
+        Some("async") => async_call::run,
         _ => checks,
     };
     match run() {
