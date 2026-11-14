@@ -498,11 +498,14 @@ fn a_running_line_offers_stop_which_asks_to_stop_the_shell() {
     assert!(matches!(&stop.widget, Widget::Button { text, .. } if text == "Stop"));
     app.shown = n.tree;
     let asked = app.os.asked.len();
-    on_ui(
-        &mut app.term,
-        &mut app.os,
-        &mut app.view,
-        &UiEvent::Pressed(CANCEL),
+    assert!(
+        on_ui(
+            &mut app.term,
+            &mut app.os,
+            &mut app.view,
+            &UiEvent::Pressed(CANCEL),
+        ),
+        "the first press redraws"
     );
     let (_, name, _) = app.os.asked[asked];
     assert_eq!(name, comp_terminal::os::SHELL_STOP);
@@ -520,11 +523,14 @@ fn a_running_line_offers_stop_which_asks_to_stop_the_shell() {
         matches!(&status.widget, Widget::Label { text, .. } if text.starts_with("Stopping ")),
         "{status:?}"
     );
-    on_ui(
-        &mut app.term,
-        &mut app.os,
-        &mut app.view,
-        &UiEvent::Pressed(CANCEL),
+    assert!(
+        !on_ui(
+            &mut app.term,
+            &mut app.os,
+            &mut app.view,
+            &UiEvent::Pressed(CANCEL),
+        ),
+        "a repeat press changes nothing"
     );
     assert_eq!(app.os.asked.len(), asked + 1, "one Stop until its answer");
 }

@@ -253,8 +253,8 @@ pub fn on_ui(term: &mut Terminal, os: &mut dyn Os, view: &mut View, e: &UiEvent)
         UiEvent::Pressed(CANCEL) if term.phase() == Phase::Waiting => {
             // The line's own answer then says how it ended; a Stop the OS
             // could not carry out says why when its answer comes.
-            term.ask_stop(os);
-            false
+            // Redrawn when asked, so the status says "Stopping".
+            term.ask_stop(os)
         }
         UiEvent::Pressed(CANCEL) => {
             term.stop(os);
