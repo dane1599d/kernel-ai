@@ -133,7 +133,8 @@ impl Shell {
     /// `open <app>`, a line that names one app and nothing else (what the
     /// panel's Apps sheet sends): Kai's own `ui_open` call, made by code with
     /// no model, through the one door ([`Shell::execute`]) at the tier Kai's
-    /// would get. A longer line ("open notes and add milk") is the model's.
+    /// would get. A longer line ("open notes and add milk"), or a name that is
+    /// no app the system has ("open garage", a file, a port), is the model's.
     pub(crate) fn open_line(&mut self, input: &str) -> Option<Reply> {
         if self.scope.contains("open") {
             return None;
@@ -143,6 +144,9 @@ impl Shell {
             return None;
         }
         app_name(app).ok()?;
+        if !self.has_app(app) {
+            return None;
+        }
         let mut arguments = serde_json::Map::new();
         arguments.insert(String::from("app"), Value::String(String::from(app)));
         let call = Call {
@@ -154,6 +158,18 @@ impl Shell {
             "request {id}: {input:?}, opened by code with no model"
         ));
         Some(self.execute(id, input, &call).reply)
+    }
+
+    /// Whether `app` is an app the system has: a service the supervisor runs
+    /// by that name or as its `<app>-window`, which the image's built-ins and
+    /// installed packages are. Without the list, none is: the model decides.
+    fn has_app(&self, app: &str) -> bool {
+        let window = format!("{app}-window");
+        self.host.services().is_ok_and(|services| {
+            services
+                .iter()
+                .any(|s| s.name.eq_ignore_ascii_case(app) || s.name.eq_ignore_ascii_case(&window))
+        })
     }
 
     /// `call`, or the call the model makes with what it read in front of it: a

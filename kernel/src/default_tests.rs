@@ -13,8 +13,8 @@
 //! `test=desk-no-memory`: the same system and the same steps, but first a
 //! process takes what is left of the admission budget (free / 2), so the
 //! kernel refuses `notes-window`'s start. `open notes`, sent to the shell as
-//! the terminal sends a line, goes through the model's `ui_open` as the panel's
-//! does; the supervisor answers at once that there is no memory to start it,
+//! the terminal sends a line, is opened by the shell's own code-made `ui_open`
+//! as the panel's is (#885), since `notes-window` is a service; the supervisor answers at once that there is no memory to start it,
 //! and the shell's answer, the text the panel shows, is "Not enough memory to
 //! open Notes" instead of a silent failure.
 
