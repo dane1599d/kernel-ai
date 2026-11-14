@@ -216,6 +216,34 @@ pub(crate) fn wire(host: &dyn crate::Host) -> String {
     text
 }
 
+/// Whether the service `app` is an app, which only the supervisor knows (an
+/// app is one it runs as a component): its rows are loaded, or it answers
+/// `kai-actions 1`. One that answers "no such app" is remembered as none until
+/// reboot, as [`wire`] remembers it; one whose rows failed to load counts as
+/// none. Asking starts an app that is down, as opening it would.
+pub(crate) fn is_app(host: &dyn crate::Host, app: &str) -> bool {
+    if let Some(apps) = host.apps() {
+        let apps = apps.borrow();
+        if apps.rows.has(app) {
+            return true;
+        }
+        if apps.rows.failed(app) {
+            return false;
+        }
+    }
+    match host.app_call(app, livecore::rows::REQUEST) {
+        Ok(_) => true,
+        Err(why) => {
+            if why == NOT_AN_APP
+                && let Some(apps) = host.apps()
+            {
+                apps.borrow_mut().rows.failed.push(app.to_string());
+            }
+            false
+        }
+    }
+}
+
 /// The supervisor's answer for a service that is not an app
 /// (`supervise::appcall::check`), less its `err `.
 const NOT_AN_APP: &str = "no such app";

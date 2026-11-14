@@ -216,10 +216,39 @@ fn open_and_a_word_that_is_no_app_goes_to_the_model() {
     for line in ["open garage", "open ideas", "open port"] {
         assert!(shell.open_line(line).is_none(), "{line} was taken");
     }
-    // `notes` is a service here, so the code takes it.
+    // `notes` is a service here that answers as an app, so the code takes it.
+    host.app_replies
+        .borrow_mut()
+        .push_back(String::from("version 1\n"));
     assert!(shell.open_line("open notes").is_some());
     host.lists_services.set(false);
     assert!(shell.open_line("open notes").is_none(), "no list, no app");
+}
+
+/// #885's review (LOW): a service that is no app (the shell, llm) is not
+/// opened by code; the supervisor's "no such app" is asked once.
+#[test]
+fn open_and_a_service_that_is_no_app_goes_to_the_model() {
+    let (host, mut shell) = with_calls(vec![]);
+    host.lists_services.set(true);
+    host.services
+        .borrow_mut()
+        .push((String::from("shell"), false));
+    host.not_apps.borrow_mut().push(String::from("shell"));
+    assert!(shell.open_line("open shell").is_none(), "shell was taken");
+    assert!(shell.open_line("open shell").is_none());
+    let asked = host
+        .app_requests
+        .borrow()
+        .iter()
+        .filter(|(app, _)| app == "shell")
+        .count();
+    assert_eq!(asked, 1, "asked again: {:?}", host.app_requests.borrow());
+    // An app that does not answer at all is the model's too.
+    host.services
+        .borrow_mut()
+        .push((String::from("paint"), false));
+    assert!(shell.open_line("open paint").is_none());
 }
 
 #[test]
