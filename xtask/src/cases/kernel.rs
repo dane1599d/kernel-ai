@@ -69,6 +69,18 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("shell-interrupt", "test=shell-interrupt")
     },
+    // CALL_SUBMIT and CALL_POLL: the shell serves app reads while llm answers.
+    TestCase {
+        expect: &[
+            "async-call: an exit and a kill each withdrew the call left queued",
+            "[aclient] handles: async: served 1 request while the call was in flight, then polled its reply",
+            "[aclient] handles: async: a call past its deadline polled TimedOut, and its late answer went nowhere",
+            "[aclient] handles: async: a Stop let a taken call answer and withdrew a queued one, and nothing was sent after it",
+            "[aclient] handles: async: a revoke ended a held call at once, Revoked",
+            "async-call: a process served a call while its own was in flight; Stop, revoke, exit and kill each freed its call",
+        ],
+        ..case("async-call", "test=async-call")
+    },
     // M10a-2's probe runs here too, so the case itself is gated under KVM and TCG;
     // `cargo xtask icount` checks its determinism under icount.
     TestCase {
