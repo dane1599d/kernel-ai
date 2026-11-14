@@ -15,13 +15,24 @@
 # same disk with one byte of the image flipped (boot cases `update-disk` and
 # `update-tampered`, ADR 0008 §12).
 #
-# The `release-boot` job builds the same image with `--test-root`: a `pkgrepo/`
-# whose `models` role, signed by a throwaway root, names only qwen3-0.6b. It
-# checks that every other boot module and part hashes as build-a's did, then
-# boots those bytes with no second disk, types `models import` and passes on
-# the import line (`cargo xtask release-boot`). The shipping image has no
-# `models` role until P4 task 18's founder-signed one, so it imports nothing
-# until then.
+# Once `release/pkgrepo/` is committed (P4 task 18's interim key files,
+# `cargo xtask release-repo`), the image carries it as `pkgrepo/`, its `models`
+# role signed with the founder's release key, and its root as `kai.root.json`.
+# `assemble` checks that the image holds that root in both places, and on a tag
+# `seq` checks every root file is each earlier release's byte for byte: they are
+# frozen. `publish` requires root to name the key the founder pinned as
+# `RELEASE_ROOT_KEY` in the `release` environment, and every other role
+# `RELEASE_KEY`: anchors outside the repository. It also writes both keys into
+# the draft's notes, which the founder holds against the paper before publishing.
+# `sign-script-macos` runs the sign script as the founder runs it, on a Mac,
+# with a test key.
+#
+# The `release-boot` job boots build-a's image itself, with qwen3-0.6b attached
+# as the import disk, types `models import` and passes on the import line
+# (`cargo xtask release-boot`): the role that ships is the one that imports.
+# With no repository committed, it builds the same image with `--test-root`
+# instead, whose `pkgrepo/` a throwaway root signs, checks that every other boot
+# module and part hashes as build-a's did, and boots that.
 #
 # The `sign` job also uploads the committed `kai-chunks 1` lists in
 # xtask/models/chunks as `models-chunks-<version>`, before any build runs, for
@@ -31,8 +42,8 @@
 # (`cargo xtask pkgrepo chunks`), and holds the upload to the commit's blobs.
 # The models are only hashed, never run.
 #
-# Stubbed until P4 task 18: tuf-on-ci's signing event for the founder's
-# YubiKeys, and the publish to `dane1599d/kernel-ai-updates`. No LLM runs.
+# Stubbed until the YubiKey root (root-ceremony.md): the publish to
+# `dane1599d/kernel-ai-updates`. No LLM runs.
 # Every action is pinned by commit SHA.
 name: Release
 
@@ -47,6 +58,10 @@ on:
       - xtask/src/image/slots.rs
       - xtask/src/release_boot.rs
       - xtask/src/cases/release.rs
+      - xtask/src/release_repo/**
+      - release/keys/**
+      - release/pkgrepo/**
+      - scripts/release-sign.sh
   workflow_dispatch:
 
 permissions:
@@ -92,6 +107,17 @@ jobs:
             echo "release/seq must rise above $last: bump it in the release PR"
             exit 1
           fi
+          # The founder-signed root never changes once released (root-ceremony.md):
+          # every earlier release that carries one must carry these bytes.
+          for tag in $(git tag --list 'v*'); do
+            [ "$tag" = "$VERSION" ] && continue
+            for root in $(git ls-tree --name-only "$tag" release/pkgrepo/metadata/ | grep '\.root\.json$' || true); do
+              if ! git diff --quiet "$tag" HEAD -- "$root"; then
+                echo "$root differs from $tag's: root files are frozen"
+                exit 1
+              fi
+            done
+          done
 
   build:
     name: Build the release image (runner ${{ matrix.runner }})
@@ -193,6 +219,17 @@ jobs:
           test "$(sort -u image-hashes.txt | wc -l)" -eq 1
           cmp build-a/NOTICES.txt build-b/NOTICES.txt
           cmp build-a/NOTICES.txt offline/NOTICES.txt
+      - name: The image carries the committed root as kai.root.json and as pkgrepo's root
+        run: |
+          root=release/pkgrepo/metadata/1.root.json
+          if [ -f "$root" ]; then
+            sha=$(sha256sum "$root" | cut -d' ' -f1)
+            grep -E "^xtask: module kai.root.json [0-9]+ $sha$" build-a/build.log
+            grep -E "^xtask: module pkgrepo/metadata/1.root.json [0-9]+ $sha$" build-a/build.log
+          elif grep -E '^xtask: module (kai.root.json|pkgrepo/)' build-a/build.log; then
+            echo "no release/pkgrepo is committed, yet the image carries a root or a repository"
+            exit 1
+          fi
       - name: The assets
         run: |
           mkdir release-assets
@@ -245,7 +282,7 @@ jobs:
           done
 
   release-boot:
-    name: The release with a test-root models role boots and imports qwen3-0.6b
+    name: The release boots and imports qwen3-0.6b under its models role
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -299,10 +336,21 @@ jobs:
           # Outside the checkout, as every output here: an untracked file marks
           # the build -dirty, which the slot record, the kernel and NOTICES carry.
           path: ${{ runner.temp }}/build-a
-      - name: The test-root build, which differs from build-a's only beneath pkgrepo/
+      - name: Boot the release itself once its signed repository is committed
+        id: image
+        run: |
+          if [ -f release/pkgrepo/metadata/1.root.json ]; then
+            zstd -dq "$RUNNER_TEMP/build-a/kernel-ai.img.zst" -o "$RUNNER_TEMP/boot.img"
+            echo "boots the release image and its founder-signed models role" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "test_root=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "test_root=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: With none, the test-root build, which differs from build-a's only beneath pkgrepo/
+        if: steps.image.outputs.test_root == 'true'
         run: |
           test -z "$(git status --porcelain)"
-          cargo xtask release-image --test-root --out "$RUNNER_TEMP/test-root.img" | tee "$RUNNER_TEMP/test-root.log"
+          cargo xtask release-image --test-root --out "$RUNNER_TEMP/boot.img" | tee "$RUNNER_TEMP/test-root.log"
           # Every boot module but the test root's repository, and every ESP part
           # but the bundle that carries it.
           same() { grep -E '^xtask: (module|part) ' "$1" | grep -v -E '^xtask: (module pkgrepo/|part boot/kai.bundle )'; }
@@ -315,8 +363,36 @@ jobs:
         env:
           FILE: ${{ steps.pin.outputs.file }}
         run: |
-          cargo xtask release-boot --image "$RUNNER_TEMP/test-root.img" \
+          cargo xtask release-boot --image "$RUNNER_TEMP/boot.img" \
             --model "$RUNNER_TEMP/kai-models/$FILE" --accel kvm --timeout 1200
+
+  # The founder signs on a Mac (root-ceremony.md): the script runs there in
+  # /bin/bash 3.2 with BSD tools and Homebrew's openssl@3. A test key only.
+  sign-script-macos:
+    name: release-sign.sh on macOS signs RFC 8032 test 2 (bash 3.2, openssl@3)
+    # Apple silicon, as the founder's Mac; macos-14 is no longer offered.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: |
+          brew list openssl@3 > /dev/null 2>&1 || brew install openssl@3
+          o=/opt/homebrew/opt/openssl@3/bin/openssl
+          "$o" version
+          /bin/bash --version | head -1
+          t=$(mktemp -d) && mkdir "$t/keys" "$t/work"
+          printf '302e020100300506032b6570042204204ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb' |
+            xxd -r -p > "$t/seed.der"
+          printf 'test pass\n' | "$o" pkcs8 -topk8 -v2 aes-256-cbc -scrypt -scrypt_N 16384 -scrypt_r 8 \
+            -scrypt_p 64 -inform DER -in "$t/seed.der" -out "$t/keys/release.key" -passout stdin
+          printf 'test pass\n' | "$o" pkey -in "$t/keys/release.key" -passin stdin -pubout -out "$t/keys/release.pub"
+          # The script shows both keys; one test key stands for the root's too.
+          cp "$t/keys/release.pub" "$t/keys/root.pub"
+          printf '\x72' > "$t/work/targets.canon"
+          out=$(printf 'test pass\n' | env -i /bin/bash --noprofile --norc scripts/release-sign.sh "$t/keys" "$t/work")
+          echo "$out"
+          echo "$out" | grep -q '^release.key is 3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c$'
+          test "$(cat "$t/work/targets.sig")" = \
+            92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00
 
   sign:
     name: Sign as TUF targets (test root), accept and refuse
@@ -365,15 +441,18 @@ jobs:
             git cat-file -p "$GITHUB_SHA:xtask/models/chunks/$(basename "$f")" | cmp - "$f"
           done
           echo "the $uploaded lists in models-chunks-$VERSION are the commit's, and the pinned files' own" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: The founder's YubiKey signing event (stub until P4 task 18)
+      - name: The committed release repository verifies and lists this catalog (P4 task 18, interim)
         run: |
-          echo "stub: tuf-on-ci opens the signing event in dane1599d/kernel-ai-updates once the root ceremony is done"
-          echo "stub: the models role signs each <id>.gguf and its <sha256>.chunks from models-chunks-$VERSION"
+          if [ -f release/pkgrepo/metadata/1.root.json ]; then
+            cargo xtask release-repo check | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "no release/pkgrepo committed: this release imports no model" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
 
   publish:
     name: Attest and draft the release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [seq, sign, vm, release-boot]
+    needs: [seq, sign, vm, release-boot, sign-script-macos]
     runs-on: ubuntu-24.04
     environment: release
     permissions:
@@ -381,6 +460,39 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Anchors outside the repository: the founder sets RELEASE_ROOT_KEY and
+      # RELEASE_KEY in this protected environment (root-ceremony.md). Root must
+      # name the one, and every other role the other, so a pull request that
+      # brings keys of its own cannot ship as the founder's. Sessions could
+      # rewrite the variables too, so the draft's notes also show both keys for
+      # the founder to hold against the paper before publishing.
+      - name: The release's keys are the ones the founder pinned
+        id: keys
+        env:
+          ROOT_KEY: ${{ vars.RELEASE_ROOT_KEY }}
+          RELEASE_KEY: ${{ vars.RELEASE_KEY }}
+        run: |
+          meta=release/pkgrepo/metadata
+          if [ ! -f "$meta/1.root.json" ]; then
+            [ -z "$ROOT_KEY$RELEASE_KEY" ] || { echo "the keys are pinned, but this release carries no root"; exit 1; }
+            exit 0
+          fi
+          [ -n "$ROOT_KEY" ] && [ -n "$RELEASE_KEY" ] ||
+            { echo "set both RELEASE_ROOT_KEY and RELEASE_KEY in the release environment (root-ceremony.md)"; exit 1; }
+          # The one key a role names, at threshold 1, or nothing.
+          role() { jq -r --arg r "$1" '.signed.roles[$r] as $x | if ($x.keyids | length) == 1 and $x.threshold == 1
+            then .signed.keys[$x.keyids[0]].keyval.public else "" end' "$meta/1.root.json"; }
+          pub() { openssl pkey -pubin -in "release/keys/$1.pub" -outform DER | tail -c 32 | od -An -v -tx1 | tr -d ' \n'; }
+          test "$(jq -r '.signed.roles | keys | join(" ")' "$meta/1.root.json")" = "root snapshot targets timestamp"
+          test "$(role root)" = "$ROOT_KEY"
+          test "$(pub root)" = "$ROOT_KEY"
+          for r in targets snapshot timestamp; do test "$(role "$r")" = "$RELEASE_KEY"; done
+          test "$(pub release)" = "$RELEASE_KEY"
+          # packages and models, as the one targets file delegates them.
+          test "$(jq -r '[.signed.delegations.keys[].keyval.public] | unique | join(" ")' "$meta"/*.targets.json)" = "$RELEASE_KEY"
+          echo "root $ROOT_KEY and release $RELEASE_KEY, as pinned"
+          { echo "root=$ROOT_KEY"; echo "release=$RELEASE_KEY"; } >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-${{ env.VERSION }}
@@ -391,10 +503,27 @@ jobs:
       - name: Draft the GitHub Release; the founder publishes it by hand
         env:
           GH_TOKEN: ${{ github.token }}
+          ROOT_KEY: ${{ steps.keys.outputs.root }}
+          RELEASE_KEY: ${{ steps.keys.outputs.release }}
         run: |
           prerelease=$([[ "$VERSION" == *-rc.* ]] && echo --prerelease || true)
+          # The asset RELEASE-NOTES.md is in SHA256SUMS, so the keys go only in
+          # the draft's notes.
+          notes="$RUNNER_TEMP/notes.md"
+          cp release-assets/RELEASE-NOTES.md "$notes"
+          if [ -n "$ROOT_KEY" ]; then
+            {
+              echo
+              echo "## Signing keys"
+              echo
+              echo "- root: \`$ROOT_KEY\`"
+              echo "- release: \`$RELEASE_KEY\`"
+              echo
+              echo "Before publishing: both must be the digits on the founder's paper (root-ceremony.md)."
+            } >> "$notes"
+          fi
           gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --draft --verify-tag $prerelease \
-            --title "Kernel AI $VERSION" --notes-file release-assets/RELEASE-NOTES.md release-assets/*
+            --title "Kernel AI $VERSION" --notes-file "$notes" release-assets/*
       - name: Publish to kernel-ai-updates (stub until P4 task 18)
         run: |
           echo "stub: snapshot and timestamp are signed and published once the root ceremony is done"

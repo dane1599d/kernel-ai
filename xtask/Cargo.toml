@@ -20,6 +20,9 @@ diskmap = { path = "../diskmap" }
 kaifs = { path = "../kaifs" }
 kaimem = { path = "../kaimem" }
 kaipkg = { path = "../kaipkg", features = ["online"] }
+# `release-repo` checks the founder's signatures and reads their PEM keys with it
+# (P4 task 18); the update disk's test reads its metadata back.
+kaituf = { path = "../kaituf" }
 # The HTTPS mock (mock_https/): its TLS server and test CA (plan p5-networking, task 7).
 kainet = { path = "../kainet", features = ["testca"] }
 rustls = { version = "=0.23.46", default-features = false }
@@ -58,8 +61,6 @@ semver = "1.0.28"
 # The model download's test plans its job as Models will (P5 task 9).
 modelchan = { path = "../modelchan" }
 comp-models = { path = "../apps/models" }
-# The update disk's test reads its metadata back.
-kaituf = { path = "../kaituf" }
 updatenet = { path = "../updatenet" }
 # The slot disk's tests read its kai-slot 1 back.
 bootslot = { path = "../bootslot" }
