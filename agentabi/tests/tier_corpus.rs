@@ -1543,6 +1543,18 @@ const EVERYDAY_TELLING: &[Case] = &[
         )],
         Asks,
     ),
+    // A complaint beside a telling line takes no vague reading (#883 review):
+    // the line names an action, so the change it did not ask for asks.
+    case(
+        "tell me how to remove ideas, it's so slow",
+        &[with("fs_trash", &[("path", IDEAS)])],
+        Asks,
+    ),
+    case(
+        "explain how to switch to round robin, it's laggy",
+        &[RR],
+        Asks,
+    ),
     // "model" is not the theme's "mode".
     case(
         "switch the model",

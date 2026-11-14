@@ -173,7 +173,10 @@ pub fn decide_net(line: &str, plan: &[Call], rows: &[Action], net: &Grounding) -
     let words = words(line);
     let hosts = Hosts { line, net };
     let english = is_english(line);
-    let named_any = rows.iter().any(|row| cued(&words, row).is_some());
+    // Every cue counts here, a telling clause's too: a line that names an
+    // action is never vague, so "tell me how to remove ideas, it's so slow"
+    // takes no vague reading (#883 review).
+    let named_any = rows.iter().any(|row| cued_in(&words, row, true).is_some());
     let decisions: Vec<Decision> = plan
         .iter()
         .map(|call| decide_one(&words, &hosts, english, call, rows))
@@ -334,13 +337,20 @@ fn value_of<'a>(call: &Call<'a>, name: &str) -> Option<Value<'a>> {
 /// cue wins over the others, so "print the policy, but don't switch to round robin"
 /// does not ask for a switch.
 fn cued(words: &[Word], row: &Action) -> Option<bool> {
-    // A clause that opens with a tell word asks to be told (#721, ADR 0002):
-    // "tell me how to remove ideas" asks for no removal.
+    cued_in(words, row, false)
+}
+
+/// [`cued`], with `telling_counts` saying whether a cue in a clause that opens
+/// with a tell word counts. For whether a call was asked for it does not
+/// (#721, ADR 0002): "tell me how to remove ideas" asks for no removal. For
+/// whether the line names an action at all it does.
+fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
     let telling = |clause: usize| {
-        words
-            .iter()
-            .find(|w| w.clause == clause)
-            .is_some_and(|w| TELL_WORDS.contains(&w.text.as_str()))
+        !telling_counts
+            && words
+                .iter()
+                .find(|w| w.clause == clause)
+                .is_some_and(|w| TELL_WORDS.contains(&w.text.as_str()))
     };
     let mut found = None;
     for cue in row.cues {
