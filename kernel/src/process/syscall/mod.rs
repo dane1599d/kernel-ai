@@ -35,6 +35,8 @@ mod update;
 mod mem;
 // P, packages.
 mod pkg;
+// A-core.
+mod clock;
 
 use crate::entry::TrapFrame;
 use crate::{cpu, ipc, threads};
@@ -107,6 +109,8 @@ const AREAS: &[Area] = &[
     mem::handle,
     // P, packages.
     pkg::handle,
+    // A-core.
+    clock::handle,
 ];
 
 fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {

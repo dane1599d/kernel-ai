@@ -557,6 +557,12 @@ impl AppCtl {
     }
 }
 
+/// Seconds since 1970 UTC (`CLOCK_NOW`); NotFound when the firmware gave no
+/// date.
+pub fn clock_now() -> Result<u64, Error> {
+    call(call::CLOCK_NOW, [0; 6])
+}
+
 /// Fills `buf` (at most [`kabi::call::ENTROPY_MAX`] bytes) with random bytes from
 /// the kernel (ENTROPY). NoEntropy on a CPU that gives none: make no key then.
 pub fn entropy(buf: &mut [u8]) -> Result<usize, Error> {

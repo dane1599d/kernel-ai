@@ -36,6 +36,7 @@ mod brackets;
 pub mod ccbuild;
 mod centry;
 mod clarify;
+mod clock;
 mod cmode;
 mod commands;
 pub mod data;
@@ -262,6 +263,11 @@ pub trait Host {
     /// its `ok`, or why not (P4 task 13).
     fn pkg(&self, _request: &str) -> Result<String, String> {
         Err(String::from("there is no pkg service here"))
+    }
+    /// Seconds since 1970 UTC from the kernel's clock (`CLOCK_NOW`), or `None`
+    /// where the firmware gave no date.
+    fn unix_seconds(&self) -> Option<u64> {
+        None
     }
     /// `cc build`'s work outside the shell's logic: component `name`'s
     /// sources, read from `dir/name/` ([`ccbuild::DIR`], or [`ccbuild::APPS_DIR`]
@@ -1122,13 +1128,19 @@ impl Shell {
         if request.is_empty() {
             return Reply::err("usage: ? <what you want done>");
         }
-        self.asked_model = true;
         let id = self.next_id;
         self.next_id += 1;
         self.host.audit(&format!(
             "script {id} requested: {}",
             show::truncate(request, 60)
         ));
+        // The time and the date come from the kernel's clock, never the model.
+        if let Some(text) = clock::answer(request, self.host.unix_seconds()) {
+            self.record(id, request, "", "answered from the clock");
+            self.worded = true;
+            return Reply::ok(text);
+        }
+        self.asked_model = true;
         if let Some(reply) = self.try_act(id, request) {
             return reply;
         }

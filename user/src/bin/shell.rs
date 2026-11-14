@@ -583,6 +583,10 @@ impl Host for System {
         build::ask_pkg(pkg_route()?, request)
     }
 
+    fn unix_seconds(&self) -> Option<u64> {
+        sys::clock_now().ok()
+    }
+
     fn net_fetch(&self, host: &str, path: &str) -> Result<String, String> {
         net::fetch(host, path)
     }

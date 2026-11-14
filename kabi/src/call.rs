@@ -16,7 +16,7 @@
 //! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; ENTROPY 83; RESOLVE_ON 84 and NETDEST_NARROW 85 (P5 task 1); P2 task 12's grants |
 //! | 90-99 | S-engine (P2) | |
 //! | 100-109 | P, packages (P2) | BOOT_READ, COMP_ADD, PKG_FETCH, PKG_TIME |
-//! | 110-119 | A-core | |
+//! | 110-119 | A-core | CLOCK_NOW |
 //! | 120-129 | model lane | |
 //! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH |
 //! | 140-149 | C, components | EDIT_CALL (lane E), CARD_READY |
@@ -666,6 +666,12 @@ pub const NET_CLOSE: u64 = 196;
 /// none. Needs `cap::NET` (P5 task 12: `fetch` and the other `kainet`
 /// clients).
 pub const NET_TIME: u64 = 197;
+
+/// `clock_now() -> seconds since 1970 UTC`: Limine's date at boot plus the
+/// time since, as [`NET_TIME`] gives it, for any process: the time of day is
+/// no secret, and the shell answers "what time is it" with it. NotFound when
+/// the firmware gave no date.
+pub const CLOCK_NOW: u64 = 110;
 
 /// The end of the reserved blocks (see the table above): the highest number a
 /// call may have. A call that is not there yet answers NotFound.
