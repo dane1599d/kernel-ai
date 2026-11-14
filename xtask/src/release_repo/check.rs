@@ -27,9 +27,11 @@ const ROOT_MARGIN_DAYS: u64 = 60;
 #[derive(Clone, Copy)]
 pub(super) enum Mode {
     /// `assemble`'s, on roles just signed at `release_seq` `version`: each
-    /// expires within [`SIGNING_DAYS`] of its full period from now. A root
-    /// that is not `fresh`, the frozen one, is held as [`Mode::Committed`]'s.
-    Signed { version: u64, fresh: bool },
+    /// but root expires within [`SIGNING_DAYS`] of its full period from now.
+    /// Root is held as [`Mode::Committed`]'s: the frozen one, or the root a
+    /// failed first release signed and the next one reuses (it is signed
+    /// once, `scripts/release-sign.sh`'s ledger).
+    Signed { version: u64 },
     /// A committed repository's, at a version up to `release_seq`: no role
     /// expires past its period from now, and root lasts [`ROOT_MARGIN_DAYS`].
     Committed { most: u64 },
@@ -112,7 +114,7 @@ pub(super) fn check_repository(
             ));
         }
         let earliest = match (mode, path == image::ROOT) {
-            (Mode::Signed { fresh: false, .. } | Mode::Committed { .. }, true) => ROOT_MARGIN_DAYS,
+            (_, true) => ROOT_MARGIN_DAYS,
             (Mode::Signed { .. }, _) => days.saturating_sub(SIGNING_DAYS),
             (Mode::Committed { .. }, false) => 0,
         };
