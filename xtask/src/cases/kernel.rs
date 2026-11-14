@@ -714,9 +714,11 @@ pub(super) const CASES: &[TestCase] = &[
     },
 ];
 
-/// The top bar's model state and memory, which change while the desk is still:
-/// `deskcore::paint::stats_area`, 320 px wide at the right of the 28 px bar,
-/// above its 1 px rule.
-fn desk_stats(width: u32, _height: u32) -> (u32, u32, u32, u32) {
-    (width.saturating_sub(320), 0, 320, 27)
+/// What changes while the desk is still (the top bar's model state and
+/// memory): deskgeom's tray mask, which deskcore paints them in.
+fn desk_stats(width: u32, height: u32) -> (u32, u32, u32, u32) {
+    let px = |n: u32| i32::try_from(n).unwrap_or(i32::MAX);
+    let r = deskgeom::points(px(width), px(height)).tray_mask();
+    let u = |n: i32| u32::try_from(n).unwrap_or(0);
+    (u(r.x), u(r.y), u(r.w), u(r.h))
 }

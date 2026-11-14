@@ -22,9 +22,9 @@ const CASE: &str = "ui-models-use";
 /// `desktop`, planned before the shell, whose route to it the window's
 /// switches come back through.
 pub const DESKTOP: &str = "desktop caps=display+input+serve pages=8192 stack_pages=512";
-/// The window's title bar: its frame is the first, at 48,52, and the click
-/// lands 8 px down and 60 px across.
-const TITLE: (i32, i32) = (108, 60);
+/// The window's title bar: it is the first window, and the click lands 60 px
+/// across.
+const TITLE: (i32, i32) = crate::ui_tests::DESK.window_title(0, 60);
 const CALL_MS: u64 = 60_000;
 /// How long `updated` may take to list once it is up, and then to store the
 /// import, under TCG.

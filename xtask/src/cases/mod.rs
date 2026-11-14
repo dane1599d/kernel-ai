@@ -349,6 +349,36 @@ mod tests {
         all
     }
 
+    /// A window's "opened at x,y" line names a cascade spot of deskgeom's
+    /// layout, so a layout change fails here before it fails a boot.
+    #[test]
+    fn every_opened_at_line_is_a_deskgeom_cascade_spot() {
+        let layout = deskgeom::points(1280, 800).layout;
+        let spots: Vec<String> = (0..deskgeom::CASCADE_SPOTS)
+            .map(|n| layout.cascade(n))
+            .map(|at| format!("opened at {},{} ", at.x, at.y))
+            .collect();
+        let mut seen = 0;
+        for case in every_case() {
+            for text in case.expect {
+                let Some(at) = text.find("opened at ") else {
+                    continue;
+                };
+                let rest = &text[at..];
+                if rest == "opened at " {
+                    continue;
+                }
+                seen += 1;
+                assert!(
+                    spots.iter().any(|spot| rest.starts_with(spot.as_str())),
+                    "{}: {text}",
+                    case.name
+                );
+            }
+        }
+        assert!(seen > 0);
+    }
+
     #[test]
     fn no_case_expects_a_text_it_forbids() {
         for case in every_case() {

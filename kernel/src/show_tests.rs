@@ -9,6 +9,7 @@
 
 use crate::display::claim;
 use crate::ui_tests::report;
+use crate::ui_tests::{APP_FRAME_W, DESK};
 use crate::{console, ipc, log, process, threads};
 use alloc::string::String;
 
@@ -23,9 +24,9 @@ const CALL_MS: u64 = 60_000;
 /// Time for comphost to start the app and paint its first frame under TCG.
 const OPEN_MS: u64 = 10_000;
 /// Where `desktop` starts the pointer: the middle of 1280x800.
-const START: (i32, i32) = (640, 400);
+const START: (i32, i32) = DESK.screen_centre();
 /// The window's close control, as `ui-window` finds it.
-const CLOSE: (i32, i32) = (48 + 642 - 17, 52 + 17);
+const CLOSE: (i32, i32) = DESK.close(0, APP_FRAME_W);
 
 fn call(request: &str) -> Result<String, &'static str> {
     ipc::call(NAME, request.as_bytes(), CALL_MS)

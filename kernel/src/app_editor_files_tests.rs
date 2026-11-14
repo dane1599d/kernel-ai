@@ -25,6 +25,7 @@
 
 use crate::app_editor_tests::{NAME, OPEN_MS, WAIT_MS, cursor, status, until};
 use crate::display::claim;
+use crate::ui_tests::DESK;
 use crate::ui_tests::report;
 use crate::{console, ipc, log, process, threads};
 use alloc::string::String;
@@ -38,8 +39,8 @@ const CALL_MS: u64 = 60_000;
 /// a margin under TCG.
 const CLICK_MS: u64 = 1_500;
 /// Where `desktop` starts the pointer, and a place inside the code view (as the editor's case has it).
-const START: (i32, i32) = (640, 400);
-const CODE: (i32, i32) = (48 + 300, 52 + 100);
+const START: (i32, i32) = DESK.screen_centre();
+const CODE: (i32, i32) = DESK.content(0, 299, 66);
 
 /// The shell's wire reply to `line`, as a typed line.
 pub(crate) fn shell(line: &str) -> Result<String, &'static str> {

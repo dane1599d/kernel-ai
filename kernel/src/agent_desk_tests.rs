@@ -16,6 +16,7 @@
 
 use crate::desk_tests::report;
 use crate::display::claim;
+use crate::ui_tests::DESK as POINTS;
 use crate::{ask_box, input, ipc, log, process, terminal, threads};
 use alloc::string::String;
 
@@ -29,10 +30,10 @@ pub const APPS: &str = "term uses=desktop caps=call+term pages=4096 stack_pages=
      notes-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand";
 const WAIT_MS: u64 = 60_000;
 /// Where `desktop` starts the pointer: the middle of 1280x800.
-pub(crate) const START: (i32, i32) = (640, 400);
-/// The Terminal's title bar: its frame is the first, at 48,52, and Notes' the
-/// second, at 80,84, below it.
-const TERM_TITLE: (i32, i32) = (150, 60);
+pub(crate) const START: (i32, i32) = POINTS.screen_centre();
+/// The Terminal's title bar: it is the first window, and Notes' the second,
+/// below it.
+const TERM_TITLE: (i32, i32) = POINTS.window_title(0, 102);
 /// Time for comphost to start Notes and paint its first frame under TCG.
 pub(crate) const OPEN_MS: u64 = 20_000;
 /// Time for the harness's keys, and for the shell to take a line.

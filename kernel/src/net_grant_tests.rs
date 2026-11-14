@@ -70,9 +70,9 @@ const DENIED_WAIT_MS: u64 = 50_000;
 /// Settings' start: comphost's, the component's compile, and its reads.
 const OPEN_MS: u64 = 60_000;
 const SETTINGS_READS_MS: u64 = 5_000;
-/// Settings' title bar: its frame is the first, at 48,52 (the app has no
-/// window), and the click lands 8 px down and 60 px across.
-const SETTINGS_TITLE: (i32, i32) = (108, 60);
+/// Settings' title bar: it is the first window (the app has no window), and the
+/// click lands 60 px across.
+const SETTINGS_TITLE: (i32, i32) = crate::ui_tests::DESK.window_title(0, 60);
 const POLL_MS: u64 = 50;
 
 fn wait(what: &'static str, mut done: impl FnMut() -> bool) -> Result<(), &'static str> {

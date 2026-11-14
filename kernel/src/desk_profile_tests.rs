@@ -13,6 +13,7 @@
 
 use crate::desk_tests::report;
 use crate::display::claim;
+use crate::ui_tests::DESK;
 use crate::{ask_box, ipc, log, process, sched_control, terminal, threads};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -34,9 +35,9 @@ const CALL_MS: u64 = 30_000;
 /// Time for comphost to start Notes and paint its first frame under TCG.
 const OPEN_MS: u64 = 10_000;
 /// Where `desktop` starts the pointer: the middle of 1280x800.
-const START: (i32, i32) = (640, 400);
-/// Notes' title bar, clear of its controls: its frame is at 48,52.
-const NOTES_TITLE: (i32, i32) = (300, 68);
+const START: (i32, i32) = DESK.screen_centre();
+/// Notes' title bar, clear of its controls: it is the first window.
+const NOTES_TITLE: (i32, i32) = DESK.window_title(0, 252);
 /// Ctrl down, Space down and up, Ctrl up; `y` down and up (scan code set 1).
 const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
 /// Y twice: a desktop card's first `y` arms it, the second runs it (#864).
