@@ -8,8 +8,8 @@
 # and their root.pub and release.pub. Each <role>.canon in WORK with no .sig is
 # copied once to a private folder, and they must be one round's files. Before
 # any passphrase, it prints the round, the two keys, the keys each copy names,
-# and each model and package it signs, refusing any file that is not the text
-# xtask writes. It then signs each copy,
+# each model and package it signs and when each file expires, refusing any
+# file that is not the text xtask writes. It then signs each copy,
 # root with root.key and the rest with release.key, and writes the raw
 # Ed25519 signature in hex as <role>.sig. Passphrases are never echoed and
 # reach openssl on a pipe. No network call. Bash 3.2 (macOS) and later;
@@ -53,8 +53,8 @@ done
 set -- "$tmp"/*
 [ -e "$1" ] || { echo "nothing to sign in $work"; exit 0; }
 # Each round signs exactly its files: targets, packages, models and snapshot
-# (and root, at the first release only), then timestamp alone. Every role is
-# at the snapshot's version, this release's number.
+# (and root, at the first release only), then timestamp alone. Every role but
+# root is at the snapshot's version, this release's number, signed once.
 files=$(cd "$tmp" && echo *)
 case "$files" in
   "models packages snapshot targets" | "models packages root snapshot targets") round=1 at=$tmp/snapshot ;;
@@ -68,8 +68,8 @@ echo "round $round of release $seq: signs $files"
 # Every number below must be one of the two on your paper. Each key a file
 # names must be a plain Ed25519 key in lower-case hex, so every one is shown.
 hex() { "$openssl" pkey -pubin -in "$1" -outform DER | tail -c 32 | od -An -v -tx1 | tr -d ' \n'; }
-rel=$(hex "$keys/release.pub")
-echo "root.key is $(hex "$keys/root.pub")"
+rk=$(hex "$keys/root.pub") rel=$(hex "$keys/release.pub")
+echo "root.key is $rk"
 echo "release.key is $rel"
 count() { (grep -o -- "$2" "$1" || true) | wc -l | tr -d ' '; }
 for copy in "$@"; do
@@ -79,35 +79,60 @@ for copy in "$@"; do
     [ "$(count "$copy" '"keytype"')" = "$(count "$copy" '"keytype":"ed25519","keyval"')" ] &&
     [ "$(count "$copy" '"scheme"')" = "$(count "$copy" '"scheme":"ed25519"}')" ] ||
     { echo "$name.canon names a key that is not lower-case hex Ed25519: nothing signed" >&2; exit 1; }
-  echo "$name.canon names: $( (grep -o '"public":"[0-9a-f]*"' "$copy" || true) | cut -d'"' -f4 | sort -u | tr '\n' ' ')"
+  echo "$name.canon names: $( (grep -o '"public":"[0-9a-f]*"' "$copy" || true) | cut -d'"' -f4 | tr '\n' ' ')"
 done
-# targets.canon lists no target itself and delegates *.kpkg to packages, then
-# *.gguf and *.chunks to models, with release.key alone: no other role can
-# speak for a package or a model. With hashes, dates, the spec version and
-# lengths aside, it, snapshot and timestamp are fixed texts, each its own _type.
-norm() { sed -e 's/"[0-9a-f]\{64\}"/"H"/g' -e 's/"expires":"[0-9:TZ-]*"/"expires":"E"/' \
-  -e 's/"spec_version":"[0-9.]*"/"spec_version":"S"/' -e "s/\"version\":$seq\([,}]\)/\"version\":N\1/g" \
-  -e 's/"length":[0-9]*/"length":L/g' "$1"; }
+# A key is named by its id, the SHA-256 of its canonical form, and the two
+# keys are two.
+id() { printf '{"keytype":"ed25519","keyval":{"public":"%s"},"scheme":"ed25519"}' "$1" | "$openssl" dgst -sha256 -r | cut -c1-64; }
+rid=$(id "$rk") lid=$(id "$rel")
+[ "$rid" != "$lid" ] || { echo "root.key and release.key are one key: nothing signed" >&2; exit 1; }
+key() { printf '"%s":{"keytype":"ed25519","keyval":{"public":"%s"},"scheme":"ed25519"}' "$1" "$2"; }
+of() { printf '"%s":{"keyids":["%s"],"threshold":1}' "$1" "$2"; }
+if [[ $rid < $lid ]]; then ks=$(key "$rid" "$rk"),$(key "$lid" "$rel"); else ks=$(key "$lid" "$rel"),$(key "$rid" "$rk"); fi
+# In round 2 the timestamp must name the snapshot round 1 signed: its canon and
+# signature here, checked with release.key, hashed as the device fetches it.
+snap= size=
+if [ "$round" = 2 ]; then
+  cp -- "$work/snapshot.canon" "$tmp/.snapshot" && cp -- "$work/snapshot.sig" "$tmp/.sig" || exit 1
+  sig=$(cat "$tmp/.sig")
+  case "$sig" in *[!0-9a-f]*) sig= ;; esac
+  [ ${#sig} -eq 128 ] && printf "$(printf '%s' "$sig" | sed 's/../\\x&/g')" > "$tmp/.raw" &&
+    "$openssl" pkeyutl -verify -pubin -inkey "$keys/release.pub" -rawin -in "$tmp/.snapshot" -sigfile "$tmp/.raw" >/dev/null 2>&1 ||
+    { echo "snapshot.sig is not release.key's signature of snapshot.canon: nothing signed" >&2; exit 1; }
+  signed() { printf '{"signatures":[{"keyid":"%s","sig":"%s"}],"signed":' "$lid" "$sig"; cat "$tmp/.snapshot"; printf '}'; }
+  snap=$(signed | "$openssl" dgst -sha256 -r | cut -c1-64) size=$(signed | wc -c | tr -d ' ')
+  echo "round 1 signed snapshot.canon as $size bytes, sha256 $snap: timestamp.canon must name it"
+fi
+# root (version 1, root.key for root and release.key for the rest), targets
+# (no target of its own; *.kpkg to packages, then *.gguf and *.chunks to
+# models, both release.key's), snapshot and timestamp are fixed texts, their
+# dates and the spec version aside: no other role can speak for a package or
+# a model, and each _type is the file's own.
+stamp() { sed -e 's/"expires":"[0-9:TZ-]*"/"expires":"E"/' -e 's/"spec_version":"[0-9.]*"/"spec_version":"S"/' "$1"; }
+norm() { stamp "$1" | sed "s/\"version\":$seq\([,}]\)/\"version\":N\1/g"; }
 ends='"terminating":true,"threshold":1}' v='{"version":N}'
-tw='{"_type":"targets","delegations":{"keys":{"H":{"keytype":"ed25519","keyval":{"public":"H"},"scheme":"ed25519"}},'
-tw=$tw'"roles":[{"keyids":["H"],"name":"packages","paths":["*.kpkg"],'$ends',{"keyids":["H"],"name":"models",'
-tw=$tw'"paths":["*.gguf","*.chunks"],'$ends']},"expires":"E","spec_version":"S","targets":{},"version":N}'
+rw='{"_type":"root","consistent_snapshot":true,"expires":"E","keys":{'$ks'},"roles":{'$(of root "$rid")','
+rw=$rw$(of snapshot "$lid")','$(of targets "$lid")','$(of timestamp "$lid")'},"spec_version":"S","version":1}'
+tw='{"_type":"targets","delegations":{"keys":{'$(key "$lid" "$rel")'},"roles":[{"keyids":["'$lid'"],"name":"packages",'
+tw=$tw'"paths":["*.kpkg"],'$ends',{"keyids":["'$lid'"],"name":"models","paths":["*.gguf","*.chunks"],'$ends']},'
+tw=$tw'"expires":"E","spec_version":"S","targets":{},"version":N}'
 sw='{"_type":"snapshot","expires":"E","meta":{"models.json":'$v',"packages.json":'$v',"targets.json":'$v'},'
 sw=$sw'"spec_version":"S","version":N}'
-mw='{"_type":"timestamp","expires":"E","meta":{"snapshot.json":{"hashes":{"sha256":"H"},"length":L,"version":N}},'
-mw=$mw'"spec_version":"S","version":N}'
-for pair in "targets:$tw" "snapshot:$sw" "timestamp:$mw"; do
-  name=${pair%%:*}
-  [ ! -e "$tmp/$name" ] || [ "$(norm "$tmp/$name")" = "${pair#*:}" ] ||
-    { echo "$name.canon is not what xtask writes: nothing signed" >&2; exit 1; }
-done
-[ ! -e "$tmp/targets" ] || grep -qF "\"public\":\"$rel\"" "$tmp/targets" ||
-  { echo "targets.canon delegates to a key that is not release.key: nothing signed" >&2; exit 1; }
+mw='{"_type":"timestamp","expires":"E","meta":{"snapshot.json":{"hashes":{"sha256":"'$snap'"},"length":'$size','
+mw=$mw'"version":N}},"spec_version":"S","version":N}'
+pin() {
+  [ ! -e "$tmp/$1" ] || [ "$($3 "$tmp/$1")" = "$2" ] ||
+    { echo "$1.canon is not what xtask writes: nothing signed" >&2; exit 1; }
+}
+pin root "$rw" stamp
+pin targets "$tw" norm
+pin snapshot "$sw" norm
+pin timestamp "$mw" norm
 # A delegated role's targets, walked as JSON (awk -v role=models|packages): the
 # role must be exactly the shape xtask writes, each model's path an id the OS
 # takes and .gguf, or a lower-case SHA-256 and .chunks, and each entry its
-# length, SHA-256 and, but for a chunk list, its index. Each line printed, a
-# package's with its grants, must be on the prepare run's page on GitHub.
+# length, SHA-256 and, but for a chunk list, its index. Each line printed must
+# be on the prepare run's page on GitHub.
 walk='
     function value(t, i,   c, d, q) {
       c = substr(t, i, 1)
@@ -121,6 +146,11 @@ walk='
         if (!q && !d) return i + 1
       }
       exit 1
+    }
+    function field(e, k,   f) {
+      if (!(f = index(e, "\"" k "\":"))) return "none"
+      f += length(k) + 3
+      return substr(e, f, value(e, f) - f)
     }
     { s = s $0 }
     END {
@@ -138,12 +168,12 @@ walk='
         else if (list) rest = "}," substr(e, 2)
         else exit 1
         if (rest !~ /^[}],"hashes":[{]"sha256":"[0-9a-f]+"[}],"length":[0-9]+[}]$/ || substr(rest, 87, 1) != "\"") exit 1
-        sha = substr(rest, 23, 64)
-        if (!kpkg) { print "models.canon signs " key ", sha256 " sha ", length " substr(rest, 99, length(rest) - 99); continue }
-        g = index(e, "\"grants\":[")
-        grants = g ? substr(e, g + 9, value(e, g + 9) - g - 9) : "none"
-        if (grants !~ /^[ -~]+$/) exit 1
-        print "packages.canon signs " key ", sha256 " sha ", grants " grants
+        line = role ".canon signs " key ", sha256 " substr(rest, 23, 64)
+        if (kpkg) line = line ", grants " field(e, "grants") ", actions " field(e, "actions") ", yanked " field(e, "yanked")
+        else line = line ", length " substr(rest, 99, length(rest) - 99)
+        if (gguf) line = line ", name " field(e, "name") ", licence " field(e, "licence") ", source " field(e, "source")
+        if (line !~ /^[ -~]+$/) exit 1
+        print line
       }
       if (substr(s, i) != "},\"version\":" seq "}") exit 1
     }'
@@ -155,6 +185,33 @@ for role in models packages; do
   [ "$(printf '%s' "$listed" | grep -c "^$role" || true)" = "$n" ] ||
     { echo "$role.canon lists $n targets, not each once: nothing signed" >&2; exit 1; }
   [ -z "$listed" ] || printf '%s\n' "$listed"
+done
+# Each role expires its full period from now, less up to the week signing may
+# take: root, targets, packages and models 365 days, snapshot 30 and timestamp
+# 7. This machine's clock must be right.
+now=$(date -u +%s)
+for copy in "$@"; do
+  name=$(basename "$copy")
+  case "$name" in snapshot) days=30 ;; timestamp) days=7 ;; *) days=365 ;; esac
+  awk -v days="$days" -v now="$now" -v name="$name" '
+    function day(y, m, d) {
+      y += 0; m += 0; y -= (m <= 2); m += (m > 2) ? -3 : 9
+      return 365 * y + int(y / 4) - int(y / 100) + int(y / 400) + int((153 * m + 2) / 5) + d - 719469
+    }
+    { s = s $0 }
+    END {
+      if (!match(s, /"expires":"[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z"/)) {
+        print name ".canon has no expiry: nothing signed" > "/dev/stderr"
+        exit 1
+      }
+      t = substr(s, RSTART + 11, 20)
+      at = day(substr(t, 1, 4), substr(t, 6, 2), substr(t, 9, 2)) * 86400
+      at += substr(t, 12, 2) * 3600 + substr(t, 15, 2) * 60 + substr(t, 18, 2)
+      line = name ".canon expires " t ", in " int((at - now) / 86400 + 0.5) " days"
+      if (at >= now + (days - 7) * 86400 && at <= now + (days + 1) * 86400) { print line; exit }
+      print line ", not within a week of " days ": nothing signed" > "/dev/stderr"
+      exit 1
+    }' "$copy" || exit 1
 done
 
 # sign KEY ROLE...: asks for KEY's passphrase, checks it, then signs each ROLE.

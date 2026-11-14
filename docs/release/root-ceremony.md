@@ -39,7 +39,7 @@ A WSL distro of its own and `env -i` do not stop that. WSL2 also does not start 
 - The key stick never goes into this PC. Files move between this PC and the signing machine on a second stick, the transfer stick. What it carries is public.
 - The sign script runs from the key stick, never from a checkout, because a session could change a checkout between your review and your run.
   - Check its SHA-256 before each run against the one you wrote down.
-  - The script at the commit that added it has this SHA-256: `2b169977d1cefe3e6640f251b52cbba832c75c4b08b68519db7e05c6993fd95f`.
+  - The script at the commit that added it has this SHA-256: `7845ec9070ffa59d8b54a2daf280101d00abf6847a08926c04d1032bff90c117`.
   - A test in `xtask/src/release_repo/tests.rs` holds this page to the script, so a change to either shows in review.
   - It runs in macOS's bash 3.2 and with Linux's or Git for Windows' bash. It uses the first OpenSSL 3 it finds at `/usr/bin/openssl` or Homebrew's `openssl@3`.
 - Root files are frozen once committed. `cargo xtask release-repo` reuses `1.root.json` and never signs root again. CI fails a pull request or a push to main that changes or removes any committed `*.root.json`, and a tag whose root files differ from any earlier release's. Two different "version 1" roots would split devices, because `updated` keeps a cached root of the same version.
@@ -98,10 +98,12 @@ Signing takes two rounds, because the timestamp holds the hash of the signed sna
 
 The script refuses a folder that holds anything else to sign, or misses one of these.
 
+**A release number is signed once.** If anything goes wrong after round 1 is signed (a refusal, a changed file, a round done again), don't sign that number again: the session raises `release/seq`, and you start again at step 1. The snapshot names each role by its version alone, so files from two signings of one number could be mixed.
+
 **Every release signs the packages again**, along with targets and the rest. You sign each built-in app's exact bytes, and any change to an app changes them. A tag whose apps are not the signed bytes is refused (`release-image` names the app and both hashes), and you sign again from step 1.
 
 1. The session runs the "Release prepare" workflow on GitHub on the commit to be released, and tells you its branch and commit.
-   - Two runners build the apps, and it goes on only when both packed byte-identical packages. Its summary page lists each model and chunk list with its SHA-256 and length, and each package with its SHA-256 and grants.
+   - Two runners build the apps, and it goes on only when both packed byte-identical packages. Its summary page lists each model and chunk list with its SHA-256 and length (a model with its name, licence and source too), and each package with its SHA-256, grants, actions and whether it is yanked.
    - Open that page yourself, not from a link: on GitHub, **Actions**, then **Release prepare**, then the run. Its summary names a branch and a commit. The branch must be `main` or `release/v…`, and the commit the one the session told you. If either is not, stop.
    - With the transfer stick in this PC, the session downloads the workflow's files (`release-prepare-<commit>`) to `<transfer stick>\kai-release\<version>`. It pastes the `sha256` line `prepare` printed for each file.
    - Eject the transfer stick.
@@ -110,8 +112,11 @@ The script refuses a folder that holds anything else to sign, or misses one of t
 4. Run `/bin/bash --noprofile --norc "$K/release-sign.sh" "$K" "$T/kai-release/<version>"`. Before any passphrase, it prints `round 1 of release <n>: signs …` (in step 6, `round 2 of release <n>: signs timestamp`), then `root.key is …` and `release.key is …`, then for each file the keys it names.
    - The round must be the one you are on, and `<n>` the release number the session told you. If not, press Ctrl-C and stop.
    - Every one of those numbers must be one of the two on your paper. If any is not, press Ctrl-C and stop.
-   - Then, in round 1, it prints `models.canon signs <file>, sha256 <hash>, length <n>` for each model and chunk list, and `packages.canon signs <name>, sha256 <hash>, grants [...]` for each package. Each whole line must be on the Release prepare summary page from step 1. Today every built-in app says `grants []`. If a line is not there, press Ctrl-C and stop.
-   - If the script stops with "is not one line of printable ASCII", "is not what xtask writes", "not one round's files", "is not a snapshot" or "a key that is not lower-case hex Ed25519", stop too: someone changed the folder.
+   - At the first release, it holds `root.canon` to version 1 of the root xtask writes for your two keys: root.key for root, release.key for targets, snapshot and timestamp, each key named by its own id. It refuses any other root, and any root on a later release.
+   - In round 2, it first checks that `snapshot.sig` is release.key's signature of `snapshot.canon`, and prints `round 1 signed snapshot.canon as <n> bytes, sha256 <hash>`: the timestamp must name exactly that.
+   - Then, in round 1, it prints `models.canon signs <file>, sha256 <hash>, length <n>` for each model and chunk list (with `name`, `licence` and `source` for a model), and `packages.canon signs <name>, sha256 <hash>, grants [...], actions [...], yanked false` for each package. Each whole line must be on the Release prepare summary page from step 1. Today every built-in app says `grants []`. If a line is not there, press Ctrl-C and stop.
+   - Last, it prints `<file>.canon expires <date>, in <n> days` for each file: 365 days for root, targets, packages and models, 30 for snapshot and 7 for timestamp. It refuses one not within a week of that, so this machine's clock must be right.
+   - If the script stops with "is not one line of printable ASCII", "is not what xtask writes", "not one round's files", "is not a snapshot", "a key that is not lower-case hex Ed25519", "are one key", "is not release.key's signature" or "not within a week of", stop too: someone changed the folder, or this machine's clock is wrong.
    - Then type each passphrase it asks for. Root's is asked only for the first release, the one that signs root. If it asks for root's on any later release, press Ctrl-C and stop: root is frozen, so a request for it means someone changed the folder.
    - For each file it prints `signed <file> with <key>: sha256 <hash>`. Each hash must be the one the session pasted for that file. If one differs, the folder changed after `prepare`: tell the session, and nothing goes further.
 5. Run `exit`, eject both sticks, take the transfer stick back to this PC, and tell the session "signed".
@@ -135,6 +140,7 @@ The session never needs the key stick or a passphrase. A change to `xtask/models
   - the rule on root's passphrase;
   - the digits in the draft (step 8);
   - signing only when a session asks for a release you expect.
+- The image's repository (`pkgrepo/`) and the online repository trust the same root and `release.key`: what you sign with it is good for both.
 
 ### Expiry and online updates
 

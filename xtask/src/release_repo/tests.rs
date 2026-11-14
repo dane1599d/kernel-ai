@@ -106,15 +106,31 @@ fn release(
     version: u64,
     sign: &dyn Fn(&Path),
 ) -> Result<(), String> {
-    prepare(paths, &targets(), models, version, NOW)?;
+    release_at(paths, models, version, sign, NOW)
+}
+
+/// [`release`] at `now`: the sign script holds expiries to its own clock.
+fn release_at(
+    paths: &Paths,
+    models: &[Model],
+    version: u64,
+    sign: &dyn Fn(&Path),
+    now: Time,
+) -> Result<(), String> {
+    prepare(paths, &targets(), models, version, now)?;
     sign(&paths.work);
-    prepare_timestamp(paths, NOW)?;
+    prepare_timestamp(paths, now)?;
     sign(&paths.work);
-    assemble(paths, models, version, NOW, &repack)
+    assemble(paths, models, version, now, &repack)
 }
 
 /// What `kaipkg::sign` writes with both keys in hand: the metadata files.
 fn in_one_go(models: &[Model]) -> Vec<(String, Vec<u8>)> {
+    in_one_go_at(models, NOW)
+}
+
+/// [`in_one_go`] at `now`.
+fn in_one_go_at(models: &[Model], now: Time) -> Vec<(String, Vec<u8>)> {
     let (root, release) = (key(ROOT_SEED), key(RELEASE_SEED));
     let keys = Keys {
         root: &root,
@@ -122,7 +138,7 @@ fn in_one_go(models: &[Model]) -> Vec<(String, Vec<u8>)> {
         ..Keys::one(&release)
     };
     let models = tuf::sign_models(models).unwrap();
-    let mut files: Vec<_> = sign::build_with_models(&targets(), &models, &keys, NOW, ADR_0008)
+    let mut files: Vec<_> = sign::build_with_models(&targets(), &models, &keys, now, ADR_0008)
         .unwrap()
         .into_iter()
         .filter(|(path, _)| path.starts_with("metadata/"))
@@ -519,7 +535,7 @@ fn the_runbook_pins_the_sign_script() {
     );
     let text = String::from_utf8(script).unwrap();
     assert!(
-        text.lines().count() <= 190,
+        text.lines().count() <= 250,
         "release-sign.sh stays short enough to read"
     );
     for word in ["curl", "wget", "/dev/tcp", "ssh", "nc ", "git ", "http"] {

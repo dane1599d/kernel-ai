@@ -8,6 +8,11 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 const OPENSSL: &str = "/usr/bin/openssl";
+
+/// This machine's clock: the script holds each expiry to it.
+fn clock() -> Time {
+    crate::pkgrepo::unix_now().unwrap()
+}
 const ROOT_PASS: &str = "root test passphrase";
 const RELEASE_PASS: &str = "release test passphrase";
 /// RFC 8032 §7.1's test 2: the release key's signature of the one byte 0x72.
@@ -99,7 +104,7 @@ fn the_script_shows_every_key_before_a_passphrase() {
     }
     let paths = workspace("showkeys");
     let stick = stick(&paths);
-    prepare(&paths, &targets(), &models::catalog().unwrap(), 1, NOW).unwrap();
+    prepare(&paths, &targets(), &models::catalog().unwrap(), 1, clock()).unwrap();
     // No passphrase given: it stops at the first prompt, having shown the keys.
     let out = sign_script(&stick, &paths.work, "");
     let shown = String::from_utf8(out.stdout).unwrap();
@@ -127,23 +132,37 @@ fn the_script_shows_every_key_before_a_passphrase() {
     // Which round, and of which release.
     let round = "round 1 of release 1: signs models packages root snapshot targets\n";
     assert!(shown.contains(round), "{shown}");
-    // Each model and package it signs, as the prepare job lists them, a
-    // package with its grants.
+    // Each model and package it signs, as the prepare job lists them: a
+    // model with its name, licence and source, a package with its grants,
+    // actions and whether it is yanked.
+    let quoted = |text: &str| serde_json::to_string(text).unwrap();
     for model in models::catalog().unwrap() {
         let line = format!(
-            "models.canon signs {}, sha256 {}, length {}\n",
+            "models.canon signs {}, sha256 {}, length {}, name {}, licence {}, source {}\n",
             model.target(),
             model.sha256,
-            model.length
+            model.length,
+            quoted(&model.name),
+            quoted(&model.licence),
+            quoted(&model.source)
         );
         assert!(shown.contains(&line), "{line} in {shown}");
     }
     for (path, bytes) in packages::built(&targets()) {
+        let name = path.split('-').next().unwrap();
         let line = format!(
-            "packages.canon signs {path}, sha256 {}, grants []\n",
+            "packages.canon signs {path}, sha256 {}, grants [], actions [\"{name}_find\"], yanked false\n",
             crate::sha256_hex(&bytes)
         );
         assert!(shown.contains(&line), "{line} in {shown}");
+    }
+    // And when each expires, its full period from now.
+    for (role, days) in [("root", 365), ("targets", 365), ("snapshot", 30)] {
+        let line = format!(", in {days} days\n");
+        let found = shown.lines().any(|l| {
+            l.starts_with(&format!("{role}.canon expires ")) && format!("{l}\n").ends_with(&line)
+        });
+        assert!(found, "{role} expires in {days} days: {shown}");
     }
 }
 
@@ -169,7 +188,7 @@ fn the_script_refuses_a_package_entry_xtask_does_not_write() {
     for (name, role, edit) in edits {
         let paths = workspace(&format!("script-{name}"));
         let stick = stick(&paths);
-        prepare(&paths, &targets(), &models::catalog().unwrap(), 1, NOW).unwrap();
+        prepare(&paths, &targets(), &models::catalog().unwrap(), 1, clock()).unwrap();
         tamper(&paths.work, role, edit);
         let out = sign_script(&stick, &paths.work, "");
         let said = String::from_utf8(out.stderr).unwrap();
@@ -182,7 +201,7 @@ fn the_script_refuses_a_package_entry_xtask_does_not_write() {
     }
     let paths = workspace("script-grant");
     let stick = stick(&paths);
-    prepare(&paths, &targets(), &models::catalog().unwrap(), 1, NOW).unwrap();
+    prepare(&paths, &targets(), &models::catalog().unwrap(), 1, clock()).unwrap();
     tamper(&paths.work, PACKAGES, |s| {
         s["targets"]["notes-1.0.0.kpkg"]["custom"]["kai"]["grants"] = json!(["net"])
     });
@@ -256,7 +275,7 @@ fn the_script_refuses_a_decoy_or_a_line_feed_in_packages() {
         let name = case.name;
         let paths = workspace(&format!("script-hidden-{name}"));
         let stick = stick(&paths);
-        prepare(&paths, &targets(), &models::catalog().unwrap(), 1, NOW).unwrap();
+        prepare(&paths, &targets(), &models::catalog().unwrap(), 1, clock()).unwrap();
         tamper(&paths.work, PACKAGES, case.edit);
         let path = paths.work.join("packages.canon");
         let mut text = fs::read_to_string(&path).unwrap();
@@ -305,7 +324,7 @@ fn the_script_refuses_targets_or_models_that_could_speak_for_a_package() {
     for (name, role, edit) in edits {
         let paths = workspace(&format!("script-role-{name}"));
         let stick = stick(&paths);
-        prepare(&paths, &targets(), &models::catalog().unwrap(), 1, NOW).unwrap();
+        prepare(&paths, &targets(), &models::catalog().unwrap(), 1, clock()).unwrap();
         tamper(&paths.work, role, edit);
         let out = sign_script(&stick, &paths.work, "");
         let said = String::from_utf8(out.stderr).unwrap();
@@ -343,6 +362,15 @@ fn first_key(work: &Path) -> String {
     let text = fs::read_to_string(work.join("root.canon")).unwrap();
     let (_, rest) = text.split_once("\"public\":\"").unwrap();
     rest[..64].to_string()
+}
+
+/// `<role>.canon` in `work` set to expire `days` from now.
+fn redate(work: &Path, role: &str, days: u64) {
+    let path = work.join(format!("{role}.canon"));
+    let text = fs::read_to_string(&path).unwrap();
+    let (head, rest) = text.split_once(r#""expires":""#).unwrap();
+    let at = Time(clock().0 + days * sign::DAY).format();
+    fs::write(&path, format!(r#"{head}"expires":"{at}{}"#, &rest[20..])).unwrap();
 }
 
 /// How many `.sig` files `work` holds.
@@ -432,15 +460,87 @@ fn the_script_signs_only_a_rounds_own_files_as_xtask_writes_them() {
             change: |w| swap(w, "models", r#""qwen3-0.6b.gguf""#, r#""Qwen3-0.6b.gguf""#),
             refused: "models.canon is not what xtask writes",
         },
+        Round {
+            name: "root-v2",
+            second: false,
+            change: |w| swap(w, "root", r#","version":1}"#, r#","version":2}"#),
+            refused: "root.canon is not what xtask writes",
+        },
+        Round {
+            name: "root-roles",
+            second: false,
+            change: |w| {
+                let text = fs::read_to_string(w.join("root.canon")).unwrap();
+                let root: Value = serde_json::from_str(&text).unwrap();
+                let ids = &root["roles"];
+                let (root_id, release_id) = (
+                    ids["root"]["keyids"][0].as_str().unwrap(),
+                    ids["targets"]["keyids"][0].as_str().unwrap(),
+                );
+                let targets = format!(r#""targets":{{"keyids":["{release_id}"]"#);
+                swap(w, "root", &targets, &targets.replace(release_id, root_id))
+            },
+            refused: "root.canon is not what xtask writes",
+        },
+        Round {
+            name: "root-keyid",
+            second: false,
+            change: |w| {
+                let text = fs::read_to_string(w.join("root.canon")).unwrap();
+                let root: Value = serde_json::from_str(&text).unwrap();
+                let id = root["roles"]["targets"]["keyids"][0]
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+                let fake = "f".repeat(64);
+                fs::write(w.join("root.canon"), text.replace(&id, &fake)).unwrap();
+            },
+            refused: "root.canon is not what xtask writes",
+        },
+        Round {
+            name: "far",
+            second: false,
+            change: |w| redate(w, "packages", 730),
+            refused: "packages.canon expires",
+        },
+        Round {
+            name: "near",
+            second: false,
+            change: |w| redate(w, "snapshot", 20),
+            refused: "not within a week of 30",
+        },
+        Round {
+            name: "timestamp-hash",
+            second: true,
+            change: |w| {
+                let text = fs::read_to_string(w.join("timestamp.canon")).unwrap();
+                let (_, rest) = text.split_once(r#""sha256":""#).unwrap();
+                swap(w, "timestamp", &rest[..64], &"0".repeat(64))
+            },
+            refused: "timestamp.canon is not what xtask writes",
+        },
+        Round {
+            name: "snapshot-sig",
+            second: true,
+            change: |w| {
+                let sig = fs::read_to_string(w.join("snapshot.sig")).unwrap();
+                let flipped = match sig.starts_with('0') {
+                    true => format!("1{}", &sig[1..]),
+                    false => format!("0{}", &sig[1..]),
+                };
+                fs::write(w.join("snapshot.sig"), flipped).unwrap();
+            },
+            refused: "snapshot.sig is not release.key's signature of snapshot.canon",
+        },
     ];
     for case in cases {
         let name = case.name;
         let paths = workspace(&format!("script-round-{name}"));
         let stick = stick(&paths);
-        prepare(&paths, &targets(), &models::catalog().unwrap(), 1, NOW).unwrap();
+        prepare(&paths, &targets(), &models::catalog().unwrap(), 1, clock()).unwrap();
         if case.second {
             sign_here(&paths.work);
-            prepare_timestamp(&paths, NOW).unwrap();
+            prepare_timestamp(&paths, clock()).unwrap();
         }
         (case.change)(&paths.work);
         let before = sigs(&paths.work);
@@ -503,8 +603,12 @@ fn the_script_signs_as_kaipkg_does() {
             String::from_utf8_lossy(&out.stderr)
         );
     };
-    release(&paths, &models, 1, &script).unwrap();
-    assert_eq!(read_repository(&paths.repo).unwrap(), in_one_go(&models));
+    let now = clock();
+    release_at(&paths, &models, 1, &script, now).unwrap();
+    assert_eq!(
+        read_repository(&paths.repo).unwrap(),
+        in_one_go_at(&models, now)
+    );
 }
 
 /// A wrong passphrase signs nothing.
@@ -515,7 +619,7 @@ fn a_wrong_passphrase_signs_nothing() {
     }
     let paths = workspace("wrongpass");
     let stick = stick(&paths);
-    prepare(&paths, &targets(), &models::catalog().unwrap(), 1, NOW).unwrap();
+    prepare(&paths, &targets(), &models::catalog().unwrap(), 1, clock()).unwrap();
     let out = sign_script(
         &stick,
         &paths.work,
