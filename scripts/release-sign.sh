@@ -8,7 +8,8 @@
 # and their root.pub and release.pub. Each <role>.canon in WORK with no .sig is
 # copied once to a private folder; before any passphrase, it prints the two
 # keys, the keys each copy names and each package it signs, with its grants,
-# refusing an entry not shaped as xtask writes one. It then signs each copy,
+# refusing a targets, models or packages file not shaped as xtask writes it.
+# It then signs each copy,
 # root with root.key and the rest with release.key, and writes the raw
 # Ed25519 signature in hex as <role>.sig. Passphrases are never echoed and
 # reach openssl on a pipe. No network call. Bash 3.2 (macOS) and later;
@@ -54,15 +55,29 @@ set -- "$tmp"/*
 
 # Every number below must be one of the two on your paper.
 hex() { "$openssl" pkey -pubin -in "$1" -outform DER | tail -c 32 | od -An -v -tx1 | tr -d ' \n'; }
+rel=$(hex "$keys/release.pub")
 echo "root.key is $(hex "$keys/root.pub")"
-echo "release.key is $(hex "$keys/release.pub")"
+echo "release.key is $rel"
 for copy in "$@"; do
   echo "$(basename "$copy").canon names: $( (grep -o '"public":"[0-9a-f]*"' "$copy" || true) | cut -d'"' -f4 | sort -u | tr '\n' ' ')"
 done
-# The packages the release signs and their grants: each must be in the prepare
-# run's list on GitHub. The role, and each entry, must be exactly as xtask writes.
-if [ -e "$tmp/packages" ]; then
-  listed=$(awk -v pre='{"custom":{"kai":' '
+# targets.canon lists no target itself and delegates *.kpkg to packages, then
+# *.gguf and *.chunks to models, with release.key alone: no other role can
+# speak for a package or a model. Hashes, dates and versions aside, it is fixed.
+shape() { sed -e 's/"[0-9a-f]\{64\}"/"H"/g' -e 's/"expires":"[0-9:TZ-]*"/"expires":"E"/' \
+  -e 's/"spec_version":"[0-9.]*"/"spec_version":"S"/' -e 's/"version":[0-9]*}$/"version":N}/' "$1"; }
+ends='"terminating":true,"threshold":1}'
+want='{"_type":"targets","delegations":{"keys":{"H":{"keytype":"ed25519","keyval":{"public":"H"},"scheme":"ed25519"}},'
+want=$want'"roles":[{"keyids":["H"],"name":"packages","paths":["*.kpkg"],'$ends',{"keyids":["H"],"name":"models",'
+want=$want'"paths":["*.gguf","*.chunks"],'$ends']},"expires":"E","spec_version":"S","targets":{},"version":N}'
+if [ -e "$tmp/targets" ] && { [ "$(shape "$tmp/targets")" != "$want" ] || ! grep -qF "\"public\":\"$rel\"" "$tmp/targets"; }; then
+  echo "targets.canon is not what xtask writes: nothing signed" >&2; exit 1
+fi
+# A delegated role's targets, walked as JSON (awk -v role=models|packages): the
+# role must be exactly the shape xtask writes, each model's path a .gguf or a
+# .chunks, and each package's entry its length, SHA-256 and index, printed
+# with its grants. Each must be in the prepare run's list on GitHub.
+walk='
     function value(t, i,   c, d, q) {
       c = substr(t, i, 1)
       if (c != "\"" && c != "{" && c != "[") { while (substr(t, i, 1) ~ /[-0-9a-z.]/) i++; return i }
@@ -79,11 +94,14 @@ if [ -e "$tmp/packages" ]; then
     { s = s $0 }
     END {
       top = "^[{]\"_type\":\"targets\",\"expires\":\"[0-9:TZ-]+\",\"spec_version\":\"[0-9.]+\",\"targets\":[{]"
+      pre = "{\"custom\":{\"kai\":"
       if (NR != 1 || !match(s, top)) exit 1
       for (i = RLENGTH + 1; substr(s, i, 1) != "}"; i = k) {
         if (n++ && substr(s, i++, 1) != ",") exit 1
         j = value(s, i); key = substr(s, i + 1, j - i - 2); k = value(s, j + 1); e = substr(s, j + 1, k - j - 1)
-        if (substr(s, j, 1) != ":" || key !~ /^[ -~]+[.]kpkg$/ || index(e, pre) != 1) exit 1
+        if (substr(s, j, 1) != ":") exit 1
+        if (role == "models") { if (key !~ /^[ -~]+[.](gguf|chunks)$/) exit 1; continue }
+        if (key !~ /^[ -~]+[.]kpkg$/ || index(e, pre) != 1) exit 1
         rest = substr(e, value(e, length(pre) + 1))
         if (rest !~ /^[}],"hashes":[{]"sha256":"[0-9a-f]+"[}],"length":[0-9]+[}]$/ || substr(rest, 87, 1) != "\"") exit 1
         g = index(e, "\"grants\":[")
@@ -92,11 +110,17 @@ if [ -e "$tmp/packages" ]; then
         print "packages.canon signs " key ", sha256 " substr(rest, 23, 64) ", grants " grants
       }
       if (substr(s, i) !~ /^[}],"version":[0-9]+[}]$/) exit 1
-    }' "$tmp/packages") || { echo "packages.canon is not what xtask writes: nothing signed" >&2; exit 1; }
+    }'
+if [ -e "$tmp/models" ]; then
+  awk -v role=models "$walk" "$tmp/models" || { echo "models.canon is not what xtask writes: nothing signed" >&2; exit 1; }
+fi
+if [ -e "$tmp/packages" ]; then
+  listed=$(awk -v role=packages "$walk" "$tmp/packages") ||
+    { echo "packages.canon is not what xtask writes: nothing signed" >&2; exit 1; }
   count=$( (grep -o '\.kpkg":{' "$tmp/packages" || true) | wc -l | tr -d ' ')
   [ "$(printf '%s' "$listed" | grep -c '^packages' || true)" = "$count" ] ||
     { echo "packages.canon lists $count packages, not each once: nothing signed" >&2; exit 1; }
-  printf '%s\n' "$listed"
+  [ -z "$listed" ] || printf '%s\n' "$listed"
 fi
 
 # sign KEY ROLE...: asks for KEY's passphrase, checks it, then signs each ROLE.

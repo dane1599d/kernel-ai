@@ -267,6 +267,48 @@ fn the_script_refuses_a_decoy_or_a_line_feed_in_packages() {
     }
 }
 
+/// `targets.canon` and `models.canon` are signed with release.key too, and
+/// the script prints no line of theirs to check, while the device's search
+/// would ask top-level `targets` first. So each must be exactly what xtask
+/// writes: a package in targets' own map, the delegations reordered with
+/// models first and taking `*.kpkg`, or a package in models' map stops the
+/// script before any passphrase.
+#[test]
+fn the_script_refuses_targets_or_models_that_could_speak_for_a_package() {
+    if !openssl_3() {
+        return;
+    }
+    let edits: [Edit; 3] = [
+        ("toplevel", "targets", |s| {
+            s["targets"]["notes-1.0.0.kpkg"] = sign::target_entry(&targets()[1])
+        }),
+        ("reordered", "targets", |s| {
+            let roles = s["delegations"]["roles"].as_array_mut().unwrap();
+            roles.reverse();
+            roles[0]["paths"] = json!(["*.kpkg", "*.gguf", "*.chunks"]);
+        }),
+        ("modelkpkg", MODELS, |s| {
+            s["targets"]["notes-1.0.0.kpkg"] = sign::target_entry(&targets()[1])
+        }),
+    ];
+    for (name, role, edit) in edits {
+        let paths = workspace(&format!("script-role-{name}"));
+        let stick = stick(&paths);
+        prepare(&paths, &targets(), &models::catalog().unwrap(), 1, NOW).unwrap();
+        tamper(&paths.work, role, edit);
+        let out = sign_script(&stick, &paths.work, "");
+        let said = String::from_utf8(out.stderr).unwrap();
+        let shown = String::from_utf8(out.stdout).unwrap();
+        assert!(!out.status.success(), "{name}");
+        let refused = format!("{role}.canon is not what xtask writes");
+        assert!(said.contains(&refused), "{name}: {said}");
+        assert!(!shown.contains("packages.canon signs"), "{name}: {shown}");
+        let sigs = fs::read_dir(&paths.work).unwrap().flatten();
+        let signed = sigs.filter(|e| e.path().extension().is_some_and(|x| x == "sig"));
+        assert_eq!(signed.count(), 0, "{name}");
+    }
+}
+
 /// RFC 8032 test 2 through the script, then a whole release in its two
 /// rounds: OpenSSL's raw signatures and `openssl pkey -pubout`'s keys are
 /// what `kaipkg::sign` makes, byte for byte.
