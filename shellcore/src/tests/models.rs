@@ -454,6 +454,34 @@ fn the_ai_downloads_a_named_or_the_recommended_model_after_one_ask() {
     }
 }
 
+/// A download the line did not ask for asks with that reason, not "no undo",
+/// and its menu opens on Deny; a name with `disk` is refused, not dropped.
+#[test]
+fn an_added_download_says_so_and_opens_on_deny() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let net = r#"{"name":"model_fetch","arguments":{"source":"net","name":"fixture-dl"}}"#;
+    host.calls.borrow_mut().push_back(call(net));
+    let reply = shell.eval("tidy up my desktop");
+    assert_eq!(reply.confirm, Some(1), "{reply:?}");
+    assert!(reply.text.starts_with("menu 1 added\n"), "{reply:?}");
+    assert!(
+        reply.text.contains("? The request did not ask for it."),
+        "{reply:?}"
+    );
+    assert!(!reply.text.contains("It has no undo"), "{reply:?}");
+    let disk = r#"{"name":"model_fetch","arguments":{"source":"disk","name":"fixture-dl"}}"#;
+    host.calls.borrow_mut().push_back(call(disk));
+    let reply = shell.eval("import fixture-dl from the attached disk");
+    assert!(
+        !reply.ok
+            && reply
+                .text
+                .contains("to download fixture-dl, fetch it from the net"),
+        "{reply:?}"
+    );
+}
+
 /// With nothing this machine may download, a `model_fetch("net")` with no id
 /// says so and asks nothing; `disk` still imports.
 #[test]

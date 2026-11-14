@@ -129,6 +129,7 @@ impl Shell {
             },
             "model_use" => self.model_use(id, request, name, decision, "asked"),
             "model_fetch" if value(values, "source") == Some("net") => {
+                let why = asked_why(decision.why);
                 let name = match name {
                     "" => match self.offer_to_download() {
                         Ok(name) => name,
@@ -136,14 +137,16 @@ impl Shell {
                     },
                     name => String::from(name),
                 };
-                self.model_download(id, request, &name)
+                self.model_download(id, request, &name, why)
             }
+            // The attached disk holds one model, imported as it is: a name
+            // there would be dropped, so it is refused rather than ignored.
+            "model_fetch" if !name.is_empty() => Reply::err(format!(
+                "the attached disk's model is imported as it is; to download {name}, fetch it from the net"
+            )),
             "model_fetch" => {
                 let call = canonical("model_fetch", "disk");
-                let why = match decision.why {
-                    Why::TakenAs | Why::Grounded | Why::Read => Why::NoUndo,
-                    why => why,
-                };
+                let why = asked_why(decision.why);
                 self.model_ask(id, request, &call, Waiting::Fetch, why, None)
             }
             other => Reply::err(format!("{other} is typed at the prompt for now")),
@@ -173,7 +176,7 @@ impl Shell {
     /// whether it may start and how large it is and from where, and the
     /// shell asks once with that (P5 question 6). It brings gigabytes and has
     /// no undo, so it always asks.
-    fn model_download(&mut self, id: u64, request: &str, name: &str) -> Reply {
+    fn model_download(&mut self, id: u64, request: &str, name: &str, why: Why) -> Reply {
         let answer = match self.host.models(&format!("models ask {name}")) {
             Ok(answer) => answer,
             Err(why) => return Reply::err(why),
@@ -188,7 +191,7 @@ impl Shell {
             subject: String::from(subject),
         };
         let subject = Some(String::from(subject));
-        self.model_ask(id, request, &call, waiting, Why::NoUndo, subject)
+        self.model_ask(id, request, &call, waiting, why, subject)
     }
 
     /// `model_use` of `name`; a switch that runs is logged with `consent`.
@@ -487,7 +490,7 @@ impl Shell {
             }
             Line::Import => self.model_call(id, request, "model_fetch", &[], typed(Why::NoUndo)),
             Line::Use(name) => self.model_use(id, request, &name, typed(Why::Asked), "typed"),
-            Line::Download(name) => self.model_download(id, request, &name),
+            Line::Download(name) => self.model_download(id, request, &name, Why::NoUndo),
         }
     }
 
@@ -537,6 +540,15 @@ fn download_call(name: &str) -> String {
     use termcore::once::{CallArg, call_text};
     call_text("model_fetch", &[CallArg::Text("net"), CallArg::Text(name)])
         .unwrap_or_else(|| String::from("model_fetch"))
+}
+
+/// Why a `model_fetch` asks: a line that asked for it asks because it has no
+/// undo; one Kai was steered into, or added, says so, and opens on Deny.
+fn asked_why(why: Why) -> Why {
+    match why {
+        Why::TakenAs | Why::Grounded | Why::Read => Why::NoUndo,
+        why => why,
+    }
 }
 
 /// The value of the argument `arg` a row was called with, if given.
