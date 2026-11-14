@@ -79,6 +79,24 @@ pub struct Queue {
 }
 
 impl Queue {
+    /// Takes back `app`'s lines a person queued that the shell has not taken
+    /// yet (a Stop before its line ran): each one's ticket, oldest first. Lines
+    /// not from a person stay.
+    pub fn withdraw_users(&mut self, app: &str) -> Vec<u32> {
+        let Some((_, waiting)) = self.effects.iter_mut().find(|(a, _)| a == app) else {
+            return Vec::new();
+        };
+        let mut tickets = Vec::new();
+        waiting.retain(|(user, line)| match (*user, ticket_of(line)) {
+            (true, Some(ticket)) => {
+                tickets.push(ticket);
+                false
+            }
+            _ => true,
+        });
+        tickets
+    }
+
     /// Queues `app`'s effect lines, not from a person's input.
     pub fn put(&mut self, app: &str, lines: &str) -> usize {
         self.put_as(app, lines, false)
@@ -250,6 +268,32 @@ pub fn split_notice(results: Vec<Done>) -> (Vec<Done>, Option<String>) {
         }
     }
     (rest, notice)
+}
+
+/// The effect the Terminal's Stop asks for ([`split_stops`]).
+pub const SHELL_STOP: &str = "shell_stop";
+/// The app whose Stop `desktop` takes: the image's Terminal.
+pub const STOPS_FROM: &str = "terminal-window";
+
+/// `lines` with their `shell_stop` calls taken out: those calls' tickets,
+/// and the other lines, for the queue. `desktop` takes these from
+/// [`STOPS_FROM`] alone, on a person's key or click, and interrupts the
+/// shell's line at once: queued, a Stop would wait behind the line it stops.
+pub fn split_stops(lines: &str) -> (Vec<u32>, String) {
+    let stop = format!("call({{name: \"{SHELL_STOP}\", ");
+    let mut tickets = Vec::new();
+    let mut rest = String::new();
+    for line in lines.lines() {
+        let wave = line.strip_prefix("effect ").and_then(|l| l.split_once(' '));
+        match (ticket_of(line), wave) {
+            (Some(ticket), Some((_, wave))) if wave.starts_with(&stop) => tickets.push(ticket),
+            _ => {
+                rest.push_str(line);
+                rest.push('\n');
+            }
+        }
+    }
+    (tickets, rest)
 }
 
 /// The ticket of an `effect <ticket> <WAVE>` line.
@@ -433,6 +477,40 @@ fn one_line(text: &str, cap: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #892's review: a Stop before the shell took the person's line takes it
+    /// back; the app's other lines, and other apps', stay.
+    #[test]
+    fn a_persons_queued_lines_are_withdrawn_and_the_rest_stay() {
+        let mut queue = Queue::default();
+        queue.put("terminal-window", &line(1));
+        queue.put_as("terminal-window", &line(2), true);
+        queue.put_as("files", &line(3), true);
+        assert_eq!(queue.withdraw_users("terminal-window"), [2]);
+        assert!(queue.withdraw_users("terminal-window").is_empty());
+        assert!(queue.withdraw_users("monitor").is_empty());
+        assert_eq!(
+            queue.take(4096),
+            Some(taken("terminal-window", false, &[line(1)]))
+        );
+        assert_eq!(queue.take(4096), Some(taken("files", true, &[line(3)])));
+    }
+
+    /// The Terminal's Stop is taken out of its lines; nothing else is.
+    #[test]
+    fn a_stop_is_taken_out_and_other_lines_stay() {
+        let lines = "effect 4 call({name: \"shell_line\", args: \"1 + 1\"})\n\
+                     effect 5 call({name: \"shell_stop\", args: \"\"})\n";
+        let (stops, rest) = split_stops(lines);
+        assert_eq!(stops, [5]);
+        assert_eq!(
+            rest,
+            "effect 4 call({name: \"shell_line\", args: \"1 + 1\"})\n"
+        );
+        // A name that only starts like it is not a stop.
+        let (stops, _) = split_stops("effect 6 call({name: \"shell_stopper\", args: \"\"})\n");
+        assert!(stops.is_empty());
+    }
 
     fn line(ticket: u32) -> String {
         format!("effect {ticket} notify(\"n\")")

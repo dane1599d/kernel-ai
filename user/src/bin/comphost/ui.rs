@@ -303,6 +303,9 @@ impl Ui {
         let mut label = None;
         host.each_instance(|instance, version, shown| {
             if let LiveInstance::V2(core) = instance {
+                for note in core.take_ui_notes() {
+                    println!("comphost: {note}");
+                }
                 let taken = core.take_ui();
                 if shown {
                     updates = taken;
