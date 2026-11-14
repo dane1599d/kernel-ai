@@ -13,7 +13,7 @@ extern crate alloc;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use comp_notes::{Actions, Notes, SCHEMA, state};
+use comp_notes::{Actions, Notes, state};
 use uikit::style::{Tone, TypeStyle};
 use uikit::widget::{Axis, Insets, Layout, NodeId, ROOT, Size, TextField, UiEvent, Value, Widget};
 
@@ -25,6 +25,9 @@ pub const LIST: NodeId = 5;
 pub const MAIN: NodeId = 6;
 pub const EDITOR: NodeId = 7;
 pub const STATUS: NodeId = 8;
+/// Removes the note in the editor, on its second press; there only while one is
+/// open.
+pub const DELETE: NodeId = 9;
 /// List items are `ITEM + position` among the shown notes.
 pub const ITEM: NodeId = 1000;
 /// Longest a list item's label gets, in characters.
@@ -41,6 +44,10 @@ pub struct View {
     pub search: String,
     /// The note in the editor, by id.
     pub selected: Option<u32>,
+    /// The note whose Delete was pressed once, and when (the call's clock, in ms)
+    /// that button was last pressed. A press after a pause removes it; any other
+    /// event takes the question back.
+    pub delete_asked: Option<(u32, u64)>,
 }
 
 /// One node of the tree: its id, its parent, its layout and its widget.
@@ -79,16 +86,7 @@ pub fn shown<'a>(notes: &'a Notes, view: &View) -> Vec<&'a state::Note> {
 
 /// A list item's label: the note's first line, cut to [`ITEM_CHARS`].
 pub fn title(text: &str) -> String {
-    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-    let line = line.trim();
-    if line.is_empty() {
-        return String::from("(empty)");
-    }
-    let mut out: String = line.chars().take(ITEM_CHARS).collect();
-    if line.chars().count() > ITEM_CHARS {
-        out.push('…');
-    }
-    out
+    comp_notes::first_line(text, ITEM_CHARS)
 }
 
 /// `n` and `noun`, plural but for one: "1 note", "2 notes".
@@ -193,6 +191,7 @@ pub fn build(notes: &Notes, view: &View) -> Vec<Entry> {
     let note = view
         .selected
         .and_then(|id| notes.state.notes.iter().find(|n| n.id == id));
+    let open = note.is_some();
     tree.push(match note {
         Some(n) => entry(
             EDITOR,
@@ -212,6 +211,25 @@ pub fn build(notes: &Notes, view: &View) -> Vec<Entry> {
             label(String::from("No note open"), TypeStyle::Body, Tone::Dim),
         ),
     });
+    if open {
+        let asked = view
+            .delete_asked
+            .map(|(id, _)| id)
+            .is_some_and(|id| Some(id) == view.selected);
+        tree.push(entry(
+            DELETE,
+            MAIN,
+            wide(),
+            Widget::Button {
+                text: String::from(if asked {
+                    "Press again to delete"
+                } else {
+                    "Delete note"
+                }),
+                action: None,
+            },
+        ));
+    }
     let tally = notes.count();
     let status = match (shown.len(), view.search.trim().is_empty()) {
         (_, true) => format!(
@@ -287,27 +305,38 @@ pub fn diff(old: &[Entry], new: &[Entry]) -> Vec<Change> {
 /// Replaces a note's text from the editor; false if it is gone or the state
 /// has no room for the new text.
 pub fn set_text(notes: &mut Notes, id: u32, text: &str) -> bool {
-    let old = match notes.state.notes.iter().find(|n| n.id == id) {
-        Some(n) => n.text.len(),
-        None => return false,
-    };
-    let grow = text.len().saturating_sub(old);
-    let size = compsdk::state::encode(SCHEMA, &notes.state).len() + grow;
-    if grow > 0 && size > compsdk::MAX_STATE {
-        return false;
-    }
-    match notes.state.notes.iter_mut().find(|n| n.id == id) {
-        Some(n) => {
-            n.text = String::from(text);
-            n.words = state::words(text);
-            true
-        }
-        None => false,
-    }
+    notes.replace(id, text).is_ok()
 }
 
-/// Handles one event from the window; whether the tree may have changed.
-pub fn on_ui(notes: &mut Notes, view: &mut View, e: &UiEvent) -> bool {
+/// The pause the second press of Delete needs after the press before it, in ms.
+/// A double click (two presses a few hundred ms apart) and a held key (a press
+/// every few tens of ms) are one press: each press inside the pause moves it on,
+/// so holding never confirms.
+pub const CONFIRM_PAUSE_MS: u64 = 600;
+
+/// Handles one event from the window at `now_ms` on the call's clock; whether the
+/// tree may have changed. Delete asks first: a person's click has no snapshot to
+/// undo, so the first press changes the button to "Press again to delete" and
+/// only a later press, after a pause and with nothing between, removes the note.
+pub fn on_ui(notes: &mut Notes, view: &mut View, e: &UiEvent, now_ms: u64) -> bool {
+    let asked = view.delete_asked.take();
+    if let (UiEvent::Pressed(DELETE), Some((id, last))) = (e, asked)
+        && view.selected == Some(id)
+        && now_ms.saturating_sub(last) < CONFIRM_PAUSE_MS
+    {
+        view.delete_asked = Some((id, now_ms));
+        return false;
+    }
+    handle(notes, view, e, asked.map(|(id, _)| id), now_ms) || asked.is_some()
+}
+
+fn handle(
+    notes: &mut Notes,
+    view: &mut View,
+    e: &UiEvent,
+    asked: Option<u32>,
+    now_ms: u64,
+) -> bool {
     match e {
         UiEvent::Pressed(NEW) => match notes.add("") {
             Ok(id) => {
@@ -316,6 +345,19 @@ pub fn on_ui(notes: &mut Notes, view: &mut View, e: &UiEvent) -> bool {
                 true
             }
             Err(_) => false,
+        },
+        UiEvent::Pressed(DELETE) => match view.selected {
+            Some(id) if asked == Some(id) => {
+                if notes.remove(id).is_ok() {
+                    view.selected = None;
+                }
+                true
+            }
+            Some(id) if notes.get(id).is_some() => {
+                view.delete_asked = Some((id, now_ms));
+                true
+            }
+            _ => false,
         },
         UiEvent::Changed(SEARCH, Value::Text(t)) => {
             view.search.clone_from(t);
