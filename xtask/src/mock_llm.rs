@@ -497,6 +497,26 @@ const ACTS: &[(&str, &str)] = &[
         "switch to files",
         r#"{"name":"ui_focus","arguments":{"window":"files"}}"#,
     ),
+    // `founder-walk` (founder test 2): a clarify with an option no row backs,
+    // which the shell drops, as the founder's model offered.
+    (
+        "do more with the cpus",
+        r#"{"name":"clarify","arguments":{"question":"What should I do with the CPUs?","options":["show the cpus","increase CPU frequency"]}}"#,
+    ),
+    // A file the line does not name, so it asks first on the card.
+    (
+        "save a note for the terminal",
+        r#"{"name":"fs_create","arguments":{"path":"walk-term.txt","text":"hello from the walk"}}"#,
+    ),
+    (
+        "save a note for the walk",
+        r#"{"name":"fs_create","arguments":{"path":"walk-panel.txt","text":"hello from the walk"}}"#,
+    ),
+    // Notes' row, with no Notes running yet.
+    (
+        "add a note saying hello dane",
+        r#"{"name":"notes_add","arguments":{"text":"hello dane"}}"#,
+    ),
     // `act-convo` with no earlier turn: there is nothing to do again.
     (
         "do it again",

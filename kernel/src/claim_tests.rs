@@ -33,6 +33,47 @@ pub(crate) fn type_keys(bytes: &[u8]) {
     }
 }
 
+/// Left Shift's set-1 make code.
+const SHIFT: u8 = 0x2A;
+/// The pause after each typed character, about a fast typist's.
+const TYPE_PACE_MS: u64 = 30;
+
+/// Set-1 make code of `c`, and whether it needs Shift (a US layout).
+fn scan(c: char) -> Option<(u8, bool)> {
+    const LETTERS: &[u8; 26] = &[
+        0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, 0x31, 0x18,
+        0x19, 0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C,
+    ];
+    Some(match c {
+        'a'..='z' => (LETTERS[c as usize - 'a' as usize], false),
+        '1'..='9' => (0x02 + (c as u8 - b'1'), false),
+        '0' => (0x0B, false),
+        ' ' => (0x39, false),
+        '\n' => (0x1C, false),
+        '-' => (0x0C, false),
+        '=' => (0x0D, false),
+        '+' => (0x0D, true),
+        '*' => (0x09, true),
+        '.' => (0x34, false),
+        _ => return None,
+    })
+}
+
+/// Types `text` as a keyboard would, a character at a time.
+pub(crate) fn type_text(text: &str) {
+    for c in text.chars() {
+        let Some((code, shift)) = scan(c) else {
+            log!("no key for {c:?}");
+            continue;
+        };
+        match shift {
+            true => type_keys(&[SHIFT, code, code | 0x80, SHIFT | 0x80]),
+            false => type_keys(&[code, code | 0x80]),
+        }
+        threads::sleep_ms(TYPE_PACE_MS);
+    }
+}
+
 fn wait(what: &'static str, mut done: impl FnMut() -> bool) -> Result<(), &'static str> {
     for _ in 0..WAIT_MS / 20 {
         if done() {

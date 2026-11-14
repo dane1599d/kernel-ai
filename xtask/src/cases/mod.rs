@@ -22,6 +22,7 @@ pub mod release;
 mod storage;
 mod tour;
 mod updates;
+mod walk;
 
 use crate::buildsvc::BuildService;
 use crate::disk::Fixture;
@@ -254,6 +255,7 @@ const LANES: &[&[TestCase]] = &[
     napbusy::CASES,
     modeldl::CASES,
     modelsuse::CASES,
+    walk::CASES,
 ];
 
 /// The cases `cargo xtask test` boots.
@@ -300,6 +302,7 @@ mod tests {
             napbusy::CASES,
             modeldl::CASES,
             modelsuse::CASES,
+            walk::CASES,
         ];
         assert_eq!(
             cases.len(),

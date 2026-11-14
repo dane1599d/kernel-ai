@@ -265,6 +265,9 @@ pub enum SelfTest {
     AppSettings,
     /// `test=desk-tour`: screenshots of the desktop and its apps, not a gate.
     DeskTour,
+    /// `test=founder-walk` (founder test 2): the founder's VirtualBox walk on
+    /// the default system, as keys and clicks.
+    FounderWalk,
     /// `desk-takeover` (P3 task 10): a key in the agent's window stops it.
     DeskTakeover,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
@@ -505,6 +508,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-no-memory" => Some(SelfTest::DeskNoMemory),
             "test=app-settings" => Some(SelfTest::AppSettings),
             "test=desk-tour" => Some(SelfTest::DeskTour),
+            "test=founder-walk" => Some(SelfTest::FounderWalk),
             "test=desk-takeover" => Some(SelfTest::DeskTakeover),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
@@ -632,6 +636,18 @@ fn updated_at_boot(test: SelfTest) -> bool {
 /// The service plan for this boot, or None for the boots that run no user space.
 /// Not for `test`: its exact frame and heap leak checks must not race processes
 /// starting up.
+/// `plan` with `log_bar=1` on `desktop`'s line: it logs each new line of the
+/// panel's bar, for the founder's walk to read.
+fn bar_logged(plan: &str) -> String {
+    plan.lines()
+        .map(|line| match line.starts_with("desktop ") {
+            true => format!("{line} log_bar=1"),
+            false => String::from(line),
+        })
+        .collect::<alloc::vec::Vec<_>>()
+        .join("\n")
+}
+
 pub fn plan(test: SelfTest) -> Option<String> {
     let wanted = matches!(
         test,
@@ -706,6 +722,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::AppSettings
             | SelfTest::NetGrant
             | SelfTest::DeskTour
+            | SelfTest::FounderWalk
             | SelfTest::DeskTakeover
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
@@ -722,13 +739,21 @@ pub fn plan(test: SelfTest) -> Option<String> {
     // edit loop), the boot manifest's headless `notes`, which `:edit notes` and
     // the editor build, and the edit service follow; without one no user sees
     // `notes`, and it would cost 32 MiB of the admission budget at boot. The
-    // screenshot tour boots it too, so its pictures are the real boot's.
+    // screenshot tour boots it too, so its pictures are the real boot's, and
+    // the founder's walk, with `desktop` logging its bar (`log_bar=1`).
     if matches!(
         test,
-        SelfTest::None | SelfTest::DeskDefault | SelfTest::DeskNoMemory | SelfTest::DeskTour
+        SelfTest::None
+            | SelfTest::DeskDefault
+            | SelfTest::DeskNoMemory
+            | SelfTest::DeskTour
+            | SelfTest::FounderWalk
     ) {
         let files = crate::block::has_partition(diskmap::KAI_DATA_TYPE);
         let mut plan = kabi::plan::system::plan(&crate::llm::plan_line(), files);
+        if matches!(test, SelfTest::FounderWalk) {
+            plan = bar_logged(&plan);
+        }
         if let Some(edit) = crate::build_service::plan_line() {
             plan.push('\n');
             plan.push_str(&crate::boot_manifest::plan_line());
