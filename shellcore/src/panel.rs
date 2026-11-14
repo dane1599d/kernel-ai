@@ -31,22 +31,10 @@ const ASKS: &str = "it asks first: ask in the terminal, which shows the script";
 const ASKED: &str = "Kai asked a question above: answer it here";
 /// The bar's line when code asked which one: the question is in the history.
 const WHICH: &str = "A question above: answer it here";
-/// The history's note when code's question holds more than plain words.
-const WHICH_PLAIN: &str = "Which one do you mean? Name it in your answer.";
-/// The longest question of code's the history echoes.
-const MAX_ECHO: usize = 160;
-
-/// Code's question, echoed only when it is short and plain: ASCII letters,
-/// digits, spaces and the punctuation a process name or the question itself
-/// uses. It can carry a name the model chose, unchecked, and the note is
-/// drawn in the system's look.
-pub(crate) fn plain_question(text: &str) -> &str {
-    let plain = |c: char| c.is_ascii_alphanumeric() || " _-.?:,'\"".contains(c);
-    match text.len() <= MAX_ECHO && !text.is_empty() && text.chars().all(plain) {
-        true => text,
-        false => WHICH_PLAIN,
-    }
-}
+/// The history's note when code asked which one. Never the question itself:
+/// it echoes a name the model chose, unchecked, and the note is drawn in the
+/// system's look.
+const WHICH_NOTE: &str = "Which one do you mean? Name it in your answer.";
 /// The bar's line when the model answered in words: they are in the history.
 const ANSWERED: &str = "Kai answered above.";
 /// The most of what the AI said that the history is given.
@@ -80,7 +68,7 @@ impl Shell {
         if line == ":c" || line.starts_with(":c ") || line == ":rhai" {
             return PanelResult::Refused(String::from(C_LINE));
         }
-        let terminal = Terminal {
+        let mut terminal = Terminal {
             partial: self.partial.take(),
             clarifying: self.clarifying.take(),
             pending: self.pending.take(),
@@ -96,7 +84,13 @@ impl Shell {
         // The panel's own question, if its last line left one: this line
         // answers it.
         self.clarifying = self.panel_clarifying.take();
+        self.forgot = false;
         let reply = self.eval(line);
+        // `new` typed here forgets the terminal's question too: one
+        // conversation, wherever it was typed.
+        if self.forgot {
+            terminal.clarifying = None;
+        }
         // Before the result takes the done line, which `said` leaves out.
         self.panel_said = self.said(&reply);
         let result = self.panel_result(&reply);
@@ -189,7 +183,7 @@ impl Shell {
             if self.clarified_by_model {
                 return PanelResult::Done(String::from(ASKED));
             }
-            self.panel_note = Some(String::from(plain_question(reply.text.trim())));
+            self.panel_note = Some(String::from(WHICH_NOTE));
             return PanelResult::Done(String::from(WHICH));
         }
         if self.worded {

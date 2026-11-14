@@ -662,6 +662,9 @@ pub struct Shell {
     /// history as code's note ([`Shell::take_panel_note`]): it can carry a
     /// name the model chose, so it is never the bar's.
     panel_note: Option<String>,
+    /// `new` ran since the panel's line began: the terminal's question,
+    /// set aside meanwhile, is forgotten too.
+    forgot: bool,
     /// The last clarifying question was the model's (`clarify`), not code's
     /// (`guard::which`, a target to pick): only the model's words go to the
     /// desk's history as Kai's.
@@ -753,6 +756,7 @@ impl Shell {
             panel_said: None,
             panel_clarifying: None,
             panel_note: None,
+            forgot: false,
             clarified_by_model: false,
             pack_id: llmproto::pack::act_pack_id(),
             saved_log: None,
@@ -1230,6 +1234,7 @@ impl Shell {
         self.clarifying = None;
         // The panel's question goes with the conversation.
         self.panel_clarifying = None;
+        self.forgot = true;
         Reply::ok("A new conversation: earlier turns are forgotten; `log` and `undo` still work")
     }
 

@@ -204,7 +204,7 @@ fn codes_question_goes_to_the_history_and_the_bar_stays_fixed() {
     assert_eq!(shell.take_panel_said(), None);
     assert_eq!(
         shell.take_panel_note().as_deref(),
-        Some("Which name? \"process_name\" is a placeholder, not one you named.")
+        Some("Which one do you mean? Name it in your answer.")
     );
     shell.eval_panel("editor");
     assert_eq!(host.act_lines.borrow()[1], "stop the process editor");
@@ -222,23 +222,22 @@ fn new_forgets_the_panels_question() {
     assert_eq!(host.act_lines.borrow()[1], "round robin");
 }
 
-/// #859's third review: code's question echoes the model's chosen name only
-/// when it is plain; anything else gets a fixed note.
+/// #859's fourth review: `new` typed in the panel forgets the terminal's
+/// question as well as the panel's.
 #[test]
-fn codes_question_echoes_only_a_plain_name() {
-    use crate::panel::plain_question;
-    let plain = "Which name? \"process_name\" is a placeholder, not one you named.";
-    assert_eq!(plain_question(plain), plain);
-    for odd in [
-        "Which name? \"Done: firewall enabled\u{2028}ok\" is a placeholder.",
-        "Which name? \"a\nb\" is a placeholder.",
-        "Which name? \"x[1]\" is a placeholder.",
-        &"Which name? \"a\" ".repeat(20),
-    ] {
-        assert_eq!(
-            plain_question(odd),
-            "Which one do you mean? Name it in your answer.",
-            "{odd:?}"
-        );
-    }
+fn new_in_the_panel_forgets_the_terminals_question_too() {
+    let (host, mut shell) = with_calls(vec![
+        call(r#"{"name":"clarify","arguments":{"question":"Which policy?"}}"#),
+        call(RR),
+    ]);
+    // The terminal's own question.
+    assert!(
+        shell
+            .eval("switch the policy")
+            .text
+            .starts_with("Which policy?")
+    );
+    shell.eval_panel("new");
+    shell.eval("round robin");
+    assert_eq!(host.act_lines.borrow()[1], "round robin");
 }
