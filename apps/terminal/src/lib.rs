@@ -31,7 +31,7 @@ pub mod wire;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use os::{Os, SHELL_LINE, shell_line_args, unescape};
+use os::{Os, SHELL_LINE, SHELL_STOP, shell_line_args, unescape};
 use span::{Kind, MAX_SPANS, Span, clean, fit};
 use termcore::menu::{Answer, answer_line};
 use wire::Wire;
@@ -166,6 +166,9 @@ pub struct Terminal {
     /// The ticket of the effect the shell has not answered. It is not saved:
     /// an effect does not outlive the app that queued it.
     in_flight: Option<u32>,
+    /// The ticket of the Stop asked for the line in flight, until its answer
+    /// or the line's own comes. Not saved, as `in_flight` is not.
+    stopping: Option<u32>,
     /// The line the AI typed into the input, until a person runs or changes it.
     /// Not saved.
     staged: Option<String>,
@@ -186,6 +189,7 @@ impl Terminal {
             base: String::from(DEFAULT_PROMPT),
             phase: Phase::Ready,
             in_flight: None,
+            stopping: None,
             staged: None,
         };
         t.push(Kind::Notice, "", GREETING, false);
@@ -407,13 +411,46 @@ impl Terminal {
         }
     }
 
+    /// Stop while a line runs: asks the OS to interrupt the shell's line
+    /// (`shell_stop`), once until its answer comes. Whether it was asked. The
+    /// line's own answer then says how it ended; a Stop the OS could not carry
+    /// out says why ([`Terminal::done`]).
+    pub fn ask_stop(&mut self, os: &mut dyn Os) -> bool {
+        if self.phase != Phase::Waiting || self.stopping.is_some() {
+            return false;
+        }
+        self.stopping = Some(os.request(SHELL_STOP, String::new()));
+        true
+    }
+
+    /// Whether a Stop was asked and its answer has not come.
+    pub fn is_stopping(&self) -> bool {
+        self.stopping.is_some()
+    }
+
     /// The result of the effect with `ticket`: the shell's wire reply, or why the
-    /// OS did not run the line. Whether it was ours and the window changed.
+    /// OS did not run the line; or the answer to a Stop. Whether it was ours and
+    /// the window changed.
     pub fn done(&mut self, os: &mut dyn Os, ticket: u32, outcome: Result<String, String>) -> bool {
+        if self.stopping == Some(ticket) {
+            self.stopping = None;
+            // A Stop that worked is told by the line's own answer.
+            if let Err(why) = outcome {
+                self.push(
+                    Kind::Notice,
+                    "",
+                    &format!("Stop: {}", clean_one(&why)),
+                    false,
+                );
+            }
+            return true;
+        }
         if self.in_flight != Some(ticket) {
             return false;
         }
         self.in_flight = None;
+        // The line has its answer, so a Stop still waiting has nothing to say.
+        self.stopping = None;
         let back = match outcome {
             Ok(wire) => self.reply(&unescape(&wire), None),
             Err(why) => {
@@ -457,6 +494,11 @@ impl Terminal {
         }
         out
     }
+}
+
+/// `text` as one plain row, for a reason the OS gave.
+fn clean_one(text: &str) -> String {
+    fit(&clean(text).lines.join(" "))
 }
 
 /// What `terminal_window_run` answers.

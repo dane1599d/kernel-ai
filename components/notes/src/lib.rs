@@ -1,6 +1,7 @@
 //! `notes`, the first app: short notes with ids, state schema 2. Its actions are
 //! `app:notes/actions@1.0.0` (`wit/notes.wit`): `add` (the new note's id),
-//! `count` (notes and words), `find` (the ids of notes with a word), `get` and
+//! `count` (notes and words), `find` (the ids of notes with a word), `get`,
+//! `list` (each note's id and first line), `remove`, `append`, `edit` and
 //! `about`. It reads schema 1, written by version 1, and migrates it.
 
 #![cfg_attr(target_family = "wasm", no_std)]
@@ -29,6 +30,27 @@ pub const WORD_COUNTS_WRONG: u32 = 1;
 pub const IDS_OUT_OF_ORDER: u32 = 2;
 /// Most ids `find` returns, so its reply fits one message.
 pub const MAX_FOUND: usize = 500;
+/// Most notes `list` returns, and the longest first line it shows of each, so its
+/// reply fits one message.
+pub const MAX_LISTED: usize = 100;
+pub const LIST_CHARS: usize = 60;
+/// Most bytes one note holds, as the window's editor does.
+pub const MAX_NOTE: usize = 2000;
+
+/// A note's first line that is not blank, cut to `max` characters with an
+/// ellipsis, or `(empty)`.
+pub fn first_line(text: &str, max: usize) -> String {
+    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let line = line.trim();
+    if line.is_empty() {
+        return String::from("(empty)");
+    }
+    let mut out: String = line.chars().take(max).collect();
+    if line.chars().count() > max {
+        out.push('…');
+    }
+    out
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notes {
@@ -81,12 +103,73 @@ impl Actions for Notes {
             .map(|note| note.text.clone())
     }
 
+    /// `3: buy milk and eggs`, a line for each note, oldest first.
+    fn list(&self) -> Vec<String> {
+        self.state
+            .notes
+            .iter()
+            .take(MAX_LISTED)
+            .map(|note| format!("{}: {}", note.id, first_line(&note.text, LIST_CHARS)))
+            .collect()
+    }
+
+    fn remove(&mut self, id: u32) -> Result<String, String> {
+        let at = self.position(id)?;
+        self.state.notes.remove(at);
+        Ok(format!("Removed note {id}."))
+    }
+
+    fn append(&mut self, id: u32, text: &str) -> Result<String, String> {
+        if text.trim().is_empty() {
+            return Err(String::from("there is nothing to add"));
+        }
+        let old = &self.state.notes[self.position(id)?].text;
+        let joined = match old.is_empty() {
+            true => text.to_string(),
+            false => format!("{old}\n{text}"),
+        };
+        self.replace(id, &joined)?;
+        Ok(format!("Added to note {id}."))
+    }
+
+    fn edit(&mut self, id: u32, text: &str) -> Result<String, String> {
+        self.replace(id, text)?;
+        Ok(format!("Changed note {id}."))
+    }
+
     fn about(&self) -> String {
         format!("notes {VERSION} schema {SCHEMA}")
     }
 }
 
 impl Notes {
+    /// Where note `id` is, or why there is none.
+    fn position(&self, id: u32) -> Result<usize, String> {
+        self.state
+            .notes
+            .iter()
+            .position(|note| note.id == id)
+            .ok_or_else(|| format!("there is no note {id}"))
+    }
+
+    /// Replaces the text of note `id`, if the note holds it and the state the host
+    /// can keep has room for it.
+    pub fn replace(&mut self, id: u32, text: &str) -> Result<(), String> {
+        let at = self.position(id)?;
+        if text.len() > MAX_NOTE {
+            return Err(format!("a note holds at most {MAX_NOTE} bytes"));
+        }
+        let grow = text.len().saturating_sub(self.state.notes[at].text.len());
+        if grow > 0 && compsdk::state::encode(SCHEMA, &self.state).len() + grow > compsdk::MAX_STATE
+        {
+            return Err(String::from("notes are full"));
+        }
+        let note = &mut self.state.notes[at];
+        note.text = text.to_string();
+        note.words = words(text);
+        Ok(())
+    }
+
     /// Whether a note with `text` still fits in the state the host can keep.
     pub fn has_room_for(&self, text: &str) -> bool {
         // The note's id, word count and framing take well under 24 bytes.
@@ -162,6 +245,20 @@ pub trait Actions {
     /// The ids of the notes that have `word`, at most [`MAX_FOUND`].
     fn find(&self, word: &str) -> Vec<u32>;
     fn get(&self, id: u32) -> Option<String>;
+    /// Each note's id and first line, at most [`MAX_LISTED`]. A version from
+    /// before the action answers with nothing, and refuses the three that change.
+    fn list(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn remove(&mut self, _id: u32) -> Result<String, String> {
+        Err(String::from("this version of notes cannot remove a note"))
+    }
+    fn append(&mut self, _id: u32, _text: &str) -> Result<String, String> {
+        Err(String::from("this version of notes cannot add to a note"))
+    }
+    fn edit(&mut self, _id: u32, _text: &str) -> Result<String, String> {
+        Err(String::from("this version of notes cannot edit a note"))
+    }
     fn about(&self) -> String;
 }
 
@@ -223,6 +320,18 @@ macro_rules! app {
                 }
                 fn get(id: u32) -> Option<String> {
                     started(|notes| notes.get(id))
+                }
+                fn list() -> Vec<String> {
+                    started(|notes| notes.list())
+                }
+                fn remove(id: u32) -> Result<String, String> {
+                    started(|notes| notes.remove(id))
+                }
+                fn append(id: u32, text: String) -> Result<String, String> {
+                    started(|notes| notes.append(id, &text))
+                }
+                fn edit(id: u32, text: String) -> Result<String, String> {
+                    started(|notes| notes.edit(id, &text))
                 }
                 fn about() -> String {
                     started(|notes| notes.about())

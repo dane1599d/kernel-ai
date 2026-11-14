@@ -281,6 +281,7 @@ impl Shell {
                 built_by: built.id,
             }),
             net: None,
+            power: false,
         });
         Reply::menu(
             id,

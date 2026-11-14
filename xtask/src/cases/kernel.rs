@@ -59,6 +59,16 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("handles", "test=handles")
     },
+    // Serial stamps (`stamp=ms`, as `cargo xtask vbox` boots): the reader takes
+    // them off, so the kernel's and the programs' lines match as without them.
+    TestCase {
+        expect: &[
+            "serial: each line starts with [the kernel clock h the HPET], in seconds",
+            "[handles] handles: every check passed",
+            "handles: CALL_H, RECV_H and REPLY_H moved a request and a handle there and back",
+        ],
+        ..case("serial-stamps", "test=handles stamp=ms")
+    },
     // SHELL_INTERRUPT: the person's Stop lets a taken call finish and stops the
     // rest of the shell's line.
     TestCase {
@@ -140,6 +150,7 @@ pub(super) const CASES: &[TestCase] = &[
             "cannot ask yet",
             "dropped a result",
             "did not reach the app",
+            super::ROOM_WARNING,
         ],
         ..case("many-processes", "test=many-processes")
     },

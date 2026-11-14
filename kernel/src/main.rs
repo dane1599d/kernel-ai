@@ -232,6 +232,12 @@ fn cmdline() -> &'static str {
     CMDLINE.response().map_or("", |r| r.cmdline())
 }
 
+/// Whether the command line selects a self-test: a test boot, whose test
+/// words (`llm.cold_ms=`) count; any other boot ignores them.
+fn test_boot() -> bool {
+    TEST_MODE.load(Ordering::SeqCst)
+}
+
 /// Runs one self-test case and reports its outcome to QEMU.
 fn run_case(check: impl FnOnce() -> Result<(), &'static str>) -> ! {
     if let Err(message) = check() {
@@ -441,6 +447,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskAgent => run_case(agent_desk_tests::agent_check),
         SelfTest::DeskDefault => run_case(default_tests::check),
         SelfTest::DeskNoMemory => run_case(default_tests::no_memory_check),
+        SelfTest::DeskWarming => run_case(default_tests::warming_check),
         SelfTest::AppSettings => run_case(app_settings_tests::check),
         SelfTest::DeskTour => run_case(desk_tour_tests::check),
         SelfTest::DeskTakeover => run_case(agent_desk_tests::takeover_check),
@@ -552,6 +559,10 @@ fn init_devices() -> &'static acpitables::Platform {
             .ok_or("no HPET; a PIT fallback is not implemented yet")?;
         hpet::init(hpet)?;
         hpet::select_clock(cmdline());
+        if cmdline().split_whitespace().any(|word| word == "stamp=ms") {
+            serial::stamp_lines(true);
+            log!("serial: each line starts with [the kernel clock h the HPET], in seconds");
+        }
         timer::init()?;
         entropy::init();
         // ADR 0007 section 8: no 8042 when the FADT says the machine has none.
