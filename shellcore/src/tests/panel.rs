@@ -121,9 +121,19 @@ fn open_and_one_app_runs_ui_open_with_no_model() {
     host.lists_services.set(true);
     host.services
         .borrow_mut()
-        .push((String::from("notes-window"), false));
+        .push((String::from("notes-window"), true));
     let shown = shell.eval_panel("open notes");
     assert!(host.act_lines.borrow().is_empty(), "the model was asked");
+    // The running apps' rows are loaded as a model request would load them,
+    // so Settings and the grants see the app opened (app-settings).
+    assert!(
+        host.app_requests
+            .borrow()
+            .iter()
+            .any(|(app, request)| app == "notes-window" && request == "kai-actions 1"),
+        "{:?}",
+        host.app_requests.borrow()
+    );
     assert!(
         shell.eval("log actlog").text.contains("ui_open"),
         "{shown:?}"

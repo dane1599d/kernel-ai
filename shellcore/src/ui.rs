@@ -157,7 +157,12 @@ impl Shell {
         self.host.audit(&format!(
             "request {id}: {input:?}, opened by code with no model"
         ));
-        Some(self.execute(id, input, &call).reply)
+        let reply = self.execute(id, input, &call).reply;
+        // As a model request would on the next line: the running apps' rows
+        // are loaded, the one just opened included, so Settings and the
+        // grants see them (app-settings, on #885).
+        let _ = crate::apps::wire(self.host.as_ref());
+        Some(reply)
     }
 
     /// Whether `app` is an app the system has: a service the supervisor runs
