@@ -5,9 +5,10 @@
 //! (`pkg` loads none: each app's plan line runs the image's own version); the
 //! case types Ctrl+Space, `apps` and Enter, and the Apps sheet lists them by
 //! name. Down four times, past `editor`, `files`, `models` and `monitor`, and Enter on
-//! `notes` sends `open notes` as a panel line, the shell takes it, the model's
-//! `ui_open` starts `notes-window` on demand, and its window opens. The host
-//! checks `desktop`'s and the supervisor's lines.
+//! `notes` sends `ui_open("notes")` as a panel line, a call the person runs
+//! with no model, the shell takes it, `ui_open` starts `notes-window` on
+//! demand, and its window opens. The host checks `desktop`'s and the
+//! supervisor's lines.
 //!
 //! `test=desk-no-memory`: the same system and the same steps, but first a
 //! process takes what is left of the admission budget (free / 2), so the
