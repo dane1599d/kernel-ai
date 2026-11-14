@@ -32,8 +32,8 @@ node 7 clip 215,0 425x420
   text 240,58 body text "milk and eggs"
   unclip
 node 9 clip 215,0 425x420
-  fill 230,356 398x28 raised r6
-  stroke 230,356 398x28 line_strong w1 r6
+  fill 230,356 398x28 raised r4
+  stroke 230,356 398x28 line_strong w1 r4
   text 385,361 label text "Delete note"
 node 8 clip 215,0 425x420
   text 230,392 small muted "3 notes, 20 words"
