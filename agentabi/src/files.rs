@@ -91,7 +91,10 @@ pub const FS_CHANGES: Action = Action {
 };
 
 pub const FS_CREATE: Action = Action {
-    cues: &["create"],
+    // Everyday words for a new file (founder test 2): "make a note called
+    // ideas", "new file", "save this". Not "make": "make it snappier" is a
+    // vague want, which no row's cue may claim.
+    cues: &["create", "new", "save", "note"],
     ..change("fs_create", "a new file; never overwrites", &[PATH, TEXT])
 };
 
@@ -118,7 +121,7 @@ pub const FS_MOVE: Action = Action {
 };
 
 pub const FS_TRASH: Action = Action {
-    cues: &["trash", "delete"],
+    cues: &["trash", "delete", "remove", "erase"],
     inverse: Inverse::Trash,
     ..change("fs_trash", "to the trash; undo brings it back", &[PATH])
 };

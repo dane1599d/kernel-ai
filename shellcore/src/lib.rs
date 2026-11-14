@@ -266,6 +266,11 @@ pub trait Host {
     fn pkg(&self, _request: &str) -> Result<String, String> {
         Err(String::from("there is no pkg service here"))
     }
+    /// Installed package `package`'s `kai-actions 1` answer, read by `pkg`
+    /// from its stored artifact: an app's rows before it first runs.
+    fn installed_rows(&self, _package: &str) -> Result<String, String> {
+        Err(String::from("there is no pkg service here"))
+    }
     /// `cc build`'s work outside the shell's logic: component `name`'s
     /// sources, read from `dir/name/` ([`ccbuild::DIR`], or [`ccbuild::APPS_DIR`]
     /// for `app_build`), built by `cc` at `version`, and the artifact written
