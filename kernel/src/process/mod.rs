@@ -195,7 +195,8 @@ static SLOT_OF_TID: [AtomicUsize; MAX_THREADS] = [const { AtomicUsize::new(0) };
 /// Kill reason plus one (0 = none); the first reason wins.
 static KILL: [AtomicU8; MAX_PROCESSES] = [const { AtomicU8::new(0) }; MAX_PROCESSES];
 static KILL_DETAIL: [AtomicU64; MAX_PROCESSES] = [const { AtomicU64::new(0) }; MAX_PROCESSES];
-/// Set when the user presses Ctrl-C for this process; `interrupted` reads and clears it.
+/// Set by [`interrupt`] (the Terminal's Stop or the panel's Esc for the shell);
+/// `interrupted` reads and clears it, and a call cancelled by it ends Interrupted.
 static INTERRUPT: [AtomicBool; MAX_PROCESSES] = [const { AtomicBool::new(false) }; MAX_PROCESSES];
 /// Set once the process has printed anything: the M10 exit test waits for every
 /// `work` process's start-up line before it measures.
@@ -246,6 +247,22 @@ fn slot_of(tid: Tid) -> Option<usize> {
 /// The calling thread's process slot, if it is a process thread.
 pub fn current_slot() -> Option<usize> {
     slot_of(threads::current_tid())
+}
+
+/// Marks the live process named `name` interrupted, as the person's Stop or
+/// Esc does for the shell ([`kabi::call::SHELL_INTERRUPT`]), and wakes every
+/// thread it has: a call it is blocked in ends Interrupted, and its script sees
+/// `interrupted()`. Its pid, or `None` when no such process runs.
+pub fn interrupt(name: &str) -> Option<u64> {
+    let (pid, tids) = with_table(|table| {
+        let slot = table
+            .iter()
+            .position(|p| p.live() && p.state != State::Exiting && p.name.as_str() == name)?;
+        INTERRUPT[slot].store(true, Ordering::SeqCst);
+        Some((table[slot].pid, table[slot].thread_tids()))
+    })?;
+    workers::wake_all(&tids);
+    Some(pid)
 }
 
 /// Whether the process has a Ctrl-C pending, without clearing it.

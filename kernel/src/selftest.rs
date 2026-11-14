@@ -264,6 +264,8 @@ pub enum SelfTest {
     Probe,
     /// P1: handle tables, startup handles and need() on handles.
     Handles,
+    /// SHELL_INTERRUPT: the person's Stop ends the shell's call in flight.
+    ShellInterrupt,
     /// L6: worker threads start, are refused, filtered and torn down.
     Threads,
     /// L6: processes killed mid-run, every thread blocked or computing, free every frame.
@@ -488,6 +490,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
             "test=handles" => Some(SelfTest::Handles),
+            "test=shell-interrupt" => Some(SelfTest::ShellInterrupt),
             "test=threads" => Some(SelfTest::Threads),
             "test=threads-kill" => Some(SelfTest::ThreadsKill),
             "test=thread-pin" => Some(SelfTest::ThreadPin),

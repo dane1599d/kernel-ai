@@ -59,6 +59,14 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("handles", "test=handles")
     },
+    // SHELL_INTERRUPT: the person's Stop ends the shell's call in flight.
+    TestCase {
+        expect: &[
+            "[shell] handles: Stop ended a call in flight after ",
+            "shell-interrupt: Stop ended the shell's call in flight, and only the person's keys may ask",
+        ],
+        ..case("shell-interrupt", "test=shell-interrupt")
+    },
     // M10a-2's probe runs here too, so the case itself is gated under KVM and TCG;
     // `cargo xtask icount` checks its determinism under icount.
     TestCase {

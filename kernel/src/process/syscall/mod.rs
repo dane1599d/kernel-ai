@@ -12,6 +12,7 @@ mod core;
 mod device;
 mod entropy;
 mod handle;
+mod interrupt;
 mod job;
 mod net;
 mod sched;
@@ -90,6 +91,7 @@ const AREAS: &[Area] = &[
     component::handle,
     net::handle,
     handle::handle,
+    interrupt::handle,
     device::handle,
     shm::handle,
     job::handle,
