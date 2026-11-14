@@ -38,7 +38,7 @@ use comp_editor_ui as ui;
 use comp_ui_bind::{Shown, Sink};
 use compsdk::{Component, ImportError};
 use editcore::screen::{Input, Key, Screen};
-use files::Files;
+use files::{Files, Kept};
 use minicbor::{Decode, Encode};
 use uikit::widget::{UiError, UiEvent};
 
@@ -51,11 +51,15 @@ const MAX_PENDING: usize = 8;
 /// What an editor with nothing open says, so a person who opens it knows what to do.
 const EMPTY: &str = "No file is open: Ctrl-O opens one by its path.";
 
-/// What the checkpoint keeps: the path of the file of the person's own that is
-/// open, so an editor that napped or came back from a swap opens it again from
-/// the disk. The session lives in the edit service, and a draft in storage is a
-/// later step: text not saved is not in it, which is why a window with any holds
-/// a nap lease (comphost) and says so (`set-unsaved`).
+/// What the checkpoint keeps of the file of the person's own that is open, so
+/// an editor that napped or came back from a swap has it again: its path, to read
+/// it from the disk, and the text as it stood when that is not what the disk has,
+/// with the line being typed in it, to put back over what is read. The text is at
+/// most [`files::KEEP_MAX`] (a checkpoint is at most 64 KiB); past it, which the
+/// editor's own limit keeps from happening, only the path is kept. A component's
+/// source is in the edit service, which keeps its session. A window with text
+/// not saved also holds a nap lease (comphost, which caps it) and says so
+/// (`set-unsaved`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
 pub struct V1 {
     #[n(0)]
@@ -63,6 +67,13 @@ pub struct V1 {
     /// Absent in a checkpoint an earlier version saved.
     #[n(1)]
     pub path: Option<String>,
+    /// The file's text as it stood, when it differed from the disk's: absent
+    /// when nothing was unsaved, and in a checkpoint an earlier version saved.
+    #[n(2)]
+    pub text: Option<String>,
+    /// The line the cursor was on, from 1.
+    #[n(3)]
+    pub line: Option<u32>,
 }
 
 /// Where the window is in being closed with changes not saved.
@@ -104,11 +115,11 @@ pub struct EditorWindow {
     /// The screen's rows and columns as the code view last said, for a new screen.
     grid: (usize, usize),
     closing: Closing,
-    /// The file a checkpoint had open, still to be read again. `import` cannot do
-    /// it: the host takes a `kai:files` request only from a call that a transaction
-    /// wraps, and a migration is not one. The first call that is one reads it
-    /// ([`EditorWindow::resume`]).
-    reopen: Option<String>,
+    /// The file a checkpoint had open and what it kept of it, still to be read
+    /// again. `import` cannot do it: the host takes a `kai:files` request only from
+    /// a call that a transaction wraps, and a migration is not one. The first call
+    /// that is one reads it ([`EditorWindow::resume`]).
+    reopen: Option<(String, Kept)>,
 }
 
 impl EditorWindow {
@@ -428,10 +439,10 @@ impl EditorWindow {
     /// OS for a file; the reply comes in a later call, as for Ctrl-O's. A file that
     /// cannot be opened again is said in the status row, and the editor is empty.
     fn resume(&mut self, host: &mut dyn Host) {
-        let Some(path) = self.reopen.take() else {
+        let Some((path, kept)) = self.reopen.take() else {
             return;
         };
-        if let Err(why) = self.files.ask_open(host, &mut self.screen, &path) {
+        if let Err(why) = self.files.ask_restore(host, &mut self.screen, &path, kept) {
             self.screen
                 .note(format!("{path} was not opened again: {why}"), true);
         }
@@ -478,19 +489,22 @@ impl Component for EditorWindow {
         }
         let kept: V1 = compsdk::state::decode(state, SCHEMA).ok_or(ImportError::Bad)?;
         let mut app = Self::new();
-        app.reopen = kept.path;
+        app.reopen = kept.path.map(|path| {
+            let line = kept.line.unwrap_or(1);
+            (
+                path,
+                Kept {
+                    text: kept.text,
+                    line,
+                },
+            )
+        });
         app.present_logged();
         Ok(app)
     }
 
     fn export(&self, schema: u32) -> Option<Vec<u8>> {
-        (schema == SCHEMA).then(|| {
-            let kept = V1 {
-                reserved: 0,
-                path: self.files.path().map(String::from),
-            };
-            compsdk::state::encode(SCHEMA, &kept)
-        })
+        (schema == SCHEMA).then(|| compsdk::state::encode(SCHEMA, &self.checkpoint()))
     }
 
     fn health(&self) -> u32 {
@@ -503,6 +517,30 @@ impl Component for EditorWindow {
 }
 
 impl EditorWindow {
+    /// What a checkpoint keeps. An editor that has only just come back and has
+    /// not read its file yet keeps what it was given.
+    fn checkpoint(&self) -> V1 {
+        if let Some((path, kept)) = &self.reopen {
+            return V1 {
+                reserved: 0,
+                path: Some(path.clone()),
+                text: kept.text.clone(),
+                line: Some(kept.line),
+            };
+        }
+        let path = self.files.path().map(String::from);
+        let text = self.files.unsaved_text(&self.screen);
+        let line = path
+            .as_ref()
+            .and_then(|_| u32::try_from(self.screen.position().0).ok());
+        V1 {
+            reserved: 0,
+            path,
+            text,
+            line,
+        }
+    }
+
     /// Draws the window, or logs why it could not.
     #[cfg(target_family = "wasm")]
     fn present_logged(&mut self) {

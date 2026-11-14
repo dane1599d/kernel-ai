@@ -771,14 +771,131 @@ fn the_keys_s_d_and_escape_answer_the_question() {
     assert_eq!(os.disk[PATH], todo());
 }
 
+/// A new editor from `app`'s checkpoint, as a nap's wake makes one, on the same
+/// disk: the import, which asks the door for nothing, and the first call after it,
+/// which reads the file; the answer is served.
+fn woken(app: &EditorWindow, disk: &BTreeMap<String, Vec<u8>>) -> (EditorWindow, Os) {
+    let kept = app.export(comp_editor_window::SCHEMA).unwrap();
+    let mut os = Os {
+        disk: disk.clone(),
+        ..Os::default()
+    };
+    let mut woke = EditorWindow::import(&kept, comp_editor_window::SCHEMA).unwrap();
+    assert!(os.pending.is_empty() && os.log.is_empty());
+    woke.on_size(&mut os, 10, 60).unwrap();
+    serve(&mut woke, &mut os);
+    (woke, os)
+}
+
+#[test]
+fn text_not_saved_is_in_the_checkpoint_and_a_woken_editor_has_it_back_unsaved() {
+    // "x" is typed at the start of line 1 and is still the line being typed.
+    let (app, os) = edited();
+    let kept = app.export(comp_editor_window::SCHEMA).unwrap();
+    let state: comp_editor_window::V1 =
+        compsdk::state::decode(&kept, comp_editor_window::SCHEMA).unwrap();
+    assert_eq!(state.path.as_deref(), Some(PATH));
+    assert_eq!(state.text.as_deref(), Some("xbuy milk\r\ncall Ann\nsleep"));
+    assert_eq!(state.line, Some(1));
+    assert!(kept.len() < compsdk::MAX_STATE);
+
+    let (mut woke, mut back) = woken(&app, &os.disk);
+    assert_eq!(back.log, [format!("read {PATH}")]);
+    assert_eq!(&back.rows()[..2], ["xbuy milk", "call Ann"]);
+    // It says it holds text not saved, as the first one did, and the disk was
+    // not written.
+    assert_eq!(back.unsaved, [true]);
+    assert!(back.writes.is_empty());
+    assert_eq!(back.disk[PATH], todo());
+    // Ctrl-S writes what was kept.
+    save(&mut woke, &mut back);
+    assert_eq!(back.disk[PATH], b"xbuy milk\r\ncall Ann\nsleep");
+    assert_eq!(back.unsaved, [true, false]);
+}
+
+#[test]
+fn the_cursors_line_and_edits_already_made_come_back_too() {
+    let (mut app, mut os) = window();
+    os.disk.insert(PATH.into(), todo());
+    open_path(&mut app, &mut os, PATH);
+    // An edit that went to the file (the cursor moved off its line), and a
+    // line being typed on the next.
+    type_text(&mut app, &mut os, "A");
+    press(&mut app, &mut os, "down", "", 0);
+    type_text(&mut app, &mut os, "B");
+    let kept = app.export(comp_editor_window::SCHEMA).unwrap();
+    let state: comp_editor_window::V1 =
+        compsdk::state::decode(&kept, comp_editor_window::SCHEMA).unwrap();
+    assert_eq!(state.line, Some(2));
+    assert_eq!(state.text.as_deref(), Some("Abuy milk\r\ncBall Ann\nsleep"));
+    let (mut woke, mut back) = woken(&app, &os.disk);
+    assert_eq!(&back.rows()[..2], ["Abuy milk", "cBall Ann"]);
+    assert!(woke.status(&mut back).contains("line 2"));
+    // One undo takes the file back toward the disk's, not to nothing.
+    press(&mut woke, &mut back, "z", "", keys::CTRL);
+    serve(&mut woke, &mut back);
+    assert_eq!(back.rows()[0], "buy milk");
+}
+
+#[test]
+fn an_editor_woken_before_its_first_call_keeps_what_it_was_given() {
+    let (app, os) = edited();
+    let kept = app.export(comp_editor_window::SCHEMA).unwrap();
+    // Imported and exported again, as an editor that napped twice in a row.
+    let woke = EditorWindow::import(&kept, comp_editor_window::SCHEMA).unwrap();
+    let again = woke.export(comp_editor_window::SCHEMA).unwrap();
+    assert_eq!(again, kept);
+    let (_, back) = woken(&woke, &os.disk);
+    assert_eq!(&back.rows()[..1], ["xbuy milk"]);
+}
+
+#[test]
+fn the_kept_text_wins_over_a_file_that_changed_or_went_while_the_editor_napped() {
+    let (app, os) = edited();
+    // The disk's file changed.
+    let mut disk = os.disk.clone();
+    disk.insert(PATH.into(), b"something else\n".to_vec());
+    let (_, back) = woken(&app, &disk);
+    assert_eq!(&back.rows()[..2], ["xbuy milk", "call Ann"]);
+    assert_eq!(back.unsaved, [true]);
+    // The file is gone: the text is shown as a new file, and a save makes it.
+    disk.clear();
+    let (mut woke, mut back) = woken(&app, &disk);
+    assert_eq!(&back.rows()[..2], ["xbuy milk", "call Ann"]);
+    assert_eq!(back.unsaved, [true]);
+    save(&mut woke, &mut back);
+    assert_eq!(back.writes, [(true, "xbuy milk\r\ncall Ann\nsleep".len())]);
+}
+
+#[test]
+fn a_file_that_cannot_be_read_again_still_shows_the_text_that_was_kept() {
+    let (app, _) = edited();
+    let mut os = Os::default();
+    let kept = app.export(comp_editor_window::SCHEMA).unwrap();
+    let mut woke = EditorWindow::import(&kept, comp_editor_window::SCHEMA).unwrap();
+    woke.on_size(&mut os, 10, 60).unwrap();
+    let (ticket, _) = os.pending.remove(0);
+    woke.on_reply(&mut os, ticket, Err(String::from("denied: not yours")))
+        .unwrap();
+    serve(&mut woke, &mut os);
+    assert_eq!(&os.rows()[..1], ["xbuy milk"]);
+    assert!(os.status().contains("not read again"), "{}", os.status());
+    // A save asks to make a file, which a file that is there refuses.
+    os.disk.insert(PATH.into(), todo());
+    save(&mut woke, &mut os);
+    assert_eq!(os.disk[PATH], todo());
+    assert!(os.status().contains("not saved"), "{}", os.status());
+}
+
 #[test]
 fn a_file_the_agent_names_takes_the_place_of_the_one_a_nap_kept() {
     let (_, mut os) = window();
     os.disk.insert(PATH.into(), todo());
-    os.disk.insert("/home/user/other.txt".into(), b"other".to_vec());
+    os.disk
+        .insert("/home/user/other.txt".into(), b"other".to_vec());
     let kept = comp_editor_window::V1 {
-        reserved: 0,
         path: Some(PATH.into()),
+        ..comp_editor_window::V1::default()
     };
     let bytes = compsdk::state::encode(comp_editor_window::SCHEMA, &kept);
     let mut woke = EditorWindow::import(&bytes, comp_editor_window::SCHEMA).unwrap();
@@ -799,6 +916,8 @@ fn the_checkpoint_keeps_the_open_file_and_a_reopened_editor_reads_it_again() {
     let state: comp_editor_window::V1 =
         compsdk::state::decode(&kept, comp_editor_window::SCHEMA).unwrap();
     assert_eq!(state.path.as_deref(), Some(PATH));
+    // Nothing was typed: there is no text to keep.
+    assert_eq!(state.text, None);
     // A new editor, as a nap's wake makes one. The import asks the door for
     // nothing (the host takes a file request only from a call a transaction
     // wraps, and a migration is not one); the first call that is one reads the

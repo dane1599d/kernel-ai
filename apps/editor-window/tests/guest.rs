@@ -12,9 +12,7 @@ use livecore::Instance;
 use livecore::txn::{Inputs, Storage};
 use uikit::widget::UiEvent;
 use wasmhost::edit::MAX_QUEUED;
-use wasmhost::{
-    CoreInstance, FileOp, Grants, Limits, Update, load_core, load_core_granted,
-};
+use wasmhost::{CoreInstance, FileOp, Grants, Limits, Update, load_core, load_core_granted};
 
 const LIMITS: Limits = Limits {
     fuel_call: 5_000_000,
@@ -42,8 +40,20 @@ fn granted() -> Grants {
     }
 }
 
+/// More room than the default for the call's fuel and memory, for a file of the
+/// largest size the editor takes: opening one costs far more than the default allows.
+const BIG: Limits = Limits {
+    fuel_call: 2_000_000_000,
+    fuel_life: 20_000_000_000,
+    memory_bytes: 16 * 1024 * 1024,
+};
+
 fn start(wasm: &[u8]) -> CoreInstance {
-    let mut g = load_core_granted(wasm, LIMITS, None, granted()).unwrap();
+    start_with(wasm, LIMITS)
+}
+
+fn start_with(wasm: &[u8], limits: Limits) -> CoreInstance {
+    let mut g = load_core_granted(wasm, limits, None, granted()).unwrap();
     g.view(&Storage::new());
     assert_eq!(g.init(), Ok(0));
     g
@@ -472,6 +482,119 @@ fn a_window_with_text_not_kept_says_so_and_asks_before_it_closes() {
     );
 }
 
+/// The agent opens `path` and the door answers with `text`: the editor has it
+/// open, in a window with the id given.
+fn open_the_file(g: &mut CoreInstance, path: &str, text: &str) -> u32 {
+    let (w, _) = frame(g);
+    let open_file = Func {
+        export: String::from("app:editor/actions@1.0.0#open-file"),
+        params: vec![Ty::String],
+        result: Some(Ty::Result(
+            Some(Box::new(Ty::String)),
+            Some(Box::new(Ty::String)),
+        )),
+    };
+    call(g, |g| {
+        Instance::call(g, &open_file, &[Val::String(path.into())])
+    })
+    .unwrap()
+    .unwrap();
+    let asked = g.take_files();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(matches!(&asked[0].op, FileOp::Read { path: p } if p == path));
+    call(g, |g| {
+        g.files_reply(asked[0].ticket, Ok(text.as_bytes().to_vec()))
+    })
+    .unwrap();
+    g.take_ui();
+    w
+}
+
+/// A new instance from `saved`, as a nap's wake makes one: it imports (a
+/// migration, which takes no file request), and its first call reads `path`,
+/// which the door answers with `disk`. The window's last frame comes back.
+fn wake(wasm: &[u8], limits: Limits, saved: &[u8], path: &str, disk: &str) -> uikit::Frame {
+    let mut h = start_with(wasm, limits);
+    assert_eq!(h.import(saved, 1), Ok(0));
+    assert!(h.take_files().is_empty());
+    let (w, _) = frame(&mut h);
+    call(&mut h, |h| h.code_size(w, CODE, 10, 60)).unwrap();
+    let again = h.take_files();
+    assert_eq!(again.len(), 1, "{again:?}");
+    assert!(matches!(&again[0].op, FileOp::Read { path: p } if p == path));
+    call(&mut h, |h| {
+        h.files_reply(again[0].ticket, Ok(disk.as_bytes().to_vec()))
+    })
+    .unwrap();
+    last_frame(&mut h)
+}
+
+#[test]
+fn a_checkpoint_with_text_not_saved_brings_it_back_unsaved() {
+    const PATH: &str = "/home/user/todo.txt";
+    let Some(wasm) = wasm() else { return };
+    let mut g = start(&wasm);
+    let w = open_the_file(&mut g, PATH, "buy milk\ncall Ann\n");
+    // A key typed into the file: the line is still being typed.
+    call(&mut g, |g| g.ui_events_user(w, &[key("x", "x", 0)])).unwrap();
+    let typed = last_frame(&mut g);
+    assert!(typed.unsaved, "{}", text_of(&typed));
+    let saved = Instance::export(&mut g, 0).unwrap().unwrap();
+    let kept: comp_editor_window::V1 =
+        compsdk::state::decode(&saved, comp_editor_window::SCHEMA).unwrap();
+    assert_eq!(kept.path.as_deref(), Some(PATH));
+    assert_eq!(kept.text.as_deref(), Some("xbuy milk\ncall Ann\n"));
+    assert_eq!(kept.line, Some(1));
+
+    // The disk has the file as it was: what comes back is the kept text, and
+    // the window says so.
+    let back = wake(&wasm, LIMITS, &saved, PATH, "buy milk\ncall Ann\n");
+    let text = text_of(&back);
+    assert!(text.contains("xbuy milk"), "{text}");
+    assert!(back.unsaved, "{text}");
+}
+
+#[test]
+fn a_file_near_the_limit_with_text_not_saved_is_kept_whole_in_a_checkpoint_that_fits() {
+    const PATH: &str = "/home/user/big.txt";
+    let Some(wasm) = wasm() else { return };
+    // 1,900 lines of 31 bytes: 58,900 bytes, under the 60 KiB the editor takes.
+    let disk: String = (0..1900)
+        .map(|i| format!("line {i:04} {}\n", "-".repeat(20)))
+        .collect();
+    assert!(disk.len() > 58_000 && disk.len() < editcore::MAX_BUNDLE);
+    let mut g = start_with(&wasm, BIG);
+    let w = open_the_file(&mut g, PATH, &disk);
+    call(&mut g, |g| g.ui_events_user(w, &[key("x", "x", 0)])).unwrap();
+    let saved = Instance::export(&mut g, 0).unwrap().unwrap();
+    // The checkpoint holds the whole text and is inside what the host takes.
+    assert!(saved.len() > 58_000, "{}", saved.len());
+    assert!(saved.len() <= compsdk::MAX_STATE, "{}", saved.len());
+    let kept: comp_editor_window::V1 =
+        compsdk::state::decode(&saved, comp_editor_window::SCHEMA).unwrap();
+    assert_eq!(kept.text.map(|t| t.len()), Some(disk.len() + 1));
+
+    let back = wake(&wasm, BIG, &saved, PATH, &disk);
+    let text = text_of(&back);
+    assert!(text.contains("xline 0000"), "{text}");
+    assert!(back.unsaved, "{text}");
+}
+
+#[test]
+fn a_file_with_nothing_unsaved_keeps_only_its_path() {
+    const PATH: &str = "/home/user/todo.txt";
+    let Some(wasm) = wasm() else { return };
+    let mut g = start(&wasm);
+    open_the_file(&mut g, PATH, "buy milk\n");
+    let saved = Instance::export(&mut g, 0).unwrap().unwrap();
+    let kept: comp_editor_window::V1 =
+        compsdk::state::decode(&saved, comp_editor_window::SCHEMA).unwrap();
+    assert_eq!((kept.path.as_deref(), kept.text), (Some(PATH), None));
+    let back = wake(&wasm, LIMITS, &saved, PATH, "buy milk\n");
+    assert!(text_of(&back).contains("buy milk"));
+    assert!(!back.unsaved);
+}
+
 #[test]
 fn a_checkpoint_with_a_file_open_imports_and_reads_the_file_in_the_first_call_after() {
     const PATH: &str = "/home/user/todo.txt";
@@ -496,9 +619,13 @@ fn a_checkpoint_with_a_file_open_imports_and_reads_the_file_in_the_first_call_af
     assert_eq!(asked.len(), 1, "{asked:?}");
     assert!(matches!(&asked[0].op, FileOp::Read { path } if path == PATH));
     call(&mut g, |g| {
-        g.files_reply(asked[0].ticket, Ok(b"buy milk
+        g.files_reply(
+            asked[0].ticket,
+            Ok(b"buy milk
 call Ann
-".to_vec()))
+"
+            .to_vec()),
+        )
     })
     .unwrap();
     let saved = Instance::export(&mut g, 0).unwrap().unwrap();
@@ -518,9 +645,13 @@ call Ann
     assert_eq!(again.len(), 1, "{again:?}");
     assert!(matches!(&again[0].op, FileOp::Read { path } if path == PATH));
     call(&mut h, |h| {
-        h.files_reply(again[0].ticket, Ok(b"buy milk
+        h.files_reply(
+            again[0].ticket,
+            Ok(b"buy milk
 call Ann
-".to_vec()))
+"
+            .to_vec()),
+        )
     })
     .unwrap();
     let text = text_of(&last_frame(&mut h));
