@@ -939,9 +939,13 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::desk_tests::BOOT_PLAN);
     }
-    if matches!(test, SelfTest::UiWindow | SelfTest::UiWindowShow) {
+    if test == SelfTest::UiWindow {
         plan.push('\n');
         plan.push_str(crate::ui_tests::PLAN);
+    }
+    if test == SelfTest::UiWindowShow {
+        plan.push('\n');
+        plan.push_str(crate::show_tests::PLAN);
     }
     if test == SelfTest::AppEditorFiles {
         plan.push('\n');

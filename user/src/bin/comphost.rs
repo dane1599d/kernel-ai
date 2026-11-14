@@ -307,13 +307,28 @@ fn main() -> i32 {
                             Some(reply) => Ok(reply),
                             // A show is the host's own: the app's window, or
                             // the app reloaded so it shows one.
-                            None if &request[..len] == kabi::live::SHOW.as_bytes() => {
-                                match windows.as_ref().is_some_and(ui::Ui::has_windows) {
-                                    true => Ok(b"ok shown (its window is open)".to_vec()),
-                                    false => host.reshow(),
+                            None if is_show(&request[..len]) => {
+                                // Hidden by the person: back as it was.
+                                let shown = windows.as_mut().is_some_and(ui::Ui::unhide);
+                                let open = windows.as_ref().is_some_and(ui::Ui::has_windows);
+                                match (shown, open) {
+                                    (true, _) => Ok(b"ok shown".to_vec()),
+                                    (false, true) => Ok(b"ok shown (its window is open)".to_vec()),
+                                    // No window, none held: it closed its own,
+                                    // or never opened one; a reload shows it.
+                                    (false, false) => host.reshow(),
                                 }
                             }
-                            None => host.handle(caller, &request[..len]),
+                            None => {
+                                // An open row (a file opened or revealed) is a
+                                // show too: what it opens is to be seen.
+                                if opens_a_window(&request[..len])
+                                    && let Some(ui) = windows.as_mut()
+                                {
+                                    ui.unhide();
+                                }
+                                host.handle(caller, &request[..len])
+                            }
                         }
                     });
                 let mut reply = match reply {
@@ -414,6 +429,30 @@ fn soonest(wait: u64, due: Option<u64>) -> u64 {
 
 /// What the instances did that leaves comphost: the editor's messages go to the
 /// edit service and its files to `desktop`, then the windows' frames.
+/// Whether `request` is [`kabi::live::SHOW`], a trailing newline allowed.
+fn is_show(request: &[u8]) -> bool {
+    request.strip_suffix(b"\n").unwrap_or(request) == kabi::live::SHOW.as_bytes()
+}
+
+/// Whether `request` calls an app row that opens something to be seen: a
+/// file opened (`open`, `open-file`) or revealed (`reveal`), as the Files and
+/// Editor rows do.
+fn opens_a_window(request: &[u8]) -> bool {
+    let Ok(text) = core::str::from_utf8(request) else {
+        return false;
+    };
+    let Some(func) = text
+        .strip_prefix("kai-call 1\n")
+        .and_then(|rest| rest.lines().find_map(|l| l.strip_prefix("func ")))
+    else {
+        return false;
+    };
+    matches!(
+        func.rsplit_once('#').map(|(_, name)| name),
+        Some("open" | "open-file" | "reveal")
+    )
+}
+
 fn settle(
     windows: &mut Option<ui::Ui>,
     edits: &mut Option<editcore::gate::Gate>,

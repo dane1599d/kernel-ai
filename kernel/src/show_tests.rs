@@ -1,10 +1,11 @@
 //! `test=ui-window-show` (the founder's second test, backlog item 2): a
-//! closed app comes back when asked, and not before. `notes-window` opens its
-//! window as in `ui-window`, and the case clicks its close control. A note
-//! added through its action then redraws the app, which used to open the
-//! window again unasked; now it stays closed, so the first `kai-show 1` finds
-//! no window and reloads the app from its checkpoint, which shows it. The
-//! second finds it open, with the note.
+//! closed app comes back when asked, and not before. `notes-window`, with a
+//! 3-second nap, opens its window as in `ui-window`, and the case clicks its
+//! close control: comphost hides it, keeping the app's frames. The app naps,
+//! unused, and a note added through its action wakes it (a reload, whose
+//! window used to come back unasked) and redraws it; the window stays hidden.
+//! The first `kai-show 1` puts it back as it was, with no reload; the second
+//! finds it open, with the note.
 
 use crate::display::claim;
 use crate::ui_tests::report;
@@ -12,6 +13,11 @@ use crate::{console, ipc, log, process, threads};
 use alloc::string::String;
 
 const NAME: &str = "notes-window";
+/// The plan lines this case adds: `ui-window`'s, with a 3-second nap.
+pub const PLAN: &str = "desktop caps=display+input+serve pages=8192 stack_pages=512\n\
+     notes-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1 nap_ms=3000";
+/// The nap, and time for comphost to notice it is due.
+const NAP_MS: u64 = 3_000 + 4_000;
 const WAIT_MS: u64 = 60_000;
 const CALL_MS: u64 = 60_000;
 /// Time for comphost to start the app and paint its first frame under TCG.
@@ -47,6 +53,8 @@ pub fn check() -> Result<(), &'static str> {
     report(0, 0, 0);
     threads::sleep_ms(2_000);
     log!("ui-window-show: Notes' window was closed");
+    // Unused and hidden, it naps; the call below wakes it, a reload.
+    threads::sleep_ms(NAP_MS);
     // A redraw of its own: it used to open the window again.
     let add = "kai-call 1\nfunc app:notes/actions@1.0.0#add\nargs {text: \"buy milk\"}\n";
     if !call(add)?.contains("ok(1)") {
@@ -55,8 +63,8 @@ pub fn check() -> Result<(), &'static str> {
     threads::sleep_ms(2_000);
     let shown = call(kabi::live::SHOW)?;
     log!("ui-window-show: the first show answered {shown}");
-    if shown != "ok shown notes-window" {
-        return Err("ui-window-show: the closed window came back unasked, or no reload");
+    if shown != "ok shown" {
+        return Err("ui-window-show: the closed window came back unasked");
     }
     threads::sleep_ms(3_000);
     let again = call(kabi::live::SHOW)?;

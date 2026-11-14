@@ -17,7 +17,6 @@ use livecore::{Fault, Performed};
 use uikit::Frame;
 use uikit::layout::Measure;
 use uikit::style::TypeStyle;
-use uikit::widget::UiEvent;
 use user::{println, sys};
 use wasmhost::desk::{Desk, Open, Show, Target, Told};
 use wasmhost::{AppEvent, LiveInstance, Update, surface};
@@ -72,6 +71,14 @@ pub struct Ui {
     pools: Vec<Pool>,
     /// Each open window's last frame, to answer the agent and to reopen.
     frames: Vec<(u32, Frame)>,
+    /// The person closed its window (or the agent's `window_close` did):
+    /// comphost took it off the desk and keeps it hidden, with the app's
+    /// latest frames in `held`, until a show ([`Ui::unhide`]). Here, outside
+    /// the app, so no reload (a nap's wake, a fault, a swap) and no app, a
+    /// Kai-built one included, can bring it back unasked (backlog item 2).
+    hidden: bool,
+    /// The frames of its windows while hidden, newest only.
+    held: Vec<(u32, Frame)>,
     /// The version whose windows show.
     shown: Option<String>,
     /// Whether one of its windows took focus since [`Ui::take_focused`].
@@ -107,6 +114,8 @@ impl Ui {
             text,
             pools: Vec::new(),
             frames: Vec::new(),
+            hidden: false,
+            held: Vec::new(),
             shown: None,
             focused: false,
             later: Vec::new(),
@@ -200,9 +209,15 @@ impl Ui {
         }
         for update in updates {
             match update {
+                // Hidden by the person: the app's frames wait for a show.
+                Update::Frame { window, frame } if self.hidden => {
+                    self.held.retain(|(app, _)| *app != window);
+                    self.held.push((window, frame));
+                }
                 Update::Frame { window, frame } => self.show(window, frame),
                 Update::Closed(window) => {
                     self.frames.retain(|(app, _)| *app != window);
+                    self.held.retain(|(app, _)| *app != window);
                     self.close(window);
                 }
                 Update::CodeSize {
@@ -389,8 +404,10 @@ impl Ui {
         for t in told {
             // A focus wakes only an app comphost napped itself (its caller
             // decides); a close or an action wakes any suspended app.
-            if !matches!(t, Told::Restarted | Told::Focus(_) | Told::Theme(_))
-                && let Some(reply) = host.wake()?
+            if !matches!(
+                t,
+                Told::Restarted | Told::Focus(_) | Told::Close(_) | Told::Theme(_)
+            ) && let Some(reply) = host.wake()?
             {
                 println!(
                     "comphost: resumed for a window event: {}",
@@ -401,12 +418,10 @@ impl Ui {
                 Told::Restarted => self.reopen(),
                 Told::Focus(_) => self.focused = true,
                 Told::Theme(name) => self.set_theme(&name),
-                Told::Close(window) => {
-                    let performed = serve_shown(host, |core| {
-                        core.ui_events(window, &[UiEvent::CloseRequested])
-                    });
-                    self.forward(performed, false);
-                }
+                // The person closed it: comphost hides it, and the app, not
+                // told, keeps its window and its state, as if minimized,
+                // until a show puts it back.
+                Told::Close(window) => self.hide(window),
                 Told::Action {
                     window,
                     node,
@@ -460,6 +475,38 @@ impl Ui {
     }
 
     /// A new `desktop`: every window opens again from its last frame.
+    /// Takes `window` off the desk and keeps its frame for a show.
+    fn hide(&mut self, window: u32) {
+        let Some(at) = self.frames.iter().position(|(app, _)| *app == window) else {
+            return;
+        };
+        let (_, frame) = self.frames.remove(at);
+        self.held.retain(|(app, _)| *app != window);
+        self.held.push((window, frame));
+        self.hidden = true;
+        self.close(window);
+        println!("comphost: window {window} hidden until it is shown");
+    }
+
+    /// A show (`kai-show 1`, or an open row's call): its hidden windows back
+    /// on the desk with the app's latest frames, no reload, so nothing it
+    /// holds is lost. True when a window came back.
+    pub fn unhide(&mut self) -> bool {
+        if !self.hidden {
+            return false;
+        }
+        self.hidden = false;
+        let held = core::mem::take(&mut self.held);
+        let shown = !held.is_empty();
+        for (window, frame) in held {
+            self.show(window, frame);
+        }
+        if shown {
+            println!("comphost: shown again, as it was");
+        }
+        shown
+    }
+
     fn reopen(&mut self) {
         if self.frames.is_empty() {
             return;

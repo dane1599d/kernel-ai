@@ -86,13 +86,9 @@ fn a_click_adds_a_note_and_a_close_request_closes() {
         (app.window(), host.ui.window(w).err()),
         (None, Some(UiError::NoWindow))
     );
-    // Closed by the person, a redraw of its own does not bring it back
-    // (backlog item 2): only a reload does, which comphost makes for a show.
+    // Shown again, it reopens with the whole tree.
     app.present(&mut host).unwrap();
-    assert_eq!(app.window(), None);
-    let mut again = NotesWindow::init();
-    again.present(&mut host).unwrap();
-    assert_ne!(again.window(), None);
+    assert_ne!(app.window(), None);
 }
 
 #[test]

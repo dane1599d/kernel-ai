@@ -107,8 +107,8 @@ fn open(route: kabi::handle::Handle, app: &str, arg: Option<&str>) -> Result<Str
         // (backlog item 2). A new start shows its own window well before.
         if !asked_to_show && waited >= SHOW_AFTER_MS {
             asked_to_show = true;
-            let show =
-                app_call(&window, kabi::live::SHOW).or_else(|_| app_call(app, kabi::live::SHOW));
+            // Only its window's service: a headless app has none to show.
+            let show = app_call(&window, kabi::live::SHOW);
             if let Err(why) = show {
                 user::println!("{app} was asked to show its window: {why}");
             }
