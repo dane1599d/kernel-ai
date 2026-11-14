@@ -234,6 +234,22 @@ fn take_panel(shell: &mut Shell) {
     }
 }
 
+/// Shows on the panel what the answer to a desktop line's card came to.
+fn give_card_result(ran: bool, line: String) {
+    use deskcore::panel::State;
+    use deskcore::panel_wire;
+    let shown = match ran {
+        true => State::Done { line },
+        false => State::Refused { reason: line },
+    };
+    let (Some(route), Some(request)) = (desktop(), panel_wire::encode_state(&shown)) else {
+        return;
+    };
+    if let Err(why) = ask_desktop(route, &request) {
+        println!("the panel's state was not set: {why}");
+    }
+}
+
 /// Goes on with an `app_build` in the background, and shows on the panel what
 /// one came to when it ends, so it is seen without another line.
 fn give_app_build(shell: &mut Shell) {
@@ -1245,7 +1261,12 @@ fn main() -> i32 {
             if !text.starts_with("answer ") {
                 ui::begin();
             }
-            shell.eval_console(text).to_wire()
+            let reply = shell.eval_console(text).to_wire();
+            // A desktop line's card was answered: the panel shows what came of it.
+            if let Some((ran, line)) = shell.take_card_result() {
+                give_card_result(ran, line);
+            }
+            reply
         } else {
             String::from("err the shell answers only the terminal")
         };

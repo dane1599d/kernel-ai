@@ -5,7 +5,8 @@
 //! - the terminal's open entry, clarifying question and proposal are its own: a
 //!   panel line neither answers nor continues them, and what a panel line
 //!   leaves open (a question, an open bracket) is dropped, since the panel
-//!   cannot show it yet;
+//!   cannot show it yet. A proposal the trusted card can show waits for it
+//!   instead (`deskask`), and the person answers there;
 //! - what the panel shows is code's: the result line of what ran, or a fixed
 //!   reason. The model's words, a model-written script's prints and its
 //!   summary are never shown there;
@@ -66,7 +67,14 @@ impl Shell {
         self.worded = false;
         self.done_line = None;
         let reply = self.eval(line);
-        let result = self.panel_result(&reply);
+        // A question the card can show waits for it (`deskask`).
+        let result = match reply.confirm.is_some() && self.pending.is_some() {
+            true => match self.wait_for_card(&reply) {
+                Ok(waits) => PanelResult::Done(String::from(waits)),
+                Err(why) => PanelResult::Refused(String::from(why)),
+            },
+            false => self.panel_result(&reply),
+        };
         if let Some(left) = self.pending.take() {
             let outcome = "discarded: the panel cannot ask yet";
             self.record(left.id, &left.request, &left.checked.script, outcome);

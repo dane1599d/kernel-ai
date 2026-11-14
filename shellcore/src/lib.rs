@@ -38,6 +38,7 @@ mod centry;
 mod cmode;
 mod commands;
 pub mod data;
+mod deskask;
 pub mod door;
 mod effects;
 mod engine;
@@ -613,6 +614,13 @@ pub struct Shell {
     /// The app whose install card waits to open by itself, once a build in
     /// the background built it ([`Shell::take_card`]).
     card: Option<String>,
+    /// Proposals from desktop lines (the panel, the Terminal window) waiting
+    /// for the trusted card (`deskask`).
+    desk_asks: Vec<deskask::Waiting>,
+    /// The question on the card that came from a desktop line.
+    card_for_desk: Option<u64>,
+    /// What that card's answer came to, for the panel.
+    card_result: Option<(bool, String)>,
     /// Apps' network asks waiting for the terminal's card (P5 task 13).
     net_cards: Vec<netask::NetAsking>,
     /// Network grants revoked, kept for their undo.
@@ -719,6 +727,9 @@ impl Shell {
             app_job: None,
             notices: Vec::new(),
             card: None,
+            desk_asks: Vec::new(),
+            card_for_desk: None,
+            card_result: None,
             net_cards: Vec::new(),
             net_revoked: Vec::new(),
             net_high: 0,
@@ -852,7 +863,12 @@ impl Shell {
         if let Some(reply) = self.status_line(input) {
             return reply;
         }
+        let answering = input
+            .strip_prefix("answer ")
+            .and_then(|rest| rest.split(' ').next())
+            .and_then(|id| id.parse::<u64>().ok());
         let mut reply = self.eval(input);
+        self.desk_answered(answering, &reply);
         if reply.confirm.is_none() && !reply.more && !self.notices.is_empty() {
             let mut text = self.take_notices().join("\n");
             if !reply.text.is_empty() {
