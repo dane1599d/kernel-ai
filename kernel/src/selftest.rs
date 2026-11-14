@@ -529,8 +529,12 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
 }
 
 /// The `updated.<key>=` words an `update` boot passes on to `updated`'s line:
-/// those its window and restart read (`user/src/bin/updated`).
-const UPDATED_TEST_WORDS: [&str; 3] = ["restart", "window", "heads_up_s"];
+/// those its window and restart read, and the online step's `retries` (how many
+/// times a network stop is tried again) and `into` (the slot to write from R)
+/// (`user/src/bin/updated`). A key a case passes that is not here is dropped
+/// without a word, so `xtask`'s host tests check every case's `updated.` words
+/// against this list.
+const UPDATED_TEST_WORDS: [&str; 5] = ["restart", "window", "heads_up_s", "retries", "into"];
 
 /// The words after `updated`'s plan line in a test boot: `start=demand`
 /// ([`kabi::plan::ON_DEMAND`]), so it holds no memory until the shell's first

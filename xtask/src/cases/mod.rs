@@ -285,4 +285,43 @@ mod tests {
         );
         assert!(tables.iter().all(|lane| !lane.is_empty()));
     }
+
+    /// The kernel drops an `updated.<key>=` word whose key is not in its
+    /// `UPDATED_TEST_WORDS`, so a case that passes one the list lacks boots
+    /// without it: `update-online-resume`'s `retries=0` was dropped that way and
+    /// `updated` tried the cut again.
+    #[test]
+    fn every_updated_word_a_case_passes_is_one_the_kernel_hands_on() {
+        let kernel = include_str!("../../../kernel/src/selftest.rs");
+        let list = kernel
+            .split("const UPDATED_TEST_WORDS")
+            .nth(1)
+            .and_then(|rest| rest.split_once("= [")?.1.split_once("];"))
+            .map(|(list, _)| list)
+            .expect("the kernel lists the updated.<key>= words it hands on");
+        let allowed: Vec<&str> = list.split('"').skip(1).step_by(2).collect();
+        let mut passed = 0;
+        for case in test_cases() {
+            let mut link = Some(case);
+            while let Some(boot) = link {
+                let keys = boot
+                    .cmdline
+                    .split_whitespace()
+                    .filter_map(|word| word.strip_prefix("updated."))
+                    .filter_map(|word| word.split_once('=').map(|(key, _)| key));
+                for key in keys {
+                    passed += 1;
+                    assert!(
+                        allowed.contains(&key),
+                        "{}: updated.{key}= is dropped by the kernel",
+                        boot.name
+                    );
+                }
+                link = boot.then;
+            }
+        }
+        // `update-window` passes three and `update-online-resume` one: the walk
+        // reaches both, so a rename of the prefix cannot leave it checking nothing.
+        assert!(passed >= 4, "only {passed} updated.<key>= words checked");
+    }
 }

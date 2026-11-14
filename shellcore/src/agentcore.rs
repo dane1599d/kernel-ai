@@ -593,11 +593,14 @@ const SHOWED_LEAD: &str = "Showed what Kai read from ";
 /// What the last finished script showed, for its turn's memory (#831): the
 /// sources of the Content `show` printed, each once, and the line the shell
 /// wrote after that output, if it wrote one (`Done: …`, `Nothing changed: …`,
-/// what was not sent, the engine's error).
+/// what was not sent, the engine's error). `withheld` when the run failed on
+/// an app's reply: the reply's text carries the app's words, so the turn is
+/// remembered by `outcome`, the shell's own line, shown or not.
 #[derive(Debug, Default)]
 pub(crate) struct Showed {
     pub from: Vec<&'static str>,
     pub outcome: Option<String>,
+    pub withheld: bool,
 }
 
 /// Sends a finished model turn to llm's conversation memory: the user's line, the
@@ -608,6 +611,8 @@ pub(crate) struct Showed {
 /// to read: later prompts would carry it as an unlabelled `Result:` line, so a
 /// fixed line naming its sources stands in for it (#831), then the line the
 /// shell wrote after it, so a later turn still knows what changed or failed.
+/// A run an app's reply failed is remembered by that line alone, never by
+/// what the app said (`<row>: the app refused`).
 pub(crate) fn remember(
     host: &dyn crate::Host,
     line: &str,
@@ -615,9 +620,10 @@ pub(crate) fn remember(
     reply: &str,
     showed: &Showed,
 ) {
-    let result = match showed.from.is_empty() {
-        true => last_line(reply).to_string(),
-        false => showed_line(showed),
+    let result = match (showed.from.is_empty(), showed.withheld) {
+        (false, _) => showed_line(showed),
+        (true, true) => showed.outcome.as_deref().map_or("", last_line).to_string(),
+        (true, false) => last_line(reply).to_string(),
     };
     host.remember(line, call, capped(&result));
 }

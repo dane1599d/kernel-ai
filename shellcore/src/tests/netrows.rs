@@ -410,6 +410,7 @@ fn the_fixed_line_is_cut_to_the_result_limit_on_a_character() {
     let showed = crate::agentcore::Showed {
         from: vec!["web"],
         outcome: Some(format!("Done: {}", "é".repeat(400))),
+        withheld: false,
     };
     crate::agentcore::remember(host.as_ref(), "line", "call", "reply", &showed);
     let remembered = last_remembered(&host);

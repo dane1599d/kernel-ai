@@ -51,7 +51,12 @@ fn call(row: &AppRow, tx: &Tx, args: &mut [&mut Dynamic]) -> RhaiResult<Data> {
         row.export
     );
     let text = tx.host.app_call(row.app, &request).map_err(fail)?;
-    let reply = livecore::call::Reply::parse(&text).map_err(fail)?;
+    // The person sees what the app said; the run is remembered by the shell's
+    // own line, so an app cannot word what later prompts carry (#831).
+    let reply = livecore::call::Reply::parse(&text).map_err(|why| {
+        *tx.app_failed.borrow_mut() = Some(withheld(name, &why));
+        fail(why)
+    })?;
     // A row the app declared read-only that changed its state lied: the change
     // is put back at once, and the call fails.
     if let (true, Some(id)) = (row.row.facts.read_only, reply.undo) {
@@ -95,6 +100,15 @@ fn call(row: &AppRow, tx: &Tx, args: &mut [&mut Dynamic]) -> RhaiResult<Data> {
         });
     }
     Ok(Data::new(row.app, reply.result.unwrap_or_default()))
+}
+
+/// The shell's line for an app reply that failed `name`'s call, `why` as
+/// [`livecore::call::Reply::parse`] gave it: none of the reply's words.
+fn withheld(name: &str, why: &str) -> String {
+    match why.split(' ').next() == Some("refused") {
+        true => format!("{name}: the app refused"),
+        false => format!("{name}: the app gave a reply the shell cannot read"),
+    }
 }
 
 /// What a change by `row` says it did: its doc's first clause in the app,
