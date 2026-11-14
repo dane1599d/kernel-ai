@@ -228,6 +228,12 @@ fn cmdline() -> &'static str {
     CMDLINE.response().map_or("", |r| r.cmdline())
 }
 
+/// Whether the command line selects a self-test: a test boot, whose test
+/// words (`llm.cold_ms=`) count; any other boot ignores them.
+fn test_boot() -> bool {
+    TEST_MODE.load(Ordering::SeqCst)
+}
+
 /// Runs one self-test case and reports its outcome to QEMU.
 fn run_case(check: impl FnOnce() -> Result<(), &'static str>) -> ! {
     if let Err(message) = check() {
