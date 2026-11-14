@@ -4,8 +4,9 @@
 //! goes through `gfx2d`'s shaper and atlas. [`Measured`] gives `uikit` the same
 //! fonts' advances, so the layout and the pixels agree.
 //!
-//! Not yet drawn as themselves: icons (no Lucide set in the boot bundle yet) are
-//! a 1 px frame in their token, and images are a `raised` box.
+//! Icons are `gfx2d`'s Kai glyphs, by name, tinted by their token; a name the
+//! set does not have is a 1 px frame in its token. Images are not yet drawn as
+//! themselves: they are a `raised` box.
 
 #![no_std]
 
@@ -174,6 +175,24 @@ fn stroke(c: &mut Canvas<'_>, r: Rect, width: i32, radius: i32, color: u32, clip
     }
 }
 
+/// Kai glyph `name` centred in `r` at the largest square that fits, in
+/// `color`, as far as `clip`; a name with no glyph is a 1 px frame.
+fn icon(c: &mut Canvas<'_>, r: Rect, name: &str, color: u32, clip: Rect) {
+    let Some(glyph) = gfx2d::icons::Icon::from_name(name) else {
+        let r = r.intersect(&clip);
+        if !r.is_empty() {
+            c.frame(r, color);
+        }
+        return;
+    };
+    let px = r.w.min(r.h);
+    if px <= 0 || r.intersect(&clip).is_empty() {
+        return;
+    }
+    let (x, y) = (r.x + (r.w - px) / 2, r.y + (r.h - px) / 2);
+    gfx2d::icons::render(glyph, px).draw(c, x, y, color & 0x00FF_FFFF, clip);
+}
+
 /// The baseline's offset from the top of a line box `line` px tall for text of
 /// `size` px: the font's ascent and descent centred in the line. Inter's and
 /// JetBrains Mono's ascents and descents, as fractions of the em.
@@ -265,11 +284,8 @@ impl Painter<'_> {
                     text,
                 );
             }
-            Op::Icon { rect, token, .. } => {
-                let r = s.rect(*rect).intersect(&clip);
-                if !r.is_empty() {
-                    c.frame(r, self.color(*token));
-                }
+            Op::Icon { rect, name, token } => {
+                icon(c, s.rect(*rect), name, self.color(*token), clip)
             }
             Op::Image { rect, .. } => {
                 c.fill(s.rect(*rect).intersect(&clip), self.color(Token::Raised))
