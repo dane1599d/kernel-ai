@@ -4,10 +4,11 @@
 //! ones of `xtask/models.json`.
 
 use comp_models::{Signed, Store, Stored};
+use fsproto::{Error, Reply};
 use modelchan::Sha256;
 use modelchan::fetch::{
-    self, DISK_MARGIN, FIXTURE, Fit, HUGGING_FACE, Hosts, MODEL_CHUNK, Machine, PARTIAL_DIR,
-    Refused, Source, ask, disk_need, guest_mib_of, offers, plan, subject,
+    self, CopyRefused, DISK_MARGIN, FIXTURE, Fit, HUGGING_FACE, Hosts, MODEL_CHUNK, Machine,
+    PARTIAL_DIR, Refused, Source, ask, disk_need, guest_mib_of, offers, plan, subject,
 };
 
 const GIB: u64 = 1 << 30;
@@ -285,7 +286,7 @@ fn a_job_reaches_its_source_and_storage_hosts_on_443_and_lands_in_the_store() {
     assert_eq!(job.source.host, "huggingface.co");
     assert_eq!(job.source.url(), role[2].source);
     let name = "40".repeat(32);
-    assert_eq!(job.partial, format!("{PARTIAL_DIR}/{name}.gguf"));
+    assert_eq!(job.partial, format!("{PARTIAL_DIR}/{name}.partial"));
     assert_eq!(job.path, format!("/system/models/{name}.gguf"));
     assert_eq!(job.chunks, format!("{name}.chunks"));
     // The resolve host, and the storage host a runner saw (run 41878520332)
@@ -399,5 +400,21 @@ fn a_source_is_an_https_resolve_url_on_a_dns_name_pinned_to_a_revision() {
         "https://huggingface.co".into(),
     ] {
         assert!(Source::parse(&bad).is_err(), "{bad}");
+    }
+}
+
+/// A sealed copy `fs` refuses for its hash is the partial's fault, and the
+/// answer says so; any other refusal, as a full disk or a failed disk, is the
+/// store's, and leaves the partial alone.
+#[test]
+fn a_copy_refused_for_its_hash_is_the_partials_fault() {
+    let bad = CopyRefused::of(Reply::Failed(Error::Invalid));
+    assert_eq!(bad, CopyRefused::BadPartial);
+    assert!(bad.why().contains("changed on disk after its check"));
+    assert!(!bad.why().contains("the store refused"));
+    for error in [Error::NoSpace, Error::Io, Error::ReadOnly, Error::Busy] {
+        let refused = CopyRefused::of(Reply::Failed(error));
+        assert_eq!(refused, CopyRefused::Store(Reply::Failed(error)));
+        assert!(refused.why().starts_with("the store refused the model"));
     }
 }

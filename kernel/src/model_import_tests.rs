@@ -1,7 +1,9 @@
 //! `test=update updated=models|probation` (P4 task 10): the model channel's
 //! case, two boots on one data disk. `updated=models` imports the import
 //! disk's fixture and switches to it; `updated=probation`, the next boot,
-//! judges its trial. Neither restarts into a slot, so the kernel's half does
+//! judges its trial. `updated=download` (P5 task 9, `model-download`)
+//! downloads the HTTPS mock's model into the store, in one boot. None
+//! restarts into a slot, so the kernel's half does
 //! not wait for one as `test=update` otherwise does: `updated` leaves
 //! `case-<step>.done` in `/system/updates` once its step ran and printed its
 //! lines, and the boot passes once the marker is there. What the step printed
@@ -24,7 +26,7 @@ pub fn step() -> Option<&'static str> {
     crate::cmdline()
         .split_whitespace()
         .find_map(|w| w.strip_prefix("updated="))
-        .filter(|step| matches!(*step, "models" | "probation"))
+        .filter(|step| matches!(*step, "models" | "probation" | "download"))
 }
 
 pub fn check(step: &str) -> Result<(), &'static str> {

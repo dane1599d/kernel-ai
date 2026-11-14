@@ -35,6 +35,7 @@ pub mod apps;
 mod brackets;
 pub mod ccbuild;
 mod centry;
+mod clarify;
 mod cmode;
 mod commands;
 pub mod data;
@@ -659,6 +660,24 @@ pub struct Shell {
     asked_model: bool,
     worded: bool,
     done_line: Option<String>,
+    /// What the AI said to the last panel line, for the desk's history
+    /// ([`Shell::take_panel_said`]): the model's words or a model script's
+    /// prints, never the panel's own state line.
+    panel_said: Option<String>,
+    /// The panel's own clarifying question, kept for its next line as an
+    /// app's terminal keeps its own: the person answers in the bar.
+    panel_clarifying: Option<String>,
+    /// A question code asked a panel line (which target), for the desk's
+    /// history as code's note ([`Shell::take_panel_note`]): it can carry a
+    /// name the model chose, so it is never the bar's.
+    panel_note: Option<String>,
+    /// `new` ran since the panel's line began: the terminal's question,
+    /// set aside meanwhile, is forgotten too.
+    forgot: bool,
+    /// The last clarifying question was the model's (`clarify`), not code's
+    /// (`guard::which`, a target to pick): only the model's words go to the
+    /// desk's history as Kai's.
+    clarified_by_model: bool,
     /// The `pack_id` of the pack the model is given, logged with each model turn
     /// (ADR 0010 §7): the same one llm reports for its `act` slot.
     pack_id: u64,
@@ -746,6 +765,11 @@ impl Shell {
             asked_model: false,
             worded: false,
             done_line: None,
+            panel_said: None,
+            panel_clarifying: None,
+            panel_note: None,
+            forgot: false,
+            clarified_by_model: false,
             pack_id: llmproto::pack::act_pack_id(),
             saved_log: None,
             owner_once: None,
@@ -941,12 +965,28 @@ impl Shell {
             return Reply::ok("");
         }
         // The answer to a clarifying question joins the request it clarifies; a typed
-        // command or Rhai line instead leaves it.
+        // command, a Rhai line or a request of its own instead leaves it.
         if let Some(request) = self.clarifying.take()
             && reads_like_words(input)
             && split_command(input, |name| self.scope.contains(name)).is_none()
         {
-            return self.ask_for_script(&format!("{request} {input}"));
+            if clarify::answers(input) {
+                return self.ask_for_script(&format!("{request} {input}"));
+            }
+            self.host.audit(&format!(
+                "the question about \"{request}\" was left: \"{input}\" reads as a new request"
+            ));
+            let note = format!(
+                "(Left the question about \"{}\".)",
+                show::truncate(&request, LEFT_NOTE_CHARS)
+            );
+            let mut reply = self.eval_line(input);
+            match reply.confirm.is_none() && !reply.more {
+                true if reply.text.is_empty() => reply.text = note,
+                true => reply.text = format!("{note}\n{}", reply.text),
+                false => self.notices.push(note),
+            }
+            return reply;
         }
         if input == "reset" {
             self.scope.clear();
@@ -1229,6 +1269,9 @@ impl Shell {
     fn forget(&mut self) -> Reply {
         self.host.forget();
         self.clarifying = None;
+        // The panel's question goes with the conversation.
+        self.panel_clarifying = None;
+        self.forgot = true;
         Reply::ok("A new conversation: earlier turns are forgotten; `log` and `undo` still work")
     }
 
@@ -1257,6 +1300,9 @@ pub fn reads_like_words(line: &str) -> bool {
         .count();
     letters >= 4 * others
 }
+
+/// The most characters of a left question the note quotes.
+const LEFT_NOTE_CHARS: usize = 40;
 
 /// The fewest words a line led by a Rhai keyword needs to read as a sentence.
 const SENTENCE_WORDS: usize = 4;

@@ -194,9 +194,10 @@ fn give_appearance(system: &System) {
 
 /// Takes the panel's oldest request, runs a line apart from the terminal's
 /// entry and questions (`Shell::eval_panel`), and reports what came of it:
-/// code's result line, or why not, never the model's words. The panel shows
-/// thinking from the Enter until then. A line that asks first is asked in the
-/// terminal for now; the panel says so.
+/// first what the AI said, for the desk's history (`panel said`), then the
+/// bar's state, code's result line or why not, never the model's words. The
+/// panel shows thinking from the Enter until then. A line that asks first
+/// waits for the trusted card (`deskask`); the panel says so.
 fn take_panel(shell: &mut Shell) {
     use deskcore::panel::{Request, State};
     use deskcore::panel_wire;
@@ -209,7 +210,17 @@ fn take_panel(shell: &mut Shell) {
     let shown = match panel_wire::parse_take(&answer) {
         Some(Some(Request::Line(line))) => {
             ui::begin();
-            match shell.eval_panel(&line) {
+            let result = shell.eval_panel(&line);
+            let said = shell.take_panel_said().map(|s| panel_wire::encode_said(&s));
+            let note = shell.take_panel_note().map(|n| panel_wire::encode_note(&n));
+            for request in said.iter().chain(note.iter()) {
+                match ask_desktop(route, request) {
+                    Ok(answer) if answer == "ok" => {}
+                    Ok(answer) => println!("the panel's history was not given it: {answer}"),
+                    Err(why) => println!("the panel's history was not given it: {why}"),
+                }
+            }
+            match result {
                 PanelResult::Done(line) => State::Done { line },
                 PanelResult::Refused(reason) => State::Refused { reason },
             }

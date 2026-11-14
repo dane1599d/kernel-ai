@@ -613,11 +613,13 @@ fn a_name_that_is_both_or_neither_asks_which() {
         reply,
         ok("indexer is both a service and a separate process (pid 32). Which one?")
     );
-    // The answer joins the request, as a clarify's does.
+    // A request of its own leaves the question, with a note (clarify::answers).
     let reply = shell.eval("stop build-9");
     assert_eq!(
         reply,
-        ok("No service or process named build-9 is running. Which one did you mean?")
+        ok(
+            "(Left the question about \"stop indexer\".)\nNo service or process named build-9 is running. Which one did you mean?"
+        )
     );
     let reply = shell.eval("restart build-3");
     assert!(
@@ -767,4 +769,93 @@ fn undo_stops_only_the_start_its_own_entry_made() {
     host.started_by.borrow_mut()[0].1 = 99;
     assert!(!shell.eval("undo").ok);
     assert!(host.services.borrow()[0].1, "notes still runs");
+}
+
+#[test]
+fn a_new_request_after_a_question_runs_alone() {
+    // The founder's VirtualBox test (2026-11-14): a stray line, a question
+    // back, then a request of its own, which must not join the stray line.
+    let start = r#"{"name":"service_start","arguments":{"name":"sshd"}}"#;
+    let cpus = r#"{"name":"script","arguments":{"code":"print(\"CPUs: \" + cpus());"}}"#;
+    let (host, mut shell) = with_services(vec![call(start), call(cpus)]);
+    assert_eq!(
+        shell.eval("sssssshd"),
+        ok("No service or process named sshd is running. Which one did you mean?")
+    );
+    let reply = shell.eval("show me the cpus");
+    // A short note says the question was left, then the request's own answer.
+    assert_eq!(
+        reply,
+        ok("(Left the question about \"sssssshd\".)\nCPUs: 4\n")
+    );
+    assert_eq!(host.act_lines.borrow()[1], "show me the cpus");
+    let audit = host.audit.borrow();
+    assert!(
+        audit
+            .iter()
+            .any(|line| line.contains("reads as a new request")),
+        "{audit:?}"
+    );
+}
+
+#[test]
+fn an_answer_to_the_question_still_continues_the_request() {
+    let start = r#"{"name":"service_start","arguments":{"name":"sshd"}}"#;
+    let netd = r#"{"name":"service_start","arguments":{"name":"indexer"}}"#;
+    let (host, mut shell) = with_services(vec![call(start), call(netd)]);
+    shell.eval("sssssshd");
+    shell.eval("the indexer one");
+    assert_eq!(host.act_lines.borrow()[1], "sssssshd the indexer one");
+}
+
+#[test]
+fn only_a_line_that_opens_like_a_request_leaves_the_question() {
+    use crate::clarify::answers;
+    for line in [
+        "sshd",
+        "round robin",
+        "the second one",
+        "stop",
+        "netd please",
+        "indexer",
+    ] {
+        assert!(answers(line), "{line}");
+    }
+    for line in [
+        "show me the cpus",
+        "What is the policy?",
+        "please list apps",
+        "Stop netd",
+        "can you do anything with the gpu",
+        "Smake a note called ideas and type hello dane into it",
+    ] {
+        assert!(!answers(line), "{line}");
+    }
+}
+
+#[test]
+fn a_telling_request_and_its_answer_still_refuse_an_added_change() {
+    // ADR 0002's telling-line rule judges the whole request: the person asked
+    // to be told, and a short answer to the question back doesn't change that.
+    let ask = r#"{"name":"clarify","arguments":{"question":"Which?","options":["interactive","round-robin"]}}"#;
+    let (host, mut shell) = with_calls(vec![call(ask), call(RR)]);
+    shell.eval("what is the policy");
+    let reply = shell.eval("round robin");
+    assert!(
+        !reply.ok && reply.text.contains("only asks to be told"),
+        "{reply:?}"
+    );
+    assert_eq!(host.act_lines.borrow()[1], "what is the policy round robin");
+}
+
+#[test]
+fn a_long_line_after_a_question_is_a_request_of_its_own() {
+    let ask = r#"{"name":"clarify","arguments":{"question":"Which?","options":["a","b"]}}"#;
+    let (host, mut shell) = with_calls(vec![call(ask), call(RR)]);
+    shell.eval("what can you do with the cpus");
+    shell.eval("Smake a note called ideas and type hello dane into it");
+    assert_eq!(
+        host.act_lines.borrow()[1],
+        "Smake a note called ideas and type hello dane into it"
+    );
 }

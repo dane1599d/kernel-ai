@@ -44,6 +44,7 @@ fn paint_in(
         desk,
         bar: &BAR,
         panel,
+        chat: &crate::chat::Chat::default(),
         ask: None,
         now_ms: 4_200,
     };
@@ -102,6 +103,7 @@ fn the_boot_desk_matches_desk_boot_s_golden() {
         desk: &desk,
         bar: &BAR,
         panel: &panel,
+        chat: &crate::chat::Chat::default(),
         ask: None,
         now_ms: 0,
     };
@@ -170,6 +172,7 @@ fn an_ask_card_paints_above_a_window() {
         desk: &desk,
         bar: &BAR,
         panel: &panel,
+        chat: &crate::chat::Chat::default(),
         ask: Some(&card),
         now_ms: 3_000,
     };
@@ -280,4 +283,174 @@ fn a_dragged_window_has_no_shadow_until_it_is_let_go() {
     assert_ne!(paint("dragged", &desk, 1280, 800), shadowed);
     press(&mut desk, false);
     assert_eq!(paint("let-go", &desk, 1280, 800), shadowed);
+}
+
+/// A pixel's colour, its alpha left out.
+fn rgb(px: u32) -> u32 {
+    px & ((1 << 24) - 1)
+}
+
+#[test]
+fn the_input_view_keeps_the_cursor_in_its_columns() {
+    use crate::paint_panel::view;
+    // A line that fits, the cursor anywhere in it: nothing is skipped.
+    assert_eq!(view(10, 10, 20), 0);
+    assert_eq!(view(30, 5, 20), 0);
+    assert_eq!(view(30, 19, 20), 0);
+    // The cursor past the last column: the marker takes column 0 and the
+    // cursor sits in the last column, 19.
+    assert_eq!(view(30, 20, 20), 2);
+    assert_eq!(view(30, 30, 20), 12);
+    assert_eq!(30 - view(30, 30, 20) + 1, 19);
+    // A cursor past the end is the end; an input too narrow skips nothing.
+    assert_eq!(view(30, 99, 20), 12);
+    assert_eq!(view(30, 30, 1), 0);
+}
+
+/// Typed past the input's width, the line scrolls: the ember caret is drawn
+/// inside the input, not cut off past its right edge (the founder's
+/// VirtualBox test, 2026-11-14).
+#[test]
+fn a_long_line_keeps_the_caret_in_the_input() {
+    let desk = Desk::new(1280, 800);
+    let mut panel = Panel::new();
+    panel.set_focus(true);
+    // `a` .. `z`, five times: far past the left half's columns.
+    for _ in 0..5 {
+        for code in 0x04..=0x1D {
+            panel.key(code, true, 0);
+            panel.key(code, false, 0);
+        }
+    }
+    assert_eq!(panel.cursor(), 130);
+    let painter = Painter::new(FONTS).expect("the fonts parse");
+    let ember = painter.palette.ai;
+    let area = desk.panel();
+    // The input's right part, below the top rule: where the caret must be.
+    let (w, h) = (1280, 800);
+    let mut image = Image::new(w, h);
+    let mut canvas = image.canvas();
+    let scene = Scene {
+        desk: &desk,
+        bar: &BAR,
+        panel: &panel,
+        chat: &crate::chat::Chat::default(),
+        ask: None,
+        now_ms: 0,
+    };
+    let mut painter = painter;
+    painter.paint(
+        &mut canvas,
+        Rect::new(0, 0, w, h),
+        &scene,
+        &mut |_, _, _| false,
+    );
+    let (x0, x1) = (area.x + area.w / 4, area.x + area.w / 2);
+    let caret = (area.y + 3..area.y + area.h)
+        .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+        .filter(|&(x, y)| rgb(image.px[(y * w + x) as usize]) == rgb(ember))
+        .count();
+    assert!(
+        caret > 20,
+        "the caret is not in the input: {caret} ember pixels"
+    );
+}
+
+/// A history of a few panel lines, with a window open over part of it.
+fn chat_scene(chat: &crate::chat::Chat, name: &str) -> (Image, Desk) {
+    let mut desk = Desk::new(1280, 800);
+    // Big enough to cover part of the history's column.
+    desk.open(1, "notes", "Notes", Size { w: 700, h: 400 }, true);
+    let panel = Panel::new();
+    let mut painter = Painter::new(FONTS).expect("the fonts parse");
+    let (w, h) = (1280, 800);
+    let mut image = Image::new(w, h);
+    let mut canvas = image.canvas();
+    let scene = Scene {
+        desk: &desk,
+        bar: &BAR,
+        panel: &panel,
+        chat,
+        ask: None,
+        now_ms: 0,
+    };
+    painter.paint(
+        &mut canvas,
+        Rect::new(0, 0, w, h),
+        &scene,
+        &mut |_, _, _| false,
+    );
+    if let Ok(dir) = std::env::var("DESK_PREVIEW") {
+        let mut ppm = std::format!("P6\n{w} {h}\n255\n").into_bytes();
+        for p in &image.px {
+            ppm.extend_from_slice(&[(p >> 16) as u8, (p >> 8) as u8, *p as u8]);
+        }
+        std::fs::write(std::format!("{dir}/{name}.ppm"), ppm).expect("the preview is written");
+    }
+    (image, desk)
+}
+
+/// The founder's ask (2026-11-14): each panel line and its reply above the
+/// bar, as a chat. The AI's words are drawn in the history, in its own look,
+/// and never in the bar, which paints as it does with no history at all.
+#[test]
+fn the_history_draws_above_the_bar_and_never_in_it() {
+    use crate::chat::{Chat, Who};
+    use crate::paint_chat::chat_area;
+    let mut chat = Chat::default();
+    chat.push(Who::You, "what is rust?");
+    chat.push(
+        Who::Kai,
+        "Rust is a systems programming language focused on safety, speed and \
+         concurrency. It has no garbage collector: memory is freed when its \
+         owner goes out of scope.",
+    );
+    chat.push(Who::Note, "Kai answered above.");
+    chat.push(Who::You, "stop notes");
+    chat.push(
+        Who::Note,
+        "it asks first: ask in the terminal, which shows the script",
+    );
+    let (with, desk) = chat_scene(&chat, "chat");
+    let (without, _) = chat_scene(&Chat::default(), "chat-empty");
+    let w = 1280;
+    let px = |image: &Image, x: i32, y: i32| rgb(image.px[(y * w + x) as usize]);
+    // The bar is the same pixels with or without a history.
+    let bar = desk.panel();
+    for y in bar.y..bar.bottom() {
+        for x in bar.x..bar.right() {
+            assert_eq!(px(&with, x, y), px(&without, x, y), "the bar at {x},{y}");
+        }
+    }
+    // The history is drawn, in its area alone.
+    let area = chat_area(&desk);
+    let changed: Vec<(i32, i32)> = (0..800)
+        .flat_map(|y| (0..w).map(move |x| (x, y)))
+        .filter(|&(x, y)| px(&with, x, y) != px(&without, x, y))
+        .collect();
+    assert!(changed.len() > 1000, "{} pixels changed", changed.len());
+    assert!(
+        changed
+            .iter()
+            .all(|&(x, y)| x >= area.x && x < area.right() && y >= area.y && y < area.bottom())
+    );
+    // Kai's ember rule runs down the column's left edge.
+    let painter = Painter::new(FONTS).expect("the fonts parse");
+    let ember = rgb(painter.palette.ai);
+    let rule = (area.y..area.bottom())
+        .filter(|&y| px(&with, area.x, y) == ember)
+        .count();
+    assert!(rule > 30, "the AI's rule is {rule} px tall");
+    // The window covers the history: inside it nothing changed.
+    let frame = desk.windows()[0].frame;
+    assert!(
+        frame.intersect(&area).is_some(),
+        "the window covers part of it"
+    );
+    assert!(
+        changed.iter().all(|&(x, y)| !(x >= frame.x
+            && x < frame.right()
+            && y >= frame.y
+            && y < frame.bottom()))
+    );
 }

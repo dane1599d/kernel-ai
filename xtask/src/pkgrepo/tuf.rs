@@ -100,20 +100,24 @@ pub fn build_with_models(
             kai: package.index(),
         })
         .collect();
-    let models = models
-        .iter()
-        .map(|model| {
-            let sha256 = kaipkg::unhex(&model.sha256)
-                .ok_or_else(|| format!("{}'s SHA-256 is not 64 hex digits", model.id))?;
-            Ok(sign::Model {
-                path: model.target(),
-                length: model.length,
-                sha256,
-                kai: model.index(),
-                chunks: model.chunks.as_ref().map(|list| list.clone().into_bytes()),
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    let models = sign_models(models)?;
     let files = sign::build_with_models(&targets, &models, &keys.roles(), now, ADR_0008)?;
     Ok(Repository { files })
+}
+
+/// `models` as the `models` role lists them: each `<id>.gguf`, and its chunk
+/// list if it has one.
+pub fn sign_models(models: &[Model]) -> Result<Vec<sign::Model>, String> {
+    let model = |model: &Model| {
+        let sha256 = kaipkg::unhex(&model.sha256)
+            .ok_or_else(|| format!("{}'s SHA-256 is not 64 hex digits", model.id))?;
+        Ok(sign::Model {
+            path: model.target(),
+            length: model.length,
+            sha256,
+            kai: model.index(),
+            chunks: model.chunks.as_ref().map(|list| list.clone().into_bytes()),
+        })
+    };
+    models.iter().map(model).collect()
 }

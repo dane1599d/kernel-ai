@@ -43,6 +43,12 @@ pub const CHUNKS_EXTENSION: &str = ".chunks";
 pub fn chunks_path(sha256: &Sha) -> String {
     format!("{}{CHUNKS_EXTENSION}", crate::hex(sha256))
 }
+
+/// The SHA-256 the role signs for `target`, such as a chunk list of
+/// [`Checked::chunks`], which a fetched copy must hash to.
+pub fn target_sha256(target: &TargetFile) -> Result<Sha, String> {
+    sha256(target)
+}
 /// `custom.kai`'s fields, all required.
 const FIELDS: [&str; 3] = ["name", "licence", "source"];
 /// Longest id, in bytes.

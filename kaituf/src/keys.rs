@@ -93,8 +93,9 @@ fn pem_spki(pem: &str) -> Option<Vec<u8>> {
         .map(<[u8]>::to_vec)
 }
 
-/// Standard base64 with padding, whitespace between characters ignored.
-fn base64(text: &str) -> Option<Vec<u8>> {
+/// Standard base64 with padding, whitespace between characters ignored: a
+/// PEM body. `cargo xtask release-repo` reads the founder's Ed25519 keys with it.
+pub fn base64(text: &str) -> Option<Vec<u8>> {
     let value = |c: u8| -> Option<u32> {
         Some(match c {
             b'A'..=b'Z' => c - b'A',

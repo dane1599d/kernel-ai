@@ -88,6 +88,27 @@ impl UiHost {
         self.updates.push(Update::Frame { window, frame });
     }
 
+    /// Lays out and paints `window`, and keeps its frame for comphost.
+    fn commit(&mut self, window: u32) -> Result<(), UiError> {
+        let m = measure(&self.measure);
+        let frame = self.ui.window(window).map(|w| w.commit(m))?;
+        for &(node, rows, cells) in &frame.code_sizes {
+            self.sized(window, node, rows, cells);
+        }
+        self.shown(window, frame);
+        Ok(())
+    }
+
+    /// Commits `window` if input changed what uikit itself holds (a field's
+    /// text, a caret, hover, focus) and the app did not commit since: an app
+    /// that takes a typed key without sending a tree (the Terminal's input
+    /// line: "the field already shows it") would otherwise never show it.
+    fn commit_if_changed(&mut self, window: u32) {
+        if self.ui.window(window).is_ok_and(|w| w.needs_frame()) {
+            let _ = self.commit(window);
+        }
+    }
+
     fn closed(&mut self, window: u32) {
         self.updates.retain(|u| {
             !matches!(
@@ -278,16 +299,7 @@ pub(crate) fn run_in(
             let node = node()?;
             host.ui.window(window).and_then(|w| w.focus(node))
         }
-        "commit" => {
-            let m = measure(&host.measure);
-            let frame = host.ui.window(window).map(|w| w.commit(m));
-            frame.map(|frame| {
-                for &(node, rows, cells) in &frame.code_sizes {
-                    host.sized(window, node, rows, cells);
-                }
-                host.shown(window, frame)
-            })
-        }
+        "commit" => host.commit(window),
         "close" => host.ui.close(window).map(|()| host.closed(window)),
         "set-unsaved" => {
             let unsaved = bool_of(args.get(1))?;
@@ -345,7 +357,12 @@ impl CoreInstance {
         let Ok(events) = events else {
             return Ok(());
         };
-        self.ui_events_user(window, &events)
+        let result = self.ui_events_user(window, &events);
+        // What the input changed in the window shows, whether or not the app
+        // committed (the founder's VirtualBox test, 2026-11-14: typed text
+        // never drew in the Terminal's input line).
+        self.store.data_mut().ui.commit_if_changed(window);
+        result
     }
 
     /// As [`CoreInstance::ui_events`], for events a person caused with a real key
@@ -380,7 +397,12 @@ impl CoreInstance {
             return Ok(Err(ActRefused::NoWindow));
         };
         match acted {
-            Ok(events) => self.ui_events(window, &events).map(Ok),
+            Ok(events) => {
+                let result = self.ui_events(window, &events).map(Ok);
+                // The agent's typing shows as a person's does.
+                self.store.data_mut().ui.commit_if_changed(window);
+                result
+            }
             Err(e) => Ok(Err(ActRefused::Node(e))),
         }
     }

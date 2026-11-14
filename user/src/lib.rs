@@ -9,6 +9,7 @@
 extern crate alloc;
 
 pub mod heap;
+pub mod kaifs;
 pub mod pool;
 pub mod sys;
 pub mod tls;

@@ -220,6 +220,8 @@ No blur, translucency or window-content animation, and nothing longer than 0.5 s
 
 The panel reads its states from 0002's structured `Outcome` and `actlog 1` entries, never from reply text.
 
+**The panel's history** (the founder, 2026-11-14, after the first VirtualBox test; row `2026-11-14-panel-history`). Each panel line and what came of it shows above the bar on the desk's background, newest at the bottom, as a chat does, under every window. The bar's state line stays code's alone. The history alone shows the model's words and a model script's prints, sent by the shell as `panel said`. It draws them as the AI's, never in the system's look: a `Kai` label in `ai`, a 2 px `ai` rule down their left, sans `text`. The system's own words stay mono, in the bar, the cards and the history's notes. A line that asks first, or leaves a question open, still goes to the terminal, and the history's note says so. The history is bounded (40 entries, 4,000 bytes each) and drops control characters. It holds no input, takes no keys, and cannot cover the bar or a card, which are drawn after it.
+
 ### 9. Scale
 
 Every size is in logical px. The scale comes from the EDID physical size when there is one, otherwise from the width (up to 1920 wide 1.0, up to 2560 1.25, up to 3840 2.0), in quarter steps from 1.0 to 3.0; a setting overrides it. At those defaults 1080p, 1440p and 4K give 1920x1080, 2048x1152 and 1920x1080 logical px, so layouts barely change. Native apps render at the exact scale. Foreign and bridged surfaces get an integer scale and are resampled.

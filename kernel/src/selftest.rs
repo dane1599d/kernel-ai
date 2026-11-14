@@ -270,6 +270,8 @@ pub enum SelfTest {
     ThreadsKill,
     /// THREAD_PIN: a pinned thread stays, an unpinned one migrates.
     ThreadPin,
+    /// L6: a clock jump past a runaway's limit is not run time.
+    RunawayStall,
     /// L6: a matvec over the thread pool equals the single-thread result.
     Matvec,
     /// L6: keys reach their thread within 20 ms while ring-3 workers compute.
@@ -489,6 +491,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=threads" => Some(SelfTest::Threads),
             "test=threads-kill" => Some(SelfTest::ThreadsKill),
             "test=thread-pin" => Some(SelfTest::ThreadPin),
+            "test=runaway-stall" => Some(SelfTest::RunawayStall),
             "test=matvec" => Some(SelfTest::Matvec),
             "test=compute-keys" => Some(SelfTest::ComputeKeys),
             "test=bigmap" => Some(SelfTest::Bigmap),
@@ -564,6 +567,16 @@ fn updated_words(test: SelfTest) -> String {
         words.push_str(&format!(
             " pages=6144 online=test netdest=proto:tcp,ports:443,hosts:{hosts}"
         ));
+    }
+    if step == "download" {
+        // The model download (P5 task 9): the HTTPS mock's model host, the
+        // storage host it redirects to, and the repository host with the
+        // role's chunk lists; its pages hold a 2 MiB chunk and the TLS
+        // records on top of `kabi::plan::UPDATED`'s. The held `NetDest` lets
+        // it read the bundle's test CA (`netroots/1.der`).
+        words.push_str(
+            " pages=6144 fetch=test netdest=proto:tcp,ports:443,hosts:models.kai.test+assets.kai.test+updates.kai.test",
+        );
     }
     // Only the words `updated` reads: a plan word such as `netdest=` or
     // `caps=` from the command line would widen its line (the manager's review
