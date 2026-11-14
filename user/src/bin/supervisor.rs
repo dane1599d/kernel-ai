@@ -161,6 +161,9 @@ fn main() -> i32 {
     save(&services);
     // The class each process was last set to by a profile; any other runs normal.
     let mut classes: Vec<(u64, u64)> = Vec::new();
+    // When the current slice of starts began; kept across passes, since a pass's
+    // wait returns at once when an event is queued, without blocking.
+    let mut slice_start = now_ms();
     loop {
         let now = now_ms();
         let mut started = false;
@@ -168,6 +171,14 @@ fn main() -> i32 {
             if service.start_at_ms.is_some_and(|at| now >= at) {
                 let _ = start(service, now);
                 started = true;
+                // A start is kernel work on this thread (loading, its log
+                // lines), so a long plan sleeps a moment between slices: the
+                // sleep blocks, and 45 starts in a row passed the 2 s burst
+                // limit (many-processes, #874).
+                if now_ms().saturating_sub(slice_start) >= START_SLICE_MS {
+                    sys::sleep_ms(1);
+                    slice_start = now_ms();
+                }
             }
         }
         if started {
@@ -389,6 +400,9 @@ fn send_ctl(name: &str, verb: sys::AppCtl) -> String {
 }
 
 const APP_START_POLL_MS: u64 = 100;
+/// The longest the supervisor starts services before it sleeps a moment: a
+/// quarter of the supervisor's 2 s burst limit.
+const START_SLICE_MS: u64 = 500;
 
 /// `app-call <app>`: the shell's request to app `app`, through the kernel. The
 /// app's own reply, or `err ...`. An app that is down, and not stopped or given
