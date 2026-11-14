@@ -401,6 +401,44 @@ fn centre(r: Rect) -> (i32, i32) {
     (r.x + r.w / 2, r.y + r.h / 2)
 }
 
+/// Kai Desk PR 3: a card that comes up while the panel (and the Apps sheet
+/// on it) has the keys takes the focus, which `desktop` reads as the sheet's
+/// close, and from then on no key reaches the panel or the sheet.
+#[test]
+fn a_card_closes_the_sheet_and_takes_its_keys() {
+    let (mut desk, _) = desk_with(1);
+    key(&mut desk, usage::LEFT_CTRL, true);
+    assert_eq!(
+        key(&mut desk, usage::SPACE, true),
+        [Effect::Focus(Focus::Panel)]
+    );
+    key(&mut desk, usage::SPACE, false);
+    key(&mut desk, usage::LEFT_CTRL, false);
+    // The sheet's keys: Down, Enter, Esc.
+    let sheet_keys = [0x51, 0x28, 0x29];
+    assert!(
+        key(&mut desk, sheet_keys[0], true).contains(&Effect::PanelKey {
+            usage: sheet_keys[0],
+            down: true
+        })
+    );
+    key(&mut desk, sheet_keys[0], false);
+    assert_eq!(desk.show_ask(9, 3), [Effect::Focus(Focus::Ask(9))]);
+    desk.card_drawn(0);
+    for code in sheet_keys {
+        for down in [true, false] {
+            let effects = key(&mut desk, code, down);
+            assert!(
+                !effects
+                    .iter()
+                    .any(|e| matches!(e, Effect::PanelKey { .. } | Effect::Focus(_))),
+                "{code:#x}: {effects:?}"
+            );
+        }
+    }
+    assert_eq!(desk.focus(), Focus::Ask(9));
+}
+
 #[test]
 fn an_ask_card_takes_only_y_n_or_a_click_and_drops_keys_held_before_it() {
     let (mut desk, ids) = desk_with(2);
