@@ -101,12 +101,16 @@ jobs:
             echo "release/seq must rise above $last: bump it in the release PR"
             exit 1
           fi
-          # The founder-signed root never changes once released (root-ceremony.md).
+          # The founder-signed root never changes once released (root-ceremony.md):
+          # every earlier release that carries one must carry these bytes.
           root=release/pkgrepo/metadata/1.root.json
-          if [ -n "$previous" ] && git cat-file -e "$previous:$root" 2>/dev/null; then
-            git diff --quiet "$previous" HEAD -- "$root" ||
-              { echo "$root differs from $previous's: the root is frozen"; exit 1; }
-          fi
+          for tag in $(git tag --list 'v*'); do
+            [ "$tag" = "$VERSION" ] && continue
+            if git cat-file -e "$tag:$root" 2>/dev/null && ! git diff --quiet "$tag" HEAD -- "$root"; then
+              echo "$root differs from $tag's: the root is frozen"
+              exit 1
+            fi
+          done
 
   build:
     name: Build the release image (runner ${{ matrix.runner }})

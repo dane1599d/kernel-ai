@@ -21,7 +21,7 @@ You chose this on 2026-11-14. Two Ed25519 key files, each encrypted with its own
 
 - Two files on one PC under one person add nothing, so root is 1 of 1. The protection is the passphrase, a USB stick plugged in only to sign, and an encrypted copy kept in another building.
 - Sign only in a WSL distro of its own, which no Claude session uses. Sessions use `Ubuntu` for their sandbox and QEMU, and a planted `openssl` or `.bashrc` there could catch a passphrase. Run every command through `env -i /bin/bash --noprofile --norc` and call `/usr/bin/openssl` by its full path.
-- The sign script runs from the key stick, never from a checkout, which a session could change between your review and your run. Check its SHA-256 before each run. The script at the commit that added it has this SHA-256: `1ccea44c1cad641f21245bb57de0126e97f94e7399db341a6f86231c4c41007e`. A test in `xtask/src/release_repo/tests.rs` holds this page to the script, so a change to either shows in review.
+- The sign script runs from the key stick, never from a checkout, which a session could change between your review and your run. Check its SHA-256 before each run. The script at the commit that added it has this SHA-256: `ea71c6a5a3ca98af417240ceacfca7709eb4b3b0561f3275602943488f213b4b`. A test in `xtask/src/release_repo/tests.rs` holds this page to the script, so a change to either shows in review.
 - `release/pkgrepo/metadata/1.root.json` is frozen once committed. `cargo xtask release-repo` reuses it and never signs root again. CI fails any pull request that changes or removes it, and any tag whose root differs from the last release's. Two different "version 1" roots would split devices, because `updated` keeps a cached root of the same version.
 - Never put a key file under the OneDrive Desktop folder, where the main checkout lives. Never type a passphrase into a Claude chat, or into a terminal a session controls.
 
@@ -45,15 +45,19 @@ You chose this on 2026-11-14. Two Ed25519 key files, each encrypted with its own
 
 The session prepares the files to sign in a folder it names, for example `E:\kai-release\rc2`, which Debian sees as `/mnt/e/kai-release/rc2`. Signing takes two rounds, because the timestamp holds the hash of the signed snapshot.
 
-1. The session runs `cargo xtask release-repo prepare --dir <folder>` and tells you the folder.
+1. The session runs `cargo xtask release-repo prepare --dir <folder>`. It tells you the folder and pastes the `sha256` line `prepare` printed for each file.
 2. Plug in the key stick and, in Debian, mount it as in setup step 3.
 3. Run `/usr/bin/sha256sum /mnt/f/kai-keys/release-sign.sh`. It must match the SHA-256 you wrote down. If it does not, stop.
-4. Run `env -i /bin/bash --noprofile --norc /mnt/f/kai-keys/release-sign.sh /mnt/f/kai-keys /mnt/e/kai-release/rc2`, using the folder the session named. Type each passphrase it asks for. Root's is asked only for the first release, which signs root.
+4. Run `env -i /bin/bash --noprofile --norc /mnt/f/kai-keys/release-sign.sh /mnt/f/kai-keys /mnt/e/kai-release/rc2`, using the folder the session named. Type each passphrase it asks for.
+   - Root's passphrase is asked only for the first release, the one that signs root. If it asks for root's on any later release, press Ctrl-C and stop: root is frozen, and a request for it means someone changed the folder.
+   - For each file it prints `signed <file> with <key>: sha256 <hash>`. Each hash must be the one the session pasted for that file. If one differs, the folder changed after `prepare`: tell the session, and nothing goes further.
 5. Run `sudo umount /mnt/f`, eject the stick, and tell the session "signed".
-6. The session runs `cargo xtask release-repo prepare-timestamp`. Repeat steps 2 to 5: this time it asks only for the release passphrase.
-7. The session runs `cargo xtask release-repo assemble`. It checks every signature, and the repository as a device does, then commits `release/pkgrepo/` and opens a pull request. Its release dry run boots the image and imports qwen3-0.6b under the role you signed.
+6. The session runs `cargo xtask release-repo prepare-timestamp` and pastes its one `sha256` line. Repeat steps 2 to 5: this time it asks only for the release passphrase.
+7. The session runs `cargo xtask release-repo assemble`. It checks every signature, the repository as a device does, and that every signed byte is what `prepare` writes for `release/keys/` and `xtask/models.json`, with no expiry later than its period allows. Then it commits `release/pkgrepo/` and opens a pull request. CI checks the same on clean runners, and the release dry run boots the image and imports qwen3-0.6b under the role you signed.
 
 The session never needs the stick or a passphrase. A model added to `xtask/models.json` makes a release fail until it is signed again this way.
+
+**What is still trusted:** you sign the bytes the session prepared. The checks above catch a repository that is not what xtask writes, and a folder changed after `prepare`. They cannot catch a session that prepares other bytes and lies about their hashes, then keeps the signatures instead of committing them. Your checks against that are the rule on root's passphrase in step 4, and signing only when a session asks for a release you expect.
 
 ### Expiry and online updates
 

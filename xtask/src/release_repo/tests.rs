@@ -3,6 +3,7 @@
 
 use super::*;
 use kaipkg::sign::{Key, Keys};
+use serde_json::json;
 
 /// RFC 8032 §7.1's test 1 seed, as the root key.
 const ROOT_SEED: &str = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
@@ -76,7 +77,7 @@ fn release(
     sign(&paths.work);
     prepare_timestamp(paths, NOW)?;
     sign(&paths.work);
-    assemble(paths, models)
+    assemble(paths, models, version, NOW)
 }
 
 /// What `kaipkg::sign` writes with both keys in hand: the metadata files.
@@ -121,7 +122,7 @@ fn signed_apart_the_release_is_what_signing_in_one_go_writes() {
     let written = read_repository(&paths.repo).unwrap();
     assert_eq!(written, in_one_go(&models));
     let keys = FileKeys::read(&paths.keys).unwrap();
-    check_repository(&written, &models, &keys).unwrap();
+    check_repository(&written, &models, &keys, NOW, Version::Exactly(1)).unwrap();
 }
 
 /// A second release reuses the committed root byte for byte and names its
@@ -132,12 +133,13 @@ fn a_later_release_keeps_the_frozen_root() {
     let models = models::catalog().unwrap();
     release(&paths, &models, 1, &sign_here).unwrap();
     let root = fs::read(paths.repo.join(image::ROOT)).unwrap();
-    prepare(&paths, &models, 2, Time(NOW.0 + 86_400)).unwrap();
+    let later = Time(NOW.0 + 86_400);
+    prepare(&paths, &models, 2, later).unwrap();
     assert!(!paths.work.join("root.canon").exists());
     sign_here(&paths.work);
-    prepare_timestamp(&paths, NOW).unwrap();
+    prepare_timestamp(&paths, later).unwrap();
     sign_here(&paths.work);
-    assemble(&paths, &models).unwrap();
+    assemble(&paths, &models, 2, later).unwrap();
     let names: Vec<String> = read_repository(&paths.repo)
         .unwrap()
         .into_iter()
@@ -171,7 +173,7 @@ fn a_signature_that_is_not_the_keys_is_refused_by_name() {
     let text = fs::read_to_string(&sig).unwrap();
     let flipped = if text.starts_with('0') { "1" } else { "0" };
     fs::write(&sig, format!("{flipped}{}", &text[1..])).unwrap();
-    let refused = assemble(&paths, &models).unwrap_err();
+    let refused = assemble(&paths, &models, 1, NOW).unwrap_err();
     assert_eq!(
         refused,
         "models.sig is not release.key's signature of models.canon"
@@ -198,11 +200,85 @@ fn a_models_role_that_is_not_the_catalog_fails_the_check() {
     release(&paths, &models, 1, &sign_here).unwrap();
     let keys = FileKeys::read(&paths.keys).unwrap();
     let files = read_repository(&paths.repo).unwrap();
-    check_repository(&files, &models, &keys).unwrap();
+    check_repository(&files, &models, &keys, NOW, Version::AtMost(1)).unwrap();
     models.push(last);
-    let refused = check_repository(&files, &models, &keys).unwrap_err();
+    let refused = check_repository(&files, &models, &keys, NOW, Version::AtMost(1)).unwrap_err();
     assert!(
-        refused.contains("not xtask/models.json's catalog"),
+        refused.contains("1.models.json is not what `release-repo prepare` writes"),
+        "{refused}"
+    );
+}
+
+/// A name for the case, the role edited, and the edit.
+type Edit = (&'static str, &'static str, fn(&mut Value));
+
+/// `<role>.canon` in `work` with `edit` applied, as a session that reaches the
+/// work folder could rewrite it before it is signed.
+fn tamper(work: &Path, role: &str, edit: fn(&mut Value)) {
+    let path = work.join(format!("{role}.canon"));
+    let mut signed: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    edit(&mut signed);
+    fs::write(&path, sign::canonical(&signed).unwrap()).unwrap();
+}
+
+/// Bytes the founder signed that `prepare` would not write are refused even
+/// with good signatures: a delegation widened, or an expiry far off.
+#[test]
+fn a_role_edited_before_it_was_signed_is_refused() {
+    let models = models::catalog().unwrap();
+    let edits: [Edit; 2] = [
+        ("widened", "targets", |s| {
+            s["delegations"]["roles"][1]["paths"] = json!(["*"])
+        }),
+        ("far-off", "snapshot", |s| {
+            s["expires"] = json!("2999-01-01T00:00:00Z")
+        }),
+    ];
+    for (name, role, edit) in edits {
+        let paths = workspace(name);
+        prepare(&paths, &models, 1, NOW).unwrap();
+        tamper(&paths.work, role, edit);
+        sign_here(&paths.work);
+        prepare_timestamp(&paths, NOW).unwrap();
+        sign_here(&paths.work);
+        let refused = assemble(&paths, &models, 1, NOW).unwrap_err();
+        assert!(
+            refused.contains(&format!("1.{role}.json")),
+            "{name}: {refused}"
+        );
+        assert!(!paths.repo.exists(), "{name}: nothing is written");
+    }
+}
+
+/// Roles signed at another version than this release's are refused.
+#[test]
+fn a_version_other_than_this_releases_is_refused() {
+    let paths = workspace("version");
+    let models = models::catalog().unwrap();
+    prepare(&paths, &models, 1, NOW).unwrap();
+    sign_here(&paths.work);
+    prepare_timestamp(&paths, NOW).unwrap();
+    sign_here(&paths.work);
+    let refused = assemble(&paths, &models, 2, NOW).unwrap_err();
+    assert!(
+        refused.contains("version 1 is not this release's"),
+        "{refused}"
+    );
+}
+
+/// A committed root whose signature is not root.key's is never reused.
+#[test]
+fn a_committed_root_not_signed_by_root_key_is_refused() {
+    let paths = workspace("rootsig");
+    let models = models::catalog().unwrap();
+    release(&paths, &models, 1, &sign_here).unwrap();
+    let at = paths.repo.join(image::ROOT);
+    let mut root: Value = serde_json::from_slice(&fs::read(&at).unwrap()).unwrap();
+    root["signatures"][0]["sig"] = json!("00".repeat(64));
+    fs::write(&at, sign::canonical(&root).unwrap()).unwrap();
+    let refused = prepare(&paths, &models, 2, NOW).unwrap_err();
+    assert!(
+        refused.contains("no valid signature by root.key"),
         "{refused}"
     );
 }

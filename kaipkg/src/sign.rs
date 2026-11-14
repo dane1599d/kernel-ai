@@ -47,7 +47,7 @@ use ed25519_compact::{KeyPair, Seed};
 use serde_json::{Map, Value, json};
 
 pub const SPEC_VERSION: &str = "1.0.37";
-const DAY: u64 = 86_400;
+pub const DAY: u64 = 86_400;
 /// The delegated role every package sits under, and what it may sign for.
 pub const PACKAGES: &str = "packages";
 const PACKAGE_PATHS: &[&str] = &["*.kpkg"];

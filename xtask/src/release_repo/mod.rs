@@ -25,15 +25,19 @@
 
 use crate::pkgrepo::models::{self, Model};
 use crate::pkgrepo::tuf;
+use check::{Version, check_repository, read_repository};
 use kaipkg::generation::Time;
-use kaipkg::image::{self, Files};
+use kaipkg::image;
 use kaipkg::sign::{self, ADR_0008, MODELS, PACKAGES, PublicKey, Roles};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod check;
 #[cfg(test)]
 mod tests;
+
+pub use check::{RepoFiles, committed};
 
 /// The founder's public keys, under the workspace.
 pub const KEYS: &str = "release/keys";
@@ -48,6 +52,8 @@ const ED25519_SPKI: [u8; 12] = [
 ];
 /// The roles of the first round, after root when it is not frozen.
 const FIRST_ROUND: [&str; 4] = ["targets", PACKAGES, MODELS, "snapshot"];
+/// Every role a release signs: the only `.canon` and `.sig` names there are.
+const ROLES: [&str; 6] = ["root", "targets", PACKAGES, MODELS, "snapshot", "timestamp"];
 
 const USAGE: &str =
     "usage: cargo xtask release-repo prepare|prepare-timestamp|assemble [--dir DIR] | check";
@@ -83,7 +89,8 @@ pub fn main(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         "assemble" => {
-            assemble(&paths, &models::catalog()?)?;
+            let version = crate::release_image::release_seq(&root)?.into();
+            assemble(&paths, &models::catalog()?, version, now)?;
             println!("xtask: wrote {} (commit it)", paths.repo.display());
             Ok(())
         }
@@ -190,7 +197,7 @@ fn prepare(paths: &Paths, models: &[Model], version: u64, now: Time) -> Result<(
     let plan = plan(&keys, models, version, now)?;
     clear(&paths.work)?;
     let mut roles = Vec::new();
-    match frozen_root(paths, &plan.root)? {
+    match frozen_root(paths, &keys, &plan.root)? {
         Some(_) => println!(
             "xtask: {REPO}/{} is committed and frozen: root is not signed again",
             image::ROOT
@@ -217,10 +224,10 @@ fn plan(
     sign::unsigned(&[], &models, &keys.roles(), now, ADR_0008, version)
 }
 
-/// The committed root, if there is one, once it is checked to name the keys
-/// and roles `root` names: whatever else it holds, such as its expiry, it is
-/// never signed again (`updated` keeps a cached root of the same version).
-fn frozen_root(paths: &Paths, root: &Value) -> Result<Option<Vec<u8>>, String> {
+/// The committed root, if there is one, once it is checked to be `root` but
+/// for its expiry and to carry root.key's signature. It is never signed again:
+/// `updated` keeps a cached root of the same version.
+fn frozen_root(paths: &Paths, keys: &FileKeys, root: &Value) -> Result<Option<Vec<u8>>, String> {
     let path = paths.repo.join(image::ROOT);
     let bytes = match fs::read(&path) {
         Ok(bytes) => bytes,
@@ -229,17 +236,14 @@ fn frozen_root(paths: &Paths, root: &Value) -> Result<Option<Vec<u8>>, String> {
     };
     let committed: Value =
         serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-    let signed = &committed["signed"];
-    let same = ["keys", "roles", "consistent_snapshot", "version"]
-        .iter()
-        .all(|field| signed[field] == root[field]);
-    match same {
-        true => Ok(Some(bytes)),
-        false => Err(format!(
-            "{} names other keys or roles than {KEYS}: the committed root is frozen",
+    if !check::same_but_expiry(&committed["signed"], root) {
+        return Err(format!(
+            "{} is not the root {KEYS} names: the committed root is frozen",
             path.display()
-        )),
+        ));
     }
+    check::root_signed(&[(image::ROOT.into(), bytes.clone())], keys)?;
+    Ok(Some(bytes))
 }
 
 /// The timestamp for the signed snapshot, written as `timestamp.canon`.
@@ -254,8 +258,9 @@ fn prepare_timestamp(paths: &Paths, now: Time) -> Result<(), String> {
     )
 }
 
-/// Every role signed, checked and written to the committed repository.
-fn assemble(paths: &Paths, models: &[Model]) -> Result<(), String> {
+/// Every role signed, checked at `now` as [`check_repository`] does, the
+/// non-root roles at `version`, and written to the committed repository.
+fn assemble(paths: &Paths, models: &[Model], version: u64, now: Time) -> Result<(), String> {
     let keys = FileKeys::read(&paths.keys)?;
     let root = match fs::read(paths.repo.join(image::ROOT)) {
         Ok(bytes) => bytes,
@@ -271,7 +276,7 @@ fn assemble(paths: &Paths, models: &[Model]) -> Result<(), String> {
     }
     let (timestamp, _) = signed_file(&paths.work, "timestamp", &keys)?;
     files.push((sign::TIMESTAMP_PATH.into(), timestamp));
-    check_repository(&files, models, &keys)?;
+    check_repository(&files, models, &keys, now, Version::Exactly(version))?;
     write_repository(&paths.repo, &files)
 }
 
@@ -307,110 +312,6 @@ fn signed_file(work: &Path, role: &str, keys: &FileKeys) -> Result<(Vec<u8>, u64
     Ok((sign::signed_envelope(&signed, &key, &sig)?, version))
 }
 
-/// A repository's files, by path from its top.
-pub type RepoFiles = Vec<(String, Vec<u8>)>;
-
-/// The committed repository, checked as [`check_repository`] does, or none
-/// when nothing is committed.
-pub fn committed(root: &Path) -> Result<Option<RepoFiles>, String> {
-    let repo = root.join(REPO);
-    if !repo.join(image::ROOT).exists() {
-        return Ok(None);
-    }
-    let keys = FileKeys::read(&root.join(KEYS))?;
-    let files = read_repository(&repo)?;
-    check_repository(&files, &models::catalog()?, &keys)?;
-    Ok(Some(files))
-}
-
-/// The repository as a device checks the image's (`kaipkg::image::listed`,
-/// expiry not checked), then against what a release signs: a root that names
-/// `keys`, no package, and the `models` role's targets exactly `models`'.
-fn check_repository(
-    files: &[(String, Vec<u8>)],
-    models: &[Model],
-    keys: &FileKeys,
-) -> Result<(), String> {
-    let mut repository = InMemory(files);
-    let listed = image::listed(&mut repository, MODELS).map_err(|why| format!("{REPO}: {why}"))?;
-    if let Some((path, why)) = listed.refused.first() {
-        return Err(format!("{REPO}: {path} is refused: {why}"));
-    }
-    if !image::listed(&mut repository, PACKAGES)?.targets.is_empty() {
-        return Err(format!("{REPO}: a release's packages role lists nothing"));
-    }
-    let plan = plan(keys, models, 1, Time(0))?;
-    let root: Value = parse(files, image::ROOT)?;
-    if root["signed"]["keys"] != plan.root["keys"] || root["signed"]["roles"] != plan.root["roles"]
-    {
-        return Err(format!("{REPO}: its root names other keys than {KEYS}"));
-    }
-    let want = plan.models.as_ref().map(|m| &m["targets"]);
-    if Some(&role_file(files, MODELS)?["signed"]["targets"]) != want {
-        return Err(format!(
-            "{REPO}: its models role is not xtask/models.json's catalog: sign it again"
-        ));
-    }
-    Ok(())
-}
-
-/// The role file the timestamp leads to, through the snapshot.
-fn role_file(files: &[(String, Vec<u8>)], role: &str) -> Result<Value, String> {
-    let version = |meta: &Value, name: &str| {
-        meta["signed"]["meta"][name]["version"]
-            .as_u64()
-            .ok_or_else(|| format!("{REPO}: no version for {name}"))
-    };
-    let timestamp = parse(files, sign::TIMESTAMP_PATH)?;
-    let snapshot = parse(
-        files,
-        &sign::path("snapshot", version(&timestamp, "snapshot.json")?),
-    )?;
-    parse(
-        files,
-        &sign::path(role, version(&snapshot, &format!("{role}.json"))?),
-    )
-}
-
-fn parse(files: &[(String, Vec<u8>)], path: &str) -> Result<Value, String> {
-    let (_, bytes) = files
-        .iter()
-        .find(|(p, _)| p == path)
-        .ok_or_else(|| format!("{REPO} has no {path}"))?;
-    serde_json::from_slice(bytes).map_err(|e| format!("{REPO}/{path}: {e}"))
-}
-
-/// The repository's files, by path from its top.
-struct InMemory<'a>(&'a [(String, Vec<u8>)]);
-
-impl Files for InMemory<'_> {
-    fn file(&mut self, path: &str, max: u64) -> Result<Option<Vec<u8>>, String> {
-        match self.0.iter().find(|(p, _)| p == path) {
-            Some((_, bytes)) if bytes.len() as u64 > max => {
-                Err(format!("{path} is over {max} bytes"))
-            }
-            Some((_, bytes)) => Ok(Some(bytes.clone())),
-            None => Ok(None),
-        }
-    }
-}
-
-/// Every `.json` file in `repo`'s `metadata/`, in name order.
-fn read_repository(repo: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
-    let dir = repo.join(image::METADATA);
-    let mut names: Vec<String> = fs::read_dir(&dir)
-        .map_err(|e| format!("cannot list {}: {e}", dir.display()))?
-        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-        .filter(|name| name.ends_with(".json"))
-        .collect();
-    names.sort();
-    let file = |name: String| {
-        let bytes = fs::read(dir.join(&name)).map_err(|e| format!("cannot read {name}: {e}"))?;
-        Ok((format!("{}/{name}", image::METADATA), bytes))
-    };
-    names.into_iter().map(file).collect()
-}
-
 /// `files` as `repo`'s `metadata/`: every other role file there goes, and a
 /// committed root must be `files`' byte for byte.
 fn write_repository(repo: &Path, files: &[(String, Vec<u8>)]) -> Result<(), String> {
@@ -434,17 +335,18 @@ fn write_repository(repo: &Path, files: &[(String, Vec<u8>)]) -> Result<(), Stri
     Ok(())
 }
 
-/// Makes `work`, and removes the `.canon` and `.sig` files an earlier run left.
+/// Makes `work`, and removes the role files an earlier run left there: each
+/// `<role>.canon` and `<role>.sig` of [`ROLES`], and nothing else.
 fn clear(work: &Path) -> Result<(), String> {
     fs::create_dir_all(work).map_err(|e| format!("cannot make {}: {e}", work.display()))?;
-    let entries = fs::read_dir(work).map_err(|e| format!("cannot list {}: {e}", work.display()))?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if matches!(
-            path.extension().and_then(|e| e.to_str()),
-            Some("canon" | "sig")
-        ) {
-            fs::remove_file(&path).map_err(|e| format!("cannot remove {}: {e}", path.display()))?;
+    for role in ROLES {
+        for file in [format!("{role}.canon"), format!("{role}.sig")] {
+            let path = work.join(file);
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("cannot remove {}: {e}", path.display())),
+            }
         }
     }
     Ok(())
