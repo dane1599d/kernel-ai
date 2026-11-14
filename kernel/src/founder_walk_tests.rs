@@ -387,6 +387,10 @@ fn notes_open_close_open() -> Result<(), &'static str> {
 }
 
 pub fn check() -> Result<(), &'static str> {
+    // The kernel's terminal, as the real boot runs it after `boot-ok`: it
+    // takes a desktop line's waiting card from the shell and posts it on
+    // `desktop`'s card. A test boot starts none of its own.
+    threads::spawn("terminal", terminal::run, 0)?;
     desk_tests::wait("founder-walk: the desktop to draw", || {
         desk_tests::desktop_shows() && claim::flushes() > 0
     })?;

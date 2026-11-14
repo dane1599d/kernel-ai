@@ -25,14 +25,20 @@ macro_rules! walk {
             min_timeout: Some(Duration::from_secs(900)),
             expect: &[
                 concat!("desktop: drew the desk at ", $size),
+                "\"open terminal\", opened by code with no model",
+                "desktop: window 1 \"Terminal\" opened at 48,52 size 802x554",
                 "founder-walk: the Terminal opened from the panel",
                 // The line as typed, every key of it, ran in the Terminal.
                 "terminal-window ran the line \"show me the cpus please\"",
                 "founder-walk: the Terminal ran the typed line and showed the CPUs",
+                "answered from the registry",
                 "founder-walk: what Kai can do with the cpus came from the rows",
                 "founder-walk: the model's clarify offered only what a row backs",
                 // The line after the clarify was a request of its own.
                 "the question about \"do more with the cpus\" was left: \"save a note for the terminal\" reads as a new request",
+                // The file is not in the line, so the call was added: it asks.
+                "fs_create is ask (Added)",
+                "card: the shell's waiting card goes to desktop",
                 " answered yes",
                 "founder-walk: the Terminal's line asked first, and Run on the card made its file",
                 "desktop: the panel shows what a card came to",
