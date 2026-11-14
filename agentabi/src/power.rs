@@ -26,7 +26,6 @@ pub const POWER_REBOOT: Action = Action {
         "restart the computer",
         "restart the machine",
         "restart the pc",
-        "restart kai",
     ],
     returns: Returns::System,
     ret: RetType::Unit,

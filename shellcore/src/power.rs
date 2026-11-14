@@ -38,8 +38,6 @@ const LINES: &[&str] = &[
     "reboot the pc",
     "restart the system",
     "reboot the system",
-    "restart kai",
-    "reboot kai",
 ];
 
 /// `text` lower-cased, with a leading "please" or "kai,", a trailing ", kai",
@@ -161,6 +159,10 @@ mod tests {
             "can you restart the computer?",
             "tell me how to restart the computer",
             "restart the terminal",
+            // Kai is the assistant, not the computer.
+            "restart kai",
+            "reboot kai",
+            "kai, restart kai",
             "restart the notes app",
             "don't restart",
             "restarting",

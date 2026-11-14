@@ -74,3 +74,39 @@ fn a_rhai_variable_named_restart_is_read_not_restarted() {
     assert_eq!(shell.eval("restart"), ok("3"));
     assert!(host.reboots.borrow().is_empty());
 }
+
+/// The Terminal app's `shell_line` effect for a person's `text`.
+fn typed_in_terminal_app(shell: &mut Shell, text: &str) -> Result<String, String> {
+    let args = format!("{{line: \"{text}\"}}");
+    let effect = format!(
+        "effect 1 call({{name: \"shell_line\", args: \"{}\"}})",
+        args.replace('"', "\\\"")
+    );
+    let done = shell.run_effects_from(crate::appline::TERMINAL_APP, &effect, true);
+    assert_eq!(done.len(), 1);
+    done[0].outcome.clone()
+}
+
+/// The desk panel and the Terminal window cannot answer a question: a restart
+/// typed there asks first, and until the trusted card takes desk questions
+/// (#864) that is a refusal, with nothing left for a later yes.
+#[test]
+fn a_restart_from_the_panel_or_the_terminal_window_never_restarts_unasked() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let shown = shell.eval_panel("restart");
+    assert!(matches!(shown, crate::PanelResult::Refused(_)), "{shown:?}");
+    let said = typed_in_terminal_app(&mut shell, "reboot");
+    assert!(
+        said.as_deref()
+            .is_ok_and(|s| s.starts_with("err it asks first")),
+        "{said:?}"
+    );
+    // Nothing waits: an answer at the console has no restart to allow.
+    let once = host.mint(1, "power_reboot()");
+    shell.eval(&format!("answer 1 allow once={once}"));
+    let once = host.mint(2, "power_reboot()");
+    shell.eval(&format!("answer 2 allow once={once}"));
+    shell.eval("y");
+    assert!(host.reboots.borrow().is_empty());
+}
