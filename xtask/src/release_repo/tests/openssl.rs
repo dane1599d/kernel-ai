@@ -124,12 +124,23 @@ fn the_script_shows_every_key_before_a_passphrase() {
     assert_eq!(names("root"), both);
     assert_eq!(names("targets"), [release.as_str()]);
     assert!(names("snapshot").is_empty());
-    // And each package it signs, as the prepare job lists them, with its
-    // grants.
+    // Which round, and of which release.
+    let round = "round 1 of release 1: signs models packages root snapshot targets\n";
+    assert!(shown.contains(round), "{shown}");
+    // Each model and package it signs, as the prepare job lists them, a
+    // package with its grants.
+    for model in models::catalog().unwrap() {
+        let line = format!(
+            "models.canon signs {}, sha256 {}, length {}\n",
+            model.target(),
+            model.sha256,
+            model.length
+        );
+        assert!(shown.contains(&line), "{line} in {shown}");
+    }
     for (path, bytes) in packages::built(&targets()) {
         let line = format!(
-            "packages.canon signs {path}, sha256 {}, grants []
-",
+            "packages.canon signs {path}, sha256 {}, grants []\n",
             crate::sha256_hex(&bytes)
         );
         assert!(shown.contains(&line), "{line} in {shown}");
@@ -306,6 +317,138 @@ fn the_script_refuses_targets_or_models_that_could_speak_for_a_package() {
         let sigs = fs::read_dir(&paths.work).unwrap().flatten();
         let signed = sigs.filter(|e| e.path().extension().is_some_and(|x| x == "sig"));
         assert_eq!(signed.count(), 0, "{name}");
+    }
+}
+
+/// A folder that holds something other than one round's own files, as xtask
+/// writes them, and how the script refuses it.
+struct Round {
+    name: &'static str,
+    /// The second round's folder: round 1 signed, then `prepare-timestamp`.
+    second: bool,
+    change: fn(&Path),
+    refused: &'static str,
+}
+
+/// `<role>.canon` in `work` with its first `from` replaced by `to`.
+fn swap(work: &Path, role: &str, from: &str, to: &str) {
+    let path = work.join(format!("{role}.canon"));
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains(from), "{role}.canon has no {from}");
+    fs::write(&path, text.replacen(from, to, 1)).unwrap();
+}
+
+/// The first key `root.canon` names, in hex.
+fn first_key(work: &Path) -> String {
+    let text = fs::read_to_string(work.join("root.canon")).unwrap();
+    let (_, rest) = text.split_once("\"public\":\"").unwrap();
+    rest[..64].to_string()
+}
+
+/// How many `.sig` files `work` holds.
+fn sigs(work: &Path) -> usize {
+    let entries = fs::read_dir(work).unwrap().flatten();
+    entries
+        .filter(|e| e.path().extension().is_some_and(|x| x == "sig"))
+        .count()
+}
+
+/// release.key signs every role but root, and the device tells roles apart
+/// by `_type` and by the snapshot's versions alone. So the script signs only a
+/// round's own files, each the text xtask writes at one release number, with
+/// plain keys: a targets role as `timestamp.canon`, beside round 1's files or
+/// as round 2's, a snapshot of another `_type`, a round missing a file, an
+/// upper-case or PEM key, a role at another version, and a model id the OS
+/// refuses each stop it before any passphrase, and nothing is signed.
+#[test]
+fn the_script_signs_only_a_rounds_own_files_as_xtask_writes_them() {
+    if !openssl_3() {
+        return;
+    }
+    const KEY: &str = "root.canon names a key that is not lower-case hex Ed25519";
+    const NOT_A_ROUND: &str = "not one round's files";
+    let timestamp_is_packages = |w: &Path| {
+        fs::copy(w.join("packages.canon"), w.join("timestamp.canon")).unwrap();
+    };
+    let cases = [
+        Round {
+            name: "extra",
+            second: false,
+            change: timestamp_is_packages,
+            refused: NOT_A_ROUND,
+        },
+        Round {
+            name: "typed",
+            second: true,
+            change: timestamp_is_packages,
+            refused: "timestamp.canon is not what xtask writes",
+        },
+        Round {
+            name: "snapshot-type",
+            second: false,
+            change: |w| {
+                swap(
+                    w,
+                    "snapshot",
+                    r#""_type":"snapshot""#,
+                    r#""_type":"targets""#,
+                )
+            },
+            refused: "is not a snapshot",
+        },
+        Round {
+            name: "missing",
+            second: false,
+            change: |w| fs::remove_file(w.join("models.canon")).unwrap(),
+            refused: NOT_A_ROUND,
+        },
+        Round {
+            name: "upper-key",
+            second: false,
+            change: |w| {
+                let key = first_key(w);
+                swap(w, "root", &key, &key.to_uppercase())
+            },
+            refused: KEY,
+        },
+        Round {
+            name: "pem-key",
+            second: false,
+            change: |w| {
+                let pem = "-----BEGIN PUBLIC KEY-----MCowBQYDK2VwAyEA-----END PUBLIC KEY-----";
+                swap(w, "root", &first_key(w), pem)
+            },
+            refused: KEY,
+        },
+        Round {
+            name: "version",
+            second: false,
+            change: |w| swap(w, "packages", r#","version":1}"#, r#","version":2}"#),
+            refused: "packages.canon is not what xtask writes",
+        },
+        Round {
+            name: "model-id",
+            second: false,
+            change: |w| swap(w, "models", r#""qwen3-0.6b.gguf""#, r#""Qwen3-0.6b.gguf""#),
+            refused: "models.canon is not what xtask writes",
+        },
+    ];
+    for case in cases {
+        let name = case.name;
+        let paths = workspace(&format!("script-round-{name}"));
+        let stick = stick(&paths);
+        prepare(&paths, &targets(), &models::catalog().unwrap(), 1, NOW).unwrap();
+        if case.second {
+            sign_here(&paths.work);
+            prepare_timestamp(&paths, NOW).unwrap();
+        }
+        (case.change)(&paths.work);
+        let before = sigs(&paths.work);
+        let out = sign_script(&stick, &paths.work, "");
+        let said = String::from_utf8(out.stderr).unwrap();
+        assert!(!out.status.success(), "{name}");
+        assert!(said.contains(case.refused), "{name}: {said}");
+        assert_eq!(sigs(&paths.work), before, "{name}: nothing is signed");
     }
 }
 

@@ -220,6 +220,17 @@ impl<'a> Updater<'a> {
         Ok(own.signed.targets.iter().map(entry).collect())
     }
 
+    /// The artifact `path` as the top-level `targets` role itself lists it,
+    /// never a delegation's entry: for a target only that role signs, as the
+    /// OS image and its chunk list. Call [`Updater::refresh`] first.
+    pub fn top_level_target(&self, path: &str) -> Result<Option<TargetFile>, Error> {
+        let top = self
+            .trusted
+            .targets("targets")
+            .ok_or_else(|| Error::Malformed("targets did not load".into()))?;
+        Ok(top.signed.targets.get(path).cloned())
+    }
+
     /// The artifact `path` as the first role to name it in a preorder depth-first
     /// search of the delegations says it is; None if no trusted role names it.
     /// Call [`Updater::refresh`] first.

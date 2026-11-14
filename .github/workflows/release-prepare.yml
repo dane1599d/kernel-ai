@@ -67,9 +67,10 @@ jobs:
             echo
             echo "Branch \`$GITHUB_REF\`, commit \`$GITHUB_SHA\`. The branch must be main or release/v…, and the commit the one the session named."
             echo
-            echo "The sign script prints each package as below, grants included: each line must be here."
+            echo "The sign script prints each model, chunk list and package as below, grants included: each line must be here."
             echo
             echo '```'
+            jq -r '.targets | to_entries[] | "models.canon signs \(.key), sha256 \(.value.hashes.sha256), length \(.value.length)"' prepare-a/models.canon
             jq -r '.targets | to_entries[] | "packages.canon signs \(.key), sha256 \(.value.hashes.sha256), grants \(.value.custom.kai.grants | tojson)"' prepare-a/packages.canon
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"

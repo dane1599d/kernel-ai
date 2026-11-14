@@ -379,3 +379,65 @@ fn without_consistent_snapshots_files_are_unversioned() {
         ]
     );
 }
+
+/// A client that takes every target of one role reads the role's own
+/// entries: top-level `targets` naming the same path, which the search asks
+/// first, changes nothing, and a path the delegation does not cover is
+/// refused by name.
+#[test]
+fn own_targets_are_the_roles_own_entries_its_delegation_covers() {
+    let mut repo = Repo::new();
+    repo.delegate(
+        "targets",
+        "packages",
+        Signer::ed25519(74),
+        &["*.kpkg"],
+        true,
+    );
+    repo.add_artifact("packages", "notes.kpkg", b"the role's");
+    repo.add_artifact("packages", "stray.gguf", b"not its to name");
+    repo.add_artifact("targets", "notes.kpkg", b"top-level's");
+    repo.publish(&["packages", "targets"]);
+    let mut cache = fresh(&repo);
+    let mut remote = Served {
+        repo: &repo,
+        log: Vec::new(),
+    };
+    let mut updater = Updater::new(&mut remote, &mut cache, NOW).unwrap();
+    updater.refresh().unwrap();
+    let searched = updater.target("notes.kpkg").unwrap().unwrap();
+    assert_eq!(searched.length, b"top-level's".len() as u64);
+    let own = updater.own_targets("packages", "targets").unwrap();
+    let paths: Vec<&str> = own.iter().map(|(path, _)| path.as_str()).collect();
+    assert_eq!(paths, ["notes.kpkg", "stray.gguf"]);
+    let notes = own[0].1.as_ref().unwrap();
+    assert_eq!(notes.length, b"the role's".len() as u64);
+    assert_eq!(
+        own[1].1.as_ref().unwrap_err(),
+        "targets delegates no stray.gguf to packages"
+    );
+    assert!(updater.own_targets("nobody", "targets").is_err());
+}
+
+/// A target only the top-level role signs is read from it alone: a
+/// delegation's entry for the same path, which the search would find when
+/// the top-level role names none, never stands in.
+#[test]
+fn a_top_level_target_is_never_a_delegations() {
+    let mut repo = Repo::new();
+    repo.delegate("targets", "a", Signer::ed25519(75), &["*"], false);
+    repo.add_artifact("a", "slot.img", b"a's");
+    repo.add_artifact("targets", "list.chunks", b"the list");
+    repo.publish(&["a", "targets"]);
+    let mut cache = fresh(&repo);
+    let mut remote = Served {
+        repo: &repo,
+        log: Vec::new(),
+    };
+    let mut updater = Updater::new(&mut remote, &mut cache, NOW).unwrap();
+    updater.refresh().unwrap();
+    assert!(updater.target("slot.img").unwrap().is_some());
+    assert_eq!(updater.top_level_target("slot.img").unwrap(), None);
+    let list = updater.top_level_target("list.chunks").unwrap().unwrap();
+    assert_eq!(list.length, b"the list".len() as u64);
+}
