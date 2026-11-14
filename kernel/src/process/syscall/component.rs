@@ -105,8 +105,9 @@ fn edit_call(
     // buffer that cannot be written must be found out first, or a retry would
     // make the same edit twice.
     writable(slot, reply, kabi::MAX_MESSAGE)?;
-    let cancel = || crate::process::killed(slot) || crate::process::interrupt_pending(slot);
-    let answer = crate::edit_session::call_for_app(&message, &cancel);
+    let cancel = || crate::process::killed(slot);
+    let stop = || crate::process::interrupt_pending(slot);
+    let answer = crate::edit_session::call_for_app(&message, &cancel, &stop);
     if crate::process::killed(slot) {
         return Err(Error::Dead);
     }

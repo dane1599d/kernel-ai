@@ -397,10 +397,14 @@ pub fn control(slot: usize, control_ptr: u64) -> Result<u64, Error> {
     if let Some(served) = ipc::serving_deadline(super::identity(slot).pid) {
         deadline = deadline.min(served.saturating_sub(syscall::NESTED_MARGIN_NS));
     }
-    let cancel = || super::killed(slot) || super::interrupt_pending(slot);
-    let reply = ipc::wait_bound(&name, deadline.min(now + syscall::MAX_BIND_WAIT_NS), cancel)
-        .and_then(|()| ipc::call_as(&name, &request, 0, deadline, cancel))
-        .map_err(|error| syscall::call_error(slot, error))?;
+    let cancel = || super::killed(slot);
+    // A Stop ends it only before the app takes it (`ipc::call_with_stop`).
+    let stop = || super::interrupt_pending(slot);
+    let reply = ipc::wait_bound(&name, deadline.min(now + syscall::MAX_BIND_WAIT_NS), || {
+        cancel() || stop()
+    })
+    .and_then(|()| ipc::call_as_stop(&name, &request, 0, deadline, cancel, stop))
+    .map_err(|error| syscall::call_error(slot, error))?;
     let len = reply
         .len()
         .min(usize::try_from(raw.reply_cap).unwrap_or(usize::MAX));

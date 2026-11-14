@@ -33,7 +33,6 @@ pub const SORT_CPU: NodeId = 7;
 pub const SORT_MEMORY: NodeId = 8;
 pub const SORT_NAME: NodeId = 9;
 pub const SORT_PID: NodeId = 10;
-pub const REFRESH: NodeId = 11;
 pub const TABLE: NodeId = 12;
 pub const MODEL: NodeId = 13;
 pub const HINT: NodeId = 16;
@@ -167,15 +166,6 @@ pub fn build(mon: &Monitor) -> Vec<Entry> {
         entry(SORT_NAME, BAR, Layout::FIT, sort_button(mon, Sort::Name)),
         entry(SORT_PID, BAR, Layout::FIT, sort_button(mon, Sort::Pid)),
         entry(
-            REFRESH,
-            BAR,
-            Layout::FIT,
-            Widget::Button {
-                text: String::from("Refresh"),
-                action: None,
-            },
-        ),
-        entry(
             TABLE,
             COLUMN,
             Layout::FILL,
@@ -214,9 +204,6 @@ pub fn on_ui(mon: &mut Monitor, e: &UiEvent) -> bool {
         UiEvent::Pressed(SORT_MEMORY) => mon.press_sort(Sort::Memory),
         UiEvent::Pressed(SORT_NAME) => mon.press_sort(Sort::Name),
         UiEvent::Pressed(SORT_PID) => mon.press_sort(Sort::Pid),
-        // The component reads a new sample after every event, so there is
-        // nothing for the model to do: the press only redraws.
-        UiEvent::Pressed(REFRESH) => {}
         UiEvent::Changed(TABLE, Value::Index(i)) => return mon.select_index(*i as usize),
         _ => return false,
     }

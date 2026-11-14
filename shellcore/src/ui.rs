@@ -101,6 +101,20 @@ pub fn app_name(app: &str) -> Result<&str, String> {
     }
 }
 
+/// The package an app's everyday name means, by `ui_open`'s `app` aliases
+/// ("file manager" is `files`), or `app` as it is.
+pub fn canonical(app: &str) -> &str {
+    let aliases = agentabi::UI_OPEN
+        .args
+        .iter()
+        .find(|arg| arg.name == "app")
+        .map_or(&[][..], |arg| arg.aliases);
+    aliases
+        .iter()
+        .find(|(written, _)| written.eq_ignore_ascii_case(app.trim()))
+        .map_or(app, |(_, means)| means)
+}
+
 /// The name the agent knows an app's window by: a `<pkg>-window` service is
 /// `<pkg>`'s window (`notes-window` is Notes'), so `ui_open("notes")`, the
 /// State line and a window's name all say `notes`.
@@ -202,6 +216,9 @@ impl Shell {
                     )));
                 }
                 Err(ActError::Unavailable(why)) => return Round::Failed(Reply::err(why)),
+                Err(ActError::Stopped) => {
+                    return Round::Failed(Reply::err(String::from("stopped")));
+                }
             };
         }
     }

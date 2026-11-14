@@ -12,6 +12,7 @@ pub(crate) mod https;
 mod kernel;
 mod modeldl;
 mod modelsuse;
+mod napbusy;
 mod netgrant;
 mod netrows;
 mod network;
@@ -44,6 +45,9 @@ pub struct TestCase {
     pub keys_on: &'static [&'static str],
     /// Texts that must all appear on the serial console for the case to pass.
     pub expect: &'static [&'static str],
+    /// Texts that fail the case wherever they appear, a program's lines
+    /// included: [`FORBID`] unless the case sets its own list.
+    pub forbid: &'static [&'static str],
     /// The case passes once every expected text is on the console, and QEMU is
     /// then stopped: a boot with no `test=` mode never reaches isa-debug-exit.
     pub stops: bool,
@@ -169,10 +173,23 @@ pub struct UpdateDisk {
     pub tampered: bool,
 }
 
+/// Lines no case expects, from the founder's second walkthrough: a package
+/// service that failed, a line the panel or an app terminal dropped, an answer
+/// lost on its way to an app, and the supervisor dying. A case that provokes
+/// one on purpose sets its own `forbid`.
+pub const FORBID: &[&str] = &[
+    "pkg: FAIL",
+    "cannot ask yet",
+    "dropped a result",
+    "did not reach the app",
+    "supervision: supervisor died",
+];
+
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
     TestCase {
         name,
         cmdline,
+        forbid: FORBID,
         keys: &[],
         keys_on: &[],
         expect: &[],
@@ -234,6 +251,7 @@ const LANES: &[&[TestCase]] = &[
     online::CASES,
     netgrant::CASES,
     appshow::CASES,
+    napbusy::CASES,
     modeldl::CASES,
     modelsuse::CASES,
 ];
@@ -279,6 +297,7 @@ mod tests {
             online::CASES,
             netgrant::CASES,
             appshow::CASES,
+            napbusy::CASES,
             modeldl::CASES,
             modelsuse::CASES,
         ];
@@ -287,6 +306,36 @@ mod tests {
             tables.iter().map(|lane| lane.len()).sum::<usize>()
         );
         assert!(tables.iter().all(|lane| !lane.is_empty()));
+    }
+
+    /// A case that expects a forbidden text could never pass: it sets its
+    /// own `forbid` instead.
+    /// Every case the tree boots: the lanes, the tour, the soak and the
+    /// release boot, and each second boot their `then` chains hold.
+    fn every_case() -> Vec<&'static TestCase> {
+        let mut todo: Vec<&'static TestCase> = test_cases();
+        todo.extend(named_only());
+        todo.extend(SOAK_CASES.iter());
+        todo.push(&release::RELEASE_BOOT);
+        let mut all = Vec::new();
+        while let Some(case) = todo.pop() {
+            todo.extend(case.then);
+            all.push(case);
+        }
+        all
+    }
+
+    #[test]
+    fn no_case_expects_a_text_it_forbids() {
+        for case in every_case() {
+            for text in case.expect {
+                assert!(
+                    !case.forbid.iter().any(|bad| text.contains(bad)),
+                    "{}: expects {text:?}, which it forbids",
+                    case.name
+                );
+            }
+        }
     }
 
     /// The kernel drops an `updated.<key>=` word whose key is not in its
