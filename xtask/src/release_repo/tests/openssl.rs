@@ -452,9 +452,10 @@ fn the_script_signs_only_a_rounds_own_files_as_xtask_writes_them() {
     }
 }
 
-/// RFC 8032 test 2 through the script, then a whole release in its two
-/// rounds: OpenSSL's raw signatures and `openssl pkey -pubout`'s keys are
-/// what `kaipkg::sign` makes, byte for byte.
+/// RFC 8032 test 2 through the script's own signing command (the script signs
+/// only a round's files), then a whole release in its two rounds through the
+/// script: OpenSSL's raw signatures and `openssl pkey -pubout`'s keys are what
+/// `kaipkg::sign` makes, byte for byte.
 #[test]
 fn the_script_signs_as_kaipkg_does() {
     if !openssl_3() {
@@ -462,21 +463,21 @@ fn the_script_signs_as_kaipkg_does() {
     }
     let paths = workspace("openssl");
     let stick = stick(&paths);
-    let vector = paths.work.with_file_name("vector");
-    fs::create_dir_all(&vector).unwrap();
-    fs::write(vector.join("targets.canon"), [0x72]).unwrap();
-    let out = sign_script(&stick, &vector, &format!("{RELEASE_PASS}\n"));
+    let message = paths.work.with_file_name("message");
+    fs::write(&message, [0x72]).unwrap();
+    let mut signing = Command::new(OPENSSL);
+    signing
+        .args(["pkeyutl", "-sign", "-rawin", "-passin", "stdin", "-inkey"])
+        .arg(stick.join("release.key"))
+        .arg("-in")
+        .arg(&message);
+    let raw = run(&mut signing, &format!("{RELEASE_PASS}\n"));
     assert!(
-        out.status.success(),
+        raw.status.success(),
         "{}",
-        String::from_utf8_lossy(&out.stderr)
+        String::from_utf8_lossy(&raw.stderr)
     );
-    assert_eq!(
-        fs::read_to_string(vector.join("targets.sig"))
-            .unwrap()
-            .trim(),
-        TEST_2_SIG
-    );
+    assert_eq!(sign::hex_bytes(&raw.stdout), TEST_2_SIG);
 
     let mut pubout = Command::new(OPENSSL);
     pubout
