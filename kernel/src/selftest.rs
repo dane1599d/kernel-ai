@@ -255,6 +255,10 @@ pub enum SelfTest {
     /// The same system with no memory left for an app: opening it says so
     /// (`desk-no-memory`).
     DeskNoMemory,
+    /// The same system while llm says it is not warm for `llm.cold_ms`: the
+    /// panel says "Kai is getting ready" until it is (`desk-warming`, founder
+    /// test 2).
+    DeskWarming,
     /// The Settings app on the desktop, its window kept from the agent (P4 task 7).
     AppSettings,
     /// `test=desk-tour`: screenshots of the desktop and its apps, not a gate.
@@ -490,6 +494,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-agent" => Some(SelfTest::DeskAgent),
             "test=desk-default" => Some(SelfTest::DeskDefault),
             "test=desk-no-memory" => Some(SelfTest::DeskNoMemory),
+            "test=desk-warming" => Some(SelfTest::DeskWarming),
             "test=app-settings" => Some(SelfTest::AppSettings),
             "test=desk-tour" => Some(SelfTest::DeskTour),
             "test=desk-takeover" => Some(SelfTest::DeskTakeover),
@@ -687,6 +692,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskAgent
             | SelfTest::DeskDefault
             | SelfTest::DeskNoMemory
+            | SelfTest::DeskWarming
             | SelfTest::AppSettings
             | SelfTest::NetGrant
             | SelfTest::DeskTour
@@ -709,7 +715,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
     // screenshot tour boots it too, so its pictures are the real boot's.
     if matches!(
         test,
-        SelfTest::None | SelfTest::DeskDefault | SelfTest::DeskNoMemory | SelfTest::DeskTour
+        SelfTest::None
+            | SelfTest::DeskDefault
+            | SelfTest::DeskNoMemory
+            | SelfTest::DeskWarming
+            | SelfTest::DeskTour
     ) {
         let files = crate::block::has_partition(diskmap::KAI_DATA_TYPE);
         let mut plan = kabi::plan::system::plan(&crate::llm::plan_line(), files);

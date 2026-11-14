@@ -693,7 +693,8 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     }
     if let Some(ready) = panel_wire::parse_ready(text) {
         if state.panel.set_ready(ready) {
-            let now = if ready { "warm" } else { "warming up" };
+            // Neither line holds the other, so a case can tell them apart.
+            let now = if ready { "ready" } else { "getting ready" };
             println!("desktop: the model is {now}");
             state.extra.push(state.desk.panel());
             state.extra.push(paint::stats_area(state.width));

@@ -16,6 +16,11 @@
 //! does; the supervisor answers at once that there is no memory to start it,
 //! and the shell's answer, the text the panel shows, is "Not enough memory to
 //! open Notes" instead of a silent failure.
+//!
+//! `test=desk-warming` (founder test 2): the same system, with llm saying it is
+//! not warm for the case's `llm.cold_ms`. The host checks that `desktop` says
+//! the model is getting ready and then ready, and stops QEMU once it has; the
+//! kernel only keeps the boot up long enough.
 
 use crate::display::claim;
 use crate::process::SpawnRequest;
@@ -200,5 +205,20 @@ pub fn no_memory_check() -> Result<(), &'static str> {
         return Err("desk-no-memory: notes-window opened by itself once memory freed");
     }
     log!("desk-no-memory: with no memory left, opening Notes said so plainly: {NOT_ENOUGH}");
+    Ok(())
+}
+
+/// How long `desk-warming` keeps the desk up once the shell is: twice the
+/// case's `llm.cold_ms=20000`, room for the shell's asks, every 3 s while llm
+/// says no (`deskcore::warmth::COLD_ASK_NS`).
+const WARMING_MS: u64 = 40_000;
+
+pub fn warming_check() -> Result<(), &'static str> {
+    desk_tests::wait("desktop to draw", || {
+        desk_tests::desktop_shows() && claim::flushes() > 0
+    })?;
+    desk_tests::wait("the shell", || ipc::server_of("shell").is_some())?;
+    threads::sleep_ms(WARMING_MS);
+    log!("desk-warming: the desk stayed up past llm's warm-up");
     Ok(())
 }
