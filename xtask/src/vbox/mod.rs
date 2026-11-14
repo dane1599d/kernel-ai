@@ -26,7 +26,7 @@ pub mod manage;
 mod powercut;
 mod vmdk;
 
-use crate::{components, disk, esp, floatguard, image, models, options, userbuild};
+use crate::{components, disk, esp, floatguard, image, models, options, pkgrepo, userbuild};
 use manage::{CONTROLLER, step, vm};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -213,7 +213,13 @@ fn build_esp(cmdline: &str) -> Result<PathBuf, String> {
     let programs = userbuild::build_user(&root, &options)?;
     let target_dir = root.join("target");
     let mut modules = esp::boot_modules(&kernel, &programs, &root)?;
-    modules.extend(components::build(&root)?);
+    let versions = components::build(&root)?;
+    // The built-in apps as the image's signed repository (ADR 0011 §8), as
+    // `run` gives QEMU: without it `pkg` refuses the image and Models has no
+    // signed catalog.
+    let repository = pkgrepo::image(&root, &versions)?;
+    modules.extend(versions);
+    modules.extend(repository.modules);
     components::check_no_test_only(&modules)?;
     let efi = crate::ensure_limine(&target_dir)?;
     let esp = target_dir.join("vbox-esp");
