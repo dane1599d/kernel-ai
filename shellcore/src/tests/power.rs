@@ -110,8 +110,12 @@ fn a_restart_from_the_panel_or_the_terminal_window_asks_on_the_card() {
     shell.eval_console(&format!("answer {} deny once={once}", menu.id));
     assert!(host.reboots.borrow().is_empty());
     // From the Terminal window: Allow, on the card, restarts.
+    // The window is told the card's menu, to show as its question (#922).
     let said = typed_in_terminal_app(&mut shell, "reboot").unwrap();
-    assert!(said.contains("on the card"), "{said}");
+    assert!(
+        said.starts_with("menu ") && said.contains("power_reboot()"),
+        "{said}"
+    );
     assert!(host.reboots.borrow().is_empty());
     let card = shell.eval_console(termcore::menu::TAKE_CARD);
     assert!(card.to_wire().contains(" added\n"), "{card:?}");

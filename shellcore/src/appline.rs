@@ -8,11 +8,14 @@
 //!   here neither answers nor continues the console's.
 //! - **It does not answer.** A call the model proposed waits for the
 //!   desktop's trusted card, as the panel's does (`deskask`): the person
-//!   answers Run or Don't there, never in the window. What the card cannot
-//!   show (a Rhai script, an `undo` that needs confirming) is refused with a
-//!   reason and dropped: an app cannot ask on its own behalf, and only the
-//!   console and the desktop's card answer (ADR 0005 section 7). What runs at
-//!   once, local and undoable, is logged and undone like any line.
+//!   answers Run or Don't there, never in the window. The line's answer is
+//!   the card's menu, which the Terminal shows as its question; it then asks
+//!   what came of it with `shell_card`, whose result is the card's answer.
+//!   The window may only decline its question while it waits. What the card
+//!   cannot show (a Rhai script, an `undo` that needs confirming) is refused
+//!   with a reason and dropped: an app cannot ask on its own behalf, and only
+//!   the console and the desktop's card answer (ADR 0005 section 7). What
+//!   runs at once, local and undoable, is logged and undone like any line.
 //! - **Only the Terminal may send one**, and only for a person's key or click.
 //!   `shell_line` is not a registry row, so no tier decides it, and no package
 //!   may declare it: the grant is the process the image's plan line names
@@ -64,7 +67,7 @@ fn line_of(args: &str) -> Result<String, String> {
 
 /// `wire` as one line: `\` and newlines escaped, cut to [`MAX_ANSWER`] bytes at
 /// a character (and never inside an escape) with a `…`.
-fn one_line(wire: &str) -> String {
+pub(crate) fn one_line(wire: &str) -> String {
     let mut out = String::new();
     let mut cut = false;
     for ch in wire.chars() {
@@ -105,6 +108,11 @@ impl Shell {
     /// Runs `line` in `app`'s terminal state, the console's set aside.
     fn eval_app(&mut self, app: &str, line: &str) -> Reply {
         let line = line.trim();
+        // The one answer a window may give: Don't, to its own question that
+        // still waits for the card.
+        if let Some(reply) = self.declined_in_window(app, line) {
+            return reply;
+        }
         if line.starts_with("answer ") {
             return Reply::err("answers go on the question's own prompt");
         }
@@ -137,14 +145,21 @@ impl Shell {
         self.worded = false;
         self.done_line = None;
         let mut reply = self.eval(line);
-        // A question the trusted card can show waits for it (`deskask`).
+        // A question the trusted card can show waits for it (`deskask`): the
+        // window is told the card's menu, to show while it waits.
+        let mut on_card = false;
         if reply.confirm.is_some() && self.pending.is_some() {
-            reply = match self.wait_for_card(&reply) {
-                Ok(waits) => Reply::ok(waits),
+            let asker = crate::deskask::Asker::App(String::from(app));
+            reply = match self.wait_for_card(&reply, asker) {
+                Ok(menu) => {
+                    on_card = true;
+                    menu
+                }
                 Err(why) => Reply::err(why),
             };
         }
-        if reply.confirm.is_some() || self.pending.is_some() || self.undo_asking.is_some() {
+        let asks = reply.confirm.is_some() && !on_card;
+        if asks || self.pending.is_some() || self.undo_asking.is_some() {
             if let Some(left) = self.pending.take() {
                 let outcome = "discarded: the terminal app cannot ask yet";
                 self.record(left.id, &left.request, &left.checked.script, outcome);

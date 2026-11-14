@@ -1,5 +1,6 @@
 //! `shell_line` (P4 task 4): the Terminal's lines run in a terminal of the app's
-//! own, cannot ask, and come back as one escaped line.
+//! own, cannot ask, and come back as one escaped line. A question goes on the
+//! desktop's card (`deskcard`).
 
 use super::act::with_calls;
 use super::*;
@@ -7,9 +8,8 @@ use crate::appline::TERMINAL_APP;
 use alloc::vec;
 
 const RR: &str = r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#;
-const STOP: &str = r#"{"name":"process_stop","arguments":{"name":"notes"}}"#;
 
-fn quote(text: &str) -> String {
+pub(super) fn quote(text: &str) -> String {
     format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
@@ -23,10 +23,30 @@ fn effect(ticket: u32, text: &str) -> String {
 }
 
 /// What the terminal app gets for `text` typed by a person.
-fn typed(shell: &mut Shell, text: &str) -> Result<String, String> {
+pub(super) fn typed(shell: &mut Shell, text: &str) -> Result<String, String> {
     let done = shell.run_effects_from(TERMINAL_APP, &effect(1, text), true);
     assert_eq!(done.len(), 1);
     done[0].outcome.clone()
+}
+
+/// A one-line answer read back as the wire reply it was (the Terminal's
+/// `unescape`).
+pub(super) fn unescaped(line: &str) -> String {
+    let mut out = String::new();
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 #[test]
@@ -53,30 +73,6 @@ fn the_apps_open_entry_is_its_own_and_the_consoles_is_untouched() {
     assert_eq!(typed(&mut shell, "7 }"), Ok(String::from("ok ")));
     assert_eq!(typed(&mut shell, "f()"), Ok(String::from("ok 7")));
     assert!(shell.eval("f()").ok);
-}
-
-#[test]
-fn a_line_that_asks_waits_for_the_card_and_only_its_allow_runs_it() {
-    let (host, mut shell) = with_calls(vec![Ok(llmproto::act::parse(STOP).unwrap())]);
-    *host.procs.borrow_mut() = vec![String::from("notes")];
-    let said = typed(&mut shell, "stop notes").unwrap();
-    assert_eq!(said, "ok it asks first: answer Run or Don't on the card");
-    assert_eq!(*host.procs.borrow(), vec![String::from("notes")]);
-    // The console's own line answers nothing.
-    let later = shell.eval("y");
-    assert!(!later.text.contains("script"), "{later:?}");
-    assert_eq!(*host.procs.borrow(), vec![String::from("notes")]);
-    // The card: code's call, its highlight on Deny, and its Allow's ONCE.
-    assert!(shell.card_waiting());
-    let card = shell.eval_console(termcore::menu::TAKE_CARD);
-    assert!(card.to_wire().contains(" added\n"), "{card:?}");
-    let menu = termcore::menu::Menu::decode(&card.to_wire()).unwrap();
-    assert_eq!(menu.call(), "process_stop(\"notes\")");
-    let once = host.mint(menu.id, menu.call());
-    let allowed = shell.eval_console(&format!("answer {} allow once={once}", menu.id));
-    assert!(allowed.ok, "{allowed:?}");
-    assert!(host.procs.borrow().is_empty());
-    assert!(matches!(shell.take_card_result(), Some((true, _))));
 }
 
 #[test]
@@ -280,9 +276,11 @@ fn the_consoles_answer_finishes_a_c_entry_after_an_app_line() {
 fn a_typed_models_import_is_refused_here_and_a_switch_runs_logged() {
     let host = FakeHost::new();
     let mut shell = shell(&host);
-    // It has no undo, so it asks: on the card, never in the window.
+    // It has no undo, so it asks: on the card, never in the window, which is
+    // told the card's menu.
     let said = typed(&mut shell, "models import").unwrap();
-    assert!(said.starts_with("ok it asks first"), "{said}");
+    let menu = termcore::menu::Menu::decode(&unescaped(&said)).unwrap();
+    assert_eq!(menu.call(), "model_fetch(\"disk\")", "{said}");
     assert!(
         !host
             .model_requests

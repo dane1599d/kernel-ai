@@ -15,13 +15,24 @@
 //! Only a proposal shown as an Allow / Deny menu goes this way: one call, the
 //! act model's rows. A Rhai script the model wrote asks a y/n question, which
 //! only the console shows (the card shows one call, never a script), so such
-//! a line is still refused with that reason. What came of a card's answer is
-//! given to the panel, so the desktop shows it (`take_card_result`).
+//! a line is still refused with that reason.
+//!
+//! What came of a card's answer goes back where its line was typed
+//! ([`Asker`]): the panel's to its bar (`take_card_result`), the Terminal's to
+//! the Terminal (#922). The Terminal is told the card's menu, shows it and
+//! waits, and asks with one more effect, [`SHELL_CARD`], which the shell holds
+//! and answers in code's words ([`Shell::take_card_answers`]): one result per
+//! effect. An answer is kept for one more ask, for a Terminal that napped or
+//! reloaded while it waited. The window may decline its question while it
+//! waits (ADR 0005 section 7); once on the card, the card answers it.
 
-use crate::actions::Pending;
+use crate::actions::{CONFIRM_EXPIRY_NS, Pending};
+use crate::effects::EffectDone;
 use crate::{Reply, Shell};
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
+use appabi::{Ty, Val, wave};
 
 /// Proposals waiting for the card, every desktop line together.
 pub(crate) const MAX_WAITING: usize = 4;
@@ -36,14 +47,55 @@ const FULL: &str = "it asks first, and other questions wait: answer those first"
 /// the card's menu, which then asks a y/n question only the console shows.
 pub(crate) const TOO_LONG: &str =
     "it asks first, and its call is too long or not plain text for the card: ask in the console";
-/// The panel's line for a card answered Don't.
+/// The line for a card answered Don't, or declined in its window.
 const DECLINED: &str = "Not run: you said Don't.";
+/// The line for a question that lapsed before the card answered it.
+const LAPSED: &str = "Not run: it waited more than two minutes for the card.";
+/// The line for a card whose countdown said Deny for no one.
+const TIMED_OUT: &str = "Not run: the card timed out.";
+/// The line for a question on the card that the console's own line let go.
+const DROPPED: &str = "Not run: a line typed in the console let the question go.";
+/// What a window's decline is told once its question is on the card.
+const ON_THE_CARD: &str = "it is on the card now: answer Run or Don't there";
+/// What a window is told when nothing waits as its question: most likely the
+/// shell restarted since it asked.
+const NOTHING_WAITS: &str =
+    "nothing waits for the card under that question: if the shell restarted, ask again";
+/// The effect a window queues once its line's question waits for the card:
+/// its result is what the card came to. Like `shell_line`, it is no registry
+/// row, and only the Terminal may send it.
+pub(crate) const SHELL_CARD: &str = "shell_card";
+/// The window's answers kept, its asks held, and its results not yet given,
+/// at most each: past it the oldest go.
+pub(crate) const MAX_KEPT: usize = 8;
+
+/// Where a desktop line was typed: where what its card came to goes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Asker {
+    /// The AI panel: its bar shows it (`take_card_result`).
+    Panel,
+    /// An app's window, the Terminal's: its [`SHELL_CARD`] effect's result.
+    App(String),
+}
 
 /// A proposal from a desktop line, waiting for the card.
 pub(crate) struct Waiting {
     pub pending: Pending,
     /// The menu, its origin `added`: the card's text.
     pub menu: String,
+    pub asker: Asker,
+}
+
+/// What came of windows' questions, matched to their [`SHELL_CARD`] effects
+/// in whichever order the two come.
+#[derive(Default)]
+pub(crate) struct Answers {
+    /// (app, question, ticket): an effect that waits for the card's answer.
+    held: Vec<(String, u64, u32)>,
+    /// (app, question, wire reply): an answer kept for the window's next ask.
+    came: Vec<(String, u64, String)>,
+    /// (app, result): results for held effects, for the host to give back.
+    given: Vec<(String, EffectDone)>,
 }
 
 /// `text`, a menu reply's text, with its origin `added`: no typed line at the
@@ -68,11 +120,44 @@ fn not_on_card(text: &str) -> (&'static str, &'static str) {
     }
 }
 
+/// The question of `shell_card({id: ...})`.
+fn id_of(args: &str) -> Result<u64, String> {
+    let ty = Ty::Record(alloc::vec![(String::from("id"), Ty::U64)]);
+    match wave::parse(args, &ty) {
+        Ok(Val::Record(fields)) => match fields.as_slice() {
+            [Val::U64(id)] => Ok(*id),
+            _ => Err(format!("{SHELL_CARD} takes {{id}}")),
+        },
+        Ok(_) => Err(format!("{SHELL_CARD} takes {{id}}")),
+        Err(why) => Err(format!("{SHELL_CARD}'s arguments: {why}")),
+    }
+}
+
+/// The question a window's line declines: exactly the decline it sends
+/// (`termcore::menu::answer_line` with `Deny`).
+fn declined(line: &str) -> Option<u64> {
+    let id = line.strip_prefix("answer ")?.split_once(' ')?;
+    let deny = termcore::menu::Answer::Deny.word();
+    (id.1 == deny).then(|| id.0.parse().ok()).flatten()
+}
+
+/// Pushes `item` on `list`, the oldest going past [`MAX_KEPT`]: what went.
+fn kept<T>(list: &mut Vec<T>, item: T) -> Option<T> {
+    let gone = (list.len() == MAX_KEPT).then(|| list.remove(0));
+    list.push(item);
+    gone
+}
+
 impl Shell {
     /// Puts the proposal the last line left in [`Shell::pending`] in line for
-    /// the card, if it is one the card can show; why not, otherwise. The
-    /// pending proposal is taken either way.
-    pub(crate) fn wait_for_card(&mut self, reply: &Reply) -> Result<&'static str, &'static str> {
+    /// the card, if it is one the card can show: the card's menu, for a
+    /// window to show; why not, otherwise. The pending proposal is taken
+    /// either way. `asker` is where what the card comes to goes.
+    pub(crate) fn wait_for_card(
+        &mut self,
+        reply: &Reply,
+        asker: Asker,
+    ) -> Result<Reply, &'static str> {
         let Some(pending) = self.pending.take() else {
             return Err(SCRIPT);
         };
@@ -87,10 +172,16 @@ impl Shell {
                 (FULL, "discarded: other questions wait")
             }
             Some(menu) => {
+                let id = pending.id;
                 self.host
-                    .audit(&format!("request {}: waits for the card", pending.id));
-                self.desk_asks.push(Waiting { pending, menu });
-                return Ok(ON_CARD);
+                    .audit(&format!("request {id}: waits for the card"));
+                let shown = Reply::menu(id, menu.clone());
+                self.desk_asks.push(Waiting {
+                    pending,
+                    menu,
+                    asker,
+                });
+                return Ok(shown);
             }
         };
         self.record(
@@ -108,6 +199,23 @@ impl Shell {
         !self.desk_asks.is_empty()
     }
 
+    /// Whether question `id` is the one on the card.
+    pub(crate) fn on_card_for_desk(&self, id: u64) -> bool {
+        self.card_for_desk.as_ref().is_some_and(|(on, _)| *on == id)
+    }
+
+    /// Whether the card's question `id` is past a question's two minutes, so
+    /// a Deny for it is the card's countdown, not a person (the kernel's card
+    /// waits as long, counted from after the question was taken).
+    pub(crate) fn card_lapsed(&self, id: u64) -> bool {
+        let now = self.host.now_ns();
+        self.on_card_for_desk(id)
+            && self
+                .pending
+                .as_ref()
+                .is_some_and(|p| p.id == id && now.saturating_sub(p.created_ns) > CONFIRM_EXPIRY_NS)
+    }
+
     /// The oldest desktop line's proposal, as the card's menu: it becomes the
     /// question the answer goes to, its two minutes counted from now.
     pub(crate) fn take_desk_ask(&mut self) -> Option<Reply> {
@@ -115,64 +223,241 @@ impl Shell {
         if self.desk_asks.is_empty() {
             return None;
         }
-        let Waiting { mut pending, menu } = self.desk_asks.remove(0);
+        let Waiting {
+            mut pending,
+            menu,
+            asker,
+        } = self.desk_asks.remove(0);
         pending.created_ns = self.host.now_ns();
         let id = pending.id;
         self.host.audit(&format!("request {id}: on the card"));
-        self.card_for_desk = Some(id);
+        self.card_for_desk = Some((id, asker));
         self.pending = Some(pending);
         Some(Reply::menu(id, menu))
     }
 
     /// Lets go of waiting questions older than a question's two minutes, as
-    /// the console's lapse: what they would do may no longer be meant.
+    /// the console's lapse: what they would do may no longer be meant. A
+    /// window's line is told.
     fn lapse_desk_asks(&mut self) {
         let now = self.host.now_ns();
-        while self.desk_asks.first().is_some_and(|w| {
-            now.saturating_sub(w.pending.created_ns) > crate::actions::CONFIRM_EXPIRY_NS
-        }) {
-            let old = self.desk_asks.remove(0).pending;
-            self.record(old.id, &old.request, &old.checked.script, "expired");
+        while self
+            .desk_asks
+            .first()
+            .is_some_and(|w| now.saturating_sub(w.pending.created_ns) > CONFIRM_EXPIRY_NS)
+        {
+            let Waiting { pending, asker, .. } = self.desk_asks.remove(0);
+            self.record(
+                pending.id,
+                &pending.request,
+                &pending.checked.script,
+                "expired",
+            );
+            if let Asker::App(app) = asker {
+                self.card_came_to(&app, pending.id, &Reply::ok(LAPSED));
+            }
         }
     }
 
-    /// Notes what the answer to a desktop line's card came to, for the
-    /// panel: `answering` is the question answered and the answer's word.
-    /// Code's words only, as the panel's own results are: the run's result
-    /// line or "Done.", a fixed line for Don't, a fixed reason for a failure.
-    /// Never the reply's text, which can be an app's.
-    pub(crate) fn desk_answered(&mut self, answering: Option<(u64, &str)>, reply: &Reply) {
+    /// Notes what the answer to a desktop line's card came to, for where the
+    /// line was typed: `answering` is the question answered and the answer's
+    /// word, `lapsed` whether the card's countdown gave it. Code's words only,
+    /// as the panel's own results are: the run's result line or "Done.", a
+    /// fixed line for Don't or a lapse, a fixed reason for a failure. Never
+    /// the reply's text, which can be an app's.
+    pub(crate) fn desk_answered(
+        &mut self,
+        answering: Option<(u64, &str)>,
+        reply: &Reply,
+        lapsed: bool,
+    ) {
         let Some((id, word)) = answering else {
             return;
         };
-        if Some(id) != self.card_for_desk || self.pending.is_some() {
+        if !self.on_card_for_desk(id) || self.pending.is_some() {
             return;
         }
-        self.card_for_desk = None;
+        let Some((_, asker)) = self.card_for_desk.take() else {
+            return;
+        };
         let declined = word == termcore::menu::Answer::Deny.word();
-        self.card_result = Some(match (declined, reply.ok) {
-            (true, _) => (false, String::from(DECLINED)),
-            (false, true) => (
-                true,
-                self.done_line
-                    .take()
-                    .map(|line| crate::panel::without_undo(&line))
-                    .unwrap_or_else(|| String::from("Done.")),
-            ),
-            (false, false) => (false, String::from(crate::panel::FAILED)),
-        });
+        let (ran, line) = match (lapsed, declined, reply.ok) {
+            (true, _, _) => (false, TIMED_OUT),
+            (false, true, _) => (false, DECLINED),
+            (false, false, true) => (true, ""),
+            (false, false, false) => (false, crate::panel::FAILED),
+        };
+        let line = match ran {
+            true => self
+                .done_line
+                .take()
+                .map(|line| crate::panel::without_undo(&line))
+                .unwrap_or_else(|| String::from("Done.")),
+            false => String::from(line),
+        };
+        // Don't and a lapse are no failure: only a run that failed is an
+        // error row.
+        let failed = !ran && !declined && !lapsed;
+        self.desk_told(id, asker, ran, failed, line);
     }
 
-    /// What the last answered desktop card came to, once: whether it ran,
-    /// and its first line, for the panel to show.
+    /// Question `id`, on the card, is gone without an answer: a line typed in
+    /// the console let its proposal go. Where it was typed is told.
+    pub(crate) fn desk_question_dropped(&mut self, id: u64) {
+        if !self.on_card_for_desk(id) {
+            return;
+        }
+        if let Some((_, asker)) = self.card_for_desk.take() {
+            self.desk_told(id, asker, false, false, String::from(DROPPED));
+        }
+    }
+
+    /// Tells `asker` what question `id` came to: the panel through
+    /// `card_result`, a window as its `shell_card`'s result.
+    fn desk_told(&mut self, id: u64, asker: Asker, ran: bool, failed: bool, line: String) {
+        match asker {
+            Asker::Panel => self.card_result = Some((ran, line)),
+            Asker::App(app) => {
+                let told = match failed {
+                    true => Reply::err(line),
+                    false => Reply::ok(line),
+                };
+                self.card_came_to(&app, id, &told);
+            }
+        }
+    }
+
+    /// What the last answered panel line's card came to, once: whether it
+    /// ran, and its first line, for the panel to show.
     pub fn take_card_result(&mut self) -> Option<(bool, String)> {
         self.card_result.take()
+    }
+
+    /// The results of windows' held [`SHELL_CARD`] effects, as (app, results),
+    /// taken once, for the host to give back as a person's results are: a
+    /// Terminal line's answer, cut as `shell_line`'s answer is.
+    pub fn take_card_answers(&mut self) -> Vec<(String, Vec<EffectDone>)> {
+        let mut out: Vec<(String, Vec<EffectDone>)> = Vec::new();
+        for (app, done) in core::mem::take(&mut self.card_answers.given) {
+            match out.iter_mut().find(|(a, _)| *a == app) {
+                Some((_, batch)) => batch.push(done),
+                None => out.push((app, alloc::vec![done])),
+            }
+        }
+        out
+    }
+
+    /// `app`'s question `id` came to `told`: the result of each held
+    /// [`SHELL_CARD`] effect for it, and kept for the window's next ask.
+    fn card_came_to(&mut self, app: &str, id: u64, told: &Reply) {
+        let wire = crate::appline::one_line(&told.to_wire());
+        let mut tickets = Vec::new();
+        self.card_answers.held.retain(|(a, q, ticket)| {
+            let mine = a == app && *q == id;
+            if mine {
+                tickets.push(*ticket);
+            }
+            !mine
+        });
+        for ticket in tickets {
+            self.give_back(app, ticket, Ok(wire.clone()));
+        }
+        kept(&mut self.card_answers.came, (String::from(app), id, wire));
+    }
+
+    /// Queues `outcome` as the result of `app`'s effect `ticket`.
+    fn give_back(&mut self, app: &str, ticket: u32, outcome: Result<String, String>) {
+        let done = EffectDone { ticket, outcome };
+        if let Some((app, gone)) = kept(&mut self.card_answers.given, (String::from(app), done)) {
+            self.host.audit(&format!(
+                "{app}'s result for effect {} was dropped: too many wait",
+                gone.ticket
+            ));
+        }
+    }
+
+    /// `shell_card` for `app` with `ticket`: what came of its line's question
+    /// on the card, if the card answered it; `None` while it waits, the
+    /// effect held until it is answered.
+    pub(crate) fn shell_card(
+        &mut self,
+        app: &str,
+        ticket: u32,
+        args: &str,
+    ) -> Option<Result<String, String>> {
+        if app != crate::appline::TERMINAL_APP {
+            return Some(Err(format!("{app} may not ask what came of a card")));
+        }
+        let id = match id_of(args) {
+            Ok(id) => id,
+            Err(why) => return Some(Err(why)),
+        };
+        let came = self
+            .card_answers
+            .came
+            .iter()
+            .position(|(a, q, _)| a == app && *q == id);
+        if let Some(at) = came {
+            return Some(Ok(self.card_answers.came.remove(at).2));
+        }
+        let mine = Asker::App(String::from(app));
+        let waits = self
+            .desk_asks
+            .iter()
+            .any(|w| w.pending.id == id && w.asker == mine)
+            || self.card_for_desk == Some((id, mine));
+        if !waits {
+            return Some(Err(String::from(NOTHING_WAITS)));
+        }
+        let held = (String::from(app), id, ticket);
+        if let Some((app, _, ticket)) = kept(&mut self.card_answers.held, held) {
+            let why = String::from("too many questions wait for the card");
+            self.give_back(&app, ticket, Err(why));
+        }
+        None
+    }
+
+    /// `app`'s line `line` declining its own question, which only waits for
+    /// the card: let go of, and the window told "Not run" as its result.
+    /// Once on the card, the card answers it. `None` for any other line.
+    pub(crate) fn declined_in_window(&mut self, app: &str, line: &str) -> Option<Reply> {
+        let id = declined(line)?;
+        let mine = Asker::App(String::from(app));
+        if self.card_for_desk == Some((id, mine.clone())) {
+            // The console's own line since let its proposal go: the card
+            // answers nothing now, so the window's wait ends here.
+            if self.pending.as_ref().is_some_and(|p| p.id == id) {
+                return Some(Reply::err(ON_THE_CARD));
+            }
+            self.card_for_desk = None;
+            self.card_came_to(app, id, &Reply::ok(DECLINED));
+            return Some(Reply::ok(""));
+        }
+        let Some(at) = self
+            .desk_asks
+            .iter()
+            .position(|w| w.pending.id == id && w.asker == mine)
+        else {
+            return Some(Reply::err(NOTHING_WAITS));
+        };
+        let Waiting { pending, .. } = self.desk_asks.remove(at);
+        let outcome = "declined in the window";
+        self.record(
+            pending.id,
+            &pending.request,
+            &pending.checked.script,
+            outcome,
+        );
+        self.save_log();
+        self.card_came_to(app, id, &Reply::ok(DECLINED));
+        // The answer is the question's result: the decline itself says nothing.
+        Some(Reply::ok(""))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SCRIPT, TOO_LONG, as_added, not_on_card};
+    use super::{SCRIPT, TOO_LONG, as_added, declined, id_of, not_on_card};
 
     #[test]
     fn a_call_too_long_for_the_menu_is_told_so_and_a_script_is_not() {
@@ -194,5 +479,22 @@ mod tests {
         assert_eq!(as_added(8, "menu 7 asked\nq"), None);
         assert_eq!(as_added(7, "Run x()? y/n, or show"), None);
         assert_eq!(as_added(7, "menu 7 asked"), None);
+    }
+
+    #[test]
+    fn only_the_decline_a_window_sends_reads_as_one() {
+        let deny = termcore::menu::answer_line(9, termcore::menu::Answer::Deny);
+        assert_eq!(declined(&deny), Some(9));
+        assert_eq!(declined("answer 9 allow"), None);
+        assert_eq!(declined("answer 9 deny once=3"), None);
+        assert_eq!(declined("answer x deny"), None);
+        assert_eq!(declined("answer 9"), None);
+    }
+
+    #[test]
+    fn a_card_effect_names_one_question() {
+        assert_eq!(id_of("{id: 12}"), Ok(12));
+        assert!(id_of("{id: \"12\"}").is_err());
+        assert!(id_of("{line: \"x\"}").is_err());
     }
 }

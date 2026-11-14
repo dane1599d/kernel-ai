@@ -28,6 +28,7 @@ mod ccbuild;
 mod centry;
 mod cmode;
 mod cprogram;
+mod deskcard;
 mod door;
 mod door_build;
 mod effects;
