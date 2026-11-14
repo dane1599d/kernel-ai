@@ -667,6 +667,7 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     if text == panel_wire::TAKE {
         let request = state.panel.take();
         if let Some(taken) = &request {
+            finish_stale(state);
             let line = matches!(taken, deskcore::panel::Request::Line(_));
             state.running.took_panel(line);
         }
@@ -768,6 +769,29 @@ fn interrupt_shell(
 /// take` and `effects done` (P4, `deskcore::effects`): its answer, or `None`
 /// for a window client's message. The app is the kernel's name for the
 /// caller, never anything it sent.
+/// Before the shell takes new work: a Terminal line whose result never came is
+/// finished, so the Terminal does not wait for ever and a later Stop is not
+/// taken for it.
+fn finish_stale(state: &mut State) {
+    let stale = state.running.take_stale();
+    if stale.is_empty() {
+        return;
+    }
+    println!(
+        "desktop: the Terminal's line had no result from the shell; {} finished",
+        stale.len()
+    );
+    for ticket in stale {
+        state.effects.finish(
+            effects::STOPS_FROM,
+            effects::Done {
+                ticket,
+                outcome: Err(String::from("its answer was lost; `show` says what ran")),
+            },
+        );
+    }
+}
+
 fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     let text = core::str::from_utf8(bytes).ok()?;
     if !text.starts_with("effects ") {
@@ -840,7 +864,11 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
         let taken = state.effects.take(kabi::MAX_MESSAGE - 64);
         if let Some(taken) = &taken {
             println!("desktop: the shell took {}'s effects", taken.app);
-            state.running.took_effects(&taken.app, taken.user);
+            finish_stale(state);
+            let tickets = taken.lines.iter().filter_map(|l| effects::ticket_of(l));
+            state
+                .running
+                .took_effects(&taken.app, taken.user, tickets.collect());
         }
         return Some(effects::encode_take(taken.as_ref()));
     }

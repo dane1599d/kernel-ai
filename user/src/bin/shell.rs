@@ -202,10 +202,19 @@ fn start_of_unit() {
     }
 }
 
-/// The end of a panel or Terminal line, before its result goes to `desktop`:
-/// a Stop that ended it must not refuse that call.
-fn end_of_unit() {
+/// A line's result to `desktop`, which a Stop must never hide: the work ran.
+/// The flag is cleared first; a Stop pressed during the call itself ends it
+/// Interrupted, and then it is cleared and sent once more.
+fn report_to_desktop(route: kabi::handle::Handle, request: &str) -> Result<String, String> {
     let _ = sys::interrupt_clear();
+    let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+    let mut sent = sys::call_route(route, request.as_bytes(), &mut reply, DESKTOP_CALL_MS);
+    if sent == Err(kabi::Error::Interrupted) {
+        let _ = sys::interrupt_clear();
+        sent = sys::call_route(route, request.as_bytes(), &mut reply, DESKTOP_CALL_MS);
+    }
+    let len = sent.map_err(|error| format!("desktop did not answer ({error:?})"))?;
+    Ok(String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned())
 }
 
 /// Takes the panel's oldest request, runs a line apart from the terminal's
@@ -242,13 +251,11 @@ fn take_panel(shell: &mut Shell) {
         // line never came here.
         _ => return,
     };
-    // The line ended: a Stop pressed as it did must not refuse the result's
-    // own call to `desktop`.
-    end_of_unit();
     let Some(request) = panel_wire::encode_state(&shown) else {
         return;
     };
-    match ask_desktop(route, &request) {
+    // The line ended: a Stop pressed as it did must not hide its result.
+    match report_to_desktop(route, &request) {
         Ok(answer) if answer == "ok" => {}
         Ok(answer) => println!("the panel's state was not set: {answer}"),
         Err(why) => println!("the panel's state was not set: {why}"),
@@ -305,10 +312,9 @@ fn take_effects(shell: &mut Shell) {
             outcome: done.outcome,
         })
         .collect();
-    // The line ended: a Stop pressed as it did must not refuse the result's
-    // own call to `desktop`.
-    end_of_unit();
-    if let Err(why) = ask_desktop(route, &effects::encode_done_as(app, user, &results)) {
+    // The line ended: a Stop pressed as it did must not hide what ran.
+    let done = effects::encode_done_as(app, user, &results);
+    if let Err(why) = report_to_desktop(route, &done) {
         println!("{app}'s effect results were not sent: {why}");
     }
 }
