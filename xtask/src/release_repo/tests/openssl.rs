@@ -92,7 +92,16 @@ fn stick(paths: &Paths) -> PathBuf {
     // The public halves, as setup step 6 leaves them beside the keys.
     fs::write(stick.join("root.pub"), pem(&key(ROOT_SEED))).unwrap();
     fs::write(stick.join("release.pub"), pem(&key(RELEASE_SEED))).unwrap();
+    // The ledger, empty, as setup makes it.
+    fs::write(stick.join("signed.log"), "").unwrap();
     stick
+}
+
+/// A round 1 line of the ledger, as the script writes it, for release `n` and
+/// a `snapshot.canon` of SHA-256 `snapshot`, the other files' hashes zeros.
+fn round_one(n: u64, snapshot: &str) -> String {
+    let zeros = "0".repeat(64);
+    format!("1 {n} models={zeros} packages={zeros} snapshot={snapshot} targets={zeros}\n")
 }
 
 /// Before any passphrase, the script names the stick's two keys and each
@@ -564,19 +573,32 @@ fn the_script_signs_only_a_rounds_own_files_as_xtask_writes_them() {
         Round {
             name: "signed-before",
             second: false,
-            change: |w| ledger(w, "1 1 models=0 packages=0 snapshot=0 targets=0\n"),
+            change: |w| ledger(w, &round_one(1, &"0".repeat(64))),
             refused: "release 1 is not above 1, the last these keys signed",
         },
         Round {
-            name: "another-root",
+            name: "longer-number",
             second: false,
-            change: |w| {
-                ledger(
-                    w,
-                    &format!("1 0 root={} snapshot=0 targets=0\n", "a".repeat(64)),
-                )
-            },
-            refused: "these keys signed another root before",
+            change: |w| ledger(w, &round_one(10, &"0".repeat(64))),
+            refused: "release 1 is not above 10, the last these keys signed",
+        },
+        Round {
+            name: "no-ledger",
+            second: false,
+            change: |w| fs::remove_file(w.with_file_name("stick").join("signed.log")).unwrap(),
+            refused: "has no signed.log, made at setup",
+        },
+        Round {
+            name: "torn",
+            second: false,
+            change: |w| ledger(w, "1 1 models=00"),
+            refused: "signed.log's last line is torn",
+        },
+        Round {
+            name: "not-a-ledger-line",
+            second: false,
+            change: |w| ledger(w, "1 1 models=0\n"),
+            refused: "signed.log has a line this script does not write",
         },
         Round {
             name: "no-round-one",
@@ -595,10 +617,7 @@ fn the_script_signs_only_a_rounds_own_files_as_xtask_writes_them() {
             prepare_timestamp(&paths, clock()).unwrap();
             // What the script's round 1 would have logged on the stick.
             let snapshot = crate::sha256_hex(&fs::read(paths.work.join("snapshot.canon")).unwrap());
-            ledger(
-                &paths.work,
-                &format!("1 1 models=0 packages=0 snapshot={snapshot} targets=0\n"),
-            );
+            ledger(&paths.work, &round_one(1, &snapshot));
         }
         (case.change)(&paths.work);
         let before = sigs(&paths.work);
@@ -679,6 +698,15 @@ fn the_script_signs_as_kaipkg_does() {
         ["models", "packages", "root", "snapshot", "targets"].map(|r| format!("{r}={}", sha(r)));
     assert_eq!(lines[0], format!("1 1 {}", one.join(" ")));
     assert_eq!(lines[1], format!("2 1 timestamp={}", sha("timestamp")));
+    // The same round 2 again signs the same bytes, and logs nothing new.
+    let first = fs::read_to_string(paths.work.join("timestamp.sig")).unwrap();
+    fs::remove_file(paths.work.join("timestamp.sig")).unwrap();
+    script(&paths.work);
+    assert_eq!(
+        fs::read_to_string(paths.work.join("timestamp.sig")).unwrap(),
+        first
+    );
+    assert_eq!(fs::read_to_string(stick.join("signed.log")).unwrap(), log);
 }
 
 /// A key file that is not the key its `.pub` names signs nothing, even with
@@ -694,10 +722,7 @@ fn a_key_that_is_not_its_pub_signs_nothing() {
     sign_here(&paths.work);
     prepare_timestamp(&paths, clock()).unwrap();
     let snapshot = crate::sha256_hex(&fs::read(paths.work.join("snapshot.canon")).unwrap());
-    ledger(
-        &paths.work,
-        &format!("1 1 models=0 packages=0 snapshot={snapshot} targets=0\n"),
-    );
+    ledger(&paths.work, &round_one(1, &snapshot));
     // release.key is now root's key, under release's passphrase.
     fs::remove_file(stick.join("release.key")).unwrap();
     key_file(&stick.join("release.key"), ROOT_SEED, RELEASE_PASS);
@@ -717,16 +742,88 @@ fn a_wrong_passphrase_signs_nothing() {
     let paths = workspace("wrongpass");
     let stick = stick(&paths);
     prepare(&paths, &targets(), &models::catalog().unwrap(), 1, clock()).unwrap();
-    let out = sign_script(
-        &stick,
-        &paths.work,
-        &format!("{RELEASE_PASS}\n{RELEASE_PASS}\n"),
+    // A wrong root passphrase, and then root's right one but release's wrong:
+    // every key is unlocked before anything is logged or signed.
+    for input in [
+        format!("{RELEASE_PASS}\n{RELEASE_PASS}\n"),
+        format!("{ROOT_PASS}\n{ROOT_PASS}\n"),
+    ] {
+        let out = sign_script(&stick, &paths.work, &input);
+        assert!(!out.status.success());
+        assert_eq!(sigs(&paths.work), 0);
+        assert_eq!(fs::read_to_string(stick.join("signed.log")).unwrap(), "");
+    }
+}
+
+/// A failed first release's root is reused, with its root.sig, and never
+/// signed again: the script checks root.key's signature and the ledger's
+/// root, and refuses another root once these keys signed one.
+#[test]
+fn a_failed_first_releases_root_is_reused_not_signed_again() {
+    if !openssl_3() {
+        return;
+    }
+    let paths = workspace("reuse-root");
+    let stick = stick(&paths);
+    // Release 2, after release 1 failed past round 1's root.
+    prepare(&paths, &targets(), &models::catalog().unwrap(), 2, clock()).unwrap();
+    let root = fs::read(paths.work.join("root.canon")).unwrap();
+    let zeros = "0".repeat(64);
+    let logged = |root: &str| {
+        format!(
+            "1 1 models={zeros} packages={zeros} root={root} snapshot={zeros} targets={zeros}\n"
+        )
+    };
+    // Signed by root.key, logged: reused, and only release.key is asked for.
+    let sig = sign::hex_bytes(&key(ROOT_SEED).sign_bytes(&root));
+    fs::write(paths.work.join("root.sig"), format!("{sig}\n")).unwrap();
+    ledger(&paths.work, &logged(&crate::sha256_hex(&root)));
+    let out = sign_script(&stick, &paths.work, &format!("{RELEASE_PASS}\n"));
+    let shown = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    assert!(!out.status.success());
-    let sigs = fs::read_dir(&paths.work).unwrap().flatten();
+    assert!(
+        shown.contains("round 1 of release 2: signs models packages snapshot targets\n"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("root.canon is the root these keys signed before: not signed again\n"),
+        "{shown}"
+    );
     assert_eq!(
-        sigs.filter(|e| e.path().extension().is_some_and(|x| x == "sig"))
-            .count(),
-        0
+        fs::read_to_string(paths.work.join("root.sig")).unwrap(),
+        format!("{sig}\n")
+    );
+    // A root.sig that is not root.key's, or a root the ledger does not name,
+    // is refused.
+    let bad = "0".repeat(128);
+    for (sig, logged) in [
+        (bad.as_str(), logged(&crate::sha256_hex(&root))),
+        (sig.as_str(), logged(&zeros)),
+    ] {
+        for role in ["targets", "packages", "models", "snapshot"] {
+            let _ = fs::remove_file(paths.work.join(format!("{role}.sig")));
+        }
+        fs::write(paths.work.join("root.sig"), format!("{sig}\n")).unwrap();
+        ledger(&paths.work, &logged);
+        let out = sign_script(&stick, &paths.work, &format!("{RELEASE_PASS}\n"));
+        let said = String::from_utf8(out.stderr).unwrap();
+        assert!(
+            said.contains("root.sig is not root.key's signature of the root these keys signed"),
+            "{said}"
+        );
+        assert_eq!(sigs(&paths.work), 1, "root.sig alone");
+    }
+    // A second root to sign, when the ledger has another: refused.
+    fs::remove_file(paths.work.join("root.sig")).unwrap();
+    ledger(&paths.work, &logged(&zeros));
+    let out = sign_script(&stick, &paths.work, "");
+    let said = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        said.contains("these keys signed another root before"),
+        "{said}"
     );
 }

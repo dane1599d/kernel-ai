@@ -552,7 +552,7 @@ fn the_runbook_pins_the_sign_script() {
     );
     let text = String::from_utf8(script).unwrap();
     assert!(
-        text.lines().count() <= 300,
+        text.lines().count() <= 340,
         "release-sign.sh stays short enough to read"
     );
     for word in ["curl", "wget", "/dev/tcp", "ssh", "nc ", "git ", "http"] {

@@ -412,6 +412,8 @@ jobs:
               -scrypt_p 64 -inform DER -in "$t/seed.der" -out "$t/keys/${k%%:*}.key" -passout stdin
             printf 'test pass\n' | "$o" pkey -in "$t/keys/${k%%:*}.key" -passin stdin -pubout -out "$t/keys/${k%%:*}.pub"
           done
+          # The ledger, empty, as setup makes it.
+          : > "$t/keys/signed.log"
           # The script's own signing command gives RFC 8032 test 2's signature of 0x72.
           printf '\x72' > "$t/message"
           sig=$(printf 'test pass\n' | "$o" pkeyutl -sign -rawin -inkey "$t/keys/release.key" -passin stdin -in "$t/message" |
@@ -451,7 +453,16 @@ jobs:
           test "$(wc -l < "$t/keys/signed.log" | tr -d ' ')" = 2
           head -1 "$t/keys/signed.log" | grep -Eq '^1 1 models=[0-9a-f]{64} packages=[0-9a-f]{64} root=[0-9a-f]{64} snapshot=[0-9a-f]{64} targets=[0-9a-f]{64}$'
           tail -1 "$t/keys/signed.log" | grep -Eq '^2 1 timestamp=[0-9a-f]{64}$'
+          # The same round 2 again signs the same bytes and logs nothing new.
+          mv "$w/timestamp.sig" "$t/timestamp.sig"
+          printf 'test pass\n' | sign
+          cmp "$w/timestamp.sig" "$t/timestamp.sig"
+          test "$(wc -l < "$t/keys/signed.log" | tr -d ' ')" = 2
+          # Another timestamp for release 1 is refused: a release is signed once.
           rm "$w/timestamp.sig"
+          sed "s/\"expires\":\"[^\"]*\"/\"expires\":\"$(date -u -r $(( $(date -u +%s) + 6 * 86400 )) +%Y-%m-%dT%H:%M:%SZ)\"/" \
+            "$w/timestamp.canon" > "$t/timestamp.canon"
+          mv "$t/timestamp.canon" "$w/timestamp.canon"
           if printf 'test pass\n' | sign 2> "$t/err"; then exit 1; fi
           grep -q 'is not the last round these keys signed' "$t/err"
 

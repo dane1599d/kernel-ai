@@ -12,10 +12,10 @@
 # names, the ledger, each model and package it signs and when each file
 # expires, refusing any file that is not the text xtask writes and any round
 # the ledger rules out. It then signs each copy, root with root.key and the
-# rest with release.key, writes the raw Ed25519 signature in hex as
-# <role>.sig, and logs the round. Passphrases are never echoed and reach
-# openssl on a pipe. No network call. Bash 3.2 (macOS) and later; OpenSSL 3
-# at a fixed path.
+# rest with release.key: it unlocks every key the round needs, logs the round,
+# and only then writes each raw Ed25519 signature in hex as <role>.sig.
+# Passphrases are never echoed and reach openssl on a pipe. No network call.
+# Bash 3.2 (macOS) and later; OpenSSL 3 at a fixed path.
 set -euo pipefail -o noclobber
 umask 077
 ulimit -c 0
@@ -102,40 +102,59 @@ rid=$(id "$rk") lid=$(id "$rel")
 key() { printf '"%s":{"keytype":"ed25519","keyval":{"public":"%s"},"scheme":"ed25519"}' "$1" "$2"; }
 of() { printf '"%s":{"keyids":["%s"],"threshold":1}' "$1" "$2"; }
 if [[ $rid < $lid ]]; then ks=$(key "$rid" "$rk"),$(key "$lid" "$rel"); else ks=$(key "$lid" "$rel"),$(key "$rid" "$rk"); fi
+sha() { "$openssl" dgst -sha256 -r "$1" | cut -c1-64; }
+# checksig CANON SIG PUB: SIG holds PUB's raw Ed25519 signature of CANON in hex.
+checksig() {
+  local s
+  s=$(cat "$2")
+  case "$s" in *[!0-9a-f]*) return 1 ;; esac
+  [ ${#s} -eq 128 ] || return 1
+  printf "$(printf '%s' "$s" | sed 's/../\\x&/g')" >| "$tmp/.raw"
+  "$openssl" pkeyutl -verify -pubin -inkey "$3" -rawin -in "$1" -sigfile "$tmp/.raw" >/dev/null 2>&1
+}
 # In round 2 the timestamp must name the snapshot round 1 signed: its canon and
 # signature here, checked with release.key, hashed as the device fetches it.
 snap= size=
 if [ "$round" = 2 ]; then
   cp -- "$work/snapshot.canon" "$tmp/.snapshot" && cp -- "$work/snapshot.sig" "$tmp/.sig" || exit 1
-  sig=$(cat "$tmp/.sig")
-  case "$sig" in *[!0-9a-f]*) sig= ;; esac
-  [ ${#sig} -eq 128 ] && printf "$(printf '%s' "$sig" | sed 's/../\\x&/g')" > "$tmp/.raw" &&
-    "$openssl" pkeyutl -verify -pubin -inkey "$keys/release.pub" -rawin -in "$tmp/.snapshot" -sigfile "$tmp/.raw" >/dev/null 2>&1 ||
+  checksig "$tmp/.snapshot" "$tmp/.sig" "$keys/release.pub" ||
     { echo "snapshot.sig is not release.key's signature of snapshot.canon: nothing signed" >&2; exit 1; }
+  sig=$(cat "$tmp/.sig")
   signed() { printf '{"signatures":[{"keyid":"%s","sig":"%s"}],"signed":' "$lid" "$sig"; cat "$tmp/.snapshot"; printf '}'; }
   snap=$(signed | "$openssl" dgst -sha256 -r | cut -c1-64) size=$(signed | wc -c | tr -d ' ')
   echo "round 1 signed snapshot.canon as $size bytes, sha256 $snap: timestamp.canon must name it"
 fi
-# signed.log, beside the keys: one line for each round these keys signed. A
-# release number is signed once, root once (or the same bytes again), and
-# round 2 follows its own round 1.
+# signed.log, made beside the keys at setup: one line for each round these
+# keys signed, written before its signatures. A release number is signed once,
+# root once (or the same bytes again), and round 2 follows its own round 1 (or
+# is the same round 2 again). Numbers compare as text, so none is too long.
 log=$keys/signed.log
-[ ! -L "$log" ] || { echo "$log is a link: nothing signed" >&2; exit 1; }
-touch -- "$log"
-sha() { "$openssl" dgst -sha256 -r "$1" | cut -c1-64; }
-last=$(awk '$1 == 1 && $2 + 0 > m { m = $2 + 0 } END { print m + 0 }' "$log")
+[ -f "$log" ] && [ ! -L "$log" ] ||
+  { echo "$keys has no signed.log, made at setup (root-ceremony.md): nothing signed" >&2; exit 1; }
+[ ! -s "$log" ] || [ "$(tail -c 1 "$log" | wc -l | tr -d ' ')" = 1 ] ||
+  { echo "signed.log's last line is torn: its round signed nothing; drop it (root-ceremony.md): nothing signed" >&2; exit 1; }
+form='^(1 [1-9][0-9]*( (models|packages|root|snapshot|targets)=[0-9a-f]{64})+|2 [1-9][0-9]* timestamp=[0-9a-f]{64})$'
+[ "$(grep -Evc "$form" "$log" || true)" = 0 ] ||
+  { echo "signed.log has a line this script does not write: nothing signed" >&2; exit 1; }
+above() { [ ${#1} -gt ${#2} ] || { [ ${#1} -eq ${#2} ] && [[ $1 > $2 ]]; }; }
+last=0
+for n in $(awk '$1 == "1" { print $2 }' "$log"); do
+  if above "$n" "$last"; then last=$n; fi
+done
 rooted=$(awk '{ for (i = 3; i <= NF; i++) if ($i ~ /^root=/) { print substr($i, 6); exit } }' "$log")
 case "$last" in
   0) echo "signed.log: these keys have signed no release yet" ;;
   *) echo "signed.log: the last release these keys signed is $last" ;;
 esac
+again=
 if [ "$round" = 1 ]; then
-  [ "$seq" -gt "$last" ] || { echo "release $seq is not above $last, the last these keys signed: nothing signed" >&2; exit 1; }
+  above "$seq" "$last" || { echo "release $seq is not above $last, the last these keys signed: nothing signed" >&2; exit 1; }
   [ ! -e "$tmp/root" ] || [ -z "$rooted" ] || [ "$(sha "$tmp/root")" = "$rooted" ] ||
     { echo "these keys signed another root before: nothing signed" >&2; exit 1; }
 else
   case "$(tail -n 1 "$log")" in
     "1 $seq "*" snapshot=$(sha "$tmp/.snapshot") "*) ;;
+    "2 $seq timestamp=$(sha "$tmp/timestamp")") again=yes ;;
     *) echo "round 1 of release $seq, with this snapshot, is not the last round these keys signed: nothing signed" >&2; exit 1 ;;
   esac
 fi
@@ -165,6 +184,15 @@ pin root "$rw" stamp
 pin targets "$tw" norm
 pin snapshot "$sw" norm
 pin timestamp "$mw" norm
+# A failed first release's root, reused with its root.sig and not signed again:
+# root.key's signature of the root above, the one the ledger logged.
+if [ "$round" = 1 ] && [ ! -e "$tmp/root" ] && [ -e "$work/root.canon" ]; then
+  cp -- "$work/root.canon" "$tmp/.root" && cp -- "$work/root.sig" "$tmp/.rootsig" || exit 1
+  checksig "$tmp/.root" "$tmp/.rootsig" "$keys/root.pub" && [ "$(stamp "$tmp/.root")" = "$rw" ] &&
+    [ -n "$rooted" ] && [ "$(sha "$tmp/.root")" = "$rooted" ] ||
+    { echo "root.sig is not root.key's signature of the root these keys signed: nothing signed" >&2; exit 1; }
+  echo "root.canon is the root these keys signed before: not signed again"
+fi
 # A delegated role's targets, walked as JSON (awk -v role=models|packages): the
 # role must be exactly the shape xtask writes, each model's path an id the OS
 # takes and .gguf, or a lower-case SHA-256 and .chunks, and each entry its
@@ -259,34 +287,45 @@ for copy in "$@"; do
     }' "$copy" || exit 1
 done
 
-# sign KEY ROLE...: asks for KEY's passphrase, checks it and that KEY.pub is
-# its public key, then signs each ROLE.
-sign() {
-  local key="$keys/$1.key" pass sig name want=$rel
+# unlock root|release: asks for the key's passphrase and checks it, and that
+# the key is the one its .pub names. Every key the round needs is unlocked
+# before the ledger line, and the ledger line is written before any signature.
+rpass= lpass=
+unlock() {
+  local key="$keys/$1.key" pass want=$rel
   case "$1" in root) want=$rk ;; esac
-  shift
-  [ $# -gt 0 ] || return 0
-  IFS= read -rsp "Passphrase for $(basename "$key"): " pass
+  IFS= read -rsp "Passphrase for $1.key: " pass
   echo >&2
-  printf '%s\n' "$pass" | "$openssl" pkey -in "$key" -passin stdin -pubout > "$tmp/.$(basename "$key").pub" ||
-    { echo "not the passphrase of $key: nothing signed with it" >&2; exit 1; }
-  [ "$(hex "$tmp/.$(basename "$key").pub")" = "$want" ] ||
-    { echo "$key is not the key its .pub names: nothing signed with it" >&2; exit 1; }
+  printf '%s\n' "$pass" | "$openssl" pkey -in "$key" -passin stdin -pubout >| "$tmp/.$1.pub" ||
+    { echo "not the passphrase of $key: nothing signed" >&2; exit 1; }
+  [ "$(hex "$tmp/.$1.pub")" = "$want" ] ||
+    { echo "$key is not the key its .pub names: nothing signed" >&2; exit 1; }
+  case "$1" in root) rpass=$pass ;; *) lpass=$pass ;; esac
+}
+# signwith PASSPHRASE root|release ROLE...: writes each ROLE's .sig.
+signwith() {
+  local pass=$1 key="$keys/$2.key" sig name
+  shift 2
   for name in "$@"; do
     sig=$(printf '%s\n' "$pass" | "$openssl" pkeyutl -sign -rawin -inkey "$key" -passin stdin -in "$tmp/$name" |
       od -An -v -tx1 | tr -d ' \n')
     [ ${#sig} -eq 128 ] || { echo "no Ed25519 signature for $name.canon" >&2; exit 1; }
     printf '%s\n' "$sig" > "$work/$name.sig"
-    echo "signed $name.canon with $(basename "$key"): sha256 $("$openssl" dgst -sha256 -r "$tmp/$name" | cut -d' ' -f1)"
+    echo "signed $name.canon with $(basename "$key"): sha256 $(sha "$tmp/$name")"
   done
-  pass=
 }
 
+[ ! -e "$tmp/root" ] || unlock root
+unlock release
+# The ledger's line for this round, then the signatures: a round cut short
+# leaves a line and so is never signed again under its number.
+if [ -z "$again" ]; then
+  line="$round $seq"
+  for copy in "$@"; do line="$line $(basename "$copy")=$(sha "$copy")"; done
+  printf '%s\n' "$line" >> "$log"
+  echo "signed.log: round $round of release $seq"
+fi
 # ${a[@]+"${a[@]}"}: an empty array under `set -u`, which bash 3.2 refuses.
-sign root ${root[@]+"${root[@]}"}
-sign release ${release[@]+"${release[@]}"}
-# The ledger's line for this round, once every file is signed.
-line="$round $seq"
-for copy in "$@"; do line="$line $(basename "$copy")=$(sha "$copy")"; done
-printf '%s\n' "$line" >> "$log"
-echo "signed.log: round $round of release $seq"
+signwith "$rpass" root ${root[@]+"${root[@]}"}
+signwith "$lpass" release ${release[@]+"${release[@]}"}
+rpass= lpass=
