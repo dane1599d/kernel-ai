@@ -297,11 +297,12 @@ pub fn disk_need(length: u64, held: u64) -> u64 {
 pub enum CopyRefused {
     /// `fs` hashed the copy as it was written, and its SHA-256 is not the
     /// model's (`Invalid`): the partial it was read from no longer holds the
-    /// bytes the download checked. Its mark goes back to none, so the next
-    /// `models download` fetches the model again.
+    /// bytes the download checked. Its mark is kept: the next
+    /// `models download` reads back every chunk it names, checks each against
+    /// the signed list, and fetches again from the first that changed, not
+    /// the whole model.
     BadPartial,
-    /// Any other refusal, as a full disk: the store's, not the partial's,
-    /// which is kept as it is.
+    /// Any other refusal, as a full disk: the store's, not the partial's.
     Store(Reply),
 }
 
@@ -318,7 +319,7 @@ impl CopyRefused {
     pub fn why(&self) -> String {
         match self {
             Self::BadPartial => String::from(
-                "the downloaded file changed on disk after its check: the store's hash of its copy is not the model's, so the next models download fetches it again",
+                "the downloaded file changed on disk after its check: the store's hash of its copy is not the model's; the next models download checks it again and fetches what changed",
             ),
             Self::Store(reply) => format!("the store refused the model: {reply:?}"),
         }

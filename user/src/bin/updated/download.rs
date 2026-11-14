@@ -20,8 +20,9 @@
 //!   (`SealedBegin`, `SealedPush`, `SealedFinish`), a chunk per tick, as an
 //!   import is, once the disk has room for it (`modelchan::fetch::disk_need`).
 //!   The partial file goes only once the copy is committed. A copy `fs`
-//!   refuses for its hash sets the partial's mark back to none
-//!   (`fetch::CopyRefused`): the partial changed after its check.
+//!   refuses for its hash means the partial changed after its check
+//!   (`fetch::CopyRefused`): the mark stays, as the next run reads back and
+//!   checks every chunk it names.
 //!
 //! The model's hosts are its source's and that host's storage hosts on 443
 //! (`Job::reaches`), on `updated`'s own `NetDest`; the list's is the
@@ -427,20 +428,9 @@ impl Running {
         }
         match folders::ask(store, &Request::SealedFinish)? {
             (Reply::Done, _) => {}
-            (other, _) => {
-                // fs dropped the action with the refusal, so the mark's own
-                // action can begin.
-                let refused = fetch::CopyRefused::of(other);
-                if refused == fetch::CopyRefused::BadPartial
-                    && let Err(e) = dl::Partial::record(&mut self.partial, 0)
-                {
-                    println!(
-                        "updated: the bad partial's mark stays: {}",
-                        self.partial.why(&e)
-                    );
-                }
-                return Err(refused.why());
-            }
+            // The mark stays either way: the next run reads back and checks
+            // every chunk it names, and fetches from the first that changed.
+            (other, _) => return Err(fetch::CopyRefused::of(other).why()),
         }
         match folders::ask(store, &Request::Commit)? {
             (Reply::Committed { .. }, _) => {}

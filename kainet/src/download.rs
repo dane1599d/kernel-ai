@@ -57,9 +57,10 @@ pub trait Partial {
     fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), DownloadError>;
     /// Fills `buf` from `offset`, which was written before. A read the
     /// partial ends before, or of a partial that is not there, fails with
-    /// [`SHORT_READ`]: a resume counts that chunk as one that no longer
-    /// matches and fetches it again. Any other failure a resume passes on,
-    /// keeping its checkpoint.
+    /// [`SHORT_READ`]: a resume, and the check before a move-in
+    /// ([`read_back`]), count that chunk as one that no longer matches, and
+    /// it is fetched again. Any other failure they pass on, keeping the
+    /// checkpoint.
     fn read(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), DownloadError>;
     /// The whole target is checked: move it into place.
     fn finish(&mut self) -> Result<(), DownloadError>;
@@ -83,8 +84,9 @@ pub trait Partial {
 }
 
 /// Why [`download`] refused to move a target in: read back before
-/// [`Partial::finish`], a chunk no longer matched or could not be read, or
-/// the partial was shorter than the target ([`DownloadError::Store`]). The
+/// [`Partial::finish`], a chunk no longer matched or the partial ended
+/// before it ([`SHORT_READ`]), or the partial was shorter than the target
+/// ([`DownloadError::Store`]). The
 /// mark was set back to that chunk, so a resume fetches it and every chunk
 /// after it again.
 pub const CHANGED_ON_DISK: &str = "a chunk changed on disk after it was checked";
@@ -443,8 +445,11 @@ impl Download {
 /// [`Download::step`] makes it at the same point: every chunk
 /// read back and checked against the list, the whole target against its
 /// signed hash, then the partial's length against the target's.
-/// - A chunk that no longer matches, or cannot be read, sets the mark back to
-///   it ([`CHANGED_ON_DISK`]), as does a partial found shorter.
+/// - A chunk that no longer matches, or that the partial ends before
+///   ([`SHORT_READ`]), sets the mark back to it ([`CHANGED_ON_DISK`]), as
+///   does a partial found shorter.
+/// - Any other failed read is passed on, the mark left as it is: a store
+///   that fails for a moment costs a try, not the chunks after it.
 /// - A partial longer than the target is refused ([`LONGER_ON_DISK`]), its
 ///   mark left as it is.
 ///
@@ -467,7 +472,11 @@ pub fn read_back(
     for i in 0..list.count() {
         let (start, end) = list.range(i);
         let bytes = &mut buf[..(end - start) as usize];
-        let read = partial.read(start, bytes).is_ok();
+        let read = match partial.read(start, bytes) {
+            Ok(()) => true,
+            Err(DownloadError::Store(SHORT_READ)) => false,
+            Err(e) => return Err(e),
+        };
         let hash: [u8; 32] = Sha256::digest(&*bytes).into();
         if !read || hash != list.hashes[i] {
             partial.record(i)?;
