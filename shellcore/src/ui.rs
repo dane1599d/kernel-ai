@@ -130,6 +130,32 @@ pub(crate) enum Round {
 const MAX_READS: usize = 2;
 
 impl Shell {
+    /// `open <app>`, a line that names one app and nothing else (what the
+    /// panel's Apps sheet sends): Kai's own `ui_open` call, made by code with
+    /// no model, through the one door ([`Shell::execute`]) at the tier Kai's
+    /// would get. A longer line ("open notes and add milk") is the model's.
+    pub(crate) fn open_line(&mut self, input: &str) -> Option<Reply> {
+        if self.scope.contains("open") {
+            return None;
+        }
+        let app = input.strip_prefix("open ")?.trim();
+        if app.is_empty() || app.contains(char::is_whitespace) {
+            return None;
+        }
+        app_name(app).ok()?;
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(String::from("app"), Value::String(String::from(app)));
+        let call = Call {
+            name: String::from("ui_open"),
+            arguments,
+        };
+        let id = self.take_id();
+        self.host.audit(&format!(
+            "request {id}: {input:?}, opened by code with no model"
+        ));
+        Some(self.execute(id, input, &call).reply)
+    }
+
     /// `call`, or the call the model makes with what it read in front of it: a
     /// view it asked for, or `desktop`'s refusal of a node it guessed, which says
     /// which window to view first (the module's note).

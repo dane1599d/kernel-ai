@@ -121,8 +121,7 @@ pub(super) const CASES: &[TestCase] = &[
             "pkg: generation 1 starts no app from a package",
             "desktop: drew the desk at ",
             "desktop: the Apps sheet lists 7 apps, 7 installed",
-            // A call the person runs, as typed: it opens Notes with no model.
-            "desktop: the Apps sheet sent \"ui_open(\\\"notes\\\")\"",
+            "desktop: the Apps sheet sent \"open notes\"",
             "process notes-window (pid ",
             "desktop: window 1 \"Notes\" opened at ",
             "desk-default: the desktop came up, the Apps sheet listed the image's seven apps, and Enter on Notes opened notes-window",

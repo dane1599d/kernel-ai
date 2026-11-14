@@ -2,10 +2,10 @@
 //! with what `pkg` lists in `kai-catalog 1`, asked for page by page through the
 //! `uses=pkg` route and read with `kaipkg::catalog::parse`, which is strict:
 //! an answer it does not take shows no row of it. The sheet takes the panel's
-//! keys while it is up. The image's own apps are listed first. Enter sends the
-//! shell the line a user would type, `install <name>` or `ui_open("<name>")`,
-//! by the row's own name, so it runs with the same consent as a typed one and
-//! opens an app with no model; Esc, or the focus leaving the panel,
+//! keys while it is up. Enter sends the shell the line a user would type,
+//! `install <name>` or `open <name>`, by the row's own name, so it runs with
+//! the same consent as a typed one; the shell opens `open <name>` itself,
+//! with no model; Esc, or the focus leaving the panel,
 //! closes it. Rows are data: nothing a summary says is sent anywhere.
 //!
 //! `desktop` calls `pkg`, never the other way, and only when the sheet opens.
@@ -125,8 +125,8 @@ pub(super) fn key(state: &mut State, usage: u16, down: bool, now_ms: u64) -> boo
     let line = match pick {
         None => return true,
         Some(Pick::Close) => None,
-        // A call the person runs, as if typed: no model needed to open it.
-        Some(Pick::Open(name)) => Some(format!("ui_open(\"{name}\")")),
+        // The shell opens `open <name>` itself, with no model.
+        Some(Pick::Open(name)) => Some(format!("open {name}")),
         Some(Pick::Install(name)) => Some(format!("install {name}")),
     };
     close(state);

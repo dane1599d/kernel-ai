@@ -24,7 +24,9 @@ const UP: u16 = 0x52;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     /// One of the image's own apps (Notes, Files, ...), not a package: Enter
-    /// opens it. Listed first, from `kabi::plan::system::APPS`.
+    /// opens it. `desktop` lists these only when `pkg` gives no rows (`pkg`
+    /// lists them as installed when it runs), from its own list of the apps
+    /// every image plans.
     BuiltIn,
     /// In the current generation: Enter opens it.
     Installed,

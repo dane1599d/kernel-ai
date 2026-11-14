@@ -112,3 +112,20 @@ fn a_typed_models_import_is_refused_at_the_panel_and_a_switch_runs_logged() {
         ok("Undone: the model before, from the next restart")
     );
 }
+
+/// #885's review: the Apps sheet's `open <app>` runs as Kai's own `ui_open`,
+/// made by code with no model; a longer line is still the model's.
+#[test]
+fn open_and_one_app_runs_ui_open_with_no_model() {
+    let (host, mut shell) = with_calls(vec![]);
+    let shown = shell.eval_panel("open notes");
+    assert!(host.act_lines.borrow().is_empty(), "the model was asked");
+    assert!(
+        shell.eval("log actlog").text.contains("ui_open"),
+        "{shown:?}"
+    );
+    // Not an app's name, or more than one word: not this line.
+    assert!(shell.open_line("open no tes").is_none());
+    assert!(shell.open_line("open").is_none());
+    assert!(shell.open_line("open ../x").is_none());
+}

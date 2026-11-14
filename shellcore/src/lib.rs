@@ -961,6 +961,10 @@ impl Shell {
                 _ => {}
             }
         }
+        // `open <app>` alone opens it with no model (the Apps sheet's line).
+        if let Some(reply) = self.open_line(input) {
+            return reply;
+        }
         // Installing Kai's last app, or showing its code, comes before a
         // package line of the same words.
         if !self.scope.contains("install")
