@@ -434,7 +434,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskPerf => run_case(desk_perf_tests::check),
         SelfTest::DeskProfile => run_case(desk_profile_tests::check),
         SelfTest::DeskProfileFloor => run_case(profile_floor_tests::check),
-        SelfTest::UiKeys => run_case(keys_tests::check),
+        SelfTest::UiKeys { busy } => run_case(|| keys_tests::check(busy)),
         SelfTest::DeskTerm => run_case(term_tests::check),
         SelfTest::AppNotes { reread } => run_case(|| app_notes_tests::check(reread)),
         SelfTest::DeskAgent => run_case(agent_desk_tests::agent_check),

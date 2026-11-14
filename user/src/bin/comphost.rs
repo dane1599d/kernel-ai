@@ -257,6 +257,9 @@ fn main() -> i32 {
     let mut tick_at = deadline(host.timeout_ms());
     // Whether the nap holds a lease for a read of the machine waiting.
     let mut leased = false;
+    // When the windows are next polled whatever the request rate: an app
+    // called more often than every POLL_MS still takes its input and results.
+    let mut poll_at = now_ms() + ui::POLL_MS;
     loop {
         // The shown instance is told it started, once: a new version or a
         // resumed app is told again (`started.rs`).
@@ -304,7 +307,7 @@ fn main() -> i32 {
         let wait = soonest(wait, due);
         let wait = napper.wait(&host, wait, now_ms());
         let mut caller = u64::MAX;
-        match sys::svc_recv(&mut request, wait, &mut caller) {
+        let idle = match sys::svc_recv(&mut request, wait, &mut caller) {
             Ok(len) => {
                 let len = len.min(request.len());
                 let heap_before = user::heap_bytes();
@@ -363,8 +366,20 @@ fn main() -> i32 {
                 tick_at = deadline(host.timeout_ms());
                 napper.after(&host, now_ms());
                 settle(&mut windows, &mut edits, &mut relay, &mut host);
+                // Called again and again: the windows are polled anyway once
+                // POLL_MS has passed since they last were.
+                now_ms() >= poll_at
             }
-            Err(Error::TimedOut) => {
+            Err(Error::TimedOut) => true,
+            Err(error) => {
+                println!("svc_recv failed: {error:?}");
+                sys::sleep_ms(100);
+                false
+            }
+        };
+        if idle {
+            poll_at = now_ms() + ui::POLL_MS;
+            {
                 if let Some(ui) = windows.as_mut().filter(|ui| ui.wants_poll()) {
                     if let Err(exit) = ui.poll(&mut host) {
                         println!("{}", exit.why);
@@ -439,10 +454,6 @@ fn main() -> i32 {
                     tick_at = deadline(host.timeout_ms());
                     settle(&mut windows, &mut edits, &mut relay, &mut host);
                 }
-            }
-            Err(error) => {
-                println!("svc_recv failed: {error:?}");
-                sys::sleep_ms(100);
             }
         }
         // A read of the machine that is due is answered, and what the app drew

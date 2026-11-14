@@ -243,7 +243,10 @@ pub enum SelfTest {
     /// Every resource-profile floor refused by the kernel (P3's exit case).
     DeskProfileFloor,
     /// The keyboard reaches an app's widgets (key input for uikit apps).
-    UiKeys,
+    /// `busy`: while Notes is called every 5 ms (comphost's poll under load).
+    UiKeys {
+        busy: bool,
+    },
     DeskTerm,
     /// `app-notes` (P4): Kai makes notes in Notes' window, they are saved, and
     /// `undo` takes one back; boot 2 (`reread`) finds them on disk.
@@ -488,7 +491,9 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-perf" => Some(SelfTest::DeskPerf),
             "test=desk-profile" => Some(SelfTest::DeskProfile),
             "test=desk-profile-floor" => Some(SelfTest::DeskProfileFloor),
-            "test=ui-keys" => Some(SelfTest::UiKeys),
+            "test=ui-keys" => Some(SelfTest::UiKeys {
+                busy: cmdline.split_whitespace().any(|w| w == "busy"),
+            }),
             "test=desk-term" => Some(SelfTest::DeskTerm),
             "test=app-notes" => Some(SelfTest::AppNotes {
                 reread: cmdline.split_whitespace().any(|w| w == "reread"),
@@ -689,7 +694,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskPerf
             | SelfTest::DeskProfile
             | SelfTest::DeskProfileFloor
-            | SelfTest::UiKeys
+            | SelfTest::UiKeys { .. }
             | SelfTest::DeskTerm
             | SelfTest::AppNotes { .. }
             | SelfTest::DeskAgent
@@ -1010,7 +1015,7 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::profile_floor_tests::PLAN);
     }
-    if test == SelfTest::UiKeys {
+    if matches!(test, SelfTest::UiKeys { .. }) {
         plan.push('\n');
         plan.push_str(crate::keys_tests::PLAN);
     }
