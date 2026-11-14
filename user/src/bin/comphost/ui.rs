@@ -83,6 +83,10 @@ pub struct Ui {
     /// Its window that holds the keyboard focus, if one does: closing it is
     /// losing the focus, whose `focus_out` comes after the window is gone.
     holder: Option<u32>,
+    /// Focus changes for the windows themselves, given by [`Ui::give_focus`]
+    /// after the nap's wake: each shows its focus ring and caret, and one
+    /// taking the keyboard focuses a default node so keys reach one.
+    window_focus: Vec<(u32, bool)>,
     /// Events that came back with the window's own calls, acted on at the next
     /// poll.
     later: Vec<Told>,
@@ -118,6 +122,7 @@ impl Ui {
             focused: None,
             used: false,
             holder: None,
+            window_focus: Vec::new(),
             later: Vec::new(),
             reply: alloc::vec![0u8; kabi::MAX_MESSAGE],
             sent: effects::Sent::default(),
@@ -162,6 +167,26 @@ impl Ui {
     /// Terminal froze while he typed in it).
     pub fn take_used(&mut self) -> bool {
         core::mem::take(&mut self.used)
+    }
+
+    /// Hands its windows the focus changes `desktop` told: after the nap's
+    /// wake (comphost calls this once the napper had the focus), so a woken
+    /// app still gets its default focus. A suspended app gets none: a focus
+    /// or a blur must not resume an app a rule suspended.
+    pub fn give_focus<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) {
+        let changes = core::mem::take(&mut self.window_focus);
+        if changes.is_empty() || host.suspended() {
+            return;
+        }
+        for (window, took) in changes {
+            let input = match took {
+                true => uikit::input::Input::FocusIn,
+                false => uikit::input::Input::FocusOut,
+            };
+            let performed = serve_shown(host, |core| core.ui_input(window, input));
+            self.forward(performed, false);
+        }
+        self.pump(host);
     }
 
     /// Whether a line it sent waits for its answer: the app must be awake
@@ -430,10 +455,12 @@ impl Ui {
                 Told::Focus(window) => {
                     self.focused = Some(true);
                     self.holder = Some(window);
+                    self.window_focus.push((window, true));
                 }
-                Told::Blur(_) => {
+                Told::Blur(window) => {
                     self.focused = Some(false);
                     self.holder = None;
+                    self.window_focus.push((window, false));
                 }
                 Told::Theme(name) => self.set_theme(&name),
                 Told::Close(window) => {

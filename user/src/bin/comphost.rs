@@ -356,6 +356,7 @@ fn main() -> i32 {
                             return exit.code;
                         }
                     }
+                    ui.give_focus(&mut host);
                 }
                 // A change or a file waiting for its answer is use: the app does
                 // not nap until it has it.
