@@ -282,6 +282,11 @@ fn a_dragged_window_has_no_shadow_until_it_is_let_go() {
     assert_eq!(paint("let-go", &desk, 1280, 800), shadowed);
 }
 
+/// A pixel's colour, its alpha left out.
+fn rgb(px: u32) -> u32 {
+    px & ((1 << 24) - 1)
+}
+
 #[test]
 fn the_input_view_keeps_the_cursor_in_its_columns() {
     use crate::paint_panel::view;
@@ -339,7 +344,7 @@ fn a_long_line_keeps_the_caret_in_the_input() {
     let (x0, x1) = (area.x + area.w / 4, area.x + area.w / 2);
     let caret = (area.y + 3..area.y + area.h)
         .flat_map(|y| (x0..x1).map(move |x| (x, y)))
-        .filter(|&(x, y)| image.px[(y * w + x) as usize] & 0x00FF_FFFF == ember & 0x00FF_FFFF)
+        .filter(|&(x, y)| rgb(image.px[(y * w + x) as usize]) == rgb(ember))
         .count();
     assert!(
         caret > 20,
