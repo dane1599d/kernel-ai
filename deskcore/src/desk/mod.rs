@@ -191,9 +191,14 @@ pub struct Desk {
     agent: Option<WindowId>,
     /// The clock `desktop` last gave ([`Desk::set_now`]).
     now_ms: u64,
-    /// When the card up now may first be answered: [`termcore::menu::SETTLE_MS`]
-    /// after it showed.
+    /// When the card up now may first be answered: a quiet
+    /// [`termcore::menu::SETTLE_MS`] after it was first drawn and after the
+    /// last key or button pressed; `u64::MAX` until it is drawn.
     ask_open_ms: u64,
+    /// When the card up now was first drawn ([`Desk::card_drawn`]).
+    ask_drawn: Option<u64>,
+    /// The last key or button pressed while the card was up.
+    ask_pressed_ms: u64,
 }
 
 impl Desk {
@@ -223,12 +228,15 @@ impl Desk {
             down: Vec::new(),
             agent: None,
             now_ms: 0,
-            ask_open_ms: 0,
+            ask_open_ms: u64::MAX,
+            ask_drawn: None,
+            ask_pressed_ms: 0,
         }
     }
 
-    /// The clock, in ms, for the card's settle time: `desktop` gives it before
-    /// each input and each card.
+    /// The clock, in ms, for the card's settle time: `desktop` gives each
+    /// input's own event time before it, so keys are judged by when they were
+    /// pressed, not by when they were read.
     pub fn set_now(&mut self, now_ms: u64) {
         self.now_ms = now_ms;
     }

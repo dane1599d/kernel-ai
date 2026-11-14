@@ -2,13 +2,17 @@
 //! and only y, n or a click on its buttons answers it; a key or click by the
 //! user in the agent's window takes over from the agent.
 //!
-//! A card on the desktop answers nothing for [`termcore::menu::SETTLE_MS`]
-//! after it shows, nor to a key held since before it, so someone still typing
-//! their next line cannot answer it. And no card here came from a line typed
-//! at the trusted terminal (a desktop line, an app's ask, the agent's call),
-//! so `y` takes two steps: the first arms the card, which then says so, and a
-//! second fresh `y` runs it. A click on Run runs it at once; `n` or a click on
-//! Don't declines at once (#864, the manager's review).
+//! A card on the desktop answers nothing until it has been on screen, and the
+//! keyboard and buttons quiet, for [`termcore::menu::SETTLE_MS`]: every key or
+//! button pressed before then starts that quiet time again, judged by the
+//! event's own time ([`Desk::set_now`]), so someone typing straight through
+//! the card's arrival never answers it. A key held since before it never
+//! does. And no card here came from a line typed at the trusted terminal (a
+//! desktop line, an app's ask, the agent's call), so `y` takes two steps: the
+//! first arms the card, which then says so; any other key disarms it and
+//! starts the quiet time again; a second fresh `y` runs it. A click on Run or
+//! Don't, after the quiet time, answers at once; so does `n` (#864, the
+//! manager's reviews).
 
 use super::{Button, Desk, Effect, Focus, Hit, Input, WindowId, usage};
 use crate::geom::Point;
@@ -35,7 +39,10 @@ impl Desk {
             armed: false,
         };
         self.ask = Some((ask, back));
-        self.ask_open_ms = self.now_ms.saturating_add(termcore::menu::SETTLE_MS);
+        // Open only once drawn ([`Desk::card_drawn`]).
+        self.ask_open_ms = u64::MAX;
+        self.ask_drawn = None;
+        self.ask_pressed_ms = 0;
         self.held = self.down.clone();
         self.grab = None;
         self.damage
@@ -52,6 +59,45 @@ impl Desk {
             self.end_ask(&mut effects);
         }
         effects
+    }
+
+    /// `desktop` put the card up now on the screen at `at_ms`: its quiet time
+    /// starts then, or at the last press if that came later.
+    pub fn card_drawn(&mut self, at_ms: u64) {
+        if self.ask.is_none() || self.ask_drawn.is_some() {
+            return;
+        }
+        self.ask_drawn = Some(at_ms);
+        self.ask_open_ms = at_ms
+            .max(self.ask_pressed_ms)
+            .saturating_add(termcore::menu::SETTLE_MS);
+    }
+
+    /// A key or button pressed at `now_ms` while the card is up: before the
+    /// card opened, it starts the quiet time again.
+    fn pressed(&mut self) -> bool {
+        let at = self.now_ms;
+        self.ask_pressed_ms = self.ask_pressed_ms.max(at);
+        if at >= self.ask_open_ms {
+            return true;
+        }
+        if self.ask_drawn.is_some() {
+            self.ask_open_ms = at.saturating_add(termcore::menu::SETTLE_MS);
+        }
+        false
+    }
+
+    /// Any key but `y`: the card is no longer armed, and is quiet again first.
+    fn disarm(&mut self) {
+        if let Some((ask, _)) = &mut self.ask
+            && ask.armed
+        {
+            ask.armed = false;
+            let ask = *ask;
+            self.damage
+                .add(trusted::card(self.width, self.height, &ask));
+        }
+        self.ask_open_ms = self.now_ms.saturating_add(termcore::menu::SETTLE_MS);
     }
 
     /// The card up now.
@@ -78,7 +124,6 @@ impl Desk {
         let Some((ask, _)) = self.ask else {
             return;
         };
-        let settled = self.now_ms >= self.ask_open_ms;
         let answer = match input {
             Input::Motion(p) => {
                 self.pointer = Point {
@@ -97,20 +142,26 @@ impl Desk {
             Input::Key {
                 usage: code,
                 down: true,
-            } if settled && !repeat && !self.held.contains(&code) => match code {
-                usage::Y if ask.armed => Some(true),
-                usage::Y => {
-                    self.arm();
-                    None
+            } => {
+                let open = self.pressed();
+                match code {
+                    _ if !open || repeat || self.held.contains(&code) => None,
+                    usage::Y if ask.armed => Some(true),
+                    usage::Y => {
+                        self.arm();
+                        None
+                    }
+                    usage::N => Some(false),
+                    _ => {
+                        self.disarm();
+                        None
+                    }
                 }
-                usage::N => Some(false),
-                _ => None,
-            },
-            Input::Key { .. } => None,
+            }
             Input::Button {
                 button: Button::Left,
                 down: true,
-            } if settled => {
+            } if self.pressed() => {
                 let (yes, no) = trusted::buttons(trusted::card(self.width, self.height, &ask));
                 if yes.contains(self.pointer) {
                     Some(true)

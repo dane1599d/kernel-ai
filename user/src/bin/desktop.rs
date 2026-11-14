@@ -389,7 +389,8 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
     };
     state.watch.input(now_ms());
     let before = state.desk.pointer();
-    state.desk.set_now(now_ms());
+    // The card judges a key by when it was pressed, not when it was read.
+    state.desk.set_now(event.time_ns / 1_000_000);
     let effects = state.desk.input(input);
     let at = state.desk.pointer();
     if at != before {
@@ -1071,6 +1072,8 @@ fn draw(state: &mut State, screen: &Screen) {
         let flushed = sys::time_ns();
         perf::drew(state, rendered - started, flushed - rendered, flushed);
     }
+    // A card up is on the screen from now: its quiet time can start.
+    state.desk.card_drawn(now_ms());
     if !state.drawn {
         state.drawn = true;
         println!("desktop: drew the desk at {}x{}", state.width, state.height);

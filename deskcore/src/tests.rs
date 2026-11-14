@@ -407,6 +407,7 @@ fn an_ask_card_takes_only_y_n_or_a_click_and_drops_keys_held_before_it() {
     // `a` is held down when the card appears.
     key(&mut desk, 0x04, true);
     assert_eq!(desk.show_ask(7, 3), [Effect::Focus(Focus::Ask(7))]);
+    desk.card_drawn(0);
     assert!(desk.take_damage().iter().any(|d| {
         let card = crate::trusted::card(W, H, &desk.ask().unwrap());
         d.intersect(&card) == Some(card)
@@ -447,6 +448,7 @@ fn a_y_held_before_the_card_cannot_answer_it_and_buttons_can() {
     let (mut desk, _) = desk_with(1);
     key(&mut desk, usage::Y, true);
     desk.show_ask(9, 1);
+    desk.card_drawn(0);
     // The y still held repeats or comes up: neither answers.
     assert!(key(&mut desk, usage::Y, true).is_empty());
     assert!(key(&mut desk, usage::Y, false).is_empty());
@@ -466,6 +468,7 @@ fn a_y_held_before_the_card_cannot_answer_it_and_buttons_can() {
 fn a_key_whose_release_went_to_the_terminal_can_answer_the_next_card() {
     let (mut desk, _) = desk_with(1);
     desk.show_ask(1, 1);
+    desk.card_drawn(0);
     desk.set_now(SETTLED);
     key(&mut desk, usage::Y, true);
     key(&mut desk, usage::Y, false);
@@ -474,6 +477,7 @@ fn a_key_whose_release_went_to_the_terminal_can_answer_the_next_card() {
     // y's release goes to the console, never to the desk.
     desk.keys_lent();
     desk.show_ask(2, 1);
+    desk.card_drawn(SETTLED);
     desk.set_now(2 * SETTLED);
     key(&mut desk, usage::Y, true);
     key(&mut desk, usage::Y, false);
@@ -483,25 +487,41 @@ fn a_key_whose_release_went_to_the_terminal_can_answer_the_next_card() {
 /// Past a card's settle time.
 const SETTLED: u64 = termcore::menu::SETTLE_MS;
 
-/// #864's review: a card that pops up while someone types their next line
-/// takes none of it, and `y` takes two steps; a click on Run, one.
+/// Presses and lets go of `code` at `at_ms`, by the event's own time.
+fn press_at(desk: &mut Desk, at_ms: u64, code: u16) -> Vec<Effect> {
+    desk.set_now(at_ms);
+    let effects = key(desk, code, true);
+    key(desk, code, false);
+    effects
+}
+
+/// #864's reviews: the card takes nothing until it has been drawn and the
+/// keys quiet for the settle time; `y` takes two steps; a repeat is not one.
 #[test]
 fn a_card_settles_before_it_answers_and_y_takes_two_steps() {
     let (mut desk, _) = desk_with(1);
     desk.set_now(1_000);
     desk.show_ask(5, 1);
-    // Within the settle time, y, n and a click on Run do nothing.
-    desk.set_now(1_000 + SETTLED - 1);
+    // Not drawn yet: nothing counts, however long after.
+    assert!(press_at(&mut desk, 5_000, usage::Y).is_empty());
+    desk.card_drawn(5_000);
+    // Within the quiet time y, n and a click on Run do nothing, and each
+    // starts it again.
     for code in [usage::Y, usage::N] {
-        assert!(key(&mut desk, code, true).is_empty());
-        key(&mut desk, code, false);
+        assert!(press_at(&mut desk, 5_000 + SETTLED - 1, code).is_empty());
     }
     let card = crate::trusted::card(W, H, &desk.ask().unwrap());
     let (yes, _) = crate::trusted::buttons(card);
-    assert!(click(&mut desk, centre(yes)).is_empty());
+    desk.set_now(5_000 + SETTLED);
+    assert!(
+        click(&mut desk, centre(yes)).is_empty(),
+        "the n restarted the quiet"
+    );
     assert!(!desk.ask().unwrap().armed);
-    // Settled: the first y arms it, with the card redrawn; the second runs it.
-    desk.set_now(1_000 + SETTLED);
+    // Quiet at last: the first y arms it, with the card redrawn; the second
+    // runs it.
+    let quiet = 5_000 + 2 * SETTLED;
+    desk.set_now(quiet);
     desk.take_damage();
     assert!(key(&mut desk, usage::Y, true).is_empty());
     assert!(!desk.take_damage().is_empty(), "the armed card redraws");
@@ -513,13 +533,55 @@ fn a_card_settles_before_it_answers_and_y_takes_two_steps() {
     assert_eq!(desk.ask(), None);
 }
 
+/// Typing straight through the card's arrival ("copy my notes", a key every
+/// 120 ms) never answers it: each key starts the quiet time again.
 #[test]
-fn a_click_on_run_answers_at_once_once_settled() {
+fn typing_straight_through_a_card_never_answers_it() {
+    let (mut desk, _) = desk_with(1);
+    desk.show_ask(3, 1);
+    desk.card_drawn(0);
+    // c o p y _ m y _ n o t e s, then on and on.
+    let codes = [
+        0x06, 0x12, 0x13, 0x1C, 0x2C, 0x10, 0x1C, 0x2C, 0x11, 0x12, 0x17, 0x08, 0x16,
+    ];
+    for (n, code) in codes.iter().cycle().take(80).enumerate() {
+        let effects = press_at(&mut desk, 100 + 120 * n as u64, *code);
+        assert!(effects.is_empty(), "key {n} answered: {effects:?}");
+    }
+    assert!(desk.ask().is_some_and(|a| !a.armed));
+}
+
+/// `y`, another key, `y`: the other key disarms the card, and the second `y`
+/// only arms it again once the keys are quiet.
+#[test]
+fn y_then_another_key_then_y_does_not_run_it() {
+    let (mut desk, _) = desk_with(1);
+    desk.show_ask(4, 1);
+    desk.card_drawn(0);
+    assert!(press_at(&mut desk, SETTLED, usage::Y).is_empty());
+    assert!(desk.ask().unwrap().armed);
+    assert!(press_at(&mut desk, SETTLED + 100, 0x04).is_empty());
+    assert!(!desk.ask().unwrap().armed);
+    assert!(press_at(&mut desk, SETTLED + 200, usage::Y).is_empty());
+    assert!(!desk.ask().unwrap().armed, "too soon after the other key");
+    // Quiet again: arm, then run.
+    assert!(press_at(&mut desk, 2 * SETTLED + 300, usage::Y).is_empty());
+    assert!(
+        press_at(&mut desk, 2 * SETTLED + 400, usage::Y)
+            .contains(&Effect::Answer { id: 4, yes: true })
+    );
+}
+
+#[test]
+fn a_click_on_run_answers_at_once_once_quiet() {
     let (mut desk, _) = desk_with(1);
     desk.show_ask(6, 1);
-    desk.set_now(SETTLED);
+    desk.card_drawn(0);
     let card = crate::trusted::card(W, H, &desk.ask().unwrap());
     let (yes, _) = crate::trusted::buttons(card);
+    desk.set_now(SETTLED - 1);
+    assert!(click(&mut desk, centre(yes)).is_empty());
+    desk.set_now(2 * SETTLED);
     assert!(click(&mut desk, centre(yes)).contains(&Effect::Answer { id: 6, yes: true }));
 }
 
