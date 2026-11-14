@@ -166,10 +166,11 @@ impl Shell {
     }
 
     /// Whether `app` is an app the system has: a service the supervisor runs
-    /// as its `<app>-window`, or by that name when the supervisor runs it as an
-    /// app (`crate::apps::is_app`), which the image's built-ins and installed
-    /// packages are. The shell, llm and the other services are not, so "open
-    /// shell" is the model's. Without the list, none is: the model decides.
+    /// as its `<app>-window`, or by that name unless the supervisor says it is
+    /// no app (`crate::apps::is_app`): the image's built-ins and installed
+    /// packages are apps; the shell, llm and the other services are not, so
+    /// "open shell" is the model's. Without the list, none is: the model
+    /// decides.
     fn has_app(&self, app: &str) -> bool {
         let window = format!("{app}-window");
         let Ok(services) = self.host.services() else {
@@ -184,7 +185,7 @@ impl Shell {
         services
             .iter()
             .find(|s| s.name.eq_ignore_ascii_case(app))
-            .is_some_and(|s| crate::apps::is_app(self.host.as_ref(), &s.name))
+            .is_some_and(|s| crate::apps::is_app(self.host.as_ref(), s))
     }
 
     /// `call`, or the call the model makes with what it read in front of it: a
