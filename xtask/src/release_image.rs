@@ -9,20 +9,28 @@
 //! `NOTICES.txt` is written beside it, byte-identical to the image's copy, as
 //! the release's second asset. `release.yml` runs it.
 //!
+//! When `release/pkgrepo/` is committed (P4 task 18's interim key files,
+//! `release_repo`), the image carries it as `pkgrepo/`, checked first: its
+//! `models` role, signed with the founder's `release.key`, names the catalog's
+//! models, so they import. Its `1.root.json` is also the image's `kai.root.json`,
+//! the root update disks are checked against (root
+//! ceremony step 6.1): one root for both. With none committed, the image has
+//! neither, and imports nothing.
+//!
 //! `--test-root` builds the same image with one difference: a `pkgrepo/` whose
 //! `models` role, signed by a fresh test root, names only `qwen3-0.6b`
-//! (`pkgrepo::release_test`). It exists for the case that boots the release and
-//! imports that model (`release_boot.rs`); the shipping image has no `models`
-//! role until task 18's founder-signed one, so a real release imports nothing
-//! until then. Each boot module's hash is printed, so `release.yml` can check
-//! that the two builds differ only beneath `pkgrepo/`.
+//! (`pkgrepo::release_test`), in place of the committed one. `kai.root.json`
+//! stays the founder's. It exists for the case that boots the release and
+//! imports that model (`release_boot.rs`) while no repository is committed.
+//! Each boot module's hash is printed, so `release.yml` can check that the two
+//! builds differ only beneath `pkgrepo/`.
 
 use crate::{components, esp, floatguard, image, options, userbuild};
 use std::fs;
 use std::path::PathBuf;
 
 /// The committed `release_seq`, `release/seq`: one positive number.
-fn release_seq(root: &std::path::Path) -> Result<u32, String> {
+pub(crate) fn release_seq(root: &std::path::Path) -> Result<u32, String> {
     let path = root.join("release").join("seq");
     let text =
         fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
@@ -70,9 +78,11 @@ pub fn main(args: &[String]) -> Result<(), String> {
         path: "kai.slot".into(),
         bytes: record.clone().into_bytes(),
     });
-    if test_root {
-        modules.extend(crate::pkgrepo::release_test()?);
-    }
+    let test = match test_root {
+        true => Some(crate::pkgrepo::release_test()?),
+        false => None,
+    };
+    modules.extend(repository(crate::release_repo::committed(&root)?, test)?);
     print_modules(&modules);
     let efi = crate::ensure_limine(&target_dir)?;
     let esp_dir = target_dir.join(match test_root {
@@ -109,6 +119,44 @@ pub fn main(args: &[String]) -> Result<(), String> {
 
 const USAGE: &str = "usage: cargo xtask release-image [--test-root] [--out PATH]";
 
+/// Where the image carries the root it checks updates against
+/// (`kernel/src/process/syscall/update.rs`).
+const TRUST_ANCHOR: &str = "kai.root.json";
+
+/// The modules for the image's repository: `signed`, the committed
+/// `release/pkgrepo`, beneath `pkgrepo/`, and its root as [`TRUST_ANCHOR`].
+/// `test`, `--test-root`'s repository, replaces it beneath `pkgrepo/` only:
+/// [`TRUST_ANCHOR`] stays the founder's.
+fn repository(
+    signed: Option<crate::release_repo::RepoFiles>,
+    test: Option<Vec<esp::Module>>,
+) -> Result<Vec<esp::Module>, String> {
+    let mut modules = Vec::new();
+    if let Some(files) = &signed {
+        let (_, root) = files
+            .iter()
+            .find(|(path, _)| path == kaipkg::image::ROOT)
+            .ok_or("the committed repository has no root")?;
+        modules.push(esp::Module {
+            path: TRUST_ANCHOR.into(),
+            bytes: root.clone(),
+        });
+    }
+    match (test, signed) {
+        (Some(test), _) => modules.extend(test),
+        (None, Some(files)) => {
+            modules.extend(crate::pkgrepo::as_modules(crate::pkgrepo::Repository {
+                files,
+            })?)
+        }
+        (None, None) => println!(
+            "xtask: no {} is committed: no models role",
+            crate::release_repo::REPO
+        ),
+    }
+    Ok(modules)
+}
+
 /// Each boot module's path, length and SHA-256, in path order: two builds
 /// that differ only beneath `pkgrepo/` print the same lines but those.
 fn print_modules(modules: &[esp::Module]) {
@@ -144,4 +192,46 @@ fn sha256_file(path: &std::path::Path) -> Result<String, String> {
         hash.update(&piece[..n]);
     }
     Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn module(path: &str) -> esp::Module {
+        esp::Module {
+            path: path.into(),
+            bytes: b"x".to_vec(),
+        }
+    }
+
+    /// The committed repository's root is `kai.root.json` too, byte for byte,
+    /// and `--test-root` swaps the repository alone.
+    #[test]
+    fn the_founders_root_is_the_trust_anchor_and_stays_under_a_test_root() {
+        let signed = vec![
+            (kaipkg::image::ROOT.to_string(), b"founder".to_vec()),
+            ("metadata/timestamp.json".to_string(), b"ts".to_vec()),
+        ];
+        let real = repository(Some(signed.clone()), None).unwrap();
+        let paths: Vec<&str> = real.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                TRUST_ANCHOR,
+                "pkgrepo/metadata/1.root.json",
+                "pkgrepo/metadata/timestamp.json"
+            ]
+        );
+        assert_eq!(real[0].bytes, real[1].bytes);
+        let test = vec![module("pkgrepo/metadata/1.root.json")];
+        let tested = repository(Some(signed), Some(test)).unwrap();
+        assert_eq!(tested.len(), 2);
+        assert_eq!(
+            (tested[0].path.as_str(), &tested[0].bytes[..]),
+            (TRUST_ANCHOR, &b"founder"[..])
+        );
+        assert_eq!(tested[1].bytes, b"x");
+        assert!(repository(None, None).unwrap().is_empty());
+    }
 }

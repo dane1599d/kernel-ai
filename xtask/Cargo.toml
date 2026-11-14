@@ -19,6 +19,9 @@ infer = { path = "../infer" }
 diskmap = { path = "../diskmap" }
 kaifs = { path = "../kaifs" }
 kaipkg = { path = "../kaipkg" }
+# `release-repo` checks the founder's signatures and reads their PEM keys with it
+# (P4 task 18); the update disk's test reads its metadata back.
+kaituf = { path = "../kaituf" }
 kabi = { path = "../kabi" }
 kaibundle = { path = "../kaibundle", features = ["alloc"] }
 livecore = { path = "../livecore" }
@@ -49,8 +52,6 @@ wit-bindgen-core = "=0.63.0"
 semver = "1.0.28"
 
 [dev-dependencies]
-# The update disk's test reads its metadata back.
-kaituf = { path = "../kaituf" }
 # The slot disk's tests read its kai-slot 1 back.
 bootslot = { path = "../bootslot" }
 wat = "1.262.0"

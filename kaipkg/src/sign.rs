@@ -29,6 +29,12 @@
 //! Keys are Ed25519 (`ed25519-compact`). Every file is canonical JSON
 //! (`kaituf::canonical`, the verifier's own), and each signature is over the
 //! canonical bytes of its `signed` object.
+//!
+//! Building and signing are apart ([`unsigned`], [`timestamp`],
+//! [`signed_envelope`]), so a release's roles can be written out, signed
+//! elsewhere with keys this code never holds, and put together after (P4 task
+//! 18's key files, `cargo xtask release-repo`). [`build_with_models`] is the
+//! same steps with keys in hand.
 
 use crate::generation::Time;
 use crate::{Sha, hex, sha256};
@@ -41,7 +47,7 @@ use ed25519_compact::{KeyPair, Seed};
 use serde_json::{Map, Value, json};
 
 pub const SPEC_VERSION: &str = "1.0.37";
-const DAY: u64 = 86_400;
+pub const DAY: u64 = 86_400;
 /// The delegated role every package sits under, and what it may sign for.
 pub const PACKAGES: &str = "packages";
 const PACKAGE_PATHS: &[&str] = &["*.kpkg"];
@@ -66,6 +72,28 @@ pub const ADR_0008: Periods = Periods {
     timestamp: 7,
 };
 
+/// One role's Ed25519 public key: what metadata names, and all of a key that
+/// signs elsewhere, as a founder's key file, is here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PublicKey(pub [u8; 32]);
+
+impl PublicKey {
+    /// The key as TUF writes it in `keys`.
+    pub fn public(&self) -> Value {
+        json!({
+            "keytype": "ed25519",
+            "scheme": "ed25519",
+            "keyval": { "public": hex_bytes(&self.0) },
+        })
+    }
+
+    /// The SHA-256 of the canonical public key, as tuf-on-ci and python-tuf name keys.
+    pub fn id(&self) -> String {
+        let public = canonical(&self.public()).expect("a key is plain JSON");
+        hex(&sha256(&public))
+    }
+}
+
 /// One role's Ed25519 key.
 #[derive(Clone)]
 pub struct Key {
@@ -79,25 +107,28 @@ impl Key {
         }
     }
 
+    pub fn public_key(&self) -> PublicKey {
+        let mut raw = [0u8; 32];
+        raw.copy_from_slice(self.pair.pk.as_ref());
+        PublicKey(raw)
+    }
+
     /// The key as TUF writes it in `keys`.
     pub fn public(&self) -> Value {
-        json!({
-            "keytype": "ed25519",
-            "scheme": "ed25519",
-            "keyval": { "public": hex_bytes(self.pair.pk.as_ref()) },
-        })
+        self.public_key().public()
     }
 
     /// The SHA-256 of the canonical public key, as tuf-on-ci and python-tuf name keys.
     pub fn id(&self) -> String {
-        let public = canonical(&self.public()).expect("a key is plain JSON");
-        hex(&sha256(&public))
+        self.public_key().id()
     }
 
-    fn sign(&self, signed: &Value) -> Result<Value, String> {
-        let bytes = canonical(signed)?;
-        let sig = self.pair.sk.sign(bytes, None);
-        Ok(json!({ "keyid": self.id(), "sig": hex_bytes(sig.as_ref()) }))
+    /// The Ed25519 signature of `message`, as `openssl pkeyutl -sign -rawin`
+    /// makes it with the same key: Ed25519 signs deterministically.
+    pub fn sign_bytes(&self, message: &[u8]) -> [u8; 64] {
+        let mut raw = [0u8; 64];
+        raw.copy_from_slice(self.pair.sk.sign(message, None).as_ref());
+        raw
     }
 }
 
@@ -125,6 +156,30 @@ impl<'a> Keys<'a> {
             models: None,
         }
     }
+
+    /// Each role's public key.
+    pub fn roles(&self) -> Roles {
+        Roles {
+            root: self.root.public_key(),
+            targets: self.targets.public_key(),
+            snapshot: self.snapshot.public_key(),
+            timestamp: self.timestamp.public_key(),
+            packages: self.packages.public_key(),
+            models: self.models.map(Key::public_key),
+        }
+    }
+}
+
+/// The public keys of one repository, by role: what its metadata names.
+#[derive(Clone, Copy, Debug)]
+pub struct Roles {
+    pub root: PublicKey,
+    pub targets: PublicKey,
+    pub snapshot: PublicKey,
+    pub timestamp: PublicKey,
+    pub packages: PublicKey,
+    /// The `models` role's, or none for a repository that signs no models.
+    pub models: Option<PublicKey>,
 }
 
 /// One package as a target: its path `<name>-<version>.kpkg`, its bytes and its
@@ -170,6 +225,58 @@ pub fn build_with_models(
     now: Time,
     periods: Periods,
 ) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let roles = unsigned(targets, models, &keys.roles(), now, periods, 1)?;
+    let snapshot = envelope(&roles.snapshot, keys.snapshot)?;
+    let timestamp = timestamp(&snapshot, 1, now, periods);
+    let mut files = roles.files;
+    files.extend([
+        (path("root", 1), envelope(&roles.root, keys.root)?),
+        (path("targets", 1), envelope(&roles.targets, keys.targets)?),
+        (path(PACKAGES, 1), envelope(&roles.packages, keys.packages)?),
+        (path("snapshot", 1), snapshot),
+        (TIMESTAMP_PATH.into(), envelope(&timestamp, keys.timestamp)?),
+    ]);
+    if let (Some(signed), Some(key)) = (&roles.models, keys.models) {
+        files.push((path(MODELS, 1), envelope(signed, key)?));
+    }
+    Ok(files)
+}
+
+/// Where a role's metadata at `version` sits, consistent snapshots' name:
+/// `metadata/<version>.<role>.json`. The timestamp's is [`TIMESTAMP_PATH`].
+pub fn path(role: &str, version: u64) -> String {
+    format!("metadata/{version}.{role}.json")
+}
+
+/// Where the timestamp sits: the one name a client knows before any other.
+pub const TIMESTAMP_PATH: &str = "metadata/timestamp.json";
+
+/// A repository's roles before they are signed: each one's `signed` object,
+/// and the target files beside them. The timestamp is not here, as it holds
+/// the SHA-256 of the snapshot as signed ([`timestamp`]).
+pub struct Unsigned {
+    pub root: Value,
+    pub targets: Value,
+    pub packages: Value,
+    /// The `models` role's, when the roles have its key.
+    pub models: Option<Value>,
+    pub snapshot: Value,
+    /// Each target's bytes, by its consistent-snapshot path under `targets/`.
+    pub files: Vec<(String, Vec<u8>)>,
+}
+
+/// The roles of the repository for `targets` and `models`, named by `roles`'
+/// keys and expiring `periods` after `now`, unsigned: root at version 1, the
+/// others at `version`, which a release takes from its `release_seq` so that
+/// it only rises.
+pub fn unsigned(
+    targets: &[Target],
+    models: &[Model],
+    keys: &Roles,
+    now: Time,
+    periods: Periods,
+    version: u64,
+) -> Result<Unsigned, String> {
     if keys.models.is_none() && !models.is_empty() {
         return Err("models are signed only with a models key".into());
     }
@@ -202,28 +309,28 @@ pub fn build_with_models(
         "version": 1,
         "expires": expires(periods.root),
         "consistent_snapshot": true,
-        "keys": key_map(&[keys.root, keys.targets, keys.snapshot, keys.timestamp]),
+        "keys": key_map(&[&keys.root, &keys.targets, &keys.snapshot, &keys.timestamp]),
         "roles": {
-            "root": role(keys.root),
-            "targets": role(keys.targets),
-            "snapshot": role(keys.snapshot),
-            "timestamp": role(keys.timestamp),
+            "root": role(&keys.root),
+            "targets": role(&keys.targets),
+            "snapshot": role(&keys.snapshot),
+            "timestamp": role(&keys.timestamp),
         },
     });
-    let mut delegated_keys = vec![keys.packages];
-    let mut roles = vec![delegation(PACKAGES, keys.packages, PACKAGE_PATHS)];
+    let mut delegated_keys = vec![&keys.packages];
+    let mut roles = vec![delegation(PACKAGES, &keys.packages, PACKAGE_PATHS)];
     let mut meta = Map::new();
-    meta.insert("targets.json".into(), json!({ "version": 1 }));
-    meta.insert("packages.json".into(), json!({ "version": 1 }));
-    if let Some(key) = keys.models {
+    meta.insert("targets.json".into(), json!({ "version": version }));
+    meta.insert("packages.json".into(), json!({ "version": version }));
+    if let Some(key) = &keys.models {
         delegated_keys.push(key);
         roles.push(delegation(MODELS, key, MODEL_PATHS));
-        meta.insert(format!("{MODELS}.json"), json!({ "version": 1 }));
+        meta.insert(format!("{MODELS}.json"), json!({ "version": version }));
     }
     let top = json!({
         "_type": "targets",
         "spec_version": SPEC_VERSION,
-        "version": 1,
+        "version": version,
         "expires": expires(periods.targets),
         "targets": {},
         "delegations": { "keys": key_map(&delegated_keys), "roles": roles },
@@ -232,7 +339,7 @@ pub fn build_with_models(
         json!({
             "_type": "targets",
             "spec_version": SPEC_VERSION,
-            "version": 1,
+            "version": version,
             "expires": expires(periods.targets),
             "targets": targets,
         })
@@ -240,47 +347,36 @@ pub fn build_with_models(
     let snapshot = json!({
         "_type": "snapshot",
         "spec_version": SPEC_VERSION,
-        "version": 1,
+        "version": version,
         "expires": expires(periods.snapshot),
         "meta": meta,
     });
-    let snapshot = envelope(&snapshot, keys.snapshot)?;
-    let timestamp = json!({
+    Ok(Unsigned {
+        root,
+        targets: top,
+        packages: delegated(listed),
+        models: keys.models.map(|_| delegated(model_targets)),
+        snapshot,
+        files,
+    })
+}
+
+/// The timestamp role at `version` for `snapshot`, the snapshot role's file
+/// as signed, of the same version, expiring `periods` after `now`.
+pub fn timestamp(snapshot: &[u8], version: u64, now: Time, periods: Periods) -> Value {
+    json!({
         "_type": "timestamp",
         "spec_version": SPEC_VERSION,
-        "version": 1,
-        "expires": expires(periods.timestamp),
+        "version": version,
+        "expires": Time(now.0 + periods.timestamp * DAY).format(),
         "meta": {
             "snapshot.json": {
-                "version": 1,
+                "version": version,
                 "length": snapshot.len(),
-                "hashes": { "sha256": hex(&sha256(&snapshot)) },
+                "hashes": { "sha256": hex(&sha256(snapshot)) },
             },
         },
-    });
-    files.extend([
-        ("metadata/1.root.json".into(), envelope(&root, keys.root)?),
-        (
-            "metadata/1.targets.json".into(),
-            envelope(&top, keys.targets)?,
-        ),
-        (
-            "metadata/1.packages.json".into(),
-            envelope(&delegated(listed), keys.packages)?,
-        ),
-        ("metadata/1.snapshot.json".into(), snapshot),
-        (
-            "metadata/timestamp.json".into(),
-            envelope(&timestamp, keys.timestamp)?,
-        ),
-    ]);
-    if let Some(key) = keys.models {
-        files.push((
-            format!("metadata/1.{MODELS}.json"),
-            envelope(&delegated(model_targets), key)?,
-        ));
-    }
-    Ok(files)
+    })
 }
 
 /// `models` as the `models` role's targets, each path new to `names`, with
@@ -324,7 +420,7 @@ fn listed_models(
 }
 
 /// A terminating delegation of `paths` to the role `name`, signed by `key`.
-fn delegation(name: &str, key: &Key, paths: &[&str]) -> Value {
+fn delegation(name: &str, key: &PublicKey, paths: &[&str]) -> Value {
     json!({
         "name": name,
         "keyids": [key.id()],
@@ -334,19 +430,28 @@ fn delegation(name: &str, key: &Key, paths: &[&str]) -> Value {
     })
 }
 
-/// `keys` as a role's `keys` map: each key's id to its public key.
-pub fn key_map(keys: &[&Key]) -> Value {
+/// `keys` as a role's `keys` map: each key's id to its public key. One key
+/// named twice, as one key for several roles, is one entry.
+pub fn key_map(keys: &[&PublicKey]) -> Value {
     Value::Object(keys.iter().map(|k| (k.id(), k.public())).collect())
 }
 
 /// A role signed by `key` alone.
-pub fn role(key: &Key) -> Value {
+pub fn role(key: &PublicKey) -> Value {
     json!({ "keyids": [key.id()], "threshold": 1 })
 }
 
-/// `signed` with its one signature, as canonical JSON.
+/// `signed` with its one signature, by `key`, as canonical JSON.
 pub fn envelope(signed: &Value, key: &Key) -> Result<Vec<u8>, String> {
-    canonical(&json!({ "signed": signed, "signatures": [key.sign(signed)?] }))
+    let sig = key.sign_bytes(&canonical(signed)?);
+    signed_envelope(signed, &key.public_key(), &sig)
+}
+
+/// `signed` with `sig`, made elsewhere over its canonical bytes by `key`'s
+/// private half, as canonical JSON. The signature is not checked here.
+pub fn signed_envelope(signed: &Value, key: &PublicKey, sig: &[u8; 64]) -> Result<Vec<u8>, String> {
+    let signature = json!({ "keyid": key.id(), "sig": hex_bytes(sig) });
+    canonical(&json!({ "signed": signed, "signatures": [signature] }))
 }
 
 /// OLPC canonical JSON, as securesystemslib writes it for TUF: kaituf's own,
@@ -361,126 +466,4 @@ pub fn hex_bytes(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// RFC 8032 §7.1, test 1: the key and the signature of the empty message.
-    #[test]
-    fn keys_sign_as_rfc_8032_says() {
-        let seed = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
-        let seed: Vec<u8> = (0..64)
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&seed[i..i + 2], 16).unwrap())
-            .collect();
-        let key = Key::from_seed(seed.try_into().unwrap());
-        assert_eq!(
-            key.public()["keyval"]["public"],
-            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
-        );
-        assert_eq!(
-            hex_bytes(key.pair.sk.sign(b"", None).as_ref()),
-            "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065\
-             224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
-        );
-        assert_eq!(key.id(), hex(&sha256(&canonical(&key.public()).unwrap())));
-    }
-
-    fn model() -> Model {
-        Model {
-            path: "tiny.gguf".into(),
-            length: 4096,
-            sha256: [7; 32],
-            kai: json!({ "name": "Tiny" }),
-            chunks: None,
-        }
-    }
-
-    fn paths(files: &[(String, Vec<u8>)]) -> Vec<&str> {
-        files.iter().map(|(p, _)| p.as_str()).collect()
-    }
-
-    #[test]
-    fn a_devices_own_repository_signs_no_models() {
-        let key = Key::from_seed([1; Seed::BYTES]);
-        let local = build(&[], &Keys::one(&key), Time(0), ADR_0008).unwrap();
-        assert!(paths(&local).iter().all(|p| !p.contains(MODELS)));
-        let with = build_with_models(&[], &[model()], &Keys::one(&key), Time(0), ADR_0008);
-        assert!(with.is_err(), "no models key, no models");
-    }
-
-    #[test]
-    fn a_models_key_signs_each_model_without_its_bytes() {
-        let key = Key::from_seed([1; Seed::BYTES]);
-        let models_key = Key::from_seed([2; Seed::BYTES]);
-        let keys = Keys {
-            models: Some(&models_key),
-            ..Keys::one(&key)
-        };
-        let files = build_with_models(&[], &[model()], &keys, Time(0), ADR_0008).unwrap();
-        assert!(paths(&files).iter().all(|p| !p.starts_with("targets/")));
-        let (_, role) = files
-            .iter()
-            .find(|(p, _)| p == "metadata/1.models.json")
-            .unwrap();
-        let role: Value = serde_json::from_slice(role).unwrap();
-        let target = &role["signed"]["targets"]["tiny.gguf"];
-        assert_eq!(target["length"], 4096);
-        assert_eq!(target["hashes"]["sha256"], hex(&[7; 32]));
-        assert_eq!(role["signatures"][0]["keyid"], models_key.id());
-        let not_a_model = Model {
-            path: "tiny.kpkg".into(),
-            ..model()
-        };
-        assert!(build_with_models(&[], &[not_a_model], &keys, Time(0), ADR_0008).is_err());
-    }
-
-    #[test]
-    fn a_models_chunk_list_is_signed_beside_it_with_its_bytes() {
-        let key = Key::from_seed([1; Seed::BYTES]);
-        let models_key = Key::from_seed([2; Seed::BYTES]);
-        let keys = Keys {
-            models: Some(&models_key),
-            ..Keys::one(&key)
-        };
-        let list = b"kai-chunks 1\n".to_vec();
-        let with = Model {
-            chunks: Some(list.clone()),
-            ..model()
-        };
-        let files = build_with_models(&[], &[with], &keys, Time(0), ADR_0008).unwrap();
-        let file = |path: &str| files.iter().find(|(p, _)| p == path).map(|(_, b)| b);
-        let role: Value = serde_json::from_slice(file("metadata/1.models.json").unwrap()).unwrap();
-        let name = format!("{}.chunks", hex(&[7; 32]));
-        let target = &role["signed"]["targets"][&name];
-        let sha = hex(&sha256(&list));
-        assert_eq!(target["length"], list.len());
-        assert_eq!(target["hashes"]["sha256"], sha);
-        assert!(target.get("custom").is_none());
-        assert_eq!(file(&format!("targets/{sha}.{name}")), Some(&list));
-        // The model itself still has no bytes.
-        assert!(role["signed"]["targets"]["tiny.gguf"].is_object());
-        assert_eq!(
-            paths(&files)
-                .iter()
-                .filter(|p| p.starts_with("targets/"))
-                .count(),
-            1
-        );
-        // The role is delegated both kinds of path.
-        let top: Value = serde_json::from_slice(file("metadata/1.targets.json").unwrap()).unwrap();
-        let delegated = &top["signed"]["delegations"]["roles"][1];
-        assert_eq!(delegated["name"], MODELS);
-        assert_eq!(delegated["paths"], json!(["*.gguf", "*.chunks"]));
-        // Two models with one GGUF would sign one list twice.
-        let twin = || Model {
-            chunks: Some(list.clone()),
-            ..model()
-        };
-        let second = Model {
-            path: "twin.gguf".into(),
-            ..twin()
-        };
-        let both = build_with_models(&[], &[twin(), second], &keys, Time(0), ADR_0008);
-        assert!(both.unwrap_err().contains("twice"));
-    }
-}
+mod tests;
