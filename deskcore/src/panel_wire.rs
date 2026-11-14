@@ -39,6 +39,7 @@ pub fn parse_appearance(request: &str) -> Option<&str> {
 }
 const STATE: &str = "panel state ";
 const SAID: &str = "panel said ";
+const NOTE: &str = "panel note ";
 /// The most a [`SAID`] request's text holds.
 pub const MAX_SAID: usize = crate::chat::MAX_TEXT;
 
@@ -56,6 +57,23 @@ pub fn encode_said(text: &str) -> String {
 pub fn parse_said(request: &str) -> Option<&str> {
     request
         .strip_prefix(SAID)
+        .filter(|text| text.len() <= MAX_SAID)
+}
+
+/// A question code asked the line the shell took last (which target), as
+/// its request: for the history as code's note, never Kai's words.
+pub fn encode_note(text: &str) -> String {
+    let mut end = text.len().min(MAX_SAID);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{NOTE}{}", &text[..end])
+}
+
+/// The text a [`encode_note`] request carries; `None` for anything else.
+pub fn parse_note(request: &str) -> Option<&str> {
+    request
+        .strip_prefix(NOTE)
         .filter(|text| text.len() <= MAX_SAID)
 }
 /// The longest text a state carries: the panel shows one line.
@@ -216,6 +234,12 @@ mod tests {
         let over = alloc::format!("{SAID}{}", "x".repeat(MAX_SAID + 1));
         assert_eq!(parse_said(&over), None);
         assert_eq!(parse_said("panel state done x"), None);
+        assert_eq!(
+            parse_note(&encode_note("Which service?")),
+            Some("Which service?")
+        );
+        assert_eq!(parse_said(&encode_note("x")), None);
+        assert_eq!(parse_note(&encode_said("x")), None);
         assert_eq!(parse_state(&encode_said("x")), None);
     }
 

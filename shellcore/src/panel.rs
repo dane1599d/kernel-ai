@@ -29,6 +29,8 @@ pub enum PanelResult {
 const ASKS: &str = "it asks first: ask in the terminal, which shows the script";
 /// The bar's line when the model asked a question: it is in the history.
 const ASKED: &str = "Kai asked a question above: answer it here";
+/// The bar's line when code asked which one: the question is in the history.
+const WHICH: &str = "A question above: answer it here";
 /// The bar's line when the model answered in words: they are in the history.
 const ANSWERED: &str = "Kai answered above.";
 /// The most of what the AI said that the history is given.
@@ -73,6 +75,7 @@ impl Shell {
         self.worded = false;
         self.done_line = None;
         self.panel_said = None;
+        self.panel_note = None;
         self.clarified_by_model = false;
         // The panel's own question, if its last line left one: this line
         // answers it.
@@ -100,6 +103,13 @@ impl Shell {
     /// the person's own lines and for what said nothing.
     pub fn take_panel_said(&mut self) -> Option<String> {
         self.panel_said.take()
+    }
+
+    /// A question code asked the last panel line, once: which target it
+    /// means. It goes to the desk's history as code's note, never to the bar,
+    /// since it can carry a name the model chose.
+    pub fn take_panel_note(&mut self) -> Option<String> {
+        self.panel_note.take()
     }
 
     /// The reply's text when the model wrote it: its words (an answer, or its
@@ -157,17 +167,21 @@ impl Shell {
             return refused(OPEN);
         }
         if self.clarifying.is_some() {
-            // The model's question is in the history; code's is short, and
-            // shown here. Either way the next panel line answers it.
-            let question = match self.clarified_by_model {
-                true => String::from(ASKED),
-                false => reply
-                    .text
-                    .lines()
-                    .find(|line| !line.trim().is_empty())
-                    .map_or_else(|| String::from(ASKED), String::from),
-            };
-            return PanelResult::Done(question);
+            // The question is in the history: the model's as Kai's words,
+            // code's as a note. The bar's line is fixed, and the next panel
+            // line answers it.
+            if self.clarified_by_model {
+                return PanelResult::Done(String::from(ASKED));
+            }
+            let question = reply.text.trim();
+            if !question.is_empty() {
+                let mut end = question.len().min(MAX_SAID);
+                while !question.is_char_boundary(end) {
+                    end -= 1;
+                }
+                self.panel_note = Some(String::from(&question[..end]));
+            }
+            return PanelResult::Done(String::from(WHICH));
         }
         if self.worded {
             return PanelResult::Done(String::from(ANSWERED));

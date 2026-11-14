@@ -186,3 +186,38 @@ fn a_claim_that_changed_nothing_is_kais_and_the_bar_says_so() {
     let said = shell.take_panel_said();
     assert_eq!(said.as_deref(), Some("Firewall change applied."));
 }
+
+/// #859's re-review: code's question can carry a name the model chose, so the
+/// bar shows a fixed line and the question goes to the history as a note,
+/// never as Kai's words; the panel's next line answers it.
+#[test]
+fn codes_question_goes_to_the_history_and_the_bar_stays_fixed() {
+    let (host, mut shell) = with_calls(vec![
+        call(r#"{"name":"process_stop","arguments":{"name":"process_name"}}"#),
+        call(r#"{"name":"process_stop","arguments":{"name":"editor"}}"#),
+    ]);
+    let shown = shell.eval_panel("stop the process");
+    assert_eq!(
+        shown,
+        PanelResult::Done("A question above: answer it here".into())
+    );
+    assert_eq!(shell.take_panel_said(), None);
+    assert_eq!(
+        shell.take_panel_note().as_deref(),
+        Some("Which name? \"process_name\" is a placeholder, not one you named.")
+    );
+    shell.eval_panel("editor");
+    assert_eq!(host.act_lines.borrow()[1], "stop the process editor");
+}
+
+#[test]
+fn new_forgets_the_panels_question() {
+    let (host, mut shell) = with_calls(vec![
+        call(r#"{"name":"clarify","arguments":{"question":"Which policy?"}}"#),
+        call(RR),
+    ]);
+    shell.eval_panel("switch the policy");
+    assert!(shell.eval("new").ok);
+    shell.eval_panel("round robin");
+    assert_eq!(host.act_lines.borrow()[1], "round robin");
+}

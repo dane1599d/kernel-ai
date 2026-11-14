@@ -688,6 +688,10 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         }
         return Some(String::from("ok"));
     }
+    if let Some(note) = panel_wire::parse_note(text) {
+        chat_push(state, Who::Note, note);
+        return Some(String::from("ok"));
+    }
     let Some(shown) = panel_wire::parse_state(text) else {
         return Some(String::from("err not a panel request"));
     };

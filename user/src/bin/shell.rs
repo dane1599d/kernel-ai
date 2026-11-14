@@ -211,8 +211,10 @@ fn take_panel(shell: &mut Shell) {
         Some(Some(Request::Line(line))) => {
             ui::begin();
             let result = shell.eval_panel(&line);
-            if let Some(said) = shell.take_panel_said() {
-                match ask_desktop(route, &panel_wire::encode_said(&said)) {
+            let said = shell.take_panel_said().map(|s| panel_wire::encode_said(&s));
+            let note = shell.take_panel_note().map(|n| panel_wire::encode_note(&n));
+            for request in said.iter().chain(note.iter()) {
+                match ask_desktop(route, request) {
                     Ok(answer) if answer == "ok" => {}
                     Ok(answer) => println!("the panel's history was not given it: {answer}"),
                     Err(why) => println!("the panel's history was not given it: {why}"),
