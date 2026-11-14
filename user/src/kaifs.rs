@@ -17,7 +17,7 @@ use alloc::format;
 use alloc::string::String;
 use fsproto::{Error, How, Reply, Request};
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER, Rights};
-use kainet::download::{DownloadError, Partial};
+use kainet::download::{DownloadError, Partial, SHORT_READ};
 
 const CALL_MS: u64 = 30_000;
 
@@ -87,8 +87,9 @@ pub fn size(dir: Handle, name: &str) -> Result<Option<u64>, String> {
     }
 }
 
-/// Reads `buf.len()` bytes of `file` from `off`.
-fn read_at(file: Handle, off: u64, buf: &mut [u8]) -> Result<(), String> {
+/// Fills `buf` from `file` at `off`, a message at a time: how many bytes it
+/// filled, short where the file ends.
+fn read_at(file: Handle, off: u64, buf: &mut [u8]) -> Result<usize, String> {
     let mut at = 0;
     while at < buf.len() {
         let len = (buf.len() - at).min(fsproto::MAX_DATA) as u32;
@@ -97,14 +98,16 @@ fn read_at(file: Handle, off: u64, buf: &mut [u8]) -> Result<(), String> {
             len,
         };
         match ask(file, request)? {
-            (Reply::Data(data), _) if !data.is_empty() && data.len() <= buf.len() - at => {
+            // fs answers nothing at the file's end.
+            (Reply::Data(data), _) if data.is_empty() => break,
+            (Reply::Data(data), _) if data.len() <= buf.len() - at => {
                 buf[at..at + data.len()].copy_from_slice(&data);
                 at += data.len();
             }
             other => return Err(format!("a read at {}: {other:?}", off + at as u64)),
         }
     }
-    Ok(())
+    Ok(at)
 }
 
 /// Writes `bytes` to `file` from `off`, a message at a time.
@@ -236,8 +239,8 @@ impl Kaifs {
             (other, _) => return Err(format!("the mark's stat: {other:?}")),
         };
         let mut text = alloc::vec![0u8; size.min(20)];
-        read_at(mark, 0, &mut text)?;
-        core::str::from_utf8(&text)
+        let got = read_at(mark, 0, &mut text)?;
+        core::str::from_utf8(&text[..got])
             .ok()
             .and_then(|t| t.trim().parse().ok())
             .ok_or_else(|| String::from("the mark is not a number"))
@@ -286,12 +289,22 @@ impl Partial for Kaifs {
         result.map_err(|e| self.failed(e, "a write"))
     }
 
+    /// A read the partial ends before, or of a partial that is not there,
+    /// fails with [`SHORT_READ`], which a resume counts as a chunk to fetch
+    /// again; any other failure is the store's.
     fn read(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), DownloadError> {
-        let result = self.handle(false, false).and_then(|file| {
-            let file = file.ok_or_else(|| String::from("no partial to read"))?;
-            read_at(file, offset, buf)
+        let result = self.handle(false, false).and_then(|file| match file {
+            Some(file) => read_at(file, offset, buf),
+            None => Ok(0),
         });
-        result.map_err(|e| self.failed(e, "a read"))
+        match result {
+            Ok(got) if got == buf.len() => Ok(()),
+            Ok(got) => {
+                let why = format!("{got} of {} bytes at {offset}", buf.len());
+                Err(self.failed(why, SHORT_READ))
+            }
+            Err(e) => Err(self.failed(e, "a read")),
+        }
     }
 
     /// The partial's length, by `Stat` on its handle: what `download` holds

@@ -375,3 +375,45 @@ fn a_click_in_a_scrolled_table_picks_the_row_it_shows() {
     let at = Point::new(b.x + 4, b.y + 1 + ROW_H + ROW_H / 2);
     assert_eq!(click(&mut w, at), [UiEvent::Changed(1, Value::Index(7))]);
 }
+
+/// The founder's second test (backlog item 5): a window that takes the
+/// keyboard with nothing focused focuses a node that takes text, so the
+/// first key is not dropped; one that has a focused node keeps it.
+#[test]
+fn a_window_taking_the_keyboard_focuses_a_text_node_if_none_has_focus() {
+    let mut w = common::notes();
+    assert_eq!(w.focus_node(), None);
+    w.input(Input::FocusIn, &M);
+    assert_eq!(w.focus_node(), Some(6), "the title, the first text node");
+    let out = w.input(typed("x"), &M);
+    assert!(
+        out.iter().any(|e| matches!(e, UiEvent::Changed(6, _))),
+        "{out:?}"
+    );
+    // A node already focused keeps the focus across a focus out and in.
+    w.focus(3).unwrap();
+    w.input(Input::FocusOut, &M);
+    w.input(Input::FocusIn, &M);
+    assert_eq!(w.focus_node(), Some(3));
+}
+
+/// #872's review: a window with no node that takes text focuses nothing on
+/// taking the keyboard, never a button a stray Space or Enter would press.
+#[test]
+fn a_window_with_only_buttons_focuses_nothing() {
+    let mut w = Window::new("Buttons", 200, 100);
+    w.put(1, ROOT, Layout::FILL, Widget::Stack { axis: Axis::Column })
+        .unwrap();
+    w.put(
+        2,
+        1,
+        Layout::FIT,
+        Widget::Button {
+            text: s("Clear"),
+            action: None,
+        },
+    )
+    .unwrap();
+    w.input(Input::FocusIn, &M);
+    assert_eq!(w.focus_node(), None);
+}

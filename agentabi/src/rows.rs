@@ -365,14 +365,22 @@ pub const MODEL_USE: Action = Action {
     old_name: None,
 };
 
-/// `model_fetch disk`: the attached disk's model copied into the store, if the
-/// signed role names it by length and SHA-256. It asks once: it brings
-/// gigabytes of new bytes. The one source is the import disk until P5's
-/// downloads.
+/// `model_fetch(source, name)`: a model into the store, if the signed role
+/// names it by length and SHA-256. `disk` copies the attached disk's model;
+/// `net` downloads the signed model `name` (P5 task 9), or with no name the
+/// one the role recommends for this machine. It asks once: it brings
+/// gigabytes of new bytes.
 pub const MODEL_FETCH: Action = Action {
     name: "model_fetch",
-    doc: "imports a signed model from the attached disk",
-    args: &[arg("source", ArgType::Enum(&["disk"]), Role::Option)],
+    doc: "imports a signed model from disk, or downloads one (net) by id",
+    args: &[
+        arg("source", ArgType::Enum(&["disk", "net"]), Role::Option),
+        arg(
+            "name",
+            ArgType::Opt(&ArgType::Text { max: 64 }),
+            Role::Target,
+        ),
+    ],
     // No undo yet: an imported model stays until a later row removes it, so
     // it is marked destructive, and asks, as every row with no undo does.
     facts: Facts {

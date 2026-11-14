@@ -249,6 +249,9 @@ impl Shell {
                     )));
                 }
                 Err(ActError::Unavailable(why)) => return Round::Failed(Reply::err(why)),
+                Err(ActError::Stopped) => {
+                    return Round::Failed(Reply::err(String::from("stopped")));
+                }
             };
         }
     }

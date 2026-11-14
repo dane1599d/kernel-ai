@@ -534,16 +534,19 @@ fn install_from<S: Remote + Source>(
     if step.ends_with("-again") {
         let current = store::current(cx.vol)?;
         let parent = store::generation(cx.vol, current)?.parent;
+        let started = sys::time_ns();
         let n = store
             .rollback(&mut cx, parent)
             .map_err(|e| format!("{e:?}"))?;
         undone = format!("undo switched to generation {n}; ");
+        bar("undo", started, ROLLBACK_BAR_MS);
     }
     let want = [Want {
         name: FROM_MIRROR,
         range: None,
     }];
     let before = requests(&source);
+    let started = sys::time_ns();
     let result = store.install(
         &mut cx,
         &mut source,
@@ -553,6 +556,9 @@ fn install_from<S: Remote + Source>(
         false,
     );
     let pieces = requests(&source) - before;
+    if result.is_ok() {
+        bar("install of big", started, INSTALL_BAR_MS);
+    }
     let line = match result {
         Ok(n) => format!(
             "{undone}{FROM_MIRROR} installed from {what} as generation {n}, fetched in {pieces} pieces"
@@ -567,6 +573,26 @@ fn install_from<S: Remote + Source>(
         "{line} (store checks: current {})",
         summary.current
     ))
+}
+
+/// S11-2's bars (ADR 0011): under KVM an install takes at most 3 s and a rollback
+/// at most 100 ms.
+const INSTALL_BAR_MS: u64 = 3_000;
+const ROLLBACK_BAR_MS: u64 = 100;
+
+/// Prints how long `what` took since `started`, against its bar. It is a figure
+/// to read, not a check: the cases run under TCG too, which no bar is for.
+fn bar(what: &str, started: u64, bar_ms: u64) {
+    let ns = sys::time_ns().saturating_sub(started);
+    let verdict = match ns / 1_000_000 <= bar_ms {
+        true => "within",
+        false => "OVER",
+    };
+    println!(
+        "pkg: {what} took {}.{:03} ms: {verdict} the {bar_ms} ms bar",
+        ns / 1_000_000,
+        ns / 1_000 % 1_000
+    );
 }
 
 /// The supervisor's route, from the plan line's `uses=supervisor`.
