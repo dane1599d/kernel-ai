@@ -25,6 +25,8 @@ pub struct Ask {
     pub id: u64,
     /// Lines of text the card shows.
     pub lines: i32,
+    /// A first `y` came: the next fresh `y` runs it (the card says so).
+    pub armed: bool,
 }
 
 /// The card's rectangle on a `width` x `height` screen: centred, above the

@@ -424,9 +424,6 @@ pub struct TestRun<'a> {
     /// The case's `differs` text, and where the rest of the first kernel line
     /// containing it is put.
     pub capture: Option<(&'static str, Arc<Mutex<Option<String>>>)>,
-    /// Text no console line may contain, whoever printed it, ring 3 too: the
-    /// first such line fails the boot at its end (founder test 2, test 5).
-    pub forbid: Vec<String>,
 }
 
 pub fn run_test(
@@ -437,6 +434,7 @@ pub fn run_test(
 ) -> Result<(), String> {
     let (accel, timeout, monitor, qmp) = (run.accel, run.timeout, run.monitor, run.qmp);
     let (stages, keys_on, stops) = (run.case.keys, run.case.keys_on, run.case.stops);
+    let forbid = run.case.forbid;
     let expect: Vec<String> = run
         .case
         .expect
@@ -458,7 +456,6 @@ pub fn run_test(
     let (seen_tx, seen_rx) = mpsc::channel();
     let cut_at = run.cut.clone();
     let capture = run.capture.clone();
-    let forbid = run.forbid.clone();
     let all = (expect.clone(), exact.clone(), None, Vec::new(), None);
     // The echo runs apart from the reader, as in icount.rs: printing to a slow CI
     // log must never stop QEMU's output being read. A full pipe makes QEMU hold
@@ -480,8 +477,9 @@ pub fn run_test(
         let mut forbidden: Option<String> = None;
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             let _ = echo_tx.send(line.clone());
-            if forbidden.is_none() && forbid.iter().any(|text| line.contains(text.as_str())) {
-                forbidden = Some(line.trim_end_matches('\r').to_string());
+            // A forbidden text fails the case from any program's line too.
+            if forbidden.is_none() && forbid.iter().any(|text| line.contains(text)) {
+                forbidden = Some(line.trim_end().to_string());
             }
             missing.retain(|text| !line.contains(text.as_str()));
             unseen.retain(|text| line.trim_end_matches('\r') != text);
@@ -563,10 +561,11 @@ pub fn run_test(
             // The power goes: QEMU stops at once, mid-write.
             let _ = child.kill();
             let _ = child.wait();
-            let _ = reader.join();
+            let forbidden = reader.join().ok().and_then(|(.., forbidden)| forbidden);
             let _ = echo.join();
             println!("xtask: power cut {} ms after the line", delay.as_millis());
-            return Ok(());
+            // A cut boot still fails on a forbidden line it printed first.
+            return forbidden_verdict(forbidden);
         }
         if started.elapsed() > timeout {
             // Where every vCPU is, before QEMU goes: a silent hang shows its code.
@@ -576,13 +575,13 @@ pub fn run_test(
             );
             let _ = child.kill();
             let _ = child.wait();
-            // A forbidden line seen before the hang is said too: it may be why.
-            let forbidden = reader.join().ok().and_then(|seen| seen.4);
+            // A forbidden line before the hang is often why: say it too.
+            let forbidden = reader.join().ok().and_then(|(.., forbidden)| forbidden);
             let _ = echo.join();
-            let also = forbidden.map_or_else(String::new, |line| {
-                format!("; the console showed a forbidden line: {line}")
+            let seen = forbidden.map_or_else(String::new, |line| {
+                format!("; a forbidden line was on the console first: {line}")
             });
-            return Err(format!("timed out after {} s{also}", timeout.as_secs()));
+            return Err(format!("timed out after {} s{seen}", timeout.as_secs()));
         }
         thread::sleep(Duration::from_millis(50));
     };
@@ -603,9 +602,7 @@ pub fn run_test(
         );
     }
     // Before QEMU's own verdict: a forbidden line is said however the run ended.
-    if let Some(line) = forbidden {
-        return Err(format!("FAIL: the console showed a forbidden line: {line}"));
-    }
+    forbidden_verdict(forbidden)?;
     let reset = run.case.resets && status.code() == Some(0);
     if stopped {
         println!("xtask: every expected line seen; QEMU stopped");
@@ -620,6 +617,14 @@ pub fn run_test(
     }
     println!("xtask: PASS");
     Ok(())
+}
+
+/// Fails a case that printed a forbidden line ([`crate::cases::FORBID`]).
+fn forbidden_verdict(forbidden: Option<String>) -> Result<(), String> {
+    match forbidden {
+        Some(line) => Err(format!("FAIL: a forbidden line was on the console: {line}")),
+        None => Ok(()),
+    }
 }
 
 /// The kernel's boot line naming the guest's vector features and XCR0, which a

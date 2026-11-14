@@ -64,7 +64,21 @@ impl Shell {
             read: None,
             apps: crate::apps::wire(self.host.as_ref()),
         };
-        let call = match self.host.act(&asked) {
+        let answer = self.host.act(&asked);
+        // The person's Stop ended the call, or came while a model that had
+        // already taken it answered: the line stops here, with no call run and
+        // no script request after it (#887's reviews).
+        let stopped = match &answer {
+            Err(ActError::Stopped) => true,
+            Ok(_) => self.host.interrupted(),
+            Err(_) => false,
+        };
+        if stopped {
+            self.host.audit(&format!("request {id}: stopped"));
+            self.record(id, request, "", "stopped");
+            return Some(Reply::err(String::from("stopped")));
+        }
+        let call = match answer {
             Ok(call) => call,
             // A model that answered but ran out of time, or cut its call off,
             // gets no second, slower try as a script request (S02-2): that
@@ -173,8 +187,14 @@ impl Shell {
             .and_then(Value::as_array)
             .map(|list| list.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
+        // An option no row backs ("increase CPU frequency") is not offered.
+        let options: Vec<&str> = options
+            .into_iter()
+            .filter(|option| crate::abilities::backed(option))
+            .collect();
         self.record(id, request, "", "asked the user to clarify");
         self.clarifying = Some(request.to_string());
+        self.clarified_by_model = true;
         let text = match options.is_empty() {
             true => question,
             false => format!("{question} ({})", options.join(", ")),

@@ -65,6 +65,9 @@ pub enum Told {
     /// One of the app's windows took the keyboard focus (`seat.focus_in`): a
     /// click on it, or Alt+Tab to it.
     Focus(u32),
+    /// The keyboard focus left one of the app's windows (`seat.focus_out`):
+    /// it is no longer in use, so the app may nap once unused.
+    Blur(u32),
     /// The desktop's theme, by name (`surfabi`'s `Theme`): at connect and
     /// after each change. The app's windows paint in it; a name the app does
     /// not know leaves them as they are.
@@ -330,6 +333,11 @@ impl Desk {
                     Ok(Event::FocusIn { surface }) => {
                         if let Some(w) = self.windows.iter().find(|w| w.surface == surface) {
                             out.push(Told::Focus(w.app));
+                        }
+                    }
+                    Ok(Event::FocusOut { surface }) => {
+                        if let Some(w) = self.windows.iter().find(|w| w.surface == surface) {
+                            out.push(Told::Blur(w.app));
                         }
                     }
                     _ => {}
