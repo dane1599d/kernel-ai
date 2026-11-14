@@ -221,6 +221,41 @@ pub(crate) fn wire(host: &dyn crate::Host) -> String {
     text
 }
 
+/// Whether `service` is an app, which only the supervisor knows (an app is
+/// one it runs as a component). Only its "no such app" says not: the shell,
+/// llm. A service that is not running counts as one without asking, which
+/// would start it; so does one whose rows are loaded, and one whose answer
+/// is any other error (slow, busy), as before this check. "No such app" is
+/// remembered for that running instance (its pid), so a service restarted,
+/// as an app installed under its name would be, is asked again.
+pub(crate) fn is_app(host: &dyn crate::Host, service: &crate::targets::Service) -> bool {
+    let app = service.name.as_str();
+    if service.pid == 0 || service.stopped {
+        return true;
+    }
+    if let Some(apps) = host.apps() {
+        let apps = apps.borrow();
+        if apps.rows.has(app) {
+            return true;
+        }
+        if apps.rows.not_app(app, service.pid) {
+            return false;
+        }
+    }
+    match host.app_call(app, livecore::rows::REQUEST) {
+        Err(why) if why == NOT_AN_APP => {
+            if let Some(apps) = host.apps() {
+                apps.borrow_mut()
+                    .rows
+                    .not_apps
+                    .push((app.to_string(), service.pid));
+            }
+            false
+        }
+        Ok(_) | Err(_) => true,
+    }
+}
+
 /// The rows of installed apps that are not running, read by `pkg` from their
 /// stored artifacts (founder test 2, item 3): "make a note called ideas" on a
 /// fresh boot must see `notes_add`, and a call to it starts the app
@@ -396,6 +431,9 @@ pub struct AppRows {
     failed: Vec<String>,
     /// (app, pid) of each running instance [`wire`] asked for its rows.
     asked: Vec<(String, u64)>,
+    /// (service, pid) of each running instance that answered "no such app"
+    /// to [`is_app`].
+    not_apps: Vec<(String, u64)>,
 }
 
 impl AppRows {
@@ -438,6 +476,11 @@ impl AppRows {
             .iter()
             .find(|l| l.app == app)
             .map(|l| l.answer.as_str())
+    }
+
+    /// Whether the instance `pid` of `service` said it is no app.
+    pub fn not_app(&self, service: &str, pid: u64) -> bool {
+        self.not_apps.iter().any(|(s, p)| s == service && *p == pid)
     }
 
     /// Whether `app`'s rows failed to load since boot.
