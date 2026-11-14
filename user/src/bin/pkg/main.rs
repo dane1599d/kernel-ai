@@ -196,8 +196,17 @@ fn serve(mut answer: impl FnMut(&str, &[Handle], u64) -> String) -> ! {
     }
 }
 
-/// `catalog` or `catalog <offset>`: one page of `kai-catalog 1`.
+/// `catalog` or `catalog <offset>`: one page of `kai-catalog 1`. `actions
+/// <package>`: an installed app's `kai-actions 1` rows, read from its stored
+/// artifact, so the shell can show them before the app first runs.
 fn answer(vol: &mut dyn Volume, text: &str) -> String {
+    if let Some(name) = text.strip_prefix("actions ") {
+        return match actions(vol, name.trim()) {
+            Ok(rows) if rows.starts_with("err ") => rows,
+            Ok(rows) => format!("ok {rows}"),
+            Err(why) => format!("err {why}"),
+        };
+    }
     let offset = match text.split_once(' ') {
         None if text == "catalog" => Some(0),
         Some(("catalog", n)) => n.parse::<usize>().ok(),
@@ -210,6 +219,34 @@ fn answer(vol: &mut dyn Volume, text: &str) -> String {
         Ok(rows) => catalog::page(&rows, offset, kabi::MAX_MESSAGE),
         Err(why) => format!("err {why}"),
     }
+}
+
+/// Installed package `name`'s rows, as comphost answers `kai-actions 1` for
+/// the artifact it loads (`livecore::rows::reply`): the same checked section,
+/// with the package's version as the label.
+fn actions(vol: &mut dyn Volume, name: &str) -> Result<String, String> {
+    let current = store::current(vol)?;
+    let package = store::generation(vol, current)?
+        .packages
+        .into_iter()
+        .find(|package| package.name == name)
+        .ok_or_else(|| format!("{name} is not installed"))?;
+    let object = vol
+        .read(&store::object_path(&package.sha))?
+        .ok_or_else(|| format!("{name}'s object is not in the store"))?;
+    let files = bundle::files(&object).map_err(String::from)?;
+    let header = files
+        .iter()
+        .find(|(file, _)| *file == bundle::HEADER)
+        .and_then(|(_, text)| core::str::from_utf8(text).ok())
+        .ok_or_else(|| format!("{name}: no header"))?;
+    let header = Header::parse(header)?;
+    let artifact = files
+        .iter()
+        .find(|(file, _)| *file == bundle::ARTIFACT)
+        .map(|(_, bytes)| *bytes)
+        .ok_or_else(|| format!("{name} is not an app"))?;
+    Ok(livecore::rows::reply(&header.version.to_string(), artifact))
 }
 
 /// The catalogue's rows: the current generation's packages, each with the index

@@ -89,6 +89,10 @@ struct FakeHost {
     act_apps: RefCell<Vec<String>>,
     /// What `unix_seconds` gives.
     wall_clock: Cell<Option<u64>>,
+    /// Installed packages' `kai-actions 1` answers, as `pkg` reads them from
+    /// the store, and each package asked for them.
+    installed: RefCell<Vec<(String, String)>>,
+    installed_asked: RefCell<Vec<String>>,
     /// What the shell asked `desktop`, and how `desktop` answers.
     ui_calls: RefCell<Vec<crate::ui::UiCall>>,
     /// The hosts the network rows reached, as `row host`.
@@ -307,6 +311,8 @@ impl FakeHost {
             act_reads: RefCell::new(Vec::new()),
             act_apps: RefCell::new(Vec::new()),
             wall_clock: Cell::new(None),
+            installed: RefCell::new(Vec::new()),
+            installed_asked: RefCell::new(Vec::new()),
             ui_calls: RefCell::new(Vec::new()),
             net_seen: RefCell::new(Vec::new()),
             queries: RefCell::new(Vec::new()),
@@ -686,6 +692,15 @@ impl Host for FakeHost {
                     "
 ",
                 )),
+            FsRead::Find(word) => Ok(files
+                .keys()
+                .filter(|path| {
+                    let last = path.rsplit('/').next().unwrap_or(path);
+                    last.to_lowercase().contains(&word.to_lowercase())
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")),
             FsRead::Read(path) | FsRead::Whole(path) => files
                 .get(path)
                 .cloned()
@@ -771,6 +786,18 @@ impl Host for FakeHost {
 
     fn unix_seconds(&self) -> Option<u64> {
         self.wall_clock.get()
+    }
+
+    fn installed_rows(&self, package: &str) -> Result<String, String> {
+        self.installed_asked
+            .borrow_mut()
+            .push(String::from(package));
+        self.installed
+            .borrow()
+            .iter()
+            .find(|(name, _)| name == package)
+            .map(|(_, rows)| rows.clone())
+            .ok_or_else(|| format!("{package} is not installed"))
     }
 
     fn services(&self) -> Result<Vec<crate::targets::Service>, String> {

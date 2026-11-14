@@ -98,3 +98,55 @@ fn a_commit_alone_leaves_the_tabs_be() {
     desk.commit(id, size, &[Rect::new(0, 0, 10, 10)]);
     assert!(!bar_damaged(&mut desk));
 }
+
+/// Backlog item 9: a press on a minimized window's tab brings it back.
+#[test]
+fn a_press_on_a_tab_brings_its_window_back() {
+    let mut desk = fresh();
+    let a = open(&mut desk, 1, true);
+    let _b = open(&mut desk, 2, true);
+    let mut effects = Vec::new();
+    desk.minimize(a, &mut effects);
+    assert!(desk.window(a).unwrap().minimized);
+    // The painter's tabs, as `desktop` gives them.
+    let tab = Rect::new(200, 4, 120, 19);
+    desk.set_tabs(alloc::vec![(a, tab)]);
+    click(&mut desk, tab);
+    let w = desk.window(a).unwrap();
+    assert!(!w.minimized, "the tab did not restore it");
+    assert_eq!(desk.focus(), Focus::Window(a));
+}
+
+/// Backlog item 9: the panel and the top bar take their own clicks, even
+/// with a window dragged under them; a dragged title bar stays in reach.
+#[test]
+fn the_bars_take_their_clicks_over_windows_and_title_bars_stay_in_reach() {
+    let mut desk = fresh();
+    let a = open(&mut desk, 1, true);
+    let frame = desk.window(a).unwrap().frame;
+    // Drag it by its title far down, past the panel, and far left.
+    desk.input(Input::Motion(Point {
+        x: frame.x + 100,
+        y: frame.y + 10,
+    }));
+    desk.input(Input::Button {
+        button: Button::Left,
+        down: true,
+    });
+    desk.input(Input::Motion(Point {
+        x: -2000,
+        y: H + 500,
+    }));
+    desk.input(Input::Button {
+        button: Button::Left,
+        down: false,
+    });
+    let moved = desk.window(a).unwrap().frame;
+    let area = desk.work_area();
+    assert!(moved.y + chrome::TITLE_BAR <= area.bottom(), "{moved:?}");
+    assert!(moved.right() >= area.x + 64, "{moved:?}");
+    // A press on the panel focuses the panel, never the window under it.
+    let panel = desk.panel();
+    click(&mut desk, panel);
+    assert_eq!(desk.focus(), Focus::Panel);
+}

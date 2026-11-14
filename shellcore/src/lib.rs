@@ -51,6 +51,7 @@ mod instructions;
 mod models;
 mod netask;
 pub mod netgrant;
+mod sound;
 pub use models::MODELS_APP;
 pub use netask::Connect as NetConnect;
 mod packages;
@@ -124,6 +125,8 @@ pub enum FsRead<'a> {
     Whole(&'a str),
     History(&'a str),
     Changes,
+    /// Paths under home whose last part holds this word, case aside.
+    Find(&'a str),
 }
 
 /// A change the `fs` server makes as one transaction, which `undo` restores.
@@ -271,6 +274,12 @@ pub trait Host {
     /// where the firmware gave no date.
     fn unix_seconds(&self) -> Option<u64> {
         None
+    }
+
+    /// Installed package `package`'s `kai-actions 1` answer, read by `pkg`
+    /// from its stored artifact: an app's rows before it first runs.
+    fn installed_rows(&self, _package: &str) -> Result<String, String> {
+        Err(String::from("there is no pkg service here"))
     }
     /// `cc build`'s work outside the shell's logic: component `name`'s
     /// sources, read from `dir/name/` ([`ccbuild::DIR`], or [`ccbuild::APPS_DIR`]
@@ -668,6 +677,9 @@ pub struct Shell {
     asked_model: bool,
     worded: bool,
     done_line: Option<String>,
+    /// The log entry the last panel line made, if it made one: what the
+    /// panel's undo link undoes ([`Shell::take_panel_entry`]).
+    panel_entry: Option<u64>,
     /// What the AI said to the last panel line, for the desk's history
     /// ([`Shell::take_panel_said`]): the model's words or a model script's
     /// prints, never the panel's own state line.
@@ -773,6 +785,7 @@ impl Shell {
             asked_model: false,
             worded: false,
             done_line: None,
+            panel_entry: None,
             panel_said: None,
             panel_clarifying: None,
             panel_note: None,
@@ -1183,6 +1196,12 @@ impl Shell {
         if let Some(text) = clock::answer(request, self.host.unix_seconds()) {
             // Not `worded`: the panel shows this line itself (#893).
             self.record(id, request, "", "answered from the clock");
+            return Reply::ok(text);
+        }
+        // Sound has one answer until there is an audio driver.
+        if let Some(text) = sound::answer(request) {
+            self.record(id, request, "", "answered: no sound yet");
+            self.worded = true;
             return Reply::ok(text);
         }
         // What Kai can do with something comes from the rows, never the model.
