@@ -26,6 +26,9 @@ pub enum Kind {
     Effects,
     File,
     Settings,
+    /// What came of a request, still to be given to its app: the person's
+    /// Stop withdrew the call that gave it before `desktop` took it.
+    Answer,
 }
 
 /// One held request: its kind, its app, how many requests it counts as (an
@@ -107,7 +110,14 @@ impl<T> Held<T> {
         Some(item.request)
     }
 
-    /// The request [`Held::start`] gave has run.
+    /// A request of `app` the host runs now from elsewhere (the main loop's
+    /// own effect batch): it holds back what comes after it, as one from
+    /// [`Held::start`] does, until [`Held::done`].
+    pub fn running(&mut self, kind: Kind, app: &str, size: usize) {
+        self.running = Some((kind, String::from(app), size));
+    }
+
+    /// The request [`Held::start`] gave, or [`Held::running`] named, has run.
     pub fn done(&mut self) {
         self.running = None;
     }

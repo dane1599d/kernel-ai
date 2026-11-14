@@ -254,6 +254,19 @@ mod held {
         assert!(held.is_empty());
     }
 
+    /// A request the host runs from elsewhere holds its app back as a held
+    /// one does, and an answer still to be given holds back only its own app.
+    #[test]
+    fn a_batch_run_from_elsewhere_and_an_answer_to_give_hold_back_their_app() {
+        let mut held: Held<&str> = Held::default();
+        held.running(Kind::Effects, "terminal-window", 2);
+        assert!(held.blocks("terminal-window") && !held.blocks("files"));
+        held.done();
+        assert!(held.is_empty());
+        held.hold(Kind::Answer, "files", 1, "listing").unwrap();
+        assert!(held.blocks("files") && !held.blocks("editor"));
+    }
+
     /// A held Settings change holds every app's requests back, until it has
     /// run.
     #[test]

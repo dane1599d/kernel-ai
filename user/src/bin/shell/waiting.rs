@@ -11,6 +11,11 @@
 //! which says what waits behind what) and run when the line ends, in the order
 //! they came ([`run_held`]). Past `MAX_HELD` for an app, one is refused at
 //! once.
+//!
+//! The person's Stop (#887) withdraws a call `desktop` has not taken yet. So
+//! a request taken just as the Stop came is held, not served, and an answer
+//! whose giving was withdrawn is held too, and given after the line: an app
+//! never waits for ever on a request the shell took.
 
 use crate::{ask_desktop, desktop};
 use alloc::string::String;
@@ -20,8 +25,8 @@ use deskcore::files::{Job, Op};
 use deskcore::settings_wire::{self as wire, Answer};
 use kabi::Error;
 use kabi::handle::Handle;
-use shellcore::Shell;
 use shellcore::waiting::{Held, Kind, MAX_HELD, Served, Waiting};
+use shellcore::{EffectDone, Shell};
 use user::sys;
 
 /// The longest the shell waits on the model before it looks at what the apps
@@ -37,10 +42,9 @@ const _: () = assert!(MAX_HELD == deskcore::effects::MAX_QUEUED);
 /// running `poll` each [`POLL_MS`] it has not come. A call made while one is
 /// in flight (none should be: a read calls no model) waits as before.
 ///
-/// The person's Stop (#887) lasts the line. Once it is set, no look begins
-/// (an app's request taken from `desktop` would be lost if its call were
-/// cut), and the call ends: llm answers a call it took with `stopped` within
-/// about 50 ms, and one it had not taken is withdrawn (Interrupted).
+/// The person's Stop lasts the line. Once it is set, no look begins, and the
+/// call ends: llm answers a call it took with `stopped` within about 50 ms,
+/// and one it had not taken is withdrawn (Interrupted).
 pub fn call_serving(
     route: Handle,
     request: &[u8],
@@ -71,6 +75,9 @@ pub enum Request {
     File(Job),
     /// The Settings app's requests.
     Settings(String, Vec<wire::Request>),
+    /// What came of an app's request, as the messages still to give
+    /// `desktop`: the person's Stop withdrew the first before it took it.
+    Give(String, Vec<Vec<u8>>),
 }
 
 /// What the apps asked while the model thought that was not a read.
@@ -92,6 +99,13 @@ fn answered_now(app: &str) {
     user::println!("shell: answered {app}'s read while the model thought");
 }
 
+/// Whether a request of `app` just taken is served now: not while anything
+/// holds it back, nor once the person has stopped (the answer's giving would
+/// be withdrawn).
+fn may_serve(held: &RefCell<HeldRequests>, app: &str) -> bool {
+    !held.borrow().blocks(app) && !sys::interrupted()
+}
+
 /// Holds `request` for the line's end, or gives it back past `MAX_HELD`.
 fn hold(
     held: &RefCell<HeldRequests>,
@@ -108,6 +122,46 @@ fn hold(
     held
 }
 
+/// Gives `desktop` `messages` for `app`, in order. One the person's Stop
+/// withdrew is held with those after it, to give after the line; one
+/// `desktop` refused ends the giving.
+fn give(route: Handle, held: &RefCell<HeldRequests>, app: &str, messages: Vec<Vec<u8>>) {
+    for (at, message) in messages.iter().enumerate() {
+        match crate::ask_desktop_bytes(route, message) {
+            Ok(reply) if !reply.starts_with(b"err") => {}
+            Ok(reply) => {
+                let why = String::from_utf8_lossy(&reply);
+                return user::println!("shell: desktop refused {app}'s answer: {why}");
+            }
+            Err(why) if !sys::interrupted() => {
+                return user::println!("shell: {app}'s answer was not given: {why}");
+            }
+            Err(_) => {
+                let rest = Request::Give(app.into(), messages[at..].to_vec());
+                held.borrow_mut()
+                    .hold(Kind::Answer, app, 1, rest)
+                    .unwrap_or_else(|_| {
+                        user::println!("shell: {app}'s answer was dropped: too many wait")
+                    });
+                return user::println!("shell: holds {app}'s answer until the line ends");
+            }
+        }
+    }
+}
+
+/// The message giving `desktop` what app `app`'s effects came to.
+fn effects_done(app: &str, user: bool, results: Vec<EffectDone>) -> Vec<Vec<u8>> {
+    alloc::vec![crate::effects_done(app, user, results).into_bytes()]
+}
+
+/// The messages giving `desktop` the answers to the Settings app's `app`.
+fn settings_done(app: &str, answers: &[Answer]) -> Vec<Vec<u8>> {
+    wire::encode_done_chunks_for(&wire::SETTINGS, app, answers, kabi::MAX_MESSAGE)
+        .into_iter()
+        .map(String::into_bytes)
+        .collect()
+}
+
 fn poll_effects(
     route: Handle,
     held: &RefCell<HeldRequests>,
@@ -119,26 +173,25 @@ fn poll_effects(
     let Some(Some((app, user, lines))) = deskcore::effects::parse_take(&answer) else {
         return;
     };
-    let blocked = held.borrow().blocks(app);
-    let served = match blocked {
-        true => None,
-        false => serve(Waiting::Effects { app, lines, user }),
+    let served = match may_serve(held, app) {
+        true => serve(Waiting::Effects { app, lines, user }),
+        false => None,
     };
     if let Some(Served::Effects(results)) = served {
         answered_now(app);
-        return crate::give_effect_results(route, app, user, results);
+        return give(route, held, app, effects_done(app, user, results));
     }
     let size = lines.lines().count();
     let request = Request::Effects(app.into(), user, lines.into());
     if hold(held, Kind::Effects, app, size, request).is_err() {
         let refused = tickets(lines)
             .into_iter()
-            .map(|ticket| shellcore::EffectDone {
+            .map(|ticket| EffectDone {
                 ticket,
                 outcome: Err(String::from(TOO_MANY)),
             })
             .collect();
-        crate::give_effect_results(route, app, user, refused);
+        give(route, held, app, effects_done(app, user, refused));
     }
 }
 
@@ -168,23 +221,28 @@ fn poll_files(
         let Some(job) = deskcore::files::parse_job(&answer) else {
             return;
         };
-        let blocked = held.borrow().blocks(&job.app);
-        let served = match (blocked, &job.op) {
-            (false, Op::Read) => serve(Waiting::FileRead {
+        let served = match (may_serve(held, &job.app), &job.op) {
+            (true, Op::Read) => serve(Waiting::FileRead {
                 app: &job.app,
                 path: &job.path,
             }),
             _ => None,
         };
-        if let Some(Served::FileRead(bytes)) = served {
+        if let Some(Served::FileRead(read)) = served {
             answered_now(&job.app);
-            let done = bytes.and_then(|bytes| crate::fill_job(route, job.id, &bytes));
-            crate::report_file_job(route, job.id, done);
+            let mut messages = match &read {
+                Ok(bytes) => crate::file_fills(job.id, bytes),
+                Err(_) => Vec::new(),
+            };
+            let done = crate::file_done(job.id, read.map(|_| ()));
+            messages.push(done.into_bytes());
+            give(route, held, &job.app, messages);
             continue;
         }
         let (id, app) = (job.id, job.app.clone());
         if hold(held, Kind::File, &app, 1, Request::File(job)).is_err() {
-            crate::report_file_job(route, id, Err(String::from(TOO_MANY)));
+            let refused = crate::file_done(id, Err(String::from(TOO_MANY)));
+            give(route, held, &app, alloc::vec![refused.into_bytes()]);
         }
     }
 }
@@ -194,21 +252,19 @@ fn poll_settings(
     held: &RefCell<HeldRequests>,
     serve: &mut dyn FnMut(Waiting<'_>) -> Option<Served>,
 ) {
-    let words = &wire::SETTINGS;
-    let Ok(answer) = ask_desktop(route, words.take) else {
+    let Ok(answer) = ask_desktop(route, wire::SETTINGS.take) else {
         return;
     };
     let Some(Some((app, requests))) = wire::parse_take(&answer) else {
         return;
     };
     let asked: Vec<(&str, bool)> = requests.iter().map(|r| (r.text.as_str(), r.user)).collect();
-    let blocked = held.borrow().blocks(app);
-    let served = match blocked {
-        true => None,
-        false => serve(Waiting::Settings {
+    let served = match may_serve(held, app) {
+        true => serve(Waiting::Settings {
             app,
             requests: &asked,
         }),
+        false => None,
     };
     if let Some(Served::Settings(outcomes)) = served {
         answered_now(app);
@@ -217,7 +273,7 @@ fn poll_settings(
             .zip(outcomes)
             .map(|(r, outcome)| Answer::new(r.ticket, outcome))
             .collect();
-        return crate::give_answers(route, words, app, &answers);
+        return give(route, held, app, settings_done(app, &answers));
     }
     let refused: Vec<Answer> = requests
         .iter()
@@ -226,7 +282,7 @@ fn poll_settings(
     let size = requests.len();
     let request = Request::Settings(app.into(), requests);
     if hold(held, Kind::Settings, app, size, request).is_err() {
-        crate::give_answers(route, words, app, &refused);
+        give(route, held, app, settings_done(app, &refused));
     }
 }
 
@@ -275,6 +331,14 @@ fn run_one(shell: &mut Shell, route: Handle, request: Request) {
                 .map(|r| Answer::new(r.ticket, shell.settings(&app, &r.text, r.user)))
                 .collect();
             crate::give_answers(route, &wire::SETTINGS, &app, &answers);
+        }
+        Request::Give(app, messages) => {
+            user::println!("shell: gives {app}'s held answer after the line");
+            for message in messages {
+                if let Err(why) = crate::ask_desktop_bytes(route, &message) {
+                    return user::println!("shell: {app}'s answer was not given: {why}");
+                }
+            }
         }
     }
 }

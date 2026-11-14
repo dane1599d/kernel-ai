@@ -268,7 +268,11 @@ const _: () = assert!(shellcore::SETTINGS_MAX_ANSWER == deskcore::settings_wire:
 /// Takes an app's oldest effects from `desktop`, runs them through the agent
 /// core, and reports what came of each; `desktop` hands the results to the
 /// app. `desktop` names the app, from its record of who queued them.
-fn take_effects(shell: &mut Shell) {
+///
+/// While the batch runs, its app counts as running in `held`: a Terminal's
+/// `shell_line` runs a line, and what the app asks during that line's model
+/// call waits behind the rest of the batch.
+fn take_effects(shell: &mut Shell, held: &core::cell::RefCell<waiting::HeldRequests>) {
     use deskcore::effects;
     let Some(route) = desktop() else {
         return;
@@ -279,7 +283,11 @@ fn take_effects(shell: &mut Shell) {
     let Some(Some((app, user, lines))) = effects::parse_take(&answer) else {
         return;
     };
+    let size = lines.lines().count();
+    held.borrow_mut()
+        .running(shellcore::waiting::Kind::Effects, app, size);
     let results = shell.run_effects_from(app, lines, user);
+    held.borrow_mut().done();
     give_effect_results(route, app, user, results);
 }
 
@@ -290,6 +298,13 @@ fn give_effect_results(
     user: bool,
     results: Vec<shellcore::EffectDone>,
 ) {
+    if let Err(why) = ask_desktop(route, &effects_done(app, user, results)) {
+        println!("{app}'s effect results were not sent: {why}");
+    }
+}
+
+/// The message that gives `desktop` what app `app`'s effects came to.
+fn effects_done(app: &str, user: bool, results: Vec<shellcore::EffectDone>) -> String {
     use deskcore::effects::{self, Done};
     let results: Vec<Done> = results
         .into_iter()
@@ -298,9 +313,7 @@ fn give_effect_results(
             outcome: done.outcome,
         })
         .collect();
-    if let Err(why) = ask_desktop(route, &effects::encode_done_as(app, user, &results)) {
-        println!("{app}'s effect results were not sent: {why}");
-    }
+    effects::encode_done_as(app, user, &results)
 }
 
 /// Hands each app what came of the effects its calls queued: the call's reply
@@ -380,7 +393,14 @@ fn take_files(shell: &mut Shell) {
 
 /// Tells `desktop` what transfer `id` came to.
 fn report_file_job(route: kabi::handle::Handle, id: u32, done: Result<(), String>) {
-    let done = match done {
+    if let Err(why) = ask_desktop(route, &file_done(id, done)) {
+        println!("the editor's file {id} was not reported: {why}");
+    }
+}
+
+/// The message that tells `desktop` what transfer `id` came to.
+fn file_done(id: u32, done: Result<(), String>) -> String {
+    match done {
         Ok(()) => format!("files done {id} ok"),
         Err(why) => {
             // One line, as `desktop` keeps it.
@@ -390,25 +410,32 @@ fn report_file_job(route: kabi::handle::Handle, id: u32, done: Result<(), String
                 .collect();
             format!("files done {id} err {}", why.trim())
         }
-    };
-    if let Err(why) = ask_desktop(route, &done) {
-        println!("the editor's file {id} was not reported: {why}");
     }
 }
 
 /// Fills a read's bytes, or a build's report, into the transfer in pieces.
 fn fill_job(route: kabi::handle::Handle, id: u32, bytes: &[u8]) -> Result<(), String> {
-    use deskcore::files::CHUNK;
-    let total = bytes.len();
-    for (i, piece) in bytes.chunks(CHUNK).enumerate() {
-        let head = format!("files fill {id} {} {total}\n", i * CHUNK);
-        let mut message = head.into_bytes();
-        message.extend_from_slice(piece);
+    for message in file_fills(id, bytes) {
         if ask_desktop_bytes(route, &message)? != b"ok" {
             return Err(String::from("desktop did not take the file"));
         }
     }
     Ok(())
+}
+
+/// The messages that fill `bytes` into transfer `id`, a piece each.
+fn file_fills(id: u32, bytes: &[u8]) -> Vec<Vec<u8>> {
+    use deskcore::files::CHUNK;
+    let total = bytes.len();
+    bytes
+        .chunks(CHUNK)
+        .enumerate()
+        .map(|(i, piece)| {
+            let mut message = format!("files fill {id} {} {total}\n", i * CHUNK).into_bytes();
+            message.extend_from_slice(piece);
+            message
+        })
+        .collect()
 }
 
 /// One transfer: a write fetches its pieces and saves; a read reads and fills; a
@@ -1256,10 +1283,6 @@ fn main() -> i32 {
     // post could not wake it.
     let mut wait_ms = 1;
     loop {
-        // Between lines: what happened on the desktop since the last look, then
-        // the panel's line and the apps' effects. A post to the event box wakes
-        // the wait at once, so a click's effect does not wait for a poll.
-        take_events(&mut shell, &mut events);
         // What the apps asked during a line that was not a read runs before
         // anything newer is taken: after each step that may run a line (the
         // last pass's, the panel's, a Terminal's `shell_line` effect) and
@@ -1274,10 +1297,16 @@ fn main() -> i32 {
         };
         waiting::run_held(&mut shell, held);
         fresh();
+        // Between lines: what happened on the desktop since the last look, then
+        // the panel's line and the apps' effects. A post to the event box wakes
+        // the wait at once, so a click's effect does not wait for a poll.
+        take_events(&mut shell, &mut events);
+        waiting::run_held(&mut shell, held);
+        fresh();
         take_panel(&mut shell);
         waiting::run_held(&mut shell, held);
         fresh();
-        take_effects(&mut shell);
+        take_effects(&mut shell, held);
         waiting::run_held(&mut shell, held);
         fresh();
         // Files the AI, the Terminal, an app, an editor save or an undo changed:
