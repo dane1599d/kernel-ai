@@ -741,10 +741,6 @@ fn files_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<Vec<u8>> {
     Some(reply.bytes)
 }
 
-/// An app's `effects put` and `effects results`, and the shell's `effects
-/// take` and `effects done` (P4, `deskcore::effects`): its answer, or `None`
-/// for a window client's message. The app is the kernel's name for the
-/// caller, never anything it sent.
 /// Interrupts the shell's line for a person's Stop or Esc (`why`), only
 /// while the shell runs that person's `line`: what to tell them.
 fn interrupt_shell(
@@ -768,6 +764,10 @@ fn interrupt_shell(
     }
 }
 
+/// An app's `effects put` and `effects results`, and the shell's `effects
+/// take` and `effects done` (P4, `deskcore::effects`): its answer, or `None`
+/// for a window client's message. The app is the kernel's name for the
+/// caller, never anything it sent.
 fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     let text = core::str::from_utf8(bytes).ok()?;
     if !text.starts_with("effects ") {
