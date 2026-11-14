@@ -109,12 +109,15 @@ pub fn main(args: &[String]) -> Result<(), String> {
         monitor,
         qmp: None,
         exact: Vec::new(),
-        contains: vec![format!(
-            "updated: imported {} ({}), {} bytes",
-            signed.id,
-            &signed.sha256[..12],
-            signed.length
-        )],
+        contains: vec![
+            format!(
+                "updated: imported {} ({}), {} bytes",
+                signed.id,
+                &signed.sha256[..12],
+                signed.length
+            ),
+            String::from(PACKAGES_KEPT),
+        ],
         cut: None,
         capture: None,
     };
@@ -128,6 +131,10 @@ pub fn main(args: &[String]) -> Result<(), String> {
 /// it (`crate::cases::FORBID`).
 #[cfg(test)]
 const PKG_FAIL: &str = "pkg: FAIL";
+/// What `pkg` prints once the image's packages are checked and installed:
+/// every package the release signs is kept, none refused, so the built-in
+/// apps' rows are known before any app runs.
+const PACKAGES_KEPT: &str = " kept and 0 refused; generation 1 is its packages: ";
 
 #[cfg(test)]
 mod tests {
@@ -159,11 +166,22 @@ mod tests {
         assert!(RELEASE_BOOT.data.is_none() && RELEASE_BOOT.import.is_none());
     }
 
-    /// `pkg: FAIL` is in the release boot's own `forbid` list, so no expected
-    /// line may carry it.
+    /// `pkg: FAIL`, every case's other forbidden lines and an image with no
+    /// packages are in the release boot's own `forbid` list, so no expected
+    /// line may carry one.
     #[test]
     fn the_release_boot_forbids_pkg_fail() {
         assert!(RELEASE_BOOT.forbid.contains(&PKG_FAIL));
+        assert!(
+            crate::cases::FORBID
+                .iter()
+                .all(|text| RELEASE_BOOT.forbid.contains(text))
+        );
+        assert!(
+            RELEASE_BOOT
+                .forbid
+                .contains(&crate::cases::release::NO_PACKAGES)
+        );
         assert!(
             RELEASE_BOOT
                 .expect

@@ -299,3 +299,50 @@ fn the_catalogue_lists_what_is_installed_then_the_mirrors_offers() {
     );
     assert_eq!(catalog::parse(&text).unwrap(), rows);
 }
+
+/// Top-level `targets`, which TUF's search asks first, names notes too, with
+/// a grant, another hash and another length, signed with the targets key: the
+/// mirror's listing and the image's check both read notes from the `packages`
+/// role it is delegated to, and the top-level entry changes nothing.
+#[test]
+fn a_package_top_level_targets_names_too_is_read_from_packages() {
+    use super::image_layout;
+    use super::tuf::envelope;
+    use serde_json::{Value, json};
+    let keys = keys(1);
+    let repo = tuf::build(&[notes(), hello()], &keys, NOW).unwrap();
+    let honest = listing(&mut device(&repo), serve(&repo), NOW).0.unwrap();
+    let image = |repo: &Repository| {
+        let mut files = image_layout(Repository {
+            files: repo.files.clone(),
+        })
+        .unwrap();
+        kaipkg::image::check(&mut files, kaipkg::PROVIDED).unwrap()
+    };
+    let honest_image = image(&repo);
+    let packages: Value = serde_json::from_slice(file(&repo, "metadata/1.packages.json")).unwrap();
+    let (path, entry) = packages["signed"]["targets"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(path, _)| path.starts_with("notes-"))
+        .map(|(path, entry)| (path.clone(), entry.clone()))
+        .unwrap();
+    let repo = tampered(&repo, "metadata/1.targets.json", |bytes| {
+        let mut value: Value = serde_json::from_slice(bytes).unwrap();
+        let mut forged = entry.clone();
+        forged["custom"]["kai"]["grants"] = json!(["net"]);
+        forged["hashes"]["sha256"] = json!("00".repeat(32));
+        forged["length"] = json!(1);
+        value["signed"]["targets"][&path] = forged;
+        *bytes = envelope(&value["signed"], &keys.targets).unwrap();
+    });
+    let found = listing(&mut device(&repo), serve(&repo), NOW).0.unwrap();
+    assert_eq!(found.refused, []);
+    assert_eq!(found.indexes, honest.indexes);
+    assert!(found.indexes.iter().all(|index| index.grants.is_empty()));
+    let checked = image(&repo);
+    assert_eq!(checked.refused, honest_image.refused);
+    assert_eq!(checked.indexes, honest_image.indexes);
+    assert!(checked.packages.iter().any(|(e, _)| e.name == "notes"));
+}
