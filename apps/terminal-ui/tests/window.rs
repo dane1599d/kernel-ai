@@ -454,8 +454,9 @@ fn focus_goes_to_the_input_only_when_it_appears() {
     busy.submit("x", Source::Typed);
     let waiting = build(&busy, &View::default());
     assert!(waiting.iter().any(|e| e.id == WAITING));
-    // A line running: Stop takes the keys, once.
-    assert_eq!(wants_focus(&ready, &waiting), Some(CANCEL));
+    // A line running: Stop never takes the keys, so typing ahead or a
+    // second Enter cannot stop it.
+    assert_eq!(wants_focus(&ready, &waiting), None);
     assert_eq!(wants_focus(&waiting, &waiting), None);
     assert_eq!(wants_focus(&waiting, &ready), Some(INPUT));
 }
@@ -488,7 +489,7 @@ fn a_running_line_offers_stop_which_asks_to_stop_the_shell() {
         Submitted::Send(_)
     ));
     let n = next(&mut app.shown, &app.term, &app.view);
-    assert_eq!(n.focus, Some(CANCEL), "Stop takes the keys");
+    assert_eq!(n.focus, None, "Stop never takes the keys");
     let stop = n
         .tree
         .iter()

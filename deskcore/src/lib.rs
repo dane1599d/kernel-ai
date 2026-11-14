@@ -31,6 +31,7 @@ pub mod paint_catalog;
 pub mod paint_panel;
 pub mod panel;
 pub mod panel_wire;
+pub mod running;
 pub mod scale;
 pub mod server;
 pub mod settings_wire;

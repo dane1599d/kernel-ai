@@ -220,14 +220,10 @@ pub fn build(term: &Terminal, view: &View) -> Vec<Entry> {
 
 /// The node that should take keyboard focus after `old` became `new`: the input
 /// line, when it has just appeared (the window opening, or a line answered).
+/// Never Stop: a key typed ahead, or a second Enter, must not stop the line.
 pub fn wants_focus(old: &[Entry], new: &[Entry]) -> Option<NodeId> {
-    let has = |tree: &[Entry], id: NodeId| tree.iter().any(|e| e.id == id);
-    if has(new, INPUT) && !has(old, INPUT) {
-        return Some(INPUT);
-    }
-    // A line running: Stop takes the keys, so Enter or Space stops it.
-    let running = |tree: &[Entry]| has(tree, CANCEL) && !has(tree, INPUT);
-    (running(new) && !running(old)).then_some(CANCEL)
+    let has = |tree: &[Entry]| tree.iter().any(|e| e.id == INPUT);
+    (has(new) && !has(old)).then_some(INPUT)
 }
 
 /// Handles one event from the window; whether the tree may have changed. A line

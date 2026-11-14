@@ -224,6 +224,9 @@ fn take_panel(shell: &mut Shell) {
         // line never came here.
         _ => return,
     };
+    // The line ended: a Stop pressed as it did must not cancel the result's
+    // own call to `desktop`, or the next line.
+    let _ = sys::interrupted();
     let Some(request) = panel_wire::encode_state(&shown) else {
         return;
     };
@@ -282,6 +285,9 @@ fn take_effects(shell: &mut Shell) {
             outcome: done.outcome,
         })
         .collect();
+    // The line ended: a Stop pressed as it did must not cancel the result's
+    // own call to `desktop`, or the next line.
+    let _ = sys::interrupted();
     if let Err(why) = ask_desktop(route, &effects::encode_done_as(app, user, &results)) {
         println!("{app}'s effect results were not sent: {why}");
     }

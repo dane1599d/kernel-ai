@@ -131,6 +131,8 @@ struct State {
     sheet: Option<deskcore::catalog::Sheet>,
     /// Apps' effects waiting for the shell, and what came of them.
     effects: effects::Queue,
+    /// Which person's line the shell runs, so Stop and Esc interrupt only it.
+    running: deskcore::running::Running,
     /// The editor's files on their way to or from the shell, while they are.
     files: deskcore::files::Files,
     /// The Settings app's requests for the shell, and the shell's answers.
@@ -202,6 +204,7 @@ fn main() -> i32 {
             panel: Panel::new(),
             sheet: None,
             effects: effects::Queue::default(),
+            running: deskcore::running::Running::default(),
             files: deskcore::files::Files::default(),
             settings: settings::Queue::default(),
             net: deskcore::net_wire::Queue::default(),
@@ -426,9 +429,11 @@ fn deliver(state: &mut State, effects: &[Effect]) {
             Effect::PanelKey { usage, down } => {
                 let before = state.panel.waiting();
                 let changed = state.panel.key(usage, down, now);
-                // Esc on a line the shell took: it is interrupted now.
+                // Esc on a line the shell took: it is interrupted now, if the
+                // shell still runs it.
                 if state.panel.take_interrupt() {
-                    let _ = interrupt_shell("the panel's Esc");
+                    let line = deskcore::running::Line::Panel;
+                    let _ = interrupt_shell(state, line, "the panel's Esc");
                 }
                 if state.panel.waiting() > before {
                     // Its length only: a panel line may hold anything typed.
@@ -661,6 +666,10 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     }
     if text == panel_wire::TAKE {
         let request = state.panel.take();
+        if let Some(taken) = &request {
+            let line = matches!(taken, deskcore::panel::Request::Line(_));
+            state.running.took_panel(line);
+        }
         if request.is_some() {
             println!("desktop: the shell took the panel's request");
             // From the Enter to the take: the wake's latency (under 100 ms).
@@ -677,6 +686,13 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     let Some(shown) = panel_wire::parse_state(text) else {
         return Some(String::from("err not a panel request"));
     };
+    // A result, or idle: the shell answered the panel's line.
+    if !matches!(
+        shown,
+        deskcore::panel::State::Thinking { .. } | deskcore::panel::State::Acting { .. }
+    ) {
+        state.running.ended(deskcore::running::Line::Panel);
+    }
     let word = match &shown {
         deskcore::panel::State::Idle => "idle",
         deskcore::panel::State::Thinking { .. } => "thinking",
@@ -729,9 +745,17 @@ fn files_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<Vec<u8>> {
 /// take` and `effects done` (P4, `deskcore::effects`): its answer, or `None`
 /// for a window client's message. The app is the kernel's name for the
 /// caller, never anything it sent.
-/// Interrupts the shell's line for a person's Stop or Esc (`why`): what to
-/// tell them.
-fn interrupt_shell(why: &str) -> Result<String, String> {
+/// Interrupts the shell's line for a person's Stop or Esc (`why`), only
+/// while the shell runs that person's `line`: what to tell them.
+fn interrupt_shell(
+    state: &State,
+    line: deskcore::running::Line,
+    why: &str,
+) -> Result<String, String> {
+    if !state.running.is(line) {
+        println!("desktop: {why} found no line of the person's running");
+        return Err(String::from("not running yet"));
+    }
     match sys::shell_interrupt() {
         Ok(_) => {
             println!("desktop: {why} interrupted the shell's line");
@@ -764,7 +788,8 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
         let (stops, rest) = effects::split_stops(lines);
         let lines = match (caller == effects::STOPS_FROM && user, stops.is_empty()) {
             (true, false) => {
-                let stopped = interrupt_shell("the Terminal's Stop");
+                let line = deskcore::running::Line::Terminal;
+                let stopped = interrupt_shell(state, line, "the Terminal's Stop");
                 for ticket in stops {
                     state.effects.finish(
                         &caller,
@@ -795,12 +820,16 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
         let taken = state.effects.take(kabi::MAX_MESSAGE - 64);
         if let Some(taken) = &taken {
             println!("desktop: the shell took {}'s effects", taken.app);
+            state.running.took_effects(&taken.app, taken.user);
         }
         return Some(effects::encode_take(taken.as_ref()));
     }
     let Some((app, results)) = effects::parse_done(text) else {
         return Some(String::from("err not an effects request"));
     };
+    if app == effects::STOPS_FROM {
+        state.running.ended(deskcore::running::Line::Terminal);
+    }
     for done in results {
         state.effects.finish(app, done);
     }
