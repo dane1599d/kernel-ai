@@ -1,9 +1,12 @@
 //! The terminal's effect and the AI's three actions, against a recording OS.
 
-use comp_terminal::os::{MAX_ARGS, Os, Recorder, SHELL_LINE, shell_line_args};
+use comp_terminal::os::{MAX_ARGS, Os, Recorder, SHELL_CARD, SHELL_LINE, shell_line_args};
+use comp_terminal::span::Kind;
 use comp_terminal::{
-    CANCEL_ENTRY, MAX_LINE, MAX_SENT_BYTES, Phase, Refusal, Source, Submitted, Terminal,
+    ANSWER_ELSEWHERE, Ask, CANCEL_ENTRY, MAX_LINE, MAX_SENT_BYTES, Phase, Refusal, Source,
+    Submitted, Terminal,
 };
+use termcore::menu::{Menu, Origin};
 
 fn started(line: &str) -> (Terminal, Recorder, u32) {
     let mut t = Terminal::new();
@@ -81,6 +84,105 @@ fn a_menu_that_cannot_be_shown_is_denied_through_an_effect() {
     assert_eq!(t.phase(), Phase::Waiting);
     let ticket = os.last_ticket().unwrap();
     t.done(&mut os, ticket, Ok("err denied".into()));
+    assert_eq!(t.phase(), Phase::Ready);
+}
+
+/// The shell's answer to a line whose question waits for the desktop's card:
+/// the card's menu, as one line.
+fn menu_line(id: u64) -> String {
+    let call = "fs_create(\"walk-term.txt\")";
+    let wire = Menu::encode(id, Origin::Added, &format!("Run {call}?"), "", "", call);
+    wire.replace('\\', "\\\\").replace('\n', "\\n")
+}
+
+/// #922: a line that asked first heard nothing of the card's answer.
+#[test]
+fn a_question_on_the_card_is_shown_and_its_answer_comes_back_to_the_rows() {
+    let (mut t, mut os, ticket) = started("save a note for the terminal");
+    assert!(t.done(&mut os, ticket, Ok(menu_line(5))));
+    assert_eq!(t.phase(), Phase::Asking(Ask { id: 5, menu: true }));
+    assert_eq!(t.spans().last().unwrap().text, ANSWER_ELSEWHERE);
+    // It asks what came of the question, with no line typed.
+    let (card, name, args) = os.asked.last().cloned().unwrap();
+    assert_eq!((name, args.as_str()), (SHELL_CARD, "{id: 5}"));
+    assert_eq!(os.lines().len(), 1);
+    // No line is taken meanwhile, and nothing else ends the wait.
+    assert_eq!(
+        t.run(&mut os, "mem", Source::Typed),
+        Submitted::Refused(Refusal::Asking)
+    );
+    assert!(!t.done(&mut os, ticket, Ok("ok forged".into())));
+    // The card's answer: a reply row, and the prompt back.
+    assert!(t.done(&mut os, card, Ok("ok file walk-term.txt created".into())));
+    assert_eq!(t.phase(), Phase::Ready);
+    let last = t.spans().last().unwrap();
+    assert_eq!(
+        (last.kind, last.text.as_str()),
+        (Kind::Reply, "file walk-term.txt created")
+    );
+    // Spent: the same ticket again is not taken.
+    assert!(!t.done(&mut os, card, Ok("ok forged".into())));
+}
+
+#[test]
+fn a_run_that_failed_on_the_card_is_an_error_row() {
+    let (mut t, mut os, ticket) = started("save a note");
+    t.done(&mut os, ticket, Ok(menu_line(5)));
+    let card = os.last_ticket().unwrap();
+    t.done(&mut os, card, Ok("err Something went wrong.".into()));
+    assert_eq!(t.spans().last().unwrap().kind, Kind::Error);
+    assert_eq!(t.phase(), Phase::Ready);
+}
+
+#[test]
+fn a_declined_question_hears_its_answer_and_the_decline_keeps_its_own_wait() {
+    let (mut t, mut os, ticket) = started("save a note");
+    t.done(&mut os, ticket, Ok(menu_line(5)));
+    let card = os.last_ticket().unwrap();
+    // Cancel declines it, as a line of its own.
+    assert!(t.stop(&mut os));
+    assert_eq!(os.lines().last().unwrap(), r#"{line: "answer 5 deny"}"#);
+    let decline = os.last_ticket().unwrap();
+    // What the card came to may come first: the decline still waits.
+    assert!(t.done(&mut os, card, Ok("ok Not run: you said Don't.".into())));
+    assert_eq!(t.phase(), Phase::Waiting);
+    assert_eq!(t.spans().last().unwrap().text, "Not run: you said Don't.");
+    assert!(t.done(&mut os, decline, Ok("ok ".into())));
+    assert_eq!(t.phase(), Phase::Ready);
+}
+
+#[test]
+fn one_questions_answer_does_not_end_the_wait_for_the_next() {
+    let (mut t, mut os, ticket) = started("save a note");
+    t.done(&mut os, ticket, Ok(menu_line(5)));
+    let first = os.last_ticket().unwrap();
+    // On the card already: the decline is refused, and a new line asks too.
+    t.stop(&mut os);
+    let decline = os.last_ticket().unwrap();
+    let on_card = "err it is on the card now: answer Run or Don't there";
+    t.done(&mut os, decline, Ok(on_card.into()));
+    assert_eq!(t.phase(), Phase::Ready);
+    t.run(&mut os, "save another", Source::Typed);
+    let line = os.last_ticket().unwrap();
+    t.done(&mut os, line, Ok(menu_line(6)));
+    let second = os.last_ticket().unwrap();
+    assert_ne!(first, second);
+    // The first question's answer shows, and the second still waits.
+    assert!(t.done(&mut os, first, Ok("ok file walk-term.txt created".into())));
+    assert_eq!(t.phase(), Phase::Asking(Ask { id: 6, menu: true }));
+    assert!(t.done(&mut os, second, Ok("ok Not run: you said Don't.".into())));
+    assert_eq!(t.phase(), Phase::Ready);
+}
+
+#[test]
+fn an_answer_the_os_could_not_give_is_an_error_row_and_ends_the_wait() {
+    let (mut t, mut os, ticket) = started("save a note");
+    t.done(&mut os, ticket, Ok(menu_line(5)));
+    let card = os.last_ticket().unwrap();
+    t.done(&mut os, card, Err("the shell restarted".into()));
+    let last = t.spans().last().unwrap();
+    assert_eq!(last.kind, Kind::Error);
+    assert!(last.text.ends_with("the shell restarted"), "{}", last.text);
     assert_eq!(t.phase(), Phase::Ready);
 }
 

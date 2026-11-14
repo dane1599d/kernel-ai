@@ -994,8 +994,11 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
     let Some((app, results)) = effects::parse_done(text) else {
         return Some(String::from("err not an effects request"));
     };
+    // Only a result for the line's own ticket ends it: what came of a card,
+    // or a result the shell held, comes outside the line.
     if app == effects::STOPS_FROM {
-        state.running.ended(deskcore::running::Line::Terminal);
+        let tickets: Vec<u32> = results.iter().map(|done| done.ticket).collect();
+        state.running.answered(&tickets);
     }
     for done in results {
         state.effects.finish(app, done);

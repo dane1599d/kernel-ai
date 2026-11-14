@@ -13,7 +13,9 @@
 //! - **Questions are not answered here.** A `confirm` or `menu` is shown as a
 //!   question, and the terminal takes no line until the trusted path has
 //!   answered it (ADR 0005 section 7). The one thing a window may do is
-//!   decline: [`Terminal::cancel`].
+//!   decline: [`Terminal::cancel`]. A menu is a question on the desktop's
+//!   card: the terminal asks what came of it ([`os::SHELL_CARD`]) and shows
+//!   that answer when the card gives it (#922).
 //! - **The AI's hands.** `terminal_window_read` is [`Terminal::read`]. `terminal_window_run`
 //!   only types: [`Terminal::stage`] puts a line in the input for a person to
 //!   run with Enter, because the shell runs a line only for a person's key or
@@ -31,7 +33,7 @@ pub mod wire;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use os::{Os, SHELL_LINE, shell_line_args, unescape};
+use os::{Os, SHELL_CARD, SHELL_LINE, shell_card_args, shell_line_args, unescape};
 use span::{Kind, MAX_SPANS, Span, clean, fit};
 use termcore::menu::{Answer, answer_line};
 use wire::Wire;
@@ -53,7 +55,10 @@ pub const CANCEL_ENTRY: &str = "\u{3}";
 pub const GREETING: &str = "Kernel AI terminal. Talk to the AI or type Rhai (try help). \
                             Kernel commands that start with ':' run on the console (Ctrl+Alt+F12).";
 /// Said under a question.
-pub const ANSWER_ELSEWHERE: &str = "Answer on the AI panel's card.";
+pub const ANSWER_ELSEWHERE: &str = "Answer Run or Don't on the card.";
+/// Questions whose answer the terminal waits for at most: past it the oldest
+/// is let go (the shell keeps no more waiting for the card).
+pub const MAX_CARDS: usize = 4;
 /// Most rows `terminal_window_read` returns, newest last.
 pub const READ_MAX_SPANS: usize = 60;
 /// Most bytes of text `terminal_window_read` returns.
@@ -134,7 +139,7 @@ impl Refusal {
     pub const fn message(self) -> &'static str {
         match self {
             Self::Busy => "wait: the last line is still running",
-            Self::Asking => "a question is waiting; answer it on the AI panel's card",
+            Self::Asking => "a question is waiting; answer Run or Don't on the card",
             Self::TooLong => "that line is longer than 200 characters or 250 bytes",
             Self::Control => "a line holds no control characters or newlines",
             Self::Answer => "answers are given only on a question's own card",
@@ -166,6 +171,9 @@ pub struct Terminal {
     /// The ticket of the effect the shell has not answered. It is not saved:
     /// an effect does not outlive the app that queued it.
     in_flight: Option<u32>,
+    /// (question, ticket) of each [`SHELL_CARD`] the card has not answered,
+    /// oldest first. Not saved, as `in_flight`.
+    cards: Vec<(u64, u32)>,
     /// The line the AI typed into the input, until a person runs or changes it.
     /// Not saved.
     staged: Option<String>,
@@ -186,6 +194,7 @@ impl Terminal {
             base: String::from(DEFAULT_PROMPT),
             phase: Phase::Ready,
             in_flight: None,
+            cards: Vec::new(),
             staged: None,
         };
         t.push(Kind::Notice, "", GREETING, false);
@@ -408,8 +417,14 @@ impl Terminal {
     }
 
     /// The result of the effect with `ticket`: the shell's wire reply, or why the
-    /// OS did not run the line. Whether it was ours and the window changed.
+    /// OS did not run the line, or what came of a question on the card. Whether
+    /// it was ours and the window changed.
     pub fn done(&mut self, os: &mut dyn Os, ticket: u32, outcome: Result<String, String>) -> bool {
+        if let Some(at) = self.cards.iter().position(|(_, t)| *t == ticket) {
+            let (id, _) = self.cards.remove(at);
+            self.card_answered(id, outcome);
+            return true;
+        }
         if self.in_flight != Some(ticket) {
             return false;
         }
@@ -424,7 +439,36 @@ impl Terminal {
         if let Some(line) = back {
             self.queue(os, &line);
         }
+        // A menu is a question on the desktop's card: ask what came of it.
+        if let Phase::Asking(Ask { id, menu: true }) = self.phase {
+            if self.cards.len() == MAX_CARDS {
+                self.cards.remove(0);
+            }
+            let ticket = os.request(SHELL_CARD, shell_card_args(id));
+            self.cards.push((id, ticket));
+        }
         true
+    }
+
+    /// What came of question `id` on the card: the shell's `ok` or `err`, or
+    /// why the OS did not say. It ends the wait for that question only: a line
+    /// begun since (its question declined in the window) keeps its phase.
+    fn card_answered(&mut self, id: u64, outcome: Result<String, String>) {
+        let phase = self.phase;
+        match outcome.map(|wire| unescape(&wire)) {
+            Ok(wire) => match wire::parse(&wire) {
+                Wire::Ok(text) => self.said(Kind::Reply, text),
+                Wire::Err(text) => self.said(Kind::Error, text),
+                _ => self.said(Kind::Error, "the shell sent a malformed reply"),
+            },
+            Err(why) => self.said(
+                Kind::Error,
+                &format!("the OS did not say what came of the card: {why}"),
+            ),
+        }
+        if phase != Phase::Asking(Ask { id, menu: true }) {
+            self.phase = phase;
+        }
     }
 
     /// What `terminal_window_read` returns: `next <seq> <phase>` (the number to ask

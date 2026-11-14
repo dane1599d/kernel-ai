@@ -100,6 +100,16 @@ impl Running {
         }
     }
 
+    /// The shell gave the Terminal results for `tickets`: its line ends only
+    /// if one is that line's own. A result given outside the line (one the
+    /// shell held, an app's call's, what came of a card) does not end the
+    /// line running now (#877's review LOW).
+    pub fn answered(&mut self, tickets: &[u32]) {
+        if self.tickets.iter().any(|t| tickets.contains(t)) {
+            self.ended(Line::Terminal);
+        }
+    }
+
     /// Whether the shell runs `line` now.
     pub fn is(&self, line: Line) -> bool {
         self.line == Some(line)
@@ -212,6 +222,25 @@ mod tests {
         queue.put(STOPS_FROM, &line(8));
         let took = running.take(&mut queue, TAKE_DURING, BUDGET).unwrap();
         assert_eq!(app(took).as_deref(), Some(STOPS_FROM), "not a person's");
+    }
+
+    /// #877's review LOW: a result for another of the Terminal's tickets (a
+    /// card's answer, held for its `shell_card`) leaves its line running.
+    #[test]
+    fn only_a_result_for_the_lines_own_ticket_ends_it() {
+        let mut running = Running::default();
+        running.took_effects(STOPS_FROM, true, alloc::vec![9]);
+        running.answered(&[3]);
+        assert!(running.is(Line::Terminal), "ticket 3 is not its own");
+        running.answered(&[]);
+        assert!(running.is(Line::Terminal));
+        running.answered(&[3, 9]);
+        assert!(!running.is(Line::Terminal));
+        assert!(running.take_stale().is_empty(), "its result came");
+        // With no line running, a result changes nothing.
+        running.took_panel(true);
+        running.answered(&[9]);
+        assert!(running.is(Line::Panel));
     }
 
     #[test]

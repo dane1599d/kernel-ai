@@ -75,8 +75,10 @@ pub fn takes_os_name(package: &str, function: &str) -> bool {
 }
 
 /// Effects the shell runs that are not registry rows: the Terminal's
-/// `shell_line` (P4 task 4). No app's action may take their names either.
-pub const PSEUDO_EFFECTS: &[&str] = &["shell_line"];
+/// `shell_line` (P4 task 4), and its `shell_card`, which asks what came of its
+/// line's question on the desktop's card (#922). No app's action may take
+/// their names either.
+pub const PSEUDO_EFFECTS: &[&str] = &["shell_line", "shell_card"];
 
 #[cfg(test)]
 mod tests {

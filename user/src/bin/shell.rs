@@ -363,12 +363,18 @@ fn take_effects(shell: &mut Shell, held: &core::cell::RefCell<waiting::HeldReque
 }
 
 /// Gives `desktop` what app `app`'s effects came to, for its `comphost`.
+/// Nothing when none has a result yet: a `shell_card` whose question waits
+/// for the card is held, and its result goes with the card's answer
+/// (`give_call_results`).
 fn give_effect_results(
     route: kabi::handle::Handle,
     app: &str,
     user: bool,
     results: Vec<shellcore::EffectDone>,
 ) {
+    if results.is_empty() {
+        return;
+    }
     // The line ended: a Stop pressed as it did must not hide what ran.
     if let Err(why) = report_to_desktop(route, &effects_done(app, user, results)) {
         println!("{app}'s effect results were not sent: {why}");
@@ -392,6 +398,8 @@ fn effects_done(app: &str, user: bool, results: Vec<shellcore::EffectDone>) -> S
 /// carried them, so `desktop` never held them, and without this the app is never
 /// told (a Files window the agent opened a folder in would show nothing). They go
 /// as `take_effects`' results do, and `desktop` gives them to the app's `comphost`.
+/// What came of a Terminal line's question on the card goes this way too, as
+/// its held `shell_card`'s result (#922).
 fn give_call_results(shell: &mut Shell) {
     use deskcore::effects::{self, Done};
     let batches = shell.take_effect_results();
@@ -1446,7 +1454,9 @@ fn main() -> i32 {
                 ui::begin();
             }
             let reply = shell.eval_console(text).to_wire();
-            // A desktop line's card was answered: the panel shows what came of it.
+            // A panel line's card was answered: the panel shows what came of
+            // it. A Terminal line's answer goes back to the Terminal on the
+            // next pass (`give_call_results`).
             if let Some((ran, line)) = shell.take_card_result() {
                 give_card_result(ran, line);
             }

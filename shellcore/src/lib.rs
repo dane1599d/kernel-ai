@@ -648,10 +648,13 @@ pub struct Shell {
     /// Proposals from desktop lines (the panel, the Terminal window) waiting
     /// for the trusted card (`deskask`).
     desk_asks: Vec<deskask::Waiting>,
-    /// The question on the card that came from a desktop line.
-    card_for_desk: Option<u64>,
-    /// What that card's answer came to, for the panel.
+    /// The question on the card that came from a desktop line, and where
+    /// that line was typed.
+    card_for_desk: Option<(u64, deskask::Asker)>,
+    /// What a panel line's card came to, for the panel.
     card_result: Option<(bool, String)>,
+    /// What windows' lines' cards came to, and their asks for it (`deskask`).
+    card_answers: deskask::Answers,
     /// Apps' network asks waiting for the terminal's card (P5 task 13).
     net_cards: Vec<netask::NetAsking>,
     /// Network grants revoked, kept for their undo.
@@ -782,6 +785,7 @@ impl Shell {
             desk_asks: Vec::new(),
             card_for_desk: None,
             card_result: None,
+            card_answers: deskask::Answers::default(),
             net_cards: Vec::new(),
             net_revoked: Vec::new(),
             net_high: 0,
@@ -926,7 +930,7 @@ impl Shell {
             let id = words.next()?.parse::<u64>().ok()?;
             Some((id, words.next().unwrap_or("")))
         });
-        if answering.is_some_and(|(id, _)| Some(id) == self.card_for_desk) {
+        if answering.is_some_and(|(id, _)| self.on_card_for_desk(id)) {
             self.done_line = None;
         }
         let mut reply = self.eval(input);
