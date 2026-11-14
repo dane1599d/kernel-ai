@@ -101,6 +101,19 @@ pub fn plan_line() -> String {
             false => log!("llm: no room for model_sha256= beside the server's arguments"),
         }
     }
+    // A test boot's `llm.cold_ms=N` (founder test 2's `desk-warming` case):
+    // llm says it is not warm for N ms after it starts. Only a test boot's
+    // counts: a person's boot command line cannot hold the panel back.
+    let cold = crate::cmdline()
+        .split_whitespace()
+        .find_map(|w| w.strip_prefix("llm.cold_ms="))
+        .filter(|ms| crate::test_boot() && ms.parse::<u64>().is_ok());
+    if let Some(ms) = cold {
+        let word = format!(" cold_ms={ms}");
+        if passed.len() + word.len() + RESTART_ROOM <= kabi::MAX_ARGS {
+            passed.push_str(&word);
+        }
+    }
     line.push_str(&passed);
     line
 }

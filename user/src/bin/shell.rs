@@ -22,6 +22,8 @@ mod routes;
 mod ui;
 #[path = "shell/waiting.rs"]
 mod waiting;
+#[path = "shell/warmth.rs"]
+mod warmth;
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -139,6 +141,10 @@ fn updated() -> kabi::handle::Handle {
 /// the signed role, and a switch commits the trial record and the hint; an
 /// import only starts, and goes on between requests.
 const UPDATED_CALL_MS: u64 = 10_000;
+/// How long a restart waits between the kernel's Busy answers, and how many
+/// times it asks: five seconds in all.
+const REBOOT_RETRY_MS: u64 = 100;
+const REBOOT_TRIES: u32 = 50;
 
 /// The route to `desktop`, on a desktop only (P3 task 7): `routes=desktop`.
 fn desktop() -> Option<kabi::handle::Handle> {
@@ -239,7 +245,7 @@ fn report_to_desktop_bytes(route: kabi::handle::Handle, request: &[u8]) -> Resul
 /// bar's state, code's result line or why not, never the model's words. The
 /// panel shows thinking from the Enter until then. A line that asks first
 /// waits for the trusted card (`deskask`); the panel says so.
-fn take_panel(shell: &mut Shell) {
+fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) {
     use deskcore::panel::{Request, State};
     use deskcore::panel_wire;
     // A unit of work that is no request: a Stop for the last one ends here.
@@ -253,6 +259,8 @@ fn take_panel(shell: &mut Shell) {
     let shown = match panel_wire::parse_take(&answer) {
         Some(Some(Request::Line(line))) => {
             ui::begin();
+            // "Kai is getting ready" for a line that waits on llm's warm-up.
+            warmth.before_request();
             let result = shell.eval_panel(&line);
             let said = shell.take_panel_said().map(|s| panel_wire::encode_said(&s));
             let note = shell.take_panel_note().map(|n| panel_wire::encode_note(&n));
@@ -264,10 +272,12 @@ fn take_panel(shell: &mut Shell) {
                     Err(why) => println!("the panel's history was not given it: {why}"),
                 }
             }
-            match result {
+            let shown = match result {
                 PanelResult::Done(line) => State::Done { line },
                 PanelResult::Refused(reason) => State::Refused { reason },
-            }
+            };
+            warmth.after_request();
+            shown
         }
         // Esc while Kai builds an app in the background stops the build.
         Some(Some(Request::Stop)) => match shell.stop_app_build() {
@@ -826,6 +836,23 @@ impl Host for System {
         Some(&self.apps)
     }
 
+    /// POWER_REBOOT with the plan's `power` (backlog item 13): it comes back
+    /// only when the kernel did not restart. The kernel answers Busy before
+    /// this boot's record is written and while `fs` serves a call, so a Busy is
+    /// tried again every [`REBOOT_RETRY_MS`], up to [`REBOOT_TRIES`] times.
+    fn power_reboot(&self) -> Result<(), String> {
+        for _ in 0..REBOOT_TRIES {
+            match sys::power_reboot() {
+                kabi::Error::Busy => sys::sleep_ms(REBOOT_RETRY_MS),
+                kabi::Error::Permission => {
+                    return Err(String::from("this shell may not restart the computer"));
+                }
+                error => return Err(format!("the kernel said {error:?}")),
+            }
+        }
+        Err(String::from("the computer is busy; try again in a moment"))
+    }
+
     fn app_call(&self, app: &str, request: &str) -> Result<String, String> {
         ask_app(app, request)
     }
@@ -954,6 +981,7 @@ impl Host for System {
             Lang::C => "c",
             Lang::Rhai | Lang::App => "rhai",
         };
+        warmth::lang(word == "c");
         if let Err(error) = app_job(&alloc::format!("warm-lang {word}")) {
             println!("warm-lang {word}: {error:?}");
         }
@@ -988,6 +1016,8 @@ impl Host for System {
     }
 
     fn forget(&self) {
+        // `new` empties llm's conversation, so it fills its slots again.
+        warmth::cooled();
         let mut reply = vec![0u8; 256];
         let _ = sys::call_route(llm(), b"new", &mut reply, MEMORY_CALL_MS);
     }
@@ -1383,6 +1413,7 @@ fn main() -> i32 {
     // event box is admitted and makes the shell the box's reader; until then a
     // post could not wake it.
     let mut wait_ms = 1;
+    let mut warmth = warmth::Warmth::default();
     loop {
         // What the apps asked during a line that was not a read runs before
         // anything newer is taken: after each step that may run a line (the
@@ -1399,7 +1430,7 @@ fn main() -> i32 {
         // the wait at once, so a click's effect does not wait for a poll.
         take_events(&mut shell, &mut events);
         waiting::run_held(&mut shell, held);
-        take_panel(&mut shell);
+        take_panel(&mut shell, &mut warmth);
         waiting::run_held(&mut shell, held);
         take_effects(&mut shell, held);
         waiting::run_held(&mut shell, held);
@@ -1426,6 +1457,8 @@ fn main() -> i32 {
             Shell::models_change,
         );
         give_app_build(&mut shell);
+        // "Kai is getting ready" on the panel until llm's prompt slots are warm.
+        warmth.peek();
         // An install card waits: the kernel's terminal takes it when it may.
         // Said again each pass, so a desktop that shows later still gets it.
         if shell.card_waiting() {

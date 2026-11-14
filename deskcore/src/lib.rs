@@ -39,6 +39,7 @@ pub mod server;
 pub mod settings_wire;
 pub mod trusted;
 pub mod view;
+pub mod warmth;
 pub mod watch;
 
 #[cfg(test)]

@@ -45,6 +45,7 @@ mod netgrant;
 mod netrows;
 mod packages;
 mod panel;
+mod power;
 mod profiles;
 mod scripts;
 mod settings;
@@ -124,6 +125,8 @@ struct FakeHost {
     apps: RefCell<crate::apps::Apps>,
     app_requests: RefCell<Vec<(String, String)>>,
     app_replies: RefCell<VecDeque<String>>,
+    /// Services the supervisor answers "no such app" for (the shell, llm).
+    not_apps: RefCell<Vec<String>>,
     /// The saved appearance (`kai-appearance 1`).
     appearance: RefCell<Option<String>>,
     /// The trusted path's ONCE book: badge, digest, and whether it was used.
@@ -203,6 +206,8 @@ struct FakeHost {
     model_requests: RefCell<Vec<String>>,
     /// What `updated` answers every request with instead, when set.
     model_answer: RefCell<Option<String>>,
+    /// Each restart, with the log on the disk when it came (backlog item 13).
+    reboots: RefCell<Vec<Option<String>>>,
 }
 
 /// What standing instructions asked the desktop and the owners for.
@@ -339,6 +344,7 @@ impl FakeHost {
             apps: RefCell::new(crate::apps::Apps::default()),
             app_requests: RefCell::new(Vec::new()),
             app_replies: RefCell::new(VecDeque::new()),
+            not_apps: RefCell::new(Vec::new()),
             appearance: RefCell::new(None),
             once: RefCell::new(Vec::new()),
             revoked: RefCell::new(Vec::new()),
@@ -391,6 +397,7 @@ impl FakeHost {
             models: RefCell::new(models::store()),
             model_requests: RefCell::new(Vec::new()),
             model_answer: RefCell::new(None),
+            reboots: RefCell::new(Vec::new()),
         })
     }
 }
@@ -910,6 +917,9 @@ impl Host for FakeHost {
         self.app_requests
             .borrow_mut()
             .push((String::from(app), String::from(request)));
+        if self.not_apps.borrow().iter().any(|a| a == app) {
+            return Err(String::from("no such app"));
+        }
         self.app_replies
             .borrow_mut()
             .pop_front()
@@ -968,6 +978,12 @@ impl Host for FakeHost {
 
     fn audit(&self, text: &str) {
         self.audit.borrow_mut().push(String::from(text));
+    }
+
+    fn power_reboot(&self) -> Result<(), String> {
+        let log = self.log_disk.borrow().clone();
+        self.reboots.borrow_mut().push(log);
+        Ok(())
     }
 
     fn pkg(&self, request: &str) -> Result<String, String> {
