@@ -576,7 +576,13 @@ pub fn run_test(
             );
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!("timed out after {} s", timeout.as_secs()));
+            // A forbidden line seen before the hang is said too: it may be why.
+            let forbidden = reader.join().ok().and_then(|seen| seen.4);
+            let _ = echo.join();
+            let also = forbidden.map_or_else(String::new, |line| {
+                format!("; the console showed a forbidden line: {line}")
+            });
+            return Err(format!("timed out after {} s{also}", timeout.as_secs()));
         }
         thread::sleep(Duration::from_millis(50));
     };
@@ -596,14 +602,15 @@ pub fn run_test(
             accel
         );
     }
+    // Before QEMU's own verdict: a forbidden line is said however the run ended.
+    if let Some(line) = forbidden {
+        return Err(format!("FAIL: the console showed a forbidden line: {line}"));
+    }
     let reset = run.case.resets && status.code() == Some(0);
     if stopped {
         println!("xtask: every expected line seen; QEMU stopped");
     } else if status.code() != Some(QEMU_PASS) && !reset {
         return Err(format!("FAIL: QEMU exited with {status}"));
-    }
-    if let Some(line) = forbidden {
-        return Err(format!("FAIL: the console showed a forbidden line: {line}"));
     }
     if !missing.is_empty() {
         return Err(format!("FAIL: never saw {missing:?} on the console"));

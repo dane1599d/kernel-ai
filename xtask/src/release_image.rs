@@ -26,7 +26,7 @@
 //! builds differ only beneath `pkgrepo/`.
 
 use crate::{components, esp, floatguard, image, options, userbuild};
-use image::modules::{Image::Release, TRUST_ANCHOR};
+use image::modules::{Image, TRUST_ANCHOR};
 use std::fs;
 use std::path::PathBuf;
 
@@ -83,8 +83,10 @@ pub fn main(args: &[String]) -> Result<(), String> {
         true => Some(crate::pkgrepo::release_test()?),
         false => None,
     };
-    let repository = repository(crate::release_repo::committed(&root)?, test)?;
-    let modules = image::modules::image_modules(Release, modules, repository)?;
+    let signed = crate::release_repo::committed(&root)?;
+    let committed = signed.is_some();
+    let repository = repository(signed, test)?;
+    let modules = image::modules::image_modules(Image::Release { committed }, modules, repository)?;
     // No extra TLS root ships: a file in `netroots/` would be trusted for
     // every host by fetch and the model download, which have TLS alone
     // (K's review of #753).

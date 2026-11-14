@@ -21,28 +21,38 @@ pub enum Image {
     Run,
     /// `cargo xtask vbox`: the same, for VirtualBox.
     Vbox,
-    /// `cargo xtask release-image`: the founder-signed `release/pkgrepo`, with
-    /// its root as [`TRUST_ANCHOR`] too (`release_image::repository`).
-    Release,
+    /// `cargo xtask release-image`: once the founder's `release/pkgrepo` is
+    /// `committed`, it with its root as [`TRUST_ANCHOR`] too
+    /// (`release_image::repository`); `--test-root` swaps the repository alone.
+    Release { committed: bool },
 }
 
 /// `modules`, then `repository`, the image's signed repository beneath
-/// `pkgrepo/`. Run's and vbox's must hold [`SIGNED_ROOT`]. A release's holds
-/// none only before the founder's repository is committed, and then carries no
-/// [`TRUST_ANCHOR`] either.
+/// `pkgrepo/`. Run's and vbox's must hold [`SIGNED_ROOT`]. A release with the
+/// founder's repository committed must hold it and [`TRUST_ANCHOR`]; one
+/// without may hold a test root's (`--test-root`) but no [`TRUST_ANCHOR`].
 pub fn image_modules(
     image: Image,
     modules: Vec<Module>,
     repository: Vec<Module>,
 ) -> Result<Vec<Module>, String> {
     let has = |path: &str| repository.iter().any(|m| m.path == path);
-    match (image, has(SIGNED_ROOT), has(TRUST_ANCHOR)) {
-        (_, true, _) | (Image::Release, false, false) => {}
-        (image, false, _) => {
+    let missing = match image {
+        Image::Run | Image::Vbox => [SIGNED_ROOT].into_iter().find(|p| !has(p)),
+        Image::Release { committed: true } => {
+            [SIGNED_ROOT, TRUST_ANCHOR].into_iter().find(|p| !has(p))
+        }
+        Image::Release { committed: false } if has(TRUST_ANCHOR) => {
             return Err(format!(
-                "the {image:?} image has no {SIGNED_ROOT}, so pkg would refuse it"
+                "a release with no committed repository carries no {TRUST_ANCHOR}"
             ));
         }
+        Image::Release { committed: false } => None,
+    };
+    if let Some(path) = missing {
+        return Err(format!(
+            "the {image:?} image has no {path}, so pkg would refuse it"
+        ));
     }
     Ok(modules.into_iter().chain(repository).collect())
 }
@@ -98,12 +108,12 @@ mod tests {
         for (image, repository) in [
             (Image::Run, test_root_repository()),
             (Image::Vbox, test_root_repository()),
-            (Image::Release, release_repository()),
+            (Image::Release { committed: true }, release_repository()),
         ] {
             let modules = image_modules(image, boot(), repository).unwrap();
             let root = modules.iter().find(|m| m.path == SIGNED_ROOT);
             assert!(root.is_some(), "{image:?} ships {SIGNED_ROOT}");
-            if image == Image::Release {
+            if image == (Image::Release { committed: true }) {
                 let anchor = modules.iter().find(|m| m.path == TRUST_ANCHOR).unwrap();
                 assert_eq!(anchor.bytes, root.unwrap().bytes);
             }
@@ -125,8 +135,21 @@ mod tests {
                 .expect("refused");
             assert!(refused.contains(SIGNED_ROOT), "{refused}");
         }
-        assert!(image_modules(Image::Release, Vec::new(), Vec::new()).is_ok());
+        let (yes, no) = (
+            Image::Release { committed: true },
+            Image::Release { committed: false },
+        );
+        assert!(image_modules(no, Vec::new(), Vec::new()).is_ok());
+        assert!(
+            image_modules(no, Vec::new(), vec![module(SIGNED_ROOT)]).is_ok(),
+            "--test-root"
+        );
+        assert!(image_modules(yes, Vec::new(), Vec::new()).is_err());
+        assert!(
+            image_modules(yes, Vec::new(), vec![module(SIGNED_ROOT)]).is_err(),
+            "no anchor"
+        );
         let anchor_alone = vec![module(TRUST_ANCHOR)];
-        assert!(image_modules(Image::Release, Vec::new(), anchor_alone).is_err());
+        assert!(image_modules(no, Vec::new(), anchor_alone).is_err());
     }
 }
