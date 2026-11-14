@@ -152,6 +152,23 @@ impl Ui {
             .is_some_and(crate::kai_settings::Forward::busy)
     }
 
+    /// Whether one of its windows holds changes not yet kept (`set-unsaved`),
+    /// shown or hidden: a nap would take them with the app's state, so the app
+    /// does not nap while one does (#878).
+    pub fn unsaved(&self) -> bool {
+        self.frames
+            .iter()
+            .chain(self.held.iter())
+            .any(|(_, frame)| frame.unsaved)
+    }
+
+    /// Whether `window`'s last frame says it holds unsaved changes.
+    fn window_unsaved(&self, window: u32) -> bool {
+        self.frames
+            .iter()
+            .any(|(app, frame)| *app == window && frame.unsaved)
+    }
+
     pub fn has_windows(&self) -> bool {
         !self.frames.is_empty()
     }
@@ -462,6 +479,22 @@ impl Ui {
                 // The person closed it: comphost hides it, and the app, not
                 // told, keeps its window and its state, as if minimized,
                 // until a show puts it back.
+                // Unsaved changes: the app is told, so it can ask to save or
+                // discard them (the Editor's prompt, #878); hiding would keep
+                // them unasked.
+                Told::Close(window) if self.window_unsaved(window) => {
+                    if let Some(reply) = host.wake()? {
+                        println!(
+                            "comphost: resumed for a close: {}",
+                            String::from_utf8_lossy(&reply)
+                        );
+                    }
+                    println!("comphost: window {window} has unsaved changes; the app is asked");
+                    let performed = serve_shown(host, |core| {
+                        core.ui_events(window, &[uikit::widget::UiEvent::CloseRequested])
+                    });
+                    self.forward(performed, false);
+                }
                 Told::Close(window) => self.hide(window),
                 Told::Action {
                     window,

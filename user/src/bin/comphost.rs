@@ -376,7 +376,11 @@ fn main() -> i32 {
                 }
                 // A change or a file waiting for its answer is use: the app does
                 // not nap until it has it.
-                let busy = windows.as_ref().is_some_and(ui::Ui::changes_busy)
+                // So is a window with changes not kept (the Editor's text, not
+                // saved): the checkpoint does not hold it (#878).
+                let busy = windows
+                    .as_ref()
+                    .is_some_and(|ui| ui.changes_busy() || ui.unsaved())
                     || relay.as_ref().is_some_and(files::Relay::busy);
                 if busy != settings_leased {
                     napper.nap.lease(busy);
