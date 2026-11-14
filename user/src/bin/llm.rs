@@ -150,6 +150,11 @@ fn main() -> i32 {
     let args = args();
     let server = remote::Server::from_args(&args);
     let restart = arg(&args, "restart").unwrap_or("0");
+    // A test boot's `cold_ms=N` (the `desk-warming` case): `warm` says no for N
+    // ms after llm starts, as a local model filling its slots would.
+    let cold_until = arg(&args, "cold_ms")
+        .and_then(|ms| ms.parse::<u64>().ok())
+        .map(|ms| sys::time_ns().saturating_add(ms.saturating_mul(1_000_000)));
     match &server {
         Some(server) => println!(
             "up (restart {restart}); server {}, model {}",
@@ -293,6 +298,9 @@ fn main() -> i32 {
             }
             Some("app-stop") => jobs.stop(rest),
             // `warm`: whether both slots hold their prompts (S02-2 waits for it).
+            Some("warm") if cold_until.is_some_and(|until| sys::time_ns() < until) => {
+                String::from("ok no")
+            }
             Some("warm") => match local_warmable(&backends, stale, cold) {
                 true => String::from("ok no"),
                 false => String::from("ok yes"),
@@ -370,13 +378,30 @@ fn local_warmable(backends: &Backends, stale: bool, cold: bool) -> bool {
 /// prompt.
 fn warm_act(local: &mut local::Local, request: &mut [u8], caller: &mut u64) -> Option<usize> {
     let mut came = None;
-    if let Err(why) = local.warm_act(|| {
-        came = sys::svc_recv(request, 1, caller).ok();
-        came.is_some()
-    }) {
+    if let Err(why) = local.warm_act(|| request_came(request, caller, &mut came)) {
         println!("local: the act prefix was not cached: {why}");
     }
     came
+}
+
+/// Whether a request came while a warm-up computes, which then stops and leaves
+/// it in `request` (its length in `came`). A `warm` ask is no such request: it
+/// is answered at once, "ok no", and the warm-up goes on. So asking whether llm
+/// is warm, as the shell does for the panel, never cuts a warm-up short or
+/// changes what llm computes.
+fn request_came(request: &mut [u8], caller: &mut u64, came: &mut Option<usize>) -> bool {
+    *came = sys::svc_recv(request, 1, caller).ok();
+    let Some(len) = *came else {
+        return false;
+    };
+    if request.get(..len.min(request.len())) != Some(b"warm") {
+        return true;
+    }
+    if let Err(error) = sys::svc_reply(b"ok no") {
+        println!("svc_reply failed: {error:?}");
+    }
+    *came = None;
+    false
 }
 
 /// Warms `local` for scripts until done or until a request comes, which is then
@@ -390,10 +415,7 @@ fn warm(
 ) -> Option<usize> {
     let started = sys::time_ns();
     let mut came = None;
-    let warmed = local.warm(lang, || {
-        came = sys::svc_recv(request, 1, caller).ok();
-        came.is_some()
-    });
+    let warmed = local.warm(lang, || request_came(request, caller, &mut came));
     let ms = (sys::time_ns() - started) / 1_000_000;
     match (warmed, came) {
         (Err(why), _) => println!("local: the script prompt was not cached: {why}"),

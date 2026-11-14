@@ -737,6 +737,18 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         }
         return Some(panel_wire::encode_take(request.as_ref()));
     }
+    if let Some(ready) = panel_wire::parse_ready(text) {
+        if state.panel.set_ready(ready) {
+            // Neither line holds the other, so a case can tell them apart.
+            let now = if ready { "ready" } else { "getting ready" };
+            println!("desktop: the model is {now}");
+            state.extra.push(state.desk.panel());
+            state.extra.push(paint::stats_area(state.width));
+            // The top bar says it too, from the next read of the stats.
+            state.bar_at = 0;
+        }
+        return Some(String::from("ok"));
+    }
     // A card's result: shown, unless a newer line is thinking, whose own
     // result comes after.
     if let Some(shown) = panel_wire::parse_card(text) {
@@ -1228,6 +1240,7 @@ fn refresh_bar(state: &mut State) {
     let mib = |frames: u64| frames * 4096 / (1024 * 1024);
     let bar = Bar {
         model: listed.iter().any(|p| p.name() == "llm"),
+        warming: state.panel.getting_ready(),
         mem_used_mib: mib(m.total_frames - m.free_frames),
         mem_total_mib: mib(m.total_frames),
     };

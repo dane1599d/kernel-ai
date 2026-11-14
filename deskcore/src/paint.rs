@@ -43,6 +43,8 @@ pub const CURSOR: i32 = 18;
 pub struct Bar {
     /// A process named `llm` runs.
     pub model: bool,
+    /// The shell said the model is not warm yet (`Panel::getting_ready`).
+    pub warming: bool,
     pub mem_used_mib: u64,
     pub mem_total_mib: u64,
 }
@@ -335,9 +337,10 @@ impl Painter {
             return;
         };
         let style = TypeStyle::MonoTitle;
-        let (dot, model) = match bar.model {
-            true => (self.palette.ok, "model ready"),
-            false => (self.palette.dim, "no model"),
+        let (dot, model) = match (bar.model, bar.warming) {
+            (true, false) => (self.palette.ok, "model ready"),
+            (true, true) => (self.palette.dim, "getting ready"),
+            (false, _) => (self.palette.dim, "no model"),
         };
         let used = format!("{}", bar.mem_used_mib);
         let total = format!("/{} MiB", bar.mem_total_mib);

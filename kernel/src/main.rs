@@ -231,6 +231,12 @@ fn cmdline() -> &'static str {
     CMDLINE.response().map_or("", |r| r.cmdline())
 }
 
+/// Whether the command line selects a self-test: a test boot, whose test
+/// words (`llm.cold_ms=`) count; any other boot ignores them.
+fn test_boot() -> bool {
+    TEST_MODE.load(Ordering::SeqCst)
+}
+
 /// Runs one self-test case and reports its outcome to QEMU.
 fn run_case(check: impl FnOnce() -> Result<(), &'static str>) -> ! {
     if let Err(message) = check() {
@@ -440,6 +446,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskAgent => run_case(agent_desk_tests::agent_check),
         SelfTest::DeskDefault => run_case(default_tests::check),
         SelfTest::DeskNoMemory => run_case(default_tests::no_memory_check),
+        SelfTest::DeskWarming => run_case(default_tests::warming_check),
         SelfTest::AppSettings => run_case(app_settings_tests::check),
         SelfTest::DeskTour => run_case(desk_tour_tests::check),
         SelfTest::DeskTakeover => run_case(agent_desk_tests::takeover_check),
