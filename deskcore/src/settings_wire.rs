@@ -170,6 +170,9 @@ impl Queue {
             taken.extend(self.waiting.pop_front());
         }
         for request in &taken {
+            // Tickets start again when the app reloads: an older entry for
+            // the same ticket is gone.
+            self.taken.retain(|t| t.ticket != request.ticket);
             if self.taken.len() == MAX_ANSWERS {
                 self.taken.pop_front();
             }
@@ -185,7 +188,7 @@ impl Queue {
     pub fn put_back(&mut self, requests: Vec<Request>) -> usize {
         let mut back = Vec::new();
         for request in requests {
-            let at = self.taken.iter().position(|t| t.ticket == request.ticket);
+            let at = self.taken.iter().rposition(|t| t.ticket == request.ticket);
             back.extend(at.and_then(|at| self.taken.remove(at)));
         }
         let count = back.len();

@@ -161,6 +161,9 @@ impl Queue {
         }
         let app = app.clone();
         for ticket in lines.iter().filter_map(|line| ticket_of(line)) {
+            // Tickets start again when an app or its comphost reloads: an
+            // older entry for the same ticket is gone.
+            self.taken.retain(|(a, t, _)| !(*a == app && *t == ticket));
             if self.taken.len() == MAX_TAKEN {
                 self.taken.pop_front();
             }
@@ -184,7 +187,7 @@ impl Queue {
             let at = self
                 .taken
                 .iter()
-                .position(|(app, t, _)| *app == taken.app && *t == ticket);
+                .rposition(|(app, t, _)| *app == taken.app && *t == ticket);
             if let Some((_, _, user)) = at.and_then(|at| self.taken.remove(at)) {
                 back.push((user, line));
             }
@@ -763,6 +766,24 @@ mod tests {
         let taken = queue.take(usize::MAX).unwrap();
         assert_eq!(taken.lines.len(), 2 * MAX_QUEUED);
         assert_eq!(queue.put("files", &line(501)), 0, "room again");
+    }
+
+    /// #913's review: tickets start again when an app reloads, so a ticket
+    /// taken again goes back with the flag of its newest take.
+    #[test]
+    fn a_ticket_taken_again_goes_back_as_its_newest_take() {
+        let mut queue = Queue::default();
+        queue.put("notes", &line(1));
+        queue.take(4096).unwrap();
+        // The app reloaded and its ticket 1 is a person's this time.
+        queue.put_as("notes", &line(1), true);
+        let newest = queue.take(4096).unwrap();
+        assert_eq!(queue.put_back(newest.clone()), 1);
+        assert_eq!(queue.take(4096), Some(newest.clone()));
+        assert_eq!(queue.put_back(newest), 1, "one entry, not two");
+        queue.take(4096).unwrap();
+        assert_eq!(queue.put_back(taken("notes", true, &[line(1)])), 1);
+        assert_eq!(queue.put_back(taken("notes", true, &[line(1)])), 0);
     }
 
     #[test]
