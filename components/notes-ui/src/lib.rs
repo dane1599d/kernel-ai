@@ -25,7 +25,8 @@ pub const LIST: NodeId = 5;
 pub const MAIN: NodeId = 6;
 pub const EDITOR: NodeId = 7;
 pub const STATUS: NodeId = 8;
-/// Removes the note in the editor; there only while one is open.
+/// Removes the note in the editor, on its second press; there only while one is
+/// open.
 pub const DELETE: NodeId = 9;
 /// List items are `ITEM + position` among the shown notes.
 pub const ITEM: NodeId = 1000;
@@ -43,6 +44,9 @@ pub struct View {
     pub search: String,
     /// The note in the editor, by id.
     pub selected: Option<u32>,
+    /// The note whose Delete was pressed once. The next press removes it; any
+    /// other event takes the question back.
+    pub delete_asked: Option<u32>,
 }
 
 /// One node of the tree: its id, its parent, its layout and its widget.
@@ -207,12 +211,17 @@ pub fn build(notes: &Notes, view: &View) -> Vec<Entry> {
         ),
     });
     if open {
+        let asked = view.delete_asked.is_some() && view.delete_asked == view.selected;
         tree.push(entry(
             DELETE,
             MAIN,
             wide(),
             Widget::Button {
-                text: String::from("Delete note"),
+                text: String::from(if asked {
+                    "Press again to delete"
+                } else {
+                    "Delete note"
+                }),
                 action: None,
             },
         ));
@@ -295,8 +304,16 @@ pub fn set_text(notes: &mut Notes, id: u32, text: &str) -> bool {
     notes.replace(id, text).is_ok()
 }
 
-/// Handles one event from the window; whether the tree may have changed.
+/// Handles one event from the window; whether the tree may have changed. Delete
+/// asks first: a person's click has no snapshot to undo, so the first press
+/// changes the button to "Press again to delete" and only the next, with
+/// nothing between, removes the note.
 pub fn on_ui(notes: &mut Notes, view: &mut View, e: &UiEvent) -> bool {
+    let asked = view.delete_asked.take();
+    handle(notes, view, e, asked) || asked.is_some()
+}
+
+fn handle(notes: &mut Notes, view: &mut View, e: &UiEvent, asked: Option<u32>) -> bool {
     match e {
         UiEvent::Pressed(NEW) => match notes.add("") {
             Ok(id) => {
@@ -307,8 +324,14 @@ pub fn on_ui(notes: &mut Notes, view: &mut View, e: &UiEvent) -> bool {
             Err(_) => false,
         },
         UiEvent::Pressed(DELETE) => match view.selected {
-            Some(id) if notes.remove(id).is_ok() => {
-                view.selected = None;
+            Some(id) if asked == Some(id) => {
+                if notes.remove(id).is_ok() {
+                    view.selected = None;
+                }
+                true
+            }
+            Some(id) if notes.get(id).is_some() => {
+                view.delete_asked = Some(id);
                 true
             }
             _ => false,

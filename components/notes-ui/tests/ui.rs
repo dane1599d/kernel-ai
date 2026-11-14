@@ -7,7 +7,7 @@ use comp_notes_ui::{self as ui, Change, DELETE, EDITOR, Entry, LIST, NEW, SEARCH
 use compsdk::Component;
 use std::path::PathBuf;
 use uikit::layout::FixedAdvance as M;
-use uikit::widget::{UiEvent, Value};
+use uikit::widget::{UiEvent, Value, Widget};
 use uikit::{Frame, Window};
 
 fn golden(name: &str, text: &str) {
@@ -86,6 +86,7 @@ fn the_editor_view() {
     let view = View {
         search: String::new(),
         selected: Some(1),
+        ..View::default()
     };
     let f = frame(&ui::build(&notes, &view));
     golden("editor", &f.list.to_string());
@@ -98,6 +99,7 @@ fn the_search_view() {
     let view = View {
         search: String::from("THE"),
         selected: None,
+        ..View::default()
     };
     let f = frame(&ui::build(&notes, &view));
     golden("search", &f.list.to_string());
@@ -193,14 +195,17 @@ fn the_diff_sends_only_what_changed_and_rebuilds_the_same_tree() {
         View {
             search: String::new(),
             selected: Some(3),
+            ..View::default()
         },
         View {
             search: String::from("the"),
             selected: Some(3),
+            ..View::default()
         },
         View {
             search: String::from("milk"),
             selected: None,
+            ..View::default()
         },
         View::default(),
     ];
@@ -257,6 +262,32 @@ fn delete_removes_the_open_note_and_is_there_only_while_one_is_open() {
         &UiEvent::Changed(LIST, Value::Index(1))
     ));
     assert!(has(&notes, &view, DELETE));
+    // The first press asks: the note stays and the button says so.
+    let text_of = |notes: &Notes, view: &View| {
+        ui::build(notes, view)
+            .into_iter()
+            .find_map(|e| match (e.id, e.widget) {
+                (DELETE, Widget::Button { text, .. }) => Some(text),
+                _ => None,
+            })
+    };
+    assert_eq!(text_of(&notes, &view).as_deref(), Some("Delete note"));
+    assert!(ui::on_ui(&mut notes, &mut view, &UiEvent::Pressed(DELETE)));
+    assert_eq!(notes.count().notes, 3);
+    assert_eq!(
+        text_of(&notes, &view).as_deref(),
+        Some("Press again to delete")
+    );
+    // Anything between takes the question back: a press after it asks again.
+    assert!(ui::on_ui(
+        &mut notes,
+        &mut view,
+        &UiEvent::Changed(LIST, Value::Index(1))
+    ));
+    assert_eq!(text_of(&notes, &view).as_deref(), Some("Delete note"));
+    assert!(ui::on_ui(&mut notes, &mut view, &UiEvent::Pressed(DELETE)));
+    assert_eq!(notes.count().notes, 3);
+    // The same note's second press removes it.
     assert!(ui::on_ui(&mut notes, &mut view, &UiEvent::Pressed(DELETE)));
     assert_eq!(notes.count().notes, 2);
     assert_eq!(notes.get(2), None);
