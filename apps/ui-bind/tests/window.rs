@@ -182,8 +182,14 @@ fn a_window_that_cannot_open_is_an_error_and_a_closed_one_is_forgotten() {
     assert_eq!(host.closed, 0);
     assert_eq!(shown.closed(&mut host, 7), Ok(true));
     assert_eq!((host.closed, shown.id()), (1, None));
-    // Presenting again opens a new window with the whole tree.
+    // Closed by the person, presenting again opens nothing (backlog item 2):
+    // a new `Shown`, the app reloaded for a show, opens it with the whole tree.
     shown
+        .present(&mut host, "Demo", (200, 100), tree(1, "a"))
+        .unwrap();
+    assert_eq!((host.opened, shown.id()), (1, None));
+    let mut fresh = Shown::new();
+    fresh
         .present(&mut host, "Demo", (200, 100), tree(1, "a"))
         .unwrap();
     assert_eq!(host.opened, 2);

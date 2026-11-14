@@ -53,6 +53,10 @@ pub struct TerminalWindow {
     view: View,
     /// The open window, and the tree it was last sent.
     window: Option<(u32, Vec<Entry>)>,
+    /// The person closed the window: it opens again only when the app is
+    /// asked to show it (comphost reloads it, `kai-show`), never on a redraw
+    /// of its own (the founder's second test, backlog item 2).
+    closed: bool,
 }
 
 impl TerminalWindow {
@@ -61,6 +65,7 @@ impl TerminalWindow {
             term,
             view: View::default(),
             window: None,
+            closed: false,
         }
     }
 
@@ -73,6 +78,9 @@ impl TerminalWindow {
     /// gives the input line the focus when it has just appeared, and commits. On
     /// an error the last tree is kept, so the next call sends the changes again.
     pub fn present(&mut self, sink: &mut dyn Sink) -> Result<(), UiError> {
+        if self.window.is_none() && self.closed {
+            return Ok(());
+        }
         let (id, mut shown) = match self.window.take() {
             Some(open) => open,
             None => {
@@ -139,6 +147,7 @@ impl OnUi for TerminalWindow {
         }
         if *event == UiEvent::CloseRequested {
             self.window = None;
+            self.closed = true;
             return sink.close(window);
         }
         match on_ui(&mut self.term, &mut Effects, &mut self.view, event) {

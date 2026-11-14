@@ -55,6 +55,10 @@ pub struct V1 {}
 #[derive(Default)]
 struct Shown {
     window: Option<(u32, Vec<Entry>)>,
+    /// The person closed the window: it opens again only when the app is
+    /// asked to show it (comphost reloads it, `kai-show`), never on a redraw
+    /// of its own (the founder's second test, backlog item 2).
+    closed: bool,
 }
 
 /// `comp-settings-ui`'s entry as `kai:ui/view` takes it. The two crates keep
@@ -92,6 +96,9 @@ impl Shown {
         next: Vec<Entry>,
         view: &mut View,
     ) -> Result<(), UiError> {
+        if self.window.is_none() && self.closed {
+            return Ok(());
+        }
         let (id, last) = match self.window.take() {
             Some(open) => open,
             None => (open_private(sink)?, Vec::new()),
@@ -315,6 +322,7 @@ impl OnUi for SettingsWindow {
         }
         if *event == UiEvent::CloseRequested {
             self.shown.window = None;
+            self.shown.closed = true;
             return sink.close(window);
         }
         let (redraw, intent) = comp_settings_ui::on_ui(&self.settings, &mut self.view, event);

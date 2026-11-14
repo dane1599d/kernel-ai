@@ -305,6 +305,14 @@ fn main() -> i32 {
                         log_nap(&name, napped);
                         match reply {
                             Some(reply) => Ok(reply),
+                            // A show is the host's own: the app's window, or
+                            // the app reloaded so it shows one.
+                            None if &request[..len] == kabi::live::SHOW.as_bytes() => {
+                                match windows.as_ref().is_some_and(ui::Ui::has_windows) {
+                                    true => Ok(b"ok shown (its window is open)".to_vec()),
+                                    false => host.reshow(),
+                                }
+                            }
                             None => host.handle(caller, &request[..len]),
                         }
                     });

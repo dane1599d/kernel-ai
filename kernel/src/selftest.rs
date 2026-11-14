@@ -191,6 +191,9 @@ pub enum SelfTest {
     DeskCatalog,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
+    /// A closed app's window stays closed until asked, then comes back
+    /// (backlog item 2).
+    UiWindowShow,
     /// The editor app's window on the desktop, opened by the agent's door, typed
     /// into and built in the background (P4 task 11).
     AppEditor,
@@ -455,6 +458,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-card-wake" => Some(SelfTest::DeskCardWake),
             "test=desk-catalog" => Some(SelfTest::DeskCatalog),
             "test=ui-window" => Some(SelfTest::UiWindow),
+            "test=ui-window-show" => Some(SelfTest::UiWindowShow),
             "test=app-editor" => Some(SelfTest::AppEditor),
             "test=app-editor-files" => Some(SelfTest::AppEditorFiles),
             "test=app-editor-build" => Some(SelfTest::AppEditorBuild),
@@ -654,6 +658,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskCardWake
             | SelfTest::DeskCatalog
             | SelfTest::UiWindow
+            | SelfTest::UiWindowShow
             | SelfTest::AppEditor
             | SelfTest::AppEditorFiles
             | SelfTest::AppEditorBuild
@@ -934,7 +939,7 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::desk_tests::BOOT_PLAN);
     }
-    if test == SelfTest::UiWindow {
+    if matches!(test, SelfTest::UiWindow | SelfTest::UiWindowShow) {
         plan.push('\n');
         plan.push_str(crate::ui_tests::PLAN);
     }

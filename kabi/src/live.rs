@@ -210,6 +210,12 @@ pub const SOURCE_SECTION: &str = "kai.source";
 pub const ACTIONS_SECTION: &str = "kai.actions";
 /// Requests starting with this are control requests, accepted only from the kernel.
 pub const CONTROL_PREFIX: &str = "ctl ";
+/// Asks a component host to show its app's window: answered by the host
+/// itself, from anyone. A running app whose window the person closed is
+/// reloaded from its checkpoint, so it shows its window as it does at start
+/// (the founder's second test, backlog item 2); one with a window open is
+/// left as it is.
+pub const SHOW: &str = "kai-show 1";
 /// Longest control request a PUBLISH holder may have relayed, after `ctl `.
 pub const MAX_CONTROL: usize = 128;
 /// Largest uploaded artifact (M9b); a notes artifact is about 72 KiB.

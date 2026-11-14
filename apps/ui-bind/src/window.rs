@@ -33,11 +33,18 @@ pub trait Sink {
 #[derive(Debug, Default)]
 pub struct Shown {
     window: Option<(u32, Vec<Entry>)>,
+    /// The person closed the window: the app opens it again only when it is
+    /// asked to show it (comphost reloads it, `kai-show`), never on a redraw
+    /// of its own (the founder's second test, backlog item 2).
+    closed: bool,
 }
 
 impl Shown {
     pub const fn new() -> Self {
-        Self { window: None }
+        Self {
+            window: None,
+            closed: false,
+        }
     }
 
     /// The open window's id.
@@ -55,6 +62,9 @@ impl Shown {
         size: (u16, u16),
         tree: Vec<Entry>,
     ) -> Result<(), UiError> {
+        if self.window.is_none() && self.closed {
+            return Ok(());
+        }
         let (id, shown) = match self.window.take() {
             Some(open) => open,
             None => (sink.open(title, size.0, size.1)?, Vec::new()),
@@ -72,6 +82,7 @@ impl Shown {
             return Ok(false);
         }
         self.window = None;
+        self.closed = true;
         sink.close(window).map(|()| true)
     }
 }

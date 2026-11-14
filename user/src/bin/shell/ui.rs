@@ -95,12 +95,23 @@ fn open(route: kabi::handle::Handle, app: &str, arg: Option<&str>) -> Result<Str
         }
     }
     let mut waited = 0;
+    let mut asked_to_show = false;
     while waited < WINDOW_WAIT_MS {
         if sys::interrupted() {
             return Err(format!("stopped while {app} was opening"));
         }
         if let Some(id) = mine(&windows(route)?) {
             return Ok(format!("opened {id}"));
+        }
+        // Running with its window closed: asked once, it shows it again
+        // (backlog item 2). A new start shows its own window well before.
+        if !asked_to_show && waited >= SHOW_AFTER_MS {
+            asked_to_show = true;
+            let show =
+                app_call(&window, kabi::live::SHOW).or_else(|_| app_call(app, kabi::live::SHOW));
+            if let Err(why) = show {
+                user::println!("{app} was asked to show its window: {why}");
+            }
         }
         sys::sleep_ms(WINDOW_POLL_MS);
         waited += WINDOW_POLL_MS;
@@ -112,6 +123,9 @@ fn windows(route: kabi::handle::Handle) -> Result<alloc::vec::Vec<Window>, Strin
     let list = ask_desktop(route, &Request::Windows.encode())?;
     rows::parse_windows(&list)
 }
+
+/// How long `ui_open` waits for a window before it asks the app to show one.
+const SHOW_AFTER_MS: u64 = 1_500;
 
 /// What `ui_open` and the panel say when there is no memory to open an app.
 const NOT_ENOUGH: &str = "Not enough memory to open ";
