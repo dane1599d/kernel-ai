@@ -14,6 +14,7 @@ pub mod release;
 mod storage;
 mod tour;
 mod updates;
+mod warming;
 
 use crate::buildsvc::BuildService;
 use crate::disk::Fixture;
@@ -190,6 +191,7 @@ const LANES: &[&[TestCase]] = &[
     storage::CASES,
     updates::CASES,
     pkg::CASES,
+    warming::CASES,
 ];
 
 /// The cases `cargo xtask test` boots.
@@ -228,6 +230,7 @@ mod tests {
             storage::CASES,
             updates::CASES,
             pkg::CASES,
+            warming::CASES,
         ];
         assert_eq!(
             cases.len(),
