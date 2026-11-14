@@ -24,6 +24,7 @@ const FORBID: &[&str] = &[
     "dropped a result",
     "did not reach the app",
     "supervision: supervisor died",
+    super::ROOM_WARNING,
     NO_PACKAGES,
 ];
 

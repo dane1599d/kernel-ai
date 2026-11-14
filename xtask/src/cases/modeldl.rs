@@ -63,7 +63,9 @@ pub const CASES: &[TestCase] = &[TestCase {
     data_mib: Some(DATA_MIB),
     // The memory `fixture-dl` needs to run, as xtask sizes a VM for a model,
     // so `updated` offers it.
-    memory_mib: Some(kabi::model::guest_mib(FIXTURE_DL_LEN)),
+    memory_mib: Some(super::with_case_room(kabi::model::guest_mib(
+        FIXTURE_DL_LEN,
+    ))),
     https: Some(Https {
         content,
         faults: FAULTS,
