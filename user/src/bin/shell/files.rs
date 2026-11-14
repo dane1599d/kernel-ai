@@ -520,17 +520,27 @@ const FIND_MAX: usize = 40;
 
 /// `fs_find`: paths under home whose last part holds `word`, case aside,
 /// looking in home and the folders below it, breadth first, within
-/// [`FIND_DIRS`] folders and [`FIND_MAX`] paths.
+/// [`FIND_DIRS`] folders and [`FIND_MAX`] paths. A folder it may not read is
+/// skipped, not the whole search; a last line says when it stopped early or
+/// skipped any (#899's review), so a short list is never taken as all there is.
 fn find(home: Handle, word: &str) -> Result<Vec<String>, String> {
     let word = word.trim().to_lowercase();
     if word.is_empty() {
         return Err(String::from("say what the name holds"));
     }
     let mut dirs = alloc::collections::VecDeque::from([String::new()]);
-    let (mut seen, mut found) = (0, Vec::new());
+    let (mut seen, mut skipped, mut cut, mut found) = (0, 0, false, Vec::new());
     while let Some(dir) = dirs.pop_front() {
         seen += 1;
-        let names = in_dir(home, &dir, Rights::READ | Rights::ENUMERATE, list)?;
+        let names = match in_dir(home, &dir, Rights::READ | Rights::ENUMERATE, list) {
+            Ok(names) => names,
+            // Home itself unreadable is the search failing.
+            Err(why) if dir.is_empty() => return Err(why),
+            Err(_) => {
+                skipped += 1;
+                continue;
+            }
+        };
         for name in names {
             let (bare, folder) = match name.strip_suffix('/') {
                 Some(bare) => (bare, true),
@@ -540,16 +550,30 @@ fn find(home: Handle, word: &str) -> Result<Vec<String>, String> {
                 true => String::from(bare),
                 false => format!("{dir}/{bare}"),
             };
-            if bare.to_lowercase().contains(&word) && found.len() < FIND_MAX {
-                found.push(format!(
-                    "/home/user/{path}{}",
-                    if folder { "/" } else { "" }
-                ));
+            if bare.to_lowercase().contains(&word) {
+                match found.len() < FIND_MAX {
+                    true => found.push(format!(
+                        "/home/user/{path}{}",
+                        if folder { "/" } else { "" }
+                    )),
+                    false => cut = true,
+                }
             }
-            if folder && seen + dirs.len() < FIND_DIRS {
-                dirs.push_back(path);
+            if folder {
+                match seen + dirs.len() < FIND_DIRS {
+                    true => dirs.push_back(path),
+                    false => cut = true,
+                }
             }
         }
+    }
+    if cut {
+        found.push(format!(
+            "(stopped early, after {seen} folders: more may match)"
+        ));
+    }
+    if skipped > 0 {
+        found.push(format!("({skipped} folders could not be read)"));
     }
     Ok(found)
 }

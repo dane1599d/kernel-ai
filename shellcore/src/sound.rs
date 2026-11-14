@@ -19,6 +19,9 @@ const AUDIO_COMMANDS: &[&str] = &["mute", "unmute", "louder", "quieter"];
 /// What "play" plays when it is sound.
 const PLAYED: &[&str] = &["sound", "sounds", "audio", "music", "song", "songs"];
 
+/// Words after "volume" that make it a disk's volume: "set the volume label".
+const DISK_VOLUME: &[&str] = &["label", "name", "size", "space", "id"];
+
 /// The most words a request about sound has.
 const MAX_WORDS: usize = 8;
 
@@ -37,6 +40,9 @@ pub(crate) fn answer(line: &str) -> Option<&'static str> {
         })
         .filter(|w| !w.is_empty())
         .collect();
+    if pair(&words, "volume", DISK_VOLUME) {
+        return None;
+    }
     let has = |list: &[&str]| words.iter().any(|w| list.contains(&w.as_str()));
     let level = has(LEVEL_VERBS) && has(&["volume", "sound"]);
     let command = has(AUDIO_COMMANDS);
@@ -98,6 +104,8 @@ mod tests {
             "show /home/user/music/volume",
             "make a note called sound",
             "show me the cpus",
+            "set the volume label to backup",
+            "change the volume name",
         ] {
             assert_eq!(answer(line), None, "{line}");
         }
