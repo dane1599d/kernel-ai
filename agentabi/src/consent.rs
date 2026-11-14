@@ -335,6 +335,9 @@ fn cued(words: &[Word], row: &Action) -> Option<bool> {
     found
 }
 
+/// The person's own folder: a path under it is named by the rest of it.
+const HOME: &str = "/home/user/";
+
 /// Every `from_request` argument is literal in the line, an alias it uses, or a
 /// symbol the line points at.
 fn arguments_in_line(words: &[Word], row: &Action, call: &Call) -> bool {
@@ -346,7 +349,11 @@ fn arguments_in_line(words: &[Word], row: &Action, call: &Call) -> bool {
         if matches!(value.label, Label::Content(_)) {
             return false;
         }
-        (names_a_thing(value.text) && !matches(words, value.text, false).is_empty())
+        let named = |text: &str| names_a_thing(text) && !matches(words, text, false).is_empty();
+        named(value.text)
+            // A file is named by its place under home: "a note called ideas"
+            // names /home/user/ideas (files.rs's PATH).
+            || value.text.strip_prefix(HOME).is_some_and(named)
             || arg.aliases.iter().any(|(written, means)| {
                 fold_eq(means, value.text) && !matches(words, written, false).is_empty()
             })
@@ -648,6 +655,7 @@ const ENGLISH: &[&str] = &[
     "could",
     "create",
     "current",
+    "dark",
     "delete",
     "dnf",
     "do",
@@ -658,6 +666,7 @@ const ENGLISH: &[&str] = &[
     "each",
     "else",
     "empty",
+    "erase",
     "every",
     "feel",
     "few",
@@ -673,6 +682,7 @@ const ENGLISH: &[&str] = &[
     "go",
     "has",
     "have",
+    "hello",
     "history",
     "how",
     "i",
@@ -688,6 +698,7 @@ const ENGLISH: &[&str] = &[
     "last",
     "less",
     "let",
+    "light",
     "like",
     "line",
     "list",
@@ -696,6 +707,7 @@ const ENGLISH: &[&str] = &[
     "make",
     "many",
     "me",
+    "mode",
     "more",
     "most",
     "move",
@@ -708,6 +720,8 @@ const ENGLISH: &[&str] = &[
     "next",
     "no",
     "not",
+    "note",
+    "notes",
     "now",
     "number",
     "of",
@@ -733,6 +747,7 @@ const ENGLISH: &[&str] = &[
     "restore",
     "run",
     "same",
+    "save",
     "saying",
     "second",
     "see",
@@ -755,6 +770,7 @@ const ENGLISH: &[&str] = &[
     "the",
     "their",
     "them",
+    "theme",
     "then",
     "there",
     "these",
@@ -768,6 +784,7 @@ const ENGLISH: &[&str] = &[
     "trash",
     "turn",
     "two",
+    "type",
     "up",
     "use",
     "used",
