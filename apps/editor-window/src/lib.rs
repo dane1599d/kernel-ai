@@ -192,7 +192,8 @@ impl EditorWindow {
         outcome: Result<Vec<u8>, String>,
     ) -> Result<(), UiError> {
         if self.files.owns(ticket) {
-            self.files.reply(&mut self.screen, self.grid, outcome);
+            self.files
+                .reply(&mut self.screen, self.grid, host.now_ms(), outcome);
             // Saved, so closed as asked; not saved, the window stays and says why.
             if self.closing == Closing::Saving {
                 self.closing = Closing::No;
@@ -319,7 +320,7 @@ impl EditorWindow {
         if line == 0 || line > 99_999 {
             return Err(String::from("Lines count from 1."));
         }
-        self.keeps_text()?;
+        self.keeps_text(host)?;
         // The source the agent names takes the place of the file a nap kept.
         self.reopen = None;
         if self.files.unsaved(&self.screen) {
@@ -339,7 +340,7 @@ impl EditorWindow {
     /// answer says only that it is on its way; the file's text never goes to the
     /// agent.
     pub fn act_open_file(&mut self, host: &mut dyn Host, path: &str) -> Result<String, String> {
-        self.keeps_text()?;
+        self.keeps_text(host)?;
         // The file the agent names takes the place of the one a nap kept.
         self.reopen = None;
         self.files.ask_open(host, &mut self.screen, path)?;
@@ -440,7 +441,16 @@ impl EditorWindow {
     /// Refuses while text a nap kept is still to be put back, waiting for the first
     /// call or for the file's read: an open now would take its place, and the text
     /// has no other copy. It is the person's to save or leave first.
-    fn keeps_text(&self) -> Result<(), String> {
+    fn keeps_text(&mut self, host: &mut dyn Host) -> Result<(), String> {
+        // The first call after a wake that is an open: the kept file's read is
+        // asked for now, so the restore goes on though this call is refused.
+        if self
+            .reopen
+            .as_ref()
+            .is_some_and(|(_, kept)| kept.text.is_some())
+        {
+            self.resume(host);
+        }
         let waiting = self
             .reopen
             .as_ref()

@@ -560,14 +560,29 @@ fn imported(wasm: &[u8], saved: &[u8]) -> CoreInstance {
 }
 
 /// Gives `h` its first transaction, which asks for the file, and answers that
-/// with `outcome`. The window's last frame.
-fn first_call_answered(h: &mut CoreInstance, outcome: Result<Vec<u8>, String>) -> uikit::Frame {
+/// with `outcome`. The window's id and last frame.
+fn first_call_answered(
+    h: &mut CoreInstance,
+    outcome: Result<Vec<u8>, String>,
+) -> (u32, uikit::Frame) {
     let (w, _) = frame(h);
     call(h, |h| h.code_size(w, CODE, 10, 60)).unwrap();
     let asked = h.take_files();
     assert_eq!(asked.len(), 1, "{asked:?}");
     call(h, |h| h.files_reply(asked[0].ticket, outcome)).unwrap();
-    last_frame(h)
+    (w, last_frame(h))
+}
+
+/// Ctrl-S as a person's key in window `w`: the write it asks the door for, as
+/// `(path, data, create)`.
+fn saved_by_ctrl_s(h: &mut CoreInstance, w: u32) -> (String, Vec<u8>, bool) {
+    call(h, |h| h.ui_events_user(w, &[key("s", "", CTRL)])).unwrap();
+    let mut asked = h.take_files();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    match asked.remove(0).op {
+        FileOp::Write { path, data, create } => (path, data, create),
+        other => panic!("{other:?}"),
+    }
 }
 
 fn open_file_action(g: &mut CoreInstance, path: &str) -> Result<String, String> {
@@ -603,9 +618,16 @@ fn an_open_by_the_agent_right_after_a_wake_does_not_drop_the_text_kept() {
     let why = open_file_action(&mut h, "/home/user/other.txt").unwrap_err();
     assert!(why.contains("not saved"), "{why}");
     assert!(open(&mut h, "notes", "src/lib.rs", 1).is_err());
-    assert!(h.take_files().is_empty());
-    // The text comes back with the next call, as it would have.
-    let back = first_call_answered(&mut h, Ok(b"buy milk\ncall Ann\n".to_vec()));
+    // The refused call asked for the kept file, so the restore goes on without
+    // waiting for another call: one read, and not one for the open.
+    let asked = h.take_files();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(matches!(&asked[0].op, FileOp::Read { path } if path == KEPT_PATH));
+    call(&mut h, |h| {
+        h.files_reply(asked[0].ticket, Ok(b"buy milk\ncall Ann\n".to_vec()))
+    })
+    .unwrap();
+    let back = last_frame(&mut h);
     let text = text_of(&back);
     assert!(text.contains("xbuy milk") && back.unsaved, "{text}");
     // While it is unsaved the editor still refuses an open that would drop it.
@@ -639,22 +661,55 @@ fn text_kept_survives_a_file_that_cannot_be_opened_again() {
     let saved = kept_checkpoint(&wasm);
     // The read is refused.
     let mut h = imported(&wasm, &saved);
-    let back = first_call_answered(&mut h, Err(String::from("denied: not yours")));
+    let there = format!("{KEPT_PATH}.recovered-0");
+    let (w, back) = first_call_answered(&mut h, Err(String::from("denied: not yours")));
     let text = text_of(&back);
     assert!(text.contains("xbuy milk") && back.unsaved, "{text}");
-    assert!(text.contains("not read again"), "{text}");
+    assert!(text.contains(&there), "{text}");
+    // A save makes the new name, never the file that could not be read.
+    assert_eq!(
+        saved_by_ctrl_s(&mut h, w),
+        (there.clone(), b"xbuy milk\ncall Ann\n".to_vec(), true)
+    );
     // The file is not text any more.
     let mut h = imported(&wasm, &saved);
-    let back = first_call_answered(&mut h, Ok(vec![0xff, 0xfe, 0x00]));
+    let (w, back) = first_call_answered(&mut h, Ok(vec![0xff, 0xfe, 0x00]));
     let text = text_of(&back);
     assert!(text.contains("xbuy milk") && back.unsaved, "{text}");
-    assert!(text.contains("not text"), "{text}");
+    assert!(text.contains("not text") && text.contains(&there), "{text}");
+    assert_eq!(saved_by_ctrl_s(&mut h, w).0, there);
     // The file grew past what the editor opens.
     let mut h = imported(&wasm, &saved);
     let big = vec![b'a'; editcore::file::MAX_BYTES + 1];
-    let back = first_call_answered(&mut h, Ok(big));
+    let (w, back) = first_call_answered(&mut h, Ok(big));
     let text = text_of(&back);
     assert!(text.contains("xbuy milk") && back.unsaved, "{text}");
+    assert_eq!(saved_by_ctrl_s(&mut h, w).0, there);
+}
+
+#[test]
+fn a_recovered_file_that_naps_again_comes_back_at_its_own_name() {
+    let Some(wasm) = wasm() else { return };
+    let saved = kept_checkpoint(&wasm);
+    let mut h = imported(&wasm, &saved);
+    first_call_answered(&mut h, Err(String::from("denied: not yours")));
+    // The checkpoint of the recovered editor names the new file, with the text.
+    let there = format!("{KEPT_PATH}.recovered-0");
+    let again = Instance::export(&mut h, 0).unwrap().unwrap();
+    let kept: comp_editor_window::V1 =
+        compsdk::state::decode(&again, comp_editor_window::SCHEMA).unwrap();
+    assert_eq!(kept.path.as_deref(), Some(there.as_str()));
+    assert_eq!(kept.text.as_deref(), Some("xbuy milk\ncall Ann\n"));
+    // The new file is not on the disk yet, so it opens as a new file with the
+    // text, and a save makes it.
+    let mut h = imported(&wasm, &again);
+    let (w, back) = first_call_answered(&mut h, Err(String::from("missing: no such file")));
+    let text = text_of(&back);
+    assert!(text.contains("xbuy milk") && back.unsaved, "{text}");
+    assert_eq!(
+        saved_by_ctrl_s(&mut h, w),
+        (there, b"xbuy milk\ncall Ann\n".to_vec(), true)
+    );
 }
 
 #[test]
@@ -670,7 +725,16 @@ fn text_kept_survives_a_path_the_door_would_not_be_asked_for() {
     let back = last_frame(&mut h);
     let text = text_of(&back);
     assert!(text.contains("kept text") && back.unsaved, "{text}");
-    assert!(text.contains("not opened again"), "{text}");
+    assert!(text.contains("could not be opened again"), "{text}");
+    // It is saved in the person's folder, as a new file, not at that path.
+    assert_eq!(
+        saved_by_ctrl_s(&mut h, w),
+        (
+            String::from("/home/user/recovered-0.txt"),
+            b"kept text\n".to_vec(),
+            true
+        )
+    );
 }
 
 #[test]

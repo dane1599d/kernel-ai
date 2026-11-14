@@ -879,12 +879,18 @@ fn a_file_that_cannot_be_read_again_still_shows_the_text_that_was_kept() {
         .unwrap();
     serve(&mut woke, &mut os);
     assert_eq!(&os.rows()[..1], ["xbuy milk"]);
-    assert!(os.status().contains("not read again"), "{}", os.status());
-    // A save asks to make a file, which a file that is there refuses.
+    // The text is open under a name of its own beside the file, which says so.
+    let there = format!("{PATH}.recovered-0");
+    assert!(os.status().contains(&there), "{}", os.status());
+    assert!(woke.status(&mut os).contains("recovered-0"));
+    // The file is there after all; a save makes the new name and leaves it be.
     os.disk.insert(PATH.into(), todo());
     save(&mut woke, &mut os);
     assert_eq!(os.disk[PATH], todo());
-    assert!(os.status().contains("not saved"), "{}", os.status());
+    let kept: &[u8] = b"xbuy milk\r\ncall Ann\nsleep";
+    assert_eq!(os.disk[&there], kept);
+    assert_eq!(os.writes, [(true, kept.len())]);
+    assert!(os.status().contains("saved"), "{}", os.status());
 }
 
 #[test]
