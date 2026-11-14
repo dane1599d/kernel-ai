@@ -35,6 +35,7 @@ pub mod apps;
 mod brackets;
 pub mod ccbuild;
 mod centry;
+mod clarify;
 mod cmode;
 mod commands;
 pub mod data;
@@ -921,12 +922,17 @@ impl Shell {
             return Reply::ok("");
         }
         // The answer to a clarifying question joins the request it clarifies; a typed
-        // command or Rhai line instead leaves it.
+        // command, a Rhai line or a request of its own instead leaves it.
         if let Some(request) = self.clarifying.take()
             && reads_like_words(input)
             && split_command(input, |name| self.scope.contains(name)).is_none()
         {
-            return self.ask_for_script(&format!("{request} {input}"));
+            if clarify::answers(input) {
+                return self.ask_for_script(&format!("{request} {input}"));
+            }
+            self.host.audit(&format!(
+                "the question about \"{request}\" was left: \"{input}\" reads as a new request"
+            ));
         }
         if input == "reset" {
             self.scope.clear();

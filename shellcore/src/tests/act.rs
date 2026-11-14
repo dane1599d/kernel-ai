@@ -768,3 +768,63 @@ fn undo_stops_only_the_start_its_own_entry_made() {
     assert!(!shell.eval("undo").ok);
     assert!(host.services.borrow()[0].1, "notes still runs");
 }
+
+#[test]
+fn a_new_request_after_a_question_runs_alone() {
+    // The founder's VirtualBox test (2026-11-14): a stray line, a question
+    // back, then a request of its own, which must not join the stray line.
+    let start = r#"{"name":"service_start","arguments":{"name":"sshd"}}"#;
+    let cpus = r#"{"name":"script","arguments":{"code":"print(\"CPUs: \" + cpus());"}}"#;
+    let (host, mut shell) = with_services(vec![call(start), call(cpus)]);
+    assert_eq!(
+        shell.eval("sssssshd"),
+        ok("No service or process named sshd is running. Which one did you mean?")
+    );
+    let reply = shell.eval("show me the cpus");
+    assert_eq!(
+        reply,
+        ok("CPUs: 4
+")
+    );
+    assert_eq!(host.act_lines.borrow()[1], "show me the cpus");
+    let audit = host.audit.borrow();
+    assert!(
+        audit
+            .iter()
+            .any(|line| line.contains("reads as a new request")),
+        "{audit:?}"
+    );
+}
+
+#[test]
+fn an_answer_to_the_question_still_continues_the_request() {
+    let start = r#"{"name":"service_start","arguments":{"name":"sshd"}}"#;
+    let netd = r#"{"name":"service_start","arguments":{"name":"indexer"}}"#;
+    let (host, mut shell) = with_services(vec![call(start), call(netd)]);
+    shell.eval("sssssshd");
+    shell.eval("the indexer one");
+    assert_eq!(host.act_lines.borrow()[1], "sssssshd the indexer one");
+}
+
+#[test]
+fn only_a_line_that_opens_like_a_request_leaves_the_question() {
+    use crate::clarify::answers;
+    for line in [
+        "sshd",
+        "round robin",
+        "the second one",
+        "stop",
+        "netd please",
+        "indexer",
+    ] {
+        assert!(answers(line), "{line}");
+    }
+    for line in [
+        "show me the cpus",
+        "What is the policy?",
+        "please list apps",
+        "Stop netd",
+    ] {
+        assert!(!answers(line), "{line}");
+    }
+}
