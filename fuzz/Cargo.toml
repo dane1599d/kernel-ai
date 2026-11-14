@@ -6,7 +6,10 @@ license = "MPL-2.0"
 publish = false
 
 # libFuzzer targets for kainet's parsers of server bytes (plan p5-networking
-# §6). Outside the workspace: libfuzzer-sys builds libFuzzer's C++, so these
+# §6), and for P3's parsers of an app's bytes (plan p3-desktop §1 and §6):
+# surfabi's message stream, header page and tree records, and look's
+# `kai-theme 1`, whose bodies are surfabi_harness.rs and look_harness.rs, run by
+# those crates' hostile tests too. Outside the workspace: libfuzzer-sys builds libFuzzer's C++, so these
 # run only in .github/workflows/fuzz.yml on a GitHub runner, never on a
 # developer's PC. Their bodies are ../fuzz/harness.rs, which kainet's host
 # tests also run (kainet/tests/fuzz_harness.rs).
@@ -23,6 +26,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4.13"
 kainet = { path = "../kainet", features = ["testca"] }
+surfabi = { path = "../surfabi" }
+look = { path = "../look" }
 rustls = { version = "=0.23.46", default-features = false }
 getrandom = "0.3"
 
@@ -60,6 +65,41 @@ bench = false
 [[bin]]
 name = "url"
 path = "fuzz_targets/url.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fetch_wire"
+path = "fuzz_targets/fetch_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "surfabi_stream"
+path = "fuzz_targets/surfabi_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "header_page"
+path = "fuzz_targets/header_page.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tree_records"
+path = "fuzz_targets/tree_records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kai_theme"
+path = "fuzz_targets/kai_theme.rs"
 test = false
 doc = false
 bench = false

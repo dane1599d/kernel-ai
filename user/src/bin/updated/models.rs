@@ -15,6 +15,7 @@
 //! about 357,000 pushes of 7 KiB.
 
 use crate::folders::{self, Folders};
+use crate::offers;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
@@ -25,6 +26,7 @@ use kabi::Error;
 use kabi::handle::Handle;
 use kabi::update::{IMPORT, MAX_IO, SECTOR};
 use kaipkg::image::Files;
+use modelchan::fetch::Hosts;
 use modelchan::import::{self, Importing};
 use modelchan::listing;
 use modelchan::trial::{self, AtBoot, Decision, Health, State, Switch, Trial};
@@ -106,6 +108,8 @@ pub struct Channel {
     /// The trial this boot judges, and when it started.
     probation: Option<(Trial, u64)>,
     asked_ms: u64,
+    /// The hosts models are downloaded from (`offers::hosts`).
+    hosts: &'static [Hosts],
 }
 
 fn now_ms() -> u64 {
@@ -115,7 +119,12 @@ fn now_ms() -> u64 {
 impl Channel {
     /// The channel, when the plan line grants the model store and `kai-data`
     /// serves it.
-    pub fn open(update: Handle, folders: &Folders, llm: Option<Handle>) -> Option<Channel> {
+    pub fn open(
+        update: Handle,
+        folders: &Folders,
+        llm: Option<Handle>,
+        hosts: &'static [Hosts],
+    ) -> Option<Channel> {
         Some(Channel {
             update,
             store: folders.models?,
@@ -125,6 +134,7 @@ impl Channel {
             last: None,
             probation: None,
             asked_ms: 0,
+            hosts,
         })
     }
 
@@ -261,18 +271,40 @@ impl Channel {
     }
 
     /// One request from the shell: `models`, `models import`, `models
-    /// progress` or `models use <64 hex>`; from the model manager's window,
-    /// `models` alone (`serve` checks who asked). Nothing in it is used as a
-    /// path.
+    /// progress`, `models use <64 hex>`, `models offers` or `models ask <id>`;
+    /// from the model manager's window, `models` alone (`serve` checks who
+    /// asked). Nothing in it is used as a path: an id is only looked up in the
+    /// signed role.
     pub fn answer(&mut self, text: &str) -> String {
         let done = match text.split(' ').collect::<Vec<_>>().as_slice() {
             ["models"] => self.list(),
             ["models", "import"] => self.start_import(),
             ["models", "progress"] => Ok(self.progress()),
             ["models", "use", sha] => listing::sha256(sha).and_then(|sha| self.use_model(&sha)),
+            ["models", "offers"] => self.offers(None),
+            ["models", "ask", id] => self.offers(Some(id)),
             _ => Err(String::from("unknown request")),
         };
         done.unwrap_or_else(|why| format!("err {why}"))
+    }
+
+    /// `models offers`, or with `id`, `models ask <id>` (`offers.rs`).
+    fn offers(&self, id: Option<&str>) -> Result<String, String> {
+        let signed = role()?;
+        let store = Store {
+            blobs: self
+                .blobs()?
+                .iter()
+                .map(|&(sha256, length, _)| Stored { sha256, length })
+                .collect(),
+            ..Store::default()
+        };
+        let facts = offers::Facts::read(self.store, &signed)?;
+        let machine = facts.machine(&store, self.hosts);
+        match id {
+            None => Ok(offers::offers(&signed, &machine)),
+            Some(id) => offers::ask(&signed, &machine, id),
+        }
     }
 
     /// The store's sealed blobs: each one's SHA-256, length and FNV-1a64.

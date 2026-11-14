@@ -34,6 +34,8 @@ mod files;
 mod kai_settings;
 #[path = "comphost/models.rs"]
 mod models;
+#[path = "comphost/net.rs"]
+mod net;
 #[path = "comphost/started.rs"]
 mod started;
 #[path = "comphost/system.rs"]
@@ -200,7 +202,7 @@ fn main() -> i32 {
     env.grants.shell_line = name == TERMINAL_APP;
     env.grants.files = name == EDITOR_APP;
     if let (true, Some(ui)) = (env.grants.settings, windows.as_mut()) {
-        ui.carry_settings();
+        ui.carry(kai_settings::Channel::Settings);
     }
     // The editor's rules for what it may send; none for an app without the grant.
     let mut edits = env.grants.edit.then(editcore::gate::Gate::new);
@@ -216,6 +218,19 @@ fn main() -> i32 {
     // Each holds its own route at index 1, so no app may hold both.
     debug_assert!(!(env.grants.system && env.grants.models));
     let mut lister = env.grants.models.then(models::Lister::new);
+    // An app whose plan line names a ceiling (`netdest=`) and a route to
+    // `fetch` after `desktop`'s may import `kai:net`; the shell asks the
+    // person per host. Its route is at index 1 too, so not with those two.
+    let mut net = match env.grants.system || env.grants.models {
+        true => None,
+        false => net::Net::new(&args),
+    };
+    env.grants.net = net.is_some();
+    // Its switches go to the shell as Settings' changes do (#556); no app is
+    // both, since each grant is a plan line's name.
+    if let (true, Some(ui)) = (env.grants.models, windows.as_mut()) {
+        ui.carry(kai_settings::Channel::Models);
+    }
     let mut napper = Napper::new(Nap::new(settings.nap_ms, now_ms()));
     napper.nap.keep_running(settings.keep_running);
     let mut host = match Host::start(env, &name, settings) {
@@ -268,6 +283,10 @@ fn main() -> i32 {
                 lister
                     .as_ref()
                     .and_then(|lister| lister.wait_ms(&mut host, now_ms()))
+            })
+            .or_else(|| {
+                net.as_ref()
+                    .and_then(|net| net.wait_ms(&mut host, now_ms()))
             });
         if due.is_some() != leased {
             leased = due.is_some();
@@ -322,9 +341,9 @@ fn main() -> i32 {
                     println!("{}", exit.why);
                     return exit.code;
                 }
-                // A settings request or a file waiting for its answer is use: the
-                // app does not nap until it has it.
-                let busy = windows.as_ref().is_some_and(ui::Ui::settings_busy)
+                // A change or a file waiting for its answer is use: the app does
+                // not nap until it has it.
+                let busy = windows.as_ref().is_some_and(ui::Ui::changes_busy)
                     || relay.as_ref().is_some_and(files::Relay::busy);
                 if busy != settings_leased {
                     napper.nap.lease(busy);
@@ -362,6 +381,13 @@ fn main() -> i32 {
         // Likewise a read of the model list.
         if let Some(lister) = lister.as_mut()
             && lister.pump(&mut host, now_ms())
+        {
+            settle(&mut windows, &mut edits, &mut relay, &mut host);
+        }
+        // And an app's network requests, each asked, called and answered in
+        // turn.
+        if let Some(net) = net.as_mut()
+            && net.pump(&mut host, now_ms())
         {
             settle(&mut windows, &mut edits, &mut relay, &mut host);
         }

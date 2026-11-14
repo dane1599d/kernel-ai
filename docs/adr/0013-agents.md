@@ -1,8 +1,8 @@
 # ADR 0013: Agents: several agents on one model, memory, search, goals and agent packages
 
-Proposed, for founder approval, 2026-10-27. The founder asked for this track on 2026-10-27: match and beat Steve ("AI OS") and AIOS (github.com/agiresearch/AIOS), placed so it does not delay v0.1. Until the founder approves it, nothing here is built. Questions below keep their stated default until the founder answers.
+Approved by the founder on 2026-10-27, with the defaults of the open questions below (recorded 2026-11-09; the answers the founder has given since are decisions rows, and the spike results are under "Spikes that settle it"). The founder asked for this track on 2026-10-27: match and beat Steve ("AI OS") and AIOS (github.com/agiresearch/AIOS), placed so it does not delay v0.1. Questions below keep their stated default until the founder answers.
 
-Repo citations are `path:line` or PR numbers on main at 1f54d4a. External facts were read on 2026-10-27 from the sources at the end; anything not checked at its source says "unverified". "Est." marks arithmetic or judgement, not a measurement. Nothing was built, run or spiked for this ADR, and no model ran.
+Repo citations are `path:line` or PR numbers on main at 1f54d4a. External facts were read on 2026-10-27 from the sources at the end; anything not checked at its source says "unverified". "Est." marks arithmetic or judgement, not a measurement. When it was written (2026-10-27) nothing had been built, run or spiked for it and no model had run; what has been since is in the decisions rows and under "Spikes that settle it".
 
 This ADR owns the agent runtime (identity, the model scheduler, quotas), long-term memory, semantic search, proactive goals and the `agent` package kind. It builds on [0001](0001-capabilities.md) (handles), [0002](0002-agent-actions.md) (the one door, tiers, `actlog`), [0004](0004-storage.md) (kaifs volumes and snapshots), [0010](0010-skill-pack.md) (the pack and `infer::segments`) and [0011](0011-packages.md) (packages). The order of work is in section "Phases"; [0000](0000-execution-plan.md) is amended only by a PR after approval.
 
@@ -101,7 +101,7 @@ A higher class always runs before a lower one. Within a class, deficit round rob
 - **Exact resume.** `restore_slot`'s checks apply unchanged, so a resumed agent continues from bit-identical state, or prefills from cold if a check fails. It never continues from wrong state.
 - **Eviction.** Least recently used per class, lowest class first. The pool holds at most 512 MiB (est.; question 4).
 
-**Batching.** Decode is bound by memory reads (L6: the 4B's products ran at 19-20 tokens/s against 21-22 from the read rate alone), and `quant` already multiplies each row by up to 8 tokens at once. So agents of one class may decode together as a batch of up to 4 sequences, which could give up to 3-4 times their throughput (est.). The foreground request decodes alone unless S13-2 shows batching slows it by at most 10%.
+**Batching.** Decode is bound by memory reads (L6: the 4B's products ran at 19-20 tokens/s against 21-22 from the read rate alone), and `quant` already multiplies each row by up to 8 tokens at once. So agents of one class may decode together as a batch of up to 4 sequences, which could give up to 3-4 times their throughput (est.). The foreground request decodes alone unless S13-2 shows batching slows it by at most 10%. *S13-2 failed (2026-11-04, best 1.28x at 2 sequences against a 1.6x bar; row `2026-11-09-s13-2-batch-decode`): decode stays serial, one sequence at a time.*
 
 **Quotas,** in the agent's manifest (section 6) or set by the user, enforced in `llm` by badge:
 
@@ -273,9 +273,13 @@ None runs a model on the founder's PC. Real-model runs are on GitHub runners, as
   - restored equals fresh (already in #114's tests).
 - **Fail:** no RAM pool; background agents run only while the foreground is idle, and resume by spill or cold prefill.
 
+**Result (recorded 2026-11-11; lane E, 2026-11-04 to 2026-11-06: the host half #681, the guest half #682, #706 and the decisions rows).** Two of the three bars are met and one is not measured yet; restored equals fresh on every size and route, on the host and in the guest. The RAM snapshot and restore of 1,024 positions takes 11.3 ms on the host (the dev PC, a release build, #681's benchmark) and 33 ms in the guest (the real Qwen3-4B under KVM on GitHub runners, #682). The spill round trip was first missed in the guest, 1.84 s against 1.5 s, and the breakdown found the cause: about 45% is the hash and conversion and about 30% the disk calls (100-130 us each, 2,200 of them at 64 KiB). With 512 KiB calls (#706, merged) a round trip of about 1,000 positions takes 0.91 s on a fast-disk runner and 1.30 s on a slow one, so the bar holds on a raw `kai-cache` region, which the founder chose for agent spills on 2026-11-06 (through kaifs, at 25 MB/s, it would take about 5.7 s each way). **Not measured:** the foreground's typing-to-done within 10% of S02-2's with two agents decoding, and the slot switch; both need the scheduler wired into `llm`, after the v0.1 tag. The Fail line is not taken: the RAM pool stands.
+
 **S13-2 `batch-decode`** (days). Host and guest benchmarks of 1, 2 and 4 sequences decoding together through `quant`'s 8-token kernels.
 - **Pass:** at least 1.6x the total throughput at 2 sequences, and the foreground's tokens/s within 10% if it joins the batch.
 - **Fail:** serial decode only.
+
+**Result (recorded 2026-11-11; the model lane; the row `2026-11-09-s13-2-batch-decode` has the figures and the runs).** Fail: the best path measured is 1.28x the throughput at 2 sequences (avx2, 4 threads, run 41890832822) against the 1.6x bar (1.00x with the plain kernels, run 41866038969), so decode stays serial.
 
 **S13-3 `embed`** (about 1 week). Qwen3-Embedding-0.6B Q8_0 through `infer` with last-token pooling.
 - **Measure:**
@@ -285,6 +289,8 @@ None runs a model on the founder's PC. Real-model runs are on GitHub runners, as
   - a query's latency over 10,000 chunks.
 - **Pass:** cosine at least 0.999; recall@5 at least 0.8; a query in at most 300 ms. The indexing bar of 150 tokens/s was dropped by the founder on 2026-11-06: indexing may be slower as long as search works, so Qwen3-Embedding-0.6B stays and the MiniLM fallback is not taken.
 - **Fail:** all-MiniLM-L6-v2 with a BERT pass in `infer`; if that also fails, keyword search with time filters only.
+
+**Result (recorded 2026-11-11; #668 and #669, run 41870777932, 2026-11-04; the founder's answer 2026-11-06).** Qwen3-Embedding-0.6B Q8_0 through `infer` agrees with llama.cpp b11399 on 100 strings at a cosine of 0.999375 at worst (bar 0.999) with identical token ids, finds 50 of 50 queries in the top 5 (recall@5 1.00, bar 0.8), and answers a query in 260 ms at p50 (bar 300 ms). Indexing ran at 96 tokens/s in the guest and 90-92 on the runner's host (run 41870777932), under the 150 tokens/s bar; the founder dropped that bar, so the fallback is not taken.
 
 **S13-4 `memory-bait`** (about 1 week). Host corpus in the way of S01-2, plus one fluency run on GitHub.
 - **Cases:**
@@ -296,10 +302,14 @@ None runs a model on the founder's PC. Real-model runs are on GitHub runners, as
   - fluency at least 47/50 with the memory section in the prompt.
 - **Fail:** fix the rule, not the threshold, as S01-2's.
 
+**Result (recorded 2026-11-11; A-core, 2026-11-04; `kaimem/tests/memory_bait.rs`).** Of 25 plants (notes, files, search results, mail and agents' reads worded as instructions to remember) none became a memory, and of 25 grants (memories that try to give consent) none raised a tier, since `decide` takes the current line alone; 10 benign cases pass. The fluency half failed twice first (41/50, then 37/50), so the rule was fixed, not the threshold: a text that gives permission or consent, starts with an action, or ties an action to a trigger is no memory (`kaimem::directive`), and the memories go into act's State, at most 3 and only those the request shares a word with. Passed: 47/50 with memories through script against the 45 bar (run 41882026542), the same as without them.
+
 **S13-5 `goals`** (about 1 week). actbench on GitHub with 20 multi-step goals over the mock OS.
 - **Measure:** completed within budget; steps that stopped to ask; steps outside scope (must be 0).
 - **Pass:** at least 70% completed with at most one check-in each, and 0 out of scope.
 - **Fail:** goals ship as "suggest the next step" only, each step confirmed.
+
+**Result (recorded 2026-11-11; A-core with the model lane, 2026-11-04; `cargo xtask actbench --arm goals`).** The first run failed (5 of 20 met), mostly the runner's doing, and was fixed to do what the `goals` agent will (the goal, then what is done, then the next step); then seed 42 met 16 of 20 and seed 1 met 15 of 20 with at most one check-in each (bar 14), and 0 calls ran outside scope. Limits: "0 run outside scope" holds by construction (the runner refuses an out-of-scope call before it applies anything, as the OS door will), and a goal stops once met, so over-action is not measured; both are for the OS wiring's runs. Goals go ahead as section 5 has them.
 
 ## Phases that depend on it
 

@@ -7,6 +7,7 @@
 
 use super::{Https, TestCase, case};
 use crate::blklog::Data;
+use crate::image::update_online::Fault;
 use crate::mock_https::Content;
 use crate::pkgrepo::mirrors::MirrorKind;
 
@@ -138,4 +139,256 @@ pub(super) const CASES: &[TestCase] = &[
             MirrorKind::HeaderDiffers,
         )
     },
+    TestCase {
+        then: Some(&A_FROM_NET),
+        ..slot_boot("update-online", "test=slot panic=reset", INSTALL)
+    },
+    TestCase {
+        then: Some(&A_REFUSES_FLIP),
+        ..slot_boot("update-online-flipped", "test=slot panic=reset", INSTALL)
+    },
+    TestCase {
+        then: Some(&A_REFUSES_EXPIRED),
+        ..slot_boot("update-online-expired", "test=slot panic=reset", INSTALL)
+    },
+    TestCase {
+        then: Some(&A_NEWER_METADATA),
+        ..slot_boot("update-online-rollback", "test=slot panic=reset", INSTALL)
+    },
+    TestCase {
+        then: Some(&A_RETRIES),
+        ..slot_boot("update-online-retry", "test=slot panic=reset", INSTALL)
+    },
+    TestCase {
+        then: Some(&A_CUT),
+        ..slot_boot("update-online-resume", "test=slot panic=reset", INSTALL)
+    },
 ];
+
+// ---- updates over the network (P5 task 10)
+
+/// A slot boot: ends in a reset, which QEMU reports as status 0 under
+/// `-no-reboot`. On the `kai-data` disk, so `updated` has `/system/trust` and
+/// `/system/updates`.
+const fn slot_boot(
+    name: &'static str,
+    cmdline: &'static str,
+    expect: &'static [&'static str],
+) -> TestCase {
+    TestCase {
+        expect,
+        server: false,
+        resets: true,
+        slots: true,
+        data: Some(VIRTIO),
+        ..case(name, cmdline)
+    }
+}
+
+/// A slot boot where `updated` reaches the HTTPS mock, which serves this build
+/// as release 2 with `fault`.
+const fn online_boot(
+    name: &'static str,
+    expect: &'static [&'static str],
+    fault: Fault,
+) -> TestCase {
+    online_boot_with(
+        name,
+        "test=update updated=online panic=reset",
+        expect,
+        fault,
+    )
+}
+
+/// [`online_boot`] with its own command line.
+const fn online_boot_with(
+    name: &'static str,
+    cmdline: &'static str,
+    expect: &'static [&'static str],
+    fault: Fault,
+) -> TestCase {
+    TestCase {
+        https: Some(Https {
+            content: nothing,
+            faults: &[],
+        }),
+        online_release: Some(fault),
+        ..slot_boot(name, cmdline, expect)
+    }
+}
+
+/// The first boot of a chain: a fresh install in R, which arms A.
+const INSTALL: &[&str] = &[
+    "slots: booted recovery (record missing)",
+    "slots: in R with no record: installed release 1 in kai-a and kai-b as trials",
+    "slots: R arms kai-a (trial)",
+    "slots: next boot kai-a",
+];
+
+/// `update-online` boot 3: B boots release 2, and the same repository offered
+/// again is refused, now from the root `/system/trust` kept.
+const B_FROM_NET: TestCase = online_boot(
+    "update-online (3: kai-b boots release 2)",
+    &[
+        "slots: booted kai-b (record read)",
+        "slots: up in kai-b (trial, 2 tries left)",
+        "updated: reconciled: OnTrial",
+        "updated: the trusted root is /system/trust's",
+        "updated: FAIL refused: release 2 is not newer than 2 (anti-rollback)",
+        "updated: restarting into the running slot",
+    ],
+    Fault::None,
+);
+
+/// `update-online` boot 2: `updated` in A reads the repository's metadata over
+/// TLS, streams release 2 into B in checked 2 MiB chunks, and restarts into it.
+const A_FROM_NET: TestCase = TestCase {
+    then: Some(&B_FROM_NET),
+    ..online_boot(
+        "update-online (2: updated writes kai-b over the network)",
+        &[
+            "updated: the trusted root is the slot's own",
+            "updated: the online repository verifies: slot.img is release 2, ",
+            "updated: took update snapshot ",
+            "updated: wrote release 2 into B over TLS and checked it: 0 chunks kept, ",
+            // The figure the founder's throughput bars read: bytes fetched over the whole
+            // stage, kainet opening a TLS connection for each 2 MiB chunk.
+            "updated: downloaded ",
+            " chunks of up to 2 MiB, a TLS connection for each)",
+            // Where that time went, summed over the stage: the redirect, the assets
+            // host's connect, the body, the hash, the slot write and its read-back.
+            "updated: split ms: redirect ",
+            ", assets-connect ",
+            ", body ",
+            ", hash ",
+            ", write ",
+            ", readback ",
+            "updated: the verified metadata is in /system/trust",
+            "update: restarting into kai-b",
+        ],
+        Fault::None,
+    )
+};
+
+/// `update-online-flipped` boot 3: A again, and B, refused, cannot boot.
+const A_AFTER_FLIP: TestCase = slot_boot(
+    "update-online-flipped (3: still kai-a)",
+    "test=slot panic=reset",
+    &[
+        "slots: booted kai-a (record read)",
+        "slots: up in kai-a (trial, 1 tries left)",
+        "slots: kai-b cannot boot (Updating)",
+    ],
+);
+
+/// `update-online-flipped` boot 2: one byte of the image the mock serves is not
+/// the one the signed chunk list names, so its chunk is refused and not written.
+const A_REFUSES_FLIP: TestCase = TestCase {
+    then: Some(&A_AFTER_FLIP),
+    ..online_boot(
+        "update-online-flipped (2: updated refuses a chunk)",
+        &[
+            "updated: the online repository verifies: slot.img is release 2, ",
+            "is not the signed one; the slot stays unbootable",
+            "updated: restarting into the running slot",
+        ],
+        Fault::FlippedByte,
+    )
+};
+
+/// `update-online-expired` boot 2: the repository's timestamp lapsed, so its
+/// metadata is refused by name and nothing is written.
+const A_REFUSES_EXPIRED: TestCase = online_boot(
+    "update-online-expired (2: updated refuses the metadata)",
+    &[
+        "updated: FAIL refused: the repository was refused: expired: timestamp",
+        "updated: restarting into the running slot",
+    ],
+    Fault::Expired,
+);
+
+/// `update-online-rollback` boot 3: B boots release 2, and the repository now
+/// serves a timestamp at a newer version that names an older snapshot than the
+/// one boot 2 trusted: refused by name, from the metadata `/system/trust` kept.
+const B_ROLLED_BACK: TestCase = online_boot(
+    "update-online-rollback (3: kai-b is offered older metadata)",
+    &[
+        "slots: booted kai-b (record read)",
+        "slots: up in kai-b (trial, 2 tries left)",
+        "updated: reconciled: OnTrial",
+        "updated: the trusted root is /system/trust's",
+        "updated: FAIL refused: the repository was refused: bad version: timestamp names an older snapshot",
+        "updated: restarting into the running slot",
+    ],
+    Fault::RolledBack,
+);
+
+/// `update-online-rollback` boot 2: the update is taken from metadata at version
+/// 2 of the timestamp and the snapshot, which `/system/trust` then keeps.
+const A_NEWER_METADATA: TestCase = TestCase {
+    then: Some(&B_ROLLED_BACK),
+    ..online_boot(
+        "update-online-rollback (2: updated takes metadata at version 2)",
+        &[
+            "updated: the online repository verifies: slot.img is release 2, ",
+            "updated: wrote release 2 into B over TLS and checked it: 0 chunks kept, ",
+            "updated: the verified metadata is in /system/trust",
+            "update: restarting into kai-b",
+        ],
+        Fault::Newer,
+    )
+};
+
+/// `update-online-retry` boot 2: the connection is cut once inside chunk 3, so
+/// chunks 0 to 2 were written and recorded; `updated` tries again in the same
+/// boot, and the second call keeps those three after reading them back, and
+/// fetches the rest.
+const A_RETRIES: TestCase = TestCase {
+    then: Some(&B_FROM_NET),
+    ..online_boot(
+        "update-online-retry (2: updated tries again after a cut)",
+        &[
+            "updated: the online repository verifies: slot.img is release 2, ",
+            "; it resumes where it was; trying again in 2 s (1 of 3)",
+            "updated: wrote release 2 into B over TLS and checked it: 3 chunks kept, ",
+            "update: restarting into kai-b",
+        ],
+        Fault::CutOnce,
+    )
+};
+
+/// `update-online-resume` boot 3: A again, after the reboot that ended boot 2.
+/// Slot B is as boot 2 left it, with chunks 0 to 2 of release 2 written, and
+/// the mark in `/system/updates` (the data disk carries over) says so: the
+/// run keeps those three after reading them back, and fetches the rest.
+const A_RESUMED: TestCase = TestCase {
+    then: Some(&B_FROM_NET),
+    keeps_slot_b: true,
+    ..online_boot(
+        "update-online-resume (3: updated resumes where it was stopped)",
+        &[
+            "updated: the online repository verifies: slot.img is release 2, ",
+            "updated: wrote release 2 into B over TLS and checked it: 3 chunks kept, ",
+            "update: restarting into kai-b",
+        ],
+        Fault::None,
+    )
+};
+
+/// `update-online-resume` boot 2: the connection is cut once inside chunk 3 and
+/// `updated` is told not to try again, so the run ends there, as a power cut
+/// would, with three chunks written and recorded (`updated`'s failure restarts
+/// into the running slot: the reboot).
+const A_CUT: TestCase = TestCase {
+    then: Some(&A_RESUMED),
+    ..online_boot_with(
+        "update-online-resume (2: the download is stopped mid-image)",
+        "test=update updated=online updated.retries=0 panic=reset",
+        &[
+            "updated: the online repository verifies: slot.img is release 2, ",
+            "; it resumes where it was",
+            "updated: restarting into the running slot",
+        ],
+        Fault::CutOnce,
+    )
+};

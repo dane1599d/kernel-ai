@@ -445,6 +445,11 @@ impl Walk {
         };
         self.site(row, args, join(control, self.sticky), at);
         match row.returns {
+            // A quarantined read's answer is still its data's (ADR 0002 D6):
+            // the question can narrow what came back, never clean it.
+            Returns::Content(source) if row.name == agentabi::QUERY.name => {
+                Val::of(join(from, Label::Content(source)))
+            }
             Returns::Content(source) => Val::of(Label::Content(source)),
             Returns::System => Val::of(join(Label::System, from)),
         }

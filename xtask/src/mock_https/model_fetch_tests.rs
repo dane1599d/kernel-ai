@@ -29,11 +29,9 @@ const HF_REPO: &str = "kernel-ai/fixture-GGUF";
 const REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
 const FILE: &str = "fixture.gguf";
 const SIZE: usize = 6 * CHUNK as usize + 4_321;
-/// The mock's model host, and the storage host its resolve URL redirects to.
-const MOCK_HOSTS: &[Hosts] = &[Hosts {
-    source: MODELS,
-    storage: &[ASSETS],
-}];
+/// The mock's model host, and the storage host its resolve URL redirects to,
+/// as `updated` takes them in the `model-download` case.
+const MOCK_HOSTS: &[Hosts] = &[fetch::FIXTURE];
 
 /// The model's bytes: a GGUF magic, then a deterministic stream.
 fn model() -> Vec<u8> {
@@ -178,6 +176,11 @@ impl Partial for Volume<'_> {
         self.files.insert(self.job.path.clone(), whole);
         Ok(())
     }
+
+    fn size(&mut self) -> Result<u64, DownloadError> {
+        let file = self.files.get(&self.job.partial);
+        Ok(file.map_or(0, |bytes| bytes.len() as u64))
+    }
 }
 
 /// One run of `job` from `mock`, reaching only the hosts the job does, on
@@ -228,6 +231,17 @@ fn served(mock: &Mock) -> usize {
 #[test]
 fn models_chunk_is_kainets() {
     assert_eq!(MODEL_CHUNK, CHUNK);
+}
+
+#[test]
+fn updateds_mock_hosts_are_the_mocks() {
+    assert_eq!(
+        fetch::FIXTURE,
+        Hosts {
+            source: MODELS,
+            storage: &[ASSETS],
+        }
+    );
 }
 
 #[test]

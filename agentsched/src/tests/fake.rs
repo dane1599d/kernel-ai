@@ -13,10 +13,13 @@ pub const PREFILL_MS: u64 = 350;
 /// One decode step of one sequence, in ms (about 100 ms at 10 tokens/s; the runners
 /// measure 10.8).
 pub const DECODE_MS: u64 = 100;
-/// One decode step for a batch of 1 to 4 sequences, in ms. S13-2 measured the
-/// runners' total throughput at 1.00x with 2 sequences and 1.60x with 4 (1.79x with
-/// 8), so a step for n sequences takes about n steps divided by that gain: 100, 200,
-/// 225 (between) and 250. Each extra sequence costs about 100, 50 and 50 ms.
+/// One decode step for a batch of 1 to 4 sequences, in ms. The plain kernels' figures
+/// from S13-2 (the row `2026-11-09-s13-2-batch-decode`): total throughput 1.00x with 2
+/// sequences and 1.60x with 4 (1.79x with 8), so a step for n sequences takes about n
+/// steps divided by that gain: 100, 200, 225 (between) and 250, and each extra
+/// sequence costs about 100, 50 and 50 ms. The best path measured later is 1.28x with
+/// 2 sequences (about 156 ms a step), still under the 1.6x bar; the fake keeps the
+/// plain figures, the worse case for batching, since decode stays serial.
 pub const DECODE_BATCH_MS: [u64; 4] = [DECODE_MS, 200, 225, 250];
 /// A move between a slot and the RAM pool, and one to or from a spill file.
 pub const RAM_MOVE_MS: u64 = 40;

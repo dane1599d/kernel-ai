@@ -85,7 +85,7 @@ pub const INDEX: &[(&str, &[&str])] = &[
     ("appearance", &["appearance_set"]),
     ("models", &["model_list", "model_fetch", "model_use"]),
     ("apps", &["app_build", "app_install"]),
-    ("net", &["net_fetch", "net_lookup"]),
+    ("net", &["net_fetch", "net_lookup", "query"]),
 ];
 
 /// Each index group's gloss, at most [`GLOSS_TOKENS`] (ADR 0010 §6's

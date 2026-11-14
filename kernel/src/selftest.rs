@@ -43,6 +43,12 @@ pub enum ActCase {
     /// `net-pf` (P5 task 11): read content goes out only to a host the line
     /// names; any other asks and names the source.
     NetPf,
+    /// `net-pf-page` (P5 task 11): a page fetched through `fetch` from a host
+    /// the line typed is shown, and what it says starts nothing.
+    NetPfPage,
+    /// `net-pf-query` (P5 task 11): a quarantined read of that page, whose
+    /// answer obeys the page and is only shown.
+    NetPfQuery,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -202,6 +208,9 @@ pub enum SelfTest {
     /// The model manager's window on the desktop, given `updated`'s model list
     /// and closed from its control (P4 task 10).
     UiModels,
+    /// A person's keys in the Models window switch the model through the
+    /// shell's `model_use` row, and `undo` switches it back (#556).
+    UiModelsUse,
     /// An unused app naps and a click wakes it (P3 task 12b).
     DeskNap,
     /// A saved appearance repaints `desktop` at once and holds across its
@@ -307,6 +316,17 @@ pub enum SelfTest {
     NetStream,
     /// P5 task 12's harness: xtask's HTTPS mock reached from ring 3.
     HttpsMock,
+    /// P5 task 6, the roadmap's P5 exit: a download cut and resumed, across a
+    /// reboot (`again`), and bad certificates and hashes refused; `small`
+    /// under TCG (`accel=tcg`).
+    NetDownload {
+        again: bool,
+        small: bool,
+    },
+    /// P5 task 12: the `fetch` service on its caller's handles.
+    FetchService,
+    /// P5 task 13: an app's HTTPS through `kai:net`, asked per host on the card.
+    NetGrant,
     /// P5 task 3: ENTROPY's sample, which two boots must not share.
     EntropyBoots,
 }
@@ -348,6 +368,8 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=act-ask" => Some(SelfTest::Act(ActCase::Ask)),
             "test=act-inject" => Some(SelfTest::Act(ActCase::Inject)),
             "test=net-pf" => Some(SelfTest::Act(ActCase::NetPf)),
+            "test=net-pf-page" => Some(SelfTest::Act(ActCase::NetPfPage)),
+            "test=net-pf-query" => Some(SelfTest::Act(ActCase::NetPfQuery)),
             "test=act-rule" => Some(SelfTest::Act(ActCase::Rule)),
             "test=pkg-local" => Some(SelfTest::Act(ActCase::PkgLocal)),
             "test=act-convo" => Some(SelfTest::Act(ActCase::Convo)),
@@ -437,6 +459,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=ui-monitor" => Some(SelfTest::UiMonitor),
             "test=ui-files" => Some(SelfTest::UiFiles),
             "test=ui-models" => Some(SelfTest::UiModels),
+            "test=ui-models-use" => Some(SelfTest::UiModelsUse),
             "test=desk-nap" => Some(SelfTest::DeskNap),
             "test=desk-appearance" => Some(SelfTest::DeskAppearance),
             "test=keep-running" => Some(SelfTest::KeepRunning {
@@ -490,6 +513,12 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net-dest" => Some(SelfTest::NetDest),
             "test=net-stream" => Some(SelfTest::NetStream),
             "test=https-mock" => Some(SelfTest::HttpsMock),
+            "test=net-download" => Some(SelfTest::NetDownload {
+                again: cmdline.split_whitespace().any(|w| w == "again"),
+                small: cmdline.split_whitespace().any(|w| w == "accel=tcg"),
+            }),
+            "test=fetch-service" => Some(SelfTest::FetchService),
+            "test=net-grant" => Some(SelfTest::NetGrant),
             "test=entropy-boots" => Some(SelfTest::EntropyBoots),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
@@ -499,11 +528,20 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
         .unwrap_or(SelfTest::None)
 }
 
+/// The `updated.<key>=` words an `update` boot passes on to `updated`'s line:
+/// those its window and restart read, and the online step's `retries` (how many
+/// times a network stop is tried again) and `into` (the slot to write from R)
+/// (`user/src/bin/updated`). A key a case passes that is not here is dropped
+/// without a word, so `xtask`'s host tests check every case's `updated.` words
+/// against this list.
+const UPDATED_TEST_WORDS: [&str; 5] = ["restart", "window", "heads_up_s", "retries", "into"];
+
 /// The words after `updated`'s plan line in a test boot: `start=demand`
 /// ([`kabi::plan::ON_DEMAND`]), so it holds no memory until the shell's first
 /// model request, except in `update`, which runs a step of the update service
 /// at boot (`updated=`, `check` by default; a refusal restarts into the
-/// running slot) and takes any `updated.<word>` as a word, as `restart=window`.
+/// running slot) and takes `updated.<word>` as a word for the keys in
+/// [`UPDATED_TEST_WORDS`], as `restart=window`.
 /// The default boot starts it at boot (`kabi::plan::system`), and so do the
 /// cases in [`updated_at_boot`].
 fn updated_words(test: SelfTest) -> String {
@@ -518,9 +556,25 @@ fn updated_words(test: SelfTest) -> String {
         .find_map(|w| w.strip_prefix("updated="))
         .unwrap_or("check");
     let mut words = format!(" after=restart step={step}");
+    if step == "online" {
+        // `updated` reaches the HTTPS mock's three hosts on port 443 through a
+        // `NetDest` of its own (P5 task 10). Its pages hold a 2 MiB chunk, the
+        // read-back buffers and the TLS records on top of `kabi::plan::UPDATED`'s.
+        let hosts = crate::pkg_tests::ONLINE_HOSTS;
+        words.push_str(&format!(
+            " pages=6144 online=test netdest=proto:tcp,ports:443,hosts:{hosts}"
+        ));
+    }
+    // Only the words `updated` reads: a plan word such as `netdest=` or
+    // `caps=` from the command line would widen its line (the manager's review
+    // of #779).
     for word in crate::cmdline()
         .split_whitespace()
         .filter_map(|w| w.strip_prefix("updated."))
+        .filter(|w| {
+            w.split_once('=')
+                .is_some_and(|(key, _)| UPDATED_TEST_WORDS.contains(&key))
+        })
     {
         words.push(' ');
         words.push_str(word);
@@ -529,9 +583,12 @@ fn updated_words(test: SelfTest) -> String {
 }
 
 /// The cases whose first model list would otherwise wait on `updated`'s start:
-/// the agent's (`app-models`) and the window's (`ui-models`).
+/// the agent's (`app-models`) and the window's (`ui-models`, `ui-models-use`).
 fn updated_at_boot(test: SelfTest) -> bool {
-    matches!(test, SelfTest::Act(ActCase::AppModels) | SelfTest::UiModels)
+    matches!(
+        test,
+        SelfTest::Act(ActCase::AppModels) | SelfTest::UiModels | SelfTest::UiModelsUse
+    )
 }
 
 /// The service plan for this boot, or None for the boots that run no user space.
@@ -571,6 +628,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::FilesRestart
             | SelfTest::FilesDeadClient
             | SelfTest::PkgStore(_)
+            | SelfTest::NetDownload { .. }
             | SelfTest::DisplayClaim
             | SelfTest::DeskWindows
             | SelfTest::DeskRestart
@@ -589,6 +647,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::UiMonitor
             | SelfTest::UiFiles
             | SelfTest::UiModels
+            | SelfTest::UiModelsUse
             | SelfTest::DeskNap
             | SelfTest::KeepRunning { .. }
             | SelfTest::DeskAppearance
@@ -605,6 +664,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskDefault
             | SelfTest::DeskNoMemory
             | SelfTest::AppSettings
+            | SelfTest::NetGrant
             | SelfTest::DeskTour
             | SelfTest::DeskTakeover
             | SelfTest::TuneRevert
@@ -669,6 +729,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             crate::files_tests::plan(&alloc::format!("churn boot={boot}"))
         }
         SelfTest::PkgStore(step) => crate::pkg_tests::plan(step),
+        SelfTest::NetDownload { again, small } => crate::net_download_tests::plan(again, small),
         SelfTest::DeskCatalog => crate::catalog_tests::plan(),
         SelfTest::CBuild => crate::cc_build_tests::plan(),
         SelfTest::AppEditorBuild => crate::app_editor_build_tests::plan(),
@@ -708,6 +769,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::FilesActions
             | SelfTest::FilesChurn { .. }
             | SelfTest::PkgStore(_)
+            | SelfTest::NetDownload { .. }
             | SelfTest::DeskCatalog
             | SelfTest::CBuild
             | SelfTest::AppEditorBuild
@@ -778,10 +840,24 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push_str(crate::agent_desk_tests::DESK);
                 crate::app_settings_tests::SHELL
             }
+            // The shell keeps the app's grants in `/system/state`, and asks
+            // about each host on `desktop`'s card.
+            SelfTest::NetGrant => {
+                plan.push('\n');
+                plan.push_str(crate::agent_desk_tests::DESK);
+                crate::net_grant_tests::SHELL
+            }
             SelfTest::KeepRunning { .. } => {
                 plan.push('\n');
                 plan.push_str(crate::keep_tests::PLAN);
                 crate::keep_tests::SHELL
+            }
+            // The window's switches reach the shell through `desktop`, so the
+            // shell has its route to it; the window comes after the shell.
+            SelfTest::UiModelsUse => {
+                plan.push('\n');
+                plan.push_str(crate::models_window_tests::DESKTOP);
+                kabi::plan::SHELL_DESK_FILES
             }
             // The desktop with its card, before the shell with `files` and
             // `state` (the appearance is saved in `/system/state`) and its
@@ -870,6 +946,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(&crate::app_window_tests::models_plan());
     }
+    if test == SelfTest::UiModelsUse {
+        plan.push('\n');
+        plan.push_str(kabi::plan::MODELS_WINDOW);
+    }
     if test == SelfTest::DeskNap {
         plan.push('\n');
         plan.push_str(crate::nap_tests::PLAN);
@@ -913,6 +993,12 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::AppSettings {
         plan.push('\n');
         plan.push_str(crate::app_settings_tests::APPS);
+    }
+    // The app whose routes are `desktop` and `fetch`: `with_updated` planned
+    // `fetch` before the shell already.
+    if test == SelfTest::NetGrant {
+        plan.push('\n');
+        plan.push_str(crate::net_grant_tests::APPS);
     }
     Some(plan)
 }

@@ -261,6 +261,52 @@ fn an_update_that_never_finished_staging_or_was_replaced_is_abandoned() {
     assert_eq!(trial(&nv.record, Slot::B, 2, Slot::A), Trial::Abandoned);
 }
 
+/// From A committed at release 1: `updated` over the network stored B's
+/// `stage_end` (release 2), and the `set` that arms the restart failed, so
+/// nothing armed B. The `pending` record `before_trial` wrote names this B.
+fn staged_but_never_armed() -> Nv {
+    let mut nv = installed();
+    stage_begin(&mut nv, Slot::B);
+    stage_end(&mut nv, Slot::B, 2);
+    nv
+}
+
+#[test]
+fn a_staged_slot_whose_restart_never_stored_is_still_a_trial_so_pending_must_stay() {
+    let nv = staged_but_never_armed();
+    // B has tries and a priority above A: it is a trial that may boot, so the
+    // record that gets the system volume back if it fails must not be cleared.
+    let b = nv.record.slot(Slot::B);
+    assert_eq!((b.tries, b.successful), (TRIES, false));
+    assert!(b.priority > nv.record.slot(Slot::A).priority);
+    assert!(may_boot(&nv.record, Slot::B));
+    // Reconcile reads it as waiting, and keeps `pending`.
+    assert_eq!(trial(&nv.record, Slot::B, 2, Slot::A), Trial::Waiting);
+}
+
+#[test]
+fn a_staged_slot_that_boots_later_and_fails_reads_as_failed_so_reconcile_restores() {
+    let mut nv = staged_but_never_armed();
+    // A later restart (the next update's, or a rollback's) puts B in front of R.
+    restart_into(&mut nv, Slot::B);
+    let mut boots = 0;
+    while trial(&nv.record, Slot::B, 2, Slot::A) != Trial::Failed {
+        assert_eq!(trial(&nv.record, Slot::B, 2, Slot::A), Trial::Waiting);
+        step(&mut nv, Event::Fault);
+        boots += 1;
+        assert!(boots < 20, "B never gave up");
+    }
+}
+
+#[test]
+fn a_staged_slot_whose_restart_never_stored_reads_as_abandoned_once_it_is_staged_again() {
+    let mut nv = staged_but_never_armed();
+    // The next update begins by writing the slot: the old `pending` then reads as
+    // never booted, and reconcile clears it and drops its snapshot.
+    stage_begin(&mut nv, Slot::B);
+    assert_eq!(trial(&nv.record, Slot::B, 2, Slot::A), Trial::Abandoned);
+}
+
 #[test]
 fn an_nvram_reinstall_never_reads_as_a_failed_update() {
     let mut nv = staged();

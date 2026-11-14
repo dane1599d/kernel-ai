@@ -158,6 +158,7 @@ impl Header {
             "model" => Kind::Model,
             "linux-layer" => Kind::LinuxLayer,
             "tool" => return Err("kind tool is reserved in format 1".into()),
+            "agent" => return Err("kind agent is reserved in format 1 (ADR 0013)".into()),
             other => return Err(alloc::format!("unknown kind {other:?}")),
         };
         let summary = field("summary")?;
@@ -261,6 +262,11 @@ mod tests {
             "abcdefghijklm",
             "fs",
             "pkg",
+            // ADR 0013's groups, reserved before their rows exist.
+            "agent",
+            "goal",
+            "memory",
+            "search",
             "no_tes",
             "nö",
             "notes-window",
@@ -279,6 +285,7 @@ mod tests {
             swap("kai-package 1", "kai-package 2"),
             swap("name notes\nversion 2.1.0", "version 2.1.0\nname notes"),
             swap("kind app", "kind tool"),
+            swap("kind app", "kind agent"),
             swap("kind app", "kind exe"),
             swap("world kai:app@0.1\n", ""),
             swap("world kai:app@0.1", "world app@0.1"),
@@ -300,5 +307,18 @@ mod tests {
         for case in &cases {
             assert!(Header::parse(case).is_err(), "{case:?}");
         }
+    }
+
+    #[test]
+    fn the_reserved_kinds_are_refused_by_name() {
+        let swap = |to: &str| NOTES.replacen("kind app", to, 1);
+        assert_eq!(
+            Header::parse(&swap("kind tool")).unwrap_err(),
+            "kind tool is reserved in format 1"
+        );
+        assert_eq!(
+            Header::parse(&swap("kind agent")).unwrap_err(),
+            "kind agent is reserved in format 1 (ADR 0013)"
+        );
     }
 }

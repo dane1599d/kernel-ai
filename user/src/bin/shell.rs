@@ -14,6 +14,8 @@ mod apart;
 mod build;
 #[path = "shell/files.rs"]
 mod files;
+#[path = "shell/net.rs"]
+mod net;
 #[path = "shell/routes.rs"]
 mod routes;
 #[path = "shell/ui.rs"]
@@ -320,6 +322,11 @@ const _: () = assert!(same(
     shellcore::SETTINGS_APP,
     deskcore::settings_wire::SETTINGS_APP
 ));
+// The same for the Models window's switches (#556).
+const _: () = assert!(same(
+    shellcore::MODELS_APP,
+    deskcore::models_wire::MODELS_APP
+));
 // The same for the editor's file door.
 const _: () = assert!(same(shellcore::door::DOOR_APP, deskcore::files::DOOR_APP));
 
@@ -431,15 +438,20 @@ const fn same(a: &str, b: &str) -> bool {
     true
 }
 
-/// Answers the Settings app's waiting `kai:settings` requests, which `desktop`
-/// holds (`deskcore::settings_wire`): the app is `desktop`'s record of the
-/// caller, and `Shell::settings` checks it again.
-fn take_settings(shell: &mut Shell) {
+/// What the shell does with one app's request: `Shell::settings` for the
+/// Settings app's, `Shell::models_change` for the Models window's switches.
+type Answering = fn(&mut Shell, &str, &str, bool) -> Result<String, String>;
+
+/// Answers one app's waiting requests, which `desktop` holds under `words`
+/// (`deskcore::settings_wire`): the Settings app's `kai:settings` requests, or
+/// the Models window's switches (`deskcore::models_wire`). The app is
+/// `desktop`'s record of the caller, and `answering` checks it again.
+fn take_changes(shell: &mut Shell, words: &deskcore::settings_wire::Words, answering: Answering) {
     use deskcore::settings_wire::{self as wire, Answer};
     let Some(route) = desktop() else {
         return;
     };
-    let Ok(answer) = ask_desktop(route, wire::TAKE) else {
+    let Ok(answer) = ask_desktop(route, words.take) else {
         return;
     };
     let Some(Some((app, requests))) = wire::parse_take(&answer) else {
@@ -447,11 +459,38 @@ fn take_settings(shell: &mut Shell) {
     };
     let answers: Vec<Answer> = requests
         .iter()
-        .map(|r| Answer::new(r.ticket, shell.settings(app, &r.text, r.user)))
+        .map(|r| Answer::new(r.ticket, answering(shell, app, &r.text, r.user)))
         .collect();
-    for done in wire::encode_done_chunks(app, &answers, kabi::MAX_MESSAGE) {
+    for done in wire::encode_done_chunks_for(words, app, &answers, kabi::MAX_MESSAGE) {
         if let Err(why) = ask_desktop(route, &done) {
-            println!("{app}'s settings answers were not sent: {why}");
+            println!(
+                "{app}'s {} answers were not sent: {why}",
+                words.word.trim_end()
+            );
+        }
+    }
+}
+
+/// Answers the apps' waiting network asks, which `desktop` holds
+/// (`deskcore::net_wire`): the app is `desktop`'s record of the caller. A new
+/// host waits as a card, which the kernel's terminal takes; the app's host
+/// asks again until the answer is not `asked`.
+fn take_net(shell: &mut Shell) {
+    use deskcore::net_wire as wire;
+    let Some(route) = desktop() else {
+        return;
+    };
+    for _ in 0..wire::MAX_WAITING {
+        let Ok(answer) = ask_desktop(route, wire::TAKE) else {
+            return;
+        };
+        let Some(Some(ask)) = wire::parse_take(&answer) else {
+            return;
+        };
+        let connect = shell.net_connect(&ask.app, &ask.host, &ask.ceiling).wire();
+        let done = wire::encode_done(&ask.app, &ask.host, &connect);
+        if let Err(why) = ask_desktop(route, &done) {
+            println!("{}'s network answer was not sent: {why}", ask.app);
         }
     }
 }
@@ -542,6 +581,14 @@ impl Host for System {
 
     fn pkg(&self, request: &str) -> Result<String, String> {
         build::ask_pkg(pkg_route()?, request)
+    }
+
+    fn net_fetch(&self, host: &str, path: &str) -> Result<String, String> {
+        net::fetch(host, path)
+    }
+
+    fn net_resolve(&self, host: &str) -> Result<Vec<String>, String> {
+        net::resolve(host)
     }
 
     fn cc_build(
@@ -1051,6 +1098,21 @@ impl Host for System {
             _ => Err("llm service: malformed reply".to_string()),
         }
     }
+
+    /// A quarantined read (P5 task 11): `llm` answers it apart from every
+    /// other request and checks the answer against its kind before replying.
+    fn query(&self, request: &llmproto::query::QueryRequest) -> Result<String, String> {
+        use llmproto::query;
+        let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+        let len = sys::call_route(
+            llm(),
+            request.encode().as_bytes(),
+            &mut reply,
+            query::CALL_TIMEOUT_MS,
+        )
+        .map_err(|error| alloc::format!("llm service: {error:?}"))?;
+        query::decode_reply(&reply[..len.min(reply.len())])
+    }
 }
 
 /// Standing instructions' events and actions (P3 task 11). The kernel's event
@@ -1144,7 +1206,17 @@ fn main() -> i32 {
         }
         give_call_results(&mut shell);
         take_files(&mut shell);
-        take_settings(&mut shell);
+        take_net(&mut shell);
+        take_changes(
+            &mut shell,
+            &deskcore::settings_wire::SETTINGS,
+            Shell::settings,
+        );
+        take_changes(
+            &mut shell,
+            &deskcore::models_wire::MODELS,
+            Shell::models_change,
+        );
         give_app_build(&mut shell);
         // An install card waits: the kernel's terminal takes it when it may.
         // Said again each pass, so a desktop that shows later still gets it.

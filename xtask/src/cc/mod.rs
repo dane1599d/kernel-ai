@@ -13,6 +13,7 @@
 
 #[cfg(test)]
 mod app_card;
+pub mod app_run;
 pub mod bind;
 
 use sha2::{Digest, Sha256};

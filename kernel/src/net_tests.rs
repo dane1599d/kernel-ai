@@ -218,11 +218,21 @@ fn netdest(spec: &str) -> Result<(u64, captable::Entry), &'static str> {
 /// Runs `netcheck` as `name` with `args`, holding `dest` if given; whether it
 /// got what it expected.
 fn netcheck(name: &str, args: &str, dest: Option<captable::Entry>) -> Result<(), &'static str> {
+    netcheck_with(name, args, dest, NETCHECK_LIMITS)
+}
+
+/// [`netcheck`] with `limits`: NET held, for `netdest-g`.
+fn netcheck_with(
+    name: &str,
+    args: &str,
+    dest: Option<captable::Entry>,
+    limits: Limits,
+) -> Result<(), &'static str> {
     let request = SpawnRequest {
         name,
         program: "netcheck",
         args: args.as_bytes(),
-        limits: NETCHECK_LIMITS,
+        limits,
         spawner: 0,
         supervisor: false,
         uses: &[],
@@ -236,7 +246,7 @@ fn netcheck(name: &str, args: &str, dest: Option<captable::Entry>) -> Result<(),
 }
 
 /// `netcheck` resolves kai.test on a `NetDest` handle that names it, and is
-/// refused without one, NET alone included: NET is for HTTP to the one server.
+/// refused without one, NET alone included: NET is the ceiling, not a handle.
 fn ring3_checks() -> Result<(), &'static str> {
     let (_, entry) = netdest(KAI_TEST)?;
     netcheck("netcheck", "host=kai.test expect=10.0.2.99", Some(entry))?;
@@ -313,7 +323,54 @@ pub fn dest_check() -> Result<(), &'static str> {
         Some(entry),
     )?;
     log!("net-dest: the retired RESOLVE refused even a holder of a NetDest");
+    // Only the LLM's own handle reaches it: another NetDest with CONNECT does
+    // not (K's review of #755, where `fetch` holds callers' handles), and NET
+    // alone gives no handle to it: only a plan line's `netdest=llm` does.
+    let (_, entry) = netdest(KAI_TEST)?;
+    let with_net = Limits {
+        caps: kabi::cap::NET,
+        ..NETCHECK_LIMITS
+    };
+    netcheck_with("netdest-g", "http=refused", Some(entry), with_net)?;
+    log!(
+        "net-dest: HTTP to the LLM needs the LLM's own handle, which NET alone does not give: a NET holder with another NetDest was refused"
+    );
+    llm_grant()?;
     any_host_pinned()
+}
+
+/// A plan line's `netdest=llm` grant, through `spawn_in` as the supervisor
+/// spawns: with NET in the ceiling the process starts with the LLM's handle,
+/// CONNECT exactly; without NET it starts with no `NetDest` (the manager's
+/// review of #779: NET bounds this handle as it bounds a moved-in one).
+fn llm_grant() -> Result<(), &'static str> {
+    let grants = supervise::Grants {
+        llm_dest: true,
+        ..supervise::Grants::default()
+    };
+    for (args, caps) in [("llm=held", kabi::cap::NET), ("llm=none", 0)] {
+        let request = SpawnRequest {
+            name: "netdest-l",
+            program: "netcheck",
+            args: args.as_bytes(),
+            limits: Limits {
+                caps,
+                ..NETCHECK_LIMITS
+            },
+            spawner: 0,
+            supervisor: false,
+            uses: &[],
+        };
+        let pid = process::spawn_in(&request, alloc::vec::Vec::new(), false, &grants)
+            .map_err(|_| "net: cannot start netcheck with netdest=llm")?;
+        if wait_exit(pid)? != (ExitReason::Exited, 0) {
+            return Err("net: netdest=llm did not grant as the ceiling allows");
+        }
+    }
+    log!(
+        "net-dest: netdest=llm gave the LLM's handle, CONNECT only, within NET, and nothing without it"
+    );
+    Ok(())
 }
 
 /// The shell's ceiling, `hosts:any` (#760), as its plan line would make it.

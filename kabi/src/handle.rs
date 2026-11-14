@@ -16,7 +16,7 @@ use bitflags::bitflags;
 /// kernel; apps reach the OS through WIT, never raw calls; and no outside
 /// package exists before v1.0. Any later change to an existing call's meaning
 /// bumps the major.
-pub const ABI: (u32, u32) = (1, 3);
+pub const ABI: (u32, u32) = (1, 4);
 
 /// The name of the ELF note that carries [`ABI`], and its type.
 pub const NOTE_NAME: &[u8; 4] = b"KAI\0";
@@ -283,7 +283,8 @@ pub struct RecvInfo {
 /// Fixed network destinations (ADR 0001 D2 `NetDest`): the object a `NetDest`
 /// handle names.
 pub mod netdest {
-    /// The LLM server named on the command line, `llm=`.
+    /// The LLM server named on the command line, `llm=`: a handle to it, with
+    /// CONNECT only, starts in the process whose plan line says `netdest=llm`.
     pub const LLM: u64 = 1;
     /// The kernel's DNS resolver.
     pub const RESOLVER: u64 = 2;

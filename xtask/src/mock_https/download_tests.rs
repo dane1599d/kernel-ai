@@ -98,6 +98,10 @@ impl Partial for Memory {
         self.finished = true;
         Ok(())
     }
+
+    fn size(&mut self) -> Result<u64, DownloadError> {
+        Ok(self.bytes.len() as u64)
+    }
 }
 
 /// One run of the download from `mock`, reaching only the hosts `allow`
@@ -192,6 +196,29 @@ fn cuts_at_forty_and_eighty_percent_resume_fetching_only_the_chunk_in_flight() {
         .filter(|r| (r.0 as u64, r.1 as u64) == fourth)
         .count();
     assert_eq!(again, 2, "the chunk the first cut was in came twice");
+}
+
+/// One `CutsAt` fault does what the two `CutOnce` faults above do, as the
+/// boot case sets it before the boot.
+#[test]
+fn one_fault_cuts_at_forty_and_eighty_percent_in_turn() {
+    let target = target();
+    let list = Chunks::of(&target, CHUNK);
+    let mock = start(Content::new().release_asset(TAG, NAME, target.clone())).unwrap();
+    mock.set_fault(ASSETS, &asset_path(), Fault::CutsAt(&[40, 80]));
+    let mut partial = Memory::default();
+    let mut cuts = 0;
+    let report = loop {
+        match run(&mock, &list, &mut partial, &github) {
+            Ok(report) => break report,
+            Err(DownloadError::Fetch(HttpError::Truncated)) => cuts += 1,
+            Err(other) => panic!("{other:?}"),
+        }
+        assert!(cuts <= 2, "more cuts than points");
+    };
+    assert_eq!((cuts, report.kept + report.fetched), (2, list.count()));
+    assert_eq!(partial.bytes, target);
+    assert_eq!(served_ranges(&mock).len(), list.count() + 2);
 }
 
 #[test]

@@ -1,13 +1,13 @@
 # P5 plan: secure networking
 
-Status: approved by the founder on 2026-10-27, with the defaults (#165). Tasks 1-7 are on main; tasks 8-14 have their host halves on main, and their OS wiring waits on the founder's OK for P5 OS merges beyond host crates and tasks 1-3. Task 15 (close) is not started.
+Status: approved by the founder on 2026-10-27, with the defaults (#165). Tasks 1-7 are on main; tasks 8-14 have their host halves on main. The founder OK'd the OS wiring of tasks 8-13 and the close on 2026-11-09, and tasks 8-13 are landing on main. Task 14's OS wiring waits for the v0.1 tag. Task 15 (close) is not started.
 
 This plan covers the work that the accepted ADRs and the execution plan ([ADR 0000](../adr/0000-execution-plan.md) §3 and §5, P5 rows) put in P5:
 - [ADR 0001](../adr/0001-capabilities.md): `NetDest` per app;
 - [ADR 0002](../adr/0002-agent-actions.md): open-world rows, the host table, P-F and quarantined reads;
 - [ADR 0004](../adr/0004-storage.md) and [ADR 0008](../adr/0008-updates.md): verified chunked downloads, and updates over the network;
 - [ADR 0011](../adr/0011-packages.md): the online repository, for v0.2;
-- [ADR 0013](../adr/0013-agents.md), if approved: agents' network budgets.
+- [ADR 0013](../adr/0013-agents.md), approved 2026-10-27 with defaults: agents' network budgets.
 
 Section 4 lists what the plan decides itself. Section 7 lists the crates, with their licences, and which ones need your approval. Nothing here was built or run for this plan. Sizes marked "est." are estimates. Crate versions and licences were read from the crates.io API on 2026-10-27.
 
@@ -111,7 +111,7 @@ Each row is one PR. "Needs" names what must merge first. Sizes are lines with te
 | 11 | **The agent's network rows.** Open-world rows; the curated host table ("weather" to the app's host); a fetch from a grounded host runs, otherwise it asks (ADR 0002 D3); P-F: a `Data` payload goes only to a host the user's line names; quarantined reads, whose answer is a bool, an enum or a short string returned as `Data` (FIDES's typed query); `:resolve` and `:ping` become read rows; `Hold` built but off (question 5) | A-core, model lane's turn | 0002 D3, D6, P5 row | 1 | M (~1,000) | `net-pf`; fluency at least 47/50; actbench with S02-1's bait probes at 0 false runs |
 | 12 | **`kai:net` for apps.** A `kai:net/http@0.1` WIT import, served by the `fetch` service, which makes each request on the calling app's own `NetDest` handle, passed with the call. The kernel enforces the destination; `fetch` checks that the certificate name is under the handle's suffixes. Apps never see sockets | C and N-t | 0003 P5 row, 0001 | 4, 5; 1 | M (~1,200) | A case where an app fetches from its host and is refused another |
 | 13 | **Per-app grants and their asks.** The first connection to a new host asks on P3's ask card, naming the app and the host; "Allow" writes a per-host `kai-grants 1` record; Settings (P4) lists and revokes them; `undo` restores a revoke | A-core, G-core's and AP-2's turns | 0001 D8, 0002 | 12 | S (~600) | `net-grant` |
-| 14 | **Agents' network budgets** (only if ADR 0013 is approved). An agent manifest's `net` line becomes a `NetDest`, plus a byte budget a day counted by the kernel on that handle | AG, K's turn | 0013 §6 | 1, 2; ADR 0013 | S (~500) | A case where an agent over its byte budget is refused |
+| 14 | **Agents' network budgets** (ADR 0013, approved 2026-10-27). An agent manifest's `net` line becomes a `NetDest`, plus a byte budget a day counted by the kernel on that handle | AG, K's turn | 0013 §6 | 1, 2; ADR 0013 | S (~500) | A case where an agent over its byte budget is refused |
 | 15 | **P5 close.** Every exit case in `ci.yml`'s shards; decisions rows; the roadmap's P5 status; ADR 0002's open-world text checked against what shipped | – | – | all | S | Section 1's exit criteria |
 
 **Critical path:** P5-S1, then task 4, then task 6 (which also needs tasks 2 and 5), then tasks 8, 9 and 10 side by side, then 15. Task 1 runs beside 4, and tasks 11-13 run beside 6-10. The only founder answers on the path are questions 1 and 2, because task 4 needs its crates.

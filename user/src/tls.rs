@@ -7,7 +7,8 @@
 //!   with RESOLVE_ON, which the kernel answers only for names under the
 //!   handle's suffixes, and connected with NET_CONNECT, which reaches only an
 //!   address the handle resolved. A name the handle does not cover is
-//!   `HttpError::Refused`. Each wait is at most [`IO_TIMEOUT_MS`], so a stalled
+//!   `HttpError::Refused`. Each wait is at most [`IO_TIMEOUT_MS`], and never
+//!   past the dial's deadline (K's review of #755), so a stalled or trickling
 //!   peer ends the fetch rather than hold it.
 //! - **Roots** ([`roots`]): Mozilla's, and the boot bundle's
 //!   `netroots/<n>.der`, which only a test bundle has (xtask's HTTPS mock's
@@ -74,10 +75,18 @@ pub fn wall() -> Wall {
 }
 
 /// A boot bundle file, if this process may read it and it is at most
-/// [`MAX_ROOT`] bytes.
+/// [`MAX_ROOT`] bytes. A refused read is printed, so a missing root shows on
+/// the console beside the handshake's `UnknownIssuer` (#792, #752, #754).
 fn boot_file(path: &str) -> Option<alloc::vec::Vec<u8>> {
     // A call with no room answers the length and copies nothing.
-    let len = sys::boot_read(path, &mut []).ok()?;
+    let len = match sys::boot_read(path, &mut []) {
+        Ok(len) => len,
+        Err(Error::NotFound) => return None,
+        Err(e) => {
+            crate::println!("tls: {path} refused: {e:?}");
+            return None;
+        }
+    };
     if len == 0 || len > MAX_ROOT {
         return None;
     }
@@ -105,14 +114,28 @@ pub fn config() -> Result<Arc<ClientConfig>, rustls::Error> {
     client::config(provider, roots(), Arc::new(wall()))
 }
 
+/// How long a wait may take: `most` milliseconds, and never past
+/// `deadline_ns` on `sys::time_ns`; `None` once the deadline has passed.
+fn wait_ms(most: u64, deadline_ns: u64) -> Option<u64> {
+    let left_ms = deadline_ns.saturating_sub(sys::time_ns()) / 1_000_000;
+    (left_ms > 0).then_some(most.min(left_ms))
+}
+
 /// A TCP stream, closed when dropped.
 pub struct Tcp {
     stream: Handle,
+    /// When the call it serves must end, on `sys::time_ns`.
+    deadline_ns: u64,
 }
 
 impl Tcp {
     fn wait(&self, want: u64) -> Result<(), &'static str> {
-        let state = sys::net_poll(self.stream, want, IO_TIMEOUT_MS).map_err(|_| "poll failed")?;
+        self.wait_at_most(want, IO_TIMEOUT_MS)
+    }
+
+    fn wait_at_most(&self, want: u64, most: u64) -> Result<(), &'static str> {
+        let ms = wait_ms(most, self.deadline_ns).ok_or("the call's time ran out")?;
+        let state = sys::net_poll(self.stream, want, ms).map_err(|_| "poll failed")?;
         if state & STREAM_FAILED != 0 {
             return Err("the connection failed");
         }
@@ -162,6 +185,9 @@ pub struct NetDial {
     pub dest: Handle,
     /// Ask for a bulk stream's larger receive buffer (a download).
     pub bulk: bool,
+    /// When the call must end, on `sys::time_ns`: no connect, send or
+    /// receive waits past it. `u64::MAX` for none.
+    pub deadline_ns: u64,
 }
 
 impl Dial for NetDial {
@@ -185,8 +211,11 @@ impl Dial for NetDial {
                     continue;
                 }
             };
-            let tcp = Tcp { stream };
-            match tcp.wait(STREAM_CONNECTED) {
+            let tcp = Tcp {
+                stream,
+                deadline_ns: self.deadline_ns,
+            };
+            match tcp.wait_at_most(STREAM_CONNECTED, CONNECT_TIMEOUT_MS) {
                 Ok(()) => return Ok(tcp),
                 Err(_) => why = "the host did not accept the connection",
             }

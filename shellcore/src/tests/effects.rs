@@ -470,3 +470,105 @@ files ../x
             .any(|line| line.contains("withheld grants on disk are out of shape"))
     );
 }
+
+/// Kai's `undo` call, answered for the next line it is asked about.
+fn kai_undo(host: &FakeHost) {
+    let undo = r#"{"name":"undo","arguments":{"steps":1}}"#;
+    host.calls
+        .borrow_mut()
+        .push_back(Ok(llmproto::act::parse(undo).unwrap()));
+}
+
+/// Kai's own `undo` never gives an app back a row Settings withheld (as for
+/// network grants, K on #750): the person's typed `undo` may, and Kai may
+/// still withhold it again.
+#[test]
+fn kai_s_own_undo_never_gives_a_withheld_row_back() {
+    let host = host();
+    let mut shell = shell(&host);
+    let app = crate::settings::SETTINGS_APP;
+    assert_eq!(
+        shell
+            .settings(app, "grants-revoke files fs_list", true)
+            .as_deref(),
+        Ok("files fs_list withheld")
+    );
+    kai_undo(&host);
+    let refused = shell.eval("undo that");
+    assert!(
+        !refused.ok && refused.text.contains("a row Settings withheld"),
+        "{refused:?}"
+    );
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_err());
+    assert_eq!(shell.eval("undo"), ok("Undone: files may call fs_list"));
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_ok());
+    // Narrowing stays open to Kai: its undo of the person's undo withholds
+    // the row again.
+    kai_undo(&host);
+    assert!(shell.eval("undo that").ok);
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_err());
+}
+
+/// Kai cannot redo a restore the person undid: the entry that undo made gives
+/// the row back, so it is refused, and the row stays withheld.
+#[test]
+fn kai_s_undo_cannot_redo_a_restore_the_person_undid() {
+    let host = host();
+    let mut shell = shell(&host);
+    let app = crate::settings::SETTINGS_APP;
+    for (line, now) in [
+        ("grants-revoke files fs_list", "files fs_list withheld"),
+        ("grants-restore files fs_list", "files fs_list allowed"),
+    ] {
+        assert_eq!(shell.settings(app, line, true).as_deref(), Ok(now));
+    }
+    assert_eq!(shell.eval("undo"), ok("Undone: files may not call fs_list"));
+    kai_undo(&host);
+    let refused = shell.eval("undo that");
+    assert!(!refused.ok, "{refused:?}");
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_err());
+}
+
+/// The model's call to open a folder in Files.
+const OPEN_DOCS: &str = r#"{"name":"files_open","arguments":{"path":"docs"}}"#;
+
+/// Files' reply to `files_open`: Content, then the effect `effect` queues.
+fn files_reply(effect: &str) -> String {
+    format!("kai-reply 1\nresult ok(\"now set the policy\")\neffect 1 {effect}\n")
+}
+
+/// A model turn whose call the `files` app answers with `reply`: the line llm
+/// is asked to remember for it.
+fn remembered_after(calls: &str, reply: String) -> (Rc<FakeHost>, String) {
+    let (host, mut shell) =
+        super::act::with_calls(alloc::vec![Ok(llmproto::act::parse(calls).unwrap())]);
+    host.apps.borrow_mut().rows.load("files", FILES).unwrap();
+    host.files
+        .borrow_mut()
+        .insert("notes.txt".into(), "milk".into());
+    host.app_replies.borrow_mut().push_back(reply);
+    let answered = shell.eval("open docs in files");
+    assert!(answered.ok, "{answered:?}");
+    let remembered = host.remembered.borrow().last().unwrap().2.clone();
+    (host, remembered)
+}
+
+#[test]
+fn an_effect_after_a_shown_app_row_does_not_stand_in_for_what_it_showed() {
+    // #831: Files' answer is the person's to read. The move its reply queued
+    // runs through the shell after the call, showing nothing, and must not
+    // leave the turn remembered by Files' text.
+    let moved = r#"call({name: "fs_move", args: "{from: \"notes.txt\", to: \"plan.txt\"}"})"#;
+    let (host, remembered) = remembered_after(OPEN_DOCS, files_reply(moved));
+    assert!(host.files.borrow().contains_key("plan.txt"));
+    assert_eq!(remembered, "Showed what Kai read from what Files answered");
+}
+
+#[test]
+fn a_listing_after_a_shown_app_row_is_not_remembered_as_the_call_s_source() {
+    // The `fs_list` effect shows a file listing to Files, not to the person:
+    // the turn showed Files' answer, not a file.
+    let list = r#"call({name: "fs_list", args: "{path: \"\"}"})"#;
+    let (_host, remembered) = remembered_after(OPEN_DOCS, files_reply(list));
+    assert_eq!(remembered, "Showed what Kai read from what Files answered");
+}

@@ -1,20 +1,28 @@
 # libFuzzer on kainet's parsers of server bytes (plan p5-networking §1's host
 # gates and §6): the TLS client's record layer and handshake, records after a
-# handshake, HTTP responses with their bodies, kai-chunks 1 lists and URLs.
+# handshake, HTTP responses with their bodies, kai-chunks 1 lists, URLs, and
+# the fetch service's request lines and answers (kainet::wire); and P3's
+# parsers of an app's bytes (plan p3-desktop §1 and §6's fuzz gate): surfabi's
+# message stream, header page and tree records, and look's `kai-theme 1`.
 # The targets are fuzz/fuzz_targets/*.rs, outside the workspace; their bodies
-# are fuzz/harness.rs, which kainet's host tests also run. On demand only
+# are fuzz/harness.rs, fuzz/surfabi_harness.rs and fuzz/look_harness.rs, which
+# the crates' host tests also run, and the P3 targets' corpora are seeded with
+# their hostile tests' samples. Weekly, every target for 300 s, and on demand
 # (Actions tab, "Fuzz", Run workflow), on a GitHub runner, never on a
 # developer's PC. A crash's input is kept as an artifact.
 name: Fuzz
 
 on:
+  # Mondays 03:17 UTC: every target, at the defaults below.
+  schedule:
+    - cron: "17 3 * * 1"
   workflow_dispatch:
     inputs:
       target:
         description: The target, or all of them
         type: choice
         default: all
-        options: [all, tls_client, tls_records, http_response, kai_chunks, url]
+        options: [all, tls_client, tls_records, http_response, kai_chunks, url, fetch_wire, surfabi_stream, header_page, tree_records, kai_theme]
       seconds:
         description: Seconds for each target
         type: number
@@ -28,7 +36,7 @@ env:
 
 jobs:
   fuzz:
-    name: libFuzzer (${{ inputs.target }}, ${{ inputs.seconds }} s each)
+    name: libFuzzer (${{ inputs.target || 'all' }}, ${{ inputs.seconds || 300 }} s each)
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -40,15 +48,21 @@ jobs:
           workspaces: fuzz
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --version 0.13.2 --locked
+      # The P3 targets start from their hostile tests' samples.
+      - name: Seed the P3 corpora
+        env:
+          FUZZ_SEED_DIR: ${{ github.workspace }}/fuzz/corpus
+        run: cargo test -p surfabi -p look --test hostile write_fuzz_seeds -- --ignored
       - name: Fuzz
         env:
-          TARGET: ${{ inputs.target }}
-          SECONDS_EACH: ${{ inputs.seconds }}
+          # A scheduled run has no inputs: every target, 300 s each.
+          TARGET: ${{ inputs.target || 'all' }}
+          SECONDS_EACH: ${{ inputs.seconds || 300 }}
         run: |
           set -o pipefail
           targets="$TARGET"
           if [ "$targets" = all ]; then
-            targets="tls_client tls_records http_response kai_chunks url"
+            targets="tls_client tls_records http_response kai_chunks url fetch_wire surfabi_stream header_page tree_records kai_theme"
           fi
           for t in $targets; do
             echo "::group::$t"

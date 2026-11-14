@@ -6,18 +6,12 @@
 #[path = "../../testkit/hostile.rs"]
 mod hostile;
 
+#[path = "../../fuzz/look_harness.rs"]
+mod harness;
+
+use harness::kai_theme as read_theme;
 use look::appearance::{Appearance, Shipped};
 use look::theme::{self, Theme};
-
-fn read_theme(bytes: &[u8]) {
-    let Ok(text) = core::str::from_utf8(bytes) else {
-        return;
-    };
-    if let Ok(theme) = Theme::parse(text) {
-        theme.check().unwrap();
-        assert_eq!(Theme::parse(&theme.encode()), Ok(theme));
-    }
-}
 
 fn read_appearance(bytes: &[u8]) {
     let Ok(text) = core::str::from_utf8(bytes) else {
@@ -53,4 +47,17 @@ fn hostile_appearances_decode_or_are_refused() {
 fn oversized_text_is_refused_before_it_is_read() {
     let long = format!("{}\n{}", theme::MAGIC, "; x\n".repeat(theme::MAX_BYTES));
     assert!(Theme::parse(&long).is_err());
+}
+
+/// Writes the `kai_theme` fuzz target's seeds, the shipped themes, under
+/// `FUZZ_SEED_DIR` (`.github/workflows/fuzz.yml` runs it before libFuzzer).
+#[test]
+#[ignore = "writes the fuzz corpus seeds; fuzz.yml runs it"]
+fn write_fuzz_seeds() {
+    let dir = std::env::var("FUZZ_SEED_DIR").expect("FUZZ_SEED_DIR names the corpus folder");
+    for (n, (target, bytes)) in harness::seeds().into_iter().enumerate() {
+        let folder = std::path::Path::new(&dir).join(target);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(format!("seed-{n}")), bytes).unwrap();
+    }
 }

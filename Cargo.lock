@@ -76,6 +76,8 @@ name = "agentid"
 version = "0.1.0-dev"
 dependencies = [
  "agentabi",
+ "agentsched",
+ "goalcore",
  "kaiagent",
  "sha2 0.11.1",
 ]
@@ -84,7 +86,9 @@ dependencies = [
 name = "agentsched"
 version = "0.0.0"
 dependencies = [
+ "infer",
  "kaiagent",
+ "quant",
 ]
 
 [[package]]
@@ -451,6 +455,16 @@ dependencies = [
  "minicbor",
  "systemabi",
  "uikit",
+ "wasmhost",
+ "wit-bindgen 0.63.0",
+]
+
+[[package]]
+name = "comp-net-fixture"
+version = "0.1.0-dev"
+dependencies = [
+ "compsdk",
+ "livecore",
  "wasmhost",
  "wit-bindgen 0.63.0",
 ]
@@ -852,6 +866,7 @@ dependencies = [
  "kabi",
  "libm",
  "look",
+ "netdest",
  "sha2 0.11.1",
  "surfabi",
  "termcore",
@@ -2260,6 +2275,7 @@ dependencies = [
  "comp-models",
  "kabi",
  "kaigrants",
+ "kainet",
  "kaiprofile",
  "livecore",
  "llmproto",
@@ -2687,6 +2703,7 @@ dependencies = [
  "llmproto",
  "look",
  "modelchan",
+ "netdest",
  "p256",
  "promptcore",
  "quant",
@@ -2703,6 +2720,7 @@ dependencies = [
  "termcore",
  "uikit",
  "uipaint",
+ "updatenet",
  "wasmhost",
 ]
 

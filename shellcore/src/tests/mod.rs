@@ -38,6 +38,7 @@ mod log;
 mod logdisk;
 mod look;
 mod models;
+mod models_window;
 mod more;
 mod netask;
 mod netgrant;
@@ -88,6 +89,9 @@ struct FakeHost {
     ui_calls: RefCell<Vec<crate::ui::UiCall>>,
     /// The hosts the network rows reached, as `row host`.
     net_seen: RefCell<Vec<String>>,
+    /// The questions `query` asked, and the model's answer to each.
+    queries: RefCell<Vec<llmproto::query::QueryRequest>>,
+    query_answer: RefCell<Result<String, String>>,
     ui_answer: RefCell<Option<UiAnswer>>,
     state: RefCell<crate::state::State>,
     /// Turns sent to the conversation memory, and how often it was forgotten.
@@ -299,6 +303,8 @@ impl FakeHost {
             act_apps: RefCell::new(Vec::new()),
             ui_calls: RefCell::new(Vec::new()),
             net_seen: RefCell::new(Vec::new()),
+            queries: RefCell::new(Vec::new()),
+            query_answer: RefCell::new(Ok(String::from("yes"))),
             ui_answer: RefCell::new(None),
             state: RefCell::new(crate::state::State::default()),
             remembered: RefCell::new(Vec::new()),
@@ -649,6 +655,11 @@ impl Host for FakeHost {
         Ok(alloc::vec![String::from("93.184.215.14")])
     }
 
+    fn query(&self, request: &llmproto::query::QueryRequest) -> Result<String, String> {
+        self.queries.borrow_mut().push(request.clone());
+        self.query_answer.borrow().clone()
+    }
+
     fn net_ping(&self, host: &str) -> Result<i64, String> {
         self.net_seen.borrow_mut().push(format!("net_ping {host}"));
         Ok(12)
@@ -856,6 +867,18 @@ impl Host for FakeHost {
         Ok(match words.as_slice() {
             ["models"] => modelchan::listing::encode(&m),
             ["models", "import"] => String::from("ok importing fixture 4096"),
+            // P5 task 9: the fixture may be downloaded; the 4B is too large
+            // for this machine's memory.
+            ["models", "offers"] => String::from(
+                "kai-offers 1\nqwen3-4b-2507 0 stored 0 0\nfixture-dl 1 fits 0 0\nqwen3-8b 0 memory 6208 4096\n",
+            ),
+            ["models", "ask", "fixture-dl"] => {
+                String::from("ok Download 12.0 MiB from models.kai.test")
+            }
+            ["models", "ask", id] => format!("err the signed models role names no {id}"),
+            ["models", "download", "fixture-dl"] => {
+                String::from("ok downloading fixture-dl 12587009 models.kai.test")
+            }
             ["models", "use", hex] => {
                 let sha = modelchan::listing::sha256(hex)?;
                 match (m.store.running == Some(sha), m.next() == Some(sha)) {

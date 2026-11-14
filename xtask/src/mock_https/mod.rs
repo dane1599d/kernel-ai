@@ -104,6 +104,10 @@ pub enum Fault {
     /// before it, with no close_notify; then the fault is gone. So a
     /// download in ranges is cut once, at that point of the file.
     CutOnce(usize),
+    /// [`Fault::CutOnce`] at each of these points in turn, given as percent
+    /// of the file, so one fault cuts a download several times: `net-download`
+    /// cuts at 40% and 80% whatever the file's size. The points rise.
+    CutsAt(&'static [u8]),
 }
 
 impl Fault {
@@ -140,6 +144,13 @@ impl Content {
         self.files
             .insert((host.into(), path.into()), Arc::new(bytes));
         self
+    }
+
+    /// The bytes at `path` on `host`, for a test of what a case would serve.
+    #[cfg(test)]
+    pub fn get(&self, host: &str, path: &str) -> Option<&[u8]> {
+        let file = self.files.get(&(host.to_string(), path.to_string()))?;
+        Some(file.as_slice())
     }
 
     /// This content and `other`'s: a path both give is `other`'s.
@@ -237,9 +248,15 @@ fn fault_for(faults: &Faults, host: &str, path: &str) -> Option<Fault> {
         .cloned()
 }
 
+/// The test CA's certificate in DER, which every mock of this run serves under
+/// ([`pki::shared`]): the root a guest trusts, known before any mock starts.
+pub fn shared_ca() -> Result<Vec<u8>, String> {
+    Ok(pki::shared()?.ca_der().to_vec())
+}
+
 /// Starts the mock on a free local port. It runs until xtask exits.
 pub fn start(content: Content) -> Result<Mock, String> {
-    let pki = Arc::new(pki::Pki::new()?);
+    let pki = pki::shared()?;
     let faults: Faults = Arc::default();
     let served = Arc::new(Mutex::new(Vec::new()));
     let listener = TcpListener::bind(("127.0.0.1", 0))
@@ -446,9 +463,33 @@ fn answer(request: &http::Request, sni: &str, content: &Content, faults: &Faults
             Some(Fault::CutAt(at - start))
         }
         Some(Fault::CutOnce(_)) => None,
+        Some(Fault::CutsAt(points)) => next_cut(faults, &key, points, file.len(), start..end),
         other => other,
     };
     answer
+}
+
+/// The cut [`Fault::CutsAt`] makes in a response of the file's bytes `range`,
+/// if its next point falls there; that point is then gone, and the fault with
+/// it after the last.
+fn next_cut(
+    faults: &Faults,
+    key: &(String, String),
+    points: &'static [u8],
+    len: usize,
+    range: std::ops::Range<usize>,
+) -> Option<Fault> {
+    let (&percent, rest) = points.split_first()?;
+    let at = len * usize::from(percent) / 100;
+    if !range.contains(&at) {
+        return None;
+    }
+    let mut faults = lock(faults);
+    match rest.is_empty() {
+        true => faults.remove(key),
+        false => faults.insert(key.clone(), Fault::CutsAt(rest)),
+    };
+    Some(Fault::CutAt(at - range.start))
 }
 
 fn send(session: &mut Conn, request: &http::Request, answer: Answer) -> Result<(), ()> {

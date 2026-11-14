@@ -41,6 +41,11 @@ pub mod link;
 pub mod models;
 #[cfg(test)]
 mod models_tests;
+#[cfg(test)]
+mod models_use_tests;
+pub mod net;
+#[cfg(test)]
+mod net_tests;
 mod reads;
 pub mod settings;
 pub mod settings_ledger;

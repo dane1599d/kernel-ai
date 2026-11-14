@@ -41,6 +41,9 @@ pub fn may_run_apart(checked: &Checked) -> bool {
             !agentabi::CALL_ONLY.iter().any(|row| row.name == *name)
                 && !name.starts_with("fs_")
                 && !agentabi::UI_ROWS.iter().any(|row| row.name == *name)
+                // The network reads need the shell's route to `fetch` and
+                // its network handle; the child holds neither.
+                && !agentabi::NET_ROWS.iter().any(|row| row.name == *name)
                 // An app's row is the shell's to call: its rows and the
                 // supervisor's route are here, not in the child.
                 && crate::apps::is_os_row(name)
@@ -66,6 +69,9 @@ pub fn serve(request: &str, host: &Rc<dyn Host>, config: &Config) -> String {
             text: why.to_string(),
             done: Vec::new(),
             value: None,
+            shown: Vec::new(),
+            failed: None,
+            withheld: false,
         })
     };
     let Some((head, source)) = request.split_once('\n') else {
@@ -150,6 +156,9 @@ pub fn decode(text: &str) -> Option<Ran> {
         text: printed,
         done,
         value: None,
+        shown: Vec::new(),
+        failed: None,
+        withheld: false,
     })
 }
 
@@ -180,6 +189,9 @@ pub fn killed(why: &str, before: Option<(u64, u64)>, host: &dyn Host) -> Ran {
         text: why.to_string(),
         done,
         value: None,
+        shown: Vec::new(),
+        failed: Some(why.to_string()),
+        withheld: false,
     }
 }
 

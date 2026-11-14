@@ -22,7 +22,6 @@ const USER_PROGRAMS: &[&str] = &[
     "scriptrun",
     "fs",
     "filecheck",
-    "updated",
     "deskdemo",
     "tufbench",
 ];
@@ -44,7 +43,10 @@ const USER_FLOAT_PROGRAMS: &[&str] = &[
     "term",
     "cc",
     "pkg",
+    "updated",
     "httpscheck",
+    "fetch",
+    "dlcheck",
 ];
 /// The view guest `appbench` embeds, built first.
 const APPBENCH_GUEST: &str = "comp-viewbench";

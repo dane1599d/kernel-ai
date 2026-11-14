@@ -111,9 +111,12 @@ mod metrics;
 mod model;
 mod model_import_tests;
 mod model_tests;
+mod models_window_tests;
 mod nap_tests;
 mod net;
 mod net_commands;
+mod net_download_tests;
+mod net_grant_tests;
 mod net_pf_tests;
 mod net_tests;
 mod nvme;
@@ -416,6 +419,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::UiMonitor => run_case(app_window_tests::monitor_check),
         SelfTest::UiFiles => run_case(app_window_tests::files_check),
         SelfTest::UiModels => run_case(app_window_tests::models_check),
+        SelfTest::UiModelsUse => run_case(models_window_tests::check),
         SelfTest::DeskNap => run_case(nap_tests::check),
         SelfTest::KeepRunning { reread } => run_case(|| keep_tests::check(reread)),
         SelfTest::DeskAppearance => run_case(appearance_tests::check),
@@ -470,6 +474,9 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetDest => run_case(net_tests::dest_check),
         SelfTest::NetStream => run_case(|| net_tests::stream_check(cmdline())),
         SelfTest::HttpsMock => run_case(https_tests::check),
+        SelfTest::NetDownload { again, .. } => run_case(|| net_download_tests::check(again)),
+        SelfTest::FetchService => run_case(https_tests::fetch_check),
+        SelfTest::NetGrant => run_case(net_grant_tests::check),
         SelfTest::EntropyBoots => run_case(entropy_tests::check),
         SelfTest::Slot => {
             // A slot boot holds `updated`'s record calls until its lever has

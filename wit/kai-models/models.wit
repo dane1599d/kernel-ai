@@ -6,9 +6,7 @@
 /// signed one with its licence. Like `kai:system`, this is a granted interface,
 /// not part of `kai:app` (which is frozen): only the app the system image names
 /// `models-window` holds the `models` grant, and a component that imports it
-/// without the grant does not stage (`Reason::Link`). It reads only. A switch or
-/// an import is Kai's `model_use` or `model_fetch`, logged and undoable, so the
-/// window asks the person to ask Kai.
+/// without the grant does not stage (`Reason::Link`).
 ///
 /// `read` only queues. The host takes the queue after the call, asks the update
 /// service for its list, and tells the app the answer in a later call, so a call
@@ -16,24 +14,45 @@
 /// cannot read twice: only the shown version's queue is taken. The answer is the
 /// list as `kai-models 1` text, at most one IPC message (8 KiB); the app parses
 /// it as it would any input, and a list it cannot parse is one it does not show.
-package kai:models@0.1.0;
+///
+/// Since 0.1.1 the window may also switch the model itself on a person's key or
+/// click (#556), as the Settings app changes a setting: `use-model` queues the
+/// switch, which goes to the shell, which runs Kai's own `model_use` row with the
+/// person's consent, logged, and undone by `undo`. An import still goes through
+/// Kai or the console, where it asks on the trusted path.
+package kai:models@0.1.1;
 
 interface models {
     /// Asks for the list and returns its ticket. Refused (the call traps) when 4
     /// reads are waiting for the host already.
     read: func() -> u32;
+
+    /// Asks for the stored model with this SHA-256 (64 lowercase hex digits) to
+    /// be the one the next restart uses, on trial, and returns the request's
+    /// ticket. It is passed on only when a person's key or click made it, and a
+    /// call may make one; any other is answered with why not. The call traps for
+    /// a SHA-256 that is not 64 lowercase hex digits, or when 4 switches are
+    /// waiting for the host already.
+    @since(version = 0.1.1)
+    use-model: func(sha256: string) -> u32;
 }
 
-/// What the update service answered.
+/// What the update service and the shell answered.
 interface listing {
     /// The answer to the read with this ticket: the list, or why there is none
     /// (no model store, or the service did not answer; at most 200 printable
     /// ASCII bytes). A ticket is not reused while this instance runs; a new
     /// instance starts again from 0.
     on-listing: func(ticket: u32, outcome: result<string, string>);
+
+    /// The answer to the switch with this ticket: what the shell said it did,
+    /// or why it did not. Tickets count on their own, apart from the reads'.
+    @since(version = 0.1.1)
+    on-used: func(ticket: u32, outcome: result<string, string>);
 }
 
-/// An app that reads the model list: the two halves of the grant.
+/// An app that reads the model list and, since 0.1.1, switches the model on a
+/// person's key: the two halves of the grant.
 world models-read {
     import models;
     export listing;

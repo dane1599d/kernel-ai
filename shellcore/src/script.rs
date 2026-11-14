@@ -105,6 +105,9 @@ struct Tx {
     journal: Journal,
     plan: Rc<Plan>,
     outbox: Outbox,
+    /// The shell's line for the last app reply that failed its row's call
+    /// (`<row>: the app refused`), with none of the reply's words (#831).
+    app_failed: Rc<RefCell<Option<String>>>,
 }
 
 impl Tx {
@@ -115,6 +118,7 @@ impl Tx {
             journal: Journal::default(),
             plan: Rc::clone(plan),
             outbox: Outbox::default(),
+            app_failed: Rc::default(),
         }
     }
 
@@ -665,6 +669,16 @@ impl Host for Stub {
     fn net_ping(&self, _: &str) -> Result<i64, String> {
         Ok(-1)
     }
+    /// An answer in the kind's shape, with no model asked: the trial checks
+    /// the script, not what the data says.
+    fn query(&self, request: &llmproto::query::QueryRequest) -> Result<String, String> {
+        use llmproto::query::QueryKind;
+        Ok(match &request.kind {
+            QueryKind::Bool => String::from("yes"),
+            QueryKind::Enum(words) => words.first().cloned().unwrap_or_default(),
+            QueryKind::Short => String::from("an answer"),
+        })
+    }
     fn apps(&self) -> Option<&core::cell::RefCell<crate::apps::Apps>> {
         self.0.apps()
     }
@@ -911,6 +925,17 @@ pub struct Ran {
     pub done: Vec<Done>,
     /// The script's last value, run in the shell; `None` from a child.
     pub value: Option<Dynamic>,
+    /// The sources of the Content it showed with `show`, each once: what it
+    /// printed from them is the person's to read, not the model's (#831). A
+    /// child shows none: the rows that read Content never run apart.
+    pub shown: Vec<&'static str>,
+    /// Why it failed, as the shell wrote it after the output: the engine's
+    /// error or what was not sent. `None` when it did not fail, or from a child.
+    pub failed: Option<String>,
+    /// It failed after an app's reply failed a row's call: `text` shows the
+    /// person the app's words, and `failed` is the shell's own line in their
+    /// place, the one a model turn is remembered by (#831).
+    pub withheld: bool,
 }
 
 /// Runs a script with the real OS, granted only the calls the plan found. Its
@@ -931,6 +956,8 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
     let result = engine::eval(&engine, &mut Scope::new(), &checked.ast, config.exec);
     let mut text = line.take_output();
     let mut last = None;
+    let mut failed = None;
+    let mut withheld = false;
     let mut ok = match result {
         Ok(value) => {
             if !value.is_unit() {
@@ -940,13 +967,24 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
             true
         }
         Err(error) => {
-            text.push_str(&line.describe(&error, config));
+            let why = line.describe(&error, config);
+            text.push_str(&why);
+            // Whatever error ended a run after an app's reply failed it may
+            // carry that reply's words, even caught and thrown again: the
+            // shell's own line stands in for it (#831).
+            let app = tx.app_failed.take();
+            withheld = app.is_some();
+            failed = Some(app.unwrap_or(why));
             false
         }
     };
     let queued = core::mem::take(&mut *tx.outbox.borrow_mut());
     if ok {
+        let sent = text.len();
         ok = flush(queued, &mut text);
+        if !ok {
+            failed = Some(text[sent..].to_string());
+        }
     }
     let done = tx.journal.take();
     Ran {
@@ -954,6 +992,9 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
         text,
         done,
         value: last,
+        shown: line.take_shown(),
+        failed,
+        withheld,
     }
 }
 

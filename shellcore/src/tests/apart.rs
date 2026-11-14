@@ -42,6 +42,9 @@ fn a_result_survives_the_wire_and_its_text_cannot_forge_a_change() {
             }),
         }],
         value: None,
+        shown: Vec::new(),
+        failed: None,
+        withheld: false,
     };
     let decoded = apart::decode(&apart::encode(&ran)).unwrap();
     assert_eq!(
@@ -167,4 +170,42 @@ fn window_rows_stay_in_the_shell_which_alone_reaches_desktop() {
                 .unwrap();
         assert!(!apart::may_run_apart(&checked), "{script}");
     }
+}
+
+#[test]
+fn network_reads_stay_in_the_shell_which_alone_reaches_fetch() {
+    let host = FakeHost::new();
+    let dyn_host: Rc<dyn Host> = host.clone();
+    for script in [
+        "show(net_fetch(\"en.wikipedia.org\"));",
+        "show(net_lookup(\"en.wikipedia.org\"));",
+    ] {
+        let call = Answer {
+            summary: String::new(),
+            script: String::from(script),
+        };
+        let checked = crate::script::check_against(
+            &call,
+            &dyn_host,
+            &DEFAULT_CONFIG,
+            &agentabi::SCRIPT_CALLS,
+        )
+        .unwrap();
+        assert!(!apart::may_run_apart(&checked), "{script}");
+    }
+}
+
+/// A child killed for time or Ctrl-C sends no journal back, so
+/// `apart::killed` reads the policy, the one thing a child can change: every
+/// other row a script may call only reads, or is a file row, which stays in
+/// the shell. A new script row that changes state breaks this, and must give
+/// `killed` a way to see that change, or stay in the shell.
+#[test]
+fn set_policy_is_the_one_change_a_killed_child_can_leave() {
+    let changing: Vec<&str> = agentabi::SCRIPT_CALLS
+        .iter()
+        .filter(|row| row.inverse != agentabi::Inverse::Read && !row.name.starts_with("fs_"))
+        .map(|row| row.name)
+        .collect();
+    assert_eq!(changing, ["set_policy"]);
 }
