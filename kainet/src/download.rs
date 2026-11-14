@@ -55,7 +55,11 @@ pub trait Partial {
     /// be durable before it returns.
     fn record(&mut self, done: usize) -> Result<(), DownloadError>;
     fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), DownloadError>;
-    /// Fills `buf` from `offset`, which was written before.
+    /// Fills `buf` from `offset`, which was written before. A read the
+    /// partial ends before, or of a partial that is not there, fails with
+    /// [`SHORT_READ`]: a resume counts that chunk as one that no longer
+    /// matches and fetches it again. Any other failure a resume passes on,
+    /// keeping its checkpoint.
     fn read(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), DownloadError>;
     /// The whole target is checked: move it into place.
     fn finish(&mut self) -> Result<(), DownloadError>;
@@ -93,6 +97,17 @@ pub const LONGER_ON_DISK: &str = "the partial is longer than its target";
 /// Why [`download`] refused to move a target in: the partial is not held
 /// alone and cannot give its length ([`Partial::size`]).
 pub const NO_SIZE: &str = "the partial cannot give its length";
+/// What [`Partial::read`] fails with when the partial ends before the read,
+/// or is not there: as a crash that cut the file leaves it.
+pub const SHORT_READ: &str = "the partial ends before the read";
+/// Why a [`Download`] stopped for good: a chunk changed on disk after its
+/// check once more after [`MAX_RESTARTS`] restarts.
+pub const KEEPS_CHANGING: &str = "the partial keeps changing on disk";
+/// How many times a [`Download`] starts again from a chunk that changed on
+/// disk before the next such change stops it ([`KEEPS_CHANGING`]), so a
+/// caller that steps it until it is done ends even on a partial another
+/// writer keeps changing.
+pub const MAX_RESTARTS: u32 = 3;
 
 /// How the server answered a range: [`crate::http::Fetched`] gives it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,13 +245,17 @@ pub enum Step {
 /// between chunks, such as answering requests: `updated` steps one in its
 /// serve loop. The steps are [`download`]'s, in its order. A step that fails
 /// leaves the run where it was, so stepping again tries the same chunk, or
-/// the same `finish`; only [`DownloadError::Whole`] is final, as the list is
-/// wrong. A partial not [`Partial::held_alone`] is read back whole before
-/// `finish` ([`read_back`]); if a chunk changed on disk, the run starts again
-/// from the mark that sets back. A new run, from the checkpoint, does as well
-/// after a restart. It
-/// holds one chunk's buffer for the run, for the read-backs and the fetches
-/// alike.
+/// the same `finish`. Two are final, and every later step answers them
+/// again: [`DownloadError::Whole`], as the list is wrong, and
+/// [`KEEPS_CHANGING`].
+///
+/// A partial not [`Partial::held_alone`] is read back whole before `finish`
+/// ([`read_back`]). If a chunk changed on disk, the run starts again from the
+/// mark that sets back, as a new run from the checkpoint would, at most
+/// [`MAX_RESTARTS`] times; the next change stops it with [`KEEPS_CHANGING`].
+///
+/// It holds one chunk's buffer for the run, for the read-backs and the
+/// fetches alike.
 pub struct Download {
     list: Chunks,
     whole: Sha256,
@@ -248,7 +267,11 @@ pub struct Download {
     kept: usize,
     /// The next chunk to read back or fetch.
     next: usize,
+    /// Times the run started again from a chunk that changed on disk.
+    restarts: u32,
     done: Option<Report>,
+    /// The final error, once there is one.
+    stopped: Option<DownloadError>,
 }
 
 impl Download {
@@ -263,7 +286,9 @@ impl Download {
             recorded,
             kept: 0,
             next: 0,
+            restarts: 0,
             done: None,
+            stopped: None,
         })
     }
 
@@ -288,13 +313,22 @@ impl Download {
         if let Some(report) = self.done {
             return Ok(Step::Done(report));
         }
+        if let Some(stopped) = &self.stopped {
+            return Err(stopped.clone());
+        }
         let i = self.next;
         if i < self.recorded {
             let (start, end) = self.list.range(i);
             let bytes = &mut self.buf[..(end - start) as usize];
-            // A chunk that cannot be read back, as one cut short by a crash,
-            // counts as one that no longer matches.
-            let read = partial.read(start, bytes).is_ok();
+            // A chunk the partial ends before, as a crash that cut the file
+            // leaves it, counts as one that no longer matches. Any other
+            // failed read is passed on with the run where it was, so a store
+            // that fails for a moment costs a try, not the chunks after it.
+            let read = match partial.read(start, bytes) {
+                Ok(()) => true,
+                Err(DownloadError::Store(SHORT_READ)) => false,
+                Err(e) => return Err(e),
+            };
             let hash: [u8; 32] = Sha256::digest(&*bytes).into();
             if read && hash == self.list.hashes[i] {
                 self.whole.update(&*bytes);
@@ -315,16 +349,21 @@ impl Download {
         // A clone, so a `finish` that fails can be stepped again.
         let blob: [u8; 32] = self.whole.clone().finalize().into();
         if blob != self.list.blob {
-            return Err(DownloadError::Whole);
+            return Err(self.stop(DownloadError::Whole));
         }
         if !partial.held_alone()
             && let Err(e) = read_back(&self.list, partial, &mut self.buf)
         {
-            // A chunk changed on disk: the mark is back at it, so the next
-            // step starts the run again from there.
-            if e == DownloadError::Store(CHANGED_ON_DISK) {
-                self.restart(partial);
+            if e != DownloadError::Store(CHANGED_ON_DISK) {
+                return Err(e);
             }
+            // A chunk changed on disk: the mark is back at it, so the next
+            // step starts the run again from there, unless it has too often.
+            if self.restarts == MAX_RESTARTS {
+                return Err(self.stop(DownloadError::Store(KEEPS_CHANGING)));
+            }
+            self.restarts += 1;
+            self.restart(partial);
             return Err(e);
         }
         partial.finish()?;
@@ -379,6 +418,12 @@ impl Download {
         partial.record(i + 1)?;
         self.whole.update(&*buf);
         Ok(())
+    }
+
+    /// Ends the run with `error`: every later step answers it.
+    fn stop(&mut self, error: DownloadError) -> DownloadError {
+        self.stopped = Some(error.clone());
+        error
     }
 
     /// The run from the start again, from the mark [`read_back`] set back:

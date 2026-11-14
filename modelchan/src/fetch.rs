@@ -28,6 +28,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use comp_models::{Signed, Store, hex, size};
+use fsproto::{Error, Reply};
 
 /// Where the store keeps its models, each as `<sha256>.gguf`.
 pub const MODELS_DIR: &str = "/system/models";
@@ -288,6 +289,40 @@ pub fn disk_need(length: u64, held: u64) -> u64 {
     (length - held.min(length))
         .saturating_add(length)
         .saturating_add(DISK_MARGIN)
+}
+
+/// Why the store refused a downloaded model's sealed copy at `SealedFinish`,
+/// after `updated` pushed the whole length into it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopyRefused {
+    /// `fs` hashed the copy as it was written, and its SHA-256 is not the
+    /// model's (`Invalid`): the partial it was read from no longer holds the
+    /// bytes the download checked. Its mark goes back to none, so the next
+    /// `models download` fetches the model again.
+    BadPartial,
+    /// Any other refusal, as a full disk: the store's, not the partial's,
+    /// which is kept as it is.
+    Store(Reply),
+}
+
+impl CopyRefused {
+    /// The refusal `SealedFinish` answered with `reply`, which is not `Done`.
+    pub fn of(reply: Reply) -> Self {
+        match reply {
+            Reply::Failed(Error::Invalid) => Self::BadPartial,
+            other => Self::Store(other),
+        }
+    }
+
+    /// The refusal in words, for the shell's answer.
+    pub fn why(&self) -> String {
+        match self {
+            Self::BadPartial => String::from(
+                "the downloaded file changed on disk after its check: the store's hash of its copy is not the model's, so the next models download fetches it again",
+            ),
+            Self::Store(reply) => format!("the store refused the model: {reply:?}"),
+        }
+    }
 }
 
 /// How `target` fits `machine`.
