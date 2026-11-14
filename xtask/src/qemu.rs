@@ -561,10 +561,11 @@ pub fn run_test(
             // The power goes: QEMU stops at once, mid-write.
             let _ = child.kill();
             let _ = child.wait();
-            let _ = reader.join();
+            let forbidden = reader.join().ok().and_then(|(.., forbidden)| forbidden);
             let _ = echo.join();
             println!("xtask: power cut {} ms after the line", delay.as_millis());
-            return Ok(());
+            // A cut boot still fails on a forbidden line it printed first.
+            return forbidden_verdict(forbidden);
         }
         if started.elapsed() > timeout {
             // Where every vCPU is, before QEMU goes: a silent hang shows its code.
@@ -574,7 +575,13 @@ pub fn run_test(
             );
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!("timed out after {} s", timeout.as_secs()));
+            // A forbidden line before the hang is often why: say it too.
+            let forbidden = reader.join().ok().and_then(|(.., forbidden)| forbidden);
+            let _ = echo.join();
+            let seen = forbidden.map_or_else(String::new, |line| {
+                format!("; a forbidden line was on the console first: {line}")
+            });
+            return Err(format!("timed out after {} s{seen}", timeout.as_secs()));
         }
         thread::sleep(Duration::from_millis(50));
     };
@@ -600,9 +607,7 @@ pub fn run_test(
     } else if status.code() != Some(QEMU_PASS) && !reset {
         return Err(format!("FAIL: QEMU exited with {status}"));
     }
-    if let Some(line) = forbidden {
-        return Err(format!("FAIL: a forbidden line was on the console: {line}"));
-    }
+    forbidden_verdict(forbidden)?;
     if !missing.is_empty() {
         return Err(format!("FAIL: never saw {missing:?} on the console"));
     }
@@ -611,6 +616,14 @@ pub fn run_test(
     }
     println!("xtask: PASS");
     Ok(())
+}
+
+/// Fails a case that printed a forbidden line ([`crate::cases::FORBID`]).
+fn forbidden_verdict(forbidden: Option<String>) -> Result<(), String> {
+    match forbidden {
+        Some(line) => Err(format!("FAIL: a forbidden line was on the console: {line}")),
+        None => Ok(()),
+    }
 }
 
 /// The kernel's boot line naming the guest's vector features and XCR0, which a

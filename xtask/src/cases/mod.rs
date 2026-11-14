@@ -304,9 +304,24 @@ mod tests {
 
     /// A case that expects a forbidden text could never pass: it sets its
     /// own `forbid` instead.
+    /// Every case the tree boots: the lanes, the tour, the soak and the
+    /// release boot, and each second boot their `then` chains hold.
+    fn every_case() -> Vec<&'static TestCase> {
+        let mut todo: Vec<&'static TestCase> = test_cases();
+        todo.extend(named_only());
+        todo.extend(SOAK_CASES.iter());
+        todo.push(&release::RELEASE_BOOT);
+        let mut all = Vec::new();
+        while let Some(case) = todo.pop() {
+            todo.extend(case.then);
+            all.push(case);
+        }
+        all
+    }
+
     #[test]
     fn no_case_expects_a_text_it_forbids() {
-        for case in test_cases() {
+        for case in every_case() {
             for text in case.expect {
                 assert!(
                     !case.forbid.iter().any(|bad| text.contains(bad)),
