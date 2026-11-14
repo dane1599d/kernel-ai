@@ -1,8 +1,30 @@
 # ADR 0005: Graphics: compositor, surface protocol and visual direction
 
-Status: Accepted 2026-10-22 (proposed 2026-10-21). The founder approved it with their answers of 2026-10-22 folded in; those points are marked "decided 2026-10-22". Questions still open below keep this ADR's stated default until the founder answers.
+Status: Amended 2026-11-14: Kai Desk. The look, the AI's place on the screen and the order of the trusted layer changed (see "Amendment 2026-11-14" below); the founder's OK of the amendment is needed before the first visible code of it merges. Accepted 2026-10-22 (proposed 2026-10-21). The founder approved it with their answers of 2026-10-22 folded in; those points are marked "decided 2026-10-22". Questions still open below keep this ADR's stated default until the founder answers.
 
 Repo citations are `path:line` on main at `ec5ecff`. Open work is cited at its branch tip: #18 virtio-gpu (`origin/dane/virtio-gpu-a5daaa`, `7603e54` plus merge `af7635d`), #19 USB input (`origin/dane/usb-input-83eb7c`, `0717caa`) and #16 networking (`origin/dane/net-dhcp-dns-b5bdb7`). Nothing was built or run for this ADR, and no model ran anywhere. Crate versions, licences, features and dependencies were re-read on crates.io on 2026-10-21 from the founder's PC (web reads only), as were the repo citations against `ec5ecff`; contrast ratios are WCAG 2.2 arithmetic.
+
+## Amendment 2026-11-14: Kai Desk
+
+The founder asked for a desktop that looks and works like Windows 11, with a Kai twist ("Start redesign now"). This amendment says what that means. It replaces the "Ember Workbench" look and the `kai>` bar along the bottom of the screen, and keeps every rule of the trusted path. Where the text below says otherwise, this section and the amended §1, §7, §8 and §9 win.
+
+**In plain words, what a person sees:**
+
+- The top bar and the `kai>` bar along the bottom are gone. A **taskbar** runs along the bottom instead: a Kai button and your apps' icons in the middle, and at the right a Kai chip (ready, thinking, done), the memory in use and the time.
+- Kai has a **pane** down the right edge: your lines, Kai's answers, the state line and the input. It is closed when the desktop starts. Ctrl+Space, or a click on the corner of the screen, opens it; so does a click on the chip.
+- A **Kai menu** (Start in the code) opens with the Super key, Ctrl+Esc or the Kai button. It has one box that says "Ask Kai or search apps", your pinned apps, your own recent lines and all apps. Type "notes" and press Enter and Notes opens; type anything that is not an app and press Enter and it asks Kai.
+- Windows get rounder corners, wide flat minimize, maximize and close buttons, and titles that show the system's name for the app first and the app's own title after it. This is the rule ADR 0005 §7 always had; the code did not follow it.
+- The look is graphite in layers (desk, shell, window, raised), with ember kept for Kai alone. The shell and hover colours are new and desktop-only; apps never get them. Light and high-contrast follow.
+- Nothing about safety changes. The ask card is drawn last, over everything, takes only y, n or a click, and Kai's words never appear in the system's look or in the state line.
+
+**Four calls the founder is asked to confirm** (each is the default this amendment builds; the OK is needed before the first visible code, the window chrome, merges):
+
+1. **The pane floats and is closed at boot.** It sits over windows rather than pushing them aside; only a maximized window is made to fit beside it. Docking it is open question 9.
+2. **The clock shows UTC**, with "UTC" written on its date line, until a time-zone setting exists. Open question 7.
+3. **The fonts stay Inter and JetBrains Mono.** Both are free to use under the OFL and neither is Microsoft's. A typeface drawn for Kai is a separate, large job. Open question 6.
+4. **Super opens the menu** and Ctrl+Space the pane. Whether Super reaches the guest in VirtualBox and QEMU is unchecked; the Kai button, the `apps` line, Ctrl+Space and the corner always work. Open question 1.
+
+**What changes in this document:** §1 and the Decision paragraph (what `desktop` draws), §7 (additions to the trusted path), §8 (renamed "The look: Kai Desk", with the new tokens, metrics and pixel tables), a note in §9, one row of the cost table, the open questions, and two rows of the options and reuse tables. The decision row is `2026-11-14-kai-desk`. It supersedes only the placement half of `2026-11-14-panel-history` (the history moves from the desk into the pane); that row's look rules stay. `2026-11-14-desktop-lines-ask-on-the-card` is unchanged. The row at decisions.md:229 is not edited.
 
 ## Context
 
@@ -35,7 +57,7 @@ Four designs were judged; scores are the judge's, out of 10.
 | A. Own surface protocol, Wayland bridge later (8) | Wayland's objects, semantics and 8-byte header over our shared-memory rings and handles; a ring-3 compositor drawing with tiny-skia, skrifa and HarfRust; every window carries an AccessKit tree | P6 becomes a 1:1 translation. The agent view and the trusted panel are in the protocol from the first app. The renderer sits behind one crate. | Kernel work comes first, and A sized it too low: it planned to map buffers "as MODEL_MAP does" and had no user unmap. Two protocols for good. Bridged apps are opaque to the agent. We own a toolkit. Its `apphost` duplicated 0003's `comphost`. | **Base** |
 | B. Wayland native from day one (4) | A Smithay compositor built as a static musl binary, run on a slice of about 45 Linux calls added to the kernel in P3; apps as Wayland clients | Best Linux-app fidelity; no bridge; Wayland's per-interface versions | Moves about 5,600 kernel lines of P6 into P3 before the first window. Decides 0006's question before its spike. Puts C (libxkbcommon, pixman) in the trusted display path. Smithay's latest release is 0.7.0 of 2025-06-24. Redox: "Smallvil performance on Redox is not adequate" (2025-11-30). Apps as `abi=linux` conflicts with 0003. | Lost. Kept: a display connection given at spawn |
 | C. Orbital/rio-style compositor, proxy later (6) | `win` composites client buffers; text control requests (`/win/list`, outlines, `act`); a 32 px strip drawn by the kernel as the only place for asks | Smallest (about 10,500 lines); a text control plane suits Rhai and a 4B model; a per-window header page, so a frame needs no IPC | A 32 px strip cannot show a 40-line script (decisions.md:74). It contradicts [ADR 0001](0001-capabilities.md), which puts the trusted path in the compositor. It also planned window-linked buffers and a 1.21:1 window edge. | Lost. Kept: the text view of windows, the takeover rule, the 4 KiB header page, the latency scene |
-| D. Visual direction (8) | "Ember Workbench" (dark-first, Ember tokens, Inter and JetBrains Mono, a bottom `kai>` line as the AI panel) against "Daylight Document" (light-first, Atkinson type, an AI column on the right) | Continues the Ember look the founder has seen (docs/images/terminal-after.png). Every contrast figure checks. Contrast becomes a CI test. | Text quality is a guess until screendumps exist. It named swash on skrifa 0.48, which swash 0.2.10 does not allow. | **The look**: Ember Workbench, with Daylight's Atkinson pair as the legible setting |
+| D. Visual direction (8) | "Ember Workbench" (dark-first, Ember tokens, Inter and JetBrains Mono, a bottom `kai>` line as the AI panel) against "Daylight Document" (light-first, Atkinson type, an AI column on the right) | Continues the Ember look the founder has seen (docs/images/terminal-after.png). Every contrast figure checks. Contrast becomes a CI test. | Text quality is a guess until screendumps exist. It named swash on skrifa 0.48, which swash 0.2.10 does not allow. | **The look**: Ember Workbench, with Daylight's Atkinson pair as the legible setting. Amended 2026-11-14: Kai Desk (§8); the Atkinson pair stays |
 
 Open-source reuse weighed. Licences come from crates.io metadata or the LICENSE file, read 2026-10-21. "Free" is the founder's 2026-10-21 class (MIT, Apache-2.0, BSD-2/3-Clause, ISC, Zlib): no question, and each PR lists the crates.
 
@@ -52,17 +74,17 @@ Open-source reuse weighed. Licences come from crates.io metadata or the LICENSE 
 | Linux display (P6) | 0006's guest runs `cage`; later a guest-side bridge | wayland-server 0.31.14, wayland-backend 0.3.17 and Smithay 0.7.0 (all MIT): only on 0006's `lxabi` fallback. Smithay 0.7.0 always depends on `xkbcommon ^0.8`, bindings to C libxkbcommon, whose files carry MIT, X11, ISC, HPND, HPND-sell-variant, MIT-open-group and one custom notice (`LicenseRef-anton-zinoviev`). |
 | Fonts | Inter 4.1, JetBrains Mono 2.304, Atkinson Hyperlegible Next: SIL OFL-1.1, ask class | Geist (OFL) and IBM Plex (OFL with the Reserved Font Name "Plex"): not needed |
 | Box drawing | a port of Alacritty's `builtin_font.rs`, Apache-2.0, free (keep the notice and state the changes) | the fonts' own glyphs: joins vary by font |
-| Icons | Lucide 1.61.0 (ISC, free; icons from Feather, `minus`, `square` and `x` among them, are MIT), rasterised at build time by resvg 0.48.1 (Apache-2.0 OR MIT) in xtask | no other icon set was weighed |
+| Icons | Lucide 1.61.0 (ISC, free; icons from Feather, `minus`, `square` and `x` among them, are MIT), rasterised at build time by resvg 0.48.1 (Apache-2.0 OR MIT) in xtask. Superseded 2026-11-14: the Kai glyphs of §8, authored fresh and drawn in code, with nothing traced from Lucide, Fluent or Segoe | no other icon set was weighed |
 
 ## Decision
 
-Kernel AI gets its own small window system. One program, `desktop`, draws every window, the AI's command line at the bottom of the screen and every question the AI asks, so no app can fake a question or a "yes". Apps describe their buttons and fields as well as drawing them, so the agent can read and press them without screenshots. The look continues the dark "Ember" terminal you have seen, and Linux apps arrive in v0.2 as one window drawn by a small Linux VM.
+Kernel AI gets its own small window system. One program, `desktop`, draws every window, the Kai taskbar, the Kai menu (Start) and the Kai pane, and every question the AI asks, so no app can fake a question or a "yes". Apps describe their buttons and fields as well as drawing them, so the agent can read and press them without screenshots. The look is Kai Desk (amended 2026-11-14): a Windows 11-style desktop in the dark "Ember" colours you have seen, and Linux apps arrive in v0.2 as one window drawn by a small Linux VM.
 
-In the options' terms: base design A; the look is design D's "Ember Workbench"; grafts are C's text view, takeover rule and per-surface header page, and B's connection given at spawn. Names follow the decision sheet: the judge's `surface@1` is `kai-surface 1`, and the judge's `ui.*` rows are snake_case.
+In the options' terms: base design A; the look is design D's "Ember Workbench", renamed and rebuilt as Kai Desk on 2026-11-14; grafts are C's text view, takeover rule and per-surface header page, and B's connection given at spawn. Names follow the decision sheet: the judge's `surface@1` is `kai-surface 1`, and the judge's `ui.*` rows are snake_case.
 
 ### 1. Shape
 
-- A ring-3 compositor, the program and service `desktop`, owns the scene, damage, focus, window decorations, the cursor, the AI panel and the agent's view. Its logic is in a host-tested crate, `deskcore`. It builds for the hard-float target and runs under the supervisor. Under the `classes` policy it is never labelled `background`, so background threads never preempt it on wake, though one already running keeps a 2 ms shield (docs/decisions.md:39, :177). `classes` has no frame deadline; S05-1's scene (f) shows whether one is needed.
+- A ring-3 compositor, the program and service `desktop`, owns the scene, damage, focus, window decorations, the cursor, the Kai taskbar, menu (Start) and pane, and the agent's view. Its logic is in a host-tested crate, `deskcore`. It builds for the hard-float target and runs under the supervisor. Under the `classes` policy it is never labelled `background`, so background threads never preempt it on wake, though one already running keeps a 2 ms shield (docs/decisions.md:39, :177). `classes` has no frame deadline; S05-1's scene (f) shows whether one is needed.
 - The kernel keeps the display and input drivers (virtio-gpu, GOP, PS/2; [ADR 0007](0007-drivers.md)) and its console. The console stays the boot, panic and recovery screen ([ADR 0008](0008-updates.md)). The kernel takes Ctrl+Alt+F12 before `desktop` sees it and switches between the console and the desktop.
 - If `desktop` dies, the console shows and the supervisor restarts it. `uikit` apps reconnect and rebuild their windows from their retained trees, without restarting.
 
@@ -155,76 +177,197 @@ Crate `surfabi`: no_std, host-tested, fuzzed. It keeps Wayland's object model, s
 - `:apply` keeps its kernel-drawn confirmation (docs/decisions.md:94): the kernel revokes the display `Shm`, draws the card on its console, reads y or n before `desktop` sees input, then hands the screen back.
 - Calls go one way. The agent core (`shell` today) calls `desktop` to take the next panel request, to report states and to run its rows. `desktop` calls no service, so routes form no cycle (0001).
 
-### 8. The look: "Ember Workbench"
+**Amended 2026-11-14 (Kai Desk).** Every rule above stays: the settle time of 400 ms, `y` arming and a fresh `y` running, a Run click needing a fresh pointer entry after the card is drawn, held keys dropped, Enter ignored, `n` or Don't declining at once, a non-ASCII character shown as `\u{...}`, the 2:00 countdown, and `:apply` on the console. Added:
 
-- A no_std crate `look` holds the tokens, type styles, motion values and `contrast()`. The kernel console uses only its integer colour constants. A CI test fails any text pair under 4.5:1 and any mark or edge under 3:1 (WCAG 2.2 1.4.3, 1.4.11). A lint fails colour literals outside `look` and the kernel console.
-- Themes are `kai-theme 1` text files (`token = #RRGGBB`, `style = family size/line weight`, `motion = name ms curve`), parsed and fuzzed in `look`. Saving one re-skins the screen in the next frame. Appearance is one run-tier row with undo, `appearance_set(setting, value)`: theme, a token, scale, text size (100-200%), reduced motion, legible type.
+- Paint order: desk, windows, the agent's outline, the taskbar and tray, the pane, the menu (Start), a tooltip, the card, the cursor.
+- Hit order: the card, the menu, the pane, the taskbar and tray, windows, the desk. The card takes all input while it is up.
+- The menu is painted below the card and also closes on `Focus::Ask`.
+- The card keeps its maximum width of 960. Its height may grow to 2/3 of the work height, (H-72) x 2/3.
+- The Kai button carries an `ask` ring while a card is up. `ask` is used nowhere else.
+- The state line is code-only in both the pane's status row and the tray chip.
+- The AI's words appear only in the pane's history rectangle, in the AI look.
+- Title bars and tooltips show the kernel's label before the app's title. This restores the rule above; the code before this amendment showed the title alone.
+- The taskbar draws no app text outside label-first tooltips.
+- Menu rows are data: a catalog row is never queued to the model, and only text the person typed is sent.
 
-Colour. Dark takes #17's palette (kernel/src/console/theme.rs:9-23) and adds `raised`, `line_strong` and `accent`. Ratios are against `window`, recomputed for this ADR.
+What this costs, said plainly. The AI's words move from a layer under the windows to a system pane drawn over them, beside the card's region. That weakens the story that the system's surfaces speak only code, so the rule is pinned and tested rather than assumed. The words show only in the history rectangle, clipped so they never reach the status row, the input, the taskbar or the card. They are drawn in the AI's look (a `Kai` label in `ai`, a 2 px `ai` rule, sans `text`), never in the card's header style, mono call lines or the `ask` colour. `y` does nothing without a card, so "Kai asks to run ... press y" inside a model's text is only text. The tests: a hostile `said` never changes the status row's or the chip's pixels; no `ask`-coloured pixel and no card-header style appears in the pane while no card is up; and the card's pixels are identical with the menu, the pane, a tooltip and a taskbar hover active, at all three sizes.
 
-| Token | Dark | Light | Job; contrast dark / light |
-|---|---|---|---|
-| desk | `0D1017` | `E9E4DA` | the desktop |
-| window | `141821` | `FAF8F4` | windows, top bar, command line |
-| raised | `1B202B` | `FFFFFF` | sheet, menus |
-| line | `232A38` | `D9D3C7` | dividers only (decorative) |
-| line_strong | `5F6B80` | `857E71` | window frames, inputs: 3.30 / 3.79 |
-| text | `ECE6DA` | `1A1D24` | 14.29 / 15.90 |
-| muted | `9AA3B4` | `4F5666` | 7.00 / 6.93 |
-| dim | `7C8AA8` | `5B6271` | 5.12 (4.70 on raised) / 5.77 |
-| ai | `FF9F5A` | `A84A0C` text, `C4560C` marks | the AI and nothing else: 8.76 / 5.42 (marks 4.23) |
-| ask | `F5C451` | `7F5800` | waiting for you: 10.91 / 6.00 |
-| error | `FF6B6B` | `B42318` | failed or refused: 6.40 / 6.20 |
-| ok | `7FD49B` | `26703F` | done, undo available: 9.97 / 5.70 |
-| accent | `8CB8FF` | `1F5FBF` | apps and links: 8.81 / 5.74 |
-| focus | `ECE6DA` | `1A1D24` | a 2 px ring with a 1 px gap |
+### 8. The look: Kai Desk
 
-A high-contrast theme is `000000` and `FFFFFF`, with ember kept (10.36:1 on black).
+Amended 2026-11-14. The name "Ember Workbench" is retired. Its tokens, themes and rules stay where this section does not change them.
 
-Type, in logical px. All three families are SIL OFL-1.1.
+- A no_std crate `look` holds the tokens, type styles, metrics (`look::metric`), motion values and `contrast()`. The kernel console uses only its integer colour constants. A CI test fails any text pair under 4.5:1 and any mark or edge under 3:1 (WCAG 2.2 1.4.3, 1.4.11) on every full ground, and holds `hover`, a restricted ground, to its own lists below. A lint fails colour literals outside `look` and the kernel console.
+- Themes are `kai-theme 1` text files (`token = #RRGGBB`, `style = family size/line weight`, `motion = name ms curve`), parsed and fuzzed in `look`. Saving one re-skins the screen in the next frame. Appearance is one run-tier row with undo, `appearance_set(setting, value)`: theme, a token, scale, text size (100-200%), reduced motion, legible type. `shell` and `hover` are tokens of a file like the others; a file written before they existed leaves them out and takes its base theme's.
+
+**What it is.** A Windows 11-style desktop built from code we own. It has solid graphite layers (desk, then shell, then window, then raised), radius, spacing and a soft shadow, and no Mica, acrylic, blur or translucency. Ember (`ai`) is the only chrome colour, and it belongs to Kai: the Kai mark, the listening rule and caret, `kai>`, Kai's history entries, the unread badge and the thinking pill. Selection and focus use `accent`. There are no Microsoft fonts, icons or marks, and the UI never says "Start" or "Copilot".
+
+Colour. All 15 earlier values are unchanged, so no earlier golden moves for colour; `shell` and `hover` are new. Ratios are against `window`, dark / light.
+
+| Token | Dark | Light | High contrast | Job |
+|---|---|---|---|---|
+| desk | `0D1017` | `E9E4DA` | `000000` | the wallpaper, flat |
+| shell | `111520` | `F3F0EA` | `000000` | the taskbar, the Kai pane and the menu's footer; desktop only; a full ground |
+| window | `141821` | `FAF8F4` | `000000` | windows and input fields |
+| raised | `1B202B` | `FFFFFF` | `000000` | the menu, tooltips and the ask card |
+| hover | `252B37` | `E4DFD5` | `000000` | hover and pressed fills; desktop only; a restricted ground |
+| line | `232A38` | `D9D3C7` | `FFFFFF` | rules and the unfocused frame (decorative) |
+| line_strong | `5F6B80` | `857E71` | `FFFFFF` | window frames and field edges: 3.30 / 3.79 |
+| text | `ECE6DA` | `1A1D24` | `FFFFFF` | 14.29 / 15.90 |
+| muted | `9AA3B4` | `4F5666` | `FFFFFF` | 7.00 / 6.93 |
+| dim | `7C8AA8` | `5B6271` | `FFFFFF` | 5.12 (4.70 on raised) / 5.77 |
+| ai | `FF9F5A` | `A84A0C` | `FF9F5A` | Kai's text, and Kai's alone: 8.76 / 5.42 |
+| ai_mark | `FF9F5A` | `C4560C` | `FF9F5A` | Kai's marks: the outline, caret, rules and mark: 8.76 / 4.23 |
+| ask | `F5C451` | `7F5800` | `FFFFFF` | the trusted layer only, the card's bar and the Kai button's ring: 10.91 / 6.00 |
+| error | `FF6B6B` | `B42318` | `FFFFFF` | failed or refused: 6.40 / 6.20 |
+| ok | `7FD49B` | `26703F` | `FFFFFF` | done, undo available: 9.97 / 5.70 |
+| accent | `8CB8FF` | `1F5FBF` | `FFFFFF` | apps, links and selection: 8.81 / 5.74 |
+| focus | `ECE6DA` | `1A1D24` | `FFFFFF` | a 2 px ring with a 1 px gap: 14.29 / 15.90 |
+
+`look` has these 17 tokens, and a test pins this table's values to the code. Apps get 12 of them (`Token::APP`): never `ai`, `ai_mark`, `ask`, `shell` or `hover`.
+
+- **`shell` is a full ground.** It joins `desk`, `window` and `raised`, so every text token holds 4.5:1 and every mark 3:1 on it. The worst cases are dark `dim` 5.26 and `line_strong` 3.39, and light `ai` 5.06 and `line_strong` 3.54.
+- **`hover` is a restricted ground.** Text held to 4.5:1 on it is `text`, `muted`, `accent`, `error` and `ok`: the dark worst is `error` 5.12, the light worst `ok` 4.56 and `accent` 4.59. Marks held to 3:1 are `focus` and `ai_mark` (light `ai_mark` 3.38). `dim`, `ai` and `line_strong` are never drawn on `hover`, and a painter test enforces it: on `hover` `dim` is 4.09:1 in dark, `ai` is 4.33:1 in light and `line_strong` is 2.64:1 in dark. That is why the Kai mark is drawn in `ai_mark` while hovered. A hover fill steps 1.28:1 (dark) and 1.17:1 (light) from `shell`.
+- **High contrast** is `000000` and `FFFFFF`, with ember kept (10.36:1 on black). Its `hover` equals the ground it sits on, so a painter that finds `hover` equal to its ground draws a 1 px `focus` frame instead of a fill. Hover and selection stay visible, and the painter never reads the theme's name.
+- A theme file or a saved colour that cleared `window` by a hair may now be refused on `shell`; the message names the pair.
+
+Type. The same seven styles at the same sizes, so the glyph atlas gains no key. All families are SIL OFL-1.1.
 
 | Style | Font, size/line, weight | Used for |
 |---|---|---|
-| small, body, label | Inter 4.1: 12/16 400; 14/20 400; 13/18 500 | captions; text; buttons and menus |
-| heading, display | Inter 18/24 600; 28/34 600 with `opsz` 32 | headings; settings titles |
-| mono, mono_title | JetBrains Mono 2.304: 14/20 400 (bold 700); 12/16 500 | terminal, editor, code in asks; window titles, tabs, `kai>`, action lines |
+| small | Inter 4.1: 12/16 400 | tray text, tooltip titles, tile names, summaries |
+| label | 13/18 500 | window titles, section heads, the pane's title, search-row names |
+| body | 14/20 400 | the menu's box, Kai's words |
+| mono | JetBrains Mono 2.304: 14/20 400 (bold 700) | your lines, call lines, the `kai>` input |
+| mono_title | 12/16 500 | kernel labels, the status row, the clock (tabular cells, so digits never shift) |
+| heading, display | Inter 18/24 600; 28/34 600 with `opsz` 32 | Settings |
 | legible (setting) | Atkinson Hyperlegible Next and Mono, 1 px larger | low vision |
+
+The rule: system words are mono; the AI's words are sans, in the AI's look; an app's title is sans after a mono kernel label.
 
 Motion. Nothing the user starts waits behind an animation; only AI surfaces move.
 
 | Token | Value | Used for |
 |---|---|---|
-| instant | 0 ms | typing, caret, focus, window open, close and raise, menus |
+| instant | 0 ms | typing, caret, focus, window open, close and raise, menus, the pane, hover, tooltips |
 | quick | 90 ms, cubic-bezier(0.2, 0, 0, 1), opacity | hover and press on controls |
-| state | 160 ms cross-fade | command-line state changes |
-| sheet | spring, 0.28 s, bounce 0 (stiffness 503.6, damping 44.9), translate only | the sheet; interruptible, keeps its velocity |
+| state | 160 ms cross-fade | the state line's changes |
+| sheet | spring, 0.28 s, bounce 0 (stiffness 503.6, damping 44.9), translate only | a sheet; interruptible, keeps its velocity |
 | settle | 480 ms linear opacity | the agent's outline after an action |
 | tick | 125 ms steps | the thinking dots, as #17's status bar |
 | reduced | all 0; the dots become a seconds counter | the setting, and every `test=` boot |
 
-No blur, translucency or window-content animation, and nothing longer than 0.5 s.
+No blur, translucency or window-content animation, and nothing longer than 0.5 s. Kai Desk adds no motion: the menu, the pane, hover, focus and tooltips are instant, so reduced motion and `test=` boots behave the same and goldens stay pure.
 
-- **Chrome.** Title bar 32 px, title in `mono_title`. Three 28x28 controls (Lucide `minus`, `square`, `x` at 16 px). Frame 1 px, radius 6 px. Only the focused window has a `line_strong` frame and a shadow (two nine-slice layers); others have a `line` frame and a `dim` title. Resize grabs reach 6 px outside the frame, corners 16x16. While the agent acts on a window, a 2 px `ai` outline sits 2 px outside its frame.
-- **Top bar.** 28 px, #17's status bar grown up (kernel/src/console/status.rs:1-8): brand, open windows as mono tabs, model state, CPU and memory, and a clock once the kernel has one.
-- **The AI panel** is a full-width 36 px command line at the bottom: `kai>` in bold `ai`, the input, then the state on the right. It takes English or Rhai, as `kai>` does now, and is also the launcher ("notes" opens Notes). Super or Ctrl+Space focuses it from anywhere (whether QEMU and VirtualBox pass both keys to the guest is unverified). A sheet (`raised`, at most 960 px wide and half the screen tall) opens above it only for answers longer than one line, the log and asks. A run-tier request never opens it.
+Metrics (`look::metric`, logical px; the grid is 4 px).
 
-| State | Shows |
+| What | Value |
 |---|---|
-| idle | `kai>`, "ask, or type Rhai" in `dim`, the model dot |
-| listening | ember block caret, a 2 px `ai` top rule |
-| thinking | dots every 125 ms, "thinking 4s", "Esc stops"; shown within 100 ms of Enter |
-| acting | the call in mono and its target ("Save (button) in Notes"); the outline on that window |
-| done | an `ok` check, code's result line ("Done: X (was Y). undo"), `undo` and `show` |
-| asking | the sheet with a 3 px `ask` bar, each action and its arguments in mono, the reason, a 2:00 countdown (shellcore/src/actions.rs:19), Run (y) and Don't (n) |
-| refused | an `error` bar and the reason |
+| Spacing scale | 4, 8, 12, 16, 24, 32, 48 |
+| Radii | 4 for tiles, hover fills, tooltips, app controls and the card's buttons; 6 for the pane's input; 8 for windows, the menu, the pane and the card; a pill is half its height |
+| Taskbar | 48 tall; items 40 with a 4 gap; icons 24 in the bar, 32 on a menu tile, 16 in a title row |
+| Flyout margin | 12 from each screen edge, and 12 above the taskbar |
+| Window | title bar 32; frame 1; radius 8 (0 when maximized); controls 40x32; resize grabs 6 outside the frame, corners 16; shadow reach 12 |
 
-The panel reads its states from 0002's structured `Outcome` and `actlog 1` entries, never from reply text.
+**Layout.** Every size below is in physical px at scale 1 (§9). One pure function, `deskgeom::Layout::for_screen(w, h, ui)`, will compute every rectangle, so painting, hit-testing, tests and boot cases read one source. 1920x1080 is the design size. 1280x800 keeps every size, and only the pane narrows to 360. 1024x768 uses the compact tray and a 340 px pane that closes when focus leaves it. The menu and the card are the same at every size. The work area is (0, 0, W, H-48). Nothing overlaps in the default state at any of the three sizes, and a test asserts it.
 
-**The panel's history** (the founder, 2026-11-14, after the first VirtualBox test; row `2026-11-14-panel-history`). Each panel line and what came of it shows above the bar on the desk's background, newest at the bottom, as a chat does, under every window. The bar's state line stays code's alone. The history alone shows the model's words and a model script's prints, sent by the shell as `panel said`. It draws them as the AI's, never in the system's look: a `Kai` label in `ai`, a 2 px `ai` rule down their left, sans `text`. The system's own words stay mono, in the bar, the cards and the history's notes. A line that asks first, or leaves a question open, still goes to the terminal, and the history's note says so. The history is bounded (40 entries, 4,000 bytes each) and drops control characters. It holds no input, takes no keys, and cannot cover the bar or a card, which are drawn after it.
+**Windows.**
+- Title bar 32, frame 1 px (`line_strong` when focused, `line` otherwise), radius 8 (0 when maximized), resize grabs 6 outside the frame, corners 16. Windows cascade from (48, 52), 32 further for each, n mod 8.
+- Controls are 40x32, flush in the title bar and 16 px glyphs, right to left: close, maximize or restore, minimize. At a frame from x 48 to 690 they sit at close 649 to 689, maximize 609 to 649, minimize 569 to 609, y 53 to 85. Hover is `hover`. Close hover is an `error` fill with the glyph in `window` (6.40:1 dark, 6.20:1 light). Inside the frame the close control wins over the corner grab.
+- The title row is a 16 px app icon (or a monogram), the kernel's label in `mono_title` `dim`, an 8 px gap, then the app's title in `label`: `text` when focused, `dim` otherwise. The label always comes first (§7).
+- The focused window and the flyouts have a shadow of two nine-slice layers reaching 12 px, split from the 6 px grab; a dragged window has none. While the agent acts on a window, a 2 px `ai` outline sits 2 px outside its frame.
+- Maximize fills the work area. With the pane open at 1280 wide or more it fills to 12 px left of the pane, and a maximized window is re-fitted when the pane opens or closes.
+
+**The taskbar** is (0, H-48, W, 48), filled `shell` with a 1 px `line` rule along its top edge.
+- Items are 40x40 at y H-44 with a 4 px gap. Each hit box covers the full 48 px height, the gaps split between neighbours, so no pixel is dead. Hover and pressed fill is `hover`, radius 4. Icons are 24 px.
+- Centred, in order: the Kai button; the pins (terminal, files, notes, editor, monitor, settings, each skipped if not installed); then running windows of apps that are not pinned, in open order. With 7 items the group is 304 wide.
+
+| Size | Bar | 7-item group | Kai button centre |
+|---|---|---|---|
+| 1920x1080 | (0, 1032, 1920, 48) | x 808 to 1112 | (828, 1056) |
+| 1280x800 | (0, 752, 1280, 48) | x 488 to 792 | (508, 776) |
+| 1024x768 | (0, 720, 1024, 48) | x 360 to 664 | (380, 744) |
+
+- At most 12 items at 1280 wide and up and 9 at 1024; past that the last slot is "more", which opens All apps. The group never meets the tray: at 1024 it ends at 664 and the tray starts at 848.
+- A pin and its windows share one item, matched by the kernel's process label and never by title. With several windows a click activates the most recent; a click on the focused one minimizes it; a click on a minimized one restores it. A pin with no window sends the line "open <name>", the path the Apps sheet takes today.
+- A running pill sits 2 px above the item's bottom, 3 px tall with round ends: 6 wide `muted` when running and unfocused, 16 wide `accent` when focused, 6 wide `dim` when minimized.
+- The Kai button draws the Kai mark in `ai` (`ai_mark` while hovered), a 16 px `ai_mark` pill under it while Thinking or Acting, and a 2 px `ask` ring at radius 8 while an ask card is up. The ring is a second trusted cue: apps cannot paint the taskbar.
+- A tooltip comes after 500 ms of hover (a delay, not an animation): 28 tall, `raised`, radius 4, a 1 px `line_strong` frame, 8 px above the taskbar and kept on screen. It shows the kernel's label in `mono_title` `dim`, a 6 px gap, then the title in `small` `text`, at most 320 wide and ending in "…" if cut. The taskbar draws no app text except inside this label-first tooltip.
+
+**The tray** is right-aligned and a pure function of W, so the screendump mask is computed, not written down. At 1280 wide and up, right to left:
+
+| Part (x, y, w, h) | 1920x1080 | 1280x800 | 1024x768 (compact) |
+|---|---|---|---|
+| Kai corner (W-16, H-48, 16, 48), hit only | (1904, 1032) | (1264, 752) | (1008, 720) |
+| Clock slot (W-96, H-48, 80, 48) | (1824, 1032) | (1184, 752) | (928, 720) |
+| Memory (W-192, H-44, 88, 40) | (1728, 1036) | (1088, 756) | hidden |
+| Kai chip (W-360, H-44, 160, 40); compact (W-168, H-44, 64, 40) | (1560, 1036) | (920, 756) | (856, 724), 64 wide |
+| Tray area, the screendump mask | (1552, 1032, 368, 48) | (912, 752, 368, 48) | (848, 720, 176, 48) |
+
+- The Kai corner's hit rectangle contains (W-1, H-1), so a clamped pointer move reaches it. A click opens the pane and focuses its input.
+- The clock is two lines in `mono_title`, right-aligned in fixed cells: "14:05" in `text` at y H-40 and "14 Nov UTC" in `muted` at y H-24. It reads the kernel's wall clock and draws nothing if there is none. The slot sits on 16 px columns at every size (columns 114 to 118 at 1920, 74 to 78 at 1280, 58 to 62 at 1024), so even a midnight rollover changes at most five tiles in a row. It says UTC; a time-zone setting is open question 7.
+- Memory is a 16 px icon and "2.1 GiB" in `small` `muted`, in 0.1 GiB steps, repainted only when the text changes. Compact mode hides it; it stays in the chip's tooltip.
+- The Kai chip is an 8 px dot and `small` text, code-only, from the panel's state, the model's warmth and the bar. The dot is `ok` when ready, a `dim` ring while getting ready, and a `dim` dash with no model; it is never `ask`. The text is "Kai ready", "Kai is getting ready", "Kai thinking 4s", "Kai acting", "Kai done", "Kai refused" or "No model". While the pane is open it shows only the dot and "Kai". A 6 px `ai` badge sits at its top right when Kai said something while the pane was closed. A click toggles the pane. Hover is `hover`, radius 4.
+
+**The Kai menu** (Start in the code) replaces the Apps sheet. It is `raised`, radius 8, with a 1 px `line_strong` frame and a flyout shadow, 640 wide and min(680, H-72) tall, centred, its bottom at H-60.
+
+| Size | Menu rectangle |
+|---|---|
+| 1920x1080 | (640, 340, 640, 680) |
+| 1280x800 | (320, 60, 640, 680) |
+| 1024x768 | (192, 28, 640, 680) |
+
+Offsets are from the menu's top left, and the padding is 24.
+- **The box** is (24, 24, 592, 40), a pill filled `window` with a 1 px `line_strong` frame, a 16 px search icon at inner x 14 and body text from inner x 40. The placeholder is "Ask Kai or search apps" in `dim`, or "Kai is getting ready · search apps" while the model warms. Focused, it has a 2 px `ai` rule inside its bottom edge and the ember block caret. #856's `<` horizontal scroll is kept.
+- **Home.** "Pinned" in `label` at y 88, with an "All apps ›" link in `accent` at the right. A grid of 6 columns by 3 rows of 96x84 cells from (32, 116) to y 368: a 40x40 tile with a 32 px icon, and the name in `small` below, centred and cut to 88 wide. Hover and selection are `hover`, radius 4. "Recent" in `label` at y 384, then up to 5 rows of 40 from y 408: your own last lines (never Kai's words) in `mono` `muted`; a click puts the line back in the box. A footer band (0, 616, 640, 64) in `shell` with a 1 px `line` on top holds the Kai mark at 20 px and the model's state in `small` `muted` at the left, and a 40x40 Settings item at the right.
+- **Search** replaces the grid when the box has text: rows of 52 from y 80 to 616 (10 rows). Row 0 is "Ask Kai: <text>" with the Kai mark, the text in `mono` `muted`. Then come matching catalog rows: a 24 px icon, the name in `label`, the summary in `small` `dim`, and an Installed or Install tag. The default selection is the first app whose name starts with the text (case-insensitive), otherwise "Ask Kai": "notes" then Enter opens Notes. Enter on Ask Kai queues the panel request, closes the menu, and opens and focuses the pane. Enter on an app sends "open <name>" or "install <name>".
+- **All apps** is reached by "All apps ›", the `apps` line or the "more" item: a 30 px header, then catalog rows of 52 from y 112 (9 rows visible), in today's order and with today's keys (Up, Down, Enter, Esc). The selected row has a 3 px `accent` edge; ember is Kai's alone.
+- Rows are catalog data. They are never queued to the model; only typed text is sent.
+
+**The Kai pane** replaces the `kai>` bar and the history on the desk. It is closed when the desktop starts, at every size. It is `shell`, radius 8, a 1 px `line_strong` frame and a flyout shadow, with its right edge 12 px from the screen's. Its width is 400 at W of 1600 or more, 360 at 1200 or more, and otherwise 340; its x is W-12-width, its y 12 and its height H-72.
+
+| Size | Pane rectangle |
+|---|---|
+| 1920x1080 | (1508, 12, 400, 1008) |
+| 1280x800 | (908, 12, 360, 728) |
+| 1024x768 | (672, 12, 340, 696) |
+
+Parts, relative to the pane, with w and h its width and height:
+- **Header**, 48 tall: the Kai mark at 20 px at (16, 14); "Kai" in `label` `text` at x 44, then the model's name and state in `small` `muted`, code-only; a 32x32 close item at (w-40, 8); a 1 px `line` rule at y 48.
+- **History** (16, 56, w-32, h-160): newest at the bottom, wrapped to its width, clipped to its rectangle so it can never reach the status row, the input, the taskbar or the card. Scrolled by PageUp and PageDown; a new entry snaps back to the bottom unless you have scrolled up. See "The pane's history" below.
+- **Status row** (0, h-100, w, 32) with a 1 px `line` on top, in `mono_title`: the states table below, code-only.
+- **Input** (12, h-56, w-24, 44), radius 6, `window` with a 1 px `line_strong` frame: `kai>` in bold `ai` mono, then the line (400 bytes at most) with #856's `<` scroll. The placeholder is "Ask Kai, or type Rhai", or "Kai is getting ready" while the model warms. Focused, it has a 2 px `ai` top rule and the ember block caret. A 32x32 send item at its right end becomes a Stop square while Kai is thinking; a click on it acts exactly like Esc.
+- The pane floats over windows. Under 1280 wide it is a flyout and closes when focus leaves it. It is not docked: docking needs a work-area protocol, open question 9.
+
+**The ask card** keeps §7's rules and its width: min(W-32, 960), centred, its bottom at H-60. Its height fits its content up to (H-72) x 2/3, rounded down, which fixes today's cut-off: 672 at 1080 tall, 485 at 800 and 464 at 768, against 366 at 768 today. At 1920 it is x 480, at 1280 x 160 and at 1024 x 32, all 960 wide. It is `raised`, radius 8, with a 1 px `line_strong` frame, the 3 px `ask` bar, "Kai asks to run", the 2:00 countdown, mono call lines and a sans reason. Its buttons are 120x32 at radius 4: Don't (n), then Run (y), or "y again" after the first press. The highlight starts on Don't.
+
+**The Kai glyphs** are ours, drawn in code, and replace Lucide.
+- Each icon is path geometry on a 24-unit grid with a 2-unit safe margin, stroked 1.5 units with round caps and joins and never under 1 px. A monochrome coverage mask is cached for each icon at 16, 20, 24 and 32 px (about 60 KB in all) and tinted with a token.
+- The set: the Kai mark (a ring with a filled spark dot at 45 degrees, grown from today's brand ring, and never a four-pane shape); the apps (terminal, files, notes, editor, monitor, models, settings); search, chat, memory, chevrons, check, stop, send, more and power; the window controls minimize, maximize, restore and close; and a monogram for any other app, the first letter of its kernel label in `label` on a `hover` tile.
+- The geometry is authored fresh and licensed with the OS (MPL-2.0). Nothing is traced from Fluent, Segoe MDL2 or Lucide. An icon the toolkit names and the set lacks draws as today's 1 px frame.
+
+**States.** The status row and the chip read their states from 0002's structured `Outcome` and `actlog 1` entries and the model's warmth, never from reply text.
+
+| State | Pane status row | Chip |
+|---|---|---|
+| idle | the model dot and "Ready", or "Kai is getting ready" in `dim` while the model warms | "Kai ready", "Kai is getting ready" or "No model" |
+| listening | the input's 2 px `ai` top rule and the ember block caret | unchanged |
+| thinking | "thinking 4s · Esc stops" and a 64x24 Stop item; shown within 100 ms of Enter | "Kai thinking 4s" |
+| acting | the call in mono and its target ("Save (button) in Notes"); the outline on that window | "Kai acting" |
+| done | an `ok` check and code's result line ("Done: X (was Y)"), with `undo` and `show` links hit where they are drawn | "Kai done" |
+| asking | the ask card over everything (§7), and the `ask` ring on the Kai button | unchanged |
+| refused | a 3 px `error` bar and the reason | "Kai refused" |
+
+**The pane's history** (the founder, 2026-11-14, after the first VirtualBox test; row `2026-11-14-panel-history`; moved from the desk into the pane by row `2026-11-14-kai-desk`). Each line you type and what came of it shows in the pane's history rectangle, newest at the bottom, as a chat does. The state line stays code's alone. The history alone shows the model's words and a model script's prints, sent by the shell as `panel said`. It draws them as the AI's, never in the system's look: a `Kai` label in `ai`, a 2 px `ai` rule down their left, sans `body` `text`. Your lines are `mono` `muted` and the system's notes `mono` `dim`, as the system's own words are. A line that asks first, or leaves a question open, still goes to the terminal, and the history's note says so. The history is bounded (40 entries, 4,000 bytes each) and drops control characters. It holds no keys of its own, and the card, the status row and the input are never covered by it.
+
+**Keys.** A tap of Super or Ctrl+Esc opens the menu with its box focused. Ctrl+Space, or the Kai corner, opens the pane and focuses its input. Esc in the menu closes it and never interrupts. Esc in the pane's input interrupts only when the panel's own request is running; otherwise it returns focus to the previous window and the pane stays open. Alt+Tab is unchanged, and Ctrl+Alt+F12 stays with the kernel. Whether Super and Ctrl+Esc reach the guest in VirtualBox and QEMU, and past the Terminal's keyboard lease, is unverified (open question 1).
+
+Kept from the accepted look: no blur or translucency, motion at most 0.5 s and nothing animated that the user waits on, the Atkinson pair as the legible setting, and `kai-theme 1`.
 
 ### 9. Scale
 
 Every size is in logical px. The scale comes from the EDID physical size when there is one, otherwise from the width (up to 1920 wide 1.0, up to 2560 1.25, up to 3840 2.0), in quarter steps from 1.0 to 3.0; a setting overrides it. At those defaults 1080p, 1440p and 4K give 1920x1080, 2048x1152 and 1920x1080 logical px, so layouts barely change. Native apps render at the exact scale. Foreign and bridged surfaces get an integer scale and are resampled.
+
+Amended 2026-11-14: unchanged at scale 1. The desktop does not yet call `scale::for_screen`, so `deskgeom`, the crate that lays out every rectangle of §8, works in physical px, which equal logical px at scale 1, until that call is wired.
 
 ### 10. Linux apps (P6)
 
@@ -271,7 +414,7 @@ Effort for v0.1, in lines including tests (estimates):
 | Wayland as the native protocol | Medium | The objects match. `uikit`'s transport and `desktop`'s front end change; apps do not. |
 | Server-drawn UI (Haiku, Flatland) | High | `uikit` moves into the compositor; trees and actions survive |
 | Replacing AccessKit | Medium | `surfabi` mirrors a pinned subset |
-| Moving the AI panel | Moderate | Apps are told their work area, and users learn where it is |
+| Moving the AI panel | Moderate | Apps are told their work area, and users learn where it is. Done 2026-11-14 (Kai Desk): the panel moved from the bottom bar to the pane, through `deskgeom`'s one layout function, so the next move changes numbers in one crate |
 | Logical px and the scale contract; the reserved AI colour and trusted layer; labels as names | High | Apps depend on them; missing accessible names are the classic retrofit |
 | `kai:ui` | High once frozen | 0003's freeze rule; every app uses it |
 | `kai-theme 1` | Moderate | Users will edit theme files, so it is versioned from its first release |
@@ -342,11 +485,15 @@ The order of work is in [0000](0000-execution-plan.md).
 
 ## Open questions for the founder
 
-1. **The look.** After S05-1's screendumps, do you approve dark-first "Ember Workbench", with the bottom `kai>` line as the AI panel and launcher? Or do you prefer light-first "Daylight Document": flat pages, Atkinson type, an AI column on the right?
+1. **The look.** After S05-1's screendumps, do you approve dark-first "Ember Workbench", with the bottom `kai>` line as the AI panel and launcher? Or do you prefer light-first "Daylight Document": flat pages, Atkinson type, an AI column on the right? Amended 2026-11-14: the founder asked for Kai Desk instead (§8), still dark-first, with Kai in the pane and the menu; the founder's OK of the amendment is the open part. Also open: whether Super reaches the guest in VirtualBox and QEMU, and Ctrl+Esc, which a Windows host may take too, stay open until they are checked in the VM, and whether either gets through the Terminal's keyboard lease. Until then the ways to the menu and the pane that always work are the Kai button, the `apps` line, Ctrl+Space and the Kai corner.
 2. **Decided 2026-10-22:** the OFL fonts are kept and Unicode-3.0 is in the free class, so Inter, JetBrains Mono and Atkinson Hyperlegible Next ship under OFL-1.1, and the font crates' `yoke` and `zerofrom` are free. (The answer was "keep ... the OFL fonts"; read here as covering these three. Say if it was meant for Noto only.) C libxkbcommon's HPND files would still come back to you, only if ADR 0006 falls back to `lxabi`.
 3. **Linux apps and the agent in v0.2.** The agent can open, focus and close the Linux window and use 0006's browser rows, but cannot press buttons inside Linux apps. That needs accessibility inside the guest carried out by the bridge, or synthetic input at the ask tier. Is window-level control plus the browser rows enough for v0.2?
 4. **CPU-only graphics.** GOP on the RTX 4070 Ti through v1.0 (0007's question 4) means no blur or glass, 4K that may animate at 30 Hz, and 1440p at most in VirtualBox. Is that acceptable, or should GPU work move earlier, at a cost of years?
 5. **Who draws questions.** Ask cards are drawn by the ring-3 compositor, not the kernel; `:apply` stays kernel-drawn. Does that meet your bar for "an app cannot fake a yes"?
+6. **A typeface of our own.** Added 2026-11-14. Kai Desk keeps Inter and JetBrains Mono, which are OFL and not Microsoft's, but are not drawn for Kai. A bespoke face is a separate, large job, and renaming an OFL build is allowed only for a font without a Reserved Font Name. Default: keep them.
+7. **A time-zone setting.** Added 2026-11-14. The tray clock shows UTC and says so on its date line, since the OS has no zone. A zone is its own decision (where it is stored, and how it is set), not part of `appearance_set`. Default: UTC until it is decided.
+8. **The wheel for apps.** Added 2026-11-14. The mouse wheel will scroll the pane's history and the menu's lists. An app gets no wheel events until `kai-surface` carries them, which is a `surfabi` change of its own. Default: the desktop's own lists only.
+9. **Docking the pane.** Added 2026-11-14. The pane floats over windows, and only a maximized window is fitted beside it, so at 1280 wide a window dragged under it is partly covered while it is open. Docking needs a work-area protocol (the `panel` object is unserved). Default: float, closed at boot.
 
 ## Sources
 

@@ -22,8 +22,10 @@
 //!   skipped.
 //! - What the file leaves out is the base's. A theme that parses must still
 //!   pass [`Theme::check`]: every text token at least 4.5:1 and every mark 3:1
-//!   on every ground (WCAG 2.2), the AI's colour unlike any colour an app may
-//!   draw with (ADR 0005 §4), sizes and motions in range.
+//!   on every ground (WCAG 2.2; `hover`, a restricted ground, holds only the
+//!   tokens drawn on it, [`HOVER_TEXT`] and [`HOVER_MARKS`]), the AI's colour
+//!   unlike any colour an app may draw with (ADR 0005 §4), sizes and motions in
+//!   range. A file that leaves out `shell` or `hover` takes its base theme's.
 //!
 //! [`Theme::encode`] writes every value, so the shipped themes are whole files.
 
@@ -41,11 +43,20 @@ pub const MAX_NAME: usize = 32;
 /// The longest motion a theme may set (ADR 0005 §8: nothing runs past 0.5 s).
 pub const MAX_MOTION_MS: u32 = 500;
 
+/// How many colour tokens a theme has.
+const COLOURS: usize = Token::ALL.len();
+/// How many type styles a theme has.
+const STYLES: usize = TypeStyle::ALL.len();
+/// How many motion tokens a theme has.
+const MOTION_TOKENS: usize = MOTIONS.len();
+
 /// The file's names for [`Token::ALL`], in its order.
-pub const TOKEN_NAMES: [&str; 15] = [
+pub const TOKEN_NAMES: [&str; COLOURS] = [
     "desk",
+    "shell",
     "window",
     "raised",
+    "hover",
     "line",
     "line_strong",
     "text",
@@ -60,7 +71,7 @@ pub const TOKEN_NAMES: [&str; 15] = [
     "focus",
 ];
 /// The file's names for [`TypeStyle::ALL`], in its order.
-pub const STYLE_NAMES: [&str; 7] = [
+pub const STYLE_NAMES: [&str; STYLES] = [
     "small",
     "body",
     "label",
@@ -70,7 +81,8 @@ pub const STYLE_NAMES: [&str; 7] = [
     "mono_title",
 ];
 /// The file's names for [`MOTIONS`], in its order.
-pub const MOTION_NAMES: [&str; 6] = ["instant", "quick", "state", "sheet", "settle", "tick"];
+pub const MOTION_NAMES: [&str; MOTION_TOKENS] =
+    ["instant", "quick", "state", "sheet", "settle", "tick"];
 /// Every motion token, in the file's order.
 pub const MOTIONS: [Motion; 6] = [
     Motion::Instant,
@@ -101,8 +113,26 @@ pub const TEXT: [Token; 9] = [
 ];
 /// Marks and edges, held to 3:1 (WCAG 2.2 1.4.11). `line` is decorative.
 pub const MARKS: [Token; 3] = [Token::LineStrong, Token::AiMark, Token::Focus];
-/// What text and marks sit on.
-pub const GROUNDS: [Token; 3] = [Token::Window, Token::Raised, Token::Desk];
+/// What text and marks sit on, each held to the full [`TEXT`] and [`MARKS`] gate.
+/// `shell` is the desktop's own chrome (ADR 0005 §8, "Kai Desk").
+pub const GROUNDS: [Token; 4] = [Token::Window, Token::Raised, Token::Desk, Token::Shell];
+/// Text drawn on `hover`, held to 4.5:1 there. `hover` is a restricted ground:
+/// the three tokens in [`HOVER_NEVER`] are never drawn on it, so they are not
+/// held to it.
+pub const HOVER_TEXT: [Token; 5] = [
+    Token::Text,
+    Token::Muted,
+    Token::Accent,
+    Token::Error,
+    Token::Ok,
+];
+/// Marks drawn on `hover`, held to 3:1 there. The Kai mark is `ai_mark` while
+/// hovered, because `ai` is 4.33:1 on the light theme's `hover`.
+pub const HOVER_MARKS: [Token; 2] = [Token::Focus, Token::AiMark];
+/// Never drawn on `hover`: `dim` (4.09:1 in the dark theme), `ai` (4.33:1 in the
+/// light one) and `line_strong` (2.64:1 in the dark one) fall short of their
+/// gate there.
+pub const HOVER_NEVER: [Token; 3] = [Token::Dim, Token::Ai, Token::LineStrong];
 
 /// A whole theme: a colour for every token, a type for every style and a
 /// motion for every motion token.
@@ -111,9 +141,9 @@ pub struct Theme {
     pub name: String,
     /// The built-in theme it starts from; it sets whether the theme is dark.
     pub base: &'static Palette,
-    colours: [u32; 15],
-    styles: [Type; 7],
-    motions: [(u32, Curve); 6],
+    colours: [u32; COLOURS],
+    styles: [Type; STYLES],
+    motions: [(u32, Curve); MOTION_TOKENS],
 }
 
 /// Why a file is not a theme: its line (1 for the first) and what is wrong.
@@ -165,8 +195,10 @@ impl Theme {
             name: self.base.name,
             dark: self.base.dark,
             desk: c(Token::Desk),
+            shell: c(Token::Shell),
             window: c(Token::Window),
             raised: c(Token::Raised),
+            hover: c(Token::Hover),
             line: c(Token::Line),
             line_strong: c(Token::LineStrong),
             text: c(Token::Text),
@@ -237,7 +269,7 @@ impl Theme {
         }
         let mut name = None;
         let mut theme: Option<Theme> = None;
-        let mut seen = [false; 15 + 7 + 6];
+        let mut seen = [false; COLOURS + STYLES + MOTION_TOKENS];
         for (at, line) in lines.enumerate() {
             let n = at + 2;
             if line.is_empty() || line.starts_with(';') {
@@ -280,11 +312,11 @@ impl Theme {
         }
         if let Some(at) = STYLE_NAMES.iter().position(|n| *n == key) {
             self.styles[at] = parse_type(value).ok_or("a style is `family size/line weight`")?;
-            return Ok(15 + at);
+            return Ok(COLOURS + at);
         }
         if let Some(at) = MOTION_NAMES.iter().position(|n| *n == key) {
             self.motions[at] = parse_motion(value).ok_or("a motion is `ms curve`")?;
-            return Ok(15 + 7 + at);
+            return Ok(COLOURS + STYLES + at);
         }
         Err("no such token, style or motion")
     }
@@ -304,6 +336,19 @@ impl Theme {
                             TOKEN_NAMES[position(&Token::ALL, &ground)],
                         ));
                     }
+                }
+            }
+        }
+        // `hover` is a restricted ground: only what is drawn on it is held to it.
+        let on = self.colour(Token::Hover);
+        for (tokens, least) in [(&HOVER_TEXT[..], 4.5), (&HOVER_MARKS[..], 3.0)] {
+            for &token in tokens {
+                let ratio = crate::contrast(self.colour(token), on);
+                if ratio < least {
+                    return Err(format!(
+                        "{} on hover is {ratio:.2}:1, under {least}:1",
+                        TOKEN_NAMES[position(&Token::ALL, &token)],
+                    ));
                 }
             }
         }

@@ -1,6 +1,6 @@
 use crate::appearance::{Appearance, Refused, Shipped, Themes};
 use crate::theme::{self, Theme};
-use crate::{Curve, Family, HIGH_CONTRAST, LIGHT, Motion, Token, TypeStyle};
+use crate::{Curve, DARK, Family, HIGH_CONTRAST, LIGHT, Motion, Token, TypeStyle};
 use std::format;
 use std::path::PathBuf;
 use std::string::String;
@@ -136,6 +136,76 @@ fn contrast_and_the_ais_colour_are_held() {
     assert!(fake.why.contains("ai's colour"), "{fake:?}");
     // `line` is decorative: any colour passes.
     assert!(Theme::parse(&format!("{head}line = #141821\n")).is_ok());
+}
+
+/// A `kai-theme 1` file written before `shell` and `hover` existed has neither.
+/// It still parses and takes its base's two, whichever base it names.
+#[test]
+fn a_file_without_shell_or_hover_takes_its_bases() {
+    for base in [&DARK, &LIGHT, &HIGH_CONTRAST] {
+        let whole = Theme::from_palette(base, false).encode();
+        let old: String = whole
+            .lines()
+            .filter(|l| !l.starts_with("shell = ") && !l.starts_with("hover = "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(
+            old.lines().count() + 2,
+            whole.lines().count(),
+            "{}",
+            base.name
+        );
+        let theme = Theme::parse(&old).unwrap();
+        assert_eq!(theme.colour(Token::Shell), base.shell, "{}", base.name);
+        assert_eq!(theme.colour(Token::Hover), base.hover, "{}", base.name);
+        // Whole, it reads back the same as the old file did.
+        assert_eq!(Theme::parse(&whole), Ok(theme), "{}", base.name);
+    }
+    // A short file, as a person would write one.
+    let text = "kai-theme 1\nname = mine\nbase = light\naccent = #1F5FBF\n";
+    let theme = Theme::parse(text).unwrap();
+    assert_eq!(theme.colour(Token::Shell), LIGHT.shell);
+    assert_eq!(theme.colour(Token::Hover), LIGHT.hover);
+}
+
+#[test]
+fn shell_and_hover_are_named_in_a_file_once_and_checked() {
+    let head = "kai-theme 1\nname = t\nbase = dark\n";
+    // They are tokens of a file like the rest: set, given once.
+    let theme = Theme::parse(&format!("{head}shell = #10131C\nhover = #262C38\n")).unwrap();
+    assert_eq!(theme.colour(Token::Shell), 0x10_131C);
+    assert_eq!(theme.colour(Token::Hover), 0x26_2C38);
+    let twice = Theme::parse(&format!("{head}shell = #10131C\nshell = #10131C\n")).unwrap_err();
+    assert_eq!((twice.line, twice.why.contains("twice")), (5, true));
+    // `shell` is a full ground: text and marks must hold on it.
+    let bright = Theme::parse(&format!("{head}shell = #FFFFFF\n")).unwrap_err();
+    assert!(bright.why.starts_with("text on shell is "), "{bright:?}");
+    let faint = Theme::parse(&format!("{head}shell = #1C2230\n")).unwrap_err();
+    assert!(faint.why.contains(" on shell is "), "{faint:?}");
+    // `hover` is a restricted ground: what is drawn on it must hold there.
+    let pale = Theme::parse(&format!("{head}hover = #8890A0\n")).unwrap_err();
+    assert!(pale.why.contains(" on hover is "), "{pale:?}");
+    // What is never drawn on it is not held to it: `dim` is 4.09:1 on this
+    // theme's `hover`, and the theme is whole all the same.
+    assert!(crate::contrast(DARK.dim, DARK.hover) < 4.5);
+    Theme::from_palette(&DARK, false).check().unwrap();
+}
+
+#[test]
+fn a_token_over_the_theme_may_be_shell_or_hover() {
+    let dark = Appearance::default();
+    let shell = dark.set("token", "shell #10131C", &Shipped).unwrap();
+    assert_eq!(
+        shell.resolve(&Shipped).unwrap().colour(Token::Shell),
+        0x10_131C
+    );
+    let refused = |r: Result<Appearance, Refused>| r.unwrap_err().0;
+    assert!(refused(dark.set("token", "shell #FFFFFF", &Shipped)).starts_with("text on shell"));
+    assert!(refused(dark.set("token", "hover #8890A0", &Shipped)).contains(" on hover "));
+    // In the order of `Token::ALL`, so a saved file reads back the same.
+    let both = shell.set("token", "hover #262C38", &Shipped).unwrap();
+    assert_eq!(both.tokens[0].0, Token::Shell);
+    assert_eq!(Appearance::decode(&both.encode(), &Shipped), Ok(both));
 }
 
 #[test]

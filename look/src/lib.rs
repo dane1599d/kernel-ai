@@ -1,10 +1,12 @@
-//! "Ember Workbench", ADR 0005 §8: the one source of Kernel AI's colours, type
-//! styles and motion values.
+//! "Kai Desk", ADR 0005 §8 (amended 2026-11-14): the one source of Kernel AI's
+//! colours, type styles, metrics and motion values.
 //!
 //! - [`Token`] and [`Palette`]: the colour tokens, each with one job, in the dark,
 //!   light and high-contrast themes. `ai` is the AI's colour and nothing else's;
 //!   apps never get it (ADR 0005 §4), and `ask` belongs to `desktop`'s trusted
-//!   layer.
+//!   layer. `shell` and `hover` are the desktop's alone: apps never get them
+//!   either.
+//! - [`metric`]: the 4 px grid, radii and the chrome's sizes, in logical px.
 //! - [`console`]: the kernel console's row tints, #17's terminal colours, which
 //!   stay the console's alone.
 //! - [`TypeStyle`] and [`Type`]: the type styles in logical px.
@@ -26,6 +28,7 @@ extern crate std;
 
 pub mod appearance;
 pub mod console;
+pub mod metric;
 pub mod theme;
 
 /// A colour's job (ADR 0005 §8's table).
@@ -33,10 +36,18 @@ pub mod theme;
 pub enum Token {
     /// The desktop.
     Desk,
-    /// Windows, the top bar and the command line.
+    /// The desktop's own chrome: the taskbar, the Kai pane and the menu's footer.
+    /// Desktop only, so apps never get it. A full ground: every text token holds
+    /// 4.5:1 and every mark 3:1 on it.
+    Shell,
+    /// Windows and their inputs.
     Window,
-    /// Sheets and menus.
+    /// The menu, tooltips and the ask card.
     Raised,
+    /// Hover and pressed fills. Desktop only. A restricted ground: only the
+    /// tokens in `theme::HOVER_TEXT` and `theme::HOVER_MARKS` are drawn on it,
+    /// never those in `theme::HOVER_NEVER`.
+    Hover,
     /// Dividers only: decorative, held to no contrast.
     Line,
     /// Window frames and inputs.
@@ -62,10 +73,12 @@ pub enum Token {
 }
 
 impl Token {
-    pub const ALL: [Token; 15] = [
+    pub const ALL: [Token; 17] = [
         Token::Desk,
+        Token::Shell,
         Token::Window,
         Token::Raised,
+        Token::Hover,
         Token::Line,
         Token::LineStrong,
         Token::Text,
@@ -80,7 +93,8 @@ impl Token {
         Token::Focus,
     ];
 
-    /// The tokens an app may draw with: none of the AI's or the trusted layer's.
+    /// The tokens an app may draw with: none of the AI's, the trusted layer's or
+    /// the desktop's own (`shell`, `hover`).
     pub const APP: [Token; 12] = [
         Token::Desk,
         Token::Window,
@@ -103,8 +117,10 @@ pub struct Palette {
     pub name: &'static str,
     pub dark: bool,
     pub desk: u32,
+    pub shell: u32,
     pub window: u32,
     pub raised: u32,
+    pub hover: u32,
     pub line: u32,
     pub line_strong: u32,
     pub text: u32,
@@ -123,8 +139,10 @@ impl Palette {
     pub const fn get(&self, token: Token) -> u32 {
         match token {
             Token::Desk => self.desk,
+            Token::Shell => self.shell,
             Token::Window => self.window,
             Token::Raised => self.raised,
+            Token::Hover => self.hover,
             Token::Line => self.line,
             Token::LineStrong => self.line_strong,
             Token::Text => self.text,
@@ -147,8 +165,10 @@ pub const DARK: Palette = Palette {
     name: "dark",
     dark: true,
     desk: 0x0D_1017,
+    shell: 0x11_1520,
     window: 0x14_1821,
     raised: 0x1B_202B,
+    hover: 0x25_2B37,
     line: 0x23_2A38,
     line_strong: 0x5F_6B80,
     text: 0xEC_E6DA,
@@ -167,8 +187,10 @@ pub const LIGHT: Palette = Palette {
     name: "light",
     dark: false,
     desk: 0xE9_E4DA,
+    shell: 0xF3_F0EA,
     window: 0xFA_F8F4,
     raised: 0xFF_FFFF,
+    hover: 0xE4_DFD5,
     line: 0xD9_D3C7,
     line_strong: 0x85_7E71,
     text: 0x1A_1D24,
@@ -183,13 +205,17 @@ pub const LIGHT: Palette = Palette {
     focus: 0x1A_1D24,
 };
 
-/// Black and white, with ember kept for the AI (10.36:1 on black).
+/// Black and white, with ember kept for the AI (10.36:1 on black). Every ground
+/// is black, `hover` included: a painter that finds `hover` equal to the ground
+/// it sits on draws a 1 px `focus` frame instead of a fill.
 pub const HIGH_CONTRAST: Palette = Palette {
     name: "high-contrast",
     dark: true,
     desk: 0x00_0000,
+    shell: 0x00_0000,
     window: 0x00_0000,
     raised: 0x00_0000,
+    hover: 0x00_0000,
     line: 0xFF_FFFF,
     line_strong: 0xFF_FFFF,
     text: 0xFF_FFFF,
