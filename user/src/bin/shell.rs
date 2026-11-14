@@ -194,6 +194,31 @@ fn give_appearance(system: &System) {
     }
 }
 
+/// The start of a unit of work the shell takes from `desktop` rather than
+/// receives as a request (a panel line, effects, files, changes, the
+/// network): a Stop for an earlier unit no longer stands, since only the
+/// shell's next `svc_recv` would clear it (#887).
+fn start_of_unit() {
+    if sys::interrupt_clear() {
+        println!("a Stop for the last line was cleared before the next");
+    }
+}
+
+/// A line's result to `desktop`, which a Stop must never hide: the work ran.
+/// The flag is cleared first; a Stop pressed during the call itself ends it
+/// Interrupted, and then it is cleared and sent once more.
+fn report_to_desktop(route: kabi::handle::Handle, request: &str) -> Result<String, String> {
+    let _ = sys::interrupt_clear();
+    let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+    let mut sent = sys::call_route(route, request.as_bytes(), &mut reply, DESKTOP_CALL_MS);
+    if sent == Err(kabi::Error::Interrupted) {
+        let _ = sys::interrupt_clear();
+        sent = sys::call_route(route, request.as_bytes(), &mut reply, DESKTOP_CALL_MS);
+    }
+    let len = sent.map_err(|error| format!("desktop did not answer ({error:?})"))?;
+    Ok(String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned())
+}
+
 /// Takes the panel's oldest request, runs a line apart from the terminal's
 /// entry and questions (`Shell::eval_panel`), and reports what came of it:
 /// first what the AI said, for the desk's history (`panel said`), then the
@@ -203,6 +228,8 @@ fn give_appearance(system: &System) {
 fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) {
     use deskcore::panel::{Request, State};
     use deskcore::panel_wire;
+    // A unit of work that is no request: a Stop for the last one ends here.
+    start_of_unit();
     let Some(route) = desktop() else {
         return;
     };
@@ -241,10 +268,13 @@ fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) {
         // line never came here.
         _ => return,
     };
-    let Some(request) = panel_wire::encode_state(&shown) else {
+    // A done line names the log entry its undo link takes back.
+    let entry = shell.take_panel_entry();
+    let Some(request) = panel_wire::encode_done(&shown, entry) else {
         return;
     };
-    match ask_desktop(route, &request) {
+    // The line ended: a Stop pressed as it did must not hide its result.
+    match report_to_desktop(route, &request) {
         Ok(answer) if answer == "ok" => {}
         Ok(answer) => println!("the panel's state was not set: {answer}"),
         Err(why) => println!("the panel's state was not set: {why}"),
@@ -298,6 +328,8 @@ const _: () = assert!(shellcore::SETTINGS_MAX_ANSWER == deskcore::settings_wire:
 /// app. `desktop` names the app, from its record of who queued them.
 fn take_effects(shell: &mut Shell) {
     use deskcore::effects::{self, Done};
+    // A unit of work that is no request: a Stop for the last one ends here.
+    start_of_unit();
     let Some(route) = desktop() else {
         return;
     };
@@ -315,7 +347,9 @@ fn take_effects(shell: &mut Shell) {
             outcome: done.outcome,
         })
         .collect();
-    if let Err(why) = ask_desktop(route, &effects::encode_done_as(app, user, &results)) {
+    // The line ended: a Stop pressed as it did must not hide what ran.
+    let done = effects::encode_done_as(app, user, &results);
+    if let Err(why) = report_to_desktop(route, &done) {
         println!("{app}'s effect results were not sent: {why}");
     }
 }
@@ -380,6 +414,8 @@ const FILES_PER_PASS: usize = 4;
 /// and what came of it goes back, a write's reason or a read's bytes.
 fn take_files(shell: &mut Shell) {
     use deskcore::files::parse_job;
+    // A unit of work that is no request: a Stop for the last one ends here.
+    start_of_unit();
     let Some(route) = desktop() else {
         return;
     };
@@ -481,6 +517,8 @@ type Answering = fn(&mut Shell, &str, &str, bool) -> Result<String, String>;
 /// `desktop`'s record of the caller, and `answering` checks it again.
 fn take_changes(shell: &mut Shell, words: &deskcore::settings_wire::Words, answering: Answering) {
     use deskcore::settings_wire::{self as wire, Answer};
+    // A unit of work that is no request: a Stop for the last one ends here.
+    start_of_unit();
     let Some(route) = desktop() else {
         return;
     };
@@ -510,6 +548,8 @@ fn take_changes(shell: &mut Shell, words: &deskcore::settings_wire::Words, answe
 /// asks again until the answer is not `asked`.
 fn take_net(shell: &mut Shell) {
     use deskcore::net_wire as wire;
+    // A unit of work that is no request: a Stop for the last one ends here.
+    start_of_unit();
     let Some(route) = desktop() else {
         return;
     };
@@ -614,6 +654,10 @@ impl Host for System {
 
     fn pkg(&self, request: &str) -> Result<String, String> {
         build::ask_pkg(pkg_route()?, request)
+    }
+
+    fn unix_seconds(&self) -> Option<u64> {
+        sys::clock_now().ok()
     }
 
     fn installed_rows(&self, package: &str) -> Result<String, String> {

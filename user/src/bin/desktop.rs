@@ -127,6 +127,10 @@ struct State {
     /// The first key has been logged since the claim: only it is, and a frame never
     /// waits on it.
     key_logged: bool,
+    /// The plan line asks for the panel's result line to be logged (`log_bar=1`),
+    /// which only a test image's does: `founder-walk` reads it. Otherwise only its
+    /// kind is, since the line may name a file.
+    log_bar: bool,
     /// The AI panel's line and the state the shell reports.
     panel: Panel,
     /// The panel's lines and what came of each, drawn on the desk.
@@ -135,6 +139,8 @@ struct State {
     sheet: Option<deskcore::catalog::Sheet>,
     /// Apps' effects waiting for the shell, and what came of them.
     effects: effects::Queue,
+    /// Which person's line the shell runs, so Stop and Esc interrupt only it.
+    running: deskcore::running::Running,
     /// The editor's files on their way to or from the shell, while they are.
     files: deskcore::files::Files,
     /// The Settings app's requests for the shell, and the shell's answers.
@@ -203,10 +209,12 @@ fn main() -> i32 {
             drawn: false,
             log_first_key: logs_first_key(),
             key_logged: false,
+            log_bar: logs_bar(),
             panel: Panel::new(),
             chat: Chat::default(),
             sheet: None,
             effects: effects::Queue::default(),
+            running: deskcore::running::Running::default(),
             files: deskcore::files::Files::default(),
             settings: settings::Queue::default(),
             net: deskcore::net_wire::Queue::default(),
@@ -429,10 +437,39 @@ fn deliver(state: &mut State, effects: &[Effect]) {
             continue;
         }
         let changed = match *effect {
+            // A click on a done line's undo or show sends it, as though typed.
+            Effect::PanelClick { at } => {
+                let area = state.desk.panel();
+                match state.painter.panel_link(area, &state.panel, at) {
+                    Some(word) => {
+                        // Undo takes back the line beside it, by its entry,
+                        // never the newest of another line's.
+                        let line = match (word, state.panel.entry()) {
+                            ("undo", Some(id)) => format!("undo {id}"),
+                            _ => String::from(word),
+                        };
+                        state.panel.send(line, now);
+                        println!("desktop: the panel's {word} was clicked");
+                        wake_shell();
+                        true
+                    }
+                    None => false,
+                }
+            }
+            Effect::Locks { caps } => {
+                state.panel.set_caps(caps);
+                false
+            }
             Effect::PanelKey { usage, down } if apps::key(state, usage, down, now) => false,
             Effect::PanelKey { usage, down } => {
                 let before = state.panel.waiting();
                 let changed = state.panel.key(usage, down, now);
+                // Esc on a line the shell took: it is interrupted now, if the
+                // shell still runs it.
+                if state.panel.take_interrupt() {
+                    let line = deskcore::running::Line::Panel;
+                    let _ = interrupt_shell(state, line, "the panel's Esc");
+                }
                 if state.panel.waiting() > before {
                     // Its length only: a panel line may hold anything typed.
                     let len = match state.panel.newest() {
@@ -605,6 +642,10 @@ fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &RecvInfo) {
         let label = name_of(pid);
         let mut client = Client::new(pid, &label);
         client.theme(&state.theme_name);
+        // Caps Lock as it is now: a client started with it on types by it.
+        client.apply(&[Effect::Locks {
+            caps: state.desk.caps(),
+        }]);
         state.clients.push(client);
     }
     let Some(at) = state.clients.iter().position(|c| c.pid == pid) else {
@@ -675,8 +716,13 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     }
     if text == panel_wire::TAKE {
         let request = state.panel.take();
-        if let Some(deskcore::panel::Request::Line(line)) = &request {
-            chat_push(state, Who::You, line);
+        if let Some(taken) = &request {
+            finish_stale(state);
+            let line = matches!(taken, deskcore::panel::Request::Line(_));
+            state.running.took_panel(line);
+            if let deskcore::panel::Request::Line(line) = taken {
+                chat_push(state, Who::You, line);
+            }
         }
         if request.is_some() {
             println!("desktop: the shell took the panel's request");
@@ -707,8 +753,10 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     // result comes after.
     if let Some(shown) = panel_wire::parse_card(text) {
         let thinking = matches!(state.panel.state(), deskcore::panel::State::Thinking { .. });
+        let text = bar_text(&shown).map(String::from);
         if !thinking && state.panel.set_state(shown) {
             println!("desktop: the panel shows what a card came to");
+            log_bar(state.log_bar, text.as_deref());
             state.extra.push(state.desk.panel());
         }
         return Some(String::from("ok"));
@@ -727,9 +775,16 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         chat_push(state, Who::Note, note);
         return Some(String::from("ok"));
     }
-    let Some(shown) = panel_wire::parse_state(text) else {
+    let Some((shown, entry)) = panel_wire::parse_done(text) else {
         return Some(String::from("err not a panel request"));
     };
+    // A result, or idle: the shell answered the panel's line.
+    if !matches!(
+        shown,
+        deskcore::panel::State::Thinking { .. } | deskcore::panel::State::Acting { .. }
+    ) {
+        state.running.ended(deskcore::running::Line::Panel);
+    }
     // The bar's result line or refusal, code's, joins the history as a note.
     match &shown {
         deskcore::panel::State::Done { line } => {
@@ -747,9 +802,11 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         deskcore::panel::State::Done { .. } => "done",
         deskcore::panel::State::Refused { .. } => "refused",
     };
-    if state.panel.set_state(shown) {
+    let text = bar_text(&shown).map(String::from);
+    if state.panel.set_done(shown, entry) {
         // Its kind only: the line is the shell's result, which may name a file.
         println!("desktop: the panel shows {word}");
+        log_bar(state.log_bar, text.as_deref());
         state.extra.push(state.desk.panel());
     }
     Some(String::from("ok"))
@@ -798,10 +855,56 @@ fn files_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<Vec<u8>> {
     Some(reply.bytes)
 }
 
+/// Interrupts the shell's line for a person's Stop or Esc (`why`), only
+/// while the shell runs that person's `line`: what to tell them.
+fn interrupt_shell(
+    state: &State,
+    line: deskcore::running::Line,
+    why: &str,
+) -> Result<String, String> {
+    if !state.running.is(line) {
+        println!("desktop: {why} found no line of the person's running");
+        return Err(String::from("not running yet"));
+    }
+    match sys::shell_interrupt() {
+        Ok(_) => {
+            println!("desktop: {why} interrupted the shell's line");
+            Ok(String::from("stopped"))
+        }
+        Err(error) => {
+            println!("desktop: {why} could not interrupt the shell ({error:?})");
+            Err(String::from("the line could not be stopped"))
+        }
+    }
+}
+
 /// An app's `effects put` and `effects results`, and the shell's `effects
 /// take` and `effects done` (P4, `deskcore::effects`): its answer, or `None`
 /// for a window client's message. The app is the kernel's name for the
 /// caller, never anything it sent.
+/// Before the shell takes new work: a Terminal line whose result never came is
+/// finished, so the Terminal does not wait for ever and a later Stop is not
+/// taken for it.
+fn finish_stale(state: &mut State) {
+    let stale = state.running.take_stale();
+    if stale.is_empty() {
+        return;
+    }
+    println!(
+        "desktop: the Terminal's line had no result from the shell; {} finished",
+        stale.len()
+    );
+    for ticket in stale {
+        state.effects.finish(
+            effects::STOPS_FROM,
+            effects::Done {
+                ticket,
+                outcome: Err(String::from("its answer was lost; `show` says what ran")),
+            },
+        );
+    }
+}
+
 fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     let text = core::str::from_utf8(bytes).ok()?;
     if !text.starts_with("effects ") {
@@ -817,6 +920,46 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
         if shell || caller.starts_with("pid ") {
             return Some(String::from("err only an app queues effects"));
         }
+        // The Terminal's Stop, on a person's key or click: the shell's line
+        // is interrupted now, never queued behind it.
+        let (stops, rest) = effects::split_stops(lines);
+        let lines = match (caller == effects::STOPS_FROM && user, stops.is_empty()) {
+            (true, false) => {
+                // A line still queued is taken back; one running is
+                // interrupted.
+                let queued = state.effects.withdraw_users(&caller);
+                let line = deskcore::running::Line::Terminal;
+                let stopped = match queued.is_empty() {
+                    true => interrupt_shell(state, line, "the Terminal's Stop"),
+                    false => {
+                        println!("desktop: the Terminal's Stop took back its queued line");
+                        Ok(String::from("stopped"))
+                    }
+                };
+                // The line's own answer, as the shell's wire says it: the
+                // Terminal shows "stopped" and takes a new line.
+                for ticket in queued {
+                    state.effects.finish(
+                        &caller,
+                        effects::Done {
+                            ticket,
+                            outcome: Ok(String::from("ok stopped")),
+                        },
+                    );
+                }
+                for ticket in stops {
+                    state.effects.finish(
+                        &caller,
+                        effects::Done {
+                            ticket,
+                            outcome: stopped.clone(),
+                        },
+                    );
+                }
+                rest.as_str()
+            }
+            _ => lines,
+        };
         let refused = state.effects.put_as(&caller, lines, user);
         let by = if user { ", by a person's input" } else { "" };
         println!("desktop: {caller} queued effects ({refused} refused{by})");
@@ -830,16 +973,39 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
     if !shell {
         return Some(String::from("err only the shell runs effects"));
     }
-    if text == effects::TAKE {
-        let taken = state.effects.take(kabi::MAX_MESSAGE - 64);
+    let skip = match text == effects::TAKE {
+        true => Some(Vec::new()),
+        false => effects::parse_take_but(text),
+    };
+    if let Some(skip) = skip {
+        let taken = state.effects.take_but(kabi::MAX_MESSAGE - 64, &skip);
         if let Some(taken) = &taken {
             println!("desktop: the shell took {}'s effects", taken.app);
+            finish_stale(state);
+            let tickets = taken.lines.iter().filter_map(|l| effects::ticket_of(l));
+            state
+                .running
+                .took_effects(&taken.app, taken.user, tickets.collect());
         }
         return Some(effects::encode_take(taken.as_ref()));
+    }
+    // #890: lines the shell took and holds back wait here again, so a shell
+    // that dies mid-line loses none.
+    if text.starts_with(effects::BACK) {
+        let Some(taken) = effects::parse_back(text) else {
+            return Some(String::from("err not an effects request"));
+        };
+        let app = taken.app.clone();
+        let kept = state.effects.put_back(taken);
+        println!("desktop: the shell put back {kept} of {app}'s effects");
+        return Some(String::from("ok"));
     }
     let Some((app, results)) = effects::parse_done(text) else {
         return Some(String::from("err not an effects request"));
     };
+    if app == effects::STOPS_FROM {
+        state.running.ended(deskcore::running::Line::Terminal);
+    }
     for done in results {
         state.effects.finish(app, done);
     }
@@ -883,6 +1049,17 @@ fn wire_request(
     if text == words.take {
         let taken = queue.take(kabi::MAX_MESSAGE - 64);
         return Some(settings::encode_take_for(words, taken.as_deref()));
+    }
+    // #890: requests the shell took and holds back wait here again.
+    if text.starts_with(words.back) {
+        return Some(match settings::parse_back_for(words, text) {
+            Some(requests) => {
+                let kept = queue.put_back(requests);
+                println!("desktop: the shell put back {kept} {what} requests");
+                String::from("ok")
+            }
+            None => format!("err not a {what} request"),
+        });
     }
     let Some(body) = text
         .strip_prefix(words.done)
@@ -1154,6 +1331,9 @@ fn draw(state: &mut State, screen: &Screen) {
         state.drawn = true;
         println!("desktop: drew the desk at {}x{}", state.width, state.height);
     }
+    // What a press on the top bar hits: its tabs as just drawn.
+    let tabs = state.painter.tabs(&state.desk);
+    state.desk.set_tabs(tabs);
 }
 
 /// A client's buffer, read where its pool is mapped. `None` past the pool.
@@ -1212,6 +1392,29 @@ fn arrow(palette: &Palette) -> [u32; 64 * 64] {
         *pixel = paint::arrow(x, y, palette).unwrap_or(0);
     }
     image
+}
+
+/// Whether the plan line has `log_bar=1`: the panel's result line is logged.
+fn logs_bar() -> bool {
+    let args = user::args();
+    user::arg(&args, "log_bar") == Some("1")
+}
+
+/// The panel's result line or refusal, if `shown` has one.
+fn bar_text(shown: &deskcore::panel::State) -> Option<&str> {
+    match shown {
+        deskcore::panel::State::Done { line } => Some(line),
+        deskcore::panel::State::Refused { reason } => Some(reason),
+        _ => None,
+    }
+}
+
+/// Logs the panel's new result line, on a test image's plan (`log_bar=1`)
+/// only, with its newlines as "; ".
+fn log_bar(enabled: bool, text: Option<&str>) {
+    if let Some(text) = text.filter(|_| enabled) {
+        println!("desktop: the bar says \"{}\"", text.replace('\n', "; "));
+    }
 }
 
 /// Whether the plan line has `key_log=on`: the first key's code is logged once.

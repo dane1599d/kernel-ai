@@ -56,6 +56,12 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
         minting()?;
         log!("files: ENDPOINT_MINT, the FILES ceiling and SYSTEM_STATE refuse what they must");
     }
+    // `power-fs`: boot 1 ends in POWER_REBOOT, not the test's exit; boot 2
+    // reads back what was written before it.
+    if !reread && cmdline.split_whitespace().any(|w| w == "power") {
+        log!("files: boot 1 restarts through POWER_REBOOT");
+        return crate::efi_tests::restart();
+    }
     Ok(())
 }
 

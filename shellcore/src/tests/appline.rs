@@ -245,7 +245,9 @@ fn a_terminal_apps_line_runs_at_kai_and_leaves_c_alone() {
     for line in [":c 6 * 7", ":c", ":rhai"] {
         assert_eq!(
             typed(&mut shell, line),
-            Ok(String::from("err C goes in the console")),
+            Ok(String::from(
+                "err C goes in the console: press Ctrl+Alt+F12"
+            )),
             "{line}"
         );
     }

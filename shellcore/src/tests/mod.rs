@@ -87,6 +87,8 @@ struct FakeHost {
     /// Each act request's second-round read (P3 task 10).
     act_reads: RefCell<Vec<Option<llmproto::act::Read>>>,
     act_apps: RefCell<Vec<String>>,
+    /// What `unix_seconds` gives.
+    wall_clock: Cell<Option<u64>>,
     /// Installed packages' `kai-actions 1` answers, as `pkg` reads them from
     /// the store, and each package asked for them.
     installed: RefCell<Vec<(String, String)>>,
@@ -308,6 +310,7 @@ impl FakeHost {
             act_states: RefCell::new(Vec::new()),
             act_reads: RefCell::new(Vec::new()),
             act_apps: RefCell::new(Vec::new()),
+            wall_clock: Cell::new(None),
             installed: RefCell::new(Vec::new()),
             installed_asked: RefCell::new(Vec::new()),
             ui_calls: RefCell::new(Vec::new()),
@@ -779,6 +782,10 @@ impl Host for FakeHost {
         self.started_by.borrow_mut().retain(|(n, _)| n != name);
         self.set_running(name, false)?;
         self.set_running(name, true)
+    }
+
+    fn unix_seconds(&self) -> Option<u64> {
+        self.wall_clock.get()
     }
 
     fn installed_rows(&self, package: &str) -> Result<String, String> {

@@ -116,6 +116,14 @@ fn the_editor_comphost_line_names_the_edit_capability() {
     assert_ne!(cap::GRANTABLE & cap::EDIT, 0);
 }
 
+/// Backlog item 13: the restart from inside the OS is the `power` word's.
+#[test]
+fn the_power_word_gives_the_power_capability() {
+    let plan = parse_plan("shell caps=serve+call+power").services;
+    assert_eq!(plan[0].limits.caps, cap::SERVE | cap::CALL | cap::POWER);
+    assert_ne!(cap::GRANTABLE & cap::POWER, 0);
+}
+
 #[test]
 fn plan_can_tune_the_restart_policy_per_service() {
     let plan = parse_plan("crasher backoff_max_ms=200 max_restarts=1000 after_ms=150").services;

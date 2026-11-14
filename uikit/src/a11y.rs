@@ -125,12 +125,13 @@ fn node_of(tree: &Tree, id: NodeId, title: &str) -> Option<Entry> {
         Widget::Stack { .. } if id == ROOT => (Role::Window, String::from(title), None, 0, None),
         Widget::Stack { .. } => (Role::Group, String::new(), None, 0, None),
         Widget::Label { text, .. } => (Role::Label, text.clone(), None, 0, None),
+        // The escape mark is a key binding, never an action to bind.
         Widget::Button { text, action } => (
             Role::Button,
             text.clone(),
             None,
             acts(&[Focus, Click]),
-            action.clone(),
+            crate::escape::split(action.as_deref()).1.map(String::from),
         ),
         Widget::TextLine(f) => (
             Role::TextInput,

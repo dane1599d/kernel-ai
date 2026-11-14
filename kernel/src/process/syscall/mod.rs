@@ -15,6 +15,7 @@ mod handle;
 mod interrupt;
 mod job;
 mod net;
+mod power;
 mod sched;
 mod service;
 mod shm;
@@ -36,6 +37,8 @@ mod update;
 mod mem;
 // P, packages.
 mod pkg;
+// A-core.
+mod clock;
 
 use crate::entry::TrapFrame;
 use crate::{cpu, ipc, threads};
@@ -96,6 +99,7 @@ const AREAS: &[Area] = &[
     shm::handle,
     job::handle,
     entropy::handle,
+    power::handle,
     // Model lane. Interim (S10-3): goes at P2 task 10.
     model_kv::handle,
     // S-io (P2).
@@ -109,6 +113,8 @@ const AREAS: &[Area] = &[
     mem::handle,
     // P, packages.
     pkg::handle,
+    // A-core.
+    clock::handle,
 ];
 
 fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {

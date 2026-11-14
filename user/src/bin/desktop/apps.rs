@@ -4,7 +4,8 @@
 //! an answer it does not take shows no row of it. The sheet takes the panel's
 //! keys while it is up. Enter sends the shell the line a user would type,
 //! `install <name>` or `open <name>`, by the row's own name, so it runs with
-//! the same consent as a typed one; Esc, or the focus leaving the panel,
+//! the same consent as a typed one; the shell opens `open <name>` itself,
+//! with no model; Esc, or the focus leaving the panel,
 //! closes it. Rows are data: nothing a summary says is sent anywhere.
 //!
 //! `desktop` calls `pkg`, never the other way, and only when the sheet opens.
@@ -33,18 +34,50 @@ fn area(state: &State, sheet: &Sheet) -> Rect {
     paint_catalog::sheet(state.width, state.height, sheet.apps().len())
 }
 
-/// Opens the sheet with `pkg`'s rows, or none when it does not answer.
+/// The image's own apps, every image's: what `ui_open` names each by, and
+/// what the sheet says of it. `pkg` lists them as installed when it runs;
+/// when it gives no rows (no `pkg`, or it failed) the sheet lists these, so it
+/// is never empty. The Editor and Models come only with a data disk, so they
+/// are not listed.
+const BUILT_IN: [(&str, &str); 5] = [
+    ("notes", "Notes: short notes, kept"),
+    ("files", "Files: your files and folders"),
+    ("terminal", "Terminal: type commands, or ask Kai"),
+    ("settings", "Settings: look, rules, grants, the network"),
+    ("monitor", "Monitor: what runs, and the memory it uses"),
+];
+
+/// A built-in app's row.
+fn built_in((name, summary): (&str, &str)) -> App {
+    App {
+        source: Source::BuiltIn,
+        name: String::from(name),
+        version: String::new(),
+        kind: String::from("app"),
+        bytes: 0,
+        licence: String::new(),
+        grants: Vec::new(),
+        installed: None,
+        summary: String::from(summary),
+    }
+}
+
+/// Opens the sheet with `pkg`'s rows; with none (it does not answer, or
+/// lists nothing), the image's own apps.
 pub(super) fn open(state: &mut State) {
     if state.sheet.is_some() {
         return;
     }
-    let apps = match rows() {
-        Ok(rows) => rows.into_iter().map(app).collect::<Vec<App>>(),
+    let mut apps: Vec<App> = match rows() {
+        Ok(rows) => rows.into_iter().map(app).collect(),
         Err(why) => {
-            println!("desktop: the Apps sheet has no rows: {why}");
+            println!("desktop: the Apps sheet has no package rows: {why}");
             Vec::new()
         }
     };
+    if apps.is_empty() {
+        apps = BUILT_IN.into_iter().map(built_in).collect();
+    }
     let installed = apps
         .iter()
         .filter(|a| a.source == Source::Installed)
@@ -53,7 +86,10 @@ pub(super) fn open(state: &mut State) {
         "desktop: the Apps sheet lists {} apps, {installed} installed",
         apps.len()
     );
-    for app in apps.iter().filter(|a| a.source != Source::Installed) {
+    for app in apps
+        .iter()
+        .filter(|a| !matches!(a.source, Source::Installed | Source::BuiltIn))
+    {
         // Shown as text, which this line is too.
         println!(
             "desktop: the Apps sheet offers {}: {:?}",
@@ -89,6 +125,7 @@ pub(super) fn key(state: &mut State, usage: u16, down: bool, now_ms: u64) -> boo
     let line = match pick {
         None => return true,
         Some(Pick::Close) => None,
+        // The shell opens `open <name>` itself, with no model.
         Some(Pick::Open(name)) => Some(format!("open {name}")),
         Some(Pick::Install(name)) => Some(format!("install {name}")),
     };

@@ -42,6 +42,9 @@ const FAULT_PANIC: u8 = 1;
 /// The record as this boot found it and the slot it runs in, once read: what the
 /// fault path writes from.
 static BOOTED: Mutex<Option<(Nv, Slot)>> = Mutex::new(None);
+/// Held across BOOTREC_SET's writes (the record, then the one-shot), so
+/// POWER_REBOOT's reset ([`reset_when_set`]) never lands between them.
+static SETTING: Mutex<()> = Mutex::new(());
 
 /// The BLI entry id of a slot, as `limine.conf` names it.
 pub fn entry_id(slot: Slot) -> &'static str {
@@ -460,6 +463,7 @@ pub fn active_committed() -> bool {
 /// BOOTREC_SET: writes `record` as given and the one-shot for `one_shot`, and
 /// keeps them as what the fault path writes from.
 pub fn set(record: Record, one_shot: Option<Slot>) -> Result<(), efi::Error> {
+    let _setting = SETTING.lock();
     efi::set_variable(&KAI, RECORD, NV_BS_RT, &record.encode())?;
     write_one_shot(one_shot)?;
     let mut booted = BOOTED.lock();
@@ -467,6 +471,21 @@ pub fn set(record: Record, one_shot: Option<Slot>) -> Result<(), efi::Error> {
         *booted = Some((Nv { record, one_shot }, slot));
     }
     Ok(())
+}
+
+/// POWER_REBOOT's reset: once a BOOTREC_SET under way has written both its
+/// variables, and no firmware call is running ([`efi::reset_after_calls`]).
+/// The caller checks [`lever_done`] first. The lock's holder may be a thread
+/// preempted on this CPU, so the wait sleeps rather than spins.
+pub fn reset_when_set() -> ! {
+    let held = loop {
+        match SETTING.try_lock() {
+            Some(held) => break held,
+            None => threads::sleep_ms(1),
+        }
+    };
+    core::mem::forget(held);
+    efi::reset_after_calls()
 }
 
 /// From the fault path: records the fault in this boot's slot and deletes the

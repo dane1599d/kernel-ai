@@ -16,6 +16,11 @@ pub const SHELL_LINE: &str = "shell_line";
 pub const MAX_ARGS: usize = 512;
 
 /// What the terminal needs from the OS: effects queued in a call.
+/// The effect a person's Stop asks for while a line runs: `desktop` takes it
+/// from the image's Terminal alone, on a key or click, and interrupts the
+/// shell's line (`sys::shell_interrupt`); it never waits behind the line.
+pub const SHELL_STOP: &str = "shell_stop";
+
 pub trait Os {
     /// Queues effect `name` with its arguments as a WAVE record; its ticket,
     /// which [`crate::Terminal::done`] gets with the result.

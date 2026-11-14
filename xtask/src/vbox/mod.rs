@@ -27,6 +27,7 @@ mod powercut;
 mod vmdk;
 
 use crate::{components, disk, esp, floatguard, image, models, options, pkgrepo, userbuild};
+use image::modules::Image::Vbox;
 use manage::{CONTROLLER, step, vm};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -238,7 +239,7 @@ fn build_esp(cmdline: &str) -> Result<PathBuf, String> {
     // signed catalog.
     let repository = pkgrepo::image(&root, &versions)?;
     modules.extend(versions);
-    modules.extend(repository.modules);
+    let modules = image::modules::image_modules(Vbox, modules, repository.modules)?;
     components::check_no_test_only(&modules)?;
     let efi = crate::ensure_limine(&target_dir)?;
     let esp = target_dir.join("vbox-esp");
