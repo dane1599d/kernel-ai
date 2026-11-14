@@ -414,7 +414,7 @@ fn the_history_draws_above_the_bar_and_never_in_it() {
     let (with, desk) = chat_scene(&chat, "chat");
     let (without, _) = chat_scene(&Chat::default(), "chat-empty");
     let w = 1280;
-    let px = |image: &Image, x: i32, y: i32| image.px[(y * w + x) as usize] & 0x00FF_FFFF;
+    let px = |image: &Image, x: i32, y: i32| rgb(image.px[(y * w + x) as usize]);
     // The bar is the same pixels with or without a history.
     let bar = desk.panel();
     for y in bar.y..bar.bottom() {
@@ -436,7 +436,7 @@ fn the_history_draws_above_the_bar_and_never_in_it() {
     );
     // Kai's ember rule runs down the column's left edge.
     let painter = Painter::new(FONTS).expect("the fonts parse");
-    let ember = painter.palette.ai & 0x00FF_FFFF;
+    let ember = rgb(painter.palette.ai);
     let rule = (area.y..area.bottom())
         .filter(|&y| px(&with, area.x, y) == ember)
         .count();
