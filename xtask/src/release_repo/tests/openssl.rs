@@ -84,7 +84,46 @@ fn stick(paths: &Paths) -> PathBuf {
     fs::create_dir_all(&stick).unwrap();
     key_file(&stick.join("root.key"), ROOT_SEED, ROOT_PASS);
     key_file(&stick.join("release.key"), RELEASE_SEED, RELEASE_PASS);
+    // The public halves, as setup step 6 leaves them beside the keys.
+    fs::write(stick.join("root.pub"), pem(&key(ROOT_SEED))).unwrap();
+    fs::write(stick.join("release.pub"), pem(&key(RELEASE_SEED))).unwrap();
     stick
+}
+
+/// Before any passphrase, the script names the stick's two keys and each
+/// key a file names, in hex: the digits the founder holds on paper.
+#[test]
+fn the_script_shows_every_key_before_a_passphrase() {
+    if !openssl_3() {
+        return;
+    }
+    let paths = workspace("showkeys");
+    let stick = stick(&paths);
+    prepare(&paths, &models::catalog().unwrap(), 1, NOW).unwrap();
+    // No passphrase given: it stops at the first prompt, having shown the keys.
+    let out = sign_script(&stick, &paths.work, "");
+    let shown = String::from_utf8(out.stdout).unwrap();
+    let [root, release] =
+        [ROOT_SEED, RELEASE_SEED].map(|s| sign::hex_bytes(&key(s).public_key().0));
+    assert!(shown.contains(&format!("root.key is {root}")), "{shown}");
+    assert!(
+        shown.contains(&format!("release.key is {release}")),
+        "{shown}"
+    );
+    let names = |file: &str| {
+        let line = shown
+            .lines()
+            .find(|l| l.starts_with(&format!("{file}.canon names:")))
+            .unwrap();
+        let mut keys: Vec<&str> = line.split_whitespace().skip(2).collect();
+        keys.sort_unstable();
+        keys
+    };
+    let mut both = vec![root.as_str(), release.as_str()];
+    both.sort_unstable();
+    assert_eq!(names("root"), both);
+    assert_eq!(names("targets"), [release.as_str()]);
+    assert!(names("snapshot").is_empty());
 }
 
 /// RFC 8032 test 2 through the script, then a whole release in its two

@@ -11,7 +11,7 @@ decision: until the YubiKeys, two founder-held Ed25519 key files sign the image 
 
 **What it signs:** the `models` role lists `models::catalog()` only, never a test fixture, and every catalog model needs its committed chunk list. Non-root roles take version `release_seq`, so they only rise.
 
-**Root files are frozen once committed:** root is never signed again. CI fails a pull request or a push that changes a committed `*.root.json`, and a tag whose root files differ from an earlier release's. The root key is also pinned outside the repository, as `RELEASE_ROOT_KEY` in the protected `release` environment, which `publish` checks. `updated` keeps a cached root of the same version, so a second version 1 would split devices.
+**Root files are frozen once committed:** root is never signed again. CI fails a pull request or a push that changes a committed `*.root.json`, and a tag whose root files differ from an earlier release's. Both keys are also pinned outside the repository, as `RELEASE_ROOT_KEY` and `RELEASE_KEY` in the protected `release` environment, which `publish` checks, and the draft release's notes show both for the founder to hold against the paper before publishing: sessions push as the founder's account, so that is the check they cannot change. `updated` keeps a cached root of the same version, so a second version 1 would split devices.
 
 **The image:** `release-image` checks the committed repository and bundles it as `pkgrepo/`, with its root as `kai.root.json` (root ceremony step 6.1). `--test-root` replaces `pkgrepo/` alone. Once a repository is committed, release-boot boots the release image itself and imports qwen3-0.6b under the founder's role.
 

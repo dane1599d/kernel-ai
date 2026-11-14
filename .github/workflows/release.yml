@@ -20,10 +20,12 @@
 # role signed with the founder's release key, and its root as `kai.root.json`.
 # `assemble` checks that the image holds that root in both places, and on a tag
 # `seq` checks every root file is each earlier release's byte for byte: they are
-# frozen. `publish` requires the root to name the key the founder pinned as
-# `RELEASE_ROOT_KEY` in the `release` environment, an anchor outside the
-# repository. `sign-script-macos` runs the sign script as the founder runs it,
-# on a Mac, with a test key.
+# frozen. `publish` requires root to name the key the founder pinned as
+# `RELEASE_ROOT_KEY` in the `release` environment, and every other role
+# `RELEASE_KEY`: anchors outside the repository. It also writes both keys into
+# the draft's notes, which the founder holds against the paper before publishing.
+# `sign-script-macos` runs the sign script as the founder runs it, on a Mac,
+# with a test key.
 #
 # The `release-boot` job boots build-a's image itself, with qwen3-0.6b attached
 # as the import disk, types `models import` and passes on the import line
@@ -60,12 +62,6 @@ on:
       - release/keys/**
       - release/pkgrepo/**
       - scripts/release-sign.sh
-      # What the committed release repository is checked against.
-      - xtask/models.json
-      - xtask/models/chunks/**
-      - xtask/src/pkgrepo/**
-      - kaipkg/**
-      - kaituf/**
   workflow_dispatch:
 
 permissions:
@@ -374,7 +370,8 @@ jobs:
   # /bin/bash 3.2 with BSD tools and Homebrew's openssl@3. A test key only.
   sign-script-macos:
     name: release-sign.sh on macOS signs RFC 8032 test 2 (bash 3.2, openssl@3)
-    runs-on: macos-14
+    # Apple silicon, as the founder's Mac; macos-14 is no longer offered.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: |
@@ -387,8 +384,13 @@ jobs:
             xxd -r -p > "$t/seed.der"
           printf 'test pass\n' | "$o" pkcs8 -topk8 -v2 aes-256-cbc -scrypt -scrypt_N 16384 -scrypt_r 8 \
             -scrypt_p 64 -inform DER -in "$t/seed.der" -out "$t/keys/release.key" -passout stdin
+          printf 'test pass\n' | "$o" pkey -in "$t/keys/release.key" -passin stdin -pubout -out "$t/keys/release.pub"
+          # The script shows both keys; one test key stands for the root's too.
+          cp "$t/keys/release.pub" "$t/keys/root.pub"
           printf '\x72' > "$t/work/targets.canon"
-          printf 'test pass\n' | env -i /bin/bash --noprofile --norc scripts/release-sign.sh "$t/keys" "$t/work"
+          out=$(printf 'test pass\n' | env -i /bin/bash --noprofile --norc scripts/release-sign.sh "$t/keys" "$t/work")
+          echo "$out"
+          echo "$out" | grep -q '^release.key is 3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c$'
           test "$(cat "$t/work/targets.sig")" = \
             92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00
 
@@ -459,24 +461,38 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      # The anchor outside the repository: the founder sets RELEASE_ROOT_KEY in
-      # this protected environment (root-ceremony.md), so a pull request that
-      # brings its own keys and repository cannot ship as the founder's.
-      - name: The release's root key is the one the founder pinned
+      # Anchors outside the repository: the founder sets RELEASE_ROOT_KEY and
+      # RELEASE_KEY in this protected environment (root-ceremony.md). Root must
+      # name the one, and every other role the other, so a pull request that
+      # brings keys of its own cannot ship as the founder's. Sessions could
+      # rewrite the variables too, so the draft's notes also show both keys for
+      # the founder to hold against the paper before publishing.
+      - name: The release's keys are the ones the founder pinned
+        id: keys
         env:
-          PINNED: ${{ vars.RELEASE_ROOT_KEY }}
+          ROOT_KEY: ${{ vars.RELEASE_ROOT_KEY }}
+          RELEASE_KEY: ${{ vars.RELEASE_KEY }}
         run: |
-          root=release/pkgrepo/metadata/1.root.json
-          if [ ! -f "$root" ]; then
-            [ -z "$PINNED" ] || { echo "RELEASE_ROOT_KEY is pinned, but this release carries no root"; exit 1; }
+          meta=release/pkgrepo/metadata
+          if [ ! -f "$meta/1.root.json" ]; then
+            [ -z "$ROOT_KEY$RELEASE_KEY" ] || { echo "the keys are pinned, but this release carries no root"; exit 1; }
             exit 0
           fi
-          [ -n "$PINNED" ] || { echo "no RELEASE_ROOT_KEY in the release environment (root-ceremony.md)"; exit 1; }
-          named=$(jq -r '.signed.roles.root as $r | if ($r.keyids | length) == 1 and $r.threshold == 1
-            then .signed.keys[$r.keyids[0]].keyval.public else "" end' "$root")
-          file=$(openssl pkey -pubin -in release/keys/root.pub -outform DER | tail -c 32 | od -An -v -tx1 | tr -d ' \n')
-          echo "pinned $PINNED; 1.root.json names $named; release/keys/root.pub is $file"
-          [ "$named" = "$PINNED" ] && [ "$file" = "$PINNED" ]
+          [ -n "$ROOT_KEY" ] && [ -n "$RELEASE_KEY" ] ||
+            { echo "set both RELEASE_ROOT_KEY and RELEASE_KEY in the release environment (root-ceremony.md)"; exit 1; }
+          # The one key a role names, at threshold 1, or nothing.
+          role() { jq -r --arg r "$1" '.signed.roles[$r] as $x | if ($x.keyids | length) == 1 and $x.threshold == 1
+            then .signed.keys[$x.keyids[0]].keyval.public else "" end' "$meta/1.root.json"; }
+          pub() { openssl pkey -pubin -in "release/keys/$1.pub" -outform DER | tail -c 32 | od -An -v -tx1 | tr -d ' \n'; }
+          test "$(jq -r '.signed.roles | keys | join(" ")' "$meta/1.root.json")" = "root snapshot targets timestamp"
+          test "$(role root)" = "$ROOT_KEY"
+          test "$(pub root)" = "$ROOT_KEY"
+          for r in targets snapshot timestamp; do test "$(role "$r")" = "$RELEASE_KEY"; done
+          test "$(pub release)" = "$RELEASE_KEY"
+          # packages and models, as the one targets file delegates them.
+          test "$(jq -r '[.signed.delegations.keys[].keyval.public] | unique | join(" ")' "$meta"/*.targets.json)" = "$RELEASE_KEY"
+          echo "root $ROOT_KEY and release $RELEASE_KEY, as pinned"
+          { echo "root=$ROOT_KEY"; echo "release=$RELEASE_KEY"; } >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-${{ env.VERSION }}
@@ -487,10 +503,27 @@ jobs:
       - name: Draft the GitHub Release; the founder publishes it by hand
         env:
           GH_TOKEN: ${{ github.token }}
+          ROOT_KEY: ${{ steps.keys.outputs.root }}
+          RELEASE_KEY: ${{ steps.keys.outputs.release }}
         run: |
           prerelease=$([[ "$VERSION" == *-rc.* ]] && echo --prerelease || true)
+          # The asset RELEASE-NOTES.md is in SHA256SUMS, so the keys go only in
+          # the draft's notes.
+          notes="$RUNNER_TEMP/notes.md"
+          cp release-assets/RELEASE-NOTES.md "$notes"
+          if [ -n "$ROOT_KEY" ]; then
+            {
+              echo
+              echo "## Signing keys"
+              echo
+              echo "- root: \`$ROOT_KEY\`"
+              echo "- release: \`$RELEASE_KEY\`"
+              echo
+              echo "Before publishing: both must be the digits on the founder's paper (root-ceremony.md)."
+            } >> "$notes"
+          fi
           gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --draft --verify-tag $prerelease \
-            --title "Kernel AI $VERSION" --notes-file release-assets/RELEASE-NOTES.md release-assets/*
+            --title "Kernel AI $VERSION" --notes-file "$notes" release-assets/*
       - name: Publish to kernel-ai-updates (stub until P4 task 18)
         run: |
           echo "stub: snapshot and timestamp are signed and published once the root ceremony is done"
