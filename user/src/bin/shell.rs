@@ -242,7 +242,7 @@ fn give_card_result(ran: bool, line: String) {
         true => State::Done { line },
         false => State::Refused { reason: line },
     };
-    let (Some(route), Some(request)) = (desktop(), panel_wire::encode_state(&shown)) else {
+    let (Some(route), Some(request)) = (desktop(), panel_wire::encode_card(&shown)) else {
         return;
     };
     if let Err(why) = ask_desktop(route, &request) {

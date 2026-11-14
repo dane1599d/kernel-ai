@@ -199,6 +199,9 @@ pub struct Desk {
     ask_drawn: Option<u64>,
     /// The last key or button pressed while the card was up.
     ask_pressed_ms: u64,
+    /// The pointer moved onto the card's Run button after the card was
+    /// drawn: a click there may run it (one parked there before may not).
+    ask_entered_run: bool,
 }
 
 impl Desk {
@@ -231,6 +234,7 @@ impl Desk {
             ask_open_ms: u64::MAX,
             ask_drawn: None,
             ask_pressed_ms: 0,
+            ask_entered_run: false,
         }
     }
 

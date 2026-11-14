@@ -43,6 +43,7 @@ impl Desk {
         self.ask_open_ms = u64::MAX;
         self.ask_drawn = None;
         self.ask_pressed_ms = 0;
+        self.ask_entered_run = false;
         self.held = self.down.clone();
         self.grab = None;
         self.damage
@@ -75,15 +76,24 @@ impl Desk {
 
     /// A key or button pressed at `now_ms` while the card is up: before the
     /// card opened, it starts the quiet time again.
+    /// A press stamped before the card was drawn (queued while `desktop` was
+    /// busy) never counts and never moves the open time; the open time only
+    /// ever moves later.
     fn pressed(&mut self) -> bool {
         let at = self.now_ms;
         self.ask_pressed_ms = self.ask_pressed_ms.max(at);
+        let Some(drawn) = self.ask_drawn else {
+            return false;
+        };
+        if at < drawn {
+            return false;
+        }
         if at >= self.ask_open_ms {
             return true;
         }
-        if self.ask_drawn.is_some() {
-            self.ask_open_ms = at.saturating_add(termcore::menu::SETTLE_MS);
-        }
+        self.ask_open_ms = self
+            .ask_open_ms
+            .max(at.saturating_add(termcore::menu::SETTLE_MS));
         false
     }
 
@@ -97,7 +107,9 @@ impl Desk {
             self.damage
                 .add(trusted::card(self.width, self.height, &ask));
         }
-        self.ask_open_ms = self.now_ms.saturating_add(termcore::menu::SETTLE_MS);
+        self.ask_open_ms = self
+            .ask_open_ms
+            .max(self.now_ms.saturating_add(termcore::menu::SETTLE_MS));
     }
 
     /// The card up now.
@@ -130,6 +142,11 @@ impl Desk {
                     x: p.x.clamp(0, self.width - 1),
                     y: p.y.clamp(0, self.height - 1),
                 };
+                let (yes, _) = trusted::buttons(trusted::card(self.width, self.height, &ask));
+                let since_drawn = self.ask_drawn.is_some_and(|d| self.now_ms >= d);
+                if since_drawn && yes.contains(self.pointer) {
+                    self.ask_entered_run = true;
+                }
                 None
             }
             Input::Key {
@@ -163,13 +180,28 @@ impl Desk {
                 down: true,
             } if self.pressed() => {
                 let (yes, no) = trusted::buttons(trusted::card(self.width, self.height, &ask));
-                if yes.contains(self.pointer) {
+                // Run only for a pointer brought there after the card was
+                // drawn: one parked where Run appeared clicks nothing.
+                let answer = if yes.contains(self.pointer) && self.ask_entered_run {
                     Some(true)
                 } else if no.contains(self.pointer) {
                     Some(false)
                 } else {
                     None
+                };
+                // A click that answers nothing is a press like a stray key.
+                if answer.is_none() {
+                    self.disarm();
                 }
+                answer
+            }
+            // Any other button pressed is a press too: it disarms the card
+            // and starts the quiet time again.
+            Input::Button { down: true, .. } => {
+                if self.pressed() {
+                    self.disarm();
+                }
+                None
             }
             Input::Button { .. } => None,
         };

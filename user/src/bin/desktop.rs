@@ -673,6 +673,16 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         }
         return Some(panel_wire::encode_take(request.as_ref()));
     }
+    // A card's result: shown, unless a newer line is thinking, whose own
+    // result comes after.
+    if let Some(shown) = panel_wire::parse_card(text) {
+        let thinking = matches!(state.panel.state(), deskcore::panel::State::Thinking { .. });
+        if !thinking && state.panel.set_state(shown) {
+            println!("desktop: the panel shows what a card came to");
+            state.extra.push(state.desk.panel());
+        }
+        return Some(String::from("ok"));
+    }
     let Some(shown) = panel_wire::parse_state(text) else {
         return Some(String::from("err not a panel request"));
     };

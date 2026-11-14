@@ -609,3 +609,55 @@ fn a_key_or_click_in_the_agents_window_takes_over() {
     desk.set_agent(Some(ids[1]));
     assert!(key(&mut desk, 0x04, true).contains(&Effect::TookOver { window: ids[1] }));
 }
+
+/// #864's third review: a press queued while `desktop` was busy, stamped
+/// before the card was drawn, never opens it early. Drawn at 550, a press
+/// stamped 100 and one at 600: the card is still quiet until 1,000.
+#[test]
+fn a_press_stamped_before_the_card_was_drawn_never_opens_it() {
+    let (mut desk, _) = desk_with(1);
+    desk.show_ask(8, 1);
+    desk.card_drawn(550);
+    assert!(press_at(&mut desk, 100, usage::Y).is_empty());
+    assert!(press_at(&mut desk, 600, usage::Y).is_empty());
+    assert!(!desk.ask().unwrap().armed, "600 is inside the quiet time");
+    // 1,000 is a settle after the press at 600: open now.
+    assert!(press_at(&mut desk, 600 + SETTLED, usage::Y).is_empty());
+    assert!(desk.ask().unwrap().armed);
+}
+
+/// A pointer parked where Run appears clicks nothing: it must be brought
+/// there after the card was drawn. A right or middle press restarts the
+/// quiet time like any other.
+#[test]
+fn a_parked_pointer_cannot_click_run_and_other_buttons_restart_the_quiet() {
+    let (mut desk, _) = desk_with(1);
+    desk.show_ask(9, 1);
+    let card = crate::trusted::card(W, H, &desk.ask().unwrap());
+    let (yes, _) = crate::trusted::buttons(card);
+    // The pointer is on Run before the card is drawn.
+    desk.set_now(0);
+    desk.input(at(centre(yes)));
+    desk.card_drawn(10);
+    desk.set_now(10 + 3 * SETTLED);
+    for down in [true, false] {
+        let press = Input::Button {
+            button: Button::Left,
+            down,
+        };
+        assert!(desk.input(press).is_empty(), "a parked click ran the card");
+    }
+    // A right press restarts the quiet: a click just after it is too soon.
+    desk.set_now(20 + 4 * SETTLED);
+    desk.input(Input::Button {
+        button: Button::Right,
+        down: true,
+    });
+    desk.set_now(20 + 4 * SETTLED + 1);
+    assert!(click(&mut desk, centre(yes)).is_empty());
+    // Quiet again, and brought onto Run: it runs.
+    desk.set_now(20 + 6 * SETTLED);
+    let away = (centre(yes).0 - 200, centre(yes).1);
+    desk.input(at(away));
+    assert!(click(&mut desk, centre(yes)).contains(&Effect::Answer { id: 9, yes: true }));
+}
