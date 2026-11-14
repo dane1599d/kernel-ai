@@ -378,13 +378,30 @@ fn local_warmable(backends: &Backends, stale: bool, cold: bool) -> bool {
 /// prompt.
 fn warm_act(local: &mut local::Local, request: &mut [u8], caller: &mut u64) -> Option<usize> {
     let mut came = None;
-    if let Err(why) = local.warm_act(|| {
-        came = sys::svc_recv(request, 1, caller).ok();
-        came.is_some()
-    }) {
+    if let Err(why) = local.warm_act(|| request_came(request, caller, &mut came)) {
         println!("local: the act prefix was not cached: {why}");
     }
     came
+}
+
+/// Whether a request came while a warm-up computes, which then stops and leaves
+/// it in `request` (its length in `came`). A `warm` ask is no such request: it
+/// is answered at once, "ok no", and the warm-up goes on. So asking whether llm
+/// is warm, as the shell does for the panel, never cuts a warm-up short or
+/// changes what llm computes.
+fn request_came(request: &mut [u8], caller: &mut u64, came: &mut Option<usize>) -> bool {
+    *came = sys::svc_recv(request, 1, caller).ok();
+    let Some(len) = *came else {
+        return false;
+    };
+    if request.get(..len.min(request.len())) != Some(b"warm") {
+        return true;
+    }
+    if let Err(error) = sys::svc_reply(b"ok no") {
+        println!("svc_reply failed: {error:?}");
+    }
+    *came = None;
+    false
 }
 
 /// Warms `local` for scripts until done or until a request comes, which is then
@@ -398,10 +415,7 @@ fn warm(
 ) -> Option<usize> {
     let started = sys::time_ns();
     let mut came = None;
-    let warmed = local.warm(lang, || {
-        came = sys::svc_recv(request, 1, caller).ok();
-        came.is_some()
-    });
+    let warmed = local.warm(lang, || request_came(request, caller, &mut came));
     let ms = (sys::time_ns() - started) / 1_000_000;
     match (warmed, came) {
         (Err(why), _) => println!("local: the script prompt was not cached: {why}"),

@@ -16,7 +16,9 @@
 //!   one changes nothing.
 //!
 //! What `desktop` is told is `deskcore::panel_wire`'s `panel ready`: when it
-//! changes, and again to a `desktop` that restarted.
+//! changes, and again to a `desktop` that restarted. With no `desktop`, llm is
+//! not asked at all. A `warm` ask is read-only in llm: it changes no state, and
+//! a warm-up answers it without stopping (`request_came` in `llm.rs`).
 
 use super::{ask_desktop, desktop, desktop_pid, llm};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -79,9 +81,14 @@ impl Warmth {
         self.readiness.ask_soon();
     }
 
-    /// Whether llm runs, after noting what cooled it since: a `new`, a
-    /// language switch, or a restart.
+    /// Whether to ask llm: it runs, and a `desktop` runs to be told, the only
+    /// one that is. With no desktop, llm is never asked, so a boot without one
+    /// sees no `warm` request and no reply to it. What cooled llm since is
+    /// noted first: a `new`, a language switch, or a restart.
     fn look(&mut self) -> bool {
+        if desktop_pid().is_none() {
+            return false;
+        }
         let pid = llm_pid();
         let cooled = COOLED.swap(false, Ordering::Relaxed);
         self.readiness.look(pid, cooled);
