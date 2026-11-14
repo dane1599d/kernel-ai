@@ -248,6 +248,8 @@ fn main() -> i32 {
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     // Whether the nap holds a lease for settings requests in flight.
     let mut settings_leased = false;
+    // The last frame that said unsaved: its count, and when it came.
+    let mut unsaved_seen: (u64, u64) = (0, 0);
     let mut started = started::Started::default();
     // When the host's own wait ends; 0 is never.
     let mut tick_at = deadline(host.timeout_ms());
@@ -377,10 +379,17 @@ fn main() -> i32 {
                 // A change or a file waiting for its answer is use: the app does
                 // not nap until it has it.
                 // So is a window with changes not kept (the Editor's text, not
-                // saved): the checkpoint does not hold it (#878).
-                let busy = windows
-                    .as_ref()
-                    .is_some_and(|ui| ui.changes_busy() || ui.unsaved())
+                // saved): the checkpoint does not hold it (#878). For at most
+                // UNSAVED_LEASE_MS after the last frame that said so, so a
+                // window left forgotten does not hold the app awake for ever.
+                let frames = windows.as_ref().map_or(0, ui::Ui::unsaved_frames);
+                if frames != unsaved_seen.0 {
+                    unsaved_seen = (frames, now_ms());
+                }
+                let unsaved = windows.as_ref().is_some_and(ui::Ui::unsaved)
+                    && now_ms().saturating_sub(unsaved_seen.1) < UNSAVED_LEASE_MS;
+                let busy = windows.as_ref().is_some_and(ui::Ui::changes_busy)
+                    || unsaved
                     || relay.as_ref().is_some_and(files::Relay::busy);
                 if busy != settings_leased {
                     napper.nap.lease(busy);
@@ -441,8 +450,6 @@ fn soonest(wait: u64, due: Option<u64>) -> u64 {
     }
 }
 
-/// What the instances did that leaves comphost: the editor's messages go to the
-/// edit service and its files to `desktop`, then the windows' frames.
 /// Whether `request` is [`kabi::live::SHOW`], a trailing newline allowed.
 fn is_show(request: &[u8]) -> bool {
     request.strip_suffix(b"\n").unwrap_or(request) == kabi::live::SHOW.as_bytes()
@@ -467,6 +474,12 @@ fn opens_a_window(request: &[u8]) -> bool {
     )
 }
 
+/// The longest unsaved changes keep the app from napping after the last
+/// frame that said so.
+const UNSAVED_LEASE_MS: u64 = 30 * 60 * 1000;
+
+/// What the instances did that leaves comphost: the editor's messages go to the
+/// edit service and its files to `desktop`, then the windows' frames.
 fn settle(
     windows: &mut Option<ui::Ui>,
     edits: &mut Option<editcore::gate::Gate>,

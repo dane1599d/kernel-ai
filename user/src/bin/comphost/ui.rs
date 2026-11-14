@@ -86,6 +86,9 @@ pub struct Ui {
     /// update or a rollback): the new version's frames for them show, as the
     /// person left them, even while another window is hidden.
     on_desk: Vec<u32>,
+    /// Frames that said unsaved so far, shown or held: comphost dates the
+    /// unsaved lease from the last one ([`Ui::unsaved_frames`]).
+    unsaved_frames: u64,
     /// The frames of its windows while hidden, newest only.
     held: Vec<(u32, Frame)>,
     /// The version whose windows show.
@@ -125,6 +128,7 @@ impl Ui {
             frames: Vec::new(),
             hidden: Vec::new(),
             hidden_app: false,
+            unsaved_frames: 0,
             on_desk: Vec::new(),
             held: Vec::new(),
             shown: None,
@@ -160,6 +164,12 @@ impl Ui {
             .iter()
             .chain(self.held.iter())
             .any(|(_, frame)| frame.unsaved)
+    }
+
+    /// How many frames have said unsaved so far: a new one is the person still
+    /// working, which renews the unsaved lease.
+    pub fn unsaved_frames(&self) -> u64 {
+        self.unsaved_frames
     }
 
     /// Whether `window`'s last frame says it holds unsaved changes.
@@ -265,6 +275,11 @@ impl Ui {
             self.shown = label;
         }
         for update in updates {
+            if let Update::Frame { frame, .. } = &update
+                && frame.unsaved
+            {
+                self.unsaved_frames += 1;
+            }
             match update {
                 // Hidden by the person: the window's frames wait for a show.
                 Update::Frame { window, frame } if self.hides(window) => {
