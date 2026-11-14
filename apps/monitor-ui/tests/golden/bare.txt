@@ -9,23 +9,23 @@ node 5 clip 0,0 640x440
   fill 12,51 101x6 accent r3
   text 180,44 body text "Memory: 2596 of 4096 MiB used"
 node 7 clip 0,0 640x440
-  fill 12,76 116x28 raised r6
-  stroke 12,76 116x28 line_strong w1 r6
+  fill 12,76 116x28 raised r4
+  stroke 12,76 116x28 line_strong w1 r4
   text 22,81 label text "CPU high-low"
 node 8 clip 0,0 640x440
-  fill 136,76 68x28 raised r6
-  stroke 136,76 68x28 line_strong w1 r6
+  fill 136,76 68x28 raised r4
+  stroke 136,76 68x28 line_strong w1 r4
   text 146,81 label text "Memory"
 node 9 clip 0,0 640x440
-  fill 212,76 52x28 raised r6
-  stroke 212,76 52x28 line_strong w1 r6
+  fill 212,76 52x28 raised r4
+  stroke 212,76 52x28 line_strong w1 r4
   text 222,81 label text "Name"
 node 10 clip 0,0 640x440
-  fill 272,76 44x28 raised r6
-  stroke 272,76 44x28 line_strong w1 r6
+  fill 272,76 44x28 raised r4
+  stroke 272,76 44x28 line_strong w1 r4
   text 282,81 label text "PID"
 node 12 clip 0,0 640x440
-  stroke 12,112 616x240 line_strong w1 r6
+  stroke 12,112 616x240 line_strong w1 r4
   text 23,116 label muted "PID"
   text 23,139 body text "1"
   text 23,163 body text "4"

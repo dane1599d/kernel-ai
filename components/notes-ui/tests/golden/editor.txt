@@ -4,17 +4,17 @@ node 1 clip 0,0 640x420
   fill 217,0 1x420 line r0
 node 3 clip 0,0 220x420
   text 12,12 small muted "Search"
-  fill 12,32 193x28 desk r6
-  stroke 12,32 193x28 line_strong w1 r6
+  fill 12,32 193x28 desk r4
+  stroke 12,32 193x28 line_strong w1 r4
   clip 13,33 191x26
   text 22,36 body dim "Find a word"
   unclip
 node 4 clip 0,0 220x420
-  fill 12,68 193x28 raised r6
-  stroke 12,68 193x28 line_strong w1 r6
+  fill 12,68 193x28 raised r4
+  stroke 12,68 193x28 line_strong w1 r4
   text 76,73 label text "New note"
 node 5 clip 0,0 220x420
-  stroke 12,104 193x304 line_strong w1 r6
+  stroke 12,104 193x304 line_strong w1 r4
   fill 13,105 191x24 raised r0
   fill 13,105 2x24 accent r0
 node 1000 clip 10,102 197x308
@@ -25,8 +25,8 @@ node 1002 clip 10,102 197x308
   text 21,153 body text "Call the plumber about the kitchen sink …"
 node 7 clip 215,0 425x420
   text 230,12 small muted "Note"
-  fill 230,32 398x316 desk r6
-  stroke 230,32 398x316 line_strong w1 r6
+  fill 230,32 398x316 desk r4
+  stroke 230,32 398x316 line_strong w1 r4
   clip 231,33 396x314
   text 240,38 body text "Groceries"
   text 240,58 body text "milk and eggs"
