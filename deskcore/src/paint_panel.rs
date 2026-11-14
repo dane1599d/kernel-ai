@@ -1,7 +1,8 @@
 //! The panel's drawing (ADR 0005 §8): `kai>` in bold ember, the line or its
 //! placeholder, the ember block caret and a 2 px ember rule while it listens,
 //! and on the right what the shell reports: the model's dot when idle,
-//! "thinking 4s" with "Esc stops", the call being acted, the result line with
+//! "Kai is getting ready" while the model warms up, idle or "4s" into a
+//! request, "thinking 4s" with "Esc stops", the call being acted, the result line with
 //! undo, or a refusal under an `error` rule. A line longer than the input
 //! scrolls so the caret stays in view, a dim `<` marking text cut off on the
 //! left ([`view`]).
@@ -16,6 +17,8 @@ use look::TypeStyle;
 
 const PROMPT: &str = "kai>";
 const PLACEHOLDER: &str = "ask, or type Rhai";
+/// What the panel says while the model warms up (founder test 2).
+pub const GETTING_READY: &str = "Kai is getting ready";
 /// The rule along the panel's top while it listens or refuses.
 const RULE: i32 = 2;
 /// Drawn in the input's first column while the line's start is scrolled off.
@@ -149,6 +152,17 @@ impl Painter {
         let y = self.baseline(area.y, area.h, style);
         let end = (right.right() - PAD) as f32;
         let parts: alloc::vec::Vec<(String, u32)> = match scene.panel.state() {
+            // The model is up but not warm: a request now waits for the warm-up.
+            State::Idle if scene.panel.getting_ready() => {
+                alloc::vec![(String::from(GETTING_READY), self.palette.dim)]
+            }
+            State::Thinking { since_ms } if scene.panel.getting_ready() => {
+                let seconds = scene.now_ms.saturating_sub(*since_ms) / 1000;
+                alloc::vec![
+                    (format!("{GETTING_READY} {seconds}s"), self.palette.text),
+                    (String::from("   Esc stops"), self.palette.dim),
+                ]
+            }
             State::Idle => {
                 let dot = if scene.bar.model {
                     self.palette.ok
