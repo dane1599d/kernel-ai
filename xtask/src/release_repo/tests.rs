@@ -147,6 +147,26 @@ fn in_one_go_at(models: &[Model], now: Time) -> Vec<(String, Vec<u8>)> {
     files
 }
 
+/// Round 1's folder as `prepare` leaves it for the test keys (RFC 8032's test 1
+/// seed as root, test 2's as release) at this machine's clock, written to
+/// `$KAI_SIGN_FIXTURE`. `release.yml`'s macOS job signs it with the sign
+/// script in both rounds, under bash 3.2 and BSD awk, as the founder's Mac
+/// would.
+#[test]
+#[ignore = "release.yml's sign-fixture job runs it"]
+fn write_round_one_for_the_macos_job() {
+    let out =
+        std::env::var_os("KAI_SIGN_FIXTURE").expect("KAI_SIGN_FIXTURE names the folder to write");
+    let out = PathBuf::from(out);
+    let _ = fs::remove_dir_all(&out);
+    let paths = Paths::of(&out, out.join("work"));
+    fs::create_dir_all(&paths.keys).unwrap();
+    fs::write(paths.keys.join("root.pub"), pem(&key(ROOT_SEED))).unwrap();
+    fs::write(paths.keys.join("release.pub"), pem(&key(RELEASE_SEED))).unwrap();
+    let now = crate::pkgrepo::unix_now().unwrap();
+    prepare(&paths, &targets(), &models::catalog().unwrap(), 1, now).unwrap();
+}
+
 #[test]
 fn reads_a_public_key_as_openssl_writes_it() {
     let rfc = "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=\n-----END PUBLIC KEY-----\n";
