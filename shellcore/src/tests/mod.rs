@@ -60,6 +60,8 @@ struct FakeHost {
     step_ns: Cell<u64>,
     /// Interrupt after this many polls.
     interrupt_in: Cell<Option<u32>>,
+    /// A Stop pressed for the whole request, as the kernel keeps it (#887).
+    stopped: Cell<bool>,
     heap: Cell<u64>,
     /// Added to `heap` on every reading, to make a run look as if it allocates.
     heap_step: Cell<u64>,
@@ -287,6 +289,7 @@ impl FakeHost {
             clock: Cell::new(0),
             step_ns: Cell::new(1000),
             interrupt_in: Cell::new(None),
+            stopped: Cell::new(false),
             heap: Cell::new(0),
             heap_step: Cell::new(0),
             policy: Cell::new(None),
@@ -384,6 +387,9 @@ impl Host for FakeHost {
     }
 
     fn interrupted(&self) -> bool {
+        if self.stopped.get() {
+            return true;
+        }
         match self.interrupt_in.get() {
             Some(0) => {
                 self.interrupt_in.set(None);

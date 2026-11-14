@@ -763,6 +763,20 @@ pub fn interrupted() -> bool {
     call(call::INTERRUPTED, [0; 6]).is_ok_and(|flag| flag != 0)
 }
 
+/// Clears this process's Stop flag as a new unit of work starts, and says
+/// whether it was set (INTERRUPTED with `clear` 1): the shell calls it before a
+/// panel line or `take_effects`, which do not come as a new request.
+pub fn interrupt_clear() -> bool {
+    call(call::INTERRUPTED, [1, 0, 0, 0, 0, 0]).is_ok_and(|flag| flag != 0)
+}
+
+/// The person's Stop or Esc for the shell's line (SHELL_INTERRUPT): the
+/// shell's pid. For `desktop`, which holds `cap::INPUT`; Permission for any
+/// other process, NotFound when no shell runs.
+pub fn shell_interrupt() -> Result<u64, Error> {
+    call(call::SHELL_INTERRUPT, [0; 6])
+}
+
 /// Copies the boot bundle's file `path` into `buf` when it fits; its length
 /// either way. Only beneath what this process's plan line grants with `bootfiles=`.
 pub fn boot_read(path: &str, buf: &mut [u8]) -> Result<usize, Error> {
