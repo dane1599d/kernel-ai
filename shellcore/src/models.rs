@@ -5,8 +5,10 @@
 //! - `model_use` names a stored model the signed role takes for the next
 //!   restart, on trial. It runs when the line names the model, and is logged
 //!   with `Inverse::Model`, so `undo` puts the model before back;
-//! - `model_fetch` imports the attached disk's model, held to the signed role.
-//!   It always asks once: gigabytes of new bytes, and no undo yet.
+//! - `model_fetch` imports the attached disk's model (`disk`), or downloads a
+//!   signed one (`net`, by its id or the recommended one), held to the signed
+//!   role. It always asks once: gigabytes of new bytes, and no undo yet. The
+//!   download asks with its size and host, as `models download <id>` does.
 //!
 //! What `updated` answers is the OS's own state, so it is the reply as it is.
 //!
@@ -126,6 +128,16 @@ impl Shell {
                 Err(why) => Reply::err(why),
             },
             "model_use" => self.model_use(id, request, name, decision, "asked"),
+            "model_fetch" if value(values, "source") == Some("net") => {
+                let name = match name {
+                    "" => match self.offer_to_download() {
+                        Ok(name) => name,
+                        Err(why) => return Reply::err(why),
+                    },
+                    name => String::from(name),
+                };
+                self.model_download(id, request, &name)
+            }
             "model_fetch" => {
                 let call = canonical("model_fetch", "disk");
                 let why = match decision.why {
@@ -135,6 +147,25 @@ impl Shell {
                 self.model_ask(id, request, &call, Waiting::Fetch, why, None)
             }
             other => Reply::err(format!("{other} is typed at the prompt for now")),
+        }
+    }
+
+    /// The model a `model_fetch("net")` with no name downloads: the one the
+    /// signed role recommends, if this machine may download it now, else the
+    /// first it may. With none, why, as `models` lists it.
+    fn offer_to_download(&self) -> Result<String, String> {
+        let text = self.host.models("models offers")?;
+        if let Some(why) = text.strip_prefix("err ") {
+            return Err(format!("no model is downloaded: {why}"));
+        }
+        let offers = offered::parse(&text)?;
+        let fits = |o: &&offered::Offered| o.fit == Fit::Fits;
+        let pick = offers.iter().filter(fits).find(|o| o.recommended);
+        match pick.or_else(|| offers.iter().find(fits)) {
+            Some(offer) => Ok(offer.id.clone()),
+            None => Err(String::from(
+                "no signed model can be downloaded on this machine now; models lists each one and why",
+            )),
         }
     }
 
@@ -506,6 +537,14 @@ fn download_call(name: &str) -> String {
     use termcore::once::{CallArg, call_text};
     call_text("model_fetch", &[CallArg::Text("net"), CallArg::Text(name)])
         .unwrap_or_else(|| String::from("model_fetch"))
+}
+
+/// The value of the argument `arg` a row was called with, if given.
+fn value<'a>(values: &'a [(&'static str, String)], arg: &str) -> Option<&'a str> {
+    values
+        .iter()
+        .find(|(n, _)| *n == arg)
+        .map(|(_, v)| v.as_str())
 }
 
 /// The canonical call for a model row: `model_use("qwen3-1.7b")`.

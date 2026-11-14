@@ -406,6 +406,72 @@ fn a_typed_download_asks_once_with_its_size_and_host_and_runs_only_on_an_allow()
     assert!(host.calls.borrow().is_empty(), "no model was asked");
 }
 
+/// Kai asked to download a model (founder test 2, item 14): `model_fetch` with
+/// `net` asks once with the size and host, as the typed line does, by the id
+/// it names or, with none, the one the signed role recommends here.
+#[test]
+fn the_ai_downloads_a_named_or_the_recommended_model_after_one_ask() {
+    let cases = [
+        (
+            r#"{"source":"net","name":"fixture-dl"}"#,
+            "download the fixture-dl model",
+        ),
+        (r#"{"source":"net"}"#, "download an AI model for me"),
+    ];
+    for (arguments, request) in cases {
+        let host = FakeHost::new();
+        let mut shell = shell(&host);
+        let json = format!(r#"{{"name":"model_fetch","arguments":{arguments}}}"#);
+        host.calls.borrow_mut().push_back(call(&json));
+        let reply = shell.eval(request);
+        assert_eq!(reply.confirm, Some(1), "{request}: {reply:?}");
+        assert!(
+            reply.text.contains(
+                "Download 12.0 MiB from models.kai.test with model_fetch(\"net\", \"fixture-dl\")? It has no undo."
+            ),
+            "{request}: {reply:?}"
+        );
+        assert!(
+            !host
+                .model_requests
+                .borrow()
+                .iter()
+                .any(|r| r.starts_with("models download")),
+            "{request}: nothing before the answer"
+        );
+        let once = host.mint(1, "model_fetch(\"net\", \"fixture-dl\")");
+        let answered = shell.eval(&format!("answer 1 allow once={once}"));
+        assert!(
+            answered.ok && answered.text.starts_with("Downloading fixture-dl"),
+            "{request}: {answered:?}"
+        );
+        assert!(
+            host.model_requests
+                .borrow()
+                .contains(&"models download fixture-dl".into()),
+            "{request}"
+        );
+    }
+}
+
+/// With nothing this machine may download, a `model_fetch("net")` with no id
+/// says so and asks nothing; `disk` still imports.
+#[test]
+fn a_net_fetch_with_nothing_to_download_says_why() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    *host.model_answer.borrow_mut() = Some(String::from("err no data disk"));
+    host.calls.borrow_mut().push_back(call(
+        r#"{"name":"model_fetch","arguments":{"source":"net"}}"#,
+    ));
+    let reply = shell.eval("download an AI model for me");
+    assert!(
+        !reply.ok && reply.text.contains("no model is downloaded: no data disk"),
+        "{reply:?}"
+    );
+    assert_eq!(reply.confirm, None);
+}
+
 #[test]
 fn a_download_updated_refuses_is_said_and_never_asked() {
     let host = FakeHost::new();
