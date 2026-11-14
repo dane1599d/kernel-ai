@@ -134,6 +134,10 @@ fn updated() -> kabi::handle::Handle {
 /// the signed role, and a switch commits the trial record and the hint; an
 /// import only starts, and goes on between requests.
 const UPDATED_CALL_MS: u64 = 10_000;
+/// How long a restart waits between the kernel's Busy answers, and how many
+/// times it asks: five seconds in all.
+const REBOOT_RETRY_MS: u64 = 100;
+const REBOOT_TRIES: u32 = 50;
 
 /// The route to `desktop`, on a desktop only (P3 task 7): `routes=desktop`.
 fn desktop() -> Option<kabi::handle::Handle> {
@@ -634,12 +638,20 @@ impl Host for System {
     }
 
     /// POWER_REBOOT with the plan's `power` (backlog item 13): it comes back
-    /// only when the kernel did not restart.
+    /// only when the kernel did not restart. The kernel answers Busy before
+    /// this boot's record is written and while `fs` serves a call, so a Busy is
+    /// tried again every [`REBOOT_RETRY_MS`], up to [`REBOOT_TRIES`] times.
     fn power_reboot(&self) -> Result<(), String> {
-        Err(match sys::power_reboot() {
-            kabi::Error::Permission => String::from("this shell may not restart the computer"),
-            error => format!("the kernel said {error:?}"),
-        })
+        for _ in 0..REBOOT_TRIES {
+            match sys::power_reboot() {
+                kabi::Error::Busy => sys::sleep_ms(REBOOT_RETRY_MS),
+                kabi::Error::Permission => {
+                    return Err(String::from("this shell may not restart the computer"));
+                }
+                error => return Err(format!("the kernel said {error:?}")),
+            }
+        }
+        Err(String::from("the computer is busy; try again in a moment"))
     }
 
     fn app_call(&self, app: &str, request: &str) -> Result<String, String> {
