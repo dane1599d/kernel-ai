@@ -523,6 +523,15 @@ const ACTS: &[(&str, &str)] = &[
         "save a note for the walk",
         r#"{"name":"fs_create","arguments":{"path":"walk-panel.txt","text":"hello from the walk"}}"#,
     ),
+    // The walk reads each file back once its card's run is over.
+    (
+        "read walk-term.txt",
+        r#"{"name":"fs_read","arguments":{"path":"walk-term.txt"}}"#,
+    ),
+    (
+        "read walk-panel.txt",
+        r#"{"name":"fs_read","arguments":{"path":"walk-panel.txt"}}"#,
+    ),
     // Notes' row, with no Notes running yet.
     (
         "add a note saying hello dane",

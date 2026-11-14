@@ -77,6 +77,9 @@ const PANEL_ASK: &str = "save a note for the walk";
 const PANEL_FILE: &str = "walk-panel.txt";
 /// What the model writes in both files.
 const FILE_TEXT: &str = "hello from the walk";
+/// Reads of a file the card allowed, this far apart.
+const FILE_READS: usize = 3;
+const FILE_READ_GAP_MS: u64 = 5_000;
 const NOTE_LINE: &str = "add a note saying hello dane";
 
 /// The side of a square of the screen [`signature`] hashes as one.
@@ -250,9 +253,10 @@ fn abilities_and_clarify() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// What the shell's read of `path` in `fs` answers.
+/// What the shell answers `read <path>`, which the mock model answers with
+/// `fs_read` (as `act-fs` reads): a typed Rhai line binds no file rows.
 fn file_text(path: &str) -> Result<String, &'static str> {
-    let read = format!("fs_read(\"{path}\")");
+    let read = format!("read {path}");
     ipc::call("shell", read.as_bytes(), CALL_MS)
         .map(|reply| String::from_utf8_lossy(&reply).into_owned())
         .map_err(|_| "founder-walk: the shell did not answer the read")
@@ -302,15 +306,17 @@ fn yes_on_the_card(path: &str) -> Result<(), &'static str> {
     })
 }
 
-/// Waits for `path` in `fs` to hold [`FILE_TEXT`].
+/// Checks that `path` in `fs` holds [`FILE_TEXT`]. The run is over once the
+/// card's answer is (`yes_on_the_card`), so a few reads far apart do: each is
+/// a line to the shell, and a model's round.
 fn file_made(path: &str) -> Result<(), &'static str> {
     let mut text = String::new();
-    for _ in 0..REPLY_MS / POLL_MS {
+    for _ in 0..FILE_READS {
         text = file_text(path)?;
         if text.contains(FILE_TEXT) {
             return Ok(());
         }
-        threads::sleep_ms(POLL_MS);
+        threads::sleep_ms(FILE_READ_GAP_MS);
     }
     log!("{CASE}: the read of {path} answered {text:?}");
     Err("founder-walk: the file the card allowed is not in fs")
