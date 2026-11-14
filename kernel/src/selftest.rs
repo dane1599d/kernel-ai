@@ -16,6 +16,8 @@ pub enum ActCase {
     Ask,
     Inject,
     Rule,
+    /// `act-stop` (#887): the person's Stop while llm answers stops the line.
+    Stop,
     PkgLocal,
     Convo,
     FsAct,
@@ -213,6 +215,9 @@ pub enum SelfTest {
     UiModelsUse,
     /// An unused app naps and a click wakes it (P3 task 12b).
     DeskNap,
+    /// A window in use never naps; one that lost the focus does (backlog
+    /// item 1).
+    DeskNapBusy,
     /// A saved appearance repaints `desktop` at once and holds across its
     /// restart (P4 task 8).
     DeskAppearance,
@@ -267,6 +272,8 @@ pub enum SelfTest {
     Probe,
     /// P1: handle tables, startup handles and need() on handles.
     Handles,
+    /// SHELL_INTERRUPT: the person's Stop ends the shell's call in flight.
+    ShellInterrupt,
     /// L6: worker threads start, are refused, filtered and torn down.
     Threads,
     /// L6: processes killed mid-run, every thread blocked or computing, free every frame.
@@ -376,6 +383,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net-pf-page" => Some(SelfTest::Act(ActCase::NetPfPage)),
             "test=net-pf-query" => Some(SelfTest::Act(ActCase::NetPfQuery)),
             "test=act-rule" => Some(SelfTest::Act(ActCase::Rule)),
+            "test=act-stop" => Some(SelfTest::Act(ActCase::Stop)),
             "test=pkg-local" => Some(SelfTest::Act(ActCase::PkgLocal)),
             "test=act-convo" => Some(SelfTest::Act(ActCase::Convo)),
             "test=fs-act" => Some(SelfTest::Act(ActCase::FsAct)),
@@ -466,6 +474,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=ui-models" => Some(SelfTest::UiModels),
             "test=ui-models-use" => Some(SelfTest::UiModelsUse),
             "test=desk-nap" => Some(SelfTest::DeskNap),
+            "test=desk-nap-busy" => Some(SelfTest::DeskNapBusy),
             "test=desk-appearance" => Some(SelfTest::DeskAppearance),
             "test=keep-running" => Some(SelfTest::KeepRunning {
                 reread: cmdline.split_whitespace().any(|w| w == "reread"),
@@ -493,6 +502,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
             "test=handles" => Some(SelfTest::Handles),
+            "test=shell-interrupt" => Some(SelfTest::ShellInterrupt),
             "test=threads" => Some(SelfTest::Threads),
             "test=threads-kill" => Some(SelfTest::ThreadsKill),
             "test=thread-pin" => Some(SelfTest::ThreadPin),
@@ -667,6 +677,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::UiModels
             | SelfTest::UiModelsUse
             | SelfTest::DeskNap
+            | SelfTest::DeskNapBusy
             | SelfTest::KeepRunning { .. }
             | SelfTest::DeskAppearance
             | SelfTest::DeskCard
@@ -968,7 +979,7 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(kabi::plan::MODELS_WINDOW);
     }
-    if test == SelfTest::DeskNap {
+    if matches!(test, SelfTest::DeskNap | SelfTest::DeskNapBusy) {
         plan.push('\n');
         plan.push_str(crate::nap_tests::PLAN);
     }

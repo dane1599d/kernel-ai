@@ -40,6 +40,7 @@ mod clarify;
 mod cmode;
 mod commands;
 pub mod data;
+mod deskask;
 pub mod door;
 mod effects;
 mod engine;
@@ -49,6 +50,7 @@ mod instructions;
 mod models;
 mod netask;
 pub mod netgrant;
+mod sound;
 pub use models::MODELS_APP;
 pub use netask::Connect as NetConnect;
 mod packages;
@@ -122,6 +124,8 @@ pub enum FsRead<'a> {
     Whole(&'a str),
     History(&'a str),
     Changes,
+    /// Paths under home whose last part holds this word, case aside.
+    Find(&'a str),
 }
 
 /// A change the `fs` server makes as one transaction, which `undo` restores.
@@ -160,7 +164,8 @@ pub const NO_FILES: &str = "there are no files here (no kai-data disk)";
 /// What the shell needs from the operating system.
 pub trait Host {
     fn now_ns(&self) -> u64;
-    /// True if the user pressed Ctrl-C since the last call; reading clears it.
+    /// Whether the person pressed Stop during the request being served. In the
+    /// OS it stays true for the rest of that request (`kabi::call::INTERRUPTED`).
     fn interrupted(&self) -> bool;
     /// Bytes of heap in use.
     fn heap_bytes(&self) -> u64;
@@ -262,6 +267,11 @@ pub trait Host {
     /// One request to `pkg` through the shell's route to it: the text after
     /// its `ok`, or why not (P4 task 13).
     fn pkg(&self, _request: &str) -> Result<String, String> {
+        Err(String::from("there is no pkg service here"))
+    }
+    /// Installed package `package`'s `kai-actions 1` answer, read by `pkg`
+    /// from its stored artifact: an app's rows before it first runs.
+    fn installed_rows(&self, _package: &str) -> Result<String, String> {
         Err(String::from("there is no pkg service here"))
     }
     /// `cc build`'s work outside the shell's logic: component `name`'s
@@ -615,6 +625,13 @@ pub struct Shell {
     /// The app whose install card waits to open by itself, once a build in
     /// the background built it ([`Shell::take_card`]).
     card: Option<String>,
+    /// Proposals from desktop lines (the panel, the Terminal window) waiting
+    /// for the trusted card (`deskask`).
+    desk_asks: Vec<deskask::Waiting>,
+    /// The question on the card that came from a desktop line.
+    card_for_desk: Option<u64>,
+    /// What that card's answer came to, for the panel.
+    card_result: Option<(bool, String)>,
     /// Apps' network asks waiting for the terminal's card (P5 task 13).
     net_cards: Vec<netask::NetAsking>,
     /// Network grants revoked, kept for their undo.
@@ -653,6 +670,9 @@ pub struct Shell {
     asked_model: bool,
     worded: bool,
     done_line: Option<String>,
+    /// The log entry the last panel line made, if it made one: what the
+    /// panel's undo link undoes ([`Shell::take_panel_entry`]).
+    panel_entry: Option<u64>,
     /// What the AI said to the last panel line, for the desk's history
     /// ([`Shell::take_panel_said`]): the model's words or a model script's
     /// prints, never the panel's own state line.
@@ -739,6 +759,9 @@ impl Shell {
             app_job: None,
             notices: Vec::new(),
             card: None,
+            desk_asks: Vec::new(),
+            card_for_desk: None,
+            card_result: None,
             net_cards: Vec::new(),
             net_revoked: Vec::new(),
             net_high: 0,
@@ -755,6 +778,7 @@ impl Shell {
             asked_model: false,
             worded: false,
             done_line: None,
+            panel_entry: None,
             panel_said: None,
             panel_clarifying: None,
             panel_note: None,
@@ -877,7 +901,16 @@ impl Shell {
         if let Some(reply) = self.status_line(input) {
             return reply;
         }
+        let answering = input.strip_prefix("answer ").and_then(|rest| {
+            let mut words = rest.split(' ');
+            let id = words.next()?.parse::<u64>().ok()?;
+            Some((id, words.next().unwrap_or("")))
+        });
+        if answering.is_some_and(|(id, _)| Some(id) == self.card_for_desk) {
+            self.done_line = None;
+        }
         let mut reply = self.eval(input);
+        self.desk_answered(answering, &reply);
         if reply.confirm.is_none() && !reply.more && !self.notices.is_empty() {
             let mut text = self.take_notices().join("\n");
             if !reply.text.is_empty() {
@@ -1152,6 +1185,12 @@ impl Shell {
             "script {id} requested: {}",
             show::truncate(request, 60)
         ));
+        // Sound has one answer until there is an audio driver.
+        if let Some(text) = sound::answer(request) {
+            self.record(id, request, "", "answered: no sound yet");
+            self.worded = true;
+            return Reply::ok(text);
+        }
         // What Kai can do with something comes from the rows, never the model.
         if let Some(text) = abilities::answer(request) {
             self.record(id, request, "", "answered from the registry");

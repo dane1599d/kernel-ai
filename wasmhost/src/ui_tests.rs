@@ -363,6 +363,7 @@ fn keys_drive_the_notes_window_guest() {
             g.ui_input(w, input).unwrap();
         }
     };
+    // Search, then New.
     press(&mut g, Key::Tab, "");
     press(&mut g, Key::Tab, "");
     press(&mut g, Key::Enter, "");
@@ -376,8 +377,7 @@ fn keys_drive_the_notes_window_guest() {
         note(&mut g),
         Some(Val::Option(Some(Box::new(Val::String(String::new())))))
     );
-    press(&mut g, Key::Tab, "");
-    press(&mut g, Key::Tab, "");
+    // New puts the keys in the note's editor (#872).
     press(&mut g, Key::Other(0x0B), "h");
     press(&mut g, Key::Other(0x0C), "i");
     assert_eq!(

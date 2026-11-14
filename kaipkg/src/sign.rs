@@ -190,6 +190,16 @@ pub struct Target {
     pub kai: Value,
 }
 
+/// `target`'s entry in its role's `targets`, exactly as [`unsigned`] writes
+/// it: its length, its SHA-256 and its `custom.kai`, and nothing else.
+pub fn target_entry(target: &Target) -> Value {
+    json!({
+        "length": target.bytes.len(),
+        "hashes": { "sha256": hex(&sha256(&target.bytes)) },
+        "custom": { "kai": target.kai },
+    })
+}
+
 /// One model as a target of the `models` role: its path `<id>.gguf`, the
 /// length and SHA-256 of the GGUF, and its `custom.kai` fields. The weights are
 /// not in the repository, so it has no bytes.
@@ -289,14 +299,7 @@ pub fn unsigned(
             return Err(format!("{} is in the repository twice", target.path));
         }
         let sha = hex(&sha256(&target.bytes));
-        listed.insert(
-            target.path.clone(),
-            json!({
-                "length": target.bytes.len(),
-                "hashes": { "sha256": sha },
-                "custom": { "kai": target.kai },
-            }),
-        );
+        listed.insert(target.path.clone(), target_entry(target));
         files.push((
             format!("targets/{sha}.{}", target.path),
             target.bytes.clone(),

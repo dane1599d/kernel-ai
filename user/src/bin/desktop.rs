@@ -394,6 +394,8 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
     };
     state.watch.input(now_ms());
     let before = state.desk.pointer();
+    // The card judges a key by when it was pressed, not when it was read.
+    state.desk.set_now(event.time_ns / 1_000_000);
     let effects = state.desk.input(input);
     let at = state.desk.pointer();
     if at != before {
@@ -427,6 +429,29 @@ fn deliver(state: &mut State, effects: &[Effect]) {
             continue;
         }
         let changed = match *effect {
+            // A click on a done line's undo or show sends it, as though typed.
+            Effect::PanelClick { at } => {
+                let area = state.desk.panel();
+                match state.painter.panel_link(area, &state.panel, at) {
+                    Some(word) => {
+                        // Undo takes back the line beside it, by its entry,
+                        // never the newest of another line's.
+                        let line = match (word, state.panel.entry()) {
+                            ("undo", Some(id)) => format!("undo {id}"),
+                            _ => String::from(word),
+                        };
+                        state.panel.send(line, now);
+                        println!("desktop: the panel's {word} was clicked");
+                        wake_shell();
+                        true
+                    }
+                    None => false,
+                }
+            }
+            Effect::Locks { caps } => {
+                state.panel.set_caps(caps);
+                false
+            }
             Effect::PanelKey { usage, down } if apps::key(state, usage, down, now) => false,
             Effect::PanelKey { usage, down } => {
                 let before = state.panel.waiting();
@@ -496,6 +521,7 @@ fn read_asks(state: &mut State) {
                 deliver(state, &effects);
             }
             println!("desktop: ask {id} shows on the card");
+            state.desk.set_now(now);
             let effects = state.desk.show_ask(id, lines);
             state.card = Some(card);
             deliver(state, &effects);
@@ -602,6 +628,10 @@ fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &RecvInfo) {
         let label = name_of(pid);
         let mut client = Client::new(pid, &label);
         client.theme(&state.theme_name);
+        // Caps Lock as it is now: a client started with it on types by it.
+        client.apply(&[Effect::Locks {
+            caps: state.desk.caps(),
+        }]);
         state.clients.push(client);
     }
     let Some(at) = state.clients.iter().position(|c| c.pid == pid) else {
@@ -613,6 +643,16 @@ fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &RecvInfo) {
         Ok(needs) => {
             for need in needs {
                 apply_need(state, at, pid, need, handle);
+            }
+            // A window it opened or closed moved the focus: every other client
+            // hears it too, so the one that lost it gets its focus_out.
+            let shared = state.clients[at].take_shared();
+            if !shared.is_empty() {
+                for (i, client) in state.clients.iter_mut().enumerate() {
+                    if i != at {
+                        client.apply(&shared);
+                    }
+                }
             }
             let reply = state.clients[at].take_events(kabi::MAX_MESSAGE);
             let _ = sys::reply_h(&reply, &[]);
@@ -678,6 +718,16 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         }
         return Some(panel_wire::encode_take(request.as_ref()));
     }
+    // A card's result: shown, unless a newer line is thinking, whose own
+    // result comes after.
+    if let Some(shown) = panel_wire::parse_card(text) {
+        let thinking = matches!(state.panel.state(), deskcore::panel::State::Thinking { .. });
+        if !thinking && state.panel.set_state(shown) {
+            println!("desktop: the panel shows what a card came to");
+            state.extra.push(state.desk.panel());
+        }
+        return Some(String::from("ok"));
+    }
     if let Some(said) = panel_wire::parse_said(text) {
         // Its length only, as for a typed line: the AI's words may hold anything.
         if chat_push(state, Who::Kai, said) {
@@ -692,7 +742,7 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         chat_push(state, Who::Note, note);
         return Some(String::from("ok"));
     }
-    let Some(shown) = panel_wire::parse_state(text) else {
+    let Some((shown, entry)) = panel_wire::parse_done(text) else {
         return Some(String::from("err not a panel request"));
     };
     // The bar's result line or refusal, code's, joins the history as a note.
@@ -712,7 +762,7 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         deskcore::panel::State::Done { .. } => "done",
         deskcore::panel::State::Refused { .. } => "refused",
     };
-    if state.panel.set_state(shown) {
+    if state.panel.set_done(shown, entry) {
         // Its kind only: the line is the shell's result, which may name a file.
         println!("desktop: the panel shows {word}");
         state.extra.push(state.desk.panel());
@@ -1112,10 +1162,15 @@ fn draw(state: &mut State, screen: &Screen) {
         let flushed = sys::time_ns();
         perf::drew(state, rendered - started, flushed - rendered, flushed);
     }
+    // A card up is on the screen from now: its quiet time can start.
+    state.desk.card_drawn(now_ms());
     if !state.drawn {
         state.drawn = true;
         println!("desktop: drew the desk at {}x{}", state.width, state.height);
     }
+    // What a press on the top bar hits: its tabs as just drawn.
+    let tabs = state.painter.tabs(&state.desk);
+    state.desk.set_tabs(tabs);
 }
 
 /// A client's buffer, read where its pool is mapped. `None` past the pool.

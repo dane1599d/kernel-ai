@@ -151,7 +151,7 @@ Crate `surfabi`: no_std, host-tested, fuzzed. It keeps Wayland's object model, s
 
 - `desktop`'s system layer holds 0001's USER right. It draws the panel, every ask card, the file picker, and the agent's 2 px outline and ghost pointer. No app surface can cover that layer, read it, or get keys while it has focus. Only system programs get the `panel` object.
 - Title bars are drawn by `desktop`: the kernel's process label, then the app's title. An app cannot pose as another app or as the system (Nitpicker's labels).
-- An ask card takes y, n or a click. Enter does nothing, and keys typed before the card appeared are dropped, as `:apply` does (docs/decisions.md:99). `y` mints 0001's `ONCE` handle for the action exactly as shown. A non-ASCII character in an argument shows as a `\u{...}` escape.
+- An ask card takes y, n or a click. Enter does nothing, and keys typed before the card appeared are dropped, as `:apply` does (docs/decisions.md:99). `y` mints 0001's `ONCE` handle for the action exactly as shown. A non-ASCII character in an argument shows as a `\u{...}` escape. On the desktop a card takes nothing for the menu's settle time after it shows, and `y` takes two fresh presses, the first arming it; a click on Run takes one (row `2026-11-14-desktop-lines-ask-on-the-card`).
 - `:apply` keeps its kernel-drawn confirmation (docs/decisions.md:94): the kernel revokes the display `Shm`, draws the card on its console, reads y or n before `desktop` sees input, then hands the screen back.
 - Calls go one way. The agent core (`shell` today) calls `desktop` to take the next panel request, to report states and to run its rows. `desktop` calls no service, so routes form no cycle (0001).
 

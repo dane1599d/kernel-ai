@@ -12,6 +12,7 @@ mod core;
 mod device;
 mod entropy;
 mod handle;
+mod interrupt;
 mod job;
 mod net;
 mod sched;
@@ -90,6 +91,7 @@ const AREAS: &[Area] = &[
     component::handle,
     net::handle,
     handle::handle,
+    interrupt::handle,
     device::handle,
     shm::handle,
     job::handle,
@@ -122,7 +124,8 @@ fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
 /// What a failed call made on a process's behalf returns to it.
 pub(super) fn call_error(slot: usize, error: ipc::CallError) -> Error {
     match error {
-        ipc::CallError::Cancelled if super::take_interrupt(slot) => Error::Interrupted,
+        // The flag stays for the rest of the line: the next request clears it.
+        ipc::CallError::Cancelled if super::interrupt_pending(slot) => Error::Interrupted,
         ipc::CallError::Cancelled | ipc::CallError::ServiceDied => Error::Dead,
         ipc::CallError::Unavailable => Error::Unavailable,
         ipc::CallError::TimedOut => Error::TimedOut,

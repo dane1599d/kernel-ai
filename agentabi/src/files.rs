@@ -73,6 +73,20 @@ pub const FS_LIST: Action = Action {
     ..read("fs_list", "a folder's names", &[PATH])
 };
 
+/// Files and folders whose names hold a word, in home and every folder below
+/// it: "find my file" (founder test 2).
+pub const FS_FIND: Action = Action {
+    cues: &["find", "search", "where"],
+    ..read(
+        "fs_find",
+        "files whose names hold a word, in every folder",
+        &[Arg {
+            from_request: true,
+            ..arg("name", ArgType::Text { max: 64 }, Role::Target)
+        }],
+    )
+};
+
 pub const FS_READ: Action = Action {
     cues: &["read", "cat"],
     ..read("fs_read", "a file's text", &[PATH])
@@ -91,7 +105,10 @@ pub const FS_CHANGES: Action = Action {
 };
 
 pub const FS_CREATE: Action = Action {
-    cues: &["create"],
+    // Everyday words for a new file (founder test 2): "make a note called
+    // ideas", "new file", "save this". Not "make": "make it snappier" is a
+    // vague want, which no row's cue may claim.
+    cues: &["create", "new", "save", "note"],
     ..change("fs_create", "a new file; never overwrites", &[PATH, TEXT])
 };
 
@@ -118,7 +135,7 @@ pub const FS_MOVE: Action = Action {
 };
 
 pub const FS_TRASH: Action = Action {
-    cues: &["trash", "delete"],
+    cues: &["trash", "delete", "remove", "erase"],
     inverse: Inverse::Trash,
     ..change("fs_trash", "to the trash; undo brings it back", &[PATH])
 };
@@ -144,8 +161,9 @@ pub const FS_EMPTY_TRASH: Action = Action {
 };
 
 /// Every file row, in the order the pack will list them.
-pub const FS_ROWS: [Action; 10] = [
+pub const FS_ROWS: [Action; 11] = [
     FS_LIST,
+    FS_FIND,
     FS_READ,
     FS_HISTORY,
     FS_CHANGES,

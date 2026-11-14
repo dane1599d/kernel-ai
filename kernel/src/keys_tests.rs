@@ -1,8 +1,10 @@
 //! `test=ui-keys` (key input for `uikit` apps): the keyboard reaches an app's
-//! widgets. Notes' window opens and takes the focus; the harness types Tab,
-//! Tab and Enter, which `desktop` posts to the window's event ring, comphost
-//! hands to `uikit`, and `uikit` routes to "New note"; two more Tabs reach the
-//! editor and "hi" goes into the new note. The case reads the note back.
+//! widgets. Notes' window opens and takes the focus, its search field
+//! focused (a window taking the keyboard focuses a text node, #872); the
+//! harness types Tab and Enter, which `desktop` posts to the window's event
+//! ring, comphost hands to `uikit`, and `uikit` routes to "New note", which
+//! focuses the new note's editor; "hi" goes into it. The case reads the note
+//! back.
 //!
 //! `busy`: the same keys while this case calls Notes every [`BUSY_MS`], more
 //! often than comphost's 20 ms poll, from before the keys until after them.

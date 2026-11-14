@@ -90,6 +90,7 @@ mod i8042;
 mod icount_tests;
 mod idt;
 mod input;
+mod interrupt_tests;
 mod ipc;
 mod irq;
 mod keep_tests;
@@ -112,6 +113,7 @@ mod model;
 mod model_import_tests;
 mod model_tests;
 mod models_window_tests;
+mod nap_busy_tests;
 mod nap_tests;
 mod net;
 mod net_commands;
@@ -421,6 +423,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::UiModels => run_case(app_window_tests::models_check),
         SelfTest::UiModelsUse => run_case(models_window_tests::check),
         SelfTest::DeskNap => run_case(nap_tests::check),
+        SelfTest::DeskNapBusy => run_case(nap_busy_tests::check),
         SelfTest::KeepRunning { reread } => run_case(|| keep_tests::check(reread)),
         SelfTest::DeskAppearance => run_case(appearance_tests::check),
         SelfTest::DeskCard => run_case(card_tests::check),
@@ -444,6 +447,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::AppBench => run_case(appbench_tests::check),
         SelfTest::TufBench => run_case(tufbench_tests::check),
         SelfTest::Handles => run_case(handle_tests::check),
+        SelfTest::ShellInterrupt => run_case(interrupt_tests::check),
         SelfTest::Threads => run_case(thread_tests::check),
         SelfTest::ThreadsKill => run_case(thread_tests::kill_check),
         SelfTest::ThreadPin => run_case(thread_tests::pin_check),

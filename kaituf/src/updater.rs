@@ -28,6 +28,10 @@ pub const MAX_ROOT_ROTATIONS: u64 = 256;
 /// How many targets roles one search may visit.
 pub const MAX_DELEGATIONS: usize = 32;
 
+/// What [`Updater::own_targets`] gives: each path a role lists, and its entry
+/// or why it is refused.
+pub type OwnTargets = Vec<(String, Result<TargetFile, String>)>;
+
 /// The repository's metadata store.
 pub trait Remote {
     /// The file `name` (such as `2.root.json` or `timestamp.json`) of at most
@@ -172,8 +176,8 @@ impl<'a> Updater<'a> {
 
     /// The paths targets role `role` lists, loaded as `delegator` delegates it,
     /// for a client that takes every target of one role, as `pkg` takes the
-    /// image's packages. Look each up with [`Updater::target`], which says what
-    /// the first role to name it holds. Call [`Updater::refresh`] first.
+    /// image's packages. [`Updater::own_targets`] gives their entries as the
+    /// role itself lists them. Call [`Updater::refresh`] first.
     pub fn listed(&mut self, role: &str, delegator: &str) -> Result<Vec<String>, Error> {
         self.load_targets(role, delegator)?;
         let targets = self
@@ -181,6 +185,50 @@ impl<'a> Updater<'a> {
             .targets(role)
             .ok_or_else(|| Error::Malformed(alloc::format!("{role} did not load")))?;
         Ok(targets.signed.targets.keys().cloned().collect())
+    }
+
+    /// Each target role `role` lists itself, loaded as `delegator` delegates
+    /// it, for a client that takes every target of one role, as `pkg` takes
+    /// the packages and `updated` the models: the role's own entries, never
+    /// what [`Updater::target`]'s search would find first for the same path,
+    /// in the top-level `targets` or an earlier delegation. An entry whose path
+    /// the delegation does not cover is refused, with why. Call
+    /// [`Updater::refresh`] first.
+    pub fn own_targets(&mut self, role: &str, delegator: &str) -> Result<OwnTargets, Error> {
+        self.load_targets(role, delegator)?;
+        let delegation = self
+            .trusted
+            .targets(delegator)
+            .and_then(|meta| {
+                let mut roles = meta.signed.delegations.iter().flat_map(|d| &d.roles);
+                roles.find(|r| r.name == role).cloned()
+            })
+            .ok_or_else(|| {
+                Error::Malformed(alloc::format!("{delegator} does not delegate {role}"))
+            })?;
+        let own = self
+            .trusted
+            .targets(role)
+            .ok_or_else(|| Error::Malformed(alloc::format!("{role} did not load")))?;
+        let entry = |(path, target): (&String, &TargetFile)| {
+            let found = match delegation.matches(path) {
+                true => Ok(target.clone()),
+                false => Err(alloc::format!("{delegator} delegates no {path} to {role}")),
+            };
+            (path.clone(), found)
+        };
+        Ok(own.signed.targets.iter().map(entry).collect())
+    }
+
+    /// The artifact `path` as the top-level `targets` role itself lists it,
+    /// never a delegation's entry: for a target only that role signs, as the
+    /// OS image and its chunk list. Call [`Updater::refresh`] first.
+    pub fn top_level_target(&self, path: &str) -> Result<Option<TargetFile>, Error> {
+        let top = self
+            .trusted
+            .targets("targets")
+            .ok_or_else(|| Error::Malformed("targets did not load".into()))?;
+        Ok(top.signed.targets.get(path).cloned())
     }
 
     /// The artifact `path` as the first role to name it in a preorder depth-first

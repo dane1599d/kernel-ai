@@ -5,7 +5,9 @@
 //! - the terminal's open entry, clarifying question and proposal are its own: a
 //!   panel line neither answers nor continues them. A question a panel line
 //!   leaves is the panel's own, kept for its next line, which answers it, as
-//!   an app's terminal keeps its own; an open bracket is dropped;
+//!   an app's terminal keeps its own; an open bracket is dropped. A proposal
+//!   the trusted card can show waits for it instead (`deskask`), and the
+//!   person answers there;
 //! - what the bar shows is code's: the result line of what ran, or a fixed
 //!   reason. The model's words, a model-written script's prints and its
 //!   summary are never shown there. They go to the desk's history above the
@@ -40,7 +42,7 @@ const ANSWERED: &str = "Kai answered above.";
 /// The most of what the AI said that the history is given.
 pub const MAX_SAID: usize = 4000;
 const OPEN: &str = "a bracket is still open: type the whole line in the terminal";
-const FAILED: &str = "it did not run: `show` in the terminal says why";
+pub(crate) const FAILED: &str = "it did not run: `show` in the terminal says why";
 const C_WAITS: &str = "a C entry waits for an answer: answer it in the terminal first";
 const C_LINE: &str = "C goes in the terminal";
 
@@ -56,6 +58,13 @@ pub(crate) struct Terminal {
 }
 
 impl Shell {
+    /// The log entry the last panel line made, once: the entry its undo link
+    /// undoes (`undo <id>`), never the newest of another line's. `None` when
+    /// it changed nothing that `undo` takes back.
+    pub fn take_panel_entry(&mut self) -> Option<u64> {
+        self.panel_entry.take()
+    }
+
     /// Runs one panel line: what the panel shows.
     pub fn eval_panel(&mut self, line: &str) -> PanelResult {
         let line = line.trim();
@@ -85,7 +94,10 @@ impl Shell {
         // answers it.
         self.clarifying = self.panel_clarifying.take();
         self.forgot = false;
+        let before = self.log.newest_live();
         let reply = self.eval(line);
+        let after = self.log.newest_live();
+        self.panel_entry = (after != before).then_some(after).flatten();
         // `new` typed here forgets the terminal's question too: one
         // conversation, wherever it was typed.
         if self.forgot {
@@ -93,7 +105,14 @@ impl Shell {
         }
         // Before the result takes the done line, which `said` leaves out.
         self.panel_said = self.said(&reply);
-        let result = self.panel_result(&reply);
+        // A question the card can show waits for it (`deskask`).
+        let result = match reply.confirm.is_some() && self.pending.is_some() {
+            true => match self.wait_for_card(&reply) {
+                Ok(waits) => PanelResult::Done(String::from(waits)),
+                Err(why) => PanelResult::Refused(String::from(why)),
+            },
+            false => self.panel_result(&reply),
+        };
         if let Some(left) = self.pending.take() {
             let outcome = "discarded: the panel cannot ask yet";
             self.record(left.id, &left.request, &left.checked.script, outcome);
@@ -215,7 +234,7 @@ impl Shell {
 
 /// A done line as the panel shows it: desktop draws its own undo control
 /// beside it, so the console's trailing `. undo` goes.
-fn without_undo(line: &str) -> String {
+pub(crate) fn without_undo(line: &str) -> String {
     match line.strip_suffix(". undo") {
         Some(said) => alloc::format!("{said}."),
         None => String::from(line),

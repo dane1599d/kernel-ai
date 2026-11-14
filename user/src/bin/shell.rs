@@ -196,8 +196,8 @@ fn give_appearance(system: &System) {
 /// entry and questions (`Shell::eval_panel`), and reports what came of it:
 /// first what the AI said, for the desk's history (`panel said`), then the
 /// bar's state, code's result line or why not, never the model's words. The
-/// panel shows thinking from the Enter until then. A line that asks first is
-/// asked in the terminal for now; the panel says so.
+/// panel shows thinking from the Enter until then. A line that asks first
+/// waits for the trusted card (`deskask`); the panel says so.
 fn take_panel(shell: &mut Shell) {
     use deskcore::panel::{Request, State};
     use deskcore::panel_wire;
@@ -235,13 +235,31 @@ fn take_panel(shell: &mut Shell) {
         // line never came here.
         _ => return,
     };
-    let Some(request) = panel_wire::encode_state(&shown) else {
+    // A done line names the log entry its undo link takes back.
+    let entry = shell.take_panel_entry();
+    let Some(request) = panel_wire::encode_done(&shown, entry) else {
         return;
     };
     match ask_desktop(route, &request) {
         Ok(answer) if answer == "ok" => {}
         Ok(answer) => println!("the panel's state was not set: {answer}"),
         Err(why) => println!("the panel's state was not set: {why}"),
+    }
+}
+
+/// Shows on the panel what the answer to a desktop line's card came to.
+fn give_card_result(ran: bool, line: String) {
+    use deskcore::panel::State;
+    use deskcore::panel_wire;
+    let shown = match ran {
+        true => State::Done { line },
+        false => State::Refused { reason: line },
+    };
+    let (Some(route), Some(request)) = (desktop(), panel_wire::encode_card(&shown)) else {
+        return;
+    };
+    if let Err(why) = ask_desktop(route, &request) {
+        println!("the panel's state was not set: {why}");
     }
 }
 
@@ -594,6 +612,10 @@ impl Host for System {
         build::ask_pkg(pkg_route()?, request)
     }
 
+    fn installed_rows(&self, package: &str) -> Result<String, String> {
+        build::ask_pkg_long(pkg_route()?, &alloc::format!("actions {package}"))
+    }
+
     fn net_fetch(&self, host: &str, path: &str) -> Result<String, String> {
         net::fetch(host, path)
     }
@@ -786,7 +808,10 @@ impl Host for System {
             &mut reply,
             SCRIPT_CALL_MS,
         )
-        .map_err(|error| unavailable(&alloc::format!("{error:?}")))?;
+        .map_err(|error| match error {
+            kabi::Error::Interrupted => ActError::Stopped,
+            error => unavailable(&alloc::format!("{error:?}")),
+        })?;
         let text = core::str::from_utf8(&reply[..len.min(reply.len())])
             .map_err(|_| unavailable("the reply is not UTF-8"))?;
         match text.split_once(' ').unwrap_or((text, "")) {
@@ -1256,7 +1281,12 @@ fn main() -> i32 {
             if !text.starts_with("answer ") {
                 ui::begin();
             }
-            shell.eval_console(text).to_wire()
+            let reply = shell.eval_console(text).to_wire();
+            // A desktop line's card was answered: the panel shows what came of it.
+            if let Some((ran, line)) = shell.take_card_result() {
+                give_card_result(ran, line);
+            }
+            reply
         } else {
             String::from("err the shell answers only the terminal")
         };
