@@ -277,6 +277,8 @@ pub enum SelfTest {
     Handles,
     /// SHELL_INTERRUPT: the person's Stop ends the shell's call in flight.
     ShellInterrupt,
+    /// CALL_SUBMIT and CALL_POLL: a process serves while its own call is in flight.
+    AsyncCall,
     /// L6: worker threads start, are refused, filtered and torn down.
     Threads,
     /// L6: processes killed mid-run, every thread blocked or computing, free every frame.
@@ -509,6 +511,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=probe" => Some(SelfTest::Probe),
             "test=handles" => Some(SelfTest::Handles),
             "test=shell-interrupt" => Some(SelfTest::ShellInterrupt),
+            "test=async-call" => Some(SelfTest::AsyncCall),
             "test=threads" => Some(SelfTest::Threads),
             "test=threads-kill" => Some(SelfTest::ThreadsKill),
             "test=thread-pin" => Some(SelfTest::ThreadPin),

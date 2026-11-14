@@ -18,6 +18,7 @@
 //! a context switch or `memory::with`. A slot's SPACE lock is only taken by the
 //! process's own threads, with preemption on, before TABLE and MEMORY.
 
+pub mod async_call;
 pub mod burst;
 pub mod components;
 mod exit;
