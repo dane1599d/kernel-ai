@@ -7,10 +7,11 @@
 # KEYS holds root.key and release.key, each encrypted with its own passphrase,
 # and their root.pub and release.pub. Each <role>.canon in WORK with no .sig is
 # copied once to a private folder; before any passphrase, it prints the two
-# keys and the keys each copy names. It then signs each copy, root with
-# root.key and the rest with release.key, and writes the raw Ed25519 signature
-# in hex as <role>.sig. Passphrases are never echoed and reach openssl on a
-# pipe. No network call. Bash 3.2 (macOS) and later; OpenSSL 3 at a fixed path.
+# keys, the keys each copy names and the packages it signs. It then signs each
+# copy, root with root.key and the rest with release.key, and writes the raw
+# Ed25519 signature in hex as <role>.sig. Passphrases are never echoed and
+# reach openssl on a pipe. No network call. Bash 3.2 (macOS) and later;
+# OpenSSL 3 at a fixed path.
 set -euo pipefail -o noclobber
 umask 077
 ulimit -c 0
@@ -54,6 +55,9 @@ echo "release.key is $(hex "$keys/release.pub")"
 for copy in "$@"; do
   echo "$(basename "$copy").canon names: $( (grep -o '"public":"[0-9a-f]*"' "$copy" || true) | cut -d'"' -f4 | sort -u | tr '\n' ' ')"
 done
+# The packages the release signs: each must be in the prepare job's list on GitHub.
+[ ! -e "$tmp/packages" ] || { grep -o -e '"[^"]*\.kpkg":{' -e '"hashes":{"sha256":"[0-9a-f]*"}' "$tmp/packages" || true; } |
+  awk -F'"' '/kpkg/ { name = $2 } /hashes/ { print "packages.canon signs " name ", sha256 " $6 }'
 
 # sign KEY ROLE...: asks for KEY's passphrase, checks it, then signs each ROLE.
 sign() {

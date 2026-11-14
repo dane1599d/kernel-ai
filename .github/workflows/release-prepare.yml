@@ -1,0 +1,74 @@
+# The files a release's founder signs (P4 task 18, interim key files;
+# docs/release/root-ceremony.md, "Each release"). Started by hand only, on the
+# commit to be released, after `release/keys/` is committed.
+#
+# Two clean runners each run `cargo xtask release-repo prepare`: it builds the
+# components as `release-image` does, packs the built-in apps, and writes each
+# role's canonical bytes with the packages it signs (`packages/` and their
+# SHA256SUMS). The job refuses unless both runners packed byte-identical
+# packages, then lists their SHA-256s in its summary and uploads runner a's
+# files as `release-prepare-<sha>`: what the founder signs, and what a session
+# carries to the transfer stick. The founder compares the packages the sign
+# script prints with this summary, on GitHub. A tag's `release-image` packs the
+# apps again and refuses any that are not the signed bytes.
+name: Release prepare
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    name: Pack and prepare (runner ${{ matrix.runner }})
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        runner: [a, b]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Outside the checkout: an untracked file would mark the build -dirty.
+      - run: mkdir -p "$RUNNER_TEMP/out" && echo "OUT=$RUNNER_TEMP/out" >> "$GITHUB_ENV"
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo xtask release-repo prepare --dir "$OUT/work" | tee "$OUT/prepare.log"
+      - name: The build left the tree clean
+        run: test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: prepare-${{ matrix.runner }}
+          path: ${{ env.OUT }}/work
+
+  compare:
+    name: Both runners packed the same bytes; the files to sign
+    needs: prepare
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: prepare-*
+      - name: The packages are byte for byte the same on both runners
+        run: |
+          (cd prepare-a/packages && sha256sum -c SHA256SUMS)
+          diff -r prepare-a/packages prepare-b/packages
+          {
+            echo "## The packages to sign, at $GITHUB_SHA"
+            echo
+            echo "The sign script prints each as \`packages.canon signs <name>, sha256 <hash>\`: each must be here."
+            echo
+            echo '```'
+            cat prepare-a/packages/SHA256SUMS
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-prepare-${{ github.sha }}
+          path: prepare-a/

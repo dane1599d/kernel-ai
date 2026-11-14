@@ -67,13 +67,27 @@ fn sign_here(work: &Path) {
     }
 }
 
+/// Two built-in apps as packages, as `packages::pack` lists them: the bytes
+/// stand in for a packed `.kpkg`, which needs the components built.
+fn targets() -> Vec<Target> {
+    let package = |name: &str, bytes: &[u8]| Target {
+        path: format!("{name}-1.0.0.kpkg"),
+        bytes: bytes.to_vec(),
+        kai: json!({ "name": name, "version": "1.0.0", "actions": [format!("{name}_find")] }),
+    };
+    vec![
+        package("files", b"files package"),
+        package("notes", b"notes package"),
+    ]
+}
+
 fn release(
     paths: &Paths,
     models: &[Model],
     version: u64,
     sign: &dyn Fn(&Path),
 ) -> Result<(), String> {
-    prepare(paths, models, version, NOW)?;
+    prepare(paths, &targets(), models, version, NOW)?;
     sign(&paths.work);
     prepare_timestamp(paths, NOW)?;
     sign(&paths.work);
@@ -89,7 +103,7 @@ fn in_one_go(models: &[Model]) -> Vec<(String, Vec<u8>)> {
         ..Keys::one(&release)
     };
     let models = tuf::sign_models(models).unwrap();
-    let mut files: Vec<_> = sign::build_with_models(&[], &models, &keys, NOW, ADR_0008)
+    let mut files: Vec<_> = sign::build_with_models(&targets(), &models, &keys, NOW, ADR_0008)
         .unwrap()
         .into_iter()
         .filter(|(path, _)| path.starts_with("metadata/"))
@@ -122,9 +136,15 @@ fn signed_apart_the_release_is_what_signing_in_one_go_writes() {
     let written = read_repository(&paths.repo).unwrap();
     assert_eq!(written, in_one_go(&models));
     let keys = FileKeys::read(&paths.keys).unwrap();
+    // The packages `prepare` wrote are the ones it signed.
+    let built = packages::read(&paths.work).unwrap();
+    assert_eq!(built, packages::built(&targets()));
+    let sums = fs::read_to_string(paths.work.join("packages/SHA256SUMS")).unwrap();
+    assert!(sums.contains("  notes-1.0.0.kpkg\n"), "{sums}");
     check_repository(
         &written,
         &models,
+        Some(&built),
         &keys,
         NOW,
         Mode::Signed {
@@ -144,7 +164,7 @@ fn a_later_release_keeps_the_frozen_root() {
     release(&paths, &models, 1, &sign_here).unwrap();
     let root = fs::read(paths.repo.join(image::ROOT)).unwrap();
     let later = Time(NOW.0 + 86_400);
-    prepare(&paths, &models, 2, later).unwrap();
+    prepare(&paths, &targets(), &models, 2, later).unwrap();
     assert!(!paths.work.join("root.canon").exists());
     sign_here(&paths.work);
     prepare_timestamp(&paths, later).unwrap();
@@ -167,7 +187,7 @@ fn a_later_release_keeps_the_frozen_root() {
     assert_eq!(fs::read(paths.repo.join(image::ROOT)).unwrap(), root);
     // A root that names other keys is never re-signed to fit them.
     fs::write(paths.keys.join("release.pub"), pem(&key(ROOT_SEED))).unwrap();
-    let refused = prepare(&paths, &models, 3, NOW).unwrap_err();
+    let refused = prepare(&paths, &targets(), &models, 3, NOW).unwrap_err();
     assert!(refused.contains("frozen"), "{refused}");
 }
 
@@ -175,7 +195,7 @@ fn a_later_release_keeps_the_frozen_root() {
 fn a_signature_that_is_not_the_keys_is_refused_by_name() {
     let paths = workspace("badsig");
     let models = models::catalog().unwrap();
-    prepare(&paths, &models, 1, NOW).unwrap();
+    prepare(&paths, &targets(), &models, 1, NOW).unwrap();
     sign_here(&paths.work);
     prepare_timestamp(&paths, NOW).unwrap();
     sign_here(&paths.work);
@@ -196,7 +216,7 @@ fn a_catalog_model_without_a_chunk_list_is_not_signed() {
     let paths = workspace("nolist");
     let mut models = models::catalog().unwrap();
     models[0].chunks = None;
-    let refused = prepare(&paths, &models, 1, NOW).unwrap_err();
+    let refused = prepare(&paths, &targets(), &models, 1, NOW).unwrap_err();
     assert!(refused.contains("no committed chunk list"), "{refused}");
 }
 
@@ -210,21 +230,91 @@ fn a_models_role_that_is_not_the_catalog_fails_the_check() {
     release(&paths, &models, 1, &sign_here).unwrap();
     let keys = FileKeys::read(&paths.keys).unwrap();
     let files = read_repository(&paths.repo).unwrap();
-    check_repository(&files, &models, &keys, NOW, Mode::Committed { most: 1 }).unwrap();
+    check_repository(
+        &files,
+        &models,
+        None,
+        &keys,
+        NOW,
+        Mode::Committed { most: 1 },
+    )
+    .unwrap();
     // Within 60 days of root's expiry, the committed repository no longer
     // passes: root version 2 is due.
     let late = Time(NOW.0 + 320 * sign::DAY);
-    let refused = check_repository(&files, &models, &keys, late, Mode::Committed { most: 1 });
+    let refused = check_repository(
+        &files,
+        &models,
+        None,
+        &keys,
+        late,
+        Mode::Committed { most: 1 },
+    );
     assert!(
         refused
             .unwrap_err()
             .contains("1.root.json: it expires sooner than 60 days")
     );
     models.push(last);
-    let refused =
-        check_repository(&files, &models, &keys, NOW, Mode::Committed { most: 1 }).unwrap_err();
+    let refused = check_repository(
+        &files,
+        &models,
+        None,
+        &keys,
+        NOW,
+        Mode::Committed { most: 1 },
+    )
+    .unwrap_err();
     assert!(
         refused.contains("1.models.json is not what `release-repo prepare` writes"),
+        "{refused}"
+    );
+}
+
+/// A build whose packages are not the signed ones is refused, naming the
+/// package and both hashes, as is a package signed and not built or built and
+/// not signed. With no build (`ci.yml`), the role is held by its shape alone.
+#[test]
+fn packages_not_the_signed_ones_are_named_with_both_hashes() {
+    let paths = workspace("packages");
+    let models = models::catalog().unwrap();
+    release(&paths, &models, 1, &sign_here).unwrap();
+    let keys = FileKeys::read(&paths.keys).unwrap();
+    let files = read_repository(&paths.repo).unwrap();
+    let check = |built: Option<&[(String, Vec<u8>)]>| {
+        check_repository(
+            &files,
+            &models,
+            built,
+            &keys,
+            NOW,
+            Mode::Committed { most: 1 },
+        )
+    };
+    check(None).unwrap();
+    let mut built = packages::built(&targets());
+    check(Some(&built)).unwrap();
+    built[1].1 = b"notes, rebuilt".to_vec();
+    let refused = check(Some(&built)).unwrap_err();
+    let (signed, packed) = (
+        crate::sha256_hex(b"notes package"),
+        crate::sha256_hex(b"notes, rebuilt"),
+    );
+    assert!(refused.starts_with("notes-1.0.0.kpkg: "), "{refused}");
+    assert!(
+        refused.contains(&signed) && refused.contains(&packed),
+        "{refused}"
+    );
+    let refused = check(Some(&built[..1])).unwrap_err();
+    assert!(
+        refused.contains("signs notes-1.0.0.kpkg, which this build does not pack"),
+        "{refused}"
+    );
+    let mut more = packages::built(&targets());
+    more.push(("terminal-1.0.0.kpkg".into(), b"terminal".to_vec()));
+    let refused = check(Some(&more)).unwrap_err();
+    assert!(
+        refused.contains("packs terminal-1.0.0.kpkg, which"),
         "{refused}"
     );
 }
@@ -273,7 +363,7 @@ fn a_role_edited_before_it_was_signed_is_refused() {
     ];
     for (name, role, edit) in edits {
         let paths = workspace(name);
-        prepare(&paths, &models, 1, NOW).unwrap();
+        prepare(&paths, &targets(), &models, 1, NOW).unwrap();
         tamper(&paths.work, role, edit);
         sign_here(&paths.work);
         prepare_timestamp(&paths, NOW).unwrap();
@@ -292,7 +382,7 @@ fn a_role_edited_before_it_was_signed_is_refused() {
 fn a_version_other_than_this_releases_is_refused() {
     let paths = workspace("version");
     let models = models::catalog().unwrap();
-    prepare(&paths, &models, 1, NOW).unwrap();
+    prepare(&paths, &targets(), &models, 1, NOW).unwrap();
     sign_here(&paths.work);
     prepare_timestamp(&paths, NOW).unwrap();
     sign_here(&paths.work);
@@ -313,7 +403,7 @@ fn a_committed_root_not_signed_by_root_key_is_refused() {
     let mut root: Value = serde_json::from_slice(&fs::read(&at).unwrap()).unwrap();
     root["signatures"][0]["sig"] = json!("00".repeat(64));
     fs::write(&at, sign::canonical(&root).unwrap()).unwrap();
-    let refused = prepare(&paths, &models, 2, NOW).unwrap_err();
+    let refused = prepare(&paths, &targets(), &models, 2, NOW).unwrap_err();
     assert!(
         refused.contains("no valid signature by root.key"),
         "{refused}"
@@ -335,7 +425,7 @@ fn the_runbook_pins_the_sign_script() {
     );
     let text = String::from_utf8(script).unwrap();
     assert!(
-        text.lines().count() <= 80,
+        text.lines().count() <= 90,
         "release-sign.sh stays short enough to read"
     );
     for word in ["curl", "wget", "/dev/tcp", "ssh", "nc ", "git ", "http"] {

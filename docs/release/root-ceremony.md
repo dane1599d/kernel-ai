@@ -13,7 +13,7 @@ You chose this on 2026-11-14. Two Ed25519 key files, each encrypted with its own
 | `root.key` | root (version 1, once) | 1 of 1 |
 | `release.key` | targets, packages (empty), models, snapshot, timestamp | 1 of 1 each |
 
-**What it gives a release.** The image carries `release/pkgrepo/` as `pkgrepo/`. Its `models` role names every model in `xtask/models.json`, so Models imports them, and it is what the download offers come from. Its `1.root.json` also ships as `kai.root.json`, the root that update disks and the online repository are checked against. One root covers both, and the YubiKey root later chains from it.
+**What it gives a release.** The image carries `release/pkgrepo/` as `pkgrepo/`. Its `packages` role signs the built-in apps (Files, Notes, Terminal and the rest) as packages, which the image carries beside it. The shell learns each app's actions from its installed package, so Kai can call an app by name before it has run. Its `models` role names every model in `xtask/models.json`, so Models imports them, and it is what the download offers come from. Its `1.root.json` also ships as `kai.root.json`, the root that update disks and the online repository are checked against. One root covers both, and the YubiKey root later chains from it.
 
 **What it does not do.** The kernel boots any model disk attached as `kai-model`, or a disk that starts with the GGUF magic, without a signature. That is how `cargo xtask vbox` VMs get their model, and attaching `kai-model.vmdk` to a release VM works without any key. On VirtualBox no disk can be the import disk (`kai-import`), so the role matters there only for downloads.
 
@@ -39,7 +39,7 @@ A WSL distro of its own and `env -i` do not stop that. WSL2 also does not start 
 - The key stick never goes into this PC. Files move between this PC and the signing machine on a second stick, the transfer stick. What it carries is public.
 - The sign script runs from the key stick, never from a checkout, because a session could change a checkout between your review and your run.
   - Check its SHA-256 before each run against the one you wrote down.
-  - The script at the commit that added it has this SHA-256: `34c9577c91a89a832bb4e41d572e8b15372cd0cee58e2d832047131fef8751c2`.
+  - The script at the commit that added it has this SHA-256: `d359cb20f8fb7d5441f13d0eb5c712783d37db82ea66ef9cf5939896caeeca9c`.
   - A test in `xtask/src/release_repo/tests.rs` holds this page to the script, so a change to either shows in review.
   - It runs in macOS's bash 3.2 and with Linux's or Git for Windows' bash. It uses the first OpenSSL 3 it finds at `/usr/bin/openssl` or Homebrew's `openssl@3`.
 - Root files are frozen once committed. `cargo xtask release-repo` reuses `1.root.json` and never signs root again. CI fails a pull request or a push to main that changes or removes any committed `*.root.json`, and a tag whose root files differ from any earlier release's. Two different "version 1" roots would split devices, because `updated` keeps a cached root of the same version.
@@ -81,7 +81,7 @@ On the fallback path, in Git Bash on this PC, `O` is `/usr/bin/openssl`, and the
    - Run `for k in root release; do echo "$k: $($O pkey -pubin -in $k.pub -outform DER | tail -c 32 | od -An -v -tx1 | tr -d ' \n')"; done`. It prints two lines of 64 hex digits. Write both on the paper you keep with the passphrases: these are "the digits on your paper".
    - In a browser, open `kernel-ai` on GitHub, then Settings → Environments → `release` → Environment variables. Add `RELEASE_ROOT_KEY` with root's digits, and `RELEASE_KEY` with release's. Do this yourself, not through a session.
 8. Get the sign script at the commit the session names (this page's pull request, once merged): `/usr/bin/curl -fsSLo release-sign.sh https://raw.githubusercontent.com/dane1599d/kernel-ai/<commit>/scripts/release-sign.sh`.
-   - Read it: it is under 80 lines.
+   - Read it: it is under 90 lines.
    - Run `$O dgst -sha256 release-sign.sh`. It must match the SHA-256 above.
    - Write it on the paper too.
 9. Save both passphrases in your password manager, and on the paper, kept away from the sticks.
@@ -93,11 +93,17 @@ On the fallback path, in Git Bash on this PC, `O` is `/usr/bin/openssl`, and the
 
 Signing takes two rounds, because the timestamp holds the hash of the signed snapshot.
 
-1. Plug the transfer stick into this PC. The session runs `cargo xtask release-repo prepare --dir <transfer stick>\kai-release\<version>`. It pastes the `sha256` line `prepare` printed for each file. Eject the transfer stick.
+**Every release signs the packages again**, along with targets and the rest. You sign each built-in app's exact bytes, and any change to an app changes them. A tag whose apps are not the signed bytes is refused (`release-image` names the app and both hashes), and you sign again from step 1.
+
+1. The session runs the "Release prepare" workflow on GitHub on the commit to be released.
+   - Two runners build the apps, and it goes on only when both packed byte-identical packages. Its summary page lists each package with its SHA-256. The session gives you that page's link.
+   - With the transfer stick in this PC, the session downloads the workflow's files (`release-prepare-<commit>`) to `<transfer stick>\kai-release\<version>`. It pastes the `sha256` line `prepare` printed for each file.
+   - Eject the transfer stick.
 2. On the signing machine, plug in the key stick and the transfer stick. Run `env -i /bin/bash --noprofile --norc`, and set `O`, `K` and `T` as in setup step 2.
 3. Run `$O dgst -sha256 "$K/release-sign.sh"`. It must match the SHA-256 on your paper. If it does not, stop.
 4. Run `/bin/bash --noprofile --norc "$K/release-sign.sh" "$K" "$T/kai-release/<version>"`. Before any passphrase, it prints `root.key is …` and `release.key is …`, then for each file the keys it names.
    - Every one of those numbers must be one of the two on your paper. If any is not, press Ctrl-C and stop.
+   - Then it prints `packages.canon signs <name>, sha256 <hash>` for each package. Each must be on the Release prepare summary page from step 1, which you open yourself on GitHub. If one is not, press Ctrl-C and stop.
    - Then type each passphrase it asks for. Root's is asked only for the first release, the one that signs root. If it asks for root's on any later release, press Ctrl-C and stop: root is frozen, so a request for it means someone changed the folder.
    - For each file it prints `signed <file> with <key>: sha256 <hash>`. Each hash must be the one the session pasted for that file. If one differs, the folder changed after `prepare`: tell the session, and nothing goes further.
 5. Run `exit`, eject both sticks, take the transfer stick back to this PC, and tell the session "signed".
@@ -105,13 +111,13 @@ Signing takes two rounds, because the timestamp holds the hash of the signed sna
 7. The session runs `cargo xtask release-repo assemble`, which checks:
    - every signature;
    - the repository, as a device checks it;
-   - that every signed byte is what `prepare` writes for `release/keys/` and `xtask/models.json`;
+   - that every signed byte is what `prepare` writes for `release/keys/` and `xtask/models.json`, and that the packages role signs exactly the packages from step 1;
    - that each expiry is within a week of its full period.
 
    Then it commits `release/pkgrepo/` and opens a pull request. CI checks the same on clean runners, on that pull request and on every later one. The release dry run boots the image and imports qwen3-0.6b under the role you signed.
 8. When the tag's release workflow has drafted the release, open the draft on GitHub. Its notes end with "Signing keys", root's digits and release's. They must be the digits on your paper. Only then press **Publish release**. If they differ, delete the draft and find out why before anything is signed or published again.
 
-The session never needs the key stick or a passphrase. A change to `xtask/models.json` or its chunk lists fails CI until the repository is signed again this way. Allow a week from step 1 to step 7: past that, `assemble` refuses the expiries, and you start again at step 1.
+The session never needs the key stick or a passphrase. A change to `xtask/models.json` or its chunk lists fails CI until the repository is signed again this way. A change to an app fails the tag's build until its package is signed again. Allow a week from step 1 to step 7: past that, `assemble` refuses the expiries, and you start again at step 1.
 
 **What is still trusted:** you sign the bytes the session prepared.
 - The checks catch a repository that is not what xtask writes, a key that is not yours, and a folder changed after `prepare`.

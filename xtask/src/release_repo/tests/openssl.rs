@@ -99,7 +99,7 @@ fn the_script_shows_every_key_before_a_passphrase() {
     }
     let paths = workspace("showkeys");
     let stick = stick(&paths);
-    prepare(&paths, &models::catalog().unwrap(), 1, NOW).unwrap();
+    prepare(&paths, &targets(), &models::catalog().unwrap(), 1, NOW).unwrap();
     // No passphrase given: it stops at the first prompt, having shown the keys.
     let out = sign_script(&stick, &paths.work, "");
     let shown = String::from_utf8(out.stdout).unwrap();
@@ -124,6 +124,14 @@ fn the_script_shows_every_key_before_a_passphrase() {
     assert_eq!(names("root"), both);
     assert_eq!(names("targets"), [release.as_str()]);
     assert!(names("snapshot").is_empty());
+    // And each package it signs, as the prepare job lists them.
+    for (path, bytes) in packages::built(&targets()) {
+        let line = format!(
+            "packages.canon signs {path}, sha256 {}",
+            crate::sha256_hex(&bytes)
+        );
+        assert!(shown.contains(&line), "{line} in {shown}");
+    }
 }
 
 /// RFC 8032 test 2 through the script, then a whole release in its two
@@ -188,7 +196,7 @@ fn a_wrong_passphrase_signs_nothing() {
     }
     let paths = workspace("wrongpass");
     let stick = stick(&paths);
-    prepare(&paths, &models::catalog().unwrap(), 1, NOW).unwrap();
+    prepare(&paths, &targets(), &models::catalog().unwrap(), 1, NOW).unwrap();
     let out = sign_script(
         &stick,
         &paths.work,

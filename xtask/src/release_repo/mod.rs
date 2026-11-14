@@ -6,8 +6,10 @@
 //! only their public halves, `release/keys/root.pub` and `release.pub`.
 //!
 //! 1. `prepare` writes each role's canonical `signed` bytes as `<role>.canon`
-//!    in the work folder (`target/release-repo`): targets, packages (empty),
-//!    models and snapshot, at version `release_seq`, and root at version 1.
+//!    in the work folder (`target/release-repo`): targets, packages, models
+//!    and snapshot, at version `release_seq`, and root at version 1.
+//!    `packages` lists the built-in apps packed from this build's components,
+//!    whose bytes it writes beside the role files (`packages.rs`).
 //!    `models` lists [`models::catalog`], each model with its committed chunk
 //!    list, never a test fixture. A committed root is frozen: it is reused,
 //!    never signed again, and it must name the same two keys.
@@ -28,12 +30,14 @@ use crate::pkgrepo::tuf;
 use check::{Mode, check_repository, read_repository};
 use kaipkg::generation::Time;
 use kaipkg::image;
+use kaipkg::sign::Target;
 use kaipkg::sign::{self, ADR_0008, MODELS, PACKAGES, PublicKey, Roles};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 mod check;
+pub mod packages;
 #[cfg(test)]
 mod tests;
 
@@ -71,7 +75,9 @@ pub fn main(args: &[String]) -> Result<(), String> {
     match command.as_str() {
         "prepare" => {
             let version = crate::release_image::release_seq(&root)?.into();
-            prepare(&paths, &models::catalog()?, version, now)?;
+            let versions = crate::components::build(&root)?;
+            let targets = packages::pack(&root, &versions)?;
+            prepare(&paths, &targets, &models::catalog()?, version, now)?;
             println!(
                 "xtask: sign them: release-sign.sh <key folder> {}",
                 paths.work.display()
@@ -94,7 +100,8 @@ pub fn main(args: &[String]) -> Result<(), String> {
             println!("xtask: wrote {} (commit it)", paths.repo.display());
             Ok(())
         }
-        "check" => match committed(&root)? {
+        // Hash-only: the packages are not built here (`ci.yml`).
+        "check" => match committed(&root, None)? {
             Some(files) => {
                 println!("xtask: {REPO} verifies: {} files", files.len());
                 Ok(())
@@ -183,10 +190,17 @@ pub fn read_public(pem: &str) -> Result<PublicKey, String> {
         .ok_or_else(|| "not an Ed25519 public key".into())
 }
 
-/// The roles of the release repository for `models` at `version`, each
-/// role's canonical bytes written to the work folder as `<role>.canon`, the
-/// committed root's excepted. Old `.canon` and `.sig` files go first.
-fn prepare(paths: &Paths, models: &[Model], version: u64, now: Time) -> Result<(), String> {
+/// The roles of the release repository for `targets`, the built-in apps'
+/// packages, and `models` at `version`, each role's canonical bytes written
+/// to the work folder as `<role>.canon`, the committed root's excepted, and
+/// the packages' bytes beside them. Old `.canon` and `.sig` files go first.
+fn prepare(
+    paths: &Paths,
+    targets: &[Target],
+    models: &[Model],
+    version: u64,
+    now: Time,
+) -> Result<(), String> {
     let keys = FileKeys::read(&paths.keys)?;
     if let Some(model) = models.iter().find(|m| m.chunks.is_none()) {
         return Err(format!(
@@ -194,7 +208,7 @@ fn prepare(paths: &Paths, models: &[Model], version: u64, now: Time) -> Result<(
             model.id
         ));
     }
-    let plan = plan(&keys, models, version, now)?;
+    let plan = plan(&keys, targets, models, version, now)?;
     clear(&paths.work)?;
     let mut roles = Vec::new();
     match frozen_root(paths, &keys, &plan.root)? {
@@ -210,18 +224,20 @@ fn prepare(paths: &Paths, models: &[Model], version: u64, now: Time) -> Result<(
     for (role, signed) in roles {
         write_canon(&paths.work, role, signed)?;
     }
-    Ok(())
+    packages::write(&paths.work, &packages::built(targets))
 }
 
-/// The roles a release signs: `models` and no package, named by `keys`.
+/// The roles a release signs: `targets`, the built-in apps' packages, and
+/// `models`, named by `keys`.
 fn plan(
     keys: &FileKeys,
+    targets: &[Target],
     models: &[Model],
     version: u64,
     now: Time,
 ) -> Result<sign::Unsigned, String> {
     let models = tuf::sign_models(models)?;
-    sign::unsigned(&[], &models, &keys.roles(), now, ADR_0008, version)
+    sign::unsigned(targets, &models, &keys.roles(), now, ADR_0008, version)
 }
 
 /// The committed root, if there is one, once it is checked to be `root` but
@@ -276,7 +292,9 @@ fn assemble(paths: &Paths, models: &[Model], version: u64, now: Time) -> Result<
     }
     let (timestamp, _) = signed_file(&paths.work, "timestamp", &keys)?;
     files.push((sign::TIMESTAMP_PATH.into(), timestamp));
-    check_repository(&files, models, &keys, now, Mode::Signed { version, fresh })?;
+    let built = packages::read(&paths.work)?;
+    let mode = Mode::Signed { version, fresh };
+    check_repository(&files, models, Some(&built), &keys, now, mode)?;
     write_repository(&paths.repo, &files)
 }
 

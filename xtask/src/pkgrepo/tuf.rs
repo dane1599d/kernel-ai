@@ -92,17 +92,21 @@ pub fn build_with_models(
     keys: &Keys,
     now: Time,
 ) -> Result<Repository, String> {
-    let targets: Vec<Target> = packages
-        .iter()
-        .map(|package| Target {
-            path: package.target(),
-            bytes: package.bytes.clone(),
-            kai: package.index(),
-        })
-        .collect();
+    let targets = sign_targets(packages);
     let models = sign_models(models)?;
     let files = sign::build_with_models(&targets, &models, &keys.roles(), now, ADR_0008)?;
     Ok(Repository { files })
+}
+
+/// `packages` as the `packages` role lists them: each `<name>-<version>.kpkg`
+/// with its bytes and `custom.kai` index fields.
+pub fn sign_targets(packages: &[Package]) -> Vec<Target> {
+    let target = |package: &Package| Target {
+        path: package.target(),
+        bytes: package.bytes.clone(),
+        kai: package.index(),
+    };
+    packages.iter().map(target).collect()
 }
 
 /// `models` as the `models` role lists them: each `<id>.gguf`, and its chunk
