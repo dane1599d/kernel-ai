@@ -446,6 +446,14 @@ jobs:
           echo "$out" | grep -q '^round 2 of release 1: signs timestamp$'
           echo "$out" | grep -q '^timestamp.canon expires .*, in 7 days$'
           verify timestamp release
+          # The stick's ledger has both rounds, and a release is signed once.
+          cat "$t/keys/signed.log"
+          test "$(wc -l < "$t/keys/signed.log" | tr -d ' ')" = 2
+          head -1 "$t/keys/signed.log" | grep -Eq '^1 1 models=[0-9a-f]{64} packages=[0-9a-f]{64} root=[0-9a-f]{64} snapshot=[0-9a-f]{64} targets=[0-9a-f]{64}$'
+          tail -1 "$t/keys/signed.log" | grep -Eq '^2 1 timestamp=[0-9a-f]{64}$'
+          rm "$w/timestamp.sig"
+          if printf 'test pass\n' | sign 2> "$t/err"; then exit 1; fi
+          grep -q 'is not the last round these keys signed' "$t/err"
 
   sign:
     name: Sign as TUF targets (test root), accept and refuse

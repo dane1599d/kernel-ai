@@ -292,10 +292,10 @@ fn assemble(
     repack: Repack,
 ) -> Result<(), String> {
     let keys = FileKeys::read(&paths.keys)?;
-    let (root, fresh) = match fs::read(paths.repo.join(image::ROOT)) {
-        Ok(bytes) => (bytes, false),
+    let root = match fs::read(paths.repo.join(image::ROOT)) {
+        Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            (signed_file(&paths.work, "root", &keys)?.0, true)
+            signed_file(&paths.work, "root", &keys)?.0
         }
         Err(e) => return Err(format!("cannot read the committed root: {e}")),
     };
@@ -307,7 +307,7 @@ fn assemble(
     let (timestamp, _) = signed_file(&paths.work, "timestamp", &keys)?;
     files.push((sign::TIMESTAMP_PATH.into(), timestamp));
     let built = repack(&packages::read(&paths.work)?)?;
-    let mode = Mode::Signed { version, fresh };
+    let mode = Mode::Signed { version };
     check_repository(&files, models, Some(&built), &keys, now, mode)?;
     write_repository(&paths.repo, &files)
 }

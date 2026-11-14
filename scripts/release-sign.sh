@@ -5,15 +5,17 @@
 #   env -i /bin/bash --noprofile --norc release-sign.sh KEYS WORK
 #
 # KEYS holds root.key and release.key, each encrypted with its own passphrase,
-# and their root.pub and release.pub. Each <role>.canon in WORK with no .sig is
-# copied once to a private folder, and they must be one round's files. Before
-# any passphrase, it prints the round, the two keys, the keys each copy names,
-# each model and package it signs and when each file expires, refusing any
-# file that is not the text xtask writes. It then signs each copy,
-# root with root.key and the rest with release.key, and writes the raw
-# Ed25519 signature in hex as <role>.sig. Passphrases are never echoed and
-# reach openssl on a pipe. No network call. Bash 3.2 (macOS) and later;
-# OpenSSL 3 at a fixed path.
+# and their root.pub and release.pub, and the ledger signed.log, a line for
+# each round they signed. Each <role>.canon in WORK with no .sig is copied once
+# to a private folder, and they must be one round's files. Before any
+# passphrase, it prints the clock, the round, the two keys, the keys each copy
+# names, the ledger, each model and package it signs and when each file
+# expires, refusing any file that is not the text xtask writes and any round
+# the ledger rules out. It then signs each copy, root with root.key and the
+# rest with release.key, writes the raw Ed25519 signature in hex as
+# <role>.sig, and logs the round. Passphrases are never echoed and reach
+# openssl on a pipe. No network call. Bash 3.2 (macOS) and later; OpenSSL 3
+# at a fixed path.
 set -euo pipefail -o noclobber
 umask 077
 ulimit -c 0
@@ -29,6 +31,8 @@ for at in /usr/bin/openssl /opt/homebrew/opt/openssl@3/bin/openssl /usr/local/op
 done
 [ -n "$openssl" ] || { echo "no OpenSSL 3 at /usr/bin or Homebrew's openssl@3" >&2; exit 1; }
 echo "using $openssl: $("$openssl" version)"
+now=$(date -u +%s)
+echo "this machine's clock: $(date -u +%Y-%m-%dT%H:%M:%SZ) UTC. If that is not now, press Ctrl-C."
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -67,8 +71,17 @@ echo "round $round of release $seq: signs $files"
 
 # Every number below must be one of the two on your paper. Each key a file
 # names must be a plain Ed25519 key in lower-case hex, so every one is shown.
-hex() { "$openssl" pkey -pubin -in "$1" -outform DER | tail -c 32 | od -An -v -tx1 | tr -d ' \n'; }
-rk=$(hex "$keys/root.pub") rel=$(hex "$keys/release.pub")
+hex() {
+  local der
+  der=$("$openssl" pkey -pubin -in "$1" -outform DER | od -An -v -tx1 | tr -d ' \n')
+  case "$der" in
+    302a300506032b6570032100*) [ ${#der} -eq 88 ] && printf '%s' "${der#302a300506032b6570032100}" && return ;;
+  esac
+  echo "$1 is not an Ed25519 public key: nothing signed" >&2
+  return 1
+}
+rk=$(hex "$keys/root.pub")
+rel=$(hex "$keys/release.pub")
 echo "root.key is $rk"
 echo "release.key is $rel"
 count() { (grep -o -- "$2" "$1" || true) | wc -l | tr -d ' '; }
@@ -103,23 +116,47 @@ if [ "$round" = 2 ]; then
   snap=$(signed | "$openssl" dgst -sha256 -r | cut -c1-64) size=$(signed | wc -c | tr -d ' ')
   echo "round 1 signed snapshot.canon as $size bytes, sha256 $snap: timestamp.canon must name it"
 fi
+# signed.log, beside the keys: one line for each round these keys signed. A
+# release number is signed once, root once (or the same bytes again), and
+# round 2 follows its own round 1.
+log=$keys/signed.log
+[ ! -L "$log" ] || { echo "$log is a link: nothing signed" >&2; exit 1; }
+touch -- "$log"
+sha() { "$openssl" dgst -sha256 -r "$1" | cut -c1-64; }
+last=$(awk '$1 == 1 && $2 + 0 > m { m = $2 + 0 } END { print m + 0 }' "$log")
+rooted=$(awk '{ for (i = 3; i <= NF; i++) if ($i ~ /^root=/) { print substr($i, 6); exit } }' "$log")
+case "$last" in
+  0) echo "signed.log: these keys have signed no release yet" ;;
+  *) echo "signed.log: the last release these keys signed is $last" ;;
+esac
+if [ "$round" = 1 ]; then
+  [ "$seq" -gt "$last" ] || { echo "release $seq is not above $last, the last these keys signed: nothing signed" >&2; exit 1; }
+  [ ! -e "$tmp/root" ] || [ -z "$rooted" ] || [ "$(sha "$tmp/root")" = "$rooted" ] ||
+    { echo "these keys signed another root before: nothing signed" >&2; exit 1; }
+else
+  case "$(tail -n 1 "$log")" in
+    "1 $seq "*" snapshot=$(sha "$tmp/.snapshot") "*) ;;
+    *) echo "round 1 of release $seq, with this snapshot, is not the last round these keys signed: nothing signed" >&2; exit 1 ;;
+  esac
+fi
 # root (version 1, root.key for root and release.key for the rest), targets
 # (no target of its own; *.kpkg to packages, then *.gguf and *.chunks to
-# models, both release.key's), snapshot and timestamp are fixed texts, their
-# dates and the spec version aside: no other role can speak for a package or
-# a model, and each _type is the file's own.
-stamp() { sed -e 's/"expires":"[0-9:TZ-]*"/"expires":"E"/' -e 's/"spec_version":"[0-9.]*"/"spec_version":"S"/' "$1"; }
+# models, both release.key's), snapshot and timestamp are fixed texts at TUF
+# spec 1.0.37, their dates aside: no other role can speak for a package or a
+# model, and each _type is the file's own.
+spec=1.0.37
+stamp() { sed -e 's/"expires":"[0-9:TZ-]*"/"expires":"E"/' "$1"; }
 norm() { stamp "$1" | sed "s/\"version\":$seq\([,}]\)/\"version\":N\1/g"; }
-ends='"terminating":true,"threshold":1}' v='{"version":N}'
+ends='"terminating":true,"threshold":1}' v='{"version":N}' sv='"spec_version":"'$spec'"'
 rw='{"_type":"root","consistent_snapshot":true,"expires":"E","keys":{'$ks'},"roles":{'$(of root "$rid")','
-rw=$rw$(of snapshot "$lid")','$(of targets "$lid")','$(of timestamp "$lid")'},"spec_version":"S","version":1}'
+rw=$rw$(of snapshot "$lid")','$(of targets "$lid")','$(of timestamp "$lid")'},'$sv',"version":1}'
 tw='{"_type":"targets","delegations":{"keys":{'$(key "$lid" "$rel")'},"roles":[{"keyids":["'$lid'"],"name":"packages",'
 tw=$tw'"paths":["*.kpkg"],'$ends',{"keyids":["'$lid'"],"name":"models","paths":["*.gguf","*.chunks"],'$ends']},'
-tw=$tw'"expires":"E","spec_version":"S","targets":{},"version":N}'
+tw=$tw'"expires":"E",'$sv',"targets":{},"version":N}'
 sw='{"_type":"snapshot","expires":"E","meta":{"models.json":'$v',"packages.json":'$v',"targets.json":'$v'},'
-sw=$sw'"spec_version":"S","version":N}'
+sw=$sw$sv',"version":N}'
 mw='{"_type":"timestamp","expires":"E","meta":{"snapshot.json":{"hashes":{"sha256":"'$snap'"},"length":'$size','
-mw=$mw'"version":N}},"spec_version":"S","version":N}'
+mw=$mw'"version":N}},'$sv',"version":N}'
 pin() {
   [ ! -e "$tmp/$1" ] || [ "$($3 "$tmp/$1")" = "$2" ] ||
     { echo "$1.canon is not what xtask writes: nothing signed" >&2; exit 1; }
@@ -154,7 +191,8 @@ walk='
     }
     { s = s $0 }
     END {
-      top = "^[{]\"_type\":\"targets\",\"expires\":\"[0-9:TZ-]+\",\"spec_version\":\"[0-9.]+\",\"targets\":[{]"
+      sv = spec; gsub(/[.]/, "[.]", sv)
+      top = "^[{]\"_type\":\"targets\",\"expires\":\"[0-9:TZ-]+\",\"spec_version\":\"" sv "\",\"targets\":[{]"
       pre = "{\"custom\":{\"kai\":"
       if (NR != 1 || !match(s, top)) exit 1
       for (i = RLENGTH + 1; substr(s, i, 1) != "}"; i = k) {
@@ -179,7 +217,7 @@ walk='
     }'
 for role in models packages; do
   [ -e "$tmp/$role" ] || continue
-  listed=$(awk -v role="$role" -v seq="$seq" "$walk" "$tmp/$role") ||
+  listed=$(awk -v role="$role" -v seq="$seq" -v spec="$spec" "$walk" "$tmp/$role") ||
     { echo "$role.canon is not what xtask writes: nothing signed" >&2; exit 1; }
   n=$(($(count "$tmp/$role" '\.kpkg":{') + $(count "$tmp/$role" '\.gguf":{') + $(count "$tmp/$role" '\.chunks":{')))
   [ "$(printf '%s' "$listed" | grep -c "^$role" || true)" = "$n" ] ||
@@ -188,8 +226,9 @@ for role in models packages; do
 done
 # Each role expires its full period from now, less up to the week signing may
 # take: root, targets, packages and models 365 days, snapshot 30 and timestamp
-# 7. This machine's clock must be right.
-now=$(date -u +%s)
+# 7. This machine's clock must be right. Every file is held to its shape
+# above, so its first expiry is its own, the top-level one, and it must be a
+# real date.
 for copy in "$@"; do
   name=$(basename "$copy")
   case "$name" in snapshot) days=30 ;; timestamp) days=7 ;; *) days=365 ;; esac
@@ -205,8 +244,14 @@ for copy in "$@"; do
         exit 1
       }
       t = substr(s, RSTART + 11, 20)
-      at = day(substr(t, 1, 4), substr(t, 6, 2), substr(t, 9, 2)) * 86400
-      at += substr(t, 12, 2) * 3600 + substr(t, 15, 2) * 60 + substr(t, 18, 2)
+      y = substr(t, 1, 4) + 0; mo = substr(t, 6, 2) + 0; d = substr(t, 9, 2) + 0
+      hh = substr(t, 12, 2) + 0; mi = substr(t, 15, 2) + 0; ss = substr(t, 18, 2) + 0
+      last = mo == 2 ? 28 + (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) : 30 + (mo + (mo > 7)) % 2
+      if (mo < 1 || mo > 12 || d < 1 || d > last || hh > 23 || mi > 59 || ss > 59) {
+        print name ".canon expires " t ", not a real date: nothing signed" > "/dev/stderr"
+        exit 1
+      }
+      at = day(y, mo, d) * 86400 + hh * 3600 + mi * 60 + ss
       line = name ".canon expires " t ", in " int((at - now) / 86400 + 0.5) " days"
       if (at >= now + (days - 7) * 86400 && at <= now + (days + 1) * 86400) { print line; exit }
       print line ", not within a week of " days ": nothing signed" > "/dev/stderr"
@@ -214,15 +259,19 @@ for copy in "$@"; do
     }' "$copy" || exit 1
 done
 
-# sign KEY ROLE...: asks for KEY's passphrase, checks it, then signs each ROLE.
+# sign KEY ROLE...: asks for KEY's passphrase, checks it and that KEY.pub is
+# its public key, then signs each ROLE.
 sign() {
-  local key="$keys/$1.key" pass sig name
+  local key="$keys/$1.key" pass sig name want=$rel
+  case "$1" in root) want=$rk ;; esac
   shift
   [ $# -gt 0 ] || return 0
   IFS= read -rsp "Passphrase for $(basename "$key"): " pass
   echo >&2
-  printf '%s\n' "$pass" | "$openssl" pkey -in "$key" -passin stdin -noout ||
+  printf '%s\n' "$pass" | "$openssl" pkey -in "$key" -passin stdin -pubout > "$tmp/.$(basename "$key").pub" ||
     { echo "not the passphrase of $key: nothing signed with it" >&2; exit 1; }
+  [ "$(hex "$tmp/.$(basename "$key").pub")" = "$want" ] ||
+    { echo "$key is not the key its .pub names: nothing signed with it" >&2; exit 1; }
   for name in "$@"; do
     sig=$(printf '%s\n' "$pass" | "$openssl" pkeyutl -sign -rawin -inkey "$key" -passin stdin -in "$tmp/$name" |
       od -An -v -tx1 | tr -d ' \n')
@@ -236,3 +285,8 @@ sign() {
 # ${a[@]+"${a[@]}"}: an empty array under `set -u`, which bash 3.2 refuses.
 sign root ${root[@]+"${root[@]}"}
 sign release ${release[@]+"${release[@]}"}
+# The ledger's line for this round, once every file is signed.
+line="$round $seq"
+for copy in "$@"; do line="$line $(basename "$copy")=$(sha "$copy")"; done
+printf '%s\n' "$line" >> "$log"
+echo "signed.log: round $round of release $seq"

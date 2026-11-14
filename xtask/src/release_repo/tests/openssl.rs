@@ -373,6 +373,12 @@ fn redate(work: &Path, role: &str, days: u64) {
     fs::write(&path, format!(r#"{head}"expires":"{at}{}"#, &rest[20..])).unwrap();
 }
 
+/// The key stick's `signed.log` beside `work`'s folder (`stick`) set to
+/// `lines`.
+fn ledger(work: &Path, lines: &str) {
+    fs::write(work.with_file_name("stick").join("signed.log"), lines).unwrap();
+}
+
 /// How many `.sig` files `work` holds.
 fn sigs(work: &Path) -> usize {
     let entries = fs::read_dir(work).unwrap().flatten();
@@ -532,6 +538,52 @@ fn the_script_signs_only_a_rounds_own_files_as_xtask_writes_them() {
             },
             refused: "snapshot.sig is not release.key's signature of snapshot.canon",
         },
+        Round {
+            name: "spec",
+            second: false,
+            change: |w| {
+                swap(
+                    w,
+                    "snapshot",
+                    r#""spec_version":"1.0.37""#,
+                    r#""spec_version":"1.0.38""#,
+                )
+            },
+            refused: "snapshot.canon is not what xtask writes",
+        },
+        Round {
+            name: "not-a-date",
+            second: false,
+            change: |w| {
+                let text = fs::read_to_string(w.join("packages.canon")).unwrap();
+                let (_, rest) = text.split_once(r#""expires":""#).unwrap();
+                swap(w, "packages", &rest[..20], "2027-02-30T00:00:00Z")
+            },
+            refused: "packages.canon expires 2027-02-30T00:00:00Z, not a real date",
+        },
+        Round {
+            name: "signed-before",
+            second: false,
+            change: |w| ledger(w, "1 1 models=0 packages=0 snapshot=0 targets=0\n"),
+            refused: "release 1 is not above 1, the last these keys signed",
+        },
+        Round {
+            name: "another-root",
+            second: false,
+            change: |w| {
+                ledger(
+                    w,
+                    &format!("1 0 root={} snapshot=0 targets=0\n", "a".repeat(64)),
+                )
+            },
+            refused: "these keys signed another root before",
+        },
+        Round {
+            name: "no-round-one",
+            second: true,
+            change: |w| ledger(w, ""),
+            refused: "is not the last round these keys signed",
+        },
     ];
     for case in cases {
         let name = case.name;
@@ -541,6 +593,12 @@ fn the_script_signs_only_a_rounds_own_files_as_xtask_writes_them() {
         if case.second {
             sign_here(&paths.work);
             prepare_timestamp(&paths, clock()).unwrap();
+            // What the script's round 1 would have logged on the stick.
+            let snapshot = crate::sha256_hex(&fs::read(paths.work.join("snapshot.canon")).unwrap());
+            ledger(
+                &paths.work,
+                &format!("1 1 models=0 packages=0 snapshot={snapshot} targets=0\n"),
+            );
         }
         (case.change)(&paths.work);
         let before = sigs(&paths.work);
@@ -609,6 +667,45 @@ fn the_script_signs_as_kaipkg_does() {
         read_repository(&paths.repo).unwrap(),
         in_one_go_at(&models, now)
     );
+    // The stick's ledger has a line for each round: round 1 with each file's
+    // SHA-256, root's included, then round 2.
+    let log = fs::read_to_string(stick.join("signed.log")).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(lines.len(), 2, "{log}");
+    let sha = |role: &str| {
+        crate::sha256_hex(&fs::read(paths.work.join(format!("{role}.canon"))).unwrap())
+    };
+    let one =
+        ["models", "packages", "root", "snapshot", "targets"].map(|r| format!("{r}={}", sha(r)));
+    assert_eq!(lines[0], format!("1 1 {}", one.join(" ")));
+    assert_eq!(lines[1], format!("2 1 timestamp={}", sha("timestamp")));
+}
+
+/// A key file that is not the key its `.pub` names signs nothing, even with
+/// its own passphrase: the script holds each `.key` to the `.pub` it showed.
+#[test]
+fn a_key_that_is_not_its_pub_signs_nothing() {
+    if !openssl_3() {
+        return;
+    }
+    let paths = workspace("notpub");
+    let stick = stick(&paths);
+    prepare(&paths, &targets(), &models::catalog().unwrap(), 1, clock()).unwrap();
+    sign_here(&paths.work);
+    prepare_timestamp(&paths, clock()).unwrap();
+    let snapshot = crate::sha256_hex(&fs::read(paths.work.join("snapshot.canon")).unwrap());
+    ledger(
+        &paths.work,
+        &format!("1 1 models=0 packages=0 snapshot={snapshot} targets=0\n"),
+    );
+    // release.key is now root's key, under release's passphrase.
+    fs::remove_file(stick.join("release.key")).unwrap();
+    key_file(&stick.join("release.key"), ROOT_SEED, RELEASE_PASS);
+    let out = sign_script(&stick, &paths.work, &format!("{RELEASE_PASS}\n"));
+    let said = String::from_utf8(out.stderr).unwrap();
+    assert!(!out.status.success());
+    assert!(said.contains("is not the key its .pub names"), "{said}");
+    assert!(!paths.work.join("timestamp.sig").exists());
 }
 
 /// A wrong passphrase signs nothing.

@@ -39,7 +39,7 @@ A WSL distro of its own and `env -i` do not stop that. WSL2 also does not start 
 - The key stick never goes into this PC. Files move between this PC and the signing machine on a second stick, the transfer stick. What it carries is public.
 - The sign script runs from the key stick, never from a checkout, because a session could change a checkout between your review and your run.
   - Check its SHA-256 before each run against the one you wrote down.
-  - The script at the commit that added it has this SHA-256: `7845ec9070ffa59d8b54a2daf280101d00abf6847a08926c04d1032bff90c117`.
+  - The script at the commit that added it has this SHA-256: `0f2c93bffdc3057bebf1cf5fa02aac4d3ebbb8bf08a719fdaab33b06de7249ed`.
   - A test in `xtask/src/release_repo/tests.rs` holds this page to the script, so a change to either shows in review.
   - It runs in macOS's bash 3.2 and with Linux's or Git for Windows' bash. It uses the first OpenSSL 3 it finds at `/usr/bin/openssl` or Homebrew's `openssl@3`.
 - Root files are frozen once committed. `cargo xtask release-repo` reuses `1.root.json` and never signs root again. CI fails a pull request or a push to main that changes or removes any committed `*.root.json`, and a tag whose root files differ from any earlier release's. Two different "version 1" roots would split devices, because `updated` keeps a cached root of the same version.
@@ -98,7 +98,10 @@ Signing takes two rounds, because the timestamp holds the hash of the signed sna
 
 The script refuses a folder that holds anything else to sign, or misses one of these.
 
-**A release number is signed once.** If anything goes wrong after round 1 is signed (a refusal, a changed file, a round done again), don't sign that number again: the session raises `release/seq`, and you start again at step 1. The snapshot names each role by its version alone, so files from two signings of one number could be mixed.
+**A release number is signed once, and root once.** The script keeps a ledger, `signed.log`, beside the keys on the key stick: one line for each round it signs. It refuses a round 1 whose number is not above the last one logged, a root other than the one these keys already signed, and a round 2 that does not follow its own round 1. The snapshot names each role by its version alone, so files from two signings of one number could otherwise be mixed.
+- If anything goes wrong after round 1 is signed (a refusal, a changed file, a round done again), the session raises `release/seq`, and you start again at step 1.
+- If that was the first release, root is not signed again. The session copies the first try's `root.canon` and `root.sig` into the new folder, over the `root.canon` that `prepare` wrote. The script then asks only for the release passphrase.
+- The key stick must be writable. Never delete or edit `signed.log`. When you check `KAIKEYS2` each year, copy `signed.log` to it too.
 
 **Every release signs the packages again**, along with targets and the rest. You sign each built-in app's exact bytes, and any change to an app changes them. A tag whose apps are not the signed bytes is refused (`release-image` names the app and both hashes), and you sign again from step 1.
 
@@ -109,15 +112,17 @@ The script refuses a folder that holds anything else to sign, or misses one of t
    - Eject the transfer stick.
 2. On the signing machine, plug in the key stick and the transfer stick. Run `env -i /bin/bash --noprofile --norc`, and set `O`, `K` and `T` as in setup step 2.
 3. Run `$O dgst -sha256 "$K/release-sign.sh"`. It must match the SHA-256 on your paper. If it does not, stop.
-4. Run `/bin/bash --noprofile --norc "$K/release-sign.sh" "$K" "$T/kai-release/<version>"`. Before any passphrase, it prints `round 1 of release <n>: signs …` (in step 6, `round 2 of release <n>: signs timestamp`), then `root.key is …` and `release.key is …`, then for each file the keys it names.
+4. Run `/bin/bash --noprofile --norc "$K/release-sign.sh" "$K" "$T/kai-release/<version>"`. Before any passphrase, it prints this machine's clock in UTC, then `round 1 of release <n>: signs …` (in step 6, `round 2 of release <n>: signs timestamp`), then `root.key is …` and `release.key is …`, then for each file the keys it names, then what `signed.log` holds.
+   - The clock must be now, give or take a few minutes. If not, press Ctrl-C and set it first.
    - The round must be the one you are on, and `<n>` the release number the session told you. If not, press Ctrl-C and stop.
    - Every one of those numbers must be one of the two on your paper. If any is not, press Ctrl-C and stop.
-   - At the first release, it holds `root.canon` to version 1 of the root xtask writes for your two keys: root.key for root, release.key for targets, snapshot and timestamp, each key named by its own id. It refuses any other root, and any root on a later release.
+   - At the first release, it holds `root.canon` to version 1 of the root xtask writes for your two keys: root.key for root, release.key for targets, snapshot and timestamp, each key named by its own id. It refuses any other root. Through `signed.log`, it also refuses a second root once these keys have signed one; the one exception is the same file again, from a failed first release.
    - In round 2, it first checks that `snapshot.sig` is release.key's signature of `snapshot.canon`, and prints `round 1 signed snapshot.canon as <n> bytes, sha256 <hash>`: the timestamp must name exactly that.
    - Then, in round 1, it prints `models.canon signs <file>, sha256 <hash>, length <n>` for each model and chunk list (with `name`, `licence` and `source` for a model), and `packages.canon signs <name>, sha256 <hash>, grants [...], actions [...], yanked false` for each package. Each whole line must be on the Release prepare summary page from step 1. Today every built-in app says `grants []`. If a line is not there, press Ctrl-C and stop.
    - Last, it prints `<file>.canon expires <date>, in <n> days` for each file: 365 days for root, targets, packages and models, 30 for snapshot and 7 for timestamp. It refuses one not within a week of that, so this machine's clock must be right.
-   - If the script stops with "is not one line of printable ASCII", "is not what xtask writes", "not one round's files", "is not a snapshot", "a key that is not lower-case hex Ed25519", "are one key", "is not release.key's signature" or "not within a week of", stop too: someone changed the folder, or this machine's clock is wrong.
-   - Then type each passphrase it asks for. Root's is asked only for the first release, the one that signs root. If it asks for root's on any later release, press Ctrl-C and stop: root is frozen, so a request for it means someone changed the folder.
+   - If the script stops with "is not one line of printable ASCII", "is not what xtask writes", "not one round's files", "is not a snapshot", "a key that is not lower-case hex Ed25519", "is not an Ed25519 public key", "are one key", "is not release.key's signature", "not within a week of", "not a real date", "is not above", "signed another root before" or "is not the last round these keys signed", stop too: someone changed the folder, or this machine's clock is wrong.
+   - Then type each passphrase it asks for. Root's is asked only for the first release, the one that signs root. If it asks for root's on any later release, press Ctrl-C and stop: root is frozen, so a request for it means someone changed the folder. After each passphrase it checks that the key file is the key its `.pub` names, and signs nothing with it if not.
+   - Last, it adds this round's line to `signed.log` and prints `signed.log: round <r> of release <n>`.
    - For each file it prints `signed <file> with <key>: sha256 <hash>`. Each hash must be the one the session pasted for that file. If one differs, the folder changed after `prepare`: tell the session, and nothing goes further.
 5. Run `exit`, eject both sticks, take the transfer stick back to this PC, and tell the session "signed".
 6. The session runs `cargo xtask release-repo prepare-timestamp` and pastes its one `sha256` line. Repeat steps 2 to 5. This time it asks only for the release passphrase.
