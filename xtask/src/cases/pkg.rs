@@ -91,7 +91,12 @@ pub(super) const CASES: &[TestCase] = &[
     // the mirror's `extra`, whose summary is written as an instruction, shows as
     // text, and Enter on it sends the shell only `install extra`. With no mock
     // model, a request to the model would fail the case.
+    // Its plan's quotas come to 104 MiB with the shell, the supervisor's
+    // included, against an admission budget (free / 2) of about 105 MiB in the
+    // 512 MiB default: a slightly bigger boot image left the shell refused
+    // (NoMemory, run 43622590769). 1024 MiB gives it room.
     TestCase {
+        memory_mib: Some(1024),
         expect: &[
             "pkg: big installed from the mirror as generation 2, fetched in 2 pieces",
             "desktop: the Apps sheet lists 9 apps, 8 installed",

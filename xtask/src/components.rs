@@ -281,6 +281,23 @@ pub const TEST_ONLY: &[Version] = &[
             wit: &["apps/grant-fixture/wit", "wit/kai-ui"],
         },
     },
+    // The `wait-reads` case's window: its buttons queue one `fs_list` or one
+    // `fs_create` while the shell waits on the model, and its action says what
+    // came of each, in order (the founder's test 2, item 7).
+    Version {
+        label: "1",
+        recipe: Recipe {
+            component: "wait-window",
+            krate: "comp-wait-fixture",
+            dirs: &["apps/wait-fixture"],
+            feature: None,
+            wit: &[
+                "apps/wait-fixture/world",
+                "wit/kai-ui",
+                "apps/wait-fixture/wit",
+            ],
+        },
+    },
     // The `net-grant` case's headless app: it fetches a fixed list of URLs
     // through `kai:net`, and the case answers the shell's cards for their
     // hosts (P5 task 13).
@@ -727,6 +744,39 @@ mod tests {
             "app:fixture-window/fixture-window@1.0.0"
         );
         assert!(parsed.actions.unwrap().contains("fs_list"));
+    }
+
+    /// `wait-reads`' fixture packs with its two effect rows and its one
+    /// action, under its own world.
+    #[test]
+    fn the_wait_fixture_packs_with_its_effects_and_actions() {
+        let fixture = TEST_ONLY
+            .iter()
+            .find(|v| v.recipe.component == "wait-window")
+            .unwrap();
+        let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+        let root = crate::workspace_root();
+        let source = artifact::bundle(&[("apps/wait-fixture/src/lib.rs", b"//")]);
+        let bytes = pack(&root, &fixture.recipe, fixture.label, module, &source).unwrap();
+        let parsed = artifact::parse(&bytes).unwrap();
+        assert_eq!(parsed.manifest.world, "app:wait-window/wait-window@1.0.0");
+        let text = parsed.actions.unwrap();
+        assert!(text.contains("effects fs_list fs_create"), "{text}");
+        let actions = livecore::actions::parse(text).unwrap();
+        assert_eq!(actions.rows.len(), 1, "{text}");
+        // The shell loads them as comphost answers `kai-actions 1`, under the
+        // running version, and its effects may call the two rows the world
+        // declares.
+        let mut rows = shellcore::apps::AppRows::default();
+        let answer = format!(
+            "version 1
+{text}"
+        );
+        assert_eq!(rows.load("wait-window", &answer), Ok(1));
+        assert!(rows.find_in("wait-window", "wait_seen").is_some());
+        assert!(rows.may_effect("wait-window", "fs_list"));
+        assert!(rows.may_effect("wait-window", "fs_create"));
+        assert!(!rows.may_effect("wait-window", "fs_trash"));
     }
 
     /// The editor build carries its three action rows, under its world.

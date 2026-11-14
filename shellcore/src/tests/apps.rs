@@ -6,7 +6,7 @@ use super::act::with_calls;
 use super::*;
 use alloc::vec;
 
-const NOTES: &str = "version 2
+pub(super) const NOTES: &str = "version 2
 kai-actions 1
 world app:notes/notes@1.0.0
 effects fs_create

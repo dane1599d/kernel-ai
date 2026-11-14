@@ -1,0 +1,16 @@
+/// A test fixture, never shipped: a window whose two buttons queue one read or
+/// one change as a person's effect, for the `wait-reads` boot case, and whose
+/// action (`app:wait/actions`) says what came of each.
+package app:wait-window@1.0.0;
+
+/// The OS rows the app queues as effects, and the only ones the agent core runs
+/// for it (effects are deny-by-default).
+/// kai: effects=fs_list fs_create
+world wait-window {
+    include kai:app/component@0.1.0;
+    import kai:app/effects@0.1.0;
+    import kai:ui/view@0.1.1;
+    export kai:ui/input@0.1.1;
+    export kai:app/events@0.1.0;
+    export app:wait/actions@1.0.0;
+}
