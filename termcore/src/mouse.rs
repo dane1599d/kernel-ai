@@ -13,6 +13,9 @@ const Y_SIGN: u8 = 1 << 5;
 const X_OVERFLOW: u8 = 1 << 6;
 const Y_OVERFLOW: u8 = 1 << 7;
 const BUTTON_BITS: u8 = 0b111;
+/// An IntelliMouse's wheel byte: a 4-bit signed count, so a byte outside this
+/// range is not one.
+const WHEEL_RANGE: core::ops::RangeInclusive<i8> = -8..=7;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Button {
@@ -102,10 +105,20 @@ impl Decoder {
         }
     }
 
+    /// Drops a partial packet: the byte stream changed hands (the console's
+    /// decoder and `desktop`'s each saw only part of it), so the next byte
+    /// must start a packet.
+    pub fn reset(&mut self) {
+        self.len = 0;
+    }
+
     /// Adds one byte and returns the packet it completes, if any. A first byte
     /// without bit 3 cannot start a packet and is dropped, so a stream that lost a
-    /// byte finds its way back to a packet start. A packet with either overflow bit
-    /// is dropped whole: its deltas are not the motion.
+    /// byte finds its way back to a packet start. So is a first byte whose wheel
+    /// byte is out of [`WHEEL_RANGE`]: the stream lost sync, and the packet's
+    /// other three bytes are scanned again for a start. A packet with either
+    /// overflow bit keeps its buttons and wheel, but not its deltas, which are
+    /// not the motion.
     pub fn push(&mut self, byte: u8) -> Option<Packet> {
         if self.len == 0 && byte & ALWAYS_ONE == 0 {
             return None;
@@ -118,14 +131,27 @@ impl Decoder {
         }
         self.len = 0;
         let [flags, x, y, z] = self.bytes;
-        if flags & (X_OVERFLOW | Y_OVERFLOW) != 0 {
+        let wheel = if self.wheel { z as i8 } else { 0 };
+        if !WHEEL_RANGE.contains(&wheel) {
+            // Three bytes cannot complete a 4-byte packet: nothing comes back.
+            for byte in [x, y, z] {
+                self.push(byte);
+            }
             return None;
         }
+        let overflow = flags & (X_OVERFLOW | Y_OVERFLOW) != 0;
+        let motion = |low, sign| {
+            if overflow {
+                0
+            } else {
+                delta(low, flags & sign != 0)
+            }
+        };
         Some(Packet {
-            dx: delta(x, flags & X_SIGN != 0),
-            dy: delta(y, flags & Y_SIGN != 0),
+            dx: motion(x, X_SIGN),
+            dy: motion(y, Y_SIGN),
             buttons: Buttons(flags & BUTTON_BITS),
-            wheel: if self.wheel { z as i8 } else { 0 },
+            wheel,
         })
     }
 }
@@ -243,10 +269,52 @@ mod tests {
     }
 
     #[test]
-    fn overflow_packets_are_dropped_whole() {
-        let (packets, count) = decode(&[0x48, 0x10, 0x10, 0x88, 0x10, 0x10, 0x08, 0x01, 0x01]);
-        assert_eq!(count, 1);
-        assert_eq!(packets[0], packet(1, 1, 0));
+    fn overflow_packets_keep_buttons_but_not_motion() {
+        let (packets, count) = decode(&[0x49, 0x10, 0x10, 0x88, 0x10, 0x10, 0x08, 0x01, 0x01]);
+        assert_eq!(count, 3);
+        assert_eq!(packets[0], packet(0, 0, 1));
+        assert_eq!(packets[1], packet(0, 0, 0));
+        assert_eq!(packets[2], packet(1, 1, 0));
+    }
+
+    #[test]
+    fn an_overflow_packet_keeps_its_wheel() {
+        let mut decoder = Decoder::new();
+        decoder.set_wheel(true);
+        let got = [0x48, 0x10, 0x10, 0x02].map(|byte| decoder.push(byte));
+        assert_eq!(got[3].map(|p| (p.dx, p.dy, p.wheel)), Some((0, 0, 2)));
+    }
+
+    #[test]
+    fn a_wheel_byte_out_of_range_rescans_for_a_packet_start() {
+        let mut decoder = Decoder::new();
+        decoder.set_wheel(true);
+        // Misframed: the stream starts at a packet's X byte (0x08, which has bit
+        // 3), so the next packet's flags byte 0x18 lands in the wheel slot.
+        // 0x18 is 24 detents: lost sync. The rescan finds 0x18 as a start.
+        let got = [0x08, 0x00, 0x00, 0x18, 0xFF, 0x00, 0x01].map(|byte| decoder.push(byte));
+        assert_eq!(got[3], None, "no false scroll");
+        assert_eq!(
+            got[6],
+            Some(Packet {
+                dx: -1,
+                dy: 0,
+                buttons: Buttons::NONE,
+                wheel: 1,
+            })
+        );
+        assert_eq!(got.iter().flatten().count(), 1);
+    }
+
+    #[test]
+    fn a_reset_drops_the_partial_packet() {
+        let mut decoder = Decoder::new();
+        decoder.set_wheel(true);
+        assert_eq!(decoder.push(0x08), None);
+        assert_eq!(decoder.push(0x05), None);
+        decoder.reset();
+        let got = [0x09, 2, 3, 0].map(|byte| decoder.push(byte));
+        assert_eq!(got[3].map(|p| (p.dx, p.dy, p.wheel)), Some((2, 3, 0)));
     }
 
     #[test]

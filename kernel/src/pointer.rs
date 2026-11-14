@@ -12,6 +12,9 @@ use spin::Mutex;
 use termcore::mouse::{Button, Buttons, Cursor, Decoder};
 
 static LOG: AtomicBool = AtomicBool::new(false);
+/// Set when the mouse stream changes hands (`input::set_taking`): the console's
+/// decoder drops its partial packet before its next byte.
+static HANDED_OVER: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy)]
 struct Click {
@@ -38,6 +41,11 @@ static POINTER: Mutex<Pointer> = Mutex::new(Pointer {
     clicks: [None; 2],
 });
 
+/// The mouse stream changed hands: see [`HANDED_OVER`]. Safe in any context.
+pub fn handed_over() {
+    HANDED_OVER.store(true, Ordering::Release);
+}
+
 pub fn configure(cmdline: &str) {
     let on = cmdline.split_whitespace().any(|arg| arg == "pointerlog");
     LOG.store(on, Ordering::Relaxed);
@@ -54,6 +62,9 @@ pub fn on_byte(byte: u8, ctrl: bool) {
     let log = LOG.load(Ordering::Relaxed);
     let (cell_width, cell_height) = console::cell();
     let mut pointer = POINTER.lock();
+    if HANDED_OVER.swap(false, Ordering::AcqRel) {
+        pointer.decoder.reset();
+    }
     pointer.decoder.set_wheel(i8042::has_wheel());
     let Some(packet) = pointer.decoder.push(byte) else {
         return;

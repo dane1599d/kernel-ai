@@ -146,8 +146,9 @@ pub struct Pointer {
     pub range: Option<(u32, u32)>,
 }
 
-/// A boot mouse report: buttons, then X and Y movement as signed bytes, and on
-/// many mice a wheel byte.
+/// A boot mouse report: buttons, then X and Y movement as signed bytes. What
+/// follows is the device's own (the boot protocol defines no wheel), so a
+/// mouse whose descriptor places a wheel is read by its layout instead.
 pub fn boot_mouse(report: &[u8]) -> Option<Pointer> {
     if report.len() < 3 {
         return None;
@@ -156,7 +157,7 @@ pub fn boot_mouse(report: &[u8]) -> Option<Pointer> {
         buttons: report[0] & 0x1F,
         x: i32::from(report[1] as i8),
         y: i32::from(report[2] as i8),
-        wheel: report.get(3).map_or(0, |&w| i32::from(w as i8)),
+        wheel: 0,
         range: None,
     })
 }

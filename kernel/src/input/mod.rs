@@ -59,6 +59,9 @@ static TAKING: AtomicBool = AtomicBool::new(false);
 /// While `desktop` holds the screen, keys go to the console while this is set
 /// (INPUT_TO_CONSOLE).
 static LEASED: AtomicBool = AtomicBool::new(false);
+/// Set when the mouse stream changes hands: the interrupt side's decoder drops
+/// its partial packet before its next byte.
+static MOUSE_HANDED_OVER: AtomicBool = AtomicBool::new(false);
 
 /// The interrupt side's decoders: one producer, the CPU that takes IRQ1.
 struct Decoders {
@@ -84,9 +87,14 @@ pub fn taking() -> bool {
     TAKING.load(Ordering::Acquire)
 }
 
-/// `desktop` holds the screen (`true`) or the console does.
+/// `desktop` holds the screen (`true`) or the console does. A change hands
+/// the mouse's byte stream over mid-packet, perhaps: each side's PS/2 decoder
+/// starts its next packet afresh.
 pub fn set_taking(on: bool) {
-    TAKING.store(on, Ordering::Release);
+    if TAKING.swap(on, Ordering::AcqRel) != on {
+        MOUSE_HANDED_OVER.store(true, Ordering::Release);
+        crate::pointer::handed_over();
+    }
 }
 
 /// INPUT_TO_CONSOLE: lends the keys to the console until the lease ends, or
@@ -137,6 +145,9 @@ fn route(byte: u8, aux: bool) -> (Route, bool) {
     if aux {
         if !taking {
             return (Route::Console, false);
+        }
+        if MOUSE_HANDED_OVER.swap(false, Ordering::AcqRel) {
+            decoders.mouse.reset();
         }
         decoders.mouse.set_wheel(i8042::has_wheel());
         if let Some(packet) = decoders.mouse.push(byte) {
