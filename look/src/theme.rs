@@ -134,6 +134,34 @@ pub const HOVER_MARKS: [Token; 2] = [Token::Focus, Token::AiMark];
 /// gate there.
 pub const HOVER_NEVER: [Token; 3] = [Token::Dim, Token::Ai, Token::LineStrong];
 
+/// A contrast gate a theme fails: `token` on `ground` is `ratio`:1, under `least`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shortfall {
+    pub token: Token,
+    pub ground: Token,
+    pub ratio: f64,
+    pub least: f64,
+}
+
+impl Shortfall {
+    /// The words a refusal gives: `muted on hover is 4.32:1, under 4.5:1`.
+    pub fn message(&self) -> String {
+        format!(
+            "{} on {} is {:.2}:1, under {}:1",
+            TOKEN_NAMES[position(&Token::ALL, &self.token)],
+            TOKEN_NAMES[position(&Token::ALL, &self.ground)],
+            self.ratio,
+            self.least,
+        )
+    }
+
+    /// Whether the ground is one the desktop added with "Kai Desk" (`shell`,
+    /// `hover`), which a theme or saved colour from before it never met.
+    pub fn is_on_a_desktop_ground(&self) -> bool {
+        matches!(self.ground, Token::Shell | Token::Hover)
+    }
+}
+
 /// A whole theme: a colour for every token, a type for every style and a
 /// motion for every motion token.
 #[derive(Clone, Debug, PartialEq)]
@@ -321,36 +349,34 @@ impl Theme {
         Err("no such token, style or motion")
     }
 
+    /// The first contrast gate the theme fails, in [`Theme::check`]'s order: the
+    /// four full grounds, then `hover`'s own lists.
+    pub fn shortfall(&self) -> Option<Shortfall> {
+        let held = |ground: Token, tokens: &[Token], least: f64| {
+            let on = self.colour(ground);
+            tokens.iter().find_map(|&token| {
+                let ratio = crate::contrast(self.colour(token), on);
+                (ratio < least).then_some(Shortfall {
+                    token,
+                    ground,
+                    ratio,
+                    least,
+                })
+            })
+        };
+        let full = GROUNDS
+            .iter()
+            .find_map(|&ground| held(ground, &TEXT, 4.5).or_else(|| held(ground, &MARKS, 3.0)));
+        // `hover` is a restricted ground: only what is drawn on it is held to it.
+        full.or_else(|| held(Token::Hover, &HOVER_TEXT, 4.5))
+            .or_else(|| held(Token::Hover, &HOVER_MARKS, 3.0))
+    }
+
     /// Whether the theme may be shown: contrast, the AI's colour, sizes and
     /// motions.
     pub fn check(&self) -> Result<(), String> {
-        for ground in GROUNDS {
-            let on = self.colour(ground);
-            for (tokens, least) in [(&TEXT[..], 4.5), (&MARKS[..], 3.0)] {
-                for &token in tokens {
-                    let ratio = crate::contrast(self.colour(token), on);
-                    if ratio < least {
-                        return Err(format!(
-                            "{} on {} is {ratio:.2}:1, under {least}:1",
-                            TOKEN_NAMES[position(&Token::ALL, &token)],
-                            TOKEN_NAMES[position(&Token::ALL, &ground)],
-                        ));
-                    }
-                }
-            }
-        }
-        // `hover` is a restricted ground: only what is drawn on it is held to it.
-        let on = self.colour(Token::Hover);
-        for (tokens, least) in [(&HOVER_TEXT[..], 4.5), (&HOVER_MARKS[..], 3.0)] {
-            for &token in tokens {
-                let ratio = crate::contrast(self.colour(token), on);
-                if ratio < least {
-                    return Err(format!(
-                        "{} on hover is {ratio:.2}:1, under {least}:1",
-                        TOKEN_NAMES[position(&Token::ALL, &token)],
-                    ));
-                }
-            }
+        if let Some(short) = self.shortfall() {
+            return Err(short.message());
         }
         let ai = self.colour(Token::Ai);
         if Token::APP.iter().any(|&token| self.colour(token) == ai) {

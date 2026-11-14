@@ -111,20 +111,34 @@ fn percent(value: &str, low: u16, high: u16, step: u16) -> Result<u16, Refused> 
 impl Appearance {
     /// The theme this ends in: the named theme, its colours, type and size.
     pub fn resolve(&self, themes: &dyn Themes) -> Result<Theme, Refused> {
-        let base = themes
-            .theme(&self.theme)
-            .ok_or_else(|| refused(format!("there is no theme {:?}", self.theme)))?;
-        let theme = self
-            .tokens
-            .iter()
-            .fold(base, |theme, &(token, rgb)| theme.with_colour(token, rgb))
-            .sized(self.legible, self.text_size);
+        let theme = self.build(themes)?;
         theme.check().map_err(Refused)?;
         Ok(theme)
     }
 
+    /// [`Appearance::resolve`], before the theme is checked.
+    fn build(&self, themes: &dyn Themes) -> Result<Theme, Refused> {
+        let base = themes
+            .theme(&self.theme)
+            .ok_or_else(|| refused(format!("there is no theme {:?}", self.theme)))?;
+        Ok(self
+            .tokens
+            .iter()
+            .fold(base, |theme, &(token, rgb)| theme.with_colour(token, rgb))
+            .sized(self.legible, self.text_size))
+    }
+
     /// `setting` set to `value`, checked; `self` is left as it was.
     pub fn set(&self, setting: &str, value: &str, themes: &dyn Themes) -> Result<Self, Refused> {
+        let next = self.changed(setting, value, themes)?;
+        next.resolve(themes)?;
+        Ok(next)
+    }
+
+    /// `setting` set to `value` as far as the value itself goes: a name that
+    /// exists, a colour or a number in range. Not yet checked against the theme
+    /// it ends in.
+    fn changed(&self, setting: &str, value: &str, themes: &dyn Themes) -> Result<Self, Refused> {
         let mut next = self.clone();
         match setting {
             "theme" => {
@@ -154,7 +168,6 @@ impl Appearance {
             "legible" => next.legible = switch(value)?,
             _ => return Err(refused(format!("no setting {setting:?}"))),
         }
-        next.resolve(themes)?;
         Ok(next)
     }
 
@@ -177,9 +190,23 @@ impl Appearance {
         out
     }
 
-    /// Reads saved settings, each through [`Appearance::set`], so what was
-    /// saved and is no longer valid (a theme since deleted) is refused whole.
+    /// Reads saved settings, each checked as [`Appearance::set`] checks it, so
+    /// what was saved and is no longer valid (a theme since deleted) is refused
+    /// whole. The one exception is [`Appearance::decode_audited`]'s.
     pub fn decode(text: &str, themes: &dyn Themes) -> Result<Self, Refused> {
+        Self::decode_audited(text, themes).map(|(appearance, _)| appearance)
+    }
+
+    /// [`Appearance::decode`], and what it let go. A save made before `shell`
+    /// and `hover` existed may hold a colour that cleared every ground it knew
+    /// and falls short on one of these (light `muted #666666` is 4.32:1 on
+    /// `hover`). That one colour is dropped, with a line saying which and why
+    /// for the host's audit log, and the rest is kept; refusing the whole save
+    /// would reset the person's theme, scale and legible type to the defaults.
+    /// A colour short on any earlier ground was short before, and still refuses
+    /// the whole save. A setting changed now with [`Appearance::set`] is refused
+    /// on `shell` and `hover` like on any other ground.
+    pub fn decode_audited(text: &str, themes: &dyn Themes) -> Result<(Self, Vec<String>), Refused> {
         if text.len() > MAX_BYTES {
             return Err(refused("the saved appearance is too long"));
         }
@@ -189,6 +216,7 @@ impl Appearance {
         }
         let mut appearance = Appearance::default();
         let mut seen = [false; 6];
+        let mut dropped = Vec::new();
         for line in lines.filter(|l| !l.is_empty()) {
             let (setting, value) = line
                 .split_once(" = ")
@@ -201,9 +229,21 @@ impl Appearance {
             if setting != "token" && core::mem::replace(&mut seen[at], true) {
                 return Err(refused(format!("{setting} is given twice")));
             }
-            appearance = appearance.set(setting, value, themes)?;
+            let next = appearance.changed(setting, value, themes)?;
+            if setting == "token"
+                && let Some(short) = next.build(themes)?.shortfall()
+                && short.is_on_a_desktop_ground()
+            {
+                dropped.push(format!(
+                    "the saved colour {value} is dropped: {}",
+                    short.message()
+                ));
+                continue;
+            }
+            next.resolve(themes)?;
+            appearance = next;
         }
-        Ok(appearance)
+        Ok((appearance, dropped))
     }
 
     /// What changed from `before` to `self`, for the reply and the log:
