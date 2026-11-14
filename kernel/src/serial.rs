@@ -45,18 +45,62 @@ pub struct Serial;
 
 /// Whether the last byte sent ended a line.
 static AT_LINE_START: AtomicBool = AtomicBool::new(true);
+/// Whether each line starts with a stamp (`stamp=ms`, [`stamp_lines`]).
+static STAMPS: AtomicBool = AtomicBool::new(false);
+
+/// Starts every serial line with `[<kernel clock> h<HPET>] `, both in seconds to
+/// the millisecond, once both clocks run. A host that stops the VM moves both on;
+/// a TSC that jumps moves only the first. `cargo xtask vbox` boots with it; QEMU
+/// cases do not, and xtask's reader takes a stamp off before it matches a line.
+pub fn stamp_lines(on: bool) {
+    STAMPS.store(on, Ordering::Relaxed);
+}
+
+/// Bytes straight to COM1, `\n` as `\r\n`.
+fn send(s: &str) {
+    for byte in s.bytes() {
+        if byte == b'\n' {
+            write_byte(b'\r');
+        }
+        write_byte(byte);
+    }
+}
+
+/// The stamp for a line starting now. Formats into nothing that allocates.
+struct Stamp;
+
+impl Write for Stamp {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        send(s);
+        Ok(())
+    }
+}
+
+fn stamp() {
+    let ms = |ns: u64| ns / 1_000_000;
+    let (clock, counter) = (ms(crate::hpet::nanos()), ms(crate::hpet::counter_nanos()));
+    let _ = write!(
+        Stamp,
+        "[{}.{:03} h{}.{:03}] ",
+        clock / 1000,
+        clock % 1000,
+        counter / 1000,
+        counter % 1000
+    );
+}
 
 impl Write for Serial {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        for byte in s.bytes() {
-            if byte == b'\n' {
-                write_byte(b'\r');
+        let stamps = STAMPS.load(Ordering::Relaxed);
+        let mut at_start = AT_LINE_START.load(Ordering::Relaxed);
+        for line in s.split_inclusive('\n') {
+            if stamps && at_start {
+                stamp();
             }
-            write_byte(byte);
+            send(line);
+            at_start = line.ends_with('\n');
         }
-        if let Some(&last) = s.as_bytes().last() {
-            AT_LINE_START.store(last == b'\n', Ordering::Relaxed);
-        }
+        AT_LINE_START.store(at_start, Ordering::Relaxed);
         Ok(())
     }
 }

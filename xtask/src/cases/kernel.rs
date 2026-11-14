@@ -59,6 +59,16 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("handles", "test=handles")
     },
+    // Serial stamps (`stamp=ms`, as `cargo xtask vbox` boots): the reader takes
+    // them off, so the kernel's and the programs' lines match as without them.
+    TestCase {
+        expect: &[
+            "serial: each line starts with [the kernel clock h the HPET], in seconds",
+            "[handles] handles: every check passed",
+            "handles: CALL_H, RECV_H and REPLY_H moved a request and a handle there and back",
+        ],
+        ..case("serial-stamps", "test=handles stamp=ms")
+    },
     // M10a-2's probe runs here too, so the case itself is gated under KVM and TCG;
     // `cargo xtask icount` checks its determinism under icount.
     TestCase {
