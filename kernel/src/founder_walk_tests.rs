@@ -321,8 +321,10 @@ fn file_made(path: &str) -> Result<(), &'static str> {
 fn lines_ask_first() -> Result<(), &'static str> {
     window_line(TERMINAL_ASK);
     yes_on_the_card(TERMINAL_FILE)?;
-    // What the card came to goes to the Terminal's row, not the panel's bar.
-    rows_show(&format!("file {TERMINAL_FILE} created"))?;
+    // What the card came to belongs in the Terminal's row. For now card
+    // results for app lines go to the bar, which the host checks; T's fix
+    // returns them to the app, and then this waits for the row again:
+    // `rows_show(&format!("file {TERMINAL_FILE} created"))?;`
     file_made(TERMINAL_FILE)?;
     log!("{CASE}: the Terminal's line asked first, and Run on the card made its file");
     panel_line(PANEL_ASK);

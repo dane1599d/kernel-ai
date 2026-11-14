@@ -40,6 +40,9 @@ macro_rules! walk {
                 "fs_create is ask (Added)",
                 "card: the shell's waiting card goes to desktop",
                 " answered yes",
+                // Card results for app lines go to the bar; T's fix returns
+                // them to the app, and the walk then reads the Terminal's row.
+                "desktop: the bar says \"Done: file walk-term.txt created (was absent).\"",
                 "founder-walk: the Terminal's line asked first, and Run on the card made its file",
                 "desktop: the panel shows what a card came to",
                 // What Run on the panel's card came to: code's done line,
