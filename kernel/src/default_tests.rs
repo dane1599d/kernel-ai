@@ -5,15 +5,16 @@
 //! (`pkg` loads none: each app's plan line runs the image's own version); the
 //! case types Ctrl+Space, `apps` and Enter, and the Apps sheet lists them by
 //! name. Down four times, past `editor`, `files`, `models` and `monitor`, and Enter on
-//! `notes` sends `open notes` as a panel line, the shell takes it, the model's
-//! `ui_open` starts `notes-window` on demand, and its window opens. The host
-//! checks `desktop`'s and the supervisor's lines.
+//! `notes` sends `open notes` as a panel line, the shell takes it and opens
+//! it itself, a code-made `ui_open` with no model (#885), which starts
+//! `notes-window` on demand, and its window opens. The host checks
+//! `desktop`'s and the supervisor's lines.
 //!
 //! `test=desk-no-memory`: the same system and the same steps, but first a
 //! process takes what is left of the admission budget (free / 2), so the
 //! kernel refuses `notes-window`'s start. `open notes`, sent to the shell as
-//! the terminal sends a line, goes through the model's `ui_open` as the panel's
-//! does; the supervisor answers at once that there is no memory to start it,
+//! the terminal sends a line, is opened by the shell's own code-made `ui_open`
+//! as the panel's is (#885), since `notes-window` is a service; the supervisor answers at once that there is no memory to start it,
 //! and the shell's answer, the text the panel shows, is "Not enough memory to
 //! open Notes" instead of a silent failure.
 

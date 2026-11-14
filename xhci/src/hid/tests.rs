@@ -75,8 +75,41 @@ fn boot_mouse_reports_are_signed_movements() {
             range: None
         })
     );
-    assert_eq!(boot_mouse(&[0x04, 1, 1, 0xFF]).unwrap().wheel, -1);
+    assert_eq!(boot_mouse(&[0x04, 1, 1, 0xFF]).unwrap().wheel, 0);
     assert_eq!(boot_mouse(&[0, 0]), None);
+}
+
+/// QEMU's usb-mouse report descriptor: five buttons, then relative X, Y and
+/// wheel bytes.
+#[rustfmt::skip]
+const QEMU_MOUSE: &[u8] = &[
+    0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, 0x09, 0x01, 0xA1, 0x00,
+    0x05, 0x09, 0x19, 0x01, 0x29, 0x05, 0x15, 0x00, 0x25, 0x01,
+    0x95, 0x05, 0x75, 0x01, 0x81, 0x02, 0x95, 0x01, 0x75, 0x03,
+    0x81, 0x01, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x09, 0x38,
+    0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x03, 0x81, 0x06,
+    0xC0, 0xC0,
+];
+
+#[test]
+fn a_mouse_descriptor_places_its_wheel() {
+    let layout = pointer_layout(QEMU_MOUSE).expect("a pointer");
+    assert!(!layout.absolute());
+    assert_eq!(
+        layout.wheel.map(|w| (w.offset, w.relative)),
+        Some((24, true))
+    );
+    // Left button, left 2, down 5, wheel -1 (away from the person).
+    assert_eq!(
+        layout.read(&[0x01, 0xFE, 5, 0xFF]),
+        Some(Pointer {
+            buttons: 1,
+            x: -2,
+            y: 5,
+            wheel: -1,
+            range: None,
+        })
+    );
 }
 
 /// QEMU's usb-tablet report descriptor.

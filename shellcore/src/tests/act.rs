@@ -906,3 +906,15 @@ fn a_long_line_after_a_question_is_a_request_of_its_own() {
         "Smake a note called ideas and type hello dane into it"
     );
 }
+
+#[test]
+fn what_time_it_is_comes_from_the_clock_not_the_model() {
+    // Founder test 2, item 12: no invented time, and no change card.
+    let (host, mut shell) = with_calls(vec![]);
+    let reply = shell.eval("what time is it?");
+    assert!(
+        reply.ok && reply.text.starts_with("I can't tell the time"),
+        "{reply:?}"
+    );
+    assert!(host.act_lines.borrow().is_empty());
+}

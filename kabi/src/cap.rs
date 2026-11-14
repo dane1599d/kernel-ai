@@ -83,6 +83,11 @@ pub const ASK: u64 = 1 << 19;
 /// kernel grants it only to the service named `comphost` running the `comphost`
 /// program (P4 task 11). Numbered at merge, after `ASK` (1 << 19).
 pub const EDIT: u64 = 1 << 20;
+/// Restart the machine ([`super::call::POWER_REBOOT`]): a `Power` handle with
+/// WRITE. A plan line gives it with the word `power`; the action that asks the
+/// person first holds it (backlog item 13). Numbered at merge, after `EDIT`
+/// (1 << 20).
+pub const POWER: u64 = 1 << 21;
 /// Every capability a supervisor may grant.
 pub const GRANTABLE: u64 = SERVE
     | NET
@@ -102,4 +107,5 @@ pub const GRANTABLE: u64 = SERVE
     | TERM
     | UPDATE
     | ASK
-    | EDIT;
+    | EDIT
+    | POWER;

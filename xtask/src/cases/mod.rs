@@ -4,6 +4,7 @@
 
 mod agent;
 mod apps;
+mod appshow;
 mod cc;
 mod components;
 mod devices;
@@ -249,6 +250,7 @@ const LANES: &[&[TestCase]] = &[
     netrows::CASES,
     online::CASES,
     netgrant::CASES,
+    appshow::CASES,
     napbusy::CASES,
     modeldl::CASES,
     modelsuse::CASES,
@@ -294,6 +296,7 @@ mod tests {
             netrows::CASES,
             online::CASES,
             netgrant::CASES,
+            appshow::CASES,
             napbusy::CASES,
             modeldl::CASES,
             modelsuse::CASES,

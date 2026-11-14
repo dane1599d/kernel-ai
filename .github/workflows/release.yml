@@ -25,7 +25,8 @@
 # `RELEASE_KEY`: anchors outside the repository. It also writes both keys into
 # the draft's notes, which the founder holds against the paper before publishing.
 # `sign-script-macos` runs the sign script as the founder runs it, on a Mac,
-# with a test key.
+# on both rounds of a folder xtask prepares (`sign-fixture`),
+# with test keys.
 #
 # The `release-boot` job boots build-a's image itself, with qwen3-0.6b attached
 # as the import disk, types `models import` and passes on the import line
@@ -62,6 +63,7 @@ on:
       - release/keys/**
       - release/pkgrepo/**
       - scripts/release-sign.sh
+      - .github/actions/qemu/build.sh
   workflow_dispatch:
 
 permissions:
@@ -74,6 +76,9 @@ env:
   # Where the release build reads its crates, and the offline rebuild mounts the
   # vendored ones, so panic locations and line tables match (decisions.md, S09-1).
   REGISTRY_SRC: /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f
+  # ci.yml's QEMU, for the `vm` and `release-boot` jobs: bump with ci.yml's.
+  QEMU_VERSION: "11.0.5"
+  QEMU_SHA256: 38a1a09f349660cb0e20b8fe5f224d6a53ec4235eb36f2e33a31e21bb6138147
 
 # bash -eo pipefail: a step piped through tee fails when its command does.
 defaults:
@@ -266,12 +271,17 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # QEMU as ci.yml's `qemu` job builds and caches it (.github/actions/qemu),
-      # restored here with the cache action pinned by SHA.
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      # restored here with the cache action pinned by SHA. On a miss (GitHub
+      # evicted it, and ci.yml may be rebuilding it now) this job builds its
+      # own the same way, about ten minutes, and saves nothing.
+      - id: qemu
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/qemu
-          key: qemu-11.0.5-ubuntu-24.04-v1
-          fail-on-cache-miss: true
+          key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
+      - name: Build QEMU ${{ env.QEMU_VERSION }} (the cache missed)
+        if: steps.qemu.outputs.cache-hit != 'true'
+        run: bash .github/actions/qemu/build.sh
       - name: OVMF, QEMU's runtime libraries, and KVM for the runner user
         run: |
           sudo apt-get update
@@ -292,16 +302,21 @@ jobs:
     name: The release boots and imports qwen3-0.6b under its models role
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    # 90, and up to 20 more for a QEMU build on a cache miss.
+    timeout-minutes: 110
     env:
       MODEL_ID: qwen3-0.6b
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      # QEMU as in `vm`: restored, or built here on a miss.
+      - id: qemu
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/qemu
-          key: qemu-11.0.5-ubuntu-24.04-v1
-          fail-on-cache-miss: true
+          key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
+      - name: Build QEMU ${{ env.QEMU_VERSION }} (the cache missed)
+        if: steps.qemu.outputs.cache-hit != 'true'
+        run: bash .github/actions/qemu/build.sh
       - name: OVMF, QEMU's runtime libraries, and KVM for the runner user
         run: |
           sudo apt-get update
@@ -373,33 +388,104 @@ jobs:
           cargo xtask release-boot --image "$RUNNER_TEMP/boot.img" \
             --model "$RUNNER_TEMP/kai-models/$FILE" --accel kvm --timeout 1200
 
+  # Round 1's folder as `release-repo prepare` leaves it, for the test keys
+  # (RFC 8032's test 1 and test 2 seeds) at this runner's clock, for the macOS
+  # job to sign: xtask's own text, packages and catalog models included.
+  sign-fixture:
+    name: A round to sign, as xtask prepares it (test keys)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: |
+          KAI_SIGN_FIXTURE="$RUNNER_TEMP/fixture" cargo test -p xtask --bin xtask \
+            release_repo::tests::write_round_one_for_the_macos_job -- --ignored --exact
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sign-fixture
+          path: ${{ runner.temp }}/fixture/work
+
   # The founder signs on a Mac (root-ceremony.md): the script runs there in
-  # /bin/bash 3.2 with BSD tools and Homebrew's openssl@3. A test key only.
+  # /bin/bash 3.2 with BSD tools and Homebrew's openssl@3. Test keys only.
   sign-script-macos:
     name: release-sign.sh on macOS signs RFC 8032 test 2 (bash 3.2, openssl@3)
+    needs: sign-fixture
     # Apple silicon, as the founder's Mac; macos-14 is no longer offered.
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: sign-fixture
+          path: ${{ runner.temp }}/work
       - run: |
           brew list openssl@3 > /dev/null 2>&1 || brew install openssl@3
           o=/opt/homebrew/opt/openssl@3/bin/openssl
           "$o" version
           /bin/bash --version | head -1
-          t=$(mktemp -d) && mkdir "$t/keys" "$t/work"
-          printf '302e020100300506032b6570042204204ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb' |
-            xxd -r -p > "$t/seed.der"
-          printf 'test pass\n' | "$o" pkcs8 -topk8 -v2 aes-256-cbc -scrypt -scrypt_N 16384 -scrypt_r 8 \
-            -scrypt_p 64 -inform DER -in "$t/seed.der" -out "$t/keys/release.key" -passout stdin
-          printf 'test pass\n' | "$o" pkey -in "$t/keys/release.key" -passin stdin -pubout -out "$t/keys/release.pub"
-          # The script shows both keys; one test key stands for the root's too.
-          cp "$t/keys/release.pub" "$t/keys/root.pub"
-          printf '\x72' > "$t/work/targets.canon"
-          out=$(printf 'test pass\n' | env -i /bin/bash --noprofile --norc scripts/release-sign.sh "$t/keys" "$t/work")
-          echo "$out"
-          echo "$out" | grep -q '^release.key is 3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c$'
-          test "$(cat "$t/work/targets.sig")" = \
+          t=$(mktemp -d) && mkdir "$t/keys"
+          w=$RUNNER_TEMP/work
+          # RFC 8032 section 7.1's test 1 and test 2 seeds as root.key and release.key.
+          for k in root:9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60 \
+            release:4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb; do
+            printf '302e020100300506032b657004220420%s' "${k#*:}" | xxd -r -p > "$t/seed.der"
+            printf 'test pass\n' | "$o" pkcs8 -topk8 -v2 aes-256-cbc -scrypt -scrypt_N 16384 -scrypt_r 8 \
+              -scrypt_p 64 -inform DER -in "$t/seed.der" -out "$t/keys/${k%%:*}.key" -passout stdin
+            printf 'test pass\n' | "$o" pkey -in "$t/keys/${k%%:*}.key" -passin stdin -pubout -out "$t/keys/${k%%:*}.pub"
+          done
+          # The ledger, empty, as setup makes it.
+          : > "$t/keys/signed.log"
+          # The script's own signing command gives RFC 8032 test 2's signature of 0x72.
+          printf '\x72' > "$t/message"
+          sig=$(printf 'test pass\n' | "$o" pkeyutl -sign -rawin -inkey "$t/keys/release.key" -passin stdin -in "$t/message" |
+            od -An -v -tx1 | tr -d ' \n')
+          test "$sig" = \
             92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00
+          sign() { env -i /bin/bash --noprofile --norc scripts/release-sign.sh "$t/keys" "$w"; }
+          verify() {
+            xxd -r -p "$w/$1.sig" > "$t/raw"
+            "$o" pkeyutl -verify -pubin -inkey "$t/keys/$2.pub" -rawin -in "$w/$1.canon" -sigfile "$t/raw"
+          }
+          # Round 1, as xtask prepared it: root with root.key, the rest with release.key.
+          out=$(printf 'test pass\ntest pass\n' | sign)
+          echo "$out"
+          echo "$out" | grep -q '^round 1 of release 1: signs models packages root snapshot targets$'
+          echo "$out" | grep -q '^release.key is 3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c$'
+          echo "$out" | grep -q '^models.canon signs qwen3-0.6b.gguf, sha256 [0-9a-f]*, length [0-9]*, name '
+          echo "$out" | grep -q '^packages.canon signs notes-1.0.0.kpkg, sha256 [0-9a-f]*, grants \[\], actions \["notes_find"\], yanked false$'
+          echo "$out" | grep -q '^root.canon expires .*, in 365 days$'
+          echo "$out" | grep -q '^snapshot.canon expires .*, in 30 days$'
+          verify root root
+          for r in targets packages models snapshot; do verify "$r" release; done
+          # Round 2, as `prepare-timestamp` leaves it: the timestamp that names
+          # the snapshot round 1 signed, as the device fetches it.
+          at=$(date -u -r $(( $(date -u +%s) + 7 * 86400 )) +%Y-%m-%dT%H:%M:%SZ)
+          lid=eaf1e23f6c823132f437a2eaa299a7950f7386631deff273db195bbd26209e2b
+          signed=$(printf '{"signatures":[{"keyid":"%s","sig":"%s"}],"signed":%s}' "$lid" "$(cat "$w/snapshot.sig")" "$(cat "$w/snapshot.canon")")
+          printf '{"_type":"timestamp","expires":"%s","meta":{"snapshot.json":{"hashes":{"sha256":"%s"},"length":%s,"version":1}},"spec_version":"1.0.37","version":1}' \
+            "$at" "$(printf '%s' "$signed" | shasum -a 256 | cut -c1-64)" "${#signed}" > "$w/timestamp.canon"
+          out=$(printf 'test pass\n' | sign)
+          echo "$out"
+          echo "$out" | grep -q '^round 2 of release 1: signs timestamp$'
+          echo "$out" | grep -q '^timestamp.canon expires .*, in 7 days$'
+          verify timestamp release
+          # The stick's ledger has both rounds, and a release is signed once.
+          cat "$t/keys/signed.log"
+          test "$(wc -l < "$t/keys/signed.log" | tr -d ' ')" = 2
+          head -1 "$t/keys/signed.log" | grep -Eq '^1 1 models=[0-9a-f]{64} packages=[0-9a-f]{64} root=[0-9a-f]{64} snapshot=[0-9a-f]{64} targets=[0-9a-f]{64}$'
+          tail -1 "$t/keys/signed.log" | grep -Eq '^2 1 timestamp=[0-9a-f]{64}$'
+          # The same round 2 again signs the same bytes and logs nothing new.
+          mv "$w/timestamp.sig" "$t/timestamp.sig"
+          printf 'test pass\n' | sign
+          cmp "$w/timestamp.sig" "$t/timestamp.sig"
+          test "$(wc -l < "$t/keys/signed.log" | tr -d ' ')" = 2
+          # Another timestamp for release 1 is refused: a release is signed once.
+          rm "$w/timestamp.sig"
+          sed "s/\"expires\":\"[^\"]*\"/\"expires\":\"$(date -u -r $(( $(date -u +%s) + 6 * 86400 )) +%Y-%m-%dT%H:%M:%SZ)\"/" \
+            "$w/timestamp.canon" > "$t/timestamp.canon"
+          mv "$t/timestamp.canon" "$w/timestamp.canon"
+          if printf 'test pass\n' | sign 2> "$t/err"; then exit 1; fi
+          grep -q 'is not the last round these keys signed' "$t/err"
 
   sign:
     name: Sign as TUF targets (test root), accept and refuse
