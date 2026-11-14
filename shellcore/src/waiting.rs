@@ -48,7 +48,9 @@ struct Item<T> {
 /// - While a Settings change is held, every request waits, so none is answered
 ///   under what the change takes away. The first Settings request held is a
 ///   change, as one that only reads is answered.
-/// - An app has at most [`MAX_HELD`] held: past that, the host refuses one.
+/// - An app has at most [`MAX_HELD`] requests held: past that, the host
+///   refuses one. Neither the one running nor an answer still to give counts:
+///   neither waits as a request of the app's.
 pub struct Held<T> {
     items: VecDeque<Item<T>>,
     running: Option<(Kind, String, usize)>,
@@ -83,14 +85,15 @@ impl<T> Held<T> {
     }
 
     /// Holds `request`, of `kind`, from `app`, counting `size`: or gives it
-    /// back past [`MAX_HELD`] for `app`.
+    /// back past [`MAX_HELD`] requests for `app`. An answer is always held.
     pub fn hold(&mut self, kind: Kind, app: &str, size: usize, request: T) -> Result<(), T> {
         let held: usize = self
-            .all()
-            .filter(|(_, held, _)| *held == app)
-            .map(|(.., size)| size)
+            .items
+            .iter()
+            .filter(|i| i.app == app && i.kind != Kind::Answer)
+            .map(|i| i.size)
             .sum();
-        if held + size > MAX_HELD {
+        if kind != Kind::Answer && held + size > MAX_HELD {
             return Err(request);
         }
         self.items.push_back(Item {

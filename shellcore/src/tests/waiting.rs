@@ -292,11 +292,16 @@ mod held {
         }
         assert_eq!(held.hold(Kind::Effects, "files", 1, 16), Err(16));
         assert_eq!(held.hold(Kind::Effects, "editor", 1, 17), Ok(()));
-        // The running one still counts; once done, there is room for one.
+        // An answer still to give is always held, and is not counted.
+        assert_eq!(held.hold(Kind::Answer, "files", 1, 18), Ok(()));
+        // The running one waits no more: there is room for one again.
         assert_eq!(held.start(), Some(0));
-        assert_eq!(held.hold(Kind::File, "files", 1, 18), Err(18));
-        held.done();
-        assert_eq!(held.hold(Kind::File, "files", 1, 18), Ok(()));
+        assert_eq!(held.hold(Kind::File, "files", 1, 19), Ok(()));
+        assert_eq!(held.hold(Kind::File, "files", 1, 20), Err(20));
+        // Nor does a batch the host runs from elsewhere count.
+        let mut held: Held<u32> = Held::default();
+        held.running(Kind::Effects, "files", 16);
+        assert_eq!(held.hold(Kind::Effects, "files", 16, 0), Ok(()));
         // A batch of three does not fit where one would.
         let mut held: Held<u32> = Held::default();
         held.hold(Kind::Effects, "files", 14, 0).unwrap();
