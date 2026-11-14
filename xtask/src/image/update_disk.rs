@@ -118,18 +118,20 @@ impl TestRoot {
 
     /// `1.root.json`: the device's trust anchor, `kai.root.json` in a slot's bundle.
     pub fn root_json(&self) -> Result<Vec<u8>, String> {
+        let [root, targets, snapshot, timestamp] =
+            [&self.root, &self.targets, &self.snapshot, &self.timestamp].map(|k| k.public_key());
         let root = json!({
             "_type": "root",
             "spec_version": SPEC_VERSION,
             "version": 1,
             "expires": self.expires(365),
             "consistent_snapshot": true,
-            "keys": tuf::key_map(&[&self.root, &self.targets, &self.snapshot, &self.timestamp]),
+            "keys": tuf::key_map(&[&root, &targets, &snapshot, &timestamp]),
             "roles": {
-                "root": tuf::role(&self.root),
-                "targets": tuf::role(&self.targets),
-                "snapshot": tuf::role(&self.snapshot),
-                "timestamp": tuf::role(&self.timestamp),
+                "root": tuf::role(&root),
+                "targets": tuf::role(&targets),
+                "snapshot": tuf::role(&snapshot),
+                "timestamp": tuf::role(&timestamp),
             },
         });
         tuf::envelope(&root, &self.root)

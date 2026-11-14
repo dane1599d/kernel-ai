@@ -15,13 +15,18 @@
 # same disk with one byte of the image flipped (boot cases `update-disk` and
 # `update-tampered`, ADR 0008 §12).
 #
-# The `release-boot` job builds the same image with `--test-root`: a `pkgrepo/`
-# whose `models` role, signed by a throwaway root, names only qwen3-0.6b. It
-# checks that every other boot module and part hashes as build-a's did, then
-# boots those bytes with no second disk, types `models import` and passes on
-# the import line (`cargo xtask release-boot`). The shipping image has no
-# `models` role until P4 task 18's founder-signed one, so it imports nothing
-# until then.
+# Once `release/pkgrepo/` is committed (P4 task 18's interim key files,
+# `cargo xtask release-repo`), the image carries it as `pkgrepo/`, its `models`
+# role signed with the founder's release key, and its root as `kai.root.json`.
+# `assemble` checks that the image holds that root in both places, and on a tag
+# `seq` checks the root is the last release's byte for byte: it is frozen.
+#
+# The `release-boot` job boots build-a's image itself, with qwen3-0.6b attached
+# as the import disk, types `models import` and passes on the import line
+# (`cargo xtask release-boot`): the role that ships is the one that imports.
+# With no repository committed, it builds the same image with `--test-root`
+# instead, whose `pkgrepo/` a throwaway root signs, checks that every other boot
+# module and part hashes as build-a's did, and boots that.
 #
 # The `sign` job also uploads the committed `kai-chunks 1` lists in
 # xtask/models/chunks as `models-chunks-<version>`, before any build runs, for
@@ -31,8 +36,8 @@
 # (`cargo xtask pkgrepo chunks`), and holds the upload to the commit's blobs.
 # The models are only hashed, never run.
 #
-# Stubbed until P4 task 18: tuf-on-ci's signing event for the founder's
-# YubiKeys, and the publish to `dane1599d/kernel-ai-updates`. No LLM runs.
+# Stubbed until the YubiKey root (root-ceremony.md): the publish to
+# `dane1599d/kernel-ai-updates`. No LLM runs.
 # Every action is pinned by commit SHA.
 name: Release
 
@@ -47,6 +52,10 @@ on:
       - xtask/src/image/slots.rs
       - xtask/src/release_boot.rs
       - xtask/src/cases/release.rs
+      - xtask/src/release_repo/**
+      - release/keys/**
+      - release/pkgrepo/**
+      - scripts/release-sign.sh
   workflow_dispatch:
 
 permissions:
@@ -91,6 +100,12 @@ jobs:
           if [ "$seq" -le "$last" ]; then
             echo "release/seq must rise above $last: bump it in the release PR"
             exit 1
+          fi
+          # The founder-signed root never changes once released (root-ceremony.md).
+          root=release/pkgrepo/metadata/1.root.json
+          if [ -n "$previous" ] && git cat-file -e "$previous:$root" 2>/dev/null; then
+            git diff --quiet "$previous" HEAD -- "$root" ||
+              { echo "$root differs from $previous's: the root is frozen"; exit 1; }
           fi
 
   build:
@@ -193,6 +208,17 @@ jobs:
           test "$(sort -u image-hashes.txt | wc -l)" -eq 1
           cmp build-a/NOTICES.txt build-b/NOTICES.txt
           cmp build-a/NOTICES.txt offline/NOTICES.txt
+      - name: The image carries the committed root as kai.root.json and as pkgrepo's root
+        run: |
+          root=release/pkgrepo/metadata/1.root.json
+          if [ -f "$root" ]; then
+            sha=$(sha256sum "$root" | cut -d' ' -f1)
+            grep -E "^xtask: module kai.root.json [0-9]+ $sha$" build-a/build.log
+            grep -E "^xtask: module pkgrepo/metadata/1.root.json [0-9]+ $sha$" build-a/build.log
+          elif grep -E '^xtask: module (kai.root.json|pkgrepo/)' build-a/build.log; then
+            echo "no release/pkgrepo is committed, yet the image carries a root or a repository"
+            exit 1
+          fi
       - name: The assets
         run: |
           mkdir release-assets
@@ -245,7 +271,7 @@ jobs:
           done
 
   release-boot:
-    name: The release with a test-root models role boots and imports qwen3-0.6b
+    name: The release boots and imports qwen3-0.6b under its models role
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -299,10 +325,21 @@ jobs:
           # Outside the checkout, as every output here: an untracked file marks
           # the build -dirty, which the slot record, the kernel and NOTICES carry.
           path: ${{ runner.temp }}/build-a
-      - name: The test-root build, which differs from build-a's only beneath pkgrepo/
+      - name: Boot the release itself once its signed repository is committed
+        id: image
+        run: |
+          if [ -f release/pkgrepo/metadata/1.root.json ]; then
+            zstd -dq "$RUNNER_TEMP/build-a/kernel-ai.img.zst" -o "$RUNNER_TEMP/boot.img"
+            echo "boots the release image and its founder-signed models role" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "test_root=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "test_root=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: With none, the test-root build, which differs from build-a's only beneath pkgrepo/
+        if: steps.image.outputs.test_root == 'true'
         run: |
           test -z "$(git status --porcelain)"
-          cargo xtask release-image --test-root --out "$RUNNER_TEMP/test-root.img" | tee "$RUNNER_TEMP/test-root.log"
+          cargo xtask release-image --test-root --out "$RUNNER_TEMP/boot.img" | tee "$RUNNER_TEMP/test-root.log"
           # Every boot module but the test root's repository, and every ESP part
           # but the bundle that carries it.
           same() { grep -E '^xtask: (module|part) ' "$1" | grep -v -E '^xtask: (module pkgrepo/|part boot/kai.bundle )'; }
@@ -315,7 +352,7 @@ jobs:
         env:
           FILE: ${{ steps.pin.outputs.file }}
         run: |
-          cargo xtask release-boot --image "$RUNNER_TEMP/test-root.img" \
+          cargo xtask release-boot --image "$RUNNER_TEMP/boot.img" \
             --model "$RUNNER_TEMP/kai-models/$FILE" --accel kvm --timeout 1200
 
   sign:
@@ -365,10 +402,13 @@ jobs:
             git cat-file -p "$GITHUB_SHA:xtask/models/chunks/$(basename "$f")" | cmp - "$f"
           done
           echo "the $uploaded lists in models-chunks-$VERSION are the commit's, and the pinned files' own" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: The founder's YubiKey signing event (stub until P4 task 18)
+      - name: The committed release repository verifies and lists this catalog (P4 task 18, interim)
         run: |
-          echo "stub: tuf-on-ci opens the signing event in dane1599d/kernel-ai-updates once the root ceremony is done"
-          echo "stub: the models role signs each <id>.gguf and its <sha256>.chunks from models-chunks-$VERSION"
+          if [ -f release/pkgrepo/metadata/1.root.json ]; then
+            cargo xtask release-repo check | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "no release/pkgrepo committed: this release imports no model" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
 
   publish:
     name: Attest and draft the release

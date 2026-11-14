@@ -27,6 +27,7 @@
 //! cargo xtask fs mkfs|import|ls|cat|check|replay ...   (kaifs data disks on the host, no WSL; see fs/mod.rs)
 //! cargo xtask release-image [--test-root] [--out PATH]   (the release image and its NOTICES.txt; release.yml runs it)
 //! cargo xtask release-boot --image PATH --model PATH [--accel kvm|tcg] [--timeout SECS]   (boots a --test-root image and imports the model; see release_boot.rs)
+//! cargo xtask release-repo prepare|prepare-timestamp|assemble [--dir DIR] | check   (the founder-signed release/pkgrepo; see release_repo/mod.rs)
 //! cargo xtask limine   (fetches and checks Limine's pinned files, for the release's source tarball)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
@@ -79,6 +80,7 @@ mod query_eval;
 mod relay;
 mod release_boot;
 mod release_image;
+mod release_repo;
 mod reuse;
 mod screen;
 mod smoke;
@@ -130,6 +132,7 @@ fn main() -> ExitCode {
         Some("pkgrepo") => pkgrepo::main(&args[1..]),
         Some("release-image") => release_image::main(&args[1..]),
         Some("release-boot") => release_boot::main(&args[1..]),
+        Some("release-repo") => release_repo::main(&args[1..]),
         // The release's source tarball carries Limine's pinned files (ADR 0009 D7).
         Some("limine") => ensure_limine(&workspace_root().join("target"))
             .map(|efi| println!("xtask: Limine {LIMINE_VERSION} at {}", efi.display())),

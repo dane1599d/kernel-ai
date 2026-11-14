@@ -54,6 +54,21 @@ jobs:
           else
             cargo xtask decisions check
           fi
+      # P4 task 18: the founder-signed root is frozen once committed. `updated`
+      # keeps a cached root of the same version, so a second "version 1" would
+      # split devices (docs/release/root-ceremony.md, "Interim: key files").
+      - name: release/pkgrepo's 1.root.json never changes once committed
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          root=release/pkgrepo/metadata/1.root.json
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          if git cat-file -e "FETCH_HEAD:$root" 2>/dev/null &&
+            ! git diff --quiet FETCH_HEAD HEAD -- "$root"; then
+            echo "$root is frozen once committed: never sign it again or remove it"
+            exit 1
+          fi
       - name: NOTICES.txt is up to date (ADR 0009 D6)
         run: |
           cargo install --locked cargo-about --version 0.9.2 --features cli

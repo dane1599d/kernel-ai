@@ -2,6 +2,85 @@
 
 P4 task 18 (ADR 0008 §7). This is the founder's runbook. It sets up the TUF repository that signs v0.1 and every later release, and it holds the keys that every Kernel AI device trusts. Nothing here runs from a Claude session: the repository, its settings, the YubiKeys and every signature are yours. Steps marked **(unverified)** come from tuf-on-ci 0.21.0's documents, which say no more on them. Try them first on a throwaway repository (step 0).
 
+Until the YubiKeys, releases are signed with two key files instead: the next section. The sections after it describe the YubiKey setup that replaces them.
+
+## Interim: key files (until the YubiKeys)
+
+You chose this on 2026-11-14. Two Ed25519 key files, each encrypted with its own passphrase, sign the image repository a release carries, `release/pkgrepo/`:
+
+| File | Signs | Threshold |
+|---|---|---|
+| `root.key` | root (version 1, once) | 1 of 1 |
+| `release.key` | targets, packages (empty), models, snapshot, timestamp | 1 of 1 each |
+
+**What it gives a release.** The image carries `release/pkgrepo/` as `pkgrepo/`. Its `models` role names every model in `xtask/models.json`, so Models imports them, and it is what the download offers come from. Its `1.root.json` also ships as `kai.root.json`, the root that update disks and the online repository are checked against. One root covers both, and the YubiKey root later chains from it.
+
+**What it does not do.** The kernel boots any model disk attached as `kai-model`, or a disk that starts with the GGUF magic, without a signature. That is how `cargo xtask vbox` VMs get their model, and attaching `kai-model.vmdk` to a release VM works without any key. On VirtualBox no disk can be the import disk (`kai-import`), so the role matters there only for downloads.
+
+**Rules that keep it safe.**
+
+- Two files on one PC under one person add nothing, so root is 1 of 1. The protection is the passphrase, a USB stick plugged in only to sign, and an encrypted copy kept in another building.
+- Sign only in a WSL distro of its own, which no Claude session uses. Sessions use `Ubuntu` for their sandbox and QEMU, and a planted `openssl` or `.bashrc` there could catch a passphrase. Run every command through `env -i /bin/bash --noprofile --norc` and call `/usr/bin/openssl` by its full path.
+- The sign script runs from the key stick, never from a checkout, which a session could change between your review and your run. Check its SHA-256 before each run. The script at the commit that added it has this SHA-256: `1ccea44c1cad641f21245bb57de0126e97f94e7399db341a6f86231c4c41007e`. A test in `xtask/src/release_repo/tests.rs` holds this page to the script, so a change to either shows in review.
+- `release/pkgrepo/metadata/1.root.json` is frozen once committed. `cargo xtask release-repo` reuses it and never signs root again. CI fails any pull request that changes or removes it, and any tag whose root differs from the last release's. Two different "version 1" roots would split devices, because `updated` keeps a cached root of the same version.
+- Never put a key file under the OneDrive Desktop folder, where the main checkout lives. Never type a passphrase into a Claude chat, or into a terminal a session controls.
+
+### One-time setup (about 30 minutes)
+
+1. In your own PowerShell window, run `wsl --install -d Debian`. When it asks, pick a user name and password for it. This is the signing distro. Never ask a session to use it.
+2. In that Debian window, run `sudo apt update && sudo apt install -y openssl`, then `/usr/bin/openssl version`. It must start with `OpenSSL 3`.
+3. Plug in a USB stick kept only for these keys. If Windows shows it as `F:`, run `sudo mkdir -p /mnt/f && sudo mount -t drvfs F: /mnt/f`. Use the stick's own letter if it is not `F:`.
+4. Run `env -i /bin/bash --noprofile --norc`, then `cd /mnt/f && mkdir -p kai-keys && cd kai-keys`.
+5. Make the root key: `/usr/bin/openssl genpkey -algorithm ed25519 | /usr/bin/openssl pkcs8 -topk8 -v2 aes-256-cbc -scrypt -out root.key`. It asks for a new passphrase twice. Use six or more random words.
+6. Make the release key the same way, with a different passphrase: `/usr/bin/openssl genpkey -algorithm ed25519 | /usr/bin/openssl pkcs8 -topk8 -v2 aes-256-cbc -scrypt -out release.key`.
+7. Run `head -1 root.key release.key`. Both must say `-----BEGIN ENCRYPTED PRIVATE KEY-----`. If either does not, delete it and repeat its step.
+8. Write the public halves: `/usr/bin/openssl pkey -in root.key -pubout -out root.pub`, then `/usr/bin/openssl pkey -in release.key -pubout -out release.pub`. Each asks for its key's passphrase.
+9. Get the sign script at the commit the session names (this page's pull request, once merged): `/usr/bin/curl -fsSLo release-sign.sh https://raw.githubusercontent.com/dane1599d/kernel-ai/<commit>/scripts/release-sign.sh`. Read it: it is under 70 lines. Then run `/usr/bin/sha256sum release-sign.sh`. It must match the SHA-256 above. Write it down with the passphrases.
+10. Save both passphrases in your password manager, and on paper kept away from the stick.
+11. Copy `root.key`, `release.key` and `release-sign.sh` to a second stick. Check the copies open: `/usr/bin/openssl pkey -in <copy> -noout` for each key, with its passphrase. Keep that stick in another building, and check it again once a year: sticks fail without warning.
+12. Give the session `root.pub` and `release.pub`, the files or their text. They are public. The session commits them as `release/keys/`.
+13. Run `exit`, `cd /`, then `sudo umount /mnt/f`, and eject the stick in Windows.
+
+### Each release
+
+The session prepares the files to sign in a folder it names, for example `E:\kai-release\rc2`, which Debian sees as `/mnt/e/kai-release/rc2`. Signing takes two rounds, because the timestamp holds the hash of the signed snapshot.
+
+1. The session runs `cargo xtask release-repo prepare --dir <folder>` and tells you the folder.
+2. Plug in the key stick and, in Debian, mount it as in setup step 3.
+3. Run `/usr/bin/sha256sum /mnt/f/kai-keys/release-sign.sh`. It must match the SHA-256 you wrote down. If it does not, stop.
+4. Run `env -i /bin/bash --noprofile --norc /mnt/f/kai-keys/release-sign.sh /mnt/f/kai-keys /mnt/e/kai-release/rc2`, using the folder the session named. Type each passphrase it asks for. Root's is asked only for the first release, which signs root.
+5. Run `sudo umount /mnt/f`, eject the stick, and tell the session "signed".
+6. The session runs `cargo xtask release-repo prepare-timestamp`. Repeat steps 2 to 5: this time it asks only for the release passphrase.
+7. The session runs `cargo xtask release-repo assemble`. It checks every signature, and the repository as a device does, then commits `release/pkgrepo/` and opens a pull request. Its release dry run boots the image and imports qwen3-0.6b under the role you signed.
+
+The session never needs the stick or a passphrase. A model added to `xtask/models.json` makes a release fail until it is signed again this way.
+
+### Expiry and online updates
+
+- Model import never checks expiry, so the role in an image keeps working.
+- Update disks and the online repository are checked at the real time. A repository signed this way stops being accepted 7 days after its timestamp is signed. Until there is an online key, an online repository signed offline needs a longer timestamp expiry, for example 30 days, re-signed by hand.
+- Root expires 365 days after you sign it. After that, update disks and online updates stop until `2.root.json` is published. Set a reminder for month 10 to make the YubiKey root (below), or a root version 2 signed with `root.key`.
+- rc.2's root names `release.key` for snapshot and timestamp. An online CI key therefore needs a root version 2 first.
+- rc.1 carries no `kai.root.json`, so an rc.1 install can never take an update. It must be reinstalled from rc.2 or later.
+
+### Moving to the YubiKeys
+
+Installed devices follow, because the new root is signed by the old one. Nothing for this is built yet. A session builds the tools when you have the YubiKeys.
+
+1. Set up the YubiKeys as in section 3 below. Their keys never leave them.
+2. A session builds root version 2: root is the three YubiKey P-256 keys, 2 of 3. Targets, packages and models are two YubiKeys, 1 of 2. Snapshot and timestamp are the online key chosen then.
+3. You sign version 2 twice over: with `root.key`, which version 1 asks for, and with two of the three YubiKeys, which version 2 asks for. kaituf checks a new root against both, and requires the version to rise by one. Its tests cover an Ed25519 root rotating to a P-256 one.
+4. `2.root.json` is published beside `1.root.json`, and both are kept forever: in `kernel-ai-updates`, and in each later release's `release/pkgrepo/metadata/`. Releases from then on are signed with the YubiKeys.
+5. Devices fetch `2.root.json` at their next update check and trust only the YubiKeys from then on. Rotation ignores expiry, so a device offline for more than a year still follows.
+6. Once a test VM has followed the rotation, delete `root.key` and `release.key` from both sticks.
+
+### If a key file is lost
+
+- **One stick, or one passphrase, with the other copy still good:** use the copy, and make a new second copy.
+- **`release.key` and both its copies:** `root.key` signs a root version 2 that names a new release key.
+- **`root.key` and both its copies, or its passphrase:** no one can sign a new root. Devices keep working, and model import keeps working, but they can take no update until they are reinstalled from an image with a new root. This is why the second copy and the paper passphrase both matter.
+- **Either key may have leaked:** stop releasing, and have a session make root version 2 with new keys at once. Anyone with the file and its passphrase can sign anything until then.
+
 ## What you end with
 
 | Role | Keys | Threshold | Expiry | Signs |
@@ -104,7 +183,7 @@ On WSL, attach the YubiKey to Linux with `usbipd-win` first.
 
 ## 6. Wire `kernel-ai` to it
 
-1. Commit the newest `root.json` from `kernel-ai-updates` to `kernel-ai` as `release/root.json` (P4 task 18). `cargo xtask release-image` bundles it as each slot's `kai.root.json` for release builds only. CI keeps signing with the throwaway test root (P4 plan section 4, item 3).
+1. Commit the new `2.root.json` from `kernel-ai-updates` to `kernel-ai` beside `release/pkgrepo/metadata/1.root.json`, which stays as it is (see "Moving to the YubiKeys" above). `cargo xtask release-image` already bundles `release/pkgrepo/` as `pkgrepo/` and its root as each slot's `kai.root.json`, for release builds only. CI keeps signing with the throwaway test root (P4 plan section 4, item 3).
 2. In `release.yml`, replace the two stubs (task 18's PR in lane U):
    - **YubiKey signing event:** on a tag, open a signing event in `kernel-ai-updates` that adds the release's targets. Use a token or App with `contents: write` on that repository only, kept in the `release` environment.
    - **Publish:** after your touch, tuf-on-ci signs snapshot and timestamp and publishes.
