@@ -173,6 +173,11 @@ impl Shell {
             .and_then(Value::as_array)
             .map(|list| list.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
+        // An option no row backs ("increase CPU frequency") is not offered.
+        let options: Vec<&str> = options
+            .into_iter()
+            .filter(|option| crate::abilities::backed(option))
+            .collect();
         self.record(id, request, "", "asked the user to clarify");
         self.clarifying = Some(request.to_string());
         self.clarified_by_model = true;

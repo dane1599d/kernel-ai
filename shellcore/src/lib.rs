@@ -21,6 +21,7 @@
 
 extern crate alloc;
 
+mod abilities;
 mod actions;
 pub mod actlog;
 mod agentcore;
@@ -1145,13 +1146,20 @@ impl Shell {
         if request.is_empty() {
             return Reply::err("usage: ? <what you want done>");
         }
-        self.asked_model = true;
         let id = self.next_id;
         self.next_id += 1;
         self.host.audit(&format!(
             "script {id} requested: {}",
             show::truncate(request, 60)
         ));
+        // What Kai can do with something comes from the rows, never the model.
+        if let Some(text) = abilities::answer(request) {
+            self.record(id, request, "", "answered from the registry");
+            // A list in words: the panel sends it to the terminal whole.
+            self.worded = true;
+            return Reply::ok(text);
+        }
+        self.asked_model = true;
         if let Some(reply) = self.try_act(id, request) {
             return reply;
         }
