@@ -452,11 +452,13 @@ impl AppRows {
         let version = head
             .strip_prefix("version ")
             .ok_or_else(|| format!("{app}'s rows: {head}"))?;
-        if let Some(loaded) = self
-            .loaded
-            .iter()
-            .find(|l| l.app == app && l.version == version)
-        {
+        // The same version, or the same rows under another label: `pkg` labels
+        // an installed app by its package version and comphost by its store
+        // label, so the app's first run must not load its rows twice.
+        let same = |l: &Loaded| {
+            l.version == version || l.answer.split_once('\n').is_some_and(|(_, s)| s == section)
+        };
+        if let Some(loaded) = self.loaded.iter().find(|l| l.app == app && same(l)) {
             return Ok(loaded.rows.len());
         }
         if self.loads == MAX_LOADS {
@@ -933,13 +935,16 @@ end
     #[test]
     fn loads_are_bounded_until_reboot() {
         let mut apps = AppRows::default();
-        for version in 0..MAX_LOADS {
-            let rows = NOTES.replacen("version 2", &format!("version {version}"), 1);
-            apps.load("notes", &rows).unwrap();
+        // Each version declares other rows: the same rows load once.
+        let version = |label: &str| {
+            NOTES
+                .replacen("version 2", &format!("version {label}"), 1)
+                .replacen("Add a note", &format!("Add a note ({label})"), 1)
+        };
+        for n in 0..MAX_LOADS {
+            apps.load("notes", &version(&n.to_string())).unwrap();
         }
-        let err = apps
-            .load("notes", &NOTES.replacen("version 2", "version x", 1))
-            .unwrap_err();
+        let err = apps.load("notes", &version("x")).unwrap_err();
         assert!(err.contains("restart"), "{err}");
         assert_eq!(apps.rows().count(), 2);
     }

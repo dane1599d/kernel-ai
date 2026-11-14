@@ -334,12 +334,20 @@ fn value_of<'a>(call: &Call<'a>, name: &str) -> Option<Value<'a>> {
 /// cue wins over the others, so "print the policy, but don't switch to round robin"
 /// does not ask for a switch.
 fn cued(words: &[Word], row: &Action) -> Option<bool> {
+    // A clause that opens with a tell word asks to be told (#721, ADR 0002):
+    // "tell me how to remove ideas" asks for no removal.
+    let telling = |clause: usize| {
+        words
+            .iter()
+            .find(|w| w.clause == clause)
+            .is_some_and(|w| TELL_WORDS.contains(&w.text.as_str()))
+    };
     let mut found = None;
     for cue in row.cues {
         let off_counts = !row.cues.iter().any(|c| c.contains("off"));
         for at in matches(words, cue, true) {
             // A question asks to be told: "is round robin on" asks for no switch.
-            if words[at].question {
+            if words[at].question || telling(words[at].clause) {
                 continue;
             }
             let clause = words[at].clause;

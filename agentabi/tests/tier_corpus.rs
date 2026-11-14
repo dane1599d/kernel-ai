@@ -1517,6 +1517,58 @@ const EVERYDAY_LINES: &[Case] = &[
     ),
 ];
 
+/// The same words in a line that asks to be told: no change is asked for
+/// (#721), whatever the cues.
+const EVERYDAY_TELLING: &[Case] = &[
+    case(
+        "tell me how to remove ideas",
+        &[with("fs_trash", &[("path", IDEAS)])],
+        Asks,
+    ),
+    case(
+        "explain how to make a new note called ideas",
+        &[with("fs_create", &[("path", IDEAS), ("text", NO_TEXT)])],
+        Asks,
+    ),
+    case(
+        "show me how to erase ideas",
+        &[with("fs_trash", &[("path", IDEAS)])],
+        Asks,
+    ),
+    case(
+        "what would dark mode look like?",
+        &[with(
+            "appearance_set",
+            &[("setting", v("theme", LIT)), ("value", v("dark", LIT))],
+        )],
+        Asks,
+    ),
+    // "model" is not the theme's "mode".
+    case(
+        "switch the model",
+        &[with(
+            "appearance_set",
+            &[("setting", v("theme", LIT)), ("value", v("dark", LIT))],
+        )],
+        Asks,
+    ),
+];
+
+#[test]
+fn everyday_words_in_a_telling_line_ask_for_nothing() {
+    let rows = rows();
+    for case in EVERYDAY_TELLING {
+        let decisions = decide(case.line, case.plan, &rows);
+        assert_eq!(
+            outcome(&decisions),
+            case.expect,
+            "{:?}: {decisions:?}",
+            case.line
+        );
+        assert_eq!(decisions[0].why, Why::Added, "{:?}", case.line);
+    }
+}
+
 #[test]
 fn everyday_words_for_a_change_run_it() {
     let rows = rows();

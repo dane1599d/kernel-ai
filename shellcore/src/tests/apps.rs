@@ -352,9 +352,21 @@ fn ui_open_with_a_file_runs_the_apps_own_open_row() {
     assert_eq!(app, "editor");
     assert_eq!(
         request,
-        "kai-call 1\nfunc app:editor/actions@1.0.0#open-file\nargs {path: \"ideas.txt\"}\n"
+        "kai-call 1\nfunc app:editor/actions@1.0.0#open-file\nargs {path: \"/home/user/ideas.txt\"}\n"
     );
     assert!(host.ui_calls.borrow().is_empty());
+    // The path passes the editor's own check, as a real boot runs it.
+    assert_eq!(editcore::file::check_path("/home/user/ideas.txt"), Ok(()));
+}
+
+#[test]
+fn ui_open_never_forwards_a_path_that_goes_up() {
+    let open = r#"{"name":"ui_open","arguments":{"app":"editor","arg":"../system/plan"}}"#;
+    let (host, mut shell) = with_calls(vec![call(open)]);
+    host.apps.borrow_mut().rows.load("editor", EDITOR).unwrap();
+    let reply = shell.eval("open ../system/plan in the editor");
+    assert!(!reply.ok && reply.text.contains(".."), "{reply:?}");
+    assert!(host.app_requests.borrow().is_empty());
 }
 
 #[test]
@@ -362,4 +374,13 @@ fn an_everyday_app_name_means_its_package() {
     assert_eq!(crate::ui::canonical("file manager"), "files");
     assert_eq!(crate::ui::canonical("Task Manager"), "monitor");
     assert_eq!(crate::ui::canonical("notes"), "notes");
+}
+
+#[test]
+fn the_same_rows_under_another_label_load_once() {
+    let mut rows = crate::apps::AppRows::default();
+    rows.load("notes", NOTES).unwrap();
+    let relabelled = NOTES.replacen("version 2", "version 1.0.0", 1);
+    rows.load("notes", &relabelled).unwrap();
+    assert_eq!(rows.apps().count(), 1);
 }
