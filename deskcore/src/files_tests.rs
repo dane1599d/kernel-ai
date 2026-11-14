@@ -155,6 +155,22 @@ fn a_write_fetched_is_not_given_back() {
     );
 }
 
+/// #913's review: a write with no bytes has nothing to fetch, so once
+/// taken the file may have been made: it is never given back.
+#[test]
+fn an_empty_write_taken_is_not_given_back() {
+    let mut files = Files::default();
+    app(
+        &mut files,
+        &format!("files start 2 write new user 0 {PATH}"),
+    );
+    assert!(shell(&mut files, "files take").starts_with("job 0 editor write"));
+    assert_eq!(
+        shell(&mut files, "files back 0"),
+        "err that transfer is not one the shell may give back"
+    );
+}
+
 /// `files take but <app>` passes by a transfer the shell holds back.
 #[test]
 fn a_take_may_skip_an_apps_transfer() {

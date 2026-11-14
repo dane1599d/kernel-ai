@@ -545,9 +545,11 @@ impl Files {
             Ok(t) => t,
             Err(e) => return e,
         };
+        // A write with no bytes has nothing to fetch: once taken, the file
+        // may have been made, so it is begun (#913's review).
         let begun = match transfer.job.op.answers_bytes() {
             true => !transfer.bytes.is_empty(),
-            false => transfer.fetched,
+            false => transfer.fetched || transfer.job.total == 0,
         };
         if transfer.phase != Phase::Running || begun {
             return err("that transfer is not one the shell may give back");

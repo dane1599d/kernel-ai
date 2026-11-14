@@ -223,38 +223,58 @@ pub(crate) fn wire(host: &dyn crate::Host) -> String {
 
 /// Whether `service` is an app, which only the supervisor knows (an app is
 /// one it runs as a component). Only its "no such app" says not: the shell,
-/// llm. A service that is not running counts as one without asking, which
-/// would start it; so does one whose rows are loaded, and one whose answer
-/// is any other error (slow, busy), as before this check. "No such app" is
-/// remembered for that running instance (its pid), so a service restarted,
-/// as an app installed under its name would be, is asked again.
+/// llm. One whose rows are loaded is an app. "No such app" is remembered for
+/// that running instance (its pid), so a service restarted, as an app
+/// installed under its name would be, is asked again.
+///
+/// A service that is not running is not asked, which would start it: it is
+/// an app unless it said "no such app" since boot (#914's review: llm down
+/// is still the model's). One whose answer is any other error (slow, busy)
+/// counts as an app, as before this check, and is not asked again for
+/// [`SLOW_FOR_NS`], so a hung app does not hold up each `open`.
 pub(crate) fn is_app(host: &dyn crate::Host, service: &crate::targets::Service) -> bool {
     let app = service.name.as_str();
-    if service.pid == 0 || service.stopped {
-        return true;
-    }
+    let now = host.now_ns();
     if let Some(apps) = host.apps() {
         let apps = apps.borrow();
         if apps.rows.has(app) {
             return true;
         }
+        if service.pid == 0 || service.stopped {
+            return !apps.rows.said_not_app(app);
+        }
         if apps.rows.not_app(app, service.pid) {
             return false;
         }
+        if apps.rows.slow(app, service.pid, now) {
+            return true;
+        }
+    } else if service.pid == 0 || service.stopped {
+        return true;
     }
-    match host.app_call(app, livecore::rows::REQUEST) {
+    let answer = host.app_call(app, livecore::rows::REQUEST);
+    let Some(apps) = host.apps() else {
+        return !matches!(answer, Err(ref why) if why == NOT_AN_APP);
+    };
+    let rows = &mut apps.borrow_mut().rows;
+    match answer {
         Err(why) if why == NOT_AN_APP => {
-            if let Some(apps) = host.apps() {
-                apps.borrow_mut()
-                    .rows
-                    .not_apps
-                    .push((app.to_string(), service.pid));
-            }
+            rows.not_apps.push((app.to_string(), service.pid));
             false
         }
-        Ok(_) | Err(_) => true,
+        Err(_) => {
+            rows.slow_since(app, service.pid, now);
+            true
+        }
+        Ok(_) => true,
     }
 }
+
+/// How long an app that answered [`is_app`] with an error other than "no
+/// such app" is not asked again.
+pub const SLOW_FOR_NS: u64 = 30_000_000_000;
+/// The most slow answers kept; the oldest goes first.
+const MAX_SLOW: usize = 16;
 
 /// The rows of installed apps that are not running, read by `pkg` from their
 /// stored artifacts (founder test 2, item 3): "make a note called ideas" on a
@@ -434,6 +454,9 @@ pub struct AppRows {
     /// (service, pid) of each running instance that answered "no such app"
     /// to [`is_app`].
     not_apps: Vec<(String, u64)>,
+    /// (service, pid, when) of each running instance whose answer to
+    /// [`is_app`] was another error, for [`SLOW_FOR_NS`].
+    slow: Vec<(String, u64, u64)>,
 }
 
 impl AppRows {
@@ -481,6 +504,30 @@ impl AppRows {
     /// Whether the instance `pid` of `service` said it is no app.
     pub fn not_app(&self, service: &str, pid: u64) -> bool {
         self.not_apps.iter().any(|(s, p)| s == service && *p == pid)
+    }
+
+    /// Whether any instance of `service` said it is no app since boot.
+    pub fn said_not_app(&self, service: &str) -> bool {
+        self.not_apps.iter().any(|(s, _)| s == service)
+    }
+
+    /// Whether the instance `pid` of `service` answered [`is_app`] with
+    /// another error less than [`SLOW_FOR_NS`] before `now`.
+    pub fn slow(&self, service: &str, pid: u64, now: u64) -> bool {
+        self.slow
+            .iter()
+            .any(|(s, p, at)| s == service && *p == pid && now.saturating_sub(*at) < SLOW_FOR_NS)
+    }
+
+    /// Notes that the instance `pid` of `service` answered slowly at `now`.
+    fn slow_since(&mut self, service: &str, pid: u64, now: u64) {
+        self.slow.retain(|(s, p, at)| {
+            !(s == service && *p == pid) && now.saturating_sub(*at) < SLOW_FOR_NS
+        });
+        if self.slow.len() >= MAX_SLOW {
+            self.slow.remove(0);
+        }
+        self.slow.push((service.to_string(), pid, now));
     }
 
     /// Whether `app`'s rows failed to load since boot.
