@@ -2,8 +2,10 @@ kai-theme 1
 name = high-contrast
 base = high-contrast
 desk = #000000
+shell = #000000
 window = #000000
 raised = #000000
+hover = #000000
 line = #FFFFFF
 line_strong = #FFFFFF
 text = #FFFFFF

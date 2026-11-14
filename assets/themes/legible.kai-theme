@@ -2,8 +2,10 @@ kai-theme 1
 name = legible
 base = light
 desk = #E9E4DA
+shell = #F3F0EA
 window = #FAF8F4
 raised = #FFFFFF
+hover = #E4DFD5
 line = #D9D3C7
 line_strong = #857E71
 text = #1A1D24

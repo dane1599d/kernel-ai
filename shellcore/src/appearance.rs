@@ -15,10 +15,21 @@ use look::appearance::{Appearance, Shipped};
 /// of shape (which is reported and left alone until a change replaces it).
 pub(crate) fn current(host: &dyn Host) -> Appearance {
     match host.appearance_read() {
-        Some(text) => Appearance::decode(&text, &Shipped).unwrap_or_else(|why| {
-            host.audit(&format!("the saved appearance is refused: {}", why.0));
-            Appearance::default()
-        }),
+        Some(text) => match Appearance::decode_audited(&text, &Shipped) {
+            // A save from before `shell` and `hover` existed may hold a colour
+            // that falls short on one of them: that colour is dropped and the
+            // rest kept, and the log says which.
+            Ok((appearance, dropped)) => {
+                for line in &dropped {
+                    host.audit(line);
+                }
+                appearance
+            }
+            Err(why) => {
+                host.audit(&format!("the saved appearance is refused: {}", why.0));
+                Appearance::default()
+            }
+        },
         None => Appearance::default(),
     }
 }

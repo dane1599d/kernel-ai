@@ -1,9 +1,10 @@
 use crate::appearance::{Appearance, Refused, Shipped, Themes};
 use crate::theme::{self, Theme};
-use crate::{Curve, Family, HIGH_CONTRAST, LIGHT, Motion, Token, TypeStyle};
+use crate::{Curve, DARK, Family, HIGH_CONTRAST, LIGHT, Motion, Token, TypeStyle};
 use std::format;
 use std::path::PathBuf;
 use std::string::String;
+use std::vec::Vec;
 
 fn golden(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -136,6 +137,230 @@ fn contrast_and_the_ais_colour_are_held() {
     assert!(fake.why.contains("ai's colour"), "{fake:?}");
     // `line` is decorative: any colour passes.
     assert!(Theme::parse(&format!("{head}line = #141821\n")).is_ok());
+}
+
+/// A `kai-theme 1` file written before `shell` and `hover` existed has neither.
+/// It still parses and takes its base's two, whichever base it names.
+#[test]
+fn a_file_without_shell_or_hover_takes_its_bases() {
+    for base in [&DARK, &LIGHT, &HIGH_CONTRAST] {
+        let whole = Theme::from_palette(base, false).encode();
+        let old: String = whole
+            .lines()
+            .filter(|l| !l.starts_with("shell = ") && !l.starts_with("hover = "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(
+            old.lines().count() + 2,
+            whole.lines().count(),
+            "{}",
+            base.name
+        );
+        let theme = Theme::parse(&old).unwrap();
+        assert_eq!(theme.colour(Token::Shell), base.shell, "{}", base.name);
+        assert_eq!(theme.colour(Token::Hover), base.hover, "{}", base.name);
+        // Whole, it reads back the same as the old file did.
+        assert_eq!(Theme::parse(&whole), Ok(theme), "{}", base.name);
+    }
+    // A short file, as a person would write one.
+    let text = "kai-theme 1\nname = mine\nbase = light\naccent = #1F5FBF\n";
+    let theme = Theme::parse(text).unwrap();
+    assert_eq!(theme.colour(Token::Shell), LIGHT.shell);
+    assert_eq!(theme.colour(Token::Hover), LIGHT.hover);
+}
+
+#[test]
+fn shell_and_hover_are_named_in_a_file_once_and_checked() {
+    let head = "kai-theme 1\nname = t\nbase = dark\n";
+    // They are tokens of a file like the rest: set, given once.
+    let theme = Theme::parse(&format!("{head}shell = #10131C\nhover = #262C38\n")).unwrap();
+    assert_eq!(theme.colour(Token::Shell), 0x10_131C);
+    assert_eq!(theme.colour(Token::Hover), 0x26_2C38);
+    let twice = Theme::parse(&format!("{head}shell = #10131C\nshell = #10131C\n")).unwrap_err();
+    assert_eq!((twice.line, twice.why.contains("twice")), (5, true));
+    // `shell` is a full ground: text and marks must hold on it.
+    let bright = Theme::parse(&format!("{head}shell = #FFFFFF\n")).unwrap_err();
+    assert!(bright.why.starts_with("text on shell is "), "{bright:?}");
+    let faint = Theme::parse(&format!("{head}shell = #1C2230\n")).unwrap_err();
+    assert!(faint.why.contains(" on shell is "), "{faint:?}");
+    // `hover` is a restricted ground: what is drawn on it must hold there.
+    let pale = Theme::parse(&format!("{head}hover = #8890A0\n")).unwrap_err();
+    assert!(pale.why.contains(" on hover is "), "{pale:?}");
+    // What is never drawn on it is not held to it: `dim` is 4.09:1 on this
+    // theme's `hover`, and the theme is whole all the same.
+    assert!(crate::contrast(DARK.dim, DARK.hover) < 4.5);
+    Theme::from_palette(&DARK, false).check().unwrap();
+}
+
+#[test]
+fn a_token_over_the_theme_may_be_shell_or_hover() {
+    let dark = Appearance::default();
+    let shell = dark.set("token", "shell #10131C", &Shipped).unwrap();
+    assert_eq!(
+        shell.resolve(&Shipped).unwrap().colour(Token::Shell),
+        0x10_131C
+    );
+    let refused = |r: Result<Appearance, Refused>| r.unwrap_err().0;
+    assert!(refused(dark.set("token", "shell #FFFFFF", &Shipped)).starts_with("text on shell"));
+    assert!(refused(dark.set("token", "hover #8890A0", &Shipped)).contains(" on hover "));
+    // In the order of `Token::ALL`, so a saved file reads back the same.
+    let both = shell.set("token", "hover #262C38", &Shipped).unwrap();
+    assert_eq!(both.tokens[0].0, Token::Shell);
+    assert_eq!(Appearance::decode(&both.encode(), &Shipped), Ok(both));
+}
+
+/// What a build from before `shell` and `hover` saved: a light theme with a
+/// `muted` that clears every ground it knew (4.53:1 on the desk, the least) and
+/// is 4.32:1 on `hover`, with the person's scale, text size and legible type.
+const MAIN_ERA_LIGHT: &str = "kai-appearance 1\ntheme = light\ntoken = muted #666666\n\
+                              scale = 150\ntext_size = 120\nreduced_motion = on\nlegible = on\n";
+/// The same in dark: `text` is 4.68:1 on `raised`, the least, and 4.07:1 on
+/// `hover`; `accent` is held on every ground.
+const MAIN_ERA_DARK: &str = "kai-appearance 1\ntheme = dark\ntoken = text #888898\n\
+                             token = accent #A0C8FF\nscale = 125\nlegible = on\n";
+
+/// A save made before the two tokens may hold a colour that falls short on one
+/// of them. Replaying it drops that one colour and keeps the rest, with a line
+/// for the audit log: refusing the whole save would reset the theme, scale and
+/// legible type to the defaults.
+#[test]
+fn a_save_from_before_shell_and_hover_loses_only_the_colour_that_falls_short() {
+    // The colour really is fine on every earlier ground and short on `hover`.
+    for (text, theme, token, rgb) in [
+        (MAIN_ERA_LIGHT, &LIGHT, Token::Muted, 0x66_6666),
+        (MAIN_ERA_DARK, &DARK, Token::Text, 0x88_8898),
+    ] {
+        for ground in [theme.window, theme.raised, theme.desk] {
+            assert!(crate::contrast(rgb, ground) >= 4.5, "{}", theme.name);
+        }
+        let short = Theme::from_palette(theme, false)
+            .with_colour(token, rgb)
+            .shortfall()
+            .unwrap();
+        assert_eq!((short.token, short.ground), (token, Token::Hover));
+        // Set now, it is refused like any other short colour, naming the pair.
+        let name = crate::theme::TOKEN_NAMES[Token::ALL.iter().position(|t| *t == token).unwrap()];
+        let now = Appearance::default()
+            .set("theme", theme.name, &Shipped)
+            .and_then(|a| a.set("token", &format!("{name} #{rgb:06X}"), &Shipped));
+        assert!(
+            now.unwrap_err()
+                .0
+                .starts_with(&format!("{name} on hover is ")),
+            "{text:?}"
+        );
+        assert!(Appearance::decode(text, &Shipped).is_ok(), "{text:?}");
+    }
+
+    let (light, dropped) = Appearance::decode_audited(MAIN_ERA_LIGHT, &Shipped).unwrap();
+    assert_eq!(light.theme, "light");
+    assert!(light.tokens.is_empty());
+    assert_eq!((light.scale, light.text_size), (150, 120));
+    assert!(light.reduced_motion && light.legible);
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    assert!(
+        dropped[0].starts_with("the saved colour muted #666666 is dropped: muted on hover is 4.3"),
+        "{dropped:?}"
+    );
+    light.resolve(&Shipped).unwrap();
+
+    // One of two goes, the other stays.
+    let (dark, dropped) = Appearance::decode_audited(MAIN_ERA_DARK, &Shipped).unwrap();
+    assert_eq!(dark.tokens, [(Token::Accent, 0xA0_C8FF)]);
+    assert_eq!(
+        (dark.theme.as_str(), dark.scale, dark.legible),
+        ("dark", 125, true)
+    );
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    assert!(dropped[0].contains("text #888898"), "{dropped:?}");
+    // `decode` gives the same appearance, and what it saves next has no trace of
+    // the colour, so the save reads back whole and with nothing dropped.
+    assert_eq!(
+        Appearance::decode(MAIN_ERA_DARK, &Shipped),
+        Ok(dark.clone())
+    );
+    let again = Appearance::decode_audited(&dark.encode(), &Shipped).unwrap();
+    assert_eq!(again, (dark, Vec::new()));
+}
+
+/// A save that is whole is read whole, whatever order its lines are in. `hover`
+/// is listed before `error` (the order of `Token::ALL`), and this `hover` holds
+/// only against the saved `error`: the default one is 4.36:1 on it. Judged line
+/// by line, `hover` was dropped with a wrong audit line and the next change lost
+/// it for good.
+#[test]
+fn a_saved_hover_that_holds_only_with_the_saved_error_is_kept() {
+    let saved = "kai-appearance 1\ntheme = dark\ntoken = hover #303644\n\
+                 token = error #FF9999\nscale = 150\n";
+    assert!(crate::contrast(DARK.error, 0x30_3644) < 4.5);
+    assert!(crate::contrast(0xFF_9999, 0x30_3644) >= 4.5);
+    // Set by hand, `hover` alone is refused; with the `error` first it is whole.
+    let alone = Appearance::default().set("token", "hover #303644", &Shipped);
+    assert!(alone.unwrap_err().0.starts_with("error on hover is 4.36"));
+    let made = Appearance::default()
+        .set("token", "error #FF9999", &Shipped)
+        .and_then(|a| a.set("token", "hover #303644", &Shipped))
+        .unwrap();
+    // It is saved in the order of `Token::ALL`, `hover` first.
+    let text = made.encode();
+    assert!(
+        text.find("hover #303644") < text.find("error #FF9999"),
+        "{text}"
+    );
+    assert_eq!(
+        Appearance::decode_audited(&text, &Shipped),
+        Ok((made.clone(), Vec::new()))
+    );
+
+    let (got, dropped) = Appearance::decode_audited(saved, &Shipped).unwrap();
+    assert_eq!(
+        got.tokens,
+        [(Token::Hover, 0x30_3644), (Token::Error, 0xFF_9999)]
+    );
+    assert_eq!((got.scale, dropped.len()), (150, 0), "{dropped:?}");
+    // The next change saves it as it was.
+    let next = got.set("scale", "200", &Shipped).unwrap();
+    assert_eq!(next.tokens, got.tokens);
+    assert_eq!(Appearance::decode(&next.encode(), &Shipped), Ok(next));
+}
+
+/// When the save sets the ground that falls short and not the colour on it, it
+/// is the ground that goes.
+#[test]
+fn a_saved_hover_too_pale_for_the_default_text_is_the_colour_dropped() {
+    let saved = "kai-appearance 1\ntheme = dark\ntoken = hover #FFFFFF\nlegible = on\n";
+    let (got, dropped) = Appearance::decode_audited(saved, &Shipped).unwrap();
+    assert!(got.tokens.is_empty() && got.legible);
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    assert!(
+        dropped[0].starts_with("the saved colour hover #FFFFFF is dropped: text on hover is "),
+        "{dropped:?}"
+    );
+}
+
+/// Only a shortfall on `shell` or `hover` is let go. One on an earlier ground was
+/// one before too, and a save that holds it, or anything else out of shape, is
+/// refused whole as it always was.
+#[test]
+fn a_save_that_was_short_before_is_still_refused_whole() {
+    let muted = "kai-appearance 1\ntheme = dark\ntoken = muted #30343C\nscale = 150\n";
+    let err = Appearance::decode_audited(muted, &Shipped).unwrap_err();
+    assert!(err.0.starts_with("muted on window is "), "{err:?}");
+    let ai = "kai-appearance 1\ntheme = dark\ntoken = accent #FF9F5A\n";
+    assert!(
+        Appearance::decode_audited(ai, &Shipped)
+            .unwrap_err()
+            .0
+            .contains("ai's colour")
+    );
+    let gone = "kai-appearance 1\ntheme = sepia\n";
+    assert!(Appearance::decode_audited(gone, &Shipped).is_err());
+    // A save with nothing short reports nothing dropped.
+    let fine = "kai-appearance 1\ntheme = dark\ntoken = accent #A0C8FF\n";
+    assert_eq!(
+        Appearance::decode_audited(fine, &Shipped).unwrap().1,
+        Vec::<String>::new()
+    );
 }
 
 #[test]

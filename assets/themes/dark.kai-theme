@@ -2,8 +2,10 @@ kai-theme 1
 name = dark
 base = dark
 desk = #0D1017
+shell = #111520
 window = #141821
 raised = #1B202B
+hover = #252B37
 line = #232A38
 line_strong = #5F6B80
 text = #ECE6DA
