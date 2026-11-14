@@ -1,7 +1,8 @@
 //! Whether a line typed after a clarifying question answers it. An answer
 //! joins the request it clarifies ("switch the policy" + "round robin"); a
 //! line that reads as a request of its own ("show me the cpus") runs alone,
-//! and the question is dropped. Code decides, from the line's first word, so
+//! and the question is dropped. Code decides, from the line's first word and
+//! its length, so
 //! the model's input is unchanged.
 
 /// Words a request or a question opens with. A clarifying answer names a
@@ -58,6 +59,10 @@ const LEADS: &[&str] = &[
 /// word ("stop", offered as an option) is always an answer.
 const REQUEST_WORDS: usize = 2;
 
+/// The most words an answer has: a longer line ("Smake a note called ideas
+/// and type hello dane into it", typo and all) is a request of its own.
+const MAX_ANSWER_WORDS: usize = 5;
+
 /// Whether `line`, typed while a question is open, answers it rather than
 /// starting a new request.
 pub(crate) fn answers(line: &str) -> bool {
@@ -68,5 +73,6 @@ pub(crate) fn answers(line: &str) -> bool {
     let first = first
         .trim_end_matches([',', '.', '?', '!', ':'])
         .to_ascii_lowercase();
-    words.len() < REQUEST_WORDS || !LEADS.contains(&first.as_str())
+    words.len() < REQUEST_WORDS
+        || (words.len() <= MAX_ANSWER_WORDS && !LEADS.contains(&first.as_str()))
 }

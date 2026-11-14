@@ -125,7 +125,7 @@ impl Shell {
     /// line only asks to be told something, and the script would make a change
     /// the line did not ask for. `None` when it may go on to its tier.
     pub(crate) fn told_only(&self, request: &str, checked: &Checked) -> Option<String> {
-        if !agentabi::consent::asks_to_be_told(request) {
+        if !agentabi::consent::asks_to_be_told(self.told_text(request)) {
             return None;
         }
         let mut added: Vec<&'static str> = Vec::new();

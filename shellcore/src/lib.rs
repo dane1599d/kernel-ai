@@ -644,6 +644,9 @@ pub struct Shell {
     partial: Option<String>,
     /// A request the model asked to clarify: the next line is joined to it.
     clarifying: Option<String>,
+    /// While a joined request runs, `(joined, typed)`: the telling-line check
+    /// judges the answer the person typed, not the question it answers.
+    answered: Option<(String, String)>,
     /// The terminals of apps that run shell lines, by app (`appline`): each has an
     /// entry, question and proposal of its own.
     fronts: alloc::collections::BTreeMap<String, panel::Terminal>,
@@ -732,6 +735,7 @@ impl Shell {
             showed: agentcore::Showed::default(),
             partial: None,
             clarifying: None,
+            answered: None,
             fronts: alloc::collections::BTreeMap::new(),
             asked_model: false,
             worded: false,
@@ -928,7 +932,11 @@ impl Shell {
             && split_command(input, |name| self.scope.contains(name)).is_none()
         {
             if clarify::answers(input) {
-                return self.ask_for_script(&format!("{request} {input}"));
+                let joined = format!("{request} {input}");
+                self.answered = Some((joined.clone(), input.to_string()));
+                let reply = self.ask_for_script(&joined);
+                self.answered = None;
+                return reply;
             }
             self.host.audit(&format!(
                 "the question about \"{request}\" was left: \"{input}\" reads as a new request"
@@ -1107,6 +1115,16 @@ impl Shell {
 
     /// Asks the LLM for a script for `request`, checks it, and proposes it. A refused
     /// answer goes back to the model once, with the reason.
+    /// The words the telling-line check (#721) judges for `request`: the
+    /// answer the person typed when `request` joins it to a question, since
+    /// the question is the model's, not theirs.
+    pub(crate) fn told_text<'a>(&'a self, request: &'a str) -> &'a str {
+        match &self.answered {
+            Some((joined, typed)) if joined == request => typed,
+            _ => request,
+        }
+    }
+
     fn ask_for_script(&mut self, request: &str) -> Reply {
         if request.is_empty() {
             return Reply::err("usage: ? <what you want done>");

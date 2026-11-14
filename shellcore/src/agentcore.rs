@@ -308,7 +308,10 @@ impl Shell {
         }
         // A change for a line that only asks to be told answers nothing it
         // asked, whatever the State or a page told the model (#721): no ask.
-        if decision.why == Why::Added && !row.facts.read_only && consent::asks_to_be_told(request) {
+        if decision.why == Why::Added
+            && !row.facts.read_only
+            && consent::asks_to_be_told(self.told_text(request))
+        {
             let why = crate::actions::told_why(row.name);
             self.record(id, request, &call.text(), &format!("refused: {why}"));
             return outcome(Tier::Never, Why::Added, Reply::err(why));

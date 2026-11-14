@@ -824,7 +824,36 @@ fn only_a_line_that_opens_like_a_request_leaves_the_question() {
         "What is the policy?",
         "please list apps",
         "Stop netd",
+        "can you do anything with the gpu",
+        "Smake a note called ideas and type hello dane into it",
     ] {
         assert!(!answers(line), "{line}");
     }
+}
+
+#[test]
+fn a_joined_answer_is_judged_as_typed_not_as_the_question() {
+    // "what can you do with the cpus" asks to be told; the answer the person
+    // types to the question it got back is theirs, and may ask for a change.
+    let ask = r#"{"name":"clarify","arguments":{"question":"Which?","options":["adjust scheduling policy"]}}"#;
+    let (host, mut shell) = with_calls(vec![call(ask), call(RR)]);
+    shell.eval("what can you do with the cpus");
+    let reply = shell.eval("use round robin");
+    assert!(!reply.text.contains("only asks to be told"), "{reply:?}");
+    assert_eq!(
+        host.act_lines.borrow()[1],
+        "what can you do with the cpus use round robin"
+    );
+}
+
+#[test]
+fn a_long_line_after_a_question_is_a_request_of_its_own() {
+    let ask = r#"{"name":"clarify","arguments":{"question":"Which?","options":["a","b"]}}"#;
+    let (host, mut shell) = with_calls(vec![call(ask), call(RR)]);
+    shell.eval("what can you do with the cpus");
+    shell.eval("Smake a note called ideas and type hello dane into it");
+    assert_eq!(
+        host.act_lines.borrow()[1],
+        "Smake a note called ideas and type hello dane into it"
+    );
 }
