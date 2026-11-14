@@ -80,6 +80,9 @@ pub struct Ui {
     /// A person typed or clicked in one of its windows, or acted on one,
     /// since [`Ui::take_used`]: use, for the app nap.
     used: bool,
+    /// Its window that holds the keyboard focus, if one does: closing it is
+    /// losing the focus, whose `focus_out` comes after the window is gone.
+    holder: Option<u32>,
     /// Events that came back with the window's own calls, acted on at the next
     /// poll.
     later: Vec<Told>,
@@ -114,6 +117,7 @@ impl Ui {
             shown: None,
             focused: None,
             used: false,
+            holder: None,
             later: Vec::new(),
             reply: alloc::vec![0u8; kabi::MAX_MESSAGE],
             sent: effects::Sent::default(),
@@ -423,8 +427,14 @@ impl Ui {
             }
             match t {
                 Told::Restarted => self.reopen(),
-                Told::Focus(_) => self.focused = Some(true),
-                Told::Blur(_) => self.focused = Some(false),
+                Told::Focus(window) => {
+                    self.focused = Some(true);
+                    self.holder = Some(window);
+                }
+                Told::Blur(_) => {
+                    self.focused = Some(false);
+                    self.holder = None;
+                }
                 Told::Theme(name) => self.set_theme(&name),
                 Told::Close(window) => {
                     let performed = serve_shown(host, |core| {
@@ -611,6 +621,13 @@ impl Ui {
     }
 
     fn close(&mut self, app: u32) {
+        // The window that held the focus is gone: the focus went with it, and
+        // the app may nap once unused (its focus_out cannot reach a window no
+        // longer here).
+        if self.holder == Some(app) {
+            self.holder = None;
+            self.focused = Some(false);
+        }
         let calls = wasmhost::desk::calls(&self.desk.closed(app));
         if !calls.is_empty() {
             self.send(&calls, None);

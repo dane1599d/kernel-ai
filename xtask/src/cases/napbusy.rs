@@ -12,6 +12,7 @@ pub(super) const CASES: &[TestCase] = &[
             "desk-nap-busy: ten seconds of keys in its window kept the app awake",
             "comphost: notes-window napped, unused",
             "desk-nap-busy: a window in use never napped, and napped once the focus left it",
+            "desk-nap-busy: closing the focused window let the app nap",
         ],
         ..case("desk-nap-busy", "test=desk-nap-busy")
     },

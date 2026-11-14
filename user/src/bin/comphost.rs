@@ -248,6 +248,8 @@ fn main() -> i32 {
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     // Whether the nap holds a lease for settings requests in flight.
     let mut settings_leased = false;
+    // Since when a line sent from a window has waited for its answer.
+    let mut awaiting_since: Option<u64> = None;
     let mut started = started::Started::default();
     // When the host's own wait ends; 0 is never.
     let mut tick_at = deadline(host.timeout_ms());
@@ -328,32 +330,47 @@ fn main() -> i32 {
                 settle(&mut windows, &mut edits, &mut relay, &mut host);
             }
             Err(Error::TimedOut) => {
-                if let Some(ui) = windows.as_mut().filter(|ui| ui.wants_poll())
-                    && let Err(exit) = ui
-                        .poll(&mut host)
-                        .and_then(|()| {
-                            // A close or an agent's action may have woken it.
-                            napper.after(&host, now_ms());
-                            // A key, click or action in a window is use: a
-                            // window in use never naps.
-                            if ui.take_used() {
-                                napper.nap.used(now_ms());
-                            }
-                            match ui.take_focused() {
-                                Some(focused) => napper.focus(&mut host, focused, now_ms()),
-                                None => Ok(None),
-                            }
-                        })
-                        .map(|napped| log_nap(&name, napped))
-                {
-                    println!("{}", exit.why);
-                    return exit.code;
+                if let Some(ui) = windows.as_mut().filter(|ui| ui.wants_poll()) {
+                    if let Err(exit) = ui.poll(&mut host) {
+                        println!("{}", exit.why);
+                        return exit.code;
+                    }
+                    // A close or an agent's action may have woken it.
+                    napper.after(&host, now_ms());
+                }
+                // A key, click or action in a window is use, and a window
+                // holding the focus keeps the app awake. Read with no window
+                // left too: the last one's close is its focus lost.
+                if let Some(ui) = windows.as_mut() {
+                    if ui.take_used() {
+                        napper.nap.used(now_ms());
+                    }
+                    let focus = match ui.take_focused() {
+                        Some(focused) => napper.focus(&mut host, focused, now_ms()),
+                        None => Ok(None),
+                    };
+                    match focus {
+                        Ok(napped) => log_nap(&name, napped),
+                        Err(exit) => {
+                            println!("{}", exit.why);
+                            return exit.code;
+                        }
+                    }
                 }
                 // A change or a file waiting for its answer is use: the app does
                 // not nap until it has it.
-                // So is a line sent from a window that waits for its answer.
+                // So is a line sent from a window that waits for its answer,
+                // for at most a minute: an answer lost never holds it awake.
+                let awaits = windows.as_ref().is_some_and(ui::Ui::awaits_answer);
+                awaiting_since = match (awaits, awaiting_since) {
+                    (false, _) => None,
+                    (true, None) => Some(now_ms()),
+                    (true, since) => since,
+                };
+                let awaiting = awaiting_since
+                    .is_some_and(|since| now_ms().saturating_sub(since) < AWAIT_LEASE_MS);
                 let busy = windows.as_ref().is_some_and(ui::Ui::changes_busy)
-                    || windows.as_ref().is_some_and(ui::Ui::awaits_answer)
+                    || awaiting
                     || relay.as_ref().is_some_and(files::Relay::busy);
                 if busy != settings_leased {
                     napper.nap.lease(busy);
@@ -416,6 +433,9 @@ fn soonest(wait: u64, due: Option<u64>) -> u64 {
 
 /// What the instances did that leaves comphost: the editor's messages go to the
 /// edit service and its files to `desktop`, then the windows' frames.
+/// The longest a line's awaited answer keeps the app from napping.
+const AWAIT_LEASE_MS: u64 = 60_000;
+
 fn settle(
     windows: &mut Option<ui::Ui>,
     edits: &mut Option<editcore::gate::Gate>,

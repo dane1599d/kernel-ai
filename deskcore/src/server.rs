@@ -97,6 +97,10 @@ pub struct Client {
     /// leaves it, the client is told (`focus_out`), so its host knows the
     /// window is no longer in use (the app nap).
     focused: Option<u32>,
+    /// Focus moves its own requests made (a window opened or closed), for
+    /// every other client too ([`Client::take_shared`]): the window that lost
+    /// the focus hears `focus_out`.
+    shared: Vec<Effect>,
 }
 
 impl Client {
@@ -115,6 +119,7 @@ impl Client {
             mods: 0,
             posts: Vec::new(),
             focused: None,
+            shared: Vec::new(),
         };
         for (n, global) in GLOBALS.iter().enumerate() {
             client.send(
@@ -402,6 +407,7 @@ impl Client {
                         let effects = desk.close(window);
                         needs.push(Need::Closed { window });
                         self.apply(&effects);
+                        self.share(&effects);
                     }
                 }
                 // The rest asks nothing of the desk yet (popups and the panel).
@@ -542,6 +548,7 @@ impl Client {
                 desk.set_app_id(window, &surface.app_id.clone());
                 surface.window = Some(window);
                 self.apply(&effects);
+                self.share(&effects);
                 window
             }
         };
@@ -612,6 +619,22 @@ impl Client {
             .iter()
             .find(|s| s.window == Some(window))?
             .toplevel
+    }
+
+    /// Keeps the focus moves among `effects` for every other client.
+    fn share(&mut self, effects: &[Effect]) {
+        self.shared.extend(
+            effects
+                .iter()
+                .filter(|e| matches!(e, Effect::Focus(_)))
+                .cloned(),
+        );
+    }
+
+    /// The focus moves its last requests made, for `desktop` to give every
+    /// other client ([`Client::apply`]), once.
+    pub fn take_shared(&mut self) -> Vec<Effect> {
+        core::mem::take(&mut self.shared)
     }
 
     fn surface_of_window(&self, window: WindowId) -> Option<u32> {

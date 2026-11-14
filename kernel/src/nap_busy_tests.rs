@@ -29,6 +29,8 @@ const START: (i32, i32) = (640, 400);
 const PANEL: (i32, i32) = (640, 800 - 18);
 /// The middle of Notes' content: its 642x454 frame at 48,52, under a 34 px bar.
 const WINDOW: (i32, i32) = (48 + 321, 52 + 34 + 210);
+/// Notes' close control, as `ui-window` finds it.
+const CLOSE: (i32, i32) = (48 + 642 - 17, 52 + 17);
 /// `a`, down and up (scan code set 1).
 const KEY: [u8; 2] = [0x1E, 0x9E];
 
@@ -96,5 +98,18 @@ pub fn check() -> Result<(), &'static str> {
         return Err("desk-nap-busy: the window that lost the focus never napped");
     }
     log!("desk-nap-busy: a window in use never napped, and napped once the focus left it");
+    // Back in it (which wakes it), then its window closed while it holds the
+    // focus: the focus goes with the window, so the app naps again.
+    click(WINDOW);
+    threads::sleep_ms(2_000);
+    click(CLOSE);
+    let closed = free_frames();
+    threads::sleep_ms(NAP_MS);
+    let after = free_frames();
+    log!("desk-nap-busy: free frames {closed} as its focused window closed, {after} after");
+    if after < closed + MIN_FRAMES {
+        return Err("desk-nap-busy: the app whose focused window closed never napped");
+    }
+    log!("desk-nap-busy: closing the focused window let the app nap");
     Ok(())
 }
