@@ -144,6 +144,7 @@ mod serial;
 mod shell_tests;
 mod shm;
 mod shm_tests;
+mod show_tests;
 mod slots;
 mod smp;
 mod smp_tests;
@@ -415,6 +416,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskCardWake => run_case(card_wake_tests::check),
         SelfTest::DeskCatalog => run_case(catalog_tests::check),
         SelfTest::UiWindow => run_case(ui_tests::check),
+        SelfTest::UiWindowShow => run_case(show_tests::check),
         SelfTest::AppEditor => run_case(app_editor_tests::check),
         SelfTest::AppEditorFiles => run_case(app_editor_files_tests::check),
         SelfTest::AppEditorBuild => run_case(app_editor_build_tests::check),
