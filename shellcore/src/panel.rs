@@ -31,6 +31,22 @@ const ASKS: &str = "it asks first: ask in the terminal, which shows the script";
 const ASKED: &str = "Kai asked a question above: answer it here";
 /// The bar's line when code asked which one: the question is in the history.
 const WHICH: &str = "A question above: answer it here";
+/// The history's note when code's question holds more than plain words.
+const WHICH_PLAIN: &str = "Which one do you mean? Name it in your answer.";
+/// The longest question of code's the history echoes.
+const MAX_ECHO: usize = 160;
+
+/// Code's question, echoed only when it is short and plain: ASCII letters,
+/// digits, spaces and the punctuation a process name or the question itself
+/// uses. It can carry a name the model chose, unchecked, and the note is
+/// drawn in the system's look.
+pub(crate) fn plain_question(text: &str) -> &str {
+    let plain = |c: char| c.is_ascii_alphanumeric() || " _-.?:,'\"".contains(c);
+    match text.len() <= MAX_ECHO && !text.is_empty() && text.chars().all(plain) {
+        true => text,
+        false => WHICH_PLAIN,
+    }
+}
 /// The bar's line when the model answered in words: they are in the history.
 const ANSWERED: &str = "Kai answered above.";
 /// The most of what the AI said that the history is given.
@@ -173,14 +189,7 @@ impl Shell {
             if self.clarified_by_model {
                 return PanelResult::Done(String::from(ASKED));
             }
-            let question = reply.text.trim();
-            if !question.is_empty() {
-                let mut end = question.len().min(MAX_SAID);
-                while !question.is_char_boundary(end) {
-                    end -= 1;
-                }
-                self.panel_note = Some(String::from(&question[..end]));
-            }
+            self.panel_note = Some(String::from(plain_question(reply.text.trim())));
             return PanelResult::Done(String::from(WHICH));
         }
         if self.worded {
