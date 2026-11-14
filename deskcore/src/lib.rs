@@ -14,6 +14,7 @@ extern crate std;
 pub mod agent;
 pub mod askcard;
 pub mod catalog;
+pub mod chat;
 pub mod chrome;
 pub mod compose;
 pub mod damage;
@@ -28,6 +29,7 @@ pub mod net_wire;
 pub mod paint;
 pub mod paint_card;
 pub mod paint_catalog;
+pub mod paint_chat;
 pub mod paint_panel;
 pub mod panel;
 pub mod panel_wire;
@@ -45,6 +47,8 @@ mod tests;
 #[cfg(test)]
 mod server_tests;
 
+#[cfg(test)]
+mod paint_sizes_tests;
 #[cfg(test)]
 mod paint_tests;
 
