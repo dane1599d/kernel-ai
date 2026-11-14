@@ -447,6 +447,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Threads => run_case(thread_tests::check),
         SelfTest::ThreadsKill => run_case(thread_tests::kill_check),
         SelfTest::ThreadPin => run_case(thread_tests::pin_check),
+        SelfTest::RunawayStall => run_case(thread_tests::stall_check),
         SelfTest::Matvec => run_case(compute_tests::matvec_check),
         SelfTest::ComputeKeys => run_case(compute_tests::keys_check),
         SelfTest::Bigmap => run_case(bigmap_tests::check),
