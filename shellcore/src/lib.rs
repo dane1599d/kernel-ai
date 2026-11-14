@@ -50,6 +50,7 @@ mod instructions;
 mod models;
 mod netask;
 pub mod netgrant;
+mod sound;
 pub use models::MODELS_APP;
 pub use netask::Connect as NetConnect;
 mod packages;
@@ -1184,6 +1185,12 @@ impl Shell {
             "script {id} requested: {}",
             show::truncate(request, 60)
         ));
+        // Sound has one answer until there is an audio driver.
+        if let Some(text) = sound::answer(request) {
+            self.record(id, request, "", "answered: no sound yet");
+            self.worded = true;
+            return Reply::ok(text);
+        }
         // What Kai can do with something comes from the rows, never the model.
         if let Some(text) = abilities::answer(request) {
             self.record(id, request, "", "answered from the registry");
