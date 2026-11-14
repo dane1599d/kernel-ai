@@ -35,6 +35,7 @@ pub mod apps;
 mod brackets;
 pub mod ccbuild;
 mod centry;
+mod clarify;
 mod cmode;
 mod commands;
 pub mod data;
@@ -921,12 +922,28 @@ impl Shell {
             return Reply::ok("");
         }
         // The answer to a clarifying question joins the request it clarifies; a typed
-        // command or Rhai line instead leaves it.
+        // command, a Rhai line or a request of its own instead leaves it.
         if let Some(request) = self.clarifying.take()
             && reads_like_words(input)
             && split_command(input, |name| self.scope.contains(name)).is_none()
         {
-            return self.ask_for_script(&format!("{request} {input}"));
+            if clarify::answers(input) {
+                return self.ask_for_script(&format!("{request} {input}"));
+            }
+            self.host.audit(&format!(
+                "the question about \"{request}\" was left: \"{input}\" reads as a new request"
+            ));
+            let note = format!(
+                "(Left the question about \"{}\".)",
+                show::truncate(&request, LEFT_NOTE_CHARS)
+            );
+            let mut reply = self.eval_line(input);
+            match reply.confirm.is_none() && !reply.more {
+                true if reply.text.is_empty() => reply.text = note,
+                true => reply.text = format!("{note}\n{}", reply.text),
+                false => self.notices.push(note),
+            }
+            return reply;
         }
         if input == "reset" {
             self.scope.clear();
@@ -1237,6 +1254,9 @@ pub fn reads_like_words(line: &str) -> bool {
         .count();
     letters >= 4 * others
 }
+
+/// The most characters of a left question the note quotes.
+const LEFT_NOTE_CHARS: usize = 40;
 
 /// The fewest words a line led by a Rhai keyword needs to read as a sentence.
 const SENTENCE_WORDS: usize = 4;
