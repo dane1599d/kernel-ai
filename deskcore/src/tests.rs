@@ -96,7 +96,21 @@ fn chrome_hits_controls_title_content_and_grabs() {
         chrome::hit(frame, p(n.x + 1, n.y + 1)),
         Some(Part::Minimize)
     );
-    assert!(c.right() <= frame.right() && n.x > m.x - chrome::CONTROL - 3);
+    // 40x32, flush with the bar's top and right end and with each other.
+    for r in [c, m, n] {
+        assert_eq!((r.w, r.h), (chrome::CONTROL_W, chrome::CONTROL_H));
+        assert_eq!(r.y, frame.y + chrome::FRAME);
+    }
+    assert_eq!(c.right(), frame.right() - chrome::FRAME);
+    assert_eq!((m.right(), n.right()), (c.x, m.x));
+    // Inside the frame the close control wins over the corner grab; the
+    // frame's own corner pixel is still a grab.
+    let corner = p(frame.right() - 2, frame.y + 1);
+    assert_eq!(chrome::hit(frame, corner), Some(Part::Close));
+    let Some(Part::Edge(e)) = chrome::hit(frame, p(frame.right() - 1, frame.y)) else {
+        panic!("no corner grab on the frame");
+    };
+    assert!(e.right && e.top);
     // 6 px outside the frame is a grab; 7 px is nothing.
     let Some(Part::Edge(e)) = chrome::hit(frame, p(frame.right() + 5, 250)) else {
         panic!("no right edge");

@@ -23,13 +23,21 @@ use crate::geom::{Point, Rect};
 use crate::panel::Panel;
 use crate::trusted;
 use alloc::format;
+use gfx2d::icons::Icon;
 use gfx2d::shadow::Shadow;
 use gfx2d::{Canvas, Fonts, Image, Text};
 use look::theme::Theme;
 use look::{DARK, Palette, TypeStyle};
 
-/// How far outside a frame its drawing reaches: the shadow fits in the grabs.
-pub const SHADOW_REACH: i32 = chrome::GRAB;
+/// How far outside a frame its drawing reaches: the focused window's shadow
+/// (`look::metric::SHADOW_REACH`), wider than its grabs.
+pub const SHADOW_REACH: i32 = look::metric::SHADOW_REACH as i32;
+/// The app icon's side in a title bar (`look::metric::ICON_TITLE`).
+const TITLE_ICON: i32 = look::metric::ICON_TITLE as i32;
+/// A window control's glyph side.
+const CONTROL_ICON: i32 = 16;
+/// Between the icon, the kernel label and the title.
+const TITLE_GAP: i32 = 8;
 /// Space before and after text in a bar.
 pub(crate) const PAD: i32 = 12;
 /// The varying right side of the top bar: model state and memory.
@@ -72,6 +80,8 @@ pub struct Painter {
     pub(crate) palette: Palette,
     near: Shadow,
     far: Shadow,
+    /// Our glyphs, by icon and size ([`gfx2d::icons`]).
+    icons: gfx2d::icons::Icons,
     /// The history's entries laid out, by entry and width
     /// ([`crate::paint_chat`]): what a repaint draws without wrapping again.
     pub(crate) chat_laid: alloc::vec::Vec<crate::paint_chat::Laid>,
@@ -109,6 +119,7 @@ impl Painter {
             palette: DARK,
             near: Shadow::new(2, 96, 0),
             far: Shadow::new(SHADOW_REACH, 64, 0),
+            icons: gfx2d::icons::Icons::default(),
             chat_laid: alloc::vec::Vec::new(),
         })
     }
@@ -154,9 +165,14 @@ impl Painter {
                 self.far.draw(c, g(window.frame), g(clip));
                 self.near.draw(c, g(window.frame), g(clip));
             }
-            let layer = self.layer(window, focused, content);
+            let hovered = desk
+                .hovered()
+                .filter(|(id, _)| *id == window.id)
+                .map(|(_, part)| part);
+            let layer = self.layer(window, focused, hovered, content);
             let at = (window.frame.x, window.frame.y);
-            c.draw_window(&layer, at, g(clip), chrome::RADIUS, true);
+            let radius = chrome::radius(window.maximized());
+            c.draw_window(&layer, at, g(clip), radius, true);
             if desk.agent() == Some(window.id) {
                 outline(c, trusted::outline(window.frame), clip, self.palette.ai);
             }
@@ -195,11 +211,13 @@ impl Painter {
     }
 
     /// Window `window`'s frame, title bar, controls and content, its corners
-    /// rounded.
+    /// rounded unless it is maximized; `hovered` is the control under the
+    /// pointer.
     fn layer(
         &mut self,
         window: &Window,
         focused: bool,
+        hovered: Option<Part>,
         content: &mut dyn FnMut(WindowId, &mut Canvas<'_>, Rect) -> bool,
     ) -> Image {
         let local = Rect::new(0, 0, window.frame.w, window.frame.h);
@@ -214,40 +232,114 @@ impl Painter {
         let bar = chrome::title_bar(local);
         c.fill(g(bar), opaque(self.palette.window));
         let controls = chrome::controls(local);
-        let text_end = controls[2].1.x - chrome::CONTROL_GAP;
-        let text_clip = Rect::new(bar.x, bar.y, text_end - bar.x, bar.h);
-        let (label, title) = match focused {
-            true => (self.palette.muted, self.palette.text),
-            false => (self.palette.dim, self.palette.dim),
-        };
-        let y = self.baseline(bar.y, bar.h, TypeStyle::MonoTitle);
-        let style = TypeStyle::MonoTitle;
-        let x = (bar.x + PAD) as f32;
-        // The app's own title, as the top bar's tabs show it; the service name
-        // only for a window that sets none. The name stays in the logs and the
-        // agent's view.
-        match window.title.is_empty() {
-            true => self.draw_text(&mut c, text_clip, x, y, style, label, &window.label),
-            false => self.draw_text(&mut c, text_clip, x, y, style, title, &window.title),
-        };
+        self.title_row(&mut c, window, focused, bar, controls[2].1.x);
         for (part, r) in controls {
-            icon(
-                &mut c,
-                part,
-                r,
-                if focused {
-                    self.palette.muted
-                } else {
-                    self.palette.dim
-                },
-            );
+            let shown = Shown {
+                focused,
+                hovered: hovered == Some(part),
+                maximized: window.maximized(),
+            };
+            self.control(&mut c, part, r, shown);
         }
         let inside = chrome::content_of(local);
         if !content(window.id, &mut c, inside) {
             c.fill(g(inside), opaque(self.palette.window));
         }
-        layer.round_corners(chrome::RADIUS);
+        layer.round_corners(chrome::radius(window.maximized()));
         layer
+    }
+
+    /// The title row (ADR 0005 §7): the app's icon, the kernel's label for
+    /// the process in mono, then the app's own title, cut at its end before
+    /// `text_end`. The label is always drawn, so an app titled like another
+    /// still shows whose window it is.
+    fn title_row(
+        &mut self,
+        c: &mut Canvas<'_>,
+        window: &Window,
+        focused: bool,
+        bar: Rect,
+        text_end: i32,
+    ) {
+        let clip = Rect::new(bar.x, bar.y, (text_end - bar.x).max(0), bar.h);
+        let (title_rgb, icon_rgb) = match focused {
+            true => (self.palette.text, self.palette.muted),
+            false => (self.palette.dim, self.palette.dim),
+        };
+        let x = bar.x + PAD;
+        let icon_y = bar.y + (bar.h - TITLE_ICON) / 2;
+        match app_icon(&window.label) {
+            Some(icon) => {
+                let at = (x, icon_y);
+                self.icons
+                    .draw(c, (icon, TITLE_ICON), at, icon_rgb, g(clip));
+            }
+            None => self.monogram(c, clip, (x, icon_y), &window.label, icon_rgb),
+        }
+        let x = (x + TITLE_ICON + TITLE_GAP) as f32;
+        let y = self.baseline(bar.y, bar.h, TypeStyle::MonoTitle);
+        let dim = self.palette.dim;
+        let advance = self.draw_text(c, clip, x, y, TypeStyle::MonoTitle, dim, &window.label);
+        if window.title.is_empty() || window.title == window.label {
+            return;
+        }
+        let y = self.baseline(bar.y, bar.h, TypeStyle::Label);
+        let x = x + advance + TITLE_GAP as f32;
+        self.draw_text(c, clip, x, y, TypeStyle::Label, title_rgb, &window.title);
+    }
+
+    /// A window with no glyph of ours: the first letter of its label on a
+    /// `hover` tile.
+    fn monogram(&mut self, c: &mut Canvas<'_>, clip: Rect, at: (i32, i32), label: &str, rgb: u32) {
+        let tile = Rect::new(at.0, at.1, TITLE_ICON, TITLE_ICON);
+        let Some(tile) = tile.intersect(&clip) else {
+            return;
+        };
+        fill(c, tile, clip, self.palette.hover);
+        let Some(first) = label.chars().next() else {
+            return;
+        };
+        let mut letter = [0u8; 4];
+        let letter = first.to_ascii_uppercase().encode_utf8(&mut letter);
+        let y = self.baseline(at.1, TITLE_ICON, TypeStyle::Small);
+        let x = (at.0 + TITLE_ICON / 4) as f32;
+        self.draw_text(c, tile, x, y, TypeStyle::Small, rgb, letter);
+    }
+
+    /// One title-bar control: its glyph, on a `hover` fill under the pointer,
+    /// close's on `error` with the glyph in `window`.
+    fn control(&mut self, c: &mut Canvas<'_>, part: Part, r: Rect, shown: Shown) {
+        let rest = match shown.focused {
+            true => self.palette.muted,
+            false => self.palette.dim,
+        };
+        let glyph = match (shown.hovered, part) {
+            (false, _) => rest,
+            (true, Part::Close) => {
+                c.fill(g(r), opaque(self.palette.error));
+                self.palette.window
+            }
+            // High contrast: hover is the ground, so a frame shows it.
+            (true, _) if self.palette.hover == self.palette.window => {
+                outline(c, r, r, self.palette.focus);
+                self.palette.text
+            }
+            (true, _) => {
+                c.fill(g(r), opaque(self.palette.hover));
+                self.palette.text
+            }
+        };
+        let icon = match part {
+            Part::Minimize => Icon::Minimize,
+            Part::Maximize if shown.maximized => Icon::Restore,
+            Part::Maximize => Icon::Maximize,
+            _ => Icon::Close,
+        };
+        let at = (
+            r.x + (r.w - CONTROL_ICON) / 2,
+            r.y + (r.h - CONTROL_ICON) / 2,
+        );
+        self.icons.draw(c, (icon, CONTROL_ICON), at, glyph, g(r));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -454,43 +546,26 @@ pub(crate) fn disc(c: &mut Canvas<'_>, clip: Rect, at: (i32, i32), r: f32, rgb: 
     }
 }
 
-/// A straight stroke `width` px wide from `a` to `b`, antialiased.
-fn stroke(c: &mut Canvas<'_>, clip: Rect, a: (f32, f32), b: (f32, f32), width: f32, rgb: u32) {
-    let (x0, x1) = (a.0.min(b.0) - width, a.0.max(b.0) + width);
-    let (y0, y1) = (a.1.min(b.1) - width, a.1.max(b.1) + width);
-    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-    let len2 = (dx * dx + dy * dy).max(f32::EPSILON);
-    for y in libm::floorf(y0) as i32..=libm::ceilf(y1) as i32 {
-        for x in libm::floorf(x0) as i32..=libm::ceilf(x1) as i32 {
-            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            let t = (((px - a.0) * dx + (py - a.1) * dy) / len2).clamp(0.0, 1.0);
-            let (qx, qy) = (a.0 + t * dx - px, a.1 + t * dy - py);
-            let d = libm::sqrtf(qx * qx + qy * qy);
-            plot(c, clip, x, y, rgb, width / 2.0 + 0.5 - d);
-        }
-    }
+/// How a title-bar control is drawn.
+#[derive(Clone, Copy)]
+struct Shown {
+    focused: bool,
+    hovered: bool,
+    maximized: bool,
 }
 
-/// A control's Lucide icon (`minus`, `square`, `x`) at 16 px, centred in `r`.
-fn icon(c: &mut Canvas<'_>, part: Part, r: Rect, rgb: u32) {
-    // Lucide draws on a 24 px grid with 2 px strokes.
-    let k = 16.0 / 24.0;
-    let (ox, oy) = ((r.x + (r.w - 16) / 2) as f32, (r.y + (r.h - 16) / 2) as f32);
-    let p = |x: f32, y: f32| (ox + x * k, oy + y * k);
-    let w = 2.0 * k;
-    let clip = r;
-    match part {
-        Part::Minimize => stroke(c, clip, p(5.0, 12.0), p(19.0, 12.0), w, rgb),
-        Part::Maximize => {
-            let corners = [p(3.0, 3.0), p(21.0, 3.0), p(21.0, 21.0), p(3.0, 21.0)];
-            for i in 0..4 {
-                stroke(c, clip, corners[i], corners[(i + 1) % 4], w, rgb);
-            }
-        }
-        Part::Close => {
-            stroke(c, clip, p(18.0, 6.0), p(6.0, 18.0), w, rgb);
-            stroke(c, clip, p(6.0, 6.0), p(18.0, 18.0), w, rgb);
-        }
-        _ => {}
+/// Our glyph for the app whose kernel label is `label` (`notes-window` is
+/// Notes), or none for an app we have none for.
+pub(crate) fn app_icon(label: &str) -> Option<Icon> {
+    let app = label.strip_suffix("-window").unwrap_or(label);
+    match app {
+        "term" | "terminal" => Some(Icon::Terminal),
+        "files" => Some(Icon::Files),
+        "notes" => Some(Icon::Notes),
+        "editor" => Some(Icon::Editor),
+        "monitor" => Some(Icon::Monitor),
+        "models" => Some(Icon::Models),
+        "settings" => Some(Icon::Settings),
+        _ => None,
     }
 }

@@ -180,6 +180,8 @@ pub struct Desk {
     pointer: Point,
     /// The window the pointer's content events go to.
     over: Option<WindowId>,
+    /// The title-bar control under the pointer, drawn with its hover fill.
+    hovered: Option<(WindowId, Part)>,
     damage: Damage,
     next: u32,
     /// Modifiers held, by usage.
@@ -235,6 +237,7 @@ impl Desk {
                 y: height / 2,
             },
             over: None,
+            hovered: None,
             damage,
             next: 1,
             ctrl: false,
@@ -310,6 +313,12 @@ impl Desk {
             Some(Grab::Move { window, .. } | Grab::Resize { window, .. }) => Some(window),
             None => None,
         }
+    }
+
+    /// The title-bar control the pointer is over, if any: minimize,
+    /// maximize or close.
+    pub fn hovered(&self) -> Option<(WindowId, Part)> {
+        self.hovered
     }
 
     pub fn pointer(&self) -> Point {
@@ -559,7 +568,14 @@ impl Desk {
             }
             None => {}
         }
-        let over = match self.hit(p) {
+        let hit = self.hit(p);
+        self.hover(match hit {
+            Hit::Window(id, part @ (Part::Minimize | Part::Maximize | Part::Close)) => {
+                Some((id, part))
+            }
+            _ => None,
+        });
+        let over = match hit {
             Hit::Window(id, Part::Content(at)) => Some((id, at)),
             _ => None,
         };
@@ -572,6 +588,26 @@ impl Desk {
         if let Some((window, at)) = over {
             effects.push(Effect::Pointer { window, at });
         }
+    }
+
+    /// Moves the hover to `hovered`, damaging the control it leaves and the
+    /// one it enters.
+    fn hover(&mut self, hovered: Option<(WindowId, Part)>) {
+        if hovered == self.hovered {
+            return;
+        }
+        for (id, part) in [self.hovered, hovered].into_iter().flatten() {
+            let rect = self.window(id).and_then(|w| {
+                chrome::controls(w.frame)
+                    .into_iter()
+                    .find(|(p, _)| *p == part)
+                    .map(|(_, r)| r)
+            });
+            if let Some(rect) = rect {
+                self.damage.add(rect);
+            }
+        }
+        self.hovered = hovered;
     }
 
     fn button(&mut self, button: Button, down: bool, effects: &mut Vec<Effect>) {
