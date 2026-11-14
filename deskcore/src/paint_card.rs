@@ -13,6 +13,8 @@ use look::TypeStyle;
 
 const TITLE: &str = "Kai asks to run";
 const YES: &str = "Run (y)";
+/// Once a first `y` armed the card: the second runs it.
+const YES_ARMED: &str = "y again";
 const NO: &str = "Don't (n)";
 /// The `ask` bar along the card's top.
 const BAR: i32 = 3;
@@ -115,7 +117,8 @@ impl Painter {
             top += LINE;
         }
         let (yes, no) = trusted::buttons(area);
-        self.button(c, clip, yes, YES, true);
+        let label = if ask.armed { YES_ARMED } else { YES };
+        self.button(c, clip, yes, label, true);
         self.button(c, clip, no, NO, false);
     }
 

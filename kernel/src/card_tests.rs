@@ -2,7 +2,8 @@
 //! card. `deskdemo`'s windows are open and keep committing; each ask runs on a
 //! thread of its own, as the terminal's would.
 //! - With `desktop` showing, the ask goes to the card and never to the console:
-//!   the screen stays `desktop`'s, and `y` answers it Allow.
+//!   the screen stays `desktop`'s. Once it settled, one `y` only arms it, and
+//!   a second answers it Allow.
 //! - A letter and Enter do not answer a card; `n` then answers it Deny.
 //! - With a card up, `desktop` is killed: the kernel takes the ask back and
 //!   asks it on the console, where `n`, typed once its menu takes keys,
@@ -17,6 +18,8 @@ use termcore::menu::{Answer, Menu, Origin};
 const WAIT_MS: u64 = 60_000;
 /// Time for a key to reach `desktop` and its answer to come back.
 const KEY_MS: u64 = 1_000;
+/// Past the card's settle time, in which it takes no key (#864).
+const SETTLE_MS: u64 = termcore::menu::SETTLE_MS + 300;
 
 /// The ask's answer: 0 while it waits.
 static ANSWER: AtomicU8 = AtomicU8::new(0);
@@ -78,8 +81,14 @@ pub fn check() -> Result<(), &'static str> {
     })?;
     // deskdemo's windows open with its first call.
     threads::sleep_ms(2_000);
-    // Y.
+    // Y, twice once the card settled: the first arms it, the second runs it.
     ask_on_card()?;
+    threads::sleep_ms(SETTLE_MS);
+    crate::claim_tests::type_keys(&[0x15, 0x95]);
+    threads::sleep_ms(KEY_MS);
+    if ANSWER.load(Ordering::Acquire) != 0 {
+        return Err("desk-card: one y ran the card");
+    }
     crate::claim_tests::type_keys(&[0x15, 0x95]);
     if answered()? != code(Answer::Allow) || !claim::showing() {
         return Err("desk-card: y on the card did not allow, or the console took the screen");
@@ -87,6 +96,7 @@ pub fn check() -> Result<(), &'static str> {
     log!("desk-card: an ask went to desktop's card, and y on it allowed");
     // A, Enter, then N.
     ask_on_card()?;
+    threads::sleep_ms(SETTLE_MS);
     crate::claim_tests::type_keys(&[0x1E, 0x9E, 0x1C, 0x9C]);
     threads::sleep_ms(KEY_MS);
     if ANSWER.load(Ordering::Acquire) != 0 {
