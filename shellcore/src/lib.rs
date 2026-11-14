@@ -68,6 +68,7 @@ mod tune;
 pub mod ui;
 mod undo;
 mod undoing;
+pub mod waiting;
 
 use actions::Pending;
 pub use agentcore::Outcome;
@@ -189,6 +190,18 @@ pub trait Host {
     /// for a script instead.
     fn act(&self, _request: &ActRequest) -> Result<Call, ActError> {
         Err(ActError::Unavailable(String::from("no tagged calls here")))
+    }
+    /// [`Host::act`], handing `serve` what the apps ask while the call is in
+    /// flight ([`waiting`]): a read it answers goes back to the app at once,
+    /// and one it does not (`None`) waits for the line, in its app's order. A
+    /// host that cannot wait off its main thread just asks.
+    fn act_serving(
+        &self,
+        request: &ActRequest,
+        serve: &mut dyn FnMut(waiting::Waiting<'_>) -> Option<waiting::Served>,
+    ) -> Result<Call, ActError> {
+        let _ = serve;
+        self.act(request)
     }
     /// Keeps a finished model turn in llm's conversation memory (P1 task 10): the
     /// user's line, the call as `act` returned it, and the result line.

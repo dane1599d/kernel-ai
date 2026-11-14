@@ -20,6 +20,8 @@ mod net;
 mod routes;
 #[path = "shell/ui.rs"]
 mod ui;
+#[path = "shell/waiting.rs"]
+mod waiting;
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -75,6 +77,9 @@ struct System {
     desktop_pid: core::cell::Cell<u64>,
     /// When the shell last looked for a new `desktop`.
     desktop_looked_ns: core::cell::Cell<u64>,
+    /// What the apps asked while the model thought that was not a read: run
+    /// after the line, before anything newer ([`waiting::run_held`]).
+    held: core::cell::RefCell<waiting::HeldRequests>,
 }
 
 /// How often an appearance `desktop` did not take is offered again.
@@ -264,7 +269,7 @@ const _: () = assert!(shellcore::SETTINGS_MAX_ANSWER == deskcore::settings_wire:
 /// core, and reports what came of each; `desktop` hands the results to the
 /// app. `desktop` names the app, from its record of who queued them.
 fn take_effects(shell: &mut Shell) {
-    use deskcore::effects::{self, Done};
+    use deskcore::effects;
     let Some(route) = desktop() else {
         return;
     };
@@ -274,8 +279,19 @@ fn take_effects(shell: &mut Shell) {
     let Some(Some((app, user, lines))) = effects::parse_take(&answer) else {
         return;
     };
-    let results: Vec<Done> = shell
-        .run_effects_from(app, lines, user)
+    let results = shell.run_effects_from(app, lines, user);
+    give_effect_results(route, app, user, results);
+}
+
+/// Gives `desktop` what app `app`'s effects came to, for its `comphost`.
+fn give_effect_results(
+    route: kabi::handle::Handle,
+    app: &str,
+    user: bool,
+    results: Vec<shellcore::EffectDone>,
+) {
+    use deskcore::effects::{self, Done};
+    let results: Vec<Done> = results
         .into_iter()
         .map(|done| Done {
             ticket: done.ticket,
@@ -357,20 +373,26 @@ fn take_files(shell: &mut Shell) {
         let Some(job) = parse_job(&answer) else {
             return;
         };
-        let done = match do_file_job(shell, route, &job) {
-            Ok(()) => format!("files done {} ok", job.id),
-            Err(why) => {
-                // One line, as `desktop` keeps it.
-                let why: String = why
-                    .chars()
-                    .map(|c| if c.is_control() { ' ' } else { c })
-                    .collect();
-                format!("files done {} err {}", job.id, why.trim())
-            }
-        };
-        if let Err(why) = ask_desktop(route, &done) {
-            println!("the editor's file {} was not reported: {why}", job.id);
+        let done = do_file_job(shell, route, &job);
+        report_file_job(route, job.id, done);
+    }
+}
+
+/// Tells `desktop` what transfer `id` came to.
+fn report_file_job(route: kabi::handle::Handle, id: u32, done: Result<(), String>) {
+    let done = match done {
+        Ok(()) => format!("files done {id} ok"),
+        Err(why) => {
+            // One line, as `desktop` keeps it.
+            let why: String = why
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
+            format!("files done {id} err {}", why.trim())
         }
+    };
+    if let Err(why) = ask_desktop(route, &done) {
+        println!("the editor's file {id} was not reported: {why}");
     }
 }
 
@@ -461,7 +483,18 @@ fn take_changes(shell: &mut Shell, words: &deskcore::settings_wire::Words, answe
         .iter()
         .map(|r| Answer::new(r.ticket, answering(shell, app, &r.text, r.user)))
         .collect();
-    for done in wire::encode_done_chunks_for(words, app, &answers, kabi::MAX_MESSAGE) {
+    give_answers(route, words, app, &answers);
+}
+
+/// Gives `desktop` app `app`'s answers under `words`.
+fn give_answers(
+    route: kabi::handle::Handle,
+    words: &deskcore::settings_wire::Words,
+    app: &str,
+    answers: &[deskcore::settings_wire::Answer],
+) {
+    use deskcore::settings_wire as wire;
+    for done in wire::encode_done_chunks_for(words, app, answers, kabi::MAX_MESSAGE) {
         if let Err(why) = ask_desktop(route, &done) {
             println!(
                 "{app}'s {} answers were not sent: {why}",
@@ -564,6 +597,40 @@ fn ask_supervisor(request: &str) -> Result<String, String> {
     .map_err(|error| format!("the supervisor did not answer ({error:?})"))?;
     let text = core::str::from_utf8(&reply[..len.min(reply.len())]).unwrap_or("err not text");
     Ok(text.to_string())
+}
+
+impl System {
+    /// One `act` request to llm. With a `poll`, the kernel holds the call
+    /// while `poll` looks at what the apps ask ([`waiting::call_serving`]);
+    /// without, the shell waits in it.
+    fn act_with(
+        &self,
+        request: &ActRequest,
+        poll: Option<&mut dyn FnMut()>,
+    ) -> Result<Call, ActError> {
+        let unavailable = |why: &str| ActError::Unavailable(alloc::format!("llm service: {why}"));
+        let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+        let request = request.encode();
+        let len = match poll {
+            Some(poll) => {
+                waiting::call_serving(llm(), request.as_bytes(), &mut reply, SCRIPT_CALL_MS, poll)
+            }
+            None => sys::call_route(llm(), request.as_bytes(), &mut reply, SCRIPT_CALL_MS),
+        }
+        .map_err(|error| match error {
+            // The person's Stop (#887): the line ends here, with no second
+            // try as a script.
+            kabi::Error::Interrupted => ActError::Stopped,
+            error => unavailable(&alloc::format!("{error:?}")),
+        })?;
+        let text = core::str::from_utf8(&reply[..len.min(reply.len())])
+            .map_err(|_| unavailable("the reply is not UTF-8"))?;
+        match text.split_once(' ').unwrap_or((text, "")) {
+            ("ok", answer) => act::decode_answer(answer),
+            ("err", why) => Err(unavailable(why)),
+            _ => Err(unavailable("malformed reply")),
+        }
+    }
 }
 
 impl Host for System {
@@ -767,25 +834,17 @@ impl Host for System {
     }
 
     fn act(&self, request: &ActRequest) -> Result<Call, ActError> {
-        let unavailable = |why: &str| ActError::Unavailable(alloc::format!("llm service: {why}"));
-        let mut reply = vec![0u8; kabi::MAX_MESSAGE];
-        let len = sys::call_route(
-            llm(),
-            request.encode().as_bytes(),
-            &mut reply,
-            SCRIPT_CALL_MS,
-        )
-        .map_err(|error| match error {
-            kabi::Error::Interrupted => ActError::Stopped,
-            error => unavailable(&alloc::format!("{error:?}")),
-        })?;
-        let text = core::str::from_utf8(&reply[..len.min(reply.len())])
-            .map_err(|_| unavailable("the reply is not UTF-8"))?;
-        match text.split_once(' ').unwrap_or((text, "")) {
-            ("ok", answer) => act::decode_answer(answer),
-            ("err", why) => Err(unavailable(why)),
-            _ => Err(unavailable("malformed reply")),
-        }
+        self.act_with(request, None)
+    }
+
+    fn act_serving(
+        &self,
+        request: &ActRequest,
+        serve: &mut dyn FnMut(
+            shellcore::waiting::Waiting<'_>,
+        ) -> Option<shellcore::waiting::Served>,
+    ) -> Result<Call, ActError> {
+        self.act_with(request, Some(&mut || waiting::poll(&self.held, serve)))
     }
 
     /// A finished model turn for llm's conversation memory, in #55's wire form. An
@@ -1185,6 +1244,7 @@ fn main() -> i32 {
             appearance_tried_ns: core::cell::Cell::new(0),
             desktop_pid: core::cell::Cell::new(0),
             desktop_looked_ns: core::cell::Cell::new(0),
+            held: core::cell::RefCell::default(),
         })
     };
     let mut shell = Shell::new(system.clone(), DEFAULT_CONFIG);
@@ -1200,8 +1260,26 @@ fn main() -> i32 {
         // the panel's line and the apps' effects. A post to the event box wakes
         // the wait at once, so a click's effect does not wait for a poll.
         take_events(&mut shell, &mut events);
+        // What the apps asked during a line that was not a read runs before
+        // anything newer is taken: after each step that may run a line (the
+        // last pass's, the panel's, a Terminal's `shell_line` effect) and
+        // before each that takes an app's requests.
+        let held = &system.held;
+        // Each step is a unit of its own, and the person's Stop (#887) lasts
+        // the unit it came in: one for a line that has ended is cleared, so it
+        // does not cut the next step's calls to `desktop`. A Terminal line's
+        // request clears it as it comes.
+        let fresh = || {
+            let _ = sys::interrupt_clear();
+        };
+        waiting::run_held(&mut shell, held);
+        fresh();
         take_panel(&mut shell);
+        waiting::run_held(&mut shell, held);
+        fresh();
         take_effects(&mut shell);
+        waiting::run_held(&mut shell, held);
+        fresh();
         // Files the AI, the Terminal, an app, an editor save or an undo changed:
         // the apps that list them are told, along with the results given next.
         if system.files.take_changed() {
@@ -1209,12 +1287,18 @@ fn main() -> i32 {
         }
         give_call_results(&mut shell);
         take_files(&mut shell);
+        waiting::run_held(&mut shell, held);
+        fresh();
         take_net(&mut shell);
+        waiting::run_held(&mut shell, held);
+        fresh();
         take_changes(
             &mut shell,
             &deskcore::settings_wire::SETTINGS,
             Shell::settings,
         );
+        waiting::run_held(&mut shell, held);
+        fresh();
         take_changes(
             &mut shell,
             &deskcore::models_wire::MODELS,

@@ -596,6 +596,44 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("app-settings", "test=app-settings")
     },
+    // The founder's test 2, item 7: the shell answers an app's reads while the
+    // model thinks, and holds its changes until the line ends
+    // (`kernel/src/wait_reads_tests.rs`). The test app `wait-window`'s Read
+    // and Make buttons queue a read and a change as a person's effects; the
+    // mock model takes 8 s over one line's call and fails another's after 6 s.
+    TestCase {
+        // The shell answers the app's `fs_list` and `fs_create` from
+        // `/home/user`, on a writable `kai-data` disk.
+        data: Some(crate::blklog::Data {
+            nvme: false,
+            log: None,
+            gpt: true,
+        }),
+        // The file system service, the shell, the desktop and a comphost app,
+        // as in `app-settings`.
+        memory_mib: Some(1024),
+        // Tab goes round the app's two buttons, Read first. With no line:
+        // Read. During the slow line: Read; then Make and Read behind it.
+        // During the failing line: Read; then Make.
+        keys: &[
+            &["tab", "ret"],
+            &["ret"],
+            &["tab", "ret", "tab", "ret"],
+            &["ret"],
+            &["tab", "ret"],
+        ],
+        expect: &[
+            "shell: answered wait-window's read while the model thought",
+            "shell: holds wait-window's request until the line ends",
+            "shell: runs wait-window's held request after the line",
+            "wait-reads: with no line running, a read was answered in ",
+            "wait-reads: while the model thought, the app's read was answered in ",
+            "wait-reads: the app's change and the read behind it waited for the line, then ran once each, in order",
+            "wait-reads: a model call that failed partway ended its line; the read during it took ",
+            "wait-reads: the shell answered the app's reads while the model thought, and held its changes until the line ended",
+        ],
+        ..case("wait-reads", "test=wait-reads")
+    },
     // P3 task 10: a key in the window the agent drives stops it, and the panel
     // says so.
     TestCase {

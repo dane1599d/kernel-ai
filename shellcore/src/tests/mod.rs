@@ -53,6 +53,7 @@ mod told;
 mod transaction;
 mod tune;
 mod ui;
+mod waiting;
 
 /// A host whose clock moves `step_ns` on every reading.
 struct FakeHost {
@@ -87,6 +88,8 @@ struct FakeHost {
     /// Each act request's second-round read (P3 task 10).
     act_reads: RefCell<Vec<Option<llmproto::act::Read>>>,
     act_apps: RefCell<Vec<String>>,
+    /// What the apps ask while each `act` is in flight: handed to its `serve`.
+    serving: RefCell<Option<alloc::boxed::Box<Serving>>>,
     /// What the shell asked `desktop`, and how `desktop` answers.
     ui_calls: RefCell<Vec<crate::ui::UiCall>>,
     /// The hosts the network rows reached, as `row host`.
@@ -234,6 +237,11 @@ impl crate::standing::Triggers for FakeTriggers {
 
 type Files = std::collections::BTreeMap<String, String>;
 
+/// What a test's apps ask while `act` is in flight, given `act_serving`'s
+/// `serve`.
+type Serving =
+    dyn Fn(&mut dyn FnMut(crate::waiting::Waiting<'_>) -> Option<crate::waiting::Served>);
+
 type Apart = alloc::boxed::Box<dyn Fn(&str) -> Result<String, String>>;
 
 type UiAnswer = alloc::boxed::Box<dyn Fn(&crate::ui::UiCall) -> Result<String, String>>;
@@ -304,6 +312,7 @@ impl FakeHost {
             act_states: RefCell::new(Vec::new()),
             act_reads: RefCell::new(Vec::new()),
             act_apps: RefCell::new(Vec::new()),
+            serving: RefCell::new(None),
             ui_calls: RefCell::new(Vec::new()),
             net_seen: RefCell::new(Vec::new()),
             queries: RefCell::new(Vec::new()),
@@ -798,6 +807,17 @@ impl Host for FakeHost {
             Some(answer) => answer(call),
             None => crate::ui::no_desktop(),
         }
+    }
+
+    fn act_serving(
+        &self,
+        request: &ActRequest,
+        serve: &mut dyn FnMut(crate::waiting::Waiting<'_>) -> Option<crate::waiting::Served>,
+    ) -> Result<Call, ActError> {
+        if let Some(serving) = self.serving.borrow().as_ref() {
+            serving(serve);
+        }
+        self.act(request)
     }
 
     fn act(&self, request: &ActRequest) -> Result<Call, ActError> {

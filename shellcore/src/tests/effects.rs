@@ -23,7 +23,7 @@ end
 ";
 
 /// A host where `files` and `monitor` (which declares no effects) are loaded.
-fn host() -> Rc<FakeHost> {
+pub(super) fn host() -> Rc<FakeHost> {
     let host = FakeHost::new();
     let mut apps = host.apps.borrow_mut();
     apps.rows.load("files", FILES).unwrap();

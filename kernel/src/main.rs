@@ -167,6 +167,7 @@ mod usage_tests;
 mod usb;
 mod version;
 mod virtio;
+mod wait_reads_tests;
 mod wake_tests;
 mod workload;
 
@@ -482,6 +483,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetDownload { again, .. } => run_case(|| net_download_tests::check(again)),
         SelfTest::FetchService => run_case(https_tests::fetch_check),
         SelfTest::NetGrant => run_case(net_grant_tests::check),
+        SelfTest::WaitReads => run_case(wait_reads_tests::check),
         SelfTest::EntropyBoots => run_case(entropy_tests::check),
         SelfTest::Slot => {
             // A slot boot holds `updated`'s record calls until its lever has

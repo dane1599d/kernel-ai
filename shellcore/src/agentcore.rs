@@ -26,6 +26,7 @@ use crate::{Reply, SCRIPT_ROUND_MS, Shell};
 use agentabi::consent::{self, Call as Planned, Label, Value as Consented, Why};
 use agentabi::{Action, ArgType, RetType, Role};
 use alloc::format;
+use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use llmproto::act::{ActError, ActRequest, Call};
@@ -64,7 +65,9 @@ impl Shell {
             read: None,
             apps: crate::apps::wire(self.host.as_ref()),
         };
-        let answer = self.host.act(&asked);
+        // The apps' reads are answered while the model thinks.
+        let host = Rc::clone(&self.host);
+        let answer = host.act_serving(&asked, &mut |waiting| self.serve_waiting(waiting));
         // The person's Stop ended the call, or came while a model that had
         // already taken it answered: the line stops here, with no call run and
         // no script request after it (#887's reviews).

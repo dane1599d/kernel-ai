@@ -595,6 +595,18 @@ name = "comp-viewbench"
 version = "0.1.0-dev"
 
 [[package]]
+name = "comp-wait-fixture"
+version = "0.1.0-dev"
+dependencies = [
+ "comp-ui-bind",
+ "compsdk",
+ "livecore",
+ "uikit",
+ "wasmhost",
+ "wit-bindgen 0.63.0",
+]
+
+[[package]]
 name = "compsdk"
 version = "0.1.0-dev"
 dependencies = [

@@ -1,0 +1,16 @@
+/// A test fixture's one action, never shipped: the `wait-reads` boot case asks
+/// it what came of the effects its window's buttons queued, in order.
+package app:wait@1.0.0;
+
+interface actions {
+    /// What came of each key's effect, in the order it came.
+    /// One line each: its ticket, its kind, ok or err, and the ms from the key.
+    /// kai: read-only=yes destructive=no idempotent=yes open-world=no inverse=none cues=wait
+    seen: func() -> result<string, string>;
+}
+
+/// The part the fixture binds itself, besides `kai:app` (`compsdk`) and
+/// `kai:ui` (`comp-ui-bind`): its action.
+world bound {
+    export actions;
+}

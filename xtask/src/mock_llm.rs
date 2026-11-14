@@ -10,6 +10,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
+use std::time::Duration;
 
 /// Largest request body read: a chat request from the kernel is a few KiB.
 const MAX_BODY: usize = 256 * 1024;
@@ -23,6 +24,16 @@ pub const REPLY: &str = "Hello from the mock LLM.";
 /// The model's answer in words, with no script, to the script request "hello".
 pub const HELLO: &str = "Hello! Ask me about this system, or tell me what to do.";
 pub const MODEL: &str = "mock";
+/// The `wait-reads` case's line (`kernel/src/wait_reads_tests.rs`), whose
+/// `act` the mock answers only after [`WAIT_SLOW_MS`], with the CPU count's
+/// call: an app's keys ask the shell for reads and changes meanwhile, and the
+/// time leaves room for the host's keys after the first answer.
+pub const WAIT_SLOW_LINE: &str = "take a while over the cpu count";
+pub const WAIT_SLOW_MS: u64 = 8_000;
+/// The same case's line whose `act` fails after [`WAIT_FAIL_MS`]: the server
+/// answers an error, as a model that stops partway does.
+pub const WAIT_FAIL_LINE: &str = "stop partway through the cpu count";
+pub const WAIT_FAIL_MS: u64 = 6_000;
 /// What every rollback explanation starts with; the rest repeats the facts'
 /// `latest rollback:` line, so a test sees the ledger's facts reached the model.
 pub const EXPLANATION: &str = "The mock LLM read the facts:";
@@ -92,6 +103,17 @@ fn route(method: &str, path: &str, body: &[u8], chats: &AtomicUsize) -> (&'stati
             chats.fetch_add(1, Ordering::SeqCst);
             match serde_json::from_slice::<Value>(body) {
                 Ok(request) if request["messages"].is_array() => {
+                    let line = act_line(&request);
+                    if line.as_deref() == Some(WAIT_SLOW_LINE) {
+                        thread::sleep(Duration::from_millis(WAIT_SLOW_MS));
+                    }
+                    if line.as_deref() == Some(WAIT_FAIL_LINE) {
+                        thread::sleep(Duration::from_millis(WAIT_FAIL_MS));
+                        return (
+                            "500 Internal Server Error",
+                            r#"{"error":{"message":"the model stopped"}}"#.to_string(),
+                        );
+                    }
                     ("200 OK", completion(&chat_content(&request)))
                 }
                 _ => (
@@ -198,6 +220,8 @@ fn chat_content(request: &Value) -> String {
 /// request line. Any other line gets words that are not a call, so the shell asks
 /// for a script as it did before `act`.
 const ACTS: &[(&str, &str)] = &[
+    // `wait-reads`: answered after `WAIT_SLOW_MS`.
+    (WAIT_SLOW_LINE, r#"{"name":"cpus","arguments":{}}"#),
     // `act-inject` (P1 task 17): AgentDojo-style. Each user task is plain; the
     // call is what a model steered by injected text in its data would make.
     // None may run what the line did not name.
@@ -592,6 +616,18 @@ fn after_read(messages: &[Value]) -> Option<String> {
         .map(|(.., call)| call.to_string())
 }
 
+/// The line of an `act` request, from its last message (`Request: <line>`);
+/// `None` for any other request.
+fn act_line(request: &Value) -> Option<String> {
+    if request["messages"][1]["content"] != llmproto::pack::MODE_ACT {
+        return None;
+    }
+    let last = request["messages"].as_array()?.last()?;
+    let text = last["content"].as_str()?;
+    text.rsplit_once("Request: ")
+        .map(|(_, line)| line.to_string())
+}
+
 /// The call for an `act` request: the last message is `Request: <line>`, and
 /// any earlier `Request: <line>` messages are history's turns, oldest first.
 /// A second round's is in [`READS`].
@@ -881,9 +917,38 @@ Keep \"editor\" responsive."
 
 #[cfg(test)]
 mod act_tests {
-    use super::{ACTS, CONVO, READS, act};
+    use super::{ACTS, CONVO, READS, WAIT_FAIL_LINE, WAIT_SLOW_LINE, act, act_line};
     use llmproto::act::{ActRequest, History, Turn};
     use serde_json::json;
+
+    /// `wait-reads`' lines are told apart only in an `act` request, by its last
+    /// message: the slow one is answered with the CPU count's call.
+    #[test]
+    fn the_wait_reads_lines_are_found_in_an_act_request_only() {
+        let act_request = |line: &str| {
+            json!({"messages": [
+                {"role": "system", "content": "pack"},
+                {"role": "system", "content": llmproto::pack::MODE_ACT},
+                {"role": "user", "content": format!("Request: {line}")},
+            ]})
+        };
+        assert_eq!(
+            act_line(&act_request(WAIT_SLOW_LINE)).as_deref(),
+            Some(WAIT_SLOW_LINE)
+        );
+        assert_eq!(
+            act_line(&act_request(WAIT_FAIL_LINE)).as_deref(),
+            Some(WAIT_FAIL_LINE)
+        );
+        let call = llmproto::act::parse(&act(&act_request(WAIT_SLOW_LINE))).unwrap();
+        assert_eq!(call.name, "cpus");
+        // A script request for the same line is not slowed.
+        let script = json!({"messages": [
+            {"role": "system", "content": "script"},
+            {"role": "user", "content": format!("Request: {WAIT_SLOW_LINE}")},
+        ]});
+        assert_eq!(act_line(&script), None);
+    }
 
     #[test]
     fn a_second_round_is_answered_from_the_line_and_the_read() {

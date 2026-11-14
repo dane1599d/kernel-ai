@@ -13,6 +13,7 @@ use crate::state::State;
 use crate::undo::{self, Inverse, Name, Refused};
 use crate::{Host, Reply, Shell};
 use alloc::format;
+use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use llmproto::act::{ActError, ActRequest, Call, Read};
@@ -187,7 +188,8 @@ impl Shell {
                 }),
                 ..asked.clone()
             };
-            call = match self.host.act(&again) {
+            let host = Rc::clone(&self.host);
+            call = match host.act_serving(&again, &mut |waiting| self.serve_waiting(waiting)) {
                 Ok(next) => {
                     self.host.audit(&format!(
                         "request {id}: then the model called {}",
