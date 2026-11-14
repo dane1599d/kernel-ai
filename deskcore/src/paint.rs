@@ -4,7 +4,8 @@
 //! Workbench's dark one until [`Painter::set_theme`]).
 //! Pure: the same [`Scene`] gives the same pixels, on the host as in `desktop`,
 //! so the look is pinned by a host test and by `desk-boot`'s golden. The panel
-//! is drawn in `paint_panel.rs`.
+//! is drawn in `paint_panel.rs`, and its history on the desk in
+//! `paint_chat.rs`.
 //!
 //! Each window is drawn as a layer (frame, title bar, controls, content), its
 //! corners rounded, then put on the frame: copied where opaque and blended at
@@ -51,6 +52,8 @@ pub struct Scene<'a> {
     pub desk: &'a Desk,
     pub bar: &'a Bar,
     pub panel: &'a Panel,
+    /// The panel's history, drawn on the desk under the windows.
+    pub chat: &'a crate::chat::Chat,
     /// The text of the ask card up now, as the kernel posted it.
     pub ask: Option<&'a Card>,
     /// The clock, for the panel's "thinking 4s".
@@ -123,6 +126,7 @@ impl Painter {
     ) {
         let (desk, bar) = (scene.desk, scene.bar);
         c.fill(g(clip), opaque(self.palette.desk));
+        self.chat(c, clip, scene);
         for window in desk.windows().iter().filter(|w| !w.minimized) {
             if reach(window.frame).intersect(&clip).is_none() {
                 continue;

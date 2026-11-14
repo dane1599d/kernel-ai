@@ -27,13 +27,40 @@ fn a_run_tier_request_shows_codes_line() {
 }
 
 #[test]
-fn the_models_words_never_reach_the_panel() {
+fn the_models_words_go_to_the_history_never_the_bar() {
     let (_host, mut shell) = with_calls(vec![call(SAY)]);
     let shown = shell.eval_panel("hi");
-    assert!(
-        matches!(&shown, PanelResult::Refused(why) if why.contains("answered in words")),
-        "{shown:?}"
+    // The bar's line is code's: it says where the words are, not what.
+    assert_eq!(shown, PanelResult::Done("Kai answered above.".into()));
+    assert_eq!(
+        shell.take_panel_said().as_deref(),
+        Some("Done: removed 3 files. Your data is safe.")
     );
+    // Given once.
+    assert_eq!(shell.take_panel_said(), None);
+}
+
+#[test]
+fn a_model_scripts_result_line_stays_in_the_bar_alone() {
+    let (_host, mut shell) = with_calls(vec![call(RR)]);
+    let shown = shell.eval_panel("switch to round robin");
+    assert!(matches!(shown, PanelResult::Done(_)), "{shown:?}");
+    // The result line is the bar's; nothing else was said, so the history
+    // gets nothing from Kai.
+    let said = shell.take_panel_said();
+    assert!(
+        said.as_deref()
+            .is_none_or(|s| !s.contains("policy round-robin")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn the_persons_own_line_gives_the_history_nothing_from_kai() {
+    let (_host, mut shell) = with_calls(vec![]);
+    let shown = shell.eval_panel("print(\"hi\"); 1 + 1");
+    assert!(matches!(shown, PanelResult::Done(_)), "{shown:?}");
+    assert_eq!(shell.take_panel_said(), None);
 }
 
 #[test]
@@ -60,6 +87,8 @@ fn a_question_the_panel_raises_is_dropped_not_left_for_a_yes() {
         matches!(&shown, PanelResult::Refused(why) if why.contains("asks first")),
         "{shown:?}"
     );
+    // A line that asks first shows its script in the terminal, not the history.
+    assert_eq!(shell.take_panel_said(), None);
     shell.eval_panel("yes");
     shell.eval("yes");
     assert_eq!(*host.procs.borrow(), vec![String::from("notes")]);

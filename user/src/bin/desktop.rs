@@ -44,12 +44,14 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use deskcore::askcard::Card;
+use deskcore::chat::{Chat, Who};
 use deskcore::compose::{Pixels, Source};
 use deskcore::desk::{Button, Desk, Effect, Focus, Input, WindowId};
 use deskcore::effects;
 use deskcore::geom::{Point, Rect};
 use deskcore::lease::{Lease, Step};
 use deskcore::paint::{self, Bar, Painter, Scene};
+use deskcore::paint_chat;
 use deskcore::paint_panel;
 use deskcore::panel::Panel;
 use deskcore::panel_wire;
@@ -127,6 +129,8 @@ struct State {
     key_logged: bool,
     /// The AI panel's line and the state the shell reports.
     panel: Panel,
+    /// The panel's lines and what came of each, drawn on the desk.
+    chat: Chat,
     /// The Apps sheet, while it is up: it takes the panel's keys.
     sheet: Option<deskcore::catalog::Sheet>,
     /// Apps' effects waiting for the shell, and what came of them.
@@ -200,6 +204,7 @@ fn main() -> i32 {
             log_first_key: logs_first_key(),
             key_logged: false,
             panel: Panel::new(),
+            chat: Chat::default(),
             sheet: None,
             effects: effects::Queue::default(),
             files: deskcore::files::Files::default(),
@@ -657,6 +662,9 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     }
     if text == panel_wire::TAKE {
         let request = state.panel.take();
+        if let Some(deskcore::panel::Request::Line(line)) = &request {
+            chat_push(state, Who::You, line);
+        }
         if request.is_some() {
             println!("desktop: the shell took the panel's request");
             // From the Enter to the take: the wake's latency (under 100 ms).
@@ -670,9 +678,29 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         }
         return Some(panel_wire::encode_take(request.as_ref()));
     }
+    if let Some(said) = panel_wire::parse_said(text) {
+        // Its length only, as for a typed line: the AI's words may hold anything.
+        if chat_push(state, Who::Kai, said) {
+            println!(
+                "desktop: the history shows what Kai said ({} characters)",
+                said.chars().count()
+            );
+        }
+        return Some(String::from("ok"));
+    }
     let Some(shown) = panel_wire::parse_state(text) else {
         return Some(String::from("err not a panel request"));
     };
+    // The bar's result line or refusal, code's, joins the history as a note.
+    match &shown {
+        deskcore::panel::State::Done { line } => {
+            chat_push(state, Who::Note, line);
+        }
+        deskcore::panel::State::Refused { reason } => {
+            chat_push(state, Who::Note, reason);
+        }
+        _ => {}
+    }
     let word = match &shown {
         deskcore::panel::State::Idle => "idle",
         deskcore::panel::State::Thinking { .. } => "thinking",
@@ -686,6 +714,16 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         state.extra.push(state.desk.panel());
     }
     Some(String::from("ok"))
+}
+
+/// Adds to the panel's history and damages where it is drawn; false when
+/// nothing was added.
+fn chat_push(state: &mut State, who: Who, text: &str) -> bool {
+    let added = state.chat.push(who, text);
+    if added {
+        state.extra.push(paint_chat::chat_area(&state.desk));
+    }
+    added
 }
 
 /// The shell's saved appearance (`panel_wire::APPEARANCE`): painted in from
@@ -1020,6 +1058,7 @@ fn draw(state: &mut State, screen: &Screen) {
         desk: &state.desk,
         bar: &state.bar,
         panel: &state.panel,
+        chat: &state.chat,
         ask: state.card.as_ref(),
         now_ms: now_ms(),
     };
