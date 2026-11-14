@@ -127,6 +127,10 @@ struct State {
     /// The first key has been logged since the claim: only it is, and a frame never
     /// waits on it.
     key_logged: bool,
+    /// The plan line asks for the panel's result line to be logged (`log_bar=1`),
+    /// which only a test image's does: `founder-walk` reads it. Otherwise only its
+    /// kind is, since the line may name a file.
+    log_bar: bool,
     /// The AI panel's line and the state the shell reports.
     panel: Panel,
     /// The panel's lines and what came of each, drawn on the desk.
@@ -205,6 +209,7 @@ fn main() -> i32 {
             drawn: false,
             log_first_key: logs_first_key(),
             key_logged: false,
+            log_bar: logs_bar(),
             panel: Panel::new(),
             chat: Chat::default(),
             sheet: None,
@@ -736,8 +741,10 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     // result comes after.
     if let Some(shown) = panel_wire::parse_card(text) {
         let thinking = matches!(state.panel.state(), deskcore::panel::State::Thinking { .. });
+        let text = bar_text(&shown).map(String::from);
         if !thinking && state.panel.set_state(shown) {
             println!("desktop: the panel shows what a card came to");
+            log_bar(state.log_bar, text.as_deref());
             state.extra.push(state.desk.panel());
         }
         return Some(String::from("ok"));
@@ -783,9 +790,11 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         deskcore::panel::State::Done { .. } => "done",
         deskcore::panel::State::Refused { .. } => "refused",
     };
+    let text = bar_text(&shown).map(String::from);
     if state.panel.set_done(shown, entry) {
         // Its kind only: the line is the shell's result, which may name a file.
         println!("desktop: the panel shows {word}");
+        log_bar(state.log_bar, text.as_deref());
         state.extra.push(state.desk.panel());
     }
     Some(String::from("ok"))
@@ -1344,6 +1353,29 @@ fn arrow(palette: &Palette) -> [u32; 64 * 64] {
         *pixel = paint::arrow(x, y, palette).unwrap_or(0);
     }
     image
+}
+
+/// Whether the plan line has `log_bar=1`: the panel's result line is logged.
+fn logs_bar() -> bool {
+    let args = user::args();
+    user::arg(&args, "log_bar") == Some("1")
+}
+
+/// The panel's result line or refusal, if `shown` has one.
+fn bar_text(shown: &deskcore::panel::State) -> Option<&str> {
+    match shown {
+        deskcore::panel::State::Done { line } => Some(line),
+        deskcore::panel::State::Refused { reason } => Some(reason),
+        _ => None,
+    }
+}
+
+/// Logs the panel's new result line, on a test image's plan (`log_bar=1`)
+/// only, with its newlines as "; ".
+fn log_bar(enabled: bool, text: Option<&str>) {
+    if let Some(text) = text.filter(|_| enabled) {
+        println!("desktop: the bar says \"{}\"", text.replace('\n', "; "));
+    }
 }
 
 /// Whether the plan line has `key_log=on`: the first key's code is logged once.
