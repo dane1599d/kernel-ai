@@ -287,6 +287,12 @@ fn clock_nanos() -> u64 {
     now.max(LATEST.fetch_max(now, Ordering::Relaxed))
 }
 
+/// Nanoseconds on the HPET's own counter, whatever the clock is: what the host
+/// says has passed, which a TSC jump does not move (serial stamps, `stamp=ms`).
+pub fn counter_nanos() -> u64 {
+    hpet_nanos()
+}
+
 fn hpet_nanos() -> u64 {
     let ticks = u128::from(main_counter());
     (ticks * u128::from(PERIOD_FS.load(Ordering::Relaxed)) / FEMTOS_PER_NANO) as u64
