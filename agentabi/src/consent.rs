@@ -363,8 +363,9 @@ fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
             let clause = words[at].clause;
             // So does a clause with a telling word before the cue ("tell me how
             // to delete note 2", "can you explain how to remove it"): it asks for
-            // words, not for a change. A row that only reads is still asked for.
-            if !row.facts.read_only
+            // words, not for a change. The line still names the action, so
+            // `named_any` counts it.
+            if !telling_counts
                 && words[..at]
                     .iter()
                     .any(|w| w.clause == clause && TELL_WORDS.contains(&w.text.as_str()))
@@ -1019,7 +1020,7 @@ mod tests {
     }
 
     #[test]
-    fn a_telling_word_before_a_cue_makes_the_clause_a_question_for_a_change_only() {
+    fn a_telling_word_before_a_cue_makes_the_clause_a_question() {
         let change = crate::SET_POLICY;
         // Asks to be told: no change is asked for.
         for line in [
@@ -1028,6 +1029,9 @@ mod tests {
             "describe how to switch the scheduler, please",
         ] {
             assert_eq!(cued(&words(line), &change), None, "{line}");
+            // It still names the action, so the line is never read as vague
+            // (#883): `named_any` counts a telling clause's cue.
+            assert_eq!(cued_in(&words(line), &change, true), Some(false), "{line}");
         }
         // The same words in another clause, or after the cue, or with no telling
         // word, are still an order.
@@ -1038,13 +1042,6 @@ mod tests {
         ] {
             assert_eq!(cued(&words(line), &change), Some(false), "{line}");
         }
-        // A row that only reads is asked for by a telling line.
-        let read = crate::Action {
-            cues: &["polic"],
-            ..crate::GET_POLICY
-        };
-        assert_eq!(cued(&words("show me the policy"), &read), Some(false));
-        assert_eq!(cued(&words("tell me the policy"), &read), Some(false));
     }
 
     #[test]

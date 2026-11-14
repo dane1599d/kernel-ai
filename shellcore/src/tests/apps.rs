@@ -172,6 +172,10 @@ fn a_line_that_asks_to_be_told_how_does_not_run_the_change() {
         ("tell me how to delete note 2", remove),
         ("can you explain how to remove note 2", remove),
         ("describe how to add eggs to note 2", append),
+        // A complaint beside it is no vague want: the line names the action
+        // (#883), so the delete is not taken as wanted.
+        ("tell me how to delete note 2, notes is so slow", remove),
+        ("explain how to remove note 2, it's laggy", remove),
     ] {
         let (host, mut shell) = with_calls(vec![call(json)]);
         host.apps.borrow_mut().rows.load("notes", MANAGE).unwrap();
