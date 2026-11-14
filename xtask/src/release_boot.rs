@@ -121,6 +121,14 @@ pub fn main(args: &[String]) -> Result<(), String> {
     qemu::run_test(&qemu, &qemu_args, &target_dir, &run)
 }
 
+/// What `pkg` prints when the image's repository does not check out, which
+/// the release boot never shows (founder test 2, test 5): the image it boots
+/// always carries a repository, the founder's once it is committed and a test
+/// root's (`--test-root`) before. [`RELEASE_BOOT`]'s own `forbid` list holds
+/// it (`crate::cases::FORBID`).
+#[cfg(test)]
+const PKG_FAIL: &str = "pkg: FAIL";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +157,18 @@ mod tests {
         assert_eq!(RELEASE_BOOT.keys.len(), RELEASE_BOOT.keys_on.len());
         assert!(RELEASE_BOOT.expect.iter().all(|text| !text.is_empty()));
         assert!(RELEASE_BOOT.data.is_none() && RELEASE_BOOT.import.is_none());
+    }
+
+    /// `pkg: FAIL` is in the release boot's own `forbid` list, so no expected
+    /// line may carry it.
+    #[test]
+    fn the_release_boot_forbids_pkg_fail() {
+        assert!(RELEASE_BOOT.forbid.contains(&PKG_FAIL));
+        assert!(
+            RELEASE_BOOT
+                .expect
+                .iter()
+                .all(|line| !line.contains(PKG_FAIL))
+        );
     }
 }

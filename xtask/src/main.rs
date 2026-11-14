@@ -199,7 +199,12 @@ fn execute(options: &Options) -> Result<(), String> {
     // The built-in apps as the image's signed repository (ADR 0011 §8).
     let mut image = pkgrepo::image(&root, &versions)?;
     modules.extend(versions);
-    modules.extend(std::mem::take(&mut image.modules));
+    let repository = std::mem::take(&mut image.modules);
+    let mut modules = crate::image::modules::image_modules(
+        crate::image::modules::Image::Run,
+        modules,
+        repository,
+    )?;
     let efi = ensure_limine(&target_dir)?;
     let esp = target_dir.join("esp");
     // `--accel wsl`: QEMU runs inside WSL2, behind wsl.exe (wsl/launch.rs).
