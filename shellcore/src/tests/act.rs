@@ -613,11 +613,13 @@ fn a_name_that_is_both_or_neither_asks_which() {
         reply,
         ok("indexer is both a service and a separate process (pid 32). Which one?")
     );
-    // The answer joins the request, as a clarify's does.
+    // A request of its own leaves the question, with a note (clarify::answers).
     let reply = shell.eval("stop build-9");
     assert_eq!(
         reply,
-        ok("No service or process named build-9 is running. Which one did you mean?")
+        ok(
+            "(Left the question about \"stop indexer\".)\nNo service or process named build-9 is running. Which one did you mean?"
+        )
     );
     let reply = shell.eval("restart build-3");
     assert!(
@@ -781,10 +783,10 @@ fn a_new_request_after_a_question_runs_alone() {
         ok("No service or process named sshd is running. Which one did you mean?")
     );
     let reply = shell.eval("show me the cpus");
+    // A short note says the question was left, then the request's own answer.
     assert_eq!(
         reply,
-        ok("CPUs: 4
-")
+        ok("(Left the question about \"sssssshd\".)\nCPUs: 4\n")
     );
     assert_eq!(host.act_lines.borrow()[1], "show me the cpus");
     let audit = host.audit.borrow();
@@ -832,18 +834,18 @@ fn only_a_line_that_opens_like_a_request_leaves_the_question() {
 }
 
 #[test]
-fn a_joined_answer_is_judged_as_typed_not_as_the_question() {
-    // "what can you do with the cpus" asks to be told; the answer the person
-    // types to the question it got back is theirs, and may ask for a change.
-    let ask = r#"{"name":"clarify","arguments":{"question":"Which?","options":["adjust scheduling policy"]}}"#;
+fn a_telling_request_and_its_answer_still_refuse_an_added_change() {
+    // ADR 0002's telling-line rule judges the whole request: the person asked
+    // to be told, and a short answer to the question back doesn't change that.
+    let ask = r#"{"name":"clarify","arguments":{"question":"Which?","options":["interactive","round-robin"]}}"#;
     let (host, mut shell) = with_calls(vec![call(ask), call(RR)]);
-    shell.eval("what can you do with the cpus");
-    let reply = shell.eval("use round robin");
-    assert!(!reply.text.contains("only asks to be told"), "{reply:?}");
-    assert_eq!(
-        host.act_lines.borrow()[1],
-        "what can you do with the cpus use round robin"
+    shell.eval("what is the policy");
+    let reply = shell.eval("round robin");
+    assert!(
+        !reply.ok && reply.text.contains("only asks to be told"),
+        "{reply:?}"
     );
+    assert_eq!(host.act_lines.borrow()[1], "what is the policy round robin");
 }
 
 #[test]

@@ -644,9 +644,6 @@ pub struct Shell {
     partial: Option<String>,
     /// A request the model asked to clarify: the next line is joined to it.
     clarifying: Option<String>,
-    /// While a joined request runs, `(joined, typed)`: the telling-line check
-    /// judges the answer the person typed, not the question it answers.
-    answered: Option<(String, String)>,
     /// The terminals of apps that run shell lines, by app (`appline`): each has an
     /// entry, question and proposal of its own.
     fronts: alloc::collections::BTreeMap<String, panel::Terminal>,
@@ -735,7 +732,6 @@ impl Shell {
             showed: agentcore::Showed::default(),
             partial: None,
             clarifying: None,
-            answered: None,
             fronts: alloc::collections::BTreeMap::new(),
             asked_model: false,
             worded: false,
@@ -932,15 +928,22 @@ impl Shell {
             && split_command(input, |name| self.scope.contains(name)).is_none()
         {
             if clarify::answers(input) {
-                let joined = format!("{request} {input}");
-                self.answered = Some((joined.clone(), input.to_string()));
-                let reply = self.ask_for_script(&joined);
-                self.answered = None;
-                return reply;
+                return self.ask_for_script(&format!("{request} {input}"));
             }
             self.host.audit(&format!(
                 "the question about \"{request}\" was left: \"{input}\" reads as a new request"
             ));
+            let note = format!(
+                "(Left the question about \"{}\".)",
+                show::truncate(&request, LEFT_NOTE_CHARS)
+            );
+            let mut reply = self.eval_line(input);
+            match reply.confirm.is_none() && !reply.more {
+                true if reply.text.is_empty() => reply.text = note,
+                true => reply.text = format!("{note}\n{}", reply.text),
+                false => self.notices.push(note),
+            }
+            return reply;
         }
         if input == "reset" {
             self.scope.clear();
@@ -1115,16 +1118,6 @@ impl Shell {
 
     /// Asks the LLM for a script for `request`, checks it, and proposes it. A refused
     /// answer goes back to the model once, with the reason.
-    /// The words the telling-line check (#721) judges for `request`: the
-    /// answer the person typed when `request` joins it to a question, since
-    /// the question is the model's, not theirs.
-    pub(crate) fn told_text<'a>(&'a self, request: &'a str) -> &'a str {
-        match &self.answered {
-            Some((joined, typed)) if joined == request => typed,
-            _ => request,
-        }
-    }
-
     fn ask_for_script(&mut self, request: &str) -> Reply {
         if request.is_empty() {
             return Reply::err("usage: ? <what you want done>");
@@ -1261,6 +1254,9 @@ pub fn reads_like_words(line: &str) -> bool {
         .count();
     letters >= 4 * others
 }
+
+/// The most characters of a left question the note quotes.
+const LEFT_NOTE_CHARS: usize = 40;
 
 /// The fewest words a line led by a Rhai keyword needs to read as a sentence.
 const SENTENCE_WORDS: usize = 4;
