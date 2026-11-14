@@ -15,7 +15,9 @@
 //! The person's Stop (#887) withdraws a call `desktop` has not taken yet. So
 //! a request taken just as the Stop came is held, not served, and an answer
 //! whose giving was withdrawn is held too, and given after the line: an app
-//! never waits for ever on a request the shell took.
+//! never waits for ever on a request the shell took. What comes of a held
+//! request after the line goes through `report_to_desktop` (#892), which a
+//! Stop for that line does not cut.
 
 use crate::{ask_desktop, desktop};
 use alloc::string::String;
@@ -306,7 +308,7 @@ pub fn run_held(shell: &mut Shell, held: &RefCell<HeldRequests>) {
         };
         // Each is a unit of its own: a Stop for the line before, or for a
         // held line before it, is not its.
-        let _ = sys::interrupt_clear();
+        crate::start_of_unit();
         run_one(shell, route, request);
         held.borrow_mut().done();
     }
@@ -335,8 +337,15 @@ fn run_one(shell: &mut Shell, route: Handle, request: Request) {
         Request::Give(app, messages) => {
             user::println!("shell: gives {app}'s held answer after the line");
             for message in messages {
-                if let Err(why) = crate::ask_desktop_bytes(route, &message) {
-                    return user::println!("shell: {app}'s answer was not given: {why}");
+                match crate::report_to_desktop_bytes(route, &message) {
+                    Ok(reply) if !reply.starts_with(b"err") => {}
+                    Ok(reply) => {
+                        let why = String::from_utf8_lossy(&reply);
+                        return user::println!("shell: desktop refused {app}'s answer: {why}");
+                    }
+                    Err(why) => {
+                        return user::println!("shell: {app}'s answer was not given: {why}");
+                    }
                 }
             }
         }

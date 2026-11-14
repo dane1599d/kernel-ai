@@ -210,16 +210,27 @@ fn start_of_unit() {
 /// A line's result to `desktop`, which a Stop must never hide: the work ran.
 /// The flag is cleared first; a Stop pressed during the call itself ends it
 /// Interrupted, and then it is cleared and sent once more.
+///
+/// Only for what comes after a line: during one (`waiting::give`) a Stop is
+/// the line's, and clearing it would let the line go on.
 fn report_to_desktop(route: kabi::handle::Handle, request: &str) -> Result<String, String> {
+    let reply = report_to_desktop_bytes(route, request.as_bytes())?;
+    Ok(String::from_utf8_lossy(&reply).into_owned())
+}
+
+/// [`report_to_desktop`] for a message that is not all text (a file's piece),
+/// answered in bytes.
+fn report_to_desktop_bytes(route: kabi::handle::Handle, request: &[u8]) -> Result<Vec<u8>, String> {
     let _ = sys::interrupt_clear();
     let mut reply = vec![0u8; kabi::MAX_MESSAGE];
-    let mut sent = sys::call_route(route, request.as_bytes(), &mut reply, DESKTOP_CALL_MS);
+    let mut sent = sys::call_route(route, request, &mut reply, DESKTOP_CALL_MS);
     if sent == Err(kabi::Error::Interrupted) {
         let _ = sys::interrupt_clear();
-        sent = sys::call_route(route, request.as_bytes(), &mut reply, DESKTOP_CALL_MS);
+        sent = sys::call_route(route, request, &mut reply, DESKTOP_CALL_MS);
     }
     let len = sent.map_err(|error| format!("desktop did not answer ({error:?})"))?;
-    Ok(String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned())
+    reply.truncate(len.min(reply.len()));
+    Ok(reply)
 }
 
 /// Takes the panel's oldest request, runs a line apart from the terminal's
@@ -400,7 +411,9 @@ fn give_call_results(shell: &mut Shell) {
                 outcome: done.outcome,
             })
             .collect();
-        if let Err(why) = ask_desktop(route, &effects::encode_done_as(&app, false, &results)) {
+        // After the line that called: its Stop must not hide them.
+        if let Err(why) = report_to_desktop(route, &effects::encode_done_as(&app, false, &results))
+        {
             println!("{app}'s effect results were not sent: {why}");
         }
     }
@@ -453,9 +466,10 @@ fn take_files(shell: &mut Shell) {
     }
 }
 
-/// Tells `desktop` what transfer `id` came to.
+/// Tells `desktop` what transfer `id` came to: a Stop for a line before
+/// it, a held transfer's, must not hide it.
 fn report_file_job(route: kabi::handle::Handle, id: u32, done: Result<(), String>) {
-    if let Err(why) = ask_desktop(route, &file_done(id, done)) {
+    if let Err(why) = report_to_desktop(route, &file_done(id, done)) {
         println!("the editor's file {id} was not reported: {why}");
     }
 }
@@ -475,10 +489,11 @@ fn file_done(id: u32, done: Result<(), String>) -> String {
     }
 }
 
-/// Fills a read's bytes, or a build's report, into the transfer in pieces.
+/// Fills a read's bytes, or a build's report, into the transfer in pieces,
+/// as [`report_file_job`] reports it.
 fn fill_job(route: kabi::handle::Handle, id: u32, bytes: &[u8]) -> Result<(), String> {
     for message in file_fills(id, bytes) {
-        if ask_desktop_bytes(route, &message)? != b"ok" {
+        if report_to_desktop_bytes(route, &message)? != b"ok" {
             return Err(String::from("desktop did not take the file"));
         }
     }
@@ -577,7 +592,8 @@ fn take_changes(shell: &mut Shell, words: &deskcore::settings_wire::Words, answe
     give_answers(route, words, app, &answers);
 }
 
-/// Gives `desktop` app `app`'s answers under `words`.
+/// Gives `desktop` app `app`'s answers under `words`: a Stop for a line
+/// before them, held ones', must not hide them.
 fn give_answers(
     route: kabi::handle::Handle,
     words: &deskcore::settings_wire::Words,
@@ -586,7 +602,7 @@ fn give_answers(
 ) {
     use deskcore::settings_wire as wire;
     for done in wire::encode_done_chunks_for(words, app, answers, kabi::MAX_MESSAGE) {
-        if let Err(why) = ask_desktop(route, &done) {
+        if let Err(why) = report_to_desktop(route, &done) {
             println!(
                 "{app}'s {} answers were not sent: {why}",
                 words.word.trim_end()
@@ -1323,6 +1339,8 @@ const WAKE_WAIT_MS: u64 = 2_000;
 /// Takes the kernel's event box and hands each event to the standing
 /// instructions; a paused rule's note goes to the log.
 fn take_events(shell: &mut Shell, buf: &mut [u8]) {
+    // A unit of work that is no request: a Stop for the last one ends here.
+    start_of_unit();
     let Ok(len) = sys::event_read(buf) else {
         return;
     };
@@ -1361,28 +1379,22 @@ fn main() -> i32 {
         // anything newer is taken: after each step that may run a line (the
         // last pass's, the panel's, a Terminal's `shell_line` effect) and
         // before each that takes an app's requests.
+        // Each step, and each held request, starts a unit of its own
+        // (`start_of_unit`): the person's Stop (#887) lasts the unit it came
+        // in, so one for a line that has ended does not cut the next step's
+        // calls to `desktop`. A Terminal line's request clears it as it comes.
         let held = &system.held;
-        // Each step is a unit of its own, and the person's Stop (#887) lasts
-        // the unit it came in: one for a line that has ended is cleared, so it
-        // does not cut the next step's calls to `desktop`. A Terminal line's
-        // request clears it as it comes.
-        let fresh = || {
-            let _ = sys::interrupt_clear();
-        };
         waiting::run_held(&mut shell, held);
-        fresh();
         // Between lines: what happened on the desktop since the last look, then
         // the panel's line and the apps' effects. A post to the event box wakes
         // the wait at once, so a click's effect does not wait for a poll.
         take_events(&mut shell, &mut events);
         waiting::run_held(&mut shell, held);
-        fresh();
         take_panel(&mut shell);
         waiting::run_held(&mut shell, held);
-        fresh();
         take_effects(&mut shell, held);
         waiting::run_held(&mut shell, held);
-        fresh();
+        start_of_unit();
         // Files the AI, the Terminal, an app, an editor save or an undo changed:
         // the apps that list them are told, along with the results given next.
         if system.files.take_changed() {
@@ -1391,17 +1403,14 @@ fn main() -> i32 {
         give_call_results(&mut shell);
         take_files(&mut shell);
         waiting::run_held(&mut shell, held);
-        fresh();
         take_net(&mut shell);
         waiting::run_held(&mut shell, held);
-        fresh();
         take_changes(
             &mut shell,
             &deskcore::settings_wire::SETTINGS,
             Shell::settings,
         );
         waiting::run_held(&mut shell, held);
-        fresh();
         take_changes(
             &mut shell,
             &deskcore::models_wire::MODELS,
