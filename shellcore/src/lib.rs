@@ -52,6 +52,7 @@ mod profiles;
 mod rules;
 pub mod script;
 mod settings;
+mod sound;
 pub use settings::{MAX_ANSWER as SETTINGS_MAX_ANSWER, SETTINGS_APP};
 mod show;
 pub mod standing;
@@ -1016,13 +1017,19 @@ impl Shell {
         if request.is_empty() {
             return Reply::err("usage: ? <what you want done>");
         }
-        self.asked_model = true;
         let id = self.next_id;
         self.next_id += 1;
         self.host.audit(&format!(
             "script {id} requested: {}",
             show::truncate(request, 60)
         ));
+        // Sound has one answer until there is an audio driver.
+        if let Some(text) = sound::answer(request) {
+            self.record(id, request, "", "answered: no sound yet");
+            self.worded = true;
+            return Reply::ok(text);
+        }
+        self.asked_model = true;
         if let Some(reply) = self.try_act(id, request) {
             return reply;
         }
