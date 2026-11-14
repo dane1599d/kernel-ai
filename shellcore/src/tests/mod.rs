@@ -45,6 +45,7 @@ mod netgrant;
 mod netrows;
 mod packages;
 mod panel;
+mod power;
 mod profiles;
 mod scripts;
 mod settings;
@@ -200,6 +201,8 @@ struct FakeHost {
     model_requests: RefCell<Vec<String>>,
     /// What `updated` answers every request with instead, when set.
     model_answer: RefCell<Option<String>>,
+    /// Each restart, with the log on the disk when it came (backlog item 13).
+    reboots: RefCell<Vec<Option<String>>>,
 }
 
 /// What standing instructions asked the desktop and the owners for.
@@ -382,6 +385,7 @@ impl FakeHost {
             models: RefCell::new(models::store()),
             model_requests: RefCell::new(Vec::new()),
             model_answer: RefCell::new(None),
+            reboots: RefCell::new(Vec::new()),
         })
     }
 }
@@ -948,6 +952,12 @@ impl Host for FakeHost {
 
     fn audit(&self, text: &str) {
         self.audit.borrow_mut().push(String::from(text));
+    }
+
+    fn power_reboot(&self) -> Result<(), String> {
+        let log = self.log_disk.borrow().clone();
+        self.reboots.borrow_mut().push(log);
+        Ok(())
     }
 
     fn pkg(&self, request: &str) -> Result<String, String> {
