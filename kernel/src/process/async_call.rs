@@ -16,7 +16,7 @@ use crate::hpet;
 use crate::ipc::{self, CallError, Pending};
 use alloc::vec::Vec;
 use captable::Entry;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 /// Each process's call in flight, each behind a lock of its own: only that
@@ -26,6 +26,10 @@ static CALLS: [Mutex<Option<Pending>>; MAX_PROCESSES] = [const { Mutex::new(None
 /// by a wait's wake-up test.
 static SLOT: [AtomicUsize; MAX_PROCESSES] = [const { AtomicUsize::new(0) }; MAX_PROCESSES];
 static DEADLINE_NS: [AtomicU64; MAX_PROCESSES] = [const { AtomicU64::new(0) }; MAX_PROCESSES];
+/// Set when a Stop was taken by another of the process's calls, or by its
+/// `interrupted()`, while this one was in flight: it ends Interrupted too (lane T
+/// on #888).
+static STOPPED: [AtomicBool; MAX_PROCESSES] = [const { AtomicBool::new(false) }; MAX_PROCESSES];
 
 /// What a poll found.
 pub enum Polled {
@@ -51,6 +55,7 @@ pub fn submit(
     }
     let pending = ipc::submit_with(name, request, pid, deadline_ns, extra)?;
     DEADLINE_NS[slot].store(deadline_ns, Ordering::SeqCst);
+    STOPPED[slot].store(false, Ordering::SeqCst);
     SLOT[slot].store(pending.index() + 1, Ordering::SeqCst);
     *call = Some(pending);
     Ok(())
@@ -62,6 +67,7 @@ pub fn submit(
 pub fn poll(slot: usize, stopped: bool) -> Option<Polled> {
     let mut call = CALLS[slot].lock();
     let pending = call.as_ref()?;
+    let stopped = stopped || STOPPED[slot].load(Ordering::SeqCst);
     let ended =
         pending.done() || stopped || hpet::nanos() >= DEADLINE_NS[slot].load(Ordering::SeqCst);
     if !ended {
@@ -86,8 +92,17 @@ pub fn wakes(slot: usize) -> bool {
         c => {
             ipc::slot_done(c - 1)
                 || super::interrupt_pending(slot)
+                || STOPPED[slot].load(Ordering::SeqCst)
                 || hpet::nanos() >= DEADLINE_NS[slot].load(Ordering::SeqCst)
         }
+    }
+}
+
+/// The process in `slot` had a Stop taken by another of its calls: the call it
+/// has in flight, if any, ends Interrupted at its next poll.
+pub fn stop(slot: usize) {
+    if SLOT[slot].load(Ordering::SeqCst) != 0 {
+        STOPPED[slot].store(true, Ordering::SeqCst);
     }
 }
 

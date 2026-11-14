@@ -264,6 +264,11 @@ fn poll(slot: usize, reply_ptr: u64, reply_cap: u64, wait_ms: u64) -> Result<u64
     let stopped = crate::process::interrupt_pending(slot);
     let (reply, _, came) = match async_call::poll(slot, stopped).ok_or(Error::NotFound)? {
         Polled::InFlight => return Err(Error::Busy),
+        // A Stop ends it Interrupted, whichever call took the flag.
+        Polled::Ended(Err(ipc::CallError::Cancelled)) => {
+            let _ = crate::process::take_interrupt(slot);
+            return Err(Error::Interrupted);
+        }
         Polled::Ended(result) => result.map_err(|error| call_error(slot, error))?,
     };
     // Nothing was asked to move back: a handle the reply carried is closed.
