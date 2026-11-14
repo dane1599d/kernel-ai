@@ -101,7 +101,7 @@ impl Terminal {
             t.push(
                 Kind::Notice,
                 "",
-                "the terminal restarted while a line was running",
+                "the answer was lost when the terminal restarted: ask again",
                 false,
             );
         }

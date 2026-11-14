@@ -12,8 +12,10 @@ mod core;
 mod device;
 mod entropy;
 mod handle;
+mod interrupt;
 mod job;
 mod net;
+mod power;
 mod sched;
 mod service;
 mod shm;
@@ -35,6 +37,8 @@ mod update;
 mod mem;
 // P, packages.
 mod pkg;
+// A-core.
+mod clock;
 
 use crate::entry::TrapFrame;
 use crate::{cpu, ipc, threads};
@@ -90,10 +94,12 @@ const AREAS: &[Area] = &[
     component::handle,
     net::handle,
     handle::handle,
+    interrupt::handle,
     device::handle,
     shm::handle,
     job::handle,
     entropy::handle,
+    power::handle,
     // Model lane. Interim (S10-3): goes at P2 task 10.
     model_kv::handle,
     // S-io (P2).
@@ -107,6 +113,8 @@ const AREAS: &[Area] = &[
     mem::handle,
     // P, packages.
     pkg::handle,
+    // A-core.
+    clock::handle,
 ];
 
 fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
@@ -122,7 +130,8 @@ fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
 /// What a failed call made on a process's behalf returns to it.
 pub(super) fn call_error(slot: usize, error: ipc::CallError) -> Error {
     match error {
-        ipc::CallError::Cancelled if super::take_interrupt(slot) => Error::Interrupted,
+        // The flag stays for the rest of the line: the next request clears it.
+        ipc::CallError::Cancelled if super::interrupt_pending(slot) => Error::Interrupted,
         ipc::CallError::Cancelled | ipc::CallError::ServiceDied => Error::Dead,
         ipc::CallError::Unavailable => Error::Unavailable,
         ipc::CallError::TimedOut => Error::TimedOut,

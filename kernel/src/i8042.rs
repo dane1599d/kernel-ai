@@ -27,6 +27,13 @@ const CONFIG_TRANSLATE: u8 = 1 << 6;
 const MOUSE_SET_DEFAULTS: u8 = 0xF6;
 const MOUSE_ENABLE_STREAMING: u8 = 0xF4;
 const MOUSE_ACK: u8 = 0xFA;
+const MOUSE_SET_SAMPLE_RATE: u8 = 0xF3;
+const MOUSE_GET_ID: u8 = 0xF2;
+const DEFAULT_SAMPLE_RATE: u8 = 100;
+/// The sample rates that knock a wheel mouse into IntelliMouse mode, and the ID
+/// it answers then.
+const INTELLIMOUSE_KNOCK: [u8; 3] = [200, 100, 80];
+const INTELLIMOUSE_ID: u8 = 3;
 const SPIN_LIMIT: u32 = 1_000_000;
 /// Most bytes one interrupt takes, so a stuck controller cannot hold the CPU.
 const DRAIN_LIMIT: usize = 32;
@@ -59,6 +66,8 @@ static WAKES: AtomicU64 = AtomicU64::new(0);
 static WORST_WAKE_NS: AtomicU64 = AtomicU64::new(0);
 /// Set once a mouse acknowledged stream mode.
 static MOUSE: AtomicBool = AtomicBool::new(false);
+/// Set once the mouse answered the IntelliMouse knock: 4-byte packets.
+static WHEEL: AtomicBool = AtomicBool::new(false);
 
 fn status() -> u8 {
     // SAFETY: reading the i8042 status register has no side effects.
@@ -112,7 +121,14 @@ pub fn init(platform: &Platform, apic_id: u8) -> Result<(), &'static str> {
     apic::route_isa_irq(platform, 1, apic::KEYBOARD_VECTOR, apic_id)?;
     apic::route_isa_irq(platform, 12, apic::MOUSE_VECTOR, apic_id)?;
     match mouse {
-        Ok(()) => log!("i8042: keyboard on IRQ1, mouse on IRQ12 (config {config:#04x})"),
+        Ok(()) => log!(
+            "i8042: keyboard on IRQ1, mouse on IRQ12 (config {config:#04x}; {})",
+            if has_wheel() {
+                "a wheel, 4-byte packets"
+            } else {
+                "no wheel"
+            }
+        ),
         Err(message) => log!("i8042: keyboard on IRQ1 (config {config:#04x}); {message}"),
     }
     Ok(())
@@ -123,33 +139,64 @@ pub fn has_mouse() -> bool {
     MOUSE.load(Ordering::Relaxed)
 }
 
-/// Resets the mouse's settings and starts stream mode. Runs before the IRQs are
-/// routed, so the answers are polled.
+/// Resets the mouse's settings, knocks it into IntelliMouse mode if it has a
+/// wheel, and starts stream mode. Runs before the IRQs are routed, so the
+/// answers are polled.
 fn enable_mouse() -> Result<(), &'static str> {
-    for byte in [MOUSE_SET_DEFAULTS, MOUSE_ENABLE_STREAMING] {
-        command(WRITE_AUX)?;
-        write_data(byte)?;
-        if !mouse_acked() {
-            return Err("no PS/2 mouse answered");
-        }
+    mouse_send(MOUSE_SET_DEFAULTS)?;
+    WHEEL.store(knock_wheel(), Ordering::Relaxed);
+    mouse_send(MOUSE_ENABLE_STREAMING)
+}
+
+/// Sends `byte` to the mouse and waits for its ACK.
+fn mouse_send(byte: u8) -> Result<(), &'static str> {
+    command(WRITE_AUX)?;
+    write_data(byte)?;
+    if !mouse_acked() {
+        return Err("no PS/2 mouse answered");
     }
     Ok(())
 }
 
+/// The IntelliMouse knock: sample rates 200, 100 and 80, then the ID. A mouse
+/// with a wheel answers ID 3 and sends 4-byte packets from then on, the fourth
+/// the wheel's detents; any other answer leaves it a 3-byte mouse. The rate goes
+/// back to the default 100 after.
+fn knock_wheel() -> bool {
+    let knocked = INTELLIMOUSE_KNOCK
+        .iter()
+        .all(|&rate| mouse_send(MOUSE_SET_SAMPLE_RATE).is_ok() && mouse_send(rate).is_ok());
+    let id = knocked
+        .then(|| mouse_send(MOUSE_GET_ID).ok().and_then(|()| mouse_byte()))
+        .flatten();
+    let _ = mouse_send(MOUSE_SET_SAMPLE_RATE).and_then(|()| mouse_send(DEFAULT_SAMPLE_RATE));
+    id == Some(INTELLIMOUSE_ID)
+}
+
+/// Whether the mouse answered the IntelliMouse knock: its packets carry the wheel.
+pub fn has_wheel() -> bool {
+    WHEEL.load(Ordering::Relaxed)
+}
+
 /// Waits for the mouse's answer, dropping keyboard bytes that come first.
 fn mouse_acked() -> bool {
+    mouse_byte() == Some(MOUSE_ACK)
+}
+
+/// The next byte from the mouse, dropping keyboard bytes that come first.
+fn mouse_byte() -> Option<u8> {
     for _ in 0..SPIN_LIMIT {
         let status = status();
         if status & OUTPUT_FULL != 0 {
             // SAFETY: the controller has a byte ready.
             let byte = unsafe { inb(DATA) };
             if status & FROM_AUX != 0 {
-                return byte == MOUSE_ACK;
+                return Some(byte);
             }
         }
         core::hint::spin_loop();
     }
-    false
+    None
 }
 
 /// Called from the keyboard and mouse interrupts: queues every byte waiting, tagged

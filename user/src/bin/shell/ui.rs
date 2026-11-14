@@ -86,21 +86,36 @@ fn open(route: kabi::handle::Handle, app: &str, arg: Option<&str>) -> Result<Str
     }
     // An app's window is its `<app>-window` service, when the plan has one.
     let window = format!("{}-window", rows::app_of(app));
-    match app_call(&window, "kai-actions 1") {
-        Ok(_) => {}
+    // The service that answered is the one a show goes to: `notes-window`
+    // for Notes, `editor` for the Editor.
+    let service = match app_call(&window, "kai-actions 1") {
+        Ok(_) => window,
         // Its window exists but there is no room for it: say so, as is.
         Err(why) if why.starts_with(NOT_ENOUGH) => return Err(why),
         Err(_) => {
             app_call(app, "kai-actions 1")?;
+            String::from(app)
         }
-    }
+    };
     let mut waited = 0;
+    let mut asked_to_show = false;
     while waited < WINDOW_WAIT_MS {
         if sys::interrupted() {
             return Err(format!("stopped while {app} was opening"));
         }
         if let Some(id) = mine(&windows(route)?) {
             return Ok(format!("opened {id}"));
+        }
+        // Running with its window closed: asked once, it shows it again
+        // (backlog item 2). A new start shows its own window well before.
+        if !asked_to_show && waited >= SHOW_AFTER_MS {
+            asked_to_show = true;
+            // A headless app answers that it has no window, and is not
+            // reloaded.
+            let show = app_call(&service, kabi::live::SHOW);
+            if let Err(why) = show {
+                user::println!("{app} was asked to show its window: {why}");
+            }
         }
         sys::sleep_ms(WINDOW_POLL_MS);
         waited += WINDOW_POLL_MS;
@@ -112,6 +127,9 @@ fn windows(route: kabi::handle::Handle) -> Result<alloc::vec::Vec<Window>, Strin
     let list = ask_desktop(route, &Request::Windows.encode())?;
     rows::parse_windows(&list)
 }
+
+/// How long `ui_open` waits for a window before it asks the app to show one.
+const SHOW_AFTER_MS: u64 = 1_500;
 
 /// What `ui_open` and the panel say when there is no memory to open an app.
 const NOT_ENOUGH: &str = "Not enough memory to open ";

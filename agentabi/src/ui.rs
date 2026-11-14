@@ -35,9 +35,22 @@ const WINDOW: Arg = Arg {
 };
 /// A node's short id in the window's last view: `b2`.
 const NODE: Arg = arg("node", ArgType::Text { max: 8 }, Role::Target);
-/// An app named in the request: a package name (ADR 0011 §2).
+/// An app named in the request: a package name (ADR 0011 §2), or an everyday
+/// name for one (founder test 2): "file manager" is `files`.
 const APP: Arg = Arg {
     from_request: true,
+    aliases: &[
+        ("file manager", "files"),
+        ("file explorer", "files"),
+        ("task manager", "monitor"),
+        ("system monitor", "monitor"),
+        ("activity monitor", "monitor"),
+        ("text editor", "editor"),
+        ("console", "terminal"),
+        ("command line", "terminal"),
+        ("control panel", "settings"),
+        ("preferences", "settings"),
+    ],
     ..arg("app", ArgType::Text { max: 24 }, Role::Target)
 };
 /// What the app opens with, such as a path.

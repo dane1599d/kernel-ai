@@ -26,8 +26,9 @@ use spin::Mutex;
 use x86_64::instructions::interrupts;
 
 const MAX_ENDPOINTS: usize = MAX_PROCESSES;
-/// Every process can have one call outstanding, plus the kernel's.
-const MAX_CALLS: usize = MAX_PROCESSES + 2;
+/// Every process can have one blocking call outstanding and one it sent with
+/// CALL_SUBMIT (`process::async_call`), plus the kernel's.
+const MAX_CALLS: usize = 2 * MAX_PROCESSES + 2;
 /// Longest a server waits in one `svc_recv`.
 const MAX_WAIT_MS: u64 = 60_000;
 /// How often a caller looks for a service that is not up yet.
@@ -283,6 +284,11 @@ impl Pending {
             REPLIED | FAILED
         )
     }
+
+    /// Its call slot, for [`slot_done`] where a lock may not be taken.
+    pub fn index(&self) -> usize {
+        self.slot
+    }
 }
 
 /// Queues `request` for the bound service `name`.
@@ -296,7 +302,7 @@ pub fn submit(
 }
 
 /// [`submit`], with what a handle call carries.
-fn submit_with(
+pub(crate) fn submit_with(
     name: &str,
     request: &[u8],
     caller_pid: u64,
@@ -353,7 +359,7 @@ pub fn finish(pending: Pending) -> Result<(Vec<u8>, u64), CallError> {
 }
 
 /// [`finish`], with the handles the reply moved.
-fn finish_with(pending: Pending) -> Result<(Vec<u8>, u64, Vec<Entry>), CallError> {
+pub(crate) fn finish_with(pending: Pending) -> Result<(Vec<u8>, u64, Vec<Entry>), CallError> {
     let slot = pending.slot;
     let (call, state) = with_ipc(|ipc| {
         let call = ipc.calls[slot].take();
@@ -380,6 +386,8 @@ fn finish_with(pending: Pending) -> Result<(Vec<u8>, u64, Vec<Entry>), CallError
             counter.fetch_add(1, Ordering::SeqCst);
             Ok((call.reply, call.taker, call.reply_handles))
         }
+        // Failed before any server took it: its deadline passed in the queue.
+        (Some(call), FAILED) if call.taker == 0 => Err(CallError::TimedOut),
         (_, FAILED) => Err(CallError::ServiceDied),
         _ => Err(CallError::TimedOut),
     }
@@ -426,14 +434,81 @@ pub fn call_with(
     cancel: impl Fn() -> bool,
     extra: Extra,
 ) -> Result<(Vec<u8>, u64, Vec<Entry>), CallError> {
-    let pending = submit_with(name, request, caller_pid, deadline_ns, extra)?;
+    call_with_stop(
+        name,
+        request,
+        caller_pid,
+        deadline_ns,
+        cancel,
+        || false,
+        extra,
+    )
+}
+
+/// [`call_with`], which a Stop (`stop()`, the person's) also ends, but only
+/// while no server has taken the call. A call a server took is waited for up
+/// to its deadline: the server may already be changing something (an `fs`
+/// write, an edit), and its reply carries what the caller must record to undo
+/// it. `cancel()` (a kill, a revoke) still ends the call at once.
+pub fn call_with_stop(
+    name: &str,
+    request: &[u8],
+    caller_pid: u64,
+    deadline_ns: u64,
+    cancel: impl Fn() -> bool,
+    stop: impl Fn() -> bool,
+    extra: Extra,
+) -> Result<(Vec<u8>, u64, Vec<Entry>), CallError> {
+    // Already stopped: nothing is sent, since a server on another CPU could take
+    // it before the first check below (#887's second review).
+    if stop() {
+        return Err(CallError::Cancelled);
+    }
+    let mut pending = submit_with(name, request, caller_pid, deadline_ns, extra)?;
+    // Set once a Stop found the call taken: from then on only its reply, its
+    // deadline or `cancel()` ends the wait.
+    let mut taken_at_stop = false;
     while !pending.done() && !cancel() && hpet::nanos() < deadline_ns {
-        threads::sleep_until_unless(deadline_ns, || pending.done() || cancel());
+        if !taken_at_stop && stop() {
+            match withdraw(pending) {
+                Ok(()) => return Err(CallError::Cancelled),
+                Err(still) => {
+                    pending = still;
+                    taken_at_stop = true;
+                    continue;
+                }
+            }
+        }
+        let stopping = || !taken_at_stop && stop();
+        threads::sleep_until_unless(deadline_ns, || pending.done() || cancel() || stopping());
     }
     let cancelled = !pending.done() && cancel();
     match finish_with(pending) {
         Err(CallError::TimedOut) if cancelled => Err(CallError::Cancelled),
         other => other,
+    }
+}
+
+/// Takes back a call no server has taken yet: Ok once it is gone, or the call
+/// back when a server already holds it (or it ended).
+pub(crate) fn withdraw(pending: Pending) -> Result<(), Pending> {
+    let slot = pending.slot;
+    let withdrawn = with_ipc(|ipc| {
+        if CALL_STATE[slot].load(Ordering::SeqCst) != QUEUED {
+            return None;
+        }
+        let call = ipc.calls[slot].take()?;
+        CALL_STATE[slot].store(FREE, Ordering::SeqCst);
+        PENDING[call.endpoint].fetch_sub(1, Ordering::SeqCst);
+        Some(call)
+    });
+    match withdrawn {
+        // Dropped outside the lock: the request and any handles it carried.
+        Some(call) => {
+            drop(call);
+            Ok(())
+        }
+        None => Err(pending),
     }
 }
 
@@ -460,6 +535,43 @@ pub fn call_from_unless(
     let deadline = hpet::nanos().saturating_add(timeout_ms.saturating_mul(1_000_000));
     wait_bound(name, deadline, &cancel)?;
     call_as_from(name, request, 0, deadline, &cancel)
+}
+
+/// [`call_as`], with a Stop that ends it only before a server takes it
+/// ([`call_with_stop`]).
+pub fn call_as_stop(
+    name: &str,
+    request: &[u8],
+    caller_pid: u64,
+    deadline_ns: u64,
+    cancel: impl Fn() -> bool,
+    stop: impl Fn() -> bool,
+) -> Result<Vec<u8>, CallError> {
+    call_with_stop(
+        name,
+        request,
+        caller_pid,
+        deadline_ns,
+        cancel,
+        stop,
+        Extra::default(),
+    )
+    .map(|(reply, _, _)| reply)
+}
+
+/// [`call_from_unless`], with a Stop that ends it only before a server takes
+/// it ([`call_with_stop`]); waiting for the service to come up, a Stop ends it.
+pub fn call_from_unless_stop(
+    name: &str,
+    request: &[u8],
+    timeout_ms: u64,
+    cancel: impl Fn() -> bool,
+    stop: impl Fn() -> bool,
+) -> Result<(Vec<u8>, u64), CallError> {
+    let deadline = hpet::nanos().saturating_add(timeout_ms.saturating_mul(1_000_000));
+    wait_bound(name, deadline, || cancel() || stop())?;
+    call_with_stop(name, request, 0, deadline, &cancel, &stop, Extra::default())
+        .map(|(reply, taker, _)| (reply, taker))
 }
 
 /// The `svc_recv` system call: waits for the next request to this process's service.
@@ -496,7 +608,10 @@ pub fn recv_with(
         timeout_ms.min(MAX_WAIT_MS)
     };
     let deadline = hpet::nanos().saturating_add(wait_ms * 1_000_000);
+    // A call in flight that runs out first ends the wait (Woken) then.
+    let wake_by = deadline.min(process::async_call::deadline(slot));
     loop {
+        expire_queued(me.name.as_str());
         let (endpoint, taken, failed, opened, extra) = with_ipc(|ipc| {
             let endpoint = bind(ipc, &me)?;
             // The next queued call, copied before any state changes, so running out
@@ -560,12 +675,20 @@ pub fn recv_with(
                 .len()
                 .min(usize::try_from(cap).unwrap_or(usize::MAX));
             uaccess::copy_to_user(slot, buf, &request[..len])?;
+            // A new request starts afresh: a Stop meant for the last one, pressed
+            // as it ended, never cancels this one (lane C on #887).
+            // Not while a call it sent (CALL_SUBMIT) is in flight: that Stop is
+            // for the call, and the line it belongs to is still running.
+            if !process::async_call::in_flight(slot) {
+                let _ = process::take_interrupt(slot);
+            }
             // Only a request the server holds opens its compute allowance.
             process::burst::serving(slot, opened);
             return Ok((request.len() as u64, caller_pid, extra));
         }
-        // No request: an event box this process reads may have woken it.
-        if crate::event_box::take_wake(me.pid) {
+        // No request: an event box this process reads may have woken it, or the
+        // call it has in flight (CALL_SUBMIT) may have ended.
+        if crate::event_box::take_wake(me.pid) || process::async_call::wakes(slot) {
             with_ipc(|ipc| {
                 if let Some(entry) = ipc.endpoints[endpoint].as_mut() {
                     entry.waiting = None;
@@ -577,9 +700,10 @@ pub fn recv_with(
             PENDING[endpoint].load(Ordering::SeqCst) > 0
                 || process::killed(slot)
                 || crate::event_box::woken(me.pid)
+                || process::async_call::wakes(slot)
         };
-        if !ready() && hpet::nanos() < deadline {
-            threads::sleep_until_unless(deadline, ready);
+        if !ready() && hpet::nanos() < wake_by {
+            threads::sleep_until_unless(wake_by, ready);
         }
         with_ipc(|ipc| {
             if let Some(entry) = ipc.endpoints[endpoint].as_mut() {
@@ -648,6 +772,18 @@ pub fn reply_with(slot: usize, ptr: u64, len: u64, handles: Vec<Entry>) -> Resul
     Ok(len as u64)
 }
 
+/// Whether the call in slot `c` has its reply or failed. Lock-free, for a
+/// wait's wake-up test ([`crate::process::async_call`]).
+pub fn slot_done(c: usize) -> bool {
+    c < MAX_CALLS && matches!(CALL_STATE[c].load(Ordering::SeqCst), REPLIED | FAILED)
+}
+
+/// Whether the call in slot `c` still waits for a server to take it.
+/// Lock-free, as [`slot_done`].
+pub fn slot_queued(c: usize) -> bool {
+    c < MAX_CALLS && CALL_STATE[c].load(Ordering::SeqCst) == QUEUED
+}
+
 /// Whether call slot `c` still holds call `id`, taken by its server and not yet
 /// answered or dropped. Lock-free, for the burst accounting on the tick.
 pub fn call_open(c: usize, id: u64) -> bool {
@@ -675,6 +811,50 @@ pub fn on_process_exit(pid: u64) {
                     .compare_exchange(TAKEN, FAILED, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()
             {
+                callers[c] = Some(call.caller);
+            }
+        }
+    });
+    for caller in callers {
+        wake(caller);
+    }
+}
+
+/// Call slots in use, for the tests that check a call's end frees its slot.
+pub fn calls_in_use() -> usize {
+    (0..MAX_CALLS)
+        .filter(|&c| CALL_STATE[c].load(Ordering::SeqCst) != FREE)
+        .count()
+}
+
+/// Calls queued for the service `name` that no server has taken yet.
+pub fn queued_for(name: &str) -> u32 {
+    with_ipc(|ipc| find(ipc, name)).map_or(0, |e| PENDING[e].load(Ordering::SeqCst))
+}
+
+/// Fails the calls queued for the service `name` whose deadline passed before
+/// any server took them, and wakes their callers: a caller that is not
+/// waiting (CALL_SUBMIT) must not have its call taken late. It collects them
+/// as TimedOut (`finish_with`).
+fn expire_queued(name: &str) {
+    let now = hpet::nanos();
+    let mut callers = [None; MAX_CALLS];
+    with_ipc(|ipc| {
+        let Some(endpoint) = find(ipc, name) else {
+            return;
+        };
+        for (c, slot) in ipc.calls.iter().enumerate() {
+            let Some(call) = slot
+                .as_ref()
+                .filter(|call| call.endpoint == endpoint && call.deadline_ns <= now)
+            else {
+                continue;
+            };
+            if CALL_STATE[c]
+                .compare_exchange(QUEUED, FAILED, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                PENDING[endpoint].fetch_sub(1, Ordering::SeqCst);
                 callers[c] = Some(call.caller);
             }
         }

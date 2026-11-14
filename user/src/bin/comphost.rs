@@ -248,11 +248,18 @@ fn main() -> i32 {
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     // Whether the nap holds a lease for settings requests in flight.
     let mut settings_leased = false;
+    // The last frame that said unsaved: its count, and when it came.
+    let mut unsaved_seen: (u64, u64) = (0, 0);
+    // Since when a line sent from a window has waited for its answer.
+    let mut awaiting_since: Option<u64> = None;
     let mut started = started::Started::default();
     // When the host's own wait ends; 0 is never.
     let mut tick_at = deadline(host.timeout_ms());
     // Whether the nap holds a lease for a read of the machine waiting.
     let mut leased = false;
+    // When the windows are next polled whatever the request rate: an app
+    // called more often than every POLL_MS still takes its input and results.
+    let mut poll_at = now_ms() + ui::POLL_MS;
     loop {
         // The shown instance is told it started, once: a new version or a
         // resumed app is told again (`started.rs`).
@@ -275,27 +282,32 @@ fn main() -> i32 {
         };
         // A read waiting for its sample or list is use: the app does not nap
         // until it has it, and the wait ends when the answer is due. No app is
-        // granted both.
-        let due = source
+        // granted both. With all its windows hidden nobody sees a sample or a
+        // list, so those reads hold nothing and it naps, its reads waiting in
+        // its queue (a hidden Monitor stops sampling); a network request it
+        // made still does.
+        let reads = source
             .as_ref()
             .and_then(|source| source.wait_ms(&mut host, now_ms()))
             .or_else(|| {
                 lister
                     .as_ref()
                     .and_then(|lister| lister.wait_ms(&mut host, now_ms()))
-            })
-            .or_else(|| {
-                net.as_ref()
-                    .and_then(|net| net.wait_ms(&mut host, now_ms()))
             });
-        if due.is_some() != leased {
-            leased = due.is_some();
+        let fetch = net
+            .as_ref()
+            .and_then(|net| net.wait_ms(&mut host, now_ms()));
+        let unseen = windows.as_ref().is_some_and(ui::Ui::hidden_only);
+        let due = reads.or(fetch);
+        let lease = (reads.is_some() && !unseen) || fetch.is_some();
+        if lease != leased {
+            leased = lease;
             napper.nap.lease(leased);
         }
         let wait = soonest(wait, due);
         let wait = napper.wait(&host, wait, now_ms());
         let mut caller = u64::MAX;
-        match sys::svc_recv(&mut request, wait, &mut caller) {
+        let idle = match sys::svc_recv(&mut request, wait, &mut caller) {
             Ok(len) => {
                 let len = len.min(request.len());
                 let heap_before = user::heap_bytes();
@@ -305,7 +317,35 @@ fn main() -> i32 {
                         log_nap(&name, napped);
                         match reply {
                             Some(reply) => Ok(reply),
-                            None => host.handle(caller, &request[..len]),
+                            // A show is the host's own: the app's window, or
+                            // the app reloaded so it shows one.
+                            // An app with no desktop has no window to show:
+                            // a show never reloads a headless app.
+                            None if is_show(&request[..len]) && windows.is_none() => {
+                                Ok(b"err no window".to_vec())
+                            }
+                            None if is_show(&request[..len]) => {
+                                // Hidden by the person: back as it was.
+                                let shown = windows.as_mut().is_some_and(ui::Ui::unhide);
+                                let open = windows.as_ref().is_some_and(ui::Ui::has_windows);
+                                match (shown, open) {
+                                    (true, _) => Ok(b"ok shown".to_vec()),
+                                    (false, true) => Ok(b"ok shown (its window is open)".to_vec()),
+                                    // No window, none held: it closed its own,
+                                    // or never opened one; a reload shows it.
+                                    (false, false) => host.reshow(),
+                                }
+                            }
+                            None => {
+                                // An open row (a file opened or revealed) is a
+                                // show too: what it opens is to be seen.
+                                if opens_a_window(&request[..len])
+                                    && let Some(ui) = windows.as_mut()
+                                {
+                                    ui.unhide();
+                                }
+                                host.handle(caller, &request[..len])
+                            }
                         }
                     });
                 let mut reply = match reply {
@@ -326,24 +366,73 @@ fn main() -> i32 {
                 tick_at = deadline(host.timeout_ms());
                 napper.after(&host, now_ms());
                 settle(&mut windows, &mut edits, &mut relay, &mut host);
+                // Called again and again: the windows are polled anyway once
+                // POLL_MS has passed since they last were.
+                now_ms() >= poll_at
             }
-            Err(Error::TimedOut) => {
-                if let Some(ui) = windows.as_mut().filter(|ui| ui.wants_poll())
-                    && let Err(exit) = ui
-                        .poll(&mut host)
-                        .and_then(|()| {
-                            // A close or an agent's action may have woken it.
-                            napper.after(&host, now_ms());
-                            napper.focus(&mut host, ui.take_focused(), now_ms())
-                        })
-                        .map(|napped| log_nap(&name, napped))
-                {
-                    println!("{}", exit.why);
-                    return exit.code;
+            Err(Error::TimedOut) => true,
+            Err(error) => {
+                println!("svc_recv failed: {error:?}");
+                sys::sleep_ms(100);
+                false
+            }
+        };
+        if idle {
+            poll_at = now_ms() + ui::POLL_MS;
+            {
+                if let Some(ui) = windows.as_mut().filter(|ui| ui.wants_poll()) {
+                    if let Err(exit) = ui.poll(&mut host) {
+                        println!("{}", exit.why);
+                        return exit.code;
+                    }
+                    // A close or an agent's action may have woken it.
+                    napper.after(&host, now_ms());
+                }
+                // A key, click or action in a window is use, and a window
+                // holding the focus keeps the app awake. Read with no window
+                // left too: the last one's close is its focus lost.
+                if let Some(ui) = windows.as_mut() {
+                    if ui.take_used() {
+                        napper.nap.used(now_ms());
+                    }
+                    let focus = match ui.take_focused() {
+                        Some(focused) => napper.focus(&mut host, focused, now_ms()),
+                        None => Ok(None),
+                    };
+                    match focus {
+                        Ok(napped) => log_nap(&name, napped),
+                        Err(exit) => {
+                            println!("{}", exit.why);
+                            return exit.code;
+                        }
+                    }
+                    ui.give_focus(&mut host);
                 }
                 // A change or a file waiting for its answer is use: the app does
                 // not nap until it has it.
+                // So is a window with changes not kept (the Editor's text, not
+                // saved): the checkpoint does not hold it (#878). For at most
+                // UNSAVED_LEASE_MS after the last frame that said so, so a
+                // window left forgotten does not hold the app awake for ever.
+                let frames = windows.as_ref().map_or(0, ui::Ui::unsaved_frames);
+                if frames != unsaved_seen.0 {
+                    unsaved_seen = (frames, now_ms());
+                }
+                let unsaved = windows.as_ref().is_some_and(ui::Ui::unsaved)
+                    && now_ms().saturating_sub(unsaved_seen.1) < UNSAVED_LEASE_MS;
+                // So is a line sent from a window that waits for its answer,
+                // for at most a minute: an answer lost never holds it awake.
+                let awaits = windows.as_ref().is_some_and(ui::Ui::awaits_answer);
+                awaiting_since = match (awaits, awaiting_since) {
+                    (false, _) => None,
+                    (true, None) => Some(now_ms()),
+                    (true, since) => since,
+                };
+                let awaiting = awaiting_since
+                    .is_some_and(|since| now_ms().saturating_sub(since) < AWAIT_LEASE_MS);
                 let busy = windows.as_ref().is_some_and(ui::Ui::changes_busy)
+                    || unsaved
+                    || awaiting
                     || relay.as_ref().is_some_and(files::Relay::busy);
                 if busy != settings_leased {
                     napper.nap.lease(busy);
@@ -365,10 +454,6 @@ fn main() -> i32 {
                     tick_at = deadline(host.timeout_ms());
                     settle(&mut windows, &mut edits, &mut relay, &mut host);
                 }
-            }
-            Err(error) => {
-                println!("svc_recv failed: {error:?}");
-                sys::sleep_ms(100);
             }
         }
         // A read of the machine that is due is answered, and what the app drew
@@ -404,8 +489,39 @@ fn soonest(wait: u64, due: Option<u64>) -> u64 {
     }
 }
 
+/// Whether `request` is [`kabi::live::SHOW`], a trailing newline allowed.
+fn is_show(request: &[u8]) -> bool {
+    request.strip_suffix(b"\n").unwrap_or(request) == kabi::live::SHOW.as_bytes()
+}
+
+/// Whether `request` calls an app row that opens something to be seen: a
+/// file opened (`open`, `open-file`) or revealed (`reveal`), as the Files and
+/// Editor rows do.
+fn opens_a_window(request: &[u8]) -> bool {
+    let Ok(text) = core::str::from_utf8(request) else {
+        return false;
+    };
+    let Some(func) = text
+        .strip_prefix("kai-call 1\n")
+        .and_then(|rest| rest.lines().find_map(|l| l.strip_prefix("func ")))
+    else {
+        return false;
+    };
+    matches!(
+        func.rsplit_once('#').map(|(_, name)| name),
+        Some("open" | "open-file" | "reveal")
+    )
+}
+
+/// The longest unsaved changes keep the app from napping after the last
+/// frame that said so.
+const UNSAVED_LEASE_MS: u64 = 30 * 60 * 1000;
+
 /// What the instances did that leaves comphost: the editor's messages go to the
 /// edit service and its files to `desktop`, then the windows' frames.
+/// The longest a line's awaited answer keeps the app from napping.
+const AWAIT_LEASE_MS: u64 = 60_000;
+
 fn settle(
     windows: &mut Option<ui::Ui>,
     edits: &mut Option<editcore::gate::Gate>,

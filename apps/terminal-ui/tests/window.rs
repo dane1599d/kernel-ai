@@ -454,7 +454,10 @@ fn focus_goes_to_the_input_only_when_it_appears() {
     busy.submit("x", Source::Typed);
     let waiting = build(&busy, &View::default());
     assert!(waiting.iter().any(|e| e.id == WAITING));
+    // A line running: Stop never takes the keys, so typing ahead or a
+    // second Enter cannot stop it.
     assert_eq!(wants_focus(&ready, &waiting), None);
+    assert_eq!(wants_focus(&waiting, &waiting), None);
     assert_eq!(wants_focus(&waiting, &ready), Some(INPUT));
 }
 
@@ -473,4 +476,64 @@ fn a_changed_event_for_another_node_does_nothing() {
     assert_eq!(view, View::default());
     assert!(os.asked.is_empty());
     assert!(matches!(t.submit("", Source::Typed), Submitted::Nothing));
+}
+
+/// The founder's second test: while a line runs, the Terminal offers Stop,
+/// which never takes the keys, and pressing it asks the OS to stop the
+/// shell's line (`shell_stop`), never another line.
+#[test]
+fn a_running_line_offers_stop_which_asks_to_stop_the_shell() {
+    let mut app = App::new();
+    assert!(matches!(
+        app.term.run(&mut app.os, "what time is it", Source::Typed),
+        Submitted::Send(_)
+    ));
+    let n = next(&mut app.shown, &app.term, &app.view);
+    assert_eq!(n.focus, None, "Stop never takes the keys");
+    let stop = n
+        .tree
+        .iter()
+        .find(|e| e.id == CANCEL)
+        .expect("a Stop button");
+    assert!(matches!(&stop.widget, Widget::Button { text, .. } if text == "Stop"));
+    app.shown = n.tree;
+    let asked = app.os.asked.len();
+    on_ui(
+        &mut app.term,
+        &mut app.os,
+        &mut app.view,
+        &UiEvent::Pressed(CANCEL),
+    );
+    let (_, name, _) = app.os.asked[asked];
+    assert_eq!(name, comp_terminal::os::SHELL_STOP);
+    assert_eq!(app.os.asked.len(), asked + 1, "only the stop is asked");
+    assert_eq!(
+        app.term.phase(),
+        Phase::Waiting,
+        "the line's own answer ends it"
+    );
+}
+
+/// #892's review: Esc anywhere in the window presses Stop while a line runs
+/// (its escape mark), and Enter typed ahead presses nothing.
+#[test]
+fn esc_stops_a_running_line_and_enter_does_not() {
+    let mut app = App::new();
+    app.type_text("what time is it");
+    app.enter();
+    assert_eq!(app.term.phase(), Phase::Waiting);
+    let asked = app.os.asked.len();
+    app.enter();
+    assert_eq!(app.os.asked.len(), asked, "a second Enter stops nothing");
+    app.key(Input::Key {
+        key: Key::Escape,
+        down: true,
+        mods: Mods::default(),
+        text: String::new(),
+    });
+    assert_eq!(app.os.asked.len(), asked + 1);
+    assert_eq!(app.os.asked[asked].1, comp_terminal::os::SHELL_STOP);
+    // The mark is a key binding only: the agent's tree binds no action to Stop.
+    let f = app.w.commit(&M);
+    assert_eq!(f.a11y.iter().find(|n| n.id == CANCEL).unwrap().bound, None);
 }

@@ -27,6 +27,13 @@ env:
   CARGO_TERM_COLOR: always
   MODEL_ID: qwen3-4b-2507
 
+# A newer push to the same pull request cancels its older run, which only
+# queues behind the batch (2026-11-14); a push, a tag or a schedule is never
+# cancelled, and a label event other than full-ci gets a group of its own.
+concurrency:
+  group: token-count-${{ github.event.pull_request.number || github.sha }}${{ github.event.action == 'labeled' && !startsWith(github.event.label.name, 'full-ci') && format('-label-{0}', github.run_id) || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   tokens:
     name: Token counts (qwen3-4b-2507 tokenizer)

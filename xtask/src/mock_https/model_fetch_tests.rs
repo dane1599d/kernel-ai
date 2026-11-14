@@ -13,7 +13,7 @@ use super::*;
 use comp_models::{Signed, Store};
 use kainet::chunks::{CHUNK, Chunks};
 use kainet::client::{self, Wall};
-use kainet::download::{Answer, DownloadError, Partial, Report, download};
+use kainet::download::{Answer, DownloadError, Partial, Report, SHORT_READ, download};
 use kainet::http::{Dial, Fetch, HttpError, Limits, Method, Range, TlsConnect, Url};
 use modelchan::fetch::{self, Hosts, Job, MODEL_CHUNK, Machine, Refused};
 use rustls::RootCertStore;
@@ -160,10 +160,10 @@ impl Partial for Volume<'_> {
         let file = self
             .files
             .get(&self.job.partial)
-            .ok_or(DownloadError::Store("no partial file"))?;
+            .ok_or(DownloadError::Store(SHORT_READ))?;
         let bytes = file
             .get(offset as usize..offset as usize + buf.len())
-            .ok_or(DownloadError::Store("short"))?;
+            .ok_or(DownloadError::Store(SHORT_READ))?;
         buf.copy_from_slice(bytes);
         Ok(())
     }

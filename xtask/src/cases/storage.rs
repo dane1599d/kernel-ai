@@ -118,6 +118,22 @@ pub(super) const CASES: &[TestCase] = &[
         then: Some(&FS_REBOOT_2),
         ..case("fs-reboot", "test=files")
     },
+    // Backlog item 13 (#879): the same files survive POWER_REBOOT, not just the
+    // test's exit: boot 1 writes them and restarts through the firmware, and
+    // boot 2, on the same disk, reads them back.
+    TestCase {
+        resets: true,
+        expect: &[
+            "filecheck: boot 1 wrote notes/plan.txt and a 20 KiB file through its Dir handle",
+            "files: boot 1 restarts through POWER_REBOOT",
+            "power: hpower (pid ",
+            "efi: resetting through ResetSystem",
+        ],
+        server: false,
+        data: Some(VIRTIO),
+        then: Some(&FS_REBOOT_2),
+        ..case("power-fs", "test=files power")
+    },
     // P4: an app's state survives a reboot through its own folder (dir=apps).
     TestCase {
         expect: &["app-saved: boot 1 added a note"],

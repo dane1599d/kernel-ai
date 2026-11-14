@@ -311,6 +311,7 @@ pub fn check(which: ActCase) -> Result<(), &'static str> {
         ActCase::Ask => ask(),
         ActCase::Inject => inject(),
         ActCase::Rule => rule(),
+        ActCase::Stop => stop(),
         ActCase::PkgLocal => expect_lines(PKG_LOCAL).map(|()| {
             log!("pkg-local: install notes ran from the image's repository and undo put the previous set back");
         }),
@@ -676,6 +677,41 @@ fn rule() -> Result<(), &'static str> {
     reply_to("n")?;
     log!(
         "act-rule: Always allow wrote a rule node, the next stop ran under it, rules_remove took it away, and a service named as a process stopped as a service"
+    );
+    Ok(())
+}
+
+/// `act-stop`'s line: the mock LLM answers it only after 4 s (xtask's
+/// `mock_llm::SLOW_LINE`; the two must match).
+const SLOW_LINE: &str = "take your time and turn on round robin scheduling";
+/// When the person presses Stop, while llm waits for the mock.
+const STOP_AFTER_MS: u64 = 1_000;
+
+/// The person's Stop, `STOP_AFTER_MS` into the line: what SHELL_INTERRUPT does
+/// for `desktop`.
+fn press_stop(_: usize) {
+    threads::sleep_ms(STOP_AFTER_MS);
+    if crate::process::interrupt("shell").is_none() {
+        log!("act-stop: no shell to stop");
+    }
+}
+
+/// #887: the real shell and llm. A Stop while llm (which took the call) waits
+/// for the model stops the line: the answer is `stopped`, the call it brought
+/// is not run, and the next line runs as usual.
+fn stop() -> Result<(), &'static str> {
+    threads::spawn("act-stop", press_stop, 0).map_err(|_| "act-stop: no thread for the Stop")?;
+    let reply = reply_to(SLOW_LINE)?;
+    if reply != "err stopped" {
+        log!("act-stop: the stopped line answered {reply:?}");
+        return Err("act-stop: the line was not stopped");
+    }
+    if !policy_is("interactive") {
+        return Err("act-stop: the stopped line's call ran");
+    }
+    expect_lines(&[("how many processors do I have", StartsWith("ok "))])?;
+    log!(
+        "act-stop: a Stop while llm answered stopped the line, ran nothing, and the next line ran"
     );
     Ok(())
 }

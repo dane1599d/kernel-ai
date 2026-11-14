@@ -3,10 +3,18 @@
 use super::{KAI, TestCase, case};
 use crate::disk::Fixture;
 
+/// One detent of the wheel toward the person (scroll down), through QMP: the
+/// press and the release of QEMU's `wheel-down` button.
+const WHEEL_PRESS: &str = r#"@{"execute":"input-send-event","arguments":{"events":[{"type":"btn","data":{"down":true,"button":"wheel-down"}}]}}"#;
+const WHEEL_RELEASE: &str = r#"@{"execute":"input-send-event","arguments":{"events":[{"type":"btn","data":{"down":false,"button":"wheel-down"}}]}}"#;
+
 /// Moves the mouse right 38 and down 40 and clicks; then holds Ctrl for 1.5 s and
 /// clicks again inside the hold. Mouse events skip the key queue that delays the
-/// Ctrl release, so the second click lands while Ctrl is down.
+/// Ctrl release, so the second click lands while Ctrl is down. A wheel detent
+/// comes first.
 const POINTER: &[&str] = &[
+    WHEEL_PRESS,
+    WHEEL_RELEASE,
     "!mouse_move 38 40",
     "!mouse_button 1",
     "!mouse_button 0",
@@ -27,13 +35,15 @@ const USB_TABLET: &[&str] = &[
     r#"@{"execute":"input-send-event","arguments":{"events":[{"type":"btn","data":{"down":false,"button":"left"}}]}}"#,
 ];
 
-/// "kai" and Enter on the USB keyboard, then the USB mouse moves right 38 and
-/// down 40 and clicks.
+/// "kai" and Enter on the USB keyboard, then a wheel detent, and the USB mouse
+/// moves right 38 and down 40 and clicks.
 const USB_MOUSE: &[&str] = &[
     "k",
     "a",
     "i",
     "ret",
+    WHEEL_PRESS,
+    WHEEL_RELEASE,
     "!mouse_move 38 40",
     "!mouse_button 1",
     "!mouse_button 0",
@@ -46,7 +56,13 @@ pub(super) const CASES: &[TestCase] = &[
     },
     TestCase {
         keys: &[POINTER],
-        expect: &["pointer: at 38 40 cell 2 5", "pointer: click 1 ctrl"],
+        expect: &[
+            "mouse on IRQ12 (config ",
+            "; a wheel, 4-byte packets)",
+            "pointer: wheel 1",
+            "pointer: at 38 40 cell 2 5",
+            "pointer: click 1 ctrl",
+        ],
         ..case("pointer", "test=pointer pointerlog")
     },
     // ADR 0007: the PCI walk follows bridges, and devmatch binds what it finds.
@@ -103,6 +119,20 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &["efi: resetting through ResetSystem"],
         ..case("efi-reset", "test=efi-reset")
     },
+    // Backlog item 13: POWER_REBOOT from ring 3, refused without `cap::POWER`,
+    // a restart through ResetSystem with it.
+    TestCase {
+        resets: true,
+        expect: &[
+            "[hnopower] power: POWER_REBOOT was refused without a Power handle",
+            "power: POWER_REBOOT without the power capability was refused",
+            "[hpower] power: asking for a restart",
+            "power: hpower (pid ",
+            ") asked for a restart",
+            "efi: resetting through ResetSystem",
+        ],
+        ..case("power-reboot", "test=power-reboot")
+    },
     // ADR 0007 section 3: a record per bound device, read by DEV_LIST from ring 3.
     TestCase {
         usb: &["usb-kbd"],
@@ -137,6 +167,7 @@ pub(super) const CASES: &[TestCase] = &[
         keys: &[USB_MOUSE],
         expect: &[
             ": mouse 0627:0001, ",
+            "usb: USB mouse moved 0 0, buttons 0, wheel 1",
             "usb: USB mouse moved 38 40, buttons 0",
             "usb: USB mouse moved 0 0, buttons 1",
             "usb: received \"kai\" over USB",

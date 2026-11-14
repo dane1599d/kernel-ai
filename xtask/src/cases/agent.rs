@@ -126,6 +126,14 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("act-rule", "test=act-rule")
     },
+    // #887: the person's Stop, with the real shell and llm and the mock model's
+    // slow line.
+    TestCase {
+        expect: &[
+            "act-stop: a Stop while llm answered stopped the line, ran nothing, and the next line ran",
+        ],
+        ..case("act-stop", "test=act-stop")
+    },
     TestCase {
         expect: &[
             "pkg-local: install notes ran from the image's repository and undo put the previous set back",

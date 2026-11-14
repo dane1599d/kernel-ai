@@ -19,7 +19,10 @@
 //!   are written, so the checked file is copied into the store in one action
 //!   (`SealedBegin`, `SealedPush`, `SealedFinish`), a chunk per tick, as an
 //!   import is, once the disk has room for it (`modelchan::fetch::disk_need`).
-//!   The partial file goes only once the copy is committed.
+//!   The partial file goes only once the copy is committed. A copy `fs`
+//!   refuses for its hash means the partial changed after its check
+//!   (`fetch::CopyRefused`): the mark stays, as the next run reads back and
+//!   checks every chunk it names.
 //!
 //! The model's hosts are its source's and that host's storage hosts on 443
 //! (`Job::reaches`), on `updated`'s own `NetDest`; the list's is the
@@ -425,7 +428,9 @@ impl Running {
         }
         match folders::ask(store, &Request::SealedFinish)? {
             (Reply::Done, _) => {}
-            other => return Err(format!("the store refused the model: {other:?}")),
+            // The mark stays either way: the next run reads back and checks
+            // every chunk it names, and fetches from the first that changed.
+            (other, _) => return Err(fetch::CopyRefused::of(other).why()),
         }
         match folders::ask(store, &Request::Commit)? {
             (Reply::Committed { .. }, _) => {}

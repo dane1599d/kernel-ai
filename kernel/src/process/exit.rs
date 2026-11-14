@@ -3,8 +3,8 @@
 //! supervisor why.
 
 use super::{
-    KILL, KILL_DETAIL, Process, SLOT_OF_TID, State, killed, lock_space, programs, request_kill,
-    slot_of, supervision, with_table, workers,
+    KILL, KILL_DETAIL, Process, SLOT_OF_TID, State, async_call, killed, lock_space, programs,
+    request_kill, slot_of, supervision, with_table, workers,
 };
 use crate::{log, memory, threads};
 use core::sync::atomic::Ordering;
@@ -55,6 +55,7 @@ pub fn exit_current() -> ! {
             .filter(|_| killed(slot))
             .unwrap_or(ExitReason::Killed);
     let detail = KILL_DETAIL[slot].load(Ordering::SeqCst);
+    async_call::on_exit(slot);
     crate::ipc::on_process_exit(process.pid);
     crate::event_box::forget(process.pid);
     crate::shm::forget(process.pid);

@@ -235,6 +235,8 @@ pub enum ActError {
     Local(String),
     /// No model can answer: the text says what to do.
     Unavailable(String),
+    /// The person pressed Stop while the call was asked (`kabi::call::SHELL_INTERRUPT`).
+    Stopped,
 }
 
 impl ActError {
@@ -244,6 +246,7 @@ impl ActError {
             Self::NotACall => "the answer was not a call".into(),
             Self::Local(why) => format!("local model: {why}"),
             Self::Unavailable(why) => why.clone(),
+            Self::Stopped => "stopped".into(),
         }
     }
 }
@@ -274,6 +277,7 @@ pub fn encode_answer(answer: &Result<Call, ActError>) -> String {
         Err(ActError::NotACall) => "err notacall".into(),
         Err(ActError::Local(why)) => format!("err local {why}"),
         Err(ActError::Unavailable(why)) => format!("err unavailable {why}"),
+        Err(ActError::Stopped) => "err stopped".into(),
     }
 }
 
@@ -289,6 +293,7 @@ pub fn decode_answer(text: &str) -> Result<Call, ActError> {
         ("notacall", "") => ActError::NotACall,
         ("local", why) => ActError::Local(why.to_string()),
         ("unavailable", why) => ActError::Unavailable(why.to_string()),
+        ("stopped", "") => ActError::Stopped,
         _ => ActError::Local(error.to_string()),
     })
 }
@@ -488,6 +493,7 @@ mod tests {
             ActError::NotACall,
             ActError::Local("it ran out of time".into()),
             ActError::Unavailable("no model".into()),
+            ActError::Stopped,
         ] {
             assert_eq!(
                 decode_answer(&encode_answer(&Err(error.clone()))),

@@ -59,7 +59,10 @@ pub const INDEX: &[(&str, &[&str])] = &[
         "pkg",
         &["pkg_install", "pkg_remove", "pkg_list", "pkg_search"],
     ),
-    ("files", &["fs_list", "fs_read", "fs_history", "fs_changes"]),
+    (
+        "files",
+        &["fs_list", "fs_find", "fs_read", "fs_history", "fs_changes"],
+    ),
     (
         "file_edits",
         &[
@@ -95,7 +98,7 @@ pub const INDEX: &[(&str, &[&str])] = &[
 pub const GLOSS: &[(&str, &str)] = &[
     ("component", "roll back a component"),
     ("pkg", "install, remove or find packages"),
-    ("files", "list or read files"),
+    ("files", "list, find or read files"),
     ("file_edits", "write, rename, trash or restore files"),
     ("ui", "open, close, switch to or type in apps"),
     ("appearance", "theme, text size or motion"),

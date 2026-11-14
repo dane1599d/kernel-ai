@@ -358,6 +358,44 @@ pub fn recv_h(buf: &mut [u8], timeout_ms: u64, info: &mut RecvInfo) -> Result<us
     .map(|len| len as usize)
 }
 
+/// Sends `request` through the `Service` route `route` without waiting
+/// (CALL_SUBMIT): one call in flight per process, collected by [`call_poll`].
+/// Busy while one is in flight. When it ends, a [`svc_recv`] or [`recv_h`] with
+/// no request queued returns Woken.
+pub fn call_submit(route: Handle, request: &[u8], timeout_ms: u64) -> Result<(), Error> {
+    call(
+        call::CALL_SUBMIT,
+        [
+            u64::from(route.0),
+            request.as_ptr() as u64,
+            request.len() as u64,
+            timeout_ms,
+            0,
+            0,
+        ],
+    )
+    .map(|_| ())
+}
+
+/// The reply to the call [`call_submit`] sent, into `reply` (CALL_POLL): its
+/// length. Waits up to `wait_ms` (0: not at all) for the call to end. Busy
+/// while it is still in flight, NotFound with none; otherwise [`call_h`]'s
+/// errors, and the call is gone.
+pub fn call_poll(reply: &mut [u8], wait_ms: u64) -> Result<usize, Error> {
+    call(
+        call::CALL_POLL,
+        [
+            reply.as_mut_ptr() as u64,
+            reply.len() as u64,
+            wait_ms,
+            0,
+            0,
+            0,
+        ],
+    )
+    .map(|len| len as usize)
+}
+
 /// Starts the program `job` names (`scriptrun`) as a child, moving `handles` into
 /// it; its pid.
 pub fn job_spawn(job: Handle, args: &str, handles: &[Handle]) -> Result<u64, Error> {
@@ -557,6 +595,12 @@ impl AppCtl {
     }
 }
 
+/// Seconds since 1970 UTC (`CLOCK_NOW`); NotFound when the firmware gave no
+/// date.
+pub fn clock_now() -> Result<u64, Error> {
+    call(call::CLOCK_NOW, [0; 6])
+}
+
 /// Fills `buf` (at most [`kabi::call::ENTROPY_MAX`] bytes) with random bytes from
 /// the kernel (ENTROPY). NoEntropy on a CPU that gives none: make no key then.
 pub fn entropy(buf: &mut [u8]) -> Result<usize, Error> {
@@ -565,6 +609,16 @@ pub fn entropy(buf: &mut [u8]) -> Result<usize, Error> {
         [buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0, 0],
     )
     .map(|n| n as usize)
+}
+
+/// Restarts the machine (POWER_REBOOT). Returns only with why it did not:
+/// Permission without a `Power` handle (`cap::POWER`). Commit what must be kept
+/// first.
+pub fn power_reboot() -> Error {
+    match call(call::POWER_REBOOT, [0; 6]) {
+        Ok(_) => Error::Invalid,
+        Err(error) => error,
+    }
 }
 
 /// `verb`'s `ctl` request to app `name`, sent by the kernel (APP_CTL); the
@@ -755,6 +809,20 @@ pub fn sched_trial(request: &kabi::sched::TrialRequest) -> Result<u64, Error> {
 /// Whether the user asked to stop since the last call; reading clears it.
 pub fn interrupted() -> bool {
     call(call::INTERRUPTED, [0; 6]).is_ok_and(|flag| flag != 0)
+}
+
+/// Clears this process's Stop flag as a new unit of work starts, and says
+/// whether it was set (INTERRUPTED with `clear` 1): the shell calls it before a
+/// panel line or `take_effects`, which do not come as a new request.
+pub fn interrupt_clear() -> bool {
+    call(call::INTERRUPTED, [1, 0, 0, 0, 0, 0]).is_ok_and(|flag| flag != 0)
+}
+
+/// The person's Stop or Esc for the shell's line (SHELL_INTERRUPT): the
+/// shell's pid. For `desktop`, which holds `cap::INPUT`; Permission for any
+/// other process, NotFound when no shell runs.
+pub fn shell_interrupt() -> Result<u64, Error> {
+    call(call::SHELL_INTERRUPT, [0; 6])
 }
 
 /// Copies the boot bundle's file `path` into `buf` when it fits; its length

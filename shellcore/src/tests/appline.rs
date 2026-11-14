@@ -56,16 +56,27 @@ fn the_apps_open_entry_is_its_own_and_the_consoles_is_untouched() {
 }
 
 #[test]
-fn a_line_that_would_ask_is_refused_and_the_console_is_not_asked() {
+fn a_line_that_asks_waits_for_the_card_and_only_its_allow_runs_it() {
     let (host, mut shell) = with_calls(vec![Ok(llmproto::act::parse(STOP).unwrap())]);
     *host.procs.borrow_mut() = vec![String::from("notes")];
     let said = typed(&mut shell, "stop notes").unwrap();
-    assert!(said.starts_with("err it asks first"), "{said}");
+    assert_eq!(said, "ok it asks first: answer Run or Don't on the card");
     assert_eq!(*host.procs.borrow(), vec![String::from("notes")]);
-    // Nothing is left waiting for the console to say yes to.
+    // The console's own line answers nothing.
     let later = shell.eval("y");
     assert!(!later.text.contains("script"), "{later:?}");
     assert_eq!(*host.procs.borrow(), vec![String::from("notes")]);
+    // The card: code's call, its highlight on Deny, and its Allow's ONCE.
+    assert!(shell.card_waiting());
+    let card = shell.eval_console(termcore::menu::TAKE_CARD);
+    assert!(card.to_wire().contains(" added\n"), "{card:?}");
+    let menu = termcore::menu::Menu::decode(&card.to_wire()).unwrap();
+    assert_eq!(menu.call(), "process_stop(\"notes\")");
+    let once = host.mint(menu.id, menu.call());
+    let allowed = shell.eval_console(&format!("answer {} allow once={once}", menu.id));
+    assert!(allowed.ok, "{allowed:?}");
+    assert!(host.procs.borrow().is_empty());
+    assert!(matches!(shell.take_card_result(), Some((true, _))));
 }
 
 #[test]
@@ -234,7 +245,9 @@ fn a_terminal_apps_line_runs_at_kai_and_leaves_c_alone() {
     for line in [":c 6 * 7", ":c", ":rhai"] {
         assert_eq!(
             typed(&mut shell, line),
-            Ok(String::from("err C goes in the console")),
+            Ok(String::from(
+                "err C goes in the console: press Ctrl+Alt+F12"
+            )),
             "{line}"
         );
     }
@@ -267,8 +280,9 @@ fn the_consoles_answer_finishes_a_c_entry_after_an_app_line() {
 fn a_typed_models_import_is_refused_here_and_a_switch_runs_logged() {
     let host = FakeHost::new();
     let mut shell = shell(&host);
+    // It has no undo, so it asks: on the card, never in the window.
     let said = typed(&mut shell, "models import").unwrap();
-    assert!(said.starts_with("err it asks first"), "{said}");
+    assert!(said.starts_with("ok it asks first"), "{said}");
     assert!(
         !host
             .model_requests

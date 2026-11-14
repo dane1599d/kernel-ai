@@ -13,8 +13,8 @@ struct kai_memory { I64 free_mib; I64 total_mib; I64 heap_kib; };
 __KAI_IMPORT("memory") I64 memory(struct kai_memory *out);
 /* milliseconds since boot (1000 ms is 1 s) */
 __KAI_IMPORT("uptime_ms") I64 uptime_ms(I64 *out);
-/* the running services */
-struct kai_processes_item { I64 pid; char name[65]; };
+/* running processes */
+struct kai_processes_item { I64 pid; char name[65]; I64 mib; I64 cpu_ms; };
 __KAI_IMPORT("processes") I64 processes(struct kai_processes_item *out, I64 cap);
 /* scheduler counters since boot */
 struct kai_threads { I64 switches; I64 ejections; I64 migrations; };
@@ -41,6 +41,8 @@ __KAI_IMPORT("pkg_list") I64 pkg_list(char *out, I64 cap);
 __KAI_IMPORT("pkg_search") I64 pkg_search(const char *text, char *out, I64 cap);
 /* a folder's names */
 __KAI_IMPORT("fs_list") I64 fs_list(const char *path, char *out, I64 cap);
+/* files whose names hold a word, in every folder */
+__KAI_IMPORT("fs_find") I64 fs_find(const char *name, char *out, I64 cap);
 /* a file's text */
 __KAI_IMPORT("fs_read") I64 fs_read(const char *path, char *out, I64 cap);
 /* a file's earlier versions */

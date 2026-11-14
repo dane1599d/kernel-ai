@@ -143,6 +143,7 @@ impl Files {
                     )
                 })
             }
+            FsRead::Find(word) => find(home, word).map(|paths| paths.join("\n")),
             FsRead::Read(path) => {
                 let file = open(home, path, How::Existing, Rights::READ)?;
                 let text = read_all(file);
@@ -511,6 +512,46 @@ fn in_dir<T>(
 
 pub(crate) fn close(handle: Handle) {
     let _ = sys::handle_close(handle);
+}
+
+/// The most folders `fs_find` looks in, and the most paths it gives back.
+const FIND_DIRS: usize = 64;
+const FIND_MAX: usize = 40;
+
+/// `fs_find`: paths under home whose last part holds `word`, case aside,
+/// looking in home and the folders below it, breadth first, within
+/// [`FIND_DIRS`] folders and [`FIND_MAX`] paths.
+fn find(home: Handle, word: &str) -> Result<Vec<String>, String> {
+    let word = word.trim().to_lowercase();
+    if word.is_empty() {
+        return Err(String::from("say what the name holds"));
+    }
+    let mut dirs = alloc::collections::VecDeque::from([String::new()]);
+    let (mut seen, mut found) = (0, Vec::new());
+    while let Some(dir) = dirs.pop_front() {
+        seen += 1;
+        let names = in_dir(home, &dir, Rights::READ | Rights::ENUMERATE, list)?;
+        for name in names {
+            let (bare, folder) = match name.strip_suffix('/') {
+                Some(bare) => (bare, true),
+                None => (name.as_str(), false),
+            };
+            let path = match dir.is_empty() {
+                true => String::from(bare),
+                false => format!("{dir}/{bare}"),
+            };
+            if bare.to_lowercase().contains(&word) && found.len() < FIND_MAX {
+                found.push(format!(
+                    "/home/user/{path}{}",
+                    if folder { "/" } else { "" }
+                ));
+            }
+            if folder && seen + dirs.len() < FIND_DIRS {
+                dirs.push_back(path);
+            }
+        }
+    }
+    Ok(found)
 }
 
 pub(crate) fn list(dir: Handle) -> Result<Vec<String>, String> {

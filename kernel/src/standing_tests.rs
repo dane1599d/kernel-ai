@@ -63,7 +63,8 @@ const MINIMIZE: (i32, i32) = (48 + 642 - 76, 52 + 17);
 /// Alt down, Tab down and up, Alt up (scan code set 1).
 const ALT_TAB: [u8; 4] = [0x38, 0x0F, 0x8F, 0xB8];
 /// `y` down and up.
-const YES: [u8; 2] = [0x15, 0x95];
+/// Y twice: a desktop card's first `y` arms it, the second runs it (#864).
+const YES: [u8; 4] = [0x15, 0x95, 0x15, 0x95];
 
 static ASKED: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicBool = AtomicBool::new(false);
@@ -88,6 +89,7 @@ fn report(dx: i32, dy: i32, buttons: u8) {
             source: Source::UsbMouse,
             motion: Motion::Relative { dx, dy },
             buttons,
+            wheel: 0,
         });
         crate::input::wake_pending();
     });

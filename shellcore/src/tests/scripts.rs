@@ -549,3 +549,16 @@ fn fixed_refuses_too_many_places() {
     let (_, error) = requests[1].repair.clone().unwrap();
     assert!(error.contains("places must be 0 to 9"), "{error}");
 }
+
+#[test]
+fn each_process_says_its_memory_and_cpu_time() {
+    // "What's using my memory" (founder test 2): mib and cpu_ms per process.
+    let source = "let p = processes()[0];
+print(p.name + \" \" + p.mib + \" \" + p.cpu_ms);";
+    let (_host, mut shell) = with_answers(vec![answer(source, "Prints one process's use.")]);
+    assert_eq!(
+        ran(&shell.eval("? what is llm using")),
+        "llm 0 0
+"
+    );
+}

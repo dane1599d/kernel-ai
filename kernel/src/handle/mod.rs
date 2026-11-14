@@ -93,7 +93,7 @@ pub fn route_name(id: u64) -> Option<Name> {
 /// The startup handles for capability bits `caps` (ADR 0001 D3's table), for the
 /// process `pid`. CALL gives a route only through `uses=`, so none here.
 pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
-    let rows: [(u64, Kind, Rights, u64); 18] = [
+    let rows: [(u64, Kind, Rights, u64); 19] = [
         // MINT under the `system` root, which is never revoked (ADR 0001 D3).
         (
             cap::SUPERVISE,
@@ -169,6 +169,8 @@ pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
         ),
         // The asks for the card, `desktop`'s alone (ADR 0005 §7).
         (cap::ASK, Kind::Ask, Rights::READ.union(Rights::WRITE), 0),
+        // Restarting the machine, for the action that asks first (backlog item 13).
+        (cap::POWER, Kind::Power, Rights::WRITE, 0),
     ];
     rows.iter()
         .filter(|(bit, ..)| caps & bit != 0)
@@ -246,6 +248,7 @@ pub fn required(bit: u64) -> Option<(Kind, Rights)> {
         cap::UPDATE => (Kind::Update, Rights::WRITE),
         cap::ASK => (Kind::Ask, Rights::WRITE),
         cap::EDIT => (Kind::Edit, Rights::CALL),
+        cap::POWER => (Kind::Power, Rights::WRITE),
         _ => return None,
     })
 }
@@ -273,6 +276,7 @@ pub fn ceiling_allows(caps: u64, kind: Kind) -> bool {
         (Kind::Update, cap::UPDATE),
         (Kind::Ask, cap::ASK),
         (Kind::Edit, cap::EDIT),
+        (Kind::Power, cap::POWER),
     ];
     bits.iter()
         .find(|(k, _)| *k == kind)

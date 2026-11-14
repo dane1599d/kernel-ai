@@ -35,6 +35,12 @@
 //! time (see [`shm`]): it maps the handles the kernel puts in its table, fills and
 //! counts the pages, and makes, maps and frees an object of its own.
 //!
+//! With `mode=reboot` it asks POWER_REBOOT for a restart (`handles/power.rs`).
+//! With `mode=stop`, started as `shell`, it checks that the person's Stop ends
+//! a call in flight as Interrupted (`handles/interrupt.rs`).
+//! With `mode=async` and `mode=slow` a pair checks CALL_SUBMIT and CALL_POLL
+//! (`handles/async_call.rs`).
+//!
 //! With `mode=mem` (lane M) it serves the kernel's anonymous-memory case (see
 //! `handles/mem.rs`).
 //!
@@ -52,10 +58,16 @@ use kabi::handle::{ABI, Handle, HandleInfo, Kind, RecvInfo, Rights, TABLE_MAX};
 use kabi::sched::SchedStats;
 use user::{arg, args, println, sys};
 
+#[path = "handles/async_call.rs"]
+mod async_call;
 #[path = "handles/entropy.rs"]
 mod entropy;
+#[path = "handles/interrupt.rs"]
+mod interrupt;
 #[path = "handles/mem.rs"]
 mod mem;
+#[path = "handles/power.rs"]
+mod power;
 
 user::entry!(main);
 
@@ -72,6 +84,14 @@ fn main() -> i32 {
         Some("job") => job,
         Some("mem") => mem::mem,
         Some("idle") => idle,
+        Some("reboot") => power::reboot,
+        Some("stop") => interrupt::stop,
+        Some("slow") => async_call::slow,
+        Some("quick") => async_call::quick,
+        Some("async") => async_call::run,
+        Some("lazy") => async_call::lazy,
+        Some("submit-exit") => async_call::submit_exit,
+        Some("submit-hold") => async_call::submit_hold,
         _ => checks,
     };
     match run() {

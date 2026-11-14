@@ -175,10 +175,14 @@ impl Painter {
                 (call.clone(), self.palette.text),
                 (format!("  {target}"), self.palette.muted),
             ],
-            State::Done { line } => alloc::vec![
-                (line.clone(), self.palette.text),
-                (String::from("   undo  show"), self.palette.accent),
-            ],
+            // Its undo and show only with the log entry they act on.
+            State::Done { line } => match scene.panel.entry() {
+                Some(_) => alloc::vec![
+                    (line.clone(), self.palette.text),
+                    (String::from(LINKS), self.palette.accent),
+                ],
+                None => alloc::vec![(line.clone(), self.palette.text)],
+            },
             State::Refused { reason } => alloc::vec![(reason.clone(), self.palette.error)],
         };
         let width: f32 = parts
@@ -193,6 +197,46 @@ impl Painter {
         }
         for (text, color) in &parts {
             x += self.draw_text(c, clip, x, y, style, *color, text);
+        }
+    }
+}
+
+/// The links a done line ends with, as drawn: what each sends when clicked.
+const LINKS: &str = "   undo  show";
+
+impl Painter {
+    /// Which of a done line's links, `undo` or `show`, the point `at` on the
+    /// screen is on, as the panel draws them: what a click there sends, as
+    /// though typed. `None` off them, or with no done line.
+    pub fn panel_link(
+        &self,
+        panel: Rect,
+        shown: &Panel,
+        at: crate::geom::Point,
+    ) -> Option<&'static str> {
+        let State::Done { line } = shown.state() else {
+            return None;
+        };
+        // No links are drawn without the entry they act on.
+        shown.entry()?;
+        if !panel.contains(at) {
+            return None;
+        }
+        let right = state_area(panel);
+        let style = TypeStyle::MonoTitle;
+        let width = |t: &str| self.text.measure(style, t).0;
+        let end = (right.right() - PAD) as f32;
+        let start = (end - width(line) - width(LINKS)).max(right.x as f32);
+        let links = start + width(line);
+        let x = at.x as f32;
+        let hit = |from: &str, word: &str| {
+            let left = links + width(from);
+            x >= left - 4.0 && x <= left + width(word) + 4.0
+        };
+        match (hit("   ", "undo"), hit("   undo  ", "show")) {
+            (true, _) => Some("undo"),
+            (_, true) => Some("show"),
+            _ => None,
         }
     }
 }

@@ -191,6 +191,8 @@ fn pointer_event(report: xhci::hid::Pointer) -> pointer::Event {
         source,
         motion,
         buttons: report.buttons,
+        // HID's wheel is positive away from the person; the event's, toward.
+        wheel: report.wheel.saturating_neg(),
     }
 }
 
@@ -229,8 +231,12 @@ pub fn self_test() -> Result<(), &'static str> {
                     alloc::format!("at {x} {y} of {x_max} {y_max}")
                 }
             };
+            let wheel = match event.wheel {
+                0 => alloc::string::String::new(),
+                detents => alloc::format!(", wheel {detents}"),
+            };
             log!(
-                "usb: {} {motion}, buttons {}",
+                "usb: {} {motion}, buttons {}{wheel}",
                 event.source.name(),
                 event.buttons
             );

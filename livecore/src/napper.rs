@@ -117,7 +117,9 @@ impl Napper {
         self.sync(host, now_ms);
     }
 
-    /// One of its windows took focus: use, which wakes only its own nap.
+    /// One of its windows took the focus, or lost it: either is use, and
+    /// while it holds the focus it never naps. Taking it wakes only its own
+    /// nap.
     pub fn focus<E: Env>(
         &mut self,
         host: &mut Host<E>,
@@ -125,10 +127,10 @@ impl Napper {
         now_ms: u64,
     ) -> Result<Option<Napped>, Exit> {
         self.sync(host, now_ms);
+        self.nap.focus(focused, now_ms);
         if !focused {
             return Ok(None);
         }
-        self.nap.used(now_ms);
         self.wake(host, now_ms)
     }
 

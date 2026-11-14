@@ -23,6 +23,11 @@ const UP: u16 = 0x52;
 /// Where a package is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
+    /// One of the image's own apps (Notes, Files, ...), not a package: Enter
+    /// opens it. `desktop` lists these only when `pkg` gives no rows (`pkg`
+    /// lists them as installed when it runs), from its own list of the apps
+    /// every image plans.
+    BuiltIn,
     /// In the current generation: Enter opens it.
     Installed,
     /// Offered by the image's signed repository.
@@ -35,6 +40,7 @@ impl Source {
     /// What the sheet says beside an offer.
     pub fn label(self) -> &'static str {
         match self {
+            Source::BuiltIn => "built in",
             Source::Installed => "installed",
             Source::Image => "on this image",
             Source::Mirror => "from the mirror",
@@ -81,7 +87,8 @@ impl App {
 /// What Enter on the sheet asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pick {
-    /// Open the installed package.
+    /// Open the built-in app or the installed package: `ui_open(<name>)`,
+    /// which needs no model.
     Open(String),
     /// Install the offered one (an update when another version is installed):
     /// `pkg_install(<name>)`, asked as a typed `install` is.
@@ -129,7 +136,7 @@ impl Sheet {
                 (true, None)
             }
             ENTER => match self.selected() {
-                Some(app) if app.source == Source::Installed => {
+                Some(app) if matches!(app.source, Source::Installed | Source::BuiltIn) => {
                     (false, Some(Pick::Open(app.name.clone())))
                 }
                 Some(app) => (false, Some(Pick::Install(app.name.clone()))),
@@ -158,6 +165,19 @@ pub(crate) mod tests {
             installed: installed.map(String::from),
             summary: summary.into(),
         }
+    }
+
+    /// Backlog: the image's own apps, listed when `pkg` gives no rows, open
+    /// as installed ones do, with no model.
+    #[test]
+    fn enter_opens_a_built_in_app() {
+        let mut sheet = Sheet::new(vec![
+            app(Source::BuiltIn, "terminal", None, "Terminal"),
+            app(Source::BuiltIn, "notes", None, "Notes"),
+        ]);
+        assert_eq!(Source::BuiltIn.label(), "built in");
+        assert_eq!(sheet.key(DOWN), (true, None));
+        assert_eq!(sheet.key(ENTER), (false, Some(Pick::Open("notes".into()))));
     }
 
     #[test]

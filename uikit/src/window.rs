@@ -46,6 +46,11 @@ pub struct Window {
     full: bool,
     unsaved: bool,
     agent_private: bool,
+    /// What the host should log about the window, once each (two escape
+    /// buttons marked); taken by [`Window::take_notes`].
+    pub(crate) notes: alloc::vec::Vec<String>,
+    /// Whether two escape buttons were noted already.
+    pub(crate) escapes_noted: bool,
 }
 
 impl Window {
@@ -61,7 +66,14 @@ impl Window {
             full: true,
             unsaved: false,
             agent_private: false,
+            notes: alloc::vec::Vec::new(),
+            escapes_noted: false,
         }
+    }
+
+    /// What the host should log about the window since the last call.
+    pub fn take_notes(&mut self) -> alloc::vec::Vec<String> {
+        core::mem::take(&mut self.notes)
     }
 
     pub fn title(&self) -> &str {

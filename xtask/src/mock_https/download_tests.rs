@@ -8,7 +8,7 @@
 use super::*;
 use kainet::chunks::{CHUNK, Chunks};
 use kainet::client::{self, Wall};
-use kainet::download::{Answer, DownloadError, Partial, Report, download};
+use kainet::download::{Answer, DownloadError, Partial, Report, SHORT_READ, download};
 use kainet::http::{Dial, Fetch, HttpError, Limits, Method, Range, TlsConnect, Url};
 use rustls::RootCertStore;
 use rustls::pki_types::CertificateDer;
@@ -89,7 +89,7 @@ impl Partial for Memory {
         let src = self
             .bytes
             .get(start..start + buf.len())
-            .ok_or(DownloadError::Store("past the end"))?;
+            .ok_or(DownloadError::Store(SHORT_READ))?;
         buf.copy_from_slice(src);
         Ok(())
     }

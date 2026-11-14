@@ -411,6 +411,7 @@ fn the_generated_tier_table_is_the_seamless_actions_one() {
         ("service_restart", Tier::Ask),
         ("appearance_set", Tier::Run),
         ("fs_list", Tier::Run),
+        ("fs_find", Tier::Run),
         ("fs_read", Tier::Run),
         ("fs_history", Tier::Run),
         ("fs_changes", Tier::Run),

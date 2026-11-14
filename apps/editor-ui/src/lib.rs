@@ -16,7 +16,7 @@ extern crate alloc;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use comp_ui_bind::tree::{Entry, entry, label};
+use comp_ui_bind::tree::{Entry, entry, label, row};
 use editcore::screen::{Row, View};
 use uikit::style::{Tone, TypeStyle};
 use uikit::widget::{
@@ -32,6 +32,12 @@ pub const TITLE: NodeId = 1;
 pub const CODE: NodeId = 2;
 /// What the editor last said, or the prompt.
 pub const STATUS: NodeId = 3;
+/// The row of choices a window asked to close with changes not saved shows
+/// ([`build_closing`]), and its three buttons.
+pub const CHOICES: NodeId = 4;
+pub const SAVE: NodeId = 5;
+pub const DISCARD: NodeId = 6;
+pub const CANCEL: NodeId = 7;
 /// The window's title, and its size when it opens, in logical px.
 pub const WINDOW_TITLE: &str = "Editor";
 pub const SIZE: (u16, u16) = (800, 560);
@@ -114,6 +120,41 @@ pub fn status(view: &View) -> (String, Tone) {
 /// The whole tree for `view`, parents before children.
 pub fn build(view: &View) -> Vec<Entry> {
     let (status, tone) = status(view);
+    base(view, &status, tone)
+}
+
+/// What the status line says while the window waits to be told whether to close
+/// with changes not saved: the keys that answer, as the buttons do.
+pub fn closing_status(can_save: bool) -> &'static str {
+    match can_save {
+        true => "Not saved: S saves and closes, D discards the changes, Esc keeps editing.",
+        false => "Not saved: D discards the changes and closes, Esc keeps editing.",
+    }
+}
+
+fn choice(text: &str) -> Widget {
+    Widget::Button {
+        text: String::from(text),
+        action: None,
+    }
+}
+
+/// The tree for `view` with the closing question: the status line says it and a
+/// row of buttons answers it, Save when there is a file to save.
+pub fn build_closing(view: &View, can_save: bool) -> Vec<Entry> {
+    let mut tree = base(view, closing_status(can_save), Tone::Accent);
+    let choices = Layout { gap: 8, ..bar() };
+    tree.push(entry(CHOICES, ROOT, choices, row()));
+    if can_save {
+        tree.push(entry(SAVE, CHOICES, Layout::FIT, choice("Save")));
+    }
+    tree.push(entry(DISCARD, CHOICES, Layout::FIT, choice("Discard")));
+    tree.push(entry(CANCEL, CHOICES, Layout::FIT, choice("Cancel")));
+    tree
+}
+
+/// The title, the code view and the status line.
+fn base(view: &View, status: &str, tone: Tone) -> Vec<Entry> {
     alloc::vec![
         entry(
             TITLE,
@@ -122,6 +163,6 @@ pub fn build(view: &View) -> Vec<Entry> {
             label(&view.title, TypeStyle::Mono, Tone::Muted)
         ),
         entry(CODE, ROOT, Layout::FILL, Widget::Code(code(view))),
-        entry(STATUS, ROOT, bar(), label(&status, TypeStyle::Mono, tone)),
+        entry(STATUS, ROOT, bar(), label(status, TypeStyle::Mono, tone)),
     ]
 }

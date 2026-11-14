@@ -33,6 +33,7 @@
 
 mod apps;
 mod consent;
+mod founder;
 mod goal_tasks;
 mod goals;
 mod grammar;

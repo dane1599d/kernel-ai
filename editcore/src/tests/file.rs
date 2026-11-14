@@ -283,3 +283,36 @@ fn ctrl_o_with_nothing_open_asks_for_a_path_too() {
     screen.input(Input::Key(Key::Ctrl('o')));
     assert_eq!(screen.view().prompt, Some(("open file", String::new())));
 }
+
+#[test]
+fn text_kept_from_before_is_the_files_text_and_is_changed_against_the_disk() {
+    let mut editor = open("buy milk\ncall Ann\nsleep\n");
+    assert_eq!(editor.replace_text(b"buy bread\r\ncall Ann\n"), Ok(()));
+    assert_eq!(editor.bytes(), b"buy bread\r\ncall Ann\n");
+    // The disk's version is still what the file was opened as.
+    assert!(editor.changed());
+    // The same text is no edit; one undo goes back to the disk's.
+    let mut same = open("a\nb\n");
+    assert_eq!(same.replace_text(b"a\nb\n"), Ok(()));
+    assert!(!same.changed());
+    assert!(cmd(&mut editor, "undo").starts_with("ok undone"));
+    assert_eq!(editor.bytes(), b"buy milk\ncall Ann\nsleep\n");
+    assert!(!editor.changed());
+    // It is refused when it is not text or does not fit, and the file stays.
+    assert!(editor.replace_text(&[0xff, 0xfe]).is_err());
+    let big = alloc::vec![b'x'; crate::MAX_BUNDLE + 1];
+    assert!(editor.replace_text(&big).is_err());
+    assert_eq!(editor.bytes(), b"buy milk\ncall Ann\nsleep\n");
+}
+
+#[test]
+fn the_line_being_typed_is_in_the_bytes_that_ask_for_it() {
+    let editor = open("buy milk\ncall Ann\n");
+    assert_eq!(
+        editor.bytes_with_line(2, "call Bob"),
+        b"buy milk\ncall Bob\n"
+    );
+    // Nothing was changed by asking, and a line that is not there is not typed.
+    assert!(!editor.changed());
+    assert_eq!(editor.bytes_with_line(9, "x"), editor.bytes());
+}

@@ -55,6 +55,13 @@ pub const PUBLISHER: &str = "edit";
 pub const FS: &str = "fs";
 /// The one service, and program, that may hold `cap::SYSTEM_STATE`.
 pub const STATE_HOLDER: &str = "shell";
+/// The one service, and program, that may hold `cap::POWER` (POWER_REBOOT).
+pub const POWER_HOLDER: &str = "shell";
+/// Whether the service `name` running `program` may have `caps`' POWER bit:
+/// restarting the machine is the shell's alone.
+pub fn power_allowed(name: &str, program: &str, caps: u64) -> bool {
+    caps & cap::POWER == 0 || (name == POWER_HOLDER && program == POWER_HOLDER)
+}
 /// Whether the service `name` running `program` may have the storage bits in
 /// `caps`: the `kai-data` partition is the file system service's alone (ADR
 /// 0004 §7), and `/system/state` the shell's (P2 task 12).
@@ -345,6 +352,9 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     // Editing for an app is comphost's alone, serving the editor, and sent only
     // for an app whose package holds the `edit` grant (P4 task 11).
     if request.limits.caps & cap::EDIT != 0 && (name != EDITOR || program != COMPONENT_HOST) {
+        return Err(Error::Permission);
+    }
+    if !power_allowed(name, program, request.limits.caps) {
         return Err(Error::Permission);
     }
     // The slots and the boot record are `updated`'s alone (ADR 0008 §10).

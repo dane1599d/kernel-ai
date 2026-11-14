@@ -122,6 +122,11 @@ pub enum Effect {
     },
     /// A key for the AI panel.
     PanelKey { usage: u16, down: bool },
+    /// A press on the AI panel, at `at` on the screen: `desktop` decides
+    /// whether it was on a control there (undo, show).
+    PanelClick { at: Point },
+    /// Caps Lock was turned on or off: every client types letters by it.
+    Locks { caps: bool },
     /// Keyboard focus moved.
     Focus(Focus),
     /// Tell the client its window's content size and state
@@ -153,6 +158,9 @@ enum Grab {
         from: Point,
     },
 }
+
+/// How much of a dragged window's title bar stays on screen, either side.
+const KEEP_ON_SCREEN: i32 = 64;
 
 /// What a point on the screen hits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,6 +197,27 @@ pub struct Desk {
     down: Vec<u16>,
     /// The window the agent is acting on: it has the outline.
     agent: Option<WindowId>,
+    /// Caps Lock: letters type the other case from Shift.
+    caps: bool,
+    /// Num Lock: on, the keypad types digits; off, it is the arrows and
+    /// navigation keys. On at start, as most PCs boot.
+    num: bool,
+    /// The top bar's tabs as last drawn, one per window: a press on one
+    /// brings that window back ([`Desk::set_tabs`]).
+    tabs: Vec<(WindowId, Rect)>,
+    /// The clock `desktop` last gave ([`Desk::set_now`]).
+    now_ms: u64,
+    /// When the card up now may first be answered: a quiet
+    /// [`termcore::menu::SETTLE_MS`] after it was first drawn and after the
+    /// last key or button pressed; `u64::MAX` until it is drawn.
+    ask_open_ms: u64,
+    /// When the card up now was first drawn ([`Desk::card_drawn`]).
+    ask_drawn: Option<u64>,
+    /// The last key or button pressed while the card was up.
+    ask_pressed_ms: u64,
+    /// The pointer moved onto the card's Run button after the card was
+    /// drawn: a click there may run it (one parked there before may not).
+    ask_entered_run: bool,
 }
 
 impl Desk {
@@ -217,7 +246,22 @@ impl Desk {
             held: Vec::new(),
             down: Vec::new(),
             agent: None,
+            caps: false,
+            num: true,
+            tabs: Vec::new(),
+            now_ms: 0,
+            ask_open_ms: u64::MAX,
+            ask_drawn: None,
+            ask_pressed_ms: 0,
+            ask_entered_run: false,
         }
+    }
+
+    /// The clock, in ms, for the card's settle time: `desktop` gives each
+    /// input's own event time before it, so keys are judged by when they were
+    /// pressed, not by when they were read.
+    pub fn set_now(&mut self, now_ms: u64) {
+        self.now_ms = now_ms;
     }
 
     /// Where windows open and maximize: the screen below the top bar and
@@ -399,20 +443,32 @@ impl Desk {
         }
     }
 
-    /// What `p` hits, topmost first.
+    /// What `p` hits, topmost first: the top bar and the panel are drawn
+    /// over every window, so a window under them never takes their clicks.
     pub fn hit(&self, p: Point) -> Hit {
+        if self.top_bar().contains(p) {
+            return Hit::TopBar;
+        }
+        if self.panel().contains(p) {
+            return Hit::Panel;
+        }
         for w in self.windows.iter().rev().filter(|w| !w.minimized) {
             if let Some(part) = chrome::hit(w.frame, p) {
                 return Hit::Window(w.id, part);
             }
         }
-        if self.top_bar().contains(p) {
-            Hit::TopBar
-        } else if self.panel().contains(p) {
-            Hit::Panel
-        } else {
-            Hit::Desktop
-        }
+        Hit::Desktop
+    }
+
+    /// The top bar's tabs as the painter laid them out
+    /// (`Painter::tabs`): what a press on the bar hits.
+    pub fn set_tabs(&mut self, tabs: Vec<(WindowId, Rect)>) {
+        self.tabs = tabs;
+    }
+
+    /// Whether Caps Lock is on, for the panel's own keymap.
+    pub fn caps(&self) -> bool {
+        self.caps
     }
 
     /// The keys went to the kernel's terminal (INPUT_TO_CONSOLE): the releases
@@ -427,6 +483,9 @@ impl Desk {
 
     pub fn input(&mut self, input: Input) -> Vec<Effect> {
         let mut effects = Vec::new();
+        // A key-down for a key already down is its repeat, never a fresh press.
+        let repeat =
+            matches!(input, Input::Key { usage, down: true } if self.down.contains(&usage));
         if let Input::Key { usage: code, down } = input {
             match down {
                 true if !self.down.contains(&code) => self.down.push(code),
@@ -435,7 +494,7 @@ impl Desk {
             }
         }
         if self.ask.is_some() {
-            self.ask_input(input, &mut effects);
+            self.ask_input(input, repeat, &mut effects);
             return effects;
         }
         self.takeover(input, &mut effects);
@@ -458,9 +517,16 @@ impl Desk {
                 let area = self.work_area();
                 if let Some(w) = self.windows.iter_mut().find(|w| w.id == window) {
                     let old = w.frame;
-                    // The title bar never leaves the work area's top edge.
-                    let y = (p.y - offset.y).max(area.y);
-                    w.frame = Rect::new(p.x - offset.x, y, old.w, old.h);
+                    // The title bar stays in the work area: never above its
+                    // top, never under the panel, and enough of it on screen
+                    // to grab it again from either side.
+                    let y = (p.y - offset.y)
+                        .min(area.bottom() - chrome::TITLE_BAR)
+                        .max(area.y);
+                    let x = (p.x - offset.x)
+                        .min(area.right() - KEEP_ON_SCREEN)
+                        .max(area.x + KEEP_ON_SCREEN - old.w);
+                    w.frame = Rect::new(x, y, old.w, old.h);
                     w.restore = None;
                     let new = w.frame;
                     self.damage.add(old);
@@ -528,8 +594,23 @@ impl Desk {
         }
         let hit = self.hit(self.pointer);
         let Hit::Window(id, part) = hit else {
-            if hit == Hit::Panel {
-                self.set_focus(Focus::Panel, effects);
+            match hit {
+                Hit::Panel => {
+                    self.set_focus(Focus::Panel, effects);
+                    if button == Button::Left {
+                        effects.push(Effect::PanelClick { at: self.pointer });
+                    }
+                }
+                // A tab brings its window back, from minimized too.
+                Hit::TopBar if button == Button::Left => {
+                    let pointer = self.pointer;
+                    if let Some(&(id, _)) = self.tabs.iter().find(|(_, r)| r.contains(pointer))
+                        && self.window(id).is_some()
+                    {
+                        self.activate(id, effects);
+                    }
+                }
+                _ => {}
             }
             return;
         };
@@ -578,6 +659,25 @@ impl Desk {
     }
 
     fn key(&mut self, code: u16, down: bool, effects: &mut Vec<Effect>) {
+        // The locks toggle on their press, and go to no one.
+        if code == crate::keymap::CAPS_LOCK || code == crate::keymap::NUM_LOCK {
+            if down && code == crate::keymap::CAPS_LOCK {
+                self.caps = !self.caps;
+                effects.push(Effect::Locks { caps: self.caps });
+            } else if down {
+                self.num = !self.num;
+            }
+            return;
+        }
+        // With Num Lock off the keypad is the arrows and navigation keys.
+        let code = match self.num {
+            true => code,
+            false => match crate::keymap::keypad_off(code) {
+                Some(nav) => nav,
+                None if (0x59..=0x63).contains(&code) => return,
+                None => code,
+            },
+        };
         match code {
             usage::LEFT_CTRL | usage::RIGHT_CTRL => self.ctrl = down,
             usage::LEFT_ALT | usage::RIGHT_ALT => self.alt = down,
