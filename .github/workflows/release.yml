@@ -63,6 +63,7 @@ on:
       - release/keys/**
       - release/pkgrepo/**
       - scripts/release-sign.sh
+      - .github/actions/qemu/build.sh
   workflow_dispatch:
 
 permissions:
@@ -75,6 +76,9 @@ env:
   # Where the release build reads its crates, and the offline rebuild mounts the
   # vendored ones, so panic locations and line tables match (decisions.md, S09-1).
   REGISTRY_SRC: /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f
+  # ci.yml's QEMU, for the `vm` and `release-boot` jobs: bump with ci.yml's.
+  QEMU_VERSION: "11.0.5"
+  QEMU_SHA256: 38a1a09f349660cb0e20b8fe5f224d6a53ec4235eb36f2e33a31e21bb6138147
 
 # bash -eo pipefail: a step piped through tee fails when its command does.
 defaults:
@@ -267,12 +271,17 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # QEMU as ci.yml's `qemu` job builds and caches it (.github/actions/qemu),
-      # restored here with the cache action pinned by SHA.
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      # restored here with the cache action pinned by SHA. On a miss (GitHub
+      # evicted it, and ci.yml may be rebuilding it now) this job builds its
+      # own the same way, about ten minutes, and saves nothing.
+      - id: qemu
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/qemu
-          key: qemu-11.0.5-ubuntu-24.04-v1
-          fail-on-cache-miss: true
+          key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
+      - name: Build QEMU ${{ env.QEMU_VERSION }} (the cache missed)
+        if: steps.qemu.outputs.cache-hit != 'true'
+        run: bash .github/actions/qemu/build.sh
       - name: OVMF, QEMU's runtime libraries, and KVM for the runner user
         run: |
           sudo apt-get update
@@ -293,16 +302,21 @@ jobs:
     name: The release boots and imports qwen3-0.6b under its models role
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    # 90, and up to 20 more for a QEMU build on a cache miss.
+    timeout-minutes: 110
     env:
       MODEL_ID: qwen3-0.6b
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      # QEMU as in `vm`: restored, or built here on a miss.
+      - id: qemu
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/qemu
-          key: qemu-11.0.5-ubuntu-24.04-v1
-          fail-on-cache-miss: true
+          key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
+      - name: Build QEMU ${{ env.QEMU_VERSION }} (the cache missed)
+        if: steps.qemu.outputs.cache-hit != 'true'
+        run: bash .github/actions/qemu/build.sh
       - name: OVMF, QEMU's runtime libraries, and KVM for the runner user
         run: |
           sudo apt-get update
