@@ -17,6 +17,7 @@ const FONTS: Fonts = Fonts {
 
 const BAR: Bar = Bar {
     model: true,
+    warming: false,
     mem_used_mib: 412,
     mem_total_mib: 1763,
 };
@@ -280,4 +281,27 @@ fn a_dragged_window_has_no_shadow_until_it_is_let_go() {
     assert_ne!(paint("dragged", &desk, 1280, 800), shadowed);
     press(&mut desk, false);
     assert_eq!(paint("let-go", &desk, 1280, 800), shadowed);
+}
+
+/// While the model warms up the panel says "Kai is getting ready", idle and
+/// in place of "thinking"; once warm it paints as it always did.
+#[test]
+fn the_panel_says_kai_is_getting_ready_until_the_model_is_warm() {
+    let desk = Desk::new(1280, 800);
+    let mut panel = Panel::new();
+    let idle = paint_with("panel-idle-unknown", &desk, &panel, 1280, 800);
+    assert!(panel.set_ready(false));
+    let warming = paint_with("panel-getting-ready", &desk, &panel, 1280, 800);
+    assert_ne!(idle, warming);
+    panel.set_state(State::Thinking { since_ms: 0 });
+    let waiting = paint_with("panel-getting-ready-asked", &desk, &panel, 1280, 800);
+    assert!(panel.set_ready(true));
+    let thinking = paint_with("panel-thinking-warm", &desk, &panel, 1280, 800);
+    assert_ne!(waiting, thinking);
+    panel.set_state(State::Idle);
+    assert_eq!(
+        paint_with("panel-idle-warm", &desk, &panel, 1280, 800),
+        idle
+    );
+    assert!(!panel.set_ready(true), "no change, no repaint");
 }

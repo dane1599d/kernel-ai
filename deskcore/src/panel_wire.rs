@@ -6,6 +6,10 @@
 //! - `panel state <state>` → `ok`: what the panel shows on its right, one of
 //!   `idle`, `acting <call>\t<target>`, `done <line>` and `refused <reason>`.
 //!   (Thinking is the panel's own, from the Enter that queued the line.)
+//! - `panel ready yes` or `panel ready no` → `ok`: whether the model is warm,
+//!   both of llm's prompt slots filled. Until it is, the panel says "Kai is
+//!   getting ready" (founder test 2): a first request then waits for the
+//!   warm-up, about 17 s after a rebuild that changed the prompt.
 //!
 //! - `appearance <kai-appearance 1 text>` → `ok` or `err <why>`: the appearance
 //!   the shell just saved (P4 task 8), for `desktop` to paint in at once.
@@ -32,6 +36,22 @@ pub fn parse_appearance(request: &str) -> Option<&str> {
     request.strip_prefix(APPEARANCE)
 }
 const STATE: &str = "panel state ";
+const READY: &str = "panel ready ";
+
+/// Whether the model is warm, as a request.
+pub fn encode_ready(ready: bool) -> String {
+    let word = if ready { "yes" } else { "no" };
+    format!("{READY}{word}")
+}
+
+/// A `panel ready` request read back; `None` for anything else.
+pub fn parse_ready(text: &str) -> Option<bool> {
+    match text.strip_prefix(READY)? {
+        "yes" => Some(true),
+        "no" => Some(false),
+        _ => None,
+    }
+}
 /// The longest text a state carries: the panel shows one line.
 pub const MAX_TEXT: usize = 200;
 
@@ -195,5 +215,22 @@ mod tests {
             assert_eq!(parse_state(bad), None, "{bad:?}");
         }
         assert_eq!(parse_take("maybe"), None);
+    }
+
+    #[test]
+    fn whether_the_model_is_warm_reads_back() {
+        for ready in [true, false] {
+            assert_eq!(parse_ready(&encode_ready(ready)), Some(ready));
+        }
+        assert_eq!(encode_ready(false), "panel ready no");
+        for bad in [
+            "panel ready",
+            "panel ready maybe",
+            "panel state idle",
+            "ready yes",
+        ] {
+            assert_eq!(parse_ready(bad), None, "{bad:?}");
+        }
+        assert_eq!(parse_state("panel ready yes"), None);
     }
 }

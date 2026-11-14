@@ -18,6 +18,8 @@ mod files;
 mod routes;
 #[path = "shell/ui.rs"]
 mod ui;
+#[path = "shell/warmth.rs"]
+mod warmth;
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -1110,6 +1112,7 @@ fn main() -> i32 {
     // event box is admitted and makes the shell the box's reader; until then a
     // post could not wake it.
     let mut wait_ms = 1;
+    let mut warmth = warmth::Warmth::default();
     loop {
         // Between lines: what happened on the desktop since the last look, then
         // the panel's line and the apps' effects. A post to the event box wakes
@@ -1121,6 +1124,8 @@ fn main() -> i32 {
         take_files(&mut shell);
         take_settings(&mut shell);
         give_app_build(&mut shell);
+        // "Kai is getting ready" on the panel until llm's prompt slots are warm.
+        warmth.report();
         give_appearance(&system);
         shell.retry_keep();
         let mut caller = u64::MAX;
