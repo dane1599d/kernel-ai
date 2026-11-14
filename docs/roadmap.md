@@ -194,6 +194,24 @@ The P2 close rows in `docs/decisions.md` have each case and the accepted miss.
 
 The P4 plan's sections 3.5 and 11 have the v0.1 checklist and each case.
 
+**P5 status (2026-11-11):** **closing, not yet done**. Tasks 1-7 are merged. The founder approved the OS wiring of tasks 8-13 on 2026-11-09: tasks 11-13 are merged, and tasks 8-10 are in review or in progress.
+- **Built:**
+  - `NetDest` per app, and `hosts:any` for the shell alone (the founder's "any site I name");
+  - TCP streams on handles and the kernel's random generator;
+  - TLS 1.3 in `kainet` on our RustCrypto provider, plus HTTP/1.1;
+  - verified chunked downloads that resume after a cut or a reboot;
+  - xtask's HTTPS mock with a test CA, in boot cases;
+  - the `fetch` service, and apps' HTTPS through `kai:net`, asked per host;
+  - P-F in consent, and quarantined reads.
+- **On main**, under KVM and TCG: `net-download` (the exit line above), `net-dest`, `net-stream`, `entropy-boots`, `https-mock`, `fetch-service`, `net-grant`, `net-pf`, `net-pf-page` and `net-pf-query`.
+- **Not met yet:**
+  - `pkg-online` (#752) and `update-online` (#754);
+  - `model-download` (task 9).
+
+  Task 14 is deferred to after the v0.1 tag, and P5 closes without it.
+
+The P5 plan's section 11 has each case.
+
 **Next step:** P2's open items above, while P3 (the desktop) and P4 go on from `docs/plans/`. Spikes run on `spike/*` branches.
 
 ## 4. Testing strategy

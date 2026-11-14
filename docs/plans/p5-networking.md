@@ -1,6 +1,6 @@
 # P5 plan: secure networking
 
-Status: approved by the founder on 2026-10-27, with the defaults (#165). Tasks 1-7 are on main; tasks 8-14 have their host halves on main. The founder OK'd the OS wiring of tasks 8-13 and the close on 2026-11-09, and tasks 8-13 are landing on main. Task 14's OS wiring waits for the v0.1 tag. Task 15 (close) is not started.
+Status: approved by the founder on 2026-10-27, with the defaults (#165). Tasks 1-7 are on main. Tasks 8-14 have their host halves on main. The founder approved the OS wiring of tasks 8-13 on 2026-11-09: tasks 11, 12 and 13 are on main (task 11 but for `Hold`), and tasks 8, 9 and 10 are in review or in progress. Task 14 waits for the v0.1 tag. Task 15 (close) is in progress: section 11 tracks each exit case.
 
 This plan covers the work that the accepted ADRs and the execution plan ([ADR 0000](../adr/0000-execution-plan.md) §3 and §5, P5 rows) put in P5:
 - [ADR 0001](../adr/0001-capabilities.md): `NetDest` per app;
@@ -277,3 +277,76 @@ Not adopted: aws-lc-rs and ring, rustls's default providers. Both build C or ass
 - **P8 (v1.0):** a second independent mirror; fuzzing of `kainet` at scale; a security review of the TLS provider and `fetch`; TLS client certificates if accounts need them.
 - **Later, on request:** TLS 1.2, IPv6, the Public Suffix List, an MCP bridge, `Hold` for sends, HTTP/2.
 - **Waiting on the founder:** section 2's questions, the crates (questions 1 and 2) first.
+
+## 11. Close status (task 15, draft of 2026-11-11)
+
+Section 1's exit cases, checked against `main` at 4cb16794 on 2026-11-11. "On main" means the case is in `xtask/src/cases`, so it runs in `ci.yml`'s boot shards under KVM and TCG, and each one merged through a batch that boots every case. Main's run [42970216733](https://github.com/dane1599d/kernel-ai/actions/runs/42970216733) passed every boot shard under KVM and TCG. Its one failure, observe determinism, is not a network case.
+
+| Exit case | Status | Where, and what is left |
+|---|---|---|
+| `net-download` | On main | #770 (N-t, task 6's case), green under KVM and TCG (run 42755357146). One 32-chunk target over two boots: it is cut at 40% and resumes, stops inside chunk 16 as a reboot would, resumes from the mark in kaifs, and is cut at 80% and resumes. Each resume fetches again only the chunk in flight. It refuses a flipped chunk, a wrong whole-file hash, and an expired, wrong-name and unknown-CA certificate before a byte is stored. 64 MiB under KVM; the same 32 chunks at 64 KiB under TCG |
+| `net-dest` | On main | #666, with `hosts:any` added in #760. #779 adds step `netdest-g`: only a plan line with `netdest=llm` gets the LLM's handle. The section's "a redirect to another host is refused" is shown in `fetch-service` (#755), which follows a redirect within the handle and hands back one off it |
+| `pkg-online` | In review | #752 (task 8), with ADR 0011's five tamper cases over the network |
+| `model-download` | In progress | Task 9 (AP-2). #772 is part 1 |
+| `update-online` | In review | #754 (task 10), with `update-online-flipped` and `update-online-expired` |
+| `net-grant` | On main | #771 (C, task 13 part 2). The never-shipped `net-fixture` app asks for each new host on a card that names the app and the host. A redirect's host is asked about by its own name. A host outside the ceiling is refused with no card. Settings' revoke makes the next request ask again, and `undo` puts the grant back |
+| `net-pf` | On main | #751. #757 adds `net-pf-page` on the HTTPS mock, and #786 adds `net-pf-query` |
+
+The tasks' own exit checks:
+
+| Task | Case | Status |
+|---|---|---|
+| 2, streams | `net-stream` | On main |
+| 3, random numbers | `entropy-boots` (two boots differ) | On main |
+| 7, the HTTPS mock | `https-mock`; every P5 case uses its `TestCase::https` | On main (#753) |
+| 11, the AI's network actions | `net-pf`, `net-pf-page`, `net-pf-query` | On main (#751, #757; quarantined reads in #785 and #786). `Hold` as a held send is not built |
+| 12, `kai:net` | `fetch-service` for the service; an app fetching from its host and refused another | On main: `fetch-service` (#755), and `net-grant` for the app (#771, task 12's C half) |
+| 13, per-app grants | `net-grant` | On main (#771) |
+| 14, agents' budgets | an agent over its byte budget is refused | Deferred: after the v0.1 tag, with ADR 0013's other OS pieces, and P5 closes without it. Its host half is on main: `kaiagent`'s bytes-a-day budget and its `DayBytes` counter (#784). The two numbers, 10 MiB a day by default and 512 at most, are estimates that go to the founder with P5's questions |
+
+**Real-model gates.**
+- **Task 11's first part (#751):** fluency 48/50 (at least 47), actbench's shipped arm at main's figures, the bait probes at 0 false runs, and the app gate at 19/20.
+- **Quarantined reads (#786, on cc2708c0):**
+  - fluency 48/50 (96%);
+  - actbench's shipped arm 108/142 on seeds 42 and 1, the same as main;
+  - the app gate 19/20.
+  - The bait probes were 45/50 after repair (90%, at their bar). Section 1's bar is at most 0 false runs, and #786 reports two bait `net_fetch` calls, which main makes too. This close names them, so the founder can read them against that bar.
+- **The model half (#785):** `query-eval` 22/24 (91%, the bar is 90%), none out of shape. Two of the nine data-borne instructions were followed. An answer stays `Data` with its source's label, and no v1 script can branch on it, so an injected instruction can at most pick another allowed answer (ADR 0002 D6).
+
+**Section 5's spikes and their bars:**
+
+| Spike | Status | Where, and what it means for the close |
+|---|---|---|
+| P5-S1 `tls-nostd` | Run, passed | rustls 0.23.46 runs without std on our RustCrypto provider (#363, 2026-10-28), and again on `kainet` itself in ring 3 (spike #654, 2026-11-04). Both have decisions rows |
+| P5-S2 `net-throughput` | Run, passed under KVM | It missed its bar at first, at 18.2 MB/s. It has passed since K's virtio-net driver: about 34 MB/s at a 20 ms round trip (run 41962939272). Both have decisions rows |
+| S11-3 `model-mirror` | Not run: due before v0.2 | No result row on main, and no lane holds it. Task 9 (#772) downloads from the pinned Hugging Face revision, which S11-3's fail rule keeps as the source (ADR 0000), so P5 closes without it. The mirror is question 7's privacy step for v0.2 |
+| S10-2 groups and swap | Not run: due before v0.2 | No result row on main. It is the model lane's. It decides whether the index level ships in v0.2, not anything P5 closes on |
+
+**A verified download runs well under P5-S2's bar.** P5-S2 measures the network alone. `net-download`'s end-to-end figure under KVM, with the case's faults in the path, is 2.66 MB/s over both boots (#770). That covers the checks, kaifs, and two TLS connections a chunk. At that rate the 2.5 GB model would take about 16 minutes (est.), not 90 s. The case sets no speed bar. #810 makes `dlcheck` print where the time goes. The manager takes the figure to the founder at the close as a plain fact, and a question only if the split shows something to choose.
+
+**Checks this close adds:**
+- `kabi::plan::system`'s `no_shipping_plan_line_names_a_test_host`: no line of the shipping plan names a `.test` host, `kai.test` included. It passes on main since #767 took the mock zone out of the shell's ceiling.
+- `kainet/tests/openssl.rs` fails on CI when openssl is missing, and warns elsewhere (#777, on main).
+- `kainet::wire` has the fuzz target and hostile tests that section 1 asks for (#777, on main).
+
+**ADR 0002 against what shipped** (its P5 row: open-world rows, the host table, `Hold`, P-F, quarantined reads, `:resolve` and `:ping` as read rows, online `pkg_install`):
+- **Shipped as written:**
+  - P-F in consent (#751);
+  - the shell's host table (`shellcore/src/sitewords.rs`, #751);
+  - `net_fetch` and `net_lookup` as open-world read rows. `:resolve` and `:ping` are now one row, `net_lookup`;
+  - `fetch` on each call's exact-host `NetDest` (#757 with #755);
+  - quarantined reads (D6, FIDES's typed query): the `query` row and `llm`'s typed answer (#785, #786). An answer keeps its data's label, so sending it to a host the line doesn't name still asks.
+- **Needs the founder:** D3 says a host is grounded if "the user said yes to it before (a grant record under ADR 0001)". What shipped grounds the agent's reuse with the shell's own per-host Always rule. An app's grant stays that app's, and agent grounding reads no app's grants (#751, agreed with C). Changing D3 amends an ADR, so the founder decides. The old and new wording are in this close's PR, and the ADR text changes only after the founder's answer.
+- **Founder's decision of 2026-11-09:** Kai may reach any website the user names. The shell's ceiling is `hosts:any` on port 443 (#760). D3's "the user typed it" already grounds such a host, so its text holds. The close notes the ceiling.
+- **Not built yet:**
+  - `Hold` as a held send. `Inverse::Hold` exists and derives Ask, as question 5's default says. No exit case asks for it;
+  - online `pkg_install` (#752).
+- **Deferred by section 2:** the MCP client (question 8).
+
+**Left before P5 closes.**
+- **To land:** `pkg-online` (#752) and `update-online` (#754).
+- **In progress:** `model-download` (task 9, AP-2; #772 is part 1).
+- **To decide:** whether `Hold` as a held send is built for the close or moves to v0.2. It is in ADR 0002's P5 row, not in section 1's exit cases.
+- **Then this close:** the D3 text change after the founder's answer, the roadmap's P5 status, and the closing decisions row.
+
+Task 14 is deferred to after the v0.1 tag, and P5 closes without it.
