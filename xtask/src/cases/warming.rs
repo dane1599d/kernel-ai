@@ -4,17 +4,18 @@
 use super::{TestCase, case};
 
 pub(super) const CASES: &[TestCase] = &[
-    // llm says it is not warm for its first 6 s (`llm.cold_ms`, a test word),
+    // llm says it is not warm for its first 20 s (`llm.cold_ms`, a test word),
     // as a local model filling its slots would. The shell tells `desktop`,
     // whose panel and top bar then say "Kai is getting ready", and then that
     // it is warm once llm says so. The desk is the default boot's, with the
-    // mock model.
+    // mock model. 20 s leaves room for a slow TCG boot to bring up the
+    // desktop and the shell while llm still says no.
     TestCase {
         expect: &[
             "desktop: the model is warming up",
             "desktop: the model is warm",
         ],
         stops: true,
-        ..case("desk-warming", "test=desk-boot llm.cold_ms=6000")
+        ..case("desk-warming", "test=desk-boot llm.cold_ms=20000")
     },
 ];
