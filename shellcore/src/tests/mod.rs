@@ -689,6 +689,15 @@ impl Host for FakeHost {
                     "
 ",
                 )),
+            FsRead::Find(word) => Ok(files
+                .keys()
+                .filter(|path| {
+                    let last = path.rsplit('/').next().unwrap_or(path);
+                    last.to_lowercase().contains(&word.to_lowercase())
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")),
             FsRead::Read(path) | FsRead::Whole(path) => files
                 .get(path)
                 .cloned()

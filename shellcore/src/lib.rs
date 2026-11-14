@@ -123,6 +123,8 @@ pub enum FsRead<'a> {
     Whole(&'a str),
     History(&'a str),
     Changes,
+    /// Paths under home whose last part holds this word, case aside.
+    Find(&'a str),
 }
 
 /// A change the `fs` server makes as one transaction, which `undo` restores.

@@ -73,6 +73,20 @@ pub const FS_LIST: Action = Action {
     ..read("fs_list", "a folder's names", &[PATH])
 };
 
+/// Files and folders whose names hold a word, in home and every folder below
+/// it: "find my file" (founder test 2).
+pub const FS_FIND: Action = Action {
+    cues: &["find", "search", "where"],
+    ..read(
+        "fs_find",
+        "files whose names hold a word, in every folder",
+        &[Arg {
+            from_request: true,
+            ..arg("name", ArgType::Text { max: 64 }, Role::Target)
+        }],
+    )
+};
+
 pub const FS_READ: Action = Action {
     cues: &["read", "cat"],
     ..read("fs_read", "a file's text", &[PATH])
@@ -147,8 +161,9 @@ pub const FS_EMPTY_TRASH: Action = Action {
 };
 
 /// Every file row, in the order the pack will list them.
-pub const FS_ROWS: [Action; 10] = [
+pub const FS_ROWS: [Action; 11] = [
     FS_LIST,
+    FS_FIND,
     FS_READ,
     FS_HISTORY,
     FS_CHANGES,
