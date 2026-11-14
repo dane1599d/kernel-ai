@@ -72,10 +72,12 @@ pub(super) const CASES: &[TestCase] = &[
     // CALL_SUBMIT and CALL_POLL: the shell serves app reads while llm answers.
     TestCase {
         expect: &[
+            "async-call: an exit and a kill each withdrew the call left queued",
             "[aclient] handles: async: served 1 request while the call was in flight, then polled its reply",
-            "[aclient] handles: async: a waited poll of a call past its deadline answered TimedOut after ",
-            "[aclient] handles: async: a Stop let the taken call answer, and no call was sent after it",
-            "async-call: a process served a call while its own was in flight, and polled the reply",
+            "[aclient] handles: async: a call past its deadline polled TimedOut, and its late answer went nowhere",
+            "[aclient] handles: async: a Stop let a taken call answer and withdrew a queued one, and nothing was sent after it",
+            "[aclient] handles: async: a revoke ended a held call at once, Revoked",
+            "async-call: a process served a call while its own was in flight; Stop, revoke, exit and kill each freed its call",
         ],
         ..case("async-call", "test=async-call")
     },

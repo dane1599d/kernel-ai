@@ -85,6 +85,9 @@ fn main() -> i32 {
         Some("slow") => async_call::slow,
         Some("quick") => async_call::quick,
         Some("async") => async_call::run,
+        Some("lazy") => async_call::lazy,
+        Some("submit-exit") => async_call::submit_exit,
+        Some("submit-hold") => async_call::submit_hold,
         _ => checks,
     };
     match run() {

@@ -245,8 +245,19 @@ fn submit(
         rights: entry.rights.bits(),
         handles: Vec::new(),
     };
-    crate::process::async_call::submit(slot, name.as_str(), &request, me.pid, deadline, extra)
-        .map_err(|error| call_error(slot, error))?;
+    // The route's grant goes with the call: a revoke ends it, as it ends a
+    // CALL_H, and wakes its caller.
+    let grant = entry.grant;
+    crate::process::async_call::submit(
+        slot,
+        name.as_str(),
+        &request,
+        me.pid,
+        deadline,
+        grant,
+        extra,
+    )
+    .map_err(|error| call_error(slot, error))?;
     Ok(0)
 }
 
@@ -264,6 +275,7 @@ fn poll(slot: usize, reply_ptr: u64, reply_cap: u64, wait_ms: u64) -> Result<u64
     // A withdrawn call (the person's Stop) ends Interrupted through `call_error`.
     let (reply, _, came) = match async_call::poll(slot).ok_or(Error::NotFound)? {
         Polled::InFlight => return Err(Error::Busy),
+        Polled::Revoked => return Err(Error::Revoked),
         Polled::Ended(result) => result.map_err(|error| call_error(slot, error))?,
     };
     // Nothing was asked to move back: a handle the reply carried is closed.

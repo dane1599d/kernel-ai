@@ -26,8 +26,9 @@ use spin::Mutex;
 use x86_64::instructions::interrupts;
 
 const MAX_ENDPOINTS: usize = MAX_PROCESSES;
-/// Every process can have one call outstanding, plus the kernel's.
-const MAX_CALLS: usize = MAX_PROCESSES + 2;
+/// Every process can have one blocking call outstanding and one it sent with
+/// CALL_SUBMIT (`process::async_call`), plus the kernel's.
+const MAX_CALLS: usize = 2 * MAX_PROCESSES + 2;
 /// Longest a server waits in one `svc_recv`.
 const MAX_WAIT_MS: u64 = 60_000;
 /// How often a caller looks for a service that is not up yet.
@@ -814,4 +815,16 @@ pub fn on_process_exit(pid: u64) {
     for caller in callers {
         wake(caller);
     }
+}
+
+/// Call slots in use, for the tests that check a call's end frees its slot.
+pub fn calls_in_use() -> usize {
+    (0..MAX_CALLS)
+        .filter(|&c| CALL_STATE[c].load(Ordering::SeqCst) != FREE)
+        .count()
+}
+
+/// Calls queued for the service `name` that no server has taken yet.
+pub fn queued_for(name: &str) -> u32 {
+    with_ipc(|ipc| find(ipc, name)).map_or(0, |e| PENDING[e].load(Ordering::SeqCst))
 }
