@@ -13,7 +13,7 @@
 //! | 66-70 | S-io (P2) | PART_INFO, PART_READ, PART_WRITE, PART_FLUSH; ENDPOINT_MINT |
 //! | 71-72 | K | PROC_STOP_ONCE, RULE_CHECK |
 //! | 73-79 | G-core (P3) | DISPLAY_CLAIM, DISPLAY_FLUSH, DISPLAY_CURSOR, DISPLAY_CURSOR_MOVE, INPUT_READ, TERM_READ, INPUT_TO_CONSOLE |
-//! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; ENTROPY 83; RESOLVE_ON 84 and NETDEST_NARROW 85 (P5 task 1); POWER_REBOOT 86; P2 task 12's grants |
+//! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; ENTROPY 83; RESOLVE_ON 84 and NETDEST_NARROW 85 (P5 task 1); POWER_REBOOT 86; SHELL_INTERRUPT 87; P2 task 12's grants |
 //! | 90-99 | S-engine (P2) | |
 //! | 100-109 | P, packages (P2) | BOOT_READ, COMP_ADD, PKG_FETCH, PKG_TIME |
 //! | 110-119 | A-core | |
@@ -86,8 +86,15 @@ pub const METRICS: u64 = 18;
 /// CPU, ending any trial (needs [`super::cap::POLICY`]); `preset` matters only for
 /// `classes`. Busy within 100 ms of the last switch.
 pub const POLICY: u64 = 19;
-/// `interrupted() -> 1 or 0`: whether the user pressed Ctrl-C since the last
-/// call; reading clears it.
+/// `interrupted(clear) -> 1 or 0`: whether the person pressed Stop (see
+/// [`SHELL_INTERRUPT`]) during the request this process serves. It stays 1 for
+/// the rest of that request: taking the next request clears it. It is also 1
+/// for a server whose request's caller was stopped: `llm` ends its answer
+/// early then, as nobody will use it.
+/// With `clear` 1 it also clears the caller's own flag, and answers what it was:
+/// the shell starts each unit of work that comes another way than a request
+/// (a panel line, `take_effects`) with it, so one Stop never outlives its unit.
+/// Invalid for another `clear`.
 pub const INTERRUPTED: u64 = 20;
 /// `comp_fetch(label_ptr, label_len, buf, cap) -> len`: copies version `label` of
 /// the caller's component into `buf` when it fits; the length either way.
@@ -394,6 +401,16 @@ pub const NETDEST_NARROW: u64 = 85;
 /// must already be committed (`fs` makes each action durable when it is
 /// committed). Numbered at merge, K's block (backlog item 13).
 pub const POWER_REBOOT: u64 = 86;
+/// `shell_interrupt() -> pid`: the person's Stop or Esc for the line the shell
+/// runs. The kernel marks the process named `shell` interrupted and wakes it. For
+/// the rest of the line, a call it makes ends Interrupted while no server has
+/// taken it (one a server took is waited for: its change and its undo record
+/// come back), and [`INTERRUPTED`] answers 1. The flag never outlives the
+/// line: the shell taking its next request clears it.
+/// Needs [`super::cap::INPUT`], the person's keys, which only `desktop` holds;
+/// NotFound when no shell runs. Numbered at merge, K's block (86 is
+/// POWER_REBOOT, #879).
+pub const SHELL_INTERRUPT: u64 = 87;
 
 // ---- G-core, 73-79 ----
 

@@ -87,26 +87,37 @@ fn typed_in_terminal_app(shell: &mut Shell, text: &str) -> Result<String, String
     done[0].outcome.clone()
 }
 
-/// The desk panel and the Terminal window cannot answer a question: a restart
-/// typed there asks first, and until the trusted card takes desk questions
-/// (#864) that is a refusal, with nothing left for a later yes.
+/// A restart typed at the desk panel or in the Terminal window asks on the
+/// trusted card (#864): a typed yes answers nothing, Don't restarts nothing,
+/// and only the card's Allow, its ONCE checked, restarts.
 #[test]
-fn a_restart_from_the_panel_or_the_terminal_window_never_restarts_unasked() {
+fn a_restart_from_the_panel_or_the_terminal_window_asks_on_the_card() {
     let host = FakeHost::new();
     let mut shell = shell(&host);
     let shown = shell.eval_panel("restart");
-    assert!(matches!(shown, crate::PanelResult::Refused(_)), "{shown:?}");
-    let said = typed_in_terminal_app(&mut shell, "reboot");
     assert!(
-        said.as_deref()
-            .is_ok_and(|s| s.starts_with("err it asks first")),
-        "{said:?}"
+        matches!(&shown, crate::PanelResult::Done(line) if line.contains("on the card")),
+        "{shown:?}"
     );
-    // Nothing waits: an answer at the console has no restart to allow.
-    let once = host.mint(1, "power_reboot()");
-    shell.eval(&format!("answer 1 allow once={once}"));
-    let once = host.mint(2, "power_reboot()");
-    shell.eval(&format!("answer 2 allow once={once}"));
-    shell.eval("y");
+    shell.eval_panel("yes");
+    shell.eval("yes");
     assert!(host.reboots.borrow().is_empty());
+    // Don't, on the card.
+    let card = shell.eval_console(termcore::menu::TAKE_CARD);
+    let menu = termcore::menu::Menu::decode(&card.to_wire()).unwrap();
+    assert_eq!(menu.call(), "power_reboot()");
+    let once = host.mint(menu.id, menu.call());
+    shell.eval_console(&format!("answer {} deny once={once}", menu.id));
+    assert!(host.reboots.borrow().is_empty());
+    // From the Terminal window: Allow, on the card, restarts.
+    let said = typed_in_terminal_app(&mut shell, "reboot").unwrap();
+    assert!(said.contains("on the card"), "{said}");
+    assert!(host.reboots.borrow().is_empty());
+    let card = shell.eval_console(termcore::menu::TAKE_CARD);
+    assert!(card.to_wire().contains(" added\n"), "{card:?}");
+    let menu = termcore::menu::Menu::decode(&card.to_wire()).unwrap();
+    let once = host.mint(menu.id, menu.call());
+    let allowed = shell.eval_console(&format!("answer {} allow once={once}", menu.id));
+    assert!(allowed.ok, "{allowed:?}");
+    assert_eq!(host.reboots.borrow().len(), 1);
 }
