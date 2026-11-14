@@ -56,6 +56,7 @@ macro_rules! walk {
                 "desktop: window 2 \"Notes\" opened at 80,84 size 642x454",
                 "comphost: window 1 hidden until it is shown",
                 "comphost: shown again, as it was",
+                "founder-walk: Notes' window came back when asked again",
                 "founder-walk: the walk is done",
             ],
             ..case($name, concat!("test=founder-walk display=", $size))

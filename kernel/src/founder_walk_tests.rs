@@ -377,8 +377,22 @@ fn click(at: (i32, i32)) {
     report(0, 0, 0);
 }
 
+/// Whether the second `open notes` brought Notes' window back: comphost
+/// answers a show "ok shown (its window is open)" when it is, and a bare "ok
+/// shown" when the show itself had to put it back, so the open had failed.
+fn notes_came_back() -> Result<(), &'static str> {
+    let answer = ipc::call(NOTES, kabi::live::SHOW.as_bytes(), CALL_MS)
+        .map(|reply| String::from_utf8_lossy(&reply).into_owned())
+        .map_err(|_| "founder-walk: Notes did not answer after open notes")?;
+    if answer.contains("its window is open") {
+        return Ok(());
+    }
+    log!("{CASE}: after open notes, a show answered {answer:?}");
+    Err("founder-walk: open notes did not bring Notes' window back")
+}
+
 /// Step 5: Notes' window opened, closed from its control, and asked for
-/// again; the host checks that it came back.
+/// again; it must be open again, as the host also checks.
 fn notes_open_close_open() -> Result<(), &'static str> {
     panel_line("open notes");
     threads::sleep_ms(OPEN_MS);
@@ -390,7 +404,8 @@ fn notes_open_close_open() -> Result<(), &'static str> {
     if process::named(NOTES).is_empty() {
         return Err("founder-walk: Notes ended instead of coming back");
     }
-    log!("{CASE}: Notes was asked for again");
+    notes_came_back()?;
+    log!("{CASE}: Notes' window came back when asked again");
     Ok(())
 }
 
