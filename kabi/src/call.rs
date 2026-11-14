@@ -391,6 +391,8 @@ pub const NETDEST_NARROW: u64 = 85;
 /// `shell_interrupt() -> pid`: the person's Stop or Esc for the line the shell
 /// runs. The kernel marks the process named `shell` interrupted and wakes it: a
 /// call it is blocked in ends Interrupted, and [`INTERRUPTED`] answers 1 once.
+/// The flag never outlives the line: the shell taking its next request clears
+/// it.
 /// Needs [`super::cap::INPUT`], the person's keys, which only `desktop` holds;
 /// NotFound when no shell runs. Numbered at merge, K's block (86 is
 /// POWER_REBOOT, #879).

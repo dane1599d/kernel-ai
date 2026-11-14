@@ -560,6 +560,9 @@ pub fn recv_with(
                 .len()
                 .min(usize::try_from(cap).unwrap_or(usize::MAX));
             uaccess::copy_to_user(slot, buf, &request[..len])?;
+            // A new request starts afresh: a Stop meant for the last one, pressed
+            // as it ended, never cancels this one (lane C on #887).
+            let _ = process::take_interrupt(slot);
             // Only a request the server holds opens its compute allowance.
             process::burst::serving(slot, opened);
             return Ok((request.len() as u64, caller_pid, extra));

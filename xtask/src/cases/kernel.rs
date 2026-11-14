@@ -63,7 +63,7 @@ pub(super) const CASES: &[TestCase] = &[
     TestCase {
         expect: &[
             "[shell] handles: Stop ended a call in flight after ",
-            "shell-interrupt: Stop ended the shell's call in flight, and only the person's keys may ask",
+            "shell-interrupt: Stop ended the shell's call in flight, never outlived it, and only the person's keys may ask",
         ],
         ..case("shell-interrupt", "test=shell-interrupt")
     },
