@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 use kabi::Error;
 use kabi::live::{MAX_ARTIFACT, MAX_CHECKPOINT, Restore};
 use livecore::Fault;
-use livecore::host::{Env, Host, Report, Restored};
+use livecore::host::{Env, Exit, Host, Report, Restored};
 use livecore::local::restored_of;
 use livecore::nap::Nap;
 use livecore::napper::{Napped, Napper};
@@ -256,6 +256,13 @@ fn main() -> i32 {
     // Whether the nap holds a lease for a read of the machine waiting.
     let mut leased = false;
     loop {
+        // What the last pass's settles recorded reaches the nap before the
+        // wait: an app that closed its own focused window from a call or a
+        // tick, with nothing to poll, would otherwise wait unnapped forever.
+        if let Err(exit) = feed_nap(&mut windows, &mut napper, &mut host, &name) {
+            println!("{}", exit.why);
+            return exit.code;
+        }
         // The shown instance is told it started, once: a new version or a
         // resumed app is told again (`started.rs`).
         if let Some(performed) = started.tell(&mut host) {
@@ -338,24 +345,10 @@ fn main() -> i32 {
                     // A close or an agent's action may have woken it.
                     napper.after(&host, now_ms());
                 }
-                // A key, click or action in a window is use, and a window
-                // holding the focus keeps the app awake. Read with no window
-                // left too: the last one's close is its focus lost.
-                if let Some(ui) = windows.as_mut() {
-                    if ui.take_used() {
-                        napper.nap.used(now_ms());
-                    }
-                    let focus = match ui.take_focused() {
-                        Some(focused) => napper.focus(&mut host, focused, now_ms()),
-                        None => Ok(None),
-                    };
-                    match focus {
-                        Ok(napped) => log_nap(&name, napped),
-                        Err(exit) => {
-                            println!("{}", exit.why);
-                            return exit.code;
-                        }
-                    }
+                // What the poll saw reaches the nap before its tick.
+                if let Err(exit) = feed_nap(&mut windows, &mut napper, &mut host, &name) {
+                    println!("{}", exit.why);
+                    return exit.code;
                 }
                 // A change or a file waiting for its answer is use: the app does
                 // not nap until it has it.
@@ -421,6 +414,28 @@ fn main() -> i32 {
     }
 }
 
+/// Feeds the nap what the windows recorded since it was last read: a key,
+/// click or action is use, and a window holding the focus keeps the app
+/// awake. Read with no window left too: the last one's close is its focus
+/// lost.
+fn feed_nap(
+    windows: &mut Option<ui::Ui>,
+    napper: &mut Napper,
+    host: &mut Host<SysEnv>,
+    name: &str,
+) -> Result<(), Exit> {
+    let Some(ui) = windows.as_mut() else {
+        return Ok(());
+    };
+    if ui.take_used() {
+        napper.nap.used(now_ms());
+    }
+    if let Some(focused) = ui.take_focused() {
+        log_nap(name, napper.focus(host, focused, now_ms())?);
+    }
+    Ok(())
+}
+
 /// The shorter of the host's wait (0 is never) and the time until a read is due
 /// (at least 1, since 0 would mean never).
 fn soonest(wait: u64, due: Option<u64>) -> u64 {
@@ -431,11 +446,11 @@ fn soonest(wait: u64, due: Option<u64>) -> u64 {
     }
 }
 
-/// What the instances did that leaves comphost: the editor's messages go to the
-/// edit service and its files to `desktop`, then the windows' frames.
 /// The longest a line's awaited answer keeps the app from napping.
 const AWAIT_LEASE_MS: u64 = 60_000;
 
+/// What the instances did that leaves comphost: the editor's messages go to the
+/// edit service and its files to `desktop`, then the windows' frames.
 fn settle(
     windows: &mut Option<ui::Ui>,
     edits: &mut Option<editcore::gate::Gate>,
