@@ -544,6 +544,10 @@ impl Host for System {
         build::ask_pkg(pkg_route()?, request)
     }
 
+    fn installed_rows(&self, package: &str) -> Result<String, String> {
+        build::ask_pkg_long(pkg_route()?, &alloc::format!("actions {package}"))
+    }
+
     fn cc_build(
         &self,
         dir: &str,
