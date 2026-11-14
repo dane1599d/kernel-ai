@@ -512,6 +512,21 @@ fn a_running_line_offers_stop_which_asks_to_stop_the_shell() {
         Phase::Waiting,
         "the line's own answer ends it"
     );
+    // #892's re-review: until the Stop's answer comes, it says so, and a
+    // second press asks nothing more.
+    let n = next(&mut app.shown, &app.term, &app.view);
+    let status = n.tree.iter().find(|e| e.id == STATUS).unwrap();
+    assert!(
+        matches!(&status.widget, Widget::Label { text, .. } if text.starts_with("Stopping ")),
+        "{status:?}"
+    );
+    on_ui(
+        &mut app.term,
+        &mut app.os,
+        &mut app.view,
+        &UiEvent::Pressed(CANCEL),
+    );
+    assert_eq!(app.os.asked.len(), asked + 1, "one Stop until its answer");
 }
 
 /// #892's review: Esc anywhere in the window presses Stop while a line runs

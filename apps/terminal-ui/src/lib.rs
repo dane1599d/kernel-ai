@@ -130,6 +130,7 @@ fn status(term: &Terminal) -> &'static str {
     match term.phase() {
         Phase::Ready => "Ready",
         Phase::Continuing => "The entry is open: finish it or cancel",
+        Phase::Waiting if term.is_stopping() => "Stopping",
         Phase::Waiting => "Running",
         Phase::Asking(_) => "A question is waiting on the AI panel",
     }
@@ -250,9 +251,9 @@ pub fn on_ui(term: &mut Terminal, os: &mut dyn Os, view: &mut View, e: &UiEvent)
             true
         }
         UiEvent::Pressed(CANCEL) if term.phase() == Phase::Waiting => {
-            // Its answer is the OS's; the line's own answer then says how
-            // it ended.
-            os.request(comp_terminal::os::SHELL_STOP, String::new());
+            // The line's own answer then says how it ended; a Stop the OS
+            // could not carry out says why when its answer comes.
+            term.ask_stop(os);
             false
         }
         UiEvent::Pressed(CANCEL) => {
