@@ -24,6 +24,24 @@ const MAX_ROUNDS: usize = 500;
 /// What a read's reason starts with when the path is not there, which makes the
 /// editor start a new file there (`kai:files`).
 pub const MISSING: &str = "missing";
+/// Most bytes of unsaved text a checkpoint keeps. A checkpoint is at most
+/// `compsdk::MAX_STATE` (64 KiB, the host's limit) with its path and framing, and a
+/// file the editor holds is at most `editcore::MAX_BUNDLE` (60 KiB), so this leaves
+/// room; past it the path is kept and the text is not, which cannot happen to text
+/// the session took, and keeps a checkpoint from ever being too big to save.
+pub const KEEP_MAX: usize = compsdk::MAX_STATE - 2048;
+// Every text the session takes is kept, and a checkpoint with it still fits.
+const _: () = assert!(KEEP_MAX >= editcore::MAX_BUNDLE && KEEP_MAX + 1024 < compsdk::MAX_STATE);
+
+/// What a checkpoint kept of the file open, to put back once the file is read
+/// again: the text as it stood (not what the disk has) and the cursor's line.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Kept {
+    /// The text not saved, if there was any.
+    pub text: Option<String>,
+    /// The line the cursor was on, from 1.
+    pub line: u32,
+}
 
 /// A request out.
 enum Job {
@@ -61,6 +79,11 @@ pub(crate) struct Files {
     job: Option<Job>,
     /// The path was not there when it was opened: the first save makes it.
     new: bool,
+    /// What a checkpoint kept, to put back when the read comes.
+    restore: Option<Kept>,
+    /// What to say once the screen has taken the file's answers, which say
+    /// "editing" over it.
+    say_after: Option<String>,
 }
 
 impl Files {
@@ -79,12 +102,54 @@ impl Files {
         edits || screen.typing()
     }
 
+    /// The text of the file open that the disk does not have, with the line being
+    /// typed in it, for a checkpoint; None when nothing is unsaved or it is over
+    /// [`KEEP_MAX`].
+    pub(crate) fn unsaved_text(&self, screen: &Screen) -> Option<String> {
+        let editor = self.editor.as_ref()?;
+        let typed = screen.draft().and_then(|draft| draft.dirty);
+        if !editor.changed() && typed.is_none() {
+            return None;
+        }
+        let bytes = match &typed {
+            Some((line, text)) => editor.bytes_with_line(*line, text),
+            None => editor.bytes(),
+        };
+        let text = String::from_utf8(bytes).ok()?;
+        (text.len() <= KEEP_MAX).then_some(text)
+    }
+
+    /// The file being read again for a checkpoint, and what the checkpoint kept of
+    /// it, while the read is out: nothing else holds that text until it is put back.
+    pub(crate) fn restoring(&self) -> Option<(&str, &Kept)> {
+        match (&self.job, &self.restore) {
+            (Some(Job::Read { path, .. }), Some(kept)) => Some((path.as_str(), kept)),
+            _ => None,
+        }
+    }
+
+    /// Whether there is a file to save, as opposed to a component's source.
+    pub(crate) fn can_save(&self) -> bool {
+        self.editor.is_some()
+    }
+
+    /// Whether a request is out.
+    pub(crate) fn busy(&self) -> bool {
+        self.job.is_some()
+    }
+
+    /// The path of the file open, if any.
+    pub(crate) fn path(&self) -> Option<&str> {
+        self.editor.as_ref().map(FileEditor::path)
+    }
+
     /// Leaves file mode for a component's source: a fresh screen of `grid`.
     pub(crate) fn close(&mut self, screen: &mut Screen, grid: (usize, usize)) {
         if self.editor.take().is_some() {
             *screen = Screen::new(grid.0, grid.1);
         }
         self.new = false;
+        self.restore = None;
     }
 
     /// Answers what the screen asks of "the service" from the file, at once.
@@ -95,6 +160,9 @@ impl Files {
         };
         for _ in 0..MAX_ROUNDS {
             let Some(out) = screen.next_request() else {
+                if let Some(note) = self.say_after.take() {
+                    screen.note(note, true);
+                }
                 return true;
             };
             let reply = editor.handle(&out.request.encode());
@@ -127,6 +195,35 @@ impl Files {
         });
         screen.note(format!("opening {path}..."), false);
         Ok(())
+    }
+
+    /// A checkpoint had `path` open, with `kept`: reads it again, and the text
+    /// not saved is put back over what the disk has once the read comes.
+    ///
+    /// When the file cannot be asked for, the text kept is shown as a new file at
+    /// the path, and says so, rather than lost with the file.
+    pub(crate) fn ask_restore(
+        &mut self,
+        host: &mut dyn Host,
+        screen: &mut Screen,
+        grid: (usize, usize),
+        path: &str,
+        kept: Kept,
+    ) -> Result<(), String> {
+        match self.ask_open(host, screen, path) {
+            Ok(()) => {
+                self.restore = Some(kept);
+                Ok(())
+            }
+            Err(why) if kept.text.is_some() => {
+                self.restore = Some(kept);
+                self.start(screen, grid, path, b"", true);
+                let shown = format!("{path} was not opened again ({why}); the text kept is shown");
+                self.say_after.get_or_insert(shown);
+                Ok(())
+            }
+            Err(why) => Err(why),
+        }
     }
 
     /// Ctrl-S: sends the file whole.
@@ -194,7 +291,23 @@ impl Files {
             (Job::Read { path, .. }, Err(why)) if why.starts_with(MISSING) => {
                 self.start(screen, grid, &path, b"", true);
             }
-            (Job::Read { .. }, Err(why)) => screen.note(why, true),
+            // The text kept is shown as a new file, which a save refuses to
+            // write over a file that is there, rather than lost for a read.
+            (Job::Read { path, .. }, Err(why))
+                if self
+                    .restore
+                    .as_ref()
+                    .is_some_and(|kept| kept.text.is_some()) =>
+            {
+                self.start(screen, grid, &path, b"", true);
+                self.say_after = Some(format!(
+                    "{path} was not read again ({why}); the text kept is shown"
+                ));
+            }
+            (Job::Read { .. }, Err(why)) => {
+                self.restore = None;
+                screen.note(why, true);
+            }
             (Job::Write { path, bytes, .. }, Ok(_)) => self.wrote(screen, &path, &bytes),
             (Job::Write { .. }, Err(why)) => screen.note(format!("not saved: {why}"), true),
             (Job::Build { .. }, Ok(report)) => {
@@ -227,15 +340,37 @@ impl Files {
         bytes: &[u8],
         new: bool,
     ) {
-        match FileEditor::open(path, bytes) {
+        let kept = self.restore.take().unwrap_or_default();
+        let mut new = new;
+        let mut lost = None;
+        let opened = match FileEditor::open(path, bytes) {
+            Ok(editor) => Ok(editor),
+            // A file that cannot be opened (not text, too big) must not take the
+            // text kept with it: it is shown as a new file at the path.
+            Err(why) if kept.text.is_some() => {
+                new = true;
+                lost = Some(format!("{why}; the text kept is shown"));
+                FileEditor::open(path, b"")
+            }
+            Err(why) => Err(why),
+        };
+        match opened {
             Err(why) => screen.note(why, true),
-            Ok(editor) => {
+            Ok(mut editor) => {
                 let name = FileEditor::name_of(path);
+                if let Some(text) = &kept.text
+                    && let Err(why) = editor.replace_text(text.as_bytes())
+                {
+                    lost = Some(format!("the text kept was not put back: {why}"));
+                }
                 self.editor = Some(editor);
                 self.new = new;
                 *screen = Screen::new(grid.0, grid.1);
                 screen.set_file_mode(true);
-                screen.open(COMPONENT, None, Some((&name, 1)));
+                screen.open(COMPONENT, None, Some((&name, kept.line.max(1))));
+                if lost.is_some() {
+                    self.say_after = lost;
+                }
             }
         }
     }
