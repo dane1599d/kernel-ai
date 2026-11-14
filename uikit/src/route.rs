@@ -50,6 +50,33 @@ impl Window {
             .collect()
     }
 
+    /// The first shown button marked as the escape button
+    /// ([`crate::escape`]); a second marked one is noted, once.
+    fn escape_button(&mut self) -> Option<NodeId> {
+        let marked: Vec<NodeId> = self
+            .tree
+            .preorder()
+            .into_iter()
+            .filter(|id| self.places.contains_key(id))
+            .filter(|id| {
+                matches!(
+                    self.tree.get(*id).map(|n| &n.widget),
+                    Some(Widget::Button { action, .. })
+                        if crate::escape::split(action.as_deref()).0
+                )
+            })
+            .collect();
+        if marked.len() > 1 && !self.escapes_noted {
+            self.escapes_noted = true;
+            self.notes.push(alloc::format!(
+                "uikit: window {:?} marks {} escape buttons; Esc presses the first",
+                self.title,
+                marked.len()
+            ));
+        }
+        marked.first().copied()
+    }
+
     pub(crate) fn set_focus(&mut self, id: Option<NodeId>) {
         if self.st.focus != id {
             self.st.focus = id;
@@ -400,6 +427,14 @@ impl Window {
         if key == Key::Escape && self.st.menu.take().is_some() {
             self.st.menu_hover = None;
             self.dirty = true;
+            return;
+        }
+        // Nothing else took it: the window's escape button, if it shows one.
+        if key == Key::Escape
+            && !mods.command()
+            && let Some(button) = self.escape_button()
+        {
+            out.push(UiEvent::Pressed(button));
             return;
         }
         let Some(f) = self.st.focus else {

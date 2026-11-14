@@ -211,7 +211,8 @@ pub fn build(term: &Terminal, view: &View) -> Vec<Entry> {
             Layout::FIT,
             Widget::Button {
                 text: String::from(text),
-                action: None,
+                // Esc presses it, from anywhere in the window.
+                action: Some(uikit::escape::escape_action(None)),
             },
         ));
     }

@@ -479,8 +479,8 @@ fn a_changed_event_for_another_node_does_nothing() {
 }
 
 /// The founder's second test: while a line runs, the Terminal offers Stop,
-/// which takes the keys, and pressing it asks the OS to stop the shell's line
-/// (`shell_stop`), never another line.
+/// which never takes the keys, and pressing it asks the OS to stop the
+/// shell's line (`shell_stop`), never another line.
 #[test]
 fn a_running_line_offers_stop_which_asks_to_stop_the_shell() {
     let mut app = App::new();
@@ -512,4 +512,28 @@ fn a_running_line_offers_stop_which_asks_to_stop_the_shell() {
         Phase::Waiting,
         "the line's own answer ends it"
     );
+}
+
+/// #892's review: Esc anywhere in the window presses Stop while a line runs
+/// (its escape mark), and Enter typed ahead presses nothing.
+#[test]
+fn esc_stops_a_running_line_and_enter_does_not() {
+    let mut app = App::new();
+    app.type_text("what time is it");
+    app.enter();
+    assert_eq!(app.term.phase(), Phase::Waiting);
+    let asked = app.os.asked.len();
+    app.enter();
+    assert_eq!(app.os.asked.len(), asked, "a second Enter stops nothing");
+    app.key(Input::Key {
+        key: Key::Escape,
+        down: true,
+        mods: Mods::default(),
+        text: String::new(),
+    });
+    assert_eq!(app.os.asked.len(), asked + 1);
+    assert_eq!(app.os.asked[asked].1, comp_terminal::os::SHELL_STOP);
+    // The mark is a key binding only: the agent's tree binds no action to Stop.
+    let f = app.w.commit(&M);
+    assert_eq!(f.a11y.iter().find(|n| n.id == CANCEL).unwrap().bound, None);
 }
