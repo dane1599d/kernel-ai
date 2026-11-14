@@ -17,13 +17,6 @@ use alloc::string::String;
 use kabi::cap;
 
 pub const APP_CALL: &str = "app-call ";
-/// The requests forwarded, by their first line.
-pub const HEADERS: &[&str] = &["kai-call 1\n", "kai-undo 1\n"];
-/// The request forwarded whole: the app's rows (`livecore::rows`).
-pub const ROWS: &str = "kai-actions 1";
-/// The requests forwarded whole: the rows, and the app's window shown
-/// ([`kabi::live::SHOW`], answered by the app's host).
-pub const WHOLE: &[&str] = &[ROWS, kabi::live::SHOW];
 /// The longest request forwarded: one message, less the `app-call` line.
 pub const MAX_REQUEST: usize = kabi::MAX_MESSAGE - 64;
 /// Who may ask.
@@ -73,8 +66,8 @@ pub fn check(
     if caller != CALLER {
         return Err("err only the shell calls apps");
     }
-    let whole = WHOLE.contains(&request.strip_suffix('\n').unwrap_or(request));
-    if !whole && !HEADERS.iter().any(|header| request.starts_with(header)) {
+    // The kernel's APP_CALL list: what passes here is never refused there.
+    if !kabi::live::app_request(request.as_bytes()) {
         return Err("err only kai-call 1, kai-undo 1, kai-actions 1 and kai-show 1 go to an app");
     }
     if request.len() > MAX_REQUEST {

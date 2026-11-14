@@ -11,8 +11,11 @@
 //! `notes_add`, which the shell loads from `notes-window` (the window fronts
 //! Notes' rows) and calls over the app route. `desk-takeover`: "switch to notes" runs
 //! `ui_focus`, which gives Notes the agent's outline, and a key typed in Notes
-//! stops the run and the panel says so. Each step shows in `desktop`'s,
-//! comphost's and the shell's log lines, which the host checks.
+//! stops the run and the panel says so. `desk-reopen` (the founder-walk,
+//! #922): Notes opened by "open notes" is closed from its window's control,
+//! which comphost hides, and "open notes" again shows it, through the
+//! supervisor's `app-call` and the kernel's APP_CALL. Each step shows in
+//! `desktop`'s, comphost's and the shell's log lines, which the host checks.
 
 use crate::desk_tests::report;
 use crate::display::claim;
@@ -43,6 +46,10 @@ const COUNT: &str = "kai-call 1\nfunc app:notes/actions@1.0.0#count\nargs {}\n";
 /// Between counts: each is a call into comphost, so not every 50 ms.
 const COUNT_MS: u64 = 1_000;
 const CALL_MS: u64 = 10_000;
+/// Notes' close control: its frame is the second, at 80,84, 642 wide as
+/// `ui-window` finds it, the control 17 px in from its right end and down
+/// from its top.
+const NOTES_CLOSE: (i32, i32) = (80 + 642 - 17, 84 + 17);
 
 pub(crate) fn wait(
     case: &str,
@@ -145,5 +152,30 @@ pub fn takeover_check() -> Result<(), &'static str> {
         return Err("desk-takeover: the key went to the terminal, not Notes");
     }
     log!("desk-takeover: a key in the window the agent drove stopped it");
+    Ok(())
+}
+
+pub fn reopen_check() -> Result<(), &'static str> {
+    const CASE: &str = "desk-reopen";
+    let mut at = START;
+    open_notes(CASE, &mut at)?;
+    // Notes, just opened, is in front: its close control hides it.
+    click(&mut at, NOTES_CLOSE);
+    threads::sleep_ms(KEYS_MS);
+    log!("{CASE}: Notes' window was closed from its control");
+    // "open notes" again: `ui_open` finds no window and asks the running app
+    // to show it (`kai-show 1`), which APP_CALL used to refuse.
+    terminal_keys(CASE, &mut at)?;
+    threads::sleep_ms(OPEN_MS);
+    // A show of our own finds it open; had the shell's failed, this one
+    // would bring the window back and answer `ok shown`.
+    let again = ipc::call("notes-window", kabi::live::SHOW.as_bytes(), CALL_MS)
+        .map(|reply| String::from_utf8_lossy(&reply).into_owned())
+        .map_err(|_| "desk-reopen: notes-window did not reply")?;
+    log!("{CASE}: a show after the second open answered {again}");
+    if !again.contains("its window is open") {
+        return Err("desk-reopen: the second open did not show Notes' window");
+    }
+    log!("desk-reopen: Notes closed from its control opened again");
     Ok(())
 }

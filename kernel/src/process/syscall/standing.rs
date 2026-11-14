@@ -23,10 +23,6 @@ const CTL_MS: u64 = 60_000;
 /// The longest an app's call may take: the supervisor waits on it, so a slow
 /// or hung app cannot hold it longer (`supervise::appcall::WAIT_MS`).
 const APP_CALL_MS: u64 = 5_000;
-/// The requests APP_CALL forwards, by their first line, and the one it
-/// forwards whole: `kai-actions 1`, the app's rows.
-const APP_REQUESTS: &[&[u8]] = &[b"kai-call 1\n", b"kai-undo 1\n"];
-const APP_ROWS: &[&[u8]] = &[b"kai-actions 1", b"kai-actions 1\n"];
 
 /// One of [`CALLS`], or `None` for a number this area does not have.
 pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u64, Error>> {
@@ -105,9 +101,9 @@ fn app_call(slot: usize, a: &[u64; 6]) -> Result<u64, Error> {
     }
     let mut request = alloc::vec![0u8; len];
     copy_from_user(slot, a[2], &mut request)?;
-    if !APP_REQUESTS.iter().any(|head| request.starts_with(head))
-        && !APP_ROWS.contains(&request.as_slice())
-    {
+    // The supervisor's own list (`supervise::appcall::check`): `kai-show 1`
+    // was missing here, so a closed app could not be shown again (#922).
+    if !kabi::live::app_request(&request) {
         return Err(Error::Invalid);
     }
     ipc::server_of(name).ok_or(Error::NotFound)?;

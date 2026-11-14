@@ -111,10 +111,12 @@ fn open(route: kabi::handle::Handle, app: &str, arg: Option<&str>) -> Result<Str
         if !asked_to_show && waited >= SHOW_AFTER_MS {
             asked_to_show = true;
             // A headless app answers that it has no window, and is not
-            // reloaded.
+            // reloaded. A refused show brings no window: say why now, not
+            // after polling the desktop for the rest of the wait (#922).
             let show = app_call(&service, kabi::live::SHOW);
             if let Err(why) = show {
                 user::println!("{app} was asked to show its window: {why}");
+                return Err(why);
             }
         }
         sys::sleep_ms(WINDOW_POLL_MS);
