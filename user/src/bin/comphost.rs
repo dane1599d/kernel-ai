@@ -334,7 +334,15 @@ fn main() -> i32 {
                         .and_then(|()| {
                             // A close or an agent's action may have woken it.
                             napper.after(&host, now_ms());
-                            napper.focus(&mut host, ui.take_focused(), now_ms())
+                            // A key, click or action in a window is use: a
+                            // window in use never naps.
+                            if ui.take_used() {
+                                napper.nap.used(now_ms());
+                            }
+                            match ui.take_focused() {
+                                Some(focused) => napper.focus(&mut host, focused, now_ms()),
+                                None => Ok(None),
+                            }
                         })
                         .map(|napped| log_nap(&name, napped))
                 {
@@ -343,7 +351,9 @@ fn main() -> i32 {
                 }
                 // A change or a file waiting for its answer is use: the app does
                 // not nap until it has it.
+                // So is a line sent from a window that waits for its answer.
                 let busy = windows.as_ref().is_some_and(ui::Ui::changes_busy)
+                    || windows.as_ref().is_some_and(ui::Ui::awaits_answer)
                     || relay.as_ref().is_some_and(files::Relay::busy);
                 if busy != settings_leased {
                     napper.nap.lease(busy);

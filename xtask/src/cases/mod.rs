@@ -11,6 +11,7 @@ pub(crate) mod https;
 mod kernel;
 mod modeldl;
 mod modelsuse;
+mod napbusy;
 mod netgrant;
 mod netrows;
 mod network;
@@ -232,6 +233,7 @@ const LANES: &[&[TestCase]] = &[
     netrows::CASES,
     online::CASES,
     netgrant::CASES,
+    napbusy::CASES,
     modeldl::CASES,
     modelsuse::CASES,
 ];
@@ -276,6 +278,7 @@ mod tests {
             netrows::CASES,
             online::CASES,
             netgrant::CASES,
+            napbusy::CASES,
             modeldl::CASES,
             modelsuse::CASES,
         ];

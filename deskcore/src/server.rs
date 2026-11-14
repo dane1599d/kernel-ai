@@ -93,6 +93,10 @@ pub struct Client {
     mods: u32,
     /// Input for its windows, by the pool whose header ring takes it.
     posts: Vec<(u32, RingEvent)>,
+    /// Its surface that has the keyboard focus, if one does: when the focus
+    /// leaves it, the client is told (`focus_out`), so its host knows the
+    /// window is no longer in use (the app nap).
+    focused: Option<u32>,
 }
 
 impl Client {
@@ -110,6 +114,7 @@ impl Client {
             serial: 0,
             mods: 0,
             posts: Vec::new(),
+            focused: None,
         };
         for (n, global) in GLOBALS.iter().enumerate() {
             client.send(
@@ -582,14 +587,20 @@ impl Client {
                 }
                 Effect::Focus(focus) => {
                     let Some(seat) = self.seat else { continue };
-                    let mine = |w: WindowId| self.surface_of_window(w);
-                    let event = match focus {
-                        Focus::Window(w) => mine(w).map(|surface| Event::FocusIn { surface }),
+                    let now = match focus {
+                        Focus::Window(w) => self.surface_of_window(w),
                         _ => None,
                     };
-                    if let Some(event) = event {
-                        self.send(seat, event);
+                    if now == self.focused {
+                        continue;
                     }
+                    if let Some(surface) = self.focused {
+                        self.send(seat, Event::FocusOut { surface });
+                    }
+                    if let Some(surface) = now {
+                        self.send(seat, Event::FocusIn { surface });
+                    }
+                    self.focused = now;
                 }
                 _ => {}
             }
