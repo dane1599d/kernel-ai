@@ -107,10 +107,13 @@ fn client_node(client: u64) -> Option<captable::grant::GrantRef> {
 pub fn check() -> Result<(), &'static str> {
     let before = ipc::calls_in_use();
     let lazy = start("alazy", "mode=lazy", cap::SERVE, &[])?;
+    bound(&["alazy"])?;
     exit_and_kill()?;
     let slow = start("aslow", "mode=slow", cap::SERVE, &[])?;
     let quick = start("aquick", "mode=quick", cap::SERVE, &[])?;
     let stop = start("astop", "mode=slow", cap::SERVE, &[])?;
+    // CALL_SUBMIT does not wait for a service to come up: each is bound first.
+    bound(&["aslow", "aquick", "astop"])?;
     let client = start(
         "aclient",
         "mode=async",
@@ -160,4 +163,15 @@ pub fn check() -> Result<(), &'static str> {
         "async-call: a process served a call while its own was in flight; Stop, revoke, exit and kill each freed its call"
     );
     Ok(())
+}
+
+/// Waits until each service in `names` is bound.
+fn bound(names: &[&str]) -> Result<(), &'static str> {
+    match names
+        .iter()
+        .all(|name| soon(|| ipc::server_of(name).is_some()))
+    {
+        true => Ok(()),
+        false => Err("async-call: a test server never came up"),
+    }
 }

@@ -414,11 +414,13 @@ pub const SHELL_INTERRUPT: u64 = 87;
 /// app reads while `llm` answers (no THREADS). Numbered at merge, K's block.
 pub const CALL_SUBMIT: u64 = 88;
 /// `call_poll(reply_ptr, reply_cap, wait_ms) -> len`: the call [`CALL_SUBMIT`]
-/// sent, waiting up to `wait_ms` (0: not at all) for it to end, or for the
-/// person's Stop. Busy while it is still in flight; once it ended, the reply's length (copied up to
-/// `reply_cap`) or [`CALL_H`]'s errors (TimedOut, Dead, Unavailable,
-/// Interrupted), and the call is gone. NotFound with none. Numbered at merge,
-/// K's block.
+/// sent, waiting up to `wait_ms` (0: not at all) for it to end: its reply, its
+/// deadline, a revoked route, or the person's Stop while no server has taken
+/// it (a taken call is waited for). Busy while it is still in flight. Once it
+/// ended, the reply's length (copied up to `reply_cap`), or [`CALL_H`]'s errors
+/// (TimedOut, Dead, Unavailable, Interrupted, Revoked), and the call is gone.
+/// A call whose deadline passes before any server takes it is never taken.
+/// NotFound with none. Numbered at merge, K's block.
 pub const CALL_POLL: u64 = 89;
 
 // ---- G-core, 73-79 ----

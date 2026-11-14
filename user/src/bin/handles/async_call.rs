@@ -67,9 +67,13 @@ pub fn quick() -> Result<(), &'static str> {
 /// `mode=lazy`: takes no call for [`LAZY_MS`]; every call sent to it must have
 /// been withdrawn by then.
 pub fn lazy() -> Result<(), &'static str> {
-    sys::sleep_ms(LAZY_MS);
     let mut buf = [0u8; 16];
     let mut info = RecvInfo::default();
+    // A first, short wait binds the service, so calls can queue for it.
+    if sys::recv_h(&mut buf, 1, &mut info).is_ok() {
+        return Err("a call reached the lazy server before it slept");
+    }
+    sys::sleep_ms(LAZY_MS);
     match sys::recv_h(&mut buf, LAZY_CHECK_MS, &mut info) {
         Ok(_) => Err("a withdrawn call reached the lazy server"),
         Err(_) => Ok(()),

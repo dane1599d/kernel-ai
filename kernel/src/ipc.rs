@@ -386,6 +386,8 @@ pub(crate) fn finish_with(pending: Pending) -> Result<(Vec<u8>, u64, Vec<Entry>)
             counter.fetch_add(1, Ordering::SeqCst);
             Ok((call.reply, call.taker, call.reply_handles))
         }
+        // Failed before any server took it: its deadline passed in the queue.
+        (Some(call), FAILED) if call.taker == 0 => Err(CallError::TimedOut),
         (_, FAILED) => Err(CallError::ServiceDied),
         _ => Err(CallError::TimedOut),
     }
@@ -609,6 +611,7 @@ pub fn recv_with(
     // A call in flight that runs out first ends the wait (Woken) then.
     let wake_by = deadline.min(process::async_call::deadline(slot));
     loop {
+        expire_queued(me.name.as_str());
         let (endpoint, taken, failed, opened, extra) = with_ipc(|ipc| {
             let endpoint = bind(ipc, &me)?;
             // The next queued call, copied before any state changes, so running out
@@ -827,4 +830,36 @@ pub fn calls_in_use() -> usize {
 /// Calls queued for the service `name` that no server has taken yet.
 pub fn queued_for(name: &str) -> u32 {
     with_ipc(|ipc| find(ipc, name)).map_or(0, |e| PENDING[e].load(Ordering::SeqCst))
+}
+
+/// Fails the calls queued for the service `name` whose deadline passed before
+/// any server took them, and wakes their callers: a caller that is not
+/// waiting (CALL_SUBMIT) must not have its call taken late. It collects them
+/// as TimedOut (`finish_with`).
+fn expire_queued(name: &str) {
+    let now = hpet::nanos();
+    let mut callers = [None; MAX_CALLS];
+    with_ipc(|ipc| {
+        let Some(endpoint) = find(ipc, name) else {
+            return;
+        };
+        for (c, slot) in ipc.calls.iter().enumerate() {
+            let Some(call) = slot
+                .as_ref()
+                .filter(|call| call.endpoint == endpoint && call.deadline_ns <= now)
+            else {
+                continue;
+            };
+            if CALL_STATE[c]
+                .compare_exchange(QUEUED, FAILED, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                PENDING[endpoint].fetch_sub(1, Ordering::SeqCst);
+                callers[c] = Some(call.caller);
+            }
+        }
+    });
+    for caller in callers {
+        wake(caller);
+    }
 }

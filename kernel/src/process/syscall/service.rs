@@ -266,9 +266,11 @@ fn submit(
 fn poll(slot: usize, reply_ptr: u64, reply_cap: u64, wait_ms: u64) -> Result<u64, Error> {
     use crate::process::async_call::{self, Polled};
     if wait_ms > 0 {
+        // Any wake ends a sleep (the person's Stop wakes every thread, even for a
+        // taken call it does not end): sleep again until the call can end.
         let until = hpet::nanos().saturating_add(wait_ms.min(MAX_CALL_MS) * 1_000_000);
         let ended = || async_call::wakes(slot) || crate::process::killed(slot);
-        if !ended() {
+        while !ended() && hpet::nanos() < until {
             crate::threads::sleep_until_unless(until.min(async_call::deadline(slot)), ended);
         }
     }
