@@ -362,6 +362,13 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("ui-keys", "test=ui-keys")
     },
+    // The same keys while Notes is called every 5 ms, more often than
+    // comphost's 20 ms poll: comphost polls its windows on a deadline too.
+    TestCase {
+        keys: &[&["tab", "tab", "ret", "tab", "tab", "h", "i"]],
+        expect: &["ui-keys: busy: the keys reached Notes while it was called every 5 ms"],
+        ..case("ui-keys (busy)", "test=ui-keys busy")
+    },
     // P3 task 8: the kernel's terminal in a window, and an ask typed there.
     // "switch the scheduler to round robin", which the mock widens to
     // `interactive`, so it asks; a question's added change is refused (#721).

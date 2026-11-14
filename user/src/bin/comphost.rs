@@ -253,6 +253,9 @@ fn main() -> i32 {
     let mut tick_at = deadline(host.timeout_ms());
     // Whether the nap holds a lease for a read of the machine waiting.
     let mut leased = false;
+    // When the windows are next polled whatever the request rate: an app
+    // called more often than every POLL_MS still takes its input and results.
+    let mut poll_at = now_ms() + ui::POLL_MS;
     loop {
         // The shown instance is told it started, once: a new version or a
         // resumed app is told again (`started.rs`).
@@ -295,7 +298,7 @@ fn main() -> i32 {
         let wait = soonest(wait, due);
         let wait = napper.wait(&host, wait, now_ms());
         let mut caller = u64::MAX;
-        match sys::svc_recv(&mut request, wait, &mut caller) {
+        let idle = match sys::svc_recv(&mut request, wait, &mut caller) {
             Ok(len) => {
                 let len = len.min(request.len());
                 let heap_before = user::heap_bytes();
@@ -326,49 +329,55 @@ fn main() -> i32 {
                 tick_at = deadline(host.timeout_ms());
                 napper.after(&host, now_ms());
                 settle(&mut windows, &mut edits, &mut relay, &mut host);
+                // Called again and again: the windows are polled anyway once
+                // POLL_MS has passed since they last were.
+                now_ms() >= poll_at
             }
-            Err(Error::TimedOut) => {
-                if let Some(ui) = windows.as_mut().filter(|ui| ui.wants_poll())
-                    && let Err(exit) = ui
-                        .poll(&mut host)
-                        .and_then(|()| {
-                            // A close or an agent's action may have woken it.
-                            napper.after(&host, now_ms());
-                            napper.focus(&mut host, ui.take_focused(), now_ms())
-                        })
-                        .map(|napped| log_nap(&name, napped))
-                {
-                    println!("{}", exit.why);
-                    return exit.code;
-                }
-                // A change or a file waiting for its answer is use: the app does
-                // not nap until it has it.
-                let busy = windows.as_ref().is_some_and(ui::Ui::changes_busy)
-                    || relay.as_ref().is_some_and(files::Relay::busy);
-                if busy != settings_leased {
-                    napper.nap.lease(busy);
-                    settings_leased = busy;
-                }
-                settle(&mut windows, &mut edits, &mut relay, &mut host);
-                match napper.tick(&mut host, now_ms()) {
-                    Ok(napped) => log_nap(&name, napped),
-                    Err(exit) => {
-                        println!("{}", exit.why);
-                        return exit.code;
-                    }
-                }
-                if tick_at != 0 && now_ms() >= tick_at {
-                    if let Err(exit) = host.tick() {
-                        println!("{}", exit.why);
-                        return exit.code;
-                    }
-                    tick_at = deadline(host.timeout_ms());
-                    settle(&mut windows, &mut edits, &mut relay, &mut host);
-                }
-            }
+            Err(Error::TimedOut) => true,
             Err(error) => {
                 println!("svc_recv failed: {error:?}");
                 sys::sleep_ms(100);
+                false
+            }
+        };
+        if idle {
+            poll_at = now_ms() + ui::POLL_MS;
+            if let Some(ui) = windows.as_mut().filter(|ui| ui.wants_poll())
+                && let Err(exit) = ui
+                    .poll(&mut host)
+                    .and_then(|()| {
+                        // A close or an agent's action may have woken it.
+                        napper.after(&host, now_ms());
+                        napper.focus(&mut host, ui.take_focused(), now_ms())
+                    })
+                    .map(|napped| log_nap(&name, napped))
+            {
+                println!("{}", exit.why);
+                return exit.code;
+            }
+            // A change or a file waiting for its answer is use: the app does
+            // not nap until it has it.
+            let busy = windows.as_ref().is_some_and(ui::Ui::changes_busy)
+                || relay.as_ref().is_some_and(files::Relay::busy);
+            if busy != settings_leased {
+                napper.nap.lease(busy);
+                settings_leased = busy;
+            }
+            settle(&mut windows, &mut edits, &mut relay, &mut host);
+            match napper.tick(&mut host, now_ms()) {
+                Ok(napped) => log_nap(&name, napped),
+                Err(exit) => {
+                    println!("{}", exit.why);
+                    return exit.code;
+                }
+            }
+            if tick_at != 0 && now_ms() >= tick_at {
+                if let Err(exit) = host.tick() {
+                    println!("{}", exit.why);
+                    return exit.code;
+                }
+                tick_at = deadline(host.timeout_ms());
+                settle(&mut windows, &mut edits, &mut relay, &mut host);
             }
         }
         // A read of the machine that is due is answered, and what the app drew
