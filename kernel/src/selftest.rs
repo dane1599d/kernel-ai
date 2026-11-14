@@ -213,6 +213,9 @@ pub enum SelfTest {
     UiModelsUse,
     /// An unused app naps and a click wakes it (P3 task 12b).
     DeskNap,
+    /// A window in use never naps; one that lost the focus does (backlog
+    /// item 1).
+    DeskNapBusy,
     /// A saved appearance repaints `desktop` at once and holds across its
     /// restart (P4 task 8).
     DeskAppearance,
@@ -463,6 +466,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=ui-models" => Some(SelfTest::UiModels),
             "test=ui-models-use" => Some(SelfTest::UiModelsUse),
             "test=desk-nap" => Some(SelfTest::DeskNap),
+            "test=desk-nap-busy" => Some(SelfTest::DeskNapBusy),
             "test=desk-appearance" => Some(SelfTest::DeskAppearance),
             "test=keep-running" => Some(SelfTest::KeepRunning {
                 reread: cmdline.split_whitespace().any(|w| w == "reread"),
@@ -662,6 +666,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::UiModels
             | SelfTest::UiModelsUse
             | SelfTest::DeskNap
+            | SelfTest::DeskNapBusy
             | SelfTest::KeepRunning { .. }
             | SelfTest::DeskAppearance
             | SelfTest::DeskCard
@@ -963,7 +968,7 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(kabi::plan::MODELS_WINDOW);
     }
-    if test == SelfTest::DeskNap {
+    if matches!(test, SelfTest::DeskNap | SelfTest::DeskNapBusy) {
         plan.push('\n');
         plan.push_str(crate::nap_tests::PLAN);
     }

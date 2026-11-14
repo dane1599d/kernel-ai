@@ -112,6 +112,7 @@ mod model;
 mod model_import_tests;
 mod model_tests;
 mod models_window_tests;
+mod nap_busy_tests;
 mod nap_tests;
 mod net;
 mod net_commands;
@@ -421,6 +422,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::UiModels => run_case(app_window_tests::models_check),
         SelfTest::UiModelsUse => run_case(models_window_tests::check),
         SelfTest::DeskNap => run_case(nap_tests::check),
+        SelfTest::DeskNapBusy => run_case(nap_busy_tests::check),
         SelfTest::KeepRunning { reread } => run_case(|| keep_tests::check(reread)),
         SelfTest::DeskAppearance => run_case(appearance_tests::check),
         SelfTest::DeskCard => run_case(card_tests::check),

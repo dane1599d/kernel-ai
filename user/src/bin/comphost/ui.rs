@@ -74,8 +74,15 @@ pub struct Ui {
     frames: Vec<(u32, Frame)>,
     /// The version whose windows show.
     shown: Option<String>,
-    /// Whether one of its windows took focus since [`Ui::take_focused`].
-    focused: bool,
+    /// The last focus change of its windows since [`Ui::take_focused`]:
+    /// `Some(true)` took it, `Some(false)` lost it.
+    focused: Option<bool>,
+    /// A person typed or clicked in one of its windows, or acted on one,
+    /// since [`Ui::take_used`]: use, for the app nap.
+    used: bool,
+    /// Its window that holds the keyboard focus, if one does: closing it is
+    /// losing the focus, whose `focus_out` comes after the window is gone.
+    holder: Option<u32>,
     /// Events that came back with the window's own calls, acted on at the next
     /// poll.
     later: Vec<Told>,
@@ -108,7 +115,9 @@ impl Ui {
             pools: Vec::new(),
             frames: Vec::new(),
             shown: None,
-            focused: false,
+            focused: None,
+            used: false,
+            holder: None,
             later: Vec::new(),
             reply: alloc::vec![0u8; kabi::MAX_MESSAGE],
             sent: effects::Sent::default(),
@@ -142,10 +151,23 @@ impl Ui {
         self.has_windows() || self.sent.awaits() || self.changes_busy()
     }
 
-    /// Whether one of its windows took focus since the last call: use, for
-    /// app nap (P3 task 12b).
-    pub fn take_focused(&mut self) -> bool {
-        core::mem::take(&mut self.focused)
+    /// How its windows' focus changed since the last call, if it did: for
+    /// app nap (P3 task 12b), which a focused window keeps awake.
+    pub fn take_focused(&mut self) -> Option<bool> {
+        self.focused.take()
+    }
+
+    /// Whether a person used one of its windows since the last call: typed,
+    /// clicked or acted. Use, so a window in use never naps (the founder's
+    /// Terminal froze while he typed in it).
+    pub fn take_used(&mut self) -> bool {
+        core::mem::take(&mut self.used)
+    }
+
+    /// Whether a line it sent waits for its answer: the app must be awake
+    /// to take it, so it holds a nap lease meanwhile.
+    pub fn awaits_answer(&self) -> bool {
+        self.sent.awaits()
     }
 
     /// Shows what the instances committed since the last call: the shown
@@ -237,6 +259,7 @@ impl Ui {
         }
         let inputs = self.take_input();
         let typed = !inputs.is_empty();
+        self.used |= typed;
         for (app, input) in inputs {
             // Typed input is a transaction too: what the app saves or asks for
             // because of it is kept like an action call's.
@@ -389,17 +412,29 @@ impl Ui {
         for t in told {
             // A focus wakes only an app comphost napped itself (its caller
             // decides); a close or an action wakes any suspended app.
-            if !matches!(t, Told::Restarted | Told::Focus(_) | Told::Theme(_))
-                && let Some(reply) = host.wake()?
+            if !matches!(
+                t,
+                Told::Restarted | Told::Focus(_) | Told::Blur(_) | Told::Theme(_)
+            ) && let Some(reply) = host.wake()?
             {
                 println!(
                     "comphost: resumed for a window event: {}",
                     String::from_utf8_lossy(&reply)
                 );
             }
+            if matches!(t, Told::Close(_) | Told::Action { .. }) {
+                self.used = true;
+            }
             match t {
                 Told::Restarted => self.reopen(),
-                Told::Focus(_) => self.focused = true,
+                Told::Focus(window) => {
+                    self.focused = Some(true);
+                    self.holder = Some(window);
+                }
+                Told::Blur(_) => {
+                    self.focused = Some(false);
+                    self.holder = None;
+                }
                 Told::Theme(name) => self.set_theme(&name),
                 Told::Close(window) => {
                     let performed = serve_shown(host, |core| {
@@ -586,6 +621,13 @@ impl Ui {
     }
 
     fn close(&mut self, app: u32) {
+        // The window that held the focus is gone: the focus went with it, and
+        // the app may nap once unused (its focus_out cannot reach a window no
+        // longer here).
+        if self.holder == Some(app) {
+            self.holder = None;
+            self.focused = Some(false);
+        }
         let calls = wasmhost::desk::calls(&self.desk.closed(app));
         if !calls.is_empty() {
             self.send(&calls, None);

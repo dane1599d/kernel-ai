@@ -617,6 +617,16 @@ fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &RecvInfo) {
             for need in needs {
                 apply_need(state, at, pid, need, handle);
             }
+            // A window it opened or closed moved the focus: every other client
+            // hears it too, so the one that lost it gets its focus_out.
+            let shared = state.clients[at].take_shared();
+            if !shared.is_empty() {
+                for (i, client) in state.clients.iter_mut().enumerate() {
+                    if i != at {
+                        client.apply(&shared);
+                    }
+                }
+            }
             let reply = state.clients[at].take_events(kabi::MAX_MESSAGE);
             let _ = sys::reply_h(&reply, &[]);
         }
