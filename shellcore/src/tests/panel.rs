@@ -255,10 +255,24 @@ fn open_and_a_service_that_is_no_app_goes_to_the_model() {
         .filter(|(app, _)| app == "shell")
         .count();
     assert_eq!(asked, 1, "asked again: {:?}", host.app_requests.borrow());
+    // Down, it is still no app, and is not asked (asking would start it).
+    host.services.borrow_mut()[1].1 = false;
+    assert!(
+        shell.open_line("open shell").is_none(),
+        "down shell was taken"
+    );
+    let asked = host
+        .app_requests
+        .borrow()
+        .iter()
+        .filter(|(app, _)| app == "shell")
+        .count();
+    assert_eq!(asked, 1, "a down service was asked");
 }
 
 /// #914's review: only "no such app" makes a service no app. One that does
-/// not answer is opened as before and asked again next time; one that is not
+/// not answer is opened as before, and asked again only after
+/// `SLOW_FOR_NS`, so a hung app does not hold up each open; one that is not
 /// running is opened without asking, which would start it.
 #[test]
 fn open_and_a_service_that_does_not_answer_or_is_down_is_still_opened() {
@@ -278,8 +292,11 @@ fn open_and_a_service_that_does_not_answer_or_is_down_is_still_opened() {
     assert!(shell.open_line("open paint").is_some(), "no answer");
     let first = paint_asks();
     assert!(first >= 1);
-    assert!(shell.open_line("open paint").is_some(), "not cached");
-    assert!(paint_asks() > first, "asked again");
+    assert!(shell.open_line("open paint").is_some(), "still opened");
+    assert_eq!(paint_asks(), first, "a slow app is not asked again at once");
+    host.clock.set(host.clock.get() + crate::apps::SLOW_FOR_NS);
+    assert!(shell.open_line("open paint").is_some(), "still opened");
+    assert!(paint_asks() > first, "asked again once the wait is over");
     assert!(shell.open_line("open clock").is_some(), "down");
     assert!(
         !host
