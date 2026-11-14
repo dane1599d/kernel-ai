@@ -13,6 +13,10 @@ use std::thread;
 
 /// Largest request body read: a chat request from the kernel is a few KiB.
 const MAX_BODY: usize = 256 * 1024;
+/// The line `act-stop` sends, which the mock answers only after [`SLOW_ACT`].
+pub const SLOW_LINE: &str = "take your time and turn on round robin scheduling";
+/// Long enough for the case to press Stop while llm waits.
+const SLOW_ACT: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// The text every question gets back. Tests look for it on the console.
 pub const REPLY: &str = "Hello from the mock LLM.";
@@ -259,6 +263,12 @@ const ACTS: &[(&str, &str)] = &[
     ),
     (
         "turn on round robin scheduling",
+        r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
+    ),
+    // `act-stop`: answered after [`SLOW_ACT`], so the person's Stop lands while
+    // llm waits for it.
+    (
+        SLOW_LINE,
         r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
     ),
     (
@@ -613,6 +623,9 @@ fn act(request: &Value) -> String {
         .iter()
         .find(|(then, now, _)| before.as_deref() == Some(*then) && *now == line)
         .map(|(.., call)| call);
+    if line == SLOW_LINE {
+        thread::sleep(SLOW_ACT);
+    }
     match convo.or_else(|| {
         ACTS.iter()
             .find(|(asked, _)| *asked == line)

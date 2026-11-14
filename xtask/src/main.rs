@@ -573,7 +573,6 @@ fn execute(options: &Options) -> Result<(), String> {
                     .map_or_else(Vec::new, disk::ModelDisk::console_text),
                 cut: cutting.then(|| (format!("files: boot {boot}:"), cut_delay(case.name, boot))),
                 capture: case.differs.map(|text| (text, Arc::new(Mutex::new(None)))),
-                forbid: Vec::new(),
             };
             let requests = mock.requests();
             let after = |service: &Option<buildsvc::BuildService>| match (case.after, service) {

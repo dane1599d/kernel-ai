@@ -212,7 +212,7 @@ impl Shell {
     /// to the kernel's terminal (CARD_READY), which asks for it with
     /// [`termcore::menu::TAKE_CARD`] when it may.
     pub fn card_waiting(&self) -> bool {
-        self.card.is_some() || self.net_card_waiting()
+        self.card.is_some() || self.net_card_waiting() || self.desk_ask_waiting()
     }
 
     /// The terminal's [`termcore::menu::TAKE_CARD`]: the waiting install
@@ -222,6 +222,10 @@ impl Shell {
     pub(crate) fn take_card(&mut self) -> Reply {
         if self.pending.is_some() {
             return Reply::ok("");
+        }
+        // A desktop line's question first: a person just asked it.
+        if let Some(reply) = self.take_desk_ask() {
+            return reply;
         }
         let Some(name) = self.card.take() else {
             // An app's network ask waits as a card too (P5 task 13).

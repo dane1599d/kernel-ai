@@ -65,10 +65,19 @@ fn a_window_opens_shows_new_pictures_and_closes() {
     assert!(
         matches!(needs[..], [Need::Show { buffer, .. }] if buffer.offset == show.target.offset)
     );
-    // A click that focuses it reaches the app as focus (app nap's use).
+    // The focus reaches the app (the app nap's use), and its loss too: a
+    // window that has it never naps, one that lost it may. Each is told once.
+    client.take_events(8192);
+    client.apply(&[Effect::Focus(Focus::Panel)]);
     client.take_events(8192);
     client.apply(&[Effect::Focus(Focus::Window(window))]);
     assert_eq!(d.told(&client.take_events(8192)), [Told::Focus(1)]);
+    client.apply(&[Effect::Focus(Focus::Window(window))]);
+    assert!(d.told(&client.take_events(8192)).is_empty());
+    client.apply(&[Effect::Focus(Focus::Panel)]);
+    assert_eq!(d.told(&client.take_events(8192)), [Told::Blur(1)]);
+    client.apply(&[Effect::Focus(Focus::Panel)]);
+    assert!(d.told(&client.take_events(8192)).is_empty());
     // The user asks to close it; the app's close ends it on the desk.
     client.apply(&[Effect::Close { window }]);
     assert_eq!(d.told(&client.take_events(8192)), [Told::Close(1)]);

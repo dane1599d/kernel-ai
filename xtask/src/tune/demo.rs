@@ -63,7 +63,6 @@ pub fn main(args: &[String]) -> Result<(), String> {
         contains: Vec::new(),
         cut: None,
         capture: None,
-        forbid: Vec::new(),
     };
     crate::qemu::run_test(&booter.qemu, &qemu_args, booter.target(), &run)?;
     println!(
