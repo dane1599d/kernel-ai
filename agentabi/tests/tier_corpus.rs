@@ -1556,6 +1556,24 @@ const EVERYDAY_TELLING: &[Case] = &[
         &[RR],
         Asks,
     ),
+    // So does a complaint beside a question (a review of #886): the question's
+    // cue names the action though it asks for none.
+    case("it's so slow, how do I switch to round robin", &[RR], Asks),
+    case(
+        "tell me, how do I switch to round robin, it's laggy",
+        &[RR],
+        Asks,
+    ),
+    case(
+        "explain: how do I switch to round robin? it's slow",
+        &[RR],
+        Asks,
+    ),
+    case(
+        "it's so slow, how do I remove ideas",
+        &[with("fs_trash", &[("path", IDEAS)])],
+        Asks,
+    ),
     // "model" is not the theme's "mode".
     case(
         "switch the model",

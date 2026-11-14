@@ -176,6 +176,11 @@ fn a_line_that_asks_to_be_told_how_does_not_run_the_change() {
         // (#883), so the delete is not taken as wanted.
         ("tell me how to delete note 2, notes is so slow", remove),
         ("explain how to remove note 2, it's laggy", remove),
+        // So is a question beside it (a review of #886): its cue names the
+        // action though it asks for none.
+        ("it's so slow, how do I delete note 2", remove),
+        ("tell me, how do I delete note 2, it's laggy", remove),
+        ("explain: how do I delete note 2? it's slow", remove),
     ] {
         let (host, mut shell) = with_calls(vec![call(json)]);
         host.apps.borrow_mut().rows.load("notes", MANAGE).unwrap();

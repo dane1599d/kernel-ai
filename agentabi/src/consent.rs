@@ -340,24 +340,25 @@ fn cued(words: &[Word], row: &Action) -> Option<bool> {
     cued_in(words, row, false)
 }
 
-/// [`cued`], with `telling_counts` saying whether a cue in a clause that opens
-/// with a tell word counts. For whether a call was asked for it does not
-/// (#721, ADR 0002): "tell me how to remove ideas" asks for no removal. For
-/// whether the line names an action at all it does.
+/// [`cued`], with `telling_counts` saying whether a cue in a clause that asks to
+/// be told counts: a question, or one that opens with a tell word. For whether a
+/// call was asked for it does not (#721, ADR 0002): "tell me how to remove
+/// ideas" asks for no removal. For whether the line names an action at all it
+/// does, so a complaint beside it ("it's so slow, how do I remove note 2") is no
+/// vague want.
 fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
     let telling = |clause: usize| {
-        !telling_counts
-            && words
-                .iter()
-                .find(|w| w.clause == clause)
-                .is_some_and(|w| TELL_WORDS.contains(&w.text.as_str()))
+        words
+            .iter()
+            .find(|w| w.clause == clause)
+            .is_some_and(|w| TELL_WORDS.contains(&w.text.as_str()))
     };
     let mut found = None;
     for cue in row.cues {
         let off_counts = !row.cues.iter().any(|c| c.contains("off"));
         for at in matches(words, cue, true) {
             // A question asks to be told: "is round robin on" asks for no switch.
-            if words[at].question || telling(words[at].clause) {
+            if !telling_counts && (words[at].question || telling(words[at].clause)) {
                 continue;
             }
             let clause = words[at].clause;
@@ -1041,6 +1042,20 @@ mod tests {
             "switch to round robin",
         ] {
             assert_eq!(cued(&words(line), &change), Some(false), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_question_asks_for_no_change_but_still_names_the_action() {
+        let change = crate::SET_POLICY;
+        for line in [
+            "is round robin on",
+            "it's so slow, how do I switch to round robin",
+            "tell me, how do I switch to round robin, it's laggy",
+            "explain: how do I switch to round robin? it's slow",
+        ] {
+            assert_eq!(cued(&words(line), &change), None, "{line}");
+            assert_eq!(cued_in(&words(line), &change, true), Some(false), "{line}");
         }
     }
 
