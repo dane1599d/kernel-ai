@@ -161,7 +161,8 @@ pub const NO_FILES: &str = "there are no files here (no kai-data disk)";
 /// What the shell needs from the operating system.
 pub trait Host {
     fn now_ns(&self) -> u64;
-    /// True if the user pressed Ctrl-C since the last call; reading clears it.
+    /// Whether the person pressed Stop during the request being served. In the
+    /// OS it stays true for the rest of that request (`kabi::call::INTERRUPTED`).
     fn interrupted(&self) -> bool;
     /// Bytes of heap in use.
     fn heap_bytes(&self) -> u64;

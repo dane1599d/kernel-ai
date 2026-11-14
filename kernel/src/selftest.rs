@@ -16,6 +16,8 @@ pub enum ActCase {
     Ask,
     Inject,
     Rule,
+    /// `act-stop` (#887): the person's Stop while llm answers stops the line.
+    Stop,
     PkgLocal,
     Convo,
     FsAct,
@@ -267,6 +269,8 @@ pub enum SelfTest {
     Probe,
     /// P1: handle tables, startup handles and need() on handles.
     Handles,
+    /// SHELL_INTERRUPT: the person's Stop ends the shell's call in flight.
+    ShellInterrupt,
     /// L6: worker threads start, are refused, filtered and torn down.
     Threads,
     /// L6: processes killed mid-run, every thread blocked or computing, free every frame.
@@ -376,6 +380,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net-pf-page" => Some(SelfTest::Act(ActCase::NetPfPage)),
             "test=net-pf-query" => Some(SelfTest::Act(ActCase::NetPfQuery)),
             "test=act-rule" => Some(SelfTest::Act(ActCase::Rule)),
+            "test=act-stop" => Some(SelfTest::Act(ActCase::Stop)),
             "test=pkg-local" => Some(SelfTest::Act(ActCase::PkgLocal)),
             "test=act-convo" => Some(SelfTest::Act(ActCase::Convo)),
             "test=fs-act" => Some(SelfTest::Act(ActCase::FsAct)),
@@ -492,6 +497,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
             "test=handles" => Some(SelfTest::Handles),
+            "test=shell-interrupt" => Some(SelfTest::ShellInterrupt),
             "test=threads" => Some(SelfTest::Threads),
             "test=threads-kill" => Some(SelfTest::ThreadsKill),
             "test=thread-pin" => Some(SelfTest::ThreadPin),

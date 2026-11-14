@@ -802,7 +802,10 @@ impl Host for System {
             &mut reply,
             SCRIPT_CALL_MS,
         )
-        .map_err(|error| unavailable(&alloc::format!("{error:?}")))?;
+        .map_err(|error| match error {
+            kabi::Error::Interrupted => ActError::Stopped,
+            error => unavailable(&alloc::format!("{error:?}")),
+        })?;
         let text = core::str::from_utf8(&reply[..len.min(reply.len())])
             .map_err(|_| unavailable("the reply is not UTF-8"))?;
         match text.split_once(' ').unwrap_or((text, "")) {
