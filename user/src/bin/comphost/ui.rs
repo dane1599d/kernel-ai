@@ -78,6 +78,14 @@ pub struct Ui {
     /// Kai-built one included, can bring it back unasked (backlog item 2).
     /// Per window: the app's other windows stay on the desk.
     hidden: Vec<u32>,
+    /// The person hid one of its windows, and no show has come since. Sticky:
+    /// a hidden window's close does not clear it, so the app cannot escape
+    /// the hide by closing that window and opening another.
+    hidden_app: bool,
+    /// The windows on the desk when the shown version last changed (an
+    /// update or a rollback): the new version's frames for them show, as the
+    /// person left them, even while another window is hidden.
+    on_desk: Vec<u32>,
     /// The frames of its windows while hidden, newest only.
     held: Vec<(u32, Frame)>,
     /// The version whose windows show.
@@ -116,6 +124,8 @@ impl Ui {
             pools: Vec::new(),
             frames: Vec::new(),
             hidden: Vec::new(),
+            hidden_app: false,
+            on_desk: Vec::new(),
             held: Vec::new(),
             shown: None,
             focused: false,
@@ -149,14 +159,19 @@ impl Ui {
     /// Whether every window it has is hidden: nothing of it is on the desk, so
     /// its background reads are not use and it naps as any unseen app does.
     pub fn hidden_only(&self) -> bool {
-        self.frames.is_empty() && !self.hidden.is_empty()
+        self.frames.is_empty() && self.hidden_app
     }
 
     /// Whether a frame for `window` waits for a show: the window is hidden, or
-    /// it is new while all the app's windows are (it opened one unseen).
+    /// it is new while nothing of the hidden app is on the desk (it opened one
+    /// unseen). A window the person had on the desk before a version change
+    /// shows again.
     fn hides(&mut self, window: u32) -> bool {
         if self.hidden.contains(&window) {
             return true;
+        }
+        if self.on_desk.contains(&window) {
+            return false;
         }
         let unseen = self.hidden_only();
         if unseen {
@@ -222,7 +237,9 @@ impl Ui {
             }
         });
         if label != self.shown {
-            for (app, _) in core::mem::take(&mut self.frames) {
+            let frames = core::mem::take(&mut self.frames);
+            self.on_desk = frames.iter().map(|(app, _)| *app).collect();
+            for (app, _) in frames {
                 self.close(app);
             }
             // The old version's frames are not the new one's: its windows
@@ -510,6 +527,8 @@ impl Ui {
         if !self.hidden.contains(&window) {
             self.hidden.push(window);
         }
+        self.hidden_app = true;
+        self.on_desk.retain(|app| *app != window);
         self.close(window);
         println!("comphost: window {window} hidden until it is shown");
     }
@@ -518,10 +537,11 @@ impl Ui {
     /// on the desk with the app's latest frames, no reload, so nothing it
     /// holds is lost. True when a window came back.
     pub fn unhide(&mut self) -> bool {
-        if self.hidden.is_empty() {
+        if self.hidden.is_empty() && !self.hidden_app {
             return false;
         }
         self.hidden.clear();
+        self.hidden_app = false;
         let held = core::mem::take(&mut self.held);
         let shown = !held.is_empty();
         for (window, frame) in held {
