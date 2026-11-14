@@ -395,9 +395,16 @@ fn clear(work: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// `signed`'s canonical bytes as `<role>.canon`, with what they hash to.
+/// `signed`'s canonical bytes as `<role>.canon`, with what they hash to. They
+/// are one line of printable ASCII, the only kind `release-sign.sh` signs.
 fn write_canon(work: &Path, role: &str, signed: &Value) -> Result<(), String> {
     let bytes = sign::canonical(signed)?;
+    if let Some(at) = bytes.iter().position(|b| !(b' '..=b'~').contains(b)) {
+        return Err(format!(
+            "{role}.canon has byte {:#04x} at {at}, not printable ASCII: release-sign.sh refuses it",
+            bytes[at]
+        ));
+    }
     let path = work.join(format!("{role}.canon"));
     fs::write(&path, &bytes).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     let version = &signed["version"];

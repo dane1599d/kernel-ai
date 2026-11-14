@@ -45,6 +45,9 @@ for canon in "$work"/*.canon; do
     *) echo "unexpected $canon: nothing signed" >&2; exit 1 ;;
   esac
   cp -- "$canon" "$tmp/$name"
+  # xtask writes one line of printable ASCII, with no newline: nothing hides.
+  [ "$(tr -d ' -~' < "$tmp/$name" | wc -c | tr -d ' ')" = 0 ] ||
+    { echo "$canon is not one line of printable ASCII: nothing signed" >&2; exit 1; }
 done
 set -- "$tmp"/*
 [ -e "$1" ] || { echo "nothing to sign in $work"; exit 0; }
@@ -57,7 +60,7 @@ for copy in "$@"; do
   echo "$(basename "$copy").canon names: $( (grep -o '"public":"[0-9a-f]*"' "$copy" || true) | cut -d'"' -f4 | sort -u | tr '\n' ' ')"
 done
 # The packages the release signs and their grants: each must be in the prepare
-# run's list on GitHub. Each entry must be exactly the shape xtask writes.
+# run's list on GitHub. The role, and each entry, must be exactly as xtask writes.
 if [ -e "$tmp/packages" ]; then
   listed=$(awk -v pre='{"custom":{"kai":' '
     function value(t, i,   c, d, q) {
@@ -75,8 +78,9 @@ if [ -e "$tmp/packages" ]; then
     }
     { s = s $0 }
     END {
-      if (!(i = index(s, "\"targets\":{"))) exit 1
-      for (i += 11; substr(s, i, 1) != "}"; i = k) {
+      top = "^[{]\"_type\":\"targets\",\"expires\":\"[0-9:TZ-]+\",\"spec_version\":\"[0-9.]+\",\"targets\":[{]"
+      if (NR != 1 || !match(s, top)) exit 1
+      for (i = RLENGTH + 1; substr(s, i, 1) != "}"; i = k) {
         if (n++ && substr(s, i++, 1) != ",") exit 1
         j = value(s, i); key = substr(s, i + 1, j - i - 2); k = value(s, j + 1); e = substr(s, j + 1, k - j - 1)
         if (substr(s, j, 1) != ":" || key !~ /^[ -~]+[.]kpkg$/ || index(e, pre) != 1) exit 1
@@ -87,7 +91,8 @@ if [ -e "$tmp/packages" ]; then
         if (grants !~ /^[ -~]+$/) exit 1
         print "packages.canon signs " key ", sha256 " substr(rest, 23, 64) ", grants " grants
       }
-    }' "$tmp/packages") || { echo "packages.canon has an entry xtask does not write: nothing signed" >&2; exit 1; }
+      if (substr(s, i) !~ /^[}],"version":[0-9]+[}]$/) exit 1
+    }' "$tmp/packages") || { echo "packages.canon is not what xtask writes: nothing signed" >&2; exit 1; }
   count=$( (grep -o '\.kpkg":{' "$tmp/packages" || true) | wc -l | tr -d ' ')
   [ "$(printf '%s' "$listed" | grep -c '^packages' || true)" = "$count" ] ||
     { echo "packages.canon lists $count packages, not each once: nothing signed" >&2; exit 1; }

@@ -233,6 +233,25 @@ fn a_signature_that_is_not_the_keys_is_refused_by_name() {
     assert!(!paths.repo.exists(), "nothing is written");
 }
 
+/// Canonical JSON writes control characters and UTF-8 as themselves, and the
+/// sign script signs only one line of printable ASCII: `prepare` writes no
+/// other, so the founder is never handed a file the script refuses.
+#[test]
+fn a_canon_outside_printable_ascii_is_not_written() {
+    let models = models::catalog().unwrap();
+    for (name, summary) in [("lf", "Notes\nand more"), ("utf8", "Notes \u{2014} more")] {
+        let paths = workspace(&format!("ascii-{name}"));
+        let mut odd = targets();
+        odd[1].kai["summary"] = json!(summary);
+        let refused = prepare(&paths, &odd, &models, 1, NOW).unwrap_err();
+        assert!(
+            refused.starts_with("packages.canon has byte 0x"),
+            "{name}: {refused}"
+        );
+        assert!(refused.ends_with("release-sign.sh refuses it"), "{refused}");
+    }
+}
+
 #[test]
 fn a_catalog_model_without_a_chunk_list_is_not_signed() {
     let paths = workspace("nolist");
@@ -500,7 +519,7 @@ fn the_runbook_pins_the_sign_script() {
     );
     let text = String::from_utf8(script).unwrap();
     assert!(
-        text.lines().count() <= 120,
+        text.lines().count() <= 125,
         "release-sign.sh stays short enough to read"
     );
     for word in ["curl", "wget", "/dev/tcp", "ssh", "nc ", "git ", "http"] {

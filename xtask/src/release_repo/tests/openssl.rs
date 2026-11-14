@@ -164,7 +164,7 @@ fn the_script_refuses_a_package_entry_xtask_does_not_write() {
         let said = String::from_utf8(out.stderr).unwrap();
         assert!(!out.status.success(), "{name}");
         assert!(
-            said.contains("packages.canon has an entry xtask does not write"),
+            said.contains("packages.canon is not what xtask writes"),
             "{name}: {said}"
         );
         assert!(!said.contains("Passphrase"), "{name}: {said}");
@@ -181,6 +181,90 @@ fn the_script_refuses_a_package_entry_xtask_does_not_write() {
             && shown.contains(r#", grants ["net"]"#),
         "{shown}"
     );
+}
+
+/// A way to hide an entry from the script's lines: an edit, then raw bytes
+/// swapped in the canonical file, and how the script refuses it.
+struct Hidden {
+    name: &'static str,
+    edit: fn(&mut Value),
+    from: &'static str,
+    to: &'static str,
+    refused: &'static str,
+}
+
+/// An honest copy of notes' entry in a top-level field that sorts before
+/// `targets`, while the real entry is granted `net`.
+fn decoy(s: &mut Value) {
+    let honest = s["targets"]["notes-1.0.0.kpkg"].clone();
+    s["a"] = json!({ "targets": { "notes-1.0.0.kpkg": honest } });
+    s["targets"]["notes-1.0.0.kpkg"]["custom"]["kai"]["grants"] = json!(["net"]);
+}
+
+/// A `packages.canon` that would show the founder honest lines while signing
+/// another entry stops the script before any passphrase, its lines unprinted:
+/// a decoy field before `targets`, a raw line feed in a key or a grant, or a
+/// line feed at the end.
+#[test]
+fn the_script_refuses_a_decoy_or_a_line_feed_in_packages() {
+    if !openssl_3() {
+        return;
+    }
+    const PRINTABLE: &str = "packages.canon is not one line of printable ASCII";
+    let cases = [
+        Hidden {
+            name: "decoy",
+            edit: decoy,
+            from: "",
+            to: "",
+            refused: "packages.canon is not what xtask writes",
+        },
+        Hidden {
+            name: "decoy-lf",
+            edit: decoy,
+            from: r#""a":{"targets":{"notes-1.0.0.kpkg""#,
+            to: "\"a\":{\"targets\":{\"notes-1.0.0.kp\nkg\"",
+            refused: PRINTABLE,
+        },
+        Hidden {
+            name: "grant-lf",
+            edit: |s| s["targets"]["notes-1.0.0.kpkg"]["custom"]["kai"]["grants"] = json!(["net"]),
+            from: r#"["net"]"#,
+            to: "[\"ne\nt\"]",
+            refused: PRINTABLE,
+        },
+        Hidden {
+            name: "end-lf",
+            edit: |_| {},
+            from: "",
+            to: "\n",
+            refused: PRINTABLE,
+        },
+    ];
+    for case in cases {
+        let name = case.name;
+        let paths = workspace(&format!("script-hidden-{name}"));
+        let stick = stick(&paths);
+        prepare(&paths, &targets(), &models::catalog().unwrap(), 1, NOW).unwrap();
+        tamper(&paths.work, PACKAGES, case.edit);
+        let path = paths.work.join("packages.canon");
+        let mut text = fs::read_to_string(&path).unwrap();
+        match case.from {
+            "" => text.push_str(case.to),
+            from => {
+                assert!(text.contains(from), "{name}: {text}");
+                text = text.replacen(from, case.to, 1);
+            }
+        }
+        fs::write(&path, text).unwrap();
+        let out = sign_script(&stick, &paths.work, "");
+        let said = String::from_utf8(out.stderr).unwrap();
+        let shown = String::from_utf8(out.stdout).unwrap();
+        assert!(!out.status.success(), "{name}");
+        assert!(said.contains(case.refused), "{name}: {said}");
+        assert!(!said.contains("Passphrase"), "{name}: {said}");
+        assert!(!shown.contains("packages.canon signs"), "{name}: {shown}");
+    }
 }
 
 /// RFC 8032 test 2 through the script, then a whole release in its two

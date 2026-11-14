@@ -39,7 +39,7 @@ A WSL distro of its own and `env -i` do not stop that. WSL2 also does not start 
 - The key stick never goes into this PC. Files move between this PC and the signing machine on a second stick, the transfer stick. What it carries is public.
 - The sign script runs from the key stick, never from a checkout, because a session could change a checkout between your review and your run.
   - Check its SHA-256 before each run against the one you wrote down.
-  - The script at the commit that added it has this SHA-256: `227ff583afbc8e40ea056eaf9907afb8ab57891ea280947996b47647ccefcbc3`.
+  - The script at the commit that added it has this SHA-256: `269bd70f8abed414a7aedf5fb3e66a3307b8a4f0957e2e991fea99badef941a6`.
   - A test in `xtask/src/release_repo/tests.rs` holds this page to the script, so a change to either shows in review.
   - It runs in macOS's bash 3.2 and with Linux's or Git for Windows' bash. It uses the first OpenSSL 3 it finds at `/usr/bin/openssl` or Homebrew's `openssl@3`.
 - Root files are frozen once committed. `cargo xtask release-repo` reuses `1.root.json` and never signs root again. CI fails a pull request or a push to main that changes or removes any committed `*.root.json`, and a tag whose root files differ from any earlier release's. Two different "version 1" roots would split devices, because `updated` keeps a cached root of the same version.
@@ -104,7 +104,7 @@ Signing takes two rounds, because the timestamp holds the hash of the signed sna
 3. Run `$O dgst -sha256 "$K/release-sign.sh"`. It must match the SHA-256 on your paper. If it does not, stop.
 4. Run `/bin/bash --noprofile --norc "$K/release-sign.sh" "$K" "$T/kai-release/<version>"`. Before any passphrase, it prints `root.key is …` and `release.key is …`, then for each file the keys it names.
    - Every one of those numbers must be one of the two on your paper. If any is not, press Ctrl-C and stop.
-   - Then it prints `packages.canon signs <name>, sha256 <hash>, grants [...]` for each package. Each whole line, grants included, must be on the Release prepare summary page from step 1. Today every built-in app says `grants []`. If a line is not there, press Ctrl-C and stop. If the script stops with "packages.canon has an entry xtask does not write", stop too: someone changed the file.
+   - Then it prints `packages.canon signs <name>, sha256 <hash>, grants [...]` for each package. Each whole line, grants included, must be on the Release prepare summary page from step 1. Today every built-in app says `grants []`. If a line is not there, press Ctrl-C and stop. If the script stops with "is not one line of printable ASCII" or "packages.canon is not what xtask writes", stop too: someone changed the file.
    - Then type each passphrase it asks for. Root's is asked only for the first release, the one that signs root. If it asks for root's on any later release, press Ctrl-C and stop: root is frozen, so a request for it means someone changed the folder.
    - For each file it prints `signed <file> with <key>: sha256 <hash>`. Each hash must be the one the session pasted for that file. If one differs, the folder changed after `prepare`: tell the session, and nothing goes further.
 5. Run `exit`, eject both sticks, take the transfer stick back to this PC, and tell the session "signed".
