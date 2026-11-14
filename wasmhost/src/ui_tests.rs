@@ -425,3 +425,76 @@ fn only_a_granted_app_keeps_a_window_from_the_agent() {
         .commit(&uikit::layout::FixedAdvance);
     assert!(!frame.agent_private);
 }
+
+fn text_line(value: &str) -> Val {
+    let fields = vec![
+        Val::String(String::from("kai>")),
+        Val::String(String::from(value)),
+        Val::String(String::from("Type a command")),
+        Val::U32(400),
+    ];
+    Val::Variant(3, Some(Box::new(Val::Record(fields))))
+}
+
+/// The founder's VirtualBox test (2026-11-14): keys typed into the Terminal's
+/// input line reached it, but the line never drew them, because the app takes
+/// a typed key without sending a tree or committing. The host shows what the
+/// input changed itself: the guest here never commits after its first frame.
+#[test]
+fn typed_text_shows_though_the_app_does_not_commit() {
+    let mut g = guest();
+    let w = open(&mut g, "Terminal");
+    assert_eq!(put(&mut g, w, 1, text_line("")), Ok((0, 0)));
+    commit(&mut g, w);
+    let frame = match g.take_ui().pop() {
+        Some(Update::Frame { frame, .. }) => frame,
+        other => panic!("{other:?}"),
+    };
+    let b = frame.a11y.iter().find(|n| n.id == 1).unwrap().bounds;
+    let at = Point::new(b.x + b.w / 2, b.y + b.h / 2);
+    for down in [true, false] {
+        let button = Input::Button {
+            at,
+            down,
+            mods: Default::default(),
+        };
+        g.ui_input(w, button).unwrap();
+    }
+    g.take_ui();
+    for c in ["h", "i"] {
+        let key = Input::Key {
+            key: uikit::input::Key::Other(0),
+            down: true,
+            mods: Default::default(),
+            text: String::from(c),
+        };
+        g.ui_input(w, key).unwrap();
+    }
+    let updates = g.take_ui();
+    let [Update::Frame { frame, .. }] = updates.as_slice() else {
+        panic!("one frame for the keys: {updates:?}");
+    };
+    let field = frame.a11y.iter().find(|n| n.id == 1).unwrap();
+    assert_eq!(field.value.as_deref(), Some("hi"));
+    assert!(
+        !frame.damage.is_empty(),
+        "the field is damaged, so it redraws"
+    );
+    // A caret move sends the app nothing, and still shows.
+    let left = Input::Key {
+        key: uikit::input::Key::Left,
+        down: true,
+        mods: Default::default(),
+        text: String::new(),
+    };
+    g.ui_input(w, left).unwrap();
+    assert!(
+        matches!(g.take_ui().as_slice(), [Update::Frame { .. }]),
+        "the caret's move is drawn"
+    );
+    // Input that changes nothing makes no frame.
+    g.ui_input(w, Input::PointerMove(Point::new(1, 1))).unwrap();
+    g.ui_input(w, Input::PointerMove(Point::new(1, 1))).unwrap();
+    let updates = g.take_ui();
+    assert!(updates.len() <= 1, "{updates:?}");
+}
