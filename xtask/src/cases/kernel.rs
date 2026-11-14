@@ -61,8 +61,9 @@ pub(super) const CASES: &[TestCase] = &[
     },
     // Serial stamps (`stamp=ms`, as `cargo xtask vbox` boots): the reader takes
     // them off, so the kernel's and the programs' lines match as without them.
+    // The lines are exact, so one still carrying its stamp fails the case.
     TestCase {
-        expect: &[
+        exact: &[
             "serial: each line starts with [the kernel clock h the HPET], in seconds",
             "[handles] handles: every check passed",
             "handles: CALL_H, RECV_H and REPLY_H moved a request and a handle there and back",

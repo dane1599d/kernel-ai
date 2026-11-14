@@ -442,7 +442,12 @@ pub fn run_test(
         .map(|text| text.to_string())
         .collect();
     let expect = [expect, run.contains.clone()].concat();
-    let exact = run.exact.clone();
+    let exact: Vec<String> = run
+        .exact
+        .iter()
+        .cloned()
+        .chain(run.case.exact.iter().map(|line| line.to_string()))
+        .collect();
     let started = Instant::now();
     let mut child = crate::wsl::command(qemu)
         .current_dir(target_dir)
