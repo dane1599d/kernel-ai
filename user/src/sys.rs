@@ -757,6 +757,13 @@ pub fn interrupted() -> bool {
     call(call::INTERRUPTED, [0; 6]).is_ok_and(|flag| flag != 0)
 }
 
+/// Clears this process's Stop flag as a new unit of work starts, and says
+/// whether it was set (INTERRUPTED with `clear` 1): the shell calls it before a
+/// panel line or `take_effects`, which do not come as a new request.
+pub fn interrupt_clear() -> bool {
+    call(call::INTERRUPTED, [1, 0, 0, 0, 0, 0]).is_ok_and(|flag| flag != 0)
+}
+
 /// The person's Stop or Esc for the shell's line (SHELL_INTERRUPT): the
 /// shell's pid. For `desktop`, which holds `cap::INPUT`; Permission for any
 /// other process, NotFound when no shell runs.

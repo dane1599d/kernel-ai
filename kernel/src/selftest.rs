@@ -16,6 +16,8 @@ pub enum ActCase {
     Ask,
     Inject,
     Rule,
+    /// `act-stop` (#887): the person's Stop while llm answers stops the line.
+    Stop,
     PkgLocal,
     Convo,
     FsAct,
@@ -375,6 +377,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net-pf-page" => Some(SelfTest::Act(ActCase::NetPfPage)),
             "test=net-pf-query" => Some(SelfTest::Act(ActCase::NetPfQuery)),
             "test=act-rule" => Some(SelfTest::Act(ActCase::Rule)),
+            "test=act-stop" => Some(SelfTest::Act(ActCase::Stop)),
             "test=pkg-local" => Some(SelfTest::Act(ActCase::PkgLocal)),
             "test=act-convo" => Some(SelfTest::Act(ActCase::Convo)),
             "test=fs-act" => Some(SelfTest::Act(ActCase::FsAct)),

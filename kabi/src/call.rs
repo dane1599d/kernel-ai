@@ -86,11 +86,15 @@ pub const METRICS: u64 = 18;
 /// CPU, ending any trial (needs [`super::cap::POLICY`]); `preset` matters only for
 /// `classes`. Busy within 100 ms of the last switch.
 pub const POLICY: u64 = 19;
-/// `interrupted() -> 1 or 0`: whether the person pressed Stop (see
+/// `interrupted(clear) -> 1 or 0`: whether the person pressed Stop (see
 /// [`SHELL_INTERRUPT`]) during the request this process serves. It stays 1 for
 /// the rest of that request: taking the next request clears it. It is also 1
 /// for a server whose request's caller was stopped: `llm` ends its answer
 /// early then, as nobody will use it.
+/// With `clear` 1 it also clears the caller's own flag, and answers what it was:
+/// the shell starts each unit of work that comes another way than a request
+/// (a panel line, `take_effects`) with it, so one Stop never outlives its unit.
+/// Invalid for another `clear`.
 pub const INTERRUPTED: u64 = 20;
 /// `comp_fetch(label_ptr, label_len, buf, cap) -> len`: copies version `label` of
 /// the caller's component into `buf` when it fits; the length either way.

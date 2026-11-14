@@ -451,6 +451,11 @@ pub fn call_with_stop(
     stop: impl Fn() -> bool,
     extra: Extra,
 ) -> Result<(Vec<u8>, u64, Vec<Entry>), CallError> {
+    // Already stopped: nothing is sent, since a server on another CPU could take
+    // it before the first check below (#887's second review).
+    if stop() {
+        return Err(CallError::Cancelled);
+    }
     let mut pending = submit_with(name, request, caller_pid, deadline_ns, extra)?;
     // Set once a Stop found the call taken: from then on only its reply, its
     // deadline or `cancel()` ends the wait.

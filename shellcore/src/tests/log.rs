@@ -132,3 +132,16 @@ fn a_stop_during_the_model_call_stops_the_line_without_a_script() {
     assert_eq!(reply.text, "stopped");
     assert!(host.script_requests.borrow().is_empty());
 }
+
+/// #887's second review: a Stop that came while the model, which had already
+/// taken the call, answered it stops the line too; the call is not run.
+#[test]
+fn a_stop_while_the_model_answered_runs_no_call() {
+    let call = llmproto::act::parse(r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#);
+    let (host, mut shell) = with_calls(vec![Ok(call.unwrap())]);
+    host.stopped.set(true);
+    let reply = shell.eval("turn on round robin scheduling");
+    assert!(!reply.ok);
+    assert_eq!(reply.text, "stopped");
+    assert!(host.script_requests.borrow().is_empty());
+}
