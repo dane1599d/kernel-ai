@@ -193,6 +193,9 @@ pub enum SelfTest {
     DeskCatalog,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
+    /// A closed app's window stays closed until asked, then comes back
+    /// (backlog item 2).
+    UiWindowShow,
     /// The editor app's window on the desktop, opened by the agent's door, typed
     /// into and built in the background (P4 task 11).
     AppEditor,
@@ -215,6 +218,9 @@ pub enum SelfTest {
     UiModelsUse,
     /// An unused app naps and a click wakes it (P3 task 12b).
     DeskNap,
+    /// A window in use never naps; one that lost the focus does (backlog
+    /// item 1).
+    DeskNapBusy,
     /// A saved appearance repaints `desktop` at once and holds across its
     /// restart (P4 task 8).
     DeskAppearance,
@@ -237,7 +243,10 @@ pub enum SelfTest {
     /// Every resource-profile floor refused by the kernel (P3's exit case).
     DeskProfileFloor,
     /// The keyboard reaches an app's widgets (key input for uikit apps).
-    UiKeys,
+    /// `busy`: while Notes is called every 5 ms (comphost's poll under load).
+    UiKeys {
+        busy: bool,
+    },
     DeskTerm,
     /// `app-notes` (P4): Kai makes notes in Notes' window, they are saved, and
     /// `undo` takes one back; boot 2 (`reread`) finds them on disk.
@@ -294,6 +303,8 @@ pub enum SelfTest {
     Efi,
     /// A reset through UEFI ResetSystem.
     EfiReset,
+    /// POWER_REBOOT from ring 3, refused without `cap::POWER` (backlog item 13).
+    PowerReboot,
     /// The boot lever on a slot image, driven by `slot-do=` (ADR 0008, lane U).
     Slot,
     /// Probation's commit on a slot image (ADR 0008 §5).
@@ -465,6 +476,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-card-wake" => Some(SelfTest::DeskCardWake),
             "test=desk-catalog" => Some(SelfTest::DeskCatalog),
             "test=ui-window" => Some(SelfTest::UiWindow),
+            "test=ui-window-show" => Some(SelfTest::UiWindowShow),
             "test=app-editor" => Some(SelfTest::AppEditor),
             "test=app-editor-files" => Some(SelfTest::AppEditorFiles),
             "test=app-editor-build" => Some(SelfTest::AppEditorBuild),
@@ -473,6 +485,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=ui-models" => Some(SelfTest::UiModels),
             "test=ui-models-use" => Some(SelfTest::UiModelsUse),
             "test=desk-nap" => Some(SelfTest::DeskNap),
+            "test=desk-nap-busy" => Some(SelfTest::DeskNapBusy),
             "test=desk-appearance" => Some(SelfTest::DeskAppearance),
             "test=keep-running" => Some(SelfTest::KeepRunning {
                 reread: cmdline.split_whitespace().any(|w| w == "reread"),
@@ -483,7 +496,9 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-perf" => Some(SelfTest::DeskPerf),
             "test=desk-profile" => Some(SelfTest::DeskProfile),
             "test=desk-profile-floor" => Some(SelfTest::DeskProfileFloor),
-            "test=ui-keys" => Some(SelfTest::UiKeys),
+            "test=ui-keys" => Some(SelfTest::UiKeys {
+                busy: cmdline.split_whitespace().any(|w| w == "busy"),
+            }),
             "test=desk-term" => Some(SelfTest::DeskTerm),
             "test=app-notes" => Some(SelfTest::AppNotes {
                 reread: cmdline.split_whitespace().any(|w| w == "reread"),
@@ -512,6 +527,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=panic-reset" => Some(SelfTest::PanicReset),
             "test=efi" => Some(SelfTest::Efi),
             "test=efi-reset" => Some(SelfTest::EfiReset),
+            "test=power-reboot" => Some(SelfTest::PowerReboot),
             "test=slot" => Some(SelfTest::Slot),
             "test=update" => Some(SelfTest::Update),
             "test=probation" => Some(SelfTest::Probation),
@@ -667,6 +683,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskCardWake
             | SelfTest::DeskCatalog
             | SelfTest::UiWindow
+            | SelfTest::UiWindowShow
             | SelfTest::AppEditor
             | SelfTest::AppEditorFiles
             | SelfTest::AppEditorBuild
@@ -675,6 +692,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::UiModels
             | SelfTest::UiModelsUse
             | SelfTest::DeskNap
+            | SelfTest::DeskNapBusy
             | SelfTest::KeepRunning { .. }
             | SelfTest::DeskAppearance
             | SelfTest::DeskCard
@@ -683,7 +701,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskPerf
             | SelfTest::DeskProfile
             | SelfTest::DeskProfileFloor
-            | SelfTest::UiKeys
+            | SelfTest::UiKeys { .. }
             | SelfTest::DeskTerm
             | SelfTest::AppNotes { .. }
             | SelfTest::DeskAgent
@@ -959,6 +977,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::ui_tests::PLAN);
     }
+    if test == SelfTest::UiWindowShow {
+        plan.push('\n');
+        plan.push_str(crate::show_tests::PLAN);
+    }
     if test == SelfTest::AppEditorFiles {
         plan.push('\n');
         plan.push_str(kabi::plan::EDITOR);
@@ -984,7 +1006,7 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(kabi::plan::MODELS_WINDOW);
     }
-    if test == SelfTest::DeskNap {
+    if matches!(test, SelfTest::DeskNap | SelfTest::DeskNapBusy) {
         plan.push('\n');
         plan.push_str(crate::nap_tests::PLAN);
     }
@@ -1008,7 +1030,7 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::profile_floor_tests::PLAN);
     }
-    if test == SelfTest::UiKeys {
+    if matches!(test, SelfTest::UiKeys { .. }) {
         plan.push('\n');
         plan.push_str(crate::keys_tests::PLAN);
     }

@@ -4,7 +4,8 @@
 //! Workbench's dark one until [`Painter::set_theme`]).
 //! Pure: the same [`Scene`] gives the same pixels, on the host as in `desktop`,
 //! so the look is pinned by a host test and by `desk-boot`'s golden. The panel
-//! is drawn in `paint_panel.rs`.
+//! is drawn in `paint_panel.rs`, and its history on the desk in
+//! `paint_chat.rs`.
 //!
 //! Each window is drawn as a layer (frame, title bar, controls, content), its
 //! corners rounded, then put on the frame: copied where opaque and blended at
@@ -51,6 +52,8 @@ pub struct Scene<'a> {
     pub desk: &'a Desk,
     pub bar: &'a Bar,
     pub panel: &'a Panel,
+    /// The panel's history, drawn on the desk under the windows.
+    pub chat: &'a crate::chat::Chat,
     /// The text of the ask card up now, as the kernel posted it.
     pub ask: Option<&'a Card>,
     /// The clock, for the panel's "thinking 4s".
@@ -63,6 +66,9 @@ pub struct Painter {
     pub(crate) palette: Palette,
     near: Shadow,
     far: Shadow,
+    /// The history's entries laid out, by entry and width
+    /// ([`crate::paint_chat`]): what a repaint draws without wrapping again.
+    pub(crate) chat_laid: alloc::vec::Vec<crate::paint_chat::Laid>,
 }
 
 /// `0xFF` alpha on a token.
@@ -97,6 +103,7 @@ impl Painter {
             palette: DARK,
             near: Shadow::new(2, 96, 0),
             far: Shadow::new(SHADOW_REACH, 64, 0),
+            chat_laid: alloc::vec::Vec::new(),
         })
     }
 
@@ -104,6 +111,8 @@ impl Painter {
     pub fn set_theme(&mut self, theme: &Theme) {
         self.palette = theme.palette();
         self.text.set_theme(theme);
+        // A theme may change the type's sizes, so the lines' breaks.
+        self.chat_laid.clear();
     }
 
     /// The theme's colours, for what `desktop` draws itself (the cursor).
@@ -123,6 +132,7 @@ impl Painter {
     ) {
         let (desk, bar) = (scene.desk, scene.bar);
         c.fill(g(clip), opaque(self.palette.desk));
+        self.chat(c, clip, scene);
         for window in desk.windows().iter().filter(|w| !w.minimized) {
             if reach(window.frame).intersect(&clip).is_none() {
                 continue;
@@ -253,7 +263,7 @@ impl Painter {
         disc(c, clip, (cx, cy), r as f32 / 2.0, self.palette.window);
         let y = self.baseline(area.y, h, TypeStyle::Label);
         let x = (cx + r + 8) as f32;
-        let x = x + self.draw_text(
+        self.draw_text(
             c,
             clip,
             x,
@@ -264,20 +274,17 @@ impl Painter {
         );
         // Tabs, bottom to top as the windows stack.
         let stats = stats_area(area.w);
-        let mut x = x as i32 + 2 * PAD;
         let y = self.baseline(area.y, h, TypeStyle::MonoTitle);
-        for window in desk.windows() {
+        for (id, tab) in self.tabs(desk) {
+            let Some(window) = desk.window(id) else {
+                continue;
+            };
             let name = if window.title.is_empty() {
                 &window.label
             } else {
                 &window.title
             };
-            let (w, _) = self.text.measure(TypeStyle::MonoTitle, name);
-            let tab_w = (w as i32 + 2 * PAD).min(TAB_MAX);
-            if x + tab_w > stats.x {
-                break;
-            }
-            let tab = Rect::new(x, area.y + 4, tab_w, h - 8);
+            let x = tab.x;
             let focused = desk.focus() == Focus::Window(window.id);
             let color = match (focused, window.minimized) {
                 (true, _) => {
@@ -290,9 +297,36 @@ impl Painter {
             let inside = tab.intersect(&clip).unwrap_or_default();
             let tx = (x + PAD) as f32;
             self.draw_text(c, inside, tx, y, TypeStyle::MonoTitle, color, name);
-            x += tab_w + 4;
         }
         self.stats(c, clip, stats, bar);
+    }
+
+    /// The top bar's tabs: one a window, bottom to top as they stack, as many
+    /// as fit before the stats. What the bar draws, and what a press on it
+    /// hits (`Desk::set_tabs`).
+    pub fn tabs(&self, desk: &Desk) -> alloc::vec::Vec<(crate::desk::WindowId, Rect)> {
+        let area = desk.top_bar();
+        let h = area.h - 1;
+        let r = 5;
+        let brand = self.text.measure(TypeStyle::Label, "Kernel AI").0 as i32;
+        let mut x = area.x + PAD + 2 * r + 8 + brand + 2 * PAD;
+        let stats = stats_area(area.w);
+        let mut tabs = alloc::vec::Vec::new();
+        for window in desk.windows() {
+            let name = if window.title.is_empty() {
+                &window.label
+            } else {
+                &window.title
+            };
+            let (w, _) = self.text.measure(TypeStyle::MonoTitle, name);
+            let tab_w = (w as i32 + 2 * PAD).min(TAB_MAX);
+            if x + tab_w > stats.x {
+                break;
+            }
+            tabs.push((window.id, Rect::new(x, area.y + 4, tab_w, h - 8)));
+            x += tab_w + 4;
+        }
+        tabs
     }
 
     /// The right side, right-aligned in `area`.

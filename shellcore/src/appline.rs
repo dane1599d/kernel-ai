@@ -6,11 +6,13 @@
 //!   question and the proposal are the app's, kept between lines, and the
 //!   console's are set aside while it runs, as the AI panel's are. A line typed
 //!   here neither answers nor continues the console's.
-//! - **It cannot ask.** What would wait for a yes (a script the model proposed,
-//!   an `undo` that needs confirming) is refused with a reason, and the proposal
-//!   is dropped, as the panel's is: an app cannot ask on its own behalf, and
-//!   only the console and the desktop's card answer (ADR 0005 section 7). What
-//!   runs at once, local and undoable, is logged and undone like any line.
+//! - **It does not answer.** A call the model proposed waits for the
+//!   desktop's trusted card, as the panel's does (`deskask`): the person
+//!   answers Run or Don't there, never in the window. What the card cannot
+//!   show (a Rhai script, an `undo` that needs confirming) is refused with a
+//!   reason and dropped: an app cannot ask on its own behalf, and only the
+//!   console and the desktop's card answer (ADR 0005 section 7). What runs at
+//!   once, local and undoable, is logged and undone like any line.
 //! - **Only the Terminal may send one**, and only for a person's key or click.
 //!   `shell_line` is not a registry row, so no tier decides it, and no package
 //!   may declare it: the grant is the process the image's plan line names
@@ -36,11 +38,12 @@ pub const TERMINAL_APP: &str = "terminal-window";
 /// Why a `shell_line` that did not come from a person's input is refused.
 pub(crate) const NOT_BY_A_PERSON: &str = "shell_line runs only for a key or click in the window";
 /// Why a line is refused while the console's C entry waits on its question.
-const C_WAITS: &str = "a C entry waits for an answer: answer it in the console first";
+const C_WAITS: &str =
+    "a C entry waits for an answer: answer it in the console first (Ctrl+Alt+F12)";
 /// Why `:c` and `:rhai` are refused: C goes in the console.
-const C_LINE: &str = "C goes in the console";
+const C_LINE: &str = "C goes in the console: press Ctrl+Alt+F12";
 /// What an app that asked gets back, in place of the question.
-const ASKS: &str = "it asks first: ask in the console, which shows the script";
+const ASKS: &str = "it asks first: ask in the console (Ctrl+Alt+F12), which shows the script";
 /// Most bytes of an answer sent back, so that with its `…` it fits the most
 /// the transport carries of a person's result (`deskcore::effects::MAX_LINE_TEXT`,
 /// which `user`'s `shell` checks at compile time).
@@ -134,6 +137,13 @@ impl Shell {
         self.worded = false;
         self.done_line = None;
         let mut reply = self.eval(line);
+        // A question the trusted card can show waits for it (`deskask`).
+        if reply.confirm.is_some() && self.pending.is_some() {
+            reply = match self.wait_for_card(&reply) {
+                Ok(waits) => Reply::ok(waits),
+                Err(why) => Reply::err(why),
+            };
+        }
         if reply.confirm.is_some() || self.pending.is_some() || self.undo_asking.is_some() {
             if let Some(left) = self.pending.take() {
                 let outcome = "discarded: the terminal app cannot ask yet";

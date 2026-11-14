@@ -86,3 +86,22 @@ fn a_resumed_app_reads_its_storage_as_when_it_started() {
     // Notes reads its notes while it restores: the new instance has the view.
     assert_eq!(call(&mut host, "viewed"), "ok viewed 2");
 }
+
+/// Backlog item 2: a show reloads the serving app from its checkpoint, a
+/// new instance with the same state, so it shows its window as at a start;
+/// a suspended one is resumed.
+#[test]
+fn a_show_reloads_the_app_with_its_state_and_resumes_a_suspended_one() {
+    let kernel = kernel(&[V1]);
+    let mut host = host(&kernel);
+    call(&mut host, "add");
+    call(&mut host, "add");
+    let reply = alloc::string::String::from_utf8(host.reshow().unwrap()).unwrap();
+    assert_eq!(reply, "ok shown counter");
+    assert_eq!(call(&mut host, "get"), "ok 2 schema 1", "its state is kept");
+    call(&mut host, "ctl suspend");
+    let reply = alloc::string::String::from_utf8(host.reshow().unwrap()).unwrap();
+    assert_eq!(reply, "ok shown counter");
+    assert!(!host.suspended());
+    assert_eq!(call(&mut host, "get"), "ok 2 schema 1");
+}

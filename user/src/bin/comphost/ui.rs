@@ -17,7 +17,6 @@ use livecore::{Fault, Performed};
 use uikit::Frame;
 use uikit::layout::Measure;
 use uikit::style::TypeStyle;
-use uikit::widget::UiEvent;
 use user::{println, sys};
 use wasmhost::desk::{Desk, Open, Show, Target, Told};
 use wasmhost::{AppEvent, LiveInstance, Update, surface};
@@ -72,10 +71,41 @@ pub struct Ui {
     pools: Vec<Pool>,
     /// Each open window's last frame, to answer the agent and to reopen.
     frames: Vec<(u32, Frame)>,
+    /// The windows the person closed (or the agent's `window_close` did):
+    /// comphost took each off the desk and keeps it hidden, with the app's
+    /// latest frame in `held`, until a show ([`Ui::unhide`]). Here, outside
+    /// the app, so no reload (a nap's wake, a fault, a swap) and no app, a
+    /// Kai-built one included, can bring it back unasked (backlog item 2).
+    /// Per window: the app's other windows stay on the desk.
+    hidden: Vec<u32>,
+    /// The person hid one of its windows, and no show has come since. Sticky:
+    /// a hidden window's close does not clear it, so the app cannot escape
+    /// the hide by closing that window and opening another.
+    hidden_app: bool,
+    /// The windows on the desk when the shown version last changed (an
+    /// update or a rollback): the new version's frames for them show, as the
+    /// person left them, even while another window is hidden.
+    on_desk: Vec<u32>,
+    /// Frames that said unsaved so far, shown or held: comphost dates the
+    /// unsaved lease from the last one ([`Ui::unsaved_frames`]).
+    unsaved_frames: u64,
+    /// The frames of its windows while hidden, newest only.
+    held: Vec<(u32, Frame)>,
     /// The version whose windows show.
     shown: Option<String>,
-    /// Whether one of its windows took focus since [`Ui::take_focused`].
-    focused: bool,
+    /// The last focus change of its windows since [`Ui::take_focused`]:
+    /// `Some(true)` took it, `Some(false)` lost it.
+    focused: Option<bool>,
+    /// A person typed or clicked in one of its windows, or acted on one,
+    /// since [`Ui::take_used`]: use, for the app nap.
+    used: bool,
+    /// Its window that holds the keyboard focus, if one does: closing it is
+    /// losing the focus, whose `focus_out` comes after the window is gone.
+    holder: Option<u32>,
+    /// Focus changes for the windows themselves, given by [`Ui::give_focus`]
+    /// after the nap's wake: each shows its focus ring and caret, and one
+    /// taking the keyboard focuses a default node so keys reach one.
+    window_focus: Vec<(u32, bool)>,
     /// Events that came back with the window's own calls, acted on at the next
     /// poll.
     later: Vec<Told>,
@@ -107,8 +137,16 @@ impl Ui {
             text,
             pools: Vec::new(),
             frames: Vec::new(),
+            hidden: Vec::new(),
+            hidden_app: false,
+            unsaved_frames: 0,
+            on_desk: Vec::new(),
+            held: Vec::new(),
             shown: None,
-            focused: false,
+            focused: None,
+            used: false,
+            holder: None,
+            window_focus: Vec::new(),
             later: Vec::new(),
             reply: alloc::vec![0u8; kabi::MAX_MESSAGE],
             sent: effects::Sent::default(),
@@ -132,8 +170,55 @@ impl Ui {
             .is_some_and(crate::kai_settings::Forward::busy)
     }
 
+    /// Whether one of its windows holds changes not yet kept (`set-unsaved`),
+    /// shown or hidden: a nap would take them with the app's state, so the app
+    /// does not nap while one does (#878).
+    pub fn unsaved(&self) -> bool {
+        self.frames
+            .iter()
+            .chain(self.held.iter())
+            .any(|(_, frame)| frame.unsaved)
+    }
+
+    /// How many frames have said unsaved so far: a new one is the person still
+    /// working, which renews the unsaved lease.
+    pub fn unsaved_frames(&self) -> u64 {
+        self.unsaved_frames
+    }
+
+    /// Whether `window`'s last frame says it holds unsaved changes.
+    fn window_unsaved(&self, window: u32) -> bool {
+        self.frames
+            .iter()
+            .any(|(app, frame)| *app == window && frame.unsaved)
+    }
+
     pub fn has_windows(&self) -> bool {
         !self.frames.is_empty()
+    }
+
+    /// Whether every window it has is hidden: nothing of it is on the desk, so
+    /// its background reads are not use and it naps as any unseen app does.
+    pub fn hidden_only(&self) -> bool {
+        self.frames.is_empty() && self.hidden_app
+    }
+
+    /// Whether a frame for `window` waits for a show: the window is hidden, or
+    /// it is new while nothing of the hidden app is on the desk (it opened one
+    /// unseen). A window the person had on the desk before a version change
+    /// shows again.
+    fn hides(&mut self, window: u32) -> bool {
+        if self.hidden.contains(&window) {
+            return true;
+        }
+        if self.on_desk.contains(&window) {
+            return false;
+        }
+        let unseen = self.hidden_only();
+        if unseen {
+            self.hidden.push(window);
+        }
+        unseen
     }
 
     /// Whether comphost should poll: a window is open, or an effect's result
@@ -142,10 +227,43 @@ impl Ui {
         self.has_windows() || self.sent.awaits() || self.changes_busy()
     }
 
-    /// Whether one of its windows took focus since the last call: use, for
-    /// app nap (P3 task 12b).
-    pub fn take_focused(&mut self) -> bool {
-        core::mem::take(&mut self.focused)
+    /// How its windows' focus changed since the last call, if it did: for
+    /// app nap (P3 task 12b), which a focused window keeps awake.
+    pub fn take_focused(&mut self) -> Option<bool> {
+        self.focused.take()
+    }
+
+    /// Whether a person used one of its windows since the last call: typed,
+    /// clicked or acted. Use, so a window in use never naps (the founder's
+    /// Terminal froze while he typed in it).
+    pub fn take_used(&mut self) -> bool {
+        core::mem::take(&mut self.used)
+    }
+
+    /// Hands its windows the focus changes `desktop` told: after the nap's
+    /// wake (comphost calls this once the napper had the focus), so a woken
+    /// app still gets its default focus. A suspended app gets none: a focus
+    /// or a blur must not resume an app a rule suspended.
+    pub fn give_focus<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) {
+        let changes = core::mem::take(&mut self.window_focus);
+        if changes.is_empty() || host.suspended() {
+            return;
+        }
+        for (window, took) in changes {
+            let input = match took {
+                true => uikit::input::Input::FocusIn,
+                false => uikit::input::Input::FocusOut,
+            };
+            let performed = serve_shown(host, |core| core.ui_input(window, input));
+            self.forward(performed, false);
+        }
+        self.pump(host);
+    }
+
+    /// Whether a line it sent waits for its answer: the app must be awake
+    /// to take it, so it holds a nap lease meanwhile.
+    pub fn awaits_answer(&self) -> bool {
+        self.sent.awaits()
     }
 
     /// Shows what the instances committed since the last call: the shown
@@ -185,6 +303,9 @@ impl Ui {
         let mut label = None;
         host.each_instance(|instance, version, shown| {
             if let LiveInstance::V2(core) = instance {
+                for note in core.take_ui_notes() {
+                    println!("comphost: {note}");
+                }
                 let taken = core.take_ui();
                 if shown {
                     updates = taken;
@@ -193,16 +314,33 @@ impl Ui {
             }
         });
         if label != self.shown {
-            for (app, _) in core::mem::take(&mut self.frames) {
+            let frames = core::mem::take(&mut self.frames);
+            self.on_desk = frames.iter().map(|(app, _)| *app).collect();
+            for (app, _) in frames {
                 self.close(app);
             }
+            // The old version's frames are not the new one's: its windows
+            // stay hidden, and wait for the new version's frames.
+            self.held.clear();
             self.shown = label;
         }
         for update in updates {
+            if let Update::Frame { frame, .. } = &update
+                && frame.unsaved
+            {
+                self.unsaved_frames += 1;
+            }
             match update {
+                // Hidden by the person: the window's frames wait for a show.
+                Update::Frame { window, frame } if self.hides(window) => {
+                    self.held.retain(|(app, _)| *app != window);
+                    self.held.push((window, frame));
+                }
                 Update::Frame { window, frame } => self.show(window, frame),
                 Update::Closed(window) => {
                     self.frames.retain(|(app, _)| *app != window);
+                    self.held.retain(|(app, _)| *app != window);
+                    self.hidden.retain(|app| *app != window);
                     self.close(window);
                 }
                 Update::CodeSize {
@@ -237,6 +375,7 @@ impl Ui {
         }
         let inputs = self.take_input();
         let typed = !inputs.is_empty();
+        self.used |= typed;
         for (app, input) in inputs {
             // Typed input is a transaction too: what the app saves or asks for
             // because of it is kept like an action call's.
@@ -388,25 +527,54 @@ impl Ui {
     ) -> Result<(), Exit> {
         for t in told {
             // A focus wakes only an app comphost napped itself (its caller
-            // decides); a close or an action wakes any suspended app.
-            if !matches!(t, Told::Restarted | Told::Focus(_) | Told::Theme(_))
-                && let Some(reply) = host.wake()?
+            // decides); an action wakes any suspended app, and a close one
+            // whose window holds unsaved changes (below).
+            if !matches!(
+                t,
+                Told::Restarted | Told::Focus(_) | Told::Blur(_) | Told::Close(_) | Told::Theme(_)
+            ) && let Some(reply) = host.wake()?
             {
                 println!(
                     "comphost: resumed for a window event: {}",
                     String::from_utf8_lossy(&reply)
                 );
             }
+            if matches!(t, Told::Close(_) | Told::Action { .. }) {
+                self.used = true;
+            }
             match t {
                 Told::Restarted => self.reopen(),
-                Told::Focus(_) => self.focused = true,
+                Told::Focus(window) => {
+                    self.focused = Some(true);
+                    self.holder = Some(window);
+                    self.window_focus.push((window, true));
+                }
+                Told::Blur(window) => {
+                    self.focused = Some(false);
+                    self.holder = None;
+                    self.window_focus.push((window, false));
+                }
                 Told::Theme(name) => self.set_theme(&name),
-                Told::Close(window) => {
+                // The person closed it: comphost hides it, and the app, not
+                // told, keeps its window and its state, as if minimized,
+                // until a show puts it back.
+                // Unsaved changes: the app is told, so it can ask to save or
+                // discard them (the Editor's prompt, #878); hiding would keep
+                // them unasked.
+                Told::Close(window) if self.window_unsaved(window) => {
+                    if let Some(reply) = host.wake()? {
+                        println!(
+                            "comphost: resumed for a close: {}",
+                            String::from_utf8_lossy(&reply)
+                        );
+                    }
+                    println!("comphost: window {window} has unsaved changes; the app is asked");
                     let performed = serve_shown(host, |core| {
-                        core.ui_events(window, &[UiEvent::CloseRequested])
+                        core.ui_events(window, &[uikit::widget::UiEvent::CloseRequested])
                     });
                     self.forward(performed, false);
                 }
+                Told::Close(window) => self.hide(window),
                 Told::Action {
                     window,
                     node,
@@ -460,6 +628,43 @@ impl Ui {
     }
 
     /// A new `desktop`: every window opens again from its last frame.
+    /// Takes `window` off the desk and keeps its frame for a show.
+    fn hide(&mut self, window: u32) {
+        let Some(at) = self.frames.iter().position(|(app, _)| *app == window) else {
+            return;
+        };
+        let (_, frame) = self.frames.remove(at);
+        self.held.retain(|(app, _)| *app != window);
+        self.held.push((window, frame));
+        if !self.hidden.contains(&window) {
+            self.hidden.push(window);
+        }
+        self.hidden_app = true;
+        self.on_desk.retain(|app| *app != window);
+        self.close(window);
+        println!("comphost: window {window} hidden until it is shown");
+    }
+
+    /// A show (`kai-show 1`, or an open row's call): its hidden windows back
+    /// on the desk with the app's latest frames, no reload, so nothing it
+    /// holds is lost. True when a window came back.
+    pub fn unhide(&mut self) -> bool {
+        if self.hidden.is_empty() && !self.hidden_app {
+            return false;
+        }
+        self.hidden.clear();
+        self.hidden_app = false;
+        let held = core::mem::take(&mut self.held);
+        let shown = !held.is_empty();
+        for (window, frame) in held {
+            self.show(window, frame);
+        }
+        if shown {
+            println!("comphost: shown again, as it was");
+        }
+        shown
+    }
+
     fn reopen(&mut self) {
         if self.frames.is_empty() {
             return;
@@ -586,6 +791,13 @@ impl Ui {
     }
 
     fn close(&mut self, app: u32) {
+        // The window that held the focus is gone: the focus went with it, and
+        // the app may nap once unused (its focus_out cannot reach a window no
+        // longer here).
+        if self.holder == Some(app) {
+            self.holder = None;
+            self.focused = Some(false);
+        }
         let calls = wasmhost::desk::calls(&self.desk.closed(app));
         if !calls.is_empty() {
             self.send(&calls, None);

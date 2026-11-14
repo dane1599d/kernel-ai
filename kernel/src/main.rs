@@ -114,6 +114,7 @@ mod model;
 mod model_import_tests;
 mod model_tests;
 mod models_window_tests;
+mod nap_busy_tests;
 mod nap_tests;
 mod net;
 mod net_commands;
@@ -144,6 +145,7 @@ mod serial;
 mod shell_tests;
 mod shm;
 mod shm_tests;
+mod show_tests;
 mod slots;
 mod smp;
 mod smp_tests;
@@ -416,6 +418,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskCardWake => run_case(card_wake_tests::check),
         SelfTest::DeskCatalog => run_case(catalog_tests::check),
         SelfTest::UiWindow => run_case(ui_tests::check),
+        SelfTest::UiWindowShow => run_case(show_tests::check),
         SelfTest::AppEditor => run_case(app_editor_tests::check),
         SelfTest::AppEditorFiles => run_case(app_editor_files_tests::check),
         SelfTest::AppEditorBuild => run_case(app_editor_build_tests::check),
@@ -424,6 +427,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::UiModels => run_case(app_window_tests::models_check),
         SelfTest::UiModelsUse => run_case(models_window_tests::check),
         SelfTest::DeskNap => run_case(nap_tests::check),
+        SelfTest::DeskNapBusy => run_case(nap_busy_tests::check),
         SelfTest::KeepRunning { reread } => run_case(|| keep_tests::check(reread)),
         SelfTest::DeskAppearance => run_case(appearance_tests::check),
         SelfTest::DeskCard => run_case(card_tests::check),
@@ -432,7 +436,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskPerf => run_case(desk_perf_tests::check),
         SelfTest::DeskProfile => run_case(desk_profile_tests::check),
         SelfTest::DeskProfileFloor => run_case(profile_floor_tests::check),
-        SelfTest::UiKeys => run_case(keys_tests::check),
+        SelfTest::UiKeys { busy } => run_case(|| keys_tests::check(busy)),
         SelfTest::DeskTerm => run_case(term_tests::check),
         SelfTest::AppNotes { reread } => run_case(|| app_notes_tests::check(reread)),
         SelfTest::DeskAgent => run_case(agent_desk_tests::agent_check),
@@ -467,6 +471,7 @@ extern "C" fn boot_continue() -> ! {
         }
         SelfTest::Efi => run_case(efi_tests::check),
         SelfTest::EfiReset => efi::reset(),
+        SelfTest::PowerReboot => run_case(efi_tests::power_check),
         SelfTest::Devices => run_case(device_tests::check),
         SelfTest::TuneRevert => run_case(tune_tests::revert_check),
         SelfTest::TuneStall => run_case(tune_stall_tests::check),

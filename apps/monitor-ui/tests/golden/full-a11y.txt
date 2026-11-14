@@ -9,7 +9,6 @@
 [8] button "Memory" runs monitor_sort
 [9] button "Name" runs monitor_sort
 [10] button "PID" runs monitor_sort
-[11] button "Refresh"
 [12] table "Processes" = "4 rows"
 [13] label "Model: ready, 12.5 tokens/s"
 [16] label "Pick a process; to stop it, ask Kai"

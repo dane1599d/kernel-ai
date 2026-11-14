@@ -2,8 +2,8 @@ name: QEMU for CI
 description: >-
   QEMU built by ci.yml's `qemu` job from a pinned, SHA-256-checked source
   tarball (Ubuntu 24.04's 8.2 crashed under TCG), restored from the cache, with
-  OVMF and QEMU's runtime libraries from apt, and on PATH. Bump `version` and
-  `sha256` here and in the `qemu` job together.
+  OVMF and QEMU's runtime libraries from apt, and on PATH. Bump `version` here
+  with the version and SHA-256 in ci.yml's `qemu` job and in release.yml.
 inputs:
   version:
     description: The QEMU release.

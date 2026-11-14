@@ -62,6 +62,7 @@ const fn install(name: &'static str, cmdline: &'static str, kind: MirrorKind) ->
 const INSTALL_AGAIN: TestCase = TestCase {
     expect: &[
         "pkg: undo switched to generation 3; big installed from the mirror as generation 4, fetched in 0 pieces",
+        "pkg: undo took ",
         "pkg-install: boot 2: fs shows generation 4 current, as pkg left it",
     ],
     ..install(
@@ -162,6 +163,7 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &[
             "pkg: PKG_FETCH refuses a request one byte off kabi::pkgrepo's",
             "pkg: big installed from the mirror as generation 2, fetched in 2 pieces",
+            "pkg: install of big took ",
             "pkg-install: generation 2 holds big from the mirror beside the image's notes",
             "pkg-install: the catalogue lists big and the seven apps installed, then the mirror's extra",
             "pkg-install: a process without /system/pkg gets Permission from BOOT_READ, COMP_ADD, PKG_FETCH and PKG_TIME",

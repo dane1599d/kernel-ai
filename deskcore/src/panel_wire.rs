@@ -6,12 +6,18 @@
 //! - `panel state <state>` → `ok`: what the panel shows on its right, one of
 //!   `idle`, `acting <call>\t<target>`, `done <line>` and `refused <reason>`.
 //!   (Thinking is the panel's own, from the Enter that queued the line.)
+//! - `panel said <text>` → `ok`: what the AI said to the line the shell took
+//!   last, the model's words or its script's prints, for the desk's history
+//!   ([`crate::chat`]), sent before that line's state. Several lines, at most
+//!   [`MAX_SAID`] bytes.
 //!
 //! - `appearance <kai-appearance 1 text>` → `ok` or `err <why>`: the appearance
 //!   the shell just saved (P4 task 8), for `desktop` to paint in at once.
 //!
-//! `desktop` takes these from the shell alone. The texts are the shell's code
-//! results and reasons, never the model's words, and are cut to one line.
+//! `desktop` takes these from the shell alone. A state's text is the shell's
+//! code result or reason, never the model's words, cut to one line; only
+//! `panel said` carries the AI's words, and only to the history, which draws
+//! them as the AI's (ADR 0005 §8, the panel's history).
 
 use crate::panel::{Request, State};
 use alloc::format;
@@ -32,6 +38,60 @@ pub fn parse_appearance(request: &str) -> Option<&str> {
     request.strip_prefix(APPEARANCE)
 }
 const STATE: &str = "panel state ";
+/// What a desktop line's card came to (`shellcore::deskask`): a state, but
+/// one that never replaces a newer line's thinking.
+const CARD: &str = "panel card ";
+
+/// A card's result as its request: [`encode_state`]'s, under [`CARD`].
+pub fn encode_card(state: &State) -> Option<String> {
+    let request = encode_state(state)?;
+    Some(format!("{CARD}{}", &request[STATE.len()..]))
+}
+
+/// A [`encode_card`] request read back; `None` for anything else.
+pub fn parse_card(text: &str) -> Option<State> {
+    let body = text.strip_prefix(CARD)?;
+    parse_state(&format!("{STATE}{body}"))
+}
+
+const SAID: &str = "panel said ";
+const NOTE: &str = "panel note ";
+/// The most a [`SAID`] request's text holds.
+pub const MAX_SAID: usize = crate::chat::MAX_TEXT;
+
+/// What the AI said, as its request: cut to [`MAX_SAID`] at a character.
+pub fn encode_said(text: &str) -> String {
+    let mut end = text.len().min(MAX_SAID);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{SAID}{}", &text[..end])
+}
+
+/// The text a [`encode_said`] request carries; `None` for anything else or
+/// for one over [`MAX_SAID`].
+pub fn parse_said(request: &str) -> Option<&str> {
+    request
+        .strip_prefix(SAID)
+        .filter(|text| text.len() <= MAX_SAID)
+}
+
+/// A question code asked the line the shell took last (which target), as
+/// its request: for the history as code's note, never Kai's words.
+pub fn encode_note(text: &str) -> String {
+    let mut end = text.len().min(MAX_SAID);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{NOTE}{}", &text[..end])
+}
+
+/// The text a [`encode_note`] request carries; `None` for anything else.
+pub fn parse_note(request: &str) -> Option<&str> {
+    request
+        .strip_prefix(NOTE)
+        .filter(|text| text.len() <= MAX_SAID)
+}
 /// The longest text a state carries: the panel shows one line.
 pub const MAX_TEXT: usize = 200;
 
@@ -68,6 +128,35 @@ pub fn encode_state(state: &State) -> Option<String> {
         State::Refused { reason } => format!("refused {}", one_line(reason)),
     };
     Some(format!("{STATE}{body}"))
+}
+
+/// [`encode_state`], with the log entry a done line's undo takes back after
+/// a tab (`panel state done <line>\t<id>`): the line has no tab of its own.
+pub fn encode_done(state: &State, entry: Option<u64>) -> Option<String> {
+    let text = encode_state(state)?;
+    match (state, entry) {
+        (State::Done { .. }, Some(id)) => Some(format!("{text}\t{id}")),
+        _ => Some(text),
+    }
+}
+
+/// A `panel state` request read back with a done line's log entry, if it
+/// names one; `None` for anything else.
+pub fn parse_done(text: &str) -> Option<(State, Option<u64>)> {
+    let Some(body) = text
+        .strip_prefix(STATE)
+        .and_then(|b| b.strip_prefix("done "))
+    else {
+        return parse_state(text).map(|state| (state, None));
+    };
+    match body.rsplit_once('\t') {
+        Some((line, id)) => {
+            let id = id.parse::<u64>().ok()?;
+            let state = parse_state(&format!("{STATE}done {line}"))?;
+            Some((state, Some(id)))
+        }
+        None => parse_state(text).map(|state| (state, None)),
+    }
 }
 
 /// A `panel state` request read back; `None` for anything else.
@@ -178,6 +267,50 @@ mod tests {
         let text = encode_state(&long).unwrap();
         assert!(text.len() <= STATE.len() + "refused ".len() + MAX_TEXT);
         assert!(parse_state(&text).is_some());
+    }
+
+    /// #875's review: a done line names the log entry its undo takes back.
+    #[test]
+    fn a_done_line_carries_its_log_entry() {
+        let done = State::Done {
+            line: "Done: policy round-robin (was interactive).".into(),
+        };
+        let text = encode_done(&done, Some(12)).unwrap();
+        assert_eq!(parse_done(&text), Some((done.clone(), Some(12))));
+        let bare = encode_done(&done, None).unwrap();
+        assert_eq!(parse_done(&bare), Some((done, None)));
+        assert_eq!(parse_done("panel state idle"), Some((State::Idle, None)));
+        assert_eq!(parse_done("panel state done x\tnine"), None);
+    }
+
+    #[test]
+    fn a_cards_result_reads_back_and_is_not_a_state() {
+        let done = State::Done {
+            line: "Done: notes stopped.".into(),
+        };
+        let text = encode_card(&done).unwrap();
+        assert_eq!(parse_card(&text), Some(done.clone()));
+        assert_eq!(parse_state(&text), None);
+        assert_eq!(parse_card(&encode_state(&done).unwrap()), None);
+    }
+
+    #[test]
+    fn what_was_said_goes_whole_up_to_its_bound() {
+        let words = "Rust is a systems language.\nIt has no garbage collector.";
+        assert_eq!(parse_said(&encode_said(words)), Some(words));
+        let long = "é".repeat(MAX_SAID);
+        let text = encode_said(&long);
+        assert!(parse_said(&text).is_some_and(|t| t.len() <= MAX_SAID));
+        let over = alloc::format!("{SAID}{}", "x".repeat(MAX_SAID + 1));
+        assert_eq!(parse_said(&over), None);
+        assert_eq!(parse_said("panel state done x"), None);
+        assert_eq!(
+            parse_note(&encode_note("Which service?")),
+            Some("Which service?")
+        );
+        assert_eq!(parse_said(&encode_note("x")), None);
+        assert_eq!(parse_note(&encode_said("x")), None);
+        assert_eq!(parse_state(&encode_said("x")), None);
     }
 
     #[test]

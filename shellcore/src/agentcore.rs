@@ -30,6 +30,9 @@ use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use llmproto::act::{ActError, ActRequest, Call};
+
+/// The person's own folder: a file `ui_open` is given by name is in it.
+const HOME: &str = "/home/user/";
 use llmproto::script::Answer;
 use serde_json::Value;
 use termcore::menu::{Menu, Origin};
@@ -145,6 +148,11 @@ impl Shell {
     /// The one door: what `call`, made for the user's `request`, may do, and doing
     /// it.
     pub(crate) fn execute(&mut self, id: u64, request: &str, call: &Call) -> Outcome {
+        let forwarded = match self.open_with(id, call) {
+            Ok(forwarded) => forwarded,
+            Err(why) => return self.refuse(id, request, call, Why::NeverValue, &why),
+        };
+        let call = forwarded.as_ref().unwrap_or(call);
         match call.name.as_str() {
             "say" => self.pseudo_say(id, request, call),
             "clarify" => self.pseudo_clarify(id, request, call),
@@ -155,6 +163,51 @@ impl Shell {
                 None => self.refuse(id, request, call, Why::Unknown, "no such action"),
             },
         }
+    }
+
+    /// `ui_open(app, arg)` with an argument, as the app's own open row
+    /// (founder test 2, item 6): "open ideas.txt in the editor" runs
+    /// `editor_open_file("/home/user/ideas.txt")`, which consent then judges
+    /// as any call. A name is taken under the person's home, as the editor's
+    /// own path check wants; `..` is refused. `Ok(None)` when the call is not
+    /// that, or the app declares no open row.
+    fn open_with(&self, id: u64, call: &Call) -> Result<Option<Call>, String> {
+        if call.name != agentabi::UI_OPEN.name {
+            return Ok(None);
+        }
+        let (Some(arg), Some(app)) = (
+            call.arguments.get("arg").and_then(Value::as_str),
+            call.arguments.get("app").and_then(Value::as_str),
+        ) else {
+            return Ok(None);
+        };
+        let arg = arg.trim();
+        if arg.is_empty() {
+            return Ok(None);
+        }
+        if arg.split('/').any(|part| part == "..") {
+            return Err(format!("{arg}: a path may not go up with .."));
+        }
+        let path = match arg.starts_with('/') {
+            true => String::from(arg),
+            false => format!("{HOME}{}", arg.trim_start_matches("./")),
+        };
+        let app = crate::ui::app_of(crate::ui::canonical(app)).replace('-', "_");
+        let Some((name, row)) = [format!("{app}_open_file"), format!("{app}_open")]
+            .into_iter()
+            .find_map(|name| Some((name.clone(), self.row(&name)?)))
+        else {
+            return Ok(None);
+        };
+        let Some(first) = row.args.first() else {
+            return Ok(None);
+        };
+        self.host.audit(&format!(
+            "request {id}: ui_open({app}, {arg}) runs as {name}"
+        ));
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(String::from(first.name), Value::from(path));
+        Ok(Some(Call { name, arguments }))
     }
 
     /// The row named `name`: the OS's, then an installed app's (P4).
@@ -190,8 +243,14 @@ impl Shell {
             .and_then(Value::as_array)
             .map(|list| list.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
+        // An option no row backs ("increase CPU frequency") is not offered.
+        let options: Vec<&str> = options
+            .into_iter()
+            .filter(|option| crate::abilities::backed(option))
+            .collect();
         self.record(id, request, "", "asked the user to clarify");
         self.clarifying = Some(request.to_string());
+        self.clarified_by_model = true;
         let text = match options.is_empty() {
             true => question,
             false => format!("{question} ({})", options.join(", ")),

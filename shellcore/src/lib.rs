@@ -21,6 +21,7 @@
 
 extern crate alloc;
 
+mod abilities;
 mod actions;
 pub mod actlog;
 mod agentcore;
@@ -36,9 +37,11 @@ mod brackets;
 pub mod ccbuild;
 mod centry;
 mod clarify;
+mod clock;
 mod cmode;
 mod commands;
 pub mod data;
+mod deskask;
 pub mod door;
 mod effects;
 mod engine;
@@ -48,6 +51,7 @@ mod instructions;
 mod models;
 mod netask;
 pub mod netgrant;
+mod sound;
 pub use models::MODELS_APP;
 pub use netask::Connect as NetConnect;
 mod packages;
@@ -122,6 +126,8 @@ pub enum FsRead<'a> {
     Whole(&'a str),
     History(&'a str),
     Changes,
+    /// Paths under home whose last part holds this word, case aside.
+    Find(&'a str),
 }
 
 /// A change the `fs` server makes as one transaction, which `undo` restores.
@@ -275,6 +281,17 @@ pub trait Host {
     /// One request to `pkg` through the shell's route to it: the text after
     /// its `ok`, or why not (P4 task 13).
     fn pkg(&self, _request: &str) -> Result<String, String> {
+        Err(String::from("there is no pkg service here"))
+    }
+    /// Seconds since 1970 UTC from the kernel's clock (`CLOCK_NOW`), or `None`
+    /// where the firmware gave no date.
+    fn unix_seconds(&self) -> Option<u64> {
+        None
+    }
+
+    /// Installed package `package`'s `kai-actions 1` answer, read by `pkg`
+    /// from its stored artifact: an app's rows before it first runs.
+    fn installed_rows(&self, _package: &str) -> Result<String, String> {
         Err(String::from("there is no pkg service here"))
     }
     /// `cc build`'s work outside the shell's logic: component `name`'s
@@ -628,6 +645,13 @@ pub struct Shell {
     /// The app whose install card waits to open by itself, once a build in
     /// the background built it ([`Shell::take_card`]).
     card: Option<String>,
+    /// Proposals from desktop lines (the panel, the Terminal window) waiting
+    /// for the trusted card (`deskask`).
+    desk_asks: Vec<deskask::Waiting>,
+    /// The question on the card that came from a desktop line.
+    card_for_desk: Option<u64>,
+    /// What that card's answer came to, for the panel.
+    card_result: Option<(bool, String)>,
     /// Apps' network asks waiting for the terminal's card (P5 task 13).
     net_cards: Vec<netask::NetAsking>,
     /// Network grants revoked, kept for their undo.
@@ -666,6 +690,27 @@ pub struct Shell {
     asked_model: bool,
     worded: bool,
     done_line: Option<String>,
+    /// The log entry the last panel line made, if it made one: what the
+    /// panel's undo link undoes ([`Shell::take_panel_entry`]).
+    panel_entry: Option<u64>,
+    /// What the AI said to the last panel line, for the desk's history
+    /// ([`Shell::take_panel_said`]): the model's words or a model script's
+    /// prints, never the panel's own state line.
+    panel_said: Option<String>,
+    /// The panel's own clarifying question, kept for its next line as an
+    /// app's terminal keeps its own: the person answers in the bar.
+    panel_clarifying: Option<String>,
+    /// A question code asked a panel line (which target), for the desk's
+    /// history as code's note ([`Shell::take_panel_note`]): it can carry a
+    /// name the model chose, so it is never the bar's.
+    panel_note: Option<String>,
+    /// `new` ran since the panel's line began: the terminal's question,
+    /// set aside meanwhile, is forgotten too.
+    forgot: bool,
+    /// The last clarifying question was the model's (`clarify`), not code's
+    /// (`guard::which`, a target to pick): only the model's words go to the
+    /// desk's history as Kai's.
+    clarified_by_model: bool,
     /// The `pack_id` of the pack the model is given, logged with each model turn
     /// (ADR 0010 §7): the same one llm reports for its `act` slot.
     pack_id: u64,
@@ -734,6 +779,9 @@ impl Shell {
             app_job: None,
             notices: Vec::new(),
             card: None,
+            desk_asks: Vec::new(),
+            card_for_desk: None,
+            card_result: None,
             net_cards: Vec::new(),
             net_revoked: Vec::new(),
             net_high: 0,
@@ -750,6 +798,12 @@ impl Shell {
             asked_model: false,
             worded: false,
             done_line: None,
+            panel_entry: None,
+            panel_said: None,
+            panel_clarifying: None,
+            panel_note: None,
+            forgot: false,
+            clarified_by_model: false,
             pack_id: llmproto::pack::act_pack_id(),
             saved_log: None,
             owner_once: None,
@@ -867,7 +921,16 @@ impl Shell {
         if let Some(reply) = self.status_line(input) {
             return reply;
         }
+        let answering = input.strip_prefix("answer ").and_then(|rest| {
+            let mut words = rest.split(' ');
+            let id = words.next()?.parse::<u64>().ok()?;
+            Some((id, words.next().unwrap_or("")))
+        });
+        if answering.is_some_and(|(id, _)| Some(id) == self.card_for_desk) {
+            self.done_line = None;
+        }
         let mut reply = self.eval(input);
+        self.desk_answered(answering, &reply);
         if reply.confirm.is_none() && !reply.more && !self.notices.is_empty() {
             let mut text = self.take_notices().join("\n");
             if !reply.text.is_empty() {
@@ -974,6 +1037,10 @@ impl Shell {
                 "show" | "why" => return self.show_last(),
                 _ => {}
             }
+        }
+        // `open <app>` alone opens it with no model (the Apps sheet's line).
+        if let Some(reply) = self.open_line(input) {
+            return reply;
         }
         // Installing Kai's last app, or showing its code, comes before a
         // package line of the same words.
@@ -1136,13 +1203,32 @@ impl Shell {
         if request.is_empty() {
             return Reply::err("usage: ? <what you want done>");
         }
-        self.asked_model = true;
         let id = self.next_id;
         self.next_id += 1;
         self.host.audit(&format!(
             "script {id} requested: {}",
             show::truncate(request, 60)
         ));
+        // The time and the date come from the kernel's clock, never the model.
+        if let Some(text) = clock::answer(request, self.host.unix_seconds()) {
+            // Not `worded`: the panel shows this line itself (#893).
+            self.record(id, request, "", "answered from the clock");
+            return Reply::ok(text);
+        }
+        // Sound has one answer until there is an audio driver.
+        if let Some(text) = sound::answer(request) {
+            self.record(id, request, "", "answered: no sound yet");
+            self.worded = true;
+            return Reply::ok(text);
+        }
+        // What Kai can do with something comes from the rows, never the model.
+        if let Some(text) = abilities::answer(request) {
+            self.record(id, request, "", "answered from the registry");
+            // A list in words: the panel sends it to the terminal whole.
+            self.worded = true;
+            return Reply::ok(text);
+        }
+        self.asked_model = true;
         if let Some(reply) = self.try_act(id, request) {
             return reply;
         }
@@ -1240,6 +1326,9 @@ impl Shell {
     fn forget(&mut self) -> Reply {
         self.host.forget();
         self.clarifying = None;
+        // The panel's question goes with the conversation.
+        self.panel_clarifying = None;
+        self.forgot = true;
         Reply::ok("A new conversation: earlier turns are forgotten; `log` and `undo` still work")
     }
 

@@ -772,6 +772,52 @@ fn undo_stops_only_the_start_its_own_entry_made() {
 }
 
 #[test]
+fn what_kai_can_do_with_something_rows_name_comes_from_the_rows() {
+    // The founder's VirtualBox test (2026-11-14): no invented "CPU frequency",
+    // and no model asked when rows name the thing.
+    let (host, mut shell) = with_calls(vec![]);
+    let cpus = shell.eval("what can you do with the cpus");
+    assert!(
+        cpus.ok && cpus.text.contains("- set_policy: switches every CPU"),
+        "{cpus:?}"
+    );
+    assert!(!cpus.text.contains("frequency"), "{cpus:?}");
+    assert!(host.act_lines.borrow().is_empty());
+}
+
+#[test]
+fn a_topic_no_row_names_or_one_meaning_everything_goes_to_the_model() {
+    use crate::abilities::answer;
+    // Whole words only: "me" is not "memory", and no match is no proof.
+    for line in [
+        "what can you do for me",
+        "what can you do on this computer",
+        "what can you do with the network",
+        "can you ican you do anything with the gpu?",
+        "can you use the gpu",
+        "what can you do",
+        "show me the cpus",
+        "what can you do with the cpus and then switch the policy to round robin",
+    ] {
+        assert_eq!(answer(line), None, "{line}");
+    }
+    // The founder's own line, typo and all, finds its opening.
+    assert!(answer("can you ican you do anything with the cpus?").is_some());
+    assert!(answer("can you use the cpus").is_some());
+}
+
+#[test]
+fn a_clarify_offers_only_what_some_row_backs() {
+    let ask = r#"{"name":"clarify","arguments":{"question":"What can you do with CPUs?","options":["adjust scheduling policy","increase CPU frequency","use GPU for rendering"]}}"#;
+    let (_host, mut shell) = with_calls(vec![call(ask)]);
+    let reply = shell.eval("tell me about cpus and stuff");
+    assert_eq!(
+        reply,
+        ok("What can you do with CPUs? (adjust scheduling policy)")
+    );
+}
+
+#[test]
 fn a_new_request_after_a_question_runs_alone() {
     // The founder's VirtualBox test (2026-11-14): a stray line, a question
     // back, then a request of its own, which must not join the stray line.
@@ -852,10 +898,23 @@ fn a_telling_request_and_its_answer_still_refuse_an_added_change() {
 fn a_long_line_after_a_question_is_a_request_of_its_own() {
     let ask = r#"{"name":"clarify","arguments":{"question":"Which?","options":["a","b"]}}"#;
     let (host, mut shell) = with_calls(vec![call(ask), call(RR)]);
-    shell.eval("what can you do with the cpus");
+    // Not "what can you do with the cpus": that is answered from the rows.
+    shell.eval("tell me about the cpus");
     shell.eval("Smake a note called ideas and type hello dane into it");
     assert_eq!(
         host.act_lines.borrow()[1],
         "Smake a note called ideas and type hello dane into it"
     );
+}
+
+#[test]
+fn what_time_it_is_comes_from_the_clock_not_the_model() {
+    // Founder test 2, item 12: no invented time, and no change card.
+    let (host, mut shell) = with_calls(vec![]);
+    let reply = shell.eval("what time is it?");
+    assert!(
+        reply.ok && reply.text.starts_with("I can't tell the time"),
+        "{reply:?}"
+    );
+    assert!(host.act_lines.borrow().is_empty());
 }
