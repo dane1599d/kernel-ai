@@ -334,6 +334,11 @@ impl Shell {
 
     /// A registry row: consent decides, then the row runs as a one-line script.
     fn call_row(&mut self, id: u64, request: &str, row: &'static Action, call: &Call) -> Outcome {
+        // A restart is the person's own line (`power`), never a model's call.
+        if row.name == agentabi::POWER_REBOOT.name {
+            let why = "a restart is typed by the person: restart";
+            return self.refuse(id, request, call, Why::Unknown, why);
+        }
         let (row, subject) = match self.target(id, request, row, call) {
             Ok(found) => found,
             Err(outcome) => return outcome,
@@ -533,6 +538,7 @@ impl Shell {
             app: None,
             install: None,
             net: None,
+            power: false,
         });
         // The highlight starts on Allow only for a call the line plainly asked for.
         let origin = match why {
