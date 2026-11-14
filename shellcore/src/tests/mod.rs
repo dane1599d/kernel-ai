@@ -121,6 +121,8 @@ struct FakeHost {
     apps: RefCell<crate::apps::Apps>,
     app_requests: RefCell<Vec<(String, String)>>,
     app_replies: RefCell<VecDeque<String>>,
+    /// Services the supervisor answers "no such app" for (the shell, llm).
+    not_apps: RefCell<Vec<String>>,
     /// The saved appearance (`kai-appearance 1`).
     appearance: RefCell<Option<String>>,
     /// The trusted path's ONCE book: badge, digest, and whether it was used.
@@ -330,6 +332,7 @@ impl FakeHost {
             apps: RefCell::new(crate::apps::Apps::default()),
             app_requests: RefCell::new(Vec::new()),
             app_replies: RefCell::new(VecDeque::new()),
+            not_apps: RefCell::new(Vec::new()),
             appearance: RefCell::new(None),
             once: RefCell::new(Vec::new()),
             revoked: RefCell::new(Vec::new()),
@@ -890,6 +893,9 @@ impl Host for FakeHost {
         self.app_requests
             .borrow_mut()
             .push((String::from(app), String::from(request)));
+        if self.not_apps.borrow().iter().any(|a| a == app) {
+            return Err(String::from("no such app"));
+        }
         self.app_replies
             .borrow_mut()
             .pop_front()
