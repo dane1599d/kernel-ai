@@ -37,6 +37,7 @@ mod brackets;
 pub mod ccbuild;
 mod centry;
 mod clarify;
+mod clock;
 mod cmode;
 mod commands;
 pub mod data;
@@ -269,6 +270,12 @@ pub trait Host {
     fn pkg(&self, _request: &str) -> Result<String, String> {
         Err(String::from("there is no pkg service here"))
     }
+    /// Seconds since 1970 UTC from the kernel's clock (`CLOCK_NOW`), or `None`
+    /// where the firmware gave no date.
+    fn unix_seconds(&self) -> Option<u64> {
+        None
+    }
+
     /// Installed package `package`'s `kai-actions 1` answer, read by `pkg`
     /// from its stored artifact: an app's rows before it first runs.
     fn installed_rows(&self, _package: &str) -> Result<String, String> {
@@ -1189,6 +1196,12 @@ impl Shell {
             "script {id} requested: {}",
             show::truncate(request, 60)
         ));
+        // The time and the date come from the kernel's clock, never the model.
+        if let Some(text) = clock::answer(request, self.host.unix_seconds()) {
+            // Not `worded`: the panel shows this line itself (#893).
+            self.record(id, request, "", "answered from the clock");
+            return Reply::ok(text);
+        }
         // Sound has one answer until there is an audio driver.
         if let Some(text) = sound::answer(request) {
             self.record(id, request, "", "answered: no sound yet");

@@ -650,6 +650,10 @@ impl Host for System {
         build::ask_pkg(pkg_route()?, request)
     }
 
+    fn unix_seconds(&self) -> Option<u64> {
+        sys::clock_now().ok()
+    }
+
     fn installed_rows(&self, package: &str) -> Result<String, String> {
         build::ask_pkg_long(pkg_route()?, &alloc::format!("actions {package}"))
     }

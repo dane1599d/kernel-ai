@@ -237,6 +237,18 @@ fn open_and_a_word_that_is_no_app_goes_to_the_model() {
 }
 
 #[test]
+fn the_panel_shows_the_time_from_the_clock() {
+    // #893: the bar shows the code-made line, not "answered above".
+    let (host, mut shell) = with_calls(vec![]);
+    host.wall_clock.set(Some(1_794_637_800));
+    assert_eq!(
+        shell.eval_panel("what time is it?"),
+        PanelResult::Done("It is 06:30 UTC on Saturday 14 November 2026.".into())
+    );
+    assert!(host.act_lines.borrow().is_empty());
+}
+
+#[test]
 fn a_question_left_past_two_minutes_lapses_before_its_card() {
     let (host, mut shell) = with_calls(vec![call(STOP)]);
     *host.procs.borrow_mut() = vec![String::from("notes")];
