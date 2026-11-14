@@ -185,7 +185,7 @@ fn main() -> i32 {
     let mut painted_in = Appearance::default();
     let mut theme_name = Appearance::default().theme.clone();
     loop {
-        let Some(screen) = claim() else {
+        let Some(screen) = claim(painter.palette()) else {
             if !wait_for_screen() {
                 return 1;
             }
@@ -250,12 +250,14 @@ fn main() -> i32 {
     }
 }
 
-fn claim() -> Option<Screen> {
+/// The screen, its hardware cursor drawn in `palette`: the theme painted in
+/// last, so a screen given back keeps the person's theme.
+fn claim(palette: &Palette) -> Option<Screen> {
     let mut info = DisplayInfo::default();
     let shm = sys::display_claim(&mut info).ok()?;
     let address = sys::shm_map(shm, true).ok()?;
     if info.cursor != 0 {
-        let _ = sys::display_cursor(&arrow(&look::DARK), (0, 0));
+        let _ = sys::display_cursor(&arrow(palette), (0, 0));
         let _ = sys::display_cursor_move(info.width / 2, info.height / 2);
     }
     Some(Screen { info, address })
@@ -1276,9 +1278,12 @@ fn draw(state: &mut State, screen: &Screen) {
         bar: &state.bar,
         panel: &state.panel,
         chat: &state.chat,
+        sheet: state.sheet.as_ref(),
         ask: state.card.as_ref(),
         now_ms: now_ms(),
     };
+    // A window with no pixels yet shows the theme's window colour.
+    let fallback = state.painter.content_fallback();
     let mut content = |id: WindowId, layer: &mut Canvas<'_>, at: Rect| {
         let Some((_, pid, buffer)) = shown.iter().find(|(w, ..)| *w == id) else {
             return false;
@@ -1292,17 +1297,13 @@ fn draw(state: &mut State, screen: &Screen) {
             stride: layer.stride_px as usize,
             data: layer.pixels,
         };
-        pixels.fill(at, at, (0xFF << 24) | look::DARK.window);
+        pixels.fill(at, at, fallback);
         pixels.draw(&source, (at.x, at.y), at);
         true
     };
     for &clip in &damage {
+        // The Apps sheet is the scene's: under the ask card, never over it.
         state.painter.paint(&mut frame, clip, &scene, &mut content);
-        if let Some(sheet) = &state.sheet {
-            let area =
-                deskcore::paint_catalog::sheet(state.width, state.height, sheet.apps().len());
-            state.painter.catalog(&mut frame, clip, area, sheet);
-        }
         if state.draws_cursor {
             state.painter.cursor(&mut frame, clip, state.desk.pointer());
         }
