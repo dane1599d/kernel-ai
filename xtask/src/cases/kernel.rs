@@ -356,7 +356,9 @@ pub(super) const CASES: &[TestCase] = &[
     },
     // Key input for uikit apps: the keyboard reaches Notes' widgets.
     TestCase {
-        keys: &[&["tab", "tab", "ret", "tab", "tab", "h", "i"]],
+        // The window takes the keyboard with its search field focused (#872);
+        // Tab to New, Enter, and the new note's editor has the keys.
+        keys: &[&["tab", "ret", "h", "i"]],
         expect: &[
             "ui-keys: Tab, Enter and typed text reached Notes' widgets through desktop and comphost",
         ],
