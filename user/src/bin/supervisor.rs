@@ -168,6 +168,13 @@ fn main() -> i32 {
             if service.start_at_ms.is_some_and(|at| now >= at) {
                 let _ = start(service, now);
                 started = true;
+                // A start is kernel work on this thread (loading, its log
+                // lines), so a long plan waits a moment between slices: the
+                // wait blocks, and 45 starts in a row passed the 2 s burst
+                // limit (many-processes, #874). The rest start next pass.
+                if now_ms().saturating_sub(now) >= START_SLICE_MS {
+                    break;
+                }
             }
         }
         if started {
@@ -389,6 +396,9 @@ fn send_ctl(name: &str, verb: sys::AppCtl) -> String {
 }
 
 const APP_START_POLL_MS: u64 = 100;
+/// The longest one pass of the main loop starts services before it waits: a
+/// quarter of the supervisor's 2 s burst limit.
+const START_SLICE_MS: u64 = 500;
 
 /// `app-call <app>`: the shell's request to app `app`, through the kernel. The
 /// app's own reply, or `err ...`. An app that is down, and not stopped or given
