@@ -19,12 +19,17 @@ const WAIT_MS: u64 = 60_000;
 const STEP_MS: u64 = 400;
 /// Time for comphost to start the app and paint its first frame under TCG.
 const OPEN_MS: u64 = 10_000;
+/// The desk's points at the selftests' 1280x800 (deskgeom), so a layout change
+/// moves every selftest's clicks with it.
+pub(crate) const DESK: deskgeom::Points = deskgeom::points(1280, 800);
+/// A 640 px wide app's frame: Notes' and most apps'.
+pub(crate) const APP_FRAME_W: i32 = 640 + 2 * deskgeom::FRAME;
 /// Where `desktop` starts the pointer: the middle of 1280x800.
-const START: (i32, i32) = (640, 400);
+const START: (i32, i32) = DESK.screen_centre();
 /// The window's close control: its 640x420 content in a 642x454 frame at the
 /// first cascade spot, 48,52, the control 17 px in from the frame's right end
 /// and down from its top, as `desk-windows` finds Left's.
-const CLOSE: (i32, i32) = (48 + 642 - 17, 52 + 17);
+const CLOSE: (i32, i32) = DESK.close(0, APP_FRAME_W);
 
 /// A USB-style relative report with `buttons` held.
 pub(crate) fn report(dx: i32, dy: i32, buttons: u8) {

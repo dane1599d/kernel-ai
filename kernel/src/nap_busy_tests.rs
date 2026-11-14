@@ -9,6 +9,7 @@
 //! lose the focus.
 
 use crate::display::claim;
+use crate::ui_tests::{APP_FRAME_W, DESK};
 use crate::{console, ipc, log, memory, process, threads};
 use alloc::string::String;
 
@@ -24,13 +25,13 @@ const NAP_MS: u64 = 3_000 + 4_000;
 /// Least a nap gives back: the guest's 128 KiB of starting memory.
 const MIN_FRAMES: u64 = 32;
 /// Where `desktop` starts the pointer: the middle of 1280x800.
-const START: (i32, i32) = (640, 400);
-/// The panel along the bottom of 1280x800 (36 px tall).
-const PANEL: (i32, i32) = (640, 800 - 18);
-/// The middle of Notes' content: its 642x454 frame at 48,52, under a 34 px bar.
-const WINDOW: (i32, i32) = (48 + 321, 52 + 34 + 210);
+const START: (i32, i32) = DESK.screen_centre();
+/// The AI panel: a click there focuses it.
+const PANEL: (i32, i32) = DESK.focus_kai();
+/// The middle of Notes' 640x420 content, in the first window.
+const WINDOW: (i32, i32) = DESK.content(0, 320, 211);
 /// Notes' close control, as `ui-window` finds it.
-const CLOSE: (i32, i32) = (48 + 642 - 17, 52 + 17);
+const CLOSE: (i32, i32) = DESK.close(0, APP_FRAME_W);
 /// `a`, down and up (scan code set 1).
 const KEY: [u8; 2] = [0x1E, 0x9E];
 

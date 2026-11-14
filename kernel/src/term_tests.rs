@@ -9,6 +9,7 @@
 
 use crate::desk_tests::report;
 use crate::display::claim;
+use crate::ui_tests::DESK;
 use crate::{console, input, log, process, terminal, threads};
 
 /// The plan lines this case adds: `desktop` as `desk-boot` runs it (its fonts
@@ -18,12 +19,11 @@ pub const PLAN: &str = "desktop caps=display+input+serve pages=8192 stack_pages=
      term uses=desktop caps=call+term pages=4096 stack_pages=512";
 const WAIT_MS: u64 = 60_000;
 /// Where `desktop` starts the pointer: the middle of 1280x800.
-const START: (i32, i32) = (640, 400);
-/// A point on the Terminal window's title bar: the first window's frame is
-/// at 48,52.
-const TITLE: (i32, i32) = (150, 60);
-/// A point on the panel along the bottom.
-const PANEL: (i32, i32) = (640, 782);
+const START: (i32, i32) = DESK.screen_centre();
+/// A point on the Terminal window's title bar: it is the first window.
+const TITLE: (i32, i32) = DESK.window_title(0, 102);
+/// A point on the AI panel.
+const PANEL: (i32, i32) = DESK.focus_kai();
 /// Time for the harness's keys, as `ask_tests` gives them.
 const KEYS_MS: u64 = 4_000;
 

@@ -14,9 +14,12 @@ use crate::{desk_tests, display, ipc, log, process, terminal, threads};
 use core::sync::atomic::{AtomicBool, Ordering};
 use kabi::ExitReason;
 
-/// A point of the empty desk at 1280x800: below the top bar, above the panel,
-/// clear of the pointer at the middle.
-const DESK_POINT: (usize, usize) = (1100, 300);
+/// A point of the empty desk at 1280x800, clear of every window and of the
+/// pointer at the middle.
+const DESK_POINT: (usize, usize) = {
+    let (x, y) = crate::ui_tests::DESK.desk_point();
+    (x as usize, y as usize)
+};
 const LINE: &str = "set the theme to light";
 /// How long the light desk may take: the shell looks for a new `desktop`
 /// every 2 s, and a restart paints its first frames before that.

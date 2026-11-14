@@ -16,12 +16,13 @@
 //!   dropped on release. A key or click by the user in the window the agent is
 //!   acting on stops the agent ("Stopped: you took over").
 
-use crate::chrome::{self, Edges, PANEL, Part, TOP_BAR};
+use crate::chrome::{self, Edges, Part};
 use crate::damage::Damage;
 use crate::geom::{Point, Rect, Size};
 use crate::trusted::Ask;
 use alloc::string::String;
 use alloc::vec::Vec;
+use deskgeom::{Layout, UiState};
 /// HID keyboard usages (page 0x07) the desk itself reacts to.
 mod ask;
 mod manage;
@@ -41,8 +42,6 @@ pub mod usage {
     pub const N: u16 = 0x11;
 }
 use usage::{SPACE, TAB};
-/// How far each new window opens from the last, down and right.
-const CASCADE: i32 = 32;
 /// The smallest content a resize leaves.
 const MIN_CONTENT: Size = Size { w: 120, h: 60 };
 
@@ -267,11 +266,16 @@ impl Desk {
     /// Where windows open and maximize: the screen below the top bar and
     /// above the panel.
     pub fn work_area(&self) -> Rect {
-        Rect::new(0, TOP_BAR, self.width, self.height - TOP_BAR - PANEL)
+        self.layout().work_area
+    }
+
+    /// Every surface's rectangle at this screen size (deskgeom).
+    pub fn layout(&self) -> Layout {
+        Layout::for_screen(self.width, self.height, UiState::default())
     }
 
     pub fn top_bar(&self) -> Rect {
-        Rect::new(0, 0, self.width, TOP_BAR)
+        self.layout().top_bar
     }
 
     /// What the top bar's tabs show changed: a window came or went, rose, was
@@ -282,7 +286,7 @@ impl Desk {
     }
 
     pub fn panel(&self) -> Rect {
-        Rect::new(0, self.height - PANEL, self.width, PANEL)
+        self.layout().panel
     }
 
     /// Bottom to top.
@@ -333,11 +337,12 @@ impl Desk {
     ) -> (WindowId, Vec<Effect>) {
         let id = WindowId(self.next);
         self.next += 1;
-        let area = self.work_area();
-        let n = self.windows.len() as i32 % 8;
+        let layout = self.layout();
+        let area = layout.work_area;
+        let at = layout.cascade(self.windows.len() as i32);
         let content = Rect::new(
-            area.x + 48 + n * CASCADE + chrome::FRAME,
-            area.y + 24 + n * CASCADE + chrome::TITLE_BAR + chrome::FRAME,
+            at.x + chrome::FRAME,
+            at.y + chrome::TITLE_BAR + chrome::FRAME,
             size.w.clamp(MIN_CONTENT.w, area.w.max(MIN_CONTENT.w)),
             size.h.clamp(MIN_CONTENT.h, area.h.max(MIN_CONTENT.h)),
         );

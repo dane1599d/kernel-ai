@@ -29,15 +29,15 @@ use alloc::string::String;
 /// saved there, and the shell answers Settings' `file appearance` from it.
 pub const SHELL: &str = kabi::plan::SHELL_DESK_FILES;
 
-/// The fixture's title bar: its frame is the second, at 80,84, and the click
-/// lands 8 px down and 60 px across. The Terminal is under it once Alt+Tab has
+/// The fixture's title bar: it is the second window, and the click lands 60 px
+/// across. The Terminal is under it once Alt+Tab has
 /// raised the fixture (see `check`); it covers the fixture before that, as typing
 /// into it raises it.
-const FIXTURE_TITLE: (i32, i32) = (140, 92);
-/// Settings' title bar: its frame is the third, at 112,116. The click is 500 px
-/// across, past the fixture's frame (80..402), so neither window can cover the
-/// other's title bar however they are raised.
-const SETTINGS_TITLE: (i32, i32) = (500, 124);
+const FIXTURE_TITLE: (i32, i32) = crate::ui_tests::DESK.window_title(1, 60);
+/// Settings' title bar: it is the third window. The click is at x 500, past the
+/// fixture's 322 px frame, so neither window can cover the other's title bar
+/// however they are raised.
+const SETTINGS_TITLE: (i32, i32) = crate::ui_tests::DESK.window_title(2, 388);
 
 /// The terminal's window, the fixture's (the test app whose `fs_list` row
 /// Settings revokes, never shipped) and Settings', the last two as apps that

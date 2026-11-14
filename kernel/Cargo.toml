@@ -21,6 +21,7 @@ cpufeat = { path = "../cpufeat" }
 csprng = { path = "../csprng" }
 devkit = { path = "../devkit" }
 devmatch = { path = "../devmatch" }
+deskgeom = { path = "../deskgeom" }
 diskmap = { path = "../diskmap" }
 fsproto = { path = "../fsproto" }
 kabi = { path = "../kabi" }
