@@ -33,6 +33,10 @@ pub const APPEARANCE_SET: Action = Action {
                 ("legible type", "legible"),
                 ("colour", "token"),
                 ("color", "token"),
+                // "dark mode", "light mode": the theme (founder test 2).
+                ("mode", "theme"),
+                ("dark", "theme"),
+                ("light", "theme"),
             ],
         },
         Arg {
@@ -59,6 +63,7 @@ pub const APPEARANCE_SET: Action = Action {
         "legible",
         "colour",
         "color",
+        "mode",
     ],
     returns: Returns::System,
     ret: RetType::Unit,

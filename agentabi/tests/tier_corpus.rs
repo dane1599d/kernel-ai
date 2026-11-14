@@ -1463,3 +1463,65 @@ fn polite_requests_and_clauses_after_a_question_still_consent() {
         assert_eq!(decisions[1].tier, Tier::Run, "{line:?}: {decisions:?}");
     }
 }
+
+const IDEAS: Value<'static> = v("/home/user/ideas", LIT);
+const NO_TEXT: Value<'static> = v("", LIT);
+
+/// Everyday words for a file or the theme (founder test 2, item 4): each
+/// names the change it asks for, so it runs, with no card.
+const EVERYDAY_LINES: &[Case] = &[
+    case(
+        "make a note called ideas",
+        &[with("fs_create", &[("path", IDEAS), ("text", NO_TEXT)])],
+        Runs,
+    ),
+    case(
+        "new file called ideas",
+        &[with("fs_create", &[("path", IDEAS), ("text", NO_TEXT)])],
+        Runs,
+    ),
+    case(
+        "save hello in a file called ideas",
+        &[with(
+            "fs_create",
+            &[("path", IDEAS), ("text", v("hello", LIT))],
+        )],
+        Runs,
+    ),
+    case(
+        "remove the file ideas",
+        &[with("fs_trash", &[("path", IDEAS)])],
+        Runs,
+    ),
+    case("erase ideas", &[with("fs_trash", &[("path", IDEAS)])], Runs),
+    case(
+        "dark mode please",
+        &[with(
+            "appearance_set",
+            &[("setting", v("theme", LIT)), ("value", v("dark", LIT))],
+        )],
+        Runs,
+    ),
+    case(
+        "switch to light mode",
+        &[with(
+            "appearance_set",
+            &[("setting", v("theme", LIT)), ("value", v("light", LIT))],
+        )],
+        Runs,
+    ),
+];
+
+#[test]
+fn everyday_words_for_a_change_run_it() {
+    let rows = rows();
+    for case in EVERYDAY_LINES {
+        let decisions = decide(case.line, case.plan, &rows);
+        assert_eq!(
+            outcome(&decisions),
+            case.expect,
+            "{:?}: {decisions:?}",
+            case.line
+        );
+    }
+}
