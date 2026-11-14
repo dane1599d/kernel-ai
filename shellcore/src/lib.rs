@@ -1115,6 +1115,8 @@ impl Shell {
         // What Kai can do with something comes from the rows, never the model.
         if let Some(text) = abilities::answer(request) {
             self.record(id, request, "", "answered from the registry");
+            // A list in words: the panel sends it to the terminal whole.
+            self.worded = true;
             return Reply::ok(text);
         }
         self.asked_model = true;

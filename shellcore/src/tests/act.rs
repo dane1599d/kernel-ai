@@ -770,9 +770,9 @@ fn undo_stops_only_the_start_its_own_entry_made() {
 }
 
 #[test]
-fn what_kai_can_do_with_something_comes_from_the_rows() {
-    // The founder's VirtualBox test (2026-11-14): no invented "CPU frequency"
-    // or GPU abilities, and no model asked.
+fn what_kai_can_do_with_something_rows_name_comes_from_the_rows() {
+    // The founder's VirtualBox test (2026-11-14): no invented "CPU frequency",
+    // and no model asked when rows name the thing.
     let (host, mut shell) = with_calls(vec![]);
     let cpus = shell.eval("what can you do with the cpus");
     assert!(
@@ -780,24 +780,37 @@ fn what_kai_can_do_with_something_comes_from_the_rows() {
         "{cpus:?}"
     );
     assert!(!cpus.text.contains("frequency"), "{cpus:?}");
-    let gpu = shell.eval("can you do anything with the gpu?");
-    assert_eq!(
-        gpu,
-        ok("None of my actions works with the gpu, so I can't do anything with it here.")
-    );
     assert!(host.act_lines.borrow().is_empty());
 }
 
 #[test]
-fn only_a_question_about_abilities_is_answered_from_the_rows() {
+fn a_topic_no_row_names_or_one_meaning_everything_goes_to_the_model() {
     use crate::abilities::answer;
-    assert!(answer("What can you do with files?").is_some());
+    // Whole words only: "me" is not "memory", and no match is no proof.
     for line in [
+        "what can you do for me",
+        "what can you do on this computer",
+        "what can you do with the network",
+        "can you ican you do anything with the gpu?",
+        "can you use the gpu",
         "what can you do",
         "show me the cpus",
         "what can you do with the cpus and then switch the policy to round robin",
-        "can you do anything",
     ] {
         assert_eq!(answer(line), None, "{line}");
     }
+    // The founder's own line, typo and all, finds its opening.
+    assert!(answer("can you ican you do anything with the cpus?").is_some());
+    assert!(answer("can you use the cpus").is_some());
+}
+
+#[test]
+fn a_clarify_offers_only_what_some_row_backs() {
+    let ask = r#"{"name":"clarify","arguments":{"question":"What can you do with CPUs?","options":["adjust scheduling policy","increase CPU frequency","use GPU for rendering"]}}"#;
+    let (_host, mut shell) = with_calls(vec![call(ask)]);
+    let reply = shell.eval("tell me about cpus and stuff");
+    assert_eq!(
+        reply,
+        ok("What can you do with CPUs? (adjust scheduling policy)")
+    );
 }
