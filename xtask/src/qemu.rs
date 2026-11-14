@@ -601,13 +601,14 @@ pub fn run_test(
             accel
         );
     }
+    // Before QEMU's own verdict: a forbidden line is said however the run ended.
+    forbidden_verdict(forbidden)?;
     let reset = run.case.resets && status.code() == Some(0);
     if stopped {
         println!("xtask: every expected line seen; QEMU stopped");
     } else if status.code() != Some(QEMU_PASS) && !reset {
         return Err(format!("FAIL: QEMU exited with {status}"));
     }
-    forbidden_verdict(forbidden)?;
     if !missing.is_empty() {
         return Err(format!("FAIL: never saw {missing:?} on the console"));
     }

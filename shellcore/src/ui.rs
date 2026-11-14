@@ -101,6 +101,20 @@ pub fn app_name(app: &str) -> Result<&str, String> {
     }
 }
 
+/// The package an app's everyday name means, by `ui_open`'s `app` aliases
+/// ("file manager" is `files`), or `app` as it is.
+pub fn canonical(app: &str) -> &str {
+    let aliases = agentabi::UI_OPEN
+        .args
+        .iter()
+        .find(|arg| arg.name == "app")
+        .map_or(&[][..], |arg| arg.aliases);
+    aliases
+        .iter()
+        .find(|(written, _)| written.eq_ignore_ascii_case(app.trim()))
+        .map_or(app, |(_, means)| means)
+}
+
 /// The name the agent knows an app's window by: a `<pkg>-window` service is
 /// `<pkg>`'s window (`notes-window` is Notes'), so `ui_open("notes")`, the
 /// State line and a window's name all say `notes`.
@@ -130,6 +144,53 @@ pub(crate) enum Round {
 const MAX_READS: usize = 2;
 
 impl Shell {
+    /// `open <app>`, a line that names one app and nothing else (what the
+    /// panel's Apps sheet sends): Kai's own `ui_open` call, made by code with
+    /// no model, through the one door ([`Shell::execute`]) at the tier Kai's
+    /// would get. A longer line ("open notes and add milk"), or a name that is
+    /// no app the system has ("open garage", a file, a port), is the model's.
+    pub(crate) fn open_line(&mut self, input: &str) -> Option<Reply> {
+        if self.scope.contains("open") {
+            return None;
+        }
+        let app = input.strip_prefix("open ")?.trim();
+        if app.is_empty() || app.contains(char::is_whitespace) {
+            return None;
+        }
+        app_name(app).ok()?;
+        if !self.has_app(app) {
+            return None;
+        }
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(String::from("app"), Value::String(String::from(app)));
+        let call = Call {
+            name: String::from("ui_open"),
+            arguments,
+        };
+        let id = self.take_id();
+        self.host.audit(&format!(
+            "request {id}: {input:?}, opened by code with no model"
+        ));
+        let reply = self.execute(id, input, &call).reply;
+        // As a model request would on the next line: the running apps' rows
+        // are loaded, the one just opened included, so Settings and the
+        // grants see them (app-settings, on #885).
+        let _ = crate::apps::wire(self.host.as_ref());
+        Some(reply)
+    }
+
+    /// Whether `app` is an app the system has: a service the supervisor runs
+    /// by that name or as its `<app>-window`, which the image's built-ins and
+    /// installed packages are. Without the list, none is: the model decides.
+    fn has_app(&self, app: &str) -> bool {
+        let window = format!("{app}-window");
+        self.host.services().is_ok_and(|services| {
+            services
+                .iter()
+                .any(|s| s.name.eq_ignore_ascii_case(app) || s.name.eq_ignore_ascii_case(&window))
+        })
+    }
+
     /// `call`, or the call the model makes with what it read in front of it: a
     /// view it asked for, or `desktop`'s refusal of a node it guessed, which says
     /// which window to view first (the module's note).

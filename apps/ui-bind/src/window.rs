@@ -27,17 +27,40 @@ pub trait Sink {
     fn focus(&mut self, _window: u32, _node: NodeId) -> Result<(), UiError> {
         Ok(())
     }
+    /// Says whether `window` holds changes not yet kept (`set-unsaved`): the
+    /// agent's `window_close` asks the user first for one that does, and the app
+    /// does not nap while one does. It shows at the next commit. A sink that
+    /// cannot says nothing.
+    fn set_unsaved(&mut self, _window: u32, _unsaved: bool) -> Result<(), UiError> {
+        Ok(())
+    }
 }
 
 /// The window an app has open, and the tree it was last sent.
 #[derive(Debug, Default)]
 pub struct Shown {
     window: Option<(u32, Vec<Entry>)>,
+    /// Whether the app wants the window to say it holds unsaved changes
+    /// ([`Shown::mark_unsaved`]), and whether the host was last told so. A new
+    /// window starts with none.
+    unsaved: bool,
+    told: bool,
 }
 
 impl Shown {
     pub const fn new() -> Self {
-        Self { window: None }
+        Self {
+            window: None,
+            unsaved: false,
+            told: false,
+        }
+    }
+
+    /// Whether the window holds changes not yet kept: sent, when it differs from
+    /// what the host was told, with the next [`Shown::present`], before its
+    /// commit. An app that never calls this never sends it.
+    pub fn mark_unsaved(&mut self, unsaved: bool) {
+        self.unsaved = unsaved;
     }
 
     /// The open window's id.
@@ -57,11 +80,26 @@ impl Shown {
     ) -> Result<(), UiError> {
         let (id, shown) = match self.window.take() {
             Some(open) => open,
-            None => (sink.open(title, size.0, size.1)?, Vec::new()),
+            None => {
+                let id = sink.open(title, size.0, size.1)?;
+                self.told = false;
+                (id, Vec::new())
+            }
         };
-        let sent = send(sink, id, &diff(&shown, &tree)).and_then(|()| sink.commit(id));
+        let sent = send(sink, id, &diff(&shown, &tree))
+            .and_then(|()| self.tell_unsaved(sink, id))
+            .and_then(|()| sink.commit(id));
         self.window = Some((id, if sent.is_ok() { tree } else { shown }));
         sent
+    }
+
+    /// Tells the host the window's unsaved flag if it changed.
+    fn tell_unsaved(&mut self, sink: &mut dyn Sink, id: u32) -> Result<(), UiError> {
+        if self.unsaved != self.told {
+            sink.set_unsaved(id, self.unsaved)?;
+            self.told = self.unsaved;
+        }
+        Ok(())
     }
 
     /// The window `window` was closed by the app or the user: forgets it, and
@@ -72,6 +110,7 @@ impl Shown {
             return Ok(false);
         }
         self.window = None;
+        self.told = false;
         sink.close(window).map(|()| true)
     }
 }
