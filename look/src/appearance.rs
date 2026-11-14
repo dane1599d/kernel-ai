@@ -83,6 +83,12 @@ fn refused(why: impl Into<String>) -> Refused {
     Refused(why.into())
 }
 
+/// A token's name in a file: `muted`.
+fn token_name(token: Token) -> &'static str {
+    let at = Token::ALL.iter().position(|t| *t == token).unwrap_or(0);
+    TOKEN_NAMES[at]
+}
+
 fn token_named(name: &str) -> Option<Token> {
     TOKEN_NAMES
         .iter()
@@ -190,9 +196,9 @@ impl Appearance {
         out
     }
 
-    /// Reads saved settings, each checked as [`Appearance::set`] checks it, so
-    /// what was saved and is no longer valid (a theme since deleted) is refused
-    /// whole. The one exception is [`Appearance::decode_audited`]'s.
+    /// Reads saved settings, the theme they end in checked once, so what was
+    /// saved and is no longer valid (a theme since deleted) is refused whole.
+    /// The one exception is [`Appearance::decode_audited`]'s.
     pub fn decode(text: &str, themes: &dyn Themes) -> Result<Self, Refused> {
         Self::decode_audited(text, themes).map(|(appearance, _)| appearance)
     }
@@ -206,6 +212,11 @@ impl Appearance {
     /// A colour short on any earlier ground was short before, and still refuses
     /// the whole save. A setting changed now with [`Appearance::set`] is refused
     /// on `shell` and `hover` like on any other ground.
+    ///
+    /// Every saved colour is applied before the theme is checked, so a colour is
+    /// judged against the others saved with it and not against the defaults the
+    /// file has not yet reached: a file lists `hover` before `error`, and a
+    /// `hover` that holds only with the saved `error` is kept.
     pub fn decode_audited(text: &str, themes: &dyn Themes) -> Result<(Self, Vec<String>), Refused> {
         if text.len() > MAX_BYTES {
             return Err(refused("the saved appearance is too long"));
@@ -216,7 +227,6 @@ impl Appearance {
         }
         let mut appearance = Appearance::default();
         let mut seen = [false; 6];
-        let mut dropped = Vec::new();
         for line in lines.filter(|l| !l.is_empty()) {
             let (setting, value) = line
                 .split_once(" = ")
@@ -229,20 +239,33 @@ impl Appearance {
             if setting != "token" && core::mem::replace(&mut seen[at], true) {
                 return Err(refused(format!("{setting} is given twice")));
             }
-            let next = appearance.changed(setting, value, themes)?;
-            if setting == "token"
-                && let Some(short) = next.build(themes)?.shortfall()
-                && short.is_on_a_desktop_ground()
-            {
-                dropped.push(format!(
-                    "the saved colour {value} is dropped: {}",
-                    short.message()
-                ));
-                continue;
-            }
-            next.resolve(themes)?;
-            appearance = next;
+            appearance = appearance.changed(setting, value, themes)?;
         }
+        // Every saved setting is in before the theme is checked, once: a colour
+        // is judged against the others saved with it, whatever order the file
+        // lists them in (`hover` comes before `error`, which it may need).
+        let mut dropped = Vec::new();
+        while let Some(short) = appearance.build(themes)?.shortfall() {
+            // Only a shortfall on `shell` or `hover` is let go, and only by
+            // dropping a colour the save set: the one that falls short, or else
+            // the ground it falls short on. Any other failure is the theme's, or
+            // was one before, and the check below refuses the whole save.
+            let held = |token| appearance.tokens.iter().find(|(t, _)| *t == token);
+            let culprit = [short.token, short.ground]
+                .into_iter()
+                .find_map(held)
+                .filter(|_| short.is_on_a_desktop_ground());
+            let Some(&(token, rgb)) = culprit else {
+                break;
+            };
+            dropped.push(format!(
+                "the saved colour {} #{rgb:06X} is dropped: {}",
+                token_name(token),
+                short.message()
+            ));
+            appearance.tokens.retain(|(t, _)| *t != token);
+        }
+        appearance.resolve(themes)?;
         Ok((appearance, dropped))
     }
 

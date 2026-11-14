@@ -283,6 +283,61 @@ fn a_save_from_before_shell_and_hover_loses_only_the_colour_that_falls_short() {
     assert_eq!(again, (dark, Vec::new()));
 }
 
+/// A save that is whole is read whole, whatever order its lines are in. `hover`
+/// is listed before `error` (the order of `Token::ALL`), and this `hover` holds
+/// only against the saved `error`: the default one is 4.36:1 on it. Judged line
+/// by line, `hover` was dropped with a wrong audit line and the next change lost
+/// it for good.
+#[test]
+fn a_saved_hover_that_holds_only_with_the_saved_error_is_kept() {
+    let saved = "kai-appearance 1\ntheme = dark\ntoken = hover #303644\n\
+                 token = error #FF9999\nscale = 150\n";
+    assert!(crate::contrast(DARK.error, 0x30_3644) < 4.5);
+    assert!(crate::contrast(0xFF_9999, 0x30_3644) >= 4.5);
+    // Set by hand, `hover` alone is refused; with the `error` first it is whole.
+    let alone = Appearance::default().set("token", "hover #303644", &Shipped);
+    assert!(alone.unwrap_err().0.starts_with("error on hover is 4.36"));
+    let made = Appearance::default()
+        .set("token", "error #FF9999", &Shipped)
+        .and_then(|a| a.set("token", "hover #303644", &Shipped))
+        .unwrap();
+    // It is saved in the order of `Token::ALL`, `hover` first.
+    let text = made.encode();
+    assert!(
+        text.find("hover #303644") < text.find("error #FF9999"),
+        "{text}"
+    );
+    assert_eq!(
+        Appearance::decode_audited(&text, &Shipped),
+        Ok((made.clone(), Vec::new()))
+    );
+
+    let (got, dropped) = Appearance::decode_audited(saved, &Shipped).unwrap();
+    assert_eq!(
+        got.tokens,
+        [(Token::Hover, 0x30_3644), (Token::Error, 0xFF_9999)]
+    );
+    assert_eq!((got.scale, dropped.len()), (150, 0), "{dropped:?}");
+    // The next change saves it as it was.
+    let next = got.set("scale", "200", &Shipped).unwrap();
+    assert_eq!(next.tokens, got.tokens);
+    assert_eq!(Appearance::decode(&next.encode(), &Shipped), Ok(next));
+}
+
+/// When the save sets the ground that falls short and not the colour on it, it
+/// is the ground that goes.
+#[test]
+fn a_saved_hover_too_pale_for_the_default_text_is_the_colour_dropped() {
+    let saved = "kai-appearance 1\ntheme = dark\ntoken = hover #FFFFFF\nlegible = on\n";
+    let (got, dropped) = Appearance::decode_audited(saved, &Shipped).unwrap();
+    assert!(got.tokens.is_empty() && got.legible);
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    assert!(
+        dropped[0].starts_with("the saved colour hover #FFFFFF is dropped: text on hover is "),
+        "{dropped:?}"
+    );
+}
+
 /// Only a shortfall on `shell` or `hover` is let go. One on an earlier ground was
 /// one before too, and a save that holds it, or anything else out of shape, is
 /// refused whole as it always was.
