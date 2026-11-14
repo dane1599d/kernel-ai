@@ -95,6 +95,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
         contains: Vec::new(),
         cut: None,
         capture: None,
+        forbid: Vec::new(),
     };
     for boot in 1..=BOOTS {
         println!("xtask: latency: boot {boot} of {BOOTS}");

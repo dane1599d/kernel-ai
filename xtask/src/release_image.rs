@@ -26,6 +26,7 @@
 //! builds differ only beneath `pkgrepo/`.
 
 use crate::{components, esp, floatguard, image, options, userbuild};
+use image::modules::{Image::Release, TRUST_ANCHOR};
 use std::fs;
 use std::path::PathBuf;
 
@@ -82,7 +83,8 @@ pub fn main(args: &[String]) -> Result<(), String> {
         true => Some(crate::pkgrepo::release_test()?),
         false => None,
     };
-    modules.extend(repository(crate::release_repo::committed(&root)?, test)?);
+    let repository = repository(crate::release_repo::committed(&root)?, test)?;
+    let modules = image::modules::image_modules(Release, modules, repository)?;
     // No extra TLS root ships: a file in `netroots/` would be trusted for
     // every host by fetch and the model download, which have TLS alone
     // (K's review of #753).
@@ -123,15 +125,11 @@ pub fn main(args: &[String]) -> Result<(), String> {
 
 const USAGE: &str = "usage: cargo xtask release-image [--test-root] [--out PATH]";
 
-/// Where the image carries the root it checks updates against
-/// (`kernel/src/process/syscall/update.rs`).
-const TRUST_ANCHOR: &str = "kai.root.json";
-
 /// The modules for the image's repository: `signed`, the committed
 /// `release/pkgrepo`, beneath `pkgrepo/`, and its root as [`TRUST_ANCHOR`].
 /// `test`, `--test-root`'s repository, replaces it beneath `pkgrepo/` only:
 /// [`TRUST_ANCHOR`] stays the founder's.
-fn repository(
+pub(crate) fn repository(
     signed: Option<crate::release_repo::RepoFiles>,
     test: Option<Vec<esp::Module>>,
 ) -> Result<Vec<esp::Module>, String> {

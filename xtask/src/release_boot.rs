@@ -117,8 +117,25 @@ pub fn main(args: &[String]) -> Result<(), String> {
         )],
         cut: None,
         capture: None,
+        forbid: forbidden(&crate::workspace_root()),
     };
     qemu::run_test(&qemu, &qemu_args, &target_dir, &run)
+}
+
+/// What `pkg` prints when the image's repository does not check out.
+const PKG_FAIL: &str = "pkg: FAIL";
+
+/// What the release boot may never show (founder test 2, test 5). Once the
+/// founder's repository is committed, the image carries it, so a `pkg: FAIL`
+/// fails the boot; before that the image has none and `pkg` says so.
+fn forbidden(root: &std::path::Path) -> Vec<String> {
+    let signed = root
+        .join(crate::release_repo::REPO)
+        .join(kaipkg::image::ROOT);
+    match signed.exists() {
+        true => vec![String::from(PKG_FAIL)],
+        false => Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -149,5 +166,20 @@ mod tests {
         assert_eq!(RELEASE_BOOT.keys.len(), RELEASE_BOOT.keys_on.len());
         assert!(RELEASE_BOOT.expect.iter().all(|text| !text.is_empty()));
         assert!(RELEASE_BOOT.data.is_none() && RELEASE_BOOT.import.is_none());
+    }
+
+    /// `pkg: FAIL` fails the release boot once a root is committed, and only then.
+    #[test]
+    fn pkg_fail_is_forbidden_once_the_founders_root_is_committed() {
+        let dir = std::env::temp_dir().join(format!("kai-release-boot-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        assert!(forbidden(&dir).is_empty());
+        let root = dir
+            .join(crate::release_repo::REPO)
+            .join(kaipkg::image::ROOT);
+        fs::create_dir_all(root.parent().unwrap()).unwrap();
+        fs::write(&root, b"{}").unwrap();
+        assert_eq!(forbidden(&dir), [PKG_FAIL]);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

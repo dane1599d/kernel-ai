@@ -199,7 +199,12 @@ fn execute(options: &Options) -> Result<(), String> {
     // The built-in apps as the image's signed repository (ADR 0011 §8).
     let mut image = pkgrepo::image(&root, &versions)?;
     modules.extend(versions);
-    modules.extend(std::mem::take(&mut image.modules));
+    let repository = std::mem::take(&mut image.modules);
+    let mut modules = crate::image::modules::image_modules(
+        crate::image::modules::Image::Run,
+        modules,
+        repository,
+    )?;
     let efi = ensure_limine(&target_dir)?;
     let esp = target_dir.join("esp");
     // `--accel wsl`: QEMU runs inside WSL2, behind wsl.exe (wsl/launch.rs).
@@ -568,6 +573,7 @@ fn execute(options: &Options) -> Result<(), String> {
                     .map_or_else(Vec::new, disk::ModelDisk::console_text),
                 cut: cutting.then(|| (format!("files: boot {boot}:"), cut_delay(case.name, boot))),
                 capture: case.differs.map(|text| (text, Arc::new(Mutex::new(None)))),
+                forbid: Vec::new(),
             };
             let requests = mock.requests();
             let after = |service: &Option<buildsvc::BuildService>| match (case.after, service) {
