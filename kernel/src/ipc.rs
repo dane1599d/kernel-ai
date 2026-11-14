@@ -426,14 +426,76 @@ pub fn call_with(
     cancel: impl Fn() -> bool,
     extra: Extra,
 ) -> Result<(Vec<u8>, u64, Vec<Entry>), CallError> {
-    let pending = submit_with(name, request, caller_pid, deadline_ns, extra)?;
+    call_with_stop(
+        name,
+        request,
+        caller_pid,
+        deadline_ns,
+        cancel,
+        || false,
+        extra,
+    )
+}
+
+/// [`call_with`], which a Stop (`stop()`, the person's) also ends, but only
+/// while no server has taken the call. A call a server took is waited for up
+/// to its deadline: the server may already be changing something (an `fs`
+/// write, an edit), and its reply carries what the caller must record to undo
+/// it. `cancel()` (a kill, a revoke) still ends the call at once.
+pub fn call_with_stop(
+    name: &str,
+    request: &[u8],
+    caller_pid: u64,
+    deadline_ns: u64,
+    cancel: impl Fn() -> bool,
+    stop: impl Fn() -> bool,
+    extra: Extra,
+) -> Result<(Vec<u8>, u64, Vec<Entry>), CallError> {
+    let mut pending = submit_with(name, request, caller_pid, deadline_ns, extra)?;
+    // Set once a Stop found the call taken: from then on only its reply, its
+    // deadline or `cancel()` ends the wait.
+    let mut taken_at_stop = false;
     while !pending.done() && !cancel() && hpet::nanos() < deadline_ns {
-        threads::sleep_until_unless(deadline_ns, || pending.done() || cancel());
+        if !taken_at_stop && stop() {
+            match withdraw(pending) {
+                Ok(()) => return Err(CallError::Cancelled),
+                Err(still) => {
+                    pending = still;
+                    taken_at_stop = true;
+                    continue;
+                }
+            }
+        }
+        let stopping = || !taken_at_stop && stop();
+        threads::sleep_until_unless(deadline_ns, || pending.done() || cancel() || stopping());
     }
     let cancelled = !pending.done() && cancel();
     match finish_with(pending) {
         Err(CallError::TimedOut) if cancelled => Err(CallError::Cancelled),
         other => other,
+    }
+}
+
+/// Takes back a call no server has taken yet: Ok once it is gone, or the call
+/// back when a server already holds it (or it ended).
+fn withdraw(pending: Pending) -> Result<(), Pending> {
+    let slot = pending.slot;
+    let withdrawn = with_ipc(|ipc| {
+        if CALL_STATE[slot].load(Ordering::SeqCst) != QUEUED {
+            return None;
+        }
+        let call = ipc.calls[slot].take()?;
+        CALL_STATE[slot].store(FREE, Ordering::SeqCst);
+        PENDING[call.endpoint].fetch_sub(1, Ordering::SeqCst);
+        Some(call)
+    });
+    match withdrawn {
+        // Dropped outside the lock: the request and any handles it carried.
+        Some(call) => {
+            drop(call);
+            Ok(())
+        }
+        None => Err(pending),
     }
 }
 
@@ -460,6 +522,43 @@ pub fn call_from_unless(
     let deadline = hpet::nanos().saturating_add(timeout_ms.saturating_mul(1_000_000));
     wait_bound(name, deadline, &cancel)?;
     call_as_from(name, request, 0, deadline, &cancel)
+}
+
+/// [`call_as`], with a Stop that ends it only before a server takes it
+/// ([`call_with_stop`]).
+pub fn call_as_stop(
+    name: &str,
+    request: &[u8],
+    caller_pid: u64,
+    deadline_ns: u64,
+    cancel: impl Fn() -> bool,
+    stop: impl Fn() -> bool,
+) -> Result<Vec<u8>, CallError> {
+    call_with_stop(
+        name,
+        request,
+        caller_pid,
+        deadline_ns,
+        cancel,
+        stop,
+        Extra::default(),
+    )
+    .map(|(reply, _, _)| reply)
+}
+
+/// [`call_from_unless`], with a Stop that ends it only before a server takes
+/// it ([`call_with_stop`]); waiting for the service to come up, a Stop ends it.
+pub fn call_from_unless_stop(
+    name: &str,
+    request: &[u8],
+    timeout_ms: u64,
+    cancel: impl Fn() -> bool,
+    stop: impl Fn() -> bool,
+) -> Result<(Vec<u8>, u64), CallError> {
+    let deadline = hpet::nanos().saturating_add(timeout_ms.saturating_mul(1_000_000));
+    wait_bound(name, deadline, || cancel() || stop())?;
+    call_with_stop(name, request, 0, deadline, &cancel, &stop, Extra::default())
+        .map(|(reply, taker, _)| (reply, taker))
 }
 
 /// The `svc_recv` system call: waits for the next request to this process's service.

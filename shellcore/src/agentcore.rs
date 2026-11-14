@@ -66,6 +66,13 @@ impl Shell {
         };
         let call = match self.host.act(&asked) {
             Ok(call) => call,
+            // The person's Stop ended the call: the line stops here, with no
+            // script request after it (#887's review).
+            Err(ActError::Stopped) => {
+                self.host.audit(&format!("request {id}: stopped"));
+                self.record(id, request, "", "stopped");
+                return Some(Reply::err(String::from("stopped")));
+            }
             // A model that answered but ran out of time, or cut its call off,
             // gets no second, slower try as a script request (S02-2): that
             // request pays its own prompt and the same time limit again.

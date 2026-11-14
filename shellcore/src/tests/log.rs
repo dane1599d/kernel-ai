@@ -119,3 +119,16 @@ U 2 of=1 "
         "{text}"
     );
 }
+
+/// #887's review: a Stop during the model's call stops the line; it does not
+/// fall back to a script request that would then run.
+#[test]
+fn a_stop_during_the_model_call_stops_the_line_without_a_script() {
+    let stopped = Err(ActError::Stopped);
+    let (host, mut shell) = with_calls(vec![stopped]);
+
+    let reply = shell.eval("make a note called ideas");
+    assert!(!reply.ok);
+    assert_eq!(reply.text, "stopped");
+    assert!(host.script_requests.borrow().is_empty());
+}

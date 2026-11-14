@@ -196,7 +196,8 @@ static SLOT_OF_TID: [AtomicUsize; MAX_THREADS] = [const { AtomicUsize::new(0) };
 static KILL: [AtomicU8; MAX_PROCESSES] = [const { AtomicU8::new(0) }; MAX_PROCESSES];
 static KILL_DETAIL: [AtomicU64; MAX_PROCESSES] = [const { AtomicU64::new(0) }; MAX_PROCESSES];
 /// Set by [`interrupt`] (the Terminal's Stop or the panel's Esc for the shell);
-/// `interrupted` reads and clears it, and a call cancelled by it ends Interrupted.
+/// `interrupted` reads it, a call it cancels ends Interrupted, and the process
+/// taking its next request clears it.
 static INTERRUPT: [AtomicBool; MAX_PROCESSES] = [const { AtomicBool::new(false) }; MAX_PROCESSES];
 /// Set once the process has printed anything: the M10 exit test waits for every
 /// `work` process's start-up line before it measures.
@@ -270,7 +271,23 @@ pub fn interrupt_pending(slot: usize) -> bool {
     INTERRUPT[slot].load(Ordering::SeqCst)
 }
 
-/// Reads and clears the process's Ctrl-C flag.
+/// Whether the caller of the request the process in `slot` holds has the
+/// person's Stop pending: a server (`llm`) checks it to end work nobody will
+/// use, then answers early.
+pub fn caller_stopped(slot: usize) -> bool {
+    let Ok(caller) = crate::ipc::current_caller(slot) else {
+        return false;
+    };
+    caller != 0
+        && with_table(|table| {
+            table
+                .iter()
+                .position(|p| p.live() && p.pid == caller)
+                .is_some_and(|at| INTERRUPT[at].load(Ordering::SeqCst))
+        })
+}
+
+/// Clears the process's Stop flag (it took its next request); whether it was set.
 pub fn take_interrupt(slot: usize) -> bool {
     INTERRUPT[slot].swap(false, Ordering::SeqCst)
 }

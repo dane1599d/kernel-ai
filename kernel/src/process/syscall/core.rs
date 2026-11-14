@@ -69,7 +69,9 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
             uaccess::copy_to_user(slot, a[0], &bytes[..size])?;
             Ok(0)
         }
-        call::INTERRUPTED => Ok(u64::from(crate::process::take_interrupt(slot))),
+        call::INTERRUPTED => Ok(u64::from(
+            crate::process::interrupt_pending(slot) || crate::process::caller_stopped(slot),
+        )),
         call::MODEL_MAP => {
             need(slot, cap::MODEL)?;
             crate::model::map(slot)

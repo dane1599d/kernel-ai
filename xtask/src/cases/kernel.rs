@@ -59,11 +59,13 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("handles", "test=handles")
     },
-    // SHELL_INTERRUPT: the person's Stop ends the shell's call in flight.
+    // SHELL_INTERRUPT: the person's Stop lets a taken call finish and stops the
+    // rest of the shell's line.
     TestCase {
         expect: &[
-            "[shell] handles: Stop ended a call in flight after ",
-            "shell-interrupt: Stop ended the shell's call in flight, never outlived it, and only the person's keys may ask",
+            "[shell] handles: Stop waited ",
+            " ms for a taken call's answer, then a new call ended Interrupted in ",
+            "shell-interrupt: Stop let a taken call finish, stopped the rest of the line, never outlived it, and only the person's keys may ask",
         ],
         ..case("shell-interrupt", "test=shell-interrupt")
     },

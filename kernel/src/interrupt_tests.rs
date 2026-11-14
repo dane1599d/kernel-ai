@@ -1,7 +1,8 @@
 //! `test=shell-interrupt`: the person's Stop for the shell's line. A holding
 //! server takes a call from `handles mode=stop` started as `shell`; the
 //! kernel's [`process::interrupt`] (what SHELL_INTERRUPT does for `desktop`)
-//! ends that call as Interrupted, and the flag does not outlive it. From ring 3
+//! lets that taken call finish, then stops the rest of the line, and the flag
+//! does not outlive it. From ring 3
 //! the call is refused without `cap::INPUT`; before the test starts one, the
 //! kernel finds no shell to interrupt. A Stop pressed once the shell is idle
 //! is cleared when it takes its next line.
@@ -84,7 +85,7 @@ pub fn check() -> Result<(), &'static str> {
         }
     }
     log!(
-        "shell-interrupt: Stop ended the shell's call in flight, never outlived it, and only the person's keys may ask"
+        "shell-interrupt: Stop let a taken call finish, stopped the rest of the line, never outlived it, and only the person's keys may ask"
     );
     Ok(())
 }

@@ -86,8 +86,11 @@ pub const METRICS: u64 = 18;
 /// CPU, ending any trial (needs [`super::cap::POLICY`]); `preset` matters only for
 /// `classes`. Busy within 100 ms of the last switch.
 pub const POLICY: u64 = 19;
-/// `interrupted() -> 1 or 0`: whether the user pressed Ctrl-C since the last
-/// call; reading clears it.
+/// `interrupted() -> 1 or 0`: whether the person pressed Stop (see
+/// [`SHELL_INTERRUPT`]) during the request this process serves. It stays 1 for
+/// the rest of that request: taking the next request clears it. It is also 1
+/// for a server whose request's caller was stopped: `llm` ends its answer
+/// early then, as nobody will use it.
 pub const INTERRUPTED: u64 = 20;
 /// `comp_fetch(label_ptr, label_len, buf, cap) -> len`: copies version `label` of
 /// the caller's component into `buf` when it fits; the length either way.
@@ -389,10 +392,11 @@ pub const RESOLVE_ON: u64 = 84;
 /// text or rights. A handle only shrinks. Numbered at merge, K's block.
 pub const NETDEST_NARROW: u64 = 85;
 /// `shell_interrupt() -> pid`: the person's Stop or Esc for the line the shell
-/// runs. The kernel marks the process named `shell` interrupted and wakes it: a
-/// call it is blocked in ends Interrupted, and [`INTERRUPTED`] answers 1 once.
-/// The flag never outlives the line: the shell taking its next request clears
-/// it.
+/// runs. The kernel marks the process named `shell` interrupted and wakes it. For
+/// the rest of the line, a call it makes ends Interrupted while no server has
+/// taken it (one a server took is waited for: its change and its undo record
+/// come back), and [`INTERRUPTED`] answers 1. The flag never outlives the
+/// line: the shell taking its next request clears it.
 /// Needs [`super::cap::INPUT`], the person's keys, which only `desktop` holds;
 /// NotFound when no shell runs. Numbered at merge, K's block (86 is
 /// POWER_REBOOT, #879).
