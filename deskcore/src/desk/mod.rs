@@ -205,6 +205,19 @@ pub struct Desk {
     /// The top bar's tabs as last drawn, one per window: a press on one
     /// brings that window back ([`Desk::set_tabs`]).
     tabs: Vec<(WindowId, Rect)>,
+    /// The clock `desktop` last gave ([`Desk::set_now`]).
+    now_ms: u64,
+    /// When the card up now may first be answered: a quiet
+    /// [`termcore::menu::SETTLE_MS`] after it was first drawn and after the
+    /// last key or button pressed; `u64::MAX` until it is drawn.
+    ask_open_ms: u64,
+    /// When the card up now was first drawn ([`Desk::card_drawn`]).
+    ask_drawn: Option<u64>,
+    /// The last key or button pressed while the card was up.
+    ask_pressed_ms: u64,
+    /// The pointer moved onto the card's Run button after the card was
+    /// drawn: a click there may run it (one parked there before may not).
+    ask_entered_run: bool,
 }
 
 impl Desk {
@@ -236,7 +249,19 @@ impl Desk {
             caps: false,
             num: true,
             tabs: Vec::new(),
+            now_ms: 0,
+            ask_open_ms: u64::MAX,
+            ask_drawn: None,
+            ask_pressed_ms: 0,
+            ask_entered_run: false,
         }
+    }
+
+    /// The clock, in ms, for the card's settle time: `desktop` gives each
+    /// input's own event time before it, so keys are judged by when they were
+    /// pressed, not by when they were read.
+    pub fn set_now(&mut self, now_ms: u64) {
+        self.now_ms = now_ms;
     }
 
     /// Where windows open and maximize: the screen below the top bar and
@@ -458,6 +483,9 @@ impl Desk {
 
     pub fn input(&mut self, input: Input) -> Vec<Effect> {
         let mut effects = Vec::new();
+        // A key-down for a key already down is its repeat, never a fresh press.
+        let repeat =
+            matches!(input, Input::Key { usage, down: true } if self.down.contains(&usage));
         if let Input::Key { usage: code, down } = input {
             match down {
                 true if !self.down.contains(&code) => self.down.push(code),
@@ -466,7 +494,7 @@ impl Desk {
             }
         }
         if self.ask.is_some() {
-            self.ask_input(input, &mut effects);
+            self.ask_input(input, repeat, &mut effects);
             return effects;
         }
         self.takeover(input, &mut effects);
