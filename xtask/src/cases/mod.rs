@@ -175,15 +175,27 @@ pub struct UpdateDisk {
 
 /// Lines no case expects, from the founder's second walkthrough: a package
 /// service that failed, a line the panel or an app terminal dropped, an answer
-/// lost on its way to an app, and the supervisor dying. A case that provokes
-/// one on purpose sets its own `forbid`.
+/// lost on its way to an app, and the supervisor dying; and the kernel's warning
+/// that the plan's boot services leave under 16 MiB of the admission budget
+/// (`supervise::budget`), which would otherwise surface later as a service
+/// refused NoMemory. A case that provokes one on purpose sets its own `forbid`.
 pub const FORBID: &[&str] = &[
     "pkg: FAIL",
     "cannot ask yet",
     "dropped a result",
     "did not reach the app",
     "supervision: supervisor died",
+    ROOM_WARNING,
 ];
+
+/// The kernel's warning that a plan nearly fills the admission budget.
+pub const ROOM_WARNING: &str = "of the admission budget left for the plan";
+
+/// Guest memory every case gets at least, in MiB. The admission budget is half
+/// the memory free once the boot modules are loaded, so on the 512 MiB base the
+/// whole system plan (about 104 MiB of quotas) had about 1 MiB of room, and a
+/// slightly bigger image refused the shell (#877). 1024 MiB leaves it hundreds.
+pub const CASE_MEMORY_MIB: u64 = 1024;
 
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
     TestCase {

@@ -491,6 +491,7 @@ fn execute(options: &Options) -> Result<(), String> {
                 mem_mib: options
                     .sizing
                     .mem_mib
+                    .max(Some(cases::CASE_MEMORY_MIB))
                     .max(case.memory_mib)
                     .max(store.as_ref().map(disk::ModelDisk::memory_mib)),
                 ..options.sizing

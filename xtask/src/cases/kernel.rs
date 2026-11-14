@@ -128,6 +128,7 @@ pub(super) const CASES: &[TestCase] = &[
             "cannot ask yet",
             "dropped a result",
             "did not reach the app",
+            super::ROOM_WARNING,
         ],
         ..case("many-processes", "test=many-processes")
     },
