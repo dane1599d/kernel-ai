@@ -426,6 +426,10 @@ fn deliver(state: &mut State, effects: &[Effect]) {
             Effect::PanelKey { usage, down } => {
                 let before = state.panel.waiting();
                 let changed = state.panel.key(usage, down, now);
+                // Esc on a line the shell took: it is interrupted now.
+                if state.panel.take_interrupt() {
+                    let _ = interrupt_shell("the panel's Esc");
+                }
                 if state.panel.waiting() > before {
                     // Its length only: a panel line may hold anything typed.
                     let len = match state.panel.newest() {
@@ -725,6 +729,21 @@ fn files_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<Vec<u8>> {
 /// take` and `effects done` (P4, `deskcore::effects`): its answer, or `None`
 /// for a window client's message. The app is the kernel's name for the
 /// caller, never anything it sent.
+/// Interrupts the shell's line for a person's Stop or Esc (`why`): what to
+/// tell them.
+fn interrupt_shell(why: &str) -> Result<String, String> {
+    match sys::shell_interrupt() {
+        Ok(_) => {
+            println!("desktop: {why} interrupted the shell's line");
+            Ok(String::from("stopped"))
+        }
+        Err(error) => {
+            println!("desktop: {why} could not interrupt the shell ({error:?})");
+            Err(String::from("the line could not be stopped"))
+        }
+    }
+}
+
 fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     let text = core::str::from_utf8(bytes).ok()?;
     if !text.starts_with("effects ") {
@@ -740,6 +759,25 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
         if shell || caller.starts_with("pid ") {
             return Some(String::from("err only an app queues effects"));
         }
+        // The Terminal's Stop, on a person's key or click: the shell's line
+        // is interrupted now, never queued behind it.
+        let (stops, rest) = effects::split_stops(lines);
+        let lines = match (caller == effects::STOPS_FROM && user, stops.is_empty()) {
+            (true, false) => {
+                let stopped = interrupt_shell("the Terminal's Stop");
+                for ticket in stops {
+                    state.effects.finish(
+                        &caller,
+                        effects::Done {
+                            ticket,
+                            outcome: stopped.clone(),
+                        },
+                    );
+                }
+                rest.as_str()
+            }
+            _ => lines,
+        };
         let refused = state.effects.put_as(&caller, lines, user);
         let by = if user { ", by a person's input" } else { "" };
         println!("desktop: {caller} queued effects ({refused} refused{by})");
