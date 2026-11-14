@@ -9,6 +9,7 @@ mod components;
 mod devices;
 pub(crate) mod https;
 mod kernel;
+mod modeldl;
 mod modelsuse;
 mod netgrant;
 mod netrows;
@@ -231,6 +232,7 @@ const LANES: &[&[TestCase]] = &[
     netrows::CASES,
     online::CASES,
     netgrant::CASES,
+    modeldl::CASES,
     modelsuse::CASES,
 ];
 
@@ -274,6 +276,7 @@ mod tests {
             netrows::CASES,
             online::CASES,
             netgrant::CASES,
+            modeldl::CASES,
             modelsuse::CASES,
         ];
         assert_eq!(

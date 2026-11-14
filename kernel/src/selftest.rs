@@ -565,6 +565,16 @@ fn updated_words(test: SelfTest) -> String {
             " pages=6144 online=test netdest=proto:tcp,ports:443,hosts:{hosts}"
         ));
     }
+    if step == "download" {
+        // The model download (P5 task 9): the HTTPS mock's model host, the
+        // storage host it redirects to, and the repository host with the
+        // role's chunk lists; its pages hold a 2 MiB chunk and the TLS
+        // records on top of `kabi::plan::UPDATED`'s. The held `NetDest` lets
+        // it read the bundle's test CA (`netroots/1.der`).
+        words.push_str(
+            " pages=6144 fetch=test netdest=proto:tcp,ports:443,hosts:models.kai.test+assets.kai.test+updates.kai.test",
+        );
+    }
     // Only the words `updated` reads: a plan word such as `netdest=` or
     // `caps=` from the command line would widen its line (the manager's review
     // of #779).

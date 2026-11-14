@@ -200,43 +200,165 @@ pub struct Report {
 }
 
 /// Downloads the target `list` describes into `partial`, fetching with
-/// `fetch`. Call it again after an error to resume.
+/// `fetch`: a [`Download`]'s steps in a loop. Call it again after an error to
+/// resume.
 pub fn download(
     list: &Chunks,
     partial: &mut impl Partial,
     fetch: &mut Fetcher,
 ) -> Result<Report, DownloadError> {
-    let mut whole = Sha256::new();
-    let recorded = partial.checkpoint()?.min(list.count());
-    let mut buf = vec![0u8; usize::try_from(list.chunk).unwrap_or(usize::MAX)];
-    let mut kept = 0;
-    while kept < recorded {
-        let (start, end) = list.range(kept);
-        let bytes = &mut buf[..(end - start) as usize];
-        partial.read(start, bytes)?;
-        let hash: [u8; 32] = Sha256::digest(&*bytes).into();
-        if hash != list.hashes[kept] {
-            break;
+    let mut run = Download::start(list.clone(), partial)?;
+    loop {
+        if let Step::Done(report) = run.step(partial, fetch)? {
+            return Ok(report);
         }
-        whole.update(&*bytes);
-        kept += 1;
     }
-    if kept < recorded {
-        partial.record(kept)?;
+}
+
+/// What one [`Download::step`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    /// Chunk `i`, on disk from an earlier run, was read back and checked again.
+    Checked(usize),
+    /// Chunk `i` was fetched, checked, written and recorded.
+    Fetched(usize),
+    /// The whole target checked out and was moved into place.
+    Done(Report),
+}
+
+/// A download run a chunk at a time, so that its caller can do other work
+/// between chunks, such as answering requests: `updated` steps one in its
+/// serve loop. The steps are [`download`]'s, in its order. A step that fails
+/// leaves the run where it was, so stepping again tries the same chunk, or
+/// the same `finish`; only [`DownloadError::Whole`] is final, as the list is
+/// wrong. A partial not [`Partial::held_alone`] is read back whole before
+/// `finish` ([`read_back`]); if a chunk changed on disk, the run starts again
+/// from the mark that sets back. A new run, from the checkpoint, does as well
+/// after a restart. It
+/// holds one chunk's buffer for the run, for the read-backs and the fetches
+/// alike.
+pub struct Download {
+    list: Chunks,
+    whole: Sha256,
+    buf: Vec<u8>,
+    /// Chunks the checkpoint names that are not yet read back; cut to where
+    /// the first one that no longer matches is.
+    recorded: usize,
+    /// Chunks read back and checked again.
+    kept: usize,
+    /// The next chunk to read back or fetch.
+    next: usize,
+    done: Option<Report>,
+}
+
+impl Download {
+    /// A run of the target `list` describes, from `partial`'s checkpoint.
+    pub fn start(list: Chunks, partial: &mut impl Partial) -> Result<Self, DownloadError> {
+        let recorded = partial.checkpoint()?.min(list.count());
+        let buf = vec![0u8; usize::try_from(list.chunk).unwrap_or(usize::MAX)];
+        Ok(Self {
+            list,
+            whole: Sha256::new(),
+            buf,
+            recorded,
+            kept: 0,
+            next: 0,
+            done: None,
+        })
     }
-    for i in kept..list.count() {
-        let (start, end) = list.range(i);
+
+    pub fn list(&self) -> &Chunks {
+        &self.list
+    }
+
+    /// Chunks read back or fetched so far, of `list().count()`.
+    pub fn progress(&self) -> usize {
+        self.next
+    }
+
+    /// The next chunk: one read back and checked again while the checkpoint
+    /// names any, then one fetched, then the whole target's hash, the
+    /// read-back of a partial not held alone, and `partial.finish()`. Once
+    /// done, it answers [`Step::Done`] again.
+    pub fn step(
+        &mut self,
+        partial: &mut impl Partial,
+        fetch: &mut Fetcher,
+    ) -> Result<Step, DownloadError> {
+        if let Some(report) = self.done {
+            return Ok(Step::Done(report));
+        }
+        let i = self.next;
+        if i < self.recorded {
+            let (start, end) = self.list.range(i);
+            let bytes = &mut self.buf[..(end - start) as usize];
+            // A chunk that cannot be read back, as one cut short by a crash,
+            // counts as one that no longer matches.
+            let read = partial.read(start, bytes).is_ok();
+            let hash: [u8; 32] = Sha256::digest(&*bytes).into();
+            if read && hash == self.list.hashes[i] {
+                self.whole.update(&*bytes);
+                self.kept += 1;
+                self.next += 1;
+                return Ok(Step::Checked(i));
+            }
+            // It no longer matches: it and every chunk after it are fetched
+            // again.
+            self.recorded = i;
+            partial.record(i)?;
+        }
+        if i < self.list.count() {
+            self.fetch_chunk(i, partial, fetch)?;
+            self.next += 1;
+            return Ok(Step::Fetched(i));
+        }
+        // A clone, so a `finish` that fails can be stepped again.
+        let blob: [u8; 32] = self.whole.clone().finalize().into();
+        if blob != self.list.blob {
+            return Err(DownloadError::Whole);
+        }
+        if !partial.held_alone()
+            && let Err(e) = read_back(&self.list, partial, &mut self.buf)
+        {
+            // A chunk changed on disk: the mark is back at it, so the next
+            // step starts the run again from there.
+            if e == DownloadError::Store(CHANGED_ON_DISK) {
+                self.restart(partial);
+            }
+            return Err(e);
+        }
+        partial.finish()?;
+        let report = Report {
+            kept: self.kept,
+            fetched: self.list.count() - self.kept,
+        };
+        self.done = Some(report);
+        Ok(Step::Done(report))
+    }
+
+    /// Chunk `i` fetched, checked against its signed hash, then written and
+    /// recorded; nothing of it is written if any check fails.
+    fn fetch_chunk(
+        &mut self,
+        i: usize,
+        partial: &mut impl Partial,
+        fetch: &mut Fetcher,
+    ) -> Result<(), DownloadError> {
+        let (start, end) = self.list.range(i);
         let want = (end - start) as usize;
-        let mut got: Vec<u8> = Vec::with_capacity(want);
+        let buf = &mut self.buf[..want];
+        let mut got = 0;
         let range = Range {
             first: start,
             last: Some(end - 1),
         };
         let answer = fetch(range, &mut |bytes| {
-            if got.len() + bytes.len() > want {
+            let to = got + bytes.len();
+            if to > want {
                 return Err(HttpError::TooLarge);
             }
-            got.extend_from_slice(bytes);
+            buf[got..to].copy_from_slice(bytes);
+            got = to;
             Ok(())
         })
         .map_err(|e| match e {
@@ -246,34 +368,34 @@ pub fn download(
         if answer.status != 206 {
             return Err(DownloadError::Status(answer.status, answer.retry_after));
         }
-        if got.len() != want {
+        if got != want {
             return Err(DownloadError::Length(i));
         }
-        let hash: [u8; 32] = Sha256::digest(&got).into();
-        if hash != list.hashes[i] {
+        let hash: [u8; 32] = Sha256::digest(&*buf).into();
+        if hash != self.list.hashes[i] {
             return Err(DownloadError::Chunk(i));
         }
-        partial.write(start, &got)?;
+        partial.write(start, buf)?;
         partial.record(i + 1)?;
-        whole.update(&got);
+        self.whole.update(&*buf);
+        Ok(())
     }
-    let blob: [u8; 32] = whole.finalize().into();
-    if blob != list.blob {
-        return Err(DownloadError::Whole);
+
+    /// The run from the start again, from the mark [`read_back`] set back:
+    /// the chunks it names are read back, the rest fetched. A mark that
+    /// cannot be read now starts it from the first chunk.
+    fn restart(&mut self, partial: &mut impl Partial) {
+        let count = self.list.count();
+        self.recorded = partial.checkpoint().map_or(0, |done| done.min(count));
+        self.whole = Sha256::new();
+        self.kept = 0;
+        self.next = 0;
     }
-    if !partial.held_alone() {
-        read_back(list, partial, &mut buf)?;
-    }
-    partial.finish()?;
-    Ok(Report {
-        kept,
-        fetched: list.count() - kept,
-    })
 }
 
 /// The check [`download`] makes when it moves in a partial not
-/// [`Partial::held_alone`], just before [`Partial::finish`], and what a
-/// caller that steps a download itself does at the same point: every chunk
+/// [`Partial::held_alone`], just before [`Partial::finish`], as
+/// [`Download::step`] makes it at the same point: every chunk
 /// read back and checked against the list, the whole target against its
 /// signed hash, then the partial's length against the target's.
 /// - A chunk that no longer matches, or cannot be read, sets the mark back to

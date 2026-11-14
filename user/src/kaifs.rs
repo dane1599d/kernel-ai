@@ -1,5 +1,7 @@
 //! A download's bytes in kaifs, through the `fs` service (`kai-fs 1`): the
-//! [`Partial`] `kainet::download` writes to.
+//! [`Partial`] `kainet::download` writes to. `dlcheck` (the `net-download`
+//! case) and `updated`'s model download (P5 task 9) use it; `updated` takes
+//! a finished model into the store as a sealed copy rather than the rename.
 //!
 //! A target `<name>` grows as `<name>.partial` in the downloads folder, beside
 //! `<name>.mark`, which holds how many chunks are checked and written, in
@@ -10,12 +12,12 @@
 //! rather than in a `.partial/` folder of its own. A file is made at the first
 //! write, so a download refused before its first chunk leaves nothing.
 
+use crate::sys;
 use alloc::format;
 use alloc::string::String;
 use fsproto::{Error, How, Reply, Request};
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER, Rights};
 use kainet::download::{DownloadError, Partial};
-use user::sys;
 
 const CALL_MS: u64 = 30_000;
 
@@ -153,6 +155,11 @@ impl Kaifs {
         }
     }
 
+    /// The folder the partial target and its mark are in.
+    pub fn dir(&self) -> Handle {
+        self.dir
+    }
+
     pub fn partial_name(&self) -> String {
         format!("{}.partial", self.name)
     }
@@ -204,11 +211,19 @@ impl Kaifs {
         Ok(())
     }
 
+    /// Commits the open action. If the commit fails or its answer is lost,
+    /// the action is aborted, so `fs` is never left holding one this side
+    /// thinks closed: the next chunk's write begins afresh, and the mark
+    /// still names only what was committed.
     fn commit(&mut self) -> Result<(), String> {
+        let got = ask(self.dir, Request::Commit);
         self.open = false;
-        match ask(self.dir, Request::Commit)? {
-            (Reply::Committed { .. }, _) => Ok(()),
-            (other, _) => Err(format!("a commit: {other:?}")),
+        match got {
+            Ok((Reply::Committed { .. }, _)) => Ok(()),
+            other => {
+                let _ = ask(self.dir, Request::Abort);
+                Err(format!("a commit: {other:?}"))
+            }
         }
     }
 
