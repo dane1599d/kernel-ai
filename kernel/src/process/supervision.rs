@@ -578,10 +578,33 @@ pub fn start(plan: String) -> Result<(), &'static str> {
     for line in plan.lines() {
         log!("  {}", redacted(line));
     }
+    log_room(&plan);
     PLAN.call_once(|| plan);
     start_unsupervised();
     threads::spawn("init", init_thread, 0)?;
     Ok(())
+}
+
+/// Logs what the plan's boot services commit to the admission budget, and
+/// warns when they leave under `supervise::budget::MIN_ROOM_MIB` of it: xtask
+/// forbids the warning, so a case near the edge fails on this line rather than
+/// on a service refused NoMemory later.
+fn log_room(plan: &str) {
+    use supervise::budget::{PAGES_PER_MIB, boot_pages, tight};
+    let committed = boot_pages(&supervise::parse_plan(plan), SUPERVISOR_LIMITS.max_pages);
+    let budget = super::page_budget();
+    log!(
+        "supervision: the plan's boot services commit {} MiB of the {} MiB admission budget",
+        committed / PAGES_PER_MIB,
+        budget / PAGES_PER_MIB
+    );
+    if tight(committed, budget) {
+        log!(
+            "supervision: under {} MiB of the admission budget left for the plan ({} pages): boot with more memory",
+            supervise::budget::MIN_ROOM_MIB,
+            budget.saturating_sub(committed)
+        );
+    }
 }
 
 /// Starts the plan's `unsupervised` lines once, as the kernel's own children with

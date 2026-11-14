@@ -177,15 +177,36 @@ pub struct UpdateDisk {
 
 /// Lines no case expects, from the founder's second walkthrough: a package
 /// service that failed, a line the panel or an app terminal dropped, an answer
-/// lost on its way to an app, and the supervisor dying. A case that provokes
-/// one on purpose sets its own `forbid`.
+/// lost on its way to an app, and the supervisor dying; and the kernel's warning
+/// that the plan's boot services leave under 16 MiB of the admission budget
+/// (`supervise::budget`), which would otherwise surface later as a service
+/// refused NoMemory. A case that provokes one on purpose sets its own `forbid`.
 pub const FORBID: &[&str] = &[
     "pkg: FAIL",
     "cannot ask yet",
     "dropped a result",
     "did not reach the app",
     "supervision: supervisor died",
+    ROOM_WARNING,
 ];
+
+/// The kernel's warning that a plan nearly fills the admission budget.
+pub const ROOM_WARNING: &str = "of the admission budget left for the plan";
+
+/// Guest memory every case gets at least, in MiB. The admission budget is half
+/// the memory free once the boot modules are loaded, so on the 512 MiB base the
+/// whole system plan (about 104 MiB of quotas) had about 1 MiB of room, and a
+/// slightly bigger image refused the shell (#877). 1024 MiB leaves it hundreds.
+pub const CASE_MEMORY_MIB: u64 = 1024;
+
+/// Guest memory for a case that boots a model needing `model_mib`
+/// (`kabi::model::guest_mib`): the model's share on [`CASE_MEMORY_MIB`] rather
+/// than on the 512 MiB base. llm's quota is sized for the model and the base
+/// is left for the other services, so on 512 MiB a whole plan beside a model
+/// had about 1 MiB of room (`ui-models-use`, run 43627865986).
+pub const fn with_case_room(model_mib: u64) -> u64 {
+    model_mib - crate::disk::BASE_MEMORY_MIB + CASE_MEMORY_MIB
+}
 
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
     TestCase {
@@ -381,5 +402,17 @@ mod tests {
         // `update-window` passes three and `update-online-resume` one: the walk
         // reaches both, so a rename of the prefix cannot leave it checking nothing.
         assert!(passed >= 4, "only {passed} updated.<key>= words checked");
+    }
+
+    /// A model case keeps the model's share and gets the case floor, not the
+    /// 512 MiB base, beneath it: 512 MiB more than the model formula.
+    #[test]
+    fn a_model_case_gets_the_case_floor_under_its_model() {
+        let model = crate::disk::memory_mib_for(crate::disk::GGUF_LEN as u64);
+        assert_eq!(
+            with_case_room(model),
+            model + CASE_MEMORY_MIB - crate::disk::BASE_MEMORY_MIB
+        );
+        assert!(with_case_room(model) >= model + 512);
     }
 }

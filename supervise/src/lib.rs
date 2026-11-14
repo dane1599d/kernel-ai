@@ -16,6 +16,7 @@ use alloc::vec::Vec;
 use kabi::{Limits, cap};
 
 pub mod appcall;
+pub mod budget;
 
 /// Defaults for a service that does not set its own limits.
 pub const DEFAULT_PAGES: u64 = 1024;
