@@ -8,9 +8,9 @@ decision: the runaway check counts at most 50 ms of one stretch between two char
 **The rule (`sched::burst::counted_since`, `MAX_STRETCH_NS`):**
 - At most 50 ms of one stretch between two charges on a CPU counts as time on it, for the burst and for METRICS' CPU time.
 - Ticks come every 1 to 10 ms (`hz=` 100 to 1000), so a real runaway is charged every tick and still dies at its limit. A 30 s stall halfway through a 2 s limit delays the kill by at most 12.5 ticks' worth (host test).
-- What is not counted is logged on the tick once it reaches 100 ms: `burst: cpu N: X ms passed between two charges, not counted as run time`. The next such report shows the gap's size.
+- What is not counted is logged on the tick once it reaches 100 ms: `burst: cpu N: X ms passed between two charges, not counted as run time: the vCPU did not run, the clock jumped, or interrupts were off that long`. The next such report shows the gap's size.
 - The cost is kernel code that keeps interrupts off for more than 50 ms: those stretches count only 50 ms each. That is a kernel bug of its own, and the late-tick line still shows it when threads wait.
 
-**The case:** `runaway-stall` (`test=runaway-stall`) moves the clock on 5 s on every CPU at once (`hpet::skip_for_test`) while a runaway with a 2 s limit computes. It must die as a runaway only after computing 2 s, not at the jump.
+**The case:** `runaway-stall` (`test=runaway-stall`) moves the clock on 5 s on every CPU at once (`hpet::skip_for_test`) while a runaway with a 2 s limit computes. It must die as a runaway after computing 2 s, less the 50 ms one stretch of the jump may add, not at the jump, and within 5 times its limit.
 
 **Not changed here:** user programs read the same clock, so a jump still ends their timed waits early, and the app nap still counts it as time unused. Whether the founder's jump was a real stall or one vCPU's TSC is for a follow-up.

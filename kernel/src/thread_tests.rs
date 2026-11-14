@@ -365,6 +365,8 @@ pub fn kill_check() -> Result<(), &'static str> {
 const STALL_LIMIT_MS: u64 = 2_000;
 const STALL_AFTER_MS: u64 = 300;
 const STALL_SKIP_MS: u64 = 5_000;
+/// How many times its limit the runaway may take to die, in time on the clock.
+const STALL_SLACK: u64 = 5;
 
 /// `test=runaway-stall`: the clock moves on 5 s at once on every CPU while a
 /// runaway with a 2 s limit computes, as when a host stops the VM. The jump is
@@ -385,9 +387,15 @@ pub fn stall_check() -> Result<(), &'static str> {
     if got != (ExitReason::Runaway, STALL_LIMIT_MS) {
         return Err("runaway-stall: the runaway ended the wrong way");
     }
-    // Killed at the jump, it would have ended about STALL_AFTER_MS in.
-    if ran_ms < STALL_LIMIT_MS {
+    // Killed at the jump, it would have ended about STALL_AFTER_MS in. Up to one
+    // stretch of the jump may still count, so it may end that much early.
+    if ran_ms < STALL_LIMIT_MS - sched::burst::MAX_STRETCH_NS / 1_000_000 {
         return Err("runaway-stall: the clock's jump was counted as run time");
+    }
+    // It computes on its own pinned CPU, so it dies near its limit; the slack is
+    // for a host that does not run the vCPU all the while (TCG on a busy runner).
+    if ran_ms > STALL_LIMIT_MS * STALL_SLACK {
+        return Err("runaway-stall: the runaway lived far past its limit");
     }
     log!(
         "runaway-stall: a clock jump past the limit was not run time, and the runaway still died at its limit"

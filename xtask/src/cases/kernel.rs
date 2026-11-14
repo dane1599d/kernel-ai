@@ -77,7 +77,7 @@ pub(super) const CASES: &[TestCase] = &[
     // A host stall: the clock jumps past a runaway's limit on every CPU at once.
     TestCase {
         expect: &[
-            "passed between two charges, not counted as run time (a host stall or a clock jump)",
+            "passed between two charges, not counted as run time: the vCPU did not run, the clock jumped",
             "runaway-stall: a clock jump past the limit was not run time, and the runaway still died at its limit",
         ],
         ..case("runaway-stall", "test=runaway-stall")

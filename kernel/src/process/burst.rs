@@ -130,7 +130,7 @@ fn log_uncounted() {
     }
     let ns = UNCOUNTED_NS[me].swap(0, Ordering::Relaxed);
     log!(
-        "burst: cpu {me}: {} ms passed between two charges, not counted as run time (a host stall or a clock jump)",
+        "burst: cpu {me}: {} ms passed between two charges, not counted as run time: the vCPU did not run, the clock jumped, or interrupts were off that long",
         ns / 1_000_000
     );
 }
