@@ -319,6 +319,7 @@ impl EditorWindow {
         if line == 0 || line > 99_999 {
             return Err(String::from("Lines count from 1."));
         }
+        self.keeps_text()?;
         // The source the agent names takes the place of the file a nap kept.
         self.reopen = None;
         if self.files.unsaved(&self.screen) {
@@ -338,6 +339,7 @@ impl EditorWindow {
     /// answer says only that it is on its way; the file's text never goes to the
     /// agent.
     pub fn act_open_file(&mut self, host: &mut dyn Host, path: &str) -> Result<String, String> {
+        self.keeps_text()?;
         // The file the agent names takes the place of the one a nap kept.
         self.reopen = None;
         self.files.ask_open(host, &mut self.screen, path)?;
@@ -435,6 +437,26 @@ impl EditorWindow {
         }
     }
 
+    /// Refuses while text a nap kept is still to be put back, waiting for the first
+    /// call or for the file's read: an open now would take its place, and the text
+    /// has no other copy. It is the person's to save or leave first.
+    fn keeps_text(&self) -> Result<(), String> {
+        let waiting = self
+            .reopen
+            .as_ref()
+            .is_some_and(|(_, kept)| kept.text.is_some())
+            || self
+                .files
+                .restoring()
+                .is_some_and(|(_, kept)| kept.text.is_some());
+        if waiting {
+            return Err(String::from(
+                "The editor is putting back text from before that is not saved; wait for it, then save or discard it.",
+            ));
+        }
+        Ok(())
+    }
+
     /// Opens the file a checkpoint had open, on the first call that may ask the
     /// OS for a file; the reply comes in a later call, as for Ctrl-O's. A file that
     /// cannot be opened again is said in the status row, and the editor is empty.
@@ -442,7 +464,10 @@ impl EditorWindow {
         let Some((path, kept)) = self.reopen.take() else {
             return;
         };
-        if let Err(why) = self.files.ask_restore(host, &mut self.screen, &path, kept) {
+        if let Err(why) = self
+            .files
+            .ask_restore(host, &mut self.screen, self.grid, &path, kept)
+        {
             self.screen
                 .note(format!("{path} was not opened again: {why}"), true);
         }
@@ -524,6 +549,15 @@ impl EditorWindow {
             return V1 {
                 reserved: 0,
                 path: Some(path.clone()),
+                text: kept.text.clone(),
+                line: Some(kept.line),
+            };
+        }
+        // The read for a restore is out: the text kept is in nobody's hands yet.
+        if let Some((path, kept)) = self.files.restoring() {
+            return V1 {
+                reserved: 0,
+                path: Some(String::from(path)),
                 text: kept.text.clone(),
                 line: Some(kept.line),
             };

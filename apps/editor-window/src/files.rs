@@ -119,6 +119,15 @@ impl Files {
         (text.len() <= KEEP_MAX).then_some(text)
     }
 
+    /// The file being read again for a checkpoint, and what the checkpoint kept of
+    /// it, while the read is out: nothing else holds that text until it is put back.
+    pub(crate) fn restoring(&self) -> Option<(&str, &Kept)> {
+        match (&self.job, &self.restore) {
+            (Some(Job::Read { path, .. }), Some(kept)) => Some((path.as_str(), kept)),
+            _ => None,
+        }
+    }
+
     /// Whether there is a file to save, as opposed to a component's source.
     pub(crate) fn can_save(&self) -> bool {
         self.editor.is_some()
@@ -190,16 +199,31 @@ impl Files {
 
     /// A checkpoint had `path` open, with `kept`: reads it again, and the text
     /// not saved is put back over what the disk has once the read comes.
+    ///
+    /// When the file cannot be asked for, the text kept is shown as a new file at
+    /// the path, and says so, rather than lost with the file.
     pub(crate) fn ask_restore(
         &mut self,
         host: &mut dyn Host,
         screen: &mut Screen,
+        grid: (usize, usize),
         path: &str,
         kept: Kept,
     ) -> Result<(), String> {
-        self.ask_open(host, screen, path)?;
-        self.restore = Some(kept);
-        Ok(())
+        match self.ask_open(host, screen, path) {
+            Ok(()) => {
+                self.restore = Some(kept);
+                Ok(())
+            }
+            Err(why) if kept.text.is_some() => {
+                self.restore = Some(kept);
+                self.start(screen, grid, path, b"", true);
+                let shown = format!("{path} was not opened again ({why}); the text kept is shown");
+                self.say_after.get_or_insert(shown);
+                Ok(())
+            }
+            Err(why) => Err(why),
+        }
     }
 
     /// Ctrl-S: sends the file whole.
@@ -317,11 +341,23 @@ impl Files {
         new: bool,
     ) {
         let kept = self.restore.take().unwrap_or_default();
-        match FileEditor::open(path, bytes) {
+        let mut new = new;
+        let mut lost = None;
+        let opened = match FileEditor::open(path, bytes) {
+            Ok(editor) => Ok(editor),
+            // A file that cannot be opened (not text, too big) must not take the
+            // text kept with it: it is shown as a new file at the path.
+            Err(why) if kept.text.is_some() => {
+                new = true;
+                lost = Some(format!("{why}; the text kept is shown"));
+                FileEditor::open(path, b"")
+            }
+            Err(why) => Err(why),
+        };
+        match opened {
             Err(why) => screen.note(why, true),
             Ok(mut editor) => {
                 let name = FileEditor::name_of(path);
-                let mut lost = None;
                 if let Some(text) = &kept.text
                     && let Err(why) = editor.replace_text(text.as_bytes())
                 {

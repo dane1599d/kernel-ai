@@ -529,6 +529,171 @@ fn wake(wasm: &[u8], limits: Limits, saved: &[u8], path: &str, disk: &str) -> ui
     last_frame(&mut h)
 }
 
+/// A checkpoint of an editor with `PATH` open and `x` typed into its first line,
+/// `milk` being the disk's text.
+const KEPT_PATH: &str = "/home/user/todo.txt";
+
+fn kept_checkpoint(wasm: &[u8]) -> Vec<u8> {
+    let mut g = start(wasm);
+    let w = open_the_file(&mut g, KEPT_PATH, "buy milk\ncall Ann\n");
+    call(&mut g, |g| g.ui_events_user(w, &[key("x", "x", 0)])).unwrap();
+    Instance::export(&mut g, 0).unwrap().unwrap()
+}
+
+/// What a checkpoint of `path` with `text` kept looks like, built by hand.
+fn checkpoint_of(path: &str, text: &str) -> Vec<u8> {
+    let kept = comp_editor_window::V1 {
+        path: Some(path.into()),
+        text: Some(text.into()),
+        line: Some(1),
+        ..comp_editor_window::V1::default()
+    };
+    compsdk::state::encode(comp_editor_window::SCHEMA, &kept)
+}
+
+/// A new instance from `saved` that has imported and not yet had a call.
+fn imported(wasm: &[u8], saved: &[u8]) -> CoreInstance {
+    let mut h = start(wasm);
+    assert_eq!(h.import(saved, 1), Ok(0));
+    assert!(h.take_files().is_empty());
+    h
+}
+
+/// Gives `h` its first transaction, which asks for the file, and answers that
+/// with `outcome`. The window's last frame.
+fn first_call_answered(h: &mut CoreInstance, outcome: Result<Vec<u8>, String>) -> uikit::Frame {
+    let (w, _) = frame(h);
+    call(h, |h| h.code_size(w, CODE, 10, 60)).unwrap();
+    let asked = h.take_files();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    call(h, |h| h.files_reply(asked[0].ticket, outcome)).unwrap();
+    last_frame(h)
+}
+
+fn open_file_action(g: &mut CoreInstance, path: &str) -> Result<String, String> {
+    let func = Func {
+        export: String::from("app:editor/actions@1.0.0#open-file"),
+        params: vec![Ty::String],
+        result: Some(Ty::Result(
+            Some(Box::new(Ty::String)),
+            Some(Box::new(Ty::String)),
+        )),
+    };
+    let r = call(g, |g| Instance::call(g, &func, &[Val::String(path.into())]));
+    match r.unwrap().unwrap() {
+        Val::Result(Ok(Some(v))) => match *v {
+            Val::String(s) => Ok(s),
+            other => panic!("{other:?}"),
+        },
+        Val::Result(Err(Some(v))) => match *v {
+            Val::String(s) => Err(s),
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn an_open_by_the_agent_right_after_a_wake_does_not_drop_the_text_kept() {
+    let Some(wasm) = wasm() else { return };
+    let saved = kept_checkpoint(&wasm);
+    let mut h = imported(&wasm, &saved);
+    // The first call after the wake is the agent's: it is refused, and asks the
+    // door for nothing.
+    let why = open_file_action(&mut h, "/home/user/other.txt").unwrap_err();
+    assert!(why.contains("not saved"), "{why}");
+    assert!(open(&mut h, "notes", "src/lib.rs", 1).is_err());
+    assert!(h.take_files().is_empty());
+    // The text comes back with the next call, as it would have.
+    let back = first_call_answered(&mut h, Ok(b"buy milk\ncall Ann\n".to_vec()));
+    let text = text_of(&back);
+    assert!(text.contains("xbuy milk") && back.unsaved, "{text}");
+    // While it is unsaved the editor still refuses an open that would drop it.
+    assert!(open_file_action(&mut h, "/home/user/other.txt").is_err());
+    assert!(h.take_files().is_empty());
+}
+
+#[test]
+fn an_open_while_the_kept_files_read_is_out_is_refused_too() {
+    let Some(wasm) = wasm() else { return };
+    let saved = kept_checkpoint(&wasm);
+    let mut h = imported(&wasm, &saved);
+    let (w, _) = frame(&mut h);
+    call(&mut h, |h| h.code_size(w, CODE, 10, 60)).unwrap();
+    let asked = h.take_files();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    // The read is out: an open is refused, and the answer then still has its text.
+    assert!(open_file_action(&mut h, "/home/user/other.txt").is_err());
+    assert!(open(&mut h, "notes", "src/lib.rs", 1).is_err());
+    assert!(h.take_files().is_empty());
+    call(&mut h, |h| {
+        h.files_reply(asked[0].ticket, Ok(b"buy milk\ncall Ann\n".to_vec()))
+    })
+    .unwrap();
+    assert!(text_of(&last_frame(&mut h)).contains("xbuy milk"));
+}
+
+#[test]
+fn text_kept_survives_a_file_that_cannot_be_opened_again() {
+    let Some(wasm) = wasm() else { return };
+    let saved = kept_checkpoint(&wasm);
+    // The read is refused.
+    let mut h = imported(&wasm, &saved);
+    let back = first_call_answered(&mut h, Err(String::from("denied: not yours")));
+    let text = text_of(&back);
+    assert!(text.contains("xbuy milk") && back.unsaved, "{text}");
+    assert!(text.contains("not read again"), "{text}");
+    // The file is not text any more.
+    let mut h = imported(&wasm, &saved);
+    let back = first_call_answered(&mut h, Ok(vec![0xff, 0xfe, 0x00]));
+    let text = text_of(&back);
+    assert!(text.contains("xbuy milk") && back.unsaved, "{text}");
+    assert!(text.contains("not text"), "{text}");
+    // The file grew past what the editor opens.
+    let mut h = imported(&wasm, &saved);
+    let big = vec![b'a'; editcore::file::MAX_BYTES + 1];
+    let back = first_call_answered(&mut h, Ok(big));
+    let text = text_of(&back);
+    assert!(text.contains("xbuy milk") && back.unsaved, "{text}");
+}
+
+#[test]
+fn text_kept_survives_a_path_the_door_would_not_be_asked_for() {
+    let Some(wasm) = wasm() else { return };
+    // A checkpoint whose path the editor no longer asks the door for: no read,
+    // and the text is shown as a new file at the path, unsaved, with the reason.
+    let saved = checkpoint_of("/etc/hosts", "kept text\n");
+    let mut h = imported(&wasm, &saved);
+    let (w, _) = frame(&mut h);
+    call(&mut h, |h| h.code_size(w, CODE, 10, 60)).unwrap();
+    assert!(h.take_files().is_empty());
+    let back = last_frame(&mut h);
+    let text = text_of(&back);
+    assert!(text.contains("kept text") && back.unsaved, "{text}");
+    assert!(text.contains("not opened again"), "{text}");
+}
+
+#[test]
+fn a_checkpoint_taken_while_the_kept_files_read_is_out_keeps_the_path_and_the_text() {
+    let Some(wasm) = wasm() else { return };
+    let saved = kept_checkpoint(&wasm);
+    let mut h = imported(&wasm, &saved);
+    let (w, _) = frame(&mut h);
+    call(&mut h, |h| h.code_size(w, CODE, 10, 60)).unwrap();
+    assert_eq!(h.take_files().len(), 1);
+    // The editor naps again before the door answers.
+    let again = Instance::export(&mut h, 0).unwrap().unwrap();
+    let kept: comp_editor_window::V1 =
+        compsdk::state::decode(&again, comp_editor_window::SCHEMA).unwrap();
+    assert_eq!(kept.path.as_deref(), Some(KEPT_PATH));
+    assert_eq!(kept.text.as_deref(), Some("xbuy milk\ncall Ann\n"));
+    assert_eq!(kept.line, Some(1));
+    // And what it kept brings the text back.
+    let back = wake(&wasm, LIMITS, &again, KEPT_PATH, "buy milk\ncall Ann\n");
+    let text = text_of(&back);
+    assert!(text.contains("xbuy milk") && back.unsaved, "{text}");
+}
+
 #[test]
 fn a_checkpoint_with_text_not_saved_brings_it_back_unsaved() {
     const PATH: &str = "/home/user/todo.txt";
