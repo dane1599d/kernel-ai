@@ -41,6 +41,10 @@ const SERIAL_LOG: &str = "serial.log";
 /// The kernel's clock and tick rate in the VM: HPET reads and APIC timer exits are
 /// slow under VirtualBox on Hyper-V (kernel/src/hpet.rs and timer.rs).
 const CLOCK: &str = "clock=tsc hz=250";
+/// Each serial line starts with the kernel clock and the HPET's own, in seconds:
+/// a host stall moves both on, a TSC jump only the first (the founder's test,
+/// 2026-11-14).
+const STAMPS: &str = "stamp=ms";
 
 struct Args {
     /// `--name`: the VM to create or boot, "Kernel AI" by default.
@@ -135,7 +139,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
     let model_words = disk
         .as_ref()
         .map_or_else(String::new, disk::ModelDisk::cmdline);
-    let cmdline = format!("{CLOCK} {model_words} {}", args.cmdline);
+    let cmdline = format!("{CLOCK} {STAMPS} {model_words} {}", args.cmdline);
     let esp = build_esp(&cmdline)?;
     let raw = dir.join("kai-os.img");
     let bytes = image::build(&esp, &raw)?;

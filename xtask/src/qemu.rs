@@ -473,8 +473,9 @@ pub fn run_test(
         let (mut missing, mut unseen) = (expect, exact);
         let mut cpu_line = None;
         let mut warnings = Vec::new();
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            let _ = echo_tx.send(line.clone());
+        for raw in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let _ = echo_tx.send(raw.clone());
+            let line = without_stamp(&raw).to_string();
             missing.retain(|text| !line.contains(text.as_str()));
             unseen.retain(|text| line.trim_end_matches('\r') != text);
             if stops && missing.is_empty() && unseen.is_empty() {
@@ -623,6 +624,25 @@ fn ci_warning(line: &str) -> Option<&str> {
         .filter(|text| !text.is_empty())
 }
 
+/// A serial line without the kernel's `[<s>.<ms> h<s>.<ms>] ` stamp (`stamp=ms`,
+/// kernel/src/serial.rs), so a case booted with stamps matches as one without.
+pub fn without_stamp(line: &str) -> &str {
+    let Some((stamp, rest)) = line.strip_prefix('[').and_then(|l| l.split_once("] ")) else {
+        return line;
+    };
+    let seconds = |text: &str| {
+        text.split_once('.').is_some_and(|(s, ms)| {
+            !s.is_empty()
+                && ms.len() == 3
+                && s.bytes().chain(ms.bytes()).all(|b| b.is_ascii_digit())
+        })
+    };
+    match stamp.split_once(" h") {
+        Some((clock, counter)) if seconds(clock) && seconds(counter) => rest,
+        _ => line,
+    }
+}
+
 /// Whether a console line was written for a ring-3 program rather than by the
 /// kernel: `[name] ...` from a program's own output, `= ...`, `! ...` and `? ...` from
 /// the shell's answers, possibly after the terminal's `kai> `, `edit <name>> `,
@@ -683,7 +703,32 @@ fn strip_confirm_prompt(line: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Typist, ci_warning, command_word, forward_https, from_programs, model_sizing};
+    use super::{
+        Typist, ci_warning, command_word, forward_https, from_programs, model_sizing, without_stamp,
+    };
+
+    /// A stamped line matches as the same line without its stamp; a program's
+    /// `[name] ` and anything stamp-like but not a stamp stay.
+    #[test]
+    fn a_stamp_comes_off_and_nothing_else_does() {
+        assert_eq!(without_stamp("[12.345 h12.340] boot-ok"), "boot-ok");
+        assert_eq!(
+            without_stamp("[0.004 h0.004] [shell] script 1 ran"),
+            "[shell] script 1 ran"
+        );
+        assert!(from_programs(without_stamp("[1.000 h1.000] [fs] fs: up")));
+        assert!(!from_programs(without_stamp("[1.000 h1.000] fs: up")));
+        for kept in [
+            "[shell] script 1 ran",
+            "[12.345] boot-ok",
+            "[12.34 h12.340] x",
+            "[a.345 h1.000] x",
+            "[1.000 h1.000]boot-ok",
+            "",
+        ] {
+            assert_eq!(without_stamp(kept), kept);
+        }
+    }
     use crate::Accel;
     use crate::options::Sizing;
     use std::io::{BufRead, BufReader};
