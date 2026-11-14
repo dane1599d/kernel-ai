@@ -217,6 +217,25 @@ pub const CONTROL_PREFIX: &str = "ctl ";
 /// so it shows its window as it does at start. An app with no desktop
 /// answers `err no window` and is never reloaded.
 pub const SHOW: &str = "kai-show 1";
+/// The requests the kernel's APP_CALL forwards to an app for the supervisor,
+/// by their first line: an action's call and its undo.
+pub const APP_HEADERS: &[&str] = &["kai-call 1\n", "kai-undo 1\n"];
+/// The requests APP_CALL forwards whole, a trailing newline allowed: the
+/// app's rows (`kai-actions 1`) and [`SHOW`].
+pub const APP_WHOLE: &[&str] = &["kai-actions 1", SHOW];
+
+/// Whether APP_CALL forwards `request` to an app: one of [`APP_WHOLE`], or
+/// one starting with one of [`APP_HEADERS`]. The kernel and the supervisor's
+/// check (`supervise::appcall`) both use it, so a request the supervisor
+/// sends is never refused below it.
+pub fn app_request(request: &[u8]) -> bool {
+    let whole = request.strip_suffix(b"\n").unwrap_or(request);
+    APP_WHOLE.iter().any(|w| w.as_bytes() == whole)
+        || APP_HEADERS
+            .iter()
+            .any(|h| request.starts_with(h.as_bytes()))
+}
+
 /// Longest control request a PUBLISH holder may have relayed, after `ctl `.
 pub const MAX_CONTROL: usize = 128;
 /// Largest uploaded artifact (M9b); a notes artifact is about 72 KiB.

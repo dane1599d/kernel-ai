@@ -102,3 +102,32 @@ fn info_labels_read_back() {
 fn publish_is_grantable() {
     assert_ne!(crate::cap::GRANTABLE & crate::cap::PUBLISH, 0);
 }
+
+/// The founder-walk (#922): `kai-show 1`, which the shell sends a closed
+/// app, was refused by APP_CALL with Invalid, so Notes closed could not be
+/// opened again.
+#[test]
+fn app_call_forwards_a_show_and_the_calls_and_nothing_else() {
+    for good in [
+        "kai-show 1",
+        "kai-show 1\n",
+        "kai-actions 1",
+        "kai-actions 1\n",
+        "kai-call 1\nfunc app:notes/actions@1.0.0#count\nargs {}\n",
+        "kai-undo 1\nid 3\n",
+    ] {
+        assert!(app_request(good.as_bytes()), "{good:?}");
+    }
+    for bad in [
+        "",
+        "kai-show 2",
+        "kai-show 1\n\n",
+        "kai-actions 1 x",
+        "kai-call 1",
+        "ctl suspend",
+        "ctl resume",
+        "status",
+    ] {
+        assert!(!app_request(bad.as_bytes()), "{bad:?}");
+    }
+}

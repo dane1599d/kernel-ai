@@ -271,6 +271,8 @@ pub enum SelfTest {
     DeskTour,
     /// `desk-takeover` (P3 task 10): a key in the agent's window stops it.
     DeskTakeover,
+    /// `desk-reopen` (#922): Notes closed from its control opens again.
+    DeskReopen,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
     Scriptrun,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
@@ -511,6 +513,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=app-settings" => Some(SelfTest::AppSettings),
             "test=desk-tour" => Some(SelfTest::DeskTour),
             "test=desk-takeover" => Some(SelfTest::DeskTakeover),
+            "test=desk-reopen" => Some(SelfTest::DeskReopen),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
@@ -713,6 +716,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::NetGrant
             | SelfTest::DeskTour
             | SelfTest::DeskTakeover
+            | SelfTest::DeskReopen
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
             | SelfTest::Tune
@@ -871,7 +875,10 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push_str(&crate::app_monitor_tests::plan());
                 kabi::plan::SHELL_DESK
             }
-            SelfTest::DeskAgent | SelfTest::DeskTakeover | SelfTest::DeskStandingRefused => {
+            SelfTest::DeskAgent
+            | SelfTest::DeskTakeover
+            | SelfTest::DeskReopen
+            | SelfTest::DeskStandingRefused => {
                 plan.push('\n');
                 plan.push_str(crate::agent_desk_tests::DESK);
                 kabi::plan::SHELL_DESK
@@ -1040,7 +1047,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(&crate::app_notes_tests::notes());
     }
-    if matches!(test, SelfTest::DeskAgent | SelfTest::DeskTakeover) {
+    if matches!(
+        test,
+        SelfTest::DeskAgent | SelfTest::DeskTakeover | SelfTest::DeskReopen
+    ) {
         plan.push('\n');
         plan.push_str(crate::agent_desk_tests::APPS);
     }
