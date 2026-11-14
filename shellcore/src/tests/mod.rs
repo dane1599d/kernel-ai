@@ -85,6 +85,8 @@ struct FakeHost {
     /// Each act request's second-round read (P3 task 10).
     act_reads: RefCell<Vec<Option<llmproto::act::Read>>>,
     act_apps: RefCell<Vec<String>>,
+    /// What `unix_seconds` gives.
+    wall_clock: Cell<Option<u64>>,
     /// What the shell asked `desktop`, and how `desktop` answers.
     ui_calls: RefCell<Vec<crate::ui::UiCall>>,
     /// The hosts the network rows reached, as `row host`.
@@ -301,6 +303,7 @@ impl FakeHost {
             act_states: RefCell::new(Vec::new()),
             act_reads: RefCell::new(Vec::new()),
             act_apps: RefCell::new(Vec::new()),
+            wall_clock: Cell::new(None),
             ui_calls: RefCell::new(Vec::new()),
             net_seen: RefCell::new(Vec::new()),
             queries: RefCell::new(Vec::new()),
@@ -758,6 +761,10 @@ impl Host for FakeHost {
         self.started_by.borrow_mut().retain(|(n, _)| n != name);
         self.set_running(name, false)?;
         self.set_running(name, true)
+    }
+
+    fn unix_seconds(&self) -> Option<u64> {
+        self.wall_clock.get()
     }
 
     fn services(&self) -> Result<Vec<crate::targets::Service>, String> {

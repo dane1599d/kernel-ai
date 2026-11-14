@@ -670,7 +670,8 @@ pub const NET_TIME: u64 = 197;
 /// `clock_now() -> seconds since 1970 UTC`: Limine's date at boot plus the
 /// time since, as [`NET_TIME`] gives it, for any process: the time of day is
 /// no secret, and the shell answers "what time is it" with it. NotFound when
-/// the firmware gave no date.
+/// the firmware gave no date. Nothing reads the RTC again after boot, so a
+/// VM that was paused or saved and resumed answers a time that is behind.
 pub const CLOCK_NOW: u64 = 110;
 
 /// The end of the reserved blocks (see the table above): the highest number a

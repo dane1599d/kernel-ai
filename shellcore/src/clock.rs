@@ -58,12 +58,11 @@ const SECONDS_PER_DAY: u64 = 86_400;
 /// The answer to `line` if it asks for the time or the date, given the clock's
 /// seconds since 1970 UTC (`None` when the firmware gave no date).
 pub(crate) fn answer(line: &str, now: Option<u64>) -> Option<String> {
-    let asked = line
-        .trim()
-        .trim_end_matches(['?', '.', '!'])
-        .trim()
-        .to_ascii_lowercase();
-    if !ASKS.contains(&asked.as_str()) {
+    // "what’s the time, Kai?" is asked as "what's the time".
+    let asked = line.trim().replace('\u{2019}', "'").to_ascii_lowercase();
+    let asked = asked.trim_end_matches(['?', '.', '!']).trim();
+    let asked = asked.strip_suffix(", kai").unwrap_or(asked).trim();
+    if !ASKS.contains(&asked) {
         return None;
     }
     Some(match now {
@@ -125,6 +124,9 @@ mod tests {
             Some("It is 06:30 UTC on Saturday 14 November 2026.")
         );
         assert!(answer("what's the date", None).is_some_and(|text| text.contains("no date")));
+        for line in ["what\u{2019}s the time", "What time is it, Kai?"] {
+            assert!(answer(line, Some(0)).is_some(), "{line}");
+        }
         for line in [
             "what time is the meeting",
             "set the time",

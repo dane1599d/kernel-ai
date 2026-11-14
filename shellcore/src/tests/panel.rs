@@ -112,3 +112,15 @@ fn a_typed_models_import_is_refused_at_the_panel_and_a_switch_runs_logged() {
         ok("Undone: the model before, from the next restart")
     );
 }
+
+#[test]
+fn the_panel_shows_the_time_from_the_clock() {
+    // #893: the bar shows the code-made line, not "answered above".
+    let (host, mut shell) = with_calls(vec![]);
+    host.wall_clock.set(Some(1_794_637_800));
+    assert_eq!(
+        shell.eval_panel("what time is it?"),
+        PanelResult::Done("It is 06:30 UTC on Saturday 14 November 2026.".into())
+    );
+    assert!(host.act_lines.borrow().is_empty());
+}

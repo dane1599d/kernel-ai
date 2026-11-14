@@ -1136,8 +1136,8 @@ impl Shell {
         ));
         // The time and the date come from the kernel's clock, never the model.
         if let Some(text) = clock::answer(request, self.host.unix_seconds()) {
+            // Not `worded`: the panel shows this line itself (#893).
             self.record(id, request, "", "answered from the clock");
-            self.worded = true;
             return Reply::ok(text);
         }
         self.asked_model = true;
