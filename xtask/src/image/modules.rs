@@ -97,7 +97,7 @@ mod tests {
             .into_iter()
             .filter(|(path, _)| path.starts_with("metadata/"))
             .collect();
-        crate::release_image::repository(Some(files), None).unwrap()
+        crate::release_image::repository(Some(files), None, &[]).unwrap()
     }
 
     /// Every image ships a signed root where `pkg` reads it; a release also
