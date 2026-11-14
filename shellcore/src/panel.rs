@@ -43,6 +43,13 @@ pub(crate) struct Terminal {
 }
 
 impl Shell {
+    /// The log entry the last panel line made, once: the entry its undo link
+    /// undoes (`undo <id>`), never the newest of another line's. `None` when
+    /// it changed nothing that `undo` takes back.
+    pub fn take_panel_entry(&mut self) -> Option<u64> {
+        self.panel_entry.take()
+    }
+
     /// Runs one panel line: what the panel shows.
     pub fn eval_panel(&mut self, line: &str) -> PanelResult {
         let line = line.trim();
@@ -65,7 +72,10 @@ impl Shell {
         self.asked_model = false;
         self.worded = false;
         self.done_line = None;
+        let before = self.log.newest_live();
         let reply = self.eval(line);
+        let after = self.log.newest_live();
+        self.panel_entry = (after != before).then_some(after).flatten();
         let result = self.panel_result(&reply);
         if let Some(left) = self.pending.take() {
             let outcome = "discarded: the panel cannot ask yet";

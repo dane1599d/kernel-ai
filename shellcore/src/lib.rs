@@ -652,6 +652,9 @@ pub struct Shell {
     asked_model: bool,
     worded: bool,
     done_line: Option<String>,
+    /// The log entry the last panel line made, if it made one: what the
+    /// panel's undo link undoes ([`Shell::take_panel_entry`]).
+    panel_entry: Option<u64>,
     /// The `pack_id` of the pack the model is given, logged with each model turn
     /// (ADR 0010 §7): the same one llm reports for its `act` slot.
     pack_id: u64,
@@ -736,6 +739,7 @@ impl Shell {
             asked_model: false,
             worded: false,
             done_line: None,
+            panel_entry: None,
             pack_id: llmproto::pack::act_pack_id(),
             saved_log: None,
             owner_once: None,

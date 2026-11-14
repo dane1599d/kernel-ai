@@ -360,9 +360,13 @@ fn the_panels_undo_and_show_are_where_they_are_drawn() {
     let desk = Desk::new(1280, 800);
     let painter = Painter::new(FONTS).expect("the fonts parse");
     let area = desk.panel();
-    let done = State::Done {
-        line: "Done: policy round-robin (was interactive).".into(),
-    };
+    let mut done = Panel::new();
+    done.set_done(
+        State::Done {
+            line: "Done: policy round-robin (was interactive).".into(),
+        },
+        Some(7),
+    );
     let y = area.y + area.h / 2;
     let found: Vec<(i32, &str)> = (area.x..area.right())
         .filter_map(|x| {
@@ -375,6 +379,17 @@ fn the_panels_undo_and_show_are_where_they_are_drawn() {
     let (undo, show) = (first("undo").unwrap(), first("show").unwrap());
     assert!(undo < show && undo > area.x + area.w / 2, "{undo} {show}");
     assert!(found.iter().all(|(x, _)| *x >= area.x + area.w / 2));
-    let idle = State::Idle;
-    assert_eq!(painter.panel_link(area, &idle, Point { x: show, y }), None);
+    // With no entry to act on, a done line has no links.
+    let mut bare = Panel::new();
+    bare.set_done(
+        State::Done {
+            line: "Done: policy round-robin (was interactive).".into(),
+        },
+        None,
+    );
+    assert_eq!(painter.panel_link(area, &bare, Point { x: show, y }), None);
+    assert_eq!(
+        painter.panel_link(area, &Panel::new(), Point { x: show, y }),
+        None
+    );
 }

@@ -425,9 +425,15 @@ fn deliver(state: &mut State, effects: &[Effect]) {
             // A click on a done line's undo or show sends it, as though typed.
             Effect::PanelClick { at } => {
                 let area = state.desk.panel();
-                match state.painter.panel_link(area, state.panel.state(), at) {
+                match state.painter.panel_link(area, &state.panel, at) {
                     Some(word) => {
-                        state.panel.send(String::from(word), now);
+                        // Undo takes back the line beside it, by its entry,
+                        // never the newest of another line's.
+                        let line = match (word, state.panel.entry()) {
+                            ("undo", Some(id)) => format!("undo {id}"),
+                            _ => String::from(word),
+                        };
+                        state.panel.send(line, now);
                         println!("desktop: the panel's {word} was clicked");
                         wake_shell();
                         true
@@ -614,6 +620,10 @@ fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &RecvInfo) {
         let label = name_of(pid);
         let mut client = Client::new(pid, &label);
         client.theme(&state.theme_name);
+        // Caps Lock as it is now: a client started with it on types by it.
+        client.apply(&[Effect::Locks {
+            caps: state.desk.caps(),
+        }]);
         state.clients.push(client);
     }
     let Some(at) = state.clients.iter().position(|c| c.pid == pid) else {
@@ -687,7 +697,7 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         }
         return Some(panel_wire::encode_take(request.as_ref()));
     }
-    let Some(shown) = panel_wire::parse_state(text) else {
+    let Some((shown, entry)) = panel_wire::parse_done(text) else {
         return Some(String::from("err not a panel request"));
     };
     let word = match &shown {
@@ -697,7 +707,7 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         deskcore::panel::State::Done { .. } => "done",
         deskcore::panel::State::Refused { .. } => "refused",
     };
-    if state.panel.set_state(shown) {
+    if state.panel.set_done(shown, entry) {
         // Its kind only: the line is the shell's result, which may name a file.
         println!("desktop: the panel shows {word}");
         state.extra.push(state.desk.panel());

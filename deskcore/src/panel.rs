@@ -57,6 +57,8 @@ pub struct Panel {
     ctrl: u8,
     /// Caps Lock, as the desk says ([`Panel::set_caps`]).
     caps: bool,
+    /// The log entry the done line's undo takes back ([`Panel::set_done`]).
+    entry: Option<u64>,
     waiting: VecDeque<Request>,
     /// [`APPS`] was sent and the sheet has not been opened for it yet.
     apps: bool,
@@ -77,6 +79,7 @@ impl Panel {
             shift: 0,
             ctrl: 0,
             caps: false,
+            entry: None,
             waiting: VecDeque::new(),
             apps: false,
         }
@@ -119,7 +122,21 @@ impl Panel {
     pub fn set_state(&mut self, state: State) -> bool {
         let changed = self.state != state;
         self.state = state;
+        self.entry = None;
         changed
+    }
+
+    /// The log entry the done line's undo takes back, with the state that
+    /// shows it: the panel draws its undo and show links only with one.
+    pub fn set_done(&mut self, state: State, entry: Option<u64>) -> bool {
+        let changed = self.set_state(state) || entry.is_some();
+        self.entry = entry.filter(|_| matches!(self.state, State::Done { .. }));
+        changed
+    }
+
+    /// The log entry the done line's undo takes back, if it names one.
+    pub fn entry(&self) -> Option<u64> {
+        self.entry
     }
 
     /// A key while the panel has focus, at `now_ms`; true when the panel

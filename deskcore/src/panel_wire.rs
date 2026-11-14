@@ -70,6 +70,35 @@ pub fn encode_state(state: &State) -> Option<String> {
     Some(format!("{STATE}{body}"))
 }
 
+/// [`encode_state`], with the log entry a done line's undo takes back after
+/// a tab (`panel state done <line>\t<id>`): the line has no tab of its own.
+pub fn encode_done(state: &State, entry: Option<u64>) -> Option<String> {
+    let text = encode_state(state)?;
+    match (state, entry) {
+        (State::Done { .. }, Some(id)) => Some(format!("{text}\t{id}")),
+        _ => Some(text),
+    }
+}
+
+/// A `panel state` request read back with a done line's log entry, if it
+/// names one; `None` for anything else.
+pub fn parse_done(text: &str) -> Option<(State, Option<u64>)> {
+    let Some(body) = text
+        .strip_prefix(STATE)
+        .and_then(|b| b.strip_prefix("done "))
+    else {
+        return parse_state(text).map(|state| (state, None));
+    };
+    match body.rsplit_once('\t') {
+        Some((line, id)) => {
+            let id = id.parse::<u64>().ok()?;
+            let state = parse_state(&format!("{STATE}done {line}"))?;
+            Some((state, Some(id)))
+        }
+        None => parse_state(text).map(|state| (state, None)),
+    }
+}
+
 /// A `panel state` request read back; `None` for anything else.
 pub fn parse_state(text: &str) -> Option<State> {
     let body = text.strip_prefix(STATE)?;
@@ -178,6 +207,20 @@ mod tests {
         let text = encode_state(&long).unwrap();
         assert!(text.len() <= STATE.len() + "refused ".len() + MAX_TEXT);
         assert!(parse_state(&text).is_some());
+    }
+
+    /// #875's review: a done line names the log entry its undo takes back.
+    #[test]
+    fn a_done_line_carries_its_log_entry() {
+        let done = State::Done {
+            line: "Done: policy round-robin (was interactive).".into(),
+        };
+        let text = encode_done(&done, Some(12)).unwrap();
+        assert_eq!(parse_done(&text), Some((done.clone(), Some(12))));
+        let bare = encode_done(&done, None).unwrap();
+        assert_eq!(parse_done(&bare), Some((done, None)));
+        assert_eq!(parse_done("panel state idle"), Some((State::Idle, None)));
+        assert_eq!(parse_done("panel state done x\tnine"), None);
     }
 
     #[test]
