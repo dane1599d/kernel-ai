@@ -201,9 +201,14 @@ pub(crate) fn wire(host: &dyn crate::Host) -> String {
             Err(why) => host.audit(&why),
         }
     }
+    installed(host, apps, &services);
     let apps = apps.borrow();
+    // Running apps first, then installed ones whose rows came from `pkg`.
+    let resting = services.iter().filter(|s| s.pid == 0 || s.stopped);
     let answers: Vec<(&str, &str)> = running
         .iter()
+        .copied()
+        .chain(resting)
         .filter_map(|s| Some((s.name.as_str(), apps.rows.answer(&s.name)?)))
         .collect();
     let (text, left_out) = llmproto::pack::apps::wire(&answers, llmproto::act::APPS_MAX_BYTES);
@@ -214,6 +219,44 @@ pub(crate) fn wire(host: &dyn crate::Host) -> String {
         ));
     }
     text
+}
+
+/// The rows of installed apps that are not running, read by `pkg` from their
+/// stored artifacts (founder test 2, item 3): "make a note called ideas" on a
+/// fresh boot must see `notes_add`, and a call to it starts the app
+/// ([`load_for`]). Each is asked once until reboot; a service `pkg` did not
+/// install is simply not shown.
+fn installed(
+    host: &dyn crate::Host,
+    apps: &core::cell::RefCell<Apps>,
+    services: &[crate::targets::Service],
+) {
+    for service in services.iter().filter(|s| s.pid == 0 || s.stopped) {
+        let app = service.name.as_str();
+        let known = {
+            let rows = &apps.borrow().rows;
+            rows.has(app) || rows.failed(app) || rows.asked(app).is_some()
+        };
+        if known {
+            continue;
+        }
+        apps.borrow_mut().rows.asked.push((app.to_string(), 0));
+        // A window's service, `<x>-window`, runs package `<x>` (kaipkg).
+        let package = app.strip_suffix("-window").unwrap_or(app);
+        let Ok(answer) = host.installed_rows(package) else {
+            continue;
+        };
+        let others: Vec<String> = services
+            .iter()
+            .map(|s| s.name.clone())
+            .filter(|name| name != app)
+            .collect();
+        let loaded = apps.borrow_mut().rows.load_among(app, &answer, &others);
+        match loaded {
+            Ok(count) => host.audit(&format!("{app}'s {count} actions loaded from its package")),
+            Err(why) => host.audit(&why),
+        }
+    }
 }
 
 /// The supervisor's answer for a service that is not an app

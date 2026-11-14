@@ -1495,6 +1495,11 @@ const EVERYDAY_LINES: &[Case] = &[
     ),
     case("erase ideas", &[with("fs_trash", &[("path", IDEAS)])], Runs),
     case(
+        "open the file manager",
+        &[with("ui_open", &[("app", v("files", LIT))])],
+        Runs,
+    ),
+    case(
         "dark mode please",
         &[with(
             "appearance_set",

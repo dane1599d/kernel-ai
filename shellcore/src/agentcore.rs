@@ -128,6 +128,8 @@ impl Shell {
     /// The one door: what `call`, made for the user's `request`, may do, and doing
     /// it.
     pub(crate) fn execute(&mut self, id: u64, request: &str, call: &Call) -> Outcome {
+        let forwarded = self.open_with(id, call);
+        let call = forwarded.as_ref().unwrap_or(call);
         match call.name.as_str() {
             "say" => self.pseudo_say(id, request, call),
             "clarify" => self.pseudo_clarify(id, request, call),
@@ -138,6 +140,32 @@ impl Shell {
                 None => self.refuse(id, request, call, Why::Unknown, "no such action"),
             },
         }
+    }
+
+    /// `ui_open(app, arg)` with an argument, as the app's own open row
+    /// (founder test 2, item 6): "open ideas.txt in the editor" runs
+    /// `editor_open_file("ideas.txt")`, which consent then judges as any call.
+    /// `None` when the call is not that, or the app declares no open row.
+    fn open_with(&self, id: u64, call: &Call) -> Option<Call> {
+        if call.name != agentabi::UI_OPEN.name {
+            return None;
+        }
+        let arg = call.arguments.get("arg")?.as_str()?.trim();
+        let app = call.arguments.get("app")?.as_str()?;
+        if arg.is_empty() {
+            return None;
+        }
+        let app = crate::ui::app_of(crate::ui::canonical(app)).replace('-', "_");
+        let (name, row) = [format!("{app}_open_file"), format!("{app}_open")]
+            .into_iter()
+            .find_map(|name| Some((name.clone(), self.row(&name)?)))?;
+        let first = row.args.first()?;
+        self.host.audit(&format!(
+            "request {id}: ui_open({app}, {arg}) runs as {name}"
+        ));
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(String::from(first.name), Value::from(arg));
+        Some(Call { name, arguments })
     }
 
     /// The row named `name`: the OS's, then an installed app's (P4).
