@@ -2,7 +2,7 @@
 //! mode=async` sends a call to `handles mode=slow`, which holds it 2 s; while
 //! it is held, the kernel calls the client, which serves it from the same
 //! thread, then is woken by the reply and polls it. A second call past its
-//! deadline wakes it too and polls TimedOut (see `user/src/bin/handles`).
+//! deadline, polled with a wait, answers TimedOut (see `user/src/bin/handles`).
 
 use crate::fpu_tests::wait_exit;
 use crate::process::{self, SpawnRequest};
@@ -41,7 +41,13 @@ fn start(
 
 pub fn check() -> Result<(), &'static str> {
     let slow = start("aslow", "mode=slow", cap::SERVE, &[])?;
-    let client = start("aclient", "mode=async", cap::SERVE | cap::CALL, &["aslow"])?;
+    let quick = start("aquick", "mode=quick", cap::SERVE, &[])?;
+    let client = start(
+        "aclient",
+        "mode=async",
+        cap::SERVE | cap::CALL,
+        &["aslow", "aquick"],
+    )?;
     let held = (0..HELD_WAIT_MS / POLL_MS).any(|_| {
         let serving = ipc::serving_deadline(slow).is_some();
         if !serving {
@@ -59,7 +65,7 @@ pub fn check() -> Result<(), &'static str> {
     if reply != b"served" {
         return Err("async-call: the client answered something else");
     }
-    for pid in [client, slow] {
+    for pid in [client, slow, quick] {
         if wait_exit(pid)? != (ExitReason::Exited, 0) {
             return Err("async-call: the ring-3 checks failed");
         }

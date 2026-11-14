@@ -378,12 +378,20 @@ pub fn call_submit(route: Handle, request: &[u8], timeout_ms: u64) -> Result<(),
 }
 
 /// The reply to the call [`call_submit`] sent, into `reply` (CALL_POLL): its
-/// length. Busy while it is in flight, NotFound with none; otherwise
-/// [`call_h`]'s errors, and the call is gone.
-pub fn call_poll(reply: &mut [u8]) -> Result<usize, Error> {
+/// length. Waits up to `wait_ms` (0: not at all) for the call to end. Busy
+/// while it is still in flight, NotFound with none; otherwise [`call_h`]'s
+/// errors, and the call is gone.
+pub fn call_poll(reply: &mut [u8], wait_ms: u64) -> Result<usize, Error> {
     call(
         call::CALL_POLL,
-        [reply.as_mut_ptr() as u64, reply.len() as u64, 0, 0, 0, 0],
+        [
+            reply.as_mut_ptr() as u64,
+            reply.len() as u64,
+            wait_ms,
+            0,
+            0,
+            0,
+        ],
     )
     .map(|len| len as usize)
 }

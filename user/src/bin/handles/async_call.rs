@@ -3,10 +3,12 @@
 //!
 //! - `mode=slow` serves two calls, each answered `pong` after [`SLOW_MS`].
 //! - `mode=async`, with a route to it: nothing to poll is NotFound; a call is
-//!   submitted, a second is Busy, and a poll is Busy while it is in flight. It
+//!   submitted, a second is Busy, and a poll is Busy while it is in flight; a
+//!   blocking call to `mode=quick` meanwhile is answered as usual. It
 //!   then serves the kernel's `read` in its own `svc_recv` until that returns
 //!   Woken, and the poll gives `pong`. A second call with a deadline shorter
-//!   than the server's answer wakes it the same way and polls TimedOut.
+//!   than the server's answer, polled with a 5 s wait, answers TimedOut once
+//!   the deadline passes.
 
 use kabi::Error;
 use kabi::handle::RecvInfo;
@@ -20,6 +22,9 @@ const CALL_MS: u64 = 10_000;
 const SHORT_MS: u64 = 200;
 /// The longest `svc_recv` waits; the call ends long before.
 const RECV_MS: u64 = 8_000;
+/// The second call's waited poll: longer than the server, so only the
+/// deadline ends it in time.
+const POLL_WAIT_MS: u64 = 5_000;
 
 pub fn slow() -> Result<(), &'static str> {
     let mut buf = [0u8; 16];
@@ -30,6 +35,15 @@ pub fn slow() -> Result<(), &'static str> {
         // The second call's caller has given up by now; the answer goes nowhere.
         let _ = sys::reply_h(b"pong", &[]);
     }
+    Ok(())
+}
+
+/// `mode=quick`: answers one call `quick` at once.
+pub fn quick() -> Result<(), &'static str> {
+    let mut buf = [0u8; 16];
+    let mut info = RecvInfo::default();
+    sys::recv_h(&mut buf, 30_000, &mut info).map_err(|_| "recv_h failed")?;
+    sys::reply_h(b"quick", &[]).map_err(|_| "reply_h failed")?;
     Ok(())
 }
 
@@ -54,7 +68,7 @@ pub fn run() -> Result<(), &'static str> {
     let route = user::route(0).ok_or("no route to the server")?;
     let mut reply = [0u8; 16];
     super::expect(
-        sys::call_poll(&mut reply),
+        sys::call_poll(&mut reply, 0),
         Error::NotFound,
         "a poll with no call",
     )?;
@@ -64,9 +78,25 @@ pub fn run() -> Result<(), &'static str> {
         Error::Busy,
         "a second call while one is in flight",
     )?;
-    super::expect(sys::call_poll(&mut reply), Error::Busy, "a poll in flight")?;
+    super::expect(
+        sys::call_poll(&mut reply, 0),
+        Error::Busy,
+        "a poll in flight",
+    )?;
+    // A blocking call made meanwhile is neither Busy nor disturbed.
+    let quick = user::route(1).ok_or("no route to the quick server")?;
+    let (len, _) = sys::call_h(quick, b"q", &mut reply, CALL_MS, &[], &mut [])
+        .map_err(|_| "a CALL_H while a call was in flight failed")?;
+    if &reply[..len] != b"quick" {
+        return Err("the quick server's answer was not its own");
+    }
+    super::expect(
+        sys::call_poll(&mut reply, 0),
+        Error::Busy,
+        "a poll after the CALL_H",
+    )?;
     let served = serve_until_woken()?;
-    let len = sys::call_poll(&mut reply).map_err(|_| "the poll after Woken failed")?;
+    let len = sys::call_poll(&mut reply, 0).map_err(|_| "the poll after Woken failed")?;
     if &reply[..len] != b"pong" {
         return Err("the reply was not the server's");
     }
@@ -74,7 +104,7 @@ pub fn run() -> Result<(), &'static str> {
         return Err("no request was served while the call was in flight");
     }
     super::expect(
-        sys::call_poll(&mut reply),
+        sys::call_poll(&mut reply, 0),
         Error::NotFound,
         "a poll after the call ended",
     )?;
@@ -83,18 +113,17 @@ pub fn run() -> Result<(), &'static str> {
     );
     sys::call_submit(route, b"ping", SHORT_MS).map_err(|_| "the second CALL_SUBMIT failed")?;
     let started = sys::time_ns();
-    serve_until_woken()?;
-    let took_ms = (sys::time_ns() - started) / 1_000_000;
     super::expect(
-        sys::call_poll(&mut reply),
+        sys::call_poll(&mut reply, POLL_WAIT_MS),
         Error::TimedOut,
-        "a call past its deadline",
+        "a waited poll of a call past its deadline",
     )?;
+    let took_ms = (sys::time_ns() - started) / 1_000_000;
     if took_ms >= SLOW_MS {
-        return Err("the deadline did not wake the wait");
+        return Err("the deadline did not end the waited poll");
     }
     println!(
-        "handles: async: a call past its deadline woke the wait after {took_ms} ms and polled TimedOut"
+        "handles: async: a waited poll of a call past its deadline answered TimedOut after {took_ms} ms"
     );
     Ok(())
 }

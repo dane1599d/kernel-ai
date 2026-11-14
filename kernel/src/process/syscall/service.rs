@@ -51,7 +51,7 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
         }
         call::CALL_H => call_h(slot, a[0], a[1]),
         call::CALL_SUBMIT => submit(slot, a[0], a[1], a[2], a[3]),
-        call::CALL_POLL => poll(slot, a[0], a[1]),
+        call::CALL_POLL => poll(slot, a[0], a[1], a[2]),
         _ => Err(Error::NotFound),
     }
 }
@@ -250,9 +250,17 @@ fn submit(
     Ok(0)
 }
 
-/// CALL_POLL: the call CALL_SUBMIT sent, once it ended.
-fn poll(slot: usize, reply_ptr: u64, reply_cap: u64) -> Result<u64, Error> {
+/// CALL_POLL: the call CALL_SUBMIT sent, once it ended, waiting up to
+/// `wait_ms` for that (0: not at all).
+fn poll(slot: usize, reply_ptr: u64, reply_cap: u64, wait_ms: u64) -> Result<u64, Error> {
     use crate::process::async_call::{self, Polled};
+    if wait_ms > 0 {
+        let until = hpet::nanos().saturating_add(wait_ms.min(MAX_CALL_MS) * 1_000_000);
+        let ended = || async_call::wakes(slot) || crate::process::killed(slot);
+        if !ended() {
+            crate::threads::sleep_until_unless(until.min(async_call::deadline(slot)), ended);
+        }
+    }
     let stopped = crate::process::interrupt_pending(slot);
     let (reply, _, came) = match async_call::poll(slot, stopped).ok_or(Error::NotFound)? {
         Polled::InFlight => return Err(Error::Busy),

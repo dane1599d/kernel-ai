@@ -413,8 +413,9 @@ pub const SHELL_INTERRUPT: u64 = 87;
 /// [`RECV_H`] with no request queued returns Woken. For the shell, which serves
 /// app reads while `llm` answers (no THREADS). Numbered at merge, K's block.
 pub const CALL_SUBMIT: u64 = 88;
-/// `call_poll(reply_ptr, reply_cap) -> len`: the call [`CALL_SUBMIT`] sent.
-/// Busy while it is in flight; once it ended, the reply's length (copied up to
+/// `call_poll(reply_ptr, reply_cap, wait_ms) -> len`: the call [`CALL_SUBMIT`]
+/// sent, waiting up to `wait_ms` (0: not at all) for it to end, or for the
+/// person's Stop. Busy while it is still in flight; once it ended, the reply's length (copied up to
 /// `reply_cap`) or [`CALL_H`]'s errors (TimedOut, Dead, Unavailable,
 /// Interrupted), and the call is gone. NotFound with none. Numbered at merge,
 /// K's block.

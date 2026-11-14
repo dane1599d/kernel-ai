@@ -83,6 +83,7 @@ fn main() -> i32 {
         Some("idle") => idle,
         Some("stop") => interrupt::stop,
         Some("slow") => async_call::slow,
+        Some("quick") => async_call::quick,
         Some("async") => async_call::run,
         _ => checks,
     };

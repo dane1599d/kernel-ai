@@ -72,7 +72,7 @@ pub(super) const CASES: &[TestCase] = &[
     TestCase {
         expect: &[
             "[aclient] handles: async: served 1 request while the call was in flight, then polled its reply",
-            "[aclient] handles: async: a call past its deadline woke the wait after ",
+            "[aclient] handles: async: a waited poll of a call past its deadline answered TimedOut after ",
             "async-call: a process served a call while its own was in flight, and polled the reply",
         ],
         ..case("async-call", "test=async-call")
