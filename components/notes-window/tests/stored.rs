@@ -87,3 +87,43 @@ fn an_edit_from_the_window_waits_in_the_checkpoint() {
     assert_eq!(v3(&app), V3 { pending: None });
     assert_eq!(NotesWindow::init().count().notes, 2);
 }
+
+#[test]
+fn the_new_actions_write_storage_and_a_removed_note_loses_its_key() {
+    fake::reset();
+    let mut app = NotesWindow::init();
+    let a = app.add("buy milk").unwrap();
+    let b = app.add("call bob").unwrap();
+    app.append(a, "and eggs").unwrap();
+    app.edit(b, "call bob today").unwrap();
+    assert_eq!(app.list(), ["1: buy milk", "2: call bob today"]);
+    fake::with(|os| {
+        assert_eq!(
+            os.storage.get(&stored::key(a)).unwrap(),
+            b"buy milk\nand eggs"
+        );
+        assert_eq!(os.storage.get(&stored::key(b)).unwrap(), b"call bob today");
+    });
+    app.remove(a).unwrap();
+    fake::with(|os| {
+        assert!(!os.storage.contains_key(&stored::key(a)));
+        assert!(os.storage.contains_key(&stored::key(b)));
+    });
+    // The checkpoint still holds nothing, and another instance finds the one left.
+    assert_eq!(v3(&app), V3 { pending: None });
+    let again = NotesWindow::init();
+    assert_eq!(again.list(), ["2: call bob today"]);
+    // A refused change writes nothing and says why.
+    assert_eq!(app.remove(a), Err(String::from("there is no note 1")));
+    assert!(app.append(b, "  ").is_err());
+}
+
+#[test]
+fn removing_the_note_the_window_has_open_closes_the_editor() {
+    fake::reset();
+    let mut app = NotesWindow::init();
+    let id = app.add("open me").unwrap();
+    app.view.selected = Some(id);
+    app.remove(id).unwrap();
+    assert_eq!(app.view.selected, None);
+}

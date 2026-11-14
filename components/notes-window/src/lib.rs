@@ -86,7 +86,7 @@ impl NotesWindow {
             self.window = None;
             return sink.close(window);
         }
-        if ui::on_ui(&mut self.notes, &mut self.view, e) {
+        if ui::on_ui(&mut self.notes, &mut self.view, e, compsdk::app::now_ms()) {
             // Storage is written in action calls only: the change waits.
             self.pending = true;
             self.present(sink)?;
@@ -135,6 +135,12 @@ impl NotesWindow {
     fn store(&mut self) {
         stored::save(&self.notes.state);
         self.pending = false;
+    }
+
+    /// An action changed the notes: they are written out, and the window shows them.
+    fn changed(&mut self) {
+        self.store();
+        self.present_logged();
     }
 }
 
@@ -204,6 +210,31 @@ impl Actions for NotesWindow {
 
     fn get(&self, id: u32) -> Option<String> {
         self.notes.get(id)
+    }
+
+    fn list(&self) -> Vec<String> {
+        self.notes.list()
+    }
+
+    fn remove(&mut self, id: u32) -> Result<String, String> {
+        let said = self.notes.remove(id)?;
+        if self.view.selected == Some(id) {
+            self.view.selected = None;
+        }
+        self.changed();
+        Ok(said)
+    }
+
+    fn append(&mut self, id: u32, text: &str) -> Result<String, String> {
+        let said = self.notes.append(id, text)?;
+        self.changed();
+        Ok(said)
+    }
+
+    fn edit(&mut self, id: u32, text: &str) -> Result<String, String> {
+        let said = self.notes.edit(id, text)?;
+        self.changed();
+        Ok(said)
     }
 
     fn about(&self) -> String {

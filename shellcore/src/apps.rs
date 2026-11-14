@@ -716,13 +716,30 @@ fn convert(app: &str, fronts: Option<&str>, row: &ActionRow) -> Result<AppRow, S
     })
 }
 
-/// The words of a row's function name, as its cues: `add` for `notes_add`.
+/// Words that ask for the same thing as a row's function word: a person says
+/// "delete note 2" to a `remove`, "show my notes" to a `list`. The OS owns the
+/// list, so an app cannot widen what its row is a request for (ADR 0002 D6).
+/// Each group is one meaning; a word in it brings the others.
+const SAME_ASK: [&[&str]; 4] = [
+    &["remove", "delete", "erase"],
+    &["list", "show"],
+    &["edit", "change", "replace", "rewrite"],
+    &["append", "add"],
+];
+
+/// The words of a row's function name, as its cues: `add` for `notes_add`,
+/// and, for `remove`, `delete` and `erase` too ([`SAME_ASK`]).
 fn cues_of(function: &str) -> Vec<String> {
-    function
-        .split('_')
-        .filter(|word| word.len() > 2)
-        .map(String::from)
-        .collect()
+    let mut cues: Vec<String> = Vec::new();
+    for word in function.split('_').filter(|word| word.len() > 2) {
+        let group = SAME_ASK.iter().find(|group| group.contains(&word));
+        for cue in group.map_or(&[word][..], |group| *group) {
+            if !cues.iter().any(|have| have == cue) {
+                cues.push(String::from(*cue));
+            }
+        }
+    }
+    cues
 }
 
 /// Whether `name` is a row of the OS under any of its lists.

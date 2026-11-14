@@ -25,11 +25,15 @@ node 1002 clip 10,102 197x308
   text 21,153 body text "Call the plumber about the kitchen sink …"
 node 7 clip 215,0 425x420
   text 230,12 small muted "Note"
-  fill 230,32 398x352 desk r6
-  stroke 230,32 398x352 line_strong w1 r6
-  clip 231,33 396x350
+  fill 230,32 398x316 desk r6
+  stroke 230,32 398x316 line_strong w1 r6
+  clip 231,33 396x314
   text 240,38 body text "Groceries"
   text 240,58 body text "milk and eggs"
   unclip
+node 9 clip 215,0 425x420
+  fill 230,356 398x28 raised r6
+  stroke 230,356 398x28 line_strong w1 r6
+  text 385,361 label text "Delete note"
 node 8 clip 215,0 425x420
   text 230,392 small muted "3 notes, 20 words"

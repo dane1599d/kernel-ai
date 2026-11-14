@@ -323,6 +323,10 @@ mod tests {
                 "notes_count",
                 "notes_find",
                 "notes_get",
+                "notes_list",
+                "notes_remove",
+                "notes_append",
+                "notes_edit",
                 "notes_about"
             ]
         );
@@ -340,6 +344,28 @@ mod tests {
         );
         assert!(text.contains("sig func(word: string) -> list<u32>\n"));
         assert!(text.contains("sig func(id: u32) -> option<string>\n"));
+        // The four that list and change notes: the list reads, the rest are undone
+        // by a snapshot, and what they act on and carry is the person's line.
+        let list = actions.by_name("notes_list").unwrap();
+        assert_eq!(list.export, "app:notes/actions@1.0.0#list");
+        assert_eq!((list.facts.read_only, list.args.len()), (Some(true), 0));
+        assert!(text.contains("sig func() -> list<string>\n"));
+        assert!(text.contains("sig func(id: u32, text: string) -> result<string, string>\n"));
+        for (name, args) in [("notes_remove", 1), ("notes_append", 2), ("notes_edit", 2)] {
+            let row = actions.by_name(name).unwrap();
+            assert_eq!(row.inverse, Inverse::Snapshot, "{name}");
+            assert_eq!(row.facts.read_only, Some(false), "{name}");
+            assert_eq!(row.args.len(), args, "{name}");
+            assert_eq!(row.args[0].role, Role::Target, "{name}");
+            assert!(row.args.iter().all(|a| a.from_request), "{name}");
+        }
+        let remove = actions.by_name("notes_remove").unwrap();
+        assert_eq!(remove.facts.destructive, Some(true));
+        let append = actions.by_name("notes_append").unwrap();
+        assert_eq!(
+            (append.args[1].role, append.args[1].max),
+            (Role::Payload, Some(2000))
+        );
     }
 
     #[test]

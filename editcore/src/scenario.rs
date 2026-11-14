@@ -36,7 +36,7 @@ pub const EDIT_COMPILE: &str = r#"s |next_id += 1;|next_id += "1";|"#;
 pub const EDIT_TRAP: &str =
     "s |self.state.notes.len())|self.state.notes[self.state.notes.len()].id)|";
 /// Where each edit lands in `components/notes/src/lib.rs`.
-pub const EDIT_LINES: [(&str, usize); 3] = [(EDIT_ABOUT, 85), (EDIT_COMPILE, 44), (EDIT_TRAP, 56)];
+pub const EDIT_LINES: [(&str, usize); 3] = [(EDIT_ABOUT, 141), (EDIT_COMPILE, 66), (EDIT_TRAP, 78)];
 
 /// How `:apply` went.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,7 +142,7 @@ pub const STEPS: &[Step] = &[
     Edit(":edit notes", &[StartsWith("ok editing notes 2: 5 files")]),
     Edit(
         "find schema {SCHEMA}",
-        &[Contains("components/notes/src/lib.rs:85:")],
+        &[Contains("components/notes/src/lib.rs:141:")],
     ),
     Live(Part(
         "S: only the kernel drives the editor and fills the store",
@@ -159,11 +159,11 @@ pub const STEPS: &[Step] = &[
     Live(Part("B: a working edit, declined once, then applied live")),
     Edit(
         EDIT_ABOUT,
-        &[Contains("lib.rs:85:"), Contains("edited live")],
+        &[Contains("lib.rs:141:"), Contains("edited live")],
     ),
     Edit("build", &[Exact("ok building e1 from 2")]),
     // Answered while the host compiles.
-    Edit("p 85", &[Contains("edited live")]),
+    Edit("p 141", &[Contains("edited live")]),
     Edit("status", &[Exact("ok notes 2: edited; building e1 from 2")]),
     BuildDone(&[StartsWith("ok built e1 from 2 (commit ")]),
     Edit(
@@ -178,7 +178,7 @@ pub const STEPS: &[Step] = &[
     Live(Counts(&[(Begins, 0), (Generation, 0)])),
     Apply {
         answer: "no",
-        view: Contains("components/notes/src/lib.rs line 85: 1 removed, 1 added"),
+        view: Contains("components/notes/src/lib.rs line 141: 1 removed, 1 added"),
         outcome: Exact("not applied"),
     },
     Live(Counts(&[(Begins, 0)])),
@@ -206,8 +206,8 @@ pub const STEPS: &[Step] = &[
     ApplyRefused(Exact("nothing new: e1 is active")),
     Live(Part("C: a compile error changes nothing")),
     Edit(":edit notes", &[StartsWith("ok editing notes e1: 5 files")]),
-    Edit(EDIT_COMPILE, &[Contains("lib.rs:44:")]),
-    // Off line 44 first, so only the failed build can bring the cursor back.
+    Edit(EDIT_COMPILE, &[Contains("lib.rs:66:")]),
+    // Off line 66 first, so only the failed build can bring the cursor back.
     Edit(
         "open Cargo.toml",
         &[StartsWith("ok components/notes/Cargo.toml, ")],
@@ -217,24 +217,24 @@ pub const STEPS: &[Step] = &[
     BuildDone(&[
         StartsWith("err build failed; the cursor is on the first error"),
         Contains("error[E0277]"),
-        Contains("components/notes/src/lib.rs:44:"),
+        Contains("components/notes/src/lib.rs:66:"),
     ]),
     Edit(
         "p",
-        &[StartsWith("ok components/notes/src/lib.rs lines 44 to ")],
+        &[StartsWith("ok components/notes/src/lib.rs lines 66 to ")],
     ),
     Unchanged,
     Builds(2),
     Live(Part("D: an index out of bounds rolls back by itself")),
     Edit("reset", &[Exact("ok back to notes e1 as opened")]),
-    Edit(EDIT_TRAP, &[Contains("lib.rs:56:")]),
+    Edit(EDIT_TRAP, &[Contains("lib.rs:78:")]),
     Edit("build", &[Exact("ok building e2 from e1")]),
     BuildDone(&[StartsWith("ok built e2 from e1 (commit ")]),
     // The edit service dies after the build; the journal heard of e2 from the
     // store, so the next line brings the session back, built.
     RestartEditor,
     Edit(
-        "p 56",
+        "p 78",
         &[Contains("self.state.notes[self.state.notes.len()]")],
     ),
     Restored(Exact(
@@ -250,10 +250,10 @@ pub const STEPS: &[Step] = &[
         "undo",
         &[StartsWith("ok undone; components/notes/src/lib.rs:1: ")],
     ),
-    Edit("p 56", &[Contains("self.state.notes.len())")]),
+    Edit("p 78", &[Contains("self.state.notes.len())")]),
     Apply {
         answer: "yes",
-        view: Contains("components/notes/src/lib.rs line 56: 1 removed, 1 added"),
+        view: Contains("components/notes/src/lib.rs line 78: 1 removed, 1 added"),
         outcome: Exact("ok probation e2 (3 calls)"),
     },
     // e2 traps on the request; e1 already answered it.
@@ -272,13 +272,13 @@ pub const STEPS: &[Step] = &[
     // The trap names the line of part D's edit.
     Live(RolledBack(
         "e2",
-        StartsWith("panicked at components/notes/src/lib.rs:56:"),
+        StartsWith("panicked at components/notes/src/lib.rs:78:"),
     )),
     // :fault opens e2 at that line.
     Edit(
         ":fault notes",
         &[StartsWith(
-            "ok editing notes e2 at components/notes/src/lib.rs:56: 5 files",
+            "ok editing notes e2 at components/notes/src/lib.rs:78: 5 files",
         )],
     ),
     Edit("p", &[Contains("self.state.notes[self.state.notes.len()]")]),
@@ -325,12 +325,12 @@ pub const STEPS: &[Step] = &[
         "F: a build the killed edit service started is adopted by the next",
     )),
     Edit(":edit notes", &[StartsWith("ok editing notes 2: 5 files")]),
-    Edit(EDIT_TRAP, &[Contains("lib.rs:56:")]),
+    Edit(EDIT_TRAP, &[Contains("lib.rs:78:")]),
     Edit("build", &[Exact("ok building e3 from 2")]),
     // Killed while the host builds; the kernel's job outlives it.
     RestartEditor,
     Edit(
-        "p 56",
+        "p 78",
         &[Contains("self.state.notes[self.state.notes.len()]")],
     ),
     Restored(Exact(

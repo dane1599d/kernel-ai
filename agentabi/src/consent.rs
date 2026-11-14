@@ -361,6 +361,17 @@ fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
                 continue;
             }
             let clause = words[at].clause;
+            // So does a clause with a telling word before the cue ("tell me how
+            // to delete note 2", "can you explain how to remove it"): it asks for
+            // words, not for a change. The line still names the action, so
+            // `named_any` counts it.
+            if !telling_counts
+                && words[..at]
+                    .iter()
+                    .any(|w| w.clause == clause && TELL_WORDS.contains(&w.text.as_str()))
+            {
+                continue;
+            }
             let negated = negated(words, at);
             let off = off_counts
                 && words
@@ -1005,6 +1016,31 @@ mod tests {
             "have the editor closed",
         ] {
             assert!(!asks_to_be_told(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_telling_word_before_a_cue_makes_the_clause_a_question() {
+        let change = crate::SET_POLICY;
+        // Asks to be told: no change is asked for.
+        for line in [
+            "tell me how to switch to round robin",
+            "can you explain how to switch the policy",
+            "describe how to switch the scheduler, please",
+        ] {
+            assert_eq!(cued(&words(line), &change), None, "{line}");
+            // It still names the action, so the line is never read as vague
+            // (#883): `named_any` counts a telling clause's cue.
+            assert_eq!(cued_in(&words(line), &change, true), Some(false), "{line}");
+        }
+        // The same words in another clause, or after the cue, or with no telling
+        // word, are still an order.
+        for line in [
+            "switch the policy and tell me when it is done",
+            "tell me what it is, then switch the policy",
+            "switch to round robin",
+        ] {
+            assert_eq!(cued(&words(line), &change), Some(false), "{line}");
         }
     }
 

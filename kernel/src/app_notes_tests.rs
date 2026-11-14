@@ -12,6 +12,11 @@
 //! 3. "add a note saying call mom" makes a second note, and `undo`, typed,
 //!    takes it back: two notes, then one, and the window shows only the first.
 //!
+//! 4. "add eggs to note 1" and "list my notes" run Notes' `notes_append` and
+//!    `notes_list` (the note reads `buy milk` and `eggs`, and the list shows its
+//!    first line); boot 2 then runs "delete note 1" (`notes_remove`) on the note
+//!    saved on disk, and Notes has none.
+//!
 //! `notes-window` runs with `dir=apps`, so each checkpoint (the adds, and the
 //! undo's) is kept in `/system/apps/notes-window/`. Boot 2 (`reread`), on the
 //! same disk, starts from that saved state: one note, "buy milk", in the
@@ -32,6 +37,7 @@ pub fn notes() -> String {
 
 const NAME: &str = "notes-window";
 const COUNT: &str = "kai-call 1\nfunc app:notes/actions@1.0.0#count\nargs {}\n";
+const GET_FIRST: &str = "kai-call 1\nfunc app:notes/actions@1.0.0#get\nargs {id: 1}\n";
 const CALL_MS: u64 = 60_000;
 const WAIT_MS: u64 = 120_000;
 /// Time for comphost to start Notes and paint its first frame under TCG.
@@ -42,6 +48,13 @@ const VIEW_LINE: &str = "what do my notes say";
 /// Notes' own count, `notes: <n>, words: <m>`.
 fn count() -> Result<String, &'static str> {
     ipc::call(NAME, COUNT.as_bytes(), CALL_MS)
+        .map(|reply| String::from_utf8_lossy(&reply).into_owned())
+        .map_err(|_| "app-notes: notes-window did not answer")
+}
+
+/// Notes' own reading of its first note.
+fn first_note() -> Result<String, &'static str> {
+    ipc::call(NAME, GET_FIRST.as_bytes(), CALL_MS)
         .map(|reply| String::from_utf8_lossy(&reply).into_owned())
         .map_err(|_| "app-notes: notes-window did not answer")
 }
@@ -100,6 +113,16 @@ pub fn check(reread: bool) -> Result<(), &'static str> {
             return Err("app-notes: boot 2's window does not show only the first note");
         }
         log!("app-notes: boot 2's window shows the note Kai made, from the saved state");
+        if !first_note()?.contains("eggs") {
+            return Err("app-notes: boot 2 lost the line added to the note");
+        }
+        let removed = ok("delete note 1")?;
+        log!("app-notes: Kai's notes_remove ran: {}", removed.trim_end());
+        expect_count(0, "app-notes: the note was not removed")?;
+        if shown()? != (false, false) {
+            return Err("app-notes: after the removal the window still shows the note");
+        }
+        log!("app-notes: boot 2 removed the saved note, in Notes and its window");
         return Ok(());
     }
     let reply = ok("add a note saying buy milk")?;
@@ -124,5 +147,22 @@ pub fn check(reread: bool) -> Result<(), &'static str> {
         return Err("app-notes: after undo the window does not show only the first note");
     }
     log!("app-notes: undo took the second note back, in Notes and its window");
+    let added = ok("add eggs to note 1")?;
+    if !first_note()?.contains("eggs") {
+        log!(
+            "app-notes: notes_append answered {added:?}; the note reads {:?}",
+            first_note()
+        );
+        return Err("app-notes: the line was not added to the note");
+    }
+    let listed = ok("list my notes")?;
+    if !listed.contains("1: buy milk") {
+        log!("app-notes: notes_list answered {listed:?}");
+        return Err("app-notes: the list does not show the note's first line");
+    }
+    log!(
+        "app-notes: Kai added to a note and listed them: {}",
+        listed.trim_end()
+    );
     Ok(())
 }
