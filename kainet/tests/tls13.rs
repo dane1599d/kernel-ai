@@ -283,12 +283,21 @@ fn mutated_records_after_the_handshake_are_refused_without_a_panic() {
             Ok(Progress::Wrote)
         );
         let mut record = s.take_outgoing();
+        let genuine = record.clone();
         let at = 5 + (rng.next() as usize) % (record.len() - 5);
         record[at] ^= 1 << (rng.next() % 8);
+        // Cut after the flipped byte, never before it: cut at it, the random
+        // tail could stand in for the genuine record's last bytes. With only
+        // its last tag byte random, one run in 256 rebuilt the genuine record,
+        // which is rightly read.
         if round.is_multiple_of(3) {
-            record.truncate(at);
+            record.truncate(at + 1);
             record.extend(rng.bytes(16));
         }
+        assert!(
+            record.iter().zip(&genuine).any(|(m, g)| m != g),
+            "round {round}: the mutation left the genuine record"
+        );
         feed_all(&mut c, &record);
         let got = c.advance(None);
         assert!(
