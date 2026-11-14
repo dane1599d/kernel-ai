@@ -121,7 +121,7 @@ pub fn check(files: &mut dyn Files, provided: &[(&str, Version)]) -> Result<Chec
 
 /// What one role lists, from [`listed`].
 pub struct Listed {
-    /// Each target, as the search of the delegations finds it.
+    /// Each target, as the role itself lists it (`Updater::own_targets`).
     pub targets: Vec<TargetFile>,
     /// Each listed path no trusted role names, and why.
     pub refused: Vec<(String, String)>,
@@ -140,22 +140,12 @@ pub fn listed(files: &mut dyn Files, role: &str) -> Result<Listed, String> {
     let mut updater = Updater::new(&mut remote, &mut cache, UNEXPIRED).map_err(tuf)?;
     updater.refresh().map_err(tuf)?;
     let (mut targets, mut refused) = (Vec::new(), Vec::new());
-    let paths = updater.listed(role, "targets").map_err(tuf)?;
-    // TUF's search asks the top-level `targets` first: a path it names too
-    // would resolve to its entry, not `role`'s. Only `role`'s own is kept.
-    let own = updater
-        .trusted()
-        .targets(role)
-        .map(|meta| meta.signed.targets.clone())
-        .unwrap_or_default();
-    for path in paths {
-        match updater.target(&path) {
-            Ok(Some(target)) if own.get(&path) != Some(&target) => {
-                refused.push((path, alloc::format!("another role names it before {role}")))
-            }
-            Ok(Some(target)) => targets.push(target),
-            Ok(None) => refused.push((path, "no trusted role names it".into())),
-            Err(why) => refused.push((path, why.to_string())),
+    // `role`'s own entries, never TUF's search, which asks the top-level
+    // `targets` first: what another role says of a path never stands in.
+    for (path, found) in updater.own_targets(role, "targets").map_err(tuf)? {
+        match found {
+            Ok(target) => targets.push(target),
+            Err(why) => refused.push((path, why)),
         }
     }
     Ok(Listed { targets, refused })

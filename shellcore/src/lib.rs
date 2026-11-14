@@ -21,6 +21,7 @@
 
 extern crate alloc;
 
+mod abilities;
 mod actions;
 pub mod actlog;
 mod agentcore;
@@ -49,6 +50,7 @@ mod instructions;
 mod models;
 mod netask;
 pub mod netgrant;
+mod sound;
 pub use models::MODELS_APP;
 pub use netask::Connect as NetConnect;
 mod packages;
@@ -122,6 +124,8 @@ pub enum FsRead<'a> {
     Whole(&'a str),
     History(&'a str),
     Changes,
+    /// Paths under home whose last part holds this word, case aside.
+    Find(&'a str),
 }
 
 /// A change the `fs` server makes as one transaction, which `undo` restores.
@@ -160,7 +164,8 @@ pub const NO_FILES: &str = "there are no files here (no kai-data disk)";
 /// What the shell needs from the operating system.
 pub trait Host {
     fn now_ns(&self) -> u64;
-    /// True if the user pressed Ctrl-C since the last call; reading clears it.
+    /// Whether the person pressed Stop during the request being served. In the
+    /// OS it stays true for the rest of that request (`kabi::call::INTERRUPTED`).
     fn interrupted(&self) -> bool;
     /// Bytes of heap in use.
     fn heap_bytes(&self) -> u64;
@@ -262,6 +267,11 @@ pub trait Host {
     /// One request to `pkg` through the shell's route to it: the text after
     /// its `ok`, or why not (P4 task 13).
     fn pkg(&self, _request: &str) -> Result<String, String> {
+        Err(String::from("there is no pkg service here"))
+    }
+    /// Installed package `package`'s `kai-actions 1` answer, read by `pkg`
+    /// from its stored artifact: an app's rows before it first runs.
+    fn installed_rows(&self, _package: &str) -> Result<String, String> {
         Err(String::from("there is no pkg service here"))
     }
     /// `cc build`'s work outside the shell's logic: component `name`'s
@@ -660,6 +670,9 @@ pub struct Shell {
     asked_model: bool,
     worded: bool,
     done_line: Option<String>,
+    /// The log entry the last panel line made, if it made one: what the
+    /// panel's undo link undoes ([`Shell::take_panel_entry`]).
+    panel_entry: Option<u64>,
     /// What the AI said to the last panel line, for the desk's history
     /// ([`Shell::take_panel_said`]): the model's words or a model script's
     /// prints, never the panel's own state line.
@@ -765,6 +778,7 @@ impl Shell {
             asked_model: false,
             worded: false,
             done_line: None,
+            panel_entry: None,
             panel_said: None,
             panel_clarifying: None,
             panel_note: None,
@@ -1165,13 +1179,26 @@ impl Shell {
         if request.is_empty() {
             return Reply::err("usage: ? <what you want done>");
         }
-        self.asked_model = true;
         let id = self.next_id;
         self.next_id += 1;
         self.host.audit(&format!(
             "script {id} requested: {}",
             show::truncate(request, 60)
         ));
+        // Sound has one answer until there is an audio driver.
+        if let Some(text) = sound::answer(request) {
+            self.record(id, request, "", "answered: no sound yet");
+            self.worded = true;
+            return Reply::ok(text);
+        }
+        // What Kai can do with something comes from the rows, never the model.
+        if let Some(text) = abilities::answer(request) {
+            self.record(id, request, "", "answered from the registry");
+            // A list in words: the panel sends it to the terminal whole.
+            self.worded = true;
+            return Reply::ok(text);
+        }
+        self.asked_model = true;
         if let Some(reply) = self.try_act(id, request) {
             return reply;
         }

@@ -13,7 +13,7 @@ You chose this on 2026-11-14. Two Ed25519 key files, each encrypted with its own
 | `root.key` | root (version 1, once) | 1 of 1 |
 | `release.key` | targets, packages (empty), models, snapshot, timestamp | 1 of 1 each |
 
-**What it gives a release.** The image carries `release/pkgrepo/` as `pkgrepo/`. Its `models` role names every model in `xtask/models.json`, so Models imports them, and it is what the download offers come from. Its `1.root.json` also ships as `kai.root.json`, the root that update disks and the online repository are checked against. One root covers both, and the YubiKey root later chains from it.
+**What it gives a release.** The image carries `release/pkgrepo/` as `pkgrepo/`. Its `packages` role signs the built-in apps (Files, Notes, Terminal and the rest) as packages, which the image carries beside it. The shell learns each app's actions from its installed package, so Kai can call an app by name before it has run. Its `models` role names every model in `xtask/models.json`, so Models imports them, and it is what the download offers come from. Its `1.root.json` also ships as `kai.root.json`, the root that update disks and the online repository are checked against. One root covers both, and the YubiKey root later chains from it.
 
 **What it does not do.** The kernel boots any model disk attached as `kai-model`, or a disk that starts with the GGUF magic, without a signature. That is how `cargo xtask vbox` VMs get their model, and attaching `kai-model.vmdk` to a release VM works without any key. On VirtualBox no disk can be the import disk (`kai-import`), so the role matters there only for downloads.
 
@@ -39,7 +39,7 @@ A WSL distro of its own and `env -i` do not stop that. WSL2 also does not start 
 - The key stick never goes into this PC. Files move between this PC and the signing machine on a second stick, the transfer stick. What it carries is public.
 - The sign script runs from the key stick, never from a checkout, because a session could change a checkout between your review and your run.
   - Check its SHA-256 before each run against the one you wrote down.
-  - The script at the commit that added it has this SHA-256: `34c9577c91a89a832bb4e41d572e8b15372cd0cee58e2d832047131fef8751c2`.
+  - The script at the commit that added it has this SHA-256: `be77aa045404b653765d876be26e28df9827ff039e8f9c976559dea9c9ce89a9`.
   - A test in `xtask/src/release_repo/tests.rs` holds this page to the script, so a change to either shows in review.
   - It runs in macOS's bash 3.2 and with Linux's or Git for Windows' bash. It uses the first OpenSSL 3 it finds at `/usr/bin/openssl` or Homebrew's `openssl@3`.
 - Root files are frozen once committed. `cargo xtask release-repo` reuses `1.root.json` and never signs root again. CI fails a pull request or a push to main that changes or removes any committed `*.root.json`, and a tag whose root files differ from any earlier release's. Two different "version 1" roots would split devices, because `updated` keeps a cached root of the same version.
@@ -76,12 +76,12 @@ On the fallback path, in Git Bash on this PC, `O` is `/usr/bin/openssl`, and the
    - It asks for a new passphrase twice. Use six or more words picked by dice (Diceware) or by your password manager's passphrase generator, not words you choose.
    - Why these settings: OpenSSL cannot decrypt a key whose scrypt needs more than 32 MiB, so N cannot go higher than 16384. p=64 makes each guess 64 times as costly as the default instead, about 2 seconds a use.
 5. Make the release key the same way, with a different passphrase: `$O genpkey -algorithm ed25519 | $O pkcs8 -topk8 -v2 aes-256-cbc -scrypt -scrypt_N 16384 -scrypt_r 8 -scrypt_p 64 -out release.key`.
-6. Run `head -1 root.key release.key`. Both must say `-----BEGIN ENCRYPTED PRIVATE KEY-----`. If either does not, delete it and repeat its step. Then write the public halves: `$O pkey -in root.key -pubout -out root.pub`, then `$O pkey -in release.key -pubout -out release.pub`. Each asks for its key's passphrase. Leave both `.pub` files in `$K`: the script shows them before every signing.
+6. Run `head -1 root.key release.key`. Both must say `-----BEGIN ENCRYPTED PRIVATE KEY-----`. If either does not, delete it and repeat its step. Then write the public halves: `$O pkey -in root.key -pubout -out root.pub`, then `$O pkey -in release.key -pubout -out release.pub`. Each asks for its key's passphrase. Leave both `.pub` files in `$K`: the script shows them before every signing. Then run `: > signed.log`: the ledger the sign script keeps of what these keys sign, empty until the first release. The script refuses to sign without it.
 7. Pin both keys:
    - Run `for k in root release; do echo "$k: $($O pkey -pubin -in $k.pub -outform DER | tail -c 32 | od -An -v -tx1 | tr -d ' \n')"; done`. It prints two lines of 64 hex digits. Write both on the paper you keep with the passphrases: these are "the digits on your paper".
    - In a browser, open `kernel-ai` on GitHub, then Settings → Environments → `release` → Environment variables. Add `RELEASE_ROOT_KEY` with root's digits, and `RELEASE_KEY` with release's. Do this yourself, not through a session.
 8. Get the sign script at the commit the session names (this page's pull request, once merged): `/usr/bin/curl -fsSLo release-sign.sh https://raw.githubusercontent.com/dane1599d/kernel-ai/<commit>/scripts/release-sign.sh`.
-   - Read it: it is under 80 lines.
+   - Read it: it is about 330 lines.
    - Run `$O dgst -sha256 release-sign.sh`. It must match the SHA-256 above.
    - Write it on the paper too.
 9. Save both passphrases in your password manager, and on the paper, kept away from the sticks.
@@ -93,25 +93,52 @@ On the fallback path, in Git Bash on this PC, `O` is `/usr/bin/openssl`, and the
 
 Signing takes two rounds, because the timestamp holds the hash of the signed snapshot.
 
-1. Plug the transfer stick into this PC. The session runs `cargo xtask release-repo prepare --dir <transfer stick>\kai-release\<version>`. It pastes the `sha256` line `prepare` printed for each file. Eject the transfer stick.
+- **Round 1** signs exactly `targets.canon`, `packages.canon`, `models.canon` and `snapshot.canon`, and `root.canon` too at the first release only.
+- **Round 2** signs `timestamp.canon` alone.
+
+The script refuses a folder that holds anything else to sign, or misses one of these.
+
+**A release number is signed once, and root once.** The script keeps a ledger, `signed.log`, beside the keys on the key stick: one line for each round it signs. It refuses a round 1 whose number is not above the last one logged, a root other than the one these keys already signed, and a round 2 that does not follow its own round 1. The snapshot names each role by its version alone, so files from two signings of one number could otherwise be mixed.
+- The script asks for every passphrase a round needs, and checks each key against its `.pub`, before it logs the round. It writes the round's line before any signature. A mistyped passphrase therefore signs and logs nothing, and you run the script again. A round cut short after its line (Ctrl-C, a full or pulled stick) counts as signed.
+- If anything goes wrong after round 1 is logged (a refusal, a changed file, a round cut short), the session raises `release/seq`, and you start again at step 1. Round 2 alone may be run again on the same `timestamp.canon`: it signs the same bytes.
+- If that was the first release, root is not signed again. The session copies the first try's `root.canon` and `root.sig` into the new folder, over the `root.canon` that `prepare` wrote. The script checks that `root.sig` is root.key's signature of the root `signed.log` names, and asks only for the release passphrase. If the first try was cut short before `root.sig` was written, the session copies `root.canon` alone, and the script signs those same bytes again.
+- The key stick must be writable. Never delete or edit `signed.log`. After every release, copy it to the `kai-keys` folder on `KAIKEYS2`: if the key stick fails, that copy must be the latest.
+- If the script says `signed.log`'s last line is torn, a round was cut off while it logged, and signed nothing. Run `head -n "$(wc -l < "$K/signed.log")" "$K/signed.log" > "$K/signed.new" && mv "$K/signed.new" "$K/signed.log"`, which keeps every whole line, then run the script again.
+
+**Every release signs the packages again**, along with targets and the rest. You sign each built-in app's exact bytes, and any change to an app changes them. A tag whose apps are not the signed bytes is refused (`release-image` names the app and both hashes), and you sign again from step 1.
+
+1. The session runs the "Release prepare" workflow on GitHub on the commit to be released, and tells you its branch and commit.
+   - Two runners build the apps, and it goes on only when both packed byte-identical packages. Its summary page lists each model and chunk list with its SHA-256 and length (a model with its name, licence and source too), and each package with its SHA-256, grants, actions and whether it is yanked.
+   - Open that page yourself, not from a link: on GitHub, **Actions**, then **Release prepare**, then the run. Its summary names a branch and a commit. The branch must be `main` or `release/v…`, and the commit the one the session told you. If either is not, stop.
+   - With the transfer stick in this PC, the session downloads the workflow's files (`release-prepare-<commit>`) to `<transfer stick>\kai-release\<version>`. It pastes the `sha256` line `prepare` printed for each file.
+   - Eject the transfer stick.
 2. On the signing machine, plug in the key stick and the transfer stick. Run `env -i /bin/bash --noprofile --norc`, and set `O`, `K` and `T` as in setup step 2.
 3. Run `$O dgst -sha256 "$K/release-sign.sh"`. It must match the SHA-256 on your paper. If it does not, stop.
-4. Run `/bin/bash --noprofile --norc "$K/release-sign.sh" "$K" "$T/kai-release/<version>"`. Before any passphrase, it prints `root.key is …` and `release.key is …`, then for each file the keys it names.
+4. Run `/bin/bash --noprofile --norc "$K/release-sign.sh" "$K" "$T/kai-release/<version>"`. Before any passphrase, it prints this machine's clock in UTC, then `round 1 of release <n>: signs …` (in step 6, `round 2 of release <n>: signs timestamp`), then `root.key is …` and `release.key is …`, then for each file the keys it names, then what `signed.log` holds.
+   - The clock must be now, give or take a few minutes. If not, press Ctrl-C and set it first.
+   - The `signed.log:` line must name the release you signed last time, and "no release yet" only at the very first release. If it does not, press Ctrl-C and stop: this is not the ledger you keep.
+   - The round must be the one you are on, and `<n>` the release number the session told you. If not, press Ctrl-C and stop.
    - Every one of those numbers must be one of the two on your paper. If any is not, press Ctrl-C and stop.
-   - Then type each passphrase it asks for. Root's is asked only for the first release, the one that signs root. If it asks for root's on any later release, press Ctrl-C and stop: root is frozen, so a request for it means someone changed the folder.
+   - At the first release, it holds `root.canon` to version 1 of the root xtask writes for your two keys: root.key for root, release.key for targets, snapshot and timestamp, each key named by its own id. It refuses any other root. Through `signed.log`, it also refuses a second root once these keys have signed one; the one exception is the same file again, from a failed first release.
+   - In round 2, it first checks that `snapshot.sig` is release.key's signature of `snapshot.canon`, and prints `round 1 signed snapshot.canon as <n> bytes, sha256 <hash>`: the timestamp must name exactly that.
+   - Then, in round 1, it prints `models.canon signs <file>, sha256 <hash>, length <n>` for each model and chunk list (with `name`, `licence` and `source` for a model), and `packages.canon signs <name>, sha256 <hash>, grants [...], actions [...], yanked false` for each package. Each whole line must be on the Release prepare summary page from step 1. Today every built-in app says `grants []`. If a line is not there, press Ctrl-C and stop.
+   - Last, it prints `<file>.canon expires <date>, in <n> days` for each file: 365 days for root, targets, packages and models, 30 for snapshot and 7 for timestamp. It refuses one not within a week of that, so this machine's clock must be right.
+   - If the script stops with "has no signed.log", "a line this script does not write", "is not one line of printable ASCII", "is not what xtask writes", "not one round's files", "is not a snapshot", "a key that is not lower-case hex Ed25519", "is not an Ed25519 public key", "are one key", "is not release.key's signature", "not within a week of", "not a real date", "is not above", "signed another root before" or "is not the last round these keys signed", stop too: someone changed the folder, or this machine's clock is wrong.
+   - Then type each passphrase it asks for. Root's is asked only for the first release, the one that signs root. If it asks for root's on any later release, press Ctrl-C and stop: root is frozen, so a request for it means someone changed the folder. It asks for every passphrase first, and checks each key file is the key its `.pub` names; if one is not, it signs nothing.
+   - Then it adds this round's line to `signed.log`, prints `signed.log: round <r> of release <n>`, and only then writes the signatures.
    - For each file it prints `signed <file> with <key>: sha256 <hash>`. Each hash must be the one the session pasted for that file. If one differs, the folder changed after `prepare`: tell the session, and nothing goes further.
 5. Run `exit`, eject both sticks, take the transfer stick back to this PC, and tell the session "signed".
 6. The session runs `cargo xtask release-repo prepare-timestamp` and pastes its one `sha256` line. Repeat steps 2 to 5. This time it asks only for the release passphrase.
 7. The session runs `cargo xtask release-repo assemble`, which checks:
    - every signature;
    - the repository, as a device checks it;
-   - that every signed byte is what `prepare` writes for `release/keys/` and `xtask/models.json`;
+   - that every signed byte is what `prepare` writes for `release/keys/` and `xtask/models.json`, and that the packages role signs exactly the packages from step 1, each packed again from the app inside it, its grants and actions included;
    - that each expiry is within a week of its full period.
 
    Then it commits `release/pkgrepo/` and opens a pull request. CI checks the same on clean runners, on that pull request and on every later one. The release dry run boots the image and imports qwen3-0.6b under the role you signed.
 8. When the tag's release workflow has drafted the release, open the draft on GitHub. Its notes end with "Signing keys", root's digits and release's. They must be the digits on your paper. Only then press **Publish release**. If they differ, delete the draft and find out why before anything is signed or published again.
 
-The session never needs the key stick or a passphrase. A change to `xtask/models.json` or its chunk lists fails CI until the repository is signed again this way. Allow a week from step 1 to step 7: past that, `assemble` refuses the expiries, and you start again at step 1.
+The session never needs the key stick or a passphrase. A change to `xtask/models.json` or its chunk lists fails CI until the repository is signed again this way. A change to an app fails the tag's build until its package is signed again. Allow a week from step 1 to step 7: past that, `assemble` refuses the expiries, and you start again at step 1.
 
 **What is still trusted:** you sign the bytes the session prepared.
 - The checks catch a repository that is not what xtask writes, a key that is not yours, and a folder changed after `prepare`.
@@ -121,6 +148,7 @@ The session never needs the key stick or a passphrase. A change to `xtask/models
   - the rule on root's passphrase;
   - the digits in the draft (step 8);
   - signing only when a session asks for a release you expect.
+- The image's repository (`pkgrepo/`) and the online repository trust the same root and `release.key`: what you sign with it is good for both.
 
 ### Expiry and online updates
 

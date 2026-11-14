@@ -15,6 +15,20 @@ const STOP: &str = r#"{"name":"process_stop","arguments":{"name":"notes"}}"#;
 const SAY: &str =
     r#"{"name":"say","arguments":{"text":"Done: removed 3 files. Your data is safe."}}"#;
 
+/// #875's review: the panel's undo takes back the line beside it, by the
+/// log entry it made; a line that changed nothing names none.
+#[test]
+fn a_panel_line_names_the_entry_its_undo_takes_back() {
+    let (_host, mut shell) = with_calls(vec![call(RR), call(SAY)]);
+    shell.eval_panel("switch to round robin");
+    let entry = shell.take_panel_entry().expect("the change made an entry");
+    assert_eq!(shell.take_panel_entry(), None, "given once");
+    shell.eval_panel("hi");
+    assert_eq!(shell.take_panel_entry(), None, "words change nothing");
+    let undone = shell.eval(&format!("undo {entry}"));
+    assert!(undone.ok, "{undone:?}");
+}
+
 #[test]
 fn a_run_tier_request_shows_codes_line() {
     let (host, mut shell) = with_calls(vec![call(RR)]);

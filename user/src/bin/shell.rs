@@ -235,7 +235,9 @@ fn take_panel(shell: &mut Shell) {
         // line never came here.
         _ => return,
     };
-    let Some(request) = panel_wire::encode_state(&shown) else {
+    // A done line names the log entry its undo link takes back.
+    let entry = shell.take_panel_entry();
+    let Some(request) = panel_wire::encode_done(&shown, entry) else {
         return;
     };
     match ask_desktop(route, &request) {
@@ -610,6 +612,10 @@ impl Host for System {
         build::ask_pkg(pkg_route()?, request)
     }
 
+    fn installed_rows(&self, package: &str) -> Result<String, String> {
+        build::ask_pkg_long(pkg_route()?, &alloc::format!("actions {package}"))
+    }
+
     fn net_fetch(&self, host: &str, path: &str) -> Result<String, String> {
         net::fetch(host, path)
     }
@@ -802,7 +808,10 @@ impl Host for System {
             &mut reply,
             SCRIPT_CALL_MS,
         )
-        .map_err(|error| unavailable(&alloc::format!("{error:?}")))?;
+        .map_err(|error| match error {
+            kabi::Error::Interrupted => ActError::Stopped,
+            error => unavailable(&alloc::format!("{error:?}")),
+        })?;
         let text = core::str::from_utf8(&reply[..len.min(reply.len())])
             .map_err(|_| unavailable("the reply is not UTF-8"))?;
         match text.split_once(' ').unwrap_or((text, "")) {

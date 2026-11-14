@@ -38,11 +38,12 @@ pub const TERMINAL_APP: &str = "terminal-window";
 /// Why a `shell_line` that did not come from a person's input is refused.
 pub(crate) const NOT_BY_A_PERSON: &str = "shell_line runs only for a key or click in the window";
 /// Why a line is refused while the console's C entry waits on its question.
-const C_WAITS: &str = "a C entry waits for an answer: answer it in the console first";
+const C_WAITS: &str =
+    "a C entry waits for an answer: answer it in the console first (Ctrl+Alt+F12)";
 /// Why `:c` and `:rhai` are refused: C goes in the console.
-const C_LINE: &str = "C goes in the console";
+const C_LINE: &str = "C goes in the console: press Ctrl+Alt+F12";
 /// What an app that asked gets back, in place of the question.
-const ASKS: &str = "it asks first: ask in the console, which shows the script";
+const ASKS: &str = "it asks first: ask in the console (Ctrl+Alt+F12), which shows the script";
 /// Most bytes of an answer sent back, so that with its `…` it fits the most
 /// the transport carries of a person's result (`deskcore::effects::MAX_LINE_TEXT`,
 /// which `user`'s `shell` checks at compile time).

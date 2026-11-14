@@ -221,3 +221,20 @@ fn a_script_that_fails_after_file_changes_drops_its_one_transaction() {
     assert!(host.files.borrow().is_empty(), "{:?}", host.files.borrow());
     assert_eq!(shell.eval("undo"), Reply::err("nothing to undo"));
 }
+
+#[test]
+fn find_looks_in_every_folder_and_changes_nothing() {
+    // "Find my file" (founder test 2): a name in a folder below home.
+    let host = FakeHost::new();
+    for (path, text) in [("docs/ideas.txt", "hello"), ("todo.txt", "milk")] {
+        host.files.borrow_mut().insert(path.into(), text.into());
+    }
+    let ran = run(&host, "show(fs_find(\"IDEAS\"));");
+    assert!(
+        ran.ok && ran.text.contains("docs/ideas.txt"),
+        "{}",
+        ran.text
+    );
+    assert!(!ran.text.contains("todo.txt"), "{}", ran.text);
+    assert!(ran.done.is_empty());
+}

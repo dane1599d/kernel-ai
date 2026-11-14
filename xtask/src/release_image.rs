@@ -17,8 +17,9 @@
 //! ceremony step 6.1): one root for both. With none committed, the image has
 //! neither, and imports nothing.
 //!
-//! `--test-root` builds the same image with one difference: a `pkgrepo/` whose
-//! `models` role, signed by a fresh test root, names only `qwen3-0.6b`
+//! `--test-root` builds the same image with one difference: a `pkgrepo/`
+//! signed by a fresh test root, whose `packages` role lists this build's
+//! packages and whose `models` role names only `qwen3-0.6b`
 //! (`pkgrepo::release_test`), in place of the committed one. `kai.root.json`
 //! stays the founder's. It exists for the case that boots the release and
 //! imports that model (`release_boot.rs`) while no repository is committed.
@@ -26,6 +27,7 @@
 //! builds differ only beneath `pkgrepo/`.
 
 use crate::{components, esp, floatguard, image, options, userbuild};
+use image::modules::{Image, TRUST_ANCHOR};
 use std::fs;
 use std::path::PathBuf;
 
@@ -68,7 +70,13 @@ pub fn main(args: &[String]) -> Result<(), String> {
     let programs = userbuild::build_user(&root, &options)?;
     let target_dir = root.join("target");
     let mut modules = esp::boot_modules(&kernel, &programs, &root)?;
-    modules.extend(components::build(&root)?);
+    let versions = components::build(&root)?;
+    // The built-in apps as packages, packed from this build's own components:
+    // the committed repository must sign exactly these entries, bytes and
+    // index.
+    let targets = crate::release_repo::packages::pack(&root, &versions)?;
+    let packages = crate::release_repo::packages::built(&targets);
+    modules.extend(versions);
     // Nothing that exists to be driven by a boot case ships.
     components::check_no_test_only(&modules)?;
     let release_seq = release_seq(&root)?;
@@ -79,10 +87,13 @@ pub fn main(args: &[String]) -> Result<(), String> {
         bytes: record.clone().into_bytes(),
     });
     let test = match test_root {
-        true => Some(crate::pkgrepo::release_test()?),
+        true => Some(crate::pkgrepo::release_test(&targets)?),
         false => None,
     };
-    modules.extend(repository(crate::release_repo::committed(&root)?, test)?);
+    let signed = crate::release_repo::committed(&root, Some(&targets))?;
+    let committed = signed.is_some();
+    let repository = repository(signed, test, &packages)?;
+    let modules = image::modules::image_modules(Image::Release { committed }, modules, repository)?;
     // No extra TLS root ships: a file in `netroots/` would be trusted for
     // every host by fetch and the model download, which have TLS alone
     // (K's review of #753).
@@ -123,17 +134,15 @@ pub fn main(args: &[String]) -> Result<(), String> {
 
 const USAGE: &str = "usage: cargo xtask release-image [--test-root] [--out PATH]";
 
-/// Where the image carries the root it checks updates against
-/// (`kernel/src/process/syscall/update.rs`).
-const TRUST_ANCHOR: &str = "kai.root.json";
-
 /// The modules for the image's repository: `signed`, the committed
-/// `release/pkgrepo`, beneath `pkgrepo/`, and its root as [`TRUST_ANCHOR`].
-/// `test`, `--test-root`'s repository, replaces it beneath `pkgrepo/` only:
+/// `release/pkgrepo`, beneath `pkgrepo/` with `packages`' bytes, which it
+/// signs, at their target paths, and its root as [`TRUST_ANCHOR`]. `test`,
+/// `--test-root`'s repository, replaces it beneath `pkgrepo/` only:
 /// [`TRUST_ANCHOR`] stays the founder's.
-fn repository(
+pub(crate) fn repository(
     signed: Option<crate::release_repo::RepoFiles>,
     test: Option<Vec<esp::Module>>,
+    packages: &[(String, Vec<u8>)],
 ) -> Result<Vec<esp::Module>, String> {
     let mut modules = Vec::new();
     if let Some(files) = &signed {
@@ -148,7 +157,11 @@ fn repository(
     }
     match (test, signed) {
         (Some(test), _) => modules.extend(test),
-        (None, Some(files)) => {
+        (None, Some(mut files)) => {
+            let targets = packages
+                .iter()
+                .map(|(path, bytes)| (format!("targets/{path}"), bytes.clone()));
+            files.extend(targets);
             modules.extend(crate::pkgrepo::as_modules(crate::pkgrepo::Repository {
                 files,
             })?)
@@ -234,32 +247,36 @@ mod tests {
     }
 
     /// The committed repository's root is `kai.root.json` too, byte for byte,
-    /// and `--test-root` swaps the repository alone.
+    /// the packages it signs go beside it at their target paths, and
+    /// `--test-root` swaps the repository alone.
     #[test]
     fn the_founders_root_is_the_trust_anchor_and_stays_under_a_test_root() {
         let signed = vec![
             (kaipkg::image::ROOT.to_string(), b"founder".to_vec()),
             ("metadata/timestamp.json".to_string(), b"ts".to_vec()),
         ];
-        let real = repository(Some(signed.clone()), None).unwrap();
+        let packages = [("notes-1.0.0.kpkg".to_string(), b"kpkg".to_vec())];
+        let real = repository(Some(signed.clone()), None, &packages).unwrap();
         let paths: Vec<&str> = real.iter().map(|m| m.path.as_str()).collect();
         assert_eq!(
             paths,
             [
                 TRUST_ANCHOR,
                 "pkgrepo/metadata/1.root.json",
-                "pkgrepo/metadata/timestamp.json"
+                "pkgrepo/metadata/timestamp.json",
+                "pkgrepo/targets/notes-1.0.0.kpkg"
             ]
         );
         assert_eq!(real[0].bytes, real[1].bytes);
+        assert_eq!(real[3].bytes, b"kpkg");
         let test = vec![module("pkgrepo/metadata/1.root.json")];
-        let tested = repository(Some(signed), Some(test)).unwrap();
+        let tested = repository(Some(signed), Some(test), &packages).unwrap();
         assert_eq!(tested.len(), 2);
         assert_eq!(
             (tested[0].path.as_str(), &tested[0].bytes[..]),
             (TRUST_ANCHOR, &b"founder"[..])
         );
         assert_eq!(tested[1].bytes, b"x");
-        assert!(repository(None, None).unwrap().is_empty());
+        assert!(repository(None, None, &packages).unwrap().is_empty());
     }
 }

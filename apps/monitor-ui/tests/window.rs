@@ -5,7 +5,7 @@
 use comp_monitor::sample::{ModelState, ModelStatus, ProcSample, Sample};
 use comp_monitor::{MAX_PROCS, Monitor, Sort};
 use comp_monitor_ui::{
-    self as ui, Change, Entry, REFRESH, SORT_CPU, SORT_MEMORY, SORT_NAME, SORT_PID, TABLE,
+    self as ui, Change, Entry, SORT_CPU, SORT_MEMORY, SORT_NAME, SORT_PID, TABLE,
 };
 use std::path::PathBuf;
 use uikit::a11y::Action;
@@ -167,12 +167,14 @@ fn the_buttons_are_bound_to_the_rows_they_run() {
     for sort in [SORT_CPU, SORT_MEMORY, SORT_NAME, SORT_PID] {
         assert_eq!(bound(sort).as_deref(), Some("monitor_sort"));
     }
-    assert_eq!(bound(REFRESH), None);
-    // The window has no button bound to the OS: stopping a process is Kai's.
-    assert!(tree.iter().all(|e| !matches!(
-        &e.widget,
-        Widget::Button { action: Some(a), .. } if a != "monitor_sort"
-    )));
+    // The window has no other button, none that does nothing (the Refresh it had
+    // did, since the numbers are read again every second) and none bound to the
+    // OS: stopping a process is Kai's.
+    let buttons = tree
+        .iter()
+        .filter(|e| matches!(e.widget, Widget::Button { .. }))
+        .count();
+    assert_eq!(buttons, 4);
 }
 
 #[test]
@@ -200,9 +202,6 @@ fn clicks_in_the_window_move_the_model() {
     assert_eq!(app.mon.procs()[0].name, "desktop");
     assert!(app.event(&UiEvent::Pressed(SORT_PID)));
     assert_eq!(app.mon.procs()[0].pid, 1);
-
-    // Refresh only redraws: the component reads a new sample after any event.
-    assert!(app.event(&UiEvent::Pressed(REFRESH)));
 
     // What the window does not use changes nothing.
     assert!(!app.event(&UiEvent::Pressed(9_999)));

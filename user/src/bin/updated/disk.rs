@@ -204,8 +204,9 @@ pub fn update(handle: Handle, restart_now: bool) -> Result<Staged, String> {
     let (target, file) = {
         let mut updater = Updater::new(&mut repo, &mut cache, now).map_err(|e| format!("{e}"))?;
         updater.refresh().map_err(|e| format!("refused: {e}"))?;
+        // Only the top-level role signs the release, never a delegation.
         let target = updater
-            .target(TARGET)
+            .top_level_target(TARGET)
             .map_err(|e| format!("refused: {e}"))?
             .ok_or("refused: the repository has no slot.img")?;
         let file = format!("targets/{}", target.path);
