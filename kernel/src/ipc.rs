@@ -488,7 +488,7 @@ pub fn call_with_stop(
 
 /// Takes back a call no server has taken yet: Ok once it is gone, or the call
 /// back when a server already holds it (or it ended).
-fn withdraw(pending: Pending) -> Result<(), Pending> {
+pub(crate) fn withdraw(pending: Pending) -> Result<(), Pending> {
     let slot = pending.slot;
     let withdrawn = with_ipc(|ipc| {
         if CALL_STATE[slot].load(Ordering::SeqCst) != QUEUED {
@@ -673,7 +673,11 @@ pub fn recv_with(
             uaccess::copy_to_user(slot, buf, &request[..len])?;
             // A new request starts afresh: a Stop meant for the last one, pressed
             // as it ended, never cancels this one (lane C on #887).
-            let _ = process::take_interrupt(slot);
+            // Not while a call it sent (CALL_SUBMIT) is in flight: that Stop is
+            // for the call, and the line it belongs to is still running.
+            if !process::async_call::in_flight(slot) {
+                let _ = process::take_interrupt(slot);
+            }
             // Only a request the server holds opens its compute allowance.
             process::burst::serving(slot, opened);
             return Ok((request.len() as u64, caller_pid, extra));
@@ -768,6 +772,12 @@ pub fn reply_with(slot: usize, ptr: u64, len: u64, handles: Vec<Entry>) -> Resul
 /// wait's wake-up test ([`crate::process::async_call`]).
 pub fn slot_done(c: usize) -> bool {
     c < MAX_CALLS && matches!(CALL_STATE[c].load(Ordering::SeqCst), REPLIED | FAILED)
+}
+
+/// Whether the call in slot `c` still waits for a server to take it.
+/// Lock-free, as [`slot_done`].
+pub fn slot_queued(c: usize) -> bool {
+    c < MAX_CALLS && CALL_STATE[c].load(Ordering::SeqCst) == QUEUED
 }
 
 /// Whether call slot `c` still holds call `id`, taken by its server and not yet

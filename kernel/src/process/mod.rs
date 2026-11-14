@@ -290,11 +290,7 @@ pub fn caller_stopped(slot: usize) -> bool {
 
 /// Clears the process's Stop flag (it took its next request); whether it was set.
 pub fn take_interrupt(slot: usize) -> bool {
-    let taken = INTERRUPT[slot].swap(false, Ordering::SeqCst);
-    if taken {
-        async_call::stop(slot);
-    }
-    taken
+    INTERRUPT[slot].swap(false, Ordering::SeqCst)
 }
 
 pub fn killed(slot: usize) -> bool {

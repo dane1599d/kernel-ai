@@ -1,14 +1,16 @@
 //! `test=async-call`: CALL_SUBMIT and CALL_POLL, as the shell uses them to
 //! serve app reads while `llm` answers.
 //!
-//! - `mode=slow` serves two calls, each answered `pong` after [`SLOW_MS`].
+//! - `mode=slow` answers each call `pong` after [`SLOW_MS`], until none comes
+//!   for [`IDLE_MS`].
 //! - `mode=async`, with a route to it: nothing to poll is NotFound; a call is
 //!   submitted, a second is Busy, and a poll is Busy while it is in flight; a
 //!   blocking call to `mode=quick` meanwhile is answered as usual. It
 //!   then serves the kernel's `read` in its own `svc_recv` until that returns
 //!   Woken, and the poll gives `pong`. A second call with a deadline shorter
 //!   than the server's answer, polled with a 5 s wait, answers TimedOut once
-//!   the deadline passes.
+//!   the deadline passes. Last, the kernel presses Stop while `astop` holds a
+//!   third call: it is still answered, and no call is sent after the Stop.
 
 use kabi::Error;
 use kabi::handle::RecvInfo;
@@ -16,6 +18,8 @@ use user::{println, sys};
 
 /// How long the slow server takes to answer each call.
 const SLOW_MS: u64 = 2_000;
+/// How long a slow server waits for another call before it ends.
+const IDLE_MS: u64 = 15_000;
 /// The first call's deadline: long enough for the answer.
 const CALL_MS: u64 = 10_000;
 /// The second call's: shorter than the answer.
@@ -28,14 +32,16 @@ const POLL_WAIT_MS: u64 = 5_000;
 
 pub fn slow() -> Result<(), &'static str> {
     let mut buf = [0u8; 16];
-    for _ in 0..2 {
+    loop {
         let mut info = RecvInfo::default();
-        sys::recv_h(&mut buf, 30_000, &mut info).map_err(|_| "recv_h failed")?;
+        // No call for a while: the client is done.
+        if sys::recv_h(&mut buf, IDLE_MS, &mut info).is_err() {
+            return Ok(());
+        }
         sys::sleep_ms(SLOW_MS);
-        // The second call's caller has given up by now; the answer goes nowhere.
+        // A caller past its deadline has given up by now; the answer goes nowhere.
         let _ = sys::reply_h(b"pong", &[]);
     }
-    Ok(())
 }
 
 /// `mode=quick`: answers one call `quick` at once.
@@ -125,5 +131,28 @@ pub fn run() -> Result<(), &'static str> {
     println!(
         "handles: async: a waited poll of a call past its deadline answered TimedOut after {took_ms} ms"
     );
+    stopped()
+}
+
+/// The person's Stop (the kernel's interrupt) while `astop` holds the call: the
+/// taken call is still answered, the flag stays, and a new call is not sent.
+fn stopped() -> Result<(), &'static str> {
+    let route = user::route(2).ok_or("no route to the stopping server")?;
+    let mut reply = [0u8; 16];
+    sys::call_submit(route, b"ping", CALL_MS).map_err(|_| "the third CALL_SUBMIT failed")?;
+    let len = sys::call_poll(&mut reply, CALL_MS)
+        .map_err(|_| "a taken call was not answered through the Stop")?;
+    if &reply[..len] != b"pong" {
+        return Err("the taken call's answer was not its server's");
+    }
+    if !sys::interrupted() {
+        return Err("the kernel's Stop never came");
+    }
+    super::expect(
+        sys::call_submit(route, b"ping", CALL_MS),
+        Error::Interrupted,
+        "a call sent after the Stop",
+    )?;
+    println!("handles: async: a Stop let the taken call answer, and no call was sent after it");
     Ok(())
 }

@@ -68,11 +68,13 @@ pub(super) const CASES: &[TestCase] = &[
             "shell-interrupt: Stop let a taken call finish, stopped the rest of the line, never outlived it, and only the person's keys may ask",
         ],
         ..case("shell-interrupt", "test=shell-interrupt")
+    },
     // CALL_SUBMIT and CALL_POLL: the shell serves app reads while llm answers.
     TestCase {
         expect: &[
             "[aclient] handles: async: served 1 request while the call was in flight, then polled its reply",
             "[aclient] handles: async: a waited poll of a call past its deadline answered TimedOut after ",
+            "[aclient] handles: async: a Stop let the taken call answer, and no call was sent after it",
             "async-call: a process served a call while its own was in flight, and polled the reply",
         ],
         ..case("async-call", "test=async-call")
