@@ -71,12 +71,13 @@ pub struct Ui {
     pools: Vec<Pool>,
     /// Each open window's last frame, to answer the agent and to reopen.
     frames: Vec<(u32, Frame)>,
-    /// The person closed its window (or the agent's `window_close` did):
-    /// comphost took it off the desk and keeps it hidden, with the app's
-    /// latest frames in `held`, until a show ([`Ui::unhide`]). Here, outside
+    /// The windows the person closed (or the agent's `window_close` did):
+    /// comphost took each off the desk and keeps it hidden, with the app's
+    /// latest frame in `held`, until a show ([`Ui::unhide`]). Here, outside
     /// the app, so no reload (a nap's wake, a fault, a swap) and no app, a
     /// Kai-built one included, can bring it back unasked (backlog item 2).
-    hidden: bool,
+    /// Per window: the app's other windows stay on the desk.
+    hidden: Vec<u32>,
     /// The frames of its windows while hidden, newest only.
     held: Vec<(u32, Frame)>,
     /// The version whose windows show.
@@ -114,7 +115,7 @@ impl Ui {
             text,
             pools: Vec::new(),
             frames: Vec::new(),
-            hidden: false,
+            hidden: Vec::new(),
             held: Vec::new(),
             shown: None,
             focused: false,
@@ -143,6 +144,25 @@ impl Ui {
 
     pub fn has_windows(&self) -> bool {
         !self.frames.is_empty()
+    }
+
+    /// Whether every window it has is hidden: nothing of it is on the desk, so
+    /// its background reads are not use and it naps as any unseen app does.
+    pub fn hidden_only(&self) -> bool {
+        self.frames.is_empty() && !self.hidden.is_empty()
+    }
+
+    /// Whether a frame for `window` waits for a show: the window is hidden, or
+    /// it is new while all the app's windows are (it opened one unseen).
+    fn hides(&mut self, window: u32) -> bool {
+        if self.hidden.contains(&window) {
+            return true;
+        }
+        let unseen = self.hidden_only();
+        if unseen {
+            self.hidden.push(window);
+        }
+        unseen
     }
 
     /// Whether comphost should poll: a window is open, or an effect's result
@@ -205,12 +225,15 @@ impl Ui {
             for (app, _) in core::mem::take(&mut self.frames) {
                 self.close(app);
             }
+            // The old version's frames are not the new one's: its windows
+            // stay hidden, and wait for the new version's frames.
+            self.held.clear();
             self.shown = label;
         }
         for update in updates {
             match update {
-                // Hidden by the person: the app's frames wait for a show.
-                Update::Frame { window, frame } if self.hidden => {
+                // Hidden by the person: the window's frames wait for a show.
+                Update::Frame { window, frame } if self.hides(window) => {
                     self.held.retain(|(app, _)| *app != window);
                     self.held.push((window, frame));
                 }
@@ -218,6 +241,7 @@ impl Ui {
                 Update::Closed(window) => {
                     self.frames.retain(|(app, _)| *app != window);
                     self.held.retain(|(app, _)| *app != window);
+                    self.hidden.retain(|app| *app != window);
                     self.close(window);
                 }
                 Update::CodeSize {
@@ -483,7 +507,9 @@ impl Ui {
         let (_, frame) = self.frames.remove(at);
         self.held.retain(|(app, _)| *app != window);
         self.held.push((window, frame));
-        self.hidden = true;
+        if !self.hidden.contains(&window) {
+            self.hidden.push(window);
+        }
         self.close(window);
         println!("comphost: window {window} hidden until it is shown");
     }
@@ -492,10 +518,10 @@ impl Ui {
     /// on the desk with the app's latest frames, no reload, so nothing it
     /// holds is lost. True when a window came back.
     pub fn unhide(&mut self) -> bool {
-        if !self.hidden {
+        if self.hidden.is_empty() {
             return false;
         }
-        self.hidden = false;
+        self.hidden.clear();
         let held = core::mem::take(&mut self.held);
         let shown = !held.is_empty();
         for (window, frame) in held {

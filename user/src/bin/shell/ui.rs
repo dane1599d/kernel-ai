@@ -86,14 +86,17 @@ fn open(route: kabi::handle::Handle, app: &str, arg: Option<&str>) -> Result<Str
     }
     // An app's window is its `<app>-window` service, when the plan has one.
     let window = format!("{}-window", rows::app_of(app));
-    match app_call(&window, "kai-actions 1") {
-        Ok(_) => {}
+    // The service that answered is the one a show goes to: `notes-window`
+    // for Notes, `editor` for the Editor.
+    let service = match app_call(&window, "kai-actions 1") {
+        Ok(_) => window,
         // Its window exists but there is no room for it: say so, as is.
         Err(why) if why.starts_with(NOT_ENOUGH) => return Err(why),
         Err(_) => {
             app_call(app, "kai-actions 1")?;
+            String::from(app)
         }
-    }
+    };
     let mut waited = 0;
     let mut asked_to_show = false;
     while waited < WINDOW_WAIT_MS {
@@ -107,8 +110,9 @@ fn open(route: kabi::handle::Handle, app: &str, arg: Option<&str>) -> Result<Str
         // (backlog item 2). A new start shows its own window well before.
         if !asked_to_show && waited >= SHOW_AFTER_MS {
             asked_to_show = true;
-            // Only its window's service: a headless app has none to show.
-            let show = app_call(&window, kabi::live::SHOW);
+            // A headless app answers that it has no window, and is not
+            // reloaded.
+            let show = app_call(&service, kabi::live::SHOW);
             if let Err(why) = show {
                 user::println!("{app} was asked to show its window: {why}");
             }

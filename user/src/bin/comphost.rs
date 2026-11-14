@@ -275,21 +275,26 @@ fn main() -> i32 {
         };
         // A read waiting for its sample or list is use: the app does not nap
         // until it has it, and the wait ends when the answer is due. No app is
-        // granted both.
-        let due = source
+        // granted both. With all its windows hidden nobody sees a sample or a
+        // list, so those reads hold nothing and it naps, its reads waiting in
+        // its queue (a hidden Monitor stops sampling); a network request it
+        // made still does.
+        let reads = source
             .as_ref()
             .and_then(|source| source.wait_ms(&mut host, now_ms()))
             .or_else(|| {
                 lister
                     .as_ref()
                     .and_then(|lister| lister.wait_ms(&mut host, now_ms()))
-            })
-            .or_else(|| {
-                net.as_ref()
-                    .and_then(|net| net.wait_ms(&mut host, now_ms()))
             });
-        if due.is_some() != leased {
-            leased = due.is_some();
+        let fetch = net
+            .as_ref()
+            .and_then(|net| net.wait_ms(&mut host, now_ms()));
+        let unseen = windows.as_ref().is_some_and(ui::Ui::hidden_only);
+        let due = reads.or(fetch);
+        let lease = (reads.is_some() && !unseen) || fetch.is_some();
+        if lease != leased {
+            leased = lease;
             napper.nap.lease(leased);
         }
         let wait = soonest(wait, due);
@@ -307,6 +312,11 @@ fn main() -> i32 {
                             Some(reply) => Ok(reply),
                             // A show is the host's own: the app's window, or
                             // the app reloaded so it shows one.
+                            // An app with no desktop has no window to show:
+                            // a show never reloads a headless app.
+                            None if is_show(&request[..len]) && windows.is_none() => {
+                                Ok(b"err no window".to_vec())
+                            }
                             None if is_show(&request[..len]) => {
                                 // Hidden by the person: back as it was.
                                 let shown = windows.as_mut().is_some_and(ui::Ui::unhide);
