@@ -249,6 +249,7 @@ const PERMS: &[(&str, &str)] = &[
     ("note_write", "app.notes.write"),
     ("file_move", "files.write"),
     ("fs_list", "files.read"),
+    ("fs_find", "files.read"),
     ("fs_read", "files.read"),
     ("fs_history", "files.read"),
     ("fs_changes", "files.read"),
