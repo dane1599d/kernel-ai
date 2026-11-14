@@ -706,7 +706,19 @@ pub(crate) fn ensure_limine(target_dir: &Path) -> Result<PathBuf, String> {
     run_checked(
         Command::new("curl")
             .current_dir(&dir)
-            .args(["-sSLf", "-o", archive, &url]),
+            // GitHub refuses release downloads now and then (a 403 or a 5xx under
+            // CI load, 2026-11-14); the checksum below holds whatever arrives.
+            .args([
+                "-sSLf",
+                "--retry",
+                "5",
+                "--retry-all-errors",
+                "--retry-delay",
+                "5",
+                "-o",
+                archive,
+                &url,
+            ]),
     )?;
     let bytes = fs::read(dir.join(archive)).map_err(|e| format!("cannot read {archive}: {e}"))?;
     let actual = sha256_hex(&bytes);
