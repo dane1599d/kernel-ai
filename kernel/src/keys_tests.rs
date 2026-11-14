@@ -46,10 +46,23 @@ fn now_ms() -> u64 {
 fn hammer(_: usize) {
     let mut last = now_ms();
     while BUSY.load(Ordering::SeqCst) {
+        // `count` answers a record, `{notes: N, words: M}`.
         match ipc::call(NAME, COUNT.as_bytes(), CALL_MS) {
-            Ok(reply) if reply.starts_with(b"ok(") => CALLS.fetch_add(1, Ordering::SeqCst),
-            _ => FAILED.fetch_add(1, Ordering::SeqCst),
-        };
+            Ok(reply) if reply.starts_with(b"{notes: ") => {
+                CALLS.fetch_add(1, Ordering::SeqCst);
+            }
+            reply => {
+                if FAILED.fetch_add(1, Ordering::SeqCst) == 0 {
+                    match reply {
+                        Ok(reply) => log!(
+                            "ui-keys: busy: count answered {:?}",
+                            String::from_utf8_lossy(&reply)
+                        ),
+                        Err(error) => log!("ui-keys: busy: count failed: {error:?}"),
+                    }
+                }
+            }
+        }
         let now = now_ms();
         if now - last > MAX_GAP_MS {
             LATE.fetch_add(1, Ordering::SeqCst);
