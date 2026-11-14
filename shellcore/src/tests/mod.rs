@@ -94,6 +94,9 @@ struct FakeHost {
     /// the store, and each package asked for them.
     installed: RefCell<Vec<(String, String)>>,
     installed_asked: RefCell<Vec<String>>,
+    /// When set, `installed_rows` fails with this, as a `pkg` that did not
+    /// answer.
+    installed_down: RefCell<Option<String>>,
     /// What the shell asked `desktop`, and how `desktop` answers.
     ui_calls: RefCell<Vec<crate::ui::UiCall>>,
     /// The hosts the network rows reached, as `row host`.
@@ -318,6 +321,7 @@ impl FakeHost {
             wall_clock: Cell::new(None),
             installed: RefCell::new(Vec::new()),
             installed_asked: RefCell::new(Vec::new()),
+            installed_down: RefCell::new(None),
             ui_calls: RefCell::new(Vec::new()),
             net_seen: RefCell::new(Vec::new()),
             queries: RefCell::new(Vec::new()),
@@ -705,7 +709,8 @@ impl Host for FakeHost {
                     let last = path.rsplit('/').next().unwrap_or(path);
                     last.to_lowercase().contains(&word.to_lowercase())
                 })
-                .cloned()
+                // As the shell's `find` answers: whole paths under home.
+                .map(|path| format!("/home/user/{path}"))
                 .collect::<Vec<_>>()
                 .join("\n")),
             FsRead::Read(path) | FsRead::Whole(path) => files
@@ -799,6 +804,9 @@ impl Host for FakeHost {
         self.installed_asked
             .borrow_mut()
             .push(String::from(package));
+        if let Some(why) = self.installed_down.borrow().clone() {
+            return Err(why);
+        }
         self.installed
             .borrow()
             .iter()
