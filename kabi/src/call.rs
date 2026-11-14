@@ -13,7 +13,7 @@
 //! | 66-70 | S-io (P2) | PART_INFO, PART_READ, PART_WRITE, PART_FLUSH; ENDPOINT_MINT |
 //! | 71-72 | K | PROC_STOP_ONCE, RULE_CHECK |
 //! | 73-79 | G-core (P3) | DISPLAY_CLAIM, DISPLAY_FLUSH, DISPLAY_CURSOR, DISPLAY_CURSOR_MOVE, INPUT_READ, TERM_READ, INPUT_TO_CONSOLE |
-//! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; ENTROPY 83; RESOLVE_ON 84 and NETDEST_NARROW 85 (P5 task 1); P2 task 12's grants |
+//! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; ENTROPY 83; RESOLVE_ON 84 and NETDEST_NARROW 85 (P5 task 1); POWER_REBOOT 86; P2 task 12's grants |
 //! | 90-99 | S-engine (P2) | |
 //! | 100-109 | P, packages (P2) | BOOT_READ, COMP_ADD, PKG_FETCH, PKG_TIME |
 //! | 110-119 | A-core | |
@@ -388,6 +388,12 @@ pub const RESOLVE_ON: u64 = 84;
 /// any address, port, protocol or host `dest`'s does not; Invalid for bad
 /// text or rights. A handle only shrinks. Numbered at merge, K's block.
 pub const NETDEST_NARROW: u64 = 85;
+/// `power_reboot() -> !`: restarts the machine through the firmware's
+/// ResetSystem, as an update's restart does. Needs [`super::cap::POWER`]
+/// (Permission without it). It does not return; whatever the caller wants kept
+/// must already be committed (`fs` makes each action durable when it is
+/// committed). Numbered at merge, K's block (backlog item 13).
+pub const POWER_REBOOT: u64 = 86;
 
 // ---- G-core, 73-79 ----
 

@@ -14,6 +14,7 @@ mod entropy;
 mod handle;
 mod job;
 mod net;
+mod power;
 mod sched;
 mod service;
 mod shm;
@@ -94,6 +95,7 @@ const AREAS: &[Area] = &[
     shm::handle,
     job::handle,
     entropy::handle,
+    power::handle,
     // Model lane. Interim (S10-3): goes at P2 task 10.
     model_kv::handle,
     // S-io (P2).

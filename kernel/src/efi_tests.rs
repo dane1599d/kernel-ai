@@ -59,3 +59,39 @@ pub fn check() -> Result<(), &'static str> {
     );
     Ok(())
 }
+
+/// `test=power-reboot` (backlog item 13): POWER_REBOOT from ring 3. `handles
+/// mode=reboot` with no capability is refused and exits 0; with `cap::POWER` it
+/// restarts the machine, so the case passes by the reset.
+pub fn power_check() -> Result<(), &'static str> {
+    let start = |name, caps| {
+        crate::process::spawn(&crate::process::SpawnRequest {
+            name,
+            program: "handles",
+            args: b"mode=reboot",
+            limits: kabi::Limits {
+                max_pages: 256,
+                max_burst_ms: 10_000,
+                caps,
+                stack_pages: 0,
+            },
+            spawner: 0,
+            supervisor: false,
+            uses: &[],
+        })
+        .map_err(|_| "power: cannot start the handles program")
+    };
+    let refused = start("hnopower", 0)?;
+    if crate::fpu_tests::wait_exit(refused)? != (kabi::ExitReason::Exited, 0) {
+        return Err("power: POWER_REBOOT without POWER was not refused");
+    }
+    log!("power: POWER_REBOOT without the power capability was refused");
+    let held = start("hpower", kabi::cap::POWER)?;
+    let got = crate::fpu_tests::wait_exit(held)?;
+    log!(
+        "power: hpower ended {} ({}) instead of restarting",
+        got.0.name(),
+        got.1
+    );
+    Err("power: POWER_REBOOT with POWER did not restart the machine")
+}

@@ -288,6 +288,8 @@ pub enum SelfTest {
     Efi,
     /// A reset through UEFI ResetSystem.
     EfiReset,
+    /// POWER_REBOOT from ring 3, refused without `cap::POWER` (backlog item 13).
+    PowerReboot,
     /// The boot lever on a slot image, driven by `slot-do=` (ADR 0008, lane U).
     Slot,
     /// Probation's commit on a slot image (ADR 0008 §5).
@@ -500,6 +502,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=panic-reset" => Some(SelfTest::PanicReset),
             "test=efi" => Some(SelfTest::Efi),
             "test=efi-reset" => Some(SelfTest::EfiReset),
+            "test=power-reboot" => Some(SelfTest::PowerReboot),
             "test=slot" => Some(SelfTest::Slot),
             "test=update" => Some(SelfTest::Update),
             "test=probation" => Some(SelfTest::Probation),

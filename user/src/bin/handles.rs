@@ -35,6 +35,8 @@
 //! time (see [`shm`]): it maps the handles the kernel puts in its table, fills and
 //! counts the pages, and makes, maps and frees an object of its own.
 //!
+//! With `mode=reboot` it asks POWER_REBOOT for a restart (`handles/power.rs`).
+//!
 //! With `mode=mem` (lane M) it serves the kernel's anonymous-memory case (see
 //! `handles/mem.rs`).
 //!
@@ -56,6 +58,8 @@ use user::{arg, args, println, sys};
 mod entropy;
 #[path = "handles/mem.rs"]
 mod mem;
+#[path = "handles/power.rs"]
+mod power;
 
 user::entry!(main);
 
@@ -72,6 +76,7 @@ fn main() -> i32 {
         Some("job") => job,
         Some("mem") => mem::mem,
         Some("idle") => idle,
+        Some("reboot") => power::reboot,
         _ => checks,
     };
     match run() {

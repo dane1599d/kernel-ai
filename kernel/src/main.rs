@@ -462,6 +462,7 @@ extern "C" fn boot_continue() -> ! {
         }
         SelfTest::Efi => run_case(efi_tests::check),
         SelfTest::EfiReset => efi::reset(),
+        SelfTest::PowerReboot => run_case(efi_tests::power_check),
         SelfTest::Devices => run_case(device_tests::check),
         SelfTest::TuneRevert => run_case(tune_tests::revert_check),
         SelfTest::TuneStall => run_case(tune_stall_tests::check),
