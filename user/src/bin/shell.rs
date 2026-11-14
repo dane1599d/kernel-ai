@@ -235,7 +235,9 @@ fn take_panel(shell: &mut Shell) {
         // line never came here.
         _ => return,
     };
-    let Some(request) = panel_wire::encode_state(&shown) else {
+    // A done line names the log entry its undo link takes back.
+    let entry = shell.take_panel_entry();
+    let Some(request) = panel_wire::encode_done(&shown, entry) else {
         return;
     };
     match ask_desktop(route, &request) {

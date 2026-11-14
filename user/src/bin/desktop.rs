@@ -429,6 +429,29 @@ fn deliver(state: &mut State, effects: &[Effect]) {
             continue;
         }
         let changed = match *effect {
+            // A click on a done line's undo or show sends it, as though typed.
+            Effect::PanelClick { at } => {
+                let area = state.desk.panel();
+                match state.painter.panel_link(area, &state.panel, at) {
+                    Some(word) => {
+                        // Undo takes back the line beside it, by its entry,
+                        // never the newest of another line's.
+                        let line = match (word, state.panel.entry()) {
+                            ("undo", Some(id)) => format!("undo {id}"),
+                            _ => String::from(word),
+                        };
+                        state.panel.send(line, now);
+                        println!("desktop: the panel's {word} was clicked");
+                        wake_shell();
+                        true
+                    }
+                    None => false,
+                }
+            }
+            Effect::Locks { caps } => {
+                state.panel.set_caps(caps);
+                false
+            }
             Effect::PanelKey { usage, down } if apps::key(state, usage, down, now) => false,
             Effect::PanelKey { usage, down } => {
                 let before = state.panel.waiting();
@@ -605,6 +628,10 @@ fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &RecvInfo) {
         let label = name_of(pid);
         let mut client = Client::new(pid, &label);
         client.theme(&state.theme_name);
+        // Caps Lock as it is now: a client started with it on types by it.
+        client.apply(&[Effect::Locks {
+            caps: state.desk.caps(),
+        }]);
         state.clients.push(client);
     }
     let Some(at) = state.clients.iter().position(|c| c.pid == pid) else {
@@ -715,7 +742,7 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         chat_push(state, Who::Note, note);
         return Some(String::from("ok"));
     }
-    let Some(shown) = panel_wire::parse_state(text) else {
+    let Some((shown, entry)) = panel_wire::parse_done(text) else {
         return Some(String::from("err not a panel request"));
     };
     // The bar's result line or refusal, code's, joins the history as a note.
@@ -735,7 +762,7 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         deskcore::panel::State::Done { .. } => "done",
         deskcore::panel::State::Refused { .. } => "refused",
     };
-    if state.panel.set_state(shown) {
+    if state.panel.set_done(shown, entry) {
         // Its kind only: the line is the shell's result, which may name a file.
         println!("desktop: the panel shows {word}");
         state.extra.push(state.desk.panel());
@@ -1141,6 +1168,9 @@ fn draw(state: &mut State, screen: &Screen) {
         state.drawn = true;
         println!("desktop: drew the desk at {}x{}", state.width, state.height);
     }
+    // What a press on the top bar hits: its tabs as just drawn.
+    let tabs = state.painter.tabs(&state.desk);
+    state.desk.set_tabs(tabs);
 }
 
 /// A client's buffer, read where its pool is mapped. `None` past the pool.
