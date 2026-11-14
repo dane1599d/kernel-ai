@@ -69,7 +69,16 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
             uaccess::copy_to_user(slot, a[0], &bytes[..size])?;
             Ok(0)
         }
-        call::INTERRUPTED => Ok(u64::from(crate::process::take_interrupt(slot))),
+        // `a[0]` 1: the caller starts a new unit of work and clears its own flag
+        // first (the shell, for a panel line or `take_effects`).
+        call::INTERRUPTED => {
+            let own = match a[0] {
+                0 => crate::process::interrupt_pending(slot),
+                1 => crate::process::take_interrupt(slot),
+                _ => return Err(Error::Invalid),
+            };
+            Ok(u64::from(own || crate::process::caller_stopped(slot)))
+        }
         call::MODEL_MAP => {
             need(slot, cap::MODEL)?;
             crate::model::map(slot)

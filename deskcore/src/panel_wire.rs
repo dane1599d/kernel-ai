@@ -38,6 +38,22 @@ pub fn parse_appearance(request: &str) -> Option<&str> {
     request.strip_prefix(APPEARANCE)
 }
 const STATE: &str = "panel state ";
+/// What a desktop line's card came to (`shellcore::deskask`): a state, but
+/// one that never replaces a newer line's thinking.
+const CARD: &str = "panel card ";
+
+/// A card's result as its request: [`encode_state`]'s, under [`CARD`].
+pub fn encode_card(state: &State) -> Option<String> {
+    let request = encode_state(state)?;
+    Some(format!("{CARD}{}", &request[STATE.len()..]))
+}
+
+/// A [`encode_card`] request read back; `None` for anything else.
+pub fn parse_card(text: &str) -> Option<State> {
+    let body = text.strip_prefix(CARD)?;
+    parse_state(&format!("{STATE}{body}"))
+}
+
 const SAID: &str = "panel said ";
 const NOTE: &str = "panel note ";
 /// The most a [`SAID`] request's text holds.
@@ -222,6 +238,17 @@ mod tests {
         let text = encode_state(&long).unwrap();
         assert!(text.len() <= STATE.len() + "refused ".len() + MAX_TEXT);
         assert!(parse_state(&text).is_some());
+    }
+
+    #[test]
+    fn a_cards_result_reads_back_and_is_not_a_state() {
+        let done = State::Done {
+            line: "Done: notes stopped.".into(),
+        };
+        let text = encode_card(&done).unwrap();
+        assert_eq!(parse_card(&text), Some(done.clone()));
+        assert_eq!(parse_state(&text), None);
+        assert_eq!(parse_card(&encode_state(&done).unwrap()), None);
     }
 
     #[test]

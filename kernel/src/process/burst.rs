@@ -90,8 +90,11 @@ fn serving_until(slot: usize) -> u64 {
 /// Each CPU's stretches between charges not counted as run time since its last
 /// tick logged them (`sched::burst::MAX_STRETCH_NS`).
 static UNCOUNTED_NS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
-/// Uncounted time this long is logged, as `threads::preempt` logs a late tick.
-const LOGGED_UNCOUNTED_NS: u64 = 100_000_000;
+/// Uncounted time this long is logged: a host stall or a clock jump worth
+/// knowing about. Not less: a serial line written with interrupts off already
+/// makes 100-140 ms under CI (many-processes, #874), and the line saying so
+/// would add more.
+const LOGGED_UNCOUNTED_NS: u64 = 1_000_000_000;
 
 /// Charges CPU time since the last charge on this CPU to `tid`, and on the tick
 /// (`decide`) kills its process once the burst is past the limit. Interrupts are off.

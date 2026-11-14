@@ -173,7 +173,10 @@ pub fn decide_net(line: &str, plan: &[Call], rows: &[Action], net: &Grounding) -
     let words = words(line);
     let hosts = Hosts { line, net };
     let english = is_english(line);
-    let named_any = rows.iter().any(|row| cued(&words, row).is_some());
+    // Every cue counts here, a telling clause's too: a line that names an
+    // action is never vague, so "tell me how to remove ideas, it's so slow"
+    // takes no vague reading (#883 review).
+    let named_any = rows.iter().any(|row| cued_in(&words, row, true).is_some());
     let decisions: Vec<Decision> = plan
         .iter()
         .map(|call| decide_one(&words, &hosts, english, call, rows))
@@ -334,12 +337,27 @@ fn value_of<'a>(call: &Call<'a>, name: &str) -> Option<Value<'a>> {
 /// cue wins over the others, so "print the policy, but don't switch to round robin"
 /// does not ask for a switch.
 fn cued(words: &[Word], row: &Action) -> Option<bool> {
+    cued_in(words, row, false)
+}
+
+/// [`cued`], with `telling_counts` saying whether a cue in a clause that opens
+/// with a tell word counts. For whether a call was asked for it does not
+/// (#721, ADR 0002): "tell me how to remove ideas" asks for no removal. For
+/// whether the line names an action at all it does.
+fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
+    let telling = |clause: usize| {
+        !telling_counts
+            && words
+                .iter()
+                .find(|w| w.clause == clause)
+                .is_some_and(|w| TELL_WORDS.contains(&w.text.as_str()))
+    };
     let mut found = None;
     for cue in row.cues {
         let off_counts = !row.cues.iter().any(|c| c.contains("off"));
         for at in matches(words, cue, true) {
             // A question asks to be told: "is round robin on" asks for no switch.
-            if words[at].question {
+            if words[at].question || telling(words[at].clause) {
                 continue;
             }
             let clause = words[at].clause;
@@ -380,6 +398,9 @@ fn negated(words: &[Word], at: usize) -> bool {
     })
 }
 
+/// The person's own folder: a path under it is named by the rest of it.
+const HOME: &str = "/home/user/";
+
 /// Every `from_request` argument is literal in the line, an alias it uses, or a
 /// symbol the line points at.
 fn arguments_in_line(words: &[Word], row: &Action, call: &Call) -> bool {
@@ -391,7 +412,11 @@ fn arguments_in_line(words: &[Word], row: &Action, call: &Call) -> bool {
         if matches!(value.label, Label::Content(_)) {
             return false;
         }
-        (names_a_thing(value.text) && !matches(words, value.text, false).is_empty())
+        let named = |text: &str| names_a_thing(text) && !matches(words, text, false).is_empty();
+        named(value.text)
+            // A file is named by its place under home: "a note called ideas"
+            // names /home/user/ideas (files.rs's PATH).
+            || value.text.strip_prefix(HOME).is_some_and(named)
             || arg.aliases.iter().any(|(written, means)| {
                 fold_eq(means, value.text) && !matches(words, written, false).is_empty()
             })
@@ -732,6 +757,7 @@ const ENGLISH: &[&str] = &[
     "could",
     "create",
     "current",
+    "dark",
     "delete",
     "dnf",
     "do",
@@ -742,6 +768,7 @@ const ENGLISH: &[&str] = &[
     "each",
     "else",
     "empty",
+    "erase",
     "every",
     "feel",
     "few",
@@ -757,6 +784,7 @@ const ENGLISH: &[&str] = &[
     "go",
     "has",
     "have",
+    "hello",
     "history",
     "how",
     "i",
@@ -772,6 +800,7 @@ const ENGLISH: &[&str] = &[
     "last",
     "less",
     "let",
+    "light",
     "like",
     "line",
     "list",
@@ -780,6 +809,7 @@ const ENGLISH: &[&str] = &[
     "make",
     "many",
     "me",
+    "mode",
     "more",
     "most",
     "move",
@@ -792,6 +822,8 @@ const ENGLISH: &[&str] = &[
     "next",
     "no",
     "not",
+    "note",
+    "notes",
     "now",
     "number",
     "of",
@@ -817,6 +849,7 @@ const ENGLISH: &[&str] = &[
     "restore",
     "run",
     "same",
+    "save",
     "saying",
     "second",
     "see",
@@ -839,6 +872,7 @@ const ENGLISH: &[&str] = &[
     "the",
     "their",
     "them",
+    "theme",
     "then",
     "there",
     "these",
@@ -852,6 +886,7 @@ const ENGLISH: &[&str] = &[
     "trash",
     "turn",
     "two",
+    "type",
     "up",
     "use",
     "used",

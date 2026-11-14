@@ -24,10 +24,6 @@ node 10 clip 0,0 640x440
   fill 272,76 44x28 raised r6
   stroke 272,76 44x28 line_strong w1 r6
   text 282,81 label text "PID"
-node 11 clip 0,0 640x440
-  fill 324,76 76x28 raised r6
-  stroke 324,76 76x28 line_strong w1 r6
-  text 334,81 label text "Refresh"
 node 12 clip 0,0 640x440
   stroke 12,112 616x240 line_strong w1 r6
   text 23,116 label muted "PID"

@@ -79,19 +79,48 @@ fn a_panel_yes_does_not_answer_the_terminals_question() {
 }
 
 #[test]
-fn a_question_the_panel_raises_is_dropped_not_left_for_a_yes() {
+fn a_question_the_panel_raises_waits_for_the_card_not_a_typed_yes() {
     let (host, mut shell) = with_calls(vec![call(STOP)]);
     *host.procs.borrow_mut() = vec![String::from("notes")];
     let shown = shell.eval_panel("stop notes");
-    assert!(
-        matches!(&shown, PanelResult::Refused(why) if why.contains("asks first")),
-        "{shown:?}"
+    assert_eq!(
+        shown,
+        PanelResult::Done("it asks first: answer Run or Don't on the card".into())
     );
-    // A line that asks first shows its script in the terminal, not the history.
+    // A line that asks first shows its script on the card, not the history.
     assert_eq!(shell.take_panel_said(), None);
+    // A typed yes, in the panel or the console, answers nothing.
     shell.eval_panel("yes");
     shell.eval("yes");
     assert_eq!(*host.procs.borrow(), vec![String::from("notes")]);
+    // Don't, on the card: nothing runs, and the panel is told.
+    let card = shell.eval_console(termcore::menu::TAKE_CARD);
+    let menu = termcore::menu::Menu::decode(&card.to_wire()).unwrap();
+    let once = host.mint(menu.id, menu.call());
+    shell.eval_console(&format!("answer {} deny once={once}", menu.id));
+    assert_eq!(*host.procs.borrow(), vec![String::from("notes")]);
+    // The panel is told in code's words, as a refusal, not a Done.
+    assert_eq!(
+        shell.take_card_result(),
+        Some((false, String::from("Not run: you said Don't.")))
+    );
+    assert!(!shell.card_waiting());
+}
+
+#[test]
+fn at_most_four_questions_wait_for_the_card() {
+    let calls = (0..5).map(|_| call(STOP)).collect();
+    let (host, mut shell) = with_calls(calls);
+    *host.procs.borrow_mut() = vec![String::from("notes")];
+    for _ in 0..4 {
+        let shown = shell.eval_panel("stop notes");
+        assert!(matches!(shown, PanelResult::Done(_)), "{shown:?}");
+    }
+    let fifth = shell.eval_panel("stop notes");
+    assert!(
+        matches!(&fifth, PanelResult::Refused(why) if why.contains("other questions wait")),
+        "{fifth:?}"
+    );
 }
 
 #[test]
@@ -122,8 +151,12 @@ fn the_users_own_line_shows_its_first_result_line() {
 fn a_typed_models_import_is_refused_at_the_panel_and_a_switch_runs_logged() {
     let host = FakeHost::new();
     let mut shell = shell(&host);
+    // It has no undo, so it asks: on the card, never at the panel.
     let shown = shell.eval_panel("models import");
-    assert!(matches!(shown, PanelResult::Refused(_)), "{shown:?}");
+    assert!(
+        matches!(&shown, PanelResult::Done(line) if line.contains("on the card")),
+        "{shown:?}"
+    );
     assert!(
         !host
             .model_requests
@@ -140,6 +173,21 @@ fn a_typed_models_import_is_refused_at_the_panel_and_a_switch_runs_logged() {
         shell.eval("undo"),
         ok("Undone: the model before, from the next restart")
     );
+}
+
+#[test]
+fn a_question_left_past_two_minutes_lapses_before_its_card() {
+    let (host, mut shell) = with_calls(vec![call(STOP)]);
+    *host.procs.borrow_mut() = vec![String::from("notes")];
+    assert!(matches!(
+        shell.eval_panel("stop notes"),
+        PanelResult::Done(_)
+    ));
+    host.clock.set(host.clock.get() + 121_000_000_000);
+    let card = shell.eval_console(termcore::menu::TAKE_CARD);
+    assert_eq!(card.text, "", "{card:?}");
+    assert!(!shell.card_waiting());
+    assert!(shell.eval("log").text.contains("expired"));
 }
 
 /// #859's review: the panel's question is the panel's, answered by its next

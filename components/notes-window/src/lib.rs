@@ -30,6 +30,10 @@ pub trait Sink {
     fn remove(&mut self, window: u32, node: NodeId) -> Result<(), UiError>;
     fn commit(&mut self, window: u32) -> Result<(), UiError>;
     fn close(&mut self, window: u32) -> Result<(), UiError>;
+    /// Asks for the keyboard focus on `node` inside the window.
+    fn focus(&mut self, _window: u32, _node: NodeId) -> Result<(), UiError> {
+        Ok(())
+    }
 }
 
 pub struct NotesWindow {
@@ -85,7 +89,13 @@ impl NotesWindow {
         if ui::on_ui(&mut self.notes, &mut self.view, e, compsdk::app::now_ms()) {
             // Storage is written in action calls only: the change waits.
             self.pending = true;
-            return self.present(sink);
+            self.present(sink)?;
+            // After New, typing goes to the new note's text, not nowhere
+            // (the founder's second test, backlog item 5).
+            if *e == UiEvent::Pressed(ui::NEW) {
+                sink.focus(window, ui::EDITOR)?;
+                sink.commit(window)?;
+            }
         }
         Ok(())
     }
