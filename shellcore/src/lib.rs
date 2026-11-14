@@ -940,8 +940,10 @@ impl Shell {
         if answering.is_some_and(|(id, _)| self.on_card_for_desk(id)) {
             self.done_line = None;
         }
+        // Read before the answer runs: its question's age decides a lapse.
+        let lapsed = answering.is_some_and(|(id, _)| self.card_lapsed(id));
         let mut reply = self.eval(input);
-        self.desk_answered(answering, &reply);
+        self.desk_answered(answering, &reply, lapsed);
         if reply.confirm.is_none() && !reply.more && !self.notices.is_empty() {
             let mut text = self.take_notices().join("\n");
             if !reply.text.is_empty() {
@@ -1004,6 +1006,8 @@ impl Shell {
                 &pending.checked.script,
                 outcome,
             );
+            // A desktop line's question on the card: where it was typed is told.
+            self.desk_question_dropped(pending.id);
         }
         self.line.begin(self.host.as_ref(), &self.config);
         if input.is_empty() {

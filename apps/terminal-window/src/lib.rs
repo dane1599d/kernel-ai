@@ -153,7 +153,12 @@ impl OnUi for TerminalWindow {
 impl Events for TerminalWindow {
     fn on_event(&mut self, event: Event) {
         match event {
-            Event::Started => {}
+            // Restored at a question on the card: ask again what came of it.
+            Event::Started => {
+                if self.term.resume(&mut Effects) {
+                    self.present_logged();
+                }
+            }
             Event::EffectDone { ticket, outcome } => {
                 if self.term.done(&mut Effects, ticket, outcome) {
                     self.present_logged();

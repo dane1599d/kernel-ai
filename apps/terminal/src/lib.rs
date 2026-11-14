@@ -59,6 +59,9 @@ pub const ANSWER_ELSEWHERE: &str = "Answer Run or Don't on the card.";
 /// Questions whose answer the terminal waits for at most: past it the oldest
 /// is let go (the shell keeps no more waiting for the card).
 pub const MAX_CARDS: usize = 4;
+/// Said when a terminal restored at a question asks again what came of it.
+pub const ASKS_AGAIN: &str =
+    "The terminal restarted while its question waited: it asks again what came of it.";
 /// Most rows `terminal_window_read` returns, newest last.
 pub const READ_MAX_SPANS: usize = 60;
 /// Most bytes of text `terminal_window_read` returns.
@@ -477,12 +480,33 @@ impl Terminal {
         }
         // A menu is a question on the desktop's card: ask what came of it.
         if let Phase::Asking(Ask { id, menu: true }) = self.phase {
-            if self.cards.len() == MAX_CARDS {
-                self.cards.remove(0);
-            }
-            let ticket = os.request(SHELL_CARD, shell_card_args(id));
-            self.cards.push((id, ticket));
+            self.ask_card(os, id);
         }
+        true
+    }
+
+    /// Asks the shell what came of question `id` on the card.
+    fn ask_card(&mut self, os: &mut dyn Os, id: u64) {
+        if self.cards.len() == MAX_CARDS {
+            self.cards.remove(0);
+        }
+        let ticket = os.request(SHELL_CARD, shell_card_args(id));
+        self.cards.push((id, ticket));
+    }
+
+    /// The app started again with this terminal restored (a nap's wake, a
+    /// reload): a question it waited on has no ask in flight, as tickets are
+    /// not saved, so it asks again; the shell keeps the answer for that ask
+    /// (#928's review). Whether it asked.
+    pub fn resume(&mut self, os: &mut dyn Os) -> bool {
+        let Phase::Asking(Ask { id, menu: true }) = self.phase else {
+            return false;
+        };
+        if self.cards.iter().any(|(question, _)| *question == id) {
+            return false;
+        }
+        self.push(Kind::Notice, "", ASKS_AGAIN, false);
+        self.ask_card(os, id);
         true
     }
 

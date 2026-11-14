@@ -409,30 +409,27 @@ fn effects_done(app: &str, user: bool, results: Vec<shellcore::EffectDone>) -> S
 /// told (a Files window the agent opened a folder in would show nothing). They go
 /// as `take_effects`' results do, and `desktop` gives them to the app's `comphost`.
 /// What came of a Terminal line's question on the card goes this way too, as
-/// its held `shell_card`'s result (#922).
+/// its held `shell_card`'s result (#922), cut as a person's result is, as the
+/// line's own answer is.
 fn give_call_results(shell: &mut Shell) {
-    use deskcore::effects::{self, Done};
-    let batches = shell.take_effect_results();
+    let calls = shell.take_effect_results().into_iter();
+    let cards = shell.take_card_answers().into_iter();
+    let batches: Vec<(String, bool, Vec<shellcore::EffectDone>)> = calls
+        .map(|(app, done)| (app, false, done))
+        .chain(cards.map(|(app, done)| (app, true, done)))
+        .collect();
     if batches.is_empty() {
         return;
     }
     let Some(route) = desktop() else {
-        for (app, _) in &batches {
+        for (app, _, _) in &batches {
             println!("{app}'s effect results were dropped: there is no desktop");
         }
         return;
     };
-    for (app, done) in batches {
-        let results: Vec<Done> = done
-            .into_iter()
-            .map(|done| Done {
-                ticket: done.ticket,
-                outcome: done.outcome,
-            })
-            .collect();
+    for (app, user, done) in batches {
         // After the line that called: its Stop must not hide them.
-        if let Err(why) = report_to_desktop(route, &effects::encode_done_as(&app, false, &results))
-        {
+        if let Err(why) = report_to_desktop(route, &effects_done(&app, user, done)) {
             println!("{app}'s effect results were not sent: {why}");
         }
     }

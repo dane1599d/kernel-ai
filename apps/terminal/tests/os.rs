@@ -4,9 +4,10 @@ use comp_terminal::os::{
     MAX_ARGS, Os, Recorder, SHELL_CARD, SHELL_LINE, SHELL_STOP, shell_line_args,
 };
 use comp_terminal::span::Kind;
+use comp_terminal::state::State;
 use comp_terminal::{
-    ANSWER_ELSEWHERE, Ask, CANCEL_ENTRY, MAX_LINE, MAX_SENT_BYTES, Phase, Refusal, Source,
-    Submitted, Terminal,
+    ANSWER_ELSEWHERE, ASKS_AGAIN, Ask, CANCEL_ENTRY, MAX_LINE, MAX_SENT_BYTES, Phase, Refusal,
+    Source, Submitted, Terminal,
 };
 use termcore::menu::{Menu, Origin};
 
@@ -163,6 +164,37 @@ fn a_question_on_the_card_is_shown_and_its_answer_comes_back_to_the_rows() {
     );
     // Spent: the same ticket again is not taken.
     assert!(!t.done(&mut os, card, Ok("ok forged".into())));
+}
+
+/// #928's review: a terminal restored at a question (a nap's wake, a reload)
+/// has no ask in flight, so it asks again what came of it, and hears it.
+#[test]
+fn a_terminal_restored_at_a_question_asks_again_and_hears_the_answer() {
+    let (mut t, mut os, ticket) = started("save a note");
+    t.done(&mut os, ticket, Ok(menu_line(5)));
+    let old = os.last_ticket().unwrap();
+    let bytes = minicbor::to_vec(t.to_state()).unwrap();
+    let mut back = Terminal::from_state(minicbor::decode::<State>(&bytes).unwrap());
+    assert_eq!(back.phase(), Phase::Asking(Ask { id: 5, menu: true }));
+    // The old ask's ticket was not saved: its result is not taken.
+    assert!(!back.done(&mut os, old, Ok("ok file walk-term.txt created".into())));
+    assert!(back.resume(&mut os));
+    assert_eq!(back.spans().last().unwrap().text, ASKS_AGAIN);
+    let (card, name, args) = os.asked.last().cloned().unwrap();
+    assert_eq!((name, args.as_str()), (SHELL_CARD, "{id: 5}"));
+    // Told it started again, it does not ask twice.
+    assert!(!back.resume(&mut os));
+    assert!(back.done(&mut os, card, Ok("ok file walk-term.txt created".into())));
+    assert_eq!(back.phase(), Phase::Ready);
+    assert_eq!(
+        back.spans().last().unwrap().text,
+        "file walk-term.txt created"
+    );
+    // At a prompt, or at a script's question, there is nothing to ask.
+    assert!(!back.resume(&mut os));
+    let mut confirm = Terminal::new();
+    confirm.reply("confirm 3 script 3: ...", None);
+    assert!(!confirm.resume(&mut os));
 }
 
 #[test]
