@@ -12,7 +12,9 @@ use livecore::Instance;
 use livecore::txn::{Inputs, Storage};
 use uikit::widget::UiEvent;
 use wasmhost::edit::MAX_QUEUED;
-use wasmhost::{CoreInstance, Grants, Limits, Update, load_core, load_core_granted};
+use wasmhost::{
+    CoreInstance, FileOp, Grants, Limits, Update, load_core, load_core_granted,
+};
 
 const LIMITS: Limits = Limits {
     fuel_call: 5_000_000,
@@ -468,4 +470,62 @@ fn a_window_with_text_not_kept_says_so_and_asks_before_it_closes() {
             .any(|u| matches!(u, Update::Closed(id) if *id == w)),
         "Discard closes the window"
     );
+}
+
+#[test]
+fn a_checkpoint_with_a_file_open_imports_and_reads_the_file_in_the_first_call_after() {
+    const PATH: &str = "/home/user/todo.txt";
+    let Some(wasm) = wasm() else { return };
+    let mut g = start(&wasm);
+    frame(&mut g);
+    // The agent opens a file and the door answers: the editor has it open.
+    let open_file = Func {
+        export: String::from("app:editor/actions@1.0.0#open-file"),
+        params: vec![Ty::String],
+        result: Some(Ty::Result(
+            Some(Box::new(Ty::String)),
+            Some(Box::new(Ty::String)),
+        )),
+    };
+    call(&mut g, |g| {
+        Instance::call(g, &open_file, &[Val::String(PATH.into())])
+    })
+    .unwrap()
+    .unwrap();
+    let asked = g.take_files();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(matches!(&asked[0].op, FileOp::Read { path } if path == PATH));
+    call(&mut g, |g| {
+        g.files_reply(asked[0].ticket, Ok(b"buy milk
+call Ann
+".to_vec()))
+    })
+    .unwrap();
+    let saved = Instance::export(&mut g, 0).unwrap().unwrap();
+
+    // A new instance imports it, as a nap's wake does. The import is a
+    // migration, which the host takes no file request from, so it must ask
+    // for none: it imports (it would not if it did) and nothing is queued.
+    let mut h = start(&wasm);
+    assert_eq!(h.import(&saved, 1), Ok(0));
+    assert!(h.take_files().is_empty());
+    let (w, _) = frame(&mut h);
+
+    // The first call that is a transaction reads the file again, and the
+    // answer fills the window.
+    call(&mut h, |h| h.code_size(w, CODE, 10, 60)).unwrap();
+    let again = h.take_files();
+    assert_eq!(again.len(), 1, "{again:?}");
+    assert!(matches!(&again[0].op, FileOp::Read { path } if path == PATH));
+    call(&mut h, |h| {
+        h.files_reply(again[0].ticket, Ok(b"buy milk
+call Ann
+".to_vec()))
+    })
+    .unwrap();
+    let text = text_of(&last_frame(&mut h));
+    assert!(text.contains("buy milk"), "{text}");
+    // And only once.
+    call(&mut h, |h| h.code_size(w, CODE, 12, 60)).unwrap();
+    assert!(h.take_files().is_empty());
 }

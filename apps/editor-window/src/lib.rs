@@ -104,6 +104,11 @@ pub struct EditorWindow {
     /// The screen's rows and columns as the code view last said, for a new screen.
     grid: (usize, usize),
     closing: Closing,
+    /// The file a checkpoint had open, still to be read again. `import` cannot do
+    /// it: the host takes a `kai:files` request only from a call that a transaction
+    /// wraps, and a migration is not one. The first call that is one reads it
+    /// ([`EditorWindow::resume`]).
+    reopen: Option<String>,
 }
 
 impl EditorWindow {
@@ -117,6 +122,7 @@ impl EditorWindow {
             files: Files::default(),
             grid: START,
             closing: Closing::No,
+            reopen: None,
         }
     }
 
@@ -161,6 +167,7 @@ impl EditorWindow {
     /// After anything that may have changed the screen: look at a running build,
     /// send what is wanted and draw.
     fn settle(&mut self, host: &mut dyn Host) -> Result<(), UiError> {
+        self.resume(host);
         self.screen.tick(host.now_ms());
         self.pump(host);
         self.present(host)
@@ -203,6 +210,7 @@ impl EditorWindow {
         text: &str,
         mods: u8,
     ) -> Result<(), UiError> {
+        self.resume(host);
         if self.closing != Closing::No {
             return self.closing_key(host, name, text, mods);
         }
@@ -256,6 +264,7 @@ impl EditorWindow {
         cell: u32,
         mods: u8,
     ) -> Result<(), UiError> {
+        self.resume(host);
         let gutter = self.screen.view().gutter;
         self.screen
             .input(keys::click_input(row, cell, mods, gutter));
@@ -264,6 +273,7 @@ impl EditorWindow {
 
     /// The wheel turned `rows` over the code view: the cursor moves that far.
     pub fn on_scroll(&mut self, host: &mut dyn Host, rows: i32) -> Result<(), UiError> {
+        self.resume(host);
         let key = if rows < 0 { Key::Up } else { Key::Down };
         for _ in 0..rows.unsigned_abs().min(64) {
             self.screen.input(Input::Key(key));
@@ -298,6 +308,8 @@ impl EditorWindow {
         if line == 0 || line > 99_999 {
             return Err(String::from("Lines count from 1."));
         }
+        // The source the agent names takes the place of the file a nap kept.
+        self.reopen = None;
         if self.files.unsaved(&self.screen) {
             return Err(String::from(
                 "The editor holds edits that are not saved or built; save or reset them first.",
@@ -315,6 +327,8 @@ impl EditorWindow {
     /// answer says only that it is on its way; the file's text never goes to the
     /// agent.
     pub fn act_open_file(&mut self, host: &mut dyn Host, path: &str) -> Result<String, String> {
+        // The file the agent names takes the place of the one a nap kept.
+        self.reopen = None;
         self.files.ask_open(host, &mut self.screen, path)?;
         self.settle(host)
             .map_err(|e| format!("the window: {e:?}"))?;
@@ -410,11 +424,17 @@ impl EditorWindow {
         }
     }
 
-    /// Opens the file at `path` again, as a checkpoint says it was open. The
-    /// reply comes in a later call, as for Ctrl-O's.
-    pub fn reopen(&mut self, host: &mut dyn Host, path: &str) -> Result<(), String> {
-        self.files.ask_open(host, &mut self.screen, path)?;
-        self.settle(host).map_err(|e| format!("the window: {e:?}"))
+    /// Opens the file a checkpoint had open, on the first call that may ask the
+    /// OS for a file; the reply comes in a later call, as for Ctrl-O's. A file that
+    /// cannot be opened again is said in the status row, and the editor is empty.
+    fn resume(&mut self, host: &mut dyn Host) {
+        let Some(path) = self.reopen.take() else {
+            return;
+        };
+        if let Err(why) = self.files.ask_open(host, &mut self.screen, &path) {
+            self.screen
+                .note(format!("{path} was not opened again: {why}"), true);
+        }
     }
 
     /// `editor_status`: the file and line, the edits made and how the last build
@@ -458,10 +478,8 @@ impl Component for EditorWindow {
         }
         let kept: V1 = compsdk::state::decode(state, SCHEMA).ok_or(ImportError::Bad)?;
         let mut app = Self::new();
+        app.reopen = kept.path;
         app.present_logged();
-        if let Some(path) = kept.path {
-            app.reopen_logged(&path);
-        }
         Ok(app)
     }
 
@@ -496,18 +514,6 @@ impl EditorWindow {
     /// There is no window on the host; tests draw through their own [`Host`].
     #[cfg(not(target_family = "wasm"))]
     fn present_logged(&mut self) {}
-
-    /// Opens the file the checkpoint had open, or logs why it could not.
-    #[cfg(target_family = "wasm")]
-    fn reopen_logged(&mut self, path: &str) {
-        if let Err(why) = self.reopen(&mut bind::Os, path) {
-            compsdk::log(&format!("editor window: not opened again: {why}"));
-        }
-    }
-
-    /// There is no OS on the host; tests call [`EditorWindow::reopen`] themselves.
-    #[cfg(not(target_family = "wasm"))]
-    fn reopen_logged(&mut self, _path: &str) {}
 }
 
 compsdk::component!(EditorWindow);

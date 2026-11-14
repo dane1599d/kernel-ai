@@ -772,6 +772,25 @@ fn the_keys_s_d_and_escape_answer_the_question() {
 }
 
 #[test]
+fn a_file_the_agent_names_takes_the_place_of_the_one_a_nap_kept() {
+    let (_, mut os) = window();
+    os.disk.insert(PATH.into(), todo());
+    os.disk.insert("/home/user/other.txt".into(), b"other".to_vec());
+    let kept = comp_editor_window::V1 {
+        reserved: 0,
+        path: Some(PATH.into()),
+    };
+    let bytes = compsdk::state::encode(comp_editor_window::SCHEMA, &kept);
+    let mut woke = EditorWindow::import(&bytes, comp_editor_window::SCHEMA).unwrap();
+    woke.act_open_file(&mut os, "/home/user/other.txt").unwrap();
+    serve(&mut woke, &mut os);
+    // Only the file named is read, not the kept one after it.
+    woke.on_size(&mut os, 24, 80).unwrap();
+    serve(&mut woke, &mut os);
+    assert_eq!(os.log, ["read /home/user/other.txt"]);
+}
+
+#[test]
 fn the_checkpoint_keeps_the_open_file_and_a_reopened_editor_reads_it_again() {
     let (mut app, mut os) = window();
     os.disk.insert(PATH.into(), todo());
@@ -780,14 +799,21 @@ fn the_checkpoint_keeps_the_open_file_and_a_reopened_editor_reads_it_again() {
     let state: comp_editor_window::V1 =
         compsdk::state::decode(&kept, comp_editor_window::SCHEMA).unwrap();
     assert_eq!(state.path.as_deref(), Some(PATH));
-    // A new editor, as a nap's wake makes one, opens the file again.
-    let (mut woke, mut os) = window();
+    // A new editor, as a nap's wake makes one. The import asks the door for
+    // nothing (the host takes a file request only from a call a transaction
+    // wraps, and a migration is not one); the first call that is one reads the
+    // file again, and the second reads nothing more.
+    let (_, mut os) = window();
     os.disk.insert(PATH.into(), todo());
-    woke.reopen(&mut os, state.path.as_deref().unwrap())
-        .unwrap();
+    let mut woke = EditorWindow::import(&kept, comp_editor_window::SCHEMA).unwrap();
+    assert!(os.pending.is_empty() && os.log.is_empty());
+    woke.on_size(&mut os, 24, 80).unwrap();
     serve(&mut woke, &mut os);
     assert_eq!(os.log, [format!("read {PATH}")]);
     assert_eq!(&os.rows()[..2], ["buy milk", "call Ann"]);
+    woke.on_size(&mut os, 20, 80).unwrap();
+    serve(&mut woke, &mut os);
+    assert_eq!(os.log.len(), 1, "{:?}", os.log);
     // Nothing open, nothing kept.
     let (empty, _) = window();
     let bytes = empty.export(comp_editor_window::SCHEMA).unwrap();
