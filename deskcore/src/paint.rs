@@ -66,6 +66,9 @@ pub struct Painter {
     pub(crate) palette: Palette,
     near: Shadow,
     far: Shadow,
+    /// The history's entries laid out, by entry and width
+    /// ([`crate::paint_chat`]): what a repaint draws without wrapping again.
+    pub(crate) chat_laid: alloc::vec::Vec<crate::paint_chat::Laid>,
 }
 
 /// `0xFF` alpha on a token.
@@ -100,6 +103,7 @@ impl Painter {
             palette: DARK,
             near: Shadow::new(2, 96, 0),
             far: Shadow::new(SHADOW_REACH, 64, 0),
+            chat_laid: alloc::vec::Vec::new(),
         })
     }
 
@@ -107,6 +111,8 @@ impl Painter {
     pub fn set_theme(&mut self, theme: &Theme) {
         self.palette = theme.palette();
         self.text.set_theme(theme);
+        // A theme may change the type's sizes, so the lines' breaks.
+        self.chat_laid.clear();
     }
 
     /// The theme's colours, for what `desktop` draws itself (the cursor).

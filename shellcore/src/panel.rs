@@ -3,9 +3,9 @@
 //! one-line state and is drawn by `desktop` as the system's own:
 //!
 //! - the terminal's open entry, clarifying question and proposal are its own: a
-//!   panel line neither answers nor continues them, and what a panel line
-//!   leaves open (a question, an open bracket) is dropped, since the panel
-//!   cannot show it yet;
+//!   panel line neither answers nor continues them. A question a panel line
+//!   leaves is the panel's own, kept for its next line, which answers it, as
+//!   an app's terminal keeps its own; an open bracket is dropped;
 //! - what the bar shows is code's: the result line of what ran, or a fixed
 //!   reason. The model's words, a model-written script's prints and its
 //!   summary are never shown there. They go to the desk's history above the
@@ -27,7 +27,8 @@ pub enum PanelResult {
 }
 
 const ASKS: &str = "it asks first: ask in the terminal, which shows the script";
-const WORDS: &str = "it asked a question: answer it in the terminal";
+/// The bar's line when the model asked a question: it is in the history.
+const ASKED: &str = "Kai asked a question above: answer it here";
 /// The bar's line when the model answered in words: they are in the history.
 const ANSWERED: &str = "Kai answered above.";
 /// The most of what the AI said that the history is given.
@@ -72,6 +73,10 @@ impl Shell {
         self.worded = false;
         self.done_line = None;
         self.panel_said = None;
+        self.clarified_by_model = false;
+        // The panel's own question, if its last line left one: this line
+        // answers it.
+        self.clarifying = self.panel_clarifying.take();
         let reply = self.eval(line);
         // Before the result takes the done line, which `said` leaves out.
         self.panel_said = self.said(&reply);
@@ -82,6 +87,7 @@ impl Shell {
             self.save_log();
         }
         self.partial = terminal.partial;
+        self.panel_clarifying = self.clarifying.take();
         self.clarifying = terminal.clarifying;
         self.pending = terminal.pending;
         self.undo_asking = terminal.undo_asking;
@@ -96,23 +102,40 @@ impl Shell {
         self.panel_said.take()
     }
 
-    /// The reply's text when the model made it: its words (an answer, or a
-    /// question left for the terminal), or what its script printed, without
-    /// the result line the bar shows. Cut to [`MAX_SAID`] bytes.
+    /// The reply's text when the model wrote it: its words (an answer, or its
+    /// own question), or what its script printed. Code's lines stay out: the
+    /// run's result line, "nothing was changed", the "Done: summary" written
+    /// when a run printed nothing, a question code asks (which target). Cut to
+    /// [`MAX_SAID`] bytes.
     fn said(&self, reply: &Reply) -> Option<String> {
-        // A line that asks first shows its script in the terminal, not here.
+        // A line that asks first shows its script on the card, not here.
         if !self.asked_model || reply.confirm.is_some() || self.pending.is_some() {
+            return None;
+        }
+        if self.clarifying.is_some() && !self.clarified_by_model {
             return None;
         }
         if !self.worded && self.clarifying.is_none() && !reply.ok {
             return None;
         }
         let done = self.done_line.as_deref().map(without_undo);
-        let kept: alloc::vec::Vec<&str> = reply
-            .text
-            .lines()
-            .filter(|line| done.as_deref() != Some(without_undo(line).as_str()))
-            .collect();
+        let ours = |line: &str| {
+            line == crate::guard::NOTHING_CHANGED
+                || done.as_deref() == Some(without_undo(line).as_str())
+        };
+        let mut kept: alloc::vec::Vec<&str> = match self.worded || self.clarified_by_model {
+            true => reply.text.lines().collect(),
+            false => reply.text.lines().filter(|line| !ours(line)).collect(),
+        };
+        // What the shell writes for a run that printed nothing ("Done.", or
+        // "Done: " and the model's summary) is code's framing, not Kai's words.
+        if !self.worded
+            && !self.clarified_by_model
+            && let [only] = kept.as_slice()
+            && (*only == "Done." || only.starts_with("Done: "))
+        {
+            kept.clear();
+        }
         let text = kept.join("\n");
         let text = text.trim();
         if text.is_empty() {
@@ -134,20 +157,33 @@ impl Shell {
             return refused(OPEN);
         }
         if self.clarifying.is_some() {
-            return refused(WORDS);
+            // The model's question is in the history; code's is short, and
+            // shown here. Either way the next panel line answers it.
+            let question = match self.clarified_by_model {
+                true => String::from(ASKED),
+                false => reply
+                    .text
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .map_or_else(|| String::from(ASKED), String::from),
+            };
+            return PanelResult::Done(question);
         }
         if self.worded {
             return PanelResult::Done(String::from(ANSWERED));
         }
         if self.asked_model {
-            return match reply.ok {
-                true => PanelResult::Done(without_undo(
+            // A run that changed nothing says so here, never "Done.".
+            let nothing = reply.text.lines().last() == Some(crate::guard::NOTHING_CHANGED);
+            return match (reply.ok, nothing) {
+                (true, true) => PanelResult::Done(String::from(crate::guard::NOTHING_CHANGED)),
+                (true, false) => PanelResult::Done(without_undo(
                     &self
                         .done_line
                         .take()
                         .unwrap_or_else(|| String::from("Done.")),
                 )),
-                false => refused(FAILED),
+                (false, _) => refused(FAILED),
             };
         }
         // The user's own line: its result is what they asked to see.

@@ -141,3 +141,48 @@ fn a_typed_models_import_is_refused_at_the_panel_and_a_switch_runs_logged() {
         ok("Undone: the model before, from the next restart")
     );
 }
+
+/// #859's review: the panel's question is the panel's, answered by its next
+/// line, never discarded or left for the terminal.
+#[test]
+fn the_panels_question_is_answered_by_its_next_line() {
+    let (host, mut shell) = with_calls(vec![
+        call(
+            r#"{"name":"clarify","arguments":{"question":"Which policy?","options":["interactive","round-robin"]}}"#,
+        ),
+        call(RR),
+    ]);
+    let shown = shell.eval_panel("switch the policy");
+    assert_eq!(
+        shown,
+        PanelResult::Done("Kai asked a question above: answer it here".into())
+    );
+    assert_eq!(
+        shell.take_panel_said().as_deref(),
+        Some("Which policy? (interactive, round-robin)")
+    );
+    // The terminal's own line does not answer it.
+    assert!(!shell.eval("1 + 1").text.contains("policy"));
+    let shown = shell.eval_panel("round robin");
+    assert!(
+        matches!(&shown, PanelResult::Done(line) if line.contains("round-robin")),
+        "{shown:?}"
+    );
+    assert_eq!(host.act_lines.borrow()[1], "switch the policy round robin");
+}
+
+/// #859's review: a printed claim with no change is Kai's words in the
+/// history, and the bar says nothing was changed, never "Done.".
+#[test]
+fn a_claim_that_changed_nothing_is_kais_and_the_bar_says_so() {
+    let (_host, mut shell) = with_calls(vec![call(
+        r#"{"name":"script","arguments":{"code":"print(\"Firewall change applied.\");"}}"#,
+    )]);
+    let shown = shell.eval_panel("turn on the firewall");
+    assert_eq!(
+        shown,
+        PanelResult::Done(crate::guard::NOTHING_CHANGED.into())
+    );
+    let said = shell.take_panel_said();
+    assert_eq!(said.as_deref(), Some("Firewall change applied."));
+}

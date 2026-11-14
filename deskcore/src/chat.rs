@@ -36,6 +36,9 @@ pub enum Who {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
+    /// Its number, from 0, never reused: what a painter's laid-out lines are
+    /// kept by.
+    pub seq: u64,
     pub who: Who,
     pub text: String,
 }
@@ -44,6 +47,7 @@ pub struct Entry {
 #[derive(Default)]
 pub struct Chat {
     entries: VecDeque<Entry>,
+    next: u64,
 }
 
 impl Chat {
@@ -65,7 +69,12 @@ impl Chat {
         if self.entries.len() >= MAX_ENTRIES {
             self.entries.pop_front();
         }
-        self.entries.push_back(Entry { who, text });
+        self.entries.push_back(Entry {
+            seq: self.next,
+            who,
+            text,
+        });
+        self.next += 1;
         true
     }
 }
@@ -112,22 +121,11 @@ pub fn wrap(text: &str, width: f32, measure: &mut dyn FnMut(&str) -> f32) -> Vec
             }
             // A word too wide for a line alone is broken where it must be.
             let mut rest = word;
-            while !rest.is_empty() && measure(rest) > width {
-                let mut cut = rest.len();
-                while cut > 0 {
-                    cut -= 1;
-                    while !rest.is_char_boundary(cut) {
-                        cut -= 1;
-                    }
-                    if cut == 0 || measure(&rest[..cut]) <= width {
-                        break;
-                    }
+            loop {
+                let cut = fit(rest, width, measure);
+                if cut == rest.len() {
+                    break;
                 }
-                // At least one character a line, however narrow.
-                let cut = match cut {
-                    0 => rest.chars().next().map_or(rest.len(), char::len_utf8),
-                    cut => cut,
-                };
                 lines.push(String::from(&rest[..cut]));
                 rest = &rest[cut..];
             }
@@ -139,6 +137,51 @@ pub fn wrap(text: &str, width: f32, measure: &mut dyn FnMut(&str) -> f32) -> Vec
         }
     }
     lines
+}
+
+/// How many bytes of `text` fit in `width`, at a character: all of it when
+/// it fits, else at least one character. It measures prefixes of growing
+/// size, doubling, then halves the step between the last that fitted and the
+/// first that did not, so no prefix measured is much longer than a line:
+/// an unbroken string costs a few measures a line, not one a character.
+fn fit(text: &str, width: f32, measure: &mut dyn FnMut(&str) -> f32) -> usize {
+    let bounds: Vec<usize> = text
+        .char_indices()
+        .map(|(at, _)| at)
+        .skip(1)
+        .chain(core::iter::once(text.len()))
+        .collect();
+    // `bounds[i]` is the end of the first `i + 1` characters.
+    let fits =
+        |i: usize, measure: &mut dyn FnMut(&str) -> f32| measure(&text[..bounds[i]]) <= width;
+    let last = bounds.len() - 1;
+    let (mut good, mut probe) = (None, 0);
+    let bad = loop {
+        if !fits(probe, measure) {
+            break probe;
+        }
+        if probe == last {
+            return text.len();
+        }
+        good = Some(probe);
+        probe = (probe * 2 + 1).min(last);
+    };
+    // Between the last that fitted and the first that did not.
+    let mut lo = good.map_or(0, |g| g + 1);
+    let mut hi = bad;
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if fits(mid, measure) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    // `lo` characters fit (none fitted: one anyway).
+    match lo {
+        0 => bounds[0],
+        n => bounds[n - 1],
+    }
 }
 
 #[cfg(test)]
@@ -175,6 +218,23 @@ mod tests {
         chat.push(Who::Kai, &"é".repeat(MAX_TEXT));
         let text = &chat.entries().next().unwrap().text;
         assert!(text.len() <= MAX_TEXT && text.chars().all(|c| c == 'é'));
+    }
+
+    /// #859's review: an unbroken string (a hash, base64) wraps in a few
+    /// measures a line, each of about a line's length.
+    #[test]
+    fn a_long_unbroken_string_wraps_with_few_short_measures() {
+        let text = "x".repeat(MAX_TEXT);
+        let mut calls = 0usize;
+        let mut measure = |t: &str| {
+            calls += 1;
+            t.len() as f32
+        };
+        let lines = wrap(&text, 80.0, &mut measure);
+        assert_eq!(lines.len(), MAX_TEXT / 80);
+        assert!(lines.iter().all(|l| l.len() == 80));
+        // A character at a time was 4,000 measures a line here.
+        assert!(calls < 20 * lines.len(), "{calls} measures");
     }
 
     #[test]

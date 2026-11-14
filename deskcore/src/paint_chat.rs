@@ -37,8 +37,12 @@ pub fn chat_area(desk: &Desk) -> Rect {
     Rect::new((width - w) / 2, top, w, (bottom - top).max(0))
 }
 
-/// One entry, laid out: its label, its lines and their look.
-struct Laid {
+/// One entry, laid out: its label, its lines and their look, kept by the
+/// entry's number and the width it was laid out at.
+#[derive(Clone)]
+pub(crate) struct Laid {
+    seq: u64,
+    width: i32,
     who: Who,
     label: &'static str,
     style: TypeStyle,
@@ -64,7 +68,7 @@ impl Painter {
         let label_h = self.text.measure(TypeStyle::Small, "Kai").1 as i32;
         let mut bottom = area.bottom();
         for entry in scene.chat.entries().rev() {
-            let laid = self.lay(entry, area.w);
+            let laid = self.laid(entry, area.w);
             let line_h = self.text.measure(laid.style, "x").1 as i32;
             let top = bottom - laid.height(label_h, line_h);
             self.entry(c, clip, area.x, top, &laid, (label_h, line_h));
@@ -73,6 +77,25 @@ impl Painter {
                 break;
             }
         }
+        // Entries the history let go of are let go here too.
+        let first = scene.chat.entries().next().map_or(u64::MAX, |e| e.seq);
+        self.chat_laid
+            .retain(|l| l.seq >= first && l.width == area.w);
+    }
+
+    /// `entry` laid out at `width`: kept from an earlier paint, or laid out
+    /// now and kept, so a window dragged over the history re-wraps nothing.
+    fn laid(&mut self, entry: &Entry, width: i32) -> Laid {
+        if let Some(laid) = self
+            .chat_laid
+            .iter()
+            .find(|l| l.seq == entry.seq && l.width == width)
+        {
+            return laid.clone();
+        }
+        let laid = self.lay(entry, width);
+        self.chat_laid.push(laid.clone());
+        laid
     }
 
     /// `entry`'s lines at `width`, in its kind's look.
@@ -86,6 +109,8 @@ impl Painter {
         let mut measure = |t: &str| text.measure(style, t).0;
         let lines = chat::wrap(&entry.text, (width - indent) as f32, &mut measure);
         Laid {
+            seq: entry.seq,
+            width,
             who: entry.who,
             label,
             style,

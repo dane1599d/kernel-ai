@@ -655,6 +655,13 @@ pub struct Shell {
     /// ([`Shell::take_panel_said`]): the model's words or a model script's
     /// prints, never the panel's own state line.
     panel_said: Option<String>,
+    /// The panel's own clarifying question, kept for its next line as an
+    /// app's terminal keeps its own: the person answers in the bar.
+    panel_clarifying: Option<String>,
+    /// The last clarifying question was the model's (`clarify`), not code's
+    /// (`guard::which`, a target to pick): only the model's words go to the
+    /// desk's history as Kai's.
+    clarified_by_model: bool,
     /// The `pack_id` of the pack the model is given, logged with each model turn
     /// (ADR 0010 §7): the same one llm reports for its `act` slot.
     pack_id: u64,
@@ -740,6 +747,8 @@ impl Shell {
             worded: false,
             done_line: None,
             panel_said: None,
+            panel_clarifying: None,
+            clarified_by_model: false,
             pack_id: llmproto::pack::act_pack_id(),
             saved_log: None,
             owner_once: None,
