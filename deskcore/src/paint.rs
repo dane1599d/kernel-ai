@@ -253,7 +253,7 @@ impl Painter {
         disc(c, clip, (cx, cy), r as f32 / 2.0, self.palette.window);
         let y = self.baseline(area.y, h, TypeStyle::Label);
         let x = (cx + r + 8) as f32;
-        let x = x + self.draw_text(
+        self.draw_text(
             c,
             clip,
             x,
@@ -264,20 +264,17 @@ impl Painter {
         );
         // Tabs, bottom to top as the windows stack.
         let stats = stats_area(area.w);
-        let mut x = x as i32 + 2 * PAD;
         let y = self.baseline(area.y, h, TypeStyle::MonoTitle);
-        for window in desk.windows() {
+        for (id, tab) in self.tabs(desk) {
+            let Some(window) = desk.window(id) else {
+                continue;
+            };
             let name = if window.title.is_empty() {
                 &window.label
             } else {
                 &window.title
             };
-            let (w, _) = self.text.measure(TypeStyle::MonoTitle, name);
-            let tab_w = (w as i32 + 2 * PAD).min(TAB_MAX);
-            if x + tab_w > stats.x {
-                break;
-            }
-            let tab = Rect::new(x, area.y + 4, tab_w, h - 8);
+            let x = tab.x;
             let focused = desk.focus() == Focus::Window(window.id);
             let color = match (focused, window.minimized) {
                 (true, _) => {
@@ -290,9 +287,36 @@ impl Painter {
             let inside = tab.intersect(&clip).unwrap_or_default();
             let tx = (x + PAD) as f32;
             self.draw_text(c, inside, tx, y, TypeStyle::MonoTitle, color, name);
-            x += tab_w + 4;
         }
         self.stats(c, clip, stats, bar);
+    }
+
+    /// The top bar's tabs: one a window, bottom to top as they stack, as many
+    /// as fit before the stats. What the bar draws, and what a press on it
+    /// hits (`Desk::set_tabs`).
+    pub fn tabs(&self, desk: &Desk) -> alloc::vec::Vec<(crate::desk::WindowId, Rect)> {
+        let area = desk.top_bar();
+        let h = area.h - 1;
+        let r = 5;
+        let brand = self.text.measure(TypeStyle::Label, "Kernel AI").0 as i32;
+        let mut x = area.x + PAD + 2 * r + 8 + brand + 2 * PAD;
+        let stats = stats_area(area.w);
+        let mut tabs = alloc::vec::Vec::new();
+        for window in desk.windows() {
+            let name = if window.title.is_empty() {
+                &window.label
+            } else {
+                &window.title
+            };
+            let (w, _) = self.text.measure(TypeStyle::MonoTitle, name);
+            let tab_w = (w as i32 + 2 * PAD).min(TAB_MAX);
+            if x + tab_w > stats.x {
+                break;
+            }
+            tabs.push((window.id, Rect::new(x, area.y + 4, tab_w, h - 8)));
+            x += tab_w + 4;
+        }
+        tabs
     }
 
     /// The right side, right-aligned in `area`.

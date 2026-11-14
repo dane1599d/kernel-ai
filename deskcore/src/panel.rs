@@ -55,6 +55,8 @@ pub struct Panel {
     focused: bool,
     shift: u8,
     ctrl: u8,
+    /// Caps Lock, as the desk says ([`Panel::set_caps`]).
+    caps: bool,
     waiting: VecDeque<Request>,
     /// [`APPS`] was sent and the sheet has not been opened for it yet.
     apps: bool,
@@ -74,6 +76,7 @@ impl Panel {
             focused: false,
             shift: 0,
             ctrl: 0,
+            caps: false,
             waiting: VecDeque::new(),
             apps: false,
         }
@@ -107,6 +110,11 @@ impl Panel {
         changed
     }
 
+    /// Caps Lock turned on or off (`Effect::Locks`).
+    pub fn set_caps(&mut self, caps: bool) {
+        self.caps = caps;
+    }
+
     /// The shell's report of what it is doing.
     pub fn set_state(&mut self, state: State) -> bool {
         let changed = self.state != state;
@@ -135,7 +143,7 @@ impl Panel {
             _ if !down => return false,
             _ => {}
         }
-        let Some(key) = keymap::key_of(code, self.shift > 0, self.ctrl > 0) else {
+        let Some(key) = keymap::key_of(code, self.shift > 0, self.ctrl > 0, self.caps) else {
             return false;
         };
         if key == Key::Esc {

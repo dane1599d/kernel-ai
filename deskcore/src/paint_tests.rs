@@ -351,3 +351,30 @@ fn a_long_line_keeps_the_caret_in_the_input() {
         "the caret is not in the input: {caret} ember pixels"
     );
 }
+
+/// Backlog item 9: a done line's undo and show are clickable where they are
+/// drawn, undo before show, and nothing else on the panel is a link.
+#[test]
+fn the_panels_undo_and_show_are_where_they_are_drawn() {
+    use crate::geom::Point;
+    let desk = Desk::new(1280, 800);
+    let painter = Painter::new(FONTS).expect("the fonts parse");
+    let area = desk.panel();
+    let done = State::Done {
+        line: "Done: policy round-robin (was interactive).".into(),
+    };
+    let y = area.y + area.h / 2;
+    let found: Vec<(i32, &str)> = (area.x..area.right())
+        .filter_map(|x| {
+            painter
+                .panel_link(area, &done, Point { x, y })
+                .map(|w| (x, w))
+        })
+        .collect();
+    let first = |word: &str| found.iter().find(|(_, w)| *w == word).map(|(x, _)| *x);
+    let (undo, show) = (first("undo").unwrap(), first("show").unwrap());
+    assert!(undo < show && undo > area.x + area.w / 2, "{undo} {show}");
+    assert!(found.iter().all(|(x, _)| *x >= area.x + area.w / 2));
+    let idle = State::Idle;
+    assert_eq!(painter.panel_link(area, &idle, Point { x: show, y }), None);
+}

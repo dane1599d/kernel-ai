@@ -177,7 +177,7 @@ impl Painter {
             ],
             State::Done { line } => alloc::vec![
                 (line.clone(), self.palette.text),
-                (String::from("   undo  show"), self.palette.accent),
+                (String::from(LINKS), self.palette.accent),
             ],
             State::Refused { reason } => alloc::vec![(reason.clone(), self.palette.error)],
         };
@@ -193,6 +193,44 @@ impl Painter {
         }
         for (text, color) in &parts {
             x += self.draw_text(c, clip, x, y, style, *color, text);
+        }
+    }
+}
+
+/// The links a done line ends with, as drawn: what each sends when clicked.
+const LINKS: &str = "   undo  show";
+
+impl Painter {
+    /// Which of a done line's links, `undo` or `show`, the point `at` on the
+    /// screen is on, as the panel draws them: what a click there sends, as
+    /// though typed. `None` off them, or with no done line.
+    pub fn panel_link(
+        &self,
+        panel: Rect,
+        state: &State,
+        at: crate::geom::Point,
+    ) -> Option<&'static str> {
+        let State::Done { line } = state else {
+            return None;
+        };
+        if !panel.contains(at) {
+            return None;
+        }
+        let right = state_area(panel);
+        let style = TypeStyle::MonoTitle;
+        let width = |t: &str| self.text.measure(style, t).0;
+        let end = (right.right() - PAD) as f32;
+        let start = (end - width(line) - width(LINKS)).max(right.x as f32);
+        let links = start + width(line);
+        let x = at.x as f32;
+        let hit = |from: &str, word: &str| {
+            let left = links + width(from);
+            x >= left - 4.0 && x <= left + width(word) + 4.0
+        };
+        match (hit("   ", "undo"), hit("   undo  ", "show")) {
+            (true, _) => Some("undo"),
+            (_, true) => Some("show"),
+            _ => None,
         }
     }
 }

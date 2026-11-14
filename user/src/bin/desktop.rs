@@ -422,6 +422,23 @@ fn deliver(state: &mut State, effects: &[Effect]) {
             continue;
         }
         let changed = match *effect {
+            // A click on a done line's undo or show sends it, as though typed.
+            Effect::PanelClick { at } => {
+                let area = state.desk.panel();
+                match state.painter.panel_link(area, state.panel.state(), at) {
+                    Some(word) => {
+                        state.panel.send(String::from(word), now);
+                        println!("desktop: the panel's {word} was clicked");
+                        wake_shell();
+                        true
+                    }
+                    None => false,
+                }
+            }
+            Effect::Locks { caps } => {
+                state.panel.set_caps(caps);
+                false
+            }
             Effect::PanelKey { usage, down } if apps::key(state, usage, down, now) => false,
             Effect::PanelKey { usage, down } => {
                 let before = state.panel.waiting();
@@ -1073,6 +1090,9 @@ fn draw(state: &mut State, screen: &Screen) {
         state.drawn = true;
         println!("desktop: drew the desk at {}x{}", state.width, state.height);
     }
+    // What a press on the top bar hits: its tabs as just drawn.
+    let tabs = state.painter.tabs(&state.desk);
+    state.desk.set_tabs(tabs);
 }
 
 /// A client's buffer, read where its pool is mapped. `None` past the pool.

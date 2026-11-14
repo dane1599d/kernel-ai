@@ -492,3 +492,36 @@ fn a_key_or_click_in_the_agents_window_takes_over() {
     desk.set_agent(Some(ids[1]));
     assert!(key(&mut desk, 0x04, true).contains(&Effect::TookOver { window: ids[1] }));
 }
+
+/// Backlog item 9: Caps Lock is announced to every client and goes to no
+/// window; with Num Lock off the keypad's 4 is Left, and its 5 nothing.
+#[test]
+fn the_locks_toggle_and_the_keypad_follows_num_lock() {
+    let (mut desk, ids) = desk_with(1);
+    let window = ids[0];
+    assert_eq!(key(&mut desk, 0x39, true), [Effect::Locks { caps: true }]);
+    assert!(key(&mut desk, 0x39, false).is_empty());
+    assert!(desk.caps());
+    // Num Lock on (as at start): keypad 4 is itself, a digit.
+    assert_eq!(
+        key(&mut desk, 0x5C, true),
+        [Effect::Key {
+            window,
+            usage: 0x5C,
+            down: true
+        }]
+    );
+    key(&mut desk, 0x5C, false);
+    // Off: it is Left.
+    assert!(key(&mut desk, 0x53, true).is_empty());
+    key(&mut desk, 0x53, false);
+    assert_eq!(
+        key(&mut desk, 0x5C, true),
+        [Effect::Key {
+            window,
+            usage: 0x50,
+            down: true
+        }]
+    );
+    assert!(key(&mut desk, 0x5D, true).is_empty(), "keypad 5 is nothing");
+}
