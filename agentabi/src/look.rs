@@ -63,7 +63,6 @@ pub const APPEARANCE_SET: Action = Action {
         "legible",
         "colour",
         "color",
-        "mode",
     ],
     returns: Returns::System,
     ret: RetType::Unit,
