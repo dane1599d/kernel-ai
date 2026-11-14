@@ -53,6 +53,7 @@ pub use netask::Connect as NetConnect;
 mod packages;
 mod panel;
 mod pkg;
+mod power;
 mod profiles;
 mod rules;
 pub mod script;
@@ -239,6 +240,12 @@ pub trait Host {
     /// is none.
     fn models(&self, _request: &str) -> Result<String, String> {
         Err(String::from("there is no model channel here"))
+    }
+    /// Restarts the computer (`POWER_REBOOT`, backlog item 13) after the
+    /// restart's Allow. On the OS it does not come back unless the kernel said
+    /// no; a test host records it and comes back with `Ok`.
+    fn power_reboot(&self) -> Result<(), String> {
+        Err(String::from("this host cannot restart the computer"))
     }
     /// The user's appearance as `kai-appearance 1` text (P4 task 8).
     fn appearance_read(&self) -> Option<String> {
@@ -981,6 +988,13 @@ impl Shell {
             && let Some(parsed) = models::parse_line(input)
         {
             return self.models_line(input, parsed);
+        }
+        // A restart is the person's own line, before Rhai and the model.
+        if power::is_restart_line(input)
+            && !self.scope.contains("restart")
+            && !self.scope.contains("reboot")
+        {
+            return self.power_line(input);
         }
         if let Some(which) = input.strip_prefix("rules_remove ")
             && !self.scope.contains("rules_remove")

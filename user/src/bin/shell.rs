@@ -633,6 +633,15 @@ impl Host for System {
         Some(&self.apps)
     }
 
+    /// POWER_REBOOT with the plan's `power` (backlog item 13): it comes back
+    /// only when the kernel did not restart.
+    fn power_reboot(&self) -> Result<(), String> {
+        Err(match sys::power_reboot() {
+            kabi::Error::Permission => String::from("this shell may not restart the computer"),
+            error => format!("the kernel said {error:?}"),
+        })
+    }
+
     fn app_call(&self, app: &str, request: &str) -> Result<String, String> {
         ask_app(app, request)
     }

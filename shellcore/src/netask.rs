@@ -248,6 +248,7 @@ impl Shell {
             app: None,
             install: None,
             net: Some(asking),
+            power: false,
         });
         Reply::menu(id, encoded)
     }
