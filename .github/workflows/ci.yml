@@ -102,6 +102,7 @@ jobs:
           cargo build -p comp-settings-window --target wasm32-unknown-unknown --profile component
           cargo build -p comp-grant-fixture --target wasm32-unknown-unknown --profile component
           cargo build -p comp-net-fixture --target wasm32-unknown-unknown --profile component
+          cargo build -p comp-wait-fixture --target wasm32-unknown-unknown --profile component
           cargo build -p comp-terminal-window --target wasm32-unknown-unknown --profile component
           cargo build -p comp-monitor-window --target wasm32-unknown-unknown --profile component
           cargo build -p comp-models-window --target wasm32-unknown-unknown --profile component
@@ -111,7 +112,7 @@ jobs:
       - run: cargo clippy -p compsdk -p comp-notes -p comp-notes-v1 -p comp-viewbench -p termcore -p comp-terminal --target wasm32-unknown-unknown -- -D warnings
       # Alone: with comp-notes in the same run its exports would be on.
       - run: cargo clippy -p comp-notes-window --target wasm32-unknown-unknown -- -D warnings
-      - run: cargo clippy -p comp-ui-bind -p comp-files-window -p comp-settings-window -p comp-terminal-window -p comp-monitor-window -p comp-models-window -p comp-grant-fixture -p comp-net-fixture --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo clippy -p comp-ui-bind -p comp-files-window -p comp-settings-window -p comp-terminal-window -p comp-monitor-window -p comp-models-window -p comp-grant-fixture -p comp-net-fixture -p comp-wait-fixture --target wasm32-unknown-unknown -- -D warnings
       - run: cargo clippy -p comp-editor-ui -p comp-editor-window --target wasm32-unknown-unknown -- -D warnings
       - name: Clippy for each broken notes version
         run: for bug in bug-import bug-health bug-trap bug-spin; do cargo clippy -p comp-notes-bad --target wasm32-unknown-unknown --features $bug -- -D warnings; done
@@ -119,8 +120,9 @@ jobs:
 
   # QEMU for every boot job, built once per version from a pinned source tarball
   # and cached: Ubuntu 24.04's QEMU 8.2 segfaulted under TCG in vector-heavy
-  # cases (matvec, local-ask, local-script). Bump the version and SHA-256 here
-  # and in .github/actions/qemu together.
+  # cases (matvec, local-ask, local-script). Bump the version and SHA-256 here,
+  # in release.yml and in .github/actions/qemu together; the build itself is
+  # .github/actions/qemu/build.sh, which release.yml runs on a cache miss.
   #
   # The boot, icount and observe jobs all need this one, so this condition gates
   # them too (founder, 2026-10-27): they run on main, on merge-batch PRs
@@ -150,20 +152,11 @@ jobs:
           path: ~/qemu
           key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
           lookup-only: true
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
       - name: Build QEMU ${{ env.QEMU_VERSION }}
         if: steps.cache.outputs.cache-hit != 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ninja-build pkg-config python3-venv \
-            libglib2.0-dev libpixman-1-dev libslirp-dev libfdt-dev flex bison
-          curl -sSfL "https://download.qemu.org/qemu-$QEMU_VERSION.tar.xz" -o qemu.tar.xz
-          echo "$QEMU_SHA256  qemu.tar.xz" | sha256sum -c -
-          tar -xJf qemu.tar.xz
-          cd "qemu-$QEMU_VERSION"
-          ./configure --prefix="$HOME/qemu" --target-list=x86_64-softmmu --enable-slirp \
-            --disable-docs --disable-gtk --disable-sdl --disable-opengl --disable-werror
-          make -j"$(nproc)" install
-          "$HOME/qemu/bin/qemu-system-x86_64" --version
+        run: bash .github/actions/qemu/build.sh
       - name: Save QEMU ${{ env.QEMU_VERSION }}
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4

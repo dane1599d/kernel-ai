@@ -129,12 +129,14 @@ pub fn refresh(
 ) -> Result<(TargetFile, TargetFile), Refused> {
     let mut updater = Updater::new(remote, cache, now).map_err(repository)?;
     updater.refresh().map_err(repository)?;
+    // Only the top-level role signs the release: a delegation's entry for
+    // either path never stands in.
     let image = updater
-        .target(TARGET)
+        .top_level_target(TARGET)
         .map_err(repository)?
         .ok_or(Refused::NotSigned(TARGET))?;
     let list = updater
-        .target(CHUNKS_TARGET)
+        .top_level_target(CHUNKS_TARGET)
         .map_err(repository)?
         .ok_or(Refused::NotSigned(CHUNKS_TARGET))?;
     Ok((image, list))

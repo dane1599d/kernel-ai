@@ -595,6 +595,12 @@ impl AppCtl {
     }
 }
 
+/// Seconds since 1970 UTC (`CLOCK_NOW`); NotFound when the firmware gave no
+/// date.
+pub fn clock_now() -> Result<u64, Error> {
+    call(call::CLOCK_NOW, [0; 6])
+}
+
 /// Fills `buf` (at most [`kabi::call::ENTROPY_MAX`] bytes) with random bytes from
 /// the kernel (ENTROPY). NoEntropy on a CPU that gives none: make no key then.
 pub fn entropy(buf: &mut [u8]) -> Result<usize, Error> {
@@ -603,6 +609,16 @@ pub fn entropy(buf: &mut [u8]) -> Result<usize, Error> {
         [buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0, 0],
     )
     .map(|n| n as usize)
+}
+
+/// Restarts the machine (POWER_REBOOT). Returns only with why it did not:
+/// Permission without a `Power` handle (`cap::POWER`). Commit what must be kept
+/// first.
+pub fn power_reboot() -> Error {
+    match call(call::POWER_REBOOT, [0; 6]) {
+        Ok(_) => Error::Invalid,
+        Err(error) => error,
+    }
 }
 
 /// `verb`'s `ctl` request to app `name`, sent by the kernel (APP_CTL); the

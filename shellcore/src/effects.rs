@@ -43,7 +43,7 @@ pub struct EffectDone {
 
 /// One effect as the app queued it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Effect {
+pub(crate) enum Effect {
     Call { name: String, args: String },
     Notify(String),
 }
@@ -61,7 +61,7 @@ fn effect_ty() -> Ty {
 }
 
 /// `effect <ticket> <wave>`; `None` for any other line or one out of shape.
-fn parse_line(line: &str) -> Option<(u32, Result<Effect, String>)> {
+pub(crate) fn parse_line(line: &str) -> Option<(u32, Result<Effect, String>)> {
     let rest = line.strip_prefix("effect ")?;
     let (ticket, text) = rest.split_once(' ')?;
     let ticket = ticket.parse().ok()?;

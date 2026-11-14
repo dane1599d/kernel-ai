@@ -20,6 +20,8 @@ mod net;
 mod routes;
 #[path = "shell/ui.rs"]
 mod ui;
+#[path = "shell/waiting.rs"]
+mod waiting;
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -75,6 +77,9 @@ struct System {
     desktop_pid: core::cell::Cell<u64>,
     /// When the shell last looked for a new `desktop`.
     desktop_looked_ns: core::cell::Cell<u64>,
+    /// What the apps asked while the model thought that was not a read: run
+    /// after the line, before anything newer ([`waiting::run_held`]).
+    held: core::cell::RefCell<waiting::HeldRequests>,
 }
 
 /// How often an appearance `desktop` did not take is offered again.
@@ -192,14 +197,53 @@ fn give_appearance(system: &System) {
     }
 }
 
+/// The start of a unit of work the shell takes from `desktop` rather than
+/// receives as a request (a panel line, effects, files, changes, the
+/// network): a Stop for an earlier unit no longer stands, since only the
+/// shell's next `svc_recv` would clear it (#887).
+fn start_of_unit() {
+    if sys::interrupt_clear() {
+        println!("a Stop for the last line was cleared before the next");
+    }
+}
+
+/// A line's result to `desktop`, which a Stop must never hide: the work ran.
+/// The flag is cleared first; a Stop pressed during the call itself ends it
+/// Interrupted, and then it is cleared and sent once more.
+///
+/// Only for what comes after a line: during one (`waiting::give`) a Stop is
+/// the line's, and clearing it would let the line go on.
+fn report_to_desktop(route: kabi::handle::Handle, request: &str) -> Result<String, String> {
+    let reply = report_to_desktop_bytes(route, request.as_bytes())?;
+    Ok(String::from_utf8_lossy(&reply).into_owned())
+}
+
+/// [`report_to_desktop`] for a message that is not all text (a file's piece),
+/// answered in bytes.
+fn report_to_desktop_bytes(route: kabi::handle::Handle, request: &[u8]) -> Result<Vec<u8>, String> {
+    let _ = sys::interrupt_clear();
+    let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+    let mut sent = sys::call_route(route, request, &mut reply, DESKTOP_CALL_MS);
+    if sent == Err(kabi::Error::Interrupted) {
+        let _ = sys::interrupt_clear();
+        sent = sys::call_route(route, request, &mut reply, DESKTOP_CALL_MS);
+    }
+    let len = sent.map_err(|error| format!("desktop did not answer ({error:?})"))?;
+    reply.truncate(len.min(reply.len()));
+    Ok(reply)
+}
+
 /// Takes the panel's oldest request, runs a line apart from the terminal's
 /// entry and questions (`Shell::eval_panel`), and reports what came of it:
-/// code's result line, or why not, never the model's words. The panel shows
-/// thinking from the Enter until then. A line that asks first is asked in the
-/// terminal for now; the panel says so.
+/// first what the AI said, for the desk's history (`panel said`), then the
+/// bar's state, code's result line or why not, never the model's words. The
+/// panel shows thinking from the Enter until then. A line that asks first
+/// waits for the trusted card (`deskask`); the panel says so.
 fn take_panel(shell: &mut Shell) {
     use deskcore::panel::{Request, State};
     use deskcore::panel_wire;
+    // A unit of work that is no request: a Stop for the last one ends here.
+    start_of_unit();
     let Some(route) = desktop() else {
         return;
     };
@@ -209,7 +253,18 @@ fn take_panel(shell: &mut Shell) {
     let shown = match panel_wire::parse_take(&answer) {
         Some(Some(Request::Line(line))) => {
             ui::begin();
-            match shell.eval_panel(&line) {
+            let result = shell.eval_panel(&line);
+            let said = shell.take_panel_said().map(|s| panel_wire::encode_said(&s));
+            let note = shell.take_panel_note().map(|n| panel_wire::encode_note(&n));
+            // After the line: an Esc pressed during it must not drop them.
+            for request in said.iter().chain(note.iter()) {
+                match report_to_desktop(route, request) {
+                    Ok(answer) if answer == "ok" => {}
+                    Ok(answer) => println!("the panel's history was not given it: {answer}"),
+                    Err(why) => println!("the panel's history was not given it: {why}"),
+                }
+            }
+            match result {
                 PanelResult::Done(line) => State::Done { line },
                 PanelResult::Refused(reason) => State::Refused { reason },
             }
@@ -224,13 +279,32 @@ fn take_panel(shell: &mut Shell) {
         // line never came here.
         _ => return,
     };
-    let Some(request) = panel_wire::encode_state(&shown) else {
+    // A done line names the log entry its undo link takes back.
+    let entry = shell.take_panel_entry();
+    let Some(request) = panel_wire::encode_done(&shown, entry) else {
         return;
     };
-    match ask_desktop(route, &request) {
+    // The line ended: a Stop pressed as it did must not hide its result.
+    match report_to_desktop(route, &request) {
         Ok(answer) if answer == "ok" => {}
         Ok(answer) => println!("the panel's state was not set: {answer}"),
         Err(why) => println!("the panel's state was not set: {why}"),
+    }
+}
+
+/// Shows on the panel what the answer to a desktop line's card came to.
+fn give_card_result(ran: bool, line: String) {
+    use deskcore::panel::State;
+    use deskcore::panel_wire;
+    let shown = match ran {
+        true => State::Done { line },
+        false => State::Refused { reason: line },
+    };
+    let (Some(route), Some(request)) = (desktop(), panel_wire::encode_card(&shown)) else {
+        return;
+    };
+    if let Err(why) = ask_desktop(route, &request) {
+        println!("the panel's state was not set: {why}");
     }
 }
 
@@ -263,8 +337,14 @@ const _: () = assert!(shellcore::SETTINGS_MAX_ANSWER == deskcore::settings_wire:
 /// Takes an app's oldest effects from `desktop`, runs them through the agent
 /// core, and reports what came of each; `desktop` hands the results to the
 /// app. `desktop` names the app, from its record of who queued them.
-fn take_effects(shell: &mut Shell) {
-    use deskcore::effects::{self, Done};
+///
+/// While the batch runs, its app counts as running in `held`: a Terminal's
+/// `shell_line` runs a line, and what the app asks during that line's model
+/// call waits behind the rest of the batch.
+fn take_effects(shell: &mut Shell, held: &core::cell::RefCell<waiting::HeldRequests>) {
+    use deskcore::effects;
+    // A unit of work that is no request: a Stop for the last one ends here.
+    start_of_unit();
     let Some(route) = desktop() else {
         return;
     };
@@ -274,17 +354,38 @@ fn take_effects(shell: &mut Shell) {
     let Some(Some((app, user, lines))) = effects::parse_take(&answer) else {
         return;
     };
-    let results: Vec<Done> = shell
-        .run_effects_from(app, lines, user)
+    let size = lines.lines().count();
+    held.borrow_mut()
+        .running(shellcore::waiting::Kind::Effects, app, size);
+    let results = shell.run_effects_from(app, lines, user);
+    held.borrow_mut().done();
+    give_effect_results(route, app, user, results);
+}
+
+/// Gives `desktop` what app `app`'s effects came to, for its `comphost`.
+fn give_effect_results(
+    route: kabi::handle::Handle,
+    app: &str,
+    user: bool,
+    results: Vec<shellcore::EffectDone>,
+) {
+    // The line ended: a Stop pressed as it did must not hide what ran.
+    if let Err(why) = report_to_desktop(route, &effects_done(app, user, results)) {
+        println!("{app}'s effect results were not sent: {why}");
+    }
+}
+
+/// The message that gives `desktop` what app `app`'s effects came to.
+fn effects_done(app: &str, user: bool, results: Vec<shellcore::EffectDone>) -> String {
+    use deskcore::effects::{self, Done};
+    let results: Vec<Done> = results
         .into_iter()
         .map(|done| Done {
             ticket: done.ticket,
             outcome: done.outcome,
         })
         .collect();
-    if let Err(why) = ask_desktop(route, &effects::encode_done_as(app, user, &results)) {
-        println!("{app}'s effect results were not sent: {why}");
-    }
+    effects::encode_done_as(app, user, &results)
 }
 
 /// Hands each app what came of the effects its calls queued: the call's reply
@@ -311,7 +412,9 @@ fn give_call_results(shell: &mut Shell) {
                 outcome: done.outcome,
             })
             .collect();
-        if let Err(why) = ask_desktop(route, &effects::encode_done_as(&app, false, &results)) {
+        // After the line that called: its Stop must not hide them.
+        if let Err(why) = report_to_desktop(route, &effects::encode_done_as(&app, false, &results))
+        {
             println!("{app}'s effect results were not sent: {why}");
         }
     }
@@ -347,6 +450,8 @@ const FILES_PER_PASS: usize = 4;
 /// and what came of it goes back, a write's reason or a read's bytes.
 fn take_files(shell: &mut Shell) {
     use deskcore::files::parse_job;
+    // A unit of work that is no request: a Stop for the last one ends here.
+    start_of_unit();
     let Some(route) = desktop() else {
         return;
     };
@@ -357,36 +462,58 @@ fn take_files(shell: &mut Shell) {
         let Some(job) = parse_job(&answer) else {
             return;
         };
-        let done = match do_file_job(shell, route, &job) {
-            Ok(()) => format!("files done {} ok", job.id),
-            Err(why) => {
-                // One line, as `desktop` keeps it.
-                let why: String = why
-                    .chars()
-                    .map(|c| if c.is_control() { ' ' } else { c })
-                    .collect();
-                format!("files done {} err {}", job.id, why.trim())
-            }
-        };
-        if let Err(why) = ask_desktop(route, &done) {
-            println!("the editor's file {} was not reported: {why}", job.id);
+        let done = do_file_job(shell, route, &job);
+        report_file_job(route, job.id, done);
+    }
+}
+
+/// Tells `desktop` what transfer `id` came to: a Stop for a line before
+/// it, a held transfer's, must not hide it.
+fn report_file_job(route: kabi::handle::Handle, id: u32, done: Result<(), String>) {
+    if let Err(why) = report_to_desktop(route, &file_done(id, done)) {
+        println!("the editor's file {id} was not reported: {why}");
+    }
+}
+
+/// The message that tells `desktop` what transfer `id` came to.
+fn file_done(id: u32, done: Result<(), String>) -> String {
+    match done {
+        Ok(()) => format!("files done {id} ok"),
+        Err(why) => {
+            // One line, as `desktop` keeps it.
+            let why: String = why
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
+            format!("files done {id} err {}", why.trim())
         }
     }
 }
 
-/// Fills a read's bytes, or a build's report, into the transfer in pieces.
+/// Fills a read's bytes, or a build's report, into the transfer in pieces,
+/// as [`report_file_job`] reports it.
 fn fill_job(route: kabi::handle::Handle, id: u32, bytes: &[u8]) -> Result<(), String> {
-    use deskcore::files::CHUNK;
-    let total = bytes.len();
-    for (i, piece) in bytes.chunks(CHUNK).enumerate() {
-        let head = format!("files fill {id} {} {total}\n", i * CHUNK);
-        let mut message = head.into_bytes();
-        message.extend_from_slice(piece);
-        if ask_desktop_bytes(route, &message)? != b"ok" {
+    for message in file_fills(id, bytes) {
+        if report_to_desktop_bytes(route, &message)? != b"ok" {
             return Err(String::from("desktop did not take the file"));
         }
     }
     Ok(())
+}
+
+/// The messages that fill `bytes` into transfer `id`, a piece each.
+fn file_fills(id: u32, bytes: &[u8]) -> Vec<Vec<u8>> {
+    use deskcore::files::CHUNK;
+    let total = bytes.len();
+    bytes
+        .chunks(CHUNK)
+        .enumerate()
+        .map(|(i, piece)| {
+            let mut message = format!("files fill {id} {} {total}\n", i * CHUNK).into_bytes();
+            message.extend_from_slice(piece);
+            message
+        })
+        .collect()
 }
 
 /// One transfer: a write fetches its pieces and saves; a read reads and fills; a
@@ -448,6 +575,8 @@ type Answering = fn(&mut Shell, &str, &str, bool) -> Result<String, String>;
 /// `desktop`'s record of the caller, and `answering` checks it again.
 fn take_changes(shell: &mut Shell, words: &deskcore::settings_wire::Words, answering: Answering) {
     use deskcore::settings_wire::{self as wire, Answer};
+    // A unit of work that is no request: a Stop for the last one ends here.
+    start_of_unit();
     let Some(route) = desktop() else {
         return;
     };
@@ -461,8 +590,20 @@ fn take_changes(shell: &mut Shell, words: &deskcore::settings_wire::Words, answe
         .iter()
         .map(|r| Answer::new(r.ticket, answering(shell, app, &r.text, r.user)))
         .collect();
-    for done in wire::encode_done_chunks_for(words, app, &answers, kabi::MAX_MESSAGE) {
-        if let Err(why) = ask_desktop(route, &done) {
+    give_answers(route, words, app, &answers);
+}
+
+/// Gives `desktop` app `app`'s answers under `words`: a Stop for a line
+/// before them, held ones', must not hide them.
+fn give_answers(
+    route: kabi::handle::Handle,
+    words: &deskcore::settings_wire::Words,
+    app: &str,
+    answers: &[deskcore::settings_wire::Answer],
+) {
+    use deskcore::settings_wire as wire;
+    for done in wire::encode_done_chunks_for(words, app, answers, kabi::MAX_MESSAGE) {
+        if let Err(why) = report_to_desktop(route, &done) {
             println!(
                 "{app}'s {} answers were not sent: {why}",
                 words.word.trim_end()
@@ -477,6 +618,8 @@ fn take_changes(shell: &mut Shell, words: &deskcore::settings_wire::Words, answe
 /// asks again until the answer is not `asked`.
 fn take_net(shell: &mut Shell) {
     use deskcore::net_wire as wire;
+    // A unit of work that is no request: a Stop for the last one ends here.
+    start_of_unit();
     let Some(route) = desktop() else {
         return;
     };
@@ -566,6 +709,40 @@ fn ask_supervisor(request: &str) -> Result<String, String> {
     Ok(text.to_string())
 }
 
+impl System {
+    /// One `act` request to llm. With a `poll`, the kernel holds the call
+    /// while `poll` looks at what the apps ask ([`waiting::call_serving`]);
+    /// without, the shell waits in it.
+    fn act_with(
+        &self,
+        request: &ActRequest,
+        poll: Option<&mut dyn FnMut()>,
+    ) -> Result<Call, ActError> {
+        let unavailable = |why: &str| ActError::Unavailable(alloc::format!("llm service: {why}"));
+        let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+        let request = request.encode();
+        let len = match poll {
+            Some(poll) => {
+                waiting::call_serving(llm(), request.as_bytes(), &mut reply, SCRIPT_CALL_MS, poll)
+            }
+            None => sys::call_route(llm(), request.as_bytes(), &mut reply, SCRIPT_CALL_MS),
+        }
+        .map_err(|error| match error {
+            // The person's Stop (#887): the line ends here, with no second
+            // try as a script.
+            kabi::Error::Interrupted => ActError::Stopped,
+            error => unavailable(&alloc::format!("{error:?}")),
+        })?;
+        let text = core::str::from_utf8(&reply[..len.min(reply.len())])
+            .map_err(|_| unavailable("the reply is not UTF-8"))?;
+        match text.split_once(' ').unwrap_or((text, "")) {
+            ("ok", answer) => act::decode_answer(answer),
+            ("err", why) => Err(unavailable(why)),
+            _ => Err(unavailable("malformed reply")),
+        }
+    }
+}
+
 impl Host for System {
     fn now_ns(&self) -> u64 {
         sys::time_ns()
@@ -581,6 +758,14 @@ impl Host for System {
 
     fn pkg(&self, request: &str) -> Result<String, String> {
         build::ask_pkg(pkg_route()?, request)
+    }
+
+    fn unix_seconds(&self) -> Option<u64> {
+        sys::clock_now().ok()
+    }
+
+    fn installed_rows(&self, package: &str) -> Result<String, String> {
+        build::ask_pkg_long(pkg_route()?, &alloc::format!("actions {package}"))
     }
 
     fn net_fetch(&self, host: &str, path: &str) -> Result<String, String> {
@@ -767,25 +952,17 @@ impl Host for System {
     }
 
     fn act(&self, request: &ActRequest) -> Result<Call, ActError> {
-        let unavailable = |why: &str| ActError::Unavailable(alloc::format!("llm service: {why}"));
-        let mut reply = vec![0u8; kabi::MAX_MESSAGE];
-        let len = sys::call_route(
-            llm(),
-            request.encode().as_bytes(),
-            &mut reply,
-            SCRIPT_CALL_MS,
-        )
-        .map_err(|error| match error {
-            kabi::Error::Interrupted => ActError::Stopped,
-            error => unavailable(&alloc::format!("{error:?}")),
-        })?;
-        let text = core::str::from_utf8(&reply[..len.min(reply.len())])
-            .map_err(|_| unavailable("the reply is not UTF-8"))?;
-        match text.split_once(' ').unwrap_or((text, "")) {
-            ("ok", answer) => act::decode_answer(answer),
-            ("err", why) => Err(unavailable(why)),
-            _ => Err(unavailable("malformed reply")),
-        }
+        self.act_with(request, None)
+    }
+
+    fn act_serving(
+        &self,
+        request: &ActRequest,
+        serve: &mut dyn FnMut(
+            shellcore::waiting::Waiting<'_>,
+        ) -> Option<shellcore::waiting::Served>,
+    ) -> Result<Call, ActError> {
+        self.act_with(request, Some(&mut || waiting::poll(&self.held, serve)))
     }
 
     /// A finished model turn for llm's conversation memory, in #55's wire form. An
@@ -1163,6 +1340,8 @@ const WAKE_WAIT_MS: u64 = 2_000;
 /// Takes the kernel's event box and hands each event to the standing
 /// instructions; a paused rule's note goes to the log.
 fn take_events(shell: &mut Shell, buf: &mut [u8]) {
+    // A unit of work that is no request: a Stop for the last one ends here.
+    start_of_unit();
     let Ok(len) = sys::event_read(buf) else {
         return;
     };
@@ -1185,6 +1364,7 @@ fn main() -> i32 {
             appearance_tried_ns: core::cell::Cell::new(0),
             desktop_pid: core::cell::Cell::new(0),
             desktop_looked_ns: core::cell::Cell::new(0),
+            held: core::cell::RefCell::default(),
         })
     };
     let mut shell = Shell::new(system.clone(), DEFAULT_CONFIG);
@@ -1196,12 +1376,26 @@ fn main() -> i32 {
     // post could not wake it.
     let mut wait_ms = 1;
     loop {
+        // What the apps asked during a line that was not a read runs before
+        // anything newer is taken: after each step that may run a line (the
+        // last pass's, the panel's, a Terminal's `shell_line` effect) and
+        // before each that takes an app's requests.
+        // Each step, and each held request, starts a unit of its own
+        // (`start_of_unit`): the person's Stop (#887) lasts the unit it came
+        // in, so one for a line that has ended does not cut the next step's
+        // calls to `desktop`. A Terminal line's request clears it as it comes.
+        let held = &system.held;
+        waiting::run_held(&mut shell, held);
         // Between lines: what happened on the desktop since the last look, then
         // the panel's line and the apps' effects. A post to the event box wakes
         // the wait at once, so a click's effect does not wait for a poll.
         take_events(&mut shell, &mut events);
+        waiting::run_held(&mut shell, held);
         take_panel(&mut shell);
-        take_effects(&mut shell);
+        waiting::run_held(&mut shell, held);
+        take_effects(&mut shell, held);
+        waiting::run_held(&mut shell, held);
+        start_of_unit();
         // Files the AI, the Terminal, an app, an editor save or an undo changed:
         // the apps that list them are told, along with the results given next.
         if system.files.take_changed() {
@@ -1209,12 +1403,15 @@ fn main() -> i32 {
         }
         give_call_results(&mut shell);
         take_files(&mut shell);
+        waiting::run_held(&mut shell, held);
         take_net(&mut shell);
+        waiting::run_held(&mut shell, held);
         take_changes(
             &mut shell,
             &deskcore::settings_wire::SETTINGS,
             Shell::settings,
         );
+        waiting::run_held(&mut shell, held);
         take_changes(
             &mut shell,
             &deskcore::models_wire::MODELS,
@@ -1248,7 +1445,12 @@ fn main() -> i32 {
             if !text.starts_with("answer ") {
                 ui::begin();
             }
-            shell.eval_console(text).to_wire()
+            let reply = shell.eval_console(text).to_wire();
+            // A desktop line's card was answered: the panel shows what came of it.
+            if let Some((ran, line)) = shell.take_card_result() {
+                give_card_result(ran, line);
+            }
+            reply
         } else {
             String::from("err the shell answers only the terminal")
         };

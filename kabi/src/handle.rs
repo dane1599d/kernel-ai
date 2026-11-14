@@ -109,10 +109,13 @@ pub enum Kind {
     /// owner's only, never duplicated or moved. Numbered at merge, after
     /// `Edit` (21).
     Stream = 22,
+    /// Restarting the machine ([`crate::call::POWER_REBOOT`]), for
+    /// [`crate::cap::POWER`]'s holder. Numbered at merge, after `Stream` (22).
+    Power = 23,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 22] = [
+    pub const ALL: [Kind; 23] = [
         Kind::Process,
         Kind::Job,
         Kind::Endpoint,
@@ -135,6 +138,7 @@ impl Kind {
         Kind::Ask,
         Kind::Edit,
         Kind::Stream,
+        Kind::Power,
     ];
 
     pub fn from_raw(raw: u32) -> Option<Kind> {
@@ -165,6 +169,7 @@ impl Kind {
             Kind::Ask => "ask",
             Kind::Edit => "edit",
             Kind::Stream => "stream",
+            Kind::Power => "power",
         }
     }
 }
@@ -316,6 +321,6 @@ mod tests {
             assert_eq!(Kind::from_raw(kind as u32), Some(kind));
         }
         assert_eq!(Kind::from_raw(0), None);
-        assert_eq!(Kind::from_raw(23), None);
+        assert_eq!(Kind::from_raw(24), None);
     }
 }

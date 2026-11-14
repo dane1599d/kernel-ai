@@ -58,13 +58,6 @@ pub fn check() -> Result<(), &'static str> {
     if !call(add)?.contains("ok(1)") {
         return Err("desk-nap: the note was not added");
     }
-    let awake = free_frames();
-    threads::sleep_ms(NAP_MS);
-    let napping = free_frames();
-    log!("desk-nap: free frames {awake} awake, {napping} napping");
-    if napping < awake + MIN_FRAMES {
-        return Err("desk-nap: the unused app gave no memory back");
-    }
     let mut at = START;
     let mut click = |to: (i32, i32)| {
         crate::ui_tests::report(to.0 - at.0, to.1 - at.1, 0);
@@ -72,6 +65,16 @@ pub fn check() -> Result<(), &'static str> {
         crate::ui_tests::report(0, 0, 0);
         at = to;
     };
+    // Its window opened with the focus, which keeps it awake (#869): the
+    // panel takes the focus, and the app is left alone.
+    click(PANEL);
+    let awake = free_frames();
+    threads::sleep_ms(NAP_MS);
+    let napping = free_frames();
+    log!("desk-nap: free frames {awake} awake, {napping} napping");
+    if napping < awake + MIN_FRAMES {
+        return Err("desk-nap: the unused app gave no memory back");
+    }
     click(PANEL);
     click(WINDOW);
     threads::sleep_ms(2_000);
