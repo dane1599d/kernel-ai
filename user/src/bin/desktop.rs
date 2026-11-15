@@ -517,6 +517,7 @@ fn deliver(state: &mut State, effects: &[Effect]) {
             Effect::PaneWheel(detents) => {
                 let area = paint_chat::chat_area(&state.desk);
                 if state.painter.wheel_history(&mut state.chat, area, detents) {
+                    println!("desktop: the wheel moved the pane's history");
                     state.extra.push(area);
                 }
                 false

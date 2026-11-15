@@ -165,6 +165,7 @@ pub(super) fn wheel(state: &mut State, detents: i32) {
         .as_mut()
         .is_some_and(|start| start.wheel(detents))
     {
+        println!("desktop: the wheel moved Start's list");
         damage(state);
     }
 }

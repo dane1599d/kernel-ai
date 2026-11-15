@@ -277,6 +277,17 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-panel", "test=desk-panel")
     },
+    // Kai Desk PR 9: "apps" opens Start's All apps (the image's own apps),
+    // and one wheel detent over it moves its list a row.
+    TestCase {
+        expect: &[
+            "desktop: focus Panel",
+            "desktop: Start shows all apps",
+            "desktop: the wheel moved Start's list",
+            "desk-wheel: opened All apps and turned the wheel over Start",
+        ],
+        ..case("desk-wheel", "test=desk-wheel")
+    },
     // P3 task 7: the shell takes the panel's line from `desktop` and reports
     // its result back.
     TestCase {

@@ -184,6 +184,8 @@ pub enum SelfTest {
     DeskBoot,
     /// The AI panel takes focus and queues a typed line (P3 task 7).
     DeskPanel,
+    /// `desk-wheel` (Kai Desk PR 9): the wheel moves Start's All apps list.
+    DeskWheel,
     /// `desk-panel-shell` (P3 task 7): the shell takes the panel's line.
     DeskPanelShell,
     /// `desk-card-wake` (Kai builds apps, follow-up 2): the terminal's prompt
@@ -486,6 +488,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=app-on-demand" => Some(SelfTest::AppOnDemand),
             "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=desk-panel" => Some(SelfTest::DeskPanel),
+            "test=desk-wheel" => Some(SelfTest::DeskWheel),
             "test=desk-panel-shell" => Some(SelfTest::DeskPanelShell),
             "test=desk-card-wake" => Some(SelfTest::DeskCardWake),
             "test=desk-catalog" => Some(SelfTest::DeskCatalog),
@@ -698,6 +701,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::FilesChurn { .. }
             | SelfTest::DeskBoot
             | SelfTest::DeskPanel
+            | SelfTest::DeskWheel
             | SelfTest::DeskPanelShell
             | SelfTest::DeskCardWake
             | SelfTest::DeskCatalog
@@ -1007,7 +1011,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::desk_tests::PLAN);
     }
-    if matches!(test, SelfTest::DeskBoot | SelfTest::DeskPanel) {
+    if matches!(
+        test,
+        SelfTest::DeskBoot | SelfTest::DeskPanel | SelfTest::DeskWheel
+    ) {
         plan.push('\n');
         plan.push_str(crate::desk_tests::BOOT_PLAN);
     }
