@@ -226,6 +226,21 @@ impl Panel {
         self.apply(key, now_ms)
     }
 
+    /// Follows a desk effect that moves the keys: `Focus` or Start opening
+    /// or closing. The pane's input listens while the panel has the focus
+    /// and Start does not have it. True when the panel changed.
+    pub fn follow_focus(&mut self, effect: &crate::desk::Effect, desk: &crate::desk::Desk) -> bool {
+        use crate::desk::{Effect, Focus};
+        match *effect {
+            Effect::Focus(focus) => {
+                let start = desk.start().is_some();
+                self.set_focus(focus == Focus::Panel && !start)
+            }
+            Effect::Start(open) => self.set_focus(desk.focus() == Focus::Panel && !open),
+            _ => false,
+        }
+    }
+
     /// Start's Ask Kai sent a line with an Enter still held: the panel
     /// drops that Enter's repeats and its release.
     pub fn hold_enter(&mut self) {

@@ -109,13 +109,14 @@ const MODIFIERS: [u16; 8] = [
     E0 | 0x5C,
 ];
 
-/// The set 1 bytes for a usage going down or up; None for keys set 1 has no
-/// plain code for.
 /// The set 1 make code a key with no set 1 code is sent as
 /// (`kabi::input::UNMAPPED`): it decodes to no usage, so it reaches no one,
 /// but it is a key pressed, so a Super held with it is no tap.
 pub const UNMAPPED: u8 = 0x54;
 
+/// The set 1 bytes for a usage going down or up. A key set 1 has no plain
+/// code for (Print Screen, Power, the media keys) is [`UNMAPPED`]'s make or
+/// break; None only for HID's codes below 0x04, which are no key.
 pub fn set1(usage: u8, pressed: bool) -> Option<Scancode> {
     let code = match usage {
         0x04..=0x65 => SET1[usize::from(usage - 0x04)],

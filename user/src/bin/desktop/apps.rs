@@ -184,14 +184,12 @@ fn carry_out(state: &mut State, pick: Pick, now_ms: u64, by_key: bool) {
         Pick::Install(name) => Some((format!("install {name}"), false)),
         Pick::Ask(text) => Some((text, true)),
     };
+    let asked = matches!(line, Some((_, true)));
     match line {
         Some((text, true)) => {
             let len = text.chars().count();
             state.panel.send(text, now_ms);
             println!("desktop: the panel queued a request ({len} characters)");
-            if by_key {
-                state.panel.hold_enter();
-            }
             state.desk.focus_pane(&mut effects);
             super::wake_shell();
         }
@@ -205,6 +203,11 @@ fn carry_out(state: &mut State, pick: Pick, now_ms: u64, by_key: bool) {
     }
     state.extra.push(state.desk.pane_area());
     deliver(state, &effects);
+    // After the focus effects (Start's close passes the focus through the
+    // window before the pane): the pane's input lets the held Enter go.
+    if by_key && asked {
+        state.panel.hold_enter();
+    }
 }
 
 /// Every page of `pkg`'s catalogue, from offset 0 until a page holds no row.

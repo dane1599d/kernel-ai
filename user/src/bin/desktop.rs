@@ -410,8 +410,8 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
             }
             // A Super tap or a chord the kernel saw ended its lease: the next
             // step asks again only for a terminal that has the focus.
-            let (ctrl, alt) = state.desk.ctrl_alt();
-            if deskcore::lease::ends_lease(event.code, event.value, ctrl, alt) {
+            let lent = state.lease.lent();
+            if deskcore::lease::ends_lease(event.code, event.value, lent) {
                 state.lease.forget();
             }
             let lent = state.lease.lent();
@@ -505,8 +505,7 @@ fn deliver(state: &mut State, effects: &[Effect]) {
                     true => apps::open(state),
                     false => apps::close(state),
                 }
-                let listening = state.desk.focus() == Focus::Panel && !open;
-                state.panel.set_focus(listening)
+                state.panel.follow_focus(effect, &state.desk)
             }
             Effect::StartClick { at } => {
                 apps::click(state, at, now);
@@ -556,8 +555,7 @@ fn deliver(state: &mut State, effects: &[Effect]) {
                     apps::close(state);
                 }
                 // The pane's input listens unless Start has the keys.
-                let start = state.desk.start().is_some();
-                state.panel.set_focus(focus == Focus::Panel && !start)
+                state.panel.follow_focus(effect, &state.desk)
             }
             _ => false,
         };

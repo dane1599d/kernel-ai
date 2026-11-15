@@ -593,3 +593,52 @@ fn a_title_change_repaints_a_tooltip_only_while_one_shows() {
     let full = Rect::new(0, band.y, 1280, band.h);
     assert!(!desk.take_damage().contains(&full));
 }
+
+/// Start's Ask Kai by Enter, in `desktop`'s real order: Start opened from a
+/// window, a draft kept in the pane's input; `focus_pane`'s effects (Start
+/// closing, the focus through the window, then the pane) followed by the
+/// panel; then the hold; then the held Enter's repeats and release. The
+/// draft never goes to Kai.
+#[test]
+fn a_held_enter_from_start_never_sends_the_panes_draft() {
+    let mut desk = Desk::new(1280, 800);
+    let (_, _) = desk.open(1, "notes", "Notes", Size { w: 300, h: 200 }, true);
+    let mut panel = Panel::new();
+    // A draft in the pane, then the keys back to the window.
+    let mut effects = Vec::new();
+    desk.set_focus(Focus::Panel, &mut effects);
+    for e in &effects {
+        panel.follow_focus(e, &desk);
+    }
+    for code in [0x0B, 0x0C] {
+        panel.key(code, true, 0);
+        panel.key(code, false, 0);
+    }
+    desk.leave_pane();
+    panel.set_focus(false);
+    // Start, from the window; Enter on Ask Kai.
+    let effects = keys(&mut desk, &SUPER);
+    for e in &effects {
+        panel.follow_focus(e, &desk);
+    }
+    panel.send(alloc::string::String::from("what is rust"), 0);
+    assert!(matches!(panel.take(), Some(crate::panel::Request::Line(_))));
+    let mut effects = Vec::new();
+    desk.focus_pane(&mut effects);
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::Focus(Focus::Window(_))))
+    );
+    for e in &effects {
+        panel.follow_focus(e, &desk);
+    }
+    panel.hold_enter();
+    assert!(panel.focused());
+    for _ in 0..3 {
+        panel.key(0x28, true, 0);
+    }
+    panel.key(0x28, false, 0);
+    assert_eq!(panel.take(), None, "the pane's draft went to Kai");
+    assert_eq!(panel.text(), "hi");
+}
