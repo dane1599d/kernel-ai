@@ -25,6 +25,7 @@ fn paint(desk: &Desk, panel: &Panel, chat: &Chat, w: i32, h: i32) -> Image {
         bar: &BAR,
         panel,
         chat,
+        sheet: None,
         ask: None,
         now_ms: 0,
     };

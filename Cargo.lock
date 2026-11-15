@@ -595,6 +595,18 @@ name = "comp-viewbench"
 version = "0.1.0-dev"
 
 [[package]]
+name = "comp-wait-fixture"
+version = "0.1.0-dev"
+dependencies = [
+ "comp-ui-bind",
+ "compsdk",
+ "livecore",
+ "uikit",
+ "wasmhost",
+ "wit-bindgen 0.63.0",
+]
+
+[[package]]
 name = "compsdk"
 version = "0.1.0-dev"
 dependencies = [
@@ -862,6 +874,7 @@ checksum = "9e9de72ce2ad1f90dc62fa25f0f430ef85eb4b0d8fa0be4f30373bc40a21d28e"
 name = "deskcore"
 version = "0.1.0-dev"
 dependencies = [
+ "deskgeom",
  "gfx2d",
  "kabi",
  "libm",
@@ -871,6 +884,10 @@ dependencies = [
  "surfabi",
  "termcore",
 ]
+
+[[package]]
+name = "deskgeom"
+version = "0.1.0-dev"
 
 [[package]]
 name = "devkit"
@@ -1446,6 +1463,7 @@ dependencies = [
  "captable",
  "cpufeat",
  "csprng",
+ "deskgeom",
  "devkit",
  "devmatch",
  "diskmap",
@@ -3192,6 +3210,7 @@ dependencies = [
  "comp-models",
  "cpufeat",
  "deskcore",
+ "deskgeom",
  "diskmap",
  "ed25519-compact",
  "editcore",

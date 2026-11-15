@@ -54,7 +54,7 @@ pub(super) fn bind(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx:
                 };
                 tx.approved(name, live)?;
                 // "file manager" opens `files` (founder test 2, item 3).
-                let app = crate::ui::canonical(app);
+                let app = crate::ui::canonical_on(h.as_ref(), app);
                 crate::ui::app_name(app).map_err(fail)?;
                 let call = UiCall::Open {
                     app: app.into(),

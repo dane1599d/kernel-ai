@@ -11,13 +11,14 @@ pub const PAGES_PER_MIB: u64 = 256;
 /// slightly bigger image or quota would refuse a service.
 pub const MIN_ROOM_MIB: u64 = 16;
 
-/// The pages the services started at boot commit, the supervisor's own
-/// `supervisor_pages` included; `start=pkg` and `start=demand` lines start
-/// later and are not counted.
+/// The pages the services started at every boot commit, the supervisor's own
+/// `supervisor_pages` included. `start=pkg` lines count: pkg starts the
+/// installed apps at every boot. `start=demand` lines start only when asked
+/// for and are not counted.
 pub fn boot_pages(plan: &Plan, supervisor_pages: u64) -> u64 {
     plan.services
         .iter()
-        .filter(|service| service.start == Start::Boot)
+        .filter(|service| matches!(service.start, Start::Boot | Start::Pkg))
         .map(|service| service.limits.max_pages)
         .fold(supervisor_pages, u64::saturating_add)
 }
@@ -33,12 +34,12 @@ mod tests {
     use crate::parse_plan;
 
     #[test]
-    fn counts_boot_services_and_the_supervisor_only() {
+    fn counts_boot_and_pkg_services_and_the_supervisor_not_demand_ones() {
         let plan = parse_plan(
-            "fs pages=8192\nshell pages=4096\nnotes pages=1024 start=demand\nextra start=pkg",
+            "fs pages=8192\nshell pages=4096\nnotes pages=1024 start=demand\nextra pages=512 start=pkg",
         );
         assert!(plan.errors.is_empty(), "{:?}", plan.errors);
-        assert_eq!(boot_pages(&plan, 2048), 2048 + 8192 + 4096);
+        assert_eq!(boot_pages(&plan, 2048), 2048 + 8192 + 4096 + 512);
     }
 
     #[test]

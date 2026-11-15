@@ -113,3 +113,32 @@ fn the_script_request_path_refuses_it_too() {
             .is_some_and(|(_, why)| why.contains("only asks to be told"))
     );
 }
+
+const TRASH_IDEAS: &str = r#"{"name":"fs_trash","arguments":{"path":"ideas"}}"#;
+
+/// #883's review: a telling line whose words cue a change ("remove") is
+/// still a telling line end to end; the model's `fs_trash` is refused with no
+/// ask, and a complaint after it never makes the call run unasked.
+#[test]
+fn tell_me_how_to_remove_a_file_never_removes_it() {
+    let (host, mut shell) = with_calls(vec![call(TRASH_IDEAS)]);
+    host.files.borrow_mut().insert("ideas".into(), "x".into());
+    let reply = shell.eval("tell me how to remove ideas");
+    assert!(refused(&reply), "{reply:?}");
+    assert_eq!(reply.confirm, None);
+    shell.eval("y");
+    assert_eq!(
+        host.files.borrow().get("ideas").map(String::as_str),
+        Some("x")
+    );
+
+    let (host, mut shell) = with_calls(vec![call(TRASH_IDEAS)]);
+    host.files.borrow_mut().insert("ideas".into(), "x".into());
+    let reply = shell.eval("tell me how to remove ideas, it's so slow");
+    assert!(!reply.text.starts_with("Done"), "{reply:?}");
+    shell.eval("y");
+    assert_eq!(
+        host.files.borrow().get("ideas").map(String::as_str),
+        Some("x")
+    );
+}

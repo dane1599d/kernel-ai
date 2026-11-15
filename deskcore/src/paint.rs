@@ -1,7 +1,8 @@
 //! Drawing the desk (ADR 0005 §5, §8): the desk, each window's chrome and
 //! content, the focused window's shadow, the agent's outline, the top bar, the
-//! panel, the ask card and the cursor, in the theme's tokens and type (Ember
-//! Workbench's dark one until [`Painter::set_theme`]).
+//! panel, the Apps sheet, the ask card and the cursor, in the theme's tokens and
+//! type (Ember Workbench's dark one until [`Painter::set_theme`]). The card is
+//! drawn last but the cursor, so nothing else covers it (ADR 0005 §7).
 //! Pure: the same [`Scene`] gives the same pixels, on the host as in `desktop`,
 //! so the look is pinned by a host test and by `desk-boot`'s golden. The panel
 //! is drawn in `paint_panel.rs`, and its history on the desk in
@@ -56,6 +57,9 @@ pub struct Scene<'a> {
     pub panel: &'a Panel,
     /// The panel's history, drawn on the desk under the windows.
     pub chat: &'a crate::chat::Chat,
+    /// The Apps sheet, while it is up: over the windows and the panel, under
+    /// the ask card.
+    pub sheet: Option<&'a crate::catalog::Sheet>,
     /// The text of the ask card up now, as the kernel posted it.
     pub ask: Option<&'a Card>,
     /// The clock, for the panel's "thinking 4s".
@@ -122,6 +126,12 @@ impl Painter {
         &self.palette
     }
 
+    /// What a window shows where its client gave no pixels yet: the theme's
+    /// window colour, opaque.
+    pub fn content_fallback(&self) -> u32 {
+        opaque(self.palette.window)
+    }
+
     /// Paints everything inside `clip`. `content` draws window `id`'s pixels
     /// into the canvas given (the window's layer) at the rectangle given, and
     /// says whether it had any; a window with none shows `window`.
@@ -157,6 +167,12 @@ impl Painter {
         if desk.panel().intersect(&clip).is_some() {
             self.panel(c, clip, scene);
         }
+        if let Some(sheet) = scene.sheet {
+            let (width, height) = (c.width as i32, c.height as i32);
+            let area = crate::paint_catalog::sheet(width, height, sheet.apps().len());
+            self.catalog(c, clip, area, sheet);
+        }
+        // The card last: nothing drawn after it but the cursor.
         if let Some(ask) = desk.ask() {
             match scene.ask {
                 Some(card) if card.id == ask.id => {

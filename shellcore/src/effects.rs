@@ -43,7 +43,7 @@ pub struct EffectDone {
 
 /// One effect as the app queued it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Effect {
+pub(crate) enum Effect {
     Call { name: String, args: String },
     Notify(String),
 }
@@ -61,7 +61,7 @@ fn effect_ty() -> Ty {
 }
 
 /// `effect <ticket> <wave>`; `None` for any other line or one out of shape.
-fn parse_line(line: &str) -> Option<(u32, Result<Effect, String>)> {
+pub(crate) fn parse_line(line: &str) -> Option<(u32, Result<Effect, String>)> {
     let rest = line.strip_prefix("effect ")?;
     let (ticket, text) = rest.split_once(' ')?;
     let ticket = ticket.parse().ok()?;
@@ -223,10 +223,13 @@ impl Shell {
     /// or click was handled (`wasmhost`'s `user_input`, carried by comphost and
     /// `desktop`). `shell_line` runs only then: it is the Terminal's own line,
     /// and neither the AI nor the app by itself may type for the founder.
+    /// A `shell_card` whose question still waits for the card has no result
+    /// yet: it is held, and its result given back once the card answers
+    /// (`deskask`), as the apps' calls' effects' results are.
     pub fn run_effects_from(&mut self, app: &str, lines: &str, user: bool) -> Vec<EffectDone> {
         let mut out = Vec::new();
-        for (ticket, effect) in lines.lines().filter_map(parse_line) {
-            let outcome = match (out.len() < MAX_EFFECTS, effect) {
+        for (n, (ticket, effect)) in lines.lines().filter_map(parse_line).enumerate() {
+            let outcome = match (n < MAX_EFFECTS, effect) {
                 (false, _) => Err(format!("more than {MAX_EFFECTS} effects in one reply")),
                 (true, Err(why)) => Err(why),
                 (true, Ok(Effect::Notify(text))) => {
@@ -237,6 +240,12 @@ impl Shell {
                     match user {
                         true => self.run_shell_line(app, &args),
                         false => Err(String::from(crate::appline::NOT_BY_A_PERSON)),
+                    }
+                }
+                (true, Ok(Effect::Call { name, args })) if name == crate::deskask::SHELL_CARD => {
+                    match self.shell_card(app, ticket, &args) {
+                        Some(outcome) => outcome,
+                        None => continue,
                     }
                 }
                 (true, Ok(Effect::Call { name, args })) => {

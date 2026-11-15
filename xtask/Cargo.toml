@@ -14,6 +14,7 @@ promptcore = { path = "../promptcore" }
 cpufeat = { path = "../cpufeat" }
 # S05-2's mock trees, counted by `cargo xtask tokens`.
 deskcore = { path = "../deskcore", features = ["mock"] }
+deskgeom = { path = "../deskgeom" }
 gguf = { path = "../gguf" }
 infer = { path = "../infer" }
 diskmap = { path = "../diskmap" }

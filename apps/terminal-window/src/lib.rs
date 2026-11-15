@@ -2,7 +2,9 @@
 //! model with the window `comp-terminal-ui` builds from it. It opens its window
 //! when it starts, redraws after each event, and sends every line, a person's
 //! Enter or the AI's `terminal_window_run`, to the shell as one effect, `shell_line`.
-//! What the shell answers comes back as an `effect-done` event.
+//! What the shell answers comes back as an `effect-done` event. A line whose
+//! question waits for the desktop's card is answered with the card's menu, and
+//! one more effect, `shell_card`, brings back what the card came to.
 //!
 //! Effects and the app's reply to them run in a transaction (`Host::serve_with`
 //! for a window's input, a request for an action), so only calls can queue
@@ -151,7 +153,12 @@ impl OnUi for TerminalWindow {
 impl Events for TerminalWindow {
     fn on_event(&mut self, event: Event) {
         match event {
-            Event::Started => {}
+            // Restored at a question on the card: ask again what came of it.
+            Event::Started => {
+                if self.term.resume(&mut Effects) {
+                    self.present_logged();
+                }
+            }
             Event::EffectDone { ticket, outcome } => {
                 if self.term.done(&mut Effects, ticket, outcome) {
                     self.present_logged();

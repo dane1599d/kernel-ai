@@ -1,0 +1,15 @@
+[package]
+name = "deskgeom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Kai Desk's geometry (ADR 0005 §8): every rectangle the desktop paints and
+# hit-tests, from the screen size alone, and the points the kernel selftests
+# and xtask cases click. no_std, no alloc and no dependencies, so deskcore,
+# the kernel and xtask all read one source of every number.
+[lib]
+doctest = false
+
+[dependencies]

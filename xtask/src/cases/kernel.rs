@@ -61,8 +61,9 @@ pub(super) const CASES: &[TestCase] = &[
     },
     // Serial stamps (`stamp=ms`, as `cargo xtask vbox` boots): the reader takes
     // them off, so the kernel's and the programs' lines match as without them.
+    // The lines are exact, so one still carrying its stamp fails the case.
     TestCase {
-        expect: &[
+        exact: &[
             "serial: each line starts with [the kernel clock h the HPET], in seconds",
             "[handles] handles: every check passed",
             "handles: CALL_H, RECV_H and REPLY_H moved a request and a handle there and back",
@@ -625,6 +626,44 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("app-settings", "test=app-settings")
     },
+    // The founder's test 2, item 7: the shell answers an app's reads while the
+    // model thinks, and holds its changes until the line ends
+    // (`kernel/src/wait_reads_tests.rs`). The test app `wait-window`'s Read
+    // and Make buttons queue a read and a change as a person's effects; the
+    // mock model takes 8 s over one line's call and fails another's after 6 s.
+    TestCase {
+        // The shell answers the app's `fs_list` and `fs_create` from
+        // `/home/user`, on a writable `kai-data` disk.
+        data: Some(crate::blklog::Data {
+            nvme: false,
+            log: None,
+            gpt: true,
+        }),
+        // The file system service, the shell, the desktop and a comphost app,
+        // as in `app-settings`.
+        memory_mib: Some(1024),
+        // Tab goes round the app's two buttons, Read first. With no line:
+        // Read. During the slow line: Read; then Make and Read behind it.
+        // During the failing line: Read; then Make.
+        keys: &[
+            &["tab", "ret"],
+            &["ret"],
+            &["tab", "ret", "tab", "ret"],
+            &["ret"],
+            &["tab", "ret"],
+        ],
+        expect: &[
+            "shell: answered wait-window's read while the model thought",
+            "shell: holds wait-window's request until the line ends",
+            "shell: runs wait-window's held request after the line",
+            "wait-reads: with no line running, a read was answered in ",
+            "wait-reads: while the model thought, the app's read was answered in ",
+            "wait-reads: the app's change and the read behind it waited for the line, then ran once each, in order",
+            "wait-reads: a model call that failed partway ended its line; the read during it took ",
+            "wait-reads: the shell answered the app's reads while the model thought, and held its changes until the line ended",
+        ],
+        ..case("wait-reads", "test=wait-reads")
+    },
     // P3 task 10: a key in the window the agent drives stops it, and the panel
     // says so.
     TestCase {
@@ -676,9 +715,11 @@ pub(super) const CASES: &[TestCase] = &[
     },
 ];
 
-/// The top bar's model state and memory, which change while the desk is still:
-/// `deskcore::paint::stats_area`, 320 px wide at the right of the 28 px bar,
-/// above its 1 px rule.
-fn desk_stats(width: u32, _height: u32) -> (u32, u32, u32, u32) {
-    (width.saturating_sub(320), 0, 320, 27)
+/// What changes while the desk is still (the top bar's model state and
+/// memory): deskgeom's tray mask, which deskcore paints them in.
+fn desk_stats(width: u32, height: u32) -> (u32, u32, u32, u32) {
+    let px = |n: u32| i32::try_from(n).unwrap_or(i32::MAX);
+    let r = deskgeom::points(px(width), px(height)).tray_mask();
+    let u = |n: i32| u32::try_from(n).unwrap_or(0);
+    (u(r.x), u(r.y), u(r.w), u(r.h))
 }

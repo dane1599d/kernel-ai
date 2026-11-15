@@ -170,6 +170,7 @@ mod usage_tests;
 mod usb;
 mod version;
 mod virtio;
+mod wait_reads_tests;
 mod wake_tests;
 mod workload;
 
@@ -453,6 +454,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskTour => run_case(desk_tour_tests::check),
         SelfTest::FounderWalk => run_case(founder_walk_tests::check),
         SelfTest::DeskTakeover => run_case(agent_desk_tests::takeover_check),
+        SelfTest::DeskReopen => run_case(agent_desk_tests::reopen_check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
@@ -496,6 +498,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetDownload { again, .. } => run_case(|| net_download_tests::check(again)),
         SelfTest::FetchService => run_case(https_tests::fetch_check),
         SelfTest::NetGrant => run_case(net_grant_tests::check),
+        SelfTest::WaitReads => run_case(wait_reads_tests::check),
         SelfTest::EntropyBoots => run_case(entropy_tests::check),
         SelfTest::Slot => {
             // A slot boot holds `updated`'s record calls until its lever has

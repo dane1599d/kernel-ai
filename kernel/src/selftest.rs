@@ -274,6 +274,8 @@ pub enum SelfTest {
     FounderWalk,
     /// `desk-takeover` (P3 task 10): a key in the agent's window stops it.
     DeskTakeover,
+    /// `desk-reopen` (#922): Notes closed from its control opens again.
+    DeskReopen,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
     Scriptrun,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
@@ -353,6 +355,9 @@ pub enum SelfTest {
     FetchService,
     /// P5 task 13: an app's HTTPS through `kai:net`, asked per host on the card.
     NetGrant,
+    /// The founder's test 2, item 7: an app's reads answered while the model
+    /// thinks, its changes held until the line ends.
+    WaitReads,
     /// P5 task 3: ENTROPY's sample, which two boots must not share.
     EntropyBoots,
 }
@@ -515,6 +520,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-tour" => Some(SelfTest::DeskTour),
             "test=founder-walk" => Some(SelfTest::FounderWalk),
             "test=desk-takeover" => Some(SelfTest::DeskTakeover),
+            "test=desk-reopen" => Some(SelfTest::DeskReopen),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
@@ -556,6 +562,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             }),
             "test=fetch-service" => Some(SelfTest::FetchService),
             "test=net-grant" => Some(SelfTest::NetGrant),
+            "test=wait-reads" => Some(SelfTest::WaitReads),
             "test=entropy-boots" => Some(SelfTest::EntropyBoots),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
@@ -715,9 +722,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskWarming
             | SelfTest::AppSettings
             | SelfTest::NetGrant
+            | SelfTest::WaitReads
             | SelfTest::DeskTour
             | SelfTest::FounderWalk
             | SelfTest::DeskTakeover
+            | SelfTest::DeskReopen
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
             | SelfTest::Tune
@@ -881,7 +890,10 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push_str(&crate::app_monitor_tests::plan());
                 kabi::plan::SHELL_DESK
             }
-            SelfTest::DeskAgent | SelfTest::DeskTakeover | SelfTest::DeskStandingRefused => {
+            SelfTest::DeskAgent
+            | SelfTest::DeskTakeover
+            | SelfTest::DeskReopen
+            | SelfTest::DeskStandingRefused => {
                 plan.push('\n');
                 plan.push_str(crate::agent_desk_tests::DESK);
                 kabi::plan::SHELL_DESK
@@ -906,6 +918,13 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push('\n');
                 plan.push_str(crate::agent_desk_tests::DESK);
                 crate::net_grant_tests::SHELL
+            }
+            // The test app's effects reach the shell through `desktop`; the
+            // shell answers them from `/home/user`.
+            SelfTest::WaitReads => {
+                plan.push('\n');
+                plan.push_str(crate::agent_desk_tests::DESK);
+                crate::wait_reads_tests::SHELL
             }
             SelfTest::KeepRunning { .. } => {
                 plan.push('\n');
@@ -1050,7 +1069,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(&crate::app_notes_tests::notes());
     }
-    if matches!(test, SelfTest::DeskAgent | SelfTest::DeskTakeover) {
+    if matches!(
+        test,
+        SelfTest::DeskAgent | SelfTest::DeskTakeover | SelfTest::DeskReopen
+    ) {
         plan.push('\n');
         plan.push_str(crate::agent_desk_tests::APPS);
     }
@@ -1063,6 +1085,11 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::NetGrant {
         plan.push('\n');
         plan.push_str(crate::net_grant_tests::APPS);
+    }
+    // The headless test app, whose route is `desktop`.
+    if test == SelfTest::WaitReads {
+        plan.push('\n');
+        plan.push_str(crate::wait_reads_tests::APPS);
     }
     Some(plan)
 }

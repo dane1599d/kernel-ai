@@ -21,6 +21,12 @@ pub const MAX_ARGS: usize = 512;
 /// shell's line (`sys::shell_interrupt`); it never waits behind the line.
 pub const SHELL_STOP: &str = "shell_stop";
 
+/// The effect that asks what came of a line's question on the desktop's
+/// trusted card (#922): queued when the shell's answer to a line is its
+/// card's menu, and answered, as `ok ...` or `err ...`, once the card is.
+/// Like `shell_line`, it is no registry row.
+pub const SHELL_CARD: &str = "shell_card";
+
 pub trait Os {
     /// Queues effect `name` with its arguments as a WAVE record; its ticket,
     /// which [`crate::Terminal::done`] gets with the result.
@@ -49,6 +55,11 @@ pub fn quote(text: &str) -> String {
 /// The arguments of `shell_line` for `line`.
 pub fn shell_line_args(line: &str) -> String {
     format!("{{line: {}}}", quote(line))
+}
+
+/// The arguments of `shell_card` for question `id`.
+pub fn shell_card_args(id: u64) -> String {
+    format!("{{id: {id}}}")
 }
 
 /// The shell's one-line answer as its wire reply. The shell writes a newline as

@@ -96,6 +96,7 @@ impl Terminal {
             phase,
             in_flight: None,
             stopping: None,
+            cards: Vec::new(),
             staged: None,
         };
         if state.phase == WAITING {

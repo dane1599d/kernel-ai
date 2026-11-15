@@ -261,13 +261,6 @@ fn main() -> i32 {
     // called more often than every POLL_MS still takes its input and results.
     let mut poll_at = now_ms() + ui::POLL_MS;
     loop {
-        // What the last pass's settles recorded reaches the nap before the
-        // wait: an app that closed its own focused window from a call or a
-        // tick, with nothing to poll, would otherwise wait unnapped forever.
-        if let Err(exit) = feed_nap(&mut windows, &mut napper, &mut host, &name) {
-            println!("{}", exit.why);
-            return exit.code;
-        }
         // The shown instance is told it started, once: a new version or a
         // resumed app is told again (`started.rs`).
         if let Some(performed) = started.tell(&mut host) {
@@ -280,6 +273,14 @@ fn main() -> i32 {
                 None => {}
             }
             settle(&mut windows, &mut edits, &mut relay, &mut host);
+        }
+        // What the settles recorded, the last pass's and the start's just
+        // above, reaches the nap before the wait: an app that closed its own
+        // focused window from a call, a tick or its start, with nothing to
+        // poll, would otherwise wait unnapped forever.
+        if let Err(exit) = feed_nap(&mut windows, &mut napper, &mut host, &name) {
+            println!("{}", exit.why);
+            return exit.code;
         }
         let open = windows.as_ref().is_some_and(ui::Ui::wants_poll);
         let wait = match (open, host.timeout_ms()) {

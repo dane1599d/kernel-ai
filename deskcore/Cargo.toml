@@ -13,6 +13,7 @@ publish = false
 doctest = false
 
 [dependencies]
+deskgeom = { path = "../deskgeom" }
 gfx2d = { path = "../gfx2d" }
 kabi = { path = "../kabi" }
 libm = "0.2.16"

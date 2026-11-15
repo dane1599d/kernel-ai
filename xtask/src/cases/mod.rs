@@ -47,6 +47,9 @@ pub struct TestCase {
     pub keys_on: &'static [&'static str],
     /// Texts that must all appear on the serial console for the case to pass.
     pub expect: &'static [&'static str],
+    /// Lines the console must show whole, after the reader takes off a serial
+    /// stamp: a line still carrying its stamp never matches.
+    pub exact: &'static [&'static str],
     /// Texts that fail the case wherever they appear, a program's lines
     /// included: [`FORBID`] unless the case sets its own list.
     pub forbid: &'static [&'static str],
@@ -216,6 +219,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         keys: &[],
         keys_on: &[],
         expect: &[],
+        exact: &[],
         stops: false,
         build: false,
         after: None,
@@ -350,6 +354,36 @@ mod tests {
             all.push(case);
         }
         all
+    }
+
+    /// A window's "opened at x,y" line names a cascade spot of deskgeom's
+    /// layout, so a layout change fails here before it fails a boot.
+    #[test]
+    fn every_opened_at_line_is_a_deskgeom_cascade_spot() {
+        let layout = deskgeom::points(1280, 800).layout;
+        let spots: Vec<String> = (0..deskgeom::CASCADE_SPOTS)
+            .map(|n| layout.cascade(n))
+            .map(|at| format!("opened at {},{} ", at.x, at.y))
+            .collect();
+        let mut seen = 0;
+        for case in every_case() {
+            for text in case.expect {
+                let Some(at) = text.find("opened at ") else {
+                    continue;
+                };
+                let rest = &text[at..];
+                if rest == "opened at " {
+                    continue;
+                }
+                seen += 1;
+                assert!(
+                    spots.iter().any(|spot| rest.starts_with(spot.as_str())),
+                    "{}: {text}",
+                    case.name
+                );
+            }
+        }
+        assert!(seen > 0);
     }
 
     #[test]

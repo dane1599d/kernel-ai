@@ -21,6 +21,7 @@
 
 use crate::display::claim;
 use crate::process::components;
+use crate::ui_tests::DESK;
 use crate::ui_tests::report;
 use crate::{build_service, console, ipc, log, process, threads};
 use alloc::format;
@@ -60,12 +61,12 @@ const CTRL_LEAD_MS: u64 = 2_000;
 /// running build.
 const POLL_MS: u64 = 2_000;
 /// Where `desktop` starts the pointer: the middle of 1280x800.
-const START: (i32, i32) = (640, 400);
+const START: (i32, i32) = DESK.screen_centre();
 /// Inside the code view's first rows, which hold Notes' `//!` lines (1 to 4), so a
 /// comment typed at the click is still a comment: the window is the first, at
-/// 48,52, under its 34 px title bar and the app's own title line, and the click is
+/// spot 0, under its title bar and the app's own title line, and the click is
 /// well right of the gutter and within the lines' text.
-const CODE: (i32, i32) = (48 + 300, 52 + 100);
+const CODE: (i32, i32) = DESK.content(0, 299, 66);
 /// How many keys each of the case's typing stages types (`// sr`, `c/lib`,
 /// `.rs:6`, one cell each); the case's table has these stages, then Ctrl-B.
 const TYPED: [u32; 3] = [5, 5, 5];

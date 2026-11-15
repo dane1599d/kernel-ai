@@ -13,6 +13,7 @@ use crate::state::State;
 use crate::undo::{self, Inverse, Name, Refused};
 use crate::{Host, Reply, Shell};
 use alloc::format;
+use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use llmproto::act::{ActError, ActRequest, Call, Read};
@@ -113,6 +114,21 @@ pub fn canonical(app: &str) -> &str {
         .iter()
         .find(|(written, _)| written.eq_ignore_ascii_case(app.trim()))
         .map_or(app, |(_, means)| means)
+}
+
+/// [`canonical`], except that an app the host runs or installed under that
+/// very name keeps it: a package called `console` is not the terminal.
+pub fn canonical_on<'a>(host: &dyn crate::Host, app: &'a str) -> &'a str {
+    let named = app.trim();
+    let real = host.services().is_ok_and(|services| {
+        services
+            .iter()
+            .any(|s| app_of(&s.name).eq_ignore_ascii_case(named))
+    });
+    match real {
+        true => named,
+        false => canonical(app),
+    }
 }
 
 /// The name the agent knows an app's window by: a `<pkg>-window` service is
@@ -259,7 +275,8 @@ impl Shell {
                 }),
                 ..asked.clone()
             };
-            call = match self.host.act(&again) {
+            let host = Rc::clone(&self.host);
+            call = match host.act_serving(&again, &mut |waiting| self.serve_waiting(waiting)) {
                 Ok(next) => {
                     self.host.audit(&format!(
                         "request {id}: then the model called {}",

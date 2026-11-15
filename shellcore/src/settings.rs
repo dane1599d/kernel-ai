@@ -100,6 +100,24 @@ impl KeepWaiting {
     }
 }
 
+/// Whether a `kai:settings` request changes anything, so it needs a key or a
+/// click, and waits for a line the model is answering
+/// ([`crate::waiting`]); the rest only read.
+pub(crate) fn is_change(request: &str) -> bool {
+    let verb = request.split_once(' ').map_or(request, |(verb, _)| verb);
+    matches!(
+        verb,
+        "appearance-set"
+            | "profile-set"
+            | "rules-remove"
+            | "grants-revoke"
+            | "grants-restore"
+            | "net-revoke"
+            | "keep-running"
+            | "restart-window"
+    )
+}
+
 impl Shell {
     /// Answers a `kai:settings` request from app `app`: the answer's text, or
     /// why not.
@@ -111,18 +129,7 @@ impl Shell {
             return Err(String::from("not a settings request"));
         }
         let (verb, rest) = request.split_once(' ').unwrap_or((request, ""));
-        let change = matches!(
-            verb,
-            "appearance-set"
-                | "profile-set"
-                | "rules-remove"
-                | "grants-revoke"
-                | "grants-restore"
-                | "net-revoke"
-                | "keep-running"
-                | "restart-window"
-        );
-        if change && !user {
+        if is_change(request) && !user {
             return Err(String::from("a change needs a key or a click"));
         }
         let logged = format!("settings: {request}");

@@ -7,6 +7,8 @@
 //!   bands blend;
 //! - [`boxdraw`]: box drawing and block elements, U+2500-259F, drawn by code
 //!   per cell so lines meet at cell edges at every size;
+//! - [`icons`]: the Kai glyphs, code-drawn on a 24-unit grid, as coverage
+//!   masks tinted by a token;
 //! - [`damage`]: [`Damage`], at most `N` rectangles, past that their bounding box
 //!   (clients 32, `desktop` 16);
 //! - [`shadow`]: pre-rendered nine-slice shadows, so a moving shadow is a blit;
@@ -33,6 +35,7 @@ extern crate std;
 pub mod boxdraw;
 pub mod canvas;
 pub mod damage;
+pub mod icons;
 pub mod shadow;
 pub mod term;
 pub mod text;

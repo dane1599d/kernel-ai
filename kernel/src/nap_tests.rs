@@ -7,6 +7,7 @@
 //! memory again and still has its note.
 
 use crate::display::claim;
+use crate::ui_tests::DESK;
 use crate::{console, ipc, log, memory, process, threads};
 use alloc::string::String;
 
@@ -23,11 +24,11 @@ const NAP_MS: u64 = 3_000 + 4_000;
 /// Least the nap must give back: the guest's 128 KiB of starting memory.
 const MIN_FRAMES: u64 = 32;
 /// Where `desktop` starts the pointer: the middle of 1280x800.
-const START: (i32, i32) = (640, 400);
-/// The panel along the bottom of 1280x800 (36 px tall).
-const PANEL: (i32, i32) = (640, 800 - 18);
-/// The middle of Notes' content: its 642x454 frame at 48,52, under a 34 px bar.
-const WINDOW: (i32, i32) = (48 + 321, 52 + 34 + 210);
+const START: (i32, i32) = DESK.screen_centre();
+/// The AI panel: a click there focuses it.
+const PANEL: (i32, i32) = DESK.focus_kai();
+/// The middle of Notes' 640x420 content, in the first window.
+const WINDOW: (i32, i32) = DESK.content(0, 320, 211);
 
 fn call(request: &str) -> Result<String, &'static str> {
     ipc::call(NAME, request.as_bytes(), CALL_MS)

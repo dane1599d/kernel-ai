@@ -107,8 +107,8 @@ impl Shell {
         self.panel_said = self.said(&reply);
         // A question the card can show waits for it (`deskask`).
         let result = match reply.confirm.is_some() && self.pending.is_some() {
-            true => match self.wait_for_card(&reply) {
-                Ok(waits) => PanelResult::Done(String::from(waits)),
+            true => match self.wait_for_card(&reply, crate::deskask::Asker::Panel) {
+                Ok(_) => PanelResult::Done(String::from(crate::deskask::ON_CARD)),
                 Err(why) => PanelResult::Refused(String::from(why)),
             },
             false => self.panel_result(&reply),

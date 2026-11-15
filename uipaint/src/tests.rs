@@ -184,3 +184,50 @@ fn the_measure_is_the_fonts_and_scale_rounds_shared_edges() {
     let b = s.rect(uikit::geom::Rect::new(3, 0, 3, 3));
     assert_eq!(a.right(), b.x);
 }
+
+#[test]
+fn an_icon_draws_its_kai_glyph_and_an_unknown_name_its_frame() {
+    use uikit::geom::Rect as Logical;
+    use uikit::list::{DisplayList, Group};
+    use uikit::style::Token;
+    let palette = &look::DARK;
+    let mut t = text(true);
+    let icon = |x: i32, name: &'static str| Op::Icon {
+        rect: Logical::new(x, 10, 16, 16),
+        name,
+        token: Token::Text,
+    };
+    let all = Logical::new(0, 0, 80, 40);
+    let list = DisplayList {
+        groups: alloc::vec![Group {
+            node: 1,
+            clip: all,
+            bounds: all,
+            ops: alloc::vec![icon(10, "chevron-down"), icon(40, "lucide-x")],
+        }],
+    };
+    let mut img = Image::new(80, 40);
+    let mut p = Painter {
+        palette,
+        text: &mut t,
+        scale: Scale::of(120),
+    };
+    let bounds = img.bounds();
+    p.paint(&mut img.canvas(), &list, bounds);
+    let (window, ink) = (palette.window | 0xFF00_0000, palette.text | 0xFF00_0000);
+    // The chevron: ink where its mask has any to show, none where it has none.
+    let mask = gfx2d::icons::render(gfx2d::icons::Icon::ChevronDown, 16);
+    for (i, &a) in mask.coverage.iter().enumerate() {
+        let (x, y) = (10 + i as i32 % 16, 10 + i as i32 / 16);
+        match a {
+            0 => assert_eq!(at(&img, x, y), window, "({x},{y})"),
+            32.. => assert_ne!(at(&img, x, y), window, "({x},{y}) coverage {a}"),
+            _ => {}
+        }
+    }
+    assert_eq!(at(&img, 10, 10), window);
+    // No glyph by that name: the 1 px frame.
+    assert_eq!(at(&img, 40, 10), ink);
+    assert_eq!(at(&img, 55, 25), ink);
+    assert_eq!(at(&img, 47, 17), window);
+}
