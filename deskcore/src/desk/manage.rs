@@ -22,6 +22,7 @@ impl Desk {
         };
         self.hover(hovered);
         self.bar_hover_to((!quiet).then_some(hit));
+        self.start_hover();
     }
 
     /// Moves the hover to `hovered`, damaging the control it leaves and the

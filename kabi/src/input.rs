@@ -127,6 +127,7 @@ pub mod usage {
     pub const RIGHT_ALT: u16 = 0xE6;
     pub const RIGHT_GUI: u16 = 0xE7;
     pub const TAB: u16 = 0x2B;
+    pub const ESCAPE: u16 = 0x29;
     pub const F12: u16 = 0x45;
 }
 
@@ -140,6 +141,10 @@ pub struct Set1 {
     skip: u8,
     ctrl: u8,
     alt: u8,
+    /// A Super key went down and no other key since: its release is a tap.
+    super_alone: bool,
+    /// The last key decoded was a Super tap's release.
+    super_tap: bool,
 }
 
 impl Set1 {
@@ -149,6 +154,8 @@ impl Set1 {
             skip: 0,
             ctrl: 0,
             alt: 0,
+            super_alone: false,
+            super_tap: false,
         }
     }
 
@@ -188,6 +195,15 @@ impl Set1 {
             usage::RIGHT_ALT => bit(&mut self.alt, 2),
             _ => {}
         }
+        let gui = matches!(usage, usage::LEFT_GUI | usage::RIGHT_GUI);
+        self.super_tap = gui && !down && self.super_alone;
+        self.super_alone = match (gui, down) {
+            (true, true) => true,
+            (true, false) => false,
+            // Any other key pressed with Super held: not a tap.
+            (false, true) => false,
+            (false, false) => self.super_alone,
+        };
         Some((usage, down))
     }
 
@@ -199,6 +215,34 @@ impl Set1 {
     /// Whether an Alt key is held.
     pub fn alt(&self) -> bool {
         self.alt != 0
+    }
+
+    /// Whether the key just decoded, `usage` going `down` or up, completes
+    /// one of `desktop`'s own chords, which reach `desktop` even while a
+    /// terminal window has the keys on a lease, and end that lease: Alt+Tab
+    /// (switch windows), Ctrl+Esc (Start), and the release of a Super key
+    /// tapped alone (Start). Call it after [`Set1::feed`] gave the key.
+    pub fn desk_chord(&self, usage: u16, down: bool) -> bool {
+        match usage {
+            usage::TAB => self.alt != 0,
+            usage::ESCAPE => self.ctrl != 0,
+            usage::LEFT_GUI | usage::RIGHT_GUI => !down && self.super_tap,
+            _ => false,
+        }
+    }
+
+    /// Whether `usage` is a modifier `desktop` must see even under a lease,
+    /// so a chord reaches it whole: Ctrl, Alt and Super. They go to both.
+    pub fn shared_modifier(usage: u16) -> bool {
+        matches!(
+            usage,
+            usage::LEFT_CTRL
+                | usage::RIGHT_CTRL
+                | usage::LEFT_ALT
+                | usage::RIGHT_ALT
+                | usage::LEFT_GUI
+                | usage::RIGHT_GUI
+        )
     }
 
     /// Whether the last byte ended its sequence: no `E0` or `E1` is waiting
@@ -244,6 +288,42 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), 86 + 17);
+    }
+
+    /// What `desk_chord` says, key by key, for `bytes`.
+    fn chords(bytes: &[u8]) -> alloc::vec::Vec<(u16, bool, bool)> {
+        let mut set1 = Set1::new();
+        bytes
+            .iter()
+            .filter_map(|&b| set1.feed(b).map(|(u, d)| (u, d, set1.desk_chord(u, d))))
+            .collect()
+    }
+
+    /// `desktop`'s chords: Alt+Tab, Ctrl+Esc, a Super tapped alone; never
+    /// Super used with another key, Esc alone, Tab alone or a letter.
+    #[test]
+    fn desk_chords_are_alt_tab_ctrl_esc_and_a_super_tap() {
+        let chord = |bytes: &[u8]| chords(bytes).iter().filter(|c| c.2).count();
+        // Super down and up alone: its release.
+        assert_eq!(
+            chords(&[0xE0, 0x5B, 0xE0, 0xDB]),
+            [
+                (usage::LEFT_GUI, true, false),
+                (usage::LEFT_GUI, false, true),
+            ]
+        );
+        // Super with a letter between: no tap.
+        assert_eq!(chord(&[0xE0, 0x5B, 0x1E, 0x9E, 0xE0, 0xDB]), 0);
+        // Right Super too.
+        assert_eq!(chord(&[0xE0, 0x5C, 0xE0, 0xDC]), 1);
+        // Ctrl+Esc, press and release while Ctrl is held.
+        assert_eq!(chord(&[0x1D, 0x01, 0x81, 0x9D]), 2);
+        // Esc alone, Tab alone, letters: none.
+        assert_eq!(chord(&[0x01, 0x81, 0x0F, 0x8F, 0x1E, 0x9E]), 0);
+        // Alt+Tab.
+        assert_eq!(chord(&[0x38, 0x0F, 0x8F, 0xB8]), 2);
+        assert!(Set1::shared_modifier(usage::LEFT_GUI));
+        assert!(!Set1::shared_modifier(usage::ESCAPE));
     }
 
     #[test]

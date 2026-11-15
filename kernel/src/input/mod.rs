@@ -15,9 +15,11 @@
 //!   `desktop` shows, for the terminal window (P3 task 8), until `desktop` ends
 //!   it when that window loses focus: no timer ends it, so a `desktop` that is
 //!   slow for a moment never hands keys back halfway through a press. The lease
-//!   also ends on any pointer button, on Alt+Tab, on Ctrl+Alt+F12, and whenever
-//!   the screen changes hands, `desktop`'s exit included ([`end_lease`]). Alt and Alt+Tab always reach the queue, so
-//!   `desktop` can always switch away. Keys change hands only between scancode
+//!   also ends on any pointer button, on `desktop`'s own chords (Alt+Tab,
+//!   Ctrl+Esc and a Super tap, `Set1::desk_chord`), on Ctrl+Alt+F12, and
+//!   whenever the screen changes hands, `desktop`'s exit included
+//!   ([`end_lease`]). Ctrl, Alt and Super, and those chords, always reach the
+//!   queue, so `desktop` can always switch away or open Start. Keys change hands only between scancode
 //!   sequences, and the console's ring is emptied each time they do.
 
 use crate::{hpet, i8042, threads};
@@ -186,21 +188,21 @@ fn route(byte: u8, aux: bool) -> (Route, bool) {
         end_lease();
         return (Route::Taken, down);
     }
-    let alt = matches!(code, usage::LEFT_ALT | usage::RIGHT_ALT);
-    let alt_tab = code == usage::TAB && decoders.keys.alt();
+    let shared = Set1::shared_modifier(code);
+    let chord = decoders.keys.desk_chord(code, down);
     drop(decoders);
     if !taking {
         return (Route::Console, false);
     }
-    if alt_tab {
+    if chord {
         // `desktop`'s own chord: never the console's, and it ends a lease.
         end_lease();
         push(Kind::Key, code, i32::from(down));
         return (Route::Taken, false);
     }
     if to_console {
-        // Alt goes to both, so `desktop` sees an Alt+Tab whole.
-        if alt {
+        // Ctrl, Alt and Super go to both, so `desktop` sees a chord whole.
+        if shared {
             push(Kind::Key, code, i32::from(down));
         }
         return (Route::Console, false);

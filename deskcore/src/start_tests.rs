@@ -128,7 +128,8 @@ fn super_and_ctrl_esc_open_start_and_ctrl_space_the_pane() {
 }
 
 /// Security invariant 1: a card paints the same over open Start as alone,
-/// at every size, and closes Start (its second guard).
+/// at every size, Start and the card in one frame; and a card closes Start
+/// (its second guard), and nothing opens it while the card is up.
 #[test]
 fn a_card_paints_the_same_over_start_and_closes_it() {
     let card = Card {
@@ -144,21 +145,54 @@ fn a_card_paints_the_same_over_start_and_closes_it() {
         let alone = paint(&plain, None, Some(&card));
         let mut desk = Desk::new(w, h);
         keys(&mut desk, &SUPER);
-        let start = Start::new(apps(), false);
-        assert!(desk.start().is_some());
         let effects = desk.show_ask(card.id, lines);
         assert!(
             effects.contains(&Effect::Start(false)),
             "{w}x{h}: Start stayed"
         );
         assert!(desk.start().is_none());
-        let over = paint(&desk, Some(&start), Some(&card));
-        let area = trusted::card(w, h, &desk.ask().expect("up"));
-        assert_eq!(pixels(&alone, area), pixels(&over, area), "{w}x{h}");
-        // Under a card nothing opens Start.
         keys(&mut desk, &SUPER);
-        assert!(desk.start().is_none());
+        assert!(desk.start().is_none(), "Start opened under a card");
+        // Both in one frame, as no input leaves them: the card on top.
+        desk.open_start_under_card();
+        let start = Start::new(apps(), false);
+        let both = paint(&desk, Some(&start), Some(&card));
+        let area = trusted::card(w, h, &desk.ask().expect("up"));
+        assert_eq!(pixels(&alone, area), pixels(&both, area), "{w}x{h}");
+        let menu = desk.start().expect("drawn");
+        assert_ne!(
+            pixels(&alone, menu),
+            pixels(&both, menu),
+            "{w}x{h}: Start not drawn"
+        );
     }
+}
+
+/// Start closed without a pick gives the keys back where they were: to the
+/// window that had them (never left in Kai's input), or to Kai's input when
+/// Start opened from it.
+#[test]
+fn closing_start_gives_the_keys_back() {
+    let mut desk = Desk::new(1280, 800);
+    let (id, _) = desk.open(1, "notes", "Notes", Size { w: 300, h: 200 }, true);
+    // The pane open beside the window, the keys in the window.
+    desk.set_focus(Focus::Panel, &mut Vec::new());
+    desk.set_focus(Focus::Window(id), &mut Vec::new());
+    assert!(desk.pane().is_some());
+    keys(&mut desk, &SUPER);
+    let mut effects = Vec::new();
+    desk.close_start(&mut effects);
+    assert_eq!(
+        desk.focus(),
+        Focus::Window(id),
+        "the keys stayed in Kai's input"
+    );
+    // From Kai's input, back to it.
+    desk.set_focus(Focus::Panel, &mut Vec::new());
+    keys(&mut desk, &SUPER);
+    desk.close_start(&mut Vec::new());
+    assert_eq!(desk.focus(), Focus::Panel);
+    assert!(desk.pane().is_some());
 }
 
 /// A press outside Start closes it and reaches nothing under it.
@@ -344,4 +378,177 @@ fn no_ask_pixel_in_start() {
             std::fs::write(name, ppm).expect("the preview is written");
         }
     }
+}
+
+/// Hovers taskbar item `i` long enough for its tooltip.
+fn tip_on(desk: &mut Desk, i: usize) {
+    let n = desk.taskbar_items().len();
+    let r = desk.item_rect(i, n);
+    desk.set_now(1_000);
+    desk.input(Input::Motion(Point {
+        x: r.x + 20,
+        y: r.y + 20,
+    }));
+    desk.tick(1_000 + TIP_MS);
+    assert_eq!(desk.tooltip(), Some(i));
+}
+
+/// A tooltip goes when Start opens or a card comes, and repaints when the
+/// title it shows changes.
+#[test]
+fn a_tooltip_goes_with_start_or_a_card_and_follows_its_title() {
+    let mut desk = Desk::new(1280, 800);
+    let (id, _) = desk.open(1, "notes", "Notes", Size { w: 300, h: 200 }, false);
+    tip_on(&mut desk, 1);
+    let n = desk.taskbar_items().len();
+    let tip = desk.tooltip_area(1, n);
+    let _ = desk.take_damage();
+    desk.set_title(id, "Groceries");
+    assert!(
+        desk.take_damage()
+            .iter()
+            .any(|d| d.intersect(&tip).is_some())
+    );
+    desk.open_start(&mut Vec::new());
+    assert_eq!(desk.tooltip(), None, "a tooltip over Start");
+    let mut desk = Desk::new(1280, 800);
+    desk.open(1, "notes", "Notes", Size { w: 300, h: 200 }, false);
+    tip_on(&mut desk, 1);
+    desk.show_ask(3, 1);
+    assert_eq!(desk.tooltip(), None, "a tooltip with a card");
+}
+
+/// A pin with windows of two labels (Notes' service and an older one): the
+/// item's label is the most recent window's, as its tooltip title is.
+#[test]
+fn a_merged_pin_takes_label_and_title_from_one_window() {
+    let mut desk = Desk::new(1920, 1080);
+    desk.set_installed(alloc::vec!["notes".into()]);
+    desk.open(1, "notes", "Old", Size { w: 300, h: 200 }, true);
+    let (newest, _) = desk.open(2, "notes-window", "New", Size { w: 300, h: 200 }, true);
+    let Some(Item::App(notes)) = desk.taskbar_items().into_iter().nth(1) else {
+        panic!("the notes pin");
+    };
+    assert_eq!(notes.windows.last(), Some(&newest));
+    assert_eq!(notes.label, "notes-window");
+}
+
+/// Moving the pointer over Start repaints it as the spot under it changes,
+/// and not while it stays on one.
+#[test]
+fn start_repaints_its_hover_only_as_the_pointer_moves_between_spots() {
+    let mut desk = Desk::new(1920, 1080);
+    keys(&mut desk, &SUPER);
+    let area = desk.start().expect("open");
+    let cell = deskgeom::start::cell(area, 0);
+    let _ = desk.take_damage();
+    // Inside one tile, and inside one band of every view's rows.
+    let y = area.y + 140;
+    desk.input(Input::Motion(Point { x: cell.x + 10, y }));
+    assert!(
+        desk.take_damage()
+            .iter()
+            .any(|d| d.intersect(&area).is_some())
+    );
+    desk.input(Input::Motion(Point {
+        x: cell.x + 20,
+        y: y + 10,
+    }));
+    assert!(desk.take_damage().is_empty(), "repainted within one tile");
+}
+
+/// High contrast: `hover` is Start's own ground, so the selected row and a
+/// hovered tile show a 1 px `focus` frame; and in every shipped theme
+/// nothing on Start's hover cue is a hover-never token.
+#[test]
+fn start_hover_shows_in_high_contrast_and_draws_no_hover_never_token() {
+    use look::theme;
+    for th in theme::shipped() {
+        let p = th.palette();
+        let allowed = [
+            p.text, p.muted, p.ok, p.accent, p.ai_mark, p.hover, p.raised, p.focus,
+        ];
+        let never: Vec<u32> = theme::HOVER_NEVER
+            .iter()
+            .map(|t| p.get(*t))
+            .filter(|c| !allowed.contains(c))
+            .collect();
+        let mut desk = Desk::new(1920, 1080);
+        keys(&mut desk, &SUPER);
+        let area = desk.start().expect("open");
+        // Search: "e" starts no app's name, so Ask Kai (row 0) is
+        // selected; the pointer on the weather row.
+        let mut search = Start::new(apps(), false);
+        search.set_text("e");
+        assert_eq!(search.selected(), 0);
+        let row = deskgeom::start::search_row(area, 0);
+        let other = deskgeom::start::search_row(area, 2);
+        desk.input(Input::Motion(Point {
+            x: other.x + 200,
+            y: other.y + 20,
+        }));
+        let image = paint_in(&desk, Some(&search), &th);
+        for r in [row, other] {
+            for px in pixels(&image, r) {
+                assert!(!never.contains(&px), "{} search: {px:06x}", th.name);
+            }
+        }
+        if p.hover == p.raised {
+            let y = row.y + row.h / 2;
+            assert_eq!(
+                image.px[(y * 1920 + row.right() - 1) as usize] & RGB,
+                p.focus,
+                "{}",
+                th.name
+            );
+        }
+        // Home, the pointer on a tile.
+        let home = Start::new(apps(), false);
+        let cell = deskgeom::start::cell(area, 0);
+        desk.input(Input::Motion(Point {
+            x: cell.x + 30,
+            y: cell.y + 30,
+        }));
+        let image = paint_in(&desk, Some(&home), &th);
+        for px in pixels(&image, cell) {
+            assert!(!never.contains(&px), "{} tile: {px:06x}", th.name);
+        }
+        if p.hover == p.raised {
+            let lit = cell.grow(-2);
+            let y = lit.y + lit.h / 2;
+            assert_eq!(
+                image.px[(y * 1920 + lit.x) as usize] & RGB,
+                p.focus,
+                "{} tile",
+                th.name
+            );
+        }
+    }
+}
+
+/// `paint` in theme `th`.
+fn paint_in(desk: &Desk, start: Option<&Start>, th: &look::theme::Theme) -> Image {
+    let l = desk.layout();
+    let (w, h) = (l.width, l.height);
+    let mut painter = Painter::new(FONTS).expect("the fonts parse");
+    painter.set_theme(th);
+    let mut image = Image::new(w, h);
+    let mut canvas = image.canvas();
+    let (panel, chat) = (Panel::new(), Chat::default());
+    let scene = Scene {
+        desk,
+        bar: &BAR,
+        panel: &panel,
+        chat: &chat,
+        start,
+        ask: None,
+        now_ms: 0,
+    };
+    painter.paint(
+        &mut canvas,
+        Rect::new(0, 0, w, h),
+        &scene,
+        &mut |_, _, _| false,
+    );
+    image
 }

@@ -153,7 +153,7 @@ pub(super) fn key(state: &mut State, usage: u16, down: bool, now_ms: u64) -> boo
         damage(state);
     }
     if let Some(pick) = pick {
-        carry_out(state, pick, now_ms);
+        carry_out(state, pick, now_ms, true);
     }
     true
 }
@@ -169,13 +169,14 @@ pub(super) fn click(state: &mut State, at: Point, now_ms: u64) {
         damage(state);
     }
     if let Some(pick) = pick {
-        carry_out(state, pick, now_ms);
+        carry_out(state, pick, now_ms, false);
     }
 }
 
 /// What Start picked: an app's line to the shell, the typed text to Kai
-/// (and the pane opens with it), or Start closes.
-fn carry_out(state: &mut State, pick: Pick, now_ms: u64) {
+/// (and the pane opens with it), or Start closes. `by_key`: an Enter picked
+/// it, which the pane's input then lets go of before it takes another.
+fn carry_out(state: &mut State, pick: Pick, now_ms: u64, by_key: bool) {
     let mut effects = Vec::new();
     let line = match pick {
         Pick::Close => None,
@@ -188,6 +189,9 @@ fn carry_out(state: &mut State, pick: Pick, now_ms: u64) {
             let len = text.chars().count();
             state.panel.send(text, now_ms);
             println!("desktop: the panel queued a request ({len} characters)");
+            if by_key {
+                state.panel.hold_enter();
+            }
             state.desk.focus_pane(&mut effects);
             super::wake_shell();
         }

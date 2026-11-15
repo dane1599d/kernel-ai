@@ -30,10 +30,13 @@ impl Desk {
         if self.start_open || self.ask.is_some() {
             return;
         }
-        // Where the keys go back to when Start closes.
+        // Where the keys go back to when Start closes without a pick: the
+        // window, or Kai's input, that had them.
+        self.start_from = self.focus;
         if !matches!(self.focus, Focus::Panel | Focus::Ask(_)) {
             self.before_panel = self.focus;
         }
+        self.tip_reset();
         self.start_open = true;
         let area = deskgeom::start::start(self.width, self.height);
         self.damage.add(area.grow(crate::paint::SHADOW_REACH));
@@ -52,10 +55,27 @@ impl Desk {
         self.damage.add(area.grow(crate::paint::SHADOW_REACH));
         self.bar_changed();
         effects.push(Effect::Start(false));
-        // Start had the keys: with no pane to take them, they go back.
-        if self.focus == Focus::Panel && !self.pane_open {
-            self.leave_panel(effects);
+        // Start had the keys: they go back where they were when it opened,
+        // never left in Kai's input unless they came from it.
+        if self.focus == Focus::Panel {
+            match self.start_from {
+                Focus::Panel if self.pane_open => {}
+                Focus::Window(id) if self.window(id).is_some_and(|w| !w.minimized) => {
+                    self.set_focus(Focus::Window(id), effects);
+                }
+                _ => {
+                    let next = self.top_visible().map_or(Focus::Nothing, Focus::Window);
+                    self.set_focus(next, effects);
+                }
+            }
         }
+    }
+
+    /// Test only: Start drawn under a card, as no input can leave them, to
+    /// show the card paints over it.
+    #[cfg(test)]
+    pub(crate) fn open_start_under_card(&mut self) {
+        self.start_open = true;
     }
 
     /// The Kai button's and Super's toggle.
@@ -109,10 +129,37 @@ impl Desk {
     pub(super) fn tip_reset(&mut self) {
         if self.tip_shown {
             self.tip_shown = false;
-            let r = deskgeom::start::tooltip(self.width, self.height, Rect::new(0, 0, 0, 0));
-            // The whole band a tooltip can take: it moved with the hover.
-            self.damage.add(Rect::new(0, r.y, self.width, r.h));
+            self.tip_repaint();
         }
         self.hover_since = self.now_ms;
+    }
+
+    /// The band a tooltip can take, damaged: it came, went or changed.
+    pub(super) fn tip_repaint(&mut self) {
+        let r = deskgeom::start::tooltip(self.width, self.height, Rect::new(0, 0, 0, 0));
+        self.damage.add(Rect::new(0, r.y, self.width, r.h));
+    }
+
+    /// The pointer moved: Start's hovered spot (by geometry alone) repaints
+    /// Start when it changes.
+    pub(super) fn start_hover(&mut self) {
+        let Some(area) = self.start() else {
+            return;
+        };
+        let p = self.pointer;
+        let spot = |n: i32, rect: &dyn Fn(i32) -> Rect| {
+            (0..n).find(|&i| rect(i).contains(p)).unwrap_or(-1)
+        };
+        use deskgeom::start as geo;
+        let now = [
+            spot(geo::GRID_COLS * geo::GRID_ROWS, &|i| geo::cell(area, i)),
+            spot(geo::RECENT_ROWS, &|i| geo::recent_row(area, i)),
+            spot(geo::SEARCH_ROWS, &|i| geo::search_row(area, i)),
+            spot(geo::ALL_ROWS, &|i| geo::all_row(area, i)),
+        ];
+        if now != self.start_spot {
+            self.start_spot = now;
+            self.damage.add(area);
+        }
     }
 }

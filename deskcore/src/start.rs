@@ -26,6 +26,11 @@ const KEYPAD_ENTER: u16 = 0x58;
 const ESCAPE: u16 = 0x29;
 const DOWN: u16 = 0x51;
 const UP: u16 = 0x52;
+const RIGHT: u16 = 0x4F;
+const LEFT: u16 = 0x50;
+/// The pinned grid's columns and its most tiles.
+const COLS: usize = deskgeom::start::GRID_COLS as usize;
+const PINNED: usize = COLS * deskgeom::start::GRID_ROWS as usize;
 /// The longest line the box takes, as the pane's input.
 pub const MAX_LINE: usize = crate::panel::MAX_LINE;
 /// Search rows below Ask Kai, at most.
@@ -68,6 +73,8 @@ pub struct Start {
     all_apps: bool,
     /// The selected search row.
     selected: usize,
+    /// The selected pinned tile on Home, once an arrow moved there.
+    home: Option<usize>,
     shift: u8,
     ctrl: u8,
     caps: bool,
@@ -81,6 +88,7 @@ impl Start {
             sheet: Sheet::new(apps),
             all_apps,
             selected: 0,
+            home: None,
             shift: 0,
             ctrl: 0,
             caps: false,
@@ -149,6 +157,23 @@ impl Start {
         rows
     }
 
+    /// Home's pinned apps: the catalog's apps on the machine, in its order,
+    /// at most 18 (6 by 3), as indices into [`Start::apps`].
+    pub fn pinned(&self) -> Vec<usize> {
+        self.apps()
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| matches!(a.source, Source::Installed | Source::BuiltIn))
+            .map(|(i, _)| i)
+            .take(PINNED)
+            .collect()
+    }
+
+    /// Home's selected tile, an index into [`Start::pinned`].
+    pub fn home_selected(&self) -> Option<usize> {
+        self.home
+    }
+
     /// The selected search row's index in [`Start::rows`].
     pub fn selected(&self) -> usize {
         self.selected
@@ -201,6 +226,30 @@ impl Start {
             _ => {}
         }
         match self.view() {
+            View::Home if matches!(code, LEFT | RIGHT | UP | DOWN) => {
+                let n = self.pinned().len();
+                if n == 0 {
+                    return (false, None);
+                }
+                let next = match (self.home, code) {
+                    (None, _) => 0,
+                    (Some(i), RIGHT) => (i + 1).min(n - 1),
+                    (Some(i), LEFT) => i.saturating_sub(1),
+                    (Some(i), DOWN) if i + COLS < n => i + COLS,
+                    (Some(i), UP) if i >= COLS => i - COLS,
+                    (Some(i), _) => i,
+                };
+                let changed = self.home != Some(next);
+                self.home = Some(next);
+                return (changed, None);
+            }
+            View::Home if code == ENTER || code == KEYPAD_ENTER => {
+                let pick = self
+                    .home
+                    .and_then(|n| self.pinned().get(n).copied())
+                    .map(|i| open(&self.apps()[i]));
+                return (false, pick);
+            }
             View::AllApps if matches!(code, UP | DOWN | ENTER) => {
                 let (changed, pick) = self.sheet.key(code);
                 let pick = pick.map(|p| match p {
@@ -339,6 +388,21 @@ mod tests {
             "an empty box sends nothing"
         );
         assert_eq!(home.key(ESCAPE, true).1, Some(Pick::Close));
+    }
+
+    /// Home: an arrow selects the first pinned tile, the arrows move over
+    /// the grid within it, and Enter opens the selected one.
+    #[test]
+    fn home_tiles_are_chosen_with_the_arrows() {
+        let mut start = Start::new(apps(), false);
+        assert_eq!(start.pinned(), [0, 1], "an offer is never pinned");
+        assert_eq!(start.home_selected(), None);
+        assert_eq!(start.key(RIGHT, true), (true, None));
+        assert_eq!(start.home_selected(), Some(0));
+        assert_eq!(start.key(RIGHT, true), (true, None));
+        assert_eq!(start.key(RIGHT, true), (false, None), "the last tile");
+        assert_eq!(start.key(DOWN, true), (false, None), "no row below");
+        assert_eq!(start.key(ENTER, true).1, Some(Pick::Open("notes".into())));
     }
 
     /// A recent line clicked comes back into the box, with its default.

@@ -27,19 +27,10 @@ const EDGE: i32 = 3;
 const PLACEHOLDER: &str = "Ask Kai or search apps";
 const WARMING: &str = "Kai is getting ready \u{b7} search apps";
 const CUT: &str = "<";
-/// The most pinned tiles: 6 columns of 3 rows.
-const PINNED: usize = (geo::GRID_COLS * geo::GRID_ROWS) as usize;
 
-/// Start's pinned apps: the catalog's apps on the machine, in its order.
+/// Start's pinned apps ([`Start::pinned`]).
 pub fn pinned(start: &Start) -> Vec<usize> {
-    start
-        .apps()
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| matches!(a.source, Source::Installed | Source::BuiltIn))
-        .map(|(i, _)| i)
-        .take(PINNED)
-        .collect()
+    start.pinned()
 }
 
 /// Your own recent lines, newest first, at most 5: never Kai's words.
@@ -113,11 +104,23 @@ impl Painter {
         }
         self.far.draw(c, g(at), g(clip));
         self.near.draw(c, g(at), g(clip));
-        let layer = self.start_layer(at, start, scene);
+        // The pointer over Start, in its own px: what takes the hover fill.
+        let p = scene.desk.pointer();
+        let hover = at.contains(p).then(|| Point {
+            x: p.x - at.x,
+            y: p.y - at.y,
+        });
+        let layer = self.start_layer(at, start, scene, hover);
         c.draw_window(&layer, (at.x, at.y), g(clip), RADIUS, true);
     }
 
-    fn start_layer(&mut self, at: Rect, start: &Start, scene: &Scene<'_>) -> Image {
+    fn start_layer(
+        &mut self,
+        at: Rect,
+        start: &Start,
+        scene: &Scene<'_>,
+        hover: Option<Point>,
+    ) -> Image {
         let local = Rect::new(0, 0, at.w, at.h);
         let parts = geo::parts(local);
         let mut layer = Image::new(local.w, local.h);
@@ -126,9 +129,9 @@ impl Painter {
         fill(&mut c, local.grow(-1), local, self.palette.raised);
         self.start_field(&mut c, parts.field, start, scene);
         match start.view() {
-            View::Home => self.start_home(&mut c, &parts, start, scene),
-            View::Search => self.start_search(&mut c, local, start),
-            View::AllApps => self.start_all(&mut c, local, start),
+            View::Home => self.start_home(&mut c, &parts, start, scene, hover),
+            View::Search => self.start_search(&mut c, local, start, hover),
+            View::AllApps => self.start_all(&mut c, local, start, hover),
         }
         layer.round_corners(RADIUS);
         layer
@@ -201,6 +204,7 @@ impl Painter {
         parts: &StartParts,
         start: &Start,
         scene: &Scene<'_>,
+        hover: Option<Point>,
     ) {
         let area = parts.area;
         let text = self.palette.text;
@@ -227,6 +231,10 @@ impl Painter {
         );
         for (n, i) in pinned(start).into_iter().enumerate() {
             let cell = geo::cell(area, n as i32);
+            let lit = start.home_selected() == Some(n) || hover.is_some_and(|p| cell.contains(p));
+            if lit {
+                self.start_fill(c, cell.grow(-2), area);
+            }
             self.start_tile(c, cell, &start.apps()[i]);
         }
         let y = self.baseline(parts.recent.y, parts.recent.h, TypeStyle::Label);
@@ -242,6 +250,9 @@ impl Painter {
         let muted = self.palette.muted;
         for (n, line) in recent(scene.chat).iter().enumerate() {
             let row = geo::recent_row(area, n as i32);
+            if hover.is_some_and(|p| row.contains(p)) {
+                self.start_fill(c, row, area);
+            }
             let y = self.baseline(row.y, row.h, TypeStyle::Mono);
             self.draw_text(c, row, row.x as f32, y, TypeStyle::Mono, muted, line);
         }
@@ -296,11 +307,18 @@ impl Painter {
 
     /// Search: Ask Kai first, then the matching apps, the selected one on
     /// the `hover` fill with its `accent` edge.
-    fn start_search(&mut self, c: &mut Canvas<'_>, area: Rect, start: &Start) {
+    fn start_search(
+        &mut self,
+        c: &mut Canvas<'_>,
+        area: Rect,
+        start: &Start,
+        hover: Option<Point>,
+    ) {
         for (n, row) in start.rows().iter().enumerate() {
             let r = geo::search_row(area, n as i32);
             let selected = n == start.selected();
-            self.start_row_ground(c, r, area, selected);
+            let hovered = hover.is_some_and(|p| r.contains(p));
+            self.start_row_ground(c, r, area, selected, hovered);
             match row {
                 Row::Ask => {
                     let at = (r.x + 12, r.y + (r.h - 24) / 2);
@@ -319,7 +337,7 @@ impl Painter {
     }
 
     /// All apps: its header, then the catalog's rows in its order.
-    fn start_all(&mut self, c: &mut Canvas<'_>, area: Rect, start: &Start) {
+    fn start_all(&mut self, c: &mut Canvas<'_>, area: Rect, start: &Start, hover: Option<Point>) {
         let head = Rect::new(area.x + geo::PAD, area.y + 80, area.w - 2 * geo::PAD, 30);
         let y = self.baseline(head.y, head.h, TypeStyle::Label);
         let text = self.palette.text;
@@ -337,21 +355,37 @@ impl Painter {
         for (n, (i, app)) in apps.take(geo::ALL_ROWS as usize).enumerate() {
             let r = geo::all_row(area, n as i32);
             let selected = i == start.sheet().selected_index();
-            self.start_row_ground(c, r, area, selected);
+            let hovered = hover.is_some_and(|p| r.contains(p));
+            self.start_row_ground(c, r, area, selected, hovered);
             self.start_app_row(c, r, app);
         }
     }
 
-    /// A selected row's `hover` fill, radius 4, and 3 px `accent` edge.
-    fn start_row_ground(&mut self, c: &mut Canvas<'_>, r: Rect, clip: Rect, selected: bool) {
+    /// A row's ground: selected, the hover cue and a 3 px `accent` edge;
+    /// under the pointer, the hover cue alone.
+    fn start_row_ground(
+        &mut self,
+        c: &mut Canvas<'_>,
+        r: Rect,
+        clip: Rect,
+        selected: bool,
+        hovered: bool,
+    ) {
+        if selected || hovered {
+            self.start_fill(c, r, clip);
+        }
         if selected {
-            self.rounded(c, r, clip, self.palette.hover, ROW_RADIUS);
-            fill(
-                c,
-                Rect::new(r.x, r.y + 4, EDGE, r.h - 8),
-                clip,
-                self.palette.accent,
-            );
+            let edge = Rect::new(r.x, r.y + 4, EDGE, r.h - 8);
+            fill(c, edge, clip, self.palette.accent);
+        }
+    }
+
+    /// The hover cue on Start's `raised` ground: the `hover` fill, radius 4,
+    /// or where `hover` is that ground (high contrast) a 1 px `focus` frame.
+    fn start_fill(&mut self, c: &mut Canvas<'_>, r: Rect, clip: Rect) {
+        match self.palette.hover == self.palette.raised {
+            true => crate::paint::frame(c, r, clip, self.palette.focus, 1),
+            false => self.rounded(c, r, clip, self.palette.hover, ROW_RADIUS),
         }
     }
 

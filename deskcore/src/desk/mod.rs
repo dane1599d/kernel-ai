@@ -234,6 +234,12 @@ pub struct Desk {
     unread: bool,
     /// Start is open.
     start_open: bool,
+    /// Where the keys were when Start opened: they go back there when it
+    /// closes without a pick.
+    start_from: Focus,
+    /// Start's spot under the pointer (a cell, recent row, search row or
+    /// All apps row, by geometry): its hover repaints only as it moves.
+    start_spot: [i32; 4],
     /// The apps installed, by name: the taskbar's pins.
     installed: Vec<String>,
     /// When the pointer came to the taskbar spot it rests on, and whether
@@ -289,6 +295,8 @@ impl Desk {
             bar_hover: None,
             unread: false,
             start_open: false,
+            start_from: Focus::Nothing,
+            start_spot: [-1; 4],
             installed: Vec::new(),
             hover_since: 0,
             tip_shown: false,
@@ -439,6 +447,8 @@ impl Desk {
             let bar = chrome::title_bar(w.frame);
             self.damage.add(bar);
             self.bar_changed();
+            // A tooltip up shows the title: it repaints with it.
+            self.tip_repaint();
         }
     }
 

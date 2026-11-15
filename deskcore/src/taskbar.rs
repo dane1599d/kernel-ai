@@ -99,9 +99,10 @@ pub fn items(desk: &Desk) -> Vec<Item> {
             .map(|w| w.id)
             .collect()
     };
+    // The most recent window's label, as the tooltip's title is its title.
     let label_of = |windows: &[WindowId], name: &str| {
         windows
-            .first()
+            .last()
             .and_then(|id| desk.window(*id))
             .map_or(String::from(name), |w| w.label.clone())
     };

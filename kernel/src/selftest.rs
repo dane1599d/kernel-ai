@@ -279,6 +279,8 @@ pub enum SelfTest {
     /// `desk-start` (Kai Desk PR 8): a Super tap, "not" and Enter open Notes
     /// from Start.
     DeskStart,
+    /// `desk-start-esc`: the same with Ctrl+Esc.
+    DeskStartEsc,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
     Scriptrun,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
@@ -525,6 +527,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-takeover" => Some(SelfTest::DeskTakeover),
             "test=desk-reopen" => Some(SelfTest::DeskReopen),
             "test=desk-start" => Some(SelfTest::DeskStart),
+            "test=desk-start-esc" => Some(SelfTest::DeskStartEsc),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
@@ -732,6 +735,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskTakeover
             | SelfTest::DeskReopen
             | SelfTest::DeskStart
+            | SelfTest::DeskStartEsc
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
             | SelfTest::Tune
@@ -899,6 +903,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskTakeover
             | SelfTest::DeskReopen
             | SelfTest::DeskStart
+            | SelfTest::DeskStartEsc
             | SelfTest::DeskStandingRefused => {
                 plan.push('\n');
                 plan.push_str(crate::agent_desk_tests::DESK);
@@ -1077,7 +1082,11 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     }
     if matches!(
         test,
-        SelfTest::DeskAgent | SelfTest::DeskTakeover | SelfTest::DeskReopen | SelfTest::DeskStart
+        SelfTest::DeskAgent
+            | SelfTest::DeskTakeover
+            | SelfTest::DeskReopen
+            | SelfTest::DeskStart
+            | SelfTest::DeskStartEsc
     ) {
         plan.push('\n');
         plan.push_str(crate::agent_desk_tests::APPS);

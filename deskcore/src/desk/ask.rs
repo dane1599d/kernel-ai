@@ -25,6 +25,8 @@ impl Desk {
     /// come up, and `desktop` drops the input the kernel has queued before it.
     pub fn show_ask(&mut self, id: u64, lines: i32) -> Vec<Effect> {
         let mut effects = Vec::new();
+        // A tooltip never shows with a card.
+        self.tip_reset();
         if let Some((old, _)) = self.ask {
             self.damage
                 .add(trusted::card(self.width, self.height, &old));

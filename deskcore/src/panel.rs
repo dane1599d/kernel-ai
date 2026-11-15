@@ -22,6 +22,9 @@ pub const MAX_LINE: usize = 400;
 /// Requests waiting for the shell, at most: an agent that stopped taking them
 /// does not make the panel grow without bound.
 const MAX_WAITING: usize = 8;
+/// Enter, on the main keys and the keypad.
+const ENTER: u16 = 0x28;
+const KEYPAD_ENTER: u16 = 0x58;
 /// The line that opens the Apps sheet.
 pub const APPS: &str = "apps";
 
@@ -73,6 +76,9 @@ pub struct Panel {
     /// The running model's name, as the shell said it (`panel model`),
     /// cleaned at the boundary.
     model: Option<String>,
+    /// Start's Ask Kai took an Enter that is still held: its repeats and
+    /// release are not this input's, so they never send the kept draft.
+    enter_held: bool,
 }
 
 impl Default for Panel {
@@ -97,6 +103,7 @@ impl Panel {
             interrupt: false,
             leave: false,
             model: None,
+            enter_held: false,
         }
     }
 
@@ -197,6 +204,10 @@ impl Panel {
                 held(&mut self.ctrl);
                 return false;
             }
+            ENTER | KEYPAD_ENTER if self.enter_held => {
+                self.enter_held = down;
+                return false;
+            }
             _ if !down => return false,
             _ => {}
         }
@@ -207,6 +218,12 @@ impl Panel {
             return self.escape();
         }
         self.apply(key, now_ms)
+    }
+
+    /// Start's Ask Kai sent a line with an Enter still held: the panel
+    /// drops that Enter's repeats and its release.
+    pub fn hold_enter(&mut self) {
+        self.enter_held = true;
     }
 
     /// The pane's send item, clicked: exactly Esc while Kai thinks (it is
@@ -412,6 +429,24 @@ mod tests {
         panel.send("install notes".into(), 7);
         assert_eq!(panel.take(), Some(Request::Line("install notes".into())));
         assert_eq!(panel.state(), &State::Thinking { since_ms: 7 });
+    }
+
+    /// Start's Ask Kai, sent with an Enter still held: its repeats and
+    /// release never send the pane's kept draft; the next Enter does.
+    #[test]
+    fn a_held_enter_from_start_never_sends_the_draft() {
+        let mut panel = Panel::new();
+        panel.set_focus(true);
+        tap(&mut panel, &[0x0B]);
+        panel.hold_enter();
+        for _ in 0..5 {
+            panel.key(0x28, true, 0);
+        }
+        panel.key(0x28, false, 0);
+        assert_eq!(panel.take(), None, "a repeat sent the draft");
+        assert_eq!(panel.text(), "h");
+        tap(&mut panel, &[0x28]);
+        assert_eq!(panel.take(), Some(Request::Line("h".into())));
     }
 
     #[test]
