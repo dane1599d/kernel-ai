@@ -10,7 +10,7 @@
 use crate::geom::{Point, Rect};
 
 pub use deskgeom::{
-    CONTROL_H, CONTROL_W, CORNER, FRAME, GRAB, PANEL, TITLE_BAR, TOP_BAR, content_of, frame_for,
+    CONTROL_H, CONTROL_W, CORNER, FRAME, GRAB, TASKBAR, TITLE_BAR, TOP_BAR, content_of, frame_for,
     title_bar,
 };
 /// A window's corner radius (`look::metric::RADIUS_MD`); a maximized one is

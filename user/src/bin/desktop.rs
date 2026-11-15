@@ -71,6 +71,8 @@ user::entry!(main);
 
 #[path = "desktop/agent.rs"]
 mod agent;
+#[path = "desktop/pane.rs"]
+mod pane;
 #[path = "desktop/perf.rs"]
 mod perf;
 
@@ -156,6 +158,8 @@ struct State {
     ticked_ms: u64,
     /// The ask card up now, as the kernel posted it.
     card: Option<Card>,
+    /// The last ask refused as too long to show whole: never asked again.
+    too_long: Option<u64>,
     /// When the ask box was last read.
     asked_ms: u64,
     /// Frames as last logged, to report moves and closes once.
@@ -222,6 +226,7 @@ fn main() -> i32 {
             agent: deskcore::agent::Agent::default(),
             ticked_ms: 0,
             card: None,
+            too_long: None,
             asked_ms: 0,
             known: Vec::new(),
             focus: Focus::Nothing,
@@ -439,11 +444,19 @@ fn deliver(state: &mut State, effects: &[Effect]) {
             continue;
         }
         let changed = match *effect {
-            // A click on a done line's undo or show sends it, as though typed.
             Effect::PanelClick { at } => {
-                let area = state.desk.panel();
-                match state.painter.panel_link(area, &state.panel, at) {
-                    Some(word) => {
+                use paint_panel::PaneClick;
+                match state.painter.pane_click(&state.desk, &state.panel, at) {
+                    // The send item: Enter; it and the status row's Stop
+                    // while Kai thinks: exactly Esc.
+                    Some(PaneClick::Send | PaneClick::Stop) => {
+                        let before = state.panel.waiting();
+                        let changed = state.panel.send_item(now);
+                        pane::after_panel_key(state, before);
+                        changed
+                    }
+                    // A done line's undo or show, sent as though typed.
+                    Some(PaneClick::Link(word)) => {
                         // Undo takes back the line beside it, by its entry,
                         // never the newest of another line's.
                         let line = match (word, state.panel.entry()) {
@@ -463,28 +476,32 @@ fn deliver(state: &mut State, effects: &[Effect]) {
                 false
             }
             Effect::PanelKey { usage, down } if apps::key(state, usage, down, now) => false,
+            // PageUp and PageDown scroll the pane's history by a page.
+            Effect::PanelKey { usage, down }
+                if usage == pane::PAGE_UP || usage == pane::PAGE_DOWN =>
+            {
+                if down {
+                    pane::page(state, usage == pane::PAGE_UP);
+                }
+                false
+            }
+            // A line edit repaints the input alone; a new state the pane.
             Effect::PanelKey { usage, down } => {
                 let before = state.panel.waiting();
+                let shown = state.panel.state().clone();
                 let changed = state.panel.key(usage, down, now);
-                // Esc on a line the shell took: it is interrupted now, if the
-                // shell still runs it.
-                if state.panel.take_interrupt() {
-                    let line = deskcore::running::Line::Panel;
-                    let _ = interrupt_shell(state, line, "the panel's Esc");
+                pane::after_panel_key(state, before);
+                match *state.panel.state() != shown {
+                    true => true,
+                    false => {
+                        if changed {
+                            let line = paint_panel::PanelChange::LineEdit;
+                            let damage = paint_panel::panel_damage(&state.desk, line);
+                            state.extra.extend(damage);
+                        }
+                        false
+                    }
                 }
-                if state.panel.waiting() > before {
-                    // Its length only: a panel line may hold anything typed.
-                    let len = match state.panel.newest() {
-                        Some(deskcore::panel::Request::Line(text)) => text.chars().count(),
-                        _ => 0,
-                    };
-                    println!("desktop: the panel queued a request ({len} characters)");
-                    wake_shell();
-                }
-                if state.panel.take_apps() {
-                    apps::open(state);
-                }
-                changed
             }
             Effect::Focus(focus) => {
                 if focus != Focus::Panel {
@@ -495,7 +512,7 @@ fn deliver(state: &mut State, effects: &[Effect]) {
             _ => false,
         };
         if changed {
-            state.extra.push(state.desk.panel());
+            state.extra.push(state.desk.pane_area());
         }
     }
 }
@@ -524,6 +541,7 @@ fn read_asks(state: &mut State) {
     };
     match (posted, state.card.as_ref()) {
         (Some((id, _, _)), Some(card)) if card.id == id => {}
+        (Some((id, _, _)), _) if state.too_long == Some(id) => {}
         (Some((id, call, question)), _) => {
             let card = Card {
                 id,
@@ -532,6 +550,10 @@ fn read_asks(state: &mut State) {
                 shown_ms: now,
             };
             let lines = state.painter.card_lines(state.width, &card);
+            if !deskcore::trusted::fits(state.width, state.height, lines) {
+                agent::refuse_too_long(state, &card);
+                return;
+            }
             if let Some(old) = state.card.take() {
                 let effects = state.desk.hide_ask(old.id);
                 deliver(state, &effects);
@@ -594,9 +616,7 @@ fn tick_panel(state: &mut State) {
     let now = now_ms();
     if paint_panel::ticks(&state.panel) && now.saturating_sub(state.ticked_ms) >= 1_000 {
         state.ticked_ms = now;
-        state
-            .extra
-            .push(paint_panel::state_area(state.desk.panel()));
+        state.extra.push(paint_panel::state_area(&state.desk));
     }
 }
 
@@ -744,7 +764,7 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
             // Neither line holds the other, so a case can tell them apart.
             let now = if ready { "ready" } else { "getting ready" };
             println!("desktop: the model is {now}");
-            state.extra.push(state.desk.panel());
+            state.extra.push(state.desk.pane_area());
             state.extra.push(paint::stats_area(state.width));
             // The top bar says it too, from the next read of the stats.
             state.bar_at = 0;
@@ -759,7 +779,7 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         if !thinking && state.panel.set_state(shown) {
             println!("desktop: the panel shows what a card came to");
             log_bar(state.log_bar, text.as_deref());
-            state.extra.push(state.desk.panel());
+            state.extra.push(state.desk.pane_area());
         }
         return Some(String::from("ok"));
     }
@@ -809,7 +829,7 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         // Its kind only: the line is the shell's result, which may name a file.
         println!("desktop: the panel shows {word}");
         log_bar(state.log_bar, text.as_deref());
-        state.extra.push(state.desk.panel());
+        state.extra.push(state.desk.pane_area());
     }
     Some(String::from("ok"))
 }
@@ -817,9 +837,10 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
 /// Adds to the panel's history and damages where it is drawn; false when
 /// nothing was added.
 fn chat_push(state: &mut State, who: Who, text: &str) -> bool {
-    let added = state.chat.push(who, text);
+    let area = paint_chat::chat_area(&state.desk);
+    let added = state.painter.chat_push(&mut state.chat, who, text, area);
     if added {
-        state.extra.push(paint_chat::chat_area(&state.desk));
+        state.extra.push(area);
     }
     added
 }
@@ -1255,10 +1276,11 @@ fn refresh_bar(state: &mut State) {
     if bar != state.bar {
         state.bar = bar;
         state.extra.push(paint::stats_area(state.width));
-        // The idle panel shows the model's dot too.
-        state
-            .extra
-            .push(paint_panel::state_area(state.desk.panel()));
+        // The idle status row shows the model's dot too, and the pane's
+        // header its state.
+        let bar = paint_panel::PanelChange::Bar;
+        let damage = paint_panel::panel_damage(&state.desk, bar);
+        state.extra.extend(damage);
     }
 }
 

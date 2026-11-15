@@ -262,7 +262,7 @@ pub(super) const CASES: &[TestCase] = &[
             size: Some((1280, 800)),
             cursor: false,
             golden: Some(crate::screen::Golden {
-                sha256: "514ded10f7fe4dd26d45737cbd9831ff457c6cf5ff59631ecc042c33342a51bb",
+                sha256: "5409c90f0bc6830ab1ed54e061ab040b69b3aa28e68e87b9d73549bb94ce6b32",
                 mask: desk_stats,
             }),
         }),
@@ -435,7 +435,8 @@ pub(super) const CASES: &[TestCase] = &[
             "desktop: the terminal window has the keys",
             "term: shows ? ",
             "desk-term: an ask typed in the terminal window was answered only on the console",
-            "desk-term: with the focus elsewhere the keys went to desktop, and nothing asked",
+            "desktop: the panel queued a request",
+            "desk-term: with the focus in the pane the keys went to desktop, and nothing asked",
         ],
         ..case("desk-term", "test=desk-term")
     },

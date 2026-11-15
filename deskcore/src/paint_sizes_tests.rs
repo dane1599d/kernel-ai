@@ -1,11 +1,11 @@
-//! The panel, its caret and the chat history at the sizes the founder's
-//! machines run (backlog test 4): VirtualBox's 1024x768, the 1280x800 the
-//! goldens use, and 1920x1080. Each is drawn only where it belongs: the bar
-//! inside the panel's rectangle, the caret inside its input, the history
-//! between the top bar and the panel.
+//! The Kai pane's input, status row, caret and history at the sizes the
+//! founder's machines run (backlog test 4): VirtualBox's 1024x768, the
+//! 1280x800 the goldens use, and 1920x1080. Each is drawn only where it
+//! belongs: the line and caret inside the input, the state inside the status
+//! row, the history inside its rectangle.
 
 use crate::chat::{Chat, Who};
-use crate::desk::Desk;
+use crate::desk::{Desk, Focus};
 use crate::geom::Rect;
 use crate::paint::{Painter, Scene};
 use crate::paint_chat::chat_area;
@@ -51,16 +51,23 @@ fn changed(a: &Image, b: &Image, w: i32, h: i32) -> Vec<(i32, i32)> {
         .collect()
 }
 
+/// A desk with the Kai pane open, its input focused.
+fn open(w: i32, h: i32) -> Desk {
+    let mut desk = Desk::new(w, h);
+    desk.set_focus(Focus::Panel, &mut Vec::new());
+    desk
+}
+
 fn inside(r: Rect, (x, y): (i32, i32)) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
 
-/// A line typed far past the input's width, and a long result on the right:
-/// both stay inside the panel, and the caret inside its input, at each size.
+/// A line typed far past the input's width, and a long result in the status
+/// row: each stays inside its own part, and the caret inside the input.
 #[test]
-fn the_panel_and_its_caret_stay_inside_the_panel_at_each_size() {
+fn the_input_status_and_caret_stay_in_their_parts_at_each_size() {
     for (w, h) in SIZES {
-        let desk = Desk::new(w, h);
+        let desk = open(w, h);
         let idle = Panel::new();
         let mut panel = Panel::new();
         panel.set_focus(true);
@@ -76,17 +83,22 @@ fn the_panel_and_its_caret_stay_inside_the_panel_at_each_size() {
         let chat = Chat::default();
         let before = paint(&desk, &idle, &chat, w, h);
         let after = paint(&desk, &panel, &chat, w, h);
-        let area = desk.panel();
+        let parts = desk.layout().pane_parts();
+        let (input, status) = (parts.input, parts.status);
         let moved = changed(&before, &after, w, h);
         assert!(!moved.is_empty(), "{w}x{h}: nothing drew");
         assert!(
-            moved.iter().all(|&p| inside(area, p)),
-            "{w}x{h}: the panel drew outside its rectangle"
+            moved.iter().all(|&p| inside(input, p) || inside(status, p)),
+            "{w}x{h}: the input or status drew outside its part"
         );
-        // The ember caret is in the input's right part, the left half.
+        assert!(
+            moved.iter().any(|&p| inside(status, p)),
+            "{w}x{h}: no state"
+        );
+        // The ember caret is in the input, before the send item.
         let ember = rgb(Painter::new(FONTS).unwrap().palette.ai);
-        let (x0, x1) = (area.x + area.w / 4, area.x + area.w / 2);
-        let caret = (area.y + 3..area.bottom())
+        let (x0, x1) = (input.x + input.w / 4, parts.send.x);
+        let caret = (input.y + 3..input.bottom())
             .flat_map(|y| (x0..x1).map(move |x| (x, y)))
             .filter(|&(x, y)| rgb(after.px[(y * w + x) as usize]) == ember)
             .count();
@@ -97,8 +109,8 @@ fn the_panel_and_its_caret_stay_inside_the_panel_at_each_size() {
     }
 }
 
-/// The history, a long answer included, draws only in its area, which sits
-/// between the top bar and the panel; the bar is the same with or without it.
+/// The history, a long answer included, draws only in its area, inside the
+/// pane above the status row; the rest is the same with or without it.
 #[test]
 fn the_history_stays_in_its_area_at_each_size() {
     let mut chat = Chat::default();
@@ -110,12 +122,13 @@ fn the_history_stays_in_its_area_at_each_size() {
     chat.push(Who::Kai, &"x".repeat(1_500));
     chat.push(Who::Note, "Kai answered above.");
     for (w, h) in SIZES {
-        let desk = Desk::new(w, h);
+        let desk = open(w, h);
         let panel = Panel::new();
         let with = paint(&desk, &panel, &chat, w, h);
         let without = paint(&desk, &panel, &Chat::default(), w, h);
         let area = chat_area(&desk);
-        assert!(area.y >= desk.top_bar().bottom() && area.bottom() <= desk.panel().y);
+        let parts = desk.layout().pane_parts();
+        assert!(area.y >= parts.header.bottom() && area.bottom() <= parts.status.y);
         assert!(area.x >= 0 && area.right() <= w, "{w}x{h}: {area:?}");
         let moved = changed(&with, &without, w, h);
         assert!(moved.len() > 1_000, "{w}x{h}: {} pixels", moved.len());

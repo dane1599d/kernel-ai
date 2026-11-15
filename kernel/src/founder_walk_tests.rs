@@ -406,7 +406,7 @@ fn points_of(surface: &display::Surface) -> Result<deskgeom::Points, &'static st
 /// A click at `at`: the pointer pinned to deskgeom's corner, wherever it was,
 /// and moved from there.
 fn click(desk: &deskgeom::Points, at: (i32, i32)) {
-    let (dx, dy) = desk.pin_to_kai();
+    let (dx, dy) = desk.pin();
     report(dx, dy, 0);
     let from = desk.pinned();
     report(at.0 - from.0, at.1 - from.1, 0);

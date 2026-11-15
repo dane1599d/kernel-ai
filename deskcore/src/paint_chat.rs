@@ -1,7 +1,8 @@
-//! Drawing the panel's history ([`crate::chat`]): a column centred on the
-//! desk's background between the top bar and the panel, newest entry at the
-//! bottom, drawn before the windows so each window covers it. Each kind has
-//! its own look, so the AI's words never pass for the system's:
+//! Drawing the panel's history ([`crate::chat`]) in the Kai pane's history
+//! rectangle, newest entry at the bottom, clipped to it so it never reaches
+//! the status row, the input, the taskbar or the card. PageUp and PageDown
+//! scroll it by entries ([`crate::chat::Chat::scroll`]). Each kind has its
+//! own look, so the AI's words never pass for the system's:
 //!
 //! - the person's line: `you` in `dim`, the line in mono `muted`;
 //! - the AI's: `Kai` in `ai`, a 2 px `ai` rule down its left, its words in
@@ -18,23 +19,19 @@ use alloc::vec::Vec;
 use gfx2d::Canvas;
 use look::TypeStyle;
 
-/// The column's widest.
-const MAX_W: i32 = 760;
-/// Space between the column and the bars, and at its sides.
-const MARGIN: i32 = 16;
 /// Space between entries.
 const GAP: i32 = 10;
 /// The AI's rule, and the space after it.
 const RULE: i32 = 2;
 const INDENT: i32 = 12;
 
-/// Where the history is drawn: what a change to it damages.
+/// Where the history is drawn on the screen: what a change to it damages.
+/// Empty while the pane is closed.
 pub fn chat_area(desk: &Desk) -> Rect {
-    let width = desk.top_bar().w;
-    let top = desk.top_bar().bottom() + MARGIN;
-    let bottom = desk.panel().y - MARGIN;
-    let w = (width - 2 * MARGIN).clamp(0, MAX_W);
-    Rect::new((width - w) / 2, top, w, (bottom - top).max(0))
+    match desk.pane() {
+        Some(_) => desk.layout().pane_parts().history,
+        None => Rect::default(),
+    }
 }
 
 /// One entry, laid out: its label, its lines and their look, kept by the
@@ -57,21 +54,23 @@ impl Laid {
 }
 
 impl Painter {
-    pub(crate) fn chat(&mut self, c: &mut Canvas<'_>, clip: Rect, scene: &Scene<'_>) {
-        if scene.chat.is_empty() {
+    /// The history in `area` of the canvas, nothing drawn outside it.
+    pub(crate) fn chat(&mut self, c: &mut Canvas<'_>, area: Rect, scene: &Scene<'_>) {
+        if scene.chat.is_empty() || area.is_empty() {
             return;
         }
-        let area = chat_area(scene.desk);
-        let Some(clip) = area.intersect(&clip) else {
-            return;
-        };
+        let clip = area;
         let label_h = self.text.measure(TypeStyle::Small, "Kai").1 as i32;
-        let mut bottom = area.bottom();
+        // Scrolled up by px, never past the oldest line at the top.
+        let most = (self.chat_height(scene.chat, area.w) - area.h).max(0);
+        let mut bottom = area.bottom() + scene.chat.scrolled().clamp(0, most);
         for entry in scene.chat.entries().rev() {
             let laid = self.laid(entry, area.w);
             let line_h = self.text.measure(laid.style, "x").1 as i32;
             let top = bottom - laid.height(label_h, line_h);
-            self.entry(c, clip, area.x, top, &laid, (label_h, line_h));
+            if top < area.bottom() {
+                self.entry(c, clip, area.x, top, &laid, (label_h, line_h));
+            }
             bottom = top - GAP;
             if bottom <= area.y {
                 break;
@@ -81,6 +80,54 @@ impl Painter {
         let first = scene.chat.entries().next().map_or(u64::MAX, |e| e.seq);
         self.chat_laid
             .retain(|l| l.seq >= first && l.width == area.w);
+    }
+
+    /// The whole history's height laid out `width` wide, gaps included: how
+    /// far it scrolls (`Chat::scroll_by`'s most is this less the area's).
+    pub fn chat_height(&mut self, chat: &crate::chat::Chat, width: i32) -> i32 {
+        let label_h = self.text.measure(TypeStyle::Small, "Kai").1 as i32;
+        let mut total = 0;
+        for entry in chat.entries() {
+            let laid = self.laid(entry, width);
+            let line_h = self.text.measure(laid.style, "x").1 as i32;
+            total += laid.height(label_h, line_h) + GAP;
+        }
+        (total - GAP).max(0)
+    }
+
+    /// Adds `text` from `who` to `chat`, drawn in `area`: at the bottom the
+    /// new entry shows; scrolled up, the view stays on what it showed, as
+    /// the offset grows by the new entry's height and the gap. False when
+    /// nothing was added.
+    pub fn chat_push(
+        &mut self,
+        chat: &mut crate::chat::Chat,
+        who: crate::chat::Who,
+        text: &str,
+        area: Rect,
+    ) -> bool {
+        let scrolled = chat.scrolled() > 0;
+        if !chat.push(who, text) {
+            return false;
+        }
+        if scrolled && !area.is_empty() {
+            let label_h = self.text.measure(TypeStyle::Small, "Kai").1 as i32;
+            let grown = chat.entries().next_back().map_or(0, |entry| {
+                let laid = self.laid(entry, area.w);
+                let line_h = self.text.measure(laid.style, "x").1 as i32;
+                laid.height(label_h, line_h) + GAP
+            });
+            let most = (self.chat_height(chat, area.w) - area.h).max(0);
+            chat.scroll_by(grown, most);
+        }
+        true
+    }
+
+    /// PageUp's or PageDown's step in a history `area_h` tall: its height
+    /// less one line, so a line stays in view across the step.
+    pub fn history_page(&self, area_h: i32) -> i32 {
+        let line_h = self.text.measure(TypeStyle::Body, "x").1 as i32;
+        (area_h - line_h).max(line_h)
     }
 
     /// `entry` laid out at `width`: kept from an earlier paint, or laid out

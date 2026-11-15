@@ -3,23 +3,32 @@
 //! every point a kernel selftest or an xtask case clicks comes from
 //! [`points`], so a change to the layout moves the tests' points with it.
 //!
-//! The numbers here are today's desk: a 28 px top bar, the 36 px AI panel
-//! along the bottom, windows cascading from 48,52 in steps of 32, and 40x32
-//! title-bar controls flush in the bar's right end (Kai Desk PR 5). All sizes
-//! are physical px at scale 1.
+//! The numbers here are today's desk: a 28 px top bar (until the taskbar
+//! replaces it), the taskbar's 48 px along the bottom, the Kai pane down the
+//! right edge (Kai Desk PR 6), windows cascading from 48,52 in steps of 32,
+//! and 40x32 title-bar controls flush in the bar's right end (PR 5). All
+//! sizes are physical px at scale 1.
 
 #![no_std]
 
+pub mod pane;
 pub mod points;
 mod rect;
 
+pub use pane::{PaneParts, pane_width};
 pub use points::{Points, points};
 pub use rect::{Point, Rect, Size};
 
 /// The top bar.
 pub const TOP_BAR: i32 = 28;
-/// The AI panel along the bottom.
-pub const PANEL: i32 = 36;
+/// The taskbar along the bottom. Until it is drawn (Kai Desk PR 7) its
+/// strip shows as desk; windows stay above it.
+pub const TASKBAR: i32 = 48;
+/// A flyout's distance from the screen's edges and from the taskbar.
+pub const FLYOUT_MARGIN: i32 = 12;
+/// From this width up the pane stays open beside the windows, and maximized
+/// windows fit beside it; under it the pane is a flyout.
+pub const PANE_BESIDE: i32 = 1280;
 /// A window's title bar, inside its frame.
 pub const TITLE_BAR: i32 = 32;
 /// A window's frame line.
@@ -43,9 +52,11 @@ pub const CASCADE_SPOTS: i32 = 8;
 pub const STATS_W: i32 = 320;
 
 /// What is open on the desk, for the parts of the layout that depend on it.
-/// Today's layout depends on nothing but the screen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct UiState {}
+pub struct UiState {
+    /// The Kai pane is open.
+    pub pane_open: bool,
+}
 
 /// Every surface of the desk at one screen size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,24 +64,50 @@ pub struct Layout {
     pub width: i32,
     pub height: i32,
     pub top_bar: Rect,
-    pub panel: Rect,
-    /// Where windows open and maximize: below the top bar, above the panel.
+    /// Where windows open: below the top bar, above the taskbar.
     pub work_area: Rect,
+    /// Where a maximized window goes: the work area, or at 1280 wide and up
+    /// with the pane open, the part of it left of the pane.
+    pub maximized: Rect,
+    /// The Kai pane, open or not (`ui.pane_open` says which).
+    pub pane: Rect,
+    pub pane_open: bool,
+    /// The ask card's and the Apps sheet's bottom edge, 12 above the taskbar.
+    pub card_bottom: i32,
+    /// The tallest the card grows: the whole work height, from 12 below the
+    /// screen's top to `card_bottom` (H-72). A call that does not fit is
+    /// never cut: the card refuses it (`deskcore::trusted::fits`).
+    pub card_max_h: i32,
     /// The top bar's part whose text changes while the desk is still, which a
     /// screendump golden masks.
     pub stats: Rect,
 }
 
 impl Layout {
-    pub const fn for_screen(width: i32, height: i32, _ui: UiState) -> Layout {
+    pub const fn for_screen(width: i32, height: i32, ui: UiState) -> Layout {
+        let work_area = Rect::new(0, TOP_BAR, width, height - TOP_BAR - TASKBAR);
+        let pane = pane::pane(width, height);
+        let maximized = match ui.pane_open && width >= PANE_BESIDE {
+            true => Rect::new(0, work_area.y, pane.x - FLYOUT_MARGIN, work_area.h),
+            false => work_area,
+        };
         Layout {
             width,
             height,
             top_bar: Rect::new(0, 0, width, TOP_BAR),
-            panel: Rect::new(0, height - PANEL, width, PANEL),
-            work_area: Rect::new(0, TOP_BAR, width, height - TOP_BAR - PANEL),
+            work_area,
+            maximized,
+            pane,
+            pane_open: ui.pane_open,
+            card_bottom: height - TASKBAR - FLYOUT_MARGIN,
+            card_max_h: height - TASKBAR - 2 * FLYOUT_MARGIN,
             stats: Rect::new(width - STATS_W, 0, STATS_W, TOP_BAR - 1),
         }
+    }
+
+    /// The pane's parts (wherever it is, open or not).
+    pub const fn pane_parts(&self) -> PaneParts {
+        pane::parts(self.pane)
     }
 
     /// The frame's top-left for the window opened when `open` windows are

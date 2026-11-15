@@ -22,10 +22,17 @@ const WAIT_MS: u64 = 60_000;
 const START: (i32, i32) = DESK.screen_centre();
 /// A point on the Terminal window's title bar: it is the first window.
 const TITLE: (i32, i32) = DESK.window_title(0, 102);
-/// A point on the AI panel.
-const PANEL: (i32, i32) = DESK.focus_kai();
+/// A point on the empty desk: a click there takes the focus from the
+/// Terminal's window, which ends its key lease (Ctrl+Space would go to the
+/// console under the lease).
+const DESK_POINT: (i32, i32) = DESK.desk_point();
 /// Time for the harness's keys, as `ask_tests` gives them.
 const KEYS_MS: u64 = 4_000;
+/// Time for the last batch, a whole line and Enter typed into the pane:
+/// xtask types a key every 150 ms after 200 ms to reach the monitor, so the
+/// 29 keys of "what is the scheduling policy" and Enter take about 4.6 s.
+/// The case must not end before the panel queues the line.
+const LINE_MS: u64 = 9_000;
 
 fn wait(what: &'static str, mut done: impl FnMut() -> bool) -> Result<(), &'static str> {
     for _ in 0..WAIT_MS / 50 {
@@ -83,17 +90,21 @@ pub fn check() -> Result<(), &'static str> {
     // The new desk, and term's window on it.
     threads::sleep_ms(3_000);
     at = START;
-    click(&mut at, PANEL);
+    click(&mut at, DESK_POINT);
     threads::sleep_ms(1_000);
     if input::leased() {
         return Err("desk-term: the keys stayed with the terminal after the focus moved");
     }
+    // The lease is over, so Ctrl+Space reaches desktop: the pane's input
+    // takes the last line, which the panel queues for the shell.
+    crate::ui_tests::focus_kai();
+    threads::sleep_ms(1_000);
     let (keys, asked) = (input::keys(), terminal::replies_shown());
     log!("desk-term: ready for keys");
-    threads::sleep_ms(KEYS_MS);
+    threads::sleep_ms(LINE_MS);
     if input::keys() == keys || terminal::replies_shown() != asked {
         return Err("desk-term: keys typed with the focus elsewhere reached the terminal");
     }
-    log!("desk-term: with the focus elsewhere the keys went to desktop, and nothing asked");
+    log!("desk-term: with the focus in the pane the keys went to desktop, and nothing asked");
     Ok(())
 }

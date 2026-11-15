@@ -22,6 +22,14 @@ const OPEN_MS: u64 = 10_000;
 /// The desk's points at the selftests' 1280x800 (deskgeom), so a layout change
 /// moves every selftest's clicks with it.
 pub(crate) const DESK: deskgeom::Points = deskgeom::points(1280, 800);
+
+/// Opens the Kai pane and focuses its input, wherever the pointer is:
+/// Ctrl+Space, as set 1 make and break codes. The pane is closed at boot, so
+/// [`deskgeom::Points::focus_kai`] is on it only after this.
+pub(crate) fn focus_kai() {
+    const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
+    crate::claim_tests::type_keys(&CTRL_SPACE);
+}
 /// A 640 px wide app's frame: Notes' and most apps'.
 pub(crate) const APP_FRAME_W: i32 = 640 + 2 * deskgeom::FRAME;
 /// Where `desktop` starts the pointer: the middle of 1280x800.

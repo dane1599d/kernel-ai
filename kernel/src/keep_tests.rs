@@ -78,14 +78,10 @@ fn napping() -> Result<bool, &'static str> {
 
 /// Uses Notes, so it is awake, then leaves it alone past its nap: whether it
 /// napped.
-/// A click on the panel, wherever the pointer is: deskgeom's move to the
-/// corner where a click focuses the AI input. The focus leaves Notes' window,
-/// which kept it awake (#869).
+/// Ctrl+Space, wherever the pointer is: the Kai pane's input takes the
+/// focus, which leaves Notes' window, which kept it awake (#869).
 fn focus_the_panel() {
-    let (dx, dy) = crate::ui_tests::DESK.pin_to_kai();
-    crate::ui_tests::report(dx, dy, 0);
-    crate::ui_tests::report(0, 0, 1);
-    crate::ui_tests::report(0, 0, 0);
+    crate::ui_tests::focus_kai();
 }
 
 fn naps_when_left() -> Result<bool, &'static str> {
