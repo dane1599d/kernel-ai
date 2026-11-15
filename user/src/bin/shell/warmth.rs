@@ -75,9 +75,11 @@ impl Warmth {
             self.ask(PEEK_MS, false);
         }
         self.tell();
-        // Between lines only, never on a panel line's path: llm is warm, so
-        // `updated`'s `health` call answers at once and cuts no warm-up.
-        if self.readiness.want() == Some(true)
+        // Between lines only, never on a panel line's path, and only once
+        // llm confirmed it is warm (not merely "ready" across a cool or a
+        // restart): `updated`'s `health` call answers at once and cuts no
+        // warm-up, and no try is spent while llm is down or loading.
+        if self.readiness.confirmed()
             && let (Some(route), Some(to)) = (desktop(), desktop_pid())
         {
             self.name(route, to);

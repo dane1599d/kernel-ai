@@ -666,9 +666,9 @@ fn no_ask_pixel_on_the_taskbar_without_a_card() {
     }
 }
 
-/// At 100 to 200% text and in legible type, the clock and the chip fit
-/// their slots: nothing is cut at the left, and the clock's two lines do
-/// not touch.
+/// At 100 to 200% text and in legible type, the clock, the chip and the
+/// memory (a two-digit GiB) fit their slots: nothing is cut, and the
+/// clock's two lines do not touch.
 #[test]
 fn the_clock_and_chip_fit_at_any_text_size() {
     let shipped = look::theme::shipped();
@@ -690,6 +690,7 @@ fn the_clock_and_chip_fit_at_any_text_size() {
         warming.set_ready(false);
         let bar = Bar {
             utc_s: Some(NEW_YEARS_EVE),
+            mem_used_mib: 99 * 1024,
             ..BAR
         };
         let image = paint_in(
@@ -729,5 +730,10 @@ fn the_clock_and_chip_fit_at_any_text_size() {
             "{}: the chip's text is cut",
             th.name
         );
+        assert_eq!(crate::tray::memory(&bar), "99.0 GiB");
+        let memory = t.memory.expect("memory at 1920");
+        let mem = ink(memory);
+        let right = mem.iter().map(|&(x, _)| x).max().unwrap_or(0);
+        assert!(right < memory.right() - 1, "{}: the memory is cut", th.name);
     }
 }
