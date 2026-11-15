@@ -42,6 +42,7 @@ mod cmode;
 mod commands;
 pub mod data;
 mod deskask;
+mod deskcard;
 pub mod door;
 mod effects;
 mod engine;
@@ -660,8 +661,8 @@ pub struct Shell {
     card_for_desk: Option<(u64, deskask::Asker)>,
     /// What a panel line's card came to, for the panel.
     card_result: Option<(bool, String)>,
-    /// What windows' lines' cards came to, and their asks for it (`deskask`).
-    card_answers: deskask::Answers,
+    /// What windows' lines' cards came to, and their asks for it (`deskcard`).
+    card_answers: deskcard::Answers,
     /// Apps' network asks waiting for the terminal's card (P5 task 13).
     net_cards: Vec<netask::NetAsking>,
     /// Network grants revoked, kept for their undo.
@@ -792,7 +793,7 @@ impl Shell {
             desk_asks: Vec::new(),
             card_for_desk: None,
             card_result: None,
-            card_answers: deskask::Answers::default(),
+            card_answers: deskcard::Answers::default(),
             net_cards: Vec::new(),
             net_revoked: Vec::new(),
             net_high: 0,
