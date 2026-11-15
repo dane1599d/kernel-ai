@@ -38,6 +38,9 @@ const TITLE_ICON: i32 = look::metric::ICON_TITLE as i32;
 const CONTROL_ICON: i32 = 16;
 /// Between the icon, the kernel label and the title.
 const TITLE_GAP: i32 = 8;
+/// The high-contrast hover cue's frame: its own 1 px, not the agent
+/// outline's ([`trusted::OUTLINE`]).
+const HOVER_FRAME: i32 = 1;
 /// Space before and after text in a bar.
 pub(crate) const PAD: i32 = 12;
 /// The varying right side of the top bar: model state and memory.
@@ -251,8 +254,12 @@ impl Painter {
 
     /// The title row (ADR 0005 §7): the app's icon, the kernel's label for
     /// the process in mono, then the app's own title, cut at its end before
-    /// `text_end`. The label is always drawn, so an app titled like another
-    /// still shows whose window it is.
+    /// `text_end`. The title starts only after the whole label, in a clip of
+    /// its own, so no pixel of a title ever shows without the label before
+    /// it, and its marks cannot reach back over the label. In a bar too
+    /// narrow for both (a frame under about 250 px) the label is cut at its
+    /// end and the title not drawn; at the narrowest, 3 controls fill the bar
+    /// and neither shows.
     fn title_row(
         &mut self,
         c: &mut Canvas<'_>,
@@ -261,7 +268,7 @@ impl Painter {
         bar: Rect,
         text_end: i32,
     ) {
-        let clip = Rect::new(bar.x, bar.y, (text_end - bar.x).max(0), bar.h);
+        let text = Rect::new(bar.x, bar.y, (text_end - bar.x).max(0), bar.h);
         let (title_rgb, icon_rgb) = match focused {
             true => (self.palette.text, self.palette.muted),
             false => (self.palette.dim, self.palette.dim),
@@ -272,25 +279,28 @@ impl Painter {
             Some(icon) => {
                 let at = (x, icon_y);
                 self.icons
-                    .draw(c, (icon, TITLE_ICON), at, icon_rgb, g(clip));
+                    .draw(c, (icon, TITLE_ICON), at, icon_rgb, g(text));
             }
-            None => self.monogram(c, clip, (x, icon_y), &window.label, icon_rgb),
+            None => self.monogram(c, text, (x, icon_y), &window.label),
         }
         let x = (x + TITLE_ICON + TITLE_GAP) as f32;
         let y = self.baseline(bar.y, bar.h, TypeStyle::MonoTitle);
         let dim = self.palette.dim;
-        let advance = self.draw_text(c, clip, x, y, TypeStyle::MonoTitle, dim, &window.label);
+        let advance = self.draw_text(c, text, x, y, TypeStyle::MonoTitle, dim, &window.label);
         if window.title.is_empty() || window.title == window.label {
             return;
         }
         let y = self.baseline(bar.y, bar.h, TypeStyle::Label);
         let x = x + advance + TITLE_GAP as f32;
+        let from = x as i32;
+        let clip = Rect::new(from, bar.y, (text_end - from).max(0), bar.h);
         self.draw_text(c, clip, x, y, TypeStyle::Label, title_rgb, &window.title);
     }
 
-    /// A window with no glyph of ours: the first letter of its label on a
-    /// `hover` tile.
-    fn monogram(&mut self, c: &mut Canvas<'_>, clip: Rect, at: (i32, i32), label: &str, rgb: u32) {
+    /// A window with no glyph of ours: the first letter of its label in
+    /// Label, `muted` on a `hover` tile, focused or not (`dim` is never drawn
+    /// on `hover`: ADR 0005 §8, `look::theme::HOVER_NEVER`).
+    fn monogram(&mut self, c: &mut Canvas<'_>, clip: Rect, at: (i32, i32), label: &str) {
         let tile = Rect::new(at.0, at.1, TITLE_ICON, TITLE_ICON);
         let Some(tile) = tile.intersect(&clip) else {
             return;
@@ -301,9 +311,10 @@ impl Painter {
         };
         let mut letter = [0u8; 4];
         let letter = first.to_ascii_uppercase().encode_utf8(&mut letter);
-        let y = self.baseline(at.1, TITLE_ICON, TypeStyle::Small);
+        let y = self.baseline(at.1, TITLE_ICON, TypeStyle::Label);
         let x = (at.0 + TITLE_ICON / 4) as f32;
-        self.draw_text(c, tile, x, y, TypeStyle::Small, rgb, letter);
+        let ink = monogram_ink(&self.palette);
+        self.draw_text(c, tile, x, y, TypeStyle::Label, ink, letter);
     }
 
     /// One title-bar control: its glyph, on a `hover` fill under the pointer,
@@ -319,14 +330,14 @@ impl Painter {
                 c.fill(g(r), opaque(self.palette.error));
                 self.palette.window
             }
-            // High contrast: hover is the ground, so a frame shows it.
+            // High contrast: hover is the ground, so a 1 px frame shows it.
             (true, _) if self.palette.hover == self.palette.window => {
-                outline(c, r, r, self.palette.focus);
-                self.palette.text
+                frame(c, r, r, self.palette.focus, HOVER_FRAME);
+                hover_ink(&self.palette)
             }
             (true, _) => {
                 c.fill(g(r), opaque(self.palette.hover));
-                self.palette.text
+                hover_ink(&self.palette)
             }
         };
         let icon = match part {
@@ -514,7 +525,11 @@ pub(crate) fn fill(c: &mut Canvas<'_>, r: Rect, clip: Rect, rgb: u32) {
 }
 
 fn outline(c: &mut Canvas<'_>, r: Rect, clip: Rect, rgb: u32) {
-    let t = trusted::OUTLINE;
+    frame(c, r, clip, rgb, trusted::OUTLINE);
+}
+
+/// `r`'s edges, `t` px thick, inside it.
+fn frame(c: &mut Canvas<'_>, r: Rect, clip: Rect, rgb: u32, t: i32) {
     for edge in [
         Rect::new(r.x, r.y, r.w, t),
         Rect::new(r.x, r.bottom() - t, r.w, t),
@@ -568,4 +583,14 @@ pub(crate) fn app_icon(label: &str) -> Option<Icon> {
         "settings" => Some(Icon::Settings),
         _ => None,
     }
+}
+
+/// A hovered control's glyph, on `hover`.
+pub(crate) fn hover_ink(palette: &Palette) -> u32 {
+    palette.text
+}
+
+/// A monogram's letter, on its `hover` tile.
+pub(crate) fn monogram_ink(palette: &Palette) -> u32 {
+    palette.muted
 }

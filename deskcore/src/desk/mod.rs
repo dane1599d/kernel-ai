@@ -325,8 +325,10 @@ impl Desk {
         self.pointer
     }
 
-    /// The frame's damage: at most 16 rectangles, or their bounding box.
+    /// The frame's damage: at most 16 rectangles, or their bounding box. The
+    /// hover is settled first, so a frame never paints a stale one.
     pub fn take_damage(&mut self) -> Vec<Rect> {
+        self.rehover();
         self.damage.take()
     }
 
@@ -439,6 +441,11 @@ impl Desk {
             return;
         };
         let content = w.content();
+        // Never narrower than the desk allows, whatever the client drew.
+        let size = Size {
+            w: size.w.max(MIN_CONTENT.w),
+            h: size.h.max(MIN_CONTENT.h),
+        };
         if size.w != content.w || size.h != content.h {
             let old = w.frame;
             w.frame = chrome::frame_for(Rect::new(content.x, content.y, size.w, size.h));
@@ -467,7 +474,11 @@ impl Desk {
             return Hit::Panel;
         }
         for w in self.windows.iter().rev().filter(|w| !w.minimized) {
-            if let Some(part) = chrome::hit(w.frame, p) {
+            let part = match w.maximized() {
+                true => chrome::hit_maximized(w.frame, p),
+                false => chrome::hit(w.frame, p),
+            };
+            if let Some(part) = part {
                 return Hit::Window(w.id, part);
             }
         }
@@ -509,14 +520,16 @@ impl Desk {
         }
         if self.ask.is_some() {
             self.ask_input(input, repeat, &mut effects);
-            return effects;
+        } else {
+            self.takeover(input, &mut effects);
+            match input {
+                Input::Motion(p) => self.motion(p, &mut effects),
+                Input::Button { button, down } => self.button(button, down, &mut effects),
+                Input::Key { usage, down } => self.key(usage, down, &mut effects),
+            }
         }
-        self.takeover(input, &mut effects);
-        match input {
-            Input::Motion(p) => self.motion(p, &mut effects),
-            Input::Button { button, down } => self.button(button, down, &mut effects),
-            Input::Key { usage, down } => self.key(usage, down, &mut effects),
-        }
+        // A click, a key or a card may have moved what is under the pointer.
+        self.rehover();
         effects
     }
 
@@ -569,12 +582,6 @@ impl Desk {
             None => {}
         }
         let hit = self.hit(p);
-        self.hover(match hit {
-            Hit::Window(id, part @ (Part::Minimize | Part::Maximize | Part::Close)) => {
-                Some((id, part))
-            }
-            _ => None,
-        });
         let over = match hit {
             Hit::Window(id, Part::Content(at)) => Some((id, at)),
             _ => None,
@@ -588,26 +595,6 @@ impl Desk {
         if let Some((window, at)) = over {
             effects.push(Effect::Pointer { window, at });
         }
-    }
-
-    /// Moves the hover to `hovered`, damaging the control it leaves and the
-    /// one it enters.
-    fn hover(&mut self, hovered: Option<(WindowId, Part)>) {
-        if hovered == self.hovered {
-            return;
-        }
-        for (id, part) in [self.hovered, hovered].into_iter().flatten() {
-            let rect = self.window(id).and_then(|w| {
-                chrome::controls(w.frame)
-                    .into_iter()
-                    .find(|(p, _)| *p == part)
-                    .map(|(_, r)| r)
-            });
-            if let Some(rect) = rect {
-                self.damage.add(rect);
-            }
-        }
-        self.hovered = hovered;
     }
 
     fn button(&mut self, button: Button, down: bool, effects: &mut Vec<Effect>) {

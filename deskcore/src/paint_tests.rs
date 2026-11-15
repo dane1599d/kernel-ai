@@ -208,19 +208,19 @@ fn an_ask_card_paints_above_a_window() {
 const THEME_GOLDENS: [(&str, &str); 4] = [
     (
         "dark",
-        "521666c729df1bff114a9d17ff6636655af5692ccf812734e04bcc420e3e184a",
+        "c64c25fc52a6251f2c8ac47abe96e1ca9adad7dec4823acc69c2466bc2f78ade",
     ),
     (
         "light",
-        "ccc7978e8c3081b056bf3ef0fd30e89c1eccf2ffc400ac26cf4f471d9bbea358",
+        "8973ef5701e69038af50a40b75e0f4ac8d642a6e70b9c04c67f1598370cbc7ef",
     ),
     (
         "high-contrast",
-        "c6379cbc85be110412bb8a4764b4c75d46f6b04ae5d57fec4fbcd25f5c4e7695",
+        "ae5277a88d96bb0d341fac4c3cc4bd1a5a6aeaf9e2557720cdbfd61c31c8f761",
     ),
     (
         "legible",
-        "b8530e84d7878a063b67f2119721dcb727246c9a16618af5080916ad6a5e9f5a",
+        "3b241fff6263a071f0582c4700c9bbf25400808bb488f6b478cb27f4feb56a09",
     ),
 ];
 

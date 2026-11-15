@@ -1,8 +1,10 @@
 //! The window frame `desktop` draws around every window (ADR 0005 §8):
 //! a 32 px title bar, three 40x32 controls flush in its right end, a 1 px
 //! frame, and resize grabs reaching 6 px outside it, 16x16 at the corners.
-//! Inside the frame the close control wins over the corner grab. Only `desktop` draws it, so
-//! an app cannot pose as another app or as the system.
+//! Inside the frame the close control wins over the corner grab; a maximized
+//! window has no grabs, so its close control reaches the screen's corner.
+//! Only `desktop` draws it, so an app cannot pose as another app or as the
+//! system.
 
 use crate::geom::{Point, Rect};
 
@@ -66,17 +68,36 @@ pub fn hit(frame: Rect, p: Point) -> Option<Part> {
     if !inside || edges.left || edges.right || edges.top || edges.bottom {
         return Some(Part::Edge(corners(frame, p, edges)));
     }
+    Some(inner(frame, p))
+}
+
+/// What `p` hits on a maximized window, or `None` off it. It fills the work
+/// area and has no grabs: its 1 px frame line hits what is just inside it,
+/// so the pointer pushed into the screen's corner is on close (as in Win11).
+pub fn hit_maximized(frame: Rect, p: Point) -> Option<Part> {
+    if !frame.contains(p) {
+        return None;
+    }
+    let p = Point {
+        x: p.x.clamp(frame.x + FRAME, frame.right() - FRAME - 1),
+        y: p.y.clamp(frame.y + FRAME, frame.bottom() - FRAME - 1),
+    };
+    Some(inner(frame, p))
+}
+
+/// What `p`, inside the frame line, hits: a control, the title or content.
+fn inner(frame: Rect, p: Point) -> Part {
     if let Some((part, _)) = controls(frame).into_iter().find(|(_, r)| r.contains(p)) {
-        return Some(part);
+        return part;
     }
     if title_bar(frame).contains(p) {
-        return Some(Part::Title);
+        return Part::Title;
     }
     let content = content_of(frame);
-    Some(Part::Content(Point {
+    Part::Content(Point {
         x: p.x - content.x,
         y: p.y - content.y,
-    }))
+    })
 }
 
 /// Widens an edge grab to a corner when `p` is within [`CORNER`] of one.
