@@ -1,5 +1,5 @@
-//! The AI panel's line (ADR 0005 §8): a full-width `kai>` command line along
-//! the bottom, which is also the launcher. Keys come from [`crate::desk::Desk`]
+//! The AI's line (ADR 0005 §8): the `kai>` input in the Kai pane, which is
+//! also the launcher. Keys come from [`crate::desk::Desk`]
 //! as `PanelKey` while the panel has focus; Enter queues the line for the agent
 //! core (the shell), which takes it with a call to `desktop` and reports what it
 //! is doing back the same way: calls go one way (ADR 0005 §7), so `desktop`
@@ -67,6 +67,9 @@ pub struct Panel {
     ready: Option<bool>,
     /// Esc on a line the shell took: `desktop` interrupts the shell's line.
     interrupt: bool,
+    /// Esc with nothing of the panel's running: the focus goes back to the
+    /// window it came from ([`Panel::take_leave`]).
+    leave: bool,
 }
 
 impl Default for Panel {
@@ -89,6 +92,7 @@ impl Panel {
             apps: false,
             ready: None,
             interrupt: false,
+            leave: false,
         }
     }
 
@@ -186,6 +190,19 @@ impl Panel {
         if key == Key::Esc {
             return self.escape();
         }
+        self.apply(key, now_ms)
+    }
+
+    /// The pane's send item, clicked: exactly Esc while Kai thinks (it is
+    /// Stop then), else Enter.
+    pub fn send_item(&mut self, now_ms: u64) -> bool {
+        match self.state {
+            State::Thinking { .. } => self.escape(),
+            _ => self.apply(Key::Enter, now_ms),
+        }
+    }
+
+    fn apply(&mut self, key: Key, now_ms: u64) -> bool {
         match self.line.apply(key) {
             Outcome::Unchanged => false,
             Outcome::Changed => true,
@@ -213,7 +230,8 @@ impl Panel {
         core::mem::take(&mut self.apps)
     }
 
-    /// Esc: stops a request being thought about, else clears the line.
+    /// Esc: stops the panel's own request being thought about; with none,
+    /// asks for the focus to go back where it came from, keeping the line.
     fn escape(&mut self) -> bool {
         if matches!(self.state, State::Thinking { .. }) {
             // A line still waiting never reaches the shell; one it took is
@@ -233,11 +251,13 @@ impl Panel {
             self.state = State::Idle;
             return true;
         }
-        if self.line.text().is_empty() {
-            return false;
-        }
-        self.line = Line::new(MAX_LINE);
-        true
+        self.leave = true;
+        false
+    }
+
+    /// Whether Esc asked for the focus to go back, once.
+    pub fn take_leave(&mut self) -> bool {
+        core::mem::take(&mut self.leave)
     }
 
     fn queue(&mut self, request: Request) {
@@ -310,18 +330,37 @@ mod tests {
         assert!(!waiting.take_interrupt());
     }
 
+    /// Esc interrupts only the panel's own request; otherwise it gives the
+    /// focus back and keeps the line.
     #[test]
-    fn esc_stops_a_request_and_otherwise_clears_the_line() {
+    fn esc_stops_a_request_and_otherwise_gives_the_focus_back() {
         let mut panel = Panel::new();
         tap(&mut panel, &[0x0B, 0x28]);
         assert!(matches!(panel.take(), Some(Request::Line(_))));
         tap(&mut panel, &[0x29]);
         assert_eq!(panel.take(), Some(Request::Stop));
         assert_eq!(panel.state(), &State::Idle);
+        assert!(!panel.take_leave());
         tap(&mut panel, &[0x0B, 0x0C]);
         tap(&mut panel, &[0x29]);
-        assert_eq!(panel.text(), "");
+        assert_eq!(panel.text(), "hi");
         assert_eq!(panel.take(), None);
+        assert!(panel.take_leave());
+        assert!(!panel.take_leave(), "once per Esc");
+    }
+
+    /// The send item sends the line, and is Stop while Kai thinks.
+    #[test]
+    fn the_send_item_sends_and_then_stops() {
+        let mut panel = Panel::new();
+        tap(&mut panel, &[0x0B]);
+        assert!(panel.send_item(5));
+        assert_eq!(panel.take(), Some(Request::Line("h".into())));
+        assert_eq!(panel.state(), &State::Thinking { since_ms: 5 });
+        assert!(panel.send_item(6));
+        assert_eq!(panel.take(), Some(Request::Stop));
+        assert_eq!(panel.state(), &State::Idle);
+        assert!(!panel.take_leave());
     }
 
     #[test]

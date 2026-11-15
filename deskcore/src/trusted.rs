@@ -3,7 +3,6 @@
 //! who gets keys and clicks while a card is up and when the user takes over,
 //! are [`crate::desk::Desk`]'s.
 
-use crate::chrome::PANEL;
 use crate::geom::Rect;
 
 /// The widest the sheet an ask card sits in grows.
@@ -29,13 +28,15 @@ pub struct Ask {
     pub armed: bool,
 }
 
-/// The card's rectangle on a `width` x `height` screen: centred, above the
-/// panel, at most half the screen tall.
+/// The card's rectangle on a `width` x `height` screen: min(W-32, 960)
+/// wide and centred, its bottom 12 above the taskbar (H-60), as tall as its
+/// lines up to (H-72) x 2/3 (deskgeom's `card_bottom` and `card_max_h`).
 pub fn card(width: i32, height: i32, ask: &Ask) -> Rect {
+    let l = deskgeom::Layout::for_screen(width, height, deskgeom::UiState::default());
     let w = (width - 2 * PADDING).min(SHEET_MAX);
     let wanted = PADDING * 3 + ask.lines.max(1) * LINE + BUTTON_H;
-    let h = wanted.min((height - PANEL) / 2);
-    Rect::new((width - w) / 2, height - PANEL - h, w, h)
+    let h = wanted.min(l.card_max_h);
+    Rect::new((width - w) / 2, l.card_bottom - h, w, h)
 }
 
 /// The Run (y) and Don't (n) buttons, bottom right of the card.

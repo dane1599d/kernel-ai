@@ -117,14 +117,14 @@ fn a_press_on_a_tab_brings_its_window_back() {
     assert_eq!(desk.focus(), Focus::Window(a));
 }
 
-/// Backlog item 9: the panel and the top bar take their own clicks, even
-/// with a window dragged under them; a dragged title bar stays in reach.
+/// Backlog item 9: a title bar dragged far off stays in reach. (The pane's
+/// own clicks over a window: `pane_tests`.)
 #[test]
-fn the_bars_take_their_clicks_over_windows_and_title_bars_stay_in_reach() {
+fn a_dragged_title_bar_stays_in_reach() {
     let mut desk = fresh();
     let a = open(&mut desk, 1, true);
     let frame = desk.window(a).unwrap().frame;
-    // Drag it by its title far down, past the panel, and far left.
+    // Drag it by its title far down, past the taskbar's strip, and far left.
     desk.input(Input::Motion(Point {
         x: frame.x + 100,
         y: frame.y + 10,
@@ -145,8 +145,4 @@ fn the_bars_take_their_clicks_over_windows_and_title_bars_stay_in_reach() {
     let area = desk.work_area();
     assert!(moved.y + chrome::TITLE_BAR <= area.bottom(), "{moved:?}");
     assert!(moved.right() >= area.x + 64, "{moved:?}");
-    // A press on the panel focuses the panel, never the window under it.
-    let panel = desk.panel();
-    click(&mut desk, panel);
-    assert_eq!(desk.focus(), Focus::Panel);
 }

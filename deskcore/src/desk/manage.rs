@@ -174,7 +174,7 @@ impl Desk {
     }
 
     pub(super) fn toggle_maximize(&mut self, id: WindowId, effects: &mut Vec<Effect>) {
-        let area = self.work_area();
+        let area = self.layout().maximized;
         let activated = self.focus == Focus::Window(id);
         let Some(w) = self.windows.iter_mut().find(|w| w.id == id) else {
             return;

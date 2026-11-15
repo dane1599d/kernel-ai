@@ -24,8 +24,8 @@ fn hits(r: Rect, p: (i32, i32)) -> bool {
 fn todays_desk_keeps_todays_numbers() {
     let l = layout(1280, 800);
     assert_eq!(l.top_bar, Rect::new(0, 0, 1280, 28));
-    assert_eq!(l.panel, Rect::new(0, 764, 1280, 36));
-    assert_eq!(l.work_area, Rect::new(0, 28, 1280, 736));
+    assert_eq!(l.work_area, Rect::new(0, 28, 1280, 724));
+    assert_eq!(l.maximized, l.work_area);
     assert_eq!(l.stats, Rect::new(960, 0, 320, 27));
     assert_eq!(l.cascade(0), Point { x: 48, y: 52 });
     assert_eq!(l.cascade(1), Point { x: 80, y: 84 });
@@ -44,12 +44,12 @@ fn every_surface_is_on_the_screen_and_they_tile_its_height() {
     for (w, h) in SIZES {
         let l = layout(w, h);
         let screen = Rect::new(0, 0, w, h);
-        for r in [l.top_bar, l.panel, l.work_area, l.stats] {
+        for r in [l.top_bar, l.work_area, l.stats, l.pane] {
             assert!(inside(screen, r), "{r:?} at {w}x{h}");
         }
         assert_eq!(l.top_bar.bottom(), l.work_area.y);
-        assert_eq!(l.work_area.bottom(), l.panel.y);
-        assert_eq!(l.panel.bottom(), h);
+        // The taskbar's 48 px stay below the work area.
+        assert_eq!(l.work_area.bottom(), h - TASKBAR);
         assert!(inside(l.top_bar, l.stats));
         for n in 0..CASCADE_SPOTS {
             assert!(inside(
@@ -65,8 +65,7 @@ fn each_point_lands_in_its_target() {
     for (w, h) in SIZES {
         let p = points(w, h);
         let l = p.layout;
-        assert!(hits(l.panel, p.focus_kai()));
-        assert!(hits(l.panel, p.pinned()));
+        assert!(hits(l.pane_parts().input, p.focus_kai()));
         assert!(hits(l.work_area, p.desk_point()));
         assert!(hits(l.work_area, p.screen_centre()));
         for n in 0..CASCADE_SPOTS {
@@ -104,7 +103,7 @@ fn the_desk_point_is_clear_of_every_window_and_its_grabs() {
 fn the_selftests_points_hit_what_they_hit() {
     let p = points(1280, 800);
     assert_eq!(p.screen_centre(), (640, 400));
-    assert_eq!(p.focus_kai(), (640, 782));
+    assert_eq!(p.focus_kai(), (908 + 180, 12 + 728 - 12 - 22));
     // Kai Desk's 40x32 controls, flush: the close control's middle.
     assert_eq!(p.close(0, NOTES_W), (48 + 642 - 1 - 20, 52 + 1 + 16));
     // The old close point is still on close; the old minimize point is on
@@ -116,4 +115,65 @@ fn the_selftests_points_hit_what_they_hit() {
     assert_eq!(p.window_title(1, 60), (140, 92));
     assert_eq!(p.window_title(2, 388), (500, 124));
     assert!(hits(controls(frame).minimize, p.minimize(0, NOTES_W)));
+}
+
+/// ADR 0005 §8's pane table, and its parts inside it and apart.
+#[test]
+fn the_pane_is_where_the_adr_puts_it() {
+    let want = [
+        ((1920, 1080), Rect::new(1508, 12, 400, 1008)),
+        ((1280, 800), Rect::new(908, 12, 360, 728)),
+        ((1024, 768), Rect::new(672, 12, 340, 696)),
+    ];
+    for ((w, h), pane) in want {
+        let l = layout(w, h);
+        assert_eq!(l.pane, pane);
+        let p = l.pane_parts();
+        for part in [
+            p.header, p.mark, p.close, p.history, p.status, p.stop, p.input, p.send,
+        ] {
+            assert!(inside(pane, part), "{part:?} at {w}x{h}");
+        }
+        assert!(inside(p.header, p.close) && inside(p.header, p.mark));
+        assert!(inside(p.status, p.stop) && inside(p.input, p.send));
+        // Top to bottom, never overlapping: header, history, status, input.
+        assert!(p.header.bottom() <= p.history.y);
+        assert!(p.history.bottom() <= p.status.y);
+        assert!(p.status.bottom() <= p.input.y);
+        assert_eq!(
+            p.input,
+            Rect::new(pane.x + 12, pane.bottom() - 56, pane.w - 24, 44)
+        );
+        // 12 above the taskbar.
+        assert_eq!(pane.bottom(), h - TASKBAR - FLYOUT_MARGIN);
+    }
+}
+
+/// The card's and sheet's anchor: bottom at H-60, at most (H-72) x 2/3.
+#[test]
+fn the_card_sits_above_the_taskbar() {
+    for ((w, h), max_h) in [((1920, 1080), 672), ((1280, 800), 485), ((1024, 768), 464)] {
+        let l = layout(w, h);
+        assert_eq!(l.card_bottom, h - 60);
+        assert_eq!(l.card_max_h, max_h);
+    }
+}
+
+/// With the pane open at 1280 and up, a maximized window fits beside it;
+/// under 1280 the pane is a flyout and maximize fills the work area.
+#[test]
+fn maximized_windows_fit_beside_an_open_pane() {
+    for (w, h) in SIZES {
+        let open = Layout::for_screen(w, h, UiState { pane_open: true });
+        let closed = layout(w, h);
+        assert_eq!(closed.maximized, closed.work_area);
+        match w >= PANE_BESIDE {
+            true => {
+                assert_eq!(open.maximized.right(), open.pane.x - FLYOUT_MARGIN);
+                assert_eq!(open.maximized.y, open.work_area.y);
+                assert_eq!(open.maximized.h, open.work_area.h);
+            }
+            false => assert_eq!(open.maximized, open.work_area),
+        }
+    }
 }

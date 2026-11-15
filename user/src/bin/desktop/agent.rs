@@ -77,6 +77,6 @@ pub fn took_over(state: &mut State, window: WindowId) {
     );
     let reason = String::from(TOOK_OVER);
     if state.panel.set_state(panel::State::Refused { reason }) {
-        state.extra.push(state.desk.panel());
+        state.extra.push(state.desk.pane_area());
     }
 }

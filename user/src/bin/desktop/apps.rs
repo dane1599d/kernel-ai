@@ -133,7 +133,7 @@ pub(super) fn key(state: &mut State, usage: u16, down: bool, now_ms: u64) -> boo
     if let Some(line) = line {
         println!("desktop: the Apps sheet sent {line:?}");
         state.panel.send(line, now_ms);
-        state.extra.push(state.desk.panel());
+        state.extra.push(state.desk.pane_area());
         super::wake_shell();
     }
     true

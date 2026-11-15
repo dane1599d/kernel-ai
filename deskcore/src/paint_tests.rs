@@ -4,7 +4,7 @@
 use crate::desk::Desk;
 use crate::geom::{Point, Rect, Size};
 use crate::paint::{Bar, Painter, Scene};
-use crate::panel::{Panel, State};
+use crate::panel::Panel;
 use alloc::string::String;
 use alloc::vec::Vec;
 use gfx2d::{Fonts, Image};
@@ -90,7 +90,7 @@ fn two_windows_paint() {
 /// 1280x800 with the cursor in the middle, as `desktop` first draws it on GOP,
 /// its RGB bytes hashed with the top bar's stats blanked. The boot's screendump
 /// must hash the same.
-const DESK_BOOT: &str = "514ded10f7fe4dd26d45737cbd9831ff457c6cf5ff59631ecc042c33342a51bb";
+const DESK_BOOT: &str = "5409c90f0bc6830ab1ed54e061ab040b69b3aa28e68e87b9d73549bb94ce6b32";
 
 #[test]
 fn the_boot_desk_matches_desk_boot_s_golden() {
@@ -128,29 +128,6 @@ fn the_boot_desk_matches_desk_boot_s_golden() {
         got, DESK_BOOT,
         "desk-boot's golden changed: update it here and in xtask"
     );
-}
-
-#[test]
-fn the_panel_paints_each_state() {
-    let desk = Desk::new(1280, 800);
-    let mut panel = Panel::new();
-    paint_with("panel-idle", &desk, &panel, 1280, 800);
-    panel.set_focus(true);
-    for code in [0x0B, 0x0C] {
-        panel.key(code, true, 0);
-        panel.key(code, false, 0);
-    }
-    paint_with("panel-listening", &desk, &panel, 1280, 800);
-    panel.set_state(State::Thinking { since_ms: 0 });
-    paint_with("panel-thinking", &desk, &panel, 1280, 800);
-    panel.set_state(State::Done {
-        line: "Done: policy round-robin (was interactive).".into(),
-    });
-    paint_with("panel-done", &desk, &panel, 1280, 800);
-    panel.set_state(State::Refused {
-        reason: "Refused: notes is protected".into(),
-    });
-    paint_with("panel-refused", &desk, &panel, 1280, 800);
 }
 
 #[test]
@@ -202,25 +179,26 @@ fn an_ask_card_paints_above_a_window() {
 }
 
 /// Each shipped theme's golden: two windows, the second focused (with its
-/// shadow), and the panel listening, at 1280x800. Its digest is pinned, so a
+/// shadow), and the Kai pane open beside them with its input listening, at
+/// 1280x800. Its digest is pinned, so a
 /// change to a theme or to the painter shows here; `DESK_PREVIEW=dir` writes
 /// each as a PPM to look at.
 const THEME_GOLDENS: [(&str, &str); 4] = [
     (
         "dark",
-        "cbdf55e83019eceea45b81ea5509839d7ab54bce08fa73a5fd17eb107fcdb05d",
+        "9b941e791223f71fa5170883bfc9a9484457e04f3f368fa3b367de81bbccf798",
     ),
     (
         "light",
-        "8bafcd33403efa1ec6f02efb233c8306d176623082cca88c4b09eb5dcbf4cd6c",
+        "120604d298eec2d0ebf787d7a94406dc1ce6dc2ad41eeafa4c8bb4defd0a11c3",
     ),
     (
         "high-contrast",
-        "8309a1a9c22f89e68b38e3452b784d84e98da869f031e81e94f4a67159ee38e4",
+        "a6834c8c1e2bd4eb2018f7afaa863c5782e75e5ba3401ee0d75e40a4d9e75d8b",
     ),
     (
         "legible",
-        "f51493952f18e020590c3d8cd7d2a677f4ad567ec2f661272e79376ae28afee1",
+        "69e6b9671f6a783dc20a579fe5d8b0e9d24298059ccc7d6009e6852d75e77c4b",
     ),
 ];
 
@@ -228,7 +206,12 @@ const THEME_GOLDENS: [(&str, &str); 4] = [
 fn each_shipped_theme_paints_its_golden() {
     let mut desk = Desk::new(1280, 800);
     desk.open(1, "notes", "Notes", Size { w: 400, h: 300 }, true);
-    desk.open(2, "shell", "Terminal", Size { w: 520, h: 320 }, true);
+    let (top, _) = desk.open(2, "shell", "Terminal", Size { w: 520, h: 320 }, true);
+    // Opened, then the focus back on the window: at 1280 the pane stays.
+    let mut effects = Vec::new();
+    desk.set_focus(crate::desk::Focus::Panel, &mut effects);
+    desk.set_focus(crate::desk::Focus::Window(top), &mut effects);
+    assert!(desk.pane().is_some());
     let mut panel = Panel::new();
     panel.set_focus(true);
     let mut seen: Vec<String> = Vec::new();
@@ -289,11 +272,6 @@ fn a_dragged_window_has_no_shadow_until_it_is_let_go() {
     assert_eq!(paint("let-go", &desk, 1280, 800), shadowed);
 }
 
-/// A pixel's colour, its alpha left out.
-fn rgb(px: u32) -> u32 {
-    px & ((1 << 24) - 1)
-}
-
 #[test]
 fn the_input_view_keeps_the_cursor_in_its_columns() {
     use crate::paint_panel::view;
@@ -309,221 +287,6 @@ fn the_input_view_keeps_the_cursor_in_its_columns() {
     // A cursor past the end is the end; an input too narrow skips nothing.
     assert_eq!(view(30, 99, 20), 12);
     assert_eq!(view(30, 30, 1), 0);
-}
-
-/// Typed past the input's width, the line scrolls: the ember caret is drawn
-/// inside the input, not cut off past its right edge (the founder's
-/// VirtualBox test, 2026-11-14).
-#[test]
-fn a_long_line_keeps_the_caret_in_the_input() {
-    let desk = Desk::new(1280, 800);
-    let mut panel = Panel::new();
-    panel.set_focus(true);
-    // `a` .. `z`, five times: far past the left half's columns.
-    for _ in 0..5 {
-        for code in 0x04..=0x1D {
-            panel.key(code, true, 0);
-            panel.key(code, false, 0);
-        }
-    }
-    assert_eq!(panel.cursor(), 130);
-    let painter = Painter::new(FONTS).expect("the fonts parse");
-    let ember = painter.palette.ai;
-    let area = desk.panel();
-    // The input's right part, below the top rule: where the caret must be.
-    let (w, h) = (1280, 800);
-    let mut image = Image::new(w, h);
-    let mut canvas = image.canvas();
-    let scene = Scene {
-        desk: &desk,
-        bar: &BAR,
-        panel: &panel,
-        chat: &crate::chat::Chat::default(),
-        sheet: None,
-        ask: None,
-        now_ms: 0,
-    };
-    let mut painter = painter;
-    painter.paint(
-        &mut canvas,
-        Rect::new(0, 0, w, h),
-        &scene,
-        &mut |_, _, _| false,
-    );
-    let (x0, x1) = (area.x + area.w / 4, area.x + area.w / 2);
-    let caret = (area.y + 3..area.y + area.h)
-        .flat_map(|y| (x0..x1).map(move |x| (x, y)))
-        .filter(|&(x, y)| rgb(image.px[(y * w + x) as usize]) == rgb(ember))
-        .count();
-    assert!(
-        caret > 20,
-        "the caret is not in the input: {caret} ember pixels"
-    );
-}
-
-/// While the model warms up the panel says "Kai is getting ready", idle and
-/// in place of "thinking"; once warm it paints as it always did.
-#[test]
-fn the_panel_says_kai_is_getting_ready_until_the_model_is_warm() {
-    let desk = Desk::new(1280, 800);
-    let mut panel = Panel::new();
-    let idle = paint_with("panel-idle-unknown", &desk, &panel, 1280, 800);
-    assert!(panel.set_ready(false));
-    let warming = paint_with("panel-getting-ready", &desk, &panel, 1280, 800);
-    assert_ne!(idle, warming);
-    panel.set_state(State::Thinking { since_ms: 0 });
-    let waiting = paint_with("panel-getting-ready-asked", &desk, &panel, 1280, 800);
-    assert!(panel.set_ready(true));
-    let thinking = paint_with("panel-thinking-warm", &desk, &panel, 1280, 800);
-    assert_ne!(waiting, thinking);
-    panel.set_state(State::Idle);
-    assert_eq!(
-        paint_with("panel-idle-warm", &desk, &panel, 1280, 800),
-        idle
-    );
-    assert!(!panel.set_ready(true), "no change, no repaint");
-}
-
-/// Backlog item 9: a done line's undo and show are clickable where they are
-/// drawn, undo before show, and nothing else on the panel is a link.
-#[test]
-fn the_panels_undo_and_show_are_where_they_are_drawn() {
-    use crate::geom::Point;
-    let desk = Desk::new(1280, 800);
-    let painter = Painter::new(FONTS).expect("the fonts parse");
-    let area = desk.panel();
-    let mut done = Panel::new();
-    done.set_done(
-        State::Done {
-            line: "Done: policy round-robin (was interactive).".into(),
-        },
-        Some(7),
-    );
-    let y = area.y + area.h / 2;
-    let found: Vec<(i32, &str)> = (area.x..area.right())
-        .filter_map(|x| {
-            painter
-                .panel_link(area, &done, Point { x, y })
-                .map(|w| (x, w))
-        })
-        .collect();
-    let first = |word: &str| found.iter().find(|(_, w)| *w == word).map(|(x, _)| *x);
-    let (undo, show) = (first("undo").unwrap(), first("show").unwrap());
-    assert!(undo < show && undo > area.x + area.w / 2, "{undo} {show}");
-    assert!(found.iter().all(|(x, _)| *x >= area.x + area.w / 2));
-    // With no entry to act on, a done line has no links.
-    let mut bare = Panel::new();
-    bare.set_done(
-        State::Done {
-            line: "Done: policy round-robin (was interactive).".into(),
-        },
-        None,
-    );
-    assert_eq!(painter.panel_link(area, &bare, Point { x: show, y }), None);
-    assert_eq!(
-        painter.panel_link(area, &Panel::new(), Point { x: show, y }),
-        None
-    );
-}
-
-/// A history of a few panel lines, with a window open over part of it.
-fn chat_scene(chat: &crate::chat::Chat, name: &str) -> (Image, Desk) {
-    let mut desk = Desk::new(1280, 800);
-    // Big enough to cover part of the history's column.
-    desk.open(1, "notes", "Notes", Size { w: 700, h: 400 }, true);
-    let panel = Panel::new();
-    let mut painter = Painter::new(FONTS).expect("the fonts parse");
-    let (w, h) = (1280, 800);
-    let mut image = Image::new(w, h);
-    let mut canvas = image.canvas();
-    let scene = Scene {
-        desk: &desk,
-        bar: &BAR,
-        panel: &panel,
-        chat,
-        sheet: None,
-        ask: None,
-        now_ms: 0,
-    };
-    painter.paint(
-        &mut canvas,
-        Rect::new(0, 0, w, h),
-        &scene,
-        &mut |_, _, _| false,
-    );
-    if let Ok(dir) = std::env::var("DESK_PREVIEW") {
-        let mut ppm = std::format!("P6\n{w} {h}\n255\n").into_bytes();
-        for p in &image.px {
-            ppm.extend_from_slice(&[(p >> 16) as u8, (p >> 8) as u8, *p as u8]);
-        }
-        std::fs::write(std::format!("{dir}/{name}.ppm"), ppm).expect("the preview is written");
-    }
-    (image, desk)
-}
-
-/// The founder's ask (2026-11-14): each panel line and its reply above the
-/// bar, as a chat. The AI's words are drawn in the history, in its own look,
-/// and never in the bar, which paints as it does with no history at all.
-#[test]
-fn the_history_draws_above_the_bar_and_never_in_it() {
-    use crate::chat::{Chat, Who};
-    use crate::paint_chat::chat_area;
-    let mut chat = Chat::default();
-    chat.push(Who::You, "what is rust?");
-    chat.push(
-        Who::Kai,
-        "Rust is a systems programming language focused on safety, speed and \
-         concurrency. It has no garbage collector: memory is freed when its \
-         owner goes out of scope.",
-    );
-    chat.push(Who::Note, "Kai answered above.");
-    chat.push(Who::You, "stop notes");
-    chat.push(
-        Who::Note,
-        "it asks first: ask in the terminal, which shows the script",
-    );
-    let (with, desk) = chat_scene(&chat, "chat");
-    let (without, _) = chat_scene(&Chat::default(), "chat-empty");
-    let w = 1280;
-    let px = |image: &Image, x: i32, y: i32| rgb(image.px[(y * w + x) as usize]);
-    // The bar is the same pixels with or without a history.
-    let bar = desk.panel();
-    for y in bar.y..bar.bottom() {
-        for x in bar.x..bar.right() {
-            assert_eq!(px(&with, x, y), px(&without, x, y), "the bar at {x},{y}");
-        }
-    }
-    // The history is drawn, in its area alone.
-    let area = chat_area(&desk);
-    let changed: Vec<(i32, i32)> = (0..800)
-        .flat_map(|y| (0..w).map(move |x| (x, y)))
-        .filter(|&(x, y)| px(&with, x, y) != px(&without, x, y))
-        .collect();
-    assert!(changed.len() > 1000, "{} pixels changed", changed.len());
-    assert!(
-        changed
-            .iter()
-            .all(|&(x, y)| x >= area.x && x < area.right() && y >= area.y && y < area.bottom())
-    );
-    // Kai's ember rule runs down the column's left edge.
-    let painter = Painter::new(FONTS).expect("the fonts parse");
-    let ember = rgb(painter.palette.ai);
-    let rule = (area.y..area.bottom())
-        .filter(|&y| px(&with, area.x, y) == ember)
-        .count();
-    assert!(rule > 30, "the AI's rule is {rule} px tall");
-    // The window covers the history: inside it nothing changed.
-    let frame = desk.windows()[0].frame;
-    assert!(
-        frame.intersect(&area).is_some(),
-        "the window covers part of it"
-    );
-    assert!(
-        changed.iter().all(|&(x, y)| !(x >= frame.x
-            && x < frame.right()
-            && y >= frame.y
-            && y < frame.bottom()))
-    );
 }
 
 /// Kai Desk PR 3: the Apps sheet is the scene's, drawn under the ask card,

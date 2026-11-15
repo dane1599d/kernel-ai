@@ -71,6 +71,8 @@ user::entry!(main);
 
 #[path = "desktop/agent.rs"]
 mod agent;
+#[path = "desktop/pane.rs"]
+mod pane;
 #[path = "desktop/perf.rs"]
 mod perf;
 
@@ -439,10 +441,17 @@ fn deliver(state: &mut State, effects: &[Effect]) {
             continue;
         }
         let changed = match *effect {
+            // The send item: Enter, or Stop (as Esc) while Kai thinks.
+            Effect::PanelClick { at } if state.desk.layout().pane_parts().send.contains(at) => {
+                let before = state.panel.waiting();
+                let changed = state.panel.send_item(now);
+                pane::after_panel_key(state, before);
+                changed
+            }
             // A click on a done line's undo or show sends it, as though typed.
             Effect::PanelClick { at } => {
-                let area = state.desk.panel();
-                match state.painter.panel_link(area, &state.panel, at) {
+                let row = paint_panel::state_area(&state.desk);
+                match state.painter.panel_link(row, &state.panel, at) {
                     Some(word) => {
                         // Undo takes back the line beside it, by its entry,
                         // never the newest of another line's.
@@ -463,27 +472,19 @@ fn deliver(state: &mut State, effects: &[Effect]) {
                 false
             }
             Effect::PanelKey { usage, down } if apps::key(state, usage, down, now) => false,
+            // PageUp and PageDown scroll the pane's history by an entry.
+            Effect::PanelKey { usage, down }
+                if usage == pane::PAGE_UP || usage == pane::PAGE_DOWN =>
+            {
+                if down && state.chat.scroll(usage == pane::PAGE_UP) {
+                    state.extra.push(paint_chat::chat_area(&state.desk));
+                }
+                false
+            }
             Effect::PanelKey { usage, down } => {
                 let before = state.panel.waiting();
                 let changed = state.panel.key(usage, down, now);
-                // Esc on a line the shell took: it is interrupted now, if the
-                // shell still runs it.
-                if state.panel.take_interrupt() {
-                    let line = deskcore::running::Line::Panel;
-                    let _ = interrupt_shell(state, line, "the panel's Esc");
-                }
-                if state.panel.waiting() > before {
-                    // Its length only: a panel line may hold anything typed.
-                    let len = match state.panel.newest() {
-                        Some(deskcore::panel::Request::Line(text)) => text.chars().count(),
-                        _ => 0,
-                    };
-                    println!("desktop: the panel queued a request ({len} characters)");
-                    wake_shell();
-                }
-                if state.panel.take_apps() {
-                    apps::open(state);
-                }
+                pane::after_panel_key(state, before);
                 changed
             }
             Effect::Focus(focus) => {
@@ -495,7 +496,7 @@ fn deliver(state: &mut State, effects: &[Effect]) {
             _ => false,
         };
         if changed {
-            state.extra.push(state.desk.panel());
+            state.extra.push(state.desk.pane_area());
         }
     }
 }
@@ -594,9 +595,7 @@ fn tick_panel(state: &mut State) {
     let now = now_ms();
     if paint_panel::ticks(&state.panel) && now.saturating_sub(state.ticked_ms) >= 1_000 {
         state.ticked_ms = now;
-        state
-            .extra
-            .push(paint_panel::state_area(state.desk.panel()));
+        state.extra.push(paint_panel::state_area(&state.desk));
     }
 }
 
@@ -744,7 +743,7 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
             // Neither line holds the other, so a case can tell them apart.
             let now = if ready { "ready" } else { "getting ready" };
             println!("desktop: the model is {now}");
-            state.extra.push(state.desk.panel());
+            state.extra.push(state.desk.pane_area());
             state.extra.push(paint::stats_area(state.width));
             // The top bar says it too, from the next read of the stats.
             state.bar_at = 0;
@@ -759,7 +758,7 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         if !thinking && state.panel.set_state(shown) {
             println!("desktop: the panel shows what a card came to");
             log_bar(state.log_bar, text.as_deref());
-            state.extra.push(state.desk.panel());
+            state.extra.push(state.desk.pane_area());
         }
         return Some(String::from("ok"));
     }
@@ -809,7 +808,7 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         // Its kind only: the line is the shell's result, which may name a file.
         println!("desktop: the panel shows {word}");
         log_bar(state.log_bar, text.as_deref());
-        state.extra.push(state.desk.panel());
+        state.extra.push(state.desk.pane_area());
     }
     Some(String::from("ok"))
 }
@@ -1256,9 +1255,7 @@ fn refresh_bar(state: &mut State) {
         state.bar = bar;
         state.extra.push(paint::stats_area(state.width));
         // The idle panel shows the model's dot too.
-        state
-            .extra
-            .push(paint_panel::state_area(state.desk.panel()));
+        state.extra.push(paint_panel::state_area(&state.desk));
     }
 }
 

@@ -31,6 +31,7 @@ pub mod paint;
 pub mod paint_card;
 pub mod paint_catalog;
 pub mod paint_chat;
+pub mod paint_pane;
 pub mod paint_panel;
 pub mod panel;
 pub mod panel_wire;
@@ -55,6 +56,8 @@ mod chrome_tests;
 mod paint_sizes_tests;
 #[cfg(test)]
 mod paint_tests;
+#[cfg(test)]
+mod pane_tests;
 
 #[cfg(test)]
 mod agent_tests;

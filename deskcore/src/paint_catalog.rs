@@ -5,7 +5,6 @@
 //! selected row is raised, with an ember edge.
 
 use crate::catalog::{App, Sheet, Source};
-use crate::chrome::PANEL;
 use crate::geom::Rect;
 use crate::paint::{Painter, fill};
 use alloc::format;
@@ -29,13 +28,15 @@ fn visible(h: i32) -> usize {
 }
 
 /// The sheet's rectangle on a `width` x `height` screen for `apps` apps:
-/// centred, on the panel, at most two thirds of the screen tall.
+/// centred, its bottom 12 above the taskbar (H-60), at most (H-72) x 2/3
+/// tall, as the card.
 pub fn sheet(width: i32, height: i32, apps: usize) -> Rect {
+    let l = deskgeom::Layout::for_screen(width, height, deskgeom::UiState::default());
     let w = (width - 2 * PADDING).min(SHEET_MAX);
     let rows = i32::try_from(apps.max(1)).unwrap_or(i32::MAX);
     let wanted = HEAD + rows.saturating_mul(ROW) + PADDING;
-    let h = wanted.min((height - PANEL) * 2 / 3);
-    Rect::new((width - w) / 2, height - PANEL - h, w, h)
+    let h = wanted.min(l.card_max_h);
+    Rect::new((width - w) / 2, l.card_bottom - h, w, h)
 }
 
 /// The first app shown, so the selected one is on the sheet.
@@ -182,14 +183,14 @@ mod tests {
     }
 
     #[test]
-    fn the_sheet_sits_on_the_panel_and_grows_with_its_apps() {
+    fn the_sheet_sits_above_the_taskbar_and_grows_with_its_apps() {
         let one = sheet(1280, 800, 1);
         let two = sheet(1280, 800, 2);
-        assert_eq!(one.bottom(), 800 - PANEL);
+        assert_eq!(one.bottom(), 800 - 60);
         assert_eq!(two.h - one.h, ROW);
         assert_eq!(one.w, SHEET_MAX);
-        // Never more than two thirds of the space above the panel.
-        assert!(sheet(1280, 800, 60).h <= (800 - PANEL) * 2 / 3);
+        // Never more than the card's tallest: (H-72) x 2/3.
+        assert_eq!(sheet(1280, 800, 60).h, (800 - 72) * 2 / 3);
     }
 
     #[test]

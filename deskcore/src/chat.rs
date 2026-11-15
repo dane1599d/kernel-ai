@@ -48,6 +48,9 @@ pub struct Entry {
 pub struct Chat {
     entries: VecDeque<Entry>,
     next: u64,
+    /// How many of the newest entries are scrolled off below the pane's
+    /// history (PageUp, PageDown); 0 shows the newest at the bottom.
+    scrolled: usize,
 }
 
 impl Chat {
@@ -57,6 +60,22 @@ impl Chat {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// How many of the newest entries are scrolled off below.
+    pub fn scrolled(&self) -> usize {
+        self.scrolled
+    }
+
+    /// PageUp (`up`) or PageDown: one entry older or newer, never past the
+    /// oldest or the newest. True when the view moved.
+    pub fn scroll(&mut self, up: bool) -> bool {
+        let before = self.scrolled;
+        self.scrolled = match up {
+            true => (self.scrolled + 1).min(self.entries.len().saturating_sub(1)),
+            false => self.scrolled.saturating_sub(1),
+        };
+        self.scrolled != before
     }
 
     /// Adds `text` from `who`, made safe to draw; false when nothing is left
@@ -75,6 +94,11 @@ impl Chat {
             text,
         });
         self.next += 1;
+        // Scrolled up, the view stays on what it showed; at the bottom it
+        // shows the new entry.
+        if self.scrolled > 0 {
+            self.scrolled = (self.scrolled + 1).min(self.entries.len() - 1);
+        }
         true
     }
 }
@@ -187,6 +211,29 @@ fn fit(text: &str, width: f32, measure: &mut dyn FnMut(&str) -> f32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PageUp and PageDown move a whole entry, within the history; a new
+    /// entry snaps the view to it only from the bottom.
+    #[test]
+    fn the_history_scrolls_by_entries_and_new_ones_keep_the_view() {
+        let mut chat = Chat::default();
+        assert!(!chat.scroll(true), "nothing to scroll");
+        for text in ["a", "b", "c"] {
+            chat.push(Who::You, text);
+        }
+        assert!(chat.scroll(true));
+        assert!(chat.scroll(true));
+        assert!(!chat.scroll(true), "the oldest stays in view");
+        assert_eq!(chat.scrolled(), 2);
+        chat.push(Who::Kai, "d");
+        assert_eq!(chat.scrolled(), 3, "the view stays on what it showed");
+        for _ in 0..3 {
+            chat.scroll(false);
+        }
+        assert!(!chat.scroll(false));
+        chat.push(Who::Kai, "e");
+        assert_eq!(chat.scrolled(), 0, "at the bottom, the new entry shows");
+    }
 
     /// One unit a character, as a mono face measures.
     fn cols(text: &str) -> f32 {

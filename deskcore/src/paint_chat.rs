@@ -1,7 +1,8 @@
-//! Drawing the panel's history ([`crate::chat`]): a column centred on the
-//! desk's background between the top bar and the panel, newest entry at the
-//! bottom, drawn before the windows so each window covers it. Each kind has
-//! its own look, so the AI's words never pass for the system's:
+//! Drawing the panel's history ([`crate::chat`]) in the Kai pane's history
+//! rectangle, newest entry at the bottom, clipped to it so it never reaches
+//! the status row, the input, the taskbar or the card. PageUp and PageDown
+//! scroll it by entries ([`crate::chat::Chat::scroll`]). Each kind has its
+//! own look, so the AI's words never pass for the system's:
 //!
 //! - the person's line: `you` in `dim`, the line in mono `muted`;
 //! - the AI's: `Kai` in `ai`, a 2 px `ai` rule down its left, its words in
@@ -18,23 +19,19 @@ use alloc::vec::Vec;
 use gfx2d::Canvas;
 use look::TypeStyle;
 
-/// The column's widest.
-const MAX_W: i32 = 760;
-/// Space between the column and the bars, and at its sides.
-const MARGIN: i32 = 16;
 /// Space between entries.
 const GAP: i32 = 10;
 /// The AI's rule, and the space after it.
 const RULE: i32 = 2;
 const INDENT: i32 = 12;
 
-/// Where the history is drawn: what a change to it damages.
+/// Where the history is drawn on the screen: what a change to it damages.
+/// Empty while the pane is closed.
 pub fn chat_area(desk: &Desk) -> Rect {
-    let width = desk.top_bar().w;
-    let top = desk.top_bar().bottom() + MARGIN;
-    let bottom = desk.panel().y - MARGIN;
-    let w = (width - 2 * MARGIN).clamp(0, MAX_W);
-    Rect::new((width - w) / 2, top, w, (bottom - top).max(0))
+    match desk.pane() {
+        Some(_) => desk.layout().pane_parts().history,
+        None => Rect::default(),
+    }
 }
 
 /// One entry, laid out: its label, its lines and their look, kept by the
@@ -57,17 +54,16 @@ impl Laid {
 }
 
 impl Painter {
-    pub(crate) fn chat(&mut self, c: &mut Canvas<'_>, clip: Rect, scene: &Scene<'_>) {
-        if scene.chat.is_empty() {
+    /// The history in `area` of the canvas, nothing drawn outside it.
+    pub(crate) fn chat(&mut self, c: &mut Canvas<'_>, area: Rect, scene: &Scene<'_>) {
+        if scene.chat.is_empty() || area.is_empty() {
             return;
         }
-        let area = chat_area(scene.desk);
-        let Some(clip) = area.intersect(&clip) else {
-            return;
-        };
+        let clip = area;
         let label_h = self.text.measure(TypeStyle::Small, "Kai").1 as i32;
         let mut bottom = area.bottom();
-        for entry in scene.chat.entries().rev() {
+        let skip = scene.chat.scrolled();
+        for entry in scene.chat.entries().rev().skip(skip) {
             let laid = self.laid(entry, area.w);
             let line_h = self.text.measure(laid.style, "x").1 as i32;
             let top = bottom - laid.height(label_h, line_h);

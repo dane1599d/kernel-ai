@@ -25,7 +25,8 @@ const NAP_MS: u64 = 3_000 + 4_000;
 const MIN_FRAMES: u64 = 32;
 /// Where `desktop` starts the pointer: the middle of 1280x800.
 const START: (i32, i32) = DESK.screen_centre();
-/// The AI panel: a click there focuses it.
+/// The Kai pane's input, once Ctrl+Space opened it: a click there keeps
+/// the focus in it.
 const PANEL: (i32, i32) = DESK.focus_kai();
 /// The middle of Notes' 640x420 content, in the first window.
 const WINDOW: (i32, i32) = DESK.content(0, 320, 211);
@@ -67,8 +68,8 @@ pub fn check() -> Result<(), &'static str> {
         at = to;
     };
     // Its window opened with the focus, which keeps it awake (#869): the
-    // panel takes the focus, and the app is left alone.
-    click(PANEL);
+    // pane's input takes the focus, and the app is left alone.
+    crate::ui_tests::focus_kai();
     let awake = free_frames();
     threads::sleep_ms(NAP_MS);
     let napping = free_frames();

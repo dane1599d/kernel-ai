@@ -26,7 +26,8 @@ const NAP_MS: u64 = 3_000 + 4_000;
 const MIN_FRAMES: u64 = 32;
 /// Where `desktop` starts the pointer: the middle of 1280x800.
 const START: (i32, i32) = DESK.screen_centre();
-/// The AI panel: a click there focuses it.
+/// The Kai pane's input, once Ctrl+Space opened it: a click there focuses
+/// it.
 const PANEL: (i32, i32) = DESK.focus_kai();
 /// The middle of Notes' 640x420 content, in the first window.
 const WINDOW: (i32, i32) = DESK.content(0, 320, 211);
@@ -71,7 +72,8 @@ pub fn check() -> Result<(), &'static str> {
         crate::ui_tests::report(0, 0, 0);
         at = to;
     };
-    click(PANEL);
+    // The pane opens (it stays open at 1280), then the window takes the keys.
+    crate::ui_tests::focus_kai();
     click(WINDOW);
     threads::sleep_ms(500);
     let awake = free_frames();

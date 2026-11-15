@@ -22,8 +22,10 @@ const WAIT_MS: u64 = 60_000;
 const START: (i32, i32) = DESK.screen_centre();
 /// A point on the Terminal window's title bar: it is the first window.
 const TITLE: (i32, i32) = DESK.window_title(0, 102);
-/// A point on the AI panel.
-const PANEL: (i32, i32) = DESK.focus_kai();
+/// A point on the empty desk: a click there takes the focus from the
+/// Terminal's window, which ends its key lease (Ctrl+Space would go to the
+/// console under the lease).
+const DESK_POINT: (i32, i32) = DESK.desk_point();
 /// Time for the harness's keys, as `ask_tests` gives them.
 const KEYS_MS: u64 = 4_000;
 
@@ -83,7 +85,7 @@ pub fn check() -> Result<(), &'static str> {
     // The new desk, and term's window on it.
     threads::sleep_ms(3_000);
     at = START;
-    click(&mut at, PANEL);
+    click(&mut at, DESK_POINT);
     threads::sleep_ms(1_000);
     if input::leased() {
         return Err("desk-term: the keys stayed with the terminal after the focus moved");

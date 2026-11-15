@@ -8,7 +8,8 @@
 //! - Only `desktop` moves keyboard focus: by a click, by Alt+Tab, or by a row
 //!   the agent runs. A new window takes focus only when a user action made it
 //!   (xdg-activation-v1's rule).
-//! - Super, or Ctrl+Space, focuses the AI panel from anywhere.
+//! - A Super tap, or Ctrl+Space, opens the Kai pane and focuses its input
+//!   from anywhere ([`pane`]); the pane is hit before the windows.
 //! - Every change damages what it uncovers and what it covers.
 //! - The trusted layer (ADR 0005 §7): an ask card sits above every window and
 //!   takes only y, n or a click on its buttons; Enter does nothing, no window
@@ -25,7 +26,10 @@ use alloc::vec::Vec;
 use deskgeom::{Layout, UiState};
 /// HID keyboard usages (page 0x07) the desk itself reacts to.
 mod ask;
+mod keys;
 mod manage;
+mod pane;
+pub use pane::PanePart;
 
 pub mod usage {
     pub const TAB: u16 = 0x2B;
@@ -41,7 +45,6 @@ pub mod usage {
     pub const Y: u16 = 0x1C;
     pub const N: u16 = 0x11;
 }
-use usage::{SPACE, TAB};
 /// The smallest content a resize leaves.
 const MIN_CONTENT: Size = Size { w: 120, h: 60 };
 
@@ -166,7 +169,8 @@ const KEEP_ON_SCREEN: i32 = 64;
 pub enum Hit {
     Window(WindowId, Part),
     TopBar,
-    Panel,
+    /// The Kai pane, while it is open.
+    Pane(PanePart),
     Desktop,
 }
 
@@ -192,6 +196,11 @@ pub struct Desk {
     super_alone: bool,
     /// The ask card up now, and where focus goes back to after it.
     ask: Option<(Ask, Focus)>,
+    /// The Kai pane is open.
+    pane_open: bool,
+    /// Where the focus was before the pane's input took it: Esc gives it
+    /// back.
+    before_panel: Focus,
     /// Keys down when the card appeared: their releases go nowhere.
     held: Vec<u16>,
     /// Keys down now.
@@ -245,6 +254,8 @@ impl Desk {
             shift: false,
             super_alone: false,
             ask: None,
+            pane_open: false,
+            before_panel: Focus::Nothing,
             held: Vec::new(),
             down: Vec::new(),
             agent: None,
@@ -266,15 +277,18 @@ impl Desk {
         self.now_ms = now_ms;
     }
 
-    /// Where windows open and maximize: the screen below the top bar and
-    /// above the panel.
+    /// Where windows open: the screen below the top bar and above the
+    /// taskbar's strip.
     pub fn work_area(&self) -> Rect {
         self.layout().work_area
     }
 
     /// Every surface's rectangle at this screen size (deskgeom).
     pub fn layout(&self) -> Layout {
-        Layout::for_screen(self.width, self.height, UiState::default())
+        let ui = UiState {
+            pane_open: self.pane_open,
+        };
+        Layout::for_screen(self.width, self.height, ui)
     }
 
     pub fn top_bar(&self) -> Rect {
@@ -286,10 +300,6 @@ impl Desk {
     pub(super) fn tabs_changed(&mut self) {
         let bar = self.top_bar();
         self.damage.add(bar);
-    }
-
-    pub fn panel(&self) -> Rect {
-        self.layout().panel
     }
 
     /// Bottom to top.
@@ -464,14 +474,15 @@ impl Desk {
         }
     }
 
-    /// What `p` hits, topmost first: the top bar and the panel are drawn
-    /// over every window, so a window under them never takes their clicks.
+    /// What `p` hits, topmost first (ADR 0005 §7's hit order): the pane,
+    /// then the top bar, are drawn over every window, so a window under them
+    /// never takes their clicks.
     pub fn hit(&self, p: Point) -> Hit {
+        if let Some(part) = self.pane_hit(p) {
+            return Hit::Pane(part);
+        }
         if self.top_bar().contains(p) {
             return Hit::TopBar;
-        }
-        if self.panel().contains(p) {
-            return Hit::Panel;
         }
         for w in self.windows.iter().rev().filter(|w| !w.minimized) {
             let part = match w.maximized() {
@@ -623,9 +634,13 @@ impl Desk {
         let hit = self.hit(self.pointer);
         let Hit::Window(id, part) = hit else {
             match hit {
-                Hit::Panel => {
+                Hit::Pane(PanePart::Close) if button == Button::Left => {
+                    self.close_pane(effects);
+                }
+                Hit::Pane(part) => {
                     self.set_focus(Focus::Panel, effects);
-                    if button == Button::Left {
+                    let clicked = matches!(part, PanePart::Status | PanePart::Send);
+                    if button == Button::Left && clicked {
                         effects.push(Effect::PanelClick { at: self.pointer });
                     }
                 }
@@ -637,6 +652,12 @@ impl Desk {
                     {
                         self.activate(id, effects);
                     }
+                }
+                // The empty desk takes the focus from every window, as a
+                // click on the Windows desktop does: the keys go nowhere,
+                // and a terminal's key lease ends.
+                Hit::Desktop if button == Button::Left => {
+                    self.set_focus(Focus::Nothing, effects);
                 }
                 _ => {}
             }
@@ -686,66 +707,6 @@ impl Desk {
         }
     }
 
-    fn key(&mut self, code: u16, down: bool, effects: &mut Vec<Effect>) {
-        // The locks toggle on their press, and go to no one.
-        if code == crate::keymap::CAPS_LOCK || code == crate::keymap::NUM_LOCK {
-            if down && code == crate::keymap::CAPS_LOCK {
-                self.caps = !self.caps;
-                effects.push(Effect::Locks { caps: self.caps });
-            } else if down {
-                self.num = !self.num;
-            }
-            return;
-        }
-        // With Num Lock off the keypad is the arrows and navigation keys.
-        let code = match self.num {
-            true => code,
-            false => match crate::keymap::keypad_off(code) {
-                Some(nav) => nav,
-                None if (0x59..=0x63).contains(&code) => return,
-                None => code,
-            },
-        };
-        match code {
-            usage::LEFT_CTRL | usage::RIGHT_CTRL => self.ctrl = down,
-            usage::LEFT_ALT | usage::RIGHT_ALT => self.alt = down,
-            usage::LEFT_SHIFT | usage::RIGHT_SHIFT => self.shift = down,
-            usage::LEFT_GUI | usage::RIGHT_GUI => {
-                if down {
-                    self.super_alone = true;
-                } else if core::mem::take(&mut self.super_alone) {
-                    self.set_focus(Focus::Panel, effects);
-                }
-                return;
-            }
-            _ => {}
-        }
-        if down {
-            self.super_alone = false;
-        }
-        if down && code == TAB && self.alt {
-            self.cycle(effects);
-            return;
-        }
-        if down && code == SPACE && self.ctrl {
-            self.set_focus(Focus::Panel, effects);
-            return;
-        }
-        // Tab and Space released after the shortcut go nowhere.
-        if !down && ((code == TAB && self.alt) || (code == SPACE && self.ctrl)) {
-            return;
-        }
-        match self.focus {
-            Focus::Window(window) => effects.push(Effect::Key {
-                window,
-                usage: code,
-                down,
-            }),
-            Focus::Panel => effects.push(Effect::PanelKey { usage: code, down }),
-            Focus::Nothing | Focus::Ask(_) => {}
-        }
-    }
-
     /// Moves keyboard focus; the old and new windows' title bars repaint.
     pub fn set_focus(&mut self, focus: Focus, effects: &mut Vec<Effect>) {
         if self.focus == focus {
@@ -766,12 +727,10 @@ impl Desk {
         {
             return;
         }
-        if matches!(self.focus, Focus::Panel) || matches!(focus, Focus::Panel) {
-            let panel = self.panel();
-            self.damage.add(panel);
-        }
+        let from = self.focus;
         self.focus = focus;
         self.tabs_changed();
         effects.push(Effect::Focus(focus));
+        self.pane_focus(from, focus, effects);
     }
 }

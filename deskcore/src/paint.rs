@@ -66,7 +66,7 @@ pub struct Scene<'a> {
     pub desk: &'a Desk,
     pub bar: &'a Bar,
     pub panel: &'a Panel,
-    /// The panel's history, drawn on the desk under the windows.
+    /// The panel's history, drawn in the Kai pane.
     pub chat: &'a crate::chat::Chat,
     /// The Apps sheet, while it is up: over the windows and the panel, under
     /// the ask card.
@@ -81,10 +81,10 @@ pub struct Painter {
     pub(crate) text: Text,
     /// The theme's colours.
     pub(crate) palette: Palette,
-    near: Shadow,
-    far: Shadow,
+    pub(crate) near: Shadow,
+    pub(crate) far: Shadow,
     /// Our glyphs, by icon and size ([`gfx2d::icons`]).
-    icons: gfx2d::icons::Icons,
+    pub(crate) icons: gfx2d::icons::Icons,
     /// The history's entries laid out, by entry and width
     /// ([`crate::paint_chat`]): what a repaint draws without wrapping again.
     pub(crate) chat_laid: alloc::vec::Vec<crate::paint_chat::Laid>,
@@ -163,7 +163,6 @@ impl Painter {
     ) {
         let (desk, bar) = (scene.desk, scene.bar);
         c.fill(g(clip), opaque(self.palette.desk));
-        self.chat(c, clip, scene);
         for window in desk.windows().iter().filter(|w| !w.minimized) {
             if reach(window.frame).intersect(&clip).is_none() {
                 continue;
@@ -188,9 +187,8 @@ impl Painter {
         if desk.top_bar().intersect(&clip).is_some() {
             self.top_bar(c, clip, desk, bar);
         }
-        if desk.panel().intersect(&clip).is_some() {
-            self.panel(c, clip, scene);
-        }
+        // The Kai pane over the windows and the top bar (ADR 0005 §7).
+        self.pane(c, clip, scene);
         if let Some(sheet) = scene.sheet {
             let (width, height) = (c.width as i32, c.height as i32);
             let area = crate::paint_catalog::sheet(width, height, sheet.apps().len());
