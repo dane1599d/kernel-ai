@@ -285,8 +285,7 @@ impl Desk {
         self.now_ms = now_ms;
     }
 
-    /// Where windows open: the screen below the top bar and above the
-    /// taskbar's strip.
+    /// Where windows open: the screen above the taskbar.
     pub fn work_area(&self) -> Rect {
         self.layout().work_area
     }

@@ -716,8 +716,8 @@ pub(super) const CASES: &[TestCase] = &[
     },
 ];
 
-/// What changes while the desk is still (the top bar's model state and
-/// memory): deskgeom's tray mask, which deskcore paints them in.
+/// What changes while the desk is still (the tray's chip, memory and
+/// clock): deskgeom's tray mask, which deskcore paints them in.
 fn desk_stats(width: u32, height: u32) -> (u32, u32, u32, u32) {
     let px = |n: u32| i32::try_from(n).unwrap_or(i32::MAX);
     let r = deskgeom::points(px(width), px(height)).tray_mask();

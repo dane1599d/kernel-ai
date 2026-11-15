@@ -79,7 +79,9 @@ pub fn parse_model(text: &str) -> Option<String> {
 }
 
 /// A model name as the pane may show it: printable ASCII only, else
-/// [`MODEL_FALLBACK`] whole; cut to [`MODEL_MAX`] bytes.
+/// [`MODEL_FALLBACK`] whole; cut to [`MODEL_MAX`] bytes. The bytes are
+/// checked before the trim, so a name padded with tabs or newlines is
+/// "model", not trimmed: safe rather than clever.
 pub fn clean_model(name: &str) -> String {
     let printable = name.bytes().all(|b| (0x20..=0x7E).contains(&b));
     let name = name.trim();

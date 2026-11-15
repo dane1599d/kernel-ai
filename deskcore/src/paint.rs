@@ -1,7 +1,8 @@
 //! Drawing the desk (ADR 0005 §5, §8): the desk, each window's chrome and
-//! content, the focused window's shadow, the agent's outline, the top bar, the
-//! panel, the Apps sheet, the ask card and the cursor, in the theme's tokens and
-//! type (Ember Workbench's dark one until [`Painter::set_theme`]). The card is
+//! content, the focused window's shadow, the agent's outline, the taskbar and
+//! tray, the Kai pane, the Apps sheet, the ask card and the cursor, in the
+//! theme's tokens and type (Ember Workbench's dark one until
+//! [`Painter::set_theme`]). The card is
 //! drawn last but the cursor, so nothing else covers it (ADR 0005 §7).
 //! Pure: the same [`Scene`] gives the same pixels, on the host as in `desktop`,
 //! so the look is pinned by a host test and by `desk-boot`'s golden. The panel
@@ -45,15 +46,13 @@ pub(crate) const PAD: i32 = 12;
 /// The software cursor's box, for its damage.
 pub const CURSOR: i32 = 18;
 
-/// What the top bar shows on its right.
+/// What the tray and the pane show of the system: the model, the memory in
+/// use and the wall clock.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Bar {
     /// A process named `llm` runs.
     pub model: bool,
-    /// The shell said the model is not warm yet (`Panel::getting_ready`).
-    pub warming: bool,
     pub mem_used_mib: u64,
-    pub mem_total_mib: u64,
     /// Seconds since 1970 UTC, for the tray's clock; none without a wall
     /// clock, and then no clock is drawn.
     pub utc_s: Option<u64>,
@@ -396,7 +395,7 @@ fn outline(c: &mut Canvas<'_>, r: Rect, clip: Rect, rgb: u32) {
 }
 
 /// `r`'s edges, `t` px thick, inside it.
-fn frame(c: &mut Canvas<'_>, r: Rect, clip: Rect, rgb: u32, t: i32) {
+pub(crate) fn frame(c: &mut Canvas<'_>, r: Rect, clip: Rect, rgb: u32, t: i32) {
     for edge in [
         Rect::new(r.x, r.y, r.w, t),
         Rect::new(r.x, r.bottom() - t, r.w, t),

@@ -17,9 +17,7 @@ pub(crate) const FONTS: Fonts = Fonts {
 
 pub(crate) const BAR: Bar = Bar {
     model: true,
-    warming: false,
     mem_used_mib: 412,
-    mem_total_mib: 1763,
     utc_s: None,
 };
 
@@ -89,7 +87,7 @@ fn two_windows_paint() {
 
 /// `desk-boot`'s golden (xtask/src/cases/kernel.rs): the empty desk at
 /// 1280x800 with the cursor in the middle, as `desktop` first draws it on GOP,
-/// its RGB bytes hashed with the top bar's stats blanked. The boot's screendump
+/// its RGB bytes hashed with the tray blanked. The boot's screendump
 /// must hash the same.
 const DESK_BOOT: &str = "19af04ec71ae1ca167b874c6e23d934e26092d95ea4c8579bf3f00f4135343a0";
 

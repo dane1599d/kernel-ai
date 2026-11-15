@@ -64,9 +64,23 @@ fn fresh() -> Desk {
 }
 
 fn paint(desk: &Desk, bar: &Bar, panel: &Panel, chat: &Chat) -> Image {
+    paint_in(desk, bar, panel, chat, None, &mut |_, _, _| false)
+}
+
+fn paint_in(
+    desk: &Desk,
+    bar: &Bar,
+    panel: &Panel,
+    chat: &Chat,
+    theme: Option<&look::theme::Theme>,
+    content: &mut dyn FnMut(WindowId, &mut gfx2d::Canvas<'_>, Rect) -> bool,
+) -> Image {
     let l = desk.layout();
     let (w, h) = (l.width, l.height);
     let mut painter = Painter::new(FONTS).expect("the fonts parse");
+    if let Some(theme) = theme {
+        painter.set_theme(theme);
+    }
     let mut image = Image::new(w, h);
     let mut canvas = image.canvas();
     let scene = Scene {
@@ -78,12 +92,7 @@ fn paint(desk: &Desk, bar: &Bar, panel: &Panel, chat: &Chat) -> Image {
         ask: None,
         now_ms: 0,
     };
-    painter.paint(
-        &mut canvas,
-        Rect::new(0, 0, w, h),
-        &scene,
-        &mut |_, _, _| false,
-    );
+    painter.paint(&mut canvas, Rect::new(0, 0, w, h), &scene, content);
     image
 }
 
@@ -338,11 +347,16 @@ fn a_hostile_said_never_changes_the_chip() {
     for text in ["Kai done", "Kai asks to run", "Kai refused", "No model"] {
         chat.push(Who::Kai, text);
     }
+    let mut fair = Chat::default();
+    fair.push(Who::Kai, "Hello.");
     for (w, h) in SIZES {
-        let desk = Desk::new(w, h);
+        // Each said with the pane closed: the chip's badge shows on both.
+        let mut desk = Desk::new(w, h);
+        desk.kai_said();
+        assert!(desk.unread());
         let panel = Panel::new();
         let with = paint(&desk, &BAR, &panel, &chat);
-        let without = paint(&desk, &BAR, &panel, &Chat::default());
+        let without = paint(&desk, &BAR, &panel, &fair);
         let bar = desk.layout().taskbar;
         assert_eq!(pixels(&with, bar), pixels(&without, bar), "{w}x{h}");
     }
@@ -429,4 +443,291 @@ fn a_dragged_title_bar_stays_in_reach() {
     let area = desk.work_area();
     assert!(moved.y + chrome::TITLE_BAR <= area.bottom(), "{moved:?}");
     assert!(moved.right() >= area.x + 64, "{moved:?}");
+}
+
+/// Each thinking or acting change, and a card, repaints the Kai button; a
+/// still desk repaints nothing of the taskbar.
+#[test]
+fn a_state_or_card_change_repaints_the_kai_button() {
+    use crate::panel::State;
+    use crate::tray::{Shown, damage};
+    let mut desk = fresh();
+    open(&mut desk, 1, true);
+    let button = desk.item_rect(0, desk.taskbar_items().len());
+    let mut panel = Panel::new();
+    let mut shown = Shown::default();
+    damage(&desk, &panel, &BAR, 0, &mut shown);
+    assert!(
+        damage(&desk, &panel, &BAR, 0, &mut shown).is_empty(),
+        "still"
+    );
+    for state in [
+        State::Thinking { since_ms: 0 },
+        State::Done { line: "x".into() },
+    ] {
+        panel.set_state(state);
+        let rects = damage(&desk, &panel, &BAR, 0, &mut shown);
+        assert!(rects.contains(&button), "{:?}", panel.state());
+    }
+    desk.show_ask(3, 1);
+    assert!(damage(&desk, &panel, &BAR, 0, &mut shown).contains(&button));
+}
+
+/// A new minute repaints the clock alone; the memory repaints only when its
+/// 0.1 GiB text changes.
+#[test]
+fn the_clock_and_memory_repaint_only_on_their_text() {
+    use crate::tray::{Shown, damage};
+    let desk = Desk::new(1920, 1080);
+    let t = desk.layout().tray;
+    let panel = Panel::new();
+    let at = |s: u64, mib: u64| Bar {
+        utc_s: Some(s),
+        mem_used_mib: mib,
+        ..BAR
+    };
+    let mut shown = Shown::default();
+    damage(&desk, &panel, &at(NEW_YEARS_EVE - 59, 2_150), 0, &mut shown);
+    // Same minute, same tenth: nothing.
+    assert!(damage(&desk, &panel, &at(NEW_YEARS_EVE, 2_160), 0, &mut shown).is_empty());
+    // A new minute: the clock alone.
+    let rects = damage(&desk, &panel, &at(NEW_YEARS_EVE + 1, 2_160), 0, &mut shown);
+    assert_eq!(rects, [t.clock]);
+    // A new tenth of a GiB: the memory alone.
+    let rects = damage(&desk, &panel, &at(NEW_YEARS_EVE + 1, 2_300), 0, &mut shown);
+    assert_eq!(rects, [t.memory.expect("memory")]);
+}
+
+/// While a card is up and Kai acts, the Kai button shows both its ring and
+/// its pill.
+#[test]
+fn the_ring_keeps_the_thinking_pill() {
+    use crate::panel::State;
+    let mut desk = fresh();
+    let mut panel = Panel::new();
+    panel.set_state(State::Thinking { since_ms: 0 });
+    desk.show_ask(4, 1);
+    let button = desk.item_rect(0, desk.taskbar_items().len());
+    let image = paint(&desk, &BAR, &panel, &Chat::default());
+    let palette = Painter::new(FONTS).unwrap().palette;
+    let pill = Rect::new(button.x + 12, button.bottom() - 6, 16, 4);
+    assert!(pixels(&image, pill).contains(&palette.ai_mark), "no pill");
+    assert!(pixels(&image, button).contains(&palette.ask), "no ring");
+}
+
+/// Security invariant 2: the taskbar is painted over the windows. A window
+/// whose content is all `ask`, reaching under the taskbar, leaves the
+/// taskbar's pixels as they are with the same window drawing nothing.
+#[test]
+fn the_taskbar_is_painted_over_a_window_under_it() {
+    let mut desk = fresh();
+    desk.open(1, "spam", "Spam", Size { w: 600, h: 1_200 }, false);
+    let ask = Painter::new(FONTS).unwrap().palette.ask;
+    let mut content = |_: WindowId, c: &mut gfx2d::Canvas<'_>, r: Rect| {
+        c.fill(gfx2d::Rect::new(r.x, r.y, r.w, r.h), (0xFF << 24) | ask);
+        true
+    };
+    let (panel, chat) = (Panel::new(), Chat::default());
+    let image = paint_in(&desk, &BAR, &panel, &chat, None, &mut content);
+    let bare = paint(&desk, &BAR, &panel, &chat);
+    let frame = desk.windows()[0].frame;
+    let bar = desk.layout().taskbar;
+    assert!(
+        frame.bottom() > bar.y,
+        "the window reaches under the taskbar"
+    );
+    assert_eq!(pixels(&image, bar), pixels(&bare, bar));
+}
+
+/// High contrast: `hover` is the taskbar's ground, so a hovered item or
+/// chip shows a 1 px `focus` frame.
+#[test]
+fn high_contrast_frames_a_hovered_item_and_the_chip() {
+    let theme = look::theme::shipped()
+        .into_iter()
+        .find(|t| t.name == "high-contrast")
+        .expect("shipped");
+    let palette = theme.palette();
+    assert_eq!(palette.hover, palette.shell);
+    let (panel, chat) = (Panel::new(), Chat::default());
+    let mut desk = fresh();
+    let targets = [desk.item_rect(0, 1), desk.layout().tray.chip];
+    for r in targets {
+        desk.input(Input::Motion(middle(r)));
+        assert!(desk.bar_hovered().is_some());
+        let image = paint_in(&desk, &BAR, &panel, &chat, Some(&theme), &mut |_, _, _| {
+            false
+        });
+        let y = r.y + r.h / 2;
+        assert_eq!(
+            image.px[(y * W + r.x) as usize] & RGB,
+            palette.focus,
+            "{r:?}"
+        );
+        assert_ne!(image.px[(y * W + r.x + 1) as usize] & RGB, palette.focus);
+    }
+}
+
+/// ADR 0005 §8: `dim`, `ai` and `line_strong` are never drawn on `hover`.
+/// In every shipped theme: a hovered Kai button, app item and "more", and
+/// the hovered chip warming, with no model, or with its badge.
+#[test]
+fn nothing_on_the_taskbars_hover_is_a_hover_never_token() {
+    use look::theme;
+    for th in theme::shipped() {
+        let p = th.palette();
+        let allowed = [
+            p.text, p.muted, p.ok, p.accent, p.ai_mark, p.hover, p.shell, p.focus,
+        ];
+        let never: Vec<u32> = theme::HOVER_NEVER
+            .iter()
+            .map(|t| p.get(*t))
+            .filter(|c| !allowed.contains(c))
+            .collect();
+        let check = |image: &Image, r: Rect, what: &str| {
+            for px in pixels(image, r) {
+                assert!(!never.contains(&px), "{} {what}: {px:06x}", th.name);
+            }
+        };
+        // Items: Kai, an app with no glyph (a monogram), and "more".
+        let mut desk = Desk::new(1024, 768);
+        for client in 1..=12 {
+            open(&mut desk, client, false);
+        }
+        let n = desk.taskbar_items().len();
+        let chat = Chat::default();
+        for i in [0, 1, n - 1] {
+            let r = desk.item_rect(i, n);
+            desk.input(Input::Motion(middle(r)));
+            let image = paint_in(
+                &desk,
+                &BAR,
+                &Panel::new(),
+                &chat,
+                Some(&th),
+                &mut |_, _, _| false,
+            );
+            check(&image, r, &alloc::format!("item {i}"));
+        }
+        // The chip, hovered: warming, no model, and badged.
+        let mut desk = Desk::new(1920, 1080);
+        let chip = desk.layout().tray.chip;
+        desk.input(Input::Motion(middle(chip)));
+        desk.kai_said();
+        let mut warming = Panel::new();
+        warming.set_ready(false);
+        let none = Bar {
+            model: false,
+            ..BAR
+        };
+        for (bar, panel, what) in [
+            (&BAR, &warming, "warming"),
+            (&none, &Panel::new(), "no model"),
+        ] {
+            let image = paint_in(&desk, bar, panel, &chat, Some(&th), &mut |_, _, _| false);
+            check(&image, chip, what);
+        }
+    }
+}
+
+/// With no card up, no `ask` pixel anywhere on the taskbar, thinking,
+/// acting or warming.
+#[test]
+fn no_ask_pixel_on_the_taskbar_without_a_card() {
+    use crate::panel::State;
+    let ask = Painter::new(FONTS).unwrap().palette.ask;
+    for (w, h) in SIZES {
+        let mut desk = Desk::new(w, h);
+        open(&mut desk, 1, true);
+        desk.kai_said();
+        let bar = desk.layout().taskbar;
+        for (state, warm) in [
+            (State::Thinking { since_ms: 0 }, true),
+            (State::Thinking { since_ms: 0 }, false),
+            (
+                State::Acting {
+                    call: "x()".into(),
+                    target: "y".into(),
+                },
+                true,
+            ),
+            (State::Idle, false),
+        ] {
+            let mut panel = Panel::new();
+            panel.set_ready(warm);
+            panel.set_state(state);
+            let image = paint(&desk, &BAR, &panel, &Chat::default());
+            assert!(
+                !pixels(&image, bar).contains(&ask),
+                "{w}x{h} {:?}",
+                panel.state()
+            );
+        }
+    }
+}
+
+/// At 100 to 200% text and in legible type, the clock and the chip fit
+/// their slots: nothing is cut at the left, and the clock's two lines do
+/// not touch.
+#[test]
+fn the_clock_and_chip_fit_at_any_text_size() {
+    let shipped = look::theme::shipped();
+    let dark = &shipped[0];
+    let legible = shipped
+        .iter()
+        .find(|t| t.name == "legible")
+        .expect("legible");
+    let mut themes = Vec::new();
+    for percent in [100, 120, 150, 175, 200] {
+        themes.push(dark.sized(false, percent));
+    }
+    themes.push(legible.sized(true, 150));
+    for th in &themes {
+        let p = th.palette();
+        let desk = Desk::new(1920, 1080);
+        let t = desk.layout().tray;
+        let mut warming = Panel::new();
+        warming.set_ready(false);
+        let bar = Bar {
+            utc_s: Some(NEW_YEARS_EVE),
+            ..BAR
+        };
+        let image = paint_in(
+            &desk,
+            &bar,
+            &warming,
+            &Chat::default(),
+            Some(th),
+            &mut |_, _, _| false,
+        );
+        let ink = |r: Rect| -> Vec<(i32, i32)> {
+            (r.y..r.bottom())
+                .flat_map(|y| (r.x..r.right()).map(move |x| (x, y)))
+                .filter(|&(x, y)| image.px[(y * 1920 + x) as usize] & RGB != p.shell)
+                .collect()
+        };
+        let clock = ink(Rect::new(
+            t.clock.x,
+            t.clock.y + 1,
+            t.clock.w,
+            t.clock.h - 1,
+        ));
+        assert!(
+            clock.iter().all(|&(x, _)| x > t.clock.x),
+            "{}: the clock is cut",
+            th.name
+        );
+        let mut rows: Vec<i32> = clock.iter().map(|&(_, y)| y).collect();
+        rows.sort();
+        rows.dedup();
+        let runs = 1 + rows.windows(2).filter(|w| w[1] > w[0] + 1).count();
+        assert_eq!(runs, 2, "{}: the clock's lines touch", th.name);
+        let chip = ink(t.chip);
+        let right = chip.iter().map(|&(x, _)| x).max().unwrap_or(0);
+        assert!(
+            right < t.chip.right() - 4,
+            "{}: the chip's text is cut",
+            th.name
+        );
+    }
 }

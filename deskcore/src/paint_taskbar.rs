@@ -47,7 +47,7 @@ impl Painter {
             }
             let hovered = desk.bar_hovered() == Some(BarSpot::Item(i));
             if hovered {
-                self.rounded(c, r, clip, self.palette.hover, HOVER_RADIUS);
+                self.hover_fill(c, r, clip, HOVER_RADIUS);
             }
             match item {
                 Item::Kai => self.kai_button(c, clip, r, hovered, scene),
@@ -71,22 +71,22 @@ impl Painter {
             true => self.palette.ai_mark,
             false => self.palette.ai,
         };
-        self.glyph(c, clip, r, Icon::Kai, mark);
-        if matches!(
-            scene.panel.state(),
-            State::Thinking { .. } | State::Acting { .. }
-        ) {
-            self.pill(c, clip, r, 16, self.palette.ai_mark);
-        }
         if scene.desk.ask().is_some() {
-            let ground = match hovered {
+            let ground = match hovered && self.palette.hover != self.palette.shell {
                 true => self.palette.hover,
                 false => self.palette.shell,
             };
             self.rounded(c, r, clip, self.palette.ask, RING_RADIUS);
             let inside = r.grow(-RING);
             self.rounded(c, inside, clip, ground, RING_RADIUS - RING);
-            self.glyph(c, clip, r, Icon::Kai, mark);
+        }
+        self.glyph(c, clip, r, Icon::Kai, mark);
+        // After the ring: while a card is up and Kai acts, both cues show.
+        if matches!(
+            scene.panel.state(),
+            State::Thinking { .. } | State::Acting { .. }
+        ) {
+            self.pill(c, clip, r, 16, self.palette.ai_mark);
         }
     }
 

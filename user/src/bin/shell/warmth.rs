@@ -32,8 +32,11 @@ use user::{println, sys};
 const PEEK_MS: u64 = 20;
 /// The wait before a panel line: longer than one of llm's warm-up slices.
 const ASK_MS: u64 = 1_500;
-/// The wait for `updated`'s list of models, asked once a `desktop`.
-const MODELS_MS: u64 = 2_000;
+/// The wait for `updated`'s list of models: past `updated`'s own 3 s wait
+/// on llm's `health`, so a late answer is never left behind.
+const MODELS_MS: u64 = 3_500;
+/// The most tries at naming the model to one `desktop`.
+const NAME_TRIES: u8 = 3;
 
 /// Set when the shell made llm fill its slots again.
 static COOLED: AtomicBool = AtomicBool::new(false);
@@ -58,8 +61,8 @@ pub(crate) fn lang(c: bool) {
 pub(crate) struct Warmth {
     readiness: Readiness,
     told: Option<(bool, u64)>,
-    /// The `desktop` last told the model's name (or asked to be, once).
-    named: Option<u64>,
+    /// The `desktop` told the model's name, or tried at it: how many times.
+    named: Option<(u64, u8)>,
 }
 
 impl Warmth {
@@ -72,6 +75,13 @@ impl Warmth {
             self.ask(PEEK_MS, false);
         }
         self.tell();
+        // Between lines only, never on a panel line's path: llm is warm, so
+        // `updated`'s `health` call answers at once and cuts no warm-up.
+        if self.readiness.want() == Some(true)
+            && let (Some(route), Some(to)) = (desktop(), desktop_pid())
+        {
+            self.name(route, to);
+        }
     }
 
     /// Right before the panel's line goes to llm.
@@ -132,23 +142,33 @@ impl Warmth {
             Ok(answer) => println!("the panel was not told the model's warmth: {answer}"),
             Err(why) => println!("the panel was not told the model's warmth: {why}"),
         }
-        self.name(route, to);
     }
 
-    /// The running model's name, to `desktop` `to`, once: tried once a
-    /// `desktop`, so a quiet `updated` never holds up the loop again.
+    /// The running model's name, to `desktop` `to`, once it took it: tried
+    /// at most [`NAME_TRIES`] times a `desktop`, so a quiet `updated` costs
+    /// the loop a bounded wait.
     fn name(&mut self, route: kabi::handle::Handle, to: u64) {
-        if self.named == Some(to) {
+        let tries = match self.named {
+            Some((pid, tries)) if pid == to => tries,
+            _ => 0,
+        };
+        if tries >= NAME_TRIES {
             return;
         }
-        self.named = Some(to);
         let Some(name) = running_model() else {
+            self.named = Some((to, tries + 1));
             return;
         };
         match ask_desktop(route, &panel_wire::encode_model(&name)) {
-            Ok(answer) if answer == "ok" => {}
-            Ok(answer) => println!("the panel was not told the model's name: {answer}"),
-            Err(why) => println!("the panel was not told the model's name: {why}"),
+            Ok(answer) if answer == "ok" => self.named = Some((to, NAME_TRIES)),
+            Ok(answer) => {
+                self.named = Some((to, tries + 1));
+                println!("the panel was not told the model's name: {answer}");
+            }
+            Err(why) => {
+                self.named = Some((to, tries + 1));
+                println!("the panel was not told the model's name: {why}");
+            }
         }
     }
 }

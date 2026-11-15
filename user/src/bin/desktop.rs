@@ -14,7 +14,7 @@
 //! - Window events (minimize, restore, focus, close) and idle minutes go to the
 //!   kernel's event box for the shell's standing instructions (P3 task 11),
 //!   found by `deskcore::watch`.
-//! - The top bar's model state and memory are read once a second; a screen
+//! - The tray's model state, memory and clock are read once a second; a screen
 //!   without a hardware cursor (GOP) gets one drawn in the frame.
 //! - Everything is painted in the theme the [`Appearance`] resolves to (P4
 //!   task 8): checked once per frame, and on a change the whole screen and the
@@ -84,7 +84,7 @@ const FONTS: Fonts = Fonts {
     mono: include_bytes!("../../../assets/fonts/JetBrainsMono-Variable.ttf"),
 };
 
-/// How often the top bar's model state and memory are read.
+/// How often the tray's model state, memory and clock are read.
 const BAR_EVERY_NS: u64 = 1_000_000_000;
 
 /// Waits for input or a client, in turn, so neither starves.
@@ -118,8 +118,8 @@ struct State {
     bar: Bar,
     bar_at: u64,
     /// What the tray last showed: a change to it repaints that part alone.
-    tray: taskbar::Shown,
-    /// Damage of desktop's own: the top bar's stats, the drawn cursor.
+    tray: deskcore::tray::Shown,
+    /// Damage of desktop's own: the tray's parts, the pane's, the drawn cursor.
     extra: Vec<Rect>,
     /// The screen has no hardware cursor, so the frame shows one.
     draws_cursor: bool,
@@ -212,7 +212,7 @@ fn main() -> i32 {
             painter,
             bar: Bar::default(),
             bar_at: 0,
-            tray: taskbar::Shown::default(),
+            tray: deskcore::tray::Shown::default(),
             extra: Vec::new(),
             draws_cursor: screen.info.cursor == 0,
             drawn: false,
@@ -1276,8 +1276,8 @@ fn post_events(state: &mut State) {
     }
 }
 
-/// Reads the model state and memory once a second; a change damages the top
-/// bar's stats.
+/// Reads the model state, memory and clock once a second; the tray repaints
+/// what changed before the next frame (`taskbar::damage`).
 fn refresh_bar(state: &mut State) {
     let now = sys::time_ns();
     if state.bar_at != 0 && now.saturating_sub(state.bar_at) < BAR_EVERY_NS {
@@ -1291,9 +1291,7 @@ fn refresh_bar(state: &mut State) {
     let mib = |frames: u64| frames * 4096 / (1024 * 1024);
     let bar = Bar {
         model: listed.iter().any(|p| p.name() == "llm"),
-        warming: state.panel.getting_ready(),
         mem_used_mib: mib(m.total_frames - m.free_frames),
-        mem_total_mib: mib(m.total_frames),
         // No wall clock (NotFound): no clock in the tray.
         utc_s: sys::clock_now().ok(),
     };

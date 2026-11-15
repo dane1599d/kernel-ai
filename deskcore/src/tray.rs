@@ -1,12 +1,15 @@
 //! What the tray says (ADR 0005 §8), code's alone: the Kai chip reads the
 //! panel's state, the model's warmth and the bar, never what anyone said;
 //! the memory is the bar's, in 0.1 GiB steps, so it repaints only when its
-//! text changes.
+//! text changes ([`damage`]).
 
+use crate::desk::Desk;
+use crate::geom::Rect;
 use crate::paint::Bar;
 use crate::panel::{Panel, State};
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 /// The chip's dot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +51,52 @@ pub fn chip(
         (_, State::Refused { .. }) => String::from("Kai refused"),
     };
     (dot, text)
+}
+
+/// What the taskbar and tray last showed, for [`damage`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Shown {
+    chip: Option<(Dot, String, bool)>,
+    memory: Option<String>,
+    minute: Option<Option<u64>>,
+    /// The Kai button: Kai thinking or acting (its pill), a card up (its
+    /// ring).
+    kai: Option<(bool, bool)>,
+}
+
+/// The parts whose look changed since `shown`, which is brought up to date:
+/// the Kai button on a state or card change, the chip on its text, dot,
+/// badge or the pane, the memory on a 0.1 GiB step, the clock on a new
+/// minute. A still desk repaints none of them.
+pub fn damage(desk: &Desk, panel: &Panel, bar: &Bar, now_ms: u64, shown: &mut Shown) -> Vec<Rect> {
+    let t = desk.layout().tray;
+    let mut rects = Vec::new();
+    let busy = matches!(panel.state(), State::Thinking { .. } | State::Acting { .. });
+    let kai = Some((busy, desk.ask().is_some()));
+    if kai != shown.kai {
+        shown.kai = kai;
+        rects.push(desk.item_rect(0, desk.taskbar_items().len()));
+    }
+    let open = desk.pane().is_some();
+    let (dot, text) = chip(panel, bar, now_ms, open, t.memory.is_none());
+    let now = Some((dot, text, desk.unread()));
+    if now != shown.chip {
+        shown.chip = now;
+        rects.push(t.chip);
+    }
+    let used = Some(memory(bar));
+    if let Some(r) = t.memory
+        && used != shown.memory
+    {
+        shown.memory = used;
+        rects.push(r);
+    }
+    let minute = Some(bar.utc_s.map(crate::clock::minute));
+    if minute != shown.minute {
+        shown.minute = minute;
+        rects.push(t.clock);
+    }
+    rects
 }
 
 /// The memory in use, "2.1 GiB".
