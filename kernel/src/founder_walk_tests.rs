@@ -10,8 +10,9 @@
 //! 2. "what can you do with the cpus" is answered from the rows. The model's
 //!    clarify for "do more with the cpus" offers only the option a row backs.
 //! 3. The next line is a request of its own (the host checks the shell's
-//!    note), and it asks first: `y` twice on the trusted card, and its file is
-//!    in `fs`. The same from the panel, whose bar the host reads (`log_bar=1`).
+//!    note), and it asks first: `y` twice on the trusted card, the Terminal's
+//!    row says what it came to, and its file is in `fs`. The same from the
+//!    panel, whose bar the host reads (`log_bar=1`).
 //! 4. "add a note saying hello dane" in the panel reaches Notes, which nothing
 //!    had started.
 //! 5. `open notes` shows its window, its close control closes it, and `open
@@ -90,13 +91,9 @@ const MIN_TYPED_TILES: usize = 6;
 /// Tries at a still screen before the typing, [`SETTLE_MS`] apart.
 const STILL_TRIES: usize = 10;
 
-/// Notes' close control, its window the desk's second: the cascade's first
-/// frame is at 48,52 under the 28-px top bar, the next 32 px on each way, and
-/// Notes' frame is 642 px wide, its control 17 px in from the top right
-/// (`ui-window-show` finds it so).
-const NOTES_CLOSE: (i32, i32) = (48 + 32 + 642 - 17, 52 + 32 + 17);
-/// Farther than any screen is wide: `desktop` stops the pointer at the corner.
-const TO_CORNER: i32 = -4_000;
+/// Notes' window is the desk's second: the Terminal's took the cascade's
+/// first spot (deskgeom counts spots from 0).
+const NOTES_SPOT: i32 = 1;
 
 /// The walk's plan: the default boot's `system`, with `log_bar=1` on
 /// `desktop`'s line, so it logs each new line of the panel's bar.
@@ -327,12 +324,13 @@ fn file_made(path: &str) -> Result<(), &'static str> {
 fn lines_ask_first() -> Result<(), &'static str> {
     window_line(TERMINAL_ASK);
     yes_on_the_card(TERMINAL_FILE)?;
-    // What the card came to belongs in the Terminal's row. For now card
-    // results for app lines go to the bar, which the host checks; T's fix
-    // returns them to the app, and then this waits for the row again:
-    // `rows_show(&format!("file {TERMINAL_FILE} created"))?;`
+    // What the card came to shows where the line was typed: code's done
+    // line, without its undo (`shellcore::deskask`), in the Terminal's row.
+    rows_show(&format!("Done: file {TERMINAL_FILE} created (was absent)."))?;
     file_made(TERMINAL_FILE)?;
-    log!("{CASE}: the Terminal's line asked first, and Run on the card made its file");
+    log!(
+        "{CASE}: the Terminal's line asked first, Run on the card made its file, and the Terminal showed what it came to"
+    );
     panel_line(PANEL_ASK);
     yes_on_the_card(PANEL_FILE)?;
     file_made(PANEL_FILE)?;
@@ -369,10 +367,21 @@ fn note_reaches_notes() -> Result<(), &'static str> {
     Err("founder-walk: the note did not reach Notes")
 }
 
-/// A click at `at`, the pointer brought from the screen's top left corner.
-fn click(at: (i32, i32)) {
-    report(TO_CORNER, TO_CORNER, 0);
-    report(at.0, at.1, 0);
+/// The desk's points at the screen's size, which the case's `display=` sets
+/// (deskgeom), so a layout change moves the walk's clicks with it.
+fn desk() -> Result<deskgeom::Points, &'static str> {
+    let surface = display::surface().ok_or("founder-walk: no display")?;
+    let px = |n: usize| i32::try_from(n).map_err(|_| "founder-walk: the screen is too big");
+    Ok(deskgeom::points(px(surface.width)?, px(surface.height)?))
+}
+
+/// A click at `at`: the pointer pinned to deskgeom's corner, wherever it was,
+/// and moved from there.
+fn click(desk: &deskgeom::Points, at: (i32, i32)) {
+    let (dx, dy) = desk.pin_to_kai();
+    report(dx, dy, 0);
+    let from = desk.pinned();
+    report(at.0 - from.0, at.1 - from.1, 0);
     report(0, 0, 1);
     report(0, 0, 0);
 }
@@ -394,9 +403,10 @@ fn notes_came_back() -> Result<(), &'static str> {
 /// Step 5: Notes' window opened, closed from its control, and asked for
 /// again; it must be open again, as the host also checks.
 fn notes_open_close_open() -> Result<(), &'static str> {
+    let desk = desk()?;
     panel_line("open notes");
     threads::sleep_ms(OPEN_MS);
-    click(NOTES_CLOSE);
+    click(&desk, desk.close(NOTES_SPOT, crate::ui_tests::APP_FRAME_W));
     threads::sleep_ms(SETTLE_MS);
     log!("{CASE}: Notes' window was closed from its control");
     panel_line("open notes");
