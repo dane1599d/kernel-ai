@@ -26,9 +26,11 @@ use alloc::vec::Vec;
 use deskgeom::{Layout, UiState};
 /// HID keyboard usages (page 0x07) the desk itself reacts to.
 mod ask;
+mod bar;
 mod keys;
 mod manage;
 mod pane;
+pub use bar::{BarSpot, TrayPart};
 pub use pane::PanePart;
 
 pub mod usage {
@@ -131,6 +133,8 @@ pub enum Effect {
     Locks { caps: bool },
     /// Keyboard focus moved.
     Focus(Focus),
+    /// The taskbar's "more" item: open the Apps sheet.
+    ShowApps,
     /// Tell the client its window's content size and state
     /// (`toplevel.configure`).
     Configure {
@@ -168,7 +172,9 @@ const KEEP_ON_SCREEN: i32 = 64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
     Window(WindowId, Part),
-    TopBar,
+    /// The taskbar: item `i` of the items now, or between them.
+    Taskbar(Option<usize>),
+    Tray(TrayPart),
     /// The Kai pane, while it is open.
     Pane(PanePart),
     Desktop,
@@ -212,9 +218,10 @@ pub struct Desk {
     /// Num Lock: on, the keypad types digits; off, it is the arrows and
     /// navigation keys. On at start, as most PCs boot.
     num: bool,
-    /// The top bar's tabs as last drawn, one per window: a press on one
-    /// brings that window back ([`Desk::set_tabs`]).
-    tabs: Vec<(WindowId, Rect)>,
+    /// The taskbar's spot under the pointer, drawn with its hover fill.
+    bar_hover: Option<BarSpot>,
+    /// Kai said something while the pane was closed: the chip's badge.
+    unread: bool,
     /// The clock `desktop` last gave ([`Desk::set_now`]).
     now_ms: u64,
     /// When the card up now may first be answered: a quiet
@@ -261,7 +268,8 @@ impl Desk {
             agent: None,
             caps: false,
             num: true,
-            tabs: Vec::new(),
+            bar_hover: None,
+            unread: false,
             now_ms: 0,
             ask_open_ms: u64::MAX,
             ask_drawn: None,
@@ -277,8 +285,7 @@ impl Desk {
         self.now_ms = now_ms;
     }
 
-    /// Where windows open: the screen below the top bar and above the
-    /// taskbar's strip.
+    /// Where windows open: the screen above the taskbar.
     pub fn work_area(&self) -> Rect {
         self.layout().work_area
     }
@@ -289,17 +296,6 @@ impl Desk {
             pane_open: self.pane_open,
         };
         Layout::for_screen(self.width, self.height, ui)
-    }
-
-    pub fn top_bar(&self) -> Rect {
-        self.layout().top_bar
-    }
-
-    /// What the top bar's tabs show changed: a window came or went, rose, was
-    /// renamed, minimized or restored, or the focus moved.
-    pub(super) fn tabs_changed(&mut self) {
-        let bar = self.top_bar();
-        self.damage.add(bar);
     }
 
     /// Bottom to top.
@@ -384,7 +380,7 @@ impl Desk {
         };
         self.damage.add(window.frame);
         self.windows.push(window);
-        self.tabs_changed();
+        self.bar_changed();
         let mut effects = Vec::new();
         if activated {
             self.set_focus(Focus::Window(id), &mut effects);
@@ -400,7 +396,7 @@ impl Desk {
         };
         let window = self.windows.remove(at);
         self.damage.add(window.frame);
-        self.tabs_changed();
+        self.bar_changed();
         if self.over == Some(id) {
             self.over = None;
         }
@@ -420,7 +416,7 @@ impl Desk {
             w.title = String::from(title);
             let bar = chrome::title_bar(w.frame);
             self.damage.add(bar);
-            self.tabs_changed();
+            self.bar_changed();
         }
     }
 
@@ -475,14 +471,14 @@ impl Desk {
     }
 
     /// What `p` hits, topmost first (ADR 0005 §7's hit order): the pane,
-    /// then the top bar, are drawn over every window, so a window under them
-    /// never takes their clicks.
+    /// then the taskbar and tray, are drawn over every window, so a window
+    /// under them never takes their clicks.
     pub fn hit(&self, p: Point) -> Hit {
         if let Some(part) = self.pane_hit(p) {
             return Hit::Pane(part);
         }
-        if self.top_bar().contains(p) {
-            return Hit::TopBar;
+        if let Some(hit) = self.bar_hit(p) {
+            return hit;
         }
         for w in self.windows.iter().rev().filter(|w| !w.minimized) {
             let part = match w.maximized() {
@@ -494,12 +490,6 @@ impl Desk {
             }
         }
         Hit::Desktop
-    }
-
-    /// The top bar's tabs as the painter laid them out
-    /// (`Painter::tabs`): what a press on the bar hits.
-    pub fn set_tabs(&mut self, tabs: Vec<(WindowId, Rect)>) {
-        self.tabs = tabs;
     }
 
     /// Whether Caps Lock is on, for the panel's own keymap.
@@ -644,14 +634,8 @@ impl Desk {
                         effects.push(Effect::PanelClick { at: self.pointer });
                     }
                 }
-                // A tab brings its window back, from minimized too.
-                Hit::TopBar if button == Button::Left => {
-                    let pointer = self.pointer;
-                    if let Some(&(id, _)) = self.tabs.iter().find(|(_, r)| r.contains(pointer))
-                        && self.window(id).is_some()
-                    {
-                        self.activate(id, effects);
-                    }
+                hit @ (Hit::Taskbar(_) | Hit::Tray(_)) if button == Button::Left => {
+                    self.bar_click(hit, effects);
                 }
                 // The empty desk takes the focus from every window, as a
                 // click on the Windows desktop does: the keys go nowhere,
@@ -729,7 +713,7 @@ impl Desk {
         }
         let from = self.focus;
         self.focus = focus;
-        self.tabs_changed();
+        self.bar_changed();
         effects.push(Effect::Focus(focus));
         self.pane_focus(from, focus, effects);
     }

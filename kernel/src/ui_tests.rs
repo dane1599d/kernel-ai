@@ -24,8 +24,8 @@ const OPEN_MS: u64 = 10_000;
 pub(crate) const DESK: deskgeom::Points = deskgeom::points(1280, 800);
 
 /// Opens the Kai pane and focuses its input, wherever the pointer is:
-/// Ctrl+Space, as set 1 make and break codes. The pane is closed at boot, so
-/// [`deskgeom::Points::focus_kai`] is on it only after this.
+/// Ctrl+Space, as set 1 make and break codes. A click on the Kai corner
+/// ([`deskgeom::Points::focus_kai`]) does the same.
 pub(crate) fn focus_kai() {
     const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
     crate::claim_tests::type_keys(&CTRL_SPACE);

@@ -14,7 +14,7 @@ const VIRTIO: Data = Data {
 pub(super) const CASES: &[TestCase] = &[
     // llm says it is not warm for its first 20 s (`llm.cold_ms`, a test word),
     // as a local model filling its slots would. The shell tells `desktop`,
-    // whose panel and top bar then say "Kai is getting ready", and then that
+    // whose pane and tray chip then say "Kai is getting ready", and then that
     // it is ready once llm says so. The system is the default boot's, as
     // `desk-default` boots it, with the mock model: there the shell has its
     // route to `desktop` (`kabi::plan::SHELL_DESK`). `test=desk-warming` only

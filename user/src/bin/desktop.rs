@@ -14,7 +14,7 @@
 //! - Window events (minimize, restore, focus, close) and idle minutes go to the
 //!   kernel's event box for the shell's standing instructions (P3 task 11),
 //!   found by `deskcore::watch`.
-//! - The top bar's model state and memory are read once a second; a screen
+//! - The tray's model state, memory and clock are read once a second; a screen
 //!   without a hardware cursor (GOP) gets one drawn in the frame.
 //! - Everything is painted in the theme the [`Appearance`] resolves to (P4
 //!   task 8): checked once per frame, and on a change the whole screen and the
@@ -75,6 +75,8 @@ mod agent;
 mod pane;
 #[path = "desktop/perf.rs"]
 mod perf;
+#[path = "desktop/taskbar.rs"]
+mod taskbar;
 
 /// The fonts ADR 0005 §8 names, built in until P2's files carry them.
 const FONTS: Fonts = Fonts {
@@ -82,7 +84,7 @@ const FONTS: Fonts = Fonts {
     mono: include_bytes!("../../../assets/fonts/JetBrainsMono-Variable.ttf"),
 };
 
-/// How often the top bar's model state and memory are read.
+/// How often the tray's model state, memory and clock are read.
 const BAR_EVERY_NS: u64 = 1_000_000_000;
 
 /// Waits for input or a client, in turn, so neither starves.
@@ -115,7 +117,9 @@ struct State {
     painter: Painter,
     bar: Bar,
     bar_at: u64,
-    /// Damage of desktop's own: the top bar's stats, the drawn cursor.
+    /// What the tray last showed: a change to it repaints that part alone.
+    tray: deskcore::tray::Shown,
+    /// Damage of desktop's own: the tray's parts, the pane's, the drawn cursor.
     extra: Vec<Rect>,
     /// The screen has no hardware cursor, so the frame shows one.
     draws_cursor: bool,
@@ -208,6 +212,7 @@ fn main() -> i32 {
             painter,
             bar: Bar::default(),
             bar_at: 0,
+            tray: deskcore::tray::Shown::default(),
             extra: Vec::new(),
             draws_cursor: screen.info.cursor == 0,
             drawn: false,
@@ -470,6 +475,11 @@ fn deliver(state: &mut State, effects: &[Effect]) {
                     }
                     None => false,
                 }
+            }
+            // The taskbar's "more": the Apps sheet.
+            Effect::ShowApps => {
+                apps::open(state);
+                false
             }
             Effect::Locks { caps } => {
                 state.panel.set_caps(caps);
@@ -765,9 +775,18 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
             let now = if ready { "ready" } else { "getting ready" };
             println!("desktop: the model is {now}");
             state.extra.push(state.desk.pane_area());
-            state.extra.push(paint::stats_area(state.width));
-            // The top bar says it too, from the next read of the stats.
+            // The tray's chip says it too, from the next read of the bar.
             state.bar_at = 0;
+        }
+        return Some(String::from("ok"));
+    }
+    // The running model's name, cleaned as it is read: the pane's header.
+    if let Some(name) = panel_wire::parse_model(text) {
+        if state.panel.set_model(name) {
+            println!("desktop: the shell named the model");
+            state
+                .extra
+                .push(deskcore::paint_pane::header_area(&state.desk));
         }
         return Some(String::from("ok"));
     }
@@ -839,6 +858,9 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
 fn chat_push(state: &mut State, who: Who, text: &str) -> bool {
     let area = paint_chat::chat_area(&state.desk);
     let added = state.painter.chat_push(&mut state.chat, who, text, area);
+    if added && matches!(who, Who::Kai) {
+        state.desk.kai_said();
+    }
     if added {
         state.extra.push(area);
     }
@@ -1254,8 +1276,8 @@ fn post_events(state: &mut State) {
     }
 }
 
-/// Reads the model state and memory once a second; a change damages the top
-/// bar's stats.
+/// Reads the model state, memory and clock once a second; the tray repaints
+/// what changed before the next frame (`taskbar::damage`).
 fn refresh_bar(state: &mut State) {
     let now = sys::time_ns();
     if state.bar_at != 0 && now.saturating_sub(state.bar_at) < BAR_EVERY_NS {
@@ -1269,23 +1291,27 @@ fn refresh_bar(state: &mut State) {
     let mib = |frames: u64| frames * 4096 / (1024 * 1024);
     let bar = Bar {
         model: listed.iter().any(|p| p.name() == "llm"),
-        warming: state.panel.getting_ready(),
         mem_used_mib: mib(m.total_frames - m.free_frames),
-        mem_total_mib: mib(m.total_frames),
+        // No wall clock (NotFound): no clock in the tray.
+        utc_s: sys::clock_now().ok(),
     };
     if bar != state.bar {
+        let model = bar.model != state.bar.model;
         state.bar = bar;
-        state.extra.push(paint::stats_area(state.width));
         // The idle status row shows the model's dot too, and the pane's
-        // header its state.
-        let bar = paint_panel::PanelChange::Bar;
-        let damage = paint_panel::panel_damage(&state.desk, bar);
-        state.extra.extend(damage);
+        // header its state; the tray's parts repaint as their text changes
+        // (`taskbar::damage`).
+        if model {
+            let bar = paint_panel::PanelChange::Bar;
+            let damage = paint_panel::panel_damage(&state.desk, bar);
+            state.extra.extend(damage);
+        }
     }
 }
 
 /// Repaints the damage into the frame, copies it to the screen and flushes it.
 fn draw(state: &mut State, screen: &Screen) {
+    taskbar::damage(state);
     let mut damage = state.desk.take_damage();
     damage.append(&mut state.extra);
     if damage.is_empty() {
@@ -1360,9 +1386,6 @@ fn draw(state: &mut State, screen: &Screen) {
         state.drawn = true;
         println!("desktop: drew the desk at {}x{}", state.width, state.height);
     }
-    // What a press on the top bar hits: its tabs as just drawn.
-    let tabs = state.painter.tabs(&state.desk);
-    state.desk.set_tabs(tabs);
 }
 
 /// A client's buffer, read where its pool is mapped. `None` past the pool.

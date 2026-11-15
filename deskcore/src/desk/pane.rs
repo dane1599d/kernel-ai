@@ -68,6 +68,12 @@ impl Desk {
         let before = self.layout().maximized;
         self.damage.add(pane.grow(crate::paint::SHADOW_REACH));
         self.pane_open = open;
+        // The chip shows less beside an open pane, and its badge goes.
+        if open {
+            self.unread = false;
+        }
+        let chip = self.layout().tray.chip;
+        self.damage.add(chip);
         if self.layout().maximized != before {
             self.refit(effects);
         }

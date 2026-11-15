@@ -12,16 +12,16 @@ impl Desk {
     /// so a click that maximizes, restores, minimizes, raises or closes never
     /// leaves the hover on what has moved under the pointer.
     pub(super) fn rehover(&mut self) {
-        let hovered = match (
-            self.ask.is_some() || self.grab.is_some(),
-            self.hit(self.pointer),
-        ) {
+        let quiet = self.ask.is_some() || self.grab.is_some();
+        let hit = self.hit(self.pointer);
+        let hovered = match (quiet, hit) {
             (false, Hit::Window(id, part @ (Part::Minimize | Part::Maximize | Part::Close))) => {
                 Some((id, part))
             }
             _ => None,
         };
         self.hover(hovered);
+        self.bar_hover_to((!quiet).then_some(hit));
     }
 
     /// Moves the hover to `hovered`, damaging the control it leaves and the
@@ -142,7 +142,7 @@ impl Desk {
         w.minimized = false;
         let frame = w.frame;
         self.damage.add(frame);
-        self.tabs_changed();
+        self.bar_changed();
         self.raise(id);
         self.set_focus(Focus::Window(id), effects);
     }
@@ -157,7 +157,7 @@ impl Desk {
         let window = self.windows.remove(at);
         self.damage.add(window.frame);
         self.windows.push(window);
-        self.tabs_changed();
+        self.bar_changed();
     }
 
     pub(crate) fn minimize(&mut self, id: WindowId, effects: &mut Vec<Effect>) {
@@ -165,7 +165,7 @@ impl Desk {
             w.minimized = true;
             let frame = w.frame;
             self.damage.add(frame);
-            self.tabs_changed();
+            self.bar_changed();
         }
         if self.focus == Focus::Window(id) {
             let next = self.top_visible().map_or(Focus::Nothing, Focus::Window);

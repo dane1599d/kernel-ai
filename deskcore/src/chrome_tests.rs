@@ -189,7 +189,7 @@ fn a_title_never_shows_without_its_whole_label() {
     let mut shown = 0;
     for w in (0..=400).step_by(10) {
         let (desk, id) = sized(LABEL, "Groceries", w);
-        // The window's own bar: the top bar's tab shows the title too.
+        // The window's own title bar only.
         let bar = text_area(&desk, id);
         let titled = painted(&desk);
         let bare = painted(&sized(LABEL, "", w).0);

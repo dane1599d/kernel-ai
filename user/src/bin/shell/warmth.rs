@@ -16,7 +16,9 @@
 //!   one changes nothing.
 //!
 //! What `desktop` is told is `deskcore::panel_wire`'s `panel ready`: when it
-//! changes, and again to a `desktop` that restarted. With no `desktop`, llm is
+//! changes, and again to a `desktop` that restarted. Each `desktop` is told
+//! the running model's name once too (`panel model`), from `updated`'s list
+//! of what the OS loaded, never from the model's output. With no `desktop`, llm is
 //! not asked at all. A `warm` ask is read-only in llm: it changes no state, and
 //! a warm-up answers it without stopping (`request_came` in `llm.rs`).
 
@@ -30,6 +32,11 @@ use user::{println, sys};
 const PEEK_MS: u64 = 20;
 /// The wait before a panel line: longer than one of llm's warm-up slices.
 const ASK_MS: u64 = 1_500;
+/// The wait for `updated`'s list of models: past `updated`'s own 3 s wait
+/// on llm's `health`, so a late answer is never left behind.
+const MODELS_MS: u64 = 3_500;
+/// The most tries at naming the model to one `desktop`.
+const NAME_TRIES: u8 = 3;
 
 /// Set when the shell made llm fill its slots again.
 static COOLED: AtomicBool = AtomicBool::new(false);
@@ -54,6 +61,8 @@ pub(crate) fn lang(c: bool) {
 pub(crate) struct Warmth {
     readiness: Readiness,
     told: Option<(bool, u64)>,
+    /// The `desktop` told the model's name, or tried at it: how many times.
+    named: Option<(u64, u8)>,
 }
 
 impl Warmth {
@@ -66,6 +75,15 @@ impl Warmth {
             self.ask(PEEK_MS, false);
         }
         self.tell();
+        // Between lines only, never on a panel line's path, and only once
+        // llm confirmed it is warm (not merely "ready" across a cool or a
+        // restart): `updated`'s `health` call answers at once and cuts no
+        // warm-up, and no try is spent while llm is down or loading.
+        if self.readiness.confirmed()
+            && let (Some(route), Some(to)) = (desktop(), desktop_pid())
+        {
+            self.name(route, to);
+        }
     }
 
     /// Right before the panel's line goes to llm.
@@ -127,6 +145,49 @@ impl Warmth {
             Err(why) => println!("the panel was not told the model's warmth: {why}"),
         }
     }
+
+    /// The running model's name, to `desktop` `to`, once it took it: tried
+    /// at most [`NAME_TRIES`] times a `desktop`, so a quiet `updated` costs
+    /// the loop a bounded wait.
+    fn name(&mut self, route: kabi::handle::Handle, to: u64) {
+        let tries = match self.named {
+            Some((pid, tries)) if pid == to => tries,
+            _ => 0,
+        };
+        if tries >= NAME_TRIES {
+            return;
+        }
+        let Some(name) = running_model() else {
+            self.named = Some((to, tries + 1));
+            return;
+        };
+        match ask_desktop(route, &panel_wire::encode_model(&name)) {
+            Ok(answer) if answer == "ok" => self.named = Some((to, NAME_TRIES)),
+            Ok(answer) => {
+                self.named = Some((to, tries + 1));
+                println!("the panel was not told the model's name: {answer}");
+            }
+            Err(why) => {
+                self.named = Some((to, tries + 1));
+                println!("the panel was not told the model's name: {why}");
+            }
+        }
+    }
+}
+
+/// The model the OS runs, by name, from `updated`'s list: the shell's
+/// record of what it loaded. None when `updated` does not answer or names
+/// none running.
+fn running_model() -> Option<alloc::string::String> {
+    let mut reply = alloc::vec![0u8; kabi::MAX_MESSAGE];
+    let len = sys::call_route(super::updated(), b"models", &mut reply, MODELS_MS).ok()?;
+    let text = core::str::from_utf8(reply.get(..len)?).ok()?;
+    let models = modelchan::listing::parse(text).ok()?;
+    models
+        .rows()
+        .iter()
+        .find(|r| matches!(r.state, comp_models::State::Running))
+        .map(|r| r.name())
 }
 
 /// The running `llm`'s pid, from the kernel's METRICS.

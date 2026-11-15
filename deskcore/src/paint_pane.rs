@@ -87,10 +87,16 @@ impl Painter {
             (true, true) => "getting ready",
             (true, false) => "ready",
         };
-        let y = self.baseline(header.y, header.h, TypeStyle::Small);
         let end = Rect::new(header.x, header.y, parts.close.x - 8 - header.x, header.h);
         let muted = self.palette.muted;
-        self.draw_text(c, end, x + advance + 8.0, y, TypeStyle::Small, muted, state);
+        let mut x = x + advance + 8.0;
+        // The model's name, the shell's record of it, in the system's mono.
+        if let Some(name) = scene.panel.model() {
+            let y = self.baseline(header.y, header.h, TypeStyle::MonoTitle);
+            x += self.draw_text(c, end, x, y, TypeStyle::MonoTitle, muted, name) + 8.0;
+        }
+        let y = self.baseline(header.y, header.h, TypeStyle::Small);
+        self.draw_text(c, end, x, y, TypeStyle::Small, muted, state);
         self.item(c, parts.close, Icon::Close, false);
         let rule = Rect::new(header.x + 1, header.bottom(), header.w - 2, 1);
         fill(c, rule, header.grow(1), self.palette.line);

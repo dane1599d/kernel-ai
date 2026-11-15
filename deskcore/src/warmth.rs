@@ -45,6 +45,16 @@ impl Readiness {
         self.want
     }
 
+    /// Whether llm said "yes" since anything last cooled or restarted it:
+    /// it runs, is loaded and idle in its receive loop. Unlike [`want`],
+    /// which keeps saying ready across a cool, this is false while llm is
+    /// down or loading.
+    ///
+    /// [`want`]: Readiness::want
+    pub fn confirmed(&self) -> bool {
+        self.confirmed
+    }
+
     /// Whether a between-lines ask is due at `now` (ns); if so, it counts as
     /// made.
     pub fn due(&mut self, now: u64) -> bool {
@@ -163,6 +173,24 @@ mod tests {
         r.look(LLM, false);
         r.answer(Answer::No, false);
         assert_eq!(r.want(), Some(false));
+    }
+
+    /// Confirmed only after llm's own "yes": a cool, a restart or no llm
+    /// takes it back at once, while `want` keeps saying ready until llm
+    /// answers otherwise. The shell names the model only when confirmed.
+    #[test]
+    fn confirmed_follows_llm_not_the_panel() {
+        let mut r = Readiness::default();
+        r.look(LLM, false);
+        assert!(!r.confirmed(), "loading");
+        r.answer(Answer::Yes, false);
+        assert!(r.confirmed());
+        for look in [(LLM, true), (Some(8), false), (None, false)] {
+            let mut r = warm();
+            r.look(look.0, look.1);
+            assert!(!r.confirmed(), "{look:?}");
+            assert_eq!(r.want(), Some(true), "{look:?}: the panel still says ready");
+        }
     }
 
     #[test]

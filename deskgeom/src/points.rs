@@ -33,11 +33,24 @@ impl Points {
         (self.layout.width / 2, self.layout.height / 2)
     }
 
-    /// The AI input: the middle of the Kai pane's input field. The pane is
-    /// closed at boot, so Ctrl+Space opens it first; a click here then keeps
-    /// the focus in it.
+    /// The Kai corner, the screen's bottom-right pixel, where [`Points::pin`]
+    /// leaves the pointer: a click there opens the Kai pane and focuses its
+    /// input, from anywhere.
     pub const fn focus_kai(&self) -> (i32, i32) {
+        self.pinned()
+    }
+
+    /// The pane's input, once the pane is open: a click there keeps the
+    /// focus in it.
+    pub const fn pane_input(&self) -> (i32, i32) {
         middle(self.layout.pane_parts().input)
+    }
+
+    /// The middle of the Kai button, the taskbar's first item, with `n`
+    /// items on the taskbar (the Kai button and one a running app).
+    pub const fn kai_button(&self, n: i32) -> (i32, i32) {
+        let l = &self.layout;
+        middle(crate::taskbar::item(l.width, l.height, 0, n))
     }
 
     /// The relative move that pins the pointer to the screen's bottom-right
@@ -99,7 +112,7 @@ impl Points {
     /// The part of the screen whose pixels change while the desk is still,
     /// for a screendump golden to mask: (x, y, w, h).
     pub const fn tray_mask(&self) -> Rect {
-        self.layout.stats
+        self.layout.tray.area
     }
 
     /// A frame at spot `n`, `frame_w` wide and just tall enough for its title
