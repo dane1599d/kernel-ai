@@ -36,7 +36,7 @@ use deskcore::settings_wire::{self as wire, Answer};
 use kabi::Error;
 use kabi::handle::Handle;
 use shellcore::waiting::{
-    self as core_waiting, Came, GaveBack, Held, Keep, Kind, Served, Step, Waiting,
+    self as core_waiting, Came, GaveBack, Held, Keep, Kind, Served, Step, Took, Waiting,
 };
 use shellcore::{EffectDone, Shell};
 use user::sys;
@@ -449,20 +449,23 @@ fn take_back(shell: &mut Shell, held: &RefCell<HeldRequests>, route: Handle, giv
                 Came::Taken(take_again(shell, held, route, kind, &app))
             }
             Step::TellLost => return tell_lost(route, &app, lost),
+            Step::Leave => {
+                return user::println!("shell: {app}'s held request is left in desktop");
+            }
             Step::Done => return,
         };
     }
 }
 
 /// Takes `app`'s request of `kind`, given back, from `desktop` again and runs
-/// it: whether anything waited.
+/// it: what came of the take.
 fn take_again(
     shell: &mut Shell,
     held: &RefCell<HeldRequests>,
     route: Handle,
     kind: Kind,
     app: &str,
-) -> bool {
+) -> Took {
     match kind {
         Kind::Effects => {
             let take = deskcore::effects::encode_take_app(app);
@@ -471,7 +474,7 @@ fn take_again(
         Kind::File => crate::run_file_taken(shell, route),
         Kind::Settings => crate::take_changes(shell, &wire::SETTINGS, Shell::settings),
         // An answer is never given back: `give` holds it in the shell.
-        Kind::Answer => true,
+        Kind::Answer => Took::Ran,
     }
 }
 

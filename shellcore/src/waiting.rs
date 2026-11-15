@@ -108,11 +108,26 @@ pub enum Step {
     /// Take it again from its app's queue, and run it.
     Take,
     /// Tell its app it did not run: `desktop` lost it, or may have. An app
-    /// drops a result for a call already answered, so this never takes the
-    /// place of one that ran.
+    /// drops a result for a call already answered, and `desktop` withdraws a
+    /// request still waiting with that ticket, so it never runs after.
     TellLost,
+    /// Leave it: the take call itself failed, and what waits in `desktop`
+    /// waits for the next take.
+    Leave,
     /// It ran: nothing more.
     Done,
+}
+
+/// What came of taking a given-back request again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Took {
+    /// Something waited, and ran.
+    Ran,
+    /// `desktop` said nothing waits.
+    Empty,
+    /// The take call failed, or its answer was out of shape: what waits is
+    /// not known.
+    CallFailed,
 }
 
 /// What came of the last step for a request given back.
@@ -123,8 +138,8 @@ pub enum Came {
     LineEnded { restarted: bool, resend: bool },
     /// The give-back was sent again.
     Resent(GaveBack),
-    /// It was taken again: whether anything waited.
-    Taken(bool),
+    /// It was taken again.
+    Taken(Took),
 }
 
 impl Came {
@@ -133,7 +148,8 @@ impl Came {
     /// - A restarted `desktop` never had it: told so, never taken.
     /// - A resend with no answer: told so, never taken, as a take could run
     ///   the app's later requests ahead of it while it sits taken.
-    /// - A take that finds nothing: told so.
+    /// - A take that finds nothing: told so. One whose call failed: left
+    ///   for the next take, never told.
     pub fn next(self) -> Step {
         match self {
             Self::LineEnded {
@@ -143,8 +159,9 @@ impl Came {
             Self::LineEnded { .. } => Step::Take,
             Self::Resent(gave) if gave.answered() => Step::Take,
             Self::Resent(_) => Step::TellLost,
-            Self::Taken(true) => Step::Done,
-            Self::Taken(false) => Step::TellLost,
+            Self::Taken(Took::Ran) => Step::Done,
+            Self::Taken(Took::Empty) => Step::TellLost,
+            Self::Taken(Took::CallFailed) => Step::Leave,
         }
     }
 }

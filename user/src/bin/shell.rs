@@ -37,6 +37,7 @@ use llmproto::chat::Completion;
 use llmproto::script::{self, Answer, AnswerError, Lang, ScriptRequest};
 use llmproto::tune::{self, TuneRequest};
 use shellcore::targets::Service;
+use shellcore::waiting::Took;
 use shellcore::{DEFAULT_CONFIG, Host, PanelResult, Proof, SCRIPT_ROUND_MS, Shell};
 use user::{arg, args, logln, println, sys};
 
@@ -363,7 +364,7 @@ fn take_effects(shell: &mut Shell, held: &core::cell::RefCell<waiting::HeldReque
 
 /// Takes effects from `desktop` with `take` (`effects take`, or after a line
 /// `effects take app <name>` for what it gave back), runs them and reports
-/// what came of each: whether any waited.
+/// what came of each: what came of the take.
 ///
 /// While the batch runs, its app counts as running in `held`: a Terminal's
 /// `shell_line` runs a line, and what the app asks during that line's model
@@ -373,20 +374,22 @@ fn run_effects_taken(
     held: &core::cell::RefCell<waiting::HeldRequests>,
     route: kabi::handle::Handle,
     take: &str,
-) -> bool {
+) -> Took {
     use deskcore::effects;
     let Ok(answer) = ask_desktop(route, take) else {
-        return false;
+        return Took::CallFailed;
     };
-    let Some(Some((app, user, lines))) = effects::parse_take(&answer) else {
-        return false;
+    let (app, user, lines) = match effects::parse_take(&answer) {
+        Some(Some(taken)) => taken,
+        Some(None) => return Took::Empty,
+        None => return Took::CallFailed,
     };
     held.borrow_mut()
         .running(shellcore::waiting::Kind::Effects, app);
     let results = shell.run_effects_from(app, lines, user);
     held.borrow_mut().done();
     give_effect_results(route, app, user, results);
-    true
+    Took::Ran
 }
 
 /// Gives `desktop` what app `app`'s effects came to, for its `comphost`.
@@ -487,24 +490,27 @@ fn take_files(shell: &mut Shell) {
         return;
     };
     for _ in 0..FILES_PER_PASS {
-        if !run_file_taken(shell, route) {
+        if run_file_taken(shell, route) != Took::Ran {
             return;
         }
     }
 }
 
 /// Takes the oldest complete transfer `desktop` holds, does it, and reports
-/// it: whether one waited.
-fn run_file_taken(shell: &mut Shell, route: kabi::handle::Handle) -> bool {
+/// it: what came of the take.
+fn run_file_taken(shell: &mut Shell, route: kabi::handle::Handle) -> Took {
     let Ok(answer) = ask_desktop(route, "files take") else {
-        return false;
+        return Took::CallFailed;
     };
+    if answer == "none" {
+        return Took::Empty;
+    }
     let Some(job) = deskcore::files::parse_job(&answer) else {
-        return false;
+        return Took::CallFailed;
     };
     let done = do_file_job(shell, route, &job);
     report_file_job(route, job.id, done);
-    true
+    Took::Ran
 }
 
 /// Tells `desktop` what transfer `id` came to: a Stop for a line before
@@ -612,31 +618,33 @@ type Answering = fn(&mut Shell, &str, &str, bool) -> Result<String, String>;
 /// Answers one app's waiting requests, which `desktop` holds under `words`
 /// (`deskcore::settings_wire`): the Settings app's `kai:settings` requests, or
 /// the Models window's switches (`deskcore::models_wire`). The app is
-/// `desktop`'s record of the caller, and `answering` checks it again. Whether
-/// any waited.
+/// `desktop`'s record of the caller, and `answering` checks it again. What
+/// came of the take.
 fn take_changes(
     shell: &mut Shell,
     words: &deskcore::settings_wire::Words,
     answering: Answering,
-) -> bool {
+) -> Took {
     use deskcore::settings_wire::{self as wire, Answer};
     // A unit of work that is no request: a Stop for the last one ends here.
     start_of_unit();
     let Some(route) = desktop() else {
-        return false;
+        return Took::CallFailed;
     };
     let Ok(answer) = ask_desktop(route, words.take) else {
-        return false;
+        return Took::CallFailed;
     };
-    let Some(Some((app, requests))) = wire::parse_take(&answer) else {
-        return false;
+    let (app, requests) = match wire::parse_take(&answer) {
+        Some(Some(taken)) => taken,
+        Some(None) => return Took::Empty,
+        None => return Took::CallFailed,
     };
     let answers: Vec<Answer> = requests
         .iter()
         .map(|r| Answer::new(r.ticket, answering(shell, app, &r.text, r.user)))
         .collect();
     give_answers(route, words, app, &answers);
-    true
+    Took::Ran
 }
 
 /// Gives `desktop` app `app`'s answers under `words`: a Stop for a line

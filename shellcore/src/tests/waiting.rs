@@ -304,7 +304,7 @@ mod held {
 /// runs once, whether `desktop` applied the first and answered late or never
 /// had it.
 mod given_back {
-    use crate::waiting::{Came, GaveBack, Keep, Step, restarted};
+    use crate::waiting::{Came, GaveBack, Keep, Step, Took, restarted};
     use alloc::string::String;
     use deskcore::{effects, files, settings_wire as wire};
 
@@ -363,8 +363,11 @@ mod given_back {
             (Came::Resent(GaveBack::Unknown), Step::TellLost),
             (Came::Resent(GaveBack::NotSent), Step::TellLost),
             (Came::Resent(GaveBack::Withdrawn), Step::TellLost),
-            (Came::Taken(true), Step::Done),
-            (Came::Taken(false), Step::TellLost),
+            (Came::Taken(Took::Ran), Step::Done),
+            (Came::Taken(Took::Empty), Step::TellLost),
+            // #938's third look: a failed take call says nothing of what
+            // waits, so the app is not told it did not run.
+            (Came::Taken(Took::CallFailed), Step::Leave),
         ];
         for (came, step) in table {
             assert_eq!(came.next(), step, "{came:?}");
