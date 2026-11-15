@@ -15,8 +15,10 @@
 //!   (`app <name> user\n...` for lines queued by a person's input): one app's
 //!   oldest effects, all of one kind;
 //! - from the shell, `effects done <name>\n<result lines>` → `ok`. A line
-//!   still waiting with an answered ticket goes: the shell gave it back, then
-//!   told the app it did not run (#938), so it never runs after;
+//!   the shell gave back and still waiting goes when its ticket is answered:
+//!   the shell told the app it did not run (#938), so it never runs after.
+//!   Only a line given back: tickets start again when an app reloads, so a
+//!   late result for an old ticket never withdraws a new line of that number;
 //! - from the shell, `effects take but <name> <name>...` → as `effects take`,
 //!   skipping those apps: ones whose requests it holds back for now;
 //! - from the shell, `effects take during` → as `effects take`, while it runs
@@ -109,6 +111,9 @@ pub struct Queue {
     /// Lines the shell took and has not answered or put back: app, ticket and
     /// whether a person's input queued it, oldest first.
     taken: VecDeque<(String, u32, bool)>,
+    /// Lines the shell put back that wait again, by app and ticket, oldest
+    /// first, at most [`MAX_TAKEN`]: the only ones a result withdraws.
+    given_back: VecDeque<(String, u32)>,
 }
 
 impl Queue {
@@ -231,6 +236,9 @@ impl Queue {
         }
         let app = app.clone();
         for ticket in lines.iter().filter_map(|line| ticket_of(line)) {
+            // Taken, so no longer waiting as given back.
+            self.given_back
+                .retain(|(a, t)| !(*a == app && *t == ticket));
             // Tickets start again when an app or its comphost reloads: an
             // older entry for the same ticket is gone.
             self.taken.retain(|(a, t, _)| !(*a == app && *t == ticket));
@@ -260,6 +268,12 @@ impl Queue {
                 .rposition(|(app, t, _)| *app == taken.app && *t == ticket);
             if let Some((_, _, user)) = at.and_then(|at| self.taken.remove(at)) {
                 back.push((user, line));
+                self.given_back
+                    .retain(|(a, t)| !(*a == taken.app && *t == ticket));
+                if self.given_back.len() == MAX_TAKEN {
+                    self.given_back.pop_front();
+                }
+                self.given_back.push_back((taken.app.clone(), ticket));
             }
         }
         let kept = back.len();
@@ -272,17 +286,28 @@ impl Queue {
 
     /// Records what came of one of `app`'s effects, or a notice for it (ticket
     /// [`NOTICE_TICKET`]): one waits at a time, as it says only that something
-    /// changed, so an app that was napping is told once on waking. A line of
-    /// the app's still waiting with that ticket is withdrawn: what came of it
-    /// is said, so it never runs after (#938: given back, then told it did not
-    /// run).
+    /// changed, so an app that was napping is told once on waking. A line the
+    /// shell gave back that still waits is withdrawn: what came of it is said,
+    /// so it never runs after (#938: given back, then told it did not run).
+    /// Only that line, the app's oldest with the ticket, as the back put it
+    /// first: a line the app queued since under the same number (it
+    /// reloaded) stays.
     pub fn finish(&mut self, app: &str, done: Done) {
         self.taken
             .retain(|(a, ticket, _)| !(a == app && *ticket == done.ticket));
-        if done.ticket != NOTICE_TICKET
-            && let Some((_, waiting)) = self.effects.iter_mut().find(|(a, _)| a == app)
-        {
-            waiting.retain(|(_, line)| ticket_of(line) != Some(done.ticket));
+        let given = self
+            .given_back
+            .iter()
+            .position(|(a, ticket)| a == app && *ticket == done.ticket);
+        if let Some(given) = given {
+            self.given_back.remove(given);
+            if let Some((_, waiting)) = self.effects.iter_mut().find(|(a, _)| a == app)
+                && let Some(at) = waiting
+                    .iter()
+                    .position(|(_, line)| ticket_of(line) == Some(done.ticket))
+            {
+                waiting.remove(at);
+            }
         }
         let results = entry(&mut self.results, app);
         if done.ticket == NOTICE_TICKET && results.iter().any(|d| *d == done) {
@@ -984,6 +1009,53 @@ mod tests {
             queue.take_app(4096, "monitor"),
             Some(taken("monitor", false, &[line(1)]))
         );
+    }
+
+    /// A line queued under a ticket like `n`'s, saying `word`: an app that
+    /// reloaded numbers its lines again.
+    fn line_saying(ticket: u32, word: &str) -> String {
+        format!("effect {ticket} notify(\"{word}\")")
+    }
+
+    /// #938's follow-up: tickets start again when an app reloads. A late
+    /// result for an old instance's ticket withdraws no new line of that
+    /// number; one for a line given back withdraws only that line; and once
+    /// it is taken again, it is no longer given back.
+    #[test]
+    fn only_a_line_given_back_is_withdrawn_by_its_result() {
+        let mut queue = Queue::default();
+        let lost = |ticket| Done {
+            ticket,
+            outcome: Err(String::from("Not run")),
+        };
+        let (old, new) = (line_saying(1, "old"), line_saying(1, "new"));
+        // Taken, and the app reloads: the old line's late result.
+        queue.put("files", &old);
+        queue.take(4096).unwrap();
+        queue.put("files", &new);
+        queue.finish("files", lost(1));
+        let fresh = Some(taken("files", false, core::slice::from_ref(&new)));
+        assert_eq!(queue.take_app(4096, "files"), fresh, "the new line stays");
+        // Given back, and the app reloads: only the given-back one goes.
+        assert_eq!(
+            queue.put_back(taken("files", false, core::slice::from_ref(&new))),
+            1
+        );
+        queue.put("files", &old);
+        queue.finish("files", lost(1));
+        let reloaded = Some(taken("files", false, core::slice::from_ref(&old)));
+        assert_eq!(queue.take_app(4096, "files"), reloaded);
+        assert_eq!(queue.take_app(4096, "files"), None);
+        // Given back, taken again: a later line 1 is no longer at risk.
+        assert_eq!(
+            queue.put_back(taken("files", false, core::slice::from_ref(&old))),
+            1
+        );
+        queue.take_app(4096, "files").unwrap();
+        queue.put("files", &new);
+        queue.finish("files", lost(1));
+        assert_eq!(queue.take_app(4096, "files"), fresh);
+        assert_eq!(queue.results("files", MESSAGE_BUDGET).len(), 3);
     }
 
     #[test]
