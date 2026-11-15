@@ -63,6 +63,27 @@ pub fn state_area(desk: &Desk) -> Rect {
     }
 }
 
+/// What changed in the panel, for what it repaints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelChange {
+    /// A key edited the line: the input alone.
+    LineEdit,
+    /// The bar (the model, its warmth): the status row's dot and the
+    /// header's state.
+    Bar,
+    /// A new state, focus or anything else: the whole pane.
+    Pane,
+}
+
+/// What `change` repaints on `desk`: nothing while the pane is closed.
+pub fn panel_damage(desk: &Desk, change: PanelChange) -> alloc::vec::Vec<Rect> {
+    match change {
+        PanelChange::LineEdit => alloc::vec![input_area(desk)],
+        PanelChange::Bar => alloc::vec![state_area(desk), crate::paint_pane::header_area(desk)],
+        PanelChange::Pane => alloc::vec![desk.pane_area()],
+    }
+}
+
 /// The pane's input on the screen while it is open; empty while closed.
 pub fn input_area(desk: &Desk) -> Rect {
     match desk.pane() {

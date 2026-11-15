@@ -95,6 +95,34 @@ impl Painter {
         (total - GAP).max(0)
     }
 
+    /// Adds `text` from `who` to `chat`, drawn in `area`: at the bottom the
+    /// new entry shows; scrolled up, the view stays on what it showed, as
+    /// the offset grows by the new entry's height and the gap. False when
+    /// nothing was added.
+    pub fn chat_push(
+        &mut self,
+        chat: &mut crate::chat::Chat,
+        who: crate::chat::Who,
+        text: &str,
+        area: Rect,
+    ) -> bool {
+        let scrolled = chat.scrolled() > 0;
+        if !chat.push(who, text) {
+            return false;
+        }
+        if scrolled && !area.is_empty() {
+            let label_h = self.text.measure(TypeStyle::Small, "Kai").1 as i32;
+            let grown = chat.entries().next_back().map_or(0, |entry| {
+                let laid = self.laid(entry, area.w);
+                let line_h = self.text.measure(laid.style, "x").1 as i32;
+                laid.height(label_h, line_h) + GAP
+            });
+            let most = (self.chat_height(chat, area.w) - area.h).max(0);
+            chat.scroll_by(grown, most);
+        }
+        true
+    }
+
     /// PageUp's or PageDown's step in a history `area_h` tall: its height
     /// less one line, so a line stays in view across the step.
     pub fn history_page(&self, area_h: i32) -> i32 {

@@ -495,7 +495,9 @@ fn deliver(state: &mut State, effects: &[Effect]) {
                     true => true,
                     false => {
                         if changed {
-                            state.extra.push(paint_panel::input_area(&state.desk));
+                            let line = paint_panel::PanelChange::LineEdit;
+                            let damage = paint_panel::panel_damage(&state.desk, line);
+                            state.extra.extend(damage);
                         }
                         false
                     }
@@ -835,9 +837,10 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
 /// Adds to the panel's history and damages where it is drawn; false when
 /// nothing was added.
 fn chat_push(state: &mut State, who: Who, text: &str) -> bool {
-    let added = state.chat.push(who, text);
+    let area = paint_chat::chat_area(&state.desk);
+    let added = state.painter.chat_push(&mut state.chat, who, text, area);
     if added {
-        state.extra.push(paint_chat::chat_area(&state.desk));
+        state.extra.push(area);
     }
     added
 }
@@ -1275,10 +1278,9 @@ fn refresh_bar(state: &mut State) {
         state.extra.push(paint::stats_area(state.width));
         // The idle status row shows the model's dot too, and the pane's
         // header its state.
-        state.extra.push(paint_panel::state_area(&state.desk));
-        state
-            .extra
-            .push(deskcore::paint_pane::header_area(&state.desk));
+        let bar = paint_panel::PanelChange::Bar;
+        let damage = paint_panel::panel_damage(&state.desk, bar);
+        state.extra.extend(damage);
     }
 }
 

@@ -711,3 +711,66 @@ fn a_long_answer_scrolls_to_its_first_line() {
     assert!(pages >= 3, "{pages} pages");
     assert!(has_label(&paint(&desk, &Panel::new(), &chat, None)));
 }
+
+/// Scrolled up, a new entry keeps the view on what it showed; and after
+/// old entries are let go, PageDown still moves the view at once.
+#[test]
+fn a_scrolled_history_keeps_its_view_and_pages_back_after_evictions() {
+    let desk = open(1280, 800);
+    let area = desk.layout().pane_parts().history;
+    let mut painter = Painter::new(FONTS).unwrap();
+    let mut chat = Chat::default();
+    for n in 0..12 {
+        painter.chat_push(
+            &mut chat,
+            Who::Kai,
+            &std::format!("answer {n} ").repeat(30),
+            area,
+        );
+    }
+    let step = painter.history_page(area.h);
+    let most = (painter.chat_height(&chat, area.w) - area.h).max(0);
+    assert!(chat.scroll_by(step, most));
+    let before = pixels(&paint(&desk, &Panel::new(), &chat, None), area);
+    painter.chat_push(&mut chat, Who::Kai, "a new answer", area);
+    let after = pixels(&paint(&desk, &Panel::new(), &chat, None), area);
+    assert_eq!(before, after, "the view moved with a new entry");
+    // To the top, then far more entries than the history keeps: the oldest
+    // are let go, and the offset left past the new most is clamped first.
+    let most = (painter.chat_height(&chat, area.w) - area.h).max(0);
+    while chat.scroll_by(step, most) {}
+    for n in 0..60 {
+        painter.chat_push(&mut chat, Who::You, &std::format!("line {n}"), area);
+    }
+    let most = (painter.chat_height(&chat, area.w) - area.h).max(0);
+    let shown = pixels(&paint(&desk, &Panel::new(), &chat, None), area);
+    assert!(chat.scroll_by(-step, most), "PageDown did nothing");
+    let paged = pixels(&paint(&desk, &Panel::new(), &chat, None), area);
+    assert_ne!(shown, paged, "PageDown showed nothing new");
+}
+
+/// What a panel change repaints: a line edit the input alone (never the
+/// status row, the header or the history), the bar the status row and the
+/// header, anything else the pane; nothing while the pane is closed.
+#[test]
+fn a_panel_change_repaints_only_its_part() {
+    use crate::paint_panel::{PanelChange, panel_damage};
+    let desk = open(1920, 1080);
+    let parts = desk.layout().pane_parts();
+    assert_eq!(panel_damage(&desk, PanelChange::LineEdit), [parts.input]);
+    for other in [parts.status, parts.header, parts.history] {
+        assert!(parts.input.intersect(&other).is_none());
+    }
+    assert_eq!(
+        panel_damage(&desk, PanelChange::Bar),
+        [parts.status, parts.header]
+    );
+    assert_eq!(
+        panel_damage(&desk, PanelChange::Pane),
+        [desk.pane().unwrap()]
+    );
+    let closed = Desk::new(1920, 1080);
+    for change in [PanelChange::LineEdit, PanelChange::Bar, PanelChange::Pane] {
+        assert!(panel_damage(&closed, change).iter().all(|r| r.is_empty()));
+    }
+}

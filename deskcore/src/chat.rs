@@ -71,9 +71,11 @@ impl Chat {
     /// or past `max`, where the oldest line is at the top. True when the
     /// view moved.
     pub fn scroll_by(&mut self, delta: i32, max: i32) -> bool {
-        let before = self.scrolled;
-        self.scrolled = self.scrolled.saturating_add(delta).clamp(0, max.max(0));
-        self.scrolled != before
+        // Clamped first: an offset left past `max` (an old entry let go)
+        // would make the next step show nothing new.
+        let at = self.scrolled.clamp(0, max.max(0));
+        self.scrolled = at.saturating_add(delta).clamp(0, max.max(0));
+        self.scrolled != at
     }
 
     /// Adds `text` from `who`, made safe to draw; false when nothing is left
@@ -209,6 +211,17 @@ mod tests {
 
     /// The history scrolls by px within its content: never below the
     /// newest line, never past the oldest.
+    #[test]
+    fn an_offset_past_a_shrunk_history_is_clamped_before_the_step() {
+        let mut chat = Chat::default();
+        chat.push(Who::You, "a");
+        assert!(chat.scroll_by(1_000, 1_000));
+        // Old entries went: the most is now 200, so PageDown's 300 lands at
+        // the bottom, not at 700 (which would still show the top).
+        assert!(chat.scroll_by(-300, 200));
+        assert_eq!(chat.scrolled(), 0);
+    }
+
     #[test]
     fn the_history_scrolls_within_its_content() {
         let mut chat = Chat::default();
