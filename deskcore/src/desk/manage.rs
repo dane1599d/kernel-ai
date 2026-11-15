@@ -1,12 +1,49 @@
 //! Moving windows about: resizing through the client, Alt+Tab, raising,
 //! minimizing and maximizing.
 
-use super::{Desk, Effect, Focus, WindowId};
-use crate::chrome::{self, Edges};
+use super::{Desk, Effect, Focus, Hit, WindowId};
+use crate::chrome::{self, Edges, Part};
 use crate::geom::{Point, Rect, Size};
 use alloc::vec::Vec;
 
 impl Desk {
+    /// The control under the pointer now, if any: none while a card is up or
+    /// a window is dragged. Called after every input and before every frame,
+    /// so a click that maximizes, restores, minimizes, raises or closes never
+    /// leaves the hover on what has moved under the pointer.
+    pub(super) fn rehover(&mut self) {
+        let hovered = match (
+            self.ask.is_some() || self.grab.is_some(),
+            self.hit(self.pointer),
+        ) {
+            (false, Hit::Window(id, part @ (Part::Minimize | Part::Maximize | Part::Close))) => {
+                Some((id, part))
+            }
+            _ => None,
+        };
+        self.hover(hovered);
+    }
+
+    /// Moves the hover to `hovered`, damaging the control it leaves and the
+    /// one it enters.
+    fn hover(&mut self, hovered: Option<(WindowId, Part)>) {
+        if hovered == self.hovered {
+            return;
+        }
+        for (id, part) in [self.hovered, hovered].into_iter().flatten() {
+            let rect = self.window(id).and_then(|w| {
+                chrome::controls(w.frame)
+                    .into_iter()
+                    .find(|(p, _)| *p == part)
+                    .map(|(_, r)| r)
+            });
+            if let Some(rect) = rect {
+                self.damage.add(rect);
+            }
+        }
+        self.hovered = hovered;
+    }
+
     /// Asks the client for the size dragging its `edges` by `delta` gives.
     pub(super) fn resize(
         &mut self,
