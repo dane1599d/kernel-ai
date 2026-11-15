@@ -304,7 +304,7 @@ mod held {
 /// runs once, whether `desktop` applied the first and answered late or never
 /// had it.
 mod given_back {
-    use crate::waiting::{GaveBack, Keep};
+    use crate::waiting::{Came, GaveBack, Keep, Step, restarted};
     use alloc::string::String;
     use deskcore::{effects, files, settings_wire as wire};
 
@@ -316,6 +316,63 @@ mod given_back {
         assert_eq!(GaveBack::Unknown.keep(1), Keep::Back { resend: true });
         assert_eq!(GaveBack::Refused.keep(1), Keep::Own(1));
         assert_eq!(GaveBack::Withdrawn.keep(1), Keep::Own(1));
+        assert_eq!(GaveBack::NotSent.keep(1), Keep::Own(1));
+    }
+
+    /// #938's re-review: a reply, or an error raised before the call was
+    /// queued, says what `desktop` has; any other error may come after it
+    /// took the call (a late reply is dropped), so it is not the shell's.
+    #[test]
+    fn a_give_back_calls_reply_or_error_says_where_the_request_is() {
+        use kabi::Error;
+        let table: [(Result<&[u8], Error>, GaveBack); 11] = [
+            (Ok(b"ok"), GaveBack::Kept),
+            (
+                Ok(b"err that transfer is not one the shell may give back"),
+                GaveBack::Refused,
+            ),
+            (Ok(b""), GaveBack::Refused),
+            (Err(Error::Interrupted), GaveBack::Withdrawn),
+            (Err(Error::Busy), GaveBack::NotSent),
+            (Err(Error::NoMemory), GaveBack::NotSent),
+            (Err(Error::TooBig), GaveBack::NotSent),
+            (Err(Error::Unavailable), GaveBack::NotSent),
+            (Err(Error::TimedOut), GaveBack::Unknown),
+            (Err(Error::Dead), GaveBack::Unknown),
+            (Err(Error::Invalid), GaveBack::Unknown),
+        ];
+        for (call, gave) in table {
+            assert_eq!(GaveBack::of(call), gave, "{call:?}");
+        }
+    }
+
+    /// #938's re-review: after the line, a request given back is told it did
+    /// not run whenever it may be lost, and is never taken behind a resend
+    /// that got no answer.
+    #[test]
+    fn after_the_line_a_given_back_request_runs_or_its_app_is_told() {
+        let ended = |restarted, resend| Came::LineEnded { restarted, resend };
+        let table = [
+            (ended(true, false), Step::TellLost),
+            (ended(true, true), Step::TellLost),
+            (ended(false, true), Step::Resend),
+            (ended(false, false), Step::Take),
+            (Came::Resent(GaveBack::Kept), Step::Take),
+            // A transfer waiting again refuses the second give-back.
+            (Came::Resent(GaveBack::Refused), Step::Take),
+            (Came::Resent(GaveBack::Unknown), Step::TellLost),
+            (Came::Resent(GaveBack::NotSent), Step::TellLost),
+            (Came::Resent(GaveBack::Withdrawn), Step::TellLost),
+            (Came::Taken(true), Step::Done),
+            (Came::Taken(false), Step::TellLost),
+        ];
+        for (came, step) in table {
+            assert_eq!(came.next(), step, "{came:?}");
+        }
+        // An unknown pid is no restart: the take that finds nothing tells.
+        assert!(restarted(Some(4), Some(9)));
+        assert!(!restarted(Some(4), Some(4)));
+        assert!(!restarted(None, Some(9)) && !restarted(Some(4), None));
     }
 
     #[test]

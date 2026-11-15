@@ -21,9 +21,10 @@
 //! answer came to may have been applied all the same (a late reply is
 //! dropped), so it is sent again after the line, never run from a copy: both
 //! would run (#938's review). An app never waits for ever on a request the
-//! shell took: one a restarted `desktop` lost is told it did not run. What
-//! comes of a held request after the line goes through `report_to_desktop`
-//! (#892), which a Stop for that line does not cut.
+//! shell took: one `desktop` lost, or may have, is told it did not run
+//! (`shellcore::waiting::Came::next`). What comes of a held request after the
+//! line goes through `report_to_desktop` (#892), which a Stop for that line
+//! does not cut.
 
 use crate::{ask_desktop, desktop};
 use alloc::format;
@@ -34,7 +35,9 @@ use deskcore::files::{Job, Op};
 use deskcore::settings_wire::{self as wire, Answer};
 use kabi::Error;
 use kabi::handle::Handle;
-use shellcore::waiting::{GaveBack, Held, Keep, Kind, Served, Waiting};
+use shellcore::waiting::{
+    self as core_waiting, Came, GaveBack, Held, Keep, Kind, Served, Step, Waiting,
+};
 use shellcore::{EffectDone, Shell};
 use user::sys;
 
@@ -171,12 +174,8 @@ fn hold(
 /// Gives a held request back to `desktop` with `back`: what came of it.
 fn give_back(route: Handle, back: &str) -> GaveBack {
     let mut reply = alloc::vec![0u8; kabi::MAX_MESSAGE];
-    match sys::call_route(route, back.as_bytes(), &mut reply, crate::DESKTOP_CALL_MS) {
-        Ok(len) if reply.get(..len) == Some(b"ok".as_slice()) => GaveBack::Kept,
-        Ok(_) => GaveBack::Refused,
-        Err(Error::Interrupted) => GaveBack::Withdrawn,
-        Err(_) => GaveBack::Unknown,
-    }
+    let sent = sys::call_route(route, back.as_bytes(), &mut reply, crate::DESKTOP_CALL_MS);
+    GaveBack::of(sent.map(|len| &reply[..len.min(reply.len())]))
 }
 
 /// The apps held back, for a take to pass by.
@@ -420,10 +419,10 @@ fn run_one(shell: &mut Shell, held: &RefCell<HeldRequests>, route: Handle, reque
     }
 }
 
-/// Takes a request given back to `desktop` again, and runs it. Its give-back
-/// is sent again first when no answer came to it: `desktop` keeps a request
-/// given back twice once. A `desktop` started since never had it, so its app
-/// is told it did not run.
+/// Takes a request given back to `desktop` again, and runs it, a step at a
+/// time (`Came::next`): its give-back sent again first when no answer came
+/// to it, as `desktop` keeps a request given back twice once. When `desktop`
+/// lost it, or may have, its app is told it did not run.
 fn take_back(shell: &mut Shell, held: &RefCell<HeldRequests>, route: Handle, given: GivenBack) {
     let GivenBack {
         kind,
@@ -432,35 +431,57 @@ fn take_back(shell: &mut Shell, held: &RefCell<HeldRequests>, route: Handle, giv
         desktop,
         lost,
     } = given;
-    if let (Some(was), Some(now)) = (desktop, crate::desktop_pid())
-        && was != now
-    {
-        user::println!("shell: desktop restarted while {app}'s request waited: it did not run");
-        for message in lost {
-            if let Err(why) = crate::report_to_desktop_bytes(route, &message) {
-                return user::println!("shell: {app} was not told: {why}");
+    let mut came = Came::LineEnded {
+        restarted: core_waiting::restarted(desktop, crate::desktop_pid()),
+        resend: resend.is_some(),
+    };
+    loop {
+        came = match came.next() {
+            Step::Resend => {
+                let back = resend.as_deref().unwrap_or_default().as_bytes();
+                let sent = crate::report_call(route, back);
+                let gave = GaveBack::of(sent.as_deref().map_err(|error| *error));
+                user::println!("shell: gave {app}'s request back again ({gave:?})");
+                Came::Resent(gave)
             }
-        }
-        return;
+            Step::Take => {
+                user::println!("shell: runs {app}'s held request after the line");
+                Came::Taken(take_again(shell, held, route, kind, &app))
+            }
+            Step::TellLost => return tell_lost(route, &app, lost),
+            Step::Done => return,
+        };
     }
-    if let Some(back) = resend {
-        match crate::report_to_desktop(route, &back) {
-            Ok(reply) => user::println!("shell: gave {app}'s request back again: {reply}"),
-            Err(why) => user::println!("shell: {app}'s request was not given back again: {why}"),
-        }
-    }
-    user::println!("shell: runs {app}'s held request after the line");
-    let ran = match kind {
+}
+
+/// Takes `app`'s request of `kind`, given back, from `desktop` again and runs
+/// it: whether anything waited.
+fn take_again(
+    shell: &mut Shell,
+    held: &RefCell<HeldRequests>,
+    route: Handle,
+    kind: Kind,
+    app: &str,
+) -> bool {
+    match kind {
         Kind::Effects => {
-            let take = deskcore::effects::encode_take_app(&app);
+            let take = deskcore::effects::encode_take_app(app);
             crate::run_effects_taken(shell, held, route, &take)
         }
         Kind::File => crate::run_file_taken(shell, route),
         Kind::Settings => crate::take_changes(shell, &wire::SETTINGS, Shell::settings),
         // An answer is never given back: `give` holds it in the shell.
         Kind::Answer => true,
-    };
-    if !ran {
-        user::println!("shell: {app}'s held request no longer waited in desktop");
+    }
+}
+
+/// Tells `app` its request given back did not run: `lost`, through
+/// `desktop`. Its comphost drops a result for a call already answered.
+fn tell_lost(route: Handle, app: &str, lost: Vec<Vec<u8>>) {
+    user::println!("shell: {app}'s held request was lost by desktop; it is told it did not run");
+    for message in lost {
+        if let Err(why) = crate::report_to_desktop_bytes(route, &message) {
+            return user::println!("shell: {app} was not told: {why}");
+        }
     }
 }

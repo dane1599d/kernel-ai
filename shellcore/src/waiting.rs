@@ -38,6 +38,8 @@ pub enum GaveBack {
     Refused,
     /// The person's Stop withdrew the call before `desktop` took it.
     Withdrawn,
+    /// The call never reached `desktop`: no room for it, or no server.
+    NotSent,
     /// No answer came: `desktop` may have kept it, as a call it took and
     /// answered late is dropped (timed out), or ended with it.
     Unknown,
@@ -56,6 +58,23 @@ pub enum Keep<T> {
 }
 
 impl GaveBack {
+    /// What came of a give-back call: `desktop`'s reply, or the call's
+    /// error. Only an error raised before the call was queued, or a Stop
+    /// that withdrew it, says `desktop` never saw it; any other may come
+    /// after `desktop` took it.
+    pub fn of(call: Result<&[u8], kabi::Error>) -> Self {
+        use kabi::Error;
+        match call {
+            Ok(b"ok") => Self::Kept,
+            Ok(_) => Self::Refused,
+            Err(Error::Interrupted) => Self::Withdrawn,
+            Err(Error::Busy | Error::NoMemory | Error::TooBig | Error::Unavailable) => {
+                Self::NotSent
+            }
+            Err(_) => Self::Unknown,
+        }
+    }
+
     /// Where `request`, given back with this outcome, is kept. Never in the
     /// host's own copy while `desktop` may hold it too: both would run
     /// (#938's review).
@@ -63,7 +82,69 @@ impl GaveBack {
         match self {
             Self::Kept => Keep::Back { resend: false },
             Self::Unknown => Keep::Back { resend: true },
-            Self::Refused | Self::Withdrawn => Keep::Own(request),
+            Self::Refused | Self::Withdrawn | Self::NotSent => Keep::Own(request),
+        }
+    }
+
+    /// Whether `desktop` answered: a resend that got no answer leaves it
+    /// unknown whether the request waits there.
+    fn answered(self) -> bool {
+        matches!(self, Self::Kept | Self::Refused)
+    }
+}
+
+/// Whether `desktop` restarted since a request was given back to it: its
+/// pid then and now, each when known. An unknown one says nothing, and the
+/// re-take that finds nothing tells the app instead.
+pub fn restarted(then: Option<u64>, now: Option<u64>) -> bool {
+    matches!((then, now), (Some(then), Some(now)) if then != now)
+}
+
+/// After the line, the host's next step for a request given back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// Give it back again: no answer came the first time.
+    Resend,
+    /// Take it again from its app's queue, and run it.
+    Take,
+    /// Tell its app it did not run: `desktop` lost it, or may have. An app
+    /// drops a result for a call already answered, so this never takes the
+    /// place of one that ran.
+    TellLost,
+    /// It ran: nothing more.
+    Done,
+}
+
+/// What came of the last step for a request given back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Came {
+    /// The line ended: whether `desktop` restarted since ([`restarted`]),
+    /// and whether no answer came to the give-back.
+    LineEnded { restarted: bool, resend: bool },
+    /// The give-back was sent again.
+    Resent(GaveBack),
+    /// It was taken again: whether anything waited.
+    Taken(bool),
+}
+
+impl Came {
+    /// The next step (#938's review): never lost in silence, and never run
+    /// behind what its app asked later.
+    /// - A restarted `desktop` never had it: told so, never taken.
+    /// - A resend with no answer: told so, never taken, as a take could run
+    ///   the app's later requests ahead of it while it sits taken.
+    /// - A take that finds nothing: told so.
+    pub fn next(self) -> Step {
+        match self {
+            Self::LineEnded {
+                restarted: true, ..
+            } => Step::TellLost,
+            Self::LineEnded { resend: true, .. } => Step::Resend,
+            Self::LineEnded { .. } => Step::Take,
+            Self::Resent(gave) if gave.answered() => Step::Take,
+            Self::Resent(_) => Step::TellLost,
+            Self::Taken(true) => Step::Done,
+            Self::Taken(false) => Step::TellLost,
         }
     }
 }

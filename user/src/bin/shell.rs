@@ -228,6 +228,11 @@ fn report_to_desktop(route: kabi::handle::Handle, request: &str) -> Result<Strin
 /// [`report_to_desktop`] for a message that is not all text (a file's piece),
 /// answered in bytes.
 fn report_to_desktop_bytes(route: kabi::handle::Handle, request: &[u8]) -> Result<Vec<u8>, String> {
+    report_call(route, request).map_err(|error| format!("desktop did not answer ({error:?})"))
+}
+
+/// [`report_to_desktop_bytes`], failing with the call's own error.
+fn report_call(route: kabi::handle::Handle, request: &[u8]) -> Result<Vec<u8>, kabi::Error> {
     let _ = sys::interrupt_clear();
     let mut reply = vec![0u8; kabi::MAX_MESSAGE];
     let mut sent = sys::call_route(route, request, &mut reply, DESKTOP_CALL_MS);
@@ -235,7 +240,7 @@ fn report_to_desktop_bytes(route: kabi::handle::Handle, request: &[u8]) -> Resul
         let _ = sys::interrupt_clear();
         sent = sys::call_route(route, request, &mut reply, DESKTOP_CALL_MS);
     }
-    let len = sent.map_err(|error| format!("desktop did not answer ({error:?})"))?;
+    let len = sent?;
     reply.truncate(len.min(reply.len()));
     Ok(reply)
 }
