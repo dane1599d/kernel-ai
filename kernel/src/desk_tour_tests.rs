@@ -177,10 +177,11 @@ pub fn check() -> Result<(), &'static str> {
     open("monitor", "open the monitor");
     shot("10-monitor");
 
-    // A question in the pane: Kai's answer in its history.
+    // A line in the pane: Kai's answer in words in its history (the mock
+    // model answers "hello" with prose and no script).
     type_keys(&CTRL_SPACE);
     threads::sleep_ms(SETTLE_MS);
-    type_text("what is the scheduling policy\n");
+    type_text("hello\n");
     shot("11-kai-pane");
 
     // Kai acting: the panel's done state from Notes' step is behind; an ask
