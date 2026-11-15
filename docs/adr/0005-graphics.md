@@ -1,6 +1,6 @@
 # ADR 0005: Graphics: compositor, surface protocol and visual direction
 
-Status: Amended 2026-11-14: Kai Desk. The look, the AI's place on the screen and the order of the trusted layer changed (see "Amendment 2026-11-14" below); the founder's OK of the amendment is needed before the first visible code of it merges. Accepted 2026-10-22 (proposed 2026-10-21). The founder approved it with their answers of 2026-10-22 folded in; those points are marked "decided 2026-10-22". Questions still open below keep this ADR's stated default until the founder answers.
+Status: Amended 2026-11-14: Kai Desk, Implemented 2026-11-15. The look, the AI's place on the screen and the order of the trusted layer changed (see "Amendment 2026-11-14" below). The founder approved the amendment with its four calls at their defaults on 2026-11-15 (#925), and Kai Desk PRs 5-10 built it (#935, #940, #943, #944, #947 and the finishing PR). Accepted 2026-10-22 (proposed 2026-10-21). The founder approved it with their answers of 2026-10-22 folded in; those points are marked "decided 2026-10-22". Questions still open below keep this ADR's stated default until the founder answers.
 
 Repo citations are `path:line` on main at `ec5ecff`. Open work is cited at its branch tip: #18 virtio-gpu (`origin/dane/virtio-gpu-a5daaa`, `7603e54` plus merge `af7635d`), #19 USB input (`origin/dane/usb-input-83eb7c`, `0717caa`) and #16 networking (`origin/dane/net-dhcp-dns-b5bdb7`). Nothing was built or run for this ADR, and no model ran anywhere. Crate versions, licences, features and dependencies were re-read on crates.io on 2026-10-21 from the founder's PC (web reads only), as were the repo citations against `ec5ecff`; contrast ratios are WCAG 2.2 arithmetic.
 
@@ -23,6 +23,17 @@ The founder asked for a desktop that looks and works like Windows 11, with a Kai
 2. **The clock shows UTC**, with "UTC" written on its date line, until a time-zone setting exists. Open question 7.
 3. **The fonts stay Inter and JetBrains Mono.** Both are free to use under the OFL and neither is Microsoft's. A typeface drawn for Kai is a separate, large job. Open question 6.
 4. **Super opens the menu** and Ctrl+Space the pane. Whether Super reaches the guest in VirtualBox and QEMU is unchecked; the Kai button, the `apps` line, Ctrl+Space and the corner always work. Open question 1.
+
+**Implemented (2026-11-15).** The window chrome (#935), the Kai pane (#940), the taskbar, tray and UTC clock (#943), Start with its pins and tooltips (#944), the mouse wheel over the pane and Start (#947), and the finish (tour shots at 1280x800, 1024x768 and 1920x1080, desk-perf scene (g), and the founder walk closing the pane before it clicks) are on main. Two things stay open: whether Super and Ctrl+Esc reach the guest in VirtualBox and QEMU and get past the Terminal's keyboard lease (open question 1), and docking the pane (open question 9). desk-perf at 1920x1080 under KVM, on the stack head's CI (run 43751047213), stayed within every S05-1 budget:
+
+| Scene | p99 (max where judged) | Budget |
+|---|---|---|
+| (a) full composite | 4.47 ms | p99 8 ms |
+| (b) drag render / flush | 1.29 / 0.75 ms | p99 8 / 4 ms |
+| (c) 160x45 text page warm / cold | max 1.69 / 4.75 ms | max 4 / 30 ms |
+| (e) key to flush | 6.12 ms | p99 8 ms |
+| (f) drag under load | 11.79 ms | p99 16.7 ms |
+| (g) full composite with Start and the pane open | see the finishing PR's desk-perf run | p99 8 ms |
 
 **What changes in this document:** §1 and the Decision paragraph (what `desktop` draws), §7 (additions to the trusted path), §8 (renamed "The look: Kai Desk", with the new tokens, metrics and pixel tables), a note in §9, one row of the cost table, the open questions, and two rows of the options and reuse tables. The decision row is `2026-11-14-kai-desk`. It supersedes only the placement half of `2026-11-14-panel-history` (the history moves from the desk into the pane); that row's look rules stay. `2026-11-14-desktop-lines-ask-on-the-card` is unchanged. The row at decisions.md:229 is not edited.
 

@@ -380,6 +380,7 @@ pub(super) const CASES: &[TestCase] = &[
             "desk-perf: (c) text page ",
             "desk-perf: (e) key to flush: ",
             "desk-perf: (f) drag under load, render+flush: ",
+            "desk-perf: (g) full composite with Start and the pane open at 1920x1080: ",
             "desk-perf: the figures are in",
         ],
         ..case("desk-perf", "test=desk-perf display=1920x1080")

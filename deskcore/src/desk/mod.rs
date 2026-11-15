@@ -382,10 +382,6 @@ impl Desk {
         self.damage.take()
     }
 
-    pub fn has_damage(&self) -> bool {
-        !self.damage.is_empty()
-    }
-
     /// Opens a window for `client` with content `size`, cascaded in the work
     /// area. It takes focus only if `activated`: a user action made it.
     pub fn open(

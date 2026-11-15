@@ -53,6 +53,8 @@ const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
 /// its card was answered is taken back before the next line.
 const CLEAR: [u8; 6] = [0x0E, 0x8E, 0x0E, 0x8E, 0x0E, 0x8E];
 const ENTER: [u8; 2] = [0x1C, 0x9C];
+/// Esc down and up.
+const ESC: [u8; 2] = [0x01, 0x81];
 /// `y` down and up: on the card, once arms Run and once more answers it.
 const YES: [u8; 2] = [0x15, 0x95];
 
@@ -188,6 +190,16 @@ fn panel_line(text: &str) {
     type_keys(&CLEAR);
     type_text(text);
     type_keys(&ENTER);
+}
+
+/// The Kai pane closed, wherever the keys were: Ctrl+Space puts them in its
+/// input (opening it if it was closed), and Esc there, with nothing running,
+/// closes it. At 1024x768 the pane floats over the windows' right side.
+fn close_pane() {
+    type_keys(&CTRL_SPACE);
+    threads::sleep_ms(SETTLE_MS);
+    type_keys(&ESC);
+    threads::sleep_ms(SETTLE_MS);
 }
 
 /// `text` typed into the focused window, and Enter.
@@ -434,6 +446,8 @@ fn notes_open_close_open() -> Result<(), &'static str> {
     let desk = desk()?;
     panel_line("open notes");
     threads::sleep_ms(OPEN_MS);
+    // The pane `open notes` was sent from may cover Notes' close control.
+    close_pane();
     click(&desk, desk.close(NOTES_SPOT, crate::ui_tests::APP_FRAME_W));
     threads::sleep_ms(SETTLE_MS);
     log!("{CASE}: Notes' window was closed from its control");

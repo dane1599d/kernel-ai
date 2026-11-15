@@ -20,7 +20,7 @@ use look::TypeStyle;
 const PROMPT: &str = "kai>";
 const PLACEHOLDER: &str = "Ask Kai, or type Rhai";
 /// What the input and status say while the model warms up (founder test 2).
-pub const GETTING_READY: &str = "Kai is getting ready";
+const GETTING_READY: &str = "Kai is getting ready";
 /// The input's rule while it listens, and the status row's while refused.
 const RULE: i32 = 2;
 const ERROR_BAR: i32 = 3;
