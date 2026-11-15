@@ -11,8 +11,9 @@
 #[repr(u8)]
 pub enum Kind {
     /// A key, `code` its usage on page 0x07; `value` 1 down, 0 up, 2 repeat,
-    /// or [`TAP`]: a Super tapped alone while a terminal held the keys on a
-    /// lease, which the kernel saw whole and ended the lease for.
+    /// or [`TAP`]: a Super tapped alone, which the kernel saw whole (it ends
+    /// the lease if a terminal held the keys on one). No other Super event
+    /// opens Start.
     Key = 1,
     /// Relative motion; `code` 0 for x, 1 for y; `value` in device units.
     Rel = 2,
@@ -143,6 +144,8 @@ pub struct Set1 {
     skip: u8,
     ctrl: u8,
     alt: u8,
+    /// The Super keys held: bit 0 left, bit 1 right.
+    gui: u8,
     /// A Super key went down and no other key since: its release is a tap.
     super_alone: bool,
     /// The last key decoded was a Super tap's release.
@@ -156,6 +159,7 @@ impl Set1 {
             skip: 0,
             ctrl: 0,
             alt: 0,
+            gui: 0,
             super_alone: false,
             super_tap: false,
         }
@@ -209,15 +213,37 @@ impl Set1 {
             _ => {}
         }
         let gui = matches!(usage, usage::LEFT_GUI | usage::RIGHT_GUI);
+        // A Super's first make, per key: its typematic repeats are makes too,
+        // and a lost break of the other Super must not stop this one's taps.
+        let n = match usage {
+            usage::LEFT_GUI => 1,
+            usage::RIGHT_GUI => 2,
+            _ => 0,
+        };
+        let first = down && n != 0 && self.gui & n == 0;
+        if n != 0 {
+            bit(&mut self.gui, n);
+        }
         self.super_tap = gui && !down && self.super_alone;
         self.super_alone = match (gui, down) {
-            (true, true) => true,
+            // Only the first make starts a tap: a repeat after a click
+            // (`break_tap`) or another key must not start it again.
+            (true, true) => first || self.super_alone,
             (true, false) => false,
             // Any other key pressed with Super held: not a tap.
             (false, true) => false,
             (false, false) => self.super_alone,
         };
         Some((usage, down))
+    }
+
+    /// Something that is not a key happened with Super held (a pointer
+    /// button pressed, the screen changing hands): Super's release is no tap.
+    /// The kernel applies it before the next key byte it routes, so it must
+    /// see a device's key bytes in the order they and the press happened
+    /// (the USB poll injects a report's earlier keys before a pointer report).
+    pub fn break_tap(&mut self) {
+        self.super_alone = false;
     }
 
     /// Whether a Ctrl and an Alt key are both held.
@@ -237,12 +263,20 @@ impl Set1 {
     /// Ctrl+Esc's press, a Super tapped alone), and Ctrl and Alt, so a chord
     /// reaches it whole. Super is not shared: a Super used with another key
     /// is the terminal's alone, so `desktop` never takes it for a tap.
+    ///
+    /// Only this side sees every key (PrintScreen, Pause and unmapped USB
+    /// keys decode to none), so a Super tap is [`KeyRoute::Tap`] with or
+    /// without a lease; `desktop` takes no other Super event for one.
     pub fn route(&self, usage: u16, down: bool, leased: bool) -> KeyRoute {
         if usage == usage::F12 && self.ctrl_alt() {
             return KeyRoute::Screen;
         }
+        let tap = matches!(usage, usage::LEFT_GUI | usage::RIGHT_GUI) && !down && self.super_tap;
         if !leased {
-            return KeyRoute::Desk;
+            return match tap {
+                true => KeyRoute::Tap,
+                false => KeyRoute::Desk,
+            };
         }
         // Chords on the press only: a release rolled over a modifier is not.
         let chord = match usage {
@@ -250,7 +284,6 @@ impl Set1 {
             usage::ESCAPE => down && self.ctrl != 0,
             _ => false,
         };
-        let tap = matches!(usage, usage::LEFT_GUI | usage::RIGHT_GUI) && !down && self.super_tap;
         let shared = matches!(
             usage,
             usage::LEFT_CTRL | usage::RIGHT_CTRL | usage::LEFT_ALT | usage::RIGHT_ALT
@@ -270,7 +303,8 @@ impl Set1 {
     }
 }
 
-/// [`Kind::Key`]'s value for a Super tap the kernel saw under a lease.
+/// [`Kind::Key`]'s value for a Super tap the kernel saw: the only Super
+/// event that opens Start.
 pub const TAP: i32 = 3;
 
 /// The set 1 make code a USB keyboard's key with no set 1 code is sent as
@@ -290,8 +324,8 @@ pub enum KeyRoute {
     /// `desktop`'s chord (Alt+Tab, Ctrl+Esc): the lease ends and it goes to
     /// `desktop` alone.
     Chord,
-    /// A Super tapped alone under a lease: the lease ends and `desktop` gets
-    /// one [`TAP`] event.
+    /// A Super tapped alone: a lease, if any, ends and `desktop` gets one
+    /// [`TAP`] event.
     Tap,
     /// Ctrl+Alt+F12: the screen changes hands; nobody gets the key.
     Screen,
@@ -461,12 +495,100 @@ mod tests {
         ];
         for (what, bytes, want) in table {
             assert_eq!(&routes(bytes, true), want, "{what}");
-            // Without a lease every key is desktop's, F12's chord aside.
+            // Without a lease every key is desktop's, F12's chord aside, and
+            // a Super tap is still the kernel's call.
             let free = routes(bytes, false);
+            let tapped = want.iter().any(|r| r.2 == Tap);
             assert!(
-                free.iter().all(|r| r.2 == Desk || r.2 == Screen),
+                free.iter()
+                    .all(|r| r.2 == Desk || r.2 == Screen || (tapped && r.2 == Tap)),
                 "{what}: {free:?}"
             );
+        }
+    }
+
+    /// A pointer press between Super's press and release breaks the tap,
+    /// with a lease or without one.
+    #[test]
+    fn a_click_with_super_held_is_no_tap() {
+        for leased in [false, true] {
+            let mut set1 = Set1::new();
+            assert_eq!(set1.feed(0xE0), None);
+            let down = set1.feed(0x5B).unwrap();
+            set1.route(down.0, down.1, leased);
+            set1.break_tap();
+            assert_eq!(set1.feed(0xE0), None);
+            let up = set1.feed(0xDB).unwrap();
+            let want = match leased {
+                true => KeyRoute::Console,
+                false => KeyRoute::Desk,
+            };
+            assert_eq!(set1.route(up.0, up.1, leased), want, "leased {leased}");
+        }
+    }
+
+    /// Super's typematic repeat after a click is no new tap: E0 5B,
+    /// `break_tap`, E0 5B again, E0 DB.
+    #[test]
+    fn a_repeat_after_a_click_does_not_restart_the_tap() {
+        let mut set1 = Set1::new();
+        for b in [0xE0, 0x5B] {
+            set1.feed(b);
+        }
+        set1.break_tap();
+        assert_eq!(set1.feed(0xE0), None);
+        let repeat = set1.feed(0x5B).unwrap();
+        assert_eq!(repeat, (usage::LEFT_GUI, true));
+        assert_eq!(set1.route(repeat.0, repeat.1, false), KeyRoute::Desk);
+        assert_eq!(set1.feed(0xE0), None);
+        let up = set1.feed(0xDB).unwrap();
+        assert_eq!(set1.route(up.0, up.1, false), KeyRoute::Desk);
+        // Released, the next press is a first make again: a tap.
+        let taps = routes(&[0xE0, 0x5B, 0xE0, 0x5B, 0xE0, 0xDB], false);
+        assert_eq!(taps.last().unwrap().2, KeyRoute::Tap, "repeats alone");
+    }
+
+    /// A Super whose break was lost (a USB unplug, a full ring) does not
+    /// stop the other Super's taps: Right Super and a letter with no break
+    /// for Right Super, then Left Super tapped.
+    #[test]
+    fn a_lost_break_of_one_super_leaves_the_others_taps() {
+        let routes = routes(&[0xE0, 0x5C, 0x1E, 0x9E, 0xE0, 0x5B, 0xE0, 0xDB], false);
+        assert_eq!(
+            routes.last(),
+            Some(&(usage::LEFT_GUI, false, KeyRoute::Tap)),
+            "{routes:?}"
+        );
+    }
+
+    /// Without a lease a lone Super tap is still [`KeyRoute::Tap`], and
+    /// Super with PrintScreen, Pause or an unmapped USB key is no tap:
+    /// `desktop` never sees those keys, so only this side can tell.
+    #[test]
+    fn without_a_lease_only_a_lone_super_is_a_tap() {
+        use KeyRoute::*;
+        let gui = usage::LEFT_GUI;
+        assert_eq!(
+            routes(&[0xE0, 0x5B, 0xE0, 0xDB], false),
+            [(gui, true, Desk), (gui, false, Tap)]
+        );
+        for (what, bytes) in [
+            (
+                "PrintScreen",
+                &[0xE0, 0x5B, 0xE0, 0x37, 0xE0, 0xB7, 0xE0, 0xDB][..],
+            ),
+            (
+                "Pause",
+                &[0xE0, 0x5B, 0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5, 0xE0, 0xDB],
+            ),
+            (
+                "unmapped",
+                &[0xE0, 0x5B, UNMAPPED, UNMAPPED | 0x80, 0xE0, 0xDB],
+            ),
+            ("letter", &[0xE0, 0x5B, 0x1E, 0x9E, 0xE0, 0xDB]),
+        ] {
+            let free = routes(bytes, false);
+            assert!(free.iter().all(|r| r.2 == Desk), "Super+{what}: {free:?}");
         }
     }
 

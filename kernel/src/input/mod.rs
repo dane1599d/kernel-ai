@@ -75,6 +75,9 @@ struct Decoders {
     leased: bool,
 }
 
+/// A pointer button went down, or the screen changed hands, since the last
+/// key byte: the next one tells `Set1` that a Super held now is no tap.
+static BREAK_TAP: AtomicBool = AtomicBool::new(false);
 /// Buttons held, as [`BITS`], from whichever pointer reported last.
 static BUTTONS: AtomicU8 = AtomicU8::new(0);
 /// Key events queued for `desktop` since boot.
@@ -96,6 +99,8 @@ pub fn taking() -> bool {
 /// starts its next packet afresh.
 pub fn set_taking(on: bool) {
     if TAKING.swap(on, Ordering::AcqRel) != on {
+        // A Super held across the change is no tap on either side.
+        BREAK_TAP.store(true, Ordering::Release);
         MOUSE_HANDED_OVER.store(true, Ordering::Release);
         crate::pointer::handed_over();
     }
@@ -145,6 +150,9 @@ fn route(byte: u8, aux: bool) -> (Route, bool) {
         // decoders is mid-call on this CPU, which never happens in practice.
         None => return (Route::Console, false),
     };
+    if BREAK_TAP.swap(false, Ordering::AcqRel) {
+        decoders.keys.break_tap();
+    }
     let taking = taking();
     if aux {
         if !taking {
@@ -202,8 +210,9 @@ fn route(byte: u8, aux: bool) -> (Route, bool) {
             push(Kind::Key, code, i32::from(down));
             return (Route::Taken, false);
         }
-        // A Super tapped alone, which only this side saw whole: the lease
-        // ends and `desktop` gets one tap, never a bare release.
+        // A Super tapped alone, which only this side saw whole (PrintScreen
+        // and Pause reach no one): a lease ends and `desktop` gets one tap,
+        // never a bare release.
         KeyRoute::Tap => {
             end_lease();
             push(Kind::Key, code, TAP);
@@ -281,10 +290,12 @@ fn mask(buttons: Buttons) -> u8 {
 }
 
 /// Button events for what changed, with HID button usages (1 left, 2 right,
-/// 3 middle). A press ends a lease: a click may move the focus.
+/// 3 middle). A press ends a lease, as a click may move the focus, and a
+/// Super held across it is no tap. PS/2 and USB pointers both come here.
 fn buttons(before: u8, now: u8) {
     if now & !before != 0 {
         end_lease();
+        BREAK_TAP.store(true, Ordering::Release);
     }
     for (_, bit, code) in BITS {
         if before & bit != now & bit {

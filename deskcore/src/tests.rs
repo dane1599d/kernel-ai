@@ -625,6 +625,33 @@ fn y_then_another_key_then_y_does_not_run_it() {
     );
 }
 
+/// `y`, Super, `y` with no lease (ADR 0005 §7): Super reaches the desk only
+/// as a press `desktop` reports, which disarms the card as any key but `y`
+/// does, so the second `y` does not run it.
+#[test]
+fn y_then_super_then_y_does_not_run_it() {
+    use crate::desk::usage::LEFT_GUI;
+    use crate::lease::{Lease, on_key};
+    let (mut desk, _) = desk_with(1);
+    let mut lease = Lease::new();
+    desk.show_ask(4, 1);
+    desk.card_drawn(0);
+    assert!(press_at(&mut desk, SETTLED, usage::Y).is_empty());
+    assert!(desk.ask().unwrap().armed);
+    // desktop's order: no set_now of its own before the press, which comes
+    // long after the `y`; the quiet time runs from the press.
+    let super_at = SETTLED + 5_000;
+    let step = on_key(&mut lease, LEFT_GUI, 1);
+    assert!(step.super_press && step.keys.is_empty());
+    desk.super_pressed(super_at);
+    assert!(!desk.ask().unwrap().armed, "Super did not disarm the card");
+    assert!(press_at(&mut desk, super_at + 20, usage::Y).is_empty());
+    assert!(press_at(&mut desk, super_at + 40, usage::Y).is_empty());
+    assert!(on_key(&mut lease, LEFT_GUI, 0).keys.is_empty());
+    assert!(desk.ask().is_some_and(|a| !a.armed));
+    assert!(desk.start().is_none());
+}
+
 #[test]
 fn a_click_on_run_answers_at_once_once_quiet() {
     let (mut desk, _) = desk_with(1);
