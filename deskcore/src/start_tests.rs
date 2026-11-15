@@ -552,3 +552,44 @@ fn paint_in(desk: &Desk, start: Option<&Start>, th: &look::theme::Theme) -> Imag
     );
     image
 }
+
+/// A card that closes Start gives the keys back, once answered, where they
+/// were before Start: never into Kai's input.
+#[test]
+fn after_a_card_that_closed_start_the_keys_go_back_before_start() {
+    let mut desk = Desk::new(1280, 800);
+    let (id, _) = desk.open(1, "notes", "Notes", Size { w: 300, h: 200 }, true);
+    keys(&mut desk, &SUPER);
+    assert_eq!(desk.focus(), Focus::Panel);
+    desk.show_ask(5, 1);
+    assert!(desk.start().is_none());
+    desk.hide_ask(5);
+    assert_eq!(
+        desk.focus(),
+        Focus::Window(id),
+        "the keys went to Kai's input"
+    );
+}
+
+/// Start opened from the empty desk closes back to the empty desk.
+#[test]
+fn start_from_the_empty_desk_closes_back_to_it() {
+    let mut desk = Desk::new(1280, 800);
+    desk.open(1, "notes", "Notes", Size { w: 300, h: 200 }, false);
+    desk.set_focus(Focus::Nothing, &mut Vec::new());
+    keys(&mut desk, &SUPER);
+    desk.close_start(&mut Vec::new());
+    assert_eq!(desk.focus(), Focus::Nothing);
+}
+
+/// A title change with no tooltip up repaints no tooltip band.
+#[test]
+fn a_title_change_repaints_a_tooltip_only_while_one_shows() {
+    let mut desk = Desk::new(1280, 800);
+    let (id, _) = desk.open(1, "notes", "Notes", Size { w: 300, h: 200 }, false);
+    let _ = desk.take_damage();
+    desk.set_title(id, "Groceries");
+    let band = deskgeom::start::tooltip(1280, 800, Rect::new(0, 0, 0, 0));
+    let full = Rect::new(0, band.y, 1280, band.h);
+    assert!(!desk.take_damage().contains(&full));
+}

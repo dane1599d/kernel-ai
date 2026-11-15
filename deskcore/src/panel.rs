@@ -130,6 +130,7 @@ impl Panel {
     pub fn set_focus(&mut self, focused: bool) -> bool {
         self.shift = 0;
         self.ctrl = 0;
+        self.enter_held = false;
         let changed = self.focused != focused;
         self.focused = focused;
         changed
@@ -208,6 +209,8 @@ impl Panel {
                 self.enter_held = down;
                 return false;
             }
+            // Any other key: that Enter is over, wherever its release went.
+            _ if down => self.enter_held = false,
             _ if !down => return false,
             _ => {}
         }
@@ -446,6 +449,22 @@ mod tests {
         assert_eq!(panel.take(), None, "a repeat sent the draft");
         assert_eq!(panel.text(), "h");
         tap(&mut panel, &[0x28]);
+        assert_eq!(panel.take(), Some(Request::Line("h".into())));
+    }
+
+    /// The held Enter never sticks: another key, or the focus moving, ends
+    /// it even if its release went elsewhere.
+    #[test]
+    fn a_held_enter_ends_with_another_key_or_a_focus_change() {
+        let mut panel = Panel::new();
+        panel.set_focus(true);
+        panel.hold_enter();
+        tap(&mut panel, &[0x0B]);
+        tap(&mut panel, &[0x28]);
+        assert_eq!(panel.take(), Some(Request::Line("h".into())));
+        panel.hold_enter();
+        panel.set_focus(true);
+        tap(&mut panel, &[0x0B, 0x28]);
         assert_eq!(panel.take(), Some(Request::Line("h".into())));
     }
 

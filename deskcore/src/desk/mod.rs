@@ -448,7 +448,9 @@ impl Desk {
             self.damage.add(bar);
             self.bar_changed();
             // A tooltip up shows the title: it repaints with it.
-            self.tip_repaint();
+            if self.tip_shown {
+                self.tip_repaint();
+            }
         }
     }
 

@@ -16,15 +16,17 @@
 //!   it when that window loses focus: no timer ends it, so a `desktop` that is
 //!   slow for a moment never hands keys back halfway through a press. The lease
 //!   also ends on any pointer button, on `desktop`'s own chords (Alt+Tab,
-//!   Ctrl+Esc and a Super tap, `Set1::desk_chord`), on Ctrl+Alt+F12, and
-//!   whenever the screen changes hands, `desktop`'s exit included
-//!   ([`end_lease`]). Ctrl, Alt and Super, and those chords, always reach the
-//!   queue, so `desktop` can always switch away or open Start. Keys change hands only between scancode
+//!   Ctrl+Esc's press, and a Super tapped alone, which `desktop` gets as one
+//!   `TAP` event), on Ctrl+Alt+F12, and whenever the screen changes hands,
+//!   `desktop`'s exit included ([`end_lease`]). Under a lease Ctrl and Alt
+//!   also reach the queue, so `desktop` sees a chord whole; Super does not,
+//!   so a Super used with another key stays the terminal's
+//!   (`kabi::input::Set1::route` decides, table-tested). Keys change hands only between scancode
 //!   sequences, and the console's ring is emptied each time they do.
 
 use crate::{hpet, i8042, threads};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
-use kabi::input::{InputEvent, Kind, Set1, usage};
+use kabi::input::{InputEvent, KeyRoute, Kind, Set1, TAP};
 use spin::Mutex;
 use termcore::mouse::{Button, Buttons, Decoder};
 
@@ -183,29 +185,37 @@ fn route(byte: u8, aux: bool) -> (Route, bool) {
             false,
         );
     };
-    if code == usage::F12 && decoders.keys.ctrl_alt() {
+    let route = decoders.keys.route(code, down, decoders.leased);
+    drop(decoders);
+    if route == KeyRoute::Screen {
         // The press switches; its release is dropped too, so neither side sees F12.
         end_lease();
         return (Route::Taken, down);
     }
-    let shared = Set1::shared_modifier(code);
-    let chord = decoders.keys.desk_chord(code, down);
-    drop(decoders);
     if !taking {
         return (Route::Console, false);
     }
-    if chord {
+    match route {
         // `desktop`'s own chord: never the console's, and it ends a lease.
-        end_lease();
-        push(Kind::Key, code, i32::from(down));
-        return (Route::Taken, false);
-    }
-    if to_console {
-        // Ctrl, Alt and Super go to both, so `desktop` sees a chord whole.
-        if shared {
+        KeyRoute::Chord => {
+            end_lease();
             push(Kind::Key, code, i32::from(down));
+            return (Route::Taken, false);
         }
-        return (Route::Console, false);
+        // A Super tapped alone, which only this side saw whole: the lease
+        // ends and `desktop` gets one tap, never a bare release.
+        KeyRoute::Tap => {
+            end_lease();
+            push(Kind::Key, code, TAP);
+            return (Route::Taken, false);
+        }
+        // Ctrl and Alt go to both, so `desktop` sees a chord whole.
+        KeyRoute::Both => {
+            push(Kind::Key, code, i32::from(down));
+            return (Route::Console, false);
+        }
+        KeyRoute::Console => return (Route::Console, false),
+        KeyRoute::Desk | KeyRoute::Screen => {}
     }
     push(Kind::Key, code, i32::from(down));
     KEYS.fetch_add(1, Ordering::Relaxed);

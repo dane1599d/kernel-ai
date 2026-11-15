@@ -63,6 +63,7 @@ impl Desk {
                 Focus::Window(id) if self.window(id).is_some_and(|w| !w.minimized) => {
                     self.set_focus(Focus::Window(id), effects);
                 }
+                Focus::Nothing => self.set_focus(Focus::Nothing, effects),
                 _ => {
                     let next = self.top_visible().map_or(Focus::Nothing, Focus::Window);
                     self.set_focus(next, effects);

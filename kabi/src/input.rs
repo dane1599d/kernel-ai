@@ -10,7 +10,9 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Kind {
-    /// A key, `code` its usage on page 0x07; `value` 1 down, 0 up, 2 repeat.
+    /// A key, `code` its usage on page 0x07; `value` 1 down, 0 up, 2 repeat,
+    /// or [`TAP`]: a Super tapped alone while a terminal held the keys on a
+    /// lease, which the kernel saw whole and ended the lease for.
     Key = 1,
     /// Relative motion; `code` 0 for x, 1 for y; `value` in device units.
     Rel = 2,
@@ -217,32 +219,36 @@ impl Set1 {
         self.alt != 0
     }
 
-    /// Whether the key just decoded, `usage` going `down` or up, completes
-    /// one of `desktop`'s own chords, which reach `desktop` even while a
-    /// terminal window has the keys on a lease, and end that lease: Alt+Tab
-    /// (switch windows), Ctrl+Esc (Start), and the release of a Super key
-    /// tapped alone (Start). Call it after [`Set1::feed`] gave the key.
-    pub fn desk_chord(&self, usage: u16, down: bool) -> bool {
-        match usage {
-            usage::TAB => self.alt != 0,
-            usage::ESCAPE => self.ctrl != 0,
-            usage::LEFT_GUI | usage::RIGHT_GUI => !down && self.super_tap,
-            _ => false,
+    /// Where the key just decoded, `usage` going `down` or up, goes, with a
+    /// terminal holding the keys on a lease (`leased`) or not. Call it after
+    /// [`Set1::feed`] gave the key. Under a lease, `desktop` gets only what
+    /// it must to switch away: its own chords, which end the lease (Alt+Tab,
+    /// Ctrl+Esc's press, a Super tapped alone), and Ctrl and Alt, so a chord
+    /// reaches it whole. Super is not shared: a Super used with another key
+    /// is the terminal's alone, so `desktop` never takes it for a tap.
+    pub fn route(&self, usage: u16, down: bool, leased: bool) -> KeyRoute {
+        if usage == usage::F12 && self.ctrl_alt() {
+            return KeyRoute::Screen;
         }
-    }
-
-    /// Whether `usage` is a modifier `desktop` must see even under a lease,
-    /// so a chord reaches it whole: Ctrl, Alt and Super. They go to both.
-    pub fn shared_modifier(usage: u16) -> bool {
-        matches!(
+        if !leased {
+            return KeyRoute::Desk;
+        }
+        let chord = match usage {
+            usage::TAB => self.alt != 0,
+            usage::ESCAPE => down && self.ctrl != 0,
+            _ => false,
+        };
+        let tap = matches!(usage, usage::LEFT_GUI | usage::RIGHT_GUI) && !down && self.super_tap;
+        let shared = matches!(
             usage,
-            usage::LEFT_CTRL
-                | usage::RIGHT_CTRL
-                | usage::LEFT_ALT
-                | usage::RIGHT_ALT
-                | usage::LEFT_GUI
-                | usage::RIGHT_GUI
-        )
+            usage::LEFT_CTRL | usage::RIGHT_CTRL | usage::LEFT_ALT | usage::RIGHT_ALT
+        );
+        match (chord, tap, shared) {
+            (true, _, _) => KeyRoute::Chord,
+            (_, true, _) => KeyRoute::Tap,
+            (_, _, true) => KeyRoute::Both,
+            _ => KeyRoute::Console,
+        }
     }
 
     /// Whether the last byte ended its sequence: no `E0` or `E1` is waiting
@@ -250,6 +256,28 @@ impl Set1 {
     pub fn at_boundary(&self) -> bool {
         !self.extended && self.skip == 0
     }
+}
+
+/// [`Kind::Key`]'s value for a Super tap the kernel saw under a lease.
+pub const TAP: i32 = 3;
+
+/// Where a key goes ([`Set1::route`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyRoute {
+    /// To `desktop`'s queue: no lease holds the keys.
+    Desk,
+    /// To the console's terminal alone.
+    Console,
+    /// To both: Ctrl or Alt under a lease, so a chord reaches `desktop`.
+    Both,
+    /// `desktop`'s chord (Alt+Tab, Ctrl+Esc): the lease ends and it goes to
+    /// `desktop` alone.
+    Chord,
+    /// A Super tapped alone under a lease: the lease ends and `desktop` gets
+    /// one [`TAP`] event.
+    Tap,
+    /// Ctrl+Alt+F12: the screen changes hands; nobody gets the key.
+    Screen,
 }
 
 #[cfg(test)]
@@ -290,40 +318,111 @@ mod tests {
         assert_eq!(seen.len(), 86 + 17);
     }
 
-    /// What `desk_chord` says, key by key, for `bytes`.
-    fn chords(bytes: &[u8]) -> alloc::vec::Vec<(u16, bool, bool)> {
+    /// Where each key of `bytes` goes, under a lease (`leased`) or not.
+    fn routes(bytes: &[u8], leased: bool) -> alloc::vec::Vec<(u16, bool, KeyRoute)> {
         let mut set1 = Set1::new();
         bytes
             .iter()
-            .filter_map(|&b| set1.feed(b).map(|(u, d)| (u, d, set1.desk_chord(u, d))))
+            .filter_map(|&b| set1.feed(b).map(|(u, d)| (u, d, set1.route(u, d, leased))))
             .collect()
     }
 
-    /// `desktop`'s chords: Alt+Tab, Ctrl+Esc, a Super tapped alone; never
-    /// Super used with another key, Esc alone, Tab alone or a letter.
+    /// A table row: what was typed, its set 1 bytes, and each key's route.
+    type Case<'a> = (&'a str, &'a [u8], &'a [(u16, bool, KeyRoute)]);
+
+    /// The route, key by key, for each sequence a person types under a
+    /// terminal's lease, and that nothing is held back without one.
     #[test]
-    fn desk_chords_are_alt_tab_ctrl_esc_and_a_super_tap() {
-        let chord = |bytes: &[u8]| chords(bytes).iter().filter(|c| c.2).count();
-        // Super down and up alone: its release.
-        assert_eq!(
-            chords(&[0xE0, 0x5B, 0xE0, 0xDB]),
-            [
-                (usage::LEFT_GUI, true, false),
-                (usage::LEFT_GUI, false, true),
-            ]
+    fn keys_under_a_lease_reach_desktop_only_to_switch_away() {
+        use KeyRoute::*;
+        let (gui, esc, ctrl, alt, tab, a) = (
+            usage::LEFT_GUI,
+            usage::ESCAPE,
+            usage::LEFT_CTRL,
+            usage::LEFT_ALT,
+            usage::TAB,
+            0x04,
         );
-        // Super with a letter between: no tap.
-        assert_eq!(chord(&[0xE0, 0x5B, 0x1E, 0x9E, 0xE0, 0xDB]), 0);
-        // Right Super too.
-        assert_eq!(chord(&[0xE0, 0x5C, 0xE0, 0xDC]), 1);
-        // Ctrl+Esc, press and release while Ctrl is held.
-        assert_eq!(chord(&[0x1D, 0x01, 0x81, 0x9D]), 2);
-        // Esc alone, Tab alone, letters: none.
-        assert_eq!(chord(&[0x01, 0x81, 0x0F, 0x8F, 0x1E, 0x9E]), 0);
-        // Alt+Tab.
-        assert_eq!(chord(&[0x38, 0x0F, 0x8F, 0xB8]), 2);
-        assert!(Set1::shared_modifier(usage::LEFT_GUI));
-        assert!(!Set1::shared_modifier(usage::ESCAPE));
+        let table: &[Case<'_>] = &[
+            (
+                "Super tap",
+                &[0xE0, 0x5B, 0xE0, 0xDB],
+                &[(gui, true, Console), (gui, false, Tap)],
+            ),
+            // Super+A, say Super+L: all the terminal's; desktop sees none.
+            (
+                "Super+letter",
+                &[0xE0, 0x5B, 0x1E, 0x9E, 0xE0, 0xDB],
+                &[
+                    (gui, true, Console),
+                    (a, true, Console),
+                    (a, false, Console),
+                    (gui, false, Console),
+                ],
+            ),
+            (
+                "Ctrl+Esc",
+                &[0x1D, 0x01, 0x81, 0x9D],
+                &[
+                    (ctrl, true, Both),
+                    (esc, true, Chord),
+                    (esc, false, Console),
+                    (ctrl, false, Both),
+                ],
+            ),
+            // Esc down, then Ctrl, then Esc up: no chord on a release.
+            (
+                "Esc, Ctrl rollover",
+                &[0x01, 0x1D, 0x81, 0x9D],
+                &[
+                    (esc, true, Console),
+                    (ctrl, true, Both),
+                    (esc, false, Console),
+                    (ctrl, false, Both),
+                ],
+            ),
+            (
+                "Esc alone",
+                &[0x01, 0x81],
+                &[(esc, true, Console), (esc, false, Console)],
+            ),
+            (
+                "a letter",
+                &[0x1E, 0x9E],
+                &[(a, true, Console), (a, false, Console)],
+            ),
+            (
+                "Alt+Tab",
+                &[0x38, 0x0F, 0x8F, 0xB8],
+                &[
+                    (alt, true, Both),
+                    (tab, true, Chord),
+                    (tab, false, Chord),
+                    (alt, false, Both),
+                ],
+            ),
+            (
+                "Ctrl+Alt+F12",
+                &[0x1D, 0x38, 0x58, 0xD8, 0xB8, 0x9D],
+                &[
+                    (ctrl, true, Both),
+                    (alt, true, Both),
+                    (usage::F12, true, Screen),
+                    (usage::F12, false, Screen),
+                    (alt, false, Both),
+                    (ctrl, false, Both),
+                ],
+            ),
+        ];
+        for (what, bytes, want) in table {
+            assert_eq!(&routes(bytes, true), want, "{what}");
+            // Without a lease every key is desktop's, F12's chord aside.
+            let free = routes(bytes, false);
+            assert!(
+                free.iter().all(|r| r.2 == Desk || r.2 == Screen),
+                "{what}: {free:?}"
+            );
+        }
     }
 
     #[test]

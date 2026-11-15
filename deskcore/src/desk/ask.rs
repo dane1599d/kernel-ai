@@ -33,6 +33,9 @@ impl Desk {
         }
         let back = match self.ask {
             Some((_, back)) => back,
+            // Start's box had the keys: after the card they go where they
+            // were before Start, never into Kai's input.
+            None if self.start_open => self.start_from,
             None => self.focus,
         };
         let ask = Ask {

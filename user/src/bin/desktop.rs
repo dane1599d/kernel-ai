@@ -408,16 +408,27 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
             if event.value != 0 {
                 perf::key(state, event.time_ns);
             }
-            Some(Input::Key {
-                usage: event.code,
-                down: event.value != 0,
-            })
+            // A Super tap the kernel saw ended its lease: the next step asks
+            // again only for a terminal that has the focus.
+            if event.value == kabi::input::TAP {
+                state.lease.forget();
+            }
+            let lent = state.lease.lent();
+            for (usage, down) in deskcore::lease::desk_keys(event.code, event.value, lent) {
+                apply_input(state, screen, event, Input::Key { usage, down });
+            }
+            None
         }
         _ => None,
     };
-    let Some(input) = input else {
-        return;
-    };
+    if let Some(input) = input {
+        apply_input(state, screen, event, input);
+    }
+}
+
+/// One input for the desk, from `event`: the desk's effects carried out,
+/// and the cursor moved with the pointer.
+fn apply_input(state: &mut State, screen: &Screen, event: &InputEvent, input: Input) {
     state.watch.input(now_ms());
     let before = state.desk.pointer();
     // The card judges a key by when it was pressed, not when it was read.
