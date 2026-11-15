@@ -6,7 +6,7 @@ use super::act::with_calls;
 use super::appline::{quote, typed, unescaped};
 use super::*;
 use crate::appline::TERMINAL_APP;
-use crate::deskask::MAX_KEPT;
+use crate::deskcard::{KEPT_NS, MAX_KEPT};
 use alloc::vec;
 
 const STOP: &str = r#"{"name":"process_stop","arguments":{"name":"notes"}}"#;
@@ -110,8 +110,20 @@ fn a_line_that_asks_waits_for_the_card_and_only_its_allow_runs_it() {
     assert!(told.starts_with("ok ") && !told.contains("undo"), "{told}");
 }
 
+/// `shell_card` with `ticket` for question `id`, whose answer came already:
+/// no result at once, and the answer with the card's answers, as a person's
+/// result, never cut as an app's (#928's review LOW).
+fn hears(shell: &mut Shell, ticket: u32, id: u64) -> Result<String, String> {
+    assert_eq!(ask_card(shell, TERMINAL_APP, ticket, id), []);
+    let back = given_back(shell);
+    assert_eq!(back.len(), 1, "{back:?}");
+    assert_eq!(back[0].ticket, ticket);
+    back[0].outcome.clone()
+}
+
 /// #928's review: a Terminal that napped or reloaded while its question
-/// waited asks again, and hears the answer its old ask was given.
+/// waited asks again, and hears the answer its old ask was given; so does a
+/// second restore's ask, for the answer's ten minutes.
 #[test]
 fn a_terminal_that_asks_again_after_a_restart_still_hears_the_answer() {
     let (host, mut shell) = stops(1);
@@ -120,13 +132,11 @@ fn a_terminal_that_asks_again_after_a_restart_still_hears_the_answer() {
     let menu = take(&mut shell, id);
     answer(&host, &mut shell, &menu, "deny");
     assert_eq!(given_back(&mut shell)[0].outcome, ok(DONT));
-    assert_eq!(
-        answered(&ask_card(&mut shell, TERMINAL_APP, 3, id)),
-        ok(DONT)
-    );
-    // Kept for one more ask only.
-    let again = answered(&ask_card(&mut shell, TERMINAL_APP, 4, id));
-    assert_eq!(again, Err(String::from(NOTHING_WAITS)));
+    assert_eq!(hears(&mut shell, 3, id), ok(DONT));
+    assert_eq!(hears(&mut shell, 4, id), ok(DONT), "a second restore");
+    host.clock.set(host.clock.get() + KEPT_NS);
+    let gone = answered(&ask_card(&mut shell, TERMINAL_APP, 5, id));
+    assert_eq!(gone, Err(String::from(NOTHING_WAITS)));
 }
 
 #[test]
@@ -138,12 +148,7 @@ fn an_answer_the_card_gave_before_the_terminal_asked_waits_for_its_ask() {
     assert_eq!(*host.procs.borrow(), vec![String::from("notes")]);
     assert_eq!(given_back(&mut shell), []);
     // Don't is no failure: a reply row, not an error.
-    assert_eq!(
-        answered(&ask_card(&mut shell, TERMINAL_APP, 2, id)),
-        ok(DONT)
-    );
-    let again = answered(&ask_card(&mut shell, TERMINAL_APP, 3, id));
-    assert_eq!(again, Err(String::from(NOTHING_WAITS)));
+    assert_eq!(hears(&mut shell, 2, id), ok(DONT));
 }
 
 #[test]
@@ -250,18 +255,24 @@ fn a_question_that_lapses_before_the_card_tells_the_window() {
     assert_eq!(*host.procs.borrow(), vec![String::from("notes")]);
 }
 
-/// #928's review: the card's countdown says Deny, but no one said Don't.
+/// #928's review: an answer after the question's two minutes is refused as
+/// expired, whoever gave it: the card's countdown, which says Deny then, or
+/// a person late at the console (#928's LOW: not "the card timed out"). A
+/// late Allow is no failed run either.
 #[test]
-fn a_card_that_timed_out_says_so_to_the_window_and_the_panel() {
-    let (host, mut shell) = stops(2);
-    let id = asked(&mut shell, "stop notes").id;
-    assert_eq!(ask_card(&mut shell, TERMINAL_APP, 2, id), []);
-    let menu = take(&mut shell, id);
-    let later = host.clock.get() + crate::actions::CONFIRM_EXPIRY_NS + 1;
-    host.clock.set(later);
-    answer(&host, &mut shell, &menu, "deny");
-    let timed_out = "ok Not run: the card timed out.";
-    assert_eq!(given_back(&mut shell)[0].outcome, ok(timed_out));
+fn a_question_answered_after_its_two_minutes_says_so_to_the_window_and_the_panel() {
+    let (host, mut shell) = stops(3);
+    let unanswered = "Not run: it was not answered within two minutes.";
+    for (ticket, word) in [(2, "deny"), (3, "allow")] {
+        let id = asked(&mut shell, "stop notes").id;
+        assert_eq!(ask_card(&mut shell, TERMINAL_APP, ticket, id), []);
+        let menu = take(&mut shell, id);
+        let later = host.clock.get() + crate::actions::CONFIRM_EXPIRY_NS + 1;
+        host.clock.set(later);
+        answer(&host, &mut shell, &menu, word);
+        let told = format!("ok {unanswered}");
+        assert_eq!(given_back(&mut shell)[0].outcome, ok(&told), "{word}");
+    }
     // The panel's card the same, as a refusal on its bar.
     shell.eval_panel("stop notes");
     let panels = shell.desk_asks.last().map(|w| w.pending.id).unwrap();
@@ -269,7 +280,7 @@ fn a_card_that_timed_out_says_so_to_the_window_and_the_panel() {
     let later = host.clock.get() + crate::actions::CONFIRM_EXPIRY_NS + 1;
     host.clock.set(later);
     answer(&host, &mut shell, &menu, "deny");
-    let told = Some((false, String::from("Not run: the card timed out.")));
+    let told = Some((false, String::from(unanswered)));
     assert_eq!(shell.take_card_result(), told);
     assert_eq!(*host.procs.borrow(), vec![String::from("notes")]);
 }
@@ -292,7 +303,7 @@ fn the_held_asks_the_results_and_the_kept_answers_are_capped() {
     let given: Vec<u32> = back.iter().map(|done| done.ticket).collect();
     assert_eq!(given, tickets[1..]);
     assert!(back.iter().all(|done| done.outcome == ok(DONT)));
-    // Answers kept for one more ask: eight more push out the first's.
+    // Answers kept for the windows' asks: eight more push out the first's.
     let mut ids = Vec::new();
     for _ in 0..MAX_KEPT {
         let id = asked(&mut shell, "stop notes").id;
@@ -303,9 +314,6 @@ fn the_held_asks_the_results_and_the_kept_answers_are_capped() {
     let pushed_out = answered(&ask_card(&mut shell, TERMINAL_APP, 30, id));
     assert_eq!(pushed_out, Err(String::from(NOTHING_WAITS)));
     for (ticket, id) in (31..).zip([ids[0], ids[MAX_KEPT - 1]]) {
-        assert_eq!(
-            answered(&ask_card(&mut shell, TERMINAL_APP, ticket, id)),
-            ok(DONT)
-        );
+        assert_eq!(hears(&mut shell, ticket, id), ok(DONT));
     }
 }

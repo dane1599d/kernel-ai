@@ -198,9 +198,12 @@ impl Queue {
         count
     }
 
-    /// Keeps what one request came to.
+    /// Keeps what one request came to. One still waiting with that ticket is
+    /// withdrawn: what came of it is said, so it never runs after (#938:
+    /// given back, then told it did not run).
     pub fn finish(&mut self, answer: Answer) {
         self.taken.retain(|t| t.ticket != answer.ticket);
+        self.waiting.retain(|r| r.ticket != answer.ticket);
         if self.answers.len() == MAX_ANSWERS {
             self.answers.pop_front();
         }
@@ -404,6 +407,26 @@ mod tests {
         assert_eq!(queue.put_back(again), 0, "sent twice");
         assert_eq!(parse_back_for(&SETTINGS, "settings back\nnot a line"), None);
         assert_eq!(parse_back_for(&SETTINGS, TAKE), None);
+    }
+
+    /// #938: a request given back, then told it did not run, is withdrawn
+    /// and never runs after.
+    #[test]
+    fn an_answer_for_a_request_given_back_withdraws_it() {
+        let mut queue = Queue::default();
+        queue
+            .put(SETTINGS_APP, "1\t1\trules-remove 2\n2\t1\trules")
+            .unwrap();
+        let held = queue.take(8192).unwrap();
+        assert_eq!(queue.put_back(held), 2);
+        queue.finish(Answer::new(1, Err(String::from("Not run"))));
+        assert_eq!(
+            queue.take(8192),
+            Some(alloc::vec![request(2, true, "rules")])
+        );
+        queue.finish(Answer::new(2, Err(String::from("Not run"))));
+        assert_eq!(queue.take(8192), None);
+        assert_eq!(queue.results(8192).matches("Not run").count(), 2);
     }
 
     #[test]

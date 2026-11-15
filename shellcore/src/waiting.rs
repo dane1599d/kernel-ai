@@ -5,8 +5,10 @@
 //! ([`Host::act_serving`]) hands the apps' waiting requests here, and those
 //! that only read are answered at once: an effect batch whose every call is a
 //! read-only row, the editor's read of a file, and Settings' reads. Anything
-//! that changes something waits for the line to end, as before: the host keeps
-//! it in [`Held`], which says what must wait behind it.
+//! that changes something waits for the line to end, as before: the host
+//! gives it back to `desktop` to keep (#890), so a shell that dies mid-line
+//! loses none, and marks it in [`Held`], which says what must wait behind it
+//! and what the host takes again after the line.
 //!
 //! [`Host::act_serving`]: crate::Host::act_serving
 
@@ -15,10 +17,6 @@ use crate::effects::{self, Effect, EffectDone};
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
-
-/// The most requests held for one app: as many as `desktop` queues effects
-/// for one (`deskcore::effects::MAX_QUEUED`).
-pub const MAX_HELD: usize = 16;
 
 /// What kind of request a held one is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,12 +29,147 @@ pub enum Kind {
     Answer,
 }
 
-/// One held request: its kind, its app, how many requests it counts as (an
-/// effect batch's lines, a Settings batch's requests), and the host's own.
+/// What came of giving a held request back to `desktop` (#890).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GaveBack {
+    /// `desktop` answered `ok`: it keeps the request.
+    Kept,
+    /// `desktop` answered, refusing it: the host alone has it.
+    Refused,
+    /// The person's Stop withdrew the call before `desktop` took it.
+    Withdrawn,
+    /// The call never reached `desktop`: no room for it, or no server.
+    NotSent,
+    /// No answer came: `desktop` may have kept it, as a call it took and
+    /// answered late is dropped (timed out), or ended with it.
+    Unknown,
+}
+
+/// Where a held request is kept until the line ends.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Keep<T> {
+    /// In `desktop`, to take again after the line. `resend`: no answer came
+    /// to its give-back, so it is sent again first, and `desktop` keeps a
+    /// request given back twice once.
+    Back { resend: bool },
+    /// The host's own copy, run after the line: `desktop` surely did not
+    /// take it back.
+    Own(T),
+}
+
+impl GaveBack {
+    /// What came of a give-back call: `desktop`'s reply, or the call's
+    /// error. Only an error raised before the call was queued, or a Stop
+    /// that withdrew it, says `desktop` never saw it; any other may come
+    /// after `desktop` took it.
+    pub fn of(call: Result<&[u8], kabi::Error>) -> Self {
+        use kabi::Error;
+        match call {
+            Ok(b"ok") => Self::Kept,
+            Ok(_) => Self::Refused,
+            Err(Error::Interrupted) => Self::Withdrawn,
+            Err(Error::Busy | Error::NoMemory | Error::TooBig | Error::Unavailable) => {
+                Self::NotSent
+            }
+            Err(_) => Self::Unknown,
+        }
+    }
+
+    /// Where `request`, given back with this outcome, is kept. Never in the
+    /// host's own copy while `desktop` may hold it too: both would run
+    /// (#938's review).
+    pub fn keep<T>(self, request: T) -> Keep<T> {
+        match self {
+            Self::Kept => Keep::Back { resend: false },
+            Self::Unknown => Keep::Back { resend: true },
+            Self::Refused | Self::Withdrawn | Self::NotSent => Keep::Own(request),
+        }
+    }
+
+    /// Whether `desktop` answered: a resend that got no answer leaves it
+    /// unknown whether the request waits there.
+    fn answered(self) -> bool {
+        matches!(self, Self::Kept | Self::Refused)
+    }
+}
+
+/// Whether `desktop` restarted since a request was given back to it: its
+/// pid then and now, each when known. An unknown one says nothing, and the
+/// re-take that finds nothing tells the app instead.
+pub fn restarted(then: Option<u64>, now: Option<u64>) -> bool {
+    matches!((then, now), (Some(then), Some(now)) if then != now)
+}
+
+/// After the line, the host's next step for a request given back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// Give it back again: no answer came the first time.
+    Resend,
+    /// Take it again from its app's queue, and run it.
+    Take,
+    /// Tell its app it did not run: `desktop` lost it, or may have. An app
+    /// drops a result for a call already answered, and `desktop` withdraws a
+    /// request still waiting with that ticket, so it never runs after.
+    TellLost,
+    /// Leave it: the take call itself failed, and what waits in `desktop`
+    /// waits for the next take.
+    Leave,
+    /// It ran: nothing more.
+    Done,
+}
+
+/// What came of taking a given-back request again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Took {
+    /// Something waited, and ran.
+    Ran,
+    /// `desktop` said nothing waits.
+    Empty,
+    /// The take call failed, or its answer was out of shape: what waits is
+    /// not known.
+    CallFailed,
+}
+
+/// What came of the last step for a request given back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Came {
+    /// The line ended: whether `desktop` restarted since ([`restarted`]),
+    /// and whether no answer came to the give-back.
+    LineEnded { restarted: bool, resend: bool },
+    /// The give-back was sent again.
+    Resent(GaveBack),
+    /// It was taken again.
+    Taken(Took),
+}
+
+impl Came {
+    /// The next step (#938's review): never lost in silence, and never run
+    /// behind what its app asked later.
+    /// - A restarted `desktop` never had it: told so, never taken.
+    /// - A resend with no answer: told so, never taken, as a take could run
+    ///   the app's later requests ahead of it while it sits taken.
+    /// - A take that finds nothing: told so. One whose call failed: left
+    ///   for the next take, never told.
+    pub fn next(self) -> Step {
+        match self {
+            Self::LineEnded {
+                restarted: true, ..
+            } => Step::TellLost,
+            Self::LineEnded { resend: true, .. } => Step::Resend,
+            Self::LineEnded { .. } => Step::Take,
+            Self::Resent(gave) if gave.answered() => Step::Take,
+            Self::Resent(_) => Step::TellLost,
+            Self::Taken(Took::Ran) => Step::Done,
+            Self::Taken(Took::Empty) => Step::TellLost,
+            Self::Taken(Took::CallFailed) => Step::Leave,
+        }
+    }
+}
+
+/// One held request: its kind, its app, and the host's own.
 struct Item<T> {
     kind: Kind,
     app: String,
-    size: usize,
     request: T,
 }
 
@@ -48,12 +181,12 @@ struct Item<T> {
 /// - While a Settings change is held, every request waits, so none is answered
 ///   under what the change takes away. The first Settings request held is a
 ///   change, as one that only reads is answered.
-/// - An app has at most [`MAX_HELD`] requests held: past that, the host
-///   refuses one. Neither the one running nor an answer still to give counts:
-///   neither waits as a request of the app's.
+///
+/// The host takes nothing of an app held back ([`Held::apps`]), so each app
+/// has at most one request held, and an answer still to give.
 pub struct Held<T> {
     items: VecDeque<Item<T>>,
-    running: Option<(Kind, String, usize)>,
+    running: Option<(Kind, String)>,
 }
 
 impl<T> Default for Held<T> {
@@ -66,11 +199,11 @@ impl<T> Default for Held<T> {
 }
 
 impl<T> Held<T> {
-    fn all(&self) -> impl Iterator<Item = (Kind, &str, usize)> {
+    fn all(&self) -> impl Iterator<Item = (Kind, &str)> {
         self.running
             .iter()
-            .map(|(kind, app, size)| (*kind, app.as_str(), *size))
-            .chain(self.items.iter().map(|i| (i.kind, i.app.as_str(), i.size)))
+            .map(|(kind, app)| (*kind, app.as_str()))
+            .chain(self.items.iter().map(|i| (i.kind, i.app.as_str())))
     }
 
     /// Whether nothing is held or running.
@@ -80,44 +213,47 @@ impl<T> Held<T> {
 
     /// Whether a request of `app` must wait behind what is held.
     pub fn blocks(&self, app: &str) -> bool {
-        self.all()
-            .any(|(kind, held, _)| kind == Kind::Settings || held == app)
+        self.blocks_all() || self.all().any(|(_, held)| held == app)
     }
 
-    /// Holds `request`, of `kind`, from `app`, counting `size`: or gives it
-    /// back past [`MAX_HELD`] requests for `app`. An answer is always held.
-    pub fn hold(&mut self, kind: Kind, app: &str, size: usize, request: T) -> Result<(), T> {
-        let held: usize = self
-            .items
-            .iter()
-            .filter(|i| i.app == app && i.kind != Kind::Answer)
-            .map(|i| i.size)
-            .sum();
-        if kind != Kind::Answer && held + size > MAX_HELD {
-            return Err(request);
+    /// Whether every request must wait: a Settings change is held or runs.
+    pub fn blocks_all(&self) -> bool {
+        self.all().any(|(kind, _)| kind == Kind::Settings)
+    }
+
+    /// The apps held back, each once, for a take to pass by.
+    pub fn apps(&self) -> Vec<String> {
+        let mut apps: Vec<String> = Vec::new();
+        for (_, app) in self.all() {
+            if !apps.iter().any(|a| a == app) {
+                apps.push(String::from(app));
+            }
         }
+        apps
+    }
+
+    /// Holds `request`, of `kind`, from `app`, behind what is held already.
+    pub fn hold(&mut self, kind: Kind, app: &str, request: T) {
         self.items.push_back(Item {
             kind,
             app: String::from(app),
-            size,
             request,
         });
-        Ok(())
     }
 
     /// The oldest held request, to run now: it holds back what came after it
     /// until [`Held::done`].
     pub fn start(&mut self) -> Option<T> {
         let item = self.items.pop_front()?;
-        self.running = Some((item.kind, item.app, item.size));
+        self.running = Some((item.kind, item.app));
         Some(item.request)
     }
 
     /// A request of `app` the host runs now from elsewhere (the main loop's
     /// own effect batch): it holds back what comes after it, as one from
     /// [`Held::start`] does, until [`Held::done`].
-    pub fn running(&mut self, kind: Kind, app: &str, size: usize) {
-        self.running = Some((kind, String::from(app), size));
+    pub fn running(&mut self, kind: Kind, app: &str) {
+        self.running = Some((kind, String::from(app)));
     }
 
     /// The request [`Held::start`] gave, or [`Held::running`] named, has run.
