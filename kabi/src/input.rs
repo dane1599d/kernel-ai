@@ -10,7 +10,9 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Kind {
-    /// A key, `code` its usage on page 0x07; `value` 1 down, 0 up, 2 repeat.
+    /// A key, `code` its usage on page 0x07; `value` 1 down, 0 up, 2 repeat,
+    /// or [`TAP`]: a Super tapped alone while a terminal held the keys on a
+    /// lease, which the kernel saw whole and ended the lease for.
     Key = 1,
     /// Relative motion; `code` 0 for x, 1 for y; `value` in device units.
     Rel = 2,
@@ -127,6 +129,7 @@ pub mod usage {
     pub const RIGHT_ALT: u16 = 0xE6;
     pub const RIGHT_GUI: u16 = 0xE7;
     pub const TAB: u16 = 0x2B;
+    pub const ESCAPE: u16 = 0x29;
     pub const F12: u16 = 0x45;
 }
 
@@ -140,6 +143,10 @@ pub struct Set1 {
     skip: u8,
     ctrl: u8,
     alt: u8,
+    /// A Super key went down and no other key since: its release is a tap.
+    super_alone: bool,
+    /// The last key decoded was a Super tap's release.
+    super_tap: bool,
 }
 
 impl Set1 {
@@ -149,6 +156,8 @@ impl Set1 {
             skip: 0,
             ctrl: 0,
             alt: 0,
+            super_alone: false,
+            super_tap: false,
         }
     }
 
@@ -163,7 +172,9 @@ impl Set1 {
                 return None;
             }
             0xE1 => {
+                // Pause: a key pressed, though it decodes to none.
                 self.skip = 5;
+                self.super_alone = false;
                 return None;
             }
             _ => {}
@@ -171,10 +182,19 @@ impl Set1 {
         let extended = core::mem::take(&mut self.extended);
         let (make, down) = (byte & 0x7F, byte & 0x80 == 0);
         let usage = match extended {
-            false => u16::from(*SET1.get(usize::from(make))?),
-            true => u16::from(SET1_E0.iter().find(|(m, _)| *m == make)?.1),
-        };
+            false => SET1.get(usize::from(make)).map(|u| u16::from(*u)),
+            true => SET1_E0
+                .iter()
+                .find(|(m, _)| *m == make)
+                .map(|(_, u)| u16::from(*u)),
+        }
+        .unwrap_or(0);
         if usage == 0 {
+            // A key with no usage here (PrintScreen, media keys, a fake
+            // shift, `UNMAPPED`): pressed with Super, Super was not tapped.
+            if down {
+                self.super_alone = false;
+            }
             return None;
         }
         let bit = |held: &mut u8, n: u8| match down {
@@ -188,6 +208,15 @@ impl Set1 {
             usage::RIGHT_ALT => bit(&mut self.alt, 2),
             _ => {}
         }
+        let gui = matches!(usage, usage::LEFT_GUI | usage::RIGHT_GUI);
+        self.super_tap = gui && !down && self.super_alone;
+        self.super_alone = match (gui, down) {
+            (true, true) => true,
+            (true, false) => false,
+            // Any other key pressed with Super held: not a tap.
+            (false, true) => false,
+            (false, false) => self.super_alone,
+        };
         Some((usage, down))
     }
 
@@ -201,11 +230,71 @@ impl Set1 {
         self.alt != 0
     }
 
+    /// Where the key just decoded, `usage` going `down` or up, goes, with a
+    /// terminal holding the keys on a lease (`leased`) or not. Call it after
+    /// [`Set1::feed`] gave the key. Under a lease, `desktop` gets only what
+    /// it must to switch away: its own chords, which end the lease (Alt+Tab,
+    /// Ctrl+Esc's press, a Super tapped alone), and Ctrl and Alt, so a chord
+    /// reaches it whole. Super is not shared: a Super used with another key
+    /// is the terminal's alone, so `desktop` never takes it for a tap.
+    pub fn route(&self, usage: u16, down: bool, leased: bool) -> KeyRoute {
+        if usage == usage::F12 && self.ctrl_alt() {
+            return KeyRoute::Screen;
+        }
+        if !leased {
+            return KeyRoute::Desk;
+        }
+        // Chords on the press only: a release rolled over a modifier is not.
+        let chord = match usage {
+            usage::TAB => down && self.alt != 0,
+            usage::ESCAPE => down && self.ctrl != 0,
+            _ => false,
+        };
+        let tap = matches!(usage, usage::LEFT_GUI | usage::RIGHT_GUI) && !down && self.super_tap;
+        let shared = matches!(
+            usage,
+            usage::LEFT_CTRL | usage::RIGHT_CTRL | usage::LEFT_ALT | usage::RIGHT_ALT
+        );
+        match (chord, tap, shared) {
+            (true, _, _) => KeyRoute::Chord,
+            (_, true, _) => KeyRoute::Tap,
+            (_, _, true) => KeyRoute::Both,
+            _ => KeyRoute::Console,
+        }
+    }
+
     /// Whether the last byte ended its sequence: no `E0` or `E1` is waiting
     /// for the rest, so the bytes after it may go elsewhere.
     pub fn at_boundary(&self) -> bool {
         !self.extended && self.skip == 0
     }
+}
+
+/// [`Kind::Key`]'s value for a Super tap the kernel saw under a lease.
+pub const TAP: i32 = 3;
+
+/// The set 1 make code a USB keyboard's key with no set 1 code is sent as
+/// (its break with bit 7): it decodes to no usage, so it reaches no one, but
+/// it is a key pressed, so Super held with it is not a tap.
+pub const UNMAPPED: u8 = 0x54;
+
+/// Where a key goes ([`Set1::route`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyRoute {
+    /// To `desktop`'s queue: no lease holds the keys.
+    Desk,
+    /// To the console's terminal alone.
+    Console,
+    /// To both: Ctrl or Alt under a lease, so a chord reaches `desktop`.
+    Both,
+    /// `desktop`'s chord (Alt+Tab, Ctrl+Esc): the lease ends and it goes to
+    /// `desktop` alone.
+    Chord,
+    /// A Super tapped alone under a lease: the lease ends and `desktop` gets
+    /// one [`TAP`] event.
+    Tap,
+    /// Ctrl+Alt+F12: the screen changes hands; nobody gets the key.
+    Screen,
 }
 
 #[cfg(test)]
@@ -244,6 +333,141 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), 86 + 17);
+    }
+
+    /// Where each key of `bytes` goes, under a lease (`leased`) or not.
+    fn routes(bytes: &[u8], leased: bool) -> alloc::vec::Vec<(u16, bool, KeyRoute)> {
+        let mut set1 = Set1::new();
+        bytes
+            .iter()
+            .filter_map(|&b| set1.feed(b).map(|(u, d)| (u, d, set1.route(u, d, leased))))
+            .collect()
+    }
+
+    /// A table row: what was typed, its set 1 bytes, and each key's route.
+    type Case<'a> = (&'a str, &'a [u8], &'a [(u16, bool, KeyRoute)]);
+
+    /// The route, key by key, for each sequence a person types under a
+    /// terminal's lease, and that nothing is held back without one.
+    #[test]
+    fn keys_under_a_lease_reach_desktop_only_to_switch_away() {
+        use KeyRoute::*;
+        let (gui, esc, ctrl, alt, tab, a) = (
+            usage::LEFT_GUI,
+            usage::ESCAPE,
+            usage::LEFT_CTRL,
+            usage::LEFT_ALT,
+            usage::TAB,
+            0x04,
+        );
+        let table: &[Case<'_>] = &[
+            (
+                "Super tap",
+                &[0xE0, 0x5B, 0xE0, 0xDB],
+                &[(gui, true, Console), (gui, false, Tap)],
+            ),
+            // Super+A, say Super+L: all the terminal's; desktop sees none.
+            (
+                "Super+letter",
+                &[0xE0, 0x5B, 0x1E, 0x9E, 0xE0, 0xDB],
+                &[
+                    (gui, true, Console),
+                    (a, true, Console),
+                    (a, false, Console),
+                    (gui, false, Console),
+                ],
+            ),
+            (
+                "Ctrl+Esc",
+                &[0x1D, 0x01, 0x81, 0x9D],
+                &[
+                    (ctrl, true, Both),
+                    (esc, true, Chord),
+                    (esc, false, Console),
+                    (ctrl, false, Both),
+                ],
+            ),
+            // Esc down, then Ctrl, then Esc up: no chord on a release.
+            (
+                "Esc, Ctrl rollover",
+                &[0x01, 0x1D, 0x81, 0x9D],
+                &[
+                    (esc, true, Console),
+                    (ctrl, true, Both),
+                    (esc, false, Console),
+                    (ctrl, false, Both),
+                ],
+            ),
+            (
+                "Esc alone",
+                &[0x01, 0x81],
+                &[(esc, true, Console), (esc, false, Console)],
+            ),
+            (
+                "a letter",
+                &[0x1E, 0x9E],
+                &[(a, true, Console), (a, false, Console)],
+            ),
+            (
+                "Alt+Tab",
+                &[0x38, 0x0F, 0x8F, 0xB8],
+                &[
+                    (alt, true, Both),
+                    (tab, true, Chord),
+                    (tab, false, Console),
+                    (alt, false, Both),
+                ],
+            ),
+            // Tab down, then Alt, then Tab up: no chord on a release.
+            (
+                "Tab, Alt rollover",
+                &[0x0F, 0x38, 0x8F, 0xB8],
+                &[
+                    (tab, true, Console),
+                    (alt, true, Both),
+                    (tab, false, Console),
+                    (alt, false, Both),
+                ],
+            ),
+            // Super with a key that decodes to none (PrintScreen's E0 37,
+            // Pause, a USB key mapped to `UNMAPPED`): no tap.
+            (
+                "Super+PrintScreen",
+                &[0xE0, 0x5B, 0xE0, 0x37, 0xE0, 0xB7, 0xE0, 0xDB],
+                &[(gui, true, Console), (gui, false, Console)],
+            ),
+            (
+                "Super+Pause",
+                &[0xE0, 0x5B, 0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5, 0xE0, 0xDB],
+                &[(gui, true, Console), (gui, false, Console)],
+            ),
+            (
+                "Super+unmapped USB key",
+                &[0xE0, 0x5B, UNMAPPED, UNMAPPED | 0x80, 0xE0, 0xDB],
+                &[(gui, true, Console), (gui, false, Console)],
+            ),
+            (
+                "Ctrl+Alt+F12",
+                &[0x1D, 0x38, 0x58, 0xD8, 0xB8, 0x9D],
+                &[
+                    (ctrl, true, Both),
+                    (alt, true, Both),
+                    (usage::F12, true, Screen),
+                    (usage::F12, false, Screen),
+                    (alt, false, Both),
+                    (ctrl, false, Both),
+                ],
+            ),
+        ];
+        for (what, bytes, want) in table {
+            assert_eq!(&routes(bytes, true), want, "{what}");
+            // Without a lease every key is desktop's, F12's chord aside.
+            let free = routes(bytes, false);
+            assert!(
+                free.iter().all(|r| r.2 == Desk || r.2 == Screen),
+                "{what}: {free:?}"
+            );
+        }
     }
 
     #[test]

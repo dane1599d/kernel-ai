@@ -12,9 +12,34 @@ use crate::panel::State;
 use crate::taskbar::{App, Item, Pill};
 use gfx2d::icons::Icon;
 use gfx2d::{Canvas, Image};
+use look::TypeStyle;
 
 /// An item's icon.
 const ICON: i32 = 24;
+/// A tooltip's padding, the gap between its label and title, its radius.
+const TIP_PAD: i32 = 8;
+const TIP_GAP: i32 = 6;
+const TIP_RADIUS: i32 = 4;
+
+/// `text` in Small cut to `room` px, ending in "…" when it was cut.
+fn cut(text: &gfx2d::Text, s: &str, room: f32) -> alloc::string::String {
+    let width = |t: &str| text.measure(TypeStyle::Small, t).0;
+    if width(s) <= room {
+        return alloc::string::String::from(s);
+    }
+    let mut out = alloc::string::String::new();
+    for ch in s.chars() {
+        out.push(ch);
+        let mut tried = out.clone();
+        tried.push('\u{2026}');
+        if width(&tried) > room {
+            out.pop();
+            break;
+        }
+    }
+    out.push('\u{2026}');
+    out
+}
 /// The hover fill's and the Kai button's ring's radii.
 const HOVER_RADIUS: i32 = 4;
 const RING_RADIUS: i32 = 8;
@@ -100,12 +125,81 @@ impl Painter {
                 self.monogram(c, clip, at, &app.label);
             }
         }
+        // A pin with no window has no pill.
         let (w, color) = match app.pill(desk) {
-            Pill::Focused => (16, self.palette.accent),
-            Pill::Running => (6, self.palette.muted),
-            Pill::Minimized => (4, self.palette.muted),
+            Some(Pill::Focused) => (16, self.palette.accent),
+            Some(Pill::Running) => (6, self.palette.muted),
+            Some(Pill::Minimized) => (4, self.palette.muted),
+            None => return,
         };
         self.pill(c, clip, r, w, color);
+    }
+
+    /// The tooltip over the hovered taskbar item, once it is due (ADR 0005
+    /// §8): `raised`, radius 4, a 1 px `line_strong` frame; the kernel's
+    /// label in mono `dim` first, then the app's title in `text`, at most
+    /// 320 wide and cut at its end. The taskbar draws app text only here.
+    pub(crate) fn tooltip(&mut self, c: &mut Canvas<'_>, clip: Rect, scene: &Scene<'_>) {
+        let desk = scene.desk;
+        let Some(i) = desk.tooltip() else {
+            return;
+        };
+        let items = desk.taskbar_items();
+        let (label, title) = match items.get(i) {
+            Some(Item::Kai) => (
+                alloc::string::String::new(),
+                alloc::string::String::from("Kai"),
+            ),
+            Some(Item::More) => (
+                alloc::string::String::new(),
+                alloc::string::String::from("More apps"),
+            ),
+            Some(Item::App(app)) => {
+                let title = app
+                    .windows
+                    .last()
+                    .and_then(|id| desk.window(*id))
+                    .map_or(alloc::string::String::new(), |w| w.title.clone());
+                (app.label.clone(), title)
+            }
+            None => return,
+        };
+        let area = desk.tooltip_area(i, items.len());
+        let Some(clip) = area.intersect(&clip) else {
+            return;
+        };
+        let label_w = self.text.measure(TypeStyle::MonoTitle, &label).0 as i32;
+        let title_w = self.text.measure(TypeStyle::Small, &title).0 as i32;
+        let gap = if label.is_empty() || title.is_empty() {
+            0
+        } else {
+            TIP_GAP
+        };
+        let w = (TIP_PAD * 2 + label_w + gap + title_w).min(area.w);
+        let item = desk.item_rect(i, items.len());
+        let x = (item.x + item.w / 2 - w / 2).clamp(area.x, area.right() - w);
+        let bubble = Rect::new(x, area.y, w, area.h);
+        self.rounded(c, bubble, clip, self.palette.line_strong, TIP_RADIUS);
+        self.rounded(
+            c,
+            bubble.grow(-1),
+            clip,
+            self.palette.raised,
+            TIP_RADIUS - 1,
+        );
+        let inside = bubble.grow(-1).intersect(&clip).unwrap_or_default();
+        let mut tx = (bubble.x + TIP_PAD) as f32;
+        if !label.is_empty() {
+            let y = self.baseline(bubble.y, bubble.h, TypeStyle::MonoTitle);
+            let dim = self.palette.dim;
+            tx += self.draw_text(c, inside, tx, y, TypeStyle::MonoTitle, dim, &label) + gap as f32;
+        }
+        let text_end = bubble.right() - TIP_PAD;
+        let room = (text_end as f32 - tx).max(0.0);
+        let shown = cut(&self.text, &title, room);
+        let y = self.baseline(bubble.y, bubble.h, TypeStyle::Small);
+        let ink = self.palette.text;
+        self.draw_text(c, inside, tx, y, TypeStyle::Small, ink, &shown);
     }
 
     /// `icon` at 24 px, centred in `r`.

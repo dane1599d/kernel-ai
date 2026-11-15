@@ -28,7 +28,7 @@ pub fn after_panel_key(state: &mut State, before: usize) {
         super::wake_shell();
     }
     if state.panel.take_apps() {
-        super::apps::open(state);
+        super::apps::show_all(state);
     }
     if state.panel.take_leave() {
         let effects = state.desk.leave_pane();

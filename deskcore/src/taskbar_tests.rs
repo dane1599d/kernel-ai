@@ -88,7 +88,7 @@ fn paint_in(
         bar,
         panel,
         chat,
-        sheet: None,
+        start: None,
         ask: None,
         now_ms: 0,
     };
@@ -212,7 +212,7 @@ fn items_are_matched_by_label_and_never_by_title() {
         panic!("notes");
     };
     assert_eq!(notes.windows.len(), 2);
-    assert_eq!(notes.pill(&desk), Pill::Running);
+    assert_eq!(notes.pill(&desk), Some(Pill::Running));
 }
 
 /// The taskbar is hit before a window dragged under it: a press there
@@ -284,19 +284,23 @@ fn overflow_becomes_more_and_the_group_never_meets_the_tray() {
 /// The Kai button and the Kai corner open the pane with its input focused;
 /// the chip toggles it.
 #[test]
-fn the_kai_button_corner_and_chip_open_the_pane() {
+fn the_kai_button_opens_start_and_the_corner_and_chip_the_pane() {
     let mut desk = fresh();
     {
         let at = item_at(&desk, 0);
         click(&mut desk, at)
     };
     assert_eq!(desk.focus(), Focus::Panel);
-    assert!(desk.pane().is_some());
+    assert!(desk.start().is_some() && desk.pane().is_none());
+    // A press outside Start closes it, and goes nowhere else.
+    let effects = click(&mut desk, Point { x: 5, y: 5 });
+    assert!(desk.start().is_none());
+    assert!(effects.contains(&Effect::Start(false)));
     let chip = desk.layout().tray.chip;
     click(&mut desk, middle(chip));
-    assert!(desk.pane().is_none(), "the chip closes it");
+    assert!(desk.pane().is_some(), "the chip opens it");
     click(&mut desk, middle(chip));
-    assert!(desk.pane().is_some(), "and opens it");
+    assert!(desk.pane().is_none(), "the chip closes it");
     let mut desk = fresh();
     // A pointer pushed far past the corner lands on its last pixel.
     let corner = Point {

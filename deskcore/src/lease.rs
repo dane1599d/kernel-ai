@@ -77,10 +77,110 @@ impl Lease {
         }
     }
 
+    /// Whether the kernel lent the keys to the terminal, as `desktop` knows.
+    pub fn lent(&self) -> bool {
+        self.leased_at.is_some()
+    }
+
     /// The lease is over: `desktop` ended it ([`Step::End`]), or a pointer
     /// button went down and the kernel ended it on the press, so the next step
     /// asks again at once instead of after [`ASK_NS`].
     pub fn forget(&mut self) {
         *self = Self::new();
+    }
+}
+
+/// The desk's keys for one kernel key event, `usage` and `value`
+/// (`kabi::input::Kind::Key`), with the lease `lent` or not. A Super tap
+/// the kernel saw under a lease ([`kabi::input::TAP`]) is Super down and
+/// up, which opens Start. Any other Super event while the lease is lent is
+/// dropped: under a lease Super belongs to the terminal, and a bare release
+/// must never pass for a tap.
+pub fn desk_keys(usage: u16, value: i32, lent: bool) -> alloc::vec::Vec<(u16, bool)> {
+    let gui = matches!(
+        usage,
+        crate::desk::usage::LEFT_GUI | crate::desk::usage::RIGHT_GUI
+    );
+    match (gui, value) {
+        (true, kabi::input::TAP) => alloc::vec![(usage, true), (usage, false)],
+        (true, _) if lent => alloc::vec::Vec::new(),
+        (_, 1 | 2) => alloc::vec![(usage, true)],
+        _ => alloc::vec![(usage, false)],
+    }
+}
+
+/// Whether the kernel ended the lease for kernel key event `usage`,
+/// `value`, while `lent`: a Super tap, or any Tab or Esc press under the
+/// lease (Alt+Tab's and Ctrl+Esc's, which reach `desktop` only as chords;
+/// a lone one never reaches it). `desktop` forgets the lease then, so it
+/// asks again only for a terminal that has the focus. It reads no Ctrl or
+/// Alt state of its own, which goes stale with both sides held.
+pub fn ends_lease(usage: u16, value: i32, lent: bool) -> bool {
+    const TAB: u16 = 0x2B;
+    const ESCAPE: u16 = 0x29;
+    match (usage, value) {
+        (_, kabi::input::TAP) => true,
+        (TAB | ESCAPE, 1) => lent,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+    use crate::desk::usage::LEFT_GUI;
+    use crate::desk::{Desk, Effect, Focus, Input};
+    use crate::geom::Size;
+
+    /// Feeds `events` (usage, value) to a desk with a window focused and the
+    /// lease `lent`: the effects.
+    fn feed(events: &[(u16, i32)], lent: bool) -> (Desk, alloc::vec::Vec<Effect>) {
+        let mut desk = Desk::new(1280, 800);
+        desk.open(1, "term", "Terminal", Size { w: 300, h: 200 }, true);
+        let mut effects = alloc::vec::Vec::new();
+        for &(usage, value) in events {
+            for (usage, down) in desk_keys(usage, value, lent) {
+                effects.extend(desk.input(Input::Key { usage, down }));
+            }
+        }
+        (desk, effects)
+    }
+
+    /// Exactly what desktop sees of Super+L under a lease: nothing of Super
+    /// (the kernel keeps it the terminal's); even a stray bare Super event
+    /// is dropped, so no Start opens and the terminal keeps the keys.
+    #[test]
+    fn super_with_a_letter_under_a_lease_opens_nothing() {
+        let (desk, effects) = feed(&[], true);
+        assert!(effects.is_empty());
+        assert!(desk.start().is_none());
+        let (desk, effects) = feed(&[(LEFT_GUI, 1), (LEFT_GUI, 0)], true);
+        assert!(desk.start().is_none(), "{effects:?}");
+        assert!(matches!(desk.focus(), Focus::Window(_)));
+    }
+
+    /// The lease is over after a tap and a chord's press, never a release
+    /// or a key alone.
+    #[test]
+    fn the_lease_ends_on_a_tap_or_a_chords_press() {
+        assert!(ends_lease(LEFT_GUI, kabi::input::TAP, true));
+        assert!(ends_lease(0x2B, 1, true), "Alt+Tab's press");
+        assert!(ends_lease(0x29, 1, true), "Ctrl+Esc's press");
+        assert!(!ends_lease(0x2B, 0, true), "a release");
+        assert!(!ends_lease(0x2B, 1, false), "no lease to end");
+        assert!(!ends_lease(0x04, 1, true), "a letter");
+        assert!(!ends_lease(LEFT_GUI, 0, true), "a bare release");
+    }
+
+    /// The kernel's tap opens Start; without a lease a plain tap does too.
+    #[test]
+    fn a_tap_opens_start_with_or_without_a_lease() {
+        let (desk, _) = feed(&[(LEFT_GUI, kabi::input::TAP)], true);
+        assert!(desk.start().is_some());
+        let (desk, _) = feed(&[(LEFT_GUI, 1), (LEFT_GUI, 0)], false);
+        assert!(desk.start().is_some());
+        // A repeat is a press; anything else is a release.
+        assert_eq!(desk_keys(0x04, 2, true), [(0x04, true)]);
+        assert_eq!(desk_keys(0x04, 0, false), [(0x04, false)]);
     }
 }

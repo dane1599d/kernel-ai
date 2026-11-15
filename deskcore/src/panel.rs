@@ -22,6 +22,9 @@ pub const MAX_LINE: usize = 400;
 /// Requests waiting for the shell, at most: an agent that stopped taking them
 /// does not make the panel grow without bound.
 const MAX_WAITING: usize = 8;
+/// Enter, on the main keys and the keypad.
+const ENTER: u16 = 0x28;
+const KEYPAD_ENTER: u16 = 0x58;
 /// The line that opens the Apps sheet.
 pub const APPS: &str = "apps";
 
@@ -73,6 +76,9 @@ pub struct Panel {
     /// The running model's name, as the shell said it (`panel model`),
     /// cleaned at the boundary.
     model: Option<String>,
+    /// Start's Ask Kai took an Enter that is still held: its repeats and
+    /// release are not this input's, so they never send the kept draft.
+    enter_held: bool,
 }
 
 impl Default for Panel {
@@ -97,6 +103,7 @@ impl Panel {
             interrupt: false,
             leave: false,
             model: None,
+            enter_held: false,
         }
     }
 
@@ -123,6 +130,10 @@ impl Panel {
     pub fn set_focus(&mut self, focused: bool) -> bool {
         self.shift = 0;
         self.ctrl = 0;
+        // The focus coming back (Ask Kai's own move to the pane) keeps it.
+        if !focused {
+            self.enter_held = false;
+        }
         let changed = self.focused != focused;
         self.focused = focused;
         changed
@@ -197,6 +208,12 @@ impl Panel {
                 held(&mut self.ctrl);
                 return false;
             }
+            ENTER | KEYPAD_ENTER if self.enter_held => {
+                self.enter_held = down;
+                return false;
+            }
+            // Any other key: that Enter is over, wherever its release went.
+            _ if down => self.enter_held = false,
             _ if !down => return false,
             _ => {}
         }
@@ -207,6 +224,27 @@ impl Panel {
             return self.escape();
         }
         self.apply(key, now_ms)
+    }
+
+    /// Follows a desk effect that moves the keys: `Focus` or Start opening
+    /// or closing. The pane's input listens while the panel has the focus
+    /// and Start does not have it. True when the panel changed.
+    pub fn follow_focus(&mut self, effect: &crate::desk::Effect, desk: &crate::desk::Desk) -> bool {
+        use crate::desk::{Effect, Focus};
+        match *effect {
+            Effect::Focus(focus) => {
+                let start = desk.start().is_some();
+                self.set_focus(focus == Focus::Panel && !start)
+            }
+            Effect::Start(open) => self.set_focus(desk.focus() == Focus::Panel && !open),
+            _ => false,
+        }
+    }
+
+    /// Start's Ask Kai sent a line with an Enter still held: the panel
+    /// drops that Enter's repeats and its release.
+    pub fn hold_enter(&mut self) {
+        self.enter_held = true;
     }
 
     /// The pane's send item, clicked: exactly Esc while Kai thinks (it is
@@ -412,6 +450,58 @@ mod tests {
         panel.send("install notes".into(), 7);
         assert_eq!(panel.take(), Some(Request::Line("install notes".into())));
         assert_eq!(panel.state(), &State::Thinking { since_ms: 7 });
+    }
+
+    /// Start's Ask Kai, sent with an Enter still held: its repeats and
+    /// release never send the pane's kept draft; the next Enter does.
+    #[test]
+    fn a_held_enter_from_start_never_sends_the_draft() {
+        let mut panel = Panel::new();
+        panel.set_focus(true);
+        tap(&mut panel, &[0x0B]);
+        panel.hold_enter();
+        for _ in 0..5 {
+            panel.key(0x28, true, 0);
+        }
+        panel.key(0x28, false, 0);
+        assert_eq!(panel.take(), None, "a repeat sent the draft");
+        assert_eq!(panel.text(), "h");
+        tap(&mut panel, &[0x28]);
+        assert_eq!(panel.take(), Some(Request::Line("h".into())));
+    }
+
+    /// The held Enter never sticks: another key, or the focus moving, ends
+    /// it even if its release went elsewhere.
+    #[test]
+    fn a_held_enter_ends_with_another_key_or_a_focus_change() {
+        let mut panel = Panel::new();
+        panel.set_focus(true);
+        panel.hold_enter();
+        tap(&mut panel, &[0x0B]);
+        tap(&mut panel, &[0x28]);
+        assert_eq!(panel.take(), Some(Request::Line("h".into())));
+        panel.hold_enter();
+        panel.set_focus(false);
+        panel.set_focus(true);
+        tap(&mut panel, &[0x0B, 0x28]);
+        assert_eq!(panel.take(), Some(Request::Line("h".into())));
+    }
+
+    /// Start's Ask Kai in `desktop`'s order: the hold, then the focus moving
+    /// to the pane (its effect delivered after), then the held Enter's
+    /// repeats and release: none sends the kept draft.
+    #[test]
+    fn a_held_enter_survives_the_move_to_the_pane() {
+        let mut panel = Panel::new();
+        tap(&mut panel, &[0x0B]);
+        panel.hold_enter();
+        panel.set_focus(true);
+        for _ in 0..3 {
+            panel.key(0x28, true, 0);
+        }
+        panel.key(0x28, false, 0);
+        assert_eq!(panel.take(), None, "the draft went to Kai");
+        assert_eq!(panel.text(), "h");
     }
 
     #[test]

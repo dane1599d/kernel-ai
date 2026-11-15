@@ -1,9 +1,12 @@
 //! Keys the desk itself takes (ADR 0005 §8, "Keys"): the locks, Alt+Tab,
-//! and a Super tap or Ctrl+Space, which open the Kai pane and focus its
-//! input. Every other key goes to the focus: a window, the panel's input, or
+//! a Super tap or Ctrl+Esc, which open Start with its box focused, and
+//! Ctrl+Space, which opens the Kai pane and focuses its input. Every other key goes to the focus: a window, the panel's input, or
 //! nowhere while a card is up.
 
 use super::usage::{self, SPACE, TAB};
+
+/// Esc, for Ctrl+Esc.
+const ESCAPE: u16 = 0x29;
 use super::{Desk, Effect, Focus};
 use alloc::vec::Vec;
 
@@ -36,7 +39,7 @@ impl Desk {
                 if down {
                     self.super_alone = true;
                 } else if core::mem::take(&mut self.super_alone) {
-                    self.set_focus(Focus::Panel, effects);
+                    self.toggle_start(effects);
                 }
                 return;
             }
@@ -50,11 +53,18 @@ impl Desk {
             return;
         }
         if down && code == SPACE && self.ctrl {
-            self.set_focus(Focus::Panel, effects);
+            self.focus_pane(effects);
             return;
         }
-        // Tab and Space released after the shortcut go nowhere.
-        if !down && ((code == TAB && self.alt) || (code == SPACE && self.ctrl)) {
+        // Ctrl+Esc: Start, where Super may not reach the guest.
+        if down && code == ESCAPE && self.ctrl {
+            self.open_start(effects);
+            return;
+        }
+        // Tab, Space and Esc released after the shortcut go nowhere.
+        let shortcut =
+            (code == TAB && self.alt) || ((code == SPACE || code == ESCAPE) && self.ctrl);
+        if !down && shortcut {
             return;
         }
         match self.focus {

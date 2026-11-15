@@ -137,6 +137,10 @@ pub fn on_interrupt() -> Option<usize> {
     poll(true)
 }
 
+// A USB key with no set 1 code goes in as kabi's `UNMAPPED`, which decodes
+// to nothing but still breaks a Super tap.
+const _: () = assert!(xhci::hid::UNMAPPED == kabi::input::UNMAPPED);
+
 /// Polls the controllers that take interrupts (`interrupts`) or the others.
 fn poll(interrupts: bool) -> Option<usize> {
     if !READY.load(Ordering::Acquire) {

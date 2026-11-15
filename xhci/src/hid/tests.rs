@@ -58,9 +58,13 @@ fn usages_map_to_set_one() {
     assert_eq!(code(0xE0, true), Some(vec![0x1D])); // left Control
     assert_eq!(code(0xE4, true), Some(vec![0xE0, 0x1D])); // right Control
     assert_eq!(code(0xE5, false), Some(vec![0xB6])); // right Shift
-    assert_eq!(code(0x46, true), None); // Print Screen
+    // A key with no set 1 code is sent as one that decodes to none, so a
+    // Super held with it is no tap; HID's non-key codes give nothing.
+    assert_eq!(code(0x46, true), Some(vec![UNMAPPED])); // Print Screen
+    assert_eq!(code(0x46, false), Some(vec![UNMAPPED | 0x80]));
+    assert_eq!(code(0x66, true), Some(vec![UNMAPPED])); // Power
     assert_eq!(code(0x00, true), None);
-    assert_eq!(code(0x66, true), None);
+    assert_eq!(code(0x01, true), None); // ErrorRollOver
 }
 
 #[test]

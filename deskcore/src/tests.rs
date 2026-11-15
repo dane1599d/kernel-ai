@@ -335,9 +335,10 @@ fn keys_go_to_the_focused_window_and_shortcuts_go_to_the_desk() {
     key(&mut desk, 0x06, true);
     assert!(!key(&mut desk, usage::LEFT_GUI, false).contains(&Effect::Focus(Focus::Panel)));
     key(&mut desk, usage::LEFT_GUI, true);
+    // A Super tap opens Start, whose box takes the panel's focus.
     assert_eq!(
         key(&mut desk, usage::LEFT_GUI, false),
-        [Effect::Focus(Focus::Panel)]
+        [Effect::Start(true), Effect::Focus(Focus::Panel)]
     );
 }
 

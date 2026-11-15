@@ -30,8 +30,10 @@ mod bar;
 mod keys;
 mod manage;
 mod pane;
+mod start;
 pub use bar::{BarSpot, TrayPart};
 pub use pane::PanePart;
+pub use start::TIP_MS;
 
 pub mod usage {
     pub const TAB: u16 = 0x2B;
@@ -133,8 +135,14 @@ pub enum Effect {
     Locks { caps: bool },
     /// Keyboard focus moved.
     Focus(Focus),
-    /// The taskbar's "more" item: open the Apps sheet.
+    /// The taskbar's "more" item: All apps.
     ShowApps,
+    /// Start opened (true) or closed: `desktop` gives it the keys meanwhile.
+    Start(bool),
+    /// A press inside Start at `at` on the screen: `desktop` decides what.
+    StartClick { at: Point },
+    /// A line for the panel to send as though typed: a pin's `open <name>`.
+    PanelLine(String),
     /// Tell the client its window's content size and state
     /// (`toplevel.configure`).
     Configure {
@@ -175,6 +183,8 @@ pub enum Hit {
     /// The taskbar: item `i` of the items now, or between them.
     Taskbar(Option<usize>),
     Tray(TrayPart),
+    /// Start, while it is open: over everything but the card.
+    Start,
     /// The Kai pane, while it is open.
     Pane(PanePart),
     Desktop,
@@ -222,6 +232,20 @@ pub struct Desk {
     bar_hover: Option<BarSpot>,
     /// Kai said something while the pane was closed: the chip's badge.
     unread: bool,
+    /// Start is open.
+    start_open: bool,
+    /// Where the keys were when Start opened: they go back there when it
+    /// closes without a pick.
+    start_from: Focus,
+    /// Start's spot under the pointer (a cell, recent row, search row or
+    /// All apps row, by geometry): its hover repaints only as it moves.
+    start_spot: [i32; 4],
+    /// The apps installed, by name: the taskbar's pins.
+    installed: Vec<String>,
+    /// When the pointer came to the taskbar spot it rests on, and whether
+    /// that item's tooltip shows.
+    hover_since: u64,
+    tip_shown: bool,
     /// The clock `desktop` last gave ([`Desk::set_now`]).
     now_ms: u64,
     /// When the card up now may first be answered: a quiet
@@ -270,6 +294,12 @@ impl Desk {
             num: true,
             bar_hover: None,
             unread: false,
+            start_open: false,
+            start_from: Focus::Nothing,
+            start_spot: [-1; 4],
+            installed: Vec::new(),
+            hover_since: 0,
+            tip_shown: false,
             now_ms: 0,
             ask_open_ms: u64::MAX,
             ask_drawn: None,
@@ -417,6 +447,10 @@ impl Desk {
             let bar = chrome::title_bar(w.frame);
             self.damage.add(bar);
             self.bar_changed();
+            // A tooltip up shows the title: it repaints with it.
+            if self.tip_shown {
+                self.tip_repaint();
+            }
         }
     }
 
@@ -474,6 +508,9 @@ impl Desk {
     /// then the taskbar and tray, are drawn over every window, so a window
     /// under them never takes their clicks.
     pub fn hit(&self, p: Point) -> Hit {
+        if self.start().is_some_and(|r| r.contains(p)) {
+            return Hit::Start;
+        }
         if let Some(part) = self.pane_hit(p) {
             return Hit::Pane(part);
         }
@@ -621,6 +658,15 @@ impl Desk {
             }
             return;
         }
+        // Start takes every press while it is open: one inside is its own,
+        // one outside closes it and goes nowhere else.
+        if let Some(start) = self.start() {
+            match start.contains(self.pointer) {
+                true => effects.push(Effect::StartClick { at: self.pointer }),
+                false => self.close_start(effects),
+            }
+            return;
+        }
         let hit = self.hit(self.pointer);
         let Hit::Window(id, part) = hit else {
             match hit {
@@ -714,6 +760,11 @@ impl Desk {
         let from = self.focus;
         self.focus = focus;
         self.bar_changed();
+        // Start is the panel's focus' other host: it goes as the focus
+        // leaves, to a card included.
+        if focus != Focus::Panel {
+            self.close_start(effects);
+        }
         effects.push(Effect::Focus(focus));
         self.pane_focus(from, focus, effects);
     }

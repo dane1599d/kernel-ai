@@ -14,6 +14,7 @@
 pub mod pane;
 pub mod points;
 mod rect;
+pub mod start;
 pub mod taskbar;
 
 pub use pane::{PaneParts, pane_width};

@@ -1,6 +1,6 @@
 //! Drawing the desk (ADR 0005 §5, §8): the desk, each window's chrome and
 //! content, the focused window's shadow, the agent's outline, the taskbar and
-//! tray, the Kai pane, the Apps sheet, the ask card and the cursor, in the
+//! tray, the Kai pane, Start, a tooltip, the ask card and the cursor, in the
 //! theme's tokens and type (Ember Workbench's dark one until
 //! [`Painter::set_theme`]). The card is
 //! drawn last but the cursor, so nothing else covers it (ADR 0005 §7).
@@ -65,9 +65,9 @@ pub struct Scene<'a> {
     pub panel: &'a Panel,
     /// The panel's history, drawn in the Kai pane.
     pub chat: &'a crate::chat::Chat,
-    /// The Apps sheet, while it is up: over the windows and the panel, under
-    /// the ask card.
-    pub sheet: Option<&'a crate::catalog::Sheet>,
+    /// Start, while it is open: over the windows, the taskbar and the pane,
+    /// under the card.
+    pub start: Option<&'a crate::start::Start>,
     /// The text of the ask card up now, as the kernel posted it.
     pub ask: Option<&'a Card>,
     /// The clock, for the panel's "thinking 4s".
@@ -186,11 +186,9 @@ impl Painter {
         // §7's paint order).
         self.taskbar(c, clip, scene);
         self.pane(c, clip, scene);
-        if let Some(sheet) = scene.sheet {
-            let (width, height) = (c.width as i32, c.height as i32);
-            let area = crate::paint_catalog::sheet(width, height, sheet.apps().len());
-            self.catalog(c, clip, area, sheet);
-        }
+        // Start, then a tooltip, over both and under the card.
+        self.start(c, clip, scene);
+        self.tooltip(c, clip, scene);
         // The card last: nothing drawn after it but the cursor.
         if let Some(ask) = desk.ask() {
             match scene.ask {

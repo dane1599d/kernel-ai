@@ -262,7 +262,7 @@ pub(super) const CASES: &[TestCase] = &[
             size: Some((1280, 800)),
             cursor: false,
             golden: Some(crate::screen::Golden {
-                sha256: "19af04ec71ae1ca167b874c6e23d934e26092d95ea4c8579bf3f00f4135343a0",
+                sha256: "e2d10823399090a959e01d43604e45e6603c6b55eb5054e67a29095241a917a8",
                 mask: desk_stats,
             }),
         }),

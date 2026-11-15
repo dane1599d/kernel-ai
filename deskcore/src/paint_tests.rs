@@ -2,7 +2,7 @@
 //! `DESK_PREVIEW=dir` each scene is also written there as a PPM to look at.
 
 use crate::desk::Desk;
-use crate::geom::{Point, Rect, Size};
+use crate::geom::{Rect, Size};
 use crate::paint::{Bar, Painter, Scene};
 use crate::panel::Panel;
 use alloc::string::String;
@@ -45,7 +45,7 @@ fn paint_in(
         bar: &BAR,
         panel,
         chat: &crate::chat::Chat::default(),
-        sheet: None,
+        start: None,
         ask: None,
         now_ms: 4_200,
     };
@@ -89,12 +89,18 @@ fn two_windows_paint() {
 /// 1280x800 with the cursor in the middle, as `desktop` first draws it on GOP,
 /// its RGB bytes hashed with the tray blanked. The boot's screendump
 /// must hash the same.
-const DESK_BOOT: &str = "19af04ec71ae1ca167b874c6e23d934e26092d95ea4c8579bf3f00f4135343a0";
+const DESK_BOOT: &str = "e2d10823399090a959e01d43604e45e6603c6b55eb5054e67a29095241a917a8";
 
 #[test]
 fn the_boot_desk_matches_desk_boot_s_golden() {
     let (w, h) = (1280, 800);
-    let desk = Desk::new(w, h);
+    let mut desk = Desk::new(w, h);
+    // As `desktop` boots: the image's own apps pinned on the taskbar.
+    let image_apps = crate::taskbar::IMAGE_APPS
+        .iter()
+        .map(|a| (*a).into())
+        .collect();
+    desk.set_installed(image_apps);
     let mut painter = Painter::new(FONTS).expect("the fonts parse");
     let mut image = Image::new(w, h);
     let mut canvas = image.canvas();
@@ -105,7 +111,7 @@ fn the_boot_desk_matches_desk_boot_s_golden() {
         bar: &BAR,
         panel: &panel,
         chat: &crate::chat::Chat::default(),
-        sheet: None,
+        start: None,
         ask: None,
         now_ms: 0,
     };
@@ -152,7 +158,7 @@ fn an_ask_card_paints_above_a_window() {
         bar: &BAR,
         panel: &panel,
         chat: &crate::chat::Chat::default(),
-        sheet: None,
+        start: None,
         ask: Some(&card),
         now_ms: 3_000,
     };
@@ -286,76 +292,6 @@ fn the_input_view_keeps_the_cursor_in_its_columns() {
     // A cursor past the end is the end; an input too narrow skips nothing.
     assert_eq!(view(30, 99, 20), 12);
     assert_eq!(view(30, 30, 1), 0);
-}
-
-/// Kai Desk PR 3: the Apps sheet is the scene's, drawn under the ask card,
-/// so a card over an open sheet shows exactly as it does alone.
-#[test]
-fn a_card_paints_over_an_open_sheet() {
-    use crate::catalog::{Sheet, Source};
-    let (w, h) = (1280, 800);
-    let mut desk = Desk::new(w, h);
-    let card = crate::askcard::Card {
-        id: 41,
-        call: "process_stop(\"build-3\")".into(),
-        reason: "build-3 has used a whole CPU for ten minutes.".into(),
-        shown_ms: 0,
-    };
-    let lines = Painter::new(FONTS)
-        .expect("the fonts parse")
-        .card_lines(w, &card);
-    desk.show_ask(card.id, lines);
-    let rows = (0..8)
-        .map(|i| {
-            crate::catalog::tests::app(
-                Source::Image,
-                &std::format!("app{i}"),
-                None,
-                "Run as Kai asks: press y twice.",
-            )
-        })
-        .collect();
-    let sheet = Sheet::new(rows);
-    let panel = Panel::new();
-    let draw = |sheet: Option<&Sheet>| {
-        let mut painter = Painter::new(FONTS).expect("the fonts parse");
-        let mut image = Image::new(w, h);
-        let scene = Scene {
-            desk: &desk,
-            bar: &BAR,
-            panel: &panel,
-            chat: &crate::chat::Chat::default(),
-            sheet,
-            ask: Some(&card),
-            now_ms: 3_000,
-        };
-        painter.paint(
-            &mut image.canvas(),
-            Rect::new(0, 0, w, h),
-            &scene,
-            &mut |_, _, _| false,
-        );
-        image
-    };
-    let (with, alone) = (draw(Some(&sheet)), draw(None));
-    let area = crate::paint_catalog::sheet(w, h, sheet.apps().len());
-    let on_card = crate::trusted::card(w, h, &desk.ask().unwrap());
-    let both = area
-        .intersect(&on_card)
-        .expect("the sheet is under the card");
-    assert!(both.w * both.h > 1000, "{both:?}");
-    for y in on_card.y..on_card.y + on_card.h {
-        for x in on_card.x..on_card.x + on_card.w {
-            let i = (y * w + x) as usize;
-            assert_eq!(with.px[i], alone.px[i], "({x}, {y})");
-        }
-    }
-    // The sheet is drawn where the card is not.
-    let outside = (area.y..area.y + area.h)
-        .flat_map(|y| (area.x..area.x + area.w).map(move |x| (x, y)))
-        .filter(|&(x, y)| !on_card.contains(Point { x, y }))
-        .any(|(x, y)| with.px[(y * w + x) as usize] != alone.px[(y * w + x) as usize]);
-    assert!(outside, "the sheet was not drawn");
 }
 
 /// Kai Desk PR 3: a window with no pixels yet shows the theme's window

@@ -1,23 +1,25 @@
-//! The Apps sheet's host half (P4 task 3): `apps` sent in the panel opens it,
-//! with what `pkg` lists in `kai-catalog 1`, asked for page by page through the
-//! `uses=pkg` route and read with `kaipkg::catalog::parse`, which is strict:
-//! an answer it does not take shows no row of it. The sheet takes the panel's
-//! keys while it is up. Enter sends the shell the line a user would type,
-//! `install <name>` or `open <name>`, by the row's own name, so it runs with
-//! the same consent as a typed one; the shell opens `open <name>` itself,
-//! with no model; Esc, or the focus leaving the panel,
-//! closes it. Rows are data: nothing a summary says is sent anywhere.
+//! Start's host half (Kai Desk PR 8; the Apps sheet's before it, P4 task
+//! 3): Start opens with what `pkg` lists in `kai-catalog 1`, asked for page
+//! by page through the `uses=pkg` route and read with
+//! `kaipkg::catalog::parse`, which is strict: an answer it does not take
+//! shows no row of it. With no rows, the image's own apps. Start takes the
+//! panel's keys while it is open. An app sends the shell the line a person
+//! would type, `install <name>` or `open <name>`, by the row's own name, so
+//! it runs with the same consent as a typed one; the shell opens `open
+//! <name>` itself, with no model. Ask Kai sends the typed text, and only
+//! that: rows are data, never queued to the model. Esc, a press outside it,
+//! a card or the focus leaving it closes Start.
 //!
-//! `desktop` calls `pkg`, never the other way, and only when the sheet opens.
+//! `desktop` calls `pkg`, never the other way, and only when Start opens.
 
-use super::State;
+use super::{State, deliver};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use deskcore::catalog::{App, Pick, Sheet, Source};
-use deskcore::geom::Rect;
-use deskcore::paint_catalog;
+use deskcore::catalog::{App, Source};
+use deskcore::geom::Point;
+use deskcore::start::{Pick, Start};
 use kaipkg::catalog::{self, Place, Row};
 use user::{println, sys};
 
@@ -27,11 +29,6 @@ const CATALOG_MS: u64 = 2_000;
 /// The route to `pkg`, the first in `uses=pkg`; none without one.
 fn pkg() -> Option<kabi::handle::Handle> {
     user::route(0)
-}
-
-/// The sheet's rectangle now, for its damage.
-fn area(state: &State, sheet: &Sheet) -> Rect {
-    paint_catalog::sheet(state.width, state.height, sheet.apps().len())
 }
 
 /// The image's own apps, every image's: what `ui_open` names each by, and
@@ -62,10 +59,19 @@ fn built_in((name, summary): (&str, &str)) -> App {
     }
 }
 
-/// Opens the sheet with `pkg`'s rows; with none (it does not answer, or
-/// lists nothing), the image's own apps.
+/// The image's own apps, by name: the taskbar's pins before `pkg` answers.
+pub(super) fn built_in_names() -> Vec<String> {
+    deskcore::taskbar::IMAGE_APPS
+        .iter()
+        .map(|name| String::from(*name))
+        .collect()
+}
+
+/// Start opened: its rows from `pkg`, or with none (it does not answer, or
+/// lists nothing) the image's own apps. The taskbar's pins follow what is
+/// installed.
 pub(super) fn open(state: &mut State) {
-    if state.sheet.is_some() {
+    if state.start.is_some() {
         return;
     }
     let mut apps: Vec<App> = match rows() {
@@ -96,47 +102,112 @@ pub(super) fn open(state: &mut State) {
             app.name, app.summary
         );
     }
-    let sheet = Sheet::new(apps);
-    state.extra.push(area(state, &sheet));
-    state.sheet = Some(sheet);
+    let on_machine: Vec<String> = apps
+        .iter()
+        .filter(|a| matches!(a.source, Source::Installed | Source::BuiltIn))
+        .map(|a| a.name.clone())
+        .collect();
+    state.desk.set_installed(on_machine);
+    let mut start = Start::new(apps, false);
+    start.set_caps(state.desk.caps());
+    state.start = Some(start);
+    damage(state);
 }
 
-/// Closes the sheet, if it is up.
+/// Start closed.
 pub(super) fn close(state: &mut State) {
-    if let Some(sheet) = state.sheet.take() {
-        state.extra.push(area(state, &sheet));
+    if state.start.take().is_some() {
+        damage(state);
     }
 }
 
-/// A key for the panel while the sheet is up: the sheet's. False when the
-/// sheet is not up, and the panel has it.
+/// All apps: the `apps` line, "All apps ›" or the taskbar's "more". Start
+/// opens for it if it is not open.
+pub(super) fn show_all(state: &mut State) {
+    if state.desk.start().is_none() {
+        let mut effects = Vec::new();
+        state.desk.open_start(&mut effects);
+        deliver(state, &effects);
+    }
+    if let Some(start) = state.start.as_mut() {
+        start.show_all();
+        println!("desktop: Start shows all apps");
+        damage(state);
+    }
+}
+
+/// Start's rectangle, damaged: it changed.
+fn damage(state: &mut State) {
+    let area = state.desk.start_area();
+    state.extra.push(area);
+}
+
+/// A key for the panel while Start is open: Start's. False when it is not
+/// open, and the panel has it.
 pub(super) fn key(state: &mut State, usage: u16, down: bool, now_ms: u64) -> bool {
-    let Some(sheet) = state.sheet.as_mut() else {
+    let Some(start) = state.start.as_mut() else {
         return false;
     };
-    if !down {
-        return true;
-    }
-    let (changed, pick) = sheet.key(usage);
+    let (changed, pick) = start.key(usage, down);
     if changed {
-        let rect = paint_catalog::sheet(state.width, state.height, sheet.apps().len());
-        state.extra.push(rect);
+        damage(state);
     }
-    let line = match pick {
-        None => return true,
-        Some(Pick::Close) => None,
-        // The shell opens `open <name>` itself, with no model.
-        Some(Pick::Open(name)) => Some(format!("open {name}")),
-        Some(Pick::Install(name)) => Some(format!("install {name}")),
-    };
-    close(state);
-    if let Some(line) = line {
-        println!("desktop: the Apps sheet sent {line:?}");
-        state.panel.send(line, now_ms);
-        state.extra.push(state.desk.pane_area());
-        super::wake_shell();
+    if let Some(pick) = pick {
+        carry_out(state, pick, now_ms, true);
     }
     true
+}
+
+/// A press inside Start at `at`.
+pub(super) fn click(state: &mut State, at: Point, now_ms: u64) {
+    let Some(start) = state.start.as_mut() else {
+        return;
+    };
+    let area = state.desk.start_area();
+    let (changed, pick) = deskcore::paint_start::click(start, area, at, &state.chat);
+    if changed {
+        damage(state);
+    }
+    if let Some(pick) = pick {
+        carry_out(state, pick, now_ms, false);
+    }
+}
+
+/// What Start picked: an app's line to the shell, the typed text to Kai
+/// (and the pane opens with it), or Start closes. `by_key`: an Enter picked
+/// it, which the pane's input then lets go of before it takes another.
+fn carry_out(state: &mut State, pick: Pick, now_ms: u64, by_key: bool) {
+    let mut effects = Vec::new();
+    let line = match pick {
+        Pick::Close => None,
+        Pick::Open(name) => Some((format!("open {name}"), false)),
+        Pick::Install(name) => Some((format!("install {name}"), false)),
+        Pick::Ask(text) => Some((text, true)),
+    };
+    let asked = matches!(line, Some((_, true)));
+    match line {
+        Some((text, true)) => {
+            let len = text.chars().count();
+            state.panel.send(text, now_ms);
+            println!("desktop: the panel queued a request ({len} characters)");
+            state.desk.focus_pane(&mut effects);
+            super::wake_shell();
+        }
+        Some((line, false)) => {
+            println!("desktop: the Apps sheet sent {line:?}");
+            state.panel.send(line, now_ms);
+            state.desk.close_start(&mut effects);
+            super::wake_shell();
+        }
+        None => state.desk.close_start(&mut effects),
+    }
+    state.extra.push(state.desk.pane_area());
+    deliver(state, &effects);
+    // After the focus effects (Start's close passes the focus through the
+    // window before the pane): the pane's input lets the held Enter go.
+    if by_key && asked {
+        state.panel.hold_enter();
+    }
 }
 
 /// Every page of `pkg`'s catalogue, from offset 0 until a page holds no row.

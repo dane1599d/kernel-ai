@@ -34,7 +34,7 @@ fn paint(desk: &Desk, panel: &Panel, chat: &Chat, card: Option<&Card>) -> Image 
         bar: &BAR,
         panel,
         chat,
-        sheet: None,
+        start: None,
         ask: card,
         now_ms: 3_000,
     };
@@ -494,25 +494,34 @@ fn a_pane_click_wins_over_a_window_under_it() {
 
 /// Ctrl+Space opens the pane and focuses its input; a Super tap does too.
 #[test]
-fn ctrl_space_and_super_open_the_pane() {
+fn ctrl_space_opens_the_pane_and_super_opens_start() {
     use crate::desk::usage;
-    for keys in [
-        &[
-            (usage::LEFT_CTRL, true),
-            (usage::SPACE, true),
-            (usage::SPACE, false),
-            (usage::LEFT_CTRL, false),
-        ][..],
-        &[(usage::LEFT_GUI, true), (usage::LEFT_GUI, false)][..],
-    ] {
-        let mut desk = Desk::new(1280, 800);
-        assert!(desk.pane().is_none(), "closed at boot");
+    let press = |desk: &mut Desk, keys: &[(u16, bool)]| {
         for &(usage, down) in keys {
             desk.input(Input::Key { usage, down });
         }
-        assert_eq!(desk.focus(), Focus::Panel);
-        assert!(desk.pane().is_some());
-    }
+    };
+    let ctrl_space = [
+        (usage::LEFT_CTRL, true),
+        (usage::SPACE, true),
+        (usage::SPACE, false),
+        (usage::LEFT_CTRL, false),
+    ];
+    let mut desk = Desk::new(1280, 800);
+    assert!(desk.pane().is_none(), "closed at boot");
+    press(&mut desk, &ctrl_space);
+    assert_eq!(desk.focus(), Focus::Panel);
+    assert!(desk.pane().is_some() && desk.start().is_none());
+    let mut desk = Desk::new(1280, 800);
+    press(
+        &mut desk,
+        &[(usage::LEFT_GUI, true), (usage::LEFT_GUI, false)],
+    );
+    assert_eq!(desk.focus(), Focus::Panel, "Start's box has the keys");
+    assert!(desk.start().is_some() && desk.pane().is_none());
+    // Ctrl+Space from Start: Start goes, the pane comes.
+    press(&mut desk, &ctrl_space);
+    assert!(desk.start().is_none() && desk.pane().is_some());
 }
 
 /// Esc with nothing of the panel's running gives the focus back to the
