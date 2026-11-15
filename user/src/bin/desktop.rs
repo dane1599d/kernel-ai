@@ -408,9 +408,10 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
             if event.value != 0 {
                 perf::key(state, event.time_ns);
             }
-            // A Super tap the kernel saw ended its lease: the next step asks
-            // again only for a terminal that has the focus.
-            if event.value == kabi::input::TAP {
+            // A Super tap or a chord the kernel saw ended its lease: the next
+            // step asks again only for a terminal that has the focus.
+            let (ctrl, alt) = state.desk.ctrl_alt();
+            if deskcore::lease::ends_lease(event.code, event.value, ctrl, alt) {
                 state.lease.forget();
             }
             let lent = state.lease.lent();

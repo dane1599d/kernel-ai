@@ -172,7 +172,9 @@ impl Set1 {
                 return None;
             }
             0xE1 => {
+                // Pause: a key pressed, though it decodes to none.
                 self.skip = 5;
+                self.super_alone = false;
                 return None;
             }
             _ => {}
@@ -180,10 +182,19 @@ impl Set1 {
         let extended = core::mem::take(&mut self.extended);
         let (make, down) = (byte & 0x7F, byte & 0x80 == 0);
         let usage = match extended {
-            false => u16::from(*SET1.get(usize::from(make))?),
-            true => u16::from(SET1_E0.iter().find(|(m, _)| *m == make)?.1),
-        };
+            false => SET1.get(usize::from(make)).map(|u| u16::from(*u)),
+            true => SET1_E0
+                .iter()
+                .find(|(m, _)| *m == make)
+                .map(|(_, u)| u16::from(*u)),
+        }
+        .unwrap_or(0);
         if usage == 0 {
+            // A key with no usage here (PrintScreen, media keys, a fake
+            // shift, `UNMAPPED`): pressed with Super, Super was not tapped.
+            if down {
+                self.super_alone = false;
+            }
             return None;
         }
         let bit = |held: &mut u8, n: u8| match down {
@@ -233,8 +244,9 @@ impl Set1 {
         if !leased {
             return KeyRoute::Desk;
         }
+        // Chords on the press only: a release rolled over a modifier is not.
         let chord = match usage {
-            usage::TAB => self.alt != 0,
+            usage::TAB => down && self.alt != 0,
             usage::ESCAPE => down && self.ctrl != 0,
             _ => false,
         };
@@ -260,6 +272,11 @@ impl Set1 {
 
 /// [`Kind::Key`]'s value for a Super tap the kernel saw under a lease.
 pub const TAP: i32 = 3;
+
+/// The set 1 make code a USB keyboard's key with no set 1 code is sent as
+/// (its break with bit 7): it decodes to no usage, so it reaches no one, but
+/// it is a key pressed, so Super held with it is not a tap.
+pub const UNMAPPED: u8 = 0x54;
 
 /// Where a key goes ([`Set1::route`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -397,9 +414,37 @@ mod tests {
                 &[
                     (alt, true, Both),
                     (tab, true, Chord),
-                    (tab, false, Chord),
+                    (tab, false, Console),
                     (alt, false, Both),
                 ],
+            ),
+            // Tab down, then Alt, then Tab up: no chord on a release.
+            (
+                "Tab, Alt rollover",
+                &[0x0F, 0x38, 0x8F, 0xB8],
+                &[
+                    (tab, true, Console),
+                    (alt, true, Both),
+                    (tab, false, Console),
+                    (alt, false, Both),
+                ],
+            ),
+            // Super with a key that decodes to none (PrintScreen's E0 37,
+            // Pause, a USB key mapped to `UNMAPPED`): no tap.
+            (
+                "Super+PrintScreen",
+                &[0xE0, 0x5B, 0xE0, 0x37, 0xE0, 0xB7, 0xE0, 0xDB],
+                &[(gui, true, Console), (gui, false, Console)],
+            ),
+            (
+                "Super+Pause",
+                &[0xE0, 0x5B, 0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5, 0xE0, 0xDB],
+                &[(gui, true, Console), (gui, false, Console)],
+            ),
+            (
+                "Super+unmapped USB key",
+                &[0xE0, 0x5B, UNMAPPED, UNMAPPED | 0x80, 0xE0, 0xDB],
+                &[(gui, true, Console), (gui, false, Console)],
             ),
             (
                 "Ctrl+Alt+F12",

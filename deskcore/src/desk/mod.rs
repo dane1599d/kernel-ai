@@ -357,6 +357,11 @@ impl Desk {
         self.hovered
     }
 
+    /// Whether Ctrl and Alt are held, as the desk has seen them.
+    pub fn ctrl_alt(&self) -> (bool, bool) {
+        (self.ctrl, self.alt)
+    }
+
     pub fn pointer(&self) -> Point {
         self.pointer
     }

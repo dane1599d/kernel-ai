@@ -109,6 +109,22 @@ pub fn desk_keys(usage: u16, value: i32, lent: bool) -> alloc::vec::Vec<(u16, bo
     }
 }
 
+/// Whether the kernel ended the lease for kernel key event `usage`,
+/// `value`, with Ctrl and Alt as the desk holds them: a Super tap, or the
+/// press of Alt+Tab or Ctrl+Esc (`kabi::input::Set1::route`'s chords).
+/// `desktop` forgets the lease then, so it asks again only for a terminal
+/// that has the focus.
+pub fn ends_lease(usage: u16, value: i32, ctrl: bool, alt: bool) -> bool {
+    const TAB: u16 = 0x2B;
+    const ESCAPE: u16 = 0x29;
+    match (usage, value) {
+        (_, kabi::input::TAP) => true,
+        (TAB, 1) => alt,
+        (ESCAPE, 1) => ctrl,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod key_tests {
     use super::*;
@@ -141,6 +157,19 @@ mod key_tests {
         let (desk, effects) = feed(&[(LEFT_GUI, 1), (LEFT_GUI, 0)], true);
         assert!(desk.start().is_none(), "{effects:?}");
         assert!(matches!(desk.focus(), Focus::Window(_)));
+    }
+
+    /// The lease is over after a tap and a chord's press, never a release
+    /// or a key alone.
+    #[test]
+    fn the_lease_ends_on_a_tap_or_a_chords_press() {
+        assert!(ends_lease(LEFT_GUI, kabi::input::TAP, false, false));
+        assert!(ends_lease(0x2B, 1, false, true), "Alt+Tab");
+        assert!(ends_lease(0x29, 1, true, false), "Ctrl+Esc");
+        assert!(!ends_lease(0x2B, 0, false, true), "a release");
+        assert!(!ends_lease(0x2B, 1, false, false), "Tab alone");
+        assert!(!ends_lease(0x29, 1, false, true), "Alt+Esc");
+        assert!(!ends_lease(LEFT_GUI, 0, false, false), "a bare release");
     }
 
     /// The kernel's tap opens Start; without a lease a plain tap does too.

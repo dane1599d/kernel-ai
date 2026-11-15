@@ -130,7 +130,10 @@ impl Panel {
     pub fn set_focus(&mut self, focused: bool) -> bool {
         self.shift = 0;
         self.ctrl = 0;
-        self.enter_held = false;
+        // The focus coming back (Ask Kai's own move to the pane) keeps it.
+        if !focused {
+            self.enter_held = false;
+        }
         let changed = self.focused != focused;
         self.focused = focused;
         changed
@@ -463,9 +466,27 @@ mod tests {
         tap(&mut panel, &[0x28]);
         assert_eq!(panel.take(), Some(Request::Line("h".into())));
         panel.hold_enter();
+        panel.set_focus(false);
         panel.set_focus(true);
         tap(&mut panel, &[0x0B, 0x28]);
         assert_eq!(panel.take(), Some(Request::Line("h".into())));
+    }
+
+    /// Start's Ask Kai in `desktop`'s order: the hold, then the focus moving
+    /// to the pane (its effect delivered after), then the held Enter's
+    /// repeats and release: none sends the kept draft.
+    #[test]
+    fn a_held_enter_survives_the_move_to_the_pane() {
+        let mut panel = Panel::new();
+        tap(&mut panel, &[0x0B]);
+        panel.hold_enter();
+        panel.set_focus(true);
+        for _ in 0..3 {
+            panel.key(0x28, true, 0);
+        }
+        panel.key(0x28, false, 0);
+        assert_eq!(panel.take(), None, "the draft went to Kai");
+        assert_eq!(panel.text(), "h");
     }
 
     #[test]

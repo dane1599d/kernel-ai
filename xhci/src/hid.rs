@@ -111,6 +111,11 @@ const MODIFIERS: [u16; 8] = [
 
 /// The set 1 bytes for a usage going down or up; None for keys set 1 has no
 /// plain code for.
+/// The set 1 make code a key with no set 1 code is sent as
+/// (`kabi::input::UNMAPPED`): it decodes to no usage, so it reaches no one,
+/// but it is a key pressed, so a Super held with it is no tap.
+pub const UNMAPPED: u8 = 0x54;
+
 pub fn set1(usage: u8, pressed: bool) -> Option<Scancode> {
     let code = match usage {
         0x04..=0x65 => SET1[usize::from(usage - 0x04)],
@@ -118,7 +123,16 @@ pub fn set1(usage: u8, pressed: bool) -> Option<Scancode> {
         _ => 0,
     };
     if code == 0 {
-        return None;
+        // A key with no set 1 code: sent as one that decodes to none, so it
+        // still counts as a key pressed (a Super held with it is no tap).
+        if !(0x04..=0xE7).contains(&usage) {
+            return None;
+        }
+        let byte = UNMAPPED | if pressed { 0 } else { 0x80 };
+        return Some(Scancode {
+            bytes: [byte, 0],
+            len: 1,
+        });
     }
     let byte = code as u8 | if pressed { 0 } else { 0x80 };
     Some(match code & E0 != 0 {
