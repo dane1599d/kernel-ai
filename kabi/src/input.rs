@@ -213,12 +213,16 @@ impl Set1 {
             _ => {}
         }
         let gui = matches!(usage, usage::LEFT_GUI | usage::RIGHT_GUI);
-        // A Super's first make; its typematic repeats are makes too.
-        let first = gui && down && self.gui == 0;
-        match usage {
-            usage::LEFT_GUI => bit(&mut self.gui, 1),
-            usage::RIGHT_GUI => bit(&mut self.gui, 2),
-            _ => {}
+        // A Super's first make, per key: its typematic repeats are makes too,
+        // and a lost break of the other Super must not stop this one's taps.
+        let n = match usage {
+            usage::LEFT_GUI => 1,
+            usage::RIGHT_GUI => 2,
+            _ => 0,
+        };
+        let first = down && n != 0 && self.gui & n == 0;
+        if n != 0 {
+            bit(&mut self.gui, n);
         }
         self.super_tap = gui && !down && self.super_alone;
         self.super_alone = match (gui, down) {
@@ -542,6 +546,19 @@ mod tests {
         // Released, the next press is a first make again: a tap.
         let taps = routes(&[0xE0, 0x5B, 0xE0, 0x5B, 0xE0, 0xDB], false);
         assert_eq!(taps.last().unwrap().2, KeyRoute::Tap, "repeats alone");
+    }
+
+    /// A Super whose break was lost (a USB unplug, a full ring) does not
+    /// stop the other Super's taps: Right Super and a letter with no break
+    /// for Right Super, then Left Super tapped.
+    #[test]
+    fn a_lost_break_of_one_super_leaves_the_others_taps() {
+        let routes = routes(&[0xE0, 0x5C, 0x1E, 0x9E, 0xE0, 0x5B, 0xE0, 0xDB], false);
+        assert_eq!(
+            routes.last(),
+            Some(&(usage::LEFT_GUI, false, KeyRoute::Tap)),
+            "{routes:?}"
+        );
     }
 
     /// Without a lease a lone Super tap is still [`KeyRoute::Tap`], and
