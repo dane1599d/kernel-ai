@@ -642,3 +642,46 @@ fn a_held_enter_from_start_never_sends_the_panes_draft() {
     assert_eq!(panel.take(), None, "the pane's draft went to Kai");
     assert_eq!(panel.text(), "hi");
 }
+
+/// Security invariant 1 with a taskbar hover (ADR 0005 §7): in the frame a
+/// card comes with the pointer on a taskbar item, the hover is still drawn
+/// and the card paints the same as alone, at every size; the next frame's
+/// settling drops the hover, as nothing hovers under a card.
+#[test]
+fn a_card_paints_the_same_with_a_taskbar_hover() {
+    let card = Card {
+        id: 42,
+        call: "process_stop(\"build-3\")".into(),
+        reason: "build-3 has used a whole CPU for ten minutes.".into(),
+        shown_ms: 0,
+    };
+    for (w, h) in SIZES {
+        let lines = Painter::new(FONTS).unwrap().card_lines(w, &card);
+        let mut plain = Desk::new(w, h);
+        plain.open(1, "notes", "Notes", Size { w: 300, h: 200 }, false);
+        plain.show_ask(card.id, lines);
+        let _ = plain.take_damage();
+        let alone = paint(&plain, None, Some(&card));
+        let mut desk = Desk::new(w, h);
+        desk.open(1, "notes", "Notes", Size { w: 300, h: 200 }, false);
+        let n = desk.taskbar_items().len();
+        let item = desk.item_rect(1, n);
+        desk.input(Input::Motion(Point {
+            x: item.x + item.w / 2,
+            y: item.y + item.h / 2,
+        }));
+        let _ = desk.take_damage();
+        desk.show_ask(card.id, lines);
+        assert!(desk.bar_hovered().is_some(), "{w}x{h}: no hover");
+        let hovered = paint(&desk, None, Some(&card));
+        let area = trusted::card(w, h, &desk.ask().expect("up"));
+        assert_eq!(pixels(&alone, area), pixels(&hovered, area), "{w}x{h}");
+        assert_ne!(
+            pixels(&alone, item),
+            pixels(&hovered, item),
+            "{w}x{h}: the hover not drawn"
+        );
+        let _ = desk.take_damage();
+        assert_eq!(desk.bar_hovered(), None, "{w}x{h}: a hover under a card");
+    }
+}

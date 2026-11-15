@@ -35,6 +35,33 @@ const LEFT_TITLE: (i32, i32) = DESK.window_title(0, 102);
 /// opened at the first cascade spot.
 const LEFT_CLOSE: (i32, i32) = (DESK.close(0, 302).0 + 200, DESK.close(0, 302).1);
 
+/// A left click at `at` on a screen whose points are `desk`: the pointer
+/// pinned to the bottom-right corner, wherever it was, then moved there.
+pub(crate) fn click_at(desk: &deskgeom::Points, at: (i32, i32)) {
+    let (dx, dy) = desk.pin();
+    report(dx, dy, 0);
+    let from = desk.pinned();
+    report(at.0 - from.0, at.1 - from.1, 0);
+    report(0, 0, 1);
+    report(0, 0, 0);
+}
+
+/// The Kai pane closed for real, at every size: Ctrl+Space opens it, or
+/// keeps it open with the keys in its input, then a click on its close item
+/// closes it. (Esc there only leaves the pane at 1280 and up.) `settle_ms`
+/// after each step.
+pub(crate) fn close_pane(settle_ms: u64) -> Result<(), &'static str> {
+    const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
+    let surface = crate::display::surface().ok_or("close_pane: no display")?;
+    let px = |n: usize| i32::try_from(n).map_err(|_| "close_pane: the screen is too big");
+    let desk = deskgeom::points(px(surface.width)?, px(surface.height)?);
+    crate::claim_tests::type_keys(&CTRL_SPACE);
+    threads::sleep_ms(settle_ms);
+    click_at(&desk, desk.pane_close());
+    threads::sleep_ms(settle_ms);
+    Ok(())
+}
+
 /// A USB-style relative report with `buttons` held.
 pub(crate) fn report(dx: i32, dy: i32, buttons: u8) {
     report_wheel(dx, dy, buttons, 0);

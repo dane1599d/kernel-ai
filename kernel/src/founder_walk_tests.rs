@@ -19,7 +19,7 @@
 //!    notes` brings it back.
 
 use crate::claim_tests::{type_keys, type_text};
-use crate::desk_tests::{self, report};
+use crate::desk_tests;
 use crate::display::claim;
 use crate::{ask_box, display, ipc, log, process, terminal, threads};
 use alloc::format;
@@ -53,8 +53,6 @@ const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
 /// its card was answered is taken back before the next line.
 const CLEAR: [u8; 6] = [0x0E, 0x8E, 0x0E, 0x8E, 0x0E, 0x8E];
 const ENTER: [u8; 2] = [0x1C, 0x9C];
-/// Esc down and up.
-const ESC: [u8; 2] = [0x01, 0x81];
 /// `y` down and up: on the card, once arms Run and once more answers it.
 const YES: [u8; 2] = [0x15, 0x95];
 
@@ -190,16 +188,6 @@ fn panel_line(text: &str) {
     type_keys(&CLEAR);
     type_text(text);
     type_keys(&ENTER);
-}
-
-/// The Kai pane closed, wherever the keys were: Ctrl+Space puts them in its
-/// input (opening it if it was closed), and Esc there, with nothing running,
-/// closes it. At 1024x768 the pane floats over the windows' right side.
-fn close_pane() {
-    type_keys(&CTRL_SPACE);
-    threads::sleep_ms(SETTLE_MS);
-    type_keys(&ESC);
-    threads::sleep_ms(SETTLE_MS);
 }
 
 /// `text` typed into the focused window, and Enter.
@@ -418,12 +406,7 @@ fn points_of(surface: &display::Surface) -> Result<deskgeom::Points, &'static st
 /// A click at `at`: the pointer pinned to deskgeom's corner, wherever it was,
 /// and moved from there.
 fn click(desk: &deskgeom::Points, at: (i32, i32)) {
-    let (dx, dy) = desk.pin();
-    report(dx, dy, 0);
-    let from = desk.pinned();
-    report(at.0 - from.0, at.1 - from.1, 0);
-    report(0, 0, 1);
-    report(0, 0, 0);
+    desk_tests::click_at(desk, at);
 }
 
 /// Whether the second `open notes` brought Notes' window back: comphost
@@ -446,8 +429,10 @@ fn notes_open_close_open() -> Result<(), &'static str> {
     let desk = desk()?;
     panel_line("open notes");
     threads::sleep_ms(OPEN_MS);
-    // The pane `open notes` was sent from may cover Notes' close control.
-    close_pane();
+    // The pane `open notes` was sent from may cover Notes' close control
+    // (at 1024x768 it floats over the windows' right side): closed by its
+    // close item, which works at every size.
+    desk_tests::close_pane(SETTLE_MS)?;
     click(&desk, desk.close(NOTES_SPOT, crate::ui_tests::APP_FRAME_W));
     threads::sleep_ms(SETTLE_MS);
     log!("{CASE}: Notes' window was closed from its control");

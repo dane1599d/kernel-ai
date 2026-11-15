@@ -146,10 +146,11 @@ pub fn check() -> Result<(), &'static str> {
     threads::sleep_ms(SETTLE_MS);
     type_text("apps\n");
     shot("04-all-apps");
-    // Esc closes Start, and Esc in the pane's idle input closes the pane.
+    // Esc closes Start, and the pane's close item closes the pane (Esc in
+    // its input only leaves it at 1280 and up).
     type_keys(&ESC);
     threads::sleep_ms(SETTLE_MS);
-    type_keys(&ESC);
+    crate::desk_tests::close_pane(SETTLE_MS)?;
 
     open("files", "open the files app");
     shot("05-files");
@@ -167,6 +168,8 @@ pub fn check() -> Result<(), &'static str> {
     type_text("add a note saying buy milk\n");
     threads::sleep_ms(SETTLE_MS);
     shot("07-notes");
+    // The pane closed again, so the app shots show the windows alone.
+    crate::desk_tests::close_pane(SETTLE_MS)?;
 
     open("settings", "open settings");
     line("show the appearance settings");

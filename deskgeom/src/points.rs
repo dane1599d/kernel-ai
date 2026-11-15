@@ -46,6 +46,13 @@ impl Points {
         middle(self.layout.pane_parts().input)
     }
 
+    /// The pane's close item, once the pane is open: a click there closes
+    /// it at every size (Esc in its input only leaves it at 1280 and up,
+    /// where it sits beside the windows).
+    pub const fn pane_close(&self) -> (i32, i32) {
+        middle(self.layout.pane_parts().close)
+    }
+
     /// The middle of the Kai button, the taskbar's first item, with `n`
     /// items on the taskbar (the Kai button and one a running app).
     pub const fn kai_button(&self, n: i32) -> (i32, i32) {
