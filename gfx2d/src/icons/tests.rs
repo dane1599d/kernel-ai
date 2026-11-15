@@ -177,3 +177,49 @@ fn the_contact_sheet_draws_in_each_theme() {
         std::fs::write(path, out).unwrap();
     }
 }
+
+#[test]
+fn the_cache_is_capped_and_drops_its_oldest_mask() {
+    let mut icons = Icons::default();
+    for px in 1..=(MAX_MASKS as i32 + 5) {
+        icons.get(Icon::Check, px.min(MAX_PX));
+    }
+    assert!(icons.len() <= MAX_MASKS, "{}", icons.len());
+    // A size past the bound is the bound's mask, not a new key.
+    let before = icons.len();
+    icons.get(Icon::Check, MAX_PX);
+    icons.get(Icon::Check, 10_000);
+    assert_eq!(icons.len(), before);
+}
+
+#[test]
+fn render_holds_its_size_to_the_bound() {
+    assert_eq!(render(Icon::Kai, 100_000).size, MAX_PX);
+    assert_eq!(render(Icon::Kai, -3).size, 1);
+    let m = render(Icon::Kai, i32::MAX);
+    assert_eq!(m.coverage.len(), (MAX_PX * MAX_PX) as usize);
+}
+
+#[test]
+fn a_mask_without_its_coverage_draws_nothing() {
+    let mut img = Image::new(8, 8);
+    let mut c = img.canvas();
+    let bounds = c.bounds();
+    for bad in [
+        Mask {
+            size: 4,
+            coverage: alloc::vec::Vec::new(),
+        },
+        Mask {
+            size: 4,
+            coverage: alloc::vec![255; 3],
+        },
+        Mask {
+            size: -2,
+            coverage: alloc::vec![255; 4],
+        },
+    ] {
+        bad.draw(&mut c, 0, 0, 0x00FF_FFFF, bounds);
+    }
+    assert!(img.px.iter().all(|&p| p == 0), "nothing drawn");
+}
