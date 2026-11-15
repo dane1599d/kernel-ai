@@ -8,6 +8,10 @@
 
 use crate::{FRAME, Layout, Point, Rect, Size, TITLE_BAR, UiState, content_of, controls};
 
+/// A relative pointer move far enough to pin the pointer to the screen's
+/// bottom-right corner from anywhere.
+const FAR: i32 = 10_000;
+
 /// How far down a title-bar point sits from the frame's top: inside the bar,
 /// and above the next cascade spot's frame, so the next window never covers it.
 const TITLE_DOWN: i32 = 8;
@@ -34,6 +38,18 @@ impl Points {
     /// the focus in it.
     pub const fn focus_kai(&self) -> (i32, i32) {
         middle(self.layout.pane_parts().input)
+    }
+
+    /// The relative move that pins the pointer to the screen's bottom-right
+    /// corner, wherever it was: for a selftest that does not know where the
+    /// pointer is. [`Points::pinned`] is where it lands.
+    pub const fn pin(&self) -> (i32, i32) {
+        (FAR, FAR)
+    }
+
+    /// Where [`Points::pin`] leaves the pointer: the screen's last pixel.
+    pub const fn pinned(&self) -> (i32, i32) {
+        (self.layout.width - 1, self.layout.height - 1)
     }
 
     /// The frame of the window at cascade spot `n`, `frame` in size.

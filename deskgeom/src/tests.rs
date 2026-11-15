@@ -177,3 +177,14 @@ fn maximized_windows_fit_beside_an_open_pane() {
         }
     }
 }
+
+/// A pin from anywhere lands on the screen's last pixel, at every size.
+#[test]
+fn a_pin_lands_on_the_screens_last_pixel() {
+    for (w, h) in SIZES {
+        let p = points(w, h);
+        let (dx, dy) = p.pin();
+        assert!(dx >= w && dy >= h, "{w}x{h}: the move is not far enough");
+        assert_eq!(p.pinned(), (w - 1, h - 1));
+    }
+}
