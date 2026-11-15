@@ -334,29 +334,113 @@ fn the_card_paints_the_same_with_the_pane_open() {
     }
 }
 
-/// Security invariant 1: a long call shows whole at 1024x768: the card is
-/// as tall as its lines want, above the taskbar's strip. 1,900 ASCII
-/// characters is 18 lines at 1024 wide, the most (H-72) x 2/3 = 464 px holds;
-/// the ask box's own bound (2,048 bytes) is 19 and does not fit (reported in
-/// the PR).
+/// Security invariant 1: a call that fills the whole 2,048-byte ask box
+/// shows whole at 1024x768: the card is as tall as its lines want, every
+/// line is drawn (the last one has ink), and the buttons are on the screen.
 #[test]
-fn a_long_call_is_fully_visible_at_1024x768() {
+fn a_call_filling_the_ask_box_is_fully_visible_at_1024x768() {
     let (w, h) = (1024, 768);
+    // The id line, the call and its newline: the box's 2,048 bytes, with
+    // no reason.
     let card = Card {
         id: 9,
-        call: "x".repeat(1_900),
+        call: "x".repeat(2_048 - 3),
         reason: String::new(),
         shown_ms: 0,
     };
-    let lines = Painter::new(FONTS).unwrap().card_lines(w, &card);
+    let painter = Painter::new(FONTS).unwrap();
+    let lines = painter.card_lines(w, &card);
+    assert!(trusted::fits(w, h, lines), "{lines} lines");
     let mut desk = Desk::new(w, h);
     desk.show_ask(card.id, lines);
     let ask = desk.ask().expect("up");
     let area = trusted::card(w, h, &ask);
-    let wanted = trusted::PADDING * 3 + lines * trusted::LINE + trusted::BUTTON_H;
-    assert_eq!(area.h, wanted, "the card is cut: {lines} lines");
+    assert_eq!(
+        area.h,
+        trusted::wanted(lines),
+        "the card is cut: {lines} lines"
+    );
     assert_eq!(area.bottom(), h - 60);
-    assert!(area.y >= 0);
+    let screen = Rect::new(0, 0, w, h);
+    let (yes, no) = trusted::buttons(area);
+    for r in [area, yes, no] {
+        assert_eq!(r.intersect(&screen), Some(r), "{r:?} off the screen");
+    }
+    // The last call line, below the title: drawn, not cut.
+    let image = paint(&desk, &Panel::new(), &Chat::default(), Some(&card));
+    let last = Rect::new(
+        area.x + trusted::PADDING,
+        area.y + trusted::PADDING + (lines - 1) * trusted::LINE,
+        200,
+        trusted::LINE,
+    );
+    let raised = painter.palette.raised;
+    let ink = pixels(&image, last)
+        .iter()
+        .filter(|&&p| p != raised)
+        .count();
+    assert!(ink > 50, "the last line is not drawn ({ink})");
+}
+
+/// A call too long to show whole even at the work height does not fit, so
+/// `desktop` refuses its ask rather than draw part of it.
+#[test]
+fn a_call_too_long_for_the_work_height_does_not_fit() {
+    for (w, h) in SIZES {
+        let max = desk_layout(w, h).card_max_h;
+        let most = (max - trusted::wanted(1)) / trusted::LINE + 1;
+        assert!(trusted::fits(w, h, most), "{w}x{h}");
+        assert!(!trusted::fits(w, h, most + 1), "{w}x{h}");
+    }
+}
+
+fn desk_layout(w: i32, h: i32) -> deskgeom::Layout {
+    Desk::new(w, h).layout()
+}
+
+/// While a card is up, a click on the empty desk is the card's: the focus
+/// stays on it, and no window or panel is told anything.
+#[test]
+fn a_desk_click_under_a_card_is_ignored() {
+    let mut desk = open(1280, 800);
+    desk.show_ask(5, 2);
+    assert_eq!(desk.focus(), Focus::Ask(5));
+    let (x, y) = deskgeom::points(1280, 800).desk_point();
+    let effects = click(&mut desk, Point { x, y });
+    assert_eq!(desk.focus(), Focus::Ask(5));
+    assert!(
+        !effects.iter().any(|e| matches!(
+            e,
+            Effect::Focus(_) | Effect::PanelKey { .. } | Effect::PanelClick { .. }
+        )),
+        "{effects:?}"
+    );
+}
+
+/// A click on the empty desk never interrupts the panel's running line: it
+/// moves the focus only, and sends the panel no key (Esc is what stops).
+#[test]
+fn a_desk_click_never_interrupts_a_running_line() {
+    let mut desk = open(1280, 800);
+    let (x, y) = deskgeom::points(1280, 800).desk_point();
+    let effects = click(&mut desk, Point { x, y });
+    assert_eq!(desk.focus(), Focus::Nothing);
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::PanelKey { .. } | Effect::PanelClick { .. }))
+    );
+    // The panel's request runs on: losing the focus stops nothing.
+    let mut panel = Panel::new();
+    panel.set_focus(true);
+    for code in [0x0B, 0x28] {
+        panel.key(code, true, 0);
+        panel.key(code, false, 0);
+    }
+    assert!(matches!(panel.state(), State::Thinking { .. }));
+    panel.set_focus(false);
+    assert!(matches!(panel.state(), State::Thinking { .. }));
+    assert!(!panel.take_interrupt());
 }
 
 /// Security invariant 2: the pane is hit before a window under it. A click

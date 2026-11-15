@@ -28,14 +28,14 @@ fn visible(h: i32) -> usize {
 }
 
 /// The sheet's rectangle on a `width` x `height` screen for `apps` apps:
-/// centred, its bottom 12 above the taskbar (H-60), at most (H-72) x 2/3
-/// tall, as the card.
+/// centred, its bottom 12 above the taskbar (H-60), at most two thirds of
+/// the work height (H-72) tall.
 pub fn sheet(width: i32, height: i32, apps: usize) -> Rect {
     let l = deskgeom::Layout::for_screen(width, height, deskgeom::UiState::default());
     let w = (width - 2 * PADDING).min(SHEET_MAX);
     let rows = i32::try_from(apps.max(1)).unwrap_or(i32::MAX);
     let wanted = HEAD + rows.saturating_mul(ROW) + PADDING;
-    let h = wanted.min(l.card_max_h);
+    let h = wanted.min(l.card_max_h * 2 / 3);
     Rect::new((width - w) / 2, l.card_bottom - h, w, h)
 }
 

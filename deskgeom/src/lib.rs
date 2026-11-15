@@ -74,8 +74,9 @@ pub struct Layout {
     pub pane_open: bool,
     /// The ask card's and the Apps sheet's bottom edge, 12 above the taskbar.
     pub card_bottom: i32,
-    /// The tallest the card or the sheet grows: two thirds of the height
-    /// above `card_bottom`, less the top margin.
+    /// The tallest the card grows: the whole work height, from 12 below the
+    /// screen's top to `card_bottom` (H-72). A call that does not fit is
+    /// never cut: the card refuses it (`deskcore::trusted::fits`).
     pub card_max_h: i32,
     /// The top bar's part whose text changes while the desk is still, which a
     /// screendump golden masks.
@@ -99,7 +100,7 @@ impl Layout {
             pane,
             pane_open: ui.pane_open,
             card_bottom: height - TASKBAR - FLYOUT_MARGIN,
-            card_max_h: (height - TASKBAR - 2 * FLYOUT_MARGIN) * 2 / 3,
+            card_max_h: height - TASKBAR - 2 * FLYOUT_MARGIN,
             stats: Rect::new(width - STATS_W, 0, STATS_W, TOP_BAR - 1),
         }
     }

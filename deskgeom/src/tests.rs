@@ -149,10 +149,10 @@ fn the_pane_is_where_the_adr_puts_it() {
     }
 }
 
-/// The card's and sheet's anchor: bottom at H-60, at most (H-72) x 2/3.
+/// The card's anchor: bottom at H-60, as tall as the work height, H-72.
 #[test]
 fn the_card_sits_above_the_taskbar() {
-    for ((w, h), max_h) in [((1920, 1080), 672), ((1280, 800), 485), ((1024, 768), 464)] {
+    for ((w, h), max_h) in [((1920, 1080), 1008), ((1280, 800), 728), ((1024, 768), 696)] {
         let l = layout(w, h);
         assert_eq!(l.card_bottom, h - 60);
         assert_eq!(l.card_max_h, max_h);

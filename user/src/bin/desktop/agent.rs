@@ -80,3 +80,26 @@ pub fn took_over(state: &mut State, window: WindowId) {
         state.extra.push(state.desk.pane_area());
     }
 }
+
+/// What the card refuses when a call is too long to show whole: the card
+/// never draws a cut call, so no one approves what they could not read.
+const TOO_LONG: &str = "Refused: too long to show on the card";
+
+/// Answers `card`'s ask no without showing it, and says why in the panel's
+/// status row, code's words.
+pub(super) fn refuse_too_long(state: &mut State, card: &deskcore::askcard::Card) {
+    let id = card.id;
+    state.too_long = Some(id);
+    let digest = termcore::once::digest_call(id, &card.call);
+    match user::sys::ask_answer(id, false, &digest) {
+        Ok(_) => println!("desktop: ask {id} is too long to show on the card; refused"),
+        Err(error) => println!("desktop: the kernel refused ask {id}'s answer ({error:?})"),
+    }
+    let reason = String::from(TOO_LONG);
+    if state
+        .panel
+        .set_state(deskcore::panel::State::Refused { reason })
+    {
+        state.extra.push(state.desk.pane_area());
+    }
+}

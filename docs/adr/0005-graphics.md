@@ -182,7 +182,7 @@ Crate `surfabi`: no_std, host-tested, fuzzed. It keeps Wayland's object model, s
 - Paint order: desk, windows, the agent's outline, the taskbar and tray, the pane, the menu (Start), a tooltip, the card, the cursor.
 - Hit order: the card, the menu, the pane, the taskbar and tray, windows, the desk. The card takes all input while it is up.
 - The menu is painted below the card and also closes on `Focus::Ask`.
-- The card keeps its maximum width of 960. Its height may grow to 2/3 of the work height, (H-72) x 2/3.
+- The card keeps its maximum width of 960. Its height grows up to the work height, H-72, and never cuts a call: a call too long to show whole even then is refused with a code-only "too long to show on the card" result, never drawn in part.
 - The Kai button carries an `ask` ring while a card is up. `ask` is used nowhere else.
 - The state line is code-only in both the pane's status row and the tray chip.
 - The AI's words appear only in the pane's history rectangle, in the AI look.
@@ -338,7 +338,7 @@ Parts, relative to the pane, with w and h its width and height:
 - **Input** (12, h-56, w-24, 44), radius 6, `window` with a 1 px `line_strong` frame: `kai>` in bold `ai` mono, then the line (400 bytes at most) with #856's `<` scroll. The placeholder is "Ask Kai, or type Rhai", or "Kai is getting ready" while the model warms. Focused, it has a 2 px `ai` top rule and the ember block caret. A 32x32 send item at its right end becomes a Stop square while Kai is thinking; a click on it acts exactly like Esc.
 - The pane floats over windows. Under 1280 wide it is a flyout and closes when focus leaves it. It is not docked: docking needs a work-area protocol, open question 9.
 
-**The ask card** keeps §7's rules and its width: min(W-32, 960), centred, its bottom at H-60. Its height fits its content up to (H-72) x 2/3, rounded down, which fixes today's cut-off: 672 at 1080 tall, 485 at 800 and 464 at 768, against 366 at 768 today. At 1920 it is x 480, at 1280 x 160 and at 1024 x 32, all 960 wide. It is `raised`, radius 8, with a 1 px `line_strong` frame, the 3 px `ask` bar, "Kai asks to run", the 2:00 countdown, mono call lines and a sans reason. Its buttons are 120x32 at radius 4: Don't (n), then Run (y), or "y again" after the first press. The highlight starts on Don't.
+**The ask card** keeps §7's rules and its width: min(W-32, 960), centred, its bottom at H-60. Its height fits its content up to the work height, H-72, which fixes today's cut-off: 1008 at 1080 tall, 728 at 800 and 696 at 768, against 366 at 768 today, so a call filling the whole 2,048-byte ask box shows whole at 1024x768 (480). A call that would not fit even then is refused with a code-only "too long to show on the card" result; the card never shows a cut call. At 1920 it is x 480, at 1280 x 160 and at 1024 x 32, all 960 wide. It is `raised`, radius 8, with a 1 px `line_strong` frame, the 3 px `ask` bar, "Kai asks to run", the 2:00 countdown, mono call lines and a sans reason. Its buttons are 120x32 at radius 4: Don't (n), then Run (y), or "y again" after the first press. The highlight starts on Don't.
 
 **The Kai glyphs** are ours, drawn in code, and replace Lucide.
 - Each icon is path geometry on a 24-unit grid with a 2-unit safe margin, stroked 1.5 units with round caps and joins and never under 1 px. A monochrome coverage mask is cached for each icon at 16, 20, 24 and 32 px (about 60 KB in all) and tinted with a token.

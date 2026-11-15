@@ -158,6 +158,8 @@ struct State {
     ticked_ms: u64,
     /// The ask card up now, as the kernel posted it.
     card: Option<Card>,
+    /// The last ask refused as too long to show whole: never asked again.
+    too_long: Option<u64>,
     /// When the ask box was last read.
     asked_ms: u64,
     /// Frames as last logged, to report moves and closes once.
@@ -224,6 +226,7 @@ fn main() -> i32 {
             agent: deskcore::agent::Agent::default(),
             ticked_ms: 0,
             card: None,
+            too_long: None,
             asked_ms: 0,
             known: Vec::new(),
             focus: Focus::Nothing,
@@ -525,6 +528,7 @@ fn read_asks(state: &mut State) {
     };
     match (posted, state.card.as_ref()) {
         (Some((id, _, _)), Some(card)) if card.id == id => {}
+        (Some((id, _, _)), _) if state.too_long == Some(id) => {}
         (Some((id, call, question)), _) => {
             let card = Card {
                 id,
@@ -533,6 +537,10 @@ fn read_asks(state: &mut State) {
                 shown_ms: now,
             };
             let lines = state.painter.card_lines(state.width, &card);
+            if !deskcore::trusted::fits(state.width, state.height, lines) {
+                agent::refuse_too_long(state, &card);
+                return;
+            }
             if let Some(old) = state.card.take() {
                 let effects = state.desk.hide_ask(old.id);
                 deliver(state, &effects);
