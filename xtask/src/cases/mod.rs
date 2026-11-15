@@ -22,6 +22,7 @@ pub mod release;
 mod storage;
 mod tour;
 mod updates;
+mod walk;
 mod warming;
 
 use crate::buildsvc::BuildService;
@@ -280,6 +281,7 @@ const LANES: &[&[TestCase]] = &[
     napbusy::CASES,
     modeldl::CASES,
     modelsuse::CASES,
+    walk::CASES,
     warming::CASES,
 ];
 
@@ -327,6 +329,7 @@ mod tests {
             napbusy::CASES,
             modeldl::CASES,
             modelsuse::CASES,
+            walk::CASES,
             warming::CASES,
         ];
         assert_eq!(

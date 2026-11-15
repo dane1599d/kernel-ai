@@ -104,6 +104,10 @@ fn open(route: kabi::handle::Handle, app: &str, arg: Option<&str>) -> Result<Str
             return Err(format!("stopped while {app} was opening"));
         }
         if let Some(id) = mine(&windows(route)?) {
+            // In desktop's own list after a show: desk-reopen reads this line.
+            if asked_to_show {
+                user::println!("ui_open: {app} is on the desk as {id} after a show");
+            }
             return Ok(format!("opened {id}"));
         }
         // Running with its window closed: asked once, it shows it again

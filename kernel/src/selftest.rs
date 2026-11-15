@@ -269,6 +269,9 @@ pub enum SelfTest {
     AppSettings,
     /// `test=desk-tour`: screenshots of the desktop and its apps, not a gate.
     DeskTour,
+    /// `test=founder-walk` (founder test 2): the founder's VirtualBox walk on
+    /// the default system, as keys and clicks.
+    FounderWalk,
     /// `desk-takeover` (P3 task 10): a key in the agent's window stops it.
     DeskTakeover,
     /// `desk-reopen` (#922): Notes closed from its control opens again.
@@ -515,6 +518,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-warming" => Some(SelfTest::DeskWarming),
             "test=app-settings" => Some(SelfTest::AppSettings),
             "test=desk-tour" => Some(SelfTest::DeskTour),
+            "test=founder-walk" => Some(SelfTest::FounderWalk),
             "test=desk-takeover" => Some(SelfTest::DeskTakeover),
             "test=desk-reopen" => Some(SelfTest::DeskReopen),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
@@ -720,6 +724,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::NetGrant
             | SelfTest::WaitReads
             | SelfTest::DeskTour
+            | SelfTest::FounderWalk
             | SelfTest::DeskTakeover
             | SelfTest::DeskReopen
             | SelfTest::TuneRevert
@@ -737,7 +742,8 @@ pub fn plan(test: SelfTest) -> Option<String> {
     // edit loop), the boot manifest's headless `notes`, which `:edit notes` and
     // the editor build, and the edit service follow; without one no user sees
     // `notes`, and it would cost 32 MiB of the admission budget at boot. The
-    // screenshot tour boots it too, so its pictures are the real boot's.
+    // screenshot tour boots it too, so its pictures are the real boot's, and
+    // the founder's walk, with `desktop` logging its bar (`log_bar=1`).
     if matches!(
         test,
         SelfTest::None
@@ -745,9 +751,13 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskNoMemory
             | SelfTest::DeskWarming
             | SelfTest::DeskTour
+            | SelfTest::FounderWalk
     ) {
         let files = crate::block::has_partition(diskmap::KAI_DATA_TYPE);
         let mut plan = kabi::plan::system::plan(&crate::llm::plan_line(), files);
+        if matches!(test, SelfTest::FounderWalk) {
+            plan = crate::founder_walk_tests::plan(&plan);
+        }
         if let Some(edit) = crate::build_service::plan_line() {
             plan.push('\n');
             plan.push_str(&crate::boot_manifest::plan_line());

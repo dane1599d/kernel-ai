@@ -80,6 +80,7 @@ mod event_box;
 mod fault;
 mod faults;
 mod files_tests;
+mod founder_walk_tests;
 mod fpu;
 mod fpu_tests;
 mod gdt;
@@ -451,6 +452,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskWarming => run_case(default_tests::warming_check),
         SelfTest::AppSettings => run_case(app_settings_tests::check),
         SelfTest::DeskTour => run_case(desk_tour_tests::check),
+        SelfTest::FounderWalk => run_case(founder_walk_tests::check),
         SelfTest::DeskTakeover => run_case(agent_desk_tests::takeover_check),
         SelfTest::DeskReopen => run_case(agent_desk_tests::reopen_check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
