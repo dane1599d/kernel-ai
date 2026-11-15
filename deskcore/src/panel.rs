@@ -70,6 +70,9 @@ pub struct Panel {
     /// Esc with nothing of the panel's running: the focus goes back to the
     /// window it came from ([`Panel::take_leave`]).
     leave: bool,
+    /// The running model's name, as the shell said it (`panel model`),
+    /// cleaned at the boundary.
+    model: Option<String>,
 }
 
 impl Default for Panel {
@@ -93,6 +96,7 @@ impl Panel {
             ready: None,
             interrupt: false,
             leave: false,
+            model: None,
         }
     }
 
@@ -135,6 +139,18 @@ impl Panel {
         self.state = state;
         self.entry = None;
         changed
+    }
+
+    /// The running model's name, as the shell said it; true when it changed.
+    pub fn set_model(&mut self, name: String) -> bool {
+        let changed = self.model.as_deref() != Some(name.as_str());
+        self.model = Some(name);
+        changed
+    }
+
+    /// The running model's name, once the shell said it.
+    pub fn model(&self) -> Option<&str> {
+        self.model.as_deref()
     }
 
     /// The shell's report of whether the model is warm; true when it changed.

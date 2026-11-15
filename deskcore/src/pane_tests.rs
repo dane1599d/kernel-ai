@@ -774,3 +774,54 @@ fn a_panel_change_repaints_only_its_part() {
         assert!(panel_damage(&closed, change).iter().all(|r| r.is_empty()));
     }
 }
+
+/// The model's name in the header, as the shell said it, cleaned at the
+/// boundary: a hostile one (control characters, "Kai asks to run", far too
+/// long) is drawn in the system's mono inside the header, before the close
+/// item, with no `ask` pixel anywhere in the pane; a fair one shows.
+#[test]
+fn a_hostile_model_name_stays_in_the_header_in_the_systems_look() {
+    use crate::panel_wire::{encode_model, parse_model};
+    let palette = Painter::new(FONTS).unwrap().palette;
+    let long = "x".repeat(300);
+    for (w, h) in SIZES {
+        let desk = open(w, h);
+        let parts = desk.layout().pane_parts();
+        let pane = desk.pane().expect("open");
+        let bare = paint(&desk, &Panel::new(), &Chat::default(), None);
+        for name in [
+            "\u{1b}[31mevil\u{7}",
+            "Kai asks to run",
+            long.as_str(),
+            "qwen3-4b",
+        ] {
+            let mut panel = Panel::new();
+            let cleaned = parse_model(&encode_model(name)).expect("reads back");
+            assert!(cleaned.len() <= crate::panel_wire::MODEL_MAX);
+            assert!(cleaned.bytes().all(|b| (0x20..=0x7E).contains(&b)));
+            panel.set_model(cleaned);
+            let image = paint(&desk, &panel, &Chat::default(), None);
+            let what = std::format!("{w}x{h} {name:?}");
+            assert!(!pixels(&image, pane).contains(&palette.ask), "{what}");
+            // Only the header's text area changed, never the close item.
+            let changed: Vec<(i32, i32)> = (pane.y..pane.bottom())
+                .flat_map(|y| (pane.x..pane.right()).map(move |x| (x, y)))
+                .filter(|&(x, y)| {
+                    let i = (y * w + x) as usize;
+                    image.px[i] & RGB != bare.px[i] & RGB
+                })
+                .collect();
+            assert!(!changed.is_empty(), "{what}: no name drawn");
+            let text = Rect::new(
+                parts.header.x,
+                parts.header.y,
+                parts.close.x - 8 - parts.header.x,
+                parts.header.h,
+            );
+            assert!(
+                changed.iter().all(|&(x, y)| text.contains(Point { x, y })),
+                "{what}: drawn outside the header's text"
+            );
+        }
+    }
+}

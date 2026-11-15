@@ -59,6 +59,36 @@ pub fn parse_ready(text: &str) -> Option<bool> {
     }
 }
 
+/// The running model's name, from the shell's record of what it loaded
+/// (`updated`'s list), never from the model's output.
+const MODEL: &str = "panel model ";
+/// The longest model name the pane shows, in bytes.
+pub const MODEL_MAX: usize = 48;
+/// What a name that is not printable ASCII shows as.
+pub const MODEL_FALLBACK: &str = "model";
+
+/// The running model's name as a request, cleaned ([`clean_model`]).
+pub fn encode_model(name: &str) -> String {
+    format!("{MODEL}{}", clean_model(name))
+}
+
+/// A `panel model` request read back and cleaned again at the boundary;
+/// `None` for anything else.
+pub fn parse_model(text: &str) -> Option<String> {
+    text.strip_prefix(MODEL).map(clean_model)
+}
+
+/// A model name as the pane may show it: printable ASCII only, else
+/// [`MODEL_FALLBACK`] whole; cut to [`MODEL_MAX`] bytes.
+pub fn clean_model(name: &str) -> String {
+    let printable = name.bytes().all(|b| (0x20..=0x7E).contains(&b));
+    let name = name.trim();
+    if !printable || name.is_empty() {
+        return String::from(MODEL_FALLBACK);
+    }
+    String::from(&name[..name.len().min(MODEL_MAX)])
+}
+
 /// What a desktop line's card came to (`shellcore::deskask`): a state, but
 /// one that never replaces a newer line's thinking.
 const CARD: &str = "panel card ";
@@ -240,6 +270,33 @@ mod tests {
     }
 
     use super::*;
+
+    /// A model name reaches the pane printable and short: control or
+    /// non-ASCII characters make it "model" whole, a long one is cut, and
+    /// the line reads back as it was sent.
+    #[test]
+    fn a_hostile_model_name_is_cleaned_and_cut() {
+        assert_eq!(
+            parse_model(&encode_model("qwen3-4b-q4")),
+            Some("qwen3-4b-q4".into())
+        );
+        assert_eq!(clean_model("\u{1b}[31mevil"), MODEL_FALLBACK);
+        assert_eq!(clean_model("tab\there"), MODEL_FALLBACK);
+        assert_eq!(clean_model("n\u{430}tes"), MODEL_FALLBACK);
+        assert_eq!(clean_model("line\nbreak"), MODEL_FALLBACK);
+        assert_eq!(clean_model("   "), MODEL_FALLBACK);
+        let long = "x".repeat(100);
+        assert_eq!(clean_model(&long).len(), MODEL_MAX);
+        // Printable words stay words: the pane draws them in the system's
+        // mono, never in the AI's look.
+        assert_eq!(clean_model("Kai asks to run"), "Kai asks to run");
+        // The boundary cleans what it reads, whoever sent it.
+        assert_eq!(
+            parse_model("panel model \u{7}bell"),
+            Some(MODEL_FALLBACK.into())
+        );
+        assert_eq!(parse_model("panel ready yes"), None);
+    }
 
     #[test]
     fn requests_and_states_read_back() {

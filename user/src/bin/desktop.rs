@@ -780,6 +780,16 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         }
         return Some(String::from("ok"));
     }
+    // The running model's name, cleaned as it is read: the pane's header.
+    if let Some(name) = panel_wire::parse_model(text) {
+        if state.panel.set_model(name) {
+            println!("desktop: the shell named the model");
+            state
+                .extra
+                .push(deskcore::paint_pane::header_area(&state.desk));
+        }
+        return Some(String::from("ok"));
+    }
     // A card's result: shown, unless a newer line is thinking, whose own
     // result comes after.
     if let Some(shown) = panel_wire::parse_card(text) {
