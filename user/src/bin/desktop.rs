@@ -444,18 +444,19 @@ fn deliver(state: &mut State, effects: &[Effect]) {
             continue;
         }
         let changed = match *effect {
-            // The send item: Enter, or Stop (as Esc) while Kai thinks.
-            Effect::PanelClick { at } if state.desk.layout().pane_parts().send.contains(at) => {
-                let before = state.panel.waiting();
-                let changed = state.panel.send_item(now);
-                pane::after_panel_key(state, before);
-                changed
-            }
-            // A click on a done line's undo or show sends it, as though typed.
             Effect::PanelClick { at } => {
-                let row = paint_panel::state_area(&state.desk);
-                match state.painter.panel_link(row, &state.panel, at) {
-                    Some(word) => {
+                use paint_panel::PaneClick;
+                match state.painter.pane_click(&state.desk, &state.panel, at) {
+                    // The send item: Enter; it and the status row's Stop
+                    // while Kai thinks: exactly Esc.
+                    Some(PaneClick::Send | PaneClick::Stop) => {
+                        let before = state.panel.waiting();
+                        let changed = state.panel.send_item(now);
+                        pane::after_panel_key(state, before);
+                        changed
+                    }
+                    // A done line's undo or show, sent as though typed.
+                    Some(PaneClick::Link(word)) => {
                         // Undo takes back the line beside it, by its entry,
                         // never the newest of another line's.
                         let line = match (word, state.panel.entry()) {
@@ -475,20 +476,30 @@ fn deliver(state: &mut State, effects: &[Effect]) {
                 false
             }
             Effect::PanelKey { usage, down } if apps::key(state, usage, down, now) => false,
-            // PageUp and PageDown scroll the pane's history by an entry.
+            // PageUp and PageDown scroll the pane's history by a page.
             Effect::PanelKey { usage, down }
                 if usage == pane::PAGE_UP || usage == pane::PAGE_DOWN =>
             {
-                if down && state.chat.scroll(usage == pane::PAGE_UP) {
-                    state.extra.push(paint_chat::chat_area(&state.desk));
+                if down {
+                    pane::page(state, usage == pane::PAGE_UP);
                 }
                 false
             }
+            // A line edit repaints the input alone; a new state the pane.
             Effect::PanelKey { usage, down } => {
                 let before = state.panel.waiting();
+                let shown = state.panel.state().clone();
                 let changed = state.panel.key(usage, down, now);
                 pane::after_panel_key(state, before);
-                changed
+                match *state.panel.state() != shown {
+                    true => true,
+                    false => {
+                        if changed {
+                            state.extra.push(paint_panel::input_area(&state.desk));
+                        }
+                        false
+                    }
+                }
             }
             Effect::Focus(focus) => {
                 if focus != Focus::Panel {
@@ -1262,8 +1273,12 @@ fn refresh_bar(state: &mut State) {
     if bar != state.bar {
         state.bar = bar;
         state.extra.push(paint::stats_area(state.width));
-        // The idle panel shows the model's dot too.
+        // The idle status row shows the model's dot too, and the pane's
+        // header its state.
         state.extra.push(paint_panel::state_area(&state.desk));
+        state
+            .extra
+            .push(deskcore::paint_pane::header_area(&state.desk));
     }
 }
 

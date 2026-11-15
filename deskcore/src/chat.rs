@@ -48,9 +48,9 @@ pub struct Entry {
 pub struct Chat {
     entries: VecDeque<Entry>,
     next: u64,
-    /// How many of the newest entries are scrolled off below the pane's
-    /// history (PageUp, PageDown); 0 shows the newest at the bottom.
-    scrolled: usize,
+    /// How far the history is scrolled up from its newest line, in px
+    /// (PageUp, PageDown); 0 shows the newest at the bottom.
+    scrolled: i32,
 }
 
 impl Chat {
@@ -62,19 +62,17 @@ impl Chat {
         self.entries.is_empty()
     }
 
-    /// How many of the newest entries are scrolled off below.
-    pub fn scrolled(&self) -> usize {
+    /// How far the history is scrolled up from its newest line, in px.
+    pub fn scrolled(&self) -> i32 {
         self.scrolled
     }
 
-    /// PageUp (`up`) or PageDown: one entry older or newer, never past the
-    /// oldest or the newest. True when the view moved.
-    pub fn scroll(&mut self, up: bool) -> bool {
+    /// Scrolls by `delta` px (up is positive), never below the newest line
+    /// or past `max`, where the oldest line is at the top. True when the
+    /// view moved.
+    pub fn scroll_by(&mut self, delta: i32, max: i32) -> bool {
         let before = self.scrolled;
-        self.scrolled = match up {
-            true => (self.scrolled + 1).min(self.entries.len().saturating_sub(1)),
-            false => self.scrolled.saturating_sub(1),
-        };
+        self.scrolled = self.scrolled.saturating_add(delta).clamp(0, max.max(0));
         self.scrolled != before
     }
 
@@ -94,11 +92,8 @@ impl Chat {
             text,
         });
         self.next += 1;
-        // Scrolled up, the view stays on what it showed; at the bottom it
-        // shows the new entry.
-        if self.scrolled > 0 {
-            self.scrolled = (self.scrolled + 1).min(self.entries.len() - 1);
-        }
+        // At the bottom the new entry shows; scrolled up, the view keeps its
+        // distance from the newest line.
         true
     }
 }
@@ -212,27 +207,22 @@ fn fit(text: &str, width: f32, measure: &mut dyn FnMut(&str) -> f32) -> usize {
 mod tests {
     use super::*;
 
-    /// PageUp and PageDown move a whole entry, within the history; a new
-    /// entry snaps the view to it only from the bottom.
+    /// The history scrolls by px within its content: never below the
+    /// newest line, never past the oldest.
     #[test]
-    fn the_history_scrolls_by_entries_and_new_ones_keep_the_view() {
+    fn the_history_scrolls_within_its_content() {
         let mut chat = Chat::default();
-        assert!(!chat.scroll(true), "nothing to scroll");
-        for text in ["a", "b", "c"] {
-            chat.push(Who::You, text);
-        }
-        assert!(chat.scroll(true));
-        assert!(chat.scroll(true));
-        assert!(!chat.scroll(true), "the oldest stays in view");
-        assert_eq!(chat.scrolled(), 2);
-        chat.push(Who::Kai, "d");
-        assert_eq!(chat.scrolled(), 3, "the view stays on what it showed");
-        for _ in 0..3 {
-            chat.scroll(false);
-        }
-        assert!(!chat.scroll(false));
-        chat.push(Who::Kai, "e");
-        assert_eq!(chat.scrolled(), 0, "at the bottom, the new entry shows");
+        chat.push(Who::You, "a");
+        assert!(!chat.scroll_by(-10, 500), "below the newest line");
+        assert!(chat.scroll_by(300, 500));
+        assert_eq!(chat.scrolled(), 300);
+        assert!(chat.scroll_by(300, 500));
+        assert_eq!(chat.scrolled(), 500, "past the oldest");
+        assert!(!chat.scroll_by(1, 500));
+        chat.push(Who::Kai, "b");
+        assert_eq!(chat.scrolled(), 500, "a new entry keeps a scrolled view");
+        assert!(chat.scroll_by(-900, 500));
+        assert_eq!(chat.scrolled(), 0);
     }
 
     /// One unit a character, as a mono face measures.

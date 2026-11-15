@@ -71,6 +71,17 @@ pub fn input_area(desk: &Desk) -> Rect {
     }
 }
 
+/// What a click on the pane's input or status row does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneClick {
+    /// The send item, with Kai idle: Enter.
+    Send,
+    /// The send item or the status row's Stop while Kai thinks: exactly Esc.
+    Stop,
+    /// A done line's `undo` or `show`, sent as though typed.
+    Link(&'static str),
+}
+
 /// Whether the shown state changes with the clock: "thinking 4s" counts.
 pub fn ticks(panel: &Panel) -> bool {
     matches!(panel.state(), State::Thinking { .. })
@@ -224,6 +235,22 @@ impl Painter {
         for (text, color) in &parts {
             x += self.draw_text(c, clip, x, y, style, *color, text);
         }
+    }
+
+    /// What a click at `at` on the open pane does: the send item, the Stop
+    /// item while Kai thinks, or a done line's link where it is drawn.
+    pub fn pane_click(&self, desk: &Desk, panel: &Panel, at: Point) -> Option<PaneClick> {
+        desk.pane()?;
+        let parts = desk.layout().pane_parts();
+        let thinking = matches!(panel.state(), State::Thinking { .. });
+        if parts.send.contains(at) || (thinking && parts.stop.contains(at)) {
+            return Some(match thinking {
+                true => PaneClick::Stop,
+                false => PaneClick::Send,
+            });
+        }
+        self.panel_link(parts.status, panel, at)
+            .map(PaneClick::Link)
     }
 
     /// Which of a done line's links, `undo` or `show`, the point `at` on the

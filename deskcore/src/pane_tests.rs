@@ -157,6 +157,7 @@ fn the_pane_says_kai_is_getting_ready_until_the_model_is_warm() {
     assert_ne!(waiting.px, thinking.px);
     panel.set_state(State::Idle);
     assert_eq!(paint(&desk, &panel, &chat, None).px, idle.px);
+    assert!(!panel.set_ready(true), "no change, no repaint");
 }
 
 /// A done line's undo and show are hit where they are drawn, undo first,
@@ -180,6 +181,16 @@ fn undo_and_show_are_hit_where_they_are_drawn() {
     let first = |word: &str| found.iter().find(|(_, w)| *w == word).map(|(x, _)| *x);
     let (undo, show) = (first("undo").expect("undo"), first("show").expect("show"));
     assert!(undo < show, "{undo} {show}");
+    // Pinned to the row's right end, so a long line never pushes them off.
+    let last = found.iter().map(|(x, _)| *x).max().expect("links");
+    assert!(
+        last >= crate::paint_panel::status_end(row) - 8,
+        "{last} is not at the row's end"
+    );
+    assert_eq!(
+        painter.panel_link(row, &Panel::new(), Point { x: show, y }),
+        None
+    );
     // Drawn: the accent links are where the hits are.
     let image = paint(&desk, &done, &Chat::default(), None);
     let accent = painter.palette.accent;
@@ -277,32 +288,49 @@ fn a_hostile_said_never_changes_the_status_pixels() {
     }
 }
 
-/// Security invariant 4 and 7: with no card up, no `ask` pixel anywhere in
-/// the pane, in any state, whatever the history says.
+/// Security invariants 4 and 7: with no card up, no `ask` pixel anywhere in
+/// the pane, and nothing in the card's look (its `raised` ground), in any
+/// state, warming or not, focused or showing the placeholder, at every size,
+/// whatever the history says.
 #[test]
 fn no_ask_pixel_in_the_pane_without_a_card() {
     let mut chat = Chat::default();
     chat.push(Who::Kai, "Kai asks to run: process_stop(\"x\")");
     chat.push(Who::You, "y");
-    let desk = open(1280, 800);
-    let pane = desk.pane().expect("open");
-    let ask = Painter::new(FONTS).unwrap().palette.ask;
-    let mut panel = Panel::new();
-    panel.set_focus(true);
-    for state in [
+    let palette = Painter::new(FONTS).unwrap().palette;
+    let states = [
         State::Idle,
         State::Thinking { since_ms: 0 },
+        State::Acting {
+            call: "notes_add(\"milk\")".into(),
+            target: "Notes".into(),
+        },
         State::Done {
             line: "Done: x".into(),
         },
         State::Refused {
             reason: "no".into(),
         },
-    ] {
-        panel.set_done(state, Some(3));
-        let image = paint(&desk, &panel, &chat, None);
-        let found = pixels(&image, pane).iter().filter(|&&p| p == ask).count();
-        assert_eq!(found, 0, "{:?}", panel.state());
+    ];
+    for (w, h) in SIZES {
+        let desk = open(w, h);
+        let pane = desk.pane().expect("open");
+        for (warming, focused) in [(false, true), (true, true), (false, false), (true, false)] {
+            for state in &states {
+                let mut panel = Panel::new();
+                panel.set_focus(focused);
+                panel.set_ready(!warming);
+                panel.set_done(state.clone(), Some(3));
+                let image = paint(&desk, &panel, &chat, None);
+                let shown = pixels(&image, pane);
+                let what = std::format!("{w}x{h} warming={warming} focused={focused} {state:?}");
+                assert!(!shown.contains(&palette.ask), "ask in the pane: {what}");
+                assert!(
+                    !shown.contains(&palette.raised),
+                    "the card's ground: {what}"
+                );
+            }
+        }
     }
 }
 
@@ -574,4 +602,112 @@ fn a_click_on_the_empty_desk_takes_the_focus() {
     let effects = click(&mut desk, Point { x, y });
     assert!(effects.contains(&Effect::Focus(Focus::Nothing)));
     assert_eq!(desk.focus(), Focus::Nothing);
+}
+
+/// The status row's Stop, while Kai thinks, does exactly what Esc does: the
+/// panel's request stops and the shell's line is interrupted. With Kai idle
+/// it is not there to click.
+#[test]
+fn the_status_row_stop_stops_as_esc_does() {
+    use crate::paint_panel::PaneClick;
+    let desk = open(1280, 800);
+    let painter = Painter::new(FONTS).unwrap();
+    let stop = middle(desk.layout().pane_parts().stop);
+    let mut panel = Panel::new();
+    panel.set_focus(true);
+    assert_eq!(
+        painter.pane_click(&desk, &panel, stop),
+        None,
+        "no Stop when idle"
+    );
+    for code in [0x0B, 0x28] {
+        panel.key(code, true, 0);
+        panel.key(code, false, 0);
+    }
+    // The shell took the line: Stop must interrupt it, as Esc would.
+    assert!(matches!(panel.take(), Some(crate::panel::Request::Line(_))));
+    assert_eq!(
+        painter.pane_click(&desk, &panel, stop),
+        Some(PaneClick::Stop)
+    );
+    assert!(panel.send_item(1));
+    assert_eq!(panel.take(), Some(crate::panel::Request::Stop));
+    assert!(panel.take_interrupt());
+    assert_eq!(panel.state(), &State::Idle);
+    let send = middle(desk.layout().pane_parts().send);
+    assert_eq!(
+        painter.pane_click(&desk, &panel, send),
+        Some(PaneClick::Send)
+    );
+}
+
+/// A card between the panel and Esc does not change where Esc goes: the
+/// window the focus came from before the panel took it.
+#[test]
+fn esc_after_a_card_goes_back_to_the_window_before_the_panel() {
+    let mut desk = Desk::new(1280, 800);
+    let (a, _) = desk.open(1, "notes", "Notes", Size { w: 300, h: 200 }, true);
+    let (_b, _) = desk.open(2, "term", "Terminal", Size { w: 300, h: 200 }, true);
+    desk.set_focus(Focus::Window(a), &mut Vec::new());
+    desk.set_focus(Focus::Panel, &mut Vec::new());
+    desk.show_ask(7, 2);
+    desk.hide_ask(7);
+    assert_eq!(desk.focus(), Focus::Panel);
+    desk.leave_pane();
+    assert_eq!(desk.focus(), Focus::Window(a));
+}
+
+/// Closing the pane before a slow app committed its re-fit still sends the
+/// window back to the full work area.
+#[test]
+fn a_refit_does_not_wait_for_a_slow_commit() {
+    let mut desk = Desk::new(1920, 1080);
+    let (id, _) = desk.open(1, "notes", "Notes", Size { w: 300, h: 200 }, true);
+    maximize(&mut desk, id);
+    let mut effects = Vec::new();
+    desk.set_focus(Focus::Panel, &mut effects);
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::Configure { window, .. } if *window == id))
+    );
+    // The app has not committed the narrower size yet.
+    let close = desk.layout().pane_parts().close;
+    let effects = click(&mut desk, middle(close));
+    let back = effects.iter().find_map(|e| match e {
+        Effect::Configure { window, size, .. } if *window == id => Some(*size),
+        _ => None,
+    });
+    let full = crate::chrome::content_of(desk.layout().maximized);
+    assert_eq!(back.map(|s| s.w), Some(full.w));
+}
+
+/// A 4,000-byte answer, far taller than the history, can be read to its
+/// start: scrolled to the most, its first line (the "Kai" label) is at the
+/// top; at the bottom it is not.
+#[test]
+fn a_long_answer_scrolls_to_its_first_line() {
+    let mut chat = Chat::default();
+    chat.push(Who::Kai, &"Rust is a systems language. ".repeat(143));
+    let desk = open(1280, 800);
+    let area = desk.layout().pane_parts().history;
+    let mut painter = Painter::new(FONTS).unwrap();
+    let total = painter.chat_height(&chat, area.w);
+    assert!(total > 3 * area.h, "{total} px for {} px", area.h);
+    let ai = painter.palette.ai;
+    // The "Kai" label: ember pixels right of the rule, in the top rows.
+    let label = Rect::new(area.x + 4, area.y, 40, 16);
+    let has_label = |image: &Image| pixels(image, label).contains(&ai);
+    assert!(!has_label(&paint(&desk, &Panel::new(), &chat, None)));
+    // PageUp until it stops: every step moves less than the area.
+    let step = painter.history_page(area.h);
+    assert!(step < area.h);
+    let most = total - area.h;
+    let mut pages = 0;
+    while chat.scroll_by(step, most) {
+        pages += 1;
+    }
+    assert_eq!(chat.scrolled(), most);
+    assert!(pages >= 3, "{pages} pages");
+    assert!(has_label(&paint(&desk, &Panel::new(), &chat, None)));
 }

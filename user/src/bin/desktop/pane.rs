@@ -35,3 +35,18 @@ pub fn after_panel_key(state: &mut State, before: usize) {
         super::deliver(state, &effects);
     }
 }
+
+/// PageUp (`up`) or PageDown: the history scrolls by its height less a line,
+/// within its content, and repaints if it moved.
+pub fn page(state: &mut State, up: bool) {
+    let area = deskcore::paint_chat::chat_area(&state.desk);
+    if area.is_empty() {
+        return;
+    }
+    let most = (state.painter.chat_height(&state.chat, area.w) - area.h).max(0);
+    let step = state.painter.history_page(area.h);
+    let delta = if up { step } else { -step };
+    if state.chat.scroll_by(delta, most) {
+        state.extra.push(area);
+    }
+}

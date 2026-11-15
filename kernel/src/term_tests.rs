@@ -90,12 +90,16 @@ pub fn check() -> Result<(), &'static str> {
     if input::leased() {
         return Err("desk-term: the keys stayed with the terminal after the focus moved");
     }
+    // The lease is over, so Ctrl+Space reaches desktop: the pane's input
+    // takes the last line, which the panel queues for the shell.
+    crate::ui_tests::focus_kai();
+    threads::sleep_ms(1_000);
     let (keys, asked) = (input::keys(), terminal::replies_shown());
     log!("desk-term: ready for keys");
     threads::sleep_ms(KEYS_MS);
     if input::keys() == keys || terminal::replies_shown() != asked {
         return Err("desk-term: keys typed with the focus elsewhere reached the terminal");
     }
-    log!("desk-term: with the focus elsewhere the keys went to desktop, and nothing asked");
+    log!("desk-term: with the focus in the pane the keys went to desktop, and nothing asked");
     Ok(())
 }

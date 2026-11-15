@@ -20,6 +20,15 @@ const INPUT_RADIUS: i32 = 6;
 /// An item's glyph.
 const GLYPH: i32 = 16;
 
+/// The pane's header on the screen while it is open: the model's state there
+/// changes with the bar. Empty while closed.
+pub fn header_area(desk: &crate::desk::Desk) -> Rect {
+    match desk.pane() {
+        Some(_) => desk.layout().pane_parts().header,
+        None => Rect::default(),
+    }
+}
+
 impl Painter {
     /// The pane, if it is open, inside `clip`.
     pub(crate) fn pane(&mut self, c: &mut gfx2d::Canvas<'_>, clip: Rect, scene: &Scene<'_>) {

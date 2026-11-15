@@ -65,9 +65,12 @@ impl Desk {
             return;
         }
         let pane = self.layout().pane;
+        let before = self.layout().maximized;
         self.damage.add(pane.grow(crate::paint::SHADOW_REACH));
         self.pane_open = open;
-        self.refit(effects);
+        if self.layout().maximized != before {
+            self.refit(effects);
+        }
     }
 
     /// The pane's close item: the pane goes, and its input's focus with it.
@@ -101,7 +104,11 @@ impl Desk {
     /// opens for its input, and a flyout closes when the focus leaves it.
     pub(super) fn pane_focus(&mut self, from: Focus, to: Focus, effects: &mut Vec<Effect>) {
         if to == Focus::Panel {
-            self.before_panel = from;
+            // Back from a card, the focus came from the panel itself: Esc
+            // still goes where it was before the panel took it.
+            if !matches!(from, Focus::Ask(_)) {
+                self.before_panel = from;
+            }
             self.show_pane(true, effects);
         }
         if from == Focus::Panel && to != Focus::Panel && self.width < PANE_BESIDE {
@@ -114,17 +121,15 @@ impl Desk {
         }
     }
 
-    /// Maximized windows fill the layout's maximize area now: beside the
+    /// The maximize area moved: maximized windows fill it now, beside the
     /// pane while it is open at 1280 wide and up, else the work area. Each
-    /// is moved now and told its new size, as a maximize does.
+    /// is moved now and told its new size, as a maximize does, whatever it
+    /// last committed: a slow app's commit is not waited for.
     pub(super) fn refit(&mut self, effects: &mut Vec<Effect>) {
         let area = self.layout().maximized;
         let focus = self.focus;
         for w in self.windows.iter_mut().filter(|w| w.maximized()) {
             let content = crate::chrome::content_of(area);
-            if w.frame.x == area.x && w.frame.y == area.y && w.content().w == content.w {
-                continue;
-            }
             let old = w.frame;
             w.frame = Rect::new(area.x, area.y, old.w, old.h);
             self.damage.add(old.grow(crate::paint::SHADOW_REACH));

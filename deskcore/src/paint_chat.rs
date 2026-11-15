@@ -61,13 +61,16 @@ impl Painter {
         }
         let clip = area;
         let label_h = self.text.measure(TypeStyle::Small, "Kai").1 as i32;
-        let mut bottom = area.bottom();
-        let skip = scene.chat.scrolled();
-        for entry in scene.chat.entries().rev().skip(skip) {
+        // Scrolled up by px, never past the oldest line at the top.
+        let most = (self.chat_height(scene.chat, area.w) - area.h).max(0);
+        let mut bottom = area.bottom() + scene.chat.scrolled().clamp(0, most);
+        for entry in scene.chat.entries().rev() {
             let laid = self.laid(entry, area.w);
             let line_h = self.text.measure(laid.style, "x").1 as i32;
             let top = bottom - laid.height(label_h, line_h);
-            self.entry(c, clip, area.x, top, &laid, (label_h, line_h));
+            if top < area.bottom() {
+                self.entry(c, clip, area.x, top, &laid, (label_h, line_h));
+            }
             bottom = top - GAP;
             if bottom <= area.y {
                 break;
@@ -77,6 +80,26 @@ impl Painter {
         let first = scene.chat.entries().next().map_or(u64::MAX, |e| e.seq);
         self.chat_laid
             .retain(|l| l.seq >= first && l.width == area.w);
+    }
+
+    /// The whole history's height laid out `width` wide, gaps included: how
+    /// far it scrolls (`Chat::scroll_by`'s most is this less the area's).
+    pub fn chat_height(&mut self, chat: &crate::chat::Chat, width: i32) -> i32 {
+        let label_h = self.text.measure(TypeStyle::Small, "Kai").1 as i32;
+        let mut total = 0;
+        for entry in chat.entries() {
+            let laid = self.laid(entry, width);
+            let line_h = self.text.measure(laid.style, "x").1 as i32;
+            total += laid.height(label_h, line_h) + GAP;
+        }
+        (total - GAP).max(0)
+    }
+
+    /// PageUp's or PageDown's step in a history `area_h` tall: its height
+    /// less one line, so a line stays in view across the step.
+    pub fn history_page(&self, area_h: i32) -> i32 {
+        let line_h = self.text.measure(TypeStyle::Body, "x").1 as i32;
+        (area_h - line_h).max(line_h)
     }
 
     /// `entry` laid out at `width`: kept from an earlier paint, or laid out
