@@ -2292,6 +2292,7 @@ dependencies = [
  "bootslot",
  "ccserve",
  "comp-models",
+ "deskcore",
  "editcore",
  "kabi",
  "kaigrants",

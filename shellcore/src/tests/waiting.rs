@@ -298,3 +298,86 @@ mod held {
         assert_eq!(held.apps(), ["files", "editor"]);
     }
 }
+
+/// #938's review: a give-back `desktop` may have applied is never run from
+/// the host's own copy. Sent again after the line and taken again, each kind
+/// runs once, whether `desktop` applied the first and answered late or never
+/// had it.
+mod given_back {
+    use crate::waiting::{GaveBack, Keep};
+    use alloc::string::String;
+    use deskcore::{effects, files, settings_wire as wire};
+
+    const BUDGET: usize = 4096;
+
+    #[test]
+    fn only_a_give_back_desktop_surely_did_not_take_keeps_a_copy() {
+        assert_eq!(GaveBack::Kept.keep(1), Keep::Back { resend: false });
+        assert_eq!(GaveBack::Unknown.keep(1), Keep::Back { resend: true });
+        assert_eq!(GaveBack::Refused.keep(1), Keep::Own(1));
+        assert_eq!(GaveBack::Withdrawn.keep(1), Keep::Own(1));
+    }
+
+    #[test]
+    fn effects_given_back_twice_run_once() {
+        for applied in [true, false] {
+            let mut desk = effects::Queue::default();
+            desk.put_as("files", "effect 1 notify(\"rm\")", true);
+            let taken = desk.take_during(BUDGET).unwrap();
+            let back = effects::encode_back(&taken);
+            if applied {
+                assert_eq!(desk.put_back(effects::parse_back(&back).unwrap()), 1);
+            }
+            // The call timed out: the host keeps no copy, and resends.
+            assert_eq!(
+                GaveBack::Unknown.keep(taken.clone()),
+                Keep::Back { resend: true }
+            );
+            let again = desk.put_back(effects::parse_back(&back).unwrap());
+            assert_eq!(again, usize::from(!applied), "applied {applied}");
+            assert_eq!(desk.take_app(BUDGET, "files"), Some(taken));
+            assert_eq!(desk.take_app(BUDGET, "files"), None, "once");
+        }
+    }
+
+    #[test]
+    fn settings_given_back_twice_run_once() {
+        for applied in [true, false] {
+            let mut desk = wire::Queue::default();
+            desk.put(wire::SETTINGS_APP, "2\t1\trules-remove 2")
+                .unwrap();
+            let taken = desk.take(BUDGET).unwrap();
+            let back = wire::encode_back_for(&wire::SETTINGS, &taken);
+            let parsed = || wire::parse_back_for(&wire::SETTINGS, &back).unwrap();
+            if applied {
+                assert_eq!(desk.put_back(parsed()), 1);
+            }
+            assert_eq!(desk.put_back(parsed()), usize::from(!applied));
+            assert_eq!(desk.take(BUDGET), Some(taken));
+            assert_eq!(desk.take(BUDGET), None, "once");
+        }
+    }
+
+    #[test]
+    fn a_file_given_back_twice_is_done_once() {
+        let ask = |desk: &mut files::Files, caller: &str, text: &str| {
+            let reply = desk.request(caller, text.as_bytes(), 0).unwrap();
+            String::from_utf8(reply.bytes).unwrap()
+        };
+        for applied in [true, false] {
+            let mut desk = files::Files::default();
+            let start = "files start 1 read /home/user/a.txt";
+            assert_eq!(ask(&mut desk, files::DOOR_APP, start), "ok");
+            let job = ask(&mut desk, files::SHELL, "files take");
+            assert!(job.starts_with("job 0 editor read"), "{job}");
+            if applied {
+                assert_eq!(ask(&mut desk, files::SHELL, "files back 0"), "ok");
+            }
+            // Sent again: refused once it waits again, which is no harm.
+            let again = ask(&mut desk, files::SHELL, "files back 0");
+            assert_eq!(again.starts_with("err"), applied, "{again}");
+            assert_eq!(ask(&mut desk, files::SHELL, "files take"), job);
+            assert_eq!(ask(&mut desk, files::SHELL, "files take"), "none");
+        }
+    }
+}

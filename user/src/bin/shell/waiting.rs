@@ -17,10 +17,13 @@
 //! The person's Stop (#887) withdraws a call `desktop` has not taken yet. So
 //! a request taken just as the Stop came is held, not served; one whose
 //! giving back was withdrawn is held in the shell, and an answer whose giving
-//! was withdrawn too: each runs, or is given, after the line. An app never
-//! waits for ever on a request the shell took. What comes of a held request
-//! after the line goes through `report_to_desktop` (#892), which a Stop for
-//! that line does not cut.
+//! was withdrawn too: each runs, or is given, after the line. A give-back no
+//! answer came to may have been applied all the same (a late reply is
+//! dropped), so it is sent again after the line, never run from a copy: both
+//! would run (#938's review). An app never waits for ever on a request the
+//! shell took: one a restarted `desktop` lost is told it did not run. What
+//! comes of a held request after the line goes through `report_to_desktop`
+//! (#892), which a Stop for that line does not cut.
 
 use crate::{ask_desktop, desktop};
 use alloc::format;
@@ -31,13 +34,16 @@ use deskcore::files::{Job, Op};
 use deskcore::settings_wire::{self as wire, Answer};
 use kabi::Error;
 use kabi::handle::Handle;
-use shellcore::waiting::{Held, Kind, Served, Waiting};
+use shellcore::waiting::{GaveBack, Held, Keep, Kind, Served, Waiting};
 use shellcore::{EffectDone, Shell};
 use user::sys;
 
 /// The longest the shell waits on the model before it looks at what the apps
 /// ask again.
 const POLL_MS: u64 = 50;
+/// What an app is told of a request given back to a `desktop` that restarted
+/// before the line ended, and so never ran.
+const LOST: &str = "Not run: desktop restarted while Kai thought; ask again";
 
 /// The call `route` answers `request` with, as `sys::call_route` gives it,
 /// running `poll` each [`POLL_MS`] it has not come. A call made while one is
@@ -71,7 +77,7 @@ pub fn call_serving(
 pub enum Request {
     /// Given back to `desktop`, which keeps it at the front of the app's
     /// queue of that kind: taken again from there after the line.
-    Back(Kind, String),
+    Back(GivenBack),
     /// An effect batch as `effects take` gave it, kept in the shell as its
     /// giving back failed: app, whether a person queued it, the lines.
     Effects(String, bool, String),
@@ -82,6 +88,19 @@ pub enum Request {
     /// What came of an app's request, as the messages still to give
     /// `desktop`: the person's Stop withdrew the first before it took it.
     Give(String, Vec<Vec<u8>>),
+}
+
+/// A request given back to `desktop`, to take again after the line.
+pub struct GivenBack {
+    kind: Kind,
+    app: String,
+    /// The give-back, sent again after the line: no answer came to it.
+    resend: Option<String>,
+    /// `desktop`'s pid when it was given back: one started since never had
+    /// it.
+    desktop: Option<u64>,
+    /// What tells the app it did not run, should `desktop` have restarted.
+    lost: Vec<Vec<u8>>,
 }
 
 /// What the apps asked while the model thought that was not a read.
@@ -116,32 +135,48 @@ fn may_serve(held: &RefCell<HeldRequests>, app: &str) -> bool {
 }
 
 /// Leaves `app`'s `request`, of `kind`, for the line's end: given back to
-/// `desktop` with `back`, to wait there; kept in the shell if that failed (a
-/// Stop withdrew it, or `desktop` would not take it). Either way its app is
-/// held back until it has run.
+/// `desktop` with `back`, to wait there; kept in the shell only if `desktop`
+/// surely did not take it back (a Stop withdrew the call, or it refused).
+/// `lost` tells the app it did not run, should `desktop` restart meanwhile.
+/// Either way its app is held back until it has run.
 fn hold(
     route: Handle,
     held: &RefCell<HeldRequests>,
-    kind: Kind,
-    app: &str,
+    (kind, app): (Kind, &str),
     back: &str,
+    lost: Vec<Vec<u8>>,
     request: Request,
 ) {
-    let kept = match ask_desktop(route, back) {
-        Ok(reply) if reply == "ok" => {
+    let desktop = crate::desktop_pid();
+    let gave = give_back(route, back);
+    let kept = match gave.keep(request) {
+        Keep::Back { resend } => {
             user::println!("shell: gave {app}'s request back to desktop until the line ends");
-            Request::Back(kind, String::from(app))
+            Request::Back(GivenBack {
+                kind,
+                app: String::from(app),
+                resend: resend.then(|| String::from(back)),
+                desktop,
+                lost,
+            })
         }
-        Ok(reply) => {
-            user::println!("shell: holds {app}'s request until the line ends: {reply}");
-            request
-        }
-        Err(why) => {
-            user::println!("shell: holds {app}'s request until the line ends: {why}");
+        Keep::Own(request) => {
+            user::println!("shell: holds {app}'s request until the line ends ({gave:?})");
             request
         }
     };
     held.borrow_mut().hold(kind, app, kept);
+}
+
+/// Gives a held request back to `desktop` with `back`: what came of it.
+fn give_back(route: Handle, back: &str) -> GaveBack {
+    let mut reply = alloc::vec![0u8; kabi::MAX_MESSAGE];
+    match sys::call_route(route, back.as_bytes(), &mut reply, crate::DESKTOP_CALL_MS) {
+        Ok(len) if reply.get(..len) == Some(b"ok".as_slice()) => GaveBack::Kept,
+        Ok(_) => GaveBack::Refused,
+        Err(Error::Interrupted) => GaveBack::Withdrawn,
+        Err(_) => GaveBack::Unknown,
+    }
 }
 
 /// The apps held back, for a take to pass by.
@@ -213,15 +248,19 @@ fn poll_effects(
         user,
         lines: lines.lines().map(String::from).collect(),
     };
+    let lost = taken
+        .lines
+        .iter()
+        .filter_map(|line| effects::ticket_of(line))
+        .map(|ticket| EffectDone {
+            ticket,
+            outcome: Err(String::from(LOST)),
+        })
+        .collect();
+    let back = effects::encode_back(&taken);
     let request = Request::Effects(app.into(), user, lines.into());
-    hold(
-        route,
-        held,
-        Kind::Effects,
-        app,
-        &effects::encode_back(&taken),
-        request,
-    );
+    let lost = effects_done(app, user, lost);
+    hold(route, held, (Kind::Effects, app), &back, lost, request);
 }
 
 fn poll_files(
@@ -260,7 +299,17 @@ fn poll_files(
             continue;
         }
         let (back, app) = (format!("files back {}", job.id), job.app.clone());
-        hold(route, held, Kind::File, &app, &back, Request::File(job));
+        // A `desktop` started since never had the transfer: the editor's
+        // poll finds it gone, so there is nothing to tell.
+        let lost = Vec::new();
+        hold(
+            route,
+            held,
+            (Kind::File, &app),
+            &back,
+            lost,
+            Request::File(job),
+        );
     }
 }
 
@@ -296,8 +345,13 @@ fn poll_settings(
         return give(route, held, app, settings_done(app, &answers));
     }
     let back = wire::encode_back_for(&wire::SETTINGS, &requests);
+    let lost: Vec<Answer> = requests
+        .iter()
+        .map(|r| Answer::new(r.ticket, Err(String::from(LOST))))
+        .collect();
+    let lost = settings_done(app, &lost);
     let request = Request::Settings(app.into(), requests);
-    hold(route, held, Kind::Settings, app, &back, request);
+    hold(route, held, (Kind::Settings, app), &back, lost, request);
 }
 
 /// Runs what was held while the model thought, oldest first, before the main
@@ -329,21 +383,7 @@ pub fn run_held(shell: &mut Shell, held: &RefCell<HeldRequests>) {
 
 fn run_one(shell: &mut Shell, held: &RefCell<HeldRequests>, route: Handle, request: Request) {
     match request {
-        Request::Back(kind, app) => {
-            user::println!("shell: runs {app}'s held request after the line");
-            match kind {
-                Kind::Effects => {
-                    let take = deskcore::effects::encode_take_app(&app);
-                    crate::run_effects_taken(shell, held, route, &take);
-                }
-                Kind::File => {
-                    crate::run_file_taken(shell, route);
-                }
-                Kind::Settings => crate::take_changes(shell, &wire::SETTINGS, Shell::settings),
-                // An answer is never given back: `give` holds it in the shell.
-                Kind::Answer => {}
-            }
-        }
+        Request::Back(given) => take_back(shell, held, route, given),
         Request::Effects(app, user, lines) => {
             user::println!("shell: runs {app}'s held request after the line");
             let results = shell.run_effects_from(&app, &lines, user);
@@ -377,5 +417,50 @@ fn run_one(shell: &mut Shell, held: &RefCell<HeldRequests>, route: Handle, reque
                 }
             }
         }
+    }
+}
+
+/// Takes a request given back to `desktop` again, and runs it. Its give-back
+/// is sent again first when no answer came to it: `desktop` keeps a request
+/// given back twice once. A `desktop` started since never had it, so its app
+/// is told it did not run.
+fn take_back(shell: &mut Shell, held: &RefCell<HeldRequests>, route: Handle, given: GivenBack) {
+    let GivenBack {
+        kind,
+        app,
+        resend,
+        desktop,
+        lost,
+    } = given;
+    if let (Some(was), Some(now)) = (desktop, crate::desktop_pid())
+        && was != now
+    {
+        user::println!("shell: desktop restarted while {app}'s request waited: it did not run");
+        for message in lost {
+            if let Err(why) = crate::report_to_desktop_bytes(route, &message) {
+                return user::println!("shell: {app} was not told: {why}");
+            }
+        }
+        return;
+    }
+    if let Some(back) = resend {
+        match crate::report_to_desktop(route, &back) {
+            Ok(reply) => user::println!("shell: gave {app}'s request back again: {reply}"),
+            Err(why) => user::println!("shell: {app}'s request was not given back again: {why}"),
+        }
+    }
+    user::println!("shell: runs {app}'s held request after the line");
+    let ran = match kind {
+        Kind::Effects => {
+            let take = deskcore::effects::encode_take_app(&app);
+            crate::run_effects_taken(shell, held, route, &take)
+        }
+        Kind::File => crate::run_file_taken(shell, route),
+        Kind::Settings => crate::take_changes(shell, &wire::SETTINGS, Shell::settings),
+        // An answer is never given back: `give` holds it in the shell.
+        Kind::Answer => true,
+    };
+    if !ran {
+        user::println!("shell: {app}'s held request no longer waited in desktop");
     }
 }

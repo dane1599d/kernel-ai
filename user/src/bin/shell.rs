@@ -358,7 +358,7 @@ fn take_effects(shell: &mut Shell, held: &core::cell::RefCell<waiting::HeldReque
 
 /// Takes effects from `desktop` with `take` (`effects take`, or after a line
 /// `effects take app <name>` for what it gave back), runs them and reports
-/// what came of each.
+/// what came of each: whether any waited.
 ///
 /// While the batch runs, its app counts as running in `held`: a Terminal's
 /// `shell_line` runs a line, and what the app asks during that line's model
@@ -368,19 +368,20 @@ fn run_effects_taken(
     held: &core::cell::RefCell<waiting::HeldRequests>,
     route: kabi::handle::Handle,
     take: &str,
-) {
+) -> bool {
     use deskcore::effects;
     let Ok(answer) = ask_desktop(route, take) else {
-        return;
+        return false;
     };
     let Some(Some((app, user, lines))) = effects::parse_take(&answer) else {
-        return;
+        return false;
     };
     held.borrow_mut()
         .running(shellcore::waiting::Kind::Effects, app);
     let results = shell.run_effects_from(app, lines, user);
     held.borrow_mut().done();
     give_effect_results(route, app, user, results);
+    true
 }
 
 /// Gives `desktop` what app `app`'s effects came to, for its `comphost`.
@@ -606,25 +607,31 @@ type Answering = fn(&mut Shell, &str, &str, bool) -> Result<String, String>;
 /// Answers one app's waiting requests, which `desktop` holds under `words`
 /// (`deskcore::settings_wire`): the Settings app's `kai:settings` requests, or
 /// the Models window's switches (`deskcore::models_wire`). The app is
-/// `desktop`'s record of the caller, and `answering` checks it again.
-fn take_changes(shell: &mut Shell, words: &deskcore::settings_wire::Words, answering: Answering) {
+/// `desktop`'s record of the caller, and `answering` checks it again. Whether
+/// any waited.
+fn take_changes(
+    shell: &mut Shell,
+    words: &deskcore::settings_wire::Words,
+    answering: Answering,
+) -> bool {
     use deskcore::settings_wire::{self as wire, Answer};
     // A unit of work that is no request: a Stop for the last one ends here.
     start_of_unit();
     let Some(route) = desktop() else {
-        return;
+        return false;
     };
     let Ok(answer) = ask_desktop(route, words.take) else {
-        return;
+        return false;
     };
     let Some(Some((app, requests))) = wire::parse_take(&answer) else {
-        return;
+        return false;
     };
     let answers: Vec<Answer> = requests
         .iter()
         .map(|r| Answer::new(r.ticket, answering(shell, app, &r.text, r.user)))
         .collect();
     give_answers(route, words, app, &answers);
+    true
 }
 
 /// Gives `desktop` app `app`'s answers under `words`: a Stop for a line

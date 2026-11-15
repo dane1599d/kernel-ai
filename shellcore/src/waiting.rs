@@ -29,6 +29,45 @@ pub enum Kind {
     Answer,
 }
 
+/// What came of giving a held request back to `desktop` (#890).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GaveBack {
+    /// `desktop` answered `ok`: it keeps the request.
+    Kept,
+    /// `desktop` answered, refusing it: the host alone has it.
+    Refused,
+    /// The person's Stop withdrew the call before `desktop` took it.
+    Withdrawn,
+    /// No answer came: `desktop` may have kept it, as a call it took and
+    /// answered late is dropped (timed out), or ended with it.
+    Unknown,
+}
+
+/// Where a held request is kept until the line ends.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Keep<T> {
+    /// In `desktop`, to take again after the line. `resend`: no answer came
+    /// to its give-back, so it is sent again first, and `desktop` keeps a
+    /// request given back twice once.
+    Back { resend: bool },
+    /// The host's own copy, run after the line: `desktop` surely did not
+    /// take it back.
+    Own(T),
+}
+
+impl GaveBack {
+    /// Where `request`, given back with this outcome, is kept. Never in the
+    /// host's own copy while `desktop` may hold it too: both would run
+    /// (#938's review).
+    pub fn keep<T>(self, request: T) -> Keep<T> {
+        match self {
+            Self::Kept => Keep::Back { resend: false },
+            Self::Unknown => Keep::Back { resend: true },
+            Self::Refused | Self::Withdrawn => Keep::Own(request),
+        }
+    }
+}
+
 /// One held request: its kind, its app, and the host's own.
 struct Item<T> {
     kind: Kind,

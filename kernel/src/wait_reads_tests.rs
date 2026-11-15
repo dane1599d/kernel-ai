@@ -361,8 +361,14 @@ fn killed_line() -> Result<(), &'static str> {
     pressed_while_running(7)?;
     threads::sleep_ms(GIVEN_BACK_MS);
     let shell = ipc::server_of("shell").ok_or("wait-reads: the shell is gone")?;
+    // The change waits: the app has only the six answers before it.
+    let waiting = seen()?.1.len();
     if !line_running() {
         return Err("wait-reads: the line ended before the shell could be killed");
+    }
+    if waiting != 6 {
+        log!("{CASE}: {waiting} answers before the kill, not 6");
+        return Err("wait-reads: the change was answered before the shell was killed");
     }
     process::kill(shell, ExitReason::Killed).map_err(|_| "wait-reads: cannot kill the shell")?;
     let after = answers(7, RESTART_MS)?;
