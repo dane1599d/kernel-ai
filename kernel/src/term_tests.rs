@@ -28,6 +28,11 @@ const TITLE: (i32, i32) = DESK.window_title(0, 102);
 const DESK_POINT: (i32, i32) = DESK.desk_point();
 /// Time for the harness's keys, as `ask_tests` gives them.
 const KEYS_MS: u64 = 4_000;
+/// Time for the last batch, a whole line and Enter typed into the pane:
+/// xtask types a key every 150 ms after 200 ms to reach the monitor, so the
+/// 29 keys of "what is the scheduling policy" and Enter take about 4.6 s.
+/// The case must not end before the panel queues the line.
+const LINE_MS: u64 = 9_000;
 
 fn wait(what: &'static str, mut done: impl FnMut() -> bool) -> Result<(), &'static str> {
     for _ in 0..WAIT_MS / 50 {
@@ -96,7 +101,7 @@ pub fn check() -> Result<(), &'static str> {
     threads::sleep_ms(1_000);
     let (keys, asked) = (input::keys(), terminal::replies_shown());
     log!("desk-term: ready for keys");
-    threads::sleep_ms(KEYS_MS);
+    threads::sleep_ms(LINE_MS);
     if input::keys() == keys || terminal::replies_shown() != asked {
         return Err("desk-term: keys typed with the focus elsewhere reached the terminal");
     }
