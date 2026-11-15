@@ -1066,7 +1066,7 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
     let budget = kabi::MAX_MESSAGE - 64;
     if let Some(took) = state.running.take(&mut state.effects, text, budget) {
         if let Some(taken) = &took.taken {
-            let during = match text == effects::TAKE_DURING {
+            let during = match text.starts_with(effects::TAKE_DURING) {
                 true => " during a line",
                 false => "",
             };

@@ -14,7 +14,9 @@
 //! - from the shell, `effects take` → `none`, or `app <name>\n<effect lines>`
 //!   (`app <name> user\n...` for lines queued by a person's input): one app's
 //!   oldest effects, all of one kind;
-//! - from the shell, `effects done <name>\n<result lines>` → `ok`;
+//! - from the shell, `effects done <name>\n<result lines>` → `ok`. A line
+//!   still waiting with an answered ticket goes: the shell gave it back, then
+//!   told the app it did not run (#938), so it never runs after;
 //! - from the shell, `effects take but <name> <name>...` → as `effects take`,
 //!   skipping those apps: ones whose requests it holds back for now;
 //! - from the shell, `effects take during` → as `effects take`, while it runs
@@ -22,6 +24,12 @@
 //!   unit: the line `desktop` sees running, and its tickets, stay
 //!   (`running::Running::take`). A person's line in [`STOPS_FROM`] is not
 //!   handed out: it waits for a take after the line, which starts it;
+//! - from the shell, `effects take during but <name> <name>...` → as
+//!   `effects take during`, skipping those apps: ones whose requests it put
+//!   back until the line ends;
+//! - from the shell, `effects take app <name>` → as `effects take`, from that
+//!   app's queue only: after the line, the shell takes again what it put
+//!   back, oldest first;
 //! - from the shell, `effects back app <name>[ user]\n<effect lines>` → `ok`:
 //!   lines it took and will not run yet, in `effects take`'s form, back at the
 //!   front of that app's queue in their order (#890). Only a line taken and not
@@ -47,6 +55,8 @@ pub const RESULTS: &str = "effects results";
 pub const TAKE: &str = "effects take";
 pub const TAKE_BUT: &str = "effects take but ";
 pub const TAKE_DURING: &str = "effects take during";
+pub const TAKE_DURING_BUT: &str = "effects take during but ";
+pub const TAKE_APP: &str = "effects take app ";
 pub const BACK: &str = "effects back ";
 const DONE: &str = "effects done ";
 /// Effects one app may have waiting for the shell.
@@ -166,11 +176,30 @@ impl Queue {
     /// [`STOPS_FROM`] (the front of its queue, a person's) is not handed out,
     /// and waits for a take after the line.
     pub fn take_during(&mut self, budget: usize) -> Option<Taken> {
+        self.take_during_but(budget, &[])
+    }
+
+    /// [`Queue::take_during`], skipping the apps in `skip` too: ones whose
+    /// requests the shell put back until the line ends.
+    pub fn take_during_but(&mut self, budget: usize, skip: &[&str]) -> Option<Taken> {
         let line_waits = self.effects.iter().any(|(app, waiting)| {
             app == STOPS_FROM && waiting.front().is_some_and(|(user, _)| *user)
         });
-        let skip: &[&str] = if line_waits { &[STOPS_FROM] } else { &[] };
-        self.take_but(budget, skip)
+        let mut skip = skip.to_vec();
+        if line_waits {
+            skip.push(STOPS_FROM);
+        }
+        self.take_but(budget, &skip)
+    }
+
+    /// [`Queue::take`] from `app`'s queue only; `None` when it has nothing
+    /// waiting.
+    pub fn take_app(&mut self, budget: usize, app: &str) -> Option<Taken> {
+        let at = self
+            .effects
+            .iter()
+            .position(|(name, waiting)| name == app && !waiting.is_empty())?;
+        Some(self.take_at(at, budget))
     }
 
     /// [`Queue::take`], skipping the apps in `skip`.
@@ -183,6 +212,12 @@ impl Queue {
                 !waiting.is_empty() && !skip.contains(&app.as_str())
             })?;
         self.next = (at + 1) % count;
+        Some(self.take_at(at, budget))
+    }
+
+    /// The oldest lines of the app at `at`, which has some, all queued the
+    /// same way, at most `budget` bytes (always at least one).
+    fn take_at(&mut self, at: usize, budget: usize) -> Taken {
         let (app, waiting) = &mut self.effects[at];
         let user = waiting.front().is_some_and(|(user, _)| *user);
         let mut lines = Vec::new();
@@ -204,7 +239,7 @@ impl Queue {
             }
             self.taken.push_back((app.clone(), ticket, user));
         }
-        Some(Taken { app, user, lines })
+        Taken { app, user, lines }
     }
 
     /// Puts lines the shell took back at the front of their app's queue, in
@@ -237,10 +272,18 @@ impl Queue {
 
     /// Records what came of one of `app`'s effects, or a notice for it (ticket
     /// [`NOTICE_TICKET`]): one waits at a time, as it says only that something
-    /// changed, so an app that was napping is told once on waking.
+    /// changed, so an app that was napping is told once on waking. A line of
+    /// the app's still waiting with that ticket is withdrawn: what came of it
+    /// is said, so it never runs after (#938: given back, then told it did not
+    /// run).
     pub fn finish(&mut self, app: &str, done: Done) {
         self.taken
             .retain(|(a, ticket, _)| !(a == app && *ticket == done.ticket));
+        if done.ticket != NOTICE_TICKET
+            && let Some((_, waiting)) = self.effects.iter_mut().find(|(a, _)| a == app)
+        {
+            waiting.retain(|(_, line)| ticket_of(line) != Some(done.ticket));
+        }
         let results = entry(&mut self.results, app);
         if done.ticket == NOTICE_TICKET && results.iter().any(|d| *d == done) {
             return;
@@ -418,6 +461,39 @@ pub fn encode_take_but(apps: &[&str]) -> String {
         true => String::from(TAKE),
         false => format!("{TAKE_BUT}{}", apps.join(" ")),
     }
+}
+
+/// The shell's take while it runs a line, skipping `apps`: a plain
+/// [`TAKE_DURING`] when none.
+pub fn encode_take_during_but(apps: &[&str]) -> String {
+    match apps.is_empty() {
+        true => String::from(TAKE_DURING),
+        false => format!("{TAKE_DURING_BUT}{}", apps.join(" ")),
+    }
+}
+
+/// The apps a take during a line skips ([`encode_take_during_but`]), or
+/// `None` for another request.
+pub fn parse_take_during_but(text: &str) -> Option<Vec<&str>> {
+    match text == TAKE_DURING {
+        true => Some(Vec::new()),
+        false => Some(
+            text.strip_prefix(TAKE_DURING_BUT)?
+                .split_whitespace()
+                .collect(),
+        ),
+    }
+}
+
+/// The shell's [`TAKE_APP`] request for `app`'s lines.
+pub fn encode_take_app(app: &str) -> String {
+    format!("{TAKE_APP}{app}")
+}
+
+/// The app a [`TAKE_APP`] request names, or `None` for another request.
+pub fn parse_take_app(text: &str) -> Option<&str> {
+    let app = text.strip_prefix(TAKE_APP)?;
+    (!app.is_empty() && !app.contains(char::is_whitespace)).then_some(app)
 }
 
 /// [`encode_take`] read back: the app, whether a person's input queued its
@@ -879,6 +955,35 @@ mod tests {
         queue.take(4096).unwrap();
         assert_eq!(queue.put_back(taken("notes", true, &[line(1)])), 1);
         assert_eq!(queue.put_back(taken("notes", true, &[line(1)])), 0);
+    }
+
+    /// #938: the shell gave lines back, then told the app one did not run:
+    /// that one is withdrawn and never runs after; another app's line with
+    /// the same ticket stays.
+    #[test]
+    fn a_result_for_a_line_given_back_withdraws_it() {
+        let mut queue = Queue::default();
+        queue.put("files", &format!("{}\n{}", line(1), line(2)));
+        queue.put("monitor", &line(1));
+        let held = queue.take(4096).unwrap();
+        assert_eq!(held.app, "files");
+        assert_eq!(queue.put_back(held), 2);
+        let lost = |ticket| Done {
+            ticket,
+            outcome: Err(String::from("Not run")),
+        };
+        queue.finish("files", lost(1));
+        assert_eq!(
+            queue.take_app(4096, "files"),
+            Some(taken("files", false, &[line(2)]))
+        );
+        queue.finish("files", lost(2));
+        assert_eq!(queue.take_app(4096, "files"), None);
+        assert_eq!(queue.results("files", MESSAGE_BUDGET).len(), 2);
+        assert_eq!(
+            queue.take_app(4096, "monitor"),
+            Some(taken("monitor", false, &[line(1)]))
+        );
     }
 
     #[test]

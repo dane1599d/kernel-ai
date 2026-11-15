@@ -231,7 +231,7 @@ fn a_read_leaves_the_lines_own_state_as_it_was() {
 }
 
 mod held {
-    use crate::waiting::{Held, Kind, MAX_HELD};
+    use crate::waiting::{Held, Kind};
 
     /// Held requests run in the order they came, and the one running still
     /// holds back its app's later requests until it is done.
@@ -239,8 +239,8 @@ mod held {
     fn they_run_in_order_and_the_running_one_still_holds_its_app_back() {
         let mut held: Held<&str> = Held::default();
         assert!(held.is_empty() && !held.blocks("files"));
-        held.hold(Kind::Effects, "files", 1, "move").unwrap();
-        held.hold(Kind::File, "editor", 1, "save").unwrap();
+        held.hold(Kind::Effects, "files", "move");
+        held.hold(Kind::File, "editor", "save");
         // Per app, whatever the kind: Files' read waits, the Terminal's not.
         assert!(held.blocks("files") && held.blocks("editor"));
         assert!(!held.blocks("terminal-window"));
@@ -259,11 +259,11 @@ mod held {
     #[test]
     fn a_batch_run_from_elsewhere_and_an_answer_to_give_hold_back_their_app() {
         let mut held: Held<&str> = Held::default();
-        held.running(Kind::Effects, "terminal-window", 2);
+        held.running(Kind::Effects, "terminal-window");
         assert!(held.blocks("terminal-window") && !held.blocks("files"));
         held.done();
         assert!(held.is_empty());
-        held.hold(Kind::Answer, "files", 1, "listing").unwrap();
+        held.hold(Kind::Answer, "files", "listing");
         assert!(held.blocks("files") && !held.blocks("editor"));
     }
 
@@ -272,41 +272,172 @@ mod held {
     #[test]
     fn a_held_settings_change_holds_every_app_back() {
         let mut held: Held<&str> = Held::default();
-        held.hold(Kind::Settings, "settings-window", 1, "revoke")
-            .unwrap();
+        held.hold(Kind::Settings, "settings-window", "revoke");
+        assert!(held.blocks_all());
         assert!(held.blocks("files") && held.blocks("editor"));
         assert_eq!(held.start(), Some("revoke"));
-        assert!(held.blocks("files"), "running");
+        assert!(held.blocks_all() && held.blocks("files"), "running");
         held.done();
-        assert!(!held.blocks("files"));
+        assert!(!held.blocks_all() && !held.blocks("files"));
     }
 
-    /// An app has at most `MAX_HELD` requests held, an effect batch counting
-    /// its lines; neither the one running nor an answer still to give is
-    /// counted, nor another app's.
+    /// #890: the apps a take passes by are those held back, running or held,
+    /// each once; another app's are not.
     #[test]
-    fn an_app_has_at_most_sixteen_held() {
-        assert_eq!(MAX_HELD, 16);
-        let mut held: Held<u32> = Held::default();
-        for at in 0..16 {
-            held.hold(Kind::Effects, "files", 1, at).unwrap();
+    fn the_apps_held_back_are_named_once_for_a_take_to_pass_by() {
+        let mut held: Held<&str> = Held::default();
+        assert!(held.apps().is_empty());
+        held.running(Kind::Effects, "terminal-window");
+        held.hold(Kind::Effects, "files", "move");
+        held.hold(Kind::Answer, "files", "listing");
+        held.hold(Kind::File, "editor", "save");
+        assert_eq!(held.apps(), ["terminal-window", "files", "editor"]);
+        assert!(!held.blocks_all() && !held.blocks("notes"));
+        held.done();
+        assert_eq!(held.start(), Some("move"));
+        assert_eq!(held.apps(), ["files", "editor"]);
+    }
+}
+
+/// #938's review: a give-back `desktop` may have applied is never run from
+/// the host's own copy. Sent again after the line and taken again, each kind
+/// runs once, whether `desktop` applied the first and answered late or never
+/// had it.
+mod given_back {
+    use crate::waiting::{Came, GaveBack, Keep, Step, Took, restarted};
+    use alloc::string::String;
+    use deskcore::{effects, files, settings_wire as wire};
+
+    const BUDGET: usize = 4096;
+
+    #[test]
+    fn only_a_give_back_desktop_surely_did_not_take_keeps_a_copy() {
+        assert_eq!(GaveBack::Kept.keep(1), Keep::Back { resend: false });
+        assert_eq!(GaveBack::Unknown.keep(1), Keep::Back { resend: true });
+        assert_eq!(GaveBack::Refused.keep(1), Keep::Own(1));
+        assert_eq!(GaveBack::Withdrawn.keep(1), Keep::Own(1));
+        assert_eq!(GaveBack::NotSent.keep(1), Keep::Own(1));
+    }
+
+    /// #938's re-review: a reply, or an error raised before the call was
+    /// queued, says what `desktop` has; any other error may come after it
+    /// took the call (a late reply is dropped), so it is not the shell's.
+    #[test]
+    fn a_give_back_calls_reply_or_error_says_where_the_request_is() {
+        use kabi::Error;
+        let table: [(Result<&[u8], Error>, GaveBack); 11] = [
+            (Ok(b"ok"), GaveBack::Kept),
+            (
+                Ok(b"err that transfer is not one the shell may give back"),
+                GaveBack::Refused,
+            ),
+            (Ok(b""), GaveBack::Refused),
+            (Err(Error::Interrupted), GaveBack::Withdrawn),
+            (Err(Error::Busy), GaveBack::NotSent),
+            (Err(Error::NoMemory), GaveBack::NotSent),
+            (Err(Error::TooBig), GaveBack::NotSent),
+            (Err(Error::Unavailable), GaveBack::NotSent),
+            (Err(Error::TimedOut), GaveBack::Unknown),
+            (Err(Error::Dead), GaveBack::Unknown),
+            (Err(Error::Invalid), GaveBack::Unknown),
+        ];
+        for (call, gave) in table {
+            assert_eq!(GaveBack::of(call), gave, "{call:?}");
         }
-        assert_eq!(held.hold(Kind::Effects, "files", 1, 16), Err(16));
-        assert_eq!(held.hold(Kind::Effects, "editor", 1, 17), Ok(()));
-        // An answer still to give is always held, and is not counted.
-        assert_eq!(held.hold(Kind::Answer, "files", 1, 18), Ok(()));
-        // The running one waits no more: there is room for one again.
-        assert_eq!(held.start(), Some(0));
-        assert_eq!(held.hold(Kind::File, "files", 1, 19), Ok(()));
-        assert_eq!(held.hold(Kind::File, "files", 1, 20), Err(20));
-        // Nor does a batch the host runs from elsewhere count.
-        let mut held: Held<u32> = Held::default();
-        held.running(Kind::Effects, "files", 16);
-        assert_eq!(held.hold(Kind::Effects, "files", 16, 0), Ok(()));
-        // A batch of three does not fit where one would.
-        let mut held: Held<u32> = Held::default();
-        held.hold(Kind::Effects, "files", 14, 0).unwrap();
-        assert_eq!(held.hold(Kind::Effects, "files", 3, 1), Err(1));
-        assert_eq!(held.hold(Kind::Effects, "files", 2, 1), Ok(()));
+    }
+
+    /// #938's re-review: after the line, a request given back is told it did
+    /// not run whenever it may be lost, and is never taken behind a resend
+    /// that got no answer.
+    #[test]
+    fn after_the_line_a_given_back_request_runs_or_its_app_is_told() {
+        let ended = |restarted, resend| Came::LineEnded { restarted, resend };
+        let table = [
+            (ended(true, false), Step::TellLost),
+            (ended(true, true), Step::TellLost),
+            (ended(false, true), Step::Resend),
+            (ended(false, false), Step::Take),
+            (Came::Resent(GaveBack::Kept), Step::Take),
+            // A transfer waiting again refuses the second give-back.
+            (Came::Resent(GaveBack::Refused), Step::Take),
+            (Came::Resent(GaveBack::Unknown), Step::TellLost),
+            (Came::Resent(GaveBack::NotSent), Step::TellLost),
+            (Came::Resent(GaveBack::Withdrawn), Step::TellLost),
+            (Came::Taken(Took::Ran), Step::Done),
+            (Came::Taken(Took::Empty), Step::TellLost),
+            // #938's third look: a failed take call says nothing of what
+            // waits, so the app is not told it did not run.
+            (Came::Taken(Took::CallFailed), Step::Leave),
+        ];
+        for (came, step) in table {
+            assert_eq!(came.next(), step, "{came:?}");
+        }
+        // An unknown pid is no restart: the take that finds nothing tells.
+        assert!(restarted(Some(4), Some(9)));
+        assert!(!restarted(Some(4), Some(4)));
+        assert!(!restarted(None, Some(9)) && !restarted(Some(4), None));
+    }
+
+    #[test]
+    fn effects_given_back_twice_run_once() {
+        for applied in [true, false] {
+            let mut desk = effects::Queue::default();
+            desk.put_as("files", "effect 1 notify(\"rm\")", true);
+            let taken = desk.take_during(BUDGET).unwrap();
+            let back = effects::encode_back(&taken);
+            if applied {
+                assert_eq!(desk.put_back(effects::parse_back(&back).unwrap()), 1);
+            }
+            // The call timed out: the host keeps no copy, and resends.
+            assert_eq!(
+                GaveBack::Unknown.keep(taken.clone()),
+                Keep::Back { resend: true }
+            );
+            let again = desk.put_back(effects::parse_back(&back).unwrap());
+            assert_eq!(again, usize::from(!applied), "applied {applied}");
+            assert_eq!(desk.take_app(BUDGET, "files"), Some(taken));
+            assert_eq!(desk.take_app(BUDGET, "files"), None, "once");
+        }
+    }
+
+    #[test]
+    fn settings_given_back_twice_run_once() {
+        for applied in [true, false] {
+            let mut desk = wire::Queue::default();
+            desk.put(wire::SETTINGS_APP, "2\t1\trules-remove 2")
+                .unwrap();
+            let taken = desk.take(BUDGET).unwrap();
+            let back = wire::encode_back_for(&wire::SETTINGS, &taken);
+            let parsed = || wire::parse_back_for(&wire::SETTINGS, &back).unwrap();
+            if applied {
+                assert_eq!(desk.put_back(parsed()), 1);
+            }
+            assert_eq!(desk.put_back(parsed()), usize::from(!applied));
+            assert_eq!(desk.take(BUDGET), Some(taken));
+            assert_eq!(desk.take(BUDGET), None, "once");
+        }
+    }
+
+    #[test]
+    fn a_file_given_back_twice_is_done_once() {
+        let ask = |desk: &mut files::Files, caller: &str, text: &str| {
+            let reply = desk.request(caller, text.as_bytes(), 0).unwrap();
+            String::from_utf8(reply.bytes).unwrap()
+        };
+        for applied in [true, false] {
+            let mut desk = files::Files::default();
+            let start = "files start 1 read /home/user/a.txt";
+            assert_eq!(ask(&mut desk, files::DOOR_APP, start), "ok");
+            let job = ask(&mut desk, files::SHELL, "files take");
+            assert!(job.starts_with("job 0 editor read"), "{job}");
+            if applied {
+                assert_eq!(ask(&mut desk, files::SHELL, "files back 0"), "ok");
+            }
+            // Sent again: refused once it waits again, which is no harm.
+            let again = ask(&mut desk, files::SHELL, "files back 0");
+            assert_eq!(again.starts_with("err"), applied, "{again}");
+            assert_eq!(ask(&mut desk, files::SHELL, "files take"), job);
+            assert_eq!(ask(&mut desk, files::SHELL, "files take"), "none");
+        }
     }
 }

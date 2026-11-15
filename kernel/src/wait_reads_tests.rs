@@ -15,6 +15,9 @@
 //!    has; then each is answered once, the change first.
 //! 3. During [`FAIL`], a model call that fails partway: a read is answered in
 //!    under [`READ_MS`], and the change held meanwhile runs once after it.
+//! 4. During [`SLOW`], the shell is killed while a change it took waits for
+//!    the line: given back to `desktop` (#890), it runs once in the restarted
+//!    shell.
 //!
 //! The shell's log has each change once. There is no Stop for a line while it
 //! waits on the model yet, so a model call that fails partway stands for one.
@@ -26,6 +29,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
+use kabi::ExitReason;
 
 /// The shell with the file system and its route to `desktop`.
 pub const SHELL: &str = kabi::plan::SHELL_DESK_FILES;
@@ -59,6 +63,11 @@ const KEYS_MS: u64 = 30_000;
 const AFTER_MS: u64 = 15_000;
 const LINE_MS: u64 = 60_000;
 const CALL_MS: u64 = 10_000;
+/// How long after the app took a key the shell has surely taken its change
+/// and given it back: it looks every 50 ms while the model thinks.
+const GIVEN_BACK_MS: u64 = 2_000;
+/// How long a killed shell's restart may take to run what it was given back.
+const RESTART_MS: u64 = 60_000;
 
 /// The lines, by index, and the one running on its own thread: whether it has
 /// answered, and whether the answer was `ok`.
@@ -342,10 +351,46 @@ fn failing_line() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// #890: the shell is killed mid-line with the app's change given back to
+/// `desktop`; the restarted shell takes it from there and runs it once. A
+/// change the shell kept in its memory would be lost, and never answered.
+fn killed_line() -> Result<(), &'static str> {
+    start_line(0)?;
+    // `ret`: Make, where the last line's keys left the focus.
+    keys();
+    pressed_while_running(7)?;
+    threads::sleep_ms(GIVEN_BACK_MS);
+    let shell = ipc::server_of("shell").ok_or("wait-reads: the shell is gone")?;
+    // The change waits: the app has only the six answers before it.
+    let waiting = seen()?.1.len();
+    if !line_running() {
+        return Err("wait-reads: the line ended before the shell could be killed");
+    }
+    if waiting != 6 {
+        log!("{CASE}: {waiting} answers before the kill, not 6");
+        return Err("wait-reads: the change was answered before the shell was killed");
+    }
+    process::kill(shell, ExitReason::Killed).map_err(|_| "wait-reads: cannot kill the shell")?;
+    let after = answers(7, RESTART_MS)?;
+    let made = after[6];
+    if !made.make || !made.ok {
+        return Err("wait-reads: the change given back did not run after the restart");
+    }
+    if ipc::server_of("shell").is_none_or(|pid| pid == shell) {
+        return Err("wait-reads: the change ran, but not in a restarted shell");
+    }
+    logged_once(made.ticket)?;
+    log!(
+        "{CASE}: the shell was killed with a change given back to desktop; the restarted shell ran it once"
+    );
+    Ok(())
+}
+
 pub fn check() -> Result<(), &'static str> {
     first_read()?;
     slow_line()?;
     failing_line()?;
+    killed_line()?;
     log!(
         "{CASE}: the shell answered the app's reads while the model thought, and held its changes until the line ended"
     );
