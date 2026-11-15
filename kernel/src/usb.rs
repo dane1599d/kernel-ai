@@ -149,6 +149,7 @@ fn poll(interrupts: bool) -> Option<usize> {
     let mut controllers = CONTROLLERS.try_lock()?;
     let mut bytes = [0u8; 64];
     let mut len = 0;
+    let mut woke = None;
     let mine = controllers
         .iter_mut()
         .filter(|(_, on_irq)| *on_irq == interrupts);
@@ -163,13 +164,22 @@ fn poll(interrupts: bool) -> Option<usize> {
                     KEYS.fetch_add(1, Ordering::Relaxed);
                 }
             }
-            Input::Pointer { report, .. } => pointer::push(pointer_event(report)),
+            Input::Pointer { report, .. } => {
+                // Keys read before the report go in first, in the order they
+                // came: a click after a Super press breaks its tap
+                // (`kabi::input::Set1::break_tap`), and not the reverse.
+                if len > 0 {
+                    woke = i8042::inject(&bytes[..len]).or(woke);
+                    len = 0;
+                }
+                pointer::push(pointer_event(report));
+            }
         });
     }
     if len == 0 {
-        return None;
+        return woke;
     }
-    i8042::inject(&bytes[..len])
+    i8042::inject(&bytes[..len]).or(woke)
 }
 
 fn pointer_event(report: xhci::hid::Pointer) -> pointer::Event {

@@ -117,10 +117,12 @@ impl Desk {
             .max(self.now_ms.saturating_add(termcore::menu::SETTLE_MS));
     }
 
-    /// A Super press the desk does not take as a key (only the kernel's tap
-    /// opens Start): on a card it is still a key that is not `y`, so it
-    /// disarms the card as any other does, and opens nothing.
-    pub fn super_pressed(&mut self) {
+    /// A Super press at `at_ms` (the kernel's time for it) that the desk does
+    /// not take as a key (only the kernel's tap opens Start): on a card it is
+    /// still a key that is not `y`, so it disarms the card as any other does,
+    /// its quiet time counted from the press, and opens nothing.
+    pub fn super_pressed(&mut self, at_ms: u64) {
+        self.set_now(at_ms);
         if self.ask.is_some() && self.pressed() {
             self.disarm();
         }

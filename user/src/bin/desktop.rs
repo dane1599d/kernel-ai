@@ -418,7 +418,7 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
             }
             // Super pressed alone opens nothing, but disarms a card.
             if key.super_press {
-                state.desk.super_pressed();
+                state.desk.super_pressed(event.time_ns / 1_000_000);
             }
             for (usage, down) in key.keys {
                 apply_input(state, screen, event, Input::Key { usage, down });

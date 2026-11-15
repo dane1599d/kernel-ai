@@ -144,6 +144,8 @@ pub struct Set1 {
     skip: u8,
     ctrl: u8,
     alt: u8,
+    /// The Super keys held: bit 0 left, bit 1 right.
+    gui: u8,
     /// A Super key went down and no other key since: its release is a tap.
     super_alone: bool,
     /// The last key decoded was a Super tap's release.
@@ -157,6 +159,7 @@ impl Set1 {
             skip: 0,
             ctrl: 0,
             alt: 0,
+            gui: 0,
             super_alone: false,
             super_tap: false,
         }
@@ -210,9 +213,18 @@ impl Set1 {
             _ => {}
         }
         let gui = matches!(usage, usage::LEFT_GUI | usage::RIGHT_GUI);
+        // A Super's first make; its typematic repeats are makes too.
+        let first = gui && down && self.gui == 0;
+        match usage {
+            usage::LEFT_GUI => bit(&mut self.gui, 1),
+            usage::RIGHT_GUI => bit(&mut self.gui, 2),
+            _ => {}
+        }
         self.super_tap = gui && !down && self.super_alone;
         self.super_alone = match (gui, down) {
-            (true, true) => true,
+            // Only the first make starts a tap: a repeat after a click
+            // (`break_tap`) or another key must not start it again.
+            (true, true) => first || self.super_alone,
             (true, false) => false,
             // Any other key pressed with Super held: not a tap.
             (false, true) => false,
@@ -223,6 +235,9 @@ impl Set1 {
 
     /// Something that is not a key happened with Super held (a pointer
     /// button pressed, the screen changing hands): Super's release is no tap.
+    /// The kernel applies it before the next key byte it routes, so it must
+    /// see a device's key bytes in the order they and the press happened
+    /// (the USB poll injects a report's earlier keys before a pointer report).
     pub fn break_tap(&mut self) {
         self.super_alone = false;
     }
@@ -506,6 +521,27 @@ mod tests {
             };
             assert_eq!(set1.route(up.0, up.1, leased), want, "leased {leased}");
         }
+    }
+
+    /// Super's typematic repeat after a click is no new tap: E0 5B,
+    /// `break_tap`, E0 5B again, E0 DB.
+    #[test]
+    fn a_repeat_after_a_click_does_not_restart_the_tap() {
+        let mut set1 = Set1::new();
+        for b in [0xE0, 0x5B] {
+            set1.feed(b);
+        }
+        set1.break_tap();
+        assert_eq!(set1.feed(0xE0), None);
+        let repeat = set1.feed(0x5B).unwrap();
+        assert_eq!(repeat, (usage::LEFT_GUI, true));
+        assert_eq!(set1.route(repeat.0, repeat.1, false), KeyRoute::Desk);
+        assert_eq!(set1.feed(0xE0), None);
+        let up = set1.feed(0xDB).unwrap();
+        assert_eq!(set1.route(up.0, up.1, false), KeyRoute::Desk);
+        // Released, the next press is a first make again: a tap.
+        let taps = routes(&[0xE0, 0x5B, 0xE0, 0x5B, 0xE0, 0xDB], false);
+        assert_eq!(taps.last().unwrap().2, KeyRoute::Tap, "repeats alone");
     }
 
     /// Without a lease a lone Super tap is still [`KeyRoute::Tap`], and

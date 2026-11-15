@@ -638,12 +638,15 @@ fn y_then_super_then_y_does_not_run_it() {
     desk.card_drawn(0);
     assert!(press_at(&mut desk, SETTLED, usage::Y).is_empty());
     assert!(desk.ask().unwrap().armed);
-    desk.set_now(SETTLED + 100);
+    // desktop's order: no set_now of its own before the press, which comes
+    // long after the `y`; the quiet time runs from the press.
+    let super_at = SETTLED + 5_000;
     let step = on_key(&mut lease, LEFT_GUI, 1);
     assert!(step.super_press && step.keys.is_empty());
-    desk.super_pressed();
+    desk.super_pressed(super_at);
     assert!(!desk.ask().unwrap().armed, "Super did not disarm the card");
-    assert!(press_at(&mut desk, SETTLED + 200, usage::Y).is_empty());
+    assert!(press_at(&mut desk, super_at + 20, usage::Y).is_empty());
+    assert!(press_at(&mut desk, super_at + 40, usage::Y).is_empty());
     assert!(on_key(&mut lease, LEFT_GUI, 0).keys.is_empty());
     assert!(desk.ask().is_some_and(|a| !a.armed));
     assert!(desk.start().is_none());
