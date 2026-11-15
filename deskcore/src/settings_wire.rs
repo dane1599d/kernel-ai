@@ -123,6 +123,9 @@ pub struct Queue {
     /// Requests the shell took and has not answered or put back, oldest
     /// first, at most [`MAX_ANSWERS`].
     taken: VecDeque<Request>,
+    /// The tickets of requests the shell put back that wait again, oldest
+    /// first, at most [`MAX_ANSWERS`]: the only ones an answer withdraws.
+    given_back: VecDeque<u32>,
 }
 
 impl Queue {
@@ -170,6 +173,8 @@ impl Queue {
             taken.extend(self.waiting.pop_front());
         }
         for request in &taken {
+            // Taken, so no longer waiting as given back.
+            self.given_back.retain(|t| *t != request.ticket);
             // Tickets start again when the app reloads: an older entry for
             // the same ticket is gone.
             self.taken.retain(|t| t.ticket != request.ticket);
@@ -193,17 +198,29 @@ impl Queue {
         }
         let count = back.len();
         for request in back.into_iter().rev() {
+            self.given_back.retain(|t| *t != request.ticket);
+            if self.given_back.len() == MAX_ANSWERS {
+                self.given_back.pop_front();
+            }
+            self.given_back.push_back(request.ticket);
             self.waiting.push_front(request);
         }
         count
     }
 
-    /// Keeps what one request came to. One still waiting with that ticket is
-    /// withdrawn: what came of it is said, so it never runs after (#938:
-    /// given back, then told it did not run).
+    /// Keeps what one request came to. One the shell gave back that still
+    /// waits is withdrawn: what came of it is said, so it never runs after
+    /// (#938: given back, then told it did not run). Only that one, the
+    /// oldest with the ticket, as the back put it first: a request the app
+    /// queued since under the same number (it reloaded) stays.
     pub fn finish(&mut self, answer: Answer) {
         self.taken.retain(|t| t.ticket != answer.ticket);
-        self.waiting.retain(|r| r.ticket != answer.ticket);
+        if let Some(given) = self.given_back.iter().position(|t| *t == answer.ticket) {
+            self.given_back.remove(given);
+            if let Some(at) = self.waiting.iter().position(|r| r.ticket == answer.ticket) {
+                self.waiting.remove(at);
+            }
+        }
         if self.answers.len() == MAX_ANSWERS {
             self.answers.pop_front();
         }
@@ -427,6 +444,38 @@ mod tests {
         queue.finish(Answer::new(2, Err(String::from("Not run"))));
         assert_eq!(queue.take(8192), None);
         assert_eq!(queue.results(8192).matches("Not run").count(), 2);
+    }
+
+    /// #938's follow-up: tickets start again when the app reloads. A late
+    /// answer for an old request withdraws no new one of that number; one
+    /// for a request given back withdraws only that one.
+    #[test]
+    fn only_a_request_given_back_is_withdrawn_by_its_answer() {
+        let mut queue = Queue::default();
+        let lost = || Answer::new(1, Err(String::from("Not run")));
+        // Taken, and the app reloads: the old request's late answer.
+        queue.put(SETTINGS_APP, "1\t1\trules-remove 2").unwrap();
+        queue.take(8192).unwrap();
+        queue.put(SETTINGS_APP, "1\t1\trules").unwrap();
+        queue.finish(lost());
+        let fresh = alloc::vec![request(1, true, "rules")];
+        assert_eq!(
+            queue.take(8192).as_ref(),
+            Some(&fresh),
+            "the new request stays"
+        );
+        // Given back, and the app reloads: only the given-back one goes.
+        assert_eq!(queue.put_back(fresh.clone()), 1);
+        queue.put(SETTINGS_APP, "1\t1\tgrants").unwrap();
+        queue.finish(lost());
+        let reloaded = alloc::vec![request(1, true, "grants")];
+        assert_eq!(queue.take(8192).as_ref(), Some(&reloaded));
+        // Given back, taken again: a later request 1 is no longer at risk.
+        assert_eq!(queue.put_back(reloaded), 1);
+        queue.take(8192).unwrap();
+        queue.put(SETTINGS_APP, "1\t1\trules").unwrap();
+        queue.finish(lost());
+        assert_eq!(queue.take(8192), Some(fresh));
     }
 
     #[test]
