@@ -292,9 +292,10 @@ fn the_hover_follows_what_is_under_the_pointer() {
 }
 
 /// A maximized window has square corners and no grabs: the pointer pushed
-/// into the screen's top-right corner is on close, which a click presses.
+/// against the screen's right edge on the close row is on close, which a
+/// click presses.
 #[test]
-fn a_maximized_window_is_square_and_closes_from_the_corner() {
+fn a_maximized_window_is_square_and_closes_from_the_right_edge() {
     let (mut desk, id) = one("notes", "Notes");
     let corner = |desk: &Desk| {
         let f = desk.window(id).expect("open").frame;
@@ -416,4 +417,52 @@ fn high_contrast_frames_a_hovered_control_in_one_px() {
     let y = max.y + max.h / 2;
     assert_eq!(px(&image, max.x, y), palette.focus);
     assert_ne!(px(&image, max.x + 1, y), palette.focus);
+}
+
+/// A monogram's letter sits whole and centred on its 16 px tile, at 100% to
+/// 200% text in every shipped theme: wide (W), narrow (I) and round (S).
+#[test]
+fn a_monogram_is_centred_and_fits_its_tile_at_any_text_size() {
+    for base in theme::shipped() {
+        for percent in [100, 150, 200] {
+            let theme = base.sized(false, percent);
+            let hover = theme.palette().hover;
+            for label in ["wiki", "ink", "spam"] {
+                let (desk, id) = one(label, "");
+                let bar = chrome::title_bar(desk.window(id).expect("open").frame);
+                let tile = Rect::new(bar.x + PAD, bar.y + (bar.h - 16) / 2, 16, 16);
+                let image = painted_in(&desk, Some(&theme));
+                let inked: Vec<(i32, i32)> = (tile.y..tile.bottom())
+                    .flat_map(|y| (tile.x..tile.right()).map(move |x| (x, y)))
+                    .filter(|&(x, y)| px(&image, x, y) != hover)
+                    .collect();
+                let what = alloc::format!("{} {percent}% {label}", theme.name);
+                let xs = || inked.iter().map(|p| p.0);
+                let ys = || inked.iter().map(|p| p.1);
+                let (Some(left), Some(right)) = (xs().min(), xs().max()) else {
+                    panic!("{what}: no letter");
+                };
+                let (top, bottom) = (ys().min().unwrap_or(0), ys().max().unwrap_or(0));
+                // Whole: clear of the tile's edges, so nothing was cut.
+                assert!(
+                    left > tile.x && right < tile.right() - 1,
+                    "{what}: cut across"
+                );
+                assert!(
+                    top > tile.y && bottom < tile.bottom() - 1,
+                    "{what}: cut down"
+                );
+                // Centred on its ink, within a pixel either way.
+                let centre = |a: i32, b: i32, from: i32| (a + b + 1) - 2 * from - 16;
+                assert!(
+                    centre(left, right, tile.x).abs() <= 2,
+                    "{what}: off centre across"
+                );
+                assert!(
+                    centre(top, bottom, tile.y).abs() <= 2,
+                    "{what}: off centre down"
+                );
+            }
+        }
+    }
 }

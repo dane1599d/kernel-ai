@@ -88,6 +88,9 @@ pub struct Painter {
     /// The history's entries laid out, by entry and width
     /// ([`crate::paint_chat`]): what a repaint draws without wrapping again.
     pub(crate) chat_laid: alloc::vec::Vec<crate::paint_chat::Laid>,
+    /// Each monogram letter's fit to its tile, by text size
+    /// ([`crate::monogram`]).
+    pub(crate) monograms: alloc::vec::Vec<crate::monogram::Fit>,
 }
 
 /// `0xFF` alpha on a token.
@@ -124,6 +127,7 @@ impl Painter {
             far: Shadow::new(SHADOW_REACH, 64, 0),
             icons: gfx2d::icons::Icons::default(),
             chat_laid: alloc::vec::Vec::new(),
+            monograms: alloc::vec::Vec::new(),
         })
     }
 
@@ -133,6 +137,7 @@ impl Painter {
         self.text.set_theme(theme);
         // A theme may change the type's sizes, so the lines' breaks.
         self.chat_laid.clear();
+        self.monograms.clear();
     }
 
     /// The theme's colours, for what `desktop` draws itself (the cursor).
@@ -295,26 +300,6 @@ impl Painter {
         let from = x as i32;
         let clip = Rect::new(from, bar.y, (text_end - from).max(0), bar.h);
         self.draw_text(c, clip, x, y, TypeStyle::Label, title_rgb, &window.title);
-    }
-
-    /// A window with no glyph of ours: the first letter of its label in
-    /// Label, `muted` on a `hover` tile, focused or not (`dim` is never drawn
-    /// on `hover`: ADR 0005 §8, `look::theme::HOVER_NEVER`).
-    fn monogram(&mut self, c: &mut Canvas<'_>, clip: Rect, at: (i32, i32), label: &str) {
-        let tile = Rect::new(at.0, at.1, TITLE_ICON, TITLE_ICON);
-        let Some(tile) = tile.intersect(&clip) else {
-            return;
-        };
-        fill(c, tile, clip, self.palette.hover);
-        let Some(first) = label.chars().next() else {
-            return;
-        };
-        let mut letter = [0u8; 4];
-        let letter = first.to_ascii_uppercase().encode_utf8(&mut letter);
-        let y = self.baseline(at.1, TITLE_ICON, TypeStyle::Label);
-        let x = (at.0 + TITLE_ICON / 4) as f32;
-        let ink = monogram_ink(&self.palette);
-        self.draw_text(c, tile, x, y, TypeStyle::Label, ink, letter);
     }
 
     /// One title-bar control: its glyph, on a `hover` fill under the pointer,

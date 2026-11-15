@@ -2,7 +2,8 @@
 //! a 32 px title bar, three 40x32 controls flush in its right end, a 1 px
 //! frame, and resize grabs reaching 6 px outside it, 16x16 at the corners.
 //! Inside the frame the close control wins over the corner grab; a maximized
-//! window has no grabs, so its close control reaches the screen's corner.
+//! window has no grabs, so its close control reaches the screen's right
+//! edge on the close row.
 //! Only `desktop` draws it, so an app cannot pose as another app or as the
 //! system.
 
@@ -73,7 +74,8 @@ pub fn hit(frame: Rect, p: Point) -> Option<Part> {
 
 /// What `p` hits on a maximized window, or `None` off it. It fills the work
 /// area and has no grabs: its 1 px frame line hits what is just inside it,
-/// so the pointer pushed into the screen's corner is on close (as in Win11).
+/// so the pointer pushed against the screen's right edge on the close row
+/// is on close (as in Win11).
 pub fn hit_maximized(frame: Rect, p: Point) -> Option<Part> {
     if !frame.contains(p) {
         return None;

@@ -25,6 +25,7 @@ pub mod geom;
 pub mod keymap;
 pub mod lease;
 pub mod models_wire;
+mod monogram;
 pub mod net_wire;
 pub mod paint;
 pub mod paint_card;
