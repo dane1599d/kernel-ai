@@ -237,12 +237,20 @@ impl Set1 {
     /// Ctrl+Esc's press, a Super tapped alone), and Ctrl and Alt, so a chord
     /// reaches it whole. Super is not shared: a Super used with another key
     /// is the terminal's alone, so `desktop` never takes it for a tap.
+    ///
+    /// Only this side sees every key (PrintScreen, Pause and unmapped USB
+    /// keys decode to none), so a Super tap is [`KeyRoute::Tap`] with or
+    /// without a lease; `desktop` takes no other Super event for one.
     pub fn route(&self, usage: u16, down: bool, leased: bool) -> KeyRoute {
         if usage == usage::F12 && self.ctrl_alt() {
             return KeyRoute::Screen;
         }
+        let tap = matches!(usage, usage::LEFT_GUI | usage::RIGHT_GUI) && !down && self.super_tap;
         if !leased {
-            return KeyRoute::Desk;
+            return match tap {
+                true => KeyRoute::Tap,
+                false => KeyRoute::Desk,
+            };
         }
         // Chords on the press only: a release rolled over a modifier is not.
         let chord = match usage {
@@ -250,7 +258,6 @@ impl Set1 {
             usage::ESCAPE => down && self.ctrl != 0,
             _ => false,
         };
-        let tap = matches!(usage, usage::LEFT_GUI | usage::RIGHT_GUI) && !down && self.super_tap;
         let shared = matches!(
             usage,
             usage::LEFT_CTRL | usage::RIGHT_CTRL | usage::LEFT_ALT | usage::RIGHT_ALT
@@ -270,7 +277,8 @@ impl Set1 {
     }
 }
 
-/// [`Kind::Key`]'s value for a Super tap the kernel saw under a lease.
+/// [`Kind::Key`]'s value for a Super tap the kernel saw: the only Super
+/// event that opens Start.
 pub const TAP: i32 = 3;
 
 /// The set 1 make code a USB keyboard's key with no set 1 code is sent as
@@ -290,8 +298,8 @@ pub enum KeyRoute {
     /// `desktop`'s chord (Alt+Tab, Ctrl+Esc): the lease ends and it goes to
     /// `desktop` alone.
     Chord,
-    /// A Super tapped alone under a lease: the lease ends and `desktop` gets
-    /// one [`TAP`] event.
+    /// A Super tapped alone: a lease, if any, ends and `desktop` gets one
+    /// [`TAP`] event.
     Tap,
     /// Ctrl+Alt+F12: the screen changes hands; nobody gets the key.
     Screen,
@@ -461,12 +469,46 @@ mod tests {
         ];
         for (what, bytes, want) in table {
             assert_eq!(&routes(bytes, true), want, "{what}");
-            // Without a lease every key is desktop's, F12's chord aside.
+            // Without a lease every key is desktop's, F12's chord aside, and
+            // a Super tap is still the kernel's call.
             let free = routes(bytes, false);
+            let tapped = want.iter().any(|r| r.2 == Tap);
             assert!(
-                free.iter().all(|r| r.2 == Desk || r.2 == Screen),
+                free.iter()
+                    .all(|r| r.2 == Desk || r.2 == Screen || (tapped && r.2 == Tap)),
                 "{what}: {free:?}"
             );
+        }
+    }
+
+    /// Without a lease a lone Super tap is still [`KeyRoute::Tap`], and
+    /// Super with PrintScreen, Pause or an unmapped USB key is no tap:
+    /// `desktop` never sees those keys, so only this side can tell.
+    #[test]
+    fn without_a_lease_only_a_lone_super_is_a_tap() {
+        use KeyRoute::*;
+        let gui = usage::LEFT_GUI;
+        assert_eq!(
+            routes(&[0xE0, 0x5B, 0xE0, 0xDB], false),
+            [(gui, true, Desk), (gui, false, Tap)]
+        );
+        for (what, bytes) in [
+            (
+                "PrintScreen",
+                &[0xE0, 0x5B, 0xE0, 0x37, 0xE0, 0xB7, 0xE0, 0xDB][..],
+            ),
+            (
+                "Pause",
+                &[0xE0, 0x5B, 0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5, 0xE0, 0xDB],
+            ),
+            (
+                "unmapped",
+                &[0xE0, 0x5B, UNMAPPED, UNMAPPED | 0x80, 0xE0, 0xDB],
+            ),
+            ("letter", &[0xE0, 0x5B, 0x1E, 0x9E, 0xE0, 0xDB]),
+        ] {
+            let free = routes(bytes, false);
+            assert!(free.iter().all(|r| r.2 == Desk), "Super+{what}: {free:?}");
         }
     }
 

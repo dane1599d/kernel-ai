@@ -202,8 +202,9 @@ fn route(byte: u8, aux: bool) -> (Route, bool) {
             push(Kind::Key, code, i32::from(down));
             return (Route::Taken, false);
         }
-        // A Super tapped alone, which only this side saw whole: the lease
-        // ends and `desktop` gets one tap, never a bare release.
+        // A Super tapped alone, which only this side saw whole (PrintScreen
+        // and Pause reach no one): a lease ends and `desktop` gets one tap,
+        // never a bare release.
         KeyRoute::Tap => {
             end_lease();
             push(Kind::Key, code, TAP);

@@ -414,8 +414,7 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
             if deskcore::lease::ends_lease(event.code, event.value, lent) {
                 state.lease.forget();
             }
-            let lent = state.lease.lent();
-            for (usage, down) in deskcore::lease::desk_keys(event.code, event.value, lent) {
+            for (usage, down) in deskcore::lease::desk_keys(event.code, event.value) {
                 apply_input(state, screen, event, Input::Key { usage, down });
             }
             None
