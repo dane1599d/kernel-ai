@@ -20,6 +20,7 @@ pub(crate) const BAR: Bar = Bar {
     warming: false,
     mem_used_mib: 412,
     mem_total_mib: 1763,
+    utc_s: None,
 };
 
 fn paint(name: &str, desk: &Desk, w: i32, h: i32) -> String {
@@ -90,7 +91,7 @@ fn two_windows_paint() {
 /// 1280x800 with the cursor in the middle, as `desktop` first draws it on GOP,
 /// its RGB bytes hashed with the top bar's stats blanked. The boot's screendump
 /// must hash the same.
-const DESK_BOOT: &str = "5409c90f0bc6830ab1ed54e061ab040b69b3aa28e68e87b9d73549bb94ce6b32";
+const DESK_BOOT: &str = "19af04ec71ae1ca167b874c6e23d934e26092d95ea4c8579bf3f00f4135343a0";
 
 #[test]
 fn the_boot_desk_matches_desk_boot_s_golden() {
@@ -112,7 +113,7 @@ fn the_boot_desk_matches_desk_boot_s_golden() {
     };
     painter.paint(&mut canvas, all, &scene, &mut |_, _, _| false);
     painter.cursor(&mut canvas, all, desk.pointer());
-    let stats = crate::paint::stats_area(w);
+    let stats = crate::paint::tray_area(&desk);
     let mut rgb = Vec::new();
     for (i, p) in image.px.iter().enumerate() {
         let (x, y) = (i as i32 % w, i as i32 / w);
@@ -186,19 +187,19 @@ fn an_ask_card_paints_above_a_window() {
 const THEME_GOLDENS: [(&str, &str); 4] = [
     (
         "dark",
-        "9b941e791223f71fa5170883bfc9a9484457e04f3f368fa3b367de81bbccf798",
+        "33a1c6d7e7257d26766e11d99f29bf50ae7decc82e99aa82757796a966e0d3de",
     ),
     (
         "light",
-        "120604d298eec2d0ebf787d7a94406dc1ce6dc2ad41eeafa4c8bb4defd0a11c3",
+        "96cf7f1aa8c792fa3592e8601f2c37707f64e0ce3f2909cced98e235e25c349b",
     ),
     (
         "high-contrast",
-        "a6834c8c1e2bd4eb2018f7afaa863c5782e75e5ba3401ee0d75e40a4d9e75d8b",
+        "888683c1c28c79f763ce2a0d3859ba41a2e93bd22f88f72b26bdf2547ef023e3",
     ),
     (
         "legible",
-        "69e6b9671f6a783dc20a579fe5d8b0e9d24298059ccc7d6009e6852d75e77c4b",
+        "8f766389c0c49025a049bde44deb9eadeb7c886e8e61be6f55c2a2ad11234c02",
     ),
 ];
 

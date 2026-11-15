@@ -25,8 +25,7 @@ const NAP_MS: u64 = 3_000 + 4_000;
 const MIN_FRAMES: u64 = 32;
 /// Where `desktop` starts the pointer: the middle of 1280x800.
 const START: (i32, i32) = DESK.screen_centre();
-/// The Kai pane's input, once Ctrl+Space opened it: a click there keeps
-/// the focus in it.
+/// The Kai corner: a click there opens the pane and focuses its input.
 const PANEL: (i32, i32) = DESK.focus_kai();
 /// The middle of Notes' 640x420 content, in the first window.
 const WINDOW: (i32, i32) = DESK.content(0, 320, 211);

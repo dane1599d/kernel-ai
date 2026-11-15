@@ -22,7 +22,6 @@ use crate::desk::{Desk, Focus, Window, WindowId};
 use crate::geom::{Point, Rect};
 use crate::panel::Panel;
 use crate::trusted;
-use alloc::format;
 use gfx2d::icons::Icon;
 use gfx2d::shadow::Shadow;
 use gfx2d::{Canvas, Fonts, Image, Text};
@@ -43,10 +42,6 @@ const TITLE_GAP: i32 = 8;
 const HOVER_FRAME: i32 = 1;
 /// Space before and after text in a bar.
 pub(crate) const PAD: i32 = 12;
-/// The varying right side of the top bar: model state and memory.
-pub const STATS_W: i32 = 320;
-/// A tab's widest.
-const TAB_MAX: i32 = 200;
 /// The software cursor's box, for its damage.
 pub const CURSOR: i32 = 18;
 
@@ -59,6 +54,9 @@ pub struct Bar {
     pub warming: bool,
     pub mem_used_mib: u64,
     pub mem_total_mib: u64,
+    /// Seconds since 1970 UTC, for the tray's clock; none without a wall
+    /// clock, and then no clock is drawn.
+    pub utc_s: Option<u64>,
 }
 
 /// Everything a frame shows besides the windows' own pixels.
@@ -102,9 +100,10 @@ pub(crate) fn g(r: Rect) -> gfx2d::Rect {
     gfx2d::Rect::new(r.x, r.y, r.w, r.h)
 }
 
-/// The top bar's part whose text changes while the desk is still.
-pub fn stats_area(width: i32) -> Rect {
-    Rect::new(width - STATS_W, 0, STATS_W, chrome::TOP_BAR - 1)
+/// The tray's part whose text changes while the desk is still: what the
+/// screendump goldens mask (deskgeom's tray mask).
+pub fn tray_area(desk: &Desk) -> Rect {
+    desk.layout().tray.area
 }
 
 /// `r` grown by what its drawing reaches outside it, for damage.
@@ -161,7 +160,7 @@ impl Painter {
         scene: &Scene<'_>,
         content: &mut dyn FnMut(WindowId, &mut Canvas<'_>, Rect) -> bool,
     ) {
-        let (desk, bar) = (scene.desk, scene.bar);
+        let desk = scene.desk;
         c.fill(g(clip), opaque(self.palette.desk));
         for window in desk.windows().iter().filter(|w| !w.minimized) {
             if reach(window.frame).intersect(&clip).is_none() {
@@ -184,10 +183,9 @@ impl Painter {
                 outline(c, trusted::outline(window.frame), clip, self.palette.ai);
             }
         }
-        if desk.top_bar().intersect(&clip).is_some() {
-            self.top_bar(c, clip, desk, bar);
-        }
-        // The Kai pane over the windows and the top bar (ADR 0005 §7).
+        // The taskbar and tray, then the Kai pane, over the windows (ADR 0005
+        // §7's paint order).
+        self.taskbar(c, clip, scene);
         self.pane(c, clip, scene);
         if let Some(sheet) = scene.sheet {
             let (width, height) = (c.width as i32, c.height as i32);
@@ -348,120 +346,6 @@ impl Painter {
         text: &str,
     ) -> f32 {
         self.text.draw(c, g(clip), x, y, style, 1.0, color, text)
-    }
-
-    /// The brand, the windows as tabs, and on the right the model and memory.
-    fn top_bar(&mut self, c: &mut Canvas<'_>, clip: Rect, desk: &Desk, bar: &Bar) {
-        let area = desk.top_bar();
-        let Some(clip) = area.intersect(&clip) else {
-            return;
-        };
-        fill(c, area, clip, self.palette.window);
-        let rule = Rect::new(area.x, area.bottom() - 1, area.w, 1);
-        fill(c, rule, clip, self.palette.line);
-        let h = area.h - 1;
-        // The brand: an ember ring and the name, as the console's status bar.
-        let r = 5;
-        let (cx, cy) = (area.x + PAD + r, area.y + h / 2);
-        disc(c, clip, (cx, cy), r as f32, self.palette.ai);
-        disc(c, clip, (cx, cy), r as f32 / 2.0, self.palette.window);
-        let y = self.baseline(area.y, h, TypeStyle::Label);
-        let x = (cx + r + 8) as f32;
-        self.draw_text(
-            c,
-            clip,
-            x,
-            y,
-            TypeStyle::Label,
-            self.palette.text,
-            "Kernel AI",
-        );
-        // Tabs, bottom to top as the windows stack.
-        let stats = stats_area(area.w);
-        let y = self.baseline(area.y, h, TypeStyle::MonoTitle);
-        for (id, tab) in self.tabs(desk) {
-            let Some(window) = desk.window(id) else {
-                continue;
-            };
-            let name = if window.title.is_empty() {
-                &window.label
-            } else {
-                &window.title
-            };
-            let x = tab.x;
-            let focused = desk.focus() == Focus::Window(window.id);
-            let color = match (focused, window.minimized) {
-                (true, _) => {
-                    fill(c, tab, clip, self.palette.raised);
-                    self.palette.text
-                }
-                (false, true) => self.palette.dim,
-                (false, false) => self.palette.muted,
-            };
-            let inside = tab.intersect(&clip).unwrap_or_default();
-            let tx = (x + PAD) as f32;
-            self.draw_text(c, inside, tx, y, TypeStyle::MonoTitle, color, name);
-        }
-        self.stats(c, clip, stats, bar);
-    }
-
-    /// The top bar's tabs: one a window, bottom to top as they stack, as many
-    /// as fit before the stats. What the bar draws, and what a press on it
-    /// hits (`Desk::set_tabs`).
-    pub fn tabs(&self, desk: &Desk) -> alloc::vec::Vec<(crate::desk::WindowId, Rect)> {
-        let area = desk.top_bar();
-        let h = area.h - 1;
-        let r = 5;
-        let brand = self.text.measure(TypeStyle::Label, "Kernel AI").0 as i32;
-        let mut x = area.x + PAD + 2 * r + 8 + brand + 2 * PAD;
-        let stats = stats_area(area.w);
-        let mut tabs = alloc::vec::Vec::new();
-        for window in desk.windows() {
-            let name = if window.title.is_empty() {
-                &window.label
-            } else {
-                &window.title
-            };
-            let (w, _) = self.text.measure(TypeStyle::MonoTitle, name);
-            let tab_w = (w as i32 + 2 * PAD).min(TAB_MAX);
-            if x + tab_w > stats.x {
-                break;
-            }
-            tabs.push((window.id, Rect::new(x, area.y + 4, tab_w, h - 8)));
-            x += tab_w + 4;
-        }
-        tabs
-    }
-
-    /// The right side, right-aligned in `area`.
-    fn stats(&mut self, c: &mut Canvas<'_>, clip: Rect, area: Rect, bar: &Bar) {
-        let Some(clip) = area.intersect(&clip) else {
-            return;
-        };
-        let style = TypeStyle::MonoTitle;
-        let (dot, model) = match (bar.model, bar.warming) {
-            (true, false) => (self.palette.ok, "model ready"),
-            (true, true) => (self.palette.dim, "getting ready"),
-            (false, _) => (self.palette.dim, "no model"),
-        };
-        let used = format!("{}", bar.mem_used_mib);
-        let total = format!("/{} MiB", bar.mem_total_mib);
-        let parts: [(&str, u32); 4] = [
-            (model, self.palette.text),
-            ("   mem ", self.palette.dim),
-            (&used, self.palette.text),
-            (&total, self.palette.dim),
-        ];
-        let width: f32 = parts
-            .iter()
-            .map(|(t, _)| self.text.measure(style, t).0)
-            .sum();
-        let mut x = (area.right() - PAD) as f32 - width;
-        let y = self.baseline(area.y, area.h, style);
-        disc(c, clip, (x as i32 - 10, area.y + area.h / 2), 3.0, dot);
-        for (text, color) in parts {
-            x += self.draw_text(c, clip, x, y, style, color, text);
-        }
     }
 
     /// The pointer, drawn by `desktop` when the screen has no hardware cursor.

@@ -10,8 +10,7 @@
 use crate::geom::{Point, Rect};
 
 pub use deskgeom::{
-    CONTROL_H, CONTROL_W, CORNER, FRAME, GRAB, TASKBAR, TITLE_BAR, TOP_BAR, content_of, frame_for,
-    title_bar,
+    CONTROL_H, CONTROL_W, CORNER, FRAME, GRAB, TASKBAR, TITLE_BAR, content_of, frame_for, title_bar,
 };
 /// A window's corner radius (`look::metric::RADIUS_MD`); a maximized one is
 /// square.
@@ -118,13 +117,14 @@ fn corners(frame: Rect, p: Point, mut edges: Edges) -> Edges {
 
 #[cfg(test)]
 mod tests {
-    /// The stats the top bar paints are what the screendump goldens mask, so
-    /// the kernel and xtask read the mask from deskgeom.
+    /// What the tray paints is what the screendump goldens mask, so the
+    /// kernel and xtask read the mask from deskgeom.
     #[test]
-    fn the_painted_stats_are_deskgeoms_tray_mask() {
+    fn the_painted_tray_is_deskgeoms_tray_mask() {
         for (w, h) in [(1920, 1080), (1280, 800), (1024, 768)] {
+            let desk = crate::desk::Desk::new(w, h);
             assert_eq!(
-                crate::paint::stats_area(w),
+                crate::paint::tray_area(&desk),
                 deskgeom::points(w, h).tray_mask()
             );
         }

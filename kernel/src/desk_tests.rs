@@ -8,7 +8,7 @@
 //! 302x234 for 300x200 of content, on a 1280x800 screen.
 //!
 //! `test=desk-boot` (P3 task 6's exit case): `desktop` alone claims the screen
-//! and draws the empty desk, top bar and panel; once it has drawn and kept still
+//! and draws the empty desk and the taskbar; once it has drawn and kept still
 //! for a second the host takes a screendump, whose digest must be the golden
 //! one (`deskcore::paint`'s host test paints the same), and presses Enter.
 
