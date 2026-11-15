@@ -400,6 +400,8 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
                 down: event.value != 0,
             })
         }
+        // The vertical wheel; a horizontal one goes nowhere yet.
+        Kind::Wheel if event.code == 0 => Some(Input::Wheel(event.value)),
         Kind::Key => {
             if state.log_first_key && !state.key_logged {
                 state.key_logged = true;
@@ -509,6 +511,20 @@ fn deliver(state: &mut State, effects: &[Effect]) {
             }
             Effect::StartClick { at } => {
                 apps::click(state, at, now);
+                false
+            }
+            // The wheel over the pane's history: three lines a detent.
+            Effect::PaneWheel(detents) => {
+                let area = paint_chat::chat_area(&state.desk);
+                if state.painter.wheel_history(&mut state.chat, area, detents) {
+                    println!("desktop: the wheel moved the pane's history");
+                    state.extra.push(area);
+                }
+                false
+            }
+            // The wheel over Start: a row a detent.
+            Effect::StartWheel(detents) => {
+                apps::wheel(state, detents);
                 false
             }
             // A pin with no window: its `open <name>`, as typed.

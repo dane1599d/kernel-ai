@@ -422,6 +422,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::AppOnDemand => run_case(demand_tests::check),
         SelfTest::DeskBoot => run_case(desk_tests::boot_check),
         SelfTest::DeskPanel => run_case(desk_tests::panel_check),
+        SelfTest::DeskWheel => run_case(desk_tests::wheel_check),
         SelfTest::DeskPanelShell => run_case(desk_tests::panel_shell_check),
         SelfTest::DeskCardWake => run_case(card_wake_tests::check),
         SelfTest::DeskCatalog => run_case(catalog_tests::check),

@@ -20,6 +20,25 @@ impl Desk {
             .then(|| deskgeom::start::start(self.width, self.height))
     }
 
+    /// The wheel turned by `detents` (Kai Desk PR 9): Start's lists while
+    /// the pointer is on Start, else the pane's history while it is on that.
+    /// Over a window it is dropped, as before: a client's wheel needs a later
+    /// `surfabi` change.
+    pub(super) fn wheel(&mut self, detents: i32, effects: &mut Vec<Effect>) {
+        if detents == 0 {
+            return;
+        }
+        let p = self.pointer;
+        if self.start().is_some_and(|r| r.contains(p)) {
+            effects.push(Effect::StartWheel(detents));
+            return;
+        }
+        let history = self.layout().pane_parts().history;
+        if self.pane().is_some() && history.contains(p) {
+            effects.push(Effect::PaneWheel(detents));
+        }
+    }
+
     /// Start's rectangle, open or not: what a change to it damages.
     pub fn start_area(&self) -> Rect {
         deskgeom::start::start(self.width, self.height)

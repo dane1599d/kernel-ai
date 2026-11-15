@@ -160,6 +160,8 @@ impl Desk {
                 }
                 None
             }
+            // The card scrolls nothing, and nothing under it scrolls.
+            Input::Wheel(_) => None,
             Input::Key {
                 usage: code,
                 down: false,

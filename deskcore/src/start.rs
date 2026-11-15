@@ -193,6 +193,31 @@ impl Start {
             .unwrap_or(0)
     }
 
+    /// The wheel turned by `detents` over Start (Kai Desk PR 9): a row a
+    /// detent in Search and All apps, down for a positive turn, within the
+    /// rows; Home does not scroll. True when the selection moved.
+    pub fn wheel(&mut self, detents: i32) -> bool {
+        let code = if detents > 0 { DOWN } else { UP };
+        let mut moved = false;
+        for _ in 0..detents.unsigned_abs() {
+            moved |= match self.view() {
+                View::Home => false,
+                View::AllApps => self.sheet.key(code).0,
+                View::Search => {
+                    let rows = self.rows().len();
+                    let next = match code {
+                        DOWN => (self.selected + 1).min(rows.saturating_sub(1)),
+                        _ => self.selected.saturating_sub(1),
+                    };
+                    let changed = next != self.selected;
+                    self.selected = next;
+                    changed
+                }
+            };
+        }
+        moved
+    }
+
     /// What a click on search row `row` asks for.
     pub fn pick_row(&self, row: usize) -> Option<Pick> {
         match self.rows().get(row)? {
@@ -403,6 +428,25 @@ mod tests {
         assert_eq!(start.key(RIGHT, true), (false, None), "the last tile");
         assert_eq!(start.key(DOWN, true), (false, None), "no row below");
         assert_eq!(start.key(ENTER, true).1, Some(Pick::Open("notes".into())));
+    }
+
+    /// The wheel moves a row a detent in All apps and Search, never past
+    /// the ends, and leaves Home be.
+    #[test]
+    fn the_wheel_moves_a_row_a_detent() {
+        let mut all = Start::new(apps(), true);
+        assert!(all.wheel(2));
+        assert_eq!(all.sheet().selected_index(), 2);
+        assert!(!all.wheel(5), "past the last row");
+        assert!(all.wheel(-1));
+        assert_eq!(all.sheet().selected_index(), 1);
+        let mut search = Start::new(apps(), false);
+        typed(&mut search, "e");
+        assert_eq!(search.selected(), 0);
+        assert!(search.wheel(1));
+        assert_eq!(search.selected(), 1);
+        let mut home = Start::new(apps(), false);
+        assert!(!home.wheel(3));
     }
 
     /// A recent line clicked comes back into the box, with its default.

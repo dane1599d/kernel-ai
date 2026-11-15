@@ -37,12 +37,18 @@ const LEFT_CLOSE: (i32, i32) = (DESK.close(0, 302).0 + 200, DESK.close(0, 302).1
 
 /// A USB-style relative report with `buttons` held.
 pub(crate) fn report(dx: i32, dy: i32, buttons: u8) {
+    report_wheel(dx, dy, buttons, 0);
+}
+
+/// A USB-style relative report with `buttons` held and the wheel turned by
+/// `wheel` detents (positive toward the person).
+fn report_wheel(dx: i32, dy: i32, buttons: u8, wheel: i32) {
     x86_64::instructions::interrupts::without_interrupts(|| {
         pointer::push(Event {
             source: Source::UsbMouse,
             motion: Motion::Relative { dx, dy },
             buttons,
-            wheel: 0,
+            wheel,
         });
         crate::input::wake_pending();
     });
@@ -173,6 +179,28 @@ pub fn panel_shell_check() -> Result<(), &'static str> {
     // The shell looks every 250 ms; the model answers a greeting in words.
     threads::sleep_ms(10_000);
     log!("desk-panel-shell: typed \"hi\" in the panel");
+    Ok(())
+}
+
+/// `test=desk-wheel` (Kai Desk PR 9): Ctrl+Space, "apps" and Enter open
+/// Start on All apps (the image's own apps, with no `pkg` in this plan); the
+/// pointer starts in the screen's middle, on Start; one wheel detent toward
+/// the person moves its list a row, which `desktop` logs. The host checks it.
+pub fn wheel_check() -> Result<(), &'static str> {
+    const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
+    // "apps", then Enter: make and break codes.
+    const APPS_ENTER: [u8; 10] = [0x1E, 0x9E, 0x19, 0x99, 0x19, 0x99, 0x1F, 0x9F, 0x1C, 0x9C];
+    wait("desktop to draw", || {
+        desktop_shows() && claim::flushes() > 0
+    })?;
+    crate::claim_tests::type_keys(&CTRL_SPACE);
+    threads::sleep_ms(STEP_MS);
+    crate::claim_tests::type_keys(&APPS_ENTER);
+    // Start asks `pkg` first, which this plan has not: the image's apps.
+    threads::sleep_ms(2_000);
+    report_wheel(0, 0, 0, 1);
+    threads::sleep_ms(1_000);
+    log!("desk-wheel: opened All apps and turned the wheel over Start");
     Ok(())
 }
 
