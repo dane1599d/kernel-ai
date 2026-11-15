@@ -6,11 +6,10 @@
 //! that does not come out as planned is logged and the tour goes on, so the
 //! pictures show what is really there.
 
-use crate::claim_tests::type_keys;
+use crate::claim_tests::{type_keys, type_text};
 use crate::display::claim;
 use crate::{allow, ask_box, ipc, log, process, terminal, threads};
 use alloc::string::String;
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use termcore::menu::{self, Answer};
 
@@ -30,7 +29,6 @@ const SHOT_MS: u64 = 3_000;
 const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
 /// `n` down and up: no, on the card.
 const NO: [u8; 2] = [0x31, 0xB1];
-const SHIFT: u8 = 0x2A;
 
 static ASKED: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicBool = AtomicBool::new(false);
@@ -102,49 +100,6 @@ fn open(app: &str, request: &str) {
     let service = alloc::format!("{app}-window");
     if wait("the app to start", || !process::named(&service).is_empty()) {
         threads::sleep_ms(OPEN_MS);
-    }
-}
-
-/// Set-1 make code of `c`, and whether it needs Shift (a US layout).
-fn scan(c: char) -> Option<(u8, bool)> {
-    const LETTERS: &[u8; 26] = &[
-        0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, 0x31, 0x18,
-        0x19, 0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C,
-    ];
-    Some(match c {
-        'a'..='z' => (LETTERS[c as usize - 'a' as usize], false),
-        '1'..='9' => (0x02 + (c as u8 - b'1'), false),
-        '0' => (0x0B, false),
-        ' ' => (0x39, false),
-        '\n' => (0x1C, false),
-        '-' => (0x0C, false),
-        '=' => (0x0D, false),
-        '+' => (0x0D, true),
-        '*' => (0x09, true),
-        '.' => (0x34, false),
-        _ => return None,
-    })
-}
-
-/// Types `text` as a keyboard would.
-fn type_text(text: &str) {
-    let mut bytes = Vec::new();
-    for c in text.chars() {
-        let Some((code, shift)) = scan(c) else {
-            log!("{CASE}: no key for {c:?}");
-            continue;
-        };
-        if shift {
-            bytes.push(SHIFT);
-        }
-        bytes.extend([code, code | 0x80]);
-        if shift {
-            bytes.push(SHIFT | 0x80);
-        }
-    }
-    for pair in bytes.chunks(8) {
-        type_keys(pair);
-        threads::sleep_ms(40);
     }
 }
 

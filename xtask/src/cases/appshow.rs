@@ -35,6 +35,7 @@ pub(super) const CASES: &[TestCase] = &[
             "comphost: window 1 hidden until it is shown",
             "desk-reopen: Notes' window was closed from its control",
             "comphost: shown again, as it was",
+            "is on the desk as w",
             "desk-reopen: a show after the second open answered ",
             "desk-reopen: Notes closed from its control opened again",
         ],

@@ -19,7 +19,7 @@
 
 use crate::desk_tests::report;
 use crate::display::claim;
-use crate::ui_tests::DESK as POINTS;
+use crate::ui_tests::{APP_FRAME_W, DESK as POINTS};
 use crate::{ask_box, input, ipc, log, process, terminal, threads};
 use alloc::string::String;
 
@@ -46,10 +46,9 @@ const COUNT: &str = "kai-call 1\nfunc app:notes/actions@1.0.0#count\nargs {}\n";
 /// Between counts: each is a call into comphost, so not every 50 ms.
 const COUNT_MS: u64 = 1_000;
 const CALL_MS: u64 = 10_000;
-/// Notes' close control: its frame is the second, at 80,84, 642 wide as
-/// `ui-window` finds it, the control 17 px in from its right end and down
-/// from its top.
-const NOTES_CLOSE: (i32, i32) = (80 + 642 - 17, 84 + 17);
+/// Notes' close control: its window is the second, at the second cascade
+/// spot, as wide as `ui-window` finds it (deskgeom's points).
+const NOTES_CLOSE: (i32, i32) = POINTS.close(1, APP_FRAME_W);
 
 pub(crate) fn wait(
     case: &str,
