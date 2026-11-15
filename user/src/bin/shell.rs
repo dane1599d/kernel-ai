@@ -37,6 +37,7 @@ use llmproto::chat::Completion;
 use llmproto::script::{self, Answer, AnswerError, Lang, ScriptRequest};
 use llmproto::tune::{self, TuneRequest};
 use shellcore::targets::Service;
+use shellcore::waiting::Took;
 use shellcore::{DEFAULT_CONFIG, Host, PanelResult, Proof, SCRIPT_ROUND_MS, Shell};
 use user::{arg, args, logln, println, sys};
 
@@ -79,8 +80,9 @@ struct System {
     desktop_pid: core::cell::Cell<u64>,
     /// When the shell last looked for a new `desktop`.
     desktop_looked_ns: core::cell::Cell<u64>,
-    /// What the apps asked while the model thought that was not a read: run
-    /// after the line, before anything newer ([`waiting::run_held`]).
+    /// What the apps asked while the model thought that was not a read, most
+    /// of it given back to `desktop` to keep: run after the line, before
+    /// anything newer ([`waiting::run_held`]).
     held: core::cell::RefCell<waiting::HeldRequests>,
 }
 
@@ -227,6 +229,11 @@ fn report_to_desktop(route: kabi::handle::Handle, request: &str) -> Result<Strin
 /// [`report_to_desktop`] for a message that is not all text (a file's piece),
 /// answered in bytes.
 fn report_to_desktop_bytes(route: kabi::handle::Handle, request: &[u8]) -> Result<Vec<u8>, String> {
+    report_call(route, request).map_err(|error| format!("desktop did not answer ({error:?})"))
+}
+
+/// [`report_to_desktop_bytes`], failing with the call's own error.
+fn report_call(route: kabi::handle::Handle, request: &[u8]) -> Result<Vec<u8>, kabi::Error> {
     let _ = sys::interrupt_clear();
     let mut reply = vec![0u8; kabi::MAX_MESSAGE];
     let mut sent = sys::call_route(route, request, &mut reply, DESKTOP_CALL_MS);
@@ -234,7 +241,7 @@ fn report_to_desktop_bytes(route: kabi::handle::Handle, request: &[u8]) -> Resul
         let _ = sys::interrupt_clear();
         sent = sys::call_route(route, request, &mut reply, DESKTOP_CALL_MS);
     }
-    let len = sent.map_err(|error| format!("desktop did not answer ({error:?})"))?;
+    let len = sent?;
     reply.truncate(len.min(reply.len()));
     Ok(reply)
 }
@@ -347,29 +354,42 @@ const _: () = assert!(shellcore::SETTINGS_MAX_ANSWER == deskcore::settings_wire:
 /// Takes an app's oldest effects from `desktop`, runs them through the agent
 /// core, and reports what came of each; `desktop` hands the results to the
 /// app. `desktop` names the app, from its record of who queued them.
+fn take_effects(shell: &mut Shell, held: &core::cell::RefCell<waiting::HeldRequests>) {
+    // A unit of work that is no request: a Stop for the last one ends here.
+    start_of_unit();
+    if let Some(route) = desktop() {
+        run_effects_taken(shell, held, route, deskcore::effects::TAKE);
+    }
+}
+
+/// Takes effects from `desktop` with `take` (`effects take`, or after a line
+/// `effects take app <name>` for what it gave back), runs them and reports
+/// what came of each: what came of the take.
 ///
 /// While the batch runs, its app counts as running in `held`: a Terminal's
 /// `shell_line` runs a line, and what the app asks during that line's model
 /// call waits behind the rest of the batch.
-fn take_effects(shell: &mut Shell, held: &core::cell::RefCell<waiting::HeldRequests>) {
+fn run_effects_taken(
+    shell: &mut Shell,
+    held: &core::cell::RefCell<waiting::HeldRequests>,
+    route: kabi::handle::Handle,
+    take: &str,
+) -> Took {
     use deskcore::effects;
-    // A unit of work that is no request: a Stop for the last one ends here.
-    start_of_unit();
-    let Some(route) = desktop() else {
-        return;
+    let Ok(answer) = ask_desktop(route, take) else {
+        return Took::CallFailed;
     };
-    let Ok(answer) = ask_desktop(route, effects::TAKE) else {
-        return;
+    let (app, user, lines) = match effects::parse_take(&answer) {
+        Some(Some(taken)) => taken,
+        Some(None) => return Took::Empty,
+        None => return Took::CallFailed,
     };
-    let Some(Some((app, user, lines))) = effects::parse_take(&answer) else {
-        return;
-    };
-    let size = lines.lines().count();
     held.borrow_mut()
-        .running(shellcore::waiting::Kind::Effects, app, size);
+        .running(shellcore::waiting::Kind::Effects, app);
     let results = shell.run_effects_from(app, lines, user);
     held.borrow_mut().done();
     give_effect_results(route, app, user, results);
+    Took::Ran
 }
 
 /// Gives `desktop` what app `app`'s effects came to, for its `comphost`.
@@ -464,22 +484,33 @@ const FILES_PER_PASS: usize = 4;
 /// done through the agent core's door (`Shell::door_read`, `Shell::door_write`),
 /// and what came of it goes back, a write's reason or a read's bytes.
 fn take_files(shell: &mut Shell) {
-    use deskcore::files::parse_job;
     // A unit of work that is no request: a Stop for the last one ends here.
     start_of_unit();
     let Some(route) = desktop() else {
         return;
     };
     for _ in 0..FILES_PER_PASS {
-        let Ok(answer) = ask_desktop(route, "files take") else {
+        if run_file_taken(shell, route) != Took::Ran {
             return;
-        };
-        let Some(job) = parse_job(&answer) else {
-            return;
-        };
-        let done = do_file_job(shell, route, &job);
-        report_file_job(route, job.id, done);
+        }
     }
+}
+
+/// Takes the oldest complete transfer `desktop` holds, does it, and reports
+/// it: what came of the take.
+fn run_file_taken(shell: &mut Shell, route: kabi::handle::Handle) -> Took {
+    let Ok(answer) = ask_desktop(route, "files take") else {
+        return Took::CallFailed;
+    };
+    if answer == "none" {
+        return Took::Empty;
+    }
+    let Some(job) = deskcore::files::parse_job(&answer) else {
+        return Took::CallFailed;
+    };
+    let done = do_file_job(shell, route, &job);
+    report_file_job(route, job.id, done);
+    Took::Ran
 }
 
 /// Tells `desktop` what transfer `id` came to: a Stop for a line before
@@ -587,25 +618,33 @@ type Answering = fn(&mut Shell, &str, &str, bool) -> Result<String, String>;
 /// Answers one app's waiting requests, which `desktop` holds under `words`
 /// (`deskcore::settings_wire`): the Settings app's `kai:settings` requests, or
 /// the Models window's switches (`deskcore::models_wire`). The app is
-/// `desktop`'s record of the caller, and `answering` checks it again.
-fn take_changes(shell: &mut Shell, words: &deskcore::settings_wire::Words, answering: Answering) {
+/// `desktop`'s record of the caller, and `answering` checks it again. What
+/// came of the take.
+fn take_changes(
+    shell: &mut Shell,
+    words: &deskcore::settings_wire::Words,
+    answering: Answering,
+) -> Took {
     use deskcore::settings_wire::{self as wire, Answer};
     // A unit of work that is no request: a Stop for the last one ends here.
     start_of_unit();
     let Some(route) = desktop() else {
-        return;
+        return Took::CallFailed;
     };
     let Ok(answer) = ask_desktop(route, words.take) else {
-        return;
+        return Took::CallFailed;
     };
-    let Some(Some((app, requests))) = wire::parse_take(&answer) else {
-        return;
+    let (app, requests) = match wire::parse_take(&answer) {
+        Some(Some(taken)) => taken,
+        Some(None) => return Took::Empty,
+        None => return Took::CallFailed,
     };
     let answers: Vec<Answer> = requests
         .iter()
         .map(|r| Answer::new(r.ticket, answering(shell, app, &r.text, r.user)))
         .collect();
     give_answers(route, words, app, &answers);
+    Took::Ran
 }
 
 /// Gives `desktop` app `app`'s answers under `words`: a Stop for a line

@@ -3,7 +3,7 @@
 //! that person's own line is the one it runs, never another app's effects or
 //! a line still waiting (#892's review).
 
-use crate::effects::{self, Queue, STOPS_FROM, TAKE, TAKE_DURING, Taken};
+use crate::effects::{self, Queue, STOPS_FROM, TAKE, Taken};
 use alloc::vec::Vec;
 
 /// A person's line the shell may run.
@@ -61,23 +61,24 @@ impl Running {
     }
 
     /// One of the shell's takes of effects from `queue` (`effects take`,
-    /// `effects take but ...`, `effects take during`), at most `budget` bytes;
-    /// `None` for any other request. A take starts new work: a Terminal line
-    /// with no result is stale, and the line taken is the one running. A take
-    /// during a line (#877: the apps' reads answered while the model thinks)
-    /// is no new unit: the line running, and its tickets, stay.
+    /// `effects take but ...`, `effects take app ...`, `effects take during`,
+    /// `effects take during but ...`), at most `budget` bytes; `None` for any
+    /// other request. A take starts new work: a Terminal line with no result
+    /// is stale, and the line taken is the one running. A take during a line
+    /// (#877: the apps' reads answered while the model thinks) is no new unit:
+    /// the line running, and its tickets, stay.
     pub fn take(&mut self, queue: &mut Queue, text: &str, budget: usize) -> Option<Took> {
-        if text == TAKE_DURING {
+        if let Some(skip) = effects::parse_take_during_but(text) {
             return Some(Took {
-                taken: queue.take_during(budget),
+                taken: queue.take_during_but(budget, &skip),
                 stale: Vec::new(),
             });
         }
-        let skip = match text == TAKE {
-            true => Vec::new(),
-            false => effects::parse_take_but(text)?,
+        let taken = match effects::parse_take_app(text) {
+            Some(app) => queue.take_app(budget, app),
+            None if text == TAKE => queue.take(budget),
+            None => queue.take_but(budget, &effects::parse_take_but(text)?),
         };
-        let taken = queue.take_but(budget, &skip);
         let stale = match &taken {
             Some(taken) => {
                 let stale = self.take_stale();
@@ -119,6 +120,7 @@ impl Running {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::effects::TAKE_DURING;
 
     #[test]
     fn only_the_persons_own_line_counts_and_only_until_its_result() {
@@ -222,6 +224,62 @@ mod tests {
         queue.put(STOPS_FROM, &line(8));
         let took = running.take(&mut queue, TAKE_DURING, BUDGET).unwrap();
         assert_eq!(app(took).as_deref(), Some(STOPS_FROM), "not a person's");
+    }
+
+    /// #890: while a line runs, the shell's take passes by the apps whose
+    /// requests it put back, and the person's Terminal line, and is no new
+    /// unit; after it, it takes each held app's lines again, as new work.
+    #[test]
+    fn a_take_during_a_line_skips_held_apps_and_one_after_takes_each_again() {
+        let (mut queue, mut running) = (Queue::default(), Running::default());
+        running.took_panel(true);
+        queue.put("files", &line(1));
+        queue.put("notes", &line(2));
+        queue.put_as(STOPS_FROM, &line(3), true);
+        let during = effects::encode_take_during_but(&["files"]);
+        assert_eq!(during, "effects take during but files");
+        let took = running.take(&mut queue, &during, BUDGET).unwrap();
+        assert_eq!(app(took).as_deref(), Some("notes"));
+        let took = running.take(&mut queue, &during, BUDGET).unwrap();
+        assert!(took.taken.is_none(), "files is held, the Terminal's waits");
+        assert!(running.is(Line::Panel), "the line still runs");
+        running.ended(Line::Panel);
+        // After the line: files' own lines first, though the Terminal's turn
+        // would come before them.
+        let again = effects::encode_take_app("files");
+        let took = running.take(&mut queue, &again, BUDGET).unwrap();
+        assert_eq!(app(took).as_deref(), Some("files"));
+        assert!(!running.is(Line::Terminal));
+        let took = running.take(&mut queue, &again, BUDGET).unwrap();
+        assert!(took.taken.is_none(), "files has nothing more");
+        let took = running.take(&mut queue, TAKE, BUDGET).unwrap();
+        assert_eq!(app(took).as_deref(), Some(STOPS_FROM));
+    }
+
+    #[test]
+    fn the_takes_that_skip_or_name_apps_read_back() {
+        assert_eq!(effects::encode_take_during_but(&[]), TAKE_DURING);
+        let text = effects::encode_take_during_but(&["files", "notes"]);
+        assert_eq!(
+            effects::parse_take_during_but(&text),
+            Some(alloc::vec!["files", "notes"])
+        );
+        assert_eq!(
+            effects::parse_take_during_but(TAKE_DURING),
+            Some(Vec::new())
+        );
+        assert_eq!(effects::parse_take_during_but(TAKE), None);
+        assert_eq!(
+            effects::parse_take_during_but("effects take but files"),
+            None
+        );
+        assert_eq!(
+            effects::parse_take_app(&effects::encode_take_app("files")),
+            Some("files")
+        );
+        assert_eq!(effects::parse_take_app("effects take app "), None);
+        assert_eq!(effects::parse_take_app("effects take app a b"), None);
+        assert_eq!(effects::parse_take_app(TAKE), None);
     }
 
     /// #877's review LOW: a result for another of the Terminal's tickets (a
