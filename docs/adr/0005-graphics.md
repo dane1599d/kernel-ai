@@ -33,7 +33,7 @@ The founder asked for a desktop that looks and works like Windows 11, with a Kai
 | (c) 160x45 text page warm / cold | max 1.69 / 4.75 ms | max 4 / 30 ms |
 | (e) key to flush | 6.12 ms | p99 8 ms |
 | (f) drag under load | 11.79 ms | p99 16.7 ms |
-| (g) full composite with Start and the pane open | see the finishing PR's desk-perf run | p99 8 ms |
+| (g) full composite with Start and the pane open (#951's run 43770528735) | 6.19 ms | p99 8 ms |
 
 **What changes in this document:** §1 and the Decision paragraph (what `desktop` draws), §7 (additions to the trusted path), §8 (renamed "The look: Kai Desk", with the new tokens, metrics and pixel tables), a note in §9, one row of the cost table, the open questions, and two rows of the options and reuse tables. The decision row is `2026-11-14-kai-desk`. It supersedes only the placement half of `2026-11-14-panel-history` (the history moves from the desk into the pane); that row's look rules stay. `2026-11-14-desktop-lines-ask-on-the-card` is unchanged. The row at decisions.md:229 is not edited.
 
