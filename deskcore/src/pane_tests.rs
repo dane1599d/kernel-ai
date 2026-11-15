@@ -834,3 +834,52 @@ fn a_hostile_model_name_stays_in_the_header_in_the_systems_look() {
         }
     }
 }
+
+/// The wheel (Kai Desk PR 9) goes to the pane's history while the pointer
+/// is on it, to Start's lists while on Start, nowhere over a window, and
+/// nowhere while a card is up.
+#[test]
+fn the_wheel_reaches_the_history_or_start_and_nothing_else() {
+    let mut desk = open(1280, 800);
+    let (id, _) = desk.open(1, "notes", "Notes", Size { w: 300, h: 200 }, false);
+    let history = desk.layout().pane_parts().history;
+    desk.input(Input::Motion(middle(history)));
+    assert_eq!(desk.input(Input::Wheel(2)), [Effect::PaneWheel(2)]);
+    let content = desk.window(id).unwrap().content();
+    desk.input(Input::Motion(middle(content)));
+    assert!(
+        desk.input(Input::Wheel(2)).is_empty(),
+        "a window got the wheel"
+    );
+    desk.open_start(&mut Vec::new());
+    let start = desk.start().expect("open");
+    desk.input(Input::Motion(middle(start)));
+    assert_eq!(desk.input(Input::Wheel(-1)), [Effect::StartWheel(-1)]);
+    desk.close_start(&mut Vec::new());
+    desk.input(Input::Motion(middle(history)));
+    desk.show_ask(3, 1);
+    assert!(
+        desk.input(Input::Wheel(1)).is_empty(),
+        "the wheel under a card"
+    );
+}
+
+/// The wheel scrolls the history three lines a detent, toward the oldest
+/// for a turn away from the person, within its content.
+#[test]
+fn the_wheel_scrolls_the_history_three_lines_a_detent() {
+    let mut chat = Chat::default();
+    chat.push(Who::Kai, &"Rust is a systems language. ".repeat(143));
+    let desk = open(1280, 800);
+    let area = desk.layout().pane_parts().history;
+    let mut painter = Painter::new(FONTS).unwrap();
+    let line_h = painter.text.measure(look::TypeStyle::Body, "x").1 as i32;
+    assert!(painter.wheel_history(&mut chat, area, -1));
+    assert_eq!(chat.scrolled(), crate::paint_chat::WHEEL_LINES * line_h);
+    assert!(painter.wheel_history(&mut chat, area, 1));
+    assert_eq!(chat.scrolled(), 0);
+    assert!(
+        !painter.wheel_history(&mut chat, area, 1),
+        "past the newest"
+    );
+}

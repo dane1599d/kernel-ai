@@ -158,6 +158,17 @@ pub(super) fn key(state: &mut State, usage: u16, down: bool, now_ms: u64) -> boo
     true
 }
 
+/// The wheel turned over Start by `detents`.
+pub(super) fn wheel(state: &mut State, detents: i32) {
+    if state
+        .start
+        .as_mut()
+        .is_some_and(|start| start.wheel(detents))
+    {
+        damage(state);
+    }
+}
+
 /// A press inside Start at `at`.
 pub(super) fn click(state: &mut State, at: Point, now_ms: u64) {
     let Some(start) = state.start.as_mut() else {

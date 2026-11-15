@@ -104,8 +104,17 @@ pub enum Button {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Input {
     Motion(Point),
-    Button { button: Button, down: bool },
-    Key { usage: u16, down: bool },
+    Button {
+        button: Button,
+        down: bool,
+    },
+    Key {
+        usage: u16,
+        down: bool,
+    },
+    /// The vertical wheel turned by detents, positive toward the person
+    /// (scroll down).
+    Wheel(i32),
 }
 
 /// What `desktop` must do after a change.
@@ -143,6 +152,11 @@ pub enum Effect {
     StartClick { at: Point },
     /// A line for the panel to send as though typed: a pin's `open <name>`.
     PanelLine(String),
+    /// The wheel over the Kai pane's history, by detents (positive scrolls
+    /// toward the newest).
+    PaneWheel(i32),
+    /// The wheel over Start's lists, by detents (positive moves down).
+    StartWheel(i32),
     /// Tell the client its window's content size and state
     /// (`toplevel.configure`).
     Configure {
@@ -564,6 +578,7 @@ impl Desk {
                 Input::Motion(p) => self.motion(p, &mut effects),
                 Input::Button { button, down } => self.button(button, down, &mut effects),
                 Input::Key { usage, down } => self.key(usage, down, &mut effects),
+                Input::Wheel(detents) => self.wheel(detents, &mut effects),
             }
         }
         // A click, a key or a card may have moved what is under the pointer.

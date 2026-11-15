@@ -19,6 +19,8 @@ use alloc::vec::Vec;
 use gfx2d::Canvas;
 use look::TypeStyle;
 
+/// Lines the history scrolls a wheel detent.
+pub const WHEEL_LINES: i32 = 3;
 /// Space between entries.
 const GAP: i32 = 10;
 /// The AI's rule, and the space after it.
@@ -121,6 +123,23 @@ impl Painter {
             chat.scroll_by(grown, most);
         }
         true
+    }
+
+    /// The wheel turned by `detents` over the history in `area`: three lines
+    /// a detent, toward the newest for a positive turn (toward the person),
+    /// within its content. True when the view moved.
+    pub fn wheel_history(
+        &mut self,
+        chat: &mut crate::chat::Chat,
+        area: Rect,
+        detents: i32,
+    ) -> bool {
+        if area.is_empty() {
+            return false;
+        }
+        let line_h = self.text.measure(TypeStyle::Body, "x").1 as i32;
+        let most = (self.chat_height(chat, area.w) - area.h).max(0);
+        chat.scroll_by(-detents.saturating_mul(WHEEL_LINES * line_h), most)
     }
 
     /// PageUp's or PageDown's step in a history `area_h` tall: its height
