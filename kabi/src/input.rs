@@ -11,8 +11,9 @@
 #[repr(u8)]
 pub enum Kind {
     /// A key, `code` its usage on page 0x07; `value` 1 down, 0 up, 2 repeat,
-    /// or [`TAP`]: a Super tapped alone while a terminal held the keys on a
-    /// lease, which the kernel saw whole and ended the lease for.
+    /// or [`TAP`]: a Super tapped alone, which the kernel saw whole (it ends
+    /// the lease if a terminal held the keys on one). No other Super event
+    /// opens Start.
     Key = 1,
     /// Relative motion; `code` 0 for x, 1 for y; `value` in device units.
     Rel = 2,
@@ -218,6 +219,12 @@ impl Set1 {
             (false, false) => self.super_alone,
         };
         Some((usage, down))
+    }
+
+    /// Something that is not a key happened with Super held (a pointer
+    /// button pressed, the screen changing hands): Super's release is no tap.
+    pub fn break_tap(&mut self) {
+        self.super_alone = false;
     }
 
     /// Whether a Ctrl and an Alt key are both held.
@@ -478,6 +485,26 @@ mod tests {
                     .all(|r| r.2 == Desk || r.2 == Screen || (tapped && r.2 == Tap)),
                 "{what}: {free:?}"
             );
+        }
+    }
+
+    /// A pointer press between Super's press and release breaks the tap,
+    /// with a lease or without one.
+    #[test]
+    fn a_click_with_super_held_is_no_tap() {
+        for leased in [false, true] {
+            let mut set1 = Set1::new();
+            assert_eq!(set1.feed(0xE0), None);
+            let down = set1.feed(0x5B).unwrap();
+            set1.route(down.0, down.1, leased);
+            set1.break_tap();
+            assert_eq!(set1.feed(0xE0), None);
+            let up = set1.feed(0xDB).unwrap();
+            let want = match leased {
+                true => KeyRoute::Console,
+                false => KeyRoute::Desk,
+            };
+            assert_eq!(set1.route(up.0, up.1, leased), want, "leased {leased}");
         }
     }
 

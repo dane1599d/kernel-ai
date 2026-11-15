@@ -109,6 +109,40 @@ pub fn desk_keys(usage: u16, value: i32) -> alloc::vec::Vec<(u16, bool)> {
     }
 }
 
+/// What `desktop` does with one kernel key event ([`on_key`]).
+#[derive(Debug, PartialEq, Eq)]
+pub struct KeyStep {
+    /// The event ended a lease, as `desktop` knew it: it forgot the lease, and
+    /// ends it on the kernel's side too (`input_to_console(false)`), since a
+    /// tap the kernel saw unleased may arrive after the kernel lent the keys
+    /// for a new focus.
+    pub end_lease: bool,
+    /// A Super press that is not a tap: it opens nothing, but on an ask card
+    /// it is any key but `y`, which disarms it ([`crate::desk::Desk::super_pressed`]).
+    pub super_press: bool,
+    /// The keys for the desk ([`desk_keys`]).
+    pub keys: alloc::vec::Vec<(u16, bool)>,
+}
+
+/// One kernel key event, `usage` and `value`, with `lease` as `desktop`
+/// knows it: forgets the lease when the event ended it, and says what else
+/// to do.
+pub fn on_key(lease: &mut Lease, usage: u16, value: i32) -> KeyStep {
+    let end_lease = ends_lease(usage, value, lease.lent());
+    if end_lease {
+        lease.forget();
+    }
+    let gui = matches!(
+        usage,
+        crate::desk::usage::LEFT_GUI | crate::desk::usage::RIGHT_GUI
+    );
+    KeyStep {
+        end_lease,
+        super_press: gui && value == 1,
+        keys: desk_keys(usage, value),
+    }
+}
+
 /// Whether the kernel ended the lease for kernel key event `usage`,
 /// `value`, while `lent`: a Super tap or any Tab or Esc press under the
 /// lease (Alt+Tab's and Ctrl+Esc's, which reach `desktop` only as chords;
@@ -173,6 +207,34 @@ mod key_tests {
             !ends_lease(LEFT_GUI, kabi::input::TAP, false),
             "a tap, no lease"
         );
+    }
+
+    /// A tap that reaches `desktop` while it holds a lease, even one the
+    /// kernel saw unleased just before it lent the keys for a new focus,
+    /// ends the lease on both sides; Super's press alone is reported, and
+    /// its keys are none.
+    #[test]
+    fn a_tap_while_lent_ends_the_lease_on_both_sides() {
+        let mut lease = Lease::new();
+        lease.asked(crate::desk::WindowId(1), true, 0);
+        assert!(lease.lent());
+        let press = on_key(&mut lease, LEFT_GUI, 1);
+        assert_eq!(
+            press,
+            KeyStep {
+                end_lease: false,
+                super_press: true,
+                keys: alloc::vec::Vec::new()
+            }
+        );
+        assert!(lease.lent());
+        let tap = on_key(&mut lease, LEFT_GUI, kabi::input::TAP);
+        assert!(tap.end_lease, "desktop must end the kernel's lease too");
+        assert!(!tap.super_press);
+        assert!(!lease.lent());
+        // Not lent: nothing to end.
+        assert!(!on_key(&mut lease, LEFT_GUI, kabi::input::TAP).end_lease);
+        assert!(!on_key(&mut lease, LEFT_GUI, 2).super_press, "a repeat");
     }
 
     /// Only the kernel's tap opens Start. Without a lease, Super pressed and

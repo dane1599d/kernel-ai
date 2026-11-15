@@ -409,12 +409,18 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
                 perf::key(state, event.time_ns);
             }
             // A Super tap or a chord the kernel saw ended its lease: the next
-            // step asks again only for a terminal that has the focus.
-            let lent = state.lease.lent();
-            if deskcore::lease::ends_lease(event.code, event.value, lent) {
-                state.lease.forget();
+            // step asks again only for a terminal that has the focus. The
+            // kernel's side ends too, as a tap it saw unleased may arrive
+            // after it lent the keys for a new focus.
+            let key = deskcore::lease::on_key(&mut state.lease, event.code, event.value);
+            if key.end_lease {
+                let _ = sys::input_to_console(false, 0);
             }
-            for (usage, down) in deskcore::lease::desk_keys(event.code, event.value) {
+            // Super pressed alone opens nothing, but disarms a card.
+            if key.super_press {
+                state.desk.super_pressed();
+            }
+            for (usage, down) in key.keys {
                 apply_input(state, screen, event, Input::Key { usage, down });
             }
             None

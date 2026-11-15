@@ -117,6 +117,15 @@ impl Desk {
             .max(self.now_ms.saturating_add(termcore::menu::SETTLE_MS));
     }
 
+    /// A Super press the desk does not take as a key (only the kernel's tap
+    /// opens Start): on a card it is still a key that is not `y`, so it
+    /// disarms the card as any other does, and opens nothing.
+    pub fn super_pressed(&mut self) {
+        if self.ask.is_some() && self.pressed() {
+            self.disarm();
+        }
+    }
+
     /// The card up now.
     pub fn ask(&self) -> Option<Ask> {
         self.ask.map(|(ask, _)| ask)
