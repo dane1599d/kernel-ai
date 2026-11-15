@@ -627,7 +627,8 @@ pub(super) const CASES: &[TestCase] = &[
         ..case("app-settings", "test=app-settings")
     },
     // The founder's test 2, item 7: the shell answers an app's reads while the
-    // model thinks, and holds its changes until the line ends
+    // model thinks, and holds its changes until the line ends, given back to
+    // `desktop` so a shell killed meanwhile loses none (#890)
     // (`kernel/src/wait_reads_tests.rs`). The test app `wait-window`'s Read
     // and Make buttons queue a read and a change as a person's effects; the
     // mock model takes 8 s over one line's call and fails another's after 6 s.
@@ -644,22 +645,25 @@ pub(super) const CASES: &[TestCase] = &[
         memory_mib: Some(1024),
         // Tab goes round the app's two buttons, Read first. With no line:
         // Read. During the slow line: Read; then Make and Read behind it.
-        // During the failing line: Read; then Make.
+        // During the failing line: Read; then Make. During the slow line
+        // again, the shell killed after: Make.
         keys: &[
             &["tab", "ret"],
             &["ret"],
             &["tab", "ret", "tab", "ret"],
             &["ret"],
             &["tab", "ret"],
+            &["ret"],
         ],
         expect: &[
             "shell: answered wait-window's read while the model thought",
-            "shell: holds wait-window's request until the line ends",
+            "shell: gave wait-window's request back to desktop until the line ends",
             "shell: runs wait-window's held request after the line",
             "wait-reads: with no line running, a read was answered in ",
             "wait-reads: while the model thought, the app's read was answered in ",
             "wait-reads: the app's change and the read behind it waited for the line, then ran once each, in order",
             "wait-reads: a model call that failed partway ended its line; the read during it took ",
+            "wait-reads: the shell was killed with a change given back to desktop; the restarted shell ran it once",
             "wait-reads: the shell answered the app's reads while the model thought, and held its changes until the line ended",
         ],
         ..case("wait-reads", "test=wait-reads")

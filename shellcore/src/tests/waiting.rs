@@ -231,7 +231,7 @@ fn a_read_leaves_the_lines_own_state_as_it_was() {
 }
 
 mod held {
-    use crate::waiting::{Held, Kind, MAX_HELD};
+    use crate::waiting::{Held, Kind};
 
     /// Held requests run in the order they came, and the one running still
     /// holds back its app's later requests until it is done.
@@ -239,8 +239,8 @@ mod held {
     fn they_run_in_order_and_the_running_one_still_holds_its_app_back() {
         let mut held: Held<&str> = Held::default();
         assert!(held.is_empty() && !held.blocks("files"));
-        held.hold(Kind::Effects, "files", 1, "move").unwrap();
-        held.hold(Kind::File, "editor", 1, "save").unwrap();
+        held.hold(Kind::Effects, "files", "move");
+        held.hold(Kind::File, "editor", "save");
         // Per app, whatever the kind: Files' read waits, the Terminal's not.
         assert!(held.blocks("files") && held.blocks("editor"));
         assert!(!held.blocks("terminal-window"));
@@ -259,11 +259,11 @@ mod held {
     #[test]
     fn a_batch_run_from_elsewhere_and_an_answer_to_give_hold_back_their_app() {
         let mut held: Held<&str> = Held::default();
-        held.running(Kind::Effects, "terminal-window", 2);
+        held.running(Kind::Effects, "terminal-window");
         assert!(held.blocks("terminal-window") && !held.blocks("files"));
         held.done();
         assert!(held.is_empty());
-        held.hold(Kind::Answer, "files", 1, "listing").unwrap();
+        held.hold(Kind::Answer, "files", "listing");
         assert!(held.blocks("files") && !held.blocks("editor"));
     }
 
@@ -272,41 +272,29 @@ mod held {
     #[test]
     fn a_held_settings_change_holds_every_app_back() {
         let mut held: Held<&str> = Held::default();
-        held.hold(Kind::Settings, "settings-window", 1, "revoke")
-            .unwrap();
+        held.hold(Kind::Settings, "settings-window", "revoke");
+        assert!(held.blocks_all());
         assert!(held.blocks("files") && held.blocks("editor"));
         assert_eq!(held.start(), Some("revoke"));
-        assert!(held.blocks("files"), "running");
+        assert!(held.blocks_all() && held.blocks("files"), "running");
         held.done();
-        assert!(!held.blocks("files"));
+        assert!(!held.blocks_all() && !held.blocks("files"));
     }
 
-    /// An app has at most `MAX_HELD` requests held, an effect batch counting
-    /// its lines; neither the one running nor an answer still to give is
-    /// counted, nor another app's.
+    /// #890: the apps a take passes by are those held back, running or held,
+    /// each once; another app's are not.
     #[test]
-    fn an_app_has_at_most_sixteen_held() {
-        assert_eq!(MAX_HELD, 16);
-        let mut held: Held<u32> = Held::default();
-        for at in 0..16 {
-            held.hold(Kind::Effects, "files", 1, at).unwrap();
-        }
-        assert_eq!(held.hold(Kind::Effects, "files", 1, 16), Err(16));
-        assert_eq!(held.hold(Kind::Effects, "editor", 1, 17), Ok(()));
-        // An answer still to give is always held, and is not counted.
-        assert_eq!(held.hold(Kind::Answer, "files", 1, 18), Ok(()));
-        // The running one waits no more: there is room for one again.
-        assert_eq!(held.start(), Some(0));
-        assert_eq!(held.hold(Kind::File, "files", 1, 19), Ok(()));
-        assert_eq!(held.hold(Kind::File, "files", 1, 20), Err(20));
-        // Nor does a batch the host runs from elsewhere count.
-        let mut held: Held<u32> = Held::default();
-        held.running(Kind::Effects, "files", 16);
-        assert_eq!(held.hold(Kind::Effects, "files", 16, 0), Ok(()));
-        // A batch of three does not fit where one would.
-        let mut held: Held<u32> = Held::default();
-        held.hold(Kind::Effects, "files", 14, 0).unwrap();
-        assert_eq!(held.hold(Kind::Effects, "files", 3, 1), Err(1));
-        assert_eq!(held.hold(Kind::Effects, "files", 2, 1), Ok(()));
+    fn the_apps_held_back_are_named_once_for_a_take_to_pass_by() {
+        let mut held: Held<&str> = Held::default();
+        assert!(held.apps().is_empty());
+        held.running(Kind::Effects, "terminal-window");
+        held.hold(Kind::Effects, "files", "move");
+        held.hold(Kind::Answer, "files", "listing");
+        held.hold(Kind::File, "editor", "save");
+        assert_eq!(held.apps(), ["terminal-window", "files", "editor"]);
+        assert!(!held.blocks_all() && !held.blocks("notes"));
+        held.done();
+        assert_eq!(held.start(), Some("move"));
+        assert_eq!(held.apps(), ["files", "editor"]);
     }
 }

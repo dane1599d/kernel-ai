@@ -79,8 +79,9 @@ struct System {
     desktop_pid: core::cell::Cell<u64>,
     /// When the shell last looked for a new `desktop`.
     desktop_looked_ns: core::cell::Cell<u64>,
-    /// What the apps asked while the model thought that was not a read: run
-    /// after the line, before anything newer ([`waiting::run_held`]).
+    /// What the apps asked while the model thought that was not a read, most
+    /// of it given back to `desktop` to keep: run after the line, before
+    /// anything newer ([`waiting::run_held`]).
     held: core::cell::RefCell<waiting::HeldRequests>,
 }
 
@@ -347,26 +348,36 @@ const _: () = assert!(shellcore::SETTINGS_MAX_ANSWER == deskcore::settings_wire:
 /// Takes an app's oldest effects from `desktop`, runs them through the agent
 /// core, and reports what came of each; `desktop` hands the results to the
 /// app. `desktop` names the app, from its record of who queued them.
+fn take_effects(shell: &mut Shell, held: &core::cell::RefCell<waiting::HeldRequests>) {
+    // A unit of work that is no request: a Stop for the last one ends here.
+    start_of_unit();
+    if let Some(route) = desktop() {
+        run_effects_taken(shell, held, route, deskcore::effects::TAKE);
+    }
+}
+
+/// Takes effects from `desktop` with `take` (`effects take`, or after a line
+/// `effects take app <name>` for what it gave back), runs them and reports
+/// what came of each.
 ///
 /// While the batch runs, its app counts as running in `held`: a Terminal's
 /// `shell_line` runs a line, and what the app asks during that line's model
 /// call waits behind the rest of the batch.
-fn take_effects(shell: &mut Shell, held: &core::cell::RefCell<waiting::HeldRequests>) {
+fn run_effects_taken(
+    shell: &mut Shell,
+    held: &core::cell::RefCell<waiting::HeldRequests>,
+    route: kabi::handle::Handle,
+    take: &str,
+) {
     use deskcore::effects;
-    // A unit of work that is no request: a Stop for the last one ends here.
-    start_of_unit();
-    let Some(route) = desktop() else {
-        return;
-    };
-    let Ok(answer) = ask_desktop(route, effects::TAKE) else {
+    let Ok(answer) = ask_desktop(route, take) else {
         return;
     };
     let Some(Some((app, user, lines))) = effects::parse_take(&answer) else {
         return;
     };
-    let size = lines.lines().count();
     held.borrow_mut()
-        .running(shellcore::waiting::Kind::Effects, app, size);
+        .running(shellcore::waiting::Kind::Effects, app);
     let results = shell.run_effects_from(app, lines, user);
     held.borrow_mut().done();
     give_effect_results(route, app, user, results);
@@ -464,22 +475,30 @@ const FILES_PER_PASS: usize = 4;
 /// done through the agent core's door (`Shell::door_read`, `Shell::door_write`),
 /// and what came of it goes back, a write's reason or a read's bytes.
 fn take_files(shell: &mut Shell) {
-    use deskcore::files::parse_job;
     // A unit of work that is no request: a Stop for the last one ends here.
     start_of_unit();
     let Some(route) = desktop() else {
         return;
     };
     for _ in 0..FILES_PER_PASS {
-        let Ok(answer) = ask_desktop(route, "files take") else {
+        if !run_file_taken(shell, route) {
             return;
-        };
-        let Some(job) = parse_job(&answer) else {
-            return;
-        };
-        let done = do_file_job(shell, route, &job);
-        report_file_job(route, job.id, done);
+        }
     }
+}
+
+/// Takes the oldest complete transfer `desktop` holds, does it, and reports
+/// it: whether one waited.
+fn run_file_taken(shell: &mut Shell, route: kabi::handle::Handle) -> bool {
+    let Ok(answer) = ask_desktop(route, "files take") else {
+        return false;
+    };
+    let Some(job) = deskcore::files::parse_job(&answer) else {
+        return false;
+    };
+    let done = do_file_job(shell, route, &job);
+    report_file_job(route, job.id, done);
+    true
 }
 
 /// Tells `desktop` what transfer `id` came to: a Stop for a line before

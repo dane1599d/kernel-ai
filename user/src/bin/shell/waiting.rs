@@ -7,19 +7,23 @@
 //! each [`POLL_MS`] `sys::call_poll` waits without its answer, runs [`poll`]:
 //! `desktop`'s waiting effects, file transfers and Settings requests go to the
 //! agent core ([`Shell::serve_waiting`]), which answers those that only read.
-//! The shell stays one thread. The rest are held (`shellcore::waiting::Held`,
-//! which says what waits behind what) and run when the line ends, in the order
-//! they came ([`run_held`]). Past `MAX_HELD` for an app, one is refused at
-//! once.
+//! The shell stays one thread. The rest are given back to `desktop` (#890),
+//! which keeps each at the front of its app's queue, so a shell that dies
+//! mid-line loses none: the restarted shell takes them. Their apps are marked
+//! held (`shellcore::waiting::Held`, which says what waits behind what), and
+//! each look passes them by. When the line ends, [`run_held`] takes each
+//! again from `desktop`, in the order they came, and runs it.
 //!
 //! The person's Stop (#887) withdraws a call `desktop` has not taken yet. So
-//! a request taken just as the Stop came is held, not served, and an answer
-//! whose giving was withdrawn is held too, and given after the line: an app
-//! never waits for ever on a request the shell took. What comes of a held
-//! request after the line goes through `report_to_desktop` (#892), which a
-//! Stop for that line does not cut.
+//! a request taken just as the Stop came is held, not served; one whose
+//! giving back was withdrawn is held in the shell, and an answer whose giving
+//! was withdrawn too: each runs, or is given, after the line. An app never
+//! waits for ever on a request the shell took. What comes of a held request
+//! after the line goes through `report_to_desktop` (#892), which a Stop for
+//! that line does not cut.
 
 use crate::{ask_desktop, desktop};
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
@@ -27,18 +31,13 @@ use deskcore::files::{Job, Op};
 use deskcore::settings_wire::{self as wire, Answer};
 use kabi::Error;
 use kabi::handle::Handle;
-use shellcore::waiting::{Held, Kind, MAX_HELD, Served, Waiting};
+use shellcore::waiting::{Held, Kind, Served, Waiting};
 use shellcore::{EffectDone, Shell};
 use user::sys;
 
 /// The longest the shell waits on the model before it looks at what the apps
 /// ask again.
 const POLL_MS: u64 = 50;
-/// Why a request past `MAX_HELD` is refused.
-const TOO_MANY: &str = "too many requests wait while Kai thinks; ask again";
-
-// The shell holds no more for an app than `desktop` queues for it.
-const _: () = assert!(MAX_HELD == deskcore::effects::MAX_QUEUED);
 
 /// The call `route` answers `request` with, as `sys::call_route` gives it,
 /// running `poll` each [`POLL_MS`] it has not come. A call made while one is
@@ -70,12 +69,15 @@ pub fn call_serving(
 
 /// One request held while the model thought.
 pub enum Request {
-    /// An effect batch as `effects take` gave it: app, whether a person
-    /// queued it, the lines.
+    /// Given back to `desktop`, which keeps it at the front of the app's
+    /// queue of that kind: taken again from there after the line.
+    Back(Kind, String),
+    /// An effect batch as `effects take` gave it, kept in the shell as its
+    /// giving back failed: app, whether a person queued it, the lines.
     Effects(String, bool, String),
-    /// The editor's transfer.
+    /// The editor's transfer, kept in the shell.
     File(Job),
-    /// The Settings app's requests.
+    /// The Settings app's requests, kept in the shell.
     Settings(String, Vec<wire::Request>),
     /// What came of an app's request, as the messages still to give
     /// `desktop`: the person's Stop withdrew the first before it took it.
@@ -87,10 +89,15 @@ pub type HeldRequests = Held<Request>;
 
 /// One look at what the apps ask: a request the agent core answers through
 /// `serve` goes back to its app now; the rest is held for the line's end.
+/// Nothing of an app held back is taken, and nothing at all while a Settings
+/// change is held.
 pub fn poll(held: &RefCell<HeldRequests>, serve: &mut dyn FnMut(Waiting<'_>) -> Option<Served>) {
     let Some(route) = desktop() else {
         return;
     };
+    if held.borrow().blocks_all() {
+        return;
+    }
     poll_effects(route, held, serve);
     poll_files(route, held, serve);
     poll_settings(route, held, serve);
@@ -108,20 +115,38 @@ fn may_serve(held: &RefCell<HeldRequests>, app: &str) -> bool {
     !held.borrow().blocks(app) && !sys::interrupted()
 }
 
-/// Holds `request` for the line's end, or gives it back past `MAX_HELD`.
+/// Leaves `app`'s `request`, of `kind`, for the line's end: given back to
+/// `desktop` with `back`, to wait there; kept in the shell if that failed (a
+/// Stop withdrew it, or `desktop` would not take it). Either way its app is
+/// held back until it has run.
 fn hold(
+    route: Handle,
     held: &RefCell<HeldRequests>,
     kind: Kind,
     app: &str,
-    size: usize,
+    back: &str,
     request: Request,
-) -> Result<(), Request> {
-    let held = held.borrow_mut().hold(kind, app, size, request);
-    match held {
-        Ok(()) => user::println!("shell: holds {app}'s request until the line ends"),
-        Err(_) => user::println!("shell: refused {app}'s request: it has {MAX_HELD} waiting"),
-    }
-    held
+) {
+    let kept = match ask_desktop(route, back) {
+        Ok(reply) if reply == "ok" => {
+            user::println!("shell: gave {app}'s request back to desktop until the line ends");
+            Request::Back(kind, String::from(app))
+        }
+        Ok(reply) => {
+            user::println!("shell: holds {app}'s request until the line ends: {reply}");
+            request
+        }
+        Err(why) => {
+            user::println!("shell: holds {app}'s request until the line ends: {why}");
+            request
+        }
+    };
+    held.borrow_mut().hold(kind, app, kept);
+}
+
+/// The apps held back, for a take to pass by.
+fn held_apps(held: &RefCell<HeldRequests>) -> Vec<String> {
+    held.borrow().apps()
 }
 
 /// Gives `desktop` `messages` for `app`, in order. One the person's Stop
@@ -140,11 +165,7 @@ fn give(route: Handle, held: &RefCell<HeldRequests>, app: &str, messages: Vec<Ve
             }
             Err(_) => {
                 let rest = Request::Give(app.into(), messages[at..].to_vec());
-                held.borrow_mut()
-                    .hold(Kind::Answer, app, 1, rest)
-                    .unwrap_or_else(|_| {
-                        user::println!("shell: {app}'s answer was dropped: too many wait")
-                    });
+                held.borrow_mut().hold(Kind::Answer, app, rest);
                 return user::println!("shell: holds {app}'s answer until the line ends");
             }
         }
@@ -169,11 +190,14 @@ fn poll_effects(
     held: &RefCell<HeldRequests>,
     serve: &mut dyn FnMut(Waiting<'_>) -> Option<Served>,
 ) {
+    use deskcore::effects::{self, Taken};
+    let apps = held_apps(held);
+    let skip: Vec<&str> = apps.iter().map(String::as_str).collect();
     // Not a take of new work: `desktop` keeps the line running as it was.
-    let Ok(answer) = ask_desktop(route, deskcore::effects::TAKE_DURING) else {
+    let Ok(answer) = ask_desktop(route, &effects::encode_take_during_but(&skip)) else {
         return;
     };
-    let Some(Some((app, user, lines))) = deskcore::effects::parse_take(&answer) else {
+    let Some(Some((app, user, lines))) = effects::parse_take(&answer) else {
         return;
     };
     let served = match may_serve(held, app) {
@@ -184,32 +208,20 @@ fn poll_effects(
         answered_now(app);
         return give(route, held, app, effects_done(app, user, results));
     }
-    let size = lines.lines().count();
+    let taken = Taken {
+        app: app.into(),
+        user,
+        lines: lines.lines().map(String::from).collect(),
+    };
     let request = Request::Effects(app.into(), user, lines.into());
-    if hold(held, Kind::Effects, app, size, request).is_err() {
-        let refused = tickets(lines)
-            .into_iter()
-            .map(|ticket| EffectDone {
-                ticket,
-                outcome: Err(String::from(TOO_MANY)),
-            })
-            .collect();
-        give(route, held, app, effects_done(app, user, refused));
-    }
-}
-
-/// The tickets of effect lines (`effect <ticket> …`).
-fn tickets(lines: &str) -> Vec<u32> {
-    lines
-        .lines()
-        .filter_map(|line| {
-            line.strip_prefix("effect ")?
-                .split_once(' ')?
-                .0
-                .parse()
-                .ok()
-        })
-        .collect()
+    hold(
+        route,
+        held,
+        Kind::Effects,
+        app,
+        &effects::encode_back(&taken),
+        request,
+    );
 }
 
 fn poll_files(
@@ -218,7 +230,12 @@ fn poll_files(
     serve: &mut dyn FnMut(Waiting<'_>) -> Option<Served>,
 ) {
     for _ in 0..crate::FILES_PER_PASS {
-        let Ok(answer) = ask_desktop(route, "files take") else {
+        let apps = held_apps(held);
+        let take = match apps.is_empty() {
+            true => String::from("files take"),
+            false => format!("files take but {}", apps.join(" ")),
+        };
+        let Ok(answer) = ask_desktop(route, &take) else {
             return;
         };
         let Some(job) = deskcore::files::parse_job(&answer) else {
@@ -242,11 +259,8 @@ fn poll_files(
             give(route, held, &job.app, messages);
             continue;
         }
-        let (id, app) = (job.id, job.app.clone());
-        if hold(held, Kind::File, &app, 1, Request::File(job)).is_err() {
-            let refused = crate::file_done(id, Err(String::from(TOO_MANY)));
-            give(route, held, &app, alloc::vec![refused.into_bytes()]);
-        }
+        let (back, app) = (format!("files back {}", job.id), job.app.clone());
+        hold(route, held, Kind::File, &app, &back, Request::File(job));
     }
 }
 
@@ -255,6 +269,9 @@ fn poll_settings(
     held: &RefCell<HeldRequests>,
     serve: &mut dyn FnMut(Waiting<'_>) -> Option<Served>,
 ) {
+    if held.borrow().blocks(wire::SETTINGS.app) {
+        return;
+    }
     let Ok(answer) = ask_desktop(route, wire::SETTINGS.take) else {
         return;
     };
@@ -278,21 +295,16 @@ fn poll_settings(
             .collect();
         return give(route, held, app, settings_done(app, &answers));
     }
-    let refused: Vec<Answer> = requests
-        .iter()
-        .map(|r| Answer::new(r.ticket, Err(String::from(TOO_MANY))))
-        .collect();
-    let size = requests.len();
+    let back = wire::encode_back_for(&wire::SETTINGS, &requests);
     let request = Request::Settings(app.into(), requests);
-    if hold(held, Kind::Settings, app, size, request).is_err() {
-        give(route, held, app, settings_done(app, &refused));
-    }
+    hold(route, held, Kind::Settings, app, &back, request);
 }
 
 /// Runs what was held while the model thought, oldest first, before the main
-/// loop takes anything newer. Each runs from the front of `held`, so what is
-/// still held, and the one running, hold back what a line it runs (a held
-/// `shell_line`) is asked meanwhile; what that holds runs here after.
+/// loop takes anything newer: one given back to `desktop` is taken again from
+/// its app's queue, where it waits first. Each runs from the front of `held`,
+/// so what is still held, and the one running, hold back what a line it runs
+/// (a held `shell_line`) is asked meanwhile; what that holds runs here after.
 pub fn run_held(shell: &mut Shell, held: &RefCell<HeldRequests>) {
     if held.borrow().is_empty() {
         return;
@@ -310,13 +322,28 @@ pub fn run_held(shell: &mut Shell, held: &RefCell<HeldRequests>) {
         // Each is a unit of its own: a Stop for the line before, or for a
         // held line before it, is not its.
         crate::start_of_unit();
-        run_one(shell, route, request);
+        run_one(shell, held, route, request);
         held.borrow_mut().done();
     }
 }
 
-fn run_one(shell: &mut Shell, route: Handle, request: Request) {
+fn run_one(shell: &mut Shell, held: &RefCell<HeldRequests>, route: Handle, request: Request) {
     match request {
+        Request::Back(kind, app) => {
+            user::println!("shell: runs {app}'s held request after the line");
+            match kind {
+                Kind::Effects => {
+                    let take = deskcore::effects::encode_take_app(&app);
+                    crate::run_effects_taken(shell, held, route, &take);
+                }
+                Kind::File => {
+                    crate::run_file_taken(shell, route);
+                }
+                Kind::Settings => crate::take_changes(shell, &wire::SETTINGS, Shell::settings),
+                // An answer is never given back: `give` holds it in the shell.
+                Kind::Answer => {}
+            }
+        }
         Request::Effects(app, user, lines) => {
             user::println!("shell: runs {app}'s held request after the line");
             let results = shell.run_effects_from(&app, &lines, user);

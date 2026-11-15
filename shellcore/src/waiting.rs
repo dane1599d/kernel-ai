@@ -5,8 +5,10 @@
 //! ([`Host::act_serving`]) hands the apps' waiting requests here, and those
 //! that only read are answered at once: an effect batch whose every call is a
 //! read-only row, the editor's read of a file, and Settings' reads. Anything
-//! that changes something waits for the line to end, as before: the host keeps
-//! it in [`Held`], which says what must wait behind it.
+//! that changes something waits for the line to end, as before: the host
+//! gives it back to `desktop` to keep (#890), so a shell that dies mid-line
+//! loses none, and marks it in [`Held`], which says what must wait behind it
+//! and what the host takes again after the line.
 //!
 //! [`Host::act_serving`]: crate::Host::act_serving
 
@@ -15,10 +17,6 @@ use crate::effects::{self, Effect, EffectDone};
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
-
-/// The most requests held for one app: as many as `desktop` queues effects
-/// for one (`deskcore::effects::MAX_QUEUED`).
-pub const MAX_HELD: usize = 16;
 
 /// What kind of request a held one is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,12 +29,10 @@ pub enum Kind {
     Answer,
 }
 
-/// One held request: its kind, its app, how many requests it counts as (an
-/// effect batch's lines, a Settings batch's requests), and the host's own.
+/// One held request: its kind, its app, and the host's own.
 struct Item<T> {
     kind: Kind,
     app: String,
-    size: usize,
     request: T,
 }
 
@@ -48,12 +44,12 @@ struct Item<T> {
 /// - While a Settings change is held, every request waits, so none is answered
 ///   under what the change takes away. The first Settings request held is a
 ///   change, as one that only reads is answered.
-/// - An app has at most [`MAX_HELD`] requests held: past that, the host
-///   refuses one. Neither the one running nor an answer still to give counts:
-///   neither waits as a request of the app's.
+///
+/// The host takes nothing of an app held back ([`Held::apps`]), so each app
+/// has at most one request held, and an answer still to give.
 pub struct Held<T> {
     items: VecDeque<Item<T>>,
-    running: Option<(Kind, String, usize)>,
+    running: Option<(Kind, String)>,
 }
 
 impl<T> Default for Held<T> {
@@ -66,11 +62,11 @@ impl<T> Default for Held<T> {
 }
 
 impl<T> Held<T> {
-    fn all(&self) -> impl Iterator<Item = (Kind, &str, usize)> {
+    fn all(&self) -> impl Iterator<Item = (Kind, &str)> {
         self.running
             .iter()
-            .map(|(kind, app, size)| (*kind, app.as_str(), *size))
-            .chain(self.items.iter().map(|i| (i.kind, i.app.as_str(), i.size)))
+            .map(|(kind, app)| (*kind, app.as_str()))
+            .chain(self.items.iter().map(|i| (i.kind, i.app.as_str())))
     }
 
     /// Whether nothing is held or running.
@@ -80,44 +76,47 @@ impl<T> Held<T> {
 
     /// Whether a request of `app` must wait behind what is held.
     pub fn blocks(&self, app: &str) -> bool {
-        self.all()
-            .any(|(kind, held, _)| kind == Kind::Settings || held == app)
+        self.blocks_all() || self.all().any(|(_, held)| held == app)
     }
 
-    /// Holds `request`, of `kind`, from `app`, counting `size`: or gives it
-    /// back past [`MAX_HELD`] requests for `app`. An answer is always held.
-    pub fn hold(&mut self, kind: Kind, app: &str, size: usize, request: T) -> Result<(), T> {
-        let held: usize = self
-            .items
-            .iter()
-            .filter(|i| i.app == app && i.kind != Kind::Answer)
-            .map(|i| i.size)
-            .sum();
-        if kind != Kind::Answer && held + size > MAX_HELD {
-            return Err(request);
+    /// Whether every request must wait: a Settings change is held or runs.
+    pub fn blocks_all(&self) -> bool {
+        self.all().any(|(kind, _)| kind == Kind::Settings)
+    }
+
+    /// The apps held back, each once, for a take to pass by.
+    pub fn apps(&self) -> Vec<String> {
+        let mut apps: Vec<String> = Vec::new();
+        for (_, app) in self.all() {
+            if !apps.iter().any(|a| a == app) {
+                apps.push(String::from(app));
+            }
         }
+        apps
+    }
+
+    /// Holds `request`, of `kind`, from `app`, behind what is held already.
+    pub fn hold(&mut self, kind: Kind, app: &str, request: T) {
         self.items.push_back(Item {
             kind,
             app: String::from(app),
-            size,
             request,
         });
-        Ok(())
     }
 
     /// The oldest held request, to run now: it holds back what came after it
     /// until [`Held::done`].
     pub fn start(&mut self) -> Option<T> {
         let item = self.items.pop_front()?;
-        self.running = Some((item.kind, item.app, item.size));
+        self.running = Some((item.kind, item.app));
         Some(item.request)
     }
 
     /// A request of `app` the host runs now from elsewhere (the main loop's
     /// own effect batch): it holds back what comes after it, as one from
     /// [`Held::start`] does, until [`Held::done`].
-    pub fn running(&mut self, kind: Kind, app: &str, size: usize) {
-        self.running = Some((kind, String::from(app), size));
+    pub fn running(&mut self, kind: Kind, app: &str) {
+        self.running = Some((kind, String::from(app)));
     }
 
     /// The request [`Held::start`] gave, or [`Held::running`] named, has run.

@@ -242,7 +242,7 @@ impl Shell {
                         false => Err(String::from(crate::appline::NOT_BY_A_PERSON)),
                     }
                 }
-                (true, Ok(Effect::Call { name, args })) if name == crate::deskask::SHELL_CARD => {
+                (true, Ok(Effect::Call { name, args })) if name == crate::deskcard::SHELL_CARD => {
                     match self.shell_card(app, ticket, &args) {
                         Some(outcome) => outcome,
                         None => continue,
