@@ -25,6 +25,7 @@ use crate::{ask_box, display, ipc, log, process, terminal, threads};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::ops::Range;
 
 const CASE: &str = "founder-walk";
 const CALL_MS: u64 = 60_000;
@@ -108,14 +109,37 @@ pub fn plan(system: &str) -> String {
         .join("\n")
 }
 
+/// The columns and rows of [`TILE`]-pixel squares that meet `mask`.
+fn squares_meeting(mask: deskgeom::Rect) -> (Range<usize>, Range<usize>) {
+    if mask.is_empty() {
+        return (0..0, 0..0);
+    }
+    let squares = |from: i32, to: i32| {
+        let from = usize::try_from(from).unwrap_or(0);
+        let to = usize::try_from(to).unwrap_or(0);
+        from / TILE..to.div_ceil(TILE)
+    };
+    (
+        squares(mask.x, mask.right()),
+        squares(mask.y, mask.bottom()),
+    )
+}
+
 /// A FNV-1a hash of each [`TILE`]-pixel square of the screen, row by row, and
-/// how many squares make a row.
+/// how many squares make a row. The squares that meet deskgeom's tray mask,
+/// whose stats repaint while the desk is still, are left out: they always
+/// hash the same.
 fn signature() -> Result<(Vec<u64>, usize), &'static str> {
     let surface = display::surface().ok_or("founder-walk: no display")?;
+    let (mask_columns, mask_rows) = squares_meeting(points_of(&surface)?.tray_mask());
     let across = surface.width.div_ceil(TILE);
     let mut tiles = alloc::vec![0xcbf2_9ce4_8422_2325u64; across * surface.height.div_ceil(TILE)];
     for y in 0..surface.height {
+        let masked_row = mask_rows.contains(&(y / TILE));
         for x in 0..surface.width {
+            if masked_row && mask_columns.contains(&(x / TILE)) {
+                continue;
+            }
             // SAFETY: the surface is `stride * height` pixels from `base`, and
             // (x, y) is inside it; a read races only `desktop`'s writes.
             let pixel = unsafe {
@@ -370,7 +394,11 @@ fn note_reaches_notes() -> Result<(), &'static str> {
 /// The desk's points at the screen's size, which the case's `display=` sets
 /// (deskgeom), so a layout change moves the walk's clicks with it.
 fn desk() -> Result<deskgeom::Points, &'static str> {
-    let surface = display::surface().ok_or("founder-walk: no display")?;
+    points_of(&display::surface().ok_or("founder-walk: no display")?)
+}
+
+/// The desk's points at `surface`'s size.
+fn points_of(surface: &display::Surface) -> Result<deskgeom::Points, &'static str> {
     let px = |n: usize| i32::try_from(n).map_err(|_| "founder-walk: the screen is too big");
     Ok(deskgeom::points(px(surface.width)?, px(surface.height)?))
 }
