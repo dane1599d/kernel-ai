@@ -120,8 +120,9 @@ pub mod metric {
     pub const CONTROL_H: i32 = 28;
     /// Space left and right of a button's or a field's text.
     pub const CONTROL_PAD: i32 = 10;
-    /// Corner radius of controls and lists (the window's is 6 px too).
-    pub const RADIUS: i32 = 6;
+    /// Corner radius of controls and lists: the desk's small radius (Kai Desk),
+    /// so app controls match its tiles and buttons.
+    pub const RADIUS: i32 = 4;
     /// The focus ring: 2 px wide, 1 px from the control.
     pub const FOCUS_GAP: i32 = 1;
     pub const FOCUS_W: i32 = 2;
