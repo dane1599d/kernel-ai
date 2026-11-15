@@ -262,3 +262,46 @@ fn a_pin_lands_on_the_screens_last_pixel() {
         assert_eq!(p.pinned(), (w - 1, h - 1));
     }
 }
+
+/// ADR 0005 §8's menu table: Start at each size, and its parts inside it.
+#[test]
+fn start_is_where_the_adr_puts_it() {
+    let want = [
+        ((1920, 1080), Rect::new(640, 340, 640, 680)),
+        ((1280, 800), Rect::new(320, 60, 640, 680)),
+        ((1024, 768), Rect::new(192, 28, 640, 680)),
+    ];
+    for ((w, h), area) in want {
+        assert_eq!(start::start(w, h), area);
+        let p = start::parts(area);
+        for r in [
+            p.field, p.pinned, p.all_apps, p.recent, p.footer, p.settings,
+        ] {
+            assert!(inside(area, r), "{r:?} at {w}x{h}");
+        }
+        assert_eq!(p.field, Rect::new(area.x + 24, area.y + 24, 592, 40));
+        let last = start::cell(area, start::GRID_COLS * start::GRID_ROWS - 1);
+        assert_eq!(last.bottom(), area.y + 368);
+        let recent = start::recent_row(area, start::RECENT_ROWS - 1);
+        assert!(recent.bottom() <= p.footer.y);
+        assert!(start::search_row(area, start::SEARCH_ROWS - 1).bottom() <= p.footer.y + 64);
+        assert!(inside(area, start::all_row(area, start::ALL_ROWS - 1)));
+    }
+}
+
+/// A tooltip's box sits 8 above the taskbar and on the screen, even over
+/// the first and last items.
+#[test]
+fn a_tooltip_stays_on_the_screen() {
+    for (w, h) in SIZES {
+        let screen = Rect::new(0, 0, w, h);
+        for item in [
+            Rect::new(0, h - 44, 40, 40),
+            Rect::new(w - 40, h - 44, 40, 40),
+        ] {
+            let tip = start::tooltip(w, h, item);
+            assert!(inside(screen, tip), "{tip:?} at {w}x{h}");
+            assert_eq!(tip.bottom(), h - TASKBAR - 8);
+        }
+    }
+}

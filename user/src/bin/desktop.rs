@@ -28,8 +28,10 @@
 //!   when the focus moves (P3 task 8). The
 //!   kernel, not `desktop`, decides which client is the terminal: it lends the
 //!   keys only for the window of a process holding TERM.
-//! - `apps` sent in the panel opens the Apps sheet, with what `pkg` lists
-//!   ([`apps`], P4 task 3).
+//! - A Super tap, Ctrl+Esc or the Kai button opens Start, "Ask Kai or search
+//!   apps", with what `pkg` lists; `apps`, "All apps ›" or the taskbar's
+//!   "more" open its All apps ([`apps`], Kai Desk PR 8; the Apps sheet of P4
+//!   task 3 before it).
 
 #![no_std]
 #![no_main]
@@ -141,8 +143,8 @@ struct State {
     panel: Panel,
     /// The panel's lines and what came of each, drawn on the desk.
     chat: Chat,
-    /// The Apps sheet, while it is up: it takes the panel's keys.
-    sheet: Option<deskcore::catalog::Sheet>,
+    /// Start, while it is open: it takes the panel's keys.
+    start: Option<deskcore::start::Start>,
     /// Apps' effects waiting for the shell, and what came of them.
     effects: effects::Queue,
     /// Which person's line the shell runs, so Stop and Esc interrupt only it.
@@ -221,7 +223,7 @@ fn main() -> i32 {
             log_bar: logs_bar(),
             panel: Panel::new(),
             chat: Chat::default(),
-            sheet: None,
+            start: None,
             effects: effects::Queue::default(),
             running: deskcore::running::Running::default(),
             files: deskcore::files::Files::default(),
@@ -242,6 +244,8 @@ fn main() -> i32 {
             perf: perf::from_args(),
             theme_name: theme_name.clone(),
         };
+        // The taskbar's pins: the image's own apps, until `pkg` lists more.
+        state.desk.set_installed(apps::built_in_names());
         println!("desktop: claimed {width}x{height}");
         let result = run(&mut state, &screen);
         painter = state.painter;
@@ -305,6 +309,8 @@ fn run(state: &mut State, screen: &Screen) -> Option<bool> {
         post_events(state);
         refresh_bar(state);
         tick_panel(state);
+        // A taskbar tooltip shows once its 500 ms are up.
+        state.desk.tick(now_ms());
         read_asks(state);
         lease(state);
         theme(state, screen);
@@ -476,10 +482,30 @@ fn deliver(state: &mut State, effects: &[Effect]) {
                     None => false,
                 }
             }
-            // The taskbar's "more": the Apps sheet.
+            // The taskbar's "more": All apps.
             Effect::ShowApps => {
-                apps::open(state);
+                apps::show_all(state);
                 false
+            }
+            // Start's host: it opens with the catalog, and takes the keys.
+            Effect::Start(open) => {
+                match open {
+                    true => apps::open(state),
+                    false => apps::close(state),
+                }
+                let listening = state.desk.focus() == Focus::Panel && !open;
+                state.panel.set_focus(listening)
+            }
+            Effect::StartClick { at } => {
+                apps::click(state, at, now);
+                false
+            }
+            // A pin with no window: its `open <name>`, as typed.
+            Effect::PanelLine(ref line) => {
+                println!("desktop: the taskbar sent {line:?}");
+                state.panel.send(line.clone(), now);
+                wake_shell();
+                true
             }
             Effect::Locks { caps } => {
                 state.panel.set_caps(caps);
@@ -517,7 +543,9 @@ fn deliver(state: &mut State, effects: &[Effect]) {
                 if focus != Focus::Panel {
                     apps::close(state);
                 }
-                state.panel.set_focus(focus == Focus::Panel)
+                // The pane's input listens unless Start has the keys.
+                let start = state.desk.start().is_some();
+                state.panel.set_focus(focus == Focus::Panel && !start)
             }
             _ => false,
         };
@@ -1332,7 +1360,7 @@ fn draw(state: &mut State, screen: &Screen) {
         bar: &state.bar,
         panel: &state.panel,
         chat: &state.chat,
-        sheet: state.sheet.as_ref(),
+        start: state.start.as_ref(),
         ask: state.card.as_ref(),
         now_ms: now_ms(),
     };

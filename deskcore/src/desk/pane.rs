@@ -98,7 +98,7 @@ impl Desk {
         effects
     }
 
-    fn leave_panel(&mut self, effects: &mut Vec<Effect>) {
+    pub(super) fn leave_panel(&mut self, effects: &mut Vec<Effect>) {
         let back = match self.before_panel {
             Focus::Window(id) if self.window(id).is_some_and(|w| !w.minimized) => Focus::Window(id),
             _ => self.top_visible().map_or(Focus::Nothing, Focus::Window),
@@ -109,7 +109,7 @@ impl Desk {
     /// Focus moved from `from` to `to`: the input's look changes, the pane
     /// opens for its input, and a flyout closes when the focus leaves it.
     pub(super) fn pane_focus(&mut self, from: Focus, to: Focus, effects: &mut Vec<Effect>) {
-        if to == Focus::Panel {
+        if to == Focus::Panel && !self.start_open {
             // Back from a card, the focus came from the panel itself: Esc
             // still goes where it was before the panel took it.
             if !matches!(from, Focus::Ask(_)) {

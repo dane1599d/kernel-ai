@@ -33,7 +33,7 @@ fn painted_in(desk: &Desk, theme: Option<&Theme>) -> Image {
         bar: &BAR,
         panel: &Panel::new(),
         chat: &crate::chat::Chat::default(),
-        sheet: None,
+        start: None,
         ask: None,
         now_ms: 0,
     };

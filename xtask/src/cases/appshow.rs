@@ -42,6 +42,33 @@ pub(super) const CASES: &[TestCase] = &[
         forbid: REOPEN_FORBID,
         ..case("desk-reopen", "test=desk-reopen")
     },
+    // Kai Desk PR 8: a Super tap opens Start; "not" selects Notes, the first
+    // app whose name starts with it, and Enter opens it with `open notes`,
+    // never as a request for the model (`kernel/src/start_tests.rs`).
+    TestCase {
+        memory_mib: Some(1024),
+        expect: &[
+            "desk-start: a Super tap was typed",
+            "desktop: focus Panel",
+            "desktop: the Apps sheet lists ",
+            "desktop: the Apps sheet sent \"open notes\"",
+            "desk-start: Super, \"not\" and Enter opened Notes from Start",
+        ],
+        forbid: START_FORBID,
+        ..case("desk-start", "test=desk-start")
+    },
+];
+
+/// [`FORBID`], and a request for the model: Start sends an app's line, never
+/// the text typed to find it.
+const START_FORBID: &[&str] = &[
+    "pkg: FAIL",
+    "cannot ask yet",
+    "dropped a result",
+    "did not reach the app",
+    "supervision: supervisor died",
+    ROOM_WARNING,
+    "desktop: the panel queued a request",
 ];
 
 /// [`FORBID`], and the shell's lines for a show refused or a window that never

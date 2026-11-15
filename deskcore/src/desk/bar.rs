@@ -48,6 +48,20 @@ impl Desk {
         self.bar_hover
     }
 
+    /// The apps installed, by name: the pins shown are these.
+    pub fn installed(&self) -> &[alloc::string::String] {
+        &self.installed
+    }
+
+    /// What `desktop` knows is installed (its built-in apps, then `pkg`'s
+    /// list): the taskbar's pins follow.
+    pub fn set_installed(&mut self, names: Vec<alloc::string::String>) {
+        if names != self.installed {
+            self.installed = names;
+            self.bar_changed();
+        }
+    }
+
     /// Whether Kai said something while the pane was closed: the chip's
     /// badge, until the pane opens.
     pub fn unread(&self) -> bool {
@@ -91,15 +105,19 @@ impl Desk {
     pub(super) fn bar_click(&mut self, hit: Hit, effects: &mut Vec<Effect>) {
         match hit {
             Hit::Taskbar(Some(i)) => match self.taskbar_items().into_iter().nth(i) {
-                Some(Item::Kai) => self.set_focus(Focus::Panel, effects),
+                Some(Item::Kai) => self.toggle_start(effects),
+                // A pin with no window opens its app, as the Apps sheet does.
+                Some(Item::App(app)) if app.windows.is_empty() => {
+                    effects.push(Effect::PanelLine(alloc::format!("open {}", app.name)));
+                }
                 Some(Item::App(app)) => self.app_click(&app.windows, effects),
                 Some(Item::More) => effects.push(Effect::ShowApps),
                 None => {}
             },
-            Hit::Tray(TrayPart::Corner) => self.set_focus(Focus::Panel, effects),
+            Hit::Tray(TrayPart::Corner) => self.focus_pane(effects),
             Hit::Tray(TrayPart::Chip) => match self.pane_open {
                 true => self.close_pane(effects),
-                false => self.set_focus(Focus::Panel, effects),
+                false => self.focus_pane(effects),
             },
             _ => {}
         }
@@ -129,6 +147,7 @@ impl Desk {
         };
         if spot != self.bar_hover {
             self.bar_hover = spot;
+            self.tip_reset();
             self.bar_changed();
         }
     }
