@@ -104,10 +104,51 @@ pub struct Head {
     /// `Content-Type`, when it is at most [`MAX_CONTENT_TYPE`] printable
     /// ASCII bytes; otherwise none.
     pub content_type: Option<String>,
+    /// The status line's reason phrase ("OK"), when it is at most
+    /// [`MAX_REASON`] printable ASCII bytes; otherwise none.
+    pub reason: Option<String>,
 }
 
 /// The longest `Content-Type` kept.
 pub const MAX_CONTENT_TYPE: usize = 128;
+/// The longest reason phrase kept.
+pub const MAX_REASON: usize = 64;
+
+/// `text` as a reason phrase: printable ASCII and at most [`MAX_REASON`]
+/// bytes, or none.
+fn reason(text: &str) -> Option<String> {
+    let printable = text.bytes().all(|b| b == b' ' || b.is_ascii_graphic());
+    (!text.is_empty() && text.len() <= MAX_REASON && printable).then(|| String::from(text))
+}
+
+/// The head of a response whose status line has come whole but whose head
+/// could not be read: its status and reason, and nothing else, with no body.
+/// A POST's answer is taken from it: the server has answered, so it has the
+/// request (`Fetch::post`).
+pub fn status_line(bytes: &[u8]) -> Option<Head> {
+    let end = bytes.windows(2).position(|w| w == b"\r\n")?;
+    let line = core::str::from_utf8(&bytes[..end]).ok()?;
+    let rest = line
+        .strip_prefix("HTTP/1.1 ")
+        .or_else(|| line.strip_prefix("HTTP/1.0 "))?;
+    let (code, phrase) = match rest.split_once(' ') {
+        Some((code, phrase)) => (code, phrase),
+        None => (rest, ""),
+    };
+    let status = (code.len() == 3 && code.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| code.parse::<u16>().ok())
+        .flatten()
+        .filter(|n| (100..=599).contains(n))?;
+    Some(Head {
+        status,
+        framing: Framing::Empty,
+        location: None,
+        content_range: None,
+        retry_after: None,
+        content_type: None,
+        reason: reason(phrase),
+    })
+}
 
 /// The response head at the start of `bytes`, and its length; `Ok(None)`
 /// if it has not all come yet.
@@ -182,6 +223,7 @@ pub fn parse(bytes: &[u8], method: Method) -> Result<Option<(Head, usize)>, Http
         content_range,
         retry_after,
         content_type,
+        reason: response.reason.and_then(reason),
     };
     Ok(Some((head, used)))
 }

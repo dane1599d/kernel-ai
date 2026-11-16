@@ -19,8 +19,11 @@
 //!   their names for the app, each with at most [`MAX_WHY`] printable bytes
 //!   of why.
 //! - **No request body or headers for apps**: GET and HEAD, with a byte
-//!   range. The shell alone posts a short text ([`post_within`], for ADR
-//!   0002's held sends), made once.
+//!   range. A POST of a short text ([`post_within`], made once) is for the
+//!   shell's held sends (ADR 0002's `Hold`). Nothing here checks who posts:
+//!   apps cannot because comphost builds no POST (`kai:net` 0.1.0 has none)
+//!   and a `kainet::later` start never carries one; a check on the caller in
+//!   the `fetch` service itself is still to come.
 //! - **A call only queues** ([`Queue`]), as `kai:models` does: at most
 //!   [`MAX_WAITING`] requests wait, and each answer comes in a later call.
 
@@ -147,6 +150,8 @@ pub struct Response {
     pub content_type: Option<String>,
     /// When to come back, in seconds, as a 429 or 503 says.
     pub retry_after: Option<u32>,
+    /// The status line's reason phrase: a POST's only, for its sender's log.
+    pub reason: Option<String>,
     pub body: Vec<u8>,
 }
 
@@ -160,8 +165,9 @@ pub enum Error {
     TooLarge,
     Timeout,
     Truncated,
-    /// A POST was cut after a byte of it may have gone out: the server may
-    /// have it ([`CUT_WHY`]), and it is not sent again.
+    /// A POST was cut after a byte of it may have gone out and before a whole
+    /// status line came back: the server may have it ([`CUT_WHY`]), and it is
+    /// not sent again.
     Cut,
 }
 
@@ -228,6 +234,7 @@ pub fn serve(
         url: format!("https://{}{}", got.url.authority(), got.url.path),
         content_type: got.head.content_type,
         retry_after: got.head.retry_after,
+        reason: None,
         body,
     })
 }
@@ -290,6 +297,7 @@ pub fn serve_within(
         url: format!("https://{}{}", got.url.authority(), got.url.path),
         content_type: got.head.content_type,
         retry_after: got.head.retry_after,
+        reason: None,
         body,
     };
     Ok(Served {
@@ -301,10 +309,12 @@ pub fn serve_within(
 
 /// A POST of `body` to `url` on the caller's handle, whose `allow` says
 /// which hosts it reaches: made once, as [`Fetch::post`] makes it. The URL's
-/// host must be one `allow` takes. A redirect is never followed: it comes back
-/// as its 3xx, with no body and [`Served::location`] set, which the caller does
-/// not follow either. The body is the caller's: `fetch` checks only its size
-/// (`wire::MAX_POST_BODY`), on the wire.
+/// host must be one `allow` takes. The answer is the status, its reason and
+/// the head's fields, with no body. A redirect is never followed: it comes back
+/// as its 3xx with [`Served::location`] set, which the caller does not follow
+/// either; a Location longer than `wire::MAX_URL` is dropped, so a server's
+/// long one never turns an answer into an error. The body is the caller's:
+/// `fetch` checks only its size (`wire::MAX_POST_BODY`), on the wire.
 pub fn post_within(
     url: &str,
     body: &[u8],
@@ -319,21 +329,19 @@ pub fn post_within(
         allow,
         clock,
     };
-    let mut answer = Vec::new();
-    let got = fetch.post(connect, &url, body, &mut |bytes| {
-        answer.extend_from_slice(bytes);
-        Ok(())
-    })?;
+    let got = fetch.post(connect, &url, body)?;
     let location = got
         .unfollowed
-        .map(|next| format!("https://{}{}", next.authority(), next.path));
+        .map(|next| format!("https://{}{}", next.authority(), next.path))
+        .filter(|location| location.len() <= crate::wire::MAX_URL);
     Ok(Served {
         response: Response {
             status: got.head.status,
             url: format!("https://{}{}", got.url.authority(), got.url.path),
             content_type: got.head.content_type,
             retry_after: got.head.retry_after,
-            body: answer,
+            reason: got.head.reason,
+            body: Vec::new(),
         },
         location,
         hops: 0,

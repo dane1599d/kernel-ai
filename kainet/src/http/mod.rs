@@ -46,8 +46,9 @@ pub enum HttpError {
     /// passing it on as the range would put the target's first bytes where
     /// the range's belong.
     RangeIgnored,
-    /// A POST failed after a byte of it may have gone out: the server may
-    /// have it, so it is not tried again ([`Fetch::post`]).
+    /// A POST failed after a byte of it may have gone out and before a whole
+    /// status line came: the server may have it, so it is not tried again
+    /// ([`Fetch::post`]).
     Cut,
 }
 
@@ -209,56 +210,83 @@ impl Fetch<'_> {
 
     /// A POST of `body` to `url`, made once: the server gets it at most once.
     /// - It is never followed to another URL. A 3xx, 303 included, is the
-    ///   answer, with no body read and [`Fetched::unfollowed`] saying where it
-    ///   led.
+    ///   answer, with [`Fetched::unfollowed`] saying where it led.
     /// - It is never tried again, on this connection or another.
-    /// - A 2xx body goes to `sink`; any other status comes back with its head.
-    /// - Once the connection is open, a byte of the request may have gone out,
-    ///   so any failure from then on is [`HttpError::Cut`]: the server may have
-    ///   it. Only a failure before that (a refused host, the deadline, no
-    ///   connection or no TLS) says it was not sent.
+    /// - Its answer is its head alone: no body is read, whatever the status.
+    /// - Once a whole status line has come, the server has answered, so the
+    ///   answer is that status: a head that does not read, or a connection
+    ///   that ends inside the head, keeps the status and drops the rest
+    ///   ([`head::status_line`]).
+    /// - Before any byte is written, a failure says it was not sent: a refused
+    ///   host, the deadline (checked again once the connection is open), no
+    ///   connection or no TLS. Between the first byte written and a whole
+    ///   status line, any failure is [`HttpError::Cut`]: the server may have
+    ///   it.
     pub fn post(
         &self,
         connect: &mut impl Connect,
         url: &Url,
         body: &[u8],
-        sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
     ) -> Result<Fetched, HttpError> {
         if !(self.allow)(&url.host, url.port) {
             return Err(HttpError::Refused(url.host.clone()));
         }
         self.in_time()?;
         let mut stream = connect.connect(url)?;
-        self.posted(&mut stream, url, body, sink)
-            .map_err(|_| HttpError::Cut)
-    }
-
-    /// The POST on an open connection, and its answer.
-    fn posted(
-        &self,
-        stream: &mut impl Stream,
-        url: &Url,
-        body: &[u8],
-        sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
-    ) -> Result<Fetched, HttpError> {
-        stream.send(&head::post(url, body))?;
-        let mut buf = Vec::new();
-        let head = self.read_head(stream, Method::Post, &mut buf)?;
+        self.in_time()?;
+        stream
+            .send(&head::post(url, body))
+            .map_err(|_| HttpError::Cut)?;
+        let head = self.post_head(&mut stream)?;
         let unfollowed = match redirects(head.status) {
             true => head.location.as_deref().and_then(|at| url.join(at).ok()),
             false => None,
         };
-        let received = match head.status {
-            200..=299 => self.read_body(stream, head.framing, buf, sink)?,
-            _ => 0,
-        };
         Ok(Fetched {
             url: url.clone(),
             head,
-            received,
+            received: 0,
             redirects: 0,
             unfollowed,
         })
+    }
+
+    /// A POST's answer: its final head, past at most [`MAX_INTERIM`] 1xx
+    /// ones. Once a status line has come whole, any failure gives that
+    /// status (the last 1xx if no other came); before it, any failure is
+    /// [`HttpError::Cut`].
+    fn post_head(&self, stream: &mut impl Stream) -> Result<Head, HttpError> {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let mut interim: Option<Head> = None;
+        let mut seen = 0;
+        let answered = |buf: &[u8], interim: Option<Head>| {
+            head::status_line(buf).or(interim).ok_or(HttpError::Cut)
+        };
+        loop {
+            match head::parse(&buf, Method::Post) {
+                Ok(Some((head, used))) => {
+                    let more = (100..=199).contains(&head.status) && head.status != 101;
+                    if !more || seen >= MAX_INTERIM {
+                        return Ok(head);
+                    }
+                    seen += 1;
+                    buf.drain(..used);
+                    interim = Some(head);
+                    continue;
+                }
+                Ok(None) => {}
+                Err(_) => return answered(&buf, interim),
+            }
+            if buf.len() >= self.limits.max_head || self.in_time().is_err() {
+                return answered(&buf, interim);
+            }
+            let room = (self.limits.max_head - buf.len()).min(chunk.len());
+            match stream.recv(&mut chunk[..room]) {
+                Ok(n) if n > 0 => buf.extend_from_slice(&chunk[..n]),
+                _ => return answered(&buf, interim),
+            }
+        }
     }
 
     fn walk(

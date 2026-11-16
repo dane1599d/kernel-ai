@@ -6,18 +6,20 @@
 //! [hops=<n>]` or `head <url> [hops=<n>]`, where `hops` counts the redirects
 //! the caller already took.
 //!
-//! A POST ([`Post`]), which only the shell sends, is `post <url> len=<n>`, a
+//! A POST ([`Post`]), for the shell's held sends, is `post <url> len=<n>`, a
 //! newline, and then exactly `n` bytes of UTF-8 text, at most
-//! [`MAX_POST_BODY`]. It is made once: never redirected and never tried again,
-//! and a cut after a byte of it may have gone out is `err cut the server may
-//! have it`.
+//! [`MAX_POST_BODY`]. It is made once: never redirected and never tried again.
+//! Its answer is the status line's (no body), and a cut after a byte of it may
+//! have gone out but before a status line came is `err cut the server may have
+//! it`.
 //!
 //! An answer is `err <kind>[ <why>]` on one line, or `ok <status>` and then
 //! one field a line ([`Head`]): `len <n>`; `hops <n>`, the request's and the
 //! redirects followed within its handle; `type <content-type>` and
 //! `retry <seconds>` when the server sent them; `url <the URL that
-//! answered>`; and `location <url>` when a redirect to a host the handle does
-//! not reach came back unfollowed, which the caller follows with `hops` + 1. A body of `len` bytes comes in an `Shm`
+//! answered>`; `location <url>` when a redirect to a host the handle does
+//! not reach came back unfollowed, which the caller follows with `hops` + 1;
+//! and `reason <phrase>`, a POST's status reason, when the server gave one. A body of `len` bytes comes in an `Shm`
 //! that `fetch` makes and moves back with the answer.
 
 use crate::fetch::{CUT_WHY, Error, MAX_HOPS, Request, Served, why};
@@ -178,7 +180,8 @@ impl Post {
             .next()
             .and_then(|word| word.strip_prefix("len="))
             .ok_or("the post gives no len")?;
-        let len = (!len.is_empty() && len.len() <= 4 && len.bytes().all(|b| b.is_ascii_digit()))
+        let digits = !len.is_empty() && len.len() <= 4 && len.bytes().all(|b| b.is_ascii_digit());
+        let len = (digits && (len == "0" || !len.starts_with('0')))
             .then(|| len.parse::<usize>().ok())
             .flatten()
             .filter(|&n| n <= MAX_POST_BODY)
@@ -229,6 +232,8 @@ pub struct Head {
     pub url: String,
     /// Where an unfollowed redirect leads: a host the handle does not reach.
     pub location: Option<String>,
+    /// A POST's status reason phrase ("OK"), if the server gave one.
+    pub reason: Option<String>,
 }
 
 impl Head {
@@ -243,6 +248,7 @@ impl Head {
             retry_after: response.retry_after,
             url: response.url.clone(),
             location: served.location.clone(),
+            reason: response.reason.clone(),
         }
     }
 }
@@ -267,8 +273,10 @@ fn kind(error: &Error) -> (&'static str, Option<&str>) {
 /// [`PostOutcome::MaybeSent`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PostOutcome {
-    /// The server answered, whatever the status: it has the request.
-    Sent { status: u16 },
+    /// The server answered, whatever the status: it has the request. `line`
+    /// is the status and its reason as the server gave them ("200 OK"), or
+    /// the status alone.
+    Sent { status: u16, line: String },
     /// Nothing went out: the request was refused, malformed, past its
     /// deadline, or no connection or TLS session was made.
     NotSent { why: String },
@@ -306,6 +314,10 @@ impl PostOutcome {
         match answer {
             Ok(head) => Self::Sent {
                 status: head.status,
+                line: match &head.reason {
+                    Some(reason) => format!("{} {reason}", head.status),
+                    None => head.status.to_string(),
+                },
             },
             Err(Error::Refused(why)) => not_sent("refused", why),
             Err(Error::BadUrl(why)) => not_sent("bad-url", why),
@@ -344,6 +356,9 @@ fn render(result: &Result<Head, Error>) -> String {
             text += &format!("url {}\n", field(&head.url));
             if let Some(location) = &head.location {
                 text += &format!("location {}\n", field(location));
+            }
+            if let Some(reason) = &head.reason {
+                text += &format!("reason {}\n", field(reason));
             }
             text
         }
@@ -392,6 +407,7 @@ pub fn parse_answer(text: &str) -> Result<Result<Head, Error>, &'static str> {
         .ok_or("the answer is not ok <status> or err")?;
     let (mut len, mut hops, mut content_type, mut retry_after, mut url, mut location) =
         (None, None, None, None, None, None);
+    let mut reason = None;
     for line in lines {
         let (key, value) = line.split_once(' ').ok_or("a field with no value")?;
         if !printable(value) {
@@ -416,6 +432,7 @@ pub fn parse_answer(text: &str) -> Result<Result<Head, Error>, &'static str> {
                 .is_none(),
             "url" => url.replace(value.to_string()).is_none(),
             "location" => location.replace(value.to_string()).is_none(),
+            "reason" => reason.replace(value.to_string()).is_none(),
             _ => return Err("a field this answer does not have"),
         };
         if !set {
@@ -430,6 +447,7 @@ pub fn parse_answer(text: &str) -> Result<Result<Head, Error>, &'static str> {
         retry_after,
         url: url.ok_or("an answer with no url")?,
         location,
+        reason,
     }))
 }
 
@@ -506,6 +524,7 @@ mod tests {
             retry_after: Some(7),
             url: "https://a.example/x".into(),
             location: Some("https://b.example/y".into()),
+            reason: None,
         };
         let text = answer(&Ok(head.clone()));
         assert_eq!(
@@ -521,6 +540,7 @@ mod tests {
             retry_after: None,
             url: "https://a.example/".into(),
             location: None,
+            reason: None,
         };
         assert_eq!(parse_answer(&answer(&Ok(plain.clone()))), Ok(Ok(plain)));
         for error in [
@@ -550,11 +570,36 @@ mod tests {
                 retry_after: None,
                 url: "https://a.example/".into(),
                 location: None,
+                reason: None,
             }))
         };
         for status in [200, 204, 303, 404, 500] {
-            assert_eq!(PostOutcome::read(&ok(status)), PostOutcome::Sent { status });
+            assert_eq!(
+                PostOutcome::read(&ok(status)),
+                PostOutcome::Sent {
+                    status,
+                    line: status.to_string()
+                }
+            );
         }
+        let told = answer(&Ok(Head {
+            status: 200,
+            len: 0,
+            hops: 0,
+            content_type: None,
+            retry_after: None,
+            url: "https://a.example/".into(),
+            location: None,
+            reason: Some("OK".into()),
+        }));
+        assert!(told.ends_with("reason OK\n"), "{told:?}");
+        assert_eq!(
+            PostOutcome::read(&told),
+            PostOutcome::Sent {
+                status: 200,
+                line: "200 OK".into()
+            }
+        );
         for error in [
             Error::Refused("b.example".into()),
             Error::BadUrl("the post gives no len".into()),

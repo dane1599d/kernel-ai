@@ -253,7 +253,11 @@ fn a_post_reaches_the_mock_once_with_its_body() {
     let mock = posting_mock();
     let served = post(&mock, &format!("https://{REPO}{HOOK}"), "hello, h\u{e9}").unwrap();
     assert_eq!(served.response.status, 200);
-    assert_eq!(served.response.body, POSTED);
+    assert_eq!(served.response.reason.as_deref(), Some("OK"));
+    assert!(
+        served.response.body.is_empty(),
+        "a POST's answer body is not read"
+    );
     let seen = mock.served();
     assert_eq!(seen.len(), 1);
     assert_eq!(
@@ -289,11 +293,11 @@ fn a_post_redirected_off_the_handle_is_not_followed() {
 }
 
 #[test]
-fn a_post_whose_answer_is_cut_may_have_arrived_and_is_not_sent_again() {
+fn a_post_whose_answer_body_is_cut_was_answered_and_is_not_sent_again() {
     let mock = posting_mock();
     mock.set_fault(REPO, HOOK, Fault::CutAt(3));
     let cut = post(&mock, &format!("https://{REPO}{HOOK}"), "hi");
-    assert_eq!(cut.unwrap_err(), Error::Cut);
+    assert_eq!(cut.unwrap().response.status, 200);
     let seen = mock.served();
     assert_eq!(seen.len(), 1, "a cut POST is never sent again");
     assert_eq!(seen[0].body.as_deref(), Some(&b"hi"[..]));

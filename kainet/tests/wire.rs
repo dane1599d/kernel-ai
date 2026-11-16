@@ -71,6 +71,7 @@ fn hostile_answers_are_refused_or_read_back_the_same() {
     for sample in [
         "ok 200\nlen 5\nhops 1\ntype text/plain\nretry 30\nurl https://a.test/x\n",
         "ok 301\nlen 0\nhops 2\nurl https://a.test/x\nlocation https://b.test/y\n",
+        "ok 200\nlen 0\nhops 0\nurl https://hooks.test/x\nreason OK\n",
         "err refused elsewhere.kai.test",
         "err tls InvalidCertificate(Expired)",
         "err timeout",
@@ -203,6 +204,7 @@ fn served(content_type: &str, url: &str, location: Option<&str>) -> Served {
             url: url.into(),
             content_type: Some(content_type.into()),
             retry_after: None,
+            reason: None,
             body: vec![7; 3],
         },
         location: location.map(Into::into),
@@ -338,10 +340,7 @@ fn hostile_posts_are_refused_by_name() {
         (b"post https://a.test/x len=+2\nhi", "len is not 0 to 4,096"),
         (b"post https://a.test/x len=\n", "len is not 0 to 4,096"),
         (b"post https://a.test/x len=4097\n", "len is not 0 to 4,096"),
-        (
-            b"post https://a.test/x len=00002\nhi",
-            "len is not 0 to 4,096",
-        ),
+        (b"post https://a.test/x len=02\nhi", "len is not 0 to 4,096"),
         (
             b"post https://a.test/x len=2 hops=1\nhi",
             "the post has a word it does not take",
