@@ -252,17 +252,19 @@ fn report_call(route: kabi::handle::Handle, request: &[u8]) -> Result<Vec<u8>, k
 /// first what the AI said, for the desk's history (`panel said`), then the
 /// bar's state, code's result line or why not, never the model's words. The
 /// panel shows thinking from the Enter until then. A line that asks first
-/// waits for the trusted card (`deskask`); the panel says so.
-fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) {
+/// waits for the trusted card (`deskask`); the panel says so. Whether it
+/// took a request, a line or a Stop: no held send starts on that pass
+/// (`give_sends`), so an undo queued behind it is taken first.
+fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) -> bool {
     use deskcore::panel::{Request, State};
     use deskcore::panel_wire;
     // A unit of work that is no request: a Stop for the last one ends here.
     start_of_unit();
     let Some(route) = desktop() else {
-        return;
+        return false;
     };
     let Ok(answer) = ask_desktop(route, panel_wire::TAKE) else {
-        return;
+        return false;
     };
     let shown = match panel_wire::parse_take(&answer) {
         Some(Some(Request::Line(line))) => {
@@ -288,22 +290,21 @@ fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) {
             shown
         }
         // Esc while Kai builds an app in the background stops the build.
-        // A Stop that stopped nothing (the line it was for has ended): the
-        // next request goes on now, so an undo queued behind it is taken
-        // before the next held send starts (`give_sends`).
+        // A Stop that stopped nothing (the line it was for has ended) is
+        // still a request taken: the next pass takes the one behind it.
         Some(Some(Request::Stop)) => match shell.stop_app_build() {
             Some(reply) => State::Done { line: reply.text },
-            None => return take_panel(shell, warmth),
+            None => return true,
         },
         // Esc after the shell took the line: it has run already, one line at
         // a time, and its result stays shown. Esc before is desktop's own: the
         // line never came here.
-        _ => return,
+        _ => return false,
     };
     // A done line names the log entry its undo link takes back.
     let entry = shell.take_panel_entry();
     let Some(request) = panel_wire::encode_done(&shown, entry) else {
-        return;
+        return true;
     };
     // The line ended: a Stop pressed as it did must not hide its result.
     match report_to_desktop(route, &request) {
@@ -311,17 +312,19 @@ fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) {
         Ok(answer) => println!("the panel's state was not set: {answer}"),
         Err(why) => println!("the panel's state was not set: {why}"),
     }
+    true
 }
 
 /// The held sends (`shellcore::outbox`), a unit of their own after the
 /// panel's line, so an `undo` it ran wins: each one due starts (its
 /// `sending` on disk first), the panel is told it is going, and only then is
 /// it sent. What each came to, and the sends still held, go to the panel.
-/// One send a pass at most: the next pass takes the panel's line first, so
-/// an undo clicked during this send's call wins over the next send (the wait
-/// is 1 ms while one is due). `shown` is the list last reported, without its
-/// countdowns, and the desktop it went to.
-fn give_sends(shell: &mut Shell, system: &System, shown: &mut SendsShown) {
+/// One send a pass at most, and none on a pass whose [`take_panel`] took a
+/// request (`took`): the next pass takes the panel's next request first, so
+/// an undo queued behind a line or a Stop, or clicked during a send's call,
+/// wins over the next send (the wait is 1 ms while one is due). `shown` is
+/// the list last reported, without its countdowns, and the desktop it went to.
+fn give_sends(shell: &mut Shell, system: &System, shown: &mut SendsShown, took: bool) {
     start_of_unit();
     // A desktop that restarted has no list: it is told again.
     if shown
@@ -330,7 +333,7 @@ fn give_sends(shell: &mut Shell, system: &System, shown: &mut SendsShown) {
     {
         *shown = None;
     }
-    if let Some(entry) = shell.start_due_send(now_ms()) {
+    if let Some(entry) = shell.start_send_after(took, now_ms()) {
         report_sends(shell, system, shown);
         shell.run_send(entry);
     }
@@ -1545,9 +1548,9 @@ fn main() -> i32 {
         // the wait at once, so a click's effect does not wait for a poll.
         take_events(&mut shell, &mut events);
         waiting::run_held(&mut shell, held);
-        take_panel(&mut shell, &mut warmth);
+        let took = take_panel(&mut shell, &mut warmth);
         waiting::run_held(&mut shell, held);
-        give_sends(&mut shell, &system, &mut sends_shown);
+        give_sends(&mut shell, &system, &mut sends_shown, took);
         take_effects(&mut shell, held);
         waiting::run_held(&mut shell, held);
         start_of_unit();

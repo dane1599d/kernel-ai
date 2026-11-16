@@ -86,6 +86,17 @@ impl Shell {
         }
     }
 
+    /// [`Shell::start_due_send`] on a pass of the OS loop, unless that pass
+    /// took a panel request (`took_request`): then none starts, and the next
+    /// pass takes the request behind it first, so an undo queued after a line
+    /// or a Stop wins over the send it names (#959 re-review).
+    pub fn start_send_after(&mut self, took_request: bool, now_ms: u64) -> Option<u64> {
+        match took_request {
+            true => None,
+            false => self.start_due_send(now_ms),
+        }
+    }
+
     /// Sends what [`Shell::start_due_send`] started for `entry`, once. A
     /// failure after it may have gone out, or a Stop that cut the wait for
     /// the answer, is logged as one that may have been sent.

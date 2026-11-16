@@ -301,10 +301,6 @@ mod tests {
         assert_eq!(left(75_000, 0), "1:15");
     }
 
-    fn held_send(entry: u64, due_ms: u64) -> HeldSend {
-        held(entry, due_ms)
-    }
-
     fn held(entry: u64, due_ms: u64) -> HeldSend {
         wire(entry, false, due_ms, "a.example").held(0)
     }
@@ -385,10 +381,10 @@ mod tests {
         };
         let request = encode_card_held(&line, Some(4)).unwrap();
         assert_eq!(request, "panel card done Sending to a.example in 5 s.\t4");
-        let (shown, held) = parse_card_held(&request).unwrap();
-        assert_eq!(held, Some(4));
-        panel.set_done(shown, held);
-        panel.set_sends(alloc::vec![held_send(4, 5_000)]);
+        let (shown, entry) = parse_card_held(&request).unwrap();
+        assert_eq!(entry, Some(4));
+        panel.set_done(shown, entry);
+        panel.set_sends(alloc::vec![held(4, 5_000)]);
         assert_eq!(panel.shown_send().map(|s| s.entry), Some(4));
         assert_eq!(panel.waiting_note(), None);
         assert!(panel.send_ended(4, String::from("Sent to a.example."), false));

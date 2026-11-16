@@ -537,3 +537,45 @@ fn a_panel_cards_result_names_the_send_it_held() {
     );
     assert_eq!(shell.take_card_held(), None);
 }
+
+/// The OS loop's passes, as `take_panel` then `give_sends`: each request
+/// (`Some`, a line run, `None` for a Stop) is one pass, and a pass that took
+/// one starts no send. Then a pass with nothing to take.
+fn passes(shell: &mut Shell, requests: &[Option<&str>], now_ms: u64) -> Vec<u64> {
+    let mut started = Vec::new();
+    for request in requests.iter().map(Some).chain([None]) {
+        if let Some(Some(line)) = request {
+            shell.eval(line);
+        }
+        if let Some(entry) = shell.start_send_after(request.is_some(), now_ms) {
+            shell.run_send(entry);
+            started.push(entry);
+        }
+    }
+    started
+}
+
+/// An undo queued behind a Stop, or behind a Stop and a line, is taken
+/// before the due send it names starts (#959 re-review).
+#[test]
+fn an_undo_queued_behind_a_stop_wins_over_its_due_send() {
+    for before in [&[None][..], &[None, Some("echo hi")][..]] {
+        let host = FakeHost::new();
+        let mut shell = shell(&host);
+        let id = hold(&host, &mut shell, "a.example", 0);
+        let undo = format!("undo {id}");
+        let requests: Vec<Option<&str>> = before
+            .iter()
+            .copied()
+            .chain([Some(undo.as_str())])
+            .collect();
+        assert_eq!(passes(&mut shell, &requests, 9_000), Vec::<u64>::new());
+        assert!(host.sends.borrow().is_empty(), "{before:?}");
+        assert_eq!(shell.start_due_send(9_000), None);
+    }
+    // With nothing queued, the due send starts on the next pass.
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let id = hold(&host, &mut shell, "a.example", 0);
+    assert_eq!(passes(&mut shell, &[None], 9_000), [id]);
+}

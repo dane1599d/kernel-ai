@@ -217,7 +217,10 @@ pub fn parse_done(text: &str) -> Option<(State, Option<u64>)> {
     };
     match body.rsplit_once('\t') {
         Some((line, id)) => {
-            let id = id.parse::<u64>().ok()?;
+            // Digits only, no leading zero: one entry has one spelling.
+            let canonical =
+                id.bytes().all(|b| b.is_ascii_digit()) && (id == "0" || !id.starts_with('0'));
+            let id = id.parse::<u64>().ok().filter(|_| canonical)?;
             let state = parse_state(&format!("{STATE}done {line}"))?;
             Some((state, Some(id)))
         }
@@ -374,6 +377,12 @@ mod tests {
         assert_eq!(parse_done(&bare), Some((done, None)));
         assert_eq!(parse_done("panel state idle"), Some((State::Idle, None)));
         assert_eq!(parse_done("panel state done x\tnine"), None);
+        assert_eq!(parse_done("panel state done x\t+4"), None);
+        assert_eq!(parse_done("panel state done x\t004"), None);
+        assert_eq!(
+            parse_done("panel state done x\t0").map(|d| d.1),
+            Some(Some(0))
+        );
     }
 
     #[test]

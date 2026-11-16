@@ -400,6 +400,13 @@ pub fn send_text(send: &crate::sends::HeldSend, more: usize, now_ms: u64) -> Str
 /// suffix, whose last two labels are both short (`example.co.uk`).
 fn cuttable(host: &str) -> usize {
     let labels: Vec<&str> = host.rsplit('.').collect();
+    // An address (`10.0.2.2`) has no site's name to keep: it is never cut.
+    if labels
+        .iter()
+        .all(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return 0;
+    }
     let short = |label: Option<&&str>| label.is_some_and(|l| l.len() <= 3);
     let keep = match short(labels.first()) && short(labels.get(1)) {
         true => 3,
@@ -454,5 +461,6 @@ mod send_tests {
         let au = "a.b.shop.com.au";
         assert_eq!(&au[super::cuttable(au)..], "shop.com.au");
         assert_eq!(super::cuttable("co.uk"), 0);
+        assert_eq!(super::cuttable("192.168.100.200"), 0);
     }
 }
