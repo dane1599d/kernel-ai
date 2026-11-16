@@ -62,6 +62,7 @@ fn the_wire_harness_returns_for_mutated_messages() {
         "err refused elsewhere.kai.test",
         "err truncated",
         "err cut the server may have it",
+        "ok 201\nlen 0\nhops 0\nurl https://hooks.test/send\nreason Created\n",
         "post https://hooks.example/send len=5
 hello",
     ] {

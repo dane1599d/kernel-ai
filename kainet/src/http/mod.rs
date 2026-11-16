@@ -213,15 +213,16 @@ impl Fetch<'_> {
     ///   answer, with [`Fetched::unfollowed`] saying where it led.
     /// - It is never tried again, on this connection or another.
     /// - Its answer is its head alone: no body is read, whatever the status.
-    /// - Once a whole status line has come, the server has answered, so the
-    ///   answer is that status: a head that does not read, or a connection
-    ///   that ends inside the head, keeps the status and drops the rest
-    ///   ([`head::status_line`]).
+    /// - Once a whole final status line (200 or more) has come, the server
+    ///   has answered, so the answer is that status: a head that does not
+    ///   read, or a connection that ends inside the head, keeps the status and
+    ///   drops the rest ([`head::status_line`]). An interim 1xx is no answer:
+    ///   it is skipped, and a cut after it is a cut.
     /// - Before any byte is written, a failure says it was not sent: a refused
     ///   host, the deadline (checked again once the connection is open), no
     ///   connection or no TLS. Between the first byte written and a whole
-    ///   status line, any failure is [`HttpError::Cut`]: the server may have
-    ///   it.
+    ///   final status line, any failure is [`HttpError::Cut`]: the server may
+    ///   have it.
     pub fn post(
         &self,
         connect: &mut impl Connect,
@@ -251,40 +252,42 @@ impl Fetch<'_> {
         })
     }
 
-    /// A POST's answer: its final head, past at most [`MAX_INTERIM`] 1xx
-    /// ones. Once a status line has come whole, any failure gives that
-    /// status (the last 1xx if no other came); before it, any failure is
-    /// [`HttpError::Cut`].
+    /// A POST's answer: its final head (200 or more). Interim 1xx heads are
+    /// skipped, however many, within [`Limits::max_head`] bytes of heads in
+    /// all; a 101 is no answer to a POST. Once a final status line has come
+    /// whole, any failure gives that status; before it, any failure, a cut
+    /// after a 1xx included, is [`HttpError::Cut`].
     fn post_head(&self, stream: &mut impl Stream) -> Result<Head, HttpError> {
         let mut buf = Vec::new();
         let mut chunk = [0u8; 4096];
-        let mut interim: Option<Head> = None;
-        let mut seen = 0;
-        let answered = |buf: &[u8], interim: Option<Head>| {
-            head::status_line(buf).or(interim).ok_or(HttpError::Cut)
+        // Bytes of heads read, interim ones included: the bound on them all.
+        let mut read = 0;
+        let answered = |buf: &[u8]| {
+            head::status_line(buf)
+                .filter(|head| head.status >= 200)
+                .ok_or(HttpError::Cut)
         };
         loop {
             match head::parse(&buf, Method::Post) {
-                Ok(Some((head, used))) => {
-                    let more = (100..=199).contains(&head.status) && head.status != 101;
-                    if !more || seen >= MAX_INTERIM {
-                        return Ok(head);
-                    }
-                    seen += 1;
+                Ok(Some((head, _))) if head.status >= 200 => return Ok(head),
+                Ok(Some((head, _))) if head.status == 101 => return Err(HttpError::Cut),
+                Ok(Some((_, used))) => {
                     buf.drain(..used);
-                    interim = Some(head);
                     continue;
                 }
                 Ok(None) => {}
-                Err(_) => return answered(&buf, interim),
+                Err(_) => return answered(&buf),
             }
-            if buf.len() >= self.limits.max_head || self.in_time().is_err() {
-                return answered(&buf, interim);
+            if read >= self.limits.max_head || self.in_time().is_err() {
+                return answered(&buf);
             }
-            let room = (self.limits.max_head - buf.len()).min(chunk.len());
+            let room = (self.limits.max_head - read).min(chunk.len());
             match stream.recv(&mut chunk[..room]) {
-                Ok(n) if n > 0 => buf.extend_from_slice(&chunk[..n]),
-                _ => return answered(&buf, interim),
+                Ok(n) if n > 0 => {
+                    read += n;
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                _ => return answered(&buf),
             }
         }
     }

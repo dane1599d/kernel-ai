@@ -232,14 +232,15 @@ fn once_a_status_line_came_the_answer_is_that_status() {
             Fails::Never,
             200,
         ),
-        // Interim 100 Continue, then nothing.
-        (b"HTTP/1.1 100 Continue\r\n\r\n", Fails::Cut, 100),
         // Interim 100 Continue, then the final answer.
         (
             b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 204 No Content\r\n\r\n",
             Fails::Cut,
             204,
         ),
+        // A blank line before the status line, and lines ending in a bare LF.
+        (b"\r\nHTTP/1.1 202 Accepted\nX-A: b\n", Fails::Cut, 202),
+        (b"\n\nHTTP/1.1 200\r\n", Fails::Cut, 200),
     ] {
         let mut server = Server::new(reply, fails);
         let got = post(&mut server, "https://a.test/hook", b"hi");
@@ -255,6 +256,52 @@ fn once_a_status_line_came_the_answer_is_that_status() {
     assert_eq!(
         post(&mut server, "https://a.test/hook", b"hi"),
         Ok((200, Some("OK".into())))
+    );
+}
+
+#[test]
+fn an_interim_answer_is_no_answer() {
+    // A 1xx says the server is reading, not that it took the request: a cut
+    // after one is a cut, however many came.
+    for reply in [
+        &b"HTTP/1.1 100 Continue\r\n\r\n"[..],
+        b"HTTP/1.1 103 Early Hints\r\nLink: </a>\r\n\r\n",
+        b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 20",
+        b"HTTP/1.1 100 Continue\r\nX-A: b",
+    ] {
+        let mut server = Server::new(reply, Fails::Cut);
+        assert_eq!(
+            post(&mut server, "https://a.test/hook", b"hi"),
+            Err(HttpError::Cut),
+            "{reply:?}"
+        );
+        assert_eq!(server.connections(), 1);
+    }
+    // A 101 is no answer to a POST.
+    let mut server = Server::new(
+        b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: x\r\n\r\n",
+        Fails::Never,
+    );
+    assert_eq!(
+        post(&mut server, "https://a.test/hook", b"hi"),
+        Err(HttpError::Cut)
+    );
+    // Any number of 1xx before the final answer are skipped.
+    let reply = format!(
+        "{}HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        "HTTP/1.1 100 Continue\r\n\r\n".repeat(5)
+    );
+    let mut server = Server::new(reply.as_bytes(), Fails::Never);
+    assert_eq!(
+        post(&mut server, "https://a.test/hook", b"hi"),
+        Ok((200, Some("OK".into())))
+    );
+    // 1xx heads past the head limit in all are a cut, never a 1xx answer.
+    let endless = "HTTP/1.1 100 Continue\r\n\r\n".repeat(1000);
+    let mut server = Server::new(endless.as_bytes(), Fails::Never);
+    assert_eq!(
+        post(&mut server, "https://a.test/hook", b"hi"),
+        Err(HttpError::Cut)
     );
 }
 

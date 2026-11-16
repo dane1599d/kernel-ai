@@ -115,8 +115,8 @@ pub const MAX_CONTENT_TYPE: usize = 128;
 pub const MAX_REASON: usize = 64;
 
 /// `text` as a reason phrase: printable ASCII and at most [`MAX_REASON`]
-/// bytes, or none.
-fn reason(text: &str) -> Option<String> {
+/// bytes, or none. `wire` checks an answer's reason by the same rule.
+pub fn reason(text: &str) -> Option<String> {
     let printable = text.bytes().all(|b| b == b' ' || b.is_ascii_graphic());
     (!text.is_empty() && text.len() <= MAX_REASON && printable).then(|| String::from(text))
 }
@@ -125,9 +125,16 @@ fn reason(text: &str) -> Option<String> {
 /// could not be read: its status and reason, and nothing else, with no body.
 /// A POST's answer is taken from it: the server has answered, so it has the
 /// request (`Fetch::post`).
+///
+/// As httparse reads a head, blank lines before it are skipped, and a line may
+/// end with a bare LF.
 pub fn status_line(bytes: &[u8]) -> Option<Head> {
-    let end = bytes.windows(2).position(|w| w == b"\r\n")?;
-    let line = core::str::from_utf8(&bytes[..end]).ok()?;
+    let start = bytes.iter().position(|&b| b != b'\r' && b != b'\n')?;
+    let bytes = &bytes[start..];
+    let end = bytes.iter().position(|&b| b == b'\n')?;
+    let line = &bytes[..end];
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    let line = core::str::from_utf8(line).ok()?;
     let rest = line
         .strip_prefix("HTTP/1.1 ")
         .or_else(|| line.strip_prefix("HTTP/1.0 "))?;

@@ -38,7 +38,12 @@ pub const MAX_ASK: usize = MAX_URL + 64;
 pub const MAX_POST_BODY: usize = 4096;
 /// The longest POST: its line, a newline and the body.
 pub const MAX_POST: usize = MAX_ASK + 1 + MAX_POST_BODY;
-/// The longest answer: two URLs, a content type and the numbers.
+/// The longest answer: room for every field at its largest, two URLs of
+/// [`MAX_URL`] (`url` and `location`), a 128-byte `type`
+/// (`http::head::MAX_CONTENT_TYPE`), a 64-byte `reason`
+/// (`http::head::MAX_REASON`) and the numbers, with room to spare; a test
+/// writes that largest answer. A server's longer `url` comes back as
+/// [`TOO_LONG`].
 pub const MAX_ANSWER: usize = 2 * MAX_URL + 512;
 /// What `fetch` answers when a response's head would not fit in
 /// [`MAX_ANSWER`]: a server's long content type, or a redirect's long URL.
@@ -299,14 +304,19 @@ impl PostOutcome {
         }
     }
 
-    /// The outcome of a POST's `answer`. `kainet::fetch::post_within` turns
-    /// every failure after its connection opened into [`Error::Cut`], so the
-    /// errors listed here as not sent can only come before that. `fetch`'s
-    /// own errors after a POST was made (no room for the body, a head too long
-    /// to pass on) are `http` errors, which are [`PostOutcome::MaybeSent`].
-    /// So are `too-large`, and `truncated`, which a POST gives only for a TLS
-    /// handshake cut before any request byte: counted as maybe sent all the
-    /// same, so a new source of either never reads as not sent.
+    /// The outcome of a POST's `answer`.
+    /// - Any `ok` answer is [`PostOutcome::Sent`]: `kainet::fetch::post_within`
+    ///   answers only with a final status (200 or more).
+    /// - `post_within` turns every failure between the first byte written and
+    ///   a final status line into [`Error::Cut`], so `refused`, `bad-url`,
+    ///   `tls` and `timeout` can only come before any byte was written:
+    ///   [`PostOutcome::NotSent`].
+    /// - Everything else is [`PostOutcome::MaybeSent`]: `cut`; `fetch`'s own
+    ///   `http` errors after a POST was made (no room for the body, a head too
+    ///   long to pass on); and `too-large` and `truncated`, which a POST gives
+    ///   only before any byte (a TLS handshake cut) but which count as maybe
+    ///   sent all the same, so a new source of either never reads as not
+    ///   sent.
     pub fn of(answer: &Result<Head, Error>) -> Self {
         let not_sent = |name: &str, why: &str| Self::NotSent {
             why: format!("{name}: {why}"),
@@ -408,6 +418,7 @@ pub fn parse_answer(text: &str) -> Result<Result<Head, Error>, &'static str> {
     let (mut len, mut hops, mut content_type, mut retry_after, mut url, mut location) =
         (None, None, None, None, None, None);
     let mut reason = None;
+    let mut reason_seen = false;
     for line in lines {
         let (key, value) = line.split_once(' ').ok_or("a field with no value")?;
         if !printable(value) {
@@ -432,7 +443,19 @@ pub fn parse_answer(text: &str) -> Result<Result<Head, Error>, &'static str> {
                 .is_none(),
             "url" => url.replace(value.to_string()).is_none(),
             "location" => location.replace(value.to_string()).is_none(),
-            "reason" => reason.replace(value.to_string()).is_none(),
+            // A reason holds to `http::head::reason`'s rule; an empty one is
+            // none.
+            "reason" => {
+                let text = value.trim();
+                reason = match text.is_empty() {
+                    true => None,
+                    false => Some(
+                        crate::http::head::reason(text)
+                            .ok_or("a reason is not printable text of at most 64 bytes")?,
+                    ),
+                };
+                !core::mem::replace(&mut reason_seen, true)
+            }
             _ => return Err("a field this answer does not have"),
         };
         if !set {
@@ -623,6 +646,39 @@ mod tests {
         ] {
             assert_eq!(PostOutcome::read(&text), PostOutcome::MaybeSent, "{text:?}");
         }
+    }
+
+    #[test]
+    fn the_largest_answer_fits() {
+        let url = format!("https://a.test/{}", "x".repeat(MAX_URL - 15));
+        assert_eq!(url.len(), MAX_URL);
+        let head = Head {
+            status: 599,
+            len: usize::MAX,
+            hops: MAX_HOPS,
+            content_type: Some("t".repeat(crate::http::head::MAX_CONTENT_TYPE)),
+            retry_after: Some(u32::MAX),
+            url: url.clone(),
+            location: Some(url),
+            reason: Some("r".repeat(crate::http::head::MAX_REASON)),
+        };
+        let text = answer(&Ok(head.clone()));
+        assert!(text.len() <= MAX_ANSWER, "{}", text.len());
+        assert_eq!(parse_answer(&text), Ok(Ok(head)));
+    }
+
+    #[test]
+    fn a_reason_holds_to_the_heads_rule() {
+        let with =
+            |reason: &str| format!("ok 200\nlen 0\nhops 0\nurl https://a/\nreason {reason}\n");
+        let read = |text: &str| parse_answer(text).map(|answer| answer.map(|head| head.reason));
+        assert_eq!(read(&with("OK")), Ok(Ok(Some("OK".into()))));
+        assert_eq!(read(&with("  Created  ")), Ok(Ok(Some("Created".into()))));
+        assert_eq!(read(&with("   ")), Ok(Ok(None)));
+        assert!(read(&with(&"r".repeat(65))).is_err());
+        assert!(read(&with("caf\u{e9}")).is_err());
+        assert!(read("ok 200\nlen 0\nhops 0\nurl https://a/\nreason A\nreason B\n").is_err());
+        assert!(read("ok 200\nlen 0\nhops 0\nurl https://a/\nreason \nreason B\n").is_err());
     }
 
     #[test]

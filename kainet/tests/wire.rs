@@ -31,10 +31,14 @@ fn ask_holds(text: &str) {
 fn answer_holds(text: &str) {
     if let Ok(result) = wire::parse_answer(text) {
         if let Ok(head) = &result {
+            if let Some(reason) = &head.reason {
+                assert_eq!(kainet::http::head::reason(reason).as_ref(), Some(reason));
+            }
             for value in [
                 Some(&head.url),
                 head.location.as_ref(),
                 head.content_type.as_ref(),
+                head.reason.as_ref(),
             ]
             .into_iter()
             .flatten()

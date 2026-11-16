@@ -89,6 +89,9 @@ pub enum Fault {
     /// The connection is dropped after `n` bytes of the body, with no
     /// close_notify.
     CutAt(usize),
+    /// The connection is dropped after `n` bytes of the response head, with
+    /// no close_notify: before a whole status line for a small `n`.
+    CutInHead(usize),
     /// The host's certificate has expired.
     Expired,
     /// The host's certificate is for another name.
@@ -573,6 +576,14 @@ fn send(session: &mut Conn, request: &http::Request, answer: Answer) -> Result<(
         body
     };
     match fault {
+        Some(Fault::CutInHead(n)) => {
+            let head = http::head(status, &headers, length);
+            session
+                .write_all(&head[..n.min(head.len())])
+                .map_err(|_| ())?;
+            // Dropped with no close_notify, inside the head.
+            Ok(())
+        }
         Some(Fault::CutAt(n)) => {
             let head = http::head(status, &headers, length);
             session.write_all(&head).map_err(|_| ())?;

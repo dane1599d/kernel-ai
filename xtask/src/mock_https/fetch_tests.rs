@@ -293,6 +293,19 @@ fn a_post_redirected_off_the_handle_is_not_followed() {
 }
 
 #[test]
+fn a_post_cut_before_its_status_line_may_have_arrived_and_is_not_sent_again() {
+    for n in [0, 5] {
+        let mock = posting_mock();
+        mock.set_fault(REPO, HOOK, Fault::CutInHead(n));
+        let cut = post(&mock, &format!("https://{REPO}{HOOK}"), "hi");
+        assert_eq!(cut.unwrap_err(), Error::Cut, "cut at {n} head bytes");
+        let seen = mock.served();
+        assert_eq!(seen.len(), 1, "a cut POST is never sent again");
+        assert_eq!(seen[0].body.as_deref(), Some(&b"hi"[..]));
+    }
+}
+
+#[test]
 fn a_post_whose_answer_body_is_cut_was_answered_and_is_not_sent_again() {
     let mock = posting_mock();
     mock.set_fault(REPO, HOOK, Fault::CutAt(3));
