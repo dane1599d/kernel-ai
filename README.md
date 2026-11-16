@@ -16,7 +16,12 @@
 
 ## Status
 
-Kernel AI is working towards **v0.1, "an AI-native OS you can try"**, in a VM (QEMU or VirtualBox). It boots to a desktop with seven built-in apps (Terminal, Files, Notes, Settings, System Monitor, Models and an editor), each a signed package whose actions the AI calls by name, a writable disk with undo, and TempleOS's idea of a `c>` prompt that runs C as you press Enter. It has no browser, no internet installs and no real-hardware drivers yet. v0.1 is not tagged: [the P4 plan](docs/plans/p4-apps.md#35-the-v01-checklist) lists what is left.
+The first release candidate, **v0.1.0-rc.1, "an AI-native OS you can try"**, is out on the [Releases page](https://github.com/dane1599d/kernel-ai/releases). It runs in a VM (QEMU or VirtualBox) and boots to a desktop with seven built-in apps (Terminal, Files, Notes, Settings, System Monitor, Models and an editor). Each app is a signed package whose actions the AI calls by name. There is a writable disk with undo, and TempleOS's idea of a `c>` prompt that runs C as you press Enter. rc.1 has no browser, no internet and no real-hardware drivers. The final v0.1 tag waits on [the P4 checklist](docs/plans/p4-apps.md#35-the-v01-checklist).
+
+Since rc.1, `main` has gained two big pieces, which come with the next release:
+
+- **Kai Desk:** a Windows 11-style desktop with a Start menu on the Super key, a taskbar and Kai's side pane.
+- **Networking (P5, closing now):** installs from the online package store, model downloads and signed updates over the internet. Apps can reach a website after you allow that site once.
 
 The next goal is a production-grade OS people have a reason to use, with the local AI able to operate everything in it. That plan is the [product roadmap](docs/roadmap.md#3b-product-roadmap-draft-for-founder-approval-2026-10-20): a desktop, files, networking, existing apps and real hardware. It is a draft and a multi-year program.
 
