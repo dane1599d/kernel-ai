@@ -1,6 +1,6 @@
 # P5 plan: secure networking
 
-Status: approved by the founder on 2026-10-27, with the defaults (#165). Tasks 1-7 are on main. Tasks 8-14 have their host halves on main. The founder approved the OS wiring of tasks 8-13 on 2026-11-09: tasks 11, 12 and 13 are on main (task 11 but for `Hold`), and tasks 8, 9 and 10 are in review or in progress. Task 14 waits for the v0.1 tag. Task 15 (close) is in progress: section 11 tracks each exit case.
+Status: approved by the founder on 2026-10-27, with the defaults (#165). Tasks 1-13 are on main (task 11 but for `Hold`). The founder approved the OS wiring of tasks 8-13 on 2026-11-09. Task 14 waits for the v0.1 tag. Task 15 (close) is in progress: every exit case passes on main under KVM and TCG, and section 11 has each one.
 
 This plan covers the work that the accepted ADRs and the execution plan ([ADR 0000](../adr/0000-execution-plan.md) §3 and §5, P5 rows) put in P5:
 - [ADR 0001](../adr/0001-capabilities.md): `NetDest` per app;
@@ -278,19 +278,25 @@ Not adopted: aws-lc-rs and ring, rustls's default providers. Both build C or ass
 - **Later, on request:** TLS 1.2, IPv6, the Public Suffix List, an MCP bridge, `Hold` for sends, HTTP/2.
 - **Waiting on the founder:** section 2's questions, the crates (questions 1 and 2) first.
 
-## 11. Close status (task 15, draft of 2026-11-11)
+## 11. Close status (task 15, draft of 2026-11-16)
 
-Section 1's exit cases, checked against `main` at 4cb16794 on 2026-11-11. "On main" means the case is in `xtask/src/cases`, so it runs in `ci.yml`'s boot shards under KVM and TCG, and each one merged through a batch that boots every case. Main's run [42970216733](https://github.com/dane1599d/kernel-ai/actions/runs/42970216733) passed every boot shard under KVM and TCG. Its one failure, observe determinism, is not a network case.
+Section 1's exit cases, checked against `main` at c56f99c8 on 2026-11-16.
+- "On main" means the case is in `xtask/src/cases`, so it runs in `ci.yml`'s boot shards under KVM and TCG.
+- Each case merged through a batch that boots every case.
+- "Main run" is a push run on `main` where the case passed under KVM and TCG: for the three cases the last draft waited on, the first such run.
+- Main's run [43788445055](https://github.com/dane1599d/kernel-ai/actions/runs/43788445055) at c56f99c8 passed every boot shard, all three under KVM and all three under TCG, with every case below in it.
 
-| Exit case | Status | Where, and what is left |
-|---|---|---|
-| `net-download` | On main | #770 (N-t, task 6's case), green under KVM and TCG (run 42755357146). One 32-chunk target over two boots: it is cut at 40% and resumes, stops inside chunk 16 as a reboot would, resumes from the mark in kaifs, and is cut at 80% and resumes. Each resume fetches again only the chunk in flight. It refuses a flipped chunk, a wrong whole-file hash, and an expired, wrong-name and unknown-CA certificate before a byte is stored. 64 MiB under KVM; the same 32 chunks at 64 KiB under TCG |
-| `net-dest` | On main | #666, with `hosts:any` added in #760. #779 adds step `netdest-g`: only a plan line with `netdest=llm` gets the LLM's handle. The section's "a redirect to another host is refused" is shown in `fetch-service` (#755), which follows a redirect within the handle and hands back one off it |
-| `pkg-online` | In review | #752 (task 8), with ADR 0011's five tamper cases over the network |
-| `model-download` | In progress | Task 9 (AP-2). #772 is part 1 |
-| `update-online` | In review | #754 (task 10), with `update-online-flipped` and `update-online-expired` |
-| `net-grant` | On main | #771 (C, task 13 part 2). The never-shipped `net-fixture` app asks for each new host on a card that names the app and the host. A redirect's host is asked about by its own name. A host outside the ceiling is refused with no card. Settings' revoke makes the next request ask again, and `undo` puts the grant back |
-| `net-pf` | On main | #751. #757 adds `net-pf-page` on the HTTPS mock, and #786 adds `net-pf-query` |
+| Exit case | Status | Main run | Where |
+|---|---|---|---|
+| `net-download` | On main | 42755357146 | #770 (N-t, task 6's case). One 32-chunk target over two boots. It is cut at 40% and resumes, stops inside chunk 16 as a reboot would, resumes from the mark in kaifs, and is cut at 80% and resumes. Each resume fetches again only the chunk in flight. It refuses a flipped chunk, a wrong whole-file hash, and an expired, wrong-name and unknown-CA certificate before a byte is stored. 64 MiB under KVM; the same 32 chunks at 64 KiB under TCG. #845 adds a read of the whole partial before it moves in |
+| `net-dest` | On main | 42970216733 | #666, with `hosts:any` added in #760. #779 adds step `netdest-g`: only a plan line with `netdest=llm` gets the LLM's handle. The section's "a redirect to another host is refused" is shown in `fetch-service` (#755), which follows a redirect within the handle and hands back one off it |
+| `pkg-online` | On main | 43361076479 | #752 (task 8), with ADR 0011's five tamper cases over the network |
+| `model-download` | On main | 43558668974 | #772 (part 1: the offers, the one ask, the guest's RAM) and #824 (part 2: the download in the OS and the case), then #866 (the download LOWs, run 43570126221) and #871 (`model_fetch` takes `net` and a name, run 43580448499) |
+| `update-online` | On main | 43508647923 | #754 (task 10), with `update-online-flipped` and `update-online-expired`. In that run its shards passed under KVM and TCG; the run's one failure was `net-grant` (below). The first run with every shard green is 43558668974 |
+| `net-grant` | On main | 42970216733 | #771 (C, task 13 part 2). The never-shipped `net-fixture` app asks for each new host on a card that names the app and the host. A redirect's host is asked about by its own name. A host outside the ceiling is refused with no card. Settings' revoke makes the next request ask again, and `undo` puts the grant back |
+| `net-pf` | On main | 42970216733 | #751. #757 adds `net-pf-page` on the HTTPS mock, and #786 adds `net-pf-query` |
+
+**One flake on main.** `net-grant` failed under TCG twice on 2026-11-13: runs 43508647923 (#754's merge) and 43519660175 (#814's). Both times it was in shard 1, with "net-grant: the Deny never refused the app" after its wait ran out. It has passed under KVM and TCG in every main run since 43558668974, and no `net-grant` change landed in between, so it reads as a timing flake under TCG, not a fault the close waits on. A third failure would make it a fix to land before the close.
 
 The tasks' own exit checks:
 
@@ -299,6 +305,9 @@ The tasks' own exit checks:
 | 2, streams | `net-stream` | On main |
 | 3, random numbers | `entropy-boots` (two boots differ) | On main |
 | 7, the HTTPS mock | `https-mock`; every P5 case uses its `TestCase::https` | On main (#753) |
+| 8, online installs | `pkg-online` | On main (#752) |
+| 9, the model download | `model-download` | On main (#772, #824, #866, #871) |
+| 10, online updates | `update-online`, `-flipped`, `-expired` | On main (#754) |
 | 11, the AI's network actions | `net-pf`, `net-pf-page`, `net-pf-query` | On main (#751, #757; quarantined reads in #785 and #786). `Hold` as a held send is not built |
 | 12, `kai:net` | `fetch-service` for the service; an app fetching from its host and refused another | On main: `fetch-service` (#755), and `net-grant` for the app (#771, task 12's C half) |
 | 13, per-app grants | `net-grant` | On main (#771) |
@@ -318,11 +327,25 @@ The tasks' own exit checks:
 | Spike | Status | Where, and what it means for the close |
 |---|---|---|
 | P5-S1 `tls-nostd` | Run, passed | rustls 0.23.46 runs without std on our RustCrypto provider (#363, 2026-10-28), and again on `kainet` itself in ring 3 (spike #654, 2026-11-04). Both have decisions rows |
-| P5-S2 `net-throughput` | Run, passed under KVM | It missed its bar at first, at 18.2 MB/s. It has passed since K's virtio-net driver: about 34 MB/s at a 20 ms round trip (run 41962939272). Both have decisions rows |
+| P5-S2 `net-throughput` | Run, passed under KVM | It missed its bar at first, at 18.2 MB/s. It has passed since K's virtio-net driver: about 34 MB/s at a 20 ms round trip (run 41962939272). Both have decisions rows. `net-download`'s latest end-to-end figure, after #814, is below |
 | S11-3 `model-mirror` | Not run: due before v0.2 | No result row on main, and no lane holds it. Task 9 (#772) downloads from the pinned Hugging Face revision, which S11-3's fail rule keeps as the source (ADR 0000), so P5 closes without it. The mirror is question 7's privacy step for v0.2 |
 | S10-2 groups and swap | Not run: due before v0.2 | No result row on main. It is the model lane's. It decides whether the index level ships in v0.2, not anything P5 closes on |
 
-**A verified download runs well under P5-S2's bar.** P5-S2 measures the network alone. `net-download`'s end-to-end figure under KVM, with the case's faults in the path, is 2.66 MB/s over both boots (#770). That covers the checks, kaifs, and two TLS connections a chunk. At that rate the 2.5 GB model would take about 16 minutes (est.), not 90 s. The case sets no speed bar. #810 makes `dlcheck` print where the time goes. The manager takes the figure to the founder at the close as a plain fact, and a question only if the split shows something to choose.
+**A verified download runs well under P5-S2's bar.** P5-S2 measures the network alone, and `net-download` measures the whole download, with its checks, kaifs and the case's faults in the path. The case sets no speed bar.
+- **Before:** 2.66 MB/s over both boots under KVM (#770), with two TLS connections a chunk.
+- **The speed-ups:**
+  - #810 made `dlcheck` print where the time goes.
+  - #814's `Direct` asks a target's ranges of the asset URL after the first redirect. That halves the connections and makes the fetch side about 20% faster.
+  - #845 reads the whole partial back before it moves in, which adds about 2.3 s for the 64 MiB.
+- **Latest figure, after #814** (its last `full-ci` run, 43497410961 at 78a97c56, with #845 merged in, under KVM):
+  - boot 1: 36.3 MB in 7,440 ms, 4.87 MB/s;
+  - boot 2: 34.8 MB in 13,054 ms, 2.66 MB/s, of which the re-reads of chunks 0-15 and the check before move-in take 6,418 ms;
+  - about 3.5 MB/s over both boots.
+- **Where the time goes:**
+  - The network is now the small part. Fetches take about 2.1 s a boot over 19-20 connections, and the bodies arrive at about 45.6 MB/s, above P5-S2's 30 MB/s bar.
+  - kaifs takes 5.2 s and 10.7 s of the two boots. A faster download now means faster kaifs writes and re-reads. That is P2's kaifs speed work, accepted as a miss for v0.1 and due after it.
+- At about 3.5 MB/s the 2.5 GB model would take about 12 minutes (est.).
+- The manager takes these figures to the founder at the close as plain facts.
 
 **Checks this close adds:**
 - `kabi::plan::system`'s `no_shipping_plan_line_names_a_test_host`: no line of the shipping plan names a `.test` host, `kai.test` included. It passes on main since #767 took the mock zone out of the shell's ceiling.
@@ -338,15 +361,14 @@ The tasks' own exit checks:
   - quarantined reads (D6, FIDES's typed query): the `query` row and `llm`'s typed answer (#785, #786). An answer keeps its data's label, so sending it to a host the line doesn't name still asks.
 - **Needs the founder:** D3 says a host is grounded if "the user said yes to it before (a grant record under ADR 0001)". What shipped grounds the agent's reuse with the shell's own per-host Always rule. An app's grant stays that app's, and agent grounding reads no app's grants (#751, agreed with C). Changing D3 amends an ADR, so the founder decides. The old and new wording are in this close's PR, and the ADR text changes only after the founder's answer.
 - **Founder's decision of 2026-11-09:** Kai may reach any website the user names. The shell's ceiling is `hosts:any` on port 443 (#760). D3's "the user typed it" already grounds such a host, so its text holds. The close notes the ceiling.
-- **Not built yet:**
-  - `Hold` as a held send. `Inverse::Hold` exists and derives Ask, as question 5's default says. No exit case asks for it;
-  - online `pkg_install` (#752).
+- **Online `pkg_install`:** built in #752 (task 8), with `pkg-online` on main.
+- **Not built yet:** `Hold` as a held send. `Inverse::Hold` exists and derives Ask, as question 5's default says. No exit case asks for it.
 - **Deferred by section 2:** the MCP client (question 8).
 
 **Left before P5 closes.**
-- **To land:** `pkg-online` (#752) and `update-online` (#754).
-- **In progress:** `model-download` (task 9, AP-2; #772 is part 1).
-- **To decide:** whether `Hold` as a held send is built for the close or moves to v0.2. It is in ADR 0002's P5 row, not in section 1's exit cases.
+- **To decide (the founder):**
+  - whether `Hold` as a held send is built for the close or moves to v0.2. It is in ADR 0002's P5 row, not in section 1's exit cases;
+  - D3's text (above).
 - **Then this close:** the D3 text change after the founder's answer, the roadmap's P5 status, and the closing decisions row.
 
 Task 14 is deferred to after the v0.1 tag, and P5 closes without it.
