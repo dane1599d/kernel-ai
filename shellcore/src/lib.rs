@@ -677,6 +677,9 @@ pub struct Shell {
     card_for_desk: Option<(u64, deskask::Asker)>,
     /// What a panel line's card came to, for the panel.
     card_result: Option<(bool, String)>,
+    /// The send a panel line's card allowed and the outbox holds, for the
+    /// panel to show as that line's ([`Shell::take_card_held`]).
+    card_held: Option<u64>,
     /// What windows' lines' cards came to, and their asks for it (`deskcard`).
     card_answers: deskcard::Answers,
     /// Apps' network asks waiting for the terminal's card (P5 task 13).
@@ -813,6 +816,7 @@ impl Shell {
             desk_asks: Vec::new(),
             card_for_desk: None,
             card_result: None,
+            card_held: None,
             card_answers: deskcard::Answers::default(),
             net_cards: Vec::new(),
             net_revoked: Vec::new(),

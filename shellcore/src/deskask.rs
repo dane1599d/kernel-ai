@@ -270,9 +270,20 @@ impl Shell {
 
     /// Tells `asker` what question `id` came to: the panel through
     /// `card_result`, a window as its `shell_card`'s result (`deskcard`).
-    fn desk_told(&mut self, id: u64, asker: Asker, ran: bool, failed: bool, line: String) {
+    pub(crate) fn desk_told(
+        &mut self,
+        id: u64,
+        asker: Asker,
+        ran: bool,
+        failed: bool,
+        line: String,
+    ) {
         match asker {
-            Asker::Panel => self.card_result = Some((ran, line)),
+            Asker::Panel => {
+                // A send the card allowed is held as the card's own entry.
+                self.card_held = (ran && self.outbox.get(id).is_some()).then_some(id);
+                self.card_result = Some((ran, line));
+            }
             Asker::App(app) => {
                 let told = match failed {
                     true => Reply::err(line),
@@ -287,6 +298,12 @@ impl Shell {
     /// ran, and its first line, for the panel to show.
     pub fn take_card_result(&mut self) -> Option<(bool, String)> {
         self.card_result.take()
+    }
+
+    /// The send the last answered panel line's card allowed, if the outbox
+    /// holds it: the entry its undo takes back.
+    pub fn take_card_held(&mut self) -> Option<u64> {
+        self.card_held.take()
     }
 
     /// `app`'s line `line` declining its own question, which only waits for

@@ -394,12 +394,19 @@ pub fn send_text(send: &crate::sends::HeldSend, more: usize, now_ms: u64) -> Str
     format!("{head}{}{tail}", send.host)
 }
 
-/// How many characters of `host` may be cut from its left and leave its
-/// last two labels, the site's own name: 25 for
-/// `a-rather-long-host-name.hooks.example.org`.
+/// How many characters of `host` may be cut from its left and leave the
+/// site's own name: its last two labels (25 for
+/// `a-rather-long-host-name.hooks.example.org`), or three under a two-part
+/// suffix, whose last two labels are both short (`example.co.uk`).
 fn cuttable(host: &str) -> usize {
+    let labels: Vec<&str> = host.rsplit('.').collect();
+    let short = |label: Option<&&str>| label.is_some_and(|l| l.len() <= 3);
+    let keep = match short(labels.first()) && short(labels.get(1)) {
+        true => 3,
+        false => 2,
+    };
     let mut dots = host.char_indices().rev().filter(|(_, c)| *c == '.');
-    match dots.nth(1) {
+    match dots.nth(keep - 1) {
         Some((at, _)) => host[..=at].chars().count(),
         None => 0,
     }
@@ -442,5 +449,10 @@ mod send_tests {
         assert_eq!(&host[super::cuttable(host)..], "example.org");
         assert_eq!(super::cuttable("example.org"), 0);
         assert_eq!(super::cuttable("localhost"), 0);
+        let uk = "hooks.example.co.uk";
+        assert_eq!(&uk[super::cuttable(uk)..], "example.co.uk");
+        let au = "a.b.shop.com.au";
+        assert_eq!(&au[super::cuttable(au)..], "shop.com.au");
+        assert_eq!(super::cuttable("co.uk"), 0);
     }
 }

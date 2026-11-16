@@ -503,3 +503,37 @@ fn the_shell_and_the_pane_agree_on_what_a_host_is() {
     let long = "a".repeat(crate::outbox::MAX_HOST + 1);
     assert!(!crate::outbox::is_host(&long) && !deskcore::sends::is_host(&long));
 }
+
+/// A panel line's card that allowed a send hands the panel the send's
+/// entry with its result; one that held nothing hands none.
+#[test]
+fn a_panel_cards_result_names_the_send_it_held() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let id = hold(&host, &mut shell, "a.example", 0);
+    shell.desk_told(
+        id,
+        crate::deskask::Asker::Panel,
+        true,
+        false,
+        String::from("Sending"),
+    );
+    assert_eq!(shell.take_card_held(), Some(id));
+    assert_eq!(shell.take_card_held(), None);
+    shell.desk_told(
+        id + 7,
+        crate::deskask::Asker::Panel,
+        true,
+        false,
+        String::from("Done."),
+    );
+    assert_eq!(shell.take_card_held(), None);
+    shell.desk_told(
+        id,
+        crate::deskask::Asker::Panel,
+        false,
+        false,
+        String::from("Not run"),
+    );
+    assert_eq!(shell.take_card_held(), None);
+}

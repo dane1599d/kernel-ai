@@ -97,14 +97,27 @@ const CARD: &str = "panel card ";
 
 /// A card's result as its request: [`encode_state`]'s, under [`CARD`].
 pub fn encode_card(state: &State) -> Option<String> {
-    let request = encode_state(state)?;
-    Some(format!("{CARD}{}", &request[STATE.len()..]))
+    encode_card_held(state, None)
 }
 
 /// A [`encode_card`] request read back; `None` for anything else.
 pub fn parse_card(text: &str) -> Option<State> {
+    parse_card_held(text).map(|(state, _)| state)
+}
+
+/// A card's result that held a send (`crate::sends`): its done line with
+/// the send's log entry after a tab, as [`encode_done`] carries a line's, so
+/// the pane shows the send's countdown and undo in its place.
+pub fn encode_card_held(state: &State, held: Option<u64>) -> Option<String> {
+    let request = encode_done(state, held)?;
+    Some(format!("{CARD}{}", &request[STATE.len()..]))
+}
+
+/// A [`encode_card_held`] request read back: the state, and the held send's
+/// entry if it names one.
+pub fn parse_card_held(text: &str) -> Option<(State, Option<u64>)> {
     let body = text.strip_prefix(CARD)?;
-    parse_state(&format!("{STATE}{body}"))
+    parse_done(&format!("{STATE}{body}"))
 }
 
 const SAID: &str = "panel said ";

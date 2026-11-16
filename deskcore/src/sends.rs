@@ -301,6 +301,10 @@ mod tests {
         assert_eq!(left(75_000, 0), "1:15");
     }
 
+    fn held_send(entry: u64, due_ms: u64) -> HeldSend {
+        held(entry, due_ms)
+    }
+
     fn held(entry: u64, due_ms: u64) -> HeldSend {
         wire(entry, false, due_ms, "a.example").held(0)
     }
@@ -365,6 +369,39 @@ mod tests {
                 line: String::from("Sent to b.example.")
             }
         );
+    }
+
+    /// A send allowed on the trusted card comes back as the card's result
+    /// over the real wire, with its entry: the pane shows its countdown and
+    /// undo as that line's own, and what it came to replaces the line
+    /// (#959 re-review).
+    #[test]
+    fn a_send_allowed_on_the_card_shows_as_its_own_line() {
+        use crate::panel_wire::{encode_card_held, parse_card_held};
+        let mut panel = Panel::new();
+        panel.send(String::from("send hello to a.example"), 0);
+        let line = State::Done {
+            line: String::from("Sending to a.example in 5 s."),
+        };
+        let request = encode_card_held(&line, Some(4)).unwrap();
+        assert_eq!(request, "panel card done Sending to a.example in 5 s.\t4");
+        let (shown, held) = parse_card_held(&request).unwrap();
+        assert_eq!(held, Some(4));
+        panel.set_done(shown, held);
+        panel.set_sends(alloc::vec![held_send(4, 5_000)]);
+        assert_eq!(panel.shown_send().map(|s| s.entry), Some(4));
+        assert_eq!(panel.waiting_note(), None);
+        assert!(panel.send_ended(4, String::from("Sent to a.example."), false));
+        assert_eq!(
+            panel.state(),
+            &State::Done {
+                line: String::from("Sent to a.example.")
+            }
+        );
+        // A card that held nothing reads back as before.
+        let plain = encode_card_held(&line, None).unwrap();
+        assert_eq!(parse_card_held(&plain), Some((line.clone(), None)));
+        assert_eq!(crate::panel_wire::parse_card(&request), Some(line));
     }
 
     #[test]

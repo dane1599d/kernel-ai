@@ -165,10 +165,12 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     }
     // A card's result: shown, unless a newer line is thinking, whose own
     // result comes after.
-    if let Some(shown) = panel_wire::parse_card(text) {
+    // A send it allowed comes with its entry: the line is the send's own,
+    // so its countdown and undo show in its place.
+    if let Some((shown, held)) = panel_wire::parse_card_held(text) {
         let thinking = matches!(state.panel.state(), deskcore::panel::State::Thinking { .. });
         let text = bar_text(&shown).map(String::from);
-        if !thinking && state.panel.set_state(shown) {
+        if !thinking && state.panel.set_done(shown, held) {
             println!("desktop: the panel shows what a card came to");
             log_bar(state.log_bar, text.as_deref());
             state.extra.push(state.desk.pane_area());

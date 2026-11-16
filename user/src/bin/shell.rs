@@ -288,9 +288,12 @@ fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) {
             shown
         }
         // Esc while Kai builds an app in the background stops the build.
+        // A Stop that stopped nothing (the line it was for has ended): the
+        // next request goes on now, so an undo queued behind it is taken
+        // before the next held send starts (`give_sends`).
         Some(Some(Request::Stop)) => match shell.stop_app_build() {
             Some(reply) => State::Done { line: reply.text },
-            None => return,
+            None => return take_panel(shell, warmth),
         },
         // Esc after the shell took the line: it has run already, one line at
         // a time, and its result stays shown. Esc before is desktop's own: the
@@ -381,15 +384,18 @@ fn now_ms() -> u64 {
     sys::time_ns() / 1_000_000
 }
 
-/// Shows on the panel what the answer to a desktop line's card came to.
-fn give_card_result(ran: bool, line: String) {
+/// Shows on the panel what the answer to a desktop line's card came to,
+/// with the send it held, if it did, so the pane shows that send's countdown
+/// and undo as the line's own.
+fn give_card_result(ran: bool, line: String, held: Option<u64>) {
     use deskcore::panel::State;
     use deskcore::panel_wire;
     let shown = match ran {
         true => State::Done { line },
         false => State::Refused { reason: line },
     };
-    let (Some(route), Some(request)) = (desktop(), panel_wire::encode_card(&shown)) else {
+    let (Some(route), Some(request)) = (desktop(), panel_wire::encode_card_held(&shown, held))
+    else {
         return;
     };
     if let Err(why) = ask_desktop(route, &request) {
@@ -1605,7 +1611,8 @@ fn main() -> i32 {
             // it. A Terminal line's answer goes back to the Terminal on the
             // next pass (`give_call_results`).
             if let Some((ran, line)) = shell.take_card_result() {
-                give_card_result(ran, line);
+                let held = shell.take_card_held();
+                give_card_result(ran, line, held);
             }
             reply
         } else {
