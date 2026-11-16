@@ -174,7 +174,7 @@ mod tests {
     fn the_system_shell_has_a_route_to_pkg_with_kai_data_and_only_then() {
         assert_eq!(shell(true), SHELL_DESK_BUILD);
         assert_eq!(shell(false), super::super::SHELL_DESK);
-        assert!(shell(true).contains("routes=desktop+pkg+fetch "));
+        assert!(shell(true).contains("routes=desktop+pkg+fetch+send "));
         assert!(lines(true).iter().any(|line| line.starts_with("pkg ")));
         assert!(!shell(false).contains("pkg"));
         // `pkg` is planned before the shell, as its route needs.
@@ -185,6 +185,29 @@ mod tests {
             .collect();
         let at = |name| order.iter().position(|n| *n == name).unwrap();
         assert!(at("pkg") < at("shell") && at("desktop") < at("shell"));
+    }
+
+    /// Only the shell reaches `send`, the `fetch` that makes POSTs: no other
+    /// line of the system plan, an app's or comphost's, names it in `uses=` or
+    /// `routes=`, and `send` is `fetch`'s program in its post role.
+    #[test]
+    fn only_the_shell_names_the_send_service() {
+        for files in [false, true] {
+            let plan = plan("llm caps=serve", files);
+            let send: Vec<&str> = plan.lines().filter(|l| l.starts_with("send ")).collect();
+            assert_eq!(send, [super::super::SEND]);
+            assert!(super::super::SEND.contains(" program=fetch "));
+            assert!(super::super::SEND.ends_with(" role=post"));
+            for line in plan.lines() {
+                let names_send = line.split_whitespace().any(|word| {
+                    let list = word
+                        .strip_prefix("uses=")
+                        .or_else(|| word.strip_prefix("routes="));
+                    list.is_some_and(|list| list.split('+').any(|name| name == "send"))
+                });
+                assert_eq!(names_send, line.starts_with("shell "), "{line}");
+            }
+        }
     }
 
     /// With `kai-data`, Notes keeps its saved state on disk: its line is

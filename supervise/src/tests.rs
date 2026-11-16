@@ -148,21 +148,32 @@ fn the_plan_the_kernel_sends_parses() {
     assert!(cc.uses.is_empty());
     // It starts when the shell first calls it, not at boot.
     assert_eq!(cc.start, Start::Demand);
-    // `fetch`, then `updated`, the model channel, just before the shell:
-    // `updated`'s one route is to llm, and it alone holds the model store.
+    // `fetch`, `send` (fetch in its send role), then `updated`, the model
+    // channel, just before the shell: `updated`'s one route is to llm, and it
+    // alone holds the model store.
     let fetch = &plan.services[2];
     assert_eq!((fetch.name.as_str(), fetch.start), ("fetch", Start::Demand));
-    let updated = &plan.services[3];
+    let send = &plan.services[3];
+    assert_eq!(
+        (send.name.as_str(), send.program.as_str(), send.start),
+        ("send", "fetch", Start::Demand)
+    );
+    assert_eq!(send.args, "role=post");
+    assert_eq!(send.limits.caps, fetch.limits.caps);
+    let updated = &plan.services[4];
     assert_eq!(updated.name, "updated");
     assert_eq!(updated.uses, ["llm"]);
     assert!(updated.dirs.contains(&Folder::Models));
-    let shell = &plan.services[4];
+    let shell = &plan.services[5];
     assert_eq!(shell.name, "shell");
     assert_eq!(
         shell.limits.caps,
         cap::SERVE | cap::CALL | cap::POLICY | cap::STOP | cap::SCRIPT | cap::POWER
     );
-    assert_eq!(shell.uses, ["llm", SUPERVISOR, "cc", "updated", "fetch"]);
+    assert_eq!(
+        shell.uses,
+        ["llm", SUPERVISOR, "cc", "updated", "fetch", "send"]
+    );
     assert_eq!(shell.limits.stack_pages, 512);
     assert!(shell.limits.stack_pages < shell.limits.max_pages);
     assert_eq!(
@@ -780,8 +791,9 @@ fn program_names_the_program_and_is_not_passed_on() {
     assert_eq!(plan.errors, Vec::<String>::new());
     assert_eq!(plan.services[1].program, "cc");
     assert_eq!(plan.services[2].program, "fetch");
-    assert_eq!(plan.services[3].program, "updated");
-    let shell = &plan.services[4];
+    assert_eq!(plan.services[3].program, "fetch");
+    assert_eq!(plan.services[4].program, "updated");
+    let shell = &plan.services[5];
     assert_eq!(shell.program, "shell");
 }
 
@@ -1113,9 +1125,9 @@ fn the_v0_1_system_plan_parses_and_its_routes_come_first() {
         // editor's builds install) `pkg` after it.
         let shell = named("shell").expect("the shell is planned");
         let tail: &[&str] = if files {
-            &["desktop", "pkg", "fetch"]
+            &["desktop", "pkg", "fetch", "send"]
         } else {
-            &["desktop", "fetch"]
+            &["desktop", "fetch", "send"]
         };
         assert_eq!(shell.uses[shell.uses.len() - tail.len()..], *tail);
         assert_eq!(named("pkg").is_some(), files);

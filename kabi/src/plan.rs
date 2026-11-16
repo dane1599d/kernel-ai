@@ -26,29 +26,29 @@ pub mod shell_route {
 /// The Rhai shell: it serves the terminal, calls the llm service, the
 /// supervisor, `cc` and `updated` ([`SHELL_ROUTES`]), may switch the scheduling
 /// policy, and needs a large stack for Rhai's recursion.
-pub const SHELL: &str = "shell caps=serve+call+policy+stop+power+script uses=llm+supervisor+cc+updated+fetch routes=fetch netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000";
+pub const SHELL: &str = "shell caps=serve+call+policy+stop+power+script uses=llm+supervisor+cc+updated+fetch+send routes=fetch+send netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000";
 /// [`SHELL`] once `fs` runs: with `files`, its `Dir` for `/home/user`, for the
 /// file rows (P2 task 11), and `state`, its `Dir` for `/system/state`, for the
 /// action log (P2 task 12).
-pub const SHELL_FILES: &str = "shell caps=serve+call+policy+stop+power+script+files+state uses=llm+supervisor+cc+updated+fetch routes=fetch netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000";
+pub const SHELL_FILES: &str = "shell caps=serve+call+policy+stop+power+script+files+state uses=llm+supervisor+cc+updated+fetch+send routes=fetch+send netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000";
 /// [`SHELL`] on a desktop: with a route to `desktop`, named in `routes=`, which
 /// it takes the AI panel's requests from and reports their states to (P3 task
 /// 7).
-pub const SHELL_DESK: &str = "shell caps=serve+call+policy+stop+power+script uses=llm+supervisor+cc+updated+desktop+fetch routes=desktop+fetch netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000";
+pub const SHELL_DESK: &str = "shell caps=serve+call+policy+stop+power+script uses=llm+supervisor+cc+updated+desktop+fetch+send routes=desktop+fetch+send netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000";
 /// [`SHELL_DESK`] with the file system too, for a case that has the desktop and
 /// a state directory in one shell (`app-settings` saves a theme and shows it in
 /// Settings): the same routes, and `files` and `state` added to the caps (a
 /// test holds the two lines together).
-pub const SHELL_DESK_FILES: &str = "shell caps=serve+call+policy+stop+power+script+files+state uses=llm+supervisor+cc+updated+desktop+fetch routes=desktop+fetch netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000";
+pub const SHELL_DESK_FILES: &str = "shell caps=serve+call+policy+stop+power+script+files+state uses=llm+supervisor+cc+updated+desktop+fetch+send routes=desktop+fetch+send netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000";
 /// [`SHELL_DESK_FILES`] with a route to `pkg` after the one to `desktop`, for the
 /// system's shell: the editor's Ctrl-B on a C component (`cc build`'s
 /// `local-next`, `local` and its undo) comes to the shell through `desktop`, and
 /// the shell reaches `pkg` by `routes=` as for [`SHELL_BUILD`]. Planned when `pkg`
 /// is, after it, which `system::lines` does with `kai-data`.
-pub const SHELL_DESK_BUILD: &str = "shell caps=serve+call+policy+stop+power+script+files+state uses=llm+supervisor+cc+updated+desktop+pkg+fetch routes=desktop+pkg+fetch netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000";
+pub const SHELL_DESK_BUILD: &str = "shell caps=serve+call+policy+stop+power+script+files+state uses=llm+supervisor+cc+updated+desktop+pkg+fetch+send routes=desktop+pkg+fetch+send netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000";
 /// [`SHELL_FILES`] with a route to `pkg`, for `cc build`'s `local-next`, `local`
 /// and its undo (P4 task 13): planned when `pkg` is, after it.
-pub const SHELL_BUILD: &str = "shell caps=serve+call+policy+stop+power+script+files+state uses=llm+supervisor+cc+updated+pkg+fetch routes=pkg+fetch netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000";
+pub const SHELL_BUILD: &str = "shell caps=serve+call+policy+stop+power+script+files+state uses=llm+supervisor+cc+updated+pkg+fetch+send routes=pkg+fetch+send netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000";
 /// Every shell line the kernel plans, for the checks that each starts with
 /// [`SHELL_ROUTES`] and names the routes after them in `routes=`.
 pub const SHELL_LINES: [&str; 6] = [
@@ -83,7 +83,7 @@ pub const ON_DEMAND: &str = " start=demand";
 /// earlier still. With no step, `updated` does nothing at start but settle a
 /// model trial left pending, and then answers the shell's model requests.
 pub fn with_updated(shell: &str, words: &str) -> String {
-    format!("{FETCH}\n{UPDATED}{words}\n{shell}")
+    format!("{FETCH}\n{SEND}\n{UPDATED}{words}\n{shell}")
 }
 /// The shell's network ceiling (P5 task 11), as each shell line's `netdest=`
 /// gives it: the hosts the agent's fetches may ever reach, on HTTPS. Each fetch
@@ -107,6 +107,15 @@ pub const CC: &str = "cc start=demand caps=serve pages=10240 stack_pages=512 bur
 /// and one 64 KiB body. A caller's line names it in `uses=`, after this line.
 pub const FETCH: &str =
     "fetch start=demand caps=serve+net pages=4096 stack_pages=64 burst_ms=30000";
+/// `fetch` in its send role (ADR 0002's `Hold`, founder 2026-11-16): the one
+/// service that makes a POST, and it makes nothing else. `fetch` reads
+/// `role=post` and then serves only a POST, while the [`FETCH`] line refuses
+/// one. Only a shell line names `send`, in `uses=` and `routes=`, so no app's
+/// line (comphost's) can reach it: the kernel routes only what a plan line
+/// names. Started on demand, by the shell's first send.
+pub const SEND: &str = "send program=fetch start=demand caps=serve+net pages=4096 stack_pages=64 burst_ms=30000 role=post";
+/// The argument that puts `fetch` in its send role ([`SEND`]).
+pub const SEND_ROLE: &str = "post";
 /// The file system service (ADR 0004): the only holder of the `kai-data`
 /// partition. Planned before the shell, and only when the disk has `kai-data`.
 /// Its pages hold a 16 MiB block cache and kaifs's working state. `kai-fs 1`'s
@@ -205,11 +214,13 @@ mod tests {
         for line in SHELL_LINES.into_iter().chain([system::SHELL_DESK_FILES]) {
             assert_eq!(uses(line)[..SHELL_ROUTES.len()], SHELL_ROUTES, "{line}");
         }
-        // Every shell reaches `fetch`, its last route, on its own ceiling.
+        // Every shell reaches `fetch` and then `send`, its last two routes, on
+        // its own ceiling.
         for line in SHELL_LINES.into_iter().chain([system::SHELL_DESK_FILES]) {
-            assert_eq!(uses(line).last(), Some(&"fetch"), "{line}");
+            let uses = uses(line);
+            assert_eq!(uses[uses.len() - 2..], ["fetch", "send"], "{line}");
             assert!(
-                line.contains(" routes=") && line.contains("fetch "),
+                line.contains(" routes=") && line.contains("fetch+send "),
                 "{line}"
             );
             assert!(line.contains(&format!(" netdest={SHELL_NET} ")), "{line}");
@@ -217,6 +228,7 @@ mod tests {
         assert_eq!(uses(SHELL)[..SHELL_ROUTES.len()], SHELL_ROUTES);
         assert_eq!(uses(SHELL_FILES)[..SHELL_ROUTES.len()], SHELL_ROUTES);
         assert_eq!(named_route("fetch", "fetch"), Some(4));
+        assert_eq!(named_route("fetch+send", "send"), Some(5));
     }
 
     #[test]
@@ -225,12 +237,12 @@ mod tests {
         let lines: Vec<&str> = plan.lines().collect();
         assert_eq!(
             lines,
-            [FETCH, format!("{UPDATED} step=check").as_str(), SHELL]
+            [FETCH, SEND, format!("{UPDATED} step=check").as_str(), SHELL]
         );
         assert_eq!(uses(UPDATED), ["llm"]);
-        assert_eq!(with_updated(SHELL_DESK, "").lines().nth(1), Some(UPDATED));
+        assert_eq!(with_updated(SHELL_DESK, "").lines().nth(2), Some(UPDATED));
         let demand = with_updated(SHELL_DESK, ON_DEMAND);
-        assert!(demand.lines().nth(1).unwrap().ends_with(" start=demand"));
+        assert!(demand.lines().nth(2).unwrap().ends_with(" start=demand"));
     }
 
     /// The system's shell is the desktop shell with files and one route more, to
@@ -240,8 +252,12 @@ mod tests {
         assert_eq!(
             SHELL_DESK_BUILD,
             SHELL_DESK_FILES
-                .replacen("+desktop+fetch ", "+desktop+pkg+fetch ", 1)
-                .replacen("routes=desktop+fetch ", "routes=desktop+pkg+fetch ", 1)
+                .replacen("+desktop+fetch+send ", "+desktop+pkg+fetch+send ", 1)
+                .replacen(
+                    "routes=desktop+fetch+send ",
+                    "routes=desktop+pkg+fetch+send ",
+                    1
+                )
                 .as_str()
         );
         assert_eq!(named_route("desktop+pkg", "desktop"), Some(4));
