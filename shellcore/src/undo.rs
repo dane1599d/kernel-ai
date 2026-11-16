@@ -94,6 +94,11 @@ pub enum Inverse {
     /// it), or put a revoked one back (the undo of a Settings revoke). The
     /// shell's store does it (`Shell::revert_net_grant`), not the host.
     NetGrant { id: u32, held: bool },
+    /// Cancel the send log entry `entry` holds in the outbox, while it waits
+    /// (`crate::outbox`). Never written to the log (it says `none` there), so
+    /// a send read back from disk has no undo and never goes; its redo is
+    /// none, since a send always asks again.
+    Unsend { entry: u64 },
 }
 
 /// A service name held without the heap, so an inverse stays `Copy`.
@@ -178,6 +183,7 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Model { .. } => String::from("the model before, from the next restart"),
         Inverse::NetGrant { id, held: true } => format!("network grant #{id} taken back"),
         Inverse::NetGrant { id, held: false } => format!("network grant #{id}"),
+        Inverse::Unsend { .. } => String::from("the send not sent"),
     }
 }
 
@@ -307,6 +313,7 @@ fn revert_one(
         | Inverse::Profile { .. }
         | Inverse::Keep { .. }
         | Inverse::NetGrant { .. }
+        | Inverse::Unsend { .. }
         | Inverse::Model { .. } => Err(Refused::Failed(String::from(
             "it is put back by the shell's own store",
         ))),
@@ -355,6 +362,9 @@ pub fn reverse(inverse: Inverse) -> Inverse {
         Inverse::Instruction { id, made } => Inverse::Instruction { id, made: !made },
         Inverse::Keep { app, on } => Inverse::Keep { app, on: !on },
         Inverse::NetGrant { id, held } => Inverse::NetGrant { id, held: !held },
+        // Never used: the undo of a cancel is logged with no inverse
+        // (`Shell::revert_entry`), so it never sends.
+        Inverse::Unsend { entry } => Inverse::Unsend { entry },
         Inverse::Appearance {
             setting,
             before,
@@ -389,10 +399,11 @@ pub fn reverse(inverse: Inverse) -> Inverse {
 }
 
 /// An inverse as one word, for the log and the `scriptrun` wire: `spec:1:2:3:2`,
-/// `fs:12`, `none`.
+/// `fs:12`, `none`. A held send's cancel is `none`: it lives in the shell's
+/// memory only, so no log read back can cancel, or send, anything.
 pub fn inverse_word(inverse: Option<Inverse>) -> String {
     match inverse {
-        None => String::from("none"),
+        None | Some(Inverse::Unsend { .. }) => String::from("none"),
         Some(Inverse::Spec {
             policy,
             preset,

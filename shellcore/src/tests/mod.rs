@@ -44,6 +44,7 @@ mod more;
 mod netask;
 mod netgrant;
 mod netrows;
+mod outbox;
 mod packages;
 mod panel;
 mod power;
@@ -212,6 +213,12 @@ struct FakeHost {
     model_answer: RefCell<Option<String>>,
     /// Each restart, with the log on the disk when it came (backlog item 13).
     reboots: RefCell<Vec<Option<String>>>,
+    /// Every send the network was given (`net_send`), with the log on disk
+    /// as it was then, and what the next sends answer (else `Ok`).
+    sends: RefCell<Vec<(crate::outbox::Send, Option<String>)>>,
+    send_answers: RefCell<VecDeque<Result<String, crate::outbox::SendFailed>>>,
+    /// Set to make the next log writes fail.
+    log_fails: Cell<u32>,
 }
 
 /// What standing instructions asked the desktop and the owners for.
@@ -403,6 +410,9 @@ impl FakeHost {
             model_requests: RefCell::new(Vec::new()),
             model_answer: RefCell::new(None),
             reboots: RefCell::new(Vec::new()),
+            sends: RefCell::new(Vec::new()),
+            send_answers: RefCell::new(VecDeque::new()),
+            log_fails: Cell::new(0),
         })
     }
 }
@@ -598,11 +608,24 @@ impl Host for FakeHost {
         Ok(())
     }
 
+    fn net_send(&self, send: &crate::outbox::Send) -> Result<String, crate::outbox::SendFailed> {
+        let disk = self.log_disk.borrow().clone();
+        self.sends.borrow_mut().push((send.clone(), disk));
+        self.send_answers
+            .borrow_mut()
+            .pop_front()
+            .unwrap_or_else(|| Ok(String::from("200 OK")))
+    }
+
     fn log_read(&self) -> Option<String> {
         self.log_disk.borrow().clone()
     }
 
     fn log_write(&self, text: &str) -> Result<(), String> {
+        if self.log_fails.get() > 0 {
+            self.log_fails.set(self.log_fails.get() - 1);
+            return Err(String::from("the disk is full"));
+        }
         *self.log_disk.borrow_mut() = Some(text.into());
         self.log_writes.set(self.log_writes.get() + 1);
         self.open_txn.set(None);
