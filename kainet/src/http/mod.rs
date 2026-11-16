@@ -1,4 +1,5 @@
 //! HTTP/1.1 for P5 (plan p5-networking, task 5): GET and HEAD, a byte range,
+//! and a POST of a short text body made once ([`Fetch::post`]),
 //! a body by length, by chunks or until a close_notify, at most five
 //! redirects, and limits on size and time. No cookies and no compression;
 //! one request a connection. Every redirect's host is checked with the
@@ -45,6 +46,9 @@ pub enum HttpError {
     /// passing it on as the range would put the target's first bytes where
     /// the range's belong.
     RangeIgnored,
+    /// A POST failed after a byte of it may have gone out: the server may
+    /// have it, so it is not tried again ([`Fetch::post`]).
+    Cut,
 }
 
 impl From<TlsError> for HttpError {
@@ -203,6 +207,60 @@ impl Fetch<'_> {
         self.walk(connect, method, url, range, sink, true)
     }
 
+    /// A POST of `body` to `url`, made once: the server gets it at most once.
+    /// - It is never followed to another URL. A 3xx, 303 included, is the
+    ///   answer, with no body read and [`Fetched::unfollowed`] saying where it
+    ///   led.
+    /// - It is never tried again, on this connection or another.
+    /// - A 2xx body goes to `sink`; any other status comes back with its head.
+    /// - Once the connection is open, a byte of the request may have gone out,
+    ///   so any failure from then on is [`HttpError::Cut`]: the server may have
+    ///   it. Only a failure before that (a refused host, the deadline, no
+    ///   connection or no TLS) says it was not sent.
+    pub fn post(
+        &self,
+        connect: &mut impl Connect,
+        url: &Url,
+        body: &[u8],
+        sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
+    ) -> Result<Fetched, HttpError> {
+        if !(self.allow)(&url.host, url.port) {
+            return Err(HttpError::Refused(url.host.clone()));
+        }
+        self.in_time()?;
+        let mut stream = connect.connect(url)?;
+        self.posted(&mut stream, url, body, sink)
+            .map_err(|_| HttpError::Cut)
+    }
+
+    /// The POST on an open connection, and its answer.
+    fn posted(
+        &self,
+        stream: &mut impl Stream,
+        url: &Url,
+        body: &[u8],
+        sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
+    ) -> Result<Fetched, HttpError> {
+        stream.send(&head::post(url, body))?;
+        let mut buf = Vec::new();
+        let head = self.read_head(stream, Method::Post, &mut buf)?;
+        let unfollowed = match redirects(head.status) {
+            true => head.location.as_deref().and_then(|at| url.join(at).ok()),
+            false => None,
+        };
+        let received = match head.status {
+            200..=299 => self.read_body(stream, head.framing, buf, sink)?,
+            _ => 0,
+        };
+        Ok(Fetched {
+            url: url.clone(),
+            head,
+            received,
+            redirects: 0,
+            unfollowed,
+        })
+    }
+
     fn walk(
         &self,
         connect: &mut impl Connect,
@@ -212,6 +270,10 @@ impl Fetch<'_> {
         sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
         within: bool,
     ) -> Result<Fetched, HttpError> {
+        // A POST is made once, never walked: a redirect would send it again.
+        if method == Method::Post {
+            return Err(HttpError::Url("a POST is made by Fetch::post"));
+        }
         let mut url = url.clone();
         if !(self.allow)(&url.host, url.port) {
             return Err(HttpError::Refused(url.host));

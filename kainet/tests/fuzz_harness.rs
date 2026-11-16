@@ -61,6 +61,9 @@ fn the_wire_harness_returns_for_mutated_messages() {
         "ok 302\nlen 0\nhops 0\nurl https://a.test/x\nlocation https://b.test/y\n",
         "err refused elsewhere.kai.test",
         "err truncated",
+        "err cut the server may have it",
+        "post https://hooks.example/send len=5
+hello",
     ] {
         hostile::fuzz(sample.as_bytes(), 0x3_317e, CASES, harness::fetch_wire);
         hostile::truncations(sample.as_bytes(), |_, bytes| harness::fetch_wire(bytes));

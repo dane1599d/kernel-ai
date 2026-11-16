@@ -16,7 +16,13 @@ pub const MAX_HEADERS: usize = 64;
 pub enum Method {
     Get,
     Head,
+    /// A short text body, sent once: [`post`] writes it, and
+    /// `Fetch::post` makes it, never following a redirect or trying again.
+    Post,
 }
+
+/// The type a POST's body is sent as.
+pub const POST_TYPE: &str = "text/plain; charset=utf-8";
 
 /// The bytes asked for: `first` to `last` inclusive, or to the end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,11 +32,22 @@ pub struct Range {
 }
 
 /// What the client sends: no cookies, no compression, one request a
-/// connection.
+/// connection. A [`Method::Post`] here has an empty body; [`post`] gives it one.
 pub fn request(method: Method, url: &Url, range: Option<Range>) -> Vec<u8> {
+    write(method, url, range, &[])
+}
+
+/// A POST of `body` to `url`: its head, with the body's length and
+/// [`POST_TYPE`], then the body.
+pub fn post(url: &Url, body: &[u8]) -> Vec<u8> {
+    write(Method::Post, url, None, body)
+}
+
+fn write(method: Method, url: &Url, range: Option<Range>, body: &[u8]) -> Vec<u8> {
     let verb = match method {
         Method::Get => "GET",
         Method::Head => "HEAD",
+        Method::Post => "POST",
     };
     let mut head = format!(
         "{verb} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: kai\r\nAccept-Encoding: identity\r\nConnection: close\r\n",
@@ -43,8 +60,16 @@ pub fn request(method: Method, url: &Url, range: Option<Range>) -> Vec<u8> {
             None => head.push_str(&format!("Range: bytes={first}-\r\n")),
         }
     }
+    if method == Method::Post {
+        head.push_str(&format!(
+            "Content-Type: {POST_TYPE}\r\nContent-Length: {}\r\n",
+            body.len()
+        ));
+    }
     head.push_str("\r\n");
-    head.into_bytes()
+    let mut bytes = head.into_bytes();
+    bytes.extend_from_slice(body);
+    bytes
 }
 
 /// How a response's body is framed.

@@ -233,6 +233,11 @@ pub fn url(data: &[u8]) {
 /// `wire::TOO_LONG`.
 pub fn fetch_wire(data: &[u8]) {
     use kainet::wire;
+    if let Ok(post) = wire::Post::parse(data) {
+        let again = post.bytes();
+        assert!(again.len() <= wire::MAX_POST);
+        assert_eq!(wire::Post::parse(&again), Ok(post));
+    }
     let Ok(text) = core::str::from_utf8(data) else {
         return;
     };

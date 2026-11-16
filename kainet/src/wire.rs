@@ -6,6 +6,12 @@
 //! [hops=<n>]` or `head <url> [hops=<n>]`, where `hops` counts the redirects
 //! the caller already took.
 //!
+//! A POST ([`Post`]), which only the shell sends, is `post <url> len=<n>`, a
+//! newline, and then exactly `n` bytes of UTF-8 text, at most
+//! [`MAX_POST_BODY`]. It is made once: never redirected and never tried again,
+//! and a cut after a byte of it may have gone out is `err cut the server may
+//! have it`.
+//!
 //! An answer is `err <kind>[ <why>]` on one line, or `ok <status>` and then
 //! one field a line ([`Head`]): `len <n>`; `hops <n>`, the request's and the
 //! redirects followed within its handle; `type <content-type>` and
@@ -14,15 +20,22 @@
 //! not reach came back unfollowed, which the caller follows with `hops` + 1. A body of `len` bytes comes in an `Shm`
 //! that `fetch` makes and moves back with the answer.
 
-use crate::fetch::{Error, MAX_HOPS, Request, Served, why};
+use crate::fetch::{CUT_WHY, Error, MAX_HOPS, Request, Served, why};
 use crate::http::{Method, Range};
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 /// The longest URL a request names, as `kai:net/http` takes it.
 pub const MAX_URL: usize = 2048;
 /// The longest request line.
 pub const MAX_ASK: usize = MAX_URL + 64;
+/// The most bytes a POST's body may hold. The body travels inline, so the
+/// longest POST ([`MAX_POST`]) must fit one IPC message (kabi's
+/// `MAX_MESSAGE`, 8 KiB; `tests/wire.rs` checks it).
+pub const MAX_POST_BODY: usize = 4096;
+/// The longest POST: its line, a newline and the body.
+pub const MAX_POST: usize = MAX_ASK + 1 + MAX_POST_BODY;
 /// The longest answer: two URLs, a content type and the numbers.
 pub const MAX_ANSWER: usize = 2 * MAX_URL + 512;
 /// What `fetch` answers when a response's head would not fit in
@@ -54,9 +67,11 @@ pub struct Ask {
 impl Ask {
     /// Its line.
     pub fn text(&self) -> String {
+        // A POST is never an `Ask` that parses: it is a [`Post`].
         let method = match self.request.method {
             Method::Get => "get",
             Method::Head => "head",
+            Method::Post => "post",
         };
         let mut text = format!("{method} {}", self.request.url);
         if let Some(range) = self.request.range {
@@ -82,13 +97,7 @@ impl Ask {
             Some("head") => Method::Head,
             _ => return Err("the request is not get or head"),
         };
-        let url = words
-            .next()
-            .filter(|u| !u.is_empty())
-            .ok_or("the request names no URL")?;
-        if url.len() > MAX_URL || !url.starts_with("https://") {
-            return Err("the URL is not an https URL of at most 2,048 bytes");
-        }
+        let url = https_url(words.next())?;
         let (mut range, mut hops) = (None, 0);
         for word in words {
             match word.split_once('=') {
@@ -112,6 +121,78 @@ impl Ask {
                 range,
             },
             hops,
+        })
+    }
+}
+
+/// The URL a request names: https, at most [`MAX_URL`] bytes.
+fn https_url(word: Option<&str>) -> Result<&str, &'static str> {
+    let url = word
+        .filter(|u| !u.is_empty())
+        .ok_or("the request names no URL")?;
+    if url.len() > MAX_URL || !url.starts_with("https://") {
+        return Err("the URL is not an https URL of at most 2,048 bytes");
+    }
+    Ok(url)
+}
+
+/// A POST of a short text, as the shell sends it to `fetch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Post {
+    pub url: String,
+    /// At most [`MAX_POST_BODY`] bytes.
+    pub body: String,
+}
+
+impl Post {
+    /// Whether `message` is a POST rather than an [`Ask`] or a
+    /// `kainet::later` message.
+    pub fn is_post(message: &[u8]) -> bool {
+        message.starts_with(b"post ")
+    }
+
+    /// Its message: the line, a newline and the body.
+    pub fn bytes(&self) -> Vec<u8> {
+        let mut bytes = format!("post {} len={}\n", self.url, self.body.len()).into_bytes();
+        bytes.extend_from_slice(self.body.as_bytes());
+        bytes
+    }
+
+    /// The POST in `message`, or why it is not one.
+    pub fn parse(message: &[u8]) -> Result<Self, &'static str> {
+        if message.len() > MAX_POST {
+            return Err("the post is too long");
+        }
+        let at = message
+            .iter()
+            .position(|&b| b == b'\n')
+            .ok_or("a post's body follows its line")?;
+        let (line, body) = (&message[..at], &message[at + 1..]);
+        let line = core::str::from_utf8(line).map_err(|_| "the post's line is not UTF-8")?;
+        let mut words = line.split(' ');
+        if words.next() != Some("post") {
+            return Err("the request is not a post");
+        }
+        let url = https_url(words.next())?;
+        let len = words
+            .next()
+            .and_then(|word| word.strip_prefix("len="))
+            .ok_or("the post gives no len")?;
+        let len = (!len.is_empty() && len.len() <= 4 && len.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| len.parse::<usize>().ok())
+            .flatten()
+            .filter(|&n| n <= MAX_POST_BODY)
+            .ok_or("len is not 0 to 4,096")?;
+        if words.next().is_some() {
+            return Err("the post has a word it does not take");
+        }
+        if body.len() != len {
+            return Err("the body is not len bytes");
+        }
+        let body = core::str::from_utf8(body).map_err(|_| "the body is not UTF-8 text")?;
+        Ok(Self {
+            url: url.to_string(),
+            body: body.to_string(),
         })
     }
 }
@@ -176,6 +257,64 @@ fn kind(error: &Error) -> (&'static str, Option<&str>) {
         Error::TooLarge => ("too-large", None),
         Error::Timeout => ("timeout", None),
         Error::Truncated => ("truncated", None),
+        Error::Cut => ("cut", Some(CUT_WHY)),
+    }
+}
+
+/// What a POST came to, as its sender logs it. It fails closed: only an
+/// error that comes before any byte of the request can go out says
+/// [`PostOutcome::NotSent`], and anything else that is not an answer is
+/// [`PostOutcome::MaybeSent`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PostOutcome {
+    /// The server answered, whatever the status: it has the request.
+    Sent { status: u16 },
+    /// Nothing went out: the request was refused, malformed, past its
+    /// deadline, or no connection or TLS session was made.
+    NotSent { why: String },
+    /// A byte may have gone out and no answer came: the server may have it.
+    MaybeSent,
+}
+
+impl PostOutcome {
+    /// The outcome of `fetch`'s answer `text` to a POST. An answer that does
+    /// not read is [`PostOutcome::MaybeSent`]: `fetch` may have sent it.
+    ///
+    /// The contract, for the shell's held sends: log "not sent" only for
+    /// [`PostOutcome::NotSent`], and "may have been sent" for
+    /// [`PostOutcome::MaybeSent`] and for any failure of the call to `fetch`
+    /// itself once it was made (a timeout waiting for the reply included).
+    pub fn read(text: &str) -> Self {
+        match parse_answer(text) {
+            Ok(answer) => Self::of(&answer),
+            Err(_) => Self::MaybeSent,
+        }
+    }
+
+    /// The outcome of a POST's `answer`. `kainet::fetch::post_within` turns
+    /// every failure after its connection opened into [`Error::Cut`], so the
+    /// errors listed here as not sent can only come before that. `fetch`'s
+    /// own errors after a POST was made (no room for the body, a head too long
+    /// to pass on) are `http` errors, which are [`PostOutcome::MaybeSent`].
+    /// So are `too-large`, and `truncated`, which a POST gives only for a TLS
+    /// handshake cut before any request byte: counted as maybe sent all the
+    /// same, so a new source of either never reads as not sent.
+    pub fn of(answer: &Result<Head, Error>) -> Self {
+        let not_sent = |name: &str, why: &str| Self::NotSent {
+            why: format!("{name}: {why}"),
+        };
+        match answer {
+            Ok(head) => Self::Sent {
+                status: head.status,
+            },
+            Err(Error::Refused(why)) => not_sent("refused", why),
+            Err(Error::BadUrl(why)) => not_sent("bad-url", why),
+            Err(Error::Tls(why)) => not_sent("tls", why),
+            Err(Error::Timeout) => not_sent("timeout", "the deadline passed before it was sent"),
+            Err(Error::Cut | Error::Http(_) | Error::TooLarge | Error::Truncated) => {
+                Self::MaybeSent
+            }
+        }
     }
 }
 
@@ -239,6 +378,8 @@ pub fn parse_answer(text: &str) -> Result<Result<Head, Error>, &'static str> {
             "too-large" => none(Error::TooLarge)?,
             "timeout" => none(Error::Timeout)?,
             "truncated" => none(Error::Truncated)?,
+            "cut" if why == CUT_WHY => Error::Cut,
+            "cut" => return Err("a cut's why is not the server may have it"),
             _ => return Err("an error this answer does not name"),
         }));
     }
@@ -389,8 +530,53 @@ mod tests {
             Error::TooLarge,
             Error::Timeout,
             Error::Truncated,
+            Error::Cut,
         ] {
             assert_eq!(parse_answer(&answer(&Err(error.clone()))), Ok(Err(error)));
+        }
+        assert_eq!(answer(&Err(Error::Cut)), "err cut the server may have it");
+        assert!(parse_answer("err cut").is_err());
+        assert!(parse_answer("err cut it was sent").is_err());
+    }
+
+    #[test]
+    fn a_post_is_not_sent_only_before_a_byte_can_go_out() {
+        let ok = |status| {
+            answer(&Ok(Head {
+                status,
+                len: 0,
+                hops: 0,
+                content_type: None,
+                retry_after: None,
+                url: "https://a.example/".into(),
+                location: None,
+            }))
+        };
+        for status in [200, 204, 303, 404, 500] {
+            assert_eq!(PostOutcome::read(&ok(status)), PostOutcome::Sent { status });
+        }
+        for error in [
+            Error::Refused("b.example".into()),
+            Error::BadUrl("the post gives no len".into()),
+            Error::Tls("UnknownIssuer".into()),
+            Error::Timeout,
+        ] {
+            let outcome = PostOutcome::read(&answer(&Err(error)));
+            assert!(
+                matches!(outcome, PostOutcome::NotSent { .. }),
+                "{outcome:?}"
+            );
+        }
+        for text in [
+            answer(&Err(Error::Cut)),
+            answer(&Err(Error::Http("fetch had no room for the body".into()))),
+            answer(&Err(Error::TooLarge)),
+            answer(&Err(Error::Truncated)),
+            String::from(TOO_LONG),
+            String::from("garbled"),
+            String::new(),
+        ] {
+            assert_eq!(PostOutcome::read(&text), PostOutcome::MaybeSent, "{text:?}");
         }
     }
 

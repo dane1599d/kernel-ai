@@ -11,7 +11,9 @@ mod hostile;
 
 use kainet::fetch::{Error, Request, Response, Served};
 use kainet::http::{Method, Range};
-use kainet::wire::{self, Ask, Head, MAX_ANSWER, MAX_ASK, MAX_URL, TOO_LONG};
+use kainet::wire::{
+    self, Ask, Head, MAX_ANSWER, MAX_ASK, MAX_POST, MAX_POST_BODY, MAX_URL, Post, TOO_LONG,
+};
 
 const CASES: usize = 5_000;
 
@@ -282,4 +284,114 @@ fn reading_a_message_allocates_little() {
         hops: 0,
     };
     assert_eq!(ask.text(), "get https://a.test/x range=1-");
+}
+
+/// A POST that reads, written again, reads back the same, within its bounds.
+fn post_holds(bytes: &[u8]) {
+    if let Ok(post) = Post::parse(bytes) {
+        assert!(post.url.len() <= MAX_URL);
+        assert!(post.body.len() <= MAX_POST_BODY);
+        let again = post.bytes();
+        assert!(again.len() <= MAX_POST, "{}", again.len());
+        assert!(Post::is_post(&again));
+        assert_eq!(Post::parse(&again), Ok(post), "{bytes:?}");
+    }
+}
+
+#[test]
+fn hostile_posts_are_refused_or_read_back_the_same() {
+    for sample in [
+        &b"post https://hooks.example/send len=5\nhello"[..],
+        b"post https://a.test/x len=0\n",
+        "post https://a.test/f?q=1 len=12\nh\u{e9}llo\nw\u{f6}rld".as_bytes(),
+    ] {
+        hostile::fuzz(sample, 0x5_a5c2, CASES, post_holds);
+        hostile::truncations(sample, |_, bytes| post_holds(bytes));
+    }
+}
+
+#[test]
+fn hostile_posts_are_refused_by_name() {
+    let body = "x".repeat(MAX_POST_BODY + 1);
+    let over = format!("post https://a.test/x len={}\n{body}", body.len());
+    let huge = format!("post https://a.test/x len=4096\n{}", "x".repeat(MAX_POST));
+    let long_url = format!("post https://a.test/{} len=0\n", "x".repeat(MAX_URL));
+    for (bytes, why) in [
+        (
+            &b"post https://a.test/x len=2"[..],
+            "a post's body follows its line",
+        ),
+        (
+            b"post https://a.test/x len=3\nhi",
+            "the body is not len bytes",
+        ),
+        (
+            b"post https://a.test/x len=1\nhi",
+            "the body is not len bytes",
+        ),
+        (
+            b"post https://a.test/x len=2\n\xff\xfe",
+            "the body is not UTF-8 text",
+        ),
+        (b"post https://a.test/x\nhi", "the post gives no len"),
+        (b"post https://a.test/x size=2\nhi", "the post gives no len"),
+        (b"post https://a.test/x len=+2\nhi", "len is not 0 to 4,096"),
+        (b"post https://a.test/x len=\n", "len is not 0 to 4,096"),
+        (b"post https://a.test/x len=4097\n", "len is not 0 to 4,096"),
+        (
+            b"post https://a.test/x len=00002\nhi",
+            "len is not 0 to 4,096",
+        ),
+        (
+            b"post https://a.test/x len=2 hops=1\nhi",
+            "the post has a word it does not take",
+        ),
+        (
+            b"post http://a.test/x len=2\nhi",
+            "the URL is not an https URL of at most 2,048 bytes",
+        ),
+        (
+            long_url.as_bytes(),
+            "the URL is not an https URL of at most 2,048 bytes",
+        ),
+        (
+            b"post  https://a.test/x len=2\nhi",
+            "the request names no URL",
+        ),
+        (
+            b"get https://a.test/x len=2\nhi",
+            "the request is not a post",
+        ),
+        (b"post \xff len=2\nhi", "the post's line is not UTF-8"),
+        (over.as_bytes(), "len is not 0 to 4,096"),
+        (huge.as_bytes(), "the post is too long"),
+    ] {
+        assert_eq!(
+            Post::parse(bytes),
+            Err(why),
+            "{}",
+            String::from_utf8_lossy(&bytes[..bytes.len().min(80)])
+        );
+    }
+    // A POST is never an `Ask`: comphost, which builds only `Ask`s, cannot post.
+    assert_eq!(
+        Ask::parse("post https://a.test/x len=2"),
+        Err("the request is not get or head")
+    );
+}
+
+#[test]
+fn the_longest_post_fits_one_ipc_message() {
+    let url = format!(
+        "https://a.test/{}",
+        "x".repeat(MAX_URL - "https://a.test/".len())
+    );
+    let post = Post {
+        url,
+        body: "\u{e9}".repeat(MAX_POST_BODY / 2),
+    };
+    let bytes = post.bytes();
+    assert!(bytes.len() <= MAX_POST, "{}", bytes.len());
+    assert_eq!(Post::parse(&bytes), Ok(post));
+    const _: () = assert!(MAX_POST <= kabi::MAX_MESSAGE);
 }
