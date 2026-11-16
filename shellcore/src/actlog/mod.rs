@@ -212,6 +212,13 @@ impl ActLog {
         })
     }
 
+    pub(crate) fn entries_mut(&mut self) -> impl Iterator<Item = &mut Entry> {
+        self.records.iter_mut().filter_map(|r| match r {
+            Record::Entry(e) => Some(e),
+            Record::System(_) => None,
+        })
+    }
+
     /// Takes the entries after `id` out of the log, oldest first, leaving the
     /// system's records: a `c>` entry's calls, to be logged as one.
     pub fn take_entries_after(&mut self, id: u64) -> Vec<Entry> {

@@ -136,10 +136,6 @@ fn malformed_text_is_refused_with_its_line() {
             "out of order",
         ),
         (
-            "actlog 1\nE 1 t=0 reg=1 pack=- form=call tier=run consent=a state=done\nD 1.1 a owner=k res=p before=a after=b inv=maybe\n",
-            "unknown inverse",
-        ),
-        (
             "actlog 1
 E 1 t=0 reg=1 pack=12ab form=call tier=run consent=a state=done
 ",
@@ -176,6 +172,18 @@ fn live_entries_and_overlaps_decide_what_undo_may_take() {
         log.list(),
         "#1 switch: ran\n#2 how many cpus: ran\n#3 switch back: ran"
     );
+}
+
+/// A slot rollback: an older shell reads a log a newer one wrote. An inverse
+/// it cannot read leaves that change without an undo; the log, and every
+/// other entry's undo, still read.
+#[test]
+fn an_inverse_this_shell_cannot_read_leaves_only_that_change_stuck() {
+    let text = "actlog 1\nE 1 t=0 reg=1 pack=- form=call tier=run consent=a state=done\nD 1.1 a owner=k res=p before=a after=b inv=maybe:7\nE 2 t=0 reg=1 pack=- form=call tier=run consent=a state=done\nD 2.1 a owner=k res=q before=a after=b inv=fs:3\n";
+    let log = ActLog::from_records(parse(text).unwrap());
+    assert_eq!(log.get(1).unwrap().changes[0].inverse, None);
+    assert!(!log.get(1).unwrap().live());
+    assert_eq!(log.newest_live(), Some(2));
 }
 
 #[test]

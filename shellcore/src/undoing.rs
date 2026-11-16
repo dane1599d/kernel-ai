@@ -21,6 +21,16 @@ impl Shell {
     pub(crate) fn undo_command(&mut self, which: &str) -> Reply {
         let which = which.trim().trim_start_matches('#');
         if which.is_empty() {
+            // A send that went is the newest thing done: `undo` says so,
+            // rather than taking back something older the person did not mean.
+            let newest_done = self
+                .log
+                .entries()
+                .rev()
+                .find(|e| e.state == State::Done && !e.changes.is_empty());
+            if let Some(why) = newest_done.and_then(|e| self.send_refusal(e)) {
+                return Reply::err(why);
+            }
             return match self.log.newest_live() {
                 Some(id) => self.revert_entry(id, false),
                 None => Reply::err("nothing to undo"),
@@ -44,7 +54,12 @@ impl Shell {
     fn undo_entry(&mut self, id: u64) -> Reply {
         match self.log.get(id) {
             Some(entry) if entry.live() => {}
-            Some(_) => return Reply::err(format!("#{id} has nothing to undo")),
+            Some(entry) => {
+                return Reply::err(
+                    self.send_refusal(entry)
+                        .unwrap_or_else(|| format!("#{id} has nothing to undo")),
+                );
+            }
             None => return Reply::err(format!("no logged entry #{id}")),
         }
         let later = self.log.later_touching(id);
@@ -98,6 +113,27 @@ impl Shell {
                     ..change
                 });
                 continue;
+            }
+            // A held send is cancelled; undoing that never sends it, so its
+            // redo has no inverse: a send always asks again.
+            if let undo::Inverse::Unsend { entry: held } = inverse {
+                match self.unsend(held, &change.res) {
+                    Ok(text) => {
+                        said.push(text);
+                        redo.push(Change {
+                            before: change.after.clone(),
+                            after: String::from(crate::outbox::Stage::Cancelled.word()),
+                            inverse: None,
+                            ..change
+                        });
+                        continue;
+                    }
+                    Err(why) => {
+                        left.push(change);
+                        stopped = Some(Reply::err(format!("{}{why}", undone(&said))));
+                        break;
+                    }
+                }
             }
             let reverted = match inverse {
                 undo::Inverse::Generation { from, to } => self

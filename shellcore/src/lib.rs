@@ -52,6 +52,7 @@ mod instructions;
 mod models;
 mod netask;
 pub mod netgrant;
+pub mod outbox;
 mod sound;
 pub use models::MODELS_APP;
 pub use netask::Connect as NetConnect;
@@ -62,6 +63,7 @@ mod power;
 mod profiles;
 mod rules;
 pub mod script;
+mod sending;
 mod settings;
 pub use settings::{MAX_ANSWER as SETTINGS_MAX_ANSWER, SETTINGS_APP};
 mod show;
@@ -349,6 +351,15 @@ pub trait Host {
     /// grounded. None here until kainet's HTTP client is wired in.
     fn net_fetch(&self, _host: &str, _path: &str) -> Result<String, String> {
         Err(String::from(NO_NET))
+    }
+    /// A held send that is due (`outbox`): `send.body` posted to `send.path`
+    /// on `send.host`, once, never retried and never redirected. Its answer's
+    /// first line, or why not, saying whether it may have gone out.
+    fn net_send(&self, _send: &outbox::Send) -> Result<String, outbox::SendFailed> {
+        Err(outbox::SendFailed {
+            why: String::from(NO_NET),
+            maybe_sent: false,
+        })
     }
     /// `net_resolve`: the addresses `host` resolves to.
     fn net_resolve(&self, _host: &str) -> Result<Vec<String>, String> {
@@ -741,6 +752,10 @@ pub struct Shell {
     values: Vec<(u64, centry::CallValue)>,
     /// The `c>` prompt's state.
     c: cmode::CMode,
+    /// Sends allowed and held before they go, with `undo` live (`outbox`).
+    outbox: outbox::Outbox,
+    /// What sends came to since the panel last looked.
+    sends_ended: Vec<outbox::Ended>,
 }
 
 impl Shell {
@@ -825,6 +840,8 @@ impl Shell {
             value_rets: Vec::new(),
             values: Vec::new(),
             c: cmode::CMode::default(),
+            outbox: outbox::Outbox::default(),
+            sends_ended: Vec::new(),
         }
         .with_saved_log()
         .with_saved_rules()
@@ -881,6 +898,13 @@ impl Shell {
                 self.log = actlog::ActLog::from_records(records);
                 self.next_id = self.log.last_id() + 1;
                 self.saved_log = Some(text);
+                // The outbox starts empty: a send still waiting, or going,
+                // when the shell stopped never goes now.
+                if outbox::settle_at_start(&mut self.log) {
+                    self.host
+                        .audit("sends held when the shell stopped were logged as not sent");
+                    self.save_log();
+                }
             }
             Err(error) => self.host.audit(&format!(
                 "the log on disk is not actlog 1 (line {}: {}); starting a new one",
@@ -892,14 +916,21 @@ impl Shell {
 
     /// Writes the log to `/system/log` if the line changed it.
     fn save_log(&mut self) {
+        if let Err(why) = self.write_log() {
+            self.host.audit(&format!("the log was not written: {why}"));
+        }
+    }
+
+    /// [`Shell::save_log`], saying whether the log is on disk: a send goes
+    /// only after its `sending` is.
+    fn write_log(&mut self) -> Result<(), String> {
         let text = self.log.text();
         if self.saved_log.as_ref() == Some(&text) {
-            return;
+            return Ok(());
         }
-        match self.host.log_write(&text) {
-            Ok(()) => self.saved_log = Some(text),
-            Err(why) => self.host.audit(&format!("the log was not written: {why}")),
-        }
+        self.host.log_write(&text)?;
+        self.saved_log = Some(text);
+        Ok(())
     }
 
     /// What the script the last line ran printed, then its error if it failed;

@@ -456,7 +456,12 @@ impl Shell {
             decision.why
         ));
         let offer = offer(row, &args, decision.why);
-        let ruled = offer.as_ref().and_then(|offer| self.rules.covering(offer));
+        // A send always asks (ADR 0002 question 3): no rule runs a Hold row,
+        // whatever offer a rule was written from.
+        let ruled = offer
+            .as_ref()
+            .filter(|_| !held(row))
+            .and_then(|offer| self.rules.covering(offer));
         let reply = match (decision.tier, ruled) {
             (Tier::Run, _) => {
                 self.shown = Some(script::shown(id, &checked));
@@ -488,7 +493,10 @@ impl Shell {
                 };
                 self.finish(id, request, &checked, how)
             }
-            _ => self.ask_call(id, request, checked, decision.why, offer, subject),
+            _ => {
+                let reason = hold_reason(row);
+                self.ask_call_with(id, request, checked, decision.why, offer, subject, reason)
+            }
         };
         outcome(decision.tier, decision.why, reply)
     }
@@ -504,17 +512,28 @@ impl Shell {
         offer: Option<Offer>,
         subject: Option<String>,
     ) -> Reply {
+        self.ask_call_with(id, request, checked, why, offer, subject, None)
+    }
+
+    /// [`Shell::ask_call`], with the row's own reason when it has one (a
+    /// held send's), in place of the one `why` gives.
+    #[allow(clippy::too_many_arguments)]
+    fn ask_call_with(
+        &mut self,
+        id: u64,
+        request: &str,
+        checked: Checked,
+        why: Why,
+        offer: Option<Offer>,
+        subject: Option<String>,
+        own: Option<String>,
+    ) -> Reply {
         let reason = match why {
-            Why::NotEnglish => String::from("the request is not in English, so it asks first"),
-            Why::Added => String::from("the request did not ask for it"),
-            Why::NoUndo => String::from("it has no undo"),
-            Why::Steered(source) => format!("Kai took it from {}", read_from(source)),
-            Why::Outbound(source) => format!(
-                "it would send what Kai read from {} out of this machine",
-                read_from(source)
-            ),
-            Why::Ungrounded => String::from("the request did not name that site"),
-            _ => String::from("it asks first"),
+            // Consent's own reasons stand: the hold is not why it asks then.
+            Why::Steered(_) | Why::Outbound(_) | Why::Added | Why::NotEnglish | Why::Ungrounded => {
+                reason_of(why)
+            }
+            _ => own.unwrap_or_else(|| reason_of(why)),
         };
         let call = checked.script.trim_end_matches(';').to_string();
         let changes: Vec<&'static str> = checked.changes.clone();
@@ -633,10 +652,46 @@ impl Shell {
     }
 }
 
+/// Why a call asks, as its card says it.
+fn reason_of(why: Why) -> String {
+    match why {
+        Why::NotEnglish => String::from("the request is not in English, so it asks first"),
+        Why::Added => String::from("the request did not ask for it"),
+        Why::NoUndo => String::from("it has no undo"),
+        Why::Steered(source) => format!("Kai took it from {}", read_from(source)),
+        Why::Outbound(source) => format!(
+            "it would send what Kai read from {} out of this machine",
+            read_from(source)
+        ),
+        Why::Ungrounded => String::from("the request did not name that site"),
+        _ => String::from("it asks first"),
+    }
+}
+
+/// Whether `row` is a send held with `undo` after its Allow (`Hold`).
+fn held(row: &Action) -> bool {
+    matches!(row.inverse, agentabi::Inverse::Hold { .. })
+}
+
+/// A held send's own reason on its card: it does have an undo, for a while.
+fn hold_reason(row: &Action) -> Option<String> {
+    match row.inverse {
+        agentabi::Inverse::Hold { ms } => Some(format!(
+            "after you allow, it waits {} s so you can undo",
+            ms.div_ceil(1000)
+        )),
+        _ => None,
+    }
+}
+
 /// The standing rules a menu may offer for a call that asks for `why`: the row's
 /// own ask (no undo) takes a rule for the action or for its target; a host nobody
-/// named takes one for that host only. Asks from consent take none.
+/// named takes one for that host only. Asks from consent take none, and a held
+/// send never takes one: a send always asks (ADR 0002 question 3).
 fn offer(row: &'static Action, args: &Arguments, why: Why) -> Option<Offer> {
+    if held(row) {
+        return None;
+    }
     let target = row
         .args
         .iter()
@@ -657,6 +712,10 @@ fn offer(row: &'static Action, args: &Arguments, why: Why) -> Option<Offer> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+#[path = "tests/agentcore_hold.rs"]
+mod hold_tests;
 
 /// `text` with its first letter in capitals, to start the menu's sentence.
 fn capitalised(text: &str) -> String {
