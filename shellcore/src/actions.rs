@@ -165,9 +165,10 @@ impl Shell {
             });
         // A read from a site only an app's grant grounds: its own reason, when
         // every call that asks is such a read.
+        // The tier each call asks at, raised by the tier table as `tier_of` does.
         let asks: Vec<Why> = decisions
             .iter()
-            .filter(|(_, d)| d.tier != Tier::Run)
+            .filter(|(name, d)| d.tier.max(tiers::of(self.tiers, name)) != Tier::Run)
             .map(|(_, d)| d.why)
             .collect();
         let grant = asks
@@ -176,7 +177,7 @@ impl Shell {
             .collect::<Option<Vec<String>>>()
             .and_then(|reasons| reasons.into_iter().next());
         if let (None, Some(reason)) = (steered, grant) {
-            return script::question(id, checked, asking, &format!(" ({reason})"));
+            return script::reads(id, checked, asking, &reason);
         }
         let added = asking
             .iter()

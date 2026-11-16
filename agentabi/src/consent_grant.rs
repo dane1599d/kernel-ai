@@ -31,66 +31,110 @@ pub const MAX_WORDS: usize = 3;
 /// The source a `System` control names: the OS's own state decided the call.
 pub const SYSTEM: &str = "system";
 
-/// Word starts that name going on the network. Un-negated, one asks to go
-/// online; negated, one bars every grant.
-const NET_STARTS: &[&str] = &[
-    "online", "internet", "web", "network", "site", "page", "fetch", "download", "look", "search",
-    "brows", "connect", "url", "http",
+/// Word starts that plainly mean the internet: one, un-negated, asks to go
+/// online.
+const ONLINE_STARTS: &[&str] = &[
+    "online", "internet", "web", "brows", "download", "url", "http",
 ];
 
-/// Whole words that do the same, too short to match by their start.
-const NET_WORDS: &[&str] = &["net", "lookup"];
+/// Whole words that do the same.
+const ONLINE_WORDS: &[&str] = &["fetch", "fetched", "fetching", "dns", "ping", "google"];
 
-/// Words that say to stay off the network, wherever they stand.
-const OFFLINE_STARTS: &[&str] = &["offline"];
+/// Phrases that do the same, matched whole: "look" alone is any look, and
+/// "up" alone is any "back it up".
+const ONLINE_PHRASES: &[&[&str]] = &[
+    &["look", "up"],
+    &["look", "it", "up"],
+    &["look", "that", "up"],
+    &["looking", "up"],
+    &["looking", "it", "up"],
+];
 
-/// Negations a grant also hears, beyond the cue words' list: contractions.
+/// Word starts that touch the network at all. With a word that negates
+/// anywhere in the line, one bars every grant: when unsure, the line said to
+/// stay offline.
+const NET_HINTS: &[&str] = &[
+    "online", "internet", "web", "brows", "download", "url", "http", "net", "connect", "search",
+    "look", "site", "page", "fetch", "wifi", "lookup", "dns", "ping", "google",
+];
+
+/// Negations a grant also hears, beyond the cue words' lists and any `n't`
+/// contraction.
 const NEGATING: &[&str] = &[
     "cant", "cannot", "wont", "dont", "didnt", "doesnt", "shouldnt", "mustnt", "neednt", "skip",
-    "stop", "nothing",
+    "stop", "nothing", "nor", "neither", "instead",
 ];
 
-/// A word in a clause that negates, for a grant: the shared list, any `n't`
+/// A word that negates, for a grant: the shared lists, any `n't`
 /// contraction, or [`NEGATING`].
+fn negating(text: &str) -> bool {
+    super::NEGATIONS.contains(&text)
+        || super::OFF_WORDS.contains(&text)
+        || NEGATING.contains(&text)
+        || text.ends_with("n't")
+}
+
+/// A word in a clause that negates, for a grant.
 fn negated_here(words: &[Word], at: usize) -> bool {
     negated(words, at)
-        || words[..at].iter().any(|w| {
-            w.clause == words[at].clause
-                && (w.text.ends_with("n't") || NEGATING.contains(&w.text.as_str()))
-        })
+        || words[..at]
+            .iter()
+            .any(|w| w.clause == words[at].clause && negating(&w.text))
 }
 
-fn net_word(text: &str, row: &Action) -> bool {
-    NET_WORDS.contains(&text)
-        || NET_STARTS.iter().any(|start| text.starts_with(start))
-        || row.cues.iter().any(|cue| cue.split(' ').any(|c| c == text))
+/// Whether `phrase` stands at `at` in `words`.
+fn phrase_at(words: &[Word], at: usize, phrase: &[&str]) -> bool {
+    words
+        .get(at..at + phrase.len())
+        .is_some_and(|run| run.iter().zip(phrase).all(|(w, p)| w.text == *p))
 }
 
-/// The line says to stay off the network: "offline" anywhere, or a net word
-/// or row cue in a clause that negates.
+/// The line says to stay off the network: "offline" or "off line" anywhere,
+/// or a word that touches the network (or a word of the row's cues) in a line
+/// that holds any word that negates, before or after it.
 fn offline_said(words: &[Word], row: &Action) -> bool {
-    words.iter().enumerate().any(|(at, word)| {
-        let text = word.text.as_str();
-        OFFLINE_STARTS.iter().any(|start| text.starts_with(start))
-            || (net_word(text, row) && negated_here(words, at))
-    })
+    let off = words.iter().enumerate().any(|(at, w)| {
+        w.text.starts_with("offline") || (w.text == "off" && phrase_at(words, at + 1, &["line"]))
+    });
+    let hint = words.iter().any(|w| {
+        NET_HINTS.iter().any(|start| w.text.starts_with(start))
+            || row
+                .cues
+                .iter()
+                .any(|cue| cue.split(' ').any(|c| c == w.text))
+    });
+    off || (hint && words.iter().any(|w| negating(&w.text)))
 }
 
-/// The line asks to go online: an un-negated net word or row cue, or the word
-/// of an app that holds the grant (its package name, a hyphenated one as its
-/// words in a row).
-fn online_asked(words: &[Word], row: &Action, apps: &[String]) -> bool {
+/// The line asks to go online: a word or phrase that plainly means the
+/// internet, un-negated, or the word of an app that holds the grant when that
+/// word is no common English word ("weather" for `weather`, never `my`).
+fn online_asked(words: &[Word], apps: &[String]) -> bool {
     let counted = |at: usize| !negated_here(words, at);
-    let net = words
-        .iter()
-        .enumerate()
-        .any(|(at, w)| net_word(&w.text, row) && counted(at));
-    net || apps.iter().any(|app| {
+    let net = words.iter().enumerate().any(|(at, w)| {
+        let text = w.text.as_str();
+        let word = ONLINE_WORDS.contains(&text)
+            || ONLINE_STARTS.iter().any(|start| text.starts_with(start));
+        let phrase = ONLINE_PHRASES.iter().any(|p| phrase_at(words, at, p));
+        (word || phrase) && counted(at)
+    });
+    net || apps.iter().filter(|app| app_word(app)).any(|app| {
         let parts: Vec<&str> = app.split('-').collect();
         words.windows(parts.len()).enumerate().any(|(at, run)| {
             run.iter().zip(&parts).all(|(w, part)| w.text == *part)
                 && (at..at + parts.len()).all(counted)
         })
+    })
+}
+
+/// Whether an app's package name may stand for its site in a line: each part
+/// at least three letters and none a common English, kind or leading word.
+fn app_word(app: &str) -> bool {
+    app.split('-').all(|part| {
+        part.len() >= 3
+            && super::ENGLISH.binary_search(&part).is_err()
+            && !super::KIND_WORDS.contains(&part)
+            && !super::DETERMINERS.contains(&part)
     })
 }
 
@@ -133,6 +177,8 @@ fn arguments_ok(words: &[Word], row: &Action, call: &Call) -> bool {
         .filter(|arg| !matches!(arg.ty, ArgType::Host))
         .filter_map(|arg| value_of(call, arg.name))
         .all(|value: Value| {
+            // `path_ok` refuses `UNKNOWN` too; it is said here outright so an
+            // unknown value never rests on the path check's character set.
             value.label == Label::Literal
                 && value.text != super::UNKNOWN
                 && path_ok(words, value.text)
@@ -160,7 +206,7 @@ pub(super) fn read(words: &[Word], net: &Grounding, row: &Action, call: &Call) -
     if offline_said(words, row) {
         return Decision::new(Tier::Ask, Why::GrantOffline);
     }
-    if !online_asked(words, row, &holders(net, row, call)) {
+    if !online_asked(words, &holders(net, row, call)) {
         return Decision::new(Tier::Ask, Why::Ungrounded);
     }
     if !arguments_ok(words, row, call) {

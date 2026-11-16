@@ -82,6 +82,10 @@ pub struct Site {
     pub control: Label,
     /// Whether it sits in a loop body, so it may run more than once.
     pub looped: bool,
+    /// The least trusted value the script met before the call in program
+    /// order: one that is not `Literal` could have decided, by an abort, a
+    /// mutation or the time a loop took, whether the call runs at all.
+    pub met: Label,
     at: (Option<usize>, Option<usize>),
 }
 
@@ -161,10 +165,18 @@ impl Plan {
         let mut calls: Vec<consent::Call<'_>> = Vec::new();
         let mut first: Vec<usize> = Vec::new();
         for (site, args) in self.sites.iter().zip(&values) {
+            // An open-world read is steered by anything the script met before
+            // it (a read only an app's grant grounds then asks).
+            let open_read = agentabi::find(rows, site.name)
+                .is_some_and(|row| row.facts.open_world && row.facts.read_only);
+            let control = match open_read {
+                true => join(site.control, site.met),
+                false => site.control,
+            };
             let call = consent::Call {
                 name: site.name,
                 args,
-                control: site.control,
+                control,
             };
             first.push(calls.len());
             calls.push(call);
@@ -204,6 +216,7 @@ pub fn analyse(ast: &AST, rows: &'static [Action]) -> Plan {
         sticky: Label::Literal,
         seen: Label::Literal,
         loops: 0,
+        met: Label::Literal,
     };
     walk.block(ast.statements(), Label::Literal);
     Plan { sites: walk.sites }
@@ -223,6 +236,8 @@ struct Walk {
     seen: Label,
     /// How many loop bodies the walk is in.
     loops: usize,
+    /// The least trusted value evaluated so far, never reset.
+    met: Label,
 }
 
 fn join_env(a: &Env, b: &Env) -> Env {
@@ -419,7 +434,16 @@ impl Walk {
             Expr::FnCall(call, at) => self.call(call, None, *at, control),
             Expr::Dot(pair, _, _) | Expr::Index(pair, _, _) => {
                 let base = self.expr(&pair.lhs, control);
-                self.chain(base, &pair.rhs, control)
+                let val = self.chain(base, &pair.rhs, control);
+                // Any method may change what it is called on (`a.push(x)`):
+                // the variable is now whatever it was given too.
+                if matches!(pair.rhs, Expr::MethodCall(..))
+                    && let Some(name) = root(&pair.lhs)
+                {
+                    let changed = Val::of(join(self.get(&name).label, val.label));
+                    self.set(&name, changed.raised(control));
+                }
+                val
             }
             Expr::And(parts, _) | Expr::Or(parts, _) | Expr::Coalesce(parts, _) => {
                 // Each part runs only if the ones before let it.
@@ -433,6 +457,7 @@ impl Walk {
             _ => Val::of(Label::Content(UNPROVEN)),
         };
         self.seen = join(self.seen, val.label);
+        self.met = join(self.met, val.label);
         val
     }
 
@@ -462,6 +487,9 @@ impl Walk {
     }
 
     fn call(&mut self, call: &FnCallExpr, this: Option<Val>, at: Position, control: Label) -> Val {
+        // What was met before this call, its own arguments aside: they are
+        // judged as arguments.
+        let before = self.met;
         let mut args: Vec<Val> = this.into_iter().collect();
         for arg in call.args.iter() {
             args.push(self.expr(arg, control));
@@ -474,7 +502,7 @@ impl Walk {
             // arguments'.
             return Val::of(from);
         };
-        self.site(row, args, join(control, self.sticky), at);
+        self.site(row, args, join(control, self.sticky), (at, before));
         match row.returns {
             // A quarantined read's answer is still its data's (ADR 0002 D6):
             // the question can narrow what came back, never clean it.
@@ -487,7 +515,13 @@ impl Walk {
     }
 
     /// Records a call of `row` at `at`; a call walked again (in a loop) joins.
-    fn site(&mut self, row: &'static Action, args: Vec<Val>, control: Label, at: Position) {
+    fn site(
+        &mut self,
+        row: &'static Action,
+        args: Vec<Val>,
+        control: Label,
+        (at, met): (Position, Label),
+    ) {
         let at = (at.line(), at.position());
         let args: Vec<(&'static str, Val)> = args
             .into_iter()
@@ -501,6 +535,7 @@ impl Walk {
         {
             Some(site) => {
                 site.looped |= self.loops > 0;
+                site.met = join(site.met, met);
                 site.control = join(site.control, control);
                 for ((_, old), (_, new)) in site.args.iter_mut().zip(&args) {
                     *old = old.join(new);
@@ -511,6 +546,7 @@ impl Walk {
                 args,
                 control,
                 looped: self.loops > 0,
+                met,
                 at,
             }),
         }

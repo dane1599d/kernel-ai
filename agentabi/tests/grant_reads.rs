@@ -8,17 +8,17 @@ use nethosts::{Granted, Grounding, Host, Table};
 
 const WEATHER: &str = "api.weather.example";
 
-/// `api.weather.example` granted to the app `weather`.
-struct WeatherApp;
+/// `api.weather.example` granted to the app named here.
+struct App(&'static str);
 
-impl Granted for WeatherApp {
+impl Granted for App {
     fn granted(&self, host: &Host) -> bool {
         host.as_str() == WEATHER
     }
 
     fn holders(&self, host: &Host) -> Vec<String> {
         match self.granted(host) {
-            true => vec![String::from("weather")],
+            true => vec![String::from(self.0)],
             false => Vec::new(),
         }
     }
@@ -57,10 +57,14 @@ fn fetch(path: &'static str) -> Call<'static> {
 }
 
 fn decide(line: &str, plan: &[Call]) -> Vec<(Tier, Why)> {
+    decide_for(&App("weather"), line, plan)
+}
+
+fn decide_for(app: &App, line: &str, plan: &[Call]) -> Vec<(Tier, Why)> {
     let table = Table::curated();
     let net = Grounding {
         table: &table,
-        granted: &WeatherApp,
+        granted: app,
         sources: &[],
     };
     decide_net(line, plan, &ROWS, &net)
@@ -179,7 +183,7 @@ fn a_path_is_one_short_run_of_the_lines_own_words() {
 #[test]
 fn a_negated_word_is_no_path() {
     assert_eq!(
-        one("look up the weather, not for leeds", fetch("/leeds")),
+        one("the weather, not for leeds", fetch("/leeds")),
         (Tier::Ask, Why::GrantPath)
     );
 }
@@ -265,5 +269,72 @@ fn data_to_a_granted_host_asks_as_outbound() {
     assert_eq!(
         one(LINE, sending),
         (Tier::Ask, Why::Outbound("note \"todo\""))
+    );
+}
+
+#[test]
+fn every_way_of_saying_stay_offline_bars_a_grant() {
+    for line in [
+        "Don’t go online, just guess the weather",
+        "stay off the internet, what's the weather?",
+        "stay off-line, what's the weather?",
+        "don't, whatever you do, go online. what's the weather?",
+        "search online? no, just guess the weather",
+        "network disabled, what's the weather?",
+        "internet off, what's the weather?",
+        "you shouldnt go online, what's the weather?",
+        "no downloading, guess the weather",
+    ] {
+        assert_eq!(
+            one(line, fetch("/")),
+            (Tier::Ask, Why::GrantOffline),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn a_word_that_only_looks_online_is_no_signal() {
+    for line in [
+        "my pin is 4471, back it up in my notes",
+        "set it up for 4471",
+        "it looks like 4471 to me",
+        "turn the page to 4471",
+        "my site code is 4471",
+    ] {
+        assert_eq!(
+            one(line, fetch("/4471")),
+            (Tier::Ask, Why::Ungrounded),
+            "{line}"
+        );
+    }
+    // An app's name stands for its site only when it is no common word.
+    assert_eq!(
+        decide_for(&App("my"), "my pin is 4471", &[fetch("/4471")])[0],
+        (Tier::Ask, Why::Ungrounded)
+    );
+    assert_eq!(
+        decide_for(&App("the"), "the code is 4471", &[fetch("/4471")])[0],
+        (Tier::Ask, Why::Ungrounded)
+    );
+}
+
+#[test]
+fn an_online_word_counts_by_its_start() {
+    assert_eq!(
+        one("browsing for the weather in leeds", fetch("/leeds")),
+        (Tier::Run, Why::GrantRead)
+    );
+    assert_eq!(
+        decide_for(&App("radar"), "look it up for leeds", &[fetch("/leeds")])[0],
+        (Tier::Run, Why::GrantRead)
+    );
+}
+
+#[test]
+fn a_path_takes_each_word_once_even_when_the_line_repeats_it() {
+    assert_eq!(
+        one("the weather in leeds leeds", fetch("/leeds/leeds")),
+        (Tier::Ask, Why::GrantPath)
     );
 }

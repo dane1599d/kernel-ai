@@ -454,10 +454,20 @@ impl Shell {
             decision.why
         ));
         let offer = offer(row, &args, decision.why);
+        // The person's Always rule for a host waives a grant read's ask as it
+        // waived the ask for that host before grants grounded anything; never
+        // a line that said to stay offline (ADR 0002 D3).
+        let waiver = match decision.why {
+            Why::GrantPath | Why::GrantSteered(_) | Why::GrantMany => {
+                self::offer(row, &args, Why::Ungrounded)
+            }
+            _ => None,
+        };
         // A send always asks (ADR 0002 question 3): no rule runs a Hold row,
         // whatever offer a rule was written from.
         let ruled = offer
             .as_ref()
+            .or(waiver.as_ref())
             .filter(|_| !held(row))
             .and_then(|offer| self.rules.covering(offer));
         let reply = match (decision.tier, ruled) {

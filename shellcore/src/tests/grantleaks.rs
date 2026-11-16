@@ -35,7 +35,7 @@ fn a_path_the_script_walk_cannot_read_asks() {
     ] {
         let reply = script_asks(code);
         assert!(
-            reply.text.contains("or what to read from it"),
+            reply.text.contains("It reads from a site"),
             "{code}: {reply:?}"
         );
     }
@@ -81,7 +81,7 @@ fn a_path_of_punctuation_case_or_repeats_asks() {
 #[test]
 fn a_line_that_asks_for_nothing_online_fetches_nothing() {
     let (host, mut shell) = granted(
-        vec![super::appgrants::fetch(WEATHER, Some("/?pin=4471"))],
+        vec![super::appgrants::fetch(WEATHER, Some("/4471"))],
         &always("weather"),
     );
     asked(&host, &shell.eval("my pin is 4471, add it to my notes"));
@@ -103,7 +103,8 @@ fn an_offline_line_says_so_and_offers_no_always() {
             reply.text.contains("said not to go online"),
             "{line}: {reply:?}"
         );
-        assert!(!reply.to_wire().contains("Always"), "{line}: {reply:?}");
+        let pending = shell.pending.as_ref().expect("asks");
+        assert!(pending.offer.is_none(), "{line}: no Always offered");
     }
 }
 
@@ -119,23 +120,55 @@ fn a_grant_grounds_its_one_host_in_the_shell() {
 }
 
 #[test]
-fn an_uninstalled_apps_grants_are_dropped_and_a_new_one_starts_with_none() {
+fn an_undone_packages_grants_are_dropped_and_no_one_elses() {
     let host = FakeHost::new();
-    host.installed
-        .borrow_mut()
-        .push(("weather".into(), "kai-actions 1".into()));
     *host.net_disk.borrow_mut() = Some(file(&[
         ("weather", WEATHER, Life::Persistent),
         ("foo-window", "foo.example", Life::Persistent),
+        ("foo", "api.foo.example", Life::Session),
+        // A plan-line app pkg never installed keeps its grant.
+        ("net-fixture", "a.kai.test", Life::Persistent),
     ]));
-    assert_eq!(crate::netask::drop_uninstalled(host.as_ref()), 1);
+    assert_eq!(
+        crate::netask::drop_package_grants(host.as_ref(), "foo"),
+        Ok(2)
+    );
     let left = crate::netgrant::NetGrants::load(&host.net_disk.borrow().clone().unwrap()).unwrap();
-    assert_eq!(left.all().len(), 1);
-    assert_eq!(left.all()[0].app, "weather");
-    // A pkg that gives no clear answer drops nothing.
-    *host.net_disk.borrow_mut() = Some(file(&[("foo", "foo.example", Life::Persistent)]));
-    *host.installed_down.borrow_mut() = Some("pkg did not answer".into());
-    assert_eq!(crate::netask::drop_uninstalled(host.as_ref()), 0);
+    let apps: Vec<&str> = left.all().iter().map(|g| g.app.as_str()).collect();
+    assert_eq!(apps, ["weather", "net-fixture"]);
+    assert!(
+        host.audit
+            .borrow()
+            .iter()
+            .any(|a| a.contains("(foo on foo.example) dropped: the undo took foo out")),
+        "{:?}",
+        host.audit.borrow()
+    );
+    // A file out of shape is left as it is, and says why.
+    *host.net_disk.borrow_mut() = Some(String::from(
+        "kai-grants 1
+not a line
+",
+    ));
+    assert!(crate::netask::drop_package_grants(host.as_ref(), "foo").is_err());
+}
+
+#[test]
+fn the_package_a_local_install_logged_is_read_back() {
+    use crate::netask::local_package;
+    assert_eq!(
+        local_package(
+            "cc build foo 0.0.3
+provenance x"
+        )
+        .as_deref(),
+        Some("foo")
+    );
+    let installed = "app_install(\"foo\")
+source /home/user/apps/foo/main.c sha256 ab
+artifact /home/user/apps/foo.kai sha256 cd";
+    assert_eq!(local_package(installed).as_deref(), Some("foo"));
+    assert_eq!(local_package("set_policy(\"rr\")"), None);
 }
 
 #[test]
@@ -176,4 +209,78 @@ fn pkgs_answer_and_its_audit_are_kept_between_passes() {
     memo.forget_installed();
     let _ = crate::appgrants::AppGrants::new(host.as_ref(), &memo).granted(&weather);
     assert_eq!(host.installed_asked.borrow().len(), 2);
+}
+
+/// The person's own Always rule for the weather host.
+fn always_rule(shell: &mut Shell) {
+    let offer = crate::rules::Offer {
+        action: "net_fetch",
+        target: Some(String::from(WEATHER)),
+        kind: false,
+    };
+    shell.rules.add(&offer, true, None, (0, 0)).unwrap();
+}
+
+#[test]
+fn the_persons_always_rule_waives_a_grant_ask_but_not_an_offline_line() {
+    // As before grants grounded anything: the rule waives the ask for its host.
+    let (host, mut shell) = granted(
+        vec![super::appgrants::fetch(WEATHER, Some("/?s=x"))],
+        &always("weather"),
+    );
+    always_rule(&mut shell);
+    let reply = shell.eval(LINE);
+    assert!(reply.ok && reply.confirm.is_none(), "{reply:?}");
+    assert_eq!(host.net_seen.borrow().len(), 1);
+    // A line that said to stay offline is its own word: no rule waives it.
+    let (host, mut shell) = granted(
+        vec![super::appgrants::fetch(WEATHER, None)],
+        &always("weather"),
+    );
+    always_rule(&mut shell);
+    asked(
+        &host,
+        &shell.eval("stay offline and guess the weather in Leeds"),
+    );
+}
+
+#[test]
+fn a_fetch_right_after_the_undo_of_its_apps_install_asks() {
+    let (host, mut shell) = granted(
+        vec![super::appgrants::fetch(WEATHER, None)],
+        &always("weather"),
+    );
+    // The memo holds pkg's "installed" when the undo runs.
+    use nethosts::Granted;
+    let weather = nethosts::Host::parse(WEATHER).unwrap();
+    assert!(crate::appgrants::AppGrants::new(host.as_ref(), &shell.grant_memo).granted(&weather));
+    shell.local_removed("cc build weather 0.0.2\nprovenance x");
+    asked(&host, &shell.eval(LINE));
+}
+
+#[test]
+fn a_steered_change_is_named_before_a_grant_read() {
+    // A change steered by a note, and a read only a grant grounds: the
+    // question names the note.
+    let code = "if fs_read(\"notes/todo.txt\") == \"\" { fs_empty_trash(); }\nnet_fetch(HOST, \"/leeds\");";
+    let reply = script_asks(code);
+    assert!(reply.text.contains("the target came from"), "{reply:?}");
+}
+
+#[test]
+fn a_value_laundered_through_a_method_or_an_abort_still_steers() {
+    for code in [
+        "let a = []; a.push(fs_changes()); if a[0] == \"x\" { net_fetch(HOST, \"/leeds\"); }",
+        "let a = []; a.insert(0, fs_changes()); if a[0] == \"x\" { net_fetch(HOST, \"/leeds\"); }",
+        "let a = []; a.append([fs_changes()]); if a[0] == \"x\" { net_fetch(HOST, \"/leeds\"); }",
+        "let k = 10 / fs_changes().len(); net_fetch(HOST, \"/leeds\");",
+    ] {
+        let reply = script_asks(code);
+        assert!(
+            reply
+                .text
+                .contains("the system's own state chose this read"),
+            "{code}: {reply:?}"
+        );
+    }
 }

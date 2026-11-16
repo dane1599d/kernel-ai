@@ -162,7 +162,7 @@ fn a_grant_grounds_a_fetch_but_names_no_destination_for_data() {
     };
     let plain = fetch("x.example", Label::Literal);
     assert_eq!(
-        decide_net("check the status page", &plain, &ROWS, &net)[0].tier,
+        decide_net("check the status page online", &plain, &ROWS, &net)[0].tier,
         Tier::Run
     );
     let sending = sending_note("x.example");

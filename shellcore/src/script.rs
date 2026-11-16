@@ -881,6 +881,17 @@ It changes {}{why}. Go ahead? y/n, or show",
     )
 }
 
+/// The question for a script whose asking calls only read from a site an
+/// app was allowed: what it reads with, and `why` it asks.
+pub fn reads(id: u64, checked: &Checked, asking: &[&str], why: &str) -> String {
+    format!(
+        "script {id}: {}
+It reads from a site with {} ({why}). Go ahead? y/n, or show",
+        checked.summary,
+        asking.join(", ")
+    )
+}
+
 /// The question for a script that would send read content out of the machine
 /// to a host the request did not name (P-F): `from` says where it was read.
 pub fn sends(id: u64, checked: &Checked, asking: &[&str], from: &str) -> String {

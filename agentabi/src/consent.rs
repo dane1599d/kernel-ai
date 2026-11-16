@@ -643,6 +643,16 @@ struct Word {
 /// The line's words: letters, digits and apostrophes, lower case. Everything else
 /// separates, so "round-robin", "round robin" and "Round Robin." read alike.
 fn words(text: &str) -> Vec<Word> {
+    // Curly apostrophes, as phone keyboards and pastes write them, are the
+    // straight one: "Don’t" is "don't".
+    let folded: alloc::string::String = text
+        .chars()
+        .map(|c| match c {
+            '\u{2019}' | '\u{2018}' | '\u{2BC}' => '\'',
+            c => c,
+        })
+        .collect();
+    let text = folded.as_str();
     let is_word = |c: char| c.is_alphanumeric() || c == '\'';
     let mut clause = 0;
     let mut out: Vec<Word> = Vec::new();

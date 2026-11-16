@@ -175,3 +175,40 @@ fn allows_checks_the_literals_it_found() {
     assert!(!only.allows("cpus", &[]));
     assert_eq!(plan.names(), ["set_policy", "get_policy", "cpus"]);
 }
+
+#[test]
+fn a_method_on_a_variable_takes_on_what_it_was_given() {
+    for script in [
+        "let a = []; a.push(note_read()); set_policy(a[0]);",
+        "let a = []; a.insert(0, note_read()); set_policy(a[0]);",
+        "let a = []; a.append([note_read()]); set_policy(a[0]);",
+    ] {
+        let (val, _) = switch(script);
+        assert_eq!(val.label, Label::Content("note \"todo\""), "{script}");
+    }
+}
+
+#[test]
+fn a_site_knows_what_the_script_met_before_it() {
+    // A division by a read's length could abort before the call: what it
+    // met decides whether the call runs at all.
+    let plan = plan("let k = 10 / note_read().len(); set_policy(\"rr\");");
+    let site = plan.sites.iter().find(|s| s.name == "set_policy").unwrap();
+    assert_eq!(site.met, Label::Content("note \"todo\""));
+    assert_eq!(site.control, Label::Literal);
+    let plain = plan_met("set_policy(\"rr\"); let k = note_read();");
+    assert_eq!(
+        plain,
+        Label::Literal,
+        "a read after the call is not before it"
+    );
+}
+
+fn plan_met(script: &str) -> Label {
+    plan(script)
+        .sites
+        .iter()
+        .find(|s| s.name == "set_policy")
+        .unwrap()
+        .met
+}

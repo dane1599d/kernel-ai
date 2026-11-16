@@ -141,41 +141,46 @@ pub(crate) fn at_boot(host: &dyn Host) -> (u32, bool) {
     (high, true)
 }
 
-/// Drops the grants of every app `pkg` says is no longer installed, after an
-/// undo took a package out, so a later package of the same name starts with
-/// none: the person allows it again on its card. A `pkg` that gives no clear
-/// answer drops nothing. How many were dropped.
-pub(crate) fn drop_uninstalled(host: &dyn Host) -> usize {
-    let Ok(mut grants) = read_store(host) else {
-        return 0;
-    };
-    let gone: Vec<(u32, String, String)> = grants
+/// Drops package `package`'s grants (its own and its `-window`'s), after an
+/// undo took the package out, so a later package of the same name starts with
+/// none: the person allows it again on its card. How many were dropped, or why
+/// the file was not changed.
+pub(crate) fn drop_package_grants(host: &dyn Host, package: &str) -> Result<usize, String> {
+    let mut grants = read_store(host)?;
+    let window = format!("{package}-window");
+    let gone: Vec<(u32, String)> = grants
         .all()
         .iter()
-        .filter(|g| {
-            let package = g.app.strip_suffix("-window").unwrap_or(&g.app);
-            host.package_installed(package) == Ok(false)
-        })
-        .map(|g| (g.id, g.app.clone(), g.object.clone()))
+        .filter(|g| g.app == package || g.app == window)
+        .map(|g| (g.id, g.object.clone()))
         .collect();
     if gone.is_empty() {
-        return 0;
+        return Ok(0);
     }
-    for (id, _, _) in &gone {
+    for (id, _) in &gone {
         grants.revoke(*id);
     }
-    if let Err(why) = write_store(host, &grants) {
+    write_store(host, &grants)?;
+    for (id, object) in &gone {
         host.audit(&format!(
-            "the removed apps' network grants were not dropped: {why}"
-        ));
-        return 0;
-    }
-    for (id, app, object) in &gone {
-        host.audit(&format!(
-            "network grant {id} ({app} on {object}) dropped: {app} is no longer installed"
+            "network grant {id} ({package} on {object}) dropped: the undo took {package} out"
         ));
     }
-    gone.len()
+    Ok(gone.len())
+}
+
+/// The package a local install's log entry installed: `cc build <name> ...`,
+/// or Kai's app's `artifact <dir>/<name>.kai ...` line.
+pub(crate) fn local_package(script: &str) -> Option<String> {
+    script.lines().find_map(|line| {
+        if let Some(rest) = line.strip_prefix("cc build ") {
+            return rest.split(' ').next().map(String::from);
+        }
+        let rest = line.strip_prefix("artifact ")?;
+        let path = rest.split(' ').next()?;
+        let file = path.rsplit('/').next()?;
+        file.strip_suffix(".kai").map(String::from)
+    })
 }
 
 impl Shell {
