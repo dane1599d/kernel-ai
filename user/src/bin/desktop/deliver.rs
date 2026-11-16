@@ -46,6 +46,13 @@ pub(super) fn deliver(state: &mut State, effects: &[Effect]) {
                         wake_shell();
                         true
                     }
+                    // A held send's undo: that send, by its entry.
+                    Some(PaneClick::UndoSend(id)) => {
+                        state.panel.send(format!("undo {id}"), now);
+                        println!("desktop: a held send's undo was clicked");
+                        wake_shell();
+                        true
+                    }
                     None => false,
                 }
             }

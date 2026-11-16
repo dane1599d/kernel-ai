@@ -189,6 +189,9 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         chat_push(state, Who::Note, note);
         return Some(String::from("ok"));
     }
+    if let Some(reply) = sends_request(state, text) {
+        return Some(reply);
+    }
     let Some((shown, entry)) = panel_wire::parse_done(text) else {
         return Some(String::from("err not a panel request"));
     };
@@ -221,6 +224,28 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         // Its kind only: the line is the shell's result, which may name a file.
         println!("desktop: the panel shows {word}");
         log_bar(state.log_bar, text.as_deref());
+        state.extra.push(state.desk.pane_area());
+    }
+    Some(String::from("ok"))
+}
+
+/// The shell's held sends (`deskcore::sends`): the ones waiting or going,
+/// and what one came to, which joins the history as code's note.
+fn sends_request(state: &mut State, text: &str) -> Option<String> {
+    use deskcore::sends;
+    if let Some(list) = sends::parse_sends(text) {
+        let now = now_ms();
+        let held = list.iter().map(|send| send.held(now)).collect();
+        if state.panel.set_sends(held) {
+            println!("desktop: the panel holds {} sends", list.len());
+            state.extra.push(paint_panel::state_area(&state.desk));
+        }
+        return Some(String::from("ok"));
+    }
+    let (entry, failed, line) = sends::parse_sent(text)?;
+    chat_push(state, Who::Note, &line);
+    if state.panel.send_ended(entry, line, failed) {
+        println!("desktop: the panel shows what a send came to");
         state.extra.push(state.desk.pane_area());
     }
     Some(String::from("ok"))

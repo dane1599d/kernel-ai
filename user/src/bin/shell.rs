@@ -36,6 +36,7 @@ use llmproto::act::{self, ActError, ActRequest, Call};
 use llmproto::chat::Completion;
 use llmproto::script::{self, Answer, AnswerError, Lang, ScriptRequest};
 use llmproto::tune::{self, TuneRequest};
+use shellcore::outbox::Stage;
 use shellcore::targets::Service;
 use shellcore::waiting::Took;
 use shellcore::{DEFAULT_CONFIG, Host, PanelResult, Proof, SCRIPT_ROUND_MS, Shell};
@@ -307,6 +308,62 @@ fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) {
         Ok(answer) => println!("the panel's state was not set: {answer}"),
         Err(why) => println!("the panel's state was not set: {why}"),
     }
+}
+
+/// The held sends (`shellcore::outbox`), a unit of their own after the
+/// panel's line, so an `undo` it ran wins: each one due starts (its
+/// `sending` on disk first), the panel is told it is going, and only then is
+/// it sent. What each came to, and the sends still held, go to the panel.
+/// `shown` is the list last reported, without its countdowns.
+fn give_sends(shell: &mut Shell, shown: &mut Option<Vec<(u64, bool)>>) {
+    start_of_unit();
+    while let Some(entry) = shell.start_due_send(now_ms()) {
+        report_sends(shell, shown);
+        shell.run_send(entry);
+    }
+    let ended = shell.take_sends_ended();
+    let Some(route) = desktop() else {
+        return;
+    };
+    for send in ended {
+        let failed = !matches!(send.stage, Stage::Sent | Stage::Cancelled);
+        let request = deskcore::sends::encode_sent(send.entry, failed, &send.line);
+        if let Err(why) = report_to_desktop(route, &request) {
+            println!("the panel was not told what a send came to: {why}");
+        }
+    }
+    report_sends(shell, shown);
+}
+
+/// The held sends to the panel, when they changed since `shown`.
+fn report_sends(shell: &Shell, shown: &mut Option<Vec<(u64, bool)>>) {
+    let now = now_ms();
+    let held = shell.held_sends(now);
+    let key: Vec<(u64, bool)> = held.iter().map(|s| (s.entry, s.sending)).collect();
+    if shown.as_ref() == Some(&key) {
+        return;
+    }
+    let Some(route) = desktop() else {
+        return;
+    };
+    let wire: Vec<deskcore::sends::WireSend> = held
+        .into_iter()
+        .map(|s| deskcore::sends::WireSend {
+            entry: s.entry,
+            sending: s.sending,
+            left_ms: s.left_ms,
+            host: s.host,
+        })
+        .collect();
+    match report_to_desktop(route, &deskcore::sends::encode_sends(&wire)) {
+        Ok(answer) if answer == "ok" => *shown = Some(key),
+        Ok(answer) => println!("the panel did not take the held sends: {answer}"),
+        Err(why) => println!("the panel did not take the held sends: {why}"),
+    }
+}
+
+fn now_ms() -> u64 {
+    sys::time_ns() / 1_000_000
 }
 
 /// Shows on the panel what the answer to a desktop line's card came to.
@@ -1450,6 +1507,7 @@ fn main() -> i32 {
     // post could not wake it.
     let mut wait_ms = 1;
     let mut warmth = warmth::Warmth::default();
+    let mut sends_shown = None;
     loop {
         // What the apps asked during a line that was not a read runs before
         // anything newer is taken: after each step that may run a line (the
@@ -1468,6 +1526,7 @@ fn main() -> i32 {
         waiting::run_held(&mut shell, held);
         take_panel(&mut shell, &mut warmth);
         waiting::run_held(&mut shell, held);
+        give_sends(&mut shell, &mut sends_shown);
         take_effects(&mut shell, held);
         waiting::run_held(&mut shell, held);
         start_of_unit();
@@ -1502,6 +1561,10 @@ fn main() -> i32 {
         }
         give_appearance(&system);
         shell.retry_keep();
+        // A held send is due within the wait: wake for it then.
+        if let Some(left) = shell.next_send_ms(now_ms()) {
+            wait_ms = wait_ms.min(left.max(1));
+        }
         let mut caller = u64::MAX;
         let len = match sys::svc_recv(&mut line, wait_ms, &mut caller) {
             Ok(len) => len.min(line.len()),

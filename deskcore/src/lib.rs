@@ -40,6 +40,7 @@ pub mod panel;
 pub mod panel_wire;
 pub mod running;
 pub mod scale;
+pub mod sends;
 pub mod server;
 pub mod settings_wire;
 pub mod start;

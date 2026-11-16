@@ -34,6 +34,8 @@ const MARK: i32 = 12;
 /// They sit at the row's right end, so a long line is cut before them and
 /// never pushes them out of the pane.
 const LINKS: &str = "   undo  show";
+/// A held send's link while it waits: undo, by the send's log entry.
+const SEND_LINK: &str = "   undo";
 /// Where the status row's text ends, from its right edge, with no Stop.
 const END: i32 = 12;
 
@@ -101,11 +103,15 @@ pub enum PaneClick {
     Stop,
     /// A done line's `undo` or `show`, sent as though typed.
     Link(&'static str),
+    /// A held send's `undo`: `undo <entry>`, that send's and no other.
+    UndoSend(u64),
 }
 
-/// Whether the shown state changes with the clock: "thinking 4s" counts.
+/// Whether the shown state changes with the clock: "thinking 4s" counts,
+/// and so does a held send's countdown.
 pub fn ticks(panel: &Panel) -> bool {
     matches!(panel.state(), State::Thinking { .. })
+        || panel.shown_send().is_some_and(|send| !send.sending)
 }
 
 impl Painter {
@@ -194,6 +200,25 @@ impl Painter {
         let mid = row.y + row.h / 2;
         let x0 = row.x + INSET;
         let clip = Rect::new(row.x, row.y, end - row.x, row.h);
+        // A held send shows whenever no line is being worked on.
+        if let Some(send) = scene.panel.shown_send() {
+            let more = scene.panel.sends().len().saturating_sub(1);
+            let text = send_text(send, more, scene.now_ms);
+            let text_end = match send.sending {
+                true => end,
+                false => {
+                    let links_x = end as f32 - self.text.measure(style, SEND_LINK).0;
+                    let accent = self.palette.accent;
+                    self.draw_text(c, clip, links_x, y, style, accent, SEND_LINK);
+                    links_x as i32
+                }
+            };
+            let cut = Rect::new(row.x, row.y, text_end - row.x, row.h);
+            disc(c, clip, (x0 + 3, mid), 3.0, self.palette.ai);
+            let color = self.palette.text;
+            self.draw_text(c, cut, (x0 + MARK) as f32, y, style, color, &text);
+            return;
+        }
         let p = &self.palette;
         let (mark, parts): (Option<u32>, Vec<(String, u32)>) = match scene.panel.state() {
             // The model is up but not warm: a request now waits for it.
@@ -270,8 +295,26 @@ impl Painter {
                 false => PaneClick::Send,
             });
         }
+        if let Some(entry) = self.send_link(parts.status, panel, at) {
+            return Some(PaneClick::UndoSend(entry));
+        }
         self.panel_link(parts.status, panel, at)
             .map(PaneClick::Link)
+    }
+
+    /// The held send whose `undo` the point `at` is on, as
+    /// [`Painter::status`] draws it at the row's right end; `None` off it,
+    /// or once the send is going.
+    pub fn send_link(&self, row: Rect, shown: &Panel, at: Point) -> Option<u64> {
+        let send = shown.shown_send().filter(|send| !send.sending)?;
+        if !row.contains(at) {
+            return None;
+        }
+        let style = TypeStyle::MonoTitle;
+        let width = |t: &str| self.text.measure(style, t).0;
+        let left = status_end(row) as f32 - width(SEND_LINK) + width("   ");
+        let x = at.x as f32;
+        (x >= left - 4.0 && x <= left + width("undo") + 4.0).then_some(send.entry)
     }
 
     /// Which of a done line's links, `undo` or `show`, the point `at` on the
@@ -282,6 +325,10 @@ impl Painter {
         let State::Done { .. } = shown.state() else {
             return None;
         };
+        // A held send shows in its place, with its own undo.
+        if shown.shown_send().is_some() {
+            return None;
+        }
         // No links are drawn without the entry they act on.
         shown.entry()?;
         if !row.contains(at) {
@@ -300,5 +347,19 @@ impl Painter {
             (_, true) => Some("show"),
             _ => None,
         }
+    }
+}
+
+/// A held send as the status row says it, in code's words: "Sending to
+/// hooks.example in 0:04", then "Sending to hooks.example..." once it goes,
+/// and how many more wait behind it.
+pub fn send_text(send: &crate::sends::HeldSend, more: usize, now_ms: u64) -> String {
+    let when = match send.sending {
+        true => String::from("..."),
+        false => format!(" in {}", crate::sends::left(send.due_ms, now_ms)),
+    };
+    match more {
+        0 => format!("Sending to {}{when}", send.host),
+        n => format!("Sending to {}{when} · {n} more", send.host),
     }
 }
