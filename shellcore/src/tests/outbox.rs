@@ -453,3 +453,129 @@ fn the_panel_sees_a_send_wait_go_and_end() {
     assert_eq!((ended[0].entry, ended[0].stage), (id, Stage::Sent));
     assert!(shell.take_sends_ended().is_empty());
 }
+
+/// The OS loop starts one send a pass, so an undo taken between two passes
+/// (a click during the first send's call) cancels the second (#959 review).
+#[test]
+fn an_undo_between_two_due_sends_cancels_the_second() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let first = hold(&host, &mut shell, "a.example", 0);
+    let second = hold(&host, &mut shell, "b.example", 2_000);
+    // Both due by the time the first send's call returns.
+    assert_eq!(shell.start_due_send(9_000), Some(first));
+    shell.run_send(first);
+    assert_eq!(
+        shell.eval(&format!("undo {second}")),
+        ok("Undone: the send to b.example, not sent")
+    );
+    assert_eq!(shell.start_due_send(9_000), None);
+    let hosts: Vec<String> = host
+        .sends
+        .borrow()
+        .iter()
+        .map(|s| s.0.host.clone())
+        .collect();
+    assert_eq!(hosts, ["a.example"]);
+}
+
+/// The shell's host rule and the pane's wire take the same hosts.
+#[test]
+fn the_shell_and_the_pane_agree_on_what_a_host_is() {
+    for host in [
+        "hooks.example",
+        "10.0.2.2",
+        "[::1]",
+        "a-b.c",
+        "",
+        "a b",
+        "a;b",
+        "a/b",
+        "a\tb",
+        "caf\u{e9}.example",
+    ] {
+        assert_eq!(
+            crate::outbox::is_host(host),
+            deskcore::sends::is_host(host),
+            "{host:?}"
+        );
+    }
+    let long = "a".repeat(crate::outbox::MAX_HOST + 1);
+    assert!(!crate::outbox::is_host(&long) && !deskcore::sends::is_host(&long));
+}
+
+/// A panel line's card that allowed a send hands the panel the send's
+/// entry with its result; one that held nothing hands none.
+#[test]
+fn a_panel_cards_result_names_the_send_it_held() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let id = hold(&host, &mut shell, "a.example", 0);
+    shell.desk_told(
+        id,
+        crate::deskask::Asker::Panel,
+        true,
+        false,
+        String::from("Sending"),
+    );
+    assert_eq!(shell.take_card_held(), Some(id));
+    assert_eq!(shell.take_card_held(), None);
+    shell.desk_told(
+        id + 7,
+        crate::deskask::Asker::Panel,
+        true,
+        false,
+        String::from("Done."),
+    );
+    assert_eq!(shell.take_card_held(), None);
+    shell.desk_told(
+        id,
+        crate::deskask::Asker::Panel,
+        false,
+        false,
+        String::from("Not run"),
+    );
+    assert_eq!(shell.take_card_held(), None);
+}
+
+/// The OS loop's passes, as `take_panel` then `give_sends`: each request
+/// (`Some`, a line run, `None` for a Stop) is one pass, and a pass that took
+/// one starts no send. Then a pass with nothing to take.
+fn passes(shell: &mut Shell, requests: &[Option<&str>], now_ms: u64) -> Vec<u64> {
+    let mut started = Vec::new();
+    for request in requests.iter().map(Some).chain([None]) {
+        if let Some(Some(line)) = request {
+            shell.eval(line);
+        }
+        if let Some(entry) = shell.start_send_after(request.is_some(), now_ms) {
+            shell.run_send(entry);
+            started.push(entry);
+        }
+    }
+    started
+}
+
+/// An undo queued behind a Stop, or behind a Stop and a line, is taken
+/// before the due send it names starts (#959 re-review).
+#[test]
+fn an_undo_queued_behind_a_stop_wins_over_its_due_send() {
+    for before in [&[None][..], &[None, Some("echo hi")][..]] {
+        let host = FakeHost::new();
+        let mut shell = shell(&host);
+        let id = hold(&host, &mut shell, "a.example", 0);
+        let undo = format!("undo {id}");
+        let requests: Vec<Option<&str>> = before
+            .iter()
+            .copied()
+            .chain([Some(undo.as_str())])
+            .collect();
+        assert_eq!(passes(&mut shell, &requests, 9_000), Vec::<u64>::new());
+        assert!(host.sends.borrow().is_empty(), "{before:?}");
+        assert_eq!(shell.start_due_send(9_000), None);
+    }
+    // With nothing queued, the due send starts on the next pass.
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let id = hold(&host, &mut shell, "a.example", 0);
+    assert_eq!(passes(&mut shell, &[None], 9_000), [id]);
+}

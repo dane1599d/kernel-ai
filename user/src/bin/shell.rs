@@ -36,6 +36,7 @@ use llmproto::act::{self, ActError, ActRequest, Call};
 use llmproto::chat::Completion;
 use llmproto::script::{self, Answer, AnswerError, Lang, ScriptRequest};
 use llmproto::tune::{self, TuneRequest};
+use shellcore::outbox::Stage;
 use shellcore::targets::Service;
 use shellcore::waiting::Took;
 use shellcore::{DEFAULT_CONFIG, Host, PanelResult, Proof, SCRIPT_ROUND_MS, Shell};
@@ -251,17 +252,19 @@ fn report_call(route: kabi::handle::Handle, request: &[u8]) -> Result<Vec<u8>, k
 /// first what the AI said, for the desk's history (`panel said`), then the
 /// bar's state, code's result line or why not, never the model's words. The
 /// panel shows thinking from the Enter until then. A line that asks first
-/// waits for the trusted card (`deskask`); the panel says so.
-fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) {
+/// waits for the trusted card (`deskask`); the panel says so. Whether it
+/// took a request, a line or a Stop: no held send starts on that pass
+/// (`give_sends`), so an undo queued behind it is taken first.
+fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) -> bool {
     use deskcore::panel::{Request, State};
     use deskcore::panel_wire;
     // A unit of work that is no request: a Stop for the last one ends here.
     start_of_unit();
     let Some(route) = desktop() else {
-        return;
+        return false;
     };
     let Ok(answer) = ask_desktop(route, panel_wire::TAKE) else {
-        return;
+        return false;
     };
     let shown = match panel_wire::parse_take(&answer) {
         Some(Some(Request::Line(line))) => {
@@ -287,19 +290,21 @@ fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) {
             shown
         }
         // Esc while Kai builds an app in the background stops the build.
+        // A Stop that stopped nothing (the line it was for has ended) is
+        // still a request taken: the next pass takes the one behind it.
         Some(Some(Request::Stop)) => match shell.stop_app_build() {
             Some(reply) => State::Done { line: reply.text },
-            None => return,
+            None => return true,
         },
         // Esc after the shell took the line: it has run already, one line at
         // a time, and its result stays shown. Esc before is desktop's own: the
         // line never came here.
-        _ => return,
+        _ => return false,
     };
     // A done line names the log entry its undo link takes back.
     let entry = shell.take_panel_entry();
     let Some(request) = panel_wire::encode_done(&shown, entry) else {
-        return;
+        return true;
     };
     // The line ended: a Stop pressed as it did must not hide its result.
     match report_to_desktop(route, &request) {
@@ -307,17 +312,93 @@ fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) {
         Ok(answer) => println!("the panel's state was not set: {answer}"),
         Err(why) => println!("the panel's state was not set: {why}"),
     }
+    true
 }
 
-/// Shows on the panel what the answer to a desktop line's card came to.
-fn give_card_result(ran: bool, line: String) {
+/// The held sends (`shellcore::outbox`), a unit of their own after the
+/// panel's line, so an `undo` it ran wins: each one due starts (its
+/// `sending` on disk first), the panel is told it is going, and only then is
+/// it sent. What each came to, and the sends still held, go to the panel.
+/// One send a pass at most, and none on a pass whose [`take_panel`] took a
+/// request (`took`): the next pass takes the panel's next request first, so
+/// an undo queued behind a line or a Stop, or clicked during a send's call,
+/// wins over the next send (the wait is 1 ms while one is due). `shown` is
+/// the list last reported, without its countdowns, and the desktop it went to.
+fn give_sends(shell: &mut Shell, system: &System, shown: &mut SendsShown, took: bool) {
+    start_of_unit();
+    // A desktop that restarted has no list: it is told again.
+    if shown
+        .as_ref()
+        .is_some_and(|(pid, _)| *pid != system.desktop_pid.get())
+    {
+        *shown = None;
+    }
+    if let Some(entry) = shell.start_send_after(took, now_ms()) {
+        report_sends(shell, system, shown);
+        shell.run_send(entry);
+    }
+    let ended = shell.take_sends_ended();
+    let Some(route) = desktop() else {
+        return;
+    };
+    for send in ended {
+        let failed = !matches!(send.stage, Stage::Sent | Stage::Cancelled);
+        let request = deskcore::sends::encode_sent(send.entry, failed, &send.line);
+        if let Err(why) = report_to_desktop(route, &request) {
+            println!("the panel was not told what a send came to: {why}");
+        }
+    }
+    report_sends(shell, system, shown);
+}
+
+/// The held sends last reported to the panel, as (entry, going), and the
+/// desktop's pid then.
+type SendsShown = Option<(u64, Vec<(u64, bool)>)>;
+
+/// The held sends to the panel, when they changed since `shown`.
+fn report_sends(shell: &Shell, system: &System, shown: &mut SendsShown) {
+    let now = now_ms();
+    let held = shell.held_sends(now);
+    let key: Vec<(u64, bool)> = held.iter().map(|s| (s.entry, s.sending)).collect();
+    let pid = system.desktop_pid.get();
+    if shown.as_ref() == Some(&(pid, key.clone())) {
+        return;
+    }
+    let Some(route) = desktop() else {
+        return;
+    };
+    let wire: Vec<deskcore::sends::WireSend> = held
+        .into_iter()
+        .map(|s| deskcore::sends::WireSend {
+            entry: s.entry,
+            sending: s.sending,
+            left_ms: s.left_ms,
+            host: s.host,
+        })
+        .collect();
+    match report_to_desktop(route, &deskcore::sends::encode_sends(&wire)) {
+        Ok(answer) if answer == "ok" => *shown = Some((pid, key)),
+        Ok(answer) => println!("the panel did not take the held sends: {answer}"),
+        Err(why) => println!("the panel did not take the held sends: {why}"),
+    }
+}
+
+fn now_ms() -> u64 {
+    sys::time_ns() / 1_000_000
+}
+
+/// Shows on the panel what the answer to a desktop line's card came to,
+/// with the send it held, if it did, so the pane shows that send's countdown
+/// and undo as the line's own.
+fn give_card_result(ran: bool, line: String, held: Option<u64>) {
     use deskcore::panel::State;
     use deskcore::panel_wire;
     let shown = match ran {
         true => State::Done { line },
         false => State::Refused { reason: line },
     };
-    let (Some(route), Some(request)) = (desktop(), panel_wire::encode_card(&shown)) else {
+    let (Some(route), Some(request)) = (desktop(), panel_wire::encode_card_held(&shown, held))
+    else {
         return;
     };
     if let Err(why) = ask_desktop(route, &request) {
@@ -1450,6 +1531,7 @@ fn main() -> i32 {
     // post could not wake it.
     let mut wait_ms = 1;
     let mut warmth = warmth::Warmth::default();
+    let mut sends_shown = None;
     loop {
         // What the apps asked during a line that was not a read runs before
         // anything newer is taken: after each step that may run a line (the
@@ -1466,8 +1548,9 @@ fn main() -> i32 {
         // the wait at once, so a click's effect does not wait for a poll.
         take_events(&mut shell, &mut events);
         waiting::run_held(&mut shell, held);
-        take_panel(&mut shell, &mut warmth);
+        let took = take_panel(&mut shell, &mut warmth);
         waiting::run_held(&mut shell, held);
+        give_sends(&mut shell, &system, &mut sends_shown, took);
         take_effects(&mut shell, held);
         waiting::run_held(&mut shell, held);
         start_of_unit();
@@ -1502,6 +1585,10 @@ fn main() -> i32 {
         }
         give_appearance(&system);
         shell.retry_keep();
+        // A held send is due within the wait: wake for it then.
+        if let Some(left) = shell.next_send_ms(now_ms()) {
+            wait_ms = wait_ms.min(left.max(1));
+        }
         let mut caller = u64::MAX;
         let len = match sys::svc_recv(&mut line, wait_ms, &mut caller) {
             Ok(len) => len.min(line.len()),
@@ -1527,7 +1614,8 @@ fn main() -> i32 {
             // it. A Terminal line's answer goes back to the Terminal on the
             // next pass (`give_call_results`).
             if let Some((ran, line)) = shell.take_card_result() {
-                give_card_result(ran, line);
+                let held = shell.take_card_held();
+                give_card_result(ran, line, held);
             }
             reply
         } else {

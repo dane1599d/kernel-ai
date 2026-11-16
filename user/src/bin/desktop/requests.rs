@@ -165,10 +165,12 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     }
     // A card's result: shown, unless a newer line is thinking, whose own
     // result comes after.
-    if let Some(shown) = panel_wire::parse_card(text) {
+    // A send it allowed comes with its entry: the line is the send's own,
+    // so its countdown and undo show in its place.
+    if let Some((shown, held)) = panel_wire::parse_card_held(text) {
         let thinking = matches!(state.panel.state(), deskcore::panel::State::Thinking { .. });
         let text = bar_text(&shown).map(String::from);
-        if !thinking && state.panel.set_state(shown) {
+        if !thinking && state.panel.set_done(shown, held) {
             println!("desktop: the panel shows what a card came to");
             log_bar(state.log_bar, text.as_deref());
             state.extra.push(state.desk.pane_area());
@@ -188,6 +190,9 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     if let Some(note) = panel_wire::parse_note(text) {
         chat_push(state, Who::Note, note);
         return Some(String::from("ok"));
+    }
+    if let Some(reply) = sends_request(state, text) {
+        return Some(reply);
     }
     let Some((shown, entry)) = panel_wire::parse_done(text) else {
         return Some(String::from("err not a panel request"));
@@ -221,6 +226,33 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         // Its kind only: the line is the shell's result, which may name a file.
         println!("desktop: the panel shows {word}");
         log_bar(state.log_bar, text.as_deref());
+        state.extra.push(state.desk.pane_area());
+    }
+    Some(String::from("ok"))
+}
+
+/// The shell's held sends (`deskcore::sends`): the ones waiting or going,
+/// and what one came to, which joins the history as code's note.
+fn sends_request(state: &mut State, text: &str) -> Option<String> {
+    use deskcore::sends;
+    if text.starts_with("panel sends ") {
+        let now = now_ms();
+        // A report it cannot read leaves no stale countdown or undo behind.
+        let (list, answer) = match sends::parse_sends(text) {
+            Some(list) => (list, "ok"),
+            None => (Vec::new(), "err not a list of sends"),
+        };
+        let held = list.iter().map(|send| send.held(now)).collect();
+        if state.panel.set_sends(held) {
+            println!("desktop: the panel holds {} sends", list.len());
+            state.extra.push(paint_panel::state_area(&state.desk));
+        }
+        return Some(String::from(answer));
+    }
+    let (entry, failed, line) = sends::parse_sent(text)?;
+    chat_push(state, Who::Note, &line);
+    if state.panel.send_ended(entry, line, failed) {
+        println!("desktop: the panel shows what a send came to");
         state.extra.push(state.desk.pane_area());
     }
     Some(String::from("ok"))

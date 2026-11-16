@@ -883,3 +883,132 @@ fn the_wheel_scrolls_the_history_three_lines_a_detent() {
         "past the newest"
     );
 }
+
+/// A held send's undo is hit where it is drawn, at every size, and names the
+/// send's entry; it is gone once the send is going, and a done line's links
+/// give way to it while it shows.
+#[test]
+fn a_held_sends_undo_is_hit_where_it_is_drawn() {
+    use crate::paint_panel::{PaneClick, send_text};
+    use crate::sends::HeldSend;
+    let painter = Painter::new(FONTS).expect("the fonts parse");
+    for (w, h) in SIZES {
+        let desk = open(w, h);
+        let row = desk.layout().pane_parts().status;
+        let mut panel = Panel::new();
+        panel.set_done(
+            State::Done {
+                line: "Sending to hooks.example in 5 s. undo 12".into(),
+            },
+            Some(12),
+        );
+        let send = HeldSend {
+            entry: 12,
+            host: "a-rather-long-host-name.hooks.example.org".into(),
+            due_ms: 7_000,
+            sending: false,
+        };
+        panel.set_sends(alloc::vec![send.clone()]);
+        let y = row.y + row.h / 2;
+        let hits: Vec<i32> = (row.x..row.right())
+            .filter(|&x| painter.send_link(row, &panel, Point { x, y }) == Some(12))
+            .collect();
+        let (first, last) = (hits[0], *hits.last().expect("a hit"));
+        assert!(last <= row.right(), "{w}x{h}: the undo runs off the row");
+        assert!(
+            last >= crate::paint_panel::status_end(row) - 8,
+            "{w}x{h}: {last} is not at the row's end"
+        );
+        assert_eq!(
+            painter.pane_click(&desk, &panel, Point { x: first + 4, y }),
+            Some(PaneClick::UndoSend(12))
+        );
+        assert_eq!(painter.panel_link(row, &panel, Point { x: first, y }), None);
+        let image = paint(&desk, &panel, &Chat::default(), None);
+        let at_undo = Rect::new(first, row.y, 24, row.h);
+        assert!(
+            pixels(&image, at_undo).contains(&painter.palette.accent),
+            "{w}x{h}: undo is not drawn there"
+        );
+        // Going: no undo, and "..." where the countdown was.
+        let going = HeldSend {
+            sending: true,
+            ..send
+        };
+        assert_eq!(
+            send_text(&going, 0, 3_000),
+            "Sending to a-rather-long-host-name.hooks.example.org..."
+        );
+        panel.set_sends(alloc::vec![going]);
+        assert_eq!(
+            painter.send_link(row, &panel, Point { x: first + 4, y }),
+            None
+        );
+        let sending = paint(&desk, &panel, &Chat::default(), None);
+        assert!(!pixels(&sending, at_undo).contains(&painter.palette.accent));
+    }
+}
+
+/// The held send's countdown ticks and is drawn: its pixels change as the
+/// seconds go, and the status row is all that changes.
+#[test]
+fn a_held_send_counts_down_in_the_status_row() {
+    use crate::sends::HeldSend;
+    let desk = open(1280, 800);
+    let mut panel = Panel::new();
+    assert!(!crate::paint_panel::ticks(&panel));
+    panel.set_sends(alloc::vec![HeldSend {
+        entry: 3,
+        host: "hooks.example".into(),
+        due_ms: 9_000,
+        sending: false,
+    }]);
+    assert!(crate::paint_panel::ticks(&panel));
+    assert_eq!(
+        crate::paint_panel::send_text(&panel.sends()[0], 1, 3_000),
+        "0:06 \u{b7} Sending to hooks.example \u{b7} 1 more"
+    );
+    let shown = paint(&desk, &panel, &Chat::default(), None);
+    let idle = paint(&desk, &Panel::new(), &Chat::default(), None);
+    let row = desk.layout().pane_parts().status;
+    assert_ne!(pixels(&shown, row), pixels(&idle, row));
+    let outside = Rect::new(0, 0, 200, 200);
+    assert_eq!(pixels(&shown, outside), pixels(&idle, outside));
+}
+
+/// At every size the countdown and the count fit before the undo link, the
+/// host cut from its left so its own end shows (#959 review).
+#[test]
+fn a_held_sends_countdown_fits_before_its_undo_at_every_size() {
+    use crate::sends::HeldSend;
+    use look::TypeStyle;
+    let painter = Painter::new(FONTS).expect("the fonts parse");
+    let send = HeldSend {
+        entry: 12,
+        host: "a-rather-long-host-name.hooks.example.org".into(),
+        due_ms: 7_000,
+        sending: false,
+    };
+    for (w, h) in SIZES {
+        let desk = open(w, h);
+        let row = desk.layout().pane_parts().status;
+        let end = crate::paint_panel::status_end(row) as f32
+            - painter.text.measure(TypeStyle::MonoTitle, "   undo").0;
+        let width = end - (row.x + 24) as f32;
+        let line = painter.send_line(&send, 1, 3_000, width);
+        assert!(line.starts_with("0:04 \u{b7} "), "{w}x{h}: {line}");
+        assert!(
+            line.ends_with("example.org \u{b7} 1 more"),
+            "{w}x{h}: {line}"
+        );
+        assert!(
+            painter.text.measure(TypeStyle::MonoTitle, &line).0 <= width,
+            "{w}x{h}: {line} does not fit"
+        );
+    }
+    // With room, the host shows whole.
+    assert_eq!(
+        painter.send_line(&send, 0, 3_000, 10_000.0),
+        "0:04 \u{b7} Sending to a-rather-long-host-name.hooks.example.org"
+    );
+}
