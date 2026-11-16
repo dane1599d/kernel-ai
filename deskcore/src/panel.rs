@@ -65,6 +65,9 @@ pub struct Panel {
     /// Sends the shell holds before they go, oldest first (`crate::sends`):
     /// apart from `state`, so a new line does not drop them.
     pub(crate) sends: alloc::vec::Vec<crate::sends::HeldSend>,
+    /// The state shows what a send came to (`Panel::send_ended`): the held
+    /// sends behind it may show in its place.
+    pub(crate) send_state: bool,
     waiting: VecDeque<Request>,
     /// [`APPS`] was sent and the sheet has not been opened for it yet.
     apps: bool,
@@ -101,6 +104,7 @@ impl Panel {
             caps: false,
             entry: None,
             sends: alloc::vec::Vec::new(),
+            send_state: false,
             waiting: VecDeque::new(),
             apps: false,
             ready: None,
@@ -153,6 +157,7 @@ impl Panel {
         let changed = self.state != state;
         self.state = state;
         self.entry = None;
+        self.send_state = false;
         changed
     }
 

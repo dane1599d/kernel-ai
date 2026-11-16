@@ -966,7 +966,7 @@ fn a_held_send_counts_down_in_the_status_row() {
     assert!(crate::paint_panel::ticks(&panel));
     assert_eq!(
         crate::paint_panel::send_text(&panel.sends()[0], 1, 3_000),
-        "Sending to hooks.example in 0:06 · 1 more"
+        "0:06 \u{b7} Sending to hooks.example \u{b7} 1 more"
     );
     let shown = paint(&desk, &panel, &Chat::default(), None);
     let idle = paint(&desk, &Panel::new(), &Chat::default(), None);
@@ -974,4 +974,41 @@ fn a_held_send_counts_down_in_the_status_row() {
     assert_ne!(pixels(&shown, row), pixels(&idle, row));
     let outside = Rect::new(0, 0, 200, 200);
     assert_eq!(pixels(&shown, outside), pixels(&idle, outside));
+}
+
+/// At every size the countdown and the count fit before the undo link, the
+/// host cut from its left so its own end shows (#959 review).
+#[test]
+fn a_held_sends_countdown_fits_before_its_undo_at_every_size() {
+    use crate::sends::HeldSend;
+    use look::TypeStyle;
+    let painter = Painter::new(FONTS).expect("the fonts parse");
+    let send = HeldSend {
+        entry: 12,
+        host: "a-rather-long-host-name.hooks.example.org".into(),
+        due_ms: 7_000,
+        sending: false,
+    };
+    for (w, h) in SIZES {
+        let desk = open(w, h);
+        let row = desk.layout().pane_parts().status;
+        let end = crate::paint_panel::status_end(row) as f32
+            - painter.text.measure(TypeStyle::MonoTitle, "   undo").0;
+        let width = end - (row.x + 24) as f32;
+        let line = painter.send_line(&send, 1, 3_000, width);
+        assert!(line.starts_with("0:04 \u{b7} "), "{w}x{h}: {line}");
+        assert!(
+            line.ends_with("example.org \u{b7} 1 more"),
+            "{w}x{h}: {line}"
+        );
+        assert!(
+            painter.text.measure(TypeStyle::MonoTitle, &line).0 <= width,
+            "{w}x{h}: {line} does not fit"
+        );
+    }
+    // With room, the host shows whole.
+    assert_eq!(
+        painter.send_line(&send, 0, 3_000, 10_000.0),
+        "0:04 \u{b7} Sending to a-rather-long-host-name.hooks.example.org"
+    );
 }

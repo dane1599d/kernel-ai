@@ -314,11 +314,21 @@ fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) {
 /// panel's line, so an `undo` it ran wins: each one due starts (its
 /// `sending` on disk first), the panel is told it is going, and only then is
 /// it sent. What each came to, and the sends still held, go to the panel.
-/// `shown` is the list last reported, without its countdowns.
-fn give_sends(shell: &mut Shell, shown: &mut Option<Vec<(u64, bool)>>) {
+/// One send a pass at most: the next pass takes the panel's line first, so
+/// an undo clicked during this send's call wins over the next send (the wait
+/// is 1 ms while one is due). `shown` is the list last reported, without its
+/// countdowns, and the desktop it went to.
+fn give_sends(shell: &mut Shell, system: &System, shown: &mut SendsShown) {
     start_of_unit();
-    while let Some(entry) = shell.start_due_send(now_ms()) {
-        report_sends(shell, shown);
+    // A desktop that restarted has no list: it is told again.
+    if shown
+        .as_ref()
+        .is_some_and(|(pid, _)| *pid != system.desktop_pid.get())
+    {
+        *shown = None;
+    }
+    if let Some(entry) = shell.start_due_send(now_ms()) {
+        report_sends(shell, system, shown);
         shell.run_send(entry);
     }
     let ended = shell.take_sends_ended();
@@ -332,15 +342,20 @@ fn give_sends(shell: &mut Shell, shown: &mut Option<Vec<(u64, bool)>>) {
             println!("the panel was not told what a send came to: {why}");
         }
     }
-    report_sends(shell, shown);
+    report_sends(shell, system, shown);
 }
 
+/// The held sends last reported to the panel, as (entry, going), and the
+/// desktop's pid then.
+type SendsShown = Option<(u64, Vec<(u64, bool)>)>;
+
 /// The held sends to the panel, when they changed since `shown`.
-fn report_sends(shell: &Shell, shown: &mut Option<Vec<(u64, bool)>>) {
+fn report_sends(shell: &Shell, system: &System, shown: &mut SendsShown) {
     let now = now_ms();
     let held = shell.held_sends(now);
     let key: Vec<(u64, bool)> = held.iter().map(|s| (s.entry, s.sending)).collect();
-    if shown.as_ref() == Some(&key) {
+    let pid = system.desktop_pid.get();
+    if shown.as_ref() == Some(&(pid, key.clone())) {
         return;
     }
     let Some(route) = desktop() else {
@@ -356,7 +371,7 @@ fn report_sends(shell: &Shell, shown: &mut Option<Vec<(u64, bool)>>) {
         })
         .collect();
     match report_to_desktop(route, &deskcore::sends::encode_sends(&wire)) {
-        Ok(answer) if answer == "ok" => *shown = Some(key),
+        Ok(answer) if answer == "ok" => *shown = Some((pid, key)),
         Ok(answer) => println!("the panel did not take the held sends: {answer}"),
         Err(why) => println!("the panel did not take the held sends: {why}"),
     }
@@ -1526,7 +1541,7 @@ fn main() -> i32 {
         waiting::run_held(&mut shell, held);
         take_panel(&mut shell, &mut warmth);
         waiting::run_held(&mut shell, held);
-        give_sends(&mut shell, &mut sends_shown);
+        give_sends(&mut shell, &system, &mut sends_shown);
         take_effects(&mut shell, held);
         waiting::run_held(&mut shell, held);
         start_of_unit();

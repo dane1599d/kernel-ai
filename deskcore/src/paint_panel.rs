@@ -203,7 +203,6 @@ impl Painter {
         // A held send shows whenever no line is being worked on.
         if let Some(send) = scene.panel.shown_send() {
             let more = scene.panel.sends().len().saturating_sub(1);
-            let text = send_text(send, more, scene.now_ms);
             let text_end = match send.sending {
                 true => end,
                 false => {
@@ -214,11 +213,18 @@ impl Painter {
                 }
             };
             let cut = Rect::new(row.x, row.y, text_end - row.x, row.h);
+            let width = (text_end - x0 - MARK) as f32;
+            let text = self.send_line(send, more, scene.now_ms, width);
             disc(c, clip, (x0 + 3, mid), 3.0, self.palette.ai);
             let color = self.palette.text;
             self.draw_text(c, cut, (x0 + MARK) as f32, y, style, color, &text);
             return;
         }
+        // Held sends behind a newer line's result: said after it.
+        let note = scene
+            .panel
+            .waiting_note()
+            .map(|note| format!(" \u{b7} {note}"));
         let p = &self.palette;
         let (mark, parts): (Option<u32>, Vec<(String, u32)>) = match scene.panel.state() {
             // The model is up but not warm: a request now waits for it.
@@ -262,7 +268,8 @@ impl Painter {
                     let x = (x0 + MARK) as f32;
                     disc(c, clip, (x0 + 3, mid), 3.0, self.palette.ok);
                     let text = self.palette.text;
-                    self.draw_text(c, cut, x, y, style, text, line);
+                    let line = format!("{line}{}", note.as_deref().unwrap_or(""));
+                    self.draw_text(c, cut, x, y, style, text, &line);
                     return;
                 }
                 (Some(p.ok), alloc::vec![(line.clone(), p.text)])
@@ -273,6 +280,10 @@ impl Painter {
                 (None, alloc::vec![(reason.clone(), p.error)])
             }
         };
+        let mut parts = parts;
+        if let Some(note) = note {
+            parts.push((note, self.palette.dim));
+        }
         let mut x = x0 as f32;
         if let Some(dot) = mark {
             disc(c, clip, (x0 + 3, mid), 3.0, dot);
@@ -350,16 +361,86 @@ impl Painter {
     }
 }
 
-/// A held send as the status row says it, in code's words: "Sending to
-/// hooks.example in 0:04", then "Sending to hooks.example..." once it goes,
-/// and how many more wait behind it.
-pub fn send_text(send: &crate::sends::HeldSend, more: usize, now_ms: u64) -> String {
-    let when = match send.sending {
-        true => String::from("..."),
-        false => format!(" in {}", crate::sends::left(send.due_ms, now_ms)),
+/// A held send as the status row says it, in code's words, around its
+/// host: the countdown first ("0:04 · Sending to "), then how many more wait
+/// (" · 1 more"); once it goes, "Sending to " and "...". With `short`, the
+/// head is the countdown alone ("0:04 · "), for a narrow pane.
+fn send_parts(
+    send: &crate::sends::HeldSend,
+    more: usize,
+    now_ms: u64,
+    short: bool,
+) -> (String, String) {
+    let more = match more {
+        0 => String::new(),
+        n => format!(" \u{b7} {n} more"),
     };
-    match more {
-        0 => format!("Sending to {}{when}", send.host),
-        n => format!("Sending to {}{when} · {n} more", send.host),
+    let sending = if short { "" } else { "Sending to " };
+    match send.sending {
+        true => (String::from(sending), format!("...{more}")),
+        false => (
+            format!(
+                "{} \u{b7} {sending}",
+                crate::sends::left(send.due_ms, now_ms)
+            ),
+            more,
+        ),
+    }
+}
+
+/// A held send's whole line: "0:04 · Sending to hooks.example · 1 more".
+pub fn send_text(send: &crate::sends::HeldSend, more: usize, now_ms: u64) -> String {
+    let (head, tail) = send_parts(send, more, now_ms, false);
+    format!("{head}{}{tail}", send.host)
+}
+
+/// How many characters of `host` may be cut from its left and leave its
+/// last two labels, the site's own name: 25 for
+/// `a-rather-long-host-name.hooks.example.org`.
+fn cuttable(host: &str) -> usize {
+    let mut dots = host.char_indices().rev().filter(|(_, c)| *c == '.');
+    match dots.nth(1) {
+        Some((at, _)) => host[..=at].chars().count(),
+        None => 0,
+    }
+}
+
+impl Painter {
+    /// [`send_text`] in at most `width` px. The host is cut from its left
+    /// ("...example.org") as far as its last two labels; past that, the head
+    /// drops "Sending to"; only then is the site's name cut too. The
+    /// countdown and the count always show.
+    pub fn send_line(
+        &self,
+        send: &crate::sends::HeldSend,
+        more: usize,
+        now_ms: u64,
+        width: f32,
+    ) -> String {
+        let fits = |text: &str| self.text.measure(TypeStyle::MonoTitle, text).0 <= width;
+        let host: Vec<char> = send.host.chars().collect();
+        let cut = |head: &str, tail: &str, skip: usize| match skip {
+            0 => format!("{head}{}{tail}", send.host),
+            _ => format!("{head}...{}{tail}", host[skip..].iter().collect::<String>()),
+        };
+        let keep = cuttable(&send.host);
+        let (head, tail) = send_parts(send, more, now_ms, false);
+        let (short, short_tail) = send_parts(send, more, now_ms, true);
+        (0..=keep)
+            .map(|skip| cut(&head, &tail, skip))
+            .chain((0..host.len()).map(|skip| cut(&short, &short_tail, skip)))
+            .find(|text| fits(text))
+            .unwrap_or_else(|| format!("{short}...{short_tail}"))
+    }
+}
+
+#[cfg(test)]
+mod send_tests {
+    #[test]
+    fn the_sites_own_name_is_its_last_two_labels() {
+        let host = "a-rather-long-host-name.hooks.example.org";
+        assert_eq!(&host[super::cuttable(host)..], "example.org");
+        assert_eq!(super::cuttable("example.org"), 0);
+        assert_eq!(super::cuttable("localhost"), 0);
     }
 }

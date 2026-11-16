@@ -5,8 +5,9 @@
 //! what it came to.
 //!
 //! They are kept apart from the panel's one state, so a line typed during
-//! the hold does not drop them: the status row shows the newest held send
-//! whenever the shell is not working on a line.
+//! the hold does not drop them. The status row shows the held send due
+//! first while the pane is idle or shows a send's own line; a newer line's
+//! result keeps its place, with "· 1 send waiting" after it.
 //!
 //! The shell reports them to `desktop` as:
 //!
@@ -63,18 +64,19 @@ impl WireSend {
 
 /// The sends waiting or going, as a request.
 pub fn encode_sends(sends: &[WireSend]) -> String {
-    if sends.is_empty() {
-        return format!("{SENDS}-");
-    }
     let each: Vec<String> = sends
         .iter()
+        .filter(|s| is_host(&s.host))
         .take(MAX_SENDS)
         .map(|s| {
             let stage = if s.sending { "sending" } else { "held" };
             format!("{} {stage} {} {}", s.entry, s.left_ms, s.host)
         })
         .collect();
-    format!("{SENDS}{}", each.join(";"))
+    match each.is_empty() {
+        true => format!("{SENDS}-"),
+        false => format!("{SENDS}{}", each.join(";")),
+    }
 }
 
 /// A `panel sends` request read back; `None` for anything else, or for a
@@ -134,8 +136,10 @@ pub fn parse_sent(text: &str) -> Option<(u64, bool, String)> {
     Some((entry, failed, line.to_string()))
 }
 
-/// A host name or address as a send may name one: printable, no spaces.
-fn is_host(host: &str) -> bool {
+/// A host name or address as a send may name one: printable, with no space,
+/// `;` or `/`. The same rule as the shell's (`shellcore::outbox::is_host`),
+/// which a shellcore test holds equal.
+pub fn is_host(host: &str) -> bool {
     !host.is_empty()
         && host.len() <= MAX_HOST
         && host
@@ -172,13 +176,38 @@ impl Panel {
         &self.sends
     }
 
-    /// The send the status row shows: the newest, unless the shell is
-    /// working on a line, whose thinking or acting shows first.
+    /// The send the status row shows: the held one due first (else one
+    /// going), while the pane is idle or shows a send's own line. A newer
+    /// line's result, and thinking or acting, show first.
     pub fn shown_send(&self) -> Option<&HeldSend> {
+        let soonest = self
+            .sends
+            .iter()
+            .filter(|s| !s.sending)
+            .min_by_key(|s| s.due_ms)
+            .or_else(|| self.sends.iter().find(|s| s.sending))?;
+        let own_line = self.send_state
+            || self
+                .entry
+                .is_some_and(|entry| self.sends.iter().any(|s| s.entry == entry));
         match self.state {
-            State::Thinking { .. } | State::Acting { .. } => None,
-            _ => self.sends.last(),
+            State::Idle => Some(soonest),
+            State::Done { .. } | State::Refused { .. } if own_line => Some(soonest),
+            _ => None,
         }
+    }
+
+    /// "1 send waiting", after a newer line's result that shows in place of
+    /// the held sends; `None` when they show, or none waits.
+    pub fn waiting_note(&self) -> Option<String> {
+        let busy = matches!(self.state, State::Thinking { .. } | State::Acting { .. });
+        if self.sends.is_empty() || busy || self.shown_send().is_some() {
+            return None;
+        }
+        Some(match self.sends.len() {
+            1 => String::from("1 send waiting"),
+            n => format!("{n} sends waiting"),
+        })
     }
 
     /// Send `entry` came to `line` (`failed`: it did not go, or may have).
@@ -189,12 +218,14 @@ impl Panel {
         let before = self.sends.len();
         self.sends.retain(|s| s.entry != entry);
         let mut changed = self.sends.len() != before;
-        if self.entry == Some(entry) && matches!(self.state, State::Done { .. }) {
+        let own = self.entry == Some(entry) || self.send_state;
+        if own && matches!(self.state, State::Done { .. } | State::Refused { .. }) {
             self.state = match failed {
                 true => State::Refused { reason: line },
                 false => State::Done { line },
             };
             self.entry = None;
+            self.send_state = true;
             changed = true;
         }
         changed
@@ -288,8 +319,59 @@ mod tests {
             },
             None,
         );
-        assert_eq!(panel.shown_send().map(|s| s.entry), Some(5));
+        assert_eq!(panel.shown_send(), None, "the new line's result shows");
+        assert_eq!(panel.waiting_note().as_deref(), Some("1 send waiting"));
         assert_eq!(panel.sends().len(), 1);
+        panel.set_state(State::Idle);
+        assert_eq!(panel.shown_send().map(|s| s.entry), Some(5));
+        assert_eq!(panel.waiting_note(), None);
+    }
+
+    /// The row shows the held send due first, not the newest (#959 review).
+    #[test]
+    fn the_send_due_first_is_the_one_shown() {
+        let mut panel = Panel::new();
+        panel.set_sends(alloc::vec![held(4, 5_000), held(6, 7_000)]);
+        assert_eq!(panel.shown_send().map(|s| s.entry), Some(4));
+        panel.set_sends(alloc::vec![held(6, 7_000), held(4, 5_000)]);
+        assert_eq!(panel.shown_send().map(|s| s.entry), Some(4));
+        let mut going = held(4, 0);
+        going.sending = true;
+        panel.set_sends(alloc::vec![going, held(6, 7_000)]);
+        assert_eq!(panel.shown_send().map(|s| s.entry), Some(6));
+        let mut alone = held(4, 0);
+        alone.sending = true;
+        panel.set_sends(alloc::vec![alone]);
+        assert_eq!(panel.shown_send().map(|s| s.entry), Some(4));
+    }
+
+    /// Once one send ends on its own line, the next held send shows there.
+    #[test]
+    fn after_one_send_ends_the_next_shows() {
+        let mut panel = Panel::new();
+        panel.set_done(
+            State::Done {
+                line: String::from("Sending to a.example in 5 s. undo 4"),
+            },
+            Some(4),
+        );
+        panel.set_sends(alloc::vec![held(4, 5_000), held(6, 7_000)]);
+        assert!(panel.send_ended(4, String::from("Sent to a.example."), false));
+        assert_eq!(panel.shown_send().map(|s| s.entry), Some(6));
+        assert!(panel.send_ended(6, String::from("Sent to b.example."), false));
+        assert_eq!(
+            panel.state(),
+            &State::Done {
+                line: String::from("Sent to b.example.")
+            }
+        );
+    }
+
+    #[test]
+    fn a_bad_host_never_reaches_the_wire() {
+        let sends = alloc::vec![wire(1, false, 1, "a;b c"), wire(2, false, 1, "b.example")];
+        assert_eq!(encode_sends(&sends), "panel sends 2 held 1 b.example");
+        assert_eq!(encode_sends(&sends[..1]), "panel sends -");
     }
 
     #[test]
