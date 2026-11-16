@@ -222,7 +222,9 @@ pub fn held_line(host: &str, ms: u32, entry: u64) -> String {
 /// What a send came to, in code's words.
 pub fn ended_line(host: &str, stage: Stage, why: &str) -> String {
     match stage {
-        Stage::Sent => format!("Sent to {host}."),
+        // `why` is the site's answer: a 2xx needs no words.
+        Stage::Sent if why.is_empty() || why.starts_with('2') => format!("Sent to {host}."),
+        Stage::Sent => format!("Sent to {host}; it answered {why}"),
         Stage::Cancelled => format!("Not sent to {host}: undone."),
         Stage::Failed => format!("Not sent to {host}: {why}"),
         Stage::Unknown => format!("It may have been sent to {host}: {why}"),
@@ -240,6 +242,19 @@ pub fn cannot_undo(host: &str, stage: Stage) -> String {
             format!("Can't undo: nothing was sent to {host}")
         }
     }
+}
+
+/// The longest host a send names (a DNS name's limit).
+pub const MAX_HOST: usize = 253;
+
+/// A host as a send may name one: a name or an address, printable, with no
+/// space, `;` or `/`. The pane's wire takes the same (`deskcore::sends`).
+pub fn is_host(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= MAX_HOST
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b))
 }
 
 /// The log as a shell that starts finds it: every send it holds as `held` is

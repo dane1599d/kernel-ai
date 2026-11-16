@@ -208,11 +208,11 @@ fn after_a_restart_nothing_held_ever_goes() {
 }
 
 #[test]
-fn a_failed_send_is_logged_with_its_reason() {
+fn a_send_that_never_connected_is_not_sent() {
     let host = FakeHost::new();
     let mut shell = shell(&host);
     host.send_answers.borrow_mut().push_back(Err(SendFailed {
-        why: String::from("the site answered 403"),
+        why: String::from("no connection to a.example"),
         maybe_sent: false,
     }));
     let id = hold(&host, &mut shell, "a.example", 0);
@@ -221,7 +221,147 @@ fn a_failed_send_is_logged_with_its_reason() {
     assert_eq!(shell.log.get(id).unwrap().state, State::Nothing);
     assert_eq!(
         shell.log.get(id).unwrap().outcome,
-        "Not sent to a.example: the site answered 403"
+        "Not sent to a.example: no connection to a.example"
+    );
+}
+
+/// Fail-closed: any answer means the site got the body, a 403 too.
+#[test]
+fn an_answer_with_an_error_status_was_still_sent() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    host.send_answers
+        .borrow_mut()
+        .push_back(Ok(String::from("403 Forbidden\nmore")));
+    let id = hold(&host, &mut shell, "a.example", 0);
+    shell.drain_sends(5_000);
+    assert_eq!(after_of(&shell, id), "sent");
+    assert_eq!(
+        shell.log.get(id).unwrap().outcome,
+        "Sent to a.example; it answered 403 Forbidden"
+    );
+    host.send_answers
+        .borrow_mut()
+        .push_back(Ok(String::from("204 No Content")));
+    let quiet = hold(&host, &mut shell, "b.example", 10_000);
+    shell.drain_sends(15_000);
+    assert_eq!(shell.log.get(quiet).unwrap().outcome, "Sent to b.example.");
+}
+
+/// Cancelling one hold never overwrites another to the same host (#958
+/// review): `undo <older>` cancels the older send only.
+#[test]
+fn undo_of_an_older_send_to_the_same_host_cancels_only_it() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let older = hold(&host, &mut shell, "hooks.example", 0);
+    let newer = hold(&host, &mut shell, "hooks.example", 1);
+    assert_eq!(
+        shell.eval(&format!("undo {older}")),
+        ok("Undone: the send to hooks.example, not sent")
+    );
+    shell.drain_sends(60_000);
+    assert_eq!(sent(&host), 1);
+    assert_eq!(after_of(&shell, newer), "sent");
+}
+
+/// A second bare `undo` after a cancel names the send still waiting, with
+/// its `undo`, and that send can still be cancelled.
+#[test]
+fn a_second_undo_names_the_send_still_waiting() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let first = hold(&host, &mut shell, "a.example", 0);
+    hold(&host, &mut shell, "b.example", 1);
+    assert_eq!(
+        shell.eval("undo"),
+        ok("Undone: the send to b.example, not sent")
+    );
+    assert_eq!(
+        shell.eval("undo"),
+        Reply::err(format!(
+            "Can't redo the send to b.example: ask again to send it. a.example is still waiting: undo {first}"
+        ))
+    );
+    assert_eq!(
+        shell.eval(&format!("undo {first}")),
+        ok("Undone: the send to a.example, not sent")
+    );
+    shell.drain_sends(60_000);
+    assert_eq!(sent(&host), 0);
+}
+
+/// A sent send behind a later entry with no undo still stops a bare `undo`
+/// from reaching back past it.
+#[test]
+fn a_sent_send_behind_an_entry_with_no_undo_still_stops_undo() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let id = hold(&host, &mut shell, "a.example", 0);
+    shell.drain_sends(5_000);
+    let mut stuck = shell.log.get(id).unwrap().clone();
+    stuck.id = shell.next_id;
+    stuck.changes[0].action = String::from("set_policy");
+    shell.next_id += 1;
+    shell.log.push(stuck);
+    assert_eq!(
+        shell.eval("undo"),
+        Reply::err("Can't undo: it was sent to a.example")
+    );
+}
+
+/// An entry gone from the log's 64-record ring never sends: there is no
+/// `sending` to write first. Until it is due, `undo <id>` still cancels.
+#[test]
+fn a_send_whose_entry_left_the_log_never_goes() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let gone = hold(&host, &mut shell, "a.example", 0);
+    let cancelled = hold(&host, &mut shell, "b.example", 1);
+    for _ in 0..crate::actlog::KEEP {
+        let id = shell.next_id;
+        shell.next_id += 1;
+        shell.record(id, "hello", "", "answered in words");
+    }
+    assert!(shell.log.get(gone).is_none());
+    assert_eq!(
+        shell.eval(&format!("undo {cancelled}")),
+        ok("Undone: the send to b.example, not sent")
+    );
+    shell.drain_sends(60_000);
+    assert_eq!(sent(&host), 0);
+    assert_eq!(shell.next_send_ms(60_000), None);
+}
+
+#[test]
+fn a_send_to_something_that_is_not_a_host_is_refused() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    for bad in ["a example", "a;b", "a/b", ""] {
+        let id = shell.next_id;
+        shell.next_id += 1;
+        let reply = shell.hold_send(id, "send it", "net_send()", send(bad), HOLD_MS);
+        assert_eq!(
+            reply,
+            Reply::err("Not sent: that is not a host name"),
+            "{bad:?}"
+        );
+    }
+    assert_eq!(shell.next_send_ms(0), None);
+}
+
+#[test]
+fn a_log_set_aside_with_a_send_going_says_so() {
+    let host = FakeHost::new();
+    *host.log_disk.borrow_mut() = Some(String::from(
+        "actlog 1\nE 1 t=0 reg=9 pack=- form=call tier=ask consent=asked state=done\nD 1.1 net_send owner=fetch res=a.example before=- after=sending inv=none\n",
+    ));
+    let _shell = shell(&host);
+    assert!(
+        host.audit
+            .borrow()
+            .iter()
+            .any(|l| l.contains("held a send that may have been sent"))
     );
 }
 

@@ -259,7 +259,8 @@ impl ActLog {
 
     /// Live entries after `id` that changed a resource entry `id` changed: `undo
     /// id` would overwrite them. An undo of a change made after `id` cancels that
-    /// change, so it does not count.
+    /// change, so it does not count, and neither does a held send: cancelling
+    /// one never overwrites another to the same host.
     pub fn later_touching(&self, id: u64) -> Vec<u64> {
         let Some(entry) = self.get(id) else {
             return Vec::new();
@@ -270,9 +271,11 @@ impl ActLog {
         self.entries()
             .filter(|e| e.id > id && e.live() && !cancels_later(e))
             .filter(|e| {
+                let sent = |c: &&Change| c.action != crate::outbox::ACTION;
                 e.changes
                     .iter()
-                    .any(|c| entry.changes.iter().any(|d| d.res == c.res))
+                    .filter(sent)
+                    .any(|c| entry.changes.iter().filter(sent).any(|d| d.res == c.res))
             })
             .map(|e| e.id)
             .collect()

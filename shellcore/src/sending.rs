@@ -28,6 +28,11 @@ impl Shell {
         ms: u32,
     ) -> Reply {
         let host = send.host.clone();
+        if !outbox::is_host(&host) {
+            let why = "that is not a host name";
+            self.record(id, request, call, &format!("refused: {why}"));
+            return Reply::err(format!("Not sent: {why}"));
+        }
         let due_ms = self.host.now_ns() / 1_000_000 + u64::from(ms);
         if let Err(why) = self.outbox.hold(id, send, due_ms) {
             self.record(id, request, call, &format!("refused: {why}"));
@@ -61,7 +66,14 @@ impl Shell {
         loop {
             let entry = self.outbox.start_due(now_ms)?;
             let host = self.outbox.get(entry)?.send.host.clone();
-            self.mark_send(entry, Stage::Sending, &format!("sending to {host}"));
+            // An entry gone from the log's ring has no `sending` to write
+            // first: it never goes.
+            if !self.mark_send(entry, Stage::Sending, &format!("sending to {host}")) {
+                self.host
+                    .audit(&format!("send #{entry} not sent: its log entry is gone"));
+                self.end_send(entry, Stage::Unsent, "its log entry is gone");
+                continue;
+            }
             match self.write_log() {
                 Ok(()) => return Some(entry),
                 Err(why) => {
@@ -87,7 +99,11 @@ impl Shell {
             return;
         };
         let (stage, why) = match self.host.net_send(&pending.send) {
-            Ok(_) => (Stage::Sent, String::new()),
+            // Any answer means the site has it, whatever it said.
+            Ok(answer) => (
+                Stage::Sent,
+                String::from(answer.lines().next().unwrap_or("")),
+            ),
             Err(failed) if failed.maybe_sent || self.host.interrupted() => {
                 (Stage::Unknown, failed.why)
             }
@@ -141,6 +157,30 @@ impl Shell {
         Ok(format!("the send to {host}, not sent"))
     }
 
+    /// Why a bare `undo` stops: a send among the entries done since the
+    /// newest live one is not held any more (it went, or its cancel was the
+    /// last undo). Sends still waiting are named, with the `undo` for each.
+    pub(crate) fn bare_send_refusal(&self) -> Option<String> {
+        let refusal = self
+            .log
+            .entries()
+            .rev()
+            .take_while(|e| !e.live())
+            .filter(|e| e.state == State::Done && !e.changes.is_empty())
+            .find_map(|e| self.send_refusal(e))?;
+        let waiting: Vec<String> = self
+            .outbox
+            .shown(0)
+            .iter()
+            .filter(|s| !s.sending)
+            .map(|s| format!("{} is still waiting: undo {}", s.host, s.entry))
+            .collect();
+        Some(match waiting.is_empty() {
+            true => refusal,
+            false => format!("{refusal}. {}", waiting.join("; ")),
+        })
+    }
+
     /// Why `undo` cannot take entry `entry` back, when it is a send that is
     /// not held any more (or the undo of one); `None` for any other entry.
     pub(crate) fn send_refusal(&self, entry: &Entry) -> Option<String> {
@@ -159,10 +199,11 @@ impl Shell {
     }
 
     /// Entry `entry`'s send at `stage`: its change's `after=`, no undo once
-    /// it left the hold, and the entry's outcome.
-    fn mark_send(&mut self, entry: u64, stage: Stage, outcome: &str) {
+    /// it left the hold, and the entry's outcome. False when the entry is no
+    /// longer in the log.
+    fn mark_send(&mut self, entry: u64, stage: Stage, outcome: &str) -> bool {
         let Some(e) = self.log.get_mut(entry) else {
-            return;
+            return false;
         };
         for change in e.changes.iter_mut().filter(|c| c.action == outbox::ACTION) {
             change.after = String::from(stage.word());
@@ -174,6 +215,7 @@ impl Shell {
         if matches!(stage, Stage::Failed | Stage::Unsent) {
             e.state = State::Nothing;
         }
+        true
     }
 
     /// Ends entry `entry`'s send at `stage`: out of the outbox, logged, and

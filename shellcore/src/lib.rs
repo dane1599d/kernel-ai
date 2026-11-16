@@ -353,8 +353,13 @@ pub trait Host {
         Err(String::from(NO_NET))
     }
     /// A held send that is due (`outbox`): `send.body` posted to `send.path`
-    /// on `send.host`, once, never retried and never redirected. Its answer's
-    /// first line, or why not, saying whether it may have gone out.
+    /// on `send.host`, once, never retried and never redirected.
+    ///
+    /// Fail-closed: `Ok` with the status line for any HTTP answer at all
+    /// (a 403 or a 500 too: the site got the body), and `Err` only when no
+    /// answer came. `maybe_sent` is false only for a failure before any byte
+    /// of the request was written (no address, no connection, the TLS
+    /// handshake refused); anything after that may have gone out.
     fn net_send(&self, _send: &outbox::Send) -> Result<String, outbox::SendFailed> {
         Err(outbox::SendFailed {
             why: String::from(NO_NET),
@@ -906,10 +911,17 @@ impl Shell {
                     self.save_log();
                 }
             }
-            Err(error) => self.host.audit(&format!(
-                "the log on disk is not actlog 1 (line {}: {}); starting a new one",
-                error.line, error.why
-            )),
+            Err(error) => {
+                self.host.audit(&format!(
+                    "the log on disk is not actlog 1 (line {}: {}); starting a new one",
+                    error.line, error.why
+                ));
+                // Its sends are lost with it; one may have been going out.
+                if text.contains(" after=sending ") {
+                    self.host
+                        .audit("the log set aside held a send that may have been sent");
+                }
+            }
         }
         self
     }

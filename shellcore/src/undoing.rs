@@ -21,14 +21,9 @@ impl Shell {
     pub(crate) fn undo_command(&mut self, which: &str) -> Reply {
         let which = which.trim().trim_start_matches('#');
         if which.is_empty() {
-            // A send that went is the newest thing done: `undo` says so,
+            // A send that went since the newest live entry: `undo` says so,
             // rather than taking back something older the person did not mean.
-            let newest_done = self
-                .log
-                .entries()
-                .rev()
-                .find(|e| e.state == State::Done && !e.changes.is_empty());
-            if let Some(why) = newest_done.and_then(|e| self.send_refusal(e)) {
+            if let Some(why) = self.bare_send_refusal() {
                 return Reply::err(why);
             }
             return match self.log.newest_live() {
@@ -60,7 +55,16 @@ impl Shell {
                         .unwrap_or_else(|| format!("#{id} has nothing to undo")),
                 );
             }
-            None => return Reply::err(format!("no logged entry #{id}")),
+            // A held send whose entry left the log's ring is still cancelled.
+            None => {
+                return match self.outbox.get(id).map(|p| p.send.host.clone()) {
+                    Some(host) => match self.unsend(id, &host) {
+                        Ok(text) => Reply::ok(format!("Undone: {text}")),
+                        Err(why) => Reply::err(why),
+                    },
+                    None => Reply::err(format!("no logged entry #{id}")),
+                };
+            }
         }
         let later = self.log.later_touching(id);
         if !later.is_empty() {
