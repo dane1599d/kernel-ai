@@ -29,6 +29,7 @@ pub mod analyse;
 pub mod apart;
 pub mod appbuild;
 mod appearance;
+mod appgrants;
 mod appinstall;
 pub mod appjob;
 pub mod appline;
@@ -696,6 +697,9 @@ pub struct Shell {
     /// The words that name a site for the agent's network rows: the curated host
     /// table, and each installed app's word for its own hosts (P5 task 11).
     hosts: nethosts::Table,
+    /// Why the network grants file was last not read for the agent's
+    /// grounding, so its audit line is said once a reason ([`appgrants`]).
+    grants_said: core::cell::RefCell<Option<String>>,
     /// The last script as `show` prints it.
     shown: Option<String>,
     /// What the script run by the last line printed.
@@ -821,6 +825,7 @@ impl Shell {
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
             hosts: nethosts::Table::curated(),
+            grants_said: core::cell::RefCell::new(None),
             shown: None,
             last_output: None,
             showed: agentcore::Showed::default(),

@@ -116,6 +116,7 @@ fn a_file_row_reaches_only_the_users_files_never_system() {
     let paths = [
         "/system/log",
         "/system/state/grants",
+        "/system/state/netgrants",
         "../system/log",
         "a/../../x",
         "/home/other/x",

@@ -73,13 +73,13 @@ fn yes_or_no(text: &str) -> Option<bool> {
 }
 
 /// Each call of `checked`'s plan with its consent for `request`, with the
-/// shell's host words.
-fn decided(
-    request: &str,
-    checked: &Checked,
-    hosts: &nethosts::Table,
-) -> Vec<(&'static str, Decision)> {
-    let decisions = checked.plan.decide(request, &agentabi::ROWS, hosts);
+/// shell's host words and the hosts the person allowed for installed apps,
+/// read only if a call needs them.
+fn decided(request: &str, checked: &Checked, shell: &Shell) -> Vec<(&'static str, Decision)> {
+    let granted = crate::appgrants::AppGrants::new(shell.host.as_ref(), &shell.grants_said);
+    let decisions = checked
+        .plan
+        .decide(request, &agentabi::ROWS, &shell.hosts, &granted);
     checked
         .plan
         .sites
@@ -105,7 +105,7 @@ impl Shell {
     /// the line and the labels of its values (ADR 0002 D3, D6), raised to its row's
     /// tier in the table, and the calls at that tier.
     pub(crate) fn tier_of(&self, request: &str, checked: &Checked) -> (Tier, Vec<&'static str>) {
-        let tiered: Vec<(&'static str, Tier)> = decided(request, checked, &self.hosts)
+        let tiered: Vec<(&'static str, Tier)> = decided(request, checked, self)
             .into_iter()
             .map(|(name, decision)| (name, decision.tier.max(tiers::of(self.tiers, name))))
             .collect();
@@ -131,7 +131,7 @@ impl Shell {
             return None;
         }
         let mut added: Vec<&'static str> = Vec::new();
-        for (name, decision) in decided(request, checked, &self.hosts) {
+        for (name, decision) in decided(request, checked, self) {
             let change = agentabi::find(&agentabi::ROWS, name).is_some_and(|r| !r.facts.read_only);
             if change && decision.why == Why::Added && !added.contains(&name) {
                 added.push(name);
@@ -144,7 +144,7 @@ impl Shell {
     /// a call, or added by the model if every one of them is run-tier in the table,
     /// or else for having no undo.
     fn question(&self, id: u64, request: &str, checked: &Checked, asking: &[&str]) -> String {
-        let decisions = decided(request, checked, &self.hosts);
+        let decisions = decided(request, checked, self);
         // P-F: read content would leave the machine, which is no change but asks
         // all the same; the question says where the data came from.
         if let Some(source) = decisions
@@ -156,6 +156,23 @@ impl Shell {
         {
             let sending = crate::agentcore::read_from(source);
             return script::sends(id, checked, asking, &sending);
+        }
+        // A read from a site only an app's grant grounds, which the line did
+        // not decide alone: the question says what decided it.
+        if let Some(why) = decisions
+            .iter()
+            .find_map(|(_, decision)| match decision.why {
+                Why::GrantSteered(source) => Some(format!(
+                    " ({} chose this read from a site allowed for an app, not the request)",
+                    crate::agentcore::read_from(source)
+                )),
+                Why::GrantPath => Some(String::from(
+                    " (the request did not name that site, an app's, or what to read from it)",
+                )),
+                _ => None,
+            })
+        {
+            return script::question(id, checked, asking, &why);
         }
         let steered = decisions
             .into_iter()
@@ -198,7 +215,7 @@ impl Shell {
             self.host
                 .audit(&format!("script {id} tier run; running it"));
             let taken_as = matches!(
-                decided(request, &checked, &self.hosts).as_slice(),
+                decided(request, &checked, self).as_slice(),
                 [(
                     _,
                     Decision {

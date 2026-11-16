@@ -374,16 +374,14 @@ impl Shell {
             args: &values,
             control,
         }];
+        let granted = crate::appgrants::AppGrants::new(self.host.as_ref(), &self.grants_said);
+        let net = crate::analyse::grounding(&self.hosts, &granted);
         let decision = match row.owner {
             agentabi::Owner::App(_) => {
                 let rows: Vec<Action> = agentabi::ROWS.iter().copied().chain([*row]).collect();
-                let net = crate::analyse::grounding(&self.hosts);
                 consent::decide_net(request, &planned, &rows, &net)[0]
             }
-            _ => {
-                let net = crate::analyse::grounding(&self.hosts);
-                consent::decide_net(request, &planned, &agentabi::ROWS, &net)[0]
-            }
+            _ => consent::decide_net(request, &planned, &agentabi::ROWS, &net)[0],
         };
         if decision.tier == Tier::Never {
             return self.refuse(id, request, call, decision.why, "it is never run");
@@ -664,6 +662,13 @@ fn reason_of(why: Why) -> String {
             read_from(source)
         ),
         Why::Ungrounded => String::from("the request did not name that site"),
+        Why::GrantSteered(source) => format!(
+            "{} chose this read from a site allowed for an app, not the request",
+            read_from(source)
+        ),
+        Why::GrantPath => {
+            String::from("the request did not name that site, an app's, or what to read from it")
+        }
         _ => String::from("it asks first"),
     }
 }

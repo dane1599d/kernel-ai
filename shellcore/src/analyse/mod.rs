@@ -120,7 +120,13 @@ impl Plan {
     /// order. A literal written as one of its argument's aliases (`"rr"`) counts as
     /// what it means, as a tagged call's does; a value whose text the walk does not
     /// know is not in any line.
-    pub fn decide(&self, line: &str, rows: &[Action], hosts: &nethosts::Table) -> Vec<Decision> {
+    pub fn decide(
+        &self,
+        line: &str,
+        rows: &[Action],
+        hosts: &nethosts::Table,
+        granted: &dyn nethosts::Granted,
+    ) -> Vec<Decision> {
         let values: Vec<Vec<(&str, consent::Value<'_>)>> = self
             .sites
             .iter()
@@ -157,18 +163,24 @@ impl Plan {
                 control: site.control,
             })
             .collect();
-        consent::decide_net(line, &calls, rows, &grounding(hosts))
+        consent::decide_net(line, &calls, rows, &grounding(hosts, granted))
     }
 }
 
 /// The host grounding the agent's network rows are decided with (ADR 0002 D3):
-/// `hosts`' words, and no grants or sources. A host the user allowed before is
-/// the shell's per-host rule, which waives the ask after consent; the OS's own
-/// checked sources are its services' to fetch, not the agent's.
-pub fn grounding(hosts: &nethosts::Table) -> nethosts::Grounding<'_> {
+/// `hosts`' words, the hosts the person allowed for installed apps (`granted`),
+/// and no sources. A grant grounds a read from its host only when the line
+/// alone decided the fetch (`agentabi::consent`), and never names a
+/// destination for data. The shell's per-host Always rule is not a ground: it
+/// waives the ask after consent. The OS's own checked sources are its
+/// services' to fetch, not the agent's.
+pub fn grounding<'a>(
+    hosts: &'a nethosts::Table,
+    granted: &'a dyn nethosts::Granted,
+) -> nethosts::Grounding<'a> {
     nethosts::Grounding {
         table: hosts,
-        granted: &nethosts::NoGrants,
+        granted,
         sources: &[],
     }
 }

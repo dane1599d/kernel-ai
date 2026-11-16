@@ -17,7 +17,7 @@
 
 use crate::{Action, ArgType, Inverse, Role, Tier, derive, find};
 use alloc::vec::Vec;
-use nethosts::{Bytes, Grounding, LineWord, NoGrants, Origin, Table, Verdict};
+use nethosts::{Bytes, Ground, Grounding, LineWord, NoGrants, Origin, Table, Verdict};
 
 /// Where a value came from (ADR 0002 D6). Ordered: the least trusted is greatest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,6 +68,12 @@ pub enum Why {
     Steered(&'static str),
     /// Content would go out of the machine.
     Outbound(&'static str),
+    /// A fetch from a host only an app's grant grounds, which read content
+    /// decided: content from this source chose it, not the line.
+    GrantSteered(&'static str),
+    /// A fetch from a host only an app's grant grounds, with a path or query
+    /// the line does not hold: the model chose what it asks the site for.
+    GrantPath,
     /// The line is not English, so it gives no consent for changes in v0.1.
     NotEnglish,
     /// A value no call may take, or a row that never runs.
@@ -244,10 +250,13 @@ fn decide_one(
         if !row.facts.open_world {
             return Decision::new(derive(row).max(Tier::Run), Why::Read);
         }
-        return match hosts_grounded(words, hosts, row, call) {
-            true => Decision::new(row.min_tier.max(Tier::Run), Why::Grounded),
-            false => Decision::new(Tier::Ask, Why::Ungrounded),
-        };
+        if !hosts_grounded(words, hosts, row, call) {
+            return Decision::new(Tier::Ask, Why::Ungrounded);
+        }
+        if granted_only(words, hosts, row, call) {
+            return granted_read(words, row, call);
+        }
+        return Decision::new(row.min_tier.max(Tier::Run), Why::Grounded);
     }
     // Data decided that this change runs, or gave it a value: the line did not
     // ask for it, whatever its cues (ADR 0002 D6). It asks, and the ask names
@@ -481,6 +490,72 @@ fn every_host(
                         .decide(hosts.line, &marked, value.text, origin, Bytes::Unchecked),
                 )
             })
+        })
+}
+
+/// Whether some host of `call` is grounded only by an app's grant (ADR 0002
+/// D3): the line neither types it nor holds a table word for it.
+fn granted_only(words: &[Word], hosts: &Hosts, row: &Action, call: &Call) -> bool {
+    !every_host(words, hosts, row, call, |verdict| {
+        !matches!(verdict, Verdict::Run(Ground::Granted))
+    })
+}
+
+/// A read from a host only a grant grounds. The app chose that host, not the
+/// user, and the app's own words reach the model (its window title in the
+/// State line), so the grant grounds only a fetch the line alone decided: no
+/// read content decided it, the line does not say to stay off the network,
+/// and every word of its path is a word of the line. Anything else asks.
+fn granted_read(words: &[Word], row: &Action, call: &Call) -> Decision {
+    if let Label::Content(source) = call.control {
+        return Decision::new(Tier::Ask, Why::GrantSteered(source));
+    }
+    if offline_said(words, row) {
+        return Decision::new(Tier::Ask, Why::Ungrounded);
+    }
+    if !path_in_line(words, row, call) {
+        return Decision::new(Tier::Ask, Why::GrantPath);
+    }
+    Decision::new(row.min_tier.max(Tier::Run), Why::Grounded)
+}
+
+/// Words that name going on the network at all: negated, they bar every
+/// grant ("don't go online, just guess").
+const NET_WORDS: &[&str] = &[
+    "online", "internet", "web", "net", "network", "website", "site", "sites", "page", "fetch",
+    "download", "look", "lookup", "connect",
+];
+
+/// Whether the line says, in a clause that negates, not to use the network:
+/// a net word or one of the row's own cues.
+fn offline_said(words: &[Word], row: &Action) -> bool {
+    words.iter().enumerate().any(|(at, word)| {
+        let text = word.text.as_str();
+        (NET_WORDS.contains(&text) || row.cues.contains(&text)) && negated(words, at)
+    })
+}
+
+/// Every word of each non-host text argument (a fetch's path and query) is a
+/// word of the line outside a negating clause: "/leeds" for "the weather in
+/// Leeds". A path the model wrote from anything else, a window title or a
+/// selection, is not.
+fn path_in_line(words: &[Word], row: &Action, call: &Call) -> bool {
+    row.args
+        .iter()
+        .filter(|arg| !matches!(arg.ty, ArgType::Host))
+        .filter_map(|arg| value_of(call, arg.name))
+        .all(|value| {
+            value
+                .text
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|piece| !piece.is_empty())
+                .all(|piece| {
+                    let piece = piece.to_lowercase();
+                    words
+                        .iter()
+                        .enumerate()
+                        .any(|(at, w)| w.text == piece && !negated(words, at))
+                })
         })
 }
 

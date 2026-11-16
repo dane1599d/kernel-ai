@@ -88,7 +88,7 @@ impl Connect {
 }
 
 /// The grants as the file holds them: none when there is no file.
-fn read_store(host: &dyn Host) -> Result<NetGrants, String> {
+pub(crate) fn read_store(host: &dyn Host) -> Result<NetGrants, String> {
     match host.net_grants_read() {
         None => Ok(NetGrants::new()),
         Some(text) => NetGrants::load(&text)
