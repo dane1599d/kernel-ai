@@ -7,7 +7,9 @@
 //! - (e): Ctrl+Space, then [`KEYS`] letters typed in the panel, each timed
 //!   from its input event to the flush that showed it;
 //! - (f): (b) again with one `work` hog per CPU under `classes`, as S05-1's
-//!   scene (f) ran.
+//!   scene (f) ran;
+//! - (g): a Super tap opens Start beside the pane (e) opened, then (a)'s
+//!   full composites with both open (Kai Desk PR 10).
 //!
 //! A gate under KVM: each miss is one `OVER BUDGET <figure> <value> ms
 //! (budget ...)` line. Shared runners are noisy, so it is best of two
@@ -47,6 +49,8 @@ const SETTLE_MS: u64 = 3_000;
 /// Ctrl down, Space down and up, Ctrl up; `a` down and up (scan code set 1).
 const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
 const LETTER: [u8; 2] = [0x1E, 0x9E];
+/// A Super tap: Left Super down and up.
+const SUPER: [u8; 4] = [0xE0, 0x5B, 0xE0, 0xDB];
 
 /// M10's `work` hogs: CPU-bound, never blocking.
 const HOG_LIMITS: Limits = Limits {
@@ -165,6 +169,19 @@ fn loaded_drag() -> Result<Vec<u8>, &'static str> {
     loaded
 }
 
+/// (g): full composites with Start and the pane open; Start opens on the
+/// first run only, and stays open for a second.
+fn open_scene(frames: usize) -> impl FnMut() -> Result<Vec<u8>, &'static str> {
+    let mut opened = false;
+    move || {
+        if !core::mem::replace(&mut opened, true) {
+            crate::claim_tests::type_keys(&SUPER);
+            threads::sleep_ms(SETTLE_MS);
+        }
+        perf(&format!("perf open {frames}"))
+    }
+}
+
 /// The reference work's median, and whether it is a runner too slow to judge.
 fn too_slow() -> Result<(u64, bool), &'static str> {
     let reply = perf("perf reference")?;
@@ -197,6 +214,7 @@ pub fn check() -> Result<(), &'static str> {
     threads::sleep_ms(SETTLE_MS);
     misses.extend(scene(gated, "(e)", keys)?);
     misses.extend(scene(gated, "(f)", loaded_drag)?);
+    misses.extend(scene(gated, "(g)", open_scene(frames))?);
     log!("desk-perf: the figures are in");
     if !kvm {
         log!("desk-perf: recorded without KVM, not judged");

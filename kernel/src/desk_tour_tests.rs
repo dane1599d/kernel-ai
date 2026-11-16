@@ -1,5 +1,6 @@
-//! `test=desk-tour`: a screenshot tour of the desktop and its apps, for people
-//! to look at, not a gate. Each step sets the screen up, logs "ready for keys",
+//! `test=desk-tour`: a screenshot tour of Kai Desk and its apps, for people
+//! to look at, not a gate; xtask boots it at 1280x800, 1024x768 and
+//! 1920x1080, and the steps are the same at each size. Each step sets the screen up, logs "ready for keys",
 //! and the host takes a QEMU `screendump` (`xtask/src/cases/tour.rs`); the
 //! steps drive the system as a person and the mock model would: lines to the
 //! shell, keys through the i8042, and clicks through the pointer queue. A step
@@ -29,6 +30,10 @@ const SHOT_MS: u64 = 3_000;
 const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
 /// `n` down and up: no, on the card.
 const NO: [u8; 2] = [0x31, 0xB1];
+/// A Super tap: Left Super down and up, which opens Start.
+const SUPER: [u8; 4] = [0xE0, 0x5B, 0xE0, 0xDB];
+/// Esc down and up.
+const ESC: [u8; 2] = [0x01, 0x81];
 
 static ASKED: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicBool = AtomicBool::new(false);
@@ -129,22 +134,32 @@ pub fn check() -> Result<(), &'static str> {
     }
     shot("01-desktop");
 
-    // The Apps sheet: `apps` sent in the panel.
+    // Start: a Super tap opens it on its pins, with its box focused.
+    type_keys(&SUPER);
+    shot("02-start");
+    // Typing searches: the apps that match, and Ask Kai.
+    type_text("no");
+    shot("03-search");
+    // Esc closes Start. `apps` sent in the pane opens it on All apps.
+    type_keys(&ESC);
     type_keys(&CTRL_SPACE);
     threads::sleep_ms(SETTLE_MS);
     type_text("apps\n");
-    shot("02-apps");
-    // Esc closes the sheet and leaves the panel.
-    type_keys(&[0x01, 0x81]);
+    shot("04-all-apps");
+    // Esc closes Start, and the pane's close item closes the pane (Esc in
+    // its input only leaves it at 1280 and up).
+    type_keys(&ESC);
+    threads::sleep_ms(SETTLE_MS);
+    crate::desk_tests::close_pane(SETTLE_MS)?;
 
     open("files", "open the files app");
-    shot("03-files");
+    shot("05-files");
 
     open("terminal", "open the terminal");
     type_text("1 + 2\n");
     threads::sleep_ms(SETTLE_MS);
     type_text("6 * 7\n");
-    shot("04-terminal");
+    shot("06-terminal");
 
     open("notes", "open notes");
     // Kai adds the note from the panel, as a person would ask.
@@ -152,23 +167,32 @@ pub fn check() -> Result<(), &'static str> {
     threads::sleep_ms(SETTLE_MS);
     type_text("add a note saying buy milk\n");
     threads::sleep_ms(SETTLE_MS);
-    shot("05-notes");
+    shot("07-notes");
+    // The pane closed again, so the app shots show the windows alone.
+    crate::desk_tests::close_pane(SETTLE_MS)?;
 
     open("settings", "open settings");
     line("show the appearance settings");
-    shot("06-settings-appearance");
+    shot("08-settings-appearance");
     line("show the access settings");
-    shot("07-settings-access");
+    shot("09-settings-access");
 
     open("monitor", "open the monitor");
-    shot("08-monitor");
+    shot("10-monitor");
+
+    // A line in the pane: Kai's answer in words in its history (the mock
+    // model answers "hello" with prose and no script).
+    type_keys(&CTRL_SPACE);
+    threads::sleep_ms(SETTLE_MS);
+    type_text("hello\n");
+    shot("11-kai-pane");
 
     // Kai acting: the panel's done state from Notes' step is behind; an ask
     // shows on the card, and the person says no.
     threads::spawn("asker", asker, 0)?;
     // Every step takes its picture, card or not: the host names them in order.
     let shown = wait("the ask on the card", ask_box::shown);
-    shot("09-kai-asks");
+    shot("12-kai-asks");
     if shown {
         // Past the card's settle time, in which it takes no key (#864).
         threads::sleep_ms(termcore::menu::SETTLE_MS + 300);
@@ -178,14 +202,14 @@ pub fn check() -> Result<(), &'static str> {
     if !ASKED.load(Ordering::Acquire) {
         log!("{CASE}: the model's act did not ask");
     }
-    shot("10-kai-done");
+    shot("13-kai-done");
 
     line("use the light theme");
-    shot("11-light");
+    shot("14-light");
 
     // Overlapping windows, Files brought to the front and focused.
     line("switch to files");
-    shot("12-overlap");
+    shot("15-overlap");
 
     log!("{CASE}: the tour is done");
     Ok(())

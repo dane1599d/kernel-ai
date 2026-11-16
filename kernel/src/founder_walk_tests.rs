@@ -19,7 +19,7 @@
 //!    notes` brings it back.
 
 use crate::claim_tests::{type_keys, type_text};
-use crate::desk_tests::{self, report};
+use crate::desk_tests;
 use crate::display::claim;
 use crate::{ask_box, display, ipc, log, process, terminal, threads};
 use alloc::format;
@@ -406,12 +406,7 @@ fn points_of(surface: &display::Surface) -> Result<deskgeom::Points, &'static st
 /// A click at `at`: the pointer pinned to deskgeom's corner, wherever it was,
 /// and moved from there.
 fn click(desk: &deskgeom::Points, at: (i32, i32)) {
-    let (dx, dy) = desk.pin();
-    report(dx, dy, 0);
-    let from = desk.pinned();
-    report(at.0 - from.0, at.1 - from.1, 0);
-    report(0, 0, 1);
-    report(0, 0, 0);
+    desk_tests::click_at(desk, at);
 }
 
 /// Whether the second `open notes` brought Notes' window back: comphost
@@ -434,6 +429,10 @@ fn notes_open_close_open() -> Result<(), &'static str> {
     let desk = desk()?;
     panel_line("open notes");
     threads::sleep_ms(OPEN_MS);
+    // The pane `open notes` was sent from may cover Notes' close control
+    // (at 1024x768 it floats over the windows' right side): closed by its
+    // close item, which works at every size.
+    desk_tests::close_pane(SETTLE_MS)?;
     click(&desk, desk.close(NOTES_SPOT, crate::ui_tests::APP_FRAME_W));
     threads::sleep_ms(SETTLE_MS);
     log!("{CASE}: Notes' window was closed from its control");

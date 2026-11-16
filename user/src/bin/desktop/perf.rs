@@ -13,6 +13,9 @@
 //!   loop takes input before it draws; a key that changes nothing is timed to
 //!   whatever frame comes next, so it can only read long, never short.
 //! - `perf drag`: (b) again, for (f) under the load the kernel starts.
+//! - `perf open <frames>`: (g), Kai Desk's (a): the whole screen composited
+//!   `frames` times with Start and the Kai pane open, which the kernel opened
+//!   with its keys; a line saying so when either is not.
 //! - `perf reference`: `kabi::perf`'s fixed reference work, timed
 //!   [`REFERENCE_ROUNDS`] times, which tells the kernel how fast the runner is.
 //!
@@ -126,6 +129,10 @@ pub fn request(state: &mut State, screen: &Screen, bytes: &[u8], pid: u64) -> Op
             return Some(String::from("ok"));
         }
         ["drag"] => drag(state, screen, "(f) drag under load, render+flush", true),
+        ["open", frames] => match frames.parse::<usize>() {
+            Ok(n) if (1..=MAX_FRAMES).contains(&n) => Vec::from([open(state, screen, n)]),
+            _ => return Some(String::from("err perf open takes 1 to 1000 frames")),
+        },
         ["reference"] => Vec::from([reference()]),
         _ => return Some(String::from("err unknown perf request")),
     };
@@ -138,13 +145,7 @@ pub fn request(state: &mut State, screen: &Screen, bytes: &[u8], pid: u64) -> Op
 
 fn scenes(state: &mut State, screen: &Screen, frames: usize) -> Vec<String> {
     let mut lines = Vec::new();
-    let mut full = Vec::new();
-    for _ in 0..frames {
-        state.extra.push(Rect::new(0, 0, state.width, state.height));
-        if let Some((render, flush)) = frame(state, screen) {
-            full.push(render + flush);
-        }
-    }
+    let full = full_frames(state, screen, frames);
     let size = format!("{}x{}", state.width, state.height);
     lines.push(line(
         &format!("(a) full composite at {size}"),
@@ -155,6 +156,35 @@ fn scenes(state: &mut State, screen: &Screen, frames: usize) -> Vec<String> {
     lines.extend(drag(state, screen, "(b) drag", false));
     lines.extend(text_page(frames));
     lines
+}
+
+/// `frames` whole-screen composites, render and flush together.
+fn full_frames(state: &mut State, screen: &Screen, frames: usize) -> Vec<u64> {
+    let mut full = Vec::new();
+    for _ in 0..frames {
+        state.extra.push(Rect::new(0, 0, state.width, state.height));
+        if let Some((render, flush)) = frame(state, screen) {
+            full.push(render + flush);
+        }
+    }
+    full
+}
+
+/// (g): (a) with Start and the Kai pane open over the windows, Kai Desk's
+/// largest painted area, judged on (a)'s budget.
+fn open(state: &mut State, screen: &Screen, frames: usize) -> String {
+    let (start, pane) = (state.desk.start().is_some(), state.desk.pane().is_some());
+    if !(start && pane) {
+        return format!("(g): Start open {start}, the pane open {pane}: not both");
+    }
+    let full = full_frames(state, screen, frames);
+    let size = format!("{}x{}", state.width, state.height);
+    line(
+        &format!("(g) full composite with Start and the pane open at {size}"),
+        &full,
+        FULL_P99,
+        Pick::P99,
+    )
 }
 
 /// One frame of whatever is damaged, then the pause outside the timing.

@@ -1,9 +1,10 @@
 name: Screenshots
 
-# The desktop tour for people to look at, not a gate: boots `desk-tour`
-# (xtask/src/cases/tour.rs) under KVM with the mock model, takes a QEMU
-# screendump at each step, and uploads them as PNGs (01-desktop.png and on) in
-# one artifact. Run by hand, or on a PR by adding the `screenshots` label (a
+# The desktop tour for people to look at, not a gate: boots `desk-tour`,
+# `desk-tour-1024` and `desk-tour-1080` (xtask/src/cases/tour.rs: 1280x800,
+# 1024x768, 1920x1080) under KVM with the mock model, takes a QEMU screendump
+# at each step, and uploads each size's PNGs (1280-01-desktop.png and on) as
+# an artifact named for its case. Run by hand, or on a PR by adding the `screenshots` label (a
 # hand run needs this file on main first).
 on:
   workflow_dispatch:
@@ -25,8 +26,12 @@ concurrency:
 
 jobs:
   tour:
-    name: Desktop tour
+    name: Desktop tour (${{ matrix.case }})
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'screenshots'
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [desk-tour, desk-tour-1024, desk-tour-1080]
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -47,13 +52,14 @@ jobs:
           save-if: false
       - name: Boot the tour and take its screendumps
         env:
-          XTASK_CASE: desk-tour
+          XTASK_CASE: ${{ matrix.case }}
         run: cargo xtask test --accel kvm --timeout 600
       - name: Convert the screendumps to PNG
         if: always()
         shell: python3 -I {0}
         run: |
-          # target/tour-<step>.ppm (binary P6, 8-bit) to screenshots/<step>.png,
+          # target/tour-<width>-<step>.ppm (binary P6, 8-bit) to
+          # screenshots/<width>-<step>.png,
           # with the standard library alone.
           import pathlib, struct, zlib
 
@@ -88,6 +94,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: desk-tour
+          name: ${{ matrix.case }}
           path: screenshots/
           if-no-files-found: warn
