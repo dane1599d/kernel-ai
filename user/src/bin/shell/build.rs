@@ -382,6 +382,18 @@ pub fn ask_pkg_long(pkg: Handle, request: &str) -> Result<String, String> {
     pkg_answer(&reply[..len.min(reply.len())])
 }
 
+/// The wait for a question pkg answers from its store at once: whether a
+/// package is installed, for the agent's grounding (`appgrants`).
+pub const PKG_QUICK_MS: u64 = 2_000;
+
+/// [`ask_pkg_long`] with a wait of `ms`.
+pub fn ask_pkg_within(pkg: Handle, request: &str, ms: u64) -> Result<String, String> {
+    let mut reply = alloc::vec![0u8; kabi::MAX_MESSAGE];
+    let len = sys::call_route(pkg, request.as_bytes(), &mut reply, ms)
+        .map_err(|e| format!("{NO_ANSWER} ({e:?})"))?;
+    pkg_answer(&reply[..len.min(reply.len())])
+}
+
 pub fn ask_pkg(pkg: Handle, request: &str) -> Result<String, String> {
     let mut reply = [0u8; PKG_REPLY];
     let len = sys::call_route(pkg, request.as_bytes(), &mut reply, PKG_CALL_MS)

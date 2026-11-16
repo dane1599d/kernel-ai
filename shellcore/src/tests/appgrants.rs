@@ -10,14 +10,14 @@ use alloc::boxed::Box;
 use alloc::vec;
 use kaigrants::{From, Grant, Grants, Kind, Life, Time};
 
-const WEATHER: &str = "api.weather.example";
-const LINE: &str = "what's the weather in Leeds?";
+pub(super) const WEATHER: &str = "api.weather.example";
+pub(super) const LINE: &str = "what's the weather in Leeds?";
 
-fn call(json: &str) -> Result<Call, ActError> {
+pub(super) fn call(json: &str) -> Result<Call, ActError> {
     Ok(llmproto::act::parse(json).unwrap())
 }
 
-fn fetch(host: &str, path: Option<&str>) -> Result<Call, ActError> {
+pub(super) fn fetch(host: &str, path: Option<&str>) -> Result<Call, ActError> {
     let call = serde_json::json!({
         "name": "net_fetch",
         "arguments": {"host": host, "path": path},
@@ -26,7 +26,7 @@ fn fetch(host: &str, path: Option<&str>) -> Result<Call, ActError> {
 }
 
 /// The grants file holding `grants`, each (app, host, life).
-fn file(grants: &[(&str, &str, Life)]) -> String {
+pub(super) fn file(grants: &[(&str, &str, Life)]) -> String {
     let grants = grants
         .iter()
         .enumerate()
@@ -52,7 +52,7 @@ fn file(grants: &[(&str, &str, Life)]) -> String {
 
 /// A shell whose model calls `calls`, with the weather app installed and
 /// `grants` on file.
-fn granted(
+pub(super) fn granted(
     calls: Vec<Result<Call, ActError>>,
     grants: &[(&str, &str, Life)],
 ) -> (Rc<FakeHost>, Shell) {
@@ -64,18 +64,18 @@ fn granted(
     (host, shell)
 }
 
-fn always(app: &'static str) -> [(&'static str, &'static str, Life); 1] {
+pub(super) fn always(app: &'static str) -> [(&'static str, &'static str, Life); 1] {
     [(app, WEATHER, Life::Persistent)]
 }
 
 /// The line ran with no ask, and fetched from the weather host.
-fn ran(host: &FakeHost, reply: &Reply) {
+pub(super) fn ran(host: &FakeHost, reply: &Reply) {
     assert!(reply.ok && reply.confirm.is_none(), "{reply:?}");
     assert_eq!(*host.net_seen.borrow(), [format!("net_fetch {WEATHER}")]);
 }
 
 /// The line asked, and nothing was fetched.
-fn asked(host: &FakeHost, reply: &Reply) {
+pub(super) fn asked(host: &FakeHost, reply: &Reply) {
     assert!(reply.confirm.is_some(), "{reply:?}");
     assert!(host.net_seen.borrow().is_empty(), "{reply:?}");
 }
@@ -102,7 +102,7 @@ fn a_this_session_grant_grounds_until_the_next_boot() {
     let session = [("weather", WEATHER, Life::Session)];
     let (host, mut shell) = granted(vec![fetch(WEATHER, None), fetch(WEATHER, None)], &session);
     ran(&host, &shell.eval(LINE));
-    crate::netask::at_boot(host.as_ref());
+    let _ = crate::netask::at_boot(host.as_ref());
     host.net_seen.borrow_mut().clear();
     asked(&host, &shell.eval(LINE));
 }
@@ -164,7 +164,7 @@ fn a_grant_that_is_no_plain_host_grounds_nothing() {
     host.installed
         .borrow_mut()
         .push(("weather".into(), "kai-actions 1".into()));
-    let said = core::cell::RefCell::new(None);
+    let said = crate::appgrants::Memo::default();
     for object in ["any", "none", "localhost"] {
         *host.net_disk.borrow_mut() = Some(file(&[
             ("weather", object, Life::Persistent),

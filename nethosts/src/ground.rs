@@ -23,6 +23,12 @@ use alloc::vec::Vec;
 /// `x.api.weather.example`.
 pub trait Granted {
     fn granted(&self, host: &Host) -> bool;
+
+    /// The apps whose grants ground `host`, by package name: their words in
+    /// the line ask for that app's site. None by default.
+    fn holders(&self, _host: &Host) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// No grants: nothing was said yes to.

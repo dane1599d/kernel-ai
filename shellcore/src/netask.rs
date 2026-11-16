@@ -115,15 +115,16 @@ fn grant_res(app: &str, host: &str) -> String {
 
 /// Checks `/system/state/netgrants` at start and drops the `session` grants:
 /// a file out of shape is audited and left as it is. The highest id the file
-/// held before the drop, for the shell's high-water mark.
-pub(crate) fn at_boot(host: &dyn Host) -> u32 {
+/// held before the drop, for the shell's high-water mark, and whether last
+/// session's grants are gone from the file.
+pub(crate) fn at_boot(host: &dyn Host) -> (u32, bool) {
     let mut grants = match read_store(host) {
         Ok(grants) => grants,
         Err(why) => {
             host.audit(&format!(
                 "{why}; no app reaches a new host until it is put right"
             ));
-            return 0;
+            return (0, true);
         }
     };
     let high = grants.high();
@@ -135,8 +136,46 @@ pub(crate) fn at_boot(host: &dyn Host) -> u32 {
         host.audit(&format!(
             "the session network grants were not dropped: {why}"
         ));
+        return (high, false);
     }
-    high
+    (high, true)
+}
+
+/// Drops the grants of every app `pkg` says is no longer installed, after an
+/// undo took a package out, so a later package of the same name starts with
+/// none: the person allows it again on its card. A `pkg` that gives no clear
+/// answer drops nothing. How many were dropped.
+pub(crate) fn drop_uninstalled(host: &dyn Host) -> usize {
+    let Ok(mut grants) = read_store(host) else {
+        return 0;
+    };
+    let gone: Vec<(u32, String, String)> = grants
+        .all()
+        .iter()
+        .filter(|g| {
+            let package = g.app.strip_suffix("-window").unwrap_or(&g.app);
+            host.package_installed(package) == Ok(false)
+        })
+        .map(|g| (g.id, g.app.clone(), g.object.clone()))
+        .collect();
+    if gone.is_empty() {
+        return 0;
+    }
+    for (id, _, _) in &gone {
+        grants.revoke(*id);
+    }
+    if let Err(why) = write_store(host, &grants) {
+        host.audit(&format!(
+            "the removed apps' network grants were not dropped: {why}"
+        ));
+        return 0;
+    }
+    for (id, app, object) in &gone {
+        host.audit(&format!(
+            "network grant {id} ({app} on {object}) dropped: {app} is no longer installed"
+        ));
+    }
+    gone.len()
 }
 
 impl Shell {

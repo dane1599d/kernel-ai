@@ -245,6 +245,8 @@ impl Shell {
                 ));
             }
         };
+        // A package went in: pkg is asked again about each grant holder.
+        self.grant_memo.forget_installed();
         let made = installed(&answer, name, &version);
         let change = Change {
             action: String::from("cc_build"),

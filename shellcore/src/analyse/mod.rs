@@ -80,6 +80,8 @@ pub struct Site {
     /// What decided that the call runs: the `if`, `for`, `switch` or early exit it
     /// sits under.
     pub control: Label,
+    /// Whether it sits in a loop body, so it may run more than once.
+    pub looped: bool,
     at: (Option<usize>, Option<usize>),
 }
 
@@ -135,7 +137,7 @@ impl Plan {
                 site.args
                     .iter()
                     .map(|(name, val)| {
-                        let text = val.text.as_deref().unwrap_or("");
+                        let text = val.text.as_deref().unwrap_or(consent::UNKNOWN);
                         let text = row
                             .and_then(|row| row.args.iter().find(|arg| arg.name == *name))
                             .and_then(|arg| {
@@ -153,17 +155,25 @@ impl Plan {
                     .collect()
             })
             .collect();
-        let calls: Vec<consent::Call<'_>> = self
-            .sites
-            .iter()
-            .zip(&values)
-            .map(|(site, args)| consent::Call {
+        // A call in a loop may run more than once, so consent sees it twice
+        // (a read only an app's grant grounds is allowed once in a plan); each
+        // site takes its first copy's decision.
+        let mut calls: Vec<consent::Call<'_>> = Vec::new();
+        let mut first: Vec<usize> = Vec::new();
+        for (site, args) in self.sites.iter().zip(&values) {
+            let call = consent::Call {
                 name: site.name,
                 args,
                 control: site.control,
-            })
-            .collect();
-        consent::decide_net(line, &calls, rows, &grounding(hosts, granted))
+            };
+            first.push(calls.len());
+            calls.push(call);
+            if site.looped {
+                calls.push(call);
+            }
+        }
+        let decisions = consent::decide_net(line, &calls, rows, &grounding(hosts, granted));
+        first.into_iter().map(|at| decisions[at]).collect()
     }
 }
 
@@ -193,6 +203,7 @@ pub fn analyse(ast: &AST, rows: &'static [Action]) -> Plan {
         sites: Vec::new(),
         sticky: Label::Literal,
         seen: Label::Literal,
+        loops: 0,
     };
     walk.block(ast.statements(), Label::Literal);
     Plan { sites: walk.sites }
@@ -210,6 +221,8 @@ struct Walk {
     sticky: Label,
     /// The least trusted label met so far, for what a `catch` may have caught.
     seen: Label,
+    /// How many loop bodies the walk is in.
+    loops: usize,
 }
 
 fn join_env(a: &Env, b: &Env) -> Env {
@@ -247,6 +260,12 @@ impl Walk {
 
     /// A body that runs any number of times, walked until its variables settle.
     fn looped(&mut self, mut body: impl FnMut(&mut Self)) {
+        self.loops += 1;
+        self.looped_body(&mut body);
+        self.loops -= 1;
+    }
+
+    fn looped_body(&mut self, body: &mut impl FnMut(&mut Self)) {
         for _ in 0..MAX_ROUNDS {
             let before = (self.env.clone(), self.sticky);
             body(self);
@@ -481,6 +500,7 @@ impl Walk {
             .find(|s| s.at == at && s.name == row.name)
         {
             Some(site) => {
+                site.looped |= self.loops > 0;
                 site.control = join(site.control, control);
                 for ((_, old), (_, new)) in site.args.iter_mut().zip(&args) {
                     *old = old.join(new);
@@ -490,6 +510,7 @@ impl Walk {
                 name: row.name,
                 args,
                 control,
+                looped: self.loops > 0,
                 at,
             }),
         }

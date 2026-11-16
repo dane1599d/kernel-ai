@@ -305,6 +305,15 @@ pub trait Host {
     fn installed_rows(&self, _package: &str) -> Result<String, String> {
         Err(String::from("there is no pkg service here"))
     }
+    /// Whether `pkg` has `package` installed now, asked with a short wait:
+    /// `Err` when it gave no clear answer.
+    fn package_installed(&self, package: &str) -> Result<bool, String> {
+        match self.installed_rows(package) {
+            Ok(_) => Ok(true),
+            Err(why) if why.ends_with(" is not installed") => Ok(false),
+            Err(why) => Err(why),
+        }
+    }
     /// `cc build`'s work outside the shell's logic: component `name`'s
     /// sources, read from `dir/name/` ([`ccbuild::DIR`], or [`ccbuild::APPS_DIR`]
     /// for `app_build`), built by `cc` at `version`, and the artifact written
@@ -697,9 +706,9 @@ pub struct Shell {
     /// The words that name a site for the agent's network rows: the curated host
     /// table, and each installed app's word for its own hosts (P5 task 11).
     hosts: nethosts::Table,
-    /// Why the network grants file was last not read for the agent's
-    /// grounding, so its audit line is said once a reason ([`appgrants`]).
-    grants_said: core::cell::RefCell<Option<String>>,
+    /// What the agent's reading of app grants keeps between passes
+    /// ([`appgrants`]).
+    grant_memo: appgrants::Memo,
     /// The last script as `show` prints it.
     shown: Option<String>,
     /// What the script run by the last line printed.
@@ -825,7 +834,7 @@ impl Shell {
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
             hosts: nethosts::Table::curated(),
-            grants_said: core::cell::RefCell::new(None),
+            grant_memo: appgrants::Memo::default(),
             shown: None,
             last_output: None,
             showed: agentcore::Showed::default(),
@@ -863,7 +872,9 @@ impl Shell {
     /// The rows withheld from apps' effects, checked at boot.
     fn with_saved_withheld(mut self) -> Self {
         grants::check_saved(self.host.as_ref());
-        self.net_high = netask::at_boot(self.host.as_ref());
+        let (high, dropped) = netask::at_boot(self.host.as_ref());
+        self.net_high = high;
+        self.grant_memo.session_stale.set(!dropped);
         self
     }
 

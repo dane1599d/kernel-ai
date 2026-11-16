@@ -822,6 +822,19 @@ impl Host for System {
         build::ask_pkg_long(pkg_route()?, &alloc::format!("actions {package}"))
     }
 
+    fn package_installed(&self, package: &str) -> Result<bool, String> {
+        let asked = build::ask_pkg_within(
+            pkg_route()?,
+            &alloc::format!("actions {package}"),
+            build::PKG_QUICK_MS,
+        );
+        match asked {
+            Ok(_) => Ok(true),
+            Err(why) if why.ends_with(" is not installed") => Ok(false),
+            Err(why) => Err(why),
+        }
+    }
+
     fn net_fetch(&self, host: &str, path: &str) -> Result<String, String> {
         net::fetch(host, path)
     }

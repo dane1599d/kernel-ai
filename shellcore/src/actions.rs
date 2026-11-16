@@ -76,7 +76,7 @@ fn yes_or_no(text: &str) -> Option<bool> {
 /// shell's host words and the hosts the person allowed for installed apps,
 /// read only if a call needs them.
 fn decided(request: &str, checked: &Checked, shell: &Shell) -> Vec<(&'static str, Decision)> {
-    let granted = crate::appgrants::AppGrants::new(shell.host.as_ref(), &shell.grants_said);
+    let granted = crate::appgrants::AppGrants::new(shell.host.as_ref(), &shell.grant_memo);
     let decisions = checked
         .plan
         .decide(request, &agentabi::ROWS, &shell.hosts, &granted);
@@ -157,29 +157,27 @@ impl Shell {
             let sending = crate::agentcore::read_from(source);
             return script::sends(id, checked, asking, &sending);
         }
-        // A read from a site only an app's grant grounds, which the line did
-        // not decide alone: the question says what decided it.
-        if let Some(why) = decisions
-            .iter()
-            .find_map(|(_, decision)| match decision.why {
-                Why::GrantSteered(source) => Some(format!(
-                    " ({} chose this read from a site allowed for an app, not the request)",
-                    crate::agentcore::read_from(source)
-                )),
-                Why::GrantPath => Some(String::from(
-                    " (the request did not name that site, an app's, or what to read from it)",
-                )),
-                _ => None,
-            })
-        {
-            return script::question(id, checked, asking, &why);
-        }
         let steered = decisions
-            .into_iter()
+            .iter()
             .find_map(|(_, decision)| match decision.why {
                 Why::Steered(source) => Some(source),
                 _ => None,
             });
+        // A read from a site only an app's grant grounds: its own reason, when
+        // every call that asks is such a read.
+        let asks: Vec<Why> = decisions
+            .iter()
+            .filter(|(_, d)| d.tier != Tier::Run)
+            .map(|(_, d)| d.why)
+            .collect();
+        let grant = asks
+            .iter()
+            .map(|why| crate::agentcore::grant_reason(*why))
+            .collect::<Option<Vec<String>>>()
+            .and_then(|reasons| reasons.into_iter().next());
+        if let (None, Some(reason)) = (steered, grant) {
+            return script::question(id, checked, asking, &format!(" ({reason})"));
+        }
         let added = asking
             .iter()
             .all(|name| tiers::of(self.tiers, name) == Tier::Run);

@@ -284,7 +284,12 @@ fn revert_one(
             .map_err(Refused::Failed),
         Inverse::Local { from, to } if to < from => host
             .pkg(&format!("switch-back {to} {from}"))
-            .map(|_| format!("packages back to generation {to}"))
+            .map(|_| {
+                // An app it took out keeps no network grant for a later one
+                // of the same name (ADR 0002 D3).
+                crate::netask::drop_uninstalled(host);
+                format!("packages back to generation {to}")
+            })
             .map_err(Refused::Failed),
         Inverse::Local { .. } => Err(Refused::Failed(String::from(
             "a local build is installed again by cc build, or by Kai's install card",

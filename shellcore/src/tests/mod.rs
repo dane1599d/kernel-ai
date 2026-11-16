@@ -35,6 +35,7 @@ mod door_build;
 mod effects;
 mod files;
 mod fuzz;
+mod grantleaks;
 mod guard;
 mod log;
 mod logdisk;

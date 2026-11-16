@@ -17,6 +17,9 @@
 
 use crate::{Action, ArgType, Inverse, Role, Tier, derive, find};
 use alloc::vec::Vec;
+
+#[path = "consent_grant.rs"]
+pub mod consent_grant;
 use nethosts::{Bytes, Ground, Grounding, LineWord, NoGrants, Origin, Table, Verdict};
 
 /// Where a value came from (ADR 0002 D6). Ordered: the least trusted is greatest.
@@ -29,6 +32,10 @@ pub enum Label {
     /// Content read from a source: a note, a page, a file.
     Content(&'static str),
 }
+
+/// The text of a value the planner does not know: it matches no word, alias,
+/// host or path.
+pub const UNKNOWN: &str = "\u{0}";
 
 /// One argument value and where it came from.
 #[derive(Clone, Copy, Debug)]
@@ -68,12 +75,21 @@ pub enum Why {
     Steered(&'static str),
     /// Content would go out of the machine.
     Outbound(&'static str),
-    /// A fetch from a host only an app's grant grounds, which read content
-    /// decided: content from this source chose it, not the line.
+    /// A read from a host only an app's grant grounds, which the line asked
+    /// for and gave its path (`consent_grant`).
+    GrantRead,
+    /// A read from a host only an app's grant grounds, which read content or
+    /// the OS's state decided ([`consent_grant::SYSTEM`]), not the line.
     GrantSteered(&'static str),
-    /// A fetch from a host only an app's grant grounds, with a path or query
-    /// the line does not hold: the model chose what it asks the site for.
+    /// A read from a host only an app's grant grounds, with an argument the
+    /// line did not give: a path or query not one run of its words.
     GrantPath,
+    /// A read from a host only an app's grant grounds, on a line that says to
+    /// stay off the network.
+    GrantOffline,
+    /// More than one read from hosts only a grant grounds in one plan, or one
+    /// in a loop.
+    GrantMany,
     /// The line is not English, so it gives no consent for changes in v0.1.
     NotEnglish,
     /// A value no call may take, or a row that never runs.
@@ -183,10 +199,11 @@ pub fn decide_net(line: &str, plan: &[Call], rows: &[Action], net: &Grounding) -
     // action is never vague, so "tell me how to remove ideas, it's so slow"
     // takes no vague reading (#883 review).
     let named_any = rows.iter().any(|row| cued_in(&words, row, true).is_some());
-    let decisions: Vec<Decision> = plan
-        .iter()
-        .map(|call| decide_one(&words, &hosts, english, call, rows))
-        .collect();
+    let decisions: Vec<Decision> = consent_grant::at_most_one(
+        plan.iter()
+            .map(|call| decide_one(&words, &hosts, english, call, rows))
+            .collect(),
+    );
     let changes = plan
         .iter()
         .filter(|call| find(rows, call.name).is_some_and(|row| !row.facts.read_only))
@@ -254,7 +271,7 @@ fn decide_one(
             return Decision::new(Tier::Ask, Why::Ungrounded);
         }
         if granted_only(words, hosts, row, call) {
-            return granted_read(words, row, call);
+            return consent_grant::read(words, hosts.net, row, call);
         }
         return Decision::new(row.min_tier.max(Tier::Run), Why::Grounded);
     }
@@ -499,64 +516,6 @@ fn granted_only(words: &[Word], hosts: &Hosts, row: &Action, call: &Call) -> boo
     !every_host(words, hosts, row, call, |verdict| {
         !matches!(verdict, Verdict::Run(Ground::Granted))
     })
-}
-
-/// A read from a host only a grant grounds. The app chose that host, not the
-/// user, and the app's own words reach the model (its window title in the
-/// State line), so the grant grounds only a fetch the line alone decided: no
-/// read content decided it, the line does not say to stay off the network,
-/// and every word of its path is a word of the line. Anything else asks.
-fn granted_read(words: &[Word], row: &Action, call: &Call) -> Decision {
-    if let Label::Content(source) = call.control {
-        return Decision::new(Tier::Ask, Why::GrantSteered(source));
-    }
-    if offline_said(words, row) {
-        return Decision::new(Tier::Ask, Why::Ungrounded);
-    }
-    if !path_in_line(words, row, call) {
-        return Decision::new(Tier::Ask, Why::GrantPath);
-    }
-    Decision::new(row.min_tier.max(Tier::Run), Why::Grounded)
-}
-
-/// Words that name going on the network at all: negated, they bar every
-/// grant ("don't go online, just guess").
-const NET_WORDS: &[&str] = &[
-    "online", "internet", "web", "net", "network", "website", "site", "sites", "page", "fetch",
-    "download", "look", "lookup", "connect",
-];
-
-/// Whether the line says, in a clause that negates, not to use the network:
-/// a net word or one of the row's own cues.
-fn offline_said(words: &[Word], row: &Action) -> bool {
-    words.iter().enumerate().any(|(at, word)| {
-        let text = word.text.as_str();
-        (NET_WORDS.contains(&text) || row.cues.contains(&text)) && negated(words, at)
-    })
-}
-
-/// Every word of each non-host text argument (a fetch's path and query) is a
-/// word of the line outside a negating clause: "/leeds" for "the weather in
-/// Leeds". A path the model wrote from anything else, a window title or a
-/// selection, is not.
-fn path_in_line(words: &[Word], row: &Action, call: &Call) -> bool {
-    row.args
-        .iter()
-        .filter(|arg| !matches!(arg.ty, ArgType::Host))
-        .filter_map(|arg| value_of(call, arg.name))
-        .all(|value| {
-            value
-                .text
-                .split(|c: char| !c.is_alphanumeric())
-                .filter(|piece| !piece.is_empty())
-                .all(|piece| {
-                    let piece = piece.to_lowercase();
-                    words
-                        .iter()
-                        .enumerate()
-                        .any(|(at, w)| w.text == piece && !negated(words, at))
-                })
-        })
 }
 
 /// Words that state a want or a complaint about how the system feels: the only
