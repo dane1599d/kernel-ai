@@ -695,7 +695,9 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     let mut boot: Option<BootFiles> = None;
     let mut netdest: Option<netdest::Dest> = None;
     let mut llm_dest = false;
-    let mut agent: Option<u64> = None;
+    // The agent= word, checked once the line's program is final: a later
+    // program= must not swap the binary its badge goes to.
+    let mut agent_word: Option<&str> = None;
     let mut netdest_word = None;
     let mut start: Option<Start> = None;
     let mut unsupervised = false;
@@ -756,10 +758,10 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
                 netdest = Some(dest);
             }
             Some(("agent", value)) => {
-                if agent.is_some() {
+                if agent_word.is_some() {
                     return Err(format!("{name}: agent= given twice"));
                 }
-                agent = Some(agent_badge(name, program, value)?);
+                agent_word = Some(value);
             }
             Some(("start", value)) => {
                 if start.is_some() {
@@ -800,7 +802,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
             || boot.is_some()
             || netdest.is_some()
             || llm_dest
-            || agent.is_some())
+            || agent_word.is_some())
     {
         return Err(format!(
             "{name}: an unsupervised process takes no caps=, uses=, dir=, bootfiles=, netdest= or agent="
@@ -808,6 +810,9 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     }
     // An agent's badge rides on its route to `llm`: a line with none has
     // nowhere to carry it.
+    let agent = agent_word
+        .map(|value| agent_badge(name, program, value))
+        .transpose()?;
     if agent.is_none() && uses.iter().any(|used| used == AGENTS_CALL) {
         return Err(format!("{name}: no route may go to {AGENTS_CALL}"));
     }
