@@ -19,6 +19,10 @@ use alloc::vec::Vec;
 
 /// The registry's id on every connection.
 pub const REGISTRY: u32 = 1;
+/// 1x in 120ths, the unit of every scale here (fractional-scale-v1's).
+pub const SCALE_ONE: u32 = 120;
+/// The largest scale a surface may ask for: 3x.
+pub const SCALE_MAX: u32 = 360;
 /// Objects one connection may hold at once.
 pub const MAX_OBJECTS: usize = 1024;
 /// The highest id a client may choose (Wayland keeps the rest for the server).
@@ -112,6 +116,13 @@ pub enum Request<'a> {
     GetPanel {
         id: u32,
     },
+    /// The scale its buffers are drawn at, in 120ths (`wl_surface.set_buffer_scale`
+    /// in fractional units): 120 until it says. A buffer `width` x `height` px
+    /// at scale `s` shows `width * 120 / s` x `height * 120 / s` logical px,
+    /// and the damage is in buffer px. A client that draws at the scale the
+    /// desktop prefers ([`Event::Scale`]) is shown unresampled. `SCALE_ONE`
+    /// to `SCALE_MAX`, else the message is bad.
+    SetBufferScale(u32),
     // toplevel
     SetTitle(&'a str),
     SetAppId(&'a str),
@@ -212,6 +223,10 @@ impl<'a> Request<'a> {
             },
             (I::Surface, 7) => Request::GetA11y { id: r.new_id()? },
             (I::Surface, 8) => Request::GetPanel { id: r.new_id()? },
+            (I::Surface, 9) => match r.uint()? {
+                s @ SCALE_ONE..=SCALE_MAX => Request::SetBufferScale(s),
+                _ => return Err(Error::BadArg),
+            },
             (I::Toplevel, 0) => Request::SetTitle(r.string()?),
             (I::Toplevel, 1) => Request::SetAppId(r.string()?),
             (I::Toplevel, 2) => Request::SetMinSize {
@@ -298,6 +313,7 @@ impl<'a> Request<'a> {
             Request::GetPopup { id, parent } => w(6).uint(id).uint(parent),
             Request::GetA11y { id } => w(7).uint(id),
             Request::GetPanel { id } => w(8).uint(id),
+            Request::SetBufferScale(scale) => w(9).uint(scale),
             Request::SetTitle(text) => w(0).string(text),
             Request::SetAppId(text) => w(1).string(text),
             Request::SetMinSize { width, height } => w(2).int(width as i32).int(height as i32),
@@ -368,6 +384,11 @@ pub enum Event<'a> {
     /// after each change, for the client to paint in. A name it does not know
     /// leaves it as it is. Only `Global` (opcode 0) is a greeting.
     Theme(&'a str),
+    /// The scale the desktop prefers its clients draw at, in 120ths: at
+    /// connect, and only when it is not 1x (a client that hears nothing draws
+    /// at 120). A client answers with `surface.set_buffer_scale` and buffers
+    /// at that scale. Not a greeting either.
+    Scale(u32),
     // buffer
     Release,
     // surface
@@ -423,6 +444,7 @@ impl<'a> Event<'a> {
                 version: r.uint()?,
             },
             (I::Registry, 1) => Event::Theme(r.string()?),
+            (I::Registry, 2) => Event::Scale(r.uint()?),
             (I::Buffer, 0) => Event::Release,
             (I::Surface, 0) => Event::PreferredScale(r.uint()?),
             (I::Surface, 1) => Event::Enter,
@@ -479,6 +501,7 @@ impl<'a> Event<'a> {
                 version,
             } => w(0).uint(name).string(interface).uint(version),
             Event::Theme(name) => w(1).string(name),
+            Event::Scale(scale) => w(2).uint(scale),
             Event::Release => w(0),
             Event::PreferredScale(scale) => w(0).uint(scale),
             Event::Enter => w(1),

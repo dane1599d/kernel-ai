@@ -135,7 +135,8 @@ struct State {
     desk: Desk,
     clients: Vec<Client>,
     pools: Vec<Pool>,
-    shown: Vec<(WindowId, u64, Buffer)>,
+    /// Each window's buffer, whose client, and the scale it was drawn at.
+    shown: Vec<(WindowId, u64, Buffer, u32)>,
     frame: Image,
     /// The desk's size in logical px: the screen's over `scale`.
     width: i32,

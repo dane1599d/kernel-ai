@@ -11,6 +11,9 @@ use crate::geom::Rect;
 use crate::scale::ONE;
 use alloc::vec::Vec;
 
+/// The alpha byte: a screen's pixels are opaque, whatever the frame held
+/// (a hole in it has none).
+const ALPHA: u32 = 0xFF << 24;
 /// A weight of 1.0 in the blend.
 const UNIT: u32 = 256;
 /// Fixed-point fraction bits of a source coordinate.
@@ -143,11 +146,80 @@ pub fn resample(src: &Source<'_>, dst: &mut Target<'_>, scale: u32, rect: Rect) 
             return;
         };
         match row.w {
-            0 => out.copy_from_slice(&top),
+            0 => {
+                for (px, &up) in out.iter_mut().zip(&top) {
+                    *px = up | ALPHA;
+                }
+            }
             w => {
                 for ((px, &up), &down) in out.iter_mut().zip(&top).zip(&bottom) {
-                    *px = lerp(up, down, w);
+                    *px = lerp(up, down, w) | ALPHA;
                 }
+            }
+        }
+    }
+}
+
+/// A client's buffer, drawn at the scale the desk shows it at.
+pub struct Buffer<'a> {
+    pub px: &'a [u32],
+    pub width: i32,
+    pub height: i32,
+    /// Pixels a row.
+    pub stride: usize,
+    /// Whether the top byte is premultiplied alpha, or ignored.
+    pub alpha: bool,
+}
+
+/// Puts a client's own pixels on the screen where its window shows through
+/// the logical `frame`: the physical `rect`, cut to the buffer laid at
+/// `origin` (the physical top-left of the window's content), and only at
+/// px whose logical px in `frame` are exactly `hole`, the value `desktop`
+/// filled the content with and nothing painted over. A window behind another,
+/// the taskbar, a card or the cursor has covered its hole, so what is on top
+/// is left on top, and the client's pixels are never resampled.
+pub fn overlay(
+    frame: &Source<'_>,
+    hole: u32,
+    scale: u32,
+    dst: &mut Target<'_>,
+    rect: Rect,
+    origin: (i32, i32),
+    buffer: &Buffer<'_>,
+) {
+    let content = Rect::new(origin.0, origin.1, buffer.width, buffer.height);
+    let Some(rect) = rect
+        .intersect(&content)
+        .and_then(|r| r.intersect(&Rect::new(0, 0, dst.width, dst.height)))
+    else {
+        return;
+    };
+    if frame.width < 1 || frame.height < 1 || frame.px.len() < (frame.width * frame.height) as usize
+    {
+        return;
+    }
+    // The logical px a physical one is the centre of.
+    let at = |d: i32, len: i32| {
+        let s = i64::from(scale.max(1));
+        ((2 * i64::from(d) + 1) * i64::from(ONE) / (2 * s)).min(i64::from(len) - 1) as usize
+    };
+    let columns: Vec<usize> = (rect.x..rect.right()).map(|x| at(x, frame.width)).collect();
+    for y in rect.y..rect.bottom() {
+        let held = &frame.px[at(y, frame.height) * frame.width as usize..];
+        let from = (y - origin.1) as usize * buffer.stride + (rect.x - origin.0) as usize;
+        let to = y as usize * dst.stride + rect.x as usize;
+        let (Some(src), Some(out)) = (
+            buffer.px.get(from..from + columns.len()),
+            dst.px.get_mut(to..to + columns.len()),
+        ) else {
+            continue;
+        };
+        for ((px, &s), &c) in out.iter_mut().zip(src).zip(&columns) {
+            if held[c] == hole {
+                *px = match buffer.alpha {
+                    true => crate::compose::over(s, *px) | ALPHA,
+                    false => s | ALPHA,
+                };
             }
         }
     }
@@ -278,6 +350,132 @@ mod tests {
         assert_eq!(physical(Rect::new(100, 100, 5, 5), 150, 120, 90), None);
         let r = physical(Rect::new(0, 0, 4, 4), 150, 120, 90).unwrap();
         assert_eq!((r.x, r.y), (0, 0));
+    }
+
+    /// A logical frame with a hole (a client's window, not yet drawn) at
+    /// (8, 8, 16, 8), 1.25x on a 60x37 screen.
+    const HOLE: u32 = (0x12 << 16) | 0x34;
+    const MARK: u32 = BLACK | (0x77 << 8) | 0x11;
+
+    fn holed() -> (Vec<u32>, i32, i32) {
+        let (w, h) = (48, 30);
+        let mut frame = frame(w, h);
+        for y in 8..16 {
+            for x in 8..24 {
+                frame[(y * w + x) as usize] = HOLE;
+            }
+        }
+        (frame, w, h)
+    }
+
+    fn overlaid(frame: &[u32], w: i32, h: i32, screen: &mut Vec<u32>, buffer: &Buffer) {
+        let (pw, ph) = (60, 37);
+        let src = Source {
+            px: frame,
+            width: w,
+            height: h,
+        };
+        let mut dst = Target {
+            px: screen,
+            stride: pw as usize,
+            width: pw,
+            height: ph,
+        };
+        resample(&src, &mut dst, 150, Rect::new(0, 0, pw, ph));
+        overlay(
+            &src,
+            HOLE,
+            150,
+            &mut dst,
+            Rect::new(0, 0, pw, ph),
+            (10, 10),
+            buffer,
+        );
+    }
+
+    #[test]
+    fn a_clients_pixels_replace_its_hole_and_nothing_else() {
+        let (frame, w, h) = holed();
+        let pixels = vec![MARK; 20 * 10];
+        let buffer = Buffer {
+            px: &pixels,
+            width: 20,
+            height: 10,
+            stride: 20,
+            alpha: false,
+        };
+        let mut screen = vec![0; 60 * 37];
+        overlaid(&frame, w, h, &mut screen, &buffer);
+        let (plain, ..) = all(&frame, w, h, 150);
+        for y in 0..37 {
+            for x in 0..60 {
+                let i = (y * 60 + x) as usize;
+                let inside = (10..30).contains(&x) && (10..20).contains(&y);
+                match inside {
+                    true => assert_eq!(screen[i], MARK, "{x},{y}"),
+                    false => assert_eq!(screen[i], plain[i] | ALPHA, "{x},{y}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn what_covers_the_hole_stays_on_top_of_the_client() {
+        let (mut frame, w, h) = holed();
+        // A taskbar-like strip over the hole's right half.
+        for y in 8..16 {
+            for x in 16..24 {
+                frame[(y * w + x) as usize] = TEAL;
+            }
+        }
+        let pixels = vec![MARK; 20 * 10];
+        let buffer = Buffer {
+            px: &pixels,
+            width: 20,
+            height: 10,
+            stride: 20,
+            alpha: false,
+        };
+        let mut screen = vec![0; 60 * 37];
+        overlaid(&frame, w, h, &mut screen, &buffer);
+        assert_eq!(screen[(12 * 60 + 12) as usize], MARK);
+        assert_eq!(screen[(12 * 60 + 25) as usize], TEAL);
+    }
+
+    #[test]
+    fn a_buffer_smaller_than_the_hole_shows_the_rest_of_the_hole_resampled() {
+        let (frame, w, h) = holed();
+        let pixels = vec![MARK; 10 * 10];
+        let buffer = Buffer {
+            px: &pixels,
+            width: 10,
+            height: 10,
+            stride: 10,
+            alpha: false,
+        };
+        let mut screen = vec![0; 60 * 37];
+        overlaid(&frame, w, h, &mut screen, &buffer);
+        assert_eq!(screen[(12 * 60 + 12) as usize], MARK);
+        assert_eq!(screen[(12 * 60 + 25) as usize], HOLE | ALPHA);
+    }
+
+    #[test]
+    fn a_translucent_buffer_blends_over_what_is_there() {
+        let (frame, w, h) = holed();
+        let half = (0x80 << 24) | (0x40 << 16);
+        let pixels = vec![half; 20 * 10];
+        let buffer = Buffer {
+            px: &pixels,
+            width: 20,
+            height: 10,
+            stride: 20,
+            alpha: true,
+        };
+        let mut screen = vec![0; 60 * 37];
+        overlaid(&frame, w, h, &mut screen, &buffer);
+        let got = screen[(12 * 60 + 12) as usize];
+        assert_eq!(got >> 24, 0xFF);
+        assert_eq!(got, crate::compose::over(half, HOLE | ALPHA) | ALPHA);
     }
 
     /// How long a whole-screen resample takes, 2048x1152 to 2560x1440 (1440p at

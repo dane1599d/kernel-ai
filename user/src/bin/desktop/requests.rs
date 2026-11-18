@@ -47,6 +47,7 @@ pub(super) fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &Rec
         let label = name_of(pid);
         let mut client = Client::new(pid, &label);
         client.theme(&state.theme_name);
+        client.scale(state.scale);
         // Caps Lock as it is now: a client started with it on types by it.
         client.apply(&[Effect::Locks {
             caps: state.desk.caps(),
@@ -90,6 +91,7 @@ pub(super) fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &Rec
             let label = state.clients[at].label.clone();
             state.clients[at] = Client::new(pid, &label);
             state.clients[at].theme(&state.theme_name);
+            state.clients[at].scale(state.scale);
             let reply = state.clients[at].take_events(kabi::MAX_MESSAGE);
             let _ = sys::reply_h(&reply, &[]);
         }
@@ -98,7 +100,7 @@ pub(super) fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &Rec
             let mut client = state.clients.remove(at);
             let effects = client.close_all(&mut state.desk);
             deliver(state, &effects);
-            state.shown.retain(|(_, owner, _)| *owner != pid);
+            state.shown.retain(|(_, owner, ..)| *owner != pid);
             for pool in state.pools.iter().filter(|p| p.pid == pid) {
                 let _ = sys::shm_unmap(pool.address);
             }

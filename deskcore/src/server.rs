@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 use surfabi::Format;
 use surfabi::header::Event as RingEvent;
 use surfabi::input::{InputEvent, Kind};
-use surfabi::proto::{Event, GLOBALS, Objects, REGISTRY, Request};
+use surfabi::proto::{Event, GLOBALS, Objects, REGISTRY, Request, SCALE_ONE};
 use surfabi::tree::{self, Tree};
 use surfabi::wire::{self, Error};
 
@@ -56,6 +56,34 @@ struct Surface {
     unsaved: bool,
     /// Whether it is kept from the agent (`toplevel.set_agent_private`).
     agent_private: bool,
+    /// The scale its buffers are drawn at (`surface.set_buffer_scale`), in
+    /// 120ths; 0 until it says, which is [`SCALE_ONE`].
+    scale: u32,
+}
+
+impl Surface {
+    fn buffer_scale(&self) -> u32 {
+        match self.scale {
+            0 => SCALE_ONE,
+            s => s,
+        }
+    }
+}
+
+/// `buffer` px at `scale` in logical px, rounded to the nearest, as a
+/// client rounds its logical size up to a buffer's.
+fn logical(buffer: i32, scale: u32) -> i32 {
+    ((i64::from(buffer) * i64::from(SCALE_ONE) + i64::from(scale) / 2) / i64::from(scale)) as i32
+}
+
+/// A rectangle of buffer px at `scale` as the logical one it lies in: grown
+/// outward to whole logical px.
+fn logical_damage(r: Rect, scale: u32) -> Rect {
+    let (s, one) = (i64::from(scale), i64::from(SCALE_ONE));
+    let lo = |v: i32| (i64::from(v) * one).div_euclid(s) as i32;
+    let hi = |v: i32| ((i64::from(v) * one + s - 1).div_euclid(s)) as i32;
+    let (x, y) = (lo(r.x), lo(r.y));
+    Rect::new(x, y, hi(r.right()) - x, hi(r.bottom()) - y)
 }
 
 /// What `desktop` must do for a request beyond the desk itself.
@@ -64,8 +92,12 @@ pub enum Need {
     /// Map the `Shm` the call brought (its first handle) as pool `pool`, of
     /// `size` bytes.
     MapPool { pool: u32, size: u32 },
-    /// `window` shows `buffer` from now on.
-    Show { window: WindowId, buffer: Buffer },
+    /// `window` shows `buffer` from now on, drawn at `scale` (120ths).
+    Show {
+        window: WindowId,
+        buffer: Buffer,
+        scale: u32,
+    },
     /// `window` is gone: forget its buffer.
     Closed { window: WindowId },
 }
@@ -138,6 +170,15 @@ impl Client {
             );
         }
         client
+    }
+
+    /// Tells the client the scale the desktop prefers it to draw at, in
+    /// 120ths: at connect, and only when it is not 1x, so a desktop at 1x
+    /// sends the bytes it always did.
+    pub fn scale(&mut self, scale: u32) {
+        if scale != SCALE_ONE {
+            self.send(REGISTRY, Event::Scale(scale));
+        }
     }
 
     /// Tells the client the desktop's theme, by name: at connect and after a
@@ -384,6 +425,7 @@ impl Client {
                     }
                 }
                 Request::Attach { buffer } => self.surface(header.object)?.attached = Some(buffer),
+                Request::SetBufferScale(scale) => self.surface(header.object)?.scale = scale,
                 Request::DamageBuffer(r) => {
                     let rect = Rect::new(r.x as i32, r.y as i32, r.w as i32, r.h as i32);
                     self.surface(header.object)?.damage.push(rect);
@@ -543,16 +585,25 @@ impl Client {
         if !self.pools.iter().any(|p| p.0 == buffer.pool) {
             return Err(Error::BadArg);
         }
-        let size = Size {
-            w: buffer.width as i32,
-            h: buffer.height as i32,
-        };
         let surface = self
             .surfaces
             .iter_mut()
             .find(|s| s.id == id)
             .ok_or(Error::UnknownObject)?;
-        let damage = core::mem::take(&mut surface.damage);
+        // The window's size is the buffer's in logical px: at a buffer scale
+        // above 1x, fewer of them than the buffer has.
+        let scale = surface.buffer_scale();
+        let size = Size {
+            w: logical(buffer.width as i32, scale).max(1),
+            h: logical(buffer.height as i32, scale).max(1),
+        };
+        let damage: Vec<Rect> = core::mem::take(&mut surface.damage)
+            .into_iter()
+            .map(|r| match scale {
+                SCALE_ONE => r,
+                s => logical_damage(r, s),
+            })
+            .collect();
         let window = match surface.window {
             Some(window) => {
                 desk.commit(window, size, &damage);
@@ -571,7 +622,11 @@ impl Client {
                 window
             }
         };
-        Ok(Some(Need::Show { window, buffer }))
+        Ok(Some(Need::Show {
+            window,
+            buffer,
+            scale,
+        }))
     }
 
     /// Turns the desk's effects that concern this client into events.

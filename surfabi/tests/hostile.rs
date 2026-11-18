@@ -29,7 +29,7 @@ fn check_stream(bytes: &[u8]) {
 #[test]
 fn the_stream_at_every_prefix() {
     let sample = harness::stream();
-    assert_eq!(harness::serve(&sample), Ok(16));
+    assert_eq!(harness::serve(&sample), Ok(17));
     hostile::truncations(&sample, |_, prefix| {
         // A prefix is a run of whole messages and then, at most, a short one.
         match harness::serve(prefix) {
@@ -162,5 +162,50 @@ fn write_fuzz_seeds() {
         let folder = std::path::Path::new(&dir).join(target);
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join("seed-0"), bytes).unwrap();
+    }
+}
+
+/// The buffer scale (`surface.set_buffer_scale`) is 120 to 360 in 120ths and
+/// nothing else: each edge, the ends past it and the extremes of a `u32`.
+#[test]
+fn the_buffer_scale_takes_one_to_three_and_nothing_else() {
+    use surfabi::proto::{Interface, Request as Req, SCALE_MAX, SCALE_ONE};
+    let at = |scale: u32| {
+        let bytes = Req::SetBufferScale(scale).encode(3).unwrap();
+        let (header, args, _) = wire::split(&bytes).unwrap();
+        assert_eq!((header.object, header.opcode), (3, 9));
+        match Req::decode(Interface::Surface, header.opcode, args) {
+            Ok(Req::SetBufferScale(scale)) => Ok(scale),
+            Ok(other) => panic!("{other:?}"),
+            Err(error) => Err(error),
+        }
+    };
+    for scale in [SCALE_ONE, 150, 240, SCALE_MAX] {
+        assert_eq!(at(scale), Ok(scale));
+    }
+    for scale in [0, 1, SCALE_ONE - 1, SCALE_MAX + 1, 1 << 16, u32::MAX] {
+        assert_eq!(at(scale), Err(Error::BadArg), "{scale}");
+    }
+    // No argument, and one too many, are no scale either.
+    assert!(Req::decode(Interface::Surface, 9, &[]).is_err());
+    let mut long = 150u32.to_le_bytes().to_vec();
+    long.extend_from_slice(&[0; 4]);
+    assert!(Req::decode(Interface::Surface, 9, &long).is_err());
+}
+
+/// The preferred scale rides the registry as opcode 2: no greeting, as the
+/// theme's.
+#[test]
+fn the_scale_event_round_trips_and_is_no_greeting() {
+    use surfabi::proto::{Event as Wire, Interface};
+    for scale in [0, 120, 150, u32::MAX] {
+        let bytes = Wire::Scale(scale).encode(REGISTRY).unwrap();
+        let (header, args, rest) = wire::split(&bytes).unwrap();
+        assert!(rest.is_empty());
+        assert_eq!((header.object, header.opcode), (REGISTRY, 2));
+        assert_eq!(
+            Wire::decode(Interface::Registry, header.opcode, args),
+            Ok(Wire::Scale(scale))
+        );
     }
 }

@@ -531,7 +531,12 @@ impl Ui {
             // whose window holds unsaved changes (below).
             if !matches!(
                 t,
-                Told::Restarted | Told::Focus(_) | Told::Blur(_) | Told::Close(_) | Told::Theme(_)
+                Told::Restarted
+                    | Told::Focus(_)
+                    | Told::Blur(_)
+                    | Told::Close(_)
+                    | Told::Theme(_)
+                    | Told::Scale
             ) && let Some(reply) = host.wake()?
             {
                 println!(
@@ -555,6 +560,7 @@ impl Ui {
                     self.window_focus.push((window, false));
                 }
                 Told::Theme(name) => self.set_theme(&name),
+                Told::Scale => self.rescale(),
                 // The person closed it: comphost hides it, and the app, not
                 // told, keeps its window and its state, as if minimized,
                 // until a show puts it back.
@@ -627,6 +633,28 @@ impl Ui {
         println!("comphost: painting in the {name} theme");
     }
 
+    /// The desktop's scale changed: every open window is drawn again at it,
+    /// whole, from its last frame, in buffers of the new size.
+    fn rescale(&mut self) {
+        for (app, mut frame) in core::mem::take(&mut self.frames) {
+            let (w, h) = frame.size;
+            frame.damage = alloc::vec![uikit::geom::Rect::new(0, 0, w, h)];
+            self.show(app, frame);
+        }
+        println!("comphost: drawing at scale {}/120", self.desk.scale());
+    }
+
+    /// Asks `desktop` for its greeting before the first window opens, so the
+    /// window is drawn at the scale it prefers from its first picture: the
+    /// events (the theme, the scale) come in the reply to any call.
+    fn greet(&mut self) {
+        let Ok(len) = sys::call_route(self.route, &[], &mut self.reply, CALL_MS) else {
+            return;
+        };
+        let told = self.desk.told(&self.reply[..len.min(self.reply.len())]);
+        self.later.extend(told);
+    }
+
     /// A new `desktop`: every window opens again from its last frame.
     /// Takes `window` off the desk and keeps its frame for a show.
     fn hide(&mut self, window: u32) {
@@ -680,6 +708,9 @@ impl Ui {
     }
 
     fn show(&mut self, app: u32, frame: Frame) {
+        if !self.desk.greeted() {
+            self.greet();
+        }
         let title = frame.title.clone();
         let first = !self.frames.iter().any(|(a, _)| *a == app);
         match self.desk.frame(app, &frame) {
@@ -769,7 +800,7 @@ impl Ui {
         let mut painter = uipaint::Painter {
             palette: &self.palette,
             text: &mut self.text,
-            scale: uipaint::Scale::of(uipaint::SCALE_ONE),
+            scale: uipaint::Scale::of(self.desk.scale()),
         };
         painter.paint(&mut canvas, &frame.list, all);
     }

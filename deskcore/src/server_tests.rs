@@ -125,7 +125,7 @@ fn a_client_opens_a_window_once_its_pool_is_mapped() {
         "{needs:?}"
     );
     let needs = client.handle(&mut desk, &show(), false).unwrap();
-    let [Need::Show { window, buffer }] = needs[..] else {
+    let [Need::Show { window, buffer, .. }] = needs[..] else {
         panic!("{needs:?}");
     };
     assert_eq!((buffer.width, buffer.height, buffer.offset), (64, 32, 4096));
@@ -823,4 +823,112 @@ fn a_wheel_goes_to_the_pool_as_an_axis_event() {
         detents: 1,
     }]);
     assert!(client.take_posts().is_empty());
+}
+
+/// The desktop's preferred scale reaches a client as one registry event, only
+/// when it is not 1x.
+#[test]
+fn a_client_hears_the_scale_only_when_it_is_not_one() {
+    let mut client = Client::new(42, "notes");
+    events(&mut client);
+    client.scale(120);
+    assert!(events(&mut client).is_empty());
+    client.scale(150);
+    let sent = events(&mut client);
+    assert_eq!(sent.len(), 1);
+    assert_eq!((sent[0].0, sent[0].1), (REGISTRY, 2));
+    assert_eq!(
+        Event::decode(Interface::Registry, sent[0].1, &sent[0].2),
+        Ok(Event::Scale(150))
+    );
+}
+
+/// A surface at buffer scale 150 with a 300x150 buffer is a 240x120 window,
+/// its damage in logical px grown outward, and the desk is told the scale it
+/// was drawn at.
+#[test]
+fn a_buffer_scale_makes_the_window_smaller_in_logical_px() {
+    use crate::geom::Size;
+    let mut desk = Desk::new(1280, 800);
+    let mut client = Client::new(42, "notes");
+    let pool = 4096 + 300 * 150 * 4;
+    let setup = bytes(&[
+        (
+            REGISTRY,
+            Request::Bind {
+                name: 1,
+                interface: "pool",
+                version: 1,
+                id: 2,
+            },
+        ),
+        (
+            REGISTRY,
+            Request::Bind {
+                name: 2,
+                interface: "surface",
+                version: 1,
+                id: 3,
+            },
+        ),
+        (2, Request::PoolCreate { size: pool }),
+        (
+            2,
+            Request::PoolBuffer {
+                id: 4,
+                offset: 4096,
+                width: 300,
+                height: 150,
+                stride: 1200,
+                format: Format::Xrgb8888,
+            },
+        ),
+        (3, Request::GetToplevel { id: 5 }),
+    ]);
+    client.handle(&mut desk, &setup, true).unwrap();
+    client.pool_mapped(2);
+    let damage = |x, y, w, h| (3, Request::DamageBuffer(SRect { x, y, w, h }));
+    let first = bytes(&[
+        (3, Request::SetBufferScale(150)),
+        (3, Request::Attach { buffer: 4 }),
+        damage(5, 5, 10, 10),
+        (3, Request::Commit),
+    ]);
+    let needs = client.handle(&mut desk, &first, false).unwrap();
+    let [Need::Show { window, scale, .. }] = needs[..] else {
+        panic!("{needs:?}");
+    };
+    assert_eq!(scale, 150);
+    let content = desk.window(window).unwrap().content();
+    assert_eq!(
+        Size {
+            w: content.w,
+            h: content.h
+        },
+        Size { w: 240, h: 120 }
+    );
+    // Buffer px 5..15 at 1.25x lie in logical px 4..12.
+    desk.take_damage();
+    let again = bytes(&[damage(5, 5, 10, 10), (3, Request::Commit)]);
+    client.handle(&mut desk, &again, false).unwrap();
+    let damaged = desk.take_damage();
+    let inside = Rect::new(content.x + 4, content.y + 4, 8, 8);
+    assert!(
+        damaged.iter().any(|d| d.intersect(&inside) == Some(inside)),
+        "{damaged:?} does not hold {inside:?}"
+    );
+}
+
+/// A surface that never sets a buffer scale is shown at 120.
+#[test]
+fn a_surface_at_the_default_scale_is_shown_at_it() {
+    let mut desk = Desk::new(1280, 800);
+    let mut client = Client::new(42, "notes");
+    client.handle(&mut desk, &setup(), true).unwrap();
+    client.pool_mapped(2);
+    let needs = client.handle(&mut desk, &show(), false).unwrap();
+    let [Need::Show { scale, .. }] = needs[..] else {
+        panic!("{needs:?}");
+    };
+    assert_eq!(scale, 120);
 }

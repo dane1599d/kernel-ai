@@ -67,6 +67,7 @@ pub fn stream() -> Vec<u8> {
         ),
         (5, Request::SetUnsaved(true)),
         (5, Request::SetAgentPrivate(true)),
+        (3, Request::SetBufferScale(150)),
         (3, Request::Attach { buffer: 4 }),
         (
             3,
