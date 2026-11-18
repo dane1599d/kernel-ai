@@ -20,6 +20,9 @@ use surfabi::proto::{Event, GLOBALS, Objects, REGISTRY, Request};
 use surfabi::tree::{self, Tree};
 use surfabi::wire::{self, Error};
 
+/// The most detents one wheel event carries to a client.
+pub const MAX_DETENTS: i32 = 120;
+
 /// A buffer in one of the client's pools.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Buffer {
@@ -217,6 +220,19 @@ impl Client {
                 (window, Kind::Button, code, i32::from(down), Some(at))
             }
             Effect::Pointer { window, at } => (window, Kind::Abs, 0, 0, Some(at)),
+            // The vertical wheel: code 0, detents positive down, as many as
+            // the person turned it by, within what a client can take in.
+            Effect::Wheel {
+                window,
+                at,
+                detents,
+            } => (
+                window,
+                Kind::Wheel,
+                0,
+                detents.clamp(-MAX_DETENTS, MAX_DETENTS),
+                Some(at),
+            ),
             _ => return,
         };
         let Some(pool) = self.pool_of(window) else {

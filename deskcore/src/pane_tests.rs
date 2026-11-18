@@ -836,8 +836,8 @@ fn a_hostile_model_name_stays_in_the_header_in_the_systems_look() {
 }
 
 /// The wheel (Kai Desk PR 9) goes to the pane's history while the pointer
-/// is on it, to Start's lists while on Start, nowhere over a window, and
-/// nowhere while a card is up.
+/// is on it, to Start's lists while on Start, to a window's client while on
+/// its content, and nowhere while a card is up.
 #[test]
 fn the_wheel_reaches_the_history_or_start_and_nothing_else() {
     let mut desk = open(1280, 800);
@@ -847,9 +847,12 @@ fn the_wheel_reaches_the_history_or_start_and_nothing_else() {
     assert_eq!(desk.input(Input::Wheel(2)), [Effect::PaneWheel(2)]);
     let content = desk.window(id).unwrap().content();
     desk.input(Input::Motion(middle(content)));
+    // A window's content gets it, as a ring event for its client (lane G,
+    // 2026-11-18: it was dropped until `surfabi` carried it).
+    let over_window = desk.input(Input::Wheel(2));
     assert!(
-        desk.input(Input::Wheel(2)).is_empty(),
-        "a window got the wheel"
+        matches!(over_window[..], [Effect::Wheel { window, detents: 2, .. }] if window == id),
+        "{over_window:?}"
     );
     desk.open_start(&mut Vec::new());
     let start = desk.start().expect("open");

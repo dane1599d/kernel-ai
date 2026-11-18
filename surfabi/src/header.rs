@@ -242,6 +242,12 @@ pub enum Event {
     /// a modifier key's own event included, so the ring alone says what was held
     /// and the seat's `modifiers` message (which another road delivers, at
     /// another time) is only for a button's.
+    ///
+    /// The wheel is an input of kind `Wheel` (the axis event): `code` 0 is the
+    /// vertical axis and `value` the detents turned, positive down, at the
+    /// pointer's `x`, `y` over the surface; other codes are reserved (a client
+    /// ignores them) and no event of it carries text. It adds no message and
+    /// changes no layout: a client that knows nothing of it skips the kind.
     Input {
         event: InputEvent,
         x: i32,
