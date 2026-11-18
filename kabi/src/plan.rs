@@ -136,7 +136,7 @@ pub const UPDATED: &str = "updated caps=update+serve+call uses=llm \
 /// resolve host and its file storage under `cdn.hf.co`, which
 /// `modelchan::fetch::HUGGING_FACE` narrows to the names under it, and the
 /// repository's Pages host, which serves the signed chunk lists. A test boot
-/// plans its own (`kernel/src/selftest.rs`), since a line takes one `netdest=`.
+/// plans its own (`kernel/src/selftest/updated.rs`), since a line takes one `netdest=`.
 pub const UPDATED_NET: &str =
     " netdest=proto:tcp,ports:443,hosts:huggingface.co+cdn.hf.co+dane1599d.github.io";
 /// The live `notes` component, run by the shared `comphost` program, without its
