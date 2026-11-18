@@ -44,6 +44,9 @@ pub struct ServiceSpec {
     /// (`kabi::handle::netdest::LLM`), the one HTTP reaches. Only a line that
     /// asks gets it; `caps=net` alone does not.
     pub llm_dest: bool,
+    /// From `agent=<name>`: the agent this line runs (ADR 0013 section 1), whose
+    /// badge (`kabi::handle::agent`) the kernel puts on its route to `llm`.
+    pub agent: Option<u64>,
     /// When the supervisor starts it, from `start=`.
     pub start: Start,
     /// Restart policy; the plan may change `max_backoff_ms` and `max_restarts`.
@@ -367,6 +370,8 @@ pub struct Grants {
     pub netdest: Option<netdest::Dest>,
     /// Its handle to the LLM server's destination, from `netdest=llm`.
     pub llm_dest: bool,
+    /// The badge on its route to `llm`, from `agent=`.
+    pub agent: Option<u64>,
 }
 
 /// Names nothing may stop: the shell, the supervisor and the model service (as
@@ -614,6 +619,7 @@ impl Plan {
             (!service.dirs.is_empty(), "dir="),
             (service.boot.is_some(), "bootfiles="),
             (service.netdest.is_some() || service.llm_dest, "netdest="),
+            (service.agent.is_some(), "agent="),
         ];
         if let Some((_, key)) = bound.iter().find(|(held, _)| *held)
             && service.program != program
@@ -629,13 +635,14 @@ impl Plan {
             boot: service.boot,
             netdest: service.netdest.clone(),
             llm_dest: service.llm_dest,
+            agent: service.agent,
         })
     }
 }
 
 /// Reads the plan: one service per line, `name [program=P] [pages=N] [stack_pages=N]
 /// [burst_ms=N] [caps=serve+net+call+policy+component+publish+model+threads+stop+script]
-/// [uses=A+B] [dir=pkg] [bootfiles=pkgrepo] [netdest=proto:tcp,hosts:example.org|llm] [start=pkg|demand] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
+/// [uses=A+B] [dir=pkg] [bootfiles=pkgrepo] [netdest=proto:tcp,hosts:example.org|llm] [agent=kai] [start=pkg|demand] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
 /// routes, folders and policy; everything else is passed to the program. A bad line skips only
 /// that service, so one typo cannot keep every other service down.
 pub fn parse_plan(text: &str) -> Plan {
@@ -672,6 +679,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     let mut boot: Option<BootFiles> = None;
     let mut netdest: Option<netdest::Dest> = None;
     let mut llm_dest = false;
+    let mut agent: Option<u64> = None;
     let mut netdest_word = None;
     let mut start: Option<Start> = None;
     let mut unsupervised = false;
@@ -731,6 +739,12 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
                 netdest_word = Some(word);
                 netdest = Some(dest);
             }
+            Some(("agent", value)) => {
+                if agent.is_some() {
+                    return Err(format!("{name}: agent= given twice"));
+                }
+                agent = Some(agent_badge(name, program, value)?);
+            }
             Some(("start", value)) => {
                 if start.is_some() {
                     return Err(format!("{name}: start= given twice"));
@@ -769,10 +783,19 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
             || !dirs.is_empty()
             || boot.is_some()
             || netdest.is_some()
-            || llm_dest)
+            || llm_dest
+            || agent.is_some())
     {
         return Err(format!(
-            "{name}: an unsupervised process takes no caps=, uses=, dir=, bootfiles= or netdest="
+            "{name}: an unsupervised process takes no caps=, uses=, dir=, bootfiles=, netdest= or agent="
+        ));
+    }
+    // An agent's badge rides on its route to `llm`: a line with none has
+    // nowhere to carry it.
+    if agent.is_some() && !uses.iter().any(|used| used == kabi::handle::agent::SERVICE) {
+        return Err(format!(
+            "{name}: agent= needs a route to {} in uses=",
+            kabi::handle::agent::SERVICE
         ));
     }
     if let Some(dest) = &netdest {
@@ -817,6 +840,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
         boot,
         netdest,
         llm_dest,
+        agent,
         start,
         policy,
         unsupervised,
@@ -829,6 +853,26 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
         ));
     }
     Ok(spec)
+}
+
+/// The badge of `agent=value` on the line `name` running `program`: a built-in
+/// agent's (`kabi::handle::agent::BUILTIN`), on its own program only, and on
+/// the shell's line for `kai`. A packaged agent's badge is the roster's, minted
+/// when it is installed, and is not named in a plan.
+fn agent_badge(name: &str, program: &str, value: &str) -> Result<u64, String> {
+    let (badge, runs) = kabi::handle::agent::builtin(value)
+        .ok_or_else(|| format!("{name}: agent={value} is not a built-in agent"))?;
+    let named = match value {
+        "kai" => name == "shell",
+        _ => name == value,
+    };
+    if program != runs || !named {
+        return Err(format!(
+            "{name}: agent={value} is for the line {} running {runs}",
+            if value == "kai" { "shell" } else { value }
+        ));
+    }
+    Ok(badge)
 }
 
 /// Whether the service `name`, planned before, is `fetch` in its send role
@@ -1158,6 +1202,8 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
         .collect()
 }
 
+#[cfg(test)]
+mod agent_tests;
 #[cfg(test)]
 mod startup_tests;
 #[cfg(test)]
