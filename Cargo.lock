@@ -86,6 +86,7 @@ dependencies = [
 name = "agentsched"
 version = "0.0.0"
 dependencies = [
+ "agentid",
  "infer",
  "kaiagent",
  "quant",
