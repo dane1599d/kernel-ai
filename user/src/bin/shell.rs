@@ -254,7 +254,9 @@ fn report_call(route: kabi::handle::Handle, request: &[u8]) -> Result<Vec<u8>, k
 /// panel shows thinking from the Enter until then. A line that asks first
 /// waits for the trusted card (`deskask`); the panel says so. Whether it
 /// took a request, a line or a Stop: no held send starts on that pass
-/// (`give_sends`), so an undo queued behind it is taken first.
+/// (`give_sends`), so an undo queued behind it is taken first. A take that
+/// failed, or an answer that does not read, counts as taken too: an undo may
+/// wait behind it, so held sends wait while the desktop does not answer.
 fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) -> bool {
     use deskcore::panel::{Request, State};
     use deskcore::panel_wire;
@@ -264,7 +266,7 @@ fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) -> bool {
         return false;
     };
     let Ok(answer) = ask_desktop(route, panel_wire::TAKE) else {
-        return false;
+        return true;
     };
     let shown = match panel_wire::parse_take(&answer) {
         Some(Some(Request::Line(line))) => {
@@ -296,10 +298,13 @@ fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) -> bool {
             Some(reply) => State::Done { line: reply.text },
             None => return true,
         },
-        // Esc after the shell took the line: it has run already, one line at
-        // a time, and its result stays shown. Esc before is desktop's own: the
-        // line never came here.
-        _ => return false,
+        // Nothing waits. Esc after the shell took the line: it has run
+        // already, one line at a time, and its result stays shown. Esc before
+        // is desktop's own: the line never came here.
+        Some(None) => return false,
+        // An answer that does not read: whatever it was, it is not passed
+        // over for a send.
+        None => return true,
     };
     // A done line names the log entry its undo link takes back.
     let entry = shell.take_panel_entry();
@@ -924,6 +929,13 @@ impl Host for System {
         net::resolve(host)
     }
 
+    fn net_send(
+        &self,
+        send: &shellcore::outbox::Send,
+    ) -> Result<String, shellcore::outbox::SendFailed> {
+        net::send(send)
+    }
+
     fn cc_build(
         &self,
         dir: &str,
@@ -1545,6 +1557,7 @@ fn main() -> i32 {
     let mut wait_ms = 1;
     let mut warmth = warmth::Warmth::default();
     let mut sends_shown = None;
+    let mut woke_before_send = false;
     loop {
         // What the apps asked during a line that was not a read runs before
         // anything newer is taken: after each step that may run a line (the
@@ -1561,8 +1574,23 @@ fn main() -> i32 {
         // the wait at once, so a click's effect does not wait for a poll.
         take_events(&mut shell, &mut events);
         waiting::run_held(&mut shell, held);
-        let took = take_panel(&mut shell, &mut warmth);
+        let mut took = take_panel(&mut shell, &mut warmth);
         waiting::run_held(&mut shell, held);
+        // A send falls due: a Terminal line that came meanwhile (an `undo`
+        // typed as it did) is answered first, and a wake (a click on the
+        // pane's undo) is taken on the next pass, before the send starts;
+        // only once in a row, so the desktop's steady events never hold a
+        // send back.
+        if !took && shell.next_send_ms(now_ms()) == Some(0) {
+            took = match serve_terminal(&mut shell, &mut line, POLL_MS) {
+                Ok(()) => true,
+                Err(kabi::Error::Woken) => !core::mem::replace(&mut woke_before_send, true),
+                Err(_) => false,
+            };
+        }
+        if !took {
+            woke_before_send = false;
+        }
         give_sends(&mut shell, &system, &mut sends_shown, took);
         take_effects(&mut shell, held);
         waiting::run_held(&mut shell, held);
@@ -1602,41 +1630,47 @@ fn main() -> i32 {
         if let Some(left) = shell.next_send_ms(now_ms()) {
             wait_ms = wait_ms.min(left.max(1));
         }
-        let mut caller = u64::MAX;
-        let len = match sys::svc_recv(&mut line, wait_ms, &mut caller) {
-            Ok(len) => len.min(line.len()),
-            Err(kabi::Error::TimedOut | kabi::Error::Woken) => {
-                wait_ms = WAKE_WAIT_MS;
-                continue;
-            }
+        match serve_terminal(&mut shell, &mut line, wait_ms) {
+            Ok(()) => {}
+            Err(kabi::Error::TimedOut | kabi::Error::Woken) => wait_ms = WAKE_WAIT_MS,
             Err(error) => {
                 println!("svc_recv failed: {error:?}");
                 sys::sleep_ms(100);
-                continue;
             }
-        };
-        // Only the kernel terminal may run shell lines.
-        let mut reply = if caller == 0 {
-            let text = core::str::from_utf8(&line[..len]).unwrap_or("");
-            // An answer to a menu goes on with its run; any other line starts one.
-            if !text.starts_with("answer ") {
-                ui::begin();
-            }
-            let reply = shell.eval_console(text).to_wire();
-            // A panel line's card was answered: the panel shows what came of
-            // it. A Terminal line's answer goes back to the Terminal on the
-            // next pass (`give_call_results`).
-            if let Some((ran, line)) = shell.take_card_result() {
-                let held = shell.take_card_held();
-                give_card_result(ran, line, held);
-            }
-            reply
-        } else {
-            String::from("err the shell answers only the terminal")
-        };
-        reply.truncate(reply.floor_char_boundary(kabi::MAX_MESSAGE));
-        if let Err(error) = sys::svc_reply(reply.as_bytes()) {
-            println!("svc_reply failed: {error:?}");
         }
     }
+}
+
+/// The shortest wait `svc_recv` takes (0 is its longest): a look for a
+/// request already there.
+const POLL_MS: u64 = 1;
+
+/// Takes the next request to the shell's service within `wait_ms`, into
+/// `line`, and answers it: only the kernel terminal may run shell lines.
+fn serve_terminal(shell: &mut Shell, line: &mut [u8], wait_ms: u64) -> Result<(), kabi::Error> {
+    let mut caller = u64::MAX;
+    let len = sys::svc_recv(line, wait_ms, &mut caller)?.min(line.len());
+    let mut reply = if caller == 0 {
+        let text = core::str::from_utf8(&line[..len]).unwrap_or("");
+        // An answer to a menu goes on with its run; any other line starts one.
+        if !text.starts_with("answer ") {
+            ui::begin();
+        }
+        let reply = shell.eval_console(text).to_wire();
+        // A panel line's card was answered: the panel shows what came of
+        // it. A Terminal line's answer goes back to the Terminal on the
+        // next pass (`give_call_results`).
+        if let Some((ran, line)) = shell.take_card_result() {
+            let held = shell.take_card_held();
+            give_card_result(ran, line, held);
+        }
+        reply
+    } else {
+        String::from("err the shell answers only the terminal")
+    };
+    reply.truncate(reply.floor_char_boundary(kabi::MAX_MESSAGE));
+    if let Err(error) = sys::svc_reply(reply.as_bytes()) {
+        println!("svc_reply failed: {error:?}");
+    }
+    Ok(())
 }
