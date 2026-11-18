@@ -1,0 +1,86 @@
+# Throughput floors (lane S-io): boots `part` (S04-2 on the real PART_* calls,
+# 32 MiB each way through `fs`) under KVM, writes its MB/s to the job summary,
+# and fails when a direction is under its floor (scripts/throughput_floor.py).
+# Not a ci.yml job: it runs on pushes to main and pull requests that change the
+# storage path, and by hand (a hand run needs this file on main first; `accel:
+# tcg` is the deliberately slow run that shows the floor failing).
+name: throughput
+
+on:
+  workflow_dispatch:
+    inputs:
+      accel:
+        description: kvm, or tcg for a run the floor must fail
+        default: kvm
+  push:
+    branches: [main]
+    paths:
+      - fsproto/**
+      - fsserve/**
+      - kaifs/**
+      - user/src/bin/fs/**
+      - user/src/kaifs.rs
+      - kernel/src/part_tests.rs
+      - kernel/src/block.rs
+      - scripts/throughput_floor.py
+      - .github/workflows/throughput.yml
+  pull_request:
+    paths:
+      - fsproto/**
+      - fsserve/**
+      - kaifs/**
+      - user/src/bin/fs/**
+      - user/src/kaifs.rs
+      - kernel/src/part_tests.rs
+      - kernel/src/block.rs
+      - scripts/throughput_floor.py
+      - .github/workflows/throughput.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # The floor for each direction, in MB/s. KVM runs of `part` on main measured
+  # 13/13, 15/15 and 21/26 MB/s (write/read, 2026-11-16 to 11-18): runner noise
+  # alone spans that, so the floor catches a halving, not a few MB/s.
+  PART_FLOOR_MBS: "10"
+  # PROOF RUN ONLY: tcg by default, so the floor must fail; the next commit puts kvm back.
+  ACCEL: ${{ inputs.accel || 'tcg' }}
+
+concurrency:
+  group: throughput-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  part:
+    name: part throughput
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/qemu
+      - name: Allow KVM for the runner user
+        if: env.ACCEL == 'kvm'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: qemu
+          save-if: false
+      - name: Boot part
+        env:
+          XTASK_CASE: part
+        shell: bash
+        run: cargo xtask test --accel "$ACCEL" --timeout 600 2>&1 | tee "$RUNNER_TEMP/part.log"
+      - name: The floor
+        if: always()
+        run: >
+          python3 -I scripts/throughput_floor.py "$RUNNER_TEMP/part.log" part "$PART_FLOOR_MBS"
+          'S04-2 on the real calls: .* write (?P<write>[0-9.]+) MB/s .*read (?P<read>[0-9.]+) MB/s'
