@@ -133,11 +133,17 @@ impl Shell {
             _ => None,
         };
         // An agent's card says who asks and offers no Always.
+        let was_menu = menu.is_some();
         let menu = match &asker {
             Asker::Agent(agent) => menu.and_then(|m| crate::agentconsent::agent_menu(agent, &m)),
             _ => menu,
         };
         let (why, outcome) = match menu {
+            // A menu the agent's name made too long for the card.
+            None if was_menu => (
+                TOO_LONG,
+                "discarded: the agent's question is too long for the card",
+            ),
             None => not_on_card(&reply.text),
             Some(_) if self.desk_asks.len() >= MAX_WAITING => {
                 (FULL, "discarded: other questions wait")
@@ -213,11 +219,17 @@ impl Shell {
         if self.desk_asks.is_empty() {
             return None;
         }
+        // The person's own lines go to the card before agents' questions.
+        let first = self
+            .desk_asks
+            .iter()
+            .position(|w| !matches!(w.asker, Asker::Agent(_)))
+            .unwrap_or(0);
         let Waiting {
             mut pending,
             menu,
             asker,
-        } = self.desk_asks.remove(0);
+        } = self.desk_asks.remove(first);
         pending.created_ns = self.host.now_ns();
         let id = pending.id;
         self.host.audit(&format!("request {id}: on the card"));
