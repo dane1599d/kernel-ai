@@ -727,8 +727,8 @@ pub struct Shell {
     roster: agentid::Roster,
     /// What the card came to for agents' asked steps, until each waits for it.
     agents_told: Vec<agentstep::Told>,
-    /// The last script as `show` prints it.
-    shown: Option<String>,
+    /// The last script as `show` prints it, and its entry's id.
+    shown: Option<(u64, String)>,
     /// What the script run by the last line printed.
     last_output: Option<String>,
     /// What the last finished script showed, and the shell's line after it: a
@@ -1202,13 +1202,11 @@ impl Shell {
             return self.undo_command(which);
         }
         // `undo <agent>` (ADR 0013 §1): that agent's newest live entry, for an
-        // agent the log holds an entry of; "undo that" is a line for Kai.
+        // agent on the roster; "undo that" is a line for Kai, whatever an
+        // agent is named.
         if let Some(agent) = input.strip_prefix("undo ")
             && !self.scope.contains("undo")
-            && self
-                .log
-                .entries()
-                .any(|e| !e.agent.is_kai() && e.agent.as_str() == agent.trim())
+            && self.is_undoable_agent(agent.trim())
         {
             return self.undo_agent(agent.trim());
         }
