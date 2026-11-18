@@ -231,8 +231,6 @@ impl Shell {
         true
     }
 
-    /// Ends entry `entry`'s send at `stage`: out of the outbox, logged, and
-    /// told at the terminal's next prompt and on the panel.
     /// Every held send more than [`outbox::UNCHECKED_MS`] past due at
     /// `now_ms`, ended unsent: the OS loop calls it while the desktop does
     /// not answer its take of the panel's requests, where an undo for it may
@@ -243,6 +241,17 @@ impl Shell {
         }
     }
 
+    /// Every held send, ended unsent: the desktop restarted, and the undo
+    /// clicks it held for them are gone with it, so none goes unchecked.
+    pub fn end_held_sends_on_restart(&mut self) {
+        // Every held one: none is due later than the end of time.
+        for entry in self.outbox.overdue(u64::MAX, 0) {
+            self.end_send(entry, Stage::Unsent, outbox::RESTART_WHY);
+        }
+    }
+
+    /// Ends entry `entry`'s send at `stage`: out of the outbox, logged, and
+    /// told at the terminal's next prompt and on the panel.
     fn end_send(&mut self, entry: u64, stage: Stage, why: &str) {
         let Some(pending) = self.outbox.take(entry) else {
             return;
