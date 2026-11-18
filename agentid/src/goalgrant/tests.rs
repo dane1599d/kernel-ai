@@ -173,3 +173,82 @@ fn a_ceiling_ends_with_its_goal_and_a_waiting_call_is_refused_then() {
     assert!(!roster.revoke_goal(3));
     let _ = vec![0u8];
 }
+
+/// Rows of the registry that change something on this machine and were reviewed as
+/// neither sending nor installing, removing or switching code or a model: a goal's
+/// scope may name them. A new row must be put here or in `INSTALL_ROWS` (or be a
+/// read, or a send by its facts) before this test passes, so none slips past.
+const REVIEWED_LOCAL_CHANGES: &[&str] = &[
+    // The scheduler policy, and the programs that run: their tiers still ask where
+    // a change has no undo.
+    "set_policy",
+    "process_stop",
+    "service_stop",
+    "service_start",
+    "service_restart",
+    "power_reboot",
+    // Files under the home folder, inside the goal's folders.
+    "fs_create",
+    "fs_write",
+    "fs_move",
+    "fs_trash",
+    "fs_restore",
+    "fs_empty_trash",
+    // Windows, and what an app's window is shown.
+    "ui_open",
+    "ui_focus",
+    "window_close",
+    "ui_act",
+    "appearance_set",
+];
+
+#[test]
+fn every_row_of_the_registry_is_a_read_a_send_an_install_or_a_reviewed_change() {
+    let unsorted: Vec<&str> = ROWS
+        .iter()
+        .filter(|row| {
+            !row.facts.read_only
+                && !sends_or_installs(row)
+                && !PERMISSION_ROWS.contains(&row.name)
+                && !REVIEWED_LOCAL_CHANGES.contains(&row.name)
+        })
+        .map(|row| row.name)
+        .collect();
+    assert!(unsorted.is_empty(), "rows to sort: {unsorted:?}");
+    // Every listed install row is a row of the registry, so a renamed one is seen.
+    for row in INSTALL_ROWS.iter().chain(PERMISSION_ROWS) {
+        assert!(agentabi::find(&ROWS, row).is_some(), "{row} is no row");
+    }
+}
+
+#[test]
+fn a_ceiling_never_covers_a_code_switch_or_a_permission_change() {
+    let mut roster = Roster::new();
+    let (kai, _) = callers(&roster);
+    for row in ["component_revert", "tune", "tune_undo"] {
+        let got = roster.grant_goal(&kai, person(), 1, &scope(&[row]), &ROWS);
+        assert_eq!(
+            got,
+            Err(GrantRefused::SendsOrInstalls(row.to_string())),
+            "{row}"
+        );
+    }
+    for scope_entry in ["component_*", "tune_*"] {
+        let got = roster.grant_goal(&kai, person(), 1, &scope(&[scope_entry]), &ROWS);
+        assert!(
+            matches!(got, Err(GrantRefused::SendsOrInstalls(_))),
+            "{scope_entry}: {got:?}"
+        );
+    }
+    for row in PERMISSION_ROWS {
+        let got = roster.grant_goal(&kai, person(), 1, &scope(&[row]), &ROWS);
+        assert_eq!(
+            got,
+            Err(GrantRefused::Permissions(row.to_string())),
+            "{row}"
+        );
+    }
+    let got = roster.grant_goal(&kai, person(), 1, &scope(&["grant_*"]), &ROWS);
+    assert!(matches!(got, Err(GrantRefused::Permissions(_))), "{got:?}");
+    assert!(roster.goal_rows(1).is_none());
+}
