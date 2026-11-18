@@ -6,8 +6,9 @@
 //! 2. thinking, from a line's Enter;
 //! 3. done, for a run-tier line that changes the policy with no card (this
 //!    side checks the card never came up while the policy moved);
-//! 4. refused, for a line the panel itself refuses (`:c`, C goes in the
-//!    Terminal);
+//! 4. refused, for a line code refuses before any model: `c` reads as a
+//!    script naming a variable there is none of (the kernel types no Shift,
+//!    so it cannot type `:c`);
 //! 5. asking, for a line that asks first: its question goes on the card, and
 //!    Run there makes its file, which the bar then says.
 
@@ -18,8 +19,8 @@ const CASE: &str = "pane-states";
 /// A line the mock model answers with a run-tier script, no card
 /// (`xtask/src/mock_llm.rs`).
 const RUN_LINE: &str = "turn on round robin scheduling";
-/// A line the panel refuses before any model: C goes in the Terminal.
-const REFUSED_LINE: &str = ":c";
+/// A line code refuses before any model: a script that names no variable.
+const REFUSED_LINE: &str = "c";
 /// A line that names a change but not its file, so it asks first, and the
 /// file Run on the card makes (the mock model's, as the walk's).
 const ASK_LINE: &str = "save a note for the walk";

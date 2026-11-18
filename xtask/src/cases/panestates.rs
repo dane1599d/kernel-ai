@@ -28,9 +28,10 @@ pub(super) const CASES: &[TestCase] = &[TestCase {
         // the card while the policy moves).
         "desktop: the bar says \"Done: policy round-robin (was interactive).",
         "pane-states: the run-tier line changed the policy and showed no card",
-        // Refused, by the panel itself.
+        // Refused, by code before any model: `c` is a script naming no
+        // variable.
         "desktop: the panel shows refused",
-        "desktop: the bar says \"C goes in the terminal\"",
+        "desktop: the bar says \"Variable not found: c (line 1, position 1)\"",
         "pane-states: the panel was given a line it refuses",
         // Asking: the line's question is on the card, and the bar says so.
         "desktop: the bar says \"it asks first: answer Run or Don't on the card\"",
