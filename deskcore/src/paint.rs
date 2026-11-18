@@ -1,7 +1,7 @@
 //! Drawing the desk (ADR 0005 §5, §8): the desk, each window's chrome and
 //! content, the focused window's shadow, the agent's outline, the taskbar and
 //! tray, the Kai pane, Start, a tooltip, the ask card and the cursor, in the
-//! theme's tokens and type (Ember Workbench's dark one until
+//! theme's tokens and type (the dark theme until
 //! [`Painter::set_theme`]). The card is
 //! drawn last but the cursor, so nothing else covers it (ADR 0005 §7).
 //! Pure: the same [`Scene`] gives the same pixels, on the host as in `desktop`,
