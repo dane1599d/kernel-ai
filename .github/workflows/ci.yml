@@ -221,7 +221,9 @@ jobs:
     # On 2026-11-03 batch #591's KVM shard 2 hit 30 minutes: an 11-minute build
     # (the batch changed llmproto and shellcore, so little was cached) plus 18
     # minutes of cases, all passing, against main's 4 and 16.
-    timeout-minutes: ${{ matrix.accel == 'tcg' && 50 || 45 }}
+    # On 2026-11-18 a batch of 10 PRs took TCG shards 39, 47 and 50+ minutes
+    # (run 44386984913, shard 1 cut off at the limit), so TCG gets 75.
+    timeout-minutes: ${{ matrix.accel == 'tcg' && 75 || 45 }}
 
   # Performance pass marks, judged on the release kernel (decisions, 2026-10-27):
   # the boot jobs' debug kernel leaves the `kernel` crate unoptimised, so its
