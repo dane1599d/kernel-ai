@@ -160,11 +160,8 @@ fn a_path_is_one_short_run_of_the_lines_own_words() {
         "/what's",
         "/london",
     ] {
-        assert_eq!(
-            one(LINE, fetch(path)),
-            (Tier::Ask, Why::GrantPath),
-            "{path}"
-        );
+        // A digit in the path also takes the app's word away as a signal.
+        assert_eq!(one(LINE, fetch(path)).0, Tier::Ask, "{path}");
     }
     // A pasted line goes out no more than three words at a time, and not at
     // all with no word that asks to go online.
@@ -183,7 +180,7 @@ fn a_path_is_one_short_run_of_the_lines_own_words() {
 #[test]
 fn a_negated_word_is_no_path() {
     assert_eq!(
-        one("the weather, not for leeds", fetch("/leeds")),
+        one("what's the weather, not for leeds?", fetch("/leeds")),
         (Tier::Ask, Why::GrantPath)
     );
 }
@@ -200,7 +197,7 @@ fn a_line_that_asks_nothing_online_grounds_no_grant() {
     );
     // The app's word counts only where it stands un-negated.
     assert_eq!(
-        one("open the weather for me", fetch("/")),
+        one("what is the weather like?", fetch("/")),
         (Tier::Run, Why::GrantRead),
         "the word asks for the app's site"
     );
@@ -334,7 +331,169 @@ fn an_online_word_counts_by_its_start() {
 #[test]
 fn a_path_takes_each_word_once_even_when_the_line_repeats_it() {
     assert_eq!(
-        one("the weather in leeds leeds", fetch("/leeds/leeds")),
+        one("what's the weather in leeds leeds?", fetch("/leeds/leeds")),
         (Tier::Ask, Why::GrantPath)
+    );
+}
+
+#[test]
+fn a_line_that_says_to_stay_offline_wins_over_a_steered_read() {
+    // A view decided the fetch, and the person's Always rule would waive a
+    // steered ask: the line's own "don't go online" asks first.
+    let viewed = call(
+        "net_fetch",
+        WEATHER,
+        literal("/leeds"),
+        Label::Content("ui"),
+    );
+    assert_eq!(
+        one(
+            "don't go online, just look at notes and guess the weather in Leeds",
+            viewed
+        ),
+        (Tier::Ask, Why::GrantOffline)
+    );
+    let system = call("net_fetch", WEATHER, literal("/leeds"), Label::System);
+    assert_eq!(
+        one("don't go online, what's the weather in Leeds?", system),
+        (Tier::Ask, Why::GrantOffline)
+    );
+}
+
+#[test]
+fn every_apostrophe_and_auxiliary_negates() {
+    for mark in [
+        '`', '\u{B4}', '\u{2032}', '\u{FF07}', '\u{2B9}', '\u{55A}', '\u{2019}',
+    ] {
+        let line = format!("Don{mark}t go online, guess the weather");
+        assert_eq!(
+            one(&line, fetch("/")),
+            (Tier::Ask, Why::GrantOffline),
+            "{line}"
+        );
+    }
+    for line in [
+        "dont go online, what's the weather in Leeds?",
+        "DONT go online, guess the weather",
+        "aint going online, what's the weather in Leeds?",
+        "you shouldnt browse, what's the weather in Leeds?",
+        "isnt it better offline? what's the weather",
+    ] {
+        assert_eq!(
+            one(line, fetch("/")),
+            (Tier::Ask, Why::GrantOffline),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn words_that_mean_stay_off_the_network_bar_a_grant() {
+    for line in [
+        "abstain from the web, guess the weather",
+        "avoid the internet, what's the weather in Leeds?",
+        "avoiding the web today, what's the weather in Leeds?",
+        "ban online lookups, guess the weather",
+        "forget the internet, what's the weather in Leeds?",
+        "ignore the internet, what's the weather in Leeds?",
+        "refrain from going online, what's the weather in Leeds?",
+        "stay away from the web, what's the weather in Leeds?",
+        "online is forbidden, what's the weather in Leeds?",
+        "online is prohibited here, what's the weather in Leeds?",
+        "nah, no looking it up, what's the weather in Leeds?",
+        "the wifi is down, what's the weather in Leeds?",
+        "I'm disconnected, what's the weather in Leeds?",
+        "I'm unplugged, what's the weather in Leeds?",
+        "I'm in airplane mode, what's the weather in Leeds?",
+        "I'm off-grid, what's the weather in Leeds?",
+        "I said no going online. What's the weather in Leeds?",
+        "Don't look it up. What's the weather in Leeds?",
+    ] {
+        assert_eq!(
+            one(line, fetch("/")),
+            (Tier::Ask, Why::GrantOffline),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn a_negation_in_another_sentence_is_not_the_lines_offline() {
+    // Pinned in the shell too, with and without the person's Always rule.
+    assert_eq!(
+        one(
+            "I don't know the weather in Leeds. Look it up online.",
+            fetch("/")
+        ),
+        (Tier::Run, Why::GrantRead)
+    );
+}
+
+#[test]
+fn an_apps_word_signals_only_a_told_line_with_no_digit() {
+    for app in ["pin", "password", "diary", "bank"] {
+        for (line, path) in [
+            ("my pin is 4471, add it to my notes", "/pin/is/4471"),
+            (
+                "my password is hunter2, add it to my notes",
+                "/password/is/hunter2",
+            ),
+            ("add to my diary: met sam at noon", "/met/sam/at"),
+            ("what's my bank pin 4471?", "/bank/pin/4471"),
+        ] {
+            assert_eq!(
+                decide_for(&App(app), line, &[fetch(path)])[0].0,
+                Tier::Ask,
+                "{app}: {line}"
+            );
+        }
+    }
+    assert_eq!(one(LINE, fetch("/leeds")), (Tier::Run, Why::GrantRead));
+}
+
+#[test]
+fn a_noun_that_names_the_internet_is_no_signal() {
+    for (line, path) in [
+        ("my google password is hunter2", "/hunter2"),
+        ("my webcam pin is 4471", "/4471"),
+        ("the website code is 4471", "/4471"),
+        ("the browser code is 4471", "/4471"),
+        ("my downloads folder has pin 4471", "/4471"),
+        ("the url code is 4471", "/4471"),
+        ("the http code is 4471", "/4471"),
+        ("my ping pong score is 4471", "/4471"),
+    ] {
+        assert_eq!(
+            one(line, fetch(path)),
+            (Tier::Ask, Why::Ungrounded),
+            "{line}"
+        );
+    }
+    for line in [
+        "google the weather in leeds",
+        "please fetch the weather in leeds",
+    ] {
+        assert_eq!(
+            one(line, fetch("/leeds")),
+            (Tier::Run, Why::GrantRead),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn an_app_name_each_check_refuses_on_its_own() {
+    // Too short; a common English word; a kind word; a leading word.
+    for app in ["zq", "notes", "app", "our"] {
+        let line = format!("what's {app}?");
+        assert_eq!(
+            decide_for(&App(app), &line, &[fetch("/")])[0],
+            (Tier::Ask, Why::Ungrounded),
+            "{app}"
+        );
+    }
+    assert_eq!(
+        decide_for(&App("radar"), "what's radar?", &[fetch("/")])[0],
+        (Tier::Run, Why::GrantRead)
     );
 }

@@ -216,7 +216,9 @@ fn a_path_the_line_does_not_hold_asks_and_says_why() {
     );
     let reply = shell.eval(LINE);
     asked(&host, &reply);
-    assert!(reply.text.contains("or what to read from it"), "{reply:?}");
+    // Its digit takes the app's word away as a signal too: the site is
+    // one the request did not name.
+    assert!(reply.text.contains("did not name that site"), "{reply:?}");
     assert!(!reply.text.contains("send"), "nothing is sent: {reply:?}");
     // A path whose words are the line's runs.
     let (host, mut shell) = granted(vec![fetch(WEATHER, Some("/leeds"))], &always("weather"));

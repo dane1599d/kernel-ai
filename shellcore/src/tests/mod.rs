@@ -36,6 +36,7 @@ mod effects;
 mod files;
 mod fuzz;
 mod grantleaks;
+mod grantundo;
 mod guard;
 mod log;
 mod logdisk;

@@ -87,15 +87,23 @@ impl Shell {
     pub(crate) fn local_removed(&mut self, script: &str) {
         self.grant_memo.forget_installed();
         let host = self.host.as_ref();
-        match crate::netask::local_package(script) {
-            Some(package) => {
-                if let Err(why) = crate::netask::drop_package_grants(host, &package) {
-                    host.audit(&format!(
-                        "{package}'s network grants were not dropped after its undo: {why}"
-                    ));
-                }
-            }
-            None => host.audit("network grants kept: the undone install names no package"),
+        let Some(package) = crate::netask::local_package(script) else {
+            host.audit("network grants kept: the undone install names no package");
+            return;
+        };
+        // An undo of an upgrade leaves the older version installed: its
+        // grants stay. A pkg that cannot say is taken as the package gone.
+        let why = match host.package_installed(&package) {
+            Ok(true) => return,
+            Ok(false) => format!("the undo took {package} out"),
+            Err(pkg) => format!(
+                "the undo took {package} out, as far as is known (pkg could not say: {pkg})"
+            ),
+        };
+        if let Err(not) = crate::netask::drop_package_grants(host, &package, &why) {
+            host.audit(&format!(
+                "{package}'s network grants were not dropped after its undo: {not}"
+            ));
         }
     }
 
@@ -104,12 +112,19 @@ impl Shell {
     /// the new package starts with none.
     pub(crate) fn fresh_package(&mut self, package: &str) {
         let host = self.host.as_ref();
-        if host.package_installed(package) == Ok(false)
-            && let Err(why) = crate::netask::drop_package_grants(host, package)
-        {
-            host.audit(&format!(
-                "{package}'s old network grants were not dropped: {why}"
-            ));
+        match host.package_installed(package) {
+            Ok(true) => {}
+            Ok(false) => {
+                let why = format!("{package} was not installed before this install");
+                if let Err(not) = crate::netask::drop_package_grants(host, package, &why) {
+                    host.audit(&format!(
+                        "{package}'s old network grants were not dropped: {not}"
+                    ));
+                }
+            }
+            Err(pkg) => host.audit(&format!(
+                "{package}'s old network grants, if any, were kept: pkg could not say whether it is installed ({pkg})"
+            )),
         }
     }
 

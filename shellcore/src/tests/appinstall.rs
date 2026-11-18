@@ -21,7 +21,7 @@ fn app() -> Result<Answer, AnswerError> {
 }
 
 /// A shell that has built the timer, as entry 1.
-fn built() -> (Rc<FakeHost>, Shell) {
+pub(super) fn built() -> (Rc<FakeHost>, Shell) {
     built_with(&["app/log", "ui/view"])
 }
 
@@ -59,7 +59,7 @@ fn built_with(imports: &[&str]) -> (Rc<FakeHost>, Shell) {
 }
 
 /// The card's call for the source the host holds now.
-fn call_for(host: &FakeHost) -> String {
+pub(super) fn call_for(host: &FakeHost) -> String {
     let sha = crate::appbuild::sha256(&host.app_sources.borrow()[0].1);
     format!("app_install(\"timer\", \"0.0.1\", \"{}\")", &sha[..16])
 }

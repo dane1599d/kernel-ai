@@ -317,7 +317,13 @@ impl Walk {
         match stmt {
             Stmt::Noop(_) => unit,
             Stmt::Expr(expr) => self.expr(expr, control),
-            Stmt::FnCall(call, at) => self.call(call, None, *at, control),
+            Stmt::FnCall(call, at) => {
+                // A row call standing alone still met its result: whether it
+                // failed (a file not there) decides what runs after it.
+                let val = self.call(call, None, *at, control);
+                self.met = join(self.met, val.label);
+                val
+            }
             Stmt::Block(block) => self.block(block.statements(), control),
             Stmt::Var(var, _, _) => {
                 let val = self.expr(&var.1, control).raised(control);
@@ -487,13 +493,13 @@ impl Walk {
     }
 
     fn call(&mut self, call: &FnCallExpr, this: Option<Val>, at: Position, control: Label) -> Val {
-        // What was met before this call, its own arguments aside: they are
-        // judged as arguments.
-        let before = self.met;
         let mut args: Vec<Val> = this.into_iter().collect();
         for arg in call.args.iter() {
             args.push(self.expr(arg, control));
         }
+        // What was met before this call runs, its own arguments with it: a
+        // System value inside them could abort the call as well as anything.
+        let before = self.met;
         let from = args
             .iter()
             .fold(Label::Literal, |label, arg| join(label, arg.label));

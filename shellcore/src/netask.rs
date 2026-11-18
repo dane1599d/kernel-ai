@@ -142,10 +142,15 @@ pub(crate) fn at_boot(host: &dyn Host) -> (u32, bool) {
 }
 
 /// Drops package `package`'s grants (its own and its `-window`'s), after an
-/// undo took the package out, so a later package of the same name starts with
-/// none: the person allows it again on its card. How many were dropped, or why
-/// the file was not changed.
-pub(crate) fn drop_package_grants(host: &dyn Host, package: &str) -> Result<usize, String> {
+/// undo took the package out or before a package of its name goes in fresh,
+/// so that package starts with none: the person allows it again on its card.
+/// Each is audited with `why`. How many were dropped, or why the file was not
+/// changed.
+pub(crate) fn drop_package_grants(
+    host: &dyn Host,
+    package: &str,
+    why: &str,
+) -> Result<usize, String> {
     let mut grants = read_store(host)?;
     let window = format!("{package}-window");
     let gone: Vec<(u32, String)> = grants
@@ -163,7 +168,7 @@ pub(crate) fn drop_package_grants(host: &dyn Host, package: &str) -> Result<usiz
     write_store(host, &grants)?;
     for (id, object) in &gone {
         host.audit(&format!(
-            "network grant {id} ({package} on {object}) dropped: the undo took {package} out"
+            "network grant {id} ({package} on {object}) dropped: {why}"
         ));
     }
     Ok(gone.len())

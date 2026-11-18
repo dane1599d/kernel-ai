@@ -59,13 +59,14 @@ fn a_fetch_the_systems_state_decided_asks() {
 
 #[test]
 fn a_grant_read_in_a_loop_or_twice_asks() {
-    for code in [
-        "for i in 0..5 { net_fetch(HOST, \"/leeds\"); }",
-        "net_fetch(HOST, \"/leeds\"); net_fetch(HOST, \"/in\");",
-    ] {
-        let reply = script_asks(code);
-        assert!(reply.text.contains("more than once"), "{code}: {reply:?}");
-    }
+    let reply = script_asks("for i in 0..5 { net_fetch(HOST, \"/leeds\"); }");
+    assert!(reply.text.contains("more than once"), "{reply:?}");
+    // A second read met the first one's page: that steers it.
+    let reply = script_asks("net_fetch(HOST, \"/leeds\"); net_fetch(HOST, \"/in\");");
+    assert!(
+        reply.text.contains("a web page chose this read"),
+        "{reply:?}"
+    );
 }
 
 #[test]
@@ -130,7 +131,7 @@ fn an_undone_packages_grants_are_dropped_and_no_one_elses() {
         ("net-fixture", "a.kai.test", Life::Persistent),
     ]));
     assert_eq!(
-        crate::netask::drop_package_grants(host.as_ref(), "foo"),
+        crate::netask::drop_package_grants(host.as_ref(), "foo", "the undo took foo out"),
         Ok(2)
     );
     let left = crate::netgrant::NetGrants::load(&host.net_disk.borrow().clone().unwrap()).unwrap();
@@ -150,7 +151,9 @@ fn an_undone_packages_grants_are_dropped_and_no_one_elses() {
 not a line
 ",
     ));
-    assert!(crate::netask::drop_package_grants(host.as_ref(), "foo").is_err());
+    assert!(
+        crate::netask::drop_package_grants(host.as_ref(), "foo", "the undo took foo out").is_err()
+    );
 }
 
 #[test]
@@ -254,6 +257,7 @@ fn a_fetch_right_after_the_undo_of_its_apps_install_asks() {
     use nethosts::Granted;
     let weather = nethosts::Host::parse(WEATHER).unwrap();
     assert!(crate::appgrants::AppGrants::new(host.as_ref(), &shell.grant_memo).granted(&weather));
+    host.installed.borrow_mut().clear();
     shell.local_removed("cc build weather 0.0.2\nprovenance x");
     asked(&host, &shell.eval(LINE));
 }
@@ -282,5 +286,49 @@ fn a_value_laundered_through_a_method_or_an_abort_still_steers() {
                 .contains("the system's own state chose this read"),
             "{code}: {reply:?}"
         );
+    }
+}
+
+#[test]
+fn an_offline_line_asks_before_a_view_steered_read_under_a_rule() {
+    use crate::ui::UiCall;
+    let (host, mut shell) = granted(
+        vec![
+            super::appgrants::call(r#"{"name":"ui_view","arguments":{"window":"notes"}}"#),
+            super::appgrants::fetch(WEATHER, Some("/leeds")),
+        ],
+        &always("weather"),
+    );
+    always_rule(&mut shell);
+    *host.ui_answer.borrow_mut() = Some(alloc::boxed::Box::new(|call: &UiCall| match call {
+        UiCall::View(_) => Ok(String::from("w2: [t1] textbox \"weather\"")),
+        _ => Ok(String::new()),
+    }));
+    let reply = shell.eval("don't go online, just look at notes and guess the weather in Leeds");
+    asked(&host, &reply);
+    assert!(
+        reply.text.contains("The request said not to go online"),
+        "{reply:?}"
+    );
+    assert!(shell.pending.as_ref().expect("asks").offer.is_none());
+}
+
+#[test]
+fn a_negation_in_another_sentence_runs_with_or_without_the_rule() {
+    let line = "I don't know the weather in Leeds. Look it up online.";
+    for rule in [false, true] {
+        let (host, mut shell) = granted(
+            vec![super::appgrants::fetch(WEATHER, None)],
+            &always("weather"),
+        );
+        if rule {
+            always_rule(&mut shell);
+        }
+        let reply = shell.eval(line);
+        assert!(
+            reply.ok && reply.confirm.is_none(),
+            "rule {rule}: {reply:?}"
+        );
+        assert_eq!(host.net_seen.borrow().len(), 1);
     }
 }

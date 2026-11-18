@@ -212,3 +212,15 @@ fn plan_met(script: &str) -> Label {
         .unwrap()
         .met
 }
+
+#[test]
+fn a_row_call_standing_alone_is_met_by_what_follows() {
+    // `note_read();` alone could fail and stop the script: the call after it
+    // met its result.
+    assert_eq!(plan_met("note_read(); set_policy(\"rr\");"), NOTE);
+}
+
+#[test]
+fn a_calls_own_arguments_are_met_before_it_runs() {
+    assert_eq!(plan_met("set_policy(`${note_read()}`);"), NOTE);
+}

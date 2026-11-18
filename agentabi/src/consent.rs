@@ -638,23 +638,28 @@ struct Word {
     /// Whether that clause is a question: it starts with a question word (and is
     /// not a polite request) or ends with `?`.
     question: bool,
+    /// Which sentence of the line it is in, counted from 0: a sentence ends at
+    /// `.` `!` `?` or `;`.
+    sentence: usize,
 }
 
 /// The line's words: letters, digits and apostrophes, lower case. Everything else
 /// separates, so "round-robin", "round robin" and "Round Robin." read alike.
 fn words(text: &str) -> Vec<Word> {
-    // Curly apostrophes, as phone keyboards and pastes write them, are the
-    // straight one: "Don’t" is "don't".
+    // Curly apostrophes and their look-alikes, as phone keyboards and pastes
+    // write them, are the straight one: "Don’t" is "don't".
     let folded: alloc::string::String = text
         .chars()
         .map(|c| match c {
-            '\u{2019}' | '\u{2018}' | '\u{2BC}' => '\'',
+            '\u{2019}' | '\u{2018}' | '\u{2BC}' | '\u{60}' | '\u{B4}' | '\u{2032}' | '\u{FF07}'
+            | '\u{2B9}' | '\u{55A}' => '\'',
             c => c,
         })
         .collect();
     let text = folded.as_str();
     let is_word = |c: char| c.is_alphanumeric() || c == '\'';
     let mut clause = 0;
+    let mut sentence = 0;
     let mut out: Vec<Word> = Vec::new();
     let mut asked = Vec::new();
     let mut rest = text;
@@ -671,6 +676,7 @@ fn words(text: &str) -> Vec<Word> {
                 text: word,
                 clause,
                 question: false,
+                sentence,
             });
         }
         if rest[..gap].contains('?') {
@@ -678,6 +684,9 @@ fn words(text: &str) -> Vec<Word> {
         }
         if rest[..gap].contains([',', ';', '.', '!', '?', ':']) {
             clause += 1;
+        }
+        if rest[..gap].contains([';', '.', '!', '?']) {
+            sentence += 1;
         }
         rest = &rest[gap..];
     }
