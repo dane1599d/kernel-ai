@@ -20,6 +20,12 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// The note on a step the goal's end cut off while it ran: failed as far as the
+/// goal knows, until its late finish says how it came out.
+pub const ENDED_IN_FLIGHT: &str = "the goal ended while this step ran";
+/// The note on such a step once its late finish came.
+pub const FINISHED_AFTER_END: &str = "it finished after the goal ended";
+
 /// What became of a proposed step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
@@ -458,9 +464,14 @@ impl Goal {
 
     /// The running step ended: what it cost, the entry it made, and whether the
     /// door answered ok. It counts against the budget either way.
+    ///
+    /// A step the goal's end cut off while it ran ([`ENDED_IN_FLIGHT`]) may still
+    /// finish once, after the end: its entry, its tokens and how it came out are
+    /// kept, so `undo goals` and cancel's offer find what it did (the door made the
+    /// entry whether or not the goal was still going).
     pub fn finish_step(&mut self, done: StepDone) -> Result<(), Refusal> {
         let Some(n) = self.flight.take() else {
-            return Err(Refusal::NoStepRunning);
+            return self.finish_after_end(done);
         };
         self.tokens_spent = self.tokens_spent.saturating_add(done.tokens);
         self.steps_run += 1;
@@ -471,7 +482,12 @@ impl Goal {
             }
             Some(why) => {
                 self.failed += 1;
-                (StepStatus::Failed, Some(valid::clean(&why)))
+                // The door's words never read as the end's own mark.
+                let why = match valid::clean(&why) {
+                    why if why == ENDED_IN_FLIGHT => format!("failed: {why}"),
+                    why => why,
+                };
+                (StepStatus::Failed, Some(why))
             }
         };
         if let Some(step) = self.log.iter_mut().rev().find(|s| s.n == n) {
@@ -482,6 +498,36 @@ impl Goal {
                 step.note = note;
             }
         }
+        Ok(())
+    }
+
+    /// The late finish of the step the goal's end cut off: its last step, failed
+    /// with [`ENDED_IN_FLIGHT`] and no entry yet. Once only: the note changes, so a
+    /// second report finds no step.
+    fn finish_after_end(&mut self, done: StepDone) -> Result<(), Refusal> {
+        let ended = self.state.is_final();
+        let Some(step) = self.log.last_mut().filter(|step| {
+            ended
+                && step.status == StepStatus::Failed
+                && step.entry.is_none()
+                && step.note == ENDED_IN_FLIGHT
+        }) else {
+            return Err(Refusal::NoStepRunning);
+        };
+        step.entry = done.entry;
+        step.tokens = done.tokens;
+        match done.failed {
+            None => {
+                step.status = StepStatus::Ran;
+                step.note = String::from(FINISHED_AFTER_END);
+                self.failed -= 1;
+                self.steps_ok += 1;
+            }
+            Some(why) => {
+                step.note = valid::clean(&format!("{FINISHED_AFTER_END}, failed: {why}"));
+            }
+        }
+        self.tokens_spent = self.tokens_spent.saturating_add(done.tokens);
         Ok(())
     }
 
@@ -508,21 +554,22 @@ impl Goal {
         let closing = match self.waiting.take() {
             Some(Ask {
                 proposal: Some(_), ..
-            }) => Some(StepStatus::Held),
+            }) => Some((StepStatus::Held, "the goal ended")),
             // A question is no step: nothing in the log to close.
             Some(_) => None,
             // The step ran as far as anyone knows and did not finish: the log calls it
             // failed, so the counts do too (a record whose counts are not its log's is
-            // refused when it is read back).
+            // refused when it is read back). Its late finish may still come, with the
+            // entry the door made ([`Goal::finish_step`]).
             None => self.flight.take().map(|_| {
                 self.steps_run += 1;
                 self.failed += 1;
-                StepStatus::Failed
+                (StepStatus::Failed, ENDED_IN_FLIGHT)
             }),
         };
-        if let (Some(status), Some(step)) = (closing, self.last_step()) {
+        if let (Some((status, note)), Some(step)) = (closing, self.last_step()) {
             step.status = status;
-            step.note = String::from("the goal ended");
+            step.note = String::from(note);
         }
         self.flight = None;
         self.state = state;
