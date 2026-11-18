@@ -23,6 +23,14 @@
 //! - The user's own rule is allowed as in `desk-standing`. Then a firing
 //!   outside it, `stop notes-window rule` sent as the shell itself, is refused
 //!   by the supervisor's RULE_CHECK and logged; no card asks, and Notes runs on.
+//!
+//! `test=desk-standing-undo`: an allowed rule taken back, both ways a person
+//! can.
+//! - The rule is allowed on the card as in `desk-standing`; a typed `undo`
+//!   takes it back: the shell's grant for it is gone, the log says so, and
+//!   minimizing Notes fires nothing.
+//! - Allowed again, `rules_remove <id>` ends it the same way, its id read
+//!   from the shell's `rules`.
 
 use crate::display::claim;
 use crate::pointer::{self, Event, Motion, Source};
@@ -196,6 +204,86 @@ pub fn check() -> Result<(), &'static str> {
         return Err("desk-standing: the note did not come back");
     }
     log!("desk-standing: restoring Notes resumed it, with its note intact");
+    Ok(())
+}
+
+/// How many of the shell's log entries are a standing rule's firings.
+fn firings() -> usize {
+    let Ok(log) = ipc::call("shell", b"log actlog", CALL_MS) else {
+        return usize::MAX;
+    };
+    String::from_utf8_lossy(&log)
+        .split("\nE ")
+        .filter(|entry| entry.contains("form=standing "))
+        .count()
+}
+
+/// The user's rule allowed on the card again, its id from the shell's
+/// `rules`, and the shell holding its grant.
+fn allow_once_more(shell: u64) -> Result<String, &'static str> {
+    ASKED.store(false, Ordering::Release);
+    DONE.store(false, Ordering::Release);
+    allow_rule(shell)?;
+    let rules = ipc::call("shell", b"rules", CALL_MS)
+        .map(|reply| String::from_utf8_lossy(&reply).into_owned())
+        .map_err(|_| "desk-standing-undo: the shell did not list its rules")?;
+    rules
+        .split_whitespace()
+        .nth(1)
+        .filter(|id| id.starts_with('S'))
+        .map(String::from)
+        .ok_or("desk-standing-undo: the allowed rule is not listed")
+}
+
+/// Clicks Notes' minimize control, the pointer starting at `from`, and
+/// checks that no rule fires for it.
+fn minimize_fires_nothing(from: (i32, i32)) -> Result<(), &'static str> {
+    let before = firings();
+    report(MINIMIZE.0 - from.0, MINIMIZE.1 - from.1, 0);
+    report(0, 0, 1);
+    report(0, 0, 0);
+    threads::sleep_ms(QUIET_MS);
+    match firings() == before && before != usize::MAX {
+        true => Ok(()),
+        false => Err("desk-standing-undo: a rule taken back still fired"),
+    }
+}
+
+/// `test=desk-standing-undo`: the rule allowed, then taken back by `undo`;
+/// allowed again, then by `rules_remove`.
+pub fn undo_check() -> Result<(), &'static str> {
+    wait("desktop, its trusted layer and Notes", || {
+        claim::showing() && ask_box::alive() && !process::named(APP).is_empty()
+    })?;
+    threads::sleep_ms(OPEN_MS);
+    let shell = pid_of("shell")?;
+    let holds = || {
+        slot_of(shell)
+            .is_some_and(|slot| handle::rules::covers(slot, "app_suspend(\"notes-window\")"))
+    };
+    let first = allow_once_more(shell)?;
+    terminal::shell_line_answered("undo");
+    wait("the undo to take the rule's grant back", || !holds())?;
+    wait("the undo in the shell's log", || {
+        logged(&[&alloc::format!("standing instruction {first} removed")])
+    })?;
+    minimize_fires_nothing(START)?;
+    log!(
+        "desk-standing-undo: undo took the allowed rule back, its grant is gone, and a minimize fires nothing"
+    );
+    // Notes back, then the rule once more, and `rules_remove`.
+    crate::claim_tests::type_keys(&ALT_TAB);
+    threads::sleep_ms(1_000);
+    let second = allow_once_more(shell)?;
+    terminal::shell_line_answered(&alloc::format!("rules_remove {second}"));
+    wait("rules_remove to take the rule's grant back", || !holds())?;
+    wait("rules_remove in the shell's log", || {
+        logged(&[&alloc::format!("Removed standing instruction {second}")])
+    })?;
+    minimize_fires_nothing(MINIMIZE)?;
+    log!(
+        "desk-standing-undo: rules_remove ended the allowed rule, its grant is gone, and a minimize fires nothing"
+    );
     Ok(())
 }
 
