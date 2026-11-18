@@ -78,6 +78,10 @@ fn only_the_shell_may_reach_the_send_service() {
         "app program=comphost caps=serve+call uses=fetch+send",
         "check program=httpscheck caps=call uses=send",
         "shell2 program=comphost caps=call uses=send",
+        // The shell's program under another name, and another program under
+        // the shell's name.
+        "kai2 program=shell caps=call uses=send",
+        "shell program=comphost caps=call uses=send",
     ] {
         let plan = parse_plan(&alloc::format!("{lines}{line}"));
         let name = line.split(' ').next().unwrap();

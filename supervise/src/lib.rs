@@ -797,8 +797,10 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     if start == Start::Pkg && args.iter().any(|a| a.starts_with("version=")) {
         return Err(format!("{name}: a start=pkg line names no version="));
     }
-    // `fetch` in its send role makes POSTs: only the shell may reach it.
-    if program != "shell"
+    // `fetch` in its send role makes POSTs: only the shell may reach it, its
+    // line named `shell` and running `shell`, as DESKTOP's and TERM's one
+    // holders are held to name and program.
+    if !(name == "shell" && program == "shell")
         && let Some(sender) = uses.iter().find(|used| sends(earlier, used))
     {
         return Err(format!(

@@ -94,8 +94,9 @@ pub fn route_name(id: u64) -> Option<Name> {
 /// process `pid`. CALL gives a route only through `uses=`, so none here.
 pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
     // Each row's capability is `kabi::cap::STARTUP_HANDLES`' entry at its
-    // place, so a host test counts what a plan line starts with.
-    let rows: [(Kind, Rights, u64); 19] = [
+    // place, so a host test counts what a plan line starts with; the two
+    // lengths are one, so a row cannot be added to one list alone.
+    let rows: [(Kind, Rights, u64); cap::STARTUP_HANDLES.len()] = [
         // MINT under the `system` root, which is never revoked (ADR 0001 D3).
         (
             Kind::Grant,
