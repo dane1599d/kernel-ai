@@ -518,6 +518,7 @@ impl Shell {
         change: Change,
     ) {
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: how.form,

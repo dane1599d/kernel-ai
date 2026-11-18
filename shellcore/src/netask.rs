@@ -346,6 +346,7 @@ impl Shell {
             ),
         };
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: Form::Call,
@@ -492,6 +493,7 @@ impl Shell {
         let words = format!("{} may not connect to {}", grant.app, grant.object);
         let entry = self.take_id();
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id: entry,
             t_ns: self.host.now_ns(),
             form: Form::Call,

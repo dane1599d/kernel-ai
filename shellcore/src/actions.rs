@@ -473,6 +473,7 @@ impl Shell {
     ) {
         self.host.audit(&format!("script {id} {outcome}"));
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: how.form,
@@ -496,6 +497,7 @@ impl Shell {
             false => Form::Script,
         };
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form,
@@ -719,9 +721,13 @@ impl Shell {
 
     /// `show` or `why`: the last script in full, with why it ran or asked.
     pub(crate) fn show_last(&self) -> Reply {
-        match &self.shown {
-            Some(text) => Reply::ok(text.clone()),
-            None => Reply::err("no script yet"),
+        let Some(text) = &self.shown else {
+            return Reply::err("no script yet");
+        };
+        // `why` names the agent whose entry the newest one is (ADR 0013 §1).
+        match self.log.entries().last().map(|e| &e.agent) {
+            Some(agent) if !agent.is_kai() => Reply::ok(format!("{text}\nby {}", agent.as_str())),
+            _ => Reply::ok(text.clone()),
         }
     }
 }

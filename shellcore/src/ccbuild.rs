@@ -285,6 +285,7 @@ impl Shell {
         let id = self.next_id;
         self.next_id += 1;
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: Form::Call,

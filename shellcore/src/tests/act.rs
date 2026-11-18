@@ -918,3 +918,27 @@ fn what_time_it_is_comes_from_the_clock_not_the_model() {
     );
     assert!(host.act_lines.borrow().is_empty());
 }
+
+#[test]
+fn undo_agent_takes_back_that_agents_newest_entry_and_why_names_it() {
+    let (host, mut shell) = with_calls(vec![call(RR)]);
+    shell.eval("switch to round robin");
+    let id = shell.log.last_id();
+    // As if agent `goals` had made it (ADR 0013 §1).
+    if let Some(entry) = shell.log.get_mut(id) {
+        entry.agent = agentid::Name::new("goals").unwrap();
+    }
+    assert!(shell.eval("why").text.ends_with("\nby goals"));
+    assert!(
+        shell
+            .eval("log")
+            .text
+            .contains(&format!("#{id} [goals] switch to round robin"))
+    );
+    assert!(shell.eval("undo goals").text.starts_with("Undone: "));
+    assert_eq!(host.policy.get(), Some(policy::INTERACTIVE));
+    assert_eq!(
+        shell.eval("undo goals"),
+        Reply::err("nothing of goals's to undo")
+    );
+}
