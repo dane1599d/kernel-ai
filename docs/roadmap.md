@@ -184,10 +184,11 @@ The P2 close rows in `docs/decisions.md` have each case and the accepted miss.
 - **Performance:** `desk-perf` is a gate under KVM, within S05-1's budgets at 1920x1080 (#476). A runner more than 3.5 times slower than the reference reports its figures without gating them (#584).
 - **Not checked in a boot, by design:** parts of `desk-panel` and `desk-standing`, which host tests cover, and `desk-perf`'s (d) and 2560x1440.
 
-**P4 status (2026-11-04):** **every exit case passes; the tag waits on the founder**. Tasks 1-15 are merged.
+**P4 status (2026-11-18):** **v0.1.0-rc.1 is out (tagged 2026-11-12, published 2026-11-14); rc.2 and v0.1.0 wait on the founder's key setup.** Tasks 1-15 are merged. v0.1 stays as cut on `release/v0.1`, plus the interim release signing and the founder's rc.1 VirtualBox fixes; Kai Desk and the internet pieces of P5 ship in v0.2 (the founder, 2026-11-18).
 - **Built:** the seven built-in apps (Terminal, Files, Notes, Settings, System Monitor, Models and the Editor) on `uikit`, each with its actions; the built-ins as signed packages from the image's TUF repository, installs from a local mirror with `undo`, and the Apps sheet; the `c>` prompt, `cc build`, and Kai writing C at `c>` after S12-2 passed; themes; the release terms (MPL-2.0 with the DCO); and `release.yml`, dry-run on a throwaway tag.
 - **On main:** all 12 exit cases, under KVM and TCG: `app-terminal`, `app-files`, `app-notes`, `app-settings`, `app-monitor`, `app-models`, `app-editor`, `pkg-image`, `pkg-install`, `desk-catalog`, `c-prompt` and `c-build`. `release-boot` imports a model into the release image in CI.
-- **Not met yet:** the root ceremony and `kernel-ai-updates` (task 18, with the founder), which gates rc.1; counsel's clearance search for the names (ADR 0009 D8, P4 question 4); `release/seq` in the release PR; and fluency and actbench on the tag's input.
+- **Not met yet:** the founder's key setup (`docs/release/root-ceremony.md`, "Interim: key files"), with which rc.2 and v0.1.0 are signed; the YubiKeys come later as root v2. Then `release/seq` 2 in the rc.2 release PR, and fluency and actbench on `release/v0.1`.
+- **Waived for v0.1.0:** counsel's clearance search for the names (the founder, 2026-11-18; ADR 0009 D8's amendment). It comes before any filing.
 - **The names are kept:** "Kernel AI" since the P4 plan's approval on 2026-10-27, and "Kai" since 2026-11-07 (#745), when the founder accepted the risk of the registered KAI marks for AI assistants that a first-pass trademark check found.
 
 The P4 plan's sections 3.5 and 11 have the v0.1 checklist and each case.
