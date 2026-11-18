@@ -354,6 +354,8 @@ pub enum SelfTest {
     NetStream,
     /// P5 task 12's harness: xtask's HTTPS mock reached from ring 3.
     HttpsMock,
+    /// P5 task 14: an agent `NetDest`'s bytes a day, counted on its record.
+    AgentNetBudget,
     /// P5 task 6, the roadmap's P5 exit: a download cut and resumed, across a
     /// reboot (`again`), and bad certificates and hashes refused; `small`
     /// under TCG (`accel=tcg`).
@@ -570,6 +572,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net-dest" => Some(SelfTest::NetDest),
             "test=net-stream" => Some(SelfTest::NetStream),
             "test=https-mock" => Some(SelfTest::HttpsMock),
+            "test=agent-net-budget" => Some(SelfTest::AgentNetBudget),
             "test=net-download" => Some(SelfTest::NetDownload {
                 again: cmdline.split_whitespace().any(|w| w == "again"),
                 small: cmdline.split_whitespace().any(|w| w == "accel=tcg"),

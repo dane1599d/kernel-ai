@@ -19,6 +19,7 @@ extern crate alloc;
 
 mod act_tests;
 mod agent_desk_tests;
+mod agent_net_budget_tests;
 mod allow;
 mod apic;
 mod app_editor_build_tests;
@@ -501,6 +502,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetDest => run_case(net_tests::dest_check),
         SelfTest::NetStream => run_case(|| net_tests::stream_check(cmdline())),
         SelfTest::HttpsMock => run_case(https_tests::check),
+        SelfTest::AgentNetBudget => run_case(agent_net_budget_tests::check),
         SelfTest::NetDownload { again, .. } => run_case(|| net_download_tests::check(again)),
         SelfTest::FetchService => run_case(https_tests::fetch_check),
         SelfTest::NetGrant => run_case(net_grant_tests::check),

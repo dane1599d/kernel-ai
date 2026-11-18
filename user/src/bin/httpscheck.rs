@@ -83,6 +83,59 @@ fn get(dest: Handle, url: &str) -> Result<(u16, Vec<u8>), HttpError> {
     Ok((got.head.status, body))
 }
 
+/// `budget=URL mib=N` (P5 task 14, `agent-net-budget`): GETs `url` on `dest`,
+/// whose record the kernel meters at `day` bytes a day, until the day's bytes
+/// run out; then a new connection on `dest` must be refused too. Every GET
+/// before that must be a 200, and what came stays within the day.
+fn budget(dest: Handle, url: &str, day: u64) -> i32 {
+    let (mut gets, mut got) = (0u64, 0u64);
+    let stopped = loop {
+        match get(dest, url) {
+            Ok((200, body)) => {
+                gets += 1;
+                got += body.len() as u64;
+                if got > day {
+                    println!(
+                        "httpscheck: budget: {got} body bytes in {gets} GETs, past the day's {day}, and never refused"
+                    );
+                    return 1;
+                }
+            }
+            Ok((status, _)) => {
+                println!("httpscheck: budget: GET {url}: {status}, not 200");
+                return 1;
+            }
+            Err(error) => break error,
+        }
+    };
+    println!(
+        "httpscheck: budget: {gets} GETs brought {got} body bytes of the day's {day}; the next stopped: {stopped:?}"
+    );
+    if gets == 0 {
+        println!("httpscheck: budget: not one GET came before the refusal");
+        return 1;
+    }
+    let Ok(url) = Url::parse(url) else {
+        return 1;
+    };
+    let mut addrs = [[0u8; 4]; 4];
+    let found = sys::resolve_on(dest, &url.host, &mut addrs).unwrap_or(0);
+    let Some(addr) = addrs[..found.min(addrs.len())].first() else {
+        println!("httpscheck: budget: {} did not resolve", url.host);
+        return 1;
+    };
+    match sys::net_connect(dest, *addr, 443, 0) {
+        Err(kabi::Error::Permission) => {
+            println!("httpscheck: budget: a new connection on the handle was refused: Permission");
+            0
+        }
+        other => {
+            println!("httpscheck: budget: a new connection came to {other:?}, not refused");
+            1
+        }
+    }
+}
+
 /// The body's first line, at most [`SHOWN`] bytes, printable.
 fn first_line(body: &[u8]) -> String {
     body.iter()
@@ -310,6 +363,12 @@ fn main() -> i32 {
             }
         };
     }
+    if let Some(url) = arg(&args, "budget") {
+        let mib = arg(&args, "mib")
+            .and_then(|m| m.parse::<u64>().ok())
+            .unwrap_or(1);
+        return budget(dest, url, mib << 20);
+    }
     if arg(&args, "via") == Some("fetch") {
         let fetched = fetch_script(dest);
         return match fetched & send_refusals(dest) {
@@ -317,6 +376,6 @@ fn main() -> i32 {
             false => 1,
         };
     }
-    println!("httpscheck: no get=, refused=, tls= or via=fetch");
+    println!("httpscheck: no get=, refused=, tls=, budget= or via=fetch");
     1
 }

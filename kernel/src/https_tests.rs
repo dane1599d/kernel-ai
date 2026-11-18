@@ -77,7 +77,7 @@ fn httpscheck(name: &str, args: &str) -> Result<(), &'static str> {
 }
 
 /// Waits for the network's address.
-fn wait_up() -> Result<(), &'static str> {
+pub(crate) fn wait_up() -> Result<(), &'static str> {
     for _ in 0..SETUP_WAIT_MS / 10 {
         if net::status().is_some_and(|s| s.address.is_some()) {
             return Ok(());

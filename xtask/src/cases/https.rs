@@ -36,6 +36,16 @@ fn hello() -> Content {
         })
 }
 
+/// What the repository host serves at `/big` for `agent-net-budget`: 48 KiB,
+/// so a 1 MiB day runs out after about twenty GETs.
+fn big() -> Content {
+    Content::new().file(REPO, "/big", alloc_big())
+}
+
+fn alloc_big() -> Vec<u8> {
+    (0..48 * 1024).map(|i| (i % 251) as u8).collect()
+}
+
 /// [`hello`], with a redirect within the repository host and one from the
 /// releases host to the assets host, as GitHub's downloads go.
 fn redirects() -> Content {
@@ -65,6 +75,22 @@ pub const CASES: &[TestCase] = &[
             "https-mock: the mock's hosts resolve and answer over TLS with its test CA",
         ],
         ..case("https-mock", "test=https-mock")
+    },
+    // P5 task 14 (`kernel/src/agent_net_budget_tests.rs`): an agent handle's
+    // bytes a day, counted by the kernel on its record: GETs until the day runs
+    // out, then a send and a new connection refused.
+    TestCase {
+        dns: true,
+        https: Some(Https {
+            content: big,
+            faults: &[],
+        }),
+        expect: &[
+            "[agent-net] httpscheck: budget: ",
+            "[agent-net] httpscheck: budget: a new connection on the handle was refused: Permission",
+            "agent-net-budget: the handle moved its 1 MiB a day, then a send and a new connection were refused",
+        ],
+        ..case("agent-net-budget", "test=agent-net-budget")
     },
     // The roadmap's P5 exit (P5 task 6, `kernel/src/net_download_tests.rs`,
     // `dlcheck`): one target in 32 chunks over two boots, a cut at 40% in the
