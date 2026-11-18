@@ -13,9 +13,9 @@ You chose this on 2026-11-14. Two Ed25519 key files, each encrypted with its own
 | `root.key` | root (version 1, once) | 1 of 1 |
 | `release.key` | targets, packages (empty), models, snapshot, timestamp | 1 of 1 each |
 
-**What it gives a release.** The image carries `release/pkgrepo/` as `pkgrepo/`. Its `packages` role signs the built-in apps (Files, Notes, Terminal and the rest) as packages, which the image carries beside it. The shell learns each app's actions from its installed package, so Kai can call an app by name before it has run. Its `models` role names every model in `xtask/models.json`, so Models imports them, and it is what the download offers come from. Its `1.root.json` also ships as `kai.root.json`, the root that update disks and the online repository are checked against. One root covers both, and the YubiKey root later chains from it.
+**What it gives a release.** The image carries `release/pkgrepo/` as `pkgrepo/`. Its `packages` role signs the built-in apps (Files, Notes, Terminal and the rest) as packages, which the image carries beside it. The shell learns each app's actions from its installed package, so Kai can call an app by name before it has run. Its `models` role names every model in `xtask/models.json`, so Models imports them (from v0.2, the download offers come from it too). Its `1.root.json` also ships as `kai.root.json`, the root that update disks are checked against, and from v0.2 the online repository. One root covers both, and the YubiKey root later chains from it.
 
-**What it does not do.** The kernel boots any model disk attached as `kai-model`, or a disk that starts with the GGUF magic, without a signature. That is how `cargo xtask vbox` VMs get their model, and attaching `kai-model.vmdk` to a release VM works without any key. On VirtualBox no disk can be the import disk (`kai-import`), so the role matters there only for downloads.
+**What it does not do.** The kernel boots any model disk attached as `kai-model`, or a disk that starts with the GGUF magic, without a signature. That is how `cargo xtask vbox` VMs get their model, and attaching `kai-model.vmdk` to a release VM works without any key. On VirtualBox no disk can be the import disk (`kai-import`), so the role matters there only for downloads, which come in v0.2.
 
 **Where to sign.** Sign on a machine no Claude session runs on: your Mac with Homebrew's `openssl@3`, or a live-USB Linux, such as Ubuntu's "Try Ubuntu" session booted from a stick. This PC is not that machine. Anything that runs as your Windows user, every Claude session included, can:
 
@@ -148,9 +148,11 @@ The session never needs the key stick or a passphrase. A change to `xtask/models
   - the rule on root's passphrase;
   - the digits in the draft (step 8);
   - signing only when a session asks for a release you expect.
-- The image's repository (`pkgrepo/`) and the online repository trust the same root and `release.key`: what you sign with it is good for both.
+- The image's repository (`pkgrepo/`) and the online repository (v0.2) trust the same root and `release.key`: what you sign with it is good for both.
 
 ### Expiry and online updates
+
+Online updates and the online repository are v0.2; v0.1 takes updates from an update disk only.
 
 - Model import never checks expiry, so the role in an image keeps working.
 - Update disks and the online repository are checked at the real time. A repository signed this way stops being accepted 7 days after its timestamp is signed. Until there is an online key, an online repository signed offline needs a longer timestamp expiry, for example 30 days, re-signed by hand.
@@ -184,7 +186,7 @@ Installed devices follow, because the new root is signed by the old one. Nothing
 | `root` | 3 YubiKeys (PIV, ECC P-256), one kept off-site | 2 of 3 | 365 days, re-signed from 60 days before | the other roles' keys |
 | `targets` | 2 YubiKeys | 1 of 2 | 365 days | slot images, R images, `SHA256SUMS`; delegates the two below |
 | `packages` | 2 YubiKeys | 1 of 2 | 365 days | `*.kpkg` (ADR 0011), terminating |
-| `models` | 2 YubiKeys | 1 of 2 | 365 days | `*.gguf` and their `kai-chunks 1` lists |
+| `models` | 2 YubiKeys | 1 of 2 | 365 days | `*.gguf` and their `kai-chunks 1` lists, `<sha256>.chunks` |
 | `snapshot`, `timestamp` | one online key in a cloud KMS, reached through GitHub OIDC | 1 | 30 and 7 days, re-signed by CI | the repository's current state |
 
 The same three YubiKeys can hold the root key and the `targets`, `packages` and `models` keys, each in its own PIV slot. ADR 0008 asks only that root needs 2 of 3 and that one key stays off-site.
@@ -265,7 +267,7 @@ On WSL, attach the YubiKey to Linux with `usbipd-win` first.
 3. **Targets' second key:** `tuf-on-ci-delegate sign/targets-1of2 targets`. Use two signers, with threshold 1.
 4. **The two delegations,** each 1 of 2, with expiry 365 days:
    - `tuf-on-ci-delegate sign/packages packages`, paths `*.kpkg`, terminating;
-   - `tuf-on-ci-delegate sign/models models`, paths `*.gguf` and `*.kai-chunks`.
+   - `tuf-on-ci-delegate sign/models models`, paths `*.gguf` and `*.chunks`, terminating, as xtask's test repositories delegate it.
 5. **Check the result:** a fresh python-tuf or `kaituf` client, given only `1.root.json`, refreshes from Pages and lands on the newest root, which needs 2 of 3 signatures.
 6. **Close the issue** tuf-on-ci opened for the scheduled runs that failed before there was metadata. From now on, those runs keep snapshot and timestamp fresh, open re-signing events and test what Pages serves.
 
