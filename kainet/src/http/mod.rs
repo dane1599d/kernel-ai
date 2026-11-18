@@ -178,7 +178,16 @@ impl<C: Connect> Connect for Keep<C> {
     fn fresh(&mut self, url: &Url) -> Result<Self::Stream, HttpError> {
         drop(self.take(url));
         self.reused = false;
-        self.inner.connect(url)
+        match self.inner.connect(url) {
+            // The kept connections may be what the transport is short of (the
+            // OS gives a process two bulk streams): they go, and the
+            // connection is tried once more.
+            Err(HttpError::Connect(_)) if !self.kept.is_empty() => {
+                self.kept.clear();
+                self.inner.connect(url)
+            }
+            other => other,
+        }
     }
 
     fn keeps(&self) -> bool {

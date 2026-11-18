@@ -13,11 +13,18 @@ type Sent = Rc<RefCell<Vec<(usize, String)>>>;
 /// once they run out ends (`recv` gives 0), as a server closing an idle
 /// connection does.
 struct Conn {
+    open: Rc<core::cell::Cell<usize>>,
     id: usize,
     replies: VecDeque<Vec<u8>>,
     out: Vec<u8>,
     at: usize,
     sent: Sent,
+}
+
+impl Drop for Conn {
+    fn drop(&mut self) {
+        self.open.set(self.open.get() - 1);
+    }
 }
 
 impl Stream for Conn {
@@ -39,8 +46,12 @@ impl Stream for Conn {
 }
 
 /// Each new connection gets `per_connection` of the script's replies, in turn:
-/// its host's own script, or the shared one for a host with none.
+/// its host's own script, or the shared one for a host with none. With
+/// `limit`, a connect while that many are open is refused, as the OS refuses
+/// a process a third bulk stream.
 struct Server {
+    limit: Option<usize>,
+    open: Rc<core::cell::Cell<usize>>,
     script: VecDeque<Vec<u8>>,
     hosts: BTreeMap<String, VecDeque<Vec<u8>>>,
     per_connection: usize,
@@ -51,6 +62,8 @@ struct Server {
 impl Server {
     fn new(replies: &[&[u8]], per_connection: usize) -> Self {
         Self {
+            limit: None,
+            open: Rc::default(),
             script: replies.iter().map(|r| r.to_vec()).collect(),
             hosts: BTreeMap::new(),
             per_connection,
@@ -74,10 +87,15 @@ impl Connect for Server {
     type Stream = Conn;
 
     fn connect(&mut self, url: &Url) -> Result<Conn, HttpError> {
+        if self.limit.is_some_and(|limit| self.open.get() >= limit) {
+            return Err(HttpError::Connect("the connection could not be opened"));
+        }
+        self.open.set(self.open.get() + 1);
         self.connects.push(url.host.clone());
         let script = self.hosts.get_mut(&url.host).unwrap_or(&mut self.script);
         let take = self.per_connection.min(script.len());
         Ok(Conn {
+            open: Rc::clone(&self.open),
             id: self.connects.len(),
             replies: script.drain(..take).collect(),
             out: Vec::new(),
@@ -339,4 +357,32 @@ fn a_redirect_with_a_long_body_is_not_kept() {
         Ok(206)
     );
     assert_eq!(keep.held(), 1, "only the assets host's");
+}
+
+#[test]
+fn kept_connections_give_way_when_the_transport_has_no_room_for_another() {
+    // Two open at most, as the OS's two bulk streams a process: the metadata
+    // host's and the releases host's are kept, so the assets host's connect
+    // is refused until they go.
+    let redirect: &[u8] =
+        b"HTTP/1.1 302 Found\r\nLocation: https://assets.kai.test/f\r\nContent-Length: 0\r\n\r\n";
+    let meta: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}";
+    let (a, b) = (part(0), part(4));
+    let mut server = Server::new(&[], 3)
+        .with_host("updates.kai.test", &[meta])
+        .with_host("releases.kai.test", &[redirect; 6])
+        .with_host("assets.kai.test", &[&a, &b]);
+    server.limit = Some(2);
+    let mut keep = Keep::new(server);
+    assert_eq!(
+        get(&mut keep, "https://updates.kai.test/m", None).0,
+        Ok(200)
+    );
+    for first in [0, 4] {
+        let (got, body) = get(&mut keep, "https://releases.kai.test/f", range(first));
+        assert_eq!(got, Ok(206), "chunk at {first}");
+        assert_eq!(body, b"abcd");
+    }
+    // Settled on two: the releases host's and the assets host's.
+    assert_eq!(keep.held(), 2);
 }
