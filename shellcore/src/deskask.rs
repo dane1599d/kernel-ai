@@ -351,7 +351,7 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
-    use super::{SCRIPT, TOO_LONG, as_added, declined, not_on_card};
+    use super::{SCRIPT, SEND, TOO_LONG, as_added, declined, not_on_card};
 
     #[test]
     fn a_call_too_long_for_the_menu_is_told_so_and_a_script_is_not() {
