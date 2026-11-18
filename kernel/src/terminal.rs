@@ -648,8 +648,9 @@ fn shown_reply(reply: &[u8]) -> Option<Waiting> {
     let mut lines: Vec<String> = Vec::new();
     for (lead, part) in [("=", shown.header), (" ", shown.text)] {
         for line in part.lines() {
+            let line = menu::visible_spaces(line);
             lines.extend(
-                wrap(line, width)
+                wrap(&line, width)
                     .into_iter()
                     .map(|row| format!("{lead} {row}")),
             );
