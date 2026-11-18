@@ -138,6 +138,25 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         ],
         ..case("desk-perf", "test=desk-perf display=1920x1080")
     },
+    // The same scenes at 2560x1440 (1.25x: the desk is composed at 2048x1152 and
+    // resampled), judged against 1.8 times S05-1's budgets (the plan's section 5).
+    TestCase {
+        gpu: true,
+        memory_mib: Some(2048),
+        min_timeout: Some(std::time::Duration::from_secs(1_200)),
+        expect: &[
+            "desk-perf: reference p50 ",
+            "desk-perf: (a) full composite at 2560x1440: ",
+            "desk-perf: (b) drag render: ",
+            "desk-perf: (b) drag flush: ",
+            "desk-perf: (c) text page ",
+            "desk-perf: (e) key to flush: ",
+            "desk-perf: (f) drag under load, render+flush: ",
+            "desk-perf: (g) full composite with Start and the pane open at 2560x1440: ",
+            "desk-perf: the figures are in",
+        ],
+        ..case("desk-perf-1440", "test=desk-perf display=2560x1440")
+    },
     // P3's exit case: a profile applied exactly, switched by a real focus change
     // through the user's rule, and undone.
     TestCase {

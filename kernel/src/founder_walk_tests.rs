@@ -400,7 +400,10 @@ fn desk() -> Result<deskgeom::Points, &'static str> {
 /// The desk's points at `surface`'s size.
 fn points_of(surface: &display::Surface) -> Result<deskgeom::Points, &'static str> {
     let px = |n: usize| i32::try_from(n).map_err(|_| "founder-walk: the screen is too big");
-    Ok(deskgeom::points(px(surface.width)?, px(surface.height)?))
+    // `desktop` lays out on the screen's logical size, as it scales it.
+    let (width_mm, _) = display::size_mm();
+    let (w, h) = deskgeom::scale::logical_size(px(surface.width)?, px(surface.height)?, width_mm);
+    Ok(deskgeom::points(w, h))
 }
 
 /// A click at `at`: the pointer pinned to deskgeom's corner, wherever it was,
