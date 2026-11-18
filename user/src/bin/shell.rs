@@ -12,15 +12,15 @@ extern crate alloc;
 mod apart;
 #[path = "shell/build.rs"]
 mod build;
+#[path = "shell/takes.rs"]
+mod takes;
+pub(crate) use takes::*;
 #[path = "shell/files.rs"]
 mod files;
 #[path = "shell/net.rs"]
 mod net;
 #[path = "shell/routes.rs"]
 mod routes;
-#[path = "shell/takes.rs"]
-mod takes;
-pub(crate) use takes::*;
 #[path = "shell/ui.rs"]
 mod ui;
 #[path = "shell/waiting.rs"]
