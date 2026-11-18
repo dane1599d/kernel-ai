@@ -2483,6 +2483,7 @@ version = "0.1.0-dev"
 dependencies = [
  "agentid",
  "kabi",
+ "kaiagent",
  "netdest",
  "termcore",
 ]

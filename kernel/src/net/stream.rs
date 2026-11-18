@@ -60,6 +60,8 @@ struct Stream {
     owner: u64,
     socket: SocketHandle,
     bulk: bool,
+    /// The day's bytes of the agent `NetDest` it was connected on, if any.
+    meter: Option<super::dest::Meter>,
     /// It has been established at least once.
     connected: bool,
 }
@@ -80,8 +82,15 @@ fn index(id: u64) -> Option<usize> {
 }
 
 /// Opens a stream for `owner` to `addr`:`port`, which the caller checked
-/// against its `NetDest`; `bulk` gives it the larger buffer. Its id.
-pub fn connect(owner: u64, addr: Ipv4Addr, port: u16, bulk: bool) -> Result<u64, Error> {
+/// against its `NetDest`; `bulk` gives it the larger buffer, and `meter` is
+/// that `NetDest`'s day's bytes, if it is an agent's. Its id.
+pub fn connect(
+    owner: u64,
+    addr: Ipv4Addr,
+    port: u16,
+    bulk: bool,
+    meter: Option<super::dest::Meter>,
+) -> Result<u64, Error> {
     let mut guard = NET.lock();
     let net = guard.as_mut().ok_or(Error::Unavailable)?;
     if net.setup.status().address.is_none() {
@@ -112,6 +121,7 @@ pub fn connect(owner: u64, addr: Ipv4Addr, port: u16, bulk: bool) -> Result<u64,
         owner,
         socket,
         bulk,
+        meter,
         connected: false,
     };
     let at = match streams.open.iter().position(Option::is_none) {
@@ -198,6 +208,13 @@ fn state(socket: &tcp::Socket, connected: bool) -> u64 {
         bits |= ready::FAILED;
     }
     bits
+}
+
+/// The day's bytes stream `id` of `owner` counts on, if it is an agent's.
+pub fn meter_of(owner: u64, id: u64) -> Option<super::dest::Meter> {
+    let streams = STREAMS.lock();
+    let stream = streams.open.get(index(id)?)?.as_ref()?;
+    (stream.owner == owner).then(|| stream.meter.clone())?
 }
 
 /// NET_SEND: queues up to [`MAX_CALL`] bytes of `data`; how many it took,
