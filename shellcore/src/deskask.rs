@@ -31,6 +31,11 @@ use alloc::string::String;
 
 /// Proposals waiting for the card, every desktop line together.
 pub(crate) const MAX_WAITING: usize = 4;
+/// The places among [`MAX_WAITING`] agents' questions may take, so the
+/// person's panel and Terminal lines keep room on the card.
+pub(crate) const AGENTS_WAITING: usize = 2;
+/// What an agent's question is told when agents' places are full.
+const AGENTS_FULL: &str = "agents' questions fill their places on the card";
 /// What the line is told when its proposal waits for the card.
 pub(crate) const ON_CARD: &str = "it asks first: answer Run or Don't on the card";
 /// What it is told when it is a script, which only the console shows.
@@ -45,7 +50,7 @@ const FULL: &str = "it asks first, and other questions wait: answer those first"
 pub(crate) const TOO_LONG: &str =
     "it asks first, and its call is too long or not plain text for the card: ask in the console";
 /// The line for a card answered Don't, or declined in its window.
-const DECLINED: &str = "Not run: you said Don't.";
+pub(crate) const DECLINED: &str = "Not run: you said Don't.";
 /// The line for a question that lapsed before the card answered it.
 const LAPSED: &str = "Not run: it waited more than two minutes for the card.";
 /// The line for a card's question answered after its two minutes: the
@@ -137,6 +142,16 @@ impl Shell {
             Some(_) if self.desk_asks.len() >= MAX_WAITING => {
                 (FULL, "discarded: other questions wait")
             }
+            // Agents take at most AGENTS_WAITING places: the person's own
+            // lines can always reach the card.
+            Some(_)
+                if matches!(asker, Asker::Agent(_)) && self.agents_waiting() >= AGENTS_WAITING =>
+            {
+                (
+                    AGENTS_FULL,
+                    "discarded: agents' questions fill their places",
+                )
+            }
             Some(menu) => {
                 let id = pending.id;
                 self.host
@@ -158,6 +173,14 @@ impl Shell {
         );
         self.save_log();
         Err(why)
+    }
+
+    /// How many agents' questions wait for the card.
+    fn agents_waiting(&self) -> usize {
+        self.desk_asks
+            .iter()
+            .filter(|w| matches!(w.asker, Asker::Agent(_)))
+            .count()
     }
 
     /// Whether a desktop line's proposal waits for the card.
@@ -206,7 +229,7 @@ impl Shell {
     /// Lets go of waiting questions older than a question's two minutes, as
     /// the console's lapse: what they would do may no longer be meant. A
     /// window's line is told.
-    fn lapse_desk_asks(&mut self) {
+    pub(crate) fn lapse_desk_asks(&mut self) {
         let now = self.host.now_ns();
         while self
             .desk_asks

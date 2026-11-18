@@ -500,7 +500,7 @@ impl Shell {
             false => Form::Script,
         };
         self.log.push(Entry {
-            agent: agentid::Name::kai(),
+            agent: self.entry_agent(id),
             id,
             t_ns: self.host.now_ns(),
             form,
@@ -565,7 +565,8 @@ impl Shell {
         let id = pending.id;
         // An agent's question runs only on the person's yes at its card
         // (`agentconsent`).
-        if self.card_is_agents(id) && !is_show(text) {
+        let expired = self.host.now_ns().saturating_sub(pending.created_ns) > CONFIRM_EXPIRY_NS;
+        if self.card_is_agents(id) && !is_show(text) && !expired {
             self.pending = Some(pending);
             let agent = match self.agent_yes_spent(id) {
                 Ok(agent) => agent,

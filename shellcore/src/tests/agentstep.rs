@@ -169,6 +169,11 @@ fn an_agents_card_names_it_offers_no_always_and_its_allow_runs_once() {
     assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
     let told = step(&mut shell, badge, &format!("wait {}", menu.id));
     assert!(told.starts_with(&format!("ok ran #{}", menu.id)), "{told}");
+    // Once: the same answer again runs nothing.
+    host.policy.set(None);
+    let again = shell.eval_console(&format!("answer {} allow once={once}", menu.id));
+    assert!(!again.ok, "{again:?}");
+    assert_eq!(host.policy.get(), None);
     // The entry says whose it was.
     assert_eq!(
         shell.log.get(menu.id).unwrap().agent.as_str(),
@@ -240,17 +245,35 @@ fn a_yes_for_a_retired_agent_runs_nothing() {
 }
 
 #[test]
-fn an_agent_has_at_most_four_questions_open() {
-    let (_, mut shell, badge) = with_agent();
-    for _ in 0..4 {
+fn agents_take_at_most_two_places_on_the_card_and_the_person_keeps_room() {
+    let stop3 = r#"{"name":"process_stop","arguments":{"name":"build-3"}}"#;
+    let host = FakeHost::new();
+    host.calls
+        .borrow_mut()
+        .push_back(Ok(llmproto::act::parse(stop3).unwrap()));
+    let mut shell = shell(&host);
+    let id = shell.roster_mut().install(manifest()).unwrap();
+    let badge = u64::from(id.badge());
+    for _ in 0..2 {
         assert!(step(&mut shell, badge, RR).starts_with("ok asked "));
     }
+    let third = step(&mut shell, badge, RR);
     assert_eq!(
-        step(&mut shell, badge, RR),
-        "err not asked: the agent has 4 questions waiting for the person"
+        third,
+        "err not asked: agents' questions fill their places on the card"
+    );
+    // The refused question is logged as the agent's, not the person's.
+    let refused = shell.log.last_id();
+    assert_eq!(
+        shell.log.get(refused).unwrap().agent.as_str(),
+        "notes-agent"
+    );
+    // The person's panel line still reaches the card.
+    assert_eq!(
+        shell.eval_panel("stop build-3"),
+        crate::PanelResult::Done(String::from(crate::deskask::ON_CARD))
     );
 }
-
 #[test]
 fn the_persons_line_while_an_agents_question_waits_stays_the_persons() {
     let (host, mut shell, badge) = with_agent();
@@ -280,4 +303,103 @@ fn the_persons_line_while_an_agents_question_waits_stays_the_persons() {
         shell.log.get(my_id).unwrap().agent.is_kai(),
         "the person's own"
     );
+}
+
+#[test]
+fn a_deny_is_the_agents_entry_and_frees_its_place() {
+    let (host, mut shell, badge) = with_agent();
+    for _ in 0..3 {
+        step(&mut shell, badge, RR);
+        let menu = take_agents_card(&mut shell);
+        let once = host.mint(menu.id, menu.call());
+        let denied = shell.eval_console(&format!("answer {} deny once={once}", menu.id));
+        assert!(denied.text.contains("you said Don't"), "{denied:?}");
+        assert_eq!(host.policy.get(), None);
+        assert_eq!(
+            shell.log.get(menu.id).unwrap().agent.as_str(),
+            "notes-agent"
+        );
+        let told = step(&mut shell, badge, &format!("wait {}", menu.id));
+        assert!(
+            told.starts_with(&format!("err not run #{}", menu.id)),
+            "{told}"
+        );
+    }
+    // Each answer gave its places back: the agent can still ask, and its
+    // Allow runs.
+    step(&mut shell, badge, RR);
+    let menu = take_agents_card(&mut shell);
+    let once = host.mint(menu.id, menu.call());
+    assert!(
+        shell
+            .eval_console(&format!("answer {} allow once={once}", menu.id))
+            .ok
+    );
+    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
+}
+
+#[test]
+fn a_lapsed_agents_question_is_its_entry_and_its_wait_hears_so() {
+    let (host, mut shell, badge) = with_agent();
+    let asked = step(&mut shell, badge, RR);
+    let id: u64 = asked["ok asked ".len()..]
+        .split(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    host.step_ns.set(200_000_000_000);
+    shell.eval_console(termcore::menu::TAKE_CARD);
+    host.step_ns.set(1000);
+    assert_eq!(shell.log.get(id).unwrap().agent.as_str(), "notes-agent");
+    let told = step(&mut shell, badge, &format!("wait {id}"));
+    assert!(told.starts_with(&format!("err not run #{id}")), "{told}");
+    // Its places came back.
+    for _ in 0..2 {
+        assert!(step(&mut shell, badge, RR).starts_with("ok asked "));
+    }
+}
+
+#[test]
+fn an_agents_step_never_takes_the_place_of_the_persons_question() {
+    let stop3 = r#"{"name":"process_stop","arguments":{"name":"build-3"}}"#;
+    let host = FakeHost::new();
+    host.calls
+        .borrow_mut()
+        .push_back(Ok(llmproto::act::parse(stop3).unwrap()));
+    let mut shell = shell(&host);
+    let id = shell.roster_mut().install(manifest()).unwrap();
+    let badge = u64::from(id.badge());
+    let mine = shell.eval_console("stop build-3");
+    assert!(mine.to_wire().starts_with("menu "), "{mine:?}");
+    let mine_id = shell.pending.as_ref().unwrap().id;
+    assert_eq!(
+        step(&mut shell, badge, RR),
+        format!("err {}", crate::agentstep::PERSON_ASKED)
+    );
+    // The person's question is still theirs to answer.
+    let once = host.mint(mine_id, "process_stop(\"build-3\")");
+    let done = shell.eval_console(&format!("answer {mine_id} allow once={once}"));
+    assert!(done.ok, "{done:?}");
+    assert!(!host.procs.borrow().iter().any(|p| p == "build-3"));
+}
+
+#[test]
+fn a_row_the_call_turns_into_is_admitted_against_the_agents_grants() {
+    // `ops-agent` holds process_stop, not service_stop: stopping a service
+    // by the process row runs service_stop, so the step is refused.
+    let host = FakeHost::new();
+    host.services
+        .borrow_mut()
+        .push((String::from("indexer"), true));
+    host.lists_services.set(true);
+    let mut shell = shell(&host);
+    let id = shell.roster_mut().install(ops_manifest()).unwrap();
+    let badge = u64::from(id.badge());
+    let stop = r#"{"name":"process_stop","arguments":{"name":"indexer"}}"#;
+    let wire = step(&mut shell, badge, stop);
+    assert!(wire.contains("it runs service_stop"), "{wire}");
+    assert!(!shell.desk_ask_waiting(), "nothing asked");
+    let refused = shell.log.last_id();
+    assert_eq!(shell.log.get(refused).unwrap().agent.as_str(), "ops-agent");
 }
