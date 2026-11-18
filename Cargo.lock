@@ -2471,6 +2471,7 @@ name = "supervise"
 version = "0.1.0-dev"
 dependencies = [
  "kabi",
+ "kaiagent",
  "netdest",
  "termcore",
 ]

@@ -9,3 +9,7 @@ publish = false
 kabi = { path = "../kabi" }
 netdest = { path = "../netdest" }
 termcore = { path = "../termcore" }
+
+[dev-dependencies]
+# A test holds `MAX_NET_MIB` to an agent manifest's most.
+kaiagent = { path = "../kaiagent" }

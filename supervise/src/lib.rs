@@ -44,6 +44,10 @@ pub struct ServiceSpec {
     /// (`kabi::handle::netdest::LLM`), the one HTTP reaches. Only a line that
     /// asks gets it; `caps=net` alone does not.
     pub llm_dest: bool,
+    /// From `net_mib=`: the MiB a day its `netdest=` may move, both ways
+    /// (P5 task 14, an agent's manifest's `bytes/day`); the kernel counts them
+    /// on the handle's record. None: not counted.
+    pub net_mib: Option<u32>,
     /// When the supervisor starts it, from `start=`.
     pub start: Start,
     /// Restart policy; the plan may change `max_backoff_ms` and `max_restarts`.
@@ -367,6 +371,8 @@ pub struct Grants {
     pub netdest: Option<netdest::Dest>,
     /// Its handle to the LLM server's destination, from `netdest=llm`.
     pub llm_dest: bool,
+    /// The MiB a day its `netdest=` may move, from `net_mib=`.
+    pub net_mib: Option<u32>,
 }
 
 /// Names nothing may stop: the shell, the supervisor and the model service (as
@@ -629,6 +635,7 @@ impl Plan {
             boot: service.boot,
             netdest: service.netdest.clone(),
             llm_dest: service.llm_dest,
+            net_mib: service.net_mib,
         })
     }
 }
@@ -672,6 +679,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     let mut boot: Option<BootFiles> = None;
     let mut netdest: Option<netdest::Dest> = None;
     let mut llm_dest = false;
+    let mut net_mib: Option<u32> = None;
     let mut netdest_word = None;
     let mut start: Option<Start> = None;
     let mut unsupervised = false;
@@ -731,6 +739,19 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
                 netdest_word = Some(word);
                 netdest = Some(dest);
             }
+            Some(("net_mib", value)) => {
+                if net_mib.is_some() {
+                    return Err(format!("{name}: net_mib= given twice"));
+                }
+                let mib = value
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|mib| (1..=MAX_NET_MIB).contains(mib))
+                    .ok_or_else(|| {
+                        format!("{name}: net_mib={value} is not 1 to {MAX_NET_MIB} MiB a day")
+                    })?;
+                net_mib = Some(mib);
+            }
             Some(("start", value)) => {
                 if start.is_some() {
                     return Err(format!("{name}: start= given twice"));
@@ -778,6 +799,11 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     if let Some(dest) = &netdest {
         any_host_line(name, program, dest)?;
     }
+    // The bytes a day are counted on the line's own destination: with none,
+    // there is nothing to count them on.
+    if net_mib.is_some() && netdest.is_none() {
+        return Err(format!("{name}: net_mib= needs a netdest="));
+    }
     if llm_dest {
         llm_dest_line(name, program, limits.caps)?;
     }
@@ -817,6 +843,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
         boot,
         netdest,
         llm_dest,
+        net_mib,
         start,
         policy,
         unsupervised,
@@ -888,6 +915,10 @@ fn llm_dest_line(name: &str, program: &str, caps: u64) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// The most MiB a day `net_mib=` may give: an agent manifest's most
+/// (`kaiagent::MAX_NET_MIB_PER_DAY`, which a test holds this to).
+pub const MAX_NET_MIB: u32 = 512;
 
 /// The one program told its line's `netdest=` as an argument.
 pub const NETDEST_ARG_PROGRAM: &str = "comphost";
@@ -1158,6 +1189,8 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
         .collect()
 }
 
+#[cfg(test)]
+mod net_mib_tests;
 #[cfg(test)]
 mod startup_tests;
 #[cfg(test)]

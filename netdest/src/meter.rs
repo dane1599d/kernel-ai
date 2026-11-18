@@ -70,6 +70,12 @@ impl DayMeter {
         }
     }
 
+    /// Gives back `bytes` of a send [`DayMeter::try_send`] charged that did not
+    /// leave (a stream that took only part of it). Never below 0.
+    pub fn refund(&mut self, bytes: u64) {
+        self.used = self.used.saturating_sub(bytes);
+    }
+
     /// Counts `bytes` received on `day`: whether the day's budget still has room.
     pub fn received(&mut self, bytes: u64, day: u32) -> bool {
         self.roll(day);
@@ -144,6 +150,13 @@ mod tests {
 
     #[test]
     fn no_budget_moves_nothing_and_a_huge_send_does_not_overflow() {
+        // A send taken in part gives the rest back.
+        let mut part = DayMeter::from_mib(1, 1);
+        assert!(part.try_send(1000, 1).is_ok());
+        part.refund(400);
+        assert_eq!(part.used(), 600);
+        part.refund(u64::MAX);
+        assert_eq!(part.used(), 0);
         let mut none = DayMeter::from_mib(0, 1);
         assert!(none.try_send(1, 1).is_err());
         assert!(!none.has_room(1));
