@@ -216,7 +216,7 @@ impl Goal {
 
     /// Whether a step that costs about `est` tokens would run past a budget or the
     /// deadline at `now`.
-    fn over(&self, now: u64, est: u64) -> Option<Pause> {
+    pub(crate) fn over(&self, now: u64, est: u64) -> Option<Pause> {
         let started = self.started_ms.unwrap_or(now);
         if self.by_ms.is_some_and(|by| now >= by) {
             Some(Pause::Deadline)
