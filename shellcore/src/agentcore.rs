@@ -172,7 +172,8 @@ impl Shell {
             true => String::from(arg),
             false => format!("{HOME}{}", arg.trim_start_matches("./")),
         };
-        let app = crate::ui::app_of(crate::ui::canonical(app)).replace('-', "_");
+        let app =
+            crate::ui::app_of(crate::ui::canonical_on(self.host.as_ref(), app)).replace('-', "_");
         let Some((name, row)) = [format!("{app}_open_file"), format!("{app}_open")]
             .into_iter()
             .find_map(|name| Some((name.clone(), self.row(&name)?)))

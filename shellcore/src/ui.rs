@@ -115,6 +115,21 @@ pub fn canonical(app: &str) -> &str {
         .map_or(app, |(_, means)| means)
 }
 
+/// [`canonical`], except that an app the host runs or installed under that
+/// very name keeps it: a package called `console` is not the terminal.
+pub fn canonical_on<'a>(host: &dyn crate::Host, app: &'a str) -> &'a str {
+    let named = app.trim();
+    let real = host.services().is_ok_and(|services| {
+        services
+            .iter()
+            .any(|s| app_of(&s.name).eq_ignore_ascii_case(named))
+    });
+    match real {
+        true => named,
+        false => canonical(app),
+    }
+}
+
 /// The name the agent knows an app's window by: a `<pkg>-window` service is
 /// `<pkg>`'s window (`notes-window` is Notes'), so `ui_open("notes")`, the
 /// State line and a window's name all say `notes`.
