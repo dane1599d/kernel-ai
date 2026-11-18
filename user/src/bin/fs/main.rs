@@ -11,6 +11,7 @@ extern crate alloc;
 
 mod check;
 mod dev;
+mod profile;
 mod shm;
 
 use alloc::vec::Vec;
@@ -90,6 +91,9 @@ fn main() -> i32 {
     server.set_name_of(name_of);
     fill_model(&mut server, part);
     let mut bench = Bench::default();
+    let mut args = [0u8; 128];
+    let args_len = sys::args(&mut args).unwrap_or(0);
+    let mut phases = profile::Phases::new(core::str::from_utf8(&args[..args_len]).unwrap_or(""));
     let mut request = alloc::vec![0u8; MAX_MESSAGE];
     loop {
         let mut from = RecvInfo::default();
@@ -109,6 +113,7 @@ fn main() -> i32 {
             [raw] if from.badge != 0 => shm::Mapped::of(request, Handle(*raw)),
             _ => None,
         };
+        let started = sys::time_ns();
         let answer = (from.badge != 0).then(|| {
             server.call_shm(
                 &Call {
@@ -122,6 +127,9 @@ fn main() -> i32 {
             )
         });
         drop(mapped);
+        if answer.is_some() {
+            phases.answered(request, started, sys::time_ns());
+        }
         for &raw in moved {
             let _ = sys::handle_close(Handle(raw));
         }
