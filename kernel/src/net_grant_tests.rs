@@ -104,6 +104,11 @@ fn card(host: &str, allow: bool) -> Result<(), &'static str> {
 /// Waits, with no card, until the shell's Deny of the revoked host has
 /// refused the app at least once (`net denied`), well inside its minute.
 fn denied_once() -> Result<(), &'static str> {
+    // Each different answer the shell gave, logged once as it first comes: a
+    // TCG run that timed out here (main runs 43508647923, 43519660175,
+    // 43925679716) had the shell refuse the app twice a second with this Deny
+    // while every answer the case read missed it, and no answer was kept.
+    let mut last = alloc::string::String::new();
     for _ in 0..DENIED_WAIT_MS / DENIED_POLL_MS {
         let said = ipc::call("shell", b"net denied", CARD_MS)
             .map_err(|_| "net-grant: the shell did not answer net denied")?;
@@ -116,6 +121,10 @@ fn denied_once() -> Result<(), &'static str> {
         if let (Some(line), Some(1..)) = (line, count) {
             log!("net-grant: the Deny refused the app's request: {line}");
             return Ok(());
+        }
+        if said != last {
+            log!("net-grant: net denied answered {said:?}");
+            last = said.into_owned();
         }
         quiet(DENIED_POLL_MS)?;
     }
