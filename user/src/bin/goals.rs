@@ -39,7 +39,7 @@ extern crate alloc;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use goalcore::runner::{Event, Parts, Plan, Planner, Runner, Steps};
+use goalcore::runner::{Event, Outcome, Parts, Plan, Planner, Runner, Steps};
 use goalcore::{Door, Goal, Goals, Presence, State, Step, StepDone, Tier};
 use llmproto::act::ActRequest;
 use user::{arg, args, println, route, sys};
@@ -365,27 +365,31 @@ struct ShellSteps {
 }
 
 impl Steps<String> for ShellSteps {
-    fn run(&mut self, goal: u64, step: &Step<String>) -> StepDone {
+    fn run(&mut self, goal: u64, step: &Step<String>) -> Outcome {
         let reply = match call_shell(&format!("agent-step goal={goal} {}", step.call)) {
             Ok(reply) => reply,
-            Err(why) => return failed(None, why),
+            Err(why) => return Outcome::Done(failed(None, why)),
         };
         let reply = match reply.strip_prefix("ok asked ") {
             Some(rest) => {
                 let id = rest.split(':').next().unwrap_or("").trim().to_string();
                 match wait_for(&id) {
                     Ok(answer) => answer,
-                    Err(why) => return failed(None, why),
+                    Err(why) => return Outcome::Done(failed(None, why)),
                 }
             }
             None => reply,
         };
+        // The person's no on the card: the step did not run.
+        if let Some(why) = reply.strip_prefix("err not run ") {
+            return Outcome::Denied(why.to_string());
+        }
         // Refused at the ceiling: the shell restarted (its grants are not kept) or
         // the goal was revoked. The goal pauses; it is not tried again in a loop.
         if reply.starts_with("err refused") {
             self.refused.push(goal);
         }
-        step_done(&reply)
+        Outcome::Done(step_done(&reply))
     }
 }
 
@@ -437,6 +441,9 @@ fn report(event: &Event) {
     match event {
         Event::Ran { goal, step, entry } => {
             println!("goals: goal {goal} step {step} ran (entry {entry:?})");
+        }
+        Event::Denied { goal, step } => {
+            println!("goals: goal {goal} step {step}: the person said no");
         }
         Event::Waiting { line, .. } => println!("goals: {line}"),
         Event::Paused { goal, pause } => println!("goals: goal {goal} paused ({pause:?})"),
