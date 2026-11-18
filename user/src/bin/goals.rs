@@ -91,7 +91,8 @@ fn agent_job() -> Result<(), String> {
     }
     println!("goals: ask answer {}", asked.len());
     let request = ActRequest {
-        line: String::from("how many cpus are there?"),
+        // A line the mock server answers with a call (its `ACTS` table).
+        line: String::from("how many processors do I have"),
         state: String::new(),
         timeout_ms: 120_000,
         read: None,
