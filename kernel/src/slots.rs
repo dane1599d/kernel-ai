@@ -72,10 +72,18 @@ pub fn this_slot() -> Option<Slot> {
     }
 }
 
+/// `KaiBootState`, or `None` when the firmware has none (a fresh install, or
+/// NVRAM cleared: R installs). A record that is there but does not decode (a
+/// bad CRC, a bad field, or a newer VERSION) is an error, not a missing one:
+/// R stays up and writes nothing (ADR 0008), so the floors and the commits it
+/// held are never rebuilt from nothing, and a system slot boots without the
+/// lever and commits nothing.
 fn read_record() -> Result<Option<Record>, &'static str> {
     let mut bytes = [0u8; 128];
     match efi::get_variable(&KAI, RECORD, &mut bytes) {
-        Ok(len) => Ok(Record::decode(&bytes[..len])),
+        Ok(len) => Record::decode(&bytes[..len]).map(Some).ok_or(
+            "slots: KaiBootState does not decode (a bad CRC or a newer version); R stays up",
+        ),
         Err(efi::Error::NotFound) => Ok(None),
         Err(_) => Err("slots: cannot read KaiBootState"),
     }

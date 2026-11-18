@@ -122,19 +122,103 @@ fn a_trial_slot_that_never_comes_up_goes_back_to_the_committed_one() {
 }
 
 #[test]
-fn a_committed_slot_gets_safe_mode_then_the_other_slot() {
+fn a_committed_slot_gets_safe_mode_then_r_when_the_other_is_below_the_floor() {
     let mut nv = installed();
     step(&mut nv, Event::Update);
     step(&mut nv, Event::UpCommit);
     assert!(nv.record.slot(Slot::B).successful);
+    // B's commit of release 2 left A's release 1 below the floor.
+    assert_eq!(nv.record.min_release_seq, 2);
+    assert_eq!(nv.record.slot(Slot::A).reason, Reason::Unbootable);
     // B now fails every boot before coming up.
     let mut landed = alloc_free_vec();
     for _ in 0..8 {
         landed.push(step(&mut nv, Event::Lost));
     }
-    // R counted B's failures: 1 re-arms, 2 re-arms in safe mode, 3 moves to A.
-    assert!(landed.contains(&Slot::A), "{landed:?}");
+    // R counted B's failures: 1 re-arms, 2 re-arms in safe mode, 3 would move
+    // to A, which is below the floor: R stays up (ADR 0008 §7).
+    assert!(!landed.contains(&Slot::A), "{landed:?}");
     assert_eq!(nv.record.slot(Slot::B).failures, MAX_FAILURES);
+    assert_eq!(nv.record.armed, None);
+}
+
+#[test]
+fn a_committed_slot_falls_back_to_another_of_the_same_release() {
+    let mut nv = installed();
+    // B holds the same release, committed too (an install whose B passed
+    // probation): at the floor, not below it.
+    stage_end(&mut nv, Slot::B, 1);
+    commit(&mut nv, Slot::B, 1);
+    restart_into(&mut nv, Slot::A);
+    commit(&mut nv, Slot::A, 1);
+    assert!(nv.record.slot(Slot::B).successful);
+    let mut landed = alloc_free_vec();
+    for _ in 0..8 {
+        landed.push(step(&mut nv, Event::Lost));
+    }
+    assert!(landed.contains(&Slot::B), "{landed:?}");
+}
+
+#[test]
+fn no_slot_below_the_floors_boots_whatever_the_record_says() {
+    let mut nv = installed();
+    // A record as older code left it: B committed at release 1, the floor at 2.
+    stage_end(&mut nv, Slot::B, 1);
+    nv.record.slot_mut(Slot::B).successful = true;
+    nv.record.slot_mut(Slot::A).release_seq = 2;
+    nv.record.min_release_seq = 2;
+    assert!(!may_boot(&nv.record, Slot::B));
+    assert!(may_boot(&nv.record, Slot::A));
+    assert!(may_boot(&nv.record, Slot::R));
+    // Neither a rollback nor R moves to it.
+    assert!(!rollback(&mut nv, Slot::A));
+    nv.record.armed = Some(Slot::B);
+    assert_eq!(r_boots(&mut nv), InR::Arm(Slot::A));
+    // A slot being written is left as it is by a commit.
+    let mut nv = installed();
+    stage_begin(&mut nv, Slot::B);
+    nv.record.slot_mut(Slot::A).release_seq = 5;
+    commit(&mut nv, Slot::A, 1);
+    assert_eq!(nv.record.slot(Slot::B).reason, Reason::Updating);
+}
+
+#[test]
+fn a_trial_that_faults_after_coming_up_gets_all_its_tries() {
+    let mut nv = installed();
+    step(&mut nv, Event::Update);
+    // B comes up and then faults, every boot.
+    let mut boots_of_b = 0;
+    for _ in 0..4 * usize::from(TRIES) {
+        match boot(&mut nv) {
+            Slot::B => {
+                boots_of_b += 1;
+                up(&mut nv, Slot::B);
+                fault(&mut nv, Slot::B, 1, 0);
+            }
+            Slot::R => {
+                r_boots(&mut nv);
+            }
+            Slot::A => break,
+        }
+    }
+    assert_eq!(boots_of_b, usize::from(TRIES), "one try each boot, not two");
+    assert_eq!(nv.record.slot(Slot::B).reason, Reason::Unbootable);
+}
+
+#[test]
+fn came_up_round_trips_in_a_byte_older_records_leave_clear() {
+    let mut record = installed().record;
+    record.came_up = true;
+    let bytes = record.encode();
+    assert_eq!(bytes[51], 1);
+    assert_eq!(Record::decode(&bytes), Some(record));
+    // A record written before it was kept reads as not come up.
+    record.came_up = false;
+    assert_eq!(record.encode()[51], 0);
+    assert_eq!(
+        Record::decode(&record.encode()).map(|r| r.came_up),
+        Some(false)
+    );
 }
 
 /// A tiny fixed-size list, since the crate has no allocator.
