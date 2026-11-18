@@ -1241,11 +1241,17 @@ fn serve_terminal(shell: &mut Shell, line: &mut [u8], wait_ms: u64) -> Result<bo
     // only its steps (`shellcore::agentstep`).
     let mut info = kabi::handle::RecvInfo::default();
     let len = sys::recv_h(line, wait_ms, &mut info)?.min(line.len());
+    // The shell takes no handle from any request: close every one the
+    // kernel moved in, so none leaks into the shell's table.
+    let moved = (info.handle_count as usize).min(info.handles.len());
+    for &h in &info.handles[..moved] {
+        let _ = sys::handle_close(kabi::handle::Handle(h));
+    }
     let caller = info.caller_pid;
     let text = core::str::from_utf8(&line[..len]).unwrap_or("");
     let stepped = match caller {
         0 => None,
-        _ => shell.from_route(info.badge, text),
+        _ => shell.from_route(info.badge, moved, text),
     };
     // Only the kernel's terminal's lines count as a line run.
     let ran = caller == 0 && stepped.is_none();
