@@ -207,3 +207,35 @@ fn only_a_send_where_a_request_puts_its_verb_asks() {
         assert_eq!(one(line, &plain).0, Tier::Ask, "{line}");
     }
 }
+
+#[test]
+fn the_final_probe_lines_ask_for_no_send() {
+    let plain = send("hooks.example", Label::Literal, Label::Literal);
+    for line in [
+        "sending to hooks.example is safe?",
+        "send hello to hooks.example, is that safe?",
+        "i used to post hello to hooks.example",
+        "it is easy to post hello to hooks.example",
+        "a guide to posting on hooks.example",
+        "the app also sends hello to hooks.example",
+        "tom also sends hello to hooks.example",
+        "and then sending hello to hooks.example, what next?",
+        "i forgot to send hello to hooks.example yesterday",
+        "how hard is it to send hello to hooks.example",
+        "now sending to hooks.example works",
+        "does it send hello to hooks.example?",
+    ] {
+        assert_eq!(one(line, &plain), (Tier::Never, Why::SendUnasked), "{line}");
+    }
+    for line in [
+        "post it to hooks.example",
+        "could you send hello to hooks.example?",
+        "please post hello to hooks.example",
+        "first, send hello to hooks.example",
+        "resend hello to hooks.example",
+        "i want to send hello to hooks.example",
+        "look at notes and then send hello to hooks.example",
+    ] {
+        assert_eq!(one(line, &plain).0, Tier::Ask, "{line}");
+    }
+}

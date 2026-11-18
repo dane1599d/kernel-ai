@@ -714,7 +714,8 @@ fn words(text: &str) -> Vec<Word> {
         let word = rest[..end].trim_matches('\'').to_lowercase();
         rest = &rest[end..];
         let gap = rest.find(is_word).unwrap_or(rest.len());
-        if !word.is_empty() {
+        let had_word = !word.is_empty();
+        if had_word {
             if CLAUSE_WORDS.contains(&word.as_str()) {
                 clause += 1;
             }
@@ -729,13 +730,16 @@ fn words(text: &str) -> Vec<Word> {
         if rest[..gap].contains('?') {
             asked.push(clause);
         }
-        if rest[..gap].contains([',', ';', '.', '!', '?', ':']) {
+        // A dot between two word characters is inside a word, a host's or a
+        // number's ("hooks.example", "1.5"): it ends no clause or sentence.
+        let inside = had_word && &rest[..gap] == "." && gap < rest.len();
+        if !inside && rest[..gap].contains([',', ';', '.', '!', '?', ':']) {
             clause += 1;
         }
         if rest[..gap].contains('?') {
             asked_sentences.push(sentence);
         }
-        if rest[..gap].contains([';', '.', '!', '?']) {
+        if !inside && rest[..gap].contains([';', '.', '!', '?']) {
             sentence += 1;
         }
         rest = &rest[gap..];

@@ -352,9 +352,14 @@ pub(crate) fn shell_line_answered(line: &str) -> bool {
 /// with what an Allow minted. A menu with `shown` text is asked only on the
 /// console, with the text again above it once the console has the screen.
 fn choose(decoder: &mut Decoder, mut menu: Menu, shown: Option<&[String]>) -> Option<Waiting> {
-    let answer = match shown {
-        Some(lines) => answer_on_console_after(decoder, &mut menu, lines),
-        None => answer(decoder, &mut menu),
+    let card_up = claim::showing() && ask_box::alive();
+    let answer = match (menu::surface(shown.is_some(), card_up), shown) {
+        (menu::Surface::Console, Some(lines)) => answer_on_console_after(decoder, &mut menu, lines),
+        (menu::Surface::Console, None) => answer_on_console(decoder, &mut menu),
+        (menu::Surface::Card, _) => match answer_on_card(&menu) {
+            Some(answer) => answer,
+            None => answer_on_console(decoder, &mut menu),
+        },
     };
     let (prompt, _) = menu.input();
     finish_line(prompt, answer.word(), "");

@@ -1,8 +1,10 @@
 //! Whether a line asks for a send (ADR 0002 D3, the P5 close's `Hold` rows):
-//! an allow list, not a deny list. A send verb counts only where a request
-//! puts one: first in its clause ("send hello to …", "first, send …"), or
-//! right after "please", "now", "just", "also", "and", "then", "to", or a
-//! polite "can / could / would / will you". Anything else asks for no send:
+//! an allow list, not a deny list. A send verb's base form counts only where a
+//! request puts one: first in its clause ("send hello to …", "first, send
+//! …"), right after "please", "now", "just", "also", "and" or "then", after a
+//! wanting "to" ("i want to send …"), or after a polite "can / could / would /
+//! will you"; a gerund only first in its clause. A sentence that ends in `?`
+//! asks no send unless it opens as a polite request. Anything else asks for no send:
 //! the noun ("the blog post about …"), a question, a clause led by "if",
 //! "in case", "whether" or "when", and "how to …" or "know what …". A request
 //! put some other way is refused, and the person says it again plainly.
@@ -10,20 +12,20 @@
 use super::{TELL_WORDS, Word, negated};
 use alloc::vec::Vec;
 
-/// The verb forms of the send rows' cues: exact words, never a prefix.
-const SEND_VERBS: &[&str] = &[
-    "send",
-    "sends",
-    "sending",
-    "resend",
-    "post",
-    "posting",
-    "submit",
-    "submitting",
-];
+/// The base forms of the send rows' cues: a request's verb.
+const BASE: &[&str] = &["send", "post", "submit", "resend"];
+/// Their gerunds: a send only first in a clause of a sentence that asks
+/// nothing ("sending hello to …, now").
+const GERUNDS: &[&str] = &["sending", "posting", "submitting", "resending"];
 
-/// Words a request puts right before its verb.
-const LEADS: &[&str] = &["please", "now", "just", "also", "and", "then", "to"];
+/// Words a request puts right before its verb's base form.
+const LEADS: &[&str] = &["please", "now", "just", "also", "and", "then"];
+
+/// Words after which "to" leads a request's verb: "i want to send …". Any
+/// other "to" ("used to post", "easy to post") leads none.
+const WANTS: &[&str] = &[
+    "want", "wants", "wanted", "need", "needs", "like", "going", "have", "has", "ready",
+];
 
 /// The polite requests: "can you send …".
 const POLITE: &[&str] = &["can", "could", "would", "will"];
@@ -55,14 +57,26 @@ fn before(words: &[Word], at: usize) -> Vec<&str> {
         .collect()
 }
 
-/// Whether the cue at `at` stands where a request puts its verb.
+/// Whether the clause of `at` opens as a polite request: "can you …".
+fn polite(words: &[Word], at: usize) -> bool {
+    let lead = before(words, at);
+    matches!(lead.as_slice(), [first, "you", ..] if POLITE.contains(first))
+}
+
+/// Whether the cue at `at` stands where a request puts its verb: a base form
+/// first in its clause or after a lead, a polite "can you", or a wanting
+/// "to"; a gerund only first in its clause of a sentence that asks nothing.
 fn placed(words: &[Word], at: usize) -> bool {
+    let text = words[at].text.as_str();
+    let base = BASE.contains(&text);
+    let gerund = GERUNDS.contains(&text) && !words[at].sentence_asks;
     let lead = before(words, at);
     match lead.as_slice() {
-        [] => true,
-        [.., word] if LEADS.contains(word) => true,
-        [.., polite, "you"] if POLITE.contains(polite) => true,
-        [.., polite, "you", "please"] if POLITE.contains(polite) => true,
+        [] => base || gerund,
+        [.., word] if LEADS.contains(word) => base,
+        [.., want, "to"] if WANTS.contains(want) => base,
+        [.., polite, "you"] if POLITE.contains(polite) => base,
+        [.., polite, "you", "please"] if POLITE.contains(polite) => base,
         _ => false,
     }
 }
@@ -86,13 +100,15 @@ fn telling(words: &[Word], at: usize) -> bool {
             .any(|p| p.len() == 2 && pair[0] == p[0] && pair[1] == p[1])
     });
     let told = lead.iter().any(|w| TELL_WORDS.contains(w));
-    words[at].question || led || phrase || told
+    // A sentence that ends in `?` asks, unless it opens as a polite request.
+    let asks = words[at].sentence_asks && !polite(words, at);
+    words[at].question || led || phrase || told || asks
 }
 
 /// Whether the line itself asks for a send.
 pub(super) fn asked(words: &[Word]) -> bool {
     words.iter().enumerate().any(|(at, w)| {
-        SEND_VERBS.contains(&w.text.as_str())
+        (BASE.contains(&w.text.as_str()) || GERUNDS.contains(&w.text.as_str()))
             && placed(words, at)
             && !telling(words, at)
             && !negated(words, at)
