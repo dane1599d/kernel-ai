@@ -1602,8 +1602,10 @@ fn main() -> i32 {
         if let Some(left) = shell.next_send_ms(now_ms()) {
             wait_ms = wait_ms.min(left.max(1));
         }
-        let mut caller = u64::MAX;
-        let len = match sys::svc_recv(&mut line, wait_ms, &mut caller) {
+        // Who sent it and the badge of its route: an agent's route may send
+        // only its steps (`shellcore::agentstep`).
+        let mut info = kabi::handle::RecvInfo::default();
+        let len = match sys::recv_h(&mut line, wait_ms, &mut info) {
             Ok(len) => len.min(line.len()),
             Err(kabi::Error::TimedOut | kabi::Error::Woken) => {
                 wait_ms = WAKE_WAIT_MS;
@@ -1615,8 +1617,16 @@ fn main() -> i32 {
                 continue;
             }
         };
-        // Only the kernel terminal may run shell lines.
-        let mut reply = if caller == 0 {
+        let caller = info.caller_pid;
+        let text = core::str::from_utf8(&line[..len]).unwrap_or("");
+        let stepped = match caller {
+            0 => None,
+            _ => shell.from_route(info.badge, text),
+        };
+        // Only the kernel terminal may run shell lines; an agent, its steps.
+        let mut reply = if let Some(reply) = stepped {
+            reply
+        } else if caller == 0 {
             let text = core::str::from_utf8(&line[..len]).unwrap_or("");
             // An answer to a menu goes on with its run; any other line starts one.
             if !text.starts_with("answer ") {
