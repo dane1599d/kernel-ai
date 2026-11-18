@@ -149,6 +149,9 @@ enum Waiting {
     More,
     /// A call that asks: the Allow / Deny menu.
     Menu(Menu),
+    /// A send's menu, with the text shown above it: answered only on the
+    /// console, where the text is shown again first (`menu::surface`).
+    Shown(Menu, Vec<String>),
 }
 
 /// The prompt for a line that continues an open entry (ADR 0012).
@@ -247,19 +250,22 @@ pub fn run(_: usize) {
     let mut waiting: Option<Waiting> = None;
     loop {
         if let Some(Waiting::Menu(menu)) = waiting {
-            waiting = choose(&mut decoder, menu);
+            waiting = choose(&mut decoder, menu, None);
+            continue;
+        }
+        if let Some(Waiting::Shown(menu, lines)) = waiting {
+            waiting = choose(&mut decoder, menu, Some(&lines));
             continue;
         }
         let prompt = match &waiting {
             Some(Waiting::Confirm(confirm)) => confirm.prompt(),
             Some(Waiting::Apply(p)) => format!("apply {} to {}? yes/no> ", p.label, p.component),
             Some(Waiting::More) => CONTINUE_PROMPT.into(),
-            Some(Waiting::Menu(_)) | None => {
-                edit_mode::prompt().unwrap_or_else(|| match C_MODE.load(Ordering::Relaxed) {
+            Some(Waiting::Menu(_) | Waiting::Shown(..)) | None => edit_mode::prompt()
+                .unwrap_or_else(|| match C_MODE.load(Ordering::Relaxed) {
                     true => C_PROMPT.into(),
                     false => PROMPT.into(),
-                })
-            }
+                }),
         };
         let asks = matches!(waiting, Some(Waiting::Confirm(_) | Waiting::Apply(_)));
         // The question is answered on the console, and only by keys typed once
@@ -308,7 +314,7 @@ pub fn run(_: usize) {
                 waiting = shell_line(line);
                 continue;
             }
-            Some(Waiting::Menu(_)) | None => {}
+            Some(Waiting::Menu(_) | Waiting::Shown(..)) | None => {}
         }
         let editing = edit_mode::editing().is_some();
         match route(line, C_MODE.load(Ordering::Relaxed)) {
@@ -332,17 +338,24 @@ pub(crate) fn shell_line_answered(line: &str) -> bool {
     let mut decoder = Decoder::new();
     let mut waiting = shell_line(line);
     let mut asked = false;
-    while let Some(Waiting::Menu(menu)) = waiting {
+    loop {
+        waiting = match waiting {
+            Some(Waiting::Menu(menu)) => choose(&mut decoder, menu, None),
+            Some(Waiting::Shown(menu, lines)) => choose(&mut decoder, menu, Some(&lines)),
+            _ => return asked,
+        };
         asked = true;
-        waiting = choose(&mut decoder, menu);
     }
-    asked
 }
 
-/// Shows `menu` on the console, reads its answer, then sends it to the shell
-/// with what an Allow minted.
-fn choose(decoder: &mut Decoder, mut menu: Menu) -> Option<Waiting> {
-    let answer = answer(decoder, &mut menu);
+/// Shows `menu` on its surface, reads its answer, then sends it to the shell
+/// with what an Allow minted. A menu with `shown` text is asked only on the
+/// console, with the text again above it once the console has the screen.
+fn choose(decoder: &mut Decoder, mut menu: Menu, shown: Option<&[String]>) -> Option<Waiting> {
+    let answer = match shown {
+        Some(lines) => answer_on_console_after(decoder, &mut menu, lines),
+        None => answer(decoder, &mut menu),
+    };
     let (prompt, _) = menu.input();
     finish_line(prompt, answer.word(), "");
     // Allow mints the call's ONCE (and an "Always allow" its rule node); the
@@ -367,9 +380,13 @@ fn choose(decoder: &mut Decoder, mut menu: Menu) -> Option<Waiting> {
 /// console (ADR 0005 §7). A card withdrawn before an answer, because `desktop`
 /// stopped showing or reading, goes to the console after.
 pub(crate) fn answer(decoder: &mut Decoder, menu: &mut Menu) -> Answer {
-    match answer_on_card(menu) {
-        Some(answer) => answer,
-        None => answer_on_console(decoder, menu),
+    let card_up = claim::showing() && ask_box::alive();
+    match menu::surface(false, card_up) {
+        menu::Surface::Card => match answer_on_card(menu) {
+            Some(answer) => answer,
+            None => answer_on_console(decoder, menu),
+        },
+        menu::Surface::Console => answer_on_console(decoder, menu),
     }
 }
 
@@ -424,8 +441,17 @@ fn answer_on_card(menu: &Menu) -> Option<Answer> {
 /// its settle, none while a key held then is down, and no auto-repeat; Ctrl-C
 /// and Esc are Deny.
 pub(crate) fn answer_on_console(decoder: &mut Decoder, menu: &mut Menu) -> Answer {
+    answer_on_console_after(decoder, menu, &[])
+}
+
+/// [`answer_on_console`], with `shown` printed first, once the console has the
+/// screen: a send's text, above its card.
+fn answer_on_console_after(decoder: &mut Decoder, menu: &mut Menu, shown: &[String]) -> Answer {
     AWAITING_ANSWER.store(true, Ordering::Release);
     let took = claim::take_for_answer();
+    for row in shown {
+        log!("{row}");
+    }
     for row in menu.rows() {
         log!("{row}");
     }
@@ -613,9 +639,20 @@ fn shown_reply(reply: &[u8]) -> Option<Waiting> {
     if text_rows + card_rows + 1 >= rows || !fits_on_screen(&card.rows().join("\n")) {
         return deny("the text to send does not fit on one screen with its question");
     }
-    show_lines("=", shown.header);
-    show_lines(" ", shown.text);
-    menu_reply(shown.menu.as_bytes())
+    // Printed when it is asked, once the console has the screen.
+    let mut lines: Vec<String> = Vec::new();
+    for (lead, part) in [("=", shown.header), (" ", shown.text)] {
+        for line in part.lines() {
+            lines.extend(
+                wrap(line, width)
+                    .into_iter()
+                    .map(|row| format!("{lead} {row}")),
+            );
+        }
+    }
+    REPLIED_NS.store(hpet::nanos(), Ordering::Relaxed);
+    REPLIES_SHOWN.fetch_add(1, Ordering::Relaxed);
+    Some(Waiting::Shown(card, lines))
 }
 
 /// A `menu` reply: shown only if it decodes and every row is shown exactly as

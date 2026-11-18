@@ -387,14 +387,41 @@ pub fn split_shown(wire: &str) -> Option<Result<Shown<'_>, Refused>> {
     })())
 }
 
-/// The id of the menu at the end of `wire`, when the menu reads that far: for
-/// the Deny of one that cannot be shown.
+/// The id of the menu in `wire`, past a shown block's bytes when it has one,
+/// so no `menu N` inside the shown text is read: for the Deny of a menu that
+/// cannot be shown.
 pub fn menu_id(wire: &str) -> Option<u64> {
-    let at = wire.find("menu ")?;
-    wire[at + 5..]
+    let menu = match wire.strip_prefix(SHOWN) {
+        Some(rest) => {
+            let (len, rest) = rest.split_once('\n')?;
+            let len: usize = len.parse().ok()?;
+            rest.get(len..)?.strip_prefix('\n')?
+        }
+        None => wire,
+    };
+    menu.strip_prefix("menu ")?
         .split([' ', '\n'])
         .next()
         .and_then(|id| id.parse().ok())
+}
+
+/// Where a menu is answered (ADR 0005 §7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Surface {
+    /// `desktop`'s trusted card.
+    Card,
+    /// The kernel console.
+    Console,
+}
+
+/// Where a menu is answered: the desk card while it is up, else the console.
+/// A menu with text shown above it is answered only on the console, where
+/// that text is: the card shows none.
+pub fn surface(shown: bool, card_up: bool) -> Surface {
+    match (shown, card_up) {
+        (false, true) => Surface::Card,
+        _ => Surface::Console,
+    }
 }
 
 pub fn answer_line(id: u64, answer: Answer) -> String {
@@ -762,5 +789,37 @@ mod granted_tests {
         let cut = &wire[..wire.len() - menu.len() - 2];
         assert!(matches!(super::split_shown(cut), Some(Err(_))));
         assert_eq!(super::menu_id(&wire), Some(4));
+    }
+
+    #[test]
+    fn a_shown_menu_is_answered_only_on_the_console_and_its_id_is_past_the_text() {
+        use super::{Surface, surface};
+        assert_eq!(surface(false, true), Surface::Card);
+        assert_eq!(surface(false, false), Surface::Console);
+        assert_eq!(
+            surface(true, true),
+            Surface::Console,
+            "the card shows no text"
+        );
+        assert_eq!(surface(true, false), Surface::Console);
+        let menu = Menu::encode(
+            7,
+            Origin::Asked,
+            "Send it with x(\"a\")?",
+            "",
+            "",
+            "x(\"a\")",
+        );
+        let wire = super::encode_shown(
+            "Kai wants to send this text to a.example:",
+            "menu 99 asked",
+            &menu,
+        );
+        assert_eq!(
+            super::menu_id(&wire),
+            Some(7),
+            "not the menu inside the text"
+        );
+        assert_eq!(super::menu_id(&menu), Some(7));
     }
 }

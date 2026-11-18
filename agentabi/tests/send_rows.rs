@@ -165,7 +165,6 @@ fn a_send_word_as_a_noun_or_in_a_telling_line_asks_for_no_send() {
         "how's the posting to hooks.example going",
         "my latest post on hooks.example, read it",
         "a note about sending hello to hooks.example",
-        "resend hello to hooks.example",
     ] {
         assert_eq!(one(line, &plain), (Tier::Never, Why::SendUnasked), "{line}");
     }
@@ -173,6 +172,37 @@ fn a_send_word_as_a_noun_or_in_a_telling_line_asks_for_no_send() {
         "send hello to hooks.example",
         "can you post hello to hooks.example",
         "please submit hello to hooks.example",
+    ] {
+        assert_eq!(one(line, &plain).0, Tier::Ask, "{line}");
+    }
+}
+
+#[test]
+fn only_a_send_where_a_request_puts_its_verb_asks() {
+    let plain = send("hooks.example", Label::Literal, Label::Literal);
+    for line in [
+        "check the blog post about hooks.example",
+        "read the job posting on hooks.example",
+        "if i send hello to hooks.example, what happens",
+        "remind me how to send hello to hooks.example",
+        "i want to know what sending hello to hooks.example does",
+        "in case i send hello to hooks.example, keep a copy",
+        "whether to send hello to hooks.example is up to you",
+        "when you send hello to hooks.example it fails",
+        "whats sending to hooks.example for",
+        "hows posting to hooks.example going",
+        "i know if i send hello to hooks.example it works",
+    ] {
+        assert_eq!(one(line, &plain), (Tier::Never, Why::SendUnasked), "{line}");
+    }
+    for line in [
+        "post it to hooks.example",
+        "could you send hello to hooks.example",
+        "please post hello to hooks.example",
+        "first, send hello to hooks.example",
+        "resend hello to hooks.example",
+        "i want to send hello to hooks.example",
+        "look at notes and then send hello to hooks.example",
     ] {
         assert_eq!(one(line, &plain).0, Tier::Ask, "{line}");
     }
