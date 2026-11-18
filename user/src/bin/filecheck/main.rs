@@ -12,6 +12,8 @@
 //!   reads `restart.txt` through the handle it kept, `restart.ok`.
 //!
 //! - `step=actions` and `step=churn boot=N`: the power cut's workload ([`cut`]).
+//! - `step=bench`: 32 MiB each way, in 7 KiB messages and over a bulk `Shm`,
+//!   with MB/s and the time spent waiting on `fs` ([`bench`]), then `bench.ok`.
 //!
 //! It prints a line for each step that passed, or `filecheck: FAIL ...`, then
 //! idles: the supervisor would restart an exited service.
@@ -21,6 +23,7 @@
 
 extern crate alloc;
 
+mod bench;
 mod cut;
 
 use alloc::format;
@@ -59,8 +62,9 @@ fn main() -> i32 {
         Some("actions") => cut::actions(home),
         Some("churn") => cut::churn(home, boot),
         Some("hold") => hold(home),
+        Some("bench") => bench::run(home),
         _ => Err(String::from(
-            "no step=write, read, restart, actions, churn or hold",
+            "no step=write, read, restart, actions, churn, hold or bench",
         )),
     };
     if let Err(why) = result {
