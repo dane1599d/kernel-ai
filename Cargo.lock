@@ -2297,6 +2297,7 @@ dependencies = [
  "deskcore",
  "editcore",
  "kabi",
+ "kaiagent",
  "kaigrants",
  "kainet",
  "kaiprofile",

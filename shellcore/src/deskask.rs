@@ -62,6 +62,8 @@ pub(crate) enum Asker {
     Panel,
     /// An app's window, the Terminal's: its `shell_card` effect's result.
     App(String),
+    /// An agent's step (`agentstep`): its `agent-step wait <id>`.
+    Agent(String),
 }
 
 /// A proposal from a desktop line, waiting for the card.
@@ -291,6 +293,7 @@ impl Shell {
                 };
                 self.card_came_to(&app, id, &told);
             }
+            Asker::Agent(agent) => self.agent_told(agent, id, ran, line),
         }
     }
 
