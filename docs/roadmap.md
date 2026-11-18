@@ -194,7 +194,7 @@ The P2 close rows in `docs/decisions.md` have each case and the accepted miss.
 
 The P4 plan's sections 3.5 and 11 have the v0.1 checklist and each case.
 
-**P5 status (2026-11-16):** **closing, not yet done**. Tasks 1-13 are merged; the founder approved the OS wiring of tasks 8-13 on 2026-11-09.
+**P5 status (2026-11-18):** **closed, but for `Hold`**. Tasks 1-13 are merged, and every exit case passes on main under KVM and TCG. `Hold`'s transport is on main (#962, #964, #967); its outbox (#975, C) and its `net_send` row (A-core) are the one open item.
 - **Built:**
   - `NetDest` per app, and `hosts:any` for the shell alone (the founder's "any site I name");
   - TCP streams on handles and the kernel's random generator;
@@ -209,11 +209,7 @@ The P4 plan's sections 3.5 and 11 have the v0.1 checklist and each case.
   - `net-dest`, `net-stream`, `entropy-boots`, `https-mock`, `fetch-service` and `net-grant`;
   - `pkg-online` (#752), `update-online` (#754) and `model-download` (#772, #824);
   - `net-pf`, `net-pf-page` and `net-pf-query`.
-- **Open:**
-  - whether `Hold` as a held send is built for the close or moves to v0.2;
-  - ADR 0002 D3's text.
-
-  Both are the founder's to decide. Task 14 is deferred to after the v0.1 tag, and P5 closes without it.
+- **Open:** `Hold` alone, 4a (#975, C) and 4b (A-core). ADR 0002 D3 was answered by the founder and amended (#961). Task 14 is deferred to after the v0.1 tag.
 
 The P5 plan's section 11 has each case.
 

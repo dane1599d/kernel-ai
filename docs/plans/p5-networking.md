@@ -1,6 +1,6 @@
 # P5 plan: secure networking
 
-Status: approved by the founder on 2026-10-27, with the defaults (#165). Tasks 1-13 are on main (task 11 but for `Hold`). The founder approved the OS wiring of tasks 8-13 on 2026-11-09. Task 14 waits for the v0.1 tag. Task 15 (close) is in progress: every exit case passes on main under KVM and TCG, and section 11 has each one.
+Status: **closed** on 2026-11-18, but for `Hold`, its one open item (section 11). Approved by the founder on 2026-10-27, with the defaults (#165). Tasks 1-13 are on main, and every exit case passes there under KVM and TCG. Task 14 is deferred to after the v0.1 tag. `Hold` ("undo send", founder 2026-11-16) has its transport on main; its outbox and its row are in review.
 
 This plan covers the work that the accepted ADRs and the execution plan ([ADR 0000](../adr/0000-execution-plan.md) §3 and §5, P5 rows) put in P5:
 - [ADR 0001](../adr/0001-capabilities.md): `NetDest` per app;
@@ -278,7 +278,20 @@ Not adopted: aws-lc-rs and ring, rustls's default providers. Both build C or ass
 - **Later, on request:** TLS 1.2, IPv6, the Public Suffix List, an MCP bridge, `Hold` for sends, HTTP/2.
 - **Waiting on the founder:** section 2's questions, the crates (questions 1 and 2) first.
 
-## 11. Close status (task 15, draft of 2026-11-16)
+## 11. Close status (task 15, closed 2026-11-18)
+
+**Landed since the founder's answers of 2026-11-16:**
+- #961: an app's site grant grounds Kai's fetches, and ADR 0002 D3 says so (amended 2026-11-16).
+- #962: `Hold`'s transport, an HTTPS POST of up to 4 KB of text made once: never redirected, never retried, and fail-closed (`PostOutcome`).
+- #964: `fetch`'s send role, the one service that posts, reached by the shell's line alone.
+- #967: a plan line over STARTUP's 16 handles is refused, and only the shell may use the send role.
+
+**The one open item, `Hold`:**
+- 4a (C, #975, in review): the shell's held outbox, sending through the send service.
+- 4b (A-core): the `net_send` row, with a 5 s hold after Allow.
+
+A five-line follow-up records `Hold` once both land.
+
 
 Section 1's exit cases, checked against `main` at c56f99c8 on 2026-11-16.
 - "On main" means the case is in `xtask/src/cases`, so it runs in `ci.yml`'s boot shards under KVM and TCG.
@@ -359,16 +372,12 @@ The tasks' own exit checks:
   - `net_fetch` and `net_lookup` as open-world read rows. `:resolve` and `:ping` are now one row, `net_lookup`;
   - `fetch` on each call's exact-host `NetDest` (#757 with #755);
   - quarantined reads (D6, FIDES's typed query): the `query` row and `llm`'s typed answer (#785, #786). An answer keeps its data's label, so sending it to a host the line doesn't name still asks.
-- **Needs the founder:** D3 says a host is grounded if "the user said yes to it before (a grant record under ADR 0001)". What shipped grounds the agent's reuse with the shell's own per-host Always rule. An app's grant stays that app's, and agent grounding reads no app's grants (#751, agreed with C). Changing D3 amends an ADR, so the founder decides. The old and new wording are in this close's PR, and the ADR text changes only after the founder's answer.
+- **D3, answered by the founder on 2026-11-16 and amended by #961:** an app's host grant grounds Kai's fetches. That reverses #751 (agreed with C), which grounded the agent's reuse with the shell's own per-host Always rule alone and read no app's grants. A grant grounds a fetch, never a destination for `Data` (P-F, D6).
 - **Founder's decision of 2026-11-09:** Kai may reach any website the user names. The shell's ceiling is `hosts:any` on port 443 (#760). D3's "the user typed it" already grounds such a host, so its text holds. The close notes the ceiling.
 - **Online `pkg_install`:** built in #752 (task 8), with `pkg-online` on main.
-- **Not built yet:** `Hold` as a held send. `Inverse::Hold` exists and derives Ask, as question 5's default says. No exit case asks for it.
+- **`Hold`, being built (founder 2026-11-16):** the transport is on main (#962, #964, #967), the outbox is #975 (C), and the `net_send` row is A-core's.
 - **Deferred by section 2:** the MCP client (question 8).
 
-**Left before P5 closes.**
-- **To decide (the founder):**
-  - whether `Hold` as a held send is built for the close or moves to v0.2. It is in ADR 0002's P5 row, not in section 1's exit cases;
-  - D3's text (above).
-- **Then this close:** the D3 text change after the founder's answer, the roadmap's P5 status, and the closing decisions row.
+**Left open at the close:** `Hold` alone: 4a (#975, C) and 4b (A-core). Nothing else waits.
 
 Task 14 is deferred to after the v0.1 tag, and P5 closes without it.
