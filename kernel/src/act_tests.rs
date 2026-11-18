@@ -324,6 +324,7 @@ pub fn check(which: ActCase) -> Result<(), &'static str> {
         ActCase::NetPf => crate::net_pf_tests::check(),
         ActCase::NetPfPage => crate::net_pf_tests::page(),
         ActCase::NetPfQuery => crate::net_pf_tests::query(),
+        ActCase::NetHold => crate::net_hold_tests::check(),
         ActCase::FsAct => expect_lines(FS_ACT).map(|()| {
             log!("fs-act: a plain create and move ran at once on kai-data, and a read showed only to the user");
         }),

@@ -154,6 +154,9 @@ pub struct TestCase {
     /// a download that was stopped can resume from what it had written (P5
     /// task 10); otherwise every boot makes the slots anew from its bundle.
     pub keeps_slot_b: bool,
+    /// The POSTs the HTTPS mock must have taken, each `(path, body)`, in order
+    /// and no others: empty for a case that checks none.
+    pub posts: &'static [(&'static str, &'static str)],
 }
 
 /// What the HTTPS mock serves a case: its hosts are `netcore::fixture`'s
@@ -254,6 +257,40 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         online: None,
         online_release: None,
         keeps_slot_b: false,
+        posts: &[],
+    }
+}
+
+/// Whether the HTTPS mock served exactly `posts`, each `(path, body)`, as its
+/// POSTs, in order: a case with no `posts` checks nothing.
+pub fn check_posts(
+    posts: &[(&str, &str)],
+    served: &[crate::mock_https::Served],
+) -> Result<(), String> {
+    if posts.is_empty() {
+        return Ok(());
+    }
+    let got: Vec<(String, String)> = served
+        .iter()
+        .filter(|s| s.method == "POST")
+        .map(|s| {
+            let body = s
+                .body
+                .as_deref()
+                .map(String::from_utf8_lossy)
+                .unwrap_or_default();
+            (s.path.clone(), body.into_owned())
+        })
+        .collect();
+    let want: Vec<(String, String)> = posts
+        .iter()
+        .map(|(path, body)| (String::from(*path), String::from(*body)))
+        .collect();
+    match got == want {
+        true => Ok(()),
+        false => Err(format!(
+            "FAIL: the HTTPS mock took POSTs {got:?}, not {want:?}"
+        )),
     }
 }
 
