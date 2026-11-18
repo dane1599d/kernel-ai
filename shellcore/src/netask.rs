@@ -88,7 +88,7 @@ impl Connect {
 }
 
 /// The grants as the file holds them: none when there is no file.
-fn read_store(host: &dyn Host) -> Result<NetGrants, String> {
+pub(crate) fn read_store(host: &dyn Host) -> Result<NetGrants, String> {
     match host.net_grants_read() {
         None => Ok(NetGrants::new()),
         Some(text) => NetGrants::load(&text)
@@ -115,15 +115,16 @@ fn grant_res(app: &str, host: &str) -> String {
 
 /// Checks `/system/state/netgrants` at start and drops the `session` grants:
 /// a file out of shape is audited and left as it is. The highest id the file
-/// held before the drop, for the shell's high-water mark.
-pub(crate) fn at_boot(host: &dyn Host) -> u32 {
+/// held before the drop, for the shell's high-water mark, and whether last
+/// session's grants are gone from the file.
+pub(crate) fn at_boot(host: &dyn Host) -> (u32, bool) {
     let mut grants = match read_store(host) {
         Ok(grants) => grants,
         Err(why) => {
             host.audit(&format!(
                 "{why}; no app reaches a new host until it is put right"
             ));
-            return 0;
+            return (0, true);
         }
     };
     let high = grants.high();
@@ -135,8 +136,56 @@ pub(crate) fn at_boot(host: &dyn Host) -> u32 {
         host.audit(&format!(
             "the session network grants were not dropped: {why}"
         ));
+        return (high, false);
     }
-    high
+    (high, true)
+}
+
+/// Drops package `package`'s grants (its own and its `-window`'s), after an
+/// undo took the package out or before a package of its name goes in fresh,
+/// so that package starts with none: the person allows it again on its card.
+/// Each is audited with `why`. How many were dropped, or why the file was not
+/// changed.
+pub(crate) fn drop_package_grants(
+    host: &dyn Host,
+    package: &str,
+    why: &str,
+) -> Result<usize, String> {
+    let mut grants = read_store(host)?;
+    let window = format!("{package}-window");
+    let gone: Vec<(u32, String)> = grants
+        .all()
+        .iter()
+        .filter(|g| g.app == package || g.app == window)
+        .map(|g| (g.id, g.object.clone()))
+        .collect();
+    if gone.is_empty() {
+        return Ok(0);
+    }
+    for (id, _) in &gone {
+        grants.revoke(*id);
+    }
+    write_store(host, &grants)?;
+    for (id, object) in &gone {
+        host.audit(&format!(
+            "network grant {id} ({package} on {object}) dropped: {why}"
+        ));
+    }
+    Ok(gone.len())
+}
+
+/// The package a local install's log entry installed: `cc build <name> ...`,
+/// or Kai's app's `artifact <dir>/<name>.kai ...` line.
+pub(crate) fn local_package(script: &str) -> Option<String> {
+    script.lines().find_map(|line| {
+        if let Some(rest) = line.strip_prefix("cc build ") {
+            return rest.split(' ').next().map(String::from);
+        }
+        let rest = line.strip_prefix("artifact ")?;
+        let path = rest.split(' ').next()?;
+        let file = path.rsplit('/').next()?;
+        file.strip_suffix(".kai").map(String::from)
+    })
 }
 
 impl Shell {

@@ -17,7 +17,10 @@
 
 use crate::{Action, ArgType, Inverse, Role, Tier, derive, find};
 use alloc::vec::Vec;
-use nethosts::{Bytes, Grounding, LineWord, NoGrants, Origin, Table, Verdict};
+
+#[path = "consent_grant.rs"]
+pub mod consent_grant;
+use nethosts::{Bytes, Ground, Grounding, LineWord, NoGrants, Origin, Table, Verdict};
 
 /// Where a value came from (ADR 0002 D6). Ordered: the least trusted is greatest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +32,10 @@ pub enum Label {
     /// Content read from a source: a note, a page, a file.
     Content(&'static str),
 }
+
+/// The text of a value the planner does not know: it matches no word, alias,
+/// host or path.
+pub const UNKNOWN: &str = "\u{0}";
 
 /// One argument value and where it came from.
 #[derive(Clone, Copy, Debug)]
@@ -68,6 +75,21 @@ pub enum Why {
     Steered(&'static str),
     /// Content would go out of the machine.
     Outbound(&'static str),
+    /// A read from a host only an app's grant grounds, which the line asked
+    /// for and gave its path (`consent_grant`).
+    GrantRead,
+    /// A read from a host only an app's grant grounds, which read content or
+    /// the OS's state decided ([`consent_grant::SYSTEM`]), not the line.
+    GrantSteered(&'static str),
+    /// A read from a host only an app's grant grounds, with an argument the
+    /// line did not give: a path or query not one run of its words.
+    GrantPath,
+    /// A read from a host only an app's grant grounds, on a line that says to
+    /// stay off the network.
+    GrantOffline,
+    /// More than one read from hosts only a grant grounds in one plan, or one
+    /// in a loop.
+    GrantMany,
     /// The line is not English, so it gives no consent for changes in v0.1.
     NotEnglish,
     /// A value no call may take, or a row that never runs.
@@ -177,10 +199,11 @@ pub fn decide_net(line: &str, plan: &[Call], rows: &[Action], net: &Grounding) -
     // action is never vague, so "tell me how to remove ideas, it's so slow"
     // takes no vague reading (#883 review).
     let named_any = rows.iter().any(|row| cued_in(&words, row, true).is_some());
-    let decisions: Vec<Decision> = plan
-        .iter()
-        .map(|call| decide_one(&words, &hosts, english, call, rows))
-        .collect();
+    let decisions: Vec<Decision> = consent_grant::at_most_one(
+        plan.iter()
+            .map(|call| decide_one(&words, &hosts, english, call, rows))
+            .collect(),
+    );
     let changes = plan
         .iter()
         .filter(|call| find(rows, call.name).is_some_and(|row| !row.facts.read_only))
@@ -244,10 +267,13 @@ fn decide_one(
         if !row.facts.open_world {
             return Decision::new(derive(row).max(Tier::Run), Why::Read);
         }
-        return match hosts_grounded(words, hosts, row, call) {
-            true => Decision::new(row.min_tier.max(Tier::Run), Why::Grounded),
-            false => Decision::new(Tier::Ask, Why::Ungrounded),
-        };
+        if !hosts_grounded(words, hosts, row, call) {
+            return Decision::new(Tier::Ask, Why::Ungrounded);
+        }
+        if granted_only(words, hosts, row, call) {
+            return consent_grant::read(words, hosts.net, row, call);
+        }
+        return Decision::new(row.min_tier.max(Tier::Run), Why::Grounded);
     }
     // Data decided that this change runs, or gave it a value: the line did not
     // ask for it, whatever its cues (ADR 0002 D6). It asks, and the ask names
@@ -484,6 +510,14 @@ fn every_host(
         })
 }
 
+/// Whether some host of `call` is grounded only by an app's grant (ADR 0002
+/// D3): the line neither types it nor holds a table word for it.
+fn granted_only(words: &[Word], hosts: &Hosts, row: &Action, call: &Call) -> bool {
+    !every_host(words, hosts, row, call, |verdict| {
+        !matches!(verdict, Verdict::Run(Ground::Granted))
+    })
+}
+
 /// Words that state a want or a complaint about how the system feels: the only
 /// lines the vague path reads as asking for a change.
 const WANT_WORDS: &[&str] = &[
@@ -604,13 +638,31 @@ struct Word {
     /// Whether that clause is a question: it starts with a question word (and is
     /// not a polite request) or ends with `?`.
     question: bool,
+    /// Which sentence of the line it is in, counted from 0: a sentence ends at
+    /// `.` `!` `?` or `;`.
+    sentence: usize,
+    /// Whether that sentence ends with `?`, whatever its clauses.
+    sentence_asks: bool,
 }
 
 /// The line's words: letters, digits and apostrophes, lower case. Everything else
 /// separates, so "round-robin", "round robin" and "Round Robin." read alike.
 fn words(text: &str) -> Vec<Word> {
+    // Curly apostrophes and their look-alikes, as phone keyboards and pastes
+    // write them, are the straight one: "Don’t" is "don't".
+    let folded: alloc::string::String = text
+        .chars()
+        .map(|c| match c {
+            '\u{2019}' | '\u{2018}' | '\u{2BC}' | '\u{60}' | '\u{B4}' | '\u{2032}' | '\u{FF07}'
+            | '\u{2B9}' | '\u{55A}' => '\'',
+            c => c,
+        })
+        .collect();
+    let text = folded.as_str();
     let is_word = |c: char| c.is_alphanumeric() || c == '\'';
     let mut clause = 0;
+    let mut sentence = 0;
+    let mut asked_sentences: Vec<usize> = Vec::new();
     let mut out: Vec<Word> = Vec::new();
     let mut asked = Vec::new();
     let mut rest = text;
@@ -627,6 +679,8 @@ fn words(text: &str) -> Vec<Word> {
                 text: word,
                 clause,
                 question: false,
+                sentence,
+                sentence_asks: false,
             });
         }
         if rest[..gap].contains('?') {
@@ -634,6 +688,12 @@ fn words(text: &str) -> Vec<Word> {
         }
         if rest[..gap].contains([',', ';', '.', '!', '?', ':']) {
             clause += 1;
+        }
+        if rest[..gap].contains('?') {
+            asked_sentences.push(sentence);
+        }
+        if rest[..gap].contains([';', '.', '!', '?']) {
+            sentence += 1;
         }
         rest = &rest[gap..];
     }
@@ -651,6 +711,9 @@ fn words(text: &str) -> Vec<Word> {
         for w in out.iter_mut().filter(|w| w.clause == c) {
             w.question = question;
         }
+    }
+    for w in out.iter_mut() {
+        w.sentence_asks = asked_sentences.contains(&w.sentence);
     }
     out
 }

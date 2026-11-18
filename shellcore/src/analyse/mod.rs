@@ -80,6 +80,12 @@ pub struct Site {
     /// What decided that the call runs: the `if`, `for`, `switch` or early exit it
     /// sits under.
     pub control: Label,
+    /// Whether it sits in a loop body, so it may run more than once.
+    pub looped: bool,
+    /// The least trusted value the script met before the call in program
+    /// order: one that is not `Literal` could have decided, by an abort, a
+    /// mutation or the time a loop took, whether the call runs at all.
+    pub met: Label,
     at: (Option<usize>, Option<usize>),
 }
 
@@ -120,7 +126,13 @@ impl Plan {
     /// order. A literal written as one of its argument's aliases (`"rr"`) counts as
     /// what it means, as a tagged call's does; a value whose text the walk does not
     /// know is not in any line.
-    pub fn decide(&self, line: &str, rows: &[Action], hosts: &nethosts::Table) -> Vec<Decision> {
+    pub fn decide(
+        &self,
+        line: &str,
+        rows: &[Action],
+        hosts: &nethosts::Table,
+        granted: &dyn nethosts::Granted,
+    ) -> Vec<Decision> {
         let values: Vec<Vec<(&str, consent::Value<'_>)>> = self
             .sites
             .iter()
@@ -129,7 +141,7 @@ impl Plan {
                 site.args
                     .iter()
                     .map(|(name, val)| {
-                        let text = val.text.as_deref().unwrap_or("");
+                        let text = val.text.as_deref().unwrap_or(consent::UNKNOWN);
                         let text = row
                             .and_then(|row| row.args.iter().find(|arg| arg.name == *name))
                             .and_then(|arg| {
@@ -147,28 +159,50 @@ impl Plan {
                     .collect()
             })
             .collect();
-        let calls: Vec<consent::Call<'_>> = self
-            .sites
-            .iter()
-            .zip(&values)
-            .map(|(site, args)| consent::Call {
+        // A call in a loop may run more than once, so consent sees it twice
+        // (a read only an app's grant grounds is allowed once in a plan); each
+        // site takes its first copy's decision.
+        let mut calls: Vec<consent::Call<'_>> = Vec::new();
+        let mut first: Vec<usize> = Vec::new();
+        for (site, args) in self.sites.iter().zip(&values) {
+            // An open-world read is steered by anything the script met before
+            // it (a read only an app's grant grounds then asks).
+            let open_read = agentabi::find(rows, site.name)
+                .is_some_and(|row| row.facts.open_world && row.facts.read_only);
+            let control = match open_read {
+                true => join(site.control, site.met),
+                false => site.control,
+            };
+            let call = consent::Call {
                 name: site.name,
                 args,
-                control: site.control,
-            })
-            .collect();
-        consent::decide_net(line, &calls, rows, &grounding(hosts))
+                control,
+            };
+            first.push(calls.len());
+            calls.push(call);
+            if site.looped {
+                calls.push(call);
+            }
+        }
+        let decisions = consent::decide_net(line, &calls, rows, &grounding(hosts, granted));
+        first.into_iter().map(|at| decisions[at]).collect()
     }
 }
 
 /// The host grounding the agent's network rows are decided with (ADR 0002 D3):
-/// `hosts`' words, and no grants or sources. A host the user allowed before is
-/// the shell's per-host rule, which waives the ask after consent; the OS's own
-/// checked sources are its services' to fetch, not the agent's.
-pub fn grounding(hosts: &nethosts::Table) -> nethosts::Grounding<'_> {
+/// `hosts`' words, the hosts the person allowed for installed apps (`granted`),
+/// and no sources. A grant grounds a read from its host only when the line
+/// alone decided the fetch (`agentabi::consent`), and never names a
+/// destination for data. The shell's per-host Always rule is not a ground: it
+/// waives the ask after consent. The OS's own checked sources are its
+/// services' to fetch, not the agent's.
+pub fn grounding<'a>(
+    hosts: &'a nethosts::Table,
+    granted: &'a dyn nethosts::Granted,
+) -> nethosts::Grounding<'a> {
     nethosts::Grounding {
         table: hosts,
-        granted: &nethosts::NoGrants,
+        granted,
         sources: &[],
     }
 }
@@ -181,6 +215,8 @@ pub fn analyse(ast: &AST, rows: &'static [Action]) -> Plan {
         sites: Vec::new(),
         sticky: Label::Literal,
         seen: Label::Literal,
+        loops: 0,
+        met: Label::Literal,
     };
     walk.block(ast.statements(), Label::Literal);
     Plan { sites: walk.sites }
@@ -198,6 +234,10 @@ struct Walk {
     sticky: Label,
     /// The least trusted label met so far, for what a `catch` may have caught.
     seen: Label,
+    /// How many loop bodies the walk is in.
+    loops: usize,
+    /// The least trusted value evaluated so far, never reset.
+    met: Label,
 }
 
 fn join_env(a: &Env, b: &Env) -> Env {
@@ -235,6 +275,12 @@ impl Walk {
 
     /// A body that runs any number of times, walked until its variables settle.
     fn looped(&mut self, mut body: impl FnMut(&mut Self)) {
+        self.loops += 1;
+        self.looped_body(&mut body);
+        self.loops -= 1;
+    }
+
+    fn looped_body(&mut self, body: &mut impl FnMut(&mut Self)) {
         for _ in 0..MAX_ROUNDS {
             let before = (self.env.clone(), self.sticky);
             body(self);
@@ -271,7 +317,13 @@ impl Walk {
         match stmt {
             Stmt::Noop(_) => unit,
             Stmt::Expr(expr) => self.expr(expr, control),
-            Stmt::FnCall(call, at) => self.call(call, None, *at, control),
+            Stmt::FnCall(call, at) => {
+                // A row call standing alone still met its result: whether it
+                // failed (a file not there) decides what runs after it.
+                let val = self.call(call, None, *at, control);
+                self.met = join(self.met, val.label);
+                val
+            }
             Stmt::Block(block) => self.block(block.statements(), control),
             Stmt::Var(var, _, _) => {
                 let val = self.expr(&var.1, control).raised(control);
@@ -388,7 +440,16 @@ impl Walk {
             Expr::FnCall(call, at) => self.call(call, None, *at, control),
             Expr::Dot(pair, _, _) | Expr::Index(pair, _, _) => {
                 let base = self.expr(&pair.lhs, control);
-                self.chain(base, &pair.rhs, control)
+                let val = self.chain(base, &pair.rhs, control);
+                // Any method may change what it is called on (`a.push(x)`):
+                // the variable is now whatever it was given too.
+                if matches!(pair.rhs, Expr::MethodCall(..))
+                    && let Some(name) = root(&pair.lhs)
+                {
+                    let changed = Val::of(join(self.get(&name).label, val.label));
+                    self.set(&name, changed.raised(control));
+                }
+                val
             }
             Expr::And(parts, _) | Expr::Or(parts, _) | Expr::Coalesce(parts, _) => {
                 // Each part runs only if the ones before let it.
@@ -402,6 +463,7 @@ impl Walk {
             _ => Val::of(Label::Content(UNPROVEN)),
         };
         self.seen = join(self.seen, val.label);
+        self.met = join(self.met, val.label);
         val
     }
 
@@ -435,6 +497,9 @@ impl Walk {
         for arg in call.args.iter() {
             args.push(self.expr(arg, control));
         }
+        // What was met before this call runs, its own arguments with it: a
+        // System value inside them could abort the call as well as anything.
+        let before = self.met;
         let from = args
             .iter()
             .fold(Label::Literal, |label, arg| join(label, arg.label));
@@ -443,7 +508,7 @@ impl Walk {
             // arguments'.
             return Val::of(from);
         };
-        self.site(row, args, join(control, self.sticky), at);
+        self.site(row, args, join(control, self.sticky), (at, before));
         match row.returns {
             // A quarantined read's answer is still its data's (ADR 0002 D6):
             // the question can narrow what came back, never clean it.
@@ -456,7 +521,13 @@ impl Walk {
     }
 
     /// Records a call of `row` at `at`; a call walked again (in a loop) joins.
-    fn site(&mut self, row: &'static Action, args: Vec<Val>, control: Label, at: Position) {
+    fn site(
+        &mut self,
+        row: &'static Action,
+        args: Vec<Val>,
+        control: Label,
+        (at, met): (Position, Label),
+    ) {
         let at = (at.line(), at.position());
         let args: Vec<(&'static str, Val)> = args
             .into_iter()
@@ -469,6 +540,8 @@ impl Walk {
             .find(|s| s.at == at && s.name == row.name)
         {
             Some(site) => {
+                site.looped |= self.loops > 0;
+                site.met = join(site.met, met);
                 site.control = join(site.control, control);
                 for ((_, old), (_, new)) in site.args.iter_mut().zip(&args) {
                     *old = old.join(new);
@@ -478,6 +551,8 @@ impl Walk {
                 name: row.name,
                 args,
                 control,
+                looped: self.loops > 0,
+                met,
                 at,
             }),
         }

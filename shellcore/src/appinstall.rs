@@ -336,6 +336,7 @@ impl Shell {
         };
         // pkg signs and installs exactly the bytes the build recorded.
         let sha = Some(built.artifact.sha256.as_str());
+        self.fresh_package(name);
         let answer = match self.host.pkg_local(name, &built.built.path, sha) {
             Ok(answer) => answer,
             Err(why) => {
@@ -351,6 +352,8 @@ impl Shell {
                 });
             }
         };
+        // A package went in: pkg is asked again about each grant holder.
+        self.grant_memo.forget_installed();
         let made = installed(&answer, name, version);
         let change = Change {
             action: String::from("app_install"),

@@ -374,16 +374,14 @@ impl Shell {
             args: &values,
             control,
         }];
+        let granted = crate::appgrants::AppGrants::new(self.host.as_ref(), &self.grant_memo);
+        let net = crate::analyse::grounding(&self.hosts, &granted);
         let decision = match row.owner {
             agentabi::Owner::App(_) => {
                 let rows: Vec<Action> = agentabi::ROWS.iter().copied().chain([*row]).collect();
-                let net = crate::analyse::grounding(&self.hosts);
                 consent::decide_net(request, &planned, &rows, &net)[0]
             }
-            _ => {
-                let net = crate::analyse::grounding(&self.hosts);
-                consent::decide_net(request, &planned, &agentabi::ROWS, &net)[0]
-            }
+            _ => consent::decide_net(request, &planned, &agentabi::ROWS, &net)[0],
         };
         if decision.tier == Tier::Never {
             return self.refuse(id, request, call, decision.why, "it is never run");
@@ -456,10 +454,20 @@ impl Shell {
             decision.why
         ));
         let offer = offer(row, &args, decision.why);
+        // The person's Always rule for a host waives a grant read's ask as it
+        // waived the ask for that host before grants grounded anything; never
+        // a line that said to stay offline (ADR 0002 D3).
+        let waiver = match decision.why {
+            Why::GrantPath | Why::GrantSteered(_) | Why::GrantMany => {
+                self::offer(row, &args, Why::Ungrounded)
+            }
+            _ => None,
+        };
         // A send always asks (ADR 0002 question 3): no rule runs a Hold row,
         // whatever offer a rule was written from.
         let ruled = offer
             .as_ref()
+            .or(waiver.as_ref())
             .filter(|_| !held(row))
             .and_then(|offer| self.rules.covering(offer));
         let reply = match (decision.tier, ruled) {
@@ -664,7 +672,7 @@ fn reason_of(why: Why) -> String {
             read_from(source)
         ),
         Why::Ungrounded => String::from("the request did not name that site"),
-        _ => String::from("it asks first"),
+        why => grant_reason(why).unwrap_or_else(|| String::from("it asks first")),
     }
 }
 
@@ -716,6 +724,25 @@ fn offer(row: &'static Action, args: &Arguments, why: Why) -> Option<Offer> {
 #[cfg(test)]
 #[path = "tests/agentcore_hold.rs"]
 mod hold_tests;
+
+/// Why a read from a site only an app's grant grounds asks
+/// (`agentabi::consent_grant`): what decided it, never that it sends.
+pub(crate) fn grant_reason(why: Why) -> Option<String> {
+    Some(match why {
+        Why::GrantSteered(source) => format!(
+            "{} chose this read from a site allowed for an app, not the request",
+            read_from(source)
+        ),
+        Why::GrantPath => {
+            String::from("the request did not name that site, an app's, or what to read from it")
+        }
+        Why::GrantOffline => String::from("the request said not to go online"),
+        Why::GrantMany => String::from(
+            "it would read from a site allowed for an app more than once, which the request did not ask for",
+        ),
+        _ => return None,
+    })
+}
 
 /// `text` with its first letter in capitals, to start the menu's sentence.
 fn capitalised(text: &str) -> String {
@@ -896,6 +923,7 @@ pub(crate) fn read_from(source: &str) -> String {
         "fs" => String::from("a file"),
         "web" => String::from("a web page"),
         "dns" => String::from("a name lookup"),
+        agentabi::consent::consent_grant::SYSTEM => String::from("the system's own state"),
         app => format!("what {} answered", crate::apps::title(app)),
     }
 }

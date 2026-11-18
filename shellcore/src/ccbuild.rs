@@ -224,6 +224,7 @@ impl Shell {
                 built.bytes, built.path
             ));
         }
+        self.fresh_package(name);
         let answer = match self.host.pkg_local(name, &built.path, None) {
             Ok(answer) => answer,
             // No answer at all: pkg may have installed it, so the attempt is
@@ -245,6 +246,8 @@ impl Shell {
                 ));
             }
         };
+        // A package went in: pkg is asked again about each grant holder.
+        self.grant_memo.forget_installed();
         let made = installed(&answer, name, &version);
         let change = Change {
             action: String::from("cc_build"),

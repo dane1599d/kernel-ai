@@ -81,7 +81,7 @@ fn a_granted_host_runs_unless_the_line_says_not_to() {
         sources: &[],
     };
     let plan = fetch("api.weather.example", Label::Literal);
-    let run = decide_net("what's the forecast for Leeds?", &plan, &ROWS, &net)[0];
+    let run = decide_net("look up the forecast for Leeds", &plan, &ROWS, &net)[0];
     assert_eq!(run.tier, Tier::Run);
     let none = Grounding {
         table: &table,
@@ -162,7 +162,7 @@ fn a_grant_grounds_a_fetch_but_names_no_destination_for_data() {
     };
     let plain = fetch("x.example", Label::Literal);
     assert_eq!(
-        decide_net("check the status page", &plain, &ROWS, &net)[0].tier,
+        decide_net("check the status page online", &plain, &ROWS, &net)[0].tier,
         Tier::Run
     );
     let sending = sending_note("x.example");

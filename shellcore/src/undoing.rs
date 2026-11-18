@@ -81,6 +81,53 @@ impl Shell {
         self.revert_entry(id, false)
     }
 
+    /// After an undo took a local install out: that package's network grants
+    /// go, so a later package of its name starts with none (ADR 0002 D3), and
+    /// pkg is asked again about every grant holder.
+    pub(crate) fn local_removed(&mut self, script: &str) {
+        self.grant_memo.forget_installed();
+        let host = self.host.as_ref();
+        let Some(package) = crate::netask::local_package(script) else {
+            host.audit("network grants kept: the undone install names no package");
+            return;
+        };
+        // An undo of an upgrade leaves the older version installed: its
+        // grants stay. A pkg that cannot say is taken as the package gone.
+        let why = match host.package_installed(&package) {
+            Ok(true) => return,
+            Ok(false) => format!("the undo took {package} out"),
+            Err(pkg) => format!(
+                "the undo took {package} out, as far as is known (pkg could not say: {pkg})"
+            ),
+        };
+        if let Err(not) = crate::netask::drop_package_grants(host, &package, &why) {
+            host.audit(&format!(
+                "{package}'s network grants were not dropped after its undo: {not}"
+            ));
+        }
+    }
+
+    /// Before a local install of `package`: if pkg says it is not installed,
+    /// grants left under its name (an undo that could not drop them) go, so
+    /// the new package starts with none.
+    pub(crate) fn fresh_package(&mut self, package: &str) {
+        let host = self.host.as_ref();
+        match host.package_installed(package) {
+            Ok(true) => {}
+            Ok(false) => {
+                let why = format!("{package} was not installed before this install");
+                if let Err(not) = crate::netask::drop_package_grants(host, package, &why) {
+                    host.audit(&format!(
+                        "{package}'s old network grants were not dropped: {not}"
+                    ));
+                }
+            }
+            Err(pkg) => host.audit(&format!(
+                "{package}'s old network grants, if any, were kept: pkg could not say whether it is installed ({pkg})"
+            )),
+        }
+    }
+
     /// The answer to `undo`'s question about a value that moved since.
     pub(crate) fn undo_answer(&mut self, id: u64, yes: bool) -> Reply {
         match yes {
@@ -162,6 +209,17 @@ impl Shell {
                 undo::Inverse::Model { back, from } => self
                     .model_back(back, from, anyway)
                     .map(|text| (text, undo::reverse(inverse))),
+                undo::Inverse::Local { from, to } if to < from => {
+                    let ids = undo::Ids {
+                        made: id,
+                        next: self.next_id,
+                    };
+                    let done = undo::revert(self.host.as_ref(), inverse, anyway, ids);
+                    if done.is_ok() {
+                        self.local_removed(&entry.script);
+                    }
+                    done
+                }
                 other => {
                     let ids = undo::Ids {
                         made: id,

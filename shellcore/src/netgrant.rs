@@ -142,6 +142,12 @@ impl NetGrants {
         self.grants.retain(|g| g.life == Life::Persistent);
     }
 
+    /// Every grant, every app's: what the agent's grounding reads
+    /// (`appgrants`).
+    pub fn all(&self) -> &[Grant] {
+        &self.grants
+    }
+
     /// App `app`'s grants, for Settings.
     pub fn of(&self, app: &str) -> Vec<&Grant> {
         self.grants.iter().filter(|g| g.app == app).collect()
