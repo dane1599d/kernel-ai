@@ -562,7 +562,7 @@ pub const MEM_RELEASE: u64 = 162;
 /// or under it is left as it is; any other non-zero one is Invalid.
 pub const PROC_QUOTA_SET: u64 = 163;
 /// PROC_QUOTA_SET's flag: lower the quota to `pages`, never raise it.
-pub const QUOTA_LOWER_ONLY: u64 = 1;
+pub const QUOTA_LOWER_ONLY: u64 = 1 << 0;
 /// `proc_class_set(pid, class) -> 0`: process `pid` runs `normal` (0) or
 /// `background` (1) on the `classes` policy from now on, every thread; SCHED_STATS
 /// shows it. Permission to make the shell, the supervisor, the model service or
