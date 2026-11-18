@@ -118,10 +118,13 @@ pub const SEND: &str = "send program=fetch start=demand caps=serve+net pages=409
 pub const SEND_ROLE: &str = "post";
 /// The file system service (ADR 0004): the only holder of the `kai-data`
 /// partition. Planned before the shell, and only when the disk has `kai-data`.
-/// Its pages hold a 16 MiB block cache and kaifs's working state. `kai-fs 1`'s
-/// minicbor decoder and the request paths outgrew the default 16-page stack,
-/// as filecheck's and `pkg`'s did.
-pub const FS: &str = "fs caps=serve+partition pages=8192 stack_pages=64 burst_ms=5000";
+/// Its pages hold a 32 MiB block cache (`kaifs::cache::FS_BLOCKS`) and kaifs's
+/// working state, 16 MiB as before: 48 MiB, which leaves a 512 MiB machine
+/// about 28 MiB of admission room on the update VM and 35 MiB on release-boot,
+/// over supervise's 16 MiB floor. `kai-fs 1`'s minicbor decoder and the
+/// request paths outgrew the default 16-page stack, as filecheck's and `pkg`'s
+/// did.
+pub const FS: &str = "fs caps=serve+partition pages=12288 stack_pages=64 burst_ms=5000";
 /// The update service (ADR 0008 §10): the only holder of the slots and the boot
 /// record. `kaituf`'s JSON and `kai-fs 1`'s CBOR decoders recurse, hence the
 /// larger stack, which counts within its pages with a 512 KiB root buffer and
