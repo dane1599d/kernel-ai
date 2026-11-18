@@ -17,6 +17,7 @@ mod netgrant;
 mod netrows;
 mod network;
 mod online;
+mod panestates;
 mod pkg;
 pub mod release;
 mod storage;
@@ -282,6 +283,7 @@ const LANES: &[&[TestCase]] = &[
     modeldl::CASES,
     modelsuse::CASES,
     walk::CASES,
+    panestates::CASES,
     warming::CASES,
 ];
 
@@ -330,6 +332,7 @@ mod tests {
             modeldl::CASES,
             modelsuse::CASES,
             walk::CASES,
+            panestates::CASES,
             warming::CASES,
         ];
         assert_eq!(
