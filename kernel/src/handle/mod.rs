@@ -93,10 +93,12 @@ pub fn route_name(id: u64) -> Option<Name> {
 /// The startup handles for capability bits `caps` (ADR 0001 D3's table), for the
 /// process `pid`. CALL gives a route only through `uses=`, so none here.
 pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
-    let rows: [(u64, Kind, Rights, u64); 19] = [
+    // Each row's capability is `kabi::cap::STARTUP_HANDLES`' entry at its
+    // place, so a host test counts what a plan line starts with; the two
+    // lengths are one, so a row cannot be added to one list alone.
+    let rows: [(Kind, Rights, u64); cap::STARTUP_HANDLES.len()] = [
         // MINT under the `system` root, which is never revoked (ADR 0001 D3).
         (
-            cap::SUPERVISE,
             Kind::Grant,
             Rights::MINT,
             captable::GrantRef {
@@ -105,76 +107,50 @@ pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
             }
             .pack(),
         ),
-        (
-            cap::SUPERVISE,
-            Kind::Job,
-            Rights::SPAWN.union(Rights::WAIT),
-            0,
-        ),
-        (cap::STOP, Kind::Job, Rights::STOP, 0),
+        (Kind::Job, Rights::SPAWN.union(Rights::WAIT), 0),
+        (Kind::Job, Rights::STOP, 0),
         // CREATE, not SPAWN: it starts `scriptrun` only, and never passes for SUPERVISE.
         (
-            cap::SCRIPT,
             Kind::Job,
             Rights::CREATE.union(Rights::WAIT),
             crate::process::job::SCRIPTRUN,
         ),
-        (
-            cap::SERVE,
-            Kind::Endpoint,
-            Rights::RECV.union(Rights::MINT),
-            pid,
-        ),
-        (
-            cap::POLICY,
-            Kind::Sched,
-            Rights::READ.union(Rights::SET_POLICY),
-            0,
-        ),
-        (
-            cap::COMPONENT,
-            Kind::Component,
-            Rights::READ.union(Rights::WRITE),
-            pid,
-        ),
-        (
-            cap::PUBLISH,
-            Kind::Store,
-            Rights::READ.union(Rights::WRITE),
-            0,
-        ),
-        (cap::PUBLISH, Kind::Build, Rights::CONNECT, 0),
-        (cap::MODEL, Kind::Model, Rights::MAP, 0),
-        (cap::THREADS, Kind::Process, Rights::THREADS, pid),
+        (Kind::Endpoint, Rights::RECV.union(Rights::MINT), pid),
+        (Kind::Sched, Rights::READ.union(Rights::SET_POLICY), 0),
+        (Kind::Component, Rights::READ.union(Rights::WRITE), pid),
+        (Kind::Store, Rights::READ.union(Rights::WRITE), 0),
+        (Kind::Build, Rights::CONNECT, 0),
+        (Kind::Model, Rights::MAP, 0),
+        (Kind::Process, Rights::THREADS, pid),
         // `kai-data` only: no handle names the ESP or the system slots (ADR 0004 §7).
         (
-            cap::PARTITION,
             Kind::Partition,
             Rights::READ.union(Rights::WRITE),
             kabi::part::DATA,
         ),
         // The screen and the input queue, `desktop`'s alone (ADR 0005 §2).
-        (cap::DISPLAY, Kind::Display, Rights::WRITE, 0),
-        (cap::INPUT, Kind::Input, Rights::READ, 0),
+        (Kind::Display, Rights::WRITE, 0),
+        (Kind::Input, Rights::READ, 0),
         // The console's rows, for the terminal window: read-only.
-        (cap::TERM, Kind::Term, Rights::READ, 0),
+        (Kind::Term, Rights::READ, 0),
         // The edit service through the kernel's journal, for `comphost` (P4 task 11).
-        (cap::EDIT, Kind::Edit, Rights::CALL, 0),
+        (Kind::Edit, Rights::CALL, 0),
         // The slots and the boot record, never the ESP or `kai-data` (ADR 0008 §10).
         (
-            cap::UPDATE,
             Kind::Update,
             Rights::INSPECT.union(Rights::READ).union(Rights::WRITE),
             kabi::update::SYSTEM,
         ),
         // The asks for the card, `desktop`'s alone (ADR 0005 §7).
-        (cap::ASK, Kind::Ask, Rights::READ.union(Rights::WRITE), 0),
+        (Kind::Ask, Rights::READ.union(Rights::WRITE), 0),
         // Restarting the machine, for the action that asks first (backlog item 13).
-        (cap::POWER, Kind::Power, Rights::WRITE, 0),
+        (Kind::Power, Rights::WRITE, 0),
     ];
-    rows.iter()
-        .filter(|(bit, ..)| caps & bit != 0)
-        .map(|&(_, kind, rights, object)| Entry::new(kind, rights | BASE, object))
+    cap::STARTUP_HANDLES
+        .iter()
+        .zip(rows)
+        .filter(|&(&bit, _)| caps & bit != 0)
+        .map(|(_, (kind, rights, object))| Entry::new(kind, rights | BASE, object))
         .collect()
 }
 
@@ -332,6 +308,15 @@ pub fn create_with(
     }
     *HANDLES[slot].lock() = Some(Handles { table, startup });
     Ok(())
+}
+
+/// How many startup handles `slot`'s table lists: STARTUP gives a process at
+/// most [`MAX_STARTUP`] of them.
+pub fn startup_len(slot: usize) -> usize {
+    HANDLES[slot]
+        .lock()
+        .as_ref()
+        .map_or(0, |handles| handles.startup.len())
 }
 
 /// Drops `slot`'s table, once its process is gone.

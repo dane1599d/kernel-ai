@@ -513,6 +513,28 @@ pub fn spawn_in(
         with_table(|table| table[slot] = Process::FREE);
         return Err((error, moved));
     }
+    // STARTUP lists at most MAX_STARTUP handles, and the plan's `netdest=`
+    // comes last: a line with more would lose its network ceiling without a
+    // word. It is refused instead, before anything moves, so the spawner keeps
+    // what it moved (supervise's `startup_handles` counts each plan line the
+    // OS ships, on the host).
+    let llm_allowed =
+        crate::handle::ceiling_allows(request.limits.caps, kabi::handle::Kind::NetDest);
+    let held = crate::handle::startup_len(slot)
+        + moved.len()
+        + usize::from(plan.netdest.is_some())
+        + usize::from(plan.llm_dest && llm_allowed);
+    if held > kabi::handle::MAX_STARTUP {
+        crate::log!(
+            "process: {} would start with {held} startup handles, more than the {} STARTUP lists: not started",
+            request.name,
+            kabi::handle::MAX_STARTUP
+        );
+        crate::handle::destroy(slot);
+        with_table(|table| table[slot] = Process::FREE);
+        supervision::record_load_failure(pid, &name, request.supervisor, request.spawner);
+        return Err((Error::Invalid, moved));
+    }
     crate::handle::give_at_start(slot, moved);
     // A plan line's `netdest=`: a record of its own, made only now, so a
     // refused spawn never hands it to the spawner with what it moved.
@@ -534,8 +556,6 @@ pub fn spawn_in(
     // that asks for it and no other NET holder (K, after #756), and only within
     // its ceiling: NET bounds this handle as it bounds a moved-in `NetDest`
     // (a plan line's own `netdest=` record above is bounded by its line).
-    let llm_allowed =
-        crate::handle::ceiling_allows(request.limits.caps, kabi::handle::Kind::NetDest);
     if plan.llm_dest && llm_allowed {
         let entry = captable::Entry::new(
             kabi::handle::Kind::NetDest,

@@ -13,6 +13,9 @@
 //! and NET and keeping no handle of its own, and `httpscheck` as its caller
 //! (`via=fetch`), with a route to it and a `NetDest` for three of the mock's
 //! hosts, narrowing one exact host a call as comphost and the shell will.
+//! `fetch` in its send role (`kabi::plan::SEND`, `role=post`) runs beside it,
+//! and the caller's second route reaches it: `fetch` refuses a POST and
+//! `send` refuses a GET.
 
 use crate::fpu_tests::wait_exit;
 use crate::process::{self, SpawnRequest};
@@ -109,6 +112,13 @@ pub fn fetch_check() -> Result<(), &'static str> {
     };
     process::spawn_with(&service, alloc::vec![], false)
         .map_err(|_| "fetch-service: cannot start fetch")?;
+    let send = SpawnRequest {
+        name: "send",
+        args: b"role=post",
+        ..service
+    };
+    process::spawn_with(&send, alloc::vec![], false)
+        .map_err(|_| "fetch-service: cannot start send")?;
     let caller = SpawnRequest {
         name: "fetch-caller",
         program: "httpscheck",
@@ -116,7 +126,7 @@ pub fn fetch_check() -> Result<(), &'static str> {
         limits: CALLER_LIMITS,
         spawner: 0,
         supervisor: false,
-        uses: &["fetch"],
+        uses: &["fetch", "send"],
     };
     let pid = process::spawn_with(&caller, alloc::vec![netdest()?], false)
         .map_err(|_| "fetch-service: cannot start its caller")?;
@@ -125,7 +135,7 @@ pub fn fetch_check() -> Result<(), &'static str> {
         _ => return Err("fetch-service: the caller did not get what it expected"),
     }
     log!(
-        "fetch-service: fetch answered on each caller's handle: a body, a redirect within the host followed, one off it handed back and fetched on its own handle, and a host off the handle refused"
+        "fetch-service: fetch answered on each caller's handle: a body, a redirect within the host followed, one off it handed back and fetched on its own handle, and a host off the handle refused; fetch refused a POST and send a GET"
     );
     Ok(())
 }

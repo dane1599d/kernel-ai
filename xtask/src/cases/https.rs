@@ -109,7 +109,11 @@ pub const CASES: &[TestCase] = &[
             "[fetch-caller] httpscheck: fetch get https://releases.kai.test/dl: 302 unfollowed, to https://assets.kai.test/hello",
             "[fetch-caller] httpscheck: fetch get https://assets.kai.test/hello hops=1: 200: kai mock: hello",
             "[fetch-caller] httpscheck: fetch get https://elsewhere.kai.test/hello: refused, the handle does not name elsewhere.kai.test",
+            "[send] fetch: ready to send, for the shell alone",
+            "[fetch-caller] httpscheck: post on fetch: refused: this fetch takes no post: the shell's send service makes them",
+            "[fetch-caller] httpscheck: get on send: refused: the send service takes only a post",
             "fetch-service: fetch answered on each caller's handle",
+            "; fetch refused a POST and send a GET",
         ],
         ..case("fetch-service", "test=fetch-service")
     },
