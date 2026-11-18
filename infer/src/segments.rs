@@ -110,8 +110,12 @@ pub fn file_bytes(kv: &KvCache, positions: usize) -> usize {
     HEADER + 4 * positions + 2 * 2 * layers * width * positions
 }
 
-fn header(key: &Key, kv: &KvCache, tokens: &[u32], values_hash: u64) -> [u8; HEADER] {
-    let (layers, width) = kv.shape();
+fn header(
+    key: &Key,
+    (layers, width): (usize, usize),
+    tokens: &[u32],
+    values_hash: u64,
+) -> [u8; HEADER] {
     let mut h = [0u8; HEADER];
     h[..8].copy_from_slice(&MAGIC);
     h[8..40].copy_from_slice(&key.model_sha256);
@@ -165,7 +169,7 @@ pub(crate) fn save(
             true
         });
     }
-    let mut ok = out(&header(key, kv, tokens, fnv.0));
+    let mut ok = out(&header(key, kv.shape(), tokens, fnv.0));
     let ids: Vec<u8> = tokens.iter().flat_map(|t| t.to_le_bytes()).collect();
     ok = ok && ids.chunks(CHUNK).all(&mut *out);
     ok = ok && rows(kv, n).all(|row| each_chunk(row, &mut buf, out));
@@ -250,6 +254,35 @@ pub(crate) fn restore(
     }
     kv.set_len(n);
     Ok(tokens)
+}
+
+/// Writes `from` as the `kai-kv 1` file its slot would have been saved as, to
+/// `out`, in order: how a RAM snapshot the pool demotes becomes a spill file
+/// without the engine (ADR 0013 section 2). The bytes are those [`save`] writes
+/// for the same slot. An empty snapshot is refused.
+pub fn save_snapshot(from: &Snapshot, out: &mut dyn FnMut(&[u8]) -> bool) -> Result<(), Error> {
+    let Some(key) = from.key.as_ref().filter(|_| !from.tokens.is_empty()) else {
+        return Err(Error::Shape("an empty snapshot has no file"));
+    };
+    let mut buf = vec![0u8; CHUNK];
+    let mut fnv = Fnv::new();
+    each_chunk(&from.halves, &mut buf, &mut |bytes| {
+        fnv.update(bytes);
+        true
+    });
+    let mut ok = out(&header(key, from.shape, &from.tokens, fnv.0));
+    let ids: Vec<u8> = from.tokens.iter().flat_map(|t| t.to_le_bytes()).collect();
+    ok = ok && ids.chunks(CHUNK).all(&mut *out);
+    ok = ok && each_chunk(&from.halves, &mut buf, out);
+    match ok {
+        true => Ok(()),
+        false => Err(Error::Shape("the KV file's writer stopped")),
+    }
+}
+
+/// The length of the file [`save_snapshot`] writes for `from`.
+pub fn snapshot_file_bytes(from: &Snapshot) -> usize {
+    HEADER + 4 * from.tokens.len() + 2 * from.halves.len()
 }
 
 /// A slot's computed positions held in RAM (ADR 0013 section 2, S13-1): the state
