@@ -47,6 +47,10 @@ pub struct TestCase {
     pub keys_on: &'static [&'static str],
     /// Texts that must all appear on the serial console for the case to pass.
     pub expect: &'static [&'static str],
+    /// Tell the kernel the accelerator, `accel=kvm` or `accel=tcg`, for a
+    /// case that judges timing differently under TCG (an HTTPS case is told
+    /// always).
+    pub accel: bool,
     /// Lines the console must show whole, after the reader takes off a serial
     /// stamp: a line still carrying its stamp never matches.
     pub exact: &'static [&'static str],
@@ -219,6 +223,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         keys: &[],
         keys_on: &[],
         expect: &[],
+        accel: false,
         exact: &[],
         stops: false,
         build: false,
