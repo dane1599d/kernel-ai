@@ -74,7 +74,7 @@ impl Warmth {
     /// Whether to ask llm: it runs, and a `desktop` runs to be told, the only
     /// one that is. With no desktop, llm is never asked, so a boot without one
     /// sees no `warm` request and no reply to it. What cooled llm since is
-    /// noted first: a `new`, a language switch, or a restart.
+    /// noted first: a `new` or a restart (v0.1 keeps one language warm).
     fn look(&mut self) -> bool {
         if desktop_pid().is_none() {
             return false;

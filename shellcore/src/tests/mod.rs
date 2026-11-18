@@ -84,6 +84,9 @@ struct FakeHost {
     /// the store, and each package asked for them.
     installed: RefCell<Vec<(String, String)>>,
     installed_asked: RefCell<Vec<String>>,
+    /// When set, `installed_rows` fails with this, as a `pkg` that did not
+    /// answer.
+    installed_down: RefCell<Option<String>>,
     /// What the shell asked `desktop`, and how `desktop` answers.
     ui_calls: RefCell<Vec<crate::ui::UiCall>>,
     ui_answer: RefCell<Option<UiAnswer>>,
@@ -294,6 +297,7 @@ impl FakeHost {
             act_apps: RefCell::new(Vec::new()),
             installed: RefCell::new(Vec::new()),
             installed_asked: RefCell::new(Vec::new()),
+            installed_down: RefCell::new(None),
             ui_calls: RefCell::new(Vec::new()),
             ui_answer: RefCell::new(None),
             state: RefCell::new(crate::state::State::default()),
@@ -715,6 +719,9 @@ impl Host for FakeHost {
         self.installed_asked
             .borrow_mut()
             .push(String::from(package));
+        if let Some(why) = self.installed_down.borrow().clone() {
+            return Err(why);
+        }
         self.installed
             .borrow()
             .iter()

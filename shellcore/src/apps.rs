@@ -221,8 +221,17 @@ fn installed(
         apps.borrow_mut().rows.asked.push((app.to_string(), 0));
         // A window's service, `<x>-window`, runs package `<x>` (kaipkg).
         let package = app.strip_suffix("-window").unwrap_or(app);
-        let Ok(answer) = host.installed_rows(package) else {
-            continue;
+        let answer = match host.installed_rows(package) {
+            Ok(answer) => answer,
+            // A service `pkg` did not install: asked, and that is the answer.
+            Err(why) if why.ends_with(NOT_INSTALLED) => continue,
+            // `pkg` did not answer, or could not read the store: say so, and
+            // ask again on the next act turn.
+            Err(why) => {
+                host.audit(&format!("{app}'s package rows were not read: {why}"));
+                apps.borrow_mut().rows.asked.retain(|(name, _)| name != app);
+                continue;
+            }
         };
         let others: Vec<String> = services
             .iter()
@@ -240,6 +249,10 @@ fn installed(
 /// The supervisor's answer for a service that is not an app
 /// (`supervise::appcall::check`), less its `err `.
 const NOT_AN_APP: &str = "no such app";
+
+/// The end of `pkg`'s answer for a package it has not installed (`pkg`'s
+/// `actions`).
+const NOT_INSTALLED: &str = " is not installed";
 
 /// Loads app `app`'s rows, by its name, if they are not loaded yet: for its
 /// effects, which may come before any call to its rows.

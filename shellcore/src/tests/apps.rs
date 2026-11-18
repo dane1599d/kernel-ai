@@ -276,6 +276,35 @@ fn an_installed_app_that_is_not_running_shows_its_rows_from_its_package() {
     assert_eq!(*host.installed_asked.borrow(), ["notes", "netd"]);
 }
 
+#[test]
+fn an_unanswered_package_lookup_is_asked_again_next_turn() {
+    // #883's review: `pkg` not answering is not "not installed"; it is
+    // audited and asked again, so Notes' rows appear once `pkg` is up.
+    let none = || Err(ActError::Unavailable(String::from("no model")));
+    let (host, mut shell) = with_calls(vec![none(), none()]);
+    host.lists_services.set(true);
+    *host.services.borrow_mut() = vec![(String::from("notes"), false)];
+    host.installed
+        .borrow_mut()
+        .push((String::from("notes"), String::from(NOTES)));
+    *host.installed_down.borrow_mut() = Some(String::from("pkg did not answer"));
+    shell.eval("make a note called ideas");
+    assert!(
+        host.audit
+            .borrow()
+            .iter()
+            .any(|a| a.contains("notes's package rows were not read: pkg did not answer"))
+    );
+    *host.installed_down.borrow_mut() = None;
+    shell.eval("add a note saying buy eggs");
+    assert_eq!(*host.installed_asked.borrow(), ["notes", "notes"]);
+    let last = host.act_apps.borrow().last().cloned().unwrap();
+    assert_eq!(
+        llmproto::pack::apps::entries(&last),
+        Some(vec![("notes", NOTES)])
+    );
+}
+
 const EDITOR: &str = "version 1
 kai-actions 1
 world app:editor/editor@1.0.0
@@ -327,6 +356,23 @@ fn an_everyday_app_name_means_its_package() {
     assert_eq!(crate::ui::canonical("file manager"), "files");
     assert_eq!(crate::ui::canonical("Task Manager"), "monitor");
     assert_eq!(crate::ui::canonical("notes"), "notes");
+}
+
+#[test]
+fn a_package_with_an_everyday_name_keeps_it() {
+    // #883's review: an alias never hides a real app of that name.
+    let host = FakeHost::new();
+    host.lists_services.set(true);
+    assert_eq!(
+        crate::ui::canonical_on(host.as_ref(), "console"),
+        "terminal"
+    );
+    *host.services.borrow_mut() = vec![(String::from("console-window"), false)];
+    assert_eq!(crate::ui::canonical_on(host.as_ref(), "console"), "console");
+    assert_eq!(
+        crate::ui::canonical_on(host.as_ref(), "file manager"),
+        "files"
+    );
 }
 
 #[test]
