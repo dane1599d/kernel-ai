@@ -485,6 +485,8 @@ impl Shell {
             .as_ref()
             .or(waiver.as_ref())
             .filter(|_| !held(row))
+            // The person's rules are for Kai's lines: an agent's step asks.
+            .filter(|_| self.agent_acting().is_none())
             .and_then(|offer| self.rules.covering(offer));
         let reply = match (decision.tier, ruled) {
             (Tier::Run, _) => {

@@ -24,6 +24,7 @@ extern crate alloc;
 mod abilities;
 mod actions;
 pub mod actlog;
+mod agentconsent;
 mod agentcore;
 pub mod agentstep;
 pub mod analyse;
@@ -727,6 +728,14 @@ pub struct Shell {
     roster: agentid::Roster,
     /// What the card came to for agents' asked steps, until each waits for it.
     agents_told: Vec<agentstep::Told>,
+    /// The admission of the agent whose step is running: no rule of the
+    /// person's covers it (`agentconsent`).
+    acting: Option<agentid::Admission>,
+    /// Agents' open questions, and the admission each was asked under.
+    agent_asks: agentid::Asks,
+    agent_admissions: Vec<(u64, agentid::Admission)>,
+    /// The agent's question the person's yes was just spent on.
+    agent_spent: Option<u64>,
     /// The last script as `show` prints it.
     shown: Option<String>,
     /// What the script run by the last line printed.
@@ -858,6 +867,10 @@ impl Shell {
             hosts: nethosts::Table::curated(),
             roster: agentid::Roster::new(),
             agents_told: Vec::new(),
+            acting: None,
+            agent_asks: agentid::Asks::new(),
+            agent_admissions: Vec::new(),
+            agent_spent: None,
             grant_memo: appgrants::Memo::default(),
             shown: None,
             last_output: None,
@@ -1034,6 +1047,15 @@ impl Shell {
         }
         // Read before the answer runs: its question's age decides a lapse.
         let lapsed = answering.is_some_and(|(id, _)| self.card_lapsed(id));
+        // An agent's question takes the person's answer here, at the
+        // terminal, or not at all (`agentconsent`).
+        if let Some((id, word)) = answering
+            && !lapsed
+            && let Some(refused) = self.agent_answer(id, word, Shell::console_mark())
+        {
+            self.save_log();
+            return refused;
+        }
         let mut reply = self.eval(input);
         self.desk_answered(answering, &reply, lapsed);
         if reply.confirm.is_none() && !reply.more && !self.notices.is_empty() {
