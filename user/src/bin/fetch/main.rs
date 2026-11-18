@@ -25,12 +25,14 @@
 //! A POST (`kainet::wire::Post`, for the shell's held sends) is a plain call
 //! only, its text inline: `post <url> len=<n>`, a newline and the body, at most
 //! `wire::MAX_POST`. It is made once, never redirected and never tried again
-//! (`kainet::fetch::post_within`). It is never started: a start carries a
-//! `wire::Ask`, which is never a POST, and comphost, the one caller that
-//! starts, builds only `Ask`s. `fetch` cannot yet tell the shell from comphost:
-//! a `uses=fetch` route's badge is 0, and a call names only the caller's pid.
-//! So "only the shell posts" rests on comphost never building a POST, which
-//! kainet's tests pin, until the kernel names a caller (see [`posted`]).
+//! (`kainet::fetch::post_within`).
+//!
+//! **Only the shell posts.** `fetch` runs in two roles, each its own plan line
+//! and process: `fetch` (`kabi::plan::FETCH`) serves GET and HEAD, plain or
+//! started, and refuses every POST; `send` (`kabi::plan::SEND`, `role=post`)
+//! serves a POST and refuses everything else. Only a shell line names `send`
+//! in `uses=`, so the kernel gives no other process a route to it: comphost,
+//! the apps' host, reaches `fetch` alone.
 
 #![no_std]
 #![no_main]
@@ -58,6 +60,33 @@ const PAGE: usize = 4096;
 const DEADLINE_NS: u64 = 30_000_000_000;
 /// How long a receive waits before it looks again.
 const IDLE_MS: u64 = 60_000;
+/// Which calls this `fetch` serves: its plan line's `role=`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Role {
+    /// GET and HEAD, plain or started; never a POST.
+    Fetch,
+    /// A POST, and nothing else (`kabi::plan::SEND`).
+    Send,
+}
+
+impl Role {
+    fn of(args: &str) -> Self {
+        match user::arg(args, "role") == Some(kabi::plan::SEND_ROLE) {
+            true => Role::Send,
+            false => Role::Fetch,
+        }
+    }
+
+    /// Why this role refuses a call of the other kind.
+    fn refusal(self) -> String {
+        let why = match self {
+            Role::Fetch => "this fetch takes no post: the shell's send service makes them",
+            Role::Send => "the send service takes only a post",
+        };
+        wire::answer(&Err(Error::Refused(fetch::why(why))))
+    }
+}
+
 /// The longest message `fetch` reads: a start, or a POST with its body.
 const MAX_READ: usize = match wire::MAX_POST > later::MAX_MESSAGE {
     true => wire::MAX_POST,
@@ -228,15 +257,8 @@ fn made(config: &Arc<ClientConfig>, request: &[u8], moved: &[Handle]) -> (String
     answered(parts, moved)
 }
 
-/// What a POST comes to, as `fetch` replies it, as [`made`].
-///
-/// Only the shell should post, but `fetch` cannot yet tell who called: the
-/// kernel gives a call the caller's pid and its route's badge, and a plain
-/// `uses=fetch` route's badge is 0 for comphost and the shell alike. Until the
-/// kernel names the caller (a badge per `uses=` route that the supervisor sets
-/// from the caller's plan line, or a kernel call that gives a pid's process
-/// label), the rule rests on comphost never building a POST: it builds only
-/// `wire::Ask`s, and a start never carries a POST.
+/// What a POST comes to, as `fetch` replies it, as [`made`]: only in the send
+/// role, which only the shell has a route to.
 fn posted(
     config: &Arc<ClientConfig>,
     request: &[u8],
@@ -302,7 +324,11 @@ fn main() -> i32 {
         }
     };
     close_own_destinations();
-    println!("fetch: ready");
+    let role = Role::of(&user::args());
+    match role {
+        Role::Fetch => println!("fetch: ready"),
+        Role::Send => println!("fetch: ready to send, for the shell alone"),
+    }
     // Room for the longest start or POST, and a byte to spare.
     let mut request = alloc::vec![0u8; MAX_READ + 1];
     let mut keep = later::Keep::<Kept>::default();
@@ -334,6 +360,12 @@ fn main() -> i32 {
         if len > limit {
             close_all(&moved);
             reply(&later::too_long(), None);
+            continue;
+        }
+        // Each role serves its own kind of call and refuses the other's.
+        if is_post != (role == Role::Send) {
+            close_all(&moved);
+            reply(&role.refusal(), None);
             continue;
         }
         // A POST is a plain call, made once.
