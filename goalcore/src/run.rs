@@ -531,6 +531,23 @@ impl Goal {
         Ok(())
     }
 
+    /// The running step was not run: the person said no on the card, where the one
+    /// door asked for it (the goals agent's one ask, after the step left goalcore as
+    /// one that runs). It is counted as asked and denied, not as run, as
+    /// [`Goal::deny`] counts a step goalcore itself held for a yes.
+    pub fn deny_running(&mut self, why: &str) -> Result<(), Refusal> {
+        let Some(n) = self.flight.take() else {
+            return Err(Refusal::NoStepRunning);
+        };
+        self.asked = self.asked.saturating_add(1);
+        self.denied = self.denied.saturating_add(1);
+        if let Some(step) = self.log.iter_mut().rev().find(|s| s.n == n) {
+            step.status = StepStatus::Denied;
+            step.note = valid::clean(why);
+        }
+        Ok(())
+    }
+
     /// Tokens spent outside a step: the planner's own prompts, as `llm` counts them.
     pub fn charge(&mut self, tokens: u64) {
         self.tokens_spent = self.tokens_spent.saturating_add(tokens);
