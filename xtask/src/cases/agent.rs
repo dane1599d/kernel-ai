@@ -67,6 +67,15 @@ const SHOW_CPUS: &[&str] = &[
 ];
 
 pub(super) const CASES: &[TestCase] = &[
+    // F3 slices 2a and 2b (docs/plans/agents-os.md): the goals agent's ask and act
+    // are jobs on its own badged route to llm, and the person's next line is timed.
+    TestCase {
+        expect: &[
+            "goals: agent-job ok",
+            "agent-job: the person's line after an agent's act took",
+        ],
+        ..case("agent-job", "test=agent-job")
+    },
     case("net", "test=net"),
     case("shell", "test=shell"),
     case("scripts", "test=scripts"),

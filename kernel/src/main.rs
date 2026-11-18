@@ -19,6 +19,7 @@ extern crate alloc;
 
 mod act_tests;
 mod agent_desk_tests;
+mod agent_job_tests;
 mod allow;
 mod apic;
 mod app_editor_build_tests;
@@ -420,6 +421,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::AppSuspend => run_case(suspend_tests::check),
         SelfTest::EventWake => run_case(wake_tests::check),
         SelfTest::AppOnDemand => run_case(demand_tests::check),
+        SelfTest::AgentJob => run_case(agent_job_tests::check),
         SelfTest::DeskBoot => run_case(desk_tests::boot_check),
         SelfTest::DeskPanel => run_case(desk_tests::panel_check),
         SelfTest::DeskWheel => run_case(desk_tests::wheel_check),
