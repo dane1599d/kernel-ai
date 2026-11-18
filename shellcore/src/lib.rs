@@ -721,6 +721,9 @@ pub struct Shell {
     /// The admission of the agent whose step is running: no rule of the
     /// person's covers it (`agentconsent`).
     acting: Option<agentid::Admission>,
+    /// The first entry id of the step `acting` is for: older entries (a
+    /// question that lapses during the step) are not its.
+    acting_from: u64,
     /// Agents' open questions, and the admission each was asked under.
     agent_asks: agentid::Asks,
     agent_admissions: Vec<(u64, agentid::Admission)>,
@@ -855,6 +858,7 @@ impl Shell {
             roster: agentid::Roster::new(),
             agents_told: Vec::new(),
             acting: None,
+            acting_from: 0,
             agent_asks: agentid::Asks::new(),
             agent_admissions: Vec::new(),
             agent_spent: None,

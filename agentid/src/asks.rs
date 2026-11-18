@@ -92,11 +92,25 @@ impl Answered {
     /// asking agent's, for the row, entry and words asked about, and the agent is
     /// still on the roster with grants for the row.
     pub fn spend(self, roster: &Roster, admission: &Admission, entry: u64, shown: &str) -> bool {
+        self.spend_in(roster, admission, entry, shown, &agentabi::ROWS)
+    }
+
+    /// [`Answered::spend`] for a call admitted among `rows` (`Roster::admit_in`),
+    /// such as an installed app's row: the grants are checked against the same
+    /// rows.
+    pub fn spend_in(
+        self,
+        roster: &Roster,
+        admission: &Admission,
+        entry: u64,
+        shown: &str,
+        rows: &[agentabi::Action],
+    ) -> bool {
         self.yes
             && admission.caller().id() == self.by
             && entry == self.entry
             && Digest::of(entry, admission.row(), shown) == self.call
-            && roster.revalidate(admission).is_ok()
+            && roster.revalidate_in(admission, rows).is_ok()
     }
 }
 
