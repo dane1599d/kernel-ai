@@ -172,6 +172,8 @@ Installed devices follow, because the new root is signed by the old one. Nothing
 5. Devices fetch `2.root.json` at their next update check and trust only the YubiKeys from then on. Rotation ignores expiry, so a device offline for more than a year still follows.
 6. Once a test VM has followed the rotation, delete `root.key` and `release.key` from both sticks.
 
+**Before root version 2: what each image anchors on (a release-tooling requirement).** Every image carries `1.root.json` as its `kai.root.json` today, because root is frozen at version 1. After a rotation that must change. A device with no `kai-data` (a fresh install, or one whose cached root is gone) anchors on whatever its image carries. An image that still carried version 1 would trust `root.key` again, and a leaked `root.key` could then sign a different version 2 and fork the chain. So from the first release after the rotation, `release-image` embeds the newest `N.root.json` as `kai.root.json`, or carries the whole chain for `updated` to walk from version 1. The session that builds root version 2 changes `release-image`, `assemble` and their checks first, before any image ships under it.
+
 ### If a key file is lost
 
 - **One stick, or one passphrase, with the other copy still good:** use the copy, and make a new second copy.
