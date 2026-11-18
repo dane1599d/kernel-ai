@@ -45,15 +45,17 @@ env:
   # 13/13, 15/15 and 21/26 MB/s (write/read, 2026-11-16 to 11-18): runner noise
   # alone spans that, so the floor catches a halving, not a few MB/s.
   PART_FLOOR_MBS: "10"
-  # PROOF RUN ONLY: tcg by default, so the floor must fail; the next commit puts kvm back.
-  ACCEL: ${{ inputs.accel || 'tcg' }}
+  # A TCG run must fail the floor: run 44386325611 booted `part` under TCG at
+  # 2/3 MB/s and failed it, as a hand run with `accel: tcg` does.
+  ACCEL: ${{ inputs.accel || 'kvm' }}
 
 concurrency:
   group: throughput-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # ci.yml's `qemu` job, as this workflow cannot rely on its cache being there:
+  # ci.yml's `qemu` job (bump its version and SHA-256 with ci.yml's), as this
+  # workflow cannot rely on that cache being there:
   # QEMU built from the same pinned tarball once, then restored.
   qemu:
     name: QEMU 11.0.5 (built once, cached)
