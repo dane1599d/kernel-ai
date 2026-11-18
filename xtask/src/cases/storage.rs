@@ -62,6 +62,21 @@ const FS_UNDO_REBOOT_2: TestCase = TestCase {
 };
 
 pub(super) const CASES: &[TestCase] = &[
+    // The kaifs re-baseline: 32 MiB each way from a ring-3 client, in 7 KiB
+    // messages and over a bulk Shm, with `fs`'s phase split. Two 32 MiB files
+    // and their undo state want more than the 64 MiB kai-data.
+    TestCase {
+        expect: &[
+            "filecheck: bench in 7 KiB messages: 32 MiB, write ",
+            "filecheck: bench in 1 MiB Shm: 32 MiB, write ",
+            "fs: phase: ",
+            "fs-bench: filecheck moved 32 MiB each way, both ways",
+        ],
+        server: false,
+        data: Some(VIRTIO),
+        data_mib: Some(256),
+        ..case("fs-bench", "test=fs-bench")
+    },
     TestCase {
         expect: &[
             "block: kai-data is ",
