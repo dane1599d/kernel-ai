@@ -9,7 +9,10 @@
 //! the estimate undercounts them. It also counts S05-2's agent views (ADR 0005):
 //! each P4 app's mock window as `ui_view` shows it, which fails past
 //! `deskcore::view::MAX_TOKENS` or when the view's estimate undercounts it.
-//! The `c-app-1` card is held to the same alarm on its own.
+//! The `c-app-1` card is held to the same alarm on its own. For the trims the
+//! agent rows need (plan agents-os §4, T0), it also counts each line of the
+//! pack's sections on its own (an example's request and answer together),
+//! largest first, with the headroom left under the alarm: measurement only.
 //! The token-count workflow runs it on GitHub's runner.
 
 use bpe::Tokenizer;
@@ -298,6 +301,7 @@ pub fn report(tok: &Tokenizer, chat: &Chat) -> String {
     let pack = count(tok, &dsl1);
     dsl.row("**whole pack**", dsl1.len(), pack);
     out.push_str(&dsl.text);
+    out.push_str(&trim_table(tok, &dsl1));
     let longest = dsl1.lines().map(|line| (count(tok, line), line)).max();
     if let Some((tokens, line)) = longest {
         let _ = writeln!(
@@ -326,7 +330,55 @@ pub fn report(tok: &Tokenizer, chat: &Chat) -> String {
             / (m8.tok_bytes.0 + dsl.tok_bytes.0).max(1) as f64,
         dsl1.len() as f64 / pack.max(1) as f64,
     );
+    let used = pack + count(tok, MODE_ACT);
+    let _ = writeln!(
+        out,
+        "- Headroom under the alarm: {PACK_ALARM} − {used} = **{}** tokens (under `PACK_BUDGET` {PACK_BUDGET}: {}).",
+        PACK_ALARM as i64 - used as i64,
+        PACK_BUDGET as i64 - used as i64,
+    );
     out
+}
+
+/// Each line of the pack's sections as a trim would take it, with its section's
+/// heading: an example's request and its answer are one item, and a heading is
+/// none. Every other non-empty line is one item, in the pack's order.
+fn trim_items(pack: &str) -> Vec<(&str, String)> {
+    let mut items = Vec::new();
+    for (heading, text) in sections(pack) {
+        let mut lines = text.lines().skip(1).filter(|line| !line.is_empty());
+        while let Some(line) = lines.next() {
+            let item = match (heading == "## Examples", line.starts_with("> ")) {
+                (true, true) => format!("{line}\n{}", lines.next().unwrap_or("")),
+                _ => line.to_string(),
+            };
+            items.push((heading, item));
+        }
+    }
+    items
+}
+
+/// The trims' table: every item of [`trim_items`] with its real tokens, the
+/// largest first (plan agents-os §4, T0).
+fn trim_table(tok: &Tokenizer, pack: &str) -> String {
+    let mut counted: Vec<(usize, &str, String)> = trim_items(pack)
+        .into_iter()
+        .map(|(heading, item)| (count(tok, &item), heading, item))
+        .collect();
+    counted.sort_by_key(|item| core::cmp::Reverse(item.0));
+    let mut table = Table::new(
+        "`dsl-1` pack lines, largest first (for trims; an example counts its request and answer)",
+    );
+    for (tokens, heading, item) in counted {
+        let shown: String = item.replace('\n', " / ").chars().take(60).collect();
+        let shown = shown.replace('|', "\\|").replace('`', "'");
+        table.row(
+            &format!("{} `{shown}`", heading.trim_start_matches("## ")),
+            item.len(),
+            tokens,
+        );
+    }
+    table.text
 }
 
 #[cfg(test)]
@@ -355,6 +407,36 @@ mod tests {
         assert!(index.starts_with("## index"), "{index}");
         let joined: String = sections(&text).iter().map(|(_, t)| *t).collect();
         assert_eq!(joined, text);
+    }
+
+    /// Every line of the pack is in exactly one trim item, in order, and an
+    /// example's request goes with its answer.
+    #[test]
+    fn the_trim_items_cover_every_line_of_the_pack_once() {
+        let text = pack::render(Format::Dsl1);
+        let items = trim_items(&text);
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with("## "))
+            .collect();
+        let rejoined: Vec<String> = items
+            .iter()
+            .flat_map(|(_, item)| item.split('\n').map(str::to_string).collect::<Vec<_>>())
+            .collect();
+        assert_eq!(rejoined, lines);
+        let examples: Vec<&String> = items
+            .iter()
+            .filter(|(heading, _)| *heading == "## Examples")
+            .map(|(_, item)| item)
+            .collect();
+        assert!(!examples.is_empty());
+        for example in examples {
+            let (request, answer) = example.split_once('\n').expect("a request and its answer");
+            assert!(
+                request.starts_with("> ") && answer.starts_with('{'),
+                "{example}"
+            );
+        }
     }
 
     /// Every OS function a script may call has a row in the pack.
