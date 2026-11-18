@@ -157,6 +157,13 @@ pub enum Effect {
     PaneWheel(i32),
     /// The wheel over Start's lists, by detents (positive moves down).
     StartWheel(i32),
+    /// The wheel over `window`'s content at `at` (content-local px), by
+    /// detents (positive scrolls down): a ring event for its client.
+    Wheel {
+        window: WindowId,
+        at: Point,
+        detents: i32,
+    },
     /// Tell the client its window's content size and state
     /// (`toplevel.configure`).
     Configure {

@@ -146,6 +146,24 @@ pub fn page() -> [u8; header::PAGE] {
             },
         );
     }
+    // The wheel (the axis event): down, up, the other axis, and the extremes.
+    for (code, value) in [(0, 3), (0, -2), (1, 1), (0, i32::MAX), (0, i32::MIN)] {
+        header::post(
+            &mut page,
+            &Event::Input {
+                event: InputEvent {
+                    time_ns: 9,
+                    kind: Kind::Wheel,
+                    code,
+                    value,
+                },
+                x: 5 << 8,
+                y: -7 << 8,
+                text: [0; 4],
+                len: 0,
+            },
+        );
+    }
     page
 }
 
