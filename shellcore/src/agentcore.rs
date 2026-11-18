@@ -472,7 +472,7 @@ impl Shell {
             .and_then(|offer| self.rules.covering(offer));
         let reply = match (decision.tier, ruled) {
             (Tier::Run, _) => {
-                self.shown = Some(script::shown(id, &checked));
+                self.show_script(id, script::shown(id, &checked));
                 let consent = match decision.why {
                     Why::TakenAs => "taken-as",
                     _ => "asked",
@@ -486,10 +486,10 @@ impl Shell {
             }
             // A standing rule waives the ask the row itself makes (ADR 0002 D2a).
             (_, Some(rule)) => {
-                self.shown = Some(format!(
-                    "{}\nran under rule #{rule}",
-                    script::shown(id, &checked)
-                ));
+                self.show_script(
+                    id,
+                    format!("{}\nran under rule #{rule}", script::shown(id, &checked)),
+                );
                 self.host.audit(&format!(
                     "request {id}: {} runs under rule #{rule}",
                     row.name
@@ -545,10 +545,10 @@ impl Shell {
         };
         let call = checked.script.trim_end_matches(';').to_string();
         let changes: Vec<&'static str> = checked.changes.clone();
-        self.shown = Some(format!(
-            "{}\nasked first: {reason}",
-            script::shown(id, &checked)
-        ));
+        self.show_script(
+            id,
+            format!("{}\nasked first: {reason}", script::shown(id, &checked)),
+        );
         self.pending = Some(crate::actions::Pending {
             id,
             request: request.to_string(),

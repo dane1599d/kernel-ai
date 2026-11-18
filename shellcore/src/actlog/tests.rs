@@ -284,3 +284,37 @@ fn the_list_names_an_agents_entry() {
     );
     assert!(!list.contains("[kai]"), "{list}");
 }
+
+#[test]
+fn an_undo_record_keeps_its_agent_in_actlog_2() {
+    let mut log = sample();
+    log.push(agents(30, "goals"));
+    log.push(Entry {
+        form: Form::Undo,
+        of: Some(30),
+        tier: None,
+        pack: None,
+        ..agents(31, "goals")
+    });
+    let text = log.text();
+    let line = text.lines().find(|l| l.starts_with("U 31 ")).unwrap();
+    assert!(line.ends_with(" agent=goals"), "{text}");
+    let bare = line.trim_end_matches(" agent=goals");
+    let agent_of = |text: &str, id: u64| {
+        let (records, aside) = text::parse_setting_aside(text).unwrap();
+        let agent = records.iter().find_map(|r| match r {
+            Record::Entry(e) if e.id == id => Some(e.agent.as_str().to_string()),
+            _ => None,
+        });
+        (agent, aside)
+    };
+    assert_eq!(agent_of(&text, 31), (Some("goals".into()), vec![]));
+    assert_eq!(agent_of(&text, 18), (Some("kai".into()), vec![]));
+    // A `U` written before undo records named their agent reads as kai's.
+    let old = text.replace(line, bare);
+    assert_eq!(agent_of(&old, 31), (Some("kai".into()), vec![]));
+    // A bad name is reported set aside, but the undo stays, so what it undid
+    // never reads as live again.
+    let bad = text.replace(line, &format!("{bare} agent=Bad!"));
+    assert_eq!(agent_of(&bad, 31), (Some("kai".into()), vec![31]));
+}
