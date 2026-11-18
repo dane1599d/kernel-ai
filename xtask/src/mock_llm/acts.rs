@@ -2,6 +2,7 @@
 //! before ([`CONVO`]) and after a read ([`READS`]).
 
 use super::act::NOTES_LOOK;
+use super::app::{BUILD_CALL, BUILD_LINE};
 use super::{SLOW_LINE, WAIT_SLOW_LINE};
 
 /// Tagged calls the mock makes for `act` requests (ADR 0002 D4), keyed by the
@@ -354,6 +355,9 @@ pub(super) const ACTS: &[(&str, &str)] = &[
         "do it again",
         r#"{"name":"clarify","arguments":{"question":"Do what again? There is no earlier request.","options":[]}}"#,
     ),
+    // `app-build` ("Kai builds apps"): the app's source is the c-app-1 round's
+    // answer (`app.rs`).
+    (BUILD_LINE, BUILD_CALL),
 ];
 
 /// Calls for a second turn (`act-convo`, P1 task 10), keyed by the latest
