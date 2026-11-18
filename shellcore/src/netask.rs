@@ -297,6 +297,7 @@ impl Shell {
             app: None,
             install: None,
             net: Some(asking),
+            send: None,
             power: false,
         });
         Reply::menu(id, encoded)

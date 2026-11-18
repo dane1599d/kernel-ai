@@ -90,6 +90,8 @@ pub enum Why {
     /// More than one read from hosts only a grant grounds in one plan, or one
     /// in a loop.
     GrantMany,
+    /// A send to a site the line does not name: refused, never asked.
+    SendHost,
     /// The line is not English, so it gives no consent for changes in v0.1.
     NotEnglish,
     /// A value no call may take, or a row that never runs.
@@ -254,6 +256,14 @@ fn decide_one(
     };
     if row.min_tier == Tier::Never || has_never_value(row, call) {
         return Decision::new(Tier::Never, Why::NeverValue);
+    }
+    // A send goes only to a site the line names (typed, or a word of the host
+    // table): never one only an app's grant grounds, nor one read content
+    // gave. No answer on a card can widen that (P5 close, ADR 0002 D3).
+    let sends_to_host = matches!(row.inverse, Inverse::Hold { .. })
+        && row.args.iter().any(|arg| matches!(arg.ty, ArgType::Host));
+    if sends_to_host && !line_names_destination(words, hosts, row, call) {
+        return Decision::new(Tier::Never, Why::SendHost);
     }
     if let Some(source) = steered(row, call) {
         return Decision::new(Tier::Ask, Why::Steered(source));
