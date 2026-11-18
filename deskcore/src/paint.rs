@@ -56,6 +56,8 @@ pub struct Bar {
     /// Seconds since 1970 UTC, for the tray's clock; none without a wall
     /// clock, and then no clock is drawn.
     pub utc_s: Option<u64>,
+    /// The clock's fixed offset from UTC in minutes (`time_zone`); 0 is UTC.
+    pub zone_min: i16,
 }
 
 /// Everything a frame shows besides the windows' own pixels.
