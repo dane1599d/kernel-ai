@@ -277,6 +277,8 @@ fn a_goal_the_shell_made_is_adopted_under_its_own_id_once() {
     // A goal set later gets an id above every one adopted.
     let next = ours.set(spec(), T0).unwrap();
     assert!(next > 42);
+}
+
 /// A planner that never proposes and charges each time.
 struct Spends {
     calls: u32,
