@@ -937,8 +937,32 @@ fn undo_agent_takes_back_that_agents_newest_entry_and_why_names_it() {
     );
     assert!(shell.eval("undo goals").text.starts_with("Undone: "));
     assert_eq!(host.policy.get(), Some(policy::INTERACTIVE));
+    // The undo is the person's, the newest entry; `why` still names the
+    // agent of the script it shows.
+    assert!(shell.log.get(shell.log.last_id()).unwrap().agent.is_kai());
+    assert!(shell.eval("why").text.ends_with(
+        "
+by goals"
+    ));
     assert_eq!(
         shell.eval("undo goals"),
         Reply::err("nothing of goals's to undo")
     );
+}
+
+#[test]
+fn undo_agent_is_for_roster_agents_never_the_persons_undo_words() {
+    let (_, mut shell) = with_calls(vec![call(RR)]);
+    shell.eval("switch to round robin");
+    let id = shell.log.last_id();
+    // An entry stamped with a name the roster does not hold.
+    if let Some(entry) = shell.log.get_mut(id) {
+        entry.agent = agentid::Name::new("ghost").unwrap();
+    }
+    assert!(!shell.is_undoable_agent("ghost"), "not on the roster");
+    assert!(!shell.is_undoable_agent("kai"));
+    assert!(shell.is_undoable_agent("goals"));
+    for word in ["that", "it", "this", "last", "That", "IT"] {
+        assert!(!shell.is_undoable_agent(word), "{word}");
+    }
 }

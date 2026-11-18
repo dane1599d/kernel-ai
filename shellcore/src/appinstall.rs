@@ -252,10 +252,13 @@ impl Shell {
         };
         self.host.audit(&format!("request {id}: {call} asks"));
         let checked = Checked::shown_only(&call);
-        self.shown = Some(format!(
-            "{}\nasked first: installing a new app always asks",
-            crate::script::shown(id, &checked)
-        ));
+        self.show_script(
+            id,
+            format!(
+                "{}\nasked first: installing a new app always asks",
+                crate::script::shown(id, &checked)
+            ),
+        );
         self.pending = Some(Pending {
             id,
             request: request.to_string(),
