@@ -28,6 +28,7 @@ pub mod lease;
 pub mod models_wire;
 mod monogram;
 pub mod net_wire;
+pub mod overlay;
 pub mod paint;
 pub mod paint_card;
 pub mod paint_chat;
