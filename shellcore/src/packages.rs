@@ -157,7 +157,10 @@ impl Shell {
             "request {id}: {call} asks ({}{audit})",
             switch.what()
         ));
-        let reply = self.ask_call(id, request, Checked::shown_only(call), why, None, subject);
+        let reply = self.ask_call(crate::agentcore::Ask {
+            subject,
+            ..crate::agentcore::Ask::new(id, request, Checked::shown_only(call), why)
+        });
         if let Some(pending) = &mut self.pending {
             pending.pkg = Some(switch);
         }

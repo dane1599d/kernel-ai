@@ -256,7 +256,10 @@ impl Shell {
     ) -> Reply {
         self.host.audit(&format!("request {id}: {call} asks"));
         let checked = Checked::shown_only(call);
-        let mut reply = self.ask_call(id, request, checked, why, None, subject.clone());
+        let mut reply = self.ask_call(crate::agentcore::Ask {
+            subject: subject.clone(),
+            ..crate::agentcore::Ask::new(id, request, checked, why)
+        });
         if let Some(subject) = subject
             && reply.confirm.is_some()
             && reply.text.starts_with("Run ")
