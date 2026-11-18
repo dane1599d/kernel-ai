@@ -53,9 +53,38 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # ci.yml's `qemu` job, as this workflow cannot rely on its cache being there:
+  # QEMU built from the same pinned tarball once, then restored.
+  qemu:
+    name: QEMU 11.0.5 (built once, cached)
+    runs-on: ubuntu-24.04
+    env:
+      QEMU_VERSION: "11.0.5"
+      QEMU_SHA256: 38a1a09f349660cb0e20b8fe5f224d6a53ec4235eb36f2e33a31e21bb6138147
+    steps:
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/qemu
+          key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
+          lookup-only: true
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+      - name: Build QEMU ${{ env.QEMU_VERSION }}
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bash .github/actions/qemu/build.sh
+      - name: Save QEMU ${{ env.QEMU_VERSION }}
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/qemu
+          key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
+    timeout-minutes: 40
+
   part:
     name: part throughput
     runs-on: ubuntu-24.04
+    needs: qemu
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
