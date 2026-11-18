@@ -239,3 +239,21 @@ fn the_final_probe_lines_ask_for_no_send() {
         assert_eq!(one(line, &plain).0, Tier::Ask, "{line}");
     }
 }
+
+#[test]
+fn the_reviews_nine_lines_ask_for_no_send() {
+    let plain = send("hooks.example", Label::Literal, Label::Literal);
+    for line in [
+        "just checking: sending to hooks.example is safe?",
+        "sending hello to hooks.example, would that work?",
+        "read the guide to posting on hooks.example",
+        "the guide to sending on hooks.example",
+        "i used to post hello on hooks.example",
+        "it is easy to post on hooks.example",
+        "tom also sends hello to hooks.example every day",
+        "the bot reads the feed and sends it to hooks.example",
+        "now posting on hooks.example: the new rules",
+    ] {
+        assert_eq!(one(line, &plain), (Tier::Never, Why::SendUnasked), "{line}");
+    }
+}
