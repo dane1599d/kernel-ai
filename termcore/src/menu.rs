@@ -387,6 +387,23 @@ pub fn split_shown(wire: &str) -> Option<Result<Shown<'_>, Refused>> {
     })())
 }
 
+/// A shown text's line as it is printed: a space that would not be seen (a
+/// trailing one, or one of a run) is `·`, so the person sees every byte.
+pub fn visible_spaces(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let end = chars.iter().rposition(|c| *c != ' ').map_or(0, |i| i + 1);
+    let mut out = String::with_capacity(line.len());
+    for (i, c) in chars.iter().enumerate() {
+        let run = *c == ' '
+            && (i >= end
+                || chars.get(i + 1) == Some(&' ')
+                || (i > 0 && chars[i - 1] == ' ')
+                || i == 0);
+        out.push(if run { '\u{b7}' } else { *c });
+    }
+    out
+}
+
 /// The id of the menu in `wire`, past a shown block's bytes when it has one,
 /// so no `menu N` inside the shown text is read: for the Deny of a menu that
 /// cannot be shown.
@@ -821,5 +838,17 @@ mod granted_tests {
             "not the menu inside the text"
         );
         assert_eq!(super::menu_id(&menu), Some(7));
+    }
+
+    #[test]
+    fn a_space_that_would_not_be_seen_is_shown() {
+        use super::visible_spaces;
+        assert_eq!(visible_spaces("hello there"), "hello there");
+        assert_eq!(
+            visible_spaces("hello  there "),
+            "hello\u{b7}\u{b7}there\u{b7}"
+        );
+        assert_eq!(visible_spaces(" lead"), "\u{b7}lead");
+        assert_eq!(visible_spaces("   "), "\u{b7}\u{b7}\u{b7}");
     }
 }

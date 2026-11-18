@@ -85,7 +85,27 @@ const SUBJECT: &str = "Send the text above";
 
 /// The header code writes over the text, outside the card.
 fn header(send: &Send) -> String {
-    format!("Kai wants to send this text to {}:", send.host)
+    format!(
+        "Kai wants to send this text ({} bytes) to {}:",
+        send.body.len(),
+        send.host
+    )
+}
+
+/// Whether the line types `host` with a port other than 443 ("https://
+/// ci.example:8443/hook"): a send goes to 443 only, and the card would not
+/// show the port.
+fn typed_other_port(line: &str, host: &str) -> bool {
+    line.split_whitespace().any(|token| {
+        let token = token
+            .trim_start_matches("https://")
+            .trim_start_matches("http://");
+        let Some((typed, rest)) = token.split_once(':') else {
+            return false;
+        };
+        let port: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        typed.eq_ignore_ascii_case(host) && !port.is_empty() && port != "443"
+    })
 }
 
 impl Shell {
@@ -100,6 +120,16 @@ impl Shell {
         why: Why,
     ) -> Reply {
         let mut send = send_of(values);
+        if typed_other_port(request, &send.host) {
+            let why = "a send goes to port 443 only";
+            self.record(
+                id,
+                request,
+                &format!("net_send to {}", send.host),
+                &format!("refused: {why}"),
+            );
+            return Reply::err(format!("Not sent: {why}"));
+        }
         if let Some(why) = unsendable(&send) {
             self.record(
                 id,
