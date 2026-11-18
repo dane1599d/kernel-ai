@@ -70,6 +70,20 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("serial-stamps", "test=handles stamp=ms")
     },
+    // IPC round trips, 0 B, 1 KiB and 7 KiB, kernel to ring 3 and ring 3 to
+    // ring 3, p50 and p99 each: recorded, not judged.
+    TestCase {
+        expect: &[
+            "ipc-rtt: kernel to ring 3, 0 B: p50 ",
+            "ipc-rtt: kernel to ring 3, 1024 B: p50 ",
+            "ipc-rtt: kernel to ring 3, 7168 B: p50 ",
+            "[rtt-client] ipc-rtt: ring 3 to ring 3, 0 B: p50 ",
+            "[rtt-client] ipc-rtt: ring 3 to ring 3, 1024 B: p50 ",
+            "[rtt-client] ipc-rtt: ring 3 to ring 3, 7168 B: p50 ",
+            "ipc-rtt: the echo server answered each size from the kernel and from ring 3",
+        ],
+        ..case("ipc-rtt", "test=ipc-rtt")
+    },
     // SHELL_INTERRUPT: the person's Stop lets a taken call finish and stops the
     // rest of the shell's line.
     TestCase {
