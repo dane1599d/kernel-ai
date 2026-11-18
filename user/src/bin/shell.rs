@@ -1183,11 +1183,13 @@ impl Host for System {
         Some(&Firings)
     }
 
-    /// One `profile` request to the supervisor per process (P3 task 12). One it
-    /// refuses puts back those set before it, so a switch is all or nothing.
+    /// One `profile` request to the supervisor per process (P3 task 12), with
+    /// `cap` on a switch (#517). One it refuses puts back those set before it,
+    /// so a switch is all or nothing.
     fn profile_apply(
         &self,
         settings: &[kaiprofile::Setting],
+        cap: bool,
     ) -> Result<Vec<kaiprofile::Setting>, String> {
         let metrics = sys::metrics().map_err(|e| format!("cannot read the processes ({e:?})"))?;
         let pid_of = |name: &str| {
@@ -1205,6 +1207,7 @@ impl Host for System {
                 pid,
                 class: setting.class.number(),
                 pages: setting.mem,
+                cap,
             });
             let had = set
                 .ok_or_else(|| format!("{} is not running", setting.process))

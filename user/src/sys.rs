@@ -501,6 +501,15 @@ pub fn proc_quota_set(pid: u64, pages: u64) -> Result<u64, Error> {
     call(call::PROC_QUOTA_SET, [pid, pages, 0, 0, 0, 0])
 }
 
+/// Process `pid`'s page quota is lowered to `pages`, and left as it is when it
+/// is at or under it; the old one (PROC_QUOTA_SET's QUOTA_LOWER_ONLY, #517).
+pub fn proc_quota_lower(pid: u64, pages: u64) -> Result<u64, Error> {
+    call(
+        call::PROC_QUOTA_SET,
+        [pid, pages, call::QUOTA_LOWER_ONLY, 0, 0, 0],
+    )
+}
+
 /// Process `pid` runs `normal` (0) or `background` (1) (PROC_CLASS_SET, needs
 /// SUPERVISE).
 pub fn proc_class_set(pid: u64, class: u64) -> Result<u64, Error> {

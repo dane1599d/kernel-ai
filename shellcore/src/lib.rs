@@ -481,10 +481,14 @@ pub trait Host {
     }
     /// Gives each process its class and quota (P3 task 12), through the
     /// supervisor's PROC_CLASS_SET and PROC_QUOTA_SET; every one's settings from
-    /// before, so `undo` can put them back.
+    /// before, so `undo` can put them back. With `cap` (a switch, #517) a
+    /// setting's `mem` is a ceiling: a quota above it is lowered, one at or
+    /// under it is left, and only a lowered one has a `mem` from before. Without
+    /// it (an undo) `mem` is set exactly.
     fn profile_apply(
         &self,
         _settings: &[kaiprofile::Setting],
+        _cap: bool,
     ) -> Result<Vec<kaiprofile::Setting>, String> {
         Err(String::from(
             "profiles are not wired to the supervisor here yet",

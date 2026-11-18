@@ -1,8 +1,12 @@
-//! `profile <pid> <class> <pages|->`: the shell asks the supervisor to set one
-//! process's CPU class and page quota for a resource profile (P3 task 12). The
-//! supervisor holds SUPERVISE, which PROC_CLASS_SET and PROC_QUOTA_SET need, and
-//! takes this only from the shell. The kernel's floors refuse a protected
+//! `profile <pid> <class> <pages|-> [cap]`: the shell asks the supervisor to set
+//! one process's CPU class and page quota for a resource profile (P3 task 12).
+//! The supervisor holds SUPERVISE, which PROC_CLASS_SET and PROC_QUOTA_SET need,
+//! and takes this only from the shell. The kernel's floors refuse a protected
 //! process, whatever the profile says.
+//!
+//! With `cap` (a profile switch, #517) the pages are a ceiling: a quota above
+//! them is lowered, and one at or under them is left as it is. Without it (an
+//! `undo`) they are set exactly, so undo may raise back what a switch lowered.
 //!
 //! The answer is `ok <old class> <old pages|->`, what the process had before, so
 //! `undo` can put it back; `-` where the quota was left as it was.
@@ -11,15 +15,18 @@ use alloc::format;
 use alloc::string::String;
 
 /// One process's settings, or the ones it had: class 0 is normal, 1 background
-/// (PROC_CLASS_SET's numbers), and a page quota or none to leave it.
+/// (PROC_CLASS_SET's numbers), and a page quota or none to leave it. `cap`
+/// makes the quota a ceiling: lowered to it, never raised.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Set {
     pub pid: u64,
     pub class: u64,
     pub pages: Option<u64>,
+    pub cap: bool,
 }
 
 const WORD: &str = "profile";
+const CAP: &str = "cap";
 
 fn class_word(class: u64) -> Option<&'static str> {
     match class {
@@ -60,8 +67,9 @@ impl Set {
     /// The request's text; `None` for a class with no word.
     pub fn encode(&self) -> Option<String> {
         let class = class_word(self.class)?;
+        let cap = if self.cap { " cap" } else { "" };
         Some(format!(
-            "{WORD} {} {class} {}",
+            "{WORD} {} {class} {}{cap}",
             self.pid,
             pages_word(self.pages)
         ))
@@ -73,10 +81,21 @@ impl Set {
         if words.next()? != WORD {
             return None;
         }
+        let (pid, class, pages) = (
+            number(words.next()?)?,
+            class_of(words.next()?)?,
+            pages_of(words.next()?)?,
+        );
+        let cap = match words.next() {
+            None => false,
+            Some(CAP) => true,
+            Some(_) => return None,
+        };
         let set = Self {
-            pid: number(words.next()?)?,
-            class: class_of(words.next()?)?,
-            pages: pages_of(words.next()?)?,
+            pid,
+            class,
+            pages,
+            cap,
         };
         words.next().is_none().then_some(set)
     }
@@ -101,6 +120,7 @@ pub fn parse_before(pid: u64, text: &str) -> Result<Set, String> {
             pid,
             class: class_of(words.next()?)?,
             pages: pages_of(words.next()?)?,
+            cap: false,
         };
         words.next().is_none().then_some(set)
     })();
@@ -117,14 +137,20 @@ mod tests {
             pid: 31,
             class: 1,
             pages: Some(65536),
+            cap: false,
         };
         let text = set.encode().unwrap();
         assert_eq!(text, "profile 31 background 65536");
         assert_eq!(Set::parse(&text), Some(set));
+        let capped = Set { cap: true, ..set };
+        let text = capped.encode().unwrap();
+        assert_eq!(text, "profile 31 background 65536 cap");
+        assert_eq!(Set::parse(&text), Some(capped));
         let before = Set {
             pid: 31,
             class: 0,
             pages: None,
+            cap: false,
         };
         assert_eq!(encode_before(before), "ok normal -");
         assert_eq!(parse_before(31, "ok normal -"), Ok(before));
@@ -143,6 +169,9 @@ mod tests {
             "profile 031 normal -",
             "profile 31 normal 12x",
             "profile 31 normal - extra",
+            "profile 31 normal - cap extra",
+            "profile 31 normal - caps",
+            "profile 31 normal cap",
             "profiles 31 normal -",
             "profile -1 normal -",
         ] {
@@ -154,6 +183,7 @@ mod tests {
             pid: 1,
             class: 2,
             pages: None,
+            cap: false,
         };
         assert_eq!(no_word.encode(), None);
     }

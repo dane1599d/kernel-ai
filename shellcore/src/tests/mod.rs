@@ -644,9 +644,12 @@ impl Host for FakeHost {
         Ok(())
     }
 
+    /// As the supervisor does: with `cap` a `mem` only lowers, and only a quota
+    /// that changed has a `mem` from before.
     fn profile_apply(
         &self,
         settings: &[kaiprofile::Setting],
+        cap: bool,
     ) -> Result<Vec<kaiprofile::Setting>, String> {
         let mut state = self.profile_state.borrow_mut();
         let mut before = Vec::new();
@@ -655,12 +658,13 @@ impl Host for FakeHost {
                 .get(&s.process)
                 .copied()
                 .unwrap_or((kaiprofile::Class::Normal, 4096));
+            let mem = s.mem.filter(|&pages| !cap || pages < now.1);
             before.push(kaiprofile::Setting {
                 process: s.process.clone(),
                 class: now.0,
-                mem: Some(now.1),
+                mem: mem.map(|_| now.1),
             });
-            state.insert(s.process.clone(), (s.class, s.mem.unwrap_or(now.1)));
+            state.insert(s.process.clone(), (s.class, mem.unwrap_or(now.1)));
         }
         Ok(before)
     }
