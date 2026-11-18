@@ -21,7 +21,7 @@ Each commit's message ends with a sign-off line, which certifies the [Developer 
 Signed-off-by: Your Name <you@example.org>
 ```
 
-`git commit -s` adds it. The name and email must be the commit's author, and a real identity you can be reached at. The `dco` check on every pull request refuses a commit without a matching sign-off, unless its author is listed in [MAINTAINERS](MAINTAINERS).
+`git commit -s` adds it. The name and email must be the commit's author, and a real identity you can be reached at. The DCO sign-off step of CI's lint job, on every pull request, refuses a commit without a matching sign-off, unless its author is listed in [MAINTAINERS](MAINTAINERS).
 
 ## AI-assisted work
 
