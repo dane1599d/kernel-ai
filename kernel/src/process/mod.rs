@@ -549,6 +549,21 @@ pub fn spawn_in(
             );
         }
     }
+    // STARTUP lists at most MAX_STARTUP handles, and the plan's `netdest=`
+    // comes last: a line with more would lose its network ceiling without a
+    // word. It is refused instead (supervise's `startup_handles` counts each
+    // plan line the OS ships, on the host).
+    let held = crate::handle::startup_len(slot);
+    if held > kabi::handle::MAX_STARTUP {
+        crate::log!(
+            "process: {} would start with {held} startup handles, more than the {} STARTUP lists: not started",
+            request.name,
+            kabi::handle::MAX_STARTUP
+        );
+        crate::handle::destroy(slot);
+        with_table(|table| table[slot] = Process::FREE);
+        return Err((Error::Invalid, alloc::vec::Vec::new()));
+    }
     if threads::spawn("user", process_main, slot).is_err() {
         crate::handle::destroy(slot);
         with_table(|table| table[slot] = Process::FREE);

@@ -797,7 +797,15 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     if start == Start::Pkg && args.iter().any(|a| a.starts_with("version=")) {
         return Err(format!("{name}: a start=pkg line names no version="));
     }
-    Ok(ServiceSpec {
+    // `fetch` in its send role makes POSTs: only the shell may reach it.
+    if program != "shell"
+        && let Some(sender) = uses.iter().find(|used| sends(earlier, used))
+    {
+        return Err(format!(
+            "{name}: only the shell may use {sender}, which sends"
+        ));
+    }
+    let spec = ServiceSpec {
         name: name.to_string(),
         program: program.to_string(),
         args: args.join(" "),
@@ -810,7 +818,50 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
         start,
         policy,
         unsupervised,
-    })
+    };
+    let held = spec.startup_handles();
+    if held > kabi::handle::MAX_STARTUP {
+        return Err(format!(
+            "{name}: {held} startup handles, more than the {} a process is given",
+            kabi::handle::MAX_STARTUP
+        ));
+    }
+    Ok(spec)
+}
+
+/// Whether the service `name`, planned before, is `fetch` in its send role
+/// (`kabi::plan::SEND`).
+fn sends(earlier: &[ServiceSpec], name: &str) -> bool {
+    let role = format!("role={}", kabi::plan::SEND_ROLE);
+    earlier
+        .iter()
+        .any(|s| s.name == name && s.args.split(' ').any(|word| word == role))
+}
+
+impl ServiceSpec {
+    /// How many startup handles the kernel gives this line's process, in
+    /// STARTUP's order: its caps' (`kabi::cap::STARTUP_HANDLES`), FILES's and
+    /// SYSTEM_STATE's `Dir`s and one a `dir=` folder, a route a `uses=`
+    /// service (with CALL), and its `netdest=` and `netdest=llm` handles last.
+    /// STARTUP lists at most `kabi::handle::MAX_STARTUP`, so a line with more
+    /// is refused here and by the kernel: its last handles, its network
+    /// ceiling among them, would be lost without a word.
+    pub fn startup_handles(&self) -> usize {
+        let caps = self.limits.caps;
+        let dirs = usize::from(caps & cap::FILES != 0)
+            + usize::from(caps & cap::SYSTEM_STATE != 0)
+            + self.dirs.len();
+        let routes = match caps & cap::CALL != 0 {
+            true => self.uses.len(),
+            false => 0,
+        };
+        let llm = self.llm_dest && caps & cap::NET != 0;
+        cap::startup_handles(caps)
+            + dirs
+            + routes
+            + usize::from(self.netdest.is_some())
+            + usize::from(llm)
+    }
 }
 
 /// `netdest=llm`: the LLM server's destination, for the line that runs the
@@ -1105,5 +1156,7 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
         .collect()
 }
 
+#[cfg(test)]
+mod startup_tests;
 #[cfg(test)]
 mod tests;

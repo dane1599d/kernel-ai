@@ -16,7 +16,9 @@
 //!   is a 200 with its body; a redirect within the host is followed; a
 //!   redirect to another host comes back unfollowed, and is then fetched on a
 //!   handle for that host with `hops=1`; a host the handle does not name is
-//!   refused.
+//!   refused. Then, on its second route, to `fetch` in its send role
+//!   (`kabi::plan::SEND`): a POST to plain `fetch` is refused, and so is a GET
+//!   to `send`, each before anything goes out.
 
 #![no_std]
 #![no_main]
@@ -29,7 +31,7 @@ use kabi::handle::{Handle, HandleInfo, Kind, Rights};
 use kainet::fetch::Error as FetchError;
 use kainet::http::{Fetch, HttpError, Limits, Method, TlsConnect, Url};
 use kainet::tls::TlsError;
-use kainet::wire::{self, Head};
+use kainet::wire::{self, Head, Post};
 use user::tls::{self, NetDial};
 use user::{arg, args, println, sys};
 
@@ -102,7 +104,13 @@ type Fetched = Result<(Head, Vec<u8>), FetchError>;
 /// `request` through the `fetch` service, on a handle narrowed from `dest` to
 /// exactly `host`.
 fn via_fetch(dest: Handle, host: &str, request: &str) -> Result<Fetched, String> {
-    let route = user::route(0).ok_or("no route to fetch")?;
+    via(0, dest, host, request.as_bytes())
+}
+
+/// `request` through the service on route `n`, on a handle narrowed from
+/// `dest` to exactly `host`.
+fn via(n: usize, dest: Handle, host: &str, request: &[u8]) -> Result<Fetched, String> {
+    let route = user::route(n).ok_or("no route to that fetch")?;
     let spec = alloc::format!("proto:tcp,ports:443,hosts:{host},match:exact");
     let rights = Rights::RESOLVE.bits() | Rights::CONNECT.bits() | Rights::TRANSFER.bits();
     let narrowed = sys::netdest_narrow(dest, &spec, rights)
@@ -111,7 +119,7 @@ fn via_fetch(dest: Handle, host: &str, request: &str) -> Result<Fetched, String>
     let mut received = [Handle(0); 1];
     let (len, count) = sys::call_h(
         route,
-        request.as_bytes(),
+        request,
         &mut reply,
         90_000,
         &[narrowed],
@@ -223,6 +231,39 @@ fn fetch_script(dest: Handle) -> bool {
     good
 }
 
+/// Each `fetch` role refuses the other's calls: a POST to plain `fetch`
+/// (route 0) and a GET to `send` (route 1).
+fn send_refusals(dest: Handle) -> bool {
+    let post = Post {
+        url: "https://updates.kai.test/hello".into(),
+        body: "hi".into(),
+    };
+    let checks: [(usize, &str, Vec<u8>, &str); 2] = [
+        (0, "post on fetch", post.bytes(), "takes no post"),
+        (
+            1,
+            "get on send",
+            b"get https://updates.kai.test/hello".to_vec(),
+            "takes only a post",
+        ),
+    ];
+    let mut good = true;
+    for (route, what, request, said) in checks {
+        let ok = match via(route, dest, "updates.kai.test", &request) {
+            Ok(Err(FetchError::Refused(why))) if why.contains(said) => {
+                println!("httpscheck: {what}: refused: {why}");
+                true
+            }
+            other => {
+                println!("httpscheck: {what}: {other:?}, not refused");
+                false
+            }
+        };
+        good &= ok;
+    }
+    good
+}
+
 fn main() -> i32 {
     let args = args();
     let Some(dest) = dest() else {
@@ -270,7 +311,8 @@ fn main() -> i32 {
         };
     }
     if arg(&args, "via") == Some("fetch") {
-        return match fetch_script(dest) {
+        let fetched = fetch_script(dest);
+        return match fetched & send_refusals(dest) {
             true => 0,
             false => 1,
         };

@@ -109,3 +109,27 @@ pub const GRANTABLE: u64 = SERVE
     | ASK
     | EDIT
     | POWER;
+
+/// The capability behind each startup handle the kernel gives from a line's
+/// caps alone, one entry a handle, in STARTUP's order (ADR 0001 D3's table;
+/// `kernel::handle::startup` takes its rows' bits from here). SUPERVISE and
+/// PUBLISH give two each. FILES and SYSTEM_STATE give their `Dir`s after these,
+/// and CALL gives a route only through `uses=`.
+pub const STARTUP_HANDLES: [u64; 19] = [
+    SUPERVISE, SUPERVISE, STOP, SCRIPT, SERVE, POLICY, COMPONENT, PUBLISH, PUBLISH, MODEL, THREADS,
+    PARTITION, DISPLAY, INPUT, TERM, EDIT, UPDATE, ASK, POWER,
+];
+
+/// How many startup handles `caps` give before any `Dir`, route or moved
+/// handle.
+pub const fn startup_handles(caps: u64) -> usize {
+    let mut count = 0;
+    let mut i = 0;
+    while i < STARTUP_HANDLES.len() {
+        if caps & STARTUP_HANDLES[i] != 0 {
+            count += 1;
+        }
+        i += 1;
+    }
+    count
+}
