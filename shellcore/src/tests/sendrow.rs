@@ -69,8 +69,8 @@ fn a_send_asks_on_a_menu_that_says_it_waits_and_offers_no_always() {
     assert!(
         shell
             .shown
-            .as_deref()
-            .unwrap_or("")
+            .as_ref()
+            .map_or("", |(_, text)| text.as_str())
             .contains("to hooks.example/hook")
     );
 }
