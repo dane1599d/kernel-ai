@@ -40,7 +40,6 @@
 967 xtask/src/actbench/mod.rs
 1048 xtask/src/actbench/tasks.rs
 891 xtask/src/components.rs
-1045 xtask/src/main.rs
 1091 xtask/src/mock_llm.rs
 833 xtask/src/pkgrepo/tests.rs
 885 xtask/src/qemu.rs

@@ -45,6 +45,8 @@ mod appgate;
 mod blklog;
 mod boot_smoke;
 mod buildsvc;
+mod case_boot;
+mod case_disks;
 mod cases;
 mod cc;
 mod components;
@@ -59,6 +61,7 @@ mod fluency;
 #[path = "fs/mod.rs"]
 mod fs_tool;
 mod hang;
+mod host;
 mod httpd;
 mod icount;
 mod image;
@@ -96,14 +99,21 @@ mod wit_tables;
 mod wsl;
 
 use options::{Accel, Options, Task, parse_args};
-use sha2::{Digest, Sha256};
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
-use std::{env, fs};
+use std::env;
+
+pub(crate) use case_boot::cut_delay;
+use case_boot::{differs, llm_cmdline};
+pub(crate) use case_disks::update_disk;
+use case_disks::{SLOT_RELEASE_SEQ, SLOT_VARS, damage_hint, store_model, update_image};
+pub(crate) use host::{
+    Firmware, build_kernel, ensure_limine, find_firmware, find_qemu, resolve_accel, sha256_hex,
+    workspace_root,
+};
 
 pub(crate) const LIMINE_VERSION: &str = "12.9.3";
 const LIMINE_SHA256: &str = "9f42fe9ea2e84d71056529969b1d5c24ba9a2287ffcc01bcce58b0ef8aa98b1d";
@@ -640,406 +650,5 @@ fn execute(options: &Options) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("failed test cases: {}", failures.join(", ")))
-    }
-}
-
-/// When the power goes in boot `boot` of a case with cuts: 0.2 to 2 s after its
-/// line, seeded by the case and the boot, so a failure repeats.
-pub(crate) fn cut_delay(name: &str, boot: u32) -> std::time::Duration {
-    let mut x = name
-        .bytes()
-        .fold(0xcbf2_9ce4_8422_2325u64 ^ u64::from(boot), |h, b| {
-            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
-        })
-        | 1;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    std::time::Duration::from_millis(200 + x % 1800)
-}
-
-/// Kernel command-line arguments that point the kernel at an LLM server.
-fn llm_cmdline(llm: Option<&str>, model: Option<&str>) -> String {
-    let mut args = Vec::new();
-    if let Some(llm) = llm {
-        args.push(format!("llm={llm}"));
-    }
-    if let Some(model) = model {
-        args.push(format!("model={model}"));
-    }
-    args.join(" ")
-}
-
-pub(crate) fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("xtask lives one level below the workspace root")
-        .to_path_buf()
-}
-
-pub(crate) fn build_kernel(root: &Path, options: &Options) -> Result<PathBuf, String> {
-    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let mut command = Command::new(cargo);
-    command
-        .current_dir(root)
-        .env("KAI_COMMIT", esp::commit_id(root))
-        .args(["build", "-p", "kernel", "--target", KERNEL_TARGET]);
-    if options.release {
-        command.arg("--release");
-    }
-    if options.spikes {
-        command.args(["--features", "spikes"]);
-    }
-    let status = command
-        .status()
-        .map_err(|e| format!("cannot run cargo: {e}"))?;
-    if !status.success() {
-        return Err("kernel build failed".into());
-    }
-    let profile = if options.release { "release" } else { "debug" };
-    Ok(root
-        .join("target")
-        .join(KERNEL_TARGET)
-        .join(profile)
-        .join("kernel"))
-}
-
-/// Downloads Limine's prebuilt binaries once, verifies the pinned checksum, and returns BOOTX64.EFI.
-pub(crate) fn ensure_limine(target_dir: &Path) -> Result<PathBuf, String> {
-    let dir = target_dir.join(format!("limine-{LIMINE_VERSION}"));
-    let efi = dir.join("limine-binary").join("BOOTX64.EFI");
-    if efi.exists() {
-        return Ok(efi);
-    }
-    fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    let archive = "limine-binary.tar.gz";
-    let url = format!(
-        "https://github.com/Limine-Bootloader/Limine/releases/download/v{LIMINE_VERSION}/{archive}"
-    );
-    println!("xtask: downloading {url}");
-    run_checked(
-        Command::new("curl")
-            .current_dir(&dir)
-            // GitHub refuses release downloads now and then (a 403 or a 5xx under
-            // CI load, 2026-11-14); the checksum below holds whatever arrives.
-            .args([
-                "-sSLf",
-                "--retry",
-                "5",
-                "--retry-all-errors",
-                "--retry-delay",
-                "5",
-                "-o",
-                archive,
-                &url,
-            ]),
-    )?;
-    let bytes = fs::read(dir.join(archive)).map_err(|e| format!("cannot read {archive}: {e}"))?;
-    let actual = sha256_hex(&bytes);
-    if actual != LIMINE_SHA256 {
-        let _ = fs::remove_file(dir.join(archive));
-        return Err(format!(
-            "Limine checksum mismatch: expected {LIMINE_SHA256}, got {actual}"
-        ));
-    }
-    run_checked(
-        Command::new(tar_program())
-            .current_dir(&dir)
-            .args(["-xzf", archive]),
-    )?;
-    if efi.exists() {
-        Ok(efi)
-    } else {
-        Err(format!("{} missing after extraction", efi.display()))
-    }
-}
-
-/// On Windows, use the system bsdtar; Git's GNU tar misreads drive-letter paths.
-fn tar_program() -> &'static str {
-    if cfg!(windows) {
-        "C:\\Windows\\System32\\tar.exe"
-    } else {
-        "tar"
-    }
-}
-
-pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
-
-fn find_qemu() -> Result<PathBuf, String> {
-    if let Ok(path) = env::var("QEMU") {
-        return Ok(PathBuf::from(path));
-    }
-    let on_path = Command::new("qemu-system-x86_64")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-    if on_path {
-        return Ok(PathBuf::from("qemu-system-x86_64"));
-    }
-    let windows_default = PathBuf::from("C:\\Program Files\\qemu\\qemu-system-x86_64.exe");
-    if windows_default.exists() {
-        return Ok(windows_default);
-    }
-    Err("QEMU not found: install qemu-system-x86_64 or set QEMU to its path".into())
-}
-
-/// This build as a slot image of the next release, and that release's number:
-/// what an update disk carries, and what the HTTPS mock serves as the online
-/// repository's `slot.img`. The image's bundle carries its own `kai.slot`
-/// naming that release.
-fn update_image(
-    root: &Path,
-    target_dir: &Path,
-    kernel: &Path,
-    modules: &[esp::Module],
-    efi: &Path,
-) -> Result<(Vec<u8>, u32), String> {
-    let release = SLOT_RELEASE_SEQ + 1;
-    let record = image::slots::slot_record(root, release);
-    let mut files: Vec<&esp::Module> = modules.iter().filter(|m| m.path != "kai.slot").collect();
-    let slot_file = esp::Module {
-        path: "kai.slot".into(),
-        bytes: record.clone().into_bytes(),
-    };
-    files.push(&slot_file);
-    let staging = target_dir.join("esp-update");
-    esp::make_esp(&staging, kernel, &files, efi, "")?;
-    Ok((image::slots::slot_image(&staging, &record)?, release))
-}
-
-/// Builds `target/update.img` for a case: this build as a slot image of the
-/// next release, signed by the run's test root (`image/update_disk.rs`). The
-/// image's bundle carries its own `kai.slot` naming that release.
-fn update_disk(
-    root: &Path,
-    target_dir: &Path,
-    kernel: &Path,
-    modules: &[esp::Module],
-    efi: &Path,
-    update: cases::UpdateDisk,
-) -> Result<String, String> {
-    let (image, release) = update_image(root, target_dir, kernel, modules, efi)?;
-    let disk = image::update_disk::test_root()?.disk(&image, release, update.tampered)?;
-    let name = String::from("update.img");
-    fs::write(target_dir.join(&name), &disk).map_err(|e| format!("cannot write {name}: {e}"))?;
-    println!(
-        "xtask: update disk {name}: release {release}, {} MiB{}",
-        disk.len() >> 20,
-        if update.tampered {
-            ", one byte of the image flipped"
-        } else {
-            ""
-        }
-    );
-    Ok(name)
-}
-
-/// The release a test build's slots hold (ADR 0008 `release_seq`).
-const SLOT_RELEASE_SEQ: u32 = 1;
-/// Where a chained slot case keeps the variable store between its boots.
-const SLOT_VARS: &str = "slot-vars.fd";
-
-/// A case's `differs` line: kept from its first boot, and on the next boot it
-/// must not be the same (two boots' ENTROPY samples).
-fn differs(run: &qemu::TestRun, sample: &mut Option<String>) -> Result<(), String> {
-    let Some((text, slot)) = &run.capture else {
-        return Ok(());
-    };
-    let got = slot
-        .lock()
-        .map_err(|_| "the capture lock was poisoned")?
-        .take();
-    let Some(got) = got else {
-        return Err(format!("FAIL: no kernel line contained {text:?}"));
-    };
-    match sample.replace(got.clone()) {
-        Some(previous) if previous == got => Err(format!(
-            "FAIL: both boots printed {text:?} with the same {got:?}"
-        )),
-        Some(previous) => {
-            println!("xtask: {text:?} differed between the boots: {previous} then {got}");
-            Ok(())
-        }
-        None => Ok(()),
-    }
-}
-
-/// UEFI firmware: a read-only code image plus a fresh writable copy of the variable store.
-struct Firmware {
-    code: PathBuf,
-    vars: PathBuf,
-}
-
-fn find_firmware(qemu: &Path, target_dir: &Path) -> Result<Firmware, String> {
-    let qemu_share = qemu
-        .parent()
-        .map(|dir| dir.join("share"))
-        .unwrap_or_default();
-    let mut candidates: Vec<(PathBuf, PathBuf)> = Vec::new();
-    if let (Ok(code), Ok(vars)) = (env::var("OVMF_CODE"), env::var("OVMF_VARS")) {
-        candidates.push((code.into(), vars.into()));
-    }
-    for (code, vars) in wsl::probe::LINUX_OVMF {
-        candidates.push((code.into(), vars.into()));
-    }
-    candidates.push((
-        qemu_share.join("edk2-x86_64-code.fd"),
-        qemu_share.join("edk2-i386-vars.fd"),
-    ));
-    let (code, vars_template) = candidates
-        .into_iter()
-        .find(|(code, vars)| code.exists() && vars.exists())
-        .ok_or("UEFI firmware not found: install OVMF or set OVMF_CODE and OVMF_VARS")?;
-    let vars = target_dir.join("ovmf-vars.fd");
-    esp::copy(&vars_template, &vars)?;
-    Ok(Firmware { code, vars })
-}
-
-fn resolve_accel(requested: Accel) -> Accel {
-    if requested != Accel::Auto {
-        return requested;
-    }
-    let kvm_usable = cfg!(target_os = "linux")
-        && fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/kvm")
-            .is_ok();
-    if kvm_usable { Accel::Kvm } else { Accel::Tcg }
-}
-
-fn run_checked(command: &mut Command) -> Result<(), String> {
-    let status = command
-        .status()
-        .map_err(|e| format!("cannot run {command:?}: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("{command:?} failed with {status}"))
-    }
-}
-
-/// Makes `image` a kaifs data disk holding `model` in its model store, named
-/// in `kai-modelhint 1`: `xtask fs mkfs`, then `import --model`.
-/// Flips one bit of the FNV-1a64 in `image`'s `kai-modelhint 1` and writes it
-/// back with a good CRC, so the hint still verifies but no longer matches the
-/// model (`xtask fs mkfs` puts `kai-data` at 2 MiB).
-fn damage_hint(image: &std::path::Path) -> Result<(), String> {
-    use std::io::{Read, Seek, SeekFrom, Write};
-    let shown = image.display();
-    let at = SeekFrom::Start(blklog::DATA_FIRST * 512);
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(image)
-        .map_err(|e| format!("{shown}: {e}"))?;
-    let mut sector = [0u8; 512];
-    file.seek(at)
-        .and_then(|_| file.read_exact(&mut sector))
-        .map_err(|e| format!("{shown}: {e}"))?;
-    let mut hint = kabi::modelhint::Hint::decode(&sector)
-        .ok_or_else(|| format!("{shown}: no kai-modelhint 1 at kai-data's start"))?;
-    hint.fnv ^= 1;
-    file.seek(at)
-        .and_then(|_| file.write_all(&hint.encode()))
-        .and_then(|_| file.sync_all())
-        .map_err(|e| format!("{shown}: {e}"))
-}
-
-fn store_model(image: &std::path::Path, model: &std::path::Path) -> Result<(), String> {
-    let image = image.display().to_string();
-    let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    fs_tool::main(&words(&["mkfs", &image, "--size", "64", "--force"]))?;
-    let model = model.display().to_string();
-    fs_tool::main(&words(&["import", "--model", &image, &model]))
-}
-
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn a_damaged_hint_still_verifies_but_names_another_fnv() {
-        use std::io::{Read, Seek, SeekFrom};
-        let dir = std::env::temp_dir().join(format!("kai-hint-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let (image, model) = (dir.join("kai-data.img"), dir.join("model.gguf"));
-        let mut bytes = b"GGUF\x03\0\0\0".to_vec();
-        bytes.resize(100_000, 7);
-        std::fs::write(&model, &bytes).unwrap();
-        super::store_model(&image, &model).unwrap();
-        let hint = || {
-            let mut file = std::fs::File::open(&image).unwrap();
-            let mut sector = [0u8; 512];
-            file.seek(SeekFrom::Start(super::blklog::DATA_FIRST * 512))
-                .unwrap();
-            file.read_exact(&mut sector).unwrap();
-            kabi::modelhint::Hint::decode(&sector).unwrap()
-        };
-        let good = hint();
-        assert_eq!(good.len, 100_000);
-        super::damage_hint(&image).unwrap();
-        let bad = hint();
-        assert_eq!(bad.fnv, good.fnv ^ 1);
-        assert_eq!((bad.len, bad.sha256), (good.len, good.sha256));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    use super::*;
-
-    #[test]
-    fn limine_conf_carries_cmdline_and_modules() {
-        let conf = esp::limine_conf("test", &["kernel.lines", "user/llm.elf"]);
-        assert!(conf.contains("protocol: limine"));
-        assert!(conf.contains("path: boot():/boot/kernel\n"));
-        assert!(conf.contains("cmdline: test"));
-        assert!(conf.contains("module_path: boot():/boot/kernel.lines\n"));
-        assert!(conf.contains("module_path: boot():/boot/user/llm.elf\n"));
-    }
-
-    #[test]
-    fn sha256_matches_known_vector() {
-        assert_eq!(
-            sha256_hex(b"abc"),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-    }
-
-    #[test]
-    fn qemu_args_use_relative_drives_and_debug_exit() {
-        let firmware = Firmware {
-            code: PathBuf::from("code.fd"),
-            vars: PathBuf::from("target/ovmf-vars.fd"),
-        };
-        let list = qemu::args(&firmware, Accel::Tcg, true, None, Default::default());
-        assert!(list.contains(&"format=raw,file=fat:rw:esp".to_string()));
-        assert!(list.windows(2).any(|w| w[0] == "-m" && w[1] == "512M"));
-        let sized = options::Sizing {
-            cpus: Some(8),
-            mem_mib: Some(6144),
-        };
-        let big = qemu::args(&firmware, Accel::Kvm, true, None, sized);
-        assert!(big.windows(2).any(|w| w[0] == "-m" && w[1] == "6144M"));
-        assert!(big.windows(2).any(|w| w[0] == "-smp" && w[1] == "8"));
-        let small = options::Sizing {
-            cpus: None,
-            mem_mib: Some(256),
-        };
-        // Never below what the base system (or a model disk) needs.
-        let floor = qemu::args(&firmware, Accel::Kvm, true, None, small);
-        assert!(floor.windows(2).any(|w| w[0] == "-m" && w[1] == "512M"));
-        assert!(!list.iter().any(|arg| arg == "-blockdev"));
-        assert!(list.contains(&"isa-debug-exit,iobase=0xf4,iosize=0x04".to_string()));
-        assert!(list.windows(2).any(|w| w[0] == "-accel" && w[1] == "tcg"));
-        assert!(
-            list.windows(2)
-                .any(|w| w[0] == "-display" && w[1] == "none")
-        );
     }
 }
