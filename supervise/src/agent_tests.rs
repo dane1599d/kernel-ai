@@ -95,3 +95,22 @@ fn a_built_in_agent_runs_its_own_program_with_a_route_to_llm() {
         );
     }
 }
+
+/// A route the process may call but never pass on: the agent's route to
+/// `llm`, whose badge is its identity, and a route to the send role.
+#[test]
+fn the_shells_badged_and_sending_routes_are_pinned() {
+    for files in [false, true] {
+        let plan = parse_plan(&kabi::plan::system::plan("llm caps=serve", files));
+        assert_eq!(plan.errors, Vec::<String>::new());
+        let shell = plan.grants("shell", "shell").unwrap();
+        assert_eq!(shell.pinned, ["llm", "send"]);
+        for service in plan.services.iter().filter(|s| s.name != "shell") {
+            let grants = plan.grants(&service.name, &service.program).unwrap();
+            assert!(grants.pinned.is_empty(), "{}", service.name);
+        }
+    }
+    // A route to llm is pinned only for an agent.
+    let plan = parse_plan("llm caps=serve\nupdated caps=call uses=llm");
+    assert!(plan.grants("updated", "updated").unwrap().pinned.is_empty());
+}

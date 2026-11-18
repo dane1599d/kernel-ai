@@ -519,6 +519,7 @@ pub fn spawn_in(
         request.uses,
         dirs,
         plan.agent,
+        &plan.pinned,
     ) {
         with_table(|table| table[slot] = Process::FREE);
         return Err((error, moved));
