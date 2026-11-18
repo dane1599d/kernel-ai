@@ -31,6 +31,13 @@ use x86_64::structures::paging::{
 };
 use x86_64::{PhysAddr, VirtAddr};
 
+/// Room [`Memory::take_owned_range`] needs for `count` pages: the pages, a
+/// leaf table for each 2 MiB they may touch, a directory for each 1 GiB and
+/// a directory-pointer table, with one more of each for the ends.
+pub const fn release_frames(count: u64) -> u64 {
+    count + count.div_ceil(512) + count.div_ceil(512 * 512) + 4
+}
+
 /// Lowest address a process may map: page 0 and its neighbours stay unmapped.
 pub const MIN_USER_ADDRESS: u64 = 0x1_0000;
 /// Marks leaf entries whose frames the process owns and teardown must free.
@@ -311,8 +318,12 @@ impl Memory {
     }
 
     /// Unmaps the pages `space` owns in `[addr, addr + count pages)` and moves
-    /// their frames into `out`, which must have room for `count` (it never
-    /// grows here, under the MEMORY lock). The frames stay allocated: the caller
+    /// their frames into `out`, with every leaf page table the range leaves
+    /// empty, unlinked: reservations take fresh addresses each time
+    /// (`mm::reserve`), so a table kept would be one more frame each time,
+    /// counted against the quota, that nothing reuses. `out` must have room
+    /// for [`release_frames`] of `count` (it never grows here, under the
+    /// MEMORY lock). How many of them are tables. The frames stay allocated: the caller
     /// shoots the range down on every CPU first, then frees them with
     /// [`Memory::free_user_frames`], so no stale TLB entry reaches a reused
     /// frame, and a process that exits meanwhile can neither free them twice
@@ -323,7 +334,8 @@ impl Memory {
         addr: u64,
         count: u64,
         out: &mut alloc::vec::Vec<u64>,
-    ) {
+    ) -> u64 {
+        let mut tables = 0;
         let mut done = 0;
         while done < count {
             let at = addr + done * PAGE_SIZE;
@@ -347,7 +359,59 @@ impl Memory {
                 space.frames -= 1;
                 USER_FRAMES.fetch_sub(1, Ordering::Relaxed);
             }
+            // Tables that map nothing more go too, freed after the same
+            // shootdown (the paging-structure caches may still hold them).
+            // One that still maps anything (a shared page, a neighbour) stays.
+            tables += self.prune(space, at, out);
         }
+        tables
+    }
+
+    /// Unlinks the tables on the path to `addr` that map nothing more, from
+    /// the leaf up to the page-directory-pointer table (never the PML4, nor
+    /// the model window's slot), into `out` while it has room; how many.
+    fn prune(&mut self, space: &mut UserSpace, addr: u64, out: &mut alloc::vec::Vec<u64>) -> u64 {
+        if !is_user_page(addr) || ((addr >> 39) & 0x1FF) as usize == WINDOW_SLOT {
+            return 0;
+        }
+        // The path: each table, and the index of the entry in it that leads on.
+        let indexes = [
+            (addr >> 39) & 0x1FF,
+            (addr >> 30) & 0x1FF,
+            (addr >> 21) & 0x1FF,
+        ];
+        let mut path = [(0u64, 0usize); 3];
+        let mut table = space.pml4;
+        for (level, index) in indexes.into_iter().enumerate() {
+            let entry = &self.table(table)[index as usize];
+            let flags = entry.flags();
+            if !flags.contains(PageTableFlags::PRESENT) || flags.contains(PageTableFlags::HUGE_PAGE)
+            {
+                return 0;
+            }
+            path[level] = (table, index as usize);
+            table = entry.addr().as_u64();
+        }
+        // `table` is the leaf; walk up while each child is empty.
+        let mut freed = 0;
+        let mut child = table;
+        for &(parent, index) in path.iter().rev() {
+            let empty = self.table(child).iter().all(|e| e.is_unused());
+            if !empty || out.len() == out.capacity() {
+                break;
+            }
+            self.table(parent)[index].set_unused();
+            out.push(child / PAGE_SIZE);
+            freed += 1;
+            space.frames -= 1;
+            USER_FRAMES.fetch_sub(1, Ordering::Relaxed);
+            child = parent;
+            // The PML4 itself is never freed here.
+            if parent == space.pml4 {
+                break;
+            }
+        }
+        freed
     }
 
     /// Frees frame numbers [`Memory::take_owned_range`] took, after their
