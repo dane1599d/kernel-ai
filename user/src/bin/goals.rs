@@ -1,26 +1,32 @@
 //! The `goals` agent (ADR 0013 section 5; row G1 of `docs/plans/agents-os.md`):
 //! the built-in agent whose routes carry badge 2. It runs `goalcore::runner` over
-//! the goals the person approved, with three parts:
+//! the goals the person approved. It serves nothing: routes form no cycle (ADR
+//! 0001), so the shell never calls it, and everything goes one way, from here to
+//! the shell over the badged route (#1047), and to llm.
 //!
-//! - **Goals come from the shell**, which runs `goal_set`, gets the person's one
-//!   yes and sets the goal's grant ceiling (`agentid::Roster::grant_goal`), then
-//!   hands the goal over: `goal-add <kai-goals 1 file with that goal>`,
-//!   `goal-pause <id>`, `goal-resume <id>`, `goal-cancel <id>`, `goal-list`. They
-//!   are served only to `kai`'s badge, on the shell's route to goals.
+//! - **Goals come from the shell's queue.** The shell runs `goal_set`, takes the
+//!   person's one yes, sets the goal's grant ceiling (`agentid::Roster::grant_goal`)
+//!   and queues `goal-add <id>` with the goal's `kai-goals 1` file; the goal rows
+//!   queue `goal-pause`, `goal-resume`, `goal-cancel` and `goal-list`. This agent
+//!   takes one with `agent-step next` each turn, and says what came of it with
+//!   `agent-step report <id> <result>`.
 //! - **The planner** asks llm for each goal's next step as an agent `act` job
 //!   (`agent-start act`, then `agent-take`), with the goal, what is done and what
 //!   is next as the line (S13-5's form). The call it answers is a step; `say` is
 //!   the goal met, `clarify` a question.
 //! - **The steps** go to the shell as `agent-step goal=<id> <call>`. The shell
 //!   admits them under that goal's ceiling and decides the tier on the empty line:
-//!   it runs what may run and puts any ask on the person's card. Then this agent
-//!   waits, and polls `agent-step wait <id>`. The person answers once, on the
-//!   card. This agent holds no action handle and answers no question itself.
+//!   it runs what may run and puts any ask on the person's card. This agent then
+//!   polls `agent-step wait <id>` at most once a second; `err unknown step` is a
+//!   no. The person answers once, on the card; this agent holds no action handle
+//!   and answers no question itself.
+//! - **A refusal at the ceiling** (the shell restarted, so its grants are gone, or
+//!   the goal was revoked) pauses the goal: it is not tried again until resumed.
+//! - **A goal that ends** (met, given up) is told to the shell with
+//!   `agent-step goal=<id> end`, which drops its ceiling.
 //!
-//! It never blocks on the shell: a call to the shell goes out with `CALL_SUBMIT`
-//! and is polled while this agent goes on serving the shell's `goal-*` requests,
-//! so the two can call each other. Goals are kept in RAM for now; `kai-goals 1`
-//! on the state volume is a follow-up.
+//! Goals are kept in RAM for now; `kai-goals 1` on the state volume is a
+//! follow-up.
 //!
 //! `test=agent-job` is the `agent-job` boot case's client: an `ask` and an `act`
 //! job on its own route, each answer taken, and a stranger's ticket refused.
@@ -34,8 +40,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use goalcore::runner::{Event, Parts, Plan, Planner, Runner, Steps};
-use goalcore::{Door, Goal, Goals, Presence, Step, StepDone, Tier};
-use kabi::handle::{Handle, RecvInfo};
+use goalcore::{Door, Goal, Goals, Presence, State, Step, StepDone, Tier};
 use llmproto::act::ActRequest;
 use user::{arg, args, println, route, sys};
 
@@ -49,12 +54,11 @@ const STEP_MS: u64 = 120_000;
 /// How long an agent-job answer is waited for in the boot case, and how often.
 const ANSWER_MS: u64 = 300_000;
 const POLL_MS: u64 = 200;
-/// A turn of the runner, and how long a wait for a request lasts between turns.
+/// A turn: the shell's queue is read and the runner turns once, about once a
+/// second (background class).
 const TURN_MS: u64 = 1_000;
-/// How often an asked step's answer is asked for.
+/// How often an asked step's answer is asked for: at most once a second.
 const WAIT_POLL_MS: u64 = 1_000;
-/// `kai`'s badge: only the shell hands goals over.
-const KAI: u64 = 1;
 /// The routes, in the plan line's `uses=` order.
 const LLM: usize = 0;
 const SHELL: usize = 1;
@@ -76,68 +80,74 @@ fn main() -> i32 {
     }
 }
 
-/// The agent's loop: serve the shell's `goal-*` requests, and take a turn of the
-/// runner about once a second.
+/// The agent's loop: the shell's queued commands, then a turn of the runner.
 fn run() -> i32 {
     println!("up; goals agent");
     let mut agent = Agent::default();
     let mut runner = Runner::new();
-    let mut request = alloc::vec![0u8; kabi::MAX_MESSAGE];
     loop {
-        agent.serve_once(&mut request, TURN_MS);
+        agent.take_queued();
         let now = now_ms();
-        let mut steps = ShellSteps {
-            held: &mut agent.held,
-        };
+        let mut steps = ShellSteps::default();
         let mut parts = Parts {
             planner: &mut agent.planner,
             door: &InCeiling,
             steps: &mut steps,
         };
         let events = runner.turn(&mut agent.goals, now, Presence::Here, &mut parts);
-        agent.apply_held();
-        for event in events {
-            report(&event);
+        // A goal the ceiling refused waits, untried, until it is resumed.
+        for goal in steps.refused {
+            if let Some(goal) = agent.goals.get_mut(goal)
+                && goal.state == State::Active
+            {
+                let _ = goal.pause();
+                println!("goals: goal {} paused: the shell refused its step", goal.id);
+            }
         }
+        for event in &events {
+            report(event);
+            if let Event::Done { goal } | Event::Failed { goal } = event {
+                end(*goal);
+            }
+        }
+        sys::sleep_ms(TURN_MS);
     }
 }
 
-/// The goals, the planner's llm jobs, and the shell's requests that came while a
-/// step was out: the goal changes they ask for are applied after the turn, so a
-/// goal never changes under a step in flight.
+/// The goals, and the planner's llm jobs.
 #[derive(Default)]
 struct Agent {
     goals: Goals,
     planner: LlmPlanner,
-    held: Vec<String>,
 }
 
 impl Agent {
-    /// Waits up to `wait_ms` for one request and answers it.
-    fn serve_once(&mut self, request: &mut [u8], wait_ms: u64) {
-        let mut info = RecvInfo::default();
-        let Ok(len) = recv(request, wait_ms, &mut info) else {
-            return;
-        };
-        let text = String::from_utf8_lossy(&request[..len.min(request.len())]).into_owned();
-        let reply = match info.badge == KAI {
-            true => self.handle(&text),
-            false => String::from("err only the shell hands goals over"),
-        };
-        if let Err(error) = sys::svc_reply(reply.as_bytes()) {
-            println!("goals: svc_reply failed: {error:?}");
+    /// The shell's queued commands, one call each, until it has none.
+    fn take_queued(&mut self) {
+        for _ in 0..goalcore::MAX_GOALS {
+            let taken = match call_shell("agent-step next") {
+                Ok(taken) => taken,
+                Err(why) => {
+                    println!("goals: the shell's queue: {why}");
+                    return;
+                }
+            };
+            let Some(queued) = taken.strip_prefix("ok ") else {
+                println!("goals: the shell's queue: {taken}");
+                return;
+            };
+            if queued.trim() == "none" {
+                return;
+            }
+            let (id, command) = queued.split_once(' ').unwrap_or((queued, ""));
+            let result = self.handle(command);
+            if let Err(why) = call_shell(&format!("agent-step report {id} {result}")) {
+                println!("goals: report {id}: {why}");
+            }
         }
     }
 
-    /// Applies the requests held while a step was out.
-    fn apply_held(&mut self) {
-        for text in core::mem::take(&mut self.held) {
-            let reply = self.handle(&text);
-            println!("goals: a held request, answered later: {reply}");
-        }
-    }
-
-    /// One `goal-*` request from the shell.
+    /// One queued `goal-*` command: what came of it, `ok …` or `err …`.
     fn handle(&mut self, text: &str) -> String {
         let (command, rest) = text.split_once([' ', '\n']).unwrap_or((text, ""));
         let id = || {
@@ -155,7 +165,7 @@ impl Agent {
                 self.with(id, |goal| goal.cancel(now))
             }),
             "goal-list" => return format!("ok {}", self.list()),
-            _ => Err(format!("unknown request {command:?}")),
+            _ => Err(format!("unknown command {command:?}")),
         };
         match done {
             Ok(()) => String::from("ok"),
@@ -163,9 +173,12 @@ impl Agent {
         }
     }
 
-    /// `goal-add`: a `kai-goals 1` file of the one goal the person approved, kept
-    /// under the shell's id.
-    fn add(&mut self, file: &str) -> Result<(), String> {
+    /// `goal-add <id>` and the `kai-goals 1` file of the one goal the person
+    /// approved, kept under the shell's id.
+    fn add(&mut self, rest: &str) -> Result<(), String> {
+        let (_, file) = rest
+            .split_once('\n')
+            .ok_or("goal-add takes the goal's file")?;
         let file = Goals::parse(file).map_err(|why| format!("not a kai-goals 1 file: {why}"))?;
         match file.list() {
             [goal] => self.goals.adopt(goal.clone()).map_err(|why| why.words()),
@@ -205,6 +218,14 @@ impl Agent {
             true => String::from("no goals"),
             false => lines.join("\n"),
         }
+    }
+}
+
+/// Tells the shell that goal `goal` ended, so it drops the goal's ceiling.
+fn end(goal: u64) {
+    match call_shell(&format!("agent-step goal={goal} end")) {
+        Ok(reply) => println!("goals: goal {goal} end: {reply}"),
+        Err(why) => println!("goals: goal {goal} end: {why}"),
     }
 }
 
@@ -334,83 +355,49 @@ fn targets(call: &llmproto::act::Call) -> Vec<String> {
         .collect()
 }
 
-/// The shell's door for this agent's steps. While a step is out, the shell's own
-/// `goal-*` requests are taken and held for after the turn.
-struct ShellSteps<'a> {
-    held: &'a mut Vec<String>,
+/// The shell's door for this agent's steps, and the goals its ceiling refused.
+#[derive(Default)]
+struct ShellSteps {
+    refused: Vec<u64>,
 }
 
-impl Steps<String> for ShellSteps<'_> {
+impl Steps<String> for ShellSteps {
     fn run(&mut self, goal: u64, step: &Step<String>) -> StepDone {
-        let sent = format!("agent-step goal={goal} {}", step.call);
-        let reply = match self.call_shell(&sent) {
+        let reply = match call_shell(&format!("agent-step goal={goal} {}", step.call)) {
             Ok(reply) => reply,
             Err(why) => return failed(None, why),
         };
         let reply = match reply.strip_prefix("ok asked ") {
             Some(rest) => {
                 let id = rest.split(':').next().unwrap_or("").trim().to_string();
-                match self.wait_for(&id) {
+                match wait_for(&id) {
                     Ok(answer) => answer,
                     Err(why) => return failed(None, why),
                 }
             }
             None => reply,
         };
+        // Refused at the ceiling: the shell restarted (its grants are not kept) or
+        // the goal was revoked. The goal pauses; it is not tried again in a loop.
+        if reply.starts_with("err refused") {
+            self.refused.push(goal);
+        }
         step_done(&reply)
     }
 }
 
-impl ShellSteps<'_> {
-    /// Polls `agent-step wait <id>` until the person answered on the card.
-    fn wait_for(&mut self, id: &str) -> Result<String, String> {
-        loop {
-            let reply = self.call_shell(&format!("agent-step wait {id}"))?;
-            if !reply.starts_with("ok waiting") {
-                return Ok(reply);
-            }
-            self.hold_requests(WAIT_POLL_MS);
+/// Polls `agent-step wait <id>`, at most once a second, until the person answered
+/// on the card. An id the shell no longer holds is a no.
+fn wait_for(id: &str) -> Result<String, String> {
+    loop {
+        let reply = call_shell(&format!("agent-step wait {id}"))?;
+        if reply.starts_with("err unknown step") {
+            return Ok(format!("err not run #{id}: no answer is kept for it"));
         }
-    }
-
-    /// One call to the shell, sent without blocking: while it is out, the shell's
-    /// own requests are taken and held, so the two never wait on each other.
-    fn call_shell(&mut self, text: &str) -> Result<String, String> {
-        let shell = route(SHELL).ok_or("no route to the shell (uses=llm+shell)")?;
-        sys::call_submit(shell, text.as_bytes(), STEP_MS)
-            .map_err(|error| format!("shell: {error:?}"))?;
-        let mut reply = alloc::vec![0u8; kabi::MAX_MESSAGE];
-        loop {
-            match sys::call_poll(&mut reply, 0) {
-                Ok(len) => {
-                    let len = len.min(reply.len());
-                    return Ok(String::from_utf8_lossy(&reply[..len]).into_owned());
-                }
-                Err(kabi::Error::Busy) => self.hold_requests(POLL_MS),
-                Err(error) => return Err(format!("shell: {error:?}")),
-            }
+        if !reply.starts_with("ok waiting") {
+            return Ok(reply);
         }
-    }
-
-    /// Takes the shell's requests for up to `wait_ms`: each is answered `ok held`
-    /// and applied after the turn.
-    fn hold_requests(&mut self, wait_ms: u64) {
-        let mut request = alloc::vec![0u8; kabi::MAX_MESSAGE];
-        let mut info = RecvInfo::default();
-        let Ok(len) = recv(&mut request, wait_ms, &mut info) else {
-            return;
-        };
-        let text = String::from_utf8_lossy(&request[..len.min(request.len())]).into_owned();
-        let reply: &[u8] = match info.badge == KAI {
-            true => {
-                self.held.push(text);
-                b"ok held: a step is out; it applies after it"
-            }
-            false => b"err only the shell hands goals over",
-        };
-        if let Err(error) = sys::svc_reply(reply) {
-            println!("goals: svc_reply failed: {error:?}");
-        }
+        sys::sleep_ms(WAIT_POLL_MS);
     }
 }
 
@@ -465,14 +452,13 @@ fn now_ms() -> u64 {
     }
 }
 
-/// The next request, with who sent it; handles a request moved are closed.
-fn recv(request: &mut [u8], timeout_ms: u64, info: &mut RecvInfo) -> Result<usize, kabi::Error> {
-    let len = sys::recv_h(request, timeout_ms, info)?;
-    let count = (info.handle_count as usize).min(info.handles.len());
-    for &handle in &info.handles[..count] {
-        let _ = sys::handle_close(Handle(handle));
-    }
-    Ok(len)
+/// One request to the shell on this agent's badged route, and its reply.
+fn call_shell(text: &str) -> Result<String, String> {
+    let shell = route(SHELL).ok_or("no route to the shell (uses=llm+shell)")?;
+    let mut reply = alloc::vec![0u8; kabi::MAX_MESSAGE];
+    let len = sys::call_route(shell, text.as_bytes(), &mut reply, STEP_MS)
+        .map_err(|error| format!("shell: {error:?}"))?;
+    Ok(String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned())
 }
 
 /// One request to `llm` on this agent's route, and its reply.
