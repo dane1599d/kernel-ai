@@ -152,3 +152,28 @@ fn a_table_word_never_stands_in_for_a_typed_host() {
         (Tier::Never, Why::SendHost)
     );
 }
+
+#[test]
+fn a_send_word_as_a_noun_or_in_a_telling_line_asks_for_no_send() {
+    let plain = send("hooks.example", Label::Literal, Label::Literal);
+    for line in [
+        "check the notes window for the post about hooks.example",
+        "the sender on hooks.example, what is it",
+        "i wonder whether to send hello to hooks.example",
+        "i know how to send hello to hooks.example",
+        "what's sending to hooks.example for",
+        "how's the posting to hooks.example going",
+        "my latest post on hooks.example, read it",
+        "a note about sending hello to hooks.example",
+        "resend hello to hooks.example",
+    ] {
+        assert_eq!(one(line, &plain), (Tier::Never, Why::SendUnasked), "{line}");
+    }
+    for line in [
+        "send hello to hooks.example",
+        "can you post hello to hooks.example",
+        "please submit hello to hooks.example",
+    ] {
+        assert_eq!(one(line, &plain).0, Tier::Ask, "{line}");
+    }
+}

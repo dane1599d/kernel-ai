@@ -20,6 +20,8 @@ use alloc::vec::Vec;
 
 #[path = "consent_grant.rs"]
 pub mod consent_grant;
+#[path = "consent_send.rs"]
+mod consent_send;
 use nethosts::{Bytes, Ground, Grounding, LineWord, NoGrants, Origin, Table, Verdict};
 
 /// Where a value came from (ADR 0002 D6). Ordered: the least trusted is greatest.
@@ -271,7 +273,7 @@ fn decide_one(
     // A send only for a line that asks for one: a cue of the row, un-negated,
     // in a clause that asks for no telling. A question or a describe line
     // never reaches a card, whatever a view said (ADR 0002 D3, #723).
-    if matches!(row.inverse, Inverse::Hold { .. }) && cued(words, row) != Some(false) {
+    if matches!(row.inverse, Inverse::Hold { .. }) && !consent_send::asked(words) {
         return Decision::new(Tier::Never, Why::SendUnasked);
     }
     if let Some(source) = steered(row, call) {

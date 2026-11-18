@@ -337,6 +337,66 @@ impl Menu {
 }
 
 /// The terminal's answer line.
+/// The lead of a text shown above a menu, outside its card (the P5 send row):
+/// `shown <bytes>`, then that many bytes (a header line code wrote, then the
+/// text), then a newline and the `menu` itself. The person reads the text
+/// where they answer; a terminal that cannot show it all denies the menu.
+pub const SHOWN: &str = "shown ";
+/// The longest shown block.
+pub const SHOWN_MAX: usize = 6 * 1024;
+
+/// A text shown above a menu, and the menu's own wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shown<'a> {
+    pub header: &'a str,
+    pub text: &'a str,
+    pub menu: &'a str,
+}
+
+/// `menu`'s wire with `text` shown above it under `header`.
+pub fn encode_shown(header: &str, text: &str, menu: &str) -> String {
+    format!(
+        "{SHOWN}{}\n{header}\n{text}\n{menu}",
+        header.len() + 1 + text.len()
+    )
+}
+
+/// The shown block of `wire`, if it has one: `None` for a plain reply, an error
+/// for a block out of shape or one that is not printable ASCII and newlines.
+pub fn split_shown(wire: &str) -> Option<Result<Shown<'_>, Refused>> {
+    let rest = wire.strip_prefix(SHOWN)?;
+    Some((|| {
+        let (len, rest) = rest.split_once('\n').ok_or(Refused::Malformed)?;
+        let len: usize = len.parse().map_err(|_| Refused::Malformed)?;
+        if len > SHOWN_MAX {
+            return Err(Refused::Unshowable);
+        }
+        let block = rest.get(..len).ok_or(Refused::Malformed)?;
+        let menu = rest[len..].strip_prefix('\n').ok_or(Refused::Malformed)?;
+        if !block
+            .bytes()
+            .all(|b| b == b'\n' || (b' '..=b'~').contains(&b))
+        {
+            return Err(Refused::Unshowable);
+        }
+        let (header, text) = block.split_once('\n').ok_or(Refused::Malformed)?;
+        if header.is_empty() || text.is_empty() || !menu.starts_with("menu ") {
+            return Err(Refused::Malformed);
+        }
+        Ok(Shown { header, text, menu })
+    })())
+}
+
+/// The id of the menu at the end of `wire`, when the menu reads that far: for
+/// the Deny of one that cannot be shown.
+pub fn menu_id(wire: &str) -> Option<u64> {
+    let at = wire.find("menu ")?;
+    wire[at + 5..]
+        .split([' ', '\n'])
+        .next()
+        .and_then(|id| id.parse().ok())
+}
+
 pub fn answer_line(id: u64, answer: Answer) -> String {
     format!("answer {id} {}", answer.word())
 }
@@ -671,5 +731,36 @@ mod granted_tests {
         ] {
             assert_eq!(read_answer(bad), None, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_shown_text_reads_back_above_its_menu_or_is_refused() {
+        let menu = Menu::encode(
+            4,
+            Origin::Asked,
+            "Send it with x(\"a\")?",
+            "",
+            "",
+            "x(\"a\")",
+        );
+        let wire = super::encode_shown(
+            "Kai wants to send this text to a.example:",
+            "hello\nthere",
+            &menu,
+        );
+        let shown = super::split_shown(&wire).unwrap().unwrap();
+        assert_eq!(shown.header, "Kai wants to send this text to a.example:");
+        assert_eq!(shown.text, "hello\nthere");
+        assert_eq!(shown.menu, menu);
+        assert!(Menu::decode(shown.menu).is_ok());
+        assert!(
+            super::split_shown(&menu).is_none(),
+            "a plain menu has no block"
+        );
+        let bad = super::encode_shown("h", "caf\u{e9}", &menu);
+        assert_eq!(super::split_shown(&bad), Some(Err(Refused::Unshowable)));
+        let cut = &wire[..wire.len() - menu.len() - 2];
+        assert!(matches!(super::split_shown(cut), Some(Err(_))));
+        assert_eq!(super::menu_id(&wire), Some(4));
     }
 }

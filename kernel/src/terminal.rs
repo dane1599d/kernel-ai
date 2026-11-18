@@ -216,6 +216,14 @@ fn take_card() -> Option<Waiting> {
         return None;
     }
     CARDS_TAKEN.fetch_add(1, Ordering::Relaxed);
+    // A text to send is read where the person answers: the desk card shows no
+    // text above it, so a send that carries one is denied there.
+    if reply.starts_with(menu::SHOWN.as_bytes()) {
+        let wire = String::from_utf8_lossy(&reply);
+        log!("! the text to send cannot be shown on the desk card, so it was denied");
+        return menu::menu_id(&wire)
+            .and_then(|id| shell_line(&menu::answer_line(id, Answer::Deny)));
+    }
     log!("card: the shell's waiting card goes to desktop");
     show_shell_reply(&reply)
 }
@@ -543,6 +551,9 @@ fn show_shell_reply(reply: &[u8]) -> Option<Waiting> {
     if reply.starts_with(b"menu ") {
         return menu_reply(reply);
     }
+    if reply.starts_with(menu::SHOWN.as_bytes()) {
+        return shown_reply(reply);
+    }
     let text = String::from_utf8_lossy(reply);
     let clean = printable(&text, kabi::MAX_MESSAGE, MAX_REPLY_LINES);
     let (kind, rest) = clean.split_once(' ').unwrap_or((clean.as_str(), ""));
@@ -573,6 +584,38 @@ fn show_shell_reply(reply: &[u8]) -> Option<Waiting> {
             tune: body.starts_with("Tune \""),
         })
     })
+}
+
+/// A `menu` with a text shown above it (a send's, P5 close): the code-written
+/// header and the whole text, wrapped, on the console outside the card, then
+/// the card. If any of it cannot be shown in full on one screen, the menu is
+/// denied, never asked blind.
+fn shown_reply(reply: &[u8]) -> Option<Waiting> {
+    let wire = core::str::from_utf8(reply).unwrap_or("");
+    let deny = |why: &str| {
+        log!("! {why}, so it was denied");
+        menu::menu_id(wire).and_then(|id| shell_line(&menu::answer_line(id, Answer::Deny)))
+    };
+    let Some(Ok(shown)) = menu::split_shown(wire) else {
+        return deny("the shell sent a text to send that cannot be shown");
+    };
+    let Ok(card) = Menu::decode(shown.menu) else {
+        return deny("the shell sent a menu that cannot be shown");
+    };
+    let (cols, rows) = crate::console::size().unwrap_or((usize::MAX, usize::MAX));
+    let width = PIECE_CHARS.min(cols.saturating_sub(2));
+    let text_rows: usize = [shown.header, shown.text]
+        .iter()
+        .flat_map(|part| part.lines())
+        .map(|line| wrap(line, width).len().max(1))
+        .sum();
+    let card_rows = card.rows().len();
+    if text_rows + card_rows + 1 >= rows || !fits_on_screen(&card.rows().join("\n")) {
+        return deny("the text to send does not fit on one screen with its question");
+    }
+    show_lines("=", shown.header);
+    show_lines(" ", shown.text);
+    menu_reply(shown.menu.as_bytes())
 }
 
 /// A `menu` reply: shown only if it decodes and every row is shown exactly as

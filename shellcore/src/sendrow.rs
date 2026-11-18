@@ -5,8 +5,10 @@
 //!
 //! The menu's line is at most [`termcore::menu::MAX_TEXT`] characters, so the
 //! call it shows, and its ONCE names, carries the text's SHA-256 (its first 16
-//! hex digits), as Kai's app install card carries its build's; a text of up
-//! to 40 plain characters is on the card itself, and `show` prints any whole. A send whose card cannot be shown is refused, never asked as a
+//! hex digits), as Kai's app install card carries its build's. The whole text
+//! goes above the card, outside it, under a header code writes ("Kai wants to
+//! send this text to <host>:"), and the card says "the text above"; a terminal
+//! that cannot show it all denies the card. `show` prints it too. A send whose card cannot be shown is refused, never asked as a
 //! y/n question no answer could allow.
 
 use crate::actions::Pending;
@@ -56,9 +58,6 @@ pub(crate) fn card_call(send: &Send) -> String {
     .unwrap_or_default()
 }
 
-/// The longest text the card itself shows, inline.
-const INLINE_TEXT: usize = 40;
-
 /// Why `send` cannot be asked about, if it cannot: a host that is not one, or
 /// a path with a space, a `#` or anything but printable ASCII.
 fn unsendable(send: &Send) -> Option<&'static str> {
@@ -68,17 +67,25 @@ fn unsendable(send: &Send) -> Option<&'static str> {
     if !send.path.bytes().all(|b| b.is_ascii_graphic() && b != b'#') {
         return Some("the path has a space, a # or a character that is not plain ASCII");
     }
+    // The text is read where the person answers, as it is: printable ASCII
+    // and line breaks only, or it is not asked about at all.
+    if send.body.is_empty()
+        || !send
+            .body
+            .bytes()
+            .all(|b| b == b'\n' || (b' '..=b'~').contains(&b))
+    {
+        return Some("the text has characters the screen cannot show as they are");
+    }
     None
 }
 
-/// The card's subject for a text short and plain enough to show on it whole.
-fn inline(send: &Send) -> Option<String> {
-    let plain = send.body.len() <= INLINE_TEXT
-        && send
-            .body
-            .bytes()
-            .all(|b| (b' '..=b'~').contains(&b) && b != b'"');
-    plain.then(|| format!("Send \"{}\"", send.body))
+/// The card's subject: the text is shown above the card, outside it.
+const SUBJECT: &str = "Send the text above";
+
+/// The header code writes over the text, outside the card.
+fn header(send: &Send) -> String {
+    format!("Kai wants to send this text to {}:", send.host)
 }
 
 impl Shell {
@@ -109,20 +116,18 @@ impl Shell {
         if call.is_empty() {
             return Reply::err("Not sent: the send cannot be shown on its card");
         }
-        let reason = crate::agentcore::hold_reason(&agentabi::NET_SEND);
+        // The card is 120 characters: the short form of the hold line.
+        let reason = Some(format!("it waits {} s for undo", agentabi::HOLD_MS / 1000));
         let checked = || Checked::shown_only(&call);
-        let mut reply = self.ask_call_with(
+        let reply = self.ask_call_with(
             id,
             request,
             checked(),
             why,
             None,
-            inline(&send),
-            reason.clone(),
+            Some(String::from(SUBJECT)),
+            reason,
         );
-        if self.pending.as_ref().is_some_and(|p| p.menu.is_none()) {
-            reply = self.ask_call_with(id, request, checked(), why, None, None, reason);
-        }
         let menu = self.pending.as_ref().is_some_and(|p| p.menu.is_some());
         if !menu {
             self.pending = None;
@@ -133,6 +138,12 @@ impl Shell {
             ));
         }
         self.shown = Some(shown(&call, &send));
+        // The whole text goes above the card, under code's header; a terminal
+        // that cannot show it all denies the card (`termcore::menu::SHOWN`).
+        let reply = Reply {
+            text: termcore::menu::encode_shown(&header(&send), &send.body, &reply.text),
+            ..reply
+        };
         if let Some(pending) = &mut self.pending {
             pending.send = Some(send);
         }

@@ -629,7 +629,12 @@ impl Reply {
     pub fn to_wire(&self) -> String {
         match self.confirm {
             _ if self.more => String::from("more"),
-            Some(_) if self.text.starts_with("menu ") => self.text.clone(),
+            Some(_)
+                if self.text.starts_with("menu ")
+                    || self.text.starts_with(termcore::menu::SHOWN) =>
+            {
+                self.text.clone()
+            }
             Some(id) => format!("confirm {id} {}", self.text),
             None => format!("{} {}", if self.ok { "ok" } else { "err" }, self.text),
         }
