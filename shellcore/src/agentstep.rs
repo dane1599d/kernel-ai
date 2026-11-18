@@ -79,7 +79,7 @@ impl Shell {
         };
         // The person's own question waits for their answer: an agent's step
         // never takes its place.
-        if self.pending.is_some() {
+        if self.pending.is_some() || self.clarifying.is_some() {
             return Reply::err(PERSON_ASKED);
         }
         let admission = match self.roster.admit(&caller, &call.name) {
@@ -99,6 +99,7 @@ impl Shell {
         let line = agentid::Line::new(text, agentid::Source::agent(caller.id()));
         let words = admission.consent_words(&line);
         self.acting = Some(admission);
+        self.acting_from = id;
         let reply = self.agent_runs(id, words, &call, name);
         self.acting = None;
         self.stamp_entries(id, id, stamp.name());
@@ -115,6 +116,11 @@ impl Shell {
         name: String,
     ) -> Reply {
         let outcome = self.execute(id, words, call);
+        // A "which one?" is the agent's to answer, never the person's next
+        // line: the console's own clarifying was empty when the step began.
+        if self.clarifying.take().is_some() {
+            return Reply::err(format!("unclear #{id}: {}", outcome.reply.text));
+        }
         if self.pending.as_ref().is_some_and(|p| p.id == id) {
             // The admission of the row that will run, which `call_row`
             // re-admitted if the row changed.

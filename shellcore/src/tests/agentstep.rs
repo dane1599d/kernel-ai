@@ -403,3 +403,76 @@ fn a_row_the_call_turns_into_is_admitted_against_the_agents_grants() {
     let refused = shell.log.last_id();
     assert_eq!(shell.log.get(refused).unwrap().agent.as_str(), "ops-agent");
 }
+
+#[test]
+fn a_yes_on_an_agents_forwarded_app_row_runs_it() {
+    // ui_open forwards to the editor's own row, which the agent also holds:
+    // the person's Allow runs it, checked against the same rows.
+    let host = FakeHost::new();
+    host.apps
+        .borrow_mut()
+        .rows
+        .load("editor", super::apps::EDITOR)
+        .unwrap();
+    host.app_replies
+        .borrow_mut()
+        .push_back(String::from("kai-reply 1\nresult ok(\"opened\")\nundo 2\n"));
+    let mut shell = shell(&host);
+    let manifest = kaiagent::Manifest::parse(
+        "kai-app 1\nid edit-agent\nabi 1.0\nagent 1\nclass background\n\
+         model tokens/day=50000 kv=1024 pool=64m\nactions ui_open editor_open_file\n\
+         memory none\nnet none\n",
+    )
+    .unwrap();
+    let id = shell.roster_mut().install(manifest).unwrap();
+    let badge = u64::from(id.badge());
+    let open = r#"{"name":"ui_open","arguments":{"app":"editor","arg":"ideas.txt"}}"#;
+    let asked = step(&mut shell, badge, open);
+    assert!(asked.starts_with("ok asked "), "{asked}");
+    let menu = take_agents_card(&mut shell);
+    let once = host.mint(menu.id, menu.call());
+    let ran = shell.eval_console(&format!("answer {} allow once={once}", menu.id));
+    assert!(ran.ok, "{ran:?}");
+    assert_eq!(host.app_requests.borrow().len(), 1, "the editor's row ran");
+}
+
+#[test]
+fn the_persons_question_that_lapses_during_an_agents_step_stays_the_persons() {
+    let stop3 = r#"{"name":"process_stop","arguments":{"name":"build-3"}}"#;
+    let host = FakeHost::new();
+    host.calls
+        .borrow_mut()
+        .push_back(Ok(llmproto::act::parse(stop3).unwrap()));
+    let mut shell = shell(&host);
+    let id = shell.roster_mut().install(manifest()).unwrap();
+    let badge = u64::from(id.badge());
+    shell.eval_panel("stop build-3");
+    let panel_id = shell.desk_asks[0].pending.id;
+    host.step_ns.set(200_000_000_000);
+    let asked = step(&mut shell, badge, RR);
+    host.step_ns.set(1000);
+    assert!(asked.starts_with("ok asked "), "{asked}");
+    let lapsed = shell.log.get(panel_id).expect("the lapse is logged");
+    assert!(lapsed.agent.is_kai(), "{lapsed:?}");
+}
+
+#[test]
+fn an_agents_which_one_goes_to_the_agent_not_the_persons_next_line() {
+    let (host, mut shell, _) = with_agent();
+    host.lists_services.set(true);
+    let id = shell.roster_mut().install(ops_manifest()).unwrap();
+    let badge = u64::from(id.badge());
+    let stop = r#"{"name":"process_stop","arguments":{"name":"no-such"}}"#;
+    let wire = step(&mut shell, badge, stop);
+    assert!(wire.starts_with("err unclear #"), "{wire}");
+    assert!(
+        shell.clarifying.is_none(),
+        "the console's own state is untouched"
+    );
+    // While the person's own "which one?" waits, an agent's step waits too.
+    shell.clarifying = Some(String::from("stop the build"));
+    assert_eq!(
+        step(&mut shell, badge, RR),
+        format!("err {}", crate::agentstep::PERSON_ASKED)
+    );
+}

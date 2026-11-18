@@ -63,7 +63,8 @@ impl Shell {
     /// Who log entry `id` is: the agent whose step runs, or whose question
     /// it is, else the person (`kai`).
     pub(crate) fn entry_agent(&self, id: u64) -> agentid::Name {
-        let admission = self.acting.as_ref().or_else(|| {
+        let acting = self.acting.as_ref().filter(|_| id >= self.acting_from);
+        let admission = acting.or_else(|| {
             self.agent_admissions
                 .iter()
                 .find(|(entry, _)| *entry == id)
@@ -169,7 +170,17 @@ impl Shell {
             .filter(|p| p.id == id)
             .map(|p| p.checked.script.clone());
         let holds = match (admission, shown) {
-            (Some(admission), Some(shown)) => answered.spend(&self.roster, &admission, id, &shown),
+            (Some(admission), Some(shown)) => {
+                // The rows `readmit` admitted it among: an app's row alone.
+                let app_row = self
+                    .row(admission.row())
+                    .filter(|row| matches!(row.owner, agentabi::Owner::App(_)));
+                let rows: &[agentabi::Action] = match app_row {
+                    Some(row) => core::slice::from_ref(row),
+                    None => &agentabi::ROWS,
+                };
+                answered.spend_in(&self.roster, &admission, id, &shown, rows)
+            }
             _ => false,
         };
         match holds {
