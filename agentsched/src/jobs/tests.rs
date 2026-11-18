@@ -216,3 +216,50 @@ fn the_built_ins_are_agentids_in_badge_order() {
     assert_eq!(ours, others);
     assert_eq!(Builtin::Kai as u64 + 1, KAI);
 }
+
+#[test]
+fn the_next_job_is_the_highest_class_then_the_oldest() {
+    let mut jobs = jobs();
+    let index = ticket(&start(&mut jobs, INDEX, "agent-start ask embed this"));
+    let first = ticket(&start(&mut jobs, GOALS, "agent-start script one"));
+    let second = ticket(&start(&mut jobs, GOALS, "agent-start script two"));
+    assert_eq!(jobs.next_job().map(|(t, _)| t), Some(first));
+    let request = jobs.job(first).unwrap().queued.unwrap();
+    jobs.finish(request, "ok".to_string());
+    assert_eq!(jobs.next_job().map(|(t, _)| t), Some(second));
+    let request = jobs.job(second).unwrap().queued.unwrap();
+    jobs.finish(request, "ok".to_string());
+    // Embedding work only when no background job waits.
+    assert_eq!(jobs.next_job().map(|(t, _)| t), Some(index));
+    jobs.handle(INDEX, Command::Stop(index), 0, 0, NOW);
+    assert!(jobs.next_job().is_none());
+}
+
+#[test]
+fn a_job_run_whole_is_charged_to_its_agent_and_never_past_its_day() {
+    let mut jobs = jobs();
+    jobs.scheduler().set_agent(Agent {
+        id: AgentId(GOALS as u32),
+        class: Class::Background,
+        weight: 1,
+        budgets: Some(Budgets {
+            tokens_per_day: 100,
+            kv_positions: 2_048,
+            pool_mib: 64,
+        }),
+    });
+    let t = ticket(&start(&mut jobs, GOALS, "agent-start ask what is due"));
+    jobs.charge(t, 70, NOW);
+    assert_eq!(jobs.scheduler().used_today(AgentId(GOALS as u32)), Some(70));
+    jobs.charge(t, 70, NOW);
+    assert_eq!(
+        jobs.scheduler().used_today(AgentId(GOALS as u32)),
+        Some(100)
+    );
+    let reply = start(&mut jobs, GOALS, "agent-start ask another");
+    assert_eq!(reply, "err Over quota: goals used 100 tokens today");
+    // A new day starts the count again.
+    let tomorrow = Now { ms: 0, day: 2 };
+    jobs.charge(t, 5, tomorrow);
+    assert_eq!(jobs.scheduler().used_today(AgentId(GOALS as u32)), Some(5));
+}

@@ -177,6 +177,28 @@ impl Jobs {
         self.jobs.get(&ticket)
     }
 
+    /// The job to run next when the caller runs requests whole (slice 2a): one of the
+    /// highest class waiting, the oldest first. The person's requests never wait for
+    /// it: the caller runs it only while none waits, and stops it when one comes.
+    pub fn next_job(&self) -> Option<(u64, &Job)> {
+        self.jobs
+            .iter()
+            .filter(|(_, job)| job.queued.is_some())
+            .min_by_key(|(ticket, job)| {
+                let class = self.sched.class_of(AgentId(job.badge as u32));
+                (class.unwrap_or(Class::Index), **ticket)
+            })
+            .map(|(ticket, job)| (*ticket, job))
+    }
+
+    /// Counts what job `ticket` spent against its agent's day.
+    pub fn charge(&mut self, ticket: u64, tokens: u32, now: Now) {
+        if let Some(job) = self.jobs.get(&ticket) {
+            let agent = AgentId(job.badge as u32);
+            self.sched.charge_whole(agent, tokens, now);
+        }
+    }
+
     /// The ticket whose scheduler request is `request`.
     pub fn ticket_of(&self, request: RequestId) -> Option<u64> {
         self.jobs

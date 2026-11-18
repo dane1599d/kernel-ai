@@ -31,6 +31,8 @@ mod remote;
 #[path = "llm/workers.rs"]
 mod workers;
 
+use agentsched::Now;
+use agentsched::jobs::{self, Jobs};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
@@ -134,6 +136,9 @@ struct Backends {
     history: History,
     /// A slot's prompt is not cached yet: `health` says `warming`.
     warming: bool,
+    /// Agents' requests (ADR 0013 section 2, F3 slice 2a): started by a route's
+    /// badge, run in idle turns.
+    jobs: Jobs,
 }
 
 /// What a turn costs a server's history: about four bytes a token, as no
@@ -191,6 +196,7 @@ fn main() -> i32 {
         traced: 0,
         history: History::new(),
         warming: false,
+        jobs: Jobs::new(agentsched::Config::default(), restart.parse().unwrap_or(0)),
     };
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     let mut response = vec![0u8; http::MAX_RESPONSE];
@@ -247,6 +253,12 @@ fn main() -> i32 {
         if waiting.is_none() && local_warmable(&backends, stale, cold) {
             continue;
         }
+        // Both slots are warm and no request waits: an agent's job may run, and gives
+        // way to the next request that comes.
+        let waiting = match waiting {
+            None => run_agent_job(&mut backends, &mut request, &mut caller, &mut cold),
+            came => came,
+        };
         let len = match waiting.map_or_else(|| sys::svc_recv(&mut request, 0, &mut caller), Ok) {
             Ok(len) => len.min(request.len()),
             Err(kabi::Error::TimedOut) => continue,
@@ -258,6 +270,15 @@ fn main() -> i32 {
         };
         let text = core::str::from_utf8(&request[..len]).unwrap_or("");
         let command = text.split([' ', '\n']).next();
+        // An agent's job: queued here, answered at once, run in an idle turn.
+        if command.is_some_and(|c| c.starts_with("agent-")) {
+            let mut reply = agent_command(&mut backends, caller, text);
+            reply.truncate(reply.floor_char_boundary(kabi::MAX_MESSAGE));
+            if let Err(error) = sys::svc_reply(reply.as_bytes()) {
+                println!("svc_reply failed: {error:?}");
+            }
+            continue;
+        }
         // A request with another prompt than the warm one takes the script
         // slot: a C program's card, unless `c>` keeps it warm, and every other.
         cold |= match command {
@@ -318,6 +339,133 @@ fn main() -> i32 {
         if let (Some((ticket, asked)), Some(Ok(local))) = (job, &mut backends.local) {
             run_job(local, &mut jobs, ticket, &asked, &mut request);
         }
+    }
+}
+
+/// The time, as an agent's day counts it: the host's date when the firmware gave
+/// one (days since 1970 UTC), else day 0 for the whole boot.
+fn now() -> Now {
+    Now {
+        ms: sys::time_ns() / 1_000_000,
+        day: sys::clock_now().map_or(0, |secs| (secs / 86_400) as u32),
+    }
+}
+
+/// Answers an `agent-*` command from the route with `badge` (F3 slice 2a). Its
+/// prompt's tokens are estimated from its bytes, for the scheduler's checks; what
+/// it really took is charged when it has run.
+fn agent_command(backends: &mut Backends, badge: u64, text: &str) -> String {
+    let command = match jobs::parse(text) {
+        Ok(Some(command)) => command,
+        Ok(None) => return format!("err unknown request {text:?}"),
+        Err(why) => return format!("err {}", printable(&why, MAX_ERROR_CHARS, 1)),
+    };
+    let (prompt, max_new) = match command {
+        // An agent's call would read the person's conversation and take the act
+        // slot: it comes with the scheduler's quanta (slice 2b).
+        jobs::Command::Start {
+            kind: jobs::Kind::Act,
+            ..
+        } => {
+            return String::from(
+                "err an agent's act requests are not served yet; send script or ask",
+            );
+        }
+        jobs::Command::Start { kind, request } => (
+            u32::try_from(request.len() / 3 + 1).unwrap_or(u32::MAX),
+            match kind {
+                jobs::Kind::Ask => AGENT_ASK_TOKENS,
+                _ => AGENT_SCRIPT_TOKENS,
+            },
+        ),
+        _ => (0, 0),
+    };
+    backends.jobs.handle(badge, command, prompt, max_new, now())
+}
+
+/// The most an agent's `ask` and `script` answers are counted at before they run.
+const AGENT_ASK_TOKENS: u32 = 512;
+const AGENT_SCRIPT_TOKENS: u32 = 1024;
+/// How often an agent's job looks for a request that came: the person waits at
+/// most this, and the step in flight.
+const AGENT_POLL_NS: u64 = 50_000_000;
+
+/// Runs the next agent job, whole, while no request waits (F3 slice 2a). On the
+/// local model it asks every [`AGENT_POLL_NS`] whether a request came; one that did
+/// stops it, is answered next, and the job starts again from its prompt in a later
+/// idle turn, exactly (ADR 0013 section 2). `Some(len)` when a request came.
+fn run_agent_job(
+    backends: &mut Backends,
+    request: &mut [u8],
+    caller: &mut u64,
+    cold: &mut bool,
+) -> Option<usize> {
+    let (ticket, job) = backends.jobs.next_job()?;
+    let (kind, queued) = (job.kind, job.queued?);
+    let text = format!("{} {}", kind.word(), job.request);
+    let mut came = None;
+    let mut polled = 0;
+    let mut stop = || {
+        let at = sys::time_ns();
+        if came.is_none() && at.saturating_sub(polled) >= AGENT_POLL_NS {
+            polled = at;
+            request_came(request, caller, &mut came);
+        }
+        came.is_some()
+    };
+    let local = matches!(backends.local, Some(Ok(_)));
+    let mut response = vec![0u8; http::MAX_RESPONSE];
+    let answer = match kind {
+        jobs::Kind::Script => agent_script(backends, &text, &mut response, &mut stop),
+        jobs::Kind::Ask => agent_ask(backends, &text, &mut response, &mut stop),
+        jobs::Kind::Act => Err(String::from("an agent's act requests are not served yet")),
+    };
+    // The script slot held the agent's prompt: it is warmed again first.
+    *cold |= local;
+    if came.is_some() {
+        return came;
+    }
+    let reply = match answer {
+        Ok(text) => format!("ok {text}"),
+        Err(error) => format!("err {}", printable(&error, MAX_ERROR_CHARS, 1)),
+    };
+    if let Some(Ok(local)) = &backends.local {
+        backends.jobs.charge(ticket, local.used(), now());
+    }
+    backends.jobs.finish(queued, reply);
+    None
+}
+
+/// An agent's `script` job: [`script`], with `stop` on the local model.
+fn agent_script(
+    backends: &mut Backends,
+    text: &str,
+    response: &mut [u8],
+    stop: &mut dyn FnMut() -> bool,
+) -> Result<String, String> {
+    let request = ScriptRequest::decode(text).ok_or("malformed script request")?;
+    match &mut backends.local {
+        Some(Ok(local)) => local
+            .script_until(&request, stop)
+            .map(|answer| script::encode_answer(&answer))
+            .map_err(|error| script::encode_error(&error)),
+        _ => script(backends, text, response),
+    }
+}
+
+/// An agent's `ask` job: the answer, with `stop` on the local model.
+fn agent_ask(
+    backends: &mut Backends,
+    text: &str,
+    response: &mut [u8],
+    stop: &mut dyn FnMut() -> bool,
+) -> Result<String, String> {
+    let question = text.split_once(' ').map_or("", |(_, rest)| rest).trim();
+    match &mut backends.local {
+        Some(Ok(local)) => local
+            .complete_until(&chat::ask(question), stop)
+            .and_then(|done| chat::answer(&done)),
+        _ => handle(backends, text, response),
     }
 }
 
