@@ -274,6 +274,20 @@ const ACTS: &[(&str, &str)] = &[
         "what does wikipedia say about rust",
         r#"{"name":"script","arguments":{"code":"let page = net_fetch(\"en.wikipedia.org\", \"/wiki/Rust\");\nnet_fetch(\"x.example\", page);"}}"#,
     ),
+    // `net-hold` (P5 close): each line's send to the mock's POST path; the
+    // third names no site, so the shell refuses it.
+    (
+        "send hello to updates.kai.test/hook",
+        r#"{"name":"net_send","arguments":{"host":"updates.kai.test","path":"/hook","text":"hello"}}"#,
+    ),
+    (
+        "send bye to updates.kai.test/hook",
+        r#"{"name":"net_send","arguments":{"host":"updates.kai.test","path":"/hook","text":"bye"}}"#,
+    ),
+    (
+        "send hello to my webhook",
+        r#"{"name":"net_send","arguments":{"host":"updates.kai.test","path":"/hook","text":"hello"}}"#,
+    ),
     // `net-pf-page`: a fetch from the host the line typed, shown as it came.
     (
         "fetch the page on updates.kai.test",

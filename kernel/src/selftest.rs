@@ -51,6 +51,9 @@ pub enum ActCase {
     /// `net-pf-query` (P5 task 11): a quarantined read of that page, whose
     /// answer obeys the page and is only shown.
     NetPfQuery,
+    /// `net-hold` (P5 close): a send the person allows waits 5 s with undo,
+    /// then goes once; one undone in its hold never goes.
+    NetHold,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -408,6 +411,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net-pf" => Some(SelfTest::Act(ActCase::NetPf)),
             "test=net-pf-page" => Some(SelfTest::Act(ActCase::NetPfPage)),
             "test=net-pf-query" => Some(SelfTest::Act(ActCase::NetPfQuery)),
+            "test=net-hold" => Some(SelfTest::Act(ActCase::NetHold)),
             "test=act-rule" => Some(SelfTest::Act(ActCase::Rule)),
             "test=act-stop" => Some(SelfTest::Act(ActCase::Stop)),
             "test=pkg-local" => Some(SelfTest::Act(ActCase::PkgLocal)),
