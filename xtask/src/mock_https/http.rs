@@ -1,11 +1,14 @@
 //! The mock's side of HTTP/1.1: a request head in (GET or HEAD, `Host:` and
-//! at most one byte range), a response head out. Everything else a client
-//! sends is refused with a status, never guessed at.
+//! at most one byte range; or POST with a `Content-Length` body of at most
+//! [`MAX_POST_BODY`]), a response head out. Everything else a client sends is
+//! refused with a status, never guessed at.
 
 /// The longest request target taken.
 const MAX_TARGET: usize = 2048;
 /// The most header lines taken.
 const MAX_HEADERS: usize = 64;
+/// The longest POST body taken: kainet's own limit.
+pub const MAX_POST_BODY: usize = kainet::wire::MAX_POST_BODY;
 
 /// A byte range a request asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +26,8 @@ pub struct Request {
     /// The `Host:` header's name, lower-cased, without a port.
     pub host: String,
     pub range: Option<Range>,
+    /// A POST's body length: its `Content-Length`, or 0 with none.
+    pub content_length: usize,
 }
 
 /// The request in `head`, which ends with its blank line, or the status that
@@ -41,7 +46,7 @@ pub fn parse(head: &[u8]) -> Result<Request, u16> {
     if version != "HTTP/1.1" {
         return Err(505);
     }
-    if method != "GET" && method != "HEAD" {
+    if !matches!(method, "GET" | "HEAD" | "POST") {
         return Err(405);
     }
     if !target.starts_with('/') || target.len() > MAX_TARGET || !target.bytes().all(is_target_byte)
@@ -50,6 +55,7 @@ pub fn parse(head: &[u8]) -> Result<Request, u16> {
     }
     let mut host = None;
     let mut range = None;
+    let mut length = None;
     for (count, line) in lines.enumerate() {
         if count >= MAX_HEADERS {
             return Err(431);
@@ -70,13 +76,30 @@ pub fn parse(head: &[u8]) -> Result<Request, u16> {
                 return Err(400);
             }
             range = Some(parse_range(value)?);
+        } else if name.eq_ignore_ascii_case("content-length") {
+            let digits = !value.is_empty() && value.len() <= 19;
+            if length.is_some() || !digits || !value.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(400);
+            }
+            length = Some(value.parse::<usize>().map_err(|_| 400u16)?);
+        } else if name.eq_ignore_ascii_case("transfer-encoding") {
+            // A body in chunks is not taken: a POST says its length.
+            return Err(400);
         }
+    }
+    let content_length = length.unwrap_or(0);
+    if method != "POST" && content_length > 0 {
+        return Err(400);
+    }
+    if content_length > MAX_POST_BODY {
+        return Err(413);
     }
     Ok(Request {
         method: method.into(),
         path: target.into(),
         host: host.ok_or(400u16)?,
         range,
+        content_length,
     })
 }
 
@@ -153,6 +176,7 @@ fn reason(status: u16) -> &'static str {
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        413 => "Content Too Large",
         416 => "Range Not Satisfiable",
         421 => "Misdirected Request",
         429 => "Too Many Requests",
@@ -198,8 +222,15 @@ mod tests {
                     first: 2,
                     last: Some(5)
                 }),
+                content_length: 0,
             })
         );
+        let post =
+            request("POST /hook HTTP/1.1\r\nHost: hooks.kai.test\r\nContent-Length: 5\r\n\r\n")
+                .unwrap();
+        assert_eq!((post.method.as_str(), post.content_length), ("POST", 5));
+        let bare = request("POST /hook HTTP/1.1\r\nHost: hooks.kai.test\r\n\r\n").unwrap();
+        assert_eq!(bare.content_length, 0);
         let head = request("HEAD / HTTP/1.1\r\nhost: x.test\r\n\r\n").unwrap();
         assert_eq!((head.method.as_str(), head.range), ("HEAD", None));
     }
@@ -214,7 +245,28 @@ mod tests {
             ),
             ("GET / HTTP/1.1\r\nHost: a test\r\n\r\n", 400),
             ("GET / HTTP/1.1\r\nHost: a.test:8080\r\n\r\n", 400),
-            ("POST / HTTP/1.1\r\nHost: a.test\r\n\r\n", 405),
+            ("PUT / HTTP/1.1\r\nHost: a.test\r\n\r\n", 405),
+            ("DELETE / HTTP/1.1\r\nHost: a.test\r\n\r\n", 405),
+            (
+                "POST / HTTP/1.1\r\nHost: a.test\r\nContent-Length: 4097\r\n\r\n",
+                413,
+            ),
+            (
+                "POST / HTTP/1.1\r\nHost: a.test\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n",
+                400,
+            ),
+            (
+                "POST / HTTP/1.1\r\nHost: a.test\r\nContent-Length: +2\r\n\r\n",
+                400,
+            ),
+            (
+                "POST / HTTP/1.1\r\nHost: a.test\r\nTransfer-Encoding: chunked\r\n\r\n",
+                400,
+            ),
+            (
+                "GET / HTTP/1.1\r\nHost: a.test\r\nContent-Length: 2\r\n\r\n",
+                400,
+            ),
             ("GET / HTTP/1.0\r\nHost: a.test\r\n\r\n", 505),
             ("GET  / HTTP/1.1\r\nHost: a.test\r\n\r\n", 400),
             ("GET a HTTP/1.1\r\nHost: a.test\r\n\r\n", 400),

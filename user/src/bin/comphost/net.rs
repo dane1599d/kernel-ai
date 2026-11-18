@@ -125,6 +125,9 @@ fn net_error(error: FetchError) -> NetError {
         FetchError::TooLarge => NetError::TooLarge,
         FetchError::Timeout => NetError::Timeout,
         FetchError::Truncated => NetError::Truncated,
+        // Only a POST is cut this way, and comphost never posts: `kai:net`
+        // 0.1.0 has no POST and no `cut`, so it reads as an HTTP error.
+        FetchError::Cut => NetError::Http(String::from("cut: the server may have it")),
     }
 }
 

@@ -225,3 +225,93 @@ fn the_service_follows_only_redirects_within_its_handle() {
         Err(Error::Http("more than five redirects".into()))
     );
 }
+
+const HOOK: &str = "/hooks/send";
+
+/// A POST of `body` to `url` through `fetch`'s `post_within`, as the shell's
+/// held send will make it, on a handle that reaches only [`REPO`].
+fn post(mock: &Mock, url: &str, body: &str) -> Result<fetch::Served, Error> {
+    let mut connect: TlsConnect<Local> = connector(mock);
+    let zero = || 0;
+    let repo_only = |host: &str, port: u16| host == REPO && port == 443;
+    fetch::post_within(
+        url,
+        body.as_bytes(),
+        &repo_only,
+        &mut connect,
+        &zero,
+        u64::MAX,
+    )
+}
+
+fn posting_mock() -> Mock {
+    start(Content::new().accepts_post(REPO, HOOK)).unwrap()
+}
+
+#[test]
+fn a_post_reaches_the_mock_once_with_its_body() {
+    let mock = posting_mock();
+    let served = post(&mock, &format!("https://{REPO}{HOOK}"), "hello, h\u{e9}").unwrap();
+    assert_eq!(served.response.status, 200);
+    assert_eq!(served.response.reason.as_deref(), Some("OK"));
+    assert!(
+        served.response.body.is_empty(),
+        "a POST's answer body is not read"
+    );
+    let seen = mock.served();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(
+        (seen[0].method.as_str(), seen[0].path.as_str()),
+        ("POST", HOOK)
+    );
+    assert_eq!(seen[0].body.as_deref(), Some("hello, h\u{e9}".as_bytes()));
+}
+
+#[test]
+fn a_post_elsewhere_is_refused_and_a_get_is_unchanged() {
+    let mock = posting_mock();
+    let other = post(&mock, &format!("https://{REPO}/other"), "x").unwrap();
+    assert_eq!(other.response.status, 405);
+    let off = post(&mock, &format!("https://{MODELS}{HOOK}"), "x");
+    assert_eq!(off.unwrap_err(), Error::Refused(MODELS.into()));
+    let seen = mock.served();
+    assert_eq!(seen.len(), 1, "the refused host was never reached");
+    assert_eq!(seen[0].body.as_deref(), Some(&b"x"[..]));
+}
+
+#[test]
+fn a_post_redirected_off_the_handle_is_not_followed() {
+    let mock = posting_mock();
+    mock.set_fault(REPO, HOOK, Fault::RedirectOff);
+    let served = post(&mock, &format!("https://{REPO}{HOOK}"), "hi").unwrap();
+    assert_eq!(served.response.status, 302);
+    assert_eq!(
+        served.location.as_deref(),
+        Some(format!("https://{OFF}{HOOK}").as_str())
+    );
+    assert_eq!(mock.served().len(), 1);
+}
+
+#[test]
+fn a_post_cut_before_its_status_line_may_have_arrived_and_is_not_sent_again() {
+    for n in [0, 5] {
+        let mock = posting_mock();
+        mock.set_fault(REPO, HOOK, Fault::CutInHead(n));
+        let cut = post(&mock, &format!("https://{REPO}{HOOK}"), "hi");
+        assert_eq!(cut.unwrap_err(), Error::Cut, "cut at {n} head bytes");
+        let seen = mock.served();
+        assert_eq!(seen.len(), 1, "a cut POST is never sent again");
+        assert_eq!(seen[0].body.as_deref(), Some(&b"hi"[..]));
+    }
+}
+
+#[test]
+fn a_post_whose_answer_body_is_cut_was_answered_and_is_not_sent_again() {
+    let mock = posting_mock();
+    mock.set_fault(REPO, HOOK, Fault::CutAt(3));
+    let cut = post(&mock, &format!("https://{REPO}{HOOK}"), "hi");
+    assert_eq!(cut.unwrap().response.status, 200);
+    let seen = mock.served();
+    assert_eq!(seen.len(), 1, "a cut POST is never sent again");
+    assert_eq!(seen[0].body.as_deref(), Some(&b"hi"[..]));
+}

@@ -21,8 +21,9 @@
 //! caller's own, so an answer kept for a request the caller gave up on is
 //! never taken for the next. A start whose [`STARTED`] reply was lost to that
 //! timeout after `fetch` took it is made twice, and only the second answer is
-//! kept: harmless for GET and HEAD, the only requests [`Ask`] carries, but a
-//! method with side effects would need its own way.
+//! kept: harmless for GET and HEAD, the only requests [`Ask`] carries. A POST
+//! is never started: it is not an [`Ask`], so a start that names one is
+//! refused, and the shell, the one caller that posts, waits for its answer.
 
 use crate::fetch::{Error, why};
 use crate::wire::{self, Ask, MAX_ASK};
@@ -294,6 +295,12 @@ mod tests {
             ("start +1 get https://a.test/x", "the id is not a number"),
             (
                 "start 1 put https://a.test/x",
+                "the request is not get or head",
+            ),
+            // A POST is never started (comphost's path): only the shell posts,
+            // and it waits for the answer.
+            (
+                "start 1 post https://a.test/x len=2\nhi",
                 "the request is not get or head",
             ),
             ("take ", "the id is not a number"),

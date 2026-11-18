@@ -16,7 +16,13 @@ pub const MAX_HEADERS: usize = 64;
 pub enum Method {
     Get,
     Head,
+    /// A short text body, sent once: [`post`] writes it, and
+    /// `Fetch::post` makes it, never following a redirect or trying again.
+    Post,
 }
+
+/// The type a POST's body is sent as.
+pub const POST_TYPE: &str = "text/plain; charset=utf-8";
 
 /// The bytes asked for: `first` to `last` inclusive, or to the end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,11 +32,22 @@ pub struct Range {
 }
 
 /// What the client sends: no cookies, no compression, one request a
-/// connection.
+/// connection. A [`Method::Post`] here has an empty body; [`post`] gives it one.
 pub fn request(method: Method, url: &Url, range: Option<Range>) -> Vec<u8> {
+    write(method, url, range, &[])
+}
+
+/// A POST of `body` to `url`: its head, with the body's length and
+/// [`POST_TYPE`], then the body.
+pub fn post(url: &Url, body: &[u8]) -> Vec<u8> {
+    write(Method::Post, url, None, body)
+}
+
+fn write(method: Method, url: &Url, range: Option<Range>, body: &[u8]) -> Vec<u8> {
     let verb = match method {
         Method::Get => "GET",
         Method::Head => "HEAD",
+        Method::Post => "POST",
     };
     let mut head = format!(
         "{verb} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: kai\r\nAccept-Encoding: identity\r\nConnection: close\r\n",
@@ -43,8 +60,16 @@ pub fn request(method: Method, url: &Url, range: Option<Range>) -> Vec<u8> {
             None => head.push_str(&format!("Range: bytes={first}-\r\n")),
         }
     }
+    if method == Method::Post {
+        head.push_str(&format!(
+            "Content-Type: {POST_TYPE}\r\nContent-Length: {}\r\n",
+            body.len()
+        ));
+    }
     head.push_str("\r\n");
-    head.into_bytes()
+    let mut bytes = head.into_bytes();
+    bytes.extend_from_slice(body);
+    bytes
 }
 
 /// How a response's body is framed.
@@ -79,10 +104,58 @@ pub struct Head {
     /// `Content-Type`, when it is at most [`MAX_CONTENT_TYPE`] printable
     /// ASCII bytes; otherwise none.
     pub content_type: Option<String>,
+    /// The status line's reason phrase ("OK"), when it is at most
+    /// [`MAX_REASON`] printable ASCII bytes; otherwise none.
+    pub reason: Option<String>,
 }
 
 /// The longest `Content-Type` kept.
 pub const MAX_CONTENT_TYPE: usize = 128;
+/// The longest reason phrase kept.
+pub const MAX_REASON: usize = 64;
+
+/// `text` as a reason phrase: printable ASCII and at most [`MAX_REASON`]
+/// bytes, or none. `wire` checks an answer's reason by the same rule.
+pub fn reason(text: &str) -> Option<String> {
+    let printable = text.bytes().all(|b| b == b' ' || b.is_ascii_graphic());
+    (!text.is_empty() && text.len() <= MAX_REASON && printable).then(|| String::from(text))
+}
+
+/// The head of a response whose status line has come whole but whose head
+/// could not be read: its status and reason, and nothing else, with no body.
+/// A POST's answer is taken from it: the server has answered, so it has the
+/// request (`Fetch::post`).
+///
+/// As httparse reads a head, blank lines before it are skipped, and a line may
+/// end with a bare LF.
+pub fn status_line(bytes: &[u8]) -> Option<Head> {
+    let start = bytes.iter().position(|&b| b != b'\r' && b != b'\n')?;
+    let bytes = &bytes[start..];
+    let end = bytes.iter().position(|&b| b == b'\n')?;
+    let line = &bytes[..end];
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    let line = core::str::from_utf8(line).ok()?;
+    let rest = line
+        .strip_prefix("HTTP/1.1 ")
+        .or_else(|| line.strip_prefix("HTTP/1.0 "))?;
+    let (code, phrase) = match rest.split_once(' ') {
+        Some((code, phrase)) => (code, phrase),
+        None => (rest, ""),
+    };
+    let status = (code.len() == 3 && code.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| code.parse::<u16>().ok())
+        .flatten()
+        .filter(|n| (100..=599).contains(n))?;
+    Some(Head {
+        status,
+        framing: Framing::Empty,
+        location: None,
+        content_range: None,
+        retry_after: None,
+        content_type: None,
+        reason: reason(phrase),
+    })
+}
 
 /// The response head at the start of `bytes`, and its length; `Ok(None)`
 /// if it has not all come yet.
@@ -157,6 +230,7 @@ pub fn parse(bytes: &[u8], method: Method) -> Result<Option<(Head, usize)>, Http
         content_range,
         retry_after,
         content_type,
+        reason: response.reason.and_then(reason),
     };
     Ok(Some((head, used)))
 }

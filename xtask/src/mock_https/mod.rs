@@ -15,7 +15,10 @@
 //! - **HTTP.** GET and HEAD, one request a connection, with a single
 //!   `Range: bytes=<first>-[<last>]` answered 206; 302 for a redirect; 404,
 //!   400, 416, 421 (a `Host:` that is not the SNI) and 431 (a head over
-//!   [`MAX_HEAD`]).
+//!   [`MAX_HEAD`]). POST, with a body of at most 4 KiB, only on a path
+//!   [`Content::accepts_post`] names, answered 200 and its body kept in
+//!   [`Served::body`] for a case to check; any other method, or a POST
+//!   elsewhere, is 405.
 //! - **Faults** ([`Fault`]), set per host and path: a cut at N bytes of the
 //!   body, an expired, wrong-name or unknown-CA certificate, a flipped byte,
 //!   429, a slow link, and a redirect off the handle's hosts.
@@ -49,7 +52,7 @@ mod tests;
 
 use kainet::tls::{Session, Transport};
 use rustls::server::UnbufferedServerConnection;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -86,6 +89,9 @@ pub enum Fault {
     /// The connection is dropped after `n` bytes of the body, with no
     /// close_notify.
     CutAt(usize),
+    /// The connection is dropped after `n` bytes of the response head, with
+    /// no close_notify: before a whole status line for a small `n`.
+    CutInHead(usize),
     /// The host's certificate has expired.
     Expired,
     /// The host's certificate is for another name.
@@ -125,13 +131,19 @@ pub struct Served {
     /// The `[start, end)` bytes sent, for a file.
     pub range: Option<(usize, usize)>,
     pub status: u16,
+    /// A POST's body, as it came.
+    pub body: Option<Vec<u8>>,
 }
+
+/// What the mock answers a POST it takes.
+pub const POSTED: &[u8] = b"received";
 
 /// What the mock serves: files by host and path, and redirects.
 #[derive(Default, Clone)]
 pub struct Content {
     files: BTreeMap<(String, String), Arc<Vec<u8>>>,
     redirects: BTreeMap<(String, String), String>,
+    posts: BTreeSet<(String, String)>,
 }
 
 impl Content {
@@ -157,6 +169,14 @@ impl Content {
     pub fn merged(mut self, other: Content) -> Self {
         self.files.extend(other.files);
         self.redirects.extend(other.redirects);
+        self.posts.extend(other.posts);
+        self
+    }
+
+    /// `path` on `host` takes a POST: answered 200 with [`POSTED`], its body
+    /// kept in [`Served::body`].
+    pub fn accepts_post(mut self, host: &str, path: &str) -> Self {
+        self.posts.insert((host.into(), path.into()));
         self
     }
 
@@ -330,11 +350,15 @@ impl Transport for Tcp {
 
 type Conn = Session<UnbufferedServerConnection, Tcp>;
 
-/// Reads the request head: up to the blank line, at most [`MAX_HEAD`].
-fn read_head(session: &mut Conn) -> Result<Vec<u8>, u16> {
+/// Reads the request head: up to the blank line, at most [`MAX_HEAD`]; the
+/// head, and the bytes that came after it.
+fn read_head(session: &mut Conn) -> Result<(Vec<u8>, Vec<u8>), u16> {
     let mut head = Vec::new();
     let mut buf = [0u8; 1024];
-    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+    let end = loop {
+        if let Some(at) = head.windows(4).position(|w| w == b"\r\n\r\n") {
+            break at + 4;
+        }
         if head.len() > MAX_HEAD {
             return Err(431);
         }
@@ -343,11 +367,31 @@ fn read_head(session: &mut Conn) -> Result<Vec<u8>, u16> {
             return Err(400);
         }
         head.extend_from_slice(&buf[..n]);
-    }
-    if head.len() > MAX_HEAD {
+    };
+    if end > MAX_HEAD {
         return Err(431);
     }
-    Ok(head)
+    let rest = head.split_off(end);
+    Ok((head, rest))
+}
+
+/// A POST's body: `first`, the bytes that came with the head, then the rest
+/// of `length`. More than `length` with the head is a 400.
+fn read_body(session: &mut Conn, first: Vec<u8>, length: usize) -> Result<Vec<u8>, u16> {
+    if first.len() > length {
+        return Err(400);
+    }
+    let mut body = first;
+    let mut buf = [0u8; 1024];
+    while body.len() < length {
+        let want = (length - body.len()).min(buf.len());
+        let n = session.read(&mut buf[..want]).map_err(|_| 400u16)?;
+        if n == 0 {
+            return Err(400);
+        }
+        body.extend_from_slice(&buf[..n]);
+    }
+    Ok(body)
 }
 
 fn serve(
@@ -357,8 +401,16 @@ fn serve(
     faults: &Faults,
     served: &Mutex<Vec<Served>>,
 ) {
-    let request = match read_head(session).and_then(|head| http::parse(&head)) {
-        Ok(request) => request,
+    let read = read_head(session).and_then(|(head, rest)| {
+        let request = http::parse(&head)?;
+        let body = match request.method.as_str() {
+            "POST" => Some(read_body(session, rest, request.content_length)?),
+            _ => None,
+        };
+        Ok((request, body))
+    });
+    let (request, body) = match read {
+        Ok(read) => read,
         Err(status) => {
             let _ = respond(session, status, &[], b"");
             return;
@@ -370,6 +422,7 @@ fn serve(
         path: request.path.clone(),
         range: None,
         status: 0,
+        body,
     };
     let answer = answer(&request, sni, content, faults);
     logged.status = answer.status;
@@ -421,6 +474,16 @@ fn answer(request: &http::Request, sni: &str, content: &Content, faults: &Faults
             return answer;
         }
         _ => {}
+    }
+    if request.method == "POST" {
+        if !content.posts.contains(&key) {
+            return Answer::plain(405);
+        }
+        let mut answer = Answer::plain(200);
+        answer.headers.push(("Content-Type", "text/plain".into()));
+        answer.body = POSTED.to_vec();
+        answer.fault = fault;
+        return answer;
     }
     if let Some(location) = content.redirects.get(&key) {
         let mut answer = Answer::plain(302);
@@ -513,6 +576,14 @@ fn send(session: &mut Conn, request: &http::Request, answer: Answer) -> Result<(
         body
     };
     match fault {
+        Some(Fault::CutInHead(n)) => {
+            let head = http::head(status, &headers, length);
+            session
+                .write_all(&head[..n.min(head.len())])
+                .map_err(|_| ())?;
+            // Dropped with no close_notify, inside the head.
+            Ok(())
+        }
         Some(Fault::CutAt(n)) => {
             let head = http::head(status, &headers, length);
             session.write_all(&head).map_err(|_| ())?;

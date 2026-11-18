@@ -345,6 +345,7 @@ fn every_answer_is_logged_with_its_range() {
                 path: "/targets/blob".into(),
                 range: Some((0, 10)),
                 status: 206,
+                body: None,
             },
             Served {
                 host: REPO.into(),
@@ -352,6 +353,7 @@ fn every_answer_is_logged_with_its_range() {
                 path: "/nothing".into(),
                 range: None,
                 status: 404,
+                body: None,
             },
         ]
     );

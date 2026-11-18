@@ -21,6 +21,16 @@
 //! (64 KiB), for at most `later::KEEP_NS` unless taken; a take of one let go
 //! is answered `gone`. While it makes a started request, other calls wait in the
 //! kernel as they do for a plain one.
+//!
+//! A POST (`kainet::wire::Post`, for the shell's held sends) is a plain call
+//! only, its text inline: `post <url> len=<n>`, a newline and the body, at most
+//! `wire::MAX_POST`. It is made once, never redirected and never tried again
+//! (`kainet::fetch::post_within`). It is never started: a start carries a
+//! `wire::Ask`, which is never a POST, and comphost, the one caller that
+//! starts, builds only `Ask`s. `fetch` cannot yet tell the shell from comphost:
+//! a `uses=fetch` route's badge is 0, and a call names only the caller's pid.
+//! So "only the shell posts" rests on comphost never building a POST, which
+//! kainet's tests pin, until the kernel names a caller (see [`posted`]).
 
 #![no_std]
 #![no_main]
@@ -34,7 +44,7 @@ use kabi::handle::{Handle, HandleInfo, Kind, MAX_TRANSFER, RecvInfo, Rights};
 use kainet::fetch::{self, Error, MAX_BODY};
 use kainet::http::TlsConnect;
 use kainet::later::{self, Message};
-use kainet::wire::{self, Ask, Head};
+use kainet::wire::{self, Ask, Head, Post};
 use rustls::ClientConfig;
 use user::tls::{self, NetDial};
 use user::{println, sys};
@@ -48,6 +58,13 @@ const PAGE: usize = 4096;
 const DEADLINE_NS: u64 = 30_000_000_000;
 /// How long a receive waits before it looks again.
 const IDLE_MS: u64 = 60_000;
+/// The longest message `fetch` reads: a start, or a POST with its body.
+const MAX_READ: usize = match wire::MAX_POST > later::MAX_MESSAGE {
+    true => wire::MAX_POST,
+    false => later::MAX_MESSAGE,
+};
+// A POST's body travels inline, so the longest one must fit one message.
+const _: () = assert!(wire::MAX_POST <= kabi::MAX_MESSAGE);
 
 /// Closes every `NetDest` this process started with. Since #779 NET brings
 /// none; kept so a plan line that adds one never leaves `fetch` a destination
@@ -79,13 +96,19 @@ fn close_all(moved: &[Handle]) {
     }
 }
 
+/// The head of what was served, and its body.
+type Parts = (Result<Head, Error>, Vec<u8>);
+
+fn parts(served: Result<fetch::Served, Error>) -> Parts {
+    match served {
+        Ok(served) => (Ok(Head::of(&served)), served.response.body),
+        Err(error) => (Err(error), Vec::new()),
+    }
+}
+
 /// What `request` comes to on the caller's `moved` handle: the head, and the
 /// body if there is one.
-fn serve(
-    config: &Arc<ClientConfig>,
-    request: &[u8],
-    moved: &[Handle],
-) -> (Result<Head, Error>, Vec<u8>) {
+fn serve(config: &Arc<ClientConfig>, request: &[u8], moved: &[Handle]) -> Parts {
     let ask = match core::str::from_utf8(request).map_err(|_| "the request is not UTF-8") {
         Ok(text) => Ask::parse(text),
         Err(why) => Err(why),
@@ -94,13 +117,55 @@ fn serve(
         Ok(ask) => ask,
         Err(why) => return (Err(Error::BadUrl(fetch::why(why))), Vec::new()),
     };
+    parts(on_handle(
+        config,
+        moved,
+        |allow, connect, clock, deadline| {
+            fetch::serve_within(&ask.request, ask.hops, allow, connect, clock, deadline)
+        },
+    ))
+}
+
+/// What a POST in `request` comes to on the caller's `moved` handle, made
+/// once, under the same checks as a GET: the URL's host must be one the handle
+/// reaches (RESOLVE_ON), on port 443, and TLS checks its certificate.
+fn serve_post(config: &Arc<ClientConfig>, request: &[u8], moved: &[Handle]) -> Parts {
+    let post = match Post::parse(request) {
+        Ok(post) => post,
+        Err(why) => return (Err(Error::BadUrl(fetch::why(why))), Vec::new()),
+    };
+    parts(on_handle(
+        config,
+        moved,
+        |allow, connect, clock, deadline| {
+            fetch::post_within(
+                &post.url,
+                post.body.as_bytes(),
+                allow,
+                connect,
+                clock,
+                deadline,
+            )
+        },
+    ))
+}
+
+/// Runs `call` on the caller's one moved `NetDest`: with whether the handle
+/// reaches a host, a TLS connection on it, the clock and the call's deadline.
+fn on_handle(
+    config: &Arc<ClientConfig>,
+    moved: &[Handle],
+    call: impl FnOnce(
+        &dyn Fn(&str, u16) -> bool,
+        &mut TlsConnect<NetDial>,
+        &dyn Fn() -> u64,
+        u64,
+    ) -> Result<fetch::Served, Error>,
+) -> Result<fetch::Served, Error> {
     let Some(dest) = destination(moved) else {
-        return (
-            Err(Error::Refused(
-                "no destination was moved in with the call".to_string(),
-            )),
-            Vec::new(),
-        );
+        return Err(Error::Refused(
+            "no destination was moved in with the call".to_string(),
+        ));
     };
     // Whether the handle reaches a host: the kernel's word, through RESOLVE_ON.
     // A name that does not resolve is the dial's to report, not a refusal.
@@ -125,17 +190,7 @@ fn serve(
             deadline_ns: deadline,
         },
     };
-    match fetch::serve_within(
-        &ask.request,
-        ask.hops,
-        &allow,
-        &mut connect,
-        &clock,
-        deadline,
-    ) {
-        Ok(served) => (Ok(Head::of(&served)), served.response.body),
-        Err(error) => (Err(error), Vec::new()),
-    }
+    call(&allow, &mut connect, &clock, deadline)
 }
 
 /// A new `Shm` holding `body`.
@@ -163,13 +218,37 @@ fn body_shm(body: &[u8]) -> Result<Handle, kabi::Error> {
 /// body's `Shm`, if there is a body. The caller's handles are closed: they are
 /// used up with the request.
 fn made(config: &Arc<ClientConfig>, request: &[u8], moved: &[Handle]) -> (String, Option<Handle>) {
-    let (mut result, body) = match request.len() > wire::MAX_ASK {
+    let parts = match request.len() > wire::MAX_ASK {
         true => (
             Err(Error::BadUrl(fetch::why("the request is too long"))),
             Vec::new(),
         ),
         false => serve(config, request, moved),
     };
+    answered(parts, moved)
+}
+
+/// What a POST comes to, as `fetch` replies it, as [`made`].
+///
+/// Only the shell should post, but `fetch` cannot yet tell who called: the
+/// kernel gives a call the caller's pid and its route's badge, and a plain
+/// `uses=fetch` route's badge is 0 for comphost and the shell alike. Until the
+/// kernel names the caller (a badge per `uses=` route that the supervisor sets
+/// from the caller's plan line, or a kernel call that gives a pid's process
+/// label), the rule rests on comphost never building a POST: it builds only
+/// `wire::Ask`s, and a start never carries a POST.
+fn posted(
+    config: &Arc<ClientConfig>,
+    request: &[u8],
+    moved: &[Handle],
+) -> (String, Option<Handle>) {
+    answered(serve_post(config, request, moved), moved)
+}
+
+/// The answer's text and the body's `Shm` for what a call came to; the
+/// caller's handles are closed.
+fn answered(parts: Parts, moved: &[Handle]) -> (String, Option<Handle>) {
+    let (mut result, body) = parts;
     close_all(moved);
     let shm = match (&result, body.is_empty()) {
         (Ok(_), false) => match body_shm(&body) {
@@ -224,8 +303,8 @@ fn main() -> i32 {
     };
     close_own_destinations();
     println!("fetch: ready");
-    // Room for the longest start, and a byte to spare.
-    let mut request = alloc::vec![0u8; later::MAX_MESSAGE + 1];
+    // Room for the longest start or POST, and a byte to spare.
+    let mut request = alloc::vec![0u8; MAX_READ + 1];
     let mut keep = later::Keep::<Kept>::default();
     loop {
         let mut info = RecvInfo::default();
@@ -246,10 +325,21 @@ fn main() -> i32 {
         let moved: Vec<Handle> = info.handles[..count].iter().map(|&h| Handle(h)).collect();
         // `recv_h` gives the message's whole length but copies only what the
         // buffer holds: a longer message is refused whole, never read cut
-        // short (#831).
-        if len > later::MAX_MESSAGE {
+        // short (#831). A POST may be longer than a start.
+        let is_post = Post::is_post(&request[..len.min(request.len())]);
+        let limit = match is_post {
+            true => wire::MAX_POST,
+            false => later::MAX_MESSAGE,
+        };
+        if len > limit {
             close_all(&moved);
             reply(&later::too_long(), None);
+            continue;
+        }
+        // A POST is a plain call, made once.
+        if is_post {
+            let (answer, shm) = posted(&config, &request[..len], &moved);
+            reply(&answer, shm);
             continue;
         }
         let text = core::str::from_utf8(&request[..len]).unwrap_or("");

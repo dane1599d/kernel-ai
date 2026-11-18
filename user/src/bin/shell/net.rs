@@ -178,6 +178,7 @@ fn failed(error: &FetchError) -> String {
         FetchError::TooLarge => String::from("the page is larger than 64 KiB"),
         FetchError::Timeout => String::from("the site did not answer in time"),
         FetchError::Truncated => String::from("the page was cut off"),
+        FetchError::Cut => String::from("cut off after it was sent: the server may have it"),
     }
 }
 
