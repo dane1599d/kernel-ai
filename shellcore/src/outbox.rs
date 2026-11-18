@@ -17,7 +17,7 @@
 
 use crate::actlog::{ActLog, Change, State};
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 /// Sends waiting at most: a ninth is refused, never queued.
@@ -42,6 +42,64 @@ pub struct SendFailed {
     /// The request may have gone out before it failed (a cut after the body
     /// was written): it is logged as one that may have been sent.
     pub maybe_sent: bool,
+}
+
+/// A site's answer as the result line says it: the status and a fixed
+/// phrase for it (`404 Not Found`), never the server's own reason, which is
+/// the site's text, not code's (#962). A status with no phrase here is the
+/// number alone.
+pub fn status_line(status: u16) -> String {
+    let phrase = match status {
+        200 => "OK",
+        201 => "Created",
+        202 => "Accepted",
+        204 => "No Content",
+        301 | 302 | 303 | 307 | 308 => "Redirect, not followed",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        408 => "Request Timeout",
+        409 => "Conflict",
+        410 => "Gone",
+        413 => "Content Too Large",
+        415 => "Unsupported Media Type",
+        422 => "Unprocessable Content",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => return status.to_string(),
+    };
+    format!("{status} {phrase}")
+}
+
+/// A failed call to the send service, as a send's failure. Only a call the
+/// kernel refused before the service could take it is "not sent" (a Stop
+/// ends a call only while no server has taken it); anything else, a timeout
+/// or the service dying with it included, may have gone out.
+pub fn call_failed(error: kabi::Error) -> SendFailed {
+    use kabi::Error as E;
+    let maybe_sent = !matches!(
+        error,
+        E::Permission
+            | E::Fault
+            | E::Invalid
+            | E::NoMemory
+            | E::NotFound
+            | E::TooBig
+            | E::Unavailable
+            | E::BadHandle
+            | E::Revoked
+            | E::Interrupted
+    );
+    let why = match maybe_sent {
+        true => format!("the send service gave no answer ({error:?})"),
+        false => format!("the send service could not be called ({error:?})"),
+    };
+    SendFailed { why, maybe_sent }
 }
 
 /// Where a send stands, as its change's `after=` word in the log.

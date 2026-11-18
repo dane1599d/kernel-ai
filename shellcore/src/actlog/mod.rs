@@ -140,11 +140,14 @@ pub struct Entry {
 
 impl Entry {
     /// Whether `undo` may revert it: it ran, made changes, and every one has an
-    /// inverse.
+    /// inverse this shell can read.
     pub fn live(&self) -> bool {
         self.state == State::Done
             && !self.changes.is_empty()
-            && self.changes.iter().all(|c| c.inverse.is_some())
+            && self
+                .changes
+                .iter()
+                .all(|c| c.inverse.is_some_and(|i| i.is_read()))
     }
 }
 
