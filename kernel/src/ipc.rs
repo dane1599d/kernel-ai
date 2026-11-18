@@ -108,6 +108,46 @@ static REPLIES_TO_PROCESSES: [AtomicU64; MAX_ENDPOINTS] =
     [const { AtomicU64::new(0) }; MAX_ENDPOINTS];
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// The last call's legs, for `test=ipc-rtt`'s breakdown: when it was queued,
+/// taken by its server and answered (HPET ns), and the CPU each happened on.
+/// Recorded only while that case has them [`on`], so no other boot pays an
+/// HPET read on its calls; read only there, where nothing else calls.
+pub mod legs {
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    static ON: AtomicBool = AtomicBool::new(false);
+
+    /// Starts or stops recording.
+    pub fn on(record: bool) {
+        ON.store(record, Ordering::Relaxed);
+    }
+
+    static AT: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+    static CPU: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+
+    /// A call's three moments, in order.
+    #[derive(Clone, Copy)]
+    pub enum Leg {
+        Queued = 0,
+        Taken = 1,
+        Replied = 2,
+    }
+
+    pub(super) fn mark(leg: Leg) {
+        if !ON.load(Ordering::Relaxed) {
+            return;
+        }
+        AT[leg as usize].store(crate::hpet::nanos(), Ordering::Relaxed);
+        CPU[leg as usize].store(crate::percpu::index() as u64, Ordering::Relaxed);
+    }
+
+    /// The last call's three times and CPUs.
+    pub fn last() -> ([u64; 3], [u64; 3]) {
+        let read = |a: &[AtomicU64; 3]| core::array::from_fn(|i| a[i].load(Ordering::Relaxed));
+        (read(&AT), read(&CPU))
+    }
+}
+
 fn with_ipc<R>(f: impl FnOnce(&mut Ipc) -> R) -> R {
     threads::preempt_disable();
     let result = f(&mut IPC.lock());
@@ -340,6 +380,7 @@ pub(crate) fn submit_with(
             extra,
             reply_handles: Vec::new(),
         });
+        legs::mark(legs::Leg::Queued);
         CALL_STATE[slot].store(QUEUED, Ordering::SeqCst);
         PENDING[endpoint].fetch_add(1, Ordering::SeqCst);
         let server = ipc.endpoints[endpoint]
@@ -655,6 +696,7 @@ pub fn recv_with(
                         call.taker = me.pid;
                         extra = core::mem::take(&mut call.extra);
                     }
+                    legs::mark(legs::Leg::Taken);
                     CALL_STATE[c].store(TAKEN, Ordering::SeqCst);
                     PENDING[endpoint].fetch_sub(1, Ordering::SeqCst);
                     if let Some(entry) = ipc.endpoints[endpoint].as_mut() {
@@ -764,6 +806,7 @@ pub fn reply_with(slot: usize, ptr: u64, len: u64, handles: Vec<Entry>) -> Resul
         }
         call.reply = reply;
         call.reply_handles = handles;
+        legs::mark(legs::Leg::Replied);
         CALL_STATE[c].store(REPLIED, Ordering::SeqCst);
         Ok(call.caller)
     })?;
