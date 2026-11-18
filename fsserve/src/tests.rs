@@ -47,7 +47,7 @@ impl<'d> Client<'d> {
     }
 
     /// Opens `path` under /home/user; the new handle's badge and rights.
-    fn open(&mut self, path: &str, how: How) -> Result<Mint, Error> {
+    pub(crate) fn open(&mut self, path: &str, how: How) -> Result<Mint, Error> {
         let rights = DIR_RIGHTS.bits();
         match self.home(Request::Open {
             path: path.into(),
