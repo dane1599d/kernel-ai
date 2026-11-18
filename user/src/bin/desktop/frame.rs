@@ -119,6 +119,7 @@ pub(super) fn draw(state: &mut State, screen: &Screen) {
     // Timed only for `desk-perf`: no TIME calls on the normal path.
     let timed = state.perf.is_some();
     let started = if timed { sys::time_ns() } else { 0 };
+    let hole = hole(state);
     let mut frame = state.frame.canvas();
     let (shown, pools) = (&state.shown, &state.pools);
     let scene = Scene {
@@ -132,13 +133,26 @@ pub(super) fn draw(state: &mut State, screen: &Screen) {
     };
     // A window with no pixels yet shows the theme's window colour.
     let fallback = state.painter.content_fallback();
+    let scale = state.scale;
     let mut content = |id: WindowId, layer: &mut Canvas<'_>, at: Rect| {
-        let Some((_, pid, buffer)) = shown.iter().find(|(w, ..)| *w == id) else {
+        let Some((_, pid, buffer, drawn_at)) = shown.iter().find(|(w, ..)| *w == id) else {
             return false;
         };
         let Some(source) = source(pools, *pid, buffer) else {
             return false;
         };
+        // A client that draws at the scale of the screen is shown unresampled:
+        // its content is a hole here, and `present` puts its pixels in it.
+        if scale != deskcore::scale::ONE && *drawn_at == scale {
+            let mut pixels = Pixels {
+                width: layer.width as i32,
+                height: layer.height as i32,
+                stride: layer.stride_px as usize,
+                data: layer.pixels,
+            };
+            pixels.fill(at, at, hole);
+            return true;
+        }
         let mut pixels = Pixels {
             width: layer.width as i32,
             height: layer.height as i32,
@@ -208,6 +222,13 @@ fn source<'a>(pools: &'a [Pool], pid: u64, buffer: &Buffer) -> Option<Source<'a>
     })
 }
 
+/// What `draw` fills a window's content with while the client's own pixels
+/// are to go in it: the window colour with the blue bit flipped, which no
+/// token is (`deskcore::upscale::overlay` replaces only a px of exactly this).
+fn hole(state: &State) -> u32 {
+    state.painter.content_fallback() ^ 1
+}
+
 /// Puts the logical `damage` of the frame on the screen and returns what it
 /// covers there, in physical px: the same rectangles at scale 1.0, else each
 /// grown to the pixels a resample of it reaches (`deskcore::upscale`). The
@@ -226,6 +247,7 @@ fn present(state: &State, screen: &Screen, damage: &[Rect]) -> Vec<Rect> {
             screen.info.pages as usize * 1024,
         )
     };
+    let hole = hole(state);
     let src = deskcore::upscale::Source {
         px: &state.frame.px,
         width: state.width,
@@ -241,6 +263,40 @@ fn present(state: &State, screen: &Screen, damage: &[Rect]) -> Vec<Rect> {
     for r in damage {
         if let Some(rect) = deskcore::upscale::physical(*r, state.scale, pw, ph) {
             deskcore::upscale::resample(&src, &mut dst, state.scale, rect);
+            // Then each window that drew at this scale, over its hole, the
+            // lowest first.
+            for window in state.desk.windows().iter().filter(|w| !w.minimized) {
+                let Some((_, pid, buffer, _)) = state
+                    .shown
+                    .iter()
+                    .find(|(id, _, _, at)| *id == window.id && *at == state.scale)
+                else {
+                    continue;
+                };
+                let Some(drawn) = source(&state.pools, *pid, buffer) else {
+                    continue;
+                };
+                let content = window.content();
+                // Rounded, as the client rounds its own (`uipaint::Scale`).
+                let phys = |v: i32| (v * state.scale as i32 + 60) / 120;
+                let pixels = deskcore::upscale::Buffer {
+                    px: drawn.data,
+                    width: drawn.width,
+                    height: drawn.height,
+                    stride: drawn.stride,
+                    alpha: drawn.alpha,
+                };
+                let origin = (phys(content.x), phys(content.y));
+                deskcore::upscale::overlay(
+                    &src,
+                    hole,
+                    state.scale,
+                    &mut dst,
+                    rect,
+                    origin,
+                    &pixels,
+                );
+            }
             covered.push(rect);
         }
     }

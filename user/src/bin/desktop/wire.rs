@@ -239,9 +239,13 @@ pub(super) fn apply_need(
                 Err(error) => println!("desktop: cannot map pid {pid}'s pool: {error:?}"),
             }
         }
-        Need::Show { window, buffer } => {
+        Need::Show {
+            window,
+            buffer,
+            scale,
+        } => {
             state.shown.retain(|(w, ..)| *w != window);
-            state.shown.push((window, pid, buffer));
+            state.shown.push((window, pid, buffer, scale));
         }
         Need::Closed { window } => {
             state.shown.retain(|(w, ..)| *w != window);
