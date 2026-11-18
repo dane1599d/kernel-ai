@@ -42,7 +42,7 @@ impl<'d> Client<'d> {
         (decode_reply(&answer.reply).unwrap(), answer.mint)
     }
 
-    fn home(&mut self, request: Request) -> (Reply, Option<Mint>) {
+    pub(crate) fn home(&mut self, request: Request) -> (Reply, Option<Mint>) {
         self.call(ALICE, HOME_USER, DIR_RIGHTS, request)
     }
 

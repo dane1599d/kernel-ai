@@ -34,3 +34,18 @@ fn a_disk_gains_memory_and_index_at_start_and_no_badge_reaches_them() {
     let (mut c, _) = Client::start(&mut disk);
     assert_eq!(c.server.generation(), generation);
 }
+
+/// `memory-volume`'s two boots on the host: the probe's purge drops the two
+/// snapshots that held its record, and after a restart none holds it.
+#[test]
+fn the_memory_probe_purges_and_a_restart_finds_no_snapshot_holding_it() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    assert_eq!(c.server.memory_probe(), Ok(2));
+    drop(c);
+    let (mut c, _) = Client::start(&mut disk);
+    assert_eq!(c.server.memory_check(), Ok((1, 0)));
+    // A client's open action keeps the probe out.
+    c.home(Request::Begin { action: 1 });
+    assert_eq!(c.server.memory_probe(), Err(Error::Busy));
+}

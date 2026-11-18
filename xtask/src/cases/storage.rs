@@ -61,7 +61,24 @@ const FS_UNDO_REBOOT_2: TestCase = TestCase {
     ..case("fs-undo-reboot (boot 2)", "test=fs-undo-reboot reread")
 };
 
+/// Boot 2 of `memory-volume`: the purge held across the reboot.
+const MEMORY_VOLUME_2: TestCase = TestCase {
+    expect: &["memory-volume: boot 2: no snapshot of memory holds the purged record"],
+    server: false,
+    data: Some(VIRTIO),
+    ..case("memory-volume (boot 2)", "test=memory-volume reread")
+};
+
 pub(super) const CASES: &[TestCase] = &[
+    // agents-os.md M1: a purged record is in no snapshot of `memory` after a
+    // reboot.
+    TestCase {
+        expect: &["memory-volume: boot 1 forgot a record and purged the 2 snapshots holding it"],
+        server: false,
+        data: Some(VIRTIO),
+        then: Some(&MEMORY_VOLUME_2),
+        ..case("memory-volume", "test=memory-volume")
+    },
     TestCase {
         expect: &[
             "block: kai-data is ",

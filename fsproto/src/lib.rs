@@ -33,6 +33,17 @@ pub const MAX_TRASH_TEXT: usize = 6 * 1024;
 /// The most items in one [`Reply::Trash`].
 pub const MAX_TRASH_ITEMS: usize = 32;
 
+/// What the kernel's self-tests send `fs` on its plain route, which only the
+/// kernel reaches (`kabi::part::stub` has S04-2's): not `kai-fs 1`.
+pub mod kernel_route {
+    /// `memory-volume` boot 1: make, snapshot, forget and purge a record in the
+    /// `memory` volume; `ok purged <n>`.
+    pub const MEMORY_PROBE: &[u8] = b"memory-volume probe";
+    /// `memory-volume` boot 2: `ok snapshots=<n> holding=<m>`, where `m` counts
+    /// the `memory` snapshots holding any object but the root folder.
+    pub const MEMORY_CHECK: &[u8] = b"memory-volume check";
+}
+
 /// How [`Request::Open`] treats the last name of its path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode)]
 pub enum How {

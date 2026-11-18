@@ -21,6 +21,7 @@ mod agentvol_tests;
 pub mod batch;
 mod buffer;
 mod lookup;
+mod memcase;
 #[cfg(test)]
 mod model_tests;
 pub mod models;

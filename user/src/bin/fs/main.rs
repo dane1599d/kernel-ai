@@ -220,6 +220,9 @@ impl Bench {
         if request == stub::CHECK {
             return check::run(part).into_bytes();
         }
+        if let Some(reply) = memory_case(server, request) {
+            return reply;
+        }
         match self.kai_fs(server, request) {
             Ok(reply) => reply,
             Err(why) => alloc::format!("err {why}").into_bytes(),
@@ -293,4 +296,23 @@ impl Bench {
             _ => Err("unknown request"),
         }
     }
+}
+
+/// The `memory-volume` case's steps (`fsserve`'s `memcase.rs`), on the plain
+/// route only the kernel reaches; `None` for any other request.
+fn memory_case<D: kaifs::BlockDev>(server: &mut Server<D>, request: &[u8]) -> Option<Vec<u8>> {
+    use fsproto::kernel_route::{MEMORY_CHECK, MEMORY_PROBE};
+    let reply = match request {
+        r if r == MEMORY_PROBE => server
+            .memory_probe()
+            .map(|n| alloc::format!("ok purged {n}")),
+        r if r == MEMORY_CHECK => server
+            .memory_check()
+            .map(|(n, m)| alloc::format!("ok snapshots={n} holding={m}")),
+        _ => return None,
+    };
+    Some(match reply {
+        Ok(text) => text.into_bytes(),
+        Err(error) => alloc::format!("err {error:?}").into_bytes(),
+    })
 }
