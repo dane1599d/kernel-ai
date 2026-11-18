@@ -333,6 +333,14 @@ impl Clock {
 /// evicts the other (S02-2).
 pub const SLOTS: local::act::Slots = local::act::Slots::TWO;
 
+/// Whose `act` request it is: the person's, with their conversation, or an agent's,
+/// with none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Whose {
+    Person,
+    Agent,
+}
+
 pub struct Local {
     engine: Engine<'static>,
     /// The tagged call's grammar over the pack's rows and the installed apps'
@@ -560,6 +568,24 @@ impl Local {
     /// at most `act::SERVICE_TIMEOUT_MS`; a script's code comes from the script
     /// prompt (`llmproto::local::act::routed`).
     pub fn act(&mut self, request: &ActRequest) -> Result<Call, ActError> {
+        self.act_until(request, Whose::Person, || false)
+    }
+
+    /// [`Self::act`] for `whose` request, with `stop` asked at every step. An
+    /// agent's call is decoded with an empty conversation of its own, never the
+    /// person's (ADR 0013 section 2, F3 slice 2b): the person's turns are theirs,
+    /// and an agent neither reads them nor adds to them.
+    pub fn act_until(
+        &mut self,
+        request: &ActRequest,
+        whose: Whose,
+        mut stop: impl FnMut() -> bool,
+    ) -> Result<Call, ActError> {
+        let none = History::new();
+        let history = match whose {
+            Whose::Person => &self.history,
+            Whose::Agent => &none,
+        };
         // The pool's figures and the picks' time from here on are this request's.
         crate::workers::report();
         self.engine.take_picking();
@@ -574,12 +600,16 @@ impl Local {
             &mut self.engine,
             &self.grammar,
             request,
-            &self.history,
+            history,
             SLOTS,
             |tokens| clock.borrow().room_for(tokens),
-            |step| clock.borrow_mut().step(step),
+            |step| match stop() {
+                true => Next::Stop,
+                false => clock.borrow_mut().step(step),
+            },
         );
         let clock = clock.into_inner();
+        self.used = clock.used();
         self.prefill_rate = clock.rate().or(self.prefill_rate);
         let forced = self.engine.forced();
         let call = match clock.interrupted {
