@@ -13,13 +13,17 @@
 //! - one step at a time, one record per step, and the state agrees with what the goal
 //!   holds (a step that waits, a step in flight);
 //! - at most `MAX_ACTIVE` goals live and `MAX_GOALS` kept, ids never reused;
+//! - every step that touched the system keeps the `actlog` entry the door made for
+//!   it, also a step the goal's end cut off that finished afterwards, and no step has
+//!   an entry the door did not make;
 //! - what is kept reads back from its own text as the same goals.
 //!
 //! The generator is splitmix64 on a seed, so a failure names the seed that makes it.
 
 use goalcore::{
-    AskKind, Budget, Door, Goal, Goals, MAX_ACTIVE, MAX_GOALS, MAX_LOG, MAX_TARGETS, Pause,
-    Presence, Refusal, Scope, Spec, State, Step, StepDone, StepStatus, Tier, Verdict,
+    AskKind, Budget, Door, ENDED_IN_FLIGHT, Goal, Goals, MAX_ACTIVE, MAX_GOALS, MAX_LOG,
+    MAX_TARGETS, Pause, Presence, Refusal, Scope, Spec, State, Step, StepDone, StepStatus, Tier,
+    Verdict,
 };
 use std::collections::BTreeSet;
 
@@ -278,6 +282,7 @@ struct Tally {
     away: usize,
     over: usize,
     ended_running: usize,
+    finished_after_end: usize,
     forgotten: usize,
 }
 
@@ -290,6 +295,7 @@ impl Tally {
         self.away += other.away;
         self.over += other.over;
         self.ended_running += other.ended_running;
+        self.finished_after_end += other.finished_after_end;
         self.forgotten += other.forgotten;
     }
 }
@@ -302,6 +308,9 @@ struct World {
     approved: BTreeSet<(u64, u32)>,
     /// The tier the door gave each step, by `(goal, step number)`.
     tiers: Vec<((u64, u32), Tier)>,
+    /// The `actlog` entry the door made for each step that touched the system, by
+    /// `(goal, step number)`.
+    entries: Vec<((u64, u32), u64)>,
     /// The most ids made, so none is ever used twice.
     top_id: u64,
 }
@@ -314,6 +323,7 @@ impl World {
             now: T0,
             approved: BTreeSet::new(),
             tiers: Vec::new(),
+            entries: Vec::new(),
             top_id: 0,
         }
     }
@@ -461,7 +471,24 @@ impl World {
                 .chance(25)
                 .then(|| "it did not work\n\u{e9}".to_string()),
         };
-        let _ = self.goals.get_mut(id).unwrap().finish_step(done);
+        let goal = self.goals.get_mut(id).unwrap();
+        // The step the report is for: the one in flight, or the one the goal's end
+        // cut off that has not finished yet. With neither, no step takes it.
+        let cut = goal.log.last().filter(|step| {
+            goal.state.is_final()
+                && step.status == StepStatus::Failed
+                && step.note == ENDED_IN_FLIGHT
+                && step.entry.is_none()
+        });
+        let step = goal.flight.or(cut.map(|step| step.n));
+        let late = goal.flight.is_none() && step.is_some();
+        let entry = done.entry;
+        let got = goal.finish_step(done);
+        assert_eq!(got.is_ok(), step.is_some(), "#{id}: {got:?}");
+        if let (Some(n), Some(entry)) = (step, entry) {
+            self.entries.push(((id, n), entry));
+        }
+        self.tally.finished_after_end += usize::from(late);
     }
 
     /// One of the calls on a goal that change where it stands.
@@ -576,6 +603,22 @@ impl World {
             .filter(|s| s.status == StepStatus::Denied)
             .count();
         assert_eq!(goal.denied as usize, denied);
+        // Every step that touched the system keeps the entry the door made for it,
+        // and none has an entry the door did not make.
+        for step in &goal.log {
+            let made = self.entries.iter().find(|(key, _)| *key == (id, step.n));
+            assert_eq!(step.entry, made.map(|(_, e)| *e), "#{id} step {}", step.n);
+        }
+        let mut undo = goal.undo_entries();
+        let mut made: Vec<u64> = self
+            .entries
+            .iter()
+            .filter(|((goal_id, _), _)| *goal_id == id)
+            .map(|(_, e)| *e)
+            .collect();
+        undo.sort_unstable();
+        made.sort_unstable();
+        assert_eq!(undo, made, "#{id}: undo goals finds every entry");
         // A step that ran without a person's yes was inside the approval, a run-tier
         // step of the door's, in a goal that was allowed to go on while the person was
         // away if they were.
@@ -656,6 +699,7 @@ fn what_the_person_approved_is_all_a_goal_does_without_asking() {
         ("asked for being away", total.away),
         ("held back", total.over),
         ("ended in the middle of a step", total.ended_running),
+        ("finished a step after the end", total.finished_after_end),
         ("forgotten", total.forgotten),
     ];
     for (what, count) in reached {
@@ -705,6 +749,36 @@ fn a_goal_ended_while_a_step_runs_counts_it_as_failed_and_reads_back() {
         }
         assert_eq!(goal.log[0].status, StepStatus::Failed);
         assert_eq!((goal.steps_run, goal.steps_ok, goal.failed), (1, 0, 1));
+        let text = goals.to_text();
+        assert_eq!(Goals::parse(&text).as_ref(), Ok(&goals), "{text}");
+        // The door's answer comes after the end: the step keeps the entry it made and
+        // how it came out, once.
+        let goal = goals.get_mut(id).unwrap();
+        let done = |entry, failed: Option<&str>| StepDone {
+            entry: Some(entry),
+            tokens: 40,
+            failed: failed.map(str::to_string),
+        };
+        let failed = (end == 1).then_some("the disk was full");
+        assert_eq!(goal.finish_step(done(77, failed)), Ok(()));
+        assert_eq!(
+            goal.finish_step(done(78, None)),
+            Err(Refusal::NoStepRunning)
+        );
+        assert_eq!(goal.log[0].entry, Some(77));
+        assert_eq!(goal.undo_entries(), [77]);
+        assert_eq!(goal.tokens_spent, 40);
+        let counts = (goal.steps_run, goal.steps_ok, goal.failed);
+        match failed {
+            None => {
+                assert_eq!(goal.log[0].status, StepStatus::Ran);
+                assert_eq!(counts, (1, 1, 0));
+            }
+            Some(_) => {
+                assert_eq!(goal.log[0].status, StepStatus::Failed);
+                assert_eq!(counts, (1, 0, 1));
+            }
+        }
         let text = goals.to_text();
         assert_eq!(Goals::parse(&text).as_ref(), Ok(&goals), "{text}");
     }
