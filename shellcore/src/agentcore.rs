@@ -347,6 +347,11 @@ impl Shell {
             Ok(found) => found,
             Err(outcome) => return outcome,
         };
+        // An agent's step: the row that runs, which `target` or `ui_open`'s
+        // forwarding may have changed, is admitted against its grants too.
+        if let Err(why) = self.readmit(row) {
+            return self.refuse(id, request, call, Why::Unknown, &why);
+        }
         let args = match arguments(row, call) {
             Ok(args) => args,
             Err(why) => return self.refuse(id, request, call, Why::Unknown, &why),
@@ -469,6 +474,8 @@ impl Shell {
             .as_ref()
             .or(waiver.as_ref())
             .filter(|_| !held(row))
+            // The person's rules are for Kai's lines: an agent's step asks.
+            .filter(|_| self.agent_acting().is_none())
             .and_then(|offer| self.rules.covering(offer));
         let reply = match (decision.tier, ruled) {
             (Tier::Run, _) => {
