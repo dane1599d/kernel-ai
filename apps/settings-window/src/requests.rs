@@ -38,6 +38,7 @@ pub enum Applied {
     Theme(String),
     Legible(bool),
     ReducedMotion(bool),
+    TimeZone(i16),
     Intent(Intent),
 }
 
@@ -47,9 +48,10 @@ impl Applied {
     pub fn read_back(&self) -> Option<crate::replies::Read> {
         use crate::replies::Read;
         match self {
-            Applied::Theme(_) | Applied::Legible(_) | Applied::ReducedMotion(_) => {
-                Some(Read::FileAppearance)
-            }
+            Applied::Theme(_)
+            | Applied::Legible(_)
+            | Applied::ReducedMotion(_)
+            | Applied::TimeZone(_) => Some(Read::FileAppearance),
             Applied::Intent(Intent::Appearance(_)) => Some(Read::FileAppearance),
             Applied::Intent(Intent::KeepRunning { .. }) => Some(Read::FileApps),
             Applied::Intent(Intent::RestartWindow(_)) => Some(Read::FileUpdates),
@@ -104,6 +106,15 @@ fn appearance(before: &Appearance, after: &Appearance) -> Vec<Planned> {
             then: Applied::ReducedMotion(after.reduced_motion),
         });
     }
+    if before.time_zone_min != after.time_zone_min {
+        out.push(Planned {
+            request: format!(
+                "appearance-set time_zone {}",
+                comp_settings::files::zone_text(after.time_zone_min)
+            ),
+            then: Applied::TimeZone(after.time_zone_min),
+        });
+    }
     out
 }
 
@@ -152,6 +163,7 @@ mod tests {
             theme: "dark".into(),
             legible: false,
             reduced_motion: false,
+            time_zone_min: 0,
         }
     }
 
@@ -168,6 +180,7 @@ mod tests {
             theme: "high-contrast".into(),
             legible: true,
             reduced_motion: false,
+            time_zone_min: 0,
         };
         assert_eq!(
             requests(&Intent::Appearance(after)),
@@ -185,6 +198,17 @@ mod tests {
             requests(&Intent::Appearance(motion)),
             ["appearance-set reduced_motion on"]
         );
+        // The time zone, in the form the saved file writes it.
+        for (minutes, request) in [
+            (120, "appearance-set time_zone +02:00"),
+            (-570, "appearance-set time_zone -09:30"),
+        ] {
+            let zone = Appearance {
+                time_zone_min: minutes,
+                ..dark()
+            };
+            assert_eq!(requests(&Intent::Appearance(zone)), [request]);
+        }
         let planned = plan(
             &dark(),
             &Intent::Appearance(Appearance {
@@ -376,6 +400,7 @@ mod tests {
                 theme: "light".into(),
                 legible: true,
                 reduced_motion: true,
+                time_zone_min: 330,
             }),
             Intent::UseProfile("quiet".into()),
             Intent::RemoveRule(RuleRef::Rule(1)),
