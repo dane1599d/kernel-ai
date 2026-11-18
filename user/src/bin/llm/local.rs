@@ -343,6 +343,9 @@ pub enum Whose {
 
 pub struct Local {
     engine: Engine<'static>,
+    /// The pack's rows alone, with no app's: what an agent's call is decoded
+    /// against, so an agent's request never changes the person's grammar.
+    base_grammar: local::act::Grammar,
     /// The tagged call's grammar over the pack's rows and the installed apps'
     /// rows, built again when the apps change.
     grammar: local::act::Grammar,
@@ -376,8 +379,10 @@ impl Local {
         engine.set_clock(user::pool::cycles);
         engine.set_parallel(workers);
         let grammar = local::act::grammar().map_err(|error| format!("{error}"))?;
+        let base_grammar = local::act::grammar().map_err(|error| format!("{error}"))?;
         Ok(Self {
             engine,
+            base_grammar,
             grammar,
             apps: crate::apps::Apps::default(),
             history: History::new(),
@@ -589,16 +594,24 @@ impl Local {
         // The pool's figures and the picks' time from here on are this request's.
         crate::workers::report();
         self.engine.take_picking();
-        if let Some(grammar) = self.apps.update(&request.apps) {
+        // The person's request brings the installed apps' rows; an agent's is decoded
+        // against the pack alone, and its `apps` never reach the person's grammar.
+        if whose == Whose::Person
+            && let Some(grammar) = self.apps.update(&request.apps)
+        {
             self.grammar = grammar;
         }
+        let grammar = match whose {
+            Whose::Person => &self.grammar,
+            Whose::Agent => &self.base_grammar,
+        };
         let clock = core::cell::RefCell::new(Clock::new(
             request.timeout_ms.min(act::SERVICE_TIMEOUT_MS),
             self.prefill_rate,
         ));
         let call = local::act::routed(
             &mut self.engine,
-            &self.grammar,
+            grammar,
             request,
             history,
             SLOTS,
