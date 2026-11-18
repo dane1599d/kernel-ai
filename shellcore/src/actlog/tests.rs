@@ -250,14 +250,24 @@ fn an_agents_entry_makes_actlog_2_with_every_entry_named() {
 }
 
 #[test]
-fn an_actlog_2_entry_with_a_bad_or_missing_agent_is_refused() {
+fn an_actlog_2_entry_with_a_bad_or_missing_agent_is_set_aside_alone() {
     let mut log = sample();
     log.push(agents(30, "goals"));
     let text = log.text();
-    let bad = text.replace(" agent=goals", " agent=Goals!");
-    assert!(text::parse(&bad).is_err());
-    let missing = text.replace(" agent=goals", "");
-    assert!(text::parse(&missing).is_err());
+    let whole = text::parse(&text).unwrap().len();
+    for broken in [
+        text.replace(" agent=goals", " agent=Goals!"),
+        text.replace(" agent=goals", ""),
+    ] {
+        let (records, aside) = text::parse_setting_aside(&broken).unwrap();
+        assert_eq!(aside, [30], "{broken}");
+        assert_eq!(records.len(), whole - 1, "only that entry goes");
+        assert!(
+            !records
+                .iter()
+                .any(|r| matches!(r, Record::Entry(e) if e.id == 30))
+        );
+    }
     // An `agent=` field in a version 1 log is one field too many.
     let v1 = text.replacen("actlog 2", "actlog 1", 1);
     assert!(text::parse(&v1).is_err());

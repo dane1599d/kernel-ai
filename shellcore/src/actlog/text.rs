@@ -133,6 +133,12 @@ pub struct ParseError {
 /// Reads `actlog 1` or `actlog 2` text back into records. A version 1 entry
 /// is the person's own: its agent is `kai`.
 pub fn parse(text: &str) -> Result<Vec<Record>, ParseError> {
+    parse_setting_aside(text).map(|(records, _)| records)
+}
+
+/// [`parse`], and the ids of the `actlog 2` entries set aside, each with its
+/// texts and changes, because their `agent=` was missing or named no agent.
+pub fn parse_setting_aside(text: &str) -> Result<(Vec<Record>, Vec<u64>), ParseError> {
     let mut reader = Reader {
         rest: text,
         line: 0,
@@ -144,6 +150,7 @@ pub fn parse(text: &str) -> Result<Vec<Record>, ParseError> {
         _ => return reader.fail("not actlog 1 or 2"),
     };
     let mut records: Vec<Record> = Vec::new();
+    let mut aside: Vec<u64> = Vec::new();
     while !reader.rest.is_empty() {
         if records.len() == MAX_RECORDS {
             return reader.fail("too many records");
@@ -153,7 +160,14 @@ pub fn parse(text: &str) -> Result<Vec<Record>, ParseError> {
             .split_once(' ')
             .ok_or_else(|| reader.error("a record has no fields"))?;
         match tag {
-            "E" | "U" => records.push(Record::Entry(reader.entry(tag, body)?)),
+            "E" | "U" => {
+                let mut put_aside = false;
+                let entry = reader.entry(tag, body, &mut put_aside)?;
+                if put_aside {
+                    aside.push(entry.id);
+                }
+                records.push(Record::Entry(entry));
+            }
             "S" => records.push(Record::System(reader.system(body)?)),
             "R" | "O" | "C" => {
                 let len = length(body).ok_or_else(|| reader.error("a bad text length"))?;
@@ -184,7 +198,8 @@ pub fn parse(text: &str) -> Result<Vec<Record>, ParseError> {
             _ => return reader.fail("an unknown record"),
         }
     }
-    Ok(records)
+    records.retain(|r| !matches!(r, Record::Entry(e) if e.of.is_none() && aside.contains(&e.id)));
+    Ok((records, aside))
 }
 
 fn length(text: &str) -> Option<usize> {
@@ -265,20 +280,28 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn entry(&self, tag: &str, body: &'a str) -> Result<Entry, ParseError> {
+    fn entry(&self, tag: &str, body: &'a str, aside: &mut bool) -> Result<Entry, ParseError> {
         let bad = |why| self.error(why);
         let mut pack = None;
         let mut agent = agentid::Name::kai();
         let (id, of, t, form, tier, consent, state) = match tag {
             "E" => {
                 const V1: &[&str] = &["", "t", "reg", "pack", "form", "tier", "consent", "state"];
-                const V2: &[&str] = &[
-                    "", "t", "reg", "pack", "form", "tier", "consent", "state", "",
-                ];
-                let v = self.fields(body, if self.agents { V2 } else { V1 })?;
+                // `actlog 2`'s `agent=` is the last field. One that is missing
+                // or names no agent sets that entry aside, not the whole log.
+                let (body, named) = match self.agents {
+                    true => match body.rsplit_once(' ') {
+                        Some((rest, last)) if last.starts_with("agent=") => (rest, Some(last)),
+                        _ => (body, None),
+                    },
+                    false => (body, None),
+                };
+                let v = self.fields(body, V1)?;
                 if self.agents {
-                    agent = agentid::stamp::read_field(Some(v[8]))
-                        .map_err(|_| bad("a bad agent field"))?;
+                    match named.map(|word| agentid::stamp::read_field(Some(word))) {
+                        Some(Ok(name)) => agent = name,
+                        _ => *aside = true,
+                    }
                 }
                 if v[2] != "1" {
                     return self.fail("an entry from another registry version");

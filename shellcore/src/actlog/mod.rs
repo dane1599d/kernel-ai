@@ -10,7 +10,7 @@
 
 mod text;
 
-pub use text::{ParseError, parse};
+pub use text::{ParseError, parse, parse_setting_aside};
 
 use crate::tiers::Tier;
 use crate::undo::Inverse;
