@@ -28,6 +28,8 @@ pub const STEP: &str = "agent-step ";
 pub(crate) const MAX_TOLD: usize = 16;
 /// What every other request from an agent's route is told.
 pub const AGENTS_ONLY_STEP: &str = "an agent may send only agent-step";
+/// What a step that carried handles is told: a step moves none.
+pub const STEP_NO_HANDLES: &str = "an agent's step carries no handles";
 
 /// What came of an agent's asked step on the card.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,12 +41,16 @@ pub(crate) struct Told {
 }
 
 impl Shell {
-    /// The gate for a request that came through a route with badge `badge`:
-    /// `None` for the kernel's own (badge 0), which the caller answers as
-    /// before; for any other, the agent's step's wire, or a refusal.
-    pub fn from_route(&mut self, badge: u64, text: &str) -> Option<String> {
+    /// The gate for a request that came through a route with badge `badge`
+    /// and moved `handles` handles (which the caller has closed): `None` for
+    /// the kernel's own (badge 0), which the caller answers as before; for
+    /// any other, the agent's step's wire, or a refusal.
+    pub fn from_route(&mut self, badge: u64, handles: usize, text: &str) -> Option<String> {
         if badge == 0 {
             return None;
+        }
+        if handles > 0 {
+            return Some(Reply::err(STEP_NO_HANDLES).to_wire());
         }
         let reply = match text.strip_prefix(STEP) {
             Some(rest) => self.agent_step(badge, rest.trim()),
@@ -82,6 +88,9 @@ impl Shell {
         // The empty line: an agent borrows no consent (ADR 0013 §1).
         let outcome = self.execute(id, "", &call);
         let since = id;
+        // Every entry from `since` on is this step's: the shell runs one
+        // request at a time on one thread, so no other line's entry can
+        // land between `take_id` and here.
         let stamped: alloc::vec::Vec<u64> = self
             .log
             .entries()

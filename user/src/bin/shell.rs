@@ -1617,11 +1617,17 @@ fn main() -> i32 {
                 continue;
             }
         };
+        // The shell takes no handle from any request: close every one the
+        // kernel moved in, so none leaks into the shell's table.
+        let moved = (info.handle_count as usize).min(info.handles.len());
+        for &h in &info.handles[..moved] {
+            let _ = sys::handle_close(kabi::handle::Handle(h));
+        }
         let caller = info.caller_pid;
         let text = core::str::from_utf8(&line[..len]).unwrap_or("");
         let stepped = match caller {
             0 => None,
-            _ => shell.from_route(info.badge, text),
+            _ => shell.from_route(info.badge, moved, text),
         };
         // Only the kernel terminal may run shell lines; an agent, its steps.
         let mut reply = if let Some(reply) = stepped {
