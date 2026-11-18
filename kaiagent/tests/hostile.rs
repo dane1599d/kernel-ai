@@ -9,7 +9,7 @@
 #[path = "../../testkit/hostile.rs"]
 mod hostile;
 
-use kaiagent::Manifest;
+use kaiagent::{Manifest, Refusal};
 
 /// Manifests that parse: the ADR's example, an interactive one with the net line (and
 /// its budget), and one at the limits.
@@ -97,5 +97,47 @@ fn every_line_dropped_doubled_or_swapped_is_refused() {
                 assert!(Manifest::parse(&swapped.concat()).is_err(), "{swapped:?}");
             }
         }
+    }
+}
+
+/// Every shared suffix, as an attacker's package would write it (alone, among its
+/// own hosts in any place, in any case, exact or not), is refused by name, and the
+/// same manifest naming a host under it is read.
+#[test]
+fn every_shared_suffix_is_refused_by_name_wherever_and_however_it_is_written() {
+    let manifest = |net: &str| {
+        format!(
+            "kai-app 1\nid weather\nabi 1.0\nagent 1\nclass interactive\nmodel -\n\
+             actions fs_list\nmemory read\nnet {net}\n"
+        )
+    };
+    for shared in netdest::SHARED_SUFFIXES {
+        let upper = shared.to_ascii_uppercase();
+        let mixed: String = shared
+            .chars()
+            .enumerate()
+            .map(|(i, c)| {
+                if i % 2 == 0 {
+                    c.to_ascii_uppercase()
+                } else {
+                    c
+                }
+            })
+            .collect();
+        for written in [shared.to_string(), upper, mixed] {
+            for hosts in [
+                written.clone(),
+                format!("{written}+a.example"),
+                format!("a.example+b.example+{written}"),
+            ] {
+                for exact in ["", "match:exact,"] {
+                    let net = format!("proto:tcp,ports:443,{exact}hosts:{hosts}");
+                    let got = Manifest::parse(&manifest(&net));
+                    assert_eq!(got, Err(Refusal::SharedHost(shared.to_string())), "{net}");
+                }
+            }
+        }
+        let under = format!("proto:tcp,ports:443,hosts:own.{shared}");
+        assert!(Manifest::parse(&manifest(&under)).is_ok(), "{under}");
     }
 }
