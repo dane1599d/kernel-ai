@@ -96,6 +96,37 @@ fn a_built_in_agent_runs_its_own_program_with_a_route_to_llm() {
     }
 }
 
+/// agent= is held to the line's final program: a program= after it cannot
+/// swap the binary its badge goes to.
+#[test]
+fn a_program_after_agent_cannot_take_its_badge() {
+    assert_eq!(
+        errors(
+            "llm caps=serve
+maint caps=call uses=llm agent=maint program=goals"
+        ),
+        ["maint: agent=maint is for the line maint running maint"]
+    );
+    // The same words in the other order are refused alike.
+    assert_eq!(
+        errors(
+            "llm caps=serve
+maint caps=call uses=llm program=goals agent=maint"
+        ),
+        ["maint: agent=maint is for the line maint running maint"]
+    );
+    // And a program= that names the agent's own program still runs.
+    let plan = parse_plan(
+        "llm caps=serve
+goals caps=call agent=goals program=goals uses=llm",
+    );
+    assert_eq!(plan.errors, Vec::<String>::new());
+    assert_eq!(
+        plan.grants("goals", "goals").unwrap().agent,
+        Some(agent::GOALS)
+    );
+}
+
 /// An agent's route to the shell carries its badge, as its route to llm does,
 /// and is pinned: the shell admits its steps by that badge alone. No other
 /// line may route to the shell, so no other route to it carries a badge.
