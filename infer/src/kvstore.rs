@@ -60,8 +60,41 @@ pub enum Unkept {
     NoRoom,
     /// The engine or the region failed while copying it.
     Failed,
-    /// It is not where the move says it is.
+    /// It is not where the move says it is, or the move goes nowhere.
     Elsewhere,
+    /// Coming back, it did not hold for the prompt: the slot is left empty, and
+    /// the run prefills.
+    Refused(Refused),
+}
+
+/// One move of `agentsched`'s (`Decision::Move { request, from, to }`), in the
+/// engine's words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Move {
+    pub request: u64,
+    pub from: Place,
+    pub to: Place,
+}
+
+/// What a move came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Applied {
+    /// The state left the slot, or the pool, for where the move sent it.
+    Kept,
+    /// The state is back in the slot in use: the positions the prompt reuses,
+    /// 0 for one kept nowhere.
+    Restored(usize),
+}
+
+/// The key a request's kept state is checked by, as `agentsched`'s engine rig
+/// keys it: `model`'s file and tier, the agent and the request as its pack id,
+/// and slot 0, since the state is bound to its request and to no slot.
+pub fn request_key(model: &Key, agent: u32, request: u64) -> Key {
+    Key {
+        pack_id: segments::spill_pack_id(agent, request),
+        slot: 0,
+        ..*model
+    }
 }
 
 /// A spill file's place in the region.
@@ -104,6 +137,38 @@ impl<R: Region> KvStore<R> {
             (true, _) => Some(Place::Ram),
             (_, true) => Some(Place::Spill),
             _ => None,
+        }
+    }
+
+    /// Makes `mv` for agent `agent`'s request, whose prompt is `turns`, on the
+    /// engine's slot in use, which the caller has switched to the request's
+    /// (out) or to a free one (in). States are keyed by [`request_key`].
+    pub fn apply(
+        &mut self,
+        engine: &mut Engine<'_>,
+        model: &Key,
+        mv: Move,
+        agent: u32,
+        turns: &[Turn<'_>],
+    ) -> Result<Applied, Unkept> {
+        let key = request_key(model, agent, mv.request);
+        match (mv.from, mv.to) {
+            (Place::Slot, Place::Slot) => Err(Unkept::Elsewhere),
+            (Place::Slot, to) => self
+                .park(engine, &key, mv.request, to)
+                .map(|()| Applied::Kept),
+            (Place::Ram, to @ (Place::Spill | Place::Cold)) => {
+                self.demote(mv.request, to).map(|()| Applied::Kept)
+            }
+            (Place::Spill, Place::Cold) => {
+                self.forget(mv.request);
+                Ok(Applied::Kept)
+            }
+            (_, Place::Slot) => self
+                .restore(engine, &key, mv.request, turns)
+                .map(Applied::Restored)
+                .map_err(Unkept::Refused),
+            _ => Err(Unkept::Elsewhere),
         }
     }
 

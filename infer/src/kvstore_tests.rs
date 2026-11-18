@@ -7,7 +7,9 @@ extern crate std;
 
 use crate::chat::{Engine, Role, Turn};
 use crate::fixture::{self, Spec};
-use crate::kvstore::{KvStore, MAX_POOL_BYTES, Place, Region, Unkept, pool_budget};
+use crate::kvstore::{
+    Applied, KvStore, MAX_POOL_BYTES, Move, Place, Region, Unkept, pool_budget, request_key,
+};
 use crate::segments::{self, Key, Snapshot};
 use crate::segments_tests::{ROOMY, key, later, reply, saved};
 use alloc::vec;
@@ -62,6 +64,7 @@ impl Region for Mem {
 }
 
 const REQUEST: u64 = 3;
+const AGENT: u32 = 7;
 const ROOM: usize = 4 << 20;
 
 fn engine(bytes: &[u8]) -> Engine<'_> {
@@ -97,12 +100,29 @@ fn round_trip(
     let bytes: &'static [u8] = Vec::leak(bytes.to_vec());
     let mut e = engine(bytes);
     computed(&mut e);
-    store.park(&e, k, REQUEST, route[0]).unwrap();
-    for &to in &route[1..] {
-        store.demote(REQUEST, to).unwrap();
+    // As agentsched's moves come: out of the slot, on through the route, back in.
+    let mut from = Place::Slot;
+    for &to in route {
+        let mv = Move {
+            request: REQUEST,
+            from,
+            to,
+        };
+        assert_eq!(
+            store.apply(&mut e, k, mv, AGENT, &saved()),
+            Ok(Applied::Kept)
+        );
+        from = to;
     }
     reply(&mut e, &[Turn::new(Role::User, "something else")], 4);
-    let n = store.restore(&mut e, k, REQUEST, &later()).unwrap();
+    let back = Move {
+        request: REQUEST,
+        from,
+        to: Place::Slot,
+    };
+    let Ok(Applied::Restored(n)) = store.apply(&mut e, k, back, AGENT, &later()) else {
+        panic!("{route:?} did not come back");
+    };
     (e, n)
 }
 
@@ -238,4 +258,46 @@ fn the_pool_takes_what_is_free_up_to_512_mib() {
     assert_eq!(pool_budget(6 << 30), 512 << 20);
     assert_eq!(pool_budget(100 << 20), 100 << 20);
     assert_eq!(pool_budget(0), 0);
+}
+
+/// A state kept for one agent's request does not come back for another
+/// agent's, as the rig keys them: the slot is left empty.
+#[test]
+fn a_move_back_for_another_agent_is_refused() {
+    let bytes = fixture::build(&Spec::tiny());
+    let model = key(Tier::best());
+    assert_ne!(
+        request_key(&model, AGENT, REQUEST),
+        request_key(&model, AGENT + 1, REQUEST)
+    );
+    for to in [Place::Ram, Place::Spill] {
+        let mut e = engine(&bytes);
+        computed(&mut e);
+        let mut store = KvStore::new(MAX_POOL_BYTES, Some(Mem::new(ROOM)));
+        let out = Move {
+            request: REQUEST,
+            from: Place::Slot,
+            to,
+        };
+        store.apply(&mut e, &model, out, AGENT, &saved()).unwrap();
+        let back = Move {
+            request: REQUEST,
+            from: to,
+            to: Place::Slot,
+        };
+        let got = store.apply(&mut e, &model, back, AGENT + 1, &later());
+        assert!(matches!(got, Err(Unkept::Refused(_))), "{to:?}: {got:?}");
+        answers_as_fresh(&bytes, &mut e, 0);
+    }
+    let mut store: KvStore<Mem> = KvStore::new(MAX_POOL_BYTES, None);
+    let nowhere = Move {
+        request: REQUEST,
+        from: Place::Cold,
+        to: Place::Ram,
+    };
+    let mut e = engine(&bytes);
+    assert_eq!(
+        store.apply(&mut e, &model, nowhere, AGENT, &saved()),
+        Err(Unkept::Elsewhere)
+    );
 }
