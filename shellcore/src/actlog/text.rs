@@ -327,9 +327,12 @@ impl<'a> Reader<'a> {
         let entry = number(entry).ok_or(bad("a bad change number"))?;
         let n = number(n).ok_or(bad("a bad change number"))? as usize;
         // An inverse this shell cannot read (one a newer shell wrote, before a
-        // slot rollback) leaves its change without an undo; the rest of the
-        // log still reads.
-        let inverse = crate::undo::parse_inverse(v[6]).unwrap_or(None);
+        // slot rollback) leaves its change without an undo, kept word for word
+        // for that shell; the rest of the log still reads.
+        let inverse = match crate::undo::parse_inverse(v[6]) {
+            Some(inverse) => inverse,
+            None => crate::undo::Raw::new(v[6]).map(crate::undo::Inverse::Unread),
+        };
         Ok((
             entry,
             n,

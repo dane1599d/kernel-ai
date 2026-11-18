@@ -294,6 +294,9 @@ pub enum SelfTest {
     Probe,
     /// P1: handle tables, startup handles and need() on handles.
     Handles,
+    /// IPC round trips timed: 0 B, 1 KiB and 7 KiB, kernel to ring 3 and ring 3
+    /// to ring 3.
+    IpcRtt,
     /// SHELL_INTERRUPT: the person's Stop ends the shell's call in flight.
     ShellInterrupt,
     /// CALL_SUBMIT and CALL_POLL: a process serves while its own call is in flight.
@@ -539,6 +542,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
             "test=handles" => Some(SelfTest::Handles),
+            "test=ipc-rtt" => Some(SelfTest::IpcRtt),
             "test=shell-interrupt" => Some(SelfTest::ShellInterrupt),
             "test=async-call" => Some(SelfTest::AsyncCall),
             "test=threads" => Some(SelfTest::Threads),

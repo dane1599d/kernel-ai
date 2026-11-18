@@ -33,6 +33,11 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
+      # One file per call: `bash -n a.sh b.sh` reads b.sh as a.sh's argument.
+      - name: The merge batcher's scripts parse (scripts/batch)
+        run: for f in scripts/batch/*.sh; do bash -n "$f" || exit 1; done
+      - name: The merge batcher lands, resumes and tidies as it should (stub gh)
+        run: bash scripts/batch/test/run.sh
       - name: Dependency licences and advisories (deny.toml, ADR 0009 D6)
         run: |
           cargo install --locked cargo-deny --version 0.20.2

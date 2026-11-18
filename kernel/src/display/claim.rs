@@ -217,13 +217,14 @@ pub fn claim(slot: usize, info: &mut DisplayInfo) -> Result<u64, Error> {
     state.taken_back = false;
     state.cursor = (surface.width as u32 / 2, surface.height as u32 / 2);
     drop(state);
+    let (width_mm, height_mm) = super::size_mm();
     *info = DisplayInfo {
         width: surface.width as u32,
         height: surface.height as u32,
         stride: (surface.stride * 4) as u32,
         format: FORMAT_XRGB8888,
-        width_mm: 0,
-        height_mm: 0,
+        width_mm,
+        height_mm,
         pages: pages as u32,
         cursor: u32::from(super::kind() == Some(super::Kind::VirtioGpu)),
     };
