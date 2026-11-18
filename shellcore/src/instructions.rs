@@ -44,14 +44,12 @@ impl Shell {
         self.host.audit(&format!(
             "request {id}: {call} asks: it makes a standing instruction"
         ));
-        let reply = self.ask_call(
+        let reply = self.ask_call(crate::agentcore::Ask::new(
             id,
             request,
             Checked::shown_only(&call),
             Why::Asked,
-            None,
-            None,
-        );
+        ));
         if let Some(pending) = &mut self.pending {
             pending.standing = Some(draft);
         }

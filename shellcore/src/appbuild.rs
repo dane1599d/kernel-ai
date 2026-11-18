@@ -193,7 +193,12 @@ impl Shell {
         if (decision.tier, decision.why) != (Tier::Run, Why::Asked) {
             self.host.audit(&format!("request {id}: {call} asks"));
             let checked = Checked::shown_only(&call);
-            let reply = self.ask_call(id, request, checked, decision.why, None, None);
+            let reply = self.ask_call(crate::agentcore::Ask::new(
+                id,
+                request,
+                checked,
+                decision.why,
+            ));
             if let Some(pending) = &mut self.pending {
                 pending.app = Some(Asked {
                     name: name.to_string(),

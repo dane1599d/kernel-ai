@@ -18,13 +18,11 @@
 
 use crate::actions::How;
 use crate::actlog::Form;
-use crate::rules::Offer;
-use crate::script::{self, Checked};
-use crate::targets::{self, Unresolved, Verb};
+use crate::script;
 use crate::tiers::Tier;
 use crate::{Reply, SCRIPT_ROUND_MS, Shell};
 use agentabi::consent::{self, Call as Planned, Label, Value as Consented, Why};
-use agentabi::{Action, ArgType, RetType, Role};
+use agentabi::{Action, RetType};
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
@@ -35,7 +33,19 @@ use llmproto::act::{ActError, ActRequest, Call};
 const HOME: &str = "/home/user/";
 use llmproto::script::Answer;
 use serde_json::Value;
-use termcore::menu::{Menu, Origin};
+
+mod args;
+mod ask;
+mod memory;
+mod target;
+
+use args::text_arg;
+pub(crate) use args::{arguments, read_from};
+#[cfg(test)]
+use ask::reason_of;
+pub(crate) use ask::{Ask, grant_reason};
+use ask::{held, hold_reason, offer};
+pub(crate) use memory::{Showed, remember};
 
 /// What a call did, in code's terms; the reply is made from it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -503,334 +513,21 @@ impl Shell {
             }
             _ => {
                 let reason = hold_reason(row);
-                self.ask_call_with(id, request, checked, decision.why, offer, subject, reason)
+                self.ask_call(Ask {
+                    offer,
+                    subject,
+                    own: reason,
+                    ..Ask::new(id, request, checked, decision.why)
+                })
             }
         };
         outcome(decision.tier, decision.why, reply)
-    }
-
-    /// An ask-tier call waits for an answer from the Allow / Deny menu, or for `y`
-    /// or `n` when its question cannot be shown as a menu.
-    pub(crate) fn ask_call(
-        &mut self,
-        id: u64,
-        request: &str,
-        checked: Checked,
-        why: Why,
-        offer: Option<Offer>,
-        subject: Option<String>,
-    ) -> Reply {
-        self.ask_call_with(id, request, checked, why, offer, subject, None)
-    }
-
-    /// [`Shell::ask_call`], with the row's own reason when it has one (a
-    /// held send's), in place of the one `why` gives.
-    #[allow(clippy::too_many_arguments)]
-    fn ask_call_with(
-        &mut self,
-        id: u64,
-        request: &str,
-        checked: Checked,
-        why: Why,
-        offer: Option<Offer>,
-        subject: Option<String>,
-        own: Option<String>,
-    ) -> Reply {
-        let reason = match why {
-            // Consent's own reasons stand: the hold is not why it asks then.
-            Why::Steered(_) | Why::Outbound(_) | Why::Added | Why::NotEnglish | Why::Ungrounded => {
-                reason_of(why)
-            }
-            _ => own.unwrap_or_else(|| reason_of(why)),
-        };
-        let call = checked.script.trim_end_matches(';').to_string();
-        let changes: Vec<&'static str> = checked.changes.clone();
-        self.shown = Some(format!(
-            "{}\nasked first: {reason}",
-            script::shown(id, &checked)
-        ));
-        self.pending = Some(crate::actions::Pending {
-            id,
-            request: request.to_string(),
-            checked,
-            asking: changes,
-            created_ns: self.host.now_ns(),
-            how: How {
-                form: Form::Call,
-                tier: Tier::Ask,
-                consent: String::from("asked"),
-            },
-            call: None,
-            offer: offer.clone(),
-            menu: None,
-            pkg: None,
-            standing: None,
-            model: None,
-            app: None,
-            install: None,
-            net: None,
-            power: false,
-        });
-        // The highlight starts on Allow only for a call the line plainly asked for.
-        let origin = match why {
-            Why::NoUndo | Why::Ungrounded => Origin::Asked,
-            _ => Origin::Added,
-        };
-        let (kind, target) = offer.map(|o| o.labels()).unwrap_or_default();
-        let question = match subject {
-            // The call stays word for word: the ONCE an Allow mints names it.
-            Some(subject) => format!("{subject} with {call}? {}.", capitalised(&reason)),
-            None => format!("Run {call}? {}.", capitalised(&reason)),
-        };
-        let menu = Menu::new(id, &question, Some(&kind), Some(&target), origin)
-            .and_then(|menu| menu.with_call(&call));
-        match menu {
-            Ok(_) => {
-                let text = Menu::encode(id, origin, &question, &kind, &target, &call);
-                if let Some(pending) = &mut self.pending {
-                    pending.menu = Some(call);
-                }
-                Reply::menu(id, text)
-            }
-            // Too long, or not plain ASCII, for the menu: the y/n question shows it.
-            Err(_) => Reply {
-                ok: true,
-                text: format!("Run {call}? {reason}. y/n, or show"),
-                confirm: Some(id),
-                more: false,
-            },
-        }
-    }
-
-    /// The row a stop, start or restart runs: code looks the name up among the
-    /// supervisor's services and the running processes, whichever row the model
-    /// picked, and asks when the name is both or neither. Any other row, a
-    /// protected name, or a host that cannot list services keeps the model's row.
-    /// With the row comes how the menu names the target ("Stop service indexer").
-    fn target(
-        &mut self,
-        id: u64,
-        request: &str,
-        row: &'static Action,
-        call: &Call,
-    ) -> Result<(&'static Action, Option<String>), Outcome> {
-        let kept = Ok((row, None));
-        let Some(verb) = Verb::of(row) else {
-            return kept;
-        };
-        let name = text_arg(call, "name");
-        if agentabi::PROTECTED.contains(&name.as_str()) {
-            return kept;
-        }
-        let (Ok(services), Ok(metrics)) = (self.host.services(), self.host.metrics()) else {
-            return kept;
-        };
-        let processes: Vec<(u64, String)> = metrics
-            .processes
-            .iter()
-            .take(metrics.process_count as usize)
-            .map(|p| (p.pid, p.name().to_string()))
-            .collect();
-        match targets::resolve(verb, &name, &services, &processes) {
-            Ok(found) => {
-                if found.row.name != row.name {
-                    self.host.audit(&format!(
-                        "request {id}: {} on {name} runs as {}",
-                        row.name, found.row.name
-                    ));
-                }
-                Ok((found.row, Some(found.question())))
-            }
-            Err(Unresolved::Clarify(question)) => {
-                self.record(id, request, &call.text(), "asked the user to clarify");
-                self.clarifying = Some(request.to_string());
-                Err(outcome(Tier::Run, Why::Read, Reply::ok(question)))
-            }
-            Err(Unresolved::Say(text)) => {
-                let reply = self.say(id, request, text);
-                Err(outcome(Tier::Run, Why::Read, reply))
-            }
-        }
     }
 
     fn refuse(&mut self, id: u64, request: &str, call: &Call, why: Why, detail: &str) -> Outcome {
         self.record(id, request, &call.text(), &format!("refused: {detail}"));
         let reply = Reply::err(format!("Refused {}: {detail}", call.name));
         outcome(Tier::Never, why, reply)
-    }
-}
-
-/// Why a call asks, as its card says it.
-fn reason_of(why: Why) -> String {
-    match why {
-        Why::NotEnglish => String::from("the request is not in English, so it asks first"),
-        Why::Added => String::from("the request did not ask for it"),
-        Why::NoUndo => String::from("it has no undo"),
-        Why::Steered(source) => format!("Kai took it from {}", read_from(source)),
-        Why::Outbound(source) => format!(
-            "it would send what Kai read from {} out of this machine",
-            read_from(source)
-        ),
-        Why::Ungrounded => String::from("the request did not name that site"),
-        why => grant_reason(why).unwrap_or_else(|| String::from("it asks first")),
-    }
-}
-
-/// Whether `row` is a send held with `undo` after its Allow (`Hold`).
-fn held(row: &Action) -> bool {
-    matches!(row.inverse, agentabi::Inverse::Hold { .. })
-}
-
-/// A held send's own reason on its card: it does have an undo, for a while.
-fn hold_reason(row: &Action) -> Option<String> {
-    match row.inverse {
-        agentabi::Inverse::Hold { ms } => Some(format!(
-            "after you allow, it waits {} s so you can undo",
-            ms.div_ceil(1000)
-        )),
-        _ => None,
-    }
-}
-
-/// The standing rules a menu may offer for a call that asks for `why`: the row's
-/// own ask (no undo) takes a rule for the action or for its target; a host nobody
-/// named takes one for that host only. Asks from consent take none, and a held
-/// send never takes one: a send always asks (ADR 0002 question 3).
-fn offer(row: &'static Action, args: &Arguments, why: Why) -> Option<Offer> {
-    if held(row) {
-        return None;
-    }
-    let target = row
-        .args
-        .iter()
-        .find(|arg| arg.role == Role::Target)
-        .and_then(|arg| args.values.iter().find(|(name, _)| *name == arg.name))
-        .map(|(_, text)| text.clone());
-    match why {
-        Why::NoUndo => Some(Offer {
-            action: row.name,
-            target,
-            kind: true,
-        }),
-        Why::Ungrounded => target.map(|target| Offer {
-            action: row.name,
-            target: Some(target),
-            kind: false,
-        }),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-#[path = "tests/agentcore_hold.rs"]
-mod hold_tests;
-
-/// Why a read from a site only an app's grant grounds asks
-/// (`agentabi::consent_grant`): what decided it, never that it sends.
-pub(crate) fn grant_reason(why: Why) -> Option<String> {
-    Some(match why {
-        Why::GrantSteered(source) => format!(
-            "{} chose this read from a site allowed for an app, not the request",
-            read_from(source)
-        ),
-        Why::GrantPath => {
-            String::from("the request did not name that site, an app's, or what to read from it")
-        }
-        Why::GrantOffline => String::from("the request said not to go online"),
-        Why::GrantMany => String::from(
-            "it would read from a site allowed for an app more than once, which the request did not ask for",
-        ),
-        _ => return None,
-    })
-}
-
-/// `text` with its first letter in capitals, to start the menu's sentence.
-fn capitalised(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
-}
-
-/// Longest result line llm keeps for a turn.
-const RESULT_MAX_BYTES: usize = 300;
-
-/// The remembered result of a turn that showed Content, before its sources.
-const SHOWED_LEAD: &str = "Showed what Kai read from ";
-
-/// What the last finished script showed, for its turn's memory (#831): the
-/// sources of the Content `show` printed, each once, and the line the shell
-/// wrote after that output, if it wrote one (`Done: …`, `Nothing changed: …`,
-/// what was not sent, the engine's error). `withheld` when the run failed on
-/// an app's reply: the reply's text carries the app's words, so the turn is
-/// remembered by `outcome`, the shell's own line, shown or not.
-#[derive(Debug, Default)]
-pub(crate) struct Showed {
-    pub from: Vec<&'static str>,
-    pub outcome: Option<String>,
-    pub withheld: bool,
-}
-
-/// Sends a finished model turn to llm's conversation memory: the user's line, the
-/// call as `act` returned it, and the result line, its last line of at most 300
-/// bytes (`Done: …`, `Taken as: …`, `Refused …`, `Not run: …`).
-///
-/// A reply that printed Content, from the sources in `showed`, is the person's
-/// to read: later prompts would carry it as an unlabelled `Result:` line, so a
-/// fixed line naming its sources stands in for it (#831), then the line the
-/// shell wrote after it, so a later turn still knows what changed or failed.
-/// A run an app's reply failed is remembered by that line alone, never by
-/// what the app said (`<row>: the app refused`).
-pub(crate) fn remember(
-    host: &dyn crate::Host,
-    line: &str,
-    call: &str,
-    reply: &str,
-    showed: &Showed,
-) {
-    let result = match (showed.from.is_empty(), showed.withheld) {
-        (false, _) => showed_line(showed),
-        (true, true) => showed.outcome.as_deref().map_or("", last_line).to_string(),
-        (true, false) => last_line(reply).to_string(),
-    };
-    host.remember(line, call, capped(&result));
-}
-
-/// The fixed line for a turn that showed Content: its sources, then the
-/// shell's own line after the output, never the output.
-fn showed_line(showed: &Showed) -> String {
-    let from: Vec<String> = showed
-        .from
-        .iter()
-        .map(|source| shown_from(source))
-        .collect();
-    let lead = format!("{SHOWED_LEAD}{}", from.join(", "));
-    match showed.outcome.as_deref().map(last_line) {
-        Some(outcome) if !outcome.is_empty() => format!("{lead}. {outcome}"),
-        _ => lead,
-    }
-}
-
-/// `text`'s last line that is not blank, or "".
-fn last_line(text: &str) -> &str {
-    text.lines()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-}
-
-/// `text` cut to [`RESULT_MAX_BYTES`] on a character boundary.
-fn capped(text: &str) -> &str {
-    &text[..text.floor_char_boundary(RESULT_MAX_BYTES)]
-}
-
-/// Where shown Content came from, in words. A query over text the script
-/// wrote itself is labelled `query`, which names no app.
-fn shown_from(source: &str) -> String {
-    match source {
-        "query" => String::from("an answer to a question about text it wrote"),
-        source => read_from(source),
     }
 }
 
@@ -850,80 +547,6 @@ pub(crate) fn outcome_refused(why: &str) -> Outcome {
     refused
 }
 
-/// A string argument, or "" when the model left it out.
-fn text_arg(call: &Call, name: &str) -> String {
-    call.arguments
-        .get(name)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
-}
-
-/// A call's arguments in the row's order, checked against its types: as text for
-/// consent and as Rhai literals for the one-line script.
-pub(crate) fn arguments(row: &'static Action, call: &Call) -> Result<Arguments, String> {
-    if let Some(extra) = call
-        .arguments
-        .keys()
-        .find(|key| !row.args.iter().any(|arg| arg.name == key.as_str()))
-    {
-        return Err(format!("{} has no argument {extra:?}", row.name));
-    }
-    let mut args = Arguments {
-        values: Vec::new(),
-        rhai: Vec::new(),
-    };
-    for arg in row.args {
-        // An optional argument left out, or given as null, is a shorter call.
-        let given = call.arguments.get(arg.name).filter(|v| !v.is_null());
-        let Some(value) = given else {
-            if matches!(arg.ty, ArgType::Opt(_)) {
-                continue;
-            }
-            return Err(format!("{} needs its {} argument", row.name, arg.name));
-        };
-        let (text, rhai) = literal(&arg.ty, value)
-            .ok_or_else(|| format!("{} is not a valid {}", value, arg.name))?;
-        args.values.push((arg.name, text));
-        args.rhai.push(rhai);
-    }
-    Ok(args)
-}
-
-/// `value` as text and as a Rhai literal, if it has the type `ty` allows.
-fn literal(ty: &ArgType, value: &Value) -> Option<(String, String)> {
-    match (ty, value) {
-        (ArgType::Opt(inner), value) => literal(inner, value),
-        (ArgType::Int { min, max }, Value::Number(n)) => {
-            let n = n.as_i64().filter(|n| (*min..=*max).contains(n))?;
-            Some((n.to_string(), n.to_string()))
-        }
-        (ArgType::Enum(words), Value::String(s)) if words.contains(&s.as_str()) => {
-            Some((s.clone(), quote(s)?))
-        }
-        (ArgType::Text { max }, Value::String(s)) if s.chars().count() <= usize::from(*max) => {
-            Some((s.clone(), quote(s)?))
-        }
-        (ArgType::Path | ArgType::Host, Value::String(s)) => Some((s.clone(), quote(s)?)),
-        _ => None,
-    }
-}
-
-/// A Rhai string literal for plain one-line text, quoted as the canonical call
-/// text the ONCE digest names (`termcore::once::quote`).
-fn quote(s: &str) -> Option<String> {
-    termcore::once::quote(s)
-}
-
-/// Where content a call was steered by came from, in words: a window's view,
-/// a file, or an app's answer, named as people know the app.
-pub(crate) fn read_from(source: &str) -> String {
-    match source {
-        "ui" => String::from("what a window shows"),
-        "fs" => String::from("a file"),
-        "web" => String::from("a web page"),
-        "dns" => String::from("a name lookup"),
-        agentabi::consent::consent_grant::SYSTEM => String::from("the system's own state"),
-        app => format!("what {} answered", crate::apps::title(app)),
-    }
-}
+#[cfg(test)]
+#[path = "tests/agentcore_hold.rs"]
+mod hold_tests;
