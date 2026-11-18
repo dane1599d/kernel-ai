@@ -314,7 +314,7 @@ impl Clients for Windows {
     }
 
     fn private(&self, window: WindowId) -> bool {
-        window.0 % 5 == 0
+        window.0.is_multiple_of(5)
     }
 
     fn act(&mut self, _: WindowId, node: u32, action: u32, _: &str) -> bool {

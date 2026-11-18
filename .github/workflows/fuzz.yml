@@ -24,7 +24,7 @@ on:
         description: The target, or all of them
         type: choice
         default: all
-        options: [all, tls_client, tls_records, http_response, kai_chunks, url, fetch_wire, surfabi_stream, header_page, tree_records, kai_theme, desk_server, desk_queues, desk_parsers, desk_agent]
+        options: [all, tls_client, tls_records, http_response, kai_chunks, url, fetch_wire, surfabi_stream, header_page, tree_records, kai_theme]
       seconds:
         description: Seconds for each target
         type: number
@@ -64,7 +64,7 @@ jobs:
           set -o pipefail
           targets="$TARGET"
           if [ "$targets" = all ]; then
-            targets="tls_client tls_records http_response kai_chunks url fetch_wire surfabi_stream header_page tree_records kai_theme desk_server desk_queues desk_parsers desk_agent"
+            targets="tls_client tls_records http_response kai_chunks url fetch_wire surfabi_stream header_page tree_records kai_theme"
           fi
           for t in $targets; do
             echo "::group::$t"
