@@ -29,8 +29,10 @@ pub(super) const CASES: &[TestCase] = &[
     case("write-protect", "test=write-protect"),
     case("stack-overflow", "test=stack-overflow"),
     case("timer", "test=timer"),
+    // Told the accelerator: TCG gets its own wake limit (#973).
     TestCase {
         keys: &[KAI],
+        accel: true,
         ..case("sched", "test=sched")
     },
     case("watchdog", "test=watchdog"),

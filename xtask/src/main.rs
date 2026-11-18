@@ -333,8 +333,9 @@ fn execute(options: &Options) -> Result<(), String> {
                 cmdline = format!("{cmdline} {}", mock_dns.cmdline());
             }
             // An HTTPS case may size what it moves by the accelerator:
-            // `net-download` takes its 32 chunks at 64 KiB under TCG, not 2 MiB.
-            if case.https.is_some() {
+            // `net-download` takes its 32 chunks at 64 KiB under TCG, not 2 MiB;
+            // `sched` gives TCG's emulated timing its own wake limit.
+            if case.https.is_some() || case.accel {
                 let tcg = accel == Accel::Tcg;
                 cmdline = format!("{cmdline} accel={}", if tcg { "tcg" } else { "kvm" });
             }
