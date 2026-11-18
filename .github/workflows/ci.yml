@@ -40,9 +40,8 @@ jobs:
       - name: Every licence in the tree and graph is allowed and has its text (ADR 0009 D5)
         run: cargo xtask licences check
       # A new decision is a file in docs/decisions/rows/, not a row of decisions.md. On a
-      # pull request the check also compares decisions.md with the base's, and warns if
-      # it gained a row; add --deny-new-rows once the pull requests that still append one
-      # have landed.
+      # pull request the check also compares decisions.md with the base's, and fails if
+      # it gained a row (--deny-new-rows: the last PR that appended one landed 11-11).
       - name: Decision rows are well formed and decisions.md gains no row
         env:
           EVENT: ${{ github.event_name }}
@@ -50,7 +49,7 @@ jobs:
         run: |
           if [ "$EVENT" = pull_request ]; then
             git fetch --no-tags --depth=1 origin "$BASE_REF"
-            cargo xtask decisions check --base FETCH_HEAD
+            cargo xtask decisions check --base FETCH_HEAD --deny-new-rows
           else
             cargo xtask decisions check
           fi
