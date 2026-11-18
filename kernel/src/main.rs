@@ -125,6 +125,7 @@ mod net_grant_tests;
 mod net_pf_tests;
 mod net_tests;
 mod nvme;
+mod pane_states_tests;
 mod part_tests;
 mod percpu;
 mod pkg_tests;
@@ -456,6 +457,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::AppSettings => run_case(app_settings_tests::check),
         SelfTest::DeskTour => run_case(desk_tour_tests::check),
         SelfTest::FounderWalk => run_case(founder_walk_tests::check),
+        SelfTest::PaneStates => run_case(pane_states_tests::check),
         SelfTest::DeskTakeover => run_case(agent_desk_tests::takeover_check),
         SelfTest::DeskReopen => run_case(agent_desk_tests::reopen_check),
         SelfTest::DeskStart => run_case(start_tests::check),

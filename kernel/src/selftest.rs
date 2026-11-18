@@ -274,6 +274,9 @@ pub enum SelfTest {
     /// `test=founder-walk` (founder test 2): the founder's VirtualBox walk on
     /// the default system, as keys and clicks.
     FounderWalk,
+    /// `test=pane-states`: the Kai pane through each of its states, from
+    /// lines typed into it, on the default system.
+    PaneStates,
     /// `desk-takeover` (P3 task 10): a key in the agent's window stops it.
     DeskTakeover,
     /// `desk-reopen` (#922): Notes closed from its control opens again.
@@ -530,6 +533,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=app-settings" => Some(SelfTest::AppSettings),
             "test=desk-tour" => Some(SelfTest::DeskTour),
             "test=founder-walk" => Some(SelfTest::FounderWalk),
+            "test=pane-states" => Some(SelfTest::PaneStates),
             "test=desk-takeover" => Some(SelfTest::DeskTakeover),
             "test=desk-reopen" => Some(SelfTest::DeskReopen),
             "test=desk-start" => Some(SelfTest::DeskStart),
@@ -740,6 +744,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::WaitReads
             | SelfTest::DeskTour
             | SelfTest::FounderWalk
+            | SelfTest::PaneStates
             | SelfTest::DeskTakeover
             | SelfTest::DeskReopen
             | SelfTest::DeskStart
@@ -769,10 +774,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskWarming
             | SelfTest::DeskTour
             | SelfTest::FounderWalk
+            | SelfTest::PaneStates
     ) {
         let files = crate::block::has_partition(diskmap::KAI_DATA_TYPE);
         let mut plan = kabi::plan::system::plan(&crate::llm::plan_line(), files);
-        if matches!(test, SelfTest::FounderWalk) {
+        if matches!(test, SelfTest::FounderWalk | SelfTest::PaneStates) {
             plan = crate::founder_walk_tests::plan(&plan);
         }
         if let Some(edit) = crate::build_service::plan_line() {
