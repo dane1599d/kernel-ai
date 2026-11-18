@@ -92,6 +92,9 @@ pub enum Why {
     GrantMany,
     /// A send to a site the line does not name: refused, never asked.
     SendHost,
+    /// A send on a line that does not ask for one (a question, a describe
+    /// line, a negated cue): refused, never asked.
+    SendUnasked,
     /// The line is not English, so it gives no consent for changes in v0.1.
     NotEnglish,
     /// A value no call may take, or a row that never runs.
@@ -262,8 +265,14 @@ fn decide_one(
     // gave. No answer on a card can widen that (P5 close, ADR 0002 D3).
     let sends_to_host = matches!(row.inverse, Inverse::Hold { .. })
         && row.args.iter().any(|arg| matches!(arg.ty, ArgType::Host));
-    if sends_to_host && !line_names_destination(words, hosts, row, call) {
+    if sends_to_host && !send_destination(words, hosts, row, call) {
         return Decision::new(Tier::Never, Why::SendHost);
+    }
+    // A send only for a line that asks for one: a cue of the row, un-negated,
+    // in a clause that asks for no telling. A question or a describe line
+    // never reaches a card, whatever a view said (ADR 0002 D3, #723).
+    if matches!(row.inverse, Inverse::Hold { .. }) && cued(words, row) != Some(false) {
+        return Decision::new(Tier::Never, Why::SendUnasked);
     }
     if let Some(source) = steered(row, call) {
         return Decision::new(Tier::Ask, Why::Steered(source));
@@ -487,6 +496,28 @@ fn line_names_destination(words: &[Word], hosts: &Hosts, row: &Action, call: &Ca
             call,
             |verdict| matches!(verdict, Verdict::Run(ground) if ground.names_destination()),
         )
+}
+
+/// A send's destination (ADR 0002 D3, P5 close): every host is one the line
+/// types; or, when the line types no host at all, a word of the host table
+/// that follows "to" or "on" ("post it to wikipedia"). A table word never
+/// stands in for a host the line typed.
+fn send_destination(words: &[Word], hosts: &Hosts, row: &Action, call: &Call) -> bool {
+    let typed_any = !nethosts::typed_hosts(hosts.line).is_empty();
+    let after_to = |word: &str| {
+        words.iter().enumerate().any(|(at, w)| {
+            w.text == word
+                && at > 0
+                && matches!(words[at - 1].text.as_str(), "to" | "on")
+                && !negated(words, at)
+        })
+    };
+    row.args.iter().any(|arg| matches!(arg.ty, ArgType::Host))
+        && every_host(words, hosts, row, call, |verdict| match verdict {
+            Verdict::Run(Ground::Typed) => true,
+            Verdict::Run(Ground::Table(word)) => !typed_any && after_to(word),
+            _ => false,
+        })
 }
 
 /// Whether `accept` takes the grounding verdict of every host argument of

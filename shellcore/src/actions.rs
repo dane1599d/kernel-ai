@@ -581,8 +581,11 @@ impl Shell {
         if pending.net.is_some() && !is_show(text) {
             return self.answer_net(pending, text);
         }
-        if pending.send.is_some() && !is_show(text) {
-            return self.answer_send(pending, text);
+        if pending.send.is_some() {
+            return match is_show(text) {
+                true => self.send_show(pending),
+                false => self.answer_send(pending, text),
+            };
         }
         if pending.standing.is_some() && !is_show(text) {
             return self.answer_instruction(pending, text);

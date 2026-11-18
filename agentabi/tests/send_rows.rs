@@ -88,11 +88,15 @@ fn a_negated_or_told_line_never_runs_a_send() {
         one("don't send hello to hooks.example yet", &plain),
         (Tier::Never, Why::SendHost)
     );
-    // A line that asks how is told, never sent (the shell refuses an added
-    // change on a telling line, ADR 0002 D3).
+    // (a) A line that asks how is told, never sent: refused, no card.
     assert_eq!(
         one("how do I send hello to hooks.example?", &plain),
-        (Tier::Ask, Why::Added)
+        (Tier::Never, Why::SendUnasked)
+    );
+    // (b) A describe line names the send only to be told about it.
+    assert_eq!(
+        one("could you describe sending hello to hooks.example", &plain),
+        (Tier::Never, Why::SendUnasked)
     );
 }
 
@@ -106,4 +110,45 @@ fn no_script_can_call_a_send() {
         "a held row is in the script set"
     );
     assert!(find(&agentabi::NET_ROWS, "net_send").is_none());
+}
+
+#[test]
+fn a_question_a_view_steered_toward_a_send_is_refused() {
+    // (c) After `ui_view`, the window chose the call: Steered, which skips the
+    // shell's telling-line guard. The line asks for no send, so none.
+    let viewed: Vec<Call<'static>> = send("hooks.example", Label::Literal, Label::Literal)
+        .into_iter()
+        .map(|call| Call {
+            control: Label::Content("ui"),
+            ..call
+        })
+        .collect();
+    assert_eq!(
+        one(
+            "what does the notes window say about hooks.example?",
+            &viewed
+        ),
+        (Tier::Never, Why::SendUnasked)
+    );
+    // A line that asks for the send, steered by a view, still asks.
+    assert_eq!(
+        one("look at notes and send hello to hooks.example", &viewed).0,
+        Tier::Ask
+    );
+}
+
+#[test]
+fn a_table_word_never_stands_in_for_a_typed_host() {
+    let wiki = send("en.wikipedia.org", Label::Literal, Label::Literal);
+    // A table word after "to" names the destination; the host is not
+    // written in the line, so the send asks as one the model filled in.
+    assert_eq!(one("post hello to wikipedia", &wiki).0, Tier::Ask);
+    assert_eq!(
+        one("post hello to hooks.example, it's like wikipedia", &wiki),
+        (Tier::Never, Why::SendHost)
+    );
+    assert_eq!(
+        one("post hello about wikipedia", &wiki),
+        (Tier::Never, Why::SendHost)
+    );
 }

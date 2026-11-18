@@ -5,8 +5,8 @@
 //!
 //! The menu's line is at most [`termcore::menu::MAX_TEXT`] characters, so the
 //! call it shows, and its ONCE names, carries the text's SHA-256 (its first 16
-//! hex digits), as Kai's app install card carries its build's; `show` prints
-//! the text. A send whose card cannot be shown is refused, never asked as a
+//! hex digits), as Kai's app install card carries its build's; a text of up
+//! to 40 plain characters is on the card itself, and `show` prints any whole. A send whose card cannot be shown is refused, never asked as a
 //! y/n question no answer could allow.
 
 use crate::actions::Pending;
@@ -17,9 +17,6 @@ use agentabi::consent::Why;
 use alloc::format;
 use alloc::string::{String, ToString};
 use termcore::once::{CallArg, call_text};
-
-/// How much of the text `show` prints with the card.
-const SHOWN_TEXT: usize = 200;
 
 /// The value of argument `name`, if given.
 fn value<'a>(values: &'a [(&'static str, String)], name: &str) -> Option<&'a str> {
@@ -59,9 +56,35 @@ pub(crate) fn card_call(send: &Send) -> String {
     .unwrap_or_default()
 }
 
+/// The longest text the card itself shows, inline.
+const INLINE_TEXT: usize = 40;
+
+/// Why `send` cannot be asked about, if it cannot: a host that is not one, or
+/// a path with a space, a `#` or anything but printable ASCII.
+fn unsendable(send: &Send) -> Option<&'static str> {
+    if nethosts::Host::parse(&send.host).is_err() {
+        return Some("that is not a host name");
+    }
+    if !send.path.bytes().all(|b| b.is_ascii_graphic() && b != b'#') {
+        return Some("the path has a space, a # or a character that is not plain ASCII");
+    }
+    None
+}
+
+/// The card's subject for a text short and plain enough to show on it whole.
+fn inline(send: &Send) -> Option<String> {
+    let plain = send.body.len() <= INLINE_TEXT
+        && send
+            .body
+            .bytes()
+            .all(|b| (b' '..=b'~').contains(&b) && b != b'"');
+    plain.then(|| format!("Send \"{}\"", send.body))
+}
+
 impl Shell {
     /// A tagged `net_send` consent asked about: its card, Allow and Deny only,
-    /// saying it waits for `undo` after the Allow.
+    /// saying it waits for `undo` after the Allow. A short text is on the card
+    /// itself; `show` gives any text whole.
     pub(crate) fn send_ask(
         &mut self,
         id: u64,
@@ -69,21 +92,37 @@ impl Shell {
         values: &[(&'static str, String)],
         why: Why,
     ) -> Reply {
-        let send = send_of(values);
+        let mut send = send_of(values);
+        if let Some(why) = unsendable(&send) {
+            self.record(
+                id,
+                request,
+                &format!("net_send to {}", send.host),
+                &format!("refused: {why}"),
+            );
+            return Reply::err(format!("Not sent: {why}"));
+        }
+        if let Ok(host) = nethosts::Host::parse(&send.host) {
+            send.host = host.as_str().to_string();
+        }
         let call = card_call(&send);
         if call.is_empty() {
             return Reply::err("Not sent: the send cannot be shown on its card");
         }
         let reason = crate::agentcore::hold_reason(&agentabi::NET_SEND);
-        let reply = self.ask_call_with(
+        let checked = || Checked::shown_only(&call);
+        let mut reply = self.ask_call_with(
             id,
             request,
-            Checked::shown_only(&call),
+            checked(),
             why,
             None,
-            None,
-            reason,
+            inline(&send),
+            reason.clone(),
         );
+        if self.pending.as_ref().is_some_and(|p| p.menu.is_none()) {
+            reply = self.ask_call_with(id, request, checked(), why, None, None, reason);
+        }
         let menu = self.pending.as_ref().is_some_and(|p| p.menu.is_some());
         if !menu {
             self.pending = None;
@@ -93,18 +132,29 @@ impl Shell {
                 send.host
             ));
         }
-        let shown: String = send.body.chars().take(SHOWN_TEXT).collect();
-        let more = match send.body.chars().count() > SHOWN_TEXT {
-            true => "…",
-            false => "",
-        };
-        if let Some(text) = &mut self.shown {
-            text.push_str(&format!("\nto {}{}: {shown}{more}", send.host, send.path));
-        }
+        self.shown = Some(shown(&call, &send));
         if let Some(pending) = &mut self.pending {
             pending.send = Some(send);
         }
         reply
+    }
+
+    /// `show` (or `answer <id> show`) for a send's card: everything it would
+    /// send, the text whole, and the card again.
+    pub(crate) fn send_show(&mut self, pending: crate::actions::Pending) -> Reply {
+        let id = pending.id;
+        let text = pending
+            .send
+            .as_ref()
+            .map(|send| shown(&pending.checked.script, send))
+            .unwrap_or_default();
+        self.pending = Some(pending);
+        Reply {
+            ok: true,
+            text,
+            confirm: Some(id),
+            more: false,
+        }
     }
 
     /// The answer to a send's card: an Allow whose ONCE checks holds the send
@@ -126,4 +176,18 @@ impl Shell {
         self.remember(&pending, &reply.text);
         reply
     }
+}
+
+/// Everything a send's `show` says: the call the card names, where it goes,
+/// the hold, and the text whole.
+fn shown(call: &str, send: &Send) -> String {
+    format!(
+        "{call}\nto {}{} (the text's SHA-256 begins {})\nAfter you allow, it waits {} s so you can undo.\ntext ({} bytes):\n{}",
+        send.host,
+        send.path,
+        &crate::appbuild::sha256(&send.body)[..16],
+        agentabi::HOLD_MS / 1000,
+        send.body.len(),
+        send.body
+    )
 }

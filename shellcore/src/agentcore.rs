@@ -386,6 +386,7 @@ impl Shell {
         if decision.tier == Tier::Never {
             let detail = match decision.why {
                 Why::SendHost => "a send goes only to a site the request names",
+                Why::SendUnasked => "the request did not ask to send anything",
                 _ => "it is never run",
             };
             return self.refuse(id, request, call, decision.why, detail);
