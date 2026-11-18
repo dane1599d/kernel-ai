@@ -16,18 +16,29 @@ use alloc::vec;
 use alloc::vec::Vec;
 use quant::Tier;
 
-/// A region in memory, which can be made to fail its writes.
+/// A region in memory, which can be made to fail its writes, and which takes
+/// only whole blocks at a block's offset, as a disk does.
 struct Mem {
     bytes: Vec<u8>,
     fail_writes: bool,
+    block: u64,
 }
 
 impl Mem {
     fn new(len: usize) -> Self {
+        Self::sectored(len, 1)
+    }
+
+    fn sectored(len: usize, block: u64) -> Self {
         Self {
             bytes: vec![0; len],
             fail_writes: false,
+            block,
         }
+    }
+
+    fn whole(&self, at: u64, len: usize) -> bool {
+        at.is_multiple_of(self.block) && (len as u64).is_multiple_of(self.block)
     }
 }
 
@@ -36,7 +47,12 @@ impl Region for Mem {
         self.bytes.len() as u64
     }
 
+    fn block(&self) -> u64 {
+        self.block
+    }
+
     fn read_at(&mut self, at: u64, buf: &mut [u8]) -> bool {
+        assert!(self.whole(at, buf.len()), "a read of part of a block");
         let at = at as usize;
         match self.bytes.get(at..at + buf.len()) {
             Some(part) => {
@@ -48,6 +64,7 @@ impl Region for Mem {
     }
 
     fn write_at(&mut self, at: u64, bytes: &[u8]) -> bool {
+        assert!(self.whole(at, bytes.len()), "a write of part of a block");
         let at = at as usize;
         match self.bytes.get_mut(at..at + bytes.len()) {
             Some(part) if !self.fail_writes => {
@@ -145,6 +162,42 @@ fn a_state_restored_from_every_place_answers_as_a_fresh_slot() {
         assert_eq!(store.place(REQUEST), None, "{route:?}");
         assert_eq!(store.ram_bytes(), 0);
     }
+}
+
+/// On a disk of 512-byte sectors, every read and write is whole sectors, the
+/// files sit on sector boundaries, and the states still come back exactly.
+#[test]
+fn spills_on_a_sectored_region_take_whole_sectors_and_come_back() {
+    const SECTOR: u64 = 512;
+    let bytes = fixture::build(&Spec::tiny());
+    let k = key(Tier::best());
+    for route in [&[Place::Spill][..], &[Place::Ram, Place::Spill]] {
+        let mut store = KvStore::new(MAX_POOL_BYTES, Some(Mem::sectored(ROOM, SECTOR)));
+        let (mut e, n) = round_trip(&bytes, &mut store, route, &k);
+        assert!(n > 0, "{route:?}");
+        answers_as_fresh(&bytes, &mut e, n);
+    }
+    // Two files in a region of exactly their rounded room, the second after
+    // the first's last, padded sector.
+    let mut e = engine(&bytes);
+    computed(&mut e);
+    let file = e.slot_file_bytes() as u64;
+    let room = file.div_ceil(SECTOR) * SECTOR;
+    assert_ne!(
+        file, room,
+        "the fixture's file should not fill whole sectors"
+    );
+    let region = Mem::sectored(2 * room as usize, SECTOR);
+    let mut store = KvStore::new(MAX_POOL_BYTES, Some(region));
+    store.park(&e, &k, 1, Place::Spill).unwrap();
+    store.park(&e, &k, 2, Place::Spill).unwrap();
+    assert_eq!(store.park(&e, &k, 3, Place::Spill), Err(Unkept::NoRoom));
+    for request in [2, 1] {
+        assert!(store.restore(&mut e, &k, request, &later()).unwrap() > 0);
+    }
+    // A block that does not divide the store's step is no region for it.
+    let mut odd = KvStore::new(MAX_POOL_BYTES, Some(Mem::sectored(ROOM, 3)));
+    assert_eq!(odd.park(&e, &k, 1, Place::Spill), Err(Unkept::NoRoom));
 }
 
 #[test]
