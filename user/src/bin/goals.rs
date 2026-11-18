@@ -139,7 +139,10 @@ impl Agent {
             if queued.trim() == "none" {
                 return;
             }
+            // `#<n> <command>`, the goal-add file on the lines after it; the report
+            // names the bare `<n>`.
             let (id, command) = queued.split_once(' ').unwrap_or((queued, ""));
+            let id = id.trim_start_matches('#');
             let result = self.handle(command);
             if let Err(why) = call_shell(&format!("agent-step report {id} {result}")) {
                 println!("goals: report {id}: {why}");
