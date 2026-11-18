@@ -372,6 +372,12 @@ pub struct Grants {
     pub llm_dest: bool,
     /// The badge on its route to `llm`, from `agent=`.
     pub agent: Option<u64>,
+    /// The routes of [`Grants::uses`] the process may call through but never
+    /// pass on (CALL only, no TRANSFER or DUPLICATE): an agent's route to
+    /// `llm`, whose badge is its identity, and a route to `fetch`'s send role,
+    /// which posts. A copy given to another process would carry the badge or
+    /// the send with it.
+    pub pinned: Vec<String>,
 }
 
 /// Names nothing may stop: the shell, the supervisor and the model service (as
@@ -629,7 +635,17 @@ impl Plan {
                 service.program
             ));
         }
+        let pinned = service
+            .uses
+            .iter()
+            .filter(|used| {
+                (service.agent.is_some() && *used == kabi::handle::agent::SERVICE)
+                    || sends(&self.services, used)
+            })
+            .cloned()
+            .collect();
         Ok(Grants {
+            pinned,
             uses: service.uses.clone(),
             dirs: service.dirs.clone(),
             boot: service.boot,
