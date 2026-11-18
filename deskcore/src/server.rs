@@ -20,6 +20,10 @@ use surfabi::proto::{Event, GLOBALS, Objects, REGISTRY, Request, SCALE_ONE};
 use surfabi::tree::{self, Tree};
 use surfabi::wire::{self, Error};
 
+/// The largest coordinate or size of a damage rectangle kept, in px: far past any
+/// buffer, and small enough that no sum of two overflows.
+const MAX_DAMAGE_PX: u32 = 1 << 20;
+
 /// The most detents one wheel event carries to a client.
 pub const MAX_DETENTS: i32 = 120;
 
@@ -427,7 +431,10 @@ impl Client {
                 Request::Attach { buffer } => self.surface(header.object)?.attached = Some(buffer),
                 Request::SetBufferScale(scale) => self.surface(header.object)?.scale = scale,
                 Request::DamageBuffer(r) => {
-                    let rect = Rect::new(r.x as i32, r.y as i32, r.w as i32, r.h as i32);
+                    // Whatever the client wrote: kept to what no sum of it can
+                    // overflow (a damage past the buffer is cut where it is used).
+                    let at = |v: u32| v.min(MAX_DAMAGE_PX) as i32;
+                    let rect = Rect::new(at(r.x), at(r.y), at(r.w), at(r.h));
                     self.surface(header.object)?.damage.push(rect);
                 }
                 Request::Commit => {

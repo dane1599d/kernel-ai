@@ -210,3 +210,46 @@ fn a_surface_at_the_default_scale_is_shown_at_it() {
     };
     assert_eq!(scale, 120);
 }
+
+/// A damage rectangle at the extremes of what a client can write (found by
+/// `deskcore/tests/hostile.rs`: `Rect::right` overflowed in `logical_damage`)
+/// neither panics nor leaves the desk with a rectangle past its screen, at any
+/// buffer scale.
+#[test]
+fn a_damage_rectangle_of_any_size_is_kept_in_bounds() {
+    for scale in [120, 150, 360] {
+        let mut desk = Desk::new(1280, 800);
+        let mut client = Client::new(42, "notes");
+        client.handle(&mut desk, &setup(), true).unwrap();
+        client.pool_mapped(2);
+        let hostile = |x, y, w, h| {
+            bytes(&[
+                (3, Request::SetBufferScale(scale)),
+                (3, Request::Attach { buffer: 4 }),
+                (3, Request::DamageBuffer(SRect { x, y, w, h })),
+                (3, Request::Commit),
+            ])
+        };
+        for (x, y, w, h) in [
+            (0, 0, i32::MAX as u32, i32::MAX as u32),
+            (
+                i32::MAX as u32,
+                i32::MAX as u32,
+                i32::MAX as u32,
+                i32::MAX as u32,
+            ),
+            (i32::MAX as u32, 0, i32::MAX as u32, 1),
+            (0, i32::MAX as u32, 1, i32::MAX as u32),
+        ] {
+            // A message the decoder refuses (negative px) closes the connection.
+            let _ = client.handle(&mut desk, &hostile(x, y, w, h), false);
+            let screen = Rect::new(0, 0, 1280, 800);
+            for d in desk.take_damage() {
+                assert!(
+                    screen.intersect(&d).is_some() || d.w <= 0 || d.h <= 0,
+                    "{d:?}"
+                );
+            }
+        }
+    }
+}
