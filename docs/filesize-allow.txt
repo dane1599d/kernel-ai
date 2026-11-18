@@ -6,7 +6,6 @@
 1615 agentabi/tests/tier_corpus.rs
 948 apps/editor-window/tests/files.rs
 891 apps/editor-window/tests/guest.rs
-1008 ccserve/kai/bind/window.c
 1455 deskcore/src/effects.rs
 1014 deskcore/src/pane_tests.rs
 824 deskcore/src/tests.rs
@@ -36,7 +35,6 @@
 919 user/src/bin/pkg/main.rs
 1642 user/src/bin/shell.rs
 1480 user/src/sys.rs
-1023 wasmhost/src/tables.rs
 967 xtask/src/actbench/mod.rs
 1048 xtask/src/actbench/tasks.rs
 891 xtask/src/components.rs
