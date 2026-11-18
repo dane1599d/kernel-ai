@@ -38,10 +38,19 @@ pub trait Planner<C> {
     fn next(&mut self, goal: &Goal, now: u64) -> (Plan<C>, u64);
 }
 
-/// Runs a step the door let run, and says what came of it: the entry the door
-/// logged (`agent=goals`), its tokens, whether it failed.
+/// What came of a step sent to run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// It ran, or failed: the entry the door logged (`agent=goals`), its tokens,
+    /// whether it failed.
+    Done(StepDone),
+    /// The person said no where the door asked (the card), with why: not run.
+    Denied(String),
+}
+
+/// Runs a step the door let run, and says what came of it.
 pub trait Steps<C> {
-    fn run(&mut self, goal: u64, step: &Step<C>) -> StepDone;
+    fn run(&mut self, goal: u64, step: &Step<C>) -> Outcome;
 }
 
 /// What a turn did, for the panel and the log.
@@ -52,6 +61,11 @@ pub enum Event {
         goal: u64,
         step: u32,
         entry: Option<u64>,
+    },
+    /// The person said no to the step on the card: it did not run.
+    Denied {
+        goal: u64,
+        step: u32,
     },
     /// The goal waits for the person: "Goal '...' is waiting for you: ...".
     Waiting {
@@ -322,14 +336,25 @@ fn run<C>(
     steps: &mut dyn Steps<C>,
     events: &mut Vec<Event>,
 ) {
-    let done = steps.run(goal.id, step);
-    let entry = done.entry;
-    let _ = goal.finish_step(done);
-    events.push(Event::Ran {
-        goal: goal.id,
-        step: n,
-        entry,
-    });
+    match steps.run(goal.id, step) {
+        Outcome::Done(done) => {
+            let entry = done.entry;
+            let _ = goal.finish_step(done);
+            events.push(Event::Ran {
+                goal: goal.id,
+                step: n,
+                entry,
+            });
+        }
+        Outcome::Denied(why) => {
+            if goal.deny_running(&why).is_ok() {
+                events.push(Event::Denied {
+                    goal: goal.id,
+                    step: n,
+                });
+            }
+        }
+    }
 }
 
 /// The pause a goal is due for before it is planned: past its tokens, its wall time
