@@ -2,7 +2,7 @@
 //! `fs_trash`, and steps that record what ran and hand out entries.
 
 use super::*;
-use crate::{Budget, Scope, Spec, StepStatus, Tier};
+use crate::{Budget, Pause, Resource, Scope, Spec, StepStatus, Tier};
 use alloc::collections::VecDeque;
 use alloc::string::ToString;
 use alloc::vec;
@@ -277,4 +277,221 @@ fn a_goal_the_shell_made_is_adopted_under_its_own_id_once() {
     // A goal set later gets an id above every one adopted.
     let next = ours.set(spec(), T0).unwrap();
     assert!(next > 42);
+/// A planner that never proposes and charges each time.
+struct Spends {
+    calls: u32,
+    plan: fn() -> Plan<&'static str>,
+}
+
+impl Planner<&'static str> for Spends {
+    fn next(&mut self, _goal: &Goal, _now: u64) -> (Plan<&'static str>, u64) {
+        self.calls += 1;
+        ((self.plan)(), 6)
+    }
+}
+
+fn turn_with(
+    runner: &mut Runner<&'static str>,
+    goals: &mut Goals,
+    now: u64,
+    planner: &mut dyn Planner<&'static str>,
+    steps: &mut Recorded,
+) -> Vec<Event> {
+    let mut parts = Parts {
+        planner,
+        door: &AsksForTrash,
+        steps,
+    };
+    runner.turn(goals, now, Presence::Away, &mut parts)
+}
+
+/// The audit's HIGH: planning is held to the budget. A planner that only says
+/// "later" (or asks again and again) charges until the budget, then the goal pauses,
+/// said, and the planner is not asked again.
+#[test]
+fn planning_that_spends_past_the_token_budget_pauses_the_goal() {
+    let mut goals = Goals::new();
+    let id = goals
+        .set(
+            Spec {
+                budget: Budget {
+                    tokens: 20,
+                    ..spec().budget
+                },
+                ..spec()
+            },
+            T0,
+        )
+        .unwrap();
+    goals.approve(id, T0).unwrap();
+    let (mut runner, mut steps) = (Runner::new(), Recorded::default());
+    let mut planner = Spends {
+        calls: 0,
+        plan: || Plan::Later,
+    };
+    let mut paused = Vec::new();
+    for at in 1..20 {
+        let events = turn_with(&mut runner, &mut goals, T0 + at, &mut planner, &mut steps);
+        paused.extend(
+            events
+                .into_iter()
+                .filter(|e| matches!(e, Event::Paused { .. })),
+        );
+    }
+    let goal = goals.get(id).unwrap();
+    assert_eq!(
+        goal.state,
+        State::Paused(Pause::Budget(Resource::Tokens)),
+        "{:?}",
+        goal.state
+    );
+    assert_eq!(paused.len(), 1, "paused once, said once: {paused:?}");
+    // At most one plan past the budget: 4 plans of 6 tokens is 24 against 20.
+    assert_eq!(planner.calls, 4);
+    assert_eq!(goal.tokens_spent, 24);
+}
+
+#[test]
+fn a_full_log_fails_the_goal_said() {
+    let mut goals = Goals::new();
+    let id = approved(&mut goals);
+    // A goal whose log holds as many steps as it may.
+    let goal = goals.get_mut(id).unwrap();
+    let entry = goal.log.first().cloned();
+    let filler = entry.unwrap_or_else(|| crate::StepLog {
+        n: 0,
+        at_ms: T0,
+        proposal: crate::Proposal {
+            tier: Tier::Run,
+            row: "fs_list".to_string(),
+            targets: vec!["reports".to_string()],
+            tokens_est: 0,
+        },
+        status: StepStatus::Denied,
+        entry: None,
+        tokens: 0,
+        note: String::new(),
+    });
+    for n in 1..=crate::MAX_LOG as u32 {
+        goal.log.push(crate::StepLog {
+            n,
+            ..filler.clone()
+        });
+    }
+    let (mut runner, mut steps) = (Runner::new(), Recorded::default());
+    let mut planner = Script(VecDeque::from([Plan::Step(step("fs_list"))]));
+    let events = turn_with(&mut runner, &mut goals, T0 + 1, &mut planner, &mut steps);
+    assert_eq!(events, [Event::Failed { goal: id }]);
+    assert_eq!(goals.get(id).unwrap().state, State::Failed);
+    assert!(steps.ran.is_empty());
+}
+
+#[test]
+fn steps_that_cannot_be_logged_again_and_again_fail_the_goal_said() {
+    let mut goals = Goals::new();
+    let id = approved(&mut goals);
+    let (mut runner, mut steps) = (Runner::new(), Recorded::default());
+    let mut planner = Spends {
+        calls: 0,
+        plan: || Plan::Step(step("Not A Row!")),
+    };
+    let mut failed = Vec::new();
+    for at in 1..10 {
+        let events = turn_with(&mut runner, &mut goals, T0 + at, &mut planner, &mut steps);
+        failed.extend(
+            events
+                .into_iter()
+                .filter(|e| matches!(e, Event::Failed { .. })),
+        );
+    }
+    assert_eq!(failed, [Event::Failed { goal: id }]);
+    assert_eq!(planner.calls, MAX_BAD_STEPS);
+    assert_eq!(goals.get(id).unwrap().state, State::Failed);
+}
+
+/// The audit's first MEDIUM: a yes, then a pause before the step ran, holds the
+/// step until the goal resumes.
+#[test]
+fn an_approved_step_waits_while_its_goal_is_paused() {
+    let mut goals = Goals::new();
+    let id = approved(&mut goals);
+    let mut planner = Script(VecDeque::from([Plan::Step(step("fs_trash"))]));
+    let (mut steps, mut runner) = (Recorded::default(), Runner::new());
+    go(
+        &mut runner,
+        &mut goals,
+        T0 + 1,
+        Presence::Here,
+        &mut planner,
+        &mut steps,
+    );
+    let goal = goals.get_mut(id).unwrap();
+    goal.approve(T0 + 2).unwrap();
+    goal.pause().unwrap();
+    go(
+        &mut runner,
+        &mut goals,
+        T0 + 3,
+        Presence::Here,
+        &mut planner,
+        &mut steps,
+    );
+    assert!(steps.ran.is_empty(), "nothing runs while it is paused");
+    goals.resume(id).unwrap();
+    let events = go(
+        &mut runner,
+        &mut goals,
+        T0 + 4,
+        Presence::Here,
+        &mut planner,
+        &mut steps,
+    );
+    assert_eq!(steps.ran, [(id, "fs_trash".to_string())]);
+    assert!(matches!(events[0], Event::Ran { .. }), "{events:?}");
+}
+
+/// The audit's second MEDIUM: a goal that waited when the agent restarted is
+/// reloaded from its file; a yes then puts a step in flight this runner never saw.
+/// It is closed as failed, and the goal is planned again.
+#[test]
+fn a_step_in_flight_after_a_restart_is_closed_and_the_goal_goes_on() {
+    let mut goals = Goals::new();
+    let id = approved(&mut goals);
+    let mut planner = Script(VecDeque::from([
+        Plan::Step(step("fs_trash")),
+        Plan::Step(step("fs_list")),
+    ]));
+    let (mut steps, mut runner) = (Recorded::default(), Runner::new());
+    go(
+        &mut runner,
+        &mut goals,
+        T0 + 1,
+        Presence::Here,
+        &mut planner,
+        &mut steps,
+    );
+    // The agent restarts: the goals come back from their file, the runner is new.
+    let mut goals = Goals::parse(&goals.to_text()).unwrap();
+    let mut runner = Runner::new();
+    goals.get_mut(id).unwrap().approve(T0 + 2).unwrap();
+    let events = go(
+        &mut runner,
+        &mut goals,
+        T0 + 3,
+        Presence::Here,
+        &mut planner,
+        &mut steps,
+    );
+    let goal = goals.get(id).unwrap();
+    assert_eq!(goal.log[0].status, StepStatus::Failed);
+    assert_eq!(goal.log[0].note, RESTARTED);
+    assert!(goal.flight.is_none() || goal.flight == Some(2));
+    // The trash step never ran; the goal planned its next one in the same turn.
+    assert!(!steps.ran.iter().any(|(_, row)| row == "fs_trash"));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::Ran { step: 2, .. })),
+        "{events:?}"
+    );
 }

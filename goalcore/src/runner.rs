@@ -10,7 +10,9 @@
 //! One step at a time per goal and at most one step a turn in all, so a goal that
 //! has work never starves the panel's check-ins.
 
-use crate::{CheckIn, Door, Goal, Goals, Pause, Presence, State, Step, StepDone, Verdict};
+use crate::{
+    CheckIn, Door, Goal, Goals, Pause, Presence, Refusal, Resource, State, Step, StepDone, Verdict,
+};
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -80,16 +82,25 @@ pub struct Parts<'a, C> {
     pub steps: &'a mut dyn Steps<C>,
 }
 
+/// Steps in a row that cannot be logged before the goal fails: a planner that
+/// keeps writing them would replan and charge forever.
+pub const MAX_BAD_STEPS: u32 = 3;
+/// Why a step in flight with no record of its call was closed.
+pub const RESTARTED: &str = "the agent restarted; the step was not run";
+
 /// The loop's own state: the steps that asked, kept with the runner's record of
-/// their call until the person answers, since a goal keeps only what it shows.
+/// their call until the person answers, since a goal keeps only what it shows; and
+/// how many steps in a row each goal's planner wrote that could not be logged.
 pub struct Runner<C> {
     asked: BTreeMap<u64, Step<C>>,
+    bad: BTreeMap<u64, u32>,
 }
 
 impl<C> Default for Runner<C> {
     fn default() -> Self {
         Self {
             asked: BTreeMap::new(),
+            bad: BTreeMap::new(),
         }
     }
 }
@@ -111,6 +122,7 @@ impl<C: Clone> Runner<C> {
         parts: &mut Parts<'_, C>,
     ) -> Vec<Event> {
         let mut events = Vec::new();
+        self.close_strays(goals, &mut events);
         if !self.run_answered(goals, parts, &mut events) {
             self.plan_one(goals, now, person, parts, &mut events);
         }
@@ -134,16 +146,52 @@ impl<C: Clone> Runner<C> {
                 self.asked.remove(&id);
                 continue;
             };
-            if goal.state == State::Waiting {
+            // Still waiting for the person, or paused after their yes: kept, and run
+            // once the goal is active again.
+            if matches!(goal.state, State::Waiting | State::Paused(_)) {
                 continue;
             }
             let step = self.asked.remove(&id);
-            if let (Some(step), Some(n)) = (step, goal.flight) {
+            if let (Some(step), Some(n), State::Active) = (step, goal.flight, goal.state) {
                 run(goal, n, &step, parts.steps, events);
                 return true;
             }
         }
         false
+    }
+
+    /// Closes as failed a step in flight that this runner has no record of (the
+    /// agent restarted and reloaded the goal, then the person said yes): it never
+    /// ran, and the goal goes on.
+    fn close_strays(&mut self, goals: &mut Goals, events: &mut Vec<Event>) {
+        let ids: Vec<u64> = goals
+            .list()
+            .iter()
+            .filter(|goal| {
+                goal.state == State::Active
+                    && goal.flight.is_some()
+                    && !self.asked.contains_key(&goal.id)
+            })
+            .map(|goal| goal.id)
+            .collect();
+        for id in ids {
+            let Some(goal) = goals.get_mut(id) else {
+                continue;
+            };
+            let n = goal.flight.unwrap_or(0);
+            let closed = StepDone {
+                entry: None,
+                tokens: 0,
+                failed: Some(String::from(RESTARTED)),
+            };
+            if goal.finish_step(closed).is_ok() {
+                events.push(Event::Ran {
+                    goal: id,
+                    step: n,
+                    entry: None,
+                });
+            }
+        }
     }
 
     fn plan_one(
@@ -164,8 +212,19 @@ impl<C: Clone> Runner<C> {
             let Some(goal) = goals.get_mut(id) else {
                 continue;
             };
+            // The budget holds for planning too: a goal past its tokens, its wall
+            // time or its deadline is not planned again (its last step may still be
+            // followed by the planner's "done", so the steps budget is the step's).
+            if let Some(pause) = planning_over(goal, now) {
+                hold(goal, pause, events);
+                continue;
+            }
             let (plan, tokens) = parts.planner.next(goal, now);
             goal.charge(tokens);
+            if let Some(pause) = planning_over(goal, now) {
+                hold(goal, pause, events);
+                continue;
+            }
             let ran = match plan {
                 Plan::Later => false,
                 Plan::Clarify(question) => {
@@ -205,7 +264,11 @@ impl<C: Clone> Runner<C> {
         events: &mut Vec<Event>,
     ) -> bool {
         let id = goal.id;
-        match goal.propose(now, step.clone(), person, parts.door) {
+        let proposed = goal.propose(now, step.clone(), person, parts.door);
+        if !matches!(proposed, Err(Refusal::BadProposal(_))) {
+            self.bad.remove(&id);
+        }
+        match proposed {
             Ok(Verdict::Run) => {
                 let n = goal.flight.unwrap_or(0);
                 run(goal, n, &step, parts.steps, events);
@@ -218,6 +281,31 @@ impl<C: Clone> Runner<C> {
             }
             Ok(Verdict::Over(pause)) => {
                 events.push(Event::Paused { goal: id, pause });
+                false
+            }
+            // A full log takes no more steps: the goal ends, said.
+            Err(Refusal::LogFull) => {
+                if goal
+                    .fail(now, "the goal has taken as many steps as its log holds")
+                    .is_ok()
+                {
+                    events.push(Event::Failed { goal: id });
+                }
+                false
+            }
+            // A step that cannot be logged, again and again: the goal ends, said.
+            Err(Refusal::BadProposal(_)) => {
+                let bad = self.bad.entry(id).or_default();
+                *bad += 1;
+                if *bad >= MAX_BAD_STEPS {
+                    self.bad.remove(&id);
+                    if goal
+                        .fail(now, "the planner kept writing steps that cannot be logged")
+                        .is_ok()
+                    {
+                        events.push(Event::Failed { goal: id });
+                    }
+                }
                 false
             }
             Err(_) => false,
@@ -242,6 +330,24 @@ fn run<C>(
         step: n,
         entry,
     });
+}
+
+/// The pause a goal is due for before it is planned: past its tokens, its wall time
+/// or its deadline. Not its steps: the planner may still say the goal is met.
+fn planning_over(goal: &Goal, now: u64) -> Option<Pause> {
+    goal.over(now, 0)
+        .filter(|pause| *pause != Pause::Budget(Resource::Steps))
+}
+
+/// Pauses `goal` for `pause`, said.
+fn hold(goal: &mut Goal, pause: Pause, events: &mut Vec<Event>) {
+    if goal.state == State::Active {
+        goal.state = State::Paused(pause);
+        events.push(Event::Paused {
+            goal: goal.id,
+            pause,
+        });
+    }
 }
 
 fn waiting(goal: &Goal) -> Option<Event> {
