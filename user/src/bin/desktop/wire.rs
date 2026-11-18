@@ -246,6 +246,10 @@ pub(super) fn apply_need(
         } => {
             state.shown.retain(|(w, ..)| *w != window);
             state.shown.push((window, pid, buffer, scale));
+            if let Some(at) = state.wheeled.iter().position(|w| *w == window) {
+                state.wheeled.remove(at);
+                println!("desktop: window {} drew after the wheel", window.0);
+            }
         }
         Need::Closed { window } => {
             state.shown.retain(|(w, ..)| *w != window);

@@ -71,7 +71,7 @@ pub(crate) fn report(dx: i32, dy: i32, buttons: u8) {
 
 /// A USB-style relative report with `buttons` held and the wheel turned by
 /// `wheel` detents (positive toward the person).
-fn report_wheel(dx: i32, dy: i32, buttons: u8, wheel: i32) {
+pub(crate) fn report_wheel(dx: i32, dy: i32, buttons: u8, wheel: i32) {
     x86_64::instructions::interrupts::without_interrupts(|| {
         pointer::push(Event {
             source: Source::UsbMouse,
