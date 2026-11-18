@@ -108,6 +108,7 @@ pub fn build_with_models(
                 length: model.length,
                 sha256,
                 kai: model.index(),
+                chunks: None,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;

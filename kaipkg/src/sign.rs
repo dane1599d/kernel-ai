@@ -5,12 +5,15 @@
 //! The top-level roles are root, targets, snapshot and timestamp; targets
 //! delegates every `*.kpkg` to the role `packages`, which lists each package as
 //! a target `<name>-<version>.kpkg` with its length, SHA-256 and `custom.kai`
-//! index fields. With a models key, targets also delegates every `*.gguf` to
-//! the role `models` (ADR 0008 §6), which lists each model as `<id>.gguf`
-//! ([`crate::models`]); a model's bytes are never in the repository. A device's
-//! own repository has no models key, so it signs no models: only the image's
-//! role says which a user may import. Snapshots are consistent, so the layout
-//! is:
+//! index fields. With a models key, targets also delegates every `*.gguf` and
+//! `*.chunks` to the role `models` (ADR 0008 §6), which lists each model as
+//! `<id>.gguf` ([`crate::models`]); a model's bytes are never in the
+//! repository. A model a download fetches also has its `kai-chunks 1` list
+//! beside it, the target `<sha256 of the GGUF>.chunks` with its bytes in the
+//! repository (P5 task 6), so each chunk is checked before it is written. A
+//! device's own repository has no models key, so it signs no models: only the
+//! image's role says which a user may import. Snapshots are consistent, so the
+//! layout is:
 //!
 //! ```text
 //! metadata/1.root.json
@@ -20,6 +23,7 @@
 //! metadata/1.snapshot.json
 //! metadata/timestamp.json
 //! targets/<sha256>.notes-1.0.0.kpkg
+//! targets/<sha256 of the list>.<sha256 of the GGUF>.chunks
 //! ```
 //!
 //! Keys are Ed25519 (`ed25519-compact`). Every file is canonical JSON
@@ -40,10 +44,10 @@ pub const SPEC_VERSION: &str = "1.0.37";
 const DAY: u64 = 86_400;
 /// The delegated role every package sits under, and what it may sign for.
 pub const PACKAGES: &str = "packages";
-const PACKAGE_PATHS: &str = "*.kpkg";
+const PACKAGE_PATHS: &[&str] = &["*.kpkg"];
 /// The delegated role every model sits under, and what it may sign for.
 pub const MODELS: &str = crate::models::ROLE;
-const MODEL_PATHS: &str = "*.gguf";
+const MODEL_PATHS: &[&str] = &["*.gguf", "*.chunks"];
 
 /// How long each role's metadata stays valid, in days.
 #[derive(Clone, Copy, Debug)]
@@ -139,6 +143,11 @@ pub struct Model {
     pub length: u64,
     pub sha256: Sha,
     pub kai: Value,
+    /// Its `kai-chunks 1` list, signed beside it as the target
+    /// [`crate::models::chunks_path`] with these bytes in the repository, for a
+    /// download to check each chunk against; `None` for a model only imported.
+    /// The caller checks that the list names this model's length and SHA-256.
+    pub chunks: Option<Vec<u8>>,
 }
 
 /// The repository for `targets`, with no models: [`build_with_models`].
@@ -186,7 +195,7 @@ pub fn build_with_models(
             target.bytes.clone(),
         ));
     }
-    let model_targets = listed_models(models, &mut names)?;
+    let model_targets = listed_models(models, &mut names, &mut files)?;
     let root = json!({
         "_type": "root",
         "spec_version": SPEC_VERSION,
@@ -274,10 +283,12 @@ pub fn build_with_models(
     Ok(files)
 }
 
-/// `models` as the `models` role's targets, each path new to `names`.
+/// `models` as the `models` role's targets, each path new to `names`, with
+/// each chunk list's bytes added to `files`.
 fn listed_models(
     models: &[Model],
     names: &mut BTreeSet<String>,
+    files: &mut Vec<(String, Vec<u8>)>,
 ) -> Result<Map<String, Value>, String> {
     let mut listed = Map::new();
     for model in models {
@@ -295,18 +306,31 @@ fn listed_models(
                 "custom": { "kai": model.kai },
             }),
         );
+        let Some(list) = &model.chunks else {
+            continue;
+        };
+        let path = crate::models::chunks_path(&model.sha256);
+        if !names.insert(path.clone()) {
+            return Err(format!("{path} is in the repository twice"));
+        }
+        let sha = hex(&sha256(list));
+        listed.insert(
+            path.clone(),
+            json!({ "length": list.len(), "hashes": { "sha256": sha } }),
+        );
+        files.push((format!("targets/{sha}.{path}"), list.clone()));
     }
     Ok(listed)
 }
 
 /// A terminating delegation of `paths` to the role `name`, signed by `key`.
-fn delegation(name: &str, key: &Key, paths: &str) -> Value {
+fn delegation(name: &str, key: &Key, paths: &[&str]) -> Value {
     json!({
         "name": name,
         "keyids": [key.id()],
         "threshold": 1,
         "terminating": true,
-        "paths": [paths],
+        "paths": paths,
     })
 }
 
@@ -367,6 +391,7 @@ mod tests {
             length: 4096,
             sha256: [7; 32],
             kai: json!({ "name": "Tiny" }),
+            chunks: None,
         }
     }
 
@@ -407,5 +432,55 @@ mod tests {
             ..model()
         };
         assert!(build_with_models(&[], &[not_a_model], &keys, Time(0), ADR_0008).is_err());
+    }
+
+    #[test]
+    fn a_models_chunk_list_is_signed_beside_it_with_its_bytes() {
+        let key = Key::from_seed([1; Seed::BYTES]);
+        let models_key = Key::from_seed([2; Seed::BYTES]);
+        let keys = Keys {
+            models: Some(&models_key),
+            ..Keys::one(&key)
+        };
+        let list = b"kai-chunks 1\n".to_vec();
+        let with = Model {
+            chunks: Some(list.clone()),
+            ..model()
+        };
+        let files = build_with_models(&[], &[with], &keys, Time(0), ADR_0008).unwrap();
+        let file = |path: &str| files.iter().find(|(p, _)| p == path).map(|(_, b)| b);
+        let role: Value = serde_json::from_slice(file("metadata/1.models.json").unwrap()).unwrap();
+        let name = format!("{}.chunks", hex(&[7; 32]));
+        let target = &role["signed"]["targets"][&name];
+        let sha = hex(&sha256(&list));
+        assert_eq!(target["length"], list.len());
+        assert_eq!(target["hashes"]["sha256"], sha);
+        assert!(target.get("custom").is_none());
+        assert_eq!(file(&format!("targets/{sha}.{name}")), Some(&list));
+        // The model itself still has no bytes.
+        assert!(role["signed"]["targets"]["tiny.gguf"].is_object());
+        assert_eq!(
+            paths(&files)
+                .iter()
+                .filter(|p| p.starts_with("targets/"))
+                .count(),
+            1
+        );
+        // The role is delegated both kinds of path.
+        let top: Value = serde_json::from_slice(file("metadata/1.targets.json").unwrap()).unwrap();
+        let delegated = &top["signed"]["delegations"]["roles"][1];
+        assert_eq!(delegated["name"], MODELS);
+        assert_eq!(delegated["paths"], json!(["*.gguf", "*.chunks"]));
+        // Two models with one GGUF would sign one list twice.
+        let twin = || Model {
+            chunks: Some(list.clone()),
+            ..model()
+        };
+        let second = Model {
+            path: "twin.gguf".into(),
+            ..twin()
+        };
+        let both = build_with_models(&[], &[twin(), second], &keys, Time(0), ADR_0008);
+        assert!(both.unwrap_err().contains("twice"));
     }
 }
