@@ -217,7 +217,7 @@ fn settings() -> Tree {
     let panel = m.add(1, Role::TabPanel, "Appearance");
     m.add(panel, Role::Label, "Choose how the desktop looks.");
     let theme = m.add(panel, Role::Menu, "Theme");
-    m.value(theme, "Ember Workbench");
+    m.value(theme, "Kai Desk");
     let size = m.add(panel, Role::Slider, "Text size");
     m.value(size, "100%");
     let scale = m.add(panel, Role::Slider, "Scale");
