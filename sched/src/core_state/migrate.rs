@@ -3,7 +3,7 @@
 //! destination's watchdog still counts only the wait on its own CPU, since the
 //! source's wait is not its policy's doing.
 
-use super::{Core, EnqueueReason, Tid};
+use super::{Core, EnqueueReason, State, Tid};
 
 /// A runnable thread taken off one Core, to be adopted by another.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +26,20 @@ impl Core {
             waited_ns,
             woken,
         })
+    }
+
+    /// Gives up a blocked or sleeping thread, for a waker on another CPU that
+    /// adopts it there as woken (the kernel's IPC handoff, `threads::wake_here`).
+    /// Unlike a wake here and then a detach, it counts no wake on this CPU and
+    /// leaves no reschedule pending for a thread that is gone. None, and
+    /// nothing changed, if `tid` is not asleep here. The caller must not take a
+    /// thread whose registers are not saved yet.
+    pub fn detach_asleep(&mut self, tid: Tid) -> Option<&'static str> {
+        if !matches!(self.state(tid), State::Blocked | State::Sleeping { .. }) {
+            return None;
+        }
+        self.set_state(tid, State::Free);
+        Some(self.names[tid])
     }
 
     /// Adopts a thread from [`Core::detach_waiting`].
