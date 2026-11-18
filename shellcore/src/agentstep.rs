@@ -26,6 +26,8 @@ use alloc::string::{String, ToString};
 pub const STEP: &str = "agent-step ";
 /// What a card's answers to agents are kept for, every agent together.
 pub(crate) const MAX_TOLD: usize = 16;
+/// What an agent's step is told while the person's own question waits.
+pub const PERSON_ASKED: &str = "busy: the person's own question waits; step again later";
 /// What every other request from an agent's route is told.
 pub const AGENTS_ONLY_STEP: &str = "an agent may send only agent-step";
 /// What a step that carried handles is told: a step moves none.
@@ -75,6 +77,11 @@ impl Shell {
             Ok(call) => call,
             Err(why) => return Reply::err(format!("not a call: {why:?}")),
         };
+        // The person's own question waits for their answer: an agent's step
+        // never takes its place.
+        if self.pending.is_some() {
+            return Reply::err(PERSON_ASKED);
+        }
         let admission = match self.roster.admit(&caller, &call.name) {
             Ok(admission) => admission,
             Err(denied) => {
@@ -87,17 +94,34 @@ impl Shell {
         let id = self.take_id();
         // The words the door gives an agent's line: none, so an agent
         // borrows no consent (ADR 0013 §1), and no rule of the person's
-        // covers it while it runs (`agentconsent`).
+        // covers it while it runs (`agentconsent`). `acting` stays set for
+        // the whole step, so every entry it logs is the agent's.
         let line = agentid::Line::new(text, agentid::Source::agent(caller.id()));
         let words = admission.consent_words(&line);
-        self.acting = Some(admission.clone());
-        let outcome = self.execute(id, words, &call);
+        self.acting = Some(admission);
+        let reply = self.agent_runs(id, words, &call, name);
         self.acting = None;
         self.stamp_entries(id, id, stamp.name());
         self.save_log();
+        reply
+    }
+
+    /// The rest of an admitted step `id`, while `acting` holds its admission.
+    fn agent_runs(
+        &mut self,
+        id: u64,
+        words: &str,
+        call: &llmproto::act::Call,
+        name: String,
+    ) -> Reply {
+        let outcome = self.execute(id, words, call);
         if self.pending.as_ref().is_some_and(|p| p.id == id) {
+            // The admission of the row that will run, which `call_row`
+            // re-admitted if the row changed.
+            let Some(admission) = self.acting.clone() else {
+                return Reply::err("not asked: no admission");
+            };
             if let Err(why) = self.open_agent_ask(id, &admission) {
-                self.save_log();
                 return Reply::err(format!("not asked: {why}"));
             }
             return match self.wait_for_card(&outcome.reply, Asker::Agent(name)) {

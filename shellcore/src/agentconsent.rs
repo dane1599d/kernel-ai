@@ -60,9 +60,49 @@ impl Shell {
         self.acting.as_ref()
     }
 
+    /// Who log entry `id` is: the agent whose step runs, or whose question
+    /// it is, else the person (`kai`).
+    pub(crate) fn entry_agent(&self, id: u64) -> agentid::Name {
+        let admission = self.acting.as_ref().or_else(|| {
+            self.agent_admissions
+                .iter()
+                .find(|(entry, _)| *entry == id)
+                .map(|(_, admission)| admission)
+        });
+        match admission {
+            Some(admission) => admission.stamp().name().clone(),
+            None => agentid::Name::kai(),
+        }
+    }
+
+    /// For an agent's step, admits `row`, the row that will run, against
+    /// the agent's grants when it is not the row the step was admitted for;
+    /// the step then asks and runs under that admission.
+    pub(crate) fn readmit(&mut self, row: &'static agentabi::Action) -> Result<(), String> {
+        let Some(admitted) = self.acting.as_ref() else {
+            return Ok(());
+        };
+        if admitted.row() == row.name {
+            return Ok(());
+        }
+        let rows: &[agentabi::Action] = match row.owner {
+            agentabi::Owner::App(_) => core::slice::from_ref(row),
+            _ => &agentabi::ROWS,
+        };
+        match self.roster.admit_in(admitted.caller(), row.name, rows) {
+            Ok(admission) => {
+                self.acting = Some(admission);
+                Ok(())
+            }
+            Err(denied) => Err(format!("it runs {}, and {denied}", row.name)),
+        }
+    }
+
     /// Opens the question step `id`'s pending call asks, for `admission`.
     /// On a refusal the pending call is let go and logged.
     pub(crate) fn open_agent_ask(&mut self, id: u64, admission: &Admission) -> Result<(), String> {
+        // Questions past their two minutes give their places back first.
+        self.lapse_desk_asks();
         let Some(shown) = self.pending.as_ref().map(|p| p.checked.script.clone()) else {
             return Err(String::from("nothing to ask"));
         };
@@ -116,8 +156,7 @@ impl Shell {
             }
         };
         if !yes {
-            self.close_agent_ask(id);
-            return None;
+            return Some(self.agent_declined(id));
         }
         let admission = self
             .agent_admissions
@@ -161,6 +200,26 @@ impl Shell {
             }
             _ => Err(self.agent_not_run(id, "an agent's question is answered on its card")),
         }
+    }
+
+    /// The person's Deny to the agent's question `id`: logged as the agent's
+    /// entry, and the agent told.
+    fn agent_declined(&mut self, id: u64) -> Reply {
+        if let Some(pending) = self.pending.take_if(|p| p.id == id) {
+            self.record(id, &pending.request, &pending.checked.script, "declined");
+            self.save_log();
+        }
+        if let Some((_, asker)) = self.card_for_desk.take() {
+            self.desk_told(
+                id,
+                asker,
+                false,
+                false,
+                String::from(crate::deskask::DECLINED),
+            );
+        }
+        self.close_agent_ask(id);
+        Reply::ok(crate::deskask::DECLINED)
     }
 
     /// Lets go of the card's question `id` without running it, tells the
