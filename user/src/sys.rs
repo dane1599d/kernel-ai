@@ -520,6 +520,12 @@ pub fn shm_map(handle: Handle, write: bool) -> Result<u64, Error> {
     )
 }
 
+/// SHM_INFO: how many pages the `Shm` `handle` names holds. Needs INSPECT on
+/// the handle.
+pub fn shm_info(handle: Handle) -> Result<u64, Error> {
+    call(call::SHM_INFO, [u64::from(handle.0), 0, 0, 0, 0, 0])
+}
+
 /// Takes the screen (`desktop` only): its back buffer's `Shm`, and its shape.
 pub fn display_claim(info: &mut kabi::display::DisplayInfo) -> Result<Handle, Error> {
     call(

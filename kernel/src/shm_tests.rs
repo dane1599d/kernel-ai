@@ -107,6 +107,25 @@ fn rounds(pids: [u64; 2]) -> Result<(), &'static str> {
             }
         }
         let checked = round == 0 || round == ROUNDS - 1;
+        if round == 0 {
+            // SHM_INFO: a holder learns the object's size only with INSPECT,
+            // which the mapping handle it was given lacks.
+            let inspect = give(a, Entry::new(Kind::Shm, Rights::INSPECT, object))?;
+            ask(
+                HOLDERS[0],
+                &alloc::format!("info {inspect}"),
+                &alloc::format!("ok {PAGES}"),
+            )?;
+            let mapping = give(a, Entry::new(Kind::Shm, Rights::MAP | Rights::READ, object))?;
+            ask(
+                HOLDERS[0],
+                &alloc::format!("info {mapping}"),
+                "err info Permission",
+            )?;
+            log!(
+                "shm: SHM_INFO gave the object's {PAGES} pages with INSPECT and refused a handle without it"
+            );
+        }
         if checked {
             ask(HOLDERS[0], "fill 1", "ok")?;
             ask(HOLDERS[1], "count 1", &alloc::format!("ok {BYTES}"))?;
