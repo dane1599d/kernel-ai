@@ -18,6 +18,9 @@ extern crate alloc;
 
 pub mod batch;
 mod buffer;
+mod bulk;
+#[cfg(test)]
+mod bulk_tests;
 mod lookup;
 #[cfg(test)]
 mod model_tests;
@@ -29,8 +32,8 @@ mod trash;
 use alloc::string::String;
 use alloc::vec::Vec;
 use fsproto::{
-    Cursor, Error, How, Kind, Listing, MAX_DATA, MAX_LIST, MAX_ROWS, Outcome, Reply, Request, Stat,
-    Version,
+    Cursor, Error, How, Kind, Listing, MAX_DATA, MAX_LIST, MAX_ROWS, MAX_SHM_DATA, Outcome, Reply,
+    Request, Stat, Version,
 };
 use kabi::fs::{
     Badge, HOME, HOME_USER, MODELS, MODELS_ROOT, SYSTEM, SYSTEM_APPS, SYSTEM_PKG, SYSTEM_RESTART,
@@ -398,10 +401,16 @@ impl<D: BlockDev> Server<D> {
 
     /// Answers one call; never fails, a failure is [`Reply::Failed`].
     pub fn call(&mut self, call: &Call) -> Answer {
+        self.call_shm(call, None)
+    }
+
+    /// [`Server::call`] with the `Shm` the request moved in, mapped read-write:
+    /// what [`Request::ReadShm`] fills and [`Request::WriteShm`] takes from.
+    pub fn call_shm(&mut self, call: &Call, shm: Option<&mut [u8]>) -> Answer {
         let now = self.base.saturating_add(call.now);
         let fs = self.fs();
         fs.clock = fs.clock.max(now);
-        let (reply, mint) = match self.answer(call) {
+        let (reply, mint) = match self.answer(call, shm) {
             Ok(done) => done,
             Err(error) => (Reply::Failed(error), None),
         };
@@ -453,7 +462,11 @@ impl<D: BlockDev> Server<D> {
         }
     }
 
-    fn answer(&mut self, call: &Call) -> Result<(Reply, Option<Mint>), Error> {
+    fn answer(
+        &mut self,
+        call: &Call,
+        shm: Option<&mut [u8]>,
+    ) -> Result<(Reply, Option<Mint>), Error> {
         // `/system/settings` and `/system/state/restart` are read only through
         // their fixed badges, whatever rights the handle carries: nothing they
         // open gets more than READ and ENUMERATE either.
@@ -483,7 +496,7 @@ impl<D: BlockDev> Server<D> {
             self.cache = None;
         }
         match request {
-            Request::Write { .. } => {}
+            Request::Write { .. } | Request::WriteShm { .. } => {}
             Request::Abort if self.owner == Some(call.caller) => self.pending = None,
             _ => self.write_out()?,
         }
@@ -492,7 +505,15 @@ impl<D: BlockDev> Server<D> {
             return Err(Error::Busy);
         }
         let in_action = self.owner.is_some();
-        let done = self.dispatch(call, &target, request);
+        let done = match request {
+            Request::ReadShm { off, len } => self
+                .read_shm(call, &target, off, len, shm)
+                .map(|r| (r, None)),
+            Request::WriteShm { off, len } => self
+                .write_shm(call, &target, off, len, shm)
+                .map(|r| (r, None)),
+            request => self.dispatch(call, &target, request),
+        };
         match done {
             // A change outside an action is durable before it is answered.
             Ok((reply, mint)) if changes && !in_action && self.owner.is_none() => {
@@ -782,6 +803,8 @@ impl<D: BlockDev> Server<D> {
             Request::SealedFinish => self.sealed_finish(call, target)?,
             Request::ModelHint { name } => self.model_hint(call, target, name.as_deref())?,
             Request::ModelInfo { name } => self.model_info(call, target, &name)?,
+            // `answer` takes these with their `Shm` (`bulk.rs`).
+            Request::ReadShm { .. } | Request::WriteShm { .. } => return Err(Error::Invalid),
         };
         Ok((reply, None))
     }
@@ -1006,7 +1029,8 @@ fn changes(request: &Request) -> bool {
         | Request::SealedBegin { .. }
         | Request::SealedPush { .. }
         | Request::SealedFinish
-        | Request::ModelHint { .. } => true,
+        | Request::ModelHint { .. }
+        | Request::WriteShm { .. } => true,
         Request::Stat
         | Request::List { .. }
         | Request::Read { .. }
@@ -1015,7 +1039,8 @@ fn changes(request: &Request) -> bool {
         | Request::Df
         | Request::Generation
         | Request::TrashList { .. }
-        | Request::ModelInfo { .. } => false,
+        | Request::ModelInfo { .. }
+        | Request::ReadShm { .. } => false,
     }
 }
 

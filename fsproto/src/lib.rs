@@ -22,6 +22,9 @@ pub const VERSION: u32 = 1;
 pub const MAX_MESSAGE: usize = 8192;
 /// The most file data in one [`Request::Write`] or [`Reply::Data`].
 pub const MAX_DATA: usize = 7 * 1024;
+/// The most file data in one [`Request::ReadShm`] or [`Request::WriteShm`]:
+/// 1 MiB, which an `Shm` moved with the request carries instead of the message.
+pub const MAX_SHM_DATA: usize = 1 << 20;
 /// The most names in one [`Reply::Listed`]: 24 of 255 bytes still fit.
 pub const MAX_LIST: u32 = 24;
 /// The most rows in one [`Reply::Changes`], [`Reply::History`] or
@@ -248,6 +251,30 @@ pub enum Request {
     ModelInfo {
         #[n(0)]
         name: String,
+    },
+    /// On a `File`, with one `Shm` moved in that maps read-write: up to `len`
+    /// bytes from `off` into the start of the `Shm` (short at the end), at most
+    /// [`MAX_SHM_DATA`] and the `Shm`'s size: [`Reply::Copied`]. Needs READ.
+    /// Invalid with no `Shm`. An `fs` older than this request answers
+    /// [`Error::BadRequest`], and the client sends [`Request::Read`] instead.
+    #[n(28)]
+    ReadShm {
+        #[n(0)]
+        off: u64,
+        #[n(1)]
+        len: u32,
+    },
+    /// On a `File`, with one `Shm` moved in that maps read-write: the first
+    /// `len` bytes of the `Shm` at `off`, at most [`MAX_SHM_DATA`] and the
+    /// `Shm`'s size, else Invalid: [`Reply::Done`]. Needs WRITE. Inside an
+    /// action it joins the pending run as [`Request::Write`] does. An older
+    /// `fs` answers [`Error::BadRequest`], as for [`Request::ReadShm`].
+    #[n(29)]
+    WriteShm {
+        #[n(0)]
+        off: u64,
+        #[n(1)]
+        len: u32,
     },
 }
 
@@ -483,6 +510,12 @@ pub enum Reply {
         len: u64,
         #[n(1)]
         fnv: u64,
+    },
+    /// [`Request::ReadShm`]'s answer: how many bytes are in the `Shm`.
+    #[n(16)]
+    Copied {
+        #[n(0)]
+        len: u64,
     },
 }
 
