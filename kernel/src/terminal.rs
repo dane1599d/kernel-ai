@@ -372,7 +372,7 @@ fn answer_on_card(menu: &Menu) -> Option<Answer> {
     if !claim::showing() || !ask_box::alive() {
         return None;
     }
-    if !ask_box::post(menu.id, menu.call(), menu.question()) {
+    if !ask_box::post(menu.id, menu.call(), &menu.question_and_detail()) {
         return None;
     }
     AWAITING_ANSWER.store(true, Ordering::Release);

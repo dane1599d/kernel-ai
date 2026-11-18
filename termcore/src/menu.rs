@@ -145,6 +145,9 @@ pub struct Menu {
     /// The call the question shows, canonical (`termcore::once::call_text`): what
     /// an Allow's ONCE digest names (`once::digest_call`).
     call: String,
+    /// A line shown under the question and outside the `ONCE` digest, such
+    /// as the install card's summary; empty for none (`Menu::with_detail`).
+    detail: String,
     choices: Vec<(Answer, String)>,
     selected: usize,
     /// Set by [`Menu::arm`]; no key counts before.
@@ -186,6 +189,7 @@ impl Menu {
             id,
             question: question.to_string(),
             call: String::new(),
+            detail: String::new(),
             choices,
             selected: match origin {
                 Origin::Asked => 0,
@@ -207,13 +211,41 @@ impl Menu {
         })
     }
 
+    /// The menu with `detail` shown under its question: printable ASCII of
+    /// at most [`MAX_TEXT`], as every text a menu shows. It is not in the
+    /// `ONCE` digest, which names the question's call alone.
+    pub fn with_detail(self, detail: &str) -> Result<Self, Refused> {
+        if !detail.is_empty() && !showable(detail) {
+            return Err(Refused::Unshowable);
+        }
+        Ok(Self {
+            detail: detail.to_string(),
+            ..self
+        })
+    }
+
     /// The call the question shows.
     pub fn call(&self) -> &str {
         &self.call
     }
 
+    /// The line shown under the question; empty for none.
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+
+    /// The question with its detail after it, on one line: what the desk's
+    /// card shows as the ask's reason.
+    pub fn question_and_detail(&self) -> String {
+        match self.detail.is_empty() {
+            true => self.question.clone(),
+            false => format!("{} -- {}", self.question, self.detail),
+        }
+    }
+
     /// Reads `menu <id> <asked|added>`, then the question, the kind rule, the
-    /// target rule and the call, one line each.
+    /// target rule and the call, one line each, and optionally a detail line
+    /// ([`Menu::encode_detail`]).
     pub fn decode(text: &str) -> Result<Self, Refused> {
         let mut lines = text.split('\n');
         let header = lines.next().ok_or(Refused::Malformed)?;
@@ -230,7 +262,8 @@ impl Menu {
             Some("added") => Origin::Added,
             _ => return Err(Refused::Malformed),
         };
-        let (Some(question), Some(kind), Some(target), Some(call), None, None) = (
+        let (Some(question), Some(kind), Some(target), Some(call), detail, None, None) = (
+            lines.next(),
             lines.next(),
             lines.next(),
             lines.next(),
@@ -240,9 +273,15 @@ impl Menu {
         ) else {
             return Err(Refused::Malformed);
         };
+        // A detail line, when there is one, says something.
+        if detail == Some("") {
+            return Err(Refused::Malformed);
+        }
         let given = |label: &str| Some(label).filter(|l| !l.is_empty()).map(String::from);
         let (kind, target) = (given(kind), given(target));
-        Self::new(id, question, kind.as_deref(), target.as_deref(), origin)?.with_call(call)
+        Self::new(id, question, kind.as_deref(), target.as_deref(), origin)?
+            .with_call(call)?
+            .with_detail(detail.unwrap_or(""))
     }
 
     /// The shell's side of [`Menu::decode`].
@@ -261,9 +300,28 @@ impl Menu {
         format!("menu {id} {origin}\n{question}\n{kind}\n{target}\n{call}")
     }
 
+    /// [`Menu::encode`] with `detail` on a line of its own after the call;
+    /// none for an empty one.
+    pub fn encode_detail(
+        id: u64,
+        origin: Origin,
+        question: &str,
+        call: &str,
+        detail: &str,
+    ) -> String {
+        let menu = Self::encode(id, origin, question, "", "", call);
+        match detail.is_empty() {
+            true => menu,
+            false => format!("{menu}\n{detail}"),
+        }
+    }
+
     /// The `?` rows, printed once: the question, then each choice numbered.
     pub fn rows(&self) -> Vec<String> {
         let mut rows = alloc::vec![format!("? {}", self.question)];
+        if !self.detail.is_empty() {
+            rows.push(format!("?   {}", self.detail));
+        }
         rows.extend(
             self.choices
                 .iter()
@@ -387,6 +445,42 @@ mod tests {
     /// Presses `key` on a menu whose gate is open.
     fn key(menu: &mut Menu, key: Key) -> Step {
         menu.apply(key)
+    }
+
+    /// A detail line rides after the call, outside the ONCE: shown under the
+    /// question, on the card after it, and only as printable ASCII within
+    /// the menu's limit. A menu without one reads as before.
+    #[test]
+    fn a_detail_line_shows_under_the_question_and_reads_back() {
+        let call = "app_install(\"timer\")";
+        let question = format!("Install {call}?");
+        let wire = Menu::encode_detail(4, Origin::Added, &question, call, "Kai says it: a timer.");
+        let menu = Menu::decode(&wire).unwrap();
+        assert_eq!(menu.detail(), "Kai says it: a timer.");
+        assert_eq!(menu.call(), call);
+        assert_eq!(
+            menu.rows()[..2],
+            [
+                format!("? {question}"),
+                String::from("?   Kai says it: a timer.")
+            ]
+        );
+        assert_eq!(
+            menu.question_and_detail(),
+            format!("{question} -- Kai says it: a timer.")
+        );
+        let plain = Menu::decode(&Menu::encode(4, Origin::Added, &question, "", "", call)).unwrap();
+        assert_eq!(plain.detail(), "");
+        assert_eq!(plain.question_and_detail(), question);
+        for bad in ["tab\there", "caf\u{e9}", &"x".repeat(MAX_TEXT + 1)] {
+            let wire = Menu::encode_detail(4, Origin::Added, &question, call, bad);
+            assert_eq!(Menu::decode(&wire), Err(Refused::Unshowable), "{bad:?}");
+        }
+        // Nothing may follow the detail line.
+        assert_eq!(
+            Menu::decode(&format!("{wire}\nmore")),
+            Err(Refused::Malformed)
+        );
     }
 
     fn stop(origin: Origin) -> Menu {
@@ -637,7 +731,7 @@ mod tests {
                         .iter()
                         .all(|r| showable(r) || r.len() <= MAX_TEXT + 8)
                 );
-                assert!(menu.rows().len() >= 3 && menu.rows().len() <= 5);
+                assert!(menu.rows().len() >= 3 && menu.rows().len() <= 6);
             }
         }
     }
