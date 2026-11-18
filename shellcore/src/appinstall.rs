@@ -9,9 +9,11 @@
 //!   `app_install("timer", "0.0.1", "<source>")`, where `<source>` begins
 //!   `main.c`'s SHA-256. The menu's id is a new log entry's, so the `ONCE`
 //!   names this card alone. The card holds [`MENU_TEXT`] characters, the
-//!   call included. Under the question, outside the `ONCE`, a detail line
-//!   says the model's one-line summary as Kai's words ([`summary_line`]),
-//!   escaped and cut to the same limit; `show code` is in the build's Done.
+//!   call included. On the console, under the question and outside the
+//!   `ONCE`, a detail line says the model's one-line summary as Kai's words
+//!   ([`summary_line`]), escaped and cut to the same limit; the desk's
+//!   trusted card shows code's question alone. `show code` is in the build's
+//!   Done.
 //! - **Checking:** the ask and the Allow both refuse a build that is not the
 //!   last one, one whose `main.c` changed since it was built (stale or
 //!   edited), or one installed already, each with why. The ask refuses one

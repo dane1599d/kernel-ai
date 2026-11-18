@@ -145,8 +145,9 @@ pub struct Menu {
     /// The call the question shows, canonical (`termcore::once::call_text`): what
     /// an Allow's ONCE digest names (`once::digest_call`).
     call: String,
-    /// A line shown under the question and outside the `ONCE` digest, such
-    /// as the install card's summary; empty for none (`Menu::with_detail`).
+    /// A line the console shows under the question, outside the `ONCE`
+    /// digest and never on the desk's card ([`Menu::card_reason`]), such as
+    /// the install card's summary; empty for none (`Menu::with_detail`).
     detail: String,
     choices: Vec<(Answer, String)>,
     selected: usize,
@@ -234,13 +235,11 @@ impl Menu {
         &self.detail
     }
 
-    /// The question with its detail after it, on one line: what the desk's
-    /// card shows as the ask's reason.
-    pub fn question_and_detail(&self) -> String {
-        match self.detail.is_empty() {
-            true => self.question.clone(),
-            false => format!("{} -- {}", self.question, self.detail),
-        }
+    /// What the desk's trusted card shows as the ask's reason: the question
+    /// alone, code's words. The detail never goes there (ADR 0005 section 7):
+    /// a summary in the model's words is not trusted text.
+    pub fn card_reason(&self) -> &str {
+        &self.question
     }
 
     /// Reads `menu <id> <asked|added>`, then the question, the kind rule, the
@@ -448,8 +447,9 @@ mod tests {
     }
 
     /// A detail line rides after the call, outside the ONCE: shown under the
-    /// question, on the card after it, and only as printable ASCII within
-    /// the menu's limit. A menu without one reads as before.
+    /// question on the console, never in the desk card's reason, and only as
+    /// printable ASCII within the menu's limit. A menu without one reads as
+    /// before.
     #[test]
     fn a_detail_line_shows_under_the_question_and_reads_back() {
         let call = "app_install(\"timer\")";
@@ -465,13 +465,12 @@ mod tests {
                 String::from("?   Kai says it: a timer.")
             ]
         );
-        assert_eq!(
-            menu.question_and_detail(),
-            format!("{question} -- Kai says it: a timer.")
-        );
+        // The desk's trusted card carries code's question alone (#1051).
+        assert_eq!(menu.card_reason(), question);
+        assert!(!menu.card_reason().contains("Kai says it"));
         let plain = Menu::decode(&Menu::encode(4, Origin::Added, &question, "", "", call)).unwrap();
         assert_eq!(plain.detail(), "");
-        assert_eq!(plain.question_and_detail(), question);
+        assert_eq!(plain.card_reason(), question);
         for bad in ["tab\there", "caf\u{e9}", &"x".repeat(MAX_TEXT + 1)] {
             let wire = Menu::encode_detail(4, Origin::Added, &question, call, bad);
             assert_eq!(Menu::decode(&wire), Err(Refused::Unshowable), "{bad:?}");
