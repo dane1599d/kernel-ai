@@ -223,6 +223,9 @@ pub(super) const CASES: &[TestCase] = &[
         keys: &[crate::screen::KEYS],
         expect: &[
             "display: virtio-gpu offers ",
+            // QEMU's EDID gives the screen's size (from its 100 dpi), which
+            // DisplayInfo passes to `desktop` for its scale.
+            "display: the screen is ",
             "display: cursor moved to 300 200",
         ],
         screen: Some(crate::screen::Expect {

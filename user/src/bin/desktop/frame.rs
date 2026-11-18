@@ -203,6 +203,11 @@ pub(super) fn draw(state: &mut State, screen: &Screen) {
     if !state.drawn {
         state.drawn = true;
         println!("desktop: drew the desk at {}x{}", state.width, state.height);
+        // A test image's plan (`log_bar=1`): the state the pane starts in.
+        if state.log_bar {
+            let word = super::pane_word(state.panel.state());
+            println!("desktop: the panel starts {word}");
+        }
     }
 }
 

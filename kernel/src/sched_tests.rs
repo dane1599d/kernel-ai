@@ -8,7 +8,11 @@ use sched::{EnqueueReason, RoundRobin, SchedPolicy, Tid};
 use termcore::keys::Key;
 
 const HOGS: usize = 8;
+/// The M4 bar for a keyboard wake-up with the hogs running, under KVM.
 const LATENCY_LIMIT_NS: u64 = 20_000_000;
+/// Under TCG (`accel=tcg`), whose timing is emulated and stands in for no real
+/// machine: the KVM bar is the one that counts (manager, #973).
+const TCG_LATENCY_LIMIT_NS: u64 = 25_000_000;
 
 static HOG_WORK: [AtomicU64; HOGS] = [const { AtomicU64::new(0) }; HOGS];
 static SLEEPERS_DONE: AtomicUsize = AtomicUsize::new(0);
@@ -115,15 +119,27 @@ pub fn latency_check() -> Result<(), &'static str> {
     let (wakes, worst) = i8042::wake_latency();
     let work: [u64; HOGS] = core::array::from_fn(|i| HOG_WORK[i].load(Ordering::Relaxed));
     let (policy, ejections, switches) = threads::stats();
+    let tcg = crate::cmdline()
+        .split_whitespace()
+        .any(|word| word == "accel=tcg");
+    let limit = match tcg {
+        true => TCG_LATENCY_LIMIT_NS,
+        false => LATENCY_LIMIT_NS,
+    };
     log!(
-        "sched: {wakes} keyboard wake-ups, worst latency {} us (limit 20000)",
-        worst / 1000
+        "sched: {wakes} keyboard wake-ups, worst latency {} us (limit {}{})",
+        worst / 1000,
+        limit / 1000,
+        if tcg { ", TCG" } else { "" }
     );
     log!(
         "sched: hog progress {work:?}; {switches} switches; policy {policy}, {ejections} ejections"
     );
-    if worst >= LATENCY_LIMIT_NS {
-        return Err("sched: keyboard wake latency was 20 ms or more");
+    if worst >= limit {
+        return Err(match tcg {
+            true => "sched: keyboard wake latency was 25 ms or more under TCG",
+            false => "sched: keyboard wake latency was 20 ms or more",
+        });
     }
     if work.contains(&0) {
         return Err("sched: a hog never ran");

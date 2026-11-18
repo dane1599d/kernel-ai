@@ -376,7 +376,15 @@ fn killed_line() -> Result<(), &'static str> {
     if !made.make || !made.ok {
         return Err("wait-reads: the change given back did not run after the restart");
     }
-    if ipc::server_of("shell").is_none_or(|pid| pid == shell) {
+    // Which shell ran it: the process table's, not IPC's. The restarted shell
+    // takes the change back from `desktop` with its own calls, before it first
+    // waits for a request, which is when its endpoint is bound; under TCG the
+    // change is answered in that gap, and `ipc::server_of` is still empty.
+    let live: Vec<u64> = process::named("shell")
+        .into_iter()
+        .map(|(pid, _)| pid)
+        .collect();
+    if live.is_empty() || live.contains(&shell) {
         return Err("wait-reads: the change ran, but not in a restarted shell");
     }
     logged_once(made.ticket)?;

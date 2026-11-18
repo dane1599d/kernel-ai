@@ -18,6 +18,17 @@ pub(super) fn bar_text(shown: &deskcore::panel::State) -> Option<&str> {
     }
 }
 
+/// The panel's state in a word, as the desktop's log says it.
+pub(super) fn pane_word(shown: &deskcore::panel::State) -> &'static str {
+    match shown {
+        deskcore::panel::State::Idle => "idle",
+        deskcore::panel::State::Thinking { .. } => "thinking",
+        deskcore::panel::State::Acting { .. } => "acting",
+        deskcore::panel::State::Done { .. } => "done",
+        deskcore::panel::State::Refused { .. } => "refused",
+    }
+}
+
 /// Logs the panel's new result line, on a test image's plan (`log_bar=1`)
 /// only, with its newlines as "; ".
 pub(super) fn log_bar(enabled: bool, text: Option<&str>) {

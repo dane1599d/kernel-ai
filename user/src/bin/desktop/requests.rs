@@ -216,13 +216,7 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         }
         _ => {}
     }
-    let word = match &shown {
-        deskcore::panel::State::Idle => "idle",
-        deskcore::panel::State::Thinking { .. } => "thinking",
-        deskcore::panel::State::Acting { .. } => "acting",
-        deskcore::panel::State::Done { .. } => "done",
-        deskcore::panel::State::Refused { .. } => "refused",
-    };
+    let word = pane_word(&shown);
     let text = bar_text(&shown).map(String::from);
     if state.panel.set_done(shown, entry) {
         // Its kind only: the line is the shell's result, which may name a file.

@@ -579,3 +579,42 @@ fn an_undo_queued_behind_a_stop_wins_over_its_due_send() {
     let id = hold(&host, &mut shell, "a.example", 0);
     assert_eq!(passes(&mut shell, &[None], 9_000), [id]);
 }
+
+/// A site's answer is said in code's fixed words, never the server's own
+/// reason; a 2xx reads as plainly sent (#962's note).
+#[test]
+fn a_status_is_said_in_fixed_words() {
+    use crate::outbox::{Stage, ended_line, status_line};
+    assert_eq!(status_line(200), "200 OK");
+    assert_eq!(status_line(404), "404 Not Found");
+    assert_eq!(status_line(302), "302 Redirect, not followed");
+    assert_eq!(status_line(299), "299");
+    assert_eq!(
+        ended_line("a.example", Stage::Sent, &status_line(204)),
+        "Sent to a.example."
+    );
+    assert_eq!(
+        ended_line("a.example", Stage::Sent, &status_line(503)),
+        "Sent to a.example; it answered 503 Service Unavailable"
+    );
+}
+
+/// Only a call the kernel refused before the send service could take it is
+/// "not sent"; a timeout, or the service dying with it, may have gone out.
+#[test]
+fn a_failed_call_is_not_sent_only_when_nothing_took_it() {
+    use crate::outbox::call_failed;
+    use kabi::Error as E;
+    for error in [
+        E::NotFound,
+        E::Unavailable,
+        E::Interrupted,
+        E::BadHandle,
+        E::Permission,
+    ] {
+        assert!(!call_failed(error).maybe_sent, "{error:?}");
+    }
+    for error in [E::TimedOut, E::Dead, E::Busy, E::Network, E::Woken] {
+        assert!(call_failed(error).maybe_sent, "{error:?}");
+    }
+}

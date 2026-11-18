@@ -100,7 +100,8 @@ use frame::{arrow, draw, post_events, refresh_bar, report, wake_shell};
 #[path = "desktop/setup.rs"]
 mod setup;
 use setup::{
-    bar_text, log_bar, logs_bar, logs_first_key, starting_appearance, theme, wait_for_screen,
+    bar_text, log_bar, logs_bar, logs_first_key, pane_word, starting_appearance, theme,
+    wait_for_screen,
 };
 
 /// The fonts ADR 0005 §8 names, built in until P2's files carry them.

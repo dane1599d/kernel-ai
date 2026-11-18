@@ -17,6 +17,7 @@ mod netgrant;
 mod netrows;
 mod network;
 mod online;
+mod panestates;
 mod pkg;
 pub mod release;
 mod storage;
@@ -47,6 +48,10 @@ pub struct TestCase {
     pub keys_on: &'static [&'static str],
     /// Texts that must all appear on the serial console for the case to pass.
     pub expect: &'static [&'static str],
+    /// Tell the kernel the accelerator, `accel=kvm` or `accel=tcg`, for a
+    /// case that judges timing differently under TCG (an HTTPS case is told
+    /// always).
+    pub accel: bool,
     /// Lines the console must show whole, after the reader takes off a serial
     /// stamp: a line still carrying its stamp never matches.
     pub exact: &'static [&'static str],
@@ -219,6 +224,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         keys: &[],
         keys_on: &[],
         expect: &[],
+        accel: false,
         exact: &[],
         stops: false,
         build: false,
@@ -263,7 +269,11 @@ pub(super) const KAI: &[&str] = &["k", "a", "i", "ret"];
 /// Every lane's cases, in lane order: `cargo xtask test` runs them all, and
 /// `--shard K/N` deals them out in this order. A lane edits only its own table.
 const LANES: &[&[TestCase]] = &[
-    kernel::CASES,
+    kernel::basics::CASES,
+    kernel::display::CASES,
+    kernel::apps::CASES,
+    kernel::desk::CASES,
+    kernel::memory::CASES,
     devices::CASES,
     agent::CASES,
     apps::CASES,
@@ -282,6 +292,7 @@ const LANES: &[&[TestCase]] = &[
     modeldl::CASES,
     modelsuse::CASES,
     walk::CASES,
+    panestates::CASES,
     warming::CASES,
 ];
 
@@ -311,7 +322,11 @@ mod tests {
         // Every lane's table is in LANES: counted from the tables themselves, so a
         // PR that adds a case need not change a shared number here.
         let tables = [
-            kernel::CASES,
+            kernel::basics::CASES,
+            kernel::display::CASES,
+            kernel::apps::CASES,
+            kernel::desk::CASES,
+            kernel::memory::CASES,
             devices::CASES,
             agent::CASES,
             apps::CASES,
@@ -330,6 +345,7 @@ mod tests {
             modeldl::CASES,
             modelsuse::CASES,
             walk::CASES,
+            panestates::CASES,
             warming::CASES,
         ];
         assert_eq!(
@@ -405,7 +421,7 @@ mod tests {
     /// `updated` tried the cut again.
     #[test]
     fn every_updated_word_a_case_passes_is_one_the_kernel_hands_on() {
-        let kernel = include_str!("../../../kernel/src/selftest.rs");
+        let kernel = include_str!("../../../kernel/src/selftest/updated.rs");
         let list = kernel
             .split("const UPDATED_TEST_WORDS")
             .nth(1)

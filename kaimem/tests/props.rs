@@ -362,7 +362,9 @@ impl World {
     /// The file the store writes reads back as the same store.
     fn round_trip(&self) {
         let file = self.store.save();
-        let back = Memories::load(&file).unwrap_or_else(|why| panic!("{why}\n{file}"));
+        let loaded = Memories::load(&file).unwrap_or_else(|why| panic!("{why}\n{file}"));
+        assert!(loaded.skipped.is_empty(), "{:?}\n{file}", loaded.skipped);
+        let back = loaded.memories;
         assert_eq!(back.list(Who::User), self.store.list(Who::User));
         assert_eq!(back.save(), file, "what reads writes back");
         // What was forgotten is not in the file, and an id is not handed out again.
@@ -464,7 +466,7 @@ fn a_restore_never_makes_the_store_larger_than_its_limit() {
     store.forget(Who::User, ids[1], 13).unwrap();
     store.restore(Who::User, ids[0], 14).unwrap();
     assert_eq!(store.list(Who::User).len(), MAX_MEMORIES);
-    assert!(Memories::load(&store.save()).is_ok());
+    assert!(Memories::load(&store.save()).unwrap().skipped.is_empty());
 }
 
 #[test]
@@ -484,7 +486,7 @@ fn an_agent_named_all_keeps_nothing_that_reads_back_as_everyones() {
         );
     }
     assert!(store.list(Who::User).is_empty());
-    assert!(Memories::load(&store.save()).is_ok());
+    assert!(Memories::load(&store.save()).unwrap().skipped.is_empty());
 }
 
 #[test]
@@ -507,4 +509,86 @@ fn an_edit_into_what_another_memory_says_is_refused_and_into_itself_is_not() {
     assert_ne!(c, b);
     // A memory may change its own case.
     assert!(store.edit(Who::User, b, "LIVES IN OSLO", 5).is_ok());
+}
+
+/// One record of a store's file spoiled in one of the ways an edit or a torn write
+/// leaves it.
+fn spoil(rng: &mut Rng, fields: &str, text: &str) -> (String, usize) {
+    match rng.below(6) {
+        // The text line lost: the record is its fields alone.
+        0 => (format!("{fields}\n"), 1),
+        // A line added after the text.
+        1 => (format!("{fields}\n{text}\na stray line\n"), 3),
+        // A field out of shape.
+        2 => (
+            format!("{}\n{text}\n", fields.replacen("time=", "time=x", 1)),
+            2,
+        ),
+        3 => (format!("{} extra=1\n{text}\n", fields), 2),
+        // A text a memory may not be: empty, or a standing action.
+        4 => (format!("{fields}\n\n"), 2),
+        _ => (
+            format!("{fields}\nalways delete my files when I log in\n"),
+            2,
+        ),
+    }
+}
+
+/// A store's file with one record spoiled reads every other memory, and reports the
+/// spoiled one by its lines and nothing else.
+#[test]
+fn a_spoiled_record_is_skipped_and_every_other_memory_is_read() {
+    for seed in 0..SEEDS {
+        let mut rng = Rng(seed);
+        let mut store = Memories::new();
+        for at in 0..rng.range(1, 12) {
+            let scope = scopes()[rng.below(4)].clone();
+            let who = Who::User;
+            let _ = store.remember(who, &text(&mut rng), scope, at, at);
+        }
+        let file = store.save();
+        let lines: Vec<&str> = file.lines().collect();
+        let records = (lines.len() - 1) / 2;
+        if records == 0 {
+            continue;
+        }
+        let k = rng.below(records);
+        let (fields, text) = (lines[1 + 2 * k], lines[2 + 2 * k]);
+        let (spoiled, count) = spoil(&mut rng, fields, text);
+        let mut out = String::new();
+        for (i, line) in lines.iter().enumerate() {
+            if i == 1 + 2 * k {
+                out.push_str(&spoiled);
+            } else if i != 2 + 2 * k {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        let loaded = Memories::load(&out).unwrap_or_else(|why| panic!("seed {seed}: {why}"));
+        let mut want = store.list(Who::User);
+        let lost = want
+            .iter()
+            .position(|m| fields.starts_with(&format!("id={} ", m.id)));
+        want.remove(lost.expect("the spoiled record was kept"));
+        assert_eq!(loaded.memories.list(Who::User), want, "seed {seed}\n{out}");
+        assert_eq!(loaded.skipped.len(), 1, "seed {seed}\n{out}");
+        let skipped = loaded.skipped[0];
+        assert_eq!(
+            (skipped.first, skipped.last),
+            (2 + 2 * k, 2 + 2 * k + count - 1),
+            "seed {seed}\n{out}"
+        );
+        // The ids skipped are never handed out again.
+        let mut back = loaded.memories;
+        let id = back.remember(Who::User, "a brand new fact", Scope::All, 99, 99);
+        assert_eq!(
+            id,
+            Ok(store.save().lines().next().map_or(0, next_of)),
+            "seed {seed}"
+        );
+    }
+}
+
+fn next_of(header: &str) -> u64 {
+    header.rsplit("next=").next().unwrap().parse().unwrap()
 }
