@@ -2199,8 +2199,12 @@ dependencies = [
 name = "semindex"
 version = "0.1.0-dev"
 dependencies = [
+ "bpe",
  "diskmap",
+ "gguf",
+ "infer",
  "libm",
+ "quant",
 ]
 
 [[package]]
