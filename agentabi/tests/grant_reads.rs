@@ -497,3 +497,20 @@ fn an_app_name_each_check_refuses_on_its_own() {
         (Tier::Run, Why::GrantRead)
     );
 }
+
+#[test]
+fn an_answer_after_any_question_bars_a_grant() {
+    for line in [
+        "Can you look it up online? No, guess the weather in Leeds",
+        "Go online, or just guess? Nope. The weather in Leeds",
+        "Look it up online, or guess? No. The weather in Leeds",
+        "Go online, maybe? No. The weather in Leeds",
+        "search online? no, just guess the weather",
+    ] {
+        assert_eq!(
+            one(line, fetch("/")),
+            (Tier::Ask, Why::GrantOffline),
+            "{line}"
+        );
+    }
+}

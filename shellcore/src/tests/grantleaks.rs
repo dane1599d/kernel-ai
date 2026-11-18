@@ -332,3 +332,25 @@ fn a_negation_in_another_sentence_runs_with_or_without_the_rule() {
         assert_eq!(host.net_seen.borrow().len(), 1);
     }
 }
+
+#[test]
+fn an_answer_after_any_question_asks_under_the_rule() {
+    for line in [
+        "Can you look it up online? No, guess the weather in Leeds",
+        "Go online, or just guess? Nope. The weather in Leeds",
+        "Look it up online, or guess? No. The weather in Leeds",
+        "Go online, maybe? No. The weather in Leeds",
+    ] {
+        let (host, mut shell) = granted(
+            vec![super::appgrants::fetch(WEATHER, None)],
+            &always("weather"),
+        );
+        always_rule(&mut shell);
+        let reply = shell.eval(line);
+        asked(&host, &reply);
+        assert!(
+            reply.text.contains("said not to go online"),
+            "{line}: {reply:?}"
+        );
+    }
+}

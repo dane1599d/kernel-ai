@@ -641,6 +641,8 @@ struct Word {
     /// Which sentence of the line it is in, counted from 0: a sentence ends at
     /// `.` `!` `?` or `;`.
     sentence: usize,
+    /// Whether that sentence ends with `?`, whatever its clauses.
+    sentence_asks: bool,
 }
 
 /// The line's words: letters, digits and apostrophes, lower case. Everything else
@@ -660,6 +662,7 @@ fn words(text: &str) -> Vec<Word> {
     let is_word = |c: char| c.is_alphanumeric() || c == '\'';
     let mut clause = 0;
     let mut sentence = 0;
+    let mut asked_sentences: Vec<usize> = Vec::new();
     let mut out: Vec<Word> = Vec::new();
     let mut asked = Vec::new();
     let mut rest = text;
@@ -677,6 +680,7 @@ fn words(text: &str) -> Vec<Word> {
                 clause,
                 question: false,
                 sentence,
+                sentence_asks: false,
             });
         }
         if rest[..gap].contains('?') {
@@ -684,6 +688,9 @@ fn words(text: &str) -> Vec<Word> {
         }
         if rest[..gap].contains([',', ';', '.', '!', '?', ':']) {
             clause += 1;
+        }
+        if rest[..gap].contains('?') {
+            asked_sentences.push(sentence);
         }
         if rest[..gap].contains([';', '.', '!', '?']) {
             sentence += 1;
@@ -704,6 +711,9 @@ fn words(text: &str) -> Vec<Word> {
         for w in out.iter_mut().filter(|w| w.clause == c) {
             w.question = question;
         }
+    }
+    for w in out.iter_mut() {
+        w.sentence_asks = asked_sentences.contains(&w.sentence);
     }
     out
 }

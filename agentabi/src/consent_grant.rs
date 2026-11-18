@@ -157,7 +157,7 @@ fn offline_said(words: &[Word], row: &Action) -> bool {
                 .any(|cue| cue.split(' ').any(|c| c == w.text))
     };
     off || words.iter().filter(|w| hint(w)).any(|w| {
-        let answered = |n: &Word| w.question && n.sentence == w.sentence + 1;
+        let answered = |n: &Word| w.sentence_asks && n.sentence == w.sentence + 1;
         words
             .iter()
             .any(|n| (n.sentence == w.sentence || answered(n)) && negating(&n.text))
