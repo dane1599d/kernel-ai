@@ -122,6 +122,39 @@ impl Shell {
         }
     }
 
+    /// Retires packaged agent `id`: its open questions are withdrawn and its
+    /// waiting ones leave the card's queue, logged and told, so they give
+    /// their places back at once.
+    pub fn retire_agent(&mut self, id: agentid::AgentId) -> Result<(), agentid::InstallError> {
+        let agent = self.roster.retire(id)?;
+        let name = String::from(agent.name().as_str());
+        self.agent_asks.withdraw_agent(id);
+        let mut at = 0;
+        while at < self.desk_asks.len() {
+            if self.desk_asks[at].asker != crate::deskask::Asker::Agent(name.clone()) {
+                at += 1;
+                continue;
+            }
+            let waiting = self.desk_asks.remove(at);
+            let pending = waiting.pending;
+            self.record(
+                pending.id,
+                &pending.request,
+                &pending.checked.script,
+                "dropped: the agent was retired",
+            );
+            self.agent_told(
+                name.clone(),
+                pending.id,
+                false,
+                String::from("Not run: the agent was retired."),
+            );
+        }
+        self.agent_admissions.retain(|(_, a)| a.caller().id() != id);
+        self.save_log();
+        Ok(())
+    }
+
     /// Question `id` is closed, answered or not: its admission goes.
     pub(crate) fn close_agent_ask(&mut self, id: u64) {
         self.agent_asks.withdraw(id);
