@@ -32,11 +32,21 @@ fn reply_to(line: &str) -> Result<String, &'static str> {
 /// `line`'s card, allowed through the trusted path: the shell's reply.
 fn allowed(line: &str) -> Result<String, &'static str> {
     let reply = reply_to(line)?;
-    let menu = menu::Menu::decode(&reply).map_err(|_| {
+    let Some(Ok(shown)) = menu::split_shown(&reply) else {
+        log!("net-hold: {line:?} answered {reply:?}");
+        return Err("net-hold: a send did not show its text above the menu");
+    };
+    if !shown
+        .header
+        .starts_with("Kai wants to send this text to updates.kai.test")
+    {
+        return Err("net-hold: the text to send was not shown under code's header");
+    }
+    let menu = menu::Menu::decode(shown.menu).map_err(|_| {
         log!("net-hold: {line:?} answered {reply:?}");
         "net-hold: a send did not ask on the menu"
     })?;
-    if !menu.question().contains("waits 5 s so you can undo") {
+    if !menu.question().contains("It waits 5 s for undo") {
         log!("net-hold: the card said {:?}", menu.question());
         return Err("net-hold: the card did not say the send waits for undo");
     }
