@@ -122,6 +122,11 @@ impl Shell {
             (Some(id), Some(_)) if id == pending.id => as_added(id, &reply.text),
             _ => None,
         };
+        // An agent's card says who asks and offers no Always.
+        let menu = match &asker {
+            Asker::Agent(agent) => menu.and_then(|m| crate::agentconsent::agent_menu(agent, &m)),
+            _ => menu,
+        };
         let (why, outcome) = match menu {
             None => not_on_card(&reply.text),
             Some(_) if self.desk_asks.len() >= MAX_WAITING => {
@@ -210,8 +215,12 @@ impl Shell {
                 &pending.checked.script,
                 "expired",
             );
-            if let Asker::App(app) = asker {
-                self.card_came_to(&app, pending.id, &Reply::ok(LAPSED));
+            match asker {
+                Asker::App(app) => self.card_came_to(&app, pending.id, &Reply::ok(LAPSED)),
+                Asker::Agent(agent) => {
+                    self.agent_told(agent, pending.id, false, String::from(LAPSED));
+                }
+                Asker::Panel => {}
             }
         }
     }

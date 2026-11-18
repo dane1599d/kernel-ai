@@ -85,34 +85,52 @@ impl Shell {
         };
         let stamp = admission.stamp();
         let id = self.take_id();
-        // The empty line: an agent borrows no consent (ADR 0013 §1).
-        let outcome = self.execute(id, "", &call);
-        let since = id;
-        // Every entry from `since` on is this step's: the shell runs one
-        // request at a time on one thread, so no other line's entry can
-        // land between `take_id` and here.
-        let stamped: alloc::vec::Vec<u64> = self
-            .log
-            .entries()
-            .filter(|e| e.id >= since)
-            .map(|e| e.id)
-            .collect();
-        for entry in stamped {
-            if let Some(e) = self.log.get_mut(entry) {
-                e.agent = stamp.name().clone();
-            }
-        }
+        // The words the door gives an agent's line: none, so an agent
+        // borrows no consent (ADR 0013 §1), and no rule of the person's
+        // covers it while it runs (`agentconsent`).
+        let line = agentid::Line::new(text, agentid::Source::agent(caller.id()));
+        let words = admission.consent_words(&line);
+        self.acting = Some(admission.clone());
+        let outcome = self.execute(id, words, &call);
+        self.acting = None;
+        self.stamp_entries(id, id, stamp.name());
         self.save_log();
         if self.pending.as_ref().is_some_and(|p| p.id == id) {
+            if let Err(why) = self.open_agent_ask(id, &admission) {
+                self.save_log();
+                return Reply::err(format!("not asked: {why}"));
+            }
             return match self.wait_for_card(&outcome.reply, Asker::Agent(name)) {
                 Ok(_) => Reply::ok(format!("asked {id}: on the person's card")),
-                Err(why) => Reply::err(format!("not asked: {why}")),
+                Err(why) => {
+                    self.close_agent_ask(id);
+                    Reply::err(format!("not asked: {why}"))
+                }
             };
         }
         let tier = outcome.tier.name();
         match outcome.reply.ok {
             true => Reply::ok(format!("{tier} #{id}: {}", outcome.reply.text)),
             false => Reply::err(format!("{tier} #{id}: {}", outcome.reply.text)),
+        }
+    }
+
+    /// Stamps log entry `id` and every entry from `since` on with agent
+    /// `name`. Every one of them is the step's (or its yes's run): the shell
+    /// runs one request at a time on one thread, so no other line's entry
+    /// can land between `since` being read and here. Entries between `id`
+    /// and `since`, the person's lines while a card waited, stay theirs.
+    pub(crate) fn stamp_entries(&mut self, id: u64, since: u64, name: &agentid::Name) {
+        let stamped: alloc::vec::Vec<u64> = self
+            .log
+            .entries()
+            .filter(|e| e.id == id || e.id >= since)
+            .map(|e| e.id)
+            .collect();
+        for entry in stamped {
+            if let Some(e) = self.log.get_mut(entry) {
+                e.agent = name.clone();
+            }
         }
     }
 
@@ -139,6 +157,7 @@ impl Shell {
 
     /// The card's answer to agent `agent`'s step `id`, kept for its wait.
     pub(crate) fn agent_told(&mut self, agent: String, id: u64, ran: bool, line: String) {
+        self.close_agent_ask(id);
         if self.agents_told.len() >= MAX_TOLD {
             self.agents_told.remove(0);
         }

@@ -130,3 +130,154 @@ fn a_step_that_carried_handles_is_refused_and_runs_nothing() {
     // The kernel's own requests are the caller's to answer, handles or not.
     assert_eq!(shell.from_route(0, 1, "cpus()"), None);
 }
+
+/// `ops-agent`, which may stop processes and set the policy.
+fn ops_manifest() -> kaiagent::Manifest {
+    kaiagent::Manifest::parse(
+        "kai-app 1\nid ops-agent\nabi 1.0\nagent 1\nclass background\n\
+         model tokens/day=50000 kv=1024 pool=64m\nactions process_stop set_policy\n\
+         memory none\nnet none\n",
+    )
+    .unwrap()
+}
+
+/// The card the terminal takes for the agent's asked step.
+fn take_agents_card(shell: &mut Shell) -> termcore::menu::Menu {
+    let card = shell.eval_console(termcore::menu::TAKE_CARD);
+    termcore::menu::Menu::decode(&card.to_wire()).expect("the agent's card")
+}
+
+#[test]
+fn an_agents_card_names_it_offers_no_always_and_its_allow_runs_once() {
+    let (host, mut shell, badge) = with_agent();
+    let asked = step(&mut shell, badge, RR);
+    assert!(asked.starts_with("ok asked "), "{asked}");
+    let menu = take_agents_card(&mut shell);
+    assert!(
+        menu.question().starts_with("notes-agent asks: "),
+        "{menu:?}"
+    );
+    assert_eq!(
+        menu.rows().len(),
+        3,
+        "Allow and Deny only: {:?}",
+        menu.rows()
+    );
+    let once = host.mint(menu.id, menu.call());
+    let ran = shell.eval_console(&format!("answer {} allow once={once}", menu.id));
+    assert!(ran.ok, "{ran:?}");
+    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
+    let told = step(&mut shell, badge, &format!("wait {}", menu.id));
+    assert!(told.starts_with(&format!("ok ran #{}", menu.id)), "{told}");
+    // The entry says whose it was.
+    assert_eq!(
+        shell.log.get(menu.id).unwrap().agent.as_str(),
+        "notes-agent"
+    );
+}
+
+#[test]
+fn an_agents_question_runs_on_no_answer_but_the_persons_allow_at_its_card() {
+    let (host, mut shell, badge) = with_agent();
+    step(&mut shell, badge, RR);
+    let menu = take_agents_card(&mut shell);
+    // A bare y at the console skips the card: it lets the question go.
+    let typed = shell.eval_console("y");
+    assert!(!typed.ok, "{typed:?}");
+    assert_eq!(host.policy.get(), None);
+    let told = step(&mut shell, badge, &format!("wait {}", menu.id));
+    assert!(
+        told.starts_with(&format!("err not run #{}", menu.id)),
+        "{told}"
+    );
+}
+
+#[test]
+fn an_always_answer_to_an_agents_card_writes_no_rule_and_runs_nothing() {
+    let (host, mut shell, badge) = with_agent();
+    step(&mut shell, badge, RR);
+    let menu = take_agents_card(&mut shell);
+    let once = host.mint(menu.id, menu.call());
+    let reply = shell.eval_console(&format!("answer {} always-kind once={once}", menu.id));
+    assert!(reply.text.contains("has no Always"), "{reply:?}");
+    assert_eq!(host.policy.get(), None);
+    assert!(shell.eval("rules").text.starts_with("no rules"));
+}
+
+#[test]
+fn the_persons_rule_covers_kais_lines_not_an_agents_step() {
+    let stop3 = r#"{"name":"process_stop","arguments":{"name":"build-3"}}"#;
+    let stop4 = r#"{"name":"process_stop","arguments":{"name":"build-4"}}"#;
+    let host = FakeHost::new();
+    host.calls
+        .borrow_mut()
+        .push_back(Ok(llmproto::act::parse(stop3).unwrap()));
+    let mut shell = shell(&host);
+    // The person stops build-3 and says: always for stopping processes.
+    shell.eval("stop build-3");
+    let once = host.mint(1, "process_stop(\"build-3\")");
+    shell.eval(&format!("answer 1 always-kind once={once}"));
+    assert_eq!(shell.eval("rules").text, "#1 process_stop");
+    let id = shell.roster_mut().install(ops_manifest()).unwrap();
+    let badge = u64::from(id.badge());
+    // The agent's stop of build-4 still asks: the rule was the person's.
+    let asked = step(&mut shell, badge, stop4);
+    assert!(asked.starts_with("ok asked "), "{asked}");
+    assert!(host.procs.borrow().iter().any(|p| p == "build-4"));
+}
+
+#[test]
+fn a_yes_for_a_retired_agent_runs_nothing() {
+    let (host, mut shell, badge) = with_agent();
+    step(&mut shell, badge, RR);
+    let menu = take_agents_card(&mut shell);
+    let id = shell.roster_mut().by_name("notes-agent").unwrap().id();
+    shell.roster_mut().retire(id).unwrap();
+    let once = host.mint(menu.id, menu.call());
+    let reply = shell.eval_console(&format!("answer {} allow once={once}", menu.id));
+    assert!(reply.text.contains("grants or call changed"), "{reply:?}");
+    assert_eq!(host.policy.get(), None);
+}
+
+#[test]
+fn an_agent_has_at_most_four_questions_open() {
+    let (_, mut shell, badge) = with_agent();
+    for _ in 0..4 {
+        assert!(step(&mut shell, badge, RR).starts_with("ok asked "));
+    }
+    assert_eq!(
+        step(&mut shell, badge, RR),
+        "err not asked: the agent has 4 questions waiting for the person"
+    );
+}
+
+#[test]
+fn the_persons_line_while_an_agents_question_waits_stays_the_persons() {
+    let (host, mut shell, badge) = with_agent();
+    let asked = step(&mut shell, badge, RR);
+    let asked_id: u64 = asked["ok asked ".len()..]
+        .split(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    // The person runs a line of their own before the card is taken.
+    host.calls
+        .borrow_mut()
+        .push_back(Ok(llmproto::act::parse(RR).unwrap()));
+    assert!(shell.eval("switch to round robin").ok);
+    let my_id = shell.log.last_id();
+    assert!(my_id > asked_id);
+    let menu = take_agents_card(&mut shell);
+    assert_eq!(menu.id, asked_id);
+    let once = host.mint(menu.id, menu.call());
+    shell.eval_console(&format!("answer {} allow once={once}", menu.id));
+    assert_eq!(
+        shell.log.get(menu.id).unwrap().agent.as_str(),
+        "notes-agent"
+    );
+    assert!(
+        shell.log.get(my_id).unwrap().agent.is_kai(),
+        "the person's own"
+    );
+}
