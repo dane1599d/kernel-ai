@@ -62,6 +62,7 @@ mod checkin;
 mod goal;
 mod goals;
 mod run;
+pub mod runner;
 mod text;
 mod valid;
 
