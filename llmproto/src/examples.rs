@@ -50,17 +50,14 @@ const SCRIPT_CALL: &str = r#"{"name":"script","arguments":{}}"#;
 
 /// The act pack's examples: (request, the tagged call answering it).
 pub const ACT: &[(&str, &str)] = &[
+    // One example routes a read to `script` (T1, agents OS plan section 4): the
+    // memory-percentage and uptime ones taught the same answer, and their
+    // tokens go to the agent rows. "print the names of all services" went for
+    // fs_find and process memory (founder test 2).
     ("how many CPUs are there?", SCRIPT_CALL),
-    ("what percentage of memory is free?", SCRIPT_CALL),
     (
         "switch to round robin",
         r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
-    ),
-    // "print the names of all services" went for fs_find and process memory
-    // (founder test 2): the CPU example already routes a read to `script`.
-    (
-        "how long has it been up, in minutes and seconds?",
-        SCRIPT_CALL,
     ),
     (
         "hello",
