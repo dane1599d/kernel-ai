@@ -10,13 +10,21 @@ const GOALS: u64 = 2;
 const INDEX: u64 = 3;
 const NOW: Now = Now { ms: 0, day: 1 };
 
+/// A caller on the route with `badge`, from a process whose pid is not it.
+fn by(badge: u64) -> Caller {
+    Caller {
+        pid: 1_000 + badge,
+        badge,
+    }
+}
+
 fn jobs() -> Jobs {
     Jobs::new(Config::default(), 7)
 }
 
 fn start(jobs: &mut Jobs, badge: u64, text: &str) -> String {
     let command = parse(text).unwrap().unwrap();
-    jobs.handle(badge, command, 40, 20, NOW)
+    jobs.handle(by(badge), command, 40, 20, NOW)
 }
 
 fn ticket(reply: &str) -> u64 {
@@ -85,17 +93,20 @@ fn a_job_waits_then_its_answer_is_taken_once() {
         GOALS,
         "agent-start script count the files",
     ));
-    assert_eq!(jobs.handle(GOALS, Command::Take(t), 0, 0, NOW), "pending");
+    assert_eq!(
+        jobs.handle(by(GOALS), Command::Take(t), 0, 0, NOW),
+        "pending"
+    );
     let request = jobs.job(t).unwrap().queued.unwrap();
     assert_eq!(jobs.ticket_of(request), Some(t));
     jobs.finish(request, "ok the answer".to_string());
     assert_eq!(jobs.scheduler().pending(), 0);
     assert_eq!(
-        jobs.handle(GOALS, Command::Take(t), 0, 0, NOW),
+        jobs.handle(by(GOALS), Command::Take(t), 0, 0, NOW),
         "ok the answer"
     );
     assert_eq!(
-        jobs.handle(GOALS, Command::Take(t), 0, 0, NOW),
+        jobs.handle(by(GOALS), Command::Take(t), 0, 0, NOW),
         "ended unknown ticket"
     );
 }
@@ -106,14 +117,14 @@ fn a_ticket_is_only_its_own_agents() {
     let t = ticket(&start(&mut jobs, GOALS, "agent-start ask what is due"));
     // Another agent's take reads as a ticket that never was, and its stop does nothing.
     assert_eq!(
-        jobs.handle(INDEX, Command::Take(t), 0, 0, NOW),
-        jobs.handle(INDEX, Command::Take(t + 1000), 0, 0, NOW)
+        jobs.handle(by(INDEX), Command::Take(t), 0, 0, NOW),
+        jobs.handle(by(INDEX), Command::Take(t + 1000), 0, 0, NOW)
     );
-    assert_eq!(jobs.handle(INDEX, Command::Stop(t), 0, 0, NOW), "ok");
+    assert_eq!(jobs.handle(by(INDEX), Command::Stop(t), 0, 0, NOW), "ok");
     assert!(jobs.job(t).is_some());
     assert_eq!(jobs.scheduler().pending(), 1);
     // Its own stop drops it from the scheduler too.
-    assert_eq!(jobs.handle(GOALS, Command::Stop(t), 0, 0, NOW), "ok");
+    assert_eq!(jobs.handle(by(GOALS), Command::Stop(t), 0, 0, NOW), "ok");
     assert!(jobs.job(t).is_none());
     assert_eq!(jobs.scheduler().pending(), 0);
 }
@@ -126,7 +137,7 @@ fn tickets_of_another_run_of_llm_are_unknown() {
     let b = ticket(&start(&mut second, GOALS, "agent-start ask b"));
     assert_ne!(a, b);
     assert_eq!(
-        second.handle(GOALS, Command::Take(a), 0, 0, NOW),
+        second.handle(by(GOALS), Command::Take(a), 0, 0, NOW),
         "ended unknown ticket"
     );
 }
@@ -139,7 +150,7 @@ fn the_schedulers_refusals_are_in_the_adrs_words() {
     assert_eq!(reply, "err this agent is not an agent llm knows");
     // Too long for the window.
     let command = parse("agent-start ask a long one").unwrap().unwrap();
-    let reply = known.handle(GOALS, command, 3_000, 2_000, NOW);
+    let reply = known.handle(by(GOALS), command, 3_000, 2_000, NOW);
     assert!(
         reply.starts_with("err the request from goals needs 5000 positions"),
         "{reply}"
@@ -177,7 +188,7 @@ fn the_schedulers_refusals_are_in_the_adrs_words() {
         }
     }
     assert_eq!(
-        over.handle(GOALS, Command::Take(t), 0, 0, NOW),
+        over.handle(by(GOALS), Command::Take(t), 0, 0, NOW),
         "ended over quota"
     );
     let reply = start(&mut over, GOALS, "agent-start ask second");
@@ -201,7 +212,7 @@ fn an_agent_keeps_at_most_so_many_jobs() {
     let request = jobs.job(tickets[0]).unwrap().queued.unwrap();
     jobs.finish(request, "ok done".to_string());
     assert!(start(&mut jobs, GOALS, "agent-start ask again").starts_with("err "));
-    jobs.handle(GOALS, Command::Take(tickets[0]), 0, 0, NOW);
+    jobs.handle(by(GOALS), Command::Take(tickets[0]), 0, 0, NOW);
     assert!(start(&mut jobs, GOALS, "agent-start ask again").starts_with("ok "));
 }
 
@@ -231,7 +242,7 @@ fn the_next_job_is_the_highest_class_then_the_oldest() {
     jobs.finish(request, "ok".to_string());
     // Embedding work only when no background job waits.
     assert_eq!(jobs.next_job().map(|(t, _)| t), Some(index));
-    jobs.handle(INDEX, Command::Stop(index), 0, 0, NOW);
+    jobs.handle(by(INDEX), Command::Stop(index), 0, 0, NOW);
     assert!(jobs.next_job().is_none());
 }
 
@@ -262,4 +273,57 @@ fn a_job_run_whole_is_charged_to_its_agent_and_never_past_its_day() {
     let tomorrow = Now { ms: 0, day: 2 };
     jobs.charge(t, 5, tomorrow);
     assert_eq!(jobs.scheduler().used_today(AgentId(GOALS as u32)), Some(5));
+}
+
+/// The manager's HIGH on #1008: the kernel's pid is no identity. A process whose pid
+/// is a built-in agent's badge number, on a route with no badge, starts nothing and
+/// takes nothing; the badge alone names the agent, whatever the pid.
+#[test]
+fn a_pid_that_equals_a_badge_number_is_no_agent() {
+    let mut jobs = jobs();
+    let command = parse("agent-start ask am I goals").unwrap().unwrap();
+    for pid in [1, 2, 3, 4] {
+        let reply = jobs.handle(
+            Caller {
+                pid,
+                badge: NO_AGENT,
+            },
+            command,
+            10,
+            10,
+            NOW,
+        );
+        assert!(reply.starts_with("err "), "pid {pid}: {reply}");
+    }
+    assert_eq!(jobs.scheduler().pending(), 0);
+    // goals' job, by its badge, from any pid; the take from pid 2 with no badge is
+    // a ticket that never was.
+    let t = ticket(&jobs.handle(
+        Caller {
+            pid: 77,
+            badge: GOALS,
+        },
+        command,
+        10,
+        10,
+        NOW,
+    ));
+    let pid_two = Caller {
+        pid: GOALS,
+        badge: NO_AGENT,
+    };
+    assert_eq!(
+        jobs.handle(pid_two, Command::Take(t), 0, 0, NOW),
+        "ended unknown ticket"
+    );
+    assert_eq!(jobs.handle(pid_two, Command::Stop(t), 0, 0, NOW), "ok");
+    assert!(jobs.job(t).is_some());
+    let other_pid = Caller {
+        pid: 9,
+        badge: GOALS,
+    };
+    assert_eq!(
+        jobs.handle(other_pid, Command::Take(t), 0, 0, NOW),
+        "pending"
+    );
 }

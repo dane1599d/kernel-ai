@@ -32,11 +32,12 @@ mod remote;
 mod workers;
 
 use agentsched::Now;
-use agentsched::jobs::{self, Jobs};
+use agentsched::jobs::{self, Caller, Jobs};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use kabi::handle::{Handle, RecvInfo};
 use kabi::model::Fnv1a;
 use llmproto::act::{ActError, ActRequest, History, history};
 use llmproto::chat::Completion;
@@ -221,7 +222,7 @@ fn main() -> i32 {
         _ => (false, false),
     };
     loop {
-        let mut caller = 0;
+        let mut caller = RecvInfo::default();
         let local = match &mut backends.local {
             Some(Ok(local)) => Some(local),
             _ => None,
@@ -259,11 +260,11 @@ fn main() -> i32 {
             None => run_agent_job(&mut backends, &mut request, &mut caller, &mut cold),
             came => came,
         };
-        let len = match waiting.map_or_else(|| sys::svc_recv(&mut request, 0, &mut caller), Ok) {
+        let len = match waiting.map_or_else(|| recv(&mut request, 0, &mut caller), Ok) {
             Ok(len) => len.min(request.len()),
             Err(kabi::Error::TimedOut) => continue,
             Err(error) => {
-                println!("svc_recv failed: {error:?}");
+                println!("recv_h failed: {error:?}");
                 sys::sleep_ms(100);
                 continue;
             }
@@ -272,7 +273,11 @@ fn main() -> i32 {
         let command = text.split([' ', '\n']).next();
         // An agent's job: queued here, answered at once, run in an idle turn.
         if command.is_some_and(|c| c.starts_with("agent-")) {
-            let mut reply = agent_command(&mut backends, caller, text);
+            let from = Caller {
+                pid: caller.caller_pid,
+                badge: caller.badge,
+            };
+            let mut reply = agent_command(&mut backends, from, text);
             reply.truncate(reply.floor_char_boundary(kabi::MAX_MESSAGE));
             if let Err(error) = sys::svc_reply(reply.as_bytes()) {
                 println!("svc_reply failed: {error:?}");
@@ -342,6 +347,18 @@ fn main() -> i32 {
     }
 }
 
+/// The next request, with who sent it and its route's badge (`RECV_H`): the badge
+/// is what names an agent, never the pid. llm takes no handles, so any a request
+/// moved are closed at once.
+fn recv(request: &mut [u8], timeout_ms: u64, info: &mut RecvInfo) -> Result<usize, kabi::Error> {
+    let len = sys::recv_h(request, timeout_ms, info)?;
+    let count = (info.handle_count as usize).min(info.handles.len());
+    for &handle in &info.handles[..count] {
+        let _ = sys::handle_close(Handle(handle));
+    }
+    Ok(len)
+}
+
 /// The time, as an agent's day counts it: the host's date when the firmware gave
 /// one (days since 1970 UTC), else day 0 for the whole boot.
 fn now() -> Now {
@@ -354,7 +371,7 @@ fn now() -> Now {
 /// Answers an `agent-*` command from the route with `badge` (F3 slice 2a). Its
 /// prompt's tokens are estimated from its bytes, for the scheduler's checks; what
 /// it really took is charged when it has run.
-fn agent_command(backends: &mut Backends, badge: u64, text: &str) -> String {
+fn agent_command(backends: &mut Backends, caller: Caller, text: &str) -> String {
     let command = match jobs::parse(text) {
         Ok(Some(command)) => command,
         Ok(None) => return format!("err unknown request {text:?}"),
@@ -380,7 +397,9 @@ fn agent_command(backends: &mut Backends, badge: u64, text: &str) -> String {
         ),
         _ => (0, 0),
     };
-    backends.jobs.handle(badge, command, prompt, max_new, now())
+    backends
+        .jobs
+        .handle(caller, command, prompt, max_new, now())
 }
 
 /// The most an agent's `ask` and `script` answers are counted at before they run.
@@ -397,7 +416,7 @@ const AGENT_POLL_NS: u64 = 50_000_000;
 fn run_agent_job(
     backends: &mut Backends,
     request: &mut [u8],
-    caller: &mut u64,
+    caller: &mut RecvInfo,
     cold: &mut bool,
 ) -> Option<usize> {
     let (ticket, job) = backends.jobs.next_job()?;
@@ -524,7 +543,7 @@ fn local_warmable(backends: &Backends, stale: bool, cold: bool) -> bool {
 
 /// Compacts history: the `act` prefix into the cache, as [`warm`] does the script
 /// prompt.
-fn warm_act(local: &mut local::Local, request: &mut [u8], caller: &mut u64) -> Option<usize> {
+fn warm_act(local: &mut local::Local, request: &mut [u8], caller: &mut RecvInfo) -> Option<usize> {
     let mut came = None;
     if let Err(why) = local.warm_act(|| request_came(request, caller, &mut came)) {
         println!("local: the act prefix was not cached: {why}");
@@ -537,8 +556,8 @@ fn warm_act(local: &mut local::Local, request: &mut [u8], caller: &mut u64) -> O
 /// is answered at once, "ok no", and the warm-up goes on. So asking whether llm
 /// is warm, as the shell does for the panel, never cuts a warm-up short or
 /// changes what llm computes.
-fn request_came(request: &mut [u8], caller: &mut u64, came: &mut Option<usize>) -> bool {
-    *came = sys::svc_recv(request, 1, caller).ok();
+fn request_came(request: &mut [u8], caller: &mut RecvInfo, came: &mut Option<usize>) -> bool {
+    *came = recv(request, 1, caller).ok();
     let Some(len) = *came else {
         return false;
     };
@@ -559,7 +578,7 @@ fn warm(
     local: &mut local::Local,
     lang: Lang,
     request: &mut [u8],
-    caller: &mut u64,
+    caller: &mut RecvInfo,
 ) -> Option<usize> {
     let started = sys::time_ns();
     let mut came = None;
