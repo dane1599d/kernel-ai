@@ -3,7 +3,9 @@
 # handshake, HTTP responses with their bodies, kai-chunks 1 lists, URLs, and
 # the fetch service's request lines and answers (kainet::wire); and P3's
 # parsers of an app's bytes (plan p3-desktop §1 and §6's fuzz gate): surfabi's
-# message stream, header page and tree records, and look's `kai-theme 1`.
+# message stream, header page and tree records, and look's `kai-theme 1`; and
+# `desktop`'s readers of other processes' bytes (plan p3-desktop section 9):
+# deskcore's client calls, queues, wire parsers and agent requests.
 # The targets are fuzz/fuzz_targets/*.rs, outside the workspace; their bodies
 # are fuzz/harness.rs, fuzz/surfabi_harness.rs and fuzz/look_harness.rs, which
 # the crates' host tests also run, and the P3 targets' corpora are seeded with
@@ -22,7 +24,7 @@ on:
         description: The target, or all of them
         type: choice
         default: all
-        options: [all, tls_client, tls_records, http_response, kai_chunks, url, fetch_wire, surfabi_stream, header_page, tree_records, kai_theme]
+        options: [all, tls_client, tls_records, http_response, kai_chunks, url, fetch_wire, surfabi_stream, header_page, tree_records, kai_theme, desk_server, desk_queues, desk_parsers, desk_agent]
       seconds:
         description: Seconds for each target
         type: number
@@ -52,7 +54,7 @@ jobs:
       - name: Seed the P3 corpora
         env:
           FUZZ_SEED_DIR: ${{ github.workspace }}/fuzz/corpus
-        run: cargo test -p surfabi -p look --test hostile write_fuzz_seeds -- --ignored
+        run: cargo test -p surfabi -p look -p deskcore --test hostile write_fuzz_seeds -- --ignored
       - name: Fuzz
         env:
           # A scheduled run has no inputs: every target, 300 s each.
@@ -62,7 +64,7 @@ jobs:
           set -o pipefail
           targets="$TARGET"
           if [ "$targets" = all ]; then
-            targets="tls_client tls_records http_response kai_chunks url fetch_wire surfabi_stream header_page tree_records kai_theme"
+            targets="tls_client tls_records http_response kai_chunks url fetch_wire surfabi_stream header_page tree_records kai_theme desk_server desk_queues desk_parsers desk_agent"
           fi
           for t in $targets; do
             echo "::group::$t"
