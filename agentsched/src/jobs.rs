@@ -4,7 +4,9 @@
 //! synchronous path; an agent's come in on its own route, whose badge the kernel
 //! sets (`kabi::handle::agent`), and wait their turn in `agentsched`:
 //!
-//! - `agent-start <act|script|ask> <request>`: `ok <ticket>` once the scheduler
+//! - `agent-start <act|script|ask> <request>`, where `<request>` is that request's
+//!   own text without its command word (an `ActRequest`'s `encode()` after `act `):
+//!   `ok <ticket>` once the scheduler
 //!   takes it, or `err <why>` in the ADR's words (`Over quota: goals used 100000
 //!   tokens today`, too long, too many waiting, not an agent);
 //! - `agent-take <ticket>`: `pending`, the answer as its own request's reply, or
