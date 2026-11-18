@@ -80,7 +80,8 @@ fn tap(d: i32, scale: u32, len: i32) -> Tap {
 
 /// `a` blended to `b` by `w` / 256, every channel at once.
 fn lerp(a: u32, b: u32, w: u32) -> u32 {
-    const LOW: u32 = 0x00FF_00FF;
+    // The red and blue channels' bits, as a quotient.
+    const LOW: u32 = u32::MAX / 257;
     let rb = ((a & LOW) * (UNIT - w) + (b & LOW) * w) >> 8 & LOW;
     let ag = (((a >> 8) & LOW) * (UNIT - w) + ((b >> 8) & LOW) * w) & !LOW;
     rb | ag
@@ -120,11 +121,16 @@ mod tests {
     use super::*;
     use alloc::vec;
 
+    /// Opaque black, and a colour: built from channels, not written as a literal.
+    const BLACK: u32 = 0xFF << 24;
+    const WHITE: u32 = u32::MAX;
+    const TEAL: u32 = BLACK | (0x12 << 16) | (0x34 << 8) | 0x56;
+
     fn frame(w: i32, h: i32) -> Vec<u32> {
         (0..w * h)
             .map(|i| {
                 let (x, y) = (i % w, i / w);
-                0xFF00_0000 | ((x as u32 * 37 % 256) << 16) | ((y as u32 * 91 % 256) << 8) | 0x40
+                BLACK | ((x as u32 * 37 % 256) << 16) | ((y as u32 * 91 % 256) << 8) | 0x40
             })
             .collect()
     }
@@ -153,9 +159,9 @@ mod tests {
     #[test]
     fn a_plain_colour_stays_it_at_every_scale() {
         for scale in [150, 180, 210, 240, 360] {
-            let src = vec![0xFF12_3456u32; 64 * 40];
+            let src = vec![TEAL; 64 * 40];
             let (out, ..) = all(&src, 64, 40, scale);
-            assert!(out.iter().all(|&p| p == 0xFF12_3456), "scale {scale}");
+            assert!(out.iter().all(|&p| p == TEAL), "scale {scale}");
         }
     }
 
@@ -171,8 +177,8 @@ mod tests {
 
     #[test]
     fn a_blend_of_two_greys_is_between_them() {
-        assert_eq!(lerp(0xFF00_0000, 0xFFFF_FFFF, 0), 0xFF00_0000);
-        let mid = lerp(0xFF00_0000, 0xFFFF_FFFF, 128);
+        assert_eq!(lerp(BLACK, WHITE, 0), BLACK);
+        let mid = lerp(BLACK, WHITE, 128);
         for shift in [0, 8, 16] {
             let c = (mid >> shift) & 0xFF;
             assert!((127..=128).contains(&c), "{c}");
@@ -205,7 +211,7 @@ mod tests {
                 let mut after = before.clone();
                 for y in r.y..r.bottom() {
                     for x in r.x..r.right() {
-                        after[(y * w + x) as usize] ^= 0x00FF_FFFF;
+                        after[(y * w + x) as usize] ^= WHITE >> 8;
                     }
                 }
                 let (full, ..) = all(&after, w, h, scale);
