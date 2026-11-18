@@ -49,6 +49,8 @@ jobs:
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Mix A, five seeds and a canary
         run: |
           if [ -f xtask/tune/decisions.json ]; then
