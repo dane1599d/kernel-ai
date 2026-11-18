@@ -63,6 +63,7 @@ mod desk_perf_tests;
 mod desk_profile_tests;
 mod desk_tests;
 mod desk_tour_tests;
+mod desk_wheel_app_tests;
 mod devhost;
 mod device_tests;
 mod devices;
@@ -429,6 +430,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskCardWake => run_case(card_wake_tests::check),
         SelfTest::DeskCatalog => run_case(catalog_tests::check),
         SelfTest::UiWindow => run_case(ui_tests::check),
+        SelfTest::DeskWheelApp => run_case(desk_wheel_app_tests::check),
         SelfTest::UiWindowShow => run_case(show_tests::check),
         SelfTest::AppEditor => run_case(app_editor_tests::check),
         SelfTest::AppEditorFiles => run_case(app_editor_files_tests::check),

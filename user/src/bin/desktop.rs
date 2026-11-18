@@ -145,6 +145,9 @@ struct State {
     shown: Vec<(WindowId, u64, Buffer, u32)>,
     /// Which clients' processes are gone (`deskcore::reap`).
     reaper: deskcore::reap::Reaper,
+    /// Windows the wheel was last sent to and that have not drawn since: the
+    /// next picture of one is logged, which tells a boot case the app scrolled.
+    wheeled: Vec<WindowId>,
     frame: Image,
     /// Which window's content was painted last at each px of `frame`, 0 for
     /// none or a window drawn at scale 1 (`deskcore::overlay`).
@@ -260,6 +263,7 @@ fn main() -> i32 {
             pools: Vec::new(),
             shown: Vec::new(),
             reaper: deskcore::reap::Reaper::default(),
+            wheeled: Vec::new(),
             frame: Image::new(width, height),
             mask: vec![0; (width.max(0) * height.max(0)) as usize],
             width,

@@ -73,6 +73,18 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         ],
         ..case("ui-window", "test=ui-window")
     },
+    // Lane G: the wheel over an app's list scrolls it. `desktop` posts the wheel
+    // to Notes' ring, and Notes' next picture (a list scrolls only if it
+    // overflows, and an unchanged window sends none) is logged after it.
+    TestCase {
+        expect: &[
+            "desk-wheel-app: Notes holds 30 notes",
+            "desktop: the wheel went to window 1",
+            "desktop: window 1 drew after the wheel",
+            "desk-wheel-app: the wheel was turned over Notes' list",
+        ],
+        ..case("desk-wheel-app", "test=desk-wheel-app")
+    },
     // P3 task 12b: an unused app naps, and a click wakes it with its state.
     TestCase {
         expect: &[
