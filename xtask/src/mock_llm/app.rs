@@ -8,7 +8,9 @@ use llmproto::pack::capp1;
 use serde_json::{Value, json};
 
 /// The line the `app-build` case types, and the call the mock makes for it.
-pub(super) const BUILD_LINE: &str = "build me a shopping list app";
+/// No telling word in it: "a shopping list app" opens the build on Deny,
+/// since consent reads the noun "list" as asking to be told (#1214, held).
+pub(super) const BUILD_LINE: &str = "build me an app called shopping";
 pub(super) const BUILD_CALL: &str =
     r#"{"name":"app_build","arguments":{"name":"shopping","request":"a shopping list"}}"#;
 

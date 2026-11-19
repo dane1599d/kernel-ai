@@ -3,7 +3,7 @@
 //! install card wakes the terminal by itself, and the person's key on
 //! `desktop`'s card decides.
 //!
-//! 1. "build me a shopping list app": the mock model's act answer is
+//! 1. "build me an app called shopping": the mock model's act answer is
 //!    `app_build("shopping", "a shopping list")` (`xtask/src/mock_llm/acts.rs`).
 //!    llm runs the `c-app-1` round as a job on its server backend, so the line
 //!    answers at once ("Building shopping"); the mock answers the round with
@@ -36,7 +36,9 @@ use fsproto::{How, Reply, Request};
 use kabi::handle::Rights;
 
 /// The line, as the mock model answers it.
-const LINE: &str = "build me a shopping list app";
+// No telling word in it: "a shopping list app" opens the build on Deny, since
+// consent reads the noun "list" as asking to be told (#1214, held).
+const LINE: &str = "build me an app called shopping";
 const NAME: &str = "shopping";
 /// The built app's plan line: a window app `pkg` starts, as `c-build`'s
 /// `hello` is. With no `start=pkg` line, the supervisor refuses `pkg`'s
