@@ -30,6 +30,14 @@ fn alive(pid: u64) -> bool {
     sys::part_peer_alive(part, pid) != Err(Error::NotFound)
 }
 
+/// A caller's capability bits, from the kernel's table (PART_PEER_CAPS): the
+/// person is the caller with POLICY (`Server::set_caps_of`). None for a caller
+/// that is gone, or the kernel.
+fn caps_of(pid: u64) -> u64 {
+    let part = Handle(PARTITION.load(Ordering::Relaxed));
+    sys::part_peer_caps(part, pid).unwrap_or(0)
+}
+
 /// A caller's process name, from the kernel's table (PART_PEER_NAME): the one
 /// folder of `/system/apps` it may open (`Server::set_name_of`). Names are
 /// unique among live processes, and pids are never reused.
@@ -88,6 +96,7 @@ fn main() -> i32 {
     PARTITION.store(part.0, Ordering::Relaxed);
     server.set_alive(alive);
     server.set_name_of(name_of);
+    server.set_caps_of(caps_of);
     fill_model(&mut server, part);
     let mut bench = Bench::default();
     let mut request = alloc::vec![0u8; MAX_MESSAGE];

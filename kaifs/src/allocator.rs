@@ -84,6 +84,10 @@ pub enum Spend {
     /// its `info.cbor`, the item's blocks kept): down to half, so trashing
     /// on a full disk never leaves the emptying nothing.
     Half,
+    /// The same work by the person (the server decides who that is): down to
+    /// a quarter, so an app that has used up [`Spend::Half`] cannot keep the
+    /// person from trashing a file.
+    Person,
     /// Work that frees space: an emptied trash, a truncate down, retention,
     /// the GC's commit, a repair. All of it.
     All,
@@ -169,6 +173,7 @@ impl Allocator {
         let floor = match self.spend {
             Spend::Keep => self.reserve,
             Spend::Half => self.reserve / 2,
+            Spend::Person => self.reserve / 4,
             Spend::All => 0,
         };
         if self.buddy.free_blocks() < floor {

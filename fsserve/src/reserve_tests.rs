@@ -165,3 +165,68 @@ fn a_truncate_and_sync_loop_never_drains_the_reserve() {
     let emptied = home(&mut c, Request::EmptyTrash);
     assert!(matches!(emptied, Reply::Emptied { .. }), "{emptied:?}");
 }
+
+/// The person, as the kernel says: the caller with POLICY, here Alice.
+fn person_caps(pid: u64) -> u64 {
+    match pid == ALICE {
+        true => kabi::cap::POLICY,
+        false => 0,
+    }
+}
+
+/// A trash or truncate by the person gets its own quarter, past what apps
+/// share; an app's keeps to half.
+#[test]
+fn the_persons_trash_gets_its_own_share_and_an_apps_keeps_to_half() {
+    let mut disk = MemDisk::new(2 * 1024);
+    let (mut c, _) = Client::start(&mut disk);
+    c.server.set_caps_of(person_caps);
+    let tier = |c: &mut Client<'_>, caller: u64, request: Request| {
+        c.server.spends_reserve(caller, &request, changes(&request))
+    };
+    let trash = || Request::Trash { name: "x".into() };
+    assert_eq!(tier(&mut c, ALICE, trash()), Spend::Person);
+    assert_eq!(tier(&mut c, BOB, trash()), Spend::Half);
+    assert_eq!(
+        tier(&mut c, ALICE, Request::Truncate { size: 0 }),
+        Spend::Person
+    );
+    assert_eq!(
+        tier(&mut c, BOB, Request::Truncate { size: 0 }),
+        Spend::Half
+    );
+}
+
+/// A hostile app trashes until the apps' half of the reserve is gone; the
+/// person can still trash a file, and emptying the trash still works.
+#[test]
+fn an_app_that_uses_up_half_cannot_keep_the_person_from_trashing() {
+    let mut disk = MemDisk::new(2 * 1024);
+    let (mut c, _) = Client::start(&mut disk);
+    c.server.set_caps_of(person_caps);
+    let made = fill(&mut c);
+    let (keep, rest) = made.split_at(5);
+    let mut refused = false;
+    for name in rest {
+        let trash = Request::Trash { name: name.clone() };
+        match c.call(BOB, HOME_USER, DIR_RIGHTS, trash).0 {
+            Reply::Done => {}
+            Reply::Failed(Error::NoSpace) => {
+                refused = true;
+                break;
+            }
+            other => panic!("the app's trash of {name}: {other:?}"),
+        }
+    }
+    assert!(refused, "the app never used up its half");
+    let trash = Request::Trash {
+        name: keep[0].clone(),
+    };
+    assert_eq!(
+        home(&mut c, trash),
+        Reply::Done,
+        "the person could not trash"
+    );
+    let emptied = home(&mut c, Request::EmptyTrash);
+    assert!(matches!(emptied, Reply::Emptied { .. }), "{emptied:?}");
+}

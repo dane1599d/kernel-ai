@@ -176,6 +176,8 @@ pub struct Server<D: BlockDev> {
     base: u64,
     /// Writes inside an action not yet given to kaifs ([`buffer`]).
     pending: Option<buffer::Pending>,
+    /// The kernel's capability bits of a caller ([`Server::set_caps_of`]).
+    caps_of: fn(u64) -> u64,
     /// The least of the open action's changes' claims on kaifs's reserve: what
     /// its commit may spend ([`Server::spends_reserve`]).
     action_spend: Spend,
@@ -224,6 +226,7 @@ impl<D: BlockDev> Server<D> {
             epoch: 0,
             base,
             pending: None,
+            caps_of: |_| 0,
             action_spend: Spend::All,
             cache: None,
             alive: |_| true,
@@ -254,6 +257,21 @@ impl<D: BlockDev> Server<D> {
     /// every later change.
     pub fn set_alive(&mut self, alive: fn(u64) -> bool) {
         self.alive = alive;
+    }
+
+    /// How `fs` learns a caller's capability bits (PART_PEER_CAPS), the
+    /// kernel's own record: the person is the caller with
+    /// [`kabi::cap::POLICY`], which only the shell's plan line carries. Until
+    /// this is set no caller is the person.
+    pub fn set_caps_of(&mut self, caps_of: fn(u64) -> u64) {
+        self.caps_of = caps_of;
+    }
+
+    /// Whether `caller` is the person: the shell, by its kernel caps, never
+    /// by a name. Kai's own actions go through the shell too, so they reach
+    /// the person's share only under the person's consent.
+    fn is_person(&self, caller: u64) -> bool {
+        (self.caps_of)(caller) & kabi::cap::POLICY != 0
     }
 
     /// How `fs` learns a caller's process name. Through [`SYSTEM_APPS`] a
@@ -558,8 +576,12 @@ impl<D: BlockDev> Server<D> {
             Request::EmptyTrash | Request::UpdateDrop { .. } | Request::Abort => Spend::All,
             // Space that may come back only later, while its copy-on-write
             // costs blocks now, so a loop of it could drain all of the
-            // reserve: half, as a trash.
-            Request::Trash { .. } | Request::Truncate { .. } => Spend::Half,
+            // reserve: half, as a trash; the person a further quarter, so an
+            // app that used up half cannot keep the person from trashing.
+            Request::Trash { .. } | Request::Truncate { .. } => match self.is_person(caller) {
+                true => Spend::Person,
+                false => Spend::Half,
+            },
             // The commit of an action, by Commit or the owner's own Sync, at
             // the least tier of its changes; a Sync outside one has nothing to
             // write and needs no reserve.
