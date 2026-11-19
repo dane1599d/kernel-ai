@@ -38,7 +38,8 @@ case "$1 $2" in
         for d in "$T"/prs/*; do n=$(basename "$d"); [ "$(st $n)" = OPEN ] || continue
           h=$(git -C "$T/origin.git" rev-parse --verify -q "refs/heads/$(pr $n branch)" || pr $n sha)
           r=false; grep -qx batch-ready "$d/labels" && r=true
-          echo "$n $(pr $n branch) $h $r false"; done;;
+          f=false; grep -qx batch-first "$d/labels" && f=true
+          echo "$n $(pr $n branch) $h $r $f"; done;;
       *"number,headRefOid"*)
         for d in "$T"/prs/*; do n=$(basename "$d"); [ "$(st $n)" = OPEN ] || continue
           echo "$n $(git -C "$T/origin.git" rev-parse --verify -q "refs/heads/$(pr $n branch)" || pr $n sha)"; done;;

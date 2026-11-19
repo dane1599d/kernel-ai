@@ -133,6 +133,13 @@ rm -rf "$RT"; git init -q "$RT"
 mkdir -p "$RT/crate/src" "$RT/apps/x/src" "$RT/kernel/src" "$RT/docs"
 for f in crate/Cargo.toml apps/x/Cargo.toml kernel/Cargo.toml Cargo.lock kernel/src/a.rs docs/inc.md; do echo x > "$RT/$f"; done
 printf 'const D: &str = include_str!("../../docs/inc.md");\n' > "$RT/crate/src/lib.rs"
+# Image code reading files the path arms would allow: a doc through
+# concat!(env!(...)) over several lines, a test fixture, a testkit helper.
+printf 'const C: &[u8] = include_bytes!(concat!(\n    env!("CARGO_MANIFEST_DIR"),\n    "/../docs/cc.md"\n));\n' > "$RT/kernel/src/c.rs"
+printf 'const F: &[u8] = include_bytes!("../../crate/tests/fixture.bin");\n' > "$RT/kernel/src/f.rs"
+printf '#[path = "../../testkit/used.rs"]\nmod used;\n' > "$RT/kernel/src/k.rs"
+# A test reaching another test file: not image code.
+mkdir -p "$RT/crate/tests"; printf '#[path = "b.rs"]\nmod b;\n' > "$RT/crate/tests/a.rs"
 git -C "$RT" add -A && git -C "$RT" commit -qm base && git -C "$RT" branch -q base
 rule() {  # $1 expected exit, $2 description, then paths to write
   local want=$1 what=$2 got; shift 2
@@ -145,6 +152,10 @@ rule() {  # $1 expected exit, $2 description, then paths to write
 rule 0 "a doc under docs/"                    docs/plan.md
 rule 0 "a .md at the root"                    README.md
 rule 1 "a doc a .rs include_str!s"            docs/inc.md
+rule 1 "a doc read through concat!(env!(..))" docs/cc.md
+rule 1 "a tests/ fixture image code includes" crate/tests/fixture.bin
+rule 1 "a testkit/ file image code #[path]s"  testkit/used.rs
+rule 0 "a tests/ file only a test reaches"    crate/tests/b.rs
 rule 1 "a .md under a component's src/"       apps/x/src/notes.md
 rule 0 "a crate's tests/ beside Cargo.toml"   crate/tests/t.rs
 rule 1 "a tests/ with no Cargo.toml beside"   loose/tests/t.rs
@@ -219,6 +230,13 @@ nb_setup 1 8 9
 auto_until "#1 merged"
 check "no no-boot batch while a boot PR waits" '! grep -q "no-boot batch" "$L" && grep -q "batch: 1 8 9$" "$L" && grep -q "#8 merged" "$L"'
 check "and its branch is a full one"          '! grep -q -- "--head batch/noboot-" "$T/gh.log"'
+
+echo "== batch-auto.sh: a batch-first boot PR goes in a full batch, first"
+nb_setup 1 8 9
+printf 'batch-ready\nbatch-first\n' > "$T/prs/1/labels"
+: > "$T/gh.log"
+auto_until "#1 merged"
+check "batch-first boot PR: one full batch"   '! grep -q "no-boot batch" "$L" && grep -q "batch: 1 8 9$" "$L" && ! grep -q -- "--head batch/noboot-" "$T/gh.log"'
 
 echo "== batch-auto.sh: KAI_BATCH_NOBOOT=0 turns the lane off"
 nb_setup 8 9
