@@ -20,11 +20,13 @@
 //!   content read that asked labels the rest of the entry as one that ran
 //!   at once does (ADR 0002 D6).
 //! - `undo`, `:dis`, `:defs`, `:reset` and a restarted cc: `session.rs`.
+//! - `:save <name>` and `:load <name>`: `files.rs`.
 //! - `? <request>` and `:keep`, Kai's own C programs: `program.rs`.
 
 pub(crate) mod program;
 
 pub use program::MAX_REPAIRS as C_REPAIRS;
+mod files;
 mod session;
 
 use crate::{CANCEL_ENTRY, Reply, Shell};
@@ -144,10 +146,12 @@ impl Shell {
             ":defs" => self.c_command(&Request::Defs),
             ":reset" => self.c_reset(),
             ":keep" => self.c_keep(),
+            _ if line.starts_with(":save ") => self.c_save(line[6..].trim()),
+            _ if line.starts_with(":load ") => self.c_load(line[6..].trim()),
             _ => match line.strip_prefix(":dis ") {
                 Some(name) => self.c_command(&Request::Dis(name.trim())),
                 None if line.starts_with(':') => Reply::err(
-                    "at c> the commands are ? <request>, :keep, :dis f, :defs, :reset, undo and :rhai",
+                    "at c> the commands are ? <request>, :keep, :dis f, :defs, :save name, :load name, :reset, undo and :rhai",
                 ),
                 None => match line.strip_prefix('?') {
                     Some(request) => self.c_program(request.trim()),
@@ -178,6 +182,18 @@ impl Shell {
             self.c.partial = Some(text.to_string());
             return Reply::more();
         }
+        // `#include "…"` lines at its top: the shell reads them (`files.rs`).
+        let expanded = match self.c_includes(text) {
+            Ok(expanded) => expanded,
+            Err(why) => return Reply::err(why),
+        };
+        if expanded.len() > promptcore::MAX_ENTRY {
+            return Reply::err(format!(
+                "dropped: with its #include files the entry is over {} KiB",
+                promptcore::MAX_ENTRY / 1024
+            ));
+        }
+        let text = expanded.as_str();
         let mut restored = match self.c_ensure_open() {
             Ok(note) => note,
             Err(why) => return Reply::err(why),

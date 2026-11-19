@@ -30,6 +30,7 @@ mod ccbuild;
 mod centry;
 mod cmode;
 mod cprogram;
+mod csave;
 mod deskcard;
 mod door;
 mod door_build;

@@ -287,6 +287,19 @@ impl Files {
 /// The change itself, inside the open action.
 fn make(home: Handle, change: FsChange) -> Result<(), String> {
     match change {
+        FsChange::Save { folder, path, text } => {
+            let dir = open(home, folder, How::Existing, Rights::ENUMERATE)
+                .or_else(|_| open(home, folder, How::Mkdir, Rights::ENUMERATE))
+                .map_err(|why| format!("/home/user/{folder}/ cannot be made: {why}"))?;
+            close(dir);
+            let rights = Rights::READ | Rights::WRITE;
+            let file = open(home, path, How::Existing, rights)
+                .or_else(|_| open(home, path, How::CreateFile, rights))?;
+            let wrote = expect_done(file, Request::Truncate { size: 0 })
+                .and_then(|()| write_all(file, text.as_bytes()));
+            close(file);
+            wrote
+        }
         FsChange::Create { path, text } => {
             let file = open(home, path, How::CreateFile, Rights::WRITE).map_err(|why| match why
                 .contains("Exists")
