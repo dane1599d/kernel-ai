@@ -37,6 +37,7 @@ mod consent;
 mod founder;
 mod goal_tasks;
 mod goals;
+mod goals_run;
 mod grammar;
 mod m8;
 mod os;
