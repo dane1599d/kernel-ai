@@ -103,6 +103,16 @@ impl Rounds {
         }
     }
 
+    /// A change to the app Kai wrote before (plan question 3): the first
+    /// round sends its kept `main.c` with the person's words, so the model
+    /// changes that app rather than writing another.
+    pub(crate) fn changing(mut self, kept: Option<String>) -> Self {
+        if let Some(source) = kept {
+            self.repair = Some((source, llmproto::app::change(&self.wanted)));
+        }
+        self
+    }
+
     /// The model's request for this round, with what it repairs.
     pub(crate) fn ask(&mut self, timeout_ms: u64) -> ScriptRequest {
         ScriptRequest {
@@ -247,8 +257,9 @@ impl Shell {
     }
 
     /// Refuses a `main.c` that `app_build` did not write: it is the person's,
-    /// never overwritten, since nothing would bring it back.
-    pub(crate) fn app_check_source(&self, name: &str) -> Result<(), String> {
+    /// never overwritten, since nothing would bring it back. One Kai wrote is
+    /// what a change starts from: its text.
+    pub(crate) fn app_check_source(&self, name: &str) -> Result<Option<String>, String> {
         let now = self
             .host
             .app_source_read(name)
@@ -257,7 +268,7 @@ impl Shell {
             Some(text) if !self.app_wrote(name, &sha256(&text)) => Err(format!(
                 "{APPS_DIR}/{name}/main.c was changed since Kai wrote it, so it is left as it is: give the app another name"
             )),
-            _ => Ok(()),
+            kept => Ok(kept),
         }
     }
 
@@ -265,9 +276,9 @@ impl Shell {
     /// built, or why not. A host that builds in the background does not
     /// come here ([`Shell::app_start`]).
     fn app_build(&mut self, name: &str, wanted: &str) -> Result<Built, String> {
-        self.app_check_source(name)?;
+        let kept = self.app_check_source(name)?;
         let started = self.host.now_ns();
-        let mut rounds = Rounds::new(name, wanted);
+        let mut rounds = Rounds::new(name, wanted).changing(kept);
         loop {
             // A round is the model's answer, cc's build and its trial: each
             // starts only if all three fit in what is left of the terminal's
@@ -352,7 +363,7 @@ impl Shell {
     ) -> Result<(String, CcBuilt, String, Artifact), Unbuilt> {
         let fail = |why: String| Unbuilt::Final(why);
         // Between rounds in the background the person may have edited it.
-        self.app_check_source(name).map_err(fail)?;
+        let _ = self.app_check_source(name).map_err(fail)?;
         self.host
             .app_source(name, source)
             .map_err(|why| fail(format!("the app's source was not kept: {}", shown(&why))))?;

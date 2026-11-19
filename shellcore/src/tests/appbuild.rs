@@ -408,3 +408,43 @@ fn a_state_too_big_for_the_runtime_is_repaired_with_its_limit_named() {
     assert_eq!(why, format!("cc build refused it:\n{STATE_HINT}{refused}"));
     assert!(STATE_HINT.contains("4096 bytes"));
 }
+
+#[test]
+fn a_change_to_an_app_kai_wrote_sends_its_main_c_and_builds_the_next_version() {
+    let (host, mut shell) = asked(vec![app(SOURCE)]);
+    host.pkg_answers
+        .borrow_mut()
+        .push_back(Ok(String::from("0.0.1")));
+    host.cc_builds.borrow_mut().push_back(Ok(built()));
+    assert!(shell.eval("make me a countdown timer app").ok);
+    // The person asks for a change to the same app.
+    const BEEP: &str =
+        r#"{"name":"app_build","arguments":{"name":"timer","request":"make it beep"}}"#;
+    let changed = format!("{SOURCE}void beep(void);\n");
+    host.calls.borrow_mut().push_back(call(BEEP));
+    host.answers.borrow_mut().push_back(app(&changed));
+    host.pkg_answers
+        .borrow_mut()
+        .push_back(Ok(String::from("0.0.2")));
+    host.cc_builds.borrow_mut().push_back(Ok(built()));
+    let reply = shell.eval("build the timer app again so that it can make it beep");
+    assert!(reply.text.contains("Built timer 0.0.2"), "{reply:?}");
+    // The model got the app it wrote, and the words, to change it.
+    let asked = host.script_requests.borrow().clone();
+    assert_eq!(asked.len(), 2);
+    assert_eq!(asked[1].request, "timer\nmake it beep");
+    assert_eq!(
+        asked[1].repair,
+        Some((String::from(SOURCE), llmproto::app::change("make it beep")))
+    );
+    // A first build sends nothing to change.
+    assert_eq!(asked[0].repair, None);
+    // Built, not installed: `install timer` asks before it replaces 0.0.1.
+    assert!(
+        !host
+            .pkg_sent
+            .borrow()
+            .iter()
+            .any(|s| s.starts_with("local "))
+    );
+}
