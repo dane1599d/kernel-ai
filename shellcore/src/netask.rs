@@ -299,6 +299,7 @@ impl Shell {
             net: Some(asking),
             power: false,
             goal: None,
+            memory: None,
         });
         Reply::menu(id, encoded)
     }

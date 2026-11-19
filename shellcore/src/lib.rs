@@ -37,6 +37,7 @@ pub mod appjob;
 pub mod appline;
 pub mod apps;
 mod brackets;
+mod cardask;
 pub mod ccbuild;
 mod centry;
 mod clarify;
@@ -56,6 +57,7 @@ mod goaltoggle;
 pub mod grants;
 mod guard;
 mod instructions;
+mod memrows;
 mod models;
 mod netask;
 pub mod netgrant;
@@ -439,6 +441,15 @@ pub trait Host {
     fn rules_write(&self, _text: &str) -> Result<(), String> {
         Ok(())
     }
+    /// What Kai remembers, `kai-memory 1`, read once at start (M2); `None`
+    /// when there is none yet.
+    fn memory_read(&self) -> Option<String> {
+        None
+    }
+    /// Writes the whole memory file, after each change.
+    fn memory_write(&self, _text: &str) -> Result<(), String> {
+        Err(String::from("there is no memory store here"))
+    }
     /// The keep-running list as `/system/state/keep` holds it.
     fn keep_read(&self) -> Option<String> {
         None
@@ -724,6 +735,8 @@ pub struct Shell {
     agents_told: Vec<agentstep::Told>,
     /// The goals the person set and the queue to `goals` (G2).
     goal_book: goalrows::GoalBook,
+    /// What Kai remembers (M2).
+    memories: kaimem::store::Memories,
     /// The admission of the agent whose step is running: no rule of the
     /// person's covers it (`agentconsent`).
     acting: Option<agentid::Admission>,
@@ -864,6 +877,7 @@ impl Shell {
             roster: agentid::Roster::new(),
             agents_told: Vec::new(),
             goal_book: goalrows::GoalBook::default(),
+            memories: kaimem::store::Memories::new(),
             acting: None,
             acting_from: 0,
             agent_asks: agentid::Asks::new(),
@@ -901,6 +915,7 @@ impl Shell {
         .with_saved_rules()
         .with_saved_standing()
         .with_saved_keep()
+        .with_saved_memories()
         .with_saved_withheld()
     }
 

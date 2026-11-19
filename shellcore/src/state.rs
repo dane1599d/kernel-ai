@@ -54,18 +54,50 @@ fn clean(value: &str) -> String {
         .collect()
 }
 
+/// [`clean`] with no cut: the memories' part is held to its room by its maker.
+fn clean_long(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| match c {
+            ' '..='~' if c != '"' && c != '\\' => c,
+            _ => '?',
+        })
+        .collect()
+}
+
 impl State {
     /// The State value, `#{...}`, which the request carries
     /// (`llmproto::act::ActRequest::state`; `user_text` writes the `State: `
     /// before it), or `None` when the OS knows nothing to show. With its prefix it
     /// is at most [`MAX_LINE`] bytes.
     pub fn snapshot(&self) -> Option<String> {
-        self.line()
+        self.snapshot_with("")
+    }
+
+    /// [`State::snapshot`] with `memory`, the memories for the request
+    /// (`kaimem::prompt::state`), as its last key when not empty (ADR 0013
+    /// §3, M2). It is the first key the line drops when too long.
+    pub fn snapshot_with(&self, memory: &str) -> Option<String> {
+        self.line_with(memory)
             .map(|line| String::from(line.strip_prefix(PREFIX).unwrap_or(&line)))
+    }
+
+    /// The room `memory` has in the line: what [`MAX_LINE`] leaves after the
+    /// rest of the State and the key's own bytes.
+    pub fn memory_room(&self) -> usize {
+        let used = match self.line() {
+            Some(line) => line.len() + ", memory: \"\"".len(),
+            None => "State: #{memory: \"\"}".len(),
+        };
+        MAX_LINE.saturating_sub(used)
     }
 
     /// The whole line as the model reads it: `State: #{...}`.
     pub fn line(&self) -> Option<String> {
+        self.line_with("")
+    }
+
+    fn line_with(&self, memory: &str) -> Option<String> {
         let scalars = [
             ("app", &self.app),
             ("window", &self.window),
@@ -85,6 +117,9 @@ impl State {
                     Part::List(self.windows.iter().map(|w| clean(w)).collect()),
                 ));
             }
+        }
+        if !memory.is_empty() {
+            parts.push(("memory", Part::One(clean_long(memory))));
         }
         loop {
             if parts.is_empty() {
