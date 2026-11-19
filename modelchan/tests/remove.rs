@@ -1,7 +1,8 @@
 //! `models remove`: a model running, on trial or being imported stays; one
 //! downloading stops; any other stored one leaves the store.
 
-use modelchan::remove::{Holds, Remove, decide};
+use modelchan::remove::{Holds, Remove, decide, trial_holds};
+use modelchan::trial::{State, Trial};
 
 const A: [u8; 32] = [0xaa; 32];
 const B: [u8; 32] = [0xbb; 32];
@@ -12,6 +13,7 @@ fn a_model_nothing_holds_leaves_the_store() {
     let others = Holds {
         running: Some(B),
         candidate: Some(B),
+        previous: Some(B),
         importing: Some(B),
         downloading: Some(B),
     };
@@ -34,6 +36,13 @@ fn a_model_running_on_trial_or_being_imported_stays() {
                 ..Holds::default()
             },
             "on trial",
+        ),
+        (
+            Holds {
+                previous: Some(A),
+                ..Holds::default()
+            },
+            "goes back to it",
         ),
         (
             Holds {
@@ -63,4 +72,23 @@ fn a_download_of_it_stops_instead() {
         ..Holds::default()
     };
     assert!(decide(&A, &both).is_err());
+}
+
+/// A trial not yet decided holds its candidate and its way back; a decided
+/// one holds neither.
+#[test]
+fn an_undecided_trial_holds_its_candidate_and_its_way_back() {
+    let trial = |state| Trial {
+        candidate: A,
+        fnv: 7,
+        previous: Some(B),
+        state,
+    };
+    for state in [State::Pending, State::Attempted] {
+        assert_eq!(trial_holds(Some(&trial(state))), (Some(A), Some(B)));
+    }
+    for state in [State::Kept, State::RolledBack("no".into())] {
+        assert_eq!(trial_holds(Some(&trial(state))), (None, None));
+    }
+    assert_eq!(trial_holds(None), (None, None));
 }
