@@ -69,6 +69,7 @@ pub(super) const CASES: &[TestCase] = &[
             "net-dest: netdest=llm gave the LLM's handle, CONNECT only, within NET, and nothing without it",
             "[netdest-h] hosts:any narrowed to one exact host, not to a suffix or hosts:any again",
             "net-dest: hosts:any stays where it was made: no narrowing makes another and it never moves, while its one-host narrowing does",
+            "net-dest: one process holds at most 16 narrowed records; another's narrowing still works",
             // Audit K #1: record ids carry a generation; handles in transit count.
             "; their ids name nothing after, and one whose handle was moving stayed",
         ],

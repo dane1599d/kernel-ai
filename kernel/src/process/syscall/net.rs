@@ -311,7 +311,7 @@ fn narrow(slot: usize, raw: u64, spec_ptr: u64, spec_len: u64, rights: u64) -> R
     let text = core::str::from_utf8(&text).map_err(|_| Error::Invalid)?;
     let narrower = netdest::Dest::parse(text).map_err(|_| Error::Invalid)?;
     let live = |object| crate::handle::names(Kind::NetDest, object);
-    let object = net::dest::narrow(object, narrower, live)?;
+    let object = net::dest::narrow(object, narrower, live, owner(slot))?;
     let entry = captable::Entry::new(Kind::NetDest, rights, object);
     match crate::handle::give(slot, alloc::vec![entry]).first() {
         Some(&handle) if handle != Handle::NONE => Ok(u64::from(handle.0)),

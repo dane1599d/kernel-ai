@@ -341,7 +341,35 @@ pub fn dest_check() -> Result<(), &'static str> {
     );
     llm_grant()?;
     any_host_pinned()?;
+    narrowing_bound()?;
     sweep_check()
+}
+
+/// Audit K #26: one process holds at most `MAX_NARROWED` records it made by
+/// narrowing; past them its narrowing is NoMemory, and another's still works.
+fn narrowing_bound() -> Result<(), &'static str> {
+    const ONE: u64 = u64::MAX - 7;
+    const OTHER: u64 = u64::MAX - 8;
+    let (object, _) = netdest(KAI_TEST)?;
+    let exact = || {
+        netdest::Dest::parse("proto:tcp,ports:8000,hosts:kai.test,match:exact")
+            .map_err(|_| "net: a bad test destination")
+    };
+    // Every one still named, as by handles it keeps.
+    let named = |_| true;
+    for _ in 0..net::dest::MAX_NARROWED {
+        net::dest::narrow(object, exact()?, named, ONE)
+            .map_err(|_| "net-dest: a narrowing within the bound was refused")?;
+    }
+    if net::dest::narrow(object, exact()?, named, ONE) != Err(kabi::Error::NoMemory) {
+        return Err("net-dest: one process narrowed past its bound");
+    }
+    net::dest::narrow(object, exact()?, named, OTHER)
+        .map_err(|_| "net-dest: another process's narrowing was refused")?;
+    log!(
+        "net-dest: one process holds at most 16 narrowed records; another's narrowing still works"
+    );
+    Ok(())
 }
 
 /// Audit K #1: fills the record table with records no handle names, waits
@@ -458,7 +486,7 @@ fn any_host_pinned() -> Result<(), &'static str> {
     let exact = netdest::Dest::parse("proto:tcp,ports:443,hosts:kai.test,match:exact")
         .map_err(|_| "net: a bad test destination")?;
     let live = |object| crate::handle::names(kabi::handle::Kind::NetDest, object);
-    let narrowed = net::dest::narrow(object, exact, live)
+    let narrowed = net::dest::narrow(object, exact, live, 0)
         .map_err(|_| "net-dest: the ceiling did not narrow to one exact host")?;
     let one = captable::Entry::new(
         kabi::handle::Kind::NetDest,
