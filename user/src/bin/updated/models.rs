@@ -425,6 +425,13 @@ impl Channel {
                     (Reply::Failed(fsproto::Error::NotFound), _) => {
                         Err(String::from("that model is not in the store"))
                     }
+                    // `fs` refuses the blob `kai-modelhint 1` names, which only
+                    // it reads: the model the kernel maps at boot, held even
+                    // with no trial record or no model loaded (an imported
+                    // image, a cancelled switch, a boot that could not map it).
+                    (Reply::Failed(fsproto::Error::Permission), _) => Err(String::from(
+                        "it is the model this machine boots; switch to another model first",
+                    )),
                     other => Err(format!("the store: {other:?}")),
                 }
             }
