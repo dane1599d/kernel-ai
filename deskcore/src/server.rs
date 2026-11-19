@@ -191,6 +191,12 @@ impl Client {
         self.send(REGISTRY, Event::Theme(name));
     }
 
+    /// Tells the client the desktop's whole appearance (`kai-appearance 1`
+    /// text), so it paints and lays out as the desktop does (`surfabi`'s `Look`).
+    pub fn look(&mut self, appearance: &str) {
+        self.send(REGISTRY, Event::Look(appearance));
+    }
+
     fn send(&mut self, object: u32, event: Event) {
         if let Ok(bytes) = event.encode(object) {
             self.events.extend_from_slice(&bytes);
