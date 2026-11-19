@@ -232,9 +232,10 @@ pub enum Request {
     SealedFinish,
     /// Removes sealed blob `name` from the model store, so its blocks can be
     /// used again: on the same handle as [`Request::SealedBegin`], never
-    /// inside an action. A hint naming it is cleared first, and the store's
-    /// undo snapshots that still hold it are dropped, so no undo brings it
-    /// back. Its blocks are reusable two commits after the GC pass it starts
+    /// inside an action. The store's undo snapshots that still hold it are
+    /// dropped, so no undo brings it back. Permission for the blob the
+    /// hint names, the model the next boot maps: point the hint elsewhere
+    /// first. Its blocks are reusable two commits after the GC pass it starts
     /// has run, as any freed block is, not at the reply. NotFound for no such blob; Invalid for a name that is not
     /// a blob's or a file that is not sealed; Busy while another caller's
     /// action holds `fs`. Number 30: #1031 takes 28 and 29.
