@@ -125,7 +125,12 @@ impl Shell {
             Verdict::Asks { text, .. } => {
                 let call =
                     call_text("memory_remember", &[CallArg::Int(id as i64)]).unwrap_or_default();
-                let question = format!("Remember \"{text}\" with {call}?");
+                // The card is code-written (ADR 0005 §7): the model's words
+                // are shown on `show`, beside it, never on it.
+                let length = text.chars().count();
+                let question = format!(
+                    "Remember a fact of {length} characters with {call}? Type show to read it"
+                );
                 let note = format!("Kai keeps \"{text}\" for every request until you forget it");
                 self.memory_ask(id, request, &call, note, &question, Waiting::Remember(text))
             }
@@ -173,7 +178,8 @@ impl Shell {
             return self.memory_edit_run(id, request, memory, text, "asked");
         }
         let call = call_text("memory_edit", &[CallArg::Int(memory as i64)]).unwrap_or_default();
-        let question = format!("Change memory {memory} to \"{text}\" with {call}?");
+        let question =
+            format!("Change memory {memory} with {call}? Type show to read the new words");
         let note = format!("memory {memory} will say \"{text}\"");
         let waiting = Waiting::Edit(memory, String::from(text));
         self.memory_ask(id, request, &call, note, &question, waiting)
