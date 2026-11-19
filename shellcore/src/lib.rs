@@ -138,9 +138,25 @@ pub enum FsRead<'a> {
 /// A change the `fs` server makes as one transaction, which `undo` restores.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FsChange<'a> {
-    Create { path: &'a str, text: &'a str },
-    Write { path: &'a str, text: &'a str },
-    Move { from: &'a str, to: &'a str },
+    Create {
+        path: &'a str,
+        text: &'a str,
+    },
+    Write {
+        path: &'a str,
+        text: &'a str,
+    },
+    /// `:save`'s file at `c>` (ADR 0012 D4): `path` made or replaced, its
+    /// folder `folder` (one beneath `/home/user`) made first when missing.
+    Save {
+        folder: &'a str,
+        path: &'a str,
+        text: &'a str,
+    },
+    Move {
+        from: &'a str,
+        to: &'a str,
+    },
     Trash(&'a str),
     Restore(&'a str),
     EmptyTrash,

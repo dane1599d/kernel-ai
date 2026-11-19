@@ -29,6 +29,7 @@ mod ccbuild;
 mod centry;
 mod cmode;
 mod cprogram;
+mod csave;
 mod deskcard;
 mod door;
 mod door_build;
@@ -768,7 +769,9 @@ impl Host for FakeHost {
             FsChange::Create { path, .. } if files.contains_key(path) => {
                 return Err(String::from("Exists: use fs_write"));
             }
-            FsChange::Create { path, text } | FsChange::Write { path, text } => {
+            FsChange::Create { path, text }
+            | FsChange::Write { path, text }
+            | FsChange::Save { path, text, .. } => {
                 files.insert(path.into(), text.into());
             }
             FsChange::Move { from, to } => {
