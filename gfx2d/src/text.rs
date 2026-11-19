@@ -235,6 +235,17 @@ impl Text {
         (out, x)
     }
 
+    /// `text`'s glyphs in `style`, in order: what is drawn for it, so a
+    /// caller can check two texts never draw the same.
+    pub fn glyphs(&self, style: TypeStyle, text: &str) -> Vec<u32> {
+        let (run, _) = self.run(style, 1.0);
+        self.shape(run, text)
+            .0
+            .into_iter()
+            .map(|(glyph, _)| glyph)
+            .collect()
+    }
+
     /// `text`'s advance and line height in logical px, for layout (uikit's
     /// `Measure`).
     pub fn measure(&self, style: TypeStyle, text: &str) -> (f32, f32) {
