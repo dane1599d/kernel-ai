@@ -29,7 +29,7 @@
 //!   publish fits `pkg`'s heap.
 
 use crate::bundle::{self, ARTIFACT, HEADER};
-use crate::generation::Time;
+use crate::generation::{Installed, Time};
 use crate::header::{Header, valid_name};
 use crate::image::{self, Checked, Files, ROOT};
 use crate::mirror::SAVE_ACTION;
@@ -357,6 +357,33 @@ pub fn shas(
     Ok(held.iter().map(|(_, _, bytes)| sha256(bytes)).collect())
 }
 
+/// The names `local`'s metadata holds a build of now.
+pub fn names(
+    vol: &mut dyn Volume,
+    key: &Key,
+    provided: &[(&str, Version)],
+) -> Result<Vec<String>, String> {
+    let held = verified(vol, key, provided)?;
+    Ok(held
+        .iter()
+        .map(|(header, _, _)| header.name.clone())
+        .collect())
+}
+
+/// The installed packages whose names a build cannot take: those `local`
+/// did not build. One whose name `local` holds is `local`'s even when its
+/// object is not the build `local` holds now: an upgrade that was undone
+/// leaves the older build installed, and `local` keeps only the newest, so
+/// the app's own name must not count as another repository's. The image's
+/// and the mirror's names are taken apart from this.
+pub fn foreign(installed: &[Installed], built: &[Sha], held: &[String]) -> Vec<String> {
+    installed
+        .iter()
+        .filter(|p| !built.contains(&p.sha) && !held.contains(&p.name))
+        .map(|p| p.name.clone())
+        .collect()
+}
+
 /// `published` installed from `checked`, what [`check`] kept of `local`, into
 /// a new generation: exactly its version, so a rebuild replaces the build
 /// installed before it. The generation's number.
@@ -493,6 +520,34 @@ mod tests {
             check(&mut vol, &key(1), PROVIDED).err().as_deref(),
             Some("local's root is not the device key's")
         );
+    }
+
+    #[test]
+    fn an_upgrade_undone_leaves_the_apps_own_name_its_own() {
+        let mut vol = MemVolume::default();
+        let key = key(1);
+        let old = artifact("hello", "0.0.1", "int x;\n");
+        publish(&mut vol, &key, &old, &[], PROVIDED, NOW).unwrap();
+        let new = artifact("hello", "0.0.2", "int y;\n");
+        publish(&mut vol, &key, &new, &[], PROVIDED, NOW).unwrap();
+        // The undo put 0.0.1 back: installed, but no longer the build local holds.
+        let installed = |name: &str, sha: Sha| Installed {
+            name: name.into(),
+            version: Version::new(0, 0, 1),
+            sha,
+            explicit: true,
+            grants: Vec::new(),
+        };
+        let built = shas(&mut vol, &key, PROVIDED).unwrap();
+        let held = names(&mut vol, &key, PROVIDED).unwrap();
+        assert_eq!(held, ["hello"]);
+        let back = [installed("hello", [7; 32]), installed("weather", [9; 32])];
+        assert_eq!(foreign(&back, &built, &held), ["weather"]);
+        // So 0.0.3 publishes: hello is not another repository's.
+        let taken = foreign(&back, &built, &held);
+        let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
+        let next = artifact("hello", "0.0.3", "int z;\n");
+        assert!(publish(&mut vol, &key, &next, &taken, PROVIDED, NOW).is_ok());
     }
 
     #[test]
