@@ -62,6 +62,7 @@ mod told;
 mod transaction;
 mod tune;
 mod ui;
+mod undo_rows;
 mod waiting;
 
 /// A host whose clock moves `step_ns` on every reading.
