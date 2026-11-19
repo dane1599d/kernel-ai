@@ -2,7 +2,7 @@
 //! emptied, since a trash and an emptied trash may take the reserve for the
 //! commits they need, and idle's commits give the freed blocks back.
 
-use super::tests::{ALICE, Client};
+use super::tests::{ALICE, BOB, Client};
 use super::*;
 use alloc::format;
 use alloc::string::String;
@@ -77,4 +77,91 @@ fn a_disk_filled_by_growth_can_still_be_emptied_through_fs() {
         how: How::CreateFile,
     };
     assert!(matches!(home(&mut c, open), Reply::Opened(..)));
+}
+
+/// The tiers each request gets: all of the reserve only for work that frees
+/// space at once, half for a trash or a truncate, none for growth or a Sync
+/// outside an action, and an action's commit (by Commit or its owner's Sync)
+/// the least of its changes'.
+#[test]
+fn each_request_gets_its_tier_and_a_commit_the_least_of_its_actions() {
+    let mut disk = MemDisk::new(2 * 1024);
+    let (mut c, _) = Client::start(&mut disk);
+    let tier = |c: &mut Client<'_>, caller: u64, request: Request| {
+        c.server.spends_reserve(caller, &request, changes(&request))
+    };
+    let trash = || Request::Trash { name: "x".into() };
+    let truncate = || Request::Truncate { size: 0 };
+    let write = || Request::Write {
+        off: 0,
+        data: vec![1],
+    };
+    assert_eq!(tier(&mut c, ALICE, Request::EmptyTrash), Spend::All);
+    assert_eq!(
+        tier(&mut c, ALICE, Request::UpdateDrop { id: 1 }),
+        Spend::All
+    );
+    assert_eq!(tier(&mut c, ALICE, trash()), Spend::Half);
+    assert_eq!(tier(&mut c, ALICE, truncate()), Spend::Half);
+    assert_eq!(tier(&mut c, ALICE, Request::Sync), Spend::Keep);
+    assert_eq!(tier(&mut c, ALICE, write()), Spend::Keep);
+    // An action of trashes and truncates commits at half; Bob's Sync in it,
+    // which is not his, keeps to the reserve.
+    assert_eq!(home(&mut c, Request::Begin { action: 1 }), Reply::Done);
+    tier(&mut c, ALICE, trash());
+    tier(&mut c, ALICE, truncate());
+    assert_eq!(tier(&mut c, ALICE, Request::Sync), Spend::Half);
+    assert_eq!(tier(&mut c, BOB, Request::Sync), Spend::Keep);
+    assert_eq!(tier(&mut c, ALICE, Request::Commit), Spend::Half);
+    assert_eq!(home(&mut c, Request::Abort), Reply::Done);
+    // One write makes the whole action growth.
+    assert_eq!(home(&mut c, Request::Begin { action: 2 }), Reply::Done);
+    tier(&mut c, ALICE, Request::EmptyTrash);
+    tier(&mut c, ALICE, write());
+    assert_eq!(tier(&mut c, ALICE, Request::Commit), Spend::Keep);
+    assert_eq!(home(&mut c, Request::Abort), Reply::Done);
+    // Only emptying: all of it.
+    assert_eq!(home(&mut c, Request::Begin { action: 3 }), Reply::Done);
+    tier(&mut c, ALICE, Request::EmptyTrash);
+    assert_eq!(tier(&mut c, ALICE, Request::Commit), Spend::All);
+    assert_eq!(home(&mut c, Request::Abort), Reply::Done);
+}
+
+/// A hostile app loops a truncate to the same size and a Sync on a full
+/// disk: neither drains more than half the reserve, and emptying the trash
+/// still works afterwards.
+#[test]
+fn a_truncate_and_sync_loop_never_drains_the_reserve() {
+    let mut disk = MemDisk::new(2 * 1024);
+    let (mut c, _) = Client::start(&mut disk);
+    let open = Request::Open {
+        path: "victim".into(),
+        rights: DIR_RIGHTS.bits(),
+        how: How::CreateFile,
+    };
+    let (_, victim) = c.call(ALICE, HOME_USER, DIR_RIGHTS, open);
+    let victim = victim.expect("a file");
+    let write = Request::Write {
+        off: 0,
+        data: vec![7; 4096],
+    };
+    assert_eq!(
+        c.call(ALICE, victim.badge, victim.rights, write).0,
+        Reply::Done
+    );
+    let made = fill(&mut c);
+    for _ in 0..300 {
+        let truncate = Request::Truncate { size: 4096 };
+        let _ = c.call(ALICE, victim.badge, victim.rights, truncate);
+        let _ = home(&mut c, Request::Sync);
+    }
+    let reserve = c.server.fs().io.alloc.reserve();
+    let (free, _) = c.server.fs().space();
+    assert!(free >= reserve / 2, "{free} free, the reserve {reserve}");
+    let trash = Request::Trash {
+        name: made[0].clone(),
+    };
+    assert_eq!(home(&mut c, trash), Reply::Done);
+    let emptied = home(&mut c, Request::EmptyTrash);
+    assert!(matches!(emptied, Reply::Emptied { .. }), "{emptied:?}");
 }
