@@ -64,6 +64,7 @@ type RhaiResult<T> = Result<T, Box<EvalAltResult>>;
 
 mod apps;
 mod grants;
+mod known;
 mod look;
 mod net;
 mod windows;
@@ -816,6 +817,9 @@ pub(crate) fn check_against(
     let (reads, changes) = split(&plan, rows);
     let granted = plan.names();
     let trial = strict(&line, config, &granted, &Tx::new(&stub, &plan));
+    if let Some(error) = known::unknown_in_try(&ast, &trial) {
+        return Err(refuse(format!("the script failed a trial run: {error}")));
+    }
     line.begin(stub.as_ref(), config);
     let note = match engine::eval(&trial, &mut Scope::new(), &ast, config.exec) {
         Ok(_) => None,

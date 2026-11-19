@@ -562,3 +562,84 @@ print(p.name + \" \" + p.mib + \" \" + p.cpu_ms);";
 "
     );
 }
+
+/// The script a `? ` line runs, checked against a fresh host.
+fn checked(script: &str) -> Result<crate::script::Checked, crate::script::Refusal> {
+    let host = FakeHost::new();
+    let dyn_host: Rc<dyn Host> = host;
+    check(
+        &answer(script, "Does it.").unwrap(),
+        &dyn_host,
+        &DEFAULT_CONFIG,
+    )
+}
+
+#[test]
+fn a_row_inside_try_binds_and_asks_as_it_does_at_top_level() {
+    // An order the model added a change to: it asks (as at top level).
+    let line = "count the cpus";
+    let top = "print(cpus());
+set_policy(\"rr\");";
+    let (_, mut shell) = with_answers(vec![answer(top, "Counts CPUs.")]);
+    let at_top = shell.eval(line);
+    assert_eq!(at_top.confirm, Some(1), "{at_top:?}");
+    for nested in [
+        "print(cpus());
+try { set_policy(\"rr\"); } catch { }",
+        "print(cpus());
+try { if true { for i in 0..1 { set_policy(\"rr\"); } } } catch (e) { print(e); }",
+        "print(cpus());
+try { print(\"a\"); } catch { set_policy(\"rr\"); }",
+    ] {
+        let plan = checked(nested)
+            .unwrap_or_else(|e| panic!("{e}: {nested}"))
+            .plan;
+        assert_eq!(plan.names(), vec!["cpus", "set_policy"], "{nested}");
+        let (host, mut shell) = with_answers(vec![answer(nested, "Counts CPUs.")]);
+        let reply = shell.eval(line);
+        assert_eq!(reply.confirm, at_top.confirm, "{nested}: {reply:?}");
+        assert_eq!(host.policy.get(), None, "{nested}: ran before the answer");
+    }
+}
+
+#[test]
+fn a_closure_inside_try_cannot_be_written_so_hides_no_call() {
+    for script in [
+        "try { let f = |x| set_policy(x); f.call(\"rr\"); } catch { }",
+        "try { let f = Fn(\"set_policy\"); f.call(\"rr\"); } catch { }",
+    ] {
+        let refusal = checked(script)
+            .err()
+            .unwrap_or_else(|| panic!("ran: {script}"));
+        assert!(
+            refusal.to_string().contains("syntax error"),
+            "{refusal}: {script}"
+        );
+    }
+}
+
+#[test]
+fn an_unknown_name_inside_try_still_fails_clearly() {
+    for script in [
+        "try { notes_add(\"buy milk\"); } catch { } print(\"carried on\");",
+        "try { for i in 0..2 { if i > 0 { notes_add(\"a\"); } } } catch { }",
+        "try { print(\"a\"); } catch { set_polcy(\"rr\"); }",
+        "try { let s = \"ab\"; s.no_such_method(); } catch { }",
+        "try { set_policy(\"rr\", \"extra\"); } catch { }",
+    ] {
+        let refusal = checked(script)
+            .err()
+            .unwrap_or_else(|| panic!("ran: {script}"));
+        assert!(
+            refusal.to_string().contains("Function not found"),
+            "{refusal}: {script}"
+        );
+    }
+    // What the engine has passes, a method and an operator with it.
+    for script in [
+        "try { let s = \"ab\"; print(s.len() + 1); print(type_of(s)); } catch (e) { print(e); }",
+        "try { print(cpus()); } catch { }",
+    ] {
+        checked(script).unwrap_or_else(|e| panic!("{e}: {script}"));
+    }
+}
