@@ -24,6 +24,10 @@ use surfabi::wire::{self, Error};
 /// buffer, and small enough that no sum of two overflows.
 const MAX_DAMAGE_PX: u32 = 1 << 20;
 
+/// The most px a buffer may have on a side: 16K, past any screen and any window
+/// the desk keeps.
+pub const MAX_BUFFER_PX: u32 = 16_384;
+
 /// The most detents one wheel event carries to a client.
 pub const MAX_DETENTS: i32 = 120;
 
@@ -384,6 +388,13 @@ impl Client {
                         .find(|p| p.0 == header.object)
                         .ok_or(Error::BadArg)?;
                     let end = u64::from(offset) + u64::from(stride) * u64::from(height);
+                    // A buffer has px, and no more per side than any screen: past that the
+                    // layer a window's repaint allocates, or its row arithmetic, is no
+                    // longer the client's to size.
+                    let sides = 1..=MAX_BUFFER_PX;
+                    if !sides.contains(&width) || !sides.contains(&height) {
+                        return Err(Error::BadArg);
+                    }
                     if offset < surfabi::header::PAGE as u32 || end > u64::from(pool.1) {
                         return Err(Error::BadArg);
                     }
