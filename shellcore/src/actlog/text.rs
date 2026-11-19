@@ -361,9 +361,15 @@ fn form_of(word: &str) -> Option<Form> {
 }
 
 fn state_of(word: &str) -> Option<State> {
-    [State::Done, State::Asked, State::Nothing, State::Undone]
-        .into_iter()
-        .find(|s| s.word() == word)
+    [
+        State::Done,
+        State::Asked,
+        State::Nothing,
+        State::Undone,
+        State::Unknown,
+    ]
+    .into_iter()
+    .find(|s| s.word() == word)
 }
 
 fn tier_of(word: &str) -> Option<Tier> {

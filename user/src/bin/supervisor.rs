@@ -364,8 +364,9 @@ fn keep(services: &mut [Service], records: &[Record], name: &str, on: bool, call
     };
     let reply = send_ctl(name, verb);
     // A running app that did not take it: the record goes back, so the shell's
-    // refusal and the supervisor agree.
-    if !reply.starts_with("ok") {
+    // refusal and the supervisor agree. One that took it and did not answer
+    // may have applied it, so the record stays as asked.
+    if !reply.starts_with("ok") && !reply.starts_with(supervise::appcall::UNANSWERED) {
         services[index].record.keep = was;
         save(services);
     }
@@ -395,6 +396,11 @@ fn send_ctl(name: &str, verb: sys::AppCtl) -> String {
             println!("{name} {}: {text}", verb.word());
             text
         }
+        Err(kabi::Error::Dead) => format!(
+            "{} {name} took the {} and did not answer; it may have taken effect",
+            supervise::appcall::UNANSWERED,
+            verb.word()
+        ),
         Err(error) => format!("err cannot reach {name}: {error:?}"),
     }
 }
@@ -447,6 +453,13 @@ fn app_call(services: &mut [Service], app: &str, request: &str, caller: u64) -> 
             format!(
                 "{} {app} did not answer in time",
                 supervise::appcall::TIMEOUT
+            )
+        }
+        Err(kabi::Error::Dead) => {
+            println!("{app} took a call and did not answer it");
+            format!(
+                "{} {app} took the call and did not answer; it may have run",
+                supervise::appcall::UNANSWERED
             )
         }
         Err(error) => format!("err cannot reach {app}: {error:?}"),

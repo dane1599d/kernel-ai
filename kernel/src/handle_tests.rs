@@ -348,8 +348,44 @@ fn revoke_mid_call() -> Result<(), &'static str> {
             return Err("handles: the revoke pair's checks failed");
         }
     }
+    unanswered()?;
     log!("handles: revoking a grant ended a call in flight through it");
     Ok(())
+}
+
+/// Audit K #19: a call its server took and did not answer by the deadline
+/// ends Unanswered, not TimedOut, so APP_CALL can say it may have run and the
+/// shell never sends it again. `hold` takes one call and keeps it 3 s.
+fn unanswered() -> Result<(), &'static str> {
+    const NAME: &str = "hunans";
+    let pid = process::spawn(&SpawnRequest {
+        name: NAME,
+        program: "handles",
+        args: b"mode=hold",
+        limits: Limits {
+            caps: cap::SERVE,
+            ..LIMITS
+        },
+        spawner: 0,
+        supervisor: false,
+        uses: &[],
+    })
+    .map_err(|_| "handles: cannot start the holder")?;
+    // Bound and waiting, so the call is taken at once rather than queued.
+    for _ in 0..1000 {
+        if ipc::server_of(NAME).is_some() {
+            break;
+        }
+        threads::sleep_ms(10);
+    }
+    let result = ipc::call_from(NAME, b"hold", 500);
+    if wait_exit(pid)? != (ExitReason::Exited, 0) {
+        return Err("handles: the holder failed");
+    }
+    match result {
+        Err(ipc::CallError::Unanswered) => Ok(()),
+        _ => Err("handles: a call taken and not answered did not end Unanswered"),
+    }
 }
 
 /// M2: make a request node, give 8 handles under it to 2 processes (4 each),

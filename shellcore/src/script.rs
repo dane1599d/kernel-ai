@@ -108,6 +108,9 @@ struct Tx {
     /// The shell's line for the last app reply that failed its row's call
     /// (`<row>: the app refused`), with none of the reply's words (#831).
     app_failed: Rc<RefCell<Option<String>>>,
+    /// The row whose app call the app took and did not answer: it may have
+    /// run, so the run's outcome is not known (audit K #19).
+    unanswered: Rc<RefCell<Option<String>>>,
 }
 
 impl Tx {
@@ -119,6 +122,7 @@ impl Tx {
             plan: Rc::clone(plan),
             outbox: Outbox::default(),
             app_failed: Rc::default(),
+            unanswered: Rc::default(),
         }
     }
 
@@ -958,6 +962,9 @@ pub struct Ran {
     /// person the app's words, and `failed` is the shell's own line in their
     /// place, the one a model turn is remembered by (#831).
     pub withheld: bool,
+    /// A row whose app call the app took and did not answer: the run may
+    /// have changed that app's state, so it did not fail cleanly.
+    pub unanswered: Option<String>,
 }
 
 /// Runs a script with the real OS, granted only the calls the plan found. Its
@@ -1017,6 +1024,7 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
         shown: line.take_shown(),
         failed,
         withheld,
+        unanswered: tx.unanswered.take(),
     }
 }
 
