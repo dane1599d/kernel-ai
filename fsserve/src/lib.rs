@@ -31,6 +31,8 @@ pub mod models;
 #[cfg(test)]
 mod oid_tests;
 #[cfg(test)]
+mod reserve_tests;
+#[cfg(test)]
 mod tests;
 mod trash;
 
@@ -178,6 +180,9 @@ pub struct Server<D: BlockDev> {
     base: u64,
     /// Writes inside an action not yet given to kaifs ([`buffer`]).
     pending: Option<buffer::Pending>,
+    /// Whether the open action made a change that grows the disk, so its
+    /// commit may not take kaifs's reserve ([`Server::spends_reserve`]).
+    action_grew: bool,
     /// The record last read.
     cache: Option<buffer::Cached>,
     /// Whether a caller (a pid) still runs: a dead owner's action is aborted
@@ -242,6 +247,7 @@ impl<D: BlockDev> Server<D> {
             epoch: 0,
             base,
             pending: None,
+            action_grew: false,
             cache: None,
             alive: |_| true,
             name_of: |_, _| None,
@@ -458,9 +464,24 @@ impl<D: BlockDev> Server<D> {
         }
         let now = self.base.saturating_add(now);
         let fs = self.fs();
-        if !fs.writable() || !(fs.gc_running() || fs.space_low() || fs.expiry_due(now)) {
+        // Under the reserve with freed blocks waiting: commits give them back.
+        let release = fs.reserve_waits_on_pending();
+        if !fs.writable() || !(fs.gc_running() || fs.space_low() || fs.expiry_due(now) || release) {
             return;
         }
+        // Retention, the GC and these commits free space: they may take the
+        // reserve, on a disk growth has filled.
+        let was = fs.io.alloc.spend_reserve(true);
+        self.retain_and_collect(now);
+        if release && self.fs.is_clean() {
+            let _ = self.commit();
+        }
+        self.fs.io.alloc.spend_reserve(was);
+    }
+
+    /// Retention, then a slice of the GC (see [`Server::idle`]).
+    fn retain_and_collect(&mut self, now: u64) {
+        let fs = self.fs();
         let stepped = (|| {
             if !fs.gc_running() {
                 let mut dropped = fs.expire(now)?.len();
@@ -537,15 +558,63 @@ impl<D: BlockDev> Server<D> {
         if changes && self.owner.is_none() && self.fs.oids_unsaved() && self.fs.is_clean() {
             let _ = self.commit();
         }
+        let spend = self.spends_reserve(call.caller, &request, &target, changes);
+        let was = self.fs.io.alloc.spend_reserve(spend);
+        let answered = self.answer_change(call, &target, request, changes, shm);
+        self.fs.io.alloc.spend_reserve(was);
+        answered
+    }
+
+    /// Whether `request` may take kaifs's reserved blocks: work that frees
+    /// space, so a disk growth filled can still be emptied (a trash, an emptied
+    /// trash, a truncate down, a dropped update snapshot, an abort, a sync),
+    /// or the commit of an action that made only such changes. A growing
+    /// change in an action marks it, so its commit keeps to the reserve.
+    fn spends_reserve(
+        &mut self,
+        caller: u64,
+        request: &Request,
+        target: &Target,
+        changes: bool,
+    ) -> bool {
+        if matches!(request, Request::Begin { .. }) && self.owner.is_none() {
+            self.action_grew = false;
+        }
+        let frees = match request {
+            Request::Trash { .. }
+            | Request::EmptyTrash
+            | Request::UpdateDrop { .. }
+            | Request::Abort
+            | Request::Sync => true,
+            Request::Truncate { size } => *size <= target.inode.size,
+            Request::Commit => !self.action_grew,
+            _ => false,
+        };
+        if changes && !frees && self.owner == Some(caller) {
+            self.action_grew = true;
+        }
+        frees
+    }
+
+    /// [`Server::answer`]'s change, once the request is known to reach its
+    /// target.
+    fn answer_change(
+        &mut self,
+        call: &Call,
+        target: &Target,
+        request: Request,
+        changes: bool,
+        shm: Option<&mut [u8]>,
+    ) -> Result<(Reply, Option<Mint>), Error> {
         let in_action = self.owner.is_some();
         let done = match request {
             Request::ReadShm { off, len } => self
-                .read_shm(call, &target, off, len, shm)
+                .read_shm(call, target, off, len, shm)
                 .map(|r| (r, None)),
             Request::WriteShm { off, len } => self
-                .write_shm(call, &target, off, len, shm)
+                .write_shm(call, target, off, len, shm)
                 .map(|r| (r, None)),
-            request => self.dispatch(call, &target, request),
+            request => self.dispatch(call, target, request),
         };
         match done {
             // A change outside an action is durable before it is answered.
