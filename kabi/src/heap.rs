@@ -11,8 +11,16 @@
 
 use core::fmt;
 
-/// Allocations of this many bytes or more get their own mapping.
-pub const BIG_BYTES: usize = 1 << 20;
+/// Allocations of this many bytes or more get their own mapping: 4 MiB, so
+/// what an app's suspend and its working state allocate (well under it)
+/// reuses the heap it already has, and what runs to tens or hundreds of MiB
+/// (llm's buffers, a frame at 1920x1080) goes back when freed.
+pub const BIG_BYTES: usize = 4 << 20;
+/// Freed mappings kept to be reused by an allocation of the same size (a
+/// frame drawn again and again), until [`Cached::take_all`] gives them back.
+pub const CACHED: usize = 2;
+/// The largest mapping kept: past it, a freed one always goes back.
+pub const MAX_CACHED_BYTES: u64 = 32 << 20;
 /// A page.
 pub const PAGE: u64 = 4096;
 /// Big allocations at once; past this they come from the heap. The kernel
@@ -97,6 +105,52 @@ impl Default for BigTable {
     }
 }
 
+/// Freed big mappings kept for reuse: each its start and its bytes.
+#[derive(Debug, Default)]
+pub struct Cached {
+    kept: [Option<(u64, u64)>; CACHED],
+}
+
+impl Cached {
+    pub const fn new() -> Self {
+        Self {
+            kept: [None; CACHED],
+        }
+    }
+
+    /// Keeps the freed mapping at `start` of `bytes`: what must go back now
+    /// instead, if any (itself when it is too large to keep, else the oldest
+    /// kept when there is no room).
+    pub fn put(&mut self, start: u64, bytes: u64) -> Option<(u64, u64)> {
+        if bytes > MAX_CACHED_BYTES || start == 0 {
+            return Some((start, bytes));
+        }
+        if let Some(slot) = self.kept.iter_mut().find(|k| k.is_none()) {
+            *slot = Some((start, bytes));
+            return None;
+        }
+        let oldest = self.kept[0];
+        self.kept.rotate_left(1);
+        self.kept[CACHED - 1] = Some((start, bytes));
+        oldest
+    }
+
+    /// A kept mapping of exactly `bytes`, taken out: its start.
+    pub fn take(&mut self, bytes: u64) -> Option<u64> {
+        let at = self
+            .kept
+            .iter()
+            .position(|k| k.is_some_and(|(_, b)| b == bytes))?;
+        let (start, _) = self.kept[at].take()?;
+        Some(start)
+    }
+
+    /// Every kept mapping, taken out, to give back.
+    pub fn take_all(&mut self) -> [Option<(u64, u64)>; CACHED] {
+        core::mem::replace(&mut self.kept, [None; CACHED])
+    }
+}
+
 /// The [`MARK_BYTES`] mark, in MiB, a heap growing from `old` to `new` bytes
 /// passes, if any: the highest one when it passes several.
 pub fn passed_mark(old: u64, new: u64) -> Option<u64> {
@@ -145,7 +199,27 @@ mod tests {
     use core::fmt::Write;
 
     #[test]
-    fn a_mebibyte_or_more_with_at_most_page_alignment_gets_its_own_mapping() {
+    fn freed_mappings_are_kept_for_the_same_size_and_given_back_when_asked() {
+        let mut cached = Cached::new();
+        assert_eq!(cached.put(PAGE, 8 * PAGE), None);
+        assert_eq!(cached.put(100 * PAGE, 16 * PAGE), None);
+        // Full: the oldest goes back.
+        assert_eq!(cached.put(200 * PAGE, 8 * PAGE), Some((PAGE, 8 * PAGE)));
+        // Only the same size is reused, the one kept.
+        assert_eq!(cached.take(4 * PAGE), None);
+        assert_eq!(cached.take(8 * PAGE), Some(200 * PAGE));
+        assert_eq!(cached.take(8 * PAGE), None);
+        // Too large to keep: straight back.
+        let huge = MAX_CACHED_BYTES + PAGE;
+        assert_eq!(cached.put(300 * PAGE, huge), Some((300 * PAGE, huge)));
+        // A trim takes what is left.
+        let all = cached.take_all();
+        assert_eq!(all.iter().flatten().count(), 1);
+        assert_eq!(cached.take(16 * PAGE), None);
+    }
+
+    #[test]
+    fn four_mebibytes_or_more_with_at_most_page_alignment_gets_its_own_mapping() {
         assert_eq!(big_bytes(BIG_BYTES - 1, 8), None);
         assert_eq!(big_bytes(BIG_BYTES, 8), Some(BIG_BYTES as u64));
         assert_eq!(big_bytes(BIG_BYTES + 1, 64), Some(BIG_BYTES as u64 + PAGE));

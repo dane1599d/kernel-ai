@@ -13,7 +13,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
-use kabi::heap::{BigTable, LineBuf, big_bytes, passed_mark};
+use kabi::heap::{BigTable, Cached, LineBuf, big_bytes, passed_mark};
 use talc::base::Talc;
 use talc::base::binning::Binning;
 use talc::source::Source;
@@ -99,6 +99,9 @@ enum Big {
 pub struct Counting {
     inner: Allocator,
     big: spin::Mutex<BigTable>,
+    /// Freed big mappings kept for an allocation of the same size, so a
+    /// buffer made and dropped every frame costs no system calls.
+    cached: spin::Mutex<Cached>,
     live: AtomicU64,
 }
 
@@ -107,6 +110,7 @@ impl Counting {
         Self {
             inner: new(),
             big: spin::Mutex::new(BigTable::new()),
+            cached: spin::Mutex::new(Cached::new()),
             live: AtomicU64::new(0),
         }
     }
@@ -115,11 +119,26 @@ impl Counting {
         self.live.load(Ordering::Relaxed)
     }
 
-    /// `bytes` (whole pages) of their own for an allocation of `size`: zeroed.
-    fn map_big(&self, bytes: u64, size: usize) -> Big {
+    /// Gives every kept mapping back to the system: an app that naps
+    /// (comphost) returns what it no longer draws with.
+    pub fn trim(&self) {
+        let kept = self.cached.lock().take_all();
+        for (start, _) in kept.into_iter().flatten() {
+            let _ = sys::mem_release(start);
+        }
+    }
+
+    /// `bytes` (whole pages) of their own for an allocation of `size`; zeroed
+    /// unless a kept one of that size was reused (`reused`).
+    fn map_big(&self, bytes: u64, size: usize, reused: &mut bool) -> Big {
         let mut table = self.big.lock();
         if !table.has_room() {
             return Big::Heap;
+        }
+        if let Some(start) = self.cached.lock().take(bytes) {
+            table.insert(start);
+            *reused = true;
+            return Big::Mapped(start as *mut u8);
         }
         let Ok(start) = sys::mem_reserve(bytes) else {
             return Big::Heap;
@@ -136,14 +155,17 @@ impl Counting {
         Big::Mapped(start as *mut u8)
     }
 
-    /// Gives `ptr` back to the system if it is a big allocation's; whether it was.
-    fn unmap_big(&self, ptr: *mut u8) -> bool {
+    /// Takes `ptr` back if it is a big allocation's of `bytes`: kept for the
+    /// next of its size, or given back to the system; whether it was one.
+    fn unmap_big(&self, ptr: *mut u8, bytes: u64) -> bool {
         let start = ptr as u64;
         let mut table = self.big.lock();
         if !table.remove(start) {
             return false;
         }
-        let _ = sys::mem_release(start);
+        if let Some((gone, _)) = self.cached.lock().put(start, bytes) {
+            let _ = sys::mem_release(gone);
+        }
         true
     }
 
@@ -157,8 +179,15 @@ impl Counting {
     /// The allocation, `zeroed` or not: a big one's pages come zeroed.
     unsafe fn allocate(&self, layout: Layout, zeroed: bool) -> *mut u8 {
         if let Some(bytes) = big_bytes(layout.size(), layout.align()) {
-            match self.map_big(bytes, layout.size()) {
-                Big::Mapped(ptr) => return self.count(ptr, layout.size()),
+            let mut reused = false;
+            match self.map_big(bytes, layout.size(), &mut reused) {
+                Big::Mapped(ptr) => {
+                    if zeroed && reused {
+                        // SAFETY: the mapping is this allocation's, `bytes` long.
+                        unsafe { core::ptr::write_bytes(ptr, 0, layout.size()) };
+                    }
+                    return self.count(ptr, layout.size());
+                }
                 Big::Refused => return core::ptr::null_mut(),
                 Big::Heap => {}
             }
@@ -195,7 +224,8 @@ unsafe impl GlobalAlloc for Counting {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let big = big_bytes(layout.size(), layout.align()).is_some() && self.unmap_big(ptr);
+        let big = big_bytes(layout.size(), layout.align())
+            .is_some_and(|bytes| self.unmap_big(ptr, bytes));
         if !big {
             // SAFETY: as above; `ptr` is not a big allocation's, so talc's.
             unsafe { GlobalAlloc::dealloc(&self.inner, ptr, layout) };
