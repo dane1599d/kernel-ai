@@ -44,9 +44,14 @@ impl<E: Env> Host<E> {
     /// its checkpoint, and nothing `f` did is kept) or no version is serving.
     ///
     /// A suspended app wakes first. During probation `f` runs on the candidate,
-    /// the version shown, with no transaction, as before: it can read and draw
-    /// but not use storage or effects, and its result has no [`Performed`] worth
-    /// running.
+    /// the version whose window is shown, as one transaction the same way: its
+    /// transaction is checked, its writes commit into the storage with the
+    /// standby's own checkpoint (`probation`: the state the kernel keeps is the
+    /// standby's), its effects go out, since its reply is the one shown, and the
+    /// tickets run on. So what the person does in the window is kept, and on a
+    /// rollback the standby reloads storage that holds it. A candidate that
+    /// faults, or whose transaction is out of bounds, is rolled back as a
+    /// request's fault rolls it back, and nothing that call did is kept.
     pub fn serve_with<R>(
         &mut self,
         f: impl FnOnce(&mut E::Instance) -> Result<R, Fault>,
@@ -58,16 +63,51 @@ impl<E: Env> Host<E> {
                 (Mode::Serving(version), _) => self.serve_call(version, f)?,
                 (mode, _) => (mode, None),
             },
-            Mode::Probation(mut probation) => {
-                let out = f(&mut probation.candidate.instance)
-                    .ok()
-                    .map(|r| (r, Performed::default()));
-                (Mode::Probation(probation), out)
-            }
+            Mode::Probation(probation) => self.serve_probation(probation, f)?,
             other => (other, None),
         };
         self.mode = mode;
         Ok(out)
+    }
+
+    /// [`Host::serve_with`] during probation: `f` on the candidate as one
+    /// transaction, committed with the standby's checkpoint, or the candidate
+    /// rolled back.
+    fn serve_probation<R>(
+        &mut self,
+        mut probation: alloc::boxed::Box<crate::host::Probation<E::Instance>>,
+        f: impl FnOnce(&mut E::Instance) -> Result<R, Fault>,
+    ) -> Result<(Mode<E::Instance>, Done<R>), Exit> {
+        let inputs = self.core.inputs();
+        let storage = self.core.storage.clone();
+        let instance = &mut probation.candidate.instance;
+        instance.begin(&storage, inputs);
+        let result = f(instance);
+        let txn = instance.finish();
+        let done = result
+            .and_then(|r| check_txn(&txn, inputs, 0).map(|()| r))
+            .map_err(Stop::Fault)
+            .and_then(|r| {
+                // The standby's state, the candidate's writes: what the kernel
+                // keeps through probation, so a rollback loses nothing.
+                self.core.commit_as(&mut probation.standby, &txn, false)?;
+                self.core.next_ticket = inputs.first_ticket.wrapping_add(txn.effects.len() as u32);
+                Ok(r)
+            });
+        match done {
+            Ok(r) => {
+                let performed = Performed {
+                    txn,
+                    first_ticket: inputs.first_ticket,
+                };
+                Ok((Mode::Probation(probation), Some((r, performed))))
+            }
+            Err(Stop::Exit(exit)) => Err(exit),
+            Err(Stop::Fault(fault)) => {
+                let (mode, _) = crate::probation::roll_back(&mut self.core, *probation, &fault, 0)?;
+                Ok((mode, None))
+            }
+        }
     }
 
     fn serve_call<R>(
