@@ -556,6 +556,9 @@ fn execute(options: &Options) -> Result<(), String> {
             if case.bridge {
                 qemu::net_behind_bridge(&mut args);
             }
+            if case.powers_off {
+                args.push("-no-shutdown".into());
+            }
             if case.screen.is_some() {
                 screen::clear(&target_dir);
             }
