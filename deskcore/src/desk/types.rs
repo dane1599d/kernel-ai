@@ -20,6 +20,8 @@ pub mod usage {
     pub const RIGHT_GUI: u16 = 0xE7;
     pub const Y: u16 = 0x1C;
     pub const N: u16 = 0x11;
+    pub const PAGE_UP: u16 = 0x4B;
+    pub const PAGE_DOWN: u16 = 0x4E;
 }
 /// The smallest content a resize leaves.
 pub(super) const MIN_CONTENT: Size = Size { w: 120, h: 60 };
@@ -127,6 +129,9 @@ pub enum Effect {
     /// The wheel over the Kai pane's history, by detents (positive scrolls
     /// toward the newest).
     PaneWheel(i32),
+    /// While a send's card is up: PageUp (`pages` -1), PageDown (1) or the
+    /// wheel scrolls its text in the pane (`desktop`'s own code).
+    PreviewScroll { pages: i32, detents: i32 },
     /// The wheel over Start's lists, by detents (positive moves down).
     StartWheel(i32),
     /// The wheel over `window`'s content at `at` (content-local px), by

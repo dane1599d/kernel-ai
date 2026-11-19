@@ -36,6 +36,7 @@ fn paint(desk: &Desk, panel: &Panel, chat: &Chat, card: Option<&Card>) -> Image 
         chat,
         start: None,
         ask: card,
+        preview: None,
         now_ms: 3_000,
     };
     let all = Rect::new(0, 0, w, h);
@@ -1009,4 +1010,73 @@ fn a_held_sends_countdown_fits_before_its_undo_at_every_size() {
         painter.send_line(&send, 0, 3_000, 10_000.0),
         "0:04 \u{b7} Sending to a-rather-long-host-name.hooks.example.org"
     );
+}
+
+/// A send's text shows in the pane, in the history's place, only while its
+/// own card is up (ADR 0005 §7, "Amended 2026-11-19"), in the AI's look:
+/// its `ai` rule, never the `ask` colour or the card's ground. With another
+/// card, or none, the history shows as ever.
+#[test]
+fn a_sends_text_shows_in_the_pane_only_with_its_card() {
+    use crate::sendview::{SendPreview, digest};
+    let text = "hello from the desk";
+    let call = std::format!(
+        "net_send(\"hooks.example\", \"/hook\", \"{}\")",
+        digest(text)
+    );
+    let preview = SendPreview::new(9, &call, text).unwrap();
+    let mut chat = Chat::default();
+    chat.push(Who::Kai, "Kai asks to run: process_stop(\"x\")");
+    let painter = Painter::new(FONTS).unwrap();
+    let palette = painter.palette;
+    let paint_with = |desk: &Desk, card: Option<&Card>| {
+        let (w, h) = desk_size(desk);
+        let mut painter = Painter::new(FONTS).unwrap();
+        let mut image = Image::new(w, h);
+        let mut canvas = image.canvas();
+        let scene = Scene {
+            desk,
+            bar: &BAR,
+            panel: &Panel::new(),
+            chat: &chat,
+            start: None,
+            ask: card,
+            preview: Some(&preview),
+            now_ms: 3_000,
+        };
+        painter.paint(
+            &mut canvas,
+            Rect::new(0, 0, w, h),
+            &scene,
+            &mut |_, _, _| false,
+        );
+        image
+    };
+    for (w, h) in SIZES {
+        let desk = open(w, h);
+        let history = desk.layout().pane_parts().history;
+        let card = Card {
+            id: 9,
+            call: call.clone(),
+            reason: String::from("Send the text above"),
+            shown_ms: 0,
+        };
+        let shown = pixels(&paint_with(&desk, Some(&card)), history);
+        assert!(shown.contains(&palette.ai), "{w}x{h}: not in the AI's look");
+        assert!(!shown.contains(&palette.ask), "{w}x{h}: the trusted look");
+        assert!(
+            !shown.contains(&palette.raised),
+            "{w}x{h}: the card's ground"
+        );
+        // Another ask's card, or none: the history shows, not the text.
+        let other = Card { id: 8, ..card };
+        let history_only = pixels(&paint_with(&desk, None), history);
+        for card in [Some(&other), None] {
+            assert_eq!(
+                pixels(&paint_with(&desk, card), history),
+                history_only,
+                "{w}x{h}: a preview without its card"
+            );
+        }
+    }
 }

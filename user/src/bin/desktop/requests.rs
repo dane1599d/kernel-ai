@@ -193,6 +193,9 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         chat_push(state, Who::Note, note);
         return Some(String::from("ok"));
     }
+    if let Some(reply) = preview::preview_request(state, text) {
+        return Some(reply);
+    }
     if let Some(reply) = sends_request(state, text) {
         return Some(reply);
     }
