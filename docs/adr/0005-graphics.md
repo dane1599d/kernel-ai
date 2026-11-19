@@ -106,7 +106,7 @@ New calls are named here, never numbered: they take the next numbers from 38 (RE
 | Object or call | What it does |
 |---|---|
 | Kind `Display`, held only by the service `desktop` running the program `desktop` | The screen |
-| `DISPLAY_CLAIM(&mut DisplayInfo) -> Shm` | Stops the console painting. Returns width, height, stride, format (XRGB8888) and the EDID size in mm, and hands over the back buffer as a kernel-owned `Shm` (MAP, READ, WRITE), mapped in 4 KiB pages. On GOP the `Shm` covers the Limine framebuffer (write-combining unverified); `desktop` composes in its own RAM frame and only writes damaged rows to it. |
+| `DISPLAY_CLAIM(&mut DisplayInfo) -> Shm` | Stops the console painting. Returns width, height, stride, format (XRGB8888) and the EDID size in mm (0 when unknown, as on virtio-gpu, whose EDID size is made up), and hands over the back buffer as a kernel-owned `Shm` (MAP, READ, WRITE), mapped in 4 KiB pages. On GOP the `Shm` covers the Limine framebuffer (write-combining unverified); `desktop` composes in its own RAM frame and only writes damaged rows to it. |
 | `DISPLAY_FLUSH(rects, n <= 32)` | virtio-gpu transfer and flush per rectangle; nothing on GOP |
 | `DISPLAY_CURSOR(image, hot)`, `DISPLAY_CURSOR_MOVE(x, y)` | The 64x64 hardware cursor on virtio-gpu. GOP has none, so `desktop` draws one. |
 | Kind `Input`, `desktop` only; `INPUT_READ(buf, cap, timeout_ms)` | Drains the kernel's one input queue of 0007's 16-byte `InputEvent` (`time_ns`, kind Key/Rel/Abs/Button/Wheel, HID usage code, value), fed by the i8042 and xHCI now and by `usbd` through `INPUT_PUSH` later |
@@ -376,7 +376,7 @@ Kept from the accepted look: no blur or translucency, motion at most 0.5 s and n
 
 ### 9. Scale
 
-Every size is in logical px. The scale comes from the EDID physical size when there is one, otherwise from the width (up to 1920 wide 1.0, up to 2560 1.25, up to 3840 2.0), in quarter steps from 1.0 to 3.0; a setting overrides it. At those defaults 1080p, 1440p and 4K give 1920x1080, 2048x1152 and 1920x1080 logical px, so layouts barely change. Native apps render at the exact scale. Foreign and bridged surfaces get an integer scale and are resampled.
+Every size is in logical px. The scale comes from the EDID physical size when there is one (a virtual screen's, such as virtio-gpu's, counts as none), otherwise from the width (up to 1920 wide 1.0, up to 2560 1.25, up to 3840 2.0), in quarter steps from 1.0 to 3.0; a setting overrides it. At those defaults 1080p, 1440p and 4K give 1920x1080, 2048x1152 and 1920x1080 logical px, so layouts barely change. Native apps render at the exact scale. Foreign and bridged surfaces get an integer scale and are resampled.
 
 Amended 2026-11-14: unchanged at scale 1. The desktop does not yet call `scale::for_screen`, so `deskgeom`, the crate that lays out every rectangle of §8, works in physical px, which equal logical px at scale 1, until that call is wired.
 
