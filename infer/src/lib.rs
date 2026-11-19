@@ -1,8 +1,9 @@
 //! Qwen3 inference on the CPU, without std: the model's shape from GGUF metadata,
 //! every weight checked against it, an f32 KV cache sized to a context cap, the
 //! forward pass over the Q8_0 weights in the file, greedy generation, seeded
-//! sampling ([`Sampler`]), decoding constrained to a JSON shape ([`json`]), and
-//! [`chat`], one answer to a conversation the way the llm service runs it.
+//! sampling ([`Sampler`]), decoding constrained to a JSON shape ([`json`]),
+//! [`chat`], one answer to a conversation the way the llm service runs it, and
+//! [`kvstore`], where a preempted request's KV state is kept.
 
 #![no_std]
 
@@ -16,6 +17,7 @@ pub mod fixture;
 mod generate;
 pub mod json;
 mod kv;
+pub mod kvstore;
 mod model;
 mod sample;
 pub mod segments;
@@ -34,6 +36,8 @@ mod forward_tests;
 mod json_tests;
 #[cfg(test)]
 mod kquant_tests;
+#[cfg(test)]
+mod kvstore_tests;
 #[cfg(test)]
 mod preempt_tests;
 #[cfg(test)]
