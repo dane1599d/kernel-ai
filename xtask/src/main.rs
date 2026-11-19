@@ -24,6 +24,7 @@
 //! cargo xtask licences check   (every licence in the tree and the dependency graph is allowed and has its text; see licences.rs)
 //! cargo xtask notices [--check]   (writes or checks NOTICES.txt, the third-party notices the image carries; see notices.rs)
 //! cargo xtask decisions [render | check [--base REV [--deny-new-rows]] | new <slug>]   (new decision rows, one file each in docs/decisions/rows/; see decisions.rs)
+//! cargo xtask filesize [check | update]   (no source file grows past 800 lines, or its count in docs/filesize-allow.txt; see filesize.rs)
 //! cargo xtask fs mkfs|import|ls|cat|check|replay ...   (kaifs data disks on the host, no WSL; see fs/mod.rs)
 //! cargo xtask release-image [--test-root] [--out PATH]   (the release image and its NOTICES.txt; release.yml runs it)
 //! cargo xtask release-boot --image PATH --model PATH [--accel kvm|tcg] [--timeout SECS]   (boots a --test-root image and imports the model; see release_boot.rs)
@@ -52,6 +53,7 @@ mod disk;
 mod doctor;
 mod edit_smoke;
 mod esp;
+mod filesize;
 mod floatguard;
 mod fluency;
 #[path = "fs/mod.rs"]
@@ -125,6 +127,7 @@ fn main() -> ExitCode {
         Some("licences") => licences::main(&args[1..]),
         Some("notices") => notices::main(&args[1..]),
         Some("decisions") => decisions::main(&args[1..]),
+        Some("filesize") => filesize::main(&args[1..]),
         Some("relay") => relay::main(&args[1..]),
         Some("wit-check") => wit::main(&args[1..]),
         Some("wit-tables") => wit_tables::main(&args[1..]),

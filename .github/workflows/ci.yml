@@ -177,6 +177,10 @@ jobs:
         run: |
           cargo install --locked cargo-about --version 0.9.2 --features cli
           cargo xtask notices --check
+      # A file over 800 lines may not grow past its count in the list; a new one may
+      # not pass 800 at all.
+      - name: No source file grows past 800 lines (docs/filesize-allow.txt)
+        run: cargo xtask filesize check
       # Host crates are the workspace's default-members (Cargo.toml), so a new
       # crate is linted and tested here without editing this file.
       - if: steps.scope.outputs.code == 'true'

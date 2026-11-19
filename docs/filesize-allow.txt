@@ -1,0 +1,47 @@
+# Source files over 800 lines, each with the count it may reach (`cargo xtask
+# filesize`). A file here may shrink; growing past its count fails CI's lint.
+# Split a file rather than raise its count; `cargo xtask filesize update`
+# rewrites this list from the tree.
+1178 agentabi/src/consent.rs
+1615 agentabi/tests/tier_corpus.rs
+948 apps/editor-window/tests/files.rs
+891 apps/editor-window/tests/guest.rs
+1008 ccserve/kai/bind/window.c
+1455 deskcore/src/effects.rs
+1014 deskcore/src/pane_tests.rs
+824 deskcore/src/tests.rs
+1083 fsserve/src/lib.rs
+1422 fsserve/src/tests.rs
+1263 goalcore/src/tests.rs
+885 infer/src/chat.rs
+834 kaifs/src/fs.rs
+894 kaifs/src/tree.rs
+879 kaifs/tests/ns_crash.rs
+1277 kainet/tests/download.rs
+865 kernel/src/ipc.rs
+1117 kernel/src/selftest.rs
+905 kernel/src/terminal.rs
+809 nethosts/src/tests.rs
+929 shellcore/src/agentcore.rs
+1089 shellcore/src/apps.rs
+1480 shellcore/src/lib.rs
+1032 shellcore/src/script.rs
+920 shellcore/src/tests/act.rs
+1286 shellcore/src/tests/mod.rs
+829 spikes/s03-1/appabi/src/lib.rs
+1164 supervise/src/lib.rs
+1249 supervise/src/tests.rs
+933 updatenet/src/tests.rs
+842 user/src/bin/comphost/ui.rs
+919 user/src/bin/pkg/main.rs
+1642 user/src/bin/shell.rs
+1480 user/src/sys.rs
+1023 wasmhost/src/tables.rs
+967 xtask/src/actbench/mod.rs
+1048 xtask/src/actbench/tasks.rs
+891 xtask/src/components.rs
+1045 xtask/src/main.rs
+1091 xtask/src/mock_llm.rs
+833 xtask/src/pkgrepo/tests.rs
+885 xtask/src/qemu.rs
+829 xtask/src/release_repo/tests/openssl.rs
