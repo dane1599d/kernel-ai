@@ -495,8 +495,10 @@ impl Local {
         self.script_until(request, || false)
     }
 
-    /// [`Self::script`], with `stop` asked at every step: an app job's round
-    /// answers the requests that come meanwhile there, and ends when it says.
+    /// [`Self::script`], with `stop` asked every [`STOP_CHECK_NS`] of compute,
+    /// not at every step: an app job's round answers the requests that come
+    /// meanwhile there, and ends when it says. Each ask may wait 1 ms for a
+    /// request, so asking at every token would cost a millisecond a token.
     pub fn script_until(
         &mut self,
         request: &ScriptRequest,
@@ -507,9 +509,17 @@ impl Local {
             request.timeout_ms.min(request.lang.service_timeout_ms()),
             self.prefill_rate,
         );
-        let mut step = |step| match stop() {
-            true => Next::Stop,
-            false => clock.step(step),
+        let mut asked = sys::time_ns();
+        let mut step = |step| {
+            let now = sys::time_ns();
+            let due = now - asked >= STOP_CHECK_NS;
+            if due {
+                asked = now;
+            }
+            match due && stop() {
+                true => Next::Stop,
+                false => clock.step(step),
+            }
         };
         let answer = match request.lang {
             script::Lang::Rhai => local::script(&mut self.engine, request, &mut step),
