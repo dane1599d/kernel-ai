@@ -140,8 +140,11 @@ pub enum Request {
     /// The object's earlier versions, newest first. Needs READ.
     #[n(12)]
     History,
-    /// The objects in this handle's volume changed since generation `since`.
-    /// Needs ENUMERATE.
+    /// The objects beneath this handle's folder (the whole volume on a
+    /// volume's root) changed since generation `since`, in order of
+    /// `(changed, object)`: the first [`MAX_ROWS`], and
+    /// [`Request::ChangesAfter`] for the pages after. A trashed object lies
+    /// beneath the trash, not where it was. Needs ENUMERATE.
     #[n(13)]
     Changes {
         #[n(0)]
@@ -248,6 +251,16 @@ pub enum Request {
     ModelInfo {
         #[n(0)]
         name: String,
+    },
+    /// [`Request::Changes`]'s next page: the rows after `after`, the
+    /// `(changed, object)` of the last row the page before gave. Number 32:
+    /// 28 to 31 are other open PRs' (#1031, #1117, #1121).
+    #[n(32)]
+    ChangesAfter {
+        #[n(0)]
+        since: u64,
+        #[n(1)]
+        after: (u64, u64),
     },
 }
 
@@ -430,7 +443,9 @@ pub enum Reply {
     },
     #[n(7)]
     History(#[n(0)] Vec<Version>),
-    /// Changed objects, and whether there were more than fit.
+    /// Changed objects in `(changed, object)` order, and whether there were
+    /// more than fit: the next page is [`Request::ChangesAfter`] with the last
+    /// row's pair.
     #[n(8)]
     Changes {
         #[n(0)]
