@@ -182,6 +182,9 @@ pub struct Server<D: BlockDev> {
     /// changes are refused ([`Error::Dropped`]) until it sends Abort or Begin
     /// itself. A commit or a drop of anyone else's leaves the marks alone.
     dropped: BTreeSet<u64>,
+    /// The caller of the request being answered: a drop on its own request
+    /// is one it hears.
+    asking: u64,
     /// The record last read.
     cache: Option<buffer::Cached>,
     /// Whether a caller (a pid) still runs: a dead owner's action is aborted
@@ -233,6 +236,7 @@ impl<D: BlockDev> Server<D> {
             base,
             pending: None,
             dropped: BTreeSet::new(),
+            asking: 0,
             cache: None,
             alive: |_| true,
             name_of: |_, _| None,
@@ -485,6 +489,7 @@ impl<D: BlockDev> Server<D> {
         call: &Call,
         shm: Option<&mut [u8]>,
     ) -> Result<(Reply, Option<Mint>), Error> {
+        self.asking = call.caller;
         // `/system/settings` and `/system/state/restart` are read only through
         // their fixed badges, whatever rights the handle carries: nothing they
         // open gets more than READ and ENUMERATE either.
@@ -1009,16 +1014,17 @@ impl<D: BlockDev> Server<D> {
     }
 
     /// [`Server::drop_changes`] for an action whose pending run failed to
-    /// write out: its owner did not ask for that, and may not know (the error
-    /// went to another caller, or read as a refusal), so its changes are
-    /// refused ([`Error::Dropped`]) until it sends Abort or Begin. Callers
+    /// write out. On another caller's request the owner hears nothing, so its
+    /// changes are refused ([`Error::Dropped`]) until it sends Abort or Begin;
+    /// on the owner's own request (its Write, its Commit) the answer tells it,
+    /// and its next standalone change, such as an undo, goes through. Callers
     /// that have died since are forgotten first, so the marks stay few.
     pub(crate) fn drop_unasked(&mut self) {
         let owner = self.owner;
         self.drop_changes();
         let alive = self.alive;
         self.dropped.retain(|&caller| alive(caller));
-        if let Some(owner) = owner {
+        if let Some(owner) = owner.filter(|&owner| owner != self.asking) {
             self.dropped.insert(owner);
         }
     }

@@ -189,9 +189,10 @@ fn a_commit_or_a_second_drop_leaves_a_callers_mark() {
 }
 
 /// The owner's own run crossing a record's end goes to kaifs whole; on a full
-/// disk that fails, the action is dropped, and the owner is marked.
+/// disk that fails and drops the action, and the owner hears it in that
+/// Write's answer: it is not marked.
 #[test]
-fn the_owners_own_write_past_a_record_marks_it_when_it_fails() {
+fn the_owners_own_failed_write_is_answered_not_marked() {
     let mut disk = MemDisk::new(2 * 1024);
     let (mut c, _) = Client::start(&mut disk);
     let doc = create(&mut c, "doc").expect("a file");
@@ -203,6 +204,67 @@ fn the_owners_own_write_past_a_record_marks_it_when_it_fails() {
     // Past 128 KiB the first whole record is written: no room for it.
     let crossing = write_run(&mut c, &doc, 0, 150 << 10);
     assert!(matches!(crossing, Reply::Failed(_)), "{crossing:?}");
+    assert_ne!(write(&mut c, &doc, 0, 10), Reply::Failed(Error::Dropped));
+}
+
+/// The owner's own Commit fails writing its run out on a full disk: it hears
+/// that in the Commit's answer, so its next standalone change, the person's
+/// undo, is not refused.
+#[test]
+fn an_undo_after_the_owners_own_failed_commit_is_not_refused() {
+    let mut disk = MemDisk::new(2 * 1024);
+    let (mut c, _) = Client::start(&mut disk);
+    let doc = create(&mut c, "doc").expect("a file");
+    fill(&mut c);
+    assert_eq!(
+        home(&mut c, ALICE, Request::Begin { action: 1 }).0,
+        Reply::Done
+    );
+    assert_eq!(write_run(&mut c, &doc, 0, 100 << 10), Reply::Done);
+    let commit = home(&mut c, ALICE, Request::Commit).0;
+    assert!(matches!(commit, Reply::Failed(_)), "{commit:?}");
+    let undo = Request::Restore { txn: 1, action: 2 };
+    assert_ne!(home(&mut c, ALICE, undo).0, Reply::Failed(Error::Dropped));
+}
+
+/// The pid [`a_dead_callers_mark_is_forgotten`] has ended.
+static ENDED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+fn alive(pid: u64) -> bool {
+    pid != ENDED.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// A marked caller that dies is forgotten at the next mark, so a process
+/// given its pid later is not refused.
+#[test]
+fn a_dead_callers_mark_is_forgotten() {
+    let mut disk = MemDisk::new(2 * 1024);
+    let (mut c, _) = Client::start(&mut disk);
+    c.server.set_alive(alive);
+    let doc = create(&mut c, "doc").expect("a file");
+    fill(&mut c);
+    assert_eq!(
+        home(&mut c, ALICE, Request::Begin { action: 1 }).0,
+        Reply::Done
+    );
+    assert_eq!(write_run(&mut c, &doc, 0, 100 << 10), Reply::Done);
+    let _ = home(&mut c, BOB, Request::Stat);
     assert_eq!(write(&mut c, &doc, 0, 10), Reply::Failed(Error::Dropped));
-    assert_eq!(home(&mut c, ALICE, Request::Abort).0, Reply::Done);
+    // Alice ends; Carol is dropped the same way, which forgets Alice.
+    ENDED.store(ALICE, core::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        home(&mut c, CAROL, Request::Begin { action: 2 }).0,
+        Reply::Done
+    );
+    for at in (0..100 << 10).step_by(fsproto::MAX_DATA) {
+        let request = Request::Write {
+            off: at as u64,
+            data: vec![5; fsproto::MAX_DATA],
+        };
+        assert_eq!(c.call(CAROL, doc.badge, doc.rights, request).0, Reply::Done);
+    }
+    let _ = home(&mut c, BOB, Request::Stat);
+    ENDED.store(0, core::sync::atomic::Ordering::Relaxed);
+    // A process with Alice's pid now is not refused.
+    assert_ne!(write(&mut c, &doc, 0, 10), Reply::Failed(Error::Dropped));
 }
