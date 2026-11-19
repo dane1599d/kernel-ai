@@ -199,7 +199,9 @@ mod tests {
         }
         // After a mark the row is shaped, not drawn by cell: it still draws
         // one glyph a byte, the cell path's, never a ligature.
-        for row in ["a!=b", "x->y", "a...b", "a//b", "a/=b", "a==b"] {
+        for row in [
+            "a!=b", "x->y", "a...b", "a//b", "a/=b", "a==b", "A`b", "a``b",
+        ] {
             let cells = glyphs(row);
             let shaped = glyphs(&alloc::format!("{WRAP_MARK}{row}"));
             assert_eq!(cells.len(), row.len(), "{row}");
@@ -214,6 +216,41 @@ mod tests {
                 seen.push(last);
             }
         }
+    }
+
+    /// After a mark, every pair of printable characters draws as the cell
+    /// path draws each alone: no feature swaps or joins a glyph by its
+    /// neighbour (#1133's last check: ccmp made '`' after a capital
+    /// `grave.case`).
+    #[test]
+    fn every_pair_after_a_mark_draws_as_its_cells() {
+        use crate::paint_tests::FONTS;
+        use crate::sendview::WRAP_MARK;
+        let painter = Painter::new(FONTS).unwrap();
+        let cell: Vec<u32> = (0u8..127)
+            .map(|b| match b {
+                32..=126 => painter
+                    .text
+                    .glyphs(SEND_STYLE, &alloc::format!("{}", b as char))[0],
+                _ => 0,
+            })
+            .collect();
+        let mut wrong = Vec::new();
+        for a in 32u8..127 {
+            for b in 32u8..127 {
+                let row = alloc::format!("{WRAP_MARK}{}{}", a as char, b as char);
+                let shaped = painter.text.glyphs(SEND_STYLE, &row);
+                if shaped[1..] != [cell[a as usize], cell[b as usize]] {
+                    wrong.push(row);
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "{} pairs draw otherwise: {:?}",
+            wrong.len(),
+            &wrong[..wrong.len().min(12)]
+        );
     }
 
     /// One line wider than the pane at 1920, with a space at the wrap: every
