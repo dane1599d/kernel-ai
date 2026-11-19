@@ -32,8 +32,8 @@ jobs:
           fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
       # What this run checks: everything on main and on a merge batch
       # (`batch/...`), and on a pull request unless it changes only docs (files
-      # under docs/ or ending in .md), which needs only DCO and the decision
-      # rows. Batches and main keep every gate.
+      # under docs/ or ending in .md, none of them read by Rust code), which
+      # needs only DCO and the decision rows. Batches and main keep every gate.
       - name: What this run checks
         id: scope
         env:
@@ -44,8 +44,19 @@ jobs:
         run: |
           code=true
           if [ "$EVENT" = pull_request ] && [ "${HEAD_REF#batch/}" = "$HEAD_REF" ]; then
-            if ! git diff --name-only "$BASE" "$HEAD" | grep -qvE '^docs/|\.md$'; then
+            changed=$(git diff --name-only "$BASE" "$HEAD")
+            if ! grep -qvE '^docs/|\.md$' <<<"$changed"; then
               code=false
+              # A doc that Rust code reads at build time (include_str! or
+              # include_bytes!, e.g. a test over a runbook) is code: its test
+              # guards it. Matched by file name, so a doubt builds.
+              for f in $changed; do
+                name=$(basename "$f" | sed 's/[.[\*^$]/\\&/g')
+                if grep -rqE --include='*.rs' "include_(str|bytes)!\([^)]*$name\"" .; then
+                  echo "$f is read by Rust code"
+                  code=true
+                fi
+              done
             fi
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
