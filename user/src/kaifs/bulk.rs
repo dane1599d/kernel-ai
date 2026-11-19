@@ -66,15 +66,26 @@ pub fn reserve(bytes: usize) -> Result<(), kabi::Error> {
     made
 }
 
-/// The `Shm` for one call, if there is one and no other call holds it.
-struct Lease {
+/// Whether a call failed after the `Shm` moved: it is then never sent again,
+/// and its holders go a message at a time.
+pub fn poisoned() -> bool {
+    POISONED.load(Ordering::Acquire)
+}
+
+/// The `Shm` while a caller holds it: for one call here, or for the life of a
+/// client that moves its own requests, as `pkg`'s store does
+/// (`kaipkg::fsvol::Bulk`). While one is held, [`read_at`] and [`write_at`]
+/// go a message at a time.
+pub struct Lease {
     handle: Handle,
     address: u64,
     len: usize,
 }
 
 impl Lease {
-    fn take() -> Option<Self> {
+    /// The `Shm`, if [`reserve`] made one, it is not poisoned and no one else
+    /// holds it.
+    pub fn take() -> Option<Self> {
         let unusable = HANDLE.load(Ordering::Relaxed) == 0 || POISONED.load(Ordering::Acquire);
         if unusable || BUSY.swap(true, Ordering::Acquire) {
             return None;
@@ -86,7 +97,8 @@ impl Lease {
         })
     }
 
-    fn bytes(&mut self) -> &mut [u8] {
+    /// The `Shm`'s bytes: what a WriteShm sends and a ReadShm fills.
+    pub fn bytes(&mut self) -> &mut [u8] {
         // SAFETY: `reserve` made at least `len` bytes, mapped read-write
         // at `address` for the process's life; this lease alone uses them
         // (BUSY), and `fs` touches them only while this thread waits in
@@ -95,7 +107,12 @@ impl Lease {
     }
 
     /// `request` on `file` with a duplicate of the `Shm` moved in.
-    fn ask(&self, file: Handle, request: Request) -> Result<Reply, String> {
+    /// Refused once the `Shm` is poisoned ([`poisoned`]), so a caller that
+    /// holds a lease can never send it again.
+    pub fn ask(&self, file: Handle, request: Request) -> Result<Reply, String> {
+        if poisoned() {
+            return Err(String::from("the bulk Shm is poisoned"));
+        }
         let copy = sys::handle_dup(self.handle, MOVED).map_err(|e| format!("HANDLE_DUP: {e:?}"))?;
         let bytes = fsproto::encode_request(&request);
         let mut reply = alloc::vec![0u8; fsproto::MAX_MESSAGE];

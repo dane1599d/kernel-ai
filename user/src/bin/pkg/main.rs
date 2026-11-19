@@ -44,7 +44,7 @@ use kabi::Error;
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER, RecvInfo};
 use kaipkg::bundle;
 use kaipkg::catalog;
-use kaipkg::fsvol::{FsVolume, Transport};
+use kaipkg::fsvol::{Bulk, FsVolume, Transport};
 use kaipkg::generation::{Generation, Time};
 use kaipkg::header::{Header, Kind as PackageKind};
 use kaipkg::image::Files;
@@ -54,6 +54,7 @@ use kaipkg::resolve::{Entry, Want};
 use kaipkg::store::{self, Ctx, Ledger, Source, Store, Volume};
 use kaipkg::version::Version;
 use kaituf::updater::{Cache, Remote};
+use user::kaifs::bulk::{self, Lease};
 use user::{println, sys};
 
 mod local;
@@ -79,7 +80,7 @@ fn main() -> i32 {
         println!("pkg: FAIL no Dir handle for /system/pkg at startup");
         idle();
     };
-    let mut vol = FsVolume::new(Calls, root);
+    let mut vol = FsVolume::new(Calls::new(), root);
     let result = match step {
         Some(step @ ("install" | "undo" | "check")) => run(&mut vol, step),
         Some(step @ ("image" | "image-again" | "image-tampered")) => image(&mut vol, Some(step)),
@@ -299,8 +300,43 @@ fn startup_dir() -> Option<Handle> {
         .map(|h| Handle(h.handle))
 }
 
-/// CALL_H on the handles `fs` minted.
-struct Calls;
+/// `pkg`'s bulk `Shm`: a little over the store's 192 KiB pieces, so each goes
+/// to `fs` in one round trip, not 28 messages; 64 pages of `pkg`'s quota.
+const BULK_SHM: usize = 256 << 10;
+
+/// CALL_H on the handles `fs` minted, and the bulk `Shm` held for `pkg`'s life
+/// when there is one.
+struct Calls {
+    bulk: Option<Lease>,
+}
+
+impl Calls {
+    fn new() -> Self {
+        let bulk = match bulk::reserve(BULK_SHM) {
+            Ok(()) => Lease::take(),
+            Err(e) => {
+                println!("pkg: no bulk Shm ({e:?}); files go to fs a message at a time");
+                None
+            }
+        };
+        Calls { bulk }
+    }
+}
+
+impl Bulk<Handle> for Calls {
+    fn bytes(&mut self) -> &mut [u8] {
+        self.bulk.as_mut().map_or(&mut [], Lease::bytes)
+    }
+
+    fn call(&mut self, on: Handle, request: Request) -> Result<Reply, String> {
+        let bulk = self.bulk.as_ref().ok_or("no bulk Shm")?;
+        bulk.ask(on, request)
+    }
+
+    fn usable(&self) -> bool {
+        self.bulk.is_some() && !bulk::poisoned()
+    }
+}
 
 impl Transport for Calls {
     type Handle = Handle;
@@ -321,6 +357,13 @@ impl Transport for Calls {
 
     fn wait_ms(&mut self, ms: u64) {
         sys::sleep_ms(ms);
+    }
+
+    fn bulk(&mut self) -> Option<&mut dyn Bulk<Handle>> {
+        match self.bulk {
+            Some(_) => Some(self),
+            None => None,
+        }
     }
 }
 
