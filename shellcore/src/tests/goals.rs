@@ -27,7 +27,7 @@ fn with_goal() -> (Rc<FakeHost>, Shell) {
         concat!(
             "menu 1 added
 ",
-            "Goal: 3 actions in 1 folder, up to 10 steps and 5000 tokens, ",
+            "Goal: 2 actions in 1 folder, up to 10 steps and 5000 tokens, ",
             "with goal_set(1)? Type show to see them
 
 

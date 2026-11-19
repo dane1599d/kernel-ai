@@ -75,3 +75,92 @@ fn a_wait_for_a_step_never_asked_is_unknown() {
     let (_, mut shell) = with_goal();
     assert_eq!(step(&mut shell, GOALS, "wait 99"), "err unknown step #99");
 }
+
+fn list(path: &str) -> String {
+    format!(r#"goal=1 {{"name":"fs_list","arguments":{{"path":"{path}"}}}}"#)
+}
+
+#[test]
+fn a_goal_step_acts_only_inside_the_folders_the_person_approved() {
+    let (_, mut shell) = with_goal();
+    assert!(step(&mut shell, GOALS, &list("notes/q3/sub")).starts_with("ok run #"));
+    assert!(step(&mut shell, GOALS, &list("/home/user/notes/q3")).starts_with("ok run #"));
+    for outside in [
+        "notes/q4",
+        "notes/q3x/plan.txt",
+        "notes/q3/../../etc",
+        "/etc/passwd",
+        "~root/notes/q3",
+        "",
+    ] {
+        let wire = step(&mut shell, GOALS, &list(outside));
+        assert!(
+            wire.starts_with("err refused") && wire.contains("outside the folders"),
+            "{outside}: {wire}"
+        );
+    }
+}
+
+#[test]
+fn a_readmitted_row_stays_under_its_goal() {
+    let (_, mut shell) = with_goal();
+    let goals = shell.roster.caller(2).unwrap();
+    let admitted = shell
+        .roster
+        .admit_for_goal_in(&goals, 1, "fs_list", &agentabi::ROWS)
+        .unwrap();
+    shell.acting = Some(admitted);
+    // A row the goal's ceiling holds: re-admitted under the same goal.
+    assert!(shell.readmit(&agentabi::FS_READ).is_ok());
+    assert_eq!(shell.acting.as_ref().and_then(|a| a.goal()), Some(1));
+    // One it does not hold is refused, whatever goals' own grants say.
+    assert!(shell.readmit(&agentabi::FS_TRASH).is_err());
+    shell.acting = None;
+}
+
+#[test]
+fn a_yes_given_after_the_goal_ended_runs_nothing() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    host.calls.borrow_mut().push_back(call(
+        r#"{"name":"goal_set","arguments":{"text":"move the files in notes/q3 into folders","steps":10,"tokens":5000,"wall":"2h"}}"#,
+    ));
+    shell.eval("move the files in notes/q3 into folders and keep at it");
+    let once = host.mint(1, "goal_set(1)");
+    assert!(shell.eval(&format!("answer 1 allow once={once}")).ok);
+    step(&mut shell, GOALS, "next");
+    step(&mut shell, GOALS, "report 1 ok");
+    assert!(
+        shell
+            .roster
+            .goal_rows(1)
+            .unwrap()
+            .iter()
+            .any(|r| r == "fs_move"),
+        "{:?}",
+        shell.roster.goal_rows(1)
+    );
+    host.files
+        .borrow_mut()
+        .insert(String::from("notes/q3/a.txt"), String::from("a"));
+    let moved =
+        r#"goal=1 {"name":"fs_move","arguments":{"from":"notes/q3/a.txt","to":"notes/q3/b.txt"}}"#;
+    let asked = step(&mut shell, GOALS, moved);
+    assert!(asked.starts_with("ok asked "), "{asked}");
+    // The goal ends while its step waits on the card.
+    assert_eq!(step(&mut shell, GOALS, "goal=1 end"), "ok ended goal 1");
+    let card = shell.eval_console(termcore::menu::TAKE_CARD);
+    let menu = termcore::menu::Menu::decode(&card.to_wire()).expect("the step's card");
+    let once = host.mint(menu.id, menu.call());
+    let answered = shell.eval_console(&format!("answer {} allow once={once}", menu.id));
+    assert!(!answered.ok, "{answered:?}");
+    assert!(
+        host.files.borrow().contains_key("notes/q3/a.txt"),
+        "nothing moved"
+    );
+    let told = step(&mut shell, GOALS, &format!("wait {}", menu.id));
+    assert!(
+        told.starts_with(&format!("err not run #{}", menu.id)),
+        "{told}"
+    );
+}

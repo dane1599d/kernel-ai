@@ -25,7 +25,9 @@ use alloc::vec::Vec;
 /// The most actions a goal names.
 pub const MAX_ACTIONS: usize = 8;
 /// The file reads a goal that names a folder may make.
-const FOLDER_READS: [&str; 3] = ["fs_list", "fs_find", "fs_read"];
+/// Not `fs_find`, which searches every folder: only the person's own word
+/// "find" adds it.
+const FOLDER_READS: [&str; 2] = ["fs_list", "fs_read"];
 /// What a goal that names nothing it does is told.
 pub const NAMES_NOTHING: &str =
     "say what the goal does, for example \"sort the files in notes/ by topic\"";
@@ -149,8 +151,23 @@ fn folders(line: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// Whether `path`, a goal step's path argument, lies inside one of
+/// `folders` once normalised as `goal_set` normalised them ([`folder`]): a
+/// path that does not normalise, or `..`, is inside none.
+pub(crate) fn path_inside(folders: &[String], path: &str) -> bool {
+    let Ok(path) = folder(path) else {
+        return false;
+    };
+    folders.iter().any(|f| {
+        path == *f
+            || path
+                .strip_prefix(f.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
 /// `word` as a folder under home, relative and normalised, or why not.
-fn folder(word: &str) -> Result<String, String> {
+pub(crate) fn folder(word: &str) -> Result<String, String> {
     let refused = || format!("{word} is not a folder in your home folder");
     let plain_chars = word
         .chars()
