@@ -2,7 +2,7 @@
 //! runs on the desktop as the system image plans it, reads the system's
 //! settings through the shell, and its window is kept from the agent. Lines are
 //! typed in `term`'s window, as `desk-agent` does, and the mock model answers
-//! each by its line (`xtask/src/mock_llm.rs`).
+//! each by its line (`xtask/src/mock_llm/`).
 //!
 //! "open settings" runs `ui_open`, which starts `settings-window`, the plan
 //! line whose name is the app's `kai:settings` grant, through the supervisor's

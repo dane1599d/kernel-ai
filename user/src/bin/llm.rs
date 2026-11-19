@@ -297,7 +297,10 @@ fn main() -> i32 {
         let rest = text.split_once(' ').map_or("", |(_, rest)| rest);
         let mut job = None;
         let mut reply = match command {
-            Some("app-start") => match jobs.start(rest, matches!(backends.local, Some(Ok(_)))) {
+            // A round is a job on the local engine, and on a server too, so the
+            // build goes on in the background and its install card asks for
+            // itself, as on the shipped system.
+            Some("app-start") => match jobs.start(rest, runs_jobs(&backends)) {
                 appjob::Start::Run(ticket, asked) => {
                     job = Some((ticket, asked));
                     format!("ok {ticket}")
@@ -341,10 +344,39 @@ fn main() -> i32 {
         if let Err(error) = sys::svc_reply(reply.as_bytes()) {
             println!("svc_reply failed: {error:?}");
         }
-        if let (Some((ticket, asked)), Some(Ok(local))) = (job, &mut backends.local) {
-            run_job(local, &mut jobs, ticket, &asked, &mut request);
+        if let Some((ticket, asked)) = job {
+            match (&mut backends.local, &backends.server) {
+                (Some(Ok(local)), _) => run_job(local, &mut jobs, ticket, &asked, &mut request),
+                (_, Some(server)) => {
+                    run_server_job(server, &mut jobs, ticket, &asked, &mut response)
+                }
+                _ => {}
+            }
         }
     }
+}
+
+/// Whether `app-start` runs a round as a job here: on the local engine when
+/// it runs, else on a server, as [`script`] picks the backend.
+fn runs_jobs(backends: &Backends) -> bool {
+    matches!(backends.local, Some(Ok(_))) || backends.server.is_some()
+}
+
+/// App job `ticket`'s round on the server, kept for `app-take`. The request
+/// blocks llm until the server answers: the shell's `app-take` that comes
+/// meanwhile times out and asks again.
+fn run_server_job(
+    server: &remote::Server,
+    jobs: &mut appjob::Jobs,
+    ticket: u64,
+    asked: &ScriptRequest,
+    response: &mut [u8],
+) {
+    let reply = match server.script(asked, response) {
+        Ok(answer) => format!("ok {answer}"),
+        Err(error) => format!("err {}", printable(&error, MAX_ERROR_CHARS, 1)),
+    };
+    jobs.finish(ticket, reply);
 }
 
 /// The next request, with who sent it and its route's badge (`RECV_H`): the badge
