@@ -928,8 +928,15 @@ impl Shell {
             self.saved_log = Some(self.log.text());
             return self;
         };
-        match actlog::parse(&text) {
-            Ok(records) => {
+        match actlog::parse_setting_aside(&text) {
+            Ok((records, aside)) => {
+                if !aside.is_empty() {
+                    let ids: Vec<String> = aside.iter().map(|id| format!("#{id}")).collect();
+                    self.host.audit(&format!(
+                        "log entries {} named no agent and were set aside",
+                        ids.join(", ")
+                    ));
+                }
                 self.log = actlog::ActLog::from_records(records);
                 self.next_id = self.log.last_id() + 1;
                 self.saved_log = Some(text);
@@ -1182,6 +1189,17 @@ impl Shell {
             && which.trim().trim_start_matches('#').parse::<u64>().is_ok()
         {
             return self.undo_command(which);
+        }
+        // `undo <agent>` (ADR 0013 §1): that agent's newest live entry, for an
+        // agent the log holds an entry of; "undo that" is a line for Kai.
+        if let Some(agent) = input.strip_prefix("undo ")
+            && !self.scope.contains("undo")
+            && self
+                .log
+                .entries()
+                .any(|e| !e.agent.is_kai() && e.agent.as_str() == agent.trim())
+        {
+            return self.undo_agent(agent.trim());
         }
         if (input == "tune" || input.starts_with("tune ")) && !self.scope.contains("tune") {
             let id = self.next_id;

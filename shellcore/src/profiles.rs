@@ -141,6 +141,7 @@ impl Shell {
         let was = core::mem::replace(&mut self.profiles.now, String::from(name));
         let key = self.keep_back(was.clone(), before);
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: logged.form,

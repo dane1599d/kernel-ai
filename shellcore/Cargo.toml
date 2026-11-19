@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+agentid = { path = "../agentid" }
 agentabi = { path = "../agentabi" }
 appabi = { path = "../appabi" }
 bootslot = { path = "../bootslot" }
