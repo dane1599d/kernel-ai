@@ -568,12 +568,14 @@ fn download_call(name: &str) -> String {
         .unwrap_or_else(|| String::from("model_fetch"))
 }
 
-/// Why a `model_fetch` asks: a line that asked for it asks for the gigabytes
-/// it brings ([`FETCH_REASON`]); one Kai was steered into, or added, says so,
-/// and opens on Deny.
+/// Why a `model_fetch` asks: a line that plainly asked for it asks for the
+/// gigabytes it brings ([`FETCH_REASON`]) and opens on Allow. Anything else
+/// keeps consent's reason: one Kai picked for a vague line (`TakenAs`), was
+/// steered into, or added, says so and opens on Deny; a model's own pick never
+/// opens on Allow.
 fn asked_why(why: Why) -> Why {
     match why {
-        Why::TakenAs | Why::Grounded | Why::Read | Why::NoUndo => Why::Asked,
+        Why::NoUndo => Why::Asked,
         why => why,
     }
 }
