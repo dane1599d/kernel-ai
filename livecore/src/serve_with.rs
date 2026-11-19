@@ -46,7 +46,9 @@ impl<E: Env> Host<E> {
     /// A suspended app wakes first. During probation `f` runs on the candidate,
     /// the version shown, with no transaction, as before: it can read and draw
     /// but not use storage or effects, and its result has no [`Performed`] worth
-    /// running.
+    /// running. A candidate that faults there is rolled back as a request's
+    /// fault rolls it back: reported, and the standby serves again, so a
+    /// version that fails only on window input is never committed.
     pub fn serve_with<R>(
         &mut self,
         f: impl FnOnce(&mut E::Instance) -> Result<R, Fault>,
@@ -58,12 +60,14 @@ impl<E: Env> Host<E> {
                 (Mode::Serving(version), _) => self.serve_call(version, f)?,
                 (mode, _) => (mode, None),
             },
-            Mode::Probation(mut probation) => {
-                let out = f(&mut probation.candidate.instance)
-                    .ok()
-                    .map(|r| (r, Performed::default()));
-                (Mode::Probation(probation), out)
-            }
+            Mode::Probation(mut probation) => match f(&mut probation.candidate.instance) {
+                Ok(r) => (Mode::Probation(probation), Some((r, Performed::default()))),
+                Err(fault) => {
+                    let (mode, _) =
+                        crate::probation::roll_back(&mut self.core, *probation, &fault, 0)?;
+                    (mode, None)
+                }
+            },
             other => (other, None),
         };
         self.mode = mode;

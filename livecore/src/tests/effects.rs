@@ -299,3 +299,23 @@ fn during_probation_a_call_runs_on_the_candidate_without_a_transaction() {
     assert_eq!(lines, "");
     assert_eq!(ledger(&kernel).counters.checkpoints, checkpoints);
 }
+
+/// Audit item 23: a candidate that faults on a call that is not a request
+/// (window input, an event) during probation is rolled back and reported,
+/// never left running to be committed by the idle rule.
+#[test]
+fn during_probation_a_candidates_fault_on_window_input_rolls_it_back() {
+    let _guard = alone();
+    let kernel = kernel(&[A, B]);
+    let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
+    call(&mut host, "kadd");
+    assert!(call(&mut host, "ctl swap b").starts_with("ok probation b"));
+    let rollbacks = ledger(&kernel).counters.rollbacks;
+    assert_eq!(ui_call(&mut host, b"poison"), None);
+    assert_eq!(ledger(&kernel).counters.rollbacks, rollbacks + 1, "reported");
+    // Probation is over: a serves again, and b is recorded as a version that
+    // failed, so swapping to it again is refused without force.
+    assert!(call(&mut host, "get").starts_with("ok 1 "));
+    assert!(!call(&mut host, "ctl swap b").starts_with("ok probation b"));
+    assert_eq!(ledger(&kernel).counters.refused_bad, 1);
+}
