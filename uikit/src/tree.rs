@@ -47,6 +47,12 @@ impl Tree {
         self.nodes.get(&id)
     }
 
+    /// A node's widget weighed `old` and now weighs `new` (a field's text was
+    /// typed into): the count follows, and never goes below nothing.
+    pub(crate) fn reweigh(&mut self, old: usize, new: usize) {
+        self.bytes = (self.bytes + new).saturating_sub(old);
+    }
+
     pub fn widget_mut(&mut self, id: NodeId) -> Option<&mut Widget> {
         self.nodes.get_mut(&id).map(|n| &mut n.widget)
     }
@@ -77,7 +83,7 @@ impl Tree {
             if old.parent != parent || old.children.len() > widget.max_children() {
                 return Err(UiError::BadParent);
             }
-            let bytes = self.bytes - old.widget.weight() + weight;
+            let bytes = (self.bytes + weight).saturating_sub(old.widget.weight());
             if bytes > MAX_BYTES {
                 return Err(UiError::TooBig);
             }
@@ -124,7 +130,7 @@ impl Tree {
         let mut stack = alloc::vec![id];
         while let Some(n) = stack.pop() {
             if let Some(node) = self.nodes.remove(&n) {
-                self.bytes -= node.widget.weight();
+                self.bytes = self.bytes.saturating_sub(node.widget.weight());
                 stack.extend(node.children);
             }
         }
