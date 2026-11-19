@@ -254,10 +254,12 @@ jobs:
     timeout-minutes: 30
 
   # Every case boots under both KVM and TCG (KVM only on a `full-ci` PR, see
-  # above); `--shard K/3` deals the cases out in turn across three runners per
-  # accelerator, and shard 1 also runs the host smokes.
+  # above); `--shard K/N` deals the cases out in turn across three KVM runners
+  # and four TCG ones (TCG cases run about 1.3 times as long: 28-38 minutes a
+  # shard against KVM's 20-23 across three, 2026-11-19), and shard 1 of each also
+  # runs the host smokes.
   boot:
-    name: Boot test (${{ matrix.accel }}, shard ${{ matrix.shard }}/3)
+    name: Boot test (${{ matrix.accel }}, shard ${{ matrix.shard }}/${{ matrix.of }})
     runs-on: ubuntu-24.04
     # `prebuild` is read by its output: a shard runs past a failed build job
     # and builds for itself.
@@ -268,8 +270,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        accel: ${{ fromJSON(github.event_name == 'pull_request' && !startsWith(github.head_ref, 'batch/') && !contains(github.event.pull_request.labels.*.name, 'full-ci-all') && '["kvm"]' || '["kvm", "tcg"]') }}
-        shard: [1, 2, 3]
+        include: ${{ fromJSON(github.event_name == 'pull_request' && !startsWith(github.head_ref, 'batch/') && !contains(github.event.pull_request.labels.*.name, 'full-ci-all') && '[{"accel":"kvm","shard":1,"of":3},{"accel":"kvm","shard":2,"of":3},{"accel":"kvm","shard":3,"of":3}]' || '[{"accel":"kvm","shard":1,"of":3},{"accel":"kvm","shard":2,"of":3},{"accel":"kvm","shard":3,"of":3},{"accel":"tcg","shard":1,"of":4},{"accel":"tcg","shard":2,"of":4},{"accel":"tcg","shard":3,"of":4},{"accel":"tcg","shard":4,"of":4}]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/qemu
@@ -321,7 +322,7 @@ jobs:
           if [ -n "$PREBUILT_SHA" ] && [ -f "$RUNNER_TEMP/prebuilt/manifest.txt" ]; then
             prebuilt=(--prebuilt "$RUNNER_TEMP/prebuilt" --prebuilt-sha "$PREBUILT_SHA")
           fi
-          cargo xtask test --accel ${{ matrix.accel }} --timeout 300 --shard ${{ matrix.shard }}/3 "${prebuilt[@]}"
+          cargo xtask test --accel ${{ matrix.accel }} --timeout 300 --shard ${{ matrix.shard }}/${{ matrix.of }} "${prebuilt[@]}"
     # TCG shards run about twice as long as KVM ones: on 2026-10-28 main's slowest
     # TCG shard took 19 of its 20 minutes, and batch #340's timed out mid-case.
     # On 2026-10-30 KVM shards took 16-18 minutes with 45 cases each, and two

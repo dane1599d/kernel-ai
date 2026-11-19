@@ -6,7 +6,7 @@
 #      At most one PR that changes what the model sees (MODEL_PATHS) goes in a
 #      batch; a second one is left out, keeps its label, and goes in the next.
 #   2. Opens a draft "batch CI" PR for that branch so ci.yml runs once on the
-#      combination, and requires lint, the 6 boot shards and the 3 observe jobs
+#      combination, and requires lint, the 7 boot shards (3 KVM, 4 TCG) and the 3 observe jobs
 #      green.
 #   3. If a PR touches what the model sees, runs the fluency gate on the batch
 #      head and requires it to pass at >= FLUENCY_MIN% after repair.
@@ -64,7 +64,7 @@ gates_green() {  # $1 run id
     echo "$g" | grep -q "^Format, lint[^=]*=success$" && ! echo "$g" | grep -qvE "=(success|skipped)$"
     return
   fi
-  [ "$(echo "$g" | grep -c "=")" -ge 10 ] && [ "$(echo "$g" | grep -vc "=success$")" = 0 ]
+  [ "$(echo "$g" | grep -c "=")" -ge 11 ] && [ "$(echo "$g" | grep -vc "=success$")" = 0 ]
 }
 
 # Observe determinism flips on plain main about 1 boot in 5 (lane K, 2026-10-27),
