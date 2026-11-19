@@ -526,7 +526,7 @@ impl Shell {
     /// [`Shell::ask_call`], with the row's own reason when it has one (a
     /// held send's), in place of the one `why` gives.
     #[allow(clippy::too_many_arguments)]
-    fn ask_call_with(
+    pub(crate) fn ask_call_with(
         &mut self,
         id: u64,
         request: &str,
