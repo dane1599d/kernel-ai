@@ -723,3 +723,104 @@ fn a_window_opened_takes_the_focus_from_another_clients_window() {
         "the first client heard its window lose the focus: {sent:?}"
     );
 }
+
+/// The wheel over a window's content, focused or not, is an effect for that
+/// window's client at the pointer's place in it; over its title bar, the empty
+/// desk, the pane's history or Start it is not.
+#[test]
+fn the_wheel_over_a_windows_content_is_for_its_client() {
+    use crate::chrome::Part;
+    use crate::desk::{Hit, Input};
+    use crate::geom::{Point, Size};
+    let mut desk = Desk::new(1280, 800);
+    let (left, _) = desk.open(1, "deskdemo", "Left", Size { w: 300, h: 200 }, true);
+    let (right, _) = desk.open(1, "deskdemo", "Right", Size { w: 300, h: 200 }, true);
+    assert_eq!(desk.focus(), Focus::Window(right));
+    // Over Left's content, where Right (on top, focused) does not reach.
+    let on_left = Point { x: 60, y: 200 };
+    let Hit::Window(id, Part::Content(at)) = desk.hit(on_left) else {
+        panic!("{:?}", desk.hit(on_left));
+    };
+    assert_eq!(id, left);
+    desk.input(Input::Motion(on_left));
+    let effects = desk.input(Input::Wheel(2));
+    let wheel = Effect::Wheel {
+        window: left,
+        at,
+        detents: 2,
+    };
+    assert!(effects.contains(&wheel), "{effects:?}");
+    // Left was not given the focus by a wheel.
+    assert_eq!(desk.focus(), Focus::Window(right));
+    // Up is a negative number of detents, and nothing at 0.
+    desk.input(Input::Motion(on_left));
+    assert!(
+        desk.input(Input::Wheel(-1))
+            .iter()
+            .any(|e| matches!(e, Effect::Wheel { detents: -1, .. }))
+    );
+    assert!(desk.input(Input::Wheel(0)).is_empty());
+    // Not the title bar, not the empty desk.
+    for p in [Point { x: 150, y: 60 }, Point { x: 1000, y: 150 }] {
+        assert!(
+            !matches!(desk.hit(p), Hit::Window(_, Part::Content(_))),
+            "{p:?}"
+        );
+        desk.input(Input::Motion(p));
+        let effects = desk.input(Input::Wheel(3));
+        assert!(
+            !effects.iter().any(|e| matches!(e, Effect::Wheel { .. })),
+            "{p:?}: {effects:?}"
+        );
+    }
+}
+
+/// A wheel effect is a ring event of kind `Wheel`: code 0, the detents (held to
+/// what a client takes in) and the place in 24.8, with no text.
+#[test]
+fn a_wheel_goes_to_the_pool_as_an_axis_event() {
+    use crate::geom::Point;
+    use surfabi::header::Event as Ring;
+    use surfabi::input::Kind;
+    let mut desk = Desk::new(1280, 800);
+    let mut client = Client::new(42, "notes");
+    client.handle(&mut desk, &setup(), true).unwrap();
+    client.pool_mapped(2);
+    let needs = client.handle(&mut desk, &show(), false).unwrap();
+    let [Need::Show { window, .. }] = needs[..] else {
+        panic!("{needs:?}");
+    };
+    let at = Point { x: 10, y: 20 };
+    let wheel = |detents| Effect::Wheel {
+        window,
+        at,
+        detents,
+    };
+    client.apply(&[wheel(3), wheel(i32::MIN), wheel(i32::MAX)]);
+    let posts = client.take_posts();
+    let got: Vec<(u32, Kind, u16, i32, i32, i32, u8)> = posts
+        .iter()
+        .map(|(pool, e)| match e {
+            Ring::Input {
+                event, x, y, len, ..
+            } => (*pool, event.kind, event.code, event.value, *x, *y, *len),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    let max = crate::server::MAX_DETENTS;
+    assert_eq!(
+        got,
+        [
+            (2, Kind::Wheel, 0, 3, 10 << 8, 20 << 8, 0),
+            (2, Kind::Wheel, 0, -max, 10 << 8, 20 << 8, 0),
+            (2, Kind::Wheel, 0, max, 10 << 8, 20 << 8, 0),
+        ]
+    );
+    // Another window's wheel is not ours.
+    client.apply(&[Effect::Wheel {
+        window: crate::desk::WindowId(window.0 + 100),
+        at,
+        detents: 1,
+    }]);
+    assert!(client.take_posts().is_empty());
+}

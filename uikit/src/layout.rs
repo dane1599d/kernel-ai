@@ -64,7 +64,8 @@ pub struct Placed {
     pub rect: Rect,
     /// What of it may show.
     pub clip: Rect,
-    /// For a scroll view: its child's length along the scroll axis.
+    /// For a scroll view: its child's length along the scroll axis; for a
+    /// list, its rows' height together.
     pub extent: i32,
 }
 
@@ -368,11 +369,20 @@ pub fn layout(
                 .collect(),
             Widget::ItemList { .. } => {
                 let inner = content.inset(1);
-                let mut y = inner.y;
+                let row = |k: &NodeId| nat.get(k).map_or(0, |n| n.1).max(metric::ROW_H);
+                // A list longer than its box scrolls (the wheel, or a key
+                // taking the selection out of view).
+                extent = node.children.iter().map(row).sum();
+                let off = scroll
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(0)
+                    .clamp(0, (extent - inner.h).max(0));
+                let mut y = inner.y - off;
                 node.children
                     .iter()
                     .map(|&k| {
-                        let h = nat.get(&k).map_or(0, |n| n.1).max(metric::ROW_H);
+                        let h = row(&k);
                         let pad = metric::ITEM_PAD;
                         let r = Rect::new(inner.x + pad, y, (inner.w - 2 * pad).max(0), h);
                         y += h;
