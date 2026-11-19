@@ -2,6 +2,7 @@
 //! an index file that a crash can tear, a model that counts its mappings, and a
 //! caller's `Dir` that reads only some folders.
 
+mod moves;
 mod text;
 mod walk;
 
@@ -29,6 +30,10 @@ pub struct Home {
     pub reads: usize,
     /// Paths whose next read fails, once each: a read that fails now.
     pub fail_reads: Vec<String>,
+    /// Paths whose every read fails.
+    pub fail_always: Vec<String>,
+    /// `fs`'s fallback count.
+    pub fallbacks: u64,
 }
 
 const HOME: &str = "/home/user";
@@ -44,6 +49,8 @@ impl Default for Home {
             next_object: 1,
             reads: 0,
             fail_reads: Vec::new(),
+            fail_always: Vec::new(),
+            fallbacks: 0,
         }
     }
 }
@@ -140,6 +147,11 @@ impl Home {
         self.touch(to);
     }
 
+    /// Removes `path` with no change anywhere: what a fallback may have missed.
+    pub fn delete_unseen(&mut self, path: &str) {
+        self.files.remove(path);
+    }
+
     /// Trashes folder `path` with everything under it: only its folder changes.
     pub fn trash_folder(&mut self, path: &str) {
         self.generation += 1;
@@ -188,11 +200,15 @@ impl Files for Home {
         Ok(Changes {
             rows,
             generation: self.generation,
+            fallbacks: self.fallbacks,
         })
     }
 
     fn read(&mut self, path: &str, max: u64) -> Result<Vec<u8>, String> {
         self.reads += 1;
+        if self.fail_always.iter().any(|p| p == path) {
+            return Err(String::from("broken"));
+        }
         if let Some(at) = self.fail_reads.iter().position(|p| p == path) {
             self.fail_reads.remove(at);
             return Err(String::from("busy"));
@@ -205,7 +221,17 @@ impl Files for Home {
     }
 
     fn files_under(&mut self, folder: &str) -> Result<Vec<Changed>, String> {
-        Ok(self.file_rows(|path, _| under(path, folder)))
+        let mut rows = self.file_rows(|path, _| under(path, folder));
+        rows.extend(
+            self.dirs
+                .iter()
+                .filter(|(path, _)| under(path, folder))
+                .map(|(path, (object, changed))| Changed {
+                    stat: stat(fsproto::Kind::Dir, *object, 0, *changed),
+                    path: Some(path.clone()),
+                }),
+        );
+        Ok(rows)
     }
 
     fn present(&mut self, path: &str) -> Result<bool, String> {

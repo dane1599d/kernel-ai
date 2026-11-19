@@ -49,7 +49,7 @@ pub mod text;
 #[cfg(test)]
 mod tests;
 
-pub use search::{BATCH_FILES, IDLE_NS, Opened, Search, Walked};
+pub use search::{BATCH_FILES, IDLE_NS, MAX_TRIES, Opened, Search, Walked};
 
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -75,8 +75,13 @@ pub struct Changes {
     /// trashed or deleted object is in no row: the home folder's handle no longer
     /// sees it, and the change to its folder is how the walk learns of it.
     pub rows: Vec<Changed>,
-    /// The generation this answer is complete up to: the next walk starts here.
+    /// The generation this answer is complete up to (`fs`'s `upto`): the next
+    /// walk starts here.
     pub generation: u64,
+    /// How many times `fs` has had to fall back to an answer that may miss
+    /// changes (#1148): when it is not what the last full reconcile saw, the
+    /// walk reconciles the whole home folder.
+    pub fallbacks: u64,
 }
 
 /// The files of `/home/user`, as the `index` agent's `Dir` sees them. An `Err` is
@@ -85,8 +90,9 @@ pub trait Files {
     fn changes(&mut self, since: u64) -> Result<Changes, String>;
     /// The bytes of the file at `path`, at most `max` of them; more is an error.
     fn read(&mut self, path: &str, max: u64) -> Result<Vec<u8>, String>;
-    /// Every file under `folder`, at any depth, with its stat and path: a folder
-    /// moved in is listed so its files are re-keyed to their new paths.
+    /// Every file and folder under `folder`, at any depth, with its stat and
+    /// path: a folder moved in is listed so its files are re-keyed to their new
+    /// paths, and a fallback lists the whole home folder.
     fn files_under(&mut self, folder: &str) -> Result<Vec<Changed>, String>;
     /// Whether anything, file or folder, is at `path` now.
     fn present(&mut self, path: &str) -> Result<bool, String>;

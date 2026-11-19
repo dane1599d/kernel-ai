@@ -9,7 +9,7 @@ use semindex::Refused;
 
 const MINUTE: u64 = 60 * 1_000_000_000;
 
-fn trip() -> Home {
+pub(super) fn trip() -> Home {
     let mut home = Home::default();
     home.write("/home/user/notes/trip.txt", "the hotel in lisbon is booked");
     home.write("/home/user/notes/soup.txt", "a soup recipe with bread");
@@ -28,6 +28,7 @@ fn a_file_changes_reports_is_found_after_one_walk() {
             removed: 0,
             skipped: 0,
             failed: 0,
+            gave_up: vec![],
             generation: 2
         }
     );
@@ -332,133 +333,4 @@ fn files_the_caller_may_not_read_are_not_ranked_at_all() {
             .map(|l| l.split(' ').nth(1).map(String::from))
     };
     assert_eq!(score(&seen), score(&reference), "{seen}\n{reference}");
-}
-
-/// The review's second HIGH: a folder renamed carries its files to their new
-/// paths, re-keyed with the chunks they have, and none is read again.
-#[test]
-fn a_renamed_folder_re_keys_its_files_without_reading_them() {
-    let (mut search, _) = open(trip(), Disk::default(), Model::keyword());
-    search.walk(0).unwrap();
-    let reads = search.files_mut().reads;
-    search
-        .files_mut()
-        .rename_folder("/home/user/notes", "/home/user/archive/2026");
-    let walked = search.walk(0).unwrap();
-    assert!(
-        matches!(walked, Walked::Indexed { failed: 0, .. }),
-        "{walked:?}"
-    );
-    assert_eq!(search.files_mut().reads, reads, "a move reads nothing");
-    let reply = search.query(&ask("lisbon"), 0, &mut everything());
-    assert_eq!(paths(&reply), ["/home/user/archive/2026/trip.txt"]);
-    let mut kept: Vec<&str> = search.index().files().map(|f| f.path.as_str()).collect();
-    kept.sort();
-    assert_eq!(
-        kept,
-        [
-            "/home/user/archive/2026/soup.txt",
-            "/home/user/archive/2026/trip.txt"
-        ]
-    );
-    let disk = search.store().clone();
-    let index = search.index().clone();
-    let (again, _) = open(Home::default(), disk, Model::keyword());
-    assert_eq!(again.index(), &index);
-}
-
-/// A trashed folder's files leave the index, though no row names them: only the
-/// folder it was in changed.
-#[test]
-fn a_trashed_folder_takes_its_files_out_of_the_index() {
-    let mut home = trip();
-    home.write("/home/user/travel/plan.txt", "lisbon by train");
-    let (mut search, _) = open(home, Disk::default(), Model::keyword());
-    search.walk(0).unwrap();
-    search.files_mut().trash_folder("/home/user/notes");
-    let walked = search.walk(0).unwrap();
-    assert!(
-        matches!(walked, Walked::Indexed { removed: 2, .. }),
-        "{walked:?}"
-    );
-    let reply = search.query(&ask("lisbon"), 0, &mut everything());
-    assert_eq!(paths(&reply), ["/home/user/travel/plan.txt"]);
-    assert_eq!(search.query(&ask("soup"), 0, &mut everything()), "ok 0");
-}
-
-/// A folder moved into one the person excluded takes its files out of the index,
-/// and moved back out, they come back.
-#[test]
-fn a_folder_moved_into_an_excluded_one_leaves_and_comes_back() {
-    let mut scope = Scope::new();
-    scope.exclude("/home/user/secret").unwrap();
-    let (mut search, _) = Search::open(trip(), Disk::default(), Model::keyword(), scope).unwrap();
-    search.walk(0).unwrap();
-    search
-        .files_mut()
-        .rename_folder("/home/user/notes", "/home/user/secret/notes");
-    let walked = search.walk(0).unwrap();
-    assert!(
-        matches!(walked, Walked::Indexed { removed: 2, .. }),
-        "{walked:?}"
-    );
-    assert_eq!(search.index().files().count(), 0);
-    search
-        .files_mut()
-        .rename_folder("/home/user/secret/notes", "/home/user/notes");
-    search.walk(0).unwrap();
-    let reply = search.query(&ask("lisbon"), 0, &mut everything());
-    assert_eq!(paths(&reply), ["/home/user/notes/trip.txt"]);
-}
-
-/// The review's MEDIUM: a file that cannot be read now keeps its old entry, and
-/// the mark stays below its change, so the next walk reads it again; a change
-/// after it is indexed meanwhile.
-#[test]
-fn a_read_that_fails_keeps_the_entry_and_is_tried_again() {
-    let (mut search, _) = open(trip(), Disk::default(), Model::keyword());
-    search.walk(0).unwrap();
-    let home = search.files_mut();
-    home.write("/home/user/notes/trip.txt", "the flight to porto");
-    home.write("/home/user/notes/bread.txt", "bread recipe");
-    home.fail_reads
-        .push(String::from("/home/user/notes/trip.txt"));
-    let walked = search.walk(0).unwrap();
-    assert!(
-        matches!(
-            walked,
-            Walked::Indexed {
-                failed: 1,
-                generation: 2,
-                ..
-            }
-        ),
-        "{walked:?}"
-    );
-    // Its old entry is still there, and still found.
-    let reply = search.query(&ask("lisbon"), 0, &mut everything());
-    assert_eq!(paths(&reply), ["/home/user/notes/trip.txt"]);
-    let reply = search.query(&ask("bread"), 0, &mut everything());
-    assert!(
-        paths(&reply)
-            .iter()
-            .any(|p| p == "/home/user/notes/bread.txt"),
-        "{reply}"
-    );
-    // The next walk reads it again.
-    let walked = search.walk(0).unwrap();
-    assert!(
-        matches!(
-            walked,
-            Walked::Indexed {
-                failed: 0,
-                generation: 4,
-                ..
-            }
-        ),
-        "{walked:?}"
-    );
-    let reply = search.query(&ask("porto"), 0, &mut everything());
-    assert_eq!(paths(&reply), ["/home/user/notes/trip.txt"]);
-    assert_eq!(search.query(&ask("lisbon"), 0, &mut everything()), "ok 0");
 }
