@@ -287,6 +287,12 @@ const PERMS: &[(&str, &str)] = &[
     ("email_send", "net.send"),
     ("power_reboot", "power"),
     ("power_off", "power"),
+    // A goal's own grants are set by `goal_set`'s one yes (`agentid::grant_goal`).
+    ("goal_set", "goals"),
+    ("goal_list", "goals"),
+    ("goal_pause", "goals"),
+    ("goal_resume", "goals"),
+    ("goal_cancel", "goals"),
     ("disk_format", "disk.admin"),
 ];
 

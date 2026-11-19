@@ -70,6 +70,9 @@ impl Shell {
             _ => return Reply::err("that route is no agent's"),
         };
         let name = caller.name().as_str().to_string();
+        if let Some(reply) = self.goal_queue_step(&caller, text) {
+            return reply;
+        }
         if let Some(id) = text.strip_prefix("wait ") {
             return self.agent_waits(&name, id.trim());
         }

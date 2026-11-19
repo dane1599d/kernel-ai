@@ -398,6 +398,10 @@ impl Shell {
             self.record(id, request, &call.text(), &format!("refused: {why}"));
             return outcome(Tier::Never, Why::Added, Reply::err(why));
         }
+        if agentabi::GOAL_ROWS.iter().any(|r| r.name == row.name) {
+            let reply = self.goal_call(id, request, row.name, &args.values, decision);
+            return outcome(decision.tier, decision.why, reply);
+        }
         if agentabi::PKG_ROWS.iter().any(|r| r.name == row.name) {
             let reply = self.pkg_call(id, request, row.name, &args.values, decision);
             return outcome(decision.tier, decision.why, reply);
@@ -577,6 +581,7 @@ impl Shell {
             install: None,
             net: None,
             power: false,
+            goal: None,
         });
         // The highlight starts on Allow only for a call the line plainly asked for.
         let origin = match why {
@@ -668,7 +673,7 @@ impl Shell {
 }
 
 /// Why a call asks, as its card says it.
-fn reason_of(why: Why) -> String {
+pub(crate) fn reason_of(why: Why) -> String {
     match why {
         Why::NotEnglish => String::from("the request is not in English, so it asks first"),
         Why::Added => String::from("the request did not ask for it"),

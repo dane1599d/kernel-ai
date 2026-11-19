@@ -298,6 +298,7 @@ impl Shell {
             install: None,
             net: Some(asking),
             power: false,
+            goal: None,
         });
         Reply::menu(id, encoded)
     }

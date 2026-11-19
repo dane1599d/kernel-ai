@@ -358,6 +358,14 @@ fn value_of<'a>(call: &Call<'a>, name: &str) -> Option<Value<'a>> {
         .map(|(_, value)| *value)
 }
 
+/// Whether `line` names `row` by one of its cues, as consent reads a line:
+/// `Some(false)` named, `Some(true)` named but negated or switched off ("never
+/// move"), `None` not named. A question's or a tell clause's cue counts. For a
+/// goal's scope (G2), which takes the person's words, never a model's.
+pub fn named_in(line: &str, row: &Action) -> Option<bool> {
+    cued_in(&words(line), row, true)
+}
+
 /// Whether a cue of `row` starts a word of the line: `Some(false)` if some do and
 /// none is negated, `Some(true)` if any is negated, `None` if none does. A negated
 /// cue wins over the others, so "print the policy, but don't switch to round robin"

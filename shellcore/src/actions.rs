@@ -61,6 +61,8 @@ pub(crate) struct Pending {
     pub net: Option<crate::netask::NetAsking>,
     /// For a restart line, true: the restart waits on the answer.
     pub power: bool,
+    /// For a goal row, what waits on the answer.
+    pub goal: Option<crate::goalrows::Waiting>,
 }
 
 /// `y`, `n`, `yes` or `no`, any case.
@@ -254,6 +256,7 @@ impl Shell {
             install: None,
             net: None,
             power: false,
+            goal: None,
         });
         Reply {
             ok: true,
@@ -609,6 +612,9 @@ impl Shell {
         }
         if pending.power && !is_show(text) {
             return self.answer_power(pending, text);
+        }
+        if pending.goal.is_some() && !is_show(text) {
+            return self.answer_goal(pending, text);
         }
         if is_show(text) {
             let question = self.question(id, &pending.request, &pending.checked, &pending.asking);

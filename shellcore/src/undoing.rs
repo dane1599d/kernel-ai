@@ -208,6 +208,10 @@ impl Shell {
                     .revert_keep(app.as_str(), on)
                     .map(|text| (text, undo::reverse(inverse)))
                     .map_err(Refused::Failed),
+                undo::Inverse::Goal { id: goal, paused } => self
+                    .revert_goal(goal, paused)
+                    .map(|text| (text, undo::reverse(inverse)))
+                    .map_err(Refused::Failed),
                 undo::Inverse::Profile { key } => self
                     .revert_profile(key)
                     .map(|(text, redo)| (text, undo::Inverse::Profile { key: redo }))

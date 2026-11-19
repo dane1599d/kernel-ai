@@ -282,6 +282,7 @@ impl Shell {
             }),
             net: None,
             power: false,
+            goal: None,
         });
         Reply::menu(
             id,
