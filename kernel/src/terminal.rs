@@ -402,7 +402,9 @@ fn answer_on_card(menu: &Menu) -> Option<Answer> {
     if !claim::showing() || !ask_box::alive() {
         return None;
     }
-    if !ask_box::post(menu.id, menu.call(), menu.question()) {
+    // Code's question alone: a menu's detail is the console's, never the
+    // trusted card's (ADR 0005 section 7).
+    if !ask_box::post(menu.id, menu.call(), menu.card_reason()) {
         return None;
     }
     AWAITING_ANSWER.store(true, Ordering::Release);
