@@ -82,12 +82,13 @@ observe_only() {  # $1 run id
 # #256 merged on 2026-10-27 with pkgrepo red, since only ci.yml was checked.
 # Returns 1 when one failed, and 2 when one is still queued or running after
 # the wait, or the listing itself failed: a no-boot batch gets here after lint
-# alone, so an unfinished gate must not read as green (#1108's review).
+# alone, so an unfinished gate must not read as green (#1108's review). gh gives
+# a queued or running run an empty conclusion, so its status is shown then.
 others_ok() {  # $1 branch, $2 sha
   local listed="" done_re="=(success|skipped|neutral|failure|cancelled|timed_out|action_required)$"
   for i in $(seq 1 60); do
     if o=$(gh run list --repo "$R" --branch "$1" --limit 30 --json headSha,workflowName,status,conclusion \
-        --jq ".[] | select(.headSha==\"$2\" and .workflowName!=\"CI\" and (.workflowName|test(\"Fluency\")|not)) | .workflowName+\"=\"+(.conclusion//.status)"); then
+        --jq ".[] | select(.headSha==\"$2\" and .workflowName!=\"CI\" and (.workflowName|test(\"Fluency\")|not)) | .workflowName+\"=\"+(if (.conclusion // \"\") == \"\" then .status else .conclusion end)"); then
       listed=1
       { [ -z "$o" ] || ! echo "$o" | grep -qvE "$done_re"; } && break
     else
