@@ -51,7 +51,7 @@ pub fn from_shell(caller: &str) -> bool {
 /// Whether `call` names the send row: its card is a send's, whatever else
 /// it says. A send's card takes no Allow without its text read through.
 pub fn names_send(call: &str) -> bool {
-    call.starts_with(ACTION) && call[ACTION.len()..].starts_with('(')
+    termcore::menu::names_send(call)
 }
 
 /// What a send's call on the card says: where it goes, and which text.
