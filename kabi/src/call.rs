@@ -386,7 +386,10 @@ pub const ENTROPY_MAX: usize = 256;
 /// name under one of the record's host suffixes is looked up (Permission
 /// otherwise, and for a dotted address, which needs no lookup), so a name the
 /// app was not given never leaves in a query. The record keeps the addresses
-/// for its connects until their TTL runs out. Numbered at merge, K's block.
+/// for its connects until their TTL runs out (a minute at least). Addresses a
+/// name may not lead to (this machine, the link, a private network) are left
+/// out of the answer; Private when nothing else is left (Network stays a
+/// lookup that failed). Numbered at merge, K's block.
 pub const RESOLVE_ON: u64 = 84;
 /// `netdest_narrow(dest, spec_ptr, spec_len, rights) -> handle`: a new
 /// `NetDest` handle, with `rights` (each held by `dest`), to a new record that
