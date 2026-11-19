@@ -79,6 +79,8 @@ mod keys;
 mod pane;
 #[path = "desktop/perf.rs"]
 mod perf;
+#[path = "desktop/pools.rs"]
+mod pools;
 #[path = "desktop/taskbar.rs"]
 mod taskbar;
 use keys::{input, lease};
@@ -119,6 +121,9 @@ const CLIENT_WAIT_MS: u64 = 2;
 struct Pool {
     pid: u64,
     pool: u32,
+    /// The `Shm` the client moved here, held (with its mapping) until the pool
+    /// is released: `pools::release`.
+    handle: Handle,
     address: u64,
     size: u32,
     /// Mapped writable, so its header page's event ring takes the client's
@@ -137,6 +142,8 @@ struct State {
     pools: Vec<Pool>,
     /// Each window's buffer, whose client, and the scale it was drawn at.
     shown: Vec<(WindowId, u64, Buffer, u32)>,
+    /// Which clients' processes are gone (`deskcore::reap`).
+    reaper: deskcore::reap::Reaper,
     frame: Image,
     /// Which window's content was painted last at each px of `frame`, 0 for
     /// none or a window drawn at scale 1 (`deskcore::overlay`).
@@ -251,6 +258,7 @@ fn main() -> i32 {
             clients: Vec::new(),
             pools: Vec::new(),
             shown: Vec::new(),
+            reaper: deskcore::reap::Reaper::default(),
             frame: Image::new(width, height),
             mask: vec![0; (width.max(0) * height.max(0)) as usize],
             width,
@@ -299,6 +307,10 @@ fn main() -> i32 {
             );
         }
         let result = run(&mut state, &screen);
+        // The clients' pools go with this connection's state; they greet again.
+        for pool in &state.pools {
+            pools::release(pool);
+        }
         painter = state.painter;
         painted_in = state.painted_in;
         appearance = state.appearance;

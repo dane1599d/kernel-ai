@@ -225,6 +225,18 @@ impl Client {
         }
     }
 
+    /// Whether any buffer of the client is in pool `pool`.
+    pub fn pool_in_use(&self, pool: u32) -> bool {
+        self.buffers.iter().any(|b| b.1.pool == pool)
+    }
+
+    /// `desktop` let pool `pool` go: it is no pool of the client's any more, and
+    /// a buffer made on it, or a commit of one, is refused.
+    pub fn pool_gone(&mut self, pool: u32) {
+        self.pools.retain(|p| p.0 != pool);
+        self.buffers.retain(|b| b.1.pool != pool);
+    }
+
     pub fn buffer(&self, id: u32) -> Option<Buffer> {
         self.buffers.iter().find(|b| b.0 == id).map(|b| b.1)
     }
