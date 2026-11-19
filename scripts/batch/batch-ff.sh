@@ -105,6 +105,9 @@ fluency_ok() {  # $1 branch, $2 sha; dispatches the run unless $fluency is set (
 }
 
 cleanup() {  # $1 batch branch, $2 batch PR number
+  # Only a batch branch: `--branch ""` would list, and cancel, the newest runs
+  # on every branch, and `push --delete ""` is no better.
+  case "$1" in batch/?*) ;; *) return 0;; esac
   # Closing a PR leaves its queued runs in the queue: cancel them first.
   for id in $(gh run list --repo "$R" --branch "$1" --limit 10 --json databaseId,status \
               --jq '.[] | select(.status!="completed") | .databaseId'); do
@@ -206,6 +209,10 @@ land() {  # PR numbers
   local i=0
   for p in "$@"; do
     [ "$(field $p headRefOid)" = "${heads[$i]}" ] || stop "#$p was pushed to during the batch; STOPPING"
+    # A resume may come hours later: a PR closed or unlabelled since does not land.
+    [ "$(field $p state)" = OPEN ] || stop "#$p is no longer open; STOPPING"
+    gh pr view "$p" --repo "$R" --json labels --jq '.labels[].name' | grep -qx batch-ready \
+      || stop "#$p is no longer batch-ready; STOPPING"
     i=$((i+1))
   done
   for p in "$@"; do
@@ -227,6 +234,9 @@ resume() {
   name=""; bpr=""
   [ -f "$STATE" ] || { echo "  no batch to resume; nothing to merge; STOPPING"; exit 0; }
   . "$STATE"
+  # Checked before anything acts on them: stop's cleanup takes `name`.
+  case "$name" in batch/?*) ;; *) name=""; stop "the resume state names no batch branch; STOPPING";; esac
+  [[ "$c" =~ ^[0-9a-f]{40}$ && "$base" =~ ^[0-9a-f]{40}$ ]] || stop "the resume state is damaged; STOPPING"
   read -ra batch <<< "$prs"; read -ra heads <<< "$heads_s"; read -ra brs <<< "$brs_s"
   echo "== resuming batch $name ($phase) on main ${base:0:7}: ${batch[*]}"
   local i=0
@@ -249,80 +259,95 @@ resume() {
   exit 0
 }
 
-batch=(); heads=(); brs=()
-model=""; rerun=""; fluency=""
-[ "$1" = --resume ] && resume
-
-git -C "$G" fetch -q origin "$MAIN"
-base=$(git -C "$G" rev-parse "origin/$MAIN")
-name="batch/$(date +%m%d-%H%M)"
-c=$base
-bpr=""
-skipped=" "
-model_heads=""
-echo "== batch $name on main ${base:0:7}: $*"
-for p in "$@"; do
-  [ "$(field $p state)" = OPEN ] || { echo "  - #$p is not open; left out"; continue; }
-  # A split re-runs halves from a list taken earlier; drop a PR unlabelled
-  # since (11-05: #696 was unlabelled for a failing pkgrepo check mid-split).
-  gh pr view "$p" --repo "$R" --json labels --jq '.labels[].name' | grep -qx batch-ready \
-    || { echo "  - #$p is no longer batch-ready; left out"; continue; }
-  br=$(field $p headRefName)
-  pbase=$(field $p baseRefName)
-  case "$skipped" in *" $pbase "*) echo "  - #$p is stacked on a left-out PR; left out"; skipped="$skipped$br "; continue;; esac
-  git -C "$G" fetch -q origin "$br"
-  head=$(git -C "$G" rev-parse "origin/$br")
-  # A PR that carries a model PR left out of this batch would land it unchecked.
-  for mh in $model_heads; do
-    if git -C "$G" merge-base --is-ancestor "$mh" "$head" 2>/dev/null; then
-      echo "  - #$p contains a model PR left out of this batch; left out"; skipped="$skipped$br "; continue 2
+# A fresh batch: the PRs combined on main, the batch branch pushed and its
+# draft PR open, recorded for a resume.
+compose() {
+  git -C "$G" fetch -q origin "$MAIN"
+  base=$(git -C "$G" rev-parse "origin/$MAIN")
+  name="batch/$(date +%m%d-%H%M)"
+  c=$base
+  bpr=""
+  skipped=" "
+  model_heads=""
+  echo "== batch $name on main ${base:0:7}: $*"
+  for p in "$@"; do
+    [ "$(field $p state)" = OPEN ] || { echo "  - #$p is not open; left out"; continue; }
+    # A split re-runs halves from a list taken earlier; drop a PR unlabelled
+    # since (11-05: #696 was unlabelled for a failing pkgrepo check mid-split).
+    gh pr view "$p" --repo "$R" --json labels --jq '.labels[].name' | grep -qx batch-ready \
+      || { echo "  - #$p is no longer batch-ready; left out"; continue; }
+    br=$(field $p headRefName)
+    pbase=$(field $p baseRefName)
+    case "$skipped" in *" $pbase "*) echo "  - #$p is stacked on a left-out PR; left out"; skipped="$skipped$br "; continue;; esac
+    git -C "$G" fetch -q origin "$br"
+    head=$(git -C "$G" rev-parse "origin/$br")
+    # A PR that carries a model PR left out of this batch would land it unchecked.
+    for mh in $model_heads; do
+      if git -C "$G" merge-base --is-ancestor "$mh" "$head" 2>/dev/null; then
+        echo "  - #$p contains a model PR left out of this batch; left out"; skipped="$skipped$br "; continue 2
+      fi
+    done
+    # One PR that changes what the model sees per batch, so a fluency miss names
+    # its PR without a split.
+    if gh pr diff $p --repo "$R" --name-only | grep -qE "$MODEL_PATHS"; then
+      if [ -n "$model" ]; then
+        echo "  - #$p changes what the model sees, and so does$model; left out until the next batch"
+        skipped="$skipped$br "; model_heads="$model_heads $head"
+        continue
+      fi
+      is_model=1
+    else
+      is_model=""
     fi
-  done
-  # One PR that changes what the model sees per batch, so a fluency miss names
-  # its PR without a split.
-  if gh pr diff $p --repo "$R" --name-only | grep -qE "$MODEL_PATHS"; then
-    if [ -n "$model" ]; then
-      echo "  - #$p changes what the model sees, and so does$model; left out until the next batch"
-      skipped="$skipped$br "; model_heads="$model_heads $head"
+    out=$(git -C "$G" -c attr.tree="$c" merge-tree --write-tree "$c" "$head")
+    if [ $? -ne 0 ]; then
+      echo "  - #$p conflicts with main or the batch so far; left out (needs a hand rebase):"
+      echo "$out" | grep -E "^CONFLICT" | sed 's/^/      /'
+      skipped="$skipped$br "
       continue
     fi
-    is_model=1
-  else
-    is_model=""
-  fi
-  out=$(git -C "$G" -c attr.tree="$c" merge-tree --write-tree "$c" "$head")
-  if [ $? -ne 0 ]; then
-    echo "  - #$p conflicts with main or the batch so far; left out (needs a hand rebase):"
-    echo "$out" | grep -E "^CONFLICT" | sed 's/^/      /'
-    skipped="$skipped$br "
-    continue
-  fi
-  t=$(echo "$out" | head -1)
-  c=$(git -C "$G" commit-tree "$t" -p "$c" -p "$head" -m "batch: #$p ($br)")
-  [ -n "$is_model" ] && model="$model #$p"
-  batch+=("$p")
-  heads+=("$head")
-  brs+=("$br")
-  echo "  + #$p ($br)"
-done
-[ ${#batch[@]} -gt 0 ] || { echo "  nothing to merge; STOPPING"; exit 0; }
-set -- "${batch[@]}"
+    t=$(echo "$out" | head -1)
+    c=$(git -C "$G" commit-tree "$t" -p "$c" -p "$head" -m "batch: #$p ($br)")
+    [ -n "$is_model" ] && model="$model #$p"
+    batch+=("$p")
+    heads+=("$head")
+    brs+=("$br")
+    echo "  + #$p ($br)"
+  done
+  [ ${#batch[@]} -gt 0 ] || { echo "  nothing to merge; STOPPING"; exit 0; }
+  set -- "${batch[@]}"
 
-git -C "$G" push -q origin "$c:refs/heads/$name" || { echo "  push failed; STOPPING"; exit 0; }
-save_state pushed
-# CI runs only on the PR, so a failed create (GitHub 5xx, 10-30) must not leave
-# wait_ci polling for three hours: retry, then stop.
-for try in 1 2 3; do
-  bpr=$(gh pr create --repo "$R" --draft --base "$MAIN" --head "$name" \
-        --title "batch CI: $* (not for merge)" \
-        --body "CI for a merge batch: the listed PRs combined on current main. It is closed once the batch is merged or fails." \
-        | grep -oE '[0-9]+$')
-  [ -n "$bpr" ] && break
-  bpr=$(gh pr list --repo "$R" --head "$name" --state open --json number --jq '.[0].number // empty' 2>/dev/null)
-  [ -n "$bpr" ] && break
-  sleep 60
-done
-[ -n "$bpr" ] || stop "batch PR could not be created; STOPPING"
-save_state pushed
-verify
-land "$@"
+  git -C "$G" push -q origin "$c:refs/heads/$name" || { echo "  push failed; STOPPING"; exit 0; }
+  save_state pushed
+  # CI runs only on the PR, so a failed create (GitHub 5xx, 10-30) must not leave
+  # wait_ci polling for three hours: retry, then stop.
+  for try in 1 2 3; do
+    bpr=$(gh pr create --repo "$R" --draft --base "$MAIN" --head "$name" \
+          --title "batch CI: $* (not for merge)" \
+          --body "CI for a merge batch: the listed PRs combined on current main. It is closed once the batch is merged or fails." \
+          | grep -oE '[0-9]+$')
+    [ -n "$bpr" ] && break
+    bpr=$(gh pr list --repo "$R" --head "$name" --state open --json number --jq '.[0].number // empty' 2>/dev/null)
+    [ -n "$bpr" ] && break
+    sleep 60
+  done
+  [ -n "$bpr" ] || stop "batch PR could not be created; STOPPING"
+  save_state pushed
+}
+
+# Everything runs from here, once bash has read the whole file: a pull that
+# rewrites this script while a batch waits on CI cannot change what runs.
+main() {
+  # batch-auto.sh waits while this names a live process.
+  echo $$ > "$S/batch-ff.pid"
+  trap 'rm -f "$S/batch-ff.pid"' EXIT
+  batch=(); heads=(); brs=()
+  model=""; rerun=""; fluency=""
+  [ "$1" = --resume ] && resume
+  compose "$@"
+  set -- "${batch[@]}"
+  verify
+  land "$@"
+}
+
+main "$@"; exit

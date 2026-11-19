@@ -45,39 +45,10 @@ pub const MAX_SUFFIXES: usize = 16;
 pub const PORT: u16 = 443;
 
 /// Suffixes under which unrelated parties hold names, which no grant may
-/// name: second-level public suffixes and shared hosting domains. Every
-/// top-level domain is refused besides.
-pub const SHARED: &[&str] = &[
-    "co.uk",
-    "org.uk",
-    "ac.uk",
-    "gov.uk",
-    "com.au",
-    "net.au",
-    "co.nz",
-    "co.jp",
-    "com.br",
-    "co.in",
-    "github.io",
-    "githubusercontent.com",
-    "gitlab.io",
-    "pages.dev",
-    "workers.dev",
-    "netlify.app",
-    "vercel.app",
-    "web.app",
-    "firebaseapp.com",
-    "herokuapp.com",
-    "appspot.com",
-    "blogspot.com",
-    "cloudfront.net",
-    "azurewebsites.net",
-    "s3.amazonaws.com",
-    "fly.dev",
-    // Parents under which every customer's names sit (C's review of #671).
-    "amazonaws.com",
-    "googleusercontent.com",
-];
+/// name: second-level public suffixes and shared hosting domains, kept in
+/// `netdest` so an agent's `net` line refuses the same ones. Every top-level
+/// domain is refused besides.
+pub use netdest::SHARED_SUFFIXES as SHARED;
 
 /// Why a grant was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,7 +82,7 @@ impl Grant {
             {
                 return Err(GrantError::NotAName(name));
             }
-            if !name.contains('.') || SHARED.contains(&name.as_str()) {
+            if netdest::is_shared(&name) {
                 return Err(GrantError::Shared(name));
             }
             kept.push(name);

@@ -16,9 +16,9 @@
 
 ## Status
 
-The first release candidate, **v0.1.0-rc.1, "an AI-native OS you can try"**, is out on the [Releases page](https://github.com/dane1599d/kernel-ai/releases). It runs in a VM (QEMU or VirtualBox) and boots to a desktop with seven built-in apps (Terminal, Files, Notes, Settings, System Monitor, Models and an editor). Each app is a signed package whose actions the AI calls by name. There is a writable disk with undo, and TempleOS's idea of a `c>` prompt that runs C as you press Enter. rc.1 has no browser, no internet and no real-hardware drivers. The final v0.1 tag waits on [the P4 checklist](docs/plans/p4-apps.md#35-the-v01-checklist).
+The first release candidate, **v0.1.0-rc.1, "an AI-native OS you can try"**, is out on the [Releases page](https://github.com/dane1599d/kernel-ai/releases). It runs in a VM (QEMU or VirtualBox) and boots to a desktop with seven built-in apps (Terminal, Files, Notes, Settings, System Monitor, Models and an editor). Each app is a signed package whose actions the AI calls by name. There is a writable disk with undo, and TempleOS's idea of a `c>` prompt that runs C as you press Enter. rc.1 has no browser, no internet and no real-hardware drivers. v0.1.0 itself stays as it was cut, on the `release/v0.1` branch, plus the release signing and the rc.1 VirtualBox fixes. rc.2 and the final tag wait on [the P4 checklist](docs/plans/p4-apps.md#35-the-v01-checklist).
 
-Since rc.1, `main` has gained two big pieces, which come with the next release:
+Since rc.1, `main` has gained two big pieces, which ship in **v0.2**, not in v0.1:
 
 - **Kai Desk:** a Windows 11-style desktop with a Start menu on the Super key, a taskbar and Kai's side pane.
 - **Networking (P5, closing now):** installs from the online package store, model downloads and signed updates over the internet. Apps can reach a website after you allow that site once.

@@ -272,17 +272,21 @@ pub fn route(service: &str) -> Result<Entry, kabi::Error> {
 /// from `caps`, then a route to each service in `uses` (CALL only). Before the
 /// process runs, so nothing races it.
 pub fn create(slot: usize, caps: u64, pid: u64, uses: &[&str]) -> Result<(), kabi::Error> {
-    create_with(slot, caps, pid, uses, &[])
+    create_with(slot, caps, pid, uses, &[], None)
 }
 
 /// [`create`], with a startup `Dir` on the `fs` route for each folder in `dirs`
-/// (the plan's `dir=`), after FILES's and SYSTEM_STATE's.
+/// (the plan's `dir=`), after FILES's and SYSTEM_STATE's, and `agent`'s badge
+/// (the plan's `agent=`, ADR 0013 section 1) on the route to
+/// `kabi::handle::agent::SERVICE`, so that service knows the agent by a badge
+/// it cannot forge. Every other route's badge is 0.
 pub fn create_with(
     slot: usize,
     caps: u64,
     pid: u64,
     uses: &[&str],
     dirs: &[supervise::Folder],
+    agent: Option<u64>,
 ) -> Result<(), kabi::Error> {
     let mut table = Table::new().map_err(kabi::Error::from)?;
     let mut startup = Vec::new();
@@ -290,7 +294,15 @@ pub fn create_with(
         .try_reserve_exact(MAX_STARTUP)
         .map_err(|_| kabi::Error::NoMemory)?;
     let routes = uses.iter().filter(|_| caps & cap::CALL != 0);
-    let routes: Result<Vec<Entry>, kabi::Error> = routes.map(|name| route(name)).collect();
+    let routes: Result<Vec<Entry>, kabi::Error> = routes
+        .map(|name| {
+            let mut entry = route(name)?;
+            if *name == kabi::handle::agent::SERVICE {
+                entry.badge = agent.unwrap_or(0);
+            }
+            Ok(entry)
+        })
+        .collect();
     let fs = match (caps & (cap::FILES | cap::SYSTEM_STATE), dirs) {
         (0, []) => None,
         _ => Some(route_id(crate::process::supervision::FS)?),
@@ -308,6 +320,18 @@ pub fn create_with(
     }
     *HANDLES[slot].lock() = Some(Handles { table, startup });
     Ok(())
+}
+
+/// The badge on `slot`'s startup route to `service`, if it has one: what a
+/// call through it delivers (`agent=`'s on the route to `llm`).
+pub fn route_badge(slot: usize, service: &str) -> Option<u64> {
+    let id = route_id(service).ok()?;
+    let guard = HANDLES[slot].lock();
+    let handles = guard.as_ref()?;
+    handles.startup.iter().find_map(|&handle| {
+        let entry = handles.table.get(handle).ok()?;
+        (entry.kind == Kind::Service && entry.object == id).then_some(entry.badge)
+    })
 }
 
 /// How many startup handles `slot`'s table lists: STARTUP gives a process at
