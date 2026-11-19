@@ -164,3 +164,44 @@ fn a_yes_given_after_the_goal_ended_runs_nothing() {
         "{told}"
     );
 }
+
+#[test]
+fn a_move_with_either_end_outside_the_folders_is_refused() {
+    let (_, mut shell) = with_goal();
+    for (from, to) in [
+        ("notes/q3/a.txt", "notes/q4/a.txt"),
+        ("notes/q4/a.txt", "notes/q3/a.txt"),
+        ("notes/q3/a.txt", "notes/q3/../a.txt"),
+    ] {
+        let moved =
+            format!(r#"goal=1 {{"name":"fs_move","arguments":{{"from":"{from}","to":"{to}"}}}}"#);
+        let wire = step(&mut shell, GOALS, &moved);
+        assert!(
+            wire.starts_with("err refused") && wire.contains("outside the folders"),
+            "{from} -> {to}: {wire}"
+        );
+    }
+}
+
+#[test]
+fn rows_that_reach_past_the_folders_are_never_a_goals() {
+    // Named in the person's line, they refuse the goal, and say which word.
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    host.calls.borrow_mut().push_back(call(SET));
+    let reply = shell.eval("keep tidying and find the files in notes/q3");
+    assert!(
+        !reply.ok && reply.text.contains("\"find\" names fs_find"),
+        "{reply:?}"
+    );
+    // And a step to one is refused even under a goal.
+    let (_, mut shell) = with_goal();
+    for json in [
+        r#"{"name":"fs_find","arguments":{"name":"plan"}}"#,
+        r#"{"name":"fs_changes","arguments":{}}"#,
+        r#"{"name":"ui_windows","arguments":{}}"#,
+    ] {
+        let wire = step(&mut shell, GOALS, &format!("goal=1 {json}"));
+        assert!(wire.starts_with("err refused"), "{json}: {wire}");
+    }
+}

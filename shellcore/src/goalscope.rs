@@ -101,6 +101,21 @@ fn may_hold(row: &Action) -> bool {
     row.owner != Owner::Shell
         && agentabi::derive(row) != Tier::Never
         && !agentid::goalgrant::sends_or_installs(row)
+        && !reaches_past_folders(row)
+}
+
+/// Whether `row` reaches past a goal's approved folders with no path the
+/// shell can hold to them: a file row with no path argument (`fs_find`,
+/// `fs_changes`, `fs_empty_trash`) or a window row. A goal never holds one.
+pub(crate) fn reaches_past_folders(row: &Action) -> bool {
+    let is_file = agentabi::FS_ROWS.iter().any(|r| r.name == row.name);
+    let has_path = row.args.iter().any(|arg| is_path(arg.name));
+    (is_file && !has_path) || agentabi::UI_ROWS.iter().any(|r| r.name == row.name)
+}
+
+/// Whether argument `name` is a file row's path: `path`, `from` or `to`.
+pub(crate) fn is_path(name: &str) -> bool {
+    matches!(name, "path" | "from" | "to")
 }
 
 /// `text` lower-cased, every run of other characters one space, padded.
