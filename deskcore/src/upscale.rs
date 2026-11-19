@@ -78,18 +78,32 @@ fn tap(d: i32, scale: u32, len: i32) -> Tap {
     }
 }
 
-/// `a` blended to `b` by `w` / 256, every channel at once.
+/// `a` blended to `b` by `w` / 256, every channel at once. Two channels a lane
+/// in 16 bits: each sum is at most 255 * 256, so nothing carries into the next
+/// lane; wrapping ops say so, and keep the loops free of overflow checks (the
+/// dev profile's) so they vectorise.
 fn lerp(a: u32, b: u32, w: u32) -> u32 {
-    // The red and blue channels' bits, as a quotient.
     const LOW: u32 = u32::MAX / 257;
-    let rb = ((a & LOW) * (UNIT - w) + (b & LOW) * w) >> 8 & LOW;
-    let ag = (((a >> 8) & LOW) * (UNIT - w) + ((b >> 8) & LOW) * w) & !LOW;
+    let (inv, w) = (UNIT - w, w);
+    let rb = ((a & LOW)
+        .wrapping_mul(inv)
+        .wrapping_add((b & LOW).wrapping_mul(w))
+        >> 8)
+        & LOW;
+    let ag = ((a >> 8) & LOW)
+        .wrapping_mul(inv)
+        .wrapping_add(((b >> 8) & LOW).wrapping_mul(w))
+        & !LOW;
     rb | ag
 }
 
 /// Resamples the physical rectangle `rect` of the screen from `src`, the
 /// logical frame, at `scale` (120ths). Anything of `rect` off the screen or
 /// past what `px` holds is left alone.
+///
+/// Two passes, so each source row is blended across once and each output row
+/// is one blend of two such rows: the horizontal pass keeps the row above and
+/// the row below the output row's place, and moves down a source row at a time.
 pub fn resample(src: &Source<'_>, dst: &mut Target<'_>, scale: u32, rect: Rect) {
     let Some(rect) = rect.intersect(&Rect::new(0, 0, dst.width, dst.height)) else {
         return;
@@ -101,17 +115,40 @@ pub fn resample(src: &Source<'_>, dst: &mut Target<'_>, scale: u32, rect: Rect) 
         .map(|x| tap(x, scale, src.width))
         .collect();
     let width = src.width as usize;
+    let across = |row: usize, out: &mut Vec<u32>| {
+        let from = &src.px[row * width..(row + 1) * width];
+        out.clear();
+        out.extend(columns.iter().map(|c| lerp(from[c.a], from[c.b], c.w)));
+    };
+    let (mut top, mut bottom) = (Vec::with_capacity(columns.len()), Vec::new());
+    let mut held: Option<usize> = None;
     for y in rect.y..rect.bottom() {
         let row = tap(y, scale, src.height);
-        let (top, bottom) = (row.a * width, row.b * width);
+        // The rows held are `row.a` and the one after: a step down of one row
+        // reuses the lower as the upper, any other starts over.
+        match held {
+            Some(at) if at == row.a => {}
+            Some(at) if at + 1 == row.a => {
+                core::mem::swap(&mut top, &mut bottom);
+                across((row.a + 1).min(src.height as usize - 1), &mut bottom);
+            }
+            _ => {
+                across(row.a, &mut top);
+                across((row.a + 1).min(src.height as usize - 1), &mut bottom);
+            }
+        }
+        held = Some(row.a);
         let to = y as usize * dst.stride + rect.x as usize;
         let Some(out) = dst.px.get_mut(to..to + columns.len()) else {
             return;
         };
-        for (px, c) in out.iter_mut().zip(&columns) {
-            let upper = lerp(src.px[top + c.a], src.px[top + c.b], c.w);
-            let lower = lerp(src.px[bottom + c.a], src.px[bottom + c.b], c.w);
-            *px = lerp(upper, lower, row.w);
+        match row.w {
+            0 => out.copy_from_slice(&top),
+            w => {
+                for ((px, &up), &down) in out.iter_mut().zip(&top).zip(&bottom) {
+                    *px = lerp(up, down, w);
+                }
+            }
         }
     }
 }
@@ -241,5 +278,37 @@ mod tests {
         assert_eq!(physical(Rect::new(100, 100, 5, 5), 150, 120, 90), None);
         let r = physical(Rect::new(0, 0, 4, 4), 150, 120, 90).unwrap();
         assert_eq!((r.x, r.y), (0, 0));
+    }
+
+    /// How long a whole-screen resample takes, 2048x1152 to 2560x1440 (1440p at
+    /// 1.25), best of five. A probe for the host, not a gate: `cargo test -p
+    /// deskcore --release upscale_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a timing probe"]
+    fn upscale_cost() {
+        let (w, h, scale) = (2048, 1152, 150);
+        let src = frame(w, h);
+        let (pw, ph) = (2560, 1440);
+        let mut out = vec![0u32; (pw * ph) as usize];
+        let best = (0..5)
+            .map(|_| {
+                let started = std::time::Instant::now();
+                let mut dst = Target {
+                    px: &mut out,
+                    stride: pw as usize,
+                    width: pw,
+                    height: ph,
+                };
+                let src = Source {
+                    px: &src,
+                    width: w,
+                    height: h,
+                };
+                resample(&src, &mut dst, scale, Rect::new(0, 0, pw, ph));
+                started.elapsed()
+            })
+            .min()
+            .unwrap();
+        std::println!("upscale {w}x{h} -> {pw}x{ph}: {best:?}");
     }
 }
