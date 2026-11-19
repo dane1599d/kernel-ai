@@ -146,7 +146,14 @@ impl<D: BlockDev> Fs<D> {
         if sb.generation < self.committed {
             return Err(Error::Corrupt("the disk lost the last commit"));
         }
-        let loaded = Self::load(&mut self.io.dev, &sb, self.faults)?;
+        let mut loaded = Self::load(&mut self.io.dev, &sb, self.faults)?;
+        // The counters stay where they were: an id handed out in the dropped
+        // transaction is never handed out again (`OID_WINDOW`).
+        for (id, vol) in loaded.vols.iter_mut() {
+            if let Some(old) = self.vols.get(id) {
+                vol.next_oid = vol.next_oid.max(old.next_oid);
+            }
+        }
         self.io.alloc = loaded.alloc;
         self.io.txn = sb.generation + 1;
         self.io.gc_pin = 0;

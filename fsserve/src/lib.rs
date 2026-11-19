@@ -9,7 +9,8 @@
 //! - One action at a time: while one caller's is open, another's change is Busy.
 //! - A badge names an object on disk, not server state, so a restarted `fs`
 //!   serves every badge the last one minted; a badge whose object is gone finds
-//!   nothing, since object ids are never reused.
+//!   nothing, since object ids are never reused: not after a remove, a restore,
+//!   an aborted action or a restart mid-action (`kaifs::fs::OID_WINDOW`).
 //! - `..` never leaves the handle's folder: lookup is path-beneath, as cap-std's.
 
 #![no_std]
@@ -22,6 +23,8 @@ mod lookup;
 #[cfg(test)]
 mod model_tests;
 pub mod models;
+#[cfg(test)]
+mod oid_tests;
 #[cfg(test)]
 mod tests;
 mod trash;
@@ -193,13 +196,19 @@ impl<D: BlockDev> Server<D> {
     /// Mounts `dev`, or formats it when no superblock slot was ever written, then
     /// makes any missing [`FOLDERS`].
     pub fn start(mut dev: D, uuid: [u8; 16]) -> Result<(Self, Started), kaifs::Error> {
-        let (fs, started) = if blank(&mut dev)? {
+        let (mut fs, started) = if blank(&mut dev)? {
             (Fs::mkfs(dev, uuid, "kai-data")?, Started::Formatted)
         } else {
             let fs = Fs::mount(dev)?;
             let generation = fs.committed;
             (fs, Started::Mounted { generation })
         };
+        // Past every id the run before could have handed out and never
+        // committed, before any handle names a new one (`kaifs::fs::OID_WINDOW`).
+        if fs.writable() {
+            fs.skip_unsaved_oids();
+            fs.commit()?;
+        }
         let base = fs.clock;
         let mut server = Server {
             fs,
