@@ -294,7 +294,7 @@ fn more_than_eight_actions_is_refused() {
     let mut shell = shell(&host);
     host.calls.borrow_mut().push_back(call(SET));
     let reply = shell.eval(
-        "find, read, create, write, move, trash, restore and list the history and changes of the files in notes/q3",
+        "read, create, write, move, trash, restore and interactive history of the files in notes/q3",
     );
     assert_eq!(
         reply,

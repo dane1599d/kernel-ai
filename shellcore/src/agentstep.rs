@@ -216,9 +216,19 @@ impl Shell {
         let Some(row) = self.row(&call.name) else {
             return Ok(());
         };
-        // The file rows name their paths `path`, `from` and `to`.
-        let is_path = |name: &str| matches!(name, "path" | "from" | "to");
-        for arg in row.args.iter().filter(|arg| is_path(arg.name)) {
+        // A row that reaches past the folders is never a goal's, whatever a
+        // ceiling holds.
+        if crate::goalscope::reaches_past_folders(row) {
+            return Err(format!(
+                "{} reaches past the folders a goal may use",
+                row.name
+            ));
+        }
+        for arg in row
+            .args
+            .iter()
+            .filter(|arg| crate::goalscope::is_path(arg.name))
+        {
             let Some(value) = call.arguments.get(arg.name).filter(|v| !v.is_null()) else {
                 continue;
             };
