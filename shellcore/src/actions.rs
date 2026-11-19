@@ -550,6 +550,9 @@ impl Shell {
             self.log_kept_trial();
             return reply;
         }
+        if let Some(reply) = self.retired_card_answer(id) {
+            return reply;
+        }
         match &self.pending {
             Some(pending) if Some(pending.id) == id => self.answer_pending(text),
             _ => Reply::err("nothing to confirm"),

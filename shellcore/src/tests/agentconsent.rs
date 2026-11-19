@@ -470,3 +470,28 @@ fn two_agents_share_the_agents_places_on_the_card() {
         );
     }
 }
+
+/// An agent retired while its question is on the card: the question is
+/// recorded dropped and its wait hears so, and the card's Allow runs
+/// nothing and says why, rather than failing (#1085's follow-up).
+#[test]
+fn retiring_an_agent_drops_its_question_on_the_card() {
+    let (host, mut shell, badge) = with_agent();
+    step(&mut shell, badge, RR);
+    let menu = take_agents_card(&mut shell);
+    let agent = shell.roster_mut().by_name("notes-agent").unwrap().id();
+    shell.retire_agent(agent).unwrap();
+    assert!(shell.pending.is_none());
+    let entry = shell.log.get(menu.id).unwrap();
+    assert!(
+        entry.outcome.contains("dropped: the agent was retired"),
+        "{entry:?}"
+    );
+    let once = host.mint(menu.id, menu.call());
+    let reply = shell.eval_console(&format!("answer {} allow once={once}", menu.id));
+    assert_eq!(reply, super::ok(crate::agentconsent::RETIRED));
+    assert_eq!(host.policy.get(), None);
+    // Said once: a second answer finds nothing.
+    let again = shell.eval_console(&format!("answer {} allow once={once}", menu.id));
+    assert!(!again.ok, "{again:?}");
+}
