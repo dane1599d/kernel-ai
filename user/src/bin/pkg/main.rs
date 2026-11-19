@@ -645,62 +645,77 @@ fn supervisor() -> Handle {
 /// from the image's own version, as every built-in window does in v0.1, or
 /// does not run at all, is said so and never loaded.
 fn start_apps(vol: &mut dyn Volume, n: u64) -> Result<Vec<String>, String> {
-    let mut started = Vec::new();
-    for package in store::generation(vol, n)?.packages {
-        let name = &package.name;
-        let Some((service, artifact)) = app_artifact(vol, name, &package.sha)? else {
-            continue;
-        };
-        let version = package.version;
-        let ask = supervise::encode_may_run(&service);
-        let mut reply = [0u8; 256];
-        let len = sys::call_route(supervisor(), ask.as_bytes(), &mut reply, CALL_MS)
-            .map_err(|e| format!("the supervisor did not answer {service}'s may-run: {e:?}"))?;
-        let not_here = match core::str::from_utf8(&reply[..len.min(reply.len())]).unwrap_or("") {
-            "ok" => None,
-            supervise::NOT_FROM_PKG => Some("its plan line runs the image's version"),
-            supervise::NOT_PLANNED => Some("this system plans no service for it"),
-            other => {
-                return Err(format!(
-                    "the supervisor refused {service}'s may-run: {other}"
-                ));
-            }
-        };
-        if let Some(why) = not_here {
-            println!(
-                "pkg: {name} {version} is installed and not started from generation {n}: {why}"
-            );
-            continue;
-        }
-        let sha = kaipkg::sha256(&artifact);
-        match sys::comp_add(&service, &artifact, &sha) {
-            Ok(()) | Err(Error::Busy) => {}
-            Err(e) => return Err(format!("COMP_ADD {service}: {e:?}")),
-        }
-        let label = kabi::live::package_label(&sha);
-        let run = supervise::Run {
-            name: &service,
-            version: &label,
-        };
-        let mut reply = [0u8; 256];
-        let len = sys::call_route(supervisor(), run.encode().as_bytes(), &mut reply, CALL_MS)
-            .map_err(|e| format!("the supervisor did not answer {name}'s run: {e:?}"))?;
-        let reply = core::str::from_utf8(&reply[..len.min(reply.len())]).unwrap_or("");
-        // Another version already serves it: shown, never hidden. `may-run`
-        // answered for a plan line that takes no package version.
-        let shadowed = match reply {
-            "ok" => None,
-            supervise::RUNS_ANOTHER => Some("it already runs another version"),
-            _ => return Err(format!("the supervisor refused {name}'s run: {reply}")),
-        };
-        match shadowed {
-            Some(why) => println!(
-                "pkg: {name} {version} ({label}) is installed but not started from generation {n}: {why}"
-            ),
-            None => started.push(format!("{name} {version} as {label}")),
-        }
+    // Only a generation that cannot be read fails it; each package's start
+    // is its own (`kaipkg::app::start_each`), so one never stops the rest.
+    let packages = store::generation(vol, n)?.packages;
+    let starts = kaipkg::app::start_each(&packages, |package| start_app(vol, n, package));
+    for line in &starts.not_started {
+        println!("pkg: {line}");
     }
-    Ok(started)
+    Ok(starts.started)
+}
+
+/// Starts `package` of generation `n`, if it is an app this system runs from
+/// a package: what started, `None` for a package passed over (said why when
+/// it is an app), or why it could not start.
+fn start_app(
+    vol: &mut dyn Volume,
+    n: u64,
+    package: &kaipkg::generation::Installed,
+) -> Result<Option<String>, String> {
+    let name = &package.name;
+    let Some((service, artifact)) = app_artifact(vol, name, &package.sha)? else {
+        return Ok(None);
+    };
+    let version = &package.version;
+    let ask = supervise::encode_may_run(&service);
+    let mut reply = [0u8; 256];
+    let len = sys::call_route(supervisor(), ask.as_bytes(), &mut reply, CALL_MS)
+        .map_err(|e| format!("the supervisor did not answer {service}'s may-run: {e:?}"))?;
+    let not_here = match core::str::from_utf8(&reply[..len.min(reply.len())]).unwrap_or("") {
+        "ok" => None,
+        supervise::NOT_FROM_PKG => Some("its plan line runs the image's version"),
+        supervise::NOT_PLANNED => Some("this system plans no service for it"),
+        other => {
+            return Err(format!(
+                "the supervisor refused {service}'s may-run: {other}"
+            ));
+        }
+    };
+    if let Some(why) = not_here {
+        println!("pkg: {name} {version} is installed and not started from generation {n}: {why}");
+        return Ok(None);
+    }
+    let sha = kaipkg::sha256(&artifact);
+    match sys::comp_add(&service, &artifact, &sha) {
+        Ok(()) | Err(Error::Busy) => {}
+        Err(e) => return Err(format!("COMP_ADD {service}: {e:?}")),
+    }
+    let label = kabi::live::package_label(&sha);
+    let run = supervise::Run {
+        name: &service,
+        version: &label,
+    };
+    let mut reply = [0u8; 256];
+    let len = sys::call_route(supervisor(), run.encode().as_bytes(), &mut reply, CALL_MS)
+        .map_err(|e| format!("the supervisor did not answer {name}'s run: {e:?}"))?;
+    let reply = core::str::from_utf8(&reply[..len.min(reply.len())]).unwrap_or("");
+    // Another version already serves it: shown, never hidden. `may-run`
+    // answered for a plan line that takes no package version.
+    let shadowed = match reply {
+        "ok" => None,
+        supervise::RUNS_ANOTHER => Some("it already runs another version"),
+        _ => return Err(format!("the supervisor refused {name}'s run: {reply}")),
+    };
+    match shadowed {
+        Some(why) => {
+            println!(
+                "pkg: {name} {version} ({label}) is installed but not started from generation {n}: {why}"
+            );
+            Ok(None)
+        }
+        None => Ok(Some(format!("{name} {version} as {label}"))),
+    }
 }
 
 /// The service package `name`, whose object is `sha`, runs as and its artifact,
