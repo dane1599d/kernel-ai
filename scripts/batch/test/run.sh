@@ -131,7 +131,8 @@ echo "== ci.yml: every job after another guards it explicitly"
 # explicit guard would be skipped, and the batcher would read every batch as
 # red. So every job with `needs:` says `!cancelled()`, and checks each need it
 # relies on by `needs.<job>.result == 'success'` (all but `noboot`, which
-# `qemu` reads by its output and runs past when it is skipped).
+# `qemu` reads by its output and runs past when it is skipped, and `prebuild`,
+# whose output the boot shards read and which they run past when it fails).
 CI="$B/../../.github/workflows/ci.yml"
 guards=$(awk '
   /^  [a-z][a-z0-9_-]*:$/ { if (job != "") print job "|" needs "|" cond; job = substr($1, 1, length($1) - 1); needs = ""; cond = ""; inif = 0; next }
@@ -147,11 +148,11 @@ while IFS='|' read -r job needs cond; do
   [ -n "$needs" ] || continue
   case "$cond" in *'!cancelled()'*) ;; *) bad_guard="$bad_guard $job(!cancelled)";; esac
   for n in $(echo "$needs" | tr ',' ' '); do
-    [ "$n" = noboot ] && continue
+    case "$n" in noboot|prebuild) continue;; esac
     case "$cond" in *"needs.$n.result == 'success'"*) ;; *) bad_guard="$bad_guard $job(needs.$n)";; esac
   done
 done <<< "$guards"
-check "jobs with needs are listed"            'echo "$guards" | grep -q "^boot|qemu|" && echo "$guards" | grep -q "^observe-compare|observe|"'
+check "jobs with needs are listed"            'echo "$guards" | grep -q "^boot|qemu,prebuild|" && echo "$guards" | grep -q "^observe-compare|observe|"'
 check "each guards its needs explicitly"      '[ -z "$bad_guard" ] || { echo "  missing:$bad_guard"; false; }'
 
 echo "== noboot.sh: every arm of the rule"
