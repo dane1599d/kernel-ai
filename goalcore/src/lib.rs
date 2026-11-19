@@ -61,6 +61,7 @@ extern crate std;
 mod checkin;
 mod goal;
 mod goals;
+pub mod report;
 mod run;
 pub mod runner;
 mod text;
