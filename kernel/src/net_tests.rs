@@ -367,8 +367,28 @@ fn sweep_check() -> Result<(), &'static str> {
         }
     }
     crate::threads::sleep_ms(GRACE_MS);
-    let fresh = net::dest::create(spec, live).ok_or("net-dest: the sweep freed no record")?;
-    if fillers
+    // A handle to the first filler moves while the sweep looks at it: its
+    // table check makes and drops a `Moving` for it, as a take and a give on
+    // another CPU would between the transit count and the tables. That filler
+    // must stay; the others go.
+    let raced = *fillers.first().ok_or("net-dest: no filler record")?;
+    let racing = |object| {
+        if object == raced {
+            drop(crate::handle::Moving::from(alloc::vec![
+                captable::Entry::new(
+                    kabi::handle::Kind::NetDest,
+                    crate::handle::NETDEST_RIGHTS,
+                    raced,
+                )
+            ]));
+        }
+        live(object)
+    };
+    let fresh = net::dest::create(spec, racing).ok_or("net-dest: the sweep freed no record")?;
+    if net::dest::dest(raced).is_none() {
+        return Err("net-dest: a record whose handle moved while the sweep looked was dropped");
+    }
+    if fillers[1..]
         .iter()
         .any(|&f| f == fresh || net::dest::dest(f).is_some())
     {
@@ -380,7 +400,7 @@ fn sweep_check() -> Result<(), &'static str> {
     drop(moving);
     log!(
         "net-dest: a full table swept {} records no handle named; their ids name nothing after, and one whose handle was moving stayed",
-        fillers.len()
+        fillers.len() - 1
     );
     Ok(())
 }

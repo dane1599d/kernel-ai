@@ -53,25 +53,36 @@ impl Moving {
 
 impl From<Vec<Entry>> for Moving {
     fn from(entries: Vec<Entry>) -> Self {
-        for entry in &entries {
-            count(entry, true);
-        }
-        MOVES.fetch_add(1, Ordering::SeqCst);
+        count_all(&entries, true);
         Self { entries }
     }
 }
 
 impl Drop for Moving {
     fn drop(&mut self) {
-        for entry in &self.entries {
-            count(entry, false);
-        }
+        count_all(&self.entries, false);
+    }
+}
+
+/// Counts each entry a sweep cares about in or out of transit, and moves
+/// [`moves`] on only when there was one: every IPC call makes and drops a
+/// `Moving`, mostly empty, and a counter moving on for those would keep a
+/// sweep from ever dropping a record (#1150's second review).
+fn count_all(entries: &[Entry], up: bool) {
+    let mut any = false;
+    for entry in entries {
+        any |= count(entry, up);
+    }
+    if any {
         MOVES.fetch_add(1, Ordering::SeqCst);
     }
 }
 
-fn count(entry: &Entry, up: bool) {
-    if entry.kind == Kind::NetDest {
-        crate::net::dest::transit(entry.object, up);
+/// Counts `entry` in or out of transit; whether its kind is counted.
+fn count(entry: &Entry, up: bool) -> bool {
+    match entry.kind {
+        Kind::NetDest => crate::net::dest::transit(entry.object, up),
+        _ => return false,
     }
+    true
 }
