@@ -698,11 +698,12 @@ fn open_window(client: &mut Client, desk: &mut Desk) -> crate::desk::WindowId {
     window
 }
 
-/// #869's review: a window a client opens takes the focus from another
-/// client's window, and that client hears its focus_out: the focus moves of
-/// a client's own requests are shared with every other client.
+/// #869's review, as the activation rule has it: a window a client opens does
+/// not take the focus from another client's window (`Desk::may_activate`); when
+/// the person's own action moves it there (the shell's `ui focus`), the client
+/// that lost it hears its focus_out.
 #[test]
-fn a_window_opened_takes_the_focus_from_another_clients_window() {
+fn a_window_given_the_focus_takes_it_from_another_clients_window() {
     let mut desk = Desk::new(1280, 800);
     let mut a = Client::new(1, "a");
     let mut b = Client::new(2, "b");
@@ -712,10 +713,16 @@ fn a_window_opened_takes_the_focus_from_another_clients_window() {
         a.take_shared()
             .contains(&Effect::Focus(Focus::Window(first)))
     );
-    open_window(&mut b, &mut desk);
-    let shared = b.take_shared();
-    assert!(!shared.is_empty(), "the new window's focus is shared");
-    a.apply(&shared);
+    let second = open_window(&mut b, &mut desk);
+    assert_eq!(
+        desk.focus(),
+        Focus::Window(first),
+        "the new window asked in vain"
+    );
+    assert!(b.take_shared().is_empty());
+    let mut moved = Vec::new();
+    desk.set_focus(Focus::Window(second), &mut moved);
+    a.apply(&moved);
     // seat.focus_out (opcode 1 on the seat, object 7).
     let sent = events(&mut a);
     assert!(
@@ -724,5 +731,7 @@ fn a_window_opened_takes_the_focus_from_another_clients_window() {
     );
 }
 
+/// Which new window takes the keyboard.
+mod focus;
 /// The wheel and the buffer scale (lane G, 2026-11-18).
 mod scale;

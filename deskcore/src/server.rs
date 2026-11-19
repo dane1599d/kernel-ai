@@ -617,11 +617,12 @@ impl Client {
                 window
             }
             None => {
-                // A window a client opens itself takes focus only through the
-                // activation rule; for now every client's first window is the
-                // user's (they started it).
+                // A window takes the keyboard only by the activation rule
+                // (`Desk::may_activate`): not while the person is acting
+                // elsewhere, so a background app cannot take their keys.
+                let active = desk.may_activate(self.pid as u32);
                 let (window, effects) =
-                    desk.open(self.pid as u32, &label, &surface.title, size, true);
+                    desk.open(self.pid as u32, &label, &surface.title, size, active);
                 desk.set_app_id(window, &surface.app_id.clone());
                 surface.window = Some(window);
                 self.apply(&effects);

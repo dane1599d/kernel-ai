@@ -108,6 +108,13 @@ fn open(route: kabi::handle::Handle, app: &str, arg: Option<&str>) -> Result<Str
             if asked_to_show {
                 user::println!("ui_open: {app} is on the desk as {id} after a show");
             }
+            // The person asked for it: it takes the keys. A new window takes
+            // none of itself (`Desk::may_activate`), so a background app cannot.
+            // (Not the agent's `ui focus`: that puts the agent's outline on the
+            // person's window and takes its first key for a takeover.)
+            if let Err(why) = ask_desktop(route, &Request::Activate(id.clone()).encode()) {
+                user::println!("ui_open: {id} opened but did not take the keys: {why}");
+            }
             return Ok(format!("opened {id}"));
         }
         // Running with its window closed: asked once, it shows it again

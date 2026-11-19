@@ -69,6 +69,10 @@ pub enum Request {
         action: u32,
     },
     Agent(Option<String>),
+    /// The person's own launch gets the keys (`ui activate w3`): the shell sends
+    /// it once a window the person asked for is on the desk. Not the agent's: no
+    /// outline, no takeover, and a window kept from the agent takes it too.
+    Activate(String),
 }
 
 impl Request {
@@ -90,6 +94,7 @@ impl Request {
                 node,
                 action,
             } => format!("ui check {window} {node} {action}"),
+            Self::Activate(w) => format!("ui activate {w}"),
             Self::Agent(Some(w)) => format!("ui agent {w}"),
             Self::Agent(None) => "ui agent none".into(),
         }
@@ -106,6 +111,7 @@ impl Request {
             "focus" if word(arg) => Self::Focus(arg.into()),
             "refocus" if word(arg) => Self::Refocus(arg.into()),
             "close" if word(arg) => Self::Close(arg.into()),
+            "activate" if word(arg) => Self::Activate(arg.into()),
             "agent" if arg == "none" => Self::Agent(None),
             "agent" if word(arg) => Self::Agent(Some(arg.into())),
             "check" => {
@@ -263,6 +269,13 @@ impl Agent {
                 // The agent drives the window it moved to: it has the outline.
                 desk.set_agent(Some(window));
                 Ok(format!("ok {before}"))
+            }
+            // The person's own launch: focus and raise, as a click would. Never the
+            // agent's outline or a takeover, and a private window takes it too.
+            Request::Activate(name) => {
+                let window = find(desk, &name)?;
+                desk.activate(window, effects);
+                Ok(format!("ok {}", view::window_id(window)))
             }
             Request::Refocus(before) => {
                 match before.as_str() {

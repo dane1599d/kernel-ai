@@ -358,3 +358,55 @@ fn only_the_answers_about_a_private_window_say_so() {
         assert!(!says_private(other), "{other:?}");
     }
 }
+
+/// What the person's own launch asks for (`ui activate`, which the shell's
+/// `ui_open` sends): the window takes the keys, with no agent outline and
+/// without "you took over" on the next key, and a window its app keeps from the
+/// agent takes them too; a stopped run does not matter, and a name no window
+/// has is refused in words.
+#[test]
+fn activate_gives_the_person_s_window_the_keys_and_nothing_of_the_agent_s() {
+    let (mut desk, mut fake, notes, term) = desktop();
+    fake.private.push(notes);
+    let mut agent = Agent::default();
+    assert_eq!(desk.focus(), Focus::Window(term));
+    let (answer, effects) = agent.answer(&mut desk, &mut fake, "ui activate notes");
+    assert_eq!(answer, "ok w1");
+    desk.take_damage();
+    assert_eq!(desk.focus(), Focus::Window(notes));
+    assert!(effects.iter().any(|e| matches!(e, Effect::Focus(_))));
+    assert_eq!(
+        desk.agent(),
+        None,
+        "no agent outline on the person's window"
+    );
+    // The person's first key there is theirs: no takeover.
+    let typed = desk.input(Input::Key {
+        usage: 0x04,
+        down: true,
+    });
+    assert!(
+        typed
+            .iter()
+            .any(|e| matches!(e, Effect::Key { window, .. } if *window == notes))
+    );
+    assert!(
+        !typed.iter().any(|e| matches!(e, Effect::TookOver { .. })),
+        "{typed:?}"
+    );
+    // Even after a run was stopped, and by id; the agent's own focus is still refused.
+    agent.took_over();
+    let (again, _) = agent.answer(&mut desk, &mut fake, "ui activate w2");
+    assert_eq!(again, "ok w2");
+    assert_eq!(desk.focus(), Focus::Window(term));
+    let (refused, _) = agent.answer(&mut desk, &mut fake, "ui focus term");
+    assert!(refused.starts_with("err stopped"), "{refused}");
+    let (none, effects) = agent.answer(&mut desk, &mut fake, "ui activate nowhere");
+    assert_eq!(none, "err no window is nowhere");
+    assert!(effects.is_empty());
+    assert_eq!(
+        Request::parse("ui activate w3"),
+        Some(Request::Activate("w3".into()))
+    );
+    assert_eq!(Request::Activate("w3".into()).encode(), "ui activate w3");
+}
