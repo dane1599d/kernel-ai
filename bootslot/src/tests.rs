@@ -452,3 +452,67 @@ fn r_writes_the_one_shot_first_only_to_arm_the_same_slot_again() {
         "a fresh install: record first"
     );
 }
+
+#[test]
+fn r_stores_the_record_even_when_the_one_shot_write_fails() {
+    use core::cell::Cell;
+    for (armed, next, one_shot_first) in [
+        (Some(Slot::B), Slot::B, true),
+        (Some(Slot::B), Slot::A, false),
+        (None, Slot::A, false),
+    ] {
+        // Which write ran, in order: 1 the one-shot, 2 the record.
+        let order = Cell::new(0u32);
+        let got = arm_writes(
+            armed,
+            next,
+            || {
+                order.set(order.get() * 10 + 1);
+                Err("refused")
+            },
+            || {
+                order.set(order.get() * 10 + 2);
+                Ok(())
+            },
+        );
+        assert_eq!(got, Err("refused"));
+        let want = if one_shot_first { 12 } else { 21 };
+        assert_eq!(order.get(), want, "armed {armed:?}, next {next:?}");
+    }
+}
+
+/// From `nv`, every boot lands in R because no one-shot is ever stored, while
+/// each R's record is (the store refuses one-shots only): how many boots
+/// until R stays up.
+fn boots_until_r_stays_up_with_no_one_shot_stored(mut nv: Nv) -> Option<usize> {
+    for boots in 1..=32 {
+        nv.one_shot = None;
+        assert_eq!(boot(&mut nv), Slot::R, "no one-shot is ever stored");
+        let decision = r_boots(&mut nv);
+        // arm_writes: the one-shot write failed, the record was stored.
+        nv.one_shot = None;
+        if decision == InR::Stay {
+            return Some(boots);
+        }
+    }
+    None
+}
+
+#[test]
+fn a_store_that_refuses_every_one_shot_ends_in_r_staying_up() {
+    // A trial: B staged by an update, armed, and lost on its one boot.
+    let mut trial = installed();
+    step(&mut trial, Event::Update);
+    step(&mut trial, Event::Lost);
+    assert!(!trial.record.slot(Slot::B).successful);
+    let boots = boots_until_r_stays_up_with_no_one_shot_stored(trial);
+    assert!(boots.is_some(), "R reset for ever from a trial");
+    // A committed slot armed.
+    let boots = boots_until_r_stays_up_with_no_one_shot_stored(installed());
+    assert!(boots.is_some(), "R reset for ever from a committed slot");
+    // A fresh install's trials.
+    let mut fresh = Nv::default();
+    install(&mut fresh, 1);
+    let boots = boots_until_r_stays_up_with_no_one_shot_stored(fresh);
+    assert!(boots.is_some(), "R reset for ever from an install");
+}
