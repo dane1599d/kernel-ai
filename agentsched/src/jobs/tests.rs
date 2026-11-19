@@ -327,3 +327,38 @@ fn a_pid_that_equals_a_badge_number_is_no_agent() {
         "pending"
     );
 }
+
+/// The manager's audit: only the person (and badge 0's services) get the person's
+/// commands. An agent's badge may send `agent-*` alone, so it can neither read nor
+/// change the person's conversation: llm refuses before it reads the request.
+#[test]
+fn only_the_person_gets_the_persons_commands() {
+    let persons = [
+        "act 120000 5 0 0\nhello",
+        "remember 1 2\nab",
+        "new",
+        "app-start x",
+        "app-take 1",
+        "app-stop 1",
+        "explain facts",
+        "query q",
+        "tune t",
+        "warm-lang c",
+        "ask what is up",
+        "script x",
+        "health",
+        "warm",
+    ];
+    for badge in [GOALS, INDEX, 4, 99] {
+        for command in persons {
+            assert!(!may_serve(badge, command), "badge {badge}: {command:?}");
+        }
+        assert!(may_serve(badge, "agent-start ask hi"));
+        assert!(may_serve(badge, "agent-take 1"));
+    }
+    for badge in [NO_AGENT, KAI] {
+        for command in persons {
+            assert!(may_serve(badge, command), "badge {badge}: {command:?}");
+        }
+    }
+}
