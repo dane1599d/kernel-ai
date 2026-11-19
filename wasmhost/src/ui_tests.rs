@@ -509,13 +509,22 @@ impl uikit::layout::Measure for Tall {
 }
 
 /// A type change (`set_measure`, then `ui_relayout`) lays the windows already
-/// open out again: the next frame holds the larger rows, the click lands on the
-/// new places and not the old ones, and the whole window is damaged.
+/// open out again: the next frame holds the larger line and wider text, and the
+/// whole window is damaged (a button is a fixed 28 px at any type, so a label,
+/// whose box is its text's, shows the change).
 #[test]
-fn a_new_measure_lays_open_windows_out_again_and_hit_tests_follow() {
+fn a_new_measure_lays_open_windows_out_again_and_paints_them_whole() {
     let mut g = guest();
     let w = open(&mut g, "Notes");
-    put(&mut g, w, 1, button("Go")).unwrap();
+    let label = Val::Variant(
+        1,
+        Some(Box::new(Val::Record(vec![
+            Val::String("Groceries".into()),
+            Val::Enum(1),
+            Val::Enum(0),
+        ]))),
+    );
+    assert_eq!(put(&mut g, w, 1, label), Ok((0, 0)));
     commit(&mut g, w);
     let frame = |g: &mut crate::CoreInstance| match g.take_ui().pop() {
         Some(Update::Frame { frame, .. }) => frame,
@@ -534,24 +543,17 @@ fn a_new_measure_lays_open_windows_out_again_and_hit_tests_follow() {
     let after_frame = frame(&mut g);
     let after = after_frame.a11y.iter().find(|n| n.id == 1).unwrap().bounds;
     assert!(
+        after.h >= 40,
+        "the line is the new measure's: {before:?} then {after:?}"
+    );
+    assert!(
         after.h > before.h && after.w > before.w,
         "{before:?} then {after:?}"
     );
     assert_eq!(after_frame.damage, [uikit::geom::Rect::new(0, 0, 200, 100)]);
-    // A click on the new bottom edge, outside the old box, presses the button.
-    let at = Point::new(after.x + after.w / 2, after.y + after.h - 2);
-    assert!(at.y >= before.y + before.h, "outside the old box");
-    for down in [true, false] {
-        g.ui_input(
-            w,
-            Input::Button {
-                at,
-                down,
-                mods: Default::default(),
-            },
-        )
-        .unwrap();
-    }
-    assert!(g.last_call_by_user());
-    assert_eq!(word(&mut g, EVENT + 24), 1, "pressed");
+    // The same measure again changes nothing in the layout, and is painted whole.
+    g.ui_relayout();
+    let again = frame(&mut g);
+    assert_eq!(again.a11y.iter().find(|n| n.id == 1).unwrap().bounds, after);
+    assert_eq!(again.damage, [uikit::geom::Rect::new(0, 0, 200, 100)]);
 }

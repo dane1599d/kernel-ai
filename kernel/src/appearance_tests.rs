@@ -29,6 +29,9 @@ const LINES: [&str; 3] = [
     "set the text size to 150",
     "open notes",
 ];
+/// Notes' window as an app that starts only when asked: `SelfTest::DeskAppearance`
+/// plans it after the shell, as the agent cases plan theirs.
+pub const NOTES: &str = "notes-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand";
 /// How long Notes may take to start and greet `desktop`, and its first pump
 /// to lay out and log (under TCG a component's first frame takes seconds).
 const NOTES_MS: u64 = 60_000;
