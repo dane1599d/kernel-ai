@@ -352,6 +352,7 @@ dependencies = [
  "comp-ui-bind",
  "compsdk",
  "editcore",
+ "kabi",
  "livecore",
  "minicbor",
  "uikit",
