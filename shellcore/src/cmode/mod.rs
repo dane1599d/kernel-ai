@@ -83,6 +83,8 @@ pub(crate) struct CMode {
     model: Option<ModelRun>,
     /// Kai's last program that defined something, for `:keep`.
     kept: Option<program::Kept>,
+    /// The running entry's [`session::Ran::included`].
+    included: Option<[u8; 32]>,
 }
 
 /// What the shell says on `:c`.
@@ -198,6 +200,7 @@ impl Shell {
         // typed: a call in an included file was not asked for by them, so it
         // counts as added and asks (ADR 0002). Only cc gets the files' text.
         let typed = text;
+        self.c.included = files::included(typed, &expanded);
         let text = expanded.as_str();
         let mut restored = match self.c_ensure_open() {
             Ok(note) => note,
@@ -264,11 +267,13 @@ impl Shell {
                         // reverts its log entry only, and `:keep` its definitions.
                         let model = self.c.model.is_some();
                         let defined = (defined && !model).then(|| text.to_string());
+                        let included = self.c.included.take();
                         self.c.ran.push(Ran {
                             seq,
                             defined,
                             logged,
                             cc: !model,
+                            included,
                         });
                         self.c_model_end(true);
                         if !value.is_empty() && !shown.is_empty() && !shown.ends_with('\n') {
