@@ -202,3 +202,24 @@ fn the_bulk_requests_keep_their_numbers() {
     let copied = encode_reply(&Reply::Copied { len: 3 });
     assert_eq!(copied, [0x82, 0x01, 0x82, 0x10, 0x81, 0x03]);
 }
+
+#[test]
+fn a_dropped_or_failed_disk_ends_an_action_and_a_refusal_does_not() {
+    use crate::{DropCause, Error, Reply, ends_action};
+    let shown = |e: Error| alloc::format!("{:?}", Reply::Failed(e));
+    for e in [
+        Error::Io,
+        Error::Dropped(DropCause::NoSpace),
+        Error::Dropped(DropCause::Io),
+    ] {
+        assert!(ends_action(&shown(e)), "{e:?}");
+    }
+    for e in [
+        Error::NoSpace,
+        Error::Permission,
+        Error::Exists,
+        Error::Busy,
+    ] {
+        assert!(!ends_action(&shown(e)), "{e:?}");
+    }
+}

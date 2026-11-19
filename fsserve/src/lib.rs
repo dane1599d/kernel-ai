@@ -33,12 +33,12 @@ pub mod models;
 mod tests;
 mod trash;
 
-use alloc::collections::BTreeSet;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use fsproto::{
-    Cursor, Error, How, Kind, Listing, MAX_DATA, MAX_LIST, MAX_ROWS, MAX_SHM_DATA, Outcome, Reply,
-    Request, Stat, Version,
+    Cursor, DropCause, Error, How, Kind, Listing, MAX_DATA, MAX_LIST, MAX_ROWS, MAX_SHM_DATA,
+    Outcome, Reply, Request, Stat, Version,
 };
 use kabi::fs::{
     Badge, HOME, HOME_USER, MODELS, MODELS_ROOT, SYSTEM, SYSTEM_APPS, SYSTEM_PKG, SYSTEM_RESTART,
@@ -181,7 +181,7 @@ pub struct Server<D: BlockDev> {
     /// The callers whose action was dropped without their asking: each one's
     /// changes are refused ([`Error::Dropped`]) until it sends Abort or Begin
     /// itself. A commit or a drop of anyone else's leaves the marks alone.
-    dropped: BTreeSet<u64>,
+    dropped: BTreeMap<u64, DropCause>,
     /// The caller of the request being answered: a drop on its own request
     /// is one it hears.
     asking: u64,
@@ -235,7 +235,7 @@ impl<D: BlockDev> Server<D> {
             epoch: 0,
             base,
             pending: None,
-            dropped: BTreeSet::new(),
+            dropped: BTreeMap::new(),
             asking: 0,
             cache: None,
             alive: |_| true,
@@ -509,7 +509,7 @@ impl<D: BlockDev> Server<D> {
             self.own_folder_only(call.caller, &request)?;
         }
         let changes = changes(&request);
-        if changes && self.dropped.contains(&call.caller) {
+        if let Some(&cause) = self.dropped.get(&call.caller).filter(|_| changes) {
             match request {
                 // It knows now: an Abort is its acknowledgement, a Begin its
                 // next action.
@@ -520,7 +520,7 @@ impl<D: BlockDev> Server<D> {
                 Request::Begin { .. } => {
                     self.dropped.remove(&call.caller);
                 }
-                _ => return Err(Error::Dropped),
+                _ => return Err(Error::Dropped(cause)),
             }
         }
         if changes && read_only(call.badge) {
@@ -1026,11 +1026,15 @@ impl<D: BlockDev> Server<D> {
         let owner = self.owner;
         self.drop_changes();
         let alive = self.alive;
-        self.dropped.retain(|&caller| alive(caller));
+        self.dropped.retain(|&caller, _| alive(caller));
+        let cause = match failed {
+            Error::NoSpace => DropCause::NoSpace,
+            _ => DropCause::Io,
+        };
         match owner {
-            Some(owner) if owner == self.asking => Error::Dropped,
+            Some(owner) if owner == self.asking => Error::Dropped(cause),
             Some(owner) => {
-                self.dropped.insert(owner);
+                self.dropped.insert(owner, cause);
                 failed
             }
             None => failed,

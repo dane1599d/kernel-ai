@@ -79,10 +79,13 @@ fn a_dropped_owner_is_refused_until_it_aborts() {
     let bob = home(&mut c, BOB, Request::Stat).0;
     assert!(matches!(bob, Reply::Failed(_)), "{bob:?}");
     // Alice's next write is refused, not committed on its own.
-    assert_eq!(write(&mut c, &doc, 200, 10), Reply::Failed(Error::Dropped));
+    assert_eq!(
+        write(&mut c, &doc, 200, 10),
+        Reply::Failed(Error::Dropped(DropCause::NoSpace))
+    );
     assert_eq!(
         home(&mut c, ALICE, Request::Commit).0,
-        Reply::Failed(Error::Dropped)
+        Reply::Failed(Error::Dropped(DropCause::NoSpace))
     );
     // Her Abort is answered Done, and then her changes land again.
     assert_eq!(home(&mut c, ALICE, Request::Abort).0, Reply::Done);
@@ -99,7 +102,10 @@ fn a_dropped_owner_is_refused_until_it_aborts() {
     };
     assert_eq!(bytes, vec![7; 100], "none of the dropped action landed");
     // Not refused any more (on this full disk it may still find no room).
-    assert_ne!(write(&mut c, &doc, 0, 10), Reply::Failed(Error::Dropped));
+    assert_ne!(
+        write(&mut c, &doc, 0, 10),
+        Reply::Failed(Error::Dropped(DropCause::NoSpace))
+    );
 }
 
 #[test]
@@ -118,7 +124,10 @@ fn a_begin_also_ends_the_refusal_and_bob_is_never_refused() {
     let trash = Request::Trash {
         name: "fill0".into(),
     };
-    assert_ne!(home(&mut c, BOB, trash).0, Reply::Failed(Error::Dropped));
+    assert_ne!(
+        home(&mut c, BOB, trash).0,
+        Reply::Failed(Error::Dropped(DropCause::NoSpace))
+    );
     assert_eq!(
         home(&mut c, ALICE, Request::Begin { action: 2 }).0,
         Reply::Done
@@ -160,7 +169,10 @@ fn a_commit_or_a_second_drop_leaves_a_callers_mark() {
         matches!(committed, Reply::Committed { .. }),
         "{committed:?}"
     );
-    assert_eq!(write(&mut c, &doc, 0, 10), Reply::Failed(Error::Dropped));
+    assert_eq!(
+        write(&mut c, &doc, 0, 10),
+        Reply::Failed(Error::Dropped(DropCause::NoSpace))
+    );
     // Carol's action is dropped the same way: both are marked.
     assert_eq!(
         home(&mut c, CAROL, Request::Begin { action: 3 }).0,
@@ -176,15 +188,21 @@ fn a_commit_or_a_second_drop_leaves_a_callers_mark() {
     let _ = home(&mut c, BOB, Request::Stat);
     assert_eq!(
         write_as(&mut c, CAROL, &doc, 10),
-        Reply::Failed(Error::Dropped)
+        Reply::Failed(Error::Dropped(DropCause::NoSpace))
     );
-    assert_eq!(write(&mut c, &doc, 0, 10), Reply::Failed(Error::Dropped));
+    assert_eq!(
+        write(&mut c, &doc, 0, 10),
+        Reply::Failed(Error::Dropped(DropCause::NoSpace))
+    );
     // Alice's Abort clears hers alone.
     assert_eq!(home(&mut c, ALICE, Request::Abort).0, Reply::Done);
-    assert_ne!(write(&mut c, &doc, 0, 10), Reply::Failed(Error::Dropped));
+    assert_ne!(
+        write(&mut c, &doc, 0, 10),
+        Reply::Failed(Error::Dropped(DropCause::NoSpace))
+    );
     assert_eq!(
         write_as(&mut c, CAROL, &doc, 10),
-        Reply::Failed(Error::Dropped)
+        Reply::Failed(Error::Dropped(DropCause::NoSpace))
     );
 }
 
@@ -203,8 +221,11 @@ fn the_owners_own_failed_write_is_answered_not_marked() {
     );
     // Past 128 KiB the first whole record is written: no room for it.
     let crossing = write_run(&mut c, &doc, 0, 150 << 10);
-    assert_eq!(crossing, Reply::Failed(Error::Dropped));
-    assert_ne!(write(&mut c, &doc, 0, 10), Reply::Failed(Error::Dropped));
+    assert_eq!(crossing, Reply::Failed(Error::Dropped(DropCause::NoSpace)));
+    assert_ne!(
+        write(&mut c, &doc, 0, 10),
+        Reply::Failed(Error::Dropped(DropCause::NoSpace))
+    );
 }
 
 /// The owner's own Commit fails writing its run out on a full disk: it hears
@@ -224,7 +245,10 @@ fn an_undo_after_the_owners_own_failed_commit_is_not_refused() {
     let commit = home(&mut c, ALICE, Request::Commit).0;
     assert!(matches!(commit, Reply::Failed(_)), "{commit:?}");
     let undo = Request::Restore { txn: 1, action: 2 };
-    assert_ne!(home(&mut c, ALICE, undo).0, Reply::Failed(Error::Dropped));
+    assert_ne!(
+        home(&mut c, ALICE, undo).0,
+        Reply::Failed(Error::Dropped(DropCause::NoSpace))
+    );
 }
 
 /// The pid [`a_dead_callers_mark_is_forgotten`] has ended.
@@ -249,7 +273,10 @@ fn a_dead_callers_mark_is_forgotten() {
     );
     assert_eq!(write_run(&mut c, &doc, 0, 100 << 10), Reply::Done);
     let _ = home(&mut c, BOB, Request::Stat);
-    assert_eq!(write(&mut c, &doc, 0, 10), Reply::Failed(Error::Dropped));
+    assert_eq!(
+        write(&mut c, &doc, 0, 10),
+        Reply::Failed(Error::Dropped(DropCause::NoSpace))
+    );
     // Alice ends; Carol is dropped the same way, which forgets Alice.
     ENDED.store(ALICE, core::sync::atomic::Ordering::Relaxed);
     assert_eq!(
@@ -266,5 +293,50 @@ fn a_dead_callers_mark_is_forgotten() {
     let _ = home(&mut c, BOB, Request::Stat);
     ENDED.store(0, core::sync::atomic::Ordering::Relaxed);
     // A process with Alice's pid now is not refused.
-    assert_ne!(write(&mut c, &doc, 0, 10), Reply::Failed(Error::Dropped));
+    assert_ne!(
+        write(&mut c, &doc, 0, 10),
+        Reply::Failed(Error::Dropped(DropCause::NoSpace))
+    );
+}
+
+/// The shell's line, as it keeps its action: begun by its first change, ended
+/// when a change's error ends it (`fsproto::ends_action`).
+struct Line {
+    open: bool,
+}
+
+impl Line {
+    fn change(&mut self, c: &mut Client<'_>, doc: &Mint, off: u64, len: usize) -> Reply {
+        if !self.open {
+            assert_eq!(home(c, ALICE, Request::Begin { action: 9 }).0, Reply::Done);
+            self.open = true;
+        }
+        let reply = write_run(c, doc, off, len);
+        if fsproto::ends_action(&format!("{reply:?}")) {
+            self.open = false;
+        }
+        reply
+    }
+}
+
+/// A line whose own write drops its action, and that catches the error and
+/// writes again, as a script can: the next write begins a new action, never
+/// landing alone outside one.
+#[test]
+fn a_line_that_writes_on_after_a_drop_begins_a_new_action() {
+    let mut disk = MemDisk::new(2 * 1024);
+    let (mut c, _) = Client::start(&mut disk);
+    let doc = create(&mut c, "doc").expect("a file");
+    fill(&mut c);
+    let mut line = Line { open: false };
+    let dropped = line.change(&mut c, &doc, 0, 150 << 10);
+    assert_eq!(dropped, Reply::Failed(Error::Dropped(DropCause::NoSpace)));
+    assert!(!line.open, "the line still thinks its action is open");
+    assert_eq!(line.change(&mut c, &doc, 0, 10), Reply::Done);
+    assert_eq!(
+        c.server.owner,
+        Some(ALICE),
+        "the write landed outside an action"
+    );
+    assert_eq!(home(&mut c, ALICE, Request::Abort).0, Reply::Done);
 }

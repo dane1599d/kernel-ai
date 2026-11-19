@@ -196,8 +196,10 @@ impl Files {
             None => self.begin(home)?,
         };
         make(home, change).inspect_err(|why| {
-            // A refused change leaves the action open; a failed disk drops it.
-            if why.contains("Io") {
+            // A refused change leaves the action open; a failed disk, or an
+            // action `fs` dropped (its writes found no room), ends it: the
+            // next change begins a new one, never writing on outside any.
+            if fsproto::ends_action(why) {
                 self.open.set(None);
                 self.dropped.set(Some(generation));
             }

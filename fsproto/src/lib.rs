@@ -421,7 +421,26 @@ pub enum Error {
     /// Done) or Begin, so a change it meant for the action never lands
     /// outside it.
     #[n(12)]
-    Dropped,
+    Dropped(#[n(0)] DropCause),
+}
+
+/// Why an action was dropped ([`Error::Dropped`]), for the person's message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode)]
+pub enum DropCause {
+    /// No room on the disk for its writes.
+    #[n(0)]
+    NoSpace,
+    /// The disk failed, or what it holds did not verify.
+    #[n(1)]
+    Io,
+}
+
+/// Whether a failed change, as a client shows it (`{reply:?}`), means `fs`
+/// dropped the client's open action: [`Error::Io`] or [`Error::Dropped`].
+/// A client that keeps an action open across changes (the shell's line)
+/// begins a new one after it, never writing on outside any.
+pub fn ends_action(why: &str) -> bool {
+    why.contains("Io") || why.contains("Dropped")
 }
 
 /// The answer to one request.
