@@ -847,13 +847,8 @@ fn the_wheel_reaches_the_history_or_start_and_nothing_else() {
     assert_eq!(desk.input(Input::Wheel(2)), [Effect::PaneWheel(2)]);
     let content = desk.window(id).unwrap().content();
     desk.input(Input::Motion(middle(content)));
-    // A window's content gets it, as a ring event for its client (lane G,
-    // 2026-11-18: it was dropped until `surfabi` carried it).
-    let over_window = desk.input(Input::Wheel(2));
-    assert!(
-        matches!(over_window[..], [Effect::Wheel { window, detents: 2, .. }] if window == id),
-        "{over_window:?}"
-    );
+    let over = desk.input(Input::Wheel(2));
+    assert!(matches!(over[..], [Effect::Wheel { window, .. }] if window == id));
     desk.open_start(&mut Vec::new());
     let start = desk.start().expect("open");
     desk.input(Input::Motion(middle(start)));

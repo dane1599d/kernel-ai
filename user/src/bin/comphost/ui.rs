@@ -20,6 +20,8 @@ use uikit::style::TypeStyle;
 use user::{println, sys};
 use wasmhost::desk::{Desk, Open, Show, Target, Told};
 use wasmhost::{AppEvent, LiveInstance, Update, surface};
+#[path = "ui_scale.rs"]
+mod scale; // `Ui`'s scale; its `scaled` takes `Told::Scale` first
 
 /// How long a call to `desktop` may take.
 pub(crate) const CALL_MS: u64 = 5_000;
@@ -525,7 +527,7 @@ impl Ui {
         host: &mut Host<E>,
         told: Vec<Told>,
     ) -> Result<(), Exit> {
-        for t in told {
+        for t in self.scaled(told) {
             // A focus wakes only an app comphost napped itself (its caller
             // decides); an action wakes any suspended app, and a close one
             // whose window holds unsaved changes (below).
@@ -555,6 +557,7 @@ impl Ui {
                     self.window_focus.push((window, false));
                 }
                 Told::Theme(name) => self.set_theme(&name),
+                Told::Scale => {}
                 // The person closed it: comphost hides it, and the app, not
                 // told, keeps its window and its state, as if minimized,
                 // until a show puts it back.
@@ -619,11 +622,7 @@ impl Ui {
         self.palette = theme.palette();
         self.text.set_theme(&theme);
         self.theme = String::from(name);
-        for (app, mut frame) in core::mem::take(&mut self.frames) {
-            let (w, h) = frame.size;
-            frame.damage = alloc::vec![uikit::geom::Rect::new(0, 0, w, h)];
-            self.show(app, frame);
-        }
+        self.redraw_all();
         println!("comphost: painting in the {name} theme");
     }
 
@@ -680,6 +679,7 @@ impl Ui {
     }
 
     fn show(&mut self, app: u32, frame: Frame) {
+        self.greet_once();
         let title = frame.title.clone();
         let first = !self.frames.iter().any(|(a, _)| *a == app);
         match self.desk.frame(app, &frame) {
@@ -769,7 +769,7 @@ impl Ui {
         let mut painter = uipaint::Painter {
             palette: &self.palette,
             text: &mut self.text,
-            scale: uipaint::Scale::of(uipaint::SCALE_ONE),
+            scale: uipaint::Scale::of(self.desk.scale()),
         };
         painter.paint(&mut canvas, &frame.list, all);
     }

@@ -11,6 +11,9 @@ use crate::geom::Rect;
 use crate::scale::ONE;
 use alloc::vec::Vec;
 
+/// The alpha byte: a screen's pixels are opaque, whatever the frame held
+/// (a hole in it has none).
+pub(crate) const ALPHA: u32 = 0xFF << 24;
 /// A weight of 1.0 in the blend.
 const UNIT: u32 = 256;
 /// Fixed-point fraction bits of a source coordinate.
@@ -143,10 +146,14 @@ pub fn resample(src: &Source<'_>, dst: &mut Target<'_>, scale: u32, rect: Rect) 
             return;
         };
         match row.w {
-            0 => out.copy_from_slice(&top),
+            0 => {
+                for (px, &up) in out.iter_mut().zip(&top) {
+                    *px = up | ALPHA;
+                }
+            }
             w => {
                 for ((px, &up), &down) in out.iter_mut().zip(&top).zip(&bottom) {
-                    *px = lerp(up, down, w);
+                    *px = lerp(up, down, w) | ALPHA;
                 }
             }
         }
