@@ -186,39 +186,29 @@ fn create_for(
                 return None;
             }
         }
-        let free = records.iter().position(Option::is_none);
-        let at = match free {
+        // A plan line needs one slot; a narrowing leaves the last few free
+        // slots to plan lines. Short of that, records nothing names go first,
+        // whether the table is full or only short of the reserve (#1181's
+        // review: the reserve must not stop a narrowing the sweep would make
+        // room for).
+        let needed = if owner.is_some() {
+            PLAN_RESERVED + 1
+        } else {
+            1
+        };
+        if room(records) < needed {
+            sweep(records, &live);
+        }
+        if room(records) < needed {
+            return None;
+        }
+        let at = match records.iter().position(Option::is_none) {
             Some(at) => at,
-            None if records.len() < MAX_RECORDS => {
+            None => {
                 records.push(None);
                 records.len() - 1
             }
-            None => {
-                let now = hpet::nanos();
-                for (i, slot) in records.iter_mut().enumerate() {
-                    let Some(record) = slot else {
-                        continue;
-                    };
-                    // The transit count first, then the tables, then whether
-                    // any handle moved meanwhile: one of the three sees a
-                    // handle that moved while it looked.
-                    let before = crate::handle::moves();
-                    let named = TRANSIT[i].load(Ordering::SeqCst) != 0
-                        || live(id(i, record.generation))
-                        || crate::handle::moves() != before
-                        || now.saturating_sub(record.born) < FRESH_NS;
-                    if !named {
-                        *slot = None;
-                    }
-                }
-                records.iter().position(Option::is_none)?
-            }
         };
-        // A narrowing leaves the last few free slots to plan lines.
-        let free = records.iter().filter(|r| r.is_none()).count() + (MAX_RECORDS - records.len());
-        if owner.is_some() && free <= PLAN_RESERVED {
-            return None;
-        }
         let generation = GENERATION[at]
             .fetch_add(1, Ordering::SeqCst)
             .wrapping_add(1);
@@ -233,6 +223,33 @@ fn create_for(
         });
         Some(id(at, generation))
     })
+}
+
+/// Free slots, the table's room to grow counted in.
+fn room(records: &[Option<Record>]) -> usize {
+    records.iter().filter(|r| r.is_none()).count() + (MAX_RECORDS - records.len())
+}
+
+/// Drops every record nothing names: no handle in a table (`live`), none
+/// moving between tables, and not made within [`FRESH_NS`].
+fn sweep(records: &mut [Option<Record>], live: &impl Fn(u64) -> bool) {
+    let now = hpet::nanos();
+    for (i, slot) in records.iter_mut().enumerate() {
+        let Some(record) = slot else {
+            continue;
+        };
+        // The transit count first, then the tables, then whether any handle
+        // moved meanwhile: one of the three sees a handle that moved while
+        // it looked.
+        let before = crate::handle::moves();
+        let named = TRANSIT[i].load(Ordering::SeqCst) != 0
+            || live(id(i, record.generation))
+            || crate::handle::moves() != before
+            || now.saturating_sub(record.born) < FRESH_NS;
+        if !named {
+            *slot = None;
+        }
+    }
 }
 
 /// The destination `object` names, if it is a record.

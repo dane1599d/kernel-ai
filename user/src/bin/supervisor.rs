@@ -57,6 +57,9 @@ struct Service {
     /// Ended by pkg's `withdraw`: when it is gone it waits for a version, with
     /// no restart counted and none scheduled.
     withdrawn: bool,
+    /// Ended by the undo of a start that found it waiting on demand: when it
+    /// is gone it waits on demand again, with no restart and none counted.
+    back_on_demand: bool,
     /// The shell's log entry whose `start` is the latest change to it, for its
     /// undo; cleared by any stop or restart.
     started_by: Option<StartedBy>,
@@ -119,6 +122,7 @@ fn main() -> i32 {
                 start_at_ms: None,
                 restart_on_exit: false,
                 withdrawn: false,
+                back_on_demand: false,
                 started_by: None,
                 version: None,
             }
@@ -301,6 +305,7 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
         // the start made and leaves it on demand, never stopped.
         Request::Stop(_) if undoing.is_some_and(|start| !start.was_held) => {
             service.start_at_ms = None;
+            service.back_on_demand = service.pid.is_some();
             if let Some(pid) = service.pid
                 && let Err(error) = sys::kill(pid)
             {
@@ -742,24 +747,40 @@ fn on_exit(services: &mut [Service], exit: &ExitRecord) {
     let now = now_ms();
     let reason = ExitReason::from_raw(exit.reason).map_or("ended", ExitReason::name);
     let name = &service.spec.name;
-    if service.withdrawn {
-        service.withdrawn = false;
-        println!("{name} {reason}; withdrawn, so not restarted: it waits for pkg");
-        service.start_at_ms = None;
-        save(services);
-        return;
-    }
-    if service.restart_on_exit {
-        service.restart_on_exit = false;
-        println!("{name} {reason}; restarting on request");
-        service.start_at_ms = Some(now);
-        save(services);
-        return;
-    }
-    if service.record.stopped {
-        println!("{name} {reason}; stopped, so not restarted");
-        save(services);
-        return;
+    let why = supervise::ending(
+        service.withdrawn,
+        service.back_on_demand,
+        service.restart_on_exit,
+        service.record.stopped,
+    );
+    service.withdrawn = false;
+    service.back_on_demand = false;
+    match why {
+        supervise::Ending::Withdrawn => {
+            println!("{name} {reason}; withdrawn, so not restarted: it waits for pkg");
+            service.start_at_ms = None;
+            save(services);
+            return;
+        }
+        supervise::Ending::BackOnDemand => {
+            println!("{name} {reason}; its start undone, it waits on demand again");
+            service.start_at_ms = None;
+            save(services);
+            return;
+        }
+        supervise::Ending::RestartOnRequest => {
+            service.restart_on_exit = false;
+            println!("{name} {reason}; restarting on request");
+            service.start_at_ms = Some(now);
+            save(services);
+            return;
+        }
+        supervise::Ending::Stopped => {
+            println!("{name} {reason}; stopped, so not restarted");
+            save(services);
+            return;
+        }
+        supervise::Ending::Policy => {}
     }
     match service.record.on_exit(
         &service.spec.policy,
