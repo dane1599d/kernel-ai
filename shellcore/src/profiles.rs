@@ -137,7 +137,7 @@ impl Shell {
             .collect();
         let focused = self.host.focused_app();
         let settings = profile.resolve(&running, focused.as_deref());
-        let before = self.host.profile_apply(&settings)?;
+        let before = self.host.profile_apply(&settings, true)?;
         let was = core::mem::replace(&mut self.profiles.now, String::from(name));
         let key = self.keep_back(was.clone(), before);
         self.log.push(Entry {
@@ -188,7 +188,7 @@ impl Shell {
             .position(|(k, _, _)| *k == key)
             .ok_or_else(|| String::from("that profile switch is too old to undo"))?;
         let (_, name, settings) = self.profiles.back.remove(at);
-        let current = self.host.profile_apply(&settings)?;
+        let current = self.host.profile_apply(&settings, false)?;
         let was = core::mem::replace(&mut self.profiles.now, name.clone());
         let redo = self.keep_back(was, current);
         Ok((format!("profile back to {name}"), redo))

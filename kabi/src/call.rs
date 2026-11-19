@@ -557,8 +557,12 @@ pub const MEM_RELEASE: u64 = 162;
 /// heap, `Shm` objects and MEM_COMMIT charge against, becomes `pages`; the old
 /// one. Pages held past a lower quota stay, and the next allocation fails.
 /// Invalid under 64 pages; Permission to lower the shell's, the supervisor's,
-/// the model service's or `desktop`'s. Needs SUPERVISE (P3 task 12).
+/// the model service's or `desktop`'s. Needs SUPERVISE (P3 task 12). A third
+/// argument of [`QUOTA_LOWER_ONLY`] makes `pages` a ceiling (#517): a quota at
+/// or under it is left as it is; any other non-zero one is Invalid.
 pub const PROC_QUOTA_SET: u64 = 163;
+/// PROC_QUOTA_SET's flag: lower the quota to `pages`, never raise it.
+pub const QUOTA_LOWER_ONLY: u64 = 1 << 0;
 /// `proc_class_set(pid, class) -> 0`: process `pid` runs `normal` (0) or
 /// `background` (1) on the `classes` policy from now on, every thread; SCHED_STATS
 /// shows it. Permission to make the shell, the supervisor, the model service or
