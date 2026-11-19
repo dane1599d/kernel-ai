@@ -92,6 +92,24 @@ fn an_app_call_taken_and_not_answered_is_an_unknown_outcome_not_nothing() {
     assert!(entry.outcome.contains("may have run"), "{}", entry.outcome);
 }
 
+#[test]
+fn a_row_inside_try_is_never_bound_so_a_caught_call_is_never_sent() {
+    // #1164's second review: a `try` around an app row must not hide a call
+    // that may have run, or send it again. Today the row is not bound inside a
+    // `try` at all (the plan does not count such a site), so nothing leaves
+    // and the run says nothing was done. Were that to change, the run's
+    // `unanswered` makes it an unknown outcome whatever `ok` says, and no
+    // later app call in the run is sent (script/apps.rs, actions.rs).
+    let script = r#"{"name":"script","arguments":{"code":"try { notes_add(\"buy milk\"); } catch {}\nprint(\"carried on\");"}}"#;
+    let (host, mut shell) = with_notes(vec![call(script)]);
+    host.app_errors.borrow_mut().push_back(String::from(
+        "unanswered notes took the call and did not answer; it may have run",
+    ));
+    let reply = shell.eval("? add a note saying buy milk");
+    assert_eq!(host.app_requests.borrow().len(), 0, "{reply:?}");
+    assert!(!reply.text.contains("Done"), "{reply:?}");
+}
+
 /// Notes' four that list and change notes, as its WIT declares them.
 const MANAGE: &str = "version 2
 kai-actions 1
