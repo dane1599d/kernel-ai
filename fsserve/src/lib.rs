@@ -26,6 +26,8 @@ mod lookup;
 mod model_tests;
 pub mod models;
 #[cfg(test)]
+mod sealed_shm_tests;
+#[cfg(test)]
 mod tests;
 mod trash;
 
@@ -512,6 +514,9 @@ impl<D: BlockDev> Server<D> {
             Request::WriteShm { off, len } => self
                 .write_shm(call, &target, off, len, shm)
                 .map(|r| (r, None)),
+            Request::SealedPushShm { len } => self
+                .sealed_push_shm(call, &target, len, shm)
+                .map(|r| (r, None)),
             request => self.dispatch(call, &target, request),
         };
         match done {
@@ -804,7 +809,9 @@ impl<D: BlockDev> Server<D> {
             Request::ModelHint { name } => self.model_hint(call, target, name.as_deref())?,
             Request::ModelInfo { name } => self.model_info(call, target, &name)?,
             // `answer` takes these with their `Shm` (`bulk.rs`).
-            Request::ReadShm { .. } | Request::WriteShm { .. } => return Err(Error::Invalid),
+            Request::ReadShm { .. } | Request::WriteShm { .. } | Request::SealedPushShm { .. } => {
+                return Err(Error::Invalid);
+            }
         };
         Ok((reply, None))
     }
@@ -1030,7 +1037,8 @@ fn changes(request: &Request) -> bool {
         | Request::SealedPush { .. }
         | Request::SealedFinish
         | Request::ModelHint { .. }
-        | Request::WriteShm { .. } => true,
+        | Request::WriteShm { .. }
+        | Request::SealedPushShm { .. } => true,
         Request::Stat
         | Request::List { .. }
         | Request::Read { .. }

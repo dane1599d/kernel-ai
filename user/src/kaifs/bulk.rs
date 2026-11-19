@@ -178,3 +178,25 @@ pub fn write_at(file: Handle, off: u64, bytes: &[u8]) -> Result<bool, String> {
     }
     Ok(true)
 }
+
+/// Pushes `bytes` into the sealed blob open on the model store's `dir`
+/// (SealedPushShm), the `Shm`'s length a round trip; `false` when it could not
+/// go in bulk and pushed nothing, and the caller pushes in messages.
+pub fn sealed_push(dir: Handle, bytes: &[u8]) -> Result<bool, String> {
+    let Some(mut shm) = Lease::take() else {
+        return Ok(false);
+    };
+    let size = shm.len;
+    for (i, piece) in bytes.chunks(size).enumerate() {
+        shm.bytes()[..piece.len()].copy_from_slice(piece);
+        let request = Request::SealedPushShm {
+            len: piece.len() as u32,
+        };
+        match shm.ask(dir, request)? {
+            Reply::Done => {}
+            Reply::Failed(Error::BadRequest) if i == 0 => return Ok(false),
+            other => return Err(format!("a bulk sealed push: {other:?}")),
+        }
+    }
+    Ok(true)
+}
