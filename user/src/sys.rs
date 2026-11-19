@@ -501,6 +501,11 @@ pub fn proc_quota_set(pid: u64, pages: u64) -> Result<u64, Error> {
     call(call::PROC_QUOTA_SET, [pid, pages, 0, 0, 0, 0])
 }
 
+/// Whether a live process has `pid` (PROC_ALIVE): false once it has ended.
+pub fn proc_alive(pid: u64) -> Result<bool, Error> {
+    call(call::PROC_ALIVE, [pid, 0, 0, 0, 0, 0]).map(|alive| alive == 1)
+}
+
 /// Process `pid` runs `normal` (0) or `background` (1) (PROC_CLASS_SET, needs
 /// SUPERVISE).
 pub fn proc_class_set(pid: u64, class: u64) -> Result<u64, Error> {
