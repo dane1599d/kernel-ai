@@ -454,6 +454,19 @@ pub fn give_at_start(slot: usize, entries: Vec<Entry>) -> bool {
     all
 }
 
+/// Puts `entries`, taken from `slot`'s table as `handles` by [`take_for`]
+/// for a move that was refused, back under the same handle values where
+/// their slots stayed empty (audit K #7): the caller still names them.
+pub fn give_back(slot: usize, handles: &[Handle], entries: Vec<Entry>) {
+    let mut guard = HANDLES[slot].lock();
+    let Some(table) = guard.as_mut().map(|h| &mut h.table) else {
+        return;
+    };
+    for (&handle, entry) in handles.iter().zip(entries) {
+        let _ = table.restore(handle, entry);
+    }
+}
+
 /// Puts moved `entries` into `slot`'s table; their new handles. One that does not
 /// fit is dropped, and its handle is 0.
 pub fn give(slot: usize, entries: Vec<Entry>) -> Vec<Handle> {
