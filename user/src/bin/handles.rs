@@ -385,7 +385,11 @@ fn own_shm() -> Result<(), &'static str> {
         "a closed handle",
     )?;
     // PROC_ALIVE needs DISPLAY or SUPERVISE, which this process lacks.
-    expect(sys::proc_alive(1), Error::Permission, "PROC_ALIVE with no right")
+    expect(
+        sys::proc_alive(1),
+        Error::Permission,
+        "PROC_ALIVE with no right",
+    )
 }
 
 /// The first startup handle of `kind`.
