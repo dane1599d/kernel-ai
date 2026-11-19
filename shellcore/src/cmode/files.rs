@@ -1,19 +1,22 @@
 //! `:save <name>` and `:load <name>` at `c>` (ADR 0012 D4, from P2).
 //!
-//! - `:save demo` writes the session's live definitions to
-//!   `/home/user/c/demo.c`, a plain C file that starts `#include <kai.h>`:
-//!   each entry that defined something, in the order it ran, so a later
-//!   redefinition wins as it did at the prompt. The write is one logged file
-//!   change, made (`fs_create`) or replaced (`fs_write`), and `undo` at `c>`
-//!   puts the file back as it was.
-//! - `:load demo` reads that file back and replays it: its definitions,
-//!   never its statements, as a restart replays (D4). It is one entry, so
-//!   `undo` at `c>` takes its definitions away again, and a restart replays
-//!   it with the rest.
+//! - `:save demo` writes the session to `/home/user/c/demo.c`, a plain C
+//!   file that starts `#include <kai.h>`: each entry that defined something,
+//!   as typed and in the order it ran, after a mark line (`saved.rs`). The
+//!   write is one logged file change, made (`fs_create`) or replaced
+//!   (`fs_write`), and `undo` at `c>` puts the file back as it was.
+//! - `:load demo` replays that file's entries one at a time, as the session
+//!   ran them: their definitions, never their statements, as a restart
+//!   replays (D4), so a redefinition replaces as it did when typed. Each is
+//!   an entry of the session, which `undo` at `c>` takes back as a typed one
+//!   and a restart replays; a file that fails part way is taken back whole.
+//! - `#include "…"` of a saved file reads it as one unit, so one that
+//!   defines a name twice is refused by name: `:load` it instead.
 //!
 //! Both stay in the person's own `/home/user/c/`: a name is a plain word,
 //! never a path, so no other folder is read or written.
 
+use super::saved;
 use super::session::Ran;
 use crate::actions::How;
 use crate::actlog::{Form, State};
@@ -27,8 +30,6 @@ use promptcore::wire::{Record, Request, parse_reply};
 
 /// The folder under `/home/user` that `:save` and `:load` use.
 const FOLDER: &str = "c";
-/// What a saved file starts with.
-const HEADER: &str = "#include <kai.h>\n";
 /// The longest name `:save` and `:load` take.
 const MAX_NAME: usize = 32;
 
@@ -105,6 +106,13 @@ impl Shell {
                 "c> read /home/user/{file} for #include ({} bytes)",
                 included.len()
             ));
+            // One unit cannot define a name twice: a saved session that
+            // redefined one loads, entry by entry, but does not include.
+            if let Some(name) = saved::redefined(&included) {
+                return Err(format!(
+                    "#include \"{path}\": it defines {name} twice; use :load"
+                ));
+            }
             out.push_str(included.trim_end());
             out.push('\n');
         }
@@ -124,26 +132,14 @@ impl Shell {
             .iter()
             .filter_map(|ran| ran.defined.as_deref())
             .collect();
-        // Only the live definitions, each once: a redefined function's last
-        // body, so the file loads and includes as one entry (`saved.rs`).
-        let (protos, live) = super::saved::live(&defined, "<kai.h>");
-        let entries = live.len();
+        let entries = defined.len();
         if entries == 0 {
             return Reply::err("nothing is defined yet, so there is nothing to save");
         }
-        let mut text = String::from(HEADER);
-        if !protos.is_empty() {
-            text.push('\n');
-            for proto in protos {
-                text.push_str(&proto);
-                text.push('\n');
-            }
-        }
-        for definition in live {
-            text.push('\n');
-            text.push_str(definition.trim_end());
-            text.push('\n');
-        }
+        let text = match saved::file(&defined) {
+            Ok(text) => text,
+            Err(why) => return Reply::err(format!("not saved: {why}")),
+        };
         let exists = self.host.fs_read(FsRead::Whole(&path)).is_ok();
         let (row, before, after) = match exists {
             true => ("fs_write", "its earlier text", "written"),
@@ -188,7 +184,7 @@ impl Shell {
             cc: false,
         });
         Reply::ok(format!(
-            "saved {entries} definitions to /home/user/{path}; undo puts it back"
+            "saved {entries} entries to /home/user/{path}; undo puts it back"
         ))
     }
 
@@ -204,9 +200,11 @@ impl Shell {
         };
         self.host
             .audit(&format!("c> read /home/user/{path} ({} bytes)", text.len()));
-        if text.len() > promptcore::MAX_ENTRY {
+        let entries = saved::entries(&text);
+        if let Some(n) = entries.iter().position(|e| e.len() > promptcore::MAX_ENTRY) {
             return Reply::err(format!(
-                "/home/user/{path} is over {} KiB, more than one entry holds",
+                "/home/user/{path}: entry {} is over {} KiB, more than one entry holds",
+                n + 1,
                 promptcore::MAX_ENTRY / 1024
             ));
         }
@@ -214,20 +212,36 @@ impl Shell {
             Ok(note) => note,
             Err(why) => return Reply::err(why),
         };
+        let mut names = 0;
+        for (n, entry) in entries.iter().enumerate() {
+            match self.c_replay(entry) {
+                Ok(defined) => names += defined,
+                Err(why) => {
+                    self.c_unload(n);
+                    return Reply::err(format!(
+                        "{restored}/home/user/{path} did not load (entry {}): {why}",
+                        n + 1
+                    ));
+                }
+            }
+        }
+        Reply::ok(format!(
+            "{restored}loaded {} entries ({names} definitions) from /home/user/{path}; statements are not run",
+            entries.len()
+        ))
+    }
+
+    /// Replays `entry`'s definitions as one entry of the session: how many it
+    /// made, or why not (cc then committed nothing of it).
+    fn c_replay(&mut self, entry: &str) -> Result<usize, String> {
         self.c.seq += 1;
         let seq = self.c.seq;
-        let request = Request::Replay { seq, entry: &text }.text();
-        let reply = match self.host.cc(request.as_bytes()) {
-            Ok(reply) => reply,
-            Err(why) => {
-                self.c.open = false;
-                return Reply::err(format!("{restored}cc did not answer: {why}"));
-            }
-        };
-        let records = match parse_reply(&reply) {
-            Ok(records) => records,
-            Err(e) => return Reply::err(format!("{restored}cc's reply: {e}")),
-        };
+        let request = Request::Replay { seq, entry }.text();
+        let reply = self.host.cc(request.as_bytes()).map_err(|why| {
+            self.c.open = false;
+            format!("cc did not answer: {why}")
+        })?;
+        let records = parse_reply(&reply).map_err(|e| format!("cc's reply: {e}"))?;
         let names = records
             .iter()
             .filter(|r| matches!(r, Record::Def { .. }))
@@ -235,21 +249,35 @@ impl Shell {
         match records.last() {
             Some(Record::Done { .. }) => {}
             Some(Record::Err { text: why, .. }) => {
-                return Reply::err(format!(
-                    "{restored}/home/user/{path} did not load: {}",
-                    String::from_utf8_lossy(why)
-                ));
+                return Err(String::from_utf8_lossy(why).into_owned());
             }
-            _ => return Reply::err(format!("{restored}cc's reply was malformed")),
+            _ => return Err(String::from("cc's reply was malformed")),
         }
         self.c.ran.push(Ran {
             seq,
-            defined: Some(text),
+            defined: Some(String::from(entry)),
             logged: None,
             cc: true,
         });
-        Reply::ok(format!(
-            "{restored}loaded {names} definitions from /home/user/{path}; statements are not run"
-        ))
+        Ok(names)
+    }
+
+    /// Takes back the `count` entries a failed `:load` replayed, last first,
+    /// so a file loads whole or not at all.
+    fn c_unload(&mut self, count: usize) {
+        for _ in 0..count {
+            let undone = self
+                .host
+                .cc(Request::Undo.text().as_bytes())
+                .is_ok_and(|reply| {
+                    matches!(parse_reply(&reply).as_deref(), Ok([Record::Undone(_)]))
+                });
+            self.c.ran.pop();
+            if !undone {
+                // cc lost its journal: the next entry opens a session again
+                // and replays what is left.
+                self.c.open = false;
+            }
+        }
     }
 }

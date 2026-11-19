@@ -26,7 +26,7 @@ fn save_writes_the_definitions_and_load_replays_them_after_a_reset() {
     assert_eq!(shell.eval("Print(\"run once\\n\");").text, "run once");
     let saved = shell.eval(":save demo");
     assert_eq!(
-        saved.text, "saved 2 definitions to /home/user/c/demo.c; undo puts it back",
+        saved.text, "saved 2 entries to /home/user/c/demo.c; undo puts it back",
         "{saved:?}"
     );
     let text = file(&host, "c/demo.c").expect("the file is written");
@@ -187,28 +187,109 @@ fn a_call_in_an_included_file_asks_where_typed_it_runs() {
     );
 }
 
-/// A redefined function is saved once, its last body: the file loads and
-/// includes (#1192's review).
+/// Each session saves, `:reset`s and loads back to the same answer, entry
+/// by entry as typed; an include works where the file defines each name
+/// once, and is refused by name where it does not (#1192's review).
 #[test]
-fn a_redefinition_saves_loads_and_includes() {
+fn sessions_save_load_and_include_or_refuse_by_name() {
+    struct Case {
+        typed: &'static [&'static str],
+        call: &'static str,
+        answer: &'static str,
+        twice: Option<&'static str>,
+    }
+    let cases = [
+        Case {
+            typed: &[
+                "typedef struct { I64 x, y; } Point;",
+                "Point Add(Point a, Point b) { Point r; r.x = a.x + b.x; r.y = a.y + b.y; return r; }",
+                "I64 SumX(I64 a, I64 b) { Point p = {a, 0}; Point q = {b, 0}; return Add(p, q).x; }",
+            ],
+            call: "SumX(2, 5)",
+            answer: "= 7",
+            twice: None,
+        },
+        Case {
+            typed: &[
+                "I64 lo = 1, hi = 2;",
+                "I64 hi = 9;",
+                "I64 Both() { return lo + hi; }",
+            ],
+            call: "Both()",
+            answer: "= 10",
+            twice: Some("hi"),
+        },
+        Case {
+            typed: &["#define N 4", "I64 cells[N];", "I64 Cells() { return N; }"],
+            call: "Cells()",
+            answer: "= 4",
+            twice: None,
+        },
+        Case {
+            typed: &["#include <kai.h>\nI64 Head() { return 3; }"],
+            call: "Head()",
+            answer: "= 3",
+            twice: None,
+        },
+        Case {
+            typed: &[
+                "I64 Sq(I64 x) { return x * x; }",
+                "I64 Twice(I64 x) { return Sq(x) * 2; }",
+                "I64 Sq(I64 x) { return x + 1; }",
+            ],
+            call: "Twice(3)",
+            answer: "= 8",
+            twice: Some("Sq"),
+        },
+    ];
+    for case in cases {
+        let host = FakeHost::new();
+        let mut shell = c_shell(&host);
+        for entry in case.typed {
+            let typed = shell.eval(entry);
+            assert!(typed.ok, "{entry}: {typed:?}");
+        }
+        assert_eq!(shell.eval(case.call).text, case.answer, "{}", case.call);
+        let saved = shell.eval(":save demo");
+        assert!(saved.ok, "{}: {saved:?}", case.call);
+        assert_eq!(shell.eval(":reset").text, "the C session is empty again");
+        let loaded = shell.eval(":load demo");
+        assert!(loaded.ok, "{}: {loaded:?}", case.call);
+        assert_eq!(
+            shell.eval(case.call).text,
+            case.answer,
+            "{} loaded",
+            case.call
+        );
+        assert_eq!(shell.eval(":reset").text, "the C session is empty again");
+        let included = shell.eval(&format!("#include \"demo.c\"\n{}", case.call));
+        match case.twice {
+            None => assert_eq!(included.text, case.answer, "{} included", case.call),
+            Some(name) => assert_eq!(
+                included.text,
+                format!("#include \"demo.c\": it defines {name} twice; use :load")
+            ),
+        }
+    }
+}
+
+/// A file that fails part way is taken back whole: nothing of it stays
+/// defined.
+#[test]
+fn a_load_that_fails_part_way_is_taken_back_whole() {
     let host = FakeHost::new();
-    let mut shell = c_shell(&host);
-    assert!(shell.eval("I64 Sq(I64 x) { return x * x; }").ok);
-    assert!(shell.eval("I64 Twice(I64 x) { return Sq(x) * 2; }").ok);
-    assert!(shell.eval("I64 Sq(I64 x) { return x + 1; }").ok);
-    let saved = shell.eval(":save demo");
-    assert_eq!(
-        saved.text,
-        "saved 2 definitions to /home/user/c/demo.c; undo puts it back"
+    host.files.borrow_mut().insert(
+        "c/bad.c".into(),
+        "#include <kai.h>\n//- entry\nI64 Good() { return 1; }\n//- entry\nI64 Bad() { return nope; }\n".into(),
     );
-    let text = file(&host, "c/demo.c").unwrap();
-    assert_eq!(text.matches("Sq(I64 x)").count(), 1, "{text}");
-    assert_eq!(shell.eval(":reset").text, "the C session is empty again");
-    let loaded = shell.eval(":load demo");
-    assert!(loaded.ok, "{loaded:?}");
-    assert_eq!(shell.eval("Twice(3)").text, "= 8");
-    assert_eq!(shell.eval(":reset").text, "the C session is empty again");
-    assert_eq!(shell.eval("#include \"demo.c\"\nTwice(2)").text, "= 6");
+    let mut shell = c_shell(&host);
+    let loaded = shell.eval(":load bad");
+    assert!(
+        !loaded.ok && loaded.text.contains("(entry 2)"),
+        "{loaded:?}"
+    );
+    assert!(!shell.eval("Good()").ok, "the first entry was taken back");
+    assert_eq!(shell.eval("undo").text, "nothing to undo at c>");
 }
 
 /// A save the fs refuses or cuts short says so, logs nothing and leaves the

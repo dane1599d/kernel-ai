@@ -1,119 +1,95 @@
-//! The live definitions of a `c>` session as one C file, for `:save`.
+//! A saved `c>` session's file (`:save`, `:load`, `#include "…"`).
 //!
-//! Each defining entry is split into its items with promptcore's own
-//! splitter, the one cc uses. An item claims names as cc's session does
-//! (`promptcore::defs`): a function's or a variable's name, `tag Point`,
-//! `#N` for a macro, `<h>` for an include. An item is live when no later
-//! item claims one of its names, so a redefined function is written once,
-//! its last body, and the file loads and includes as one entry. Every live
-//! function's prototype goes first, so a body may call one written after it,
-//! as at the prompt, where a redefinition goes last. Statements define
-//! nothing and are never written.
+//! `:save` writes each defining entry as it was typed, in the order it ran,
+//! each after a line [`MARK`] that code writes, so `:load` replays the
+//! entries one at a time exactly as the session ran them: a redefinition
+//! replaces as it did when typed. The mark is a C comment, so the file is
+//! plain C, and `#include` reads it as one unit; one unit cannot define a
+//! name twice, so an include of a file that does is refused by name
+//! ([`redefined`]) and `:load` is the way in.
 
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use promptcore::prepare::BASE_TYPES;
-use promptcore::split::{Storage, What, split};
+use promptcore::split::{What, split};
 
-/// One item of a defining entry: the names it claims and its text.
-struct Item {
-    keys: Vec<String>,
-    text: String,
-    /// A function's prototype, written before every body.
-    proto: Option<String>,
-}
+/// The line before each entry of a saved file.
+pub(super) const MARK: &str = "//- entry";
+/// What a saved file starts with, which a `c>` session has already.
+pub(super) const HEADER: &str = "#include <kai.h>";
 
-/// The names `what` claims; a typedef's names are added to `types`.
-fn keys_of(what: &What, types: &mut Vec<String>) -> Vec<String> {
-    match what {
-        What::Define(name) | What::Undef(name) => alloc::vec![format!("#{name}")],
-        What::Include(header) => alloc::vec![String::from(header.as_str())],
-        What::Func(func) => alloc::vec![func.name.clone()],
-        What::Decl(decl) => {
-            let names = decl.declarators.iter().map(|d| d.name.clone());
-            if decl.storage == Storage::Typedef {
-                types.extend(names.clone());
-            }
-            let tags = decl.tags.iter().map(|t| format!("tag {}", t.name));
-            let constants = decl
-                .tags
-                .iter()
-                .flat_map(|t| t.enumerators.iter().cloned())
-                .chain(decl.enumerators.iter().cloned());
-            names.chain(tags).chain(constants).collect()
+/// A saved file's text for `entries`, or why not: an entry holds a line
+/// that is the mark itself, which would cut it in two on `:load`.
+pub(super) fn file(entries: &[&str]) -> Result<String, String> {
+    let mut text = format!("{HEADER}\n");
+    for entry in entries {
+        if entry.lines().any(|line| line.trim() == MARK) {
+            return Err(format!("an entry holds a line `{MARK}`, which :save uses"));
         }
-        What::Stmt { .. } => Vec::new(),
+        text.push('\n');
+        text.push_str(MARK);
+        text.push('\n');
+        text.push_str(entry.trim_end());
+        text.push('\n');
     }
+    Ok(text)
 }
 
-/// `entry`'s items that define something, in order. An entry that does not
-/// split (cc took it, so this should not happen) is kept whole, claiming
-/// nothing.
-fn items_of(entry: &str, types: &mut Vec<String>) -> Vec<Item> {
-    let Ok(tokens) = promptcore::lex::lex(entry) else {
-        return alloc::vec![whole(entry)];
-    };
-    let known = types.clone();
-    let is_type = |name: &str| BASE_TYPES.contains(&name) || known.iter().any(|t| t == name);
-    let Ok(items) = split(entry, &tokens, &is_type) else {
-        return alloc::vec![whole(entry)];
-    };
-    items
-        .iter()
-        .filter_map(|item| {
-            let keys = keys_of(&item.what, types);
-            // `#undef` claims its macro so the define goes, and writes nothing.
-            let undef = matches!(item.what, What::Undef(_));
-            let proto = match &item.what {
-                What::Func(func) if !func.local => Some(func.proto.clone()),
-                _ => None,
-            };
-            (!keys.is_empty()).then(|| Item {
-                keys,
-                proto,
-                text: match undef {
-                    true => String::new(),
-                    false => String::from(&entry[item.start..item.end]),
-                },
-            })
-        })
+/// The entries of a file, cut at [`MARK`] lines, without the blank ones and
+/// the lone [`HEADER`] before the first mark. A file without marks is one
+/// entry.
+pub(super) fn entries(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = alloc::vec![String::new()];
+    for line in text.split_inclusive('\n') {
+        if line.trim() == MARK {
+            out.push(String::new());
+        } else if let Some(entry) = out.last_mut() {
+            entry.push_str(line);
+        }
+    }
+    out.into_iter()
+        .map(|entry| String::from(entry.trim_end()))
+        .filter(|entry| !entry.trim().is_empty() && entry.trim() != HEADER)
         .collect()
 }
 
-fn whole(entry: &str) -> Item {
-    Item {
-        keys: Vec::new(),
-        text: String::from(entry.trim_end()),
-        proto: None,
-    }
-}
-
-/// The live functions' prototypes, then the text of every live definition
-/// in `entries` (oldest first) in the order it ran, `header` left out where
-/// an entry included it again.
-pub(super) fn live(entries: &[&str], header: &str) -> (Vec<String>, Vec<String>) {
-    let mut types = Vec::new();
-    let items: Vec<Item> = entries
-        .iter()
-        .flat_map(|entry| items_of(entry, &mut types))
-        .collect();
-    let live: Vec<&Item> = items
-        .iter()
-        .enumerate()
-        .filter(|(i, item)| {
-            let later = &items[i + 1..];
-            let replaced = item
-                .keys
+/// The first name `text` defines twice, as one unit would: a function, a
+/// variable, a typedef, a tag, an enum constant or a macro (an `#undef`
+/// lets a macro be defined again). `None` when there is none, or when
+/// `text` does not split (cc then says why).
+pub(super) fn redefined(text: &str) -> Option<String> {
+    let tokens = promptcore::lex::lex(text).ok()?;
+    let is_type = |name: &str| BASE_TYPES.contains(&name);
+    let items = split(text, &tokens, &is_type).ok()?;
+    let mut seen: Vec<String> = Vec::new();
+    for item in &items {
+        let claimed: Vec<String> = match &item.what {
+            What::Undef(name) => {
+                let key = format!("#{name}");
+                seen.retain(|k| *k != key);
+                continue;
+            }
+            What::Define(name) => alloc::vec![format!("#{name}")],
+            What::Func(func) => alloc::vec![func.name.clone()],
+            What::Decl(decl) => decl
+                .declarators
                 .iter()
-                .any(|key| later.iter().any(|l| l.keys.contains(key)));
-            !replaced && !item.text.is_empty() && item.keys.iter().all(|k| k != header)
-        })
-        .map(|(_, item)| item)
-        .collect();
-    let protos = live.iter().filter_map(|item| item.proto.clone()).collect();
-    let bodies = live.iter().map(|item| item.text.clone()).collect();
-    (protos, bodies)
+                .map(|d| d.name.clone())
+                .chain(decl.tags.iter().map(|t| format!("tag {}", t.name)))
+                .chain(decl.tags.iter().flat_map(|t| t.enumerators.clone()))
+                .chain(decl.enumerators.iter().cloned())
+                .collect(),
+            What::Include(_) | What::Stmt { .. } => continue,
+        };
+        for key in claimed {
+            if seen.contains(&key) {
+                return Some(key);
+            }
+            seen.push(key);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -121,37 +97,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_redefinition_is_written_once_its_last_body() {
-        let entries = [
-            "I64 Sq(I64 x) { return x * x; }",
-            "I64 Twice(I64 x) { return Sq(x) * 2; }\nTwice(3);",
-            "I64 Sq(I64 x) { return x + 1; }",
-        ];
-        let (protos, bodies) = live(&entries, "<kai.h>");
-        assert_eq!(protos, ["I64 Twice(I64 x);", "I64 Sq(I64 x);"]);
-        assert_eq!(
-            bodies,
-            [
-                "I64 Twice(I64 x) { return Sq(x) * 2; }",
-                "I64 Sq(I64 x) { return x + 1; }"
-            ]
+    fn a_file_cuts_back_into_its_entries() {
+        let typed = ["I64 Sq(I64 x) { return x * x; }", "I64 lo, hi;\nhi = 2;"];
+        let text = file(&typed).unwrap();
+        assert!(
+            text.starts_with("#include <kai.h>\n\n//- entry\n"),
+            "{text}"
         );
+        assert_eq!(entries(&text), typed);
+        assert_eq!(
+            entries("I64 One() { return 1; }\n"),
+            ["I64 One() { return 1; }"]
+        );
+        assert!(file(&["I64 a;\n//- entry\nI64 b;"]).is_err());
     }
 
     #[test]
-    fn typedefs_macros_and_tags_are_tracked() {
-        let entries = [
-            "#include <kai.h>\ntypedef I64 Money;\nMoney Cost = 3;",
-            "#define N 4\nstruct P { I64 x; };",
-            "#undef N\nMoney Cost = 5;",
-        ];
+    fn a_name_defined_twice_is_found() {
+        let twice = "I64 Sq(I64 x) { return x; }\n//- entry\nI64 Sq(I64 x) { return 1; }";
+        assert_eq!(redefined(twice).as_deref(), Some("Sq"));
+        let once = "typedef struct { I64 x; } Point;\nPoint Add(Point a) { return a; }";
+        assert_eq!(redefined(once), None);
         assert_eq!(
-            live(&entries, "<kai.h>").1,
-            [
-                "typedef I64 Money;",
-                "struct P { I64 x; };",
-                "Money Cost = 5;"
-            ]
+            redefined("#define N 2\n#undef N\n#define N 3\nI64 a[N];"),
+            None
         );
+        assert_eq!(redefined("I64 lo, hi;\nI64 hi;").as_deref(), Some("hi"));
     }
 }
