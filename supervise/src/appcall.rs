@@ -25,9 +25,13 @@ pub const CALLER: &str = "shell";
 /// serves one request at a time, so a slow or hung app holds every other
 /// request, restarts too, no longer than this.
 pub const WAIT_MS: u64 = 5_000;
-/// The answer when the app did not answer in [`WAIT_MS`]; the shell may try
-/// once more.
+/// The answer when the app did not take the call in [`WAIT_MS`]; it never
+/// ran, so the shell may try once more.
 pub const TIMEOUT: &str = "err timeout";
+/// The answer when the app took the call and did not answer, or died with
+/// it: the action may have run, so it is never tried again on its own
+/// (audit K #19).
+pub const UNANSWERED: &str = "err unanswered";
 /// Before the app's name, the answer when the kernel refused to start it for
 /// memory (the admission rule, free / 2): no wait, and nothing to retry.
 pub const NO_MEMORY: &str = "err no memory to start ";

@@ -449,6 +449,13 @@ fn app_call(services: &mut [Service], app: &str, request: &str, caller: u64) -> 
                 supervise::appcall::TIMEOUT
             )
         }
+        Err(kabi::Error::Dead) => {
+            println!("{app} took a call and did not answer it");
+            format!(
+                "{} {app} took the call and did not answer; it may have run",
+                supervise::appcall::UNANSWERED
+            )
+        }
         Err(error) => format!("err cannot reach {app}: {error:?}"),
     }
 }
