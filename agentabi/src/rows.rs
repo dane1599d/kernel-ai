@@ -79,7 +79,10 @@ pub const UPTIME_MS: Action = read(
 
 pub const PROCESSES: Action = read(
     "processes",
-    "running processes",
+    // "Services": the M8 tasks, and people, call these services; as
+    // "running processes" (807098c7), service reads went unanswered or
+    // filtered names for "service" (M8 43/50, run 44426055059).
+    "the running services",
     RetType::List(&RetType::Record(&[
         ("pid", RetType::Of(INT)),
         ("name", RetType::Of(STRING)),
