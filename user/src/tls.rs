@@ -171,6 +171,12 @@ impl Transport for Tcp {
             return Ok(0);
         }
         loop {
+            // Before every read, not only when one finds nothing: a peer that
+            // keeps the buffer full would otherwise never meet the deadline
+            // (audit K #16).
+            if wait_ms(1, self.deadline_ns).is_none() {
+                return Err("the call's time ran out");
+            }
             match sys::net_recv(self.stream, &mut buf[..cap]) {
                 Ok(n) => return Ok(n),
                 Err(Error::Busy) => self.wait(STREAM_READABLE | STREAM_CLOSED)?,
