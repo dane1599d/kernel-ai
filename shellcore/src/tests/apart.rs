@@ -225,17 +225,15 @@ fn a_run_that_succeeded_after_an_unanswered_call_is_an_unknown_outcome_and_has_n
     let (host, mut shell) = with_answers(vec![answer("set_policy(\"rr\");")]);
     child_of(&host);
     assert!(shell.eval("? use round robin").ok);
-    let (host_b, mut shell_b) = (host.clone(), &mut shell);
-    *host_b.apart.borrow_mut() = Some(alloc::boxed::Box::new(|_: &str| {
+    *host.apart.borrow_mut() = Some(alloc::boxed::Box::new(|_: &str| {
         Ok(String::from(
-            "ran 1 ok=1 0 11 unanswered=notes_add\ncarried on\n",
+            "ran 1 ok=1 0 10 unanswered=notes_add\ncarried on\n",
         ))
     }));
-    host_b
-        .answers
+    host.answers
         .borrow_mut()
         .push_back(answer("print(cpus());"));
-    let reply = shell_b.eval("? how many cpus");
+    let reply = shell.eval("? how many cpus");
     assert!(
         reply
             .text
@@ -243,16 +241,16 @@ fn a_run_that_succeeded_after_an_unanswered_call_is_an_unknown_outcome_and_has_n
         "{reply:?}"
     );
     assert!(!reply.text.contains("Done"), "{reply:?}");
-    let entry = shell_b.log.get(shell_b.log.last_id()).expect("an entry");
+    let entry = shell.log.get(shell.log.last_id()).expect("an entry");
     assert_eq!(entry.state, crate::actlog::State::Unknown);
-    let undo = shell_b.eval("undo");
+    let undo = shell.eval("undo");
     assert!(!undo.ok, "{undo:?}");
     assert!(
         undo.text.contains("the outcome of notes_add is not known"),
         "{undo:?}"
     );
     assert_ne!(
-        host_b.policy.get(),
+        host.policy.get(),
         Some(policy::INTERACTIVE),
         "the older entry was not undone"
     );
@@ -298,4 +296,28 @@ fn a_partial_rollback_after_an_unanswered_call_is_still_an_unknown_outcome() {
         undo.text.contains("the outcome of notes_add is not known"),
         "{undo:?}"
     );
+}
+
+#[test]
+fn an_unknown_outcomes_known_changes_are_undone_by_number_never_by_a_bare_undo() {
+    // #1200's review: an entry logged Unknown keeps the changes that are
+    // known; a bare undo stops at it, and `undo <id>` puts those back.
+    let (host, mut shell) = with_answers(vec![answer("set_policy(\"rr\");")]);
+    child_of(&host);
+    assert!(shell.eval("? use round robin").ok);
+    let first = shell.log.last_id();
+    let mut unknown = shell.log.get(first).expect("the run's entry").clone();
+    unknown.id = first + 1;
+    unknown.state = crate::actlog::State::Unknown;
+    unknown.outcome = String::from("failed; notes_add may have run");
+    shell.log.push(unknown);
+    let bare = shell.eval("undo");
+    assert!(
+        bare.text.contains("the outcome of notes_add is not known"),
+        "{bare:?}"
+    );
+    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
+    let by_id = shell.eval(&format!("undo {}", first + 1));
+    assert!(by_id.ok, "{by_id:?}");
+    assert_eq!(host.policy.get(), Some(policy::INTERACTIVE));
 }
