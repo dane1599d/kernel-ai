@@ -452,10 +452,10 @@ const _: () = assert!(kabi::model::KV_IO_BYTES <= crate::nvme::STAGING_BYTES);
 /// `/system/models/cache/`): MODEL_KV_LOAD (`flush` is `None`) and
 /// MODEL_KV_SAVE. Moves `len` bytes between the caller's `buf` and byte `offset`
 /// of KV region `region` of the `kai-cache` partition. Only the model's holder
-/// may, `offset` and `len` are whole sectors, `len` at most
-/// `kabi::model::KV_IO_BYTES`, and the bytes stay inside the region; the
-/// partition must hold every region. The caller's memory is copied outside the
-/// disk's lock.
+/// may, and `kabi::model::kv_extent` bounds the call: whole sectors, `len` at
+/// most `kabi::model::KV_IO_BYTES`, inside the region, a slot region only on a
+/// partition that holds every slot region, and the spill region on its own end.
+/// The caller's memory is copied outside the disk's lock.
 pub fn kv_io(
     slot: usize,
     region: u64,
@@ -464,31 +464,25 @@ pub fn kv_io(
     len: u64,
     flush: Option<bool>,
 ) -> Result<u64, Error> {
-    use kabi::model::{KV_IO_BYTES, KV_REGION_BYTES, KV_REGIONS, KV_SECTOR};
+    use kabi::model::{KV_SECTOR, kv_extent};
     if !may_map(slot) {
         return Err(Error::Permission);
     }
-    let in_region = offset
-        .checked_add(len)
-        .is_some_and(|end| end <= KV_REGION_BYTES);
-    if region >= KV_REGIONS
-        || !in_region
-        || len == 0
-        || len > KV_IO_BYTES
-        || !offset.is_multiple_of(KV_SECTOR)
-        || !len.is_multiple_of(KV_SECTOR)
-    {
+    // The call's own bounds first, on a partition big enough for any region;
+    // the partition's own after, under its lock.
+    if kv_extent(region, offset, len, u64::MAX).is_none() {
         return Err(Error::Invalid);
     }
-    let first = (region * KV_REGION_BYTES + offset) / KV_SECTOR;
     let mut bytes = alloc::vec![0u8; len as usize];
     if flush.is_some() {
         process::uaccess::copy_from_user(slot, buf, &mut bytes)?;
     }
     let done = block::with_partition(diskmap::KAI_CACHE_TYPE, |part| {
-        if part.sectors() < KV_REGIONS * KV_REGION_BYTES / KV_SECTOR {
+        let partition = part.sectors().saturating_mul(KV_SECTOR);
+        let Some(at) = kv_extent(region, offset, len, partition) else {
             return Err(Error::NotFound);
-        }
+        };
+        let first = at / KV_SECTOR;
         let failed = |_| Error::Unavailable;
         match flush {
             None => bytes.copy_from_slice(part.read(first, len / KV_SECTOR).map_err(failed)?),
