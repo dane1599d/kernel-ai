@@ -478,6 +478,7 @@ fn grants() -> Result<(), &'static str> {
         Error::NotFound,
         "a ONCE badge never held",
     )?;
+    proc_alive()?;
     Ok(())
 }
 
@@ -751,6 +752,25 @@ fn devlist() -> Result<(), &'static str> {
             })
     {
         return Err("DEV_LIST into a one-record buffer did not give the first record");
+    }
+    Ok(())
+}
+
+/// PROC_ALIVE: a running service's pid (from LIST) is alive; pid 0 and one
+/// never given out are not.
+fn proc_alive() -> Result<(), &'static str> {
+    let mut listing = [0u8; 1024];
+    let len = sys::list(&mut listing).map_err(|_| "LIST failed")?;
+    let text = core::str::from_utf8(&listing[..len.min(listing.len())]).unwrap_or("");
+    let pid: u64 = text
+        .lines()
+        .find_map(|line| line.split_whitespace().next()?.parse().ok())
+        .ok_or("LIST named no running process")?;
+    if sys::proc_alive(pid) != Ok(true) {
+        return Err("PROC_ALIVE said a running process had ended");
+    }
+    if sys::proc_alive(0) != Ok(false) || sys::proc_alive(u64::MAX) != Ok(false) {
+        return Err("PROC_ALIVE said pid 0 or one never made was alive");
     }
     Ok(())
 }
