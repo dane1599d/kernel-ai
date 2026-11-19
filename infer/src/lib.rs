@@ -20,6 +20,7 @@ mod kv;
 pub mod kvstore;
 mod model;
 mod sample;
+pub mod sectors;
 pub mod segments;
 pub mod tagged;
 mod weights;
@@ -48,6 +49,8 @@ mod reference;
 mod reply_tests;
 #[cfg(test)]
 mod resume_tests;
+#[cfg(test)]
+mod sectors_tests;
 #[cfg(test)]
 mod segments_tests;
 #[cfg(test)]

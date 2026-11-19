@@ -3,12 +3,49 @@
 //! `kai-kv 1` file (`infer::segments`) in a fixed region of the `kai-cache`
 //! partition, through MODEL_KV_LOAD and MODEL_KV_SAVE. Every call moves whole
 //! sectors, up to [`KV_IO_BYTES`] at a time, so the reader and writer here buffer
-//! what the engine streams.
+//! what the engine streams. Past the slot regions, [`spill_region`] is where
+//! preempted agents' states go (F4), through `infer::sectors`.
 
 use alloc::vec;
 use alloc::vec::Vec;
-use kabi::model::{KV_IO_BYTES, KV_REGION_BYTES, KV_SECTOR};
+use infer::sectors::{Miss, SectorRegion, Sectored};
+use kabi::Error;
+use kabi::model::{KV_IO_BYTES, KV_REGION_BYTES, KV_SECTOR, KV_SPILL_REGION};
 use user::sys;
+
+/// The spill region (agents OS plan F4), past the slot regions, as the
+/// `infer::kvstore::KvStore` spills to it.
+pub struct SpillDisk;
+
+impl Sectored for SpillDisk {
+    fn load(&mut self, at: u64, buf: &mut [u8]) -> Result<(), Miss> {
+        sys::model_kv_load(KV_SPILL_REGION, at, buf)
+            .map(drop)
+            .map_err(miss)
+    }
+
+    fn save(&mut self, at: u64, bytes: &[u8], flush: bool) -> Result<(), Miss> {
+        sys::model_kv_save(KV_SPILL_REGION, at, bytes, flush)
+            .map(drop)
+            .map_err(miss)
+    }
+}
+
+/// NotFound is past the end of the spill region, or no `kai-cache` at all: the
+/// kernel says both alike (K, #1076). `SectorRegion` reads it so only while it
+/// finds the size at open; later it is a failed call.
+fn miss(error: Error) -> Miss {
+    match error {
+        Error::NotFound => Miss::PastEnd,
+        _ => Miss::Failed,
+    }
+}
+
+/// The spill region, its size found once; None when this disk has no room for
+/// one (or no `kai-cache`). The slot regions are untouched either way.
+pub fn spill_region() -> Option<SectorRegion<SpillDisk>> {
+    SectorRegion::open(SpillDisk, KV_SECTOR, KV_IO_BYTES)
+}
 
 /// Fills each buffer it is given from region `region`, in order: what
 /// `Engine::restore_slot` reads from. False past the region or on a failed read.
