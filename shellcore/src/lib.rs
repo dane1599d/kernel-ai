@@ -49,6 +49,9 @@ mod deskcard;
 pub mod door;
 mod effects;
 mod engine;
+mod goalqueue;
+mod goalrows;
+mod goalscope;
 pub mod grants;
 mod guard;
 mod instructions;
@@ -728,6 +731,8 @@ pub struct Shell {
     roster: agentid::Roster,
     /// What the card came to for agents' asked steps, until each waits for it.
     agents_told: Vec<agentstep::Told>,
+    /// The goals the person set and the queue to `goals` (G2).
+    goal_book: goalrows::GoalBook,
     /// The admission of the agent whose step is running: no rule of the
     /// person's covers it (`agentconsent`).
     acting: Option<agentid::Admission>,
@@ -870,6 +875,7 @@ impl Shell {
             hosts: nethosts::Table::curated(),
             roster: agentid::Roster::new(),
             agents_told: Vec::new(),
+            goal_book: goalrows::GoalBook::default(),
             acting: None,
             acting_from: 0,
             agent_asks: agentid::Asks::new(),

@@ -2362,6 +2362,7 @@ dependencies = [
  "comp-models",
  "deskcore",
  "editcore",
+ "goalcore",
  "kabi",
  "kaiagent",
  "kaigrants",
