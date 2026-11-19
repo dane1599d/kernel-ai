@@ -215,3 +215,34 @@ fn set_policy_is_the_one_change_a_killed_child_can_leave() {
         .collect();
     assert_eq!(changing, ["set_policy"]);
 }
+
+#[test]
+fn a_run_that_succeeded_after_an_unanswered_call_is_an_unknown_outcome_and_has_no_undo() {
+    // The child says the run went on (ok=1) after a row's call went
+    // unanswered, as a caught error would: the shell logs Unknown, says the
+    // outcome is unknown, never Done, and a bare `undo` stops there rather
+    // than reaching an older entry (#1164's review).
+    let (host, mut shell) = with_answers(vec![answer("set_policy(\"rr\");")]);
+    child_of(&host);
+    assert!(shell.eval("? use round robin").ok);
+    let (host_b, mut shell_b) = (host.clone(), &mut shell);
+    *host_b.apart.borrow_mut() = Some(alloc::boxed::Box::new(|_: &str| {
+        Ok(String::from("ran 1 ok=1 0 11 unanswered=notes_add\ncarried on\n"))
+    }));
+    host_b.answers.borrow_mut().push_back(answer("print(cpus());"));
+    let reply = shell_b.eval("? how many cpus");
+    assert!(
+        reply.text.contains("Outcome unknown: notes_add may have run"),
+        "{reply:?}"
+    );
+    assert!(!reply.text.contains("Done"), "{reply:?}");
+    let entry = shell_b.log.get(shell_b.log.last_id()).expect("an entry");
+    assert_eq!(entry.state, crate::actlog::State::Unknown);
+    let undo = shell_b.eval("undo");
+    assert!(!undo.ok, "{undo:?}");
+    assert!(
+        undo.text.contains("the outcome of notes_add is not known"),
+        "{undo:?}"
+    );
+    assert_ne!(host_b.policy.get(), Some(policy::INTERACTIVE), "the older entry was not undone");
+}
