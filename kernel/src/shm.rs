@@ -505,10 +505,14 @@ pub fn settle(object: u64) {
 
 /// Gives `charge` back to its creator, if the process in its slot is still it.
 fn refund(charge: Charge) {
+    // The pid is checked with the space's lock held: a space is installed
+    // and taken away under that lock, so the slot cannot pass to another
+    // process between the check and the refund (#1155's review).
+    let mut space = process::lock_space(charge.slot);
     if process::identity(charge.slot).pid != charge.pid {
         return;
     }
-    if let Some(space) = process::lock_space(charge.slot).as_mut() {
+    if let Some(space) = space.as_mut() {
         space.refund(charge.pages);
     }
 }
