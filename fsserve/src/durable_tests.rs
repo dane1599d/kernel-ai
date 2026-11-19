@@ -15,6 +15,8 @@ use kaifs::cache::Cached;
 use kaifs::{BLOCK, Block, DevInfo, IoError};
 
 const BLOCKS: usize = 4096;
+/// What the change writes: one message's worth.
+const BYTES: usize = fsproto::MAX_DATA;
 
 /// The disk's bytes, its write calls so far, and the call it fails from.
 struct State {
@@ -131,7 +133,7 @@ fn done_always_means_on_the_disk_whichever_write_fails() {
         }
         let write = Request::Write {
             off: 0,
-            data: vec![9; 20_000],
+            data: vec![9; BYTES],
         };
         let answer = call(&mut server, file.badge, write);
         let reply = fsproto::decode_reply(&answer.reply).unwrap();
@@ -150,7 +152,7 @@ fn done_always_means_on_the_disk_whichever_write_fails() {
         );
         fs.set_volume(kaifs::vol::HOME).unwrap();
         let ino = Badge::parse(file.badge).object;
-        assert_eq!(fs.read_file(ino).unwrap(), vec![9; 20_000]);
+        assert_eq!(fs.read_file(ino).unwrap(), vec![9; BYTES]);
     }
     assert!(answered_done > 0, "no failure point late enough to land");
 }
