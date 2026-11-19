@@ -204,3 +204,25 @@ fn an_edit_to_permission_words_is_refused_before_any_card() {
     assert!(!reply.ok && shell.pending.is_none(), "{reply:?}");
     assert_eq!(text_of(&shell, 1).as_deref(), Some("I use metric units"));
 }
+
+#[test]
+fn another_number_in_the_line_names_no_memory() {
+    let (host, mut shell) = with_two();
+    host.calls.borrow_mut().push_back(remember("I have 3 cats"));
+    shell.eval("remember that I have 3 cats");
+    // Memory 3 exists; the line names memory 2, and the call picks 3.
+    host.calls.borrow_mut().push_back(call(
+        r#"{"name":"memory_edit","arguments":{"id":3,"text":"I have 3 cats"}}"#,
+    ));
+    let asked = shell.eval("change memory 2 to I have 3 cats");
+    assert!(
+        asked.text.contains("Change memory 3 with memory_edit(3)?"),
+        "{asked:?}"
+    );
+    // How a memory is named: "memory 2" or "#2"; another number is no name.
+    use crate::memrows::named;
+    assert_eq!(named("change memory 2 to I have 3 cats"), [2]);
+    assert_eq!(named("forget #2 please"), [2]);
+    assert_eq!(named("I have 3 cats"), [] as [u64; 0]);
+    assert_eq!(named("swap memories 1 and #4"), [1, 4]);
+}
