@@ -255,7 +255,7 @@ S05-2's pass mark is each P4 app's view at most 300 tokens. Past that, the proje
 - **P5:** network asks on the ask card; fonts and apps as packages ([ADR 0011](../adr/0011-packages.md)).
 - **P6:** a profile also sizes the Linux VM's vCPUs and memory, for games in the VM (ADR 0006); standing instructions for browser tabs: the guest agent `kai-guest` reports tab events (a tab minimized, hidden or closed), and a rule's action asks the guest to discard or restore the tab, so "while my tab is minimized, don't give it memory until it's reopened" works for the browser too (ADR 0006); the Linux guest's screen as one foreign `Surface` (v0.2); a per-window guest bridge after it; `wlbridge` only on 0006's `lxabi` fallback.
 - **P7:** GOP on the founder's PC with its colour masks; scale from a real monitor's EDID; input from `usbd`.
-- **P8:** fuzzing of `surfabi`, the tree decoder and `kai-theme 1` at scale; a screen reader on the same trees; a security review of the trusted path.
+- **P8:** fuzzing of `surfabi`, the tree decoder and `kai-theme 1` at scale (the targets exist, `fuzz/fuzz_targets`; `desktop`'s own readers of other processes' bytes have four more, `desk_server`, `desk_queues`, `desk_parsers` and `desk_agent`, whose bodies `deskcore/tests/hostile.rs` also runs); a screen reader on the same trees; a security review of the trusted path.
 - **Lowering a live component's memory limit in place**, rather than at its next instantiation, when comphost supports it: P4 or later.
 - **GPU share in profiles:** the reserved `gpu` field, once GPU support lands (P7+).
 - **`kai-surface 2`:** GPU buffers, only when GPU work starts (ADR 0005, question 4).
