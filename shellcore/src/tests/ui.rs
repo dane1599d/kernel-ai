@@ -207,6 +207,97 @@ fn the_persons_open_is_theirs_and_the_agents_is_not() {
     assert_eq!(opens(&host), [false]);
 }
 
+/// A refused focus on a window that did open (a private one, a run the person
+/// took over) is no failure: the answer says it opened without the keys, and it
+/// is a change `undo` closes.
+const OPENED_NO_KEYS: &str = "opened w5 without the keys: stopped: you took over";
+
+#[test]
+fn an_open_whose_focus_was_refused_is_still_a_change_undo_can_close() {
+    use crate::ui::opened_text;
+    assert_eq!(opened_text("w5", Ok(())), "opened w5");
+    assert_eq!(
+        opened_text("w5", Err(String::from("stopped: you took over"))),
+        OPENED_NO_KEYS
+    );
+    let open = r#"{"name":"ui_open","arguments":{"app":"notes"}}"#;
+    let (host, mut shell) = with_calls(vec![call(open)]);
+    desktop(&host);
+    *host.ui_answer.borrow_mut() = Some(Box::new(|call: &UiCall| match call {
+        UiCall::Open { .. } => Ok(String::from(OPENED_NO_KEYS)),
+        UiCall::Close(window) => Ok(window.clone()),
+        _ => Ok(String::new()),
+    }));
+    let reply = shell.eval("please open the notes app");
+    assert_eq!(reply, ok("Done: window notes open (was closed). undo"));
+    // The window may hold work: undo asks, and then closes that window.
+    assert!(shell.eval("undo").text.ends_with("anyway? y/n"));
+    assert!(shell.eval("y").ok);
+    assert_eq!(
+        host.ui_calls.borrow().last(),
+        Some(&UiCall::Close("w5".into()))
+    );
+}
+
+/// Undo of a closed window whose reopening is refused the keys (a private one)
+/// is done, and the redo closes what it opened.
+#[test]
+fn undoing_a_close_whose_reopening_has_no_keys_is_done_and_redoable() {
+    let close = r#"{"name":"window_close","arguments":{"window":"notes"}}"#;
+    let (host, mut shell) = with_calls(vec![call(close)]);
+    desktop(&host);
+    *host.ui_answer.borrow_mut() = Some(Box::new(|call: &UiCall| match call {
+        UiCall::Windows => Ok(String::from("w2	notes	Notes	1")),
+        UiCall::Open { .. } => Ok(String::from(OPENED_NO_KEYS)),
+        UiCall::Close(window) => Ok(window.clone()),
+        _ => Ok(String::new()),
+    }));
+    assert!(shell.eval("close notes").confirm.is_some());
+    let once = host.mint(1, "window_close(\"notes\")");
+    assert!(shell.eval(&format!("answer 1 allow once={once}")).ok);
+    let undone = shell.eval("undo");
+    assert!(undone.ok, "{undone:?}");
+    assert_eq!(
+        host.ui_calls.borrow().last(),
+        Some(&UiCall::Open {
+            app: "notes".into(),
+            arg: None,
+            person: false
+        })
+    );
+    // Its redo is a close of the window it opened, which asks first.
+    let redo = shell.eval("undo");
+    assert!(redo.text.ends_with("anyway? y/n"), "{redo:?}");
+}
+
+/// The person's open that waited on consent (a call decided after a window's
+/// content was read asks) is still theirs when the answer comes.
+#[test]
+fn a_persons_open_that_waits_for_consent_still_runs_as_theirs() {
+    let (host, mut shell) = with_calls(vec![]);
+    host.lists_services.set(true);
+    *host.services.borrow_mut() = vec![(String::from("notes-window"), true)];
+    desktop(&host);
+    shell.steered = Some("ui");
+    let asked = shell.eval("open notes");
+    assert!(asked.confirm.is_some(), "{asked:?}");
+    assert!(host.ui_calls.borrow().is_empty());
+    shell.steered = None;
+    let once = host.mint(1, "ui_open(\"notes\")");
+    let done = shell.eval(&format!("answer 1 allow once={once}"));
+    assert!(done.ok, "{done:?}");
+    let opens: Vec<bool> = host
+        .ui_calls
+        .borrow()
+        .iter()
+        .filter_map(|c| match c {
+            UiCall::Open { person, .. } => Some(*person),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(opens, [true]);
+}
+
 #[test]
 fn a_script_or_an_undo_after_a_view_is_refused() {
     let view = r#"{"name":"ui_view","arguments":{"window":"notes"}}"#;

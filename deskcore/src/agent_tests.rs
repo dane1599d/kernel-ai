@@ -411,3 +411,29 @@ fn activate_gives_the_person_s_window_the_keys_and_nothing_of_the_agent_s() {
     );
     assert_eq!(Request::Activate("w3".into()).encode(), "ui activate w3");
 }
+
+/// What an open sends to give its window the keys: `ui activate` for the
+/// person's own, `ui focus` for the agent's, and the two behave as they are
+/// named on a window kept from the agent and after a takeover.
+#[test]
+fn an_open_activates_for_the_person_and_focuses_for_the_agent() {
+    assert_eq!(Request::open("w3", true), Request::Activate("w3".into()));
+    assert_eq!(Request::open("w3", false), Request::Focus("w3".into()));
+    let (mut desk, mut fake, notes, term) = desktop();
+    fake.private.push(notes);
+    let mut agent = Agent::default();
+    // The agent's is refused for a private window, the person's is not.
+    let (refused, _) = agent.answer(&mut desk, &mut fake, &Request::open("w1", false).encode());
+    assert!(refused.starts_with("err w1 is private"), "{refused}");
+    let (given, _) = agent.answer(&mut desk, &mut fake, &Request::open("w1", true).encode());
+    assert!(given.starts_with("ok "), "{given}");
+    assert_eq!((desk.focus(), desk.agent()), (Focus::Window(notes), None));
+    // After a takeover the agent's is refused for any window, the person's not.
+    agent.took_over();
+    let to_term = Request::open("w2", false).encode();
+    let (stopped, _) = agent.answer(&mut desk, &mut fake, &to_term);
+    assert_eq!(stopped, "err stopped: you took over");
+    let (given, _) = agent.answer(&mut desk, &mut fake, &Request::open("w2", true).encode());
+    assert!(given.starts_with("ok "), "{given}");
+    assert_eq!(desk.focus(), Focus::Window(term));
+}

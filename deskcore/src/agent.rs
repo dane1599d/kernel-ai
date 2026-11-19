@@ -76,6 +76,17 @@ pub enum Request {
 }
 
 impl Request {
+    /// What gives window `id` the keys for an open: the person's own open
+    /// (`person`) is `Activate`, as a click would; any other, the agent's, is
+    /// `Focus`, with its outline, refused for a private window and after a
+    /// takeover.
+    pub fn open(id: &str, person: bool) -> Self {
+        match person {
+            true => Self::Activate(id.into()),
+            false => Self::Focus(id.into()),
+        }
+    }
+
     pub fn encode(&self) -> String {
         match self {
             Self::Windows => "ui windows".into(),

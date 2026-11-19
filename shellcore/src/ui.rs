@@ -338,23 +338,34 @@ fn text<'a>(call: &'a Call, name: &str) -> &'a str {
         .unwrap_or_default()
 }
 
+/// What `ui_open` answers for a window it opened as `id`: `opened w5`, or, when
+/// `desktop` would not give it the keys (a private window, a run the person
+/// took over), `opened w5 without the keys: <why>`. The window is on the desk
+/// either way, so it is a change that `undo` can close.
+pub fn opened_text(id: &str, keys: Result<(), String>) -> String {
+    match keys {
+        Ok(()) => format!("opened {id}"),
+        Err(why) => format!("opened {id} without the keys: {why}"),
+    }
+}
+
 /// What undoes a `ui_open` that answered `answer` for `app`: closing the
-/// window it opened, or, when it only focused a window the user had, putting
+/// window it opened (the words after it, [`opened_text`]'s reason, say only why
+/// it has no keys), or, when it only focused a window the user had, putting
 /// focus back. `None` for an answer that says neither.
 pub(crate) fn opened(answer: &str, app: &str) -> Option<Inverse> {
     let mut words = answer.split(' ');
-    let inverse = match (words.next()?, words.next()?, words.next()) {
-        ("opened", window, None) => Inverse::Reclose {
+    match (words.next()?, words.next()?, words.next()) {
+        ("opened", window, _) => Some(Inverse::Reclose {
             window: Name::new(window)?,
             app: Name::new(app)?,
-        },
-        ("focused", window, Some(before)) => Inverse::Refocus {
+        }),
+        ("focused", window, Some(before)) if words.next().is_none() => Some(Inverse::Refocus {
             to: Name::new(before)?,
             from: Name::new(window)?,
-        },
-        _ => return None,
-    };
-    words.next().is_none().then_some(inverse)
+        }),
+        _ => None,
+    }
 }
 
 /// Puts back a window change (`undo`): what it did and its redo, or why not.

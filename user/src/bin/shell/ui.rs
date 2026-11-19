@@ -118,16 +118,14 @@ fn open(
                 user::println!("ui_open: {app} is on the desk as {id} after a show");
             }
             // A new window takes no keys of itself (`Desk::may_activate`), so a
-            // background app cannot; the one who asked for it gives them.
-            if let Err(why) = take_keys(route, &id, person) {
-                match person {
-                    true => user::println!("ui_open: {id} opened but did not take the keys: {why}"),
-                    // The run was stopped by a takeover: the window is there, and
-                    // the answer says it did not get the agent's hand.
-                    false => return Err(format!("{id} opened, but {why}")),
-                }
+            // background app cannot; the one who asked for it gives them. A
+            // refused focus (a private window, a takeover) is no failure: the
+            // window is open, so the answer says so, and `undo` can close it.
+            let keys = take_keys(route, &id, person).map(|_| ());
+            if let Err(why) = &keys {
+                user::println!("ui_open: {id} opened but did not take the keys: {why}");
             }
-            return Ok(format!("opened {id}"));
+            return Ok(rows::opened_text(&id, keys));
         }
         // Running with its window closed: asked once, it shows it again
         // (backlog item 2). A new start shows its own window well before.
@@ -152,11 +150,7 @@ fn open(
 /// the person's own open, `ui activate` (as a click would); for the agent's,
 /// `ui focus` (its outline, never a private window or a stopped run).
 fn take_keys(route: kabi::handle::Handle, id: &str, person: bool) -> Result<String, String> {
-    let request = match person {
-        true => Request::Activate(id.to_string()),
-        false => Request::Focus(id.to_string()),
-    };
-    let answer = ask_desktop(route, &request.encode())?;
+    let answer = ask_desktop(route, &Request::open(id, person).encode())?;
     match answer.strip_prefix("err ") {
         Some(why) => Err(why.to_string()),
         None => Ok(answer
