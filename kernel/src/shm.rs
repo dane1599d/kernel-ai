@@ -458,11 +458,15 @@ pub fn collect() {
     let mut refunds = Vec::new();
     with(|objects| {
         for (index, place) in objects.objects.iter_mut().enumerate() {
+            // The transit count, then the tables, then whether any handle
+            // moved meanwhile, as the NetDest sweep does (`handle::moves`).
+            let before = handle::moves();
             let unused = place.as_ref().is_some_and(|object| {
                 object.mappings.is_empty()
-                    && TRANSIT[index].load(Ordering::SeqCst) == 0
                     && !object.pinned
+                    && TRANSIT[index].load(Ordering::SeqCst) == 0
                     && !held(pack(index, object.generation))
+                    && handle::moves() == before
             });
             if !unused {
                 continue;
