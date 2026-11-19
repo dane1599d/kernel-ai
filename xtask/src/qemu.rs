@@ -4,13 +4,25 @@ use crate::cases::TestCase;
 use crate::disk::{BASE_MEMORY_MIB, ModelDisk};
 use crate::options::Sizing;
 use crate::{Accel, Firmware};
-use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::{BufRead, BufReader};
+use std::net::TcpListener;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
+
+mod console;
+mod keys;
+mod net;
+
+use console::{CPU_LINE, ci_warning, forbidden_verdict};
+pub use console::{from_programs, without_stamp};
+use keys::Typist;
+#[cfg(test)]
+use net::command_word;
+use net::{NET_DEVICE, USER_NET};
+pub use net::{forward_https, input_args, net_behind_bridge};
 
 /// QEMU exit status for `isa-debug-exit` value 0x10: (0x10 << 1) | 1.
 pub(crate) const QEMU_PASS: i32 = 33;
@@ -217,182 +229,6 @@ pub fn free_port() -> Result<u16, String> {
         .and_then(|listener| listener.local_addr())
         .map(|addr| addr.port())
         .map_err(|e| format!("cannot find a free port for the QEMU monitor: {e}"))
-}
-
-/// The stages of a case's keys, typed in the order the guest announced them.
-/// The monitor serves one client at a time, so two stages started together would
-/// take turns in whatever order their connections landed (a Ctrl-O and the path
-/// that follows it, the path first): each stage waits for the one before it.
-struct Typist {
-    monitor: u16,
-    qmp: Option<u16>,
-    last: Option<thread::JoinHandle<()>>,
-}
-
-impl Typist {
-    fn new(monitor: u16, qmp: Option<u16>) -> Self {
-        Self {
-            monitor,
-            qmp,
-            last: None,
-        }
-    }
-
-    /// Types `keys` once the stages sent before have been typed.
-    fn send(&mut self, keys: &'static [&'static str]) {
-        let before = self.last.take();
-        let (monitor, qmp) = (self.monitor, self.qmp);
-        self.last = Some(thread::spawn(move || {
-            if let Some(before) = before {
-                let _ = before.join();
-            }
-            type_keys(monitor, qmp, keys);
-        }));
-    }
-}
-
-/// Types keys into the guest through the QEMU monitor: a key name with
-/// `sendkey`, a `!` line as the monitor command after the `!`, an `@` line
-/// as a QMP command on `qmp`, and `~` and a number as a wait of that many ms.
-fn type_keys(port: u16, qmp: Option<u16>, keys: &[&str]) {
-    let mut qmp = qmp.map(Qmp::new);
-    for _ in 0..50 {
-        if let Ok(mut monitor) = TcpStream::connect(("127.0.0.1", port)) {
-            thread::sleep(Duration::from_millis(200));
-            for key in keys {
-                if let Some(ms) = key.strip_prefix('~').and_then(|ms| ms.parse().ok()) {
-                    thread::sleep(Duration::from_millis(ms));
-                    continue;
-                }
-                let sent = match (key.strip_prefix('!'), key.strip_prefix('@')) {
-                    (Some(command), _) => writeln!(monitor, "{command}"),
-                    (_, Some(command)) => match qmp.as_mut() {
-                        Some(qmp) => qmp.run(command),
-                        None => Err(std::io::Error::other("no QMP socket for an @ line")),
-                    },
-                    _ => writeln!(monitor, "sendkey {key}"),
-                };
-                if sent.is_err() {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(150));
-            }
-            println!("xtask: sent {} inputs through the QEMU monitor", keys.len());
-            return;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    eprintln!("xtask: could not reach the QEMU monitor on port {port}");
-}
-
-/// A QMP connection, opened on first use: QMP takes one client at a time and
-/// wants its capabilities negotiated first.
-struct Qmp {
-    port: u16,
-    stream: Option<BufReader<TcpStream>>,
-}
-
-impl Qmp {
-    fn new(port: u16) -> Self {
-        Self { port, stream: None }
-    }
-
-    /// Sends one command and waits for its answer, skipping events. The first
-    /// command connects and negotiates capabilities.
-    fn run(&mut self, command: &str) -> std::io::Result<()> {
-        if self.stream.is_none() {
-            let stream = TcpStream::connect(("127.0.0.1", self.port))?;
-            stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-            let mut reader = BufReader::new(stream);
-            let mut greeting = String::new();
-            reader.read_line(&mut greeting)?;
-            Self::send(&mut reader, r#"{"execute":"qmp_capabilities"}"#)?;
-            self.stream = Some(reader);
-        }
-        let reader = self.stream.as_mut().expect("connected just above");
-        Self::send(reader, command)
-    }
-
-    fn send(reader: &mut BufReader<TcpStream>, command: &str) -> std::io::Result<()> {
-        writeln!(reader.get_mut(), "{command}")?;
-        loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line)? == 0 {
-                return Err(std::io::Error::other("QMP closed the connection"));
-            }
-            if line.contains("\"return\"") {
-                return Ok(());
-            }
-            if line.contains("\"error\"") {
-                return Err(std::io::Error::other(format!("QMP: {}", line.trim())));
-            }
-        }
-    }
-}
-
-/// The network card's `-device` value.
-const NET_DEVICE: &str = "virtio-net-pci,netdev=net0";
-/// The user-mode network every VM gets.
-const USER_NET: &str = "user,id=net0";
-
-/// Moves the network card behind a PCIe root port of its own (bus 1).
-/// Forwards the guest's connections to `netcore::fixture::MOCK_ADDRESS` on
-/// port 443 to the HTTPS mock on the host's `port` (P5 task 12's harness):
-/// QEMU's user network starts `relay`, xtask's own `relay` subcommand, for each
-/// connection, so every mock host a case names is reached on 443, as the
-/// guest's TLS clients and `kai:net` require.
-pub fn forward_https(args: &mut [String], relay: &Path, port: u16) {
-    let [a, b, c, d] = netcore::fixture::MOCK_ADDRESS;
-    if let Some(netdev) = args.iter_mut().find(|arg| arg.as_str() == USER_NET) {
-        *netdev = format!(
-            "{USER_NET},guestfwd=tcp:{a}.{b}.{c}.{d}:443-cmd:{} relay 127.0.0.1:{port}",
-            command_word(&relay.display().to_string())
-        );
-    }
-}
-
-/// `word` as one word of a `cmd:` QEMU's user network splits as a shell
-/// does, in single quotes, and with each comma doubled, as QEMU's option
-/// parser reads a comma in a value (K's review of #753).
-fn command_word(word: &str) -> String {
-    format!("'{}'", word.replace('\'', "'\\''")).replace(',', ",,")
-}
-
-pub fn net_behind_bridge(args: &mut Vec<String>) {
-    if let Some(at) = args.iter().position(|arg| arg == NET_DEVICE) {
-        args[at] = format!("{NET_DEVICE},bus=kai-rp0");
-        let port = [
-            "pcie-root-port,id=kai-rp0,chassis=1".into(),
-            "-device".into(),
-        ];
-        args.splice(at..at, port);
-    }
-}
-
-/// The `qemu-xhci` controller with the case's USB devices, and a QMP socket
-/// when the case sends `@` lines; the port goes to the test run.
-pub fn input_args(case: &TestCase) -> Result<(Vec<String>, Option<u16>), String> {
-    let mut args = Vec::new();
-    if !case.usb.is_empty() {
-        args.extend(["-device".into(), "qemu-xhci,id=xhci".into()]);
-        for device in case.usb {
-            args.extend(["-device".into(), format!("{device},bus=xhci.0")]);
-        }
-    }
-    let wants_qmp = case
-        .keys
-        .iter()
-        .flat_map(|stage| stage.iter())
-        .any(|key| key.starts_with('@'));
-    if !wants_qmp {
-        return Ok((args, None));
-    }
-    let port = free_port()?;
-    args.extend([
-        "-qmp".into(),
-        format!("tcp:127.0.0.1:{port},server=on,wait=off"),
-    ]);
-    Ok((args, Some(port)))
 }
 
 pub fn run_interactive(qemu: &Path, args: &[String], target_dir: &Path) -> Result<(), String> {
@@ -623,110 +459,6 @@ pub fn run_test(
     }
     println!("xtask: PASS");
     Ok(())
-}
-
-/// Fails a case that printed a forbidden line ([`crate::cases::FORBID`]).
-fn forbidden_verdict(forbidden: Option<String>) -> Result<(), String> {
-    match forbidden {
-        Some(line) => Err(format!("FAIL: a forbidden line was on the console: {line}")),
-        None => Ok(()),
-    }
-}
-
-/// The kernel's boot line naming the guest's vector features and XCR0, which a
-/// test repeats at its end.
-const CPU_LINE: &str = "cpu: vector features:";
-
-/// A kernel line that a case passed with something a person should see, such
-/// as `desk-perf` left ungated on a slow runner: xtask repeats its text as a
-/// GitHub `::warning::`, which the run's summary shows.
-const CI_WARNING: &str = "ci-warning: ";
-
-/// The text of a kernel's [`CI_WARNING`] line; a program's never counts.
-fn ci_warning(line: &str) -> Option<&str> {
-    let line = line.trim_end_matches('\r');
-    if from_programs(line) {
-        return None;
-    }
-    line.strip_prefix(CI_WARNING)
-        .filter(|text| !text.is_empty())
-}
-
-/// A serial line without the kernel's `[<s>.<ms> h<s>.<ms>] ` stamp (`stamp=ms`,
-/// kernel/src/serial.rs), so a case booted with stamps matches as one without.
-pub fn without_stamp(line: &str) -> &str {
-    let Some((stamp, rest)) = line.strip_prefix('[').and_then(|l| l.split_once("] ")) else {
-        return line;
-    };
-    let seconds = |text: &str| {
-        text.split_once('.').is_some_and(|(s, ms)| {
-            !s.is_empty()
-                && ms.len() == 3
-                && s.bytes().chain(ms.bytes()).all(|b| b.is_ascii_digit())
-        })
-    };
-    match stamp.split_once(" h") {
-        Some((clock, counter)) if seconds(clock) && seconds(counter) => rest,
-        _ => line,
-    }
-}
-
-/// Whether a console line was written for a ring-3 program rather than by the
-/// kernel: `[name] ...` from a program's own output, `= ...`, `! ...` and `? ...` from
-/// the shell's answers, possibly after the terminal's `kai> `, `edit <name>> `,
-/// `run script N? y/n> ` and `apply <label> to <name>? yes/no> ` prompts, which
-/// start the line the terminal logs on Enter. `screenlog`'s `screen: ` lines count
-/// too: a screen row copies program text and kernel lines alike.
-pub fn from_programs(line: &str) -> bool {
-    if line.starts_with("screen: ") {
-        return true;
-    }
-    let mut rest = line;
-    while let Some(after) = rest
-        .strip_prefix("kai> ")
-        .or_else(|| strip_confirm_prompt(rest))
-        .or_else(|| strip_edit_prompt(rest))
-    {
-        rest = after;
-    }
-    ["[", "= ", "! ", "? "]
-        .iter()
-        .any(|lead| rest.starts_with(lead))
-}
-
-fn is_word(text: &str) -> bool {
-    !text.is_empty()
-        && text
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-}
-
-/// The text after a leading `edit <name>> ` or `apply <label> to <name>? yes/no> `.
-fn strip_edit_prompt(line: &str) -> Option<&str> {
-    if let Some(after) = line.strip_prefix("edit ") {
-        let (name, rest) = after.split_once("> ")?;
-        return is_word(name).then_some(rest);
-    }
-    let after = line.strip_prefix("apply ")?;
-    let (label, after) = after.split_once(" to ")?;
-    let (name, rest) = after.split_once("? yes/no> ")?;
-    (is_word(label) && is_word(name)).then_some(rest)
-}
-
-/// The text after a leading `run script N? y/n> ` or `start trial N? yes/no> `
-/// prompt.
-fn strip_confirm_prompt(line: &str) -> Option<&str> {
-    let after = line
-        .strip_prefix("run script ")
-        .or_else(|| line.strip_prefix("start trial "))?;
-    let digits = after.bytes().take_while(u8::is_ascii_digit).count();
-    if digits == 0 {
-        return None;
-    }
-    let after = &after[digits..];
-    after
-        .strip_prefix("? yes/no> ")
-        .or_else(|| after.strip_prefix("? y/n> "))
 }
 
 #[cfg(test)]
