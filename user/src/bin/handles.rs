@@ -380,7 +380,8 @@ fn own_shm() -> Result<(), &'static str> {
         Error::BadHandle,
         "a closed handle",
     )?;
-    Ok(())
+    // PROC_ALIVE needs DISPLAY or SUPERVISE, which this process lacks.
+    expect(sys::proc_alive(1), Error::Permission, "PROC_ALIVE with no right")
 }
 
 /// The first startup handle of `kind`.
@@ -756,8 +757,8 @@ fn devlist() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// PROC_ALIVE: a running service's pid (from LIST) is alive; pid 0 and one
-/// never given out are not.
+/// PROC_ALIVE: a running service's pid (from LIST) is alive, and so is the
+/// kernel's, 0; one never given out is not.
 fn proc_alive() -> Result<(), &'static str> {
     let mut listing = [0u8; 1024];
     let len = sys::list(&mut listing).map_err(|_| "LIST failed")?;
@@ -769,8 +770,11 @@ fn proc_alive() -> Result<(), &'static str> {
     if sys::proc_alive(pid) != Ok(true) {
         return Err("PROC_ALIVE said a running process had ended");
     }
-    if sys::proc_alive(0) != Ok(false) || sys::proc_alive(u64::MAX) != Ok(false) {
-        return Err("PROC_ALIVE said pid 0 or one never made was alive");
+    if sys::proc_alive(0) != Ok(true) {
+        return Err("PROC_ALIVE said the kernel, pid 0, had ended");
+    }
+    if sys::proc_alive(u64::MAX) != Ok(false) {
+        return Err("PROC_ALIVE said a pid never made was alive");
     }
     Ok(())
 }
