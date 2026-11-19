@@ -7,6 +7,7 @@ mod apps;
 mod appshow;
 mod cc;
 mod components;
+mod desksends;
 mod devices;
 pub(crate) mod https;
 mod kernel;
@@ -294,6 +295,7 @@ const LANES: &[&[TestCase]] = &[
     walk::CASES,
     panestates::CASES,
     warming::CASES,
+    desksends::CASES,
 ];
 
 /// The cases `cargo xtask test` boots.
@@ -347,6 +349,7 @@ mod tests {
             walk::CASES,
             panestates::CASES,
             warming::CASES,
+            desksends::CASES,
         ];
         assert_eq!(
             cases.len(),
