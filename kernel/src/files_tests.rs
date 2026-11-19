@@ -188,7 +188,7 @@ fn minting() -> Result<(), &'static str> {
     // REPLY_H moves a Dir only to a process with FILES.
     let moving = put(Kind::Dir, Rights::READ | Rights::TRANSFER, 1)?;
     let moving = Handle(moving as u32);
-    if handle::take_for(slot, &[moving], cap::SERVE | cap::CALL) != Err(Error::Permission) {
+    if handle::take_for(slot, &[moving], cap::SERVE | cap::CALL).err() != Some(Error::Permission) {
         return Err("files: a Dir would move to a process without FILES");
     }
     handle::take_for(slot, &[moving], cap::FILES)
@@ -332,7 +332,7 @@ pub(crate) fn ask(badge: u64, request: Request) -> Result<Reply, &'static str> {
     let extra = ipc::Extra {
         badge,
         rights: RIGHTS.bits(),
-        handles: Vec::new(),
+        handles: crate::handle::Moving::none(),
     };
     let (reply, _, _) = ipc::call_with(SERVICE, &bytes, 0, deadline, || false, extra)
         .map_err(|_| "files: a call to fs failed")?;

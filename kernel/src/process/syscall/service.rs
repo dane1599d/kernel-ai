@@ -123,7 +123,7 @@ fn call_h(slot: usize, route: u64, args_ptr: u64) -> Result<u64, Error> {
     .map_err(|error| call_error(slot, error))?;
     // The handles go only to a server whose capability bits allow their kinds.
     let moved = match sending.is_empty() {
-        true => Vec::new(),
+        true => handle::Moving::none(),
         false => {
             let server = ipc::server_of(name).and_then(handle::caps_of);
             handle::take_for(slot, &sending, server.ok_or(Error::Unavailable)?)?
@@ -194,7 +194,7 @@ fn reply_h(
 ) -> Result<u64, Error> {
     let sending = read_handles(slot, handles_ptr, handles_len)?;
     let moved = match sending.is_empty() {
-        true => Vec::new(),
+        true => handle::Moving::none(),
         false => {
             // The kernel takes no handles.
             let caller = handle::caps_of(ipc::current_caller(slot)?).ok_or(Error::Invalid)?;
@@ -243,7 +243,7 @@ fn submit(
     let extra = ipc::Extra {
         badge: entry.badge,
         rights: entry.rights.bits(),
-        handles: Vec::new(),
+        handles: handle::Moving::none(),
     };
     // The route's grant goes with the call: a revoke ends it, as it ends a
     // CALL_H, and wakes its caller.

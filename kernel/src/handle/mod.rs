@@ -32,7 +32,10 @@ pub struct Handles {
 }
 
 pub mod grant;
+mod moving;
 pub mod rules;
+
+pub use moving::Moving;
 
 static HANDLES: [Mutex<Option<Handles>>; MAX_PROCESSES] =
     [const { Mutex::new(None) }; MAX_PROCESSES];
@@ -446,7 +449,7 @@ pub fn need_object(
 /// of a kind the receiver may hold (Permission), and appear once (Invalid). A
 /// `NetDest` naming a `hosts:any` record (the shell's ceiling) never moves
 /// (Permission): only its narrowings do. On any refusal nothing is taken.
-pub fn take_for(slot: usize, handles: &[Handle], to_caps: u64) -> Result<Vec<Entry>, kabi::Error> {
+pub fn take_for(slot: usize, handles: &[Handle], to_caps: u64) -> Result<Moving, kabi::Error> {
     let mut guard = lock(slot);
     let table = &mut guard.as_mut().ok_or(kabi::Error::BadHandle)?.table;
     for (i, &handle) in handles.iter().enumerate() {
@@ -462,22 +465,26 @@ pub fn take_for(slot: usize, handles: &[Handle], to_caps: u64) -> Result<Vec<Ent
             return Err(kabi::Error::Invalid);
         }
     }
-    handles
+    let taken: Result<Vec<Entry>, kabi::Error> = handles
         .iter()
         .map(|&handle| table.close(handle).map_err(kabi::Error::from))
-        .collect()
+        .collect();
+    // Counted in transit before the table's lock goes: no moment where no
+    // table and no move names them.
+    taken.map(Moving::from)
 }
 
 /// Puts `entries` moved in before the process in `slot` first runs (JOB_SPAWN)
 /// into its table and lists them in STARTUP, as the handles it starts with.
 /// One that does not fit is dropped; whether every one fitted.
-pub fn give_at_start(slot: usize, entries: Vec<Entry>) -> bool {
+pub fn give_at_start(slot: usize, entries: impl Into<Moving>) -> bool {
+    let moving = entries.into();
     let mut guard = lock(slot);
     let Some(handles) = guard.as_mut() else {
         return false;
     };
     let mut all = true;
-    for entry in entries {
+    for &entry in moving.entries() {
         if let Ok(handle) = handles.table.insert(entry)
             && handles.startup.try_reserve(1).is_ok()
         {
@@ -492,26 +499,30 @@ pub fn give_at_start(slot: usize, entries: Vec<Entry>) -> bool {
 /// Puts `entries`, taken from `slot`'s table as `handles` by [`take_for`]
 /// for a move that was refused, back under the same handle values where
 /// their slots stayed empty (audit K #7): the caller still names them.
-pub fn give_back(slot: usize, handles: &[Handle], entries: Vec<Entry>) {
-    let mut guard = HANDLES[slot].lock();
+pub fn give_back(slot: usize, handles: &[Handle], moving: Moving) {
+    let mut guard = lock(slot);
     let Some(table) = guard.as_mut().map(|h| &mut h.table) else {
         return;
     };
-    for (&handle, entry) in handles.iter().zip(entries) {
+    // `moving` stops counting them only once dropped, after they are back.
+    for (&handle, &entry) in handles.iter().zip(moving.entries()) {
         let _ = table.restore(handle, entry);
     }
 }
 
 /// Puts moved `entries` into `slot`'s table; their new handles. One that does not
 /// fit is dropped, and its handle is 0.
-pub fn give(slot: usize, entries: Vec<Entry>) -> Vec<Handle> {
+pub fn give(slot: usize, entries: impl Into<Moving>) -> Vec<Handle> {
+    let moving = entries.into();
     let mut guard = lock(slot);
     let Some(handles) = guard.as_mut() else {
-        return alloc::vec![Handle::NONE; entries.len()];
+        return alloc::vec![Handle::NONE; moving.len()];
     };
-    entries
-        .into_iter()
-        .map(|entry| handles.table.insert(entry).unwrap_or(Handle::NONE))
+    // `moving` stops counting them only once dropped, after they are in.
+    moving
+        .entries()
+        .iter()
+        .map(|&entry| handles.table.insert(entry).unwrap_or(Handle::NONE))
         .collect()
 }
 

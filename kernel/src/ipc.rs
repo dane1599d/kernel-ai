@@ -15,10 +15,10 @@
 //! the IPC lock, and only then call `wake`. When a server dies, calls it had taken
 //! fail at once and queued ones wait for the next instance.
 
+use crate::handle::Moving;
 use crate::process::{self, MAX_PROCESSES, Name, uaccess};
 use crate::{hpet, log, threads};
 use alloc::vec::Vec;
-use captable::Entry;
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use kabi::{Error, MAX_MESSAGE};
 use sched::Tid;
@@ -62,7 +62,7 @@ pub struct Extra {
     pub badge: u64,
     pub rights: u32,
     /// Handles moved with the request, already out of the caller's table.
-    pub handles: Vec<Entry>,
+    pub handles: Moving,
 }
 
 struct Endpoint {
@@ -85,7 +85,7 @@ struct Call {
     taker: u64,
     extra: Extra,
     /// Handles moved with the reply, already out of the server's table.
-    reply_handles: Vec<Entry>,
+    reply_handles: Moving,
 }
 
 struct Ipc {
@@ -401,7 +401,7 @@ fn queue(
             deadline_ns,
             taker: 0,
             extra,
-            reply_handles: Vec::new(),
+            reply_handles: Moving::none(),
         });
         legs::mark(legs::Leg::Queued);
         CALL_STATE[slot].store(QUEUED, Ordering::SeqCst);
@@ -426,7 +426,7 @@ pub fn finish(pending: Pending) -> Result<(Vec<u8>, u64), CallError> {
 }
 
 /// [`finish`], with the handles the reply moved.
-pub(crate) fn finish_with(pending: Pending) -> Result<(Vec<u8>, u64, Vec<Entry>), CallError> {
+pub(crate) fn finish_with(pending: Pending) -> Result<(Vec<u8>, u64, Moving), CallError> {
     let slot = pending.slot;
     let (call, state) = with_ipc(|ipc| {
         let call = ipc.calls[slot].take();
@@ -500,7 +500,7 @@ pub fn call_with(
     deadline_ns: u64,
     cancel: impl Fn() -> bool,
     extra: Extra,
-) -> Result<(Vec<u8>, u64, Vec<Entry>), CallError> {
+) -> Result<(Vec<u8>, u64, Moving), CallError> {
     call_with_stop(
         name,
         request,
@@ -525,7 +525,7 @@ pub fn call_with_stop(
     cancel: impl Fn() -> bool,
     stop: impl Fn() -> bool,
     extra: Extra,
-) -> Result<(Vec<u8>, u64, Vec<Entry>), CallError> {
+) -> Result<(Vec<u8>, u64, Moving), CallError> {
     // Already stopped: nothing is sent, since a server on another CPU could take
     // it before the first check below (#887's second review).
     if stop() {
@@ -790,7 +790,7 @@ pub fn recv_with(
 
 /// The `svc_reply` system call: answers the call taken by the last `svc_recv`.
 pub fn reply(slot: usize, ptr: u64, len: u64) -> Result<u64, Error> {
-    reply_with(slot, ptr, len, Vec::new())
+    reply_with(slot, ptr, len, Moving::none())
 }
 
 /// The caller of the call this process took and has not answered: its pid (0 for
@@ -810,7 +810,7 @@ pub fn current_caller(slot: usize) -> Result<u64, Error> {
 }
 
 /// [`reply`], moving `handles` (already out of the server's table) to the caller.
-pub fn reply_with(slot: usize, ptr: u64, len: u64, handles: Vec<Entry>) -> Result<u64, Error> {
+pub fn reply_with(slot: usize, ptr: u64, len: u64, handles: Moving) -> Result<u64, Error> {
     let len = usize::try_from(len).map_err(|_| Error::TooBig)?;
     if len > MAX_MESSAGE {
         return Err(Error::TooBig);
