@@ -20,6 +20,10 @@ use surfabi::proto::{Event, GLOBALS, Objects, REGISTRY, Request, SCALE_ONE};
 use surfabi::tree::{self, Tree};
 use surfabi::wire::{self, Error};
 
+/// The most encoded events a client may have waiting: 256 KiB, a few thousand
+/// messages, far more than one round of a client that reads them.
+pub const MAX_EVENT_BYTES: usize = 256 * 1024;
+
 /// The largest coordinate or size of a damage rectangle kept, in px: far past any
 /// buffer, and small enough that no sum of two overflows.
 const MAX_DAMAGE_PX: u32 = 1 << 20;
@@ -196,9 +200,20 @@ impl Client {
     }
 
     fn send(&mut self, object: u32, event: Event) {
+        // Past the cap nothing more is kept: the connection is to be dropped
+        // ([`Client::too_far_behind`]), so no queue grows without end.
+        if self.events.len() > MAX_EVENT_BYTES {
+            return;
+        }
         if let Ok(bytes) = event.encode(object) {
             self.events.extend_from_slice(&bytes);
         }
+    }
+
+    /// Whether the client lets its events pile past [`MAX_EVENT_BYTES`]: it
+    /// never answers, or answers slower than the desk speaks. `desktop` drops it.
+    pub fn too_far_behind(&self) -> bool {
+        self.events.len() > MAX_EVENT_BYTES
     }
 
     /// The events waiting for the client, as many whole messages as fit in
@@ -444,7 +459,17 @@ impl Client {
                     // overflow (a damage past the buffer is cut where it is used).
                     let at = |v: u32| v.min(MAX_DAMAGE_PX) as i32;
                     let rect = Rect::new(at(r.x), at(r.y), at(r.w), at(r.h));
-                    self.surface(header.object)?.damage.push(rect);
+                    let surface = self.surface(header.object)?;
+                    surface.damage.push(rect);
+                    // A client that never commits cannot grow the list: past
+                    // what a header page holds it is one rectangle, the bounding box.
+                    if surface.damage.len() > surfabi::header::MAX_DAMAGE {
+                        let all = surface
+                            .damage
+                            .iter()
+                            .fold(Rect::new(0, 0, 0, 0), |all, r| all.union(r));
+                        surface.damage = alloc::vec![all];
+                    }
                 }
                 Request::Commit => {
                     if let Some(need) = self.commit(desk, header.object)? {

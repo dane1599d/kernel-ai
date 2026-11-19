@@ -55,7 +55,7 @@ pub(super) fn after_closed(state: &mut State, at: usize, pid: u64, pool: Option<
 /// Drops the clients whose process is gone, as a crashed or stopped `comphost`
 /// leaves its windows and pools behind: `alive` is the kernel's list of
 /// processes and `whole` whether it is certainly the whole list
-/// (`deskcore::reap`).
+/// (`deskcore::reap`); a client that lets its events pile up goes too.
 pub(super) fn reap(state: &mut State, alive: &[u64], whole: bool) {
     let pids: Vec<u64> = state.clients.iter().map(|c| c.pid).collect();
     for pid in state.reaper.gone(&pids, alive, whole) {
@@ -63,5 +63,13 @@ pub(super) fn reap(state: &mut State, alive: &[u64], whole: bool) {
         if let Some(at) = state.clients.iter().position(|c| c.pid == pid) {
             drop_client(state, at);
         }
+    }
+    // A client that lets its events pile up goes too.
+    while let Some(at) = state.clients.iter().position(|c| c.too_far_behind()) {
+        println!(
+            "desktop: pid {} never reads its events; its windows close",
+            state.clients[at].pid
+        );
+        drop_client(state, at);
     }
 }

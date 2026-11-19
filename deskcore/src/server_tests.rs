@@ -745,6 +745,8 @@ fn a_window_given_the_focus_takes_it_from_another_clients_window() {
 
 /// Which new window takes the keyboard.
 mod focus;
+/// What a client that never commits or never reads may make `desktop` keep.
+mod limits;
 /// The modifiers every client is told.
 mod mods;
 /// Pools `desktop` lets go.
