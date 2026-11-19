@@ -356,7 +356,7 @@ fn choose(decoder: &mut Decoder, mut menu: Menu, shown: Option<&[String]>) -> Op
     // A send's menu without its text (a desk card: the text is in the Kai
     // pane) is answered on the card or denied, never asked bare on the
     // console, where its text would not be (#1142's review).
-    let bare_send = shown.is_none() && menu::names_send(menu.call());
+    let bare_send = menu::bare_send(shown.is_some(), menu.call());
     let answer = match (menu::surface(shown.is_some(), card_up), shown) {
         (menu::Surface::Console, Some(lines)) => answer_on_console_after(decoder, &mut menu, lines),
         (menu::Surface::Console, None) if bare_send => bare_send_denied(&menu),
@@ -401,7 +401,7 @@ fn bare_send_denied(menu: &Menu) -> Answer {
 /// stopped showing or reading, goes to the console after.
 pub(crate) fn answer(decoder: &mut Decoder, menu: &mut Menu) -> Answer {
     let card_up = claim::showing() && ask_box::alive();
-    let bare_send = menu::names_send(menu.call());
+    let bare_send = menu::bare_send(false, menu.call());
     match menu::surface(false, card_up) {
         menu::Surface::Card => match answer_on_card(menu) {
             Some(answer) => answer,
