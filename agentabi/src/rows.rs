@@ -371,7 +371,8 @@ pub const MODEL_USE: Action = Action {
 /// names it by length and SHA-256. `disk` copies the attached disk's model;
 /// `net` downloads the signed model `name` (P5 task 9), or with no name the
 /// one the role recommends for this machine. It asks once: it brings
-/// gigabytes of new bytes.
+/// gigabytes of new bytes. `updated` undoes it: it removes the blob, or stops
+/// the download and drops the part downloaded.
 pub const MODEL_FETCH: Action = Action {
     name: "model_fetch",
     doc: "imports a signed model from disk, or downloads one (net) by id",
@@ -383,13 +384,10 @@ pub const MODEL_FETCH: Action = Action {
             Role::Target,
         ),
     ],
-    // No undo yet: an imported model stays until a later row removes it, so
-    // it is marked destructive, and asks, as every row with no undo does.
-    facts: Facts {
-        destructive: true,
-        ..Facts::LOCAL_CHANGE
-    },
-    inverse: Inverse::None("an imported model stays in the store"),
+    // The owner puts back what was there before, as for model_use: no blob.
+    // It still asks first (`min_tier`), for the gigabytes it brings.
+    facts: Facts::LOCAL_CHANGE,
+    inverse: Inverse::Restore,
     cues: &["import", "fetch", "download"],
     min_tier: Tier::Ask,
     ..MODEL_USE
