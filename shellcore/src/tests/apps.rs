@@ -66,6 +66,32 @@ fn an_apps_row_runs_as_a_kai_call_and_undo_puts_its_state_back() {
     assert_eq!(host.app_requests.borrow()[1].1, "kai-undo 1\nid 4\n");
 }
 
+#[test]
+fn an_app_call_taken_and_not_answered_is_an_unknown_outcome_not_nothing() {
+    // Audit K #19: the app took the call and did not answer in time. It may
+    // have added the note, so the person, the log and the model are told the
+    // outcome is not known; "Nothing changed" would invite the same call again.
+    let add = r#"{"name":"notes_add","arguments":{"text":"buy milk"}}"#;
+    let (host, mut shell) = with_notes(vec![call(add)]);
+    host.app_errors.borrow_mut().push_back(String::from(
+        "unanswered notes took the call and did not answer; it may have run",
+    ));
+    let reply = shell.eval("add a note saying buy milk");
+    assert!(!reply.ok, "{reply:?}");
+    assert!(
+        reply
+            .text
+            .contains("Outcome unknown: notes_add may have run"),
+        "{reply:?}"
+    );
+    assert!(!reply.text.contains("Nothing changed"), "{reply:?}");
+    // Sent once: an unanswered call is never sent again.
+    assert_eq!(host.app_requests.borrow().len(), 1);
+    let entry = shell.log.get(shell.log.last_id()).expect("an entry");
+    assert_eq!(entry.state, crate::actlog::State::Unknown);
+    assert!(entry.outcome.contains("may have run"), "{}", entry.outcome);
+}
+
 /// Notes' four that list and change notes, as its WIT declares them.
 const MANAGE: &str = "version 2
 kai-actions 1

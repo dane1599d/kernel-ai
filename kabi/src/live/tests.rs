@@ -131,3 +131,20 @@ fn app_call_forwards_a_show_and_the_calls_and_nothing_else() {
         assert!(!app_request(bad.as_bytes()), "{bad:?}");
     }
 }
+
+#[test]
+fn only_an_app_call_never_taken_is_sent_again() {
+    assert!(app_call_may_retry(
+        "timeout notes-window did not answer in time"
+    ));
+    assert!(!app_call_may_retry(
+        "unanswered notes-window took the call and did not answer; it may have run"
+    ));
+    assert!(!app_call_may_retry("cannot reach notes-window: Busy"));
+    assert!(!app_call_may_retry("no memory to start notes-window"));
+    assert!(!app_call_may_retry("notes-window is stopped"));
+    assert!(app_call_unanswered("unanswered notes-window took the call"));
+    assert!(!app_call_unanswered(
+        "timeout notes-window did not answer in time"
+    ));
+}

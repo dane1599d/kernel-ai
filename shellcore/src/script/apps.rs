@@ -50,7 +50,12 @@ fn call(row: &AppRow, tx: &Tx, args: &mut [&mut Dynamic]) -> RhaiResult<Data> {
         livecore::call::CALL_HEADER,
         row.export
     );
-    let text = tx.host.app_call(row.app, &request).map_err(fail)?;
+    let text = tx.host.app_call(row.app, &request).map_err(|why| {
+        if kabi::live::app_call_unanswered(&why) {
+            *tx.unanswered.borrow_mut() = Some(name.to_string());
+        }
+        fail(why)
+    })?;
     // The person sees what the app said; the run is remembered by the shell's
     // own line, so an app cannot word what later prompts carry (#831).
     let reply = livecore::call::Reply::parse(&text).map_err(|why| {

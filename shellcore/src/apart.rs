@@ -72,6 +72,7 @@ pub fn serve(request: &str, host: &Rc<dyn Host>, config: &Config) -> String {
             shown: Vec::new(),
             failed: None,
             withheld: false,
+            unanswered: None,
         })
     };
     let Some((head, source)) = request.split_once('\n') else {
@@ -97,8 +98,14 @@ pub fn serve(request: &str, host: &Rc<dyn Host>, config: &Config) -> String {
 
 /// What a run says, for the shell.
 pub fn encode(ran: &Ran) -> String {
+    // A row whose app call may have run, as one more word: an older shell
+    // reading this ignores it.
+    let unanswered = ran
+        .unanswered
+        .as_deref()
+        .map_or(String::new(), |row| format!(" unanswered={}", word(row)));
     let mut out = format!(
-        "{RESULT} ok={} {} {}\n{}\n",
+        "{RESULT} ok={} {} {}{unanswered}\n{}\n",
         u8::from(ran.ok),
         ran.done.len(),
         ran.text.len(),
@@ -132,6 +139,10 @@ pub fn decode(text: &str) -> Option<Ran> {
     };
     let count: usize = words.next()?.parse().ok()?;
     let len: usize = words.next()?.parse().ok()?;
+    let unanswered = words
+        .next()
+        .and_then(|w| w.strip_prefix("unanswered="))
+        .map(String::from);
     let printed = take(&mut rest, len)?;
     let mut done = Vec::new();
     for _ in 0..count.min(64) {
@@ -159,6 +170,7 @@ pub fn decode(text: &str) -> Option<Ran> {
         shown: Vec::new(),
         failed: None,
         withheld: false,
+        unanswered,
     })
 }
 
@@ -192,6 +204,7 @@ pub fn killed(why: &str, before: Option<(u64, u64)>, host: &dyn Host) -> Ran {
         shown: Vec::new(),
         failed: Some(why.to_string()),
         withheld: false,
+        unanswered: None,
     }
 }
 
