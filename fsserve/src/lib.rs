@@ -16,6 +16,8 @@
 
 extern crate alloc;
 
+#[cfg(test)]
+mod agentvol_tests;
 pub mod batch;
 mod buffer;
 mod bulk;
@@ -196,13 +198,18 @@ impl<D: BlockDev> Server<D> {
     /// Mounts `dev`, or formats it when no superblock slot was ever written, then
     /// makes any missing [`FOLDERS`].
     pub fn start(mut dev: D, uuid: [u8; 16]) -> Result<(Self, Started), kaifs::Error> {
-        let (fs, started) = if blank(&mut dev)? {
+        let (mut fs, started) = if blank(&mut dev)? {
             (Fs::mkfs(dev, uuid, "kai-data")?, Started::Formatted)
         } else {
             let fs = Fs::mount(dev)?;
             let generation = fs.committed;
             (fs, Started::Mounted { generation })
         };
+        // ADR 0013's `memory` and `index`, on a disk that lacks them. No badge
+        // names either (`Server::target`), so no client reaches them here.
+        if fs.writable() && fs.add_agent_volumes()? > 0 {
+            fs.commit()?;
+        }
         let base = fs.clock;
         let mut server = Server {
             fs,
@@ -420,18 +427,21 @@ impl<D: BlockDev> Server<D> {
         }
     }
 
-    /// Between calls, never inside an action: when space is low, retention drops
-    /// the expired undo snapshots and up to [`DROP_PER_PASS`] of the oldest
-    /// (kaifs's space rule), then the GC frees what they held: a slice of it, or
-    /// while space is low the whole pass, since a writer that never pauses would
-    /// otherwise outrun it. `now` is the time in ns, as [`Call::now`].
+    /// Between calls, never inside an action: when space is low or an undo
+    /// snapshot has expired (`memory`'s live an hour), retention drops the
+    /// expired undo snapshots and, while space is low, up to [`DROP_PER_PASS`]
+    /// of the oldest (kaifs's space rule), then the GC frees what they held: a
+    /// slice of it, or while space is low the whole pass, since a writer that
+    /// never pauses would otherwise outrun it. `now` is the time in ns since
+    /// boot, as [`Call::now`]; expiry is on the filesystem's clock.
     pub fn idle(&mut self, now: u64) {
         self.reap();
         if self.owner.is_some() {
             return;
         }
+        let now = self.base.saturating_add(now);
         let fs = self.fs();
-        if !fs.writable() || !(fs.gc_running() || fs.space_low()) {
+        if !fs.writable() || !(fs.gc_running() || fs.space_low() || fs.expiry_due(now)) {
             return;
         }
         let stepped = (|| {
