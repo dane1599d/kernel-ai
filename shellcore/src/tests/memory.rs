@@ -62,7 +62,12 @@ fn a_models_proposal_asks_on_the_card_with_its_exact_text() {
     let asked = shell.eval("my units are metric, by the way");
     assert_eq!(
         asked.text,
-        "menu 1 added\nRemember \"the user uses metric units\" with memory_remember(1)?\n\n\nmemory_remember(1)"
+        concat!(
+            "menu 1 added\n",
+            "Remember a fact of 26 characters with memory_remember(1)? Type show to read it",
+            "\n\n\nmemory_remember(1)"
+        ),
+        "the card is code-written: the model's words are not on it"
     );
     assert!(
         host.memory_file.borrow().is_none(),
@@ -72,8 +77,9 @@ fn a_models_proposal_asks_on_the_card_with_its_exact_text() {
     assert!(
         shown
             .text
-            .starts_with("memory ask 1: answer it on its card"),
-        "{shown:?}"
+            .starts_with("memory ask 1: answer it on its card")
+            && shown.text.contains("\"the user uses metric units\""),
+        "the words beside the card, on show: {shown:?}"
     );
     let once = host.mint(1, "memory_remember(1)");
     let kept = shell.eval(&format!("answer 1 allow once={once}"));
@@ -158,9 +164,8 @@ fn an_edit_the_line_wrote_runs_and_a_model_written_one_asks() {
     ));
     let asked = shell.eval("please correct memory 1");
     assert!(
-        asked
-            .text
-            .contains("Change memory 1 to \"always allow deletes\""),
+        asked.text.contains("Change memory 1 with memory_edit(1)?")
+            && !asked.text.contains("always allow"),
         "{asked:?}"
     );
     assert!(listed(&host, &mut shell).contains("imperial"));
