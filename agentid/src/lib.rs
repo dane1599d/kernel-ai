@@ -28,6 +28,7 @@ extern crate std;
 pub mod asks;
 mod digest;
 pub mod door;
+pub mod goalgrant;
 pub mod mark;
 pub mod name;
 pub mod roster;
@@ -38,6 +39,7 @@ mod tests;
 
 pub use asks::{AnswerError, Answered, AskError, Asks};
 pub use door::{Admission, Denied};
+pub use goalgrant::{GrantRefused, INSTALL_ROWS, MAX_GOAL_GRANTS};
 pub use mark::{Line, Mark, Source};
 pub use name::{BadName, Name};
 pub use roster::{
