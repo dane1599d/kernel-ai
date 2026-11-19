@@ -209,6 +209,11 @@ pub fn mark_wrote(slot: usize) {
     WROTE[slot].store(true, Ordering::Relaxed);
 }
 
+/// The slot of the live process `pid`.
+pub fn slot_of_pid(pid: u64) -> Option<usize> {
+    with_table(|table| table.iter().position(|p| p.live() && p.pid == pid))
+}
+
 /// Whether the live process `pid` has printed anything yet.
 pub fn has_written(pid: u64) -> bool {
     with_table(|table| table.iter().position(|p| p.live() && p.pid == pid))
@@ -507,9 +512,14 @@ pub fn spawn_in(
         Err(error) => return Err((error, moved)),
     };
     // Its startup handles and what was moved to it, before it can run (ADR 0001 D3).
-    if let Err(error) =
-        crate::handle::create_with(slot, request.limits.caps, pid, request.uses, dirs)
-    {
+    if let Err(error) = crate::handle::create_with(
+        slot,
+        request.limits.caps,
+        pid,
+        request.uses,
+        dirs,
+        plan.agent,
+    ) {
         with_table(|table| table[slot] = Process::FREE);
         return Err((error, moved));
     }

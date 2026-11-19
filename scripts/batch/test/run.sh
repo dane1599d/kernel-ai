@@ -112,6 +112,19 @@ setup
 echo true > "$T/prs/1/cross"; ff 1
 check "landed, branch kept"                   'has "kept feat/a (#1: MERGED true)" && ! gone feat/a'
 
+echo "== a resume refuses a PR unlabelled since the stop"
+setup
+touch "$T/kill-on-ready"; ff 1
+: > "$T/prs/1/labels"
+ff --resume
+check "unlabelled: nothing lands"             'has "#1 is no longer batch-ready; STOPPING" && ! gone feat/a && [ ! -f "$T/state/current-batch" ]'
+
+echo "== a damaged resume state cancels and deletes nothing"
+printf 'phase=pushed\nname=\nbase=x\nc=y\nbpr=\nprs=1\nheads_s=x\nbrs_s=feat/a\n' > "$T/state/current-batch"
+: > "$T/gh.log"; ff --resume
+check "no batch branch: stopped"              'has "names no batch branch; STOPPING" && [ ! -f "$T/state/current-batch" ]'
+check "and no run was listed or cancelled"    '! grep -q "run " "$T/gh.log"'
+
 echo "== batch-auto.sh resumes an unfinished batch first"
 setup
 touch "$T/kill-on-ready"; ff 1 2
@@ -119,6 +132,17 @@ bash "$B/batch-auto.sh" & A=$!
 for i in $(seq 1 120); do grep -q "#2 merged" "$T/state/batch-auto.log" 2>/dev/null && break; /bin/sleep 1 2>/dev/null || /usr/bin/sleep 1; done
 touch "$T/state/batch-auto.stop"; wait $A
 check "the log shows the resume and merges"   'grep -q "resuming the unfinished batch: 1 2" "$T/state/batch-auto.log" && grep -q "#1 merged" "$T/state/batch-auto.log"'
+
+echo "== batch-auto.sh: a lone model PR that fails fluency leaves; the rest land"
+setup
+printf 'fluency: 40/50 first try (80%%), 42/50 after one repair (84%%)\nthe fluency gate fails\n' > "$T/fluency.log"
+bash "$B/batch-auto.sh" > /dev/null & A=$!
+for i in $(seq 1 120); do grep -q "#7 merged" "$T/state/batch-auto.log" 2>/dev/null && break; /bin/sleep 1 2>/dev/null || /usr/bin/sleep 1; done
+touch "$T/state/batch-auto.stop"; wait $A
+L="$T/state/batch-auto.log"
+check "the model PR loses its label"          'grep -q "#2 failed the fluency gate" "$L" && [ ! -s "$T/prs/2/labels" ]'
+check "the others land without a split"       'grep -q "#1 merged" "$L" && grep -q "#5 merged" "$L" && grep -q "#7 merged" "$L" && ! grep -q "splitting" "$L"'
+check "the model PR is not merged"            '! grep -q "#2 merged" "$L" && ! gone feat/m1'
 
 echo "branches left: $(branches)"
 [ $fails = 0 ] && echo "all batcher tests pass" || { echo "$fails batcher test(s) failed"; exit 1; }

@@ -556,3 +556,121 @@ fn a_packaged_agent_takes_its_class_and_budgets_from_its_manifest() {
         })
     );
 }
+
+/// The row `2026-11-18-agentsched-grammar-preemption`: a grammar answer interrupted by
+/// the person's request starts again from its prompt, which is not prefilled again,
+/// and the tokens it decodes again are charged again.
+#[test]
+fn a_grammar_answer_the_person_interrupts_starts_again_from_its_prompt() {
+    let mut e = Engine::new(Config::default(), &[kai(), big(2, Class::Background, 1)]);
+    let g = e.ask_shaped(AgentId(2), 64, 20, Shape::Grammar).unwrap();
+    // Its prompt, then five tokens of its answer.
+    while runs(&e.log)
+        .iter()
+        .filter(|(r, k, _)| *r == g && *k == Kind::Decode)
+        .count()
+        < 5
+    {
+        e.step();
+    }
+    assert_eq!(e.sched.open, Some(g));
+    let f = e.ask(KAI, 32, 3).unwrap();
+    // The person's request takes the free slot at once: that interrupts the answer.
+    assert_eq!(e.step(), Event::Move(f, Place::Cold, Place::Slot));
+    assert_eq!(e.sched.open, None);
+    assert_eq!(e.sched.reqs[&g].made, 0);
+    e.run_idle(200);
+    let of_g = |kind| -> u32 {
+        runs(&e.log)
+            .iter()
+            .filter(|(r, k, _)| *r == g && *k == kind)
+            .map(|(_, _, t)| t)
+            .sum()
+    };
+    // The prompt ran once; the answer's five tokens ran twice, then the rest.
+    assert_eq!((of_g(Kind::Prefill), of_g(Kind::Decode)), (64, 25));
+    assert_eq!(e.sched.used_today(AgentId(2)), Some(64 + 25));
+    assert!(e.done.contains(&g) && e.done.contains(&f));
+}
+
+/// An open grammar answer keeps the model against its own class and those below: an
+/// agent of the same class, even one that has waited past the aging bound, waits for
+/// the answer to end, and the answer is never interrupted.
+#[test]
+fn a_grammar_answer_runs_to_its_end_against_its_own_class() {
+    let mut e = Engine::new(
+        Config {
+            kv_slots: 4,
+            ..Config::default()
+        },
+        &[
+            big(2, Class::Background, 1),
+            big(3, Class::Background, 4),
+            big(4, Class::Index, 1),
+        ],
+    );
+    let g = e.ask_shaped(AgentId(2), 16, 800, Shape::Grammar).unwrap();
+    while e.sched.open != Some(g) {
+        e.step();
+    }
+    let other = e.ask(AgentId(3), 16, 10).unwrap();
+    let index = e.ask(AgentId(4), 16, 0).unwrap();
+    let before = e.log.len();
+    e.run_idle(5_000);
+    let order: Vec<RequestId> = runs(&e.log[before..]).iter().map(|(r, _, _)| *r).collect();
+    let g_end = order.iter().rposition(|r| *r == g).unwrap();
+    assert!(order[..=g_end].iter().all(|r| *r == g), "nothing cut in");
+    assert!(order.contains(&other) && order.contains(&index));
+    // 800 tokens at 100 ms is past the aging bound, and still nothing cut in.
+    const { assert!(800 * DECODE_MS > AGING_MS) };
+    let decoded: u32 = runs(&e.log)
+        .iter()
+        .filter(|(r, k, _)| *r == g && *k == Kind::Decode)
+        .map(|(_, _, t)| t)
+        .sum();
+    assert_eq!(decoded, 800, "not one token twice");
+}
+
+/// A grammar answer never joins a batch, and no batch forms around one.
+#[test]
+fn a_grammar_answer_decodes_alone_even_with_batching_on() {
+    let mut e = Engine::new(
+        Config {
+            kv_slots: 4,
+            batch: Batch::Up(4),
+            ..Config::default()
+        },
+        &[
+            big(2, Class::Background, 1),
+            big(3, Class::Background, 1),
+            big(4, Class::Background, 1),
+        ],
+    );
+    let g = e.ask_shaped(AgentId(2), 8, 30, Shape::Grammar).unwrap();
+    e.ask(AgentId(3), 8, 30).unwrap();
+    e.ask(AgentId(4), 8, 30).unwrap();
+    e.run_idle(2_000);
+    let mut batched = false;
+    for event in &e.log {
+        if let Event::Run(q) = event {
+            batched |= q.len() > 1;
+            if q.iter().any(|(r, _, _)| *r == g) {
+                assert_eq!(q.len(), 1, "{q:?}");
+            }
+        }
+    }
+    assert!(batched, "the free ones did batch");
+}
+
+/// An open grammar answer its agent cancels leaves nothing open behind it.
+#[test]
+fn finishing_an_open_grammar_answer_closes_it() {
+    let mut e = Engine::new(Config::default(), &[big(2, Class::Background, 1)]);
+    let g = e.ask_shaped(AgentId(2), 8, 30, Shape::Grammar).unwrap();
+    while e.sched.open != Some(g) {
+        e.step();
+    }
+    e.sched.finish(g);
+    assert_eq!(e.sched.open, None);
+    assert_eq!(e.step(), Event::Idle);
+}

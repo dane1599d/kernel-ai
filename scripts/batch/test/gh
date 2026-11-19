@@ -34,11 +34,20 @@ case "$1 $2" in
   "pr list")
     case "$a" in
       *"--head"*) echo 999;;
+      *"number,headRefName,headRefOid,labels"*)
+        for d in "$T"/prs/*; do n=$(basename "$d"); [ "$(st $n)" = OPEN ] || continue
+          h=$(git -C "$T/origin.git" rev-parse --verify -q "refs/heads/$(pr $n branch)" || pr $n sha)
+          r=false; grep -qx batch-ready "$d/labels" && r=true
+          echo "$n $(pr $n branch) $h $r false"; done;;
+      *"number,headRefOid"*)
+        for d in "$T"/prs/*; do n=$(basename "$d"); [ "$(st $n)" = OPEN ] || continue
+          echo "$n $(git -C "$T/origin.git" rev-parse --verify -q "refs/heads/$(pr $n branch)" || pr $n sha)"; done;;
       *"baseRefName,headRefName"*)
         [ -f "$T/list-fails" ] && exit 1
         for d in "$T"/prs/*; do n=$(basename "$d"); [ "$(st $n)" = OPEN ] && { pr $n base; pr $n branch; }; done; true;;
     esac;;
-  "pr edit"|"pr ready"|"pr close"|"pr comment"|"run cancel"|"run rerun") :;;
+  "pr edit") case "$a" in *"--remove-label batch-ready"*) : > "$T/prs/$3/labels";; esac;;
+  "pr ready"|"pr close"|"pr comment"|"run cancel"|"run rerun") :;;
   "run list")
     case "$a" in
       *ci.yml*) echo "123 completed";;
