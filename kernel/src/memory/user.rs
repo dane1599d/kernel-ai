@@ -2,14 +2,18 @@
 //! copied from the kernel PML4 and shared, since every kernel-half PML4 entry was
 //! created at boot and never changes. The lower half belongs to the process.
 //!
-//! TLB rules, which is why nothing here sends a shootdown:
+//! TLB rules, which is why nothing here sends a shootdown itself:
 //! - Kernel threads always run on the kernel PML4 (no lazy CR3), so only CPUs running
 //!   one of the process's threads (its main thread and, since L6, its workers) have
 //!   its CR3 loaded.
 //! - User pages are never GLOBAL and PCIDs are off, so any CR3 write flushes them.
-//! - Pages are only ever added while the process lives (not-present entries are never
-//!   cached), never unmapped, and the space is freed only by its last thread out,
-//!   after every one of its threads switched its CPU to the kernel PML4.
+//! - Pages are added while the process lives (not-present entries are never cached),
+//!   and the space is freed only by its last thread out, after every one of its
+//!   threads switched its CPU to the kernel PML4.
+//! - Owned pages are unmapped while the process runs only by MEM_RELEASE
+//!   (`crate::process::mem::release`): [`Memory::take_owned_range`] unmaps them and
+//!   the tables they leave empty, the caller shoots the range down on every CPU,
+//!   and only then frees the frames, tables included.
 //! - The one exception is shared pages (`Shm`, ADR 0001 D4): `crate::shm` unmaps or
 //!   retargets them while the process runs, and shoots the range down on every
 //!   CPU itself. They are never OWNED, so teardown leaves their frames alone.
@@ -323,7 +327,8 @@ impl Memory {
     /// (`mm::reserve`), so a table kept would be one more frame each time,
     /// counted against the quota, that nothing reuses. `out` must have room
     /// for [`release_frames`] of `count` (it never grows here, under the
-    /// MEMORY lock). How many of them are tables. The frames stay allocated: the caller
+    /// MEMORY lock). Returns how many of the frames put in `out` are tables.
+    /// The frames stay allocated: the caller
     /// shoots the range down on every CPU first, then frees them with
     /// [`Memory::free_user_frames`], so no stale TLB entry reaches a reused
     /// frame, and a process that exits meanwhile can neither free them twice
@@ -342,34 +347,36 @@ impl Memory {
             let first = ((at >> 12) & 0x1FF) as usize;
             let run = (512 - first).min((count - done) as usize);
             done += run as u64;
-            let Ok(leaf) = self.leaf_table(space, at) else {
-                continue;
-            };
-            for entry in self.table(leaf).iter_mut().skip(first).take(run) {
-                let flags = entry.flags();
-                if !flags.contains(PageTableFlags::PRESENT) || !flags.contains(OWNED) {
-                    continue;
+            if let Ok(leaf) = self.leaf_table(space, at) {
+                for entry in self.table(leaf).iter_mut().skip(first).take(run) {
+                    let flags = entry.flags();
+                    if !flags.contains(PageTableFlags::PRESENT) || !flags.contains(OWNED) {
+                        continue;
+                    }
+                    if out.len() == out.capacity() {
+                        // Never allocate here; the caller sized `out` from the book.
+                        continue;
+                    }
+                    out.push(entry.addr().as_u64() / PAGE_SIZE);
+                    entry.set_unused();
+                    space.frames -= 1;
+                    USER_FRAMES.fetch_sub(1, Ordering::Relaxed);
                 }
-                if out.len() == out.capacity() {
-                    // Never allocate here; the caller sized `out` from the book.
-                    continue;
-                }
-                out.push(entry.addr().as_u64() / PAGE_SIZE);
-                entry.set_unused();
-                space.frames -= 1;
-                USER_FRAMES.fetch_sub(1, Ordering::Relaxed);
             }
             // Tables that map nothing more go too, freed after the same
             // shootdown (the paging-structure caches may still hold them).
             // One that still maps anything (a shared page, a neighbour) stays.
+            // With no leaf, a directory a failed commit made at a 1 GiB
+            // boundary (its leaf never allocated) goes the same way.
             tables += self.prune(space, at, out);
         }
         tables
     }
 
     /// Unlinks the tables on the path to `addr` that map nothing more, from
-    /// the leaf up to the page-directory-pointer table (never the PML4, nor
-    /// the model window's slot), into `out` while it has room; how many.
+    /// the deepest there is (the leaf, or where the path stops) up to the
+    /// page-directory-pointer table (never the PML4, nor the model window's
+    /// slot), into `out` while it has room; how many.
     fn prune(&mut self, space: &mut UserSpace, addr: u64, out: &mut alloc::vec::Vec<u64>) -> u64 {
         if !is_user_page(addr) || ((addr >> 39) & 0x1FF) as usize == WINDOW_SLOT {
             return 0;
@@ -381,21 +388,26 @@ impl Memory {
             (addr >> 21) & 0x1FF,
         ];
         let mut path = [(0u64, 0usize); 3];
+        let mut depth = 0;
         let mut table = space.pml4;
-        for (level, index) in indexes.into_iter().enumerate() {
+        for index in indexes {
             let entry = &self.table(table)[index as usize];
             let flags = entry.flags();
-            if !flags.contains(PageTableFlags::PRESENT) || flags.contains(PageTableFlags::HUGE_PAGE)
-            {
+            if flags.contains(PageTableFlags::HUGE_PAGE) {
                 return 0;
             }
-            path[level] = (table, index as usize);
+            if !flags.contains(PageTableFlags::PRESENT) {
+                break;
+            }
+            path[depth] = (table, index as usize);
+            depth += 1;
             table = entry.addr().as_u64();
         }
-        // `table` is the leaf; walk up while each child is empty.
+        // `table` is the deepest table on the path (the leaf, or one whose
+        // entry for `addr` is empty); walk up while each child is empty.
         let mut freed = 0;
         let mut child = table;
-        for &(parent, index) in path.iter().rev() {
+        for &(parent, index) in path[..depth].iter().rev() {
             let empty = self.table(child).iter().all(|e| e.is_unused());
             if !empty || out.len() == out.capacity() {
                 break;
