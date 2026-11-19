@@ -355,6 +355,16 @@ fn private_answers() -> Result<(), &'static str> {
     let other_ten = core::net::Ipv4Addr::new(10, 1, 2, 3);
     net::dest::resolved(object, &[lan, carrier, fixture, other_ten], 300);
     let tcp = netdest::Protocol::Tcp;
+    // Through RESOLVE_ON from ring 3: a name answering only a private address
+    // is Private, and a mixed answer gives back only its test-subnet address.
+    let (_, entry) = netdest(KAI_TEST)?;
+    netcheck("netdest-p", "host=lan.kai.test expect=private", Some(entry))?;
+    let (_, entry) = netdest(KAI_TEST)?;
+    netcheck(
+        "netdest-q",
+        "host=mixed.kai.test expect=10.0.2.97",
+        Some(entry),
+    )?;
     let refused = [lan, carrier, other_ten].iter().all(|&addr| {
         !net::dest::answerable(addr) && !net::dest::may_connect(object, tcp, addr, 8000)
     });
