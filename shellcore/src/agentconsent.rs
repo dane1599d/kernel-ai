@@ -23,6 +23,9 @@ use alloc::format;
 use alloc::string::String;
 use termcore::menu::{Answer, Menu, Origin};
 
+/// What a retired agent's question on the card comes to.
+pub(crate) const RETIRED: &str = "Not run: the agent was retired.";
+
 /// What a step whose question could not be opened is told.
 fn ask_refusal(why: AskError) -> &'static str {
     match why {
@@ -150,9 +153,49 @@ impl Shell {
                 String::from("Not run: the agent was retired."),
             );
         }
+        self.retire_card_question(&name);
         self.agent_admissions.retain(|(_, a)| a.caller().id() != id);
         self.save_log();
         Ok(())
+    }
+
+    /// The retired agent `name`'s question already on the card goes too: it
+    /// is recorded dropped, the agent's wait hears so, and the card's answer,
+    /// when it comes, runs nothing and says why ([`RETIRED`]). The card
+    /// itself stays up until answered or its two minutes lapse: only the
+    /// kernel's terminal can take a posted ask down.
+    fn retire_card_question(&mut self, name: &str) {
+        let asker = crate::deskask::Asker::Agent(String::from(name));
+        if !self
+            .card_for_desk
+            .as_ref()
+            .is_some_and(|(_, a)| *a == asker)
+        {
+            return;
+        }
+        let Some((id, _)) = self.card_for_desk.take() else {
+            return;
+        };
+        if let Some(pending) = self.pending.take_if(|p| p.id == id) {
+            self.record(
+                pending.id,
+                &pending.request,
+                &pending.checked.script,
+                "dropped: the agent was retired",
+            );
+        }
+        self.retired_card = Some(id);
+        self.agent_told(String::from(name), id, false, String::from(RETIRED));
+    }
+
+    /// The card's answer to question `id`, whose agent was retired while it
+    /// was up: code's line, and nothing runs. `None` for any other question.
+    pub(crate) fn retired_card_answer(&mut self, id: Option<u64>) -> Option<Reply> {
+        let retired = self.retired_card.take_if(|r| Some(*r) == id)?;
+        self.host.audit(&format!(
+            "request {retired}: answered after its agent was retired"
+        ));
+        Some(Reply::ok(RETIRED))
     }
 
     /// Question `id` is closed, answered or not: its admission goes.
