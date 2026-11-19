@@ -71,7 +71,10 @@ jobs:
         run: |
           # Both commits and the history between them (a full clone is ~15 MB).
           git fetch --no-tags --unshallow origin "$BASE" "$HEAD" 2>/dev/null || git fetch --no-tags origin "$BASE" "$HEAD"
-          bash scripts/batch/noboot.sh "$BASE" "$HEAD"
+          # main's copy of the rule, never the batch's own: a change to the rule
+          # must not judge itself (and noboot.sh sends scripts/batch/ to a full batch).
+          git show "$BASE:scripts/batch/noboot.sh" > "$RUNNER_TEMP/noboot.sh"
+          bash "$RUNNER_TEMP/noboot.sh" "$BASE" "$HEAD"
       # P4 task 18: the founder-signed root is frozen once committed. `updated`
       # keeps a cached root of the same version, so a second "version 1" would
       # split devices (docs/release/root-ceremony.md, "Interim: key files").

@@ -77,15 +77,29 @@ observe_only() {  # $1 run id
 # The path-filtered workflows (kaifs, kaituf, pkgrepo, Release, DCO, Token
 # counts) run on the batch head too: every one must finish without a failure.
 # #256 merged on 2026-10-27 with pkgrepo red, since only ci.yml was checked.
+# Returns 1 when one failed, and 2 when one is still queued or running after
+# the wait, or the listing itself failed: a no-boot batch gets here after lint
+# alone, so an unfinished gate must not read as green (#1108's review).
 others_ok() {  # $1 branch, $2 sha
+  local listed="" done_re="=(success|skipped|neutral|failure|cancelled|timed_out|action_required)$"
   for i in $(seq 1 60); do
-    o=$(gh run list --repo "$R" --branch "$1" --limit 30 --json headSha,workflowName,status,conclusion \
-        --jq ".[] | select(.headSha==\"$2\" and .workflowName!=\"CI\" and (.workflowName|test(\"Fluency\")|not)) | .workflowName+\"=\"+(.conclusion//.status)")
-    echo "$o" | grep -qvE "=(success|skipped|neutral|failure|cancelled|timed_out|action_required)$" || break
+    if o=$(gh run list --repo "$R" --branch "$1" --limit 30 --json headSha,workflowName,status,conclusion \
+        --jq ".[] | select(.headSha==\"$2\" and .workflowName!=\"CI\" and (.workflowName|test(\"Fluency\")|not)) | .workflowName+\"=\"+(.conclusion//.status)"); then
+      listed=1
+      { [ -z "$o" ] || ! echo "$o" | grep -qvE "$done_re"; } && break
+    else
+      listed=""; o=""
+    fi
     sleep 60
   done
-  echo "$o" | sed 's/^/    /'
-  ! echo "$o" | grep -qE "=(failure|cancelled|timed_out|action_required)$"
+  [ -n "$o" ] && echo "$o" | sed 's/^/    /'
+  [ -n "$listed" ] || { echo "    the workflow listing failed"; return 2; }
+  echo "$o" | grep -qE "=(failure|cancelled|timed_out|action_required)$" && return 1
+  if [ -n "$o" ] && echo "$o" | grep -qvE "$done_re"; then
+    echo "    a workflow did not finish"
+    return 2
+  fi
+  return 0
 }
 
 fluency_ok() {  # $1 branch, $2 sha; dispatches the run unless $fluency is set (a resume)
@@ -214,7 +228,9 @@ verify() {
     fi
   fi
   gates_green "$id" || { failed_cases "$id"; stop "batch NOT green; STOPPING (fall back to merge-chain.sh)"; }
-  others_ok "$name" "$c" || stop "batch NOT green: another workflow failed; STOPPING"
+  others_ok "$name" "$c"; rc=$?
+  [ $rc = 2 ] && stop "CI did not finish (another workflow); STOPPING"
+  [ $rc = 0 ] || stop "batch NOT green: another workflow failed; STOPPING"
   if [ -n "$model" ]; then
     echo "  changes what the model sees ($model): running the fluency gate"
     fluency_ok "$name" "$c"; rc=$?
@@ -257,6 +273,8 @@ resume() {
   . "$STATE"
   # Checked before anything acts on them: stop's cleanup takes `name`.
   case "$name" in batch/?*) ;; *) name=""; stop "the resume state names no batch branch; STOPPING";; esac
+  # The gate follows the branch CI ran on, whatever the state says.
+  case "$name" in batch/noboot-*) noboot=1;; *) noboot="";; esac
   [[ "$c" =~ ^[0-9a-f]{40}$ && "$base" =~ ^[0-9a-f]{40}$ ]] || stop "the resume state is damaged; STOPPING"
   read -ra batch <<< "$prs"; read -ra heads <<< "$heads_s"; read -ra brs <<< "$brs_s"
   echo "== resuming batch $name ($phase) on main ${base:0:7}: ${batch[*]}"
