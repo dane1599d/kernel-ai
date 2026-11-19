@@ -498,3 +498,60 @@ fn typed_text_shows_though_the_app_does_not_commit() {
     let updates = g.take_ui();
     assert!(updates.len() <= 1, "{updates:?}");
 }
+
+/// A measure of fixed, large boxes: every line is 40 high and 20 wide a char.
+struct Tall;
+
+impl uikit::layout::Measure for Tall {
+    fn measure(&self, _: uikit::style::TypeStyle, text: &str) -> (f32, f32) {
+        (text.len() as f32 * 20.0, 40.0)
+    }
+}
+
+/// A type change (`set_measure`, then `ui_relayout`) lays the windows already
+/// open out again: the next frame holds the larger rows, the click lands on the
+/// new places and not the old ones, and the whole window is damaged.
+#[test]
+fn a_new_measure_lays_open_windows_out_again_and_hit_tests_follow() {
+    let mut g = guest();
+    let w = open(&mut g, "Notes");
+    put(&mut g, w, 1, button("Go")).unwrap();
+    commit(&mut g, w);
+    let frame = |g: &mut crate::CoreInstance| match g.take_ui().pop() {
+        Some(Update::Frame { frame, .. }) => frame,
+        other => panic!("{other:?}"),
+    };
+    let before = frame(&mut g)
+        .a11y
+        .iter()
+        .find(|n| n.id == 1)
+        .unwrap()
+        .bounds;
+    // Nothing is queued until the type changes.
+    g.set_measure(Box::new(Tall));
+    assert!(g.take_ui().is_empty(), "a measure alone shows nothing");
+    g.ui_relayout();
+    let after_frame = frame(&mut g);
+    let after = after_frame.a11y.iter().find(|n| n.id == 1).unwrap().bounds;
+    assert!(
+        after.h > before.h && after.w > before.w,
+        "{before:?} then {after:?}"
+    );
+    assert_eq!(after_frame.damage, [uikit::geom::Rect::new(0, 0, 200, 100)]);
+    // A click on the new bottom edge, outside the old box, presses the button.
+    let at = Point::new(after.x + after.w / 2, after.y + after.h - 2);
+    assert!(at.y >= before.y + before.h, "outside the old box");
+    for down in [true, false] {
+        g.ui_input(
+            w,
+            Input::Button {
+                at,
+                down,
+                mods: Default::default(),
+            },
+        )
+        .unwrap();
+    }
+    assert!(g.last_call_by_user());
+    assert_eq!(word(&mut g, EVENT + 24), 1, "pressed");
+}

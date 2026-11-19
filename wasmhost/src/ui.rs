@@ -339,7 +339,13 @@ impl CoreInstance {
         let host = &mut self.store.data_mut().ui;
         let windows: Vec<u32> = host.ui.ids().collect();
         for window in windows {
-            let _ = host.commit(window);
+            // Cannot fail for an id the windows list just gave, but a later
+            // error is a note comphost logs, never lost.
+            if let Err(why) = host.commit(window) {
+                host.notes.push(format!(
+                    "window {window} could not be laid out again: {why:?}"
+                ));
+            }
         }
     }
 

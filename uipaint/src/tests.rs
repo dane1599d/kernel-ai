@@ -390,3 +390,34 @@ legible = on",
     let body = uikit::style::TypeStyle::Body;
     assert!(Measured(&wrong).measure(body, "x").1 < Measured(&right).measure(body, "x").1);
 }
+
+/// What comphost keeps and measures with: the appearance text `desktop` sends,
+/// resolved once (`resolve_look`) and stored, is the theme `measure_theme`
+/// hands every new measure, so layout and paint agree for `theme = legible`
+/// with the legible switch off, which the default theme's measure does not.
+#[test]
+fn the_stored_theme_is_what_new_measures_are_built_from() {
+    let (appearance, painted) = crate::resolve_look(
+        "kai-appearance 1
+theme = legible
+legible = off
+",
+    )
+    .unwrap();
+    assert!(
+        !appearance.legible,
+        "the switch is off: the theme is legible"
+    );
+    let stored = Some(painted.clone());
+    let mut paint = text(false);
+    paint.set_theme(&painted);
+    let mut measure = text(true);
+    measure.set_theme(&crate::measure_theme(stored.as_ref()));
+    let mut default = text(true);
+    default.set_theme(&crate::measure_theme(None));
+    let body = uikit::style::TypeStyle::Body;
+    let drawn = paint.style(crate::look_style(body)).line;
+    assert_eq!(Measured(&measure).measure(body, "x").1, drawn);
+    assert!(Measured(&default).measure(body, "x").1 < drawn);
+    assert!(crate::resolve_look("not an appearance").is_err());
+}
