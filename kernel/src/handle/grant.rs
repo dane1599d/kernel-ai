@@ -190,6 +190,17 @@ pub fn spend_once(badge: u64, digest: &[u8; 32]) -> Result<(), kabi::Error> {
     }
 }
 
+/// ONCE_CHECK: [`spend_once`] for the process in `slot`, which must hold the
+/// `ONCE` itself (NotFound otherwise, as for no badge): a process that only
+/// learned a badge cannot use up, or test digests against, another's
+/// consent (audit K #6).
+pub fn spend_held_once(slot: usize, badge: u64, digest: &[u8; 32]) -> Result<(), kabi::Error> {
+    if !holds_once(slot, badge) {
+        return Err(kabi::Error::NotFound);
+    }
+    spend_once(badge, digest)
+}
+
 /// [`spend_once`] for a call made by process `pid`, which must hold the `ONCE`;
 /// pid 0, the kernel's own request, holds no table and is not checked.
 pub fn spend_once_for(pid: u64, badge: u64, digest: &[u8; 32]) -> Result<(), kabi::Error> {
