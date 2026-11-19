@@ -15,8 +15,9 @@
 //! - **It never covers a send or an install row.** A scope that names one, or a
 //!   group that holds one, is refused whole ([`GrantRefused::SendsOrInstalls`]): a
 //!   change that reaches past the machine (`open_world` and not read-only) or that
-//!   installs, removes or switches code or a model (`INSTALL_ROWS`). The person can
-//!   still do those with their own line.
+//!   installs, removes or switches code or a model (`INSTALL_ROWS`), or that changes
+//!   what apps may reach (`PERMISSION_ROWS`). The person can still do those with
+//!   their own line.
 //! - **It ends with the goal.** [`Roster::revoke_goal`] drops it, and a call that
 //!   waited (for a yes, in a queue) is refused when it is checked again.
 
@@ -30,6 +31,9 @@ use alloc::vec::Vec;
 use core::fmt;
 
 /// Rows that install, remove or switch code or a model: never in a goal's ceiling.
+/// `component_revert` swaps a live component to an earlier version; `tune` runs a
+/// kernel scheduler trial and `tune_undo` swaps back the policy a trial kept. A test
+/// walks every row of the registry, so a new row of this kind cannot slip past.
 pub const INSTALL_ROWS: &[&str] = &[
     "pkg_install",
     "pkg_remove",
@@ -37,7 +41,13 @@ pub const INSTALL_ROWS: &[&str] = &[
     "app_install",
     "model_fetch",
     "model_use",
+    "component_revert",
+    "tune",
+    "tune_undo",
 ];
+/// Rows that change what apps may reach (the person's site grants): never in a
+/// goal's ceiling, since a goal that could restore a grant could widen itself.
+pub const PERMISSION_ROWS: &[&str] = &["grant_revoke", "grant_restore"];
 /// The most goals that hold a ceiling at once (goalcore keeps at most this many).
 pub const MAX_GOAL_GRANTS: usize = 16;
 
@@ -52,6 +62,8 @@ pub enum GrantRefused {
     UnknownRow(String),
     /// A scope entry is, or covers, a row that sends or installs.
     SendsOrInstalls(String),
+    /// A scope entry is, or covers, a row that changes what apps may reach.
+    Permissions(String),
     /// A scope entry is a row that never runs.
     Never(String),
     /// The scope names no row.
@@ -69,6 +81,10 @@ impl fmt::Display for GrantRefused {
             Self::SendsOrInstalls(r) => write!(
                 f,
                 "{r}: a goal may not send or install; do that with your own line"
+            ),
+            Self::Permissions(r) => write!(
+                f,
+                "{r}: a goal may not change what apps may reach; do that with your own line"
             ),
             Self::Never(r) => write!(f, "{r}: that action never runs"),
             Self::Empty => f.write_str("a goal needs at least one action"),
@@ -121,6 +137,9 @@ impl Roster {
             for action in named {
                 if sends_or_installs(action) {
                     return Err(GrantRefused::SendsOrInstalls(action.name.to_string()));
+                }
+                if PERMISSION_ROWS.contains(&action.name) {
+                    return Err(GrantRefused::Permissions(action.name.to_string()));
                 }
                 if agentabi::derive(action) == Tier::Never {
                     return Err(GrantRefused::Never(action.name.to_string()));
@@ -183,8 +202,9 @@ impl Roster {
             .goal_grants
             .get(&goal)
             .is_some_and(|names| names.iter().any(|name| name == action.name));
-        // A send or install row is refused even if a ceiling somehow named it.
-        if !(is_goals && held) || sends_or_installs(action) {
+        // A send, install or permission row is refused even if a ceiling named it.
+        let never = sends_or_installs(action) || PERMISSION_ROWS.contains(&action.name);
+        if !(is_goals && held) || never {
             return Err(Denied::OutsideGrants);
         }
         Ok(Admission::for_goal(caller.clone(), action.name, goal))
