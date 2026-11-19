@@ -124,14 +124,24 @@ impl Shell {
             .iter()
             .filter_map(|ran| ran.defined.as_deref())
             .collect();
-        let entries = defined.len();
+        // Only the live definitions, each once: a redefined function's last
+        // body, so the file loads and includes as one entry (`saved.rs`).
+        let (protos, live) = super::saved::live(&defined, "<kai.h>");
+        let entries = live.len();
         if entries == 0 {
             return Reply::err("nothing is defined yet, so there is nothing to save");
         }
         let mut text = String::from(HEADER);
-        for entry in defined {
+        if !protos.is_empty() {
             text.push('\n');
-            text.push_str(entry.trim_end());
+            for proto in protos {
+                text.push_str(&proto);
+                text.push('\n');
+            }
+        }
+        for definition in live {
+            text.push('\n');
+            text.push_str(definition.trim_end());
             text.push('\n');
         }
         let exists = self.host.fs_read(FsRead::Whole(&path)).is_ok();
@@ -178,7 +188,7 @@ impl Shell {
             cc: false,
         });
         Reply::ok(format!(
-            "saved {entries} entries to /home/user/{path}; undo puts it back"
+            "saved {entries} definitions to /home/user/{path}; undo puts it back"
         ))
     }
 

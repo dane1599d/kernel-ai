@@ -348,6 +348,9 @@ impl Host for FakeHost {
     }
 
     fn fs_change(&self, change: FsChange) -> Result<u64, String> {
+        if let Some(why) = self.fs_fail.borrow_mut().take() {
+            return Err(why);
+        }
         let before = self.files.borrow().clone();
         let mut files = before.clone();
         match change {
