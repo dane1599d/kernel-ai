@@ -14,6 +14,10 @@ const SETTLE_NS: u64 = 100_000_000;
 /// CPU with interrupts off (ADR 0007 section 8). Never returns.
 pub fn safe_to_switch_off() -> ! {
     x86_64::instructions::interrupts::disable();
+    // Every other CPU stops too, so neither `fs` nor an app runs on while the
+    // screen says it is safe. Nothing is half written: POWER_OFF was refused
+    // as Busy while `fs` held a call, and `fs` commits before it answers.
+    crate::smp::halt_others();
     crate::console::resume();
     log!("power: it is now safe to switch off the computer");
     loop {

@@ -329,7 +329,13 @@ pub fn reset_after_calls() -> ! {
 pub fn power_off_after_calls() -> ! {
     interrupts::disable();
     core::mem::forget(CALL.lock());
-    if let Some(services) = SERVICES.get() {
+    // `poweroff=fallback` on a test boot takes the path a machine without
+    // runtime services takes, so a case can see it.
+    let fallback = crate::test_boot()
+        && crate::cmdline()
+            .split_whitespace()
+            .any(|word| word == "poweroff=fallback");
+    if let Some(services) = SERVICES.get().filter(|_| !fallback) {
         log!("efi: turning off through ResetSystem");
         crate::fpu::around_firmware(|| (services.reset)(RESET_SHUTDOWN, 0, 0, core::ptr::null()));
         log!("efi: ResetSystem returned from a shutdown");
