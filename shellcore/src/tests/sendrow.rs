@@ -204,7 +204,7 @@ fn the_whole_text_is_shown_above_the_card_under_codes_header() {
     let menu = Menu::decode(shown.menu).unwrap();
     assert!(
         menu.question()
-            .starts_with("Send the text above with net_send(\"hooks.example\""),
+            .starts_with("Send the text shown with net_send(\"hooks.example\""),
         "{}",
         menu.question()
     );
@@ -344,4 +344,41 @@ fn a_send_from_the_pane_where_its_text_cannot_show_is_asked_at_the_console() {
     assert!(!shell.desk_ask_waiting());
     assert!(host.previews.borrow().is_empty());
     assert!(host.sends.borrow().is_empty());
+}
+
+/// A host or path with a quote or a backslash is refused before any card:
+/// the card's call must keep the send row's shape, which the desk reads to
+/// tie the card to its text (#1142's review, CRITICAL).
+#[test]
+fn a_quote_or_backslash_in_the_host_or_path_is_refused() {
+    for (host, path) in [
+        ("hooks.example", "/a\"b"),
+        ("hooks.example", "/a\\b"),
+        ("hooks\"x.example", "/hook"),
+    ] {
+        let (host_, mut shell) = with_calls(vec![send_call(host, Some(path), "hello")]);
+        let reply = shell.eval(LINE);
+        // Refused before any card: by the row's own check, or a host that
+        // is not the one the line names.
+        assert!(!reply.ok, "{host} {path}: {reply:?}");
+        assert!(
+            reply.text.starts_with("Not sent: ") || reply.text.starts_with("Refused net_send: "),
+            "{reply:?}"
+        );
+        assert!(shell.pending.is_none());
+        assert!(host_.sends.borrow().is_empty());
+    }
+}
+
+/// The desk card's menu for a send always parses as the send row's call,
+/// so `desktop` treats it as a send's card (termcore::menu::names_send).
+#[test]
+fn a_sends_desk_card_names_the_send_row() {
+    let (host, mut shell) = with_calls(vec![send_call("hooks.example", Some("/hook"), "hello")]);
+    host.send_fits.set(true);
+    shell.eval_panel(LINE);
+    let card = shell.eval_console(termcore::menu::TAKE_CARD);
+    let menu = Menu::decode(&card.to_wire()).expect("the card's menu");
+    assert!(termcore::menu::names_send(menu.call()));
+    assert!(deskcore::sendview::send_call(menu.call()).is_some());
 }

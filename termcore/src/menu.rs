@@ -462,6 +462,16 @@ pub fn menu_id(wire: &str) -> Option<u64> {
         .and_then(|id| id.parse().ok())
 }
 
+/// Whether `call` names the send row (`net_send(...)`): a send's menu is
+/// answered only with its text in view, so one that comes without it (a
+/// desk card, whose text is in the Kai pane) is answered on the card or not
+/// at all, never asked bare on the console (ADR 0005 §7, "Amended
+/// 2026-11-19").
+pub fn names_send(call: &str) -> bool {
+    call.strip_prefix("net_send")
+        .is_some_and(|rest| rest.starts_with('('))
+}
+
 /// Where a menu is answered (ADR 0005 §7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Surface {
@@ -567,6 +577,15 @@ mod tests {
             Menu::decode(&format!("{wire}\nmore")),
             Err(Refused::Malformed)
         );
+    }
+
+    #[test]
+    fn a_send_is_told_by_its_call() {
+        assert!(names_send("net_send(\"a\", \"/b\", \"0123456789abcdef\")"));
+        assert!(names_send("net_send()"));
+        for call in ["cpus()", "net_sender(\"a\")", "fs_create(\"net_send(\")"] {
+            assert!(!names_send(call), "{call}");
+        }
     }
 
     fn stop(origin: Origin) -> Menu {
