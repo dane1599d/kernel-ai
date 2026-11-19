@@ -27,9 +27,12 @@ use alloc::vec::Vec;
 const CASE: &str = "desk-sends";
 /// The line typed in the Kai pane: it asks for a send and names its host.
 pub(crate) const LINE: &str = "send my long note to hooks.example";
-/// The text's lines: more than the pane shows at 1920x1080, so it scrolls.
-/// `xtask/src/mock_llm/sends.rs` makes the same text, which its test checks.
-const TEXT_LINES: usize = 100;
+/// The text's numbered sentences, on one line: a send's text holds no
+/// control character (`termcore::once::quote`, so no line break) and at most
+/// `agentabi::SEND_MAX` characters. Soft-wrapped, it is more rows than the
+/// pane shows at 1920x1080, so it scrolls. `xtask/src/mock_llm/sends.rs`
+/// makes the same text, which its test checks.
+const TEXT_PIECES: usize = 150;
 const HOST: &str = "hooks.example";
 /// `agentabi::HOLD_MS`: an allowed send waits this long for `undo`.
 const HOLD_MS: u64 = 5_000;
@@ -55,12 +58,12 @@ const HELD: &str = "Sending to hooks.example in 5 s. undo ";
 /// What a send `undo` cancelled comes to (`shellcore::outbox::ended_line`).
 const UNDONE: &str = "Not sent to hooks.example: undone.";
 
-/// The text the mock model sends: numbered lines.
+/// The text the mock model sends: numbered sentences on one line.
 pub(crate) fn text() -> String {
-    let lines: Vec<String> = (1..=TEXT_LINES)
-        .map(|n| format!("{n:03} the text goes on"))
+    let pieces: Vec<String> = (1..=TEXT_PIECES)
+        .map(|n| format!("{n:03} the text goes on."))
         .collect();
-    lines.join("\n")
+    pieces.join(" ")
 }
 
 /// The call the card shows: the host, the path and the text's digest.
