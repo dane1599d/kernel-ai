@@ -99,14 +99,20 @@ fn write(before: &Nv, after: &Nv) -> Result<(), efi::Error> {
     write_one_shot(after.one_shot)
 }
 
-/// R's arm: the one-shot, then the record. A power cut between them boots
-/// the slot with its try not yet taken, never takes a try with no boot
-/// behind it (and the next R would take another).
+/// R re-arming the slot it found armed ([`bootslot::one_shot_first`]): the
+/// one-shot, then the record. A power cut between them boots the slot with
+/// its try not yet taken, never takes a try with no boot behind it. The
+/// record is written even when the one-shot fails, so each pass through R
+/// still counts and a store that refuses every one-shot ends in R staying
+/// up, not in a reset loop.
 fn write_arm(before: &Nv, after: &Nv) -> Result<(), efi::Error> {
-    if after.one_shot != before.one_shot {
-        write_one_shot(after.one_shot)?;
-    }
-    write_record(before, after)
+    let one_shot = if after.one_shot != before.one_shot {
+        write_one_shot(after.one_shot)
+    } else {
+        Ok(())
+    };
+    write_record(before, after)?;
+    one_shot
 }
 
 /// Writes `after`'s record if it changed from `before`'s.
@@ -421,7 +427,12 @@ fn in_r(had_record: bool, before: Nv, mut nv: Nv) {
                 entry_id(slot),
                 describe(&nv.record, slot)
             );
-            finish(&nv, write_arm(&before, &nv))
+            let written = if bootslot::one_shot_first(before.record.armed, slot) {
+                write_arm(&before, &nv)
+            } else {
+                write(&before, &nv)
+            };
+            finish(&nv, written)
         }
         InR::Stay => {
             log!("slots: nothing bootable; R stays up");
@@ -543,7 +554,11 @@ pub fn on_fault() {
     };
     let mut after = before;
     bootslot::fault(&mut after, slot, FAULT_PANIC, 0);
-    match write(&before, &after) {
+    // The one-shot is deleted whatever BOOTED remembers of it (a fault just
+    // after set() wrote one may come before BOOTED was told), so R boots next.
+    let record = write_record(&before, &after);
+    let one_shot = write_one_shot(None);
+    match record.and(one_shot) {
         Ok(()) => log!("slots: fault recorded in {}; R boots next", entry_id(slot)),
         Err(error) => log!("slots: cannot record the fault: {error:?}"),
     }
