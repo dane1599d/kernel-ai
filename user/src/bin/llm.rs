@@ -522,8 +522,10 @@ fn run_job(
     request: &mut [u8],
 ) {
     let mut caller = 0;
+    // 1 ms: a timeout of 0 is the kernel's longest wait (60 s), which held
+    // the round at each check until a request came, so it never finished.
     let answer = local.script_until(asked, || {
-        let Ok(len) = sys::svc_recv(request, 0, &mut caller) else {
+        let Ok(len) = sys::svc_recv(request, 1, &mut caller) else {
             return false;
         };
         let text = core::str::from_utf8(&request[..len.min(request.len())]).unwrap_or("");
