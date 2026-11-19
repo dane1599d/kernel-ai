@@ -24,6 +24,18 @@ use super::{CC, FS};
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// The supervisor's own page quota, which counts against the admission budget
+/// like a service's.
+pub const SUPERVISOR_PAGES: u64 = 2048;
+
+/// Pages the system plan's services other than `llm` commit at boot, the
+/// supervisor's included, with room to spare: with `kai-data`, the supervisor,
+/// `fs`, `pkg`, `desktop`, `updated` and the shell. The kernel keeps twice this
+/// free after copying a model (`kernel/src/model.rs`), as processes may hold
+/// half of what is free; supervise's tests check the plan fits under it. A boot
+/// with a build service adds `notes` and `edit` beyond it, as a developer's.
+pub const OTHER_SERVICES_PAGES: u64 = 32 * 1024;
+
 /// `desktop` with the ask card, and its route to `pkg` for the Apps sheet.
 pub const DESKTOP_PKG: &str =
     "desktop caps=display+input+serve+ask+call uses=pkg pages=8192 stack_pages=512 burst_ms=10000";
