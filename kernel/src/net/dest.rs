@@ -133,8 +133,13 @@ pub fn create(dest: Dest, live: impl Fn(u64) -> bool) -> Option<u64> {
                     let Some(record) = slot else {
                         continue;
                     };
-                    let named = live(id(i, record.generation))
-                        || TRANSIT[i].load(Ordering::SeqCst) != 0
+                    // The transit count first, then the tables, then whether
+                    // any handle moved meanwhile: one of the three sees a
+                    // handle that moved while it looked.
+                    let before = crate::handle::moves();
+                    let named = TRANSIT[i].load(Ordering::SeqCst) != 0
+                        || live(id(i, record.generation))
+                        || crate::handle::moves() != before
                         || now.saturating_sub(record.born) < FRESH_NS;
                     if !named {
                         *slot = None;
