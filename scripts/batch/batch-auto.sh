@@ -114,6 +114,10 @@ batch() {  # PR numbers, or --resume; a failed batch is bisected
   fi
   if grep -qE "NOT green|fluency below" "$out"; then
     set -- $(grep -oE "^  \+ #[0-9]+" "$out" | grep -oE "[0-9]+")
+    # The boot cases that failed, as batch-ff.sh read them from the jobs' logs.
+    local cases
+    cases=$(grep "^    failed case: " "$out" | sed 's/^    failed case: xtask: //' | tr '\n' ';' | sed 's/;$//; s/;/; /g')
+    [ -n "$cases" ] && say "batch of $* failed: $cases"
     # The batch's one model PR failed the fluency gate (and nothing else
     # failed): it, and any PR stacked with it, leave the batch; the rest go
     # again without a split. The stack keeps its labels and waits on its parent.
@@ -131,7 +135,7 @@ batch() {  # PR numbers, or --resume; a failed batch is bisected
       return
     fi
     if [ $# -eq 1 ]; then
-      fails=$(grep -E "=failure|fluency run" "$out" | sed 's/^ *//' | tr '\n' ' ')
+      fails=$(grep -E "=failure|fluency run|failed case: " "$out" | sed 's/^ *//; s/^failed case: xtask: //' | tr '\n' ' ')
       unlabel $1 "Batcher: this PR failed in a merge batch on its own: $fails. Fix it, push once, and add \`batch-ready\` again."
       say "#$1 failed alone: $fails"
     elif [ $# -gt 1 ]; then

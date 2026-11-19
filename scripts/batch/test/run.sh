@@ -147,5 +147,17 @@ check "the model PR is not merged"            '! grep -q "#2 merged" "$L" && ! g
 # off it and were never batched (96 open PRs at --limit 80, 2026-11-19).
 check "every open-PR listing asks for 1000"   'grep "pr list .*--state open" "$T/gh.log" | grep -v -- "--head" | grep -q . && ! grep "pr list .*--state open" "$T/gh.log" | grep -v -- "--head" | grep -qv -- "--limit 1000"'
 
+echo "== batch-auto.sh: a failed batch names its failing cases in the log"
+setup
+for n in 2 3 4 5 7; do : > "$T/prs/$n/labels"; done
+printf '%s\t%s\t%s\n' "Boot test (kvm, shard 1/3)" "UNKNOWN STEP" "2026-11-18T21:07:27Z xtask: test case c-build: FAIL: QEMU exited with exit status: 35" \
+  "Boot test (kvm, shard 1/3)" "UNKNOWN STEP" "2026-11-18T21:18:32Z xtask: failed test cases: c-build" > "$T/failed.log"
+CI_RESULT=failure bash "$B/batch-auto.sh" > /dev/null & A=$!
+for i in $(seq 1 120); do grep -q "failed alone" "$T/state/batch-auto.log" 2>/dev/null && break; /bin/sleep 1 2>/dev/null || /usr/bin/sleep 1; done
+touch "$T/state/batch-auto.stop"; wait $A; rm -f "$T/failed.log"
+L="$T/state/batch-auto.log"
+check "the log names the failing case"        'grep -q "batch of 1 failed: .*test case c-build: FAIL" "$L"'
+check "the PR failed alone, its case named"   'grep -q "#1 failed alone: .*test case c-build: FAIL" "$L" && [ ! -s "$T/prs/1/labels" ]'
+
 echo "branches left: $(branches)"
 [ $fails = 0 ] && echo "all batcher tests pass" || { echo "$fails batcher test(s) failed"; exit 1; }

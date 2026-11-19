@@ -56,6 +56,7 @@ case "$1 $2" in
     esac;;
   "run view")
     case "$a" in
+      *--log-failed*) cat "$T/failed.log" 2>/dev/null;;
       *--log*) cat "$T/fluency.log";;
       *) for j in "Format, lint" "Boot test (kvm, shard 1)" "Boot test (kvm, shard 2)" "Boot test (kvm, shard 3)" "Boot test (tcg, shard 1)" "Boot test (tcg, shard 2)" "Boot test (tcg, shard 3)" "Observe determinism 1" "Observe determinism 2" "Observe determinism 3"; do echo "$j=${CI_RESULT:-success}"; done;;
     esac;;
