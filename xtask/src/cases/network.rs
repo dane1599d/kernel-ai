@@ -71,6 +71,7 @@ pub(super) const CASES: &[TestCase] = &[
             "net-dest: hosts:any stays where it was made: no narrowing makes another and it never moves, while its one-host narrowing does",
             // Audit K #1: record ids carry a generation; handles in transit count.
             "; their ids name nothing after, and one whose handle was moving stayed",
+            "net-dest: an address resolved with TTL 0 can be connected to at once, on the record's port",
         ],
         ..case("net-dest", "test=net-dest")
     },
