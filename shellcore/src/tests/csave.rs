@@ -314,3 +314,24 @@ fn a_failed_save_logs_nothing_and_keeps_the_file() {
         );
     }
 }
+
+/// An entry that included a file is kept as typed: a later save writes its
+/// `#include` line, not the file's text, and a load reads the file again
+/// (#1192's re-check).
+#[test]
+fn an_included_entry_is_saved_as_typed() {
+    let host = FakeHost::new();
+    host.files
+        .borrow_mut()
+        .insert("c/lib.c".into(), "I64 Seven() { return 7; }\n".into());
+    let mut shell = c_shell(&host);
+    assert_eq!(shell.eval("#include \"lib.c\"\nI64 g = Seven();").text, "");
+    let saved = shell.eval(":save both");
+    assert!(saved.ok, "{saved:?}");
+    let text = file(&host, "c/both.c").unwrap();
+    assert!(text.contains("#include \"lib.c\""), "{text}");
+    assert!(!text.contains("return 7"), "{text}");
+    assert_eq!(shell.eval(":reset").text, "the C session is empty again");
+    assert!(shell.eval(":load both").ok);
+    assert_eq!(shell.eval("g").text, "= 7", "its initializer ran on load");
+}

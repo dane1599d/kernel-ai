@@ -220,7 +220,7 @@ impl Shell {
             reply = self.host.cc(request.as_bytes());
         }
         match reply {
-            Ok(reply) => self.c_drive(seq, text, reply, restored),
+            Ok(reply) => self.c_drive(seq, typed, reply, restored),
             Err(why) => {
                 self.c.open = false;
                 self.c_failed(&restored, &format!("cc did not answer: {why}"))
