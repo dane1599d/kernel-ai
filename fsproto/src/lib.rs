@@ -143,11 +143,8 @@ pub enum Request {
     /// The object's earlier versions, newest first. Needs READ.
     #[n(12)]
     History,
-    /// The objects beneath this handle's folder (the whole volume on a
-    /// volume's root) changed since generation `since`, in order of
-    /// `(changed, object)`: the first [`MAX_ROWS`], and
-    /// [`Request::ChangesAfter`] for the pages after. A trashed object lies
-    /// beneath the trash, not where it was. Needs ENUMERATE.
+    /// The first page of [`Request::ChangesSince`], as [`Reply::Changes`]: for
+    /// a caller that wants a glance, not to keep up. Needs ENUMERATE.
     #[n(13)]
     Changes {
         #[n(0)]
@@ -279,15 +276,20 @@ pub enum Request {
         #[n(1)]
         len: u32,
     },
-    /// [`Request::Changes`]'s next page: the rows after `after`, the
-    /// `(changed, object)` of the last row the page before gave. Number 32:
+    /// What a reader that keeps up (a search index) asks: the objects beneath
+    /// this handle's folder (the whole volume on a volume's root) whose last
+    /// committed change is after generation `since`, in `(changed, object)`
+    /// order, after `after` (the last row of the page before) when given:
+    /// [`Reply::ChangesPage`]. A change in an open action shows once it
+    /// commits, under a generation past the page's `upto`. A trashed object
+    /// lies beneath the trash, not where it was. Needs ENUMERATE. Number 32:
     /// 30 and 31 are other open PRs' (#1117, #1121).
     #[n(32)]
-    ChangesAfter {
+    ChangesSince {
         #[n(0)]
         since: u64,
         #[n(1)]
-        after: (u64, u64),
+        after: Option<(u64, u64)>,
     },
 }
 
@@ -471,8 +473,7 @@ pub enum Reply {
     #[n(7)]
     History(#[n(0)] Vec<Version>),
     /// Changed objects in `(changed, object)` order, and whether there were
-    /// more than fit: the next page is [`Request::ChangesAfter`] with the last
-    /// row's pair.
+    /// more than fit.
     #[n(8)]
     Changes {
         #[n(0)]
@@ -531,6 +532,24 @@ pub enum Reply {
     Copied {
         #[n(0)]
         len: u64,
+    },
+    /// A page of [`Request::ChangesSince`]: its rows, whether more follow
+    /// (the next page asks with the last row's `(changed, object)`), the
+    /// committed generation the listing is complete up to (once `more` is
+    /// false, the `since` of the next round), and how many mounts of the disk
+    /// have fallen back past newer commits. When that count differs from the
+    /// last one a reader saw, commits it read may have been undone, and it
+    /// reads everything again from 0. Number 17: 16 is [`Reply::Copied`].
+    #[n(17)]
+    ChangesPage {
+        #[n(0)]
+        rows: Vec<Stat>,
+        #[n(1)]
+        more: bool,
+        #[n(2)]
+        upto: u64,
+        #[n(3)]
+        fallbacks: u64,
     },
 }
 

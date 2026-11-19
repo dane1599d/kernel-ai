@@ -757,11 +757,19 @@ impl<D: BlockDev> Server<D> {
             }
             Request::Changes { since } => {
                 need(Rights::ENUMERATE)?;
-                self.changed_since(object, since, None)?
+                let (rows, more) = self.changed_since(object, since, None)?;
+                Reply::Changes { rows, more }
             }
-            Request::ChangesAfter { since, after } => {
+            Request::ChangesSince { since, after } => {
                 need(Rights::ENUMERATE)?;
-                self.changed_since(object, since, Some(after))?
+                let (rows, more) = self.changed_since(object, since, after)?;
+                let fs = self.fs();
+                Reply::ChangesPage {
+                    rows,
+                    more,
+                    upto: fs.committed,
+                    fallbacks: fs.fallbacks(),
+                }
             }
             Request::Sync => {
                 let generation = self.commit()?;
@@ -1070,7 +1078,7 @@ fn changes(request: &Request) -> bool {
         | Request::Read { .. }
         | Request::History
         | Request::Changes { .. }
-        | Request::ChangesAfter { .. }
+        | Request::ChangesSince { .. }
         | Request::Df
         | Request::Generation
         | Request::TrashList { .. }
