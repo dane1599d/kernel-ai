@@ -54,7 +54,9 @@ env:
   # A TCG run must fail the floor: run 44386325611 booted `part` under TCG at
   # 2/3 MB/s and failed it, as a hand run with `accel: tcg` does.
   # P5-S2's pass (docs/plans/p5-networking.md section 5): at least 30 MB/s at
-  # a 20 ms round trip, with the 1 MiB bulk buffer at shipped settings.
+  # a 20 ms round trip, with the 1 MiB bulk buffer at shipped settings, on the
+  # median of three boots. #1217's run on main's driver: 23.8 MB/s at +0 ms,
+  # 32.3 at +20 and 8.2 at +80 (+0 under +20 is a follow-up to look at).
   NET_FLOOR_MBS: "30"
   ACCEL: ${{ inputs.accel || 'kvm' }}
 
@@ -163,19 +165,23 @@ jobs:
           sleep 1
       # The added round trip is the host's: netem on the TAP device delays
       # what goes to the guest, so the driver runs as it ships.
-      - name: Boot net-throughput at 0, 20 and 80 ms
+      # +20 ms, the floored one, boots three times and its median is floored:
+      # #1217's first run measured 32.3 MB/s, too near 30 for one boot on a
+      # noisy runner to decide.
+      - name: Boot net-throughput at 0, 20 (three times) and 80 ms
         env:
           XTASK_CASE: net-throughput
           XTASK_NETDEV: tap,id=net0,ifname=kaitap0,script=no,downscript=no
         shell: bash
         run: |
-          for rtt in 0 20 80; do
+          for run in 0 20-1 20-2 20-3 80; do
+            rtt="${run%%-*}"
             sudo tc qdisc del dev kaitap0 root 2>/dev/null || true
             if [ "$rtt" != 0 ]; then
               sudo tc qdisc add dev kaitap0 root netem delay "${rtt}ms" limit 100000
             fi
-            echo "== round trip +${rtt} ms"
-            cargo xtask test --release --accel "$ACCEL" --timeout 600 2>&1 | tee "$RUNNER_TEMP/net-$rtt.log"
+            echo "== round trip +${rtt} ms ($run)"
+            cargo xtask test --release --accel "$ACCEL" --timeout 600 2>&1 | tee "$RUNNER_TEMP/net-$run.log"
           done
           sudo tc qdisc del dev kaitap0 root 2>/dev/null || true
       - name: The figures at 0 and 80 ms
@@ -184,8 +190,10 @@ jobs:
           for rtt in 0 80; do
             echo "+${rtt} ms: $(grep -h 'net-throughput: .* MB/s' "$RUNNER_TEMP/net-$rtt.log" | tail -1)" | tee -a "$GITHUB_STEP_SUMMARY"
           done
-      - name: The floor at 20 ms
+      - name: The floor at 20 ms, on the median of three boots
         if: always()
         run: >
-          python3 -I scripts/throughput_floor.py "$RUNNER_TEMP/net-20.log" "net-throughput +20 ms" "$NET_FLOOR_MBS"
+          python3 -I scripts/throughput_floor.py
+          "$RUNNER_TEMP/net-20-1.log,$RUNNER_TEMP/net-20-2.log,$RUNNER_TEMP/net-20-3.log"
+          "net-throughput +20 ms" "$NET_FLOOR_MBS"
           'net-throughput: [0-9]+ bytes in [0-9]+ ms = (?P<down>[0-9.]+) MB/s'
