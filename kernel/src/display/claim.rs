@@ -195,7 +195,9 @@ pub fn claim(slot: usize, info: &mut DisplayInfo) -> Result<u64, Error> {
             object,
         )
     };
-    let handle = match grants::insert(slot, entry) {
+    let inserted = grants::insert(slot, entry);
+    shm::settle(object);
+    let handle = match inserted {
         Ok(handle) => handle,
         Err(error) => {
             let _ = grants::revoke(grant);
