@@ -11,8 +11,8 @@
 //! has work never starves the panel's check-ins.
 
 use crate::{
-    CheckIn, Door, Goal, Goals, Pause, Presence, Refusal, Resource, State, Step, StepDone,
-    StepStatus, Verdict,
+    CheckIn, Door, Goal, Goals, Pause, Presence, Refusal, State, Step, StepDone, StepStatus,
+    Verdict,
 };
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -303,13 +303,13 @@ impl<C: Clone + PartialEq> Runner<C> {
             // The budget holds for planning too: a goal past its tokens, its wall
             // time or its deadline is not planned again (its last step may still be
             // followed by the planner's "done", so the steps budget is the step's).
-            if let Some(pause) = planning_over(goal, now) {
+            if let Some(pause) = goal.planning_over(now) {
                 hold(goal, pause, events);
                 continue;
             }
             let (plan, tokens) = parts.planner.next(goal, now);
             goal.charge(tokens);
-            if let Some(pause) = planning_over(goal, now) {
+            if let Some(pause) = goal.planning_over(now) {
                 hold(goal, pause, events);
                 continue;
             }
@@ -418,13 +418,6 @@ fn last_denied(goal: &Goal) -> bool {
     goal.log
         .last()
         .is_some_and(|step| step.status == StepStatus::Denied)
-}
-
-/// The pause a goal is due for before it is planned: past its tokens, its wall time
-/// or its deadline. Not its steps: the planner may still say the goal is met.
-fn planning_over(goal: &Goal, now: u64) -> Option<Pause> {
-    goal.over(now, 0)
-        .filter(|pause| *pause != Pause::Budget(Resource::Steps))
 }
 
 /// Pauses `goal` for `pause`, said.
