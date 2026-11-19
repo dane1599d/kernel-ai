@@ -51,7 +51,31 @@ pub fn main(args: &[String]) -> Result<(), String> {
     print!("{}", views(&tok));
     check_budget(&tok)?;
     check_app_card(&tok)?;
+    check_apps_turn(&tok)?;
     check_views(&tok)
+}
+
+/// The shipped apps' turn (P4 task 15) as llm builds it, counted with the
+/// model's tokenizer (`pack::apps::turn_counted`): it must leave out no app the
+/// host's estimate keeps, or the act prompt would change in the guest only.
+fn check_apps_turn(tok: &Tokenizer) -> Result<(), String> {
+    use llmproto::pack::apps::{self, APPS_BUDGET};
+    let groups = crate::actbench::apps::shipped()?;
+    let (turn, real_out) = apps::turn_counted(&groups, |text| count(tok, text));
+    let (_, estimated_out) = apps::turn(&groups);
+    println!(
+        "\n- The shipped apps turn: {} real tokens of {APPS_BUDGET}; left out: {}",
+        count(tok, &turn),
+        estimated_out.join(" ")
+    );
+    match real_out == estimated_out {
+        true => Ok(()),
+        false => Err(format!(
+            "the shipped apps turn leaves out {real_out:?} by real tokens and \
+             {estimated_out:?} by estimate: llm counts real tokens, so the guest's \
+             act prompt would differ"
+        )),
+    }
 }
 
 /// S05-2's views: each P4 app's mock window, with the other apps' windows in
