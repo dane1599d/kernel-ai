@@ -114,6 +114,22 @@ batch() {  # PR numbers, or --resume; a failed batch is bisected
   fi
   if grep -qE "NOT green|fluency below" "$out"; then
     set -- $(grep -oE "^  \+ #[0-9]+" "$out" | grep -oE "[0-9]+")
+    # The batch's one model PR failed the fluency gate (and nothing else
+    # failed): it, and any PR stacked with it, leave the batch; the rest go
+    # again without a split. The stack keeps its labels and waits on its parent.
+    local -a model_prs
+    model_prs=($(grep -oE "changes what the model sees \(( #[0-9]+)+\)" "$out" | grep -oE "[0-9]+"))
+    if ! grep -q "NOT green" "$out" && [ ${#model_prs[@]} -eq 1 ] && [ $# -gt 1 ]; then
+      local m=${model_prs[0]} g rest=()
+      fails=$(grep -E "fluency run" "$out" | sed 's/^ *//' | tr '\n' ' ')
+      unlabel $m "Batcher: this PR was its merge batch's only change to what the model sees, and the fluency gate failed: $fails. Fix it, push once, and add \`batch-ready\` again."
+      say "#$m failed the fluency gate: $fails"
+      while read -r g; do
+        case " $g " in *" $m "*) ;; *) rest+=($g);; esac
+      done < <(groups "$@")
+      [ ${#rest[@]} -gt 0 ] && batch "${rest[@]}"
+      return
+    fi
     if [ $# -eq 1 ]; then
       fails=$(grep -E "=failure|fluency run" "$out" | sed 's/^ *//' | tr '\n' ' ')
       unlabel $1 "Batcher: this PR failed in a merge batch on its own: $fails. Fix it, push once, and add \`batch-ready\` again."
@@ -148,25 +164,39 @@ batch() {  # PR numbers, or --resume; a failed batch is bisected
   say "batch stopped: $(grep -E 'STOPPING|nothing to merge' "$out" | head -1 | sed 's/^ *//')"
 }
 
-say "batcher started"
-while [ ! -f "$S/batch-auto.stop" ]; do
-  if ps -ef | grep -v grep | grep -q "batch-ff.sh"; then sleep 120; continue; fi
-  if [ -f "$S/current-batch" ]; then
-    say "resuming the unfinished batch: $(. "$S/current-batch"; echo "$prs")"
-    batch --resume
-    # batch-ff.sh clears the state on every way out; a state left behind means
-    # it died, so park it rather than resume it forever.
+# A batch-ff.sh run is live while its pid file names a live process; a PC
+# stop leaves the file, and its pid is gone.
+ff_running() {
+  local pid
+  pid=$(cat "$S/batch-ff.pid" 2>/dev/null) && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+# Everything runs from here, once bash has read the whole file: a pull that
+# rewrites this script cannot change the running batcher.
+main() {
+  echo "batch-auto: state in $S (log, stop file, batch-max), repo $R, checkout $G"
+  say "batcher started (state $S)"
+  while [ ! -f "$S/batch-auto.stop" ]; do
+    if ff_running; then sleep 120; continue; fi
     if [ -f "$S/current-batch" ]; then
-      mv -f "$S/current-batch" "$S/current-batch.failed-$(date +%m%d-%H%M%S)"
-      say "the resume did not finish; state parked beside the log, labels kept"
+      say "resuming the unfinished batch: $(. "$S/current-batch"; echo "$prs")"
+      batch --resume
+      # batch-ff.sh clears the state on every way out; a state left behind means
+      # it died, so park it rather than resume it forever.
+      if [ -f "$S/current-batch" ]; then
+        mv -f "$S/current-batch" "$S/current-batch.failed-$(date +%m%d-%H%M%S)"
+        say "the resume did not finish; state parked beside the log, labels kept"
+      fi
+      sleep 30
+      continue
     fi
+    list=$(eligible)
+    if [ -z "$list" ]; then sleep 300; continue; fi
+    say "batch: $(echo $list)"
+    batch $list
     sleep 30
-    continue
-  fi
-  list=$(eligible)
-  if [ -z "$list" ]; then sleep 300; continue; fi
-  say "batch: $(echo $list)"
-  batch $list
-  sleep 30
-done
-say "batcher stopped"
+  done
+  say "batcher stopped"
+}
+
+main "$@"; exit

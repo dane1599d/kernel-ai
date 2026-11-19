@@ -2,12 +2,23 @@
 //! it the foreground's oldest, or aging, then deficit round robin over tokens.
 
 use crate::sched::{Pick, Scheduler};
-use crate::{AGING_MS, AgentId, BLOCK_TOKENS, Batch, Class, MAX_BATCH, Place, RequestId};
+use crate::{AGING_MS, AgentId, BLOCK_TOKENS, Batch, Class, MAX_BATCH, Place, RequestId, Shape};
 use alloc::vec::Vec;
 
 impl Scheduler {
     /// The request that gets the next quantum, and how it was chosen, if any waits.
-    pub(crate) fn lead(&mut self, now_ms: u64) -> Option<(RequestId, Pick)> {
+    pub(crate) fn lead(
+        &mut self,
+        now_ms: u64,
+        open: Option<RequestId>,
+    ) -> Option<(RequestId, Pick)> {
+        // An open grammar answer keeps the model unless a higher class waits.
+        if let Some(open) = open
+            && let Some(class) = self.reqs.get(&open).map(|r| r.class)
+            && !self.reqs.values().any(|r| r.class < class)
+        {
+            return Some((open, Pick::Continue));
+        }
         for class in Class::ALL {
             if !self.reqs.values().any(|r| r.class == class) {
                 continue;
@@ -127,6 +138,7 @@ impl Scheduler {
                     r.agent == *agent
                         && r.class == lead.class
                         && r.place == Place::Slot
+                        && r.shape == Shape::Free
                         && r.decoding()
                 })
                 .min_by_key(|(id, r)| (r.arrived_ms, **id));

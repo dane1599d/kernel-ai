@@ -585,6 +585,37 @@ fn the_net_line_is_none_or_a_destination_an_agent_may_hold() {
 }
 
 #[test]
+fn a_net_line_naming_a_shared_suffix_is_refused_by_name() {
+    for host in [
+        "github.io",
+        "co.uk",
+        "amazonaws.com",
+        "s3.amazonaws.com",
+        "web.app",
+    ] {
+        for value in [
+            format!("proto:tcp,ports:443,hosts:{host}"),
+            format!("proto:tcp,ports:443,hosts:api.weather.example+{host}"),
+            format!("proto:tcp,ports:443,match:exact,hosts:{host}"),
+            format!(
+                "proto:tcp,ports:443,hosts:{} bytes/day=10m",
+                host.to_ascii_uppercase()
+            ),
+        ] {
+            let refusal = refused(&with("net", &value));
+            assert_eq!(refusal, Refusal::SharedHost(host.to_string()), "{value}");
+            assert!(refusal.to_string().contains("shared suffix"), "{refusal}");
+        }
+    }
+    // A host under a shared suffix names one party's site, and is read.
+    for host in ["kai.github.io", "weather.co.uk", "bucket.s3.amazonaws.com"] {
+        let value = format!("proto:tcp,ports:443,hosts:{host}");
+        let parsed = Manifest::parse(&with("net", &value)).unwrap();
+        assert_eq!(parsed.net.unwrap().hosts, [host], "{value}");
+    }
+}
+
+#[test]
 fn a_manifest_with_net_always_asks_at_install() {
     let net = with("net", "proto:tcp,ports:443,hosts:api.weather.example");
     let interactive = net.replace("class background", "class interactive");

@@ -4,6 +4,11 @@
 //! - `handles mode=rtt` calls it on a route, ring 3 to ring 3, and prints its
 //!   own figures (`user/src/bin/handles/rtt.rs`).
 //!
+//! For the kernel's calls, each leg is timed too ([`ipc::legs`]): queued to
+//! taken (the server's wake), taken to answered (the server's work and its
+//! system calls), and answered to back (the caller's wake), with how many
+//! calls had the server on the caller's CPU.
+//!
 //! Each size's p50 and p99 is logged. They are recorded, not judged: the case
 //! fails only if a call fails or an echo comes back another size, and the
 //! figures are read from the log, as spike S01-1's M1 is.
@@ -80,14 +85,28 @@ fn from_kernel() -> Result<(), &'static str> {
             call()?;
         }
         let mut times: Vec<u64> = Vec::with_capacity(ROUNDS);
+        let mut legs: [Vec<u64>; 3] = core::array::from_fn(|_| Vec::with_capacity(ROUNDS));
+        let mut same_cpu = 0;
         for _ in 0..ROUNDS {
             let start = hpet::nanos();
             call()?;
-            times.push(hpet::nanos().saturating_sub(start));
+            let back = hpet::nanos();
+            times.push(back.saturating_sub(start));
+            let ([queued, taken, replied], cpus) = ipc::legs::last();
+            legs[0].push(taken.saturating_sub(queued));
+            legs[1].push(replied.saturating_sub(taken));
+            legs[2].push(back.saturating_sub(replied));
+            if cpus[0] == cpus[1] {
+                same_cpu += 1;
+            }
         }
         let p99 = percentile(&mut times, 99);
         let p50 = percentile(&mut times, 50);
         log!("ipc-rtt: kernel to ring 3, {size} B: p50 {p50} ns, p99 {p99} ns over {ROUNDS} calls");
+        let [wake, work, back] = legs.map(|mut leg| percentile(&mut leg, 50));
+        log!(
+            "ipc-rtt: kernel to ring 3, {size} B, p50 legs: server's wake {wake} ns, its work {work} ns, caller's wake {back} ns; server on the caller's CPU in {same_cpu} of {ROUNDS}"
+        );
     }
     Ok(())
 }
@@ -116,7 +135,10 @@ fn from_ring3() -> Result<(), &'static str> {
 
 pub fn check() -> Result<(), &'static str> {
     start_echo()?;
-    from_kernel()?;
+    ipc::legs::on(true);
+    let timed = from_kernel();
+    ipc::legs::on(false);
+    timed?;
     from_ring3()?;
     log!("ipc-rtt: the echo server answered each size from the kernel and from ring 3");
     Ok(())
