@@ -136,17 +136,49 @@ fn a_soft_wrap_is_marked_and_no_space_hides_at_it() {
 /// back.
 #[test]
 fn it_is_read_through_once_every_line_has_shown() {
+    let ten = laid("a", 10);
     let mut preview = SendPreview::new(1, &call_for(TEXT), TEXT).unwrap();
-    assert!(!preview.on_screen(4, 10));
+    assert!(!preview.on_screen(4, &ten));
     preview.scroll(9, 10, 4);
-    assert!(!preview.on_screen(4, 10), "lines 5 and 6 were never shown");
+    assert!(
+        !preview.on_screen(4, &ten),
+        "lines 5 and 6 were never shown"
+    );
     preview.scroll(-3, 10, 4);
     assert!(preview.header(4, 10)[1].ends_with("lines 4-7 of 10"));
-    assert!(preview.on_screen(4, 10));
+    assert!(preview.on_screen(4, &ten));
     preview.scroll(-9, 10, 4);
-    assert!(preview.on_screen(4, 10));
+    assert!(preview.on_screen(4, &ten));
     let mut short = SendPreview::new(1, &call_for(TEXT), TEXT).unwrap();
-    assert!(short.on_screen(5, 2), "a text that fits is read at once");
+    assert!(
+        short.on_screen(5, &laid("a", 2)),
+        "a text that fits is read at once"
+    );
+}
+
+/// Laid-out lines for the read-through tests: `n` of them, told apart by
+/// `layout`.
+fn laid(layout: &str, n: usize) -> Vec<String> {
+    (0..n).map(|i| format!("{layout} {i}")).collect()
+}
+
+/// Another layout of as many lines starts the count again: lines seen in
+/// the old one are not read in the new (#1142's re-check).
+#[test]
+fn a_new_layout_of_as_many_lines_starts_the_count_again() {
+    let mut preview = SendPreview::new(1, &call_for(TEXT), TEXT).unwrap();
+    let (wide, narrow) = (laid("wide", 10), laid("narrow", 10));
+    assert!(!preview.on_screen(4, &wide));
+    preview.scroll(6, 10, 4);
+    assert!(
+        !preview.on_screen(4, &narrow),
+        "lines 1-6 of the new layout unseen"
+    );
+    assert!(preview.seen[..6].iter().all(|seen| !seen));
+    preview.scroll(-6, 10, 4);
+    assert!(!preview.on_screen(4, &narrow), "lines 5 and 6 still unseen");
+    preview.scroll(3, 10, 4);
+    assert!(preview.on_screen(4, &narrow));
 }
 
 #[test]
@@ -203,9 +235,10 @@ fn the_slot_shows_a_text_with_its_card_and_says_when_it_is_read() {
         };
         assert_eq!(came, (true, Some(Came::Shown { ask: 9, bytes: 31 })));
         assert_eq!(slot.preview().map(|p| p.ask), Some(9));
-        assert_eq!(slot.drawn(1, 2), None, "one line of two");
-        assert_eq!(slot.drawn(2, 2), Some(9));
-        assert_eq!(slot.drawn(2, 2), None, "said once");
+        let two = laid("a", 2);
+        assert_eq!(slot.drawn(1, &two), None, "one line of two");
+        assert_eq!(slot.drawn(2, &two), Some(9));
+        assert_eq!(slot.drawn(2, &two), None, "said once");
     }
     let mut slot = Slot::default();
     assert_eq!(slot.card(4, "cpus()"), (false, None));
@@ -226,7 +259,7 @@ fn the_slot_refuses_a_mismatch_and_an_unparsed_send() {
     assert_eq!(slot.card(9, odd), (true, None));
     assert_eq!(slot.text(9, TEXT), Some(Came::Refused { ask: 9 }));
     assert!(slot.preview().is_none());
-    assert_eq!(slot.drawn(10, 1), None);
+    assert_eq!(slot.drawn(10, &laid("a", 1)), None);
 }
 
 /// A card withdrawn after the next one's text came never takes that text
