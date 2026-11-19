@@ -257,7 +257,32 @@ impl Shell {
             Some(text) if !self.app_wrote(name, &sha256(&text)) => Err(format!(
                 "{APPS_DIR}/{name}/main.c was changed since Kai wrote it, so it is left as it is: give the app another name"
             )),
-            _ => Ok(()),
+            _ => self.app_folder_check(name),
+        }
+    }
+
+    /// Refuses a folder that holds a `.c` or `.h` file beside the `main.c`
+    /// Kai writes: the build would refuse it every round
+    /// (`ccbuild::sources_ok`), so it is said once, before any round.
+    fn app_folder_check(&self, name: &str) -> Result<(), String> {
+        let folder = format!("{}/{name}", APPS_DIR.trim_start_matches("/home/user/"));
+        let Ok(listed) = self.host.fs_read(crate::FsRead::List(&folder)) else {
+            return Ok(());
+        };
+        let names: alloc::vec::Vec<&str> = listed
+            .lines()
+            .map(|line| {
+                line.trim()
+                    .trim_end_matches('/')
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("")
+            })
+            .filter(|name| name.ends_with(".c") || name.ends_with(".h"))
+            .collect();
+        match names.is_empty() {
+            true => Ok(()),
+            false => crate::ccbuild::sources_ok(APPS_DIR, &names),
         }
     }
 
@@ -374,6 +399,8 @@ impl Shell {
                     "cc could not build Kai's app {name}: {}",
                     shown(why)
                 )),
+                // Files Kai did not write: no round of the model's mends it.
+                None if why.starts_with(crate::ccbuild::NOT_KAIS) => fail(why),
                 None => {
                     let hint = match why.contains(STATE_CHECK_NAME) {
                         true => STATE_HINT,
