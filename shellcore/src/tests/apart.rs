@@ -246,3 +246,43 @@ fn a_run_that_succeeded_after_an_unanswered_call_is_an_unknown_outcome_and_has_n
     );
     assert_ne!(host_b.policy.get(), Some(policy::INTERACTIVE), "the older entry was not undone");
 }
+
+#[test]
+fn a_partial_rollback_after_an_unanswered_call_is_still_an_unknown_outcome() {
+    // The run failed, one change could not be put back (no inverse), and a
+    // row's call went unanswered: the outcome is unknown whatever else
+    // happened, and a bare undo stops there (#1200's review).
+    let ran = Ran {
+        ok: false,
+        text: String::from("it failed"),
+        done: vec![Done {
+            action: "set_policy".into(),
+            owner: "kernel".into(),
+            res: "policy".into(),
+            before: "interactive".into(),
+            after: "round-robin".into(),
+            inverse: None,
+        }],
+        value: None,
+        shown: Vec::new(),
+        failed: None,
+        withheld: false,
+        unanswered: Some(String::from("notes_add")),
+    };
+    let wire = apart::encode(&ran);
+    let (host, mut shell) = with_answers(vec![answer("print(cpus());")]);
+    *host.apart.borrow_mut() = Some(alloc::boxed::Box::new(move |_: &str| Ok(wire.clone())));
+    let reply = shell.eval("? how many cpus");
+    assert!(!reply.ok, "{reply:?}");
+    assert!(
+        reply.text.contains("Outcome unknown: notes_add may have run"),
+        "{reply:?}"
+    );
+    let entry = shell.log.get(shell.log.last_id()).expect("an entry");
+    assert_eq!(entry.state, crate::actlog::State::Unknown);
+    let undo = shell.eval("undo");
+    assert!(
+        undo.text.contains("the outcome of notes_add is not known"),
+        "{undo:?}"
+    );
+}
