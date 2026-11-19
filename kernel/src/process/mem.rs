@@ -79,12 +79,19 @@ pub fn commit(slot: usize, addr: u64, bytes: u64) -> Result<u64, Error> {
 }
 
 /// MEM_RELEASE: unmaps and frees every page of the reservation starting at
-/// `addr`, which then ends; how many pages were freed.
+/// `addr`, which then ends; how many pages were freed. It walks one page past
+/// the committed ones ([`mm::reserve::Release::walk`]), so the tables a commit
+/// cut short left there (a directory at a 1 GiB boundary with no leaf under
+/// it) go too, after the same shootdown, which therefore never covers 0 pages.
 pub fn release(slot: usize, addr: u64) -> Result<u64, Error> {
     let pages = {
         let mut guard = lock_space(slot);
         let space = guard.as_mut().ok_or(Error::Dead)?;
-        space.reservations.begin_release(addr).map_err(refused)?
+        space
+            .reservations
+            .begin_release(addr)
+            .map_err(refused)?
+            .walk
     };
     // Room for every frame before any lock: none is taken while allocating.
     // Should this fail, the pages stay mapped until the process ends, which
