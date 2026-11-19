@@ -824,3 +824,31 @@ fn the_skip_needs_no_read_after_the_mount() {
     fs.skip_unsaved_oids();
     assert!(fs.next_oid() > last, "{} after {last}", fs.next_oid());
 }
+
+/// A mount that falls back counts it, once: a later mount of the same line
+/// of commits, with the abandoned newer slots still on the rings, does not
+/// count it again; a second fallback counts again.
+#[test]
+fn a_fallback_is_counted_once_and_the_next_one_again() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    for name in ["a", "b", "c"] {
+        fs.create(ROOT, name).unwrap();
+        fs.commit().unwrap();
+    }
+    assert_eq!(fs.fallbacks(), 0);
+    let mut disk = fs.into_dev();
+    break_the_newest_table(&mut disk);
+    let mut fs = Fs::mount(disk).unwrap();
+    assert_eq!(fs.fallbacks(), 1);
+    fs.create(ROOT, "d").unwrap();
+    fs.commit().unwrap();
+    let mut fs = remount(fs);
+    assert_eq!(fs.fallbacks(), 1, "counted again on a plain mount");
+    fs.create(ROOT, "e").unwrap();
+    fs.commit().unwrap();
+    let mut disk = fs.into_dev();
+    break_the_newest_table(&mut disk);
+    let fs = Fs::mount(disk).unwrap();
+    assert_eq!(fs.fallbacks(), 2);
+}
