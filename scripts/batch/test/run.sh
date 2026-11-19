@@ -143,6 +143,9 @@ L="$T/state/batch-auto.log"
 check "the model PR loses its label"          'grep -q "#2 failed the fluency gate" "$L" && [ ! -s "$T/prs/2/labels" ]'
 check "the others land without a split"       'grep -q "#1 merged" "$L" && grep -q "#5 merged" "$L" && grep -q "#7 merged" "$L" && ! grep -q "splitting" "$L"'
 check "the model PR is not merged"            '! grep -q "#2 merged" "$L" && ! gone feat/m1'
+# With more open PRs than a listing holds, the oldest batch-ready ones fell
+# off it and were never batched (96 open PRs at --limit 80, 2026-11-19).
+check "every open-PR listing asks for 1000"   'grep "pr list .*--state open" "$T/gh.log" | grep -v -- "--head" | grep -q . && ! grep "pr list .*--state open" "$T/gh.log" | grep -v -- "--head" | grep -qv -- "--limit 1000"'
 
 echo "branches left: $(branches)"
 [ $fails = 0 ] && echo "all batcher tests pass" || { echo "$fails batcher test(s) failed"; exit 1; }
