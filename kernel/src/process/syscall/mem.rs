@@ -2,7 +2,7 @@
 //! need no capability (each works only in the caller's own address space, and a
 //! commit counts against its own page quota); and resource profiles'
 //! PROC_QUOTA_SET and PROC_CLASS_SET (P3 task 12), which need SUPERVISE; and
-//! PROC_ALIVE, which needs nothing.
+//! PROC_ALIVE, which needs DISPLAY or SUPERVISE.
 
 use super::need;
 use crate::process::{mem, profile};
@@ -27,9 +27,9 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
         call::PROC_QUOTA_SET => {
             need(slot, cap::SUPERVISE).and_then(|()| profile::quota_set_with(a[0], a[1], a[2]))
         }
-        call::PROC_ALIVE => Ok(u64::from(
-            a[0] != 0 && crate::process::slot_of_pid(a[0]).is_some(),
-        )),
+        call::PROC_ALIVE => need(slot, cap::DISPLAY)
+            .or_else(|_| need(slot, cap::SUPERVISE))
+            .map(|()| u64::from(crate::process::alive(a[0]))),
         _ => need(slot, cap::SUPERVISE).and_then(|()| profile::class_set(a[0], a[1])),
     })
 }

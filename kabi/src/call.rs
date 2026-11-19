@@ -573,10 +573,13 @@ pub const QUOTA_LOWER_ONLY: u64 = 1 << 0;
 /// `desktop` background; Busy while a tuning trial runs. Needs SUPERVISE.
 pub const PROC_CLASS_SET: u64 = 164;
 /// `proc_alive(pid) -> 0|1`: whether a live process has `pid` (1) or none
-/// does any more (0); pid 0, the kernel, is 0. Needs no capability: a pid
-/// is no secret, and a holder of many clients' pids (`desktop`'s windows)
-/// learns which have ended without a table of every process. Numbered at
-/// merge, M's block.
+/// does any more (0); pid 0, the kernel, always runs, as for
+/// [`PART_PEER_ALIVE`]. For a holder of many clients' pids (`desktop`'s
+/// windows) to learn which have ended without a table of every process:
+/// needs [`super::cap::DISPLAY`] or [`super::cap::SUPERVISE`] (which LIST
+/// already needs), Permission otherwise, so no app watches when the person's
+/// processes start and end (ADR 0001). Numbered at merge, M's block; 165 is
+/// SHM_SIZE's (#1141).
 pub const PROC_ALIVE: u64 = 166;
 
 // ---- U, 170-179 ----
