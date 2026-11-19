@@ -346,7 +346,14 @@ fn remove(node: &mut Node, key: &Key, store: &mut dyn Store) -> Result<Option<Ve
             let i = slot(children, key);
             let child = dirty(&mut children[i].1, store)?;
             let old = remove(child, key, store)?;
-            if child.underfull() && children.len() > 1 {
+            // An emptied child leaves its branch whatever the branch holds: a
+            // one-child branch would otherwise be evened out with its
+            // neighbour and carry the empty leaf along, which every scan then
+            // refuses once written. A branch emptied so goes from its parent
+            // the same way, and the root's from `Tree::remove`.
+            if child.is_empty() {
+                children.remove(i);
+            } else if child.underfull() && children.len() > 1 {
                 rebalance(children, i, store)?;
             }
             Ok(old)
