@@ -17,7 +17,7 @@
 //! never a path, so no other folder is read or written.
 
 use super::saved;
-use super::session::Ran;
+use super::session::{Ran, no_session};
 use crate::actions::How;
 use crate::actlog::{Form, State};
 use crate::script::{Checked, file_done};
@@ -217,16 +217,19 @@ impl Shell {
                 promptcore::MAX_ENTRY / 1024
             ));
         }
-        let restored = match self.c_ensure_open() {
+        let mut restored = match self.c_ensure_open() {
             Ok(note) => note,
             Err(why) => return Reply::err(why),
         };
         let mut names = 0;
+        // The entries this load adds come after this one; a take-back stops
+        // there, whatever a restart in between replayed.
+        let before = self.c.seq;
         for (n, entry) in entries.iter().enumerate() {
-            match self.c_replay(entry) {
+            match self.c_replay(entry, &mut restored) {
                 Ok(defined) => names += defined,
                 Err(why) => {
-                    self.c_unload(n);
+                    self.c_unload(before);
                     return Reply::err(format!(
                         "{restored}/home/user/{path} did not load (entry {}): {why}",
                         n + 1
@@ -244,7 +247,9 @@ impl Shell {
     /// the session, as it first ran without its statements: how many it made,
     /// or why not (cc then committed nothing of it). It is kept as typed;
     /// only cc sees its `#include "…"` files.
-    fn c_replay(&mut self, entry: &str) -> Result<usize, String> {
+    /// A restart's note, when cc had restarted, goes on `note`, kept whether
+    /// the entry loads or not.
+    fn c_replay(&mut self, entry: &str, note: &mut String) -> Result<usize, String> {
         let expanded = self.c_includes(entry)?;
         if expanded.len() > promptcore::MAX_ENTRY {
             return Err(format!(
@@ -259,11 +264,19 @@ impl Shell {
             entry: &expanded,
         }
         .text();
-        let reply = self.host.cc(request.as_bytes()).map_err(|why| {
+        let mut reply = self.c_send(&request)?;
+        // A cc the supervisor restarted since the last line has no session:
+        // open it again, replay, and send this once more, as an entry does.
+        if no_session(&reply) {
             self.c.open = false;
-            format!("cc did not answer: {why}")
-        })?;
-        let records = parse_reply(&reply).map_err(|e| format!("cc's reply: {e}"))?;
+            note.push_str(&self.c_ensure_open()?);
+            reply = self.c_send(&request)?;
+        }
+        // A reply that does not parse fails the load, which is taken back in
+        // the session as it is: cc did not restart, so nothing resets.
+        let Ok(records) = parse_reply(&reply) else {
+            return Err(String::from("cc's reply did not parse"));
+        };
         let names = records
             .iter()
             .filter(|r| matches!(r, Record::Def { .. }))
@@ -294,12 +307,23 @@ impl Shell {
         Ok(names)
     }
 
-    /// Takes back the `count` entries a failed `:load` replayed, last first,
-    /// so a file loads whole or not at all.
-    fn c_unload(&mut self, count: usize) {
-        for _ in 0..count {
-            self.c.ran.pop();
-            if !self.c.open {
+    /// One request to cc; when it does not answer, the session is closed.
+    fn c_send(&mut self, request: &str) -> Result<Vec<u8>, String> {
+        self.host.cc(request.as_bytes()).map_err(|why| {
+            self.c.open = false;
+            format!("cc did not answer: {why}")
+        })
+    }
+
+    /// Takes back the entries a failed `:load` added, those after entry
+    /// `before`, last first, so a file loads whole or not at all; the
+    /// person's own entries stay, a restart in between or not.
+    fn c_unload(&mut self, before: u64) {
+        while self.c.ran.last().is_some_and(|ran| ran.seq > before) {
+            let Some(ran) = self.c.ran.pop() else {
+                break;
+            };
+            if !self.c.open || !ran.cc {
                 continue;
             }
             let undone = self

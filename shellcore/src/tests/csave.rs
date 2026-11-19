@@ -390,3 +390,130 @@ fn a_restart_tells_of_an_include_changed_since() {
     assert!(after.text.ends_with("= 9"), "{after:?}");
     assert!(!shell.eval("Seven()").ok, "the changed file never ran");
 }
+
+/// An entry that used what a skipped entry defined is named too, not
+/// dropped without a word (#1192's review).
+#[test]
+fn a_restart_names_an_entry_that_used_a_skipped_one() {
+    let host = FakeHost::new();
+    host.files
+        .borrow_mut()
+        .insert("c/lib.c".into(), "I64 Seven() { return 7; }\n".into());
+    let mut shell = c_shell(&host);
+    assert!(
+        shell
+            .eval("#include \"lib.c\"\nI64 Eight() { return Seven() + 1; }")
+            .ok
+    );
+    assert!(shell.eval("I64 Ten() { return Eight() + 2; }").ok);
+    host.files
+        .borrow_mut()
+        .insert("c/lib.c".into(), "I64 Seven() { return 70; }\n".into());
+    start_cc(&host);
+    let after = shell.eval("1");
+    assert!(
+        after.text.contains("entry 1's #include files changed"),
+        "{after:?}"
+    );
+    assert!(after.text.contains("entry 2 did not replay: "), "{after:?}");
+    assert!(after.text.contains("; not restored"), "{after:?}");
+}
+
+/// A :load right after cc restarted opens the session again, as an entry
+/// does, and loads (#1192's review).
+#[test]
+fn a_load_after_a_restart_opens_the_session_again() {
+    let host = FakeHost::new();
+    host.files
+        .borrow_mut()
+        .insert("c/lib.c".into(), "I64 One() { return 1; }\n".into());
+    let mut shell = c_shell(&host);
+    assert!(shell.eval("I64 Two() { return 2; }").ok);
+    start_cc(&host);
+    let loaded = shell.eval(":load lib");
+    assert!(loaded.ok, "{loaded:?}");
+    assert!(
+        loaded
+            .text
+            .starts_with("cc restarted; restored 1 definitions"),
+        "{loaded:?}"
+    );
+    assert_eq!(shell.eval("One() + Two()").text, "= 3");
+}
+
+/// :defs after cc restarted shows the restart's note first.
+#[test]
+fn defs_after_a_restart_shows_the_note() {
+    let host = FakeHost::new();
+    let mut shell = c_shell(&host);
+    assert!(shell.eval("I64 Two() { return 2; }").ok);
+    *host.cc.borrow_mut() = None;
+    assert!(!shell.eval("Two()").ok);
+    start_cc(&host);
+    let defs = shell.eval(":defs");
+    assert!(
+        defs.text
+            .starts_with("cc restarted; restored 1 definitions"),
+        "{defs:?}"
+    );
+    assert!(defs.text.contains("Two"), "{defs:?}");
+}
+
+/// cc's reply as the wire writes it: one error record.
+fn cc_error(text: &[u8]) -> Vec<u8> {
+    let mut reply = promptcore::wire::Reply::new(kabi::MAX_MESSAGE);
+    reply
+        .push(&promptcore::wire::Record::Err { line: 0, text })
+        .unwrap();
+    reply.into_bytes()
+}
+
+/// A load whose reply does not parse fails, and the session stays as it
+/// was: cc did not restart, so nothing resets (#1216's review).
+#[test]
+fn an_unparsable_load_reply_keeps_the_session() {
+    let host = FakeHost::new();
+    host.files
+        .borrow_mut()
+        .insert("c/lib.c".into(), "I64 One() { return 1; }\n".into());
+    let mut shell = c_shell(&host);
+    assert!(shell.eval("I64 total = 42;").ok);
+    host.cc_script.borrow_mut().push_back(b"garbage".to_vec());
+    let loaded = shell.eval(":load lib");
+    assert!(
+        !loaded.ok && loaded.text.contains("did not parse"),
+        "{loaded:?}"
+    );
+    let after = shell.eval("total");
+    assert_eq!(after.text, "= 42", "no restart, no reset: {after:?}");
+    assert!(shell.eval("undo").text.starts_with("undid entry 1"));
+}
+
+/// cc restarted before a load whose second entry fails: the take-back
+/// removes only what the load added, the person's entries stay, and the
+/// restart's note is in the reply (#1216's review).
+#[test]
+fn a_restart_mid_load_takes_back_only_the_loads_entries() {
+    let host = FakeHost::new();
+    host.files.borrow_mut().insert(
+        "c/half.c".into(),
+        "//- entry\nI64 Good() { return 1; }\n//- entry\nI64 Bad() { return nope; }\n".into(),
+    );
+    let mut shell = c_shell(&host);
+    assert!(shell.eval("I64 Keep() { return 5; }").ok);
+    // The first load request finds no session, as after a restart.
+    host.cc_script
+        .borrow_mut()
+        .push_back(cc_error(b"no session is open"));
+    let loaded = shell.eval(":load half");
+    assert!(!loaded.ok, "{loaded:?}");
+    assert!(
+        loaded
+            .text
+            .starts_with("cc restarted; restored 1 definitions"),
+        "{loaded:?}"
+    );
+    assert!(loaded.text.contains("(entry 2)"), "{loaded:?}");
+    assert_eq!(shell.eval("Keep()").text, "= 5", "the person's entry stays");
+    assert!(!shell.eval("Good()").ok, "the load's entry was taken back");
+}

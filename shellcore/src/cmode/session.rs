@@ -72,7 +72,14 @@ impl Shell {
                 continue;
             }
             let replay = Request::Replay { seq, entry: &entry }.text();
-            if self.c_expect_done(&replay) {
+            // An entry that does not replay, one that used what a skipped
+            // entry defined among them, is named too.
+            if let Err(why) = self.c_replayed(&replay) {
+                skipped.push_str(&format!(
+                    "entry {seq} did not replay: {}; not restored\n",
+                    why.trim_end()
+                ));
+            } else {
                 restored += 1;
                 self.c.ran.push(Ran {
                     seq,
@@ -97,21 +104,34 @@ impl Shell {
         }
     }
 
-    fn c_expect_done(&self, request: &str) -> bool {
-        let Ok(reply) = self.host.cc(request.as_bytes()) else {
-            return false;
-        };
-        matches!(
-            parse_reply(&reply).as_deref(),
-            Ok([.., Record::Done { .. }])
-        )
+    /// Sends a replay: `Ok` when cc ran it to its end, or why not.
+    fn c_replayed(&self, request: &str) -> Result<(), String> {
+        let reply = self
+            .host
+            .cc(request.as_bytes())
+            .map_err(|why| format!("cc did not answer: {why}"))?;
+        match parse_reply(&reply).as_deref() {
+            Ok([.., Record::Done { .. }]) => Ok(()),
+            Ok([.., Record::Err { text, .. }]) => Err(String::from_utf8_lossy(text).into_owned()),
+            _ => Err(String::from("cc's reply was malformed")),
+        }
     }
 
     /// `:dis f` and `:defs`: cc's text.
     pub(super) fn c_command(&mut self, request: &Request) -> Reply {
-        if let Err(why) = self.c_ensure_open() {
-            return Reply::err(why);
+        // A restart's note goes in front of the answer, as for an entry.
+        let note = match self.c_ensure_open() {
+            Ok(note) => note,
+            Err(why) => return Reply::err(why),
+        };
+        let reply = self.c_command_text(request);
+        Reply {
+            text: format!("{note}{}", reply.text),
+            ..reply
         }
+    }
+
+    fn c_command_text(&mut self, request: &Request) -> Reply {
         let reply = match self.host.cc(request.text().as_bytes()) {
             Ok(reply) => reply,
             Err(why) => {
