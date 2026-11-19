@@ -341,3 +341,52 @@ token = text #EEEEEE",
     assert_ne!(a.px, b.px, "the text's pixels take the colour chosen");
     assert_eq!(at(&a, 0, 0), at(&b, 0, 0), "the background is the theme's");
 }
+
+/// What the layout measures is what the paint draws, in every shipped theme and
+/// with text size and legible type on: the row of a line is the line of the
+/// style the painter uses. The legible theme's styles are one px larger than the
+/// default's, so a measure built from another theme comes out short.
+#[test]
+fn measured_rows_are_the_painted_rows_in_the_legible_theme_and_the_rest() {
+    use uikit::style::TypeStyle as S;
+    const STYLES: [S; 7] = [
+        S::Small,
+        S::Body,
+        S::Label,
+        S::Heading,
+        S::Display,
+        S::Mono,
+        S::MonoTitle,
+    ];
+    let others = [
+        "theme = dark",
+        "theme = light",
+        "theme = high-contrast",
+        "theme = dark
+text_size = 150
+legible = on",
+    ];
+    let legible = appearance("theme = legible");
+    let default = appearance("theme = dark");
+    for theme in others
+        .iter()
+        .map(|s| appearance(s))
+        .chain([legible.clone()])
+    {
+        let mut t = text(theme.palette().dark);
+        t.set_theme(&theme);
+        for style in STYLES {
+            let drawn = t.style(crate::look_style(style)).line;
+            let (_, measured) = Measured(&t).measure(style, "x");
+            assert_eq!(measured, drawn, "{} {style:?}", theme.name);
+        }
+    }
+    // Why it matters: the default's measure is shorter than the legible theme's
+    // paint for every style.
+    let mut wrong = text(true);
+    wrong.set_theme(&default);
+    let mut right = text(false);
+    right.set_theme(&legible);
+    let body = uikit::style::TypeStyle::Body;
+    assert!(Measured(&wrong).measure(body, "x").1 < Measured(&right).measure(body, "x").1);
+}

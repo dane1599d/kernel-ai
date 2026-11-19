@@ -5,22 +5,23 @@
 //! every window out in its type, so rows grow with the text.
 
 use super::*;
-use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use look::appearance::{Appearance, Shipped};
+use look::theme::Theme;
 
-/// The legible type and the text size in percent that new layouts are measured
-/// in: set by [`Ui::set_look`], read by [`measure`] for every instance loaded
-/// after (a version loaded again starts in the type in use).
-static LEGIBLE: AtomicBool = AtomicBool::new(false);
-static PERCENT: AtomicU16 = AtomicU16::new(100);
+/// The theme the windows are painted in, the one new layouts are measured in:
+/// set by [`Ui::set_look`], read by [`type_theme`] for every instance loaded
+/// after (a version loaded again, a standby, starts in the type in use).
+static IN_USE: spin::Mutex<Option<Theme>> = spin::Mutex::new(None);
 
-/// The type styles layouts are measured in now: the default theme's, legible
-/// and sized as the appearance says.
-pub(super) fn type_theme() -> look::theme::Theme {
-    look::theme::Theme::from_palette(&look::DARK, false).sized(
-        LEGIBLE.load(Ordering::Relaxed),
-        PERCENT.load(Ordering::Relaxed),
-    )
+/// The theme layouts are measured in now: the very theme the paint uses (its
+/// type, legible and sized as the appearance says), or the default until the
+/// desktop says. A measure from any other theme would lay windows out in a
+/// type other than the one drawn.
+pub(super) fn type_theme() -> Theme {
+    match IN_USE.lock().as_ref() {
+        Some(theme) => theme.clone(),
+        None => Theme::from_palette(&look::DARK, false),
+    }
 }
 
 impl Ui {
@@ -52,8 +53,7 @@ impl Ui {
         self.palette = theme.palette();
         self.text.set_theme(&theme);
         self.theme = theme.name.clone();
-        LEGIBLE.store(appearance.legible, Ordering::Relaxed);
-        PERCENT.store(appearance.text_size, Ordering::Relaxed);
+        *IN_USE.lock() = Some(theme.clone());
         if !host.suspended() {
             let _ = serve_shown(host, |core| {
                 if let Some(measure) = measure() {
