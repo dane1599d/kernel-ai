@@ -287,7 +287,7 @@ fn a_faulting_or_overspending_call_keeps_nothing_and_the_version_reloads() {
 }
 
 #[test]
-fn during_probation_a_call_runs_on_the_candidate_without_a_transaction() {
+fn during_probation_a_read_on_the_candidate_commits_nothing() {
     let _guard = alone();
     let kernel = kernel(&[A, B]);
     let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
@@ -324,11 +324,11 @@ fn during_probation_a_candidates_fault_on_window_input_rolls_it_back() {
     assert_eq!(ledger(&kernel).counters.refused_bad, 1);
 }
 
-/// #1175's review: a healthy candidate that uses storage or effects on window
-/// input during probation (a window's refresh queues one) is not a fault: it
-/// stays on probation, and what it wrote is not kept.
+/// #1175's review: during probation, window input is one call on the
+/// candidate like any other: its writes are kept (with the standby's
+/// checkpoint), its effects go out, and it stays on probation.
 #[test]
-fn during_probation_a_healthy_candidate_may_touch_storage_and_is_kept() {
+fn during_probation_window_input_is_kept_and_its_effects_go_out() {
     let _guard = alone();
     let kernel = kernel(&[A, B]);
     let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
@@ -336,17 +336,85 @@ fn during_probation_a_healthy_candidate_may_touch_storage_and_is_kept() {
     assert!(call(&mut host, "ctl swap b").starts_with("ok probation b"));
     let rollbacks = ledger(&kernel).counters.rollbacks;
     let (reply, lines) = ui_call(&mut host, b"kadd").expect("served");
-    assert!(reply.contains("result \"b "), "{reply}");
-    assert_eq!(lines, "", "nothing performed");
+    assert!(reply.contains("result \"b 2\""), "{reply}");
+    assert_eq!(lines, "effect 2 notify(\"b 2\")\n", "its effect goes out");
+    assert_eq!(
+        stored(&kernel, "count").as_deref(),
+        Some("2"),
+        "its write is kept"
+    );
+    assert_eq!(stored(&kernel, "by").as_deref(), Some("b"));
     assert_eq!(
         ledger(&kernel).counters.rollbacks,
         rollbacks,
         "not rolled back"
     );
+    assert!(call(&mut host, "ctl status").contains("probation"));
+}
+
+/// Tickets run on across window input and requests during probation, so no
+/// two calls share one (a reply is never taken for another call's).
+#[test]
+fn during_probation_tickets_rise_across_window_input_and_requests() {
+    let _guard = alone();
+    let kernel = kernel(&[A, B]);
+    let mut host = host_with(&kernel, 10, "version=a probation_calls=9 probation_ms=0");
+    let (_, first, _) = parts(&call(&mut host, "kadd"));
+    assert!(call(&mut host, "ctl swap b").starts_with("ok probation b"));
+    let (_, one) = ui_call(&mut host, b"kadd").unwrap();
+    let (_, two) = ui_call(&mut host, b"kadd").unwrap();
+    let (_, three, _) = parts(&call(&mut host, "kadd"));
+    let ticket = |line: &str| -> u64 {
+        line.trim_start_matches("effect ")
+            .split(' ')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    let tickets = [
+        ticket(&first[0]),
+        ticket(one.trim()),
+        ticket(two.trim()),
+        ticket(&three[0]),
+    ];
+    assert!(tickets.windows(2).all(|w| w[0] < w[1]), "{tickets:?}");
+}
+
+/// A candidate whose window input queues too many effects is out of bounds:
+/// it is rolled back, and nothing that call did is kept.
+#[test]
+fn during_probation_an_overspending_window_call_rolls_the_candidate_back() {
+    let _guard = alone();
+    let kernel = kernel(&[A, B]);
+    let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
+    call(&mut host, "kadd");
+    assert!(call(&mut host, "ctl swap b").starts_with("ok probation b"));
+    let rollbacks = ledger(&kernel).counters.rollbacks;
+    assert_eq!(ui_call(&mut host, b"kspam"), None);
+    assert_eq!(ledger(&kernel).counters.rollbacks, rollbacks + 1);
     assert_eq!(
         stored(&kernel, "count").as_deref(),
         Some("1"),
         "nothing kept"
     );
-    assert!(call(&mut host, "ctl status").contains("probation"));
+}
+
+/// After a rollback the standby serves from storage that holds what the
+/// person did in the candidate's window.
+#[test]
+fn after_a_rollback_the_standby_sees_the_candidates_window_writes() {
+    let _guard = alone();
+    let kernel = kernel(&[A, B]);
+    let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
+    call(&mut host, "kadd");
+    assert!(call(&mut host, "ctl swap b").starts_with("ok probation b"));
+    ui_call(&mut host, b"kadd").expect("kept");
+    assert_eq!(ui_call(&mut host, b"poison"), None, "rolled back");
+    // a serves again, and reads the count b's window call wrote.
+    assert!(
+        call(&mut host, "kget").starts_with("kai-reply 1\nresult \"2 by b "),
+        "{}",
+        call(&mut host, "kget")
+    );
 }
