@@ -78,6 +78,9 @@ pub struct TestCase {
     /// Boot with the mock LLM server on the command line (`llm=`). Without it, the
     /// case also fails if the mock gets any request while it runs.
     pub server: bool,
+    /// The case boots under KVM only: a step it times (an `undo` within a
+    /// 5 s hold) would flake under TCG's emulation.
+    pub kvm_only: bool,
     /// Guest memory in MiB when the case needs more than its disk does (`bigmap`
     /// needs RAM above 4 GiB); `--mem` still wins if larger.
     pub memory_mib: Option<u64>,
@@ -235,6 +238,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         disk: None,
         server: true,
         memory_mib: None,
+        kvm_only: false,
         nvme: false,
         image: false,
         dns: false,

@@ -11,6 +11,8 @@ pub(super) const CASES: &[TestCase] = &[TestCase {
     // `display=` needs virtio-gpu; 1920x1080 as `desk-perf` boots it.
     gpu: true,
     memory_mib: Some(2048),
+    // The undo must land within the 5 s hold: under TCG it would flake.
+    kvm_only: true,
     expect: &[
         "desktop: drew the desk at 1920x1080",
         "is a send's: it waits for its text",
@@ -20,6 +22,7 @@ pub(super) const CASES: &[TestCase] = &[TestCase {
         "desk-sends: y before the text was read through did not allow it",
         "desktop: the send's text scrolled",
         "'s whole text has been on the screen",
+        "desk-sends: the card allowed after ",
         "answered allow on desktop's card",
         "a send to hooks.example is held 5000 ms",
         "desk-sends: read through, y allowed the send, held 5 s with undo ",
