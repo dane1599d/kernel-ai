@@ -146,8 +146,16 @@ fn entries_ok(entries: u32) -> bool {
 }
 
 /// A KRNG v1 ring over a region of shared memory, attached: its `entries`
-/// read once, here.
+/// read once, here. [`Ring::split`] hands out its ends once each: one
+/// producer and one consumer per direction, never a second.
 pub struct Ring<'a> {
+    view: View<'a>,
+}
+
+/// Where the ring is, and its `entries` as read at attach: what each end
+/// keeps a copy of. Private, so no end can be made but by [`Ring::split`].
+#[derive(Clone, Copy)]
+struct View<'a> {
     base: NonNull<u8>,
     len: usize,
     entries: u32,
@@ -155,10 +163,10 @@ pub struct Ring<'a> {
     _region: PhantomData<&'a mut [u8]>,
 }
 
-// SAFETY: the ring's shared fields are atomics, and its entries are plain
-// integers copied in and out whole by one producer and one consumer.
+// SAFETY: a ring is the region's one owner on this side until it is split,
+// and each half then owns one end of each direction alone; the shared fields
+// are atomics, and entries are plain integers copied in and out whole.
 unsafe impl Send for Ring<'_> {}
-unsafe impl Sync for Ring<'_> {}
 
 impl<'a> Ring<'a> {
     /// Lays out a fresh ring of `kind` with `entries` in `region`: the header
@@ -166,7 +174,8 @@ impl<'a> Ring<'a> {
     ///
     /// # Safety
     /// `region` must be valid for reads and writes of `len` bytes for `'a`,
-    /// 8-byte aligned, and touched by nothing else while it is set up.
+    /// 8-byte aligned, and touched by nothing else while it is set up; this
+    /// side makes one `Ring` over it.
     pub unsafe fn init(
         region: NonNull<u8>,
         len: usize,
@@ -196,8 +205,8 @@ impl<'a> Ring<'a> {
     ///
     /// # Safety
     /// `region` must be valid for reads and writes of `len` bytes for `'a`
-    /// and 8-byte aligned; the other side may write any bytes into it at any
-    /// time, which this type survives.
+    /// and 8-byte aligned, and this side makes one `Ring` over it; the other
+    /// side may write any bytes into it at any time, which this type survives.
     pub unsafe fn attach(region: NonNull<u8>, len: usize) -> Result<Self, Error> {
         if len < HEADER_BYTES || !(region.as_ptr() as usize).is_multiple_of(8) {
             return Err(Error::Size);
@@ -226,24 +235,128 @@ impl<'a> Ring<'a> {
             return Err(Error::Size);
         }
         Ok(Self {
-            base: region,
-            len,
-            entries,
-            kind,
-            _region: PhantomData,
+            view: View {
+                base: region,
+                len,
+                entries,
+                kind,
+                _region: PhantomData,
+            },
         })
     }
 
     pub fn kind(&self) -> u16 {
-        self.kind
+        self.view.kind
     }
 
     pub fn entries(&self) -> u32 {
-        self.entries
+        self.view.entries
     }
 
     /// Where the data area starts in the region, and how long it is.
     pub fn data_area(&self) -> (usize, usize) {
+        self.view.data_area()
+    }
+
+    /// The ring's two halves, once: the client's (it produces requests and
+    /// consumes responses) and the server's (the other way). The ring is
+    /// used up, so no second producer or consumer of a direction exists.
+    ///
+    /// ```
+    /// # use core::ptr::NonNull;
+    /// # use kabi::ring::{self, Ring};
+    /// # let mut words = vec![0u64; ring::size(8, 0) / 8];
+    /// # let region = NonNull::new(words.as_mut_ptr().cast::<u8>()).unwrap();
+    /// let ring = unsafe { Ring::init(region, ring::size(8, 0), ring::BLOCK, 8) }.unwrap();
+    /// let (mut client, mut server) = ring.split();
+    /// client.requests.push(&ring::Request::default()).unwrap().unwrap();
+    /// assert!(server.requests.pop().unwrap().is_some());
+    /// ```
+    ///
+    /// A second split does not compile:
+    ///
+    /// ```compile_fail
+    /// # use core::ptr::NonNull;
+    /// # use kabi::ring::{self, Ring};
+    /// # let mut words = vec![0u64; ring::size(8, 0) / 8];
+    /// # let region = NonNull::new(words.as_mut_ptr().cast::<u8>()).unwrap();
+    /// let ring = unsafe { Ring::init(region, ring::size(8, 0), ring::BLOCK, 8) }.unwrap();
+    /// let (client, server) = ring.split();
+    /// let again = ring.split(); // the ring was used up by the first split
+    /// ```
+    ///
+    /// An end is not copied either:
+    ///
+    /// ```compile_fail
+    /// # use core::ptr::NonNull;
+    /// # use kabi::ring::{self, Ring};
+    /// # let mut words = vec![0u64; ring::size(8, 0) / 8];
+    /// # let region = NonNull::new(words.as_mut_ptr().cast::<u8>()).unwrap();
+    /// let ring = unsafe { Ring::init(region, ring::size(8, 0), ring::BLOCK, 8) }.unwrap();
+    /// let (client, _server) = ring.split();
+    /// let second = client.requests.clone();
+    /// ```
+    pub fn split(self) -> (Client<'a>, Server<'a>) {
+        let view = self.view;
+        (
+            Client {
+                requests: Producer::new(view, Dir::Requests),
+                responses: Consumer::new(view, Dir::Responses),
+            },
+            Server {
+                requests: Consumer::new(view, Dir::Requests),
+                responses: Producer::new(view, Dir::Responses),
+            },
+        )
+    }
+}
+
+/// The client's half: it sends requests and takes their responses.
+pub struct Client<'a> {
+    pub requests: Producer<'a, Request>,
+    pub responses: Consumer<'a, Response>,
+}
+
+/// The server's half: it takes requests and sends their responses.
+pub struct Server<'a> {
+    pub requests: Consumer<'a, Request>,
+    pub responses: Producer<'a, Response>,
+}
+
+impl Client<'_> {
+    /// Asks for (or stops asking for) a doorbell when responses come.
+    pub fn want_responses(&self, on: bool) {
+        self.requests
+            .view
+            .header()
+            .want_rsp
+            .store(u32::from(on), Ordering::SeqCst);
+    }
+
+    /// Whether the server asked for a doorbell when requests come.
+    pub fn server_wants_requests(&self) -> bool {
+        self.requests.view.header().want_req.load(Ordering::SeqCst) != 0
+    }
+}
+
+impl Server<'_> {
+    /// Asks for (or stops asking for) a doorbell when requests come.
+    pub fn want_requests(&self, on: bool) {
+        self.requests
+            .view
+            .header()
+            .want_req
+            .store(u32::from(on), Ordering::SeqCst);
+    }
+
+    /// Whether the client asked for a doorbell when responses come.
+    pub fn client_wants_responses(&self) -> bool {
+        self.requests.view.header().want_rsp.load(Ordering::SeqCst) != 0
+    }
+}
+
+impl View<'_> {
+    fn data_area(&self) -> (usize, usize) {
         let start = size(self.entries, 0);
         (start, self.len - start)
     }
@@ -252,48 +365,6 @@ impl<'a> Ring<'a> {
         // SAFETY: the header lies in the region for 'a (checked at attach);
         // only its atomics are read through this reference.
         unsafe { self.base.cast::<Header>().as_ref() }
-    }
-
-    /// Asks for (or stops asking for) doorbells on requests.
-    pub fn want_requests(&self, on: bool) {
-        self.header()
-            .want_req
-            .store(u32::from(on), Ordering::SeqCst);
-    }
-
-    /// Whether the other side asked for doorbells on requests.
-    pub fn wants_requests(&self) -> bool {
-        self.header().want_req.load(Ordering::SeqCst) != 0
-    }
-
-    pub fn want_responses(&self, on: bool) {
-        self.header()
-            .want_rsp
-            .store(u32::from(on), Ordering::SeqCst);
-    }
-
-    pub fn wants_responses(&self) -> bool {
-        self.header().want_rsp.load(Ordering::SeqCst) != 0
-    }
-
-    /// The request side's producer (the client).
-    pub fn request_producer(&self) -> Producer<'_, 'a, Request> {
-        Producer::new(self, Dir::Requests)
-    }
-
-    /// The request side's consumer (the server).
-    pub fn request_consumer(&self) -> Consumer<'_, 'a, Request> {
-        Consumer::new(self, Dir::Requests)
-    }
-
-    /// The response side's producer (the server).
-    pub fn response_producer(&self) -> Producer<'_, 'a, Response> {
-        Producer::new(self, Dir::Responses)
-    }
-
-    /// The response side's consumer (the client).
-    pub fn response_consumer(&self) -> Consumer<'_, 'a, Response> {
-        Consumer::new(self, Dir::Responses)
     }
 
     /// The (head, tail) atomics of `dir`.
@@ -331,10 +402,10 @@ pub trait Entry: Copy {}
 impl Entry for Request {}
 impl Entry for Response {}
 
-/// One direction's producer: keeps its head in its own memory and reads only
-/// the consumer's tail from the ring.
-pub struct Producer<'r, 'a, T: Entry> {
-    ring: &'r Ring<'a>,
+/// One direction's producer, the only one: it keeps its head in its own
+/// memory and reads only the consumer's tail from the ring.
+pub struct Producer<'a, T: Entry> {
+    view: View<'a>,
     dir: Dir,
     head: u32,
     /// The consumer's tail as last seen: it never goes back.
@@ -342,11 +413,15 @@ pub struct Producer<'r, 'a, T: Entry> {
     _entry: PhantomData<T>,
 }
 
-impl<'r, 'a, T: Entry> Producer<'r, 'a, T> {
-    fn new(ring: &'r Ring<'a>, dir: Dir) -> Self {
-        let (head, tail) = ring.indices(dir);
+// SAFETY: the one producer of its direction ([`Ring::split`]); it may move
+// to another thread, and is never shared.
+unsafe impl<T: Entry> Send for Producer<'_, T> {}
+
+impl<'a, T: Entry> Producer<'a, T> {
+    fn new(view: View<'a>, dir: Dir) -> Self {
+        let (head, tail) = view.indices(dir);
         Self {
-            ring,
+            view,
             dir,
             head: head.load(Ordering::Acquire),
             tail: tail.load(Ordering::Acquire),
@@ -357,10 +432,10 @@ impl<'r, 'a, T: Entry> Producer<'r, 'a, T> {
     /// The consumer's tail, judged: it may not pass this producer's head nor
     /// go back.
     fn tail(&mut self) -> Result<u32, Corrupt> {
-        let tail = self.ring.indices(self.dir).1.load(Ordering::Acquire);
+        let tail = self.view.indices(self.dir).1.load(Ordering::Acquire);
         let taken = tail.wrapping_sub(self.tail);
         let used = self.head.wrapping_sub(tail);
-        if taken > self.head.wrapping_sub(self.tail) || used > self.ring.entries {
+        if taken > self.head.wrapping_sub(self.tail) || used > self.view.entries {
             return Err(Corrupt);
         }
         self.tail = tail;
@@ -370,7 +445,7 @@ impl<'r, 'a, T: Entry> Producer<'r, 'a, T> {
     /// Free slots now.
     pub fn space(&mut self) -> Result<u32, Corrupt> {
         let tail = self.tail()?;
-        Ok(self.ring.entries - self.head.wrapping_sub(tail))
+        Ok(self.view.entries - self.head.wrapping_sub(tail))
     }
 
     /// Writes `entry` at the head, then publishes the head (release).
@@ -378,12 +453,13 @@ impl<'r, 'a, T: Entry> Producer<'r, 'a, T> {
         if self.space()? == 0 {
             return Ok(Err(Full));
         }
-        let slot = self.ring.slot(self.dir, self.head).cast::<T>();
-        // SAFETY: the slot lies in the region; the consumer reads it only
-        // after the head below says it is there.
+        let slot = self.view.slot(self.dir, self.head).cast::<T>();
+        // SAFETY: the slot lies in the region, this is its direction's one
+        // producer, and the consumer reads the slot only after the head below
+        // says it is there.
         unsafe { slot.write_volatile(*entry) };
         self.head = self.head.wrapping_add(1);
-        self.ring
+        self.view
             .indices(self.dir)
             .0
             .store(self.head, Ordering::Release);
@@ -391,10 +467,10 @@ impl<'r, 'a, T: Entry> Producer<'r, 'a, T> {
     }
 }
 
-/// One direction's consumer: keeps its tail in its own memory and reads only
-/// the producer's head from the ring.
-pub struct Consumer<'r, 'a, T: Entry> {
-    ring: &'r Ring<'a>,
+/// One direction's consumer, the only one: it keeps its tail in its own
+/// memory and reads only the producer's head from the ring.
+pub struct Consumer<'a, T: Entry> {
+    view: View<'a>,
     dir: Dir,
     tail: u32,
     /// The producer's head as last seen: it never goes back.
@@ -402,14 +478,17 @@ pub struct Consumer<'r, 'a, T: Entry> {
     _entry: PhantomData<T>,
 }
 
-impl<'r, 'a, T: Entry> Consumer<'r, 'a, T> {
-    fn new(ring: &'r Ring<'a>, dir: Dir) -> Self {
-        let (head, tail) = ring.indices(dir);
-        let tail = tail.load(Ordering::Acquire);
+// SAFETY: the one consumer of its direction ([`Ring::split`]); it may move to
+// another thread, and is never shared.
+unsafe impl<T: Entry> Send for Consumer<'_, T> {}
+
+impl<'a, T: Entry> Consumer<'a, T> {
+    fn new(view: View<'a>, dir: Dir) -> Self {
+        let (head, tail) = view.indices(dir);
         Self {
-            ring,
+            view,
             dir,
-            tail,
+            tail: tail.load(Ordering::Acquire),
             head: head.load(Ordering::Acquire),
             _entry: PhantomData,
         }
@@ -418,12 +497,12 @@ impl<'r, 'a, T: Entry> Consumer<'r, 'a, T> {
     /// The producer's head, judged (acquire): at most `entries` ahead of this
     /// tail, and never behind where it was.
     fn head(&mut self) -> Result<u32, Corrupt> {
-        let head = self.ring.indices(self.dir).0.load(Ordering::Acquire);
+        let head = self.view.indices(self.dir).0.load(Ordering::Acquire);
         // Both measured from this tail, both at most `entries`, so no wrap
         // makes a head that went back look ahead.
         let ready = head.wrapping_sub(self.tail);
         let seen = self.head.wrapping_sub(self.tail);
-        if ready > self.ring.entries || ready < seen {
+        if ready > self.view.entries || ready < seen {
             return Err(Corrupt);
         }
         self.head = head;
@@ -442,12 +521,12 @@ impl<'r, 'a, T: Entry> Consumer<'r, 'a, T> {
         if self.ready()? == 0 {
             return Ok(None);
         }
-        let slot = self.ring.slot(self.dir, self.tail).cast::<T>();
+        let slot = self.view.slot(self.dir, self.tail).cast::<T>();
         // SAFETY: the slot lies in the region, and the head (acquire) says
         // the producer finished writing it.
         let entry = unsafe { slot.read_volatile() };
         self.tail = self.tail.wrapping_add(1);
-        self.ring
+        self.view
             .indices(self.dir)
             .1
             .store(self.tail, Ordering::Release);

@@ -7,7 +7,6 @@ use super::*;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ptr::NonNull;
-use std::sync::Arc;
 use std::thread;
 
 /// An 8-byte-aligned region of `bytes`, kept alive by its owner.
@@ -115,8 +114,8 @@ fn a_ring_out_of_shape_is_refused() {
 fn a_ring_fills_empties_and_wraps_around() {
     let mut region = Region::new(size(8, 0));
     let ring = unsafe { Ring::init(region.ptr(), region.len(), BLOCK, 8) }.unwrap();
-    let mut tx = ring.request_producer();
-    let mut rx = ring.request_consumer();
+    let (mut client, mut server) = ring.split();
+    let (tx, rx) = (&mut client.requests, &mut server.requests);
     assert_eq!(rx.pop(), Ok(None), "empty");
     let mut next = 0;
     let mut want = 0;
@@ -139,8 +138,7 @@ fn a_ring_fills_empties_and_wraps_around() {
     }
     assert_eq!(want, next);
     // Responses go the other way on their own indices.
-    let mut rtx = ring.response_producer();
-    let mut rrx = ring.response_consumer();
+    let (rtx, rrx) = (&mut server.responses, &mut client.responses);
     let done = Response {
         tag: 5,
         status: 0,
@@ -158,8 +156,8 @@ fn free_running_indices_wrap_at_u32_max() {
     let header = unsafe { &*region.header() };
     header.req_head.store(start, Ordering::SeqCst);
     header.req_tail.store(start, Ordering::SeqCst);
-    let mut tx = ring.request_producer();
-    let mut rx = ring.request_consumer();
+    let (mut client, mut server) = ring.split();
+    let (tx, rx) = (&mut client.requests, &mut server.requests);
     for tag in 0..20 {
         assert_eq!(tx.push(&request(tag)), Ok(Ok(())));
         assert_eq!(rx.pop().unwrap().map(|r| r.tag), Some(tag));
@@ -170,27 +168,17 @@ fn free_running_indices_wrap_at_u32_max() {
     );
 }
 
-/// The region and the ring over it, shared by two threads.
-struct Shared {
-    _region: Region,
-    ring: Ring<'static>,
-}
-
 #[test]
 fn a_producer_and_a_consumer_racing_on_two_threads_keep_order() {
     const COUNT: u64 = 200_000;
-    let mut region = Region::new(size(16, 0));
+    // The region outlives both threads: leaked for the test.
+    let region = std::boxed::Box::leak(std::boxed::Box::new(Region::new(size(16, 0))));
     let (ptr, len) = (region.ptr(), region.len());
-    // SAFETY: the region lives in `Shared` as long as the ring.
-    let ring = unsafe { Ring::init(ptr, len, BLOCK, 16) }.unwrap();
-    let shared = Arc::new(Shared {
-        _region: region,
-        ring,
-    });
+    let ring: Ring<'static> = unsafe { Ring::init(ptr, len, BLOCK, 16) }.unwrap();
+    let (mut client, mut server) = ring.split();
     let producer = {
-        let shared = shared.clone();
         thread::spawn(move || {
-            let mut tx = shared.ring.request_producer();
+            let tx = &mut client.requests;
             let mut tag = 0;
             while tag < COUNT {
                 match tx.push(&request(tag)).unwrap() {
@@ -200,7 +188,7 @@ fn a_producer_and_a_consumer_racing_on_two_threads_keep_order() {
             }
         })
     };
-    let mut rx = shared.ring.request_consumer();
+    let rx = &mut server.requests;
     let mut want = 0;
     while want < COUNT {
         match rx.pop().unwrap() {
@@ -220,7 +208,8 @@ fn a_hostile_producers_head_is_corrupt_never_a_read_out_of_bounds() {
     let mut region = Region::new(size(8, 0));
     let ring = unsafe { Ring::init(region.ptr(), region.len(), BLOCK, 8) }.unwrap();
     let header = unsafe { &*region.header() };
-    let mut rx = ring.request_consumer();
+    let (_client, mut server) = ring.split();
+    let rx = &mut server.requests;
     // A head more than `entries` ahead of the tail.
     for bad in [9, 1000, u32::MAX] {
         header.req_head.store(bad, Ordering::SeqCst);
@@ -244,7 +233,8 @@ fn a_hostile_consumers_tail_is_corrupt_never_a_write_out_of_bounds() {
     let mut region = Region::new(size(8, 0));
     let ring = unsafe { Ring::init(region.ptr(), region.len(), BLOCK, 8) }.unwrap();
     let header = unsafe { &*region.header() };
-    let mut tx = ring.request_producer();
+    let (mut client, _server) = ring.split();
+    let tx = &mut client.requests;
     for tag in 0..4 {
         tx.push(&request(tag)).unwrap().unwrap();
     }
@@ -265,10 +255,11 @@ fn a_hostile_consumers_tail_is_corrupt_never_a_write_out_of_bounds() {
 fn doorbell_wishes_are_each_sides_to_set() {
     let mut region = Region::new(size(8, 0));
     let ring = unsafe { Ring::init(region.ptr(), region.len(), VMEXIT, 8) }.unwrap();
-    assert!(!ring.wants_requests() && !ring.wants_responses());
-    ring.want_requests(true);
-    ring.want_responses(true);
-    assert!(ring.wants_requests() && ring.wants_responses());
-    ring.want_requests(false);
-    assert!(!ring.wants_requests());
+    let (client, server) = ring.split();
+    assert!(!client.server_wants_requests() && !server.client_wants_responses());
+    server.want_requests(true);
+    client.want_responses(true);
+    assert!(client.server_wants_requests() && server.client_wants_responses());
+    server.want_requests(false);
+    assert!(!client.server_wants_requests());
 }
