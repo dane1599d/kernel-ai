@@ -541,6 +541,11 @@ pub fn shm_info(handle: Handle) -> Result<u64, Error> {
     call(call::SHM_INFO, [u64::from(handle.0), 0, 0, 0, 0, 0])
 }
 
+/// The bytes of the `Shm` that `handle` names: what a mapping of it may read.
+pub fn shm_size(handle: Handle) -> Result<u64, Error> {
+    call(call::SHM_SIZE, [u64::from(handle.0), 0, 0, 0, 0, 0])
+}
+
 /// Takes the screen (`desktop` only): its back buffer's `Shm`, and its shape.
 pub fn display_claim(info: &mut kabi::display::DisplayInfo) -> Result<Handle, Error> {
     call(

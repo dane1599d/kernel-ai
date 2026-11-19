@@ -204,6 +204,26 @@ pub fn create(slot: usize, pages: u64) -> Result<u64, Error> {
     }
 }
 
+/// SHM_SIZE: the bytes of the object `raw` names in `slot`'s table, whatever
+/// the handle's rights.
+pub fn size(slot: usize, raw: u64) -> Result<u64, Error> {
+    let handle = Handle(u32::try_from(raw).map_err(|_| Error::BadHandle)?);
+    let entry = handle::with(slot, |h| {
+        h.table.check(handle, Kind::Shm, Rights::empty(), &Kernel)
+    })?
+    .map_err(Error::from)?;
+    let (index, generation) = unpack(entry.object);
+    with(|objects| {
+        objects
+            .objects
+            .get(index)
+            .and_then(Option::as_ref)
+            .filter(|o| o.generation == generation)
+            .map(|o| o.frames.len() as u64 * PAGE_SIZE)
+            .ok_or(Error::BadHandle)
+    })
+}
+
 /// SHM_MAP: maps the object `raw` names in `slot`'s space; returns its address.
 /// Invalid when the object holds fewer than `min_pages` pages, so a server
 /// that will touch that many never faults on a short one (0: no check).
