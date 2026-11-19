@@ -35,14 +35,14 @@ fn a_model_running_on_trial_or_being_imported_stays() {
                 candidate: Some(A),
                 ..Holds::default()
             },
-            "on trial",
+            "the next restart starts it",
         ),
         (
             Holds {
                 previous: Some(A),
                 ..Holds::default()
             },
-            "goes back to it",
+            "falls back to",
         ),
         (
             Holds {
@@ -74,10 +74,11 @@ fn a_download_of_it_stops_instead() {
     assert!(decide(&A, &both).is_err());
 }
 
-/// A trial not yet decided holds its candidate and its way back; a decided
-/// one holds neither.
+/// A trial holds what the hint names or may go back to: undecided, its
+/// candidate and its way back; kept, its candidate; rolled back, its previous,
+/// which the next boot runs.
 #[test]
-fn an_undecided_trial_holds_its_candidate_and_its_way_back() {
+fn a_trial_holds_what_the_next_boot_may_map() {
     let trial = |state| Trial {
         candidate: A,
         fnv: 7,
@@ -87,8 +88,16 @@ fn an_undecided_trial_holds_its_candidate_and_its_way_back() {
     for state in [State::Pending, State::Attempted] {
         assert_eq!(trial_holds(Some(&trial(state))), (Some(A), Some(B)));
     }
-    for state in [State::Kept, State::RolledBack("no".into())] {
-        assert_eq!(trial_holds(Some(&trial(state))), (None, None));
-    }
+    assert_eq!(trial_holds(Some(&trial(State::Kept))), (Some(A), None));
+    let rolled = trial(State::RolledBack("no".into()));
+    assert_eq!(trial_holds(Some(&rolled)), (None, Some(B)));
+    // So the fallback a rolled-back trial runs next cannot be removed.
+    let (candidate, previous) = trial_holds(Some(&rolled));
+    let holds = Holds {
+        candidate,
+        previous,
+        ..Holds::default()
+    };
+    assert!(decide(&B, &holds).unwrap_err().contains("falls back to"));
     assert_eq!(trial_holds(None), (None, None));
 }

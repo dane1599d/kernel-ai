@@ -14,10 +14,11 @@ use alloc::string::String;
 pub struct Holds {
     /// The model `llm` reports loaded.
     pub running: Option<Sha256>,
-    /// The candidate of a trial not yet decided: the next restart's, or the
-    /// one this boot is trying.
+    /// The model the next restart maps by the hint: an undecided trial's
+    /// candidate, or the one a kept trial keeps.
     pub candidate: Option<Sha256>,
-    /// What that trial goes back to if the candidate fails to load.
+    /// The model a trial falls back to: an undecided one's way back, or the
+    /// one a rolled-back trial put the hint back on.
     pub previous: Option<Sha256>,
     /// The model an import from the attached disk is writing.
     pub importing: Option<Sha256>,
@@ -34,15 +35,19 @@ pub enum Remove {
     Blob,
 }
 
-/// The models a trial record holds while it is not decided (pending, or
-/// attempted by this boot): its candidate and the model a rollback goes back
-/// to. A kept or rolled-back trial holds none.
+/// The models a trial record holds, as (candidate, previous): those the hint
+/// names or may go back to, which the kernel maps at the next boot. Undecided
+/// (pending, or attempted by this boot), both; kept, its candidate, which the
+/// hint names; rolled back, its previous, which the hint names again. Removing
+/// either would leave the next restart with no model.
 pub fn trial_holds(trial: Option<&Trial>) -> (Option<Sha256>, Option<Sha256>) {
-    match trial {
-        Some(t) if matches!(t.state, State::Pending | State::Attempted) => {
-            (Some(t.candidate), t.previous)
-        }
-        _ => (None, None),
+    let Some(t) = trial else {
+        return (None, None);
+    };
+    match t.state {
+        State::Pending | State::Attempted => (Some(t.candidate), t.previous),
+        State::Kept => (Some(t.candidate), None),
+        State::RolledBack(_) => (None, t.previous),
     }
 }
 
@@ -57,12 +62,12 @@ pub fn decide(sha256: &Sha256, holds: &Holds) -> Result<Remove, String> {
     }
     if is(holds.candidate) {
         return Err(String::from(
-            "it is on trial for the next restart; undo that switch first",
+            "the next restart starts it; switch to another model first",
         ));
     }
     if is(holds.previous) {
         return Err(String::from(
-            "a model on trial goes back to it if it fails; ask again once the trial ends",
+            "it is the model this machine falls back to; switch to another model first",
         ));
     }
     if is(holds.importing) {
