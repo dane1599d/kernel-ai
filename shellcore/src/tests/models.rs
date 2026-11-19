@@ -765,3 +765,42 @@ fn a_second_undo_after_a_removal_does_not_reach_an_older_entry() {
         "the switch stays"
     );
 }
+
+/// Fix check of #1157: a fetch the line asked for opens its menu on Allow, as
+/// before it had an undo; one the model added still opens on Deny.
+#[test]
+fn an_asked_fetch_opens_on_allow_and_an_added_one_on_deny() {
+    let host = FakeHost::new();
+    let mut typed = shell(&host);
+    let reply = typed.eval("models import");
+    assert!(
+        reply.text.starts_with(
+            "menu 1 asked
+"
+        ),
+        "{reply:?}"
+    );
+    let host = FakeHost::new();
+    let mut asked = shell(&host);
+    let fetch = r#"{"name":"model_fetch","arguments":{"source":"disk"}}"#;
+    host.calls.borrow_mut().push_back(call(fetch));
+    let reply = asked.eval("please import the model from the attached disk");
+    assert!(
+        reply.text.starts_with(
+            "menu 1 asked
+"
+        ),
+        "{reply:?}"
+    );
+    let host = FakeHost::new();
+    let mut added = shell(&host);
+    host.calls.borrow_mut().push_back(call(fetch));
+    let reply = added.eval("tidy up my desktop");
+    assert!(
+        reply.text.starts_with(
+            "menu 1 added
+"
+        ),
+        "{reply:?}"
+    );
+}
