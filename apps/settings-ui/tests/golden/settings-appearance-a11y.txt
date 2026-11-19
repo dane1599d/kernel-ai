@@ -6,3 +6,4 @@
 [10] button "Theme: dark" runs appearance_set
 [11] switch "Legible type" = "off"
 [12] switch "Reduce motion" = "off"
+[13] menu "Time zone: UTC"
