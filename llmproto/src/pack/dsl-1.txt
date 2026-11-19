@@ -31,7 +31,7 @@ type Policy = "interactive" | "round-robin"
 cpus() -> int
 memory() -> #{free_mib: int, total_mib: int, heap_kib: int}  // MiB; kernel heap in KiB
 uptime_ms() -> int  // since boot
-processes() -> [#{pid: int, name: string, mib: int, cpu_ms: int}]
+processes() -> [#{pid: int, name: string, mib: int, cpu_ms: int}]  // the running services
 threads() -> #{switches: int, ejections: int, migrations: int}  // scheduler counters since boot
 get_policy() -> Policy
 set_policy(name: Policy) [undo]  // every CPU

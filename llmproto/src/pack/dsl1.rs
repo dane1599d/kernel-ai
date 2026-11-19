@@ -46,7 +46,7 @@ pub(super) const BRIEF: &[(&str, &str)] = &[
     ("memory", "MiB; kernel heap in KiB"),
     ("uptime_ms", "since boot"),
     ("get_policy", ""),
-    ("processes", ""),
+    ("processes", "the running services"),
     ("set_policy", "every CPU"),
     ("tune_undo", "puts back the policy a kept trial replaced"),
     ("component_revert", "a live component back n versions"),
