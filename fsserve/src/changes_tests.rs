@@ -52,12 +52,12 @@ fn page(c: &mut Client<'_>, badge: u64, since: u64, after: Option<(u64, u64)>) -
     else {
         panic!("not a page");
     };
-    let pairs: Vec<(u64, u64)> = rows.iter().map(|r| (r.changed, r.object)).collect();
-    assert!(pairs.is_sorted(), "a page out of order");
-    assert!(pairs.iter().all(|&(changed, _)| changed <= upto));
+    let objects: Vec<u64> = rows.iter().map(|r| r.object).collect();
+    assert!(objects.is_sorted(), "a page out of order");
+    assert!(rows.iter().all(|r| r.changed > since && r.changed <= upto));
     Page {
         objects: rows.iter().map(|r| r.object).collect(),
-        next: pairs.last().copied().filter(|_| more),
+        next: objects.last().map(|&last| (upto, last)).filter(|_| more),
         upto,
         fallbacks,
     }
@@ -137,12 +137,15 @@ fn a_commit_between_two_pages_is_not_missed() {
         rest.extend(got.objects);
         after = got.next;
     }
-    assert!(rest.contains(&given), "the changed object came again");
-    assert!(rest.contains(&late), "the new object was missed");
     let all: BTreeSet<u64> = first.objects.iter().chain(&rest).copied().collect();
     for file in &files {
         assert!(all.contains(&object(file)), "a file was skipped");
     }
+    // What changed during the round has a generation past its `upto`: the
+    // next round, from there, gives it.
+    let (next, _, _) = page_through(&mut c, HOME_USER, first.upto);
+    assert!(next.contains(&given), "the changed object was missed");
+    assert!(next.contains(&late), "the new object was missed");
 }
 
 /// An open action's objects are not given until it commits, then they are,
@@ -211,7 +214,8 @@ fn an_object_moved_out_or_trashed_leaves_its_folders_changes() {
 fn a_page_says_how_many_mounts_fell_back() {
     let mut disk = MemDisk::new(BLOCKS);
     let (mut c, _) = Client::start(&mut disk);
-    assert_eq!(page(&mut c, HOME_USER, 0, None).fallbacks, 0);
+    // A new disk starts at 1: 0 is what a build that keeps no count writes.
+    assert_eq!(page(&mut c, HOME_USER, 0, None).fallbacks, 1);
 }
 
 /// A restored update snapshot takes `system` back to older state, with older
@@ -251,4 +255,53 @@ fn a_raised_count_is_committed_before_a_page_shows_it() {
     drop(c);
     let (mut c, _) = Client::start(&mut disk);
     assert_eq!(page(&mut c, HOME_USER, 0, None).fallbacks, shown);
+}
+
+/// While another caller's action holds `fs`, a raised count cannot be
+/// committed: a page is refused Busy, and nothing is committed for it.
+#[test]
+fn a_page_waits_while_an_action_holds_an_unsaved_count() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let begin = Request::Begin { action: 1 };
+    assert_eq!(on(&mut c, ALICE, HOME_USER, begin).0, Reply::Done);
+    // A restore raises the count, unsaved, inside Alice's action.
+    let fs = c.server.fs();
+    fs.set_volume(kaifs::vol::MODELS).unwrap();
+    let snapshot = fs.snapshot().unwrap();
+    assert!(fs.restore_snapshot(snapshot).unwrap());
+    let generation = c.server.generation();
+    let request = Request::ChangesSince {
+        since: 0,
+        after: None,
+    };
+    assert_eq!(
+        on(&mut c, BOB, HOME_USER, request).0,
+        Reply::Failed(Error::Busy)
+    );
+    assert_eq!(c.server.generation(), generation, "nothing was committed");
+    commit(&mut c);
+    let shown = page(&mut c, HOME_USER, 0, None).fallbacks;
+    assert!(!c.server.fs().fallbacks_unsaved());
+    assert!(shown >= 2);
+}
+
+/// A full round reads about a page of the tree a page, not all of it: 2,000
+/// objects in one generation, paged, find each exactly once.
+#[test]
+fn a_long_round_finds_each_object_once() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let (_, _, before) = page_through(&mut c, HOME_USER, 0);
+    let begin = Request::Begin { action: 1 };
+    assert_eq!(on(&mut c, ALICE, HOME_USER, begin).0, Reply::Done);
+    let made: BTreeSet<u64> = (0..2_000)
+        .map(|n| object(&open(&mut c, HOME_USER, &format!("g{n}"), How::CreateFile)))
+        .collect();
+    commit(&mut c);
+    let (seen, pages, _) = page_through(&mut c, HOME_USER, before);
+    let unique: BTreeSet<u64> = seen.iter().copied().collect();
+    assert_eq!(unique.len(), seen.len(), "an object came twice");
+    assert!(made.is_subset(&unique));
+    assert!(pages >= 2_000 / MAX_ROWS as usize);
 }
