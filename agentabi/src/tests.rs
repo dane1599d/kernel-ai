@@ -26,7 +26,8 @@ fn the_lists_cover_every_row_once() {
         .chain(&MODEL_ROWS)
         .chain(&APP_ROWS)
         .chain(&NET_ROWS)
-        .chain(&POWER_ROWS);
+        .chain(&POWER_ROWS)
+        .chain(&SEND_ROWS);
     assert_eq!(listed.clone().count(), ROWS.len());
     for row in listed {
         assert!(ROWS.iter().any(|r| r.name == row.name), "{}", row.name);

@@ -53,6 +53,7 @@ mod panel;
 mod power;
 mod profiles;
 mod scripts;
+mod sendrow;
 mod settings;
 mod standing;
 mod told;

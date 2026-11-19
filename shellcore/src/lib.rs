@@ -65,6 +65,7 @@ mod profiles;
 mod rules;
 pub mod script;
 mod sending;
+mod sendrow;
 mod settings;
 pub use settings::{MAX_ANSWER as SETTINGS_MAX_ANSWER, SETTINGS_APP};
 mod show;
@@ -365,9 +366,9 @@ pub trait Host {
     /// A held send that is due (`outbox`): `send.body` posted to `send.path`
     /// on `send.host`, once, never retried and never redirected.
     ///
-    /// Fail-closed: `Ok` with the status line for any HTTP answer at all
-    /// (a 403 or a 500 too: the site got the body), and `Err` only when no
-    /// answer came. `maybe_sent` is false only for a failure before any byte
+    /// Fail-closed: `Ok` with the answer's status code and reason (`200 OK`,
+    /// `403 Forbidden`) for any HTTP answer at all (a 403 or a 500 too: the
+    /// site got the body), and `Err` only when no answer came. `maybe_sent` is false only for a failure before any byte
     /// of the request was written (no address, no connection, the TLS
     /// handshake refused); anything after that may have gone out.
     fn net_send(&self, _send: &outbox::Send) -> Result<String, outbox::SendFailed> {
@@ -628,7 +629,12 @@ impl Reply {
     pub fn to_wire(&self) -> String {
         match self.confirm {
             _ if self.more => String::from("more"),
-            Some(_) if self.text.starts_with("menu ") => self.text.clone(),
+            Some(_)
+                if self.text.starts_with("menu ")
+                    || self.text.starts_with(termcore::menu::SHOWN) =>
+            {
+                self.text.clone()
+            }
             Some(id) => format!("confirm {id} {}", self.text),
             None => format!("{} {}", if self.ok { "ok" } else { "err" }, self.text),
         }
