@@ -413,11 +413,7 @@ fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
             // to delete note 2", "can you explain how to remove it"): it asks for
             // words, not for a change. The line still names the action, so
             // `named_any` counts it.
-            if !telling_counts
-                && words[..at]
-                    .iter()
-                    .any(|w| w.clause == clause && TELL_WORDS.contains(&w.text.as_str()))
-            {
+            if !telling_counts && (0..at).any(|i| words[i].clause == clause && tells(words, i)) {
                 continue;
             }
             let negated = negated(words, at);
@@ -632,6 +628,26 @@ fn is_question(line: &str) -> bool {
 }
 
 /// Words that start a line asking to be told something, not for a change.
+/// Whether the word at `at` is a telling word used as one: it leads its
+/// clause, after nothing but polite or modal words ("tell me how", "please
+/// list", "can you explain", "I want you to describe"). As a noun it tells
+/// nothing: "build me a shopping list app" asks for the app, and "list" there
+/// is no request to be told (#1202's boot case).
+fn tells(words: &[Word], at: usize) -> bool {
+    let clause = words[at].clause;
+    TELL_WORDS.contains(&words[at].text.as_str())
+        && words[..at]
+            .iter()
+            .filter(|w| w.clause == clause)
+            .all(|w| LEADS.contains(&w.text.as_str()))
+}
+
+/// Words that may come before a telling verb in its clause and leave it one.
+const LEADS: &[&str] = &[
+    "please", "can", "could", "would", "will", "you", "just", "kai", "now", "then", "also", "and",
+    "so", "hey", "ok", "okay", "i", "want", "need", "to", "me", "us",
+];
+
 const TELL_WORDS: &[&str] = &[
     "describe",
     "explain",
