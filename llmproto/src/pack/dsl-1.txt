@@ -51,3 +51,4 @@ appearance (theme, text size or motion): appearance_set
 models (list, import or switch the AI model): model_list model_fetch model_use
 apps (build or install a new app): app_build app_install
 net (web): net_fetch net_lookup query
+goal (long tasks): goal_set goal_list goal_pause goal_resume goal_cancel

@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 agentid = { path = "../agentid" }
+goalcore = { path = "../goalcore" }
 agentabi = { path = "../agentabi" }
 appabi = { path = "../appabi" }
 bootslot = { path = "../bootslot" }
