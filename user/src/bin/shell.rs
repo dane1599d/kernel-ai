@@ -1174,6 +1174,11 @@ fn main() -> i32 {
             took = if deferred { Taken::Request } else { took };
         }
         woke_before_send &= took.any();
+        // A send falls due: the Terminal window's effects are taken first,
+        // so an `undo N` typed there cancels it before it starts.
+        if !took.any() && shell.next_send_ms(now_ms()) == Some(0) {
+            take_effects(&mut shell, held);
+        }
         sends::give(&mut shell, &system, &mut sends_shown, took);
         take_effects(&mut shell, held);
         waiting::run_held(&mut shell, held);
