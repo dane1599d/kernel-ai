@@ -913,10 +913,12 @@ fn a_file_near_the_limit_opens_in_one_call_under_the_editors_own_settings() {
     const PATH: &str = "/home/user/big.txt";
     let Some(wasm) = wasm() else { return };
     let limits = plan_limits();
-    assert!(limits.fuel_call > LIMITS.fuel_call, "the plan line asks for more");
+    assert!(
+        limits.fuel_call > LIMITS.fuel_call,
+        "the plan line asks for more"
+    );
     let disk: String = (0..1900)
-        .map(|i| format!("line {i:04} {}
-", "-".repeat(20)))
+        .map(|i| format!("line {i:04} {}\n", "-".repeat(20)))
         .collect();
     assert!(disk.len() > 58_000 && disk.len() < editcore::MAX_BUNDLE);
     let mut g = start_with(&wasm, limits);
