@@ -46,7 +46,12 @@ pub enum CallError {
     Unavailable,
     /// Too many calls in flight.
     Busy,
+    /// No server took it before its deadline: it never ran, so it may be
+    /// tried again.
     TimedOut,
+    /// Its server took it and gave no reply by the deadline: it may have run,
+    /// or still run (audit K #19).
+    Unanswered,
     /// The service died while handling the call.
     ServiceDied,
     /// The caller gave up (killed, or Ctrl-C).
@@ -456,6 +461,7 @@ pub(crate) fn finish_with(pending: Pending) -> Result<(Vec<u8>, u64, Vec<Entry>)
         // Failed before any server took it: its deadline passed in the queue.
         (Some(call), FAILED) if call.taker == 0 => Err(CallError::TimedOut),
         (_, FAILED) => Err(CallError::ServiceDied),
+        (Some(_), TAKEN) => Err(CallError::Unanswered),
         _ => Err(CallError::TimedOut),
     }
 }
@@ -552,7 +558,7 @@ pub fn call_with_stop(
     }
     let cancelled = !pending.done() && cancel();
     match finish_with(pending) {
-        Err(CallError::TimedOut) if cancelled => Err(CallError::Cancelled),
+        Err(CallError::TimedOut | CallError::Unanswered) if cancelled => Err(CallError::Cancelled),
         other => other,
     }
 }
