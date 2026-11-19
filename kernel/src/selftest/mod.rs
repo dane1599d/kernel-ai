@@ -331,6 +331,9 @@ pub enum SelfTest {
     EfiReset,
     /// POWER_REBOOT from ring 3, refused without `cap::POWER` (backlog item 13).
     PowerReboot,
+    /// POWER_OFF from ring 3, refused without `cap::POWER`; with it the machine
+    /// turns off through ResetSystem (ADR 0007 section 8).
+    PowerOff,
     /// The boot lever on a slot image, driven by `slot-do=` (ADR 0008, lane U).
     Slot,
     /// Probation's commit on a slot image (ADR 0008 §5).

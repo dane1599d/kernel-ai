@@ -133,6 +133,21 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("power-reboot", "test=power-reboot")
     },
+    // ADR 0007 section 8: POWER_OFF from ring 3, refused without `cap::POWER`,
+    // the machine off through ResetSystem with it: QEMU ends by the guest's
+    // shutdown, which under -no-reboot exits 0 as a reset does.
+    TestCase {
+        resets: true,
+        expect: &[
+            "[hnopoweroff] power: POWER_OFF was refused without a Power handle",
+            "power: POWER_OFF without the power capability was refused",
+            "[hpoweroff] power: asking to turn off",
+            "power: hpoweroff (pid ",
+            ") asked for the computer off",
+            "efi: turning off through ResetSystem",
+        ],
+        ..case("power-off", "test=power-off")
+    },
     // ADR 0007 section 3: a record per bound device, read by DEV_LIST from ring 3.
     TestCase {
         usb: &["usb-kbd"],

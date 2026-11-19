@@ -635,6 +635,14 @@ pub fn entropy(buf: &mut [u8]) -> Result<usize, Error> {
 /// Restarts the machine (POWER_REBOOT). Returns only with why it did not:
 /// Permission without a `Power` handle (`cap::POWER`). Commit what must be kept
 /// first.
+/// POWER_OFF: turns the machine off; returns only with why not.
+pub fn power_off() -> Error {
+    match call(call::POWER_OFF, [0; 6]) {
+        Ok(_) => Error::Invalid,
+        Err(error) => error,
+    }
+}
+
 pub fn power_reboot() -> Error {
     match call(call::POWER_REBOOT, [0; 6]) {
         Ok(_) => Error::Invalid,
