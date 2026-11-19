@@ -277,7 +277,9 @@ fn kernel_grants() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// `handles mode=grants`, started with SUPERVISE and POLICY.
+/// `handles mode=grants`, started with SUPERVISE and POLICY. It exits owning
+/// a live node, so its exit only completes if `revoke_owned` does not
+/// deadlock (audit K #11).
 fn ring3_grants() -> Result<(), &'static str> {
     let pid = process::spawn(&SpawnRequest {
         name: "hgrant",
