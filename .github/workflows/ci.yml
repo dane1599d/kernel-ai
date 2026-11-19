@@ -309,12 +309,15 @@ jobs:
   # M10a-2's spike, not a gate: boots `icount-probe` twice under single-threaded
   # TCG with icount and requires the same digest; it also prints host seconds per
   # virtual second, which fixes shift and the trial's window length.
+  # Not a gate, so not on merge batches either (2026-11-19: 6-10 runner minutes
+  # and a job slot per batch, while batches queue for runners): it runs on main
+  # pushes, where a drift shows the commit that brought it, and on a PR
+  # labelled `full-ci-all`.
   icount:
     name: icount determinism probe (not a gate)
     if: >-
       !cancelled() && needs.qemu.result == 'success' &&
       (github.event_name != 'pull_request' ||
-      startsWith(github.head_ref, 'batch/') ||
       contains(github.event.pull_request.labels.*.name, 'full-ci-all'))
     runs-on: ubuntu-24.04
     needs: qemu
