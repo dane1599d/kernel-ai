@@ -417,3 +417,116 @@ fn a_window_with_only_buttons_focuses_nothing() {
     w.input(Input::FocusIn, &M);
     assert_eq!(w.focus_node(), None);
 }
+
+fn field(w: &mut Window, value: &str) {
+    let f = uikit::widget::TextField {
+        label: s("Name"),
+        value: s(value),
+        placeholder: String::new(),
+        max_len: 4000,
+    };
+    w.put(2, ROOT, Layout::FIT, Widget::TextLine(f)).unwrap();
+}
+
+/// A caret kept as a byte offset must not stay inside a multi-byte character
+/// when the app puts a new value under it: the next key used to slice there and
+/// panic the host.
+#[test]
+fn a_put_that_leaves_the_caret_inside_a_character_does_not_break_the_next_key() {
+    let mut w = Window::new("t", 200, 100);
+    field(&mut w, "");
+    w.commit(&M);
+    w.act(2, Action::Focus, None, &M).unwrap();
+    w.input(typed("a"), &M);
+    w.input(typed("b"), &M);
+    // The caret is at byte 2; the app answers with a value where byte 2 is inside "é".
+    for value in ["né", "你好", "✓ sent", ""] {
+        field(&mut w, value);
+        w.commit(&M);
+        w.input(typed("x"), &M);
+        w.input(key(Key::Left), &M);
+        w.input(key(Key::Backspace), &M);
+        w.input(key(Key::Delete), &M);
+        w.input(key(Key::End), &M);
+        // Back to the byte-2 caret for the next value.
+        w.input(key(Key::Home), &M);
+        w.input(key(Key::Right), &M);
+        w.input(key(Key::Right), &M);
+    }
+}
+
+/// Typed text counts in the window's byte total, so removing the field later
+/// takes off what it weighs and no more: the total never wraps, and a put after
+/// it is not refused as too big.
+#[test]
+fn typing_then_removing_a_field_leaves_the_window_able_to_take_more() {
+    let mut w = Window::new("t", 400, 200);
+    w.put(1, ROOT, Layout::FILL, Widget::Stack { axis: Axis::Column })
+        .unwrap();
+    let f = uikit::widget::TextField {
+        label: s("Line"),
+        value: String::new(),
+        placeholder: String::new(),
+        max_len: 4000,
+    };
+    w.put(2, 1, Layout::FIT, Widget::TextLine(f)).unwrap();
+    w.commit(&M);
+    w.act(2, Action::Focus, None, &M).unwrap();
+    for _ in 0..2000 {
+        w.input(typed("x"), &M);
+    }
+    w.remove(2).unwrap();
+    // The count is back where an empty window has it; one more put fits.
+    w.put(3, 1, Layout::FIT, label("Ready")).unwrap();
+    w.commit(&M);
+    // And the same after a replace and a second removal.
+    let f = uikit::widget::TextField {
+        label: s("Line"),
+        value: s("again"),
+        placeholder: String::new(),
+        max_len: 4000,
+    };
+    w.put(2, 1, Layout::FIT, Widget::TextLine(f)).unwrap();
+    w.remove(2).unwrap();
+    w.remove(3).unwrap();
+    w.put(4, 1, Layout::FIT, label("Next")).unwrap();
+}
+
+/// Values the host accepts that would make `clamp` panic on a person's key or
+/// click: tabs with no labels, a slider whose min is over its max.
+#[test]
+fn a_key_or_click_on_empty_tabs_or_an_inverted_slider_does_nothing_harmful() {
+    let mut w = Window::new("t", 300, 120);
+    w.put(1, ROOT, Layout::FILL, Widget::Stack { axis: Axis::Column })
+        .unwrap();
+    w.put(
+        2,
+        1,
+        Layout::FIT,
+        Widget::Tabs {
+            labels: Vec::new(),
+            selected: 0,
+        },
+    )
+    .unwrap();
+    w.put(
+        3,
+        1,
+        Layout::FIT,
+        Widget::Slider {
+            label: s("Size"),
+            min: 10,
+            max: 0,
+            step: 1,
+            value: 5,
+        },
+    )
+    .unwrap();
+    w.commit(&M);
+    w.act(2, Action::Focus, None, &M).unwrap();
+    w.input(key(Key::Left), &M);
+    w.input(key(Key::Right), &M);
+    let at = centre(&mut w, 3);
+    click(&mut w, at);
+    w.input(Input::PointerMove(Point::new(at.x + 5, at.y)), &M);
+}

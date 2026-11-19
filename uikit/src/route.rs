@@ -263,7 +263,7 @@ impl Window {
         let raw = i64::from(*min) + span.max(0) * dx / w;
         let step = i64::from((*step).max(1));
         let snapped = i64::from(*min) + (raw - i64::from(*min) + step / 2) / step * step;
-        Some(snapped.clamp(i64::from(*min), i64::from(*max)) as i32)
+        Some(snapped.clamp(i64::from(*min), i64::from(*max).max(i64::from(*min))) as i32)
     }
 
     /// The byte offset in `text` nearest `x` px from its start.
@@ -518,7 +518,7 @@ impl Window {
                     _ => return,
                 };
                 let i = (i64::from(selected) + step(back))
-                    .clamp(0, labels.len() as i64 - 1)
+                    .clamp(0, (labels.len() as i64 - 1).max(0))
                     .max(0) as u32;
                 out.extend(self.change(f, Value::Index(i)).ok().flatten());
             }
@@ -560,6 +560,11 @@ impl Window {
             .copied()
             .unwrap_or(value.len())
             .min(value.len());
+        // Never inside a character: a stored caret may predate the text.
+        let mut at = at;
+        while !value.is_char_boundary(at) {
+            at -= 1;
+        }
         let prev = value[..at].char_indices().last().map_or(0, |(i, _)| i);
         let next = value[at..].chars().next().map_or(at, |c| at + c.len_utf8());
         let line_start = value[..at].rfind('\n').map_or(0, |i| i + 1);
