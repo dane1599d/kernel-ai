@@ -251,10 +251,7 @@ impl Client {
                 window,
                 usage,
                 down,
-            } => {
-                self.modifier(usage, down);
-                (window, Kind::Key, usage, i32::from(down), None)
-            }
+            } => (window, Kind::Key, usage, i32::from(down), None),
             Effect::Button {
                 window,
                 at,
@@ -318,20 +315,9 @@ impl Client {
         self.posts.push((pool, event));
     }
 
-    /// Shift, Ctrl, Alt and Super, held or let go: the seat hears the new set.
-    fn modifier(&mut self, usage: u16, down: bool) {
-        let bit = match usage {
-            0xE1 | 0xE5 => 1,
-            0xE0 | 0xE4 => 2,
-            0xE2 | 0xE6 => 4,
-            0xE3 | 0xE7 => 8,
-            _ => return,
-        };
-        let mods = if down {
-            self.mods | bit
-        } else {
-            self.mods & !bit
-        };
+    /// The modifiers the desk says are held (shift 1, ctrl 2, alt 4, super 8),
+    /// whatever had the focus when they changed: the seat hears the new set.
+    fn modifiers(&mut self, mods: u32) {
         if mods == self.mods {
             return;
         }
@@ -654,6 +640,9 @@ impl Client {
             self.input(effect);
             if let Effect::Locks { caps } = *effect {
                 self.caps = caps;
+            }
+            if let Effect::Modifiers(mods) = *effect {
+                self.modifiers(mods);
             }
             match *effect {
                 Effect::Configure {
