@@ -29,6 +29,18 @@ fn rename_into(
     to: &str,
     into: (u64, Rights),
 ) -> Reply {
+    rename_with(c, source, rights, from, to, Ok(into))
+}
+
+/// [`rename_into`] with what `fs` read of the moved handle.
+fn rename_with(
+    c: &mut Client<'_>,
+    source: &Mint,
+    rights: Rights,
+    from: &str,
+    to: &str,
+    into: Result<(u64, Rights), Error>,
+) -> Reply {
     let bytes = encode_request(&Request::Rename {
         from: from.into(),
         to: to.into(),
@@ -100,5 +112,36 @@ fn a_rename_into_a_dir_refuses_a_taken_name_a_file_and_another_volume() {
     let other = (kabi::fs::SYSTEM_STATE, DIR_RIGHTS);
     let across = rename_into(&mut c, &a, a.rights, "x", "z", other);
     assert_eq!(across, Reply::Failed(Error::Invalid));
+    assert!(exists(&mut c, a.badge, "x"), "nothing moved");
+}
+
+/// A moved handle `fs` could not read as a destination (another's, closed, of
+/// another kind) is the Rename's error: it never renames within its own
+/// folder instead.
+#[test]
+fn a_rename_whose_moved_handle_cannot_be_a_destination_fails_and_moves_nothing() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let a = open(&mut c, HOME_USER, "a", How::Mkdir);
+    open(&mut c, a.badge, "x", How::CreateFile);
+    for why in [Error::Permission, Error::Invalid] {
+        let failed = rename_with(&mut c, &a, a.rights, "x", "y", Err(why));
+        assert_eq!(failed, Reply::Failed(why));
+    }
+    assert!(exists(&mut c, a.badge, "x"), "renamed in its own folder");
+    assert!(!exists(&mut c, a.badge, "y"));
+}
+
+/// A read-only folder and the apps root are never a destination.
+#[test]
+fn a_read_only_folder_and_the_apps_root_are_refused_as_destinations() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let a = open(&mut c, HOME_USER, "a", How::Mkdir);
+    open(&mut c, a.badge, "x", How::CreateFile);
+    for badge in [kabi::fs::SYSTEM_SETTINGS, kabi::fs::SYSTEM_APPS] {
+        let refused = rename_into(&mut c, &a, a.rights, "x", "x", (badge, DIR_RIGHTS));
+        assert_eq!(refused, Reply::Failed(Error::Permission), "{badge:#x}");
+    }
     assert!(exists(&mut c, a.badge, "x"), "nothing moved");
 }

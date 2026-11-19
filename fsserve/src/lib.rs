@@ -185,9 +185,10 @@ pub struct Server<D: BlockDev> {
     name_of: NameOf,
     /// The model store's blob being written in the open action ([`models`]).
     sealing: Option<models::Sealing>,
-    /// The `Dir` a Rename moved with it, as `fs` read it (ENDPOINT_BADGE): its
-    /// badge and rights, for the one call ([`Server::call_into`]).
-    into: Option<(u64, Rights)>,
+    /// What a Rename moved with it, as `fs` read it (ENDPOINT_BADGE): a `Dir`'s
+    /// badge and rights, or why the handle it moved cannot be one, for the one
+    /// call ([`Server::call_into`]).
+    into: Option<Result<(u64, Rights), Error>>,
 }
 
 /// The object a checked badge names.
@@ -410,11 +411,13 @@ impl<D: BlockDev> Server<D> {
         self.call_shm(call, None)
     }
 
-    /// [`Server::call`] for a request that moved a `Dir` of this server's in
-    /// with it, whose badge and rights are `into` (ENDPOINT_BADGE): the
-    /// destination of [`Request::Rename`]. Any other request answers as if
-    /// nothing moved.
-    pub fn call_into(&mut self, call: &Call, into: (u64, Rights)) -> Answer {
+    /// [`Server::call`] for a request that moved a handle in with it: `into`
+    /// is the badge and rights of a `Dir` of this server's (ENDPOINT_BADGE),
+    /// the destination of [`Request::Rename`], or the error the handle gives
+    /// when it cannot be one (another's, closed, of another kind, more than
+    /// one): such a Rename fails with it, never falling back to its own
+    /// folder. Any other request answers as if nothing moved.
+    pub fn call_into(&mut self, call: &Call, into: Result<(u64, Rights), Error>) -> Answer {
         self.into = Some(into);
         let answer = self.call(call);
         self.into = None;
@@ -704,10 +707,11 @@ impl<D: BlockDev> Server<D> {
                 // Into the moved `Dir` when there is one: DELETE here, CREATE
                 // there. Else in this one, which needs both.
                 let into = match self.into.take() {
-                    Some((badge, rights)) => {
+                    Some(Ok((badge, rights))) => {
                         need(Rights::DELETE)?;
                         self.rename_into(call.badge, badge, rights)?
                     }
+                    Some(Err(why)) => return Err(why),
                     None => {
                         need(Rights::DELETE | Rights::CREATE)?;
                         object
