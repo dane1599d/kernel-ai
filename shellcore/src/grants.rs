@@ -99,19 +99,28 @@ pub fn valid_row(row: &str) -> bool {
 }
 
 /// The pairs withheld now: none with no file; why not, for a file out of
-/// shape, which must not be read as none.
+/// shape or one that could not be read, which must not be read as none.
 fn current(host: &dyn Host) -> Result<Withheld, String> {
     match host.withheld_read() {
-        None => Ok(Withheld::default()),
-        Some(text) => Withheld::parse(&text)
+        Ok(None) => Ok(Withheld::default()),
+        Ok(Some(text)) => Withheld::parse(&text)
             .map_err(|why| format!("the withheld grants on disk are out of shape ({why})")),
+        Err(why) => Err(format!(
+            "the withheld grants on disk could not be read ({why})"
+        )),
     }
 }
 
 /// Whether `app`'s effects may not call `row` now: every row, while the file
-/// is out of shape (fail closed).
+/// is out of shape or cannot be read (fail closed), and that is audited.
 pub fn is_withheld(host: &dyn Host, app: &str, row: &str) -> bool {
-    current(host).map_or(true, |withheld| withheld.contains(app, row))
+    match current(host) {
+        Ok(withheld) => withheld.contains(app, row),
+        Err(why) => {
+            host.audit(&format!("{why}; {app}'s effect may not call {row}"));
+            true
+        }
+    }
 }
 
 /// Checks `/system/state/withheld` at start: a file out of shape is audited,

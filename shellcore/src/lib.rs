@@ -455,9 +455,10 @@ pub trait Host {
         Err(String::from("there is no /system/state here"))
     }
     /// The rows taken back from apps' effects, as `/system/state/withheld`
-    /// holds them (`kai-withheld 1`, P4 task 7).
-    fn withheld_read(&self) -> Option<String> {
-        None
+    /// holds them (`kai-withheld 1`, P4 task 7): `None` with no file, and
+    /// why not when it could not be read.
+    fn withheld_read(&self) -> Result<Option<String>, String> {
+        Ok(None)
     }
     /// Writes the whole withheld file, before a change takes effect.
     fn withheld_write(&self, _text: &str) -> Result<(), String> {

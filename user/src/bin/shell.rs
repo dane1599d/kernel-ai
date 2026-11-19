@@ -196,7 +196,10 @@ fn give_appearance(system: &System) {
     {
         return;
     }
-    let (Some(route), Some(text)) = (desktop(), system.state.read(files::APPEARANCE)) else {
+    let (Some(route), Some(text)) = (
+        desktop(),
+        system.state.read(files::APPEARANCE).ok().flatten(),
+    ) else {
         system.appearance_due.set(false);
         return;
     };
@@ -856,7 +859,7 @@ impl Host for System {
     }
 
     fn log_read(&self) -> Option<String> {
-        self.state.read(files::LOG)
+        self.state.read(files::LOG).ok().flatten()
     }
 
     /// In the same commit as the files the line changed (P2 task 12); else its
@@ -872,15 +875,15 @@ impl Host for System {
     }
 
     fn rules_read(&self) -> Option<String> {
-        self.state.read(files::RULES)
+        self.state.read(files::RULES).ok().flatten()
     }
 
     fn standing_read(&self) -> Option<String> {
-        self.state.read(files::STANDING)
+        self.state.read(files::STANDING).ok().flatten()
     }
 
     fn keep_read(&self) -> Option<String> {
-        self.state.read(files::KEEP)
+        self.state.read(files::KEEP).ok().flatten()
     }
 
     fn keep_write(&self, text: &str) -> Result<(), String> {
@@ -893,7 +896,7 @@ impl Host for System {
     }
 
     fn restart_read(&self) -> Option<String> {
-        self.state.read(files::RESTART)
+        self.state.read(files::RESTART).ok().flatten()
     }
 
     /// As the keep-running list is: with the line's files, if it changed any.
@@ -912,7 +915,7 @@ impl Host for System {
     }
 
     fn appearance_read(&self) -> Option<String> {
-        self.state.read(files::APPEARANCE)
+        self.state.read(files::APPEARANCE).ok().flatten()
     }
 
     /// Saved with the line's files, as the rules are; then `desktop` paints in
@@ -951,7 +954,7 @@ impl Host for System {
     }
 
     fn net_grants_read(&self) -> Option<String> {
-        self.state.read(files::NETGRANTS)
+        self.state.read(files::NETGRANTS).ok().flatten()
     }
 
     /// As the rules are written: with the line's files, if it changed any.
@@ -964,7 +967,7 @@ impl Host for System {
         }
     }
 
-    fn withheld_read(&self) -> Option<String> {
+    fn withheld_read(&self) -> Result<Option<String>, String> {
         self.state.read(files::WITHHELD)
     }
 

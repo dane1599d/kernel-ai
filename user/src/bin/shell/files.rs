@@ -415,13 +415,26 @@ const _: () = {
 };
 
 impl State {
-    /// File `name` as `/system/state` holds it; `None` with no such file or no
-    /// handle.
-    pub fn read(&self, name: &str) -> Option<String> {
-        let file = open(self.dir?, name, How::Existing, Rights::READ).ok()?;
+    /// File `name` as `/system/state` holds it; `None` only with no such file
+    /// or no handle (nothing was ever written there), and why not for any other
+    /// failure: a full disk or an fs error is no proof the file is absent.
+    pub fn read(&self, name: &str) -> Result<Option<String>, String> {
+        let Some(dir) = self.dir else {
+            return Ok(None);
+        };
+        let request = Request::Open {
+            path: name.to_string(),
+            rights: Rights::READ.bits(),
+            how: How::Existing,
+        };
+        let file = match ask(dir, request)? {
+            (Reply::Opened(..), Some(handle)) => handle,
+            (Reply::Failed(Error::NotFound), _) => return Ok(None),
+            (other, _) => return Err(format!("{name}: {}", unexpected(&other))),
+        };
         let text = read_all(file);
         close(file);
-        text.ok()
+        text.map(Some)
     }
 
     /// Writes the whole of file `name` into the action now open, the one that
