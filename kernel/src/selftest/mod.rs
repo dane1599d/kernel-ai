@@ -88,6 +88,12 @@ pub enum SelfTest {
     /// `c-build` (P4 task 13): `cc build` installs a C app from `local`, and
     /// `undo` switches back.
     CBuild,
+    /// `app-build` ("Kai builds apps"): a typed line builds an app in the
+    /// background, its install card opens by itself, and an Allow installs and
+    /// opens it; `app-build-deny` (`deny`): a Deny installs nothing.
+    AppBuild {
+        deny: bool,
+    },
     /// M8b: LLM-written scripts are checked and run by their tier.
     Scripts,
     /// P1 task 7: one tagged call through the one door. `act-plain`: plain
