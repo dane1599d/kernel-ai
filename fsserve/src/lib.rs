@@ -25,6 +25,8 @@ mod lookup;
 mod model_tests;
 pub mod models;
 #[cfg(test)]
+mod sealed_remove_tests;
+#[cfg(test)]
 mod tests;
 mod trash;
 
@@ -790,6 +792,7 @@ impl<D: BlockDev> Server<D> {
             Request::SealedBegin { name, len } => self.sealed_begin(call, target, &name, len)?,
             Request::SealedPush { data } => self.sealed_push(call, target, &data)?,
             Request::SealedFinish => self.sealed_finish(call, target)?,
+            Request::SealedRemove { name } => self.sealed_remove(call, target, &name)?,
             Request::ModelHint { name } => self.model_hint(call, target, name.as_deref())?,
             Request::ModelInfo { name } => self.model_info(call, target, &name)?,
         };
@@ -1016,6 +1019,7 @@ fn changes(request: &Request) -> bool {
         | Request::SealedBegin { .. }
         | Request::SealedPush { .. }
         | Request::SealedFinish
+        | Request::SealedRemove { .. }
         | Request::ModelHint { .. } => true,
         Request::Stat
         | Request::List { .. }

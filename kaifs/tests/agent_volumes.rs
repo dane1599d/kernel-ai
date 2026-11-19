@@ -136,3 +136,30 @@ fn a_purge_drops_every_memory_snapshot_holding_the_record_and_no_other() {
     assert!(fs.lookup(ROOT, "r1").unwrap().is_none());
     checked(&mut fs);
 }
+
+#[test]
+fn dropping_the_undo_snapshots_holding_a_file_keeps_every_other_kind() {
+    let mut fs = fresh();
+    fs.set_volume(HOME).unwrap();
+    fs.begin(1).unwrap();
+    let blob = fs.create(ROOT, "blob").unwrap();
+    fs.write_file(blob, &[9; 9000]).unwrap();
+    fs.commit().unwrap();
+    // A named snapshot and action 2's undo snapshot both hold it.
+    let named = fs.snapshot().unwrap();
+    fs.commit().unwrap();
+    fs.begin(2).unwrap();
+    fs.create(ROOT, "later").unwrap();
+    fs.commit().unwrap();
+    assert_eq!(fs.snapshots().len(), 3);
+    fs.remove(ROOT, "blob").unwrap();
+    // Only the undo snapshot that holds it goes: not action 1's, from
+    // before it, and not the named one.
+    assert_eq!(fs.drop_undo_holding(HOME, blob).unwrap(), 1);
+    fs.commit().unwrap();
+    let mut fs = Fs::mount(fs.into_dev()).unwrap();
+    fs.set_volume(HOME).unwrap();
+    assert_eq!(fs.snapshots().len(), 2);
+    assert!(fs.snapshots().contains_key(&named));
+    checked(&mut fs);
+}
