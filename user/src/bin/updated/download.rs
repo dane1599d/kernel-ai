@@ -133,8 +133,8 @@ impl ModelPartial {
     /// The last error, with what `kaifs` said.
     fn why(&self, error: &DownloadError) -> String {
         match &self.0.why {
-            Some(why) => format!("{error:?}: {why}"),
-            None => format!("{error:?}"),
+            Some(why) => format!("{}: {why}", error.plain()),
+            None => error.plain(),
         }
     }
 }

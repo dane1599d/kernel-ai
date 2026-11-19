@@ -414,6 +414,13 @@ mod tls_kind_tests {
             ),
         ];
         for (tls, kind) in cases {
+            // The same words reach a person through `plain`, as the store's
+            // and a download's failures carry them.
+            let http = HttpError::Tls(TlsError::Tls(tls.clone()));
+            let download =
+                crate::download::DownloadError::Fetch(HttpError::Tls(TlsError::Tls(tls.clone())));
+            assert_eq!(http.plain(), kind);
+            assert_eq!(download.plain(), kind);
             let error = Error::from(HttpError::Tls(TlsError::Tls(tls)));
             let Error::Tls(said) = &error else {
                 panic!("{error:?}");

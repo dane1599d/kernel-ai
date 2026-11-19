@@ -126,7 +126,7 @@ impl<'a, C: Connect> Online<'a, C> {
 
 /// An HTTP failure in words, for `kaituf` and the store.
 fn words(error: HttpError) -> String {
-    format!("the repository: {error:?}")
+    format!("the repository: {}", error.plain())
 }
 
 /// Whether `name` is a numbered root, `<n>.root.json`, which `kaituf` asks
