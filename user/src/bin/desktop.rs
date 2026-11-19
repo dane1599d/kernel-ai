@@ -230,7 +230,16 @@ fn main() -> i32 {
         // The desk works in logical px: the screen's size over the scale
         // (ADR 0005 §9); `frame::present` is the one place they become
         // physical.
-        let scale = deskcore::scale::for_screen(screen.info.width, screen.info.width_mm);
+        // The screen's size in mm is the EDID's, which only a virtio-gpu gives,
+        // and QEMU's says the size of its default mode, not of the screen the
+        // case asked for (1920x1080 read as 1.5x). So it is taken only when the
+        // plan line says `edid=on`; otherwise the width alone picks the scale.
+        let args = user::args();
+        let width_mm = match user::arg(&args, "edid") {
+            Some("on") => screen.info.width_mm,
+            _ => 0,
+        };
+        let scale = deskcore::scale::for_screen(screen.info.width, width_mm);
         let width = deskcore::upscale::logical(screen.info.width as i32, scale);
         let height = deskcore::upscale::logical(screen.info.height as i32, scale);
         let mut state = State {
