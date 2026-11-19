@@ -14,11 +14,11 @@
 //!   [`FNV_ATTR`]: nothing the caller says about the bytes is taken on trust.
 //! - [`Request::ModelHint`] writes the hint, in `kai-data`'s first block, which
 //!   kaifs leaves outside the filesystem, for a sealed blob of the store only.
-//! - [`Request::SealedRemove`] removes a blob outside any action: the hint is
-//!   cleared first if it names it, so no boot maps blocks about to be freed;
-//!   then the blob goes, with the store's undo snapshots that hold it, in one
-//!   commit, and a GC pass starts to free its blocks (reusable two commits
-//!   after it ends).
+//! - [`Request::SealedRemove`] removes a blob outside any action, with the
+//!   store's undo snapshots that hold it, in one commit, and a GC pass starts
+//!   to free its blocks (reusable two commits after it ends). The blob the
+//!   hint names, the model the next boot maps, is refused: `fs` alone reads
+//!   the hint, so it alone can tell.
 
 use crate::{Call, Server, Target, error};
 use fsproto::{Error, MAX_DATA, Reply};
@@ -159,7 +159,9 @@ impl<D: BlockDev> Server<D> {
         if !fs.is_sealed(entry.ino).map_err(error)? {
             return Err(Error::Invalid);
         }
-        self.clear_hint_of(&named)?;
+        if self.hint_names(&named)? {
+            return Err(Error::Permission);
+        }
         // A failure here is dropped whole by `answer`: a change outside an
         // action leaves nothing half done.
         let fs = self.fs();
@@ -177,16 +179,11 @@ impl<D: BlockDev> Server<D> {
         Ok(Reply::Done)
     }
 
-    /// Clears `kai-modelhint 1` if it names the blob with SHA-256 `sha256`.
-    fn clear_hint_of(&mut self, sha256: &[u8; 32]) -> Result<(), Error> {
-        let dev = &mut self.fs.io.dev;
+    /// Whether `kai-modelhint 1` names the blob with SHA-256 `sha256`.
+    fn hint_names(&mut self, sha256: &[u8; 32]) -> Result<bool, Error> {
         let mut block = [0u8; BLOCK];
-        dev.read(0, &mut block).map_err(|_| Error::Io)?;
-        if Hint::decode(&block).is_some_and(|hint| hint.sha256 == *sha256) {
-            dev.write(0, &[0u8; BLOCK]).map_err(|_| Error::Io)?;
-            dev.flush().map_err(|_| Error::Io)?;
-        }
-        Ok(())
+        self.fs.io.dev.read(0, &mut block).map_err(|_| Error::Io)?;
+        Ok(Hint::decode(&block).is_some_and(|hint| hint.sha256 == *sha256))
     }
 
     /// A blob that failed after its writer was taken aborts the whole action,

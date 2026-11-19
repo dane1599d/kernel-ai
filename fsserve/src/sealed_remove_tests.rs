@@ -87,7 +87,7 @@ fn collect(c: &mut Client<'_>) {
 }
 
 #[test]
-fn a_removed_blob_takes_its_hint_and_snapshots_and_its_blocks_come_back() {
+fn a_removed_blob_takes_its_snapshots_and_its_blocks_come_back() {
     let mut disk = MemDisk::new(BLOCKS);
     let (mut c, _) = Client::start(&mut disk);
     let old = model((4 << 20) + 77, 1);
@@ -97,14 +97,13 @@ fn a_removed_blob_takes_its_hint_and_snapshots_and_its_blocks_come_back() {
     // Each import's undo snapshot is of the store before it: the first's is
     // empty, the second's holds the old blob.
     assert_eq!(undo_snapshots(&mut c), 2);
-    let hint_old = Request::ModelHint {
-        name: Some(old_name.clone()),
+    let hint_new = Request::ModelHint {
+        name: Some(new_name.clone()),
     };
-    assert_eq!(store(&mut c, ALICE, hint_old), Reply::Done);
+    assert_eq!(store(&mut c, ALICE, hint_new), Reply::Done);
     let (free_before, _) = c.server.fs().space();
 
     assert_eq!(remove(&mut c, ALICE, &old_name), Reply::Done);
-    assert_eq!(hint(&mut c), None, "the hint named the removed blob");
     assert_eq!(undo_snapshots(&mut c), 1, "the one holding it is dropped");
     collect(&mut c);
     // A freed block is reusable two commits on, as any is in kaifs.
@@ -192,5 +191,29 @@ fn a_remove_is_refused_inside_an_action_off_the_store_and_for_a_bad_name() {
     );
     // Still there after all of that.
     let info = Request::ModelInfo { name };
+    assert!(matches!(store(&mut c, ALICE, info), Reply::Model { .. }));
+}
+
+/// The blob the hint names is the model the next boot maps: refused, and
+/// neither it nor the hint changes. Only `fs` reads the hint, so only `fs`
+/// can tell; `updated` says to switch to another model first.
+#[test]
+fn the_blob_the_hint_names_is_refused_and_nothing_changes() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let booted = import(&mut c, &model(150_000, 6));
+    let hint_it = Request::ModelHint {
+        name: Some(booted.clone()),
+    };
+    assert_eq!(store(&mut c, ALICE, hint_it), Reply::Done);
+    let before = hint(&mut c);
+    let generation = c.server.generation();
+    assert_eq!(
+        remove(&mut c, ALICE, &booted),
+        Reply::Failed(Error::Permission)
+    );
+    assert_eq!(hint(&mut c), before);
+    assert_eq!(c.server.generation(), generation, "nothing was committed");
+    let info = Request::ModelInfo { name: booted };
     assert!(matches!(store(&mut c, ALICE, info), Reply::Model { .. }));
 }
