@@ -16,8 +16,9 @@ pub(super) const CASES: &[TestCase] = &[TestCase {
     expect: &[
         "desktop: drew the desk at 1920x1080",
         "is a send's: it waits for its text",
-        // The mock model's text: 100 lines (`xtask/src/mock_llm/sends.rs`).
-        "shows its text in the pane (2099 bytes)",
+        // The mock model's text: 150 sentences on one line
+        // (`xtask/src/mock_llm/sends.rs`).
+        "shows its text in the pane (3299 bytes)",
         "desk-sends: the card shows only the call, with the text's digest",
         "desk-sends: y before the text was read through did not allow it",
         "desktop: the send's text scrolled",

@@ -8,15 +8,18 @@ use serde_json::json;
 
 /// The line `desk-sends` types (`kernel/src/desk_sends_tests.rs`).
 const LINE: &str = "send my long note to hooks.example";
-/// The text's lines; the kernel case makes the same text for its digest.
-const TEXT_LINES: usize = 100;
+/// The text's numbered sentences, on one line (a send's text holds no line
+/// break); the kernel case makes the same text for its digest.
+const TEXT_PIECES: usize = 150;
+/// `agentabi::SEND_MAX`: the most characters a send's text may hold.
+const SEND_MAX: usize = 4096;
 
-/// The text the send carries: numbered lines, as the kernel case's `text()`.
+/// The text the send carries: numbered sentences, as the kernel case's `text()`.
 fn text() -> String {
-    let lines: Vec<String> = (1..=TEXT_LINES)
-        .map(|n| format!("{n:03} the text goes on"))
+    let pieces: Vec<String> = (1..=TEXT_PIECES)
+        .map(|n| format!("{n:03} the text goes on."))
         .collect();
-    lines.join("\n")
+    pieces.join(" ")
 }
 
 /// The call for an act request's `line`, when it is the case's.
@@ -38,6 +41,16 @@ mod tests {
         assert_eq!(super::call("send hello to hooks.example"), None);
     }
 
+    /// The shell refuses a send's text with a control character or past
+    /// SEND_MAX as "not a valid text" (`termcore::once::quote`; #1239's first
+    /// full-ci run): the case's text is neither.
+    #[test]
+    fn the_text_is_one_line_within_the_send_cap() {
+        let text = text();
+        assert!(!text.chars().any(char::is_control), "{text:?}");
+        assert!(text.chars().count() <= SEND_MAX, "{}", text.len());
+    }
+
     #[test]
     fn the_act_route_answers_the_line_with_the_send() {
         let request = json!({"messages": [
@@ -54,8 +67,9 @@ mod tests {
     fn the_kernel_case_makes_the_same_line_and_text() {
         let kernel = include_str!("../../../kernel/src/desk_sends_tests.rs");
         assert!(kernel.contains(&format!("LINE: &str = \"{LINE}\"")));
-        assert!(kernel.contains(&format!("TEXT_LINES: usize = {TEXT_LINES};")));
-        assert!(kernel.contains("format!(\"{n:03} the text goes on\")"));
-        assert_eq!(text().len(), 2099);
+        assert!(kernel.contains(&format!("TEXT_PIECES: usize = {TEXT_PIECES};")));
+        assert!(kernel.contains("format!(\"{n:03} the text goes on.\")"));
+        assert!(kernel.contains("pieces.join(\" \")"));
+        assert_eq!(text().len(), 3299);
     }
 }
