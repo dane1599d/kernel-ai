@@ -534,7 +534,11 @@ impl Local {
         // The pool's figures and the picks' time from here on are this request's.
         crate::workers::report();
         self.engine.take_picking();
-        if let Some(grammar) = self.apps.update(&request.apps) {
+        let engine = &self.engine;
+        if let Some(grammar) = self
+            .apps
+            .update(&request.apps, &|text| engine.text_tokens(text))
+        {
             self.grammar = grammar;
         }
         let clock = core::cell::RefCell::new(Clock::new(

@@ -31,7 +31,7 @@
 //! all the runner's CPUs (the same bits as one). Every run is written to
 //! `target/actbench/<unix time>-<arm>-s<seed>.jsonl`, headed by `pack_id`.
 
-mod apps;
+pub(crate) mod apps;
 mod consent;
 mod founder;
 mod goal_tasks;
