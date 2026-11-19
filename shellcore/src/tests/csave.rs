@@ -335,3 +335,58 @@ fn an_included_entry_is_saved_as_typed() {
     assert!(shell.eval(":load both").ok);
     assert_eq!(shell.eval("g").text, "= 7", "its initializer ran on load");
 }
+
+/// A load refused for an initializer that calls kai leaves the live session
+/// exactly as it was: its globals, its definitions and its undo (#1192's
+/// re-check).
+#[test]
+fn a_refused_load_leaves_the_live_session_as_it_was() {
+    let host = FakeHost::new();
+    host.files.borrow_mut().insert(
+        "c/calls.c".into(),
+        "//- entry\nI64 Good() { return 1; }\n//- entry\nI64 st = fs_create(\"x.txt\", \"y\");\n"
+            .into(),
+    );
+    let mut shell = c_shell(&host);
+    assert!(shell.eval("I64 total = 42;").ok);
+    let loaded = shell.eval(":load calls");
+    assert!(
+        !loaded.ok && loaded.text.contains("an initializer calls kai"),
+        "{loaded:?}"
+    );
+    assert!(file(&host, "x.txt").is_none(), "no call ran");
+    assert_eq!(shell.eval("total").text, "= 42");
+    assert!(!shell.eval("Good()").ok, "nothing of the file stays");
+    let undone = shell.eval("undo");
+    assert!(undone.text.starts_with("undid entry 1"), "{undone:?}");
+}
+
+/// A restart does not replay an entry whose included file changed since it
+/// ran, and says which (#1192's re-check).
+#[test]
+fn a_restart_tells_of_an_include_changed_since() {
+    let host = FakeHost::new();
+    host.files
+        .borrow_mut()
+        .insert("c/lib.c".into(), "I64 Seven() { return 7; }\n".into());
+    let mut shell = c_shell(&host);
+    assert!(
+        shell
+            .eval("#include \"lib.c\"\nI64 Eight() { return Seven() + 1; }")
+            .ok
+    );
+    assert!(shell.eval("I64 Nine() { return 9; }").ok);
+    host.files
+        .borrow_mut()
+        .insert("c/lib.c".into(), "I64 Seven() { return 70; }\n".into());
+    start_cc(&host);
+    let after = shell.eval("Nine()");
+    assert!(
+        after
+            .text
+            .contains("entry 1's #include files changed since it ran; not restored"),
+        "{after:?}"
+    );
+    assert!(after.text.ends_with("= 9"), "{after:?}");
+    assert!(!shell.eval("Seven()").ok, "the changed file never ran");
+}

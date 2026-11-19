@@ -75,6 +75,14 @@ fn include_of(path: &str) -> Result<String, String> {
     }
 }
 
+/// The SHA-256 of `expanded`, what cc ran for the entry `typed`, when its
+/// `#include "…"` files made it other than the text: kept with the entry, so
+/// a replay of files changed since is refused.
+pub(super) fn included(typed: &str, expanded: &str) -> Option<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    (typed != expanded).then(|| Sha256::digest(expanded.as_bytes()).into())
+}
+
 /// The path of an `#include "<path>"` line, or `None` for any other line.
 fn quoted_include(line: &str) -> Option<&str> {
     let rest = line.trim().strip_prefix('#')?.trim_start();
@@ -182,6 +190,7 @@ impl Shell {
             defined: None,
             logged: Some(id),
             cc: false,
+            included: None,
         });
         Reply::ok(format!(
             "saved {entries} entries to /home/user/{path}; undo puts it back"
@@ -266,8 +275,9 @@ impl Shell {
             }
             // An initializer that calls kai stops at a need; a load runs no
             // call, so the entry fails and the load is taken back.
+            // cc drops the run waiting on it at the next request, the
+            // take-back's undo, and commits nothing of it: the session stays.
             Some(Record::Need { .. }) => {
-                self.c.open = false;
                 return Err(String::from(
                     "an initializer calls kai, and :load runs no calls",
                 ));
@@ -279,6 +289,7 @@ impl Shell {
             defined: Some(String::from(entry)),
             logged: None,
             cc: true,
+            included: included(entry, &expanded),
         });
         Ok(names)
     }
