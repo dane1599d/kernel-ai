@@ -52,6 +52,28 @@ pub enum HttpError {
     Cut,
 }
 
+impl HttpError {
+    /// The error in fixed words a person may read: a TLS failure as its kind
+    /// ([`crate::fetch::tls_kind`]), never rustls's own text, which can carry
+    /// the names on a certificate from a private network (audit K #17).
+    pub fn plain(&self) -> String {
+        match self {
+            HttpError::Url(why)
+            | HttpError::Connect(why)
+            | HttpError::Head(why)
+            | HttpError::Body(why) => String::from(*why),
+            HttpError::Tls(tls) => String::from(crate::fetch::tls_kind(tls)),
+            HttpError::Truncated => String::from("the answer was cut short"),
+            HttpError::TooLarge => String::from("the answer was too large"),
+            HttpError::TooManyRedirects => String::from("more than five redirects"),
+            HttpError::Refused(host) => alloc::format!("{host} is not a host this may reach"),
+            HttpError::Timeout => String::from("it timed out"),
+            HttpError::RangeIgnored => String::from("the server ignored the range"),
+            HttpError::Cut => String::from("the connection was cut; the server may have it"),
+        }
+    }
+}
+
 impl From<TlsError> for HttpError {
     fn from(error: TlsError) -> Self {
         match error {

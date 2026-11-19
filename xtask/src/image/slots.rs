@@ -245,11 +245,6 @@ const DATA_NAME: &str = "kai-data";
 /// second model beside it, with the home folder.
 pub const RELEASE_DATA_MIB: u64 = 8192;
 
-/// Writes the release disk to `out`: the slot disk with an empty command line,
-/// then `kai-data` as partition 5, formatted with a fixed volume id, so every
-/// build of a commit writes the same bytes. `updated` never writes it: it
-/// writes only `kai-a` and `kai-b`. The disk is written a piece at a time and
-/// left sparse where the system allows, never held in memory. Its size.
 /// A release image's command line: no dev or test words. Never `online=test`,
 /// which opens QEMU's test subnet to names' answers (audit K #17).
 pub const RELEASE_CMDLINE: &str = "";
@@ -262,6 +257,11 @@ pub fn release_cmdline_ok(cmdline: &str) -> bool {
         .any(|word| word.starts_with("online=") || word.starts_with("test="))
 }
 
+/// Writes the release disk to `out`: the slot disk with an empty command line,
+/// then `kai-data` as partition 5, formatted with a fixed volume id, so every
+/// build of a commit writes the same bytes. `updated` never writes it: it
+/// writes only `kai-a` and `kai-b`. The disk is written a piece at a time and
+/// left sparse where the system allows, never held in memory. Its size.
 pub fn build_release(esp: &Path, out: &Path, record: &str, data_mib: u64) -> Result<u64, String> {
     use std::io::{Seek, SeekFrom, Write};
     if !release_cmdline_ok(RELEASE_CMDLINE) {
