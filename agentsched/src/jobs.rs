@@ -11,6 +11,10 @@
 //!   `ended <why>`;
 //! - `agent-stop <ticket>`: `ok`, the request dropped.
 //!
+//! **Only the route's badge names an agent** ([`Caller`]): the kernel puts it
+//! on the route (`RECV_H`'s `RecvInfo::badge`), and no process can forge it. The
+//! caller's pid is no identity: a process whose pid is 2 is not `goals`.
+//!
 //! A ticket is good only on the badge that started it: any other badge hears
 //! `ended unknown ticket`, as for a ticket that never was, so a ticket says
 //! nothing about another agent's work. Badge 0 (no agent) and `kai` (the
@@ -133,6 +137,14 @@ pub fn refusal_words(refusal: Refusal, name: &str) -> String {
     }
 }
 
+/// Who sent a request, as the kernel reports it (`RECV_H`): the process, and the
+/// badge of the route it came through. Only the badge is read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Caller {
+    pub pid: u64,
+    pub badge: u64,
+}
+
 /// What a job holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Job {
@@ -177,6 +189,28 @@ impl Jobs {
         self.jobs.get(&ticket)
     }
 
+    /// The job to run next when the caller runs requests whole (slice 2a): one of the
+    /// highest class waiting, the oldest first. The person's requests never wait for
+    /// it: the caller runs it only while none waits, and stops it when one comes.
+    pub fn next_job(&self) -> Option<(u64, &Job)> {
+        self.jobs
+            .iter()
+            .filter(|(_, job)| job.queued.is_some())
+            .min_by_key(|(ticket, job)| {
+                let class = self.sched.class_of(AgentId(job.badge as u32));
+                (class.unwrap_or(Class::Index), **ticket)
+            })
+            .map(|(ticket, job)| (*ticket, job))
+    }
+
+    /// Counts what job `ticket` spent against its agent's day.
+    pub fn charge(&mut self, ticket: u64, tokens: u32, now: Now) {
+        if let Some(job) = self.jobs.get(&ticket) {
+            let agent = AgentId(job.badge as u32);
+            self.sched.charge_whole(agent, tokens, now);
+        }
+    }
+
     /// The ticket whose scheduler request is `request`.
     pub fn ticket_of(&self, request: RequestId) -> Option<u64> {
         self.jobs
@@ -185,16 +219,18 @@ impl Jobs {
             .map(|(ticket, _)| *ticket)
     }
 
-    /// Answers agent command `command` from `badge`. `prompt_tokens` is what the
-    /// request's prompt takes, and `max_new` what its answer may, both the engine's.
+    /// Answers agent command `command` from `caller`, known by its route's badge
+    /// alone. `prompt_tokens` is what the request's prompt takes, and `max_new` what
+    /// its answer may, both the engine's.
     pub fn handle(
         &mut self,
-        badge: u64,
+        caller: Caller,
         command: Command<'_>,
         prompt_tokens: u32,
         max_new: u32,
         now: Now,
     ) -> String {
+        let badge = caller.badge;
         match command {
             Command::Start { kind, request } => {
                 self.start(badge, kind, request, prompt_tokens, max_new, now)
