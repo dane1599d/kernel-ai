@@ -59,7 +59,7 @@ struct Service {
     withdrawn: bool,
     /// The shell's log entry whose `start` is the latest change to it, for its
     /// undo; cleared by any stop or restart.
-    started_by: Option<u64>,
+    started_by: Option<StartedBy>,
     /// A `start=pkg` service's package version, from the store holder's `run`;
     /// until then it stays down.
     version: Option<String>,
@@ -218,6 +218,18 @@ fn serve(services: &mut [Service], classes: &mut Vec<(u64, u64)>) {
     }
 }
 
+/// Who started a service with a log entry's id, and what the start changed,
+/// so its undo puts back that and nothing more (audit K #28).
+#[derive(Clone, Copy)]
+struct StartedBy {
+    id: u64,
+    caller: u64,
+    /// It was stopped or given up before: the undo stops it again. Otherwise
+    /// it was only waiting on demand, and the undo ends the instance and
+    /// leaves it on demand.
+    was_held: bool,
+}
+
 fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     let records: Vec<Record> = services.iter().map(|s| s.record.clone()).collect();
     if text.trim() == supervise::SERVICES {
@@ -267,16 +279,35 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     if let Request::Suspend(_) | Request::Resume(_) = request {
         return app_ctl(&name, matches!(request, Request::Resume(_)));
     }
-    if let Proof::Undo(id) = proof
-        && service.started_by != Some(id)
-    {
-        return String::from("err not that entry's start");
-    }
+    // An undo answers only the start it names, from the caller that made it.
+    let undoing = match proof {
+        Proof::Undo(id) => match service.started_by {
+            Some(start) if start.id == id && start.caller == caller => Some(start),
+            _ => return String::from("err not that entry's start"),
+        },
+        _ => None,
+    };
+    let was_held = service.record.stopped || service.record.gave_up;
     service.started_by = match (request, proof) {
-        (Request::Start(_), Proof::Entry(id)) => Some(id),
+        (Request::Start(_), Proof::Entry(id)) => Some(StartedBy {
+            id,
+            caller,
+            was_held,
+        }),
         _ => None,
     };
     match request {
+        // The start found it waiting on demand: its undo ends the instance
+        // the start made and leaves it on demand, never stopped.
+        Request::Stop(_) if undoing.is_some_and(|start| !start.was_held) => {
+            service.start_at_ms = None;
+            if let Some(pid) = service.pid
+                && let Err(error) = sys::kill(pid)
+            {
+                println!("cannot end {name} (pid {pid}): {error:?}");
+            }
+            println!("{name} back on demand, its start undone");
+        }
         Request::Stop(_) => {
             service.record.stopped = true;
             service.start_at_ms = None;

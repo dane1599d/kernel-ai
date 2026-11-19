@@ -37,6 +37,12 @@ const MAX_RESOLVED: usize = 32;
 /// Bits of an id below its generation: the slot.
 const SLOT_BITS: u32 = 8;
 const _: () = assert!(MAX_RECORDS == 1 << SLOT_BITS);
+/// Records one process may have made by narrowing and still hold (audit K
+/// #26): one holder cannot pin the table and stop every other narrowing.
+pub const MAX_NARROWED: usize = 16;
+/// Slots only a plan line's own record ([`create`], no owner) may take, so a
+/// spawn never fails because the narrowings filled the table.
+const PLAN_RESERVED: usize = 8;
 /// A record this young is never dropped: the step from [`create`] to the
 /// handle that names it, preempted at the worst moment, is far shorter.
 const FRESH_NS: u64 = 1_000_000_000;
@@ -44,6 +50,8 @@ const FRESH_NS: u64 = 1_000_000_000;
 struct Record {
     /// Its slot's generation when it was made: part of its id.
     generation: u32,
+    /// The process whose narrowing made it; none for a plan line's.
+    owner: Option<u64>,
     /// When it was made (HPET).
     born: u64,
     dest: Dest,
@@ -118,8 +126,27 @@ fn with<R>(f: impl FnOnce(&mut Vec<Option<Record>>) -> R) -> R {
 
 /// A new record for `dest`: its object id. When the table is full, records no
 /// live handle names (`live`) are dropped first; None if it is still full.
+/// A plan line's own record: it may take the slots kept for those.
 pub fn create(dest: Dest, live: impl Fn(u64) -> bool) -> Option<u64> {
+    create_for(dest, live, None)
+}
+
+/// [`create`] for a narrowing by process `owner` (`Some`): None past
+/// [`MAX_NARROWED`] of its own still named, or when only the slots kept for
+/// plan lines are left.
+fn create_for(dest: Dest, live: impl Fn(u64) -> bool, owner: Option<u64>) -> Option<u64> {
     with(|records| {
+        if let Some(pid) = owner {
+            let mine = records
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| r.as_ref().map(|r| (i, r)))
+                .filter(|(i, r)| r.owner == Some(pid) && live(id(*i, r.generation)))
+                .count();
+            if mine >= MAX_NARROWED {
+                return None;
+            }
+        }
         let free = records.iter().position(Option::is_none);
         let at = match free {
             Some(at) => at,
@@ -148,12 +175,18 @@ pub fn create(dest: Dest, live: impl Fn(u64) -> bool) -> Option<u64> {
                 records.iter().position(Option::is_none)?
             }
         };
+        // A narrowing leaves the last few free slots to plan lines.
+        let free = records.iter().filter(|r| r.is_none()).count() + (MAX_RECORDS - records.len());
+        if owner.is_some() && free <= PLAN_RESERVED {
+            return None;
+        }
         let generation = GENERATION[at]
             .fetch_add(1, Ordering::SeqCst)
             .wrapping_add(1);
         mark_any_host(at, dest.any_host);
         records[at] = Some(Record {
             generation,
+            owner,
             born: hpet::nanos(),
             dest,
             resolved: Vec::new(),
@@ -231,7 +264,12 @@ fn special(addr: Ipv4Addr) -> bool {
 
 /// A record for `narrower`, made from `object`'s, if `object`'s covers it:
 /// its id. The addresses `object` resolved do not carry over.
-pub fn narrow(object: u64, narrower: Dest, live: impl Fn(u64) -> bool) -> Result<u64, kabi::Error> {
+pub fn narrow(
+    object: u64,
+    narrower: Dest,
+    live: impl Fn(u64) -> bool,
+    owner: u64,
+) -> Result<u64, kabi::Error> {
     let wider = dest(object).ok_or(kabi::Error::Invalid)?;
     // `hosts:any` is made only from the shell's plan line, never by narrowing,
     // and narrows only to exact hosts: a suffix such as `co.uk` would carry
@@ -240,5 +278,5 @@ pub fn narrow(object: u64, narrower: Dest, live: impl Fn(u64) -> bool) -> Result
     if narrower.any_host || suffix_of_any || !narrower.within(&wider) {
         return Err(kabi::Error::Permission);
     }
-    create(narrower, live).ok_or(kabi::Error::NoMemory)
+    create_for(narrower, live, Some(owner)).ok_or(kabi::Error::NoMemory)
 }
