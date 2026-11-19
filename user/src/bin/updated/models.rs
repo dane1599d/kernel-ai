@@ -399,12 +399,11 @@ impl Channel {
     /// `llm` cannot say which model it runs, since the kernel fills a running
     /// model straight from its blob's blocks.
     fn remove_model(&mut self, sha256: &Sha256) -> Result<String, String> {
+        let (candidate, previous) = remove::trial_holds(self.record()?.as_ref());
         let holds = Holds {
             running: self.running_now()?,
-            candidate: self
-                .record()?
-                .filter(|t| t.state == State::Pending)
-                .map(|t| t.candidate),
+            candidate,
+            previous,
             importing: self.import.as_ref().map(|run| run.sha256),
             downloading: self.download.as_ref().map(download::Running::sha256),
         };
