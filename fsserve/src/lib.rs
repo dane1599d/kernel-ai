@@ -31,6 +31,8 @@ pub mod models;
 #[cfg(test)]
 mod oid_tests;
 #[cfg(test)]
+mod rename_tests;
+#[cfg(test)]
 mod tests;
 mod trash;
 
@@ -188,6 +190,9 @@ pub struct Server<D: BlockDev> {
     name_of: NameOf,
     /// The model store's blob being written in the open action ([`models`]).
     sealing: Option<models::Sealing>,
+    /// The `Dir` a Rename moved with it, as `fs` read it (ENDPOINT_BADGE): its
+    /// badge and rights, for the one call ([`Server::call_into`]).
+    into: Option<(u64, Rights)>,
 }
 
 /// The object a checked badge names.
@@ -246,6 +251,7 @@ impl<D: BlockDev> Server<D> {
             alive: |_| true,
             name_of: |_, _| None,
             sealing: None,
+            into: None,
         };
         let fixed = server.prepare(&uuid)?;
         (
@@ -428,6 +434,17 @@ impl<D: BlockDev> Server<D> {
         self.call_shm(call, None)
     }
 
+    /// [`Server::call`] for a request that moved a `Dir` of this server's in
+    /// with it, whose badge and rights are `into` (ENDPOINT_BADGE): the
+    /// destination of [`Request::Rename`]. Any other request answers as if
+    /// nothing moved.
+    pub fn call_into(&mut self, call: &Call, into: (u64, Rights)) -> Answer {
+        self.into = Some(into);
+        let answer = self.call(call);
+        self.into = None;
+        answer
+    }
+
     /// [`Server::call`] with the `Shm` the request moved in, mapped read-write:
     /// what [`Request::ReadShm`] fills and [`Request::WriteShm`] takes from.
     pub fn call_shm(&mut self, call: &Call, shm: Option<&mut [u8]>) -> Answer {
@@ -567,6 +584,26 @@ impl<D: BlockDev> Server<D> {
         }
     }
 
+    /// The folder a Rename on `source` moves into: the `Dir` whose badge and
+    /// rights the request moved in. It needs CREATE, must be a folder this
+    /// server serves in the same volume (kaifs renames within one), and is
+    /// never a read-only folder or the apps root, whose openings are held to
+    /// one folder a caller ([`Server::own_folder_only`]).
+    fn rename_into(&mut self, source: u64, badge: u64, rights: Rights) -> Result<u64, Error> {
+        if !rights.contains(Rights::CREATE) || read_only(badge) || badge == SYSTEM_APPS {
+            return Err(Error::Permission);
+        }
+        if Badge::parse(badge).volume != Badge::parse(source).volume {
+            return Err(Error::Invalid);
+        }
+        let target = self.target(badge)?;
+        if target.file {
+            return Err(Error::NotDir);
+        }
+        // `target` chose the destination's volume, the source's too.
+        Ok(target.object)
+    }
+
     /// The volume and object `badge` names, checked to exist with its kind.
     fn target(&mut self, badge: u64) -> Result<Target, Error> {
         let Badge {
@@ -697,9 +734,20 @@ impl<D: BlockDev> Server<D> {
             }
             Request::Rename { from, to } => {
                 dir()?;
-                need(Rights::DELETE | Rights::CREATE)?;
+                // Into the moved `Dir` when there is one: DELETE here, CREATE
+                // there. Else in this one, which needs both.
+                let into = match self.into.take() {
+                    Some((badge, rights)) => {
+                        need(Rights::DELETE)?;
+                        self.rename_into(call.badge, badge, rights)?
+                    }
+                    None => {
+                        need(Rights::DELETE | Rights::CREATE)?;
+                        object
+                    }
+                };
                 let fs = self.fs();
-                fs.rename(object, &from, object, &to).map_err(error)?;
+                fs.rename(object, &from, into, &to).map_err(error)?;
                 Reply::Done
             }
             Request::Trash { name } => {
