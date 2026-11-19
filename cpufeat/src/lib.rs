@@ -17,6 +17,19 @@ pub const XCR0_HI16_ZMM: u64 = 1 << 7;
 /// The three AVX-512 components, which XSETBV takes only all together, with AVX.
 pub const XCR0_AVX512: u64 = XCR0_OPMASK | XCR0_ZMM_HI256 | XCR0_HI16_ZMM;
 const YMM_STATE: u64 = XCR0_SSE | XCR0_AVX;
+
+/// EFER.NXE: page-table entries may forbid execution. W^X (ADR 0012 D5, D9)
+/// rests on it, and only the boot loader sets it, so the kernel checks it.
+pub const EFER_NXE: u64 = 1 << 11;
+
+/// Whether EFER, as read, lets pages forbid execution; why not, if it does not.
+pub fn nx_enabled(efer: u64) -> Result<(), &'static str> {
+    if efer & EFER_NXE != 0 {
+        Ok(())
+    } else {
+        Err("cpu: EFER.NXE is clear, so no page can forbid execution (W^X)")
+    }
+}
 const ZMM_STATE: u64 = YMM_STATE | XCR0_AVX512;
 /// Bytes every XSAVE area starts with: the 512-byte legacy region (x87, MXCSR and
 /// xmm) and the 64-byte header.
@@ -426,6 +439,18 @@ unsafe fn xgetbv0() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn nx_must_be_on_whatever_else_efer_holds() {
+        use super::{EFER_NXE, nx_enabled};
+        // SCE, LME and LMA as a booted long-mode CPU has them.
+        let long_mode = (1 << 0) | (1 << 8) | (1 << 10);
+        assert_eq!(nx_enabled(long_mode | EFER_NXE), Ok(()));
+        assert_eq!(nx_enabled(EFER_NXE), Ok(()));
+        assert!(nx_enabled(long_mode).is_err());
+        assert!(nx_enabled(0).is_err());
+        assert!(nx_enabled(!EFER_NXE).is_err());
+    }
+
     extern crate std;
 
     use super::*;
