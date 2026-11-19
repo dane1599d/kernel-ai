@@ -168,7 +168,25 @@ impl Roster {
 
     /// Drops goal `goal`'s ceiling, when it ends, is cancelled or is forgotten.
     pub fn revoke_goal(&mut self, goal: u64) -> bool {
+        self.goal_folders.remove(&goal);
         self.goal_grants.remove(&goal).is_some()
+    }
+
+    /// Keeps the folders the person approved for goal `goal`, beside its
+    /// ceiling: only a goal that holds one keeps them, and they go with it.
+    pub fn keep_goal_folders(&mut self, goal: u64, folders: &[String]) -> bool {
+        if !self.goal_grants.contains_key(&goal) {
+            return false;
+        }
+        self.goal_folders.insert(goal, folders.to_vec());
+        true
+    }
+
+    /// The folders goal `goal` may act in, if it holds a ceiling: none kept
+    /// is no folder at all.
+    pub fn goal_folders(&self, goal: u64) -> Option<&[String]> {
+        self.goal_grants.get(&goal)?;
+        Some(self.goal_folders.get(&goal).map_or(&[][..], Vec::as_slice))
     }
 
     /// The rows goal `goal` may call, if it holds a ceiling.

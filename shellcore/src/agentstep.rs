@@ -105,6 +105,16 @@ impl Shell {
                 .admit_for_goal_in(&caller, goal, &call.name, &agentabi::ROWS),
             None => self.roster.admit(&caller, &call.name),
         };
+        // A goal's step acts only inside the folders the person approved.
+        if let Some(goal) = goal
+            && let Err(why) = self.goal_paths(goal, &call)
+        {
+            self.host.audit(&format!(
+                "{name}'s step {} for goal {goal} refused: {why}",
+                call.name
+            ));
+            return Reply::err(format!("refused: {why}"));
+        }
         let admission = match admitted {
             Ok(admission) => admission,
             Err(denied) => {
@@ -197,6 +207,27 @@ impl Shell {
                 e.agent = name.clone();
             }
         }
+    }
+
+    /// Every path argument of goal `goal`'s step `call` lies inside one of
+    /// the goal's approved folders.
+    fn goal_paths(&self, goal: u64, call: &llmproto::act::Call) -> Result<(), String> {
+        let folders = self.roster.goal_folders(goal).unwrap_or(&[]);
+        let Some(row) = self.row(&call.name) else {
+            return Ok(());
+        };
+        // The file rows name their paths `path`, `from` and `to`.
+        let is_path = |name: &str| matches!(name, "path" | "from" | "to");
+        for arg in row.args.iter().filter(|arg| is_path(arg.name)) {
+            let Some(value) = call.arguments.get(arg.name).filter(|v| !v.is_null()) else {
+                continue;
+            };
+            let path = value.as_str().unwrap_or("");
+            if !crate::goalscope::path_inside(folders, path) {
+                return Err(format!("{path} is outside the folders this goal may use"));
+            }
+        }
+        Ok(())
     }
 
     /// `agent-step goal=<id> end`: goal `goal` ended, so its ceiling goes.
