@@ -149,6 +149,11 @@ impl<C: Connect> Keep<C> {
         self.kept.clear();
     }
 
+    /// The kept connections, to set each one's next deadline.
+    pub fn kept_mut(&mut self) -> impl Iterator<Item = &mut C::Stream> {
+        self.kept.iter_mut().map(|(_, _, stream)| stream)
+    }
+
     fn take(&mut self, url: &Url) -> Option<C::Stream> {
         let at = self
             .kept
