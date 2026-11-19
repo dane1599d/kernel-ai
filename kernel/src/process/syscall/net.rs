@@ -320,6 +320,10 @@ fn resolve(
         .filter(|&addr| net::dest::answerable(addr))
         .collect();
     if reachable.is_empty() && !found.addresses.is_empty() {
+        // The reason for the person's console only: what the app hears is
+        // what a name with no address gives, so it cannot tell which names
+        // exist only inside a private network (#1170's review).
+        crate::log!("net: {host} led only to private addresses; refused as unresolved");
         return Err(Error::Private);
     }
     let cap = usize::try_from(out_cap).unwrap_or(usize::MAX);
