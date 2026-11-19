@@ -1,7 +1,7 @@
 //! `desktop`, the compositor (ADR 0005 §1, P3 task 6): it claims the screen,
 //! serves `kai-surface 1` to its clients, and draws their windows with
-//! `deskcore`'s rules, painted by `deskcore::paint` on `gfx2d` in Ember
-//! Workbench's tokens and type.
+//! `deskcore`'s rules, painted by `deskcore::paint` on `gfx2d` in the theme's
+//! tokens and type.
 //!
 //! - A client calls the `desktop` service with a run of `surfabi` messages; the
 //!   reply carries the events waiting for it. `pool.create` brings its `Shm`,
@@ -137,8 +137,11 @@ struct State {
     pools: Vec<Pool>,
     shown: Vec<(WindowId, u64, Buffer)>,
     frame: Image,
+    /// The desk's size in logical px: the screen's over `scale`.
     width: i32,
     height: i32,
+    /// The scale in 120ths (`deskcore::scale`): 120 draws the frame as it is.
+    scale: u32,
     painter: Painter,
     bar: Bar,
     bar_at: u64,
@@ -224,8 +227,12 @@ fn main() -> i32 {
             }
             continue;
         };
-        let width = screen.info.width as i32;
-        let height = screen.info.height as i32;
+        // The desk works in logical px: the screen's size over the scale
+        // (ADR 0005 §9); `frame::present` is the one place they become
+        // physical.
+        let scale = deskcore::scale::for_screen(screen.info.width, screen.info.width_mm);
+        let width = deskcore::upscale::logical(screen.info.width as i32, scale);
+        let height = deskcore::upscale::logical(screen.info.height as i32, scale);
         let mut state = State {
             desk: Desk::new(width, height),
             clients: Vec::new(),
@@ -234,6 +241,7 @@ fn main() -> i32 {
             frame: Image::new(width, height),
             width,
             height,
+            scale,
             painter,
             bar: Bar::default(),
             bar_at: 0,
@@ -270,6 +278,12 @@ fn main() -> i32 {
         // The taskbar's pins: the image's own apps, until `pkg` lists more.
         state.desk.set_installed(apps::built_in_names());
         println!("desktop: claimed {width}x{height}");
+        if scale != deskcore::scale::ONE {
+            println!(
+                "desktop: scale {scale}/120 on {}x{} px",
+                screen.info.width, screen.info.height
+            );
+        }
         let result = run(&mut state, &screen);
         painter = state.painter;
         painted_in = state.painted_in;
