@@ -25,6 +25,9 @@ use alloc::vec::Vec;
 pub const ENDED_IN_FLIGHT: &str = "the goal ended while this step ran";
 /// The note on such a step once its late finish came.
 pub const FINISHED_AFTER_END: &str = "it finished after the goal ended";
+/// The note on a step the planner wrote again after the person said no to it:
+/// held, and the goal paused until they resume it.
+pub const REPEATED: &str = "you said no to this step before; resume the goal to let it ask again";
 
 /// What became of a proposed step.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -562,6 +565,38 @@ impl Goal {
             step.status = StepStatus::Denied;
             step.note = valid::clean(why);
         }
+        Ok(())
+    }
+
+    /// The planner wrote again a step the person said no to: it is not asked. It is
+    /// logged as held, with [`REPEATED`] as why, so the goal's own record says what
+    /// stopped it and which step, and the goal pauses as the person's own pause
+    /// does: their resume is what lets it go on. The tier is the door's, as for
+    /// any step logged.
+    pub fn hold_repeat<C>(
+        &mut self,
+        now: u64,
+        step: Step<C>,
+        door: &dyn Door<C>,
+    ) -> Result<(), Refusal> {
+        if self.state != State::Active {
+            return Err(Refusal::NotActive(self.state));
+        }
+        if self.flight.is_some() {
+            return Err(Refusal::StepInFlight);
+        }
+        if self.log.len() >= MAX_LOG {
+            return Err(Refusal::LogFull);
+        }
+        step_ok(&step)?;
+        let p = Proposal {
+            tier: door.tier(&step),
+            row: step.row,
+            targets: step.targets,
+            tokens_est: step.tokens_est,
+        };
+        self.push_log(p, now, StepStatus::Held, String::from(REPEATED));
+        self.state = State::Paused(Pause::User);
         Ok(())
     }
 
