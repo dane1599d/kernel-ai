@@ -1,0 +1,8 @@
+[0] window "Settings"
+[1] group ""
+[2] tab_list "" = "Appearance"
+[3] group ""
+[4] label "Appearance"
+[10] button "Theme: dark" runs appearance_set
+[11] switch "Legible type" = "off"
+[12] switch "Reduce motion" = "off"
