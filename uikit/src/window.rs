@@ -131,6 +131,13 @@ impl Window {
         self.full = true;
     }
 
+    /// The whole window is painted at the next commit, whatever the display
+    /// list diff says: the type changed, so text drawn in the same box differs.
+    pub fn repaint_all(&mut self) {
+        self.dirty = true;
+        self.full = true;
+    }
+
     pub fn put(
         &mut self,
         id: NodeId,
