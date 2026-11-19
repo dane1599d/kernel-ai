@@ -26,7 +26,7 @@ fn save_writes_the_definitions_and_load_replays_them_after_a_reset() {
     assert_eq!(shell.eval("Print(\"run once\\n\");").text, "run once");
     let saved = shell.eval(":save demo");
     assert_eq!(
-        saved.text, "saved 2 entries to /home/user/c/demo.c; undo puts it back",
+        saved.text, "saved 2 definitions to /home/user/c/demo.c; undo puts it back",
         "{saved:?}"
     );
     let text = file(&host, "c/demo.c").expect("the file is written");
@@ -154,4 +154,82 @@ fn an_include_outside_the_persons_folders_is_refused() {
     // An include below the top is cc's to refuse, not read.
     let below = shell.eval("I64 a = 1;\n#include \"demo.c\"");
     assert!(!below.ok, "{below:?}");
+}
+
+/// A call in an included file was not asked for by the person's line: the
+/// request is what they typed, so the call counts as added and asks, where
+/// the same call typed runs (ADR 0002; #1192's review).
+#[test]
+fn a_call_in_an_included_file_asks_where_typed_it_runs() {
+    let host = FakeHost::new();
+    host.files
+        .borrow_mut()
+        .insert("notes/plan.txt".into(), "keep me".into());
+    host.files.borrow_mut().insert(
+        "c/tidy.c".into(),
+        "I64 st = fs_trash(\"notes/plan.txt\");\n".into(),
+    );
+    let mut shell = c_shell(&host);
+    let included = shell.eval("#include \"tidy.c\"");
+    assert!(included.confirm.is_some(), "{included:?}");
+    assert!(
+        file(&host, "notes/plan.txt").is_some(),
+        "not trashed without a yes"
+    );
+    let last = shell
+        .log
+        .get(shell.log.last_id())
+        .map(|e| e.request.clone());
+    assert!(
+        last.as_ref()
+            .is_none_or(|request| !request.contains("fs_trash")),
+        "the log keeps the typed line: {last:?}"
+    );
+}
+
+/// A redefined function is saved once, its last body: the file loads and
+/// includes (#1192's review).
+#[test]
+fn a_redefinition_saves_loads_and_includes() {
+    let host = FakeHost::new();
+    let mut shell = c_shell(&host);
+    assert!(shell.eval("I64 Sq(I64 x) { return x * x; }").ok);
+    assert!(shell.eval("I64 Twice(I64 x) { return Sq(x) * 2; }").ok);
+    assert!(shell.eval("I64 Sq(I64 x) { return x + 1; }").ok);
+    let saved = shell.eval(":save demo");
+    assert_eq!(
+        saved.text,
+        "saved 2 definitions to /home/user/c/demo.c; undo puts it back"
+    );
+    let text = file(&host, "c/demo.c").unwrap();
+    assert_eq!(text.matches("Sq(I64 x)").count(), 1, "{text}");
+    assert_eq!(shell.eval(":reset").text, "the C session is empty again");
+    let loaded = shell.eval(":load demo");
+    assert!(loaded.ok, "{loaded:?}");
+    assert_eq!(shell.eval("Twice(3)").text, "= 8");
+    assert_eq!(shell.eval(":reset").text, "the C session is empty again");
+    assert_eq!(shell.eval("#include \"demo.c\"\nTwice(2)").text, "= 6");
+}
+
+/// A save the fs refuses or cuts short says so, logs nothing and leaves the
+/// file as it was (#1192's review).
+#[test]
+fn a_failed_save_logs_nothing_and_keeps_the_file() {
+    let host = FakeHost::new();
+    host.files
+        .borrow_mut()
+        .insert("c/demo.c".into(), "I64 Old() { return 0; }\n".into());
+    let mut shell = c_shell(&host);
+    assert!(shell.eval("I64 One() { return 1; }").ok);
+    for why in ["Exists: refused", "Io: the disk failed mid-write"] {
+        let logged = shell.log.last_id();
+        *host.fs_fail.borrow_mut() = Some(why.into());
+        let saved = shell.eval(":save demo");
+        assert!(!saved.ok && saved.text.contains(why), "{saved:?}");
+        assert_eq!(shell.log.last_id(), logged, "nothing logged");
+        assert_eq!(
+            file(&host, "c/demo.c").unwrap(),
+            "I64 Old() { return 0; }\n"
+        );
+    }
 }

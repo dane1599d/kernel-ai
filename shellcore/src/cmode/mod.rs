@@ -27,6 +27,7 @@ pub(crate) mod program;
 
 pub use program::MAX_REPAIRS as C_REPAIRS;
 mod files;
+mod saved;
 mod session;
 
 use crate::{CANCEL_ENTRY, Reply, Shell};
@@ -193,6 +194,10 @@ impl Shell {
                 promptcore::MAX_ENTRY / 1024
             ));
         }
+        // The request, its consent and its log entry are what the person
+        // typed: a call in an included file was not asked for by them, so it
+        // counts as added and asks (ADR 0002). Only cc gets the files' text.
+        let typed = text;
         let text = expanded.as_str();
         let mut restored = match self.c_ensure_open() {
             Ok(note) => note,
@@ -201,7 +206,7 @@ impl Shell {
         self.c.seq += 1;
         self.c.calls = 0;
         let seq = self.c.seq;
-        self.entry_begin(text);
+        self.entry_begin(typed);
         let request = Request::Eval { seq, entry: text }.text();
         let mut reply = self.host.cc(request.as_bytes());
         // A cc the supervisor restarted between entries has no session: open

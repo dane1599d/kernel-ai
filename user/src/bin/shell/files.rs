@@ -190,6 +190,9 @@ impl Files {
     /// One change in the line's action, opened by its first change; the action's
     /// generation, the transaction `undo` restores.
     pub fn change(&self, change: FsChange) -> Result<u64, String> {
+        if matches!(change, FsChange::Save { .. }) {
+            return self.save(change);
+        }
         let home = self.home()?;
         let generation = match self.open.get() {
             Some(generation) => generation,
@@ -202,6 +205,23 @@ impl Files {
                 self.dropped.set(Some(generation));
             }
         })?;
+        self.changed.set(true);
+        Ok(generation)
+    }
+
+    /// `:save`'s change in an action of its own: one left open commits
+    /// first, and a save that fails part way (its folder made, its file cut
+    /// short) is aborted, so nothing of it commits without its log entry.
+    fn save(&self, change: FsChange) -> Result<u64, String> {
+        let home = self.home()?;
+        self.commit()?;
+        let generation = self.begin(home)?;
+        if let Err(why) = make(home, change) {
+            let _ = ask(home, Request::Abort);
+            self.open.set(None);
+            self.dropped.set(Some(generation));
+            return Err(why);
+        }
         self.changed.set(true);
         Ok(generation)
     }
