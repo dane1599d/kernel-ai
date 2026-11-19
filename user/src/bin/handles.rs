@@ -358,6 +358,9 @@ fn region(address: u64, len: usize) -> &'static mut [u8] {
 /// unmapped; then a map of a closed handle fails.
 fn own_shm() -> Result<(), &'static str> {
     let handle = sys::shm_create(4).map_err(|_| "create failed")?;
+    if sys::shm_size(handle) != Ok(4 * 4096) {
+        return Err("SHM_SIZE did not give the object's 4 pages");
+    }
     let address = sys::shm_map(handle, true).map_err(|_| "map failed")?;
     expect(
         sys::shm_map(handle, false),
@@ -379,6 +382,11 @@ fn own_shm() -> Result<(), &'static str> {
         sys::shm_map(handle, true),
         Error::BadHandle,
         "a closed handle",
+    )?;
+    expect(
+        sys::shm_size(handle),
+        Error::BadHandle,
+        "SHM_SIZE of a closed handle",
     )?;
     Ok(())
 }
