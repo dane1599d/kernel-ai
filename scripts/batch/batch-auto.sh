@@ -27,7 +27,7 @@ unlabel() {  # $1 PR, $2 comment
 # may only include other PRs that are in the same list.
 eligible() {
   git -C "$G" fetch -q origin
-  open=$(gh pr list --repo "$R" --state open --limit 80 --json number,headRefName,headRefOid,labels \
+  open=$(gh pr list --repo "$R" --state open --limit 1000 --json number,headRefName,headRefOid,labels \
          --jq '.[] | "\(.number) \(.headRefName) \(.headRefOid) \([.labels[].name] | index("batch-ready") != null) \([.labels[].name] | index("batch-first") != null)"')
   # `batch-first` PRs (e.g. a fix for a flaky test every batch would hit) go
   # ahead of the rest; then oldest first.
@@ -55,7 +55,7 @@ groups() {  # PR numbers
   local -a prs heads grp
   local i j k n=$# mb old new heads_all
   prs=("$@")
-  heads_all=$(gh pr list --repo "$R" --state open --limit 80 --json number,headRefOid --jq '.[] | "\(.number) \(.headRefOid)"')
+  heads_all=$(gh pr list --repo "$R" --state open --limit 1000 --json number,headRefOid --jq '.[] | "\(.number) \(.headRefOid)"')
   for ((i=0; i<n; i++)); do
     heads[$i]=$(echo "$heads_all" | awk -v p="${prs[$i]}" '$1==p {print $2}')
     grp[$i]=$i
