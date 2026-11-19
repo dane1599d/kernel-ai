@@ -9,7 +9,8 @@
 //! - One action at a time: while one caller's is open, another's change is Busy.
 //! - A badge names an object on disk, not server state, so a restarted `fs`
 //!   serves every badge the last one minted; a badge whose object is gone finds
-//!   nothing, since object ids are never reused.
+//!   nothing, since object ids are never reused: not after a remove, a restore,
+//!   an aborted action or a restart mid-action (`kaifs::fs::OID_WINDOW`).
 //! - `..` never leaves the handle's folder: lookup is path-beneath, as cap-std's.
 
 #![no_std]
@@ -27,6 +28,8 @@ mod lookup;
 #[cfg(test)]
 mod model_tests;
 pub mod models;
+#[cfg(test)]
+mod oid_tests;
 #[cfg(test)]
 mod tests;
 mod trash;
@@ -205,9 +208,14 @@ impl<D: BlockDev> Server<D> {
             let generation = fs.committed;
             (fs, Started::Mounted { generation })
         };
-        // ADR 0013's `memory` and `index`, on a disk that lacks them. No badge
-        // names either (`Server::target`), so no client reaches them here.
-        if fs.writable() && fs.add_agent_volumes()? > 0 {
+        // Past every id the run before could have handed out and never
+        // committed, before any handle names a new one or a volume is made
+        // (`kaifs::fs::OID_WINDOW`). Then ADR 0013's `memory` and `index`, on
+        // a disk that lacks them. No badge names either (`Server::target`), so
+        // no client reaches them here.
+        if fs.writable() {
+            fs.skip_unsaved_oids();
+            fs.add_agent_volumes()?;
             fs.commit()?;
         }
         let base = fs.clock;

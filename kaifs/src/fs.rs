@@ -52,6 +52,15 @@ pub use crate::io::{
 };
 pub use crate::vol::{FIRST_OID, HOME, MODELS, SYSTEM, Snap, VOLUMES};
 
+/// The most object ids a volume hands out past the counter its last commit
+/// wrote. An id handed out and never committed (its action aborted, its
+/// commit failed, or `fs` stopped) is never handed out again: an abort keeps
+/// the counter, and a server skips a whole window at mount
+/// ([`Fs::skip_unsaved_oids`]), past anything the run before could have
+/// handed out. A `fs` handle names an object by its id, so a reissued id
+/// would let a handle minted for a dropped object open another one.
+pub const OID_WINDOW: u64 = 1 << 20;
+
 /// The volume [`Fs::format`] makes, and every call acts on until
 /// [`Fs::set_volume`]: `system`.
 pub const VOLUME: u64 = SYSTEM;
@@ -462,13 +471,28 @@ impl<D: BlockDev> Fs<D> {
     }
 
     /// Hands out a new object id in the active volume; none is ever handed out
-    /// twice.
+    /// twice, across an abort or (with [`Fs::skip_unsaved_oids`]) a restart.
+    /// NoSpace once [`OID_WINDOW`] ids are out past the last committed counter:
+    /// a commit makes room.
     pub fn alloc_oid(&mut self) -> Result<u64, Error> {
         let vol = self.vol_mut();
         let oid = vol.next_oid;
+        if oid >= vol.base.1.saturating_add(OID_WINDOW) {
+            return Err(Error::NoSpace);
+        }
         vol.next_oid = oid.checked_add(1).ok_or(Error::NoSpace)?;
         vol.live_changed = true;
         Ok(oid)
+    }
+
+    /// Moves every volume's counter a whole [`OID_WINDOW`] past what the disk's
+    /// last commit holds, so no id the run before handed out and never
+    /// committed can come again. For a server, once at mount; the caller
+    /// commits, and only then hands out ids. Nothing else changes.
+    pub fn skip_unsaved_oids(&mut self) {
+        for vol in self.vols.values_mut() {
+            vol.next_oid = vol.next_oid.max(vol.base.1.saturating_add(OID_WINDOW));
+        }
     }
 
     /// Raises the counter past `oid`: `check --repair` found an object above it.
@@ -731,7 +755,9 @@ impl<D: BlockDev> Fs<D> {
         }
         let mut written = Vec::new();
         for (&id, vol) in self.vols.iter_mut() {
-            if !vol.live_changed {
+            // A counter an abort or a skip moved is written even when the tree
+            // did not change, so the window counts from it.
+            if !vol.live_changed && vol.next_oid == vol.base.1 {
                 continue;
             }
             let newest = vol.newest();

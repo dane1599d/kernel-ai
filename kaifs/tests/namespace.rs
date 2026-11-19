@@ -625,3 +625,62 @@ fn repair_salvages_a_tree_with_a_node_that_no_longer_verifies() {
     check_namespace(&mut fs, &mut cache).unwrap();
     assert_eq!(fs.stat(ROOT).unwrap().kind, FileType::Dir);
 }
+
+/// An id handed out inside an action that was then dropped is never handed
+/// out again: `fs` minted a handle for it, which must not come to name another
+/// object.
+#[test]
+fn an_id_from_an_aborted_action_is_never_handed_out_again() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    fs.begin(1).unwrap();
+    let dropped = fs.create(ROOT, "t").unwrap();
+    let dropped_dir = fs.mkdir(ROOT, "d").unwrap();
+    fs.abort().unwrap();
+    let next = fs.create(ROOT, "victim").unwrap();
+    assert!(next > dropped.max(dropped_dir), "{next} after {dropped}");
+    commit_and_check(&mut fs);
+    // A remount reads the counter the commit wrote: still past them.
+    let mut fs = remount(fs);
+    assert!(fs.create(ROOT, "later").unwrap() > next);
+    commit_and_check(&mut fs);
+}
+
+/// A run that stops mid-action leaves ids it handed out but never committed.
+/// A server's skip at mount passes all of them, and the window bounds how
+/// many there can be.
+#[test]
+fn the_skip_at_mount_passes_every_id_the_last_run_could_have_handed_out() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    fs.begin(1).unwrap();
+    let mut last = 0;
+    for n in 0..50 {
+        last = fs.create(ROOT, &format!("f{n}")).unwrap();
+    }
+    // The run stops here: nothing committed.
+    let mut fs = Fs::mount(fs.into_dev()).unwrap();
+    fs.skip_unsaved_oids();
+    fs.commit().unwrap();
+    let mut fs = remount(fs);
+    let first = fs.create(ROOT, "after").unwrap();
+    assert!(first > last, "{first} after {last}");
+    commit_and_check(&mut fs);
+}
+
+#[test]
+fn no_more_than_a_window_of_ids_go_out_past_the_last_commit() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    // Right after a commit the window is whole: exactly that many go out.
+    let mut given = 0u64;
+    while fs.alloc_oid().is_ok() {
+        given += 1;
+        assert!(given <= kaifs::fs::OID_WINDOW);
+    }
+    assert_eq!(given, kaifs::fs::OID_WINDOW);
+    assert_eq!(fs.alloc_oid(), Err(Error::NoSpace));
+    // A commit makes room again.
+    fs.commit().unwrap();
+    assert!(fs.alloc_oid().is_ok());
+}
