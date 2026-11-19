@@ -193,6 +193,14 @@ mod tests {
             let shaped = glyphs(&mark);
             assert!(shaped.len() == 1 && shaped[0] != 0, "{mark}: {shaped:?}");
         }
+        // After a mark the row is shaped, not drawn by cell: it still draws
+        // one glyph a byte, the cell path's, never a ligature.
+        for row in ["a!=b", "x->y", "a...b", "a//b", "a/=b", "a==b"] {
+            let cells = glyphs(row);
+            let shaped = glyphs(&alloc::format!("{WRAP_MARK}{row}"));
+            assert_eq!(cells.len(), row.len(), "{row}");
+            assert_eq!(shaped[1..], cells[..], "{row} after a mark");
+        }
         for after in ["", "\u{21aa}"] {
             let mut seen = Vec::new();
             for b in 32u8..127 {
