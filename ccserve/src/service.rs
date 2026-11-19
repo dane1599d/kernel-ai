@@ -218,6 +218,16 @@ impl<E: Effects> Service<E> {
                 host,
                 reply,
             ),
+            Request::Load { seq, entry } => eval(
+                &self.compiler,
+                effects,
+                open,
+                seq,
+                entry,
+                Mode::Load,
+                host,
+                reply,
+            ),
             Request::Resume { id, ok, result } => {
                 resume(effects, open, id, ok, result, host, reply)
             }
