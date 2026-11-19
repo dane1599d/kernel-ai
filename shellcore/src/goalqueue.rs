@@ -8,6 +8,7 @@ use crate::goalrows::GOALS_ONLY;
 use crate::{Reply, Shell};
 use alloc::format;
 use alloc::string::String;
+use goalcore::report::Report;
 
 impl Shell {
     /// `agent-step next` and `agent-step report <n> <result>`, for `goals`'s
@@ -42,8 +43,11 @@ impl Shell {
     }
 
     /// What came of taken command `<n>`: kept for `goal_list`, and its place
-    /// freed. A goal `goals` refused to add, or reports ended (done, failed,
-    /// cancelled, expired) or no longer has (forgotten), loses its ceiling.
+    /// freed. The report is read only in the shape `goalcore::report` writes
+    /// (`ok` and a status line a goal, `gone <id>`, `err <why>`), and an `err`'s
+    /// words never as a state. A goal reported in a final state (done,
+    /// failed, cancelled) or gone loses its ceiling; so does a goal `goals` did
+    /// not report added.
     fn goal_report(&mut self, rest: &str) -> Reply {
         let (n, result) = rest.split_once(' ').unwrap_or((rest, ""));
         let Ok(n) = n.trim_start_matches('#').parse::<u64>() else {
@@ -58,25 +62,25 @@ impl Shell {
             return Reply::err(format!("no taken command #{n}"));
         };
         let queued = self.goal_book.queue.remove(at);
-        // A goal-list report names each goal and its state, a line each.
-        // goals sends it as `ok <id> <state> ...`, a line a goal.
-        for line in result.strip_prefix("ok ").unwrap_or(result).lines() {
-            let mut words = line.split_whitespace();
-            let (Some(goal), Some(word)) = (words.next(), words.next()) else {
-                continue;
-            };
-            if let (Ok(goal), Some(word)) = (goal.parse::<u64>(), ended(word)) {
-                self.goal_ended(goal, word);
+        let report = Report::parse(result);
+        match &report {
+            Some(Report::Ok(statuses)) => {
+                for status in statuses.iter().filter(|s| s.state.is_final()) {
+                    self.goal_ended(status.goal, status.state.word());
+                }
             }
-        }
-        let no_goal: alloc::vec::Vec<&str> = result.split_whitespace().take(4).collect();
-        if no_goal == ["err", "no", "goal", format!("{}", queued.goal).as_str()] {
-            self.goal_ended(queued.goal, "forgotten");
+            Some(Report::Gone(goal)) if *goal == queued.goal => {
+                self.goal_ended(queued.goal, "forgotten");
+            }
+            _ => {}
         }
         let result = one_line(result);
         self.host
             .audit(&format!("goals reports #{n} ({}): {result}", queued.goal));
-        let refused_add = queued.command.starts_with("goal-add ") && result.starts_with("err");
+        // An add `goals` did not report done, in any shape, gives its
+        // ceiling back: the safe way round.
+        let refused_add =
+            queued.command.starts_with("goal-add ") && !matches!(report, Some(Report::Ok(_)));
         if refused_add {
             self.roster.revoke_goal(queued.goal);
         }
@@ -96,15 +100,6 @@ impl Shell {
             kept.state = word;
         }
     }
-}
-
-/// The words goals reports a goal that takes no more steps with (goalcore's
-/// final states, and an expired one).
-const ENDED: [&str; 4] = ["done", "failed", "cancelled", "expired"];
-
-/// `word` if it is one of [`ENDED`].
-fn ended(word: &str) -> Option<&'static str> {
-    ENDED.iter().copied().find(|ended| *ended == word)
 }
 
 /// What goals reported, as one printable line for `goal_list` and the audit:
