@@ -163,6 +163,10 @@ pub(super) const CASES: &[TestCase] = &[
         then: Some(&A_CUT),
         ..slot_boot("update-online-resume", "test=slot panic=reset", INSTALL)
     },
+    TestCase {
+        then: Some(&A_FAILS_FOR_R),
+        ..slot_boot("update-online-reinstall", "test=slot panic=reset", INSTALL)
+    },
 ];
 
 // ---- updates over the network (P5 task 10)
@@ -390,5 +394,52 @@ const A_CUT: TestCase = TestCase {
             "updated: restarting into the running slot",
         ],
         Fault::CutOnce,
+    )
+};
+
+/// `update-online-reinstall` boot 4: A boots release 2, the release R fetched,
+/// on trial.
+const A_REINSTALLED: TestCase = slot_boot(
+    "update-online-reinstall (4: kai-a boots release 2)",
+    "test=slot panic=reset",
+    &[
+        "slots: booted kai-a (record read)",
+        "slots: up in kai-a (trial, 2 tries left)",
+    ],
+);
+
+/// `update-online-reinstall` boot 3: R stays up, as when the person chooses
+/// recovery (`slot-do=stay`), and `:reinstall` from the network (ADR 0008 §9,
+/// P5 task 10): `updated` in R reads the repository from R's own root, streams
+/// release 2 into the slot it was told (`into=A`) in checked chunks, and
+/// restarts into it.
+const R_REINSTALLS_A: TestCase = TestCase {
+    then: Some(&A_REINSTALLED),
+    ..online_boot_with(
+        "update-online-reinstall (3: R fetches release 2 into kai-a)",
+        "test=update updated=online updated.into=A slot-do=stay panic=reset",
+        &[
+            "slots: booted recovery (record read)",
+            "slots: R stays up, as chosen (slot-do=stay)",
+            "updated: the trusted root is the slot's own",
+            "updated: the online repository verifies: slot.img is release 2, ",
+            "updated: wrote release 2 into A over TLS and checked it: 0 chunks kept, ",
+            "update: restarting into kai-a",
+        ],
+        Fault::None,
+    )
+};
+
+/// `update-online-reinstall` boot 2: A, a trial, fails before its checks, so R
+/// boots next.
+const A_FAILS_FOR_R: TestCase = TestCase {
+    then: Some(&R_REINSTALLS_A),
+    ..slot_boot(
+        "update-online-reinstall (2: kai-a fails)",
+        "test=slot slot-do=panic panic=reset",
+        &[
+            "slots: booted kai-a (record read)",
+            "slots: fault recorded in kai-a; R boots next",
+        ],
     )
 };

@@ -15,7 +15,11 @@
 //!
 //! `test=slot` drives the lever from the command line for the `slot-ab` case:
 //! `slot-do=commit`, `slot-do=stage` (the other slot, as `slot-seq=`) and
-//! `slot-do=panic` (before the checks), each ending the boot in a reset.
+//! `slot-do=panic` (before the checks), each ending the boot in a reset. In R,
+//! a test boot's `slot-do=stay` keeps R up with the record as it found it, as
+//! a person who chooses recovery does, so `updated` can `:reinstall` there
+//! (the `update-online-reinstall` case). An installed command line names only
+//! its slot, so a shipping R never reads it.
 
 use crate::efi::{self, Guid, KAI, NV_BS_RT};
 use crate::{bootfiles, ipc, log, threads};
@@ -362,7 +366,16 @@ fn commit(slot: Slot, calls: u64, elapsed_ms: u64) {
     }
 }
 
+/// A test boot in R that asked to stay up (`slot-do=stay`).
+fn stays_for_a_test() -> bool {
+    word("test").is_some() && word("slot-do") == Some("stay")
+}
+
 fn in_r(had_record: bool, before: Nv, mut nv: Nv) {
+    if had_record && stays_for_a_test() {
+        log!("slots: R stays up, as chosen (slot-do=stay)");
+        return;
+    }
     let decision = if had_record {
         bootslot::r_boots(&mut nv)
     } else {
