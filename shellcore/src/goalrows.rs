@@ -345,6 +345,8 @@ asked first: a goal row always asks",
         if let Err(why) = granted {
             return Reply::err(format!("no goal set: {why}"));
         }
+        // The folders the card counted, with the ceiling: one value.
+        self.roster.keep_goal_folders(goal, &spec.scope.folders);
         let now = self.host.now_ns() / 1_000_000;
         let file = match goal_file(goal, spec.clone(), now) {
             Ok(file) => file,

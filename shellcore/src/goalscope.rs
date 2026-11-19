@@ -25,7 +25,9 @@ use alloc::vec::Vec;
 /// The most actions a goal names.
 pub const MAX_ACTIONS: usize = 8;
 /// The file reads a goal that names a folder may make.
-const FOLDER_READS: [&str; 3] = ["fs_list", "fs_find", "fs_read"];
+/// Not `fs_find`, which searches every folder: only the person's own word
+/// "find" adds it.
+const FOLDER_READS: [&str; 2] = ["fs_list", "fs_read"];
 /// What a goal that names nothing it does is told.
 pub const NAMES_NOTHING: &str =
     "say what the goal does, for example \"sort the files in notes/ by topic\"";
@@ -99,6 +101,21 @@ fn may_hold(row: &Action) -> bool {
     row.owner != Owner::Shell
         && agentabi::derive(row) != Tier::Never
         && !agentid::goalgrant::sends_or_installs(row)
+        && !reaches_past_folders(row)
+}
+
+/// Whether `row` reaches past a goal's approved folders with no path the
+/// shell can hold to them: a file row with no path argument (`fs_find`,
+/// `fs_changes`, `fs_empty_trash`) or a window row. A goal never holds one.
+pub(crate) fn reaches_past_folders(row: &Action) -> bool {
+    let is_file = agentabi::FS_ROWS.iter().any(|r| r.name == row.name);
+    let has_path = row.args.iter().any(|arg| is_path(arg.name));
+    (is_file && !has_path) || agentabi::UI_ROWS.iter().any(|r| r.name == row.name)
+}
+
+/// Whether argument `name` is a file row's path: `path`, `from` or `to`.
+pub(crate) fn is_path(name: &str) -> bool {
+    matches!(name, "path" | "from" | "to")
 }
 
 /// `text` lower-cased, every run of other characters one space, padded.
@@ -149,8 +166,23 @@ fn folders(line: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// Whether `path`, a goal step's path argument, lies inside one of
+/// `folders` once normalised as `goal_set` normalised them ([`folder`]): a
+/// path that does not normalise, or `..`, is inside none.
+pub(crate) fn path_inside(folders: &[String], path: &str) -> bool {
+    let Ok(path) = folder(path) else {
+        return false;
+    };
+    folders.iter().any(|f| {
+        path == *f
+            || path
+                .strip_prefix(f.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
 /// `word` as a folder under home, relative and normalised, or why not.
-fn folder(word: &str) -> Result<String, String> {
+pub(crate) fn folder(word: &str) -> Result<String, String> {
     let refused = || format!("{word} is not a folder in your home folder");
     let plain_chars = word
         .chars()

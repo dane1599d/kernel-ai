@@ -15,7 +15,13 @@
 //!   read runs.
 //! - **Its log entry** is stamped with the agent's name (`actlog 2`).
 //! - **An ask** goes to the person's card, as a desktop line's does, and the
-//!   step waits: `agent-step wait <id>` says what it came to.
+//!   step waits: `agent-step wait <id>` says what it came to, and `err unknown
+//!   step` for an id it never asked.
+//! - **A goal's step** (the `goals` agent, G2): `agent-step goal=<id> <call>`
+//!   is admitted under that goal's ceiling (`agentid::Roster::
+//!   admit_for_goal_in`), never `goals`' own grants, and refused once the
+//!   goal ended or its ceiling was revoked; `agent-step goal=<id> end` drops
+//!   the ceiling when the goal ends.
 
 use crate::deskask::Asker;
 use crate::{Reply, Shell};
@@ -76,11 +82,40 @@ impl Shell {
         if let Some(id) = text.strip_prefix("wait ") {
             return self.agent_waits(&name, id.trim());
         }
+        let (goal, text) = match text.strip_prefix("goal=") {
+            Some(rest) => {
+                let (goal, call) = rest.split_once(' ').unwrap_or((rest, ""));
+                match goal.parse::<u64>() {
+                    Ok(goal) => (Some(goal), call.trim()),
+                    Err(_) => return Reply::err("usage: agent-step goal=<id> <call>|end"),
+                }
+            }
+            None => (None, text),
+        };
+        if let (Some(goal), "end") = (goal, text) {
+            return self.goal_end(&caller, goal);
+        }
         let call = match llmproto::act::parse(text) {
             Ok(call) => call,
             Err(why) => return Reply::err(format!("not a call: {why:?}")),
         };
-        let admission = match self.roster.admit(&caller, &call.name) {
+        let admitted = match goal {
+            Some(goal) => self
+                .roster
+                .admit_for_goal_in(&caller, goal, &call.name, &agentabi::ROWS),
+            None => self.roster.admit(&caller, &call.name),
+        };
+        // A goal's step acts only inside the folders the person approved.
+        if let Some(goal) = goal
+            && let Err(why) = self.goal_paths(goal, &call)
+        {
+            self.host.audit(&format!(
+                "{name}'s step {} for goal {goal} refused: {why}",
+                call.name
+            ));
+            return Reply::err(format!("refused: {why}"));
+        }
+        let admission = match admitted {
             Ok(admission) => admission,
             Err(denied) => {
                 self.host
@@ -174,6 +209,51 @@ impl Shell {
         }
     }
 
+    /// Every path argument of goal `goal`'s step `call` lies inside one of
+    /// the goal's approved folders.
+    fn goal_paths(&self, goal: u64, call: &llmproto::act::Call) -> Result<(), String> {
+        let folders = self.roster.goal_folders(goal).unwrap_or(&[]);
+        let Some(row) = self.row(&call.name) else {
+            return Ok(());
+        };
+        // A row that reaches past the folders is never a goal's, whatever a
+        // ceiling holds.
+        if crate::goalscope::reaches_past_folders(row) {
+            return Err(format!(
+                "{} reaches past the folders a goal may use",
+                row.name
+            ));
+        }
+        for arg in row
+            .args
+            .iter()
+            .filter(|arg| crate::goalscope::is_path(arg.name))
+        {
+            let Some(value) = call.arguments.get(arg.name).filter(|v| !v.is_null()) else {
+                continue;
+            };
+            let path = value.as_str().unwrap_or("");
+            if !crate::goalscope::path_inside(folders, path) {
+                return Err(format!("{path} is outside the folders this goal may use"));
+            }
+        }
+        Ok(())
+    }
+
+    /// `agent-step goal=<id> end`: goal `goal` ended, so its ceiling goes.
+    /// Only `goals` ends a goal.
+    fn goal_end(&mut self, caller: &agentid::Caller, goal: u64) -> Reply {
+        if caller.name().as_str() != "goals" {
+            return Reply::err(crate::goalrows::GOALS_ONLY);
+        }
+        let held = self.roster.revoke_goal(goal);
+        self.goal_ended_by_goals(goal);
+        self.host.audit(&format!(
+            "goals ended goal {goal}; its ceiling went: {held}"
+        ));
+        Reply::ok(format!("ended goal {goal}"))
+    }
+
     /// What agent `name`'s asked step `id` came to on the card, once.
     fn agent_waits(&mut self, name: &str, id: &str) -> Reply {
         let Ok(id) = id.trim_start_matches('#').parse::<u64>() else {
@@ -191,8 +271,17 @@ impl Shell {
                     false => Reply::err(format!("not run #{id}: {}", told.line)),
                 }
             }
-            None => Reply::ok(format!("waiting #{id}")),
+            // Still on the card, or waiting for its place there.
+            None if self.agent_asked(name, id) => Reply::ok(format!("waiting #{id}")),
+            None => Reply::err(format!("unknown step #{id}")),
         }
+    }
+
+    /// Whether agent `name` asked step `id` and it waits for an answer.
+    fn agent_asked(&self, name: &str, id: u64) -> bool {
+        self.agent_admissions
+            .iter()
+            .any(|(entry, admission)| *entry == id && admission.caller().name().as_str() == name)
     }
 
     /// The card's answer to agent `agent`'s step `id`, kept for its wait.
