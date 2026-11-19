@@ -520,6 +520,12 @@ impl<D: BlockDev> Server<D> {
                 Request::Begin { .. } => {
                     self.dropped.remove(&call.caller);
                 }
+                // Its Commit is told the action is gone, which it hears: its
+                // next standalone change, such as an undo, goes through.
+                Request::Commit => {
+                    self.dropped.remove(&call.caller);
+                    return Err(Error::Dropped(cause));
+                }
                 _ => return Err(Error::Dropped(cause)),
             }
         }
@@ -562,9 +568,13 @@ impl<D: BlockDev> Server<D> {
             Ok(done) => Ok(done),
             Err(e) => {
                 // A failed change leaves nothing half done: outside an action
-                // there is nothing else pending, inside one the disk failed.
-                if changes && (!in_action || e == Error::Io) {
+                // there is nothing else pending, inside one the disk failed,
+                // and its owner (the caller) is told its action is gone.
+                if changes && !in_action {
                     self.drop_changes();
+                } else if changes && e == Error::Io {
+                    self.drop_changes();
+                    return Err(Error::Dropped(DropCause::Io));
                 }
                 Err(e)
             }

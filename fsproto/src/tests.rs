@@ -204,22 +204,23 @@ fn the_bulk_requests_keep_their_numbers() {
 }
 
 #[test]
-fn a_dropped_or_failed_disk_ends_an_action_and_a_refusal_does_not() {
-    use crate::{DropCause, Error, Reply, ends_action};
-    let shown = |e: Error| alloc::format!("{:?}", Reply::Failed(e));
+fn only_a_dropped_action_ends_one_and_a_refusal_or_failure_does_not() {
+    use crate::{DropCause, Error};
     for e in [
-        Error::Io,
         Error::Dropped(DropCause::NoSpace),
         Error::Dropped(DropCause::Io),
     ] {
-        assert!(ends_action(&shown(e)), "{e:?}");
+        assert!(e.ends_action(), "{e:?}");
     }
+    // fs answers an in-action Io as Dropped(Io); a bare Io is a read's or a
+    // change's outside any action, which leaves an open one where it was.
     for e in [
+        Error::Io,
         Error::NoSpace,
         Error::Permission,
         Error::Exists,
         Error::Busy,
     ] {
-        assert!(!ends_action(&shown(e)), "{e:?}");
+        assert!(!e.ends_action(), "{e:?}");
     }
 }

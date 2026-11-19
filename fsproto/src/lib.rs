@@ -435,12 +435,16 @@ pub enum DropCause {
     Io,
 }
 
-/// Whether a failed change, as a client shows it (`{reply:?}`), means `fs`
-/// dropped the client's open action: [`Error::Io`] or [`Error::Dropped`].
-/// A client that keeps an action open across changes (the shell's line)
-/// begins a new one after it, never writing on outside any.
-pub fn ends_action(why: &str) -> bool {
-    why.contains("Io") || why.contains("Dropped")
+impl Error {
+    /// Whether this answer means `fs` dropped the caller's open action: only
+    /// [`Error::Dropped`], whatever request it answers (a read that wrote out
+    /// the pending run, a write, a commit). A client that keeps an action open
+    /// across requests (the shell's line, `updated`'s download) forgets it and
+    /// begins a new one, never writing on outside any. Decided on the decoded
+    /// kind, never on a message's text, which may hold a path.
+    pub fn ends_action(&self) -> bool {
+        matches!(self, Error::Dropped(_))
+    }
 }
 
 /// The answer to one request.

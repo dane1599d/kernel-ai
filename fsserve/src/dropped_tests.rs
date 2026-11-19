@@ -83,10 +83,8 @@ fn a_dropped_owner_is_refused_until_it_aborts() {
         write(&mut c, &doc, 200, 10),
         Reply::Failed(Error::Dropped(DropCause::NoSpace))
     );
-    assert_eq!(
-        home(&mut c, ALICE, Request::Commit).0,
-        Reply::Failed(Error::Dropped(DropCause::NoSpace))
-    );
+    // (A Commit would be told Dropped and clear the mark too; see
+    // `a_marked_owners_commit_is_told_dropped_and_its_undo_goes_through`.)
     // Her Abort is answered Done, and then her changes land again.
     assert_eq!(home(&mut c, ALICE, Request::Abort).0, Reply::Done);
     let Reply::Data(bytes) = c
@@ -300,7 +298,7 @@ fn a_dead_callers_mark_is_forgotten() {
 }
 
 /// The shell's line, as it keeps its action: begun by its first change, ended
-/// when a change's error ends it (`fsproto::ends_action`).
+/// when a change's error ends it ([`Error::ends_action`]).
 struct Line {
     open: bool,
 }
@@ -312,7 +310,7 @@ impl Line {
             self.open = true;
         }
         let reply = write_run(c, doc, off, len);
-        if fsproto::ends_action(&format!("{reply:?}")) {
+        if matches!(&reply, Reply::Failed(e) if e.ends_action()) {
             self.open = false;
         }
         reply
@@ -339,4 +337,48 @@ fn a_line_that_writes_on_after_a_drop_begins_a_new_action() {
         "the write landed outside an action"
     );
     assert_eq!(home(&mut c, ALICE, Request::Abort).0, Reply::Done);
+}
+
+/// A marked owner's Commit is told its action is gone, and that clears the
+/// mark: its undo, the next standalone change, is not refused.
+#[test]
+fn a_marked_owners_commit_is_told_dropped_and_its_undo_goes_through() {
+    let mut disk = MemDisk::new(2 * 1024);
+    let (mut c, _) = Client::start(&mut disk);
+    let doc = create(&mut c, "doc").expect("a file");
+    fill(&mut c);
+    assert_eq!(
+        home(&mut c, ALICE, Request::Begin { action: 1 }).0,
+        Reply::Done
+    );
+    assert_eq!(write_run(&mut c, &doc, 0, 100 << 10), Reply::Done);
+    let _ = home(&mut c, BOB, Request::Stat);
+    assert_eq!(
+        home(&mut c, ALICE, Request::Commit).0,
+        Reply::Failed(Error::Dropped(DropCause::NoSpace))
+    );
+    let undo = Request::Restore { txn: 1, action: 2 };
+    assert_ne!(
+        home(&mut c, ALICE, undo).0,
+        Reply::Failed(Error::Dropped(DropCause::NoSpace))
+    );
+}
+
+/// The owner's own read writes out its pending run first; when that drops
+/// the action, the read is answered Dropped, a kind that ends it.
+#[test]
+fn the_owners_read_that_drops_its_action_is_answered_dropped() {
+    let mut disk = MemDisk::new(2 * 1024);
+    let (mut c, _) = Client::start(&mut disk);
+    let doc = create(&mut c, "doc").expect("a file");
+    fill(&mut c);
+    assert_eq!(
+        home(&mut c, ALICE, Request::Begin { action: 1 }).0,
+        Reply::Done
+    );
+    assert_eq!(write_run(&mut c, &doc, 0, 100 << 10), Reply::Done);
+    let read = home(&mut c, ALICE, Request::Stat).0;
+    assert_eq!(read, Reply::Failed(Error::Dropped(DropCause::NoSpace)));
+    assert!(matches!(&read, Reply::Failed(e) if e.ends_action()));
+    assert_eq!(c.server.owner, None);
 }
