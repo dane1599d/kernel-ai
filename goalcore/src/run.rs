@@ -217,18 +217,35 @@ impl Goal {
     /// Whether a step that costs about `est` tokens would run past a budget or the
     /// deadline at `now`.
     pub(crate) fn over(&self, now: u64, est: u64) -> Option<Pause> {
+        let out_of_steps = self.steps_run >= self.budget.steps;
+        self.out_of_time(now)
+            .or(out_of_steps.then_some(Pause::Budget(Resource::Steps)))
+            .or_else(|| self.out_of_tokens(est))
+    }
+
+    /// What holds the goal back from being planned at `now`: its deadline, its wall
+    /// time or its tokens, each looked at on its own. Not its steps: a goal that
+    /// ran its last step is planned once more, so the planner can say it is met,
+    /// and a step it writes instead is held by [`Goal::over`].
+    pub(crate) fn planning_over(&self, now: u64) -> Option<Pause> {
+        self.out_of_time(now).or_else(|| self.out_of_tokens(0))
+    }
+
+    fn out_of_time(&self, now: u64) -> Option<Pause> {
         let started = self.started_ms.unwrap_or(now);
         if self.by_ms.is_some_and(|by| now >= by) {
             Some(Pause::Deadline)
         } else if now.saturating_sub(started) >= self.budget.wall_ms {
             Some(Pause::Budget(Resource::Wall))
-        } else if self.steps_run >= self.budget.steps {
-            Some(Pause::Budget(Resource::Steps))
-        } else if self.tokens_spent.saturating_add(est) > self.budget.tokens {
-            Some(Pause::Budget(Resource::Tokens))
         } else {
             None
         }
+    }
+
+    /// Whether `est` more tokens would pass the token budget.
+    fn out_of_tokens(&self, est: u64) -> Option<Pause> {
+        let over = self.tokens_spent.saturating_add(est) > self.budget.tokens;
+        over.then_some(Pause::Budget(Resource::Tokens))
     }
 
     /// Why this step has to ask, if it does. Scope first: a step that needs more
