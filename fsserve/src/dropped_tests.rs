@@ -22,6 +22,21 @@ fn create(c: &mut Client<'_>, name: &str) -> Option<Mint> {
     home(c, ALICE, open).1
 }
 
+/// Writes `len` bytes at `off` in `kai-fs 1`'s message pieces: the first
+/// reply that is not Done, else Done.
+fn write_run(c: &mut Client<'_>, file: &Mint, off: u64, len: usize) -> Reply {
+    let mut at = 0;
+    while at < len {
+        let piece = (len - at).min(fsproto::MAX_DATA);
+        let reply = write(c, file, off + at as u64, piece);
+        if reply != Reply::Done {
+            return reply;
+        }
+        at += piece;
+    }
+    Reply::Done
+}
+
 fn write(c: &mut Client<'_>, file: &Mint, off: u64, len: usize) -> Reply {
     let request = Request::Write {
         off,
@@ -55,7 +70,7 @@ fn a_dropped_owner_is_refused_until_it_aborts() {
         home(&mut c, ALICE, Request::Begin { action: 1 }).0,
         Reply::Done
     );
-    assert_eq!(write(&mut c, &doc, 0, 100 << 10), Reply::Done);
+    assert_eq!(write_run(&mut c, &doc, 0, 100 << 10), Reply::Done);
     // Bob's read writes the run out first; there is no room, so Alice's
     // action is dropped and Bob is told.
     let bob = home(&mut c, BOB, Request::Stat).0;
@@ -94,7 +109,7 @@ fn a_begin_also_ends_the_refusal_and_bob_is_never_refused() {
         home(&mut c, ALICE, Request::Begin { action: 1 }).0,
         Reply::Done
     );
-    assert_eq!(write(&mut c, &doc, 0, 100 << 10), Reply::Done);
+    assert_eq!(write_run(&mut c, &doc, 0, 100 << 10), Reply::Done);
     let _ = home(&mut c, BOB, Request::Stat);
     // Bob's own changes are not refused: the action was Alice's.
     let trash = Request::Trash {

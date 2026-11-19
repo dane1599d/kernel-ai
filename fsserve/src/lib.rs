@@ -1012,12 +1012,18 @@ impl<D: BlockDev> Server<D> {
     /// Drops everything since the last commit, an open action with it; the
     /// generation now on the disk. That is the last commit, or one an error
     /// interrupted after it had landed whole ([`Fs::abort`]).
+    /// [`Server::drop_changes`] for an action whose pending run failed to
+    /// write out: its owner did not ask for that, and may not know (the error
+    /// went to another caller, or read as a refusal), so its changes are
+    /// refused ([`Error::Dropped`]) until it sends Abort or Begin.
+    pub(crate) fn drop_unasked(&mut self) {
+        let owner = self.owner;
+        self.drop_changes();
+        self.dropped = owner;
+    }
+
     fn drop_changes(&mut self) -> u64 {
-        // Its owner did not ask for this: its changes are refused until it
-        // knows ([`Error::Dropped`]). Abort, Commit and a reap clear it.
-        if let Some(owner) = self.owner.take() {
-            self.dropped = Some(owner);
-        }
+        self.owner = None;
         self.pending = None;
         self.sealing = None;
         self.cache = None;
