@@ -1,0 +1,55 @@
+# ADR 0003 section 2's oracle: the same bytes on two engines. The probe guest
+# (spikes/s03-1/guest), built for wasm32, takes 10,000 generated calls on wasmi
+# through the repo's `appabi` and on Wasmtime 50's component runtime, and the
+# results must show 0 differences as WAVE text. The oracle is its own workspace
+# (spikes/s03-1), so Wasmtime never enters the main Cargo.lock.
+name: Oracle (appabi against Wasmtime)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - appabi/**
+      - wasmhost/**
+      - compsdk/**
+      - wit/**
+      - spikes/s03-1/**
+      - .github/workflows/oracle.yml
+  pull_request:
+    paths:
+      - appabi/**
+      - wasmhost/**
+      - compsdk/**
+      - wit/**
+      - spikes/s03-1/**
+      - .github/workflows/oracle.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+# A newer push to a pull request cancels its older run.
+concurrency:
+  group: oracle-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  oracle:
+    name: appabi on wasmi equals Wasmtime (10,000 calls)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for the probe guest
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/s03-1
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: The oracle, and the notes guest's calls
+        run: cargo test --manifest-path spikes/s03-1/Cargo.toml -p s03-1-oracle -- --nocapture
