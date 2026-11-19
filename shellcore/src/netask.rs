@@ -300,6 +300,7 @@ impl Shell {
             send: None,
             power: false,
             goal: None,
+            memory: None,
         });
         Reply::menu(id, encoded)
     }

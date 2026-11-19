@@ -45,9 +45,10 @@ pub const INSTALL_ROWS: &[&str] = &[
     "tune",
     "tune_undo",
 ];
-/// Rows that change what apps or goals may reach (the person's site grants, and
-/// the goals themselves): never in a goal's ceiling, since a goal that could
-/// restore a grant, or set or resume a goal, could widen itself.
+/// Rows that change what apps or goals may reach (the person's site grants, the
+/// goals themselves, and the memories Kai reads every turn): never in a goal's
+/// ceiling, since a goal that could restore a grant, set or resume a goal, or
+/// write a memory that steers later turns could widen itself.
 pub const PERMISSION_ROWS: &[&str] = &[
     "grant_revoke",
     "grant_restore",
@@ -55,6 +56,10 @@ pub const PERMISSION_ROWS: &[&str] = &[
     "goal_pause",
     "goal_resume",
     "goal_cancel",
+    "memory_remember",
+    "memory_edit",
+    "memory_forget",
+    "memory_forget_all",
 ];
 /// The most goals that hold a ceiling at once (goalcore keeps at most this many).
 pub const MAX_GOAL_GRANTS: usize = 16;

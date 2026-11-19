@@ -65,6 +65,8 @@ pub(crate) struct Pending {
     pub power: bool,
     /// For a goal row, what waits on the answer.
     pub goal: Option<crate::goalrows::Waiting>,
+    /// For a memory row, what waits on the answer.
+    pub memory: Option<crate::memrows::Waiting>,
 }
 
 /// `y`, `n`, `yes` or `no`, any case.
@@ -260,6 +262,7 @@ impl Shell {
             send: None,
             power: false,
             goal: None,
+            memory: None,
         });
         Reply {
             ok: true,
@@ -625,7 +628,10 @@ impl Shell {
         if pending.goal.is_some() && !is_show(text) {
             return self.answer_goal(pending, text);
         }
-        if pending.goal.is_some() && is_show(text) {
+        if pending.memory.is_some() && !is_show(text) {
+            return self.answer_memory(pending, text);
+        }
+        if (pending.goal.is_some() || pending.memory.is_some()) && is_show(text) {
             return self.show_goal_ask(pending);
         }
         if is_show(text) {

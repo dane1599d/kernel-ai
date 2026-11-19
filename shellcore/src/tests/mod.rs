@@ -46,6 +46,7 @@ mod guard;
 mod log;
 mod logdisk;
 mod look;
+mod memory;
 mod models;
 mod models_window;
 mod more;
@@ -127,6 +128,7 @@ struct FakeHost {
     /// What the supervisor was told to keep running, and the saved list.
     kept: RefCell<Vec<(String, bool)>>,
     keep_file: RefCell<Option<String>>,
+    pub memory_file: RefCell<Option<String>>,
     /// How many `keep` requests the supervisor refuses next, as one for an app
     /// not serving yet.
     keep_fails: Cell<u32>,
@@ -359,6 +361,7 @@ impl FakeHost {
             audit: RefCell::new(Vec::new()),
             kept: RefCell::new(Vec::new()),
             keep_file: RefCell::new(None),
+            memory_file: RefCell::new(None),
             keep_fails: Cell::new(0),
             keep_refusal: RefCell::new(None),
             restart_file: RefCell::new(None),

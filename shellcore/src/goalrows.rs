@@ -18,13 +18,11 @@
 
 use crate::actions::{How, Pending};
 use crate::actlog::{Change, Entry, State};
-use crate::script::Checked;
 use crate::{Reply, Shell};
 use agentabi::consent::Decision;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use termcore::menu::{Menu, Origin};
 use termcore::once::{CallArg, call_text};
 
 /// The most commands waiting for `goals`, taken or not.
@@ -237,10 +235,7 @@ impl Shell {
         self.goal_ask(id, request, &call, note, Waiting::Cancel(goal), question)
     }
 
-    /// Asks once for a goal row on a card whose question is `question`,
-    /// code-written, with Deny highlighted; `note` says in full what it does
-    /// on `show`. Only the card's Allow, with its ONCE, carries it out, so a
-    /// question too long for the card is refused, never asked as y/n.
+    /// Asks once for a goal row on its card ([`Shell::card_ask`]).
     pub(crate) fn goal_ask(
         &mut self,
         id: u64,
@@ -250,44 +245,15 @@ impl Shell {
         waiting: Waiting,
         question: String,
     ) -> Reply {
-        let menu = Menu::new(id, &question, Some(""), Some(""), Origin::Added)
-            .and_then(|menu| menu.with_call(call));
-        if menu.is_err() {
-            return Reply::err(format!("not asked: {call} does not fit its card"));
+        match self.card_ask(id, request, call, note, &question) {
+            Ok(reply) => {
+                if let Some(pending) = self.pending.as_mut() {
+                    pending.goal = Some(waiting);
+                }
+                reply
+            }
+            Err(refused) => refused,
         }
-        self.host.audit(&format!("request {id}: {call} asks"));
-        let mut checked = Checked::shown_only(call);
-        checked.note = Some(note);
-        self.shown = Some(format!(
-            "{}
-asked first: a goal row always asks",
-            crate::script::shown(id, &checked)
-        ));
-        self.pending = Some(Pending {
-            id,
-            request: request.to_string(),
-            checked,
-            asking: Vec::new(),
-            created_ns: self.host.now_ns(),
-            how: How {
-                form: crate::actlog::Form::Call,
-                tier: agentabi::Tier::Ask,
-                consent: String::from("asked"),
-            },
-            call: None,
-            offer: None,
-            menu: Some(String::from(call)),
-            pkg: None,
-            standing: None,
-            model: None,
-            app: None,
-            install: None,
-            net: None,
-            send: None,
-            power: false,
-            goal: Some(waiting),
-        });
-        Reply::menu(id, Menu::encode(id, Origin::Added, &question, "", "", call))
     }
 
     /// `show` for a goal row's ask: what it sets, in full, and that only its
@@ -295,13 +261,14 @@ asked first: a goal row always asks",
     pub(crate) fn show_goal_ask(&mut self, pending: Pending) -> Reply {
         let id = pending.id;
         let shown = crate::script::shown(id, &pending.checked);
+        let kind = match pending.memory.is_some() {
+            true => "memory",
+            false => "goal",
+        };
         self.pending = Some(pending);
         Reply {
             ok: true,
-            text: format!(
-                "goal ask {id}: answer it on its card, Allow or Deny
-{shown}"
-            ),
+            text: format!("{kind} ask {id}: answer it on its card, Allow or Deny\n{shown}"),
             confirm: Some(id),
             more: false,
         }

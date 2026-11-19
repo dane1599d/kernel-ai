@@ -2366,6 +2366,7 @@ dependencies = [
  "kabi",
  "kaiagent",
  "kaigrants",
+ "kaimem",
  "kainet",
  "kaiprofile",
  "livecore",
