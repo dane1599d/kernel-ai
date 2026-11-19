@@ -60,17 +60,22 @@ impl Door<&'static str> for AsksForTrash {
 struct Recorded {
     ran: Vec<(u64, String)>,
     next_entry: u64,
+    /// Rows the person says no to on the card.
+    deny: Vec<&'static str>,
 }
 
 impl Steps<&'static str> for Recorded {
-    fn run(&mut self, goal: u64, step: &Step<&'static str>) -> StepDone {
+    fn run(&mut self, goal: u64, step: &Step<&'static str>) -> Outcome {
         self.ran.push((goal, step.row.clone()));
+        if self.deny.contains(&step.row.as_str()) {
+            return Outcome::Denied("the person said no".to_string());
+        }
         self.next_entry += 1;
-        StepDone {
+        Outcome::Done(StepDone {
             entry: Some(100 + self.next_entry),
             tokens: 7,
             failed: None,
-        }
+        })
     }
 }
 
@@ -480,4 +485,38 @@ fn a_step_in_flight_after_a_restart_is_closed_and_the_goal_goes_on() {
             .any(|e| matches!(e, Event::Ran { step: 2, .. })),
         "{events:?}"
     );
+}
+
+/// The person's no on the card: the step did not run, and is counted as asked and
+/// denied, not as run; the goal reads back from its own file and goes on.
+#[test]
+fn a_no_on_the_card_is_a_denied_step_not_a_failed_one() {
+    let mut goals = Goals::new();
+    let id = approved(&mut goals);
+    let mut planner = Script(VecDeque::from([
+        Plan::Step(step("fs_list")),
+        Plan::Step(step("fs_list")),
+    ]));
+    let mut steps = Recorded {
+        deny: vec!["fs_list"],
+        ..Recorded::default()
+    };
+    let mut runner = Runner::new();
+    let events = go(
+        &mut runner,
+        &mut goals,
+        T0 + 1,
+        Presence::Away,
+        &mut planner,
+        &mut steps,
+    );
+    assert_eq!(events, [Event::Denied { goal: id, step: 1 }]);
+    let goal = goals.get(id).unwrap();
+    assert_eq!(goal.log[0].status, StepStatus::Denied);
+    assert_eq!(goal.log[0].note, "the person said no");
+    assert_eq!((goal.steps_run, goal.failed, goal.denied), (0, 0, 1));
+    assert_eq!(goal.state, State::Active, "it goes on");
+    assert!(goal.flight.is_none());
+    let text = goals.to_text();
+    assert_eq!(Goals::parse(&text).as_ref(), Ok(&goals), "{text}");
 }
