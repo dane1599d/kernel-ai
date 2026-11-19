@@ -289,6 +289,23 @@ asked first: a goal row always asks",
         Reply::menu(id, Menu::encode(id, Origin::Added, &question, "", "", call))
     }
 
+    /// `show` for a goal row's ask: what it sets, in full, and that only its
+    /// card's Allow or Deny answers it (a typed y does not).
+    pub(crate) fn show_goal_ask(&mut self, pending: Pending) -> Reply {
+        let id = pending.id;
+        let shown = crate::script::shown(id, &pending.checked);
+        self.pending = Some(pending);
+        Reply {
+            ok: true,
+            text: format!(
+                "goal ask {id}: answer it on its card, Allow or Deny
+{shown}"
+            ),
+            confirm: Some(id),
+            more: false,
+        }
+    }
+
     /// The answer to a goal row's ask: an Allow whose ONCE checks carries it
     /// out, under the person's mark.
     pub(crate) fn answer_goal(&mut self, pending: Pending, text: &str) -> Reply {

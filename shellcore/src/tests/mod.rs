@@ -37,6 +37,7 @@ mod door_build;
 mod effects;
 mod files;
 mod fuzz;
+mod goalreports;
 mod goals;
 mod grantleaks;
 mod grantundo;
