@@ -156,8 +156,8 @@ pub(super) fn draw(state: &mut State, screen: &Screen) {
         }
     }
     let rendered = if timed { sys::time_ns() } else { 0 };
-    copy_to_screen(&state.frame.px, state.width, screen, &damage);
-    let rects: Vec<FlushRect> = damage
+    let shown = present(state, screen, &damage);
+    let rects: Vec<FlushRect> = shown
         .iter()
         .map(|r| FlushRect {
             x: r.x as u32,
@@ -210,6 +210,45 @@ fn source<'a>(pools: &'a [Pool], pid: u64, buffer: &Buffer) -> Option<Source<'a>
         stride: words,
         alpha: buffer.format == Format::Argb8888,
     })
+}
+
+/// Puts the logical `damage` of the frame on the screen and returns what it
+/// covers there, in physical px: the same rectangles at scale 1.0, else each
+/// grown to the pixels a resample of it reaches (`deskcore::upscale`). The
+/// one place logical px become physical.
+fn present(state: &State, screen: &Screen, damage: &[Rect]) -> Vec<Rect> {
+    if state.scale == deskcore::scale::ONE {
+        copy_to_screen(&state.frame.px, state.width, screen, damage);
+        return damage.to_vec();
+    }
+    let (pw, ph) = (screen.info.width as i32, screen.info.height as i32);
+    let words = (screen.info.stride / 4) as usize;
+    // SAFETY: the kernel mapped the back buffer's `pages` pages at `address`.
+    let pixels = unsafe {
+        core::slice::from_raw_parts_mut(
+            screen.address as *mut u32,
+            screen.info.pages as usize * 1024,
+        )
+    };
+    let src = deskcore::upscale::Source {
+        px: &state.frame.px,
+        width: state.width,
+        height: state.height,
+    };
+    let mut dst = deskcore::upscale::Target {
+        px: pixels,
+        stride: words,
+        width: pw,
+        height: ph,
+    };
+    let mut covered = Vec::with_capacity(damage.len());
+    for r in damage {
+        if let Some(rect) = deskcore::upscale::physical(*r, state.scale, pw, ph) {
+            deskcore::upscale::resample(&src, &mut dst, state.scale, rect);
+            covered.push(rect);
+        }
+    }
+    covered
 }
 
 fn copy_to_screen(frame: &[u32], width: i32, screen: &Screen, damage: &[Rect]) {

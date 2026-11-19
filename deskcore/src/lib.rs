@@ -47,6 +47,7 @@ pub mod start;
 pub mod taskbar;
 pub mod tray;
 pub mod trusted;
+pub mod upscale;
 pub mod view;
 pub mod warmth;
 pub mod watch;
