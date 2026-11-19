@@ -18,6 +18,8 @@ mod files;
 mod net;
 #[path = "shell/routes.rs"]
 mod routes;
+#[path = "shell/sends.rs"]
+mod sends;
 #[path = "shell/ui.rs"]
 mod ui;
 #[path = "shell/waiting.rs"]
@@ -36,7 +38,7 @@ use llmproto::act::{self, ActError, ActRequest, Call};
 use llmproto::chat::Completion;
 use llmproto::script::{self, Answer, AnswerError, Lang, ScriptRequest};
 use llmproto::tune::{self, TuneRequest};
-use shellcore::outbox::Stage;
+use sends::{Taken, now_ms};
 use shellcore::targets::Service;
 use shellcore::waiting::Took;
 use shellcore::{DEFAULT_CONFIG, Host, PanelResult, Proof, SCRIPT_ROUND_MS, Shell};
@@ -254,19 +256,18 @@ fn report_call(route: kabi::handle::Handle, request: &[u8]) -> Result<Vec<u8>, k
 /// panel shows thinking from the Enter until then. A line that asks first
 /// waits for the trusted card (`deskask`); the panel says so. Whether it
 /// took a request, a line or a Stop: no held send starts on that pass
-/// (`give_sends`), so an undo queued behind it is taken first. A take that
-/// failed, or an answer that does not read, counts as taken too: an undo may
-/// wait behind it, so held sends wait while the desktop does not answer.
-fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) -> bool {
+/// (`sends::give`), so an undo queued behind it is taken first. A take that
+/// failed, or an answer that does not read, is [`Taken::Unanswered`].
+fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) -> Taken {
     use deskcore::panel::{Request, State};
     use deskcore::panel_wire;
     // A unit of work that is no request: a Stop for the last one ends here.
     start_of_unit();
     let Some(route) = desktop() else {
-        return false;
+        return Taken::Nothing;
     };
     let Ok(answer) = ask_desktop(route, panel_wire::TAKE) else {
-        return true;
+        return Taken::Unanswered;
     };
     let shown = match panel_wire::parse_take(&answer) {
         Some(Some(Request::Line(line))) => {
@@ -296,20 +297,18 @@ fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) -> bool {
         // still a request taken: the next pass takes the one behind it.
         Some(Some(Request::Stop)) => match shell.stop_app_build() {
             Some(reply) => State::Done { line: reply.text },
-            None => return true,
+            None => return Taken::Request,
         },
         // Nothing waits. Esc after the shell took the line: it has run
         // already, one line at a time, and its result stays shown. Esc before
         // is desktop's own: the line never came here.
-        Some(None) => return false,
-        // An answer that does not read: whatever it was, it is not passed
-        // over for a send.
-        None => return true,
+        Some(None) => return Taken::Nothing,
+        None => return Taken::Unanswered,
     };
     // A done line names the log entry its undo link takes back.
     let entry = shell.take_panel_entry();
     let Some(request) = panel_wire::encode_done(&shown, entry) else {
-        return true;
+        return Taken::Request;
     };
     // The line ended: a Stop pressed as it did must not hide its result.
     match report_to_desktop(route, &request) {
@@ -317,79 +316,7 @@ fn take_panel(shell: &mut Shell, warmth: &mut warmth::Warmth) -> bool {
         Ok(answer) => println!("the panel's state was not set: {answer}"),
         Err(why) => println!("the panel's state was not set: {why}"),
     }
-    true
-}
-
-/// The held sends (`shellcore::outbox`), a unit of their own after the
-/// panel's line, so an `undo` it ran wins: each one due starts (its
-/// `sending` on disk first), the panel is told it is going, and only then is
-/// it sent. What each came to, and the sends still held, go to the panel.
-/// One send a pass at most, and none on a pass whose [`take_panel`] took a
-/// request (`took`): the next pass takes the panel's next request first, so
-/// an undo queued behind a line or a Stop, or clicked during a send's call,
-/// wins over the next send (the wait is 1 ms while one is due). `shown` is
-/// the list last reported, without its countdowns, and the desktop it went to.
-fn give_sends(shell: &mut Shell, system: &System, shown: &mut SendsShown, took: bool) {
-    start_of_unit();
-    // A desktop that restarted has no list: it is told again.
-    if shown
-        .as_ref()
-        .is_some_and(|(pid, _)| *pid != system.desktop_pid.get())
-    {
-        *shown = None;
-    }
-    if let Some(entry) = shell.start_send_after(took, now_ms()) {
-        report_sends(shell, system, shown);
-        shell.run_send(entry);
-    }
-    let ended = shell.take_sends_ended();
-    let Some(route) = desktop() else {
-        return;
-    };
-    for send in ended {
-        let failed = !matches!(send.stage, Stage::Sent | Stage::Cancelled);
-        let request = deskcore::sends::encode_sent(send.entry, failed, &send.line);
-        if let Err(why) = report_to_desktop(route, &request) {
-            println!("the panel was not told what a send came to: {why}");
-        }
-    }
-    report_sends(shell, system, shown);
-}
-
-/// The held sends last reported to the panel, as (entry, going), and the
-/// desktop's pid then.
-type SendsShown = Option<(u64, Vec<(u64, bool)>)>;
-
-/// The held sends to the panel, when they changed since `shown`.
-fn report_sends(shell: &Shell, system: &System, shown: &mut SendsShown) {
-    let now = now_ms();
-    let held = shell.held_sends(now);
-    let key: Vec<(u64, bool)> = held.iter().map(|s| (s.entry, s.sending)).collect();
-    let pid = system.desktop_pid.get();
-    if shown.as_ref() == Some(&(pid, key.clone())) {
-        return;
-    }
-    let Some(route) = desktop() else {
-        return;
-    };
-    let wire: Vec<deskcore::sends::WireSend> = held
-        .into_iter()
-        .map(|s| deskcore::sends::WireSend {
-            entry: s.entry,
-            sending: s.sending,
-            left_ms: s.left_ms,
-            host: s.host,
-        })
-        .collect();
-    match report_to_desktop(route, &deskcore::sends::encode_sends(&wire)) {
-        Ok(answer) if answer == "ok" => *shown = Some((pid, key)),
-        Ok(answer) => println!("the panel did not take the held sends: {answer}"),
-        Err(why) => println!("the panel did not take the held sends: {why}"),
-    }
-}
-
-fn now_ms() -> u64 {
-    sys::time_ns() / 1_000_000
+    Taken::Request
 }
 
 /// Shows on the panel what the answer to a desktop line's card came to,
@@ -1580,18 +1507,17 @@ fn main() -> i32 {
         // typed as it did) is answered first, and a wake (a click on the
         // pane's undo) is taken on the next pass, before the send starts;
         // only once in a row, so the desktop's steady events never hold a
-        // send back.
-        if !took && shell.next_send_ms(now_ms()) == Some(0) {
-            took = match serve_terminal(&mut shell, &mut line, POLL_MS) {
-                Ok(()) => true,
+        // send back. Only the kernel's terminal's lines count.
+        if !took.any() && shell.next_send_ms(now_ms()) == Some(0) {
+            let deferred = match serve_terminal(&mut shell, &mut line, POLL_MS) {
+                Ok(ran) => ran,
                 Err(kabi::Error::Woken) => !core::mem::replace(&mut woke_before_send, true),
                 Err(_) => false,
             };
+            took = if deferred { Taken::Request } else { took };
         }
-        if !took {
-            woke_before_send = false;
-        }
-        give_sends(&mut shell, &system, &mut sends_shown, took);
+        woke_before_send &= took.any();
+        sends::give(&mut shell, &system, &mut sends_shown, took);
         take_effects(&mut shell, held);
         waiting::run_held(&mut shell, held);
         start_of_unit();
@@ -1631,7 +1557,7 @@ fn main() -> i32 {
             wait_ms = wait_ms.min(left.max(1));
         }
         match serve_terminal(&mut shell, &mut line, wait_ms) {
-            Ok(()) => {}
+            Ok(_) => {}
             Err(kabi::Error::TimedOut | kabi::Error::Woken) => wait_ms = WAKE_WAIT_MS,
             Err(error) => {
                 println!("svc_recv failed: {error:?}");
@@ -1647,10 +1573,12 @@ const POLL_MS: u64 = 1;
 
 /// Takes the next request to the shell's service within `wait_ms`, into
 /// `line`, and answers it: only the kernel terminal may run shell lines.
-fn serve_terminal(shell: &mut Shell, line: &mut [u8], wait_ms: u64) -> Result<(), kabi::Error> {
+/// Whether it ran one.
+fn serve_terminal(shell: &mut Shell, line: &mut [u8], wait_ms: u64) -> Result<bool, kabi::Error> {
     let mut caller = u64::MAX;
     let len = sys::svc_recv(line, wait_ms, &mut caller)?.min(line.len());
-    let mut reply = if caller == 0 {
+    let ran = caller == 0;
+    let mut reply = if ran {
         let text = core::str::from_utf8(&line[..len]).unwrap_or("");
         // An answer to a menu goes on with its run; any other line starts one.
         if !text.starts_with("answer ") {
@@ -1672,5 +1600,5 @@ fn serve_terminal(shell: &mut Shell, line: &mut [u8], wait_ms: u64) -> Result<()
     if let Err(error) = sys::svc_reply(reply.as_bytes()) {
         println!("svc_reply failed: {error:?}");
     }
-    Ok(())
+    Ok(ran)
 }

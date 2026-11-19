@@ -79,13 +79,14 @@ pub fn status_line(status: u16) -> String {
 /// A failed call to the send service, as a send's failure. Only a call the
 /// kernel refused before the service could take it is "not sent" (a Stop
 /// ends a call only while no server has taken it); anything else, a timeout
-/// or the service dying with it included, may have gone out.
+/// or the service dying with it included, may have gone out. Fault is not
+/// "not sent": the kernel copies the reply into the shell's buffer after
+/// the service answered, so a fault there comes after the send.
 pub fn call_failed(error: kabi::Error) -> SendFailed {
     use kabi::Error as E;
     let maybe_sent = !matches!(
         error,
         E::Permission
-            | E::Fault
             | E::Invalid
             | E::NoMemory
             | E::NotFound
@@ -101,6 +102,13 @@ pub fn call_failed(error: kabi::Error) -> SendFailed {
     };
     SendFailed { why, maybe_sent }
 }
+
+/// How long past due a held send waits for the desktop to answer before it
+/// is ended unsent (`Shell::end_unchecked_sends`).
+pub const UNCHECKED_MS: u64 = 60_000;
+/// Why: code's words, after "Not sent to <host>: ".
+pub const UNCHECKED_WHY: &str =
+    "the desktop did not answer for a minute, so its undo could not be checked";
 
 /// Where a send stands, as its change's `after=` word in the log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -239,6 +247,15 @@ impl Outbox {
     }
 
     /// Takes entry `entry`'s send out of the outbox, as it ends.
+    /// The held sends more than `by_ms` past due at `now_ms`.
+    pub fn overdue(&self, now_ms: u64, by_ms: u64) -> Vec<u64> {
+        self.pending
+            .iter()
+            .filter(|p| p.stage == Stage::Held && p.due_ms.saturating_add(by_ms) <= now_ms)
+            .map(|p| p.entry)
+            .collect()
+    }
+
     pub fn take(&mut self, entry: u64) -> Option<Pending> {
         let at = self.pending.iter().position(|p| p.entry == entry)?;
         Some(self.pending.remove(at))
