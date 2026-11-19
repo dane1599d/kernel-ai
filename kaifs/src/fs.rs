@@ -220,8 +220,10 @@ impl<D: BlockDev> Fs<D> {
             label: name,
             committed: 0,
             oid_mark: 0,
-            fallbacks: 0,
-            saved_fallbacks: 0,
+            // 0 is what a build that keeps no count writes: a new disk starts
+            // at 1, so a mount can tell the two apart.
+            fallbacks: 1,
+            saved_fallbacks: 1,
             clock: 0,
             volumes: Tree::default(),
             vols: volumes
@@ -263,11 +265,22 @@ impl<D: BlockDev> Fs<D> {
         let slots = format::read_rings(&mut self.io.dev)?;
         let mark = slots.iter().map(|slot| slot.oid_mark).max().unwrap_or(0);
         let most = slots.iter().map(|slot| slot.fallbacks).max().unwrap_or(0);
+        // Gone back: a newer slot of this line was passed over; or the slot
+        // mounted is from a line a fallback already left (its count below the
+        // rings' highest); or a build that keeps no count wrote it (0), so
+        // what happened since it is unknown.
         let fell_back = slots
             .iter()
-            .any(|slot| slot.generation > sb.generation && slot.fallbacks >= sb.fallbacks);
+            .any(|slot| slot.generation > sb.generation && slot.fallbacks >= sb.fallbacks)
+            || sb.fallbacks < most
+            || sb.fallbacks == 0;
         self.oid_mark = self.oid_mark.max(mark);
         self.fallbacks = self.fallbacks.max(most + u64::from(fell_back));
+        // A mount that cannot commit changes nothing on the disk, so its
+        // count cannot be shown again for other history: it counts as saved.
+        if !self.writable {
+            self.saved_fallbacks = self.fallbacks;
+        }
         Ok(())
     }
 
@@ -686,6 +699,21 @@ impl<D: BlockDev> Fs<D> {
         let pin = self.pin();
         let (vol, mut store) = split(&mut self.vols, &mut self.io, self.active, pin);
         vol.live.scan_born_after(since, &mut store, visit)
+    }
+
+    /// The items of the active volume's tree as the last commit wrote it,
+    /// in leaves born after generation `since`, from key `from` on, until
+    /// `visit` returns false. The committed tree, not the live one: what an
+    /// open action changed, and may yet drop, is not there.
+    pub fn scan_committed_born_after_from(
+        &mut self,
+        since: u64,
+        from: &Key,
+        visit: &mut dyn FnMut(&Key, &[u8]) -> bool,
+    ) -> Result<(), Error> {
+        let pin = self.pin();
+        let (vol, mut store) = split(&mut self.vols, &mut self.io, self.active, pin);
+        Tree::open(vol.base.0).scan_born_after_from(since, from, &mut store, visit)
     }
 
     /// Makes `items`, raw and in key order, the active volume's whole live tree.

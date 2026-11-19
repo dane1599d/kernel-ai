@@ -82,10 +82,12 @@ impl<D: BlockDev> Fs<D> {
         Ok(Some(rows))
     }
 
-    /// Whether `ino` is `dir` or lies beneath it in the live tree: what a
-    /// folder's holder may learn of. A trashed object lies beneath the trash,
+    /// Whether `ino` is `dir` or lies beneath it in the tree the last commit
+    /// wrote (an open action's moves are not there yet): what a folder's
+    /// holder may learn of. A trashed object lies beneath the trash,
     /// not the folder it came from; false for an `ino` that is not there.
     pub fn is_beneath(&mut self, ino: u64, dir: u64) -> Result<bool, Error> {
+        let committed = View::Tree(self.vol().base.0);
         let mut seen = BTreeSet::new();
         let mut node = ino;
         loop {
@@ -98,7 +100,7 @@ impl<D: BlockDev> Fs<D> {
                     false => Err(Error::Corrupt("a folder's parents loop")),
                 };
             }
-            node = match self.inode_in(View::Live, node)? {
+            node = match self.inode_in(committed, node)? {
                 Some(inode) => inode.parent,
                 None => return Ok(false),
             };

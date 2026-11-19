@@ -723,19 +723,18 @@ impl<D: BlockDev> Server<D> {
             }
             Request::Changes { since } => {
                 need(Rights::ENUMERATE)?;
-                let (rows, more) = self.changed_since(object, since, None)?;
+                let (rows, more, _) = self.changed_since(object, since, None)?;
                 Reply::Changes { rows, more }
             }
             Request::ChangesSince { since, after } => {
                 need(Rights::ENUMERATE)?;
                 self.save_fallbacks()?;
-                let (rows, more) = self.changed_since(object, since, after)?;
-                let fs = self.fs();
+                let (rows, more, upto) = self.changed_since(object, since, after)?;
                 Reply::ChangesPage {
                     rows,
                     more,
-                    upto: fs.committed,
-                    fallbacks: fs.fallbacks(),
+                    upto,
+                    fallbacks: self.fs().fallbacks(),
                 }
             }
             Request::Sync => {
