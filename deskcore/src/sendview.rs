@@ -32,11 +32,14 @@ pub const PREVIEW: &str = "panel preview ";
 pub const FITS: &str = "panel send-fits";
 /// The lines a send's card takes: its title, the call, the reason.
 pub const CARD_LINES: i32 = 4;
-/// What the preview shows for a space at the start or the end of a line,
-/// and for an empty line: the text is printable ASCII and line breaks only
-/// ([`SendPreview::new`]), so neither mark can be one of its own bytes.
+/// What the preview shows for a space that could hide (at a line's start or
+/// end, in a run of two or more, at a wrap), for an empty line, and at the
+/// start of a line the pane wrapped (a soft wrap, not one of the text's own
+/// line breaks): the text is printable ASCII and line breaks only
+/// ([`SendPreview::new`]), so no mark can be one of its own bytes.
 pub const SPACE_MARK: char = '\u{b7}';
 pub const EMPTY_MARK: char = '\u{b6}';
+pub const WRAP_MARK: char = '\u{21aa}';
 
 /// Whether `caller` may give the panel a send's text, or ask whether a
 /// send's card fits: the shell alone, as with every `panel` request. Not an
@@ -111,8 +114,9 @@ pub struct SendPreview {
     pub text: String,
     /// Lines scrolled past at the top.
     pub scrolled: usize,
-    /// The furthest line that has been on the screen, counted from 1.
-    pub read_to: usize,
+    /// Which of the laid-out lines have been on the screen, each one: the
+    /// whole text is read only when every line has been, not only the last.
+    pub seen: Vec<bool>,
 }
 
 impl SendPreview {
@@ -130,7 +134,7 @@ impl SendPreview {
             call,
             text: String::from(text),
             scrolled: 0,
-            read_to: 0,
+            seen: Vec::new(),
         })
     }
 
@@ -155,8 +159,9 @@ impl SendPreview {
     }
 
     /// The text's lines as they are shown, every byte of it visible: a space
-    /// at a line's start or end as [`SPACE_MARK`], an empty line as
-    /// [`EMPTY_MARK`]; the painter wraps each by character, keeping all.
+    /// that could hide (at a line's start or end, or in a run of two or
+    /// more) as [`SPACE_MARK`], an empty line as [`EMPTY_MARK`]. The painter
+    /// wraps each by character ([`wrap_shown`]), keeping all.
     pub fn shown(&self) -> Vec<String> {
         self.text
             .split('\n')
@@ -164,17 +169,20 @@ impl SendPreview {
                 if line.is_empty() {
                     return String::from(EMPTY_MARK);
                 }
-                let body = line.trim_matches(' ');
-                if body.is_empty() {
-                    return line.chars().map(|_| SPACE_MARK).collect();
-                }
-                let lead = line.len() - line.trim_start_matches(' ').len();
-                let trail = line.len() - line.trim_end_matches(' ').len();
-                let mut shown = String::with_capacity(line.len() + 2 * (lead + trail));
-                shown.extend(core::iter::repeat_n(SPACE_MARK, lead));
-                shown.push_str(body);
-                shown.extend(core::iter::repeat_n(SPACE_MARK, trail));
-                shown
+                let chars: Vec<char> = line.chars().collect();
+                let last = chars.len() - 1;
+                (0..chars.len())
+                    .map(|i| {
+                        let space = chars[i] == ' ';
+                        let edge = i == 0 || i == last;
+                        let run =
+                            (i > 0 && chars[i - 1] == ' ') || (i < last && chars[i + 1] == ' ');
+                        match space && (edge || run) {
+                            true => SPACE_MARK,
+                            false => chars[i],
+                        }
+                    })
+                    .collect()
             })
             .collect()
     }
@@ -190,10 +198,18 @@ impl SendPreview {
     }
 
     /// The text's lines from its scroll, `rows` of `total`, are on the
-    /// screen now: whether the whole text has been, the last line included.
+    /// screen now: whether every one of its lines has been, each in turn,
+    /// not only its last (a jump to the end reads nothing in between). A
+    /// new layout (another width) starts the count again.
     pub fn on_screen(&mut self, rows: usize, total: usize) -> bool {
-        self.read_to = self.read_to.max((self.scrolled + rows).min(total));
-        self.read_to >= total
+        if self.seen.len() != total {
+            self.seen = alloc::vec![false; total];
+        }
+        let end = (self.scrolled + rows).min(total);
+        for seen in &mut self.seen[self.scrolled.min(end)..end] {
+            *seen = true;
+        }
+        self.seen.iter().all(|&seen| seen)
     }
 }
 
@@ -297,6 +313,42 @@ impl Slot {
         self.unread = false;
         Some(preview.ask)
     }
+}
+
+/// `line` (one of [`SendPreview::shown`]'s) cut into pieces no wider than
+/// `width` by `measure`, character by character, every character kept: a
+/// piece the pane wrapped onto starts with [`WRAP_MARK`], and a space at
+/// either side of a wrap shows as [`SPACE_MARK`], so a soft wrap never looks
+/// like one of the text's own line breaks and no space hides at it.
+pub fn wrap_shown(line: &str, width: f32, measure: &dyn Fn(&str) -> f32) -> Vec<String> {
+    let mut pieces: Vec<String> = Vec::new();
+    let mut piece = String::new();
+    for ch in line.chars() {
+        piece.push(ch);
+        let alone = piece.chars().count() == 1 || piece == alloc::format!("{WRAP_MARK}{ch}");
+        if !alone && measure(&piece) > width {
+            piece.pop();
+            pieces.push(core::mem::take(&mut piece));
+            piece.push(WRAP_MARK);
+            piece.push(ch);
+        }
+    }
+    pieces.push(piece);
+    let count = pieces.len();
+    for (i, piece) in pieces.iter_mut().enumerate() {
+        if i + 1 < count && piece.ends_with(' ') {
+            piece.pop();
+            piece.push(SPACE_MARK);
+        }
+        if i > 0 {
+            *piece = piece.replacen(
+                &alloc::format!("{WRAP_MARK} "),
+                &alloc::format!("{WRAP_MARK}{SPACE_MARK}"),
+                1,
+            );
+        }
+    }
+    pieces
 }
 
 /// A send's text as its request to `desktop`.
