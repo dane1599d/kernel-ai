@@ -67,14 +67,36 @@ fn content(why: Why) -> Option<&'static str> {
 }
 
 /// Whether the person's line asked for memory `memory` itself: the door
-/// found the line asking (never a "Taken as"), and the number is typed in it.
+/// found the line asking (never a "Taken as"), and the line names exactly
+/// that one memory, the way a memory is named ([`named`]). Any other number
+/// in the line ("change memory 2 to I have 3 cats") names nothing.
 fn line_names(request: &str, decision: Decision, memory: u64) -> bool {
-    let number = format!("{memory}");
-    decision.tier == Tier::Run
-        && decision.why == Why::Asked
-        && request
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|word| word == number)
+    decision.tier == Tier::Run && decision.why == Why::Asked && named(request) == [memory]
+}
+
+/// The memories `line` names: "memory 2" (or "memories 2") and "#2".
+pub(crate) fn named(line: &str) -> Vec<u64> {
+    let lower = line.to_ascii_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '#'))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let mut found = Vec::new();
+    for (at, word) in words.iter().enumerate() {
+        let number = match word.strip_prefix('#') {
+            Some(number) => number.parse::<u64>().ok(),
+            None if *word == "memory" || *word == "memories" => {
+                words.get(at + 1).and_then(|next| next.parse::<u64>().ok())
+            }
+            None => None,
+        };
+        if let Some(number) = number
+            && !found.contains(&number)
+        {
+            found.push(number);
+        }
+    }
+    found
 }
 
 impl Shell {
