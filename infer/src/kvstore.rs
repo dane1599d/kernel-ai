@@ -41,8 +41,15 @@ pub enum Place {
 }
 
 /// Raw bytes a spill file goes to: the `kai-cache` region in the OS, a buffer
-/// in the tests. Each call is whole or fails.
+/// in the tests. Each call is whole or fails, and moves whole blocks at a
+/// block's offset: the store aligns every file to [`Region::block`] and pads
+/// its last block.
 pub trait Region {
+    /// The bytes every offset and length is a multiple of: a sector for a
+    /// disk. It divides 64 KiB, the most the store moves at once.
+    fn block(&self) -> u64 {
+        1
+    }
     /// Its bytes.
     fn size(&self) -> u64;
     fn read_at(&mut self, at: u64, buf: &mut [u8]) -> bool;
@@ -97,11 +104,12 @@ pub fn request_key(model: &Key, agent: u32, request: u64) -> Key {
     }
 }
 
-/// A spill file's place in the region.
+/// A spill file's place in the region: `room` bytes from `at`, whole blocks,
+/// the file first and zeros after it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Extent {
     at: u64,
-    len: u64,
+    room: u64,
 }
 
 pub struct KvStore<R: Region> {
@@ -239,13 +247,27 @@ impl<R: Region> KvStore<R> {
         let Some(region) = self.region.as_mut() else {
             return Err(Refused::Short);
         };
-        let end = extent.at + extent.len;
+        // Whole steps of blocks are read, and handed out as the engine asks.
+        let end = extent.at + extent.room;
         let mut at = extent.at;
-        engine.restore_slot(key, turns, &mut |buf| {
-            let fits = at + buf.len() as u64 <= end;
-            let read = fits && region.read_at(at, buf);
-            at += buf.len() as u64;
-            read
+        let mut chunk: Vec<u8> = Vec::new();
+        let mut used = 0;
+        engine.restore_slot(key, turns, &mut |out| {
+            let mut done = 0;
+            while done < out.len() {
+                if used == chunk.len() {
+                    let step = (end - at).min(STEP as u64) as usize;
+                    chunk.resize(step, 0);
+                    if step == 0 || !region.read_at(at, &mut chunk) {
+                        return false;
+                    }
+                    (at, used) = (at + step as u64, 0);
+                }
+                let take = (out.len() - done).min(chunk.len() - used);
+                out[done..done + take].copy_from_slice(&chunk[used..used + take]);
+                (done, used) = (done + take, used + take);
+            }
+            true
         })
     }
 
@@ -263,9 +285,14 @@ impl<R: Region> KvStore<R> {
         len: u64,
         write: impl FnOnce(&mut dyn FnMut(&[u8]) -> bool) -> bool,
     ) -> Result<(), Unkept> {
-        let at = self.room(len).ok_or(Unkept::NoRoom)?;
+        let block = self.region.as_ref().map_or(1, Region::block);
+        if block == 0 || !(STEP as u64).is_multiple_of(block) {
+            return Err(Unkept::NoRoom);
+        }
+        let room = len.div_ceil(block) * block;
+        let at = self.room(room).ok_or(Unkept::NoRoom)?;
         let region = self.region.as_mut().ok_or(Unkept::NoRoom)?;
-        let end = at + len;
+        let end = at + room;
         let mut next = at;
         let mut pending: Vec<u8> = Vec::with_capacity(STEP);
         let put = |bytes: &[u8], region: &mut R, next: &mut u64| {
@@ -274,24 +301,31 @@ impl<R: Region> KvStore<R> {
             *next += bytes.len() as u64;
             written
         };
+        // Whole steps go out as they fill, so every write is whole blocks.
         let wrote = write(&mut |bytes| {
             pending.extend_from_slice(bytes);
-            if pending.len() < STEP {
-                return true;
+            let mut ok = true;
+            while ok && pending.len() >= STEP {
+                ok = put(&pending[..STEP], region, &mut next);
+                pending.drain(..STEP);
             }
-            let ok = put(&pending, region, &mut next);
-            pending.clear();
             ok
         });
-        let ok = wrote && put(&pending, region, &mut next) && next == end && region.flush();
+        // The last block is padded with zeros, which a restore never reads as file.
+        pending.resize(pending.len().div_ceil(block as usize) * block as usize, 0);
+        let ok = wrote
+            && (pending.is_empty() || put(&pending, region, &mut next))
+            && next == end
+            && region.flush();
         if !ok {
             return Err(Unkept::Failed);
         }
-        self.spills.insert(request, Extent { at, len });
+        self.spills.insert(request, Extent { at, room });
         Ok(())
     }
 
-    /// The lowest offset with `len` free bytes in the region.
+    /// The lowest offset with `len` free bytes in the region: extents start at
+    /// whole blocks, since each takes whole blocks from one.
     fn room(&self, len: u64) -> Option<u64> {
         let size = self.region.as_ref()?.size();
         let mut taken: Vec<Extent> = self.spills.values().copied().collect();
@@ -301,7 +335,7 @@ impl<R: Region> KvStore<R> {
             if e.at.saturating_sub(at) >= len {
                 return Some(at);
             }
-            at = at.max(e.at + e.len);
+            at = at.max(e.at + e.room);
         }
         (size.saturating_sub(at) >= len).then_some(at)
     }
