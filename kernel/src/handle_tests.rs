@@ -36,12 +36,59 @@ pub fn check() -> Result<(), &'static str> {
     startup_handles()?;
     ring3()?;
     routes()?;
+    agent_route()?;
     kernel_grants()?;
     ring3_grants()?;
     revoke_mid_call()?;
     m1();
     m2();
     log!("handles: tables, startup handles and need() on handles all behaved");
+    Ok(())
+}
+
+/// ADR 0013 section 1: a plan line's `agent=` badge rides on its route to
+/// `llm`, and only there; a line with none has badge 0 on every route.
+fn agent_route() -> Result<(), &'static str> {
+    use kabi::handle::agent;
+    let badges = |grants: supervise::Grants| -> Result<(Option<u64>, Option<u64>), &'static str> {
+        let request = SpawnRequest {
+            name: "hagent",
+            program: "handles",
+            args: b"mode=idle",
+            limits: Limits {
+                caps: cap::CALL,
+                ..LIMITS
+            },
+            spawner: 0,
+            supervisor: false,
+            uses: &[agent::SERVICE, "hsrv"],
+        };
+        let pid = process::spawn_in(&request, Vec::new(), false, &grants)
+            .map_err(|_| "handles: cannot start the agent's process")?;
+        let slot = process::slot_of_pid(pid).ok_or("handles: the agent's process is gone")?;
+        let found = (
+            handle::route_badge(slot, agent::SERVICE),
+            handle::route_badge(slot, "hsrv"),
+        );
+        process::kill(pid, ExitReason::Killed)
+            .map_err(|_| "handles: cannot end the agent's process")?;
+        wait_exit(pid)?;
+        Ok(found)
+    };
+    let kai = supervise::Grants {
+        agent: Some(agent::KAI),
+        ..supervise::Grants::default()
+    };
+    if badges(kai)? != (Some(agent::KAI), Some(0)) {
+        return Err("handles: an agent's badge is not on its route to llm alone");
+    }
+    if badges(supervise::Grants::default())? != (Some(0), Some(0)) {
+        return Err("handles: a line with no agent= has a badge on a route");
+    }
+    log!(
+        "handles: an agent's route to llm carries its badge (kai {}), and no other route does",
+        agent::KAI
+    );
     Ok(())
 }
 

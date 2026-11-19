@@ -63,7 +63,7 @@ impl Shell {
         let asked = ActRequest {
             line: request.to_string(),
             // Data, never consent (ADR 0010 §5): it reaches the model only.
-            state: self.state_line().unwrap_or_default(),
+            state: self.state_line_for(request).unwrap_or_default(),
             timeout_ms: SCRIPT_ROUND_MS,
             read: None,
             apps: crate::apps::wire(self.host.as_ref()),
@@ -398,6 +398,10 @@ impl Shell {
             self.record(id, request, &call.text(), &format!("refused: {why}"));
             return outcome(Tier::Never, Why::Added, Reply::err(why));
         }
+        if agentabi::MEMORY_ROWS.iter().any(|r| r.name == row.name) {
+            let reply = self.memory_call(id, request, row.name, &args.values, decision);
+            return outcome(decision.tier, decision.why, reply);
+        }
         if agentabi::GOAL_ROWS.iter().any(|r| r.name == row.name) {
             let reply = self.goal_call(id, request, row.name, &args.values, decision);
             return outcome(decision.tier, decision.why, reply);
@@ -582,6 +586,7 @@ impl Shell {
             net: None,
             power: false,
             goal: None,
+            memory: None,
         });
         // The highlight starts on Allow only for a call the line plainly asked for.
         let origin = match why {

@@ -293,6 +293,13 @@ const PERMS: &[(&str, &str)] = &[
     ("goal_pause", "goals"),
     ("goal_resume", "goals"),
     ("goal_cancel", "goals"),
+    // ADR 0013 §3: what Kai keeps of the person's words.
+    ("memory_remember", "memory"),
+    ("memory_list", "memory"),
+    ("memory_search", "memory"),
+    ("memory_edit", "memory"),
+    ("memory_forget", "memory"),
+    ("memory_forget_all", "memory"),
     ("disk_format", "disk.admin"),
 ];
 
