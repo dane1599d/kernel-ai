@@ -69,18 +69,21 @@ pub struct Changed {
 /// What changed since a generation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Changes {
-    /// Every object changed after the generation asked about, files and
-    /// folders. `fs` answers at most 64 rows a call, in `(changed, object)` order;
-    /// the OS half pages with `ChangesAfter` until it has them all (#1148). A
-    /// trashed or deleted object is in no row: the home folder's handle no longer
-    /// sees it, and the change to its folder is how the walk learns of it.
+    /// Every committed object changed after the generation asked about, files
+    /// and folders. `fs` answers at most 64 rows a page, in `(changed, object)`
+    /// order; the OS half pages with `ChangesSince { since, after }` until `more`
+    /// is false (#1148). A trashed, deleted or moved-out object is in no row: the
+    /// home folder's handle no longer sees it, and the change to its folder is
+    /// how the walk learns of it.
     pub rows: Vec<Changed>,
-    /// The generation this answer is complete up to (`fs`'s `upto`): the next
-    /// walk starts here.
+    /// The committed generation this answer is complete up to (the last page's
+    /// `upto`): the next walk starts here. After a fall back it may be lower
+    /// than the one asked about.
     pub generation: u64,
-    /// How many times `fs` has had to fall back to an answer that may miss
-    /// changes (#1148): when it is not what the last full reconcile saw, the
-    /// walk reconciles the whole home folder.
+    /// The disk's fall-back count, kept in every superblock and never repeated
+    /// (#1148): a fall back mount can undo commits already indexed, so when it is
+    /// not what the last full reconcile saw, the walk reconciles the whole home
+    /// folder and the index's mark follows `fs`'s back.
     pub fallbacks: u64,
 }
 

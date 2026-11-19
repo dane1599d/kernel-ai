@@ -266,3 +266,39 @@ fn a_fallback_or_a_start_reconciles_the_whole_home_folder() {
     again.walk(0).unwrap();
     assert_eq!(again.index().files().count(), 0);
 }
+
+/// A fall back mount undoes commits already indexed: the index takes back what
+/// was undone, its mark follows `fs`'s back, and a change made after the fall back,
+/// at a generation the old mark had passed, is still indexed.
+#[test]
+fn a_fall_back_that_undoes_commits_takes_the_index_back_with_it() {
+    let (mut search, _) = open(trip(), Disk::default(), Model::keyword());
+    search.walk(0).unwrap();
+    let earlier = search.files_mut().clone();
+    let home = search.files_mut();
+    home.write("/home/user/notes/trip.txt", "the flight to porto");
+    home.write("/home/user/notes/bread.txt", "bread recipe");
+    search.walk(0).unwrap();
+    assert_eq!(search.index().generation, 4);
+    search.files_mut().fall_back_to(&earlier);
+    search.walk(0).unwrap();
+    assert_eq!(search.index().generation, 2, "the mark went back with fs");
+    let reply = search.query(&ask("lisbon"), 0, &mut everything());
+    assert_eq!(paths(&reply), ["/home/user/notes/trip.txt"], "undone back");
+    assert_eq!(search.query(&ask("porto"), 0, &mut everything()), "ok 0");
+    let reply = search.query(&ask("bread"), 0, &mut everything());
+    assert!(!reply.contains("bread.txt"), "{reply}");
+    // A change after the fall back, at generation 3, below the old mark of 4.
+    search
+        .files_mut()
+        .write("/home/user/notes/tea.txt", "green tea");
+    search.walk(0).unwrap();
+    let reply = search.query(&ask("tea"), 0, &mut everything());
+    assert_eq!(paths(&reply), ["/home/user/notes/tea.txt"]);
+    // The index file holds it all, and reads back as it is.
+    let disk = search.store().clone();
+    let index = search.index().clone();
+    let (again, opened) = open(Home::default(), disk, Model::keyword());
+    assert_eq!(opened, crate::Opened::Read { torn: false });
+    assert_eq!(again.index(), &index);
+}

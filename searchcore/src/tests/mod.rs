@@ -21,6 +21,7 @@ use semindex::{EmbedError, Embedder, EmbedderId, Scope};
 /// changes the folder and the folders it left and joined, not the files under it;
 /// a trashed or deleted object is gone from the home folder's view with no row of
 /// its own, and only its folder's change says so (as `fs` answers since #1148).
+#[derive(Clone)]
 pub struct Home {
     files: BTreeMap<String, (u64, Vec<u8>, u64)>,
     dirs: BTreeMap<String, (u64, u64)>,
@@ -145,6 +146,15 @@ impl Home {
         self.touch(parent(from));
         self.touch(parent(to));
         self.touch(to);
+    }
+
+    /// `earlier`'s files, folders and generation, with the fall-back count moved
+    /// on: a fall back mount that undid the commits made since.
+    pub fn fall_back_to(&mut self, earlier: &Home) {
+        self.files = earlier.files.clone();
+        self.dirs = earlier.dirs.clone();
+        self.generation = earlier.generation;
+        self.fallbacks += 1;
     }
 
     /// Removes `path` with no change anywhere: what a fallback may have missed.

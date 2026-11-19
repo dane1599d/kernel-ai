@@ -12,6 +12,7 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use semindex::format::MAX_BATCH;
 use semindex::index::FileEntry;
 use semindex::search::MAX_HITS;
 use semindex::{Embedder, Header, Index, Query, Record, Refused, Scope};
@@ -182,6 +183,28 @@ impl<F: Files, S: Store, M: Models> Search<F, S, M> {
                 return Err(format!("the index did not take a batch: {why}"));
             }
         }
+        self.index.generation = generation;
+        Ok(())
+    }
+
+    /// Writes the index file anew from the entries it holds, closed at
+    /// `generation`: the one way its mark goes back, after `fs` fell back to an
+    /// earlier commit. Nothing is read or embedded again.
+    fn rewrite(&mut self, generation: u64) -> Result<(), String> {
+        let why = |why: Refused| String::from(why.why());
+        let mut bytes = semindex::fresh(&self.index.header).map_err(why)?;
+        let mut batch = semindex::Batch::new();
+        for entry in self.index.files() {
+            let records = entry_records(entry, &entry.path);
+            if batch.len() + records.len() >= MAX_BATCH {
+                bytes.extend(core::mem::take(&mut batch).commit(generation));
+            }
+            for record in &records {
+                batch.push(record).map_err(why)?;
+            }
+        }
+        bytes.extend(batch.commit(generation));
+        self.store.replace(&bytes)?;
         self.index.generation = generation;
         Ok(())
     }

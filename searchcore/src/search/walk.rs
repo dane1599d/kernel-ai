@@ -5,11 +5,13 @@
 //! 2. Each changed folder whose path is not the one it had when it was last
 //!    listed whole (moved, made, or not yet seen since the agent started) is
 //!    listed and reconciled: a file indexed at another path is re-keyed to its
-//!    new one with the chunks it has, one changed since it was indexed or not
-//!    indexed is read, one the scope does not index leaves, and what the index
-//!    holds under the folder that the listing does not, leaves. A walk whose
-//!    `fs` fell back since the last full one (and the first walk after every
-//!    start) reconciles the whole home folder this way.
+//!    new one with the chunks it has, one at another generation than the one
+//!    indexed (or not indexed) is read, one the scope does not index leaves,
+//!    and what the index holds under the folder that the listing does not,
+//!    leaves. A walk whose `fs` fell back since the last full one (and the
+//!    first walk after every start) reconciles the whole home folder this way;
+//!    a fall back can undo commits, so when `fs`'s generation went back, the
+//!    index is written anew with its mark at `fs`'s.
 //! 3. For each changed folder, everything under a child of it that no longer
 //!    exists leaves: a trashed or deleted object has no row of its own, and its
 //!    folder's change is how the walk learns of it.
@@ -79,9 +81,11 @@ impl<F: Files, S: Store, M: Models> Search<F, S, M> {
             .filter_map(|row| Some((row.stat.object, row.path.as_deref()?, row.stat.changed)))
             .filter(|(_, path, _)| scope::clean(path) && scope::within(path, HOME))
             .collect();
+        let mut rescanned = false;
         if self.fallbacks != Some(changes.fallbacks) {
             match self.reconcile(HOME, &mut walk)? {
                 true => {
+                    rescanned = true;
                     self.fallbacks = Some(changes.fallbacks);
                     for &(object, path, _) in &folders {
                         self.listed(object, path);
@@ -113,6 +117,12 @@ impl<F: Files, S: Store, M: Models> Search<F, S, M> {
         };
         if !walk.pending.records.is_empty() || mark > since {
             self.commit(walk.pending.records, mark)?;
+        }
+        // `fs` fell back to an earlier commit, so its generations went back: the
+        // index, reconciled whole, is written anew with its mark at `fs`'s, or
+        // the changes made after the fall back would be below the mark.
+        if rescanned && changes.generation < self.index.generation {
+            self.rewrite(changes.generation)?;
         }
         if self.index.header.embedder.is_some() {
             self.used_ns = now_ns;
@@ -213,7 +223,9 @@ impl<F: Files, S: Store, M: Models> Search<F, S, M> {
                     walk.done.removed += 1;
                     Vec::from([Record::Remove { object }])
                 }
-                (Ok(()), Some(entry)) if entry.generation >= row.stat.changed => {
+                // The very version indexed: after a fall back a file's generation
+                // may go back, and an older one is not the one indexed.
+                (Ok(()), Some(entry)) if entry.generation == row.stat.changed => {
                     walk.seen.insert(object);
                     if walk.pending.path_of(object) == Some(path) {
                         continue;
