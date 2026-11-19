@@ -1,6 +1,8 @@
 # Throughput floors (lane S-io): boots `part` (S04-2 on the real PART_* calls,
-# 32 MiB each way through `fs`) under KVM, writes its MB/s to the job summary,
-# and fails when a direction is under its floor (scripts/throughput_floor.py).
+# 32 MiB each way through `fs`) and `net-throughput` (P5-S2's bar: one bulk
+# download through main's virtio-net driver, at 0, 20 and 80 ms of added round
+# trip) under KVM, writes their MB/s to the job summary, and fails when a figure
+# is under its floor (scripts/throughput_floor.py).
 # Not a ci.yml job: it runs on pushes to main and pull requests that change the
 # storage path, and by hand (a hand run needs this file on main first; `accel:
 # tcg` is the deliberately slow run that shows the floor failing).
@@ -15,6 +17,8 @@ on:
   push:
     branches: [main]
     paths:
+      - kernel/src/net/**
+      - kernel/src/net_throughput_tests.rs
       - fsproto/**
       - fsserve/**
       - kaifs/**
@@ -26,6 +30,8 @@ on:
       - .github/workflows/throughput.yml
   pull_request:
     paths:
+      - kernel/src/net/**
+      - kernel/src/net_throughput_tests.rs
       - fsproto/**
       - fsserve/**
       - kaifs/**
@@ -47,6 +53,9 @@ env:
   PART_FLOOR_MBS: "10"
   # A TCG run must fail the floor: run 44386325611 booted `part` under TCG at
   # 2/3 MB/s and failed it, as a hand run with `accel: tcg` does.
+  # P5-S2's pass (docs/plans/p5-networking.md section 5): at least 30 MB/s at
+  # a 20 ms round trip, with the 1 MiB bulk buffer at shipped settings.
+  NET_FLOOR_MBS: "30"
   ACCEL: ${{ inputs.accel || 'kvm' }}
 
 concurrency:
@@ -115,3 +124,68 @@ jobs:
         run: >
           python3 -I scripts/throughput_floor.py "$RUNNER_TEMP/part.log" part "$PART_FLOOR_MBS"
           'S04-2 on the real calls: .* write (?P<write>[0-9.]+) MB/s .*read (?P<read>[0-9.]+) MB/s'
+
+  net:
+    name: net-throughput
+    runs-on: ubuntu-24.04
+    needs: qemu
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/qemu
+      - name: Allow KVM for the runner user
+        if: env.ACCEL == 'kvm'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: qemu-release
+          save-if: false
+      # A TAP device, not slirp, whose TCP to the guest does not scale its
+      # window (spike P5-S2): the host's own TCP at 10.0.2.2, as slirp's
+      # gateway is; the case uses ip=static.
+      - name: A TAP device at 10.0.2.2 for the guest
+        run: |
+          sudo ip tuntap add dev kaitap0 mode tap user "$USER"
+          sudo ip addr add 10.0.2.2/24 dev kaitap0
+          sudo ip link set kaitap0 up
+      - name: Serve a 256 MiB blob on port 8765
+        run: |
+          mkdir -p "$RUNNER_TEMP/www"
+          head -c 268435456 /dev/zero > "$RUNNER_TEMP/www/blob"
+          python3 -m http.server 8765 --bind 10.0.2.2 --directory "$RUNNER_TEMP/www" > "$RUNNER_TEMP/http.log" 2>&1 &
+          sleep 1
+      # The added round trip is the host's: netem on the TAP device delays
+      # what goes to the guest, so the driver runs as it ships.
+      - name: Boot net-throughput at 0, 20 and 80 ms
+        env:
+          XTASK_CASE: net-throughput
+          XTASK_NETDEV: tap,id=net0,ifname=kaitap0,script=no,downscript=no
+        shell: bash
+        run: |
+          for rtt in 0 20 80; do
+            sudo tc qdisc del dev kaitap0 root 2>/dev/null || true
+            if [ "$rtt" != 0 ]; then
+              sudo tc qdisc add dev kaitap0 root netem delay "${rtt}ms" limit 100000
+            fi
+            echo "== round trip +${rtt} ms"
+            cargo xtask test --release --accel "$ACCEL" --timeout 600 2>&1 | tee "$RUNNER_TEMP/net-$rtt.log"
+          done
+          sudo tc qdisc del dev kaitap0 root 2>/dev/null || true
+      - name: The figures at 0 and 80 ms
+        if: always()
+        run: |
+          for rtt in 0 80; do
+            echo "+${rtt} ms: $(grep -h 'net-throughput: .* MB/s' "$RUNNER_TEMP/net-$rtt.log" | tail -1)" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+      - name: The floor at 20 ms
+        if: always()
+        run: >
+          python3 -I scripts/throughput_floor.py "$RUNNER_TEMP/net-20.log" "net-throughput +20 ms" "$NET_FLOOR_MBS"
+          'net-throughput: [0-9]+ bytes in [0-9]+ ms = (?P<down>[0-9.]+) MB/s'
