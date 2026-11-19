@@ -485,21 +485,42 @@ impl<D: BlockDev> Fs<D> {
         Ok(oid)
     }
 
-    /// Moves every volume's counter a whole [`OID_WINDOW`] past what the disk's
-    /// last commit holds, so no id the run before handed out and never
-    /// committed can come again. For a server, once at mount; the caller
-    /// commits, and only then hands out ids. Nothing else changes.
+    /// Moves every volume's counter past any id a run before this mount could
+    /// have handed out and never committed: one [`OID_WINDOW`] past the
+    /// mounted commit's counter, and one more for each newer generation the
+    /// rings show, a mount that fell back past them (each commit's counter is
+    /// at most a window past the one before). For a server, once at mount.
+    /// Ids stay refused (the window) until a commit writes the new counters,
+    /// so a disk that cannot commit yet still mounts and serves.
     pub fn skip_unsaved_oids(&mut self) {
+        let newest = format::read_rings(&mut self.io.dev)
+            .ok()
+            .and_then(|found| found.first().map(|sb| sb.generation))
+            .unwrap_or(self.committed)
+            .max(self.committed);
+        let windows = (newest - self.committed).saturating_add(1);
+        let skip = OID_WINDOW.saturating_mul(windows);
         for vol in self.vols.values_mut() {
-            vol.next_oid = vol.next_oid.max(vol.base.1.saturating_add(OID_WINDOW));
+            vol.next_oid = vol.next_oid.max(vol.base.1.saturating_add(skip));
         }
     }
 
+    /// Whether a volume's counter has moved past what the last commit wrote
+    /// (an abort or [`Fs::skip_unsaved_oids`]): a commit then saves it, and
+    /// until one does, a skip's ids stay refused.
+    pub fn oids_unsaved(&self) -> bool {
+        self.vols.values().any(|vol| vol.next_oid != vol.base.1)
+    }
+
     /// Raises the counter past `oid`: `check --repair` found an object above it.
+    /// The window counts from it too, so the repair can still make
+    /// `/lost+found`: the disk already holds `oid`, and a repair is offline,
+    /// so no handle names an id it hands out before its commit.
     pub(crate) fn bump_oid(&mut self, oid: u64) {
         let vol = self.vol_mut();
         if oid >= vol.next_oid {
             vol.next_oid = oid.saturating_add(1);
+            vol.base.1 = vol.base.1.max(oid);
             vol.live_changed = true;
         }
     }

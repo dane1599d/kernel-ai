@@ -74,3 +74,79 @@ fn handles_from_an_action_fs_never_finished_never_open_a_later_object() {
         assert_eq!(stale(&mut c, mint), Reply::Failed(Error::NotFound));
     }
 }
+
+/// A disk whose writes fail while `failing` is set.
+struct Failing<'d> {
+    disk: &'d mut MemDisk,
+    failing: alloc::rc::Rc<core::cell::Cell<bool>>,
+}
+
+impl kaifs::BlockDev for Failing<'_> {
+    fn info(&self) -> kaifs::DevInfo {
+        self.disk.info()
+    }
+
+    fn read(&mut self, addr: u64, buf: &mut kaifs::Block) -> Result<(), kaifs::IoError> {
+        self.disk.read(addr, buf)
+    }
+
+    fn write(&mut self, addr: u64, data: &kaifs::Block) -> Result<(), kaifs::IoError> {
+        match self.failing.get() {
+            true => Err(kaifs::IoError),
+            false => self.disk.write(addr, data),
+        }
+    }
+
+    fn flush(&mut self) -> Result<(), kaifs::IoError> {
+        match self.failing.get() {
+            true => Err(kaifs::IoError),
+            false => self.disk.flush(),
+        }
+    }
+}
+
+fn create_on<D: kaifs::BlockDev>(server: &mut Server<D>, path: &str) -> Reply {
+    let open = Request::Open {
+        path: path.into(),
+        rights: DIR_RIGHTS.bits(),
+        how: How::CreateFile,
+    };
+    let bytes = fsproto::encode_request(&open);
+    let answer = server.call(&Call {
+        caller: BOB,
+        badge: HOME_USER,
+        rights: DIR_RIGHTS,
+        request: &bytes,
+        now: 1_000,
+    });
+    fsproto::decode_reply(&answer.reply).unwrap()
+}
+
+/// A disk that cannot be written at start still mounts and serves: no id
+/// goes out until a commit saves the skipped counters, and once writes work
+/// again the next change saves them first.
+#[test]
+fn fs_starts_on_a_disk_it_cannot_write_and_mints_no_id_until_it_can() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let kept = {
+        let (mut c, _) = Client::start(&mut disk);
+        assert_eq!(
+            home(&mut c, ALICE, Request::Begin { action: 1 }).0,
+            Reply::Done
+        );
+        create(&mut c, ALICE, "t", How::CreateFile)
+        // `fs` stops mid-action.
+    };
+    let failing = alloc::rc::Rc::new(core::cell::Cell::new(true));
+    let dev = Failing {
+        disk: &mut disk,
+        failing: failing.clone(),
+    };
+    let (mut server, _) = Server::start(dev, [7; 16]).expect("starts on a failing disk");
+    assert!(matches!(create_on(&mut server, "x"), Reply::Failed(_)));
+    failing.set(false);
+    assert!(matches!(create_on(&mut server, "y"), Reply::Opened(..)));
+    drop(server);
+    let (mut c, _) = Client::start(&mut disk);
+    assert_eq!(stale(&mut c, &kept), Reply::Failed(Error::NotFound));
+}

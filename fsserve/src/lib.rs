@@ -209,14 +209,23 @@ impl<D: BlockDev> Server<D> {
             (fs, Started::Mounted { generation })
         };
         // Past every id the run before could have handed out and never
-        // committed, before any handle names a new one or a volume is made
-        // (`kaifs::fs::OID_WINDOW`). Then ADR 0013's `memory` and `index`, on
-        // a disk that lacks them. No badge names either (`Server::target`), so
-        // no client reaches them here.
+        // committed (`kaifs::fs::OID_WINDOW`), before a volume is made. Then
+        // ADR 0013's `memory` and `index`, on a disk that lacks them; no badge
+        // names either (`Server::target`), so no client reaches them here.
+        // Until a commit saves the new counters no id goes out; a disk that
+        // cannot commit now (full, or failing writes) still starts, and
+        // `answer` tries again before the next change. A disk that needed
+        // the volumes and cannot save them does not start, as before.
         if fs.writable() {
             fs.skip_unsaved_oids();
-            fs.add_agent_volumes()?;
-            fs.commit()?;
+            let added = fs.add_agent_volumes()?;
+            match fs.commit() {
+                Ok(_) => {}
+                Err(e) if added > 0 => return Err(e),
+                Err(_) => {
+                    fs.abort()?;
+                }
+            }
         }
         let base = fs.clock;
         let mut server = Server {
@@ -521,6 +530,12 @@ impl<D: BlockDev> Server<D> {
         let target = self.target(call.badge)?;
         if changes && self.owner.is_some_and(|o| o != call.caller) {
             return Err(Error::Busy);
+        }
+        // Counters an abort or the start's skip moved are saved before the
+        // next change outside an action, so ids go out again (a commit that
+        // fails leaves them refused, and the change then fails as it would).
+        if changes && self.owner.is_none() && self.fs.oids_unsaved() && self.fs.is_clean() {
+            let _ = self.commit();
         }
         let in_action = self.owner.is_some();
         let done = match request {
