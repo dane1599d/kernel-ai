@@ -129,6 +129,12 @@ pub struct Tcp {
 }
 
 impl Tcp {
+    /// When the next call on a kept connection must end: its own deadline,
+    /// not the one it was dialed under.
+    pub fn set_deadline(&mut self, deadline_ns: u64) {
+        self.deadline_ns = deadline_ns;
+    }
+
     fn wait(&self, want: u64) -> Result<(), &'static str> {
         self.wait_at_most(want, IO_TIMEOUT_MS)
     }
