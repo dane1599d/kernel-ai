@@ -413,7 +413,13 @@ fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
             // to delete note 2", "can you explain how to remove it"): it asks for
             // words, not for a change. The line still names the action, so
             // `named_any` counts it.
-            if !telling_counts && (0..at).any(|i| words[i].clause == clause && tells(words, i)) {
+            if !telling_counts
+                && (0..at).any(|i| {
+                    words[i].clause == clause
+                        && TELL_WORDS.contains(&words[i].text.as_str())
+                        && !noun_before_cue(words, i, at)
+                })
+            {
                 continue;
             }
             let negated = negated(words, at);
@@ -610,6 +616,7 @@ fn wants(words: &[Word]) -> bool {
 const QUESTION_WORDS: &[&str] = &[
     "how", "what", "which", "who", "whom", "whose", "when", "where", "why", "is", "are", "was",
     "were", "does", "do", "did", "can", "could", "will", "would", "should", "has", "have",
+    "what's", "how's", "where's", "who's", "when's", "why's", "which's",
 ];
 
 /// Whether `line` is a question: it ends with `?`, or starts with a question word
@@ -628,24 +635,31 @@ fn is_question(line: &str) -> bool {
 }
 
 /// Words that start a line asking to be told something, not for a change.
-/// Whether the word at `at` is a telling word used as one: it leads its
-/// clause, after nothing but polite or modal words ("tell me how", "please
-/// list", "can you explain", "I want you to describe"). As a noun it tells
-/// nothing: "build me a shopping list app" asks for the app, and "list" there
-/// is no request to be told (#1202's boot case).
-fn tells(words: &[Word], at: usize) -> bool {
-    let clause = words[at].clause;
-    TELL_WORDS.contains(&words[at].text.as_str())
-        && words[..at]
-            .iter()
-            .filter(|w| w.clause == clause)
-            .all(|w| LEADS.contains(&w.text.as_str()))
+/// Whether the telling word at `tell` is a noun naming the thing the cue at
+/// `cue` asks for, and so asks to be told nothing: it comes right before the
+/// cue word, after a determiner or a noun ("a shopping list app", "my report
+/// app"). Anything else keeps the clause a telling one, so the rule fails
+/// safe: "the list of packages to install", "a list of files I could delete"
+/// and "can you briefly explain how to remove ideas" still ask nothing.
+fn noun_before_cue(words: &[Word], tell: usize, cue: usize) -> bool {
+    if tell + 1 != cue || tell == 0 || words[tell - 1].clause != words[tell].clause {
+        return false;
+    }
+    let before = words[tell - 1].text.as_str();
+    DETERMINERS.contains(&before)
+        || (!NOT_NOUNS.contains(&before)
+            && !TELL_WORDS.contains(&before)
+            && !QUESTION_WORDS.contains(&before))
 }
 
-/// Words that may come before a telling verb in its clause and leave it one.
-const LEADS: &[&str] = &[
-    "please", "can", "could", "would", "will", "you", "just", "kai", "now", "then", "also", "and",
-    "so", "hey", "ok", "okay", "i", "want", "need", "to", "me", "us",
+/// Words that are no noun before a telling word: pronouns, polite and modal
+/// words, and fillers that lead an order to be told ("can you list", "please
+/// describe", "I'd like you to explain").
+const NOT_NOUNS: &[&str] = &[
+    "i", "i'd", "i'm", "me", "you", "we", "us", "they", "them", "he", "she", "him", "her", "it",
+    "please", "pls", "plz", "kindly", "just", "briefly", "quickly", "also", "now", "then", "and",
+    "or", "so", "to", "of", "like", "want", "need", "kai", "hey", "ok", "okay", "go", "first",
+    "again", "simply", "maybe",
 ];
 
 const TELL_WORDS: &[&str] = &[
@@ -662,7 +676,8 @@ const TELL_WORDS: &[&str] = &[
 /// Question words that only ever ask to be told: not `do`, `can` or `will`,
 /// which also lead orders ("do the same for the editor").
 const WH_WORDS: &[&str] = &[
-    "how", "what", "which", "who", "whom", "whose", "when", "where", "why",
+    "how", "what", "which", "who", "whom", "whose", "when", "where", "why", "what's", "how's",
+    "where's", "who's", "when's", "why's", "which's",
 ];
 
 /// Whether `line` only asks to be told something: one ending in `?`, one led by
