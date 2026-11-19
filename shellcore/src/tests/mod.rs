@@ -40,6 +40,7 @@ mod files;
 mod fuzz;
 mod goalreports;
 mod goals;
+mod goalsteps;
 mod grantleaks;
 mod grantundo;
 mod guard;
