@@ -338,14 +338,17 @@ impl Desk {
     /// A commit: the client drew `damage` (content-local px) at content
     /// `size`. A new size re-frames the window from its top-left corner.
     pub fn commit(&mut self, id: WindowId, size: Size, damage: &[Rect]) {
+        let area = self.layout().work_area;
         let Some(w) = self.windows.iter_mut().find(|w| w.id == id) else {
             return;
         };
         let content = w.content();
-        // Never narrower than the desk allows, whatever the client drew.
+        // Never narrower than the desk allows, nor wider than the work area (as
+        // when it opened), whatever the client drew: a layer of the window's size
+        // is allocated for every repaint.
         let size = Size {
-            w: size.w.max(MIN_CONTENT.w),
-            h: size.h.max(MIN_CONTENT.h),
+            w: size.w.clamp(MIN_CONTENT.w, area.w.max(MIN_CONTENT.w)),
+            h: size.h.clamp(MIN_CONTENT.h, area.h.max(MIN_CONTENT.h)),
         };
         if size.w != content.w || size.h != content.h {
             let old = w.frame;
