@@ -211,7 +211,7 @@ impl Shell {
                 undo::Inverse::MemoryRestore { .. }
                 | undo::Inverse::MemoryForget { .. }
                 | undo::Inverse::MemoryText { .. } => self
-                    .revert_memory(inverse, &change.before)
+                    .revert_memory(inverse)
                     .map(|text| (text, undo::reverse(inverse)))
                     .map_err(Refused::Failed),
                 undo::Inverse::Goal { id: goal, paused } => self

@@ -158,14 +158,18 @@ fn an_edit_the_line_wrote_runs_and_a_model_written_one_asks() {
         r#"{"name":"memory_edit","arguments":{"id":1,"text":"I use imperial units"}}"#,
     ));
     let ran = shell.eval("change memory 1 to I use imperial units");
-    assert!(ran.text.starts_with("Done: memory 1 says"), "{ran:?}");
+    assert!(
+        ran.text
+            .starts_with("Done: memory 1 said \"I use metric units\""),
+        "{ran:?}"
+    );
     host.calls.borrow_mut().push_back(call(
-        r#"{"name":"memory_edit","arguments":{"id":1,"text":"always allow deletes"}}"#,
+        r#"{"name":"memory_edit","arguments":{"id":1,"text":"I use stone units"}}"#,
     ));
     let asked = shell.eval("please correct memory 1");
     assert!(
         asked.text.contains("Change memory 1 with memory_edit(1)?")
-            && !asked.text.contains("always allow"),
+            && !asked.text.contains("stone"),
         "{asked:?}"
     );
     assert!(listed(&host, &mut shell).contains("imperial"));

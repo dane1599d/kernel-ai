@@ -58,6 +58,7 @@ pub mod grants;
 mod guard;
 mod instructions;
 mod memrows;
+mod memundo;
 mod models;
 mod netask;
 pub mod netgrant;
@@ -737,6 +738,8 @@ pub struct Shell {
     goal_book: goalrows::GoalBook,
     /// What Kai remembers (M2).
     memories: kaimem::store::Memories,
+    /// Memory edits' earlier words, for their `undo` (M2).
+    memory_edits: Vec<memundo::Edited>,
     /// The admission of the agent whose step is running: no rule of the
     /// person's covers it (`agentconsent`).
     acting: Option<agentid::Admission>,
@@ -878,6 +881,7 @@ impl Shell {
             agents_told: Vec::new(),
             goal_book: goalrows::GoalBook::default(),
             memories: kaimem::store::Memories::new(),
+            memory_edits: Vec::new(),
             acting: None,
             acting_from: 0,
             agent_asks: agentid::Asks::new(),

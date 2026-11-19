@@ -27,7 +27,8 @@ const fn arg(name: &'static str, ty: ArgType, role: Role, from_request: bool) ->
     }
 }
 
-/// The memory, by its number in `memory_list`.
+/// The memory, by its number in `memory_list`: the line's own, or the call
+/// asks, so the model never picks which memory goes.
 const ID: Arg = arg(
     "id",
     ArgType::Int {
@@ -35,7 +36,7 @@ const ID: Arg = arg(
         max: 1 << 40,
     },
     Role::Target,
-    false,
+    true,
 );
 /// What is kept: `kaimem`'s 200 bytes.
 const TEXT: Arg = arg("text", ArgType::Text { max: 200 }, Role::Payload, true);
@@ -177,5 +178,8 @@ mod tests {
     fn a_kept_text_must_be_the_lines_own() {
         assert!(MEMORY_REMEMBER.args[0].from_request);
         assert!(MEMORY_EDIT.args[1].from_request);
+        // Which memory goes is the line's too.
+        assert!(MEMORY_EDIT.args[0].from_request);
+        assert!(MEMORY_FORGET.args[0].from_request);
     }
 }
