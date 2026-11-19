@@ -51,5 +51,8 @@ jobs:
         with:
           workspaces: spikes/s03-1
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: The oracle, and the notes guest's calls
-        run: cargo test --manifest-path spikes/s03-1/Cargo.toml -p s03-1-oracle -- --nocapture
+      # The oracle alone. tests/notes.rs holds S03-1's one-time size and
+      # string-speed measures, on a guest bound to the spike-era notes logic: a
+      # timing ratio is no gate on a shared runner, and ADR 0003 asks for this one.
+      - name: The oracle (10,000 calls) and the unmodified module's wrap
+        run: cargo test --manifest-path spikes/s03-1/Cargo.toml -p s03-1-oracle --test oracle -- --nocapture
