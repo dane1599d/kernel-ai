@@ -384,7 +384,10 @@ pub fn pointer_layout(descriptor: &[u8]) -> Option<PointerLayout> {
                 let variable = unsigned & 0x2 != 0 && unsigned & 0x1 == 0;
                 for index in 0..globals.count.min(256) {
                     let offset = offsets[slot].1;
-                    offsets[slot].1 += globals.size;
+                    // A Report Size from the device is any u32: a report whose
+                    // offsets would pass u32::MAX bits is refused, never wrapped
+                    // round to fields that seem to sit inside a short report.
+                    offsets[slot].1 = offset.checked_add(globals.size)?;
                     let take = variable
                         && in_pointer
                         && found

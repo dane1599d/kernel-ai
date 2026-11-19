@@ -232,3 +232,43 @@ fn fields_at_any_offset_and_size_read_only_inside_the_report() {
         }
     }
 }
+
+/// A mouse collection whose X and Y follow a field of `size` bits, `count`
+/// times: Usage Page Desktop, Usage Mouse, Collection Application, Report
+/// Size and Count (four bytes each), Input, then X and Y as 8-bit fields.
+fn huge_fields(size: u32, count: u32) -> Vec<u8> {
+    let mut d = vec![0x05, 0x01, 0x09, 0x02, 0xA1, 0x01];
+    d.push(0x77);
+    d.extend_from_slice(&size.to_le_bytes());
+    d.push(0x97);
+    d.extend_from_slice(&count.to_le_bytes());
+    d.extend_from_slice(&[0x81, 0x01]);
+    d.extend_from_slice(&[0x09, 0x30, 0x09, 0x31, 0x75, 0x08, 0x95, 0x02, 0x81, 0x06]);
+    d.push(0xC0);
+    d
+}
+
+#[test]
+fn report_offsets_that_would_pass_u32_are_refused() {
+    // Each would carry the offset past u32::MAX bits: one huge field, a
+    // count of large ones, and one that ends exactly past it.
+    for (size, count) in [
+        (u32::MAX, 2),
+        (u32::MAX, 1),
+        (0x8000_0000, 256),
+        (0x0100_0000, 256),
+        (u32::MAX - 7, 1),
+    ] {
+        let descriptor = huge_fields(size, count);
+        check_report_descriptor(&descriptor);
+        assert_eq!(
+            pointer_layout(&descriptor),
+            None,
+            "size {size:#x} x {count}"
+        );
+    }
+    // Large but within u32: a layout, whose X sits past any real report.
+    let layout = pointer_layout(&huge_fields(0x0100_0000, 4)).expect("a layout");
+    assert_eq!(layout.x.map(|x| x.offset), Some(0x0400_0000));
+    check_report_descriptor(&huge_fields(0x0100_0000, 4));
+}
