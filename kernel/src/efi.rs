@@ -46,6 +46,8 @@ const RT_SET_VIRTUAL_ADDRESS_MAP: u64 = 56;
 const RT_GET_VARIABLE: u64 = 72;
 const RT_SET_VARIABLE: u64 = 88;
 const RT_RESET_SYSTEM: u64 = 104;
+/// ResetSystem's `EfiResetShutdown` (UEFI 2.10, 8.5.1).
+const RESET_SHUTDOWN: u32 = 2;
 /// EFI_STATUS values, with the high bit for errors.
 const NOT_FOUND: usize = 0x8000_0000_0000_000E;
 const BUFFER_TOO_SMALL: usize = 0x8000_0000_0000_0005;
@@ -318,6 +320,21 @@ pub fn reset_after_calls() -> ! {
     interrupts::disable();
     core::mem::forget(CALL.lock());
     reset_now()
+}
+
+/// Turns the machine off through ResetSystem (EfiResetShutdown) once no
+/// firmware call is under way, as [`reset_after_calls`] does. Without runtime
+/// services, or if the firmware returns, the console says it is safe to switch
+/// off and the CPU halts ([`crate::power::safe_to_switch_off`]).
+pub fn power_off_after_calls() -> ! {
+    interrupts::disable();
+    core::mem::forget(CALL.lock());
+    if let Some(services) = SERVICES.get() {
+        log!("efi: turning off through ResetSystem");
+        crate::fpu::around_firmware(|| (services.reset)(RESET_SHUTDOWN, 0, 0, core::ptr::null()));
+        log!("efi: ResetSystem returned from a shutdown");
+    }
+    crate::power::safe_to_switch_off()
 }
 
 /// With interrupts off.
