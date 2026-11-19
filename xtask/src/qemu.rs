@@ -358,6 +358,13 @@ fn command_word(word: &str) -> String {
     format!("'{}'", word.replace('\'', "'\\''")).replace(',', ",,")
 }
 
+/// Gives the network card no MSI-X vectors, so the kernel polls it.
+pub fn net_without_vectors(args: &mut [String]) {
+    if let Some(at) = args.iter().position(|arg| arg.starts_with(NET_DEVICE)) {
+        args[at].push_str(",vectors=0");
+    }
+}
+
 pub fn net_behind_bridge(args: &mut Vec<String>) {
     if let Some(at) = args.iter().position(|arg| arg == NET_DEVICE) {
         args[at] = format!("{NET_DEVICE},bus=kai-rp0");

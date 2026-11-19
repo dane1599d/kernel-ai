@@ -211,8 +211,11 @@ pub fn exchange(
         ) {
             connected = true;
         }
+        let mut queued = false;
         if socket.can_send() && sent < request.len() {
-            sent += socket.send_slice(&request[sent..]).unwrap_or(0);
+            let taken = socket.send_slice(&request[sent..]).unwrap_or(0);
+            sent += taken;
+            queued = taken > 0;
         }
         let mut failed = None;
         while socket.can_recv() && response.len() < max_response {
@@ -246,6 +249,11 @@ pub fn exchange(
         }
         if hpet::nanos() > deadline {
             break Err("net: request timed out");
+        }
+        if queued {
+            // What was just queued leaves now: the wait below may be the
+            // whole fallback when nothing comes back first.
+            net.poll();
         }
         drop(guard);
         wake::wait(ticket, MAX_POLL_GAP_MS);

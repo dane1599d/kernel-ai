@@ -94,4 +94,19 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("net-stream", "test=net-stream")
     },
+    // The same streams with no MSI-X on the card (`vectors=0`): the kernel
+    // keeps it polled at the old gaps, and everything still flows.
+    TestCase {
+        echo: true,
+        server: false,
+        net_polled: true,
+        expect: &[
+            "net: card up, MAC ",
+            ", polled; ",
+            "net-stream: streams echoed through the handle, kept to its port and to 16, and closed",
+            "net-stream: the card was polled, with no receive interrupts",
+            "net-stream: a process killed with 3 streams open left none",
+        ],
+        ..case("net-stream-polled", "test=net-stream")
+    },
 ];
