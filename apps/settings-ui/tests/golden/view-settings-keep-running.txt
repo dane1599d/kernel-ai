@@ -1,0 +1,2 @@
+windows: [w1] settings (focused)  [w2] terminal "kai>"
+w1: [a1] tabs 0 items  text "Keep running"  [s2] switch "Keep files running" = off  [s3] switch "Keep notes running" = off

@@ -1,0 +1,36 @@
+node 0 clip 0,0 640x460
+  fill 0,0 640x460 window r0
+node 2 clip 0,0 640x460
+  text 12,7 label muted "Appearance"
+  text 116,7 label muted "What apps can do"
+  text 268,7 label text "Rules and profiles"
+  fill 256,30 168x2 accent r0
+  text 436,7 label muted "Keep running"
+  text 556,7 label muted "Updates"
+  text 636,7 label muted "About"
+  text 700,7 label muted "Network"
+  fill 0,31 640x1 line r0
+node 4 clip 0,0 640x460
+  text 12,44 heading text "Rules and profiles"
+node 30 clip 0,0 640x460
+  text 12,76 label text "Standing rules"
+node 6000 clip 0,0 640x460
+  text 12,102 body text "Always stop build-3 when asked"
+node 7000 clip 0,0 640x460
+  fill 560,102 68x28 raised r4
+  stroke 560,102 68x28 line_strong w1 r4
+  text 570,107 label text "Remove"
+node 6001 clip 0,0 640x460
+  text 12,138 body text "When a build finishes, tell me"
+node 7001 clip 0,0 640x460
+  fill 560,138 68x28 raised r4
+  stroke 560,138 68x28 line_strong w1 r4
+  text 570,143 label text "Remove"
+node 31 clip 0,0 640x460
+  stroke 12,174 616x50 line_strong w1 r4
+  fill 13,175 614x24 raised r0
+  fill 13,175 2x24 accent r0
+node 8000 clip 10,172 620x54
+  text 21,175 body text "normal"
+node 8001 clip 10,172 620x54
+  text 21,199 body text "focus"

@@ -1,0 +1,6 @@
+[0] window "Settings"
+[1] group ""
+[2] tab_list "" = "Updates"
+[3] group ""
+[4] label "Updates"
+[40] switch "Restart for an update by itself, in a time window" = "off"
