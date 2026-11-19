@@ -352,21 +352,7 @@ pub(crate) fn shell_line_answered(line: &str) -> bool {
 /// with what an Allow minted. A menu with `shown` text is asked only on the
 /// console, with the text again above it once the console has the screen.
 fn choose(decoder: &mut Decoder, mut menu: Menu, shown: Option<&[String]>) -> Option<Waiting> {
-    let card_up = claim::showing() && ask_box::alive();
-    // A send's menu without its text (a desk card: the text is in the Kai
-    // pane) is answered on the card or denied, never asked bare on the
-    // console, where its text would not be (#1142's review).
-    let bare_send = menu::bare_send(shown.is_some(), menu.call());
-    let answer = match (menu::surface(shown.is_some(), card_up), shown) {
-        (menu::Surface::Console, Some(lines)) => answer_on_console_after(decoder, &mut menu, lines),
-        (menu::Surface::Console, None) if bare_send => bare_send_denied(&menu),
-        (menu::Surface::Console, None) => answer_on_console(decoder, &mut menu),
-        (menu::Surface::Card, _) => match answer_on_card(&menu) {
-            Some(answer) => answer,
-            None if bare_send => bare_send_denied(&menu),
-            None => answer_on_console(decoder, &mut menu),
-        },
-    };
+    let answer = pick(decoder, &mut menu, shown);
     let (prompt, _) = menu.input();
     finish_line(prompt, answer.word(), "");
     // Allow mints the call's ONCE (and an "Always allow" its rule node); the
@@ -383,6 +369,25 @@ fn choose(decoder: &mut Decoder, mut menu: Menu, shown: Option<&[String]>) -> Op
             log!("! the Allow could not be granted ({error:?}), so it was denied");
             shell_line(&menu::answer_line(menu.id, Answer::Deny))
         }
+    }
+}
+
+/// [`choose`]'s answer to `menu`, read on its one surface. A send's menu
+/// without its text (a desk card: the text is in the Kai pane) is answered on
+/// the card or denied, never asked bare on the console, where its text would
+/// not be (#1142's review).
+pub(crate) fn pick(decoder: &mut Decoder, menu: &mut Menu, shown: Option<&[String]>) -> Answer {
+    let card_up = claim::showing() && ask_box::alive();
+    let bare_send = menu::bare_send(shown.is_some(), menu.call());
+    match (menu::surface(shown.is_some(), card_up), shown) {
+        (menu::Surface::Console, Some(lines)) => answer_on_console_after(decoder, menu, lines),
+        (menu::Surface::Console, None) if bare_send => bare_send_denied(menu),
+        (menu::Surface::Console, None) => answer_on_console(decoder, menu),
+        (menu::Surface::Card, _) => match answer_on_card(menu) {
+            Some(answer) => answer,
+            None if bare_send => bare_send_denied(menu),
+            None => answer_on_console(decoder, menu),
+        },
     }
 }
 
