@@ -11,6 +11,7 @@ extern crate alloc;
 
 mod check;
 mod dev;
+mod shm;
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -100,26 +101,38 @@ fn main() -> i32 {
             }
             Err(_) => continue,
         };
-        // `kai-fs 1` takes no handles yet; any a request carried are dropped.
-        for &raw in &from.handles[..(from.handle_count as usize).min(from.handles.len())] {
+        let moved = &from.handles[..(from.handle_count as usize).min(from.handles.len())];
+        let request = &request[..len];
+        // A bulk request's one `Shm`, mapped for it; any other handle a
+        // request carried is dropped, and the `Shm` too once answered.
+        let mut mapped = match moved {
+            [raw] if from.badge != 0 => shm::Mapped::of(request, Handle(*raw)),
+            _ => None,
+        };
+        let answer = (from.badge != 0).then(|| {
+            server.call_shm(
+                &Call {
+                    caller: from.caller_pid,
+                    badge: from.badge,
+                    rights: Rights::from_bits_truncate(from.rights),
+                    request,
+                    now: sys::time_ns(),
+                },
+                mapped.as_mut().map(shm::Mapped::bytes),
+            )
+        });
+        drop(mapped);
+        for &raw in moved {
             let _ = sys::handle_close(Handle(raw));
         }
-        let request = &request[..len];
-        if from.badge == 0 {
+        let Some(answer) = answer else {
             let reply = match from.caller_pid {
                 0 => bench.answer(&mut server, part, request),
                 _ => b"err plain routes to fs are the kernel's".to_vec(),
             };
             let _ = sys::reply_h(&reply, &[]);
             continue;
-        }
-        let answer = server.call(&Call {
-            caller: from.caller_pid,
-            badge: from.badge,
-            rights: Rights::from_bits_truncate(from.rights),
-            request,
-            now: sys::time_ns(),
-        });
+        };
         // The kernel, as a test's client, takes no handles: it names objects by
         // their badges.
         let mint = answer.mint.filter(|_| from.caller_pid != 0);

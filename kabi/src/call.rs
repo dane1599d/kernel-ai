@@ -253,6 +253,9 @@ pub const SHM_CREATE: u64 = 53;
 /// `shm_map(handle, write) -> address`: maps the object at its place in
 /// [`crate::layout::SHM_BASE`], read-only (MAP and READ) or read-write (MAP, READ
 /// and WRITE, `write` = 1), never executable. Busy if this process maps it already.
+/// A third argument above 0 is the fewest pages the caller will touch: Invalid
+/// for an object with fewer, so a server mapping a client's `Shm` never faults
+/// past a short one (`shm_map_least`).
 /// Once the grant node its handle came through is revoked, every page reads as
 /// zero and writes reach no one.
 pub const SHM_MAP: u64 = 54;

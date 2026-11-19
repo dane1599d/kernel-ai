@@ -523,9 +523,15 @@ pub fn shm_create(pages: u64) -> Result<Handle, Error> {
 
 /// Maps the `Shm` that `handle` names, read-write if `write`; its address.
 pub fn shm_map(handle: Handle, write: bool) -> Result<u64, Error> {
+    shm_map_least(handle, write, 0)
+}
+
+/// [`shm_map`], Invalid when the `Shm` holds fewer than `pages` pages: for a
+/// server about to touch that many of a client's.
+pub fn shm_map_least(handle: Handle, write: bool, pages: u64) -> Result<u64, Error> {
     call(
         call::SHM_MAP,
-        [u64::from(handle.0), u64::from(write), 0, 0, 0, 0],
+        [u64::from(handle.0), u64::from(write), pages, 0, 0, 0],
     )
 }
 

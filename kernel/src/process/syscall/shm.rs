@@ -18,8 +18,8 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
     CALLS.contains(&number).then(|| match number {
         call::SHM_CREATE => shm::create(slot, a[0]),
         call::SHM_MAP => match a[1] {
-            0 => shm::map(slot, a[0], false),
-            1 => shm::map(slot, a[0], true),
+            0 => shm::map(slot, a[0], false, a[2]),
+            1 => shm::map(slot, a[0], true, a[2]),
             _ => Err(Error::Invalid),
         },
         call::SHM_INFO => shm::info(slot, a[0]),
