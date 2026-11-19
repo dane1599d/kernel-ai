@@ -7,6 +7,7 @@ use alloc::collections::VecDeque;
 use alloc::string::ToString;
 use alloc::vec;
 
+mod budget;
 mod denied;
 
 const T0: u64 = 1_000_000;
