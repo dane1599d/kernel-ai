@@ -185,3 +185,17 @@ fn the_closing_question_adds_a_row_of_buttons_and_save_only_where_there_is_a_fil
     );
     assert_eq!(answered.len(), 2, "{answered:?}");
 }
+
+#[path = "../../../testkit/appview.rs"]
+mod appview;
+
+/// The agent's view of the Editor with a file open: whole, within 300 tokens,
+/// and the committed one (`tests/golden/view-editor.txt`).
+#[test]
+fn the_agents_view_of_the_editor_is_whole_and_fits_300_tokens() {
+    let mut w = put(&build(&view()));
+    let f = w.commit(&FixedAdvance);
+    appview::check("editor", "editor", "Editor", &f);
+    appview::goldens("editor", &f);
+    appview::paints("editor", &f);
+}

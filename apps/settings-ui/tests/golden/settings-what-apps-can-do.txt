@@ -1,0 +1,28 @@
+node 0 clip 0,0 640x460
+  fill 0,0 640x460 window r0
+node 2 clip 0,0 640x460
+  text 12,7 label muted "Appearance"
+  text 116,7 label text "What apps can do"
+  fill 104,30 152x2 accent r0
+  text 268,7 label muted "Rules and profiles"
+  text 436,7 label muted "Keep running"
+  text 556,7 label muted "Updates"
+  text 636,7 label muted "About"
+  text 700,7 label muted "Network"
+  fill 0,31 640x1 line r0
+node 4 clip 0,0 640x460
+  text 12,44 heading text "What apps can do"
+node 20 clip 0,0 640x460
+  stroke 12,76 616x50 line_strong w1 r4
+  fill 13,101 614x24 raised r0
+  fill 13,101 2x24 accent r0
+node 1000 clip 10,74 620x54
+  text 21,77 body text "browser"
+node 1001 clip 10,74 620x54
+  text 21,101 body text "notes"
+node 3000 clip 0,0 640x460
+  text 12,134 body text "notes_add: allowed"
+node 4000 clip 0,0 640x460
+  fill 560,134 68x28 raised r4
+  stroke 560,134 68x28 line_strong w1 r4
+  text 570,139 label text "Revoke"

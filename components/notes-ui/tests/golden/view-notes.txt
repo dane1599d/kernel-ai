@@ -1,0 +1,2 @@
+windows: [w1] notes (focused)  [w2] terminal "kai>"
+w1: [t1] textbox "Search"  [b2] button "New note"  [l3] list "Notes" 3 items  text "Groceries"  text "Ideas for the desktop: a launche..."  text "Call the plumber about the kitch..."  [t4] textarea "Note" = "Groceries\nmilk and eggs"  [b5] button "Delete note"  text "3 notes, 20 words"
