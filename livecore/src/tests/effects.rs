@@ -312,10 +312,41 @@ fn during_probation_a_candidates_fault_on_window_input_rolls_it_back() {
     assert!(call(&mut host, "ctl swap b").starts_with("ok probation b"));
     let rollbacks = ledger(&kernel).counters.rollbacks;
     assert_eq!(ui_call(&mut host, b"poison"), None);
-    assert_eq!(ledger(&kernel).counters.rollbacks, rollbacks + 1, "reported");
+    assert_eq!(
+        ledger(&kernel).counters.rollbacks,
+        rollbacks + 1,
+        "reported"
+    );
     // Probation is over: a serves again, and b is recorded as a version that
     // failed, so swapping to it again is refused without force.
     assert!(call(&mut host, "get").starts_with("ok 1 "));
     assert!(!call(&mut host, "ctl swap b").starts_with("ok probation b"));
     assert_eq!(ledger(&kernel).counters.refused_bad, 1);
+}
+
+/// #1175's review: a healthy candidate that uses storage or effects on window
+/// input during probation (a window's refresh queues one) is not a fault: it
+/// stays on probation, and what it wrote is not kept.
+#[test]
+fn during_probation_a_healthy_candidate_may_touch_storage_and_is_kept() {
+    let _guard = alone();
+    let kernel = kernel(&[A, B]);
+    let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
+    call(&mut host, "kadd");
+    assert!(call(&mut host, "ctl swap b").starts_with("ok probation b"));
+    let rollbacks = ledger(&kernel).counters.rollbacks;
+    let (reply, lines) = ui_call(&mut host, b"kadd").expect("served");
+    assert!(reply.contains("result \"b "), "{reply}");
+    assert_eq!(lines, "", "nothing performed");
+    assert_eq!(
+        ledger(&kernel).counters.rollbacks,
+        rollbacks,
+        "not rolled back"
+    );
+    assert_eq!(
+        stored(&kernel, "count").as_deref(),
+        Some("1"),
+        "nothing kept"
+    );
+    assert!(call(&mut host, "ctl status").contains("probation"));
 }

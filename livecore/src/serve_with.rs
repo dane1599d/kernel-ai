@@ -46,9 +46,11 @@ impl<E: Env> Host<E> {
     /// A suspended app wakes first. During probation `f` runs on the candidate,
     /// the version shown, with no transaction, as before: it can read and draw
     /// but not use storage or effects, and its result has no [`Performed`] worth
-    /// running. A candidate that faults there is rolled back as a request's
-    /// fault rolls it back: reported, and the standby serves again, so a
-    /// version that fails only on window input is never committed.
+    /// running: it runs inside a call whose transaction is dropped, so its
+    /// storage and effects calls work (as an app's window refresh queues one)
+    /// and keep nothing. A candidate that faults there is rolled back as a
+    /// request's fault rolls it back: reported, and the standby serves again,
+    /// so a version that fails only on window input is never committed.
     pub fn serve_with<R>(
         &mut self,
         f: impl FnOnce(&mut E::Instance) -> Result<R, Fault>,
@@ -60,7 +62,7 @@ impl<E: Env> Host<E> {
                 (Mode::Serving(version), _) => self.serve_call(version, f)?,
                 (mode, _) => (mode, None),
             },
-            Mode::Probation(mut probation) => match f(&mut probation.candidate.instance) {
+            Mode::Probation(mut probation) => match self.on_probation(&mut probation, f) {
                 Ok(r) => (Mode::Probation(probation), Some((r, Performed::default()))),
                 Err(fault) => {
                     let (mode, _) =
@@ -72,6 +74,22 @@ impl<E: Env> Host<E> {
         };
         self.mode = mode;
         Ok(out)
+    }
+
+    /// `f` on `probation`'s candidate, inside a call whose transaction is
+    /// dropped: its writes and effects are not the version that replies'.
+    fn on_probation<R>(
+        &mut self,
+        probation: &mut crate::host::Probation<E::Instance>,
+        f: impl FnOnce(&mut E::Instance) -> Result<R, Fault>,
+    ) -> Result<R, Fault> {
+        let inputs = self.core.inputs();
+        let storage = self.core.storage.clone();
+        let instance = &mut probation.candidate.instance;
+        instance.begin(&storage, inputs);
+        let result = f(instance);
+        let _dropped = instance.finish();
+        result
     }
 
     fn serve_call<R>(
