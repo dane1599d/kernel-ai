@@ -47,6 +47,7 @@ pub(super) fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &Rec
         let label = name_of(pid);
         let mut client = Client::new(pid, &label);
         client.theme(&state.theme_name);
+        client.look(&state.look_text);
         client.scale(state.scale);
         // Caps Lock as it is now: a client started with it on types by it.
         client.apply(&[Effect::Locks {
@@ -91,6 +92,7 @@ pub(super) fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &Rec
             let label = state.clients[at].label.clone();
             state.clients[at] = Client::new(pid, &label);
             state.clients[at].theme(&state.theme_name);
+            state.clients[at].look(&state.look_text);
             state.clients[at].scale(state.scale);
             let reply = state.clients[at].take_events(kabi::MAX_MESSAGE);
             let _ = sys::reply_h(&reply, &[]);

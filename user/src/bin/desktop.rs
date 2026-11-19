@@ -214,6 +214,8 @@ struct State {
     perf: Option<perf::Perf>,
     /// The theme's name, as clients are told it (`surfabi`'s `Theme`).
     theme_name: String,
+    /// The appearance clients are told (`surfabi`'s `Look`): what is painted.
+    look_text: String,
 }
 
 fn main() -> i32 {
@@ -224,6 +226,7 @@ fn main() -> i32 {
     let mut appearance = starting_appearance();
     let mut painted_in = Appearance::default();
     let mut theme_name = Appearance::default().theme.clone();
+    let mut look_text = Appearance::default().encode();
     loop {
         let Some(screen) = claim(painter.palette()) else {
             if !wait_for_screen() {
@@ -288,6 +291,7 @@ fn main() -> i32 {
             painted_in,
             perf: perf::from_args(),
             theme_name: theme_name.clone(),
+            look_text: look_text.clone(),
         };
         // The taskbar's pins: the image's own apps, until `pkg` lists more.
         state.desk.set_installed(apps::built_in_names());
@@ -303,6 +307,7 @@ fn main() -> i32 {
         painted_in = state.painted_in;
         appearance = state.appearance;
         theme_name = state.theme_name;
+        look_text = state.look_text;
         let Some(back) = result else {
             return 1;
         };

@@ -73,8 +73,10 @@ pub(super) fn theme(state: &mut State, screen: &Screen) {
     println!("desktop: painting in the {} theme", theme.name);
     // Every client paints in it too, from its next poll.
     state.theme_name = String::from(theme.name.as_str());
+    state.look_text = state.appearance.encode();
     for client in &mut state.clients {
         client.theme(&state.theme_name);
+        client.look(&state.look_text);
     }
     state.painted_in = state.appearance.clone();
 }
