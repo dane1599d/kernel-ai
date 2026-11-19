@@ -143,21 +143,18 @@ impl<const CELLS: usize> Grid<CELLS> {
         row < self.rows && self.continued & (1 << row) != 0
     }
 
-    /// How `row` is styled: by the text of the row its line began on. A row a
-    /// full row wrapped onto is never styled by its own text, so text that
-    /// overflows a row (a cut that counted one character where the screen
-    /// shows two, a reply longer than the screen is wide) cannot start a row
-    /// that looks like a prompt, a question or a kernel line. One whose first
-    /// row has scrolled away is a plain log row.
+    /// How `row` is styled: by its own text when a line began on it; a row
+    /// a full row wrapped onto is a plain log row, every column in the body
+    /// tone, never styled by its own text. So text that overflows a row (a
+    /// cut that counted one character where the screen shows two, a reply
+    /// longer than the screen is wide) cannot start a row that looks like a
+    /// prompt, a question or a kernel line, and none of its characters goes
+    /// undrawn as a lead.
     pub fn kind_of(&self, row: usize) -> crate::style::Kind {
-        let mut first = row;
-        while self.continues(first) {
-            match first.checked_sub(1) {
-                Some(above) => first = above,
-                None => return crate::style::Kind::of(&[]),
-            }
+        match self.continues(row) {
+            true => crate::style::Kind::of(&[]),
+            false => crate::style::Kind::of(self.row(row)),
         }
-        crate::style::Kind::of(self.row(first))
     }
 
     /// How many cells of `row` there are up to its last non-blank one.

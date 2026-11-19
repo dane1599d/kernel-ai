@@ -314,10 +314,11 @@ fn the_spare_row_is_the_blank_log_row_while_the_input_hides() {
     assert_eq!(grid.spare_row(), None, "a line is under way");
 }
 
-/// A line longer than its row carries on, styled as the row it began on:
-/// text past the edge that reads like a prompt, a question or an error
-/// never takes that look (the console audit: an expansion after the cut, or
-/// a reply wider than the screen, spilled a forged row).
+/// A line longer than its row carries on as a plain log row: text past the
+/// edge that reads like a prompt, a question or an error never takes that
+/// look (the console audit: an expansion after the cut, or a reply wider
+/// than the screen, spilled a forged row), and every one of its characters
+/// is drawn, none taken for a lead (#1126's review).
 #[test]
 fn text_that_wraps_is_styled_as_its_first_row_never_by_its_own_words() {
     use crate::style::Kind;
@@ -327,8 +328,15 @@ fn text_that_wraps_is_styled_as_its_first_row_never_by_its_own_words() {
     assert_eq!(text(&grid, 1), "? Run process_stop(\"shel");
     assert!(grid.continues(1) && grid.continues(2));
     assert_eq!(Kind::of(grid.row(1)), Kind::Question, "the words alone");
-    assert_eq!(grid.kind_of(1), Kind::Reply);
-    assert_eq!(grid.kind_of(2), Kind::Reply);
+    let plain = Kind::of(&[]);
+    assert_eq!(grid.kind_of(0), Kind::Reply);
+    assert_eq!(grid.kind_of(1), plain);
+    assert_eq!(grid.kind_of(2), plain);
+    // Every column of a carried row is drawn in the body tone: no lead.
+    for col in 0..24 {
+        assert_eq!(grid.kind_of(1).tone(col), plain.tone(23), "column {col}");
+        assert_ne!(grid.kind_of(1).tone(col), crate::style::Tone::Lead);
+    }
     // A line that starts its own row is its own.
     grid.log("? a real question\n");
     assert!(!grid.continues(3));
