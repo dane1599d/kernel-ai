@@ -250,9 +250,24 @@ pub const RELEASE_DATA_MIB: u64 = 8192;
 /// build of a commit writes the same bytes. `updated` never writes it: it
 /// writes only `kai-a` and `kai-b`. The disk is written a piece at a time and
 /// left sparse where the system allows, never held in memory. Its size.
+/// A release image's command line: no dev or test words. Never `online=test`,
+/// which opens QEMU's test subnet to names' answers (audit K #17).
+pub const RELEASE_CMDLINE: &str = "";
+
+/// Whether `cmdline` may go on a release image: no word that only the boot
+/// cases may use.
+pub fn release_cmdline_ok(cmdline: &str) -> bool {
+    !cmdline
+        .split_whitespace()
+        .any(|word| word.starts_with("online=") || word.starts_with("test="))
+}
+
 pub fn build_release(esp: &Path, out: &Path, record: &str, data_mib: u64) -> Result<u64, String> {
     use std::io::{Seek, SeekFrom, Write};
-    let plan = plan(esp, "", record, Some(data_mib))?;
+    if !release_cmdline_ok(RELEASE_CMDLINE) {
+        return Err("a release image may not carry a test word".into());
+    }
+    let plan = plan(esp, RELEASE_CMDLINE, record, Some(data_mib))?;
     let shown = out.display();
     let len = plan.sectors * u64::from(SECTOR);
     let mut file = fs::File::create(out).map_err(|e| format!("cannot write {shown}: {e}"))?;
@@ -275,6 +290,16 @@ pub fn build_release(esp: &Path, out: &Path, record: &str, data_mib: u64) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_release_image_never_carries_online_test() {
+        assert!(release_cmdline_ok(RELEASE_CMDLINE));
+        let conf = limine_conf(RELEASE_CMDLINE);
+        assert!(!conf.contains("online="), "{conf}");
+        assert!(!release_cmdline_ok("online=test"));
+        assert!(!release_cmdline_ok("accel=kvm online=test"));
+        assert!(!release_cmdline_ok("test=update"));
+    }
 
     #[test]
     fn the_config_names_every_slot_by_partition_and_defaults_to_r() {
