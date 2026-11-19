@@ -26,6 +26,12 @@ impl Shell {
             if let Some(why) = self.bare_send_refusal() {
                 return Reply::err(why);
             }
+            // An unknown outcome since the newest live entry: it has no undo,
+            // and `undo` must not reach past it to something older the person
+            // did not mean (#1164's review).
+            if let Some(why) = self.bare_unknown_refusal() {
+                return Reply::err(why);
+            }
             return match self.log.newest_live() {
                 Some(id) => self.revert_entry(id, false),
                 None => Reply::err("nothing to undo"),
@@ -35,6 +41,25 @@ impl Shell {
             return Reply::err("usage: undo [entry number]");
         };
         self.undo_entry(id)
+    }
+
+    /// What a bare `undo` says when the newest entry it would pass is an
+    /// unknown outcome: what may have run, and that there is nothing to undo.
+    fn bare_unknown_refusal(&self) -> Option<String> {
+        let entry = self
+            .log
+            .entries()
+            .rev()
+            .take_while(|e| !e.live())
+            .find(|e| e.state == crate::actlog::State::Unknown)?;
+        let row = entry
+            .outcome
+            .rsplit_once("; ")
+            .and_then(|(_, tail)| tail.strip_suffix(" may have run"))
+            .unwrap_or("a call");
+        Some(format!(
+            "the outcome of {row} is not known, so there is nothing to undo; check it"
+        ))
     }
 
     /// `tune undo`: the newest trial the kernel kept.
