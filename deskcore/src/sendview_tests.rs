@@ -81,11 +81,12 @@ fn a_preview_is_made_only_for_the_cards_own_text() {
     }
 }
 
-/// Every byte shows: a space at a line's start or end, and an empty line,
-/// as a mark the text itself can never hold (#1142's review).
+/// Every byte shows: a space that could hide (at a line's ends, in a run),
+/// and an empty line, as marks the text itself can never hold; a single
+/// inner space stays a space (#1142's review).
 #[test]
-fn spaces_and_empty_lines_show_as_marks() {
-    let text = "  indented\n\n   \ntrailing  \ninner  gap";
+fn spaces_that_could_hide_and_empty_lines_show_as_marks() {
+    let text = "  indented\n\n   \ntrailing  \ninner  gap\none space";
     let preview = SendPreview::new(1, &call_for(text), text).unwrap();
     assert_eq!(
         preview.shown(),
@@ -94,21 +95,53 @@ fn spaces_and_empty_lines_show_as_marks() {
             "\u{b6}",
             "\u{b7}\u{b7}\u{b7}",
             "trailing\u{b7}\u{b7}",
-            "inner  gap",
+            "inner\u{b7}\u{b7}gap",
+            "one space",
         ]
     );
 }
 
-/// Read through means the last line has been on the screen, at once or
-/// by scrolling; scrolling back does not take it back.
+/// A soft wrap starts its piece with a mark, so it never looks like one of
+/// the text's own line breaks; a space at the wrap shows; every character
+/// is kept.
 #[test]
-fn it_is_read_through_once_its_last_line_has_shown() {
+fn a_soft_wrap_is_marked_and_no_space_hides_at_it() {
+    let measure = |t: &str| t.chars().count() as f32;
+    let pieces = wrap_shown("ab cd efgh", 4.0, &measure);
+    assert_eq!(pieces, ["ab c", "\u{21aa}d e", "\u{21aa}fgh"]);
+    // A space at either side of a wrap shows.
+    assert_eq!(
+        wrap_shown("abc def", 3.0, &measure),
+        ["abc", "\u{21aa}\u{b7}d", "\u{21aa}ef"]
+    );
+    let kept: String = pieces
+        .concat()
+        .replace('\u{21aa}', "")
+        .replace('\u{b7}', " ");
+    assert_eq!(kept, "ab cd efgh");
+    // Two texts that differ only in a line break draw differently.
+    let one = SendPreview::new(1, &call_for("abcdefgh"), "abcdefgh").unwrap();
+    let two = SendPreview::new(1, &call_for("abcd\nefgh"), "abcd\nefgh").unwrap();
+    let draw = |p: &SendPreview| -> Vec<String> {
+        p.shown()
+            .iter()
+            .flat_map(|l| wrap_shown(l, 4.0, &measure))
+            .collect()
+    };
+    assert_ne!(draw(&one), draw(&two));
+}
+
+/// Read through means every line has been on the screen, each in turn: a
+/// jump to the end reads nothing between; scrolling back takes nothing
+/// back.
+#[test]
+fn it_is_read_through_once_every_line_has_shown() {
     let mut preview = SendPreview::new(1, &call_for(TEXT), TEXT).unwrap();
     assert!(!preview.on_screen(4, 10));
-    preview.scroll(3, 10, 4);
-    assert!(!preview.on_screen(4, 10));
-    assert!(preview.header(4, 10)[1].ends_with("lines 4-7 of 10"));
     preview.scroll(9, 10, 4);
+    assert!(!preview.on_screen(4, 10), "lines 5 and 6 were never shown");
+    preview.scroll(-3, 10, 4);
+    assert!(preview.header(4, 10)[1].ends_with("lines 4-7 of 10"));
     assert!(preview.on_screen(4, 10));
     preview.scroll(-9, 10, 4);
     assert!(preview.on_screen(4, 10));

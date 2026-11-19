@@ -11,7 +11,7 @@
 
 use crate::geom::Rect;
 use crate::paint::{Painter, fill};
-use crate::sendview::SendPreview;
+use crate::sendview::{SendPreview, wrap_shown};
 use alloc::string::String;
 use alloc::vec::Vec;
 use gfx2d::Canvas;
@@ -21,9 +21,9 @@ use look::TypeStyle;
 const RULE: i32 = 2;
 const INDENT: i32 = 12;
 
-/// `line` cut into pieces at most `width` px wide by `measure`, character by
-/// character, every character kept; at least one character a piece.
-fn wrap_chars(line: &str, width: f32, measure: &dyn Fn(&str) -> f32) -> Vec<String> {
+/// Code's header line `line` cut into pieces no wider than `width`, every
+/// character kept: the header is code's own words, so it needs no marks.
+fn wrap_code(line: &str, width: f32, measure: &dyn Fn(&str) -> f32) -> Vec<String> {
     let mut pieces = Vec::new();
     let mut piece = String::new();
     for ch in line.chars() {
@@ -58,7 +58,7 @@ impl Painter {
         let lines: Vec<String> = preview
             .shown()
             .iter()
-            .flat_map(|line| wrap_chars(line, width, &body))
+            .flat_map(|line| wrap_shown(line, width, &body))
             .collect();
         let line_h = self.text.measure(TypeStyle::Body, "x").1 as i32;
         let head_h = self.text.measure(TypeStyle::Mono, "x").1 as i32;
@@ -69,7 +69,7 @@ impl Painter {
             preview
                 .header(rows, lines.len())
                 .iter()
-                .flat_map(|h| wrap_chars(h, area.w.max(1) as f32, &mono))
+                .flat_map(|h| wrap_code(h, area.w.max(1) as f32, &mono))
                 .collect()
         };
         let guess = wrap_header(lines.len()).len() as i32;
@@ -124,15 +124,50 @@ impl Painter {
 mod tests {
     use super::*;
 
-    /// Wrapping by character keeps every character, spaces included.
+    /// A text, its card and a real layout at every size: the text shows on
+    /// the frame after both are here, is read through only once every line
+    /// has been on the screen, a jump to the end reads nothing between, and
+    /// scrolling through page by page does (#1142's review).
     #[test]
-    fn wrapping_by_character_keeps_every_character() {
-        let measure = |t: &str| t.chars().count() as f32;
-        let line = "ab  cd e";
-        let pieces = wrap_chars(line, 3.0, &measure);
-        assert_eq!(pieces, ["ab ", " cd", " e"]);
-        assert_eq!(pieces.concat(), line);
-        assert_eq!(wrap_chars("", 3.0, &measure), [""]);
+    fn a_long_text_is_read_through_only_line_by_line_on_a_real_layout() {
+        use crate::paint_tests::FONTS;
+        use crate::sendview::{Slot, digest};
+        let painter = Painter::new(FONTS).unwrap();
+        let text: String = (0..120)
+            .map(|n| alloc::format!("line {n} of the text\n"))
+            .collect();
+        let call = alloc::format!(
+            "net_send(\"hooks.example\", \"/hook\", \"{}\")",
+            digest(&text)
+        );
+        for (w, h) in [(1024, 768), (1280, 800), (1920, 1080)] {
+            let mut desk = crate::desk::Desk::new(w, h);
+            desk.set_focus(crate::desk::Focus::Panel, &mut Vec::new());
+            let area = desk.layout().pane_parts().history;
+            let mut slot = Slot::default();
+            assert!(slot.card(5, &call).0);
+            assert!(slot.text(5, &text).is_some());
+            let laid = painter.preview_layout(area, slot.preview().unwrap());
+            let (rows, total) = (laid.rows, laid.lines.len());
+            assert!(rows > 0 && total > rows, "{w}x{h}: {rows} of {total}");
+            assert_eq!(slot.drawn(rows, total), None, "{w}x{h}: the first page");
+            // A jump to the end: the last line, nothing between.
+            let preview = slot.preview_mut().unwrap();
+            preview.scroll(total as i32, total, rows);
+            assert_eq!(slot.drawn(rows, total), None, "{w}x{h}: jumped");
+            // Back to the top, then page by page.
+            slot.preview_mut()
+                .unwrap()
+                .scroll(-(total as i32), total, rows);
+            let mut read = None;
+            for _ in 0..total {
+                read = read.or(slot.drawn(rows, total));
+                let page = rows.saturating_sub(1).max(1) as i32;
+                slot.preview_mut().unwrap().scroll(page, total, rows);
+            }
+            read = read.or(slot.drawn(rows, total));
+            assert_eq!(read, Some(5), "{w}x{h}: read through");
+        }
     }
 
     /// The header shows whole in the pane at every size: where, how much,
