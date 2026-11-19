@@ -213,3 +213,42 @@ fn a_page_says_how_many_mounts_fell_back() {
     let (mut c, _) = Client::start(&mut disk);
     assert_eq!(page(&mut c, HOME_USER, 0, None).fallbacks, 0);
 }
+
+/// A restored update snapshot takes `system` back to older state, with older
+/// `changed` stamps: the count goes up, so a reader reads everything again.
+#[test]
+fn an_update_restore_raises_the_count() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let updates = kabi::fs::SYSTEM_UPDATES;
+    let before = page(&mut c, updates, 0, None).fallbacks;
+    let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, Request::UpdateSnapshot);
+    let Reply::Snapshot { id, .. } = reply else {
+        panic!("{reply:?}");
+    };
+    let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, Request::UpdateRestore { id });
+    assert!(matches!(reply, Reply::Committed { .. }), "{reply:?}");
+    assert_eq!(page(&mut c, updates, 0, None).fallbacks, before + 1);
+}
+
+/// A count raised and not yet committed is committed before a page shows it.
+#[test]
+fn a_raised_count_is_committed_before_a_page_shows_it() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let fs = c.server.fs();
+    let snapshot = fs.snapshot().unwrap();
+    fs.commit().unwrap();
+    assert!(fs.restore_snapshot(snapshot).unwrap());
+    fs.commit().unwrap();
+    // Raised again with nothing else changed, and not committed.
+    assert!(fs.restore_snapshot(snapshot).unwrap());
+    let _ = fs.abort();
+    let fs = c.server.fs();
+    assert!(fs.fallbacks_unsaved());
+    let shown = page(&mut c, HOME_USER, 0, None).fallbacks;
+    assert!(!c.server.fs().fallbacks_unsaved());
+    drop(c);
+    let (mut c, _) = Client::start(&mut disk);
+    assert_eq!(page(&mut c, HOME_USER, 0, None).fallbacks, shown);
+}

@@ -18,6 +18,19 @@ use fsproto::{Error, MAX_ROWS, Stat};
 use kaifs::{BlockDev, ROOT};
 
 impl<D: BlockDev> Server<D> {
+    /// Commits a raised fallback count before a reader sees it, so a later
+    /// fallback can never show the same count again: Busy while an action
+    /// holds `fs` (ask again), or the commit's error.
+    pub(crate) fn save_fallbacks(&mut self) -> Result<(), Error> {
+        if !self.fs.fallbacks_unsaved() {
+            return Ok(());
+        }
+        if self.owner.is_some() || !self.fs.is_clean() {
+            return Err(Error::Busy);
+        }
+        self.commit().map(|_| ())
+    }
+
     /// The page of objects beneath `dir` whose last committed change is after
     /// `since`, after `after`; and whether more follow.
     pub(crate) fn changed_since(

@@ -762,6 +762,7 @@ impl<D: BlockDev> Server<D> {
             }
             Request::ChangesSince { since, after } => {
                 need(Rights::ENUMERATE)?;
+                self.save_fallbacks()?;
                 let (rows, more) = self.changed_since(object, since, after)?;
                 let fs = self.fs();
                 Reply::ChangesPage {
