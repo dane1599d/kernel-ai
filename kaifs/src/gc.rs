@@ -120,7 +120,7 @@ impl<D: BlockDev> Fs<D> {
     /// space (a trash, an emptied trash, a truncate down, retention, the GC's
     /// commit, a repair), which must work on a disk growth has filled.
     pub fn freeing<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        let was = self.io.alloc.spend_reserve(true);
+        let was = self.io.alloc.spend_reserve(crate::allocator::Spend::All);
         let out = f(self);
         self.io.alloc.spend_reserve(was);
         out

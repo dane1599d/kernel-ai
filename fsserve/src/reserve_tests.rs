@@ -50,10 +50,19 @@ fn a_disk_filled_by_growth_can_still_be_emptied_through_fs() {
     let made = fill(&mut c);
     assert!(made.len() > 100, "{} files", made.len());
     let (full, _) = c.server.fs().space();
-    for name in &made[..made.len() / 2] {
+    // A trash frees nothing until the trash is emptied, so trashing may use
+    // only half the reserve: past that it is refused, and the emptying still
+    // has the rest.
+    let mut trashed = 0;
+    for name in &made {
         let trash = Request::Trash { name: name.clone() };
-        assert_eq!(home(&mut c, trash), Reply::Done, "trashing {name}");
+        match home(&mut c, trash) {
+            Reply::Done => trashed += 1,
+            Reply::Failed(Error::NoSpace) => break,
+            other => panic!("trashing {name}: {other:?}"),
+        }
     }
+    assert!(trashed > 10, "only {trashed} trashed on a full disk");
     let emptied = home(&mut c, Request::EmptyTrash);
     assert!(matches!(emptied, Reply::Emptied { .. }), "{emptied:?}");
     for round in 0..20u64 {
