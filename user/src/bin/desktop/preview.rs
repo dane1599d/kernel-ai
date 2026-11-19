@@ -70,7 +70,7 @@ pub(super) fn drawn(state: &mut State, at_ms: u64) {
         return;
     };
     let laid = state.painter.preview_layout(area, preview);
-    if let Some(ask) = state.sends.drawn(laid.rows, laid.lines.len()) {
+    if let Some(ask) = state.sends.drawn(laid.rows, &laid.lines) {
         state.desk.preview_drawn(ask, at_ms);
         println!("desktop: ask {ask}'s whole text has been on the screen");
     }
