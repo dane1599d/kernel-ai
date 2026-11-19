@@ -130,7 +130,9 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     if !text.starts_with("panel ") {
         return None;
     }
-    if name_of(pid) != "shell" {
+    // The shell alone: a send's text and its fit included
+    // (`deskcore::sendview::from_shell`), never an app's.
+    if !deskcore::sendview::from_shell(&name_of(pid)) {
         return Some(String::from("err only the shell talks to the panel"));
     }
     if text == panel_wire::TAKE {

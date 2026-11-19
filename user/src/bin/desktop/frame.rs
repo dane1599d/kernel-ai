@@ -134,7 +134,7 @@ pub(super) fn draw(state: &mut State, screen: &Screen) {
         chat: &state.chat,
         start: state.start.as_ref(),
         ask: state.card.as_ref(),
-        preview: state.preview.as_ref(),
+        preview: state.sends.preview(),
         now_ms: now_ms(),
     };
     // A window with no pixels yet shows the theme's window colour.

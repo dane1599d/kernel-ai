@@ -204,12 +204,8 @@ struct State {
     ticked_ms: u64,
     /// The ask card up now, as the kernel posted it.
     card: Option<Card>,
-    /// A send's text as the shell handed it, for card `id` (`preview`).
-    preview_text: Option<(u64, String)>,
-    /// That text, checked against its card's digest: what the pane shows.
-    preview: Option<deskcore::sendview::SendPreview>,
-    /// The preview has not yet been on the screen.
-    preview_unseen: bool,
+    /// A send's text and its card: what the pane shows (`preview`).
+    sends: deskcore::sendview::Slot,
     /// The last ask refused as too long to show whole: never asked again.
     too_long: Option<u64>,
     /// When the ask box was last read.
@@ -295,9 +291,7 @@ fn main() -> i32 {
             agent: deskcore::agent::Agent::default(),
             ticked_ms: 0,
             card: None,
-            preview_text: None,
-            preview: None,
-            preview_unseen: false,
+            sends: deskcore::sendview::Slot::default(),
             too_long: None,
             asked_ms: 0,
             known: Vec::new(),
