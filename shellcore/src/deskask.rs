@@ -38,6 +38,11 @@ pub(crate) const SCRIPT: &str =
     "it asks first, and its script shows only in the console: ask there";
 /// What it is told when it is a send, whose text only the console shows.
 pub(crate) const SEND: &str = "a send shows its text only in the console: ask there";
+/// What it is told when a send's card and the Kai pane do not fit side by
+/// side here, or an agent asks for it: the console asks (ADR 0005 §7,
+/// "Amended 2026-11-19").
+pub(crate) const SEND_HERE: &str =
+    "it is a send, and its text cannot show beside its card here: ask in the console";
 /// What it is told when too many already wait.
 const FULL: &str = "it asks first, and other questions wait: answer those first";
 /// What it is told when its one call is too long, or not plain ASCII, for
@@ -73,6 +78,9 @@ pub(crate) struct Waiting {
     pub pending: Pending,
     /// The menu, its origin `added`: the card's text.
     pub menu: String,
+    /// A send's text, which the Kai pane shows beside its card
+    /// (`Host::desk_preview`): given to `desktop` as the card goes up.
+    pub send: Option<String>,
     pub asker: Asker,
 }
 
@@ -123,11 +131,28 @@ impl Shell {
             return Err(SCRIPT);
         };
         self.lapse_desk_asks();
+        // A send's card (ADR 0005 §7, "Amended 2026-11-19"): its menu goes
+        // to the card plain, and its text to the Kai pane, where the card and
+        // the open pane fit side by side; never an agent's.
+        let shown = termcore::menu::split_shown(&reply.text).and_then(Result::ok);
+        let send = match (&shown, &pending.send, &asker) {
+            (Some(_), Some(send), Asker::Panel | Asker::App(_)) => Some(send.body.clone()),
+            _ => None,
+        };
+        let fits = send.is_some() && self.host.desk_send_fits();
+        let menu_text = match (&shown, fits) {
+            (Some(shown), true) => shown.menu,
+            _ => reply.text.as_str(),
+        };
         let menu = match (reply.confirm, &pending.menu) {
-            (Some(id), Some(_)) if id == pending.id => as_added(id, &reply.text),
+            (Some(id), Some(_)) if id == pending.id => as_added(id, menu_text),
             _ => None,
         };
         let (why, outcome) = match menu {
+            None if shown.is_some() && send.is_some() => (
+                SEND_HERE,
+                "discarded: its text cannot show beside its card here",
+            ),
             None => not_on_card(&reply.text),
             Some(_) if self.desk_asks.len() >= MAX_WAITING => {
                 (FULL, "discarded: other questions wait")
@@ -141,6 +166,7 @@ impl Shell {
                     pending,
                     menu,
                     asker,
+                    send: send.filter(|_| fits),
                 });
                 return Ok(shown);
             }
@@ -189,9 +215,21 @@ impl Shell {
             mut pending,
             menu,
             asker,
+            send,
         } = self.desk_asks.remove(0);
         pending.created_ns = self.host.now_ns();
         let id = pending.id;
+        // A send's text goes to the Kai pane first: `desktop` shows it only
+        // if its hash is the card's, and the card takes no Allow until it has
+        // been read through. One that does not get there leaves the card to
+        // Don't or its lapse.
+        if let Some(text) = send
+            && let Err(why) = self.host.desk_preview(id, &text)
+        {
+            self.host.audit(&format!(
+                "request {id}: its text did not reach the pane: {why}"
+            ));
+        }
         self.host.audit(&format!("request {id}: on the card"));
         self.card_for_desk = Some((id, asker));
         self.pending = Some(pending);
