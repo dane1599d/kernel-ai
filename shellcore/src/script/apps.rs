@@ -44,6 +44,14 @@ fn call(row: &AppRow, tx: &Tx, args: &mut [&mut Dynamic]) -> RhaiResult<Data> {
     let live: Vec<String> = args.iter().map(|a| a.to_string()).collect();
     let live: Vec<&str> = live.iter().map(String::as_str).collect();
     tx.approved(name, &live)?;
+    // An app call earlier in this run went unanswered and may have run: no
+    // app call goes after it, even one a `catch` lets the script try again
+    // (#1164's second review).
+    if let Some(earlier) = tx.unanswered.borrow().as_deref() {
+        return Err(fail(format!(
+            "{earlier} may have run already, so no more app calls run in this script"
+        )));
+    }
     let record = encode(&row.args, args).map_err(fail)?;
     let request = format!(
         "{}\nfunc {}\nargs {record}\n",

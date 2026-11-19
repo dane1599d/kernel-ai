@@ -374,9 +374,10 @@ impl Shell {
             };
             said = Some(text.clone());
         }
+        // Whatever `ran.ok` says: a script that caught the error still sent a
+        // call that may have run.
         let state = match (ran.ok, ran.unanswered.as_deref()) {
-            (true, _) => State::Done,
-            (false, Some(row)) => {
+            (_, Some(row)) => {
                 // An app took a call and did not answer: it may have run, so
                 // the person and the model are told so (#1164's review).
                 if !text.is_empty() && !text.ends_with('\n') {
@@ -387,13 +388,13 @@ impl Shell {
                 said = Some(line);
                 State::Unknown
             }
+            (true, None) => State::Done,
             (false, None) => State::Nothing,
         };
         let unknown = ran
             .unanswered
             .as_deref()
-            .filter(|_| !ran.ok)
-            .map(|row| format!("failed; {row} may have run"));
+            .map(|row| format!("{outcome}; {row} may have run"));
         let outcome = unknown.as_deref().unwrap_or(outcome);
         self.log_entry(id, request, checked, how, state, outcome, ran.done);
         self.run_app_effects();
