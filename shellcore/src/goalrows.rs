@@ -21,10 +21,11 @@ use crate::actlog::{Change, Entry, State};
 use crate::script::Checked;
 use crate::undo::Inverse;
 use crate::{Reply, Shell};
-use agentabi::consent::{Decision, Why};
+use agentabi::consent::Decision;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use termcore::menu::{Menu, Origin};
 use termcore::once::{CallArg, call_text};
 
 /// The most commands waiting for `goals`, taken or not.
@@ -127,7 +128,7 @@ impl Shell {
         request: &str,
         row: &str,
         values: &[(&'static str, String)],
-        decision: Decision,
+        _decision: Decision,
     ) -> Reply {
         if self.agent_acting().is_some() {
             return Reply::err(PERSON_ONLY);
@@ -135,37 +136,39 @@ impl Shell {
         let goal = value(values, "id").and_then(|v| v.parse::<u64>().ok());
         match (row, goal) {
             ("goal_list", _) => Reply::ok(self.goal_book.list()),
-            ("goal_set", _) => self.goal_set(id, request, values, decision.why),
+            ("goal_set", _) => self.goal_set(id, request, values),
             ("goal_pause", Some(goal)) => self.goal_toggle(id, request, goal, true),
             ("goal_resume", Some(goal)) => self.goal_toggle(id, request, goal, false),
-            ("goal_cancel", Some(goal)) => self.goal_cancel(id, request, goal, decision.why),
+            ("goal_cancel", Some(goal)) => self.goal_cancel(id, request, goal),
             _ => Reply::err(format!("{row} needs its id")),
         }
     }
 
     /// `goal_set`: the spec checked, then the one ask with its approval.
-    fn goal_set(
-        &mut self,
-        id: u64,
-        request: &str,
-        values: &[(&'static str, String)],
-        why: Why,
-    ) -> Reply {
-        let spec = match self.goal_spec(values) {
+    fn goal_set(&mut self, id: u64, request: &str, values: &[(&'static str, String)]) -> Reply {
+        // The scope is the person's line's, never the model's arguments'.
+        let spec = match self.goal_spec(request, values) {
             Ok(spec) => spec,
             Err(why) => return Reply::err(format!("no goal set: {why}")),
         };
-        // The card holds 120 characters: it names the goal by its words, and
-        // `show` gives the whole approval. The spec the yes sets waits in the
-        // pending ask, so the short call binds the same goal the ONCE names.
+        // The card holds 120 characters of code-written words: the counts of
+        // what the goal may use and spend; `show` lists every row and folder.
+        // The spec the yes sets waits in the pending ask, so the short call
+        // binds the same goal the ONCE names, and `grant_goal` gets exactly
+        // the scope `show` listed.
         let call = call_text("goal_set", &[CallArg::Int(id as i64)]).unwrap_or_default();
-        let subject = format!("Set goal \"{}\"", clip(&spec.text));
+        let question = card_counts(&spec, &call);
         let note = spec.approval();
-        self.goal_ask(id, request, &call, note, Waiting::Set(spec), why, subject)
+        self.goal_ask(id, request, &call, note, Waiting::Set(spec), question)
     }
 
-    /// The goal `values` describe, held to goalcore's limits.
-    fn goal_spec(&self, values: &[(&'static str, String)]) -> Result<goalcore::Spec, String> {
+    /// The goal `values` describe, its scope from the person's `line`, held
+    /// to goalcore's limits.
+    fn goal_spec(
+        &self,
+        line: &str,
+        values: &[(&'static str, String)],
+    ) -> Result<goalcore::Spec, String> {
         let text = value(values, "text").unwrap_or_default().trim().to_string();
         let number = |arg: &str| value(values, arg).and_then(|v| v.parse::<u64>().ok());
         let now = self.host.now_ns() / 1_000_000;
@@ -181,7 +184,9 @@ impl Shell {
             wall_ms: crate::goalscope::duration_ms(value(values, "wall").unwrap_or_default())?,
         };
         let spec = goalcore::Spec {
-            scope: crate::goalscope::scope(&text)?,
+            scope: crate::goalscope::scope(line, |folder| {
+                self.host.fs_read(crate::FsRead::List(folder)).map(|_| ())
+            })?,
             text,
             by_ms,
             budget,
@@ -256,7 +261,7 @@ impl Shell {
     }
 
     /// `goal_cancel`: asks with what it stops.
-    fn goal_cancel(&mut self, id: u64, request: &str, goal: u64, why: Why) -> Reply {
+    fn goal_cancel(&mut self, id: u64, request: &str, goal: u64) -> Reply {
         let text = match self.goal_book.goal(goal) {
             Ok(kept) if kept.state == "cancelled" => {
                 return Reply::err(format!("goal {goal} was cancelled"));
@@ -265,23 +270,19 @@ impl Shell {
             Err(why) => return Reply::err(why),
         };
         let call = call_text("goal_cancel", &[CallArg::Int(goal as i64)]).unwrap_or_default();
-        let subject = format!("Cancel goal {goal} for good");
+        let question = format!(
+            "Cancel goal {goal} for good with {call}? Its steps stay done; type show for its words"
+        );
         let note = format!(
             "goal {goal}, \"{text}\", stops for good; its steps stay done (undo goals undoes them)"
         );
-        self.goal_ask(
-            id,
-            request,
-            &call,
-            note,
-            Waiting::Cancel(goal),
-            why,
-            subject,
-        )
+        self.goal_ask(id, request, &call, note, Waiting::Cancel(goal), question)
     }
 
-    /// Asks once for a goal row, `note` saying in full what it does on `show`.
-    #[allow(clippy::too_many_arguments)]
+    /// Asks once for a goal row on a card whose question is `question`,
+    /// code-written, with Deny highlighted; `note` says in full what it does
+    /// on `show`. Only the card's Allow, with its ONCE, carries it out, so a
+    /// question too long for the card is refused, never asked as y/n.
     fn goal_ask(
         &mut self,
         id: u64,
@@ -289,17 +290,46 @@ impl Shell {
         call: &str,
         note: String,
         waiting: Waiting,
-        why: Why,
-        subject: String,
+        question: String,
     ) -> Reply {
+        let menu = Menu::new(id, &question, Some(""), Some(""), Origin::Added)
+            .and_then(|menu| menu.with_call(call));
+        if menu.is_err() {
+            return Reply::err(format!("not asked: {call} does not fit its card"));
+        }
         self.host.audit(&format!("request {id}: {call} asks"));
         let mut checked = Checked::shown_only(call);
         checked.note = Some(note);
-        let reply = self.ask_call(id, request, checked, why, None, Some(subject));
-        if let Some(pending) = &mut self.pending {
-            pending.goal = Some(waiting);
-        }
-        reply
+        self.shown = Some(format!(
+            "{}
+asked first: a goal row always asks",
+            crate::script::shown(id, &checked)
+        ));
+        self.pending = Some(Pending {
+            id,
+            request: request.to_string(),
+            checked,
+            asking: Vec::new(),
+            created_ns: self.host.now_ns(),
+            how: How {
+                form: crate::actlog::Form::Call,
+                tier: agentabi::Tier::Ask,
+                consent: String::from("asked"),
+            },
+            call: None,
+            offer: None,
+            menu: Some(String::from(call)),
+            pkg: None,
+            standing: None,
+            model: None,
+            app: None,
+            install: None,
+            net: None,
+            send: None,
+            power: false,
+            goal: Some(waiting),
+        });
+        Reply::menu(id, Menu::encode(id, Origin::Added, &question, "", "", call))
     }
 
     /// The answer to a goal row's ask: an Allow whose ONCE checks carries it
@@ -423,18 +453,20 @@ impl Shell {
     }
 }
 
-/// The most of a goal's words the card shows.
-const CARD_WORDS: usize = 30;
-
-/// `text`, cut to [`CARD_WORDS`] characters for the card.
-fn clip(text: &str) -> String {
-    match text.chars().count() > CARD_WORDS {
-        true => format!(
-            "{}...",
-            text.chars().take(CARD_WORDS - 3).collect::<String>()
-        ),
-        false => String::from(text),
-    }
+/// What `goal_set`'s card says, in code-written words only: how many actions
+/// and folders, and the most it may spend.
+fn card_counts(spec: &goalcore::Spec, call: &str) -> String {
+    let count = |n: usize, one: &str, many: &str| match n {
+        1 => format!("1 {one}"),
+        n => format!("{n} {many}"),
+    };
+    format!(
+        "Goal: {} in {}, up to {} steps and {} tokens, with {call}? Type show to see them",
+        count(spec.scope.rows.len(), "action", "actions"),
+        count(spec.scope.folders.len(), "folder", "folders"),
+        spec.budget.steps,
+        spec.budget.tokens,
+    )
 }
 
 /// The `kai-goals 1` file of the one goal `goal`, approved at `now`.
