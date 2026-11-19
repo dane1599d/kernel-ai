@@ -4,12 +4,15 @@
 //! SHA-256; the Kai pane shows the text itself, outside the card, as a send
 //! preview.
 //!
-//! The shell carries the text to `desktop` (`panel preview <id>`), but a text
-//! is shown only when `desktop`'s own hash of it begins with the digest in
-//! the call the kernel posted for that ask ([`SendPreview::new`]); one that
-//! does not match is never drawn, and its card is never allowed. The card
-//! takes no Allow until the preview has been drawn (`Desk::needs_preview`,
-//! `Desk::preview_drawn`).
+//! The shell carries the text to `desktop` (`panel preview <id>`; only the
+//! shell may, [`from_shell`]), but a text is shown only when `desktop`'s own
+//! hash of it begins with the digest in the call the kernel posted for that
+//! ask ([`SendPreview::new`]). Any card whose call names `net_send` is a
+//! send's card ([`names_send`]), parsed or not: one whose call does not
+//! parse, or whose text does not match, never shows a text and never takes
+//! an Allow. The card takes no Allow until the whole text has been on the
+//! screen (`Desk::needs_preview`, `Desk::preview_drawn`); [`Slot`] keeps
+//! which text goes with which card.
 
 use alloc::format;
 use alloc::string::String;
@@ -29,6 +32,24 @@ pub const PREVIEW: &str = "panel preview ";
 pub const FITS: &str = "panel send-fits";
 /// The lines a send's card takes: its title, the call, the reason.
 pub const CARD_LINES: i32 = 4;
+/// What the preview shows for a space at the start or the end of a line,
+/// and for an empty line: the text is printable ASCII and line breaks only
+/// ([`SendPreview::new`]), so neither mark can be one of its own bytes.
+pub const SPACE_MARK: char = '\u{b7}';
+pub const EMPTY_MARK: char = '\u{b6}';
+
+/// Whether `caller` may give the panel a send's text, or ask whether a
+/// send's card fits: the shell alone, as with every `panel` request. Not an
+/// app, and not the chat, which reaches `desktop` only as `panel said` text.
+pub fn from_shell(caller: &str) -> bool {
+    caller == "shell"
+}
+
+/// Whether `call` names the send row: its card is a send's, whatever else
+/// it says. A send's card takes no Allow without its text read through.
+pub fn names_send(call: &str) -> bool {
+    call.starts_with(ACTION) && call[ACTION.len()..].starts_with('(')
+}
 
 /// What a send's call on the card says: where it goes, and which text.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,7 +63,7 @@ pub struct SendCall {
 /// The send `call` names, if it is exactly the send row's call:
 /// `net_send("<host>", "<path>", "<16 lower-case hex>")`, its host and path
 /// plain ASCII with no quote or backslash (the row allows none). `None` for
-/// any other call.
+/// any other call, and for a send's call written any other way.
 pub fn send_call(call: &str) -> Option<SendCall> {
     let args = call
         .strip_prefix(ACTION)?
@@ -96,11 +117,15 @@ pub struct SendPreview {
 
 impl SendPreview {
     /// The preview of `text` for ask `ask`, whose card shows `call` as the
-    /// kernel posted it: `None` unless `call` is a send's and `text`, at most
-    /// [`MAX_TEXT`] bytes, hashes to its digest.
+    /// kernel posted it: `None` unless `call` is a send's, `text` is at most
+    /// [`MAX_TEXT`] bytes of printable ASCII and line breaks (the send row's
+    /// own rule), and it hashes to the call's digest.
     pub fn new(ask: u64, call: &str, text: &str) -> Option<Self> {
         let call = send_call(call)?;
-        (text.len() <= MAX_TEXT && digest(text) == call.digest).then(|| Self {
+        let plain = text
+            .bytes()
+            .all(|b| b == b'\n' || (b' '..=b'~').contains(&b));
+        (plain && text.len() <= MAX_TEXT && digest(text) == call.digest).then(|| Self {
             ask,
             call,
             text: String::from(text),
@@ -109,29 +134,49 @@ impl SendPreview {
         })
     }
 
-    /// The header code writes over the text: where it goes and how much,
-    /// and which of its `total` lines show now, `rows` at a time.
-    pub fn header(&self, rows: usize, total: usize) -> String {
+    /// The header code writes over the text, as two lines: where it goes
+    /// and how much; then the digest and which of its `total` lines show
+    /// now, `rows` at a time.
+    pub fn header(&self, rows: usize, total: usize) -> [String; 2] {
         let first = (self.scrolled + 1).min(total);
         let last = (self.scrolled + rows).min(total);
-        format!(
-            "{} bytes to {}{} \u{b7} SHA-256 {} \u{b7} lines {first}-{last} of {total}",
-            self.text.len(),
-            self.call.host,
-            self.call.path,
-            self.call.digest,
-        )
+        [
+            format!(
+                "{} bytes to {}{}",
+                self.text.len(),
+                self.call.host,
+                self.call.path
+            ),
+            format!(
+                "SHA-256 {} \u{b7} lines {first}-{last} of {total}",
+                self.call.digest
+            ),
+        ]
     }
 
-    /// The text as it is shown: its own line breaks kept, and anything
-    /// outside printable ASCII as `\u{...}` (`askcard::shown`), every
-    /// character kept. The painter wraps each line to the width.
-    pub fn shown(&self) -> String {
+    /// The text's lines as they are shown, every byte of it visible: a space
+    /// at a line's start or end as [`SPACE_MARK`], an empty line as
+    /// [`EMPTY_MARK`]; the painter wraps each by character, keeping all.
+    pub fn shown(&self) -> Vec<String> {
         self.text
             .split('\n')
-            .map(crate::askcard::shown)
-            .collect::<Vec<_>>()
-            .join("\n")
+            .map(|line| {
+                if line.is_empty() {
+                    return String::from(EMPTY_MARK);
+                }
+                let body = line.trim_matches(' ');
+                if body.is_empty() {
+                    return line.chars().map(|_| SPACE_MARK).collect();
+                }
+                let lead = line.len() - line.trim_start_matches(' ').len();
+                let trail = line.len() - line.trim_end_matches(' ').len();
+                let mut shown = String::with_capacity(line.len() + 2 * (lead + trail));
+                shown.extend(core::iter::repeat_n(SPACE_MARK, lead));
+                shown.push_str(body);
+                shown.extend(core::iter::repeat_n(SPACE_MARK, trail));
+                shown
+            })
+            .collect()
     }
 
     /// Scrolls by `lines` (down for a positive count), within `total` lines
@@ -152,6 +197,108 @@ impl SendPreview {
     }
 }
 
+/// What a step of [`Slot`] came to, for `desktop`'s log.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Came {
+    /// Card `ask` shows its text now.
+    Shown { ask: u64, bytes: usize },
+    /// Card `ask`'s text does not match its call, or its call does not
+    /// parse: nothing is shown, and the card takes no Allow.
+    Refused { ask: u64 },
+}
+
+/// Which send's text goes with which card, in `desktop`: the card up now,
+/// the text the shell gave, and the preview made of the two.
+#[derive(Clone, Debug, Default)]
+pub struct Slot {
+    /// The card up now: its ask, its call, and whether it is a send's.
+    card: Option<(u64, String, bool)>,
+    /// The text the shell gave, for its ask.
+    text: Option<(u64, String)>,
+    preview: Option<SendPreview>,
+    /// The preview has not yet been read through on the screen.
+    unread: bool,
+}
+
+impl Slot {
+    /// Card `ask` with `call` went up: whether it is a send's card, which
+    /// takes no Allow until its text is read through.
+    pub fn card(&mut self, ask: u64, call: &str) -> (bool, Option<Came>) {
+        let send = names_send(call);
+        self.preview = None;
+        self.unread = false;
+        self.card = Some((ask, String::from(call), send));
+        let came = if send { self.attach() } else { None };
+        (send, came)
+    }
+
+    /// The shell gave the text for ask `ask`.
+    pub fn text(&mut self, ask: u64, text: &str) -> Option<Came> {
+        self.text = Some((ask, String::from(text)));
+        self.attach()
+    }
+
+    /// Card `ask` went down: its card, its text and its preview go, nothing
+    /// that is another card's. True when a preview went off the screen.
+    pub fn gone(&mut self, ask: u64) -> bool {
+        if self.card.as_ref().is_some_and(|(id, ..)| *id == ask) {
+            self.card = None;
+        }
+        if self.text.as_ref().is_some_and(|(id, _)| *id == ask) {
+            self.text = None;
+        }
+        let shown = self.preview.as_ref().is_some_and(|p| p.ask == ask);
+        if shown {
+            self.preview = None;
+            self.unread = false;
+        }
+        shown
+    }
+
+    /// The text and the card, once both are here: shown only if the card is
+    /// a send's whose call parses and the text's hash is its digest.
+    fn attach(&mut self) -> Option<Came> {
+        let (ask, call, send) = self.card.as_ref()?;
+        let (for_ask, text) = self.text.as_ref()?;
+        if !send || for_ask != ask || self.preview.is_some() {
+            return None;
+        }
+        match SendPreview::new(*ask, call, text) {
+            Some(preview) => {
+                let bytes = preview.text.len();
+                self.preview = Some(preview);
+                self.unread = true;
+                Some(Came::Shown { ask: *ask, bytes })
+            }
+            None => Some(Came::Refused { ask: *ask }),
+        }
+    }
+
+    /// The text shown now, if any.
+    pub fn preview(&self) -> Option<&SendPreview> {
+        self.preview.as_ref()
+    }
+
+    pub fn preview_mut(&mut self) -> Option<&mut SendPreview> {
+        self.preview.as_mut()
+    }
+
+    /// A frame showed `rows` of the text's `total` lines from its scroll:
+    /// the card's ask once the whole text has now been read through, the
+    /// first time only.
+    pub fn drawn(&mut self, rows: usize, total: usize) -> Option<u64> {
+        if !self.unread {
+            return None;
+        }
+        let preview = self.preview.as_mut()?;
+        if !preview.on_screen(rows, total) {
+            return None;
+        }
+        self.unread = false;
+        Some(preview.ask)
+    }
+}
+
 /// A send's text as its request to `desktop`.
 pub fn encode_preview(ask: u64, text: &str) -> String {
     format!("{PREVIEW}{ask}\n{text}")
@@ -167,111 +314,5 @@ pub fn parse_preview(request: &str) -> Option<(u64, &str)> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const TEXT: &str = "hello from the desk\nsecond line";
-
-    fn call_for(text: &str) -> String {
-        format!(
-            "net_send(\"hooks.example\", \"/hook\", \"{}\")",
-            digest(text)
-        )
-    }
-
-    #[test]
-    fn a_send_call_reads_back_and_others_do_not() {
-        let call = send_call(&call_for(TEXT)).unwrap();
-        assert_eq!(call.host, "hooks.example");
-        assert_eq!(call.path, "/hook");
-        assert_eq!(call.digest.len(), DIGEST_HEX);
-        for bad in [
-            "net_send(\"hooks.example\", \"/hook\")",
-            "net_send(\"hooks.example\", \"hook\", \"0123456789abcdef\")",
-            "net_send(\"\", \"/hook\", \"0123456789abcdef\")",
-            "net_send(\"hooks.example\", \"/hook\", \"0123456789ABCDEF\")",
-            "net_send(\"hooks.example\", \"/hook\", \"0123456789abcdef\", \"x\")",
-            "net_send(\"a\\\"b\", \"/hook\", \"0123456789abcdef\")",
-            "fs_create(\"a\", \"/hook\", \"0123456789abcdef\")",
-        ] {
-            assert_eq!(send_call(bad), None, "{bad}");
-        }
-    }
-
-    /// The digest is SHA-256's own: "abc"'s begins ba7816bf8f01cfea.
-    #[test]
-    fn the_digest_is_sha256s_first_16_hex() {
-        assert_eq!(digest("abc"), "ba7816bf8f01cfea");
-    }
-
-    /// Only a text whose hash is the card's shows: a byte changed, added or
-    /// left out shows nothing.
-    #[test]
-    fn a_preview_is_made_only_for_the_cards_own_text() {
-        let call = call_for(TEXT);
-        let preview = SendPreview::new(7, &call, TEXT).unwrap();
-        assert_eq!(
-            preview.header(1, 2),
-            alloc::format!(
-                "31 bytes to hooks.example/hook \u{b7} SHA-256 {} \u{b7} lines 1-1 of 2",
-                digest(TEXT)
-            )
-        );
-        for other in [
-            "hello from the desk\nsecond lin",
-            "Hello from the desk\nsecond line",
-            "",
-        ] {
-            assert_eq!(SendPreview::new(7, &call, other), None, "{other:?}");
-        }
-        assert_eq!(SendPreview::new(7, "cpus()", TEXT), None);
-        let long = "x".repeat(MAX_TEXT + 1);
-        assert_eq!(SendPreview::new(7, &call_for(&long), &long), None);
-    }
-
-    #[test]
-    fn its_text_keeps_every_character_and_escapes_what_is_not_plain() {
-        let text = "caf\u{e9}\n\ttab";
-        let preview = SendPreview::new(1, &call_for(text), text).unwrap();
-        assert_eq!(preview.shown(), "caf\\u{e9}\n\\u{9}tab");
-    }
-
-    /// Read through means the last line has been on the screen, at once or
-    /// by scrolling; scrolling back does not take it back.
-    #[test]
-    fn it_is_read_through_once_its_last_line_has_shown() {
-        let mut preview = SendPreview::new(1, &call_for(TEXT), TEXT).unwrap();
-        assert!(!preview.on_screen(4, 10));
-        preview.scroll(3, 10, 4);
-        assert!(!preview.on_screen(4, 10));
-        assert_eq!(
-            preview.header(4, 10).rsplit(" \u{b7} ").next(),
-            Some("lines 4-7 of 10")
-        );
-        preview.scroll(9, 10, 4);
-        assert!(preview.on_screen(4, 10));
-        preview.scroll(-9, 10, 4);
-        assert!(preview.on_screen(4, 10));
-        let mut short = SendPreview::new(1, &call_for(TEXT), TEXT).unwrap();
-        assert!(short.on_screen(5, 2), "a text that fits is read at once");
-    }
-
-    #[test]
-    fn the_preview_wire_reads_back() {
-        let wire = encode_preview(12, TEXT);
-        assert_eq!(parse_preview(&wire), Some((12, TEXT)));
-        assert_eq!(parse_preview("panel preview x\nhi"), None);
-        assert_eq!(parse_preview("panel preview 3"), None);
-        let long = alloc::format!("{PREVIEW}3\n{}", "x".repeat(MAX_TEXT + 1));
-        assert_eq!(parse_preview(&long), None);
-    }
-
-    #[test]
-    fn scrolling_stays_within_the_text() {
-        let mut preview = SendPreview::new(1, &call_for(TEXT), TEXT).unwrap();
-        assert!(!preview.scroll(-3, 10, 4));
-        assert!(preview.scroll(9, 10, 4));
-        assert_eq!(preview.scrolled, 6);
-        assert!(!preview.scroll(1, 10, 4));
-    }
-}
+#[path = "sendview_tests.rs"]
+mod tests;
