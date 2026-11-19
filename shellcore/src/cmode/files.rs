@@ -17,7 +17,7 @@
 //! never a path, so no other folder is read or written.
 
 use super::saved;
-use super::session::Ran;
+use super::session::{Ran, no_session};
 use crate::actions::How;
 use crate::actlog::{Form, State};
 use crate::script::{Checked, file_done};
@@ -217,14 +217,17 @@ impl Shell {
                 promptcore::MAX_ENTRY / 1024
             ));
         }
-        let restored = match self.c_ensure_open() {
+        let mut restored = match self.c_ensure_open() {
             Ok(note) => note,
             Err(why) => return Reply::err(why),
         };
         let mut names = 0;
         for (n, entry) in entries.iter().enumerate() {
             match self.c_replay(entry) {
-                Ok(defined) => names += defined,
+                Ok((defined, note)) => {
+                    names += defined;
+                    restored.push_str(&note);
+                }
                 Err(why) => {
                     self.c_unload(n);
                     return Reply::err(format!(
@@ -244,7 +247,7 @@ impl Shell {
     /// the session, as it first ran without its statements: how many it made,
     /// or why not (cc then committed nothing of it). It is kept as typed;
     /// only cc sees its `#include "…"` files.
-    fn c_replay(&mut self, entry: &str) -> Result<usize, String> {
+    fn c_replay(&mut self, entry: &str) -> Result<(usize, String), String> {
         let expanded = self.c_includes(entry)?;
         if expanded.len() > promptcore::MAX_ENTRY {
             return Err(format!(
@@ -259,11 +262,21 @@ impl Shell {
             entry: &expanded,
         }
         .text();
-        let reply = self.host.cc(request.as_bytes()).map_err(|why| {
+        let mut note = String::new();
+        let mut reply = self.c_send(&request)?;
+        // A cc the supervisor restarted since the last line has no session:
+        // open it again, replay, and send this once more, as an entry does.
+        if no_session(&reply) {
             self.c.open = false;
-            format!("cc did not answer: {why}")
-        })?;
-        let records = parse_reply(&reply).map_err(|e| format!("cc's reply: {e}"))?;
+            note = self.c_ensure_open()?;
+            reply = self.c_send(&request)?;
+        }
+        let Ok(records) = parse_reply(&reply) else {
+            // Whether cc committed it is unknown: the next entry opens a
+            // session again and replays only what `ran` holds.
+            self.c.open = false;
+            return Err(String::from("cc's reply did not parse"));
+        };
         let names = records
             .iter()
             .filter(|r| matches!(r, Record::Def { .. }))
@@ -282,7 +295,10 @@ impl Shell {
                     "an initializer calls kai, and :load runs no calls",
                 ));
             }
-            _ => return Err(String::from("cc's reply was malformed")),
+            _ => {
+                self.c.open = false;
+                return Err(String::from("cc's reply was malformed"));
+            }
         }
         self.c.ran.push(Ran {
             seq,
@@ -291,7 +307,15 @@ impl Shell {
             cc: true,
             included: included(entry, &expanded),
         });
-        Ok(names)
+        Ok((names, note))
+    }
+
+    /// One request to cc; when it does not answer, the session is closed.
+    fn c_send(&mut self, request: &str) -> Result<Vec<u8>, String> {
+        self.host.cc(request.as_bytes()).map_err(|why| {
+            self.c.open = false;
+            format!("cc did not answer: {why}")
+        })
     }
 
     /// Takes back the `count` entries a failed `:load` replayed, last first,
