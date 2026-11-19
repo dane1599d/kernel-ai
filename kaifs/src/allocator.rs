@@ -71,8 +71,22 @@ pub struct Allocator {
     pub faults: Faults,
     /// Free blocks held back for the work that frees space ([`RESERVE_MIN`]).
     reserve: u64,
-    /// Whether this work may take blocks from the reserve.
-    spend_reserve: bool,
+    /// How far this work may take blocks from the reserve.
+    spend: Spend,
+}
+
+/// How far the work that follows may go into the reserve.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Spend {
+    /// Growth: none of it.
+    Keep,
+    /// Work that frees space only later, such as a trash (a slot folder and
+    /// its `info.cbor`, the item's blocks kept): down to half, so trashing
+    /// on a full disk never leaves the emptying nothing.
+    Half,
+    /// Work that frees space: an emptied trash, a truncate down, retention,
+    /// the GC's commit, a repair. All of it.
+    All,
 }
 
 /// The fewest free blocks held back from growth: a full disk keeps enough for
@@ -143,7 +157,7 @@ impl Allocator {
             deltas: 0,
             faults: Faults::default(),
             reserve: RESERVE_MIN.max((area.1 - area.0) / 200),
-            spend_reserve: false,
+            spend: Spend::Keep,
         }
     }
 
@@ -152,7 +166,12 @@ impl Allocator {
     /// spend it ([`Allocator::spend_reserve`]).
     pub fn alloc(&mut self, level: u8) -> Result<Run, Error> {
         let run = self.buddy.alloc(level).ok_or(Error::NoSpace)?;
-        if !self.spend_reserve && self.buddy.free_blocks() < self.reserve {
+        let floor = match self.spend {
+            Spend::Keep => self.reserve,
+            Spend::Half => self.reserve / 2,
+            Spend::All => 0,
+        };
+        if self.buddy.free_blocks() < floor {
             self.buddy.free(run);
             return Err(Error::NoSpace);
         }
@@ -160,10 +179,9 @@ impl Allocator {
         Ok(run)
     }
 
-    /// Lets the work that follows take blocks from the reserve, or stops it;
-    /// what it was before.
-    pub fn spend_reserve(&mut self, on: bool) -> bool {
-        core::mem::replace(&mut self.spend_reserve, on)
+    /// How far the work that follows may go into the reserve; what it was.
+    pub fn spend_reserve(&mut self, spend: Spend) -> Spend {
+        core::mem::replace(&mut self.spend, spend)
     }
 
     /// The free blocks held back from growth.

@@ -42,6 +42,7 @@ use kabi::fs::{
     SYSTEM_SETTINGS, SYSTEM_STATE, SYSTEM_TRUST, SYSTEM_UPDATES,
 };
 use kabi::handle::Rights;
+use kaifs::allocator::Spend;
 use kaifs::ns::Listed;
 use kaifs::{BlockDev, FileType, Fs, Inode, ROOT};
 
@@ -175,9 +176,9 @@ pub struct Server<D: BlockDev> {
     base: u64,
     /// Writes inside an action not yet given to kaifs ([`buffer`]).
     pending: Option<buffer::Pending>,
-    /// Whether the open action made a change that grows the disk, so its
-    /// commit may not take kaifs's reserve ([`Server::spends_reserve`]).
-    action_grew: bool,
+    /// The least of the open action's changes' claims on kaifs's reserve: what
+    /// its commit may spend ([`Server::spends_reserve`]).
+    action_spend: Spend,
     /// The record last read.
     cache: Option<buffer::Cached>,
     /// Whether a caller (a pid) still runs: a dead owner's action is aborted
@@ -223,7 +224,7 @@ impl<D: BlockDev> Server<D> {
             epoch: 0,
             base,
             pending: None,
-            action_grew: false,
+            action_spend: Spend::All,
             cache: None,
             alive: |_| true,
             name_of: |_, _| None,
@@ -444,7 +445,7 @@ impl<D: BlockDev> Server<D> {
         }
         // Retention, the GC and these commits free space: they may take the
         // reserve, on a disk growth has filled.
-        let was = fs.io.alloc.spend_reserve(true);
+        let was = fs.io.alloc.spend_reserve(Spend::All);
         self.retain_and_collect(now);
         if release && self.fs.is_clean() {
             let _ = self.commit();
@@ -532,35 +533,36 @@ impl<D: BlockDev> Server<D> {
         answered
     }
 
-    /// Whether `request` may take kaifs's reserved blocks: work that frees
-    /// space, so a disk growth filled can still be emptied (a trash, an emptied
-    /// trash, a truncate down, a dropped update snapshot, an abort, a sync),
-    /// or the commit of an action that made only such changes. A growing
-    /// change in an action marks it, so its commit keeps to the reserve.
+    /// How far `request` may go into kaifs's reserved blocks, so a disk
+    /// growth filled can still be emptied: all of it for work that frees space
+    /// (an emptied trash, a truncate down, a dropped update snapshot, an
+    /// abort, a sync), half for a trash, which frees nothing until the trash
+    /// is emptied, and none for growth. An action's commit gets the least of
+    /// its changes'.
     fn spends_reserve(
         &mut self,
         caller: u64,
         request: &Request,
         target: &Target,
         changes: bool,
-    ) -> bool {
+    ) -> Spend {
         if matches!(request, Request::Begin { .. }) && self.owner.is_none() {
-            self.action_grew = false;
+            self.action_spend = Spend::All;
         }
-        let frees = match request {
-            Request::Trash { .. }
-            | Request::EmptyTrash
-            | Request::UpdateDrop { .. }
-            | Request::Abort
-            | Request::Sync => true,
-            Request::Truncate { size } => *size <= target.inode.size,
-            Request::Commit => !self.action_grew,
-            _ => false,
+        let spend = match request {
+            Request::EmptyTrash | Request::UpdateDrop { .. } | Request::Abort | Request::Sync => {
+                Spend::All
+            }
+            Request::Truncate { size } if *size <= target.inode.size => Spend::All,
+            Request::Trash { .. } => Spend::Half,
+            Request::Commit => self.action_spend,
+            _ => Spend::Keep,
         };
-        if changes && !frees && self.owner == Some(caller) {
-            self.action_grew = true;
+        let in_its_action = self.owner == Some(caller);
+        if changes && in_its_action && !matches!(request, Request::Commit | Request::Abort) {
+            self.action_spend = self.action_spend.min(spend);
         }
-        frees
+        spend
     }
 
     /// [`Server::answer`]'s change, once the request is known to reach its
