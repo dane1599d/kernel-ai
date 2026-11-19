@@ -687,6 +687,9 @@ pub struct Shell {
     /// The question on the card that came from a desktop line, and where
     /// that line was typed.
     card_for_desk: Option<(u64, deskask::Asker)>,
+    /// The card's question whose agent was retired while it was up: its
+    /// answer runs nothing and says so (`agentconsent::RETIRED`).
+    retired_card: Option<u64>,
     /// What a panel line's card came to, for the panel.
     card_result: Option<(bool, String)>,
     /// The send a panel line's card allowed and the outbox holds, for the
@@ -845,6 +848,7 @@ impl Shell {
             card: None,
             desk_asks: Vec::new(),
             card_for_desk: None,
+            retired_card: None,
             card_result: None,
             card_held: None,
             card_answers: deskcard::Answers::default(),
