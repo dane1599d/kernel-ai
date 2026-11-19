@@ -852,3 +852,77 @@ fn a_fallback_is_counted_once_and_the_next_one_again() {
     let fs = Fs::mount(disk).unwrap();
     assert_eq!(fs.fallbacks(), 2);
 }
+
+/// Zeroes the `n` newest commits' volume-table roots.
+fn break_the_newest_tables(disk: &mut MemDisk, n: usize) {
+    let slots = format::read_rings(disk).unwrap();
+    let mut done = std::collections::BTreeSet::new();
+    for slot in slots {
+        if done.len() == n {
+            break;
+        }
+        if done.insert(slot.generation) {
+            disk.write(slot.volumes.addr, &[0; BLOCK]).unwrap();
+        }
+    }
+}
+
+/// A fallback past two slots, then one commit: the newest slot stays on the
+/// rings, abandoned, newer than every commit after it. A remount must not
+/// count it again.
+#[test]
+fn an_abandoned_slot_is_not_counted_twice() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    for name in ["a", "b", "c", "d"] {
+        fs.create(ROOT, name).unwrap();
+        fs.commit().unwrap();
+    }
+    let mut disk = fs.into_dev();
+    break_the_newest_tables(&mut disk, 2);
+    let mut fs = Fs::mount(disk).unwrap();
+    assert_eq!(fs.fallbacks(), 1);
+    fs.create(ROOT, "e").unwrap();
+    fs.commit().unwrap();
+    let mut disk = fs.into_dev();
+    let newest = format::read_rings(&mut disk).unwrap()[0];
+    let fs = Fs::mount(disk).unwrap();
+    assert!(
+        newest.generation > fs.committed,
+        "the abandoned slot is still newer"
+    );
+    assert_eq!(fs.fallbacks(), 1, "the abandoned slot counted twice");
+}
+
+/// `check --repair` that mounts past a newer commit counts the fallback, as a
+/// mount does, and its commit keeps it.
+#[test]
+fn a_repair_mount_that_falls_back_counts_it() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    for name in ["a", "b"] {
+        fs.create(ROOT, name).unwrap();
+        fs.commit().unwrap();
+    }
+    let mut disk = fs.into_dev();
+    break_the_newest_table(&mut disk);
+    let (mut fs, _) = kaifs::repair_fs::mount_to_repair(disk).unwrap();
+    assert_eq!(fs.fallbacks(), 1);
+    fs.commit().unwrap();
+    let fs = remount(fs);
+    assert_eq!(fs.fallbacks(), 1);
+}
+
+#[test]
+fn a_restored_snapshot_raises_the_count() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    let snap = fs.snapshot().unwrap();
+    fs.create(ROOT, "later").unwrap();
+    fs.commit().unwrap();
+    assert!(fs.restore_snapshot(snap).unwrap());
+    assert!(fs.fallbacks_unsaved());
+    fs.commit().unwrap();
+    assert!(!fs.fallbacks_unsaved());
+    assert_eq!(remount(fs).fallbacks(), 1);
+}
