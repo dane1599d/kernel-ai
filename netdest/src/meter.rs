@@ -1,0 +1,157 @@
+//! A destination's bytes a day (P5 task 14, ADR 0013 section 6): an agent's
+//! `NetDest` moves at most its manifest's `bytes/day` (10 MiB unless the manifest
+//! asks for more, never past 512 MiB: `kaiagent::NetBudget`), counted by the kernel
+//! on the handle. This is the counting rule, with no kernel in it; the kernel keeps
+//! one [`DayMeter`] per agent handle and asks it on each send and receive.
+//!
+//! - **Both ways count.** What is sent and what is received are one day's bytes.
+//! - **A send that would pass the budget is refused whole**, before it leaves, and
+//!   charges nothing ([`DayMeter::try_send`]).
+//! - **What is received is counted when it arrives** ([`DayMeter::received`]): it
+//!   cannot be refused once it is here, so a receive may pass the budget by its own
+//!   bytes, and then nothing more moves that day.
+//! - **The day turns forward only.** A later day starts the count again; a clock
+//!   that goes back is not a new day, so it never buys more bytes.
+
+/// Bytes in a MiB, as `bytes/day=10m` counts them.
+pub const MIB: u64 = 1024 * 1024;
+
+/// Why a send was refused: the day's bytes so far and the budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OverBudget {
+    pub used: u64,
+    pub budget: u64,
+}
+
+/// One handle's bytes on one day.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DayMeter {
+    budget: u64,
+    used: u64,
+    day: u32,
+}
+
+impl DayMeter {
+    /// A meter of `budget` bytes a day, starting on `day`.
+    pub const fn new(budget: u64, day: u32) -> Self {
+        Self {
+            budget,
+            used: 0,
+            day,
+        }
+    }
+
+    /// A meter of `mib` MiB a day (a manifest's `bytes/day=<mib>m`), from `day`.
+    pub const fn from_mib(mib: u32, day: u32) -> Self {
+        Self::new(mib as u64 * MIB, day)
+    }
+
+    /// A later `day` starts the count again; an earlier one is the same day.
+    fn roll(&mut self, day: u32) {
+        if day > self.day {
+            self.day = day;
+            self.used = 0;
+        }
+    }
+
+    /// Whether `bytes` may be sent on `day`: charged if so, refused whole if they
+    /// would pass the budget.
+    pub fn try_send(&mut self, bytes: u64, day: u32) -> Result<(), OverBudget> {
+        self.roll(day);
+        match self.used.checked_add(bytes) {
+            Some(after) if after <= self.budget => {
+                self.used = after;
+                Ok(())
+            }
+            _ => Err(OverBudget {
+                used: self.used,
+                budget: self.budget,
+            }),
+        }
+    }
+
+    /// Counts `bytes` received on `day`: whether the day's budget still has room.
+    pub fn received(&mut self, bytes: u64, day: u32) -> bool {
+        self.roll(day);
+        self.used = self.used.saturating_add(bytes);
+        self.used < self.budget
+    }
+
+    /// Whether anything more may move on `day`.
+    pub fn has_room(&mut self, day: u32) -> bool {
+        self.roll(day);
+        self.used < self.budget
+    }
+
+    /// The day's bytes so far.
+    pub fn used(&self) -> u64 {
+        self.used
+    }
+
+    pub fn budget(&self) -> u64 {
+        self.budget
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sends_within_the_budget_are_charged_and_one_past_it_is_refused_whole() {
+        let mut meter = DayMeter::from_mib(10, 1);
+        assert_eq!(meter.budget(), 10 * MIB);
+        assert_eq!(meter.try_send(6 * MIB, 1), Ok(()));
+        assert_eq!(
+            meter.try_send(5 * MIB, 1),
+            Err(OverBudget {
+                used: 6 * MIB,
+                budget: 10 * MIB
+            })
+        );
+        assert_eq!(meter.used(), 6 * MIB, "a refused send charges nothing");
+        assert_eq!(
+            meter.try_send(4 * MIB, 1),
+            Ok(()),
+            "exactly the budget fits"
+        );
+        assert!(!meter.has_room(1));
+        assert!(meter.try_send(1, 1).is_err());
+    }
+
+    #[test]
+    fn what_is_received_counts_and_stops_the_day_once_past() {
+        let mut meter = DayMeter::from_mib(1, 7);
+        assert!(meter.received(MIB / 2, 7));
+        // A receive cannot be refused once here: it passes, and the day is done.
+        assert!(!meter.received(MIB, 7));
+        assert_eq!(meter.used(), MIB / 2 + MIB);
+        assert!(meter.try_send(1, 7).is_err());
+        assert!(!meter.has_room(7));
+    }
+
+    #[test]
+    fn a_later_day_starts_again_and_an_earlier_one_buys_nothing() {
+        let mut meter = DayMeter::from_mib(1, 10);
+        assert!(meter.try_send(MIB, 10).is_ok());
+        assert!(
+            meter.try_send(1, 9).is_err(),
+            "a clock gone back is the same day"
+        );
+        assert!(meter.try_send(MIB, 11).is_ok(), "the next day starts again");
+        assert_eq!(meter.used(), MIB);
+    }
+
+    #[test]
+    fn no_budget_moves_nothing_and_a_huge_send_does_not_overflow() {
+        let mut none = DayMeter::from_mib(0, 1);
+        assert!(none.try_send(1, 1).is_err());
+        assert!(!none.has_room(1));
+        let mut max = DayMeter::from_mib(512, 1);
+        assert_eq!(max.budget(), 512 * MIB);
+        assert!(max.try_send(u64::MAX, 1).is_err());
+        assert_eq!(max.used(), 0);
+        assert!(!max.received(u64::MAX, 1));
+        assert_eq!(max.used(), u64::MAX);
+    }
+}
