@@ -176,6 +176,15 @@ finish() {  # PR numbers
   echo "batch done"
 }
 
+# The boot cases a run failed, from its failed jobs' logs: each shard's
+# "xtask: failed test cases: ..." and "xtask: test case NAME: FAIL: ..." lines,
+# so batch-auto.log names the cause without opening a job's log.
+failed_cases() {  # $1 run id
+  gh run view "$1" --repo "$R" --log-failed 2>/dev/null \
+    | grep -oE "xtask: (failed test cases: .*|test case .*: FAIL.*)" \
+    | sort -u | head -20 | sed 's/^/    failed case: /'
+}
+
 verify() {
   echo "  batch PR #$bpr, head ${c:0:7}, waiting for CI"
   id=$(wait_ci "$name" "$c") || stop "CI did not finish; STOPPING"
@@ -192,7 +201,7 @@ verify() {
       echo "  re-run $id"
     fi
   fi
-  gates_green "$id" || stop "batch NOT green; STOPPING (fall back to merge-chain.sh)"
+  gates_green "$id" || { failed_cases "$id"; stop "batch NOT green; STOPPING (fall back to merge-chain.sh)"; }
   others_ok "$name" "$c" || stop "batch NOT green: another workflow failed; STOPPING"
   if [ -n "$model" ]; then
     echo "  changes what the model sees ($model): running the fluency gate"
