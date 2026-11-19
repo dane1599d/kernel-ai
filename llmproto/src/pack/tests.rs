@@ -63,7 +63,8 @@ fn marks_follow_the_derived_tier() {
         line(&agentabi::SET_POLICY).split("  //").next(),
         Some("set_policy(name: Policy) [undo]")
     );
-    assert!(line(&agentabi::CPUS).starts_with("cpus() -> int  // "));
+    // A read whose name and type say it all has no comment (T3).
+    assert_eq!(line(&agentabi::CPUS), "cpus() -> int");
     assert!(line(&agentabi::TUNE).contains(" [ask]  // "));
     assert!(line(&agentabi::COMPONENT_REVERT).contains("back: int 1..6?"));
 }
