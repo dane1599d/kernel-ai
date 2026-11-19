@@ -472,6 +472,15 @@ pub fn names_send(call: &str) -> bool {
         .is_some_and(|rest| rest.starts_with('('))
 }
 
+/// Whether a menu for `call`, asked with its `shown` text or not, is a
+/// send's that has no text to show beside it: then it is answered on the
+/// desk card (where its text is in the Kai pane) or denied, never asked on
+/// the console, where it would show bare (#1142's review). The kernel's
+/// terminal asks this before it asks a menu on the console.
+pub fn bare_send(shown: bool, call: &str) -> bool {
+    !shown && names_send(call)
+}
+
 /// Where a menu is answered (ADR 0005 §7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Surface {
@@ -577,6 +586,16 @@ mod tests {
             Menu::decode(&format!("{wire}\nmore")),
             Err(Refused::Malformed)
         );
+    }
+
+    /// A send's menu with its text is the console's; one without it (the
+    /// desk card's) is never asked there; any other menu is as ever.
+    #[test]
+    fn a_sends_menu_without_its_text_is_never_the_consoles() {
+        let send = "net_send(\"a\", \"/b\", \"0123456789abcdef\")";
+        assert!(bare_send(false, send));
+        assert!(!bare_send(true, send));
+        assert!(!bare_send(false, "process_stop(\"x\")"));
     }
 
     #[test]

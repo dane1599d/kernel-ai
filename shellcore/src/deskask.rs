@@ -288,13 +288,17 @@ impl Shell {
             (false, false, true) => (true, ""),
             (false, false, false) => (false, crate::panel::FAILED),
         };
-        let line = match ran {
-            true => self
+        // A send the card allowed is held, not done: its line says so, with
+        // its undo, as the console's does (#1142's review).
+        let held = ran && self.outbox.get(id).is_some();
+        let line = match (ran, held) {
+            (true, true) => String::from(reply.text.lines().next().unwrap_or("")),
+            (true, false) => self
                 .done_line
                 .take()
                 .map(|line| crate::panel::without_undo(&line))
                 .unwrap_or_else(|| String::from("Done.")),
-            false => String::from(line),
+            (false, _) => String::from(line),
         };
         // Don't and a lapse are no failure: only a run that failed is an
         // error row.

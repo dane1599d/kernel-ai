@@ -317,3 +317,27 @@ fn the_held_asks_the_results_and_the_kept_answers_are_capped() {
         assert_eq!(hears(&mut shell, ticket, id), ok(DONT));
     }
 }
+
+/// A send the Terminal window's line asked for, allowed on the card, is
+/// held, not done: the window hears it waits 5 s with its undo, as the
+/// console says (#1142's review).
+#[test]
+fn a_send_allowed_from_the_terminal_window_says_it_is_held_with_its_undo() {
+    let call = serde_json::json!({
+        "name": "net_send",
+        "arguments": {"host": "hooks.example", "path": "/hook", "text": "hello"},
+    });
+    let (host, mut shell) = with_calls(vec![Ok(llmproto::act::parse(&call.to_string()).unwrap())]);
+    host.send_fits.set(true);
+    let asked = asked(&mut shell, "send hello to hooks.example/hook");
+    assert_eq!(ask_card(&mut shell, TERMINAL_APP, 2, asked.id), []);
+    let menu = take(&mut shell, asked.id);
+    assert!(answer(&host, &mut shell, &menu, "allow").ok);
+    let back = given_back(&mut shell);
+    let told = back[0].outcome.clone().unwrap();
+    assert!(
+        told.starts_with("ok Sending to hooks.example in 5 s") && told.contains("undo"),
+        "{told}"
+    );
+    assert!(host.sends.borrow().is_empty(), "held, not sent");
+}
