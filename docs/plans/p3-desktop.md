@@ -1,10 +1,10 @@
 # P3 plan: the desktop
 
-Status: approved by the founder on 2026-10-27 (#146), with its defaults, and **done 2026-11-03** on the roadmap: every exit case of section 1 is a boot case on main and passes under KVM and TCG (section 10). The close and its gaps are in `docs/decisions/rows/2026-11-09-p3-close.md`. The fuzz targets section 1 asks for do not exist yet, and that gate is open (`docs/decisions/rows/2026-11-09-p3-fuzz-gate-open.md`). It plans the work that the accepted ADRs (`docs/adr/`, accepted 2026-10-22) and the execution plan ([ADR 0000](../adr/0000-execution-plan.md) §3, P3 rows) put in P3: [ADR 0005](../adr/0005-graphics.md) (graphics and the look) almost whole, and the P3 rows of [ADR 0003](../adr/0003-app-model.md) (the app model) and [ADR 0002](../adr/0002-agent-actions.md) (agent actions). Section 4 lists the few things it decides itself, because no ADR covers them. Nothing here was built or run for this plan when it was written. Sizes marked "est." are estimates, mostly ADR 0005's own.
+Status: approved by the founder on 2026-10-27 (#146), with its defaults, and **done 2026-11-03** on the roadmap: every exit case of section 1 is a boot case on main and passes under KVM and TCG (section 10). The close and its gaps are in `docs/decisions/rows/2026-11-09-p3-close.md`. The fuzz gate section 1 asks for was open at the close and **closed on 2026-11-18**: the four targets exist and have run clean (`docs/decisions/rows/2026-11-18-p3-fuzz-gate-closed.md`). Since 2026-11-14 the look is Kai Desk, ADR 0005 §8. It plans the work that the accepted ADRs (`docs/adr/`, accepted 2026-10-22) and the execution plan ([ADR 0000](../adr/0000-execution-plan.md) §3, P3 rows) put in P3: [ADR 0005](../adr/0005-graphics.md) (graphics and the look) almost whole, and the P3 rows of [ADR 0003](../adr/0003-app-model.md) (the app model) and [ADR 0002](../adr/0002-agent-actions.md) (agent actions). Section 4 lists the few things it decides itself, because no ADR covers them. Nothing here was built or run for this plan when it was written. Sizes marked "est." are estimates, mostly ADR 0005's own.
 
 ## 1. Goal and exit
 
-**Goal** (roadmap P3): virtio-gpu 2D in the VM (UEFI GOP on real hardware), a compositor, windows, fonts and text rendering, input focus, a launcher, an AI panel that is always there, and the app model with its UI API. This is the founder's "nicer UI" phase: the black text screen becomes a desktop in the dark "Ember Workbench" look, ADR 0005 §8. Amended 2026-11-14: the look is now Kai Desk, a Windows 11-style desktop with a taskbar, a menu and a pane for Kai (ADR 0005 §8, row `2026-11-14-kai-desk`); the exit below is as first built.
+**Goal** (roadmap P3): virtio-gpu 2D in the VM (UEFI GOP on real hardware), a compositor, windows, fonts and text rendering, input focus, a launcher, an AI panel that is always there, and the app model with its UI API. This is the founder's "nicer UI" phase: the black text screen becomes a desktop. First built as the dark "Ember Workbench" look; amended 2026-11-14, the look is Kai Desk, a Windows 11-style desktop with a taskbar, a menu and a pane for Kai (ADR 0005 §8, row `2026-11-14-kai-desk`); the exit below is as first built.
 
 What the founder sees at the end of P3, in the VM:
 
@@ -273,7 +273,7 @@ Section 1's exit cases against `main` on 2026-11-02. "On main" means the case is
 | `desk-windows` | On main | Open, drag 200 px, raise and close, from `desktop`'s and `deskdemo`'s log lines |
 | `desk-agent` | On main | #433 (task 10's OS half): `ui_open`, then a declared action, then `ui_view` and `ui_act` after a yes on the card |
 | `display-claim` | On main | Ctrl+Alt+F12 out and back; only `desktop` can claim |
-| `desk-panel` | On main, partly | Ctrl+Space focuses the panel and Enter queues the line; `desk-panel-shell` (#339) adds the shell taking it and the state shown. Not checked in a boot: Super, each panel state from idle to refused, and that a run-tier request never opens the sheet |
+| `desk-panel` | On main, partly | Ctrl+Space focuses the panel and Enter queues the line; `desk-panel-shell` (#339) adds the shell taking it and the state shown. Super is checked in a boot by `desk-start` (a Super tap reaches `desktop` through the Terminal's key lease and opens Start, #950). Not checked in a boot: each panel state from idle to refused, and that a run-tier request never opens the sheet |
 | `desk-ask` | On main | With `desk-card` and `desk-term`: the card takes only y, n or a click, keys typed before it are dropped, and with `desktop` killed the console asks |
 | `desk-takeover` | On main | #433: a key in the window the agent drives stops the run, the panel says "Stopped: you took over", and later acts are refused until the user's next line |
 | `desk-restart` | On main | #206: `desktop` killed, the supervisor restarts it, `deskdemo` reconnects |
@@ -286,5 +286,5 @@ Section 1's exit cases against `main` on 2026-11-02. "On main" means the case is
 Beside the plan's set, these desk cases are also on main: `desk-nap`, `desk-card`, `desk-term`, `desk-panel-shell`, `ui-window`, `ui-keys`, `app-suspend` and `app-on-demand`.
 
 **Before the close PR:**
-- **What no boot checks, by design:** the parts of `desk-panel` and `desk-standing` marked "partly" are host-tested; `desk-perf` does not time (d), since `desktop` has no spring, nor 2560x1440.
+- **What no boot checks, by design:** the parts of `desk-panel` (each panel state, a run-tier request never opening the sheet) and `desk-standing` marked "partly" are host-tested (Super is boot-checked since `desk-start`); `desk-perf` does not time (d), since `desktop` has no spring, nor 2560x1440.
 - **Write the close itself.** Task 13's decisions rows and the roadmap's P3 status.
