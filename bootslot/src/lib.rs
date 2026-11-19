@@ -230,6 +230,46 @@ impl Record {
     }
 }
 
+/// A `KaiBootState` that is there but does not decode: a bad magic, CRC or
+/// field, or a VERSION this code does not know. Not the same as no record: R
+/// stays up and writes nothing (ADR 0008), so the floors and commits it held
+/// are never rebuilt from nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Undecodable;
+
+/// The record the firmware gave: `found` is the variable's bytes, `None` when
+/// it has no `KaiBootState`. `Ok(None)` only when there is none.
+pub fn read(found: Option<&[u8]>) -> Result<Option<Record>, Undecodable> {
+    match found {
+        None => Ok(None),
+        Some(bytes) => Record::decode(bytes).map(Some).ok_or(Undecodable),
+    }
+}
+
+/// What a boot of `slot` does with the record it read (the kernel's lever).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Start {
+    /// R with a record: [`r_boots`].
+    RBoots(Record),
+    /// R with none: [`install`].
+    Install,
+    /// A system slot with its record: *up*, then probation.
+    Slot(Record),
+    /// A system slot with no record (NVRAM lost it, the one-shot survived):
+    /// nothing is written, so R, booting next, still installs. *Up* on an
+    /// empty record would write one with no floors, armed nowhere.
+    NoRecord,
+}
+
+pub fn start(slot: Slot, record: Option<Record>) -> Start {
+    match (slot, record) {
+        (Slot::R, Some(record)) => Start::RBoots(record),
+        (Slot::R, None) => Start::Install,
+        (_, Some(record)) => Start::Slot(record),
+        (_, None) => Start::NoRecord,
+    }
+}
+
 /// The slot the firmware boots: the one-shot, or R without one. Limine erases
 /// the one-shot when it reads it.
 pub fn boot(nv: &mut Nv) -> Slot {

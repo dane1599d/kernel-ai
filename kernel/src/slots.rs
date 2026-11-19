@@ -80,13 +80,14 @@ pub fn this_slot() -> Option<Slot> {
 /// lever and commits nothing.
 fn read_record() -> Result<Option<Record>, &'static str> {
     let mut bytes = [0u8; 128];
-    match efi::get_variable(&KAI, RECORD, &mut bytes) {
-        Ok(len) => Record::decode(&bytes[..len]).map(Some).ok_or(
-            "slots: KaiBootState does not decode (a bad CRC or a newer version); R stays up",
-        ),
-        Err(efi::Error::NotFound) => Ok(None),
-        Err(_) => Err("slots: cannot read KaiBootState"),
-    }
+    let found = match efi::get_variable(&KAI, RECORD, &mut bytes) {
+        Ok(len) => Some(&bytes[..len]),
+        Err(efi::Error::NotFound) => None,
+        Err(_) => return Err("slots: cannot read KaiBootState"),
+    };
+    bootslot::read(found).map_err(|bootslot::Undecodable| {
+        "slots: KaiBootState does not decode (a bad CRC or a newer version); R stays up"
+    })
 }
 
 /// Writes what `after` changed from `before`: the record, then the one-shot.
@@ -212,8 +213,20 @@ fn lever(test: bool) {
         entry_id(slot),
         if record.is_some() { "read" } else { "missing" }
     );
-    if slot == Slot::R {
-        return in_r(record.is_some(), before, nv);
+    match bootslot::start(slot, record) {
+        bootslot::Start::RBoots(_) | bootslot::Start::Install => {
+            return in_r(record.is_some(), before, nv);
+        }
+        // *Up* on no record would write one with no floors, armed nowhere: R,
+        // booting next with none, installs instead.
+        bootslot::Start::NoRecord => {
+            log!(
+                "slots: no record in {}; booting without the lever",
+                entry_id(slot)
+            );
+            return;
+        }
+        bootslot::Start::Slot(_) => {}
     }
     *BOOTED.lock() = Some((before, slot));
     let action = if test { action() } else { Action::Restart };
@@ -473,12 +486,16 @@ pub fn active_committed() -> bool {
 pub fn set(record: Record, one_shot: Option<Slot>) -> Result<(), efi::Error> {
     let _setting = SETTING.lock();
     efi::set_variable(&KAI, RECORD, NV_BS_RT, &record.encode())?;
-    write_one_shot(one_shot)?;
-    let mut booted = BOOTED.lock();
-    if let Some((_, slot)) = *booted {
-        *booted = Some((Nv { record, one_shot }, slot));
+    // The record is the firmware's now: the fault path writes from it even if
+    // the one-shot fails next, never from the record before (a commit's
+    // floors would fall back).
+    {
+        let mut booted = BOOTED.lock();
+        if let Some((_, slot)) = *booted {
+            *booted = Some((Nv { record, one_shot }, slot));
+        }
     }
-    Ok(())
+    write_one_shot(one_shot)
 }
 
 /// POWER_REBOOT's reset: once a BOOTREC_SET under way has written both its
