@@ -52,6 +52,7 @@ mod engine;
 mod goalqueue;
 mod goalrows;
 mod goalscope;
+mod goaltoggle;
 pub mod grants;
 mod guard;
 mod instructions;

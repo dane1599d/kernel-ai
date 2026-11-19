@@ -27,7 +27,7 @@ fn with_goal() -> (Rc<FakeHost>, Shell) {
         concat!(
             "menu 1 added
 ",
-            "Goal: 4 actions in 1 folder, up to 10 steps and 5000 tokens, ",
+            "Goal: 3 actions in 1 folder, up to 10 steps and 5000 tokens, ",
             "with goal_set(1)? Type show to see them
 
 
@@ -127,7 +127,7 @@ fn pause_and_resume_are_queued_and_undo_each_other() {
     host.calls
         .borrow_mut()
         .push_back(call(r#"{"name":"goal_pause","arguments":{"id":1}}"#));
-    let paused = shell.eval("pause goal 1");
+    let paused = shell.eval("please pause it for now");
     assert!(paused.text.starts_with("Done: goal 1 paused"), "{paused:?}");
     assert_eq!(goals_step(&mut shell, "next"), "ok #2 goal-pause 1");
     let undone = shell.eval_console("undo");
@@ -138,6 +138,8 @@ fn pause_and_resume_are_queued_and_undo_each_other() {
 #[test]
 fn cancel_asks_and_its_allow_drops_the_ceiling() {
     let (host, mut shell) = with_goal();
+    goals_step(&mut shell, "next");
+    goals_step(&mut shell, "report 1 ok");
     host.calls
         .borrow_mut()
         .push_back(call(r#"{"name":"goal_cancel","arguments":{"id":1}}"#));
@@ -149,7 +151,6 @@ fn cancel_asks_and_its_allow_drops_the_ceiling() {
     let done = shell.eval(&format!("answer {id} allow once={once}"));
     assert!(done.text.starts_with("Goal 1 cancelled"), "{done:?}");
     assert!(shell.roster.goal_rows(1).is_none());
-    goals_step(&mut shell, "next");
     assert_eq!(goals_step(&mut shell, "next"), "ok #2 goal-cancel 1");
 }
 
@@ -184,7 +185,7 @@ fn the_queue_holds_at_most_its_limit() {
             0 => r#"{"name":"goal_pause","arguments":{"id":1}}"#,
             _ => r#"{"name":"goal_resume","arguments":{"id":1}}"#,
         }));
-        let reply = shell.eval("pause or resume goal 1");
+        let reply = shell.eval("please pause it or resume it now");
         if n + 1 < MAX_QUEUED {
             assert!(reply.ok, "{n}: {reply:?}");
         } else {
@@ -299,4 +300,138 @@ fn more_than_eight_actions_is_refused() {
         reply,
         Reply::err(format!("no goal set: {}", crate::goalscope::SAY_LESS))
     );
+}
+
+#[test]
+fn a_folders_path_names_no_action() {
+    // "notes" in the path is no cue for fs_create.
+    let (shown, granted) = shown_then_granted("keep tidying the files in notes/q3", SET);
+    let granted = granted.expect("goal 1's ceiling");
+    assert!(
+        !granted.iter().any(|r| r == "fs_create"),
+        "{granted:?}: {shown}"
+    );
+}
+
+#[test]
+fn a_negated_action_refuses_the_goal_and_names_the_word() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    host.calls.borrow_mut().push_back(call(SET));
+    let reply = shell.eval("keep tidying the files in notes/q3 but never move them");
+    assert!(
+        !reply.ok && reply.text.contains("\"move\" is said not to happen"),
+        "{reply:?}"
+    );
+    assert!(shell.pending.is_none());
+}
+
+#[test]
+fn a_pause_the_line_did_not_ask_for_asks_on_the_card() {
+    let (host, mut shell) = with_goal();
+    goals_step(&mut shell, "next");
+    goals_step(&mut shell, "report 1 ok");
+    host.calls
+        .borrow_mut()
+        .push_back(call(r#"{"name":"goal_pause","arguments":{"id":1}}"#));
+    let asked = shell.eval("keep the tidying going");
+    assert!(
+        asked.text.starts_with(
+            "menu 2 added
+Pause goal 1 with goal_pause(1)? "
+        ),
+        "{asked:?}"
+    );
+    assert_eq!(
+        goals_step(&mut shell, "next"),
+        "ok none",
+        "nothing queued before the yes"
+    );
+    let once = host.mint(2, "goal_pause(1)");
+    let done = shell.eval(&format!("answer 2 allow once={once}"));
+    assert!(done.text.starts_with("Done: goal 1 paused"), "{done:?}");
+    assert_eq!(shell.log.get(2).unwrap().consent, "yes");
+    assert_eq!(goals_step(&mut shell, "next"), "ok #2 goal-pause 1");
+}
+
+#[test]
+fn an_approved_cancel_drops_the_ceiling_even_with_the_queue_full() {
+    let (host, mut shell) = with_goal();
+    // goals took the add and has not reported it: it holds its place.
+    goals_step(&mut shell, "next");
+    for n in 1..MAX_QUEUED {
+        host.calls.borrow_mut().push_back(call(match n % 2 {
+            1 => r#"{"name":"goal_pause","arguments":{"id":1}}"#,
+            _ => r#"{"name":"goal_resume","arguments":{"id":1}}"#,
+        }));
+        assert!(shell.eval("please pause it or resume it now").ok, "{n}");
+    }
+    host.calls
+        .borrow_mut()
+        .push_back(call(r#"{"name":"goal_cancel","arguments":{"id":1}}"#));
+    let asked = shell.eval("cancel goal 1");
+    let id = asked.confirm.expect("asked");
+    let once = host.mint(id, "goal_cancel(1)");
+    let done = shell.eval(&format!("answer {id} allow once={once}"));
+    assert!(done.text.starts_with("Goal 1 cancelled"), "{done:?}");
+    assert!(shell.roster.goal_rows(1).is_none());
+    // Its untaken commands went; the cancel is queued.
+    let mut taken = Vec::new();
+    loop {
+        let next = goals_step(&mut shell, "next");
+        if next == "ok none" {
+            break;
+        }
+        taken.push(next);
+    }
+    assert!(
+        taken.last().unwrap().ends_with("goal-cancel 1"),
+        "{taken:?}"
+    );
+    assert!(!taken.iter().any(|t| t.contains("goal-pause")), "{taken:?}");
+}
+
+#[test]
+fn undo_puts_back_the_state_before_and_never_revives_a_cancelled_goal() {
+    let (host, mut shell) = with_goal();
+    for _ in 0..2 {
+        host.calls
+            .borrow_mut()
+            .push_back(call(r#"{"name":"goal_pause","arguments":{"id":1}}"#));
+        shell.eval("please pause it for now");
+    }
+    // The second pause found it paused: its undo leaves it paused.
+    let last = shell.log.last_id();
+    let inverse = shell.log.get(last).unwrap().changes[0].inverse;
+    assert_eq!(
+        inverse,
+        Some(crate::undo::Inverse::Goal {
+            id: 1,
+            paused: true
+        })
+    );
+    host.calls
+        .borrow_mut()
+        .push_back(call(r#"{"name":"goal_cancel","arguments":{"id":1}}"#));
+    let asked = shell.eval("cancel goal 1");
+    let id = asked.confirm.expect("asked");
+    let once = host.mint(id, "goal_cancel(1)");
+    shell.eval(&format!("answer {id} allow once={once}"));
+    assert_eq!(
+        shell.revert_goal(1, false),
+        Err(String::from("goal 1 is cancelled"))
+    );
+}
+
+#[test]
+fn goal_ids_are_never_used_twice_after_a_restart() {
+    let (host, mut shell) = with_goal();
+    // A restart: the book is gone, the log is kept.
+    shell.goal_book = crate::goalrows::GoalBook::default();
+    host.calls.borrow_mut().push_back(call(SET));
+    let asked = shell.eval("keep tidying the files in notes/q3");
+    let id = asked.confirm.expect("asked");
+    let once = host.mint(id, &format!("goal_set({id})"));
+    let set = shell.eval(&format!("answer {id} allow once={once}"));
+    assert!(set.text.starts_with("Goal 2 set"), "{set:?}");
 }

@@ -19,7 +19,6 @@
 use crate::actions::{How, Pending};
 use crate::actlog::{Change, Entry, State};
 use crate::script::Checked;
-use crate::undo::Inverse;
 use crate::{Reply, Shell};
 use agentabi::consent::Decision;
 use alloc::format;
@@ -42,6 +41,7 @@ pub const GOALS_ONLY: &str = "only the goals agent takes the goal queue";
 pub(crate) enum Waiting {
     Set(goalcore::Spec),
     Cancel(u64),
+    Toggle { goal: u64, pause: bool },
 }
 
 /// A goal the person set, as the shell knows it.
@@ -73,7 +73,7 @@ pub(crate) struct GoalBook {
 }
 
 impl GoalBook {
-    fn queue(&mut self, goal: u64, command: String) -> Result<(), String> {
+    pub(crate) fn queue(&mut self, goal: u64, command: String) -> Result<(), String> {
         if self.queue.len() >= MAX_QUEUED {
             return Err(String::from(
                 "the goals agent has not taken its last changes yet; try again soon",
@@ -87,6 +87,27 @@ impl GoalBook {
             taken: false,
         });
         Ok(())
+    }
+
+    /// Queues goal `goal`'s cancel whatever the queue holds: its commands
+    /// not taken yet go, so the cancel never waits for room.
+    fn queue_cancel(&mut self, goal: u64) {
+        let unadded = self
+            .queue
+            .iter()
+            .any(|q| q.goal == goal && !q.taken && q.command.starts_with("goal-add "));
+        self.queue.retain(|q| q.goal != goal || q.taken);
+        // A goal `goals` never took has nothing to cancel there.
+        if unadded {
+            return;
+        }
+        self.next_n += 1;
+        self.queue.push(Queued {
+            n: self.next_n,
+            goal,
+            command: format!("goal-cancel {goal}"),
+            taken: false,
+        });
     }
 
     pub(crate) fn goal(&mut self, id: u64) -> Result<&mut Kept, String> {
@@ -128,7 +149,7 @@ impl Shell {
         request: &str,
         row: &str,
         values: &[(&'static str, String)],
-        _decision: Decision,
+        decision: Decision,
     ) -> Reply {
         if self.agent_acting().is_some() {
             return Reply::err(PERSON_ONLY);
@@ -137,8 +158,8 @@ impl Shell {
         match (row, goal) {
             ("goal_list", _) => Reply::ok(self.goal_book.list()),
             ("goal_set", _) => self.goal_set(id, request, values),
-            ("goal_pause", Some(goal)) => self.goal_toggle(id, request, goal, true),
-            ("goal_resume", Some(goal)) => self.goal_toggle(id, request, goal, false),
+            ("goal_pause", Some(goal)) => self.goal_toggle(id, request, goal, true, decision),
+            ("goal_resume", Some(goal)) => self.goal_toggle(id, request, goal, false, decision),
             ("goal_cancel", Some(goal)) => self.goal_cancel(id, request, goal),
             _ => Reply::err(format!("{row} needs its id")),
         }
@@ -197,69 +218,6 @@ impl Shell {
         Ok(spec)
     }
 
-    /// `goal_pause` (`pause`) or `goal_resume`: queued, logged with the other
-    /// as its undo.
-    fn goal_toggle(&mut self, id: u64, request: &str, goal: u64, pause: bool) -> Reply {
-        let (row, word) = match pause {
-            true => ("goal_pause", "paused"),
-            false => ("goal_resume", "running"),
-        };
-        let command = match pause {
-            true => format!("goal-pause {goal}"),
-            false => format!("goal-resume {goal}"),
-        };
-        match self.goal_book.goal(goal) {
-            Ok(kept) if kept.state == "cancelled" => {
-                return Reply::err(format!("goal {goal} was cancelled"));
-            }
-            Ok(_) => {}
-            Err(why) => return Reply::err(why),
-        }
-        if let Err(why) = self.goal_book.queue(goal, command) {
-            return Reply::err(why);
-        }
-        let before = self
-            .goal_book
-            .goal(goal)
-            .map(|k| k.state)
-            .unwrap_or("running");
-        if let Ok(kept) = self.goal_book.goal(goal) {
-            kept.state = word;
-        }
-        let call = call_text(row, &[CallArg::Int(goal as i64)]).unwrap_or_default();
-        let how = How {
-            form: crate::actlog::Form::Call,
-            tier: agentabi::Tier::Run,
-            consent: String::from("asked"),
-        };
-        let change = Change {
-            action: String::from(row),
-            owner: String::from("goals"),
-            res: format!("goal {goal}"),
-            before: String::from(before),
-            after: String::from(word),
-            inverse: Some(Inverse::Goal {
-                id: goal,
-                paused: !pause,
-            }),
-        };
-        self.goal_logged(id, request, &call, how, change);
-        Reply::ok(format!("Done: goal {goal} {word}. undo"))
-    }
-
-    /// `undo` of a pause or resume: goal `goal` paused (`paused`) or going
-    /// again.
-    pub(crate) fn revert_goal(&mut self, goal: u64, paused: bool) -> Result<String, String> {
-        let command = match paused {
-            true => format!("goal-pause {goal}"),
-            false => format!("goal-resume {goal}"),
-        };
-        self.goal_book.queue(goal, command)?;
-        let kept = self.goal_book.goal(goal)?;
-        kept.state = if paused { "paused" } else { "running" };
-        Ok(format!("goal {goal} {}", kept.state))
-    }
-
     /// `goal_cancel`: asks with what it stops.
     fn goal_cancel(&mut self, id: u64, request: &str, goal: u64) -> Reply {
         let text = match self.goal_book.goal(goal) {
@@ -283,7 +241,7 @@ impl Shell {
     /// code-written, with Deny highlighted; `note` says in full what it does
     /// on `show`. Only the card's Allow, with its ONCE, carries it out, so a
     /// question too long for the card is refused, never asked as y/n.
-    fn goal_ask(
+    pub(crate) fn goal_ask(
         &mut self,
         id: u64,
         request: &str,
@@ -348,6 +306,9 @@ asked first: a goal row always asks",
         let reply = match waiting {
             Waiting::Set(spec) => self.goal_made(&pending, spec, how),
             Waiting::Cancel(goal) => self.goal_cancelled(&pending, goal, how),
+            Waiting::Toggle { goal, pause } => {
+                self.goal_toggle_run(pending.id, &pending.request, goal, pause, "yes")
+            }
         };
         self.remember(&pending, &reply.text);
         reply
@@ -355,7 +316,9 @@ asked first: a goal row always asks",
 
     /// The person's yes to `goal_set`: the ceiling, then the goal queued.
     fn goal_made(&mut self, pending: &Pending, spec: goalcore::Spec, how: How) -> Reply {
-        let goal = self.goal_book.next_goal.max(1);
+        // Goal ids are never used twice, across restarts too: the log keeps
+        // every goal this shell set.
+        let goal = self.goal_book.next_goal.max(self.last_logged_goal() + 1);
         let Ok(kai) = self.roster.caller(KAI_BADGE) else {
             return Reply::err("no goal set: the shell is not on its roster");
         };
@@ -406,14 +369,14 @@ asked first: a goal row always asks",
 
     /// The person's yes to `goal_cancel`: the ceiling goes at once.
     fn goal_cancelled(&mut self, pending: &Pending, goal: u64, how: How) -> Reply {
-        if let Err(why) = self.goal_book.queue(goal, format!("goal-cancel {goal}")) {
-            return Reply::err(why);
-        }
+        // The ceiling goes first, whatever else happens: the goal can take no
+        // step from the yes on.
         self.roster.revoke_goal(goal);
         let before = match self.goal_book.goal(goal) {
             Ok(kept) => core::mem::replace(&mut kept.state, "cancelled"),
             Err(why) => return Reply::err(why),
         };
+        self.goal_book.queue_cancel(goal);
         let change = Change {
             action: String::from("goal_cancel"),
             owner: String::from("goals"),
@@ -427,13 +390,31 @@ asked first: a goal row always asks",
         Reply::ok(format!("Goal {goal} cancelled"))
     }
 
+    /// The highest goal id the log has a change for, or 0.
+    fn last_logged_goal(&self) -> u64 {
+        self.log
+            .entries()
+            .flat_map(|entry| entry.changes.iter())
+            .filter(|change| change.action == "goal_set")
+            .filter_map(|change| change.res.strip_prefix("goal ")?.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0)
+    }
+
     /// What `goal_list` shows.
     #[cfg(test)]
     pub(crate) fn goal_book_list(&self) -> String {
         self.goal_book.list()
     }
 
-    fn goal_logged(&mut self, id: u64, request: &str, call: &str, how: How, change: Change) {
+    pub(crate) fn goal_logged(
+        &mut self,
+        id: u64,
+        request: &str,
+        call: &str,
+        how: How,
+        change: Change,
+    ) {
         self.log.push(Entry {
             agent: agentid::Name::kai(),
             id,
