@@ -85,6 +85,35 @@ fn kind(ty: &ArgType) -> Kind<'static> {
     }
 }
 
+/// Whether `rows`, an app's, decode under the tagged grammar. The shell's
+/// loader takes kinds the decoder cannot steer (an int range with nothing in
+/// it, a text of no characters, a list of lists), and one such app must not
+/// keep every other app's rows from the model. Nothing is leaked but the inner
+/// kind of a list or option argument.
+pub fn decodable(rows: &[&'static agentabi::Action]) -> bool {
+    let args: Vec<Vec<Arg<'static>>> = rows
+        .iter()
+        .map(|row| {
+            row.args
+                .iter()
+                .map(|a| Arg {
+                    name: a.name,
+                    kind: kind(&a.ty),
+                })
+                .collect()
+        })
+        .collect();
+    let actions: Vec<Action<'_>> = rows
+        .iter()
+        .zip(&args)
+        .map(|(row, args)| Action {
+            name: row.name,
+            args,
+        })
+        .collect();
+    infer::tagged::check(&actions).is_ok()
+}
+
 /// The actions an `act` answer may name: the pack's rows, then `say`,
 /// `clarify`, `script` and `undo`. Built once, when the model loads.
 pub fn actions(rows: &[&'static agentabi::Action]) -> Vec<Action<'static>> {
@@ -510,6 +539,36 @@ mod tests {
         assert!(grammar.second("tune").is_none());
         assert!(grammar.second("tune_undo").is_none());
         assert!(grammar.second("set_policy").is_none());
+    }
+
+    /// Audit (lane M, items 3 and 5): kinds the shell's loader takes and the
+    /// decoder refuses are found per app, so llm leaves that app out alone.
+    #[test]
+    fn an_apps_row_the_decoder_cannot_steer_is_not_decodable() {
+        let like = agentabi::find(&agentabi::ROWS, "fs_create").unwrap();
+        let with = |name: &'static str, ty: ArgType| -> &'static agentabi::Action {
+            let args: &'static [agentabi::Arg] =
+                Box::leak(Box::new([agentabi::Arg { ty, ..like.args[0] }]));
+            Box::leak(Box::new(agentabi::Action {
+                name,
+                args,
+                ..*like
+            }))
+        };
+        assert!(decodable(&[with(
+            "good_add",
+            ArgType::Int { min: 0, max: 9 }
+        )]));
+        for ty in [
+            ArgType::Int { min: 5, max: 3 },
+            ArgType::Text { max: 0 },
+            ArgType::List(&ArgType::List(&ArgType::Path, 4), 4),
+        ] {
+            let rows = [with("good_add", ArgType::Path), with("bad_add", ty)];
+            assert!(!decodable(&rows), "{ty:?}");
+            // The rows that do decode still build a grammar.
+            assert!(decodable(&rows[..1]));
+        }
     }
 
     #[test]
