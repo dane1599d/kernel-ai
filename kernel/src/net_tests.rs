@@ -342,6 +342,7 @@ pub fn dest_check() -> Result<(), &'static str> {
     llm_grant()?;
     any_host_pinned()?;
     narrowing_bound()?;
+    narrowing_sweeps_before_the_reserve()?;
     sweep_check()
 }
 
@@ -369,6 +370,37 @@ fn narrowing_bound() -> Result<(), &'static str> {
     log!(
         "net-dest: one process holds at most 16 narrowed records; another's narrowing still works"
     );
+    Ok(())
+}
+
+/// #1181's review: a narrowing that would dip into the slots kept for plan
+/// lines sweeps first. The table is left with fewer free slots than the
+/// reserve, all its records dead but for the ones a plan-line make kept as
+/// named; the narrowing must sweep them and succeed.
+fn narrowing_sweeps_before_the_reserve() -> Result<(), &'static str> {
+    const GRACE_MS: u64 = 1_100;
+    const ONE: u64 = u64::MAX - 9;
+    let spec = netdest::Dest::parse(KAI_TEST).map_err(|_| "net: a bad test destination")?;
+    let live = |object| crate::handle::names(kabi::handle::Kind::NetDest, object);
+    let mut made = alloc::vec::Vec::new();
+    while made.len() < 300 {
+        match net::dest::create(spec.clone(), live) {
+            Some(object) => made.push(object),
+            None => break,
+        }
+    }
+    crate::threads::sleep_ms(GRACE_MS);
+    // One more plan-line record, whose sweep keeps all but the last six as
+    // named: the table then has a handful of free slots, under the reserve.
+    let keep = made.len().saturating_sub(6);
+    let kept = &made[..keep];
+    let parent = net::dest::create(spec, |object| kept.contains(&object) || live(object))
+        .ok_or("net-dest: no room after a partial sweep")?;
+    let exact = netdest::Dest::parse("proto:tcp,ports:8000,hosts:kai.test,match:exact")
+        .map_err(|_| "net: a bad test destination")?;
+    net::dest::narrow(parent, exact, live, ONE)
+        .map_err(|_| "net-dest: a narrowing short of the reserve did not sweep first")?;
+    log!("net-dest: a narrowing short of the plan lines' reserve swept the dead records first");
     Ok(())
 }
 

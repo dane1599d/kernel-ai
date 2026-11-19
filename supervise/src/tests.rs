@@ -1247,3 +1247,28 @@ fn hosts_any_sits_on_the_shell_line_alone_and_only_for_https() {
         );
     }
 }
+
+#[test]
+fn an_undone_on_demand_start_ends_back_on_demand_with_no_restart_counted() {
+    // start (the service waited on demand), its undo, then the exit the undo
+    // caused: none of that restarts it or counts against its cap, so a later
+    // demand still starts it.
+    let spec = parse_plan("send start=demand caps=serve").services;
+    let record = Record {
+        name: String::from("send"),
+        ..Record::default()
+    };
+    assert_eq!(ending(false, true, false, false), Ending::BackOnDemand);
+    // The undo's flag wins over a restart asked for or a stop, as `withdrawn`
+    // wins over it.
+    assert_eq!(ending(false, true, true, true), Ending::BackOnDemand);
+    assert_eq!(ending(true, true, false, false), Ending::Withdrawn);
+    assert_eq!(ending(false, false, false, false), Ending::Policy);
+    assert_eq!(record.restarts, 0);
+    assert!(!record.gave_up && !record.stopped);
+    let specs: Vec<&ServiceSpec> = spec.iter().collect();
+    assert_eq!(
+        check_demand("send", &specs, core::slice::from_ref(&record), 0, &[false]),
+        Ok(Some(0))
+    );
+}
