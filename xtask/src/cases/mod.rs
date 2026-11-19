@@ -17,6 +17,7 @@ mod netgrant;
 mod netrows;
 mod network;
 mod online;
+mod panestates;
 mod pkg;
 pub mod release;
 mod storage;
@@ -268,7 +269,11 @@ pub(super) const KAI: &[&str] = &["k", "a", "i", "ret"];
 /// Every lane's cases, in lane order: `cargo xtask test` runs them all, and
 /// `--shard K/N` deals them out in this order. A lane edits only its own table.
 const LANES: &[&[TestCase]] = &[
-    kernel::CASES,
+    kernel::basics::CASES,
+    kernel::display::CASES,
+    kernel::apps::CASES,
+    kernel::desk::CASES,
+    kernel::memory::CASES,
     devices::CASES,
     agent::CASES,
     apps::CASES,
@@ -287,6 +292,7 @@ const LANES: &[&[TestCase]] = &[
     modeldl::CASES,
     modelsuse::CASES,
     walk::CASES,
+    panestates::CASES,
     warming::CASES,
 ];
 
@@ -316,7 +322,11 @@ mod tests {
         // Every lane's table is in LANES: counted from the tables themselves, so a
         // PR that adds a case need not change a shared number here.
         let tables = [
-            kernel::CASES,
+            kernel::basics::CASES,
+            kernel::display::CASES,
+            kernel::apps::CASES,
+            kernel::desk::CASES,
+            kernel::memory::CASES,
             devices::CASES,
             agent::CASES,
             apps::CASES,
@@ -335,6 +345,7 @@ mod tests {
             modeldl::CASES,
             modelsuse::CASES,
             walk::CASES,
+            panestates::CASES,
             warming::CASES,
         ];
         assert_eq!(
@@ -410,7 +421,7 @@ mod tests {
     /// `updated` tried the cut again.
     #[test]
     fn every_updated_word_a_case_passes_is_one_the_kernel_hands_on() {
-        let kernel = include_str!("../../../kernel/src/selftest.rs");
+        let kernel = include_str!("../../../kernel/src/selftest/updated.rs");
         let list = kernel
             .split("const UPDATED_TEST_WORDS")
             .nth(1)
