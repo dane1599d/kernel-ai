@@ -312,7 +312,7 @@ fn resolve(
         })?;
     // Only addresses a name's answer may lead to: none private, none of this
     // machine or the link (audit K #17). An answer that leads only there is
-    // Network, so the app learns nothing about what sits at those addresses.
+    // Private, so the app learns nothing about what sits at those addresses.
     let reachable: Vec<_> = found
         .addresses
         .iter()
@@ -320,7 +320,7 @@ fn resolve(
         .filter(|&addr| net::dest::answerable(addr))
         .collect();
     if reachable.is_empty() && !found.addresses.is_empty() {
-        return Err(Error::Network);
+        return Err(Error::Private);
     }
     let cap = usize::try_from(out_cap).unwrap_or(usize::MAX);
     let bytes: Vec<u8> = reachable

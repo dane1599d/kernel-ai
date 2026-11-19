@@ -145,17 +145,32 @@ pub enum Error {
 /// What a TLS failure says to an app: a fixed kind, never rustls's own text,
 /// which can carry the names on a certificate from a private network (audit
 /// K #17).
-fn tls_kind(error: &crate::tls::TlsError) -> &'static str {
+pub(crate) fn tls_kind(error: &crate::tls::TlsError) -> &'static str {
     use crate::tls::TlsError;
+    use rustls::CertificateError as Cert;
     match error {
-        TlsError::Tls(rustls::Error::InvalidCertificate(_)) => {
-            "the host's certificate was not accepted"
-        }
-        TlsError::Tls(_) => "the secure connection failed",
-        TlsError::Transport(_) | TlsError::Truncated => "the connection broke",
-        _ => "the host sent what TLS does not allow",
+        TlsError::Tls(rustls::Error::InvalidCertificate(cert)) => match cert {
+            Cert::NotValidForName | Cert::NotValidForNameContext { .. } => TLS_NAME_MISMATCH,
+            Cert::UnknownIssuer => TLS_UNKNOWN_ISSUER,
+            Cert::Expired | Cert::ExpiredContext { .. } => TLS_EXPIRED,
+            _ => TLS_NOT_ACCEPTED,
+        },
+        TlsError::Tls(rustls::Error::AlertReceived(_)) => TLS_REFUSED,
+        TlsError::Tls(_) => TLS_FAILED,
+        TlsError::Transport(_) | TlsError::Truncated => TLS_BROKE,
+        _ => TLS_NOT_ALLOWED,
     }
 }
+
+/// The fixed TLS kinds an app is told ([`tls_kind`]).
+pub const TLS_NAME_MISMATCH: &str = "the host's certificate is for another name";
+pub const TLS_UNKNOWN_ISSUER: &str = "the host's certificate is from an issuer not trusted";
+pub const TLS_EXPIRED: &str = "the host's certificate has expired";
+pub const TLS_NOT_ACCEPTED: &str = "the host's certificate was not accepted";
+pub const TLS_REFUSED: &str = "the host refused the secure connection";
+pub const TLS_FAILED: &str = "the secure connection failed";
+pub const TLS_BROKE: &str = "the connection broke";
+pub const TLS_NOT_ALLOWED: &str = "the host sent what TLS does not allow";
 
 /// What a cut POST says: whether the server got it is not known.
 pub const CUT_WHY: &str = "the server may have it";
@@ -362,6 +377,61 @@ impl Queue {
     /// The oldest waiting request.
     pub fn take(&mut self) -> Option<(u32, Request)> {
         self.waiting.pop_front()
+    }
+}
+
+#[cfg(test)]
+mod tls_kind_tests {
+    use super::*;
+    use crate::tls::TlsError;
+    use alloc::format;
+    use alloc::vec;
+    use rustls::pki_types::ServerName;
+    use rustls::{AlertDescription, CertificateError};
+
+    #[test]
+    fn an_app_never_sees_a_certificates_names_or_rustlss_words() {
+        let expected = ServerName::try_from("api.example.test").unwrap();
+        let cases = [
+            (
+                rustls::Error::InvalidCertificate(CertificateError::NotValidForNameContext {
+                    expected,
+                    presented: vec![String::from("printer.lan")],
+                }),
+                TLS_NAME_MISMATCH,
+            ),
+            (
+                rustls::Error::InvalidCertificate(CertificateError::UnknownIssuer),
+                TLS_UNKNOWN_ISSUER,
+            ),
+            (
+                rustls::Error::InvalidCertificate(CertificateError::Expired),
+                TLS_EXPIRED,
+            ),
+            (
+                rustls::Error::AlertReceived(AlertDescription::HandshakeFailure),
+                TLS_REFUSED,
+            ),
+        ];
+        for (tls, kind) in cases {
+            let error = Error::from(HttpError::Tls(TlsError::Tls(tls)));
+            let Error::Tls(said) = &error else {
+                panic!("{error:?}");
+            };
+            assert_eq!(said, kind);
+            let text = format!("{error:?}");
+            for leak in [
+                "printer.lan",
+                "api.example.test",
+                "NotValidFor",
+                "UnknownIssuer",
+                "Expired",
+                "AlertReceived",
+                "HandshakeFailure",
+            ] {
+                assert!(!text.contains(leak), "{leak} in {text}");
+            }
+        }
     }
 }
 

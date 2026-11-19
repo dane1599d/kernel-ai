@@ -198,7 +198,7 @@ impl Dial for NetDial {
         let found = match sys::resolve_on(self.dest, host, &mut addrs) {
             Ok(found) => found.min(MAX_ADDRESSES),
             Err(Error::Permission) => return Err(HttpError::Refused(host.to_string())),
-            Err(Error::Network) => {
+            Err(Error::Private) => {
                 return Err(HttpError::Connect(
                     "the host's name leads to a private address",
                 ));

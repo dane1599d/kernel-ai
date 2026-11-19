@@ -163,7 +163,7 @@ fn main() -> i32 {
     }
     let (Some(host), Some(expect)) = (arg(&args, "host"), arg(&args, "expect")) else {
         println!(
-            "usage: netcheck host=NAME expect=A.B.C.D|permission|narrow-refused [narrow=SPEC] [legacy]"
+            "usage: netcheck host=NAME expect=A.B.C.D|permission|private|narrow-refused [narrow=SPEC] [legacy]"
         );
         return 2;
     };
@@ -198,6 +198,10 @@ fn main() -> i32 {
     match (answer, expect) {
         (Err(Error::Permission), "permission") => {
             println!("resolve {host} refused: not under this handle's hosts");
+            0
+        }
+        (Err(Error::Private), "private") => {
+            println!("resolve {host} refused: it leads only to private addresses");
             0
         }
         (Ok(count), expected) if count > 0 => {

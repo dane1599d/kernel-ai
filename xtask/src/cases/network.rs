@@ -72,6 +72,8 @@ pub(super) const CASES: &[TestCase] = &[
             // Audit K #1: record ids carry a generation; handles in transit count.
             "; their ids name nothing after, and one whose handle was moving stayed",
             // Audit K #17: the mock DNS's cmdline carries online=test.
+            "[netdest-p] resolve lan.kai.test refused: it leads only to private addresses",
+            "[netdest-q] resolved mixed.kai.test to 10.0.2.97 (1 address(es))",
             "net-dest: private answers are refused; QEMU's test subnet is reached only with online=test",
         ],
         ..case("net-dest", "test=net-dest")

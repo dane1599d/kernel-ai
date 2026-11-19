@@ -229,20 +229,7 @@ pub fn may_connect(object: u64, protocol: Protocol, addr: Ipv4Addr, port: u16) -
 /// fixtures and the HTTPS mock) is not refused. A release image never
 /// carries that word (`xtask::image::slots::build_release`).
 fn special(addr: Ipv4Addr) -> bool {
-    let [a, b, _, _] = addr.octets();
-    let private = a == 10
-        || (a == 172 && (16..32).contains(&b))
-        || (a == 192 && b == 168)
-        || (a == 100 && (64..128).contains(&b))
-        || a == 0
-        || a >= 240;
-    let test_subnet = test_network() && addr.octets()[..3] == [10, 0, 2];
-    addr.is_loopback()
-        || addr.is_link_local()
-        || addr.is_unspecified()
-        || addr.is_broadcast()
-        || addr.is_multicast()
-        || (private && !test_subnet)
+    netdest::special(addr, test_network())
 }
 
 /// Whether a name's answer may lead to `addr`: RESOLVE_ON hands an app only

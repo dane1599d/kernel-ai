@@ -75,6 +75,9 @@ mod tests {
             .unwrap();
         assert!(client.recv(&mut buf).is_err());
         assert_eq!(server.queries(), 2);
-        assert_eq!(server.cmdline(), format!("dns=10.0.2.2:{}", server.port));
+        let cmdline = server.cmdline();
+        let words: Vec<&str> = cmdline.split_whitespace().collect();
+        assert!(words.contains(&format!("dns=10.0.2.2:{}", server.port).as_str()));
+        assert!(words.contains(&"online=test"), "{cmdline}");
     }
 }
