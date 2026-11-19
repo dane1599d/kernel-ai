@@ -283,3 +283,15 @@ fn a_full_process_table_is_a_window_the_tree_limits_allow() {
             .all(|c| c.chars().all(|c| !c.is_control()))
     );
 }
+
+#[path = "../../../testkit/appview.rs"]
+mod appview;
+
+/// The agent's view of the busy machine: whole, within 300 tokens, and the
+/// committed one (`tests/golden/view-monitor.txt`).
+#[test]
+fn the_agents_view_of_the_monitor_is_whole_and_fits_300_tokens() {
+    let f = frame(&App::full().tree());
+    appview::check("monitor", "monitor", ui::TITLE, &f);
+    appview::paints("monitor", &f);
+}

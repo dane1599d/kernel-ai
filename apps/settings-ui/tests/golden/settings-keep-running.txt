@@ -1,0 +1,22 @@
+node 0 clip 0,0 640x460
+  fill 0,0 640x460 window r0
+node 2 clip 0,0 640x460
+  text 12,7 label muted "Appearance"
+  text 116,7 label muted "What apps can do"
+  text 268,7 label muted "Rules and profiles"
+  text 436,7 label text "Keep running"
+  fill 424,30 120x2 accent r0
+  text 556,7 label muted "Updates"
+  text 636,7 label muted "About"
+  text 700,7 label muted "Network"
+  fill 0,31 640x1 line r0
+node 4 clip 0,0 640x460
+  text 12,44 heading text "Keep running"
+node 9000 clip 0,0 640x460
+  fill 12,81 32x18 line_strong r9
+  fill 14,83 14x14 text r7
+  text 52,80 body text "Keep files running"
+node 9001 clip 0,0 640x460
+  fill 12,117 32x18 accent r9
+  fill 28,119 14x14 text r7
+  text 52,116 body text "Keep notes running"
