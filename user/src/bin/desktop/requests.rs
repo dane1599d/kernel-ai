@@ -118,7 +118,9 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     if !text.starts_with("panel ") {
         return None;
     }
-    if name_of(pid) != "shell" {
+    // The shell alone: a send's text and its fit included
+    // (`deskcore::sendview::from_shell`), never an app's.
+    if !deskcore::sendview::from_shell(&name_of(pid)) {
         return Some(String::from("err only the shell talks to the panel"));
     }
     if text == panel_wire::TAKE {
@@ -192,6 +194,9 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     if let Some(note) = panel_wire::parse_note(text) {
         chat_push(state, Who::Note, note);
         return Some(String::from("ok"));
+    }
+    if let Some(reply) = preview::preview_request(state, text) {
+        return Some(reply);
     }
     if let Some(reply) = sends_request(state, text) {
         return Some(reply);

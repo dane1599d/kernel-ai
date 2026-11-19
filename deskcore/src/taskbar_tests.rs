@@ -90,6 +90,7 @@ fn paint_in(
         chat,
         start: None,
         ask: None,
+        preview: None,
         now_ms: 0,
     };
     painter.paint(&mut canvas, Rect::new(0, 0, w, h), &scene, content);

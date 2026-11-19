@@ -72,6 +72,9 @@ pub struct Scene<'a> {
     pub start: Option<&'a crate::start::Start>,
     /// The text of the ask card up now, as the kernel posted it.
     pub ask: Option<&'a Card>,
+    /// A send's text, checked against its card's digest: drawn in the pane
+    /// in place of the history while that card is up.
+    pub preview: Option<&'a crate::sendview::SendPreview>,
     /// The clock, for the panel's "thinking 4s".
     pub now_ms: u64,
 }

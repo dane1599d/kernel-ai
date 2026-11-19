@@ -41,19 +41,23 @@ pub(super) fn read_asks(state: &mut State) {
                 return;
             }
             if let Some(old) = state.card.take() {
+                preview::card_gone(state, old.id);
                 let effects = state.desk.hide_ask(old.id);
                 deliver(state, &effects);
             }
             println!("desktop: ask {id} shows on the card");
             state.desk.set_now(now);
             let effects = state.desk.show_ask(id, lines);
+            let shown = card.clone();
             state.card = Some(card);
             deliver(state, &effects);
+            preview::card_shown(state, &shown);
         }
         (None, Some(card)) => {
             // Withdrawn by the kernel: it asks on the console now.
             let id = card.id;
             state.card = None;
+            preview::card_gone(state, id);
             let effects = state.desk.hide_ask(id);
             deliver(state, &effects);
         }
@@ -66,6 +70,7 @@ pub(super) fn answer_ask(state: &mut State, id: u64, yes: bool) {
     let Some(card) = state.card.take().filter(|c| c.id == id) else {
         return;
     };
+    preview::card_gone(state, id);
     let digest = termcore::once::digest_call(id, &card.call);
     let word = if yes { "yes" } else { "no" };
     match sys::ask_answer(id, yes, &digest) {

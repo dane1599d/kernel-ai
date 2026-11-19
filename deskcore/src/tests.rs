@@ -822,3 +822,95 @@ fn presses_at_100_and_600_with_the_card_drawn_at_550_do_not_open_it() {
     desk.set_now(601);
     assert!(click(&mut desk, centre(yes)).is_empty());
 }
+
+/// A send's card (ADR 0005 §7, "Amended 2026-11-19") takes no y and no Run
+/// click until its whole text has been on the screen, however long it has
+/// been up; `n` declines as ever; the pane opens for it; PageUp, PageDown
+/// and the wheel scroll the text; and once it has been read through, the
+/// card settles and answers as any card does.
+#[test]
+fn a_sends_card_answers_nothing_until_its_text_is_drawn() {
+    let (mut desk, _) = desk_with(1);
+    desk.set_now(1_000);
+    desk.show_ask(9, 1);
+    desk.card_drawn(1_000);
+    desk.needs_preview();
+    assert!(desk.pane().is_some(), "the pane opens for the text");
+    assert!(desk.awaits_preview());
+    let card = crate::trusted::card(W, H, &desk.ask().unwrap());
+    let (yes, _) = crate::trusted::buttons(card);
+    let late = 1_000 + 10 * SETTLED;
+    for _ in 0..3 {
+        assert!(press_at(&mut desk, late, usage::Y).is_empty());
+    }
+    assert!(!desk.ask().unwrap().armed);
+    desk.set_now(late + 1);
+    click(&mut desk, (1, 1));
+    desk.set_now(late + 2);
+    assert!(
+        click(&mut desk, centre(yes)).is_empty(),
+        "Run waits for the text"
+    );
+    // The keys and the wheel scroll the text.
+    let quiet = late + 2 + SETTLED;
+    assert!(
+        press_at(&mut desk, quiet, usage::PAGE_DOWN).contains(&Effect::PreviewScroll {
+            pages: 1,
+            detents: 0
+        })
+    );
+    assert!(
+        desk.input(Input::Wheel(-2))
+            .contains(&Effect::PreviewScroll {
+                pages: 0,
+                detents: -2
+            })
+    );
+    // Another ask's text opens nothing.
+    desk.preview_drawn(8, quiet);
+    assert!(desk.awaits_preview());
+    // Read through: quiet once more, then the two steps.
+    desk.preview_drawn(9, quiet);
+    assert!(!desk.awaits_preview());
+    assert!(press_at(&mut desk, quiet + SETTLED - 1, usage::Y).is_empty());
+    let open = quiet + 2 * SETTLED;
+    assert!(press_at(&mut desk, open, usage::Y).is_empty());
+    assert!(press_at(&mut desk, open + 1, usage::Y).contains(&Effect::Answer { id: 9, yes: true }));
+}
+
+/// Don't is never held back: `n` declines a send's card before its text is
+/// read.
+#[test]
+fn a_sends_card_declines_before_its_text_is_read() {
+    let (mut desk, _) = desk_with(1);
+    desk.set_now(1_000);
+    desk.show_ask(9, 1);
+    desk.card_drawn(1_000);
+    desk.needs_preview();
+    let open = 1_000 + SETTLED;
+    assert!(press_at(&mut desk, open, usage::N).contains(&Effect::Answer { id: 9, yes: false }));
+}
+
+/// A card that is not a send's opens as before, preview or none.
+#[test]
+fn a_card_that_is_not_a_sends_needs_no_text() {
+    let (mut desk, _) = desk_with(1);
+    desk.set_now(1_000);
+    desk.show_ask(4, 1);
+    desk.card_drawn(1_000);
+    assert!(!desk.awaits_preview());
+    let open = 1_000 + SETTLED;
+    assert!(press_at(&mut desk, open, usage::Y).is_empty());
+    assert!(press_at(&mut desk, open + 1, usage::Y).contains(&Effect::Answer { id: 4, yes: true }));
+}
+
+/// A send's card is offered only where it and the open pane fit side by
+/// side, the history rectangle uncovered: decided from the geometry.
+#[test]
+fn a_sends_card_fits_beside_the_pane_only_where_the_geometry_allows() {
+    use crate::sendview::CARD_LINES;
+    assert!(Desk::new(1920, 1080).card_beside_pane(CARD_LINES));
+    for (w, h) in [(1280, 800), (1024, 768)] {
+        assert!(!Desk::new(w, h).card_beside_pane(CARD_LINES), "{w}x{h}");
+    }
+}
