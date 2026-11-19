@@ -1,0 +1,2 @@
+windows: [w1] settings (focused)  [w2] terminal "kai>"
+w1: [a1] tabs 0 items  text "Updates"  [s2] switch "Restart for an update by itself,..." = off
