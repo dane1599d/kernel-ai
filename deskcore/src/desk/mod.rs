@@ -164,6 +164,22 @@ impl Desk {
         self.now_ms = now_ms;
     }
 
+    /// Whether a window `client` opens now may take the keyboard focus (the
+    /// activation rule of ADR 0005 §3): only when nothing has it (the desk at
+    /// boot, after a click on it) or one of that client's own windows has it.
+    /// Any other window opens without the keys, however long the person has been
+    /// still: what the person asked for (`open notes` through the shell, a pin,
+    /// Start) is given the focus by the shell's `ui focus`, which `ui_open`
+    /// sends once the window is on the desk, so a background app cannot take the
+    /// keys meant for the pane, the Terminal or another app.
+    pub fn may_activate(&self, client: u32) -> bool {
+        match self.focus {
+            Focus::Nothing => true,
+            Focus::Window(id) => self.window(id).is_some_and(|w| w.client == client),
+            _ => false,
+        }
+    }
+
     /// Where windows open: the screen above the taskbar.
     pub fn work_area(&self) -> Rect {
         self.layout().work_area
