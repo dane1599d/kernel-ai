@@ -73,7 +73,7 @@ impl Shell {
     /// Entry `id`, if it is live and nothing later changed what it changed.
     fn undo_entry(&mut self, id: u64) -> Reply {
         match self.log.get(id) {
-            Some(entry) if entry.live() => {}
+            Some(entry) if entry.undoable_by_id() => {}
             Some(entry) => {
                 return Reply::err(
                     self.send_refusal(entry)
