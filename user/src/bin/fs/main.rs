@@ -42,10 +42,10 @@ user::entry!(main);
 
 /// How long a receive waits before a slice of the GC.
 const IDLE_MS: u64 = 100;
-/// The block cache in front of the disk: 16 MiB of 4 KiB blocks for now, under
-/// the memory the kernel sets aside for services beside the model; the plan's
-/// 64 MiB ([`kaifs::cache::DEFAULT_BLOCKS`]) waits for that budget to grow.
-const CACHE_BLOCKS: usize = 4096;
+/// The block cache in front of the disk: 32 MiB of 4 KiB blocks, which a
+/// 512 MiB machine has room for (`kabi::plan::FS`); the plan's 64 MiB
+/// ([`kaifs::cache::DEFAULT_BLOCKS`]) waits for a cache sized from RAM.
+const CACHE_BLOCKS: usize = kaifs::cache::FS_BLOCKS;
 /// The kernel's S04-2 file, in `system`.
 const BENCH_FILE: &str = "s04-2";
 

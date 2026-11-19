@@ -18,6 +18,9 @@ use alloc::vec::Vec;
 
 /// The plan's cap: 64 MiB of 4 KiB blocks.
 pub const DEFAULT_BLOCKS: usize = (64 << 20) / BLOCK;
+/// What `fs` holds: 32 MiB, what a 512 MiB machine leaves room for beside the
+/// other boot services (the plan's 64 MiB waits for a cache sized from RAM).
+pub const FS_BLOCKS: usize = (32 << 20) / BLOCK;
 
 struct Slot {
     addr: u64,

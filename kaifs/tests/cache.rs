@@ -199,3 +199,40 @@ fn a_tree_read_again_comes_from_memory() {
     assert_eq!(again_misses, 0);
     assert!(again_hits > 1_000);
 }
+
+/// `fs`'s cache ([`kaifs::cache::FS_BLOCKS`], 32 MiB): a file read a second
+/// time, cold the first, comes from memory when it fits, 24 MiB here. The
+/// 32 MiB S04-2 file does not fit beside the tree's nodes, and is only logged.
+#[test]
+fn a_warm_re_read_of_a_file_that_fits_fs_cache_hits() {
+    let hit_rate = |len: usize| {
+        let mut fs = Fs::mkfs(
+            Cached::new(MemDisk::new(16384), kaifs::cache::FS_BLOCKS),
+            [2; 16],
+            "warm",
+        )
+        .unwrap();
+        fs.set_volume(HOME).unwrap();
+        let f = fs.create(ROOT, "big").unwrap();
+        let bytes: Vec<u8> = (0..len).map(|i| (i * 7 % 253) as u8).collect();
+        fs.write_file(f, &bytes).unwrap();
+        fs.commit().unwrap();
+        // A fresh mount over the same cache device: the first read warms it.
+        let mut fs = Fs::mount(fs.into_dev()).unwrap();
+        fs.set_volume(HOME).unwrap();
+        assert!(fs.read_file(f).unwrap() == bytes);
+        let (hits, misses) = (fs.io.dev.hits, fs.io.dev.misses);
+        assert!(fs.read_file(f).unwrap() == bytes);
+        let (hits, misses) = (fs.io.dev.hits - hits, fs.io.dev.misses - misses);
+        let rate = hits * 1000 / (hits + misses).max(1);
+        eprintln!(
+            "kaifs cache: a {} MiB file read again through 32 MiB: {hits} hits, {misses} misses ({}.{}%)",
+            len >> 20,
+            rate / 10,
+            rate % 10
+        );
+        rate
+    };
+    assert!(hit_rate(24 << 20) >= 950);
+    hit_rate(32 << 20);
+}
