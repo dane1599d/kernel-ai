@@ -248,6 +248,13 @@ nb_setup 8
 CI_RESULT=failure auto_until "failed alone"
 check "a lone PR gets its full batch first"   'grep -q "no-boot batch of 8 failed; trying it once as a full batch" "$L" && grep -q "#8 failed alone" "$L"'
 
+echo "== batch-auto.sh: a resumed no-boot batch that fails is tried once as a full batch"
+nb_setup 8
+touch "$T/kill-on-ready"; ff --noboot 8
+sed -i 's/^phase=.*/phase=pushed/' "$T/state/current-batch"
+CI_RESULT=failure auto_until "failed alone"
+check "the resume's failure gets its full batch" 'grep -q "resuming the unfinished batch: 8" "$L" && grep -q "no-boot batch of 8 failed; trying it once as a full batch" "$L" && grep -q "#8 failed alone" "$L"'
+
 echo "== batch-ff.sh: a no-boot batch whose combined commit needs boot goes full"
 setup
 mkpr 8 feat/doc main docs/x.md
