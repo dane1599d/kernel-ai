@@ -88,7 +88,7 @@ pub const INDEX: &[(&str, &[&str])] = &[
     ("appearance", &["appearance_set"]),
     ("models", &["model_list", "model_fetch", "model_use"]),
     ("apps", &["app_build", "app_install"]),
-    ("net", &["net_fetch", "net_lookup", "query"]),
+    ("net", &["net_fetch", "net_lookup", "query", "net_send"]),
 ];
 
 /// Each index group's gloss, at most [`GLOSS_TOKENS`] (ADR 0010 §6's
@@ -104,7 +104,7 @@ pub const GLOSS: &[(&str, &str)] = &[
     ("appearance", "theme, text size or motion"),
     ("models", "list, import or switch the AI model"),
     ("apps", "build or install a new app"),
-    ("net", "web"),
+    ("net", "web, send"),
 ];
 /// The longest a gloss may be, in estimated tokens.
 pub const GLOSS_TOKENS: usize = 12;

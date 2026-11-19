@@ -36,6 +36,8 @@ pub(crate) const ON_CARD: &str = "it asks first: answer Run or Don't on the card
 /// What it is told when it is a script, which only the console shows.
 pub(crate) const SCRIPT: &str =
     "it asks first, and its script shows only in the console: ask there";
+/// What it is told when it is a send, whose text only the console shows.
+pub(crate) const SEND: &str = "a send shows its text only in the console: ask there";
 /// What it is told when too many already wait.
 const FULL: &str = "it asks first, and other questions wait: answer those first";
 /// What it is told when its one call is too long, or not plain ASCII, for
@@ -88,6 +90,9 @@ fn as_added(id: u64, text: &str) -> Option<String> {
 /// outcome: one call too long or not plain text for the menu asks a y/n
 /// question instead (`agentcore`'s fallback), anything else is a script.
 fn not_on_card(text: &str) -> (&'static str, &'static str) {
+    if text.starts_with(termcore::menu::SHOWN) {
+        return (SEND, "discarded: a send shows its text only in the console");
+    }
     match text.starts_with("Run ") && text.ends_with("y/n, or show") {
         true => (TOO_LONG, "discarded: the card cannot show the call"),
         false => (SCRIPT, "discarded: only the console shows a script"),
@@ -346,13 +351,20 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
-    use super::{SCRIPT, TOO_LONG, as_added, declined, not_on_card};
+    use super::{SCRIPT, SEND, TOO_LONG, as_added, declined, not_on_card};
 
     #[test]
     fn a_call_too_long_for_the_menu_is_told_so_and_a_script_is_not() {
         let long = "Run notes_add(\"a very long note\")? It asks first. y/n, or show";
         assert_eq!(not_on_card(long).0, TOO_LONG);
         assert_eq!(not_on_card("script 4:\nlet x = 1;\ny/n, or show").0, SCRIPT);
+        // A send's text is shown only in the console: its own reason.
+        let send = termcore::menu::encode_shown(
+            "Kai wants to send this text to a.example:",
+            "hi",
+            "menu 5 asked\nq\n\n\nx",
+        );
+        assert_eq!(not_on_card(&send).0, SEND);
     }
 
     #[test]

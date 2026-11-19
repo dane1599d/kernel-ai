@@ -209,3 +209,33 @@ fn hosts_any_names_every_name_of_two_labels_and_only_it_covers_itself() {
     assert!(Dest::parse("hosts:any,hosts:kai.test").is_err());
     assert!(Dest::parse("hosts:any+kai.test").is_err());
 }
+
+#[test]
+fn a_shared_suffix_is_a_top_level_domain_or_one_of_the_list_and_nothing_under_one() {
+    for name in ["com", "uk", "io", "COM", "com."] {
+        assert!(is_shared(name), "{name}");
+    }
+    for name in SHARED_SUFFIXES {
+        assert!(is_shared(name), "{name}");
+        assert!(is_shared(&name.to_ascii_uppercase()), "{name}");
+        assert!(is_shared(&std::format!("{name}.")), "{name}");
+        // A name under one is one party's site.
+        assert!(!is_shared(&std::format!("me.{name}")), "{name}");
+    }
+    for name in [
+        "example.com",
+        "kai.test",
+        "uk.co",
+        "github.com",
+        "io.github",
+        "co.uk.example",
+    ] {
+        assert!(!is_shared(name), "{name}");
+    }
+    // Every entry is a host name of two labels or more, lower case, and listed once.
+    for (at, name) in SHARED_SUFFIXES.iter().enumerate() {
+        assert!(valid_host(name) && name.contains('.'), "{name}");
+        assert_eq!(*name, name.to_ascii_lowercase());
+        assert!(!SHARED_SUFFIXES[..at].contains(name), "{name} twice");
+    }
+}

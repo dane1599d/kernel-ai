@@ -1,5 +1,7 @@
 //! The agent's network rows in the OS (P5 task 11): `net_fetch` through the
-//! `fetch` service, and `net_lookup`'s resolve on the shell's own `NetDest`.
+//! `fetch` service, and `net_lookup`'s resolve on the shell's own `NetDest`;
+//! a held send's POST through the `send` service, the `fetch` that alone
+//! makes them.
 //!
 //! The shell's plan line holds its network ceiling (`kabi::plan::SHELL_NET`).
 //! Each call narrows it to exactly the one host consent grounded
@@ -19,6 +21,7 @@ use kabi::handle::{Handle, HandleInfo, Kind, Rights};
 use kainet::fetch::{Error as FetchError, Request};
 use kainet::http::Method;
 use kainet::wire::{self, Ask};
+use shellcore::outbox;
 use spin::Once;
 use user::sys;
 
@@ -117,6 +120,66 @@ pub fn fetch(host: &str, path: &str) -> Result<String, String> {
     }
     let len = head.len.min(body.len());
     Ok(String::from_utf8_lossy(&body[..len]).into_owned())
+}
+
+/// How long one send may take: the send service's own 30 s, and its start
+/// on demand.
+const SEND_MS: u64 = 35_000;
+
+/// A held send that is due (`shellcore::outbox`), posted once through the
+/// `send` service on a handle for exactly `send.host` on 443: the status
+/// line for any answer, else why not and whether it may have gone out
+/// (`kainet::wire::PostOutcome::read`'s contract). The status is said in a
+/// fixed phrase (`outbox::status_line`), never the server's own reason.
+pub fn send(send: &outbox::Send) -> Result<String, outbox::SendFailed> {
+    let not_sent = |why: String| outbox::SendFailed {
+        why,
+        maybe_sent: false,
+    };
+    let route = crate::routes::named("send")
+        .ok_or_else(|| not_sent(String::from("the shell has no route to send")))?;
+    let host = host_name(&send.host).map_err(not_sent)?;
+    let path = path_of(&send.path).map_err(not_sent)?;
+    if send.body.len() > wire::MAX_POST_BODY {
+        return Err(not_sent(String::from("the text is longer than 4 KB")));
+    }
+    let post = wire::Post {
+        url: format!("https://{host}{path}"),
+        body: send.body.clone(),
+    };
+    let rights = Rights::RESOLVE.bits() | Rights::CONNECT.bits() | Rights::TRANSFER.bits();
+    let dest = narrowed(&host, rights).map_err(not_sent)?;
+    let mut reply = alloc::vec![0u8; wire::MAX_ANSWER];
+    let mut received = [Handle(0); 1];
+    let called = sys::call_h(
+        route,
+        &post.bytes(),
+        &mut reply,
+        SEND_MS,
+        &[dest],
+        &mut received,
+    );
+    let (len, count) = match called {
+        Ok(answered) => answered,
+        Err(error) => {
+            // Moved with a call the kernel took; here if it refused it.
+            let _ = sys::handle_close(dest);
+            return Err(outbox::call_failed(error));
+        }
+    };
+    // A POST's answer carries no body the shell reads.
+    if count == 1 {
+        let _ = sys::handle_close(received[0]);
+    }
+    let text = core::str::from_utf8(&reply[..len.min(reply.len())]).unwrap_or("");
+    match wire::PostOutcome::read(text) {
+        wire::PostOutcome::Sent { status, .. } => Ok(outbox::status_line(status)),
+        wire::PostOutcome::NotSent { why } => Err(not_sent(why)),
+        wire::PostOutcome::MaybeSent => Err(outbox::SendFailed {
+            why: String::from("no answer came after it went out"),
+            maybe_sent: true,
+        }),
+    }
 }
 
 /// A URL path: "/" when empty, else from '/' on, with no space or control

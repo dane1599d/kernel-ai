@@ -59,6 +59,8 @@ pub(crate) struct Pending {
     pub install: Option<crate::appinstall::Installing>,
     /// For an app's first connection to a host, the ask its card shows.
     pub net: Option<crate::netask::NetAsking>,
+    /// For a `net_send`, the send its card asks to hold.
+    pub send: Option<crate::outbox::Send>,
     /// For a restart line, true: the restart waits on the answer.
     pub power: bool,
 }
@@ -253,6 +255,7 @@ impl Shell {
             app: None,
             install: None,
             net: None,
+            send: None,
             power: false,
         });
         Reply {
@@ -577,6 +580,12 @@ impl Shell {
         }
         if pending.net.is_some() && !is_show(text) {
             return self.answer_net(pending, text);
+        }
+        if pending.send.is_some() {
+            return match is_show(text) {
+                true => self.send_show(pending),
+                false => self.answer_send(pending, text),
+            };
         }
         if pending.standing.is_some() && !is_show(text) {
             return self.answer_instruction(pending, text);

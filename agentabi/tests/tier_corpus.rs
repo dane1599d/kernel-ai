@@ -281,6 +281,7 @@ const PERMS: &[(&str, &str)] = &[
     ("rules", "grants.read"),
     ("browser_open", "net.connect"),
     ("net_fetch", "net.connect"),
+    ("net_send", "net.send"),
     ("net_lookup", "net.connect"),
     // A question to the local model about read data: it reads, sends nothing.
     ("query", "model.read"),
