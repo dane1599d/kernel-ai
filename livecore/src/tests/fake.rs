@@ -41,6 +41,8 @@ pub enum Bug {
 
 /// Makes every [`Bug::Injected`] candidate trap on its next `kadd`.
 pub static INJECT: AtomicBool = AtomicBool::new(false);
+/// Makes every quiet version's (a standby's) export trap while set.
+pub static INJECT_EXPORT: AtomicBool = AtomicBool::new(false);
 
 /// One version's behaviour.
 #[derive(Clone, Debug)]
@@ -244,6 +246,9 @@ impl Instance for Fake {
             return Ok(None);
         }
         if schema != self.schema && self.bug == Bug::ExportOlderTrap {
+            return Err(trap("export"));
+        }
+        if self.quiet && INJECT_EXPORT.load(Ordering::SeqCst) {
             return Err(trap("export"));
         }
         let claimed = if self.bug == Bug::Export {
