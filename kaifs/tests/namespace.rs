@@ -733,3 +733,94 @@ fn repair_raises_the_counter_far_and_still_makes_lost_and_found() {
     );
     drop(fs);
 }
+
+/// Hands out ids until the window is spent; the last one.
+fn spend_the_window(fs: &mut Fs<MemDisk>) -> u64 {
+    let mut last = 0;
+    while let Ok(oid) = fs.alloc_oid() {
+        last = oid;
+    }
+    last
+}
+
+/// Zeroes the newest commit's volume-table root, so a mount falls back.
+fn break_the_newest_table(disk: &mut MemDisk) {
+    let newest = format::read_rings(disk).unwrap()[0];
+    disk.write(newest.volumes.addr, &[0; BLOCK]).unwrap();
+}
+
+/// A second fallback goes back past commits the first one's run made, which
+/// reused generation numbers. The marks on their superblocks still carry
+/// every id handed out, so the skip passes all of them.
+#[test]
+fn a_second_fallback_still_skips_past_every_id() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    for name in ["a", "b"] {
+        fs.create(ROOT, name).unwrap();
+        fs.commit().unwrap();
+    }
+    let mut last = spend_the_window(&mut fs);
+    let mut disk = fs.into_dev();
+    break_the_newest_table(&mut disk);
+    let mut fs = Fs::mount(disk).unwrap();
+    fs.skip_unsaved_oids();
+    fs.commit().unwrap();
+    for n in 0..3 {
+        fs.create(ROOT, &format!("c{n}")).unwrap();
+        fs.commit().unwrap();
+    }
+    last = last.max(spend_the_window(&mut fs));
+    let mut disk = fs.into_dev();
+    break_the_newest_table(&mut disk);
+    let mut fs = Fs::mount(disk).unwrap();
+    fs.skip_unsaved_oids();
+    fs.commit().unwrap();
+    let after = fs.create(ROOT, "after").unwrap();
+    assert!(after > last, "{after} after {last}");
+}
+
+/// A disk that reads at mount and then stops.
+struct StopsReading {
+    disk: MemDisk,
+    stopped: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl BlockDev for StopsReading {
+    fn info(&self) -> kaifs::DevInfo {
+        self.disk.info()
+    }
+
+    fn read(&mut self, addr: u64, buf: &mut kaifs::Block) -> Result<(), kaifs::IoError> {
+        match self.stopped.get() {
+            true => Err(kaifs::IoError),
+            false => self.disk.read(addr, buf),
+        }
+    }
+
+    fn write(&mut self, addr: u64, data: &kaifs::Block) -> Result<(), kaifs::IoError> {
+        self.disk.write(addr, data)
+    }
+
+    fn flush(&mut self) -> Result<(), kaifs::IoError> {
+        self.disk.flush()
+    }
+}
+
+/// The skip reads nothing: the mark was read at mount, so a read error after
+/// it cannot shrink the skip to a guess.
+#[test]
+fn the_skip_needs_no_read_after_the_mount() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    let last = spend_the_window(&mut fs);
+    let stopped = std::rc::Rc::new(std::cell::Cell::new(false));
+    let dev = StopsReading {
+        disk: fs.into_dev(),
+        stopped: stopped.clone(),
+    };
+    let mut fs = Fs::mount(dev).unwrap();
+    stopped.set(true);
+    fs.skip_unsaved_oids();
+    assert!(fs.next_oid() > last, "{} after {last}", fs.next_oid());
+}
