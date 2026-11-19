@@ -93,6 +93,15 @@ impl Shell {
         Reply::ok(format!("reported #{n}"))
     }
 
+    /// Goal `goal` was ended by `goals` itself (`agent-step goal=<id> end`).
+    pub(crate) fn goal_ended_by_goals(&mut self, goal: u64) {
+        if let Ok(kept) = self.goal_book.goal(goal)
+            && matches!(kept.state, "running" | "paused")
+        {
+            kept.state = "ended";
+        }
+    }
+
     /// Goal `goal` takes no more steps (`word` says why): its ceiling goes.
     fn goal_ended(&mut self, goal: u64, word: &'static str) {
         self.roster.revoke_goal(goal);
