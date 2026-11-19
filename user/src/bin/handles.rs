@@ -478,9 +478,12 @@ fn grants() -> Result<(), &'static str> {
         Error::NotFound,
         "a ONCE badge never held",
     )?;
-    // A node left live: the kernel revokes it as this process ends (audit K
-    // #11: that path deadlocked on the grant tree's lock).
-    sys::grant_new(root, 0, "left").map_err(|_| "the node left live was refused")?;
+    // Three nodes left live, one under another: the kernel revokes every one
+    // as this process ends (audit K #11: that path deadlocked on the grant
+    // tree's lock, and stopped at the first refusal).
+    let left = sys::grant_new(root, 0, "left").map_err(|_| "a node left live was refused")?;
+    sys::grant_new(root, 0, "left 2").map_err(|_| "a node left live was refused")?;
+    sys::grant_new(left, 0, "left 3").map_err(|_| "a node left live was refused")?;
     Ok(())
 }
 

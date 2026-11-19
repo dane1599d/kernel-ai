@@ -120,7 +120,10 @@ pub fn revoke(node: GrantRef) -> Result<usize, kabi::Error> {
 /// Revokes every node the process `pid` made, when it ends: what it gave out
 /// under them goes with it.
 pub fn revoke_owned(pid: u64) {
-    loop {
+    // Every one, whatever a revoke answers (one revoked meanwhile by its
+    // parent answers Revoked, and the rest must still go: #1160's review);
+    // at most one pass per node, so a node that will not go cannot loop.
+    for _ in 0..NODES {
         // Its own statement, so the lock goes before `revoke` takes it again:
         // a `while let` scrutinee's guard would live through the body, and the
         // lock is not reentrant (audit K #11).
@@ -128,10 +131,13 @@ pub fn revoke_owned(pid: u64) {
         let Some(node) = owned else {
             break;
         };
-        if revoke(node).is_err() {
-            break;
-        }
+        let _ = revoke(node);
     }
+}
+
+/// Whether the process `pid` still owns a live node: none once it has ended.
+pub fn owns_any(pid: u64) -> bool {
+    TREE.lock().owned_by(pid).is_some()
 }
 
 /// Records that the calling thread waits on a call through a route given under
