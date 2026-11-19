@@ -21,7 +21,7 @@
 //! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH |
 //! | 140-149 | C, components | EDIT_CALL (lane E), CARD_READY |
 //! | 150-159 | V, virtual machines (P6) | |
-//! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET |
+//! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET, SHM_SIZE |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
 //! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL, APP_CALL |
 //! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE, PART_PEER_NAME |
@@ -564,6 +564,11 @@ pub const PROC_QUOTA_SET: u64 = 163;
 /// shows it. Permission to make the shell, the supervisor, the model service or
 /// `desktop` background; Busy while a tuning trial runs. Needs SUPERVISE.
 pub const PROC_CLASS_SET: u64 = 164;
+/// `shm_size(handle) -> bytes`: how long the `Shm` that `handle` names is,
+/// its pages times 4,096, so a holder that maps one it was given never reads
+/// past it on the sender's word (audit G #7). Any right will do; BadHandle
+/// for a handle that is not an open `Shm`. Numbered at merge, M's block.
+pub const SHM_SIZE: u64 = 165;
 
 // ---- U, 170-179 ----
 

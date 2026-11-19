@@ -204,6 +204,27 @@ pub fn create(slot: usize, pages: u64) -> Result<u64, Error> {
     }
 }
 
+/// SHM_SIZE: the bytes of the object `raw` names in `slot`'s table, whatever
+/// the handle's rights. Read with `handle::entry`, not `check`: asking a
+/// `ONCE` handle's size must not use it up.
+pub fn size(slot: usize, raw: u64) -> Result<u64, Error> {
+    let handle = Handle(u32::try_from(raw).map_err(|_| Error::BadHandle)?);
+    let entry = handle::entry(slot, handle)?;
+    if entry.kind != Kind::Shm {
+        return Err(Error::BadHandle);
+    }
+    let (index, generation) = unpack(entry.object);
+    with(|objects| {
+        objects
+            .objects
+            .get(index)
+            .and_then(Option::as_ref)
+            .filter(|o| o.generation == generation)
+            .map(|o| o.frames.len() as u64 * PAGE_SIZE)
+            .ok_or(Error::BadHandle)
+    })
+}
+
 /// SHM_MAP: maps the object `raw` names in `slot`'s space; returns its address.
 pub fn map(slot: usize, raw: u64, write: bool) -> Result<u64, Error> {
     let handle = Handle(u32::try_from(raw).map_err(|_| Error::BadHandle)?);
