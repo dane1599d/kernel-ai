@@ -413,6 +413,13 @@ pub enum Error {
     /// A message `fs` cannot read: wrong version, bad CBOR or too large.
     #[n(11)]
     BadRequest,
+    /// The caller's action was dropped without its asking (writing out its
+    /// pending run failed on another caller's request, or one of its own
+    /// changes failed): none of its changes so far will land. Every change
+    /// of the caller is refused this way until it sends Abort (answered Done)
+    /// or Begin, so a change it meant for the action never lands outside it.
+    #[n(12)]
+    Dropped,
 }
 
 /// The answer to one request.

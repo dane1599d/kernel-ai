@@ -23,6 +23,8 @@ mod buffer;
 mod bulk;
 #[cfg(test)]
 mod bulk_tests;
+#[cfg(test)]
+mod dropped_tests;
 mod lookup;
 #[cfg(test)]
 mod model_tests;
@@ -175,6 +177,9 @@ pub struct Server<D: BlockDev> {
     base: u64,
     /// Writes inside an action not yet given to kaifs ([`buffer`]).
     pending: Option<buffer::Pending>,
+    /// The caller whose action was dropped without its asking: its changes
+    /// are refused ([`Error::Dropped`]) until it sends Abort or Begin.
+    dropped: Option<u64>,
     /// The record last read.
     cache: Option<buffer::Cached>,
     /// Whether a caller (a pid) still runs: a dead owner's action is aborted
@@ -225,6 +230,7 @@ impl<D: BlockDev> Server<D> {
             epoch: 0,
             base,
             pending: None,
+            dropped: None,
             cache: None,
             alive: |_| true,
             name_of: |_, _| None,
@@ -289,6 +295,8 @@ impl<D: BlockDev> Server<D> {
             && !(self.alive)(owner)
         {
             self.drop_changes();
+            // Gone: nothing to tell, and its pid may come again.
+            self.dropped = None;
         }
     }
 
@@ -496,6 +504,18 @@ impl<D: BlockDev> Server<D> {
             self.own_folder_only(call.caller, &request)?;
         }
         let changes = changes(&request);
+        if changes && self.dropped == Some(call.caller) {
+            match request {
+                // It knows now: an Abort is its acknowledgement, a Begin its
+                // next action.
+                Request::Abort => {
+                    self.dropped = None;
+                    return Ok((Reply::Done, None));
+                }
+                Request::Begin { .. } => self.dropped = None,
+                _ => return Err(Error::Dropped),
+            }
+        }
         if changes && read_only(call.badge) {
             return Err(Error::Permission);
         }
@@ -703,6 +723,8 @@ impl<D: BlockDev> Server<D> {
                 }
                 let generation = self.commit();
                 self.owner = None;
+                // The owner hears how its commit went: nothing to refuse.
+                self.dropped = None;
                 Reply::Committed {
                     generation: generation?,
                 }
@@ -710,6 +732,7 @@ impl<D: BlockDev> Server<D> {
             Request::Abort => {
                 self.owned(call.caller)?;
                 self.drop_changes();
+                self.dropped = None;
                 Reply::Done
             }
             Request::Restore { txn, action } => {
@@ -990,7 +1013,11 @@ impl<D: BlockDev> Server<D> {
     /// generation now on the disk. That is the last commit, or one an error
     /// interrupted after it had landed whole ([`Fs::abort`]).
     fn drop_changes(&mut self) -> u64 {
-        self.owner = None;
+        // Its owner did not ask for this: its changes are refused until it
+        // knows ([`Error::Dropped`]). Abort, Commit and a reap clear it.
+        if let Some(owner) = self.owner.take() {
+            self.dropped = Some(owner);
+        }
         self.pending = None;
         self.sealing = None;
         self.cache = None;
