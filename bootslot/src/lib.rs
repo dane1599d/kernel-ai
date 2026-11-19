@@ -289,6 +289,15 @@ fn arm(nv: &mut Nv, slot: Slot) {
     nv.record.armed = Some(slot);
 }
 
+/// Whether R, arming `next` from a record that had `armed`, writes the
+/// one-shot before the record. Only when it arms the same slot again: a cut
+/// between the writes then boots that slot with its try or failure count
+/// spared. When it arms another (or a fresh install), the record goes first,
+/// so a slot it retired stays retired whatever boots next.
+pub fn one_shot_first(armed: Option<Slot>, next: Slot) -> bool {
+    armed == Some(next)
+}
+
 /// *stage*, before writing `slot`: it never boots until [`stage_end`].
 pub fn stage_begin(nv: &mut Nv, slot: Slot) {
     *nv.record.slot_mut(slot) = SlotState {
