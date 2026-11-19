@@ -39,11 +39,14 @@ undo(steps: int 1..1)  // puts back the last change made; undo again redoes it
 /// for byte there) and the line's types already say the rest: S10-0's draft
 /// wording. Every name here is a row (a test checks); this table goes once the
 /// registry's docs are cut to 60 bytes.
+/// "" leaves the line with no comment: its name and type say it all (T3,
+/// pack room).
 pub(super) const BRIEF: &[(&str, &str)] = &[
-    ("cpus", "CPUs online"),
+    ("cpus", ""),
     ("memory", "MiB; kernel heap in KiB"),
-    ("uptime_ms", "milliseconds since boot"),
-    ("get_policy", "the scheduling policy"),
+    ("uptime_ms", "since boot"),
+    ("get_policy", ""),
+    ("processes", ""),
     ("set_policy", "every CPU"),
     ("tune_undo", "puts back the policy a kept trial replaced"),
     ("component_revert", "a live component back n versions"),
@@ -161,7 +164,10 @@ pub(super) fn line(row: &Action) -> String {
         "" => String::new(),
         mark => format!(" [{mark}]"),
     };
-    format!("{}{}{mark}  // {}", row.name, signature(row), doc(row))
+    match doc(row) {
+        "" => format!("{}{}{mark}", row.name, signature(row)),
+        doc => format!("{}{}{mark}  // {doc}", row.name, signature(row)),
+    }
 }
 
 /// The family `row` heads a line for, with its members, or `None` when `row`
@@ -231,7 +237,7 @@ pub(super) fn row_lines(rows: &[&Action]) -> Vec<String> {
 }
 
 /// What heads the index lines (ADR 0010 §6).
-pub const INDEX_HEADING: &str = "## index (call one and its arguments are shown next)\n";
+pub const INDEX_HEADING: &str = "## index (call one; its arguments come next)\n";
 
 /// The header of the service group every one of `rows` belongs to, if any.
 pub(super) fn header(rows: &[&Action]) -> Option<&'static str> {

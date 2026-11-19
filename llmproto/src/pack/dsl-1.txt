@@ -28,18 +28,18 @@ undo(steps: int 1..1)  // puts back the last change made; undo again redoes it
 {"name":"say","arguments":{"text":"I cannot do that: there is no action for ordering food."}}
 ## system
 type Policy = "interactive" | "round-robin"
-cpus() -> int  // CPUs online
+cpus() -> int
 memory() -> #{free_mib: int, total_mib: int, heap_kib: int}  // MiB; kernel heap in KiB
-uptime_ms() -> int  // milliseconds since boot
-processes() -> [#{pid: int, name: string, mib: int, cpu_ms: int}]  // running processes
+uptime_ms() -> int  // since boot
+processes() -> [#{pid: int, name: string, mib: int, cpu_ms: int}]
 threads() -> #{switches: int, ejections: int, migrations: int}  // scheduler counters since boot
-get_policy() -> Policy  // the scheduling policy
+get_policy() -> Policy
 set_policy(name: Policy) [undo]  // every CPU
 process_stop(name: string) [ask]  // stops or kills processes by name
 service_stop|start|restart(name: string) [ask|undo|ask]  // start runs a stopped one; stop keeps it down; restart resets
 tune(target: string?, intent: string?) [ask]  // proposes a scheduler trial for a process
 tune_undo() [undo]  // puts back the policy a kept trial replaced
-## index (call one and its arguments are shown next)
+## index (call one; its arguments come next)
 component (roll back a component): component_revert
 pkg (install, remove or find packages): pkg_install pkg_remove pkg_list pkg_search
 files (list, find or read files): fs_list fs_find fs_read fs_history fs_changes
