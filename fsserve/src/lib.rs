@@ -19,6 +19,9 @@ extern crate alloc;
 
 pub mod batch;
 mod buffer;
+mod changes;
+#[cfg(test)]
+mod changes_tests;
 mod lookup;
 #[cfg(test)]
 mod model_tests;
@@ -720,12 +723,19 @@ impl<D: BlockDev> Server<D> {
             }
             Request::Changes { since } => {
                 need(Rights::ENUMERATE)?;
-                let changed = self.fs().changes(since).map_err(error)?;
-                let more = changed.len() > MAX_ROWS as usize;
-                let rows = changed.iter().take(MAX_ROWS as usize);
-                Reply::Changes {
-                    rows: rows.map(|(ino, inode)| stat(*ino, inode)).collect(),
+                let (rows, more) = self.changed_since(object, since, None)?;
+                Reply::Changes { rows, more }
+            }
+            Request::ChangesSince { since, after } => {
+                need(Rights::ENUMERATE)?;
+                self.save_fallbacks()?;
+                let (rows, more) = self.changed_since(object, since, after)?;
+                let fs = self.fs();
+                Reply::ChangesPage {
+                    rows,
                     more,
+                    upto: fs.committed,
+                    fallbacks: fs.fallbacks(),
                 }
             }
             Request::Sync => {
@@ -1032,6 +1042,7 @@ fn changes(request: &Request) -> bool {
         | Request::Read { .. }
         | Request::History
         | Request::Changes { .. }
+        | Request::ChangesSince { .. }
         | Request::Df
         | Request::Generation
         | Request::TrashList { .. }
