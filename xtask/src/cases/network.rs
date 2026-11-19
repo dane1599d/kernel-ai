@@ -85,6 +85,8 @@ pub(super) const CASES: &[TestCase] = &[
             "[netstream-a] after closing them, by NET_CLOSE or by the handle, 16 more opened",
             "[netstream-a] a third bulk stream of one process was Busy",
             "net-stream: streams echoed through the handle, kept to its port and to 16, and closed",
+            // QEMU's virtio-net has MSI-X: frames wake the net thread (P5 plan 3.2).
+            "net-stream: the card raised ",
             // Not "[netstream-b] holding 3 streams": the kernel kills b once
             // its own count shows 3 open, which can be before b's line reaches
             // the console (run 41942359956). That count is the proof b held them.
