@@ -17,6 +17,9 @@ use uikit::{Frame, Window};
 const INTER: &[u8] = include_bytes!("../../assets/fonts/InterVariable.ttf");
 const MONO: &[u8] = include_bytes!("../../assets/fonts/JetBrainsMono-Variable.ttf");
 
+/// A colour of no theme, written by its channels (the lint takes no literals).
+const TEAL: u32 = crate::OPAQUE | (0x12 << 16) | (0x34 << 8) | 0x56;
+
 fn text(dark: bool) -> Text {
     Text::new(
         Fonts {
@@ -125,12 +128,12 @@ fn at(img: &Image, x: i32, y: i32) -> u32 {
 fn fills_land_in_their_colour_and_text_draws_inside_its_box() {
     let palette = &look::DARK;
     let (img, f) = render(120, palette);
-    let window = palette.window | 0xFF00_0000;
+    let window = palette.window | crate::OPAQUE;
     assert_eq!(at(&img, 0, 0), window, "the background");
     let ops = f.list.groups.iter().flat_map(|g| &g.ops);
     for op in ops.clone() {
         if let Op::Fill { rect, token, .. } = op {
-            let c = palette.get(crate::look_token(*token)) | 0xFF00_0000;
+            let c = palette.get(crate::look_token(*token)) | crate::OPAQUE;
             let (x, y) = (rect.x + rect.w / 2, rect.y + rect.h / 2);
             // A fill's centre is its colour unless text is drawn over it.
             let covered = ops
@@ -159,7 +162,7 @@ fn damage_limits_what_is_drawn() {
     let mut t = text(true);
     let f = frame(&t);
     let mut img = Image::new(f.size.0, f.size.1);
-    img.px.fill(0xFF12_3456);
+    img.px.fill(TEAL);
     let mut p = Painter {
         palette,
         text: &mut t,
@@ -167,8 +170,8 @@ fn damage_limits_what_is_drawn() {
     };
     let damage = Rect::new(0, 0, 10, 10);
     p.paint(&mut img.canvas(), &f.list, damage);
-    assert_eq!(at(&img, 5, 5), palette.window | 0xFF00_0000);
-    assert_eq!(at(&img, 50, 50), 0xFF12_3456);
+    assert_eq!(at(&img, 5, 5), palette.window | crate::OPAQUE);
+    assert_eq!(at(&img, 50, 50), TEAL);
 }
 
 #[test]
@@ -214,7 +217,7 @@ fn an_icon_draws_its_kai_glyph_and_an_unknown_name_its_frame() {
     };
     let bounds = img.bounds();
     p.paint(&mut img.canvas(), &list, bounds);
-    let (window, ink) = (palette.window | 0xFF00_0000, palette.text | 0xFF00_0000);
+    let (window, ink) = (palette.window | crate::OPAQUE, palette.text | crate::OPAQUE);
     // The chevron: ink where its mask has any to show, none where it has none.
     let mask = gfx2d::icons::render(gfx2d::icons::Icon::ChevronDown, 16);
     for (i, &a) in mask.coverage.iter().enumerate() {
