@@ -26,7 +26,7 @@
 //! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL, APP_CALL |
 //! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE, PART_PEER_NAME |
 //! | 192-199 | N, network (P5) | NET_CONNECT, NET_SEND, NET_RECV, NET_POLL, NET_CLOSE (task 2) |
-//! | 200-209 | K, second block | SHM_INFO; ENDPOINT_BADGE 201 (S-io) |
+//! | 200-209 | K, second block | SHM_INFO; ENDPOINT_BADGE 201, PART_PEER_CAPS 202 (S-io) |
 
 /// `exit(code: i32) -> !`
 pub const EXIT: u64 = 0;
@@ -737,6 +737,14 @@ pub const SHM_INFO: u64 = 200;
 /// learns a badge (ADR 0001); BadHandle for a handle that is not there, or a
 /// raw value past u32; Revoked for one whose grant was revoked.
 pub const ENDPOINT_BADGE: u64 = 201;
+/// `part_peer_caps(partition, pid) -> caps`: live process `pid`'s capability
+/// bits ([`super::cap`]), as its plan line gave them, read from the process
+/// table, for `fs`, which gives the person's own requests (the shell's, with
+/// [`super::cap::POLICY`]) their share of the space reserve by them, never by
+/// a name. Needs a `Partition` handle (any rights), so only `fs` can ask, as
+/// [`PART_PEER_NAME`]. NotFound when `pid` is not running; pid 0, the kernel,
+/// has none.
+pub const PART_PEER_CAPS: u64 = 202;
 
 /// The end of the reserved blocks (see the table above): the highest number a
 /// call may have. A call that is not there yet answers NotFound.
