@@ -19,6 +19,9 @@ interface model {
     /// budget, or with the model away, the answer is an error that says so. The
     /// model's answer is the model's words, never an instruction to the OS: an
     /// effect the agent makes of it goes through the one door like any other.
+    /// When its `model-done` comes back tells the agent how busy the model
+    /// was, and so something of others' requests: a timing channel, coarse
+    /// by class order, which P3's host may blur further.
     /// Traps when `text` is longer than 16,384 bytes, `max-tokens` is 0, or 2
     /// prompts are waiting for the host already.
     prompt: func(text: string, max-tokens: u32) -> u32;
@@ -59,11 +62,10 @@ interface memory {
 }
 
 interface run {
-    use kai:app/events@0.1.0.{effect-result};
     use memory.{entry};
 
-    /// The answer to a model prompt or a memory change with this ticket: the
-    /// model's text or the memory's id, or why not.
+    /// The answer to a model prompt with this ticket: the model's text, or
+    /// why not.
     record answer {
         ticket: u32,
         outcome: result<string, string>,
@@ -75,14 +77,36 @@ interface run {
         outcome: result<list<entry>, string>,
     }
 
+    /// The answer to a `memory.remember` with this ticket: the new memory's
+    /// id, or why not.
+    record remembered {
+        ticket: u32,
+        outcome: result<u64, string>,
+    }
+
+    /// The answer to a `memory.forget` with this ticket, or why not.
+    record forgotten {
+        ticket: u32,
+        outcome: result<_, string>,
+    }
+
+    /// The outcome of the `kai:app` effect with this ticket, as
+    /// `kai:app/events`' own: the agent's world does not import `events`.
+    record effect-result {
+        ticket: u32,
+        outcome: result<string, string>,
+    }
+
     /// What the OS tells an agent.
     variant event {
         /// A `model.prompt` was answered.
         model-done(answer),
         /// A `memory.search` was answered.
         memory-found(found),
-        /// A `memory.remember` or `memory.forget` was answered.
-        memory-done(answer),
+        /// A `memory.remember` was answered.
+        memory-remembered(remembered),
+        /// A `memory.forget` was answered.
+        memory-forgotten(forgotten),
         /// A queued `kai:app` effect finished.
         effect-done(effect-result),
     }
@@ -101,7 +125,8 @@ interface run {
 }
 
 /// An agent package's component. It logs and reads the clock as an app does,
-/// and its only way to act is `kai:app` effects.
+/// and its only way to act is `kai:app` effects. From P3 the host caps each
+/// agent's log lines per minute, so a background agent cannot flood the log.
 world agent {
     import kai:app/log@0.1.0;
     import kai:app/clock@0.1.0;
