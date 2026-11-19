@@ -734,7 +734,8 @@ pub const SHM_INFO: u64 = 200;
 /// written to `out` as two u64, the badge and then the rights: how `fs` reads
 /// the destination `Dir` a client moved to it with a Rename. Permission for a
 /// handle on another process's endpoint, or of another kind, so no one else
-/// learns a badge (ADR 0001); BadHandle for a handle that is not there.
+/// learns a badge (ADR 0001); BadHandle for a handle that is not there, or a
+/// raw value past u32; Revoked for one whose grant was revoked.
 pub const ENDPOINT_BADGE: u64 = 201;
 
 /// The end of the reserved blocks (see the table above): the highest number a

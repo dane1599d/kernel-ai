@@ -310,11 +310,14 @@ fn endpoint_badge(slot: usize, raw: u64, out: u64) -> Result<u64, Error> {
 
 /// The badge and rights of `raw`, a `Dir` or `File` handle in the caller's
 /// table that names the caller's own endpoint (a route by its own name, as
-/// [`mint`] makes them); Permission for any other, BadHandle for none. It
-/// takes no route name: a caller without one is simply refused.
+/// [`mint`] makes them); Permission for any other; BadHandle for none, or a
+/// raw value past u32; Revoked for one whose grant was revoked. It takes no
+/// route name: a caller without one is simply refused.
 pub(crate) fn badge_of(slot: usize, raw: u64) -> Result<(u64, Rights), Error> {
     let handle = Handle(u32::try_from(raw).map_err(|_| Error::BadHandle)?);
-    let entry = handle::with(slot, |h| h.table.get(handle).copied())?.map_err(Error::from)?;
+    // `live`, as CALL_H takes a Dir or File: a handle whose grant was revoked
+    // answers Revoked, though it is not closed yet.
+    let entry = handle::with(slot, |h| h.table.live(handle, &Kernel))?.map_err(Error::from)?;
     if !matches!(entry.kind, Kind::Dir | Kind::File) {
         return Err(Error::Permission);
     }
