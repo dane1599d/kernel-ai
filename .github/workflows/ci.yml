@@ -32,6 +32,8 @@ jobs:
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
       # One file per call: `bash -n a.sh b.sh` reads b.sh as a.sh's argument.
       - name: The merge batcher's scripts parse (scripts/batch)
@@ -210,7 +212,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: qemu
-          save-if: ${{ matrix.accel == 'kvm' && matrix.shard == 1 }}
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.accel == 'kvm' && matrix.shard == 1 }}
       - name: Boot kernel with spikes and check pass/fail
         run: cargo xtask test --accel ${{ matrix.accel }} --timeout 300 --shard ${{ matrix.shard }}/3
     # TCG shards run about twice as long as KVM ones: on 2026-10-28 main's slowest
@@ -249,6 +251,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: qemu-release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Boot the release kernel and log the perf marks
         env:
           XTASK_CASE: shm
