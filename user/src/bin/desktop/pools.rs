@@ -55,9 +55,13 @@ pub(super) fn after_closed(state: &mut State, at: usize, pid: u64, pool: Option<
 /// Drops the clients whose process is not among `alive` (the kernel's list),
 /// as a crashed or stopped `comphost` leaves its windows and pools behind.
 pub(super) fn reap(state: &mut State, alive: &[u64]) {
-    while let Some(at) = state.clients.iter().position(|c| !alive.contains(&c.pid)) {
+    while let Some(at) = state
+        .clients
+        .iter()
+        .position(|c| !alive.contains(&c.pid) || c.too_far_behind())
+    {
         println!(
-            "desktop: pid {} is gone; its windows close",
+            "desktop: pid {} is gone or never reads its events; its windows close",
             state.clients[at].pid
         );
         drop_client(state, at);
