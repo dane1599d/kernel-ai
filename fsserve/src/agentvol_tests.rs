@@ -28,9 +28,9 @@ fn a_disk_gains_memory_and_index_at_start_and_no_badge_reaches_them() {
             assert_eq!(reply, Reply::Failed(Error::NotFound), "volume {volume}");
         }
     }
-    // A restart finds them and adds nothing.
-    let generation = c.server.generation();
+    // A restart finds them and adds nothing. (Its commit of the skipped id
+    // counters, #1137, moves the generation, so the volumes are compared.)
     drop(c);
     let (mut c, _) = Client::start(&mut disk);
-    assert_eq!(c.server.generation(), generation);
+    assert_eq!(c.server.fs().volumes(), volumes);
 }
