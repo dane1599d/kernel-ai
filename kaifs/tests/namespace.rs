@@ -684,3 +684,52 @@ fn no_more_than_a_window_of_ids_go_out_past_the_last_commit() {
     fs.commit().unwrap();
     assert!(fs.alloc_oid().is_ok());
 }
+
+/// A mount that fell back past newer commits (their tables unreadable) skips
+/// a window for each, past any id those runs could have handed out.
+#[test]
+fn a_mount_that_fell_back_skips_past_every_newer_run() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    for round in 0..3 {
+        fs.create(ROOT, &format!("r{round}")).unwrap();
+        fs.commit().unwrap();
+    }
+    // After the newest commit, a whole window handed out and never committed.
+    let mut last = 0;
+    while let Ok(oid) = fs.alloc_oid() {
+        last = oid;
+    }
+    let mut disk = fs.into_dev();
+    let newest = format::read_rings(&mut disk).unwrap()[0];
+    disk.write(newest.volumes.addr, &[0; BLOCK]).unwrap();
+    let mut fs = Fs::mount(disk).unwrap();
+    assert!(fs.committed < newest.generation, "the mount fell back");
+    fs.skip_unsaved_oids();
+    fs.commit().unwrap();
+    let after = fs.create(ROOT, "after").unwrap();
+    assert!(after > last, "{after} after {last}");
+}
+
+/// `check --repair` that finds an object far above the counter raises it
+/// past that object and can still make `/lost+found` for it.
+#[test]
+fn repair_raises_the_counter_far_and_still_makes_lost_and_found() {
+    let (fs, fixes) = broken(
+        |fs| {
+            // An empty file's inode, put far above the counter with no name.
+            let tmp = fs.create(ROOT, "tmp").unwrap();
+            let inode = fs.stat(tmp).unwrap();
+            fs.remove(ROOT, "tmp").unwrap();
+            let far = fs.next_oid() + 3 * kaifs::fs::OID_WINDOW;
+            fs.put(Key::new(far, K_INODE, 0), &inode.encode()).unwrap();
+        },
+        "an object id outside",
+    );
+    assert!(fixes.iter().any(|l| l.contains("/lost+found")), "{fixes:?}");
+    assert!(
+        fixes.iter().any(|l| l.contains("counter raised")),
+        "{fixes:?}"
+    );
+    drop(fs);
+}

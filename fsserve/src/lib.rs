@@ -204,10 +204,15 @@ impl<D: BlockDev> Server<D> {
             (fs, Started::Mounted { generation })
         };
         // Past every id the run before could have handed out and never
-        // committed, before any handle names a new one (`kaifs::fs::OID_WINDOW`).
+        // committed (`kaifs::fs::OID_WINDOW`). Until a commit saves the new
+        // counters no id goes out; a disk that cannot commit now (full, or
+        // failing writes) still starts, and `answer` tries again before the
+        // next change.
         if fs.writable() {
             fs.skip_unsaved_oids();
-            fs.commit()?;
+            if fs.commit().is_err() {
+                fs.abort()?;
+            }
         }
         let base = fs.clock;
         let mut server = Server {
@@ -499,6 +504,12 @@ impl<D: BlockDev> Server<D> {
         let target = self.target(call.badge)?;
         if changes && self.owner.is_some_and(|o| o != call.caller) {
             return Err(Error::Busy);
+        }
+        // Counters an abort or the start's skip moved are saved before the
+        // next change outside an action, so ids go out again (a commit that
+        // fails leaves them refused, and the change then fails as it would).
+        if changes && self.owner.is_none() && self.fs.oids_unsaved() && self.fs.is_clean() {
+            let _ = self.commit();
         }
         let in_action = self.owner.is_some();
         let done = self.dispatch(call, &target, request);
