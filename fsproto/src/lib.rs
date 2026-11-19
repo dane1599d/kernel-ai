@@ -414,10 +414,12 @@ pub enum Error {
     #[n(11)]
     BadRequest,
     /// The caller's action was dropped without its asking: its pending run of
-    /// writes failed to write out (no room, the disk), on another caller's
-    /// request or its own. None of its changes so far will land. Every change
-    /// of the caller is refused this way until it sends Abort (answered Done)
-    /// or Begin, so a change it meant for the action never lands outside it.
+    /// writes failed to write out (no room, the disk), and none of its changes
+    /// so far will land. On its own request, that request is answered this.
+    /// On another caller's, which the owner never hears, every change of the
+    /// owner's after it is refused this way until it sends Abort (answered
+    /// Done) or Begin, so a change it meant for the action never lands
+    /// outside it.
     #[n(12)]
     Dropped,
 }

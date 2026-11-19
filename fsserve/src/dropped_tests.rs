@@ -189,8 +189,8 @@ fn a_commit_or_a_second_drop_leaves_a_callers_mark() {
 }
 
 /// The owner's own run crossing a record's end goes to kaifs whole; on a full
-/// disk that fails and drops the action, and the owner hears it in that
-/// Write's answer: it is not marked.
+/// disk that fails and drops the action. That Write is answered Dropped, so
+/// the owner knows its action is gone, and it is not marked.
 #[test]
 fn the_owners_own_failed_write_is_answered_not_marked() {
     let mut disk = MemDisk::new(2 * 1024);
@@ -203,7 +203,7 @@ fn the_owners_own_failed_write_is_answered_not_marked() {
     );
     // Past 128 KiB the first whole record is written: no room for it.
     let crossing = write_run(&mut c, &doc, 0, 150 << 10);
-    assert!(matches!(crossing, Reply::Failed(_)), "{crossing:?}");
+    assert_eq!(crossing, Reply::Failed(Error::Dropped));
     assert_ne!(write(&mut c, &doc, 0, 10), Reply::Failed(Error::Dropped));
 }
 

@@ -1014,18 +1014,26 @@ impl<D: BlockDev> Server<D> {
     }
 
     /// [`Server::drop_changes`] for an action whose pending run failed to
-    /// write out. On another caller's request the owner hears nothing, so its
-    /// changes are refused ([`Error::Dropped`]) until it sends Abort or Begin;
-    /// on the owner's own request (its Write, its Commit) the answer tells it,
-    /// and its next standalone change, such as an undo, goes through. Callers
-    /// that have died since are forgotten first, so the marks stay few.
-    pub(crate) fn drop_unasked(&mut self) {
+    /// write out (`failed` says why); the error to answer. On another caller's
+    /// request the owner hears nothing, so its changes are refused
+    /// ([`Error::Dropped`]) until it sends Abort or Begin, and the caller gets
+    /// `failed`. On the owner's own request (its Write, its Commit) that answer
+    /// is [`Error::Dropped`], not why the run failed, so it knows its action
+    /// is gone and cannot write on as if inside it; it is not marked, so its
+    /// next standalone change, such as an undo, goes through. Callers that
+    /// have died since are forgotten first, so the marks stay few.
+    pub(crate) fn drop_unasked(&mut self, failed: Error) -> Error {
         let owner = self.owner;
         self.drop_changes();
         let alive = self.alive;
         self.dropped.retain(|&caller| alive(caller));
-        if let Some(owner) = owner.filter(|&owner| owner != self.asking) {
-            self.dropped.insert(owner);
+        match owner {
+            Some(owner) if owner == self.asking => Error::Dropped,
+            Some(owner) => {
+                self.dropped.insert(owner);
+                failed
+            }
+            None => failed,
         }
     }
 
