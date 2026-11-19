@@ -18,8 +18,7 @@ use crate::fs::{Fs, Snap};
 use crate::io::Meta;
 use crate::tree::Key;
 use crate::vol::{
-    K_UNDO, SnapKind, UNDO_LIFE, Undo, decode_undo, encode_snapshot, encode_undo, snap_key,
-    undo_key,
+    K_UNDO, SnapKind, Undo, decode_undo, encode_snapshot, encode_undo, snap_key, undo_key,
 };
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -172,13 +171,17 @@ impl<D: BlockDev> Fs<D> {
             if !vol.live_changed && vol.touched.is_empty() {
                 continue;
             }
+            // `index` is derived data, never backed up: no undo snapshot.
+            let Some(life) = crate::agentvol::undo_life(id) else {
+                continue;
+            };
             let snap_id = vol.next_snap;
             let snap = Snap {
                 root: vol.base.0,
                 generation: action.base,
                 next_oid: vol.base.1,
                 kind: SnapKind::Undo,
-                expiry: self.clock.saturating_add(UNDO_LIFE),
+                expiry: self.clock.saturating_add(life),
                 pin: action.id,
             };
             let undo = Undo {

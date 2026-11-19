@@ -72,7 +72,7 @@ pub struct Vol {
 }
 
 impl Vol {
-    fn new(name: &str) -> Self {
+    pub(crate) fn new(name: &str) -> Self {
         Vol {
             name: name.to_string(),
             live: Tree::default(),
@@ -170,10 +170,6 @@ impl<D: BlockDev> Fs<D> {
         faults: Faults,
         volumes: &[(u64, &str)],
     ) -> Result<Self, Error> {
-        // Before anything is written: no volume is made with a name ADR 0013 reserves.
-        for (_, name) in volumes {
-            crate::vol::check_new_volume(name)?;
-        }
         let info = dev.info();
         if info.blocks < format::MIN_BLOCKS {
             return Err(Error::NoSpace);
