@@ -54,8 +54,9 @@ pub fn actions(home: Handle) -> Result<(), String> {
         state.commits.len()
     );
     let files = verify(dir)?;
-    mark(home, "actions.ok")?;
+    // The line first: the kernel ends the boot once it sees the mark.
     println!("filecheck: {files} files whole after the actions");
+    mark(home, "actions.ok")?;
     Ok(())
 }
 

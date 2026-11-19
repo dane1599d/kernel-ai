@@ -155,7 +155,7 @@ pub(super) const CASES: &[TestCase] = &[
     // than holding every later change at Busy (PART_PEER_ALIVE).
     TestCase {
         expect: &[
-            "filecheck: holding an action with half.txt in it",
+            "filecheck: holding an action; half.txt goes in it",
             "files: a client killed mid-action leaves nothing, and the next Begin goes through",
         ],
         server: false,
