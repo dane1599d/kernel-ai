@@ -204,7 +204,7 @@ fn the_whole_text_is_shown_above_the_card_under_codes_header() {
     let menu = Menu::decode(shown.menu).unwrap();
     assert!(
         menu.question()
-            .starts_with("Send the text above with net_send(\"hooks.example\""),
+            .starts_with("Send the text shown with net_send(\"hooks.example\""),
         "{}",
         menu.question()
     );
@@ -284,4 +284,101 @@ fn a_bad_host_or_path_is_refused_before_a_card() {
 
 fn call_of(json: &str) -> Result<Call, ActError> {
     Ok(llmproto::act::parse(json).unwrap())
+}
+
+/// A send typed in the Kai pane, where its card and the pane fit side by
+/// side (ADR 0005 §7, "Amended 2026-11-19"): it waits for the desk's card,
+/// whose menu is plain, the text going to the pane as the card goes up; an
+/// Allow holds it as on the console.
+#[test]
+fn a_send_from_the_pane_goes_on_the_desk_card_with_its_text_to_the_pane() {
+    let (host, mut shell) = with_calls(vec![send_call("hooks.example", Some("/hook"), "hello")]);
+    host.send_fits.set(true);
+    let shown = shell.eval_panel(LINE);
+    assert_eq!(
+        shown,
+        crate::PanelResult::Done(String::from(crate::deskask::ON_CARD))
+    );
+    assert!(
+        host.previews.borrow().is_empty(),
+        "the text goes as the card goes up"
+    );
+    let card = shell.eval_console(termcore::menu::TAKE_CARD);
+    let wire = card.to_wire();
+    assert!(
+        termcore::menu::split_shown(&wire).is_none(),
+        "the card's menu is plain"
+    );
+    let menu = Menu::decode(&wire).expect("the card's menu");
+    assert!(
+        menu.call()
+            .starts_with("net_send(\"hooks.example\", \"/hook\", \"")
+    );
+    assert_eq!(*host.previews.borrow(), [(menu.id, String::from("hello"))]);
+    // The text's digest is the card's.
+    let digest = &crate::appbuild::sha256("hello")[..16];
+    assert!(
+        menu.call().ends_with(&std::format!("\"{digest}\")")),
+        "{}",
+        menu.call()
+    );
+    let once = host.mint(menu.id, menu.call());
+    let held = shell.eval_console(&std::format!("answer {} allow once={once}", menu.id));
+    assert!(held.ok, "{held:?}");
+    assert!(
+        held.text.starts_with("Sending to hooks.example in 5 s"),
+        "{held:?}"
+    );
+}
+
+/// Where the card and the pane do not fit side by side, a send typed at the
+/// desk is asked at the console, as before; nothing goes to the pane.
+#[test]
+fn a_send_from_the_pane_where_its_text_cannot_show_is_asked_at_the_console() {
+    let (host, mut shell) = with_calls(vec![send_call("hooks.example", Some("/hook"), "hello")]);
+    let shown = shell.eval_panel(LINE);
+    assert_eq!(
+        shown,
+        crate::PanelResult::Refused(String::from(crate::deskask::SEND_HERE))
+    );
+    assert!(!shell.desk_ask_waiting());
+    assert!(host.previews.borrow().is_empty());
+    assert!(host.sends.borrow().is_empty());
+}
+
+/// A host or path with a quote or a backslash is refused before any card:
+/// the card's call must keep the send row's shape, which the desk reads to
+/// tie the card to its text (#1142's review, CRITICAL).
+#[test]
+fn a_quote_or_backslash_in_the_host_or_path_is_refused() {
+    for (host, path) in [
+        ("hooks.example", "/a\"b"),
+        ("hooks.example", "/a\\b"),
+        ("hooks\"x.example", "/hook"),
+    ] {
+        let (host_, mut shell) = with_calls(vec![send_call(host, Some(path), "hello")]);
+        let reply = shell.eval(LINE);
+        // Refused before any card: by the row's own check, or a host that
+        // is not the one the line names.
+        assert!(!reply.ok, "{host} {path}: {reply:?}");
+        assert!(
+            reply.text.starts_with("Not sent: ") || reply.text.starts_with("Refused net_send: "),
+            "{reply:?}"
+        );
+        assert!(shell.pending.is_none());
+        assert!(host_.sends.borrow().is_empty());
+    }
+}
+
+/// The desk card's menu for a send always parses as the send row's call,
+/// so `desktop` treats it as a send's card (termcore::menu::names_send).
+#[test]
+fn a_sends_desk_card_names_the_send_row() {
+    let (host, mut shell) = with_calls(vec![send_call("hooks.example", Some("/hook"), "hello")]);
+    host.send_fits.set(true);
+    shell.eval_panel(LINE);
+    let card = shell.eval_console(termcore::menu::TAKE_CARD);
+    let menu = Menu::decode(&card.to_wire()).expect("the card's menu");
+    assert!(termcore::menu::names_send(menu.call()));
+    assert!(deskcore::sendview::send_call(menu.call()).is_some());
 }

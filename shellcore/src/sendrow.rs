@@ -7,7 +7,8 @@
 //! call it shows, and its ONCE names, carries the text's SHA-256 (its first 16
 //! hex digits), as Kai's app install card carries its build's. The whole text
 //! goes above the card, outside it, under a header code writes ("Kai wants to
-//! send this text to <host>:"), and the card says "the text above"; a terminal
+//! send this text to <host>:"), and the card says "the text shown"
+//! (on the desk, in the Kai pane beside it); a terminal
 //! that cannot show it all denies the card. `show` prints it too. A send whose card cannot be shown is refused, never asked as a
 //! y/n question no answer could allow.
 
@@ -64,8 +65,17 @@ fn unsendable(send: &Send) -> Option<&'static str> {
     if nethosts::Host::parse(&send.host).is_err() {
         return Some("that is not a host name");
     }
-    if !send.path.bytes().all(|b| b.is_ascii_graphic() && b != b'#') {
-        return Some("the path has a space, a # or a character that is not plain ASCII");
+    // Nothing the card's call would have to escape: a quote or a backslash
+    // would make the call another shape than the send row's, which `desktop`
+    // reads to tie the card to its text (#1142's review).
+    let plain = |b: u8| b.is_ascii_graphic() && b != b'"' && b != b'\\';
+    if !send.host.bytes().all(plain) {
+        return Some("that is not a host name");
+    }
+    if !send.path.bytes().all(|b| plain(b) && b != b'#') {
+        return Some(
+            "the path has a space, a #, a quote, a backslash or a character that is not plain ASCII",
+        );
     }
     // The text is read where the person answers, as it is: printable ASCII
     // and line breaks only, or it is not asked about at all.
@@ -81,7 +91,7 @@ fn unsendable(send: &Send) -> Option<&'static str> {
 }
 
 /// The card's subject: the text is shown above the card, outside it.
-const SUBJECT: &str = "Send the text above";
+const SUBJECT: &str = "Send the text shown";
 
 /// The header code writes over the text, outside the card.
 fn header(send: &Send) -> String {

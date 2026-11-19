@@ -517,6 +517,25 @@ impl Host for System {
         net::send(send)
     }
 
+    fn desk_send_fits(&self) -> bool {
+        let Some(route) = desktop() else {
+            return false;
+        };
+        matches!(
+            ask_desktop(route, deskcore::sendview::FITS).as_deref(),
+            Ok("yes")
+        )
+    }
+
+    fn desk_preview(&self, id: u64, text: &str) -> Result<(), String> {
+        let route = desktop().ok_or_else(|| String::from("there is no desktop"))?;
+        let request = deskcore::sendview::encode_preview(id, text);
+        match report_to_desktop(route, &request)? {
+            answer if answer == "ok" => Ok(()),
+            answer => Err(answer),
+        }
+    }
+
     fn cc_build(
         &self,
         dir: &str,
