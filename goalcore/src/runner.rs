@@ -11,7 +11,8 @@
 //! has work never starves the panel's check-ins.
 
 use crate::{
-    CheckIn, Door, Goal, Goals, Pause, Presence, Refusal, Resource, State, Step, StepDone, Verdict,
+    CheckIn, Door, Goal, Goals, Pause, Presence, Refusal, Resource, State, Step, StepDone,
+    StepStatus, Verdict,
 };
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -67,6 +68,12 @@ pub enum Event {
         goal: u64,
         step: u32,
     },
+    /// The planner wrote again a step the person had said no to. It was not asked
+    /// again: the goal is paused until the person resumes it.
+    Repeated {
+        goal: u64,
+        row: String,
+    },
     /// The goal waits for the person: "Goal '...' is waiting for you: ...".
     Waiting {
         goal: u64,
@@ -103,11 +110,19 @@ pub const MAX_BAD_STEPS: u32 = 3;
 pub const RESTARTED: &str = "the agent restarted; the step was not run";
 
 /// The loop's own state: the steps that asked, kept with the runner's record of
-/// their call until the person answers, since a goal keeps only what it shows; and
-/// how many steps in a row each goal's planner wrote that could not be logged.
+/// their call until the person answers, since a goal keeps only what it shows; how
+/// many steps in a row each goal's planner wrote that could not be logged; and the
+/// steps of each goal the person said no to, so none is asked a second time.
+///
+/// A no holds until the person acts: the goal is paused at the first repeat, and
+/// their resume lets the step be asked once more. Each denied step has a record in
+/// the goal's log, so a goal's list is no longer than [`crate::MAX_LOG`]. It is the
+/// runner's memory only: after a restart of the agent a denied step may be asked
+/// one more time.
 pub struct Runner<C> {
     asked: BTreeMap<u64, Step<C>>,
     bad: BTreeMap<u64, u32>,
+    denied: BTreeMap<u64, Vec<Step<C>>>,
 }
 
 impl<C> Default for Runner<C> {
@@ -115,11 +130,12 @@ impl<C> Default for Runner<C> {
         Self {
             asked: BTreeMap::new(),
             bad: BTreeMap::new(),
+            denied: BTreeMap::new(),
         }
     }
 }
 
-impl<C: Clone> Runner<C> {
+impl<C: Clone + PartialEq> Runner<C> {
     pub fn new() -> Self {
         Self::default()
     }
@@ -136,6 +152,9 @@ impl<C: Clone> Runner<C> {
         parts: &mut Parts<'_, C>,
     ) -> Vec<Event> {
         let mut events = Vec::new();
+        // A goal that ended or was forgotten has nothing left to ask.
+        self.denied
+            .retain(|id, _| goals.get(*id).is_some_and(|goal| !goal.state.is_final()));
         self.close_strays(goals, &mut events);
         if !self.run_answered(goals, parts, &mut events) {
             self.plan_one(goals, now, person, parts, &mut events);
@@ -165,13 +184,68 @@ impl<C: Clone> Runner<C> {
             if matches!(goal.state, State::Waiting | State::Paused(_)) {
                 continue;
             }
-            let step = self.asked.remove(&id);
-            if let (Some(step), Some(n), State::Active) = (step, goal.flight, goal.state) {
-                run(goal, n, &step, parts.steps, events);
-                return true;
+            let Some(step) = self.asked.remove(&id) else {
+                continue;
+            };
+            match (goal.flight, goal.state) {
+                (Some(n), State::Active) => {
+                    self.run(goal, n, step, parts.steps, events);
+                    return true;
+                }
+                // The person said no where goalcore asked (`Goal::deny`): the step
+                // that waited is the last one logged.
+                (None, State::Active) if last_denied(goal) => self.remember_no(id, step),
+                _ => {}
             }
         }
         false
+    }
+
+    /// Runs step `n` of `goal`, in flight, and records what came of it: the entry is
+    /// kept whatever came of the step (#980's rule), and a no on the card is
+    /// remembered.
+    fn run(
+        &mut self,
+        goal: &mut Goal,
+        n: u32,
+        step: Step<C>,
+        steps: &mut dyn Steps<C>,
+        events: &mut Vec<Event>,
+    ) {
+        match steps.run(goal.id, &step) {
+            Outcome::Done(done) => {
+                let entry = done.entry;
+                let _ = goal.finish_step(done);
+                events.push(Event::Ran {
+                    goal: goal.id,
+                    step: n,
+                    entry,
+                });
+            }
+            Outcome::Denied(why) => {
+                if goal.deny_running(&why).is_ok() {
+                    events.push(Event::Denied {
+                        goal: goal.id,
+                        step: n,
+                    });
+                    self.remember_no(goal.id, step);
+                }
+            }
+        }
+    }
+
+    fn remember_no(&mut self, goal: u64, step: Step<C>) {
+        self.denied.entry(goal).or_default().push(step);
+    }
+
+    /// Whether the person said no to this very step of `goal`: the same row, paths
+    /// and call. What it was expected to cost is not part of what they refused.
+    fn said_no_to(&self, goal: u64, step: &Step<C>) -> bool {
+        self.denied.get(&goal).is_some_and(|denied| {
+            denied
+                .iter()
+                .any(|no| no.row == step.row && no.targets == step.targets && no.call == step.call)
+        })
     }
 
     /// Closes as failed a step in flight that this runner has no record of (the
@@ -278,6 +352,18 @@ impl<C: Clone> Runner<C> {
         events: &mut Vec<Event>,
     ) -> bool {
         let id = goal.id;
+        // A step the person said no to is not asked again: the goal stops here, and
+        // their resume is what lets it go on.
+        if self.said_no_to(id, &step) {
+            self.denied.remove(&id);
+            if goal.pause().is_ok() {
+                events.push(Event::Repeated {
+                    goal: id,
+                    row: step.row,
+                });
+            }
+            return false;
+        }
         let proposed = goal.propose(now, step.clone(), person, parts.door);
         if !matches!(proposed, Err(Refusal::BadProposal(_))) {
             self.bad.remove(&id);
@@ -285,7 +371,7 @@ impl<C: Clone> Runner<C> {
         match proposed {
             Ok(Verdict::Run) => {
                 let n = goal.flight.unwrap_or(0);
-                run(goal, n, &step, parts.steps, events);
+                self.run(goal, n, step, parts.steps, events);
                 true
             }
             Ok(Verdict::Ask(_)) => {
@@ -327,34 +413,11 @@ impl<C: Clone> Runner<C> {
     }
 }
 
-/// Runs step `n` of `goal`, in flight, and records what came of it: the entry is
-/// kept whatever came of the step (#980's rule).
-fn run<C>(
-    goal: &mut Goal,
-    n: u32,
-    step: &Step<C>,
-    steps: &mut dyn Steps<C>,
-    events: &mut Vec<Event>,
-) {
-    match steps.run(goal.id, step) {
-        Outcome::Done(done) => {
-            let entry = done.entry;
-            let _ = goal.finish_step(done);
-            events.push(Event::Ran {
-                goal: goal.id,
-                step: n,
-                entry,
-            });
-        }
-        Outcome::Denied(why) => {
-            if goal.deny_running(&why).is_ok() {
-                events.push(Event::Denied {
-                    goal: goal.id,
-                    step: n,
-                });
-            }
-        }
-    }
+/// Whether the last step `goal` logged is one the person said no to.
+fn last_denied(goal: &Goal) -> bool {
+    goal.log
+        .last()
+        .is_some_and(|step| step.status == StepStatus::Denied)
 }
 
 /// The pause a goal is due for before it is planned: past its tokens, its wall time
