@@ -332,6 +332,10 @@ impl Bulk<Handle> for Calls {
         let bulk = self.bulk.as_ref().ok_or("no bulk Shm")?;
         bulk.ask(on, request)
     }
+
+    fn usable(&self) -> bool {
+        self.bulk.is_some() && !bulk::poisoned()
+    }
 }
 
 impl Transport for Calls {

@@ -40,6 +40,10 @@ struct Served<'d> {
     bulk_calls: usize,
     /// Answers them as an `fs` before them does: BadRequest.
     old_fs: bool,
+    /// The bulk call that fails after its `Shm` moved (a CALL_H timeout),
+    /// poisoning it.
+    bulk_fails_at: Option<usize>,
+    poisoned: bool,
 }
 
 /// Another caller of `fs`, as the shell is.
@@ -118,6 +122,13 @@ impl Bulk<Badge> for Served<'_> {
         if self.calls >= self.stop_at {
             return Err("fs stopped".into());
         }
+        if self.poisoned {
+            panic!("a poisoned Shm was sent");
+        }
+        if self.bulk_fails_at == Some(self.bulk_calls) {
+            self.poisoned = true;
+            return Err("CALL_H: TimedOut".into());
+        }
         if self.old_fs {
             return Ok(Reply::Failed(fsproto::Error::BadRequest));
         }
@@ -133,6 +144,10 @@ impl Bulk<Badge> for Served<'_> {
             self.shm.as_deref_mut(),
         );
         fsproto::decode_reply(&answer.reply).map_err(|e| format!("{e:?}"))
+    }
+
+    fn usable(&self) -> bool {
+        !self.poisoned
     }
 }
 
@@ -150,6 +165,8 @@ fn volume(disk: &mut MemDisk) -> FsVolume<Served<'_>> {
         shm: None,
         bulk_calls: 0,
         old_fs: false,
+        bulk_fails_at: None,
+        poisoned: false,
     };
     FsVolume::new(served, (HOME_USER, DIR_RIGHTS))
 }
@@ -546,4 +563,24 @@ fn an_install_in_bulk_survives_a_restart() {
     assert_eq!(names(&mut vol, 2), ["big"]);
     assert!(store::present(&mut vol, &kaipkg::sha256(&big)).unwrap());
     store::check(&mut vol, &Store::default(), Time(200)).unwrap();
+}
+
+/// A bulk call that fails after its `Shm` moved poisons it: that write fails,
+/// the `Shm` is never sent again (the transport panics if it is), and the
+/// next writes and reads go in messages and land.
+#[test]
+fn a_poisoned_shm_is_never_sent_again_and_files_go_in_messages() {
+    let mut disk = MemDisk::new(16 * 1024);
+    let data = bytes(3 * SHM + 7);
+    let mut vol = bulk_volume(&mut disk);
+    vol.transport.bulk_fails_at = Some(2);
+    assert!(vol.write("pkg/big.bin", &data).is_err());
+    assert!(vol.transport.poisoned);
+    let sent = vol.transport.bulk_calls;
+    vol.write("pkg/big.bin", &data).unwrap();
+    vol.append("pkg/big.bin", &data[..SHM + 1]).unwrap();
+    let mut whole = data.clone();
+    whole.extend_from_slice(&data[..SHM + 1]);
+    assert!(vol.read("pkg/big.bin").unwrap() == Some(whole));
+    assert_eq!(vol.transport.bulk_calls, sent);
 }

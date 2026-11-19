@@ -51,6 +51,18 @@ pub trait Bulk<H> {
     fn bytes(&mut self) -> &mut [u8];
     /// `request`, a ReadShm or WriteShm, on `on` with the `Shm` moved along.
     fn call(&mut self, on: H, request: Request) -> Result<Reply, String>;
+    /// Whether the `Shm` may still be sent: false for good once a call failed
+    /// after it moved (a timeout, `fs` gone), since that request may still be
+    /// running in `fs` and could yet read or fill it. [`FsVolume`] then goes a
+    /// message at a time.
+    fn usable(&self) -> bool {
+        true
+    }
+}
+
+/// The transport's bulk `Shm`, if it has one it may still send.
+fn usable<T: Transport>(transport: &mut T) -> Option<&mut dyn Bulk<T::Handle>> {
+    transport.bulk().filter(|bulk| bulk.usable())
 }
 
 /// A reply, alone or with the handle it moved: what [`FsVolume::ask`]'s
@@ -161,7 +173,7 @@ impl<T: Transport> FsVolume<T> {
 
     /// `request` on `file` through the bulk `Shm`, sent again on Busy.
     fn ask_bulk(&mut self, file: T::Handle, request: Request) -> Result<Reply, String> {
-        self.retried(request, |transport, request| match transport.bulk() {
+        self.retried(request, |transport, request| match usable(transport) {
             Some(bulk) => bulk.call(file, request),
             None => Err("no bulk Shm".into()),
         })
@@ -169,7 +181,7 @@ impl<T: Transport> FsVolume<T> {
 
     /// The bulk `Shm`'s length, 0 without one.
     fn bulk_len(&mut self) -> usize {
-        self.transport.bulk().map_or(0, |b| b.bytes().len())
+        usable(&mut self.transport).map_or(0, |b| b.bytes().len())
     }
 
     /// `request` on `on`, which must answer Done.

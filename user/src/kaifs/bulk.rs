@@ -66,6 +66,12 @@ pub fn reserve(bytes: usize) -> Result<(), kabi::Error> {
     made
 }
 
+/// Whether a call failed after the `Shm` moved: it is then never sent again,
+/// and its holders go a message at a time.
+pub fn poisoned() -> bool {
+    POISONED.load(Ordering::Acquire)
+}
+
 /// The `Shm` while a caller holds it: for one call here, or for the life of a
 /// client that moves its own requests, as `pkg`'s store does
 /// (`kaipkg::fsvol::Bulk`). While one is held, [`read_at`] and [`write_at`]
@@ -101,7 +107,12 @@ impl Lease {
     }
 
     /// `request` on `file` with a duplicate of the `Shm` moved in.
+    /// Refused once the `Shm` is poisoned ([`poisoned`]), so a caller that
+    /// holds a lease can never send it again.
     pub fn ask(&self, file: Handle, request: Request) -> Result<Reply, String> {
+        if poisoned() {
+            return Err(String::from("the bulk Shm is poisoned"));
+        }
         let copy = sys::handle_dup(self.handle, MOVED).map_err(|e| format!("HANDLE_DUP: {e:?}"))?;
         let bytes = fsproto::encode_request(&request);
         let mut reply = alloc::vec![0u8; fsproto::MAX_MESSAGE];
