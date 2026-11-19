@@ -19,6 +19,7 @@ pub(crate) const BAR: Bar = Bar {
     model: true,
     mem_used_mib: 412,
     utc_s: None,
+    zone_min: 0,
 };
 
 fn paint(name: &str, desk: &Desk, w: i32, h: i32) -> String {

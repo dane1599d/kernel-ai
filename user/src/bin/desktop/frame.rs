@@ -87,6 +87,7 @@ pub(super) fn refresh_bar(state: &mut State) {
         mem_used_mib: mib(m.total_frames - m.free_frames),
         // No wall clock (NotFound): no clock in the tray.
         utc_s: sys::clock_now().ok(),
+        zone_min: state.appearance.time_zone_min,
     };
     if bar != state.bar {
         let model = bar.model != state.bar.model;

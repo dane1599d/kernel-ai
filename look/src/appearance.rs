@@ -8,6 +8,10 @@
 //! - `scale`: the screen's scale in percent, 100 to 300 in steps of 25.
 //! - `text_size`: text in percent of its size, 100 to 200 in steps of 10.
 //! - `reduced_motion`, `legible`: `on` or `off`.
+//! - `time_zone`: the tray clock's fixed offset from UTC, `UTC` or `+05:30`
+//!   (`-9`, `+2`), from -12:00 to +14:00 in 15-minute steps. No daylight
+//!   saving: the person changes it. It is a file and plan-line setting only
+//!   until the agent's row and the Settings app list it ([`FILE_SETTINGS`]).
 //!
 //! Every setting is checked against the theme it ends in: a token or a theme
 //! that would break [`Theme::check`] (contrast, the AI's colour) is refused.
@@ -31,6 +35,20 @@ pub const SETTINGS: [&str; 6] = [
     "reduced_motion",
     "legible",
 ];
+/// Every setting the saved file may hold: [`SETTINGS`], which the agent's
+/// `appearance_set` row names, and `time_zone`, which it does not yet.
+pub const FILE_SETTINGS: [&str; 7] = [
+    "theme",
+    "token",
+    "scale",
+    "text_size",
+    "reduced_motion",
+    "legible",
+    "time_zone",
+];
+/// The earliest and latest `time_zone`, in minutes from UTC.
+pub const ZONE_MIN: i16 = -12 * 60;
+pub const ZONE_MAX: i16 = 14 * 60;
 /// The longest saved settings read.
 pub const MAX_BYTES: usize = 2 * 1024;
 
@@ -60,6 +78,9 @@ pub struct Appearance {
     pub text_size: u16,
     pub reduced_motion: bool,
     pub legible: bool,
+    /// The tray clock's offset from UTC in minutes, a multiple of 15 from
+    /// [`ZONE_MIN`] to [`ZONE_MAX`]; 0 is UTC.
+    pub time_zone_min: i16,
 }
 
 impl Default for Appearance {
@@ -71,6 +92,7 @@ impl Default for Appearance {
             text_size: 100,
             reduced_motion: false,
             legible: false,
+            time_zone_min: 0,
         }
     }
 }
@@ -111,6 +133,46 @@ fn percent(value: &str, low: u16, high: u16, step: u16) -> Result<u16, Refused> 
         _ => Err(refused(format!(
             "it is {low}% to {high}% in steps of {step}"
         ))),
+    }
+}
+
+/// A `time_zone` value: `UTC`, or a sign, hours and optional `:MM`.
+fn zone(value: &str) -> Result<i16, Refused> {
+    let bad = || refused("it is UTC or an offset like +05:30, from -12:00 to +14:00");
+    if value == "UTC" {
+        return Ok(0);
+    }
+    let (sign, rest) = match value.as_bytes().first() {
+        Some(b'+') => (1i16, &value[1..]),
+        Some(b'-') => (-1i16, &value[1..]),
+        _ => return Err(bad()),
+    };
+    let (hours, minutes) = rest.split_once(':').unwrap_or((rest, "0"));
+    let digits = |s: &str, most: usize| {
+        (!s.is_empty() && s.len() <= most && s.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| s.parse::<i16>().ok())
+            .flatten()
+    };
+    let (Some(h), Some(m)) = (digits(hours, 2), digits(minutes, 2)) else {
+        return Err(bad());
+    };
+    let total = sign * (h * 60 + m);
+    match m < 60 && m % 15 == 0 && (ZONE_MIN..=ZONE_MAX).contains(&total) {
+        true => Ok(total),
+        false => Err(bad()),
+    }
+}
+
+/// An offset as a file writes it: `UTC`, `+02:00`, `-09:30`.
+pub fn zone_text(minutes: i16) -> String {
+    match minutes {
+        0 => String::from("UTC"),
+        m => format!(
+            "{}{:02}:{:02}",
+            if m < 0 { '-' } else { '+' },
+            m.abs() / 60,
+            m.abs() % 60
+        ),
     }
 }
 
@@ -172,6 +234,7 @@ impl Appearance {
             "text_size" => next.text_size = percent(value, 100, 200, 10)?,
             "reduced_motion" => next.reduced_motion = switch(value)?,
             "legible" => next.legible = switch(value)?,
+            "time_zone" => next.time_zone_min = zone(value)?,
             _ => return Err(refused(format!("no setting {setting:?}"))),
         }
         Ok(next)
@@ -193,6 +256,10 @@ impl Appearance {
             on(self.reduced_motion),
             on(self.legible)
         );
+        // Written only when set, so a saved file without one stays as it was.
+        if self.time_zone_min != 0 {
+            let _ = writeln!(out, "time_zone = {}", zone_text(self.time_zone_min));
+        }
         out
     }
 
@@ -226,12 +293,12 @@ impl Appearance {
             return Err(refused(format!("the first line is not {MAGIC:?}")));
         }
         let mut appearance = Appearance::default();
-        let mut seen = [false; 6];
+        let mut seen = [false; FILE_SETTINGS.len()];
         for line in lines.filter(|l| !l.is_empty()) {
             let (setting, value) = line
                 .split_once(" = ")
                 .ok_or_else(|| refused("a line is not `setting = value`"))?;
-            let at = SETTINGS
+            let at = FILE_SETTINGS
                 .iter()
                 .position(|s| *s == setting)
                 .ok_or_else(|| refused(format!("no setting {setting:?}")))?;
@@ -295,6 +362,13 @@ impl Appearance {
             if now != was {
                 parts.push(format!("{name} {} (was {})", on(now), on(was)));
             }
+        }
+        if self.time_zone_min != before.time_zone_min {
+            parts.push(format!(
+                "time zone {} (was {})",
+                zone_text(self.time_zone_min),
+                zone_text(before.time_zone_min)
+            ));
         }
         match parts.is_empty() {
             true => String::from("nothing changed"),
