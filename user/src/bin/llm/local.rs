@@ -310,6 +310,11 @@ impl Clock {
         sys::time_ns().saturating_add(need) <= self.deadline
     }
 
+    /// Tokens computed and made so far, for an agent's charge.
+    fn used(&self) -> u32 {
+        u32::try_from(self.computed + self.tokens).unwrap_or(u32::MAX)
+    }
+
     fn speed(&self) -> Option<Speed> {
         let first = self.first?;
         Some(Speed {
@@ -343,6 +348,9 @@ pub struct Local {
     bytes: &'static [u8],
     /// That identity, once computed.
     model_id: Option<[u8; 32]>,
+    /// Tokens the last `complete` or script took: its prompt's computed tokens
+    /// and its answer's, what an agent's job is charged (F3 slice 2a).
+    used: u32,
 }
 
 impl Local {
@@ -369,6 +377,7 @@ impl Local {
             prefill_rate: None,
             bytes,
             model_id: None,
+            used: 0,
         })
     }
 
@@ -469,9 +478,23 @@ impl Local {
 
     /// The model's greedy answer to `request`, for `ask`, `:why` and `:model`.
     pub fn complete(&mut self, request: &chat::Request) -> Result<Completion, String> {
+        self.complete_until(request, || false)
+    }
+
+    /// [`Self::complete`], with `stop` asked at every step: an agent's job gives
+    /// way to a request that comes (F3 slice 2a).
+    pub fn complete_until(
+        &mut self,
+        request: &chat::Request,
+        mut stop: impl FnMut() -> bool,
+    ) -> Result<Completion, String> {
         self.engine.use_slot(SLOTS.script);
         let mut clock = Clock::new(DEADLINE_MS, self.prefill_rate);
-        let done = local::complete(&mut self.engine, request, |step| clock.step(step));
+        let done = local::complete(&mut self.engine, request, |step| match stop() {
+            true => Next::Stop,
+            false => clock.step(step),
+        });
+        self.used = clock.used();
         self.last = clock.speed().or(self.last);
         self.prefill_rate = clock.rate().or(self.prefill_rate);
         let completion = done.map_err(|error| match error {
@@ -519,12 +542,18 @@ impl Local {
             script::Lang::App => local::app(&mut self.engine, request, &mut step),
         };
         self.prefill_rate = clock.rate().or(self.prefill_rate);
+        self.used = clock.used();
         let forced = self.engine.forced();
         self.last = clock
             .speed()
             .map(|speed| Speed { forced, ..speed })
             .or(self.last);
         answer
+    }
+
+    /// Tokens the last `complete` or script took (prompt computed, answer made).
+    pub fn used(&self) -> u32 {
+        self.used
     }
 
     /// One tagged call for the shell's `request`, within the time it gives and

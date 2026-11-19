@@ -222,6 +222,24 @@ impl Scheduler {
         Ok(id)
     }
 
+    /// Counts `tokens` against `agent`'s day for work the caller ran whole, outside
+    /// [`Scheduler::next`]'s quanta (llm's slice 2a runs an agent's request as one
+    /// call): never past the day's budget, which is then spent.
+    pub fn charge_whole(&mut self, agent: AgentId, tokens: u32, now: Now) {
+        self.roll_day(now.day);
+        if let Some(state) = self.agents.get_mut(&agent) {
+            let room = state.agent.budgets.map_or(u32::MAX, |b| {
+                b.tokens_per_day.saturating_sub(state.used_today)
+            });
+            state.used_today += tokens.min(room);
+        }
+    }
+
+    /// The class `agent` runs in, if it is known.
+    pub fn class_of(&self, agent: AgentId) -> Option<Class> {
+        self.agents.get(&agent).map(|a| a.agent.class)
+    }
+
     /// `request` is over before its last token (the model stopped, or the agent
     /// cancelled it): its slot, snapshot and place in the queue are free.
     pub fn finish(&mut self, request: RequestId) {
