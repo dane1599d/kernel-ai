@@ -66,7 +66,11 @@ fn a_busy_store_refuses_a_blob_but_stops_its_own_download() {
         busy: true,
         ..Holds::default()
     };
-    assert!(decide(&A, &busy).unwrap_err().contains("try again when it finishes"));
+    assert!(
+        decide(&A, &busy)
+            .unwrap_err()
+            .contains("try again when it finishes")
+    );
     let downloading = Holds {
         downloading: Some(A),
         busy: true,
