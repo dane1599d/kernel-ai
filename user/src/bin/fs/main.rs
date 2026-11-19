@@ -110,9 +110,16 @@ fn main() -> i32 {
             [raw] if from.badge != 0 => shm::Mapped::of(request, Handle(*raw)),
             _ => None,
         };
+        // A handle that cannot be a destination is the Rename's error, never
+        // a rename within its own folder.
         let into = match moved {
-            [raw] if from.badge != 0 && mapped.is_none() => sys::endpoint_badge(Handle(*raw)).ok(),
-            _ => None,
+            [] => None,
+            [_] if mapped.is_some() => None,
+            [raw] => Some(sys::endpoint_badge(Handle(*raw)).map_err(|e| match e {
+                Error::Permission => fsproto::Error::Permission,
+                _ => fsproto::Error::Invalid,
+            })),
+            _ => Some(Err(fsproto::Error::Invalid)),
         };
         let answer = (from.badge != 0).then(|| {
             let call = Call {
