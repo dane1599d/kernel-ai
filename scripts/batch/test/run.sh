@@ -140,6 +140,13 @@ printf 'const F: &[u8] = include_bytes!("../../crate/tests/fixture.bin");\n' > "
 printf '#[path = "../../testkit/used.rs"]\nmod used;\n' > "$RT/kernel/src/k.rs"
 # A test reaching another test file: not image code.
 mkdir -p "$RT/crate/tests"; printf '#[path = "b.rs"]\nmod b;\n' > "$RT/crate/tests/a.rs"
+# include! itself; a #[path]ed mod.rs, whose module tree comes with it; a
+# testkit file image code reaches that reads a test fixture in turn.
+printf 'include!("../../docs/gen.md");\n' > "$RT/kernel/src/i.rs"
+printf '#[path = "../../testkit/tree/mod.rs"]\nmod tree;\n' > "$RT/kernel/src/m.rs"
+mkdir -p "$RT/testkit/tree"; printf 'mod leaf;\n' > "$RT/testkit/tree/mod.rs"; echo x > "$RT/testkit/tree/leaf.rs"
+printf '#[path = "../../testkit/hop.rs"]\nmod hop;\n' > "$RT/kernel/src/h.rs"
+printf 'const X: &str = include_str!("../crate/tests/data.txt");\n' > "$RT/testkit/hop.rs"
 git -C "$RT" add -A && git -C "$RT" commit -qm base && git -C "$RT" branch -q base
 rule() {  # $1 expected exit, $2 description, then paths to write
   local want=$1 what=$2 got; shift 2
@@ -156,6 +163,9 @@ rule 1 "a doc read through concat!(env!(..))" docs/cc.md
 rule 1 "a tests/ fixture image code includes" crate/tests/fixture.bin
 rule 1 "a testkit/ file image code #[path]s"  testkit/used.rs
 rule 0 "a tests/ file only a test reaches"    crate/tests/b.rs
+rule 1 "a doc image code include!s"           docs/gen.md
+rule 1 "a file in a #[path]ed mod.rs's tree"  testkit/tree/leaf.rs
+rule 1 "a fixture a testkit helper reads"     crate/tests/data.txt
 rule 1 "a .md under a component's src/"       apps/x/src/notes.md
 rule 0 "a crate's tests/ beside Cargo.toml"   crate/tests/t.rs
 rule 1 "a tests/ with no Cargo.toml beside"   loose/tests/t.rs
@@ -180,6 +190,11 @@ git -C "$RT" checkout -q -b child && echo z > "$RT/docs/child.md" && git -C "$RT
 check "a docs PR stacked on a kernel PR (exit 1)" '[ "$got" = 1 ]'
 (cd "$RT" && bash "$B/noboot.sh" base no-such-rev > /dev/null 2>&1); got=$?
 check "unreadable revisions (exit 2)"          '[ "$got" = 2 ]'
+# A git whose grep fails: the reference check must answer "read" (fail closed).
+printf '#!/bin/sh\n[ "$1" = grep ] && exit 2\nexec git "$@"\n' > "$T/failgit"; chmod +x "$T/failgit"
+git -C "$RT" checkout -q -B case base && echo y >> "$RT/docs/plan.md" && git -C "$RT" add -A && git -C "$RT" commit -qm case
+(cd "$RT" && NOBOOT_GIT="$T/failgit" bash "$B/noboot.sh" base case > /dev/null); got=$?
+check "a grep error fails closed (exit 1)"     '[ "$got" = 1 ]'
 
 echo "== another workflow still running, or unlisted, is not green"
 setup
