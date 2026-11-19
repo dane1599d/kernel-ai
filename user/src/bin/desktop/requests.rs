@@ -61,8 +61,13 @@ pub(super) fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &Rec
     let result = state.clients[at].handle(&mut state.desk, bytes, handle.is_some());
     match result {
         Ok(needs) => {
+            let mut kept = false;
             for need in needs {
-                apply_need(state, at, pid, need, handle);
+                kept |= apply_need(state, at, pid, need, handle);
+            }
+            // A handle no need took is closed, or the kernel's table keeps it.
+            if let Some(handle) = handle.filter(|_| !kept) {
+                let _ = sys::handle_close(handle);
             }
             // A window it opened or closed moved the focus: every other client
             // hears it too, so the one that lost it gets its focus_out.
@@ -84,6 +89,9 @@ pub(super) fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &Rec
         // changed, and never heard the greeting).
         Err(surfabi::wire::Error::UnknownObject) if new => {
             println!("desktop: pid {pid} spoke to an earlier desktop; greeting it");
+            if let Some(handle) = handle {
+                let _ = sys::handle_close(handle);
+            }
             // Windows the message opened before it failed go with the old
             // connection, not left on the desk.
             let effects = state.clients[at].close_all(&mut state.desk);
@@ -97,14 +105,10 @@ pub(super) fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &Rec
         }
         Err(error) => {
             println!("desktop: pid {pid} sent a bad message ({error:?}); closing its windows");
-            let mut client = state.clients.remove(at);
-            let effects = client.close_all(&mut state.desk);
-            deliver(state, &effects);
-            state.shown.retain(|(_, owner, ..)| *owner != pid);
-            for pool in state.pools.iter().filter(|p| p.pid == pid) {
-                let _ = sys::shm_unmap(pool.address);
+            if let Some(handle) = handle {
+                let _ = sys::handle_close(handle);
             }
-            state.pools.retain(|p| p.pid != pid);
+            pools::drop_client(state, at);
             let _ = sys::reply_h(b"", &[]);
         }
     }

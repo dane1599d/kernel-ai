@@ -79,6 +79,8 @@ mod keys;
 mod pane;
 #[path = "desktop/perf.rs"]
 mod perf;
+#[path = "desktop/pools.rs"]
+mod pools;
 #[path = "desktop/taskbar.rs"]
 mod taskbar;
 use keys::{input, lease};
@@ -119,6 +121,9 @@ const CLIENT_WAIT_MS: u64 = 2;
 struct Pool {
     pid: u64,
     pool: u32,
+    /// The `Shm` the client moved here, held (with its mapping) until the pool
+    /// is released: `pools::release`.
+    handle: Handle,
     address: u64,
     size: u32,
     /// Mapped writable, so its header page's event ring takes the client's
@@ -299,6 +304,10 @@ fn main() -> i32 {
             );
         }
         let result = run(&mut state, &screen);
+        // The clients' pools go with this connection's state; they greet again.
+        for pool in &state.pools {
+            pools::release(pool);
+        }
         painter = state.painter;
         painted_in = state.painted_in;
         appearance = state.appearance;
