@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# The tests run the scripts without waiting.
+exit 0

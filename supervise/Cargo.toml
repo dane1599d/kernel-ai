@@ -9,3 +9,7 @@ publish = false
 kabi = { path = "../kabi" }
 netdest = { path = "../netdest" }
 termcore = { path = "../termcore" }
+
+[dev-dependencies]
+# The agents' badges, held to kabi's (`agent_tests`).
+agentid = { path = "../agentid" }

@@ -32,7 +32,14 @@ jobs:
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
+      # One file per call: `bash -n a.sh b.sh` reads b.sh as a.sh's argument.
+      - name: The merge batcher's scripts parse (scripts/batch)
+        run: for f in scripts/batch/*.sh; do bash -n "$f" || exit 1; done
+      - name: The merge batcher lands, resumes and tidies as it should (stub gh)
+        run: bash scripts/batch/test/run.sh
       - name: Dependency licences and advisories (deny.toml, ADR 0009 D6)
         run: |
           cargo install --locked cargo-deny --version 0.20.2
@@ -40,9 +47,8 @@ jobs:
       - name: Every licence in the tree and graph is allowed and has its text (ADR 0009 D5)
         run: cargo xtask licences check
       # A new decision is a file in docs/decisions/rows/, not a row of decisions.md. On a
-      # pull request the check also compares decisions.md with the base's, and warns if
-      # it gained a row; add --deny-new-rows once the pull requests that still append one
-      # have landed.
+      # pull request the check also compares decisions.md with the base's, and fails if
+      # it gained a row (--deny-new-rows: the last PR that appended one landed 11-11).
       - name: Decision rows are well formed and decisions.md gains no row
         env:
           EVENT: ${{ github.event_name }}
@@ -50,7 +56,7 @@ jobs:
         run: |
           if [ "$EVENT" = pull_request ]; then
             git fetch --no-tags --depth=1 origin "$BASE_REF"
-            cargo xtask decisions check --base FETCH_HEAD
+            cargo xtask decisions check --base FETCH_HEAD --deny-new-rows
           else
             cargo xtask decisions check
           fi
@@ -206,7 +212,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: qemu
-          save-if: ${{ matrix.accel == 'kvm' && matrix.shard == 1 }}
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.accel == 'kvm' && matrix.shard == 1 }}
       - name: Boot kernel with spikes and check pass/fail
         run: cargo xtask test --accel ${{ matrix.accel }} --timeout 300 --shard ${{ matrix.shard }}/3
     # TCG shards run about twice as long as KVM ones: on 2026-10-28 main's slowest
@@ -245,6 +251,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: qemu-release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Boot the release kernel and log the perf marks
         env:
           XTASK_CASE: shm

@@ -32,6 +32,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod ranges;
+pub mod shared;
 #[cfg(test)]
 mod tests;
 
@@ -40,6 +41,7 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::net::Ipv4Addr;
 pub use ranges::{AddrRange, MAX_SET_SIZE, PortRange};
+pub use shared::{SHARED_SUFFIXES, is_shared};
 
 /// The most host-name suffixes a destination names.
 pub const MAX_HOSTS: usize = 8;
