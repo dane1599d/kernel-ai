@@ -99,20 +99,21 @@ fn write(before: &Nv, after: &Nv) -> Result<(), efi::Error> {
     write_one_shot(after.one_shot)
 }
 
-/// R re-arming the slot it found armed ([`bootslot::one_shot_first`]): the
-/// one-shot, then the record. A power cut between them boots the slot with
-/// its try not yet taken, never takes a try with no boot behind it. The
-/// record is written even when the one-shot fails, so each pass through R
-/// still counts and a store that refuses every one-shot ends in R staying
-/// up, not in a reset loop.
-fn write_arm(before: &Nv, after: &Nv) -> Result<(), efi::Error> {
-    let one_shot = if after.one_shot != before.one_shot {
-        write_one_shot(after.one_shot)
-    } else {
-        Ok(())
-    };
-    write_record(before, after)?;
-    one_shot
+/// R's arm, in [`bootslot::arm_writes`]'s order: the one-shot first only to
+/// re-arm the slot it found armed (a cut between the writes spares its try),
+/// and the record stored even when the one-shot fails.
+fn write_arm(before: &Nv, after: &Nv, next: Slot) -> Result<(), efi::Error> {
+    bootslot::arm_writes(
+        before.record.armed,
+        next,
+        || {
+            if after.one_shot == before.one_shot {
+                return Ok(());
+            }
+            write_one_shot(after.one_shot)
+        },
+        || write_record(before, after),
+    )
 }
 
 /// Writes `after`'s record if it changed from `before`'s.
@@ -427,12 +428,7 @@ fn in_r(had_record: bool, before: Nv, mut nv: Nv) {
                 entry_id(slot),
                 describe(&nv.record, slot)
             );
-            let written = if bootslot::one_shot_first(before.record.armed, slot) {
-                write_arm(&before, &nv)
-            } else {
-                write(&before, &nv)
-            };
-            finish(&nv, written)
+            finish(&nv, write_arm(&before, &nv, slot))
         }
         InR::Stay => {
             log!("slots: nothing bootable; R stays up");
@@ -516,12 +512,10 @@ pub fn set(record: Record, one_shot: Option<Slot>) -> Result<(), efi::Error> {
     efi::set_variable(&KAI, RECORD, NV_BS_RT, &record.encode())?;
     // The record is the firmware's now: the fault path writes from it even if
     // the one-shot fails next, never from the record before (a commit's
-    // floors would fall back). The one-shot is kept only once it is written,
-    // so the fault path, comparing, still writes one the firmware lacks.
+    // floors would fall back). The fault path deletes the one-shot whatever
+    // BOOTED holds, so only the record is kept.
     keep_booted(|nv| nv.record = record);
-    write_one_shot(one_shot)?;
-    keep_booted(|nv| nv.one_shot = one_shot);
-    Ok(())
+    write_one_shot(one_shot)
 }
 
 /// POWER_REBOOT's reset: once a BOOTREC_SET under way has written both its

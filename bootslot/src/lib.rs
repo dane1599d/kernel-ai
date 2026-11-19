@@ -298,6 +298,28 @@ pub fn one_shot_first(armed: Option<Slot>, next: Slot) -> bool {
     armed == Some(next)
 }
 
+/// R's two writes when it arms `next` from a record that had `armed`, in the
+/// order [`one_shot_first`] gives: `one_shot` stores the one-shot, `record`
+/// the record. With the one-shot first, the record is stored even when the
+/// one-shot fails, so each pass through R still counts and a store that
+/// refuses every one-shot ends in R staying up, not in a reset loop. The
+/// first error, if any.
+pub fn arm_writes<E>(
+    armed: Option<Slot>,
+    next: Slot,
+    one_shot: impl FnOnce() -> Result<(), E>,
+    record: impl FnOnce() -> Result<(), E>,
+) -> Result<(), E> {
+    if one_shot_first(armed, next) {
+        let stored = one_shot();
+        record()?;
+        stored
+    } else {
+        record()?;
+        one_shot()
+    }
+}
+
 /// *stage*, before writing `slot`: it never boots until [`stage_end`].
 pub fn stage_begin(nv: &mut Nv, slot: Slot) {
     *nv.record.slot_mut(slot) = SlotState {
