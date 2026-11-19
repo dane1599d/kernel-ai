@@ -92,6 +92,8 @@ pub fn serve(component: &str, shm: &[u8], host: &dyn Host) -> Result<String, Str
     trial.call("a key", |app| app.ui_input(window, key))?;
     let shown = trial.last.as_ref().filter(|(shown, _)| *shown == window);
     if let Some((node, name)) = shown.and_then(|(_, frame)| button(frame)) {
+        // The app's own label, of any length: cut, for the report.
+        let name: String = name.chars().take(40).collect();
         let what = format!("a click on node {node} ({name:?})");
         trial.call(&what, |app| {
             app.ui_act(window, node, Action::Click, None).map(|_| ())
