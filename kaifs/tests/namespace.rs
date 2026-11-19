@@ -825,6 +825,7 @@ fn the_skip_needs_no_read_after_the_mount() {
     assert!(fs.next_oid() > last, "{} after {last}", fs.next_oid());
 }
 
+/// (A new disk's count starts at 1: 0 is what a build that keeps none writes.)
 /// A mount that falls back counts it, once: a later mount of the same line
 /// of commits, with the abandoned newer slots still on the rings, does not
 /// count it again; a second fallback counts again.
@@ -836,21 +837,21 @@ fn a_fallback_is_counted_once_and_the_next_one_again() {
         fs.create(ROOT, name).unwrap();
         fs.commit().unwrap();
     }
-    assert_eq!(fs.fallbacks(), 0);
+    assert_eq!(fs.fallbacks(), 1);
     let mut disk = fs.into_dev();
     break_the_newest_table(&mut disk);
     let mut fs = Fs::mount(disk).unwrap();
-    assert_eq!(fs.fallbacks(), 1);
+    assert_eq!(fs.fallbacks(), 2);
     fs.create(ROOT, "d").unwrap();
     fs.commit().unwrap();
     let mut fs = remount(fs);
-    assert_eq!(fs.fallbacks(), 1, "counted again on a plain mount");
+    assert_eq!(fs.fallbacks(), 2, "counted again on a plain mount");
     fs.create(ROOT, "e").unwrap();
     fs.commit().unwrap();
     let mut disk = fs.into_dev();
     break_the_newest_table(&mut disk);
     let fs = Fs::mount(disk).unwrap();
-    assert_eq!(fs.fallbacks(), 2);
+    assert_eq!(fs.fallbacks(), 3);
 }
 
 /// Zeroes the `n` newest commits' volume-table roots.
@@ -881,7 +882,7 @@ fn an_abandoned_slot_is_not_counted_twice() {
     let mut disk = fs.into_dev();
     break_the_newest_tables(&mut disk, 2);
     let mut fs = Fs::mount(disk).unwrap();
-    assert_eq!(fs.fallbacks(), 1);
+    assert_eq!(fs.fallbacks(), 2);
     fs.create(ROOT, "e").unwrap();
     fs.commit().unwrap();
     let mut disk = fs.into_dev();
@@ -891,7 +892,7 @@ fn an_abandoned_slot_is_not_counted_twice() {
         newest.generation > fs.committed,
         "the abandoned slot is still newer"
     );
-    assert_eq!(fs.fallbacks(), 1, "the abandoned slot counted twice");
+    assert_eq!(fs.fallbacks(), 2, "the abandoned slot counted twice");
 }
 
 /// `check --repair` that mounts past a newer commit counts the fallback, as a
@@ -907,10 +908,10 @@ fn a_repair_mount_that_falls_back_counts_it() {
     let mut disk = fs.into_dev();
     break_the_newest_table(&mut disk);
     let (mut fs, _) = kaifs::repair_fs::mount_to_repair(disk).unwrap();
-    assert_eq!(fs.fallbacks(), 1);
+    assert_eq!(fs.fallbacks(), 2);
     fs.commit().unwrap();
     let fs = remount(fs);
-    assert_eq!(fs.fallbacks(), 1);
+    assert_eq!(fs.fallbacks(), 2);
 }
 
 #[test]
@@ -924,5 +925,42 @@ fn a_restored_snapshot_raises_the_count() {
     assert!(fs.fallbacks_unsaved());
     fs.commit().unwrap();
     assert!(!fs.fallbacks_unsaved());
-    assert_eq!(remount(fs).fallbacks(), 1);
+    assert_eq!(remount(fs).fallbacks(), 2);
+}
+
+/// A slot mounted from a line a fallback already left (its count below the
+/// highest on the rings) is a jump to other history: counted.
+#[test]
+fn mounting_a_line_a_fallback_left_is_counted() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    for name in ["a", "b", "c"] {
+        fs.create(ROOT, name).unwrap();
+        fs.commit().unwrap();
+    }
+    let mut disk = fs.into_dev();
+    // An older slot of another line, with a higher count, left on the rings.
+    let slots = format::read_rings(&mut disk).unwrap();
+    let mut other = slots[2];
+    other.fallbacks = 5;
+    format::write_rings(&mut disk, &other).unwrap();
+    let fs = Fs::mount(disk).unwrap();
+    assert_eq!(fs.fallbacks(), 6);
+}
+
+/// A slot a build that keeps no count wrote (0 there) mounts as unknown
+/// history: counted, past the highest on the rings.
+#[test]
+fn a_slot_an_older_build_wrote_is_counted() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    fs.create(ROOT, "a").unwrap();
+    fs.commit().unwrap();
+    let before = fs.fallbacks();
+    let mut disk = fs.into_dev();
+    let mut newest = format::read_rings(&mut disk).unwrap()[0];
+    newest.fallbacks = 0;
+    format::write_rings(&mut disk, &newest).unwrap();
+    let fs = Fs::mount(disk).unwrap();
+    assert_eq!(fs.fallbacks(), before + 1);
 }
