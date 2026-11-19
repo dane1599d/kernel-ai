@@ -292,14 +292,34 @@ pub fn routed(
 /// and the request together pass [`act::STATE_REQUEST_TOKENS`] real tokens
 /// (ADR 0010 §5). A request still over that leaves the answer less room.
 pub(crate) fn within_budget(engine: &Engine<'_>, request: &ActRequest) -> ActRequest {
-    let text = act::user_text(&request.state, &request.line);
-    match !request.state.is_empty() && engine.text_tokens(&text) > act::STATE_REQUEST_TOKENS {
-        true => ActRequest {
-            state: String::new(),
-            ..request.clone()
-        },
-        false => request.clone(),
+    let over = |state: &str| {
+        !state.is_empty()
+            && engine.text_tokens(&act::user_text(state, &request.line)) > act::STATE_REQUEST_TOKENS
+    };
+    if !over(&request.state) {
+        return request.clone();
     }
+    // The memories (ADR 0013 §3) go first, then the rest of the State.
+    let state = match without_memory(&request.state) {
+        Some(state) if !over(&state) => state,
+        _ => String::new(),
+    };
+    ActRequest {
+        state,
+        ..request.clone()
+    }
+}
+
+/// `state` without its last key `memory: "..."`, if it has one: the State
+/// the shell would have sent with no memories.
+pub(crate) fn without_memory(state: &str) -> Option<String> {
+    if state.starts_with("#{memory: \"") {
+        return Some(String::new());
+    }
+    let at = state.rfind(", memory: \"")?;
+    state
+        .ends_with("\"}")
+        .then(|| alloc::format!("{}}}", &state[..at]))
 }
 
 /// One call for `request` after `history`. A call naming an index-only row
@@ -759,5 +779,20 @@ mod tests {
         // `new`: history gone, and the request is the plain one again.
         history.clear();
         assert_eq!(act::request(&request, &history).messages.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod memory_key_tests {
+    use super::without_memory;
+
+    #[test]
+    fn the_memory_key_goes_and_the_rest_of_the_state_stays() {
+        assert_eq!(
+            without_memory("#{app: \"notes\", memory: \"a; b\"}").as_deref(),
+            Some("#{app: \"notes\"}")
+        );
+        assert_eq!(without_memory("#{memory: \"a\"}").as_deref(), Some(""));
+        assert_eq!(without_memory("#{app: \"notes\"}"), None);
     }
 }

@@ -4,20 +4,25 @@
 //!
 //! - **Remember.** The person's own "remember …" line keeps its own words
 //!   (`kaimem::remember::from_line`), never the model's. A memory the model
-//!   proposes asks on the card with its exact text. One steered by content (a
-//!   file, a page) is refused, whoever asks: read data never plants one.
-//! - **Edit** keeps a text the line wrote, and asks for any other; content
-//!   never writes one.
-//! - **Forget** runs and `undo` brings it back for 10 minutes; then the store
-//!   purges it. **Forget all** always asks.
+//!   proposes asks on the card; the card is code-written (ADR 0005 §7) and the
+//!   words are shown beside it, on `show`. One steered by content (a file, a
+//!   page) is refused, whoever asks: read data never plants one. A fact kept
+//!   already is said so, and nothing is logged or undone for it.
+//! - **Edit and forget** run without a card only when the person's line asked
+//!   for that very memory: the cue and its number, typed (`Why::Asked`). A
+//!   "Taken as" from a vague line, a number the model chose, or anything else
+//!   goes to the card, which `show` explains with the memory's words. The
+//!   reply names what was changed or forgotten. Content never writes one.
+//! - **Forget** is undone for 10 minutes; then the store purges it. **Forget
+//!   all** always asks.
 //! - **Agents** keep their own memories through their package (P3), never
 //!   through these rows.
-//! - **The State** carries at most 3 memories that share a word with the
-//!   request, inside its 64 tokens ([`Shell::state_line_for`]). They inform
-//!   the model and never give consent.
+//! - **The log** keeps no memory's words: what was kept or forgotten is named
+//!   by its number, and an edit's earlier words wait for `undo` in the shell
+//!   (`memundo`), not on disk.
 
 use crate::actions::Pending;
-use crate::actlog::{Change, Entry, Form, State};
+use crate::actlog::Change;
 use crate::undo::Inverse;
 use crate::{Reply, Shell};
 use agentabi::Tier;
@@ -32,6 +37,9 @@ use termcore::once::{CallArg, call_text};
 
 /// What an agent's step to a memory row is told.
 pub const AGENTS_OWN: &str = "an agent keeps its own memories through its package, not these rows";
+/// What a proposal the card cannot show as plain words is told.
+pub const SAY_IT: &str =
+    "that memory cannot be shown plainly beside the card; say \"remember ...\" yourself";
 
 /// What a memory row's ask waits on.
 #[derive(Clone, Debug)]
@@ -58,28 +66,18 @@ fn content(why: Why) -> Option<&'static str> {
     }
 }
 
-impl Shell {
-    /// The memories `memory_read` holds, loaded at start; records out of
-    /// shape are skipped and said.
-    pub(crate) fn with_saved_memories(mut self) -> Self {
-        let Some(text) = self.host.memory_read() else {
-            return self;
-        };
-        match kaimem::store::Memories::load(&text) {
-            Ok(loaded) => {
-                for skipped in &loaded.skipped {
-                    self.host
-                        .audit(&format!("a memory record was skipped: {skipped:?}"));
-                }
-                self.memories = loaded.memories;
-            }
-            Err(why) => self.host.audit(&format!(
-                "the memory file is out of shape, so none is read: {why}"
-            )),
-        }
-        self
-    }
+/// Whether the person's line asked for memory `memory` itself: the door
+/// found the line asking (never a "Taken as"), and the number is typed in it.
+fn line_names(request: &str, decision: Decision, memory: u64) -> bool {
+    let number = format!("{memory}");
+    decision.tier == Tier::Run
+        && decision.why == Why::Asked
+        && request
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| word == number)
+}
 
+impl Shell {
     /// A memory row's call, which `call_row` hands here with its tier decided.
     pub(crate) fn memory_call(
         &mut self,
@@ -122,11 +120,15 @@ impl Shell {
         match kaimem::remember::decide(asker, true) {
             Verdict::Refused(why) => Reply::err(format!("not remembered: {why}")),
             Verdict::Runs { text, .. } => self.memory_keep(id, request, &text, "asked"),
+            Verdict::Asks { text, .. } if !text.is_ascii() => {
+                Reply::err(format!("not remembered: {SAY_IT}"))
+            }
             Verdict::Asks { text, .. } => {
+                if let Some(kept) = self.memory_kept(&text) {
+                    return Reply::ok(format!("Kai already remembers that (memory {kept})"));
+                }
                 let call =
                     call_text("memory_remember", &[CallArg::Int(id as i64)]).unwrap_or_default();
-                // The card is code-written (ADR 0005 §7): the model's words
-                // are shown on `show`, beside it, never on it.
                 let length = text.chars().count();
                 let question = format!(
                     "Remember a fact of {length} characters with {call}? Type show to read it"
@@ -137,27 +139,39 @@ impl Shell {
         }
     }
 
-    /// Keeps `text` for the person, logged with its forget as the undo.
+    /// The memory already kept for everyone with `text`, if any.
+    fn memory_kept(&self, text: &str) -> Option<u64> {
+        let text = text.trim();
+        self.memories
+            .list(Who::User)
+            .iter()
+            .find(|m| m.scope == Scope::All && m.text.eq_ignore_ascii_case(text))
+            .map(|m| m.id)
+    }
+
+    /// Keeps `text` for the person, logged with its forget as the undo. A
+    /// fact kept already changes nothing, so nothing is logged to undo.
     fn memory_keep(&mut self, id: u64, request: &str, text: &str, consent: &str) -> Reply {
+        if let Some(kept) = self.memory_kept(text) {
+            return Reply::ok(format!("Kai already remembers that (memory {kept})"));
+        }
         let now = self.host.now_ns();
         let kept = self.memories.remember(Who::User, text, Scope::All, id, now);
         let memory = match kept {
             Ok(memory) => memory,
             Err(why) => return Reply::err(format!("not remembered: {why}")),
         };
+        let change = memory_change("memory_remember", memory, "", "kept");
         let change = Change {
-            action: String::from("memory_remember"),
-            owner: String::from("memory"),
-            res: format!("memory {memory}"),
-            before: String::new(),
-            after: String::from(text),
             inverse: Some(Inverse::MemoryForget { id: memory }),
+            ..change
         };
         self.memory_logged(id, request, "memory_remember", consent, alloc::vec![change]);
         Reply::ok(format!("Kai remembers \"{text}\" (memory {memory}). undo"))
     }
 
-    /// `memory_edit`: a text the line wrote runs; any other asks.
+    /// `memory_edit`: the person's line naming the memory and its new words
+    /// runs; anything else asks on the card.
     fn memory_edit(
         &mut self,
         id: u64,
@@ -171,16 +185,25 @@ impl Shell {
                 "not changed: a memory is never written from content ({source})"
             ));
         }
-        if self.memories.get(Who::User, memory).is_none() {
-            return Reply::err(format!("no memory {memory}; memory_list shows them"));
+        if let Some(why) = kaimem::record::text_problem(text.trim()) {
+            return Reply::err(format!("not changed: {why}"));
         }
-        if decision.tier == Tier::Run {
+        let Some(old) = self.memories.get(Who::User, memory).map(|m| m.text.clone()) else {
+            return Reply::err(format!("no memory {memory}; memory_list shows them"));
+        };
+        if line_names(request, decision, memory) {
             return self.memory_edit_run(id, request, memory, text, "asked");
+        }
+        if !text.is_ascii() {
+            return Reply::err(format!("not changed: {SAY_IT}"));
         }
         let call = call_text("memory_edit", &[CallArg::Int(memory as i64)]).unwrap_or_default();
         let question =
             format!("Change memory {memory} with {call}? Type show to read the new words");
-        let note = format!("memory {memory} will say \"{text}\"");
+        let note = format!(
+            "memory {memory} says \"{old}\"; it would say \"{}\"",
+            text.trim()
+        );
         let waiting = Waiting::Edit(memory, String::from(text));
         self.memory_ask(id, request, &call, note, &question, waiting)
     }
@@ -198,31 +221,29 @@ impl Shell {
             Ok(before) => before,
             Err(why) => return Reply::err(format!("not changed: {why}")),
         };
+        let after = String::from(text.trim());
+        self.memory_edited(memory, &after, &before);
         let change = Change {
-            action: String::from("memory_edit"),
-            owner: String::from("memory"),
-            res: format!("memory {memory}"),
-            before,
-            after: String::from(text.trim()),
             inverse: Some(Inverse::MemoryText { id: memory }),
+            ..memory_change("memory_edit", memory, "words before", "edited")
         };
         self.memory_logged(id, request, "memory_edit", consent, alloc::vec![change]);
         Reply::ok(format!(
-            "Done: memory {memory} says \"{}\". undo",
-            text.trim()
+            "Done: memory {memory} said \"{before}\" and says \"{after}\" now. undo"
         ))
     }
 
-    /// `memory_forget`: runs when the line asked, else asks.
+    /// `memory_forget`: runs when the person's line named that memory, else
+    /// asks.
     fn memory_forget(&mut self, id: u64, request: &str, memory: u64, decision: Decision) -> Reply {
         let Some(text) = self.memories.get(Who::User, memory).map(|m| m.text.clone()) else {
             return Reply::err(format!("no memory {memory}; memory_list shows them"));
         };
-        if decision.tier == Tier::Run {
+        if line_names(request, decision, memory) {
             return self.memory_forget_run(id, request, &[memory], "asked");
         }
         let call = call_text("memory_forget", &[CallArg::Int(memory as i64)]).unwrap_or_default();
-        let question = format!("Forget memory {memory} with {call}?");
+        let question = format!("Forget memory {memory} with {call}? Type show to read it");
         let note = format!("Kai forgets \"{text}\"; undo brings it back for 10 minutes");
         self.memory_ask(id, request, &call, note, &question, Waiting::Forget(memory))
     }
@@ -242,7 +263,8 @@ impl Shell {
         self.memory_ask(id, request, &call, note, &question, Waiting::ForgetAll)
     }
 
-    /// Forgets each of `memories`, logged with their restore as the undo.
+    /// Forgets each of `memories`, logged with their restore as the undo;
+    /// the reply names what went.
     fn memory_forget_run(
         &mut self,
         id: u64,
@@ -252,32 +274,31 @@ impl Shell {
     ) -> Reply {
         let now = self.host.now_ns();
         let mut changes = Vec::new();
+        let mut gone = Vec::new();
         for &memory in memories {
             let Some(text) = self.memories.get(Who::User, memory).map(|m| m.text.clone()) else {
                 continue;
             };
             if self.memories.forget(Who::User, memory, now).is_ok() {
                 changes.push(Change {
-                    action: String::from("memory_forget"),
-                    owner: String::from("memory"),
-                    res: format!("memory {memory}"),
-                    before: text,
-                    after: String::from("forgotten"),
                     inverse: Some(Inverse::MemoryRestore { id: memory }),
+                    ..memory_change("memory_forget", memory, "kept", "forgotten")
                 });
+                gone.push((memory, text));
             }
         }
         if changes.is_empty() {
             return Reply::err("nothing was forgotten");
         }
-        let count = changes.len();
         self.memory_logged(id, request, "memory_forget", consent, changes);
-        match count {
-            1 => Reply::ok(format!(
-                "Forgotten: memory {}. undo for 10 minutes",
-                memories[0]
+        match gone.as_slice() {
+            [(memory, text)] => Reply::ok(format!(
+                "Forgotten: memory {memory}, \"{text}\". undo for 10 minutes"
             )),
-            n => Reply::ok(format!("Forgotten: {n} memories. undo for 10 minutes")),
+            all => Reply::ok(format!(
+                "Forgotten: {} memories. undo for 10 minutes",
+                all.len()
+            )),
         }
     }
 
@@ -322,89 +343,18 @@ impl Shell {
         self.remember(&pending, &reply.text);
         reply
     }
+}
 
-    fn memory_logged(
-        &mut self,
-        id: u64,
-        request: &str,
-        row: &str,
-        consent: &str,
-        changes: Vec<Change>,
-    ) {
-        let script = changes
-            .first()
-            .map(|c| format!("{row}({})", c.res.trim_start_matches("memory ")))
-            .unwrap_or_default();
-        self.log.push(Entry {
-            agent: agentid::Name::kai(),
-            id,
-            t_ns: self.host.now_ns(),
-            form: Form::Call,
-            of: None,
-            tier: Some(if consent == "yes" {
-                Tier::Ask
-            } else {
-                Tier::Run
-            }),
-            pack: None,
-            consent: String::from(consent),
-            state: State::Done,
-            request: String::from(request),
-            script,
-            outcome: String::from("ran"),
-            changes,
-        });
-        self.save_log();
-        self.memory_save();
-    }
-
-    /// Drops memories forgotten more than 10 minutes ago, for good.
-    fn memory_purge(&mut self) {
-        if self.memories.purge(self.host.now_ns()) > 0 {
-            self.memory_save();
-        }
-    }
-
-    fn memory_save(&mut self) {
-        if let Err(why) = self.host.memory_write(&self.memories.save()) {
-            self.host
-                .audit(&format!("the memories were not saved: {why}"));
-        }
-    }
-
-    /// `undo` of a memory change: `MemoryRestore` brings a forgotten one
-    /// back (within 10 minutes), `MemoryForget` forgets one again, and
-    /// `MemoryText` sets one back to `text`.
-    pub(crate) fn revert_memory(&mut self, inverse: Inverse, text: &str) -> Result<String, String> {
-        let now = self.host.now_ns();
-        let done = match inverse {
-            Inverse::MemoryRestore { id } => self
-                .memories
-                .restore(Who::User, id, now)
-                .map(|()| format!("memory {id} is back")),
-            Inverse::MemoryForget { id } => self
-                .memories
-                .forget(Who::User, id, now)
-                .map(|()| format!("memory {id} forgotten")),
-            Inverse::MemoryText { id } => self
-                .memories
-                .edit(Who::User, id, text, now)
-                .map(|_| format!("memory {id} says \"{text}\" again")),
-            _ => return Err(String::from("not a memory change")),
-        };
-        if done.is_ok() {
-            self.memory_save();
-        }
-        done
-    }
-
-    /// The State the next request `request` carries: the OS's, with the
-    /// memories that share a word with it in the room the line has left.
-    pub(crate) fn state_line_for(&self, request: &str) -> Option<String> {
-        let state = self.host.state();
-        let memories = self.memories.list(Who::User);
-        let memory = kaimem::prompt::state(&memories, request, state.memory_room());
-        state.snapshot_with(&memory)
+/// A memory change for the log, which keeps no memory's words: `before` and
+/// `after` say what happened to memory `memory`.
+fn memory_change(action: &str, memory: u64, before: &str, after: &str) -> Change {
+    Change {
+        action: String::from(action),
+        owner: String::from("memory"),
+        res: format!("memory {memory}"),
+        before: String::from(before),
+        after: String::from(after),
+        inverse: None,
     }
 }
 

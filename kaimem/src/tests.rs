@@ -626,3 +626,12 @@ fn a_habit_is_refused_with_words_that_say_how_to_keep_it() {
         Verdict::Runs { .. }
     ));
 }
+
+#[test]
+fn a_memory_too_long_for_the_room_leaves_it_to_a_shorter_one() {
+    let long = memory(1, 1, &format!("units units {}", "x".repeat(100)));
+    let short = memory(2, 2, "metric units");
+    let state = prompt::state(&[&long, &short], "show units", 80);
+    assert!(state.contains("metric units"), "{state}");
+    assert!(!state.contains("xxx"), "{state}");
+}

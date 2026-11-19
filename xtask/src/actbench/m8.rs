@@ -72,19 +72,16 @@ pub fn shipping(
     GateHost::with_act(reference(engine, true), act)
 }
 
-/// `state` with the memories `line` shares words with after it, within
-/// [`act::STATE_MAX_BYTES`].
+/// `state` with the memories `line` shares words with, as the shell sends
+/// them: the State map's last key, `memory: "..."`, in the room ADR 0010's
+/// line leaves (`shellcore::state::with_memory`, M2).
 pub fn with_memories(state: &str, line: &str) -> String {
     let kept = crate::fluency::memories::kept();
-    let all: Vec<&kaimem::record::Memory> = kept.iter().collect();
-    let gap = if state.is_empty() { 0 } else { 2 };
-    let room = act::STATE_MAX_BYTES.saturating_sub(state.len() + gap);
+    let all: Vec<&kaimem::record::Memory> = kept.iter().filter(|m| m.text.is_ascii()).collect();
+    let snapshot = (!state.is_empty()).then_some(state);
+    let room = shellcore::state::memory_room(snapshot);
     let memories = kaimem::prompt::state(&all, line, room);
-    match (state.is_empty(), memories.is_empty()) {
-        (_, true) => state.to_string(),
-        (true, false) => memories,
-        (false, false) => format!("{state}; {memories}"),
-    }
+    shellcore::state::with_memory(snapshot, &memories).unwrap_or_default()
 }
 
 /// A Rhai literal for an argument value.
@@ -213,8 +210,13 @@ mod tests {
             let state = with_memories("", task.request);
             assert!(state.len() <= act::STATE_MAX_BYTES, "{state}");
             with += usize::from(!state.is_empty());
-            let after = with_memories("focused=build-3", task.request);
-            assert!(after.starts_with("focused=build-3") && after.len() <= act::STATE_MAX_BYTES);
+            assert!(
+                state.is_empty() || state.starts_with("#{memory: \""),
+                "{state}"
+            );
+            let map = "#{app: \"notes\"}";
+            let after = with_memories(map, task.request);
+            assert!(after.starts_with("#{app: \"notes\"") && after.len() <= act::STATE_MAX_BYTES);
         }
         println!("S13-4: {with} of 50 State lines carry memories");
         assert!(with > 0);

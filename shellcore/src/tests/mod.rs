@@ -47,6 +47,7 @@ mod log;
 mod logdisk;
 mod look;
 mod memory;
+mod memory_safety;
 mod models;
 mod models_window;
 mod more;
