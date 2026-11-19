@@ -25,6 +25,18 @@ pub fn forward_https(args: &mut [String], relay: &Path, port: u16) {
     }
 }
 
+/// `XTASK_NETDEV`, when set, in place of the user network: the throughput
+/// workflow's TAP device (`net-throughput`), since slirp's TCP to the guest
+/// does not scale its window (spike P5-S2).
+pub fn netdev_from_env(args: &mut [String]) {
+    let Ok(netdev) = std::env::var("XTASK_NETDEV") else {
+        return;
+    };
+    if let Some(arg) = args.iter_mut().find(|arg| arg.as_str() == USER_NET) {
+        *arg = netdev;
+    }
+}
+
 /// `word` as one word of a `cmd:` QEMU's user network splits as a shell
 /// does, in single quotes, and with each comma doubled, as QEMU's option
 /// parser reads a comma in a value (K's review of #753).

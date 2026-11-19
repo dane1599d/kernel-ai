@@ -200,6 +200,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net-static" => Some(SelfTest::NetStatic),
             "test=net-dest" => Some(SelfTest::NetDest),
             "test=net-stream" => Some(SelfTest::NetStream),
+            "test=net-throughput" => Some(SelfTest::NetThroughput),
             "test=https-mock" => Some(SelfTest::HttpsMock),
             "test=net-download" => Some(SelfTest::NetDownload {
                 again: cmdline.split_whitespace().any(|w| w == "again"),

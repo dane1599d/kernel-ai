@@ -556,6 +556,7 @@ fn execute(options: &Options) -> Result<(), String> {
             if case.bridge {
                 qemu::net_behind_bridge(&mut args);
             }
+            qemu::netdev_from_env(&mut args);
             if case.screen.is_some() {
                 screen::clear(&target_dir);
             }
