@@ -1,14 +1,19 @@
-//! A goal's scope and times, from the words of `goal_set` (G2): what the goal
-//! may use is taken from the request, as a standing rule's scope is (P3), never
-//! from a list the model wrote. The person sees it on the one ask and approves
-//! exactly it; a step outside it asks.
+//! A goal's scope and times (G2). The scope comes from the person's own typed
+//! line, the request as the console or panel received it, never from the
+//! arguments a model wrote for `goal_set`: the model may word the goal, but
+//! what it may touch is what the person said. It is worked out once, shown
+//! on `show`, counted on the card, and handed to `grant_goal` as the same
+//! value; nothing derives it again.
 //!
-//! - **Rows**: every OS row a cue of which starts a word of the goal's text,
-//!   except a goal row, a shell-owned row, a never row and one that sends or
-//!   installs (`agentid::goalgrant::sends_or_installs`). Naming a folder adds the
-//!   file reads, so the goal can see what it works on.
-//! - **Folders**: each relative path written in the text (`notes/q3`), with a
-//!   leading `~/` or `/home/user/` taken off. Nothing else is guessed.
+//! - **Rows**: explicit registry rows, never `<group>_*`: each OS row a cue of
+//!   which is a word of the line. A word that names a row a goal may never
+//!   hold (one that sends, installs, changes a permission or never runs)
+//!   refuses the goal and says which word. At most [`MAX_ACTIONS`].
+//! - **Folders**: each path written in the line, under the person's home:
+//!   relative, or `~/` or `/home/user/` in front, normalised, with no `..`,
+//!   no other absolute path and only plain path characters, and one `fs`
+//!   lists. (kaifs has no symlinks: a listed folder is the folder.) Naming a
+//!   folder adds the file reads, so the goal can see what it works on.
 //! - **Times**: `90m`, `2h` or `1d`. Anything else is refused, never guessed.
 
 use agentabi::{Action, Owner, Tier};
@@ -16,21 +21,40 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+/// The most actions a goal names.
+pub const MAX_ACTIONS: usize = 8;
 /// The file reads a goal that names a folder may make.
 const FOLDER_READS: [&str; 3] = ["fs_list", "fs_find", "fs_read"];
 /// What a goal that names nothing it does is told.
-pub(crate) const NAMES_NOTHING: &str =
+pub const NAMES_NOTHING: &str =
     "say what the goal does, for example \"sort the files in notes/ by topic\"";
+/// What a goal that names too much is told.
+pub const SAY_LESS: &str = "say less: a goal names at most 8 actions";
 
-/// The scope of a goal whose words are `text`, or why there is none.
-pub(crate) fn scope(text: &str) -> Result<goalcore::Scope, String> {
-    let words = plain(text);
-    let folders = folders(text)?;
-    let mut rows: Vec<String> = agentabi::ROWS
-        .iter()
-        .filter(|row| may_hold(row) && row.cues.iter().any(|cue| names(&words, cue)))
-        .map(|row| row.name.to_string())
-        .collect();
+/// The scope of a goal the person asked for with `line`; `listed` asks `fs`
+/// whether a folder is there.
+pub(crate) fn scope(
+    line: &str,
+    listed: impl Fn(&str) -> Result<(), String>,
+) -> Result<goalcore::Scope, String> {
+    let words = plain(line);
+    let mut rows: Vec<String> = Vec::new();
+    for row in agentabi::ROWS.iter().filter(|row| considered(row)) {
+        let Some(cue) = row.cues.iter().find(|cue| names(&words, cue)) else {
+            continue;
+        };
+        if !may_hold(row) {
+            return Err(format!(
+                "\"{cue}\" names {}, which a goal may not do; do that with your own line",
+                row.name
+            ));
+        }
+        rows.push(row.name.to_string());
+    }
+    let folders = folders(line)?;
+    for folder in &folders {
+        listed(folder).map_err(|why| format!("{folder}: {why}"))?;
+    }
     if !folders.is_empty() {
         for read in FOLDER_READS {
             if !rows.iter().any(|row| row == read) {
@@ -41,18 +65,22 @@ pub(crate) fn scope(text: &str) -> Result<goalcore::Scope, String> {
     if rows.is_empty() {
         return Err(String::from(NAMES_NOTHING));
     }
-    if rows.len() > goalcore::MAX_ROWS {
-        return Err(String::from(
-            "the goal names too many kinds of action; say it more narrowly",
-        ));
+    if rows.len() > MAX_ACTIONS {
+        return Err(String::from(SAY_LESS));
     }
     Ok(goalcore::Scope { rows, folders })
 }
 
-/// Whether a goal's ceiling may hold `row` at all.
+/// Whether a word naming `row` counts at all: not a goal row, and not one of
+/// the shell's pure helpers.
+fn considered(row: &Action) -> bool {
+    !row.name.starts_with("goal_") && !(row.owner == Owner::Shell && row.facts.read_only)
+}
+
+/// Whether a goal's ceiling may hold `row`: not a shell-owned change (a
+/// permission or a restart), never-tier, a send or an install.
 fn may_hold(row: &Action) -> bool {
-    !row.name.starts_with("goal_")
-        && row.owner != Owner::Shell
+    row.owner != Owner::Shell
         && agentabi::derive(row) != Tier::Never
         && !agentid::goalgrant::sends_or_installs(row)
 }
@@ -82,29 +110,18 @@ fn names(words: &str, cue: &str) -> bool {
         && (words.contains(&format!("{cue} ")) || words.contains(&format!("{cue}s ")))
 }
 
-/// The folders written in `text`.
-fn folders(text: &str) -> Result<Vec<String>, String> {
+/// The folders written in `line`, normalised.
+fn folders(line: &str) -> Result<Vec<String>, String> {
     let mut out: Vec<String> = Vec::new();
-    for word in text.split_whitespace() {
-        let word = word.trim_matches(|c: char| ",.;:!?\"'()".contains(c));
+    for word in line.split_whitespace() {
+        let word = word.trim_matches(|c: char| ",;:!?\"'()".contains(c));
+        let word = word.trim_end_matches('.');
         if !word.contains('/') {
             continue;
         }
-        let path = word
-            .strip_prefix("~/")
-            .or_else(|| word.strip_prefix("/home/user/"))
-            .unwrap_or(word)
-            .trim_end_matches('/');
-        let plain_path = !path.is_empty()
-            && !path.starts_with('/')
-            && path
-                .split('/')
-                .all(|p| !p.is_empty() && p != "." && p != "..");
-        if !plain_path {
-            return Err(format!("{word} is not a folder in your home folder"));
-        }
-        if !out.iter().any(|f| f == path) {
-            out.push(path.to_string());
+        let path = folder(word)?;
+        if !out.contains(&path) {
+            out.push(path);
         }
     }
     if out.len() > goalcore::MAX_FOLDERS {
@@ -114,6 +131,40 @@ fn folders(text: &str) -> Result<Vec<String>, String> {
         ));
     }
     Ok(out)
+}
+
+/// `word` as a folder under home, relative and normalised, or why not.
+fn folder(word: &str) -> Result<String, String> {
+    let refused = || format!("{word} is not a folder in your home folder");
+    let plain_chars = word
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "._-/~".contains(c));
+    if !plain_chars {
+        return Err(refused());
+    }
+    let rest = match word {
+        "~" | "/home/user" => "",
+        _ => match (word.strip_prefix("~/"), word.strip_prefix("/home/user/")) {
+            (Some(rest), _) | (_, Some(rest)) => rest,
+            _ if word.starts_with('/') || word.starts_with('~') => return Err(refused()),
+            _ => word,
+        },
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for part in rest.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => return Err(refused()),
+            part if part.contains('~') => return Err(refused()),
+            part => parts.push(part),
+        }
+    }
+    match parts.is_empty() {
+        true => Err(format!(
+            "{word}: name a folder in your home folder, not all of it"
+        )),
+        false => Ok(parts.join("/")),
+    }
 }
 
 /// `90m`, `2h` or `1d`, in milliseconds.

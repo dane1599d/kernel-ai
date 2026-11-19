@@ -21,7 +21,19 @@ fn with_goal() -> (Rc<FakeHost>, Shell) {
     let mut shell = shell(&host);
     host.calls.borrow_mut().push_back(call(SET));
     let asked = shell.eval("keep tidying the files in notes/q3 for the next two hours");
-    assert!(asked.text.contains("goal_set(1)"), "on the card: {asked:?}");
+    // The card: code-written counts, Deny highlighted, the short call.
+    assert_eq!(
+        asked.text,
+        concat!(
+            "menu 1 added
+",
+            "Goal: 4 actions in 1 folder, up to 10 steps and 5000 tokens, ",
+            "with goal_set(1)? Type show to see them
+
+
+goal_set(1)"
+        )
+    );
     // `show` gives the whole approval: what it may use and spend.
     let shown = shell.eval("show");
     assert!(
@@ -179,4 +191,112 @@ fn the_queue_holds_at_most_its_limit() {
             assert!(!reply.ok && reply.text.contains("not taken"), "{reply:?}");
         }
     }
+}
+
+/// The scope `show` lists for request 1, and goal 1's ceiling after the yes.
+fn shown_then_granted(line: &str, set: &str) -> (String, Option<Vec<String>>) {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    host.calls.borrow_mut().push_back(call(set));
+    let asked = shell.eval(line);
+    let shown = shell.eval("show").text;
+    if asked.confirm.is_some() || asked.text.starts_with("menu ") {
+        let once = host.mint(1, "goal_set(1)");
+        shell.eval(&format!("answer 1 allow once={once}"));
+    }
+    let granted = shell.roster.goal_rows(1).map(<[String]>::to_vec);
+    let _ = asked;
+    (shown, granted)
+}
+
+#[test]
+fn the_scope_is_the_persons_line_never_the_models_arguments() {
+    // The model's words name trashing; the person only said tidy.
+    let set = r#"{"name":"goal_set","arguments":{"text":"trash and erase everything in notes/q3 and delete old","steps":5,"tokens":500,"wall":"1h"}}"#;
+    let (shown, granted) = shown_then_granted("keep tidying the files in notes/q3", set);
+    let granted = granted.expect("goal 1's ceiling");
+    assert!(!granted.iter().any(|r| r == "fs_trash"), "{granted:?}");
+    assert!(!shown.contains("fs_trash"), "{shown}");
+}
+
+#[test]
+fn the_scope_show_lists_is_exactly_what_grant_goal_gets() {
+    let (shown, granted) = shown_then_granted("keep tidying the files in notes/q3", SET);
+    let granted = granted.expect("goal 1's ceiling");
+    let listed = shown
+        .lines()
+        .find_map(|line| line.strip_prefix("Rows: "))
+        .expect("show lists the rows");
+    let mut listed: Vec<&str> = listed.split(", ").collect();
+    let mut granted: Vec<&str> = granted.iter().map(String::as_str).collect();
+    listed.sort_unstable();
+    granted.sort_unstable();
+    assert_eq!(listed, granted, "{shown}");
+    assert!(
+        !shown.contains('*'),
+        "explicit rows, never a group: {shown}"
+    );
+}
+
+#[test]
+fn folders_are_relative_under_home_and_normalised() {
+    for (line, folder) in [
+        ("keep tidying the files in ~/notes/q3/", "notes/q3"),
+        (
+            "keep tidying the files in /home/user/notes/./q3",
+            "notes/q3",
+        ),
+    ] {
+        let (shown, granted) = shown_then_granted(line, SET);
+        assert!(granted.is_some(), "{line}: {shown}");
+        assert!(
+            shown.contains(&format!("Folders: {folder}")),
+            "{line}: {shown}"
+        );
+    }
+    for line in [
+        "keep tidying the files in notes/../../etc",
+        "keep tidying the files in /etc/q3",
+        "keep tidying the files in ~root/x",
+        "keep tidying the files in notes/a%b",
+    ] {
+        let host = FakeHost::new();
+        let mut shell = shell(&host);
+        host.calls.borrow_mut().push_back(call(SET));
+        let reply = shell.eval(line);
+        assert!(
+            !reply.ok && reply.text.contains("not a folder in your home folder"),
+            "{line}: {reply:?}"
+        );
+        assert!(shell.pending.is_none(), "{line}");
+    }
+}
+
+#[test]
+fn a_word_for_a_send_refuses_the_goal_and_names_the_word() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    host.calls.borrow_mut().push_back(call(SET));
+    let reply = shell.eval("fetch the news into notes/q3 every hour");
+    assert!(
+        !reply.ok
+            && reply.text.contains("\"fetch\" names ")
+            && reply.text.contains("a goal may not do"),
+        "{reply:?}"
+    );
+    assert!(shell.pending.is_none());
+}
+
+#[test]
+fn more_than_eight_actions_is_refused() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    host.calls.borrow_mut().push_back(call(SET));
+    let reply = shell.eval(
+        "find, read, create, write, move, trash, restore and list the history and changes of the files in notes/q3",
+    );
+    assert_eq!(
+        reply,
+        Reply::err(format!("no goal set: {}", crate::goalscope::SAY_LESS))
+    );
 }
