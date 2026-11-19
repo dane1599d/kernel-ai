@@ -9,6 +9,9 @@ use alloc::format;
 use alloc::vec;
 use kaifs::MemDisk;
 
+/// A third caller.
+const CAROL: u64 = 9;
+
 fn home(c: &mut Client<'_>, caller: u64, request: Request) -> (Reply, Option<Mint>) {
     c.call(caller, HOME_USER, DIR_RIGHTS, request)
 }
@@ -121,5 +124,85 @@ fn a_begin_also_ends_the_refusal_and_bob_is_never_refused() {
         Reply::Done
     );
     assert_eq!(write(&mut c, &doc, 0, 10), Reply::Done);
+    assert_eq!(home(&mut c, ALICE, Request::Abort).0, Reply::Done);
+}
+
+fn write_as(c: &mut Client<'_>, caller: u64, file: &Mint, len: usize) -> Reply {
+    let request = Request::Write {
+        off: 0,
+        data: vec![3; len],
+    };
+    c.call(caller, file.badge, file.rights, request).0
+}
+
+/// Each caller's mark is its own: another caller's commit, or a second drop,
+/// leaves it alone, and only its own Abort or Begin clears it.
+#[test]
+fn a_commit_or_a_second_drop_leaves_a_callers_mark() {
+    let mut disk = MemDisk::new(2 * 1024);
+    let (mut c, _) = Client::start(&mut disk);
+    let doc = create(&mut c, "doc").expect("a file");
+    fill(&mut c);
+    // Alice's action is dropped under Bob's read.
+    assert_eq!(
+        home(&mut c, ALICE, Request::Begin { action: 1 }).0,
+        Reply::Done
+    );
+    assert_eq!(write_run(&mut c, &doc, 0, 100 << 10), Reply::Done);
+    let _ = home(&mut c, BOB, Request::Stat);
+    // Bob's own action, begun and committed: Alice is still marked.
+    assert_eq!(
+        home(&mut c, BOB, Request::Begin { action: 2 }).0,
+        Reply::Done
+    );
+    let committed = home(&mut c, BOB, Request::Commit).0;
+    assert!(
+        matches!(committed, Reply::Committed { .. }),
+        "{committed:?}"
+    );
+    assert_eq!(write(&mut c, &doc, 0, 10), Reply::Failed(Error::Dropped));
+    // Carol's action is dropped the same way: both are marked.
+    assert_eq!(
+        home(&mut c, CAROL, Request::Begin { action: 3 }).0,
+        Reply::Done
+    );
+    for at in (0..100 << 10).step_by(fsproto::MAX_DATA) {
+        let request = Request::Write {
+            off: at as u64,
+            data: vec![5; fsproto::MAX_DATA],
+        };
+        assert_eq!(c.call(CAROL, doc.badge, doc.rights, request).0, Reply::Done);
+    }
+    let _ = home(&mut c, BOB, Request::Stat);
+    assert_eq!(
+        write_as(&mut c, CAROL, &doc, 10),
+        Reply::Failed(Error::Dropped)
+    );
+    assert_eq!(write(&mut c, &doc, 0, 10), Reply::Failed(Error::Dropped));
+    // Alice's Abort clears hers alone.
+    assert_eq!(home(&mut c, ALICE, Request::Abort).0, Reply::Done);
+    assert_ne!(write(&mut c, &doc, 0, 10), Reply::Failed(Error::Dropped));
+    assert_eq!(
+        write_as(&mut c, CAROL, &doc, 10),
+        Reply::Failed(Error::Dropped)
+    );
+}
+
+/// The owner's own run crossing a record's end goes to kaifs whole; on a full
+/// disk that fails, the action is dropped, and the owner is marked.
+#[test]
+fn the_owners_own_write_past_a_record_marks_it_when_it_fails() {
+    let mut disk = MemDisk::new(2 * 1024);
+    let (mut c, _) = Client::start(&mut disk);
+    let doc = create(&mut c, "doc").expect("a file");
+    fill(&mut c);
+    assert_eq!(
+        home(&mut c, ALICE, Request::Begin { action: 1 }).0,
+        Reply::Done
+    );
+    // Past 128 KiB the first whole record is written: no room for it.
+    let crossing = write_run(&mut c, &doc, 0, 150 << 10);
+    assert!(matches!(crossing, Reply::Failed(_)), "{crossing:?}");
+    assert_eq!(write(&mut c, &doc, 0, 10), Reply::Failed(Error::Dropped));
     assert_eq!(home(&mut c, ALICE, Request::Abort).0, Reply::Done);
 }

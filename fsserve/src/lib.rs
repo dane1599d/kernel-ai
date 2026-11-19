@@ -33,6 +33,7 @@ pub mod models;
 mod tests;
 mod trash;
 
+use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec::Vec;
 use fsproto::{
@@ -177,9 +178,10 @@ pub struct Server<D: BlockDev> {
     base: u64,
     /// Writes inside an action not yet given to kaifs ([`buffer`]).
     pending: Option<buffer::Pending>,
-    /// The caller whose action was dropped without its asking: its changes
-    /// are refused ([`Error::Dropped`]) until it sends Abort or Begin.
-    dropped: Option<u64>,
+    /// The callers whose action was dropped without their asking: each one's
+    /// changes are refused ([`Error::Dropped`]) until it sends Abort or Begin
+    /// itself. A commit or a drop of anyone else's leaves the marks alone.
+    dropped: BTreeSet<u64>,
     /// The record last read.
     cache: Option<buffer::Cached>,
     /// Whether a caller (a pid) still runs: a dead owner's action is aborted
@@ -230,7 +232,7 @@ impl<D: BlockDev> Server<D> {
             epoch: 0,
             base,
             pending: None,
-            dropped: None,
+            dropped: BTreeSet::new(),
             cache: None,
             alive: |_| true,
             name_of: |_, _| None,
@@ -295,8 +297,6 @@ impl<D: BlockDev> Server<D> {
             && !(self.alive)(owner)
         {
             self.drop_changes();
-            // Gone: nothing to tell, and its pid may come again.
-            self.dropped = None;
         }
     }
 
@@ -504,15 +504,17 @@ impl<D: BlockDev> Server<D> {
             self.own_folder_only(call.caller, &request)?;
         }
         let changes = changes(&request);
-        if changes && self.dropped == Some(call.caller) {
+        if changes && self.dropped.contains(&call.caller) {
             match request {
                 // It knows now: an Abort is its acknowledgement, a Begin its
                 // next action.
                 Request::Abort => {
-                    self.dropped = None;
+                    self.dropped.remove(&call.caller);
                     return Ok((Reply::Done, None));
                 }
-                Request::Begin { .. } => self.dropped = None,
+                Request::Begin { .. } => {
+                    self.dropped.remove(&call.caller);
+                }
                 _ => return Err(Error::Dropped),
             }
         }
@@ -723,8 +725,6 @@ impl<D: BlockDev> Server<D> {
                 }
                 let generation = self.commit();
                 self.owner = None;
-                // The owner hears how its commit went: nothing to refuse.
-                self.dropped = None;
                 Reply::Committed {
                     generation: generation?,
                 }
@@ -732,7 +732,6 @@ impl<D: BlockDev> Server<D> {
             Request::Abort => {
                 self.owned(call.caller)?;
                 self.drop_changes();
-                self.dropped = None;
                 Reply::Done
             }
             Request::Restore { txn, action } => {
@@ -1009,19 +1008,24 @@ impl<D: BlockDev> Server<D> {
         }
     }
 
-    /// Drops everything since the last commit, an open action with it; the
-    /// generation now on the disk. That is the last commit, or one an error
-    /// interrupted after it had landed whole ([`Fs::abort`]).
     /// [`Server::drop_changes`] for an action whose pending run failed to
     /// write out: its owner did not ask for that, and may not know (the error
     /// went to another caller, or read as a refusal), so its changes are
-    /// refused ([`Error::Dropped`]) until it sends Abort or Begin.
+    /// refused ([`Error::Dropped`]) until it sends Abort or Begin. Callers
+    /// that have died since are forgotten first, so the marks stay few.
     pub(crate) fn drop_unasked(&mut self) {
         let owner = self.owner;
         self.drop_changes();
-        self.dropped = owner;
+        let alive = self.alive;
+        self.dropped.retain(|&caller| alive(caller));
+        if let Some(owner) = owner {
+            self.dropped.insert(owner);
+        }
     }
 
+    /// Drops everything since the last commit, an open action with it; the
+    /// generation now on the disk. That is the last commit, or one an error
+    /// interrupted after it had landed whole ([`Fs::abort`]).
     fn drop_changes(&mut self) -> u64 {
         self.owner = None;
         self.pending = None;
