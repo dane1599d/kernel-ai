@@ -184,6 +184,9 @@ impl Shell {
                 "dropped: the agent was retired",
             );
         }
+        self.host.audit(&format!(
+            "request {id}: on the card, dropped: {name} was retired"
+        ));
         self.retired_card = Some(id);
         self.agent_told(String::from(name), id, false, String::from(RETIRED));
     }
