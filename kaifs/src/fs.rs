@@ -276,6 +276,11 @@ impl<D: BlockDev> Fs<D> {
             || sb.fallbacks == 0;
         self.oid_mark = self.oid_mark.max(mark);
         self.fallbacks = self.fallbacks.max(most + u64::from(fell_back));
+        // A mount that cannot commit changes nothing on the disk, so its
+        // count cannot be shown again for other history: it counts as saved.
+        if !self.writable {
+            self.saved_fallbacks = self.fallbacks;
+        }
         Ok(())
     }
 
@@ -696,8 +701,11 @@ impl<D: BlockDev> Fs<D> {
         vol.live.scan_born_after(since, &mut store, visit)
     }
 
-    /// [`Fs::scan_born_after`] from key `from` on, until `visit` returns false.
-    pub fn scan_born_after_from(
+    /// The items of the active volume's tree as the last commit wrote it,
+    /// in leaves born after generation `since`, from key `from` on, until
+    /// `visit` returns false. The committed tree, not the live one: what an
+    /// open action changed, and may yet drop, is not there.
+    pub fn scan_committed_born_after_from(
         &mut self,
         since: u64,
         from: &Key,
@@ -705,8 +713,7 @@ impl<D: BlockDev> Fs<D> {
     ) -> Result<(), Error> {
         let pin = self.pin();
         let (vol, mut store) = split(&mut self.vols, &mut self.io, self.active, pin);
-        vol.live
-            .scan_born_after_from(since, from, &mut store, visit)
+        Tree::open(vol.base.0).scan_born_after_from(since, from, &mut store, visit)
     }
 
     /// Makes `items`, raw and in key order, the active volume's whole live tree.

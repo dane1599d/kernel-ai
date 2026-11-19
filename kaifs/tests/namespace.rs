@@ -964,3 +964,43 @@ fn a_slot_an_older_build_wrote_is_counted() {
     let fs = Fs::mount(disk).unwrap();
     assert_eq!(fs.fallbacks(), before + 1);
 }
+
+/// A disk that cannot make writes durable, so a mount of it is read-only.
+struct NoFlush(MemDisk);
+
+impl BlockDev for NoFlush {
+    fn info(&self) -> kaifs::DevInfo {
+        kaifs::DevInfo {
+            volatile_cache: true,
+            flush: false,
+            ..self.0.info()
+        }
+    }
+
+    fn read(&mut self, addr: u64, buf: &mut kaifs::Block) -> Result<(), kaifs::IoError> {
+        self.0.read(addr, buf)
+    }
+
+    fn write(&mut self, addr: u64, data: &kaifs::Block) -> Result<(), kaifs::IoError> {
+        self.0.write(addr, data)
+    }
+
+    fn flush(&mut self) -> Result<(), kaifs::IoError> {
+        self.0.flush()
+    }
+}
+
+/// A read-only mount raises the count as any mount does, but cannot commit
+/// it: it counts as saved, since nothing on the disk can change under it.
+#[test]
+fn a_read_only_mounts_raised_count_counts_as_saved() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    let mut disk = fs.into_dev();
+    let mut newest = format::read_rings(&mut disk).unwrap()[0];
+    newest.fallbacks = 0;
+    format::write_rings(&mut disk, &newest).unwrap();
+    let fs = Fs::mount(NoFlush(disk)).unwrap();
+    assert!(!fs.writable());
+    assert!(!fs.fallbacks_unsaved());
+}

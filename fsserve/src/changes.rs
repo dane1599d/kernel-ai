@@ -42,7 +42,9 @@ impl<D: BlockDev> Server<D> {
     /// `(since, upto]`, in object order after the cursor, `upto` being the
     /// round's ceiling (the first page's committed generation, carried back in
     /// `after`); whether more follow, and `upto`. Each page reads about a
-    /// page's worth of the tree ([`kaifs::Fs::scan_born_after_from`]).
+    /// page's worth of the committed tree
+    /// ([`kaifs::Fs::scan_committed_born_after_from`]): an open action's
+    /// changes, which it may yet drop, are not there.
     pub(crate) fn changed_since(
         &mut self,
         dir: u64,
@@ -63,12 +65,12 @@ impl<D: BlockDev> Server<D> {
             let mut batch: Vec<(u64, Inode)> = Vec::new();
             let mut last = None;
             let mut bad = false;
-            fs.scan_born_after_from(since, &from, &mut |key, raw| {
+            fs.scan_committed_born_after_from(since, &from, &mut |key, raw| {
                 last = Some(*key);
                 if key.kind == K_INODE && key.off == 0 {
                     match inline_of(raw).map(Inode::decode) {
-                        // An open action's changes carry the generation it
-                        // will commit as: past `upto`, so the next round.
+                        // Commits after the round began are past `upto`:
+                        // the next round.
                         Some(Ok(inode)) if inode.changed > since && inode.changed <= upto => {
                             batch.push((key.oid, inode))
                         }

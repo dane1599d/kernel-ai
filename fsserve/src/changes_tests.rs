@@ -305,3 +305,77 @@ fn a_long_round_finds_each_object_once() {
     assert!(made.is_subset(&unique));
     assert!(pages >= 2_000 / MAX_ROWS as usize);
 }
+
+/// An object an open action changes mid-round, and then drops, is still
+/// given: the round reads the committed tree, where it never changed.
+#[test]
+fn an_object_an_aborted_action_touched_mid_round_is_still_given() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let (_, _, before) = page_through(&mut c, HOME_USER, 0);
+    let begin = Request::Begin { action: 1 };
+    assert_eq!(on(&mut c, ALICE, HOME_USER, begin).0, Reply::Done);
+    let files: Vec<Mint> = (0..150)
+        .map(|n| open(&mut c, HOME_USER, &format!("f{n}"), How::CreateFile))
+        .collect();
+    commit(&mut c);
+    let last = files.last().expect("files");
+    let first = page(&mut c, HOME_USER, before, None);
+    assert!(
+        !first.objects.contains(&object(last)),
+        "past the first page"
+    );
+    // Alice changes it in an action, Bob pages on, then Alice drops it.
+    let begin = Request::Begin { action: 2 };
+    assert_eq!(on(&mut c, ALICE, HOME_USER, begin).0, Reply::Done);
+    let write = Request::Write {
+        off: 0,
+        data: vec![1; 10],
+    };
+    assert_eq!(c.call(ALICE, last.badge, last.rights, write).0, Reply::Done);
+    let mut seen = first.objects;
+    let mut after = first.next;
+    while let Some(at) = after {
+        let got = page(&mut c, HOME_USER, before, Some(at));
+        seen.extend(got.objects);
+        after = got.next;
+    }
+    assert_eq!(on(&mut c, ALICE, HOME_USER, Request::Abort).0, Reply::Done);
+    assert!(
+        seen.contains(&object(last)),
+        "the object the abort undid was skipped"
+    );
+}
+
+/// A subfolder's holder pages over a generation that is mostly outside it:
+/// the pages go on across many batches of the scan, and a page reads a small
+/// part of what a whole round does.
+#[test]
+fn a_subfolders_round_spans_batches_and_a_page_reads_little() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let (_, _, before) = page_through(&mut c, HOME_USER, 0);
+    let begin = Request::Begin { action: 1 };
+    assert_eq!(on(&mut c, ALICE, HOME_USER, begin).0, Reply::Done);
+    for n in 0..2_000 {
+        open(&mut c, HOME_USER, &format!("o{n}"), How::CreateFile);
+    }
+    let sub = open(&mut c, HOME_USER, "sub", How::Mkdir);
+    let inside: Vec<u64> = (0..3)
+        .map(|n| object(&open(&mut c, sub.badge, &format!("i{n}"), How::CreateFile)))
+        .collect();
+    commit(&mut c);
+    let (seen, _, _) = page_through(&mut c, sub.badge, before);
+    for ino in &inside {
+        assert!(seen.contains(ino), "an object in the folder was missed");
+    }
+    assert!(seen.len() <= inside.len() + 1, "{} given", seen.len());
+    let reads = |c: &mut Client<'_>| c.server.fs().io.node_reads;
+    let start = reads(&mut c);
+    page(&mut c, HOME_USER, before, None);
+    let one = reads(&mut c) - start;
+    let start = reads(&mut c);
+    page_through(&mut c, HOME_USER, before);
+    let all = reads(&mut c) - start;
+    assert!(one * 5 < all, "a page read {one} nodes, a round {all}");
+}
