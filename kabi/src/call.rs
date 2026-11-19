@@ -26,6 +26,7 @@
 //! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL, APP_CALL |
 //! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE, PART_PEER_NAME |
 //! | 192-199 | N, network (P5) | NET_CONNECT, NET_SEND, NET_RECV, NET_POLL, NET_CLOSE (task 2) |
+//! | 200-209 | K, second block | SHM_INFO |
 
 /// `exit(code: i32) -> !`
 pub const EXIT: u64 = 0;
@@ -720,9 +721,15 @@ pub const NET_TIME: u64 = 197;
 /// VM that was paused or saved and resumed answers a time that is behind.
 pub const CLOCK_NOW: u64 = 110;
 
+/// `shm_info(handle) -> pages`: how many pages the `Shm` the handle names
+/// holds, so a holder can check its size before it trusts a mapping (cc's
+/// request `Shm`, which a short one would fault it in). Needs INSPECT on the
+/// handle, which SHM_CREATE's handle carries.
+pub const SHM_INFO: u64 = 200;
+
 /// The end of the reserved blocks (see the table above): the highest number a
 /// call may have. A call that is not there yet answers NotFound.
-pub const MAX: u64 = 199;
+pub const MAX: u64 = 209;
 
 #[cfg(test)]
 mod tests {

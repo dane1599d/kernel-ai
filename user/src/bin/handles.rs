@@ -154,6 +154,10 @@ fn shm() -> Result<(), &'static str> {
                     Err(error) => alloc::format!("err map {error:?}"),
                 }
             }
+            (Some("info"), Some(handle), _) => match sys::shm_info(Handle(handle as u32)) {
+                Ok(pages) => alloc::format!("ok {pages}"),
+                Err(error) => alloc::format!("err info {error:?}"),
+            },
             (Some("fill"), Some(byte), _) => match mapped {
                 Some((address, len)) => {
                     region(address, len).fill(byte as u8);

@@ -259,6 +259,27 @@ pub fn map_entry(slot: usize, entry: &Entry, write: bool) -> Result<u64, Error> 
     Ok(address)
 }
 
+/// SHM_INFO: how many pages the object `raw` names in `slot`'s table holds,
+/// for a holder that must know its size before it trusts a mapping (cc's
+/// request `Shm`). Needs INSPECT on the handle.
+pub fn info(slot: usize, raw: u64) -> Result<u64, Error> {
+    let handle = Handle(u32::try_from(raw).map_err(|_| Error::BadHandle)?);
+    let entry = handle::with(slot, |h| {
+        h.table.check(handle, Kind::Shm, Rights::INSPECT, &Kernel)
+    })?
+    .map_err(Error::from)?;
+    let (index, generation) = unpack(entry.object);
+    with(|objects| {
+        objects
+            .objects
+            .get(index)
+            .and_then(Option::as_ref)
+            .filter(|o| o.generation == generation)
+            .map(|o| o.frames.len() as u64)
+            .ok_or(Error::BadHandle)
+    })
+}
+
 /// SHM_UNMAP: removes `slot`'s mapping that starts at `address`.
 pub fn unmap(slot: usize, address: u64) -> Result<u64, Error> {
     let offset = address.checked_sub(SHM_BASE).ok_or(Error::Invalid)?;
