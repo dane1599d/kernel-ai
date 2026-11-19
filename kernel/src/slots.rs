@@ -69,13 +69,22 @@ pub fn this_slot() -> Option<Slot> {
     }
 }
 
+/// `KaiBootState`, or `None` when the firmware has none (a fresh install, or
+/// NVRAM cleared: R installs). A record that is there but does not decode (a
+/// bad CRC, a bad field, or a newer VERSION) is an error, not a missing one:
+/// R stays up and writes nothing (ADR 0008), so the floors and the commits it
+/// held are never rebuilt from nothing, and a system slot boots without the
+/// lever and commits nothing.
 fn read_record() -> Result<Option<Record>, &'static str> {
     let mut bytes = [0u8; 128];
-    match efi::get_variable(&KAI, RECORD, &mut bytes) {
-        Ok(len) => Ok(Record::decode(&bytes[..len])),
-        Err(efi::Error::NotFound) => Ok(None),
-        Err(_) => Err("slots: cannot read KaiBootState"),
-    }
+    let found = match efi::get_variable(&KAI, RECORD, &mut bytes) {
+        Ok(len) => Some(&bytes[..len]),
+        Err(efi::Error::NotFound) => None,
+        Err(_) => return Err("slots: cannot read KaiBootState"),
+    };
+    bootslot::read(found).map_err(|bootslot::Undecodable| {
+        "slots: KaiBootState does not decode (a bad CRC or a newer version); R stays up"
+    })
 }
 
 /// Writes what `after` changed from `before`: the record, then the one-shot.
@@ -201,8 +210,20 @@ fn lever(test: bool) {
         entry_id(slot),
         if record.is_some() { "read" } else { "missing" }
     );
-    if slot == Slot::R {
-        return in_r(record.is_some(), before, nv);
+    match bootslot::start(slot, record) {
+        bootslot::Start::RBoots(_) | bootslot::Start::Install => {
+            return in_r(record.is_some(), before, nv);
+        }
+        // *Up* on no record would write one with no floors, armed nowhere: R,
+        // booting next with none, installs instead.
+        bootslot::Start::NoRecord => {
+            log!(
+                "slots: no record in {}; booting without the lever",
+                entry_id(slot)
+            );
+            return;
+        }
+        bootslot::Start::Slot(_) => {}
     }
     *BOOTED.lock() = Some((before, slot));
     let action = if test { action() } else { Action::Restart };
@@ -461,12 +482,16 @@ pub fn active_committed() -> bool {
 /// keeps them as what the fault path writes from.
 pub fn set(record: Record, one_shot: Option<Slot>) -> Result<(), efi::Error> {
     efi::set_variable(&KAI, RECORD, NV_BS_RT, &record.encode())?;
-    write_one_shot(one_shot)?;
-    let mut booted = BOOTED.lock();
-    if let Some((_, slot)) = *booted {
-        *booted = Some((Nv { record, one_shot }, slot));
+    // The record is the firmware's now: the fault path writes from it even if
+    // the one-shot fails next, never from the record before (a commit's
+    // floors would fall back).
+    {
+        let mut booted = BOOTED.lock();
+        if let Some((_, slot)) = *booted {
+            *booted = Some((Nv { record, one_shot }, slot));
+        }
     }
-    Ok(())
+    write_one_shot(one_shot)
 }
 
 /// From the fault path: records the fault in this boot's slot and deletes the

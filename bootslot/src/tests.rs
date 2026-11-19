@@ -122,19 +122,105 @@ fn a_trial_slot_that_never_comes_up_goes_back_to_the_committed_one() {
 }
 
 #[test]
-fn a_committed_slot_gets_safe_mode_then_the_other_slot() {
+fn a_committed_slot_gets_safe_mode_then_r_when_the_other_is_below_the_floor() {
     let mut nv = installed();
     step(&mut nv, Event::Update);
     step(&mut nv, Event::UpCommit);
     assert!(nv.record.slot(Slot::B).successful);
+    // B's commit of release 2 left A's release 1 below the floor.
+    assert_eq!(nv.record.min_release_seq, 2);
+    assert_eq!(nv.record.slot(Slot::A).reason, Reason::Unbootable);
     // B now fails every boot before coming up.
     let mut landed = alloc_free_vec();
     for _ in 0..8 {
         landed.push(step(&mut nv, Event::Lost));
     }
-    // R counted B's failures: 1 re-arms, 2 re-arms in safe mode, 3 moves to A.
-    assert!(landed.contains(&Slot::A), "{landed:?}");
+    // R counted B's failures: 1 re-arms, 2 re-arms in safe mode, 3 would move
+    // to A, which is below the floor: R stays up (ADR 0008 §7).
+    assert!(!landed.contains(&Slot::A), "{landed:?}");
     assert_eq!(nv.record.slot(Slot::B).failures, MAX_FAILURES);
+    assert_eq!(nv.record.armed, None);
+}
+
+/// No install or update leaves two slots committed at one release, so this
+/// state is built by hand: it holds that the floor rule alone would not stop
+/// such a fall-back, not that a machine ever takes one.
+#[test]
+fn a_committed_slot_falls_back_to_another_of_the_same_release() {
+    let mut nv = installed();
+    // B holds the same release, committed too: at the floor, not below it.
+    stage_end(&mut nv, Slot::B, 1);
+    commit(&mut nv, Slot::B, 1);
+    restart_into(&mut nv, Slot::A);
+    commit(&mut nv, Slot::A, 1);
+    assert!(nv.record.slot(Slot::B).successful);
+    let mut landed = alloc_free_vec();
+    for _ in 0..8 {
+        landed.push(step(&mut nv, Event::Lost));
+    }
+    assert!(landed.contains(&Slot::B), "{landed:?}");
+}
+
+#[test]
+fn no_slot_below_the_floors_boots_whatever_the_record_says() {
+    let mut nv = installed();
+    // A record as older code left it: B committed at release 1, the floor at 2.
+    stage_end(&mut nv, Slot::B, 1);
+    nv.record.slot_mut(Slot::B).successful = true;
+    nv.record.slot_mut(Slot::A).release_seq = 2;
+    nv.record.min_release_seq = 2;
+    assert!(!may_boot(&nv.record, Slot::B));
+    assert!(may_boot(&nv.record, Slot::A));
+    assert!(may_boot(&nv.record, Slot::R));
+    // Neither a rollback nor R moves to it.
+    assert!(!rollback(&mut nv, Slot::A));
+    nv.record.armed = Some(Slot::B);
+    assert_eq!(r_boots(&mut nv), InR::Arm(Slot::A));
+    // A slot being written is left as it is by a commit.
+    let mut nv = installed();
+    stage_begin(&mut nv, Slot::B);
+    nv.record.slot_mut(Slot::A).release_seq = 5;
+    commit(&mut nv, Slot::A, 1);
+    assert_eq!(nv.record.slot(Slot::B).reason, Reason::Updating);
+}
+
+#[test]
+fn a_trial_that_faults_after_coming_up_gets_all_its_tries() {
+    let mut nv = installed();
+    step(&mut nv, Event::Update);
+    // B comes up and then faults, every boot.
+    let mut boots_of_b = 0;
+    for _ in 0..4 * usize::from(TRIES) {
+        match boot(&mut nv) {
+            Slot::B => {
+                boots_of_b += 1;
+                up(&mut nv, Slot::B);
+                fault(&mut nv, Slot::B, 1, 0);
+            }
+            Slot::R => {
+                r_boots(&mut nv);
+            }
+            Slot::A => break,
+        }
+    }
+    assert_eq!(boots_of_b, usize::from(TRIES), "one try each boot, not two");
+    assert_eq!(nv.record.slot(Slot::B).reason, Reason::Unbootable);
+}
+
+#[test]
+fn came_up_round_trips_in_a_byte_older_records_leave_clear() {
+    let mut record = installed().record;
+    record.came_up = true;
+    let bytes = record.encode();
+    assert_eq!(bytes[51], 1);
+    assert_eq!(Record::decode(&bytes), Some(record));
+    // A record written before it was kept reads as not come up.
+    record.came_up = false;
+    assert_eq!(record.encode()[51], 0);
+    assert_eq!(
+        Record::decode(&record.encode()).map(|r| r.came_up),
+        Some(false)
+    );
 }
 
 /// A tiny fixed-size list, since the crate has no allocator.
@@ -266,4 +352,48 @@ fn an_nvram_reinstall_never_reads_as_a_failed_update() {
     let mut nv = staged();
     install(&mut nv, 2);
     assert_eq!(trial(&nv.record, Slot::B, 2, Slot::A), Trial::Waiting);
+}
+
+/// `bytes` with `at` set to `value` and the CRC made good again, so only the
+/// field is wrong.
+fn with_byte(mut bytes: [u8; BYTES], at: usize, value: u8) -> [u8; BYTES] {
+    bytes[at] = value;
+    let crc = crc32(&bytes[..60]);
+    bytes[60..].copy_from_slice(&crc.to_le_bytes());
+    bytes
+}
+
+#[test]
+fn a_record_that_does_not_decode_is_not_a_missing_one() {
+    let good = installed().record.encode();
+    assert_eq!(read(None), Ok(None));
+    assert_eq!(read(Some(&good)), Ok(Some(installed().record)));
+    let mut bad_crc = good;
+    bad_crc[60] ^= 1;
+    for (why, bytes) in [
+        ("a bad CRC", bad_crc),
+        ("VERSION 1.1", with_byte(good, 5, 1)),
+        ("VERSION 2.0", with_byte(good, 4, 2)),
+        ("a bad reason", with_byte(good, 6 + 3, 3)),
+        ("a bad armed slot", with_byte(good, 33, 7)),
+    ] {
+        assert_eq!(read(Some(&bytes)), Err(Undecodable), "{why}");
+    }
+    assert_eq!(read(Some(&good[..63])), Err(Undecodable), "too short");
+}
+
+#[test]
+fn a_system_slot_with_no_record_writes_none_so_r_installs_next() {
+    assert_eq!(start(Slot::A, None), Start::NoRecord);
+    assert_eq!(start(Slot::B, None), Start::NoRecord);
+    // Nothing written: the next boot, R, still finds none and installs.
+    assert_eq!(start(Slot::R, None), Start::Install);
+    let record = installed().record;
+    assert_eq!(start(Slot::R, Some(record)), Start::RBoots(record));
+    assert_eq!(start(Slot::A, Some(record)), Start::Slot(record));
+    // Why it must not come up: *up* on an empty record changes it, and the
+    // kernel would write a record with no floors, armed nowhere.
+    let mut empty = Nv::default();
+    up(&mut empty, Slot::A);
+    assert_ne!(empty.record, Record::default());
 }
