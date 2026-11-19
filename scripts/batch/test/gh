@@ -60,7 +60,9 @@ case "$1 $2" in
     case "$a" in
       *--log-failed*) cat "$T/failed.log" 2>/dev/null;;
       *--log*) cat "$T/fluency.log";;
-      *) for j in "Format, lint" "Boot test (kvm, shard 1)" "Boot test (kvm, shard 2)" "Boot test (kvm, shard 3)" "Boot test (tcg, shard 1)" "Boot test (tcg, shard 2)" "Boot test (tcg, shard 3)" "Observe determinism 1" "Observe determinism 2" "Observe determinism 3"; do echo "$j=${CI_RESULT:-success}"; done;;
+      # CI_SKIP_BOOT: the boot jobs skipped, as CI skips them for a no-boot batch.
+      *) for j in "Format, lint" "Boot test (kvm, shard 1)" "Boot test (kvm, shard 2)" "Boot test (kvm, shard 3)" "Boot test (tcg, shard 1)" "Boot test (tcg, shard 2)" "Boot test (tcg, shard 3)" "Observe determinism 1" "Observe determinism 2" "Observe determinism 3"; do
+           r=${CI_RESULT:-success}; [ -n "${CI_SKIP_BOOT:-}" ] && [ "$j" != "Format, lint" ] && r=skipped; echo "$j=$r"; done;;
     esac;;
   "workflow run") echo dispatched >> "$T/fluency-dispatches";;
   *) echo "stub gh: unhandled $a" >&2; exit 1;;
