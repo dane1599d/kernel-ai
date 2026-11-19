@@ -394,3 +394,28 @@ fn a_window_that_carries_out_choices_keeps_its_bound_button_and_disks() {
     assert_eq!(button.bound.as_deref(), Some("model_use"));
     assert!(has(&tree, IMPORT));
 }
+
+#[path = "../../../testkit/appview.rs"]
+mod appview;
+
+/// The agent's view of Models with a model chosen: whole, within 300 tokens,
+/// and the committed one (`tests/golden/view-models.txt`).
+#[test]
+fn the_agents_view_of_models_is_whole_and_fits_300_tokens() {
+    let m = models();
+    let tree = build(
+        &m,
+        &View {
+            selected: Some(QWEN),
+            ..View::default()
+        },
+    );
+    let mut w = Window::new("Models", SIZE.0, SIZE.1);
+    for e in &tree {
+        w.put(e.id, e.parent, e.layout, e.widget.clone()).unwrap();
+    }
+    let f = w.commit(&FixedAdvance);
+    appview::check("models", "models", "Models", &f);
+    appview::goldens("models", &f);
+    appview::paints("models", &f);
+}

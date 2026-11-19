@@ -1,0 +1,15 @@
+[0] window "Settings"
+[1] group ""
+[2] tab_list "" = "Rules and profiles"
+[3] group ""
+[4] label "Rules and profiles"
+[30] label "Standing rules"
+[5000] group ""
+[6000] label "Always stop build-3 when asked"
+[7000] button "Remove" runs rules_remove
+[5001] group ""
+[6001] label "When a build finishes, tell me"
+[7001] button "Remove" runs rules_remove
+[31] list "Profiles" = "2 items, selected 0"
+[8000] label "normal"
+[8001] label "focus"

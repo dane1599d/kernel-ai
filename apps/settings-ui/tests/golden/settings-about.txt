@@ -1,0 +1,22 @@
+node 0 clip 0,0 640x460
+  fill 0,0 640x460 window r0
+node 2 clip 0,0 640x460
+  text 12,7 label muted "Appearance"
+  text 116,7 label muted "What apps can do"
+  text 268,7 label muted "Rules and profiles"
+  text 436,7 label muted "Keep running"
+  text 556,7 label muted "Updates"
+  text 636,7 label text "About"
+  fill 624,30 64x2 accent r0
+  text 700,7 label muted "Network"
+  fill 0,31 640x1 line r0
+node 4 clip 0,0 640x460
+  text 12,44 heading text "About"
+node 10000 clip 0,0 640x460
+  text 12,76 body text "Kernel AI 0.1.0-dev (commit abc)"
+node 10001 clip 0,0 640x460
+  text 12,104 body text "Licence: MPL-2.0"
+node 10002 clip 0,0 640x460
+  text 12,132 body text "Source: https://github.com/dane1599d/kernel-ai"
+node 10003 clip 0,0 640x460
+  text 12,160 body text "54 crates; see NOTICES.txt"
