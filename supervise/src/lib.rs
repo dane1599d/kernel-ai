@@ -1047,6 +1047,40 @@ fn caps(service: &str, value: &str) -> Result<u64, String> {
     })
 }
 
+/// What a service's exit leads to before its restart policy is asked: the
+/// supervisor's own reasons for an exit, which neither restart it nor count
+/// as a failure, come first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ending {
+    /// pkg withdrew it: it waits for a version.
+    Withdrawn,
+    /// An undo of a start that found it waiting on demand ended it: it waits
+    /// on demand again, with no restart and none counted (#1181's review).
+    BackOnDemand,
+    /// A restart was asked for: it starts again at once.
+    RestartOnRequest,
+    /// It was stopped: it stays down.
+    Stopped,
+    /// None of those: its restart policy decides ([`Record::on_exit`]).
+    Policy,
+}
+
+/// [`Ending`] for an exit, from the supervisor's flags on the service.
+pub fn ending(
+    withdrawn: bool,
+    back_on_demand: bool,
+    restart_on_exit: bool,
+    stopped: bool,
+) -> Ending {
+    match (withdrawn, back_on_demand, restart_on_exit, stopped) {
+        (true, ..) => Ending::Withdrawn,
+        (_, true, ..) => Ending::BackOnDemand,
+        (_, _, true, _) => Ending::RestartOnRequest,
+        (_, _, _, true) => Ending::Stopped,
+        _ => Ending::Policy,
+    }
+}
+
 /// When to restart a service that ended, or whether to stop trying.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decision {
