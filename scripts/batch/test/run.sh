@@ -64,6 +64,7 @@ check "the first model PR goes in"            'has "  + #2 (feat/m1)"'
 check "a second model PR waits"               'has "  - #3 changes what the model sees, and so does #2"'
 check "its stacked child waits with it"       'has "  - #4 is stacked on a left-out PR"'
 check "the fluency gate ran once"             '[ "$(wc -l < "$T/fluency-dispatches")" = 1 ]'
+check "dispatched with CI, before it is read" 'awk "/workflow run fluency-model/ && !w {w=NR} /run list .*--workflow ci.yml/ && !c {c=NR} END {exit !(w && c && w < c)}" "$T/gh.log"'
 check "main holds the tested batch"           'has "main fast-forwarded to the tested batch"'
 check "landed heads are deleted"              'gone feat/a && gone feat/m1'
 check "the base of an open PR is kept"        'has "kept feat/d (an open PR" && ! gone feat/d'
@@ -78,6 +79,12 @@ check "the resume lands both"                 'has "  #3: MERGED" && has "  #4: 
 check "the resume did not re-run fluency"     '[ "$(wc -l < "$T/fluency-dispatches")" = 2 ]'
 check "the resume deletes the heads"          'gone feat/m2 && gone feat/c'
 check "the state is cleared"                  '[ ! -f "$T/state/current-batch" ]'
+
+echo "== a model batch whose CI fails: its fluency run is cancelled with it"
+setup
+: > "$T/gh.log"
+CI_RESULT=failure ff 2
+check "dispatched, then the batch's runs cancelled" 'grep -q "workflow run fluency-model.yml --repo .* --ref batch/" "$T/gh.log" && has "batch NOT green" && grep -q "run cancel 789" "$T/gh.log" && ! has "#2: MERGED"'
 
 echo "== a stop just after the fast-forward, then --resume"
 setup
