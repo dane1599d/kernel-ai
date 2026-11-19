@@ -6,10 +6,27 @@
 //!
 //! Only kinds whose objects a sweep frees are counted: `NetDest` records
 //! ([`crate::net::dest::transit`]).
+//!
+//! A sweep reads a record's transit count and then the tables, and a handle
+//! may move between the two: out of a table after the count was read as 0,
+//! before that table is scanned. Every move moves [`moves`] on, under the
+//! source table's lock for a take, so a sweep that sees it change while it
+//! looks keeps the record (#1150's review).
 
 use alloc::vec::Vec;
 use captable::Entry;
+use core::sync::atomic::{AtomicU64, Ordering};
 use kabi::handle::Kind;
+
+/// Moves on as entries start or end a move.
+static MOVES: AtomicU64 = AtomicU64::new(0);
+
+/// How many times entries have started or ended a move: a sweep reads it
+/// before and after it looks at one object, and keeps the object if it
+/// changed.
+pub fn moves() -> u64 {
+    MOVES.load(Ordering::SeqCst)
+}
 
 /// Entries on their way to a table; counted as in transit until dropped.
 #[derive(Debug, Default)]
@@ -39,6 +56,7 @@ impl From<Vec<Entry>> for Moving {
         for entry in &entries {
             count(entry, true);
         }
+        MOVES.fetch_add(1, Ordering::SeqCst);
         Self { entries }
     }
 }
@@ -48,6 +66,7 @@ impl Drop for Moving {
         for entry in &self.entries {
             count(entry, false);
         }
+        MOVES.fetch_add(1, Ordering::SeqCst);
     }
 }
 

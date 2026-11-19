@@ -35,7 +35,7 @@ pub mod grant;
 mod moving;
 pub mod rules;
 
-pub use moving::Moving;
+pub use moving::{Moving, moves};
 
 static HANDLES: [Mutex<Option<Handles>>; MAX_PROCESSES] =
     [const { Mutex::new(None) }; MAX_PROCESSES];
