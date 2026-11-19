@@ -367,9 +367,10 @@ impl Agent {
     }
 }
 
-/// `w3` by its id, or an app's frontmost window by the app's name, by the
-/// package a `<pkg>-window` app shows (`notes` for `notes-window`), or by the
-/// title, when no app has that name, case aside.
+/// `w3` by its id, or an app's frontmost window by the process's name (the
+/// kernel's label) or by the package a `<pkg>-window` app shows (`notes` for
+/// `notes-window`), case aside. Never by the title or an app id the client chose:
+/// a window named by what it says of itself could stand in for another app.
 pub fn find_window(desk: &Desk, name: &str) -> Option<WindowId> {
     let listed = view::listed(desk);
     if let Some(id) = view::parse_window(name) {
@@ -384,9 +385,7 @@ pub fn find_window(desk: &Desk, name: &str) -> Option<WindowId> {
     fn package(l: &Listed) -> &str {
         l.app.strip_suffix("-window").unwrap_or_default()
     }
-    by(|l| &l.app)
-        .or_else(|| by(package))
-        .or_else(|| by(|l| &l.title))
+    by(|l| &l.app).or_else(|| by(package))
 }
 
 /// `ui windows`' answer: one line a window, its fields without tabs or breaks.
