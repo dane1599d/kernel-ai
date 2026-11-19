@@ -135,7 +135,7 @@ impl FileEditor {
             ));
         }
         let bundle = artifact::bundle(&[(name.as_str(), bytes)]);
-        let session = Session::open(COMPONENT, LABEL, &bundle)?;
+        let session = Session::open_owned(COMPONENT, LABEL, bundle)?;
         let mut service = Service::new("", "");
         service.session = Some(session);
         Ok(Self {
