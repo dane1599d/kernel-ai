@@ -82,8 +82,20 @@ impl<H: Hal, T: Transport, const SIZE: usize> VirtioNet<H, T, SIZE> {
         self.mac
     }
 
+    pub fn transport(&self) -> &T {
+        &self.transport
+    }
+
     pub fn disable_interrupts(&mut self) {
         self.rx.set_dev_notify(false);
+        self.tx.set_dev_notify(false);
+    }
+
+    /// Asks for an interrupt on received frames only. With EVENT_IDX the
+    /// device signals once a frame passes the last one taken back, which
+    /// `pop_used` keeps up to date; the flag is for a device without it.
+    pub fn receive_interrupts(&mut self) {
+        self.rx.set_dev_notify(true);
         self.tx.set_dev_notify(false);
     }
 
@@ -113,8 +125,13 @@ impl<H: Hal, T: Transport, const SIZE: usize> VirtioNet<H, T, SIZE> {
         added
     }
 
-    /// The token of the next filled receive buffer, if any.
+    /// The token of the next filled receive buffer, if any. The fence orders
+    /// the last `pop_used`'s store of `used_event` before this load of the used
+    /// index (x86 may reorder a store with a later load), so a frame the
+    /// device used meanwhile is seen here or raises the interrupt, never
+    /// neither (VirtIO 1.2, 2.7.10).
     pub fn poll_receive(&self) -> Option<u16> {
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         self.rx.peek_used()
     }
 
