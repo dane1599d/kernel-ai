@@ -724,5 +724,7 @@ fn a_window_opened_takes_the_focus_from_another_clients_window() {
     );
 }
 
+/// Which new window takes the keyboard.
+mod focus;
 /// The wheel and the buffer scale (lane G, 2026-11-18).
 mod scale;

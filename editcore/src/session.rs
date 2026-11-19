@@ -77,6 +77,22 @@ impl File {
         })
     }
 
+    /// Whether the file's bytes are exactly `bytes`, compared line by line with
+    /// nothing copied: a whole file's copy costs a guest call far more than the
+    /// compare does, and a window asks every frame.
+    fn is(&self, bytes: &[u8]) -> bool {
+        let mut at = 0;
+        for line in &self.lines {
+            for part in [line.text.as_bytes(), line.ending.bytes()] {
+                match bytes.get(at..at + part.len()) {
+                    Some(same) if same == part => at += part.len(),
+                    _ => return false,
+                }
+            }
+        }
+        at == bytes.len()
+    }
+
     pub fn bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         for line in &self.lines {
@@ -230,8 +246,18 @@ impl Session {
         artifact::bundle(&parts)
     }
 
+    /// Whether the files differ from the bundle as opened: the same paths in the
+    /// same order, each with the bytes it had, checked without building the
+    /// bundle again (see [`File::is`]).
     pub fn changed(&self) -> bool {
-        self.to_bundle() != self.original
+        let Ok(original) = artifact::source_files(&self.original) else {
+            return true;
+        };
+        original.len() != self.files.len()
+            || original
+                .iter()
+                .zip(&self.files)
+                .any(|((path, bytes), file)| *path != file.path || !file.is(bytes))
     }
 
     /// Whether file `index` differs from the opened version.
@@ -239,7 +265,7 @@ impl Session {
         let original = artifact::source_files(&self.original).unwrap_or_default();
         original
             .get(index)
-            .is_none_or(|(_, bytes)| *bytes != self.files[index].bytes())
+            .is_none_or(|(_, bytes)| !self.files[index].is(bytes))
     }
 
     /// The file named `name`: its path, or a suffix of it after a `/` that only

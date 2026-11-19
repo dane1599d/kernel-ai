@@ -39,6 +39,10 @@ mod input;
 mod types;
 pub use types::*;
 
+/// How long the person must have left the keyboard and the pointer alone for
+/// another client's new window to take the keys.
+pub const ACTIVATE_IDLE_MS: u64 = 2_000;
+
 pub struct Desk {
     width: i32,
     height: i32,
@@ -97,6 +101,10 @@ pub struct Desk {
     tip_shown: bool,
     /// The clock `desktop` last gave ([`Desk::set_now`]).
     now_ms: u64,
+    /// When the person last pressed a key, a button or moved the pointer, by
+    /// that clock: while they are acting, a window another client opens does
+    /// not take the keyboard ([`Desk::may_activate`]).
+    last_input_ms: Option<u64>,
     /// When the card up now may first be answered: a quiet
     /// [`termcore::menu::SETTLE_MS`] after it was first drawn and after the
     /// last key or button pressed; `u64::MAX` until it is drawn.
@@ -150,6 +158,7 @@ impl Desk {
             hover_since: 0,
             tip_shown: false,
             now_ms: 0,
+            last_input_ms: None,
             ask_open_ms: u64::MAX,
             ask_drawn: None,
             ask_pressed_ms: 0,
@@ -162,6 +171,23 @@ impl Desk {
     /// pressed, not by when they were read.
     pub fn set_now(&mut self, now_ms: u64) {
         self.now_ms = now_ms;
+    }
+
+    /// Whether a window `client` opens now may take the keyboard focus (the
+    /// activation rule of ADR 0005 §3, as far as `desktop` can tell without a
+    /// token): when nothing has it, when one of that client's own windows has
+    /// it, or when the person has not pressed, clicked or moved for
+    /// [`ACTIVATE_IDLE_MS`]. A background app that opens a window while the
+    /// person types in the pane, the Terminal or another app does not take
+    /// their keys.
+    pub fn may_activate(&self, client: u32) -> bool {
+        match self.focus {
+            Focus::Nothing => true,
+            Focus::Window(id) if self.window(id).is_some_and(|w| w.client == client) => true,
+            _ => self
+                .last_input_ms
+                .is_none_or(|at| self.now_ms.saturating_sub(at) >= ACTIVATE_IDLE_MS),
+        }
     }
 
     /// Where windows open: the screen above the taskbar.
@@ -390,6 +416,7 @@ impl Desk {
     }
 
     pub fn input(&mut self, input: Input) -> Vec<Effect> {
+        self.last_input_ms = Some(self.now_ms);
         let mut effects = Vec::new();
         // A key-down for a key already down is its repeat, never a fresh press.
         let repeat =

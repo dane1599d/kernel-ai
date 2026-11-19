@@ -946,3 +946,46 @@ fn the_checkpoint_keeps_the_open_file_and_a_reopened_editor_reads_it_again() {
         compsdk::state::decode(&bytes, comp_editor_window::SCHEMA).unwrap();
     assert_eq!(nothing.path, None);
 }
+
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+struct Counting;
+static ALLOCS: AtomicU64 = AtomicU64::new(0);
+static BYTES: AtomicU64 = AtomicU64::new(0);
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        BYTES.fetch_add(l.size() as u64, Ordering::Relaxed);
+        unsafe { System.alloc(l) }
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        unsafe { System.dealloc(p, l) }
+    }
+}
+#[global_allocator]
+static COUNT: Counting = Counting;
+
+#[test]
+#[ignore = "a probe"]
+fn probe_open_allocations() {
+    for lines in [100usize, 1900] {
+        let (mut app, mut os) = window();
+        let disk: String = (0..lines)
+            .map(|i| format!("line {i:04} {}\n", "-".repeat(20)))
+            .collect();
+        os.disk.insert(PATH.into(), disk.into_bytes());
+        press(&mut app, &mut os, "o", "", keys::CTRL);
+        type_text(&mut app, &mut os, PATH);
+        press(&mut app, &mut os, "enter", "", 0);
+        let (a0, b0) = (ALLOCS.load(Ordering::Relaxed), BYTES.load(Ordering::Relaxed));
+        let t = std::time::Instant::now();
+        serve(&mut app, &mut os);
+        println!(
+            "lines {lines}: {} allocations, {} KiB, {:?}",
+            ALLOCS.load(Ordering::Relaxed) - a0,
+            (BYTES.load(Ordering::Relaxed) - b0) / 1024,
+            t.elapsed()
+        );
+    }
+}

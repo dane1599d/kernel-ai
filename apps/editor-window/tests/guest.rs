@@ -889,3 +889,43 @@ call Ann
     call(&mut h, |h| h.code_size(w, CODE, 12, 60)).unwrap();
     assert!(h.take_files().is_empty());
 }
+
+/// A file near the editor's 60 KiB limit opens within the default call fuel
+/// (`Limits::default` of the host: 5,000,000), not only with the room `BIG`
+/// gives, and the window then shows its first lines.
+#[test]
+fn a_file_near_the_limit_opens_within_the_default_call_fuel() {
+    const PATH: &str = "/home/user/big.txt";
+    let Some(wasm) = wasm() else { return };
+    let disk: String = (0..1900)
+        .map(|i| format!("line {i:04} {}\n", "-".repeat(20)))
+        .collect();
+    assert!(disk.len() > 58_000 && disk.len() < editcore::MAX_BUNDLE);
+    let mut g = start(&wasm);
+    let w = open_the_file(&mut g, PATH, &disk);
+    // The window then draws it, in a call of its own.
+    call(&mut g, |g| g.code_size(w, CODE, 10, 60)).unwrap();
+    let (_, f) = frame(&mut g);
+    let text = text_of(&f);
+    assert!(text.contains("line 0000"), "{text}");
+}
+
+#[test]
+#[ignore = "a probe"]
+fn probe_open_fuel() {
+    let Some(wasm) = wasm() else { return };
+    for lines in [100usize, 400, 800, 1900] {
+        let disk: String = (0..lines)
+            .map(|i| format!("line {i:04} {}
+", "-".repeat(20)))
+            .collect();
+        let (mut lo, mut hi) = (100_000u64, 2_000_000_000u64);
+        while hi - lo > hi / 50 {
+            let mid = (lo + hi) / 2;
+            let mut g = start_with(&wasm, Limits { fuel_call: mid, fuel_life: 20_000_000_000, memory_bytes: 16 * 1024 * 1024 });
+            let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| open_the_file(&mut g, "/home/user/big.txt", &disk))).is_ok();
+            if ok { hi = mid } else { lo = mid }
+        }
+        println!("lines {lines} ({} bytes): about {hi} fuel", disk.len());
+    }
+}
