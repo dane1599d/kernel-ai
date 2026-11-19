@@ -304,10 +304,16 @@ pub fn attempt_change(name: &str, words: &str, change: &str, transport: Transpor
             ..first
         };
     }
+    let kept = host.sources.borrow().get(name).cloned();
     host.asks(name, change);
     let line = format!("change my {name} app: {change}");
     let mut changed = built_and_clicked(&host, &mut shell, &line);
     changed.rounds = host.rounds.borrow().clone();
+    // A change that writes back the same main.c changed nothing: not a pass.
+    let now = host.sources.borrow().get(name).cloned();
+    if changed.failure.is_none() && now == kept {
+        changed.failure = Some(String::from("the change wrote the same main.c back"));
+    }
     changed
 }
 
@@ -495,7 +501,8 @@ mod tests {
     fn a_change_rebuilds_the_app_from_its_kept_main_c() {
         let (_, main, _) = capp1::EXAMPLES[0];
         let seen = Rc::new(RefCell::new(Vec::new()));
-        let answers = RefCell::new(vec![app(main), app(main)].into_iter());
+        let changed = format!("{main}\n/* the count */\n");
+        let answers = RefCell::new(vec![app(main), app(&changed)].into_iter());
         let log = seen.clone();
         let transport: Transport = Box::new(move |request: &ScriptRequest| {
             log.borrow_mut().push(request.clone());
@@ -509,6 +516,26 @@ mod tests {
         assert_eq!(
             asked[1].repair.as_ref().map(|(_, why)| why.as_str()),
             Some(llmproto::app::change("show the count").as_str())
+        );
+    }
+
+    #[test]
+    fn a_change_that_writes_the_same_main_c_back_does_not_pass() {
+        let (_, main, _) = capp1::EXAMPLES[0];
+        let outcome = attempt_change(
+            "shop",
+            "a shopping list",
+            "show the count",
+            canned(vec![app(main), app(main)]),
+        );
+        assert!(!outcome.passed(), "{outcome:?}");
+        assert!(
+            outcome
+                .failure
+                .as_deref()
+                .unwrap_or("")
+                .contains("same main.c"),
+            "{outcome:?}"
         );
     }
 
