@@ -406,6 +406,7 @@ impl Channel {
             previous,
             importing: self.import.as_ref().map(|run| run.sha256),
             downloading: self.download.as_ref().map(download::Running::sha256),
+            busy: self.store_busy().is_some(),
         };
         match remove::decide(sha256, &holds)? {
             Remove::Download => {
