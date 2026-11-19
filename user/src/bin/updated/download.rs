@@ -271,6 +271,11 @@ impl Running {
         &self.job.id
     }
 
+    /// The model it fetches.
+    pub fn sha256(&self) -> Sha256 {
+        self.job.sha256
+    }
+
     /// `ok downloading <bytes> <of>`, then `ok storing <bytes> <of>`.
     pub fn progress(&self) -> String {
         let length = self.job.length;
@@ -490,6 +495,17 @@ impl Running {
             self.report.fetched,
             self.report.kept
         )
+    }
+
+    /// Stops the run for good, the undo of its `model_fetch`: an open copy's
+    /// action is aborted, and what `.partial/` holds goes too, while its
+    /// handle is still open; only then is the handle closed, once.
+    pub fn cancel(&mut self, store: Handle) {
+        if matches!(self.phase, Phase::Copying(_)) {
+            let _ = folders::ask(store, &Request::Abort);
+        }
+        self.remove_partial();
+        self.partial.close();
     }
 
     /// Drops the run: an open copy's action is aborted; what `.partial/`
