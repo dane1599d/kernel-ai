@@ -472,13 +472,17 @@ fn two_agents_share_the_agents_places_on_the_card() {
 }
 
 /// An agent retired while its question is on the card: the question is
-/// recorded dropped and its wait hears so, and the card's Allow runs
-/// nothing and says why, rather than failing (#1085's follow-up).
+/// recorded dropped as the agent's, audited, and its place and admission go;
+/// the card's stale Allow runs nothing and says why, rather than failing;
+/// and a question put on the card after it is untouched by that answer and
+/// answers as ever (#1085's follow-up; #1104's review).
 #[test]
 fn retiring_an_agent_drops_its_question_on_the_card() {
     let (host, mut shell, badge) = with_agent();
     step(&mut shell, badge, RR);
     let menu = take_agents_card(&mut shell);
+    assert!(shell.agent_asks.is_open(menu.id));
+    assert!(shell.agent_admissions.iter().any(|(e, _)| *e == menu.id));
     let agent = shell.roster_mut().by_name("notes-agent").unwrap().id();
     shell.retire_agent(agent).unwrap();
     assert!(shell.pending.is_none());
@@ -487,11 +491,41 @@ fn retiring_an_agent_drops_its_question_on_the_card() {
         entry.outcome.contains("dropped: the agent was retired"),
         "{entry:?}"
     );
+    assert_eq!(entry.agent.as_str(), "notes-agent");
+    let audited = |text: &str| host.audit.borrow().iter().any(|line| line.contains(text));
+    assert!(audited(&format!(
+        "request {}: on the card, dropped: notes-agent was retired",
+        menu.id
+    )));
+    assert!(
+        !shell.agent_asks.is_open(menu.id),
+        "its place on the card is free"
+    );
+    assert!(
+        !shell.agent_admissions.iter().any(|(e, _)| *e == menu.id),
+        "its admission is gone"
+    );
+    // Another question takes the card before the stale answer comes.
+    let other = shell.roster_mut().install(ops_manifest()).unwrap();
+    let other = u64::from(other.badge());
+    assert!(step(&mut shell, other, RR).starts_with("ok asked "));
+    let next = take_agents_card(&mut shell);
+    assert_ne!(next.id, menu.id);
     let once = host.mint(menu.id, menu.call());
     let reply = shell.eval_console(&format!("answer {} allow once={once}", menu.id));
     assert_eq!(reply, super::ok(crate::agentconsent::RETIRED));
+    assert!(audited(&format!(
+        "request {}: answered after its agent was retired",
+        menu.id
+    )));
     assert_eq!(host.policy.get(), None);
-    // Said once: a second answer finds nothing.
+    assert_eq!(shell.pending.as_ref().map(|p| p.id), Some(next.id));
+    // Said once: a second stale answer finds nothing.
     let again = shell.eval_console(&format!("answer {} allow once={once}", menu.id));
     assert!(!again.ok, "{again:?}");
+    // The question on the card now answers as ever.
+    let once = host.mint(next.id, next.call());
+    let ran = shell.eval_console(&format!("answer {} allow once={once}", next.id));
+    assert!(ran.ok, "{ran:?}");
+    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
 }
