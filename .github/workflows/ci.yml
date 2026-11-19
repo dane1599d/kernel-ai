@@ -60,6 +60,18 @@ jobs:
           else
             cargo xtask decisions check
           fi
+      # A no-boot batch skips every boot job (the `qemu` job's condition below),
+      # so it must change nothing they see: scripts/batch/noboot.sh's rule, over
+      # every file from the batch's merge base with main.
+      - name: A no-boot batch changes nothing the boot jobs see
+        if: startsWith(github.head_ref, 'batch/noboot-')
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Both commits and the history between them (a full clone is ~15 MB).
+          git fetch --no-tags --unshallow origin "$BASE" "$HEAD" 2>/dev/null || git fetch --no-tags origin "$BASE" "$HEAD"
+          bash scripts/batch/noboot.sh "$BASE" "$HEAD"
       # P4 task 18: the founder-signed root is frozen once committed. `updated`
       # keeps a cached root of the same version, so a second "version 1" would
       # split devices (docs/release/root-ceremony.md, "Interim: key files").
@@ -141,8 +153,11 @@ jobs:
   # and a PR labelled `full-ci-all` gets the whole set too, e.g. to chase a TCG hang.
   qemu:
     name: QEMU 11.0.5 (built once, cached)
+    # Not for a no-boot batch (`batch/noboot-...`, scripts/batch/noboot.sh): it
+    # changes nothing the boot jobs see, which the lint job checks.
     if: >-
       (github.event.action != 'labeled' || startsWith(github.event.label.name, 'full-ci')) &&
+      !startsWith(github.head_ref, 'batch/noboot-') &&
       (github.event_name != 'pull_request' ||
       startsWith(github.head_ref, 'batch/') ||
       contains(github.event.pull_request.labels.*.name, 'full-ci') ||

@@ -125,6 +125,29 @@ printf 'phase=pushed\nname=\nbase=x\nc=y\nbpr=\nprs=1\nheads_s=x\nbrs_s=feat/a\n
 check "no batch branch: stopped"              'has "names no batch branch; STOPPING" && [ ! -f "$T/state/current-batch" ]'
 check "and no run was listed or cancelled"    '! grep -q "run " "$T/gh.log"'
 
+echo "== a no-boot batch takes only PRs the boot jobs cannot see"
+setup
+mkpr 8 feat/doc main docs/x.md
+mkpr 9 feat/tool main scripts/y.sh
+git -C "$T/work" checkout -q --detach origin/main
+: > "$T/gh.log"
+bash "$B/batch-ff.sh" --noboot 1 8 9 > "$T/out" 2>&1
+check "a boot PR is left out, label kept"     'has "#1 changes what the boot jobs check; left out of a no-boot batch" && [ -s "$T/prs/1/labels" ]'
+check "the others land on a noboot branch"    'has "  #8: MERGED" && has "  #9: MERGED" && grep -q "pr create .*--head batch/noboot-" "$T/gh.log"'
+
+echo "== batch-auto.sh: no-boot PRs go first, then a full batch"
+setup
+mkpr 8 feat/doc main docs/x.md
+mkpr 9 feat/tool main scripts/y.sh
+git -C "$T/work" checkout -q --detach origin/main
+for n in 2 3 4 5 7; do : > "$T/prs/$n/labels"; done
+bash "$B/batch-auto.sh" > /dev/null & A=$!
+for i in $(seq 1 120); do grep -q "#1 merged" "$T/state/batch-auto.log" 2>/dev/null && break; /bin/sleep 1 2>/dev/null || /usr/bin/sleep 1; done
+touch "$T/state/batch-auto.stop"; wait $A
+L="$T/state/batch-auto.log"
+check "the no-boot PRs batch first"           'grep -q "no-boot batch: 8 9" "$L" && grep -q "#8 merged" "$L"'
+check "then the boot PR in a full batch"      'grep -q "batch: 1$" "$L" && grep -q "#1 merged" "$L"'
+
 echo "== batch-auto.sh resumes an unfinished batch first"
 setup
 touch "$T/kill-on-ready"; ff 1 2

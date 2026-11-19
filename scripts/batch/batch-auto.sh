@@ -24,7 +24,8 @@ unlabel() {  # $1 PR, $2 comment
 }
 
 # The labelled PRs that can land on their own: each one's commits, beyond main,
-# may only include other PRs that are in the same list.
+# may only include other PRs that are in the same list. One line each: the PR,
+# its head, and whether it is batch-first.
 eligible() {
   git -C "$G" fetch -q origin
   open=$(gh pr list --repo "$R" --state open --limit 1000 --json number,headRefName,headRefOid,labels \
@@ -44,7 +45,7 @@ eligible() {
         ok=0; break
       fi
     done <<< "$open"
-    [ $ok = 1 ] && echo $p
+    [ $ok = 1 ] && echo "$p $head $(echo "$open" | awk -v p=$p '$1==p {print $5}')"
   done | head -"$(cat "$S/batch-max" 2>/dev/null || echo $MAX)"
 }
 
@@ -177,6 +178,11 @@ ff_running() {
 
 # Everything runs from here, once bash has read the whole file: a pull that
 # rewrites this script cannot change the running batcher.
+# Whether a head's whole change from main is one the boot jobs cannot see.
+noboot_ok() {  # $1 head
+  (cd "$G" && bash "$KAI_SCRIPTS/noboot.sh" "origin/$MAIN" "$1" >/dev/null)
+}
+
 main() {
   echo "batch-auto: state in $S (log, stop file, batch-max), repo $R, checkout $G"
   say "batcher started (state $S)"
@@ -194,8 +200,22 @@ main() {
       sleep 30
       continue
     fi
-    list=$(eligible)
-    if [ -z "$list" ]; then sleep 300; continue; fi
+    rows=$(eligible)
+    if [ -z "$rows" ]; then sleep 300; continue; fi
+    list=$(echo "$rows" | awk '{print $1}')
+    # PRs the boot jobs cannot see go first, in a no-boot batch that needs lint
+    # alone, unless a batch-first PR needs the boot jobs (an urgent fix waits
+    # for nothing). A failed no-boot batch is split into full batches.
+    if [ "$NOBOOT" = 1 ]; then
+      urgent=$(echo "$rows" | while read -r p h f; do [ "$f" = true ] && ! noboot_ok "$h" && echo $p; done)
+      nb=$(echo "$rows" | while read -r p h f; do noboot_ok "$h" && echo $p; done)
+      if [ -n "$nb" ] && [ -z "$urgent" ]; then
+        say "no-boot batch: $(echo $nb)"
+        batch --noboot $nb
+        sleep 30
+        continue
+      fi
+    fi
     say "batch: $(echo $list)"
     batch $list
     sleep 30
