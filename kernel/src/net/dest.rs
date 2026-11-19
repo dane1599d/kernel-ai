@@ -259,14 +259,43 @@ pub fn may_connect(object: u64, protocol: Protocol, addr: Ipv4Addr, port: u16) -
 
 /// An address a name's answer must not lead to unless the record names it
 /// literally (lane C's review of task 1): this machine, the link, nothing,
-/// everyone or a group. An answer pointing there is how DNS rebinding reaches
-/// what the app was never given.
+/// everyone or a group, and a private network (audit K #17): 10/8,
+/// 172.16/12, 192.168/16, the carrier's 100.64/10, 0/8 and 240/4. An answer
+/// pointing there is how DNS rebinding reaches what the app was never given,
+/// and a probe of the person's LAN and the VM host on its ports.
+///
+/// One exception, for the boot cases' own network: with `online=test` on
+/// the kernel command line, QEMU's user network 10.0.2.0/24 (the mock DNS's
+/// fixtures and the HTTPS mock) is not refused. A release image never
+/// carries that word (`xtask::image::slots::build_release`).
 fn special(addr: Ipv4Addr) -> bool {
+    let [a, b, _, _] = addr.octets();
+    let private = a == 10
+        || (a == 172 && (16..32).contains(&b))
+        || (a == 192 && b == 168)
+        || (a == 100 && (64..128).contains(&b))
+        || a == 0
+        || a >= 240;
+    let test_subnet = test_network() && addr.octets()[..3] == [10, 0, 2];
     addr.is_loopback()
         || addr.is_link_local()
         || addr.is_unspecified()
         || addr.is_broadcast()
         || addr.is_multicast()
+        || (private && !test_subnet)
+}
+
+/// Whether a name's answer may lead to `addr`: RESOLVE_ON hands an app only
+/// such addresses, and keeps only them for its connects.
+pub fn answerable(addr: Ipv4Addr) -> bool {
+    !special(addr)
+}
+
+/// Whether the boot runs on the boot cases' test network (`online=test`).
+fn test_network() -> bool {
+    crate::cmdline()
+        .split_whitespace()
+        .any(|word| word == "online=test")
 }
 
 /// A record for `narrower`, made from `object`'s, if `object`'s covers it:

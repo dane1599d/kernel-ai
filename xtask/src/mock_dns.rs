@@ -21,7 +21,9 @@ impl MockDns {
 
     /// The kernel command-line word that points the guest here.
     pub fn cmdline(&self) -> String {
-        format!("dns=10.0.2.2:{}", self.port)
+        // The mock's fixtures and the HTTPS mock sit on QEMU's 10.0.2.0/24,
+        // which only `online=test` lets a name's answer lead to (audit K #17).
+        format!("dns=10.0.2.2:{} online=test", self.port)
     }
 }
 

@@ -142,6 +142,21 @@ pub enum Error {
     Cut,
 }
 
+/// What a TLS failure says to an app: a fixed kind, never rustls's own text,
+/// which can carry the names on a certificate from a private network (audit
+/// K #17).
+fn tls_kind(error: &crate::tls::TlsError) -> &'static str {
+    use crate::tls::TlsError;
+    match error {
+        TlsError::Tls(rustls::Error::InvalidCertificate(_)) => {
+            "the host's certificate was not accepted"
+        }
+        TlsError::Tls(_) => "the secure connection failed",
+        TlsError::Transport(_) | TlsError::Truncated => "the connection broke",
+        _ => "the host sent what TLS does not allow",
+    }
+}
+
 /// What a cut POST says: whether the server got it is not known.
 pub const CUT_WHY: &str = "the server may have it";
 
@@ -150,7 +165,7 @@ impl From<HttpError> for Error {
         match error {
             HttpError::Refused(host) => Error::Refused(why(&host)),
             HttpError::Url(text) => Error::BadUrl(why(text)),
-            HttpError::Tls(tls) => Error::Tls(why(&format!("{tls:?}"))),
+            HttpError::Tls(tls) => Error::Tls(why(tls_kind(&tls))),
             HttpError::Connect(text) => Error::Tls(why(text)),
             HttpError::TooLarge => Error::TooLarge,
             HttpError::Timeout => Error::Timeout,
