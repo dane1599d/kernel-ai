@@ -317,12 +317,14 @@ pub fn update(handle: Handle, restart_now: bool, args: &str) -> Result<Staged, S
     let hosts = Hosts::mock();
     // Where the time goes, summed over the stage (`split.rs`).
     let split = Split::default();
-    let online = |hosts: &Hosts| {
+    let online = |hosts: &Hosts, bulk: bool| {
         // The image is a download: bulk streams have the larger receive buffer.
+        // A process gets two, and the download keeps both (the releases host's
+        // and the assets host's): the metadata asked again goes on plain ones.
         // No deadline of the dial's own: `Online` ends each request at `REQUEST_NS`.
         let dial = NetDial {
             dest,
-            bulk: true,
+            bulk,
             deadline_ns: u64::MAX,
         };
         // The chunks' connections are kept, one a host (the releases host and
@@ -337,7 +339,7 @@ pub fn update(handle: Handle, restart_now: bool, args: &str) -> Result<Staged, S
         Online::new(hosts.clone(), connect, &clock, REQUEST_NS)
     };
 
-    let mut repository = online(&hosts);
+    let mut repository = online(&hosts, true);
     let (image, list) = plan::refresh(&mut repository, &mut cache, now)
         .map_err(|why| format!("refused: {}", why.why()))?;
     let release = plan::release_of(&image).map_err(|why| format!("refused: {}", why.why()))?;
@@ -382,7 +384,7 @@ pub fn update(handle: Handle, restart_now: bool, args: &str) -> Result<Staged, S
     };
     // The metadata again, from a connection of its own, once the image has
     // checked out: a long download can span a newer release.
-    let mut recheck = || plan::refresh(&mut online(&hosts), &mut cache, now);
+    let mut recheck = || plan::refresh(&mut online(&hosts, false), &mut cache, now);
     let started = sys::time_ns();
     // A stop that is the network's (a cut, a timeout, a busy server) is not the end:
     // the checked chunks are kept, and another call resumes at the first unchecked.
