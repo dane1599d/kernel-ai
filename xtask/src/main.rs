@@ -293,6 +293,8 @@ fn execute(options: &Options) -> Result<(), String> {
         .enumerate()
         .filter(|&(index, _)| options::in_shard(options.shard, index))
         .map(|(_, case)| case)
+        // A case that times a step boots only where it runs at speed.
+        .filter(|case| !(case.kvm_only && accel == Accel::Tcg))
         // `XTASK_CASE=name` boots only that case, which may be one booted only
         // when named (the screenshot tour).
         .chain(match env::var("XTASK_CASE") {

@@ -47,8 +47,9 @@ const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
 const YES: [u8; 2] = [0x15, 0x95];
 /// PageDown down and up: set 1's `E0 51`, HID usage 0x4E (`kabi::input`).
 const PAGE_DOWN: [u8; 4] = [0xE0, 0x51, 0xE0, 0xD1];
-/// PageDowns pressed: the text read through at any pane of 10 rows or more.
-const PAGES: usize = 12;
+/// Most PageDowns before the case gives up: the text is read through long
+/// before, at any pane of 3 rows or more.
+const MAX_PAGES: usize = 50;
 /// What the Allow's hold says in the shell's log, before its entry.
 const HELD: &str = "Sending to hooks.example in 5 s. undo ";
 /// What a send `undo` cancelled comes to (`shellcore::outbox::ended_line`).
@@ -109,7 +110,14 @@ fn ask_from_the_pane() -> Result<(), &'static str> {
     threads::sleep_ms(KEY_MS);
     type_text(LINE);
     type_text("\n");
-    wait("the send on the card", ask_box::shown)?;
+    // At 1920x1080 the card sits beside the open pane, so the send is the
+    // card's; asked at the console instead, `desk_send_fits` said no.
+    wait("the send on the card or the console", || {
+        ask_box::shown() || terminal::menu_takes_keys()
+    })?;
+    if !ask_box::shown() {
+        return Err("desk-sends: desk_send_fits said no at 1920x1080, and the console asked");
+    }
     let question = ask_box::question().unwrap_or_default();
     log!("{CASE}: the card asks: {question}");
     if !question.contains(&card_call(&text())) || question.contains("the text goes on") {
@@ -133,17 +141,24 @@ fn yes_before_reading() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// PageDown to the end of the text, then `y` twice: the Allow holds the send.
+/// A page at a time, `y` twice after each: the card answers only once the
+/// last page has been on the screen, however many rows the pane shows. The
+/// Allow holds the send.
 fn read_through_and_allow() -> Result<u64, &'static str> {
-    for _ in 0..PAGES {
+    let mut pages = 0;
+    while ask_box::shown() {
+        if pages == MAX_PAGES {
+            return Err("desk-sends: the card never allowed, the text read to its end");
+        }
         type_keys(&PAGE_DOWN);
+        pages += 1;
+        threads::sleep_ms(KEY_MS);
+        type_keys(&YES);
+        threads::sleep_ms(KEY_MS);
+        type_keys(&YES);
         threads::sleep_ms(KEY_MS);
     }
-    threads::sleep_ms(SETTLE_MS);
-    type_keys(&YES);
-    threads::sleep_ms(KEY_MS);
-    type_keys(&YES);
-    wait("the card's answer", || !ask_box::shown())?;
+    log!("{CASE}: the card allowed after {pages} PageDown(s), once the text was read through");
     let mut entry = None;
     wait("the hold in the shell's log", || {
         entry = held_entry(&actlog());
