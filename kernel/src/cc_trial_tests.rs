@@ -136,7 +136,7 @@ fn ask_cc(request: &str, object: u64) -> Result<Vec<u8>, &'static str> {
     let extra = ipc::Extra {
         badge: 0,
         rights: 0,
-        handles: vec![Entry::new(Kind::Shm, TRIAL_RIGHTS, object)],
+        handles: vec![Entry::new(Kind::Shm, TRIAL_RIGHTS, object)].into(),
     };
     let deadline = hpet::nanos() + CALL_MS * 1_000_000;
     match ipc::call_with(CC, request.as_bytes(), 0, deadline, || false, extra) {
