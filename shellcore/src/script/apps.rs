@@ -250,6 +250,9 @@ mod guard_tests {
     fn no_app_call_goes_after_one_that_went_unanswered() {
         assert_eq!(after_unanswered(None), Ok(()));
         let refused = after_unanswered(Some("notes_add")).unwrap_err();
-        assert!(refused.starts_with("notes_add may have run already"), "{refused}");
+        assert!(
+            refused.starts_with("notes_add may have run already"),
+            "{refused}"
+        );
     }
 }

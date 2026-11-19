@@ -498,13 +498,18 @@ fn an_unanswered_keep_running_switch_counts_as_made_on_both_sides() {
 fn a_saved_kept_app_that_takes_the_switch_unanswered_stays_kept() {
     // At boot, and on a retry: the switch is made on the supervisor's side,
     // so the shell's list keeps the app and a later "off" is still sent.
-    let unanswered = "unanswered notes took the keep-running on and did not answer; it may have taken effect";
+    let unanswered =
+        "unanswered notes took the keep-running on and did not answer; it may have taken effect";
     let host = host_with_keep("kai-keep 1\nnotes\n");
     *host.keep_refusal.borrow_mut() = Some(String::from(unanswered));
     let mut booted = shell(&host);
     *host.keep_refusal.borrow_mut() = None;
     assert_eq!(
-        booted.settings(crate::settings::SETTINGS_APP, "keep-running off notes", true),
+        booted.settings(
+            crate::settings::SETTINGS_APP,
+            "keep-running off notes",
+            true
+        ),
         Ok(String::from("notes keep-running off"))
     );
     let retried = host_with_keep("kai-keep 1\nnotes\n");

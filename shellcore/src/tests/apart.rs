@@ -227,12 +227,19 @@ fn a_run_that_succeeded_after_an_unanswered_call_is_an_unknown_outcome_and_has_n
     assert!(shell.eval("? use round robin").ok);
     let (host_b, mut shell_b) = (host.clone(), &mut shell);
     *host_b.apart.borrow_mut() = Some(alloc::boxed::Box::new(|_: &str| {
-        Ok(String::from("ran 1 ok=1 0 11 unanswered=notes_add\ncarried on\n"))
+        Ok(String::from(
+            "ran 1 ok=1 0 11 unanswered=notes_add\ncarried on\n",
+        ))
     }));
-    host_b.answers.borrow_mut().push_back(answer("print(cpus());"));
+    host_b
+        .answers
+        .borrow_mut()
+        .push_back(answer("print(cpus());"));
     let reply = shell_b.eval("? how many cpus");
     assert!(
-        reply.text.contains("Outcome unknown: notes_add may have run"),
+        reply
+            .text
+            .contains("Outcome unknown: notes_add may have run"),
         "{reply:?}"
     );
     assert!(!reply.text.contains("Done"), "{reply:?}");
@@ -244,7 +251,11 @@ fn a_run_that_succeeded_after_an_unanswered_call_is_an_unknown_outcome_and_has_n
         undo.text.contains("the outcome of notes_add is not known"),
         "{undo:?}"
     );
-    assert_ne!(host_b.policy.get(), Some(policy::INTERACTIVE), "the older entry was not undone");
+    assert_ne!(
+        host_b.policy.get(),
+        Some(policy::INTERACTIVE),
+        "the older entry was not undone"
+    );
 }
 
 #[test]
@@ -275,7 +286,9 @@ fn a_partial_rollback_after_an_unanswered_call_is_still_an_unknown_outcome() {
     let reply = shell.eval("? how many cpus");
     assert!(!reply.ok, "{reply:?}");
     assert!(
-        reply.text.contains("Outcome unknown: notes_add may have run"),
+        reply
+            .text
+            .contains("Outcome unknown: notes_add may have run"),
         "{reply:?}"
     );
     let entry = shell.log.get(shell.log.last_id()).expect("an entry");
