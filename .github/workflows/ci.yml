@@ -214,6 +214,9 @@ jobs:
     name: Boot test (${{ matrix.accel }}, shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-24.04
     needs: qemu
+    # Explicit: a job's implicit success() covers its needs' needs too, and the
+    # `noboot` job above `qemu` is skipped on every run but a no-boot batch.
+    if: ${{ !cancelled() && needs.qemu.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -269,8 +272,9 @@ jobs:
   perf:
     name: Perf marks (release kernel)
     if: >-
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci')
+      !cancelled() && needs.qemu.result == 'success' &&
+      (github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci'))
     runs-on: ubuntu-24.04
     needs: qemu
     continue-on-error: true
@@ -308,9 +312,10 @@ jobs:
   icount:
     name: icount determinism probe (not a gate)
     if: >-
-      github.event_name != 'pull_request' ||
+      !cancelled() && needs.qemu.result == 'success' &&
+      (github.event_name != 'pull_request' ||
       startsWith(github.head_ref, 'batch/') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci-all')
+      contains(github.event.pull_request.labels.*.name, 'full-ci-all'))
     runs-on: ubuntu-24.04
     needs: qemu
     continue-on-error: true
@@ -335,9 +340,10 @@ jobs:
   observe:
     name: Observe determinism (${{ matrix.runner }})
     if: >-
-      github.event_name != 'pull_request' ||
+      !cancelled() && needs.qemu.result == 'success' &&
+      (github.event_name != 'pull_request' ||
       startsWith(github.head_ref, 'batch/') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci-all')
+      contains(github.event.pull_request.labels.*.name, 'full-ci-all'))
     runs-on: ubuntu-24.04
     needs: qemu
     strategy:
@@ -371,6 +377,7 @@ jobs:
     name: Observe determinism across runners
     runs-on: ubuntu-24.04
     needs: observe
+    if: ${{ !cancelled() && needs.observe.result == 'success' }}
     steps:
       - uses: actions/download-artifact@v4
       - name: Both runners built the same summary

@@ -125,6 +125,35 @@ printf 'phase=pushed\nname=\nbase=x\nc=y\nbpr=\nprs=1\nheads_s=x\nbrs_s=feat/a\n
 check "no batch branch: stopped"              'has "names no batch branch; STOPPING" && [ ! -f "$T/state/current-batch" ]'
 check "and no run was listed or cancelled"    '! grep -q "run " "$T/gh.log"'
 
+echo "== ci.yml: every job after another guards it explicitly"
+# A job's implicit success() covers its needs' needs too (actions/runner#491):
+# with `noboot` skipped on every run but a no-boot batch, a boot job without an
+# explicit guard would be skipped, and the batcher would read every batch as
+# red. So every job with `needs:` says `!cancelled()`, and checks each need it
+# relies on by `needs.<job>.result == 'success'` (all but `noboot`, which
+# `qemu` reads by its output and runs past when it is skipped).
+CI="$B/../../.github/workflows/ci.yml"
+guards=$(awk '
+  /^  [a-z][a-z0-9_-]*:$/ { if (job != "") print job "|" needs "|" cond; job = substr($1, 1, length($1) - 1); needs = ""; cond = ""; inif = 0; next }
+  /^[a-z]/ { if (job != "") print job "|" needs "|" cond; job = ""; next }
+  job == "" { next }
+  /^    needs: / { needs = $0; sub(/^    needs: */, "", needs); gsub(/[][ ]/, "", needs); inif = 0; next }
+  /^    if: / { cond = $0; inif = ($0 ~ /: >-$/); next }
+  /^    [a-z]/ { inif = 0; next }
+  inif && /^      / { cond = cond " " $0; next }
+  END { if (job != "") print job "|" needs "|" cond }' "$CI")
+bad_guard=""
+while IFS='|' read -r job needs cond; do
+  [ -n "$needs" ] || continue
+  case "$cond" in *'!cancelled()'*) ;; *) bad_guard="$bad_guard $job(!cancelled)";; esac
+  for n in $(echo "$needs" | tr ',' ' '); do
+    [ "$n" = noboot ] && continue
+    case "$cond" in *"needs.$n.result == 'success'"*) ;; *) bad_guard="$bad_guard $job(needs.$n)";; esac
+  done
+done <<< "$guards"
+check "jobs with needs are listed"            'echo "$guards" | grep -q "^boot|qemu|" && echo "$guards" | grep -q "^observe-compare|observe|"'
+check "each guards its needs explicitly"      '[ -z "$bad_guard" ] || { echo "  missing:$bad_guard"; false; }'
+
 echo "== noboot.sh: every arm of the rule"
 # A repo of its own: each case is one commit on a branch from `base`, judged
 # by noboot.sh as CI judges a batch (exit 0 no-boot, 1 needs boot, 2 unreadable).
