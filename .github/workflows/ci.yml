@@ -300,6 +300,11 @@ jobs:
         with:
           shared-key: qemu
           save-if: false
+      # The build service's `--frozen` builds (the edit smoke, app-editor,
+      # manifest) download nothing, and a shard that boots the build job's
+      # artifacts runs no cargo build that would fetch their crates.
+      - name: Fetch the locked crates for the build service's offline builds
+        run: cargo fetch --locked
       # No download, or a bad one, and the test step builds as it always did.
       - name: Download the build job's artifacts
         if: needs.prebuild.outputs.sha != ''
