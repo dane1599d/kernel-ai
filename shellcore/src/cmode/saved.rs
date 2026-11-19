@@ -12,7 +12,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use promptcore::prepare::BASE_TYPES;
-use promptcore::split::{What, split};
+use promptcore::split::{Storage, What, split};
 
 /// The line before each entry of a saved file.
 pub(super) const MARK: &str = "//- entry";
@@ -54,9 +54,11 @@ pub(super) fn entries(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The first name `text` defines twice, as one unit would: a function, a
-/// variable, a typedef, a tag, an enum constant or a macro (an `#undef`
-/// lets a macro be defined again). `None` when there is none, or when
+/// The first name `text` defines twice, as one unit would: a function with
+/// its body, a variable with its initializer, a tag with its body, an enum
+/// constant or a macro (an `#undef` lets a macro be defined again). A
+/// prototype, an `extern`, a typedef or a variable without an initializer
+/// defines nothing here, as C lets them repeat. `None` when there is none, or when
 /// `text` does not split (cc then says why).
 pub(super) fn redefined(text: &str) -> Option<String> {
     let tokens = promptcore::lex::lex(text).ok()?;
@@ -75,6 +77,7 @@ pub(super) fn redefined(text: &str) -> Option<String> {
             What::Decl(decl) => decl
                 .declarators
                 .iter()
+                .filter(|d| d.init.is_some() && decl.storage != Storage::Extern)
                 .map(|d| d.name.clone())
                 .chain(decl.tags.iter().map(|t| format!("tag {}", t.name)))
                 .chain(decl.tags.iter().flat_map(|t| t.enumerators.clone()))
@@ -122,6 +125,11 @@ mod tests {
             redefined("#define N 2\n#undef N\n#define N 3\nI64 a[N];"),
             None
         );
-        assert_eq!(redefined("I64 lo, hi;\nI64 hi;").as_deref(), Some("hi"));
+        assert_eq!(
+            redefined("I64 lo = 1, hi = 2;\nI64 hi = 9;").as_deref(),
+            Some("hi")
+        );
+        let declared = "I64 Sq(I64 x);\nextern I64 n;\nI64 Sq(I64 x) { return x; }\nI64 n = 2;";
+        assert_eq!(redefined(declared), None);
     }
 }

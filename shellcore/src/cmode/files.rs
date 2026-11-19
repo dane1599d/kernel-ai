@@ -231,12 +231,25 @@ impl Shell {
         ))
     }
 
-    /// Replays `entry`'s definitions as one entry of the session: how many it
-    /// made, or why not (cc then committed nothing of it).
+    /// Loads `entry`'s definitions and their initializers as one entry of
+    /// the session, as it first ran without its statements: how many it made,
+    /// or why not (cc then committed nothing of it). It is kept as typed;
+    /// only cc sees its `#include "…"` files.
     fn c_replay(&mut self, entry: &str) -> Result<usize, String> {
+        let expanded = self.c_includes(entry)?;
+        if expanded.len() > promptcore::MAX_ENTRY {
+            return Err(format!(
+                "with its #include files it is over {} KiB",
+                promptcore::MAX_ENTRY / 1024
+            ));
+        }
         self.c.seq += 1;
         let seq = self.c.seq;
-        let request = Request::Replay { seq, entry }.text();
+        let request = Request::Load {
+            seq,
+            entry: &expanded,
+        }
+        .text();
         let reply = self.host.cc(request.as_bytes()).map_err(|why| {
             self.c.open = false;
             format!("cc did not answer: {why}")
@@ -250,6 +263,14 @@ impl Shell {
             Some(Record::Done { .. }) => {}
             Some(Record::Err { text: why, .. }) => {
                 return Err(String::from_utf8_lossy(why).into_owned());
+            }
+            // An initializer that calls kai stops at a need; a load runs no
+            // call, so the entry fails and the load is taken back.
+            Some(Record::Need { .. }) => {
+                self.c.open = false;
+                return Err(String::from(
+                    "an initializer calls kai, and :load runs no calls",
+                ));
             }
             _ => return Err(String::from("cc's reply was malformed")),
         }
@@ -266,15 +287,19 @@ impl Shell {
     /// so a file loads whole or not at all.
     fn c_unload(&mut self, count: usize) {
         for _ in 0..count {
+            self.c.ran.pop();
+            if !self.c.open {
+                continue;
+            }
             let undone = self
                 .host
                 .cc(Request::Undo.text().as_bytes())
                 .is_ok_and(|reply| {
                     matches!(parse_reply(&reply).as_deref(), Ok([Record::Undone(_)]))
                 });
-            self.c.ran.pop();
             if !undone {
-                // cc lost its journal: the next entry opens a session again
+                // cc lost its journal, or its reply did not parse: no more
+                // undo goes to it, and the next entry opens a session again
                 // and replays what is left.
                 self.c.open = false;
             }

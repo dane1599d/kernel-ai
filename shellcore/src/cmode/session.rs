@@ -51,7 +51,12 @@ impl Shell {
         self.c.ran.clear();
         let mut restored = 0;
         for (seq, text) in kept {
-            let replay = Request::Replay { seq, entry: &text }.text();
+            // An entry is kept as typed: its `#include "…"` files are read
+            // again, and one that is gone is not restored.
+            let Ok(entry) = self.c_includes(&text) else {
+                continue;
+            };
+            let replay = Request::Replay { seq, entry: &entry }.text();
             if self.c_expect_done(&replay) {
                 restored += 1;
                 self.c.ran.push(Ran {

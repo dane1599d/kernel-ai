@@ -53,15 +53,24 @@ const UNDO: &[(&str, Expect)] = &[
     ("policy", Exact("ok scheduling policy: interactive")),
 ];
 
-/// The session saved to `/home/user/c/demo.c`, emptied, and loaded back:
-/// Twice calls the redefined Sq again. Then the file as an `#include`.
+/// The session saved to `/home/user/c/demo.c`, emptied, and loaded back
+/// entry by entry: Twice calls the redefined Sq again. demo.c redefines Sq,
+/// so it does not include; a file that defines each name once does.
 const FILES: &[(&str, Expect)] = &[
     (":c", StartsWith("ok ")),
     (":save demo", StartsWith("ok saved ")),
     (":reset", Exact("ok the C session is empty again")),
     (":load demo", StartsWith("ok loaded ")),
     ("Twice(3)", Exact("ok = 8")),
-    ("#include \"demo.c\"\nTwice(2)", Exact("ok = 6")),
+    (
+        "#include \"demo.c\"\nTwice(2)",
+        Exact("err #include \"demo.c\": it defines Sq twice; use :load"),
+    ),
+    (":reset", Exact("ok the C session is empty again")),
+    ("I64 Cube(I64 x) { return x * x * x; }", Exact("ok ")),
+    (":save cube", StartsWith("ok saved 1 entries ")),
+    (":reset", Exact("ok the C session is empty again")),
+    ("#include \"cube.c\"\nCube(2)", Exact("ok = 8")),
     (":rhai", Exact("ok back at kai>")),
 ];
 
