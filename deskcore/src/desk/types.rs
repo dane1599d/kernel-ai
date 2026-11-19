@@ -114,6 +114,10 @@ pub enum Effect {
     PanelClick { at: Point },
     /// Caps Lock was turned on or off: every client types letters by it.
     Locks { caps: bool },
+    /// The modifiers held changed (shift 1, ctrl 2, alt 4, super 8), whatever
+    /// had the focus when they were pressed or let go: every client's seat
+    /// hears it, and keys after it carry it. Sent before the key that changed it.
+    Modifiers(u32),
     /// Keyboard focus moved.
     Focus(Focus),
     /// The taskbar's "more" item: All apps.
