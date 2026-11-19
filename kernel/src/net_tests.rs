@@ -341,7 +341,26 @@ pub fn dest_check() -> Result<(), &'static str> {
     );
     llm_grant()?;
     any_host_pinned()?;
-    sweep_check()
+    sweep_check()?;
+    ttl_zero_check()
+}
+
+/// Audit K #18: an address resolved with TTL 0 may still be connected to at
+/// once (it counts for at least a minute), on the record's port only.
+fn ttl_zero_check() -> Result<(), &'static str> {
+    let (object, _) = netdest(KAI_TEST)?;
+    let addr = core::net::Ipv4Addr::new(10, 0, 2, 99);
+    net::dest::resolved(object, &[addr], 0);
+    let tcp = netdest::Protocol::Tcp;
+    if !net::dest::may_connect(object, tcp, addr, 8000)
+        || net::dest::may_connect(object, tcp, addr, 8001)
+    {
+        return Err("net-dest: a TTL-0 answer could not be connected to, or reached another port");
+    }
+    log!(
+        "net-dest: an address resolved with TTL 0 can be connected to at once, on the record's port"
+    );
+    Ok(())
 }
 
 /// Audit K #1: fills the record table with records no handle names, waits
