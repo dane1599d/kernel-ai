@@ -54,6 +54,9 @@ pub struct Grid<const CELLS: usize> {
     damage: Damage,
     /// The cursor at the last `take_damage`, moved along with scrolls since.
     shown_cursor: Option<(usize, usize)>,
+    /// Rows a full row wrapped onto (bit `row`): their text is the row
+    /// above's, carried on, never a row of its own ([`Grid::kind_of`]).
+    continued: u128,
 }
 
 fn is_blank(ch: char) -> bool {
@@ -95,6 +98,7 @@ impl<const CELLS: usize> Grid<CELLS> {
                 rows: 0,
             },
             shown_cursor: None,
+            continued: 0,
         }
     }
 
@@ -113,6 +117,7 @@ impl<const CELLS: usize> Grid<CELLS> {
         self.input.shown = false;
         self.input_top = 0;
         self.shown_cursor = None;
+        self.continued = 0;
         self.damage = Damage {
             scrolled: 0,
             rows: self.all_rows(),
@@ -131,6 +136,28 @@ impl<const CELLS: usize> Grid<CELLS> {
             return &[];
         }
         &self.cells[row * self.cols..(row + 1) * self.cols]
+    }
+
+    /// Whether `row` holds text that wrapped onto it from the row above.
+    pub fn continues(&self, row: usize) -> bool {
+        row < self.rows && self.continued & (1 << row) != 0
+    }
+
+    /// How `row` is styled: by the text of the row its line began on. A row a
+    /// full row wrapped onto is never styled by its own text, so text that
+    /// overflows a row (a cut that counted one character where the screen
+    /// shows two, a reply longer than the screen is wide) cannot start a row
+    /// that looks like a prompt, a question or a kernel line. One whose first
+    /// row has scrolled away is a plain log row.
+    pub fn kind_of(&self, row: usize) -> crate::style::Kind {
+        let mut first = row;
+        while self.continues(first) {
+            match first.checked_sub(1) {
+                Some(above) => first = above,
+                None => return crate::style::Kind::of(&[]),
+            }
+        }
+        crate::style::Kind::of(self.row(first))
     }
 
     /// How many cells of `row` there are up to its last non-blank one.
@@ -267,12 +294,15 @@ impl<const CELLS: usize> Grid<CELLS> {
     fn blank_row(&mut self, row: usize) {
         let cols = self.cols;
         self.cells[row * cols..(row + 1) * cols].fill(' ');
+        self.continued &= !(1 << row);
         self.mark(row);
     }
 
     fn put(&mut self, ch: char) {
         if self.log.1 >= self.cols {
             self.newline();
+            // The row is full: the line carries on, as the same line.
+            self.continued |= 1 << self.log.0;
         }
         let (row, col) = self.log;
         self.cells[row * self.cols + col] = ch;
@@ -284,10 +314,11 @@ impl<const CELLS: usize> Grid<CELLS> {
         self.log.1 = 0;
         if self.log.0 + 1 < self.rows {
             self.log.0 += 1;
-            return;
+        } else {
+            self.scroll(1);
+            self.log.0 = self.rows - 1;
         }
-        self.scroll(1);
-        self.log.0 = self.rows - 1;
+        self.continued &= !(1 << self.log.0);
     }
 
     fn back_one(&mut self) {
@@ -302,6 +333,7 @@ impl<const CELLS: usize> Grid<CELLS> {
 
     fn clear(&mut self) {
         self.cells[..self.cols * self.rows].fill(' ');
+        self.continued = 0;
         self.log = (0, 0);
         self.damage = Damage {
             scrolled: 0,
@@ -318,6 +350,7 @@ impl<const CELLS: usize> Grid<CELLS> {
         }
         self.cells.copy_within(n * cols..rows * cols, 0);
         self.cells[(rows - n) * cols..rows * cols].fill(' ');
+        self.continued = shift_down(self.continued, n);
         // A log row scrolled away leaves the log at the top of a blank screen.
         self.log = match self.log.0.checked_sub(n) {
             Some(row) => (row, self.log.1),

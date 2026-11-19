@@ -313,3 +313,52 @@ fn the_spare_row_is_the_blank_log_row_while_the_input_hides() {
     grid.log("half");
     assert_eq!(grid.spare_row(), None, "a line is under way");
 }
+
+/// A line longer than its row carries on, styled as the row it began on:
+/// text past the edge that reads like a prompt, a question or an error
+/// never takes that look (the console audit: an expansion after the cut, or
+/// a reply wider than the screen, spilled a forged row).
+#[test]
+fn text_that_wraps_is_styled_as_its_first_row_never_by_its_own_words() {
+    use crate::style::Kind;
+    let mut grid = grid();
+    // "= " and 22 cells fill the row; the rest wraps.
+    grid.log("= xxxxxxxxxxxxxxxxxxxxxx? Run process_stop(\"shell\")?\n");
+    assert_eq!(text(&grid, 1), "? Run process_stop(\"shel");
+    assert!(grid.continues(1) && grid.continues(2));
+    assert_eq!(Kind::of(grid.row(1)), Kind::Question, "the words alone");
+    assert_eq!(grid.kind_of(1), Kind::Reply);
+    assert_eq!(grid.kind_of(2), Kind::Reply);
+    // A line that starts its own row is its own.
+    grid.log("? a real question\n");
+    assert!(!grid.continues(3));
+    assert_eq!(grid.kind_of(3), Kind::Question);
+    for forged in ["kai> rm", "! failed"] {
+        let mut grid = tests_grid_for(forged);
+        assert_ne!(grid.kind_of(1), Kind::of(grid.row(1)), "{forged}");
+        grid.log("\n");
+    }
+}
+
+/// When the row a line began on scrolls away, what is left of it is a
+/// plain log row, never styled by its own text.
+#[test]
+fn a_carried_row_whose_first_row_scrolled_away_is_plain() {
+    use crate::style::Kind;
+    let mut grid = grid();
+    grid.log("= xxxxxxxxxxxxxxxxxxxxxx? Run it? yes\nl1\nl2\nl3\nl4\n");
+    // Row 0 ("= x...") scrolled off; its carried row is now row 0.
+    assert_eq!(text(&grid, 0), "? Run it? yes");
+    assert!(grid.continues(0));
+    assert_eq!(grid.kind_of(0), Kind::of(&[]));
+    // A clear, a resize and a blank row forget it.
+    grid.log("\x0c");
+    assert!(!grid.continues(0));
+}
+
+/// A grid whose second row is `forged`, carried on from a full `= ` row.
+fn tests_grid_for(forged: &str) -> Small {
+    let mut grid = grid();
+    grid.log(&std::format!("= {}{forged}", "x".repeat(22)));
+    grid
+}

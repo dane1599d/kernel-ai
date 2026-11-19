@@ -111,7 +111,10 @@ fn write(slot: usize, ptr: u64, len: u64, flags: u64) -> Result<u64, Error> {
     if flags & !call::WRITE_LOG_ONLY != 0 {
         return Err(Error::Invalid);
     }
-    let log_only = flags & call::WRITE_LOG_ONLY != 0;
+    // While a question waits for its answer, no process's text reaches the
+    // screen: it could scroll the question away while its menu still takes
+    // `y` (the console audit). It goes to the log, as WRITE_LOG_ONLY's does.
+    let log_only = flags & call::WRITE_LOG_ONLY != 0 || crate::terminal::awaiting_answer();
     let len = usize::try_from(len).unwrap_or(usize::MAX).min(MAX_WRITE);
     let mut buf = [0u8; MAX_WRITE];
     uaccess::copy_from_user(slot, ptr, &mut buf[..len])?;
