@@ -245,6 +245,7 @@ pub fn poll(
 ) -> Result<u64, Error> {
     let deadline = hpet::nanos().saturating_add(timeout_ms.min(MAX_WAIT_MS) * 1_000_000);
     loop {
+        let ticket = super::frames_ticket();
         let bits = with(owner, id, |socket, connected| state(socket, *connected))?;
         if bits & (want | ready::FAILED) != 0 || hpet::nanos() >= deadline {
             return Ok(bits);
@@ -252,7 +253,7 @@ pub fn poll(
         if cancel() {
             return Err(Error::Interrupted);
         }
-        crate::threads::sleep_ms(POLL_GAP_MS);
+        super::wait_for_frames(ticket, POLL_GAP_MS);
     }
 }
 
