@@ -175,6 +175,28 @@ impl Shell {
                 });
                 continue;
             }
+            // A fetched model is removed, or its download stopped; undoing that
+            // would fetch gigabytes again, so its redo has no inverse either: a
+            // fresh model_fetch asks.
+            if let undo::Inverse::Fetched { sha } = inverse {
+                match self.model_unfetch(sha) {
+                    Ok(text) => {
+                        said.push(text);
+                        redo.push(Change {
+                            before: change.after.clone(),
+                            after: change.before.clone(),
+                            inverse: None,
+                            ..change
+                        });
+                        continue;
+                    }
+                    Err(why) => {
+                        left.push(change);
+                        stopped = Some(Reply::err(format!("{}{why}", undone(&said))));
+                        break;
+                    }
+                }
+            }
             // A held send is cancelled; undoing that never sends it, so its
             // redo has no inverse: a send always asks again.
             if let undo::Inverse::Unsend { entry: held } = inverse {
