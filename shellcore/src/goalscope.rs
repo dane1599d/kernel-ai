@@ -5,8 +5,9 @@
 //! on `show`, counted on the card, and handed to `grant_goal` as the same
 //! value; nothing derives it again.
 //!
-//! - **Rows**: explicit registry rows, never `<group>_*`: each OS row a cue of
-//!   which is a word of the line. A word that names a row a goal may never
+//! - **Rows**: explicit registry rows, never `<group>_*`: each OS row the
+//!   line names by a whole cue, path words aside. One consent reads as
+//!   negated (`consent::named_in`: "never move") refuses the goal. A word that names a row a goal may never
 //!   hold (one that sends, installs, changes a permission or never runs)
 //!   refuses the goal and says which word. At most [`MAX_ACTIONS`].
 //! - **Folders**: each path written in the line, under the person's home:
@@ -37,12 +38,27 @@ pub(crate) fn scope(
     line: &str,
     listed: impl Fn(&str) -> Result<(), String>,
 ) -> Result<goalcore::Scope, String> {
-    let words = plain(line);
+    // A folder's path is where the goal works, not what it does: its words
+    // ("notes/q3") name no action.
+    let words: Vec<&str> = line
+        .split_whitespace()
+        .filter(|w| !w.contains('/'))
+        .collect();
+    let words = words.join(" ");
+    let plain_words = plain(&words);
     let mut rows: Vec<String> = Vec::new();
     for row in agentabi::ROWS.iter().filter(|row| considered(row)) {
-        let Some(cue) = row.cues.iter().find(|cue| names(&words, cue)) else {
+        // Named by a whole cue ("go" is not in "good"); negated as consent
+        // reads the line ("never move").
+        let Some(cue) = row.cues.iter().find(|cue| names(&plain_words, cue)) else {
             continue;
         };
+        let negated = agentabi::consent::named_in(&words, row) == Some(true);
+        if negated {
+            return Err(format!(
+                "\"{cue}\" is said not to happen; say only what the goal does"
+            ));
+        }
         if !may_hold(row) {
             return Err(format!(
                 "\"{cue}\" names {}, which a goal may not do; do that with your own line",
@@ -102,7 +118,7 @@ fn plain(text: &str) -> String {
 }
 
 /// Whether cue `cue` is words of `words` ([`plain`]'s form), whole, or with a
-/// plural `s`: "go" is not in "good".
+/// plural `s`.
 fn names(words: &str, cue: &str) -> bool {
     let cue = plain(cue);
     let cue = cue.trim_end();

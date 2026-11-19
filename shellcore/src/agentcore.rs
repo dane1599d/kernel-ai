@@ -673,7 +673,7 @@ impl Shell {
 }
 
 /// Why a call asks, as its card says it.
-fn reason_of(why: Why) -> String {
+pub(crate) fn reason_of(why: Why) -> String {
     match why {
         Why::NotEnglish => String::from("the request is not in English, so it asks first"),
         Why::Added => String::from("the request did not ask for it"),
