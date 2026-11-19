@@ -408,3 +408,24 @@ fn a_state_too_big_for_the_runtime_is_repaired_with_its_limit_named() {
     assert_eq!(why, format!("cc build refused it:\n{STATE_HINT}{refused}"));
     assert!(STATE_HINT.contains("4096 bytes"));
 }
+
+/// #1172's review: a `.c` or `.h` file beside main.c in the app's folder is
+/// refused once, before any model round, with what to do.
+#[test]
+fn a_foreign_source_in_the_apps_folder_is_refused_before_any_round() {
+    let (host, mut shell) = asked(vec![app(SOURCE)]);
+    host.files
+        .borrow_mut()
+        .insert(String::from("apps/timer/extra.c"), String::from("int x;"));
+    let reply = shell.eval("make me a countdown timer app");
+    assert!(
+        !reply.ok
+            && reply.text.contains(crate::ccbuild::NOT_KAIS)
+            && reply.text.contains("give the app another name"),
+        "{reply:?}"
+    );
+    assert!(
+        host.script_requests.borrow().is_empty(),
+        "no model round spent"
+    );
+}
