@@ -644,8 +644,9 @@ pub const EVENT_READ: u64 = 183;
 /// `app_suspend` and `app_resume` for a standing instruction after RULE_CHECK
 /// (P3 task 11), and the shell's keep-running switch (P3 task 12b): needs
 /// [`super::cap::SUPERVISE`]. Invalid for another verb; NotFound with no such
-/// service; TimedOut when it does not answer within 5 s, and at once when
-/// the app's process ends with the ctl unanswered.
+/// service; TimedOut when the app did not take it within 5 s, and at once
+/// when the app's process ends with it still queued; Dead when it took it
+/// and did not answer, or died with it (it may have taken effect).
 pub const APP_CTL: u64 = 184;
 /// `app_call(name_ptr, name_len, req_ptr, req_len, buf, cap | wait_ms << 32) -> len`: the
 /// kernel sends `req`, a `kai-call 1`, a `kai-undo 1` or `kai-actions 1`, of at most

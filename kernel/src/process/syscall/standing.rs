@@ -153,6 +153,8 @@ fn app_ctl(slot: usize, ptr: u64, len: u64, verb: u64, buf: u64, cap: u64) -> Re
         .map_err(|error| match error {
             ipc::CallError::Unavailable => Error::NotFound,
             ipc::CallError::NoMemory => Error::NoMemory,
+            // Taken, and not answered: the suspend or resume may have happened.
+            ipc::CallError::Unanswered | ipc::CallError::ServiceDied => Error::Dead,
             _ => Error::TimedOut,
         })?;
     let reply = &reply[..reply.len().min(usize::try_from(cap).unwrap_or(usize::MAX))];

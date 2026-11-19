@@ -844,11 +844,13 @@ pub fn call_open(c: usize, id: u64) -> bool {
 /// A process died: unbind its endpoints and fail the calls it had taken.
 pub fn on_process_exit(pid: u64) {
     let mut callers = [None; MAX_CALLS];
+    let mut unbound = [false; MAX_ENDPOINTS];
     with_ipc(|ipc| {
         for (index, slot) in ipc.endpoints.iter_mut().enumerate() {
             let Some(endpoint) = slot.as_mut().filter(|e| e.server_pid == pid) else {
                 continue;
             };
+            unbound[index] = true;
             endpoint.server_pid = 0;
             endpoint.waiting = None;
             BOUND[index].store(0, Ordering::SeqCst);
@@ -859,6 +861,15 @@ pub fn on_process_exit(pid: u64) {
                 && CALL_STATE[c]
                     .compare_exchange(TAKEN, FAILED, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()
+            {
+                callers[c] = Some(call.caller);
+            }
+            // A call still queued for it stays queued for its next instance,
+            // but its caller wakes to ask its own `cancel` again: APP_CTL's
+            // ends once the app is gone, not at its deadline (#1164's review).
+            if let Some(call) = call.as_ref()
+                && CALL_STATE[c].load(Ordering::SeqCst) == QUEUED
+                && unbound[call.endpoint]
             {
                 callers[c] = Some(call.caller);
             }

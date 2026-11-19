@@ -66,6 +66,9 @@ pub enum State {
     Nothing,
     /// A later undo put its changes back.
     Undone,
+    /// It failed after an app took a call and did not answer: that call may
+    /// have run, so it is neither done nor nothing (audit K #19).
+    Unknown,
 }
 
 impl State {
@@ -75,6 +78,7 @@ impl State {
             Self::Asked => "asked",
             Self::Nothing => "nothing",
             Self::Undone => "undone",
+            Self::Unknown => "unknown",
         }
     }
 }

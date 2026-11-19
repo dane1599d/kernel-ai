@@ -135,6 +135,9 @@ struct FakeHost {
     app_replies: RefCell<VecDeque<String>>,
     /// Services the supervisor answers "no such app" for (the shell, llm).
     not_apps: RefCell<Vec<String>>,
+    /// Errors the next app calls answer, before any reply: as the shell's
+    /// `ask_app` gives the supervisor's `err ...` answers.
+    app_errors: RefCell<VecDeque<String>>,
     /// The saved appearance (`kai-appearance 1`).
     appearance: RefCell<Option<String>>,
     /// The trusted path's ONCE book: badge, digest, and whether it was used.
@@ -360,6 +363,7 @@ impl FakeHost {
             app_requests: RefCell::new(Vec::new()),
             app_replies: RefCell::new(VecDeque::new()),
             not_apps: RefCell::new(Vec::new()),
+            app_errors: RefCell::new(VecDeque::new()),
             appearance: RefCell::new(None),
             once: RefCell::new(Vec::new()),
             revoked: RefCell::new(Vec::new()),
@@ -954,6 +958,9 @@ impl Host for FakeHost {
             .push((String::from(app), String::from(request)));
         if self.not_apps.borrow().iter().any(|a| a == app) {
             return Err(String::from("no such app"));
+        }
+        if let Some(error) = self.app_errors.borrow_mut().pop_front() {
+            return Err(error);
         }
         self.app_replies
             .borrow_mut()
