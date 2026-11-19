@@ -40,7 +40,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
 use core::net::Ipv4Addr;
-pub use meter::{DayMeter, OverBudget};
+pub use meter::{DayMeter, NO_CLOCK, OverBudget};
 pub use ranges::{AddrRange, MAX_SET_SIZE, PortRange};
 
 /// The most host-name suffixes a destination names.
