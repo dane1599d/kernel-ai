@@ -69,7 +69,17 @@ pub struct Allocator {
     chain: Vec<BlockPtr>,
     deltas: u32,
     pub faults: Faults,
+    /// Free blocks held back for the work that frees space ([`RESERVE_MIN`]).
+    reserve: u64,
+    /// Whether this work may take blocks from the reserve.
+    spend_reserve: bool,
 }
+
+/// The fewest free blocks held back from growth: a full disk keeps enough for
+/// the commits that free space (a trash, an emptied trash, a truncate down,
+/// retention and the GC, each needing new tree, volume-table and allocator
+/// blocks). The reserve is this or 1/200 of the data area, whichever is more.
+pub const RESERVE_MIN: u64 = 64;
 
 /// What the allocator holds, to compare a mounted state with a committed one.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -132,14 +142,38 @@ impl Allocator {
             chain: Vec::new(),
             deltas: 0,
             faults: Faults::default(),
+            reserve: RESERVE_MIN.max((area.1 - area.0) / 200),
+            spend_reserve: false,
         }
     }
 
-    /// A free run of `level`, recorded for this transaction's delta.
+    /// A free run of `level`, recorded for this transaction's delta. NoSpace if
+    /// it would leave fewer free blocks than the reserve, unless this work may
+    /// spend it ([`Allocator::spend_reserve`]).
     pub fn alloc(&mut self, level: u8) -> Result<Run, Error> {
         let run = self.buddy.alloc(level).ok_or(Error::NoSpace)?;
+        if !self.spend_reserve && self.buddy.free_blocks() < self.reserve {
+            self.buddy.free(run);
+            return Err(Error::NoSpace);
+        }
         self.allocs.push(run);
         Ok(run)
+    }
+
+    /// Lets the work that follows take blocks from the reserve, or stops it;
+    /// what it was before.
+    pub fn spend_reserve(&mut self, on: bool) -> bool {
+        core::mem::replace(&mut self.spend_reserve, on)
+    }
+
+    /// The free blocks held back from growth.
+    pub fn reserve(&self) -> u64 {
+        self.reserve
+    }
+
+    /// Whether freed runs are waiting out their two commits.
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
     }
 
     /// Frees `run` in generation `txn`: free again from `txn + 2`.

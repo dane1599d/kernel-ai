@@ -116,6 +116,22 @@ impl<D: BlockDev> Fs<D> {
         (self.io.alloc.free_blocks(), end - start)
     }
 
+    /// Runs `f` with the allocator's reserve open: for the work that frees
+    /// space (a trash, an emptied trash, a truncate down, retention, the GC's
+    /// commit, a repair), which must work on a disk growth has filled.
+    pub fn freeing<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let was = self.io.alloc.spend_reserve(true);
+        let out = f(self);
+        self.io.alloc.spend_reserve(was);
+        out
+    }
+
+    /// Whether free space is under the reserve, with freed blocks waiting out
+    /// their two commits: an empty commit or two would give them back.
+    pub fn reserve_waits_on_pending(&self) -> bool {
+        self.io.alloc.free_blocks() < self.io.alloc.reserve() && self.io.alloc.has_pending()
+    }
+
     /// Whether free space is under a tenth of the data area: when the GC must run,
     /// and retention drops the oldest undo snapshot.
     pub fn space_low(&self) -> bool {
