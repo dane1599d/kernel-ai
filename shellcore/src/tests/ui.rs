@@ -135,7 +135,8 @@ fn close_asks_and_undo_reopens_and_open_runs_and_undo_closes() {
         host.ui_calls.borrow().last(),
         Some(&UiCall::Open {
             app: "notes".into(),
-            arg: None
+            arg: None,
+            person: false
         })
     );
     let opened = shell.eval("open notes");
@@ -170,6 +171,40 @@ fn opening_an_app_already_open_only_focuses_it_and_undo_never_closes_it() {
     let calls = host.ui_calls.borrow();
     assert_eq!(calls.last(), Some(&UiCall::Refocus("w1".into())));
     assert!(!calls.iter().any(|c| matches!(c, UiCall::Close(_))));
+}
+
+/// Who drives an open decides how its window takes the keys: the person's own
+/// `open notes` (typed, or the Apps sheet's line) is theirs (`person`: `ui
+/// activate`, no outline), and a model's `ui_open` (a script's too: the same binding) is the
+/// agent's (`ui focus`, with its outline).
+#[test]
+fn the_persons_open_is_theirs_and_the_agents_is_not() {
+    let open = r#"{"name":"ui_open","arguments":{"app":"notes"}}"#;
+    let opens = |host: &FakeHost| -> Vec<bool> {
+        host.ui_calls
+            .borrow()
+            .iter()
+            .filter_map(|c| match c {
+                UiCall::Open { person, .. } => Some(*person),
+                _ => None,
+            })
+            .collect()
+    };
+    // The person's own line: no model is asked.
+    let (host, mut shell) = with_calls(vec![]);
+    host.lists_services.set(true);
+    *host.services.borrow_mut() = vec![(String::from("notes-window"), true)];
+    desktop(&host);
+    assert!(shell.eval("open notes").ok);
+    assert_eq!(opens(&host), [true]);
+    // The model's call for the same words in a longer line.
+    let (host, mut shell) = with_calls(vec![call(open)]);
+    host.lists_services.set(true);
+    *host.services.borrow_mut() = vec![(String::from("notes-window"), true)];
+    desktop(&host);
+    let reply = shell.eval("please open the notes app");
+    assert!(reply.ok, "{reply:?}");
+    assert_eq!(opens(&host), [false]);
 }
 
 #[test]

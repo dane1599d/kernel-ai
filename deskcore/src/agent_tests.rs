@@ -371,7 +371,8 @@ fn activate_gives_the_person_s_window_the_keys_and_nothing_of_the_agent_s() {
     let mut agent = Agent::default();
     assert_eq!(desk.focus(), Focus::Window(term));
     let (answer, effects) = agent.answer(&mut desk, &mut fake, "ui activate notes");
-    assert_eq!(answer, "ok w1");
+    // Where the focus was (the terminal), for an undo.
+    assert_eq!(answer, "ok w2");
     desk.take_damage();
     assert_eq!(desk.focus(), Focus::Window(notes));
     assert!(effects.iter().any(|e| matches!(e, Effect::Focus(_))));
@@ -397,7 +398,7 @@ fn activate_gives_the_person_s_window_the_keys_and_nothing_of_the_agent_s() {
     // Even after a run was stopped, and by id; the agent's own focus is still refused.
     agent.took_over();
     let (again, _) = agent.answer(&mut desk, &mut fake, "ui activate w2");
-    assert_eq!(again, "ok w2");
+    assert_eq!(again, "ok w1");
     assert_eq!(desk.focus(), Focus::Window(term));
     let (refused, _) = agent.answer(&mut desk, &mut fake, "ui focus term");
     assert!(refused.starts_with("err stopped"), "{refused}");

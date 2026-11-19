@@ -27,9 +27,15 @@ pub enum UiCall {
     /// Opens `app`: its first request starts it and it opens its window. The
     /// answer is `opened w5` for a new window, or `focused w3 w1` when the
     /// app's window was open already and only took focus (from `w1`).
+    /// `person` is true for the person's own line (`open notes`, the Apps
+    /// sheet): the window takes the keys as a click would give them (`ui
+    /// activate`), a private one too, and no outline. Any other open (a model's,
+    /// a script's, a goal's) is the agent's: it gets the outline (`ui focus`),
+    /// a private window is refused, and so is any window after a takeover.
     Open {
         app: String,
         arg: Option<String>,
+        person: bool,
     },
     Focus(String),
     /// Puts keyboard focus back where `ui_focus` found it: `w2`, `panel`, `none`.
@@ -187,7 +193,9 @@ impl Shell {
         self.host.audit(&format!(
             "request {id}: {input:?}, opened by code with no model"
         ));
+        self.person_line = true;
         let reply = self.execute(id, input, &call).reply;
+        self.person_line = false;
         // As a model request would on the next line: the running apps' rows
         // are loaded, the one just opened included, so Settings and the
         // grants see them (app-settings, on #885).
@@ -369,6 +377,7 @@ pub(crate) fn revert(
             let open = UiCall::Open {
                 app: app.as_str().into(),
                 arg: None,
+                person: false,
             };
             let answer = host.ui(&open).map_err(Refused::Failed)?;
             let redo = opened(&answer, app.as_str()).unwrap_or(undo::reverse(inverse));

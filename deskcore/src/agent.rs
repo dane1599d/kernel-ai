@@ -272,10 +272,12 @@ impl Agent {
             }
             // The person's own launch: focus and raise, as a click would. Never the
             // agent's outline or a takeover, and a private window takes it too.
+            // Answers where the focus was, as `Focus` does, for an undo.
             Request::Activate(name) => {
                 let window = find(desk, &name)?;
+                let before = focus_name(desk.focus());
                 desk.activate(window, effects);
-                Ok(format!("ok {}", view::window_id(window)))
+                Ok(format!("ok {before}"))
             }
             Request::Refocus(before) => {
                 match before.as_str() {

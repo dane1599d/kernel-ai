@@ -441,12 +441,13 @@ impl Shell {
             script,
             summary: String::new(),
         };
-        let checked = match script::check_against(&answer, &self.host, &self.config, rows) {
+        let mut checked = match script::check_against(&answer, &self.host, &self.config, rows) {
             Ok(checked) => checked,
             Err(refusal) => {
                 return self.refuse(id, request, call, decision.why, &refusal.to_string());
             }
         };
+        checked.person = self.person_line;
         self.host.audit(&format!(
             "request {id}: {} is {} ({:?})",
             row.name,
