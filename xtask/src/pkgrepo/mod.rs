@@ -22,6 +22,8 @@ mod serve;
 pub(crate) mod tuf;
 
 #[cfg(test)]
+mod image_tests;
+#[cfg(test)]
 mod mirror_tests;
 #[cfg(test)]
 mod model_tests;
