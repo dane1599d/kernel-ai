@@ -8,31 +8,82 @@ mod walk;
 use crate::{Access, Changed, Changes, Files, Models, Search, Store};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::cell::Cell;
 use semindex::{EmbedError, Embedder, EmbedderId, Scope};
 
-/// The home folder: each file's object, bytes and the generation that last
-/// changed it; and the objects gone since, with the generation they went at.
-#[derive(Default)]
+/// The home folder as kaifs keeps it: files and folders are objects, each with the
+/// generation that last changed it. A rename keeps the object; moving a folder
+/// changes the folder and the folders it left and joined, not the files under it;
+/// a trashed or deleted object is gone from the home folder's view with no row of
+/// its own, and only its folder's change says so (as `fs` answers since #1148).
 pub struct Home {
     files: BTreeMap<String, (u64, Vec<u8>, u64)>,
-    gone: Vec<(u64, u64)>,
+    dirs: BTreeMap<String, (u64, u64)>,
     generation: u64,
     next_object: u64,
+    /// Files read, to show a move is not read again.
+    pub reads: usize,
+    /// Paths whose next read fails, once each: a read that fails now.
+    pub fail_reads: Vec<String>,
+}
+
+const HOME: &str = "/home/user";
+
+impl Default for Home {
+    fn default() -> Self {
+        let mut dirs = BTreeMap::new();
+        dirs.insert(String::from(HOME), (1, 0));
+        Self {
+            files: BTreeMap::new(),
+            dirs,
+            generation: 0,
+            next_object: 1,
+            reads: 0,
+            fail_reads: Vec::new(),
+        }
+    }
+}
+
+fn parent(path: &str) -> &str {
+    path.rsplit_once('/').map_or(HOME, |(parent, _)| parent)
+}
+
+fn under(path: &str, folder: &str) -> bool {
+    path.strip_prefix(folder)
+        .is_some_and(|rest| rest.starts_with('/'))
 }
 
 impl Home {
+    fn object(&mut self) -> u64 {
+        self.next_object += 1;
+        self.next_object
+    }
+
+    /// Folder `path` changed in this generation; made, with its parents, if new.
+    fn touch(&mut self, path: &str) {
+        if !self.dirs.contains_key(path) {
+            self.touch(parent(path));
+            let object = self.object();
+            self.dirs
+                .insert(path.to_string(), (object, self.generation));
+        }
+        if let Some(dir) = self.dirs.get_mut(path) {
+            dir.1 = self.generation;
+        }
+    }
+
     /// Writes `path` in a new generation: the object it had, or a new one.
     pub fn write(&mut self, path: &str, text: &str) -> u64 {
         self.generation += 1;
         let object = match self.files.get(path) {
             Some((object, ..)) => *object,
             None => {
-                self.next_object += 1;
-                self.next_object
+                self.touch(parent(path));
+                self.object()
             }
         };
         let entry = (object, text.as_bytes().to_vec(), self.generation);
@@ -42,24 +93,65 @@ impl Home {
 
     pub fn delete(&mut self, path: &str) {
         self.generation += 1;
-        if let Some((object, ..)) = self.files.remove(path) {
-            self.gone.push((object, self.generation));
+        if self.files.remove(path).is_some() {
+            self.touch(parent(path));
         }
     }
 
-    /// Moves `from` to `to`, keeping its object, as a rename does.
+    /// Moves file `from` to `to`, keeping its object, as a rename does.
     pub fn rename(&mut self, from: &str, to: &str) {
         self.generation += 1;
         if let Some((object, bytes, _)) = self.files.remove(from) {
-            self.files
-                .insert(to.to_string(), (object, bytes, self.generation));
+            self.touch(parent(from));
+            self.touch(parent(to));
+            let entry = (object, bytes, self.generation);
+            self.files.insert(to.to_string(), entry);
         }
+    }
+
+    /// Moves folder `from` to `to` with everything under it: the folder and the
+    /// two it left and joined change, and the files under it keep their objects
+    /// and their generations.
+    pub fn rename_folder(&mut self, from: &str, to: &str) {
+        self.generation += 1;
+        let moved = |path: &str| format!("{to}{}", &path[from.len()..]);
+        let files: Vec<String> = self
+            .files
+            .keys()
+            .filter(|p| under(p, from))
+            .cloned()
+            .collect();
+        for path in files {
+            let entry = self.files.remove(&path).unwrap();
+            self.files.insert(moved(&path), entry);
+        }
+        let dirs: Vec<String> = self
+            .dirs
+            .keys()
+            .filter(|p| *p == from || under(p, from))
+            .cloned()
+            .collect();
+        for path in dirs {
+            let entry = self.dirs.remove(&path).unwrap();
+            self.dirs.insert(moved(&path), entry);
+        }
+        self.touch(parent(from));
+        self.touch(parent(to));
+        self.touch(to);
+    }
+
+    /// Trashes folder `path` with everything under it: only its folder changes.
+    pub fn trash_folder(&mut self, path: &str) {
+        self.generation += 1;
+        self.files.retain(|p, _| !under(p, path));
+        self.dirs.retain(|p, _| p != path && !under(p, path));
+        self.touch(parent(path));
     }
 }
 
-fn stat(object: u64, size: u64, changed: u64) -> fsproto::Stat {
+fn stat(kind: fsproto::Kind, object: u64, size: u64, changed: u64) -> fsproto::Stat {
     fsproto::Stat {
-        kind: fsproto::Kind::File,
+        kind,
         object,
         size,
         mtime: changed * 1_000,
@@ -68,34 +160,31 @@ fn stat(object: u64, size: u64, changed: u64) -> fsproto::Stat {
     }
 }
 
-impl Files for Home {
-    fn changes(&mut self, since: u64) -> Result<Changes, String> {
-        let mut rows: Vec<Changed> = self
-            .files
+impl Home {
+    fn file_rows(&self, keep: impl Fn(&str, u64) -> bool) -> Vec<Changed> {
+        self.files
             .iter()
-            .filter(|(_, (_, _, changed))| *changed > since)
+            .filter(|(path, (_, _, changed))| keep(path, *changed))
             .map(|(path, (object, bytes, changed))| Changed {
-                stat: stat(*object, bytes.len() as u64, *changed),
+                stat: stat(fsproto::Kind::File, *object, bytes.len() as u64, *changed),
                 path: Some(path.clone()),
             })
-            .collect();
+            .collect()
+    }
+}
+
+impl Files for Home {
+    fn changes(&mut self, since: u64) -> Result<Changes, String> {
+        let mut rows = self.file_rows(|_, changed| changed > since);
         rows.extend(
-            self.gone
+            self.dirs
                 .iter()
-                .filter(|(_, changed)| *changed > since)
-                .map(|(object, changed)| Changed {
-                    stat: stat(*object, 0, *changed),
-                    path: None,
+                .filter(|(_, (_, changed))| *changed > since)
+                .map(|(path, (object, changed))| Changed {
+                    stat: stat(fsproto::Kind::Dir, *object, 0, *changed),
+                    path: Some(path.clone()),
                 }),
         );
-        // A folder's own change, which the walk passes over.
-        rows.push(Changed {
-            stat: fsproto::Stat {
-                kind: fsproto::Kind::Dir,
-                ..stat(999, 0, self.generation)
-            },
-            path: Some(String::from("/home/user")),
-        });
         Ok(Changes {
             rows,
             generation: self.generation,
@@ -103,11 +192,24 @@ impl Files for Home {
     }
 
     fn read(&mut self, path: &str, max: u64) -> Result<Vec<u8>, String> {
+        self.reads += 1;
+        if let Some(at) = self.fail_reads.iter().position(|p| p == path) {
+            self.fail_reads.remove(at);
+            return Err(String::from("busy"));
+        }
         match self.files.get(path) {
             Some((_, bytes, _)) if bytes.len() as u64 <= max => Ok(bytes.clone()),
             Some(_) => Err(String::from("too large")),
             None => Err(String::from("not found")),
         }
+    }
+
+    fn files_under(&mut self, folder: &str) -> Result<Vec<Changed>, String> {
+        Ok(self.file_rows(|path, _| under(path, folder)))
+    }
+
+    fn present(&mut self, path: &str) -> Result<bool, String> {
+        Ok(self.files.contains_key(path) || self.dirs.contains_key(path))
     }
 }
 

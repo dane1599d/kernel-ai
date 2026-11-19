@@ -21,13 +21,19 @@
 //!   at most [`BATCH_FILES`] files. A batch commits whole or not at all. Only the
 //!   walk's last batch moves the index's generation mark on, so a crash in any batch
 //!   leaves the mark where the walk began, and the next walk does those files again.
-//!   Indexing a file again replaces it, so doing it twice is harmless.
+//!   Indexing a file again replaces it, so doing it twice is harmless. A changed
+//!   folder with nothing indexed under it is listed, so a moved folder's files are
+//!   re-keyed to their new paths without being read again; and for every changed
+//!   folder, the indexed files under a child of it that no longer exists leave.
+//!   A file that cannot be read now keeps its old entry, and the mark stays below
+//!   its change, so the next walk tries it again.
 //! - **Model.** A walk that would embed waits while there is no room for the model
 //!   ([`Walked::NoRoom`]): indexing never pushes out the person's own requests. The
 //!   model is dropped after [`IDLE_NS`] unused ([`Search::idle`]).
 //! - **Query.** One request text in, one reply text out ([`text`]). Results come
-//!   from `semindex::search`, and a path the caller's `Dir` may not read is never
-//!   returned, nor counted.
+//!   from `semindex::search` over the files the caller's `Dir` may read and no
+//!   others: a file it may not read is never returned, takes no place under the
+//!   limit, and plays no part in any score.
 //!
 //! The index is derived data: losing it loses nothing but time.
 
@@ -50,31 +56,40 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use semindex::{Embedder, EmbedderId};
 
-/// One object `changes(since)` reported: its stat, as kaifs's `Reply::Changes`
-/// row gives it, and its path now.
+/// One object `changes(since)` reported, or a folder listed: its stat, as kaifs's
+/// `Reply::Changes` row gives it, and its path now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Changed {
     pub stat: fsproto::Stat,
-    /// Its absolute path now, or `None` when it is no longer under `/home/user`
-    /// (deleted, trashed or moved out): it leaves the index.
+    /// Its absolute path now, or `None` when it is no longer under `/home/user`:
+    /// it leaves the index.
     pub path: Option<String>,
 }
 
 /// What changed since a generation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Changes {
-    /// Every object changed after the generation asked about. `fs` answers at
-    /// most 64 rows a call; the OS half asks until it has them all.
+    /// Every object changed after the generation asked about, files and
+    /// folders. `fs` answers at most 64 rows a call, in `(changed, object)` order;
+    /// the OS half pages with `ChangesAfter` until it has them all (#1148). A
+    /// trashed or deleted object is in no row: the home folder's handle no longer
+    /// sees it, and the change to its folder is how the walk learns of it.
     pub rows: Vec<Changed>,
     /// The generation this answer is complete up to: the next walk starts here.
     pub generation: u64,
 }
 
-/// The files of `/home/user`, as the `index` agent's `Dir` sees them.
+/// The files of `/home/user`, as the `index` agent's `Dir` sees them. An `Err` is
+/// a failure to read now: what it was about is kept and tried again.
 pub trait Files {
     fn changes(&mut self, since: u64) -> Result<Changes, String>;
     /// The bytes of the file at `path`, at most `max` of them; more is an error.
     fn read(&mut self, path: &str, max: u64) -> Result<Vec<u8>, String>;
+    /// Every file under `folder`, at any depth, with its stat and path: a folder
+    /// moved in is listed so its files are re-keyed to their new paths.
+    fn files_under(&mut self, folder: &str) -> Result<Vec<Changed>, String>;
+    /// Whether anything, file or folder, is at `path` now.
+    fn present(&mut self, path: &str) -> Result<bool, String>;
 }
 
 /// The index file on the `index` volume.
