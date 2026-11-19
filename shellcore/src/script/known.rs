@@ -5,9 +5,12 @@
 //! the strict engine has, with that many arguments, before the script is run.
 
 use alloc::format;
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
-use rhai::{AST, ASTNode, Engine, Expr, FnCallExpr, Stmt};
+use core::any::TypeId;
+use core::cell::RefCell;
+use rhai::{AST, ASTNode, Dynamic, Engine, Expr, FnCallExpr, Stmt};
 
 /// Names Rhai answers itself rather than through a registered function.
 const KEYWORDS: [&str; 10] = [
@@ -79,4 +82,51 @@ fn is_operator(call: &FnCallExpr) -> bool {
             .chars()
             .next()
             .is_some_and(|c| c.is_alphabetic() || c == '_')
+}
+
+/// The first call the trial run made that no function of `engine` takes, as
+/// "Function not found", wrong argument types included: a `catch` would hide
+/// it, so the run is no proof. Rhai asks the hook after any native call fails;
+/// one whose name, count and types match a function failed in that function
+/// (a stub row's own error), which a `catch` may well mean to catch.
+pub(super) fn watch(engine: &mut Engine) -> Rc<RefCell<Option<String>>> {
+    let known: Vec<(String, Vec<TypeId>)> = engine.collect_fn_metadata(
+        None,
+        |info| {
+            Some((
+                String::from(info.metadata.name.as_str()),
+                info.metadata.param_types.iter().copied().collect(),
+            ))
+        },
+        true,
+    );
+    let missed: Rc<RefCell<Option<String>>> = Rc::default();
+    let seen = Rc::clone(&missed);
+    #[allow(deprecated)] // volatile, not deprecated
+    engine.on_missing_function(move |name, args, _, _| {
+        let takes = |types: &[TypeId]| {
+            types.len() == args.len()
+                && types
+                    .iter()
+                    .zip(args.iter())
+                    // A function that ran and failed may have taken its
+                    // arguments out, leaving `()`.
+                    .all(|(t, arg)| {
+                        *t == TypeId::of::<Dynamic>() || *t == arg.type_id() || arg.is_unit()
+                    })
+        };
+        let operator = !name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphabetic() || c == '_');
+        let found = KEYWORDS.contains(&name)
+            || operator
+            || known.iter().any(|(n, types)| n == name && takes(types));
+        if !found && seen.borrow().is_none() {
+            let types: Vec<&str> = args.iter().map(|arg| arg.type_name()).collect();
+            *seen.borrow_mut() = Some(format!("Function not found: {name} ({})", types.join(", ")));
+        }
+        Ok(None)
+    });
+    missed
 }
