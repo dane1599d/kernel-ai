@@ -16,6 +16,17 @@ use appabi::{Ty, Val, wave};
 use core::any::TypeId;
 use rhai::{Dynamic, Engine, NativeCallContext};
 
+/// Whether another app call may go, given the row whose call went unanswered
+/// earlier in the run, if one did: never after one.
+pub(super) fn after_unanswered(earlier: Option<&str>) -> Result<(), String> {
+    match earlier {
+        Some(row) => Err(format!(
+            "{row} may have run already, so no more app calls run in this script"
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Binds `row` for each arity it takes: its trailing options may be left out.
 pub(super) fn bind(engine: &mut Engine, row: AppRow, tx: &Tx) {
     let all = row.row.args.len();
@@ -47,11 +58,7 @@ fn call(row: &AppRow, tx: &Tx, args: &mut [&mut Dynamic]) -> RhaiResult<Data> {
     // An app call earlier in this run went unanswered and may have run: no
     // app call goes after it, even one a `catch` lets the script try again
     // (#1164's second review).
-    if let Some(earlier) = tx.unanswered.borrow().as_deref() {
-        return Err(fail(format!(
-            "{earlier} may have run already, so no more app calls run in this script"
-        )));
-    }
+    after_unanswered(tx.unanswered.borrow().as_deref()).map_err(fail)?;
     let record = encode(&row.args, args).map_err(fail)?;
     let request = format!(
         "{}\nfunc {}\nargs {record}\n",
@@ -233,4 +240,19 @@ fn text(value: &Dynamic) -> Result<String, String> {
         .clone()
         .into_string()
         .map_err(|_| format!("{value} is not text"))
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::after_unanswered;
+
+    #[test]
+    fn no_app_call_goes_after_one_that_went_unanswered() {
+        assert_eq!(after_unanswered(None), Ok(()));
+        let refused = after_unanswered(Some("notes_add")).unwrap_err();
+        assert!(
+            refused.starts_with("notes_add may have run already"),
+            "{refused}"
+        );
+    }
 }

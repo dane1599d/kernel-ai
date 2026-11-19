@@ -827,7 +827,7 @@ fn ask_app_once(app: &str, request: &str) -> Result<String, String> {
     let mut reply = vec![0u8; kabi::MAX_MESSAGE];
     let call = supervise::appcall::encode(app, request);
     let len = sys::call_route(supervisor(), call.as_bytes(), &mut reply, APP_CALL_MS)
-        .map_err(|error| format!("the supervisor did not answer ({error:?})"))?;
+        .map_err(kabi::live::app_call_hop)?;
     let text = String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned();
     match text.strip_prefix("err ") {
         Some(why) => Err(why.to_string()),

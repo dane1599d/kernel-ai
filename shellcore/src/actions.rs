@@ -493,6 +493,29 @@ impl Shell {
             "Changed before the error, and could not be put back: {}. undo",
             what.join("; ")
         );
+        // An app call that went unanswered makes the whole outcome unknown,
+        // whatever could or could not be put back (#1200's review): logged
+        // Unknown, so a bare undo stops here too.
+        if let Some(row) = ran.unanswered.as_deref() {
+            // The changes that are known can still be put back by number; the
+            // call whose outcome is unknown cannot, and the reply says which.
+            let undoable = left.iter().all(|c| c.inverse.is_some_and(|i| i.is_read()));
+            let kept = match undoable {
+                true => format!(
+                    "Changed before the error, and could not be put back: {}. `undo {id}` puts those back",
+                    what.join("; ")
+                ),
+                false => format!(
+                    "Changed before the error, and could not be put back: {}",
+                    what.join("; ")
+                ),
+            };
+            let what = format!("Outcome unknown: {row} may have run, which no undo reaches");
+            let outcome = format!("failed; {row} may have run");
+            self.log_entry(id, request, checked, how, State::Unknown, &outcome, left);
+            let reply = Reply::err(format!("{}\n{kept}\n{what}", ran.text.trim_end()));
+            return (reply, format!("{what}. {kept}"));
+        }
         self.log_entry(id, request, checked, how, State::Done, "failed", left);
         let reply = Reply::err(format!("{}\n{kept}", ran.text.trim_end()));
         (reply, kept)
