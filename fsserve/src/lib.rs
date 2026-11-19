@@ -20,6 +20,8 @@ extern crate alloc;
 mod agentvol_tests;
 pub mod batch;
 mod buffer;
+#[cfg(test)]
+mod clock_tests;
 mod lookup;
 #[cfg(test)]
 mod model_tests;
@@ -167,8 +169,10 @@ pub struct Server<D: BlockDev> {
     system_apps: u64,
     /// This disk's epoch, in every badge but the fixed ones ([`kabi::fs`]).
     epoch: u16,
-    /// The clock at mount: kaifs's times are this plus time since boot, so they
-    /// never go back across reboots (there is no wall clock yet).
+    /// What kaifs's clock counts from: its times are this plus time since
+    /// boot. The clock at mount, or the wall time at boot once
+    /// [`Server::set_wall_clock`] gives one past it, so retention counts the
+    /// time the machine was off and the clock never goes back across reboots.
     base: u64,
     /// Writes inside an action not yet given to kaifs ([`buffer`]).
     pending: Option<buffer::Pending>,
@@ -251,6 +255,15 @@ impl<D: BlockDev> Server<D> {
     /// every later change.
     pub fn set_alive(&mut self, alive: fn(u64) -> bool) {
         self.alive = alive;
+    }
+
+    /// The wall time at boot, ns since 1970 (`CLOCK_NOW` less the time since
+    /// boot), when the firmware gave a date. kaifs's clock then runs from it,
+    /// so an undo snapshot expires 30 days (`memory`'s one hour) after it was
+    /// made however long the machine was off between. A wall time behind the
+    /// disk's clock changes nothing: the clock never goes back.
+    pub fn set_wall_clock(&mut self, boot_epoch_ns: u64) {
+        self.base = self.base.max(boot_epoch_ns);
     }
 
     /// How `fs` learns a caller's process name. Through [`SYSTEM_APPS`] a

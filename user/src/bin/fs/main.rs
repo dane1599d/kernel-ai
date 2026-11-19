@@ -87,6 +87,12 @@ fn main() -> i32 {
     PARTITION.store(part.0, Ordering::Relaxed);
     server.set_alive(alive);
     server.set_name_of(name_of);
+    // Retention counts real time when the firmware gave a date; without one,
+    // kaifs's clock counts only the time `fs` has run.
+    if let Ok(seconds) = sys::clock_now() {
+        let wall = seconds.saturating_mul(1_000_000_000);
+        server.set_wall_clock(wall.saturating_sub(sys::time_ns()));
+    }
     fill_model(&mut server, part);
     let mut bench = Bench::default();
     let mut request = alloc::vec![0u8; MAX_MESSAGE];
