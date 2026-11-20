@@ -96,6 +96,10 @@ pub fn power_off_check() -> Result<(), &'static str> {
         return Err("power: POWER_OFF without POWER was not refused");
     }
     log!("power: POWER_OFF without the power capability was refused");
+    if crate::efi::power_off_fallback() {
+        // What `desktop` does when it takes the screen (this boot runs none).
+        crate::console::suspend();
+    }
     let held = start_power("hpoweroff", kabi::cap::POWER, b"mode=poweroff")?;
     let got = crate::fpu_tests::wait_exit(held)?;
     log!(
