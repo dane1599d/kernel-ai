@@ -19,9 +19,11 @@
 use crate::process::{MAX_PROCESSES, Name};
 use alloc::vec::Vec;
 use captable::{Entry, Table};
+use core::mem::ManuallyDrop;
+use core::ops::{Deref, DerefMut};
 use kabi::cap;
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, Rights};
-use spin::Mutex;
+use spin::{Mutex, MutexGuard};
 
 /// A process's table and the handles it started with.
 pub struct Handles {
@@ -35,6 +37,45 @@ pub mod rules;
 static HANDLES: [Mutex<Option<Handles>>; MAX_PROCESSES] =
     [const { Mutex::new(None) }; MAX_PROCESSES];
 
+/// `slot`'s table, locked with preemption off for as long as it is held, as
+/// `process::lock_space` and `with_table` do: a holder is never switched out
+/// mid-section, so the scans that take these locks with preemption or
+/// interrupts off (`shm::collect`, the NetDest sweep) never spin on a lock
+/// whose holder cannot run (audit K #8, #10). Nothing that sleeps runs under it.
+pub(crate) fn lock(slot: usize) -> Locked<'static> {
+    crate::threads::preempt_disable();
+    Locked {
+        guard: ManuallyDrop::new(HANDLES[slot].lock()),
+    }
+}
+
+/// [`lock`]'s guard: the lock goes, then preemption comes back.
+pub(crate) struct Locked<'a> {
+    guard: ManuallyDrop<MutexGuard<'a, Option<Handles>>>,
+}
+
+impl Deref for Locked<'_> {
+    type Target = Option<Handles>;
+
+    fn deref(&self) -> &Option<Handles> {
+        &self.guard
+    }
+}
+
+impl DerefMut for Locked<'_> {
+    fn deref_mut(&mut self) -> &mut Option<Handles> {
+        &mut self.guard
+    }
+}
+
+impl Drop for Locked<'_> {
+    fn drop(&mut self) {
+        // SAFETY: the guard is dropped here once, and never used after.
+        unsafe { ManuallyDrop::drop(&mut self.guard) };
+        crate::threads::preempt_enable();
+    }
+}
+
 /// Rights every startup handle carries besides its own: it can be inspected,
 /// narrowed into a second handle and moved to another process.
 const BASE: Rights = Rights::DUPLICATE
@@ -47,8 +88,8 @@ pub const NETDEST_RIGHTS: Rights = BASE.union(Rights::RESOLVE).union(Rights::CON
 
 /// Whether any process's table holds a handle of `kind` naming `object`.
 pub fn names(kind: Kind, object: u64) -> bool {
-    HANDLES.iter().any(|handles| {
-        handles.lock().as_ref().is_some_and(|h| {
+    (0..MAX_PROCESSES).any(|slot| {
+        lock(slot).as_ref().is_some_and(|h| {
             h.table
                 .iter()
                 .any(|(_, entry)| entry.kind == kind && entry.object == object)
@@ -318,7 +359,7 @@ pub fn create_with(
     {
         startup.push(table.insert(entry).map_err(kabi::Error::from)?);
     }
-    *HANDLES[slot].lock() = Some(Handles { table, startup });
+    *lock(slot) = Some(Handles { table, startup });
     Ok(())
 }
 
@@ -326,7 +367,7 @@ pub fn create_with(
 /// call through it delivers (`agent=`'s on the route to `llm`).
 pub fn route_badge(slot: usize, service: &str) -> Option<u64> {
     let id = route_id(service).ok()?;
-    let guard = HANDLES[slot].lock();
+    let guard = lock(slot);
     let handles = guard.as_ref()?;
     handles.startup.iter().find_map(|&handle| {
         let entry = handles.table.get(handle).ok()?;
@@ -337,30 +378,24 @@ pub fn route_badge(slot: usize, service: &str) -> Option<u64> {
 /// How many startup handles `slot`'s table lists: STARTUP gives a process at
 /// most [`MAX_STARTUP`] of them.
 pub fn startup_len(slot: usize) -> usize {
-    HANDLES[slot]
-        .lock()
+    lock(slot)
         .as_ref()
         .map_or(0, |handles| handles.startup.len())
 }
 
 /// Drops `slot`'s table, once its process is gone.
 pub fn destroy(slot: usize) {
-    HANDLES[slot].lock().take();
+    lock(slot).take();
 }
 
 /// Runs `f` on `slot`'s table; NotFound if it has none.
 pub fn with<R>(slot: usize, f: impl FnOnce(&mut Handles) -> R) -> Result<R, kabi::Error> {
-    HANDLES[slot]
-        .lock()
-        .as_mut()
-        .map(f)
-        .ok_or(kabi::Error::NotFound)
+    lock(slot).as_mut().map(f).ok_or(kabi::Error::NotFound)
 }
 
 /// Whether `slot` holds a live handle of `kind` with every right in `rights`.
 pub fn holds(slot: usize, kind: Kind, rights: Rights) -> bool {
-    HANDLES[slot]
-        .lock()
+    lock(slot)
         .as_ref()
         .is_some_and(|handles| handles.table.holds(kind, rights, &grant::Kernel))
 }
@@ -375,7 +410,7 @@ pub fn holders(kind: Kind) -> Vec<usize> {
 /// What a call that needed capability bits `bits` now needs: for each bit, a live
 /// handle of its kind and right. Permission otherwise.
 pub fn need(slot: usize, bits: u64) -> Result<(), kabi::Error> {
-    let guard = HANDLES[slot].lock();
+    let guard = lock(slot);
     let table = &guard.as_ref().ok_or(kabi::Error::Permission)?.table;
     let mut rest = bits;
     while rest != 0 {
@@ -398,7 +433,7 @@ pub fn need_object(
     rights: Rights,
     object: u64,
 ) -> Result<(), kabi::Error> {
-    let guard = HANDLES[slot].lock();
+    let guard = lock(slot);
     let table = &guard.as_ref().ok_or(kabi::Error::Permission)?.table;
     match table.holds_object(kind, rights, object, &grant::Kernel) {
         true => Ok(()),
@@ -412,7 +447,7 @@ pub fn need_object(
 /// `NetDest` naming a `hosts:any` record (the shell's ceiling) never moves
 /// (Permission): only its narrowings do. On any refusal nothing is taken.
 pub fn take_for(slot: usize, handles: &[Handle], to_caps: u64) -> Result<Vec<Entry>, kabi::Error> {
-    let mut guard = HANDLES[slot].lock();
+    let mut guard = lock(slot);
     let table = &mut guard.as_mut().ok_or(kabi::Error::BadHandle)?.table;
     for (i, &handle) in handles.iter().enumerate() {
         let entry = table.get(handle).map_err(kabi::Error::from)?;
@@ -437,7 +472,7 @@ pub fn take_for(slot: usize, handles: &[Handle], to_caps: u64) -> Result<Vec<Ent
 /// into its table and lists them in STARTUP, as the handles it starts with.
 /// One that does not fit is dropped; whether every one fitted.
 pub fn give_at_start(slot: usize, entries: Vec<Entry>) -> bool {
-    let mut guard = HANDLES[slot].lock();
+    let mut guard = lock(slot);
     let Some(handles) = guard.as_mut() else {
         return false;
     };
@@ -457,7 +492,7 @@ pub fn give_at_start(slot: usize, entries: Vec<Entry>) -> bool {
 /// Puts moved `entries` into `slot`'s table; their new handles. One that does not
 /// fit is dropped, and its handle is 0.
 pub fn give(slot: usize, entries: Vec<Entry>) -> Vec<Handle> {
-    let mut guard = HANDLES[slot].lock();
+    let mut guard = lock(slot);
     let Some(handles) = guard.as_mut() else {
         return alloc::vec![Handle::NONE; entries.len()];
     };
