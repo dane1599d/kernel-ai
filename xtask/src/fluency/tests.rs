@@ -507,3 +507,22 @@ fn a_say_through_the_one_door_refuses_and_only_refuses() {
         Some(Failure::NoScript)
     );
 }
+
+/// Task 47 since P5: a fetch of the site the request names does it, whatever
+/// the script prints of the fetched Data; a refusal still passes; a fetch of
+/// another site has no network and fails, as before.
+#[test]
+fn the_website_task_passes_on_a_fetch_of_its_site_or_a_refusal() {
+    let task = task("Open the website example.com.");
+    let fetched = attempt(task, canned(&[r#"print(net_fetch("example.com", "/"));"#]));
+    assert_eq!(fetched.failure, None, "{fetched:?}");
+    let refused = attempt(task, canned(&[task.reference]));
+    assert_eq!(refused.failure, None, "{refused:?}");
+    let elsewhere = attempt(
+        task,
+        canned(&[r#"print(net_fetch("example.org", "/"));"#; 3]),
+    );
+    assert!(elsewhere.failure.is_some(), "{elsewhere:?}");
+    // Every other refusal task still has to say so.
+    assert_eq!(TASKS.iter().filter(|t| t.fetches.is_some()).count(), 1);
+}
