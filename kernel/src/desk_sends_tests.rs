@@ -95,7 +95,10 @@ fn shell(line: &str) -> Result<String, &'static str> {
         .map_err(|_| "desk-sends: the shell did not reply")
 }
 
-/// The shell's action log, as `/system/log` holds it.
+/// The shell's action log, as `/system/log` holds it. A line to the shell:
+/// while the card is up it would discard the send it asks about (any line
+/// but the answer does, `Shell::eval_line`), so the case reads it only
+/// after the card has answered.
 fn actlog() -> String {
     shell("log actlog").unwrap_or_default()
 }
@@ -137,7 +140,9 @@ fn yes_before_reading() -> Result<(), &'static str> {
     threads::sleep_ms(KEY_MS);
     type_keys(&YES);
     threads::sleep_ms(KEY_MS * 2);
-    if !ask_box::shown() || actlog().contains(HELD) {
+    // The card still up is the send not allowed: the shell holds it only
+    // on the card's answer. No log read here (see `actlog`).
+    if !ask_box::shown() {
         return Err("desk-sends: y allowed the send before its text was read through");
     }
     log!("{CASE}: y before the text was read through did not allow it");
