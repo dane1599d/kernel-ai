@@ -413,6 +413,38 @@ pub enum Error {
     /// A message `fs` cannot read: wrong version, bad CBOR or too large.
     #[n(11)]
     BadRequest,
+    /// The caller's action was dropped without its asking: its pending run of
+    /// writes failed to write out (no room, the disk), and none of its changes
+    /// so far will land. On its own request, that request is answered this.
+    /// On another caller's, which the owner never hears, every change of the
+    /// owner's after it is refused this way until it sends Abort (answered
+    /// Done) or Begin, so a change it meant for the action never lands
+    /// outside it.
+    #[n(12)]
+    Dropped(#[n(0)] DropCause),
+}
+
+/// Why an action was dropped ([`Error::Dropped`]), for the person's message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode)]
+pub enum DropCause {
+    /// No room on the disk for its writes.
+    #[n(0)]
+    NoSpace,
+    /// The disk failed, or what it holds did not verify.
+    #[n(1)]
+    Io,
+}
+
+impl Error {
+    /// Whether this answer means `fs` dropped the caller's open action: only
+    /// [`Error::Dropped`], whatever request it answers (a read that wrote out
+    /// the pending run, a write, a commit). A client that keeps an action open
+    /// across requests (the shell's line, `updated`'s download) forgets it and
+    /// begins a new one, never writing on outside any. Decided on the decoded
+    /// kind, never on a message's text, which may hold a path.
+    pub fn ends_action(&self) -> bool {
+        matches!(self, Error::Dropped(_))
+    }
 }
 
 /// The answer to one request.

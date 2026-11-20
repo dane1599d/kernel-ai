@@ -24,6 +24,8 @@ mod buffer;
 mod bulk;
 #[cfg(test)]
 mod bulk_tests;
+#[cfg(test)]
+mod dropped_tests;
 mod lookup;
 #[cfg(test)]
 mod model_tests;
@@ -34,11 +36,12 @@ mod oid_tests;
 mod tests;
 mod trash;
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use fsproto::{
-    Cursor, Error, How, Kind, Listing, MAX_DATA, MAX_LIST, MAX_ROWS, MAX_SHM_DATA, Outcome, Reply,
-    Request, Stat, Version,
+    Cursor, DropCause, Error, How, Kind, Listing, MAX_DATA, MAX_LIST, MAX_ROWS, MAX_SHM_DATA,
+    Outcome, Reply, Request, Stat, Version,
 };
 use kabi::fs::{
     Badge, HOME, HOME_USER, MODELS, MODELS_ROOT, SYSTEM, SYSTEM_APPS, SYSTEM_PKG, SYSTEM_RESTART,
@@ -178,6 +181,13 @@ pub struct Server<D: BlockDev> {
     base: u64,
     /// Writes inside an action not yet given to kaifs ([`buffer`]).
     pending: Option<buffer::Pending>,
+    /// The callers whose action was dropped without their asking: each one's
+    /// changes are refused ([`Error::Dropped`]) until it sends Abort or Begin
+    /// itself. A commit or a drop of anyone else's leaves the marks alone.
+    dropped: BTreeMap<u64, DropCause>,
+    /// The caller of the request being answered: a drop on its own request
+    /// is one it hears.
+    asking: u64,
     /// The record last read.
     cache: Option<buffer::Cached>,
     /// Whether a caller (a pid) still runs: a dead owner's action is aborted
@@ -242,6 +252,8 @@ impl<D: BlockDev> Server<D> {
             epoch: 0,
             base,
             pending: None,
+            dropped: BTreeMap::new(),
+            asking: 0,
             cache: None,
             alive: |_| true,
             name_of: |_, _| None,
@@ -494,6 +506,7 @@ impl<D: BlockDev> Server<D> {
         call: &Call,
         shm: Option<&mut [u8]>,
     ) -> Result<(Reply, Option<Mint>), Error> {
+        self.asking = call.caller;
         // `/system/settings` and `/system/state/restart` are read only through
         // their fixed badges, whatever rights the handle carries: nothing they
         // open gets more than READ and ENUMERATE either.
@@ -513,6 +526,26 @@ impl<D: BlockDev> Server<D> {
             self.own_folder_only(call.caller, &request)?;
         }
         let changes = changes(&request);
+        if let Some(&cause) = self.dropped.get(&call.caller).filter(|_| changes) {
+            match request {
+                // It knows now: an Abort is its acknowledgement, a Begin its
+                // next action.
+                Request::Abort => {
+                    self.dropped.remove(&call.caller);
+                    return Ok((Reply::Done, None));
+                }
+                Request::Begin { .. } => {
+                    self.dropped.remove(&call.caller);
+                }
+                // Its Commit is told the action is gone, which it hears: its
+                // next standalone change, such as an undo, goes through.
+                Request::Commit => {
+                    self.dropped.remove(&call.caller);
+                    return Err(Error::Dropped(cause));
+                }
+                _ => return Err(Error::Dropped(cause)),
+            }
+        }
         if changes && read_only(call.badge) {
             return Err(Error::Permission);
         }
@@ -558,9 +591,13 @@ impl<D: BlockDev> Server<D> {
             Ok(done) => Ok(done),
             Err(e) => {
                 // A failed change leaves nothing half done: outside an action
-                // there is nothing else pending, inside one the disk failed.
-                if changes && (!in_action || e == Error::Io) {
+                // there is nothing else pending, inside one the disk failed,
+                // and its owner (the caller) is told its action is gone.
+                if changes && !in_action {
                     self.drop_changes();
+                } else if changes && e == Error::Io {
+                    self.drop_changes();
+                    return Err(Error::Dropped(DropCause::Io));
                 }
                 Err(e)
             }
@@ -1006,6 +1043,34 @@ impl<D: BlockDev> Server<D> {
                 generation,
             }),
             Err(e) => Err(e),
+        }
+    }
+
+    /// [`Server::drop_changes`] for an action whose pending run failed to
+    /// write out (`failed` says why); the error to answer. On another caller's
+    /// request the owner hears nothing, so its changes are refused
+    /// ([`Error::Dropped`]) until it sends Abort or Begin, and the caller gets
+    /// `failed`. On the owner's own request (its Write, its Commit) that answer
+    /// is [`Error::Dropped`], not why the run failed, so it knows its action
+    /// is gone and cannot write on as if inside it; it is not marked, so its
+    /// next standalone change, such as an undo, goes through. Callers that
+    /// have died since are forgotten first, so the marks stay few.
+    pub(crate) fn drop_unasked(&mut self, failed: Error) -> Error {
+        let owner = self.owner;
+        self.drop_changes();
+        let alive = self.alive;
+        self.dropped.retain(|&caller, _| alive(caller));
+        let cause = match failed {
+            Error::NoSpace => DropCause::NoSpace,
+            _ => DropCause::Io,
+        };
+        match owner {
+            Some(owner) if owner == self.asking => Error::Dropped(cause),
+            Some(owner) => {
+                self.dropped.insert(owner, cause);
+                failed
+            }
+            None => failed,
         }
     }
 
