@@ -367,10 +367,14 @@ impl<C: Clone + PartialEq> Runner<C> {
         // A step the person said no to is not asked again: the goal stops here, and
         // their resume is what lets it go on.
         if self.said_no_to(id, &step) {
-            self.forget_no(id, &step);
             let row = step.row.clone();
-            match goal.hold_repeat(now, step, parts.door) {
-                Ok(()) => events.push(Event::Repeated { goal: id, row }),
+            match goal.hold_repeat(now, step.clone(), parts.door) {
+                // Held and paused: the no to this one step is forgotten, so the
+                // person's resume lets it be asked once more.
+                Ok(()) => {
+                    self.forget_no(id, &step);
+                    events.push(Event::Repeated { goal: id, row });
+                }
                 Err(Refusal::LogFull) => {
                     if goal
                         .fail(now, "the goal has taken as many steps as its log holds")
@@ -379,6 +383,9 @@ impl<C: Clone + PartialEq> Runner<C> {
                         events.push(Event::Failed { goal: id });
                     }
                 }
+                // Not held (a goal this turn does not plan): the no is kept and the
+                // step is not asked, so nothing reaches the card without the
+                // person's act.
                 Err(_) => {}
             }
             return false;
