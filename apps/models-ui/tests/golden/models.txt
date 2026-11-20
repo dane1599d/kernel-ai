@@ -1,0 +1,42 @@
+node 0 clip 0,0 640x460
+  fill 0,0 640x460 window r0
+node 2 clip 0,0 640x460
+  text 12,12 heading text "Models"
+node 3 clip 0,0 640x460
+  stroke 12,44 616x98 line_strong w1 r4
+  fill 13,69 614x24 raised r0
+  text 23,48 label muted "Model"
+  text 23,71 body text "Qwen3-4B-Instruct-2507 Q4_K_M"
+  text 23,95 body text "Qwen3-0.6B Q8_0"
+  text 23,119 body text "Fixture model"
+  text 275,48 label muted "Size"
+  text 275,71 body text "2.3 GiB"
+  text 275,95 body text "609.8 MiB"
+  text 275,119 body text "4.0 KiB"
+  text 367,48 label muted "Licence"
+  text 367,71 body text "Apache-2.0"
+  text 367,95 body text "Apache-2.0"
+  text 367,119 body text "Apache-2.0"
+  text 467,48 label muted "State"
+  text 467,71 body text "in use"
+  text 467,95 body text "stored"
+  text 467,119 body text "signed, not stored"
+  fill 13,68 614x1 line r0
+node 20 clip 0,0 640x460
+  text 12,150 body text "Qwen3-4B-Instruct-2507 Q4_K_M"
+node 21 clip 0,0 640x460
+  text 12,170 body text "SHA-256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+node 22 clip 0,0 640x460
+  text 12,190 body text "Licence: Apache-2.0"
+node 23 clip 0,0 640x460
+  text 12,210 body text "From unsloth/qwen3-4b-2507-GGUF@a1b2c3d"
+node 6 clip 0,0 640x460
+  text 12,238 label text "Attached disks"
+node 2000 clip 0,0 640x460
+  text 12,264 body text "kai-model: 4.0 KiB"
+node 3000 clip 0,0 640x460
+  fill 560,264 68x28 raised r4
+  stroke 560,264 68x28 line_strong w1 r4
+  text 570,269 label text "Import"
+node 2001 clip 0,0 640x460
+  text 12,300 body muted "backup: 10 bytes, not the size of a model the role signs"

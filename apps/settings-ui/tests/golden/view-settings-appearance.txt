@@ -1,0 +1,2 @@
+windows: [w1] settings (focused)  [w2] terminal "kai>"
+w1: [a1] tabs 0 items  text "Appearance"  [b2] button "Theme: dark"  [s3] switch "Legible type" = off  [s4] switch "Reduce motion" = off  [m5] menu "Time zone: UTC" 0 items

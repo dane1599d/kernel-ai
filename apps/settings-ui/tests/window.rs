@@ -538,3 +538,28 @@ fn the_network_page_lists_each_host_and_its_revoke_names_that_grant() {
     let (_, intent) = on_ui(&s, &mut view, &UiEvent::Pressed(NET_REVOKE));
     assert_eq!(intent, Some(Intent::RevokeNet(4)));
 }
+
+#[path = "../../../testkit/appview.rs"]
+mod appview;
+
+/// The agent's view of Settings, on each page: whole, within 300 tokens, and
+/// the committed ones (`tests/golden/view-settings-<page>.txt`).
+#[test]
+fn the_agents_view_of_every_settings_page_is_whole_and_fits_300_tokens() {
+    let s = settings();
+    for (n, page) in Page::ALL.iter().enumerate() {
+        let mut view = View::page(n);
+        view.app = Some(String::from("notes"));
+        let mut w = Window::new("Settings", SIZE.0, SIZE.1);
+        for e in build(&s, &mut view) {
+            w.put(e.id, e.parent, e.layout, e.widget.clone()).unwrap();
+        }
+        let f = w.commit(&FixedAdvance);
+        let name = format!("settings-{}", page.title().to_lowercase().replace(' ', "-"));
+        appview::check(&name, "settings", "Settings", &f);
+        appview::goldens(&name, &f);
+        if n == 0 {
+            appview::paints("settings", &f);
+        }
+    }
+}

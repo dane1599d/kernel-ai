@@ -75,6 +75,58 @@ fn mock_views() -> Vec<(&'static str, String)> {
         .collect()
 }
 
+/// S05-2's views of each shipped app's real window, as each `-ui` crate's host
+/// test commits them (`tests/golden/view-*.txt`, made by `testkit/appview.rs`:
+/// the window's real frame, `wasmhost::surface::tree_update`, then
+/// `deskcore::view::project`), so the real tokenizer counts what the agent is
+/// shown and not only the mock trees.
+fn real_views() -> Vec<(&'static str, &'static str)> {
+    macro_rules! golden {
+        ($name:literal, $path:literal) => {
+            ($name, include_str!(concat!("../../", $path)).trim_end())
+        };
+    }
+    vec![
+        golden!("notes", "components/notes-ui/tests/golden/view-notes.txt"),
+        golden!("files", "apps/files-ui/tests/golden/view-files.txt"),
+        golden!("monitor", "apps/monitor-ui/tests/golden/view-monitor.txt"),
+        golden!("models", "apps/models-ui/tests/golden/view-models.txt"),
+        golden!(
+            "terminal",
+            "apps/terminal-ui/tests/golden/view-terminal.txt"
+        ),
+        golden!("editor", "apps/editor-ui/tests/golden/view-editor.txt"),
+        golden!(
+            "settings, About",
+            "apps/settings-ui/tests/golden/view-settings-about.txt"
+        ),
+        golden!(
+            "settings, Appearance",
+            "apps/settings-ui/tests/golden/view-settings-appearance.txt"
+        ),
+        golden!(
+            "settings, Keep running",
+            "apps/settings-ui/tests/golden/view-settings-keep-running.txt"
+        ),
+        golden!(
+            "settings, Network",
+            "apps/settings-ui/tests/golden/view-settings-network.txt"
+        ),
+        golden!(
+            "settings, Rules and profiles",
+            "apps/settings-ui/tests/golden/view-settings-rules-and-profiles.txt"
+        ),
+        golden!(
+            "settings, Updates",
+            "apps/settings-ui/tests/golden/view-settings-updates.txt"
+        ),
+        golden!(
+            "settings, What apps can do",
+            "apps/settings-ui/tests/golden/view-settings-what-apps-can-do.txt"
+        ),
+    ]
+}
+
 /// S05-2's table (ADR 0005, "Spikes that settle it").
 fn views(tok: &Tokenizer) -> String {
     use deskcore::view::{MAX_TOKENS, estimate_tokens};
@@ -86,6 +138,16 @@ fn views(tok: &Tokenizer) -> String {
             tok,
             &format!("`{app}` (estimated {})", estimate_tokens(&text)),
             &text,
+        );
+    }
+    for (app, text) in real_views() {
+        table.part(
+            tok,
+            &format!(
+                "`{app}`, the real window (estimated {})",
+                estimate_tokens(text)
+            ),
+            text,
         );
     }
     table.text
@@ -105,6 +167,25 @@ fn check_views(tok: &Tokenizer) -> Result<(), String> {
             return Err(format!(
                 "S05-2: {app}'s view estimate ({}) undercounts the real {real} tokens",
                 estimate_tokens(&text)
+            ));
+        }
+    }
+    for (app, text) in real_views() {
+        let real = count(tok, text);
+        if real > MAX_TOKENS {
+            return Err(format!(
+                "S05-2: the real {app} window's view takes {real} tokens, over {MAX_TOKENS}:                  shorten the projection before its format freezes"
+            ));
+        }
+        if estimate_tokens(text) < real {
+            return Err(format!(
+                "S05-2: the real {app} window's view estimate ({}) undercounts the real {real} tokens",
+                estimate_tokens(text)
+            ));
+        }
+        if text.contains(" more") {
+            return Err(format!(
+                "S05-2: the real {app} window's view is cut: {text}"
             ));
         }
     }
@@ -384,6 +465,20 @@ fn trim_table(tok: &Tokenizer, pack: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The committed real views are whole, within the budget by the host's
+    /// estimate, and start with the window list, as `ui_view` answers.
+    #[test]
+    fn the_real_app_views_are_whole_and_within_the_estimate() {
+        use deskcore::view::{MAX_TOKENS, estimate_tokens};
+        let views = real_views();
+        assert_eq!(views.len(), 13);
+        for (app, text) in views {
+            assert!(estimate_tokens(text) <= MAX_TOKENS, "{app}: {text}");
+            assert!(!text.contains(" more"), "{app} is cut: {text}");
+            assert!(text.starts_with("windows: [w1]"), "{app}: {text}");
+        }
+    }
 
     #[test]
     fn the_pack_is_printable_ascii_in_lines_of_at_most_120() {
