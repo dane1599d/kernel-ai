@@ -69,7 +69,8 @@ pub enum Event {
         step: u32,
     },
     /// The planner wrote again a step the person had said no to. It was not asked
-    /// again: the goal is paused until the person resumes it.
+    /// again: it is logged as held ([`crate::REPEATED`]), and the goal is paused
+    /// until the person resumes it.
     Repeated {
         goal: u64,
         row: String,
@@ -114,8 +115,10 @@ pub const RESTARTED: &str = "the agent restarted; the step was not run";
 /// many steps in a row each goal's planner wrote that could not be logged; and the
 /// steps of each goal the person said no to, so none is asked a second time.
 ///
-/// A no holds until the person acts: the goal is paused at the first repeat, and
-/// their resume lets the step be asked once more. Each denied step has a record in
+/// A no holds until the person acts: a repeat is logged as held with
+/// [`crate::REPEATED`] and pauses the goal, and the runner forgets the no to that
+/// step alone, so the person's resume lets that one step be asked once more and
+/// every other refused step still needs its own. Each denied step has a record in
 /// the goal's log, so a goal's list is no longer than [`crate::MAX_LOG`]. It is the
 /// runner's memory only: after a restart of the agent a denied step may be asked
 /// one more time.
@@ -241,11 +244,20 @@ impl<C: Clone + PartialEq> Runner<C> {
     /// Whether the person said no to this very step of `goal`: the same row, paths
     /// and call. What it was expected to cost is not part of what they refused.
     fn said_no_to(&self, goal: u64, step: &Step<C>) -> bool {
-        self.denied.get(&goal).is_some_and(|denied| {
-            denied
-                .iter()
-                .any(|no| no.row == step.row && no.targets == step.targets && no.call == step.call)
-        })
+        self.denied
+            .get(&goal)
+            .is_some_and(|denied| denied.iter().any(|no| same(no, step)))
+    }
+
+    /// Forgets the person's no to `step` alone: each refused step needs its own
+    /// resume before it is asked again.
+    fn forget_no(&mut self, goal: u64, step: &Step<C>) {
+        if let Some(denied) = self.denied.get_mut(&goal) {
+            denied.retain(|no| !same(no, step));
+            if denied.is_empty() {
+                self.denied.remove(&goal);
+            }
+        }
     }
 
     /// Closes as failed a step in flight that this runner has no record of (the
@@ -355,12 +367,19 @@ impl<C: Clone + PartialEq> Runner<C> {
         // A step the person said no to is not asked again: the goal stops here, and
         // their resume is what lets it go on.
         if self.said_no_to(id, &step) {
-            self.denied.remove(&id);
-            if goal.pause().is_ok() {
-                events.push(Event::Repeated {
-                    goal: id,
-                    row: step.row,
-                });
+            self.forget_no(id, &step);
+            let row = step.row.clone();
+            match goal.hold_repeat(now, step, parts.door) {
+                Ok(()) => events.push(Event::Repeated { goal: id, row }),
+                Err(Refusal::LogFull) => {
+                    if goal
+                        .fail(now, "the goal has taken as many steps as its log holds")
+                        .is_ok()
+                    {
+                        events.push(Event::Failed { goal: id });
+                    }
+                }
+                Err(_) => {}
             }
             return false;
         }
@@ -411,6 +430,11 @@ impl<C: Clone + PartialEq> Runner<C> {
             Err(_) => false,
         }
     }
+}
+
+/// Whether `a` and `b` are the same step: row, paths and call.
+fn same<C: PartialEq>(a: &Step<C>, b: &Step<C>) -> bool {
+    a.row == b.row && a.targets == b.targets && a.call == b.call
 }
 
 /// Whether the last step `goal` logged is one the person said no to.
