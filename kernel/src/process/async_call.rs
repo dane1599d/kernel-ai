@@ -23,8 +23,8 @@ use crate::handle::grant::{self as grants, Kernel};
 use crate::hpet;
 use crate::ipc::{self, CallError, Pending};
 use alloc::vec::Vec;
+use captable::Live;
 use captable::grant::GrantRef;
-use captable::{Entry, Live};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
@@ -53,7 +53,7 @@ pub enum Polled {
     /// The call is still in flight.
     InFlight,
     /// The reply, the pid that answered and the handles it moved, or why none.
-    Ended(Result<(Vec<u8>, u64, Vec<Entry>), CallError>),
+    Ended(Result<(Vec<u8>, u64, crate::handle::Moving), CallError>),
     /// The route's grant was revoked: the call is gone.
     Revoked,
 }

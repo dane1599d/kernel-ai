@@ -237,8 +237,12 @@ fn netcheck_with(
         supervisor: false,
         uses: &[],
     };
-    let pid = process::spawn_with(&request, dest.into_iter().collect(), false)
-        .map_err(|_| "net: cannot start netcheck")?;
+    let pid = process::spawn_with(
+        &request,
+        dest.into_iter().collect::<alloc::vec::Vec<_>>(),
+        false,
+    )
+    .map_err(|_| "net: cannot start netcheck")?;
     match wait_exit(pid)? {
         (ExitReason::Exited, 0) => Ok(()),
         _ => Err("net: netcheck did not get what it expected"),
@@ -336,7 +340,69 @@ pub fn dest_check() -> Result<(), &'static str> {
         "net-dest: HTTP to the LLM needs the LLM's own handle, which NET alone does not give: a NET holder with another NetDest was refused"
     );
     llm_grant()?;
-    any_host_pinned()
+    any_host_pinned()?;
+    sweep_check()
+}
+
+/// Audit K #1: fills the record table with records no handle names, waits
+/// out a new record's grace, and makes one more, so the sweep runs. Every
+/// filler's id then names nothing, even where its slot holds the new record
+/// (the slot's generation moved on), and a record whose only handle is moving
+/// between tables stays.
+fn sweep_check() -> Result<(), &'static str> {
+    const GRACE_MS: u64 = 1_100;
+    let spec = netdest::Dest::parse(KAI_TEST).map_err(|_| "net: a bad test destination")?;
+    let live = |object| crate::handle::names(kabi::handle::Kind::NetDest, object);
+    let kept = net::dest::create(spec.clone(), live).ok_or("net-dest: no room for a record")?;
+    let moving = crate::handle::Moving::from(alloc::vec![captable::Entry::new(
+        kabi::handle::Kind::NetDest,
+        crate::handle::NETDEST_RIGHTS,
+        kept,
+    )]);
+    let mut fillers = alloc::vec::Vec::new();
+    while fillers.len() < 300 {
+        match net::dest::create(spec.clone(), live) {
+            Some(object) => fillers.push(object),
+            None => break,
+        }
+    }
+    crate::threads::sleep_ms(GRACE_MS);
+    // A handle to the first filler moves while the sweep looks at it: its
+    // table check makes and drops a `Moving` for it, as a take and a give on
+    // another CPU would between the transit count and the tables. That filler
+    // must stay; the others go.
+    let raced = *fillers.first().ok_or("net-dest: no filler record")?;
+    let racing = |object| {
+        if object == raced {
+            drop(crate::handle::Moving::from(alloc::vec![
+                captable::Entry::new(
+                    kabi::handle::Kind::NetDest,
+                    crate::handle::NETDEST_RIGHTS,
+                    raced,
+                )
+            ]));
+        }
+        live(object)
+    };
+    let fresh = net::dest::create(spec, racing).ok_or("net-dest: the sweep freed no record")?;
+    if net::dest::dest(raced).is_none() {
+        return Err("net-dest: a record whose handle moved while the sweep looked was dropped");
+    }
+    if fillers[1..]
+        .iter()
+        .any(|&f| f == fresh || net::dest::dest(f).is_some())
+    {
+        return Err("net-dest: a swept record's id still named a record");
+    }
+    if net::dest::dest(kept).is_none() {
+        return Err("net-dest: a record whose handle was moving was swept");
+    }
+    drop(moving);
+    log!(
+        "net-dest: a full table swept {} records no handle named; their ids name nothing after, and one whose handle was moving stayed",
+        fillers.len() - 1
+    );
+    Ok(())
 }
 
 /// A plan line's `netdest=llm` grant, through `spawn_in` as the supervisor
@@ -406,7 +472,10 @@ fn any_host_pinned() -> Result<(), &'static str> {
     let moved = |handle| crate::handle::take_for(slot, &[handle], kabi::cap::NET);
     let (whole, part) = match given.as_slice() {
         [whole, part] => (moved(*whole), moved(*part)),
-        _ => (Ok(alloc::vec::Vec::new()), Err(kabi::Error::NoMemory)),
+        _ => (
+            Ok(crate::handle::Moving::none()),
+            Err(kabi::Error::NoMemory),
+        ),
     };
     crate::handle::destroy(slot);
     match (whole, part) {
