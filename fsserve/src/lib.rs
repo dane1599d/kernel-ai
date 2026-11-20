@@ -9,7 +9,8 @@
 //! - One action at a time: while one caller's is open, another's change is Busy.
 //! - A badge names an object on disk, not server state, so a restarted `fs`
 //!   serves every badge the last one minted; a badge whose object is gone finds
-//!   nothing, since object ids are never reused.
+//!   nothing, since object ids are never reused: not after a remove, a restore,
+//!   an aborted action or a restart mid-action (`kaifs::fs::OID_WINDOW`).
 //! - `..` never leaves the handle's folder: lookup is path-beneath, as cap-std's.
 
 #![no_std]
@@ -27,6 +28,8 @@ mod lookup;
 #[cfg(test)]
 mod model_tests;
 pub mod models;
+#[cfg(test)]
+mod oid_tests;
 #[cfg(test)]
 mod tests;
 mod trash;
@@ -205,10 +208,24 @@ impl<D: BlockDev> Server<D> {
             let generation = fs.committed;
             (fs, Started::Mounted { generation })
         };
-        // ADR 0013's `memory` and `index`, on a disk that lacks them. No badge
+        // Past every id the run before could have handed out and never
+        // committed (`kaifs::fs::OID_WINDOW`), before a volume is made. Then
+        // ADR 0013's `memory` and `index`, on a disk that lacks them; no badge
         // names either (`Server::target`), so no client reaches them here.
-        if fs.writable() && fs.add_agent_volumes()? > 0 {
-            fs.commit()?;
+        // Until a commit saves the new counters no id goes out; a disk that
+        // cannot commit now (full, or failing writes) still starts, and
+        // `answer` tries again before the next change. A disk that needed
+        // the volumes and cannot save them does not start, as before.
+        if fs.writable() {
+            fs.skip_unsaved_oids();
+            let added = fs.add_agent_volumes()?;
+            match fs.commit() {
+                Ok(_) => {}
+                Err(e) if added > 0 => return Err(e),
+                Err(_) => {
+                    fs.abort()?;
+                }
+            }
         }
         let base = fs.clock;
         let mut server = Server {
@@ -513,6 +530,12 @@ impl<D: BlockDev> Server<D> {
         let target = self.target(call.badge)?;
         if changes && self.owner.is_some_and(|o| o != call.caller) {
             return Err(Error::Busy);
+        }
+        // Counters an abort or the start's skip moved are saved before the
+        // next change outside an action, so ids go out again (a commit that
+        // fails leaves them refused, and the change then fails as it would).
+        if changes && self.owner.is_none() && self.fs.oids_unsaved() && self.fs.is_clean() {
+            let _ = self.commit();
         }
         let in_action = self.owner.is_some();
         let done = match request {
