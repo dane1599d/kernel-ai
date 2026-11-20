@@ -43,8 +43,7 @@ impl Clients for Fake {
 fn desktop() -> (Desk, Fake, WindowId, WindowId) {
     let mut desk = Desk::new(1280, 800);
     let size = Size { w: 400, h: 300 };
-    let (notes, _) = desk.open(1, "comphost", "Notes", size, true);
-    desk.set_app_id(notes, "notes");
+    let (notes, _) = desk.open(1, "notes-window", "Notes", size, true);
     let (term, _) = desk.open(2, "term", "kai>", size, true);
     let mut m = Mock::new("Notes");
     m.add(1, Role::TextInput, "Search");
@@ -118,14 +117,15 @@ fn windows_list_front_to_back_and_read_back() {
             ),
             (
                 crate::view::window_id(notes),
-                "notes".into(),
+                "notes-window".into(),
                 "Notes".into(),
                 false
             ),
         ]
     );
     assert_eq!(find_window(&desk, "NOTES"), Some(notes));
-    assert_eq!(find_window(&desk, "kai>"), Some(term), "by title");
+    assert_eq!(find_window(&desk, "term"), Some(term), "by its process");
+    assert_eq!(find_window(&desk, "kai>"), None, "not by its title");
     assert_eq!(find_window(&desk, "w99"), None);
     assert_eq!(parse_windows("w1\tnotes\tNotes\tyes"), None);
 }
@@ -224,7 +224,7 @@ fn check_names_an_unknown_or_guessed_node_and_sends_nothing() {
             "err unknown node; view w1 first",
         ),
         ("ui check notes b9 0", "err unknown node; view w1 first"),
-        ("ui check kai> b2 0", "err unknown node; view w2 first"),
+        ("ui check term b2 0", "err unknown node; view w2 first"),
         ("ui check notes b2 2", "err b2 does not take that action"),
     ] {
         assert_eq!(
@@ -266,7 +266,7 @@ fn close_asks_the_app_as_its_close_control_would() {
     let (mut desk, mut fake, notes, _) = desktop();
     let mut agent = Agent::default();
     let (closed, effects) = agent.answer(&mut desk, &mut fake, "ui close notes");
-    assert_eq!(closed, "ok notes");
+    assert_eq!(closed, "ok notes-window");
     assert_eq!(effects, [Effect::Close { window: notes }]);
     // The app decides: the window is still there until it closes it.
     assert!(desk.window(notes).is_some());
@@ -436,4 +436,27 @@ fn an_open_activates_for_the_person_and_focuses_for_the_agent() {
     let (given, _) = agent.answer(&mut desk, &mut fake, &Request::open("w2", true).encode());
     assert!(given.starts_with("ok "), "{given}");
     assert_eq!(desk.focus(), Focus::Window(term));
+}
+
+/// A window is named by what the kernel calls its process, never by what the
+/// client says of itself: an `app_id` or a title of another app's name finds
+/// nothing, and the listing shows the process.
+#[test]
+fn a_window_cannot_pose_as_another_app_by_its_app_id_or_its_title() {
+    use crate::view;
+    let mut desk = Desk::new(1280, 800);
+    let size = Size { w: 400, h: 300 };
+    let (real, _) = desk.open(1, "notes-window", "Notes", size, true);
+    let (fake, _) = desk.open(2, "evil", "settings", size, true);
+    desk.set_app_id(fake, "notes");
+    // The app id is not the name; the real Notes is the one `notes` finds.
+    assert_eq!(find_window(&desk, "notes"), Some(real));
+    assert_eq!(find_window(&desk, "evil"), Some(fake));
+    // A title is no name either: the window titled `settings` is not settings.
+    assert_eq!(find_window(&desk, "settings"), None);
+    let apps: Vec<String> = view::listed(&desk).into_iter().map(|l| l.app).collect();
+    assert_eq!(apps, ["evil", "notes-window"]);
+    // And with no real Notes open, `notes` finds nothing, whatever the id says.
+    desk.close(real);
+    assert_eq!(find_window(&desk, "notes"), None);
 }
