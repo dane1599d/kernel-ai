@@ -136,6 +136,7 @@ pub fn load_core_granted(
         .map_err(|error| Fault::new(Reason::Compile, error.to_string()))?;
     let mut linker = link_imports(&engine, &module, grants)?;
     let state = HostState {
+        in_realloc: false,
         limits: StoreLimitsBuilder::new()
             .memory_size(limits.memory_bytes)
             // Its own region's memory, made by the host, counts as one more.
@@ -674,6 +675,7 @@ impl livecore::Instance for CoreInstance {
             storage: storage.clone(),
             txn: livecore::txn::Txn::default(),
             first_ticket: inputs.first_ticket,
+            bytes: 0,
         });
     }
 
