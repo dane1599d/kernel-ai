@@ -74,6 +74,8 @@ pub struct Desk {
     agent: Option<WindowId>,
     /// Caps Lock: letters type the other case from Shift.
     caps: bool,
+    /// The modifiers every client was last told held ([`Effect::Modifiers`]).
+    mods_sent: u32,
     /// Num Lock: on, the keypad types digits; off, it is the arrows and
     /// navigation keys. On at start, as most PCs boot.
     num: bool,
@@ -140,6 +142,7 @@ impl Desk {
             down: Vec::new(),
             agent: None,
             caps: false,
+            mods_sent: 0,
             num: true,
             bar_hover: None,
             unread: false,
@@ -408,6 +411,27 @@ impl Desk {
         self.held.retain(modifier);
     }
 
+    /// The modifiers held now, as a client's seat counts them: shift 1, ctrl 2,
+    /// alt 4, super 8.
+    fn modifier_mask(&self) -> u32 {
+        let any = |left: u16, right: u16| self.down.iter().any(|&k| k == left || k == right);
+        u32::from(any(usage::LEFT_SHIFT, usage::RIGHT_SHIFT))
+            | u32::from(any(usage::LEFT_CTRL, usage::RIGHT_CTRL)) << 1
+            | u32::from(any(usage::LEFT_ALT, usage::RIGHT_ALT)) << 2
+            | u32::from(any(usage::LEFT_GUI, usage::RIGHT_GUI)) << 3
+    }
+
+    /// Whether a modifier of `bit` is held (either side's key).
+    fn holds(&self, bit: u32) -> bool {
+        self.modifier_mask() & bit != 0
+    }
+
+    /// [`Desk::holds`], for the tests of other modules.
+    #[cfg(test)]
+    pub(crate) fn holds_for_test(&self, bit: u32) -> bool {
+        self.holds(bit)
+    }
+
     pub fn input(&mut self, input: Input) -> Vec<Effect> {
         let mut effects = Vec::new();
         // A key-down for a key already down is its repeat, never a fresh press.
@@ -418,6 +442,19 @@ impl Desk {
                 true if !self.down.contains(&code) => self.down.push(code),
                 true => {}
                 false => self.down.retain(|&k| k != code),
+            }
+            // The modifiers follow every key, whatever has the focus and even a
+            // card up (which swallows the releases the pane's shortcuts need).
+            match code {
+                usage::LEFT_CTRL | usage::RIGHT_CTRL => self.ctrl = self.holds(2),
+                usage::LEFT_ALT | usage::RIGHT_ALT => self.alt = self.holds(4),
+                usage::LEFT_SHIFT | usage::RIGHT_SHIFT => self.shift = self.holds(1),
+                _ => {}
+            }
+            let held = self.modifier_mask();
+            if held != self.mods_sent {
+                self.mods_sent = held;
+                effects.push(Effect::Modifiers(held));
             }
         }
         if self.ask.is_some() {
