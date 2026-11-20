@@ -285,7 +285,9 @@ fn kernel_grants() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// `handles mode=grants`, started with SUPERVISE and POLICY.
+/// `handles mode=grants`, started with SUPERVISE and POLICY. It exits owning
+/// a live node, so its exit only completes if `revoke_owned` does not
+/// deadlock (audit K #11).
 fn ring3_grants() -> Result<(), &'static str> {
     let pid = process::spawn(&SpawnRequest {
         name: "hgrant",
@@ -301,6 +303,9 @@ fn ring3_grants() -> Result<(), &'static str> {
     })
     .map_err(|_| "handles: cannot start the grants check")?;
     match wait_exit(pid)? {
+        (ExitReason::Exited, 0) if grants::owns_any(pid) => {
+            Err("handles: a node the ended process made is still live")
+        }
         (ExitReason::Exited, 0) => Ok(()),
         _ => Err("handles: the ring-3 grant checks failed"),
     }
