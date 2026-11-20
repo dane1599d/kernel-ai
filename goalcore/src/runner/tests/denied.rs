@@ -232,3 +232,49 @@ fn a_repeat_forgets_the_no_to_that_step_alone() {
     let text = goals.to_text();
     assert_eq!(Goals::parse(&text).as_ref(), Ok(&goals), "{text}");
 }
+
+/// #1146's LOW: a repeat with no room left in the log fails the goal, said,
+/// rather than pausing it with nothing logged.
+#[test]
+fn a_repeat_with_a_full_log_fails_the_goal() {
+    let mut goals = Goals::new();
+    let id = approved(&mut goals);
+    let mut planner = Script(VecDeque::from([
+        Plan::Step(step("fs_list")),
+        Plan::Step(step("fs_list")),
+    ]));
+    let mut steps = Recorded {
+        deny: vec!["fs_list"],
+        ..Recorded::default()
+    };
+    let mut runner = Runner::new();
+    let events = go(
+        &mut runner,
+        &mut goals,
+        T0 + 1,
+        Presence::Away,
+        &mut planner,
+        &mut steps,
+    );
+    assert_eq!(events, [Event::Denied { goal: id, step: 1 }]);
+    // The log fills up with what came before.
+    let goal = goals.get_mut(id).unwrap();
+    let denied = goal.log[0].clone();
+    for n in 2..=crate::MAX_LOG as u32 {
+        goal.log.push(crate::StepLog {
+            n,
+            ..denied.clone()
+        });
+    }
+    let events = go(
+        &mut runner,
+        &mut goals,
+        T0 + 2,
+        Presence::Away,
+        &mut planner,
+        &mut steps,
+    );
+    assert_eq!(events, [Event::Failed { goal: id }]);
+    assert_eq!(goals.get(id).unwrap().state, State::Failed);
+    assert_eq!(steps.ran.len(), 1, "asked once");
+}
