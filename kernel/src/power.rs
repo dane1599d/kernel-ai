@@ -8,6 +8,8 @@ use acpitables::fadt::{Reset, Space};
 
 /// How long one way gets to reset the machine before the next is tried.
 const SETTLE_NS: u64 = 100_000_000;
+/// How long the other CPUs get to stop before it is said safe to switch off.
+const HALT_WAIT_NS: u64 = 100_000_000;
 
 /// Where the machine cannot be turned off: shows that it is safe to switch
 /// off, on the console's screen again if `desktop` held it, and halts this
@@ -18,7 +20,17 @@ pub fn safe_to_switch_off() -> ! {
     // screen says it is safe. Nothing is half written: POWER_OFF was refused
     // as Busy while `fs` held a call, and `fs` commits before it answers.
     crate::smp::halt_others();
+    let (halted, others) = crate::smp::others_halted(HALT_WAIT_NS);
+    let had_desktop = crate::console::suspended();
     crate::console::resume();
+    if halted == others {
+        log!("power: every other CPU stopped ({others})");
+    } else {
+        log!("power: only {halted} of {others} other CPUs stopped");
+    }
+    if had_desktop && !crate::console::suspended() {
+        log!("power: the console has the screen back from the desktop");
+    }
     log!("power: it is now safe to switch off the computer");
     loop {
         x86_64::instructions::hlt();

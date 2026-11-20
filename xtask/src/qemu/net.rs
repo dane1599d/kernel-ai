@@ -44,7 +44,8 @@ pub fn net_behind_bridge(args: &mut Vec<String>) {
 }
 
 /// The `qemu-xhci` controller with the case's USB devices, and a QMP socket
-/// when the case sends `@` lines; the port goes to the test run.
+/// when the case sends `@` lines or powers off (its SHUTDOWN reason); the
+/// port goes to the test run.
 pub fn input_args(case: &TestCase) -> Result<(Vec<String>, Option<u16>), String> {
     let mut args = Vec::new();
     if !case.usb.is_empty() {
@@ -53,12 +54,19 @@ pub fn input_args(case: &TestCase) -> Result<(Vec<String>, Option<u16>), String>
             args.extend(["-device".into(), format!("{device},bus=xhci.0")]);
         }
     }
-    let wants_qmp = case
+    let sends_qmp = case
         .keys
         .iter()
         .flat_map(|stage| stage.iter())
         .any(|key| key.starts_with('@'));
-    if !wants_qmp {
+    if sends_qmp && case.powers_off {
+        // QMP takes one client, and the power-off verdict holds it.
+        return Err(format!(
+            "{}: a power-off case cannot send @ lines",
+            case.name
+        ));
+    }
+    if !(sends_qmp || case.powers_off) {
         return Ok((args, None));
     }
     let port = free_port()?;

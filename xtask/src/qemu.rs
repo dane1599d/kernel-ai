@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 mod console;
 mod keys;
 mod net;
+mod shutdown;
 
 use console::{CPU_LINE, ci_warning, forbidden_verdict};
 pub use console::{from_programs, without_stamp};
@@ -241,30 +242,21 @@ pub fn run_interactive(qemu: &Path, args: &[String], target_dir: &Path) -> Resul
     Ok(())
 }
 
-/// How long a power-off case waits for QEMU to report the guest's shutdown.
+/// How long a power-off case waits, once its lines are in, for QMP's
+/// SHUTDOWN event.
 const POWER_OFF_WAIT: Duration = Duration::from_secs(15);
 
-/// Whether QEMU's monitor on `port`, asked `command` again and again within
-/// `within`, answers with `want` in its text.
-fn monitor_reports(port: u16, command: &str, want: &str, within: Duration) -> bool {
-    use std::io::{Read, Write};
-    use std::net::TcpStream;
-    let started = Instant::now();
-    while started.elapsed() < within {
-        if let Ok(mut monitor) = TcpStream::connect(("127.0.0.1", port)) {
-            let _ = monitor.set_read_timeout(Some(Duration::from_millis(300)));
-            if writeln!(monitor, "{command}").is_ok() {
-                thread::sleep(Duration::from_millis(300));
-                let mut buf = [0u8; 4096];
-                let got = monitor.read(&mut buf).unwrap_or(0);
-                if String::from_utf8_lossy(&buf[..got]).contains(want) {
-                    return true;
-                }
-            }
-        }
-        thread::sleep(Duration::from_millis(250));
+/// A power-off case passes only on QEMU's `guest-shutdown`: a reset is a FAIL.
+fn power_off_verdict(reason: Option<&str>) -> Result<(), String> {
+    match reason {
+        Some(shutdown::GUEST_SHUTDOWN) => Ok(()),
+        Some(other) => Err(format!(
+            "FAIL: QEMU stopped the guest for {other}, not a power-off"
+        )),
+        None => Err(String::from(
+            "FAIL: the guest did not turn the machine off (QMP reported no shutdown)",
+        )),
     }
-    false
 }
 
 pub struct TestRun<'a> {
@@ -319,6 +311,12 @@ pub fn run_test(
         .spawn()
         .map_err(|e| format!("cannot start QEMU: {e}"))?;
     let stdout = child.stdout.take().ok_or("QEMU stdout was not captured")?;
+    // Heard from the start: the event comes once, maybe before the last line.
+    let shutdown = match (powers_off, qmp) {
+        (true, Some(port)) => Some(shutdown::listen(port)),
+        (true, None) => return Err(String::from("a power-off case needs a QMP socket")),
+        (false, _) => None,
+    };
     let (ready_tx, ready_rx) = mpsc::channel();
     let (cut_tx, cut_rx) = mpsc::channel();
     let (seen_tx, seen_rx) = mpsc::channel();
@@ -410,7 +408,7 @@ pub fn run_test(
     });
     let mut cut_seen = None;
     let mut stopped = false;
-    let mut powered_off = false;
+    let mut shutdown_reason = None;
     let status = loop {
         if let Some(status) = child
             .try_wait()
@@ -420,9 +418,9 @@ pub fn run_test(
         }
         if seen_rx.try_recv().is_ok() {
             // A power-off case: the guest must have turned the machine off,
-            // which under -no-shutdown leaves QEMU paused in `shutdown`.
-            if powers_off {
-                powered_off = monitor_reports(monitor, "info status", "shutdown", POWER_OFF_WAIT);
+            // not reset it (both pause QEMU under -no-shutdown).
+            if let Some(events) = &shutdown {
+                shutdown_reason = events.recv_timeout(POWER_OFF_WAIT).ok();
             }
             // Every expected line is in: nothing more is waited for.
             let _ = child.kill();
@@ -479,10 +477,8 @@ pub fn run_test(
     // Before QEMU's own verdict: a forbidden line is said however the run ended.
     forbidden_verdict(forbidden)?;
     let reset = run.case.resets && status.code() == Some(0);
-    if powers_off && !powered_off {
-        return Err(String::from(
-            "FAIL: the guest did not turn the machine off (QEMU never reported a shutdown)",
-        ));
+    if powers_off {
+        power_off_verdict(shutdown_reason.as_deref())?;
     }
     if stopped {
         println!("xtask: every expected line seen; QEMU stopped");
@@ -502,8 +498,45 @@ pub fn run_test(
 #[cfg(test)]
 mod tests {
     use super::{
-        Typist, ci_warning, command_word, forward_https, from_programs, model_sizing, without_stamp,
+        Typist, ci_warning, command_word, forward_https, from_programs, input_args, model_sizing,
+        power_off_verdict, without_stamp,
     };
+    use crate::cases::{TestCase, case};
+
+    /// Only `guest-shutdown` passes: a reset that paused QEMU is a FAIL, and so
+    /// is no event at all.
+    #[test]
+    fn a_power_off_passes_only_on_a_guest_shutdown() {
+        assert_eq!(power_off_verdict(Some("guest-shutdown")), Ok(()));
+        let reset = power_off_verdict(Some("guest-reset")).unwrap_err();
+        assert!(
+            reset.contains("for guest-reset, not a power-off"),
+            "{reset}"
+        );
+        let none = power_off_verdict(None).unwrap_err();
+        assert!(none.contains("QMP reported no shutdown"), "{none}");
+    }
+
+    /// A power-off case gets a QMP socket for its verdict, and may not share it
+    /// with `@` lines.
+    #[test]
+    fn a_power_off_case_gets_qmp_and_sends_no_at_lines() {
+        let off = TestCase {
+            powers_off: true,
+            ..case("off", "test=power-off")
+        };
+        let (args, port) = input_args(&off).unwrap();
+        assert!(port.is_some());
+        assert!(args.iter().any(|arg| arg == "-qmp"));
+        assert_eq!(input_args(&case("plain", "test=x")).unwrap().1, None);
+        let typed = TestCase {
+            powers_off: true,
+            keys: &[&["@{\"execute\":\"stop\"}"]],
+            ..case("typed", "test=power-off")
+        };
+        let refused = input_args(&typed).unwrap_err();
+        assert!(refused.contains("cannot send @ lines"), "{refused}");
+    }
 
     /// A stamped line matches as the same line without its stamp; a program's
     /// `[name] ` and anything stamp-like but not a stamp stay.
