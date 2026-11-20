@@ -39,6 +39,7 @@ pub mod paint_taskbar;
 pub mod paint_tray;
 pub mod panel;
 pub mod panel_wire;
+pub mod reap;
 pub mod running;
 pub mod scale;
 pub mod sends;

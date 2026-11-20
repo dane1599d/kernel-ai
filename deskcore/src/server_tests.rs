@@ -747,6 +747,8 @@ fn a_window_given_the_focus_takes_it_from_another_clients_window() {
 mod focus;
 /// The modifiers every client is told.
 mod mods;
+/// Pools `desktop` lets go.
+mod pools;
 /// The wheel and the buffer scale (lane G, 2026-11-18).
 mod scale;
 /// What a client's sizes may be.
