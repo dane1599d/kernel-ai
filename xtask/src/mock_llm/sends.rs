@@ -11,8 +11,6 @@ const LINE: &str = "send my long note to hooks.example";
 /// The text's numbered sentences, on one line (a send's text holds no line
 /// break); the kernel case makes the same text for its digest.
 const TEXT_PIECES: usize = 150;
-/// `agentabi::SEND_MAX`: the most characters a send's text may hold.
-const SEND_MAX: usize = 4096;
 
 /// The text the send carries: numbered sentences, as the kernel case's `text()`.
 fn text() -> String {
@@ -31,6 +29,9 @@ pub(super) fn call(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `agentabi::SEND_MAX`: the most characters a send's text may hold.
+    const SEND_MAX: usize = 4096;
 
     #[test]
     fn the_cases_line_gets_a_send_call_and_others_get_none() {
