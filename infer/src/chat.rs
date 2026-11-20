@@ -292,6 +292,12 @@ impl<'a> Engine<'a> {
         self.slot = slot;
     }
 
+    /// How many tokens the slot in use holds computed: after
+    /// [`Engine::restore_slot`], the file's.
+    pub fn cached_len(&self) -> usize {
+        self.cached.len()
+    }
+
     /// Writes the slot in use as a `kai-kv 1` file ([`crate::segments`]) to
     /// `out`, in order: its computed positions and the tokens behind them.
     pub fn save_slot(
