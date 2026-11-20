@@ -339,7 +339,7 @@ fn main() -> i32 {
             },
             _ => match handle(&mut backends, text, &mut response) {
                 Ok(text) => format!("ok {text}"),
-                Err(error) => format!("err {}", printable(&error, MAX_ERROR_CHARS, 1)),
+                Err(error) => format!("err {}", script::error_line(&error, MAX_ERROR_CHARS)),
             },
         };
         // The character cap can still exceed the kernel's message size in bytes.
@@ -540,7 +540,7 @@ fn run_job(
         Ok(answer) => format!("ok {}", script::encode_answer(&answer)),
         Err(error) => format!(
             "err {}",
-            printable(&script::encode_error(&error), MAX_ERROR_CHARS, 1)
+            script::error_line(&script::encode_error(&error), MAX_ERROR_CHARS)
         ),
     };
     jobs.finish(ticket, reply);
