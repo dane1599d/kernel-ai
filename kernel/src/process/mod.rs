@@ -550,7 +550,9 @@ pub fn spawn_in(
     // refused spawn never hands it to the spawner with what it moved.
     if let Some(dest) = &plan.netdest {
         let live = |object| crate::handle::names(kabi::handle::Kind::NetDest, object);
-        let Some(object) = crate::net::dest::create(dest.clone(), live) else {
+        // An agent's line: its day's bytes, `net_mib=` (P5 task 14).
+        let meter = plan.net_mib.map(crate::net::dest::meter);
+        let Some(object) = crate::net::dest::create_metered(dest.clone(), live, meter) else {
             crate::handle::destroy(slot);
             with_table(|table| table[slot] = Process::FREE);
             return Err((Error::NoMemory, alloc::vec::Vec::new()));

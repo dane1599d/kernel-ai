@@ -15,12 +15,16 @@
 //!   with the process it was made for: its narrowings name exact hosts only,
 //!   never a suffix or `hosts:any` ([`narrow`]), and no handle to it is
 //!   moved ([`any_host`], which the move checks without this table's lock).
+//! - An agent's record carries its day's bytes (P5 task 14, [`Meter`]): every
+//!   record narrowed from it shares that one meter, so a narrowing never buys
+//!   a fresh budget, and every stream connected on it counts against it.
 
 use crate::hpet;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 use core::sync::atomic::{AtomicU64, Ordering};
-use netdest::{Dest, Protocol};
+use netdest::{DayMeter, Dest, Protocol};
 use spin::Mutex;
 use x86_64::instructions::interrupts::without_interrupts;
 
@@ -31,10 +35,35 @@ const MAX_RECORDS: usize = 256;
 /// Resolved addresses one record keeps at most; the oldest go first.
 const MAX_RESOLVED: usize = 32;
 
+/// An agent destination's bytes a day, shared by every record narrowed from
+/// it and every stream on them.
+pub type Meter = Arc<Mutex<DayMeter>>;
+
 struct Record {
     dest: Dest,
     /// Addresses it resolved, and the HPET time each stops counting.
     resolved: Vec<(Ipv4Addr, u64)>,
+    /// An agent's day's bytes ([`Meter`]); none for every other record.
+    meter: Option<Meter>,
+}
+
+/// Today, as the meters count days: whole days of the wall clock since 1970.
+/// With no wall clock it is always day 0, so a meter never turns over and
+/// buys no more bytes.
+pub fn today() -> u32 {
+    crate::clock::unix_seconds()
+        .and_then(|s| u32::try_from(s / 86_400).ok())
+        .unwrap_or(0)
+}
+
+/// A meter of `mib` MiB a day, from today.
+pub fn meter(mib: u32) -> Meter {
+    Arc::new(Mutex::new(DayMeter::from_mib(mib, today())))
+}
+
+/// `f` on `meter`, with interrupts off as every lock here is taken.
+pub fn with_meter<R>(meter: &Meter, f: impl FnOnce(&mut DayMeter) -> R) -> R {
+    without_interrupts(|| f(&mut meter.lock()))
 }
 
 static RECORDS: Mutex<Vec<Option<Record>>> = Mutex::new(Vec::new());
@@ -71,6 +100,11 @@ fn with<R>(f: impl FnOnce(&mut Vec<Option<Record>>) -> R) -> R {
 /// A new record for `dest`: its object id. When the table is full, records no
 /// live handle names (`live`) are dropped first; None if it is still full.
 pub fn create(dest: Dest, live: impl Fn(u64) -> bool) -> Option<u64> {
+    create_metered(dest, live, None)
+}
+
+/// [`create`], the record counting its bytes on `meter` when given.
+pub fn create_metered(dest: Dest, live: impl Fn(u64) -> bool, meter: Option<Meter>) -> Option<u64> {
     with(|records| {
         let free = records.iter().position(Option::is_none);
         let at = match free {
@@ -92,6 +126,7 @@ pub fn create(dest: Dest, live: impl Fn(u64) -> bool) -> Option<u64> {
         records[at] = Some(Record {
             dest,
             resolved: Vec::new(),
+            meter,
         });
         Some(FIRST + at as u64)
     })
@@ -101,6 +136,12 @@ pub fn create(dest: Dest, live: impl Fn(u64) -> bool) -> Option<u64> {
 pub fn dest(object: u64) -> Option<Dest> {
     let at = index(object)?;
     with(|records| records.get(at)?.as_ref().map(|r| r.dest.clone()))
+}
+
+/// The meter `object`'s record counts on, if it is an agent's.
+pub fn meter_of(object: u64) -> Option<Meter> {
+    let at = index(object)?;
+    with(|records| records.get(at)?.as_ref()?.meter.clone())
 }
 
 /// Whether a resolve of `name` on `object` may be answered.
@@ -176,5 +217,6 @@ pub fn narrow(object: u64, narrower: Dest, live: impl Fn(u64) -> bool) -> Result
     if narrower.any_host || suffix_of_any || !narrower.within(&wider) {
         return Err(kabi::Error::Permission);
     }
-    create(narrower, live).ok_or(kabi::Error::NoMemory)
+    // The narrower record counts on the wider one's meter: never a fresh day.
+    create_metered(narrower, live, meter_of(object)).ok_or(kabi::Error::NoMemory)
 }
