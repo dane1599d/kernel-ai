@@ -100,7 +100,7 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
         call::ONCE_CHECK => {
             let mut digest = [0u8; 32];
             uaccess::copy_from_user(slot, a[1], &mut digest)?;
-            grants::spend_once(a[0], &digest).map(|()| 0)
+            grants::spend_held_once(slot, a[0], &digest).map(|()| 0)
         }
         call::RULE_CHECK => rule_check(slot, a[0], a[1], a[2]),
         call::ONCE_CHECK_FOR => {
