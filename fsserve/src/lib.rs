@@ -24,6 +24,9 @@ mod buffer;
 mod bulk;
 #[cfg(test)]
 mod bulk_tests;
+mod changes;
+#[cfg(test)]
+mod changes_tests;
 #[cfg(test)]
 mod clock_tests;
 mod lookup;
@@ -767,12 +770,18 @@ impl<D: BlockDev> Server<D> {
             }
             Request::Changes { since } => {
                 need(Rights::ENUMERATE)?;
-                let changed = self.fs().changes(since).map_err(error)?;
-                let more = changed.len() > MAX_ROWS as usize;
-                let rows = changed.iter().take(MAX_ROWS as usize);
-                Reply::Changes {
-                    rows: rows.map(|(ino, inode)| stat(*ino, inode)).collect(),
+                let (rows, more, _) = self.changed_since(object, since, None)?;
+                Reply::Changes { rows, more }
+            }
+            Request::ChangesSince { since, after } => {
+                need(Rights::ENUMERATE)?;
+                self.save_fallbacks()?;
+                let (rows, more, upto) = self.changed_since(object, since, after)?;
+                Reply::ChangesPage {
+                    rows,
                     more,
+                    upto,
+                    fallbacks: self.fs().fallbacks(),
                 }
             }
             Request::Sync => {
@@ -1082,6 +1091,7 @@ fn changes(request: &Request) -> bool {
         | Request::Read { .. }
         | Request::History
         | Request::Changes { .. }
+        | Request::ChangesSince { .. }
         | Request::Df
         | Request::Generation
         | Request::TrashList { .. }
