@@ -2,7 +2,7 @@
 
 Proposed 2026-11-23, for the founder's approval with the P6 plan ([`docs/plans/p6-parity.md`](../plans/p6-parity.md)). Questions below keep their stated default until the founder answers.
 
-Repo citations are `path:line` on main at 682411c5. Crate versions and licences were read from the crates.io API on 2026-11-23; other external facts were read on 2026-11-23 from the sources at the end, and anything not checked at its source says "unverified". "Est." marks arithmetic or judgement, not a measurement. Nothing was built, run or spiked for this ADR, and no model ran anywhere.
+Repo citations are `path:line` on main at 682411c5. Crate versions, dates, licences and dependency lists were read from the crates.io API on 2026-11-23; the licences of C libraries, test suites and data that are not crates were read from their repositories' licence files through the GitHub API the same day; other external facts were read on 2026-11-23 from the sources at the end, and anything not checked at its source says "unverified". "Est." marks arithmetic or judgement, not a measurement. Nothing was built, run or spiked for this ADR, and no model ran anywhere.
 
 This ADR picks the web engine, the JavaScript engine and where they run, and says how the browser fits the OS: processes, the network, cookies, fonts, images, downloads, and how Kai drives it. It builds on [0001](0001-capabilities.md) (handles), [0002](0002-agent-actions.md) (the one door, D3 grounding, D6 and P-F), [0003](0003-app-model.md) (apps as Wasm; the second engine), [0005](0005-graphics.md) (surfaces, the trusted path, the accessibility tree) and [0006](0006-existing-software.md) (Firefox in a Linux VM). It changes one thing in 0006, said in "Changes to recently merged and open work".
 
@@ -22,7 +22,7 @@ This ADR picks the web engine, the JavaScript engine and where they run, and say
 
 **What changed since ADR 0006 was read (2026-10-21):**
 - Servo is published as a library: `servo` 0.8.0 on crates.io (2026-11-07, MPL-2.0), with Stylo 0.24.0 (2026-11-11) and WebRender 0.70.1 published beside it.
-- Blitz, DioxusLabs' modular HTML and CSS engine, is published as `blitz` 0.2.1 (2026-10-16, MIT OR Apache-2.0). It is built from Stylo, Taffy (layout), Parley (text) and html5ever, and paints through `anyrender`, which has a CPU backend on vello_cpu (`anyrender_vello_cpu` 0.19.0). It has no JavaScript, and says it does not aim to be a whole browser (its README).
+- Blitz, DioxusLabs' modular HTML and CSS engine (MIT OR Apache-2.0), is built from Stylo, Taffy (layout), Parley (text) and html5ever, and paints through `anyrender`, which has a CPU backend on vello_cpu (`anyrender_vello_cpu` 0.19.0). It has no JavaScript, and says it does not aim to be a whole browser (its README). Its last stable release is `blitz` 0.2.1 (2025-10-08), which pins Stylo 0.8, Parley 0.6 and Taffy 0.9. The current line is 0.3.0-beta.4 (2026-10-16), which pins Stylo 0.22, selectors 0.41, cssparser 0.38, markup5ever 0.40, Parley 0.12 and Taffy 0.15 (`blitz-dom`'s dependency list). The repository is active (last push 2026-11-23).
 - Boa 0.22.0 (2026-08-28, Unlicense OR MIT) reports 95.60% of test262 (its v0.22 notes, read through a mirror; unverified at the source).
 - SpiderMonkey runs as a WebAssembly component: StarlingMonkey (Bytecode Alliance) targets WASI 0.2, and weval's ahead-of-time partial evaluation is reported to give 2-5x over its interpreter (weval's docs; arXiv 2411.10559 reports 2.17x).
 
@@ -38,9 +38,9 @@ Scores out of 10, as in ADR 0006. Person-months (PM) are estimates for one engin
 - Cost: about 11-21 PM before the first page (est.): `std` 3-5, `mozjs` 3-6, a GL or CPU backend 3-6, glue 2-4. After that, a rebase each month.
 - Why not first: the most porting before anything shows. It stays the later option because it shares Stylo and html5ever with B, so B's work carries over (see "What it costs to change later").
 
-**B. Blitz's stack, with our own browser layer (score 8, chosen).** html5ever 0.40.1 and Stylo 0.24.0 (the same parser and style system as Servo and, for Stylo, Firefox), Taffy 0.15.1 (block, flex and grid layout), Parley 0.13.0 (text layout), and vello_cpu 0.4.0 through `anyrender` for painting.
+**B. Blitz's stack, with our own browser layer (score 8, chosen).** html5ever (the same parser as Servo), Stylo (the style system of Servo and Firefox), Taffy (block, flex and grid layout), Parley (text layout), and vello_cpu through `anyrender` for painting. We start from Blitz 0.3.0-beta.4 and its pins (Stylo 0.22, Taffy 0.15, Parley 0.12). The newest releases are ahead of those pins: html5ever 0.40.1, Stylo 0.24.0, Taffy 0.15.1, Parley 0.13.0, vello_cpu 0.4.0. Moving Blitz onto them is our first sync (plan task B-1), offered upstream.
 - For: pure Rust and modular, so we take the parts and write the rest. It paints on the CPU, so it needs no GPU. AccessKit is built in, which is the tree our agent already reads. Its licences are MIT or Apache-2.0, except Stylo's MPL-2.0 crates (question 2). It builds with `std`, so `wasm32-wasip2` gives it `std` without porting `std` to our kernel.
-- Against: there is no JavaScript, no DOM API for scripts, no navigation or history, and forms are partial. It is young (0.2), and its team builds it for app UIs, not for a browser. So the browser layer is ours: JS bindings, events, navigation, forms, storage. We may carry a fork.
+- Against: there is no JavaScript, no DOM API for scripts, no navigation or history, and forms are partial. It is young (0.2 stable, a 0.3 beta), there has been no stable release for over a year, and its team builds it for app UIs, not for a browser. So the browser layer is ours: JS bindings, events, navigation, forms, storage. We may carry a fork.
 - Cost: about 6-10 PM to static pages, forms and first scripts (milestones B0-B3 in the plan), and 18-30 PM to the reading and light-app web (B4-B5) (est.).
 
 **C. Ladybird's LibWeb and LibJS (score 3, rejected again).** BSD-2-Clause, C++. ADR 0006's reasons stand as read on 2026-10-21: no public pull requests since 2026-06-05, a POSIX layer (mlibc) and a C++ toolchain to port, LibJS's JIT to turn off, and FFmpeg (LGPL) for media. Its strength, a whole browser with its own JavaScript, is real. Its port is 0006's route B: 18-28 PM plus a standing rebase. Not rechecked since.
@@ -66,7 +66,7 @@ No engine may JIT before v1.0 (ADR 0003 §1, ADR 0006 item 3, ADR 0012). So ever
 | Engine | Licence | Language | For | Against | Choice |
 |---|---|---|---|---|---|
 | Boa 0.22.0 | Unlicense OR MIT | Rust | 95.60% of test262 (unverified at source); pure Rust, so it builds for `wasm32-wasip2` with no C toolchain; its native-object API suits bindings written in Rust beside Blitz's DOM | Slower than QuickJS on published benchmarks (unverified; S14-3 measures) | **Default** |
-| QuickJS-ng through rquickjs 0.14.0 | MIT | C | Small and fast for an interpreter; rquickjs is a mature Rust binding | A clang build for `wasm32-wasi` in CI (C in the build is allowed, ADR 0006 question 2); whether rquickjs 0.14 bundles QuickJS-ng is unverified | Taken if S14-3 shows Boa too slow |
+| QuickJS-ng through rquickjs 0.14.0 | MIT | C | Small and fast for an interpreter; rquickjs is a mature Rust binding | A clang build for `wasm32-wasi` in CI (C in the build is allowed, ADR 0006 question 2). rquickjs binds QuickJS-NG (its README), MIT like QuickJS-NG itself | Taken if S14-3 shows Boa too slow |
 | SpiderMonkey (StarlingMonkey build) | MPL-2.0 | C++ | Firefox's own engine, the best conformance; a maintained WASI 0.2 build; weval for AOT | A large C++ build, several MB of Wasm (unverified), MPL-2.0 (question 2) | Only if S14-3 shows both above too slow on the site list |
 | V8 | BSD-3-Clause | C++ | Has a jitless mode | No maintained WASI build; the GN and Chromium toolchain; very large | Not viable before v1.0 |
 
@@ -90,7 +90,7 @@ In plain words: Kernel AI gets its own browser, built in Rust from the same part
    - **`browser`**, the app: a Wasm component on wasmi in `apps/browser/`, drawn with `uikit`. It holds the tabs, the address bar, back and forward, downloads, history and bookmarks. The address bar and the site's name are the browser's own drawing, never the page's.
    - **`webview`**, a renderer: one process per site, a Wasm component on Wasmtime with CI-compiled code. A site is the scheme plus the registrable domain, found through the Public Suffix List (question 2). A renderer holds three things and no other handle: a route to `webnet`, tagged with its site by the kernel's badge so it cannot ask for another site's cookies; a child surface (below) inside the browser's window; and its accessibility records. It has no file, network, agent or clipboard handle.
    - **`webnet`**, the network service: a native ring-3 service that links `kainet`. It holds the browser's `NetDest` (`hosts:any` on ports 443 and 80, question 3), the cookie jar, the HTTP cache and HSTS. It checks CORS and opaque-response blocking for every renderer request, so a renderer never sees another site's protected bytes.
-   - **Limits.** At most 8 renderers (est.; the process table has 64 slots). Past that, the least recently used background tab is discarded and reloads when shown. Each renderer gets a memory ceiling of 256 MiB (est.) through `kai-profile 1`.
+   - **Limits.** At most 8 renderers (est.; the process table has 64 slots), and 4 until demand paging (the roadmap's M10b) lands, so renderers never squeeze the model (plan section 12.2). Past that, the least recently used background tab is discarded and reloads when shown. Each renderer gets a memory ceiling of 256 MiB (est.) through `kai-profile 1`.
    - **Frames.** A cross-site `iframe` shares its embedder's process until out-of-process frames come in milestone B5. That is weaker than Chrome and Firefox, and it is said in the browser's About page until then.
    - **Child surfaces.** A child surface is a new `kai-surface 1` object: a rectangle of a parent window that another process draws, clipped by `desktop` to the page area, so page pixels never cover the browser's address bar (ADR 0005 §7).
 
@@ -113,13 +113,13 @@ In plain words: Kernel AI gets its own browser, built in Rust from the same part
 7. **Fonts and text.**
    - **Shaping and layout.** Parley lays out text and fontique finds fonts. harfrust and skrifa, already in `gfx2d`, shape and draw it.
    - **System fonts.** Inter and JetBrains Mono, plus the Noto families for the major scripts and Noto Color Emoji (OFL-1.1, approved for font data by ADR 0009).
-   - **Web fonts.** WOFF through flate2, and WOFF2 through brotli and our own table decoder (est. 1,000 lines; the `woff2` crate's last release is from 2022).
+   - **Web fonts.** WOFF and WOFF2 through wuff 0.2.10 (MIT, pure Rust, 2026-11-05), which Blitz already uses as its optional web-font decoder. The `woff2` crate (Apache-2.0) is not used: its last release is from 2022. If wuff falls behind, our own WOFF2 table decoder over brotli is the fallback (est. 1,000 lines).
    - **Checking fonts.** Every font a page sends is parsed by read-fonts, memory-safe Rust, inside the renderer.
 
 8. **Images and media.**
    - **Images (B1).** png 0.18.1, zune-jpeg 0.5.15, gif 0.14.2 and image-webp 0.2.4, all in ADR 0009's free class. They are shared with the Photos app as one crate, `kaimedia`. Each image is decoded in the renderer, with at most 64 megapixels decoded per image (est.).
    - **Later images.** SVG through resvg 0.50.0 (B4), and AVIF through rav1d 1.1.0 (B6).
-   - **Video and audio (B6).** WebM with VP9 or AV1, and Opus or Vorbis, through rav1d (BSD-2-Clause), libvpx (BSD-3-Clause, C) and opus (BSD-3-Clause, C); MSE for adaptive streams; sound through `audiod` (the plan's track M). H.264 and AAC stay off (ADR 0006 question 7, still open).
+   - **Video and audio (B6).** WebM with VP9 or AV1, and Opus or Vorbis, through rav1d 1.1.0 (BSD-2-Clause), libvpx (BSD-3-Clause, C) and libopus (BSD-3-Clause, C, through the `opus` 0.4.0 binding, MIT/Apache-2.0); the Vorbis decoder is picked in that task from ADR 0009's free class; MSE for adaptive streams; sound through `audiod` (the plan's track M). H.264 and AAC stay off (ADR 0006 question 7, still open).
 
 9. **Downloads.**
    - **Where they land.** `webnet` writes each download to `/home/user/Downloads/<name>.partial` through `fs`, then renames it into place.
@@ -144,14 +144,92 @@ In plain words: Kernel AI gets its own browser, built in Rust from the same part
 
 11. **Updates.** The browser, `webview` and `webnet` ship as one signed first-party package (ADR 0011), apart from OS releases. Upstream html5ever, Stylo and Blitz are synced once a month. A security fix upstream reaches the package within 14 days (est. target).
 
-12. **Work order.** The plan's track B, tasks B-1 to B-18, with milestones B0-B6 and their gates.
+12. **The security position, in one place.** Each of these is a rule with a test, not a hope.
+   - **Page content is data, never instructions to Kai.** Page text, links, form labels, downloaded files and anything a quarantined read returns are `Data` with the site's label (ADR 0002 D6). Data can start nothing and cannot choose the target of an outbound or undo-less call without an ask. `browser-pf` and S02-1's bait probes, extended with page-injection probes, gate milestone B2.
+   - **Each site is sealed.** One renderer process per site, a Wasm component holding a site-tagged route to `webnet`, a child surface and its accessibility records, and no other handle (item 4). Wasm's bounds checks and the process wall both stand between a page and the OS. `webnet` alone holds the network, and it enforces CORS, opaque-response blocking and per-site cookie jars on the renderer's behalf.
+   - **Forms, sends and downloads ask.** Kai's `browser_type`, `browser_submit` and `browser_download` always ask, naming the site and what goes in (item 10). A download a page starts without the person's click asks (item 9). A form the person submits by hand is the person's own act and does not ask.
+   - **The browser's own drawing is the trusted path.** The address bar, the site's name, the padlock, permission prompts and Kai's ask cards are drawn by `browser` or `desktop`, never by page pixels (item 4, ADR 0005 §7).
+   - **No JIT, no executable memory at run time.** Renderer code is compiled ahead of time in CI and signed (question 5).
+   - **Every parser of outside bytes is fuzzed**: HTML, CSS, fonts, images, HTTP, cookies, URLs (plan section 10).
+
+13. **Work order.** The plan's track B, tasks B-1 to B-18, with milestones B0-B6 and their gates, after track F's F-1 to F-6.
+
+## Crates and licences
+
+Read from each crate's published metadata on the crates.io API (`/api/v1/crates/<name>` and its version's record) on 2026-11-23. Non-crate parts were read from their repositories' licence files through the GitHub API on the same day. The class is ADR 0009 D4's: **free** needs no approval (each PR lists it); **ask** needs a founder row before it is adopted.
+
+**No GPL or LGPL code is in the chosen stack.** This was checked for every crate below and for the first-level dependencies of `stylo` 0.24.0 and `blitz-dom` 0.3.0-beta.4, not yet for the whole graph: when task B-1 adds them, `cargo deny` (`deny.toml`) fails CI on any licence outside the allow list, so a GPL or LGPL crate deeper down cannot land unseen. GPL and LGPL appear only in routes **not** taken, named plainly in the last table.
+
+**The engine** (task B-1 pins the exact versions Blitz's beta needs; the newest are shown):
+
+| Crate | Newest version, date | Licence (crates.io) | Class |
+|---|---|---|---|
+| blitz-dom, blitz-html, blitz-traits, blitz-paint | 0.3.0-beta.4 (2026-10-16); stable 0.2.4, 0.2.0, 0.2.0, 0.2.1 (2025-10) | MIT OR Apache-2.0 | free |
+| stylo_taffy | 0.3.0-beta.4; stable 0.2.0 | MIT OR Apache-2.0 OR MPL-2.0 | free (taken under MIT OR Apache-2.0) |
+| html5ever, markup5ever, web_atoms, string_cache | 0.40.1, 0.40.0, 0.3.0, 0.11.0 | MIT OR Apache-2.0 | free |
+| **stylo** | 0.24.0 (2026-11-11) | **MPL-2.0** | **ask (question 2)** |
+| **stylo_dom, stylo_traits, stylo_derive, stylo_static_prefs, stylo_atoms** | 0.24.0 | **MPL-2.0** | **ask (question 2)** |
+| **stylo_config** | 0.12.0 | **MPL-2.0** | **ask (question 2)** |
+| **selectors** | 0.43.0 | **MPL-2.0** | **ask (question 2)** |
+| **cssparser, cssparser-macros, dtoa-short** | 0.38.0, 0.7.1, 0.3.5 | **MPL-2.0** | **ask (question 2)** |
+| **to_shmem, to_shmem_derive** | 0.8.0, 0.3.0 | **MPL-2.0** | **ask (question 2)** |
+| **app_units, uluru** | 0.7.8, 3.1.0 | **MPL-2.0** | **ask (question 2)** |
+| stylo_malloc_size_of, malloc_size_of_derive, servo_arc | 0.24.0, 0.1.3, 0.6.0 | MIT OR Apache-2.0 | free |
+| euclid, smallbitvec, thin-vec, atomic_refcell, rayon | 0.22.14, 2.6.1, 0.2.21, 0.1.14, 1.12.0 | MIT OR Apache-2.0 (atomic_refcell: Apache-2.0 OR MIT) | free |
+| precomputed-hash, void | 0.1.1, 1.0.2 | MIT | free |
+| encoding_rs | 0.8.44 | (Apache-2.0 OR MIT) AND BSD-3-Clause | free |
+| icu_segmenter | 2.4.0 | Unicode-3.0 | free (ADR 0009's free class) |
+| taffy | 0.15.1 | MIT | free |
+| parley, fontique | 0.13.0 | Apache-2.0 OR MIT | free |
+| anyrender, anyrender_vello_cpu, anyrender_svg | 0.15.0, 0.19.0, 0.16.0 | MIT OR Apache-2.0 | free |
+| vello_cpu | 0.4.0 | Apache-2.0 OR MIT | free |
+| read-fonts | 0.47.0 | MIT OR Apache-2.0 | free (already in the tree through skrifa) |
+| accesskit | 0.25.2 | MIT OR Apache-2.0 | free (its subset is already pinned in `uikit`) |
+| wuff | 0.2.10 | MIT | free |
+| keyboard-types, cursor-icon | 0.8.3, 1.2.0 | MIT OR Apache-2.0; MIT OR Apache-2.0 OR Zlib | free |
+
+**JavaScript, the runtime, the network and media:**
+
+| Crate or part | Version | Licence | Class |
+|---|---|---|---|
+| boa_engine, boa_gc, boa_parser | 0.22.0 | Unlicense OR MIT | free |
+| rquickjs, rquickjs-sys (bundles QuickJS-NG) | 0.14.0 | MIT; QuickJS-NG's repository: MIT | free; only if S14-3 picks it |
+| **mozjs**, StarlingMonkey (SpiderMonkey) | 0.27.0 | **MPL-2.0** | **ask**, only if S14-3 needs it (question 2's second part) |
+| wasmtime, pulley-interpreter | 51.0.0 | Apache-2.0 WITH LLVM-exception | free (ADR 0003's second engine) |
+| brotli | 9.1.3 | BSD-3-Clause AND MIT | free |
+| flate2 | 1.1.11 | MIT OR Apache-2.0 | free (already in the tree) |
+| h2 (B5) | 0.4.20 | MIT | free |
+| tungstenite (B5) | 0.30.0 | MIT OR Apache-2.0 | free |
+| psl (the crate) | 2.1.261 (2026-11-22) | MIT/Apache-2.0 | free |
+| **The Public Suffix List (the data inside `psl`)** | daily | **MPL-2.0** (publicsuffix/list's licence) | **ask (question 2)** |
+| png, gif, image-webp, image | 0.18.1, 0.14.2, 0.2.4, 0.25.10 | MIT OR Apache-2.0 | free |
+| zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib | free |
+| resvg, usvg (B4) | 0.50.0 | Apache-2.0 OR MIT | free |
+| rav1d (B6) | 1.1.0 | BSD-2-Clause | free |
+| libvpx (B6, C) | upstream | BSD-3-Clause (webmproject/libvpx) | free |
+| libopus (B6, C) through `opus` | upstream; opus 0.4.0 | BSD-3-Clause text (xiph/opus `COPYING`); the binding MIT/Apache-2.0 | free |
+| Noto fonts and Noto Color Emoji | upstream | OFL-1.1 (notofonts, googlefonts/noto-emoji) | approved for font data (ADR 0009, 2026-10-22) |
+
+**Test suites, fetched in CI at a pinned commit and never shipped or committed:** WPT (3-Clause BSD, its `LICENSE.md`) and test262 (Ecma's BSD licence, its `LICENSE`).
+
+**Not taken, and why it matters for the licence:**
+
+| Part | Licence | Where it would come from |
+|---|---|---|
+| **GStreamer** | **LGPL-2.1** (ADR 0006's research) | Servo's media (route A). Not taken |
+| **FFmpeg** (`libavcodec`) | **LGPL** (ADR 0006) | Ladybird's media (route C); inside the Linux guest only if ADR 0006 question 7 says yes |
+| **EasyList** | **GPL-3.0-or-later OR CC-BY-SA-3.0** (easylist.to's licence page) | A tracker blocklist. Not taken (plan question 8) |
+| servo, webrender | MPL-2.0 | Route A, re-measured at B5 |
+| symphonia | MPL-2.0 | A pure-Rust audio decoder; would be an ask if track M picks it |
+| woff2 | Apache-2.0 | Free, but unmaintained since 2022; wuff instead |
 
 ## Consequences
 
 - Kernel AI gets a browser that is its own: it looks like Kai Desk, opens in under a second (S14-1's bar), costs no Linux guest's RAM, and Kai reads and drives it through typed rows rather than from outside.
 - The renderer is the most attacked code in any OS. Here every site is sealed twice: by Wasm's checks and by its own process, which holds no handle but a tagged route to `webnet` and a surface.
 - We own the browser layer: bindings, events, navigation, forms, storage. That is the long tail of web compatibility, and it will trail Chrome and Firefox for years on the heavy web. Track V's Firefox covers that gap, if question 1 keeps it.
-- MPL-2.0 enters the shipped graph through Stylo, if question 2 says yes. It is the OS's own licence (ADR 0009 D1), so the duty is to publish our changes to those files, which we do anyway.
+- MPL-2.0 enters the shipped graph through Stylo and its 14 helper crates, and the suffix list's data, if question 2 says yes. It is the OS's own licence (ADR 0009 D1, decided 2026-10-27), so the duty is to publish our changes to those files, which we do anyway. `deny.toml` gains one exception per crate, and `NOTICES.txt` lists them.
+- Blitz has had no stable release since 2025-10. We build on its 0.3 beta and may carry a fork; each monthly sync is our cost (item 11).
 - The kernel gains one path, a loader for signed code images, and Wasmtime joins as ADR 0003's second engine. Both serve other apps later.
 - `kai:net@0.1.0` stays small for apps. Only `webnet` holds `hosts:any`.
 
@@ -188,7 +266,7 @@ All run on the host or on GitHub runners. None runs a model, and none runs QEMU 
 
 ## Changes to recently merged and open work
 
-- **ADR 0006 (accepted).** On approval, its Status line notes "partly superseded by ADR 0014: the `browser_*` rows are answered by Kai Browser first; the VM is P6's track V". Nothing else in 0006 changes. Its item 7 rows keep their names, and the VM's Firefox registers as a second provider, chosen by the person or by `browser_open`'s `engine` argument.
+- **ADR 0006 (accepted).** On approval, its Status line notes "partly superseded by ADR 0014: the `browser_*` rows are answered by Kai Browser first; the VM is P6's track V". Nothing else in 0006 changes. Its item 7 rows keep their names, and the VM's Firefox registers as a second provider, chosen by the person or by `browser_open`'s `engine` argument. 0006's rows take a `window`; Kai Browser's take a `tab`, and a VM window counts as one tab.
 - **ADR 0003 (accepted).** Its second-engine triggers gain one: "the web engine's renderers". No text changes until Wasmtime lands (plan task F-1).
 - **`kai:net@0.1.0`.** No change.
 - **`nethosts` and the shell's ceiling.** No change. `webnet`'s ceiling is its own plan line, `netdest=proto:tcp,ports:443+80,hosts:any` (question 3).
@@ -196,9 +274,9 @@ All run on the host or on GitHub runners. None runs a model, and none runs QEMU 
 
 ## Open questions for the founder
 
-These are questions 1-6 of the P6 plan's section 2, which says what each answer changes:
+These are questions 1-6 of the P6 plan's section 5, which says what each answer changes. Questions 7-9 there (the search default, privacy defaults, H.264) are product choices inside this design and change none of its items.
 1. Our own browser first, with Firefox in the Linux VM kept as the second route. Default: yes.
-2. The MPL-2.0 crates: Stylo, selectors and cssparser, and the Public Suffix List's data. SpiderMonkey is asked again only if S14-3 needs it. Default: approve the first group.
+2. The MPL-2.0 crates: Stylo and its parts, selectors, cssparser and their small helpers (the 15 crates marked "ask" above), and the Public Suffix List's data. SpiderMonkey is asked again only if S14-3 needs it. Default: approve the first group as one row.
 3. The browser reaches any website without asking site by site. Default: yes.
 4. TLS 1.2 for the browser alone. Default: yes.
 5. Engine code compiled ahead of time in CI and signed. Default: yes.
@@ -207,11 +285,13 @@ These are questions 1-6 of the P6 plan's section 2, which says what each answer 
 ## Sources
 
 External, read 2026-11-23:
-- crates.io API (versions, licences, dates): servo 0.8.0, stylo 0.24.0, selectors 0.43.0, cssparser 0.38.0, webrender 0.70.1, mozjs 0.27.0 (MPL-2.0); html5ever 0.40.1, blitz 0.2.1, blitz-dom 0.2.4, anyrender_vello_cpu 0.19.0 (MIT OR Apache-2.0); taffy 0.15.1 (MIT); parley 0.13.0, fontique 0.13.0, vello_cpu 0.4.0, resvg 0.50.0 (Apache-2.0 OR MIT); boa_engine 0.22.0 (Unlicense OR MIT); rquickjs 0.14.0 (MIT); png 0.18.1, gif 0.14.2, image-webp 0.2.4 (MIT OR Apache-2.0); zune-jpeg 0.5.15 (MIT OR Apache-2.0 OR Zlib); brotli 9.1.3 (BSD-3-Clause AND MIT); woff2 0.3.0 (Apache-2.0, 2022-05-05); rav1d 1.1.0 (BSD-2-Clause); h2 0.4.20 (MIT); tungstenite 0.30.0 (MIT OR Apache-2.0); psl 2.1.261 (MIT/Apache-2.0 crate; its data is the Public Suffix List, MPL-2.0, as P5's plan read); wasmtime 51.0.0 (Apache-2.0 WITH LLVM-exception)
+- crates.io API (versions, licences, dates, and the dependency lists of `stylo` 0.24.0, `blitz-dom` 0.2.4 and `blitz-dom` 0.3.0-beta.4): every crate in "Crates and licences", plus servo 0.8.0 and webrender 0.70.1 (MPL-2.0), symphonia 0.6.1 (MPL-2.0) and woff2 0.3.0 (Apache-2.0, 2022-05-05)
+- GitHub API, repository licence files: webmproject/libvpx (BSD-3-Clause), xiph/opus `COPYING` (BSD-3-Clause text), quickjs-ng/quickjs (MIT), publicsuffix/list (MPL-2.0), web-platform-tests/wpt `LICENSE.md` (3-Clause BSD), tc39/test262 `LICENSE` (BSD), notofonts/noto-cjk `Sans/LICENSE` and googlefonts/noto-emoji (OFL-1.1); DelSkayn/rquickjs README (binds QuickJS-NG)
+- EasyList's licence page: https://easylist.to/pages/licence.html
 - Blitz README and crate pages: https://github.com/DioxusLabs/blitz, https://docs.rs/crate/blitz/0.2.1
 - Boa v0.22 release notes (mirror): https://newreleases.io/project/github/boa-dev/boa/release/v0.22; v0.21 post: https://boajs.dev/blog/2025/10/22/boa-release-21
 - StarlingMonkey: https://github.com/bytecodealliance/StarlingMonkey; ComponentizeJS: https://github.com/bytecodealliance/componentizejs; weval: https://github.com/tekknolagi/weval and https://arxiv.org/abs/2411.10559
 - Servo releases (Phoronix on 0.5 and 0.7): https://phoronix.com/news/Servo-0.7-Changes; servo.org: https://servo.org/about/
 - Ladybird, litehtml and V8 facts are ADR 0006's (read 2026-10-21) or general and marked unverified above
 
-Repository (main at 682411c5): cpufeat/src/lib.rs:106-107; wit/kai-net/http.wit:26, :66; kabi/src/plan.rs:30; gfx2d/Cargo.toml; assets/fonts; uipaint/src/lib.rs:8-9; uikit/src/a11y.rs:1-3; kernel/src/process/mod.rs:58; user/x86_64-kai-user.json; agentabi/src/net.rs:116; docs/adr/0003-app-model.md §1; docs/adr/0006-existing-software.md items 1-13; docs/plans/p5-networking.md sections 2 and 11.
+Repository (main at 682411c5): docs/decisions.md:278 (the OS is MPL-2.0 with the DCO, decided 2026-10-27); deny.toml:32-43 (today's licence exceptions); cpufeat/src/lib.rs:106-107; wit/kai-net/http.wit:26, :66; kabi/src/plan.rs:30; gfx2d/Cargo.toml; assets/fonts; uipaint/src/lib.rs:8-9; uikit/src/a11y.rs:1-3; kernel/src/process/mod.rs:58; user/x86_64-kai-user.json; agentabi/src/net.rs:116; docs/adr/0003-app-model.md §1; docs/adr/0006-existing-software.md items 1-13; docs/plans/p5-networking.md sections 2 and 11.

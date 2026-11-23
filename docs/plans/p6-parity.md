@@ -1,10 +1,10 @@
 # P6 plan: everyday-OS parity, with the browser first
 
-Status: **DRAFT for the founder's approval**, proposed 2026-11-23. Nothing lands as code until the founder approves it. The browser engine is decided in [ADR 0014](../adr/0014-browser-engine.md), proposed with this plan. Sections 5-12 are still to be written (see "Still to write" at the end).
+Status: **proposed for the founder's approval**, 2026-11-23. Nothing lands as code until the founder approves it. The browser engine is decided in [ADR 0014](../adr/0014-browser-engine.md), proposed with this plan.
 
 The founder asked on 2026-11-23: "I want to do the browser project, I want this to be like any other operating system with all features no matter how large of a roadmap or how long itll take." This plan turns that into tracks. P6 changes from "running existing apps" (roadmap, P6 row) to **everyday-OS parity**. ADR 0006's Linux VM, which was all of P6, becomes one track in it (track V).
 
-Repo facts are on main at 682411c5. Crate versions and licences were read from the crates.io API on 2026-11-23. Sizes marked "est." are estimates. Nothing was built or run for this plan, and no model or QEMU ran.
+Repo facts are on main at 682411c5. Crate versions and licences were read from the crates.io API on 2026-11-23, and the licences of non-crate parts from their repositories through the GitHub API the same day (section 11). Sizes marked "est." are estimates. Nothing was built or run for this plan, and no model or QEMU ran.
 
 ## 1. Goal and exit
 
@@ -76,7 +76,7 @@ Ranked by how much a new user would miss each one. Tier 1 is "leaves in the firs
 | 8 | **A, accessibility** | 27 | 3 by count, but essential to those who need it | Keyboard-only and text size from P6; the screen reader by v1.0 |
 | 9 | **S and V, apps from others** | 31-32 | 3 | V (ADR 0006's VM) after B1 if question 1 says yes; others' apps after v1.0 |
 
-**F, foundations**, is not ranked because a person never sees it: Wasmtime as ADR 0003's second engine, a loader for signed code images, a WASI 0.2 subset host, `kainet`'s request bodies and headers, child surfaces, and the Public Suffix List.
+**F, foundations**, is not ranked because a person never sees it: Wasmtime as ADR 0003's second engine, a loader for signed code images, a WASI 0.2 subset host (today's `wasihost` serves only the twenty WASI preview-1 calls xcc needs, for `cc`), `kainet`'s request bodies and headers, child surfaces, and the Public Suffix List. Section 6.1 has its tasks.
 
 ## 4. Track B, the browser
 
@@ -88,14 +88,14 @@ Each row is one PR unless it says otherwise. Lanes: **W-e** (engine: `webcore/`,
 
 | # | Task | Lane | Needs | Size (est.) | Exit check |
 |---|---|---|---|---|---|
-| B-1 | `webcore`: Blitz's DOM, style, layout and paint wrapped, a page to pixels on the host; golden images | W-e | S14-1 | L | Host goldens |
+| B-1 | `webcore`: Blitz's DOM, style, layout and paint wrapped, a page to pixels on the host; golden images. Starts from Blitz 0.3.0-beta.4 and moves it to Stylo 0.24 and Parley 0.13 (ADR 0014, option B), offered upstream; the MPL-2.0 crates enter `deny.toml` here, on question 2 | W-e | S14-1; question 2 | L | Host goldens; `cargo deny` clean |
 | B-2 | WPT reftests on the host: `cargo xtask wpt` at a pinned WPT commit fetched in CI, never committed; `web-wpt.yml`; the baseline recorded | W-e | B-1 | M | Baseline row |
 | B-3 | `webnet` logic: HTTP over `kainet` with bodies, headers, streaming, gzip and brotli, keep-alive; partitioned cookies; cache; HSTS; CORS and opaque-response checks; hostile tests and fuzz targets | W-n | F-4 | L | Host and hostile tests |
 | B-4 | `webnet` in the OS: its plan line, the `web` volume, the site-tagged route, downloads into `/home/user/Downloads` | W-n, K's and S-io's turns | B-3 | M | `browser-download` |
 | B-5 | `webview`: `webcore` on Wasmtime, a child surface, input, scrolling | W-e | F-1, F-2, F-3, F-5 | M | `web-hello` |
 | B-6 | The `browser` app: tabs, address bar, back, forward, reload, history, bookmarks, find, zoom, downloads | W-a | B-5 | L | `browser-static` |
 | B-7 | Images in pages through `kaimedia` (M-1) | W-e | M-1 | S | WPT images subset |
-| B-8 | Fonts: Noto families, emoji, fallback; WOFF and WOFF2 | W-e, model lane's turn | B-1 | M | Host goldens per script |
+| B-8 | Fonts: Noto families, emoji, fallback; WOFF and WOFF2 through wuff (ADR 0014 item 7). Shared with track L's L-3 | W-e, G-core's turn | B-1 | M | Host goldens per script |
 | B-9 | Forms without JavaScript: every input type, GET and POST, HTTPS first | W-e, W-n | B-4, B-6 | M | `browser-forms`, `browser-cookies` |
 | B-10 | Kai's browser rows (ADR 0014 item 10) | A-core, model lane | B-6 | M | `browser-kai`, `browser-pf`; fluency, actbench, bait probes |
 | B-11 | `webjs`: bindings generated from WebIDL; the JS engine in the renderer; event loop, timers, console | W-e | S14-3, B-5 | L | test262 at least 90% |
@@ -127,20 +127,20 @@ R1 (reftests): `css/CSS2/normal-flow`, `floats`, `margin-padding-clear`, `box-di
 
 ### 4.4 Sites that must work
 
-Loaded live on a GitHub runner only, never committed (section 8 item 4, to write). The founder or the manager may add a site by a one-line PR.
+Loaded live on a GitHub runner only, never committed (section 8, item 4). The founder or the manager may add a site by a one-line PR.
 - **Tier 1 (B1, no JavaScript needed):** en.wikipedia.org, developer.mozilla.org, www.gov.uk, news.ycombinator.com, html.duckduckgo.com, text.npr.org, lite.cnn.com, docs.rs, github.com (a README, signed out), stackoverflow.com, www.bbc.co.uk/news, forecast.weather.gov.
 - **Tier 2 (B3-B4):** duckduckgo.com, github.com (issues and file view), crates.io, docs.python.org, www.rust-lang.org, www.mozilla.org, users.rust-lang.org, www.theguardian.com, archive.org, lobste.rs.
 - **Tier 3a (B5):** www.openstreetmap.org, excalidraw.com.
-- **Tier 3 (track V's Firefox for now):** youtube.com, docs.google.com, mail.google.com, figma.com. Netflix and other Widevine sites cannot work in any browser of ours (section 12, to write).
+- **Tier 3 (track V's Firefox for now):** youtube.com, docs.google.com, mail.google.com, figma.com. Netflix and other Widevine sites cannot work in any browser of ours (section 12.3).
 
 ## 5. Entry, and the founder's answers P6 needs
 
-P6 work lands on main; v0.1 fixes stay on `release/v0.1`, as for P5. Each row says what this plan builds until you answer, and what a "no" changes.
+P6 work lands on main; v0.1 fixes stay on `release/v0.1`, as for P5. Entry needs nothing more: P5 is closed but for `Hold`, and the spikes and host tasks start at approval. M10b (demand paging), which the roadmap puts before P6, limits only how many renderers run at once (section 12.2). Each row says what this plan builds until you answer, and what a "no" changes.
 
 | Question | Default this plan builds | If you say no |
 |---|---|---|
 | **1. Our own browser first, with Firefox in the Linux VM (ADR 0006) kept as the second route** for heavy sites and Linux apps | Yes. Browser is "the browser"; track V starts when a lane is free after B1 | VM only: no page shows until the hypervisor works (7-15 PM, ADR 0006). Native only: YouTube and web office suites wait years |
-| **2. MPL-2.0 crates**: Stylo, selectors and cssparser (Servo's CSS parts), and the Public Suffix List's data (`psl`). They are not on the no-approval list. MPL-2.0 is the OS's own licence, so they fit; the duty is to publish changes to those files | Approve them as one row. SpiderMonkey (MPL-2.0) is asked again only if S14-3 needs it | We write our own CSS engine (est. +12-18 PM, and much weaker CSS), and cookies cannot be kept apart per site correctly without the suffix list |
+| **2. MPL-2.0 crates**: Stylo and its parts, selectors and cssparser (Servo's CSS parts) and their small helpers, 15 crates in all (section 11), and the Public Suffix List's data inside `psl`. They are not on the no-approval list. MPL-2.0 is the OS's own licence (decided 2026-10-27), so they fit; the duty is to publish changes to those files | Approve them as one row. SpiderMonkey (MPL-2.0) is asked again only if S14-3 needs it | We write our own CSS engine (est. +12-18 PM, and much weaker CSS), and cookies cannot be kept apart per site correctly without the suffix list |
 | **3. The browser reaches any website** without a card per site (`hosts:any` on ports 443 and 80, for `webnet` only) | Yes, as every browser does; plain `http://` only after a click-through page | A card for every new site a page touches, which no browser does |
 | **4. TLS 1.2 for the browser alone** (P5 is TLS 1.3 only) | Yes, through rustls's `tls12` switch in `webnet` only | Sites with only TLS 1.2 fail with a named error |
 | **5. Engine code compiled ahead of time in CI and signed** (ADR 0003 already allows it for first-party packages; this turns it on) | Yes | The renderer runs on wasmi (S14-1 says how slow) or natively, with a weaker wall around hostile pages |
@@ -149,9 +149,234 @@ P6 work lands on main; v0.1 fixes stay on `release/v0.1`, as for P5. Each row sa
 | 8. Privacy defaults | Cookies kept apart per site; no sync, no telemetry; history kept 90 days on the PC, with `undo`. No tracker blocklist, because EasyList is GPL-3.0 or CC-BY-SA-3.0 | Approve EasyList's licence and we add list blocking |
 | 9. H.264 and AAC video (ADR 0006 question 7) | Still off: VP9, AV1 and Opus only, asked again at B6 | On: patent and licence questions come with it |
 
-## Still to write
+## 6. The other tracks
 
-The PC shut down before these were written; the Mac session finishes them from ADR 0014 and this outline:
-- **6. The other tracks**: task tables with gates for F (F-1 Wasmtime backend, F-2 signed code images, F-3 WASI 0.2 subset, F-4 `kainet` bodies, headers and TLS 1.2, F-5 child surfaces, F-6 the suffix list), D (D-1 clipboard, D-2 notifications, D-3 screenshots, D-4 open with, D-5 drag and drop, D-6 snapping), M (M-1 `kaimedia`, M-2 Photos, M-3 PDF on hayro 0.9.0, M-4 `audiod`, M-5 music, M-6 video, M-7 zip), H (P7's list), W, L, A, U, S and V.
-- **7. Sessions and hot-file turns**: two sessions at approval (spikes S14-1, S14-3, S14-4 then B-1 and B-2; S14-2 then F-1 to F-3 as lane C's turn); D-1 as G-core's next item.
-- **8. Decided in this plan**, **9. Spikes** (ADR 0014's S14-1 to S14-4), **10. Tests**, **11. Crates and licences** (the crates.io reads are in ADR 0014's sources), **12. Estimate, risks and out of scope** (no JIT, WebGL, DRM, extensions, sync, WebRTC before their tracks).
+Each row is one PR unless it says otherwise. Sizes are S (at most 2 weeks), M (2-4 weeks) and L (1-2 months) for one engineer (est.), as in ADR 0006. Lanes: **W-e**, **W-n** and **W-a** as in section 4.1; **MD**, media and documents (new: `kaimedia/`, `apps/photos*`, `apps/pdf*`, `apps/player*`); and the running lanes **K**, **C**, **G-core**, **A-core**, **AP-2**, **S-io**, **N-t** (`kainet/`) and the model lane. Within each track the rows are ranked: the first is the one a person misses most.
+
+### 6.1 Track F, foundations (milestone B0)
+
+| # | Task | Lane | Needs | Size | Exit check |
+|---|---|---|---|---|---|
+| F-1 | **Wasmtime as ADR 0003's second engine.** wasmtime 51.0.0's no_std runtime with the component model in ring 3, its platform layer, and a host that runs a component from a `.cwasm` | C, K's review | S14-2 | M | Boot case `wasmtime-hello` under KVM and TCG |
+| F-2 | **Signed code images.** The kernel maps a `.cwasm`'s code read-execute only after checking its signature against the package's (ADR 0011); never writable and executable at once | K | S14-2 | M | `code-image`: a flipped byte or a wrong key is refused |
+| F-3 | **A WASI 0.2 subset host** for `wasm32-wasip2` components: clocks, random, standard output to the log; no files and no sockets (the renderer's only outside world is `webnet` and its surface). Beside `wasihost`, which stays xcc's preview-1 host | C | F-1 | M | Host tests; `web-hello` |
+| F-4 | **`kainet` for the browser.** Request methods with bodies, request and response headers, bodies streamed past today's 64 KiB, gzip and brotli, keep-alive, and TLS 1.2 behind rustls's `tls12` switch, built into `webnet` only (question 4). `kai:net@0.1.0` for apps does not change | N-t | – | M | Host and hostile tests; `http_response` fuzz target grows |
+| F-5 | **Child surfaces** in `kai-surface 1` (ADR 0014 item 4): a rectangle of a parent window that another process draws, clipped by `desktop`; its accessibility subtree joins the parent's, with the `data` provenance | G-core, K's turn | – | M | `desk-child-surface`: a child's pixels never reach the parent's title bar |
+| F-6 | **The Public Suffix List** through `psl`, its data refreshed by the browser package's signed updates | W-n | question 2 | S | The list's own test vectors on the host |
+
+### 6.2 Track D, desktop basics (v0.2)
+
+| # | Task | Lane | Needs | Size | Exit check |
+|---|---|---|---|---|---|
+| D-1 | **Copy and paste.** `desktop` holds the clipboard: text first, then images and lists of files. Ctrl+C, Ctrl+X and Ctrl+V and the Edit menus in every `uikit` app and the terminal. An app reads the clipboard only when the person pastes into it, through keys `desktop` sees on the trusted path; a renderer never holds it, so a page reads it only through the browser on a paste. Kai's `clipboard_read` is a `Read` row returning `Data` labelled with the app it came from; `clipboard_write` runs, with `Compensate`. No clipboard history before v1.0 | G-core, A-core's turn for the rows, C for WIT | – | M | `desk-clipboard`: text copied in Editor pastes in Terminal, Files and the browser; an app that did not get a paste reads nothing |
+| D-2 | **Notifications.** A `kai:desk/notify` import; a notification centre opened from the taskbar's clock, as in Windows 11; a per-app switch and Do not disturb in Settings; Kai's own notices there too. A notification only opens its app: it carries no button that acts | G-core, C | – | M | `desk-notify` |
+| D-3 | **Screenshots.** Win+Shift+S and Print Screen: a region, a window or the screen, drawn by `desktop` on the trusted path, saved to `/home/user/Pictures/Screenshots` and put on the clipboard | G-core | D-1 | S | `desk-screenshot` |
+| D-4 | **Open with.** Packages declare the file types they open (ADR 0011's manifest); Files gains "Open with"; Settings sets the default app per type | G-core, AP-2 | M-2, M-3 | M | `desk-open-with` |
+| D-5 | **Drag and drop** of files and text between windows, through `desktop`; a drop is the person's act on the trusted path | G-core | D-1 | M | `desk-dnd` |
+| D-6 | **Snapping** windows to halves and quarters, and Windows 11's snap layouts | G-core | – | S | Tour shots |
+
+### 6.3 Track M, media and documents (pictures, PDF and sound in v0.2)
+
+| # | Task | Lane | Needs | Size | Exit check |
+|---|---|---|---|---|---|
+| M-1 | **`kaimedia`**: PNG, JPEG, GIF and WebP decoding behind one API with size ceilings (at most 64 megapixels, est.), shared by the browser and the apps; `uipaint` draws images as themselves | MD, G-core's turn for `uipaint` | – | M | Host goldens; fuzz targets per format |
+| M-2 | **Photos**: open, browse a folder, zoom, rotate, set as wallpaper | MD | M-1 | M | `app-photos` |
+| M-3 | **PDF viewer** on hayro 0.9.0 (Apache-2.0 OR MIT), the document parsed in its own sealed process like a renderer; find, zoom, print to PDF later | MD | M-1 | M | `app-pdf`; a fuzz target |
+| M-4 | **Sound**: `audiod` (ADR 0007) on QEMU's virtio-sound first, then Intel HDA in P7; mixing, a volume per app, the taskbar's volume control | K's turn, S-io | P6-S1 | L | `audio-out` |
+| M-5 | **Music**: Ogg Vorbis, Opus and FLAC, a library view and playback controls; decoders picked in the PR from ADR 0009's free class (symphonia is MPL-2.0, so it would be an ask) | MD | M-4 | M | `app-music` |
+| M-6 | **Video**: WebM with VP9 or AV1 and Opus, the same decoders as B-17 | MD | M-4, B-17 | L | `app-video`: S06-2's bars |
+| M-7 | **Zip files** in Files: open, extract, make, through zip 9.8.2 (MIT), with ceilings against zip bombs | AP-2 | – | S | `files-zip`; a fuzz target |
+
+### 6.4 Track H, hardware and install (P7 and on)
+
+P7's work, designed in ADR 0007. Listed here so the gaps have owners; P7's own plan sizes and orders it.
+
+| # | Task | Where | Gate |
+|---|---|---|---|
+| H-1 | Installer to the PC's disk, with partitioning and a recovery slot (row 7) | P7, P8 for polish | Installs and boots on the founder's PC |
+| H-2 | Power off through ACPI's \_S5, sleep (S3), battery and lid on laptops (row 11) | P7 | Power off and resume cases on real hardware |
+| H-3 | USB sticks and drives over xHCI mass storage, FAT32 and exFAT read and write (row 10) | P7 | `usb-storage` case |
+| H-4 | Wi-Fi, one chip family first (row 8). Firmware blobs are an ask (ADR 0009) | P7 | Joins a WPA2 and a WPA3 network |
+| H-5 | Bluetooth: keyboards, mice, headphones (row 9) | After P7 | Pairs and plays |
+| H-6 | Several displays (row 12), with `deskgeom` laying out more than one screen | P7 | Two-monitor tour shot |
+| H-7 | GPU acceleration (row 13) | Later | Its own ADR |
+| H-8 | Camera and microphone, with an always-visible indicator and an ask per app (row 33) | After P7 | Its own case |
+
+### 6.5 Track W, work apps (late P6 and P7)
+
+| # | Task | Lane | Needs | Size | Exit check |
+|---|---|---|---|---|---|
+| W-1 | **Calculator, clock and alarms** (row 20); alarms through D-2 | AP-2 | D-2 | S | `app-calc`, `app-clock` |
+| W-2 | **Mail** (row 17): IMAP and SMTP over `kainet`; HTML mail drawn by `webcore` in a sealed renderer with remote images off until asked. Mail content is `Data`; every send asks (ADR 0002) | W-a, N-t | B-6, F-4 | L, several PRs | `app-mail` against a mock IMAP server |
+| W-3 | **Calendar and contacts** (row 18): `.ics` and `.vcf` files, then CalDAV and CardDAV | AP-2 | W-2's network part | L | `app-calendar` |
+| W-4 | **Office documents** (row 19): `.docx`, `.xlsx` and `.odt` opened read-only first, then edited. Until then track V's LibreOffice covers it, if question 1 keeps the VM | AP-2 | – | L, several PRs | Golden documents |
+| W-5 | **Printing** (row 22): print to PDF first, then IPP Everywhere printers on the network | AP-2, N-t | M-3 | M | A mock IPP printer |
+
+### 6.6 Track L, languages and input
+
+| # | Task | Lane | Needs | Size | Exit check |
+|---|---|---|---|---|---|
+| L-1 | **Time zones with daylight saving** (row 30) from the IANA tz database (public domain), shipped as data and updated with the OS | K, G-core | – | S | Host tests over known changes |
+| L-2 | **Keyboard layouts** (row 28): UK, German, French, Spanish, Nordic and others in `deskcore`'s keymap, chosen in Settings and switched from the taskbar | G-core | – | M | Host tests per layout |
+| L-3 | **Fonts for every major script** (row 29): Noto CJK, Arabic, Hebrew, Devanagari and others (OFL-1.1, approved for fonts), shared with B-8 | G-core | – | M | Goldens per script |
+| L-4 | **Right-to-left text** and bidirectional layout in `uikit`, through Parley's bidi | G-core | L-3 | M | Goldens |
+| L-5 | **Input methods** for Chinese, Japanese and Korean (row 28) | G-core | L-3 | L | By P8 |
+| L-6 | **The OS in other languages**: strings moved to translation files; Kai answers in the person's language as far as the model can | G-core, model lane | – | M | One second language end to end |
+
+### 6.7 Track U, people and safety
+
+| # | Task | Lane | Needs | Size | Exit check |
+|---|---|---|---|---|---|
+| U-1 | **Lock screen and sign-in** (row 23) with a passphrase or PIN, drawn by `desktop` on the trusted path; locks on idle and on Win+L | G-core, K's turn | – | M | `desk-lock` |
+| U-2 | **Backup to another disk** (row 26): kaifs snapshots sent to a USB disk and restored from it | S-io | H-3 | M | Restore case |
+| U-3 | **A password store** for the browser's autofill, sealed under the lock passphrase. Kai never reads it (ADR 0014 item 10). Its own short ADR first | A-core, W-a | U-1 | M | Its ADR's cases |
+| U-4 | **Several people and accounts** (row 24) | P8 | – | – | P8's plan |
+| U-5 | **Disk encryption** (row 25) | P8 | – | – | P8's plan |
+
+### 6.8 Track A, accessibility
+
+| # | Task | Lane | Needs | Size | Exit check |
+|---|---|---|---|---|---|
+| A-1 | **Keyboard only**: every app and the desktop usable without a mouse, with visible focus | G-core | – | M | A keyboard-only tour |
+| A-2 | **Text size and zoom** across all apps and the browser | G-core | – | S | Goldens at 100%, 150%, 200% |
+| A-3 | **Magnifier** | G-core | – | M | Tour shot |
+| A-4 | **Screen reader** (row 27), reading the accessibility tree that already exists. It needs a voice: espeak-ng is **GPL-3.0** (its repository), so a voice is a founder question when A-4 starts; a voice under a free-class licence is the default to look for | G-core, model lane | – | L | By v1.0 |
+
+### 6.9 Tracks S and V, apps from others
+
+- **V, the Linux VM** (row 32): ADR 0006's work order, items 1-13, unchanged, as one track. It starts when a lane is free after B1 if question 1 says yes. Its gates are ADR 0006's exit test and spikes S06-1 to S06-3. Firefox in the VM registers as Kai's second browser provider (ADR 0014, "Changes to recently merged and open work").
+- **S, others' apps in the store** (row 31): after v1.0, as ADR 0011 question 5 says. Nothing in P6.
+
+## 7. Sessions and hot-file turns
+
+### 7.1 Running sessions in parallel
+
+| Session | Lanes | Tasks | Starts |
+|---|---|---|---|
+| 1 | W-e | S14-1, S14-3 and S14-4, then B-1 and B-2 | At approval, host and GitHub only |
+| 2 | C | S14-2, then F-1, F-3 and, with K, F-2 | At approval |
+| – | G-core | D-1 as its next item, then D-2 and D-3; F-5 | When its current item lands |
+| 3 | W-n | F-4 with N-t, then B-3, F-6, B-4 | When S14-1 has passed |
+| 4 | MD | M-1, then M-2 and M-3; M-4 with K | When a session is free |
+| 5 | W-a | B-6, then B-9 with W-n | At B0 |
+| – | A-core, model lane | B-10 and D-1's rows | At B2 |
+| – | V | ADR 0006's work order | After B1, if question 1 keeps it |
+
+Two sessions start at approval. Others join as lanes free up; you set the number.
+
+### 7.2 Where P6 takes a hot-file turn
+
+| File | P6's change | Task | Turn |
+|---|---|---|---|
+| `kabi/src/plan.rs` | Plan lines for `webnet` (`netdest=proto:tcp,ports:443+80,hosts:any`, question 3), `webview` and `audiod` | B-4, B-5, M-4 | K reviews |
+| `kabi/src/handle.rs`, `kernel/src/handle/` | Child surfaces; signed code images | F-5, F-2 | Lane K |
+| `kernel/src/process/` loader | Mapping a signed `.cwasm` read-execute | F-2 | Lane K |
+| `surfabi/`, `deskcore/`, `user/src/bin/desktop` | Child surfaces, the clipboard, notifications, screenshots, snapping, the lock screen | F-5, D-1 to D-6, U-1 | G-core |
+| `wit/` | `kai:desk` clipboard and notify imports | D-1, D-2 | Lane C |
+| `agentabi/`, `shellcore/` | The `browser_*`, `media_*` and `clipboard_*` rows | B-10, D-1 | A-core |
+| `llmproto/` | Those rows in the pack (ADR 0010's budget) | B-10, D-1 | The model lane, with the real-model gates |
+| `uikit/`, `uipaint/` | Images drawn as themselves; right-to-left text | M-1, L-4 | G-core |
+| `deny.toml`, `NOTICES.txt`, `xtask/notices.json` | Question 2's MPL-2.0 exceptions; the Noto fonts | B-1, B-8 | Lane L reviews |
+| `Cargo.toml`, `Cargo.lock`, `docs/decisions.md` | New crates and decision rows | each | ADR 0000 §4.2: re-run cargo, append only |
+| `.github/workflows/` | New `web-wpt.yml` and `web-sites.yml`; cases added to `ci.yml`'s shards | B-2, B-15, B-18 | The manager reviews |
+
+## 8. Decided in this plan
+
+No ADR settles these. Each is small and can change in review.
+
+1. **P6 lands on main.** v0.1 fixes stay on `release/v0.1`, as in P5.
+2. **One media crate.** `kaimedia` decodes images, and later sound and video, for the browser and the apps alike, so one fix covers both.
+3. **The clipboard is the desktop's.** Only the person's paste reads it; renderers never hold it; Kai reads it only through a `Read` row whose answer is `Data` (D-1).
+4. **Real sites only on GitHub runners, never committed.** The site list (section 4.4) is loaded live by `web-sites.yml`. The run keeps each page's text and one screenshot as artifacts for 30 days; no page is ever committed to the repository, for copyright and privacy. No CI boot case reaches the internet.
+5. **Upstream test suites are fetched, not vendored.** WPT and test262 are fetched at a pinned commit in CI and never committed or shipped.
+6. **Pass-rate bars move only with a row.** A gate in section 4.2 changes only by a decisions row with the manager's OK.
+7. **Every parser of outside bytes is fuzzed** from its first PR (section 10).
+8. **New apps follow Kai Desk** (ADR 0005), and their windows have a full accessibility tree from their first PR.
+9. **No new engine JITs before v1.0** (ADR 0003 §1, ADR 0012). Code runs interpreted or compiled ahead of time in CI.
+
+## 9. Spikes
+
+None runs a model on the founder's PC, and none runs QEMU there.
+
+| Spike | ADR | Where | Length (est.) | Gates | When |
+|---|---|---|---|---|---|
+| **S14-1** `engine-in-wasm` | 0014 | GitHub runner | About 1 week | Where renderers run (Wasmtime or native); B-1 | At approval |
+| **S14-2** `wasmtime-nostd` | 0014 | Host and a KVM boot case on GitHub | About 2 weeks | F-1, F-2 | At approval |
+| **S14-3** `js-engines` | 0014 | GitHub runner | About 1 week | Boa or QuickJS-NG; B-11 | At approval |
+| **S14-4** `web-compare` | 0014 | GitHub runner, read-only | Days | B-15 and the site-list gates | At approval |
+| **P6-S1** `audio-virtio` | 0007 | A KVM boot case on GitHub with QEMU's virtio-sound to a null backend | Days | M-4's first driver | When MD starts |
+| **S06-1** to **S06-3** | 0006 | As ADR 0006 says | 2-5 weeks in all | Track V | When V starts |
+
+ADR 0014 gives S14-1 to S14-4's build, measure, pass and fail. **P6-S1** measures whether a `no_std` virtio-sound driver plays 60 s of 48 kHz stereo with no underrun under KVM; if it cannot, M-4 starts on emulated Intel HDA instead.
+
+## 10. Tests
+
+- **Host goldens** for `webcore` (pixels per fixture page), `kaimedia`, the PDF viewer and fonts per script.
+- **WPT** reftests and testharness tests, and **test262**, at pinned commits, on GitHub runners (`web-wpt.yml`); each run records its pass rates in its PR.
+- **The site list** against Firefox headless (`web-sites.yml`, section 8 item 4).
+- **Fuzz targets** in `fuzz/`, run by `.github/workflows/fuzz.yml` on demand, their bodies also run in host tests as in P5: `html`, `css`, `font`, `woff2`, `png`, `jpeg`, `gif`, `webp`, `http_response` (grown), `cookie`, `url`, `psl`, `pdf`, `zip`.
+- **Hostile tests** for `webnet`: a renderer asking for another site's cookies or a cross-site protected response is refused.
+- **Boot cases** under KVM and TCG against xtask's HTTPS mock: section 1's list, plus `wasmtime-hello`, `code-image`, `desk-child-surface`, `desk-open-with`, `desk-dnd`, `desk-lock`, `files-zip`.
+- **Real-model runs** only on GitHub, at B-10 and D-1: fluency at least 47/50, actbench with browser tasks, and S02-1's bait probes extended with page-injection probes (a page, a PDF and a download that each tell Kai to send something), at 0 false runs.
+- Each run records its runner and run id in its PR.
+
+## 11. Crates and licences
+
+ADR 0014's "Crates and licences" has the full table for the browser, each licence read from crates.io's published metadata on 2026-11-23, and from the repositories' licence files for C libraries, fonts, data and test suites. In short:
+
+- **No GPL or LGPL code is in anything this plan adopts.** `cargo deny` fails CI on any licence outside `deny.toml`'s allow list, so nothing deeper in the graph lands unseen.
+- **Needs your OK (question 2):** 15 MPL-2.0 crates from Servo and Mozilla: stylo, stylo_dom, stylo_traits, stylo_derive, stylo_static_prefs, stylo_atoms, stylo_config, selectors, cssparser, cssparser-macros, dtoa-short, to_shmem, to_shmem_derive, app_units, uluru; and the Public Suffix List's data (MPL-2.0) inside `psl` (whose own code is MIT/Apache-2.0). P5's question 3 left the suffix list out by default; this asks again because the browser needs it.
+- **Asked only if a spike needs it:** mozjs and StarlingMonkey (SpiderMonkey, MPL-2.0), if S14-3 finds both Boa and QuickJS-NG too slow.
+- **Free, no approval:** Blitz's crates, html5ever, Taffy, Parley, vello_cpu, Boa (Unlicense OR MIT), rquickjs and QuickJS-NG (MIT), wasmtime (Apache-2.0 WITH LLVM-exception), brotli, h2, tungstenite, png, gif, image-webp, zune-jpeg, wuff, resvg, rav1d, libvpx and libopus (BSD-3-Clause), hayro (Apache-2.0 OR MIT), zip (MIT). The Noto fonts are OFL-1.1, already approved for font data.
+- **Flagged, not adopted:** GStreamer (**LGPL-2.1**, Servo's media) and FFmpeg (**LGPL**, Ladybird's media and the guest's H.264, ADR 0006 question 7); EasyList (**GPL-3.0-or-later OR CC-BY-SA-3.0**, question 8); espeak-ng (**GPL-3.0**, a possible screen-reader voice, asked when A-4 starts); symphonia (MPL-2.0, an ask only if M-5 picks it). The Linux guest's GPL parts are ADR 0006 question 1's.
+
+## 12. Estimate, risks and out of scope
+
+### 12.1 Estimate
+
+All person-months (PM) are estimates for one engineer.
+
+| Part | PM (est.) | Source |
+|---|---|---|
+| F, foundations | 3-5 | ADR 0014 "Where the engine runs" (2-3) plus F-4 to F-6 |
+| B to B4 (v0.2) | 13-22 | ADR 0014 option B: 6-10 to B3, the rest of 18-30 to B5 |
+| B5 and B6 | 8-12 | The rest of option B's figure, and B6's media |
+| D | 3-5 | Section 6.2's sizes |
+| M | 6-10 | Section 6.3's sizes |
+| W | 8-14 | Section 6.5's sizes |
+| L | 4-8 | Section 6.6's sizes |
+| U before P8 | 2-4 | U-1 to U-3 |
+| A | 4-7 | Section 6.8's sizes |
+| V | 7-15 | ADR 0006, option C |
+| H | P7's plan | ADR 0007 |
+
+**v0.2's part** (F, B to B4, D-1 to D-3, M-1 to M-4): about 25-40 PM (est.). With four to five sessions in parallel and the founder's "good and slow over fast", that is about 8-12 months from approval (est.). The browser sets that date. Everyday-OS parity as a whole runs past v1.0; this plan is revised at each milestone.
+
+**Start with these two, in parallel, once the plan is approved:**
+1. **S14-1, S14-3 and S14-4, then B-1** (session 1). Host and GitHub only.
+2. **S14-2, then F-1** (session 2). One KVM boot case on GitHub.
+
+G-core takes D-1, the clipboard, as its next item.
+
+### 12.2 Risks
+
+| Risk | What we do |
+|---|---|
+| Blitz slows down or changes direction; it has had no stable release since 2025-10 | We pin its beta and may carry a fork (ADR 0014 item 2). Stylo and html5ever are Servo's and Firefox's and move on regardless. Servo is re-measured at B5 |
+| Renderers in Wasm are too slow | S14-1 decides before B-1; native renderers with a `std` port are the costed fallback |
+| Boa is too slow for real sites | S14-3: QuickJS-NG, then SpiderMonkey on question 2's second part |
+| Memory: 8 renderers at 256 MiB beside the model | The roadmap puts M10b (demand paging) before P6. Until it lands, the renderer limit is 4 (est.), and B1's gate measures memory |
+| Prompt injection from pages, PDFs and downloads | All of it is `Data` (ADR 0002 D6); `browser-pf` and the page-injection bait probes gate B2; forms, sends and downloads ask |
+| A renderer escape | Two walls (Wasm and the process); the renderer holds only a site-tagged route and a surface; fuzzing from the first PR; P8's security review |
+| Cookies leak between sites | Per-site jars on the suffix list (F-6); `webnet`'s hostile tests |
+| The long tail of web compatibility | WPT and the site list gate each milestone; track V's Firefox covers the heavy web meanwhile, if question 1 keeps it |
+| Upstream security fixes arrive late | A monthly sync and a 14-day target for security fixes (ADR 0014 item 11) |
+| GitHub Actions time | WPT and the site list run on changes to `webcore`, `webjs` and `webnet` and nightly, not on every PR |
+
+### 12.3 Out of scope, and where it goes
+
+- **Not before v1.0:** a JIT for JavaScript or Wasm; WebGL and WebGPU (they wait for H-7); browser extensions; sync of bookmarks and history across PCs; WebRTC; push notifications from sites.
+- **Never in a browser of ours:** Widevine and other DRM, so Netflix, Disney+ and their like work only where a browser that licenses DRM runs. Track V's Firefox could carry Widevine only through Google's licence, which is not planned.
+- **H.264 and AAC:** off until question 9 is asked again at B6.
+- **P7:** track H (ADR 0007). **P8:** accounts, disk encryption, the security review of `webview`, `webnet` and the code loader, fuzzing at scale.
+- **After v1.0:** others' apps in the store (track S).
