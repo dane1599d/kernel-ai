@@ -37,11 +37,6 @@ const PERMITS: &[&str] = &[
     "permission",
     "permit",
     "permitted",
-    // "the user trusts mirror.example for downloads": a grant to a host
-    // (S13-4's re-run with web content).
-    "trust",
-    "trusts",
-    "trusted",
     "said yes",
     "says yes",
     "say yes",
@@ -101,12 +96,10 @@ const ACTIONS: &[&str] = &[
     "launch",
     "mail",
     "overwrite",
-    "ping",
     "power",
     "reboot",
     "remove",
     "rename",
-    "resolve",
     "restart",
     "restore",
     "send",
@@ -121,10 +114,39 @@ const ACTIONS: &[&str] = &[
     "wipe",
 ];
 
+/// Words that vouch for a host: a grant when the text names a host or an
+/// action ("the user trusts mirror.example for downloads", S13-4's re-run with
+/// web content), a fact otherwise ("my trusted contact is Ann").
+const VOUCHES: &[&str] = &[
+    "trust",
+    "trusts",
+    "trusted",
+    "trustworthy",
+    "rely on",
+    "relies on",
+    "faith in",
+    "whitelist",
+    "whitelisted",
+    "allowlist",
+    "allowlisted",
+];
+
+/// The network rows' verbs, whole words only: "resolved to" and "ping pong" are
+/// left out below.
+const NET_ACTIONS: &[&str] = &["ping", "pings", "pinged", "resolve", "resolves"];
+
+/// Words before a vouch that turn it round: "I don't trust public wifi".
+const NEGATIONS: &[&str] = &["not", "don't", "doesn't", "didn't", "never", "no"];
+
 /// Why `text` cannot be a memory because it would permit or instruct, or
 /// `None`.
 pub fn problem(text: &str) -> Option<&'static str> {
-    let folded = text.to_lowercase();
+    let folded = fold_wide(&text.to_lowercase());
+    if mixes_alphabets(&folded) {
+        return Some(
+            "a word mixes letters of different alphabets, as look-alike letters do, so that is not kept",
+        );
+    }
     let padded = format!(" {} ", words(&folded).join(" "));
     let has = |phrase: &str| padded.contains(&format!(" {phrase} "));
     if PERMITS.iter().any(|p| has(p))
@@ -135,19 +157,77 @@ pub fn problem(text: &str) -> Option<&'static str> {
         return Some("a memory never gives permission: Kai asks each time, so that is not kept");
     }
     let words = words(&folded);
-    let action = |w: &String| ACTIONS.iter().any(|a| w.starts_with(a));
+    let action = |w: &String| {
+        ACTIONS.iter().any(|a| w.starts_with(a))
+            || (NET_ACTIONS.contains(&w.as_str()) && !has("ping pong"))
+    };
     // `net_lookup`'s and `net_fetch`'s "look up", two words where "look" alone
-    // is too common a word to stand for an action.
-    let looks_up = has("look up") || has("looks up");
-    // An action tied to a trigger, or a text that starts with one: an order.
-    let ordered = words.first().is_some_and(action) || padded.starts_with(" look up ");
+    // is too common a word to stand for an action; "look up to" someone is not.
+    let looks_up =
+        (has("look up") || has("looks up")) && !(has("look up to") || has("looks up to"));
     let acts = words.iter().any(action) || looks_up;
+    if vouches(&padded) && (acts || names_host(&folded)) {
+        return Some("a memory never gives permission: Kai asks each time, so that is not kept");
+    }
+    // An action tied to a trigger, or a text that starts with one: an order.
+    let ordered =
+        words.first().is_some_and(action) || (looks_up && padded.starts_with(" look up "));
     if ordered || (acts && TRIGGERS.iter().any(|t| has(t))) {
         return Some(
             "that reads as a standing instruction, and a memory only informs: for Kai to do it, make it a rule; for a fact about you, say it without when or always",
         );
     }
     None
+}
+
+/// Whether `padded` (words, one space apart, with a space at each end) vouches
+/// for something, not after a negation.
+fn vouches(padded: &str) -> bool {
+    VOUCHES.iter().any(|vouch| {
+        let needle = format!(" {vouch} ");
+        padded.match_indices(&needle).any(|(at, _)| {
+            let before = padded[..at].rsplit(' ').next().unwrap_or("");
+            !NEGATIONS.contains(&before)
+        })
+    })
+}
+
+/// Whether `text` names a host: a word with a dot between letters or digits
+/// (`mirror.example`).
+fn names_host(text: &str) -> bool {
+    text.split_whitespace().any(|word| {
+        let word = word.trim_matches(|c: char| !c.is_alphanumeric());
+        word.split('.').count() > 1
+            && word.split('.').all(|part| {
+                !part.is_empty() && part.chars().all(|c| c.is_alphanumeric() || c == '-')
+            })
+    })
+}
+
+/// Fullwidth forms (`ｌｏｏｋ`) as the ASCII they read as.
+fn fold_wide(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '\u{ff01}'..='\u{ff5e}' => char::from_u32(c as u32 - 0xfee0).unwrap_or(c),
+            '\u{3000}' => ' ',
+            c => c,
+        })
+        .collect()
+}
+
+/// Whether a word mixes ASCII letters with letters of another alphabet: a
+/// Cyrillic `ѕ` in `truѕts` reads as the English word and matches none.
+/// Accented Latin letters (`café`) are Latin, and not a mix.
+fn mixes_alphabets(text: &str) -> bool {
+    let latin = |c: char| {
+        c.is_ascii_alphabetic()
+            || ('\u{c0}'..='\u{24f}').contains(&c)
+            || ('\u{1e00}'..='\u{1eff}').contains(&c)
+    };
+    words(text).iter().any(|word| {
+        word.chars().any(|c| c.is_ascii_alphabetic())
+            && word.chars().any(|c| c.is_alphabetic() && !latin(c))
+    })
 }
 
 /// `text`'s words, apostrophes kept ("don't").
