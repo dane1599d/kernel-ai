@@ -41,6 +41,11 @@ const MAX_RESOLVED: usize = 32;
 /// Bits of an id below its generation: the slot.
 const SLOT_BITS: u32 = 8;
 const _: () = assert!(MAX_RECORDS == 1 << SLOT_BITS);
+/// The least a resolved address counts for the connect check, whatever
+/// its TTL: a TTL of 0 (dnsmasq's for local names) or shorter than a dial's
+/// wait would otherwise expire before the connect (audit K #18). The DNS
+/// cache keeps the server's TTL as it is.
+const MIN_CONNECT_TTL_S: u64 = 60;
 /// A record this young is never dropped: the step from [`create`] to the
 /// handle that names it, preempted at the worst moment, is far shorter.
 const FRESH_NS: u64 = 1_000_000_000;
@@ -217,8 +222,9 @@ pub fn resolved(object: u64, addresses: &[Ipv4Addr], ttl_s: u64) {
     let Some((at, generation)) = slot_of(object) else {
         return;
     };
-    let until = hpet::nanos().saturating_add(ttl_s.saturating_mul(1_000_000_000));
     let now = hpet::nanos();
+    let ttl_s = ttl_s.max(MIN_CONNECT_TTL_S);
+    let until = now.saturating_add(ttl_s.saturating_mul(1_000_000_000));
     with(|records| {
         let Some(Some(record)) = records.get_mut(at) else {
             return;

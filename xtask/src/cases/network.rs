@@ -75,6 +75,7 @@ pub(super) const CASES: &[TestCase] = &[
             "[netdest-p] resolve lan.kai.test refused: it leads only to private addresses",
             "[netdest-q] resolved mixed.kai.test to 10.0.2.97 (1 address(es))",
             "net-dest: private answers are refused; QEMU's test subnet is reached only with online=test",
+            "net-dest: an address resolved with TTL 0 can be connected to at once, on the record's port",
         ],
         ..case("net-dest", "test=net-dest")
     },
