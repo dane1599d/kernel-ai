@@ -16,6 +16,7 @@ use crate::{handle, hpet, ipc, log, process};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use kabi::Error;
 use kabi::handle::Kind;
 use kabi::part::{SECTOR, stub};
 
@@ -61,6 +62,8 @@ pub fn check() -> Result<(), &'static str> {
     .and_then(Result::ok)
     .ok_or("part: kai-data's last sector could not be put back")?;
     only_fs()?;
+    peer_caps()?;
+    policy_rule()?;
     log!("part: fs alone holds a Partition, for kai-data only, and its checks pass");
     bench()
 }
@@ -90,6 +93,71 @@ fn only_fs() -> Result<(), &'static str> {
     if holders != [SERVICE] {
         log!("part: Partition handles are held by {holders:?}");
         return Err("part: a process other than fs holds a Partition");
+    }
+    Ok(())
+}
+
+/// PART_PEER_CAPS answers a Partition's holder with a live process's plan
+/// caps, and nothing else: not a call on another kind of handle (what a
+/// process without a Partition has), not pid 0 or a process that is gone.
+fn peer_caps() -> Result<(), &'static str> {
+    use crate::process::syscall::fs::peer_caps;
+    let slot = *handle::holders(Kind::Partition)
+        .first()
+        .ok_or("part: no process holds a Partition")?;
+    let fs = process::identity(slot);
+    let (part, other) = handle::with(slot, |h| {
+        let of = |kind| {
+            h.table
+                .iter()
+                .find(|(_, e)| e.kind == kind)
+                .map(|(handle, _)| u64::from(handle.0))
+        };
+        (of(Kind::Partition), of(Kind::Endpoint))
+    })
+    .map_err(|_| "part: fs has no table")?;
+    let (part, other) = (
+        part.ok_or("part: fs has no Partition handle")?,
+        other.ok_or("part: fs has no Endpoint handle")?,
+    );
+    if peer_caps(slot, part, fs.pid) != Ok(fs.limits.caps) {
+        return Err("part: PART_PEER_CAPS did not give fs's own plan caps");
+    }
+    for (what, got, want) in [
+        (
+            "an Endpoint",
+            peer_caps(slot, other, fs.pid),
+            Error::BadHandle,
+        ),
+        ("pid 0", peer_caps(slot, part, 0), Error::NotFound),
+        (
+            "a pid not running",
+            peer_caps(slot, part, u64::MAX),
+            Error::NotFound,
+        ),
+    ] {
+        if got != Err(want) {
+            log!("part: PART_PEER_CAPS with {what} gave {got:?}, wanted {want:?}");
+            return Err("part: PART_PEER_CAPS answered what it must refuse");
+        }
+    }
+    Ok(())
+}
+
+/// The supervisor's POLICY rule, the one `PART_PEER_CAPS`'s answer leans on:
+/// only the line named `shell` running `shell` may hold POLICY, so no app, nor
+/// a renamed shell or a shell running another program, passes for the person.
+fn policy_rule() -> Result<(), &'static str> {
+    use crate::process::supervision::policy_allowed;
+    let policy = kabi::cap::POLICY;
+    let refused = [("kai", "shell"), ("shell", "notes"), ("fs", "fs")];
+    if refused
+        .iter()
+        .any(|(name, program)| policy_allowed(name, program, policy))
+        || !policy_allowed("shell", "shell", policy)
+        || !policy_allowed("fs", "fs", 0)
+    {
+        return Err("part: the supervisor's POLICY rule is not the shell's alone");
     }
     Ok(())
 }

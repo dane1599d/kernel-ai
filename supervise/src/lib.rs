@@ -856,6 +856,13 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
             "{name}: only the shell may use {sender}, which sends"
         ));
     }
+    // POLICY is the person's: the scheduler's controls need it, and `fs` gives
+    // its holder the person's share of the space reserve (PART_PEER_CAPS). Only
+    // the shell's line holds it, named `shell` and running `shell`, so no
+    // other line, a package's app included, can pass for the person.
+    if limits.caps & cap::POLICY != 0 && !(name == "shell" && program == "shell") {
+        return Err(format!("{name}: only the shell may hold policy"));
+    }
     let spec = ServiceSpec {
         name: name.to_string(),
         program: program.to_string(),

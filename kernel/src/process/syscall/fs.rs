@@ -5,7 +5,8 @@
 //!   outside it, the ESP and the slots included, can never be named.
 //! - ENDPOINT_MINT lets a server make a `Dir` or `File` handle on its own
 //!   endpoint, with a badge it chooses, to hand to a client; a call on it reaches
-//!   that server like a route's.
+//!   that server like a route's. ENDPOINT_BADGE reads such a handle's badge and
+//!   rights back, for its own endpoint only: one a client moved to it.
 
 use crate::block::{self, Device};
 use crate::handle::{self, grant::Kernel};
@@ -23,8 +24,10 @@ const CALLS: &[u64] = &[
     call::PART_WRITE,
     call::PART_FLUSH,
     call::ENDPOINT_MINT,
+    call::ENDPOINT_BADGE,
     call::PART_PEER_ALIVE,
     call::PART_PEER_NAME,
+    call::PART_PEER_CAPS,
     call::MODEL_FILL,
 ];
 
@@ -37,7 +40,9 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
         call::PART_FLUSH => flush(slot, a[0]),
         call::PART_PEER_ALIVE => peer_alive(slot, a[0], a[1]),
         call::PART_PEER_NAME => peer_name(slot, a[0], a[1], a[2], a[3]),
+        call::PART_PEER_CAPS => peer_caps(slot, a[0], a[1]),
         call::MODEL_FILL => model_fill(slot, a[0], a[1], a[2], a[3]),
+        call::ENDPOINT_BADGE => endpoint_badge(slot, a[0], a[1]),
         _ => mint(slot, a[0], a[1], a[2], a[3]),
     })
 }
@@ -207,6 +212,14 @@ fn peer_name(slot: usize, raw: u64, pid: u64, ptr: u64, cap: u64) -> Result<u64,
     Ok(len as u64)
 }
 
+/// PART_PEER_CAPS: live process `pid`'s capability bits from the table, under
+/// its lock, for `fs` alone (a `Partition` handle). Pid 0, the kernel, has
+/// none: NotFound, as for a process that is not running.
+pub(crate) fn peer_caps(slot: usize, raw: u64, pid: u64) -> Result<u64, Error> {
+    partition(slot, raw, Rights::empty())?;
+    crate::process::caps_of(pid).ok_or(Error::NotFound)
+}
+
 /// MODEL_FILL: the model store's model, from `kai-data` block runs the caller
 /// names, into the runs reserved at boot ([`crate::model::fill`]).
 fn model_fill(slot: usize, raw: u64, ptr: u64, count: u64, offset: u64) -> Result<u64, Error> {
@@ -293,4 +306,36 @@ pub(crate) fn mint(
     entry.badge = badge;
     let handle = handle::with(slot, |h| h.table.insert(entry))?.map_err(Error::from)?;
     Ok(u64::from(handle.0))
+}
+
+/// ENDPOINT_BADGE: [`badge_of`] written to the caller's `out`.
+fn endpoint_badge(slot: usize, raw: u64, out: u64) -> Result<u64, Error> {
+    let (badge, rights) = badge_of(slot, raw)?;
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&badge.to_le_bytes());
+    bytes[8..].copy_from_slice(&u64::from(rights.bits()).to_le_bytes());
+    copy_to_user(slot, out, &bytes)?;
+    Ok(0)
+}
+
+/// The badge and rights of `raw`, a `Dir` or `File` handle in the caller's
+/// table that names the caller's own endpoint (a route by its own name, as
+/// [`mint`] makes them); Permission for any other; BadHandle for none, or a
+/// raw value past u32; Revoked for one whose grant was revoked. It takes no
+/// route name: a caller without one is simply refused.
+pub(crate) fn badge_of(slot: usize, raw: u64) -> Result<(u64, Rights), Error> {
+    let handle = Handle(u32::try_from(raw).map_err(|_| Error::BadHandle)?);
+    // `live`, as CALL_H takes a Dir or File: a handle whose grant was revoked
+    // answers Revoked, though it is not closed yet.
+    let entry = handle::with(slot, |h| h.table.live(handle, &Kernel))?.map_err(Error::from)?;
+    if !matches!(entry.kind, Kind::Dir | Kind::File) {
+        return Err(Error::Permission);
+    }
+    let me = crate::process::identity(slot);
+    let own =
+        handle::route_name(entry.object).is_some_and(|name| name.as_str() == me.name.as_str());
+    match own {
+        true => Ok((entry.badge, entry.rights)),
+        false => Err(Error::Permission),
+    }
 }

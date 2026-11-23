@@ -1462,6 +1462,12 @@ pub fn part_peer_name(handle: Handle, pid: u64, out: &mut [u8]) -> Result<usize,
     .map(|n| n as usize)
 }
 
+/// Live process `pid`'s capability bits (PART_PEER_CAPS), for `fs`, which holds
+/// the `Partition` handle `handle`.
+pub fn part_peer_caps(handle: Handle, pid: u64) -> Result<u64, Error> {
+    call(call::PART_PEER_CAPS, [u64::from(handle.0), pid, 0, 0, 0, 0])
+}
+
 /// Hands the kernel the model store's model, `extents` (first block, blocks) of
 /// the partition from byte `offset` of the file (P2 task 10); the bytes filled.
 pub fn model_fill(partition: Handle, extents: &[(u64, u64)], offset: u64) -> Result<u64, Error> {
@@ -1498,4 +1504,16 @@ pub fn endpoint_mint(
         ],
     )
     .map(|raw| Handle(raw as u32))
+}
+
+/// The badge and rights of a `Dir` or `File` handle on this process's own
+/// endpoint (ENDPOINT_BADGE): one a client moved to it. Permission for any
+/// other handle.
+pub fn endpoint_badge(handle: Handle) -> Result<(u64, Rights), Error> {
+    let mut out = [0u64; 2];
+    call(
+        call::ENDPOINT_BADGE,
+        [u64::from(handle.0), out.as_mut_ptr() as u64, 0, 0, 0, 0],
+    )?;
+    Ok((out[0], Rights::from_bits_truncate(out[1] as u32)))
 }
