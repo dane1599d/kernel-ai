@@ -509,6 +509,15 @@ impl Host for FakeHost {
         Ok(())
     }
 
+    fn memory_read(&self) -> Option<String> {
+        self.memory_file.borrow().clone()
+    }
+
+    fn memory_write(&self, text: &str) -> Result<(), String> {
+        *self.memory_file.borrow_mut() = Some(String::from(text));
+        Ok(())
+    }
+
     fn keep_running(&self, app: &str, on: bool) -> Result<(), String> {
         if self.keep_fails.get() > 0 {
             self.keep_fails.set(self.keep_fails.get() - 1);

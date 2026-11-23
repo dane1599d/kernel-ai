@@ -71,14 +71,20 @@ pub const STATE_LEAD: &str = "the user said earlier (facts only):";
 /// budget, not raised).
 pub fn state(memories: &[&Memory], request: &str, max_bytes: usize) -> String {
     let mut out = String::new();
-    for memory in relevant(memories, request).into_iter().take(STATE_SHOWN) {
+    let mut shown = 0;
+    for memory in relevant(memories, request) {
+        if shown == STATE_SHOWN {
+            break;
+        }
         let add = match out.is_empty() {
             true => STATE_LEAD.len() + 1 + memory.text.len(),
             false => 2 + memory.text.len(),
         };
+        // One that does not fit leaves room for a shorter one after it.
         if out.len() + add > max_bytes {
-            break;
+            continue;
         }
+        shown += 1;
         match out.is_empty() {
             true => {
                 out.push_str(STATE_LEAD);

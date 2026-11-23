@@ -99,6 +99,17 @@ pub const INDEX: &[(&str, &[&str])] = &[
             "goal_cancel",
         ],
     ),
+    (
+        "memory",
+        &[
+            "memory_remember",
+            "memory_list",
+            "memory_search",
+            "memory_edit",
+            "memory_forget",
+            "memory_forget_all",
+        ],
+    ),
 ];
 
 /// Each index group's gloss, at most [`GLOSS_TOKENS`] (ADR 0010 §6's
@@ -116,6 +127,7 @@ pub const GLOSS: &[(&str, &str)] = &[
     ("apps", "build or install a new app"),
     ("net", "web, send"),
     ("goal", "long tasks"),
+    ("memory", "facts Kai keeps"),
 ];
 /// The longest a gloss may be, in estimated tokens.
 pub const GLOSS_TOKENS: usize = 12;

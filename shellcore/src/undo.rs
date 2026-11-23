@@ -31,14 +31,22 @@ pub enum Inverse {
     /// Make package generation `to` current again, but only while `from` (the one
     /// the switch made) still is. The shell's package store does it
     /// (`Shell::revert_entry`), not the host.
-    Generation { from: u64, to: u64 },
+    Generation {
+        from: u64,
+        to: u64,
+    },
     /// Make generation `to` of `pkg`'s store current again while `from`, the
     /// one a `cc build` install made, still is: `pkg`'s `switch-back`, which
     /// goes back to the parent only, so an install is not redone (P4 task 13).
-    Local { from: u64, to: u64 },
+    Local {
+        from: u64,
+        to: u64,
+    },
     /// Restore what `fs` transaction `txn` replaced (P2 task 11); the `fs`
     /// server refuses one over a later change.
-    Fs { txn: u64 },
+    Fs {
+        txn: u64,
+    },
     /// Put back what standing instruction `rule`'s firing (`action` on `app`)
     /// did, through its owner; with `undo` false, do it again (P3 task 11).
     Fired {
@@ -49,21 +57,47 @@ pub enum Inverse {
     },
     /// Put back every process's class and quota from before a profile switch,
     /// kept by the shell under `key` (P3 task 12; `Shell::revert_entry`).
-    Profile { key: u64 },
+    Profile {
+        key: u64,
+    },
     /// Remove standing instruction `id` again (`made`: `undo` of `rules_add`),
     /// or put a removed one back (`undo` of `rules_remove`). The shell's store
     /// does it (`Shell::revert_entry`), not the host.
-    Instruction { id: u64, made: bool },
+    Instruction {
+        id: u64,
+        made: bool,
+    },
     /// Keep app `app` running (`on`) or let it nap again, as it was before a
     /// Settings toggle. The shell's list does it (`Shell::revert_keep`).
-    Keep { app: Name, on: bool },
+    Keep {
+        app: Name,
+        on: bool,
+    },
     /// Pause goal `id` again (`paused`) or resume it, as it was before a
     /// `goal_resume` or `goal_pause` (G2). The shell queues it for `goals`
     /// (`Shell::revert_goal`).
-    Goal { id: u64, paused: bool },
+    Goal {
+        id: u64,
+        paused: bool,
+    },
+    /// Bring forgotten memory `id` back (within 10 minutes), forget it again,
+    /// or set its text back to the change's `before` (M2). The shell's store
+    /// does it (`Shell::revert_memory`).
+    MemoryRestore {
+        id: u64,
+    },
+    MemoryForget {
+        id: u64,
+    },
+    MemoryText {
+        id: u64,
+    },
     /// Put app `app`'s state back from before its call kept as `id` (ADR 0003
     /// §4's checkpoint undo, `kai-undo 1`): the app runs its own inverse.
-    App { app: Name, id: u64 },
+    App {
+        app: Name,
+        id: u64,
+    },
     /// Set appearance `setting` back to `before`, while it is still `after`
     /// (P4 task 8's `appearance_set`).
     Appearance {
@@ -73,12 +107,18 @@ pub enum Inverse {
     },
     /// Put keyboard focus back on `to` (`w2`, `panel` or `none`); its redo
     /// focuses `from` again (P3 task 10's `ui_focus`).
-    Refocus { to: Name, from: Name },
+    Refocus {
+        to: Name,
+        from: Name,
+    },
     /// Open the app whose window `window_close` closed.
     Reopen(Name),
     /// Close `window`, which `ui_open` opened for `app`. It asks first, since
     /// the window may hold work by now.
-    Reclose { window: Name, app: Name },
+    Reclose {
+        window: Name,
+        app: Name,
+    },
     /// Use model `back` from the next restart again, while the next restart's
     /// model is still `from` (P4 task 10's `model_use`); none when no model
     /// was in use, which cannot be gone back to. The shell asks `updated`
@@ -97,12 +137,17 @@ pub enum Inverse {
     /// Take network grant `id` back (`held`: the undo of the Allow that made
     /// it), or put a revoked one back (the undo of a Settings revoke). The
     /// shell's store does it (`Shell::revert_net_grant`), not the host.
-    NetGrant { id: u32, held: bool },
+    NetGrant {
+        id: u32,
+        held: bool,
+    },
     /// Cancel the send log entry `entry` holds in the outbox, while it waits
     /// (`crate::outbox`). Never written to the log (it says `none` there), so
     /// a send read back from disk has no undo and never goes; its redo is
     /// none, since a send always asks again.
-    Unsend { entry: u64 },
+    Unsend {
+        entry: u64,
+    },
     /// An inverse this shell cannot read, as `/system/log` holds it: one a
     /// newer shell wrote, read back after a slot rollback. It has no undo
     /// here, and is written back word for word, so the newer shell finds it
@@ -223,6 +268,9 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Keep { app, .. } => format!("{} keep-running as before", app.as_str()),
         Inverse::Goal { id, paused: true } => format!("goal {id} paused again"),
         Inverse::Goal { id, paused: false } => format!("goal {id} going again"),
+        Inverse::MemoryRestore { id } => format!("memory {id} back"),
+        Inverse::MemoryForget { id } => format!("memory {id} forgotten"),
+        Inverse::MemoryText { id } => format!("memory {id} as it was"),
         Inverse::App { app, .. } => format!("{} as it was", app.as_str()),
         Inverse::Appearance {
             setting, before, ..
@@ -367,6 +415,9 @@ fn revert_one(
         | Inverse::Profile { .. }
         | Inverse::Keep { .. }
         | Inverse::Goal { .. }
+        | Inverse::MemoryRestore { .. }
+        | Inverse::MemoryForget { .. }
+        | Inverse::MemoryText { .. }
         | Inverse::NetGrant { .. }
         | Inverse::Unsend { .. }
         | Inverse::Model { .. } => Err(Refused::Failed(String::from(
@@ -423,6 +474,9 @@ pub fn reverse(inverse: Inverse) -> Inverse {
             id,
             paused: !paused,
         },
+        Inverse::MemoryRestore { id } => Inverse::MemoryForget { id },
+        Inverse::MemoryForget { id } => Inverse::MemoryRestore { id },
+        Inverse::MemoryText { id } => Inverse::MemoryText { id },
         Inverse::NetGrant { id, held } => Inverse::NetGrant { id, held: !held },
         // Never used: the undo of a cancel is logged with no inverse
         // (`Shell::revert_entry`), so it never sends.
@@ -493,6 +547,9 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
         Some(Inverse::Profile { key }) => format!("profile:{key}"),
         Some(Inverse::Keep { app, on }) => format!("keep:{}:{}", app.as_str(), u8::from(on)),
         Some(Inverse::Goal { id, paused }) => format!("goal:{id}:{}", u8::from(paused)),
+        Some(Inverse::MemoryRestore { id }) => format!("memrestore:{id}"),
+        Some(Inverse::MemoryForget { id }) => format!("memforget:{id}"),
+        Some(Inverse::MemoryText { id }) => format!("memtext:{id}"),
         Some(Inverse::App { app, id }) => format!("app:{}:{id}", app.as_str()),
         Some(Inverse::Appearance {
             setting,
@@ -566,6 +623,15 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
         "goal" => Inverse::Goal {
             id: number(parts.next())?,
             paused: flag(parts.next())?,
+        },
+        "memrestore" => Inverse::MemoryRestore {
+            id: number(parts.next())?,
+        },
+        "memforget" => Inverse::MemoryForget {
+            id: number(parts.next())?,
+        },
+        "memtext" => Inverse::MemoryText {
+            id: number(parts.next())?,
         },
         "app" => Inverse::App {
             app: Name::new(parts.next()?)?,
