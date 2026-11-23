@@ -69,6 +69,7 @@ type RhaiResult<T> = Result<T, Box<EvalAltResult>>;
 
 mod apps;
 mod grants;
+mod known;
 mod look;
 mod net;
 mod windows;
@@ -823,13 +824,22 @@ pub(crate) fn check_against(
     let plan = Rc::new(analyse::analyse(&ast, rows));
     let (reads, changes) = split(&plan, rows);
     let granted = plan.names();
-    let trial = strict(&line, config, &granted, &Tx::new(&stub, &plan));
+    let mut trial = strict(&line, config, &granted, &Tx::new(&stub, &plan));
+    let missed = known::watch(&mut trial);
+    if let Some(error) = known::unknown_in_try(&ast, &trial) {
+        return Err(refuse(format!("the script failed a trial run: {error}")));
+    }
     line.begin(stub.as_ref(), config);
     let note = match engine::eval(&trial, &mut Scope::new(), &ast, config.exec) {
-        Ok(_) => None,
         Err(_) if line.stopped.get() == Some(Stop::Interrupted) => {
             return Err(Refusal::Interrupted);
         }
+        // A call no function takes, though the script's own `catch` caught it.
+        _ if missed.borrow().is_some() => {
+            let error = missed.take().unwrap_or_default();
+            return Err(refuse(format!("the script failed a trial run: {error}")));
+        }
+        Ok(_) => None,
         Err(error) => match stand_in_note(&error) {
             Some(note) => Some(note),
             None => {
