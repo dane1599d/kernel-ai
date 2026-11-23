@@ -6,7 +6,7 @@ use super::*;
 use crate::agentstep::{AGENTS_ONLY_STEP, STEP_NO_HANDLES};
 
 /// `notes-agent`, which may call `cpus` and `set_policy` and nothing else.
-fn manifest() -> kaiagent::Manifest {
+pub(super) fn manifest() -> kaiagent::Manifest {
     kaiagent::Manifest::parse(
         "kai-app 1\nid notes-agent\nabi 1.0\nagent 1\nclass background\n\
          model tokens/day=50000 kv=1024 pool=64m\nactions cpus set_policy\n\
@@ -16,18 +16,18 @@ fn manifest() -> kaiagent::Manifest {
 }
 
 /// A shell with `notes-agent` installed, and its route's badge.
-fn with_agent() -> (Rc<FakeHost>, Shell, u64) {
+pub(super) fn with_agent() -> (Rc<FakeHost>, Shell, u64) {
     let host = FakeHost::new();
     let mut shell = shell(&host);
     let id = shell.roster_mut().install(manifest()).unwrap();
     (host, shell, u64::from(id.badge()))
 }
 
-const CPUS: &str = r#"{"name":"cpus","arguments":{}}"#;
-const RR: &str = r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#;
-const STOP: &str = r#"{"name":"process_stop","arguments":{"name":"build-3"}}"#;
+pub(super) const CPUS: &str = r#"{"name":"cpus","arguments":{}}"#;
+pub(super) const RR: &str = r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#;
+pub(super) const STOP: &str = r#"{"name":"process_stop","arguments":{"name":"build-3"}}"#;
 
-fn step(shell: &mut Shell, badge: u64, call: &str) -> String {
+pub(super) fn step(shell: &mut Shell, badge: u64, call: &str) -> String {
     shell
         .from_route(badge, 0, &format!("agent-step {call}"))
         .expect("an agent's route")
