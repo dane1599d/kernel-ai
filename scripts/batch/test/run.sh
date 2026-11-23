@@ -125,6 +125,35 @@ printf 'phase=pushed\nname=\nbase=x\nc=y\nbpr=\nprs=1\nheads_s=x\nbrs_s=feat/a\n
 check "no batch branch: stopped"              'has "names no batch branch; STOPPING" && [ ! -f "$T/state/current-batch" ]'
 check "and no run was listed or cancelled"    '! grep -q "run " "$T/gh.log"'
 
+echo "== ci.yml: every job after another guards it explicitly"
+# A job's implicit success() covers its needs' needs too (actions/runner#491):
+# with `noboot` skipped on every run but a no-boot batch, a boot job without an
+# explicit guard would be skipped, and the batcher would read every batch as
+# red. So every job with `needs:` says `!cancelled()`, and checks each need it
+# relies on by `needs.<job>.result == 'success'` (all but `noboot`, which
+# `qemu` reads by its output and runs past when it is skipped).
+CI="$B/../../.github/workflows/ci.yml"
+guards=$(awk '
+  /^  [a-z][a-z0-9_-]*:$/ { if (job != "") print job "|" needs "|" cond; job = substr($1, 1, length($1) - 1); needs = ""; cond = ""; inif = 0; next }
+  /^[a-z]/ { if (job != "") print job "|" needs "|" cond; job = ""; next }
+  job == "" { next }
+  /^    needs: / { needs = $0; sub(/^    needs: */, "", needs); gsub(/[][ ]/, "", needs); inif = 0; next }
+  /^    if: / { cond = $0; inif = ($0 ~ /: >-$/); next }
+  /^    [a-z]/ { inif = 0; next }
+  inif && /^      / { cond = cond " " $0; next }
+  END { if (job != "") print job "|" needs "|" cond }' "$CI")
+bad_guard=""
+while IFS='|' read -r job needs cond; do
+  [ -n "$needs" ] || continue
+  case "$cond" in *'!cancelled()'*) ;; *) bad_guard="$bad_guard $job(!cancelled)";; esac
+  for n in $(echo "$needs" | tr ',' ' '); do
+    [ "$n" = noboot ] && continue
+    case "$cond" in *"needs.$n.result == 'success'"*) ;; *) bad_guard="$bad_guard $job(needs.$n)";; esac
+  done
+done <<< "$guards"
+check "jobs with needs are listed"            'echo "$guards" | grep -q "^boot|qemu|" && echo "$guards" | grep -q "^observe-compare|observe|"'
+check "each guards its needs explicitly"      '[ -z "$bad_guard" ] || { echo "  missing:$bad_guard"; false; }'
+
 echo "== noboot.sh: every arm of the rule"
 # A repo of its own: each case is one commit on a branch from `base`, judged
 # by noboot.sh as CI judges a batch (exit 0 no-boot, 1 needs boot, 2 unreadable).
@@ -140,6 +169,13 @@ printf 'const F: &[u8] = include_bytes!("../../crate/tests/fixture.bin");\n' > "
 printf '#[path = "../../testkit/used.rs"]\nmod used;\n' > "$RT/kernel/src/k.rs"
 # A test reaching another test file: not image code.
 mkdir -p "$RT/crate/tests"; printf '#[path = "b.rs"]\nmod b;\n' > "$RT/crate/tests/a.rs"
+# include! itself; a #[path]ed mod.rs, whose module tree comes with it; a
+# testkit file image code reaches that reads a test fixture in turn.
+printf 'include!("../../docs/gen.md");\n' > "$RT/kernel/src/i.rs"
+printf '#[path = "../../testkit/tree/mod.rs"]\nmod tree;\n' > "$RT/kernel/src/m.rs"
+mkdir -p "$RT/testkit/tree"; printf 'mod leaf;\n' > "$RT/testkit/tree/mod.rs"; echo x > "$RT/testkit/tree/leaf.rs"
+printf '#[path = "../../testkit/hop.rs"]\nmod hop;\n' > "$RT/kernel/src/h.rs"
+printf 'const X: &str = include_str!("../crate/tests/data.txt");\n' > "$RT/testkit/hop.rs"
 git -C "$RT" add -A && git -C "$RT" commit -qm base && git -C "$RT" branch -q base
 rule() {  # $1 expected exit, $2 description, then paths to write
   local want=$1 what=$2 got; shift 2
@@ -156,6 +192,9 @@ rule 1 "a doc read through concat!(env!(..))" docs/cc.md
 rule 1 "a tests/ fixture image code includes" crate/tests/fixture.bin
 rule 1 "a testkit/ file image code #[path]s"  testkit/used.rs
 rule 0 "a tests/ file only a test reaches"    crate/tests/b.rs
+rule 1 "a doc image code include!s"           docs/gen.md
+rule 1 "a file in a #[path]ed mod.rs's tree"  testkit/tree/leaf.rs
+rule 1 "a fixture a testkit helper reads"     crate/tests/data.txt
 rule 1 "a .md under a component's src/"       apps/x/src/notes.md
 rule 0 "a crate's tests/ beside Cargo.toml"   crate/tests/t.rs
 rule 1 "a tests/ with no Cargo.toml beside"   loose/tests/t.rs
@@ -180,6 +219,11 @@ git -C "$RT" checkout -q -b child && echo z > "$RT/docs/child.md" && git -C "$RT
 check "a docs PR stacked on a kernel PR (exit 1)" '[ "$got" = 1 ]'
 (cd "$RT" && bash "$B/noboot.sh" base no-such-rev > /dev/null 2>&1); got=$?
 check "unreadable revisions (exit 2)"          '[ "$got" = 2 ]'
+# A git whose grep fails: the reference check must answer "read" (fail closed).
+printf '#!/bin/sh\n[ "$1" = grep ] && exit 2\nexec git "$@"\n' > "$T/failgit"; chmod +x "$T/failgit"
+git -C "$RT" checkout -q -B case base && echo y >> "$RT/docs/plan.md" && git -C "$RT" add -A && git -C "$RT" commit -qm case
+(cd "$RT" && NOBOOT_GIT="$T/failgit" bash "$B/noboot.sh" base case > /dev/null); got=$?
+check "a grep error fails closed (exit 1)"     '[ "$got" = 1 ]'
 
 echo "== another workflow still running, or unlisted, is not green"
 setup
@@ -247,6 +291,13 @@ echo "== batch-auto.sh: a failed no-boot batch is tried once as a full batch"
 nb_setup 8
 CI_RESULT=failure auto_until "failed alone"
 check "a lone PR gets its full batch first"   'grep -q "no-boot batch of 8 failed; trying it once as a full batch" "$L" && grep -q "#8 failed alone" "$L"'
+
+echo "== batch-auto.sh: a resumed no-boot batch that fails is tried once as a full batch"
+nb_setup 8
+touch "$T/kill-on-ready"; ff --noboot 8
+sed -i 's/^phase=.*/phase=pushed/' "$T/state/current-batch"
+CI_RESULT=failure auto_until "failed alone"
+check "the resume's failure gets its full batch" 'grep -q "resuming the unfinished batch: 8" "$L" && grep -q "no-boot batch of 8 failed; trying it once as a full batch" "$L" && grep -q "#8 failed alone" "$L"'
 
 echo "== batch-ff.sh: a no-boot batch whose combined commit needs boot goes full"
 setup

@@ -85,6 +85,11 @@ batch() {  # PR numbers, or --resume, or --noboot and PR numbers; a failed batch
   # local: the halves below recurse, and shared `out`/`h` mis-split the batch
   local out h p files fails br noboot_run=""
   [ "$1" = --noboot ] && noboot_run=1
+  # A resumed batch is a no-boot one when its branch says so (read before
+  # batch-ff.sh clears the state), so its failure gets the full retry too.
+  if [ "$1" = --resume ] && (. "$S/current-batch" 2>/dev/null; case "$name" in batch/noboot-*) exit 0;; *) exit 1;; esac); then
+    noboot_run=1
+  fi
   out="$S/batch-auto-$(date +%m%d-%H%M%S).out"
   bash "$KAI_SCRIPTS/batch-ff.sh" "$@" > "$out" 2>&1
   for p in $(grep -oE "^  - #[0-9]+ conflicts" "$out" | grep -oE "[0-9]+"); do
