@@ -18,8 +18,9 @@
 //! fails the case. Each budget is for a runner of baseline speed, so the case
 //! judges a figure against its budget times the runner's measured slowness
 //! (below), never less than the budget ([`kabi::perf::misses_scaled`]);
-//! `desktop`'s own `OVER` lines use the bare budgets. Under TCG the figures
-//! are recorded and not judged, with fewer frames.
+//! `desktop`'s own `OVER` lines use the bare budgets. Before a second run the
+//! reference is timed again and both runs are judged by the larger median.
+//! Under TCG the figures are recorded and not judged, with fewer frames.
 //!
 //! First `desktop` times `kabi::perf`'s fixed reference work. Under KVM a
 //! median over 3.5 times its recorded baseline is a runner too slow for any
@@ -149,15 +150,35 @@ fn stop_hogs(hogs: &[u64]) -> Result<(), &'static str> {
     Err("desk-perf: the killed hogs were not reaped")
 }
 
+/// The scale `reference` gives the budgets, as `1.8`.
+fn scale(reference: u64) -> String {
+    kabi::perf::times_baseline(
+        reference.clamp(kabi::perf::REFERENCE_BASELINE_NS, kabi::perf::SCALE_CAP_NS),
+    )
+}
+
 /// The figures over their budget scaled for the runner (`reference`, the
-/// reference median), each `desktop` miss within it logged as such.
+/// reference median), each `desktop` miss within it logged as such. Each
+/// figure is also logged with the ratio and itself over the ratio, so main's
+/// runs show how well the reference predicts it.
 fn judged<'a>(what: &str, run: &str, reply: &'a str, reference: u64) -> Vec<&'a str> {
+    use kabi::perf::{hundredths_text, per_baseline, ratio_hundredths};
+    for figure in kabi::perf::figures(reply) {
+        log!(
+            "desk-perf: ratio: {what}, {run}: {}: {} {} ms at {}x, {} ms per baseline",
+            figure.name,
+            figure.label,
+            hundredths_text(figure.value),
+            hundredths_text(ratio_hundredths(reference)),
+            hundredths_text(per_baseline(figure.value, reference))
+        );
+    }
     let over = kabi::perf::misses_scaled(reply, reference);
     for miss in kabi::perf::misses(reply) {
         if !over.contains(&miss) {
             log!(
                 "desk-perf: {what}, {run}: within budget scaled {}x for the runner: {miss}",
-                kabi::perf::times_baseline(reference.max(kabi::perf::REFERENCE_BASELINE_NS))
+                scale(reference)
             );
         }
     }
@@ -169,7 +190,8 @@ fn judged<'a>(what: &str, run: &str, reply: &'a str, reference: u64) -> Vec<&'a 
 
 /// One scene's figures, best of two when `gated`: a run with a miss (against
 /// the scaled budgets) is run once more, and the figures over budget in both
-/// are returned.
+/// are returned. Before the second run the reference work is timed again, and
+/// both runs are judged by the larger median.
 fn scene(
     gated: bool,
     reference: u64,
@@ -186,9 +208,22 @@ fn scene(
         return Ok(Vec::new());
     }
     log!("desk-perf: {what}: measured once more, best of two");
+    let remeasured = reference_ns()?;
+    let judging = kabi::perf::judging_reference(reference, remeasured);
+    log!(
+        "desk-perf: {what}: the reference work again: {remeasured} ns; both runs judged at {}x",
+        scale(judging)
+    );
+    let over = match judging == reference {
+        true => over,
+        false => judged(what, "first run, judged again", &first, judging),
+    };
+    if over.is_empty() {
+        return Ok(Vec::new());
+    }
     let second = run()?;
     let second = String::from_utf8_lossy(&second);
-    let again = judged(what, "second run", &second, reference);
+    let again = judged(what, "second run", &second, judging);
     Ok(kabi::perf::still_over(&over, &again)
         .into_iter()
         .map(String::from)
@@ -207,13 +242,22 @@ fn keys() -> Result<Vec<u8>, &'static str> {
 }
 
 /// (f): the drag again, under load. The hogs are reaped before it returns,
-/// so a second run can start `hog-1..` afresh.
-fn loaded_drag() -> Result<Vec<u8>, &'static str> {
-    let hogs = start_hogs()?;
-    threads::sleep_ms(500);
-    let loaded = perf("perf drag");
-    stop_hogs(&hogs)?;
-    loaded
+/// so a second run can start `hog-1..` afresh; a reap that runs out of time
+/// fails the case only when it is `gated`, since only then is there a second
+/// run.
+fn loaded_drag(gated: bool) -> impl FnMut() -> Result<Vec<u8>, &'static str> {
+    move || {
+        let hogs = start_hogs()?;
+        threads::sleep_ms(500);
+        let loaded = perf("perf drag");
+        if let Err(error) = stop_hogs(&hogs) {
+            if gated {
+                return Err(error);
+            }
+            log!("desk-perf: (f): not gated, so going on");
+        }
+        loaded
+    }
 }
 
 /// (g): full composites with Start and the pane open; Start opens on the
@@ -229,11 +273,16 @@ fn open_scene(frames: usize) -> impl FnMut() -> Result<Vec<u8>, &'static str> {
     }
 }
 
+/// The reference work's median, timed by `desktop` now.
+fn reference_ns() -> Result<u64, &'static str> {
+    let reply = perf("perf reference")?;
+    kabi::perf::reference_ns(&String::from_utf8_lossy(&reply))
+        .ok_or("desk-perf: desktop's reference line did not parse")
+}
+
 /// The reference work's median, and whether it is a runner too slow to judge.
 fn too_slow() -> Result<(u64, bool), &'static str> {
-    let reply = perf("perf reference")?;
-    let p50 = kabi::perf::reference_ns(&String::from_utf8_lossy(&reply))
-        .ok_or("desk-perf: desktop's reference line did not parse")?;
+    let p50 = reference_ns()?;
     let slow = kabi::perf::too_slow(p50);
     log!(
         "desk-perf: the reference work's median is {p50} ns, baseline {} ns: {}",
@@ -257,7 +306,7 @@ pub fn check() -> Result<(), &'static str> {
     if gated {
         log!(
             "desk-perf: budgets scaled {}x for the runner (the reference's median over its baseline, at least 1)",
-            kabi::perf::times_baseline(reference.max(kabi::perf::REFERENCE_BASELINE_NS))
+            scale(reference)
         );
     }
     let frames = if kvm { KVM_FRAMES } else { TCG_FRAMES };
@@ -266,7 +315,7 @@ pub fn check() -> Result<(), &'static str> {
     crate::claim_tests::type_keys(&CTRL_SPACE);
     threads::sleep_ms(SETTLE_MS);
     misses.extend(scene(gated, reference, "(e)", keys)?);
-    misses.extend(scene(gated, reference, "(f)", loaded_drag)?);
+    misses.extend(scene(gated, reference, "(f)", loaded_drag(gated))?);
     misses.extend(scene(gated, reference, "(g)", open_scene(frames))?);
     log!("desk-perf: the figures are in");
     if !kvm {

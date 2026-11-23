@@ -10,7 +10,10 @@
 //! miss only when it is over its budget times the runner's measured slowness,
 //! the reference median over [`REFERENCE_BASELINE_NS`], never less than one
 //! ([`misses_scaled`]): a runner 1.85 times the baseline gets an 8 ms budget
-//! of 14.8 ms. `desktop` still writes its `OVER BUDGET` lines against the bare
+//! of 14.8 ms. The scale is capped at the slow factor ([`SCALE_CAP_NS`]).
+//! Before a scene's second run the reference is measured again, and both runs
+//! are judged by the larger of the two medians ([`judging_reference`]), so
+//! a runner that slows within the boot is seen. `desktop` still writes its `OVER BUDGET` lines against the bare
 //! budgets, so the logs show both.
 //!
 //! A runner can be slow for a whole boot, not only noisy, and then no budget
@@ -106,19 +109,81 @@ fn hundredths(text: &str) -> Option<u64> {
     whole.checked_mul(100)?.checked_add(frac)
 }
 
+/// The reference median the scale stops at: the slow factor, 3.5 times the
+/// baseline (56 ms).
+pub const SCALE_CAP_NS: u64 = REFERENCE_BASELINE_NS * SLOW_FACTOR_TENTHS / 10;
+
 /// A budget in hundredths of a ms, scaled for a runner whose reference median
 /// is `reference_ns`: times `reference_ns` over the baseline, never less than
-/// the budget itself.
+/// the budget itself and never more than [`SCALE_CAP_NS`] allows.
 pub fn scaled_budget(budget: u64, reference_ns: u64) -> u64 {
-    let ratio = reference_ns.max(REFERENCE_BASELINE_NS);
+    let ratio = reference_ns.clamp(REFERENCE_BASELINE_NS, SCALE_CAP_NS);
     budget.saturating_mul(ratio) / REFERENCE_BASELINE_NS
+}
+
+/// The reference median a scene's two runs are judged by: the larger of the
+/// boot's first measurement and the one taken just before the second run.
+/// [`scaled_budget`] caps it.
+pub fn judging_reference(first_ns: u64, again_ns: u64) -> u64 {
+    first_ns.max(again_ns)
+}
+
+/// One figure line of `desktop`'s reply:
+/// `name: n=.. p50 .. p95 .. p99 .. max .. ms, budget <p99|max> .. ms: ...`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Figure<'a> {
+    pub name: &'a str,
+    /// `p99` or `max`: the statistic the budget is for.
+    pub label: &'a str,
+    /// That statistic and the budget, in hundredths of a ms.
+    pub value: u64,
+    pub budget: u64,
+}
+
+/// Every judged figure in `reply`, in order; lines that do not parse are left
+/// out.
+pub fn figures(reply: &str) -> Vec<Figure<'_>> {
+    reply.lines().filter_map(figure_line).collect()
+}
+
+fn figure_line(line: &str) -> Option<Figure<'_>> {
+    let (name, rest) = line.split_once(": n=")?;
+    let (stats, budget) = rest.split_once(" ms, budget ")?;
+    let (label, budget) = budget.split_once(' ')?;
+    let budget = budget.split_once(" ms")?.0;
+    let mut words = stats.split(' ');
+    words.find(|&w| w == label)?;
+    Some(Figure {
+        name,
+        label,
+        value: hundredths(words.next()?)?,
+        budget: hundredths(budget)?,
+    })
+}
+
+/// `value` (hundredths of a ms) divided by the runner's ratio to the baseline,
+/// in hundredths of a ms: what the figure would be on a runner of baseline
+/// speed if the reference predicted it exactly. Not clamped, for the logs.
+pub fn per_baseline(value: u64, reference_ns: u64) -> u64 {
+    value.saturating_mul(REFERENCE_BASELINE_NS) / reference_ns.max(1)
+}
+
+/// `reference_ns` over the baseline, in hundredths: `185` for 29.6 ms.
+pub fn ratio_hundredths(reference_ns: u64) -> u64 {
+    reference_ns.saturating_mul(100) / REFERENCE_BASELINE_NS
+}
+
+/// Hundredths of a ms (or of a ratio) as text: `"14.80"` for 1480.
+pub fn hundredths_text(value: u64) -> alloc::string::String {
+    alloc::format!("{}.{:02}", value / 100, value % 100)
 }
 
 /// The figures in `reply` over their budget scaled for a runner whose
 /// reference median is `reference_ns` ([`scaled_budget`]), by name. A value
 /// that reaches the scaled budget is a miss, so on a runner at or under the
-/// baseline these are exactly [`misses`]. A miss line that does not parse is
-/// kept, so a garbled line never passes a figure.
+/// baseline these are exactly [`misses`]. A miss line whose value or budget
+/// does not parse is kept, so a line [`misses`] can name never passes a
+/// figure.
 pub fn misses_scaled(reply: &str, reference_ns: u64) -> Vec<&str> {
     reply
         .lines()
@@ -225,6 +290,66 @@ mod tests {
         assert_eq!(scaled_budget(800, 56_000_000), 2800);
     }
 
+    #[test]
+    fn the_scale_stops_at_the_slow_factor() {
+        assert_eq!(SCALE_CAP_NS, 56_000_000);
+        assert_eq!(scaled_budget(800, 80_000_000), 2800);
+        assert_eq!(scaled_budget(1670, u64::MAX), 5845);
+    }
+
+    #[test]
+    fn both_runs_are_judged_by_the_larger_reference() {
+        assert_eq!(judging_reference(20_000_000, 30_000_000), 30_000_000);
+        assert_eq!(judging_reference(30_000_000, 20_000_000), 30_000_000);
+        // A runner that slowed past the slow factor in the boot is judged at
+        // the cap, not ungated.
+        let judged = judging_reference(29_603_970, 70_000_000);
+        assert_eq!(scaled_budget(800, judged), 2800);
+        // #1261's (g) at the first ratio, 1.85, against a remeasured 2.2.
+        let g = "OVER BUDGET (g) full composite with Start and the pane open at 1920x1080 15.20 ms (budget p99 8.00 ms)";
+        assert_eq!(misses_scaled(g, 29_603_970).len(), 1);
+        let again = judging_reference(29_603_970, 35_200_000);
+        assert!(misses_scaled(g, again).is_empty());
+        // A faster second measurement never tightens the budget.
+        assert_eq!(judging_reference(29_603_970, 16_000_000), 29_603_970);
+    }
+
+    #[test]
+    fn every_figure_line_gives_its_judged_value_and_budget() {
+        let found = figures(WARM);
+        assert_eq!(
+            found,
+            [
+                Figure {
+                    name: "(c) text page 160x45 warm",
+                    label: "max",
+                    value: 514,
+                    budget: 400
+                },
+                Figure {
+                    name: "(c) text page 160x45 cold",
+                    label: "max",
+                    value: 990,
+                    budget: 3000
+                },
+            ]
+        );
+        let g = "(g) full composite with Start and the pane open at 1920x1080: n=300 p50 9.80 p95 11.86 p99 13.47 max 13.83 ms, budget p99 8.00 ms: OVER";
+        assert_eq!(figures(g)[0].value, 1347);
+        assert_eq!(figures(g)[0].label, "p99");
+        assert!(figures("(b) drag render: no samples").is_empty());
+    }
+
+    #[test]
+    fn a_figure_is_told_per_baseline() {
+        // #1261's (g): 13.47 ms at 1.85 is 7.28 ms per baseline.
+        assert_eq!(ratio_hundredths(29_603_970), 185);
+        assert_eq!(per_baseline(1347, 29_603_970), 728);
+        assert_eq!(hundredths_text(728), "7.28");
+        assert_eq!(hundredths_text(5), "0.05");
+        assert_eq!(per_baseline(800, 0), 800 * REFERENCE_BASELINE_NS);
+    }
+
     /// The three failures of 2026-11-23 the scaling must pass, and what it
     /// still fails.
     #[test]
@@ -235,7 +360,7 @@ mod tests {
             )
         };
         let f = "OVER BUDGET (f) drag under load, render+flush 20.72 ms (budget p99 16.70 ms)";
-        // #1119: (f) 20.72 ms on a runner 1.34 times the baseline (22.37).
+        // #1119: (f) 20.72 ms on a runner 1.34 times the baseline (22.40).
         assert!(misses_scaled(f, 21_467_770).is_empty());
         // #1141: (g) 9.26 ms at 2.52 times (20.17).
         assert!(misses_scaled(&g("9.26"), 40_347_570).is_empty());
