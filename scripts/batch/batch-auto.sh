@@ -80,6 +80,66 @@ groups() {  # PR numbers
   done
 }
 
+# The file each `git merge-tree` CONFLICT line names: a content conflict's
+# "Merge conflict in F", and the first path of any other kind, such as a
+# modify/delete's "F deleted in X and modified in Y" (#1199 on 11-23 listed
+# none for kernel/src/selftest.rs and xtask/src/mock_llm.rs).
+conflict_files() {  # merge-tree CONFLICT lines on stdin
+  sed -nE '/CONFLICT \(/ {
+    s/.*CONFLICT \([^)]*\): //
+    s/^(Merge conflict in |directory in the way of |file in the way of )//
+    s/^(Merge conflict in )?([^ ]+)( .*)?$/\2/
+    s/,$//
+    p
+  }'
+}
+
+# A batch that does not compile (batch-ff.sh's "compile error: FILE:LINE"
+# lines): the PRs that touch the files rustc names leave it, with their
+# stacks, and the rest go again whole, rather than halving it. If any of the
+# rest lands, a lone culprit is unlabelled with the errors; several go on as a
+# batch of their own, which halving then sorts out (one may land, and the
+# other then fails alone). Returns 1, for the usual split, when no PR, or
+# every PR, touches them.
+culprits_out() {  # $1 batch-ff.sh output, then the batch's PR numbers
+  local out=$1 p br g hit files errs merged=""
+  local -a culprits=() rest=() leaving=()
+  shift
+  files=$(grep "^    compile error: " "$out" | sed -E 's/^    compile error: ([^: ]+):[0-9].*/\1/' | sort -u)
+  [ -n "$files" ] || return 1
+  git -C "$G" fetch -q origin
+  for p in "$@"; do
+    br=$(gh pr view $p --repo "$R" --json headRefName --jq .headRefName)
+    [ -n "$br" ] && git -C "$G" diff --name-only "origin/$MAIN...origin/$br" 2>/dev/null \
+      | grep -qxF "$files" && culprits+=($p)
+  done
+  [ ${#culprits[@]} -gt 0 ] || return 1
+  # Whole stacks: a culprit's group leaves with it.
+  while read -r g; do
+    hit=""
+    for p in "${culprits[@]}"; do case " $g " in *" $p "*) hit=1;; esac; done
+    if [ -n "$hit" ]; then leaving+=($g); else rest+=($g); fi
+  done < <(groups "$@")
+  [ ${#rest[@]} -gt 0 ] || return 1
+  errs=$(grep "^    compile error: " "$out" | sed 's/^    compile error: //' | head -5 | tr '\n' ';' | sed 's/;$//; s/;/; /g')
+  say "batch of $* does not compile: $errs"
+  say "trying it without ${leaving[*]} (${culprits[*]} touch those files)"
+  batch "${rest[@]}"
+  for p in "${rest[@]}"; do
+    [ "$(gh pr view $p --repo "$R" --json state --jq .state)" = MERGED ] && { merged=1; break; }
+  done
+  if [ -z "$merged" ]; then
+    say "the rest did not land either; ${leaving[*]} keep their labels"
+  elif [ ${#culprits[@]} -eq 1 ]; then
+    unlabel ${culprits[0]} "Batcher: its merge batch did not compile, and this PR touches the files rustc named: $errs. The rest of the batch landed without it. Rebase onto main, fix the build, push once, and add \`batch-ready\` again."
+    say "#${culprits[0]} unlabelled: the batch did not compile in files it touches; the rest landed"
+  else
+    say "the rest landed; ${leaving[*]} go on as a batch of their own"
+    batch "${leaving[@]}"
+  fi
+  return 0
+}
+
 batch() {  # PR numbers, or --resume; a failed batch is bisected
   [ $# -eq 0 ] && return
   # local: the halves below recurse, and shared `out`/`h` mis-split the batch
@@ -88,7 +148,7 @@ batch() {  # PR numbers, or --resume; a failed batch is bisected
   bash "$KAI_SCRIPTS/batch-ff.sh" "$@" > "$out" 2>&1
   for p in $(grep -oE "^  - #[0-9]+ conflicts" "$out" | grep -oE "[0-9]+"); do
     files=$(awk -v p="#$p" '$0 ~ "^  - "p" conflicts" {f=1; next} /^  [-+] #/ {f=0} f' "$out" \
-            | grep -oE "Merge conflict in .*" | sed 's/Merge conflict in //' | tr '\n' ' ')
+            | conflict_files | tr '\n' ' ')
     # A lane may have rebased while the batch ran: keep the label if the PR's
     # current head merges cleanly with current main.
     git -C "$G" fetch -q origin
@@ -115,6 +175,7 @@ batch() {  # PR numbers, or --resume; a failed batch is bisected
   fi
   if grep -qE "NOT green|fluency below" "$out"; then
     set -- $(grep -oE "^  \+ #[0-9]+" "$out" | grep -oE "[0-9]+")
+    [ $# -gt 1 ] && culprits_out "$out" "$@" && return
     # The boot cases that failed, as batch-ff.sh read them from the jobs' logs.
     local cases
     cases=$(grep "^    failed case: " "$out" | sed 's/^    failed case: xtask: //' | tr '\n' ';' | sed 's/;$//; s/;/; /g')

@@ -211,6 +211,20 @@ failed_cases() {  # $1 run id
     | sort -u | head -20 | sed 's/^/    failed case: /'
 }
 
+# The rustc errors in a run's failed jobs, one line each: the `--> file:line`
+# an error points at, then the error. batch-auto.sh takes the PRs that touch
+# those files out of the batch first, before halving it (11-23: two semantic
+# clashes in kainet, E0592 and E0609, cost hours of bisecting).
+compile_errors() {  # $1 run id
+  gh run view "$1" --repo "$R" --log-failed 2>/dev/null \
+    | sed -E 's/\x1b\[[0-9;]*m//g; s/^[^\t]*\t[^\t]*\t//; s/^[0-9]{4}-[0-9-]+T[0-9:.]+Z //' \
+    | awk '/^error(\[E[0-9]+\])?: / { msg = $0; want = 1; next }
+           want && /^ *--> / { sub(/^ *--> /, ""); print $0 "  " msg; want = 0; next }
+           /^(warning|note|help)/ { want = 0 }' \
+    | sed -E 's#^/home/runner/work/[^/]+/[^/]+/##' \
+    | sort -u | head -20 | sed 's/^/    compile error: /'
+}
+
 verify() {
   echo "  batch PR #$bpr, head ${c:0:7}, waiting for CI"
   id=$(wait_ci "$name" "$c") || stop "CI did not finish; STOPPING"
@@ -227,7 +241,7 @@ verify() {
       echo "  re-run $id"
     fi
   fi
-  gates_green "$id" || { failed_cases "$id"; stop "batch NOT green; STOPPING (fall back to merge-chain.sh)"; }
+  gates_green "$id" || { failed_cases "$id"; compile_errors "$id"; stop "batch NOT green; STOPPING (fall back to merge-chain.sh)"; }
   others_ok "$name" "$c"; rc=$?
   [ $rc = 2 ] && stop "CI did not finish (another workflow); STOPPING"
   [ $rc = 0 ] || stop "batch NOT green: another workflow failed; STOPPING"

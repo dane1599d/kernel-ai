@@ -39,7 +39,7 @@ mkpr() {  # n branch base files...
 }
 
 setup() {
-  rm -rf "$T/origin.git" "$T/work" "$T/prs" "$T/state" "$T"/kill-* "$T/fluency-dispatches" "$T/list-fails" "$T/others" "$T/others-fail"
+  rm -rf "$T/origin.git" "$T/work" "$T/prs" "$T/state" "$T"/kill-* "$T/fluency-dispatches" "$T/list-fails" "$T/others" "$T/others-fail" "$T/fail-with" "$T/compile.log"
   git init -q --bare "$T/origin.git"
   git -C "$T/origin.git" symbolic-ref HEAD refs/heads/main
   git clone -q "$T/origin.git" "$T/work" 2>/dev/null
@@ -238,6 +238,58 @@ touch "$T/state/batch-auto.stop"; wait $A; rm -f "$T/failed.log"
 L="$T/state/batch-auto.log"
 check "the log names the failing case"        'grep -q "batch of 1 failed: .*test case c-build: FAIL" "$L"'
 check "the PR failed alone, its case named"   'grep -q "#1 failed alone: .*test case c-build: FAIL" "$L" && [ ! -s "$T/prs/1/labels" ]'
+
+auto_until() {  # runs batch-auto.sh until its log matches $1, then stops it
+  # The no-boot lane off: it would land the .txt PRs ahead in a batch of their own.
+  KAI_BATCH_NOBOOT=0 bash "$B/batch-auto.sh" > /dev/null & A=$!
+  for i in $(seq 1 120); do grep -qE "$1" "$T/state/batch-auto.log" 2>/dev/null && break; /bin/sleep 1 2>/dev/null || /usr/bin/sleep 1; done
+  touch "$T/state/batch-auto.stop"; wait $A
+}
+compile_log() {  # rustc errors at each FILE:LINE given, as gh run view --log-failed prints them
+  local at
+  for at in "$@"; do
+    printf '%s\t%s\t%s\n' "Format, lint, host unit tests" "Run tests" "2026-11-23T10:00:00.1Z error[E0592]: duplicate definitions with name \`io_mut\`" \
+      "Format, lint, host unit tests" "Run tests" "2026-11-23T10:00:00.2Z    --> $at:5"
+  done > "$T/compile.log"
+}
+
+echo "== batch-auto.sh: a batch that does not compile goes again without the PR rustc names"
+setup
+for n in 2 3 4 7; do : > "$T/prs/$n/labels"; done
+mkpr 8 feat/k main kainet/src/tcp.rs
+git -C "$T/work" checkout -q --detach origin/main
+cat "$T/prs/8/sha" > "$T/fail-with"
+compile_log kainet/src/tcp.rs:212
+auto_until "unlabelled|keep their labels|splitting"
+L="$T/state/batch-auto.log"
+check "the error and its file are logged"     'grep -q "does not compile: kainet/src/tcp.rs:212:5  error\[E0592\]" "$L"'
+check "the rest goes again whole, no halving" 'grep -q "trying it without 8 (8 touch those files)" "$L" && ! grep -q splitting "$L"'
+check "the rest lands"                        'grep -q "#1 merged" "$L" && grep -q "#5 merged" "$L"'
+check "the culprit is unlabelled, commented"  '[ ! -s "$T/prs/8/labels" ] && grep -q "pr comment 8 .*kainet/src/tcp.rs:212" "$T/gh.log" && ! grep -q "#8 merged" "$L"'
+
+echo "== batch-auto.sh: two PRs that clash only together: the rest lands, then one of them"
+setup
+for n in 2 3 4 7; do : > "$T/prs/$n/labels"; done
+mkpr 8 feat/k main kainet/src/tcp.rs
+mkpr 9 feat/k2 main kainet/src/io.rs
+git -C "$T/work" checkout -q --detach origin/main
+echo "$(cat "$T/prs/8/sha") $(cat "$T/prs/9/sha")" > "$T/fail-with"
+compile_log kainet/src/tcp.rs:212 kainet/src/io.rs:40
+auto_until "#9 failed alone|#8 failed alone"
+L="$T/state/batch-auto.log"
+check "both leave the batch"                  'grep -q "trying it without 8 9 (8 9 touch those files)" "$L"'
+check "the rest lands, then they go together" 'grep -q "#1 merged" "$L" && grep -q "#5 merged" "$L" && grep -q "the rest landed; 8 9 go on as a batch of their own" "$L"'
+check "one lands, the other fails alone"      'grep -q "#8 merged" "$L" && grep -q "#9 failed alone" "$L" && [ ! -s "$T/prs/9/labels" ]'
+
+echo "== batch-auto.sh: a modify/delete conflict names its file"
+setup
+for n in 1 2 3 4 5 7; do : > "$T/prs/$n/labels"; done
+mkpr 9 feat/z main base.txt
+git -C "$T/work" checkout -q -B gone origin/main && git -C "$T/work" rm -q base.txt && git -C "$T/work" commit -qm "rm base" && git -C "$T/work" push -q origin HEAD:main
+git -C "$T/work" fetch -q origin && git -C "$T/work" checkout -q --detach origin/main
+auto_until "left out: conflicts in"
+L="$T/state/batch-auto.log"
+check "the deleted file is listed"            'grep -q "#9 left out: conflicts in base.txt" "$L" && [ ! -s "$T/prs/9/labels" ]'
 
 echo "branches left: $(branches)"
 [ $fails = 0 ] && echo "all batcher tests pass" || { echo "$fails batcher test(s) failed"; exit 1; }
