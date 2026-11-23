@@ -388,6 +388,16 @@ compose() {
   done
   [ -n "$bpr" ] || stop "batch PR could not be created; STOPPING"
   save_state pushed
+  # The fluency gate starts with CI, not after it (27 minutes saved on the
+  # 12-PR batch of 11-19), and is read after the gates as before. It runs on
+  # this batch's own branch, so a stop's cleanup cancels it with CI's runs;
+  # a lane's runs are never touched. If the dispatch fails, fluency_ok
+  # dispatches it after the gates, as it used to.
+  if [ -n "$model" ] && gh workflow run fluency-model.yml --repo "$R" --ref "$name" >/dev/null; then
+    fluency=dispatched; save_state pushed
+    # Not "changes what the model sees (...)": batch-auto counts that line.
+    echo "  fluency gate dispatched with CI, for$model"
+  fi
 }
 
 # Everything runs from here, once bash has read the whole file: a pull that
