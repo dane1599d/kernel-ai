@@ -348,13 +348,18 @@ impl Host for FakeHost {
     }
 
     fn fs_change(&self, change: FsChange) -> Result<u64, String> {
+        if let Some(why) = self.fs_fail.borrow_mut().take() {
+            return Err(why);
+        }
         let before = self.files.borrow().clone();
         let mut files = before.clone();
         match change {
             FsChange::Create { path, .. } if files.contains_key(path) => {
                 return Err(String::from("Exists: use fs_write"));
             }
-            FsChange::Create { path, text } | FsChange::Write { path, text } => {
+            FsChange::Create { path, text }
+            | FsChange::Write { path, text }
+            | FsChange::Save { path, text, .. } => {
                 files.insert(path.into(), text.into());
             }
             FsChange::Move { from, to } => {

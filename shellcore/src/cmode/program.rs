@@ -240,6 +240,7 @@ impl Shell {
             defined: Some(kept.program.clone()),
             logged: None,
             cc: true,
+            included: None,
         });
         Reply::ok(format!(
             "{restored}kept {}:\n{}",

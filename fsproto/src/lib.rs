@@ -143,8 +143,8 @@ pub enum Request {
     /// The object's earlier versions, newest first. Needs READ.
     #[n(12)]
     History,
-    /// The objects in this handle's volume changed since generation `since`.
-    /// Needs ENUMERATE.
+    /// The first page of [`Request::ChangesSince`], as [`Reply::Changes`]: for
+    /// a caller that wants a glance, not to keep up. Needs ENUMERATE.
     #[n(13)]
     Changes {
         #[n(0)]
@@ -233,6 +233,20 @@ pub enum Request {
     /// FNV-1a64 is kept for the hint. The caller then commits its action.
     #[n(25)]
     SealedFinish,
+    /// Removes sealed blob `name` from the model store, so its blocks can be
+    /// used again: on the same handle as [`Request::SealedBegin`], never
+    /// inside an action. The store's undo snapshots that still hold it are
+    /// dropped, so no undo brings it back. Permission for the blob the
+    /// hint names, the model the next boot maps: point the hint elsewhere
+    /// first. Its blocks are reusable two commits after the GC pass it starts
+    /// has run, as any freed block is, not at the reply. NotFound for no such blob; Invalid for a name that is not
+    /// a blob's or a file that is not sealed; Busy while another caller's
+    /// action holds `fs`. Number 30: #1031 takes 28 and 29.
+    #[n(30)]
+    SealedRemove {
+        #[n(0)]
+        name: String,
+    },
     /// Points `kai-modelhint 1` at sealed blob `name`, or clears it with none,
     /// so the next boot maps that model, or none. On the same handle as
     /// [`Request::SealedBegin`], never inside an action: `fs` writes the hint
@@ -275,6 +289,35 @@ pub enum Request {
         off: u64,
         #[n(1)]
         len: u32,
+    },
+    /// [`Request::SealedPush`] with the blob's next `len` bytes in the start
+    /// of one `Shm` moved in, up to [`MAX_SHM_DATA`] and the `Shm`'s size,
+    /// else Invalid: [`Reply::Done`]. `fs` copies them out once, then hashes
+    /// and writes that copy, so what it keeps is what it hashed. An older
+    /// `fs` answers [`Error::BadRequest`], and the client pushes in messages.
+    /// Number 31: 30 is #1117's SealedRemove.
+    #[n(31)]
+    SealedPushShm {
+        #[n(0)]
+        len: u32,
+    },
+    /// What a reader that keeps up (a search index) asks, a round at a time:
+    /// the objects beneath this handle's folder (the whole volume on a
+    /// volume's root) whose last committed change is in `(since, upto]`, in
+    /// object order: [`Reply::ChangesPage`]. The first page has no `after`
+    /// and sets the round's `upto`; each next page asks after
+    /// `(upto, last row's object)`. The round over (`more` false), the next
+    /// starts from `since = upto`: a change made during a round, an open
+    /// action's once it commits, has a generation past `upto`, so it comes in
+    /// the next. A trashed object lies beneath the trash, not where it was.
+    /// Needs ENUMERATE. Number 32:
+    /// 30 and 31 are other open PRs' (#1117, #1121).
+    #[n(32)]
+    ChangesSince {
+        #[n(0)]
+        since: u64,
+        #[n(1)]
+        after: Option<(u64, u64)>,
     },
 }
 
@@ -413,6 +456,38 @@ pub enum Error {
     /// A message `fs` cannot read: wrong version, bad CBOR or too large.
     #[n(11)]
     BadRequest,
+    /// The caller's action was dropped without its asking: its pending run of
+    /// writes failed to write out (no room, the disk), and none of its changes
+    /// so far will land. On its own request, that request is answered this.
+    /// On another caller's, which the owner never hears, every change of the
+    /// owner's after it is refused this way until it sends Abort (answered
+    /// Done) or Begin, so a change it meant for the action never lands
+    /// outside it.
+    #[n(12)]
+    Dropped(#[n(0)] DropCause),
+}
+
+/// Why an action was dropped ([`Error::Dropped`]), for the person's message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode)]
+pub enum DropCause {
+    /// No room on the disk for its writes.
+    #[n(0)]
+    NoSpace,
+    /// The disk failed, or what it holds did not verify.
+    #[n(1)]
+    Io,
+}
+
+impl Error {
+    /// Whether this answer means `fs` dropped the caller's open action: only
+    /// [`Error::Dropped`], whatever request it answers (a read that wrote out
+    /// the pending run, a write, a commit). A client that keeps an action open
+    /// across requests (the shell's line, `updated`'s download) forgets it and
+    /// begins a new one, never writing on outside any. Decided on the decoded
+    /// kind, never on a message's text, which may hold a path.
+    pub fn ends_action(&self) -> bool {
+        matches!(self, Error::Dropped(_))
+    }
 }
 
 /// The answer to one request.
@@ -457,7 +532,8 @@ pub enum Reply {
     },
     #[n(7)]
     History(#[n(0)] Vec<Version>),
-    /// Changed objects, and whether there were more than fit.
+    /// Changed objects in `(changed, object)` order, and whether there were
+    /// more than fit.
     #[n(8)]
     Changes {
         #[n(0)]
@@ -516,6 +592,24 @@ pub enum Reply {
     Copied {
         #[n(0)]
         len: u64,
+    },
+    /// A page of [`Request::ChangesSince`]: its rows, in object order, whether
+    /// more follow (the next page asks after `(upto, last row's object)`), the
+    /// round's `upto` (once `more` is false, the `since` of the next round),
+    /// and how often the disk's state went back (a fallback mount, a restored
+    /// update snapshot). When that count differs from the
+    /// last one a reader saw, commits it read may have been undone, and it
+    /// reads everything again from 0. Number 17: 16 is [`Reply::Copied`].
+    #[n(17)]
+    ChangesPage {
+        #[n(0)]
+        rows: Vec<Stat>,
+        #[n(1)]
+        more: bool,
+        #[n(2)]
+        upto: u64,
+        #[n(3)]
+        fallbacks: u64,
     },
 }
 

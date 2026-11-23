@@ -98,6 +98,12 @@ fn main() -> i32 {
     server.set_alive(alive);
     server.set_name_of(name_of);
     server.set_caps_of(caps_of);
+    // Retention counts real time when the firmware gave a date; without one,
+    // kaifs's clock counts only the time `fs` has run.
+    if let Ok(seconds) = sys::clock_now() {
+        let wall = seconds.saturating_mul(1_000_000_000);
+        server.set_wall_clock(wall.saturating_sub(sys::time_ns()));
+    }
     fill_model(&mut server, part);
     let mut bench = Bench::default();
     let mut request = alloc::vec![0u8; MAX_MESSAGE];
@@ -113,23 +119,36 @@ fn main() -> i32 {
         };
         let moved = &from.handles[..(from.handle_count as usize).min(from.handles.len())];
         let request = &request[..len];
-        // A bulk request's one `Shm`, mapped for it; any other handle a
-        // request carried is dropped, and the `Shm` too once answered.
+        // A bulk request's one `Shm`, mapped for it; or a Rename's one `Dir`
+        // of this server's, read by its badge (ENDPOINT_BADGE). Every handle
+        // a request carried is dropped once it is answered.
         let mut mapped = match moved {
             [raw] if from.badge != 0 => shm::Mapped::of(request, Handle(*raw)),
             _ => None,
         };
+        // A handle that cannot be a destination is the Rename's error, never
+        // a rename within its own folder.
+        let into = match moved {
+            [] => None,
+            [_] if mapped.is_some() => None,
+            [raw] => Some(sys::endpoint_badge(Handle(*raw)).map_err(|e| match e {
+                Error::Permission => fsproto::Error::Permission,
+                _ => fsproto::Error::Invalid,
+            })),
+            _ => Some(Err(fsproto::Error::Invalid)),
+        };
         let answer = (from.badge != 0).then(|| {
-            server.call_shm(
-                &Call {
-                    caller: from.caller_pid,
-                    badge: from.badge,
-                    rights: Rights::from_bits_truncate(from.rights),
-                    request,
-                    now: sys::time_ns(),
-                },
-                mapped.as_mut().map(shm::Mapped::bytes),
-            )
+            let call = Call {
+                caller: from.caller_pid,
+                badge: from.badge,
+                rights: Rights::from_bits_truncate(from.rights),
+                request,
+                now: sys::time_ns(),
+            };
+            match into {
+                Some(into) => server.call_into(&call, into),
+                None => server.call_shm(&call, mapped.as_mut().map(shm::Mapped::bytes)),
+            }
         });
         drop(mapped);
         for &raw in moved {

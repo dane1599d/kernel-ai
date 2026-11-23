@@ -30,6 +30,7 @@ mod ccbuild;
 mod centry;
 mod cmode;
 mod cprogram;
+mod csave;
 mod deskcard;
 mod door;
 mod door_build;
@@ -191,6 +192,8 @@ struct FakeHost {
     pub app_sources: RefCell<Vec<(String, String)>>,
     /// The `fs` server's files, and each transaction's files before and after.
     files: RefCell<std::collections::BTreeMap<String, String>>,
+    /// The next change fails with this, as a refused or cut-short one does.
+    fs_fail: RefCell<Option<String>>,
     txns: RefCell<Vec<(Files, Files)>>,
     /// As the shell does on `fs`: a line's changes are one transaction, left open
     /// until the log write commits it; the open one's index.
@@ -399,6 +402,7 @@ impl FakeHost {
             warms: RefCell::new(Vec::new()),
             app_sources: RefCell::new(Vec::new()),
             files: RefCell::new(Files::new()),
+            fs_fail: RefCell::new(None),
             txns: RefCell::new(Vec::new()),
             one_action: Cell::new(false),
             open_txn: Cell::new(None),

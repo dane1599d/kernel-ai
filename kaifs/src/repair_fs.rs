@@ -84,7 +84,11 @@ pub fn mount_to_repair<D: BlockDev>(mut dev: D) -> Result<(Fs<D>, Vec<String>), 
     let faults = Faults::default();
     let error = match Fs::newest(&mut dev) {
         Ok((sb, rules)) => match Fs::load(&mut dev, &sb, faults) {
-            Ok(loaded) => return Ok((Fs::assemble(dev, &sb, rules, loaded, faults), Vec::new())),
+            Ok(loaded) => {
+                let mut fs = Fs::assemble(dev, &sb, rules, loaded, faults);
+                fs.read_ring_history(&sb)?;
+                return Ok((fs, Vec::new()));
+            }
             Err(e) => e,
         },
         Err(e) => e,
@@ -118,6 +122,10 @@ pub fn mount_to_repair<D: BlockDev>(mut dev: D) -> Result<(Fs<D>, Vec<String>), 
     if !fs.writable() {
         return Err(Error::ReadOnly);
     }
+    // Its commit goes above every slot, so no later mount sees the newer ones
+    // it passed over: the count and the mark go up now, and that commit keeps
+    // them.
+    fs.read_ring_history(&sb)?;
     let used = fs.io.alloc.claim(&runs);
     // Above every commit on the rings, so a mount takes this one.
     let newest = format::read_rings(&mut fs.io.dev)?

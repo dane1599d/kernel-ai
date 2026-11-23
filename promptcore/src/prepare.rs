@@ -72,6 +72,9 @@ pub enum Mode {
     /// Definitions only: a restarted `cc` replays the shell's kept entries, and
     /// runs no statement again (D4). Globals keep only static initializers.
     Replay,
+    /// Definitions with their initializers, and no statement: `:load`
+    /// replays a saved entry as it first defined things (D4).
+    Load,
 }
 
 /// Lines of the unit that came from the entry: `(unit line, entry line, count)`.
@@ -201,7 +204,7 @@ impl Defs {
             unit.chunk(*line, text);
         }
         let statements = match mode {
-            Mode::Eval => parts.statements,
+            Mode::Eval | Mode::Load => parts.statements,
             Mode::Replay => Vec::new(),
         };
         let Some(((last_line, last), rest)) = statements.split_last() else {
@@ -310,6 +313,8 @@ impl Parts {
             }
             What::Func(func) => self.func(seq, line, text, func),
             What::Decl(decl) => self.decl(seq, line, decl, mode),
+            // `:load` runs a saved entry's initializers, never its statements.
+            What::Stmt { .. } if mode == Mode::Load => {}
             What::Stmt { form, semi } => self.statement(line, text, form, *semi, last, callable),
         }
     }
@@ -456,7 +461,7 @@ impl Parts {
         match d.init.as_deref() {
             Some(init) if assignable && !init.starts_with('{') => {
                 self.section.push((line, format!("{spec} {};", d.text)));
-                if mode == Mode::Eval {
+                if mode != Mode::Replay {
                     self.statements
                         .push((line, format!("{} = {init};", d.name)));
                 }
