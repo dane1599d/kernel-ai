@@ -23,63 +23,6 @@ unlabel() {  # $1 PR, $2 comment
   gh pr comment "$1" --repo "$R" --body "$2" >/dev/null 2>&1
 }
 
-# The labelled PRs that can land on their own: each one's commits, beyond main,
-# may only include other PRs that are in the same list. One line each: the PR,
-# its head, and whether it is batch-first.
-eligible() {
-  git -C "$G" fetch -q origin
-  open=$(gh pr list --repo "$R" --state open --limit 1000 --json number,headRefName,headRefOid,labels \
-         --jq '.[] | "\(.number) \(.headRefName) \(.headRefOid) \([.labels[].name] | index("batch-ready") != null) \([.labels[].name] | index("batch-first") != null)"')
-  # `batch-first` PRs (e.g. a fix for a flaky test every batch would hit) go
-  # ahead of the rest; then oldest first.
-  ready=$( (echo "$open" | awk '$4=="true" && $5=="true" {print $1}' | sort -n
-            echo "$open" | awk '$4=="true" && $5!="true" {print $1}' | sort -n) )
-  for p in $ready; do
-    head=$(echo "$open" | awk -v p=$p '$1==p {print $3}')
-    ok=1
-    while read -r o obr ohead olab; do
-      [ "$o" = "$p" ] && continue
-      echo " $ready " | tr '\n' ' ' | grep -q " $o " && continue
-      if git -C "$G" merge-base --is-ancestor "$ohead" "$head" 2>/dev/null \
-         && ! git -C "$G" merge-base --is-ancestor "$ohead" "origin/$MAIN" 2>/dev/null; then
-        ok=0; break
-      fi
-    done <<< "$open"
-    [ $ok = 1 ] && echo "$p $head $(echo "$open" | awk -v p=$p '$1==p {print $5}')"
-  done | head -"$(cat "$S/batch-max" 2>/dev/null || echo $MAX)"
-}
-
-# One line per group of PRs that share commits beyond main (stacks), in input
-# order. A split keeps each group whole: a stack's parent may not pass without
-# its child (#443 needed #456 on 10-30, and the plain halving split them twice).
-groups() {  # PR numbers
-  local -a prs heads grp
-  local i j k n=$# mb old new heads_all
-  prs=("$@")
-  heads_all=$(gh pr list --repo "$R" --state open --limit 1000 --json number,headRefOid --jq '.[] | "\(.number) \(.headRefOid)"')
-  for ((i=0; i<n; i++)); do
-    heads[$i]=$(echo "$heads_all" | awk -v p="${prs[$i]}" '$1==p {print $2}')
-    grp[$i]=$i
-  done
-  for ((i=0; i<n; i++)); do
-    for ((j=i+1; j<n; j++)); do
-      [ "${grp[$i]}" = "${grp[$j]}" ] && continue
-      mb=$(git -C "$G" merge-base "${heads[$i]}" "${heads[$j]}" 2>/dev/null) || continue
-      git -C "$G" merge-base --is-ancestor "$mb" "origin/$MAIN" 2>/dev/null && continue
-      old=${grp[$j]}; new=${grp[$i]}
-      for ((k=0; k<n; k++)); do [ "${grp[$k]}" = "$old" ] && grp[$k]=$new; done
-    done
-  done
-  for ((i=0; i<n; i++)); do
-    [ "${grp[$i]}" = "done" ] && continue
-    local g=${grp[$i]} line=""
-    for ((k=0; k<n; k++)); do
-      [ "${grp[$k]}" = "$g" ] && { line="$line ${prs[$k]}"; grp[$k]=done; }
-    done
-    echo $line
-  done
-}
-
 # The file each `git merge-tree` CONFLICT line names: a content conflict's
 # "Merge conflict in F", and the first path of any other kind, such as a
 # modify/delete's "F deleted in X and modified in Y" (#1199 on 11-23 listed
@@ -138,6 +81,63 @@ culprits_out() {  # $1 batch-ff.sh output, then the batch's PR numbers
     batch "${leaving[@]}"
   fi
   return 0
+}
+
+# The labelled PRs that can land on their own: each one's commits, beyond main,
+# may only include other PRs that are in the same list. One line each: the PR,
+# its head, and whether it is batch-first.
+eligible() {
+  git -C "$G" fetch -q origin
+  open=$(gh pr list --repo "$R" --state open --limit 1000 --json number,headRefName,headRefOid,labels \
+         --jq '.[] | "\(.number) \(.headRefName) \(.headRefOid) \([.labels[].name] | index("batch-ready") != null) \([.labels[].name] | index("batch-first") != null)"')
+  # `batch-first` PRs (e.g. a fix for a flaky test every batch would hit) go
+  # ahead of the rest; then oldest first.
+  ready=$( (echo "$open" | awk '$4=="true" && $5=="true" {print $1}' | sort -n
+            echo "$open" | awk '$4=="true" && $5!="true" {print $1}' | sort -n) )
+  for p in $ready; do
+    head=$(echo "$open" | awk -v p=$p '$1==p {print $3}')
+    ok=1
+    while read -r o obr ohead olab; do
+      [ "$o" = "$p" ] && continue
+      echo " $ready " | tr '\n' ' ' | grep -q " $o " && continue
+      if git -C "$G" merge-base --is-ancestor "$ohead" "$head" 2>/dev/null \
+         && ! git -C "$G" merge-base --is-ancestor "$ohead" "origin/$MAIN" 2>/dev/null; then
+        ok=0; break
+      fi
+    done <<< "$open"
+    [ $ok = 1 ] && echo "$p $head $(echo "$open" | awk -v p=$p '$1==p {print $5}')"
+  done | head -"$(cat "$S/batch-max" 2>/dev/null || echo $MAX)"
+}
+
+# One line per group of PRs that share commits beyond main (stacks), in input
+# order. A split keeps each group whole: a stack's parent may not pass without
+# its child (#443 needed #456 on 10-30, and the plain halving split them twice).
+groups() {  # PR numbers
+  local -a prs heads grp
+  local i j k n=$# mb old new heads_all
+  prs=("$@")
+  heads_all=$(gh pr list --repo "$R" --state open --limit 1000 --json number,headRefOid --jq '.[] | "\(.number) \(.headRefOid)"')
+  for ((i=0; i<n; i++)); do
+    heads[$i]=$(echo "$heads_all" | awk -v p="${prs[$i]}" '$1==p {print $2}')
+    grp[$i]=$i
+  done
+  for ((i=0; i<n; i++)); do
+    for ((j=i+1; j<n; j++)); do
+      [ "${grp[$i]}" = "${grp[$j]}" ] && continue
+      mb=$(git -C "$G" merge-base "${heads[$i]}" "${heads[$j]}" 2>/dev/null) || continue
+      git -C "$G" merge-base --is-ancestor "$mb" "origin/$MAIN" 2>/dev/null && continue
+      old=${grp[$j]}; new=${grp[$i]}
+      for ((k=0; k<n; k++)); do [ "${grp[$k]}" = "$old" ] && grp[$k]=$new; done
+    done
+  done
+  for ((i=0; i<n; i++)); do
+    [ "${grp[$i]}" = "done" ] && continue
+    local g=${grp[$i]} line=""
+    for ((k=0; k<n; k++)); do
+      [ "${grp[$k]}" = "$g" ] && { line="$line ${prs[$k]}"; grp[$k]=done; }
+    done
+    echo $line
+  done
 }
 
 batch() {  # PR numbers, or --resume; a failed batch is bisected

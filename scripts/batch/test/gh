@@ -26,6 +26,7 @@ compile_fails() {
   done
   return 1
 }
+[ "$1 $2" = "run view" ] && compile_fails && CI_RESULT=failure
 st() {
   local s
   s=$(pr $1 state)
@@ -76,8 +77,7 @@ case "$1 $2" in
     case "$a" in
       *--log-failed*) if compile_fails; then cat "$T/compile.log"; else cat "$T/failed.log" 2>/dev/null; fi;;
       *--log*) cat "$T/fluency.log";;
-      *) r=${CI_RESULT:-success}; compile_fails && r=failure
-         for j in "Format, lint" "Boot test (kvm, shard 1)" "Boot test (kvm, shard 2)" "Boot test (kvm, shard 3)" "Boot test (tcg, shard 1)" "Boot test (tcg, shard 2)" "Boot test (tcg, shard 3)" "Observe determinism 1" "Observe determinism 2" "Observe determinism 3"; do echo "$j=$r"; done;;
+      *) for j in "Format, lint" "Boot test (kvm, shard 1)" "Boot test (kvm, shard 2)" "Boot test (kvm, shard 3)" "Boot test (tcg, shard 1)" "Boot test (tcg, shard 2)" "Boot test (tcg, shard 3)" "Observe determinism 1" "Observe determinism 2" "Observe determinism 3"; do echo "$j=${CI_RESULT:-success}"; done;;
     esac;;
   "workflow run") echo dispatched >> "$T/fluency-dispatches";;
   *) echo "stub gh: unhandled $a" >&2; exit 1;;
