@@ -825,8 +825,9 @@ pub(crate) fn check_against(
     let (reads, changes) = split(&plan, rows);
     let granted = plan.names();
     let mut trial = strict(&line, config, &granted, &Tx::new(&stub, &plan));
-    let missed = known::watch(&mut trial);
-    if let Some(error) = known::unknown_in_try(&ast, &trial) {
+    let functions = known::known(&trial);
+    let missed = known::watch(&mut trial, Rc::clone(&functions));
+    if let Some(error) = known::unknown_in_try(&ast, &functions) {
         return Err(refuse(format!("the script failed a trial run: {error}")));
     }
     line.begin(stub.as_ref(), config);
@@ -835,12 +836,22 @@ pub(crate) fn check_against(
             return Err(Refusal::Interrupted);
         }
         // A call no function takes, though the script's own `catch` caught it.
-        _ if missed.borrow().is_some() => {
+        // This arm stays Ok-only: an uncaught error keeps the engine's own
+        // words, line and position, and `known::takes` may record a miss for a
+        // call that failed by itself (it cannot always tell), which only an
+        // uncaught error shows rightly. The two depend on each other.
+        Ok(_) if missed.borrow().is_some() => {
             let error = missed.take().unwrap_or_default();
             return Err(refuse(format!("the script failed a trial run: {error}")));
         }
         Ok(_) => None,
         Err(error) => match stand_in_note(&error) {
+            // A stand-in's arithmetic stopped the trial after a `catch` hid a
+            // call no function takes: the miss is what refuses it.
+            Some(_) if missed.borrow().is_some() => {
+                let error = missed.take().unwrap_or_default();
+                return Err(refuse(format!("the script failed a trial run: {error}")));
+            }
             Some(note) => Some(note),
             None => {
                 return Err(refuse(format!(

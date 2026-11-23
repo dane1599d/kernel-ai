@@ -605,3 +605,24 @@ fn the_same_rows_under_another_label_load_once() {
     rows.load("notes", &relabelled).unwrap();
     assert_eq!(rows.apps().count(), 1);
 }
+
+/// An app's rows take any value (`Dynamic`) and refuse a wrong one themselves:
+/// inside a `try`, that refusal is one the script's `catch` may mean to catch.
+#[test]
+fn an_apps_row_refusing_inside_try_passes_the_check() {
+    let host = FakeHost::new();
+    host.apps.borrow_mut().rows.load("notes", NOTES).unwrap();
+    let row = host.apps.borrow().rows.find("notes_add").unwrap().row;
+    let dyn_host: Rc<dyn Host> = host;
+    let script = "try { notes_add(5); } catch (e) { print(e); }";
+    crate::script::check_against(
+        &llmproto::script::Answer {
+            summary: String::from("Adds a note."),
+            script: String::from(script),
+        },
+        &dyn_host,
+        &DEFAULT_CONFIG,
+        core::slice::from_ref(row),
+    )
+    .unwrap_or_else(|e| panic!("{e}: {script}"));
+}

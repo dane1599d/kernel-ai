@@ -648,3 +648,79 @@ fn an_unknown_name_inside_try_still_fails_clearly() {
         checked(script).unwrap_or_else(|e| panic!("{e}: {script}"));
     }
 }
+
+#[test]
+fn print_or_debug_with_arguments_no_overload_takes_is_refused_inside_try() {
+    for (script, missing) in [
+        (
+            "try { print(\"policy:\", get_policy()); set_policy(\"rr\"); } catch { }",
+            "Function not found: print (",
+        ),
+        (
+            "try { debug(1, 2); set_policy(\"rr\"); } catch (e) { print(e); }",
+            "Function not found: debug (",
+        ),
+    ] {
+        let refusal = checked(script)
+            .err()
+            .unwrap_or_else(|| panic!("ran: {script}"));
+        assert!(refusal.to_string().contains(missing), "{refusal}: {script}");
+    }
+}
+
+#[test]
+fn a_call_found_only_by_running_names_its_argument_types() {
+    for (script, missing) in [
+        (
+            "try { set_policy(5); } catch { }",
+            "Function not found: set_policy (i64)",
+        ),
+        (
+            "try { let s = \"ab\"; s.sub_string(\"x\"); } catch (e) { print(e); }",
+            "Function not found: sub_string (string, string)",
+        ),
+        // A map key that is not there is `()` among real values.
+        (
+            "try { print(fixed(memory().used_mib, 0)); } catch { }",
+            "Function not found: fixed ((), i64)",
+        ),
+    ] {
+        let refusal = checked(script)
+            .err()
+            .unwrap_or_else(|| panic!("ran: {script}"));
+        assert!(refusal.to_string().contains(missing), "{refusal}: {script}");
+    }
+}
+
+#[test]
+fn a_function_that_ran_and_failed_inside_try_is_one_a_catch_may_catch() {
+    // `fixed` refuses 99 places itself, after taking its arguments out.
+    for script in [
+        "try { print(fixed(1, 99)); } catch (e) { print(e); }",
+        "try { print(fixed(1, 2)); } catch (e) { print(e); }",
+    ] {
+        checked(script).unwrap_or_else(|e| panic!("{e}: {script}"));
+    }
+}
+
+#[test]
+fn an_uncaught_failure_keeps_the_engines_own_error() {
+    let refusal = checked("set_policy(5);").expect_err("a call no function takes is refused");
+    assert!(
+        refusal.to_string().contains("(line 1, position 1)"),
+        "{refusal}"
+    );
+}
+
+#[test]
+fn a_hidden_miss_still_refuses_when_a_stand_in_stops_the_trial() {
+    let script = "try { print(\"policy:\", get_policy()); set_policy(\"rr\"); } catch { }\n\
+                  let n = 0;\nprint(5 / n);";
+    let refusal = checked(script)
+        .err()
+        .unwrap_or_else(|| panic!("ran: {script}"));
+    assert!(
+        refusal.to_string().contains("Function not found: print ("),
+        "{refusal}"
+    );
+}
