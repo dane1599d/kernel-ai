@@ -182,7 +182,23 @@ pub fn grammar() -> Result<Grammar, infer::Error> {
 /// (`pack::apps::turn`); an app left out of the turn cannot be named either.
 /// Each build leaks its actions, so llm builds one only when its apps change.
 pub fn grammar_with(groups: &[AppGroup]) -> Result<Grammar, infer::Error> {
-    let (apps_turn, left_out) = apps::turn(groups);
+    build(groups, true)
+}
+
+/// Spike S10-2's flat arm: [`grammar_with`] with every app's full lines in
+/// the apps turn (`pack::apps::flat_turn`), so an app row is written in one
+/// round. The pack's own index groups stay as they ship.
+pub fn grammar_flat(groups: &[AppGroup]) -> Result<Grammar, infer::Error> {
+    build(groups, false)
+}
+
+/// The grammars over the pack's rows and `groups`' rows, those on the index
+/// level when `apps_indexed`.
+fn build(groups: &[AppGroup], apps_indexed: bool) -> Result<Grammar, infer::Error> {
+    let (apps_turn, left_out) = match apps_indexed {
+        true => apps::turn(groups),
+        false => apps::flat_turn(groups),
+    };
     let shown: Vec<AppGroup> = groups
         .iter()
         .filter(|group| !left_out.contains(&group.app))
@@ -190,8 +206,10 @@ pub fn grammar_with(groups: &[AppGroup]) -> Result<Grammar, infer::Error> {
         .collect();
     let mut rows = crate::pack::rows();
     rows.extend(shown.iter().flat_map(|group| group.rows.iter().copied()));
-    let index_only =
-        |name: &str| crate::pack::indexed(name).is_some() || apps::group_of(&shown, name).is_some();
+    let index_only = |name: &str| {
+        crate::pack::indexed(name).is_some()
+            || (apps_indexed && apps::group_of(&shown, name).is_some())
+    };
     let full = actions(&rows);
     let mut second = Vec::new();
     for action in full.iter().filter(|a| !a.args.is_empty()) {
