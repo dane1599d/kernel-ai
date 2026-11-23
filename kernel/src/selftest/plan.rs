@@ -71,6 +71,8 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
             | SelfTest::DeskStandingRefused
+            | SelfTest::DeskStandingUndo
+            | SelfTest::DeskSends
             | SelfTest::DeskPerf
             | SelfTest::DeskProfile
             | SelfTest::DeskProfileFloor
@@ -262,7 +264,8 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskStart
             | SelfTest::DeskStartEsc
             | SelfTest::DeskTaskbar
-            | SelfTest::DeskStandingRefused => {
+            | SelfTest::DeskStandingRefused
+            | SelfTest::DeskSends => {
                 plan.push('\n');
                 plan.push_str(crate::agent_desk_tests::DESK);
                 kabi::plan::SHELL_DESK
@@ -409,7 +412,7 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::nap_tests::PLAN);
     }
-    if test == SelfTest::DeskStanding {
+    if matches!(test, SelfTest::DeskStanding | SelfTest::DeskStandingUndo) {
         plan.push('\n');
         plan.push_str(crate::standing_tests::PLAN);
     }
