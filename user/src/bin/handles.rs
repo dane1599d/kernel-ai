@@ -89,6 +89,7 @@ fn main() -> i32 {
         Some("mem") => mem::mem,
         Some("idle") => idle,
         Some("reboot") => power::reboot,
+        Some("poweroff") => power::power_off,
         Some("stop") => interrupt::stop,
         Some("slow") => async_call::slow,
         Some("quick") => async_call::quick,
