@@ -1,5 +1,6 @@
 //! `kai-kv 1` files: a restored slot answers as a freshly computed one on every
-//! tier, and every mismatch leaves the slot empty for a cold prefill.
+//! tier, a swapped app group's segment too (spike S10-2), and every mismatch
+//! leaves the slot empty for a cold prefill.
 
 extern crate std;
 
@@ -263,5 +264,69 @@ fn a_prompt_reuses_only_what_it_shares_with_the_file() {
         assert_eq!(got.cached, n);
         assert_eq!(n, got.prompt_tokens.min(n));
         assert_eq!((got.bytes, got.tokens), (want.bytes, want.tokens));
+    }
+}
+
+/// The layered `act` prompt of spike S10-2 (ADR 0010 §6): the pack, the apps
+/// turn's index lines and the request, then one app group's full lines.
+fn group_round(lines: &'static str) -> [Turn<'static>; 4] {
+    [
+        Turn::new(Role::System, "You run inside Kernel AI. Rows: say(text)."),
+        Turn::new(
+            Role::System,
+            "apps: todo: todo_add todo_list; timer: timer_set",
+        ),
+        Turn::new(Role::User, "add milk to my list"),
+        Turn::new(Role::System, lines),
+    ]
+}
+
+/// S10-2's swap: a slot saved after one group's second round, restored for
+/// another group's, reuses the start they share (the pack, the apps turn and
+/// the request) and answers as a freshly computed slot, on every tier; for
+/// its own group it reuses all but the prompt's last token.
+#[test]
+fn a_swapped_group_segment_answers_as_a_fresh_one_on_every_tier() {
+    let bytes = fixture::build(&Spec::tiny());
+    let todo = group_round("todo_add(item): adds an item. todo_list(): lists them.");
+    let timer = group_round("timer_set(minutes): starts a timer.");
+    for tier in Tier::all() {
+        let mut first = Engine::load(&bytes, tier, 256, ROOMY).unwrap();
+        // One token made and never run: the cache holds the prompt alone.
+        reply(&mut first, &todo, 1);
+        let mut saved = Vec::new();
+        first
+            .save_slot(&key(tier), &mut |part| {
+                saved.extend_from_slice(part);
+                true
+            })
+            .unwrap();
+        let before_request = first.conversation_tokens(&todo[..2]);
+        for (turns, own) in [(&todo, true), (&timer, false)] {
+            let mut restored = Engine::load(&bytes, tier, 256, ROOMY).unwrap();
+            let n = restored
+                .restore_slot(&key(tier), turns, &mut reader(&saved))
+                .unwrap();
+            let whole = restored.conversation_tokens(turns);
+            if own {
+                assert_eq!(n, whole - 1, "{}", tier.name());
+            } else {
+                assert!(n > before_request && n < whole, "{}: {n}", tier.name());
+            }
+            let mut fresh = Engine::load(&bytes, tier, 256, ROOMY).unwrap();
+            let (got, want) = (
+                reply(&mut restored, turns, 12),
+                reply(&mut fresh, turns, 12),
+            );
+            assert_eq!(got.cached, n, "{}", tier.name());
+            assert_eq!(want.cached, 0);
+            assert_eq!(
+                (got.bytes, got.tokens),
+                (want.bytes, want.tokens),
+                "{} own={own}",
+                tier.name()
+            );
+            assert_cache_holds_its_tokens(&bytes, tier, &restored);
+        }
     }
 }
