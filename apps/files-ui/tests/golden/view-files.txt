@@ -1,0 +1,2 @@
+windows: [w1] files (focused)  [w2] terminal "kai>"
+w1: [b1] button "Up"  text "Home"  [b2] button "Refresh"  [l3] list "Files" 4 items  text "docs/"  text "old/"  text "notes.txt"  text "photo one.png"  text "notes.txt"  text "Groceries"  text "milk"  text "eggs"  [t4] textbox "Rename to" = "notes.txt"  [b5] button "Open"  [b6] button "Rename"  [b7] button "Trash"  [b8] button "Restore"  text "2 folders, 2 files"

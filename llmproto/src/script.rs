@@ -513,6 +513,19 @@ pub fn encode_error(error: &AnswerError) -> String {
     }
 }
 
+/// An error as llm sends it on the wire: one line, cut to `max_chars`, except
+/// a model's answer in words (`noscript`, [`AnswerError::NoScript`]), which goes
+/// whole: it is the answer, and its summary is already held to
+/// [`REPLY_MAX_CHARS`]. Cut to llm's error length, a 300-character answer
+/// reached the person cut mid-word with no mark.
+pub fn error_line(error: &str, max_chars: usize) -> String {
+    let words = match error.starts_with("noscript ") {
+        true => "noscript ".len() + REPLY_MAX_CHARS,
+        false => 0,
+    };
+    crate::text::printable(error, max_chars.max(words), 1)
+}
+
 /// Reads [`encode_error`]'s text. Anything else is a server error.
 pub fn decode_error(text: &str) -> AnswerError {
     let (kind, rest) = text.split_once(' ').unwrap_or((text, ""));

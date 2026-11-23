@@ -349,6 +349,9 @@ pub struct Local {
     apps: crate::apps::Apps,
     /// Conversation memory for `act`, in RAM only (P1 plan section 4).
     history: History,
+    /// The tokens last written, or tried, to the act slot's `kai-kv 1` file,
+    /// or restored from it; none before either.
+    act_written: Option<usize>,
     last: Option<Speed>,
     /// The last prefill rate measured, tokens/s, for [`Clock::room_for`].
     prefill_rate: Option<f64>,
@@ -381,6 +384,7 @@ impl Local {
             grammar,
             apps: crate::apps::Apps::default(),
             history: History::new(),
+            act_written: None,
             last: None,
             prefill_rate: None,
             bytes,
@@ -435,6 +439,9 @@ impl Local {
                 Err(why) => println!("local: KV slot {slot} not restored ({why:?}) in {ms} ms"),
             }
             restored[i] = got.is_ok();
+            if slot == SLOTS.act && got.is_ok() {
+                self.act_written = Some(self.engine.cached_len());
+            }
         }
         (restored[0], restored[1])
     }
@@ -451,6 +458,11 @@ impl Local {
             .engine
             .save_slot(&key, &mut |bytes| writer.write(bytes));
         let ok = wrote.is_ok() && writer.finish();
+        // Tried once at this length, written or not: a disk that refused it
+        // is not asked again for the same prefix.
+        if slot == SLOTS.act {
+            self.act_written = Some(self.engine.cached_len());
+        }
         let ms = (sys::time_ns() - started) / 1_000_000;
         match ok {
             true => println!("local: KV slot {slot} saved in {ms} ms"),
@@ -652,6 +664,18 @@ impl Local {
             true => format!("{kept} turns, {tokens} of {budget} tokens (the older half went)"),
             false => format!("{kept} turns, {tokens} of {budget} tokens"),
         }
+    }
+
+    /// Whether the act slot's `kai-kv 1` file is to be written now, just after
+    /// its prefix was computed: only while history is empty, since history is
+    /// RAM only and the file must never hold a turn (audit, lane M item 4),
+    /// and only when the file is not this prefix already. A file from before
+    /// this rule that held turns is longer than the prefix, so it is written
+    /// again at the first idle turn with no conversation: after `new`, or the
+    /// next boot.
+    pub fn act_file_due(&mut self) -> bool {
+        self.engine.use_slot(SLOTS.act);
+        self.history.is_empty() && self.act_written != Some(self.engine.cached_len())
     }
 
     /// `new`: forgets the conversation.

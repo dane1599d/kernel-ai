@@ -212,14 +212,13 @@ fn main() -> i32 {
     // Whether the `act` prefix changed (a remembered turn, `new`): compacted,
     // that is computed again, while no request waits.
     let mut stale = true;
-    // Interim (S10-3): the slots' prefixes from last boot's KV files; a slot
-    // that did not come back is saved once its warm-up finishes.
-    let (mut save_act, mut save_script) = match &mut backends.local {
-        Some(Ok(local)) => {
-            let (act, script) = local.restore();
-            (!act, !script)
-        }
-        _ => (false, false),
+    // Interim (S10-3): the slots' prefixes from last boot's KV files. The
+    // script slot that did not come back is saved once its warm-up finishes;
+    // the act slot's file is written whenever its prefix, with no
+    // conversation in it, differs from the file (`Local::act_file_due`).
+    let mut save_script = match &mut backends.local {
+        Some(Ok(local)) => !local.restore().1,
+        _ => false,
     };
     loop {
         let mut caller = RecvInfo::default();
@@ -235,7 +234,7 @@ fn main() -> i32 {
             Some(local) if stale => {
                 let came = warm_act(local, &mut request, &mut caller);
                 stale = came.is_some();
-                if !stale && core::mem::take(&mut save_act) {
+                if !stale && local.act_file_due() {
                     local.save(local::SLOTS.act);
                 }
                 came
@@ -339,7 +338,7 @@ fn main() -> i32 {
             },
             _ => match handle(&mut backends, text, &mut response) {
                 Ok(text) => format!("ok {text}"),
-                Err(error) => format!("err {}", printable(&error, MAX_ERROR_CHARS, 1)),
+                Err(error) => format!("err {}", script::error_line(&error, MAX_ERROR_CHARS)),
             },
         };
         // The character cap can still exceed the kernel's message size in bytes.
@@ -540,7 +539,7 @@ fn run_job(
         Ok(answer) => format!("ok {}", script::encode_answer(&answer)),
         Err(error) => format!(
             "err {}",
-            printable(&script::encode_error(&error), MAX_ERROR_CHARS, 1)
+            script::error_line(&script::encode_error(&error), MAX_ERROR_CHARS)
         ),
     };
     jobs.finish(ticket, reply);

@@ -13,3 +13,5 @@ termcore = { path = "../termcore" }
 [dev-dependencies]
 # The agents' badges, held to kabi's (`agent_tests`).
 agentid = { path = "../agentid" }
+# A test holds `MAX_NET_MIB` to an agent manifest's most.
+kaiagent = { path = "../kaiagent" }

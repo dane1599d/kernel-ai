@@ -260,7 +260,13 @@ fn input_for_a_window_goes_to_its_pool_with_its_text() {
         usage,
         down,
     };
-    client.apply(&[key(0xE1, true), key(0x04, true), key(0x04, false)]);
+    // As the desk sends them: the modifiers first, then the key that changed them.
+    client.apply(&[
+        Effect::Modifiers(1),
+        key(0xE1, true),
+        key(0x04, true),
+        key(0x04, false),
+    ]);
     let posts = client.take_posts();
     let typed: Vec<(u32, Kind, u16, i32, &[u8])> = posts
         .iter()
@@ -299,7 +305,13 @@ fn input_for_a_window_goes_to_its_pool_with_its_text() {
     let modifiers = Event::decode(Interface::Seat, sent[0].1, &sent[0].2);
     assert_eq!((sent[0].0, modifiers), (7, Ok(Event::Modifiers(1))));
     // Ctrl held: the key comes with no text.
-    client.apply(&[key(0xE1, false), key(0xE0, true), key(0x06, true)]);
+    client.apply(&[
+        Effect::Modifiers(0),
+        key(0xE1, false),
+        Effect::Modifiers(2),
+        key(0xE0, true),
+        key(0x06, true),
+    ]);
     let ctrl_c = client.take_posts();
     assert!(matches!(ctrl_c[2].1, Ring::Input { len: 0, .. }));
     let held: Vec<i32> = ctrl_c
@@ -733,6 +745,12 @@ fn a_window_given_the_focus_takes_it_from_another_clients_window() {
 
 /// Which new window takes the keyboard.
 mod focus;
+/// What a client that never commits or never reads may make `desktop` keep.
+mod limits;
+/// The modifiers every client is told.
+mod mods;
+/// Pools `desktop` lets go.
+mod pools;
 /// The wheel and the buffer scale (lane G, 2026-11-18).
 mod scale;
 /// What a client's sizes may be.

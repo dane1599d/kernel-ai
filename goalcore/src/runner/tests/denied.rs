@@ -2,6 +2,7 @@
 //! a second time, whichever way they said it.
 
 use super::*;
+use crate::REPEATED;
 
 fn step_on(row: &str, path: &str) -> Step<&'static str> {
     Step {
@@ -44,7 +45,14 @@ fn a_step_the_person_said_no_to_is_not_asked_again() {
     assert_eq!(steps.ran.len(), 1, "asked once");
     let goal = goals.get(id).unwrap();
     assert_eq!(goal.state, State::Paused(Pause::User));
-    assert_eq!((goal.log.len(), goal.asked, goal.denied), (1, 1, 1));
+    assert_eq!((goal.log.len(), goal.asked, goal.denied), (2, 1, 1));
+    // The goal's own record says what stopped it, and which step.
+    let held = &goal.log[1];
+    assert_eq!(
+        (held.status, held.note.as_str()),
+        (StepStatus::Held, REPEATED)
+    );
+    assert_eq!(held.proposal.row, "fs_list");
     // Paused, it is not planned: nothing is asked while the person is silent.
     assert_eq!(turn(&mut goals, &mut steps, T0 + 3), []);
     assert_eq!(steps.ran.len(), 1);
@@ -52,7 +60,7 @@ fn a_step_the_person_said_no_to_is_not_asked_again() {
     goals.resume(id).unwrap();
     assert_eq!(
         turn(&mut goals, &mut steps, T0 + 4),
-        [Event::Denied { goal: id, step: 2 }]
+        [Event::Denied { goal: id, step: 3 }]
     );
     assert_eq!(turn(&mut goals, &mut steps, T0 + 5), repeated);
     assert_eq!(
@@ -175,4 +183,98 @@ fn a_goal_that_ends_takes_its_denied_steps_with_it() {
         &mut steps,
     );
     assert!(runner.denied.is_empty());
+}
+
+/// #1112's LOW: a repeat forgets the no to that step alone. The person said no to
+/// A, B and C; the planner cycles A, B, C, A. Each needs its own resume before it
+/// comes back, so one resume never brings back three cards.
+#[test]
+fn a_repeat_forgets_the_no_to_that_step_alone() {
+    let mut goals = Goals::new();
+    let id = approved(&mut goals);
+    let [a, b, c] = ["reports/a", "reports/b", "reports/c"].map(|path| step_on("fs_list", path));
+    let mut planner = Script(VecDeque::from(
+        [&a, &b, &c, &a, &b, &c, &a].map(|step| Plan::Step(step.clone())),
+    ));
+    let mut steps = Recorded {
+        deny: vec!["fs_list"],
+        ..Recorded::default()
+    };
+    let mut runner = Runner::new();
+    let mut turn = |goals: &mut Goals, steps: &mut Recorded, at| {
+        go(
+            &mut runner,
+            goals,
+            T0 + at,
+            Presence::Away,
+            &mut planner,
+            steps,
+        )
+    };
+    for at in 1..=3 {
+        let events = turn(&mut goals, &mut steps, at);
+        assert!(matches!(events[..], [Event::Denied { .. }]), "{events:?}");
+    }
+    let repeated = |events: Vec<Event>| matches!(events[..], [Event::Repeated { .. }]);
+    // A again: held, and the goal pauses.
+    assert!(repeated(turn(&mut goals, &mut steps, 4)));
+    // One resume: B and C are still refused, so each pauses the goal in turn.
+    for at in 5..=6 {
+        goals.resume(id).unwrap();
+        assert!(repeated(turn(&mut goals, &mut steps, at)), "{at}");
+    }
+    assert_eq!(steps.ran.len(), 3, "no card came back for B or C");
+    // A was forgotten at its repeat: after this resume it may be asked once more.
+    goals.resume(id).unwrap();
+    let events = turn(&mut goals, &mut steps, 7);
+    assert!(matches!(events[..], [Event::Denied { .. }]), "{events:?}");
+    assert_eq!(steps.ran.len(), 4);
+    let text = goals.to_text();
+    assert_eq!(Goals::parse(&text).as_ref(), Ok(&goals), "{text}");
+}
+
+/// #1146's LOW: a repeat with no room left in the log fails the goal, said,
+/// rather than pausing it with nothing logged.
+#[test]
+fn a_repeat_with_a_full_log_fails_the_goal() {
+    let mut goals = Goals::new();
+    let id = approved(&mut goals);
+    let mut planner = Script(VecDeque::from([
+        Plan::Step(step("fs_list")),
+        Plan::Step(step("fs_list")),
+    ]));
+    let mut steps = Recorded {
+        deny: vec!["fs_list"],
+        ..Recorded::default()
+    };
+    let mut runner = Runner::new();
+    let events = go(
+        &mut runner,
+        &mut goals,
+        T0 + 1,
+        Presence::Away,
+        &mut planner,
+        &mut steps,
+    );
+    assert_eq!(events, [Event::Denied { goal: id, step: 1 }]);
+    // The log fills up with what came before.
+    let goal = goals.get_mut(id).unwrap();
+    let denied = goal.log[0].clone();
+    for n in 2..=crate::MAX_LOG as u32 {
+        goal.log.push(crate::StepLog {
+            n,
+            ..denied.clone()
+        });
+    }
+    let events = go(
+        &mut runner,
+        &mut goals,
+        T0 + 2,
+        Presence::Away,
+        &mut planner,
+        &mut steps,
+    );
+    assert_eq!(events, [Event::Failed { goal: id }]);
+    assert_eq!(goals.get(id).unwrap().state, State::Failed);
+    assert_eq!(steps.ran.len(), 1, "asked once");
 }

@@ -461,7 +461,7 @@ fn directive(text: &str, line: u32) -> Result<Option<What>, Error> {
         },
         "include" => Err(syntax(
             line,
-            "only #include <…> works at c>; files come with :load",
+            "#include \"…\" works only at the top of an entry typed at c>, one file deep; :load replays a saved file",
         )),
         _ => Err(syntax(
             line,

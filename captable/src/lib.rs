@@ -304,6 +304,31 @@ impl Table {
         Ok(entry)
     }
 
+    /// Undoes [`Table::close`] of `handle`: puts `entry` back under the same
+    /// handle value when its slot has stayed empty since (its generation one
+    /// past the handle's, or retired at it), so a caller whose move was
+    /// refused keeps the handles it named. Otherwise the entry goes in as
+    /// [`Table::insert`] puts it; the handle it ends up under.
+    pub fn restore(&mut self, handle: Handle, entry: Entry) -> Result<Handle, Error> {
+        let index = handle.index();
+        let undone = self.slots.get(index).is_some_and(|slot| {
+            slot.entry.is_none()
+                && (slot.generation == handle.generation().wrapping_add(1)
+                    || (slot.generation == handle.generation()
+                        && slot.generation == MAX_GENERATION))
+        });
+        if !undone || handle == Handle::NONE {
+            return self.insert(entry);
+        }
+        if let Some(at) = self.free.iter().position(|&i| usize::from(i) == index) {
+            self.free.remove(at);
+        }
+        let slot = &mut self.slots[index];
+        slot.generation = handle.generation();
+        slot.entry = Some(entry);
+        Ok(handle)
+    }
+
     /// Every open handle and its entry, by index.
     pub fn iter(&self) -> impl Iterator<Item = (Handle, &Entry)> {
         self.slots.iter().enumerate().filter_map(|(index, slot)| {

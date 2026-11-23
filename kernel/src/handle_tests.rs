@@ -265,6 +265,14 @@ fn kernel_grants() -> Result<(), &'static str> {
         let badge = grants::mint_once(slot, Kind::Sched, Rights::READ, 0, request, shown)
             .and_then(|h| handle::with(slot, |t| t.table.get(h).map(|e| e.badge).unwrap_or(0)))
             .map_err(|_| "handles: cannot mint a second ONCE handle")?;
+        // ONCE_CHECK spends only a ONCE the caller holds (audit K #6): from
+        // another table it is NotFound and leaves it, then its holder uses it.
+        let elsewhere = (slot + 1) % MAX_PROCESSES;
+        if grants::spend_held_once(elsewhere, badge, &shown) != Err(kabi::Error::NotFound)
+            || grants::check_once(badge, &other) != Verdict::Mismatch
+        {
+            return Err("handles: a ONCE was checked by a process that does not hold it");
+        }
         let _ = grants::revoke(request);
         if grants::check_once(badge, &shown) != Verdict::Revoked {
             return Err("handles: a ONCE digest outlived its request");
@@ -277,7 +285,9 @@ fn kernel_grants() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// `handles mode=grants`, started with SUPERVISE and POLICY.
+/// `handles mode=grants`, started with SUPERVISE and POLICY. It exits owning
+/// a live node, so its exit only completes if `revoke_owned` does not
+/// deadlock (audit K #11).
 fn ring3_grants() -> Result<(), &'static str> {
     let pid = process::spawn(&SpawnRequest {
         name: "hgrant",
@@ -293,6 +303,9 @@ fn ring3_grants() -> Result<(), &'static str> {
     })
     .map_err(|_| "handles: cannot start the grants check")?;
     match wait_exit(pid)? {
+        (ExitReason::Exited, 0) if grants::owns_any(pid) => {
+            Err("handles: a node the ended process made is still live")
+        }
         (ExitReason::Exited, 0) => Ok(()),
         _ => Err("handles: the ring-3 grant checks failed"),
     }
