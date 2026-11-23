@@ -52,7 +52,9 @@ case "$1 $2" in
     case "$a" in
       *ci.yml*) echo "123 completed";;
       *fluency-model*) echo "456 completed";;
-      *"--limit 30"*) echo "DCO=success";;
+      *"--limit 30"*)
+        [ -f "$T/others-fail" ] && exit 1
+        if [ -f "$T/others" ]; then cat "$T/others"; else echo "DCO=success"; fi;;
     esac;;
   "run view")
     case "$a" in

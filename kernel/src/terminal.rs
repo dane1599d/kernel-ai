@@ -54,6 +54,9 @@ static MENU_OPEN_MS: AtomicU64 = AtomicU64::new(0);
 static LINES_CLEARED: AtomicU64 = AtomicU64::new(0);
 /// The shell said it has a card waiting (CARD_READY), not yet taken.
 static CARD_WAITING: AtomicBool = AtomicBool::new(false);
+/// The prompt can give way to a card now: it waits at an empty line with
+/// nothing else waiting ([`read_line`]). For [`card_state`].
+static CARD_PROMPT: AtomicBool = AtomicBool::new(false);
 /// Cards taken from the shell at an empty prompt, and the shell's answers to
 /// [`termcore::menu::TAKE_CARD`], for the boot case.
 static CARDS_TAKEN: AtomicU64 = AtomicU64::new(0);
@@ -190,6 +193,20 @@ pub fn cards_taken() -> (u64, u64) {
     (
         CARDS_TAKEN.load(Ordering::Relaxed),
         CARD_ASKS.load(Ordering::Relaxed),
+    )
+}
+
+/// Why the shell's waiting card is or is not taken, in words, for a boot
+/// case whose card did not come: each condition [`card_may_open`] and the
+/// prompt need.
+pub fn card_state() -> alloc::string::String {
+    format!(
+        "card waiting {}, prompt free {}, desktop showing {}, trusted layer reading {}, box empty {}",
+        card_armed(),
+        CARD_PROMPT.load(Ordering::Acquire),
+        claim::showing(),
+        ask_box::alive(),
+        ask_box::empty()
     )
 }
 
@@ -402,7 +419,9 @@ fn answer_on_card(menu: &Menu) -> Option<Answer> {
     if !claim::showing() || !ask_box::alive() {
         return None;
     }
-    if !ask_box::post(menu.id, menu.call(), menu.question()) {
+    // Code's question alone: a menu's detail is the console's, never the
+    // trusted card's (ADR 0005 section 7).
+    if !ask_box::post(menu.id, menu.call(), menu.card_reason()) {
         return None;
     }
     AWAITING_ANSWER.store(true, Ordering::Release);
@@ -493,13 +512,19 @@ fn now_ms() -> u64 {
 fn read_line(decoder: &mut Decoder, prompt: &str, card: bool) -> Read {
     let mut line = Line::new(MAX_LINE);
     loop {
-        let key = match card && line.text().is_empty() {
+        let free = card && line.text().is_empty();
+        CARD_PROMPT.store(free, Ordering::Release);
+        let key = match free {
             true => match decoder.read_key_unless(&card_armed, &card_may_open) {
                 Some(key) => key,
-                None => return Read::Card,
+                None => {
+                    CARD_PROMPT.store(false, Ordering::Release);
+                    return Read::Card;
+                }
             },
             false => decoder.read_key(),
         };
+        CARD_PROMPT.store(false, Ordering::Release);
         match line.apply(key) {
             Outcome::Unchanged => {}
             Outcome::Changed => console::show_input(prompt, line.text(), line.cursor()),

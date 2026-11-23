@@ -332,8 +332,15 @@ name = "comp-editor-ui"
 version = "0.1.0-dev"
 dependencies = [
  "comp-ui-bind",
+ "deskcore",
  "editcore",
+ "gfx2d",
+ "look",
+ "sha2 0.11.1",
+ "surfabi",
  "uikit",
+ "uipaint",
+ "wasmhost",
 ]
 
 [[package]]
@@ -366,7 +373,14 @@ dependencies = [
  "agentabi",
  "comp-files",
  "comp-ui-bind",
+ "deskcore",
+ "gfx2d",
+ "look",
+ "sha2 0.11.1",
+ "surfabi",
  "uikit",
+ "uipaint",
+ "wasmhost",
 ]
 
 [[package]]
@@ -407,7 +421,14 @@ version = "0.1.0-dev"
 dependencies = [
  "comp-models",
  "comp-ui-bind",
+ "deskcore",
+ "gfx2d",
+ "look",
+ "sha2 0.11.1",
+ "surfabi",
  "uikit",
+ "uipaint",
+ "wasmhost",
 ]
 
 [[package]]
@@ -440,7 +461,14 @@ version = "0.1.0-dev"
 dependencies = [
  "comp-monitor",
  "comp-ui-bind",
+ "deskcore",
+ "gfx2d",
+ "look",
+ "sha2 0.11.1",
+ "surfabi",
  "uikit",
+ "uipaint",
+ "wasmhost",
 ]
 
 [[package]]
@@ -494,7 +522,14 @@ version = "0.1.0-dev"
 dependencies = [
  "comp-notes",
  "compsdk",
+ "deskcore",
+ "gfx2d",
+ "look",
+ "sha2 0.11.1",
+ "surfabi",
  "uikit",
+ "uipaint",
+ "wasmhost",
 ]
 
 [[package]]
@@ -531,8 +566,14 @@ name = "comp-settings-ui"
 version = "0.1.0-dev"
 dependencies = [
  "comp-settings",
+ "deskcore",
+ "gfx2d",
  "look",
+ "sha2 0.11.1",
+ "surfabi",
  "uikit",
+ "uipaint",
+ "wasmhost",
 ]
 
 [[package]]
@@ -564,7 +605,14 @@ name = "comp-terminal-ui"
 version = "0.1.0-dev"
 dependencies = [
  "comp-terminal",
+ "deskcore",
+ "gfx2d",
+ "look",
+ "sha2 0.11.1",
+ "surfabi",
  "uikit",
+ "uipaint",
+ "wasmhost",
 ]
 
 [[package]]
@@ -1586,6 +1634,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "maintcore"
+version = "0.1.0-dev"
+
+[[package]]
 name = "managed"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2184,6 +2236,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c107b6f4780854c8b126e228ea8869f4d7b71260f962fefb57b996b8959ba6b"
 
 [[package]]
+name = "searchcore"
+version = "0.1.0-dev"
+dependencies = [
+ "fsproto",
+ "semindex",
+]
+
+[[package]]
 name = "sec1"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2303,6 +2363,7 @@ dependencies = [
  "deskcore",
  "editcore",
  "kabi",
+ "kaiagent",
  "kaigrants",
  "kainet",
  "kaiprofile",
@@ -2479,6 +2540,7 @@ version = "0.1.0-dev"
 dependencies = [
  "agentid",
  "kabi",
+ "kaiagent",
  "netdest",
  "termcore",
 ]

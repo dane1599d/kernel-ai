@@ -8,6 +8,16 @@
 //! The host wakes only what it napped. An app suspended by a standing
 //! instruction or the agent stays suspended until that rule's `until`, or a
 //! request, brings it back.
+//!
+//! A clock jump is not unused time. The host says, when it waits for a nap,
+//! when it will look again ([`Nap::look_by`]); if it looks later than that
+//! by more than [`STALL_SLACK_MS`], the machine was stalled (the VM paused,
+//! the host suspended or swamped) and the time past the promise is not
+//! counted as the app's ([`Nap::looked`]).
+
+/// How late past its promised look the host may be before the lateness is a
+/// stall: a busy scheduler's ordinary delay stays within it.
+pub const STALL_SLACK_MS: u64 = 2_000;
 
 /// One app's use, as its host sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -22,6 +32,8 @@ pub struct Nap {
     leases: u32,
     /// Whether this host suspended it, and so may wake it.
     napped: bool,
+    /// The latest the host said it would look again ([`Nap::look_by`]).
+    look_by_ms: Option<u64>,
 }
 
 impl Nap {
@@ -33,7 +45,30 @@ impl Nap {
             keep_running: false,
             leases: 0,
             napped: false,
+            look_by_ms: None,
         }
+    }
+
+    /// The host waits until at most `deadline_ms` before it looks again, or
+    /// for ever (`None`).
+    pub fn look_by(&mut self, deadline_ms: Option<u64>) {
+        self.look_by_ms = deadline_ms;
+    }
+
+    /// The host looks at `now_ms`: time past its promised look, beyond
+    /// [`STALL_SLACK_MS`], was a stall, not use or disuse, and is taken out
+    /// of the unused time, so the app does not nap for it. The stall is how
+    /// far it was late, in ms (0 for none).
+    pub fn looked(&mut self, now_ms: u64) -> u64 {
+        let Some(by) = self.look_by_ms.take() else {
+            return 0;
+        };
+        let late = now_ms.saturating_sub(by);
+        if late <= STALL_SLACK_MS {
+            return 0;
+        }
+        self.last_use_ms = self.last_use_ms.saturating_add(late).min(now_ms);
+        late
     }
 
     /// A request, or input to one of its windows.
@@ -127,6 +162,41 @@ mod tests {
         n.lease(false);
         assert!(n.due(10 * MIN2));
         assert!(!Nap::new(0, 0).due(u64::MAX), "nap_ms=0 never naps");
+    }
+
+    /// A host stall (the clock jumping while nothing ran) is not unused
+    /// time: an app the host promised to look at in time is not due for the
+    /// stall, but still naps once its own unused time has passed.
+    #[test]
+    fn a_clock_jump_is_not_unused_time() {
+        let mut n = Nap::new(MIN2, 0);
+        // The host waits 30 s (another deadline comes first).
+        n.look_by(Some(30_000));
+        // It looks an hour later: the VM was paused.
+        let now = 60 * MIN2;
+        assert_eq!(n.looked(now), now - 30_000);
+        assert!(!n.due(now), "the stall napped it");
+        // What it had left at the promised look still counts.
+        assert_eq!(n.wait_ms(now), Some(MIN2 - 30_000));
+        assert!(n.due(now + MIN2 - 30_000));
+    }
+
+    /// A look on time, or a little late, changes nothing; a look with no
+    /// promise (the host waited for a request) counts as ever.
+    #[test]
+    fn a_look_on_time_or_without_a_promise_counts_as_ever() {
+        let mut n = Nap::new(MIN2, 0);
+        n.look_by(Some(MIN2));
+        assert_eq!(n.looked(MIN2 + STALL_SLACK_MS), 0);
+        assert!(n.due(MIN2 + STALL_SLACK_MS));
+        let mut n = Nap::new(MIN2, 0);
+        assert_eq!(n.looked(10 * MIN2), 0);
+        assert!(n.due(10 * MIN2));
+        // A promise is used once.
+        let mut n = Nap::new(MIN2, 0);
+        n.look_by(Some(1_000));
+        n.looked(500);
+        assert_eq!(n.looked(10 * MIN2), 0);
     }
 
     #[test]

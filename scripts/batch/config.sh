@@ -18,6 +18,8 @@
 #   KAI_FLUENCY_MIN            fluency gate after one repair, %   90
 #   KAI_MODEL_PATHS            paths that change what the model   see below
 #                              sees: such a PR needs the fluency gate, one per batch
+#   KAI_BATCH_NOBOOT           1: PRs that change nothing the     1
+#                              boot jobs see (noboot.sh) land first in a lint-only batch
 KAI_SCRIPTS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 R=${KAI_REPO:-dane1599d/kernel-ai}
 G=${KAI_GIT_DIR:-$(git -C "$KAI_SCRIPTS" rev-parse --show-toplevel 2>/dev/null)}
@@ -32,3 +34,4 @@ MAX=${KAI_BATCH_MAX:-15}
 DELETE_BRANCHES=${KAI_BATCH_DELETE_BRANCHES:-1}
 FLUENCY_MIN=${KAI_FLUENCY_MIN:-90}
 MODEL_PATHS=${KAI_MODEL_PATHS:-'^(llmproto/|infer/src/|quant/|gguf/|user/src/bin/llm|user/src/pool\.rs|agentabi/|shellcore/src/(agentcore|state)\.rs)'}
+NOBOOT=${KAI_BATCH_NOBOOT:-1}

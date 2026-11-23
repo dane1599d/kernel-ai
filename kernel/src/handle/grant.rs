@@ -11,7 +11,7 @@
 //! it mints a `ONCE` handle under it ([`mint_once`]) whose badge names a digest
 //! held here, which the action's owner checks ([`check_once`]).
 
-use super::HANDLES;
+use super::lock;
 use crate::threads;
 use captable::grant::{self, GrantRef, Life, Live, NODES, Tree};
 use captable::once::{Book, Verdict};
@@ -120,11 +120,24 @@ pub fn revoke(node: GrantRef) -> Result<usize, kabi::Error> {
 /// Revokes every node the process `pid` made, when it ends: what it gave out
 /// under them goes with it.
 pub fn revoke_owned(pid: u64) {
-    while let Some(node) = TREE.lock().owned_by(pid) {
-        if revoke(node).is_err() {
+    // Every one, whatever a revoke answers (one revoked meanwhile by its
+    // parent answers Revoked, and the rest must still go: #1160's review);
+    // at most one pass per node, so a node that will not go cannot loop.
+    for _ in 0..NODES {
+        // Its own statement, so the lock goes before `revoke` takes it again:
+        // a `while let` scrutinee's guard would live through the body, and the
+        // lock is not reentrant (audit K #11).
+        let owned = TREE.lock().owned_by(pid);
+        let Some(node) = owned else {
             break;
-        }
+        };
+        let _ = revoke(node);
     }
+}
+
+/// Whether the process `pid` still owns a live node: none once it has ended.
+pub fn owns_any(pid: u64) -> bool {
+    TREE.lock().owned_by(pid).is_some()
 }
 
 /// Records that the calling thread waits on a call through a route given under
@@ -190,6 +203,17 @@ pub fn spend_once(badge: u64, digest: &[u8; 32]) -> Result<(), kabi::Error> {
     }
 }
 
+/// ONCE_CHECK: [`spend_once`] for the process in `slot`, which must hold the
+/// `ONCE` itself (NotFound otherwise, as for no badge): a process that only
+/// learned a badge cannot use up, or test digests against, another's
+/// consent (audit K #6).
+pub fn spend_held_once(slot: usize, badge: u64, digest: &[u8; 32]) -> Result<(), kabi::Error> {
+    if !holds_once(slot, badge) {
+        return Err(kabi::Error::NotFound);
+    }
+    spend_once(badge, digest)
+}
+
 /// [`spend_once`] for a call made by process `pid`, which must hold the `ONCE`;
 /// pid 0, the kernel's own request, holds no table and is not checked.
 pub fn spend_once_for(pid: u64, badge: u64, digest: &[u8; 32]) -> Result<(), kabi::Error> {
@@ -206,7 +230,7 @@ pub fn spend_once_for(pid: u64, badge: u64, digest: &[u8; 32]) -> Result<(), kab
 
 /// Whether `slot`'s table holds a `ONCE` handle with badge `badge`.
 pub fn holds_once(slot: usize, badge: u64) -> bool {
-    HANDLES[slot].lock().as_ref().is_some_and(|h| {
+    lock(slot).as_ref().is_some_and(|h| {
         h.table
             .iter()
             .any(|(_, e)| e.flags.contains(Flags::ONCE) && e.badge == badge)
@@ -215,7 +239,7 @@ pub fn holds_once(slot: usize, badge: u64) -> bool {
 
 /// Puts `entry` in `slot`'s table.
 pub fn insert(slot: usize, entry: Entry) -> Result<Handle, kabi::Error> {
-    let mut guard = HANDLES[slot].lock();
+    let mut guard = lock(slot);
     let table: &mut Table = &mut guard.as_mut().ok_or(kabi::Error::NotFound)?.table;
     table.insert(entry).map_err(kabi::Error::from)
 }

@@ -338,3 +338,20 @@ fn a_double_click_or_a_held_key_does_not_confirm_a_delete() {
     assert!(on_at(&mut notes, &mut view, &press, at + 1_000));
     assert_eq!(notes.count().notes, 2);
 }
+
+#[path = "../../../testkit/appview.rs"]
+mod appview;
+
+/// The agent's view of Notes with its list and an open note: whole, within 300
+/// tokens, and the committed one (`tests/golden/view-notes.txt`).
+#[test]
+fn the_agents_view_of_notes_is_whole_and_fits_300_tokens() {
+    let notes = some_notes();
+    let view = View {
+        selected: Some(1),
+        ..View::default()
+    };
+    let f = frame(&ui::build(&notes, &view));
+    appview::check("notes", "notes", "Notes", &f);
+    appview::paints("notes", &f);
+}

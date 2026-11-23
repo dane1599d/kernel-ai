@@ -25,6 +25,7 @@ mod abilities;
 mod actions;
 pub mod actlog;
 mod agentcore;
+pub mod agentstep;
 pub mod analyse;
 pub mod apart;
 pub mod appbuild;
@@ -722,6 +723,10 @@ pub struct Shell {
     /// What the agent's reading of app grants keeps between passes
     /// ([`appgrants`]).
     grant_memo: appgrants::Memo,
+    /// The agents the shell knows (ADR 0013 §1): who a badged route's step is.
+    roster: agentid::Roster,
+    /// What the card came to for agents' asked steps, until each waits for it.
+    agents_told: Vec<agentstep::Told>,
     /// The last script as `show` prints it.
     shown: Option<String>,
     /// What the script run by the last line printed.
@@ -776,6 +781,9 @@ pub struct Shell {
     /// The source of the data the call now running was decided after (a
     /// view's second round), for consent (ADR 0002 D6).
     steered: Option<&'static str>,
+    /// The line now running is the person's own `open <app>` (`open_line`),
+    /// made by code with no model: its calls are the person's (`Checked::person`).
+    person_line: bool,
     /// The `c>` entry now running, and its calls' values (P4 task 12).
     c_entry: Option<centry::CEntry>,
     last_value: Option<rhai::Dynamic>,
@@ -848,6 +856,8 @@ impl Shell {
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
             hosts: nethosts::Table::curated(),
+            roster: agentid::Roster::new(),
+            agents_told: Vec::new(),
             grant_memo: appgrants::Memo::default(),
             shown: None,
             last_output: None,
@@ -868,6 +878,7 @@ impl Shell {
             saved_log: None,
             owner_once: None,
             steered: None,
+            person_line: false,
             c_entry: None,
             last_value: None,
             value_rets: Vec::new(),

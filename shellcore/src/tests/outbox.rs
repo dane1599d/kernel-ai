@@ -703,3 +703,31 @@ fn the_longest_inverse_fits_the_raw_word() {
         );
     }
 }
+
+/// A desktop restart ends every held send unsent, in code's words, and the
+/// one already sending goes on (the send-chain audit's MEDIUM).
+#[test]
+fn a_desktop_restart_ends_every_held_send_unsent() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let going = hold(&host, &mut shell, "a.example", 0);
+    let held = hold(&host, &mut shell, "b.example", 4_000);
+    assert_eq!(shell.start_due_send(5_000), Some(going));
+    shell.end_held_sends_on_restart();
+    assert_eq!(after_of(&shell, held), "unsent");
+    assert_eq!(after_of(&shell, going), "sending");
+    let ended = shell.take_sends_ended();
+    assert_eq!(
+        ended[0].line,
+        format!("Not sent to b.example: {}", crate::outbox::RESTART_WHY)
+    );
+    shell.run_send(going);
+    shell.drain_sends(u64::MAX / 2);
+    let hosts: Vec<String> = host
+        .sends
+        .borrow()
+        .iter()
+        .map(|s| s.0.host.clone())
+        .collect();
+    assert_eq!(hosts, ["a.example"]);
+}

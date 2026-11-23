@@ -6,9 +6,11 @@
 //! in its place.
 
 use crate::bundle;
+use crate::generation::Installed;
 use crate::header::{Header, Kind};
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 /// What a window's service name ends with.
 pub const WINDOW: &str = "-window";
@@ -37,6 +39,40 @@ pub fn service(header: &Header, object: &[u8]) -> Result<Option<String>, String>
             name = header.name
         )),
     }
+}
+
+/// What starting a generation's apps came to ([`start_each`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Starts {
+    /// What `start` said of each app it started.
+    pub started: Vec<String>,
+    /// `<name> <version> is installed but not started: <why>`, one a
+    /// package whose start failed.
+    pub not_started: Vec<String>,
+}
+
+/// Starts each of `packages` with `start`, one at a time, so one that fails
+/// (its component not taken, an answer the supervisor should not give)
+/// never keeps the rest from starting at every boot. `start` answers
+/// `Ok(Some(line))` for an app it started, `Ok(None)` for a package it passed
+/// over (not an app, or one it said why it does not start), and `Err(why)`
+/// for a failure, which is said and gone past.
+pub fn start_each<F>(packages: &[Installed], mut start: F) -> Starts
+where
+    F: FnMut(&Installed) -> Result<Option<String>, String>,
+{
+    let mut starts = Starts::default();
+    for package in packages {
+        match start(package) {
+            Ok(Some(line)) => starts.started.push(line),
+            Ok(None) => {}
+            Err(why) => starts.not_started.push(format!(
+                "{} {} is installed but not started: {why}",
+                package.name, package.version
+            )),
+        }
+    }
+    starts
 }
 
 #[cfg(test)]
@@ -113,5 +149,42 @@ pub(crate) mod tests {
         let header = Header::parse(text).unwrap();
         let object = bundle::build(&[(bundle::HEADER, text.as_bytes()), ("words.txt", b"a\n")]);
         assert_eq!(service(&header, &object), Ok(None));
+    }
+
+    /// One package whose start fails is said and gone past: the ones after
+    /// it still start (the audit: one COMP_ADD refused kept every later app
+    /// from starting at every boot).
+    #[test]
+    fn one_failed_start_never_stops_the_rest() {
+        use crate::generation::Installed;
+        use crate::version::Version;
+        let package = |name: &str| Installed {
+            name: String::from(name),
+            version: Version::parse("1.0.0").unwrap(),
+            sha: crate::sha256(name.as_bytes()),
+            explicit: true,
+            grants: alloc::vec::Vec::new(),
+        };
+        let packages = [
+            package("notes"),
+            package("timer"),
+            package("lib"),
+            package("clock"),
+        ];
+        let mut tried = alloc::vec::Vec::new();
+        let starts = start_each(&packages, |p| {
+            tried.push(p.name.clone());
+            match p.name.as_str() {
+                "timer" => Err(String::from("COMP_ADD timer: NoMemory")),
+                "lib" => Ok(None),
+                name => Ok(Some(format!("{name} started"))),
+            }
+        });
+        assert_eq!(tried, ["notes", "timer", "lib", "clock"]);
+        assert_eq!(starts.started, ["notes started", "clock started"]);
+        assert_eq!(
+            starts.not_started,
+            ["timer 1.0.0 is installed but not started: COMP_ADD timer: NoMemory"]
+        );
     }
 }

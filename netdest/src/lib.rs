@@ -31,6 +31,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+pub mod meter;
 pub mod ranges;
 pub mod shared;
 #[cfg(test)]
@@ -40,6 +41,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
 use core::net::Ipv4Addr;
+pub use meter::{DayMeter, OverBudget};
 pub use ranges::{AddrRange, MAX_SET_SIZE, PortRange};
 pub use shared::{SHARED_SUFFIXES, is_shared};
 

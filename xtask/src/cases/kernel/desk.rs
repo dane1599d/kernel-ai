@@ -332,7 +332,7 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
             &["tab", "ret"],
             &["tab", "left", "tab", "ret"],
             &[
-                "tab", "tab", "tab", "right", "right", "right", "right", "tab", "spc",
+                "tab", "tab", "tab", "tab", "right", "right", "right", "right", "tab", "spc",
             ],
             &[
                 "l", "o", "o", "k", "spc", "a", "t", "spc", "s", "e", "t", "t", "i", "n", "g", "s",

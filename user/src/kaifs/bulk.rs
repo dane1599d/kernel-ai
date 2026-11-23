@@ -2,9 +2,20 @@
 //! calls [`reserve`] gets one `Shm` of up to [`fsproto::MAX_SHM_DATA`],
 //! kept for its life, and a duplicate of it moves with each request. One is
 //! made once, not per call, since SHM_CREATE counts its pages against the
-//! quota until the process ends. Without one, while another thread uses it, or
-//! with an `fs` that predates the requests, [`super::read_at`] and [`super::write_at`] go a
-//! message at a time, having changed nothing.
+//! quota until the process ends. Without one, while another thread uses it,
+//! once it is poisoned, or with an `fs` that predates the requests,
+//! [`super::read_at`] and [`super::write_at`] go a message at a time.
+//!
+//! Who reserves: the kernel has 64 `Shm` objects for the whole system
+//! (`kernel::shm::MAX_OBJECTS`), shared with windows, `cc` and `fetch`, so only
+//! a process that moves files in bulk should reserve one: a benchmark, a
+//! model or package download. Apps and the shell do not. A reserve that finds
+//! none free answers Busy, and that process goes a message at a time.
+//!
+//! A request whose CALL_H fails after the `Shm` moved (a timeout, `fs` gone)
+//! may still be running in `fs`, which could yet read or fill the `Shm`. The
+//! `Shm` is then poisoned for the process's life: it is never handed to `fs`
+//! again, so no later transfer's bytes can meet that request's.
 
 use crate::sys;
 use alloc::format;
@@ -27,6 +38,8 @@ static ADDRESS: AtomicU64 = AtomicU64::new(0);
 static LEN: AtomicU64 = AtomicU64::new(0);
 /// Held while a call uses the `Shm`.
 static BUSY: AtomicBool = AtomicBool::new(false);
+/// Set once a request's CALL_H failed after the `Shm` moved with it.
+static POISONED: AtomicBool = AtomicBool::new(false);
 
 /// Makes the process's bulk `Shm`, `bytes` long (at most
 /// [`fsproto::MAX_SHM_DATA`]), counted against its quota for its life.
@@ -53,16 +66,28 @@ pub fn reserve(bytes: usize) -> Result<(), kabi::Error> {
     made
 }
 
-/// The `Shm` for one call, if there is one and no other call holds it.
-struct Lease {
+/// Whether a call failed after the `Shm` moved: it is then never sent again,
+/// and its holders go a message at a time.
+pub fn poisoned() -> bool {
+    POISONED.load(Ordering::Acquire)
+}
+
+/// The `Shm` while a caller holds it: for one call here, or for the life of a
+/// client that moves its own requests, as `pkg`'s store does
+/// (`kaipkg::fsvol::Bulk`). While one is held, [`read_at`] and [`write_at`]
+/// go a message at a time.
+pub struct Lease {
     handle: Handle,
     address: u64,
     len: usize,
 }
 
 impl Lease {
-    fn take() -> Option<Self> {
-        if HANDLE.load(Ordering::Relaxed) == 0 || BUSY.swap(true, Ordering::Acquire) {
+    /// The `Shm`, if [`reserve`] made one, it is not poisoned and no one else
+    /// holds it.
+    pub fn take() -> Option<Self> {
+        let unusable = HANDLE.load(Ordering::Relaxed) == 0 || POISONED.load(Ordering::Acquire);
+        if unusable || BUSY.swap(true, Ordering::Acquire) {
             return None;
         }
         Some(Self {
@@ -72,7 +97,8 @@ impl Lease {
         })
     }
 
-    fn bytes(&mut self) -> &mut [u8] {
+    /// The `Shm`'s bytes: what a WriteShm sends and a ReadShm fills.
+    pub fn bytes(&mut self) -> &mut [u8] {
         // SAFETY: `reserve` made at least `len` bytes, mapped read-write
         // at `address` for the process's life; this lease alone uses them
         // (BUSY), and `fs` touches them only while this thread waits in
@@ -81,7 +107,12 @@ impl Lease {
     }
 
     /// `request` on `file` with a duplicate of the `Shm` moved in.
-    fn ask(&self, file: Handle, request: Request) -> Result<Reply, String> {
+    /// Refused once the `Shm` is poisoned ([`poisoned`]), so a caller that
+    /// holds a lease can never send it again.
+    pub fn ask(&self, file: Handle, request: Request) -> Result<Reply, String> {
+        if poisoned() {
+            return Err(String::from("the bulk Shm is poisoned"));
+        }
         let copy = sys::handle_dup(self.handle, MOVED).map_err(|e| format!("HANDLE_DUP: {e:?}"))?;
         let bytes = fsproto::encode_request(&request);
         let mut reply = alloc::vec![0u8; fsproto::MAX_MESSAGE];
@@ -94,7 +125,17 @@ impl Lease {
             &[copy],
             &mut moved,
         );
-        let (len, _) = call.map_err(|e| format!("CALL_H: {e:?}"))?;
+        let (len, _) = call.map_err(|e| {
+            match e {
+                // Refused before anything moved: the copy is still here.
+                kabi::Error::Permission | kabi::Error::Invalid => {
+                    let _ = sys::handle_close(copy);
+                }
+                // It moved, and the request may still be running in `fs`.
+                _ => POISONED.store(true, Ordering::Release),
+            }
+            format!("CALL_H: {e:?}")
+        })?;
         fsproto::decode_reply(&reply[..len]).map_err(|e| format!("a reply: {e:?}"))
     }
 }

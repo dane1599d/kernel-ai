@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # For host-only PRs (no full-ci, so no boot jobs): label batch-ready, in order,
-# once ci.yml's "Format, lint, host unit tests" passes (DCO is its own workflow; the batch checks it) on the expected head.
+# once ci.yml's "Format, lint, host unit tests" passes (DCO is a step of it) on the expected head.
 # Exits early if either fails or the head moves.
 # Usage: label-on-lint.sh <pr>:<head-prefix> [...]   (one gh round per 5 min)
 # Settings: config.sh.

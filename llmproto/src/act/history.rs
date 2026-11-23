@@ -115,6 +115,14 @@ impl History {
         dropped
     }
 
+    /// These turns without the oldest `n`: for one request that would not fit
+    /// with all of them (`local::act::act`). History itself keeps them.
+    pub fn without_oldest(&self, n: usize) -> History {
+        History {
+            turns: self.turns.iter().skip(n).cloned().collect(),
+        }
+    }
+
     /// Every kept turn's messages, oldest first.
     pub fn messages(&self) -> Vec<Message> {
         self.turns().flat_map(Turn::messages).collect()
