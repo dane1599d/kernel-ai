@@ -89,6 +89,8 @@ mod deliver;
 use deliver::deliver;
 #[path = "desktop/asks.rs"]
 mod asks;
+#[path = "desktop/preview.rs"]
+mod preview;
 use asks::{answer_ask, post, read_asks};
 #[path = "desktop/requests.rs"]
 mod requests;
@@ -202,6 +204,8 @@ struct State {
     ticked_ms: u64,
     /// The ask card up now, as the kernel posted it.
     card: Option<Card>,
+    /// A send's text and its card: what the pane shows (`preview`).
+    sends: deskcore::sendview::Slot,
     /// The last ask refused as too long to show whole: never asked again.
     too_long: Option<u64>,
     /// When the ask box was last read.
@@ -287,6 +291,7 @@ fn main() -> i32 {
             agent: deskcore::agent::Agent::default(),
             ticked_ms: 0,
             card: None,
+            sends: deskcore::sendview::Slot::default(),
             too_long: None,
             asked_ms: 0,
             known: Vec::new(),
