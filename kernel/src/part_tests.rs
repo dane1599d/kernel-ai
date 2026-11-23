@@ -141,6 +141,28 @@ fn peer_caps() -> Result<(), &'static str> {
             return Err("part: PART_PEER_CAPS answered what it must refuse");
         }
     }
+    // Another live process, the supervisor when the case runs one: the answer
+    // is that process's caps, not the caller's.
+    let others: Vec<(u64, u64)> = process::with_table(|table| {
+        table
+            .iter()
+            .filter(|p| p.live() && p.pid != fs.pid && p.state != process::State::Exiting)
+            .map(|p| (p.pid, p.limits.caps))
+            .collect()
+    });
+    for &(pid, caps) in &others {
+        let got = peer_caps(slot, part, pid);
+        // One that exited since the table was read is NotFound, rightly.
+        let gone = got == Err(Error::NotFound) && process::caps_of(pid).is_none();
+        if got != Ok(caps) && !gone {
+            log!("part: PART_PEER_CAPS for pid {pid} gave {got:?}, wanted {caps:#x}");
+            return Err("part: PART_PEER_CAPS did not give another process's plan caps");
+        }
+    }
+    log!(
+        "part: PART_PEER_CAPS answered fs and {} other live processes",
+        others.len()
+    );
     Ok(())
 }
 
