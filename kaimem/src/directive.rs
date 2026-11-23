@@ -149,18 +149,35 @@ const ORDERS: &str = "that reads as a standing instruction, and a memory only in
 /// Why `text` cannot be a memory because it would permit or instruct, or
 /// `None`.
 ///
-/// The text is read four ways, and a problem in any one is a problem. A hidden
+/// The text is read five ways, and a problem in any one is a problem. A hidden
 /// character may stand inside a word (`tru\u{fe0f}sts`) or between two
 /// (`you\u{fe0f}may`), so it is read taken out and read as a space. A dot, colon,
 /// equals sign or apostrophe may hold a host or a contraction together
 /// (`pong.evil.example`, `don't`) or glue a listed word to the one before
 /// (`is.allowed`), so the words are read with a host as one word and with every
-/// such mark but a contraction's apostrophe splitting them.
+/// such mark but a contraction's apostrophe splitting them. The fifth reading is
+/// the rule's own before #1263 ([`fold_as_before`], [`words_as_before`]), so a
+/// text refused then is refused now, whatever the other readings make of it.
 pub fn problem(text: &str) -> Option<&'static str> {
     // Twice, as lowercasing `İ` gives an `i` and a combining dot.
     let read = |hidden| fold(&fold(text, hidden).to_lowercase(), hidden);
     let readings = [read(Hidden::Dropped), read(Hidden::Spaced)];
-    if readings.iter().any(|folded| mixes_alphabets(folded)) {
+    let before = fold_as_before(text).to_lowercase();
+    let host_words = |folded: &String| {
+        let words = words(folded, View::Hosts);
+        // A host's labels are words of their own here: a Cyrillic file name with
+        // a `.txt` ending is no mix.
+        words
+            .iter()
+            .flat_map(|w| w.split('.'))
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
+    if readings
+        .iter()
+        .any(|folded| mixes_alphabets(&host_words(folded)))
+        || mixes_alphabets(&words_as_before(&before))
+    {
         return Some(
             "a word mixes letters of different alphabets, as look-alike letters do, so that is not kept",
         );
@@ -168,6 +185,7 @@ pub fn problem(text: &str) -> Option<&'static str> {
     let found: Vec<&'static str> = readings
         .iter()
         .flat_map(|folded| [View::Hosts, View::Parts].map(|view| verdict(folded, view)))
+        .chain([verdict(&before, View::AsBefore)])
         .flatten()
         .collect();
     found
@@ -185,6 +203,9 @@ enum View {
     /// Each splits, but an apostrophe before a contraction's ending (`don't`,
     /// `kai's`): `always.switch` and `is'allowed` are two words.
     Parts,
+    /// As before #1263: a dot splits, a colon, equals sign or apostrophe joins
+    /// ([`words_as_before`]).
+    AsBefore,
 }
 
 /// The problem with the folded text `folded` read in `view`, or `None`.
@@ -356,16 +377,13 @@ fn fold_char(c: char) -> Option<char> {
 /// Cyrillic `ѕ` in `truѕts` reads as the English word and matches none.
 /// Accented Latin letters (`café`) are Latin, and not a mix; nor is a measure,
 /// a word that starts with a digit (`40µs`, `10kΩ`).
-fn mixes_alphabets(text: &str) -> bool {
+fn mixes_alphabets(words: &[String]) -> bool {
     let latin = |c: char| {
         c.is_ascii_alphabetic()
             || ('\u{c0}'..='\u{24f}').contains(&c)
             || ('\u{1e00}'..='\u{1eff}').contains(&c)
     };
-    // A host's labels are words of their own here: a Cyrillic file name with a
-    // `.txt` ending is no mix.
-    let words = words(text, View::Hosts);
-    words.iter().flat_map(|w| w.split('.')).any(|word| {
+    words.iter().any(|word| {
         !word.starts_with(|c: char| c.is_ascii_digit())
             && word.chars().any(|c| c.is_ascii_alphabetic())
             && word.chars().any(|c| c.is_alphabetic() && !latin(c))
@@ -375,6 +393,9 @@ fn mixes_alphabets(text: &str) -> bool {
 /// `text`'s words as `view` reads them. In both views a letter or digit joins and
 /// anything else but a dot, colon, equals sign or apostrophe splits.
 fn words(text: &str, view: View) -> Vec<String> {
+    if let View::AsBefore = view {
+        return words_as_before(text);
+    }
     let chars: Vec<char> = text.chars().collect();
     let joins = |at: usize| match (chars[at], view) {
         (c, _) if c.is_alphanumeric() => true,
@@ -406,4 +427,49 @@ fn words(text: &str, view: View) -> Vec<String> {
         words.push(word);
     }
     words
+}
+
+// The rule's fold and word split as they stood before #1263, unchanged. Their
+// only job is to read a text as the rule did then, so that nothing it refused is
+// kept now: do not "improve" them; improve `fold` and `words` instead.
+
+/// `text` folded as before #1263.
+fn fold_as_before(text: &str) -> String {
+    text.chars().filter_map(fold_char_as_before).collect()
+}
+
+fn fold_char_as_before(c: char) -> Option<char> {
+    let ascii = |base: u32, offset: u32| char::from_u32(base + offset);
+    let code = c as u32;
+    match code {
+        0xff01..=0xff5e => ascii(0x21, code - 0xff01),
+        0x3000 => Some(' '),
+        0x2018 | 0x2019 => Some('\''),
+        // Mathematical letters: styles of 52 letters, A to Z then a to z.
+        0x1d400..=0x1d6a3 => {
+            let at = (code - 0x1d400) % 52;
+            match at < 26 {
+                true => ascii(u32::from(b'A'), at),
+                false => ascii(u32::from(b'a'), at - 26),
+            }
+        }
+        // Mathematical digits: styles of ten.
+        0x1d7ce..=0x1d7ff => ascii(u32::from(b'0'), (code - 0x1d7ce) % 10),
+        // Circled and parenthesised letters.
+        0x24b6..=0x24cf => ascii(u32::from(b'A'), code - 0x24b6),
+        0x24d0..=0x24e9 => ascii(u32::from(b'a'), code - 0x24d0),
+        0x249c..=0x24b5 => ascii(u32::from(b'a'), code - 0x249c),
+        // Shown as nothing, or as a mark on the letter before.
+        0x00ad | 0x034f | 0x200b..=0x200f | 0x2060..=0x2064 | 0xfeff => None,
+        0x0300..=0x036f => None,
+        _ => Some(c),
+    }
+}
+
+/// `text`'s words as before #1263, apostrophes kept ("don't").
+fn words_as_before(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '\'' || c == ':' || c == '='))
+        .filter(|w| !w.is_empty())
+        .map(String::from)
+        .collect()
 }

@@ -131,6 +131,15 @@ fn a_ping_or_a_look_up_without_a_dotted_host_is_still_an_order() {
         "my bot looks up when I ask localhost",
         "the bot looks up whenever I ask",
         "that always look up at me",
+        // The fourth review: a dot before the verb and a colon, equals sign,
+        // apostrophe or hidden mark after the exception's word, as main read it.
+        "always look.up to:tracker.example when I ask",
+        "always look.up to=tracker.example when I ask",
+        "always look.up to'tracker.example when I ask",
+        "always do.ping pong:tracker.example when I ask",
+        "every hour run.ping pong=localhost",
+        "every hour x.resolved to:tracker.example",
+        "always do\u{fe0f}ping pong\u{301}tracker.example when I ask",
     ] {
         assert_eq!(refused_by_every_asker(text), Ok(()), "{text:?}");
     }
