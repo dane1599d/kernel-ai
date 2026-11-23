@@ -1174,6 +1174,11 @@ fn main() -> i32 {
             took = if deferred { Taken::Request } else { took };
         }
         woke_before_send &= took.any();
+        // A send falls due: the Terminal window's effects are taken first,
+        // so an `undo N` typed there cancels it before it starts.
+        if !took.any() && shell.next_send_ms(now_ms()) == Some(0) {
+            take_effects(&mut shell, held);
+        }
         sends::give(&mut shell, &system, &mut sends_shown, took);
         take_effects(&mut shell, held);
         waiting::run_held(&mut shell, held);
@@ -1229,13 +1234,31 @@ fn main() -> i32 {
 const POLL_MS: u64 = 1;
 
 /// Takes the next request to the shell's service within `wait_ms`, into
-/// `line`, and answers it: only the kernel terminal may run shell lines.
-/// Whether it ran one.
+/// `line`, and answers it: only the kernel terminal may run shell lines, and
+/// an agent's badged route only its steps. Whether it ran a terminal line.
 fn serve_terminal(shell: &mut Shell, line: &mut [u8], wait_ms: u64) -> Result<bool, kabi::Error> {
-    let mut caller = u64::MAX;
-    let len = sys::svc_recv(line, wait_ms, &mut caller)?.min(line.len());
-    let ran = caller == 0;
-    let mut reply = if ran {
+    // Who sent it and the badge of its route: an agent's route may send
+    // only its steps (`shellcore::agentstep`).
+    let mut info = kabi::handle::RecvInfo::default();
+    let len = sys::recv_h(line, wait_ms, &mut info)?.min(line.len());
+    // The shell takes no handle from any request: close every one the
+    // kernel moved in, so none leaks into the shell's table.
+    let moved = (info.handle_count as usize).min(info.handles.len());
+    for &h in &info.handles[..moved] {
+        let _ = sys::handle_close(kabi::handle::Handle(h));
+    }
+    let caller = info.caller_pid;
+    let text = core::str::from_utf8(&line[..len]).unwrap_or("");
+    let stepped = match caller {
+        0 => None,
+        _ => shell.from_route(info.badge, moved, text),
+    };
+    // Only the kernel's terminal's lines count as a line run.
+    let ran = caller == 0 && stepped.is_none();
+    // Only the kernel terminal may run shell lines; an agent, its steps.
+    let mut reply = if let Some(reply) = stepped {
+        reply
+    } else if ran {
         let text = core::str::from_utf8(&line[..len]).unwrap_or("");
         // An answer to a menu goes on with its run; any other line starts one.
         if !text.starts_with("answer ") {

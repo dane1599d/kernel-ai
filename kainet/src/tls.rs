@@ -328,6 +328,12 @@ pub struct Session<C, T> {
 const RECV_CHUNK: usize = 16 * 1024;
 
 impl<C: Side, T: Transport> Session<C, T> {
+    /// The transport under the session, to change how long it waits (a kept
+    /// connection's next call has a deadline of its own).
+    pub fn io_mut(&mut self) -> &mut T {
+        &mut self.io
+    }
+
     pub fn new(conn: C, io: T) -> Self {
         Self {
             tls: Tls::new(conn),

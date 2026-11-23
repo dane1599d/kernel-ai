@@ -314,7 +314,10 @@ pub fn start(content: Content) -> Result<Mock, String> {
                 let mut session = Session::new(conn, Tcp(stream));
                 if session.handshake().is_ok() {
                     let host = lock(&sni).unwrap_or_default();
-                    serve(&mut session, host, &content, &faults, &served);
+                    let mut first = true;
+                    while serve(&mut session, host, &content, &faults, &served, first) {
+                        first = false;
+                    }
                 }
             });
         }
@@ -394,26 +397,37 @@ fn read_body(session: &mut Conn, first: Vec<u8>, length: usize) -> Result<Vec<u8
     Ok(body)
 }
 
+/// Serves one request on `session`; whether the connection stays open for
+/// another. It does when the client asked to keep it, for a GET or HEAD whose
+/// answer has no fault and came with nothing after the head. A kept
+/// connection that ends or idles out before its next request is closed with
+/// no answer: a late 400 would be read as the next request's.
 fn serve(
     session: &mut Conn,
     sni: &str,
     content: &Content,
     faults: &Faults,
     served: &Mutex<Vec<Served>>,
-) {
+    first: bool,
+) -> bool {
+    let mut extra = false;
     let read = read_head(session).and_then(|(head, rest)| {
         let request = http::parse(&head)?;
         let body = match request.method.as_str() {
             "POST" => Some(read_body(session, rest, request.content_length)?),
-            _ => None,
+            _ => {
+                extra = !rest.is_empty();
+                None
+            }
         };
         Ok((request, body))
     });
     let (request, body) = match read {
         Ok(read) => read,
+        Err(_) if !first => return false,
         Err(status) => {
             let _ = respond(session, status, &[], b"");
-            return;
+            return false;
         }
     };
     let mut logged = Served {
@@ -428,7 +442,8 @@ fn serve(
     logged.status = answer.status;
     logged.range = answer.range;
     lock(served).push(logged);
-    let _ = send(session, &request, answer);
+    let keep = request.keep_alive && request.method != "POST" && answer.fault.is_none() && !extra;
+    send(session, &request, answer, keep).is_ok() && keep
 }
 
 /// What a request gets, before it is sent.
@@ -555,7 +570,7 @@ fn next_cut(
     Some(Fault::CutAt(at - range.start))
 }
 
-fn send(session: &mut Conn, request: &http::Request, answer: Answer) -> Result<(), ()> {
+fn send(session: &mut Conn, request: &http::Request, answer: Answer, keep: bool) -> Result<(), ()> {
     let Answer {
         status,
         headers,
@@ -603,7 +618,7 @@ fn send(session: &mut Conn, request: &http::Request, answer: Answer) -> Result<(
             }
             session.close().map_err(|_| ())
         }
-        _ => respond_with(session, status, &headers, &body, length),
+        _ => respond_with(session, status, &headers, &body, length, keep),
     }
 }
 
@@ -613,7 +628,7 @@ fn respond(
     headers: &[(&'static str, String)],
     body: &[u8],
 ) -> Result<(), ()> {
-    respond_with(session, status, headers, body, body.len())
+    respond_with(session, status, headers, body, body.len(), false)
 }
 
 fn respond_with(
@@ -622,9 +637,13 @@ fn respond_with(
     headers: &[(&'static str, String)],
     body: &[u8],
     length: usize,
+    keep: bool,
 ) -> Result<(), ()> {
-    let mut out = http::head(status, headers, length);
+    let mut out = http::head_kept(status, headers, length, keep);
     out.extend_from_slice(body);
     session.write_all(&out).map_err(|_| ())?;
-    session.close().map_err(|_| ())
+    match keep {
+        true => Ok(()),
+        false => session.close().map_err(|_| ()),
+    }
 }

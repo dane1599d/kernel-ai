@@ -37,6 +37,18 @@ pub enum Refused {
     Releasing,
 }
 
+/// What MEM_RELEASE takes out of the page tables, from the reservation's start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Release {
+    /// The pages committed, to unmap.
+    pub committed: u64,
+    /// The pages to walk: the committed ones and, when fewer than the
+    /// reservation holds, the first past them, where a commit cut short (out
+    /// of frames for its page tables) may have left tables with nothing in
+    /// them. Never past the reservation.
+    pub walk: u64,
+}
+
 /// What a commit asks for: map `pages` fresh pages from `at`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Commit {
@@ -129,8 +141,8 @@ impl Reservations {
     }
 
     /// MEM_RELEASE begins on the reservation starting at `start`: no commit
-    /// takes it from now. Its committed pages, to unmap.
-    pub fn begin_release(&mut self, start: u64) -> Result<u64, Refused> {
+    /// takes it from now. What to take out of the page tables.
+    pub fn begin_release(&mut self, start: u64) -> Result<Release, Refused> {
         let entry = self
             .entries
             .iter_mut()
@@ -141,7 +153,10 @@ impl Reservations {
             return Err(Refused::Releasing);
         }
         entry.releasing = true;
-        Ok(entry.committed)
+        Ok(Release {
+            committed: entry.committed,
+            walk: (entry.committed + 1).min(entry.pages),
+        })
     }
 
     /// MEM_RELEASE is done: the reservation leaves the book.
@@ -220,12 +235,36 @@ mod tests {
         let mut book = book();
         let a = book.reserve(8).unwrap();
         book.committed(a, 5);
-        assert_eq!(book.begin_release(a), Ok(5));
+        assert_eq!(
+            book.begin_release(a),
+            Ok(Release {
+                committed: 5,
+                walk: 6
+            })
+        );
         assert_eq!(book.plan_commit(a, 1), Err(Refused::Releasing));
         assert_eq!(book.begin_release(a), Err(Refused::Releasing));
         book.end_release(a);
         assert_eq!(book.begin_release(a), Err(Refused::NotFound));
         assert_eq!(book.committed_pages(), 0);
+    }
+
+    #[test]
+    fn a_release_walks_one_page_past_a_short_commit_and_never_past_the_end() {
+        let mut book = book();
+        // Nothing committed (a first commit that failed): the first page.
+        let a = book.reserve(4).unwrap();
+        assert_eq!(book.begin_release(a).map(|r| r.walk), Ok(1));
+        // All of it committed: nothing past the end.
+        let b = book.reserve(3).unwrap();
+        book.committed(b, 3);
+        assert_eq!(
+            book.begin_release(b),
+            Ok(Release {
+                committed: 3,
+                walk: 3
+            })
+        );
     }
 
     #[test]

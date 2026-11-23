@@ -218,6 +218,16 @@ impl<E: Effects> Service<E> {
                 host,
                 reply,
             ),
+            Request::Load { seq, entry } => eval(
+                &self.compiler,
+                effects,
+                open,
+                seq,
+                entry,
+                Mode::Load,
+                host,
+                reply,
+            ),
             Request::Resume { id, ok, result } => {
                 resume(effects, open, id, ok, result, host, reply)
             }
@@ -482,7 +492,10 @@ fn capped(listing: &str) -> String {
     if listing.len() <= MAX_TEXT {
         return listing.into();
     }
-    let cut = listing[..MAX_TEXT].rfind('\n').map_or(0, |at| at + 1);
+    // At a char boundary first: a listing or a trial report may hold
+    // multi-byte text where byte MAX_TEXT falls.
+    let end = crate::dis::char_cut(listing, MAX_TEXT);
+    let cut = listing[..end].rfind('\n').map_or(0, |at| at + 1);
     let more = listing[cut..].lines().count();
     format!("{}… and {more} more\n", &listing[..cut])
 }
@@ -543,10 +556,7 @@ fn end(reply: &mut Reply, record: &Record) {
 }
 
 fn error(reply: &mut Reply, line: u32, text: &str) {
-    let mut cut = text.len().min(MAX_ERR);
-    while !text.is_char_boundary(cut) {
-        cut -= 1;
-    }
+    let cut = crate::dis::char_cut(text, MAX_ERR);
     end(
         reply,
         &Record::Err {
@@ -612,4 +622,29 @@ fn wcc_messages(stderr: &str, lines: &LineMap) -> (u32, String) {
         }
     }
     (first, out)
+}
+
+#[cfg(test)]
+mod cut_tests {
+    use super::*;
+    use alloc::string::String;
+
+    /// A listing (or a trial report) of wide characters cut at MAX_TEXT
+    /// never panics, wherever byte MAX_TEXT falls in a character.
+    #[test]
+    fn a_long_listing_of_wide_characters_is_cut_without_a_panic() {
+        for lead in 0..3 {
+            let mut listing = "x".repeat(lead);
+            while listing.len() <= MAX_TEXT + 8 {
+                listing.push('\u{3042}');
+            }
+            let shown = capped(&listing);
+            assert!(shown.len() < listing.len(), "{lead}");
+            let mut lines = String::new();
+            for _ in 0..300 {
+                lines.push_str("\u{3042}\u{3042}\u{3042} def\n");
+            }
+            let _ = capped(&lines);
+        }
+    }
 }

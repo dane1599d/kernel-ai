@@ -877,16 +877,35 @@ pub(crate) fn is_os_row(name: &str) -> bool {
         .any(|row| row.name == name)
 }
 
-/// The OS's type for a declared argument of WIT type `ty`.
+/// The OS's type for a declared argument of WIT type `ty`, or `None` for one
+/// the model's decoder cannot hold (`infer::tagged::valid_kind`), so the
+/// shell never keeps a row llm leaves out: an empty int range (the decoder
+/// starts ranges at 0), a text of no characters, or a list or option inside a
+/// list, or an option inside an option.
 fn arg_type(kind: &ArgKind, ty: &Ty, min: Option<i64>, max: Option<i64>) -> Option<ArgType> {
+    match kind {
+        ArgKind::List(inner) if !scalar(inner) => return None,
+        ArgKind::Option(inner)
+            if !(scalar(inner) || matches!(&**inner, ArgKind::List(item) if scalar(item))) =>
+        {
+            return None;
+        }
+        _ => {}
+    }
     Some(match (kind, ty) {
         (ArgKind::Text, _) => ArgType::Text {
-            max: max.map_or(TEXT_MAX, |m| u16::try_from(m).unwrap_or(u16::MAX)),
+            max: match max.map_or(TEXT_MAX, |m| u16::try_from(m).unwrap_or(u16::MAX)) {
+                0 => return None,
+                max => max,
+            },
         },
-        (ArgKind::Int, _) => ArgType::Int {
-            min: min.unwrap_or(0),
-            max: max.unwrap_or(i64::from(u32::MAX)),
-        },
+        (ArgKind::Int, _) => {
+            let (min, max) = (min.unwrap_or(0), max.unwrap_or(i64::from(u32::MAX)));
+            if min.max(0) > max {
+                return None;
+            }
+            ArgType::Int { min, max }
+        }
         (ArgKind::Bool, _) => ArgType::Enum(&["false", "true"]),
         (ArgKind::Enum, Ty::Enum(cases)) => ArgType::Enum(leak_strs(cases)),
         (ArgKind::Path, _) => ArgType::Path,
@@ -899,6 +918,11 @@ fn arg_type(kind: &ArgKind, ty: &Ty, min: Option<i64>, max: Option<i64>) -> Opti
         }
         _ => return None,
     })
+}
+
+/// A kind the decoder holds on its own: not a list or an option.
+fn scalar(kind: &ArgKind) -> bool {
+    !matches!(kind, ArgKind::List(_) | ArgKind::Option(_))
 }
 
 /// An app as people name it: its package, not its `-window` service, with a
@@ -952,6 +976,53 @@ end
         // The same version again loads nothing new.
         assert_eq!(apps.load("notes", NOTES), Ok(2));
         assert_eq!(apps.rows().count(), 2);
+    }
+
+    #[test]
+    fn a_kind_the_models_decoder_cannot_hold_is_no_row() {
+        let int = |range: &str| {
+            NOTES
+                .replace("sig func(text: string)", "sig func(text: u32)")
+                .replace(
+                    "arg text text max=2000 role=payload from-request",
+                    &format!("arg text int {range} role=payload from-request"),
+                )
+        };
+        // An empty range, as llm's decoder starts ranges at 0.
+        for range in ["min=5 max=3", "min=-9 max=-2"] {
+            let mut apps = AppRows::default();
+            assert!(apps.load("notes", &int(range)).is_err(), "{range}");
+        }
+        let mut apps = AppRows::default();
+        assert_eq!(apps.load("notes", &int("min=-3 max=3")), Ok(2));
+        // A text of no characters.
+        let empty = NOTES.replace("max=2000", "max=0");
+        assert!(AppRows::default().load("notes", &empty).is_err());
+        // A list inside a list, or an option inside an option.
+        for (sig, kind) in [
+            ("list<list<string>>", "list:list:text"),
+            ("list<option<string>>", "list:option:text"),
+            ("option<option<string>>", "option:option:text"),
+        ] {
+            let nested = NOTES
+                .replace("sig func(text: string)", &format!("sig func(text: {sig})"))
+                .replace(
+                    "arg text text max=2000",
+                    &format!("arg text {kind} max=2000"),
+                );
+            assert!(AppRows::default().load("notes", &nested).is_err(), "{kind}");
+        }
+        // A list in an option is one the decoder holds.
+        let held = NOTES
+            .replace(
+                "sig func(text: string)",
+                "sig func(text: option<list<string>>)",
+            )
+            .replace(
+                "arg text text max=2000",
+                "arg text option:list:text max=2000",
+            );
+        assert_eq!(AppRows::default().load("notes", &held), Ok(2));
     }
 
     #[test]

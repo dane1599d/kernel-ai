@@ -1,0 +1,31 @@
+node 0 clip 0,0 640x460
+  fill 0,0 640x460 window r0
+node 2 clip 0,0 640x460
+  text 12,7 label text "Appearance"
+  fill 0,30 104x2 accent r0
+  text 116,7 label muted "What apps can do"
+  text 268,7 label muted "Rules and profiles"
+  text 436,7 label muted "Keep running"
+  text 556,7 label muted "Updates"
+  text 636,7 label muted "About"
+  text 700,7 label muted "Network"
+  fill 0,31 640x1 line r0
+node 4 clip 0,0 640x460
+  text 12,44 heading text "Appearance"
+node 10 clip 0,0 640x460
+  fill 12,76 616x28 raised r4
+  stroke 12,76 616x28 line_strong w1 r4
+  text 276,81 label text "Theme: dark"
+node 11 clip 0,0 640x460
+  fill 12,117 32x18 line_strong r9
+  fill 14,119 14x14 text r7
+  text 52,116 body text "Legible type"
+node 12 clip 0,0 640x460
+  fill 12,153 32x18 line_strong r9
+  fill 14,155 14x14 text r7
+  text 52,152 body text "Reduce motion"
+node 13 clip 0,0 640x460
+  fill 12,184 616x28 raised r4
+  stroke 12,184 616x28 line_strong w1 r4
+  text 22,189 label text "Time zone: UTC"
+  icon 602,190 16x16 chevron-down muted

@@ -301,3 +301,23 @@ fn the_count_says_one_folder_and_one_file_in_the_singular() {
     assert_eq!(count("docs/\na.txt\n"), "1 folder, 1 file");
     assert_eq!(count("a/\nb/\nc.txt\nd.txt\n"), "2 folders, 2 files");
 }
+
+#[path = "../../../testkit/appview.rs"]
+mod appview;
+
+/// The agent's view of Files with a file open: whole, within 300 tokens, and
+/// the committed one (`tests/golden/view-files.txt`).
+#[test]
+fn the_agents_view_of_files_is_whole_and_fits_300_tokens() {
+    let mut app = App::new();
+    app.files.select(&mut app.os, "notes.txt").unwrap();
+    app.answer(
+        "Groceries
+	milk
+	eggs
+",
+    );
+    let f = frame(&app.tree());
+    appview::check("files", "files", ui::TITLE_TEXT, &f);
+    appview::paints("files", &f);
+}

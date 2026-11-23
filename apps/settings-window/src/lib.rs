@@ -289,6 +289,7 @@ impl SettingsWindow {
                     Applied::Theme(theme) => self.settings.appearance.theme = theme,
                     Applied::Legible(on) => self.settings.appearance.legible = on,
                     Applied::ReducedMotion(on) => self.settings.appearance.reduced_motion = on,
+                    Applied::TimeZone(min) => self.settings.appearance.time_zone_min = min,
                     Applied::Intent(intent) => self.settings.applied(&intent),
                 }
                 if let Some(read) = again {

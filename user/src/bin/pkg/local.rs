@@ -156,7 +156,7 @@ fn install(vol: &mut FsVolume<Calls>, rest: &str, handles: &[Handle]) -> Result<
 
 /// The names a build cannot take: every package the image's repository holds,
 /// every one the mirror listed when this device last trusted it, and every one
-/// installed whose object `local` did not build. If the image's names cannot
+/// installed that `local` did not build (`local::foreign`). If the image's names cannot
 /// be read, nothing is published.
 fn taken(vol: &mut FsVolume<Calls>, key: &Key) -> Result<Vec<String>, String> {
     let (image, mirror) = KNOWN.lock().clone();
@@ -169,14 +169,11 @@ fn taken(vol: &mut FsVolume<Calls>, key: &Key) -> Result<Vec<String>, String> {
         true => taken.extend(kaipkg::mirror::cached_names(vol)?),
     }
     let built = local::shas(vol, key, kaipkg::PROVIDED)?;
+    let held = local::names(vol, key, kaipkg::PROVIDED)?;
     let current = store::current(vol)?;
     let installed = store::generation(vol, current)?.packages;
-    taken.extend(
-        installed
-            .into_iter()
-            .filter(|p| !built.contains(&p.sha))
-            .map(|p| p.name),
-    );
+    // A name local holds is local's, also after an upgrade was undone.
+    taken.extend(local::foreign(&installed, &built, &held));
     Ok(taken)
 }
 

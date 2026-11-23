@@ -26,7 +26,7 @@
 //! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL, APP_CALL |
 //! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE, PART_PEER_NAME |
 //! | 192-199 | N, network (P5) | NET_CONNECT, NET_SEND, NET_RECV, NET_POLL, NET_CLOSE (task 2) |
-//! | 200-209 | K, second block | SHM_INFO |
+//! | 200-209 | K, second block | SHM_INFO; ENDPOINT_BADGE 201 (S-io) |
 
 /// `exit(code: i32) -> !`
 pub const EXIT: u64 = 0;
@@ -301,10 +301,10 @@ pub const THREAD_PIN: u64 = 63;
 /// **Interim** (S10-3; removed at P2 task 10, when the KV files move to
 /// `/system/models/cache/`). `model_kv_load(region, offset, buf, len) -> len`:
 /// reads `len` bytes at byte `offset` of KV region `region` of the `kai-cache`
-/// partition (see [`crate::model::KV_REGIONS`]) into `buf`. `offset` and `len`
-/// are whole sectors, `len` at most [`crate::model::KV_IO_BYTES`]. The model's
-/// holder only (`cap::MODEL`); NotFound without a `kai-cache` partition that
-/// holds every region.
+/// partition (see [`crate::model::KV_REGIONS`] and
+/// [`crate::model::KV_SPILL_REGION`]) into `buf`, bounded by
+/// [`crate::model::kv_extent`]. The model's holder only (`cap::MODEL`);
+/// NotFound without a `kai-cache` partition the region fits in.
 pub const MODEL_KV_LOAD: u64 = 64;
 /// **Interim**, as [`MODEL_KV_LOAD`]: `model_kv_save(region, offset, buf, len,
 /// flush) -> len` writes `len` bytes of `buf` there; `flush` is 0, or 1 to make
@@ -729,6 +729,14 @@ pub const CLOCK_NOW: u64 = 110;
 /// request `Shm`, which a short one would fault it in). Needs INSPECT on the
 /// handle, which SHM_CREATE's handle carries.
 pub const SHM_INFO: u64 = 200;
+/// `endpoint_badge(handle, out) -> 0`: the badge and rights of a `Dir` or
+/// `File` handle on the caller's own endpoint, as [`ENDPOINT_MINT`] made it,
+/// written to `out` as two u64, the badge and then the rights: how `fs` reads
+/// the destination `Dir` a client moved to it with a Rename. Permission for a
+/// handle on another process's endpoint, or of another kind, so no one else
+/// learns a badge (ADR 0001); BadHandle for a handle that is not there, or a
+/// raw value past u32; Revoked for one whose grant was revoked.
+pub const ENDPOINT_BADGE: u64 = 201;
 
 /// The end of the reserved blocks (see the table above): the highest number a
 /// call may have. A call that is not there yet answers NotFound.

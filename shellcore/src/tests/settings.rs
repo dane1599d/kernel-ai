@@ -92,6 +92,27 @@ fn a_profile_set_by_click_is_logged_as_the_click_and_undoes() {
     assert!(profiles.lines().any(|l| l == "* default"), "{profiles}");
 }
 
+/// The Settings app's time zone: saved as the file writes it, said by look,
+/// and undone back to the zone before (#1017's row).
+#[test]
+fn a_time_zone_by_click_saves_and_undoes() {
+    let host = host();
+    let mut shell = shell(&host);
+    let zone = |host: &FakeHost| crate::appearance::current(host).time_zone_min;
+    let words = shell
+        .settings(SETTINGS_APP, "appearance-set time_zone +02:00", true)
+        .unwrap();
+    assert!(words.contains("+02:00"), "{words}");
+    assert_eq!(zone(&host), 120);
+    assert!(
+        shell
+            .settings(SETTINGS_APP, "appearance-set time_zone +15:00", true)
+            .is_err()
+    );
+    assert!(shell.eval("undo").text.starts_with("Undone: "));
+    assert_eq!(zone(&host), 0);
+}
+
 #[test]
 fn appearance_set_by_click_saves_the_setting_is_logged_as_the_click_and_undoes() {
     let host = host();

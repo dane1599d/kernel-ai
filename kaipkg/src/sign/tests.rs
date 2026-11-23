@@ -121,3 +121,22 @@ fn a_models_chunk_list_is_signed_beside_it_with_its_bytes() {
     let both = build_with_models(&[], &[twin(), second], &keys, Time(0), ADR_0008);
     assert!(both.unwrap_err().contains("twice"));
 }
+
+/// The YubiKey runbook's `models` delegation names exactly the paths this
+/// code signs, so a root version 2 built from it accepts every model and
+/// chunk list (the manager's audit of release/v0.1's update path).
+#[test]
+fn the_root_ceremony_delegates_models_the_paths_this_code_signs() {
+    let doc = include_str!("../../../docs/release/root-ceremony.md");
+    let line = doc
+        .lines()
+        .find(|line| line.contains("tuf-on-ci-delegate sign/models models"))
+        .expect("the runbook delegates the models role");
+    let named: Vec<&str> = line
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|part| part.starts_with("*."))
+        .collect();
+    assert_eq!(named, MODEL_PATHS, "{line}");
+}

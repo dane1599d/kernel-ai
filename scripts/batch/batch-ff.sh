@@ -18,6 +18,11 @@
 # Combining honours .gitattributes.
 # A failed batch merges nothing: fall back to merge-chain.sh, one at a time.
 #
+# No-boot: `batch-ff.sh --noboot <PRs>` takes only PRs that noboot.sh finds
+# change nothing the boot jobs see, on a `batch/noboot-...` branch. ci.yml runs
+# no boot job for it, and its lint job fails it if noboot.sh disagrees; it lands
+# on lint and the other workflows alone (2026-11-19, to spend fewer runners).
+#
 # Resume: from the push of the batch branch on, the batch is recorded in
 # $S/current-batch. If the PC stops, `batch-ff.sh --resume` (batch-auto.sh runs
 # it first thing) picks the batch up: it waits for CI if CI had not passed yet,
@@ -50,6 +55,12 @@ gates_green() {  # $1 run id
     sleep 30
   done
   echo "$g" | sed 's/^/    /'
+  # A no-boot batch runs lint alone (ci.yml skips the boot jobs for it, after
+  # its lint job checked that nothing it changes reaches them).
+  if [ -n "$noboot" ]; then
+    echo "$g" | grep -q "^Format, lint[^=]*=success$" && ! echo "$g" | grep -qvE "=(success|skipped)$"
+    return
+  fi
   [ "$(echo "$g" | grep -c "=")" -ge 10 ] && [ "$(echo "$g" | grep -vc "=success$")" = 0 ]
 }
 
@@ -66,15 +77,29 @@ observe_only() {  # $1 run id
 # The path-filtered workflows (kaifs, kaituf, pkgrepo, Release, DCO, Token
 # counts) run on the batch head too: every one must finish without a failure.
 # #256 merged on 2026-10-27 with pkgrepo red, since only ci.yml was checked.
+# Returns 1 when one failed, and 2 when one is still queued or running after
+# the wait, or the listing itself failed: a no-boot batch gets here after lint
+# alone, so an unfinished gate must not read as green (#1108's review).
 others_ok() {  # $1 branch, $2 sha
+  local listed="" done_re="=(success|skipped|neutral|failure|cancelled|timed_out|action_required)$"
   for i in $(seq 1 60); do
-    o=$(gh run list --repo "$R" --branch "$1" --limit 30 --json headSha,workflowName,status,conclusion \
-        --jq ".[] | select(.headSha==\"$2\" and .workflowName!=\"CI\" and (.workflowName|test(\"Fluency\")|not)) | .workflowName+\"=\"+(.conclusion//.status)")
-    echo "$o" | grep -qvE "=(success|skipped|neutral|failure|cancelled|timed_out|action_required)$" || break
+    if o=$(gh run list --repo "$R" --branch "$1" --limit 30 --json headSha,workflowName,status,conclusion \
+        --jq ".[] | select(.headSha==\"$2\" and .workflowName!=\"CI\" and (.workflowName|test(\"Fluency\")|not)) | .workflowName+\"=\"+(.conclusion//.status)"); then
+      listed=1
+      { [ -z "$o" ] || ! echo "$o" | grep -qvE "$done_re"; } && break
+    else
+      listed=""; o=""
+    fi
     sleep 60
   done
-  echo "$o" | sed 's/^/    /'
-  ! echo "$o" | grep -qE "=(failure|cancelled|timed_out|action_required)$"
+  [ -n "$o" ] && echo "$o" | sed 's/^/    /'
+  [ -n "$listed" ] || { echo "    the workflow listing failed"; return 2; }
+  echo "$o" | grep -qE "=(failure|cancelled|timed_out|action_required)$" && return 1
+  if [ -n "$o" ] && echo "$o" | grep -qvE "$done_re"; then
+    echo "    a workflow did not finish"
+    return 2
+  fi
+  return 0
 }
 
 fluency_ok() {  # $1 branch, $2 sha; dispatches the run unless $fluency is set (a resume)
@@ -125,6 +150,7 @@ save_state() {  # $1 phase: pushed (CI not yet passed) or green
     printf 'name=%q\nbase=%q\nc=%q\nbpr=%q\n' "$name" "$base" "$c" "$bpr"
     printf 'model=%q\nrerun=%q\nfluency=%q\n' "$model" "$rerun" "$fluency"
     printf 'prs=%q\nheads_s=%q\nbrs_s=%q\n' "${batch[*]}" "${heads[*]}" "${brs[*]}"
+    printf 'noboot=%q\n' "$noboot"
   } > "$STATE.tmp" && mv -f "$STATE.tmp" "$STATE"
 }
 
@@ -202,7 +228,9 @@ verify() {
     fi
   fi
   gates_green "$id" || { failed_cases "$id"; stop "batch NOT green; STOPPING (fall back to merge-chain.sh)"; }
-  others_ok "$name" "$c" || stop "batch NOT green: another workflow failed; STOPPING"
+  others_ok "$name" "$c"; rc=$?
+  [ $rc = 2 ] && stop "CI did not finish (another workflow); STOPPING"
+  [ $rc = 0 ] || stop "batch NOT green: another workflow failed; STOPPING"
   if [ -n "$model" ]; then
     echo "  changes what the model sees ($model): running the fluency gate"
     fluency_ok "$name" "$c"; rc=$?
@@ -245,6 +273,8 @@ resume() {
   . "$STATE"
   # Checked before anything acts on them: stop's cleanup takes `name`.
   case "$name" in batch/?*) ;; *) name=""; stop "the resume state names no batch branch; STOPPING";; esac
+  # The gate follows the branch CI ran on, whatever the state says.
+  case "$name" in batch/noboot-*) noboot=1;; *) noboot="";; esac
   [[ "$c" =~ ^[0-9a-f]{40}$ && "$base" =~ ^[0-9a-f]{40}$ ]] || stop "the resume state is damaged; STOPPING"
   read -ra batch <<< "$prs"; read -ra heads <<< "$heads_s"; read -ra brs <<< "$brs_s"
   echo "== resuming batch $name ($phase) on main ${base:0:7}: ${batch[*]}"
@@ -273,7 +303,7 @@ resume() {
 compose() {
   git -C "$G" fetch -q origin "$MAIN"
   base=$(git -C "$G" rev-parse "origin/$MAIN")
-  name="batch/$(date +%m%d-%H%M)"
+  name="batch/${noboot:+noboot-}$(date +%m%d-%H%M)"
   c=$base
   bpr=""
   skipped=" "
@@ -290,6 +320,11 @@ compose() {
     case "$skipped" in *" $pbase "*) echo "  - #$p is stacked on a left-out PR; left out"; skipped="$skipped$br "; continue;; esac
     git -C "$G" fetch -q origin "$br"
     head=$(git -C "$G" rev-parse "origin/$br")
+    # A no-boot batch takes only a PR whose whole change from main is one the
+    # boot jobs cannot see (noboot.sh); the rest keep their labels for a full one.
+    if [ -n "$noboot" ] && ! (cd "$G" && bash "$KAI_SCRIPTS/noboot.sh" "origin/$MAIN" "$head" >/dev/null); then
+      echo "  - #$p changes what the boot jobs check; left out of a no-boot batch"; skipped="$skipped$br "; continue
+    fi
     # A PR that carries a model PR left out of this batch would land it unchecked.
     for mh in $model_heads; do
       if git -C "$G" merge-base --is-ancestor "$mh" "$head" 2>/dev/null; then
@@ -351,8 +386,10 @@ main() {
   echo $$ > "$S/batch-ff.pid"
   trap 'rm -f "$S/batch-ff.pid"' EXIT
   batch=(); heads=(); brs=()
-  model=""; rerun=""; fluency=""
+  model=""; rerun=""; fluency=""; noboot=""
   [ "$1" = --resume ] && resume
+  # `--noboot`: a batch of PRs the boot jobs cannot see, gated on lint alone.
+  [ "$1" = --noboot ] && { noboot=1; shift; }
   compose "$@"
   set -- "${batch[@]}"
   verify

@@ -25,6 +25,9 @@ use alloc::vec::Vec;
 pub const ENDED_IN_FLIGHT: &str = "the goal ended while this step ran";
 /// The note on such a step once its late finish came.
 pub const FINISHED_AFTER_END: &str = "it finished after the goal ended";
+/// The note on a step the planner wrote again after the person said no to it:
+/// held, and the goal paused until they resume it.
+pub const REPEATED: &str = "you said no to this step before; resume the goal to let it ask again";
 
 /// What became of a proposed step.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -216,19 +219,36 @@ impl Goal {
 
     /// Whether a step that costs about `est` tokens would run past a budget or the
     /// deadline at `now`.
-    fn over(&self, now: u64, est: u64) -> Option<Pause> {
+    pub(crate) fn over(&self, now: u64, est: u64) -> Option<Pause> {
+        let out_of_steps = self.steps_run >= self.budget.steps;
+        self.out_of_time(now)
+            .or(out_of_steps.then_some(Pause::Budget(Resource::Steps)))
+            .or_else(|| self.out_of_tokens(est))
+    }
+
+    /// What holds the goal back from being planned at `now`: its deadline, its wall
+    /// time or its tokens, each looked at on its own. Not its steps: a goal that
+    /// ran its last step is planned once more, so the planner can say it is met,
+    /// and a step it writes instead is held by [`Goal::over`].
+    pub(crate) fn planning_over(&self, now: u64) -> Option<Pause> {
+        self.out_of_time(now).or_else(|| self.out_of_tokens(0))
+    }
+
+    fn out_of_time(&self, now: u64) -> Option<Pause> {
         let started = self.started_ms.unwrap_or(now);
         if self.by_ms.is_some_and(|by| now >= by) {
             Some(Pause::Deadline)
         } else if now.saturating_sub(started) >= self.budget.wall_ms {
             Some(Pause::Budget(Resource::Wall))
-        } else if self.steps_run >= self.budget.steps {
-            Some(Pause::Budget(Resource::Steps))
-        } else if self.tokens_spent.saturating_add(est) > self.budget.tokens {
-            Some(Pause::Budget(Resource::Tokens))
         } else {
             None
         }
+    }
+
+    /// Whether `est` more tokens would pass the token budget.
+    fn out_of_tokens(&self, est: u64) -> Option<Pause> {
+        let over = self.tokens_spent.saturating_add(est) > self.budget.tokens;
+        over.then_some(Pause::Budget(Resource::Tokens))
     }
 
     /// Why this step has to ask, if it does. Scope first: a step that needs more
@@ -528,6 +548,55 @@ impl Goal {
             }
         }
         self.tokens_spent = self.tokens_spent.saturating_add(done.tokens);
+        Ok(())
+    }
+
+    /// The running step was not run: the person said no on the card, where the one
+    /// door asked for it (the goals agent's one ask, after the step left goalcore as
+    /// one that runs). It is counted as asked and denied, not as run, as
+    /// [`Goal::deny`] counts a step goalcore itself held for a yes.
+    pub fn deny_running(&mut self, why: &str) -> Result<(), Refusal> {
+        let Some(n) = self.flight.take() else {
+            return Err(Refusal::NoStepRunning);
+        };
+        self.asked = self.asked.saturating_add(1);
+        self.denied = self.denied.saturating_add(1);
+        if let Some(step) = self.log.iter_mut().rev().find(|s| s.n == n) {
+            step.status = StepStatus::Denied;
+            step.note = valid::clean(why);
+        }
+        Ok(())
+    }
+
+    /// The planner wrote again a step the person said no to: it is not asked. It is
+    /// logged as held, with [`REPEATED`] as why, so the goal's own record says what
+    /// stopped it and which step, and the goal pauses as the person's own pause
+    /// does: their resume is what lets it go on. The tier is the door's, as for
+    /// any step logged.
+    pub fn hold_repeat<C>(
+        &mut self,
+        now: u64,
+        step: Step<C>,
+        door: &dyn Door<C>,
+    ) -> Result<(), Refusal> {
+        if self.state != State::Active {
+            return Err(Refusal::NotActive(self.state));
+        }
+        if self.flight.is_some() {
+            return Err(Refusal::StepInFlight);
+        }
+        if self.log.len() >= MAX_LOG {
+            return Err(Refusal::LogFull);
+        }
+        step_ok(&step)?;
+        let p = Proposal {
+            tier: door.tier(&step),
+            row: step.row,
+            targets: step.targets,
+            tokens_est: step.tokens_est,
+        };
+        self.push_log(p, now, StepStatus::Held, String::from(REPEATED));
+        self.state = State::Paused(Pause::User);
         Ok(())
     }
 
