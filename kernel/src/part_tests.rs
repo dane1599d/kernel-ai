@@ -63,6 +63,7 @@ pub fn check() -> Result<(), &'static str> {
     .ok_or("part: kai-data's last sector could not be put back")?;
     only_fs()?;
     peer_caps()?;
+    policy_rule()?;
     log!("part: fs alone holds a Partition, for kai-data only, and its checks pass");
     bench()
 }
@@ -139,6 +140,24 @@ fn peer_caps() -> Result<(), &'static str> {
             log!("part: PART_PEER_CAPS with {what} gave {got:?}, wanted {want:?}");
             return Err("part: PART_PEER_CAPS answered what it must refuse");
         }
+    }
+    Ok(())
+}
+
+/// The supervisor's POLICY rule, the one `PART_PEER_CAPS`'s answer leans on:
+/// only the line named `shell` running `shell` may hold POLICY, so no app, nor
+/// a renamed shell or a shell running another program, passes for the person.
+fn policy_rule() -> Result<(), &'static str> {
+    use crate::process::supervision::policy_allowed;
+    let policy = kabi::cap::POLICY;
+    let refused = [("kai", "shell"), ("shell", "notes"), ("fs", "fs")];
+    if refused
+        .iter()
+        .any(|(name, program)| policy_allowed(name, program, policy))
+        || !policy_allowed("shell", "shell", policy)
+        || !policy_allowed("fs", "fs", 0)
+    {
+        return Err("part: the supervisor's POLICY rule is not the shell's alone");
     }
     Ok(())
 }

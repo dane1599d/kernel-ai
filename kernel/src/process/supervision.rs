@@ -65,6 +65,12 @@ pub const POWER_HOLDER: &str = "shell";
 pub fn power_allowed(name: &str, program: &str, caps: u64) -> bool {
     caps & cap::POWER == 0 || (name == POWER_HOLDER && program == POWER_HOLDER)
 }
+/// Whether the service `name` running `program` may have `caps`' POLICY bit:
+/// the scheduler's controls and the person's share of the disk reserve are the
+/// shell's, since `fs` reads POLICY as the person (`PART_PEER_CAPS`).
+pub fn policy_allowed(name: &str, program: &str, caps: u64) -> bool {
+    caps & cap::POLICY == 0 || (name == POLICY_HOLDER && program == POLICY_HOLDER)
+}
 /// Whether the service `name` running `program` may have the storage bits in
 /// `caps`: the `kai-data` partition is the file system service's alone (ADR
 /// 0004 §7), and `/system/state` the shell's (P2 task 12).
@@ -334,10 +340,7 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     if request.limits.caps & cap::SCRIPT != 0 && name != SCRIPTER {
         return Err(Error::Permission);
     }
-    // The scheduler's controls and the person's share of the disk reserve
-    // are the shell's: `fs` reads POLICY as the person (`PART_PEER_CAPS`).
-    if request.limits.caps & cap::POLICY != 0 && (name != POLICY_HOLDER || program != POLICY_HOLDER)
-    {
+    if !policy_allowed(name, program, request.limits.caps) {
         return Err(Error::Permission);
     }
     // Uploading versions and reaching the build service are for the edit service.
