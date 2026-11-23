@@ -12,6 +12,7 @@ use crate::{Reply, Shell};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use promptcore::defs::Kind;
 use promptcore::wire::{Record, Request, parse_reply};
 
 /// An entry that ran: what `undo` and a replay need.
@@ -31,6 +32,29 @@ pub(super) struct Ran {
     /// then (keys as [`saved::defines`] gives them): a restart that skips the
     /// entry still knows what it defined, though the files may be gone.
     pub(super) names: Vec<String>,
+    /// Of those, the functions cc redefined in place, same type, so every
+    /// caller already defined follows (what the replies' `def` and
+    /// `retyped` records say, not a guess from the text). A global, a retyped
+    /// function, a macro or a tag is not here: earlier callers keep the old.
+    pub(super) rebinds: Vec<String>,
+}
+
+/// The functions in `records` that cc defined in place: a function `def`
+/// without a `retyped` for it.
+pub(super) fn rebound(records: &[Record]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for record in records {
+        match record {
+            Record::Def {
+                kind: Kind::Func,
+                name,
+                ..
+            } => names.push(name.to_string()),
+            Record::Retyped(name) => names.retain(|n| n != name),
+            _ => {}
+        }
+    }
+    names
 }
 
 /// One entry of a restart, in the order they ran.
@@ -38,6 +62,8 @@ struct Step {
     seq: u64,
     /// What it defined when it ran.
     names: Vec<String>,
+    /// The part of `names` defined in place: [`Ran::rebinds`].
+    rebinds: Vec<String>,
     /// Its text as cc replays it, when it was restored.
     restored: Option<String>,
 }
@@ -46,12 +72,13 @@ struct Step {
 /// defined. A mention is a match on the word, so it may be a parameter or a
 /// local: each line says what the session knows, no more.
 ///
-/// A function is called through its slot, so it follows a redefinition even
-/// for a caller defined before it: such a name is stale when the last entry
-/// that defined it is skipped. A macro or a tag binds where the caller is
-/// defined: stale when the nearest earlier definition is skipped. Not seen
-/// here: a redefinition of another type takes a new slot, so callers between
-/// it and a later restored one may differ, and no note says so.
+/// What a caller ends up bound to is found the way the linker did it: from
+/// the nearest definer before the caller, forward through each later definer
+/// that redefined in place (a slot every caller shares), and no further. A
+/// global, a retyped function, a macro or a tag is bound where the caller
+/// is. The name is stale when that last definer was skipped. A caller with
+/// no definer before it is not named, and nor is one whose last definer was
+/// restored, though a retyped chain may differ: silence, never a guess.
 fn rebind_notes(steps: &[Step]) -> String {
     let mut skipped: Vec<String> = Vec::new();
     for step in steps.iter().filter(|s| s.restored.is_none()) {
@@ -68,26 +95,21 @@ fn rebind_notes(steps: &[Step]) -> String {
         };
         for key in saved::mentions(text, &skipped) {
             let by = |s: &&Step| s.names.contains(&key);
-            let (stale, live) = if key.starts_with('#') || key.starts_with("tag ") {
-                let before = &steps[..at];
-                (
-                    before
-                        .iter()
-                        .rev()
-                        .find(by)
-                        .is_some_and(|s| s.restored.is_none()),
-                    before.iter().any(|s| s.restored.is_some() && by(&s)),
-                )
-            } else {
-                (
-                    steps
-                        .iter()
-                        .rev()
-                        .find(by)
-                        .is_some_and(|s| s.restored.is_none()),
-                    steps.iter().any(|s| s.restored.is_some() && by(&s)),
-                )
+            let Some(first) = steps[..at].iter().rposition(|s| by(&s)) else {
+                continue;
             };
+            let mut last = first;
+            for (i, later) in steps.iter().enumerate().skip(at + 1) {
+                if !by(&later) {
+                    continue;
+                }
+                if !later.rebinds.contains(&key) {
+                    break;
+                }
+                last = i;
+            }
+            let stale = steps[last].restored.is_none();
+            let live = steps[..at].iter().any(|s| s.restored.is_some() && by(&s));
             if !stale {
                 continue;
             }
@@ -135,10 +157,12 @@ impl Shell {
         let mut steps: Vec<Step> = Vec::new();
         for ran in kept {
             let (seq, names, included) = (ran.seq, ran.names, ran.included);
+            let ran_rebinds = ran.rebinds;
             let text = ran.defined.unwrap_or_default();
-            let step = |restored| Step {
+            let step = |restored, rebinds| Step {
                 seq,
                 names: names.clone(),
+                rebinds,
                 restored,
             };
             // An entry is kept as typed: its `#include "…"` files are read
@@ -148,7 +172,7 @@ impl Shell {
                 Ok(entry) => entry,
                 Err(why) => {
                     skipped.push_str(&format!("entry {seq}'s {why}; not restored\n"));
-                    steps.push(step(None));
+                    steps.push(step(None, ran_rebinds.clone()));
                     continue;
                 }
             };
@@ -156,28 +180,32 @@ impl Shell {
                 skipped.push_str(&format!(
                     "entry {seq}'s #include files changed since it ran; not restored\n"
                 ));
-                steps.push(step(None));
+                steps.push(step(None, ran_rebinds.clone()));
                 continue;
             }
             let replay = Request::Replay { seq, entry: &entry }.text();
             // An entry that does not replay is named too.
-            if let Err(why) = self.c_replayed(&replay) {
-                skipped.push_str(&format!(
-                    "entry {seq} did not replay: {}; not restored\n",
-                    why.trim_end()
-                ));
-                steps.push(step(None));
-            } else {
-                steps.push(step(Some(entry)));
-                restored += 1;
-                self.c.ran.push(Ran {
-                    seq,
-                    defined: Some(text),
-                    logged: None,
-                    cc: true,
-                    included,
-                    names,
-                });
+            match self.c_replayed(&replay) {
+                Err(why) => {
+                    skipped.push_str(&format!(
+                        "entry {seq} did not replay: {}; not restored\n",
+                        why.trim_end()
+                    ));
+                    steps.push(step(None, ran_rebinds));
+                }
+                Ok(rebinds) => {
+                    steps.push(step(Some(entry), rebinds.clone()));
+                    restored += 1;
+                    self.c.ran.push(Ran {
+                        seq,
+                        defined: Some(text),
+                        logged: None,
+                        cc: true,
+                        included,
+                        names,
+                        rebinds,
+                    });
+                }
             }
         }
         skipped.push_str(&rebind_notes(&steps));
@@ -196,13 +224,13 @@ impl Shell {
     }
 
     /// Sends a replay: `Ok` when cc ran it to its end, or why not.
-    fn c_replayed(&self, request: &str) -> Result<(), String> {
+    fn c_replayed(&self, request: &str) -> Result<Vec<String>, String> {
         let reply = self
             .host
             .cc(request.as_bytes())
             .map_err(|why| format!("cc did not answer: {why}"))?;
         match parse_reply(&reply).as_deref() {
-            Ok([.., Record::Done { .. }]) => Ok(()),
+            Ok(records @ [.., Record::Done { .. }]) => Ok(rebound(records)),
             Ok([.., Record::Err { text, .. }]) => Err(String::from_utf8_lossy(text).into_owned()),
             _ => Err(String::from("cc's reply was malformed")),
         }
@@ -350,6 +378,7 @@ mod tests {
         Step {
             seq,
             names: names.iter().map(|n| String::from(*n)).collect(),
+            rebinds: Vec::new(),
             restored: restored.map(String::from),
         }
     }

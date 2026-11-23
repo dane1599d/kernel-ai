@@ -660,3 +660,61 @@ fn a_restart_names_nobody_when_a_restored_entry_defines_the_name_again() {
     assert!(note.contains("entry 2's #include files changed"), "{note}");
     assert!(!note.contains("mentions"), "{note}");
 }
+
+/// A global redefined by a skipped entry gets a new address; a caller
+/// defined before it never followed it, so none is named, one after is
+/// (#1266's second review).
+#[test]
+fn a_restart_names_a_caller_of_a_skipped_global_only_after_it() {
+    let entries = ["I64 n = 3;", "I64 Get() { return n; }", INCLUDE];
+    let note = restart_note("I64 n = 9;\n", &entries, Some("I64 n = 8;\n"));
+    assert!(note.contains("entry 3's "), "{note}");
+    assert!(!note.contains("mentions"), "{note}");
+    let entries = ["I64 n = 3;", INCLUDE, "I64 Get() { return n; }"];
+    let note = restart_note("I64 n = 9;\n", &entries, Some("I64 n = 8;\n"));
+    assert!(
+        note.contains(&format!("entry 3 mentions n, {LIVE}\n")),
+        "{note}"
+    );
+}
+
+/// A function redefined with another type gets a new slot: a caller before
+/// it keeps the old body, before and after the restart, so none is named.
+#[test]
+fn a_restart_names_no_caller_before_a_skipped_retyped_function() {
+    let entries = ["I64 f() { return 1; }", "I64 g() { return f(); }", INCLUDE];
+    let (lib, edited) = ("F64 f() { return 2.0; }\n", "F64 f() { return 3.0; }\n");
+    let note = restart_note(lib, &entries, Some(edited));
+    assert!(note.contains("entry 3's "), "{note}");
+    assert!(!note.contains("mentions"), "{note}");
+}
+
+/// A parameter that shares the skipped name is a word match only: the note
+/// says what is known, that no restored entry defines the name.
+#[test]
+fn a_restart_does_not_claim_a_binding_for_a_parameter_of_the_same_name() {
+    let entries = [INCLUDE, "I64 Add(I64 Seven) { return Seven + 1; }"];
+    let note = restart_note(SEVEN, &entries, Some(SEVEN_EDITED));
+    assert!(
+        note.contains(
+            "entry 2 mentions Seven, which a skipped entry defined and no restored entry defines now\n"
+        ),
+        "{note}"
+    );
+    assert!(!note.contains("uses the earlier"), "{note}");
+}
+
+/// An include whose file is unchanged restores whole, and nothing is said.
+#[test]
+fn a_restart_with_the_include_unchanged_has_no_note() {
+    let entries = [INCLUDE, "I64 Eight() { return Seven() + 1; }"];
+    let note = restart_note(SEVEN, &entries, Some(SEVEN));
+    assert!(
+        note.starts_with("cc restarted; restored 2 definitions"),
+        "{note}"
+    );
+    assert!(
+        !note.contains("mentions") && !note.contains("not restored"),
+        "{note}"
+    );
+}

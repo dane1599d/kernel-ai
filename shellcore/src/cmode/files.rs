@@ -192,6 +192,7 @@ impl Shell {
             cc: false,
             included: None,
             names: Vec::new(),
+            rebinds: Vec::new(),
         });
         Reply::ok(format!(
             "saved {entries} entries to /home/user/{path}; undo puts it back"
@@ -305,6 +306,7 @@ impl Shell {
             cc: true,
             included: included(entry, &expanded),
             names: saved::defines(&expanded),
+            rebinds: super::session::rebound(&records),
         });
         Ok(names)
     }
