@@ -102,30 +102,6 @@ const MAXIMIZED_BESIDE_PANE: &str = "desktop: window 2 moved to 0,0 size 896x752
 /// And with the pane closed again: the whole work area above the taskbar.
 const MAXIMIZED_ALONE: &str = "desktop: window 2 moved to 0,0 size 1280x752";
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use deskgeom::{Layout, UiState};
-
-    /// The case's expected frames are deskgeom's maximized rectangles at
-    /// 1280x800, with the pane open and closed.
-    #[test]
-    fn the_taskbar_cases_frames_are_the_layouts_maximized_rectangles() {
-        let frame = |pane_open| {
-            let r = Layout::for_screen(1280, 800, UiState { pane_open }).maximized;
-            format!(
-                "desktop: window 2 moved to {},{} size {}x{}",
-                r.x, r.y, r.w, r.h
-            )
-        };
-        assert_eq!(frame(true), MAXIMIZED_BESIDE_PANE);
-        assert_eq!(frame(false), MAXIMIZED_ALONE);
-        // Left of the pane by the flyout margin.
-        let l = Layout::for_screen(1280, 800, UiState { pane_open: true });
-        assert_eq!(l.maximized.w, l.pane.x - deskgeom::FLYOUT_MARGIN);
-    }
-}
-
 /// [`FORBID`], and a request for the model: Start sends an app's line, never
 /// the text typed to find it.
 const START_FORBID: &[&str] = &[
@@ -150,3 +126,27 @@ const REOPEN_FORBID: &[&str] = &[
     "was asked to show its window",
     "showed no window",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deskgeom::{Layout, UiState};
+
+    /// The case's expected frames are deskgeom's maximized rectangles at
+    /// 1280x800, with the pane open and closed.
+    #[test]
+    fn the_taskbar_cases_frames_are_the_layouts_maximized_rectangles() {
+        let frame = |pane_open| {
+            let r = Layout::for_screen(1280, 800, UiState { pane_open }).maximized;
+            format!(
+                "desktop: window 2 moved to {},{} size {}x{}",
+                r.x, r.y, r.w, r.h
+            )
+        };
+        assert_eq!(frame(true), MAXIMIZED_BESIDE_PANE);
+        assert_eq!(frame(false), MAXIMIZED_ALONE);
+        // Left of the pane by the flyout margin.
+        let l = Layout::for_screen(1280, 800, UiState { pane_open: true });
+        assert_eq!(l.maximized.w, l.pane.x - deskgeom::FLYOUT_MARGIN);
+    }
+}
