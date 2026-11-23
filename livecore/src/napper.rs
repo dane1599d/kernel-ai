@@ -157,6 +157,7 @@ impl Napper {
         now_ms: u64,
     ) -> Result<Option<Napped>, Exit> {
         self.sync(host, now_ms);
+        self.nap.observe(now_ms);
         if host.suspended() || !self.nap.due(now_ms) {
             return Ok(None);
         }

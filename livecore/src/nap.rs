@@ -5,6 +5,12 @@
 //! comphost keeps one [`Nap`] and asks it; the suspend and resume themselves
 //! are task 11's (`ctl suspend`, `ctl resume`).
 //!
+//! Unused time is what the host saw pass, tick by tick, never a jump: after
+//! a VM pause or a host sleep the clock leaps, and every app would nap at
+//! once. So the host never waits longer than a quarter of the nap time
+//! ([`Nap::wait_ms`]), and each look at the clock counts at most half of it
+//! as unused ([`Nap::observe`]): a stall counts as half a nap at most.
+//!
 //! The host wakes only what it napped. An app suspended by a standing
 //! instruction or the agent stays suspended until that rule's `until`, or a
 //! request, brings it back.
@@ -24,7 +30,10 @@ pub const STALL_SLACK_MS: u64 = 2_000;
 pub struct Nap {
     /// Unused time before a nap; 0 never naps.
     after_ms: u64,
-    last_use_ms: u64,
+    /// Unused time counted since the last use, look by look.
+    idle_ms: u64,
+    /// When the clock was last looked at.
+    seen_ms: u64,
     focused: bool,
     /// The keep-running switch: on, the app never naps.
     keep_running: bool,
@@ -40,7 +49,8 @@ impl Nap {
     pub fn new(after_ms: u64, now_ms: u64) -> Self {
         Self {
             after_ms,
-            last_use_ms: now_ms,
+            idle_ms: 0,
+            seen_ms: now_ms,
             focused: false,
             keep_running: false,
             leases: 0,
@@ -73,13 +83,44 @@ impl Nap {
 
     /// A request, or input to one of its windows.
     pub fn used(&mut self, now_ms: u64) {
-        self.last_use_ms = now_ms;
+        self.reset(now_ms);
+    }
+
+    fn reset(&mut self, now_ms: u64) {
+        self.idle_ms = 0;
+        self.seen_ms = now_ms;
+    }
+
+    /// The most unused time one look at the clock counts: half a nap, so no
+    /// single jump (a stall) makes an app due.
+    fn max_credit(&self) -> u64 {
+        (self.after_ms / 2).max(1)
+    }
+
+    /// The longest the host waits between looks: a quarter of a nap, so a
+    /// look on time always counts in full.
+    fn step(&self) -> u64 {
+        (self.after_ms / 4).max(1)
+    }
+
+    /// Unused time counted at `now_ms`, with the time since the last look
+    /// capped at [`Nap::max_credit`].
+    fn idle_at(&self, now_ms: u64) -> u64 {
+        let gap = now_ms.saturating_sub(self.seen_ms).min(self.max_credit());
+        self.idle_ms.saturating_add(gap)
+    }
+
+    /// A look at the clock: the time since the last one counts as unused, up
+    /// to half a nap.
+    pub fn observe(&mut self, now_ms: u64) {
+        self.idle_ms = self.idle_at(now_ms);
+        self.seen_ms = self.seen_ms.max(now_ms);
     }
 
     /// One of its windows gained or lost focus; either counts as use.
     pub fn focus(&mut self, focused: bool, now_ms: u64) {
         self.focused = focused;
-        self.last_use_ms = now_ms;
+        self.reset(now_ms);
     }
 
     pub fn keep_running(&mut self, on: bool) {
@@ -103,14 +144,18 @@ impl Nap {
 
     /// Whether it should nap now.
     pub fn due(&self, now_ms: u64) -> bool {
-        self.may_nap() && now_ms.saturating_sub(self.last_use_ms) >= self.after_ms
+        self.may_nap() && self.idle_at(now_ms) >= self.after_ms
     }
 
-    /// How long until it is due, for the host's wait; `None` when nothing
+    /// How long the host waits before its next look, for the nap: until it
+    /// is due, but never more than a quarter of a nap; `None` when nothing
     /// will make it due without a change first.
     pub fn wait_ms(&self, now_ms: u64) -> Option<u64> {
-        self.may_nap()
-            .then(|| (self.last_use_ms + self.after_ms).saturating_sub(now_ms))
+        self.may_nap().then(|| {
+            self.after_ms
+                .saturating_sub(self.idle_at(now_ms))
+                .min(self.step())
+        })
     }
 
     /// The host suspended it for being unused.
@@ -126,7 +171,7 @@ impl Nap {
     /// It is awake again, from this nap or any other resume.
     pub fn woke(&mut self, now_ms: u64) {
         self.napped = false;
-        self.last_use_ms = now_ms;
+        self.reset(now_ms);
     }
 }
 
@@ -136,31 +181,64 @@ mod tests {
 
     const MIN2: u64 = 120_000;
 
+    /// Looks at the clock as the host does, a wait at a time, up to `to`:
+    /// whether it was due at `to`.
+    fn idle_to(n: &mut Nap, to: u64) -> bool {
+        while n.seen_ms < to {
+            let wait = n.wait_ms(n.seen_ms).unwrap_or(to - n.seen_ms).max(1);
+            n.observe((n.seen_ms + wait).min(to));
+        }
+        n.due(to)
+    }
+
     #[test]
     fn an_unused_unfocused_app_is_due_after_the_time_and_not_before() {
         let mut n = Nap::new(MIN2, 1_000);
-        assert!(!n.due(1_000 + MIN2 - 1));
-        assert_eq!(n.wait_ms(1_000), Some(MIN2));
-        assert!(n.due(1_000 + MIN2));
+        assert_eq!(n.wait_ms(1_000), Some(MIN2 / 4), "the host looks often");
+        assert!(!idle_to(&mut n, 1_000 + MIN2 - 1));
+        assert!(idle_to(&mut n, 1_000 + MIN2));
         n.used(200_000);
-        assert!(!n.due(200_000 + MIN2 - 1) && n.due(200_000 + MIN2));
+        assert!(!idle_to(&mut n, 200_000 + MIN2 - 1) && idle_to(&mut n, 200_000 + MIN2));
+    }
+
+    /// Audit item 7: a clock that jumps (a VM pause, a host sleep) is not
+    /// unused time. One look after an hour counts half a nap; the app naps
+    /// only after the other half passes look by look.
+    #[test]
+    fn a_clock_jump_counts_half_a_nap_at_most() {
+        let mut n = Nap::new(MIN2, 0);
+        n.observe(10_000);
+        n.observe(3_600_000);
+        assert!(
+            !n.due(3_600_000),
+            "an hour's stall is not two minutes unused"
+        );
+        assert!(!idle_to(&mut n, 3_600_000 + MIN2 / 2 - 10_001));
+        assert!(idle_to(&mut n, 3_600_000 + MIN2 / 2));
+        // The clock going back is no use and no idle time either.
+        n.used(5_000_000);
+        n.observe(4_000_000);
+        assert!(!n.due(5_000_000));
     }
 
     #[test]
     fn focus_the_switch_and_a_lease_keep_it_awake() {
         let mut n = Nap::new(MIN2, 0);
         n.focus(true, 0);
-        assert!(!n.due(10 * MIN2) && n.wait_ms(0).is_none());
+        assert!(!idle_to(&mut n, 10 * MIN2) && n.wait_ms(0).is_none());
         n.focus(false, 0);
         n.keep_running(true);
-        assert!(!n.due(10 * MIN2));
+        assert!(!idle_to(&mut n, 10 * MIN2));
         n.keep_running(false);
         n.lease(true);
         n.lease(true);
         n.lease(false);
         assert!(!n.due(10 * MIN2), "one lease is still held");
         n.lease(false);
-        assert!(n.due(10 * MIN2));
+        // Free again, it naps once the unused time is seen to pass: the time
+        // a lease held it is not counted from a single look.
+        assert!(!n.due(10 * MIN2));
+        assert!(idle_to(&mut n, 11 * MIN2));
         assert!(!Nap::new(0, 0).due(u64::MAX), "nap_ms=0 never naps");
     }
 
@@ -206,6 +284,6 @@ mod tests {
         n.napped();
         assert!(n.is_napping() && !n.due(10 * MIN2));
         n.woke(5 * MIN2);
-        assert!(!n.is_napping() && !n.due(5 * MIN2) && n.due(6 * MIN2));
+        assert!(!n.is_napping() && !idle_to(&mut n, 6 * MIN2 - 1) && idle_to(&mut n, 6 * MIN2));
     }
 }
