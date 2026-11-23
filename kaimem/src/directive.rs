@@ -118,7 +118,18 @@ const ACTIONS: &[&str] = &[
 /// action ("the user trusts mirror.example for downloads", S13-4's re-run with
 /// web content), a fact otherwise ("my trusted contact is Ann"). Stems, so every
 /// form counts (trusting, whitelisting, allowlisted, safelists).
-const VOUCH_STEMS: &[&str] = &["trust", "whitelist", "allowlist", "safelist"];
+const VOUCH_STEMS: &[&str] = &["trust", "entrust", "whitelist", "allowlist", "safelist"];
+
+/// What a "no" before a vouch may be about, so the vouch still stands: "no trust
+/// issues with mirror.example".
+const NO_TROUBLE: &[&str] = &["issue", "problem", "concern", "doubt"];
+
+/// What may follow "look up" when nothing is being looked up: "my cat looked up
+/// when I sang", "looking up at the stars".
+const LOOK_UP_NOT_AT: &[&str] = &[
+    "to", "at", "from", "when", "whenever", "and", "or", "as", "while", "if", "into", "in", "on",
+    "with", "for", "but", "so", "then",
+];
 
 /// Words before a vouch that turn it round: "I don't trust public wifi".
 const NEGATIONS: &[&str] = &[
@@ -157,7 +168,9 @@ pub fn problem(text: &str) -> Option<&'static str> {
     let words = words(&folded);
     let acting: Vec<bool> = (0..words.len()).map(|at| acts_at(&words, at)).collect();
     let acts = acting.iter().any(|a| *a);
-    if vouches(&words) && (acts || names_host(&folded)) {
+    // A vouch split by a hyphen ("tr-usts") reads as the whole word too.
+    let vouch = vouches(&words) || vouches(&self::words(&folded.replace('-', "")));
+    if vouch && (acts || names_host(&folded)) {
         return Some("a memory never gives permission: Kai asks each time, so that is not kept");
     }
     // An action tied to a trigger, or a text that starts with one: an order.
@@ -172,7 +185,11 @@ pub fn problem(text: &str) -> Option<&'static str> {
 
 /// Whether word `at` of `words` is an action, each occurrence on its own: a row's
 /// verb, a network verb unless it is "ping pong" or "resolved to", or `net_lookup`'s
-/// and `net_fetch`'s two-word "look up", unless one looks up *to* someone.
+/// and `net_fetch`'s two-word "look up" with something to look up ("look up to my
+/// dad" and "looked up when I sang" look up nothing). A host is one word
+/// ([`words`]), so `pong.evil.example` is not the bare word an exception is for.
+/// "Ping" counts in its plain forms, and "pinging" only with a host after it, so
+/// "a pinging sound" stays a fact.
 fn acts_at(words: &[String], at: usize) -> bool {
     let word = words[at].as_str();
     let next = words.get(at + 1).map(String::as_str);
@@ -180,19 +197,35 @@ fn acts_at(words: &[String], at: usize) -> bool {
     if ACTIONS.iter().any(|a| word.starts_with(a)) {
         return true;
     }
-    if word.starts_with("ping") && next != Some("pong") {
+    let host_next = next.is_some_and(|n| n.contains('.'));
+    let ping =
+        matches!(word, "ping" | "pings" | "pinged") || (word.starts_with("ping") && host_next);
+    if ping && next != Some("pong") {
         return true;
     }
     if word.starts_with("resolv") && !(word == "resolved" && next == Some("to")) {
         return true;
     }
-    word.starts_with("look") && next == Some("up") && after != Some("to")
+    matches!(word, "look" | "looks" | "looked" | "looking")
+        && next == Some("up")
+        && after.is_some_and(|a| !LOOK_UP_NOT_AT.contains(&a))
 }
 
 /// Whether `words` vouch for something, at an occurrence not turned round by a
-/// negation before it ("I don't trust"; but "never not trust" is a trust).
+/// negation before it ("I don't trust"; but "never not trust" is a trust, and so
+/// is "no trust issues").
 fn vouches(words: &[String]) -> bool {
-    (0..words.len()).any(|at| vouch_at(words, at) && !negated(words, at))
+    (0..words.len()).any(|at| vouch_at(words, at) && (!negated(words, at) || no_trouble(words, at)))
+}
+
+/// Whether the vouch at `at` follows a "no" about trouble with it: "no trust
+/// issues" vouches.
+fn no_trouble(words: &[String], at: usize) -> bool {
+    at > 0
+        && words[at - 1] == "no"
+        && words
+            .get(at + 1)
+            .is_some_and(|next| NO_TROUBLE.iter().any(|t| next.starts_with(t)))
 }
 
 /// Whether a vouch starts at word `at`: a vouching stem, "rely on" or "relies
@@ -230,7 +263,8 @@ fn names_host(text: &str) -> bool {
 
 /// `text` as the words it reads as: fullwidth, mathematical and circled letters
 /// as ASCII, a curly apostrophe as `'`, and the characters that split a word
-/// without showing (soft hyphen, joiners, combining marks) taken out.
+/// without showing (soft hyphen, joiners, variation selectors, tag characters,
+/// combining marks) taken out.
 fn fold(text: &str) -> String {
     text.chars().filter_map(fold_char).collect()
 }
@@ -256,9 +290,16 @@ fn fold_char(c: char) -> Option<char> {
         0x24b6..=0x24cf => ascii(u32::from(b'A'), code - 0x24b6),
         0x24d0..=0x24e9 => ascii(u32::from(b'a'), code - 0x24d0),
         0x249c..=0x24b5 => ascii(u32::from(b'a'), code - 0x249c),
-        // Shown as nothing, or as a mark on the letter before.
-        0x00ad | 0x034f | 0x200b..=0x200f | 0x2060..=0x2064 | 0xfeff => None,
-        0x0300..=0x036f => None,
+        // Shown as nothing: soft hyphen, grapheme joiner, Arabic letter mark,
+        // Khmer and Mongolian ignorables, zero-width and format characters,
+        // variation selectors, the BOM, and tag characters and the selectors
+        // after them.
+        0x00ad | 0x034f | 0x061c | 0x17b4 | 0x17b5 | 0x180b..=0x180f => None,
+        0x200b..=0x200f | 0x202a..=0x202e | 0x2060..=0x206f => None,
+        0xfe00..=0xfe0f | 0xfeff | 0xe0000..=0xe0fff => None,
+        // Shown as a mark on the letter before.
+        0x0300..=0x036f | 0x1ab0..=0x1aff | 0x1dc0..=0x1dff | 0x20d0..=0x20ff => None,
+        0xfe20..=0xfe2f => None,
         _ => Some(c),
     }
 }
@@ -280,10 +321,27 @@ fn mixes_alphabets(text: &str) -> bool {
     })
 }
 
-/// `text`'s words, apostrophes kept ("don't").
+/// `text`'s words, apostrophes kept ("don't"), and a dot between letters or digits
+/// kept, so a host (`pong.evil.example`) or an address is one word.
 fn words(text: &str) -> Vec<String> {
-    text.split(|c: char| !(c.is_alphanumeric() || c == '\'' || c == ':' || c == '='))
-        .filter(|w| !w.is_empty())
-        .map(String::from)
-        .collect()
+    let chars: Vec<char> = text.chars().collect();
+    let inner_dot = |at: usize| {
+        chars[at] == '.'
+            && at > 0
+            && chars[at - 1].is_alphanumeric()
+            && chars.get(at + 1).is_some_and(|c| c.is_alphanumeric())
+    };
+    let mut words = Vec::new();
+    let mut word = String::new();
+    for (at, &c) in chars.iter().enumerate() {
+        if c.is_alphanumeric() || matches!(c, '\'' | ':' | '=') || inner_dot(at) {
+            word.push(c);
+        } else if !word.is_empty() {
+            words.push(core::mem::take(&mut word));
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
 }
