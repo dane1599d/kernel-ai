@@ -104,6 +104,11 @@ pub struct TestCase {
     /// The case passes by resetting the machine: under `-no-reboot` QEMU then
     /// exits with status 0 instead of the isa-debug-exit code.
     pub resets: bool,
+    /// The case passes only by the guest turning the machine off: QEMU runs
+    /// with `-no-shutdown`, so a shutdown pauses it, and once every expected
+    /// line is in the monitor must report `shutdown`. A reset (QEMU exits
+    /// under `-no-reboot`) or a hang fails it.
+    pub powers_off: bool,
     /// A fresh writable `kai-data` disk (ADR 0004).
     pub data: Option<crate::blklog::Data>,
     /// With `data` on a GPT disk: `kai-data`'s size in MiB, when the case
@@ -243,6 +248,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         usb: &[],
         bridge: false,
         resets: false,
+        powers_off: false,
         data: None,
         data_mib: None,
         then: None,
