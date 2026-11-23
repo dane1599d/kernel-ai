@@ -302,7 +302,12 @@ fn ring3_grants() -> Result<(), &'static str> {
         uses: &[],
     })
     .map_err(|_| "handles: cannot start the grants check")?;
-    match wait_exit(pid)? {
+    let ended = wait_exit(pid)?;
+    // PROC_ALIVE's answer for a process that ran and has ended: gone.
+    if process::alive(pid) {
+        return Err("handles: an ended process still answered alive");
+    }
+    match ended {
         (ExitReason::Exited, 0) if grants::owns_any(pid) => {
             Err("handles: a node the ended process made is still live")
         }
