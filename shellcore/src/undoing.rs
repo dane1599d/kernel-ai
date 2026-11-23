@@ -21,9 +21,13 @@ impl Shell {
     pub(crate) fn undo_command(&mut self, which: &str) -> Reply {
         let which = which.trim().trim_start_matches('#');
         if which.is_empty() {
-            // A send that went since the newest live entry: `undo` says so,
-            // rather than taking back something older the person did not mean.
-            if let Some(why) = self.bare_send_refusal() {
+            // A send that went since the newest live entry, or a model removed
+            // for good: `undo` says so, rather than taking back something older
+            // the person did not mean.
+            if let Some(why) = self
+                .bare_send_refusal()
+                .or_else(|| self.bare_unfetch_refusal())
+            {
                 return Reply::err(why);
             }
             // An unknown outcome since the newest live entry: it has no undo,
@@ -69,6 +73,31 @@ impl Shell {
             .unwrap_or("a call");
         Some(format!(
             "the outcome of {row} is not known, so there is nothing to undo; check it"
+        ))
+    }
+
+    /// Why a bare `undo` stops: since the newest live entry, an undo removed a
+    /// fetched model for good, which has nothing to redo. Going on to an older
+    /// entry would undo something the person did not mean.
+    fn bare_unfetch_refusal(&self) -> Option<String> {
+        let removed = self
+            .log
+            .entries()
+            .rev()
+            .take_while(|e| !e.live())
+            .find(|e| {
+                e.of.is_some()
+                    && e.changes
+                        .iter()
+                        .any(|c| c.action == "model_fetch" && c.inverse.is_none())
+            })?;
+        let model = removed
+            .changes
+            .iter()
+            .find(|c| c.action == "model_fetch")
+            .map_or("", |c| c.before.as_str());
+        Some(format!(
+            "Can't redo removing model {model}: fetch it again to bring it back. To undo an older entry, name it: undo <number>"
         ))
     }
 
@@ -199,6 +228,44 @@ impl Shell {
                     ..change
                 });
                 continue;
+            }
+            // A fetched model is removed, or its download stopped; undoing that
+            // would fetch gigabytes again, so its redo has no inverse either: a
+            // fresh model_fetch asks.
+            if let undo::Inverse::Fetched { sha } = inverse {
+                // It deletes for good, so it always asks the person first,
+                // whoever asked for the undo: Kai's own `undo` call too. Only
+                // a typed `y` answers (`answer_bare`).
+                if !anyway {
+                    self.undo_asking = Some(id);
+                    self.host
+                        .audit(&format!("undo #{id} asks: it removes a model for good"));
+                    let mut text = undone(&said);
+                    text.push_str(&format!(
+                        "Remove model {} for good? No undo brings it back. y/n",
+                        change.after
+                    ));
+                    left.push(change);
+                    stopped = Some(Reply::ok(text));
+                    break;
+                }
+                match self.model_unfetch(sha) {
+                    Ok(text) => {
+                        said.push(text);
+                        redo.push(Change {
+                            before: change.after.clone(),
+                            after: change.before.clone(),
+                            inverse: None,
+                            ..change
+                        });
+                        continue;
+                    }
+                    Err(why) => {
+                        left.push(change);
+                        stopped = Some(Reply::err(format!("{}{why}", undone(&said))));
+                        break;
+                    }
+                }
             }
             // A held send is cancelled; undoing that never sends it, so its
             // redo has no inverse: a send always asks again.

@@ -587,6 +587,19 @@ impl Host for FakeHost {
                     }
                 }
             }
+            // The undo of a model_fetch: refused while the blob runs or is on
+            // trial, as `updated` refuses it.
+            ["models", "remove", hex] => {
+                let sha = modelchan::listing::sha256(hex)?;
+                if m.store.running == Some(sha) {
+                    String::from("err it is the model running; use another first")
+                } else if m.next() == Some(sha) {
+                    String::from("err it is on trial for the next restart; undo that first")
+                } else {
+                    m.store.blobs.retain(|b| b.sha256 != sha);
+                    String::from("ok removed")
+                }
+            }
             _ => String::from("err unknown request"),
         })
     }
