@@ -82,6 +82,10 @@ const BASE: Rights = Rights::DUPLICATE
     .union(Rights::INSPECT)
     .union(Rights::TRANSFER);
 
+/// A route the process may call through but never pass on: no TRANSFER or
+/// DUPLICATE (`supervise::Grants::pinned`).
+pub const PINNED_RIGHTS: Rights = Rights::CALL.union(Rights::INSPECT);
+
 /// A plan line's `netdest=` handle (P5 task 1): resolve and connect on its
 /// record, which it may narrow and pass on.
 pub const NETDEST_RIGHTS: Rights = BASE.union(Rights::RESOLVE).union(Rights::CONNECT);
@@ -313,14 +317,16 @@ pub fn route(service: &str) -> Result<Entry, kabi::Error> {
 /// from `caps`, then a route to each service in `uses` (CALL only). Before the
 /// process runs, so nothing races it.
 pub fn create(slot: usize, caps: u64, pid: u64, uses: &[&str]) -> Result<(), kabi::Error> {
-    create_with(slot, caps, pid, uses, &[], None)
+    create_with(slot, caps, pid, uses, &[], None, &[])
 }
 
 /// [`create`], with a startup `Dir` on the `fs` route for each folder in `dirs`
 /// (the plan's `dir=`), after FILES's and SYSTEM_STATE's, and `agent`'s badge
 /// (the plan's `agent=`, ADR 0013 section 1) on the route to
 /// `kabi::handle::agent::SERVICE`, so that service knows the agent by a badge
-/// it cannot forge. Every other route's badge is 0.
+/// it cannot forge. Every other route's badge is 0. A route named in `pinned`
+/// gets CALL and INSPECT only: the process calls through it but can never
+/// move or copy it, so its badge, or its send, stays its own.
 pub fn create_with(
     slot: usize,
     caps: u64,
@@ -328,6 +334,7 @@ pub fn create_with(
     uses: &[&str],
     dirs: &[supervise::Folder],
     agent: Option<u64>,
+    pinned: &[alloc::string::String],
 ) -> Result<(), kabi::Error> {
     let mut table = Table::new().map_err(kabi::Error::from)?;
     let mut startup = Vec::new();
@@ -340,6 +347,9 @@ pub fn create_with(
             let mut entry = route(name)?;
             if *name == kabi::handle::agent::SERVICE {
                 entry.badge = agent.unwrap_or(0);
+            }
+            if pinned.iter().any(|kept| kept == name) {
+                entry.rights = PINNED_RIGHTS;
             }
             Ok(entry)
         })
@@ -363,15 +373,16 @@ pub fn create_with(
     Ok(())
 }
 
-/// The badge on `slot`'s startup route to `service`, if it has one: what a
-/// call through it delivers (`agent=`'s on the route to `llm`).
-pub fn route_badge(slot: usize, service: &str) -> Option<u64> {
+/// The badge and rights of `slot`'s startup route to `service`, if it has one:
+/// the badge is what a call through it delivers (`agent=`'s on the route to
+/// `llm`).
+pub fn route_of(slot: usize, service: &str) -> Option<(u64, Rights)> {
     let id = route_id(service).ok()?;
     let guard = lock(slot);
     let handles = guard.as_ref()?;
     handles.startup.iter().find_map(|&handle| {
         let entry = handles.table.get(handle).ok()?;
-        (entry.kind == Kind::Service && entry.object == id).then_some(entry.badge)
+        (entry.kind == Kind::Service && entry.object == id).then_some((entry.badge, entry.rights))
     })
 }
 
