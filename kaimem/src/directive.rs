@@ -124,67 +124,6 @@ const VOUCH_STEMS: &[&str] = &["trust", "entrust", "whitelist", "allowlist", "sa
 /// issues with mirror.example".
 const NO_TROUBLE: &[&str] = &["issue", "problem", "concern", "doubt"];
 
-/// What a gaze looks up at or from, before a pronoun or a noun phrase: "at me",
-/// "from her book", "at the stars".
-const GAZE_AT: &[&str] = &["at", "from"];
-
-/// What may start a clause after a gaze, before a pronoun and its verb: "my cat
-/// looked up when I sang".
-const GAZE_CLAUSE: &[&str] = &["when", "whenever", "while", "as", "if"];
-
-/// Words that may end a gaze, besides the end of the text: "at me whenever I
-/// sing", "at the clock every hour". A name there ("at the host localhost") is
-/// something to look up.
-const GAZE_ENDS: &[&str] = &[
-    "when", "whenever", "while", "as", "if", "but", "so", "then", "because", "until", "before",
-    "after", "every", "each", "always", "daily", "nightly",
-];
-
-/// Who may look up in a gaze, right before the verb: not "you", whom an order
-/// speaks to, nor "it", which may be Kai.
-const SUBJECTS: &[&str] = &["i", "we", "he", "she", "they"];
-
-/// Who a gaze may land on: "at me", "from her"; not "it" or "them", which may be hosts.
-const OBJECTS: &[&str] = &["me", "us", "him", "her", "you"];
-
-/// Who may start a clause after a gaze: "when I sang", "when it snows".
-const CLAUSE_SUBJECTS: &[&str] = &["i", "we", "he", "she", "they", "it", "you"];
-
-/// Verbs of a request: a clause with one is a trigger ("looks up as I ask"),
-/// not a moment ("looked up when I sang").
-const REQUESTS: &[&str] = &[
-    "ask", "asks", "asked", "say", "says", "said", "tell", "tells", "type", "types", "want",
-    "wants", "need", "needs", "request", "requests",
-];
-
-/// Words that start a noun phrase: "the cat looks up", "at the stars".
-const DETERMINERS: &[&str] = &[
-    "a", "an", "the", "this", "that", "its", "my", "his", "her", "our", "your", "their",
-];
-
-/// Words that may stand between a subject and its verb: "I always look up".
-const ADVERBS: &[&str] = &[
-    "always",
-    "often",
-    "sometimes",
-    "usually",
-    "never",
-    "still",
-    "just",
-    "also",
-    "rarely",
-];
-
-/// What a "pinging" describes when it is a sound, not something done: "a pinging
-/// sound", "the pinging noise".
-const SOUNDS: &[&str] = &[
-    "sound", "sounds", "noise", "noises", "tone", "tones", "beep", "beeps", "chime", "chimes",
-];
-
-/// Verbs a pinging sound is heard or made with: "I hear the pinging noise", "my
-/// car makes a pinging sound". Not "make", which may be an order.
-const HEARD: &[&str] = &["hear", "hears", "heard", "makes", "made", "is", "was"];
-
 /// Words before a vouch that turn it round: "I don't trust public wifi".
 const NEGATIONS: &[&str] = &[
     "not",
@@ -260,14 +199,12 @@ fn verdict(folded: &str, view: View) -> Option<&'static str> {
     {
         return Some(GRANTS);
     }
-    // Whether the text names a host anywhere, whichever view it is read in.
+    // Whether the text names a host, whichever view it is read in.
     let hosted = names_host(folded)
         || self::words(folded, View::Hosts)
             .iter()
             .any(|w| w.contains('.'));
-    let acting: Vec<bool> = (0..words.len())
-        .map(|at| acts_at(&words, at, hosted))
-        .collect();
+    let acting: Vec<bool> = (0..words.len()).map(|at| acts_at(&words, at)).collect();
     let acts = acting.iter().any(|a| *a);
     // A vouch split by a hyphen ("tr-usts") reads as the whole word too.
     let vouch = vouches(&words) || vouches(&self::words(&folded.replace('-', ""), view));
@@ -284,78 +221,24 @@ fn verdict(folded: &str, view: View) -> Option<&'static str> {
 
 /// Whether word `at` of `words` is an action, each occurrence on its own: a row's
 /// verb, a network verb unless it is "ping pong" or "resolved to", or `net_lookup`'s
-/// and `net_fetch`'s two-word "look up". In the view where a host is one word,
-/// `pong.evil.example` is not the bare word an exception is for.
-///
-/// Every form of "ping" and every "look up" acts, as before #1263, but for two
-/// narrow facts in a text that names no dotted host (`hosted`): a sound ("a
-/// pinging sound", [`sounds`]) and a gaze or a regard ("looks up to my dad",
-/// [`gazes`]). Anything else, "do the pinging", "look up for me localhost", is
-/// an action whatever the target looks like.
-fn acts_at(words: &[String], at: usize, hosted: bool) -> bool {
+/// and `net_fetch`'s two-word "look up", unless one looks up *to* someone. In the
+/// view where a host is one word, `pong.evil.example` is not the bare word an
+/// exception is for. A fact that only sounds like one ("a pinging sound", "my cat
+/// looked up") is refused too: no word shape tells it from an order.
+fn acts_at(words: &[String], at: usize) -> bool {
     let word = words[at].as_str();
     let next = words.get(at + 1).map(String::as_str);
     let after = words.get(at + 2).map(String::as_str);
     if ACTIONS.iter().any(|a| word.starts_with(a)) {
         return true;
     }
-    if word.starts_with("ping") && next != Some("pong") && (hosted || !sounds(words, at)) {
+    if word.starts_with("ping") && next != Some("pong") {
         return true;
     }
     if word.starts_with("resolv") && !(word == "resolved" && next == Some("to")) {
         return true;
     }
-    word.starts_with("look")
-        && next == Some("up")
-        && (hosted || !(after == Some("to") || gazes(words, at)))
-}
-
-/// Whether the ping form at `at` is a sound someone hears or something makes:
-/// "I hear the pinging noise", "my car makes a pinging sound", then the end, a
-/// [`GAZE_ENDS`] word, or where it comes from ("from the router"). "Do the
-/// pinging", "run a pinging sound against localhost" and the plain forms
-/// (ping, pings, pinged) are something done.
-fn sounds(words: &[String], at: usize) -> bool {
-    let word = |i: Option<usize>| i.and_then(|i| words.get(i)).map_or("", String::as_str);
-    let ends = |i: usize| word(Some(i)).is_empty() || GAZE_ENDS.contains(&word(Some(i)));
-    let heard = DETERMINERS.contains(&word(at.checked_sub(1)))
-        && (at == 1 || HEARD.contains(&word(at.checked_sub(2))));
-    let from = word(Some(at + 2)) == "from"
-        && DETERMINERS.contains(&word(Some(at + 3)))
-        && !word(Some(at + 4)).is_empty()
-        && ends(at + 5);
-    !matches!(words[at].as_str(), "ping" | "pings" | "pinged")
-        && SOUNDS.contains(&word(Some(at + 1)))
-        && heard
-        && (ends(at + 2) || from)
-}
-
-/// Whether the "look up" at `at` is someone's gaze, and then the end or a
-/// [`GAZE_ENDS`] word: a person ("I look", "I always look") looking up at or
-/// from a person or a noun phrase ("at the stars", "from her book"); anyone with
-/// a subject ("my cat looks") looking up at a person ("at me") or as a clause
-/// starts ("when I sang"). An order has no subject ("always look up at the
-/// router"); a bare name after the preposition ("at localhost", "at the host
-/// localhost") is something to look up; and "the bot looks up at the router"
-/// may be Kai looking something up.
-fn gazes(words: &[String], at: usize) -> bool {
-    let word = |i: Option<usize>| i.and_then(|i| words.get(i)).map_or("", String::as_str);
-    let (before, before2) = (word(at.checked_sub(1)), word(at.checked_sub(2)));
-    let person =
-        SUBJECTS.contains(&before) || (ADVERBS.contains(&before) && SUBJECTS.contains(&before2));
-    // "That" may join a clause ("that always look up") rather than start a noun.
-    let subject = person || (DETERMINERS.contains(&before2) && before2 != "that");
-    let ends = |i: usize| word(Some(i)).is_empty() || GAZE_ENDS.contains(&word(Some(i)));
-    let (prep, first, second) = (word(Some(at + 2)), word(Some(at + 3)), word(Some(at + 4)));
-    let phrase = DETERMINERS.contains(&first) && !second.is_empty() && ends(at + 5);
-    let looked_at = GAZE_AT.contains(&prep)
-        && ((OBJECTS.contains(&first) && ends(at + 4)) || (person && phrase));
-    let clause = GAZE_CLAUSE.contains(&prep)
-        && CLAUSE_SUBJECTS.contains(&first)
-        && !second.is_empty()
-        && !REQUESTS.contains(&second)
-        && ends(at + 5);
-    subject && (looked_at || clause)
+    word.starts_with("look") && next == Some("up") && after != Some("to")
 }
 
 /// Whether `words` vouch for something, at an occurrence not turned round by a
