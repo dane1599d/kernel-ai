@@ -9,7 +9,9 @@
 //! - Arm `layered`: what llm ships. The eight stub apps ([`stubs`]) go in the
 //!   apps turn as index lines (`llmproto::pack::apps::turn`); a call naming an
 //!   app row stops after the name and is written again with that app's lines
-//!   after the request (`llmproto::local::act::act`), at 3,072 positions.
+//!   after the request (`llmproto::local::act::act`), at 3,072 positions:
+//!   ADR 0010's context. llm itself still loads at `kabi::model::CONTEXT_CAP`
+//!   (2,048) today.
 //! - Arm `flat`: every app's full lines in the apps turn
 //!   (`llmproto::local::act::grammar_flat`), each call written in one round,
 //!   at 4,096 positions.
@@ -17,8 +19,10 @@
 //! Both answer the 120 [`tasks`] through llm's own `act` on the shipped pack,
 //! with llm's sampler. llm draws with one fixed seed, so a rerun is the same
 //! run: there is no seed option. The gate (`--gate`, both arms in one run):
-//! layered scores at least flat less 2 points (of 100), and names the right
-//! app on at least 95% of the single-app tasks. Every task goes to
+//! both arms answer every task with a call (no error and no full context, so
+//! a flat arm that never answered cannot make the comparison pass), layered
+//! scores at least flat less 2 points (of 100), and names the right app on at
+//! least 95% of the single-app tasks. Every task goes to
 //! `target/groups/<arm>.jsonl`, and the figures to the step summary. Real
 //! model runs are for GitHub runners only.
 //!
@@ -40,7 +44,8 @@ use std::path::Path;
 use std::time::Instant;
 use tasks::{Cat, TASKS, Task, Want};
 
-/// The time llm gives one call.
+/// The time llm gives one call. The harness hands it to `act` as llm does;
+/// the local engine does not stop on it, so a slow call is only slow.
 const TIMEOUT_MS: u64 = 60_000;
 /// The gate: layered may trail flat by at most this many points (of 100).
 const MAX_TRAIL_POINTS: f64 = 2.0;
@@ -185,6 +190,9 @@ struct Tally {
     cats: [(usize, usize); Cat::ALL.len()],
     /// (right app, asked) over the single-app tasks.
     right: (usize, usize),
+    /// Tasks whose `act` gave an error instead of a call.
+    errors: usize,
+    /// Of those, the ones whose request filled the model's context.
     context_full: usize,
     prompt_positions: usize,
     millis: Vec<u128>,
@@ -267,6 +275,7 @@ fn run_arm(
         let got = match &call {
             Ok(call) => call.text(),
             Err(why) => {
+                tally.errors += 1;
                 tally.context_full += usize::from(why.contains("filled the model's context"));
                 why.clone()
             }
@@ -292,11 +301,12 @@ fn run_arm(
     Ok(tally)
 }
 
-/// An arm's Markdown rows.
-fn rows(arm: Arm, tally: &Tally) -> String {
+/// An arm's Markdown rows; `model` is the engine as it loaded (the positions
+/// it clamped the arm's context to, its tier and workers).
+fn rows(arm: Arm, model: &str, tally: &Tally) -> String {
     let (passed, asked) = tally.passed();
     let mut text = format!(
-        "\n### {} ({} positions)\n\n| Measure | Value |\n|---|---|\n\
+        "\n### {} ({} positions asked)\n\n{model}\n\n| Measure | Value |\n|---|---|\n\
          | passed | {passed}/{asked} ({:.1} points) |\n",
         arm.name(),
         arm.context(),
@@ -308,11 +318,12 @@ fn rows(arm: Arm, tally: &Tally) -> String {
     text.push_str(&format!(
         "| right app on single-app tasks | {}/{} ({:.1}%) |\n\
          | prompt positions before the request | {} |\n\
-         | context full | {} |\n| median ms a task | {} |\n",
+         | errors (no call) | {} |\n| context full | {} |\n| median ms a task | {} |\n",
         tally.right.0,
         tally.right.1,
         100.0 * tally.right_share(),
         tally.prompt_positions,
+        tally.errors,
         tally.context_full,
         tally.median_ms(),
     ));
@@ -320,22 +331,35 @@ fn rows(arm: Arm, tally: &Tally) -> String {
 }
 
 /// The gate's verdict over both arms, as Markdown, and whether it passes.
+/// Both arms must answer every task with a call: an error counts as a failed
+/// task, so a flat arm that errs throughout (a grammar regression, a turn too
+/// long for its context) would score zero and let any layered score pass.
 fn verdict(layered: &Tally, flat: &Tally) -> (bool, String) {
     let trail = flat.points() - layered.points();
+    let answered = |tally: &Tally| tally.errors == 0 && tally.context_full == 0;
+    let (layered_answered, flat_answered) = (answered(layered), answered(flat));
     let score = trail <= MAX_TRAIL_POINTS;
     let right = layered.right_share() >= MIN_RIGHT_GROUP;
     let mark = |ok: bool| if ok { "pass" } else { "FAIL" };
     let text = format!(
         "\n### gate\n\n| Check | Value | Bar | |\n|---|---|---|---|\n\
+         | flat: tasks with no call | {} ({} context full) | 0 | {} |\n\
+         | layered: tasks with no call | {} ({} context full) | 0 | {} |\n\
          | layered against flat | {:+.1} points | >= -{MAX_TRAIL_POINTS} | {} |\n\
          | layered: right app after the name stop | {:.1}% | >= {:.0}% | {} |\n",
+        flat.errors,
+        flat.context_full,
+        mark(flat_answered),
+        layered.errors,
+        layered.context_full,
+        mark(layered_answered),
         -trail,
         mark(score),
         100.0 * layered.right_share(),
         100.0 * MIN_RIGHT_GROUP,
         mark(right),
     );
-    (score && right, text)
+    (flat_answered && layered_answered && score && right, text)
 }
 
 pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
@@ -346,9 +370,11 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
     let groups = stubs::groups()?;
     let tasks = chosen(options.limit);
     let mut summary = format!(
-        "## groups (spike S10-2)\n\n{} tasks on {} stub apps, commit {}\n",
+        "## groups (spike S10-2)\n\n{} tasks on {} stub apps, model {}, act pack_id {:016x}, commit {}\n",
         tasks.len(),
         groups.len(),
+        options.id,
+        llmproto::pack::act_pack_id(),
         std::env::var("GITHUB_SHA").unwrap_or_else(|_| String::from("(local)")),
     );
     let mut tallies = Vec::new();
@@ -364,7 +390,7 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
             tally.right.0,
             tally.right.1
         );
-        summary.push_str(&rows(arm, &tally));
+        summary.push_str(&rows(arm, &loaded.line, &tally));
         tallies.push((arm, tally));
     }
     let tally_of = |arm: Arm| tallies.iter().find(|(a, _)| *a == arm).map(|(_, t)| t);

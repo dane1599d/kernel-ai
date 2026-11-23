@@ -195,6 +195,28 @@ fn the_gate_allows_two_points_and_needs_95_percent_right() {
 }
 
 #[test]
+fn the_gate_fails_when_an_arm_did_not_answer_every_task() {
+    let tally = |passed: usize, errors: usize, context_full: usize| Tally {
+        cats: [(passed, 100), (0, 0), (0, 0)],
+        right: (100, 100),
+        errors,
+        context_full,
+        ..Tally::default()
+    };
+    // A flat arm whose every decode erred scores 0: nothing was compared.
+    let (passes, text) = verdict(&tally(90, 0, 0), &tally(0, 100, 0));
+    assert!(!passes);
+    assert!(
+        text.contains("| flat: tasks with no call | 100 (0 context full) | 0 | FAIL |"),
+        "{text}"
+    );
+    assert!(!verdict(&tally(90, 0, 0), &tally(90, 1, 1)).0);
+    assert!(!verdict(&tally(90, 1, 0), &tally(90, 0, 0)).0);
+    assert!(!verdict(&tally(90, 0, 1), &tally(90, 0, 0)).0);
+    assert!(verdict(&tally(90, 0, 0), &tally(90, 0, 0)).0);
+}
+
+#[test]
 fn both_arms_run_end_to_end_on_the_fixture_model() {
     let groups = stubs::groups().unwrap();
     let text = [
@@ -212,9 +234,27 @@ fn both_arms_run_end_to_end_on_the_fixture_model() {
         assert_eq!(tally.passed().1, 3);
         assert_eq!(tally.right.1, 1);
         assert!(tally.prompt_positions > 0);
-        assert!(rows(arm, &tally).contains(&format!("### {} (", arm.name())));
+        assert_eq!(tally.context_full, 0, "{}", arm.name());
+        let text = rows(arm, &loaded.line, &tally);
+        assert!(text.contains(&format!("### {} (", arm.name())), "{text}");
+        assert!(text.contains(&loaded.line), "{text}");
         let written = fs::read_to_string(dir.join("groups").join(format!("{}.jsonl", arm.name())));
-        assert_eq!(written.unwrap().lines().count(), 3);
+        let written = written.unwrap();
+        assert_eq!(written.lines().count(), 3);
+        // Each answer is a call, or the fixture's reply cut off at the token
+        // limit; never an engine error.
+        let cut_off = llmproto::act::ActError::CutOff.describe();
+        let mut cut = 0;
+        for line in written.lines() {
+            let record: Value = serde_json::from_str(line).unwrap();
+            let got = record["got"].as_str().unwrap();
+            if got == cut_off {
+                cut += 1;
+            } else {
+                assert!(llmproto::act::parse(got).is_ok(), "{}: {got}", arm.name());
+            }
+        }
+        assert_eq!(tally.errors, cut, "{}", arm.name());
     }
     write_summary("## groups\n", &dir).unwrap();
     assert!(dir.join("groups").join("summary.md").exists());
