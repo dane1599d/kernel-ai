@@ -5,13 +5,13 @@
 //! [`Moving`] holds it, and the sweeps count that as named (audit K #1).
 //!
 //! Only kinds whose objects a sweep frees are counted: `NetDest` records
-//! ([`crate::net::dest::transit`]).
+//! ([`crate::net::dest::transit`]) and `Shm` objects ([`crate::shm::transit`]).
 //!
-//! A sweep reads a record's transit count and then the tables, and a handle
+//! A sweep reads an object's transit count and then the tables, and a handle
 //! may move between the two: out of a table after the count was read as 0,
 //! before that table is scanned. Every move moves [`moves`] on, under the
 //! source table's lock for a take, so a sweep that sees it change while it
-//! looks keeps the record (#1150's review).
+//! looks keeps the object (#1150's review).
 
 use alloc::vec::Vec;
 use captable::Entry;
@@ -82,6 +82,7 @@ fn count_all(entries: &[Entry], up: bool) {
 fn count(entry: &Entry, up: bool) -> bool {
     match entry.kind {
         Kind::NetDest => crate::net::dest::transit(entry.object, up),
+        Kind::Shm => crate::shm::transit(entry.object, up),
         _ => return false,
     }
     true
