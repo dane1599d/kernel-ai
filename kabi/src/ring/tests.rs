@@ -34,6 +34,22 @@ impl Region {
     }
 }
 
+/// One of the header's atomics, through a raw projection: no `&Header` is
+/// live while a plain field is written.
+macro_rules! atom {
+    ($header:expr, $field:ident) => {
+        unsafe { &*core::ptr::addr_of!((*$header).$field) }
+    };
+}
+
+/// Writes a plain header field the way a peer would, volatile, by a raw
+/// projection.
+macro_rules! poke {
+    ($header:expr, $field:ident, $value:expr) => {
+        unsafe { core::ptr::addr_of_mut!((*$header).$field).write_volatile($value) }
+    };
+}
+
 fn request(tag: u64) -> Request {
     Request {
         tag,
@@ -50,12 +66,16 @@ fn the_layout_is_the_adrs() {
     let ring = unsafe { Ring::init(region.ptr(), region.len(), MSG, 8) }.unwrap();
     assert_eq!((ring.kind(), ring.entries()), (MSG, 8));
     assert_eq!(ring.data_area(), (size(8, 0), region.len() - size(8, 0)));
-    let header = unsafe { &*region.header() };
-    assert_eq!(
-        (header.magic, header.version, header.entries),
-        (MAGIC, 1, 8)
-    );
-    assert_eq!(header.rest, [0; 28]);
+    let header = region.header();
+    let read = unsafe {
+        (
+            core::ptr::addr_of!((*header).magic).read_volatile(),
+            core::ptr::addr_of!((*header).version).read_volatile(),
+            core::ptr::addr_of!((*header).entries).read_volatile(),
+            core::ptr::addr_of!((*header).rest).read_volatile(),
+        )
+    };
+    assert_eq!(read, (MAGIC, 1, 8, [0; 28]));
     // The kinds and ops, claimed in order.
     assert_eq!([BLOCK, FRAME, MSG, PCM, VMEXIT], [1, 2, 3, 4, 5]);
     assert_eq!([block::READ, block::WRITE, block::FLUSH], [1, 2, 3]);
@@ -86,18 +106,16 @@ fn a_ring_out_of_shape_is_refused() {
         Some(Error::Size)
     );
     unsafe { Ring::init(ptr, len, BLOCK, 16) }.unwrap();
-    unsafe { (*region.header()).version = 2 };
+    poke!(region.header(), version, 2);
     assert_eq!(
         unsafe { Ring::attach(ptr, len) }.err(),
         Some(Error::Version)
     );
-    unsafe { (*region.header()).magic = *b"KRNX" };
+    poke!(region.header(), magic, *b"KRNX");
     assert_eq!(unsafe { Ring::attach(ptr, len) }.err(), Some(Error::Magic));
-    unsafe {
-        (*region.header()).magic = MAGIC;
-        (*region.header()).version = 1;
-        (*region.header()).entries = 32;
-    }
+    poke!(region.header(), magic, MAGIC);
+    poke!(region.header(), version, 1);
+    poke!(region.header(), entries, 32);
     assert_eq!(
         unsafe { Ring::attach(ptr, len) }.err(),
         Some(Error::Size),
@@ -153,9 +171,9 @@ fn free_running_indices_wrap_at_u32_max() {
     let mut region = Region::new(size(8, 0));
     let ring = unsafe { Ring::init(region.ptr(), region.len(), BLOCK, 8) }.unwrap();
     let start = u32::MAX - 3;
-    let header = unsafe { &*region.header() };
-    header.req_head.store(start, Ordering::SeqCst);
-    header.req_tail.store(start, Ordering::SeqCst);
+    let header = region.header();
+    atom!(header, req_head).store(start, Ordering::SeqCst);
+    atom!(header, req_tail).store(start, Ordering::SeqCst);
     let (mut client, mut server) = ring.split();
     let (tx, rx) = (&mut client.requests, &mut server.requests);
     for tag in 0..20 {
@@ -163,7 +181,7 @@ fn free_running_indices_wrap_at_u32_max() {
         assert_eq!(rx.pop().unwrap().map(|r| r.tag), Some(tag));
     }
     assert_eq!(
-        header.req_head.load(Ordering::SeqCst),
+        atom!(header, req_head).load(Ordering::SeqCst),
         start.wrapping_add(20)
     );
 }
@@ -207,22 +225,22 @@ fn a_producer_and_a_consumer_racing_on_two_threads_keep_order() {
 fn a_hostile_producers_head_is_corrupt_never_a_read_out_of_bounds() {
     let mut region = Region::new(size(8, 0));
     let ring = unsafe { Ring::init(region.ptr(), region.len(), BLOCK, 8) }.unwrap();
-    let header = unsafe { &*region.header() };
+    let header = region.header();
     let (_client, mut server) = ring.split();
     let rx = &mut server.requests;
     // A head more than `entries` ahead of the tail.
     for bad in [9, 1000, u32::MAX] {
-        header.req_head.store(bad, Ordering::SeqCst);
+        atom!(header, req_head).store(bad, Ordering::SeqCst);
         assert_eq!(rx.pop(), Err(Corrupt), "{bad}");
     }
     // A head that goes back.
-    header.req_head.store(5, Ordering::SeqCst);
+    atom!(header, req_head).store(5, Ordering::SeqCst);
     assert_eq!(rx.ready(), Ok(5));
-    header.req_head.store(3, Ordering::SeqCst);
+    atom!(header, req_head).store(3, Ordering::SeqCst);
     assert_eq!(rx.ready(), Err(Corrupt));
     // `entries` rewritten after attach is not believed: slots stay masked.
-    unsafe { (*region.header()).entries = 4096 };
-    header.req_head.store(5, Ordering::SeqCst);
+    poke!(header, entries, 4096);
+    atom!(header, req_head).store(5, Ordering::SeqCst);
     for _ in 0..5 {
         assert!(rx.pop().unwrap().is_some());
     }
@@ -232,22 +250,22 @@ fn a_hostile_producers_head_is_corrupt_never_a_read_out_of_bounds() {
 fn a_hostile_consumers_tail_is_corrupt_never_a_write_out_of_bounds() {
     let mut region = Region::new(size(8, 0));
     let ring = unsafe { Ring::init(region.ptr(), region.len(), BLOCK, 8) }.unwrap();
-    let header = unsafe { &*region.header() };
+    let header = region.header();
     let (mut client, _server) = ring.split();
     let tx = &mut client.requests;
     for tag in 0..4 {
         tx.push(&request(tag)).unwrap().unwrap();
     }
     // A tail past the head.
-    header.req_tail.store(5, Ordering::SeqCst);
+    atom!(header, req_tail).store(5, Ordering::SeqCst);
     assert_eq!(tx.push(&request(9)), Err(Corrupt));
     // A tail that goes back.
-    header.req_tail.store(3, Ordering::SeqCst);
+    atom!(header, req_tail).store(3, Ordering::SeqCst);
     assert_eq!(tx.space(), Ok(7));
-    header.req_tail.store(1, Ordering::SeqCst);
+    atom!(header, req_tail).store(1, Ordering::SeqCst);
     assert_eq!(tx.space(), Err(Corrupt));
     // Far out of range.
-    header.req_tail.store(u32::MAX / 2, Ordering::SeqCst);
+    atom!(header, req_tail).store(u32::MAX / 2, Ordering::SeqCst);
     assert_eq!(tx.push(&request(9)), Err(Corrupt));
 }
 
@@ -262,4 +280,66 @@ fn doorbell_wishes_are_each_sides_to_set() {
     assert!(client.server_wants_requests() && server.client_wants_responses());
     server.want_requests(false);
     assert!(!client.server_wants_requests());
+}
+
+/// The doorbell protocol on two threads: the server sets its wish (which
+/// fences), checks `ready()` once more and only then sleeps; the client
+/// pushes and rings when the wish is set (which fences first). Over many
+/// rounds the server never sleeps through a request: a missed wakeup would
+/// show as a sleep that times out with a request waiting.
+#[test]
+fn the_doorbell_protocol_never_loses_a_wakeup_on_two_threads() {
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::Duration;
+    const ROUNDS: u64 = 20_000;
+    let region = std::boxed::Box::leak(std::boxed::Box::new(Region::new(size(8, 0))));
+    let (ptr, len) = (region.ptr(), region.len());
+    let ring: Ring<'static> = unsafe { Ring::init(ptr, len, BLOCK, 8) }.unwrap();
+    let (mut client, mut server) = ring.split();
+    // The doorbell: a count of rings, and a condvar to sleep on.
+    let bell = Arc::new((Mutex::new(0u64), Condvar::new()));
+    let ringer = bell.clone();
+    let producer = thread::spawn(move || {
+        for tag in 0..ROUNDS {
+            while client.requests.push(&request(tag)).unwrap().is_err() {
+                thread::yield_now();
+            }
+            if client.server_wants_requests() {
+                let (rings, wake) = &*ringer;
+                *rings.lock().unwrap() += 1;
+                wake.notify_one();
+            }
+        }
+    });
+    let mut want = 0;
+    let mut heard = 0;
+    while want < ROUNDS {
+        while let Some(got) = server.requests.pop().unwrap() {
+            assert_eq!(got.tag, want);
+            want += 1;
+        }
+        if want == ROUNDS {
+            break;
+        }
+        server.want_requests(true);
+        if server.requests.ready().unwrap() > 0 {
+            server.want_requests(false);
+            continue;
+        }
+        let (rings, wake) = &*bell;
+        let mut rang = rings.lock().unwrap();
+        while *rang == heard {
+            let (now, waited) = wake.wait_timeout(rang, Duration::from_secs(5)).unwrap();
+            rang = now;
+            assert!(
+                !(waited.timed_out() && *rang == heard),
+                "a wakeup was lost with {} requests waiting",
+                server.requests.ready().unwrap()
+            );
+        }
+        heard = *rang;
+        drop(rang);
+        server.want_requests(false);
+    }
+    producer.join().unwrap();
 }
