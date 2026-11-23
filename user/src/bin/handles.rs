@@ -41,6 +41,8 @@
 //! With `mode=async` and `mode=slow` a pair checks CALL_SUBMIT and CALL_POLL
 //! (`handles/async_call.rs`).
 //!
+//! With `mode=echo` and `mode=rtt` a pair times IPC round trips for
+//! `test=ipc-rtt` (`handles/rtt.rs`).
 //! With `mode=mem` (lane M) it serves the kernel's anonymous-memory case (see
 //! `handles/mem.rs`).
 //!
@@ -68,6 +70,8 @@ mod interrupt;
 mod mem;
 #[path = "handles/power.rs"]
 mod power;
+#[path = "handles/rtt.rs"]
+mod rtt;
 
 user::entry!(main);
 
@@ -92,6 +96,8 @@ fn main() -> i32 {
         Some("lazy") => async_call::lazy,
         Some("submit-exit") => async_call::submit_exit,
         Some("submit-hold") => async_call::submit_hold,
+        Some("echo") => rtt::echo,
+        Some("rtt") => rtt::rtt,
         _ => checks,
     };
     match run() {
@@ -148,6 +154,10 @@ fn shm() -> Result<(), &'static str> {
                     Err(error) => alloc::format!("err map {error:?}"),
                 }
             }
+            (Some("info"), Some(handle), _) => match sys::shm_info(Handle(handle as u32)) {
+                Ok(pages) => alloc::format!("ok {pages}"),
+                Err(error) => alloc::format!("err info {error:?}"),
+            },
             (Some("fill"), Some(byte), _) => match mapped {
                 Some((address, len)) => {
                     region(address, len).fill(byte as u8);
@@ -472,6 +482,12 @@ fn grants() -> Result<(), &'static str> {
         Error::NotFound,
         "a ONCE badge never held",
     )?;
+    // Three nodes left live, one under another: the kernel revokes every one
+    // as this process ends (audit K #11: that path deadlocked on the grant
+    // tree's lock, and stopped at the first refusal).
+    let left = sys::grant_new(root, 0, "left").map_err(|_| "a node left live was refused")?;
+    sys::grant_new(root, 0, "left 2").map_err(|_| "a node left live was refused")?;
+    sys::grant_new(left, 0, "left 3").map_err(|_| "a node left live was refused")?;
     Ok(())
 }
 

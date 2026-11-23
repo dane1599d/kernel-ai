@@ -36,12 +36,59 @@ pub fn check() -> Result<(), &'static str> {
     startup_handles()?;
     ring3()?;
     routes()?;
+    agent_route()?;
     kernel_grants()?;
     ring3_grants()?;
     revoke_mid_call()?;
     m1();
     m2();
     log!("handles: tables, startup handles and need() on handles all behaved");
+    Ok(())
+}
+
+/// ADR 0013 section 1: a plan line's `agent=` badge rides on its route to
+/// `llm`, and only there; a line with none has badge 0 on every route.
+fn agent_route() -> Result<(), &'static str> {
+    use kabi::handle::agent;
+    let badges = |grants: supervise::Grants| -> Result<(Option<u64>, Option<u64>), &'static str> {
+        let request = SpawnRequest {
+            name: "hagent",
+            program: "handles",
+            args: b"mode=idle",
+            limits: Limits {
+                caps: cap::CALL,
+                ..LIMITS
+            },
+            spawner: 0,
+            supervisor: false,
+            uses: &[agent::SERVICE, "hsrv"],
+        };
+        let pid = process::spawn_in(&request, Vec::new(), false, &grants)
+            .map_err(|_| "handles: cannot start the agent's process")?;
+        let slot = process::slot_of_pid(pid).ok_or("handles: the agent's process is gone")?;
+        let found = (
+            handle::route_badge(slot, agent::SERVICE),
+            handle::route_badge(slot, "hsrv"),
+        );
+        process::kill(pid, ExitReason::Killed)
+            .map_err(|_| "handles: cannot end the agent's process")?;
+        wait_exit(pid)?;
+        Ok(found)
+    };
+    let kai = supervise::Grants {
+        agent: Some(agent::KAI),
+        ..supervise::Grants::default()
+    };
+    if badges(kai)? != (Some(agent::KAI), Some(0)) {
+        return Err("handles: an agent's badge is not on its route to llm alone");
+    }
+    if badges(supervise::Grants::default())? != (Some(0), Some(0)) {
+        return Err("handles: a line with no agent= has a badge on a route");
+    }
+    log!(
+        "handles: an agent's route to llm carries its badge (kai {}), and no other route does",
+        agent::KAI
+    );
     Ok(())
 }
 
@@ -218,6 +265,14 @@ fn kernel_grants() -> Result<(), &'static str> {
         let badge = grants::mint_once(slot, Kind::Sched, Rights::READ, 0, request, shown)
             .and_then(|h| handle::with(slot, |t| t.table.get(h).map(|e| e.badge).unwrap_or(0)))
             .map_err(|_| "handles: cannot mint a second ONCE handle")?;
+        // ONCE_CHECK spends only a ONCE the caller holds (audit K #6): from
+        // another table it is NotFound and leaves it, then its holder uses it.
+        let elsewhere = (slot + 1) % MAX_PROCESSES;
+        if grants::spend_held_once(elsewhere, badge, &shown) != Err(kabi::Error::NotFound)
+            || grants::check_once(badge, &other) != Verdict::Mismatch
+        {
+            return Err("handles: a ONCE was checked by a process that does not hold it");
+        }
         let _ = grants::revoke(request);
         if grants::check_once(badge, &shown) != Verdict::Revoked {
             return Err("handles: a ONCE digest outlived its request");
@@ -230,7 +285,9 @@ fn kernel_grants() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// `handles mode=grants`, started with SUPERVISE and POLICY.
+/// `handles mode=grants`, started with SUPERVISE and POLICY. It exits owning
+/// a live node, so its exit only completes if `revoke_owned` does not
+/// deadlock (audit K #11).
 fn ring3_grants() -> Result<(), &'static str> {
     let pid = process::spawn(&SpawnRequest {
         name: "hgrant",
@@ -246,6 +303,9 @@ fn ring3_grants() -> Result<(), &'static str> {
     })
     .map_err(|_| "handles: cannot start the grants check")?;
     match wait_exit(pid)? {
+        (ExitReason::Exited, 0) if grants::owns_any(pid) => {
+            Err("handles: a node the ended process made is still live")
+        }
         (ExitReason::Exited, 0) => Ok(()),
         _ => Err("handles: the ring-3 grant checks failed"),
     }

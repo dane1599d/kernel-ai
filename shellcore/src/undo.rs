@@ -99,6 +99,53 @@ pub enum Inverse {
     /// a send read back from disk has no undo and never goes; its redo is
     /// none, since a send always asks again.
     Unsend { entry: u64 },
+    /// An inverse this shell cannot read, as `/system/log` holds it: one a
+    /// newer shell wrote, read back after a slot rollback. It has no undo
+    /// here, and is written back word for word, so the newer shell finds it
+    /// again once the slot moves forward.
+    Unread(Raw),
+}
+
+impl Inverse {
+    /// Whether this shell can put the change back: every inverse but one it
+    /// could not read.
+    pub fn is_read(&self) -> bool {
+        !matches!(self, Inverse::Unread(_))
+    }
+}
+
+/// The longest unreadable inverse kept word for word; a longer one is lost
+/// (`none`), as before.
+pub const MAX_RAW: usize = 160;
+
+/// An inverse's word as the log held it, without the heap, so an inverse
+/// stays `Copy`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Raw {
+    bytes: [u8; MAX_RAW],
+    len: u8,
+}
+
+impl Raw {
+    /// `None` for a word longer than [`MAX_RAW`], or one with a space or a
+    /// control character, which a log line could not hold as one word.
+    pub fn new(word: &str) -> Option<Self> {
+        if word.is_empty() || word.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return None;
+        }
+        let mut bytes = [0u8; MAX_RAW];
+        bytes
+            .get_mut(..word.len())?
+            .copy_from_slice(word.as_bytes());
+        Some(Self {
+            bytes,
+            len: word.len() as u8,
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or("none")
+    }
 }
 
 /// A service name held without the heap, so an inverse stays `Copy`.
@@ -184,6 +231,7 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::NetGrant { id, held: true } => format!("network grant #{id} taken back"),
         Inverse::NetGrant { id, held: false } => format!("network grant #{id}"),
         Inverse::Unsend { .. } => String::from("the send not sent"),
+        Inverse::Unread(_) => String::from("what a newer shell recorded"),
     }
 }
 
@@ -317,6 +365,9 @@ fn revert_one(
         | Inverse::Model { .. } => Err(Refused::Failed(String::from(
             "it is put back by the shell's own store",
         ))),
+        Inverse::Unread(_) => Err(Refused::Failed(String::from(
+            "a newer shell recorded how, and this one cannot read it",
+        ))),
     }
 }
 
@@ -365,6 +416,7 @@ pub fn reverse(inverse: Inverse) -> Inverse {
         // Never used: the undo of a cancel is logged with no inverse
         // (`Shell::revert_entry`), so it never sends.
         Inverse::Unsend { entry } => Inverse::Unsend { entry },
+        Inverse::Unread(raw) => Inverse::Unread(raw),
         Inverse::Appearance {
             setting,
             before,
@@ -404,6 +456,7 @@ pub fn reverse(inverse: Inverse) -> Inverse {
 pub fn inverse_word(inverse: Option<Inverse>) -> String {
     match inverse {
         None | Some(Inverse::Unsend { .. }) => String::from("none"),
+        Some(Inverse::Unread(raw)) => String::from(raw.as_str()),
         Some(Inverse::Spec {
             policy,
             preset,

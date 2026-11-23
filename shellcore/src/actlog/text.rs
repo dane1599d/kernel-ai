@@ -28,17 +28,25 @@ use alloc::vec::Vec;
 use core::fmt::Write;
 
 pub const HEADER: &str = "actlog 1";
+/// The header of a log whose entries name their agent (ADR 0013 §1): `E`
+/// records carry `agent=<name>`. Written only when an entry is an agent's,
+/// so a log of the person's own entries stays `actlog 1`, which a shell
+/// before agents (a slot rolled back) still reads whole.
+pub const HEADER_2: &str = "actlog 2";
 /// Longest free text one record carries.
 pub const MAX_TEXT: usize = 8 * 1024;
 /// Most records a text may hold.
 pub const MAX_RECORDS: usize = 4 * super::KEEP;
 
-pub(super) fn write<'a>(records: impl Iterator<Item = &'a Record>) -> String {
-    let mut out = String::from(HEADER);
+pub(super) fn write<'a>(records: impl Iterator<Item = &'a Record> + Clone) -> String {
+    let agents = records
+        .clone()
+        .any(|r| matches!(r, Record::Entry(e) if !e.agent.is_kai()));
+    let mut out = String::from(if agents { HEADER_2 } else { HEADER });
     out.push('\n');
     for record in records {
         match record {
-            Record::Entry(e) => entry(&mut out, e),
+            Record::Entry(e) => entry(&mut out, e, agents),
             Record::System(s) => {
                 let _ = writeln!(
                     out,
@@ -55,7 +63,7 @@ pub(super) fn write<'a>(records: impl Iterator<Item = &'a Record>) -> String {
     out
 }
 
-fn entry(out: &mut String, e: &Entry) {
+fn entry(out: &mut String, e: &Entry, agents: bool) {
     match e.of {
         Some(of) => {
             let _ = writeln!(
@@ -68,9 +76,13 @@ fn entry(out: &mut String, e: &Entry) {
         }
         None => {
             let tier = e.tier.map_or("-", Tier::name);
+            let agent = match agents {
+                true => alloc::format!(" {}={}", agentid::stamp::KEY, e.agent.as_str()),
+                false => String::new(),
+            };
             let _ = writeln!(
                 out,
-                "E {} t={} reg={} pack={} form={} tier={tier} consent={} state={}",
+                "E {} t={} reg={} pack={} form={} tier={tier} consent={} state={}{agent}",
                 e.id,
                 e.t_ns,
                 agentabi::REGISTRY_VERSION,
@@ -118,16 +130,27 @@ pub struct ParseError {
     pub why: &'static str,
 }
 
-/// Reads `actlog 1` text back into records.
+/// Reads `actlog 1` or `actlog 2` text back into records. A version 1 entry
+/// is the person's own: its agent is `kai`.
 pub fn parse(text: &str) -> Result<Vec<Record>, ParseError> {
+    parse_setting_aside(text).map(|(records, _)| records)
+}
+
+/// [`parse`], and the ids of the `actlog 2` entries set aside, each with its
+/// texts and changes, because their `agent=` was missing or named no agent.
+pub fn parse_setting_aside(text: &str) -> Result<(Vec<Record>, Vec<u64>), ParseError> {
     let mut reader = Reader {
         rest: text,
         line: 0,
+        agents: false,
     };
-    if reader.line_text()? != HEADER {
-        return reader.fail("not actlog 1");
-    }
+    reader.agents = match reader.line_text()? {
+        HEADER => false,
+        HEADER_2 => true,
+        _ => return reader.fail("not actlog 1 or 2"),
+    };
     let mut records: Vec<Record> = Vec::new();
+    let mut aside: Vec<u64> = Vec::new();
     while !reader.rest.is_empty() {
         if records.len() == MAX_RECORDS {
             return reader.fail("too many records");
@@ -137,7 +160,14 @@ pub fn parse(text: &str) -> Result<Vec<Record>, ParseError> {
             .split_once(' ')
             .ok_or_else(|| reader.error("a record has no fields"))?;
         match tag {
-            "E" | "U" => records.push(Record::Entry(reader.entry(tag, body)?)),
+            "E" | "U" => {
+                let mut put_aside = false;
+                let entry = reader.entry(tag, body, &mut put_aside)?;
+                if put_aside {
+                    aside.push(entry.id);
+                }
+                records.push(Record::Entry(entry));
+            }
             "S" => records.push(Record::System(reader.system(body)?)),
             "R" | "O" | "C" => {
                 let len = length(body).ok_or_else(|| reader.error("a bad text length"))?;
@@ -168,7 +198,8 @@ pub fn parse(text: &str) -> Result<Vec<Record>, ParseError> {
             _ => return reader.fail("an unknown record"),
         }
     }
-    Ok(records)
+    records.retain(|r| !matches!(r, Record::Entry(e) if e.of.is_none() && aside.contains(&e.id)));
+    Ok((records, aside))
 }
 
 fn length(text: &str) -> Option<usize> {
@@ -184,6 +215,8 @@ fn number(text: &str) -> Option<u64> {
 struct Reader<'a> {
     rest: &'a str,
     line: usize,
+    /// `actlog 2`: every `E` record ends with `agent=<name>`.
+    agents: bool,
 }
 
 impl<'a> Reader<'a> {
@@ -247,15 +280,29 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn entry(&self, tag: &str, body: &'a str) -> Result<Entry, ParseError> {
+    fn entry(&self, tag: &str, body: &'a str, aside: &mut bool) -> Result<Entry, ParseError> {
         let bad = |why| self.error(why);
         let mut pack = None;
+        let mut agent = agentid::Name::kai();
         let (id, of, t, form, tier, consent, state) = match tag {
             "E" => {
-                let v = self.fields(
-                    body,
-                    &["", "t", "reg", "pack", "form", "tier", "consent", "state"],
-                )?;
+                const V1: &[&str] = &["", "t", "reg", "pack", "form", "tier", "consent", "state"];
+                // `actlog 2`'s `agent=` is the last field. One that is missing
+                // or names no agent sets that entry aside, not the whole log.
+                let (body, named) = match self.agents {
+                    true => match body.rsplit_once(' ') {
+                        Some((rest, last)) if last.starts_with("agent=") => (rest, Some(last)),
+                        _ => (body, None),
+                    },
+                    false => (body, None),
+                };
+                let v = self.fields(body, V1)?;
+                if self.agents {
+                    match named.map(|word| agentid::stamp::read_field(Some(word))) {
+                        Some(Ok(name)) => agent = name,
+                        _ => *aside = true,
+                    }
+                }
                 if v[2] != "1" {
                     return self.fail("an entry from another registry version");
                 }
@@ -284,6 +331,7 @@ impl<'a> Reader<'a> {
             }
         };
         Ok(Entry {
+            agent,
             id: number(id).ok_or(bad("a bad entry number"))?,
             t_ns: number(t).ok_or(bad("a bad time"))?,
             form,
@@ -327,9 +375,12 @@ impl<'a> Reader<'a> {
         let entry = number(entry).ok_or(bad("a bad change number"))?;
         let n = number(n).ok_or(bad("a bad change number"))? as usize;
         // An inverse this shell cannot read (one a newer shell wrote, before a
-        // slot rollback) leaves its change without an undo; the rest of the
-        // log still reads.
-        let inverse = crate::undo::parse_inverse(v[6]).unwrap_or(None);
+        // slot rollback) leaves its change without an undo, kept word for word
+        // for that shell; the rest of the log still reads.
+        let inverse = match crate::undo::parse_inverse(v[6]) {
+            Some(inverse) => inverse,
+            None => crate::undo::Raw::new(v[6]).map(crate::undo::Inverse::Unread),
+        };
         Ok((
             entry,
             n,

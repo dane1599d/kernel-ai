@@ -389,6 +389,7 @@ impl Shell {
 
     fn log_change(&mut self, id: u64, request: &str, call: &str, how: How, change: Change) {
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: how.form,

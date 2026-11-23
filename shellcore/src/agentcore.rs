@@ -384,7 +384,12 @@ impl Shell {
             _ => consent::decide_net(request, &planned, &agentabi::ROWS, &net)[0],
         };
         if decision.tier == Tier::Never {
-            return self.refuse(id, request, call, decision.why, "it is never run");
+            let detail = match decision.why {
+                Why::SendHost => "a send goes only to a site the request names",
+                Why::SendUnasked => "the request did not ask to send anything",
+                _ => "it is never run",
+            };
+            return self.refuse(id, request, call, decision.why, detail);
         }
         // A change for a line that only asks to be told answers nothing it
         // asked, whatever the State or a page told the model (#721): no ask.
@@ -399,6 +404,16 @@ impl Shell {
         }
         if agentabi::MODEL_ROWS.iter().any(|r| r.name == row.name) {
             let reply = self.model_call(id, request, row.name, &args.values, decision);
+            return outcome(decision.tier, decision.why, reply);
+        }
+        if row.name == agentabi::NET_SEND.name {
+            // A send is asked for at Kai's prompt: a `c>` program may not make
+            // one (ADR 0012), whatever its entry read.
+            if self.c_entry.is_some() {
+                let why = "a send is asked for at Kai's prompt, not from a c> program";
+                return self.refuse(id, request, call, decision.why, why);
+            }
+            let reply = self.send_ask(id, request, &args.values, decision.why);
             return outcome(decision.tier, decision.why, reply);
         }
         if row.name == agentabi::APP_INSTALL.name {
@@ -441,12 +456,13 @@ impl Shell {
             script,
             summary: String::new(),
         };
-        let checked = match script::check_against(&answer, &self.host, &self.config, rows) {
+        let mut checked = match script::check_against(&answer, &self.host, &self.config, rows) {
             Ok(checked) => checked,
             Err(refusal) => {
                 return self.refuse(id, request, call, decision.why, &refusal.to_string());
             }
         };
+        checked.person = self.person_line;
         self.host.audit(&format!(
             "request {id}: {} is {} ({:?})",
             row.name,
@@ -526,7 +542,7 @@ impl Shell {
     /// [`Shell::ask_call`], with the row's own reason when it has one (a
     /// held send's), in place of the one `why` gives.
     #[allow(clippy::too_many_arguments)]
-    fn ask_call_with(
+    pub(crate) fn ask_call_with(
         &mut self,
         id: u64,
         request: &str,
@@ -569,6 +585,7 @@ impl Shell {
             app: None,
             install: None,
             net: None,
+            send: None,
             power: false,
         });
         // The highlight starts on Allow only for a call the line plainly asked for.
@@ -682,7 +699,7 @@ fn held(row: &Action) -> bool {
 }
 
 /// A held send's own reason on its card: it does have an undo, for a while.
-fn hold_reason(row: &Action) -> Option<String> {
+pub(crate) fn hold_reason(row: &Action) -> Option<String> {
     match row.inverse {
         agentabi::Inverse::Hold { ms } => Some(format!(
             "after you allow, it waits {} s so you can undo",

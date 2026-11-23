@@ -118,7 +118,7 @@ fn render(name: &str, body: &FunctionBody, callee: &dyn Fn(u32) -> String) -> Op
             depth += 1;
         }
         if out.len() > MAX_TEXT {
-            out.truncate(MAX_TEXT);
+            out.truncate(char_cut(&out, MAX_TEXT));
             out.push_str("\n…\n");
             break;
         }
@@ -237,5 +237,28 @@ mod tests {
         ] {
             assert_eq!(wasm_name(variant), name);
         }
+    }
+}
+
+/// The longest prefix of `text` at most `max` bytes that ends on a char
+/// boundary: a cut there never splits a character.
+pub(crate) fn char_cut(text: &str, max: usize) -> usize {
+    let mut cut = text.len().min(max);
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    cut
+}
+
+#[cfg(test)]
+mod char_cut_tests {
+    use super::char_cut;
+
+    #[test]
+    fn a_cut_never_splits_a_character() {
+        let text = "ab\u{3042}cd";
+        assert_eq!(char_cut(text, 3), 2);
+        assert_eq!(char_cut(text, 5), 5);
+        assert_eq!(char_cut(text, 99), text.len());
     }
 }

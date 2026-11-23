@@ -28,6 +28,55 @@ pub fn wake(tid: Tid) {
     }
 }
 
+/// Wakes `tid` for a caller on this CPU about to wait for it, pulling it onto
+/// this CPU when it sleeps on another: the IPC fast path (the blocking call's
+/// server). A wake across CPUs is a reschedule interrupt to a CPU that is often
+/// halted, and under KVM each cost about 110-140 us of a call's round trip
+/// (`test=ipc-rtt`'s legs, #1000); on this CPU the caller's wait switches
+/// straight to it, and its reply wakes the caller here too. The move follows
+/// load balancing's rule: never a pinned thread, nor one whose registers are
+/// not saved yet (`ON_CPU`). Otherwise, and when it already runs here, a plain
+/// [`wake`]. Interrupts must be off.
+pub fn wake_here(tid: Tid) {
+    let me = percpu::index();
+    let owner = OWNER[tid].load(Ordering::Acquire);
+    if owner == me || PINNED[tid].load(Ordering::Relaxed) {
+        wake(tid);
+        return;
+    }
+    let now = hpet::nanos();
+    let moved = CORES[owner].lock().as_mut().and_then(|core| {
+        let asleep = matches!(
+            core.state(tid),
+            sched::State::Blocked | sched::State::Sleeping { .. }
+        );
+        if !asleep || ON_CPU[tid].load(Ordering::Acquire) {
+            return None;
+        }
+        core.wake(tid, now);
+        let moved = core.detach_runnable(|other| other != tid);
+        LOAD[owner].store(core.load(), Ordering::Relaxed);
+        moved
+    });
+    let Some((tid, name)) = moved else {
+        wake(tid);
+        return;
+    };
+    OWNER[tid].store(me, Ordering::Release);
+    if let Some(core) = CORES[me].lock().as_mut() {
+        core.adopt(tid, name, EnqueueReason::Woken, now);
+        LOAD[me].store(core.load(), Ordering::Relaxed);
+    }
+    HANDOFFS.fetch_add(1, Ordering::Relaxed);
+}
+
+static HANDOFFS: AtomicU64 = AtomicU64::new(0);
+
+/// Servers pulled onto their caller's CPU by [`wake_here`] so far.
+pub fn handoffs() -> u64 {
+    HANDOFFS.load(Ordering::Relaxed)
+}
+
 /// Wakes each of `tids`, those another CPU owns first: waking one this CPU owns
 /// may switch to it at once, and the others would wait for the waker to run again.
 /// Interrupts must be off.

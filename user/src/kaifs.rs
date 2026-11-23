@@ -87,9 +87,20 @@ pub fn size(dir: Handle, name: &str) -> Result<Option<u64>, String> {
     }
 }
 
-/// Fills `buf` from `file` at `off`, a message at a time: how many bytes it
-/// filled, short where the file ends.
-fn read_at(file: Handle, off: u64, buf: &mut [u8]) -> Result<usize, String> {
+/// Fills `buf` from `file` at `off`: how many bytes it filled, short where
+/// the file ends. Past one message's worth, in a process that reserved a bulk
+/// `Shm`, it goes up to 1 MiB a round trip ([`bulk`]); else a message at a time.
+pub fn read_at(file: Handle, off: u64, buf: &mut [u8]) -> Result<usize, String> {
+    if buf.len() > fsproto::MAX_DATA
+        && let Some(read) = bulk::read_at(file, off, buf)?
+    {
+        return Ok(read);
+    }
+    read_small(file, off, buf)
+}
+
+/// [`read_at`] a message at a time.
+fn read_small(file: Handle, off: u64, buf: &mut [u8]) -> Result<usize, String> {
     let mut at = 0;
     while at < buf.len() {
         let len = (buf.len() - at).min(fsproto::MAX_DATA) as u32;
@@ -110,8 +121,18 @@ fn read_at(file: Handle, off: u64, buf: &mut [u8]) -> Result<usize, String> {
     Ok(at)
 }
 
-/// Writes `bytes` to `file` from `off`, a message at a time.
-fn write_at(file: Handle, off: u64, bytes: &[u8]) -> Result<(), String> {
+/// Writes `bytes` to `file` from `off`: up to 1 MiB a round trip past one
+/// message's worth, in a process that reserved a bulk `Shm` ([`bulk`]); else a
+/// message at a time.
+pub fn write_at(file: Handle, off: u64, bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() > fsproto::MAX_DATA && bulk::write_at(file, off, bytes)? {
+        return Ok(());
+    }
+    write_small(file, off, bytes)
+}
+
+/// [`write_at`] a message at a time.
+fn write_small(file: Handle, off: u64, bytes: &[u8]) -> Result<(), String> {
     for (i, piece) in bytes.chunks(fsproto::MAX_DATA).enumerate() {
         let request = Request::Write {
             off: off + (i * fsproto::MAX_DATA) as u64,
@@ -333,3 +354,5 @@ impl Partial for Kaifs {
         done(self.dir, request).map_err(|e| self.failed(e, "the rename"))
     }
 }
+
+pub mod bulk;

@@ -625,3 +625,202 @@ fn repair_salvages_a_tree_with_a_node_that_no_longer_verifies() {
     check_namespace(&mut fs, &mut cache).unwrap();
     assert_eq!(fs.stat(ROOT).unwrap().kind, FileType::Dir);
 }
+
+/// An id handed out inside an action that was then dropped is never handed
+/// out again: `fs` minted a handle for it, which must not come to name another
+/// object.
+#[test]
+fn an_id_from_an_aborted_action_is_never_handed_out_again() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    fs.begin(1).unwrap();
+    let dropped = fs.create(ROOT, "t").unwrap();
+    let dropped_dir = fs.mkdir(ROOT, "d").unwrap();
+    fs.abort().unwrap();
+    let next = fs.create(ROOT, "victim").unwrap();
+    assert!(next > dropped.max(dropped_dir), "{next} after {dropped}");
+    commit_and_check(&mut fs);
+    // A remount reads the counter the commit wrote: still past them.
+    let mut fs = remount(fs);
+    assert!(fs.create(ROOT, "later").unwrap() > next);
+    commit_and_check(&mut fs);
+}
+
+/// A run that stops mid-action leaves ids it handed out but never committed.
+/// A server's skip at mount passes all of them, and the window bounds how
+/// many there can be.
+#[test]
+fn the_skip_at_mount_passes_every_id_the_last_run_could_have_handed_out() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    fs.begin(1).unwrap();
+    let mut last = 0;
+    for n in 0..50 {
+        last = fs.create(ROOT, &format!("f{n}")).unwrap();
+    }
+    // The run stops here: nothing committed.
+    let mut fs = Fs::mount(fs.into_dev()).unwrap();
+    fs.skip_unsaved_oids();
+    fs.commit().unwrap();
+    let mut fs = remount(fs);
+    let first = fs.create(ROOT, "after").unwrap();
+    assert!(first > last, "{first} after {last}");
+    commit_and_check(&mut fs);
+}
+
+#[test]
+fn no_more_than_a_window_of_ids_go_out_past_the_last_commit() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    // Right after a commit the window is whole: exactly that many go out.
+    let mut given = 0u64;
+    while fs.alloc_oid().is_ok() {
+        given += 1;
+        assert!(given <= kaifs::fs::OID_WINDOW);
+    }
+    assert_eq!(given, kaifs::fs::OID_WINDOW);
+    assert_eq!(fs.alloc_oid(), Err(Error::NoSpace));
+    // A commit makes room again.
+    fs.commit().unwrap();
+    assert!(fs.alloc_oid().is_ok());
+}
+
+/// A mount that fell back past newer commits (their tables unreadable) skips
+/// a window for each, past any id those runs could have handed out.
+#[test]
+fn a_mount_that_fell_back_skips_past_every_newer_run() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    for round in 0..3 {
+        fs.create(ROOT, &format!("r{round}")).unwrap();
+        fs.commit().unwrap();
+    }
+    // After the newest commit, a whole window handed out and never committed.
+    let mut last = 0;
+    while let Ok(oid) = fs.alloc_oid() {
+        last = oid;
+    }
+    let mut disk = fs.into_dev();
+    let newest = format::read_rings(&mut disk).unwrap()[0];
+    disk.write(newest.volumes.addr, &[0; BLOCK]).unwrap();
+    let mut fs = Fs::mount(disk).unwrap();
+    assert!(fs.committed < newest.generation, "the mount fell back");
+    fs.skip_unsaved_oids();
+    fs.commit().unwrap();
+    let after = fs.create(ROOT, "after").unwrap();
+    assert!(after > last, "{after} after {last}");
+}
+
+/// `check --repair` that finds an object far above the counter raises it
+/// past that object and can still make `/lost+found` for it.
+#[test]
+fn repair_raises_the_counter_far_and_still_makes_lost_and_found() {
+    let (fs, fixes) = broken(
+        |fs| {
+            // An empty file's inode, put far above the counter with no name.
+            let tmp = fs.create(ROOT, "tmp").unwrap();
+            let inode = fs.stat(tmp).unwrap();
+            fs.remove(ROOT, "tmp").unwrap();
+            let far = fs.next_oid() + 3 * kaifs::fs::OID_WINDOW;
+            fs.put(Key::new(far, K_INODE, 0), &inode.encode()).unwrap();
+        },
+        "an object id outside",
+    );
+    assert!(fixes.iter().any(|l| l.contains("/lost+found")), "{fixes:?}");
+    assert!(
+        fixes.iter().any(|l| l.contains("counter raised")),
+        "{fixes:?}"
+    );
+    drop(fs);
+}
+
+/// Hands out ids until the window is spent; the last one.
+fn spend_the_window(fs: &mut Fs<MemDisk>) -> u64 {
+    let mut last = 0;
+    while let Ok(oid) = fs.alloc_oid() {
+        last = oid;
+    }
+    last
+}
+
+/// Zeroes the newest commit's volume-table root, so a mount falls back.
+fn break_the_newest_table(disk: &mut MemDisk) {
+    let newest = format::read_rings(disk).unwrap()[0];
+    disk.write(newest.volumes.addr, &[0; BLOCK]).unwrap();
+}
+
+/// A second fallback goes back past commits the first one's run made, which
+/// reused generation numbers. The marks on their superblocks still carry
+/// every id handed out, so the skip passes all of them.
+#[test]
+fn a_second_fallback_still_skips_past_every_id() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    for name in ["a", "b"] {
+        fs.create(ROOT, name).unwrap();
+        fs.commit().unwrap();
+    }
+    let mut last = spend_the_window(&mut fs);
+    let mut disk = fs.into_dev();
+    break_the_newest_table(&mut disk);
+    let mut fs = Fs::mount(disk).unwrap();
+    fs.skip_unsaved_oids();
+    fs.commit().unwrap();
+    for n in 0..3 {
+        fs.create(ROOT, &format!("c{n}")).unwrap();
+        fs.commit().unwrap();
+    }
+    last = last.max(spend_the_window(&mut fs));
+    let mut disk = fs.into_dev();
+    break_the_newest_table(&mut disk);
+    let mut fs = Fs::mount(disk).unwrap();
+    fs.skip_unsaved_oids();
+    fs.commit().unwrap();
+    let after = fs.create(ROOT, "after").unwrap();
+    assert!(after > last, "{after} after {last}");
+}
+
+/// A disk that reads at mount and then stops.
+struct StopsReading {
+    disk: MemDisk,
+    stopped: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl BlockDev for StopsReading {
+    fn info(&self) -> kaifs::DevInfo {
+        self.disk.info()
+    }
+
+    fn read(&mut self, addr: u64, buf: &mut kaifs::Block) -> Result<(), kaifs::IoError> {
+        match self.stopped.get() {
+            true => Err(kaifs::IoError),
+            false => self.disk.read(addr, buf),
+        }
+    }
+
+    fn write(&mut self, addr: u64, data: &kaifs::Block) -> Result<(), kaifs::IoError> {
+        self.disk.write(addr, data)
+    }
+
+    fn flush(&mut self) -> Result<(), kaifs::IoError> {
+        self.disk.flush()
+    }
+}
+
+/// The skip reads nothing: the mark was read at mount, so a read error after
+/// it cannot shrink the skip to a guess.
+#[test]
+fn the_skip_needs_no_read_after_the_mount() {
+    let mut fs = fresh();
+    commit_and_check(&mut fs);
+    let last = spend_the_window(&mut fs);
+    let stopped = std::rc::Rc::new(std::cell::Cell::new(false));
+    let dev = StopsReading {
+        disk: fs.into_dev(),
+        stopped: stopped.clone(),
+    };
+    let mut fs = Fs::mount(dev).unwrap();
+    stopped.set(true);
+    fs.skip_unsaved_oids();
+    assert!(fs.next_oid() > last, "{} after {last}", fs.next_oid());
+}

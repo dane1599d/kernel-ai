@@ -20,9 +20,17 @@ use surfabi::proto::{Event, GLOBALS, Objects, REGISTRY, Request, SCALE_ONE};
 use surfabi::tree::{self, Tree};
 use surfabi::wire::{self, Error};
 
+/// The most encoded events a client may have waiting: 256 KiB, a few thousand
+/// messages, far more than one round of a client that reads them.
+pub const MAX_EVENT_BYTES: usize = 256 * 1024;
+
 /// The largest coordinate or size of a damage rectangle kept, in px: far past any
 /// buffer, and small enough that no sum of two overflows.
 const MAX_DAMAGE_PX: u32 = 1 << 20;
+
+/// The most px a buffer may have on a side: 16K, past any screen and any window
+/// the desk keeps.
+pub const MAX_BUFFER_PX: u32 = 16_384;
 
 /// The most detents one wheel event carries to a client.
 pub const MAX_DETENTS: i32 = 120;
@@ -198,9 +206,20 @@ impl Client {
     }
 
     fn send(&mut self, object: u32, event: Event) {
+        // Past the cap nothing more is kept: the connection is to be dropped
+        // ([`Client::too_far_behind`]), so no queue grows without end.
+        if self.events.len() > MAX_EVENT_BYTES {
+            return;
+        }
         if let Ok(bytes) = event.encode(object) {
             self.events.extend_from_slice(&bytes);
         }
+    }
+
+    /// Whether the client lets its events pile past [`MAX_EVENT_BYTES`]: it
+    /// never answers, or answers slower than the desk speaks. `desktop` drops it.
+    pub fn too_far_behind(&self) -> bool {
+        self.events.len() > MAX_EVENT_BYTES
     }
 
     /// The events waiting for the client, as many whole messages as fit in
@@ -225,6 +244,18 @@ impl Client {
         if let Some(p) = self.pools.iter_mut().find(|p| p.0 == pool) {
             p.2 = true;
         }
+    }
+
+    /// Whether any buffer of the client is in pool `pool`.
+    pub fn pool_in_use(&self, pool: u32) -> bool {
+        self.buffers.iter().any(|b| b.1.pool == pool)
+    }
+
+    /// `desktop` let pool `pool` go: it is no pool of the client's any more, and
+    /// a buffer made on it, or a commit of one, is refused.
+    pub fn pool_gone(&mut self, pool: u32) {
+        self.pools.retain(|p| p.0 != pool);
+        self.buffers.retain(|b| b.1.pool != pool);
     }
 
     pub fn buffer(&self, id: u32) -> Option<Buffer> {
@@ -253,10 +284,7 @@ impl Client {
                 window,
                 usage,
                 down,
-            } => {
-                self.modifier(usage, down);
-                (window, Kind::Key, usage, i32::from(down), None)
-            }
+            } => (window, Kind::Key, usage, i32::from(down), None),
             Effect::Button {
                 window,
                 at,
@@ -320,20 +348,9 @@ impl Client {
         self.posts.push((pool, event));
     }
 
-    /// Shift, Ctrl, Alt and Super, held or let go: the seat hears the new set.
-    fn modifier(&mut self, usage: u16, down: bool) {
-        let bit = match usage {
-            0xE1 | 0xE5 => 1,
-            0xE0 | 0xE4 => 2,
-            0xE2 | 0xE6 => 4,
-            0xE3 | 0xE7 => 8,
-            _ => return,
-        };
-        let mods = if down {
-            self.mods | bit
-        } else {
-            self.mods & !bit
-        };
+    /// The modifiers the desk says are held (shift 1, ctrl 2, alt 4, super 8),
+    /// whatever had the focus when they changed: the seat hears the new set.
+    fn modifiers(&mut self, mods: u32) {
         if mods == self.mods {
             return;
         }
@@ -390,6 +407,13 @@ impl Client {
                         .find(|p| p.0 == header.object)
                         .ok_or(Error::BadArg)?;
                     let end = u64::from(offset) + u64::from(stride) * u64::from(height);
+                    // A buffer has px, and no more per side than any screen: past that the
+                    // layer a window's repaint allocates, or its row arithmetic, is no
+                    // longer the client's to size.
+                    let sides = 1..=MAX_BUFFER_PX;
+                    if !sides.contains(&width) || !sides.contains(&height) {
+                        return Err(Error::BadArg);
+                    }
                     if offset < surfabi::header::PAGE as u32 || end > u64::from(pool.1) {
                         return Err(Error::BadArg);
                     }
@@ -441,7 +465,17 @@ impl Client {
                     // overflow (a damage past the buffer is cut where it is used).
                     let at = |v: u32| v.min(MAX_DAMAGE_PX) as i32;
                     let rect = Rect::new(at(r.x), at(r.y), at(r.w), at(r.h));
-                    self.surface(header.object)?.damage.push(rect);
+                    let surface = self.surface(header.object)?;
+                    surface.damage.push(rect);
+                    // A client that never commits cannot grow the list: past
+                    // what a header page holds it is one rectangle, the bounding box.
+                    if surface.damage.len() > surfabi::header::MAX_DAMAGE {
+                        let all = surface
+                            .damage
+                            .iter()
+                            .fold(Rect::new(0, 0, 0, 0), |all, r| all.union(r));
+                        surface.damage = alloc::vec![all];
+                    }
                 }
                 Request::Commit => {
                     if let Some(need) = self.commit(desk, header.object)? {
@@ -623,11 +657,12 @@ impl Client {
                 window
             }
             None => {
-                // A window a client opens itself takes focus only through the
-                // activation rule; for now every client's first window is the
-                // user's (they started it).
+                // A window takes the keyboard only by the activation rule
+                // (`Desk::may_activate`): not while the person is acting
+                // elsewhere, so a background app cannot take their keys.
+                let active = desk.may_activate(self.pid as u32);
                 let (window, effects) =
-                    desk.open(self.pid as u32, &label, &surface.title, size, true);
+                    desk.open(self.pid as u32, &label, &surface.title, size, active);
                 desk.set_app_id(window, &surface.app_id.clone());
                 surface.window = Some(window);
                 self.apply(&effects);
@@ -648,6 +683,9 @@ impl Client {
             self.input(effect);
             if let Effect::Locks { caps } = *effect {
                 self.caps = caps;
+            }
+            if let Effect::Modifiers(mods) = *effect {
+                self.modifiers(mods);
             }
             match *effect {
                 Effect::Configure {

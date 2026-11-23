@@ -21,6 +21,7 @@ mod names;
 mod net;
 mod power;
 mod rows;
+mod send;
 mod show;
 mod ui;
 
@@ -32,6 +33,7 @@ pub use names::{RESERVED_GROUPS, is_reserved, takes_os_name};
 pub use net::*;
 pub use power::*;
 pub use rows::*;
+pub use send::*;
 pub use show::{Signature, Type};
 pub use ui::*;
 

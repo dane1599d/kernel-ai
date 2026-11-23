@@ -1,0 +1,171 @@
+//! The pointer's motion and buttons (moved out of `mod.rs`, not changed).
+
+use super::*;
+
+impl Desk {
+    pub(super) fn motion(&mut self, p: Point, effects: &mut Vec<Effect>) {
+        let p = Point {
+            x: p.x.clamp(0, self.width - 1),
+            y: p.y.clamp(0, self.height - 1),
+        };
+        self.pointer = p;
+        match self.grab {
+            Some(Grab::Move { window, offset }) => {
+                let area = self.work_area();
+                if let Some(w) = self.windows.iter_mut().find(|w| w.id == window) {
+                    let old = w.frame;
+                    // The title bar stays in the work area: never above its
+                    // top, never under the panel, and enough of it on screen
+                    // to grab it again from either side.
+                    let y = (p.y - offset.y)
+                        .min(area.bottom() - chrome::TITLE_BAR)
+                        .max(area.y);
+                    let x = (p.x - offset.x)
+                        .min(area.right() - KEEP_ON_SCREEN)
+                        .max(area.x + KEEP_ON_SCREEN - old.w);
+                    w.frame = Rect::new(x, y, old.w, old.h);
+                    w.restore = None;
+                    let new = w.frame;
+                    self.damage.add(old);
+                    self.damage.add(new);
+                }
+                return;
+            }
+            Some(Grab::Resize {
+                window,
+                edges,
+                start,
+                from,
+            }) => {
+                self.resize(
+                    window,
+                    edges,
+                    start,
+                    Point {
+                        x: p.x - from.x,
+                        y: p.y - from.y,
+                    },
+                    effects,
+                );
+                return;
+            }
+            None => {}
+        }
+        let hit = self.hit(p);
+        let over = match hit {
+            Hit::Window(id, Part::Content(at)) => Some((id, at)),
+            _ => None,
+        };
+        if let Some(old) = self.over
+            && over.is_none_or(|(id, _)| id != old)
+        {
+            effects.push(Effect::Leave { window: old });
+        }
+        self.over = over.map(|(id, _)| id);
+        if let Some((window, at)) = over {
+            effects.push(Effect::Pointer { window, at });
+        }
+    }
+
+    pub(super) fn button(&mut self, button: Button, down: bool, effects: &mut Vec<Effect>) {
+        if !down {
+            if let Some(id) = self.dragged() {
+                // Let go: its shadow comes back, so its place is drawn again.
+                if let Some(frame) = self.window(id).map(|w| w.frame) {
+                    self.damage.add(frame);
+                }
+                self.grab = None;
+                return;
+            }
+            if let Some(window) = self.over
+                && let Hit::Window(id, Part::Content(at)) = self.hit(self.pointer)
+                && id == window
+            {
+                effects.push(Effect::Button {
+                    window,
+                    at,
+                    button,
+                    down,
+                });
+            }
+            return;
+        }
+        // Start takes every press while it is open: one inside is its own,
+        // one outside closes it and goes nowhere else.
+        if let Some(start) = self.start() {
+            match start.contains(self.pointer) {
+                true => effects.push(Effect::StartClick { at: self.pointer }),
+                false => self.close_start(effects),
+            }
+            return;
+        }
+        let hit = self.hit(self.pointer);
+        let Hit::Window(id, part) = hit else {
+            match hit {
+                Hit::Pane(PanePart::Close) if button == Button::Left => {
+                    self.close_pane(effects);
+                }
+                Hit::Pane(part) => {
+                    self.set_focus(Focus::Panel, effects);
+                    let clicked = matches!(part, PanePart::Status | PanePart::Send);
+                    if button == Button::Left && clicked {
+                        effects.push(Effect::PanelClick { at: self.pointer });
+                    }
+                }
+                hit @ (Hit::Taskbar(_) | Hit::Tray(_)) if button == Button::Left => {
+                    self.bar_click(hit, effects);
+                }
+                // The empty desk takes the focus from every window, as a
+                // click on the Windows desktop does: the keys go nowhere,
+                // and a terminal's key lease ends.
+                Hit::Desktop if button == Button::Left => {
+                    self.set_focus(Focus::Nothing, effects);
+                }
+                _ => {}
+            }
+            return;
+        };
+        self.raise(id);
+        self.set_focus(Focus::Window(id), effects);
+        if button != Button::Left {
+            if let Part::Content(at) = part {
+                effects.push(Effect::Button {
+                    window: id,
+                    at,
+                    button,
+                    down,
+                });
+            }
+            return;
+        }
+        let Some(frame) = self.window(id).map(|w| w.frame) else {
+            return;
+        };
+        match part {
+            Part::Content(at) => effects.push(Effect::Button {
+                window: id,
+                at,
+                button,
+                down,
+            }),
+            Part::Title => {
+                let offset = Point {
+                    x: self.pointer.x - frame.x,
+                    y: self.pointer.y - frame.y,
+                };
+                self.grab = Some(Grab::Move { window: id, offset });
+            }
+            Part::Edge(edges) => {
+                self.grab = Some(Grab::Resize {
+                    window: id,
+                    edges,
+                    start: frame,
+                    from: self.pointer,
+                });
+            }
+            Part::Close => effects.push(Effect::Close { window: id }),
+            Part::Minimize => self.minimize(id, effects),
+            Part::Maximize => self.toggle_maximize(id, effects),
+        }
+    }
+}

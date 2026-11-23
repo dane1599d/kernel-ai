@@ -41,6 +41,10 @@ pub struct Checked {
     pub plan: Rc<Plan>,
     /// Set when the trial run stopped early on a stand-in value.
     pub note: Option<String>,
+    /// Set when the person's own line made the call (`Shell::open_line`), not a
+    /// model, a script or a goal: a window it opens takes the keys as a click
+    /// would (`UiCall::Open`).
+    pub person: bool,
     ast: AST,
 }
 
@@ -55,6 +59,7 @@ impl Checked {
             changes: Vec::new(),
             plan: Rc::default(),
             note: None,
+            person: false,
             ast: AST::empty(),
         }
     }
@@ -108,6 +113,8 @@ struct Tx {
     /// The shell's line for the last app reply that failed its row's call
     /// (`<row>: the app refused`), with none of the reply's words (#831).
     app_failed: Rc<RefCell<Option<String>>>,
+    /// The person's own line made this run's calls (`Checked::person`).
+    person: bool,
 }
 
 impl Tx {
@@ -119,6 +126,7 @@ impl Tx {
             plan: Rc::clone(plan),
             outbox: Outbox::default(),
             app_failed: Rc::default(),
+            person: false,
         }
     }
 
@@ -839,6 +847,7 @@ pub(crate) fn check_against(
         changes,
         plan,
         note,
+        person: false,
         ast,
     })
 }
@@ -973,6 +982,7 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
     let line = Line::new();
     let mut tx = Tx::new(host, &checked.plan);
     tx.consent = consent;
+    tx.person = checked.person;
     let engine = strict(&line, config, &checked.plan.names(), &tx);
     line.begin(host.as_ref(), config);
     let result = engine::eval(&engine, &mut Scope::new(), &checked.ast, config.exec);

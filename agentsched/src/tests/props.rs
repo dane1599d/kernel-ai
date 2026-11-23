@@ -85,6 +85,7 @@ struct Was {
     class: Class,
     place: Place,
     agent: AgentId,
+    shape: Shape,
 }
 
 fn snapshot(s: &Scheduler) -> BTreeMap<RequestId, Was> {
@@ -97,6 +98,7 @@ fn snapshot(s: &Scheduler) -> BTreeMap<RequestId, Was> {
                     class: r.class,
                     place: r.place,
                     agent: r.agent,
+                    shape: r.shape,
                 },
             )
         })
@@ -126,7 +128,11 @@ fn run(seed: u64, steps: usize) -> Vec<Event> {
             let who = all[rng.below(all.len() as u64) as usize].id;
             let prompt = rng.range(0, 150) as u32;
             let new = rng.range(0, 60) as u32;
-            let _ = e.ask(who, prompt, new);
+            let shape = match rng.percent(30) {
+                true => Shape::Grammar,
+                false => Shape::Free,
+            };
+            let _ = e.ask_shaped(who, prompt, new, shape);
         }
         if rng.percent(3) && !e.sched.reqs.is_empty() {
             let at = rng.below(e.sched.reqs.len() as u64) as usize;
@@ -140,8 +146,30 @@ fn run(seed: u64, steps: usize) -> Vec<Event> {
         let before = snapshot(&e.sched);
         let best = before.values().map(|w| w.class).min();
         let slots_before = e.sched.resident();
+        let open = e.sched.open;
         let event = e.step();
         let ctx = format!("seed {seed}, step {step}, {event:?}, {cfg:?}");
+        // An open grammar answer: only a higher class takes the model from it, and
+        // whatever does starts it again from its prompt.
+        if let Some(g) = open {
+            let class = before[&g].class;
+            let higher = before.values().any(|w| w.class < class);
+            let goes_on = match &event {
+                Event::Run(q) => q.len() == 1 && q[0].0 == g,
+                Event::End(..) => true,
+                _ => false,
+            };
+            assert!(goes_on || higher, "an open answer cut in on: {ctx}");
+            if !goes_on && let Some(req) = e.sched.reqs.get(&g) {
+                assert_eq!(req.made, 0, "an interrupted answer goes on: {ctx}");
+                assert_ne!(e.sched.open, Some(g), "{ctx}");
+            }
+        }
+        if let Some(g) = e.sched.open {
+            let req = &e.sched.reqs[&g];
+            assert!(req.shape == Shape::Grammar && req.made > 0, "{ctx}");
+            assert_eq!(req.place, Place::Slot, "{ctx}");
+        }
         match &event {
             Event::Idle => assert!(before.is_empty(), "idle with work: {ctx}"),
             Event::End(id, _) => assert!(before.contains_key(id), "{ctx}"),
@@ -166,6 +194,7 @@ fn run(seed: u64, steps: usize) -> Vec<Event> {
                     assert!(agents_seen.insert(was.agent), "one agent twice: {ctx}");
                     assert!((1..=BLOCK_TOKENS).contains(tokens), "{ctx}");
                     assert!(*kind == Kind::Decode || q.len() == 1, "{ctx}");
+                    assert!(was.shape == Shape::Free || q.len() == 1, "batched: {ctx}");
                     *charged.entry(was.agent).or_default() += u64::from(*tokens);
                 }
                 match cfg.batch {

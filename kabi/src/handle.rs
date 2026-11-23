@@ -16,7 +16,7 @@ use bitflags::bitflags;
 /// kernel; apps reach the OS through WIT, never raw calls; and no outside
 /// package exists before v1.0. Any later change to an existing call's meaning
 /// bumps the major.
-pub const ABI: (u32, u32) = (1, 4);
+pub const ABI: (u32, u32) = (1, 5);
 
 /// The name of the ELF note that carries [`ABI`], and its type.
 pub const NOTE_NAME: &[u8; 4] = b"KAI\0";
@@ -293,6 +293,40 @@ pub mod netdest {
     pub const LLM: u64 = 1;
     /// The kernel's DNS resolver.
     pub const RESOLVER: u64 = 2;
+}
+
+/// Agents' badges (ADR 0013 section 1): the kernel puts the badge a plan line's
+/// `agent=` names on that line's route to [`agent::SERVICE`], and the service
+/// keys its queues, quotas and KV slots on it. No agent can forge it: a route's
+/// badge is the kernel's. 0, every other route's, is no agent.
+pub mod agent {
+    /// The service whose route carries an agent's badge.
+    pub const SERVICE: &str = "llm";
+    /// The shell, which is the person.
+    pub const KAI: u64 = 1;
+    /// Runs goals.
+    pub const GOALS: u64 = 2;
+    /// Embeds files and memories.
+    pub const INDEX: u64 = 3;
+    /// Self-maintenance.
+    pub const MAINT: u64 = 4;
+    /// The built-in agents, in badge order: each name, its badge, and the one
+    /// program a line naming it may run (`agentid::Builtin`'s ids, which a
+    /// supervise test holds to these).
+    pub const BUILTIN: [(&str, u64, &str); 4] = [
+        ("kai", KAI, "shell"),
+        ("goals", GOALS, "goals"),
+        ("index", INDEX, "index"),
+        ("maint", MAINT, "maint"),
+    ];
+
+    /// The badge of the built-in agent `name`, and the program it runs.
+    pub fn builtin(name: &str) -> Option<(u64, &'static str)> {
+        BUILTIN
+            .iter()
+            .find(|(agent, ..)| *agent == name)
+            .map(|&(_, badge, program)| (badge, program))
+    }
 }
 
 const _: () = {

@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Stub gh for the batcher tests (run.sh): answers only the calls the batcher
+# makes, from a PR table $T/prs/<n>/{state,sha,branch,base,files,cross,labels}.
+# A PR whose head is in the bare repo's main reads as MERGED. CI and fluency are
+# always green. $T/kill-on-ready and $T/kill-on-merged kill the batch-ff.sh in
+# $T/ffpid once, at `gh pr ready` (before the fast-forward) or at the first
+# MERGED answer (after it), as a PC stop would; $T/list-fails fails the
+# open-PR listing.
+T=${STUB_T:?}
+echo "gh $*" >> "$T/gh.log"
+a="$*"
+pr() { cat "$T/prs/$1/$2" 2>/dev/null; }
+st() {
+  local s
+  s=$(pr $1 state)
+  if [ "$s" = OPEN ] && git -C "$T/origin.git" merge-base --is-ancestor "$(pr $1 sha)" refs/heads/main 2>/dev/null; then s=MERGED; fi
+  if [ "$s" = MERGED ] && [ -f "$T/kill-on-merged" ]; then rm -f "$T/kill-on-merged"; kill -9 $(cat "$T/ffpid"); fi
+  echo $s
+}
+if [ "$1 $2" = "pr ready" ] && [ -f "$T/kill-on-ready" ]; then rm -f "$T/kill-on-ready"; kill -9 $(cat "$T/ffpid"); exit 1; fi
+case "$1 $2" in
+  "pr view")
+    n=$3
+    case "$a" in
+      *"--json labels"*) pr $n labels;;
+      *"state,isCrossRepository"*) echo "$(st $n) $(pr $n cross || echo false)";;
+      *"--json state"*) st $n;;
+      *"--json headRefName"*) pr $n branch;;
+      *"--json baseRefName"*) pr $n base;;
+      *"--json headRefOid"*) git -C "$T/origin.git" rev-parse --verify -q "refs/heads/$(pr $n branch)" || pr $n sha;;
+    esac;;
+  "pr diff") pr $3 files;;
+  "pr create") echo "https://github.com/x/y/pull/999";;
+  "pr list")
+    case "$a" in
+      *"--head"*) echo 999;;
+      *"number,headRefName,headRefOid,labels"*)
+        for d in "$T"/prs/*; do n=$(basename "$d"); [ "$(st $n)" = OPEN ] || continue
+          h=$(git -C "$T/origin.git" rev-parse --verify -q "refs/heads/$(pr $n branch)" || pr $n sha)
+          r=false; grep -qx batch-ready "$d/labels" && r=true
+          echo "$n $(pr $n branch) $h $r false"; done;;
+      *"number,headRefOid"*)
+        for d in "$T"/prs/*; do n=$(basename "$d"); [ "$(st $n)" = OPEN ] || continue
+          echo "$n $(git -C "$T/origin.git" rev-parse --verify -q "refs/heads/$(pr $n branch)" || pr $n sha)"; done;;
+      *"baseRefName,headRefName"*)
+        [ -f "$T/list-fails" ] && exit 1
+        for d in "$T"/prs/*; do n=$(basename "$d"); [ "$(st $n)" = OPEN ] && { pr $n base; pr $n branch; }; done; true;;
+    esac;;
+  "pr edit") case "$a" in *"--remove-label batch-ready"*) : > "$T/prs/$3/labels";; esac;;
+  "pr ready"|"pr close"|"pr comment"|"run cancel"|"run rerun") :;;
+  "run list")
+    case "$a" in
+      *ci.yml*) echo "123 completed";;
+      *fluency-model*) echo "456 completed";;
+      *"--limit 30"*)
+        [ -f "$T/others-fail" ] && exit 1
+        if [ -f "$T/others" ]; then cat "$T/others"; else echo "DCO=success"; fi;;
+    esac;;
+  "run view")
+    case "$a" in
+      *--log-failed*) cat "$T/failed.log" 2>/dev/null;;
+      *--log*) cat "$T/fluency.log";;
+      *) for j in "Format, lint" "Boot test (kvm, shard 1)" "Boot test (kvm, shard 2)" "Boot test (kvm, shard 3)" "Boot test (tcg, shard 1)" "Boot test (tcg, shard 2)" "Boot test (tcg, shard 3)" "Observe determinism 1" "Observe determinism 2" "Observe determinism 3"; do echo "$j=${CI_RESULT:-success}"; done;;
+    esac;;
+  "workflow run") echo dispatched >> "$T/fluency-dispatches";;
+  *) echo "stub gh: unhandled $a" >&2; exit 1;;
+esac

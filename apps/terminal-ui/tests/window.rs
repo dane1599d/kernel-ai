@@ -558,3 +558,25 @@ fn esc_stops_a_running_line_and_enter_does_not() {
     let f = app.w.commit(&M);
     assert_eq!(f.a11y.iter().find(|n| n.id == CANCEL).unwrap().bound, None);
 }
+
+#[path = "../../../testkit/appview.rs"]
+mod appview;
+
+/// The agent's view of the Terminal with a few lines of history: whole, within
+/// 300 tokens, and the committed one (`tests/golden/view-terminal.txt`).
+#[test]
+fn the_agents_view_of_the_terminal_is_whole_and_fits_300_tokens() {
+    let mut t = Terminal::new();
+    t.submit("ls", Source::Typed);
+    t.reply("ok docs/  notes.txt  photo.png", None);
+    t.submit("open notes", Source::Ai);
+    t.reply("ok opened Notes", None);
+    let mut w = window();
+    for e in build(&t, &View::default()) {
+        w.put(e.id, e.parent, e.layout, e.widget.clone()).unwrap();
+    }
+    let f = w.commit(&M);
+    appview::check("terminal", "terminal", "Terminal", &f);
+    appview::goldens("terminal", &f);
+    appview::paints("terminal", &f);
+}

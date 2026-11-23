@@ -1,0 +1,20 @@
+node 0 clip 0,0 800x560
+  fill 0,0 800x560 window r0
+node 1 clip 0,0 800x560
+  text 0,0 mono muted "notes 2: components/notes/src/lib.rs *"
+node 2 clip 0,0 800x560
+  fill 0,28 800x504 desk r4
+  stroke 0,28 800x504 line_strong w1 r4
+  clip 1,29 798x502
+  text 6,34 mono dim "1"
+  text 22,34 mono text "fn main() {"
+  fill 1,54 798x20 raised r0
+  text 6,54 mono dim "2"
+  text 22,54 mono text "    run(); // see "
+  text 166,54 mono accent "src/ui.rs:7"
+  fill 166,72 88x1 accent r0
+  text 6,74 mono dim "3"
+  text 22,74 mono text "}"
+  unclip
+node 3 clip 0,0 800x560
+  text 0,532 mono muted "ok built e1"

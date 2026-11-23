@@ -28,7 +28,8 @@ use uikit::style::{Token, TypeStyle};
 
 /// `surface.preferred_scale`'s unit: 120 is 1x.
 pub const SCALE_ONE: u32 = 120;
-const OPAQUE: u32 = 0xFF00_0000;
+/// The alpha byte of an opaque pixel, built from its channel, not a colour.
+const OPAQUE: u32 = 0xFF << 24;
 
 /// The appearance `text` (`kai-appearance 1`, as `desktop` sends it) and the
 /// theme it resolves to among the shipped themes: what a client paints in. The
@@ -212,7 +213,7 @@ fn icon(c: &mut Canvas<'_>, r: Rect, name: &str, color: u32, clip: Rect) {
         return;
     }
     let (x, y) = (r.x + (r.w - px) / 2, r.y + (r.h - px) / 2);
-    gfx2d::icons::render(glyph, px).draw(c, x, y, color & 0x00FF_FFFF, clip);
+    gfx2d::icons::render(glyph, px).draw(c, x, y, color & !OPAQUE, clip);
 }
 
 /// The baseline's offset from the top of a line box `line` px tall for text of

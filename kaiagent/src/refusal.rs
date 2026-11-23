@@ -68,6 +68,9 @@ pub enum Refusal {
     NetBudgetKey(String),
     /// The net budget is not in MiB, as `bytes/day=10m`.
     NetBudgetUnit,
+    /// A net line's host is a shared suffix (`netdest::is_shared`): a top-level
+    /// domain, or one such as `github.io` under which unrelated parties hold names.
+    SharedHost(String),
 }
 
 impl fmt::Display for Refusal {
@@ -115,6 +118,10 @@ impl fmt::Display for Refusal {
                 "after a destination the net line takes bytes/day=Nm and nothing else, not {w:?}"
             ),
             Self::NetBudgetUnit => f.write_str("the net budget is in MiB, as bytes/day=10m"),
+            Self::SharedHost(host) => write!(
+                f,
+                "net: {host} is a shared suffix, under which unrelated parties hold names; name the agent's own host"
+            ),
         }
     }
 }

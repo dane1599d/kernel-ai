@@ -72,26 +72,58 @@ pub fn this_slot() -> Option<Slot> {
     }
 }
 
+/// `KaiBootState`, or `None` when the firmware has none (a fresh install, or
+/// NVRAM cleared: R installs). A record that is there but does not decode (a
+/// bad CRC, a bad field, or a newer VERSION) is an error, not a missing one:
+/// R stays up and writes nothing (ADR 0008), so the floors and the commits it
+/// held are never rebuilt from nothing, and a system slot boots without the
+/// lever and commits nothing.
 fn read_record() -> Result<Option<Record>, &'static str> {
     let mut bytes = [0u8; 128];
-    match efi::get_variable(&KAI, RECORD, &mut bytes) {
-        Ok(len) => Ok(Record::decode(&bytes[..len])),
-        Err(efi::Error::NotFound) => Ok(None),
-        Err(_) => Err("slots: cannot read KaiBootState"),
-    }
+    let found = match efi::get_variable(&KAI, RECORD, &mut bytes) {
+        Ok(len) => Some(&bytes[..len]),
+        Err(efi::Error::NotFound) => None,
+        Err(_) => return Err("slots: cannot read KaiBootState"),
+    };
+    bootslot::read(found).map_err(|bootslot::Undecodable| {
+        "slots: KaiBootState does not decode (a bad CRC or a newer version); R stays up"
+    })
 }
 
 /// Writes what `after` changed from `before`: the record, then the one-shot.
 fn write(before: &Nv, after: &Nv) -> Result<(), efi::Error> {
-    if before.record != after.record {
-        let mut record = after.record;
-        record.boot_seq = before.record.boot_seq.wrapping_add(1);
-        efi::set_variable(&KAI, RECORD, NV_BS_RT, &record.encode())?;
-    }
+    write_record(before, after)?;
     if after.one_shot == before.one_shot {
         return Ok(());
     }
     write_one_shot(after.one_shot)
+}
+
+/// R's arm, in [`bootslot::arm_writes`]'s order: the one-shot first only to
+/// re-arm the slot it found armed (a cut between the writes spares its try),
+/// and the record stored even when the one-shot fails.
+fn write_arm(before: &Nv, after: &Nv, next: Slot) -> Result<(), efi::Error> {
+    bootslot::arm_writes(
+        before.record.armed,
+        next,
+        || {
+            if after.one_shot == before.one_shot {
+                return Ok(());
+            }
+            write_one_shot(after.one_shot)
+        },
+        || write_record(before, after),
+    )
+}
+
+/// Writes `after`'s record if it changed from `before`'s.
+fn write_record(before: &Nv, after: &Nv) -> Result<(), efi::Error> {
+    if before.record == after.record {
+        return Ok(());
+    }
+    let mut record = after.record;
+    record.boot_seq = before.record.boot_seq.wrapping_add(1);
+    efi::set_variable(&KAI, RECORD, NV_BS_RT, &record.encode())
 }
 
 /// Sets Limine's one-shot to `slot`'s entry, or deletes it.
@@ -114,9 +146,10 @@ fn write_one_shot(one_shot: Option<Slot>) -> Result<(), efi::Error> {
     }
 }
 
-/// Writes `after` and resets into the slot it arms (or R without a one-shot).
-fn finish(before: &Nv, after: &Nv) -> ! {
-    if let Err(error) = write(before, after) {
+/// Resets, once `after` is `written`, into the slot it arms (or R without a
+/// one-shot).
+fn finish(after: &Nv, written: Result<(), efi::Error>) -> ! {
+    if let Err(error) = written {
         log!("slots: SetVariable failed: {error:?}");
     }
     log!(
@@ -204,8 +237,20 @@ fn lever(test: bool) {
         entry_id(slot),
         if record.is_some() { "read" } else { "missing" }
     );
-    if slot == Slot::R {
-        return in_r(record.is_some(), before, nv);
+    match bootslot::start(slot, record) {
+        bootslot::Start::RBoots(_) | bootslot::Start::Install => {
+            return in_r(record.is_some(), before, nv);
+        }
+        // *Up* on no record would write one with no floors, armed nowhere: R,
+        // booting next with none, installs instead.
+        bootslot::Start::NoRecord => {
+            log!(
+                "slots: no record in {}; booting without the lever",
+                entry_id(slot)
+            );
+            return;
+        }
+        bootslot::Start::Slot(_) => {}
     }
     *BOOTED.lock() = Some((before, slot));
     let action = if test { action() } else { Action::Restart };
@@ -259,7 +304,7 @@ fn lever(test: bool) {
         Action::Restart | Action::Panic => {}
     }
     if test {
-        finish(&before, &nv);
+        finish(&nv, write(&before, &nv));
     }
     // A normal boot writes the one-shot that *up* armed and keeps running.
     if let Err(error) = write(&before, &nv) {
@@ -383,7 +428,7 @@ fn in_r(had_record: bool, before: Nv, mut nv: Nv) {
                 entry_id(slot),
                 describe(&nv.record, slot)
             );
-            finish(&before, &nv)
+            finish(&nv, write_arm(&before, &nv, slot))
         }
         InR::Stay => {
             log!("slots: nothing bootable; R stays up");
@@ -465,12 +510,12 @@ pub fn active_committed() -> bool {
 pub fn set(record: Record, one_shot: Option<Slot>) -> Result<(), efi::Error> {
     let _setting = SETTING.lock();
     efi::set_variable(&KAI, RECORD, NV_BS_RT, &record.encode())?;
-    write_one_shot(one_shot)?;
-    let mut booted = BOOTED.lock();
-    if let Some((_, slot)) = *booted {
-        *booted = Some((Nv { record, one_shot }, slot));
-    }
-    Ok(())
+    // The record is the firmware's now: the fault path writes from it even if
+    // the one-shot fails next, never from the record before (a commit's
+    // floors would fall back). The fault path deletes the one-shot whatever
+    // BOOTED holds, so only the record is kept.
+    keep_booted(|nv| nv.record = record);
+    write_one_shot(one_shot)
 }
 
 /// POWER_REBOOT's reset: once a BOOTREC_SET under way has written both its
@@ -488,6 +533,13 @@ pub fn reset_when_set() -> ! {
     efi::reset_after_calls()
 }
 
+/// Changes what the fault path writes from, if this boot keeps it.
+fn keep_booted(change: impl FnOnce(&mut Nv)) {
+    if let Some((nv, _)) = BOOTED.lock().as_mut() {
+        change(nv);
+    }
+}
+
 /// From the fault path: records the fault in this boot's slot and deletes the
 /// one-shot, so R boots next. Does nothing off a slot image or in R.
 pub fn on_fault() {
@@ -496,7 +548,11 @@ pub fn on_fault() {
     };
     let mut after = before;
     bootslot::fault(&mut after, slot, FAULT_PANIC, 0);
-    match write(&before, &after) {
+    // The one-shot is deleted whatever BOOTED remembers of it (a fault just
+    // after set() wrote one may come before BOOTED was told), so R boots next.
+    let record = write_record(&before, &after);
+    let one_shot = write_one_shot(None);
+    match record.and(one_shot) {
         Ok(()) => log!("slots: fault recorded in {}; R boots next", entry_id(slot)),
         Err(error) => log!("slots: cannot record the fault: {error:?}"),
     }

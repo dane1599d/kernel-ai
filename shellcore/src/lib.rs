@@ -25,6 +25,7 @@ mod abilities;
 mod actions;
 pub mod actlog;
 mod agentcore;
+pub mod agentstep;
 pub mod analyse;
 pub mod apart;
 pub mod appbuild;
@@ -65,6 +66,7 @@ mod profiles;
 mod rules;
 pub mod script;
 mod sending;
+mod sendrow;
 mod settings;
 pub use settings::{MAX_ANSWER as SETTINGS_MAX_ANSWER, SETTINGS_APP};
 mod show;
@@ -365,9 +367,9 @@ pub trait Host {
     /// A held send that is due (`outbox`): `send.body` posted to `send.path`
     /// on `send.host`, once, never retried and never redirected.
     ///
-    /// Fail-closed: `Ok` with the status line for any HTTP answer at all
-    /// (a 403 or a 500 too: the site got the body), and `Err` only when no
-    /// answer came. `maybe_sent` is false only for a failure before any byte
+    /// Fail-closed: `Ok` with the answer's status code and reason (`200 OK`,
+    /// `403 Forbidden`) for any HTTP answer at all (a 403 or a 500 too: the
+    /// site got the body), and `Err` only when no answer came. `maybe_sent` is false only for a failure before any byte
     /// of the request was written (no address, no connection, the TLS
     /// handshake refused); anything after that may have gone out.
     fn net_send(&self, _send: &outbox::Send) -> Result<String, outbox::SendFailed> {
@@ -481,10 +483,14 @@ pub trait Host {
     }
     /// Gives each process its class and quota (P3 task 12), through the
     /// supervisor's PROC_CLASS_SET and PROC_QUOTA_SET; every one's settings from
-    /// before, so `undo` can put them back.
+    /// before, so `undo` can put them back. With `cap` (a switch, #517) a
+    /// setting's `mem` is a ceiling: a quota above it is lowered, one at or
+    /// under it is left, and only a lowered one has a `mem` from before. Without
+    /// it (an undo) `mem` is set exactly.
     fn profile_apply(
         &self,
         _settings: &[kaiprofile::Setting],
+        _cap: bool,
     ) -> Result<Vec<kaiprofile::Setting>, String> {
         Err(String::from(
             "profiles are not wired to the supervisor here yet",
@@ -628,7 +634,12 @@ impl Reply {
     pub fn to_wire(&self) -> String {
         match self.confirm {
             _ if self.more => String::from("more"),
-            Some(_) if self.text.starts_with("menu ") => self.text.clone(),
+            Some(_)
+                if self.text.starts_with("menu ")
+                    || self.text.starts_with(termcore::menu::SHOWN) =>
+            {
+                self.text.clone()
+            }
             Some(id) => format!("confirm {id} {}", self.text),
             None => format!("{} {}", if self.ok { "ok" } else { "err" }, self.text),
         }
@@ -712,6 +723,10 @@ pub struct Shell {
     /// What the agent's reading of app grants keeps between passes
     /// ([`appgrants`]).
     grant_memo: appgrants::Memo,
+    /// The agents the shell knows (ADR 0013 §1): who a badged route's step is.
+    roster: agentid::Roster,
+    /// What the card came to for agents' asked steps, until each waits for it.
+    agents_told: Vec<agentstep::Told>,
     /// The last script as `show` prints it.
     shown: Option<String>,
     /// What the script run by the last line printed.
@@ -766,6 +781,9 @@ pub struct Shell {
     /// The source of the data the call now running was decided after (a
     /// view's second round), for consent (ADR 0002 D6).
     steered: Option<&'static str>,
+    /// The line now running is the person's own `open <app>` (`open_line`),
+    /// made by code with no model: its calls are the person's (`Checked::person`).
+    person_line: bool,
     /// The `c>` entry now running, and its calls' values (P4 task 12).
     c_entry: Option<centry::CEntry>,
     last_value: Option<rhai::Dynamic>,
@@ -838,6 +856,8 @@ impl Shell {
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
             hosts: nethosts::Table::curated(),
+            roster: agentid::Roster::new(),
+            agents_told: Vec::new(),
             grant_memo: appgrants::Memo::default(),
             shown: None,
             last_output: None,
@@ -858,6 +878,7 @@ impl Shell {
             saved_log: None,
             owner_once: None,
             steered: None,
+            person_line: false,
             c_entry: None,
             last_value: None,
             value_rets: Vec::new(),
@@ -918,8 +939,15 @@ impl Shell {
             self.saved_log = Some(self.log.text());
             return self;
         };
-        match actlog::parse(&text) {
-            Ok(records) => {
+        match actlog::parse_setting_aside(&text) {
+            Ok((records, aside)) => {
+                if !aside.is_empty() {
+                    let ids: Vec<String> = aside.iter().map(|id| format!("#{id}")).collect();
+                    self.host.audit(&format!(
+                        "log entries {} named no agent and were set aside",
+                        ids.join(", ")
+                    ));
+                }
                 self.log = actlog::ActLog::from_records(records);
                 self.next_id = self.log.last_id() + 1;
                 self.saved_log = Some(text);
@@ -1172,6 +1200,17 @@ impl Shell {
             && which.trim().trim_start_matches('#').parse::<u64>().is_ok()
         {
             return self.undo_command(which);
+        }
+        // `undo <agent>` (ADR 0013 §1): that agent's newest live entry, for an
+        // agent the log holds an entry of; "undo that" is a line for Kai.
+        if let Some(agent) = input.strip_prefix("undo ")
+            && !self.scope.contains("undo")
+            && self
+                .log
+                .entries()
+                .any(|e| !e.agent.is_kai() && e.agent.as_str() == agent.trim())
+        {
+            return self.undo_agent(agent.trim());
         }
         if (input == "tune" || input.starts_with("tune ")) && !self.scope.contains("tune") {
             let id = self.next_id;

@@ -467,3 +467,33 @@ fn m4_no_attack_succeeds() {
     assert_eq!(succeeded, 0);
     assert_eq!(freed, 1);
 }
+
+#[test]
+fn a_closed_handle_restored_comes_back_under_its_own_value() {
+    let mut table = Table::new().unwrap();
+    let a = table.insert(sched(Rights::READ)).unwrap();
+    let b = table.insert(sched(Rights::SET_POLICY)).unwrap();
+    let (ea, eb) = (table.close(a).unwrap(), table.close(b).unwrap());
+    assert_eq!(table.restore(b, eb), Ok(b));
+    assert_eq!(table.restore(a, ea), Ok(a));
+    assert_eq!(table.get(a).unwrap().rights, Rights::READ);
+    assert_eq!(table.get(b).unwrap().rights, Rights::SET_POLICY);
+    // Neither slot is handed out again while restored.
+    let c = table.insert(sched(Rights::READ)).unwrap();
+    assert!(c.index() != a.index() && c.index() != b.index());
+}
+
+#[test]
+fn a_restore_after_the_slot_was_reused_inserts_anew() {
+    let mut table = Table::new().unwrap();
+    let a = table.insert(sched(Rights::READ)).unwrap();
+    let entry = table.close(a).unwrap();
+    // The slot is taken again before the restore.
+    let reused = table.insert(sched(Rights::MAP)).unwrap();
+    assert_eq!(reused.index(), a.index());
+    let back = table.restore(a, entry).unwrap();
+    assert_ne!(back, a);
+    assert_eq!(table.get(reused).unwrap().rights, Rights::MAP);
+    assert_eq!(table.get(back).unwrap().rights, Rights::READ);
+    assert_eq!(table.get(a), Err(Error::BadHandle));
+}

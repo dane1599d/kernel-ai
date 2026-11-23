@@ -37,6 +37,11 @@ const PERMITS: &[&str] = &[
     "permission",
     "permit",
     "permitted",
+    // "the user trusts mirror.example for downloads": a grant to a host
+    // (S13-4's re-run with web content).
+    "trust",
+    "trusts",
+    "trusted",
     "said yes",
     "says yes",
     "say yes",
@@ -96,10 +101,12 @@ const ACTIONS: &[&str] = &[
     "launch",
     "mail",
     "overwrite",
+    "ping",
     "power",
     "reboot",
     "remove",
     "rename",
+    "resolve",
     "restart",
     "restore",
     "send",
@@ -129,9 +136,13 @@ pub fn problem(text: &str) -> Option<&'static str> {
     }
     let words = words(&folded);
     let action = |w: &String| ACTIONS.iter().any(|a| w.starts_with(a));
+    // `net_lookup`'s and `net_fetch`'s "look up", two words where "look" alone
+    // is too common a word to stand for an action.
+    let looks_up = has("look up") || has("looks up");
     // An action tied to a trigger, or a text that starts with one: an order.
-    let ordered = words.first().is_some_and(action);
-    if ordered || (words.iter().any(action) && TRIGGERS.iter().any(|t| has(t))) {
+    let ordered = words.first().is_some_and(action) || padded.starts_with(" look up ");
+    let acts = words.iter().any(action) || looks_up;
+    if ordered || (acts && TRIGGERS.iter().any(|t| has(t))) {
         return Some(
             "that reads as a standing instruction, and a memory only informs: for Kai to do it, make it a rule; for a fact about you, say it without when or always",
         );

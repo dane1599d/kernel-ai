@@ -37,24 +37,31 @@ impl Napper {
         Self { nap }
     }
 
-    /// The nap ends whenever the app is running again, whoever resumed it.
+    /// The nap ends whenever the app is running again, whoever resumed it;
+    /// and a look later than the wait promised was a stall, not disuse
+    /// (`Nap::looked`).
     pub fn sync<E: Env>(&mut self, host: &Host<E>, now_ms: u64) {
+        self.nap.looked(now_ms);
         if self.nap.is_napping() && !host.suspended() {
             self.nap.woke(now_ms);
         }
     }
 
-    /// How long to wait, at most `wait` (0 forever), so a nap comes on time.
-    pub fn wait<E: Env>(&self, host: &Host<E>, wait: u64, now_ms: u64) -> u64 {
+    /// How long to wait, at most `wait` (0 forever), so a nap comes on time;
+    /// the nap is told when the host will look again (`Nap::look_by`).
+    pub fn wait<E: Env>(&mut self, host: &Host<E>, wait: u64, now_ms: u64) -> u64 {
         let nap = (!host.suspended())
             .then(|| self.nap.wait_ms(now_ms))
             .flatten()
             .map(|ms| ms.max(1));
-        match (wait, nap) {
+        let wait = match (wait, nap) {
             (0, Some(nap)) => nap,
             (wait, Some(nap)) => wait.min(nap),
             (wait, None) => wait,
-        }
+        };
+        let by = (wait > 0).then(|| now_ms.saturating_add(wait));
+        self.nap.look_by(by);
+        wait
     }
 
     /// Before a request from `caller`: the keep-running switch is answered

@@ -50,6 +50,9 @@ enum Backend {
 struct Display {
     surface: Surface,
     backend: Backend,
+    /// The screen's size in mm from its EDID, (0, 0) when unknown (GOP gives
+    /// none, and virtio-gpu's is made up).
+    size_mm: (u32, u32),
 }
 
 // SAFETY: the device state is used only under the DISPLAY mutex, by one CPU at a
@@ -75,6 +78,7 @@ pub fn init_gop(fb: &Framebuffer) -> Option<Surface> {
     *DISPLAY.lock() = Some(Display {
         surface,
         backend: Backend::Gop,
+        size_mm: (0, 0),
     });
     Some(surface)
 }
@@ -114,11 +118,27 @@ pub fn init_gpu(
         stride: mode.0 as usize,
     };
     gpu.flush(Rect::screen(mode.0, mode.1))?;
+    // A virtio-gpu screen is a window on a host: its EDID's size is made up
+    // (QEMU's is its default mode's at a fixed density, whatever the mode),
+    // so it is unknown here and the scale goes by the width.
+    if let Some((width, height)) = gpu.size_mm() {
+        log!("display: the EDID says {width}x{height} mm; a virtual screen's size is unknown");
+    }
     *DISPLAY.lock() = Some(Display {
         surface,
         backend: Backend::Gpu(Box::new(gpu)),
+        size_mm: (0, 0),
     });
     Ok(surface)
+}
+
+/// The screen's size in mm from its EDID, width by height; (0, 0) when it is
+/// unknown (no EDID, a virtual screen's) or there is no display.
+pub fn size_mm() -> (u32, u32) {
+    DISPLAY
+        .lock()
+        .as_ref()
+        .map_or((0, 0), |display| display.size_mm)
 }
 
 /// The display's back buffer, if there is a display.

@@ -1,0 +1,12 @@
+[package]
+name = "maintcore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The `maint` agent's rules (ADR 0013 section 7, row X1 of
+# docs/plans/agents-os.md): it reads health and proposes, and applies nothing.
+# `no_std` and no dependencies; host-tested only, wired into nothing yet.
+[lib]
+doctest = false

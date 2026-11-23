@@ -60,6 +60,11 @@ fn every_request_round_trips() {
         Request::Changes { since: 1 },
         Request::Sync,
         Request::Df,
+        Request::ReadShm {
+            off: u64::MAX,
+            len: MAX_SHM_DATA as u32,
+        },
+        Request::WriteShm { off: 0, len: 1 },
     ];
     for request in requests {
         let bytes = encode_request(&request);
@@ -123,6 +128,7 @@ fn every_reply_round_trips_and_the_largest_fit_one_message() {
         },
         Reply::Space { free: 1, total: 2 },
         Reply::Failed(Error::Busy),
+        Reply::Copied { len: u64::MAX },
     ];
     for reply in replies {
         let bytes = encode_reply(&reply);
@@ -182,4 +188,17 @@ fn one_path_at_the_whole_trash_budget_fits_one_message() {
         more: true,
     };
     assert!(encode_reply(&reply).len() <= MAX_MESSAGE);
+}
+
+/// The bulk requests are new variants of `kai-fs 1`: their numbers are fixed,
+/// so an `fs` built before them refuses them as a bad request, and the client
+/// can tell that from a refusal of the read itself.
+#[test]
+fn the_bulk_requests_keep_their_numbers() {
+    let read = encode_request(&Request::ReadShm { off: 1, len: 2 });
+    assert_eq!(read, [0x82, 0x01, 0x82, 0x18, 28, 0x82, 0x01, 0x02]);
+    let write = encode_request(&Request::WriteShm { off: 1, len: 2 });
+    assert_eq!(write, [0x82, 0x01, 0x82, 0x18, 29, 0x82, 0x01, 0x02]);
+    let copied = encode_reply(&Reply::Copied { len: 3 });
+    assert_eq!(copied, [0x82, 0x01, 0x82, 0x10, 0x81, 0x03]);
 }

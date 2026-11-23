@@ -81,6 +81,11 @@ pub(super) fn refresh_bar(state: &mut State) {
         return;
     };
     let listed = &m.processes[..(m.process_count as usize).min(m.processes.len())];
+    // A client whose process is gone leaves its windows and pools: dropped, but
+    // only on a list that is whole (see `deskcore::reap`).
+    let alive: Vec<u64> = listed.iter().map(|p| p.pid).collect();
+    let whole = deskcore::reap::list_is_whole(listed.len(), m.processes.len());
+    pools::reap(state, &alive, whole);
     let mib = |frames: u64| frames * 4096 / (1024 * 1024);
     let bar = Bar {
         model: listed.iter().any(|p| p.name() == "llm"),
@@ -203,6 +208,11 @@ pub(super) fn draw(state: &mut State, screen: &Screen) {
     if !state.drawn {
         state.drawn = true;
         println!("desktop: drew the desk at {}x{}", state.width, state.height);
+        // A test image's plan (`log_bar=1`): the state the pane starts in.
+        if state.log_bar {
+            let word = super::pane_word(state.panel.state());
+            println!("desktop: the panel starts {word}");
+        }
     }
 }
 

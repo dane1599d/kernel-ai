@@ -59,6 +59,8 @@ pub(crate) struct Pending {
     pub install: Option<crate::appinstall::Installing>,
     /// For an app's first connection to a host, the ask its card shows.
     pub net: Option<crate::netask::NetAsking>,
+    /// For a `net_send`, the send its card asks to hold.
+    pub send: Option<crate::outbox::Send>,
     /// For a restart line, true: the restart waits on the answer.
     pub power: bool,
 }
@@ -253,6 +255,7 @@ impl Shell {
             app: None,
             install: None,
             net: None,
+            send: None,
             power: false,
         });
         Reply {
@@ -473,6 +476,7 @@ impl Shell {
     ) {
         self.host.audit(&format!("script {id} {outcome}"));
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: how.form,
@@ -496,6 +500,7 @@ impl Shell {
             false => Form::Script,
         };
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form,
@@ -577,6 +582,12 @@ impl Shell {
         }
         if pending.net.is_some() && !is_show(text) {
             return self.answer_net(pending, text);
+        }
+        if pending.send.is_some() {
+            return match is_show(text) {
+                true => self.send_show(pending),
+                false => self.answer_send(pending, text),
+            };
         }
         if pending.standing.is_some() && !is_show(text) {
             return self.answer_instruction(pending, text);
@@ -719,9 +730,13 @@ impl Shell {
 
     /// `show` or `why`: the last script in full, with why it ran or asked.
     pub(crate) fn show_last(&self) -> Reply {
-        match &self.shown {
-            Some(text) => Reply::ok(text.clone()),
-            None => Reply::err("no script yet"),
+        let Some(text) = &self.shown else {
+            return Reply::err("no script yet");
+        };
+        // `why` names the agent whose entry the newest one is (ADR 0013 §1).
+        match self.log.entries().last().map(|e| &e.agent) {
+            Some(agent) if !agent.is_kai() => Reply::ok(format!("{text}\nby {}", agent.as_str())),
+            _ => Reply::ok(text.clone()),
         }
     }
 }

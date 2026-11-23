@@ -110,6 +110,24 @@ fn a_restored_slot_answers_as_a_fresh_one_on_every_tier() {
     }
 }
 
+/// After a restore the slot holds the file's tokens, all of them, however few
+/// the next prompt shares: what llm compares with the prefix it would write.
+#[test]
+fn a_restored_slot_holds_as_many_tokens_as_its_file() {
+    let bytes = fixture::build(&Spec::tiny());
+    let tier = Tier::best();
+    let mut first = Engine::load(&bytes, tier, 256, ROOMY).unwrap();
+    let saved = file(&mut first, &key(tier));
+    let written = first.cached_len();
+    assert!(written > 0);
+    let mut restored = Engine::load(&bytes, tier, 256, ROOMY).unwrap();
+    assert_eq!(restored.cached_len(), 0);
+    restored
+        .restore_slot(&key(tier), &later(), &mut reader(&saved))
+        .unwrap();
+    assert_eq!(restored.cached_len(), written);
+}
+
 /// What a refusal case changes: its name, key, file, prompt and the refusal.
 type Case<'a> = (&'a str, Key, Vec<u8>, &'a [Turn<'a>], Refused);
 

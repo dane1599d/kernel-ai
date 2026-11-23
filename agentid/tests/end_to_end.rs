@@ -61,6 +61,7 @@ impl Model {
             agent: SchedId(agent),
             prompt_tokens: prompt,
             max_new_tokens: new,
+            shape: agentsched::Shape::Free,
         };
         self.sched.submit(ask, self.now)
     }

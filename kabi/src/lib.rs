@@ -19,6 +19,7 @@ pub mod event;
 pub mod event_ring;
 pub mod fs;
 pub mod handle;
+pub mod heap;
 pub mod input;
 mod ipc;
 pub mod layout;

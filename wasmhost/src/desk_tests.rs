@@ -139,10 +139,13 @@ fn a_late_modifiers_message_never_changes_the_keys_already_in_the_ring() {
         usage,
         down,
     };
+    // The desk tells every client the modifiers before the key that changed them.
     client.apply(&[
+        Effect::Modifiers(2),
         key(0xE0, true),
         key(0x05, true),
         key(0x05, false),
+        Effect::Modifiers(0),
         key(0xE0, false),
     ]);
     let ring: Vec<_> = client.take_posts().into_iter().map(|(_, e)| e).collect();

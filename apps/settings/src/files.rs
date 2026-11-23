@@ -6,15 +6,20 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// A zone as the saved file and `appearance-set` write it (`UTC`, `+02:00`).
+pub use look::appearance::zone_text;
+
 /// The shell's saved appearance (`kai-appearance 1`, `look::appearance`): the
-/// theme by `look` palette name, and the two switches ADR 0005 §8 names. The
-/// other settings in the file (scale, text size, colour tokens) are the
-/// shell's and `desktop`'s, and are not shown here.
+/// theme by `look` palette name, the two switches ADR 0005 §8 names, and the
+/// tray clock's time zone. The other settings in the file (scale, text size,
+/// colour tokens) are the shell's and `desktop`'s, and are not shown here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Appearance {
     pub theme: String,
     pub legible: bool,
     pub reduced_motion: bool,
+    /// The clock's fixed offset from UTC in minutes (`time_zone`); 0 is UTC.
+    pub time_zone_min: i16,
 }
 
 impl Default for Appearance {
@@ -23,6 +28,7 @@ impl Default for Appearance {
             theme: String::from(look::THEMES[0].name),
             legible: false,
             reduced_motion: false,
+            time_zone_min: 0,
         }
     }
 }
@@ -60,6 +66,7 @@ impl Appearance {
                 theme: saved.theme,
                 legible: saved.legible,
                 reduced_motion: saved.reduced_motion,
+                time_zone_min: saved.time_zone_min,
             },
             Err(_) => Appearance::default(),
         }

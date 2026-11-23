@@ -7,16 +7,15 @@
 //! scope rule itself (C on #650): the user reads and writes every memory; an
 //! agent reads its own and those for all, and writes only its own.
 
-use crate::record::{self, Memory, Scope, is_agent_name, text_problem};
+use crate::record::{self, Memory, Scope, Skipped, is_agent_name, text_problem};
+
+pub use crate::record::MAX_MEMORIES;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 /// How long a forgotten memory can be brought back: 10 minutes.
 pub const FORGET_UNDO_NS: u64 = 10 * 60 * 1_000_000_000;
-/// The most memories kept (est.): a store this full refuses new ones until
-/// some are forgotten.
-pub const MAX_MEMORIES: usize = 512;
 
 /// Who reads or writes: the shell (the user), or an agent by name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +39,14 @@ impl Who<'_> {
             (Who::Agent(_), Scope::All) => false,
         }
     }
+}
+
+/// What [`Memories::load`] read: the store, and every record it left out.
+#[must_use]
+#[derive(Clone, Debug)]
+pub struct Loaded {
+    pub memories: Memories,
+    pub skipped: Vec<Skipped>,
 }
 
 /// The memories, and those forgotten within the undo window.
@@ -67,13 +74,20 @@ impl Memories {
         Self::default()
     }
 
-    /// The store a `kai-memory 1` file holds.
-    pub fn load(file: &str) -> Result<Self, String> {
-        let (next, kept) = record::decode(file)?;
-        Ok(Self {
-            kept,
-            forgotten: Vec::new(),
-            next,
+    /// The store a `kai-memory 1` file holds, and every record left out. A bad
+    /// header or another version refuses the file; a bad record is skipped and
+    /// reported ([`record::decode`]), and so are a text its scope already keeps
+    /// and a record past [`MAX_MEMORIES`], so what loads keeps the store's rules.
+    /// What was skipped is gone from the file at the next save: the caller says so.
+    pub fn load(file: &str) -> Result<Loaded, String> {
+        let read = record::decode(file)?;
+        Ok(Loaded {
+            memories: Self {
+                kept: read.memories,
+                forgotten: Vec::new(),
+                next: read.next,
+            },
+            skipped: read.skipped,
         })
     }
 

@@ -64,7 +64,8 @@ impl Split {
         let end = sys::time_ns();
         self.in_call.set(false);
         match self.connects.get() {
-            0 => {}
+            // Every hop on a kept connection: the whole call is the body's.
+            0 => add(&self.body, end.saturating_sub(self.call_start.get())),
             1 => {
                 // No redirect: the one connection is the assets'.
                 let (start, took) = self.first.get();
