@@ -163,6 +163,7 @@ pub fn attempt(task: &Task, transport: Transport) -> Outcome {
             reply.ok,
             &output_of(&reply.text),
             &host.changes.borrow(),
+            &host.fetched.borrow(),
         ),
     };
     Outcome {
