@@ -362,6 +362,7 @@ fn revoke_mid_call() -> Result<(), &'static str> {
         }
     }
     unanswered()?;
+    crate::ipc_queued_tests::check()?;
     log!("handles: revoking a grant ended a call in flight through it");
     Ok(())
 }

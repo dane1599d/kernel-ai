@@ -114,6 +114,8 @@ mod memory;
 mod metrics;
 mod model;
 mod model_import_tests;
+mod ipc_queued_tests;
+mod model_fill_tests;
 mod model_tests;
 mod models_window_tests;
 mod nap_busy_tests;

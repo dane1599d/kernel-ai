@@ -341,7 +341,37 @@ pub fn dest_check() -> Result<(), &'static str> {
     );
     llm_grant()?;
     any_host_pinned()?;
+    moves_check()?;
     sweep_check()
+}
+
+/// #1150's review: a `Moving` with no `NetDest` entry leaves `moves()` where
+/// it was (every IPC call makes one, and a counter moving on for those would
+/// keep a sweep from ever dropping a record); one with a `NetDest` moves it on
+/// as it starts and as it ends. Another CPU's move may land between the reads,
+/// so a few tries, one of which must see exactly that.
+fn moves_check() -> Result<(), &'static str> {
+    const TRIES: usize = 8;
+    let entry = |kind| captable::Entry::new(kind, crate::handle::NETDEST_RIGHTS, net::dest::FIRST);
+    for _ in 0..TRIES {
+        let before = crate::handle::moves();
+        drop(crate::handle::Moving::from(alloc::vec![entry(
+            kabi::handle::Kind::Sched
+        )]));
+        drop(crate::handle::Moving::none());
+        let plain = crate::handle::moves();
+        let moving = crate::handle::Moving::from(alloc::vec![entry(kabi::handle::Kind::NetDest)]);
+        let started = crate::handle::moves();
+        drop(moving);
+        let ended = crate::handle::moves();
+        if (plain, started, ended) == (before, before + 1, before + 2) {
+            log!(
+                "net-dest: a move with no NetDest leaves moves() as it was; one with a NetDest moves it on as it starts and ends"
+            );
+            return Ok(());
+        }
+    }
+    Err("net-dest: moves() did not count exactly the NetDest moves")
 }
 
 /// Audit K #1: fills the record table with records no handle names, waits

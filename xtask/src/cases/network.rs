@@ -69,6 +69,8 @@ pub(super) const CASES: &[TestCase] = &[
             "net-dest: netdest=llm gave the LLM's handle, CONNECT only, within NET, and nothing without it",
             "[netdest-h] hosts:any narrowed to one exact host, not to a suffix or hosts:any again",
             "net-dest: hosts:any stays where it was made: no narrowing makes another and it never moves, while its one-host narrowing does",
+            // #1150's review: only NetDest moves move the sweep's counter on.
+            "net-dest: a move with no NetDest leaves moves() as it was; one with a NetDest moves it on as it starts and ends",
             // Audit K #1: record ids carry a generation; handles in transit count.
             "; their ids name nothing after, and one whose handle was moving stayed",
         ],

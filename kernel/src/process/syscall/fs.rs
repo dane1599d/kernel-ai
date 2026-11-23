@@ -232,6 +232,8 @@ fn model_fill(slot: usize, raw: u64, ptr: u64, count: u64, offset: u64) -> Resul
             )
         })
         .collect();
+    // `test=model-store fill=...`: the restart and give-up cases run first.
+    crate::model_fill_tests::before_fill(&extents, offset);
     crate::model::fill::fill(&extents, offset)
 }
 
