@@ -93,7 +93,10 @@ fn card(host: &str, allow: bool) -> Result<(), &'static str> {
         // Which side stalled: the shell never said a card waits ("card
         // waiting false"), or the terminal could not take it. Run
         // 44386525169's re-ask after the revoke gave no word of which.
-        log!("net-grant: the card did not come: {}", terminal::card_state());
+        log!(
+            "net-grant: the card did not come: {}",
+            terminal::card_state()
+        );
         return Err(why);
     }
     let question = ask_box::question().unwrap_or_default();
