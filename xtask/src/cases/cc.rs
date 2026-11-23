@@ -29,6 +29,8 @@ pub(super) const CASES: &[TestCase] = &[
             "c-prompt: :c, definitions, a redefinition that switched its caller, :dis, a kai call and its undo, :rhai",
             "c-prompt: :save, :reset, :load and an #include of the saved file, and a call works",
         ],
+        // `:save` writes `/home/user/c/` through `fs`, whose disk this is.
+        data: Some(VIRTIO),
         ..case("c-prompt", "test=c-prompt")
     },
     // P4 task 13's exit case: generation 1 is the image's packages, which
