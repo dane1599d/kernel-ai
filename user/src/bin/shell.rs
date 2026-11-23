@@ -398,7 +398,7 @@ const APP_CALL_MS: u64 = 8_000;
 /// timeout is tried once more.
 fn ask_app(app: &str, request: &str) -> Result<String, String> {
     match ask_app_once(app, request) {
-        Err(why) if why.starts_with("timeout") => {
+        Err(why) if kabi::live::app_call_may_retry(&why) => {
             println!("{app} did not answer in time; asking once more");
             ask_app_once(app, request)
         }

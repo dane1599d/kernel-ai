@@ -45,11 +45,17 @@ fn a_result_survives_the_wire_and_its_text_cannot_forge_a_change() {
         shown: Vec::new(),
         failed: None,
         withheld: false,
+        unanswered: Some(String::from("notes_add")),
     };
     let decoded = apart::decode(&apart::encode(&ran)).unwrap();
     assert_eq!(
-        (decoded.ok, &decoded.text, &decoded.done),
-        (ran.ok, &ran.text, &ran.done)
+        (
+            decoded.ok,
+            &decoded.text,
+            &decoded.done,
+            &decoded.unanswered
+        ),
+        (ran.ok, &ran.text, &ran.done, &ran.unanswered)
     );
     for bad in [
         "",

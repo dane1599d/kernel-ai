@@ -374,10 +374,28 @@ impl Shell {
             };
             said = Some(text.clone());
         }
-        let state = match ran.ok {
-            true => State::Done,
-            false => State::Nothing,
+        // Whatever `ran.ok` says: a script that caught the error still sent a
+        // call that may have run.
+        let state = match (ran.ok, ran.unanswered.as_deref()) {
+            (_, Some(row)) => {
+                // An app took a call and did not answer: it may have run, so
+                // the person and the model are told so (#1164's review).
+                if !text.is_empty() && !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                let line = format!("Outcome unknown: {row} may have run");
+                text.push_str(&line);
+                said = Some(line);
+                State::Unknown
+            }
+            (true, None) => State::Done,
+            (false, None) => State::Nothing,
         };
+        let unknown = ran
+            .unanswered
+            .as_deref()
+            .map(|row| format!("{outcome}; {row} may have run"));
+        let outcome = unknown.as_deref().unwrap_or(outcome);
         self.log_entry(id, request, checked, how, state, outcome, ran.done);
         self.run_app_effects();
         self.showed = Showed {
@@ -429,6 +447,27 @@ impl Shell {
             .as_deref()
             .and_then(|why| why.lines().rev().find(|l| !l.trim().is_empty()))
             .unwrap_or("it failed");
+        if left.is_empty()
+            && let Some(row) = ran.unanswered.as_deref()
+        {
+            // An app took a call and did not answer: it may have run, so the
+            // person and the model are told the outcome is not known, never
+            // that nothing changed (#1164's review).
+            let what = format!("Outcome unknown: {row} may have run");
+            self.host
+                .audit(&format!("script {id} failed; {row} may have run"));
+            self.log_entry(
+                id,
+                request,
+                checked,
+                how,
+                State::Unknown,
+                &format!("failed; {row} may have run"),
+                Vec::new(),
+            );
+            let text = format!("{}\n{what}", ran.text.trim_end());
+            return (Reply::err(text), format!("{what}: {failed}"));
+        }
         if left.is_empty() {
             self.host.audit(&format!("script {id} failed; rolled back"));
             self.log_entry(
