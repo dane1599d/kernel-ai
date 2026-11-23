@@ -135,10 +135,15 @@ fn from_ring3() -> Result<(), &'static str> {
 
 pub fn check() -> Result<(), &'static str> {
     start_echo()?;
+    let handoffs = threads::handoffs();
     ipc::legs::on(true);
     let timed = from_kernel();
     ipc::legs::on(false);
     timed?;
+    log!(
+        "ipc-rtt: {} of the kernel's calls pulled the echo server onto the caller's CPU",
+        threads::handoffs() - handoffs
+    );
     from_ring3()?;
     log!("ipc-rtt: the echo server answered each size from the kernel and from ring 3");
     Ok(())

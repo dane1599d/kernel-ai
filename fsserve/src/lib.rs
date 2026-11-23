@@ -9,19 +9,27 @@
 //! - One action at a time: while one caller's is open, another's change is Busy.
 //! - A badge names an object on disk, not server state, so a restarted `fs`
 //!   serves every badge the last one minted; a badge whose object is gone finds
-//!   nothing, since object ids are never reused.
+//!   nothing, since object ids are never reused: not after a remove, a restore,
+//!   an aborted action or a restart mid-action (`kaifs::fs::OID_WINDOW`).
 //! - `..` never leaves the handle's folder: lookup is path-beneath, as cap-std's.
 
 #![no_std]
 
 extern crate alloc;
 
+#[cfg(test)]
+mod agentvol_tests;
 pub mod batch;
 mod buffer;
+mod bulk;
+#[cfg(test)]
+mod bulk_tests;
 mod lookup;
 #[cfg(test)]
 mod model_tests;
 pub mod models;
+#[cfg(test)]
+mod oid_tests;
 #[cfg(test)]
 mod tests;
 mod trash;
@@ -29,8 +37,8 @@ mod trash;
 use alloc::string::String;
 use alloc::vec::Vec;
 use fsproto::{
-    Cursor, Error, How, Kind, Listing, MAX_DATA, MAX_LIST, MAX_ROWS, Outcome, Reply, Request, Stat,
-    Version,
+    Cursor, Error, How, Kind, Listing, MAX_DATA, MAX_LIST, MAX_ROWS, MAX_SHM_DATA, Outcome, Reply,
+    Request, Stat, Version,
 };
 use kabi::fs::{
     Badge, HOME, HOME_USER, MODELS, MODELS_ROOT, SYSTEM, SYSTEM_APPS, SYSTEM_PKG, SYSTEM_RESTART,
@@ -193,13 +201,32 @@ impl<D: BlockDev> Server<D> {
     /// Mounts `dev`, or formats it when no superblock slot was ever written, then
     /// makes any missing [`FOLDERS`].
     pub fn start(mut dev: D, uuid: [u8; 16]) -> Result<(Self, Started), kaifs::Error> {
-        let (fs, started) = if blank(&mut dev)? {
+        let (mut fs, started) = if blank(&mut dev)? {
             (Fs::mkfs(dev, uuid, "kai-data")?, Started::Formatted)
         } else {
             let fs = Fs::mount(dev)?;
             let generation = fs.committed;
             (fs, Started::Mounted { generation })
         };
+        // Past every id the run before could have handed out and never
+        // committed (`kaifs::fs::OID_WINDOW`), before a volume is made. Then
+        // ADR 0013's `memory` and `index`, on a disk that lacks them; no badge
+        // names either (`Server::target`), so no client reaches them here.
+        // Until a commit saves the new counters no id goes out; a disk that
+        // cannot commit now (full, or failing writes) still starts, and
+        // `answer` tries again before the next change. A disk that needed
+        // the volumes and cannot save them does not start, as before.
+        if fs.writable() {
+            fs.skip_unsaved_oids();
+            let added = fs.add_agent_volumes()?;
+            match fs.commit() {
+                Ok(_) => {}
+                Err(e) if added > 0 => return Err(e),
+                Err(_) => {
+                    fs.abort()?;
+                }
+            }
+        }
         let base = fs.clock;
         let mut server = Server {
             fs,
@@ -398,10 +425,16 @@ impl<D: BlockDev> Server<D> {
 
     /// Answers one call; never fails, a failure is [`Reply::Failed`].
     pub fn call(&mut self, call: &Call) -> Answer {
+        self.call_shm(call, None)
+    }
+
+    /// [`Server::call`] with the `Shm` the request moved in, mapped read-write:
+    /// what [`Request::ReadShm`] fills and [`Request::WriteShm`] takes from.
+    pub fn call_shm(&mut self, call: &Call, shm: Option<&mut [u8]>) -> Answer {
         let now = self.base.saturating_add(call.now);
         let fs = self.fs();
         fs.clock = fs.clock.max(now);
-        let (reply, mint) = match self.answer(call) {
+        let (reply, mint) = match self.answer(call, shm) {
             Ok(done) => done,
             Err(error) => (Reply::Failed(error), None),
         };
@@ -411,18 +444,21 @@ impl<D: BlockDev> Server<D> {
         }
     }
 
-    /// Between calls, never inside an action: when space is low, retention drops
-    /// the expired undo snapshots and up to [`DROP_PER_PASS`] of the oldest
-    /// (kaifs's space rule), then the GC frees what they held: a slice of it, or
-    /// while space is low the whole pass, since a writer that never pauses would
-    /// otherwise outrun it. `now` is the time in ns, as [`Call::now`].
+    /// Between calls, never inside an action: when space is low or an undo
+    /// snapshot has expired (`memory`'s live an hour), retention drops the
+    /// expired undo snapshots and, while space is low, up to [`DROP_PER_PASS`]
+    /// of the oldest (kaifs's space rule), then the GC frees what they held: a
+    /// slice of it, or while space is low the whole pass, since a writer that
+    /// never pauses would otherwise outrun it. `now` is the time in ns since
+    /// boot, as [`Call::now`]; expiry is on the filesystem's clock.
     pub fn idle(&mut self, now: u64) {
         self.reap();
         if self.owner.is_some() {
             return;
         }
+        let now = self.base.saturating_add(now);
         let fs = self.fs();
-        if !fs.writable() || !(fs.gc_running() || fs.space_low()) {
+        if !fs.writable() || !(fs.gc_running() || fs.space_low() || fs.expiry_due(now)) {
             return;
         }
         let stepped = (|| {
@@ -453,7 +489,11 @@ impl<D: BlockDev> Server<D> {
         }
     }
 
-    fn answer(&mut self, call: &Call) -> Result<(Reply, Option<Mint>), Error> {
+    fn answer(
+        &mut self,
+        call: &Call,
+        shm: Option<&mut [u8]>,
+    ) -> Result<(Reply, Option<Mint>), Error> {
         // `/system/settings` and `/system/state/restart` are read only through
         // their fixed badges, whatever rights the handle carries: nothing they
         // open gets more than READ and ENUMERATE either.
@@ -483,7 +523,7 @@ impl<D: BlockDev> Server<D> {
             self.cache = None;
         }
         match request {
-            Request::Write { .. } => {}
+            Request::Write { .. } | Request::WriteShm { .. } => {}
             Request::Abort if self.owner == Some(call.caller) => self.pending = None,
             _ => self.write_out()?,
         }
@@ -491,8 +531,22 @@ impl<D: BlockDev> Server<D> {
         if changes && self.owner.is_some_and(|o| o != call.caller) {
             return Err(Error::Busy);
         }
+        // Counters an abort or the start's skip moved are saved before the
+        // next change outside an action, so ids go out again (a commit that
+        // fails leaves them refused, and the change then fails as it would).
+        if changes && self.owner.is_none() && self.fs.oids_unsaved() && self.fs.is_clean() {
+            let _ = self.commit();
+        }
         let in_action = self.owner.is_some();
-        let done = self.dispatch(call, &target, request);
+        let done = match request {
+            Request::ReadShm { off, len } => self
+                .read_shm(call, &target, off, len, shm)
+                .map(|r| (r, None)),
+            Request::WriteShm { off, len } => self
+                .write_shm(call, &target, off, len, shm)
+                .map(|r| (r, None)),
+            request => self.dispatch(call, &target, request),
+        };
         match done {
             // A change outside an action is durable before it is answered.
             Ok((reply, mint)) if changes && !in_action && self.owner.is_none() => {
@@ -782,6 +836,8 @@ impl<D: BlockDev> Server<D> {
             Request::SealedFinish => self.sealed_finish(call, target)?,
             Request::ModelHint { name } => self.model_hint(call, target, name.as_deref())?,
             Request::ModelInfo { name } => self.model_info(call, target, &name)?,
+            // `answer` takes these with their `Shm` (`bulk.rs`).
+            Request::ReadShm { .. } | Request::WriteShm { .. } => return Err(Error::Invalid),
         };
         Ok((reply, None))
     }
@@ -1006,7 +1062,8 @@ fn changes(request: &Request) -> bool {
         | Request::SealedBegin { .. }
         | Request::SealedPush { .. }
         | Request::SealedFinish
-        | Request::ModelHint { .. } => true,
+        | Request::ModelHint { .. }
+        | Request::WriteShm { .. } => true,
         Request::Stat
         | Request::List { .. }
         | Request::Read { .. }
@@ -1015,7 +1072,8 @@ fn changes(request: &Request) -> bool {
         | Request::Df
         | Request::Generation
         | Request::TrashList { .. }
-        | Request::ModelInfo { .. } => false,
+        | Request::ModelInfo { .. }
+        | Request::ReadShm { .. } => false,
     }
 }
 

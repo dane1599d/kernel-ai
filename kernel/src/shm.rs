@@ -205,7 +205,9 @@ pub fn create(slot: usize, pages: u64) -> Result<u64, Error> {
 }
 
 /// SHM_MAP: maps the object `raw` names in `slot`'s space; returns its address.
-pub fn map(slot: usize, raw: u64, write: bool) -> Result<u64, Error> {
+/// Invalid when the object holds fewer than `min_pages` pages, so a server
+/// that will touch that many never faults on a short one (0: no check).
+pub fn map(slot: usize, raw: u64, write: bool, min_pages: u64) -> Result<u64, Error> {
     let handle = Handle(u32::try_from(raw).map_err(|_| Error::BadHandle)?);
     let mut rights = Rights::MAP | Rights::READ;
     if write {
@@ -213,7 +215,24 @@ pub fn map(slot: usize, raw: u64, write: bool) -> Result<u64, Error> {
     }
     let entry = handle::with(slot, |h| h.table.check(handle, Kind::Shm, rights, &Kernel))?
         .map_err(Error::from)?;
+    if min_pages > 0 && pages_of(&entry)? < min_pages {
+        return Err(Error::Invalid);
+    }
     map_entry(slot, &entry, write)
+}
+
+/// How many pages the object `entry` names holds.
+fn pages_of(entry: &Entry) -> Result<u64, Error> {
+    let (index, generation) = unpack(entry.object);
+    with(|objects| {
+        objects
+            .objects
+            .get(index)
+            .and_then(Option::as_ref)
+            .filter(|o| o.generation == generation)
+            .map(|o| o.frames.len() as u64)
+            .ok_or(Error::BadHandle)
+    })
 }
 
 /// Maps the object `entry` names, for a holder whose handle was already checked.
@@ -257,6 +276,27 @@ pub fn map_entry(slot: usize, entry: &Entry, write: bool) -> Result<u64, Error> 
     // A revoke that ran between the check and the mapping finds it now.
     on_revoke();
     Ok(address)
+}
+
+/// SHM_INFO: how many pages the object `raw` names in `slot`'s table holds,
+/// for a holder that must know its size before it trusts a mapping (cc's
+/// request `Shm`). Needs INSPECT on the handle.
+pub fn info(slot: usize, raw: u64) -> Result<u64, Error> {
+    let handle = Handle(u32::try_from(raw).map_err(|_| Error::BadHandle)?);
+    let entry = handle::with(slot, |h| {
+        h.table.check(handle, Kind::Shm, Rights::INSPECT, &Kernel)
+    })?
+    .map_err(Error::from)?;
+    let (index, generation) = unpack(entry.object);
+    with(|objects| {
+        objects
+            .objects
+            .get(index)
+            .and_then(Option::as_ref)
+            .filter(|o| o.generation == generation)
+            .map(|o| o.frames.len() as u64)
+            .ok_or(Error::BadHandle)
+    })
 }
 
 /// SHM_UNMAP: removes `slot`'s mapping that starts at `address`.

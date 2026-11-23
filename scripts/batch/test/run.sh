@@ -39,7 +39,7 @@ mkpr() {  # n branch base files...
 }
 
 setup() {
-  rm -rf "$T/origin.git" "$T/work" "$T/prs" "$T/state" "$T"/kill-* "$T/fluency-dispatches" "$T/list-fails"
+  rm -rf "$T/origin.git" "$T/work" "$T/prs" "$T/state" "$T"/kill-* "$T/fluency-dispatches" "$T/list-fails" "$T/others" "$T/others-fail"
   git init -q --bare "$T/origin.git"
   git -C "$T/origin.git" symbolic-ref HEAD refs/heads/main
   git clone -q "$T/origin.git" "$T/work" 2>/dev/null
@@ -124,6 +124,86 @@ printf 'phase=pushed\nname=\nbase=x\nc=y\nbpr=\nprs=1\nheads_s=x\nbrs_s=feat/a\n
 : > "$T/gh.log"; ff --resume
 check "no batch branch: stopped"              'has "names no batch branch; STOPPING" && [ ! -f "$T/state/current-batch" ]'
 check "and no run was listed or cancelled"    '! grep -q "run " "$T/gh.log"'
+
+echo "== noboot.sh: every arm of the rule"
+# A repo of its own: each case is one commit on a branch from `base`, judged
+# by noboot.sh as CI judges a batch (exit 0 no-boot, 1 needs boot, 2 unreadable).
+RT="$T/rule"
+rm -rf "$RT"; git init -q "$RT"
+mkdir -p "$RT/crate/src" "$RT/apps/x/src" "$RT/kernel/src" "$RT/docs"
+for f in crate/Cargo.toml apps/x/Cargo.toml kernel/Cargo.toml Cargo.lock kernel/src/a.rs docs/inc.md; do echo x > "$RT/$f"; done
+printf 'const D: &str = include_str!("../../docs/inc.md");\n' > "$RT/crate/src/lib.rs"
+git -C "$RT" add -A && git -C "$RT" commit -qm base && git -C "$RT" branch -q base
+rule() {  # $1 expected exit, $2 description, then paths to write
+  local want=$1 what=$2 got; shift 2
+  git -C "$RT" checkout -q -B case base
+  for f in "$@"; do mkdir -p "$RT/$(dirname "$f")"; echo y >> "$RT/$f"; done
+  git -C "$RT" add -A && git -C "$RT" commit -qm case
+  (cd "$RT" && bash "$B/noboot.sh" base case > /dev/null); got=$?
+  check "$what (exit $want)" '[ "$got" = "$want" ]'
+}
+rule 0 "a doc under docs/"                    docs/plan.md
+rule 0 "a .md at the root"                    README.md
+rule 1 "a doc a .rs include_str!s"            docs/inc.md
+rule 1 "a .md under a component's src/"       apps/x/src/notes.md
+rule 0 "a crate's tests/ beside Cargo.toml"   crate/tests/t.rs
+rule 1 "a tests/ with no Cargo.toml beside"   loose/tests/t.rs
+rule 1 "a src/tests/ module"                  crate/src/tests/t.rs
+rule 0 "testkit/"                             testkit/h.rs
+rule 0 "a script outside scripts/batch"       scripts/tool.sh
+rule 1 "the batcher or its rule"              scripts/batch/noboot.sh
+rule 0 "another workflow"                     .github/workflows/other.yml
+rule 1 "ci.yml"                               .github/workflows/ci.yml
+rule 1 "a CI action"                          .github/actions/qemu/action.yml
+rule 0 "an xtask tool no boot run calls"      xtask/src/tokens.rs
+rule 1 "xtask's runner"                       xtask/src/main.rs
+rule 1 "Cargo.lock"                           Cargo.lock
+rule 1 "kernel code"                          kernel/src/a.rs
+rule 1 "a doc and kernel code together"       docs/plan.md kernel/src/b.rs
+git -C "$RT" checkout -q -B case base && git -C "$RT" mv kernel/src/a.rs docs/a.md && git -C "$RT" commit -qm rename
+(cd "$RT" && bash "$B/noboot.sh" base case > /dev/null); got=$?
+check "a rename counts its old name (exit 1)"  '[ "$got" = 1 ]'
+git -C "$RT" checkout -q -B parent base && echo z >> "$RT/kernel/src/a.rs" && git -C "$RT" commit -qam parent
+git -C "$RT" checkout -q -b child && echo z > "$RT/docs/child.md" && git -C "$RT" add -A && git -C "$RT" commit -qm child
+(cd "$RT" && bash "$B/noboot.sh" base child > /dev/null); got=$?
+check "a docs PR stacked on a kernel PR (exit 1)" '[ "$got" = 1 ]'
+(cd "$RT" && bash "$B/noboot.sh" base no-such-rev > /dev/null 2>&1); got=$?
+check "unreadable revisions (exit 2)"          '[ "$got" = 2 ]'
+
+echo "== another workflow still running, or unlisted, is not green"
+setup
+echo "kaifs=in_progress" > "$T/others"
+ff 1
+check "unfinished: CI did not finish"         'has "a workflow did not finish" && has "CI did not finish (another workflow); STOPPING" && ! has "#1: MERGED" && [ -s "$T/prs/1/labels" ]'
+rm -f "$T/others"; touch "$T/others-fail"
+ff 1
+check "unlisted: CI did not finish"           'has "the workflow listing failed" && has "CI did not finish (another workflow)" && ! has "#1: MERGED"'
+rm -f "$T/others-fail"; : > "$T/others"
+ff 1
+check "no other workflow at all: lands"       'has "  #1: MERGED"'
+
+echo "== a no-boot batch takes only PRs the boot jobs cannot see"
+setup
+mkpr 8 feat/doc main docs/x.md
+mkpr 9 feat/tool main scripts/y.sh
+git -C "$T/work" checkout -q --detach origin/main
+: > "$T/gh.log"
+bash "$B/batch-ff.sh" --noboot 1 8 9 > "$T/out" 2>&1
+check "a boot PR is left out, label kept"     'has "#1 changes what the boot jobs check; left out of a no-boot batch" && [ -s "$T/prs/1/labels" ]'
+check "the others land on a noboot branch"    'has "  #8: MERGED" && has "  #9: MERGED" && grep -q "pr create .*--head batch/noboot-" "$T/gh.log"'
+
+echo "== batch-auto.sh: no-boot PRs go first, then a full batch"
+setup
+mkpr 8 feat/doc main docs/x.md
+mkpr 9 feat/tool main scripts/y.sh
+git -C "$T/work" checkout -q --detach origin/main
+for n in 2 3 4 5 7; do : > "$T/prs/$n/labels"; done
+bash "$B/batch-auto.sh" > /dev/null & A=$!
+for i in $(seq 1 120); do grep -q "#1 merged" "$T/state/batch-auto.log" 2>/dev/null && break; /bin/sleep 1 2>/dev/null || /usr/bin/sleep 1; done
+touch "$T/state/batch-auto.stop"; wait $A
+L="$T/state/batch-auto.log"
+check "the no-boot PRs batch first"           'grep -q "no-boot batch: 8 9" "$L" && grep -q "#8 merged" "$L"'
+check "then the boot PR in a full batch"      'grep -q "batch: 1$" "$L" && grep -q "#1 merged" "$L"'
 
 echo "== batch-auto.sh resumes an unfinished batch first"
 setup

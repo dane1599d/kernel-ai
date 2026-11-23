@@ -127,6 +127,18 @@ fn answer(
     if !is_shm {
         return refusal("a request brings an Shm, not another kind");
     }
+    // The slice below is `shm::BYTES` long: a shorter Shm, or one whose size
+    // cc may not read (SHM_INFO needs INSPECT), is refused before the map.
+    match sys::shm_info(shm) {
+        Ok(pages) if shm::holds_bytes(pages) => {}
+        Ok(pages) => {
+            return refusal(&format!(
+                "a request's Shm holds {pages} pages, and cc needs {}",
+                shm::PAGES
+            ));
+        }
+        Err(error) => return refusal(&format!("cc cannot read the Shm's size: {error:?}")),
+    }
     let write = ccserve::writes_shm(request);
     let address = match sys::shm_map(shm, write) {
         Ok(address) => address,
@@ -136,14 +148,12 @@ fn answer(
         }
     };
     // SAFETY: the kernel mapped the Shm at `address`, read-write only when
-    // `write`, in a slot of its own (`kabi::layout::SHM_SLOT`, 1 GiB), and the
-    // shell makes it `shm::BYTES` long. Past a shorter one's pages the slot is
-    // unmapped, so it faults cc and reaches no other memory. The shell maps it
-    // too, but it is blocked in `call_h` until this reply, and cc copies the
-    // bundle or artifact out before it reads it all the same (`shm::serve`,
+    // `write`, in a slot of its own (`kabi::layout::SHM_SLOT`, 1 GiB), and
+    // SHM_INFO showed it holds at least `shm::BYTES`. The shell maps it too,
+    // but it is blocked in `call_h` until this reply, and cc copies the bundle
+    // or artifact out before it reads it all the same (`shm::serve`,
     // `trial::serve`). The slice is mutable only when the mapping is, and is
     // not used after the unmap.
-    // TODO: refuse a short Shm once HANDLE_INFO reports an Shm's pages.
     let mapped = match write {
         true => {
             Shm::Write(unsafe { core::slice::from_raw_parts_mut(address as *mut u8, shm::BYTES) })

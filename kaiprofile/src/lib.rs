@@ -10,8 +10,9 @@
 //! ```
 //!
 //! A line names its target, then `class` (`normal` or `background`, the classes
-//! policy's two that PROC_CLASS_SET takes), `mem` (a page quota, or `-` to leave
-//! it as it is) and `gpu`, reserved: anything but 0 is refused until GPU support
+//! policy's two that PROC_CLASS_SET takes), `mem` (a page quota ceiling, or `-`
+//! to leave it as it is: a switch lowers a quota above it and never raises one,
+//! #517) and `gpu`, reserved: anything but 0 is refused until GPU support
 //! (P7+). Targets are `app <name>`, `group <name> members=<a>+<b>` (a member may
 //! end in `*`), `focused` (the app with focus) and `others` (every app the
 //! profile names no other way). Profiles never name the shell, the supervisor,
@@ -43,7 +44,7 @@ pub const MAX_LINES: usize = 64;
 pub const MAX_LINE: usize = 200;
 /// The lowest page quota PROC_QUOTA_SET takes.
 pub const MIN_PAGES: u64 = 64;
-/// The page quota `quiet` gives every app: 64 MiB.
+/// The most page quota `quiet` leaves any app: 64 MiB.
 pub const QUIET_PAGES: u64 = 16_384;
 /// The processes a profile may never name; the kernel protects them too.
 pub const PROTECTED: [&str; 4] = ["shell", "supervisor", "llm", "desktop"];

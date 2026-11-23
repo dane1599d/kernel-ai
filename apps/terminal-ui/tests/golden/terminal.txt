@@ -1,0 +1,32 @@
+node 0 clip 0,0 800x520
+  fill 0,0 800x520 window r0
+node 1004 clip 0,0 800x479
+  text 10,10 mono dim "Kernel AI terminal. Talk to the AI or type Rhai (try help). Kernel commands that start"
+  text 10,30 mono dim "with ':' run on the console (Ctrl+Alt+F12)."
+node 1009 clip 0,0 800x479
+  text 10,50 mono accent "kai> "
+node 1010 clip 0,0 800x479
+  text 50,50 mono text "ls"
+node 1012 clip 0,0 800x479
+  text 10,70 mono text "= docs/  notes.txt  photo.png"
+node 1017 clip 0,0 800x479
+  text 10,90 mono accent "kai> "
+node 1018 clip 0,0 800x479
+  text 50,90 mono text "open notes"
+node 1019 clip 0,0 800x479
+  text 727,90 small dim "by the AI"
+node 1020 clip 0,0 800x479
+  text 10,110 mono text "= opened Notes"
+node 6 clip 0,0 800x479
+  text 10,136 small muted "kai>"
+  fill 10,156 780x28 desk r4
+  stroke 10,156 780x28 line_strong w1 r4
+  clip 11,157 778x26
+  text 20,160 body dim "Type a command, or ask the AI"
+  unclip
+node 9 clip 0,0 800x520
+  text 8,484 small muted "Ready · 5 rows"
+node 10 clip 0,0 800x520
+  fill 732,484 60x28 raised r4
+  stroke 732,484 60x28 line_strong w1 r4
+  text 742,489 label text "Clear"

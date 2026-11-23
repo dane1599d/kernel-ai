@@ -417,3 +417,86 @@ fn a_window_with_only_buttons_focuses_nothing() {
     w.input(Input::FocusIn, &M);
     assert_eq!(w.focus_node(), None);
 }
+
+/// A list of `n` rows in a window 120 px tall, ids 10.. for its rows.
+fn list(n: u32) -> Window {
+    let mut w = Window::new("l", 200, 120);
+    w.put(
+        1,
+        ROOT,
+        Layout::FILL,
+        Widget::ItemList {
+            label: s("Notes"),
+            selected: None,
+        },
+    )
+    .unwrap();
+    for i in 0..n {
+        w.put(10 + i, 1, Layout::FIT, label(&format!("row {i}")))
+            .unwrap();
+    }
+    w
+}
+
+fn wheel(w: &mut Window, at: Point, dy: i32) {
+    w.input(Input::Wheel { at, dy }, &M);
+}
+
+fn bounds(w: &mut Window, id: u32) -> Rect {
+    w.commit(&M)
+        .a11y
+        .iter()
+        .find(|n| n.id == id)
+        .unwrap()
+        .bounds
+}
+
+#[test]
+fn the_wheel_scrolls_a_list_longer_than_its_box_and_stops_at_its_ends() {
+    let mut w = list(20);
+    // The third row, which a step moves up and does not take out of the box.
+    let first = bounds(&mut w, 12);
+    wheel(&mut w, Point::new(20, 20), 1);
+    let moved = bounds(&mut w, 12);
+    assert_eq!(moved.y, first.y - uikit::style::metric::WHEEL_STEP);
+    // Up from the top does nothing; far down stops with the last row inside.
+    wheel(&mut w, Point::new(20, 20), -5);
+    assert_eq!(bounds(&mut w, 12), first);
+    wheel(&mut w, Point::new(20, 20), 100);
+    let last = bounds(&mut w, 29);
+    assert!(last.bottom() < 120, "{last:?}");
+    assert!(last.bottom() >= 120 - 3, "{last:?}");
+    wheel(&mut w, Point::new(20, 20), 1);
+    assert_eq!(bounds(&mut w, 29), last);
+}
+
+#[test]
+fn a_short_list_does_not_move_and_a_click_hits_the_row_under_it_once_scrolled() {
+    let mut w = list(2);
+    let before = bounds(&mut w, 11);
+    wheel(&mut w, Point::new(20, 20), 3);
+    assert_eq!(bounds(&mut w, 11), before);
+    let mut w = list(20);
+    wheel(&mut w, Point::new(20, 20), 2);
+    let row = bounds(&mut w, 15);
+    let at = Point::new(row.x + 4, row.y + row.h / 2);
+    let heard = click(&mut w, at);
+    assert!(
+        heard.contains(&UiEvent::Changed(1, Value::Index(5))),
+        "{heard:?}"
+    );
+}
+
+#[test]
+fn the_keys_keep_the_selected_row_in_view_of_a_list() {
+    let mut w = list(20);
+    w.act(1, Action::Focus, None, &M).unwrap();
+    for _ in 0..12 {
+        w.input(key(Key::Down), &M);
+    }
+    // Twelve Downs from nothing selected: the twelfth row.
+    let row = bounds(&mut w, 21);
+    assert!(row.y >= 1 && row.bottom() <= 119, "{row:?}");
+    let first = bounds(&mut w, 10);
+    assert!(first.is_empty() || first.y < 0, "{first:?}");
+}

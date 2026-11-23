@@ -334,6 +334,7 @@ fn a_source_line_in_another_entry_does_not_make_a_main_c_kai_s() {
         crate::appbuild::sha256(mine)
     );
     shell.log.push(crate::actlog::Entry {
+        agent: agentid::Name::kai(),
         id: 90,
         t_ns: 0,
         form: crate::actlog::Form::Call,

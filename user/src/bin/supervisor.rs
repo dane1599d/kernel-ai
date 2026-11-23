@@ -471,9 +471,11 @@ fn retry(app: &str, request: &str, reply: &mut [u8], deadline: u64) -> Result<us
     }
 }
 
-/// `profile <pid> <class> <pages|->`, from the shell only: the class, then the
-/// quota; what the process had before. A quota the kernel refuses puts the
-/// class back, so a refused request changes nothing.
+/// `profile <pid> <class> <pages|-> [cap]`, from the shell only: the class, then
+/// the quota; what the process had before. With `cap` the quota is only ever
+/// lowered (#517), and one left as it was answers `-`, so undo leaves it too. A
+/// quota the kernel refuses puts the class back, so a refused request changes
+/// nothing.
 fn set_profile(
     services: &[Service],
     classes: &mut Vec<(u64, u64)>,
@@ -497,7 +499,8 @@ fn set_profile(
     }
     let pages_before = match set.pages {
         None => None,
-        Some(pages) => match sys::proc_quota_set(set.pid, pages) {
+        Some(pages) => match quota(set.pid, pages, set.cap) {
+            Ok(old) if set.cap && old <= pages => None,
             Ok(old) => Some(old),
             Err(error) => {
                 let _ = sys::proc_class_set(set.pid, class_before);
@@ -512,7 +515,16 @@ fn set_profile(
         pid: set.pid,
         class: class_before,
         pages: pages_before,
+        cap: false,
     })
+}
+
+/// The quota set, or with `cap` only lowered; the old one.
+fn quota(pid: u64, pages: u64, cap: bool) -> Result<u64, kabi::Error> {
+    match cap {
+        true => sys::proc_quota_lower(pid, pages),
+        false => sys::proc_quota_set(pid, pages),
+    }
 }
 
 /// A `ONCE` or a rule, checked through the kernel; any other proof needs no call.

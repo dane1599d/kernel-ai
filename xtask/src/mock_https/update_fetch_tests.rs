@@ -15,7 +15,7 @@ use crate::image::update_disk::{Stamp, test_root};
 use bootslot::{Nv, Reason, Record, Slot, SlotState};
 use kainet::chunks::{CHUNK, Chunks, MAX_LIST};
 use kainet::client::{self, Wall};
-use kainet::http::{Dial, HttpError, TlsConnect, Url};
+use kainet::http::{Dial, HttpError, Keep, TlsConnect, Url};
 use kaipkg::memvol::MemVolume;
 use kaipkg::mirror::{TUF_DIR, TufCache};
 use kaipkg::online::{Hosts, Online};
@@ -61,10 +61,16 @@ fn hex(bytes: &[u8]) -> String {
 
 struct Local(u16);
 
+thread_local! {
+    /// TCP connections this test's thread opened to the mock.
+    static DIALS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
 impl Dial for Local {
     type Transport = Tcp;
 
     fn dial(&mut self, _: &str, _: u16) -> Result<Tcp, HttpError> {
+        DIALS.with(|dials| dials.set(dials.get() + 1));
         let stream = TcpStream::connect(("127.0.0.1", self.0))
             .map_err(|_| HttpError::Connect("the mock refused"))?;
         stream
@@ -152,7 +158,9 @@ impl Published {
     }
 }
 
-fn online(mock: &Mock) -> Online<'static, TlsConnect<Local>> {
+/// The repository as `updated` reaches it, its connections kept between
+/// requests, one a host.
+fn online(mock: &Mock) -> Online<'static, Keep<TlsConnect<Local>>> {
     let mut roots = RootCertStore::empty();
     roots.add(CertificateDer::from(mock.ca().to_vec())).unwrap();
     let wall = Wall {
@@ -160,10 +168,10 @@ fn online(mock: &Mock) -> Online<'static, TlsConnect<Local>> {
         floor_s: client::FLOOR_S,
     };
     let config = client::config(pki::provider(), roots, Arc::new(wall)).unwrap();
-    let connect = TlsConnect {
+    let connect = Keep::new(TlsConnect {
         config,
         dial: Local(mock.port),
-    };
+    });
     Online::new(hosts(), connect, &|| 0, REQUEST_NS)
 }
 
@@ -336,9 +344,15 @@ fn the_release_streams_in_through_the_redirect_and_becomes_a_trial_slot() {
     let published = Published::standard();
     let mock = published.serve();
     let mut device = Device::new(&published, SEQ - 1);
+    DIALS.with(|dials| dials.set(0));
     let staged = run(&mock, &mut device).unwrap();
     assert_eq!((staged.slot, staged.release_seq), (Slot::B, SEQ));
     assert_eq!(staged.report.fetched, 6);
+    // Kept connections, one a host: the metadata's, the releases host's and
+    // the assets host's for the list and all six chunks, and the recheck's
+    // own. Each chunk had cost two TLS connections.
+    let dials = DIALS.with(|dials| dials.get());
+    assert_eq!(dials, 4, "TCP connections for the whole update");
     assert_eq!(device.written(), &published.image[..]);
     // The slot was marked Updating before it was written, and is a trial last.
     assert_eq!(device.var.0.len(), 2);

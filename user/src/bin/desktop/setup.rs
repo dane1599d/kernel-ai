@@ -48,7 +48,7 @@ pub(super) fn logs_first_key() -> bool {
 pub(super) fn starting_appearance() -> Appearance {
     let args = user::args();
     let mut chosen = Appearance::default();
-    for setting in appearance::SETTINGS {
+    for setting in appearance::FILE_SETTINGS {
         let Some(value) = user::arg(&args, setting) else {
             continue;
         };

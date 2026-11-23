@@ -19,6 +19,7 @@ pub(crate) const BAR: Bar = Bar {
     model: true,
     mem_used_mib: 412,
     utc_s: None,
+    zone_min: 0,
 };
 
 fn paint(name: &str, desk: &Desk, w: i32, h: i32) -> String {
@@ -85,7 +86,7 @@ fn two_windows_paint() {
     paint("two", &desk, 1280, 800);
 }
 
-/// `desk-boot`'s golden (xtask/src/cases/kernel.rs): the empty desk at
+/// `desk-boot`'s golden (xtask/src/cases/kernel/desk.rs): the empty desk at
 /// 1280x800 with the cursor in the middle, as `desktop` first draws it on GOP,
 /// its RGB bytes hashed with the tray blanked. The boot's screendump
 /// must hash the same.

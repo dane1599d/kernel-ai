@@ -212,14 +212,13 @@ fn main() -> i32 {
     // Whether the `act` prefix changed (a remembered turn, `new`): compacted,
     // that is computed again, while no request waits.
     let mut stale = true;
-    // Interim (S10-3): the slots' prefixes from last boot's KV files; a slot
-    // that did not come back is saved once its warm-up finishes.
-    let (mut save_act, mut save_script) = match &mut backends.local {
-        Some(Ok(local)) => {
-            let (act, script) = local.restore();
-            (!act, !script)
-        }
-        _ => (false, false),
+    // Interim (S10-3): the slots' prefixes from last boot's KV files. The
+    // script slot that did not come back is saved once its warm-up finishes;
+    // the act slot's file is written whenever its prefix, with no
+    // conversation in it, differs from the file (`Local::act_file_due`).
+    let mut save_script = match &mut backends.local {
+        Some(Ok(local)) => !local.restore().1,
+        _ => false,
     };
     loop {
         let mut caller = RecvInfo::default();
@@ -235,7 +234,7 @@ fn main() -> i32 {
             Some(local) if stale => {
                 let came = warm_act(local, &mut request, &mut caller);
                 stale = came.is_some();
-                if !stale && core::mem::take(&mut save_act) {
+                if !stale && local.act_file_due() {
                     local.save(local::SLOTS.act);
                 }
                 came
@@ -257,7 +256,13 @@ fn main() -> i32 {
         // Both slots are warm and no request waits: an agent's job may run, and gives
         // way to the next request that comes.
         let waiting = match waiting {
-            None => run_agent_job(&mut backends, &mut request, &mut caller, &mut cold),
+            None => run_agent_job(
+                &mut backends,
+                &mut request,
+                &mut caller,
+                &mut cold,
+                &mut stale,
+            ),
             came => came,
         };
         let len = match waiting.map_or_else(|| recv(&mut request, 0, &mut caller), Ok) {
@@ -336,7 +341,7 @@ fn main() -> i32 {
             },
             _ => match handle(&mut backends, text, &mut response) {
                 Ok(text) => format!("ok {text}"),
-                Err(error) => format!("err {}", printable(&error, MAX_ERROR_CHARS, 1)),
+                Err(error) => format!("err {}", script::error_line(&error, MAX_ERROR_CHARS)),
             },
         };
         // The character cap can still exceed the kernel's message size in bytes.
@@ -410,21 +415,12 @@ fn agent_command(backends: &mut Backends, caller: Caller, text: &str) -> String 
         Err(why) => return format!("err {}", printable(&why, MAX_ERROR_CHARS, 1)),
     };
     let (prompt, max_new) = match command {
-        // An agent's call would read the person's conversation and take the act
-        // slot: it comes with the scheduler's quanta (slice 2b).
-        jobs::Command::Start {
-            kind: jobs::Kind::Act,
-            ..
-        } => {
-            return String::from(
-                "err an agent's act requests are not served yet; send script or ask",
-            );
-        }
         jobs::Command::Start { kind, request } => (
             u32::try_from(request.len() / 3 + 1).unwrap_or(u32::MAX),
             match kind {
+                jobs::Kind::Act => AGENT_ACT_TOKENS,
                 jobs::Kind::Ask => AGENT_ASK_TOKENS,
-                _ => AGENT_SCRIPT_TOKENS,
+                jobs::Kind::Script => AGENT_SCRIPT_TOKENS,
             },
         ),
         _ => (0, 0),
@@ -434,7 +430,9 @@ fn agent_command(backends: &mut Backends, caller: Caller, text: &str) -> String 
         .handle(caller, command, prompt, max_new, now())
 }
 
-/// The most an agent's `ask` and `script` answers are counted at before they run.
+/// The most an agent's `act`, `ask` and `script` answers are counted at before they
+/// run.
+const AGENT_ACT_TOKENS: u32 = 256;
 const AGENT_ASK_TOKENS: u32 = 512;
 const AGENT_SCRIPT_TOKENS: u32 = 1024;
 /// How often an agent's job looks for a request that came: the person waits at
@@ -450,6 +448,7 @@ fn run_agent_job(
     request: &mut [u8],
     caller: &mut RecvInfo,
     cold: &mut bool,
+    stale: &mut bool,
 ) -> Option<usize> {
     let (ticket, job) = backends.jobs.next_job()?;
     let (kind, queued) = (job.kind, job.queued?);
@@ -469,10 +468,13 @@ fn run_agent_job(
     let answer = match kind {
         jobs::Kind::Script => agent_script(backends, &text, &mut response, &mut stop),
         jobs::Kind::Ask => agent_ask(backends, &text, &mut response, &mut stop),
-        jobs::Kind::Act => Err(String::from("an agent's act requests are not served yet")),
+        jobs::Kind::Act => agent_act(backends, &text, &mut response, &mut stop),
     };
-    // The script slot held the agent's prompt: it is warmed again first.
+    // The script slot held the agent's prompt: it is warmed again first. An agent's
+    // call also took the act slot, with no conversation: the person's act prefix and
+    // history are computed again before their next request.
     *cold |= local;
+    *stale |= local && kind == jobs::Kind::Act;
     if came.is_some() {
         return came;
     }
@@ -485,6 +487,26 @@ fn run_agent_job(
     }
     backends.jobs.finish(queued, reply);
     None
+}
+
+/// An agent's `act` job: one tagged call, decoded with no conversation, never the
+/// person's (on a server too), with `stop` on the local model.
+fn agent_act(
+    backends: &mut Backends,
+    text: &str,
+    response: &mut [u8],
+    stop: &mut dyn FnMut() -> bool,
+) -> Result<String, String> {
+    let request = ActRequest::decode(text).ok_or("malformed act request")?;
+    let answer = match (&mut backends.local, &backends.server) {
+        (Some(Ok(local)), _) => local.act_until(&request, local::Whose::Agent, stop),
+        (_, Some(server)) => server.act(&request, &History::new(), response),
+        (Some(Err(why)), None) => Err(ActError::Unavailable(format!(
+            "the model cannot run ({why})"
+        ))),
+        (None, None) => Err(ActError::Unavailable(String::from(NO_MODEL))),
+    };
+    Ok(llmproto::act::encode_answer(&answer))
 }
 
 /// An agent's `script` job: [`script`], with `stop` on the local model.
@@ -531,8 +553,10 @@ fn run_job(
     request: &mut [u8],
 ) {
     let mut caller = 0;
+    // 1 ms: a timeout of 0 is the kernel's longest wait (60 s), which held
+    // the round at each check until a request came, so it never finished.
     let answer = local.script_until(asked, || {
-        let Ok(len) = sys::svc_recv(request, 0, &mut caller) else {
+        let Ok(len) = sys::svc_recv(request, 1, &mut caller) else {
             return false;
         };
         let text = core::str::from_utf8(&request[..len.min(request.len())]).unwrap_or("");
@@ -547,7 +571,7 @@ fn run_job(
         Ok(answer) => format!("ok {}", script::encode_answer(&answer)),
         Err(error) => format!(
             "err {}",
-            printable(&script::encode_error(&error), MAX_ERROR_CHARS, 1)
+            script::error_line(&script::encode_error(&error), MAX_ERROR_CHARS)
         ),
     };
     jobs.finish(ticket, reply);

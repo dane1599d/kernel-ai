@@ -44,6 +44,12 @@ pub fn check() -> Result<(), &'static str> {
     let row = time(Rect::new(0, height / 2, width, console::cell().1 as u32))?;
     log!("display: flush timing, mean of {FLUSHES}: full screen {full} us, one text row {row} us");
     if kind == Kind::VirtioGpu {
+        // A virtual screen's size is unknown, whatever QEMU's EDID says: the
+        // desktop's scale goes by the width.
+        if display::size_mm() != (0, 0) {
+            return Err("display: virtio-gpu reports a size in mm");
+        }
+        log!("display: virtio-gpu size in mm is unknown (0 x 0)");
         display::set_cursor(cursor_pixel, (0, 0), CURSOR_AT)?;
         log!("display: cursor set at {} {}", CURSOR_AT.0, CURSOR_AT.1);
         display::move_cursor(CURSOR_TO)?;

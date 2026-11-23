@@ -1,7 +1,7 @@
 //! `desktop`, the compositor (ADR 0005 §1, P3 task 6): it claims the screen,
 //! serves `kai-surface 1` to its clients, and draws their windows with
-//! `deskcore`'s rules, painted by `deskcore::paint` on `gfx2d` in Ember
-//! Workbench's tokens and type.
+//! `deskcore`'s rules, painted by `deskcore::paint` on `gfx2d` in the theme's
+//! tokens and type.
 //!
 //! - A client calls the `desktop` service with a run of `surfabi` messages; the
 //!   reply carries the events waiting for it. `pool.create` brings its `Shm`,
@@ -79,6 +79,8 @@ mod keys;
 mod pane;
 #[path = "desktop/perf.rs"]
 mod perf;
+#[path = "desktop/pools.rs"]
+mod pools;
 #[path = "desktop/taskbar.rs"]
 mod taskbar;
 use keys::{input, lease};
@@ -120,6 +122,9 @@ const CLIENT_WAIT_MS: u64 = 2;
 struct Pool {
     pid: u64,
     pool: u32,
+    /// The `Shm` the client moved here, held (with its mapping) until the pool
+    /// is released: `pools::release`.
+    handle: Handle,
     address: u64,
     size: u32,
     /// Mapped writable, so its header page's event ring takes the client's
@@ -136,10 +141,19 @@ struct State {
     desk: Desk,
     clients: Vec<Client>,
     pools: Vec<Pool>,
-    shown: Vec<(WindowId, u64, Buffer)>,
+    /// Each window's buffer, whose client, and the scale it was drawn at.
+    shown: Vec<(WindowId, u64, Buffer, u32)>,
+    /// Which clients' processes are gone (`deskcore::reap`).
+    reaper: deskcore::reap::Reaper,
     frame: Image,
+    /// Which window's content was painted last at each px of `frame`, 0 for
+    /// none or a window drawn at scale 1 (`deskcore::overlay`).
+    mask: Vec<u32>,
+    /// The desk's size in logical px: the screen's over `scale`.
     width: i32,
     height: i32,
+    /// The scale in 120ths (`deskcore::scale`): 120 draws the frame as it is.
+    scale: u32,
     painter: Painter,
     bar: Bar,
     bar_at: u64,
@@ -225,16 +239,32 @@ fn main() -> i32 {
             }
             continue;
         };
-        let width = screen.info.width as i32;
-        let height = screen.info.height as i32;
+        // The desk works in logical px: the screen's size over the scale
+        // (ADR 0005 §9); `frame::present` is the one place they become
+        // physical.
+        // The screen's size in mm is the EDID's, which only a virtio-gpu gives,
+        // and QEMU's says the size of its default mode, not of the screen the
+        // case asked for (1920x1080 read as 1.5x). So it is taken only when the
+        // plan line says `edid=on`; otherwise the width alone picks the scale.
+        let args = user::args();
+        let width_mm = match user::arg(&args, "edid") {
+            Some("on") => screen.info.width_mm,
+            _ => 0,
+        };
+        let scale = deskcore::scale::for_screen(screen.info.width, width_mm);
+        let width = deskcore::upscale::logical(screen.info.width as i32, scale);
+        let height = deskcore::upscale::logical(screen.info.height as i32, scale);
         let mut state = State {
             desk: Desk::new(width, height),
             clients: Vec::new(),
             pools: Vec::new(),
             shown: Vec::new(),
+            reaper: deskcore::reap::Reaper::default(),
             frame: Image::new(width, height),
+            mask: vec![0; (width.max(0) * height.max(0)) as usize],
             width,
             height,
+            scale,
             painter,
             bar: Bar::default(),
             bar_at: 0,
@@ -271,7 +301,17 @@ fn main() -> i32 {
         // The taskbar's pins: the image's own apps, until `pkg` lists more.
         state.desk.set_installed(apps::built_in_names());
         println!("desktop: claimed {width}x{height}");
+        if scale != deskcore::scale::ONE {
+            println!(
+                "desktop: scale {scale}/120 on {}x{} px",
+                screen.info.width, screen.info.height
+            );
+        }
         let result = run(&mut state, &screen);
+        // The clients' pools go with this connection's state; they greet again.
+        for pool in &state.pools {
+            pools::release(pool);
+        }
         painter = state.painter;
         painted_in = state.painted_in;
         appearance = state.appearance;

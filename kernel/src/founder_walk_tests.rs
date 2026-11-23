@@ -304,7 +304,12 @@ fn answered_within(ms: u64) -> bool {
 /// Run shows in the run itself: `fs_create` never overwrites, and the host
 /// expects the panel's bar to say it created the file.
 pub(crate) fn yes_on_the_card(path: &str) -> Result<(), &'static str> {
-    desk_tests::wait("founder-walk: the ask on the card", ask_box::shown)?;
+    if let Err(why) = desk_tests::wait("founder-walk: the ask on the card", ask_box::shown) {
+        // What the kernel's terminal needed and did not have (a flake in
+        // #1055's run gave no word of which).
+        log!("{CASE}: the card did not come: {}", terminal::card_state());
+        return Err(why);
+    }
     let replies = terminal::replies_shown();
     let question = ask_box::question().unwrap_or_default();
     if !question.contains(path) {

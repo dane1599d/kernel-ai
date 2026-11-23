@@ -42,7 +42,7 @@ Every ADR 0013 host crate, each `no_std` and host-tested, wired into nothing: `a
 | # | Task | Lane | Needs | Gate | Boot case | Size |
 |---|---|---|---|---|---|---|
 | G1 | **The `goals` agent** (`user/src/bin/goals/`). Runs `goalcore` with the real clock; plans each step as a background request; runs it through `agentcore::execute` under `agent=goals`; records the step's `actlog` entry before it reports, also for a step ended mid-flight (Q3); keeps `kai-goals 1` on `home`'s state folder; storm rules (one step a goal, 4 goals active) | AG | F1, F2, F3, Q3 | `goalcore` props and hostile; S13-5's arm re-run through the OS door on a runner (≥ 14 of 20, 0 out of scope) | `goal-run`: a mock goal runs two run-tier steps unattended, pauses on an ask, resumes on the person's yes; `undo goals` undoes its last step | L (~1,500) |
-| G2 | **Goal rows.** `goal_set` (the one ask: scope, budget, check-ins), `goal_list`, `goal_pause`, `goal_resume`, `goal_cancel` (offers to undo every step) | A-core, with AG | G1, room (§4) | fluency; actbench | `goal-set`: the ask names scope, budget and times; a step outside scope asks; cancel offers undo | M (~600) |
+| G2 | **Goal rows**, in the shape A-core and AG agreed on 2026-11-18 (§7) | A-core, with AG | G1, room (§4) | fluency; actbench | `goal-set`: the ask names scope, budget and times; a step outside scope asks; cancel offers undo as its own choice | M (~600) |
 | G3 | **Panel check-ins and agent states.** The panel posts a goal's check-in line and "Goal '…' is waiting for you: …"; shows each agent working, waiting or paused | G-core's turn | G1 | – | `goal-checkin`: a goal behind at 75% of its time posts one line before its deadline | M (~500) |
 
 ### 2.5 Agent packages
@@ -53,7 +53,7 @@ Every ADR 0013 host crate, each `no_std` and host-tested, wired into nothing: `a
 | P2 | **`kind agent` in `kai-package 2`.** Format 1 still refuses it by name; format 2 carries the `kaiagent` manifest, checked at install | P's turn | P1 | `kaipkg` hostile | in P4's case | M (~500) |
 | P3 | **Agents in comphost.** A packaged agent runs as a component with its own badge (F2's route); `kai:agent/model` goes through the scheduler within its budgets; its effects through the one door under its manifest's `actions` ceiling; memory only its own scope, only with `memory write` | C, AG reviews | F2, F3, P1, M2 | `kaiagent` and `agentid` props | `agent-pkg-run`: a fixture agent calls an action outside its manifest and is refused at the door before tiers | L (~1,200) |
 | P4 | **Install ask and the Agents catalogue.** A `background` agent asks once at install with its actions, budget and memory use; Apps sheet's Agents heading; removing stops it and revokes its grants in one switch | AP-2's turn, P's turn | P2, P3 | – | `agent-pkg-install`: install asks; remove stops and revokes; undo restores | M (~500) |
-| P5 | **P5 task 14: agents' network budgets.** A manifest's `net` line becomes a `NetDest` ceiling; the kernel counts bytes a day on the handle and refuses past the budget (default and ceiling: Q-net in section 6) | AG, K's turn | P3; P5 tasks 1-2 | `netdest` and `kaiagent` hostile; Q5's shared-suffix refusal | `agent-net-budget`: an agent over its byte budget is refused, by name | M (~500) |
+| P5 | **P5 task 14: agents' network budgets.** A manifest's `net` line becomes a `NetDest` ceiling; the kernel counts bytes a day on the handle and refuses past the budget (10 MB a day unless the manifest asks for more, never more than 512 MB: decided, §6) | AG, K's turn | P3; P5 tasks 1-2 | `netdest` and `kaiagent` hostile; Q5's shared-suffix refusal | `agent-net-budget`: an agent over its byte budget is refused, by name | M (~500) |
 
 ### 2.6 Self-maintenance and close
 
@@ -135,7 +135,28 @@ No agent's own prompt (the `goals` planner's, a packaged agent's) is the act pac
 
 ## 6. Questions found while cutting this plan
 
-These are product answers ADR 0013 does not give. They went to the manager as founder questions with defaults; the rows that need them wait, and nothing here assumes the answer.
+These are product answers ADR 0013 does not give. They went to the manager as founder questions with defaults.
 
-1. **Agents' network budget (P5).** How much network may an agent use a day? *Default: 10 MB a day unless its manifest asks for more, and never more than 512 MB a day.*
-2. **Memory on small machines (F4, S3).** The KV pool (512 MiB) and the embedding model (639 MB while indexing) both want RAM beside the 4B model. On the founder's 6 GB VM they may not all fit. *Default: the pool takes at most what is free after the model loads, up to 512 MiB; indexing waits while there is not room for the embedding model; nothing pushes out the person's own requests.*
+1. **Agents' network budget (P5).** **Decided** (the founder took the default on 2026-11-18): an agent gets 10 MB a day unless its manifest asks for more, and never more than 512 MB a day. `kaiagent`'s `NetBudget` already holds these (`DEFAULT_NET_MIB_PER_DAY`, `MAX_NET_MIB_PER_DAY`).
+2. **Memory on small machines (F4, S3).** The KV pool (512 MiB) and the embedding model (639 MB while indexing) both want RAM beside the 4B model, and on the founder's 6 GB VM they may not all fit. **The default is in use until the founder confirms it** (the manager, 2026-11-18; it blocks no row): the pool takes at most what is free after the model loads, up to 512 MiB; indexing waits while there is not room for the embedding model; nothing pushes out the person's own requests.
+
+## 7. Agreed shapes and briefs
+
+**The goal rows (G2)**, agreed by A-core and AG on 2026-11-18. A-core builds them after Hold 4b, once §4 has made room (about 25 tokens on one index line).
+
+- `goal_set(text: Text<=200, by: Opt<Text 32>, steps: Int 1..=500, tokens: Int 1..=200000, wall: Text 16, checkins: Opt<List<Text 16, 8>>)` [ask]. It takes no rows or folders: the runner derives them from the request, as P3's rule scope does, so the model's arguments can never widen them. The card shows `goalcore::Spec::approval()`. `by` and `wall` are parsed by code ("18:00", "2h", "1d"); anything that does not parse is refused, never guessed.
+- `goal_pause(id)` and `goal_resume(id)` [undo], each the other's inverse. Resuming a goal stopped by its budget or its deadline asks, with the reason.
+- `goal_extend(id, steps?, tokens?, wall?, by?)` [ask]: a row of its own, so `goal_set` stays the one ask that makes a goal.
+- `goal_cancel(id)` [ask], with no inverse ("cancelled"). Undoing the goal's steps is a separate, explicit choice on the card ("cancel and undo its N steps"), never the default; it runs newest first under `agent=goals`.
+- `goal_list()` is a read. `undo goals` is F1's `undo <agent>`, not a row.
+
+**Lane briefs.** Paste-ready briefs for the first OS lanes are in the manager's notes for this group of sessions (`ag-lane-briefs.md`), one per item. Each repeats the machine and git rules. In short:
+
+| Brief | Rows | Lane | Starts when |
+|---|---|---|---|
+| The goals agent | G1-G3 | AG, with A-core's and G-core's turns | F1 (`actlog 2`) and F3's slices (#1008, #1010) are merged |
+| The search service | S1-S4 | AG, with S-engine's, L's, M's and A-core's turns | F2 (#982) and F3 are merged |
+| Agent packages | P1-P4 | C, P and AP-2, with AG reviewing | F2 and F3; P3 also needs M2 |
+| Quotas in `llm` | F3-F5 | AG (F3 was handed over from the model lane), then A-core for F5 | F2 (#982) |
+| P5 task 14 | P5 (plan §2.5) | AG, with K's turn | P3 and #988 |
+

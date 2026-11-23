@@ -161,6 +161,14 @@ fn wake(tid: Option<Tid>) {
     }
 }
 
+/// Wakes a waiting server for a caller that waits for its reply next: pulled
+/// onto the caller's CPU when it can be (`threads::wake_here`).
+fn wake_here(tid: Option<Tid>) {
+    if let Some(tid) = tid {
+        interrupts::without_interrupts(|| threads::wake_here(tid));
+    }
+}
+
 /// Wakes the server of process `pid` if it waits in `svc_recv`, which then
 /// returns `Woken` (an event box it reads got an event).
 pub fn wake_server(pid: u64) {
@@ -341,13 +349,28 @@ pub fn submit(
     submit_with(name, request, caller_pid, deadline_ns, Extra::default())
 }
 
-/// [`submit`], with what a handle call carries.
+/// [`submit`], with what a handle call carries: for a caller that goes on
+/// running (CALL_SUBMIT), so the server is woken where it is.
 pub(crate) fn submit_with(
     name: &str,
     request: &[u8],
     caller_pid: u64,
     deadline_ns: u64,
     extra: Extra,
+) -> Result<Pending, CallError> {
+    queue(name, request, caller_pid, deadline_ns, extra, false)
+}
+
+/// Queues the call and wakes its server if it waits: onto this CPU when
+/// `waits`, the caller waiting for the reply next, so the two pass the CPU
+/// between them with no reschedule interrupt.
+fn queue(
+    name: &str,
+    request: &[u8],
+    caller_pid: u64,
+    deadline_ns: u64,
+    extra: Extra,
+    waits: bool,
 ) -> Result<Pending, CallError> {
     if request.len() > MAX_MESSAGE {
         return Err(CallError::TooBig);
@@ -388,7 +411,10 @@ pub(crate) fn submit_with(
             .and_then(|e| e.waiting.take());
         Ok((slot, server))
     })?;
-    wake(server);
+    match waits {
+        true => wake_here(server),
+        false => wake(server),
+    }
     Ok(Pending { slot })
 }
 
@@ -505,7 +531,8 @@ pub fn call_with_stop(
     if stop() {
         return Err(CallError::Cancelled);
     }
-    let mut pending = submit_with(name, request, caller_pid, deadline_ns, extra)?;
+    // The caller waits for the reply from here: its server comes to this CPU.
+    let mut pending = queue(name, request, caller_pid, deadline_ns, extra, true)?;
     // Set once a Stop found the call taken: from then on only its reply, its
     // deadline or `cancel()` ends the wait.
     let mut taken_at_stop = false;

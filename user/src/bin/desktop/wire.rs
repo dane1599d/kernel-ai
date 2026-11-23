@@ -210,16 +210,19 @@ pub(super) fn net_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<S
     })
 }
 
+/// Carries out one thing a client's message needed; true when it kept the
+/// handle the message moved (a pool's `Shm`), which `pools::release` closes
+/// later, and false when the caller must close it.
 pub(super) fn apply_need(
     state: &mut State,
     at: usize,
     pid: u64,
     need: Need,
     handle: Option<Handle>,
-) {
+) -> bool {
     match need {
         Need::MapPool { pool, size } => {
-            let Some(handle) = handle else { return };
+            let Some(handle) = handle else { return false };
             // Writable when the client allowed it, for its input ring; read-only
             // otherwise, as before.
             let mapped = sys::shm_map(handle, true)
@@ -230,22 +233,37 @@ pub(super) fn apply_need(
                     state.pools.push(Pool {
                         pid,
                         pool,
+                        handle,
                         address,
                         size,
                         writable,
                     });
                     state.clients[at].pool_mapped(pool);
+                    return true;
                 }
                 Err(error) => println!("desktop: cannot map pid {pid}'s pool: {error:?}"),
             }
+            false
         }
-        Need::Show { window, buffer } => {
+        Need::Show {
+            window,
+            buffer,
+            scale,
+        } => {
             state.shown.retain(|(w, ..)| *w != window);
-            state.shown.push((window, pid, buffer));
+            state.shown.push((window, pid, buffer, scale));
+            false
         }
         Need::Closed { window } => {
+            let pool = state
+                .shown
+                .iter()
+                .find(|(w, ..)| *w == window)
+                .map(|(_, _, buffer, _)| buffer.pool);
             state.shown.retain(|(w, ..)| *w != window);
             state.agent.closed(window);
+            pools::after_closed(state, at, pid, pool);
+            false
         }
     }
 }

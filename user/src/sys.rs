@@ -501,6 +501,15 @@ pub fn proc_quota_set(pid: u64, pages: u64) -> Result<u64, Error> {
     call(call::PROC_QUOTA_SET, [pid, pages, 0, 0, 0, 0])
 }
 
+/// Process `pid`'s page quota is lowered to `pages`, and left as it is when it
+/// is at or under it; the old one (PROC_QUOTA_SET's QUOTA_LOWER_ONLY, #517).
+pub fn proc_quota_lower(pid: u64, pages: u64) -> Result<u64, Error> {
+    call(
+        call::PROC_QUOTA_SET,
+        [pid, pages, call::QUOTA_LOWER_ONLY, 0, 0, 0],
+    )
+}
+
 /// Process `pid` runs `normal` (0) or `background` (1) (PROC_CLASS_SET, needs
 /// SUPERVISE).
 pub fn proc_class_set(pid: u64, class: u64) -> Result<u64, Error> {
@@ -514,10 +523,22 @@ pub fn shm_create(pages: u64) -> Result<Handle, Error> {
 
 /// Maps the `Shm` that `handle` names, read-write if `write`; its address.
 pub fn shm_map(handle: Handle, write: bool) -> Result<u64, Error> {
+    shm_map_least(handle, write, 0)
+}
+
+/// [`shm_map`], Invalid when the `Shm` holds fewer than `pages` pages: for a
+/// server about to touch that many of a client's.
+pub fn shm_map_least(handle: Handle, write: bool, pages: u64) -> Result<u64, Error> {
     call(
         call::SHM_MAP,
-        [u64::from(handle.0), u64::from(write), 0, 0, 0, 0],
+        [u64::from(handle.0), u64::from(write), pages, 0, 0, 0],
     )
+}
+
+/// SHM_INFO: how many pages the `Shm` `handle` names holds. Needs INSPECT on
+/// the handle.
+pub fn shm_info(handle: Handle) -> Result<u64, Error> {
+    call(call::SHM_INFO, [u64::from(handle.0), 0, 0, 0, 0, 0])
 }
 
 /// Takes the screen (`desktop` only): its back buffer's `Shm`, and its shape.

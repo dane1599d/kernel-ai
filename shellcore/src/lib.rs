@@ -25,6 +25,7 @@ mod abilities;
 mod actions;
 pub mod actlog;
 mod agentcore;
+pub mod agentstep;
 pub mod analyse;
 pub mod apart;
 pub mod appbuild;
@@ -482,10 +483,14 @@ pub trait Host {
     }
     /// Gives each process its class and quota (P3 task 12), through the
     /// supervisor's PROC_CLASS_SET and PROC_QUOTA_SET; every one's settings from
-    /// before, so `undo` can put them back.
+    /// before, so `undo` can put them back. With `cap` (a switch, #517) a
+    /// setting's `mem` is a ceiling: a quota above it is lowered, one at or
+    /// under it is left, and only a lowered one has a `mem` from before. Without
+    /// it (an undo) `mem` is set exactly.
     fn profile_apply(
         &self,
         _settings: &[kaiprofile::Setting],
+        _cap: bool,
     ) -> Result<Vec<kaiprofile::Setting>, String> {
         Err(String::from(
             "profiles are not wired to the supervisor here yet",
@@ -718,6 +723,10 @@ pub struct Shell {
     /// What the agent's reading of app grants keeps between passes
     /// ([`appgrants`]).
     grant_memo: appgrants::Memo,
+    /// The agents the shell knows (ADR 0013 §1): who a badged route's step is.
+    roster: agentid::Roster,
+    /// What the card came to for agents' asked steps, until each waits for it.
+    agents_told: Vec<agentstep::Told>,
     /// The last script as `show` prints it.
     shown: Option<String>,
     /// What the script run by the last line printed.
@@ -772,6 +781,9 @@ pub struct Shell {
     /// The source of the data the call now running was decided after (a
     /// view's second round), for consent (ADR 0002 D6).
     steered: Option<&'static str>,
+    /// The line now running is the person's own `open <app>` (`open_line`),
+    /// made by code with no model: its calls are the person's (`Checked::person`).
+    person_line: bool,
     /// The `c>` entry now running, and its calls' values (P4 task 12).
     c_entry: Option<centry::CEntry>,
     last_value: Option<rhai::Dynamic>,
@@ -844,6 +856,8 @@ impl Shell {
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
             hosts: nethosts::Table::curated(),
+            roster: agentid::Roster::new(),
+            agents_told: Vec::new(),
             grant_memo: appgrants::Memo::default(),
             shown: None,
             last_output: None,
@@ -864,6 +878,7 @@ impl Shell {
             saved_log: None,
             owner_once: None,
             steered: None,
+            person_line: false,
             c_entry: None,
             last_value: None,
             value_rets: Vec::new(),
@@ -924,8 +939,15 @@ impl Shell {
             self.saved_log = Some(self.log.text());
             return self;
         };
-        match actlog::parse(&text) {
-            Ok(records) => {
+        match actlog::parse_setting_aside(&text) {
+            Ok((records, aside)) => {
+                if !aside.is_empty() {
+                    let ids: Vec<String> = aside.iter().map(|id| format!("#{id}")).collect();
+                    self.host.audit(&format!(
+                        "log entries {} named no agent and were set aside",
+                        ids.join(", ")
+                    ));
+                }
                 self.log = actlog::ActLog::from_records(records);
                 self.next_id = self.log.last_id() + 1;
                 self.saved_log = Some(text);
@@ -1178,6 +1200,17 @@ impl Shell {
             && which.trim().trim_start_matches('#').parse::<u64>().is_ok()
         {
             return self.undo_command(which);
+        }
+        // `undo <agent>` (ADR 0013 §1): that agent's newest live entry, for an
+        // agent the log holds an entry of; "undo that" is a line for Kai.
+        if let Some(agent) = input.strip_prefix("undo ")
+            && !self.scope.contains("undo")
+            && self
+                .log
+                .entries()
+                .any(|e| !e.agent.is_kai() && e.agent.as_str() == agent.trim())
+        {
+            return self.undo_agent(agent.trim());
         }
         if (input == "tune" || input.starts_with("tune ")) && !self.scope.contains("tune") {
             let id = self.next_id;

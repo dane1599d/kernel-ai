@@ -46,7 +46,11 @@ fn a_window_opens_shows_new_pictures_and_closes() {
     assert_eq!(open.pool_bytes, 4096 + 2 * 320 * 200 * 4);
     assert_eq!(open.target.offset, 4096);
     let needs = serve(&mut client, &mut screen, &open.calls, true);
-    let [Need::MapPool { pool, size }, Need::Show { window, buffer }] = needs[..] else {
+    let [
+        Need::MapPool { pool, size },
+        Need::Show { window, buffer, .. },
+    ] = needs[..]
+    else {
         panic!("{needs:?}");
     };
     assert_eq!(
@@ -117,10 +121,13 @@ fn a_late_modifiers_message_never_changes_the_keys_already_in_the_ring() {
         usage,
         down,
     };
+    // The desk tells every client the modifiers before the key that changed them.
     client.apply(&[
+        Effect::Modifiers(2),
         key(0xE0, true),
         key(0x05, true),
         key(0x05, false),
+        Effect::Modifiers(0),
         key(0xE0, false),
     ]);
     let ring: Vec<_> = client.take_posts().into_iter().map(|(_, e)| e).collect();
@@ -284,3 +291,66 @@ fn position(calls: &[u8], is: impl Fn(&Request<'_>) -> bool) -> Option<usize> {
 }
 
 const INTERFACES: [Interface; 2] = [Interface::Toplevel, Interface::A11y];
+
+/// A client told 1.25x opens its window with buffers 1.25 times as big,
+/// declares the scale before the first buffer, and `desktop` lays out the
+/// window at its logical size. A desktop at 1x says nothing and nothing
+/// changes; a new desktop at 1x puts the client back to 1x.
+#[test]
+fn a_client_told_the_scale_draws_at_it_and_the_desk_sizes_the_window_in_logical_px() {
+    let mut screen = Screen::new(1280, 800);
+    let mut client = Client::new(7, "notes-window");
+    client.scale(150);
+    let mut d = Desk::new();
+    assert_eq!(d.told(&client.take_events(8192)), []);
+    assert_eq!(d.scale(), 150);
+    let Err(open) = d.frame(1, &frame("Notes", 320, 200, "Go")) else {
+        panic!("a first frame opens a window");
+    };
+    // 320x200 logical at 1.25x: 400x250 px.
+    assert_eq!(open.pool_bytes, 4096 + 2 * 400 * 250 * 4);
+    assert_eq!((open.target.width, open.target.height), (400, 250));
+    let needs = serve(&mut client, &mut screen, &open.calls, true);
+    let [
+        Need::MapPool { pool, .. },
+        Need::Show {
+            window,
+            buffer,
+            scale,
+        },
+    ] = needs[..]
+    else {
+        panic!("{needs:?}");
+    };
+    assert_eq!((buffer.width, buffer.height, scale), (400, 250, 150));
+    client.pool_mapped(pool);
+    let content = screen.window(window).unwrap().content();
+    assert_eq!((content.w, content.h), (320, 200));
+    // A new picture goes to the other buffer, damage in buffer px.
+    let Ok(show) = d.frame(1, &frame("Notes", 320, 200, "Go on")) else {
+        panic!("an open window takes new pictures");
+    };
+    assert_eq!((show.target.width, show.target.height), (400, 250));
+    assert!(
+        show.damage
+            .iter()
+            .all(|r| r.x + r.w <= 400 && r.y + r.h <= 250)
+    );
+    // The scale changing under an open window is told to the app; a new
+    // desktop at 1x (a greeting, no scale) puts it back.
+    client.take_events(8192);
+    client.scale(180);
+    assert_eq!(d.told(&client.take_events(8192)), [Told::Scale]);
+    assert_eq!(d.scale(), 180);
+    let Err(reopened) = d.frame(1, &frame("Notes", 320, 200, "Go")) else {
+        panic!("a window at another scale opens again");
+    };
+    assert_eq!((reopened.target.width, reopened.target.height), (480, 300));
+    let restarted = Client::new(8, "notes-window").take_events(8192);
+    assert_eq!(d.told(&restarted), [Told::Restarted]);
+    assert_eq!(d.scale(), 120);
+    // A scale no surface may take is not drawn at.
+    client.scale(9_999);
+    assert!(d.told(&client.take_events(8192)).is_empty());
+    assert_eq!(d.scale(), 120);
+}
