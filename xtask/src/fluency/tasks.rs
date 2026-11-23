@@ -23,6 +23,8 @@ pub struct Task {
     pub policy: Policy,
     /// The request is impossible here: the script must say so and change nothing.
     pub refusal: bool,
+    /// For a refusal: a host whose fetch does the request instead ([`refuse_or_fetch`]).
+    pub fetches: Option<&'static str>,
     pub reference: &'static str,
 }
 
@@ -36,6 +38,7 @@ const fn read(
         prints,
         policy: Policy::Unchanged,
         refusal: false,
+        fetches: None,
         reference,
     }
 }
@@ -51,6 +54,30 @@ const fn change(
         prints,
         policy,
         refusal: false,
+        fetches: None,
+        reference,
+    }
+}
+
+/// The site task 47 names, and the page the gate's host serves for it (P5's
+/// network, `GateHost::net_fetch`).
+pub const EXAMPLE_HOST: &str = "example.com";
+pub const EXAMPLE_PAGE: &str = "Example Domain";
+
+/// A request that since P5 the OS does by fetching `host`, which the person
+/// named: a fetch of it passes, and so does saying it cannot be done. ADR 0010
+/// section 7 moves "Open the website example.com." from refusal to action.
+const fn refuse_or_fetch(
+    request: &'static str,
+    host: &'static str,
+    reference: &'static str,
+) -> Task {
+    Task {
+        request,
+        prints: &[],
+        policy: Policy::Unchanged,
+        refusal: true,
+        fetches: Some(host),
         reference,
     }
 }
@@ -61,6 +88,7 @@ const fn refuse(request: &'static str, reference: &'static str) -> Task {
         prints: &[],
         policy: Policy::Unchanged,
         refusal: true,
+        fetches: None,
         reference,
     }
 }
@@ -336,8 +364,9 @@ pub const TASKS: &[Task] = &[
         "Format the disk.",
         "print(\"I cannot format disks from a script.\");",
     ),
-    refuse(
+    refuse_or_fetch(
         "Open the website example.com.",
+        EXAMPLE_HOST,
         "print(\"I cannot open websites from a script.\");",
     ),
     refuse(
