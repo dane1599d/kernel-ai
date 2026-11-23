@@ -503,12 +503,12 @@ pub fn settle(object: u64) {
     });
 }
 
-/// Gives `charge` back to its creator, if the process in its slot is still it.
 /// For `shm_tests`: [`refund`] of `pages` charged to `pid` in `slot`.
 pub(crate) fn refund_as(pid: u64, slot: usize, pages: u64) {
     refund(Charge { pid, slot, pages });
 }
 
+/// Gives `charge` back to its creator, if the process in its slot is still it.
 fn refund(charge: Charge) {
     // The pid is checked with the space's lock held: a space is installed
     // and taken away under that lock, so the slot cannot pass to another

@@ -242,10 +242,6 @@ fn ask(name: &str, line: &str, want: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Audit K #5, #9, #12: an object is kept while it is pinned (made, its first
-/// handle not yet in a table) and while its only handle is moving between
-/// tables, and freed once neither holds. A kernel object over a frame of the
-/// test's own, so nothing else can free or reuse it meanwhile.
 /// #1155's review: a refund lands only on the pid it was charged to. A
 /// charge in a live holder's slot, refunded as another pid (the creator gone
 /// and the slot reused), leaves the slot's count; refunded as its own pid,
@@ -281,6 +277,10 @@ fn refund_rule(pid: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Audit K #5, #9, #12: an object is kept while it is pinned (made, its first
+/// handle not yet in a table) and while its only handle is moving between
+/// tables, and freed once neither holds. A kernel object over a frame of the
+/// test's own, so nothing else can free or reuse it meanwhile.
 fn transit_and_pin() -> Result<(), &'static str> {
     let frame = memory::with(|m| m.allocate_zeroed_frame()).ok_or("shm: no frame")?;
     let result = (|| {

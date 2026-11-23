@@ -577,7 +577,12 @@ pub fn give_back(slot: usize, handles: &[Handle], moving: Moving) {
         );
     }
     for &handle in lost {
-        let _ = table.release(handle);
+        if let Err(error) = table.release(handle) {
+            crate::log!(
+                "handle: a refused move's lost handle {:#x} was not held: {error:?}",
+                handle.0
+            );
+        }
     }
 }
 

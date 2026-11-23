@@ -41,6 +41,7 @@ pub fn check() -> Result<(), &'static str> {
     ring3_grants()?;
     revoke_mid_call()?;
     held_move()?;
+    taken_back_at_start()?;
     m1();
     m2();
     log!("handles: tables, startup handles and need() on handles all behaved");
@@ -464,6 +465,58 @@ fn held_move() -> Result<(), &'static str> {
     log!(
         "handles: a refused move's handle came back under its value with its rights, an insert meanwhile notwithstanding"
     );
+    Ok(())
+}
+
+/// #1267's review: [`handle::take_at_start`] by itself. Two entries moved in
+/// at a process's start come back out, in order and as they went in, and
+/// leave STARTUP as it was before them; a range STARTUP does not list takes
+/// nothing.
+fn taken_back_at_start() -> Result<(), &'static str> {
+    let slot = MAX_PROCESSES - 3;
+    handle::create(slot, cap::POLICY, 97, &[]).map_err(|_| "handles: no table for take-back")?;
+    let result = (|| {
+        let first = handle::startup_len(slot);
+        let entries = [
+            captable::Entry::new(Kind::Sched, Rights::READ | Rights::TRANSFER, 0xf1),
+            captable::Entry::new(Kind::Sched, Rights::READ, 0xf2),
+        ];
+        if !handle::give_at_start(slot, handle::Moving::from(Vec::from(entries))) {
+            return Err("handles: the moved entries did not fit at start");
+        }
+        if handle::startup_len(slot) != first + 2 {
+            return Err("handles: STARTUP does not list the moved entries");
+        }
+        let past = handle::take_at_start(slot, first + 1, 2);
+        if !past.entries().is_empty() || handle::startup_len(slot) != first + 2 {
+            return Err("handles: a take-back past STARTUP's end took something");
+        }
+        let back = handle::take_at_start(slot, first, 2);
+        let same = back.len() == 2
+            && back.entries().iter().zip(&entries).all(|(got, want)| {
+                got.kind == want.kind && got.rights == want.rights && got.object == want.object
+            });
+        if !same {
+            return Err("handles: the entries taken back are not the ones moved in, in order");
+        }
+        if handle::startup_len(slot) != first {
+            return Err("handles: a take-back left its handles in STARTUP");
+        }
+        let left = handle::with(slot, |h| {
+            h.table
+                .iter()
+                .filter(|(_, e)| e.kind == Kind::Sched && (e.object == 0xf1 || e.object == 0xf2))
+                .count()
+        })
+        .map_err(|_| "handles: the table went")?;
+        if left != 0 {
+            return Err("handles: a take-back left its entries in the table");
+        }
+        Ok(())
+    })();
+    handle::destroy(slot);
+    result?;
+    log!("handles: a spawn refused after the move takes its moved entries back out, in order");
     Ok(())
 }
 
