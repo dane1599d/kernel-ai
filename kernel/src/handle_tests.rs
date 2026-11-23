@@ -40,6 +40,7 @@ pub fn check() -> Result<(), &'static str> {
     kernel_grants()?;
     ring3_grants()?;
     revoke_mid_call()?;
+    held_move()?;
     m1();
     m2();
     log!("handles: tables, startup handles and need() on handles all behaved");
@@ -400,6 +401,54 @@ fn unanswered() -> Result<(), &'static str> {
         Err(ipc::CallError::Unanswered) => Ok(()),
         _ => Err("handles: a call taken and not answered did not end Unanswered"),
     }
+}
+
+/// #1162's review: a refused JOB_SPAWN gives the caller its handles back
+/// under the values it holds, with their rights, even when another insert
+/// lands in the table between the take and the give-back; a move that went
+/// through closes them.
+fn held_move() -> Result<(), &'static str> {
+    let slot = MAX_PROCESSES - 3;
+    handle::create(slot, cap::POLICY, 98, &[]).map_err(|_| "handles: no table for the move")?;
+    let result = (|| {
+        let rights = Rights::READ | Rights::TRANSFER;
+        let insert = |rights| {
+            handle::with(slot, |h| {
+                h.table.insert(captable::Entry::new(Kind::Sched, rights, 1))
+            })
+            .ok()
+            .and_then(Result::ok)
+            .ok_or("handles: an insert failed")
+        };
+        let moved = insert(rights)?;
+        let moving = handle::take_held(slot, &[moved], cap::POLICY)
+            .map_err(|_| "handles: a held take was refused")?;
+        // A sibling thread's insert while the spawn is under way.
+        let between = insert(Rights::READ)?;
+        if between.index() == moved.index() {
+            return Err("handles: an insert took a slot held for a move");
+        }
+        handle::give_back(slot, &[moved], moving);
+        let back = handle::with(slot, |h| h.table.get(moved).map(|e| e.rights)).ok();
+        if back != Some(Ok(rights)) {
+            return Err("handles: a refused move's handle did not come back as it was");
+        }
+        let moving = handle::take_held(slot, &[moved], cap::POLICY)
+            .map_err(|_| "handles: a second held take was refused")?;
+        handle::release(slot, &[moved]);
+        drop(moving);
+        let gone = handle::with(slot, |h| h.table.get(moved).is_err()).ok();
+        if gone != Some(true) {
+            return Err("handles: a move that went through left its handle open");
+        }
+        Ok(())
+    })();
+    handle::destroy(slot);
+    result?;
+    log!(
+        "handles: a refused move's handle came back under its value with its rights, an insert meanwhile notwithstanding"
+    );
+    Ok(())
 }
 
 /// M2: make a request node, give 8 handles under it to 2 processes (4 each),
