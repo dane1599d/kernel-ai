@@ -41,6 +41,17 @@ const MAX_RESOLVED: usize = 32;
 /// Bits of an id below its generation: the slot.
 const SLOT_BITS: u32 = 8;
 const _: () = assert!(MAX_RECORDS == 1 << SLOT_BITS);
+/// Records one process may have made by narrowing and still hold (audit K
+/// #26): one holder cannot pin the table and stop every other narrowing.
+pub const MAX_NARROWED: usize = 16;
+/// Slots only a plan line's own record ([`create`], no owner) may take, so a
+/// spawn never fails because the narrowings filled the table.
+const PLAN_RESERVED: usize = 8;
+/// The least a resolved address counts for the connect check, whatever
+/// its TTL: a TTL of 0 (dnsmasq's for local names) or shorter than a dial's
+/// wait would otherwise expire before the connect (audit K #18). The DNS
+/// cache keeps the server's TTL as it is.
+const MIN_CONNECT_TTL_S: u64 = 60;
 /// A record this young is never dropped: the step from [`create`] to the
 /// handle that names it, preempted at the worst moment, is far shorter.
 const FRESH_NS: u64 = 1_000_000_000;
@@ -52,6 +63,8 @@ pub type Meter = Arc<Mutex<DayMeter>>;
 struct Record {
     /// Its slot's generation when it was made: part of its id.
     generation: u32,
+    /// The process whose narrowing made it; none for a plan line's.
+    owner: Option<u64>,
     /// When it was made (HPET).
     born: u64,
     dest: Dest,
@@ -147,39 +160,58 @@ fn with<R>(f: impl FnOnce(&mut Vec<Option<Record>>) -> R) -> R {
 
 /// A new record for `dest`: its object id. When the table is full, records no
 /// live handle names (`live`) are dropped first; None if it is still full.
+/// A plan line's own record: it may take the slots kept for those.
 pub fn create(dest: Dest, live: impl Fn(u64) -> bool) -> Option<u64> {
-    create_metered(dest, live, None)
+    create_for(dest, live, None, None)
 }
 
 /// [`create`], the record counting its bytes on `meter` when given.
 pub fn create_metered(dest: Dest, live: impl Fn(u64) -> bool, meter: Option<Meter>) -> Option<u64> {
+    create_for(dest, live, meter, None)
+}
+
+/// [`create_metered`] for a narrowing by process `owner` (`Some`): None past
+/// [`MAX_NARROWED`] of its own still named, or when only the slots kept for
+/// plan lines are left.
+fn create_for(
+    dest: Dest,
+    live: impl Fn(u64) -> bool,
+    meter: Option<Meter>,
+    owner: Option<u64>,
+) -> Option<u64> {
     with(|records| {
-        let free = records.iter().position(Option::is_none);
-        let at = match free {
+        if let Some(pid) = owner {
+            let mine = records
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| r.as_ref().map(|r| (i, r)))
+                .filter(|(i, r)| r.owner == Some(pid) && live(id(*i, r.generation)))
+                .count();
+            if mine >= MAX_NARROWED {
+                return None;
+            }
+        }
+        // A plan line needs one slot; a narrowing leaves the last few free
+        // slots to plan lines. Short of that, records nothing names go first,
+        // whether the table is full or only short of the reserve (#1181's
+        // review: the reserve must not stop a narrowing the sweep would make
+        // room for).
+        let needed = if owner.is_some() {
+            PLAN_RESERVED + 1
+        } else {
+            1
+        };
+        if room(records) < needed {
+            sweep(records, &live);
+        }
+        if room(records) < needed {
+            return None;
+        }
+        let at = match records.iter().position(Option::is_none) {
             Some(at) => at,
-            None if records.len() < MAX_RECORDS => {
+            None => {
                 records.push(None);
                 records.len() - 1
-            }
-            None => {
-                let now = hpet::nanos();
-                for (i, slot) in records.iter_mut().enumerate() {
-                    let Some(record) = slot else {
-                        continue;
-                    };
-                    // The transit count first, then the tables, then whether
-                    // any handle moved meanwhile: one of the three sees a
-                    // handle that moved while it looked.
-                    let before = crate::handle::moves();
-                    let named = TRANSIT[i].load(Ordering::SeqCst) != 0
-                        || live(id(i, record.generation))
-                        || crate::handle::moves() != before
-                        || now.saturating_sub(record.born) < FRESH_NS;
-                    if !named {
-                        *slot = None;
-                    }
-                }
-                records.iter().position(Option::is_none)?
             }
         };
         let generation = GENERATION[at]
@@ -188,6 +220,7 @@ pub fn create_metered(dest: Dest, live: impl Fn(u64) -> bool, meter: Option<Mete
         mark_any_host(at, dest.any_host);
         records[at] = Some(Record {
             generation,
+            owner,
             born: hpet::nanos(),
             dest,
             resolved: Vec::new(),
@@ -195,6 +228,33 @@ pub fn create_metered(dest: Dest, live: impl Fn(u64) -> bool, meter: Option<Mete
         });
         Some(id(at, generation))
     })
+}
+
+/// Free slots, the table's room to grow counted in.
+fn room(records: &[Option<Record>]) -> usize {
+    records.iter().filter(|r| r.is_none()).count() + (MAX_RECORDS - records.len())
+}
+
+/// Drops every record nothing names: no handle in a table (`live`), none
+/// moving between tables, and not made within [`FRESH_NS`].
+fn sweep(records: &mut [Option<Record>], live: &impl Fn(u64) -> bool) {
+    let now = hpet::nanos();
+    for (i, slot) in records.iter_mut().enumerate() {
+        let Some(record) = slot else {
+            continue;
+        };
+        // The transit count first, then the tables, then whether any handle
+        // moved meanwhile: one of the three sees a handle that moved while
+        // it looked.
+        let before = crate::handle::moves();
+        let named = TRANSIT[i].load(Ordering::SeqCst) != 0
+            || live(id(i, record.generation))
+            || crate::handle::moves() != before
+            || now.saturating_sub(record.born) < FRESH_NS;
+        if !named {
+            *slot = None;
+        }
+    }
 }
 
 /// The destination `object` names, if it is a record.
@@ -217,8 +277,9 @@ pub fn resolved(object: u64, addresses: &[Ipv4Addr], ttl_s: u64) {
     let Some((at, generation)) = slot_of(object) else {
         return;
     };
-    let until = hpet::nanos().saturating_add(ttl_s.saturating_mul(1_000_000_000));
     let now = hpet::nanos();
+    let ttl_s = ttl_s.max(MIN_CONNECT_TTL_S);
+    let until = now.saturating_add(ttl_s.saturating_mul(1_000_000_000));
     with(|records| {
         let Some(Some(record)) = records.get_mut(at) else {
             return;
@@ -259,19 +320,44 @@ pub fn may_connect(object: u64, protocol: Protocol, addr: Ipv4Addr, port: u16) -
 
 /// An address a name's answer must not lead to unless the record names it
 /// literally (lane C's review of task 1): this machine, the link, nothing,
-/// everyone or a group. An answer pointing there is how DNS rebinding reaches
-/// what the app was never given.
+/// everyone or a group, and a private network (audit K #17): 10/8,
+/// 172.16/12, 192.168/16, the carrier's 100.64/10, 0/8 and 240/4. An answer
+/// pointing there is how DNS rebinding reaches what the app was never given,
+/// and a probe of the person's LAN and the VM host on its ports.
+///
+/// One exception, for the boot cases' own network: with `online=test` on
+/// the kernel command line, QEMU's user network 10.0.2.0/24 (the mock DNS's
+/// fixtures and the HTTPS mock) is not refused. A release image never
+/// carries that word (`xtask::image::slots::build_release`).
 fn special(addr: Ipv4Addr) -> bool {
-    addr.is_loopback()
-        || addr.is_link_local()
-        || addr.is_unspecified()
-        || addr.is_broadcast()
-        || addr.is_multicast()
+    netdest::special(addr, test_network())
+}
+
+/// Whether a name's answer may lead to `addr`: RESOLVE_ON hands an app only
+/// such addresses, and keeps only them for its connects.
+pub fn answerable(addr: Ipv4Addr) -> bool {
+    !special(addr)
+}
+
+/// Whether the boot runs on the boot cases' test network: `online=test` on a
+/// test boot (a `test=` word), as the kernel's other test words count only
+/// there. A plain boot with the word, `xtask vbox` under VirtualBox's NAT
+/// say, where 10.0.2.2 is the host machine, gets the full rule.
+fn test_network() -> bool {
+    crate::test_boot()
+        && crate::cmdline()
+            .split_whitespace()
+            .any(|word| word == "online=test")
 }
 
 /// A record for `narrower`, made from `object`'s, if `object`'s covers it:
 /// its id. The addresses `object` resolved do not carry over.
-pub fn narrow(object: u64, narrower: Dest, live: impl Fn(u64) -> bool) -> Result<u64, kabi::Error> {
+pub fn narrow(
+    object: u64,
+    narrower: Dest,
+    live: impl Fn(u64) -> bool,
+    owner: u64,
+) -> Result<u64, kabi::Error> {
     let wider = dest(object).ok_or(kabi::Error::Invalid)?;
     // `hosts:any` is made only from the shell's plan line, never by narrowing,
     // and narrows only to exact hosts: a suffix such as `co.uk` would carry
@@ -281,5 +367,5 @@ pub fn narrow(object: u64, narrower: Dest, live: impl Fn(u64) -> bool) -> Result
         return Err(kabi::Error::Permission);
     }
     // The narrower record counts on the wider one's meter: never a fresh day.
-    create_metered(narrower, live, meter_of(object)).ok_or(kabi::Error::NoMemory)
+    create_for(narrower, live, meter_of(object), Some(owner)).ok_or(kabi::Error::NoMemory)
 }

@@ -71,8 +71,15 @@ pub(super) const CASES: &[TestCase] = &[
             "net-dest: hosts:any stays where it was made: no narrowing makes another and it never moves, while its one-host narrowing does",
             // #1150's review: only NetDest moves move the sweep's counter on.
             "net-dest: a move with no NetDest leaves moves() as it was; one with a NetDest moves it on as it starts and ends",
+            "net-dest: one process holds at most 16 narrowed records; another's narrowing still works",
+            "net-dest: a narrowing short of the plan lines' reserve swept the dead records first",
             // Audit K #1: record ids carry a generation; handles in transit count.
             "; their ids name nothing after, and one whose handle was moving stayed",
+            // Audit K #17: the mock DNS's cmdline carries online=test.
+            "[netdest-p] resolve lan.kai.test refused: it leads only to private addresses",
+            "[netdest-q] resolved mixed.kai.test to 10.0.2.97 (1 address(es))",
+            "net-dest: private answers are refused; QEMU's test subnet is reached only with online=test",
+            "net-dest: an address resolved with TTL 0 can be connected to at once, on the record's port",
         ],
         ..case("net-dest", "test=net-dest")
     },

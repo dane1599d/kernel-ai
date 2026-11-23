@@ -342,7 +342,122 @@ pub fn dest_check() -> Result<(), &'static str> {
     llm_grant()?;
     any_host_pinned()?;
     moves_check()?;
-    sweep_check()
+    narrowing_bound()?;
+    narrowing_sweeps_before_the_reserve()?;
+    sweep_check()?;
+    private_answers()?;
+    ttl_zero_check()
+}
+
+/// Audit K #17: an answer that leads to a private network is not kept for a
+/// connect, while QEMU's 10.0.2.0/24 is, on this `online=test` boot only.
+fn private_answers() -> Result<(), &'static str> {
+    let (object, _) = netdest(KAI_TEST)?;
+    let lan = core::net::Ipv4Addr::new(192, 168, 1, 1);
+    let carrier = core::net::Ipv4Addr::new(100, 64, 0, 1);
+    let fixture = core::net::Ipv4Addr::new(10, 0, 2, 99);
+    let other_ten = core::net::Ipv4Addr::new(10, 1, 2, 3);
+    net::dest::resolved(object, &[lan, carrier, fixture, other_ten], 300);
+    let tcp = netdest::Protocol::Tcp;
+    // Through RESOLVE_ON from ring 3: a name answering only a private address
+    // is Private, and a mixed answer gives back only its test-subnet address.
+    let (_, entry) = netdest(KAI_TEST)?;
+    netcheck("netdest-p", "host=lan.kai.test expect=private", Some(entry))?;
+    let (_, entry) = netdest(KAI_TEST)?;
+    netcheck(
+        "netdest-q",
+        "host=mixed.kai.test expect=10.0.2.97",
+        Some(entry),
+    )?;
+    let refused = [lan, carrier, other_ten].iter().all(|&addr| {
+        !net::dest::answerable(addr) && !net::dest::may_connect(object, tcp, addr, 8000)
+    });
+    if !refused
+        || !net::dest::answerable(fixture)
+        || !net::dest::may_connect(object, tcp, fixture, 8000)
+    {
+        return Err("net-dest: a private answer was kept, or the test subnet was refused");
+    }
+    log!(
+        "net-dest: private answers are refused; QEMU's test subnet is reached only with online=test"
+    );
+    Ok(())
+}
+
+/// Audit K #18: an address resolved with TTL 0 may still be connected to at
+/// once (it counts for at least a minute), on the record's port only.
+fn ttl_zero_check() -> Result<(), &'static str> {
+    let (object, _) = netdest(KAI_TEST)?;
+    let addr = core::net::Ipv4Addr::new(10, 0, 2, 99);
+    net::dest::resolved(object, &[addr], 0);
+    let tcp = netdest::Protocol::Tcp;
+    if !net::dest::may_connect(object, tcp, addr, 8000)
+        || net::dest::may_connect(object, tcp, addr, 8001)
+    {
+        return Err("net-dest: a TTL-0 answer could not be connected to, or reached another port");
+    }
+    log!(
+        "net-dest: an address resolved with TTL 0 can be connected to at once, on the record's port"
+    );
+    Ok(())
+}
+
+/// Audit K #26: one process holds at most `MAX_NARROWED` records it made by
+/// narrowing; past them its narrowing is NoMemory, and another's still works.
+fn narrowing_bound() -> Result<(), &'static str> {
+    const ONE: u64 = u64::MAX - 7;
+    const OTHER: u64 = u64::MAX - 8;
+    let (object, _) = netdest(KAI_TEST)?;
+    let exact = || {
+        netdest::Dest::parse("proto:tcp,ports:8000,hosts:kai.test,match:exact")
+            .map_err(|_| "net: a bad test destination")
+    };
+    // Every one still named, as by handles it keeps.
+    let named = |_| true;
+    for _ in 0..net::dest::MAX_NARROWED {
+        net::dest::narrow(object, exact()?, named, ONE)
+            .map_err(|_| "net-dest: a narrowing within the bound was refused")?;
+    }
+    if net::dest::narrow(object, exact()?, named, ONE) != Err(kabi::Error::NoMemory) {
+        return Err("net-dest: one process narrowed past its bound");
+    }
+    net::dest::narrow(object, exact()?, named, OTHER)
+        .map_err(|_| "net-dest: another process's narrowing was refused")?;
+    log!(
+        "net-dest: one process holds at most 16 narrowed records; another's narrowing still works"
+    );
+    Ok(())
+}
+
+/// #1181's review: a narrowing that would dip into the slots kept for plan
+/// lines sweeps first. The table is left with fewer free slots than the
+/// reserve, all its records dead but for the ones a plan-line make kept as
+/// named; the narrowing must sweep them and succeed.
+fn narrowing_sweeps_before_the_reserve() -> Result<(), &'static str> {
+    const GRACE_MS: u64 = 1_100;
+    const ONE: u64 = u64::MAX - 9;
+    let spec = netdest::Dest::parse(KAI_TEST).map_err(|_| "net: a bad test destination")?;
+    let live = |object| crate::handle::names(kabi::handle::Kind::NetDest, object);
+    let mut made = alloc::vec::Vec::new();
+    while made.len() < 300 {
+        match net::dest::create(spec.clone(), live) {
+            Some(object) => made.push(object),
+            None => break,
+        }
+    }
+    crate::threads::sleep_ms(GRACE_MS);
+    // One more plan-line record, whose sweep keeps all but the last six as
+    // named: the table then has a handful of free slots, under the reserve.
+    let keep = made.len().saturating_sub(6);
+    let kept = &made[..keep];
+    let parent = net::dest::create(spec, |object| kept.contains(&object) || live(object))
+        .ok_or("net-dest: no room after a partial sweep")?;
+    let exact = netdest::Dest::parse("proto:tcp,ports:8000,hosts:kai.test,match:exact")
+        .map_err(|_| "net: a bad test destination")?;
+    net::dest::narrow(parent, exact, live, ONE)
+        .map_err(|_| "net-dest: a narrowing short of the reserve did not sweep first")?;
+    log!("net-dest: a narrowing short of the plan lines' reserve swept the dead records first");
+    Ok(())
 }
 
 /// #1150's review: a `Moving` with no `NetDest` entry leaves `moves()` where
@@ -488,7 +603,7 @@ fn any_host_pinned() -> Result<(), &'static str> {
     let exact = netdest::Dest::parse("proto:tcp,ports:443,hosts:kai.test,match:exact")
         .map_err(|_| "net: a bad test destination")?;
     let live = |object| crate::handle::names(kabi::handle::Kind::NetDest, object);
-    let narrowed = net::dest::narrow(object, exact, live)
+    let narrowed = net::dest::narrow(object, exact, live, 0)
         .map_err(|_| "net-dest: the ceiling did not narrow to one exact host")?;
     let one = captable::Entry::new(
         kabi::handle::Kind::NetDest,
