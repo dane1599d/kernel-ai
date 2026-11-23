@@ -80,10 +80,11 @@ groups() {  # PR numbers
   done
 }
 
-batch() {  # PR numbers, or --resume; a failed batch is bisected
+batch() {  # PR numbers, or --resume, or --noboot and PR numbers; a failed batch is bisected
   [ $# -eq 0 ] && return
   # local: the halves below recurse, and shared `out`/`h` mis-split the batch
-  local out h p files fails br
+  local out h p files fails br noboot_run=""
+  [ "$1" = --noboot ] && noboot_run=1
   out="$S/batch-auto-$(date +%m%d-%H%M%S).out"
   bash "$KAI_SCRIPTS/batch-ff.sh" "$@" > "$out" 2>&1
   for p in $(grep -oE "^  - #[0-9]+ conflicts" "$out" | grep -oE "[0-9]+"); do
@@ -119,6 +120,14 @@ batch() {  # PR numbers, or --resume; a failed batch is bisected
     local cases
     cases=$(grep "^    failed case: " "$out" | sed 's/^    failed case: xtask: //' | tr '\n' ';' | sed 's/;$//; s/;/; /g')
     [ -n "$cases" ] && say "batch of $* failed: $cases"
+    # A no-boot batch may fail only because it needed the boot jobs after all
+    # (CI's rule on the combined commit disagreed): its PRs go once more as a
+    # full batch, a lone PR too, before anything is unlabelled or split.
+    if [ -n "$noboot_run" ]; then
+      say "no-boot batch of $* failed; trying it once as a full batch"
+      batch "$@"
+      return
+    fi
     # The batch's one model PR failed the fluency gate (and nothing else
     # failed): it, and any PR stacked with it, leave the batch; the rest go
     # again without a split. The stack keeps its labels and waits on its parent.
@@ -203,13 +212,14 @@ main() {
     rows=$(eligible)
     if [ -z "$rows" ]; then sleep 300; continue; fi
     list=$(echo "$rows" | awk '{print $1}')
-    # PRs the boot jobs cannot see go first, in a no-boot batch that needs lint
-    # alone, unless a batch-first PR needs the boot jobs (an urgent fix waits
-    # for nothing). A failed no-boot batch is split into full batches.
+    # A no-boot batch, which needs lint alone, only when every eligible PR is
+    # one the boot jobs cannot see: with any boot PR waiting, one full batch
+    # takes them all, as a no-boot batch first would cost its landing's full
+    # run on main as well (#1108's review). A failed no-boot batch is tried
+    # once as a full batch before anything is unlabelled or split.
     if [ "$NOBOOT" = 1 ]; then
-      urgent=$(echo "$rows" | while read -r p h f; do [ "$f" = true ] && ! noboot_ok "$h" && echo $p; done)
       nb=$(echo "$rows" | while read -r p h f; do noboot_ok "$h" && echo $p; done)
-      if [ -n "$nb" ] && [ -z "$urgent" ]; then
+      if [ -n "$nb" ] && [ "$(echo $nb)" = "$(echo $list)" ]; then
         say "no-boot batch: $(echo $nb)"
         batch --noboot $nb
         sleep 30

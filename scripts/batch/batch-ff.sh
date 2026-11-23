@@ -360,6 +360,14 @@ compose() {
   done
   [ ${#batch[@]} -gt 0 ] || { echo "  nothing to merge; STOPPING"; exit 0; }
   set -- "${batch[@]}"
+  # Each PR was judged on its own tree; the combined commit is what CI judges.
+  # One that needs the boot jobs (main gained an include_str! of a PR's doc
+  # since it branched) goes as a full batch rather than failing CI's check.
+  if [ -n "$noboot" ] && ! (cd "$G" && bash "$KAI_SCRIPTS/noboot.sh" "$base" "$c" >/dev/null); then
+    echo "  the combined commit needs the boot jobs: running as a full batch"
+    noboot=""
+    name="batch/$(date +%m%d-%H%M)"
+  fi
 
   git -C "$G" push -q origin "$c:refs/heads/$name" || { echo "  push failed; STOPPING"; exit 0; }
   save_state pushed
