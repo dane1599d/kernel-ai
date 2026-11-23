@@ -9,6 +9,22 @@ use acpitables::fadt::{Reset, Space};
 /// How long one way gets to reset the machine before the next is tried.
 const SETTLE_NS: u64 = 100_000_000;
 
+/// Where the machine cannot be turned off: shows that it is safe to switch
+/// off, on the console's screen again if `desktop` held it, and halts this
+/// CPU with interrupts off (ADR 0007 section 8). Never returns.
+pub fn safe_to_switch_off() -> ! {
+    x86_64::instructions::interrupts::disable();
+    // Every other CPU stops too, so neither `fs` nor an app runs on while the
+    // screen says it is safe. Nothing is half written: POWER_OFF was refused
+    // as Busy while `fs` held a call, and `fs` commits before it answers.
+    crate::smp::halt_others();
+    crate::console::resume();
+    log!("power: it is now safe to switch off the computer");
+    loop {
+        x86_64::instructions::hlt();
+    }
+}
+
 /// Reboots the machine. Never returns.
 pub fn reboot() -> ! {
     x86_64::instructions::interrupts::disable();
