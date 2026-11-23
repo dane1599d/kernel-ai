@@ -121,6 +121,29 @@ fn a_client_hears_the_scale_only_when_it_is_not_one() {
     );
 }
 
+/// The desktop's whole appearance reaches a client as one more registry event,
+/// whole, at any size the saved appearance has.
+#[test]
+fn a_client_hears_the_whole_appearance_as_one_registry_event() {
+    let mut client = Client::new(42, "notes");
+    events(&mut client);
+    let text = "kai-appearance 1
+theme = light
+scale = 100
+text_size = 150
+\n                reduced_motion = off
+legible = on
+";
+    client.look(text);
+    let sent = events(&mut client);
+    assert_eq!(sent.len(), 1);
+    assert_eq!((sent[0].0, sent[0].1), (REGISTRY, 3));
+    assert_eq!(
+        Event::decode(Interface::Registry, sent[0].1, &sent[0].2),
+        Ok(Event::Look(text))
+    );
+}
+
 /// A surface at buffer scale 150 with a 300x150 buffer is a 240x120 window,
 /// its damage in logical px grown outward, and the desk is told the scale it
 /// was drawn at.
