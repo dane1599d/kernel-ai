@@ -333,6 +333,16 @@ impl CoreInstance {
         self.store.data_mut().ui.measure = Some(measure);
     }
 
+    /// Lays every window out again, whole, with the measure now set (the type
+    /// changed), and keeps the frames for comphost.
+    pub fn ui_relayout(&mut self) {
+        let host = &mut self.store.data_mut().ui;
+        let windows: Vec<u32> = host.ui.ids().collect();
+        for window in windows {
+            let _ = host.commit(window);
+        }
+    }
+
     /// Lets the app keep its windows from the agent (`set-agent-private`), for
     /// an app the system image grants it, never from its own manifest. Without
     /// it, the call traps.
