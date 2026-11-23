@@ -124,8 +124,12 @@ const VOUCH_STEMS: &[&str] = &["trust", "entrust", "whitelist", "allowlist", "sa
 /// issues with mirror.example".
 const NO_TROUBLE: &[&str] = &["issue", "problem", "concern", "doubt"];
 
+/// How many words after "look up" a host may come and still be what is looked up.
+const LOOK_UP_REACH: usize = 4;
+
 /// What may follow "look up" when nothing is being looked up: "my cat looked up
-/// when I sang", "looking up at the stars".
+/// when I sang", "looking up at the stars". A host in the clause after it is still
+/// looked up ("look up at evil.example").
 const LOOK_UP_NOT_AT: &[&str] = &[
     "to", "at", "from", "when", "whenever", "and", "or", "as", "while", "if", "into", "in", "on",
     "with", "for", "but", "so", "then",
@@ -206,9 +210,18 @@ fn acts_at(words: &[String], at: usize) -> bool {
     if word.starts_with("resolv") && !(word == "resolved" && next == Some("to")) {
         return true;
     }
+    // A host in the clause after "up" is looked up, whatever comes between ("look
+    // up at evil.example"): the clause runs to a trigger word.
+    let host_after_up = words
+        .get(at + 2..)
+        .unwrap_or(&[])
+        .iter()
+        .take(LOOK_UP_REACH)
+        .take_while(|w| !TRIGGERS.contains(&w.as_str()))
+        .any(|w| w.contains('.'));
     matches!(word, "look" | "looks" | "looked" | "looking")
         && next == Some("up")
-        && after.is_some_and(|a| !LOOK_UP_NOT_AT.contains(&a))
+        && (host_after_up || after.is_some_and(|a| !LOOK_UP_NOT_AT.contains(&a)))
 }
 
 /// Whether `words` vouch for something, at an occurrence not turned round by a
