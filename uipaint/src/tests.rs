@@ -329,10 +329,12 @@ legible = on",
 #[test]
 fn a_token_override_changes_an_app_windows_pixels() {
     let plain = appearance("theme = dark");
-    let tinted = appearance(
+    // A legible colour that is not the theme's text, written as the override's hex.
+    let chosen = look::DARK.ask & 0xFF_FFFF;
+    let tinted = appearance(&format!(
         "theme = dark
-token = text #EEEEEE",
-    );
+token = text #{chosen:06X}"
+    ));
     assert_ne!(
         plain.colour(look::Token::Text),
         tinted.colour(look::Token::Text)
