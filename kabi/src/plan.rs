@@ -201,6 +201,65 @@ mod tests {
 
     /// The routes after the prefix are checked by name in `supervise`
     /// (`every_shell_lines_routes_are_named_in_order`).
+    /// `cap::POLICY` is the person's: the scheduler's controls need it, and
+    /// `fs` gives its holder the person's share of the space reserve
+    /// (`PART_PEER_CAPS`). Every line the system and its apps plan, test lines
+    /// included, carries it only if it is the shell's (named and running
+    /// `shell`); `supervise` refuses it on any other line, a package's too.
+    #[test]
+    fn only_the_shells_line_carries_policy() {
+        use alloc::string::String;
+        let mut lines: Vec<String> = Vec::new();
+        for files in [false, true] {
+            lines.extend(super::system::plan("llm", files).lines().map(String::from));
+            lines.extend(super::system::lines(files).into_iter().map(String::from));
+        }
+        lines.extend(SHELL_LINES.map(String::from));
+        lines.extend(super::system::APPS.map(String::from));
+        lines.extend(
+            [
+                CC,
+                FETCH,
+                SEND,
+                FS,
+                UPDATED,
+                FILES_WINDOW,
+                MONITOR_WINDOW,
+                MODELS_WINDOW,
+                NOTES_TEST,
+                NOTES_EDIT_TEST,
+                EDIT_BASE,
+                EDITOR,
+                super::system::DESKTOP,
+                super::system::DESKTOP_PKG,
+                super::system::PKG,
+                super::system::NOTES_SAVED,
+                super::system::EDITOR_APP,
+                super::system::MODELS_APP,
+            ]
+            .map(String::from),
+        );
+        lines.push(notes("2", Some("1")));
+        let mut shells = 0;
+        for line in &lines {
+            let mut words = line.split_whitespace();
+            let name = words.next().unwrap_or_default();
+            let program = line
+                .split_whitespace()
+                .find_map(|w| w.strip_prefix("program="))
+                .unwrap_or(name);
+            let policy = line
+                .split_whitespace()
+                .filter_map(|w| w.strip_prefix("caps="))
+                .flat_map(|caps| caps.split('+'))
+                .any(|cap| cap == "policy");
+            let shell = name == "shell" && program == "shell";
+            assert_eq!(policy, shell, "{line}");
+            shells += usize::from(shell);
+        }
+        assert!(shells >= SHELL_LINES.len(), "the walk missed shell lines");
+    }
+
     #[test]
     fn each_shell_line_starts_with_the_shells_fixed_routes() {
         let named = [
