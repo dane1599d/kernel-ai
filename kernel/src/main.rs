@@ -444,6 +444,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskAppearance => run_case(appearance_tests::check),
         SelfTest::DeskCard => run_case(card_tests::check),
         SelfTest::DeskStanding => run_case(standing_tests::check),
+        SelfTest::DeskStandingUndo => run_case(standing_tests::undo_check),
         SelfTest::DeskStandingRefused => run_case(standing_tests::refused_check),
         SelfTest::DeskSends => run_case(desk_sends_tests::check),
         SelfTest::DeskPerf => run_case(desk_perf_tests::check),

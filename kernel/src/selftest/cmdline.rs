@@ -143,6 +143,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-card" => Some(SelfTest::DeskCard),
             "test=desk-standing" => Some(SelfTest::DeskStanding),
             "test=desk-standing-refused" => Some(SelfTest::DeskStandingRefused),
+            "test=desk-standing-undo" => Some(SelfTest::DeskStandingUndo),
             "test=desk-sends" => Some(SelfTest::DeskSends),
             "test=desk-perf" => Some(SelfTest::DeskPerf),
             "test=desk-profile" => Some(SelfTest::DeskProfile),
