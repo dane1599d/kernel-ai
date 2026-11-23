@@ -28,7 +28,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use netdest::{DayMeter, Dest, Protocol};
+use netdest::{DayMeter, Dest, NO_CLOCK, Protocol};
 use spin::Mutex;
 use x86_64::instructions::interrupts::without_interrupts;
 
@@ -62,12 +62,12 @@ struct Record {
 }
 
 /// Today, as the meters count days: whole days of the wall clock since 1970.
-/// With no wall clock it is always day 0, so a meter never turns over and
-/// buys no more bytes.
+/// With no wall clock it is [`NO_CLOCK`]: a meter never turns over then, and
+/// what it counted carries into the first day the clock shows.
 pub fn today() -> u32 {
     crate::clock::unix_seconds()
         .and_then(|s| u32::try_from(s / 86_400).ok())
-        .unwrap_or(0)
+        .unwrap_or(NO_CLOCK)
 }
 
 /// A meter of `mib` MiB a day, from today.
