@@ -84,16 +84,22 @@ impl<E: Env> Host<E> {
         instance.begin(&storage, inputs);
         let result = f(instance);
         let txn = instance.finish();
-        let done = result
-            .and_then(|r| check_txn(&txn, inputs, 0).map(|()| r))
-            .map_err(Stop::Fault)
-            .and_then(|r| {
-                // The standby's state, the candidate's writes: what the kernel
-                // keeps through probation, so a rollback loses nothing.
-                self.core.commit_as(&mut probation.standby, &txn, false)?;
-                self.core.next_ticket = inputs.first_ticket.wrapping_add(txn.effects.len() as u32);
-                Ok(r)
-            });
+        let checked = result.and_then(|r| check_txn(&txn, inputs, 0).map(|()| r));
+        // The standby's own export first: a fault there is the standby's, not
+        // the candidate's, and probation goes on as a request's would.
+        if checked.is_ok()
+            && let Err(fault) = crate::host::export_own(&mut probation.standby)
+        {
+            let (mode, _) = crate::probation::standby_failed(&mut self.core, *probation, &fault)?;
+            return Ok((mode, None));
+        }
+        let done = checked.map_err(Stop::Fault).and_then(|r| {
+            // The standby's state, the candidate's writes: what the kernel
+            // keeps through probation, so a rollback loses nothing.
+            self.core.commit_as(&mut probation.standby, &txn, false)?;
+            self.core.next_ticket = inputs.first_ticket.wrapping_add(txn.effects.len() as u32);
+            Ok(r)
+        });
         match done {
             Ok(r) => {
                 let performed = Performed {

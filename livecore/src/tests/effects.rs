@@ -418,3 +418,33 @@ fn after_a_rollback_the_standby_sees_the_candidates_window_writes() {
         call(&mut host, "kget")
     );
 }
+
+/// #1175's follow-up: a fault in the standby's own export while it commits
+/// a window call's writes is the standby's: it is reloaded and probation
+/// goes on, the candidate not blamed, and nothing of that call is kept.
+#[test]
+fn during_probation_a_standby_export_fault_reloads_the_standby_and_keeps_probation() {
+    use super::fake::INJECT_EXPORT;
+    use core::sync::atomic::Ordering;
+    let _guard = alone();
+    let kernel = kernel(&[A, B]);
+    let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
+    call(&mut host, "kadd");
+    assert!(call(&mut host, "ctl swap b").starts_with("ok probation b"));
+    let rollbacks = ledger(&kernel).counters.rollbacks;
+    INJECT_EXPORT.store(true, Ordering::SeqCst);
+    let served = ui_call(&mut host, b"kadd");
+    INJECT_EXPORT.store(false, Ordering::SeqCst);
+    assert_eq!(served, None);
+    assert_eq!(
+        ledger(&kernel).counters.rollbacks,
+        rollbacks,
+        "b is not blamed"
+    );
+    assert_eq!(
+        stored(&kernel, "count").as_deref(),
+        Some("1"),
+        "nothing kept"
+    );
+    assert!(call(&mut host, "ctl status").contains("probation"));
+}
