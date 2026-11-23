@@ -116,7 +116,7 @@ fn send_metered(slot: usize, id: u64, data: &[u8]) -> Result<usize, Error> {
     }
     let sent = net::stream::send(owner(slot), id, data);
     let taken = *sent.as_ref().unwrap_or(&0) as u64;
-    net::dest::with_meter(&meter, |m| m.refund(len.saturating_sub(taken)));
+    net::dest::with_meter(&meter, |m| m.refund(len.saturating_sub(taken), today));
     sent
 }
 

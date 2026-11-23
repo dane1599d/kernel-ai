@@ -41,7 +41,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
 use core::net::Ipv4Addr;
-pub use meter::{DayMeter, OverBudget};
+pub use meter::{DayMeter, NO_CLOCK, OverBudget};
 
 /// Whether a name's answer must not lead to `addr` (audit K #17): this
 /// machine, the link, nothing, everyone, a group, or a private network:
