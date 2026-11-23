@@ -141,8 +141,10 @@ fn peer_caps() -> Result<(), &'static str> {
             return Err("part: PART_PEER_CAPS answered what it must refuse");
         }
     }
-    // Another live process, the supervisor when the case runs one: the answer
-    // is that process's caps, not the caller's.
+    // Every other live process, the supervisor among them (the case's plan
+    // runs under it): the answer is that process's caps, not the caller's.
+    // At least one must answer with caps other than fs's, or the check would
+    // pass by checking nothing.
     let others: Vec<(u64, u64)> = process::with_table(|table| {
         table
             .iter()
@@ -150,6 +152,7 @@ fn peer_caps() -> Result<(), &'static str> {
             .map(|p| (p.pid, p.limits.caps))
             .collect()
     });
+    let mut unlike_fs = 0;
     for &(pid, caps) in &others {
         let got = peer_caps(slot, part, pid);
         // One that exited since the table was read is NotFound, rightly.
@@ -158,6 +161,15 @@ fn peer_caps() -> Result<(), &'static str> {
             log!("part: PART_PEER_CAPS for pid {pid} gave {got:?}, wanted {caps:#x}");
             return Err("part: PART_PEER_CAPS did not give another process's plan caps");
         }
+        if !gone && caps != fs.limits.caps {
+            unlike_fs += 1;
+        }
+    }
+    if unlike_fs == 0 {
+        log!("part: other live processes: {others:?}");
+        return Err(
+            "part: no other live process with caps unlike fs's to ask PART_PEER_CAPS about",
+        );
     }
     log!(
         "part: PART_PEER_CAPS answered fs and {} other live processes",

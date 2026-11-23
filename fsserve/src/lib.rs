@@ -79,7 +79,8 @@ fn read_only(badge: u64) -> bool {
 pub type NameOf = fn(u64, &mut [u8; kabi::MAX_NAME]) -> Option<usize>;
 
 /// How `fs` learns a live caller's plan capability bits ([`Server::set_caps_of`],
-/// PART_PEER_CAPS), or `None` for a pid not running or a kernel without the call.
+/// PART_PEER_CAPS), or `None` when the call fails: a pid not running, a kernel
+/// without the call, or any other error.
 pub type CapsOf = fn(u64) -> Option<u64>;
 
 /// The callers whose answer [`Server::is_person`] keeps: pids are never reused,
@@ -316,8 +317,10 @@ impl<D: BlockDev> Server<D> {
     }
 
     /// Whether `caller` is the person: it holds `cap::POLICY`. Asked of the
-    /// kernel once a caller, kept for the [`PEOPLE_KEPT`] latest; the kernel
-    /// (pid 0) and a caller the kernel does not answer for are not.
+    /// kernel once a caller, its answer kept for the [`PEOPLE_KEPT`] latest;
+    /// the kernel (pid 0) is not. A call that fails is not kept: that request
+    /// gets an app's tier and the next one asks again, so one passing failure
+    /// never makes the shell an app on the full disk that needs its quarter.
     fn is_person(&mut self, caller: u64) -> bool {
         if caller == 0 {
             return false;
@@ -325,7 +328,10 @@ impl<D: BlockDev> Server<D> {
         if let Some(&(_, person)) = self.people.iter().find(|(pid, _)| *pid == caller) {
             return person;
         }
-        let person = (self.caps_of)(caller).is_some_and(|caps| caps & kabi::cap::POLICY != 0);
+        let Some(caps) = (self.caps_of)(caller) else {
+            return false;
+        };
+        let person = caps & kabi::cap::POLICY != 0;
         if self.people.len() == PEOPLE_KEPT {
             self.people.remove(0);
         }

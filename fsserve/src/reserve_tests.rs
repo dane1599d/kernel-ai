@@ -169,12 +169,12 @@ fn a_truncate_and_sync_loop_never_drains_the_reserve() {
 /// A pid the tests' kernel knows as an app with no special caps.
 const CAROL: u64 = 9;
 
-/// The tests' PART_PEER_CAPS: Alice is the person (the shell's POLICY), Bob
-/// and Carol are apps, any other pid is not running.
+/// The tests' PART_PEER_CAPS: Alice is the person (the shell's POLICY), Bob,
+/// Carol and pids 100 to 199 are apps, any other pid is not running.
 fn caps(pid: u64) -> Option<u64> {
     match pid {
         ALICE => Some(kabi::cap::SERVE | kabi::cap::POLICY),
-        BOB | CAROL => Some(kabi::cap::CALL),
+        BOB | CAROL | 100..200 => Some(kabi::cap::CALL),
         _ => None,
     }
 }
@@ -225,12 +225,13 @@ fn the_person_s_trash_and_truncate_go_to_their_quarter() {
     tier(&mut c, ALICE, write);
     assert_eq!(tier(&mut c, ALICE, Request::Commit), Spend::Keep);
     assert_eq!(home(&mut c, Request::Abort), Reply::Done);
-    // The answers are kept: the kernel is asked once a caller.
+    // The answers are kept: the kernel is asked once a caller. A failed call
+    // (pid 1234, not running) is not.
     assert_eq!(
         c.server.people.iter().filter(|(p, _)| *p == ALICE).count(),
         1
     );
-    assert!(!c.server.people.iter().any(|(p, _)| *p == 0));
+    assert!(!c.server.people.iter().any(|(p, _)| *p == 0 || *p == 1234));
     // Kept for the latest few only, and asked again after.
     for pid in 100..100 + PEOPLE_KEPT as u64 {
         assert_eq!(tier(&mut c, pid, trash()), Spend::Half);
@@ -311,4 +312,34 @@ fn an_app_trashing_until_refused_leaves_the_person_room_to_delete() {
     // The emptying has the last quarter.
     let emptied = home(&mut c, Request::EmptyTrash);
     assert!(matches!(emptied, Reply::Emptied { .. }), "{emptied:?}");
+}
+
+/// Whether [`flaky_caps`] has failed its one time.
+static FAILED_ONCE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// The tests' PART_PEER_CAPS that fails the first time it is asked, as a
+/// passing kernel error would, then answers as [`caps`].
+fn flaky_caps(pid: u64) -> Option<u64> {
+    if !FAILED_ONCE.swap(true, core::sync::atomic::Ordering::SeqCst) {
+        return None;
+    }
+    caps(pid)
+}
+
+/// A PART_PEER_CAPS call that fails gives that one request an app's tier and
+/// is not kept: the person's next trash asks again and gets their quarter.
+#[test]
+fn a_failed_answer_is_asked_again() {
+    let mut disk = MemDisk::new(2 * 1024);
+    let (mut c, _) = Client::start(&mut disk);
+    c.server.set_caps_of(flaky_caps);
+    let trash = Request::Trash { name: "x".into() };
+    let changes = changes(&trash);
+    assert_eq!(c.server.spends_reserve(ALICE, &trash, changes), Spend::Half);
+    assert!(c.server.people.is_empty());
+    assert_eq!(
+        c.server.spends_reserve(ALICE, &trash, changes),
+        Spend::Person
+    );
+    assert_eq!(c.server.people, [(ALICE, true)]);
 }
