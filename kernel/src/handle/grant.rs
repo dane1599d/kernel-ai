@@ -120,19 +120,15 @@ pub fn revoke(node: GrantRef) -> Result<usize, kabi::Error> {
 /// Revokes every node the process `pid` made, when it ends: what it gave out
 /// under them goes with it.
 pub fn revoke_owned(pid: u64) {
-    // Every one, whatever a revoke answers (one revoked meanwhile by its
-    // parent answers Revoked, and the rest must still go: #1160's review);
-    // at most one pass per node, so a node that will not go cannot loop.
-    for _ in 0..NODES {
-        // Its own statement, so the lock goes before `revoke` takes it again:
-        // a `while let` scrutinee's guard would live through the body, and the
-        // lock is not reentrant (audit K #11).
-        let owned = TREE.lock().owned_by(pid);
-        let Some(node) = owned else {
-            break;
-        };
-        let _ = revoke(node);
-    }
+    // Each pass asks the tree in its own call, so the lock goes before
+    // `revoke` takes it again (it is not reentrant: audit K #11); whatever a
+    // revoke answers, the rest still go (`revoke_each`, host-tested).
+    captable::grant::revoke_each(
+        || TREE.lock().owned_by(pid),
+        |node| {
+            let _ = revoke(node);
+        },
+    );
 }
 
 /// Whether the process `pid` still owns a live node: none once it has ended.

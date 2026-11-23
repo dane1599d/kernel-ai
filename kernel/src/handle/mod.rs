@@ -450,6 +450,23 @@ pub fn need_object(
 /// `NetDest` naming a `hosts:any` record (the shell's ceiling) never moves
 /// (Permission): only its narrowings do. On any refusal nothing is taken.
 pub fn take_for(slot: usize, handles: &[Handle], to_caps: u64) -> Result<Moving, kabi::Error> {
+    take_with(slot, handles, to_caps, Table::close)
+}
+
+/// [`take_for`] for a move that may yet be refused (JOB_SPAWN): the slots
+/// stay held for their values, so [`give_back`] always returns the entries
+/// under the handles the caller names, and [`release`] closes them once the
+/// move went through.
+pub fn take_held(slot: usize, handles: &[Handle], to_caps: u64) -> Result<Moving, kabi::Error> {
+    take_with(slot, handles, to_caps, Table::hold)
+}
+
+fn take_with(
+    slot: usize,
+    handles: &[Handle],
+    to_caps: u64,
+    take: fn(&mut Table, Handle) -> Result<Entry, captable::Error>,
+) -> Result<Moving, kabi::Error> {
     let mut guard = lock(slot);
     let table = &mut guard.as_mut().ok_or(kabi::Error::BadHandle)?.table;
     for (i, &handle) in handles.iter().enumerate() {
@@ -467,7 +484,7 @@ pub fn take_for(slot: usize, handles: &[Handle], to_caps: u64) -> Result<Moving,
     }
     let taken: Result<Vec<Entry>, kabi::Error> = handles
         .iter()
-        .map(|&handle| table.close(handle).map_err(kabi::Error::from))
+        .map(|&handle| take(table, handle).map_err(kabi::Error::from))
         .collect();
     // Counted in transit before the table's lock goes: no moment where no
     // table and no move names them.
@@ -496,9 +513,11 @@ pub fn give_at_start(slot: usize, entries: impl Into<Moving>) -> bool {
     all
 }
 
-/// Puts `entries`, taken from `slot`'s table as `handles` by [`take_for`]
-/// for a move that was refused, back under the same handle values where
-/// their slots stayed empty (audit K #7): the caller still names them.
+/// Puts `entries`, taken from `slot`'s table as `handles` by [`take_held`]
+/// for a move that was refused, back under the same handle values (audit K
+/// #7): the caller still names them. One that cannot go back (the table is
+/// gone, or its slot was not held) is said and dropped; nothing then names it,
+/// so its object goes as a close's would.
 pub fn give_back(slot: usize, handles: &[Handle], moving: Moving) {
     let mut guard = lock(slot);
     let Some(table) = guard.as_mut().map(|h| &mut h.table) else {
@@ -506,7 +525,30 @@ pub fn give_back(slot: usize, handles: &[Handle], moving: Moving) {
     };
     // `moving` stops counting them only once dropped, after they are back.
     for (&handle, &entry) in handles.iter().zip(moving.entries()) {
-        let _ = table.restore(handle, entry);
+        if let Err(error) = table.put_back(handle, entry) {
+            crate::log!(
+                "handle: a refused move's {:?} could not go back under {:#x}: {error:?}",
+                entry.kind,
+                handle.0
+            );
+        }
+    }
+}
+
+/// Ends [`take_held`]'s hold on `handles` in `slot`'s table for a move that
+/// went through: their values are closed. Nothing to do once the table is gone.
+pub fn release(slot: usize, handles: &[Handle]) {
+    let mut guard = lock(slot);
+    let Some(table) = guard.as_mut().map(|h| &mut h.table) else {
+        return;
+    };
+    for &handle in handles {
+        if let Err(error) = table.release(handle) {
+            crate::log!(
+                "handle: a moved handle {:#x} was not held: {error:?}",
+                handle.0
+            );
+        }
     }
 }
 
