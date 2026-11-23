@@ -265,6 +265,7 @@ pub(super) fn apply_need(
                 .find(|(w, ..)| *w == window)
                 .map(|(_, _, buffer, _)| buffer.pool);
             state.shown.retain(|(w, ..)| *w != window);
+            state.wheeled.retain(|w| *w != window);
             state.agent.closed(window);
             pools::after_closed(state, at, pid, pool);
             false
