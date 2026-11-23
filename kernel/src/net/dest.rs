@@ -28,7 +28,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use netdest::{DayMeter, Dest, Protocol};
+use netdest::{DayMeter, Dest, NO_CLOCK, Protocol};
 use spin::Mutex;
 use x86_64::instructions::interrupts::without_interrupts;
 
@@ -41,6 +41,17 @@ const MAX_RESOLVED: usize = 32;
 /// Bits of an id below its generation: the slot.
 const SLOT_BITS: u32 = 8;
 const _: () = assert!(MAX_RECORDS == 1 << SLOT_BITS);
+/// Records one process may have made by narrowing and still hold (audit K
+/// #26): one holder cannot pin the table and stop every other narrowing.
+pub const MAX_NARROWED: usize = 16;
+/// Slots only a plan line's own record ([`create`], no owner) may take, so a
+/// spawn never fails because the narrowings filled the table.
+const PLAN_RESERVED: usize = 8;
+/// The least a resolved address counts for the connect check, whatever
+/// its TTL: a TTL of 0 (dnsmasq's for local names) or shorter than a dial's
+/// wait would otherwise expire before the connect (audit K #18). The DNS
+/// cache keeps the server's TTL as it is.
+const MIN_CONNECT_TTL_S: u64 = 60;
 /// A record this young is never dropped: the step from [`create`] to the
 /// handle that names it, preempted at the worst moment, is far shorter.
 const FRESH_NS: u64 = 1_000_000_000;
@@ -52,6 +63,8 @@ pub type Meter = Arc<Mutex<DayMeter>>;
 struct Record {
     /// Its slot's generation when it was made: part of its id.
     generation: u32,
+    /// The process whose narrowing made it; none for a plan line's.
+    owner: Option<u64>,
     /// When it was made (HPET).
     born: u64,
     dest: Dest,
@@ -62,12 +75,12 @@ struct Record {
 }
 
 /// Today, as the meters count days: whole days of the wall clock since 1970.
-/// With no wall clock it is always day 0, so a meter never turns over and
-/// buys no more bytes.
+/// With no wall clock it is [`NO_CLOCK`]: a meter never turns over then, and
+/// what it counted carries into the first day the clock shows.
 pub fn today() -> u32 {
     crate::clock::unix_seconds()
         .and_then(|s| u32::try_from(s / 86_400).ok())
-        .unwrap_or(0)
+        .unwrap_or(NO_CLOCK)
 }
 
 /// A meter of `mib` MiB a day, from today.
@@ -147,39 +160,58 @@ fn with<R>(f: impl FnOnce(&mut Vec<Option<Record>>) -> R) -> R {
 
 /// A new record for `dest`: its object id. When the table is full, records no
 /// live handle names (`live`) are dropped first; None if it is still full.
+/// A plan line's own record: it may take the slots kept for those.
 pub fn create(dest: Dest, live: impl Fn(u64) -> bool) -> Option<u64> {
-    create_metered(dest, live, None)
+    create_for(dest, live, None, None)
 }
 
 /// [`create`], the record counting its bytes on `meter` when given.
 pub fn create_metered(dest: Dest, live: impl Fn(u64) -> bool, meter: Option<Meter>) -> Option<u64> {
+    create_for(dest, live, meter, None)
+}
+
+/// [`create_metered`] for a narrowing by process `owner` (`Some`): None past
+/// [`MAX_NARROWED`] of its own still named, or when only the slots kept for
+/// plan lines are left.
+fn create_for(
+    dest: Dest,
+    live: impl Fn(u64) -> bool,
+    meter: Option<Meter>,
+    owner: Option<u64>,
+) -> Option<u64> {
     with(|records| {
-        let free = records.iter().position(Option::is_none);
-        let at = match free {
+        if let Some(pid) = owner {
+            let mine = records
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| r.as_ref().map(|r| (i, r)))
+                .filter(|(i, r)| r.owner == Some(pid) && live(id(*i, r.generation)))
+                .count();
+            if mine >= MAX_NARROWED {
+                return None;
+            }
+        }
+        // A plan line needs one slot; a narrowing leaves the last few free
+        // slots to plan lines. Short of that, records nothing names go first,
+        // whether the table is full or only short of the reserve (#1181's
+        // review: the reserve must not stop a narrowing the sweep would make
+        // room for).
+        let needed = if owner.is_some() {
+            PLAN_RESERVED + 1
+        } else {
+            1
+        };
+        if room(records) < needed {
+            sweep(records, &live);
+        }
+        if room(records) < needed {
+            return None;
+        }
+        let at = match records.iter().position(Option::is_none) {
             Some(at) => at,
-            None if records.len() < MAX_RECORDS => {
+            None => {
                 records.push(None);
                 records.len() - 1
-            }
-            None => {
-                let now = hpet::nanos();
-                for (i, slot) in records.iter_mut().enumerate() {
-                    let Some(record) = slot else {
-                        continue;
-                    };
-                    // The transit count first, then the tables, then whether
-                    // any handle moved meanwhile: one of the three sees a
-                    // handle that moved while it looked.
-                    let before = crate::handle::moves();
-                    let named = TRANSIT[i].load(Ordering::SeqCst) != 0
-                        || live(id(i, record.generation))
-                        || crate::handle::moves() != before
-                        || now.saturating_sub(record.born) < FRESH_NS;
-                    if !named {
-                        *slot = None;
-                    }
-                }
-                records.iter().position(Option::is_none)?
             }
         };
         let generation = GENERATION[at]
@@ -188,6 +220,7 @@ pub fn create_metered(dest: Dest, live: impl Fn(u64) -> bool, meter: Option<Mete
         mark_any_host(at, dest.any_host);
         records[at] = Some(Record {
             generation,
+            owner,
             born: hpet::nanos(),
             dest,
             resolved: Vec::new(),
@@ -195,6 +228,33 @@ pub fn create_metered(dest: Dest, live: impl Fn(u64) -> bool, meter: Option<Mete
         });
         Some(id(at, generation))
     })
+}
+
+/// Free slots, the table's room to grow counted in.
+fn room(records: &[Option<Record>]) -> usize {
+    records.iter().filter(|r| r.is_none()).count() + (MAX_RECORDS - records.len())
+}
+
+/// Drops every record nothing names: no handle in a table (`live`), none
+/// moving between tables, and not made within [`FRESH_NS`].
+fn sweep(records: &mut [Option<Record>], live: &impl Fn(u64) -> bool) {
+    let now = hpet::nanos();
+    for (i, slot) in records.iter_mut().enumerate() {
+        let Some(record) = slot else {
+            continue;
+        };
+        // The transit count first, then the tables, then whether any handle
+        // moved meanwhile: one of the three sees a handle that moved while
+        // it looked.
+        let before = crate::handle::moves();
+        let named = TRANSIT[i].load(Ordering::SeqCst) != 0
+            || live(id(i, record.generation))
+            || crate::handle::moves() != before
+            || now.saturating_sub(record.born) < FRESH_NS;
+        if !named {
+            *slot = None;
+        }
+    }
 }
 
 /// The destination `object` names, if it is a record.
@@ -217,8 +277,9 @@ pub fn resolved(object: u64, addresses: &[Ipv4Addr], ttl_s: u64) {
     let Some((at, generation)) = slot_of(object) else {
         return;
     };
-    let until = hpet::nanos().saturating_add(ttl_s.saturating_mul(1_000_000_000));
     let now = hpet::nanos();
+    let ttl_s = ttl_s.max(MIN_CONNECT_TTL_S);
+    let until = now.saturating_add(ttl_s.saturating_mul(1_000_000_000));
     with(|records| {
         let Some(Some(record)) = records.get_mut(at) else {
             return;
@@ -291,7 +352,12 @@ fn test_network() -> bool {
 
 /// A record for `narrower`, made from `object`'s, if `object`'s covers it:
 /// its id. The addresses `object` resolved do not carry over.
-pub fn narrow(object: u64, narrower: Dest, live: impl Fn(u64) -> bool) -> Result<u64, kabi::Error> {
+pub fn narrow(
+    object: u64,
+    narrower: Dest,
+    live: impl Fn(u64) -> bool,
+    owner: u64,
+) -> Result<u64, kabi::Error> {
     let wider = dest(object).ok_or(kabi::Error::Invalid)?;
     // `hosts:any` is made only from the shell's plan line, never by narrowing,
     // and narrows only to exact hosts: a suffix such as `co.uk` would carry
@@ -301,5 +367,5 @@ pub fn narrow(object: u64, narrower: Dest, live: impl Fn(u64) -> bool) -> Result
         return Err(kabi::Error::Permission);
     }
     // The narrower record counts on the wider one's meter: never a fresh day.
-    create_metered(narrower, live, meter_of(object)).ok_or(kabi::Error::NoMemory)
+    create_for(narrower, live, meter_of(object), Some(owner)).ok_or(kabi::Error::NoMemory)
 }
