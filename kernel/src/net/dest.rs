@@ -28,7 +28,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use netdest::{DayMeter, Dest, Protocol};
+use netdest::{DayMeter, Dest, NO_CLOCK, Protocol};
 use spin::Mutex;
 use x86_64::instructions::interrupts::without_interrupts;
 
@@ -47,6 +47,11 @@ pub const MAX_NARROWED: usize = 16;
 /// Slots only a plan line's own record ([`create`], no owner) may take, so a
 /// spawn never fails because the narrowings filled the table.
 const PLAN_RESERVED: usize = 8;
+/// The least a resolved address counts for the connect check, whatever
+/// its TTL: a TTL of 0 (dnsmasq's for local names) or shorter than a dial's
+/// wait would otherwise expire before the connect (audit K #18). The DNS
+/// cache keeps the server's TTL as it is.
+const MIN_CONNECT_TTL_S: u64 = 60;
 /// A record this young is never dropped: the step from [`create`] to the
 /// handle that names it, preempted at the worst moment, is far shorter.
 const FRESH_NS: u64 = 1_000_000_000;
@@ -70,12 +75,12 @@ struct Record {
 }
 
 /// Today, as the meters count days: whole days of the wall clock since 1970.
-/// With no wall clock it is always day 0, so a meter never turns over and
-/// buys no more bytes.
+/// With no wall clock it is [`NO_CLOCK`]: a meter never turns over then, and
+/// what it counted carries into the first day the clock shows.
 pub fn today() -> u32 {
     crate::clock::unix_seconds()
         .and_then(|s| u32::try_from(s / 86_400).ok())
-        .unwrap_or(0)
+        .unwrap_or(NO_CLOCK)
 }
 
 /// A meter of `mib` MiB a day, from today.
@@ -272,8 +277,9 @@ pub fn resolved(object: u64, addresses: &[Ipv4Addr], ttl_s: u64) {
     let Some((at, generation)) = slot_of(object) else {
         return;
     };
-    let until = hpet::nanos().saturating_add(ttl_s.saturating_mul(1_000_000_000));
     let now = hpet::nanos();
+    let ttl_s = ttl_s.max(MIN_CONNECT_TTL_S);
+    let until = now.saturating_add(ttl_s.saturating_mul(1_000_000_000));
     with(|records| {
         let Some(Some(record)) = records.get_mut(at) else {
             return;
@@ -314,14 +320,30 @@ pub fn may_connect(object: u64, protocol: Protocol, addr: Ipv4Addr, port: u16) -
 
 /// An address a name's answer must not lead to unless the record names it
 /// literally (lane C's review of task 1): this machine, the link, nothing,
-/// everyone or a group. An answer pointing there is how DNS rebinding reaches
-/// what the app was never given.
+/// everyone or a group, and a private network (audit K #17): 10/8,
+/// 172.16/12, 192.168/16, the carrier's 100.64/10, 0/8 and 240/4. An answer
+/// pointing there is how DNS rebinding reaches what the app was never given,
+/// and a probe of the person's LAN and the VM host on its ports.
+///
+/// One exception, for the boot cases' own network: with `online=test` on
+/// the kernel command line, QEMU's user network 10.0.2.0/24 (the mock DNS's
+/// fixtures and the HTTPS mock) is not refused. A release image never
+/// carries that word (`xtask::image::slots::build_release`).
 fn special(addr: Ipv4Addr) -> bool {
-    addr.is_loopback()
-        || addr.is_link_local()
-        || addr.is_unspecified()
-        || addr.is_broadcast()
-        || addr.is_multicast()
+    netdest::special(addr, test_network())
+}
+
+/// Whether a name's answer may lead to `addr`: RESOLVE_ON hands an app only
+/// such addresses, and keeps only them for its connects.
+pub fn answerable(addr: Ipv4Addr) -> bool {
+    !special(addr)
+}
+
+/// Whether the boot runs on the boot cases' test network (`online=test`).
+fn test_network() -> bool {
+    crate::cmdline()
+        .split_whitespace()
+        .any(|word| word == "online=test")
 }
 
 /// A record for `narrower`, made from `object`'s, if `object`'s covers it:
