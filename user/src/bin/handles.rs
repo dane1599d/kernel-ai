@@ -358,16 +358,16 @@ fn region(address: u64, len: usize) -> &'static mut [u8] {
     unsafe { core::slice::from_raw_parts_mut(address as *mut u8, len) }
 }
 
-/// SHM_SIZE on the 4-page `handle`: its bytes, also through a duplicate with
-/// no rights at all (any right will do, none needed); BadHandle for a handle
+/// SHM_INFO on the 4-page `handle` (as bytes, `sys::shm_size`): also through
+/// a duplicate with no rights at all, INSPECT included; BadHandle for a handle
 /// of another kind, and for a closed one.
 fn shm_size_rules(handle: Handle) -> Result<(), &'static str> {
     if sys::shm_size(handle) != Ok(4 * 4096) {
-        return Err("SHM_SIZE did not give the object's 4 pages");
+        return Err("SHM_INFO did not give the object's 4 pages");
     }
     let bare = sys::handle_dup(handle, Rights::empty()).map_err(|_| "a rightless dup failed")?;
     if sys::shm_size(bare) != Ok(4 * 4096) {
-        return Err("SHM_SIZE refused a handle with no rights");
+        return Err("SHM_INFO refused a handle with no rights");
     }
     expect(
         sys::shm_map(bare, false),
@@ -378,7 +378,7 @@ fn shm_size_rules(handle: Handle) -> Result<(), &'static str> {
     expect(
         sys::shm_size(bare),
         Error::BadHandle,
-        "SHM_SIZE of a closed dup",
+        "SHM_INFO of a closed dup",
     )?;
     let mut list = [HandleInfo::default(); 16];
     let count = sys::startup(&mut list)
@@ -392,12 +392,12 @@ fn shm_size_rules(handle: Handle) -> Result<(), &'static str> {
     expect(
         sys::shm_size(other),
         Error::BadHandle,
-        "SHM_SIZE of another kind",
+        "SHM_INFO of another kind",
     )?;
     expect(
         sys::shm_size(Handle(u32::MAX)),
         Error::BadHandle,
-        "SHM_SIZE of a handle never made",
+        "SHM_INFO of a handle never made",
     )
 }
 
@@ -431,7 +431,7 @@ fn own_shm() -> Result<(), &'static str> {
     expect(
         sys::shm_size(handle),
         Error::BadHandle,
-        "SHM_SIZE of a closed handle",
+        "SHM_INFO of a closed handle",
     )?;
     Ok(())
 }

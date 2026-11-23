@@ -535,15 +535,16 @@ pub fn shm_map_least(handle: Handle, write: bool, pages: u64) -> Result<u64, Err
     )
 }
 
-/// SHM_INFO: how many pages the `Shm` `handle` names holds. Needs INSPECT on
-/// the handle.
+/// SHM_INFO: how many pages the `Shm` `handle` names holds, whatever the
+/// handle's rights; BadHandle for a handle that is not an open `Shm`.
 pub fn shm_info(handle: Handle) -> Result<u64, Error> {
     call(call::SHM_INFO, [u64::from(handle.0), 0, 0, 0, 0, 0])
 }
 
-/// The bytes of the `Shm` that `handle` names: what a mapping of it may read.
+/// The bytes of the `Shm` that `handle` names: what a mapping of it may read
+/// ([`shm_info`]'s pages, in bytes).
 pub fn shm_size(handle: Handle) -> Result<u64, Error> {
-    call(call::SHM_SIZE, [u64::from(handle.0), 0, 0, 0, 0, 0])
+    shm_info(handle).map(|pages| pages * kabi::heap::PAGE)
 }
 
 /// Takes the screen (`desktop` only): its back buffer's `Shm`, and its shape.

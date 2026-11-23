@@ -21,7 +21,7 @@
 //! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH |
 //! | 140-149 | C, components | EDIT_CALL (lane E), CARD_READY |
 //! | 150-159 | V, virtual machines (P6) | |
-//! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET, SHM_SIZE |
+//! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
 //! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL, APP_CALL |
 //! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE, PART_PEER_NAME |
@@ -572,11 +572,6 @@ pub const QUOTA_LOWER_ONLY: u64 = 1 << 0;
 /// shows it. Permission to make the shell, the supervisor, the model service or
 /// `desktop` background; Busy while a tuning trial runs. Needs SUPERVISE.
 pub const PROC_CLASS_SET: u64 = 164;
-/// `shm_size(handle) -> bytes`: how long the `Shm` that `handle` names is,
-/// its pages times 4,096, so a holder that maps one it was given never reads
-/// past it on the sender's word (audit G #7). Any right will do; BadHandle
-/// for a handle that is not an open `Shm`. Numbered at merge, M's block.
-pub const SHM_SIZE: u64 = 165;
 
 // ---- U, 170-179 ----
 
@@ -731,8 +726,10 @@ pub const CLOCK_NOW: u64 = 110;
 
 /// `shm_info(handle) -> pages`: how many pages the `Shm` the handle names
 /// holds, so a holder can check its size before it trusts a mapping (cc's
-/// request `Shm`, which a short one would fault it in). Needs INSPECT on the
-/// handle, which SHM_CREATE's handle carries.
+/// request `Shm`, which a short one would fault it in; audit G #7's
+/// receivers). Any handle to it will do, whatever its rights: the size of an
+/// object a holder can already name tells it nothing more. BadHandle for a
+/// handle that is not an open `Shm`.
 pub const SHM_INFO: u64 = 200;
 
 /// The end of the reserved blocks (see the table above): the highest number a

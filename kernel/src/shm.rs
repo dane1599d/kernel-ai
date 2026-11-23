@@ -204,27 +204,6 @@ pub fn create(slot: usize, pages: u64) -> Result<u64, Error> {
     }
 }
 
-/// SHM_SIZE: the bytes of the object `raw` names in `slot`'s table, whatever
-/// the handle's rights. Read with `handle::entry`, not `check`: asking a
-/// `ONCE` handle's size must not use it up.
-pub fn size(slot: usize, raw: u64) -> Result<u64, Error> {
-    let handle = Handle(u32::try_from(raw).map_err(|_| Error::BadHandle)?);
-    let entry = handle::entry(slot, handle)?;
-    if entry.kind != Kind::Shm {
-        return Err(Error::BadHandle);
-    }
-    let (index, generation) = unpack(entry.object);
-    with(|objects| {
-        objects
-            .objects
-            .get(index)
-            .and_then(Option::as_ref)
-            .filter(|o| o.generation == generation)
-            .map(|o| o.frames.len() as u64 * PAGE_SIZE)
-            .ok_or(Error::BadHandle)
-    })
-}
-
 /// SHM_MAP: maps the object `raw` names in `slot`'s space; returns its address.
 /// Invalid when the object holds fewer than `min_pages` pages, so a server
 /// that will touch that many never faults on a short one (0: no check).
@@ -301,13 +280,14 @@ pub fn map_entry(slot: usize, entry: &Entry, write: bool) -> Result<u64, Error> 
 
 /// SHM_INFO: how many pages the object `raw` names in `slot`'s table holds,
 /// for a holder that must know its size before it trusts a mapping (cc's
-/// request `Shm`). Needs INSPECT on the handle.
+/// request `Shm`), whatever the handle's rights. Read with `handle::entry`,
+/// not `check`: asking a `ONCE` handle's size must not use it up.
 pub fn info(slot: usize, raw: u64) -> Result<u64, Error> {
     let handle = Handle(u32::try_from(raw).map_err(|_| Error::BadHandle)?);
-    let entry = handle::with(slot, |h| {
-        h.table.check(handle, Kind::Shm, Rights::INSPECT, &Kernel)
-    })?
-    .map_err(Error::from)?;
+    let entry = handle::entry(slot, handle)?;
+    if entry.kind != Kind::Shm {
+        return Err(Error::BadHandle);
+    }
     let (index, generation) = unpack(entry.object);
     with(|objects| {
         objects
