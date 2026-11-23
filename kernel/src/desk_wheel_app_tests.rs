@@ -11,6 +11,9 @@ use crate::desk_tests::{report, report_wheel};
 use crate::display::claim;
 use crate::{ipc, log, process, threads};
 
+/// The plan lines: `ui-window`'s, with `desktop` logging the wheel (`wheel_log=on`).
+pub const PLAN: &str = "desktop caps=display+input+serve pages=8192 stack_pages=512 wheel_log=on\n\
+     notes-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1";
 const CASE: &str = "desk-wheel-app";
 const WAIT_MS: u64 = 60_000;
 /// Time for comphost to start the app and paint its first frame under TCG.

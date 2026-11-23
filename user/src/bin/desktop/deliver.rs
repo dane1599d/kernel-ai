@@ -85,10 +85,12 @@ pub(super) fn deliver(state: &mut State, effects: &[Effect]) {
             // The wheel over a window's content: the client has it in its
             // ring; its next picture says it scrolled.
             Effect::Wheel { window, .. } => {
-                if !state.wheeled.contains(&window) {
-                    state.wheeled.push(window);
+                if state.log_wheel {
+                    if !state.wheeled.contains(&window) {
+                        state.wheeled.push(window);
+                    }
+                    println!("desktop: the wheel went to window {}", window.0);
                 }
-                println!("desktop: the wheel went to window {}", window.0);
                 false
             }
             // The wheel over Start: a row a detent.
