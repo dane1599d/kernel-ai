@@ -61,6 +61,29 @@ pub fn turn(groups: &[AppGroup]) -> (String, Vec<String>) {
     }
 }
 
+/// The flat apps turn's first line (spike S10-2's flat arm).
+pub const FLAT_HEADING: &str = "## apps";
+
+/// Spike S10-2's flat arm: every app's full lines ([`group_text`]) in the apps
+/// turn, with no budget, so a call naming an app row is written in one round.
+/// Apps with no rows are left out; "" for none. What ships is [`turn`].
+pub fn flat_turn(groups: &[AppGroup]) -> (String, Vec<String>) {
+    let mut text = String::from(FLAT_HEADING);
+    let mut left_out = Vec::new();
+    for group in groups {
+        if group.rows.is_empty() {
+            left_out.push(group.app.clone());
+            continue;
+        }
+        text.push('\n');
+        text.push_str(group_text(group).trim_end());
+    }
+    match left_out.len() == groups.len() {
+        true => (String::new(), left_out),
+        false => (text, left_out),
+    }
+}
+
 /// App `group`'s full lines, as a system turn after the request: what a call
 /// naming one of its rows is decoded with the second time. Each row has a line
 /// of its own; the OS's family lines (`service_stop|start`) are for its rows.

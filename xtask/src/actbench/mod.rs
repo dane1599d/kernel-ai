@@ -157,21 +157,26 @@ fn parse(args: &[String]) -> Result<Options, String> {
 
 /// The engine and what the report says about its model.
 pub(crate) struct Loaded {
-    engine: Shared,
+    pub(crate) engine: Shared,
     tokenizer: bpe::Tokenizer,
     tokenizer_sha256: String,
-    line: String,
+    pub(crate) line: String,
 }
 
 /// The engine for model `bytes` at [`CONTEXT`] positions on every CPU.
 fn load(bytes: &'static [u8], name: &str) -> Result<Loaded, String> {
+    load_at(bytes, name, CONTEXT)
+}
+
+/// [`load`] at `context` positions (spike S10-2's arms differ in it).
+pub(crate) fn load_at(bytes: &'static [u8], name: &str, context: usize) -> Result<Loaded, String> {
     let started = Instant::now();
     let budget = Budget {
         kv_bytes: 1 << 30,
         other_bytes: kabi::model::ENGINE_OTHER_BYTES as usize * 2,
     };
     let mut engine =
-        Engine::load(bytes, Tier::best(), CONTEXT, budget).map_err(|e| e.to_string())?;
+        Engine::load(bytes, Tier::best(), context, budget).map_err(|e| e.to_string())?;
     let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
     let threads: &'static Threads = Box::leak(Box::new(Threads(workers)));
     engine.set_parallel(threads);

@@ -344,3 +344,36 @@ fn data_of_digits_at_the_byte_cap_is_cut_to_fit_a_context_of_2048() {
         assert!(completion.is_ok(), "{completion:?}");
     }
 }
+
+#[test]
+fn the_flat_grammar_writes_an_apps_row_in_one_round() {
+    use crate::pack::apps::{self, AppGroup};
+    use infer::json::Constraint;
+    let row = |name, like| {
+        let like = agentabi::find(&agentabi::ROWS, like).unwrap();
+        &*alloc::boxed::Box::leak(alloc::boxed::Box::new(agentabi::Action { name, ..*like }))
+    };
+    let notes = AppGroup {
+        app: "notes".into(),
+        rows: vec![row("notes_add", "fs_create"), row("notes_count", "cpus")],
+    };
+    let flat = act::grammar_flat(core::slice::from_ref(&notes)).unwrap();
+    assert_eq!(
+        flat.apps_turn(),
+        apps::flat_turn(core::slice::from_ref(&notes)).0
+    );
+    let whole = br#"{"name":"notes_add","arguments":{"path":"a","text":"milk"}}"#;
+    let g = flat.first();
+    assert!(g.is_done(&g.advance(g.start(), whole).unwrap()));
+    // The name alone is no call: its arguments come in the same round.
+    let named = br#"{"name":"notes_add","arguments":{}}"#;
+    assert!(g.advance(g.start(), named).is_err());
+    // As shipped, the same row stops after its name.
+    let layered = act::grammar_with(&[notes]).unwrap();
+    let g = layered.first();
+    assert!(g.is_done(&g.advance(g.start(), named).unwrap()));
+    // The pack's own index groups stay on the index level in both.
+    let indexed = br#"{"name":"component_revert","arguments":{}}"#;
+    let g = flat.first();
+    assert!(g.is_done(&g.advance(g.start(), indexed).unwrap()));
+}

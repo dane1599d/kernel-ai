@@ -218,6 +218,29 @@ fn the_apps_turn_names_each_apps_rows_on_one_line() {
 }
 
 #[test]
+fn the_flat_apps_turn_shows_every_apps_full_lines() {
+    let empty = apps::AppGroup {
+        app: "empty".into(),
+        rows: std::vec![],
+    };
+    let (turn, left_out) = apps::flat_turn(&[notes(), empty.clone()]);
+    assert_eq!(
+        turn,
+        std::format!(
+            "{}\n{}",
+            apps::FLAT_HEADING,
+            apps::group_text(&notes()).trim_end()
+        )
+    );
+    assert_eq!(left_out, ["empty"]);
+    assert_eq!(apps::flat_turn(&[]), (String::new(), std::vec![]));
+    assert_eq!(
+        apps::flat_turn(&[empty]),
+        (String::new(), std::vec!["empty".into()])
+    );
+}
+
+#[test]
 fn apps_past_the_budget_are_left_out_and_the_rest_fit_it() {
     let names: std::vec::Vec<&'static str> = (0..40)
         .map(|i| &*std::boxed::Box::leak(std::format!("app{i}_do_something_long").into_boxed_str()))
