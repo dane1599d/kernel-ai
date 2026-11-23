@@ -7,6 +7,7 @@
 //! undone. Then cc goes back one entry at a time to it, entries that only ran
 //! code included, so cc's journal and the shell's stay aligned.
 
+use super::saved;
 use crate::{Reply, Shell};
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -26,6 +27,15 @@ pub(super) struct Ran {
     /// The SHA-256 of what cc ran, when its `#include "…"` files made that
     /// other than its text: a replay of files changed since is refused.
     pub(super) included: Option<[u8; 32]>,
+}
+
+/// Adds the names `text` defines to `gone`, each once.
+fn forget(gone: &mut Vec<String>, text: &str) {
+    for name in saved::defines(text) {
+        if !gone.contains(&name) {
+            gone.push(name);
+        }
+    }
 }
 
 impl Shell {
@@ -54,6 +64,9 @@ impl Shell {
         self.c.ran.clear();
         let mut restored = 0;
         let mut skipped = String::new();
+        // The names the entries not restored defined: a later entry that
+        // uses one binds to an earlier definition, or to none (#1260).
+        let mut gone: Vec<String> = Vec::new();
         for (seq, text, included) in kept {
             // An entry is kept as typed: its `#include "…"` files are read
             // again, and one that is gone or changed since is not restored,
@@ -62,6 +75,7 @@ impl Shell {
                 Ok(entry) => entry,
                 Err(why) => {
                     skipped.push_str(&format!("entry {seq}'s {why}; not restored\n"));
+                    forget(&mut gone, &text);
                     continue;
                 }
             };
@@ -69,6 +83,7 @@ impl Shell {
                 skipped.push_str(&format!(
                     "entry {seq}'s #include files changed since it ran; not restored\n"
                 ));
+                forget(&mut gone, &entry);
                 continue;
             }
             let replay = Request::Replay { seq, entry: &entry }.text();
@@ -79,7 +94,16 @@ impl Shell {
                     "entry {seq} did not replay: {}; not restored\n",
                     why.trim_end()
                 ));
+                forget(&mut gone, &entry);
             } else {
+                if let Some(name) = saved::uses(&entry, &gone) {
+                    skipped.push_str(&format!(
+                        "entry {seq} uses {name}, which a skipped entry redefined; it now binds to the earlier definition\n"
+                    ));
+                }
+                // Defined again here: later entries bind to this one.
+                let own = saved::defines(&entry);
+                gone.retain(|name| !own.contains(name));
                 restored += 1;
                 self.c.ran.push(Ran {
                     seq,
