@@ -216,8 +216,12 @@ failed_cases() {  # $1 run id
 # those files out of the batch first, before halving it (11-23: two semantic
 # clashes in kainet, E0592 and E0609, cost hours of bisecting).
 compile_errors() {  # $1 run id
-  gh run view "$1" --repo "$R" --log-failed 2>/dev/null \
-    | sed -E 's/\x1b\[[0-9;]*m//g; s/^[^\t]*\t[^\t]*\t//; s/^[0-9]{4}-[0-9-]+T[0-9:.]+Z //' \
+  # Each log line is "job<TAB>step<TAB>time text", the text in ANSI colour.
+  # `cut` and a literal escape, not `\t` and `\x1b`, which only GNU sed reads:
+  # macOS sed would print nothing and the batch would just be halved.
+  local esc=$'\033'
+  gh run view "$1" --repo "$R" --log-failed 2>/dev/null | cut -f3- \
+    | sed -E "s/${esc}\[[0-9;]*m//g; s/^[0-9]{4}-[0-9-]+T[0-9:.]+Z //" \
     | awk '/^error(\[E[0-9]+\])?: / { msg = $0; want = 1; next }
            want && /^ *--> / { sub(/^ *--> /, ""); print $0 "  " msg; want = 0; next }
            /^(warning|note|help)/ { want = 0 }' \

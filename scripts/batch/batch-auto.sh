@@ -40,10 +40,13 @@ conflict_files() {  # merge-tree CONFLICT lines on stdin
 # A batch that does not compile (batch-ff.sh's "compile error: FILE:LINE"
 # lines): the PRs that touch the files rustc names leave it, with their
 # stacks, and the rest go again whole, rather than halving it. If any of the
-# rest lands, a lone culprit is unlabelled with the errors; several go on as a
-# batch of their own, which halving then sorts out (one may land, and the
-# other then fails alone). Returns 1, for the usual split, when no PR, or
-# every PR, touches them.
+# rest lands, the culprits go on as a batch of their own: touching a file
+# rustc named is no proof (on 11-20 and 11-23 the error was in main's code,
+# not the guilty PR's), so a culprit loses its label only by failing on its
+# own run, and an innocent one lands. If none of the rest lands, the culprits
+# keep their labels for the next batch. Each retry gets a strict subset, so
+# this ends. Returns 1, for the usual split, when no PR, or every PR, touches
+# them.
 culprits_out() {  # $1 batch-ff.sh output, then the batch's PR numbers
   local out=$1 p br g hit files errs merged=""
   local -a culprits=() rest=() leaving=()
@@ -73,9 +76,6 @@ culprits_out() {  # $1 batch-ff.sh output, then the batch's PR numbers
   done
   if [ -z "$merged" ]; then
     say "the rest did not land either; ${leaving[*]} keep their labels"
-  elif [ ${#culprits[@]} -eq 1 ]; then
-    unlabel ${culprits[0]} "Batcher: its merge batch did not compile, and this PR touches the files rustc named: $errs. The rest of the batch landed without it. Rebase onto main, fix the build, push once, and add \`batch-ready\` again."
-    say "#${culprits[0]} unlabelled: the batch did not compile in files it touches; the rest landed"
   else
     say "the rest landed; ${leaving[*]} go on as a batch of their own"
     batch "${leaving[@]}"
@@ -197,7 +197,7 @@ batch() {  # PR numbers, or --resume; a failed batch is bisected
       return
     fi
     if [ $# -eq 1 ]; then
-      fails=$(grep -E "=failure|fluency run|failed case: " "$out" | sed 's/^ *//; s/^failed case: xtask: //' | tr '\n' ' ')
+      fails=$(grep -E "=failure|fluency run|failed case: |compile error: " "$out" | sed 's/^ *//; s/^failed case: xtask: //' | tr '\n' ' ')
       unlabel $1 "Batcher: this PR failed in a merge batch on its own: $fails. Fix it, push once, and add \`batch-ready\` again."
       say "#$1 failed alone: $fails"
     elif [ $# -gt 1 ]; then

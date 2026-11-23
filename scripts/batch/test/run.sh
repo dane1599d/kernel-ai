@@ -246,10 +246,13 @@ auto_until() {  # runs batch-auto.sh until its log matches $1, then stops it
   touch "$T/state/batch-auto.stop"; wait $A
 }
 compile_log() {  # rustc errors at each FILE:LINE given, as gh run view --log-failed prints them
-  local at
+  # The shape of the 11-23 batch run's log: ANSI colour, under "UNKNOWN STEP".
+  local at e=$'\033' j="Format, lint, host unit tests" s="UNKNOWN STEP"
   for at in "$@"; do
-    printf '%s\t%s\t%s\n' "Format, lint, host unit tests" "Run tests" "2026-11-23T10:00:00.1Z error[E0592]: duplicate definitions with name \`io_mut\`" \
-      "Format, lint, host unit tests" "Run tests" "2026-11-23T10:00:00.2Z    --> $at:5"
+    printf '%s\t%s\t%s\n' \
+      "$j" "$s" "2026-11-23T04:16:08.8681079Z ${e}[1m${e}[91merror[E0609]${e}[0m${e}[1m: no field \`last_use_ms\` on type \`&mut Nap\`${e}[0m" \
+      "$j" "$s" "2026-11-23T04:16:08.8683125Z   ${e}[1m${e}[94m--> ${e}[0m$at:14" \
+      "$j" "$s" "2026-11-23T04:16:08.8683945Z    ${e}[1m${e}[94m|${e}[0m"
   done > "$T/compile.log"
 }
 
@@ -260,12 +263,12 @@ mkpr 8 feat/k main kainet/src/tcp.rs
 git -C "$T/work" checkout -q --detach origin/main
 cat "$T/prs/8/sha" > "$T/fail-with"
 compile_log kainet/src/tcp.rs:212
-auto_until "unlabelled|keep their labels|splitting"
+auto_until "failed alone|keep their labels|splitting"
 L="$T/state/batch-auto.log"
-check "the error and its file are logged"     'grep -q "does not compile: kainet/src/tcp.rs:212:5  error\[E0592\]" "$L"'
+check "the error and its file are logged"     'grep -q "does not compile: kainet/src/tcp.rs:212:14  error\[E0609\]: no field" "$L"'
 check "the rest goes again whole, no halving" 'grep -q "trying it without 8 (8 touch those files)" "$L" && ! grep -q splitting "$L"'
 check "the rest lands"                        'grep -q "#1 merged" "$L" && grep -q "#5 merged" "$L"'
-check "the culprit is unlabelled, commented"  '[ ! -s "$T/prs/8/labels" ] && grep -q "pr comment 8 .*kainet/src/tcp.rs:212" "$T/gh.log" && ! grep -q "#8 merged" "$L"'
+check "the culprit goes alone, fails, unlabelled with the error" 'grep -q "the rest landed; 8 go on as a batch of their own" "$L" && grep -q "#8 failed alone" "$L" && [ ! -s "$T/prs/8/labels" ] && grep -q "pr comment 8 .*compile error: kainet/src/tcp.rs:212:14" "$T/gh.log" && ! grep -q "#8 merged" "$L"'
 
 echo "== batch-auto.sh: two PRs that clash only together: the rest lands, then one of them"
 setup
@@ -280,6 +283,51 @@ L="$T/state/batch-auto.log"
 check "both leave the batch"                  'grep -q "trying it without 8 9 (8 9 touch those files)" "$L"'
 check "the rest lands, then they go together" 'grep -q "#1 merged" "$L" && grep -q "#5 merged" "$L" && grep -q "the rest landed; 8 9 go on as a batch of their own" "$L"'
 check "one lands, the other fails alone"      'grep -q "#8 merged" "$L" && grep -q "#9 failed alone" "$L" && [ ! -s "$T/prs/9/labels" ]'
+
+# The review of #1264: A (8) changes a signature, main calls it from a file
+# C (9) also touches, so rustc names C's file while A is in the batch. C must
+# not lose its label for the rest failing again; it lands on a run of its own.
+echo "== batch-auto.sh: the rest fails again; the innocent PR rustc pointed at still lands"
+setup
+for n in 2 3 4 7; do : > "$T/prs/$n/labels"; done
+mkpr 8 feat/sig main kabi/src/call.rs
+mkpr 9 feat/caller main kernel/src/process/mod.rs
+git -C "$T/work" checkout -q --detach origin/main
+cat "$T/prs/8/sha" > "$T/fail-with"
+compile_log kernel/src/process/mod.rs:212
+: > "$T/gh.log"
+auto_until "#9 (merged|failed alone|unlabelled)"
+L="$T/state/batch-auto.log"
+check "C leaves, the rest goes again"         'grep -q "trying it without 9 (9 touch those files)" "$L"'
+check "the rest fails again and is halved"    'grep -q "splitting" "$L" && grep -q "#1 merged" "$L" && grep -q "#5 merged" "$L"'
+check "A fails alone, with the error"         'grep -q "#8 failed alone: .*compile error: kernel/src/process/mod.rs:212:14" "$L" && [ ! -s "$T/prs/8/labels" ]'
+check "C goes on alone and lands, uncommented" 'grep -q "the rest landed; 9 go on as a batch of their own" "$L" && grep -q "#9 merged" "$L" && ! grep -q "pr comment 9 " "$T/gh.log" && ! grep -q "pr edit 9 " "$T/gh.log"'
+
+echo "== batch-auto.sh: a culprit inside a stack leaves with its stack"
+setup
+for n in 2 3 4 7; do : > "$T/prs/$n/labels"; done
+mkpr 8 feat/k main kainet/src/tcp.rs
+mkpr 9 feat/k2 feat/k kainet/src/io.rs
+git -C "$T/work" checkout -q --detach origin/main
+cat "$T/prs/9/sha" > "$T/fail-with"
+compile_log kainet/src/io.rs:40
+auto_until "#9 failed alone|keep their labels"
+L="$T/state/batch-auto.log"
+check "the whole stack leaves"                'grep -q "trying it without 8 9 (9 touch those files)" "$L"'
+check "the rest lands, the stack goes on"     'grep -q "#1 merged" "$L" && grep -q "#5 merged" "$L" && grep -q "the rest landed; 8 9 go on as a batch of their own" "$L"'
+check "the parent lands, the child fails"     'grep -q "#8 merged" "$L" && grep -q "#9 failed alone: .*kainet/src/io.rs:40:14" "$L" && [ ! -s "$T/prs/9/labels" ]'
+
+echo "== batch-auto.sh: errors in files no PR touches: the usual halving"
+setup
+for n in 2 3 4 7; do : > "$T/prs/$n/labels"; done
+mkpr 8 feat/k main kainet/src/tcp.rs
+git -C "$T/work" checkout -q --detach origin/main
+cat "$T/prs/8/sha" > "$T/fail-with"
+compile_log kernel/src/process/mod.rs:212
+auto_until "#8 failed alone|keep their labels"
+L="$T/state/batch-auto.log"
+check "no PR leaves first; the batch is split" '! grep -q "trying it without" "$L" && grep -q "batch of 1 5 8 failed; splitting it" "$L"'
+check "the others land, the PR fails alone"   'grep -q "#1 merged" "$L" && grep -q "#5 merged" "$L" && grep -q "#8 failed alone: .*compile error: kernel/src/process/mod.rs:212:14" "$L" && [ ! -s "$T/prs/8/labels" ]'
 
 echo "== batch-auto.sh: a modify/delete conflict names its file"
 setup
