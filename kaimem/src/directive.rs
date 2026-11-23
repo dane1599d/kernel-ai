@@ -124,15 +124,19 @@ const VOUCH_STEMS: &[&str] = &["trust", "entrust", "whitelist", "allowlist", "sa
 /// issues with mirror.example".
 const NO_TROUBLE: &[&str] = &["issue", "problem", "concern", "doubt"];
 
-/// How many words after "look up" a host may come and still be what is looked up.
-const LOOK_UP_REACH: usize = 4;
-
 /// What may follow "look up" when nothing is being looked up: "my cat looked up
-/// when I sang", "looking up at the stars". A host in the clause after it is still
-/// looked up ("look up at evil.example").
+/// when I sang", "looking up at the stars". In a text that names a host, a host
+/// is what is looked up ("look up at evil.example", "tracker.example is the host
+/// to look up at").
 const LOOK_UP_NOT_AT: &[&str] = &[
     "to", "at", "from", "when", "whenever", "and", "or", "as", "while", "if", "into", "in", "on",
     "with", "for", "but", "so", "then",
+];
+
+/// Words before a "pinging" that make it a description ("a pinging sound", "the
+/// pinging noise"), not something Kai does.
+const DETERMINERS: &[&str] = &[
+    "a", "an", "the", "this", "that", "its", "my", "his", "her", "our", "your", "their",
 ];
 
 /// Words before a vouch that turn it round: "I don't trust public wifi".
@@ -151,38 +155,83 @@ const NEGATIONS: &[&str] = &[
     "couldn't",
 ];
 
+/// Why a text that grants is refused.
+const GRANTS: &str = "a memory never gives permission: Kai asks each time, so that is not kept";
+
+/// Why a text that orders is refused.
+const ORDERS: &str = "that reads as a standing instruction, and a memory only informs: for Kai to do it, make it a rule; for a fact about you, say it without when or always";
+
 /// Why `text` cannot be a memory because it would permit or instruct, or
 /// `None`.
+///
+/// The text is read four ways, and a problem in any one is a problem. A hidden
+/// character may stand inside a word (`tru\u{fe0f}sts`) or between two
+/// (`you\u{fe0f}may`), so it is read taken out and read as a space. A dot, colon,
+/// equals sign or apostrophe may hold a host or a contraction together
+/// (`pong.evil.example`, `don't`) or glue a listed word to the one before
+/// (`is.allowed`), so the words are read with a host as one word and with every
+/// such mark but a contraction's apostrophe splitting them.
 pub fn problem(text: &str) -> Option<&'static str> {
-    let folded = fold(text).to_lowercase();
-    if mixes_alphabets(&folded) {
+    // Twice, as lowercasing `İ` gives an `i` and a combining dot.
+    let read = |hidden| fold(&fold(text, hidden).to_lowercase(), hidden);
+    let readings = [read(Hidden::Dropped), read(Hidden::Spaced)];
+    if readings.iter().any(|folded| mixes_alphabets(folded)) {
         return Some(
             "a word mixes letters of different alphabets, as look-alike letters do, so that is not kept",
         );
     }
-    let padded = format!(" {} ", words(&folded).join(" "));
+    let found: Vec<&'static str> = readings
+        .iter()
+        .flat_map(|folded| [View::Hosts, View::Parts].map(|view| verdict(folded, view)))
+        .flatten()
+        .collect();
+    found
+        .iter()
+        .find(|why| **why == GRANTS)
+        .or(found.first())
+        .copied()
+}
+
+/// How [`words`] treats a dot, colon, equals sign or apostrophe inside a word.
+#[derive(Clone, Copy)]
+enum View {
+    /// Each joins: a host (`pong.evil.example`), `tier=` and `don't` are one word.
+    Hosts,
+    /// Each splits, but an apostrophe before a contraction's ending (`don't`,
+    /// `kai's`): `always.switch` and `is'allowed` are two words.
+    Parts,
+}
+
+/// The problem with the folded text `folded` read in `view`, or `None`.
+fn verdict(folded: &str, view: View) -> Option<&'static str> {
+    let words = words(folded, view);
+    let padded = format!(" {} ", words.join(" "));
     let has = |phrase: &str| padded.contains(&format!(" {phrase} "));
     if PERMITS.iter().any(|p| has(p))
         || ["tier=", "system:", "consent="]
             .iter()
             .any(|c| folded.contains(c))
     {
-        return Some("a memory never gives permission: Kai asks each time, so that is not kept");
+        return Some(GRANTS);
     }
-    let words = words(&folded);
-    let acting: Vec<bool> = (0..words.len()).map(|at| acts_at(&words, at)).collect();
+    // Whether the text names a host anywhere, whichever view it is read in.
+    let hosted = names_host(folded)
+        || self::words(folded, View::Hosts)
+            .iter()
+            .any(|w| w.contains('.'));
+    let acting: Vec<bool> = (0..words.len())
+        .map(|at| acts_at(&words, at, hosted))
+        .collect();
     let acts = acting.iter().any(|a| *a);
     // A vouch split by a hyphen ("tr-usts") reads as the whole word too.
-    let vouch = vouches(&words) || vouches(&self::words(&folded.replace('-', "")));
-    if vouch && (acts || names_host(&folded)) {
-        return Some("a memory never gives permission: Kai asks each time, so that is not kept");
+    let vouch = vouches(&words) || vouches(&self::words(&folded.replace('-', ""), view));
+    if vouch && (acts || hosted) {
+        return Some(GRANTS);
     }
     // An action tied to a trigger, or a text that starts with one: an order.
     let ordered = acting.first().copied().unwrap_or(false);
     if ordered || (acts && TRIGGERS.iter().any(|t| has(t))) {
-        return Some(
-            "that reads as a standing instruction, and a memory only informs: for Kai to do it, make it a rule; for a fact about you, say it without when or always",
-        );
+        return Some(ORDERS);
     }
     None
 }
@@ -190,38 +239,31 @@ pub fn problem(text: &str) -> Option<&'static str> {
 /// Whether word `at` of `words` is an action, each occurrence on its own: a row's
 /// verb, a network verb unless it is "ping pong" or "resolved to", or `net_lookup`'s
 /// and `net_fetch`'s two-word "look up" with something to look up ("look up to my
-/// dad" and "looked up when I sang" look up nothing). A host is one word
-/// ([`words`]), so `pong.evil.example` is not the bare word an exception is for.
-/// "Ping" counts in its plain forms, and "pinging" only with a host after it, so
-/// "a pinging sound" stays a fact.
-fn acts_at(words: &[String], at: usize) -> bool {
+/// dad" and "looked up when I sang" look up nothing). In the view where a host is
+/// one word, `pong.evil.example` is not the bare word an exception is for. In a
+/// text that names a host (`hosted`), wherever it stands, "pinging" counts and
+/// "look up" always has something to look up; without one, "a pinging sound" (a
+/// form of "ping" after a [`DETERMINERS`] word) and "looking up at the stars" stay
+/// facts.
+fn acts_at(words: &[String], at: usize, hosted: bool) -> bool {
     let word = words[at].as_str();
     let next = words.get(at + 1).map(String::as_str);
     let after = words.get(at + 2).map(String::as_str);
     if ACTIONS.iter().any(|a| word.starts_with(a)) {
         return true;
     }
-    let host_next = next.is_some_and(|n| n.contains('.'));
-    let ping =
-        matches!(word, "ping" | "pings" | "pinged") || (word.starts_with("ping") && host_next);
+    let described = at > 0 && DETERMINERS.contains(&words[at - 1].as_str());
+    let ping = matches!(word, "ping" | "pings" | "pinged")
+        || (word.starts_with("ping") && (hosted || !described));
     if ping && next != Some("pong") {
         return true;
     }
     if word.starts_with("resolv") && !(word == "resolved" && next == Some("to")) {
         return true;
     }
-    // A host in the clause after "up" is looked up, whatever comes between ("look
-    // up at evil.example"): the clause runs to a trigger word.
-    let host_after_up = words
-        .get(at + 2..)
-        .unwrap_or(&[])
-        .iter()
-        .take(LOOK_UP_REACH)
-        .take_while(|w| !TRIGGERS.contains(&w.as_str()))
-        .any(|w| w.contains('.'));
-    matches!(word, "look" | "looks" | "looked" | "looking")
+    word.starts_with("look")
         && next == Some("up")
-        && (host_after_up || after.is_some_and(|a| !LOOK_UP_NOT_AT.contains(&a)))
+        && (hosted || after.is_none_or(|a| !LOOK_UP_NOT_AT.contains(&a)))
 }
 
 /// Whether `words` vouch for something, at an occurrence not turned round by a
@@ -277,9 +319,23 @@ fn names_host(text: &str) -> bool {
 /// `text` as the words it reads as: fullwidth, mathematical and circled letters
 /// as ASCII, a curly apostrophe as `'`, and the characters that split a word
 /// without showing (soft hyphen, joiners, variation selectors, tag characters,
-/// combining marks) taken out.
-fn fold(text: &str) -> String {
-    text.chars().filter_map(fold_char).collect()
+/// combining marks) taken out or, as `hidden` says, read as a space.
+fn fold(text: &str, hidden: Hidden) -> String {
+    text.chars()
+        .filter_map(|c| match (fold_char(c), hidden) {
+            (None, Hidden::Spaced) => Some(' '),
+            (folded, _) => folded,
+        })
+        .collect()
+}
+
+/// How [`fold`] reads a character that shows as nothing or as a mark.
+#[derive(Clone, Copy)]
+enum Hidden {
+    /// Taken out, as inside a word: `tru\u{fe0f}sts` reads as `trusts`.
+    Dropped,
+    /// A space, as between two words: `you\u{fe0f}may` reads as `you may`.
+    Spaced,
 }
 
 fn fold_char(c: char) -> Option<char> {
@@ -327,27 +383,41 @@ fn mixes_alphabets(text: &str) -> bool {
             || ('\u{c0}'..='\u{24f}').contains(&c)
             || ('\u{1e00}'..='\u{1eff}').contains(&c)
     };
-    words(text).iter().any(|word| {
+    // A host's labels are words of their own here: a Cyrillic file name with a
+    // `.txt` ending is no mix.
+    let words = words(text, View::Hosts);
+    words.iter().flat_map(|w| w.split('.')).any(|word| {
         !word.starts_with(|c: char| c.is_ascii_digit())
             && word.chars().any(|c| c.is_ascii_alphabetic())
             && word.chars().any(|c| c.is_alphabetic() && !latin(c))
     })
 }
 
-/// `text`'s words, apostrophes kept ("don't"), and a dot between letters or digits
-/// kept, so a host (`pong.evil.example`) or an address is one word.
-fn words(text: &str) -> Vec<String> {
+/// `text`'s words as `view` reads them. In both views a letter or digit joins and
+/// anything else but a dot, colon, equals sign or apostrophe splits.
+fn words(text: &str, view: View) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
-    let inner_dot = |at: usize| {
-        chars[at] == '.'
-            && at > 0
-            && chars[at - 1].is_alphanumeric()
-            && chars.get(at + 1).is_some_and(|c| c.is_alphanumeric())
+    let joins = |at: usize| match (chars[at], view) {
+        (c, _) if c.is_alphanumeric() => true,
+        ('\'' | ':' | '=', View::Hosts) => true,
+        ('.', View::Hosts) => {
+            at > 0
+                && chars[at - 1].is_alphanumeric()
+                && chars.get(at + 1).is_some_and(|c| c.is_alphanumeric())
+        }
+        ('\'', View::Parts) => {
+            let tail: String = chars[at + 1..]
+                .iter()
+                .take_while(|c| c.is_alphanumeric())
+                .collect();
+            matches!(tail.as_str(), "t" | "s" | "d" | "m" | "ll" | "re" | "ve")
+        }
+        _ => false,
     };
     let mut words = Vec::new();
     let mut word = String::new();
     for (at, &c) in chars.iter().enumerate() {
-        if c.is_alphanumeric() || matches!(c, '\'' | ':' | '=') || inner_dot(at) {
+        if joins(at) {
             word.push(c);
         } else if !word.is_empty() {
             words.push(core::mem::take(&mut word));
