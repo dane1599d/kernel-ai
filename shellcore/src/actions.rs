@@ -63,6 +63,8 @@ pub(crate) struct Pending {
     pub send: Option<crate::outbox::Send>,
     /// For a restart line, true: the restart waits on the answer.
     pub power: bool,
+    /// For a goal row, what waits on the answer.
+    pub goal: Option<crate::goalrows::Waiting>,
 }
 
 /// `y`, `n`, `yes` or `no`, any case.
@@ -257,6 +259,7 @@ impl Shell {
             net: None,
             send: None,
             power: false,
+            goal: None,
         });
         Reply {
             ok: true,
@@ -500,7 +503,7 @@ impl Shell {
             false => Form::Script,
         };
         self.log.push(Entry {
-            agent: agentid::Name::kai(),
+            agent: self.entry_agent(id),
             id,
             t_ns: self.host.now_ns(),
             form,
@@ -563,6 +566,30 @@ impl Shell {
             return Reply::err("nothing to confirm");
         };
         let id = pending.id;
+        // An agent's question runs only on the person's yes at its card
+        // (`agentconsent`).
+        let expired = self.host.now_ns().saturating_sub(pending.created_ns) > CONFIRM_EXPIRY_NS;
+        if self.card_is_agents(id) && !is_show(text) && !expired {
+            self.pending = Some(pending);
+            let agent = match self.agent_yes_spent(id) {
+                Ok(agent) => agent,
+                Err(refused) => return refused,
+            };
+            let Some(back) = self.pending.take() else {
+                return Reply::err("nothing to confirm");
+            };
+            // What the yes runs is the agent's: its entries say so.
+            let since = self.next_id;
+            let reply = self.answer_pending_checked(back, text);
+            self.stamp_entries(id, since, &agent);
+            return reply;
+        }
+        self.answer_pending_checked(pending, text)
+    }
+
+    /// [`Shell::answer_pending`] once the answer may go to `pending`.
+    fn answer_pending_checked(&mut self, pending: Pending, text: &str) -> Reply {
+        let id = pending.id;
         if self.host.now_ns().saturating_sub(pending.created_ns) > CONFIRM_EXPIRY_NS {
             self.record(id, &pending.request, &pending.checked.script, "expired");
             self.remember(&pending, "Not run: the question expired");
@@ -594,6 +621,12 @@ impl Shell {
         }
         if pending.power && !is_show(text) {
             return self.answer_power(pending, text);
+        }
+        if pending.goal.is_some() && !is_show(text) {
+            return self.answer_goal(pending, text);
+        }
+        if pending.goal.is_some() && is_show(text) {
+            return self.show_goal_ask(pending);
         }
         if is_show(text) {
             let question = self.question(id, &pending.request, &pending.checked, &pending.asking);

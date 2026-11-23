@@ -527,7 +527,7 @@ fn a_lasting_pkg_answer_is_asked_and_audited_once() {
     }
 }
 
-const EDITOR: &str = "version 1
+pub(super) const EDITOR: &str = "version 1
 kai-actions 1
 world app:editor/editor@1.0.0
 action editor_open_file

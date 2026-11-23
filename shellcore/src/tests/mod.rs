@@ -17,6 +17,7 @@ const TRIAL_REPORT: &str = "init, started, a key and a click ran; 1 window";
 
 mod act;
 mod actions;
+mod agentconsent;
 mod agentstep;
 mod apart;
 mod appbuild;
@@ -37,6 +38,9 @@ mod effects;
 mod fake_host;
 mod files;
 mod fuzz;
+mod goalreports;
+mod goals;
+mod goalsteps;
 mod grantleaks;
 mod grantundo;
 mod guard;
