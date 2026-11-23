@@ -72,6 +72,36 @@ fn fired(rule: &str, event: crate::standing::Kind, app: &str) -> (Rc<FakeHost>, 
     (host, shell, reply)
 }
 
+/// The `goals` agent's badge (tests/goals.rs).
+const GOALS: u64 = 2;
+
+/// Goal 1 set on the person's allow and taken by `goals`, then `toggles`
+/// (each a `goal_pause` or `goal_resume` call) on the person's line `said`;
+/// the reply is the last one's.
+fn goal_toggled(toggles: &[&str]) -> (Rc<FakeHost>, Shell, Reply) {
+    let set = r#"{"name":"goal_set","arguments":{"text":"tidy the files in notes/q3","steps":10,"tokens":5000,"wall":"2h"}}"#;
+    let (host, mut shell) = with(&[set]);
+    shell.eval("keep tidying the files in notes/q3 for the next two hours");
+    let once = host.mint(1, "goal_set(1)");
+    let set = shell.eval(&format!("answer 1 allow once={once}"));
+    assert!(set.text.starts_with("Goal 1 set"), "{set:?}");
+    assert!(goals_step(&mut shell, "next").starts_with("ok #1 goal-add 1"));
+    assert_eq!(goals_step(&mut shell, "report 1 ok"), "ok reported #1");
+    let mut reply = Reply::err("no toggle");
+    for json in toggles {
+        host.calls.borrow_mut().push_back(call(json));
+        reply = shell.eval("please pause it or resume it now");
+    }
+    (host, shell, reply)
+}
+
+fn goals_step(shell: &mut Shell, text: &str) -> String {
+    super::agentstep::step(shell, GOALS, text)
+}
+
+const GOAL_PAUSE: &str = r#"{"name":"goal_pause","arguments":{"id":1}}"#;
+const GOAL_RESUME: &str = r#"{"name":"goal_resume","arguments":{"id":1}}"#;
+
 const FS_CREATE: &str = r#"{"name":"fs_create","arguments":{"path":"notes.txt","text":"hello"}}"#;
 const MAKE_NOTES: &str = "create notes.txt saying hello";
 
@@ -176,6 +206,8 @@ const CASES: &[(&str, Run)] = &[
             "notes",
         )
     }),
+    ("goal_pause", || goal_toggled(&[GOAL_PAUSE])),
+    ("goal_resume", || goal_toggled(&[GOAL_PAUSE, GOAL_RESUME])),
     ("profile_set", || {
         fired(
             "on focus(game) -> profile_set(gaming)",
@@ -284,5 +316,60 @@ fn no_row_is_both_cased_and_excused_and_every_name_is_a_row() {
             rows.iter().any(|r| r.name == *name),
             "{name} is no undoable row"
         );
+    }
+}
+
+/// The log's before and after are words; this checks the goal itself: after
+/// `undo` the goal is in the state it was in before the row ran, and `goals`
+/// is told so on its queue, the step after the row's own command.
+#[test]
+fn undo_puts_a_paused_or_resumed_goal_back_and_tells_goals() {
+    for (toggles, row_command, before, back_command) in [
+        (
+            &[GOAL_PAUSE][..],
+            "goal-pause 1",
+            "running",
+            "goal-resume 1",
+        ),
+        (
+            &[GOAL_PAUSE, GOAL_RESUME][..],
+            "goal-resume 1",
+            "paused",
+            "goal-pause 1",
+        ),
+    ] {
+        let (_host, mut shell, reply) = goal_toggled(toggles);
+        assert!(reply.ok, "{row_command}: {reply:?}");
+        let undone = shell.eval("undo");
+        assert!(undone.ok && undone.text.starts_with("Undone"), "{undone:?}");
+        assert_eq!(
+            shell.goal_book.goal(1).unwrap().state,
+            before,
+            "{row_command}"
+        );
+        let mut queued = alloc::vec::Vec::new();
+        loop {
+            let next = goals_step(&mut shell, "next");
+            if next == "ok none" {
+                break;
+            }
+            queued.push(
+                next.split_once(' ')
+                    .unwrap()
+                    .1
+                    .split_once(' ')
+                    .unwrap()
+                    .1
+                    .to_string(),
+            );
+        }
+        // The row's own command, then the undo's: the last word to goals is
+        // the state before.
+        assert_eq!(
+            queued.last().map(String::as_str),
+            Some(back_command),
+            "{queued:?}"
+        );
+        assert!(queued.iter().any(|c| c == row_command), "{queued:?}");
     }
 }
