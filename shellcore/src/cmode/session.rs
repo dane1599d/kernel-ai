@@ -27,15 +27,82 @@ pub(super) struct Ran {
     /// The SHA-256 of what cc ran, when its `#include "…"` files made that
     /// other than its text: a replay of files changed since is refused.
     pub(super) included: Option<[u8; 32]>,
+    /// The names what cc ran defines, `#include` files read as they were
+    /// then (keys as [`saved::defines`] gives them): a restart that skips the
+    /// entry still knows what it defined, though the files may be gone.
+    pub(super) names: Vec<String>,
 }
 
-/// Adds the names `text` defines to `gone`, each once.
-fn forget(gone: &mut Vec<String>, text: &str) {
-    for name in saved::defines(text) {
-        if !gone.contains(&name) {
-            gone.push(name);
+/// One entry of a restart, in the order they ran.
+struct Step {
+    seq: u64,
+    /// What it defined when it ran.
+    names: Vec<String>,
+    /// Its text as cc replays it, when it was restored.
+    restored: Option<String>,
+}
+
+/// The notes for restored entries that mention a name a skipped entry
+/// defined. A mention is a match on the word, so it may be a parameter or a
+/// local: each line says what the session knows, no more.
+///
+/// A function is called through its slot, so it follows a redefinition even
+/// for a caller defined before it: such a name is stale when the last entry
+/// that defined it is skipped. A macro or a tag binds where the caller is
+/// defined: stale when the nearest earlier definition is skipped. Not seen
+/// here: a redefinition of another type takes a new slot, so callers between
+/// it and a later restored one may differ, and no note says so.
+fn rebind_notes(steps: &[Step]) -> String {
+    let mut skipped: Vec<String> = Vec::new();
+    for step in steps.iter().filter(|s| s.restored.is_none()) {
+        for name in &step.names {
+            if !skipped.contains(name) {
+                skipped.push(name.clone());
+            }
         }
     }
+    let mut out = String::new();
+    for (at, step) in steps.iter().enumerate() {
+        let Some(text) = &step.restored else {
+            continue;
+        };
+        for key in saved::mentions(text, &skipped) {
+            let by = |s: &&Step| s.names.contains(&key);
+            let (stale, live) = if key.starts_with('#') || key.starts_with("tag ") {
+                let before = &steps[..at];
+                (
+                    before
+                        .iter()
+                        .rev()
+                        .find(by)
+                        .is_some_and(|s| s.restored.is_none()),
+                    before.iter().any(|s| s.restored.is_some() && by(&s)),
+                )
+            } else {
+                (
+                    steps
+                        .iter()
+                        .rev()
+                        .find(by)
+                        .is_some_and(|s| s.restored.is_none()),
+                    steps.iter().any(|s| s.restored.is_some() && by(&s)),
+                )
+            };
+            if !stale {
+                continue;
+            }
+            let (seq, name) = (step.seq, saved::bare(&key));
+            out.push_str(&match live {
+                true => format!(
+                    "entry {seq} mentions {name}, which a skipped entry redefined; if it means that one, it now uses the earlier definition\n"
+                ),
+                false => format!(
+                    "entry {seq} mentions {name}, which a skipped entry defined and no restored entry defines now\n"
+                ),
+            });
+        }
+    }
+    out
 }
 
 impl Shell {
@@ -51,11 +118,12 @@ impl Shell {
         };
         self.c_expect_ok(&open.text())?;
         self.c.open = true;
-        let kept: Vec<(u64, String, Option<[u8; 32]>)> = self
+        let kept: Vec<Ran> = self
             .c
             .ran
             .iter()
-            .filter_map(|r| r.defined.clone().map(|text| (r.seq, text, r.included)))
+            .filter(|r| r.defined.is_some())
+            .cloned()
             .collect();
         if kept.is_empty() {
             return Ok(String::new());
@@ -64,10 +132,15 @@ impl Shell {
         self.c.ran.clear();
         let mut restored = 0;
         let mut skipped = String::new();
-        // The names the entries not restored defined: a later entry that
-        // uses one binds to an earlier definition, or to none (#1260).
-        let mut gone: Vec<String> = Vec::new();
-        for (seq, text, included) in kept {
+        let mut steps: Vec<Step> = Vec::new();
+        for ran in kept {
+            let (seq, names, included) = (ran.seq, ran.names, ran.included);
+            let text = ran.defined.unwrap_or_default();
+            let step = |restored| Step {
+                seq,
+                names: names.clone(),
+                restored,
+            };
             // An entry is kept as typed: its `#include "…"` files are read
             // again, and one that is gone or changed since is not restored,
             // and the person is told, never given code they did not run.
@@ -75,7 +148,7 @@ impl Shell {
                 Ok(entry) => entry,
                 Err(why) => {
                     skipped.push_str(&format!("entry {seq}'s {why}; not restored\n"));
-                    forget(&mut gone, &text);
+                    steps.push(step(None));
                     continue;
                 }
             };
@@ -83,27 +156,19 @@ impl Shell {
                 skipped.push_str(&format!(
                     "entry {seq}'s #include files changed since it ran; not restored\n"
                 ));
-                forget(&mut gone, &entry);
+                steps.push(step(None));
                 continue;
             }
             let replay = Request::Replay { seq, entry: &entry }.text();
-            // An entry that does not replay, one that used what a skipped
-            // entry defined among them, is named too.
+            // An entry that does not replay is named too.
             if let Err(why) = self.c_replayed(&replay) {
                 skipped.push_str(&format!(
                     "entry {seq} did not replay: {}; not restored\n",
                     why.trim_end()
                 ));
-                forget(&mut gone, &entry);
+                steps.push(step(None));
             } else {
-                if let Some(name) = saved::uses(&entry, &gone) {
-                    skipped.push_str(&format!(
-                        "entry {seq} uses {name}, which a skipped entry redefined; it now binds to the earlier definition\n"
-                    ));
-                }
-                // Defined again here: later entries bind to this one.
-                let own = saved::defines(&entry);
-                gone.retain(|name| !own.contains(name));
+                steps.push(step(Some(entry)));
                 restored += 1;
                 self.c.ran.push(Ran {
                     seq,
@@ -111,9 +176,11 @@ impl Shell {
                     logged: None,
                     cc: true,
                     included,
+                    names,
                 });
             }
         }
+        skipped.push_str(&rebind_notes(&steps));
         Ok(format!(
             "cc restarted; restored {restored} definitions; globals reset\n{skipped}"
         ))
@@ -272,5 +339,33 @@ pub(super) fn resume(need: u64, value: Result<serde_json::Value, String>) -> Str
             result: "the result is too long for c>",
         }
         .text(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn step(seq: u64, names: &[&str], restored: Option<&str>) -> Step {
+        Step {
+            seq,
+            names: names.iter().map(|n| String::from(*n)).collect(),
+            restored: restored.map(String::from),
+        }
+    }
+
+    /// A macro binds where its caller is defined: an entry before the
+    /// skipped definition is not named, one after it is (#1266's review).
+    #[test]
+    fn a_macro_caller_is_named_only_after_the_skipped_definition() {
+        let steps = [
+            step(1, &["#N"], Some("#define N 2")),
+            step(2, &[], Some("I64 a[N];")),
+            step(3, &["#N"], None),
+            step(4, &[], Some("I64 b[N];")),
+        ];
+        let notes = rebind_notes(&steps);
+        assert!(notes.contains("entry 4 mentions N, which a skipped entry redefined"));
+        assert!(!notes.contains("entry 2"), "{notes}");
     }
 }

@@ -85,6 +85,8 @@ pub(crate) struct CMode {
     kept: Option<program::Kept>,
     /// The running entry's [`session::Ran::included`].
     included: Option<[u8; 32]>,
+    /// The names the running entry's text, files included, defines.
+    names: Option<Vec<String>>,
 }
 
 /// What the shell says on `:c`.
@@ -201,6 +203,7 @@ impl Shell {
         // counts as added and asks (ADR 0002). Only cc gets the files' text.
         let typed = text;
         self.c.included = files::included(typed, &expanded);
+        self.c.names = Some(saved::defines(&expanded));
         let text = expanded.as_str();
         let mut restored = match self.c_ensure_open() {
             Ok(note) => note,
@@ -274,6 +277,7 @@ impl Shell {
                             logged,
                             cc: !model,
                             included,
+                            names: self.c.names.take().unwrap_or_default(),
                         });
                         self.c_model_end(true);
                         if !value.is_empty() && !shown.is_empty() && !shown.ends_with('\n') {

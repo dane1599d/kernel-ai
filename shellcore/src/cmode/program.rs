@@ -20,7 +20,7 @@
 //!   own. A kept function's calls are then decided against the user's later
 //!   entry, as typed code's are, so a change with a literal argument asks.
 
-use super::{MAX_CALLS, ModelRun, Ran, resume};
+use super::{MAX_CALLS, ModelRun, Ran, resume, saved};
 use crate::{Reply, SCRIPT_ROUND_MS, Shell};
 use agentabi::{ArgType, RetType};
 use alloc::format;
@@ -241,6 +241,7 @@ impl Shell {
             logged: None,
             cc: true,
             included: None,
+            names: saved::defines(&kept.program),
         });
         Reply::ok(format!(
             "{restored}kept {}:\n{}",

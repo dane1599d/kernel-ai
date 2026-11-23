@@ -191,6 +191,7 @@ impl Shell {
             logged: Some(id),
             cc: false,
             included: None,
+            names: Vec::new(),
         });
         Reply::ok(format!(
             "saved {entries} entries to /home/user/{path}; undo puts it back"
@@ -303,6 +304,7 @@ impl Shell {
             logged: None,
             cc: true,
             included: included(entry, &expanded),
+            names: saved::defines(&expanded),
         });
         Ok(names)
     }
