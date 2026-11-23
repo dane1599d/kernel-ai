@@ -523,6 +523,20 @@ pub fn set(record: Record, one_shot: Option<Slot>) -> Result<(), efi::Error> {
 /// The caller checks [`lever_done`] first. The lock's holder may be a thread
 /// preempted on this CPU, so the wait sleeps rather than spins.
 pub fn reset_when_set() -> ! {
+    hold_setting();
+    efi::reset_after_calls()
+}
+
+/// [`reset_when_set`]'s wait, then the machine turns off
+/// ([`efi::power_off_after_calls`]).
+pub fn power_off_when_set() -> ! {
+    hold_setting();
+    efi::power_off_after_calls()
+}
+
+/// Takes SETTING for good: no BOOTREC_SET starts after, and one under way
+/// finished both its writes.
+fn hold_setting() {
     let held = loop {
         match SETTING.try_lock() {
             Some(held) => break held,
@@ -530,7 +544,6 @@ pub fn reset_when_set() -> ! {
         }
     };
     core::mem::forget(held);
-    efi::reset_after_calls()
 }
 
 /// Changes what the fault path writes from, if this boot keeps it.
