@@ -17,11 +17,24 @@
 //!   once, when it attaches. A peer's index that is out of range or goes
 //!   backwards is [`Corrupt`], never a panic or a read outside the ring.
 //! - A peer refuses any other version ([`Error::Version`]).
+//! - **The halves.** [`Ring::split`] gives a [`Client`] (it sends requests:
+//!   the kernel or the initiator keeps it) and a [`Server`] (it serves them:
+//!   the driver or the device side keeps it). Each side keeps its own half
+//!   and drops the other. Two sides in one address space (a loopback, a test)
+//!   share one split, each with its half; neither attaches again.
+//! - **Doorbells** (virtio's event suppression). A waiter sets its wish
+//!   ([`Server::want_requests`], [`Client::want_responses`]), which fences;
+//!   then it checks `ready()` once more, and sleeps only if nothing came. A
+//!   producer pushes, then asks whether the peer wants a doorbell
+//!   ([`Client::server_wants_requests`], [`Server::client_wants_responses`]),
+//!   which fences before reading the wish, and rings if so. The two full
+//!   fences close the store-to-load gap (Dekker's) that release and acquire
+//!   alone leave open, so no wakeup is lost.
 
 use core::marker::PhantomData;
 use core::mem::size_of;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering, fence};
 
 /// The header's magic.
 pub const MAGIC: [u8; 4] = *b"KRNG";
@@ -174,8 +187,9 @@ impl<'a> Ring<'a> {
     ///
     /// # Safety
     /// `region` must be valid for reads and writes of `len` bytes for `'a`,
-    /// 8-byte aligned, and touched by nothing else while it is set up; this
-    /// side makes one `Ring` over it.
+    /// 8-byte aligned, and touched by nothing else while it is set up. At most
+    /// one `Ring` over a region exists in this address space at a time: a
+    /// peer here uses the other half of this ring's split, never attaches.
     pub unsafe fn init(
         region: NonNull<u8>,
         len: usize,
@@ -205,8 +219,10 @@ impl<'a> Ring<'a> {
     ///
     /// # Safety
     /// `region` must be valid for reads and writes of `len` bytes for `'a`
-    /// and 8-byte aligned, and this side makes one `Ring` over it; the other
-    /// side may write any bytes into it at any time, which this type survives.
+    /// and 8-byte aligned. At most one `Ring` over a region exists in this
+    /// address space at a time: a peer here uses the other half of that one
+    /// split, never attaches again. The other side may write any bytes into
+    /// the region at any time, which this type survives.
     pub unsafe fn attach(region: NonNull<u8>, len: usize) -> Result<Self, Error> {
         if len < HEADER_BYTES || !(region.as_ptr() as usize).is_multiple_of(8) {
             return Err(Error::Size);
@@ -324,34 +340,51 @@ pub struct Server<'a> {
 }
 
 impl Client<'_> {
-    /// Asks for (or stops asking for) a doorbell when responses come.
+    /// Asks for (or stops asking for) a doorbell when responses come. Then
+    /// a full fence: the caller checks `responses.ready()` once more before
+    /// it sleeps, and sees any response pushed before the server read this.
     pub fn want_responses(&self, on: bool) {
         self.requests
             .view
-            .header()
-            .want_rsp
+            .want(Dir::Responses)
             .store(u32::from(on), Ordering::SeqCst);
+        fence(Ordering::SeqCst);
     }
 
-    /// Whether the server asked for a doorbell when requests come.
+    /// Whether the server asked for a doorbell when requests come: called
+    /// after a push, with a full fence first so the head published is seen
+    /// before the wish is read.
     pub fn server_wants_requests(&self) -> bool {
-        self.requests.view.header().want_req.load(Ordering::SeqCst) != 0
+        fence(Ordering::SeqCst);
+        self.requests
+            .view
+            .want(Dir::Requests)
+            .load(Ordering::SeqCst)
+            != 0
     }
 }
 
 impl Server<'_> {
-    /// Asks for (or stops asking for) a doorbell when requests come.
+    /// Asks for (or stops asking for) a doorbell when requests come. Then a
+    /// full fence: the caller checks `requests.ready()` once more before it
+    /// sleeps, and sees any request pushed before the client read this.
     pub fn want_requests(&self, on: bool) {
         self.requests
             .view
-            .header()
-            .want_req
+            .want(Dir::Requests)
             .store(u32::from(on), Ordering::SeqCst);
+        fence(Ordering::SeqCst);
     }
 
-    /// Whether the client asked for a doorbell when responses come.
+    /// Whether the client asked for a doorbell when responses come: called
+    /// after a push, with a full fence first.
     pub fn client_wants_responses(&self) -> bool {
-        self.requests.view.header().want_rsp.load(Ordering::SeqCst) != 0
+        fence(Ordering::SeqCst);
+        self.requests
+            .view
+            .want(Dir::Responses)
+            .load(Ordering::SeqCst)
+            != 0
     }
 }
 
@@ -361,18 +394,33 @@ impl View<'_> {
         (start, self.len - start)
     }
 
-    fn header(&self) -> &Header {
-        // SAFETY: the header lies in the region for 'a (checked at attach);
-        // only its atomics are read through this reference.
-        unsafe { self.base.cast::<Header>().as_ref() }
+    /// One of the header's atomics, by a raw projection: no reference is
+    /// made over the plain fields, which the peer may rewrite.
+    fn atomic(&self, field: impl FnOnce(*mut Header) -> *mut AtomicU32) -> &AtomicU32 {
+        // SAFETY: the header lies in the region for 'a (checked at attach),
+        // and the field is an atomic, which the peer may write concurrently.
+        unsafe { &*field(self.base.cast::<Header>().as_ptr()) }
     }
 
     /// The (head, tail) atomics of `dir`.
     fn indices(&self, dir: Dir) -> (&AtomicU32, &AtomicU32) {
-        let header = self.header();
         match dir {
-            Dir::Requests => (&header.req_head, &header.req_tail),
-            Dir::Responses => (&header.rsp_head, &header.rsp_tail),
+            Dir::Requests => (
+                self.atomic(|h| unsafe { core::ptr::addr_of_mut!((*h).req_head) }),
+                self.atomic(|h| unsafe { core::ptr::addr_of_mut!((*h).req_tail) }),
+            ),
+            Dir::Responses => (
+                self.atomic(|h| unsafe { core::ptr::addr_of_mut!((*h).rsp_head) }),
+                self.atomic(|h| unsafe { core::ptr::addr_of_mut!((*h).rsp_tail) }),
+            ),
+        }
+    }
+
+    /// The doorbell wish for `dir`.
+    fn want(&self, dir: Dir) -> &AtomicU32 {
+        match dir {
+            Dir::Requests => self.atomic(|h| unsafe { core::ptr::addr_of_mut!((*h).want_req) }),
+            Dir::Responses => self.atomic(|h| unsafe { core::ptr::addr_of_mut!((*h).want_rsp) }),
         }
     }
 
