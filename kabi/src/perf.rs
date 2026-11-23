@@ -4,7 +4,14 @@
 //!
 //! Shared runners are noisy, so the gate is best of two: a scene with a miss
 //! is measured once more in the same boot, and only a figure over its budget
-//! in both runs fails the case ([`still_over`]). The budgets stay as they are.
+//! in both runs fails the case ([`still_over`]).
+//!
+//! Each budget is set for a runner of baseline speed. Under KVM a figure is a
+//! miss only when it is over its budget times the runner's measured slowness,
+//! the reference median over [`REFERENCE_BASELINE_NS`], never less than one
+//! ([`misses_scaled`]): a runner 1.85 times the baseline gets an 8 ms budget
+//! of 14.8 ms. `desktop` still writes its `OVER BUDGET` lines against the bare
+//! budgets, so the logs show both.
 //!
 //! A runner can be slow for a whole boot, not only noisy, and then no budget
 //! can be met. So under KVM the kernel first has `desktop` time a fixed
@@ -74,6 +81,57 @@ pub fn misses(reply: &str) -> Vec<&str> {
         .collect()
 }
 
+/// A miss line's figure, value and budget, the last two in hundredths of a
+/// ms: `("(c) text page 160x45 warm", 514, 400)` for
+/// `OVER BUDGET (c) text page 160x45 warm 5.14 ms (budget max 4.00 ms)`.
+fn over_line(line: &str) -> Option<(&str, u64, u64)> {
+    let (figure, budget) = line.strip_prefix(OVER_BUDGET)?.split_once(" ms (budget ")?;
+    let (name, value) = figure.rsplit_once(' ')?;
+    let budget = budget.strip_suffix(" ms)")?.rsplit_once(' ')?.1;
+    Some((name, hundredths(value)?, hundredths(budget)?))
+}
+
+/// `"5.14"` as 514; at most two decimals.
+fn hundredths(text: &str) -> Option<u64> {
+    let (whole, frac) = text.split_once('.').unwrap_or((text, ""));
+    if frac.len() > 2 || whole.is_empty() {
+        return None;
+    }
+    let whole: u64 = whole.parse().ok()?;
+    let frac: u64 = match frac.len() {
+        0 => 0,
+        1 => frac.parse::<u64>().ok()? * 10,
+        _ => frac.parse().ok()?,
+    };
+    whole.checked_mul(100)?.checked_add(frac)
+}
+
+/// A budget in hundredths of a ms, scaled for a runner whose reference median
+/// is `reference_ns`: times `reference_ns` over the baseline, never less than
+/// the budget itself.
+pub fn scaled_budget(budget: u64, reference_ns: u64) -> u64 {
+    let ratio = reference_ns.max(REFERENCE_BASELINE_NS);
+    budget.saturating_mul(ratio) / REFERENCE_BASELINE_NS
+}
+
+/// The figures in `reply` over their budget scaled for a runner whose
+/// reference median is `reference_ns` ([`scaled_budget`]), by name. A value
+/// that reaches the scaled budget is a miss, so on a runner at or under the
+/// baseline these are exactly [`misses`]. A miss line that does not parse is
+/// kept, so a garbled line never passes a figure.
+pub fn misses_scaled(reply: &str, reference_ns: u64) -> Vec<&str> {
+    reply
+        .lines()
+        .filter(|l| l.starts_with(OVER_BUDGET))
+        .filter_map(|l| match over_line(l) {
+            Some((name, value, budget)) => {
+                (value >= scaled_budget(budget, reference_ns)).then_some(name)
+            }
+            None => misses(l).into_iter().next(),
+        })
+        .collect()
+}
+
 /// How many times the baseline a reference median of `p50_ns` is, to a
 /// tenth: `2.8` for 44.56 ms against 16.
 pub fn times_baseline(p50_ns: u64) -> alloc::string::String {
@@ -140,6 +198,60 @@ mod tests {
         // The slowest in-budget runner seen, 48.09 ms, is gated.
         assert!(!too_slow(48_087_560));
         assert!(!too_slow(0));
+    }
+
+    #[test]
+    fn a_miss_line_gives_its_value_and_budget_in_hundredths() {
+        let line = "OVER BUDGET (c) text page 160x45 warm 5.14 ms (budget max 4.00 ms)";
+        assert_eq!(
+            over_line(line),
+            Some(("(c) text page 160x45 warm", 514, 400))
+        );
+        assert_eq!(hundredths("16.7"), Some(1670));
+        assert_eq!(hundredths("8"), Some(800));
+        assert_eq!(hundredths("1.234"), None);
+        assert_eq!(hundredths(".5"), None);
+        assert_eq!(over_line("OVER BUDGET garbled"), None);
+    }
+
+    #[test]
+    fn budgets_scale_with_the_runner_but_never_shrink() {
+        assert_eq!(scaled_budget(800, REFERENCE_BASELINE_NS), 800);
+        assert_eq!(scaled_budget(800, REFERENCE_BASELINE_NS / 2), 800);
+        assert_eq!(scaled_budget(800, 0), 800);
+        // #1261's runner: 29.60 ms, 1.85 times the baseline.
+        assert_eq!(scaled_budget(800, 29_603_970), 1480);
+        // The slowest gated runner, 3.5 times: 28 ms.
+        assert_eq!(scaled_budget(800, 56_000_000), 2800);
+    }
+
+    /// The three failures of 2026-11-23 the scaling must pass, and what it
+    /// still fails.
+    #[test]
+    fn a_figure_is_judged_against_its_scaled_budget() {
+        let g = |value: &str| {
+            alloc::format!(
+                "OVER BUDGET (g) full composite with Start and the pane open at 1920x1080 {value} ms (budget p99 8.00 ms)"
+            )
+        };
+        let f = "OVER BUDGET (f) drag under load, render+flush 20.72 ms (budget p99 16.70 ms)";
+        // #1119: (f) 20.72 ms on a runner 1.34 times the baseline (22.37).
+        assert!(misses_scaled(f, 21_467_770).is_empty());
+        // #1141: (g) 9.26 ms at 2.52 times (20.17).
+        assert!(misses_scaled(&g("9.26"), 40_347_570).is_empty());
+        // #1261: (g) 13.65 ms at 1.85 times (14.80).
+        assert!(misses_scaled(&g("13.65"), 29_603_970).is_empty());
+        // Main's runner, 1.29 times: (g) 10.62 ms, half again its 6.96 ms, fails.
+        assert_eq!(
+            misses_scaled(&g("10.62"), 20_590_190),
+            ["(g) full composite with Start and the pane open at 1920x1080"]
+        );
+        // At or under the baseline the bare budget holds, as `desktop` judged.
+        assert_eq!(misses_scaled(&g("8.01"), 15_000_000).len(), 1);
+        assert_eq!(misses_scaled(WARM, REFERENCE_BASELINE_NS), misses(WARM));
+        // A garbled miss line still counts.
+        let garbled = "OVER BUDGET (b) drag flush 5.00 ms (budget soon)";
+        assert_eq!(misses_scaled(garbled, 40_000_000), ["(b) drag flush"]);
     }
 
     #[test]
