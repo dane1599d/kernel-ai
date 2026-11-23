@@ -220,6 +220,14 @@ pub const fn with_case_room(model_mib: u64) -> u64 {
     model_mib - crate::disk::BASE_MEMORY_MIB + CASE_MEMORY_MIB
 }
 
+/// The line `cargo xtask test` prints for `case` when it is not booted
+/// under TCG (`kvm_only`), so a run that leaves a case out says so; `None`
+/// for a case that boots under any accelerator.
+pub(crate) fn tcg_skip(case: &TestCase) -> Option<String> {
+    case.kvm_only
+        .then(|| format!("xtask: {} skipped under TCG (kvm_only)", case.name))
+}
+
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
     TestCase {
         name,
@@ -319,6 +327,18 @@ pub fn named_only() -> Vec<&'static TestCase> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn a_kvm_only_case_says_it_is_skipped_under_tcg() {
+        let cases = test_cases();
+        let sends = cases.iter().find(|case| case.name == "desk-sends").unwrap();
+        assert_eq!(
+            tcg_skip(sends).as_deref(),
+            Some("xtask: desk-sends skipped under TCG (kvm_only)")
+        );
+        let any = cases.iter().find(|case| !case.kvm_only).unwrap();
+        assert_eq!(tcg_skip(any), None);
+    }
 
     #[test]
     fn every_case_has_one_name_and_one_lane() {
