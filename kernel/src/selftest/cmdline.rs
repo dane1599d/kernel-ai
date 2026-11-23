@@ -165,6 +165,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-reopen" => Some(SelfTest::DeskReopen),
             "test=desk-start" => Some(SelfTest::DeskStart),
             "test=desk-start-esc" => Some(SelfTest::DeskStartEsc),
+            "test=desk-taskbar" => Some(SelfTest::DeskTaskbar),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),

@@ -206,8 +206,11 @@ struct State {
     too_long: Option<u64>,
     /// When the ask box was last read.
     asked_ms: u64,
-    /// Frames as last logged, to report moves and closes once.
-    known: Vec<(WindowId, Rect)>,
+    /// Frames and whether minimized, as last logged, to report moves,
+    /// minimizes, restores and closes once.
+    known: Vec<(WindowId, Rect, bool)>,
+    /// Whether the Kai pane was open when last logged.
+    pane_shown: bool,
     focus: Focus,
     /// What standing instructions hear about: window events and idle.
     watch: Watch,
@@ -290,6 +293,7 @@ fn main() -> i32 {
             too_long: None,
             asked_ms: 0,
             known: Vec::new(),
+            pane_shown: false,
             focus: Focus::Nothing,
             watch: Watch::new(now_ms()),
             lease: Lease::new(),

@@ -71,7 +71,60 @@ pub(super) const CASES: &[TestCase] = &[
         forbid: START_FORBID,
         ..case("desk-start-esc", "test=desk-start-esc")
     },
+    // Kai Desk PR 8's taskbar by clicks, as `desktop` says it did each one
+    // (`kernel/src/taskbar_tests.rs`): the Notes pin sends `open notes` with
+    // no model; its item minimizes and restores; the Kai button opens Start;
+    // the Kai chip opens the pane, a maximized window stops 12 px left of it
+    // (`MAXIMIZED_BESIDE_PANE`), and fits the work area again once it closes.
+    TestCase {
+        memory_mib: Some(1024),
+        expect: &[
+            "desk-taskbar: clicked the Notes pin",
+            "desktop: the taskbar sent \"open notes\"",
+            "desktop: window 2 \"Notes\" opened at ",
+            "desktop: window 2 minimized",
+            "desktop: window 2 restored",
+            "desktop: the Apps sheet lists ",
+            "desktop: the Kai pane opened",
+            MAXIMIZED_BESIDE_PANE,
+            "desktop: the Kai pane closed",
+            MAXIMIZED_ALONE,
+            "desk-taskbar: the taskbar opened, minimized, restored and maximized beside the pane",
+        ],
+        forbid: START_FORBID,
+        ..case("desk-taskbar", "test=desk-taskbar")
+    },
 ];
+
+/// Notes' maximized frame with the pane open at 1280x800: the work area left
+/// of the pane, 12 px short of it (the pane is 360 wide, 12 from the right).
+const MAXIMIZED_BESIDE_PANE: &str = "desktop: window 2 moved to 0,0 size 896x752";
+/// And with the pane closed again: the whole work area above the taskbar.
+const MAXIMIZED_ALONE: &str = "desktop: window 2 moved to 0,0 size 1280x752";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deskgeom::{Layout, UiState};
+
+    /// The case's expected frames are deskgeom's maximized rectangles at
+    /// 1280x800, with the pane open and closed.
+    #[test]
+    fn the_taskbar_cases_frames_are_the_layouts_maximized_rectangles() {
+        let frame = |pane_open| {
+            let r = Layout::for_screen(1280, 800, UiState { pane_open }).maximized;
+            format!(
+                "desktop: window 2 moved to {},{} size {}x{}",
+                r.x, r.y, r.w, r.h
+            )
+        };
+        assert_eq!(frame(true), MAXIMIZED_BESIDE_PANE);
+        assert_eq!(frame(false), MAXIMIZED_ALONE);
+        // Left of the pane by the flyout margin.
+        let l = Layout::for_screen(1280, 800, UiState { pane_open: true });
+        assert_eq!(l.maximized.w, l.pane.x - deskgeom::FLYOUT_MARGIN);
+    }
+}
 
 /// [`FORBID`], and a request for the model: Start sends an app's line, never
 /// the text typed to find it.

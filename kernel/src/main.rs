@@ -158,6 +158,7 @@ mod standing_tests;
 mod start_tests;
 mod stop_tests;
 mod suspend_tests;
+mod taskbar_tests;
 mod term_tests;
 mod terminal;
 mod thread_tests;
@@ -462,6 +463,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskReopen => run_case(agent_desk_tests::reopen_check),
         SelfTest::DeskStart => run_case(start_tests::check),
         SelfTest::DeskStartEsc => run_case(start_tests::esc_check),
+        SelfTest::DeskTaskbar => run_case(taskbar_tests::check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),

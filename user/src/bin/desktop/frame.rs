@@ -3,31 +3,50 @@
 
 use super::*;
 
-/// Logs windows that opened, moved or closed, and focus changes, once each.
+/// Logs windows that opened, moved, minimized, were restored or closed, the
+/// Kai pane opening and closing, and focus changes, once each.
 pub(super) fn report(state: &mut State) {
     for window in state.desk.windows() {
-        match state.known.iter_mut().find(|(id, _)| *id == window.id) {
+        match state.known.iter_mut().find(|(id, ..)| *id == window.id) {
             None => {
                 let f = window.frame;
                 println!(
                     "desktop: window {} \"{}\" opened at {},{} size {}x{}",
                     window.id.0, window.title, f.x, f.y, f.w, f.h
                 );
-                state.known.push((window.id, f));
+                state.known.push((window.id, f, window.minimized));
             }
-            Some((_, frame)) if *frame != window.frame => {
-                let f = window.frame;
-                println!(
-                    "desktop: window {} moved to {},{} size {}x{}",
-                    window.id.0, f.x, f.y, f.w, f.h
-                );
-                *frame = f;
+            Some((_, frame, minimized)) => {
+                if *frame != window.frame {
+                    let f = window.frame;
+                    println!(
+                        "desktop: window {} moved to {},{} size {}x{}",
+                        window.id.0, f.x, f.y, f.w, f.h
+                    );
+                    *frame = f;
+                }
+                if *minimized != window.minimized {
+                    let what = if window.minimized {
+                        "minimized"
+                    } else {
+                        "restored"
+                    };
+                    println!("desktop: window {} {what}", window.id.0);
+                    *minimized = window.minimized;
+                }
             }
-            Some(_) => {}
         }
     }
+    let pane = state.desk.pane().is_some();
+    if pane != state.pane_shown {
+        println!(
+            "desktop: the Kai pane {}",
+            if pane { "opened" } else { "closed" }
+        );
+        state.pane_shown = pane;
+    }
     let desk = &state.desk;
-    state.known.retain(|(id, _)| {
+    state.known.retain(|(id, ..)| {
         let open = desk.window(*id).is_some();
         if !open {
             println!("desktop: window {} closed", id.0);
