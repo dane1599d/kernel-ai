@@ -31,6 +31,8 @@ pub mod models;
 #[cfg(test)]
 mod oid_tests;
 #[cfg(test)]
+mod reserve_tests;
+#[cfg(test)]
 mod tests;
 mod trash;
 
@@ -45,6 +47,7 @@ use kabi::fs::{
     SYSTEM_SETTINGS, SYSTEM_STATE, SYSTEM_TRUST, SYSTEM_UPDATES,
 };
 use kabi::handle::Rights;
+use kaifs::allocator::Spend;
 use kaifs::ns::Listed;
 use kaifs::{BlockDev, FileType, Fs, Inode, ROOT};
 
@@ -178,6 +181,9 @@ pub struct Server<D: BlockDev> {
     base: u64,
     /// Writes inside an action not yet given to kaifs ([`buffer`]).
     pending: Option<buffer::Pending>,
+    /// The least of the open action's changes' claims on kaifs's reserve: what
+    /// its commit may spend ([`Server::spends_reserve`]).
+    action_spend: Spend,
     /// The record last read.
     cache: Option<buffer::Cached>,
     /// Whether a caller (a pid) still runs: a dead owner's action is aborted
@@ -242,6 +248,7 @@ impl<D: BlockDev> Server<D> {
             epoch: 0,
             base,
             pending: None,
+            action_spend: Spend::All,
             cache: None,
             alive: |_| true,
             name_of: |_, _| None,
@@ -458,9 +465,24 @@ impl<D: BlockDev> Server<D> {
         }
         let now = self.base.saturating_add(now);
         let fs = self.fs();
-        if !fs.writable() || !(fs.gc_running() || fs.space_low() || fs.expiry_due(now)) {
+        // Under the reserve with freed blocks waiting: commits give them back.
+        let release = fs.reserve_waits_on_pending();
+        if !fs.writable() || !(fs.gc_running() || fs.space_low() || fs.expiry_due(now) || release) {
             return;
         }
+        // Retention, the GC and these commits free space: they may take the
+        // reserve, on a disk growth has filled.
+        let was = fs.io.alloc.spend_reserve(Spend::All);
+        self.retain_and_collect(now);
+        if release && self.fs.is_clean() {
+            let _ = self.commit();
+        }
+        self.fs.io.alloc.spend_reserve(was);
+    }
+
+    /// Retention, then a slice of the GC (see [`Server::idle`]).
+    fn retain_and_collect(&mut self, now: u64) {
+        let fs = self.fs();
         let stepped = (|| {
             if !fs.gc_running() {
                 let mut dropped = fs.expire(now)?.len();
@@ -537,15 +559,73 @@ impl<D: BlockDev> Server<D> {
         if changes && self.owner.is_none() && self.fs.oids_unsaved() && self.fs.is_clean() {
             let _ = self.commit();
         }
+        let spend = self.spends_reserve(call.caller, &request, changes);
+        let was = self.fs.io.alloc.spend_reserve(spend);
+        let answered = self.answer_change(call, &target, request, changes, shm);
+        self.fs.io.alloc.spend_reserve(was);
+        answered
+    }
+
+    /// How far `request` may go into kaifs's reserved blocks, so a disk
+    /// growth filled can still be emptied, and no client can drain them: all
+    /// of it only for work that frees space at once and cannot be looped to
+    /// spend it (an emptied trash, a dropped update snapshot), half for a
+    /// trash or a truncate, whose space comes back later, none for growth. An
+    /// action's commit, by Commit or its owner's Sync, gets the least of its
+    /// changes'. Idle's retention and GC and `check --repair` take all of it
+    /// themselves.
+    pub(crate) fn spends_reserve(
+        &mut self,
+        caller: u64,
+        request: &Request,
+        changes: bool,
+    ) -> Spend {
+        if matches!(request, Request::Begin { .. }) && self.owner.is_none() {
+            self.action_spend = Spend::All;
+        }
+        let in_its_action = self.owner == Some(caller);
+        let spend = match request {
+            // What frees space at once, and cannot be looped to drain the
+            // reserve: an emptied trash, a dropped update snapshot. (Abort
+            // allocates nothing.)
+            Request::EmptyTrash | Request::UpdateDrop { .. } | Request::Abort => Spend::All,
+            // Space that may come back only later, while its copy-on-write
+            // costs blocks now, so a loop of it could drain all of the
+            // reserve: half, as a trash.
+            Request::Trash { .. } | Request::Truncate { .. } => Spend::Half,
+            // The commit of an action, by Commit or the owner's own Sync, at
+            // the least tier of its changes; a Sync outside one has nothing to
+            // write and needs no reserve.
+            Request::Commit => self.action_spend,
+            Request::Sync if in_its_action => self.action_spend,
+            _ => Spend::Keep,
+        };
+        let commits = matches!(request, Request::Commit | Request::Abort | Request::Sync);
+        if changes && in_its_action && !commits {
+            self.action_spend = self.action_spend.min(spend);
+        }
+        spend
+    }
+
+    /// [`Server::answer`]'s change, once the request is known to reach its
+    /// target.
+    fn answer_change(
+        &mut self,
+        call: &Call,
+        target: &Target,
+        request: Request,
+        changes: bool,
+        shm: Option<&mut [u8]>,
+    ) -> Result<(Reply, Option<Mint>), Error> {
         let in_action = self.owner.is_some();
         let done = match request {
             Request::ReadShm { off, len } => self
-                .read_shm(call, &target, off, len, shm)
+                .read_shm(call, target, off, len, shm)
                 .map(|r| (r, None)),
             Request::WriteShm { off, len } => self
-                .write_shm(call, &target, off, len, shm)
+                .write_shm(call, target, off, len, shm)
                 .map(|r| (r, None)),
-            request => self.dispatch(call, &target, request),
+            request => self.dispatch(call, target, request),
         };
         match done {
             // A change outside an action is durable before it is answered.
