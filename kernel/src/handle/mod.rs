@@ -322,8 +322,8 @@ pub fn create(slot: usize, caps: u64, pid: u64, uses: &[&str]) -> Result<(), kab
 
 /// [`create`], with a startup `Dir` on the `fs` route for each folder in `dirs`
 /// (the plan's `dir=`), after FILES's and SYSTEM_STATE's, and `agent`'s badge
-/// (the plan's `agent=`, ADR 0013 section 1) on the route to
-/// `kabi::handle::agent::SERVICE`, so that service knows the agent by a badge
+/// (the plan's `agent=`, ADR 0013 section 1) on the routes to
+/// `kabi::handle::agent::BADGED`, so those services know the agent by a badge
 /// it cannot forge. Every other route's badge is 0. A route named in `pinned`
 /// gets CALL and INSPECT only: the process calls through it but can never
 /// move or copy it, so its badge, or its send, stays its own.
@@ -345,8 +345,8 @@ pub fn create_with(
     let routes: Result<Vec<Entry>, kabi::Error> = routes
         .map(|name| {
             let mut entry = route(name)?;
-            if *name == kabi::handle::agent::SERVICE {
-                entry.badge = agent.unwrap_or(0);
+            if kabi::handle::agent::BADGED.contains(name) {
+                entry.badge = kabi::handle::agent::badge(name, agent);
             }
             if pinned.iter().any(|kept| kept == name) {
                 entry.rights = PINNED_RIGHTS;

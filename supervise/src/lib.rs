@@ -379,8 +379,8 @@ pub struct Grants {
     /// The MiB a day its `netdest=` may move, from `net_mib=`.
     pub net_mib: Option<u32>,
     /// The routes of [`Grants::uses`] the process may call through but never
-    /// pass on (CALL only, no TRANSFER or DUPLICATE): an agent's route to
-    /// `llm`, whose badge is its identity, and a route to `fetch`'s send role,
+    /// pass on (CALL only, no TRANSFER or DUPLICATE): an agent's routes to
+    /// `llm` and the shell, whose badge is its identity, and a route to `fetch`'s send role,
     /// which posts. A copy given to another process would carry the badge or
     /// the send with it.
     pub pinned: Vec<String>,
@@ -645,7 +645,7 @@ impl Plan {
             .uses
             .iter()
             .filter(|used| {
-                (service.agent.is_some() && *used == kabi::handle::agent::SERVICE)
+                (service.agent.is_some() && kabi::handle::agent::BADGED.contains(&used.as_str()))
                     || sends(&self.services, used)
             })
             .cloned()
@@ -829,6 +829,9 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     }
     // An agent's badge rides on its route to `llm`: a line with none has
     // nowhere to carry it.
+    if agent.is_none() && uses.iter().any(|used| used == AGENTS_CALL) {
+        return Err(format!("{name}: no route may go to {AGENTS_CALL}"));
+    }
     if agent.is_some() && !uses.iter().any(|used| used == kabi::handle::agent::SERVICE) {
         return Err(format!(
             "{name}: agent= needs a route to {} in uses=",
@@ -1029,15 +1032,22 @@ fn folders(service: &str, value: &str) -> Result<Vec<Folder>, String> {
 }
 
 /// Services nobody may call: the shell takes only the terminal's lines, and the
-/// edit service only the kernel's (ADR 0001 D3).
+/// edit service only the kernel's (ADR 0001 D3). An agent's line is the one
+/// exception for the shell ([`AGENTS_CALL`]).
 pub const UNCALLABLE: &[&str] = &["shell", "edit"];
 
+/// The uncallable service an `agent=` line may route to: its route carries the
+/// agent's badge and is pinned, and the shell admits an agent's step by that
+/// badge alone (ADR 0013 section 5).
+pub const AGENTS_CALL: &str = "shell";
+
 /// The routes in `uses=A+B`: each a service listed before this one, so routes
-/// form no cycle, never itself, `shell` or `edit`, and each once.
+/// form no cycle, never itself or `edit`, `shell` only from an agent's line
+/// (checked once the line is read), and each once.
 fn routes(service: &str, value: &str, earlier: &[ServiceSpec]) -> Result<Vec<String>, String> {
     let mut uses: Vec<String> = Vec::new();
     for target in value.split('+') {
-        if UNCALLABLE.contains(&target) || target == service {
+        if (UNCALLABLE.contains(&target) && target != AGENTS_CALL) || target == service {
             return Err(format!("{service}: no route may go to {target}"));
         }
         if target != SUPERVISOR && !earlier.iter().any(|s| s.name == target) {
