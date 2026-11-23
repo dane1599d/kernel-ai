@@ -384,7 +384,12 @@ fn own_shm() -> Result<(), &'static str> {
         Error::BadHandle,
         "a closed handle",
     )?;
-    Ok(())
+    // PROC_ALIVE needs DISPLAY or SUPERVISE, which this process lacks.
+    expect(
+        sys::proc_alive(1),
+        Error::Permission,
+        "PROC_ALIVE with no right",
+    )
 }
 
 /// The first startup handle of `kind`.
@@ -488,6 +493,7 @@ fn grants() -> Result<(), &'static str> {
     let left = sys::grant_new(root, 0, "left").map_err(|_| "a node left live was refused")?;
     sys::grant_new(root, 0, "left 2").map_err(|_| "a node left live was refused")?;
     sys::grant_new(left, 0, "left 3").map_err(|_| "a node left live was refused")?;
+    proc_alive()?;
     Ok(())
 }
 
@@ -761,6 +767,28 @@ fn devlist() -> Result<(), &'static str> {
             })
     {
         return Err("DEV_LIST into a one-record buffer did not give the first record");
+    }
+    Ok(())
+}
+
+/// PROC_ALIVE: a running service's pid (from LIST) is alive, and so is the
+/// kernel's, 0; one never given out is not.
+fn proc_alive() -> Result<(), &'static str> {
+    let mut listing = [0u8; 1024];
+    let len = sys::list(&mut listing).map_err(|_| "LIST failed")?;
+    let text = core::str::from_utf8(&listing[..len.min(listing.len())]).unwrap_or("");
+    let pid: u64 = text
+        .lines()
+        .find_map(|line| line.split_whitespace().next()?.parse().ok())
+        .ok_or("LIST named no running process")?;
+    if sys::proc_alive(pid) != Ok(true) {
+        return Err("PROC_ALIVE said a running process had ended");
+    }
+    if sys::proc_alive(0) != Ok(true) {
+        return Err("PROC_ALIVE said the kernel, pid 0, had ended");
+    }
+    if sys::proc_alive(u64::MAX) != Ok(false) {
+        return Err("PROC_ALIVE said a pid never made was alive");
     }
     Ok(())
 }
