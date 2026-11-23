@@ -19,9 +19,11 @@
 # A failed batch merges nothing: fall back to merge-chain.sh, one at a time.
 #
 # No-boot: `batch-ff.sh --noboot <PRs>` takes only PRs that noboot.sh finds
-# change nothing the boot jobs see, on a `batch/noboot-...` branch. ci.yml runs
-# no boot job for it, and its lint job fails it if noboot.sh disagrees; it lands
-# on lint and the other workflows alone (2026-11-19, to spend fewer runners).
+# change nothing the boot jobs see, on a `batch/noboot-...` branch. ci.yml's
+# `noboot` job runs main's copy of noboot.sh on the batch's diff and skips the
+# boot jobs only when it agrees; otherwise they all run, and the batch lands on
+# them as a full one would. Agreed, it lands on lint and the other workflows
+# alone (2026-11-19, to spend fewer runners).
 #
 # Resume: from the push of the batch branch on, the batch is recorded in
 # $S/current-batch. If the PC stops, `batch-ff.sh --resume` (batch-auto.sh runs
@@ -55,8 +57,9 @@ gates_green() {  # $1 run id
     sleep 30
   done
   echo "$g" | sed 's/^/    /'
-  # A no-boot batch runs lint alone (ci.yml skips the boot jobs for it, after
-  # its lint job checked that nothing it changes reaches them).
+  # A no-boot batch needs lint, and every boot job that ran green: ci.yml skips
+  # them only when its `noboot` job finds that nothing the batch changes
+  # reaches them; if it disagrees they run, and must pass.
   if [ -n "$noboot" ]; then
     echo "$g" | grep -q "^Format, lint[^=]*=success$" && ! echo "$g" | grep -qvE "=(success|skipped)$"
     return

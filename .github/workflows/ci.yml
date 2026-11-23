@@ -129,25 +129,6 @@ jobs:
           else
             cargo xtask decisions check
           fi
-      # A no-boot batch skips every boot job (the `qemu` job's condition below),
-      # so it must change nothing they see: scripts/batch/noboot.sh's rule, over
-      # every file from the batch's merge base with main. Only the batcher's own
-      # draft PR ("batch CI: ...") is a no-boot batch, whatever a branch is named.
-      - name: A no-boot batch changes nothing the boot jobs see
-        if: >-
-          startsWith(github.head_ref, 'batch/noboot-') &&
-          github.event.pull_request.draft &&
-          startsWith(github.event.pull_request.title, 'batch CI:')
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-        run: |
-          # Both commits and the history between them (a full clone is ~15 MB).
-          git fetch --no-tags --unshallow origin "$BASE" "$HEAD" 2>/dev/null || git fetch --no-tags origin "$BASE" "$HEAD"
-          # main's copy of the rule, never the batch's own: a change to the rule
-          # must not judge itself (and noboot.sh sends scripts/batch/ to a full batch).
-          git show "$BASE:scripts/batch/noboot.sh" > "$RUNNER_TEMP/noboot.sh"
-          bash "$RUNNER_TEMP/noboot.sh" "$BASE" "$HEAD"
       # P4 task 18: the founder-signed root is frozen once committed. `updated`
       # keeps a cached root of the same version, so a second "version 1" would
       # split devices (docs/release/root-ceremony.md, "Interim: key files").
@@ -240,16 +221,46 @@ jobs:
   # or observe: those ran on every lane's PR and starved the merge batches of the
   # account's 20 job slots (2026-10-27). Batches and main still run everything,
   # and a PR labelled `full-ci-all` gets the whole set too, e.g. to chase a TCG hang.
+  # Whether this run may skip the boot jobs: only a `batch/noboot-...` run, and
+  # only when main's copy of scripts/batch/noboot.sh finds that nothing the
+  # change touches reaches the image or the boot runs. The answer comes from
+  # the diff, never from a name, flag or title a PR's author sets; a wrong
+  # name, an error or a rule that disagrees means `skip=false` and every boot
+  # job runs. Any other run skips this job and its `qemu` starts at once.
+  noboot:
+    name: No-boot check (scripts/batch/noboot.sh)
+    if: startsWith(github.head_ref, 'batch/noboot-')
+    runs-on: ubuntu-24.04
+    outputs:
+      skip: ${{ steps.rule.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: rule
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          skip=false
+          # main's copy of the rule, never the batch's own: a change to the rule
+          # must not judge itself (and noboot.sh sends scripts/batch/ to a full batch).
+          if git show "$BASE:scripts/batch/noboot.sh" > "$RUNNER_TEMP/noboot.sh" 2>/dev/null \
+             && bash "$RUNNER_TEMP/noboot.sh" "$BASE" "$HEAD"; then
+            skip=true
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          echo "the boot jobs are skipped: $skip"
+
   qemu:
     name: QEMU 11.0.5 (built once, cached)
-    # Not for a no-boot batch (the batcher's draft "batch CI: ..." PR from a
-    # `batch/noboot-...` branch, scripts/batch/noboot.sh): it changes nothing
-    # the boot jobs see, which the lint job checks. Any other PR so named boots.
+    # A no-boot batch boots nothing, when the `noboot` job above says so from
+    # its diff. `!cancelled()` lets this run when that job is skipped.
+    needs: noboot
     if: >-
+      !cancelled() &&
+      needs.noboot.outputs.skip != 'true' &&
       (github.event.action != 'labeled' || startsWith(github.event.label.name, 'full-ci')) &&
-      !(startsWith(github.head_ref, 'batch/noboot-') &&
-        github.event.pull_request.draft &&
-        startsWith(github.event.pull_request.title, 'batch CI:')) &&
       (github.event_name != 'pull_request' ||
       startsWith(github.head_ref, 'batch/') ||
       contains(github.event.pull_request.labels.*.name, 'full-ci') ||
@@ -285,6 +296,9 @@ jobs:
     name: Boot test (${{ matrix.accel }}, shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-24.04
     needs: qemu
+    # Explicit: a job's implicit success() covers its needs' needs too, and the
+    # `noboot` job above `qemu` is skipped on every run but a no-boot batch.
+    if: ${{ !cancelled() && needs.qemu.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -340,8 +354,9 @@ jobs:
   perf:
     name: Perf marks (release kernel)
     if: >-
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci')
+      !cancelled() && needs.qemu.result == 'success' &&
+      (github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci'))
     runs-on: ubuntu-24.04
     needs: qemu
     continue-on-error: true
@@ -379,9 +394,10 @@ jobs:
   icount:
     name: icount determinism probe (not a gate)
     if: >-
-      github.event_name != 'pull_request' ||
+      !cancelled() && needs.qemu.result == 'success' &&
+      (github.event_name != 'pull_request' ||
       startsWith(github.head_ref, 'batch/') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci-all')
+      contains(github.event.pull_request.labels.*.name, 'full-ci-all'))
     runs-on: ubuntu-24.04
     needs: qemu
     continue-on-error: true
@@ -406,9 +422,10 @@ jobs:
   observe:
     name: Observe determinism (${{ matrix.runner }})
     if: >-
-      github.event_name != 'pull_request' ||
+      !cancelled() && needs.qemu.result == 'success' &&
+      (github.event_name != 'pull_request' ||
       startsWith(github.head_ref, 'batch/') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci-all')
+      contains(github.event.pull_request.labels.*.name, 'full-ci-all'))
     runs-on: ubuntu-24.04
     needs: qemu
     strategy:
@@ -442,6 +459,7 @@ jobs:
     name: Observe determinism across runners
     runs-on: ubuntu-24.04
     needs: observe
+    if: ${{ !cancelled() && needs.observe.result == 'success' }}
     steps:
       - uses: actions/download-artifact@v4
       - name: Both runners built the same summary
