@@ -546,7 +546,15 @@ pub fn spawn_in(
         supervision::record_load_failure(pid, &name, request.supervisor, request.spawner);
         return Err((Error::Invalid, moved));
     }
-    crate::handle::give_at_start(slot, moved);
+    // Where the moved handles start in STARTUP, and whether all went in: a
+    // refusal from here on takes them back out for the spawner.
+    let moved_at = crate::handle::startup_len(slot);
+    let moved_len = moved.len();
+    let moved_in = crate::handle::give_at_start(slot, moved);
+    let take_back = || match moved_in {
+        true => crate::handle::take_at_start(slot, moved_at, moved_len),
+        false => crate::handle::Moving::none(),
+    };
     // A plan line's `netdest=`: a record of its own, made only now, so a
     // refused spawn never hands it to the spawner with what it moved.
     if let Some(dest) = &plan.netdest {
@@ -554,9 +562,10 @@ pub fn spawn_in(
         // An agent's line: its day's bytes, `net_mib=` (P5 task 14).
         let meter = plan.net_mib.map(crate::net::dest::meter);
         let Some(object) = crate::net::dest::create_metered(dest.clone(), live, meter) else {
+            let moved = take_back();
             crate::handle::destroy(slot);
             with_table(|table| table[slot] = Process::FREE);
-            return Err((Error::NoMemory, crate::handle::Moving::none()));
+            return Err((Error::NoMemory, moved));
         };
         let entry = captable::Entry::new(
             kabi::handle::Kind::NetDest,
@@ -583,10 +592,11 @@ pub fn spawn_in(
         }
     }
     if threads::spawn("user", process_main, slot).is_err() {
+        let moved = take_back();
         crate::handle::destroy(slot);
         with_table(|table| table[slot] = Process::FREE);
         supervision::record_load_failure(pid, &name, request.supervisor, request.spawner);
-        return Err((Error::NoMemory, crate::handle::Moving::none()));
+        return Err((Error::NoMemory, moved));
     }
     Ok(pid)
 }

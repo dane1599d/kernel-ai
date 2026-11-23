@@ -513,14 +513,49 @@ pub fn give_at_start(slot: usize, entries: impl Into<Moving>) -> bool {
     all
 }
 
+/// Takes back out of the table of the process in `slot`, which never ran, the
+/// `count` startup handles from STARTUP's `first`: the entries
+/// [`give_at_start`] put there for a move, in the order they were moved, so a
+/// spawn refused after that point still gives them back. Nothing when the
+/// table is gone or does not list them all.
+pub fn take_at_start(slot: usize, first: usize, count: usize) -> Moving {
+    let mut guard = lock(slot);
+    let Some(handles) = guard.as_mut() else {
+        return Moving::none();
+    };
+    let Some(listed) = handles.startup.get(first..first + count) else {
+        return Moving::none();
+    };
+    if listed
+        .iter()
+        .any(|&handle| handles.table.get(handle).is_err())
+    {
+        return Moving::none();
+    }
+    let listed: Vec<Handle> = listed.to_vec();
+    handles.startup.drain(first..first + count);
+    let entries: Vec<Entry> = listed
+        .iter()
+        .filter_map(|&handle| handles.table.close(handle).ok())
+        .collect();
+    // Counted in transit before the table's lock goes, as `take_with` does.
+    Moving::from(entries)
+}
+
 /// Puts `entries`, taken from `slot`'s table as `handles` by [`take_held`]
 /// for a move that was refused, back under the same handle values (audit K
 /// #7): the caller still names them. One that cannot go back (the table is
 /// gone, or its slot was not held) is said and dropped; nothing then names it,
-/// so its object goes as a close's would.
+/// so its object goes as a close's would. A handle with no entry coming back
+/// (the refused process's table went with them) is released: its slot is
+/// closed, never left held.
 pub fn give_back(slot: usize, handles: &[Handle], moving: Moving) {
     let mut guard = lock(slot);
     let Some(table) = guard.as_mut().map(|h| &mut h.table) else {
+        crate::log!(
+            "handle: a refused move's {} handles could not go back: the table is gone",
+            moving.len()
+        );
         return;
     };
     // `moving` stops counting them only once dropped, after they are back.
@@ -532,6 +567,17 @@ pub fn give_back(slot: usize, handles: &[Handle], moving: Moving) {
                 handle.0
             );
         }
+    }
+    let lost = &handles[moving.len().min(handles.len())..];
+    if !lost.is_empty() {
+        crate::log!(
+            "handle: a refused move lost {} of its {} handles; their slots are closed",
+            lost.len(),
+            handles.len()
+        );
+    }
+    for &handle in lost {
+        let _ = table.release(handle);
     }
 }
 

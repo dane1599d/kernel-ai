@@ -406,7 +406,7 @@ fn unanswered() -> Result<(), &'static str> {
 /// #1162's review: a refused JOB_SPAWN gives the caller its handles back
 /// under the values it holds, with their rights, even when another insert
 /// lands in the table between the take and the give-back; a move that went
-/// through closes them.
+/// through closes them, and so does a refusal that brings nothing back.
 fn held_move() -> Result<(), &'static str> {
     let slot = MAX_PROCESSES - 3;
     handle::create(slot, cap::POLICY, 98, &[]).map_err(|_| "handles: no table for the move")?;
@@ -437,9 +437,25 @@ fn held_move() -> Result<(), &'static str> {
             .map_err(|_| "handles: a second held take was refused")?;
         handle::release(slot, &[moved]);
         drop(moving);
-        let gone = handle::with(slot, |h| h.table.get(moved).is_err()).ok();
-        if gone != Some(true) {
-            return Err("handles: a move that went through left its handle open");
+        // `hold` already emptied the slot, so only its reuse shows the release:
+        // the next insert takes the freed slot under a new value.
+        let reused = insert(Rights::READ)?;
+        if reused.index() != moved.index() || reused == moved {
+            return Err("handles: a move that went through left its slot held");
+        }
+        if handle::with(slot, |h| h.table.get(moved).is_err()).ok() != Some(true) {
+            return Err("handles: a move that went through left its old value open");
+        }
+        // A refused spawn whose child's table went with the entries (#1267's
+        // review): nothing comes back, and the held slot is closed, not leaked.
+        let lost = insert(rights)?;
+        let moving = handle::take_held(slot, &[lost], cap::POLICY)
+            .map_err(|_| "handles: a third held take was refused")?;
+        drop(moving);
+        handle::give_back(slot, &[lost], handle::Moving::none());
+        let reused = insert(Rights::READ)?;
+        if reused.index() != lost.index() || reused == lost {
+            return Err("handles: a refused move with nothing back left its slot held");
         }
         Ok(())
     })();
