@@ -30,6 +30,12 @@ impl Shell {
             {
                 return Reply::err(why);
             }
+            // An unknown outcome since the newest live entry: it has no undo,
+            // and `undo` must not reach past it to something older the person
+            // did not mean (#1164's review).
+            if let Some(why) = self.bare_unknown_refusal() {
+                return Reply::err(why);
+            }
             return match self.log.newest_live() {
                 Some(id) => self.revert_entry(id, false),
                 None => Reply::err("nothing to undo"),
@@ -49,6 +55,25 @@ impl Shell {
             Some(id) => self.undo_entry(id),
             None => Reply::err(format!("nothing of {agent}'s to undo")),
         }
+    }
+
+    /// What a bare `undo` says when the newest entry it would pass is an
+    /// unknown outcome: what may have run, and that there is nothing to undo.
+    fn bare_unknown_refusal(&self) -> Option<String> {
+        let entry = self
+            .log
+            .entries()
+            .rev()
+            .take_while(|e| !e.live())
+            .find(|e| e.state == crate::actlog::State::Unknown)?;
+        let row = entry
+            .outcome
+            .rsplit_once("; ")
+            .and_then(|(_, tail)| tail.strip_suffix(" may have run"))
+            .unwrap_or("a call");
+        Some(format!(
+            "the outcome of {row} is not known, so there is nothing to undo; check it"
+        ))
     }
 
     /// Why a bare `undo` stops: since the newest live entry, an undo removed a
@@ -87,7 +112,7 @@ impl Shell {
     /// Entry `id`, if it is live and nothing later changed what it changed.
     fn undo_entry(&mut self, id: u64) -> Reply {
         match self.log.get(id) {
-            Some(entry) if entry.live() => {}
+            Some(entry) if entry.undoable_by_id() => {}
             Some(entry) => {
                 return Reply::err(
                     self.send_refusal(entry)
