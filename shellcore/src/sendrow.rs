@@ -137,7 +137,7 @@ impl Shell {
                 send.host
             ));
         }
-        self.shown = Some(shown(&call, &send));
+        self.shown = Some((id, shown(&call, &send)));
         // The whole text goes above the card, under code's header; a terminal
         // that cannot show it all denies the card (`termcore::menu::SHOWN`).
         let reply = Reply {

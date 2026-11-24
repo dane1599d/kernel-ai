@@ -16,6 +16,10 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// Words after `undo` that are the person's own line ("undo that"), never an
+/// agent's name, even if a packaged agent is called one of them.
+const NOT_AGENT_NAMES: &[&str] = &["that", "it", "this", "last", "everything", "all"];
+
 impl Shell {
     /// `undo` with nothing (the newest live entry) or an entry number.
     pub(crate) fn undo_command(&mut self, which: &str) -> Reply {
@@ -35,6 +39,16 @@ impl Shell {
             return Reply::err("usage: undo [entry number]");
         };
         self.undo_entry(id)
+    }
+
+    /// Whether `undo <name>` names an agent: one on the roster other than
+    /// kai, and never a word the person's own "undo that" uses.
+    pub(crate) fn is_undoable_agent(&self, name: &str) -> bool {
+        !NOT_AGENT_NAMES.contains(&name.to_ascii_lowercase().as_str())
+            && self
+                .roster
+                .by_name(name)
+                .is_some_and(|a| !a.name().is_kai())
     }
 
     /// `undo <agent>`: the newest live entry agent `agent` made, under the

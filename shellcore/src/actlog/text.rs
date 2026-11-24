@@ -64,11 +64,15 @@ pub(super) fn write<'a>(records: impl Iterator<Item = &'a Record> + Clone) -> St
 }
 
 fn entry(out: &mut String, e: &Entry, agents: bool) {
+    let agent = match agents {
+        true => alloc::format!(" {}={}", agentid::stamp::KEY, e.agent.as_str()),
+        false => String::new(),
+    };
     match e.of {
         Some(of) => {
             let _ = writeln!(
                 out,
-                "U {} of={of} t={} state={}",
+                "U {} of={of} t={} state={}{agent}",
                 e.id,
                 e.t_ns,
                 e.state.word()
@@ -76,10 +80,6 @@ fn entry(out: &mut String, e: &Entry, agents: bool) {
         }
         None => {
             let tier = e.tier.map_or("-", Tier::name);
-            let agent = match agents {
-                true => alloc::format!(" {}={}", agentid::stamp::KEY, e.agent.as_str()),
-                false => String::new(),
-            };
             let _ = writeln!(
                 out,
                 "E {} t={} reg={} pack={} form={} tier={tier} consent={} state={}{agent}",
@@ -284,25 +284,32 @@ impl<'a> Reader<'a> {
         let bad = |why| self.error(why);
         let mut pack = None;
         let mut agent = agentid::Name::kai();
+        // `actlog 2`'s `agent=` is the last field of an `E` or a `U`. One
+        // that is missing or names no agent sets that entry aside, not the
+        // whole log; a `U` from before undo records named theirs is kai's.
+        // A set-aside `U` is reported but kept (as kai's), so the entry it
+        // undid never reads as live again.
+        let (body, named) = match self.agents {
+            true => match body.rsplit_once(' ') {
+                Some((rest, last)) if last.starts_with("agent=") => (rest, Some(last)),
+                _ => (body, None),
+            },
+            false => (body, None),
+        };
+        if self.agents {
+            match (
+                tag,
+                named.map(|word| agentid::stamp::read_field(Some(word))),
+            ) {
+                (_, Some(Ok(name))) => agent = name,
+                ("U", None) => {}
+                _ => *aside = true,
+            }
+        }
         let (id, of, t, form, tier, consent, state) = match tag {
             "E" => {
                 const V1: &[&str] = &["", "t", "reg", "pack", "form", "tier", "consent", "state"];
-                // `actlog 2`'s `agent=` is the last field. One that is missing
-                // or names no agent sets that entry aside, not the whole log.
-                let (body, named) = match self.agents {
-                    true => match body.rsplit_once(' ') {
-                        Some((rest, last)) if last.starts_with("agent=") => (rest, Some(last)),
-                        _ => (body, None),
-                    },
-                    false => (body, None),
-                };
                 let v = self.fields(body, V1)?;
-                if self.agents {
-                    match named.map(|word| agentid::stamp::read_field(Some(word))) {
-                        Some(Ok(name)) => agent = name,
-                        _ => *aside = true,
-                    }
-                }
                 if v[2] != "1" {
                     return self.fail("an entry from another registry version");
                 }

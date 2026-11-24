@@ -211,7 +211,7 @@ impl Shell {
             }
             _ => format!("asked first: {} has no undo", at.join(", ")),
         };
-        self.shown = Some(format!("{}\n{why}", script::shown(id, &checked)));
+        self.show_script(id, format!("{}\n{why}", script::shown(id, &checked)));
         if tier == Tier::Run {
             self.host
                 .audit(&format!("script {id} tier run; running it"));
@@ -728,13 +728,19 @@ impl Shell {
         }
     }
 
+    /// Keeps `text` as what `show` prints for entry `id`'s script.
+    pub(crate) fn show_script(&mut self, id: u64, text: String) {
+        self.shown = Some((id, text));
+    }
+
     /// `show` or `why`: the last script in full, with why it ran or asked.
     pub(crate) fn show_last(&self) -> Reply {
-        let Some(text) = &self.shown else {
+        let Some((id, text)) = &self.shown else {
             return Reply::err("no script yet");
         };
-        // `why` names the agent whose entry the newest one is (ADR 0013 §1).
-        match self.log.entries().last().map(|e| &e.agent) {
+        // `why` names the agent of the entry whose script it shows (ADR 0013
+        // §1), not the newest entry's.
+        match self.log.get(*id).map(|e| &e.agent) {
             Some(agent) if !agent.is_kai() => Reply::ok(format!("{text}\nby {}", agent.as_str())),
             _ => Reply::ok(text.clone()),
         }
