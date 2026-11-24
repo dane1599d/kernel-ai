@@ -217,8 +217,8 @@ impl Host for FakeHost {
         Ok(())
     }
 
-    fn standing_read(&self) -> Option<String> {
-        self.standing_disk.borrow().clone()
+    fn standing_read(&self) -> Result<Option<String>, String> {
+        self.state_read("standing_read", &self.standing_disk)
     }
 
     fn standing_write(&self, text: &str) -> Result<(), String> {
@@ -262,8 +262,8 @@ impl Host for FakeHost {
         }
     }
 
-    fn rules_read(&self) -> Option<String> {
-        self.rules_disk.borrow().clone()
+    fn rules_read(&self) -> Result<Option<String>, String> {
+        self.state_read("rules_read", &self.rules_disk)
     }
 
     fn rules_write(&self, text: &str) -> Result<(), String> {
@@ -271,8 +271,8 @@ impl Host for FakeHost {
         Ok(())
     }
 
-    fn net_grants_read(&self) -> Option<String> {
-        self.net_disk.borrow().clone()
+    fn net_grants_read(&self) -> Result<Option<String>, String> {
+        self.state_read("net_grants_read", &self.net_disk)
     }
 
     fn net_grants_write(&self, text: &str) -> Result<(), String> {
@@ -503,8 +503,8 @@ impl Host for FakeHost {
         Some(child(request))
     }
 
-    fn keep_read(&self) -> Option<String> {
-        self.keep_file.borrow().clone()
+    fn keep_read(&self) -> Result<Option<String>, String> {
+        self.state_read("keep_read", &self.keep_file)
     }
 
     fn keep_write(&self, text: &str) -> Result<(), String> {

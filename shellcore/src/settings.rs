@@ -517,7 +517,10 @@ impl Shell {
             self.keep.push(name.to_string());
         }
         let text = keep_text(&self.saved_keep());
-        if let Err(why) = self.host.keep_write(&text) {
+        let written = self
+            .not_unread(crate::KEEP)
+            .and_then(|()| self.host.keep_write(&text));
+        if let Err(why) = written {
             self.host
                 .audit(&format!("the keep-running list was not saved: {why}"));
         }
@@ -533,7 +536,8 @@ impl Shell {
     /// The keep-running list `/system/state/keep` holds, each told to the
     /// supervisor again; a list out of shape is set aside whole.
     pub(crate) fn with_saved_keep(mut self) -> Self {
-        let Some(text) = self.host.keep_read() else {
+        let read = self.host.keep_read();
+        let Some(text) = self.read_at_start(crate::KEEP, read) else {
             return self;
         };
         let Some(apps) = parse_keep(&text) else {

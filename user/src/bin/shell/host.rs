@@ -411,16 +411,16 @@ impl Host for System {
         logged.and(committed)
     }
 
-    fn rules_read(&self) -> Option<String> {
-        self.state.read(files::RULES).ok().flatten()
+    fn rules_read(&self) -> Result<Option<String>, String> {
+        self.state.read(files::RULES)
     }
 
-    fn standing_read(&self) -> Option<String> {
-        self.state.read(files::STANDING).ok().flatten()
+    fn standing_read(&self) -> Result<Option<String>, String> {
+        self.state.read(files::STANDING)
     }
 
-    fn keep_read(&self) -> Option<String> {
-        self.state.read(files::KEEP).ok().flatten()
+    fn keep_read(&self) -> Result<Option<String>, String> {
+        self.state.read(files::KEEP)
     }
 
     fn keep_write(&self, text: &str) -> Result<(), String> {
@@ -490,8 +490,8 @@ impl Host for System {
         }
     }
 
-    fn net_grants_read(&self) -> Option<String> {
-        self.state.read(files::NETGRANTS).ok().flatten()
+    fn net_grants_read(&self) -> Result<Option<String>, String> {
+        self.state.read(files::NETGRANTS)
     }
 
     /// As the rules are written: with the line's files, if it changed any.

@@ -87,12 +87,17 @@ impl Connect {
     }
 }
 
-/// The grants as the file holds them: none when there is no file.
+/// The grants as the file holds them: none when there is no file; why not,
+/// for a file out of shape or one that could not be read, which must not be
+/// read as none: a grant written then would replace the file without them.
 pub(crate) fn read_store(host: &dyn Host) -> Result<NetGrants, String> {
     match host.net_grants_read() {
-        None => Ok(NetGrants::new()),
-        Some(text) => NetGrants::load(&text)
+        Ok(None) => Ok(NetGrants::new()),
+        Ok(Some(text)) => NetGrants::load(&text)
             .map_err(|why| format!("the network grants on disk are out of shape ({why})")),
+        Err(why) => Err(format!(
+            "the network grants on disk could not be read ({why})"
+        )),
     }
 }
 
