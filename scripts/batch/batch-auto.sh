@@ -57,7 +57,7 @@ culprits_out() {  # $1 batch-ff.sh output, then the batch's PR numbers
   for p in "$@"; do
     br=$(gh pr view $p --repo "$R" --json headRefName --jq .headRefName)
     [ -n "$br" ] && git -C "$G" diff --name-only "origin/$MAIN...origin/$br" 2>/dev/null \
-      | grep -qxF "$files" && culprits+=($p)
+      | grep -qxF -e "$files" && culprits+=($p)
   done
   [ ${#culprits[@]} -gt 0 ] || return 1
   # Whole stacks: a culprit's group leaves with it.
@@ -197,6 +197,16 @@ batch() {  # PR numbers, or --resume; a failed batch is bisected
       return
     fi
     if [ $# -eq 1 ]; then
+      # A lane may have pushed a fix while CI ran (batch-ff.sh stops on red
+      # before it checks the heads): keep the label of a PR whose head is no
+      # longer the one tested; the next batch tries the new head.
+      local tested now
+      tested=$(grep -oE "^  \+ #$1 \(.*\) at [0-9a-f]{40}$" "$out" | grep -oE "[0-9a-f]{40}$")
+      now=$(gh pr view $1 --repo "$R" --json headRefOid --jq .headRefOid)
+      if [ -n "$tested" ] && [ -n "$now" ] && [ "$now" != "$tested" ]; then
+        say "#$1 failed alone, but it was pushed to since the batch took it; label kept"
+        return
+      fi
       fails=$(grep -E "=failure|fluency run|failed case: |compile error: " "$out" | sed 's/^ *//; s/^failed case: xtask: //' | tr '\n' ' ')
       unlabel $1 "Batcher: this PR failed in a merge batch on its own: $fails. Fix it, push once, and add \`batch-ready\` again."
       say "#$1 failed alone: $fails"

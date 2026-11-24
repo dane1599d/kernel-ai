@@ -219,12 +219,14 @@ compile_errors() {  # $1 run id
   # Each log line is "job<TAB>step<TAB>time text", the text in ANSI colour.
   # `cut` and a literal escape, not `\t` and `\x1b`, which only GNU sed reads:
   # macOS sed would print nothing and the batch would just be halved.
+  # rustc prints an error's `-->` on the line right after it, so any other line
+  # ends the wait: a stray `-->` after "error: could not compile" is not paired.
   local esc=$'\033'
   gh run view "$1" --repo "$R" --log-failed 2>/dev/null | cut -f3- \
     | sed -E "s/${esc}\[[0-9;]*m//g; s/^[0-9]{4}-[0-9-]+T[0-9:.]+Z //" \
     | awk '/^error(\[E[0-9]+\])?: / { msg = $0; want = 1; next }
            want && /^ *--> / { sub(/^ *--> /, ""); print $0 "  " msg; want = 0; next }
-           /^(warning|note|help)/ { want = 0 }' \
+           { want = 0 }' \
     | sed -E 's#^/home/runner/work/[^/]+/[^/]+/##' \
     | sort -u | head -20 | sed 's/^/    compile error: /'
 }
@@ -284,7 +286,8 @@ land() {  # PR numbers
 }
 
 # Picks up the batch in $STATE after a stop. Prints the batch's PRs as "+ #N"
-# lines, as a fresh run does, so batch-auto.sh reads the outcome the same way.
+# lines with their heads, as a fresh run does, so batch-auto.sh reads the
+# outcome the same way.
 resume() {
   name=""; bpr=""
   [ -f "$STATE" ] || { echo "  no batch to resume; nothing to merge; STOPPING"; exit 0; }
@@ -297,7 +300,7 @@ resume() {
   read -ra batch <<< "$prs"; read -ra heads <<< "$heads_s"; read -ra brs <<< "$brs_s"
   echo "== resuming batch $name ($phase) on main ${base:0:7}: ${batch[*]}"
   local i=0
-  for p in "${batch[@]}"; do echo "  + #$p (${brs[$i]})"; i=$((i+1)); done
+  for p in "${batch[@]}"; do echo "  + #$p (${brs[$i]}) at ${heads[$i]}"; i=$((i+1)); done
   [ ${#batch[@]} -gt 0 ] && [ ${#heads[@]} = ${#batch[@]} ] || stop "the resume state is damaged; STOPPING"
   set -- "${batch[@]}"
   git -C "$G" fetch -q origin "$MAIN"
@@ -374,7 +377,9 @@ compose() {
     batch+=("$p")
     heads+=("$head")
     brs+=("$br")
-    echo "  + #$p ($br)"
+    # The head goes in the line: batch-auto.sh keeps the label of a PR that
+    # fails alone if the lane pushed to it since.
+    echo "  + #$p ($br) at $head"
   done
   [ ${#batch[@]} -gt 0 ] || { echo "  nothing to merge; STOPPING"; exit 0; }
   set -- "${batch[@]}"

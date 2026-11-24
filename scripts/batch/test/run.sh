@@ -39,7 +39,7 @@ mkpr() {  # n branch base files...
 }
 
 setup() {
-  rm -rf "$T/origin.git" "$T/work" "$T/prs" "$T/state" "$T"/kill-* "$T/fluency-dispatches" "$T/list-fails" "$T/others" "$T/others-fail" "$T/fail-with" "$T/compile.log"
+  rm -rf "$T/origin.git" "$T/work" "$T/prs" "$T/state" "$T"/kill-* "$T/fluency-dispatches" "$T/list-fails" "$T/others" "$T/others-fail" "$T/fail-with" "$T/compile.log" "$T"/on-ci-wait-* "$T/ci-waits"
   git init -q --bare "$T/origin.git"
   git -C "$T/origin.git" symbolic-ref HEAD refs/heads/main
   git clone -q "$T/origin.git" "$T/work" 2>/dev/null
@@ -328,6 +328,84 @@ auto_until "#8 failed alone|keep their labels"
 L="$T/state/batch-auto.log"
 check "no PR leaves first; the batch is split" '! grep -q "trying it without" "$L" && grep -q "batch of 1 5 8 failed; splitting it" "$L"'
 check "the others land, the PR fails alone"   'grep -q "#1 merged" "$L" && grep -q "#5 merged" "$L" && grep -q "#8 failed alone: .*compile error: kernel/src/process/mod.rs:212:14" "$L" && [ ! -s "$T/prs/8/labels" ]'
+
+repush() {  # $1 PR, $2 N: at the Nth CI wait its lane pushes a new head, a sibling of the old one
+  local n=$1 br; br=$(cat "$T/prs/$1/branch")
+  cat > "$T/on-ci-wait-$2" <<EOF
+new=\$(git -C "$T/origin.git" commit-tree "refs/heads/$br^{tree}" -p "refs/heads/$br^" -m "$br fixed")
+git -C "$T/origin.git" update-ref "refs/heads/$br" "\$new"
+echo "\$new" > "$T/prs/$n/sha"
+EOF
+}
+no_word_to() { ! grep -qE "pr (comment|edit) $1 " "$T/gh.log"; }  # $1 PR: never commented on or unlabelled
+
+echo "== batch-auto.sh: none of the rest lands; the culprit keeps its label"
+setup
+for n in 2 3 4 7; do : > "$T/prs/$n/labels"; done
+mkpr 9 feat/caller main kernel/src/process/mod.rs
+git -C "$T/work" checkout -q --detach origin/main
+printf '%s\n' "$(cat "$T/prs/1/sha")" "$(cat "$T/prs/5/sha")" > "$T/fail-with"
+compile_log kernel/src/process/mod.rs:212
+: > "$T/gh.log"
+auto_until "keep their labels"
+L="$T/state/batch-auto.log"
+check "the rest fails, each PR alone"         'grep -q "trying it without 9" "$L" && grep -q "#1 failed alone" "$L" && grep -q "#5 failed alone" "$L"'
+check "the culprit keeps its label, no word"  'grep -q "the rest did not land either; 9 keep their labels" "$L" && no_word_to 9 && ! grep -q "#9 failed alone" "$L"'
+
+echo "== batch-auto.sh: a culprit unlabelled while the rest runs is left out"
+setup
+for n in 2 3 4 7; do : > "$T/prs/$n/labels"; done
+mkpr 9 feat/caller main kernel/src/process/mod.rs
+git -C "$T/work" checkout -q --detach origin/main
+cat "$T/prs/9/sha" > "$T/fail-with"
+compile_log kernel/src/process/mod.rs:212
+echo ": > '$T/prs/9/labels'" > "$T/on-ci-wait-2"
+: > "$T/gh.log"
+auto_until "batch stopped"
+L="$T/state/batch-auto.log"
+check "the rest lands, the culprit goes on"   'grep -q "#1 merged" "$L" && grep -q "the rest landed; 9 go on" "$L"'
+check "it is left out: no run, no word"       'grep -q "batch stopped: nothing to merge" "$L" && ! grep -qE "#9 (merged|failed)" "$L" && no_word_to 9'
+
+echo "== batch-auto.sh: a culprit re-pushed while the rest runs goes on at its new head"
+setup
+for n in 2 3 4 7; do : > "$T/prs/$n/labels"; done
+mkpr 9 feat/caller main kernel/src/process/mod.rs
+git -C "$T/work" checkout -q --detach origin/main
+cat "$T/prs/9/sha" > "$T/fail-with"
+compile_log kernel/src/process/mod.rs:212
+repush 9 2
+: > "$T/gh.log"
+auto_until "#9 (merged|failed alone)"
+L="$T/state/batch-auto.log"
+check "the new head lands, no word"           'grep -q "the rest landed; 9 go on" "$L" && grep -q "#9 merged" "$L" && no_word_to 9'
+
+echo "== batch-auto.sh: every PR a culprit: the usual halving"
+setup
+for n in 1 2 3 4 5 7; do : > "$T/prs/$n/labels"; done
+mkpr 8 feat/k main kainet/src/tcp.rs
+mkpr 9 feat/k2 main kainet/src/io.rs
+git -C "$T/work" checkout -q --detach origin/main
+cat "$T/prs/8/sha" > "$T/fail-with"
+compile_log kainet/src/tcp.rs:212 kainet/src/io.rs:40
+auto_until "#8 failed alone|keep their labels"
+L="$T/state/batch-auto.log"
+check "nobody leaves first; it is halved"     '! grep -q "trying it without" "$L" && grep -q "batch of 8 9 failed; splitting it" "$L"'
+check "the guilty one fails alone, the other lands" 'grep -q "#8 failed alone" "$L" && grep -q "#9 merged" "$L" && [ ! -s "$T/prs/8/labels" ]'
+
+echo "== batch-auto.sh: a PR re-pushed during its solo run keeps its label"
+setup
+for n in 2 3 4 7; do : > "$T/prs/$n/labels"; done
+mkpr 9 feat/caller main kernel/src/process/mod.rs
+git -C "$T/work" checkout -q --detach origin/main
+cat "$T/prs/9/sha" > "$T/fail-with"
+compile_log kernel/src/process/mod.rs:212
+repush 9 3
+: > "$T/gh.log"
+auto_until "#9 (merged|failed alone: )"
+L="$T/state/batch-auto.log"
+check "it fails alone on the old head"        'grep -q "#9 failed alone, but it was pushed to since the batch took it; label kept" "$L"'
+check "no comment, no unlabel"                'no_word_to 9'
+check "the new head lands next"               'grep -q "#9 merged" "$L"'
 
 echo "== batch-auto.sh: a modify/delete conflict names its file"
 setup
