@@ -30,6 +30,7 @@ use kaituf::meta::TargetFile;
 use modelchan::fetch::Hosts;
 use modelchan::import::{self, Importing};
 use modelchan::listing;
+use modelchan::remove::{self, Holds, Remove};
 use modelchan::trial::{self, AtBoot, Decision, Health, State, Switch, Trial};
 use user::{println, sys};
 
@@ -369,8 +370,9 @@ impl Channel {
     }
 
     /// One request from the shell: `models`, `models import`, `models
-    /// progress`, `models use <64 hex>`, `models offers`, `models ask <id>` or
-    /// `models download <id>`; from the model manager's window, `models` alone
+    /// progress`, `models use <64 hex>`, `models offers`, `models ask <id>`,
+    /// `models download <id>` or `models remove <64 hex>` (a `model_fetch`'s
+    /// undo); from the model manager's window, `models` alone
     /// (`serve` checks who asked). Nothing in it is used as a path: an id is
     /// only looked up in the signed role.
     pub fn answer(&mut self, text: &str) -> String {
@@ -382,9 +384,74 @@ impl Channel {
             ["models", "offers"] => self.offers(None),
             ["models", "ask", id] => self.offers(Some(id)),
             ["models", "download", id] => self.start_download(id),
+            ["models", "remove", sha] => {
+                listing::sha256(sha).and_then(|sha| self.remove_model(&sha))
+            }
             _ => Err(String::from("unknown request")),
         };
         done.unwrap_or_else(|why| format!("err {why}"))
+    }
+
+    /// `models remove <64 hex>`, the undo of a `model_fetch`
+    /// (`modelchan::remove`): a download of that model stops and its part is
+    /// dropped, or its blob leaves the store, outside any action. Never while
+    /// it runs, is the trial's candidate or is being imported; and not while
+    /// `llm` cannot say which model it runs, since the kernel fills a running
+    /// model straight from its blob's blocks.
+    fn remove_model(&mut self, sha256: &Sha256) -> Result<String, String> {
+        let (candidate, previous) = remove::trial_holds(self.record()?.as_ref());
+        let holds = Holds {
+            running: self.running_now()?,
+            candidate,
+            previous,
+            importing: self.import.as_ref().map(|run| run.sha256),
+            downloading: self.download.as_ref().map(download::Running::sha256),
+        };
+        match remove::decide(sha256, &holds)? {
+            Remove::Download => {
+                if let Some(mut run) = self.download.take() {
+                    run.cancel(self.store);
+                }
+                self.end_download(Err(String::from("stopped by undo")));
+                Ok(String::from("ok stopped"))
+            }
+            Remove::Blob => {
+                let name = blob(sha256);
+                match folders::ask(self.store, &Request::SealedRemove { name: name.clone() })? {
+                    (Reply::Done, _) => {
+                        println!("updated: {name} removed from the store");
+                        Ok(String::from("ok removed"))
+                    }
+                    (Reply::Failed(fsproto::Error::NotFound), _) => {
+                        Err(String::from("that model is not in the store"))
+                    }
+                    // `fs` refuses the blob `kai-modelhint 1` names, which only
+                    // it reads: the model the kernel maps at boot, held even
+                    // with no trial record or no model loaded (an imported
+                    // image, a cancelled switch, a boot that could not map it).
+                    (Reply::Failed(fsproto::Error::Permission), _) => Err(String::from(
+                        "it is the model this machine boots; switch to another model first",
+                    )),
+                    other => Err(format!("the store: {other:?}")),
+                }
+            }
+        }
+    }
+
+    /// The stored model `llm` reports loaded, if any; an error when `llm` is
+    /// there and does not say.
+    fn running_now(&self) -> Result<Option<Sha256>, String> {
+        if self.llm.is_none() {
+            return Ok(None);
+        }
+        let text = self
+            .health()
+            .ok_or_else(|| String::from("llm did not say which model it runs; ask again"))?;
+        let Some((len, fnv)) = listing::loaded(&text) else {
+            return Ok(None);
+        };
+        let blobs = self.blobs()?;
+        Ok(blobs.iter().find(|b| (b.1, b.2) == (len, fnv)).map(|b| b.0))
     }
 
     /// `models offers`, or with `id`, `models ask <id>` (`offers.rs`).
