@@ -27,34 +27,65 @@ base=$1 head=$2
 mb=$(git merge-base "$base" "$head" 2>/dev/null) || { echo "noboot: cannot read $base and $head"; exit 2; }
 files=$(git diff --name-only --no-renames "$mb" "$head") || exit 2
 
-# Whether code that is not itself a test or a tool reads `$1` at build time:
-# a .rs file outside the tests/ directories, testkit/ and the xtask tools
-# below that names the file and uses include_str!, include_bytes! or #[path]
-# anywhere (so a concat!(env!("CARGO_MANIFEST_DIR"), "...") over several lines
-# counts). Matched by file name, as fixed text. Any error answers yes: the
-# rule fails closed.
-referenced() {  # $1 path
-  local name files rc
+# The git that `referenced` greps with; a test points it at one that fails.
+GIT=${NOBOOT_GIT:-git}
+# How many hops through test-only files (tests/, testkit/, the tools) a read
+# is followed back towards image code.
+HOPS=4
+
+# Whether a file is test-only or a tool's: what it reads counts only when
+# image code reads it in turn.
+test_only() {  # $1 path
+  case "$1" in
+    testkit/*) return 0;;
+    xtask/src/decisions.rs|xtask/src/decisions/*|xtask/src/filesize.rs) return 0;;
+    xtask/src/actbench/*|xtask/src/tokens.rs|xtask/src/doctor/*) return 0;;
+    */src/*) return 1;;
+    tests/*|*/tests/*) return 0;;
+  esac
+  return 1
+}
+
+# The .rs files at $head that may read `$1` at build time: those that name
+# it (fixed text) and use include!, include_str!, include_bytes! or #[path]
+# anywhere in them (so a concat!(env!("CARGO_MANIFEST_DIR"), "...") over
+# several lines counts), and those that #[path] the module whose tree holds
+# it (`<dir>/mod.rs` or `<dir>.rs` for any parent <dir> of it). Prints them;
+# exits 3 on any error.
+readers() {  # $1 path
+  local name dir files rc g
   name=$(basename "$1")
-  files=$(git grep -l -F -e "$name" "$head" -- '*.rs' 2>/dev/null); rc=$?
-  [ $rc = 1 ] && return 1
-  [ $rc = 0 ] || return 0
-  files=$(printf '%s\n' "$files" | cut -d: -f2- | awk '
-    /^testkit\// { next }
-    /^xtask\/src\/(decisions|filesize|actbench|tokens|doctor)/ { next }
-    /(^|\/)tests\// && !/\/src\// { next }
-    { print }')
-  [ -n "$files" ] || return 1
-  # Exit 0 (read) at the first file that includes, or on any error.
-  if printf '%s\n' "$files" | {
-    while IFS= read -r g; do
-      git grep -q -E 'include_(str|bytes)!|#\[path' "$head" -- "$g" 2>/dev/null
-      [ $? = 1 ] || exit 0
-    done
-    exit 1
-  }; then
-    return 0
-  fi
+  files=$($GIT grep -l -F -e "$name" "$head" -- '*.rs' 2>/dev/null); rc=$?
+  [ $rc -gt 1 ] && return 3
+  printf '%s\n' "$files" | cut -d: -f2- | while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    $GIT grep -q -E 'include(_str|_bytes)?!|#\[path' "$head" -- ":(literal)$g" 2>/dev/null; rc=$?
+    [ $rc = 0 ] && echo "$g"
+    [ $rc -gt 1 ] && echo "?error"
+  done
+  # A #[path]ed `<dir>/mod.rs` or `<dir>.rs` brings the module tree in <dir>/.
+  dir=$(dirname "$1")
+  while [ "$dir" != . ] && [ "$dir" != / ]; do
+    name=$(basename "$dir" | sed 's/[.[\*^$+?(){}|]/\\&/g')
+    files=$($GIT grep -l -E "#\[path *= *\"([^\"]*/)?$name(/mod\.rs|\.rs)\"" "$head" -- '*.rs' 2>/dev/null); rc=$?
+    [ $rc -gt 1 ] && { echo "?error"; break; }
+    printf '%s\n' "$files" | cut -d: -f2- | grep -v '^$'
+    dir=$(dirname "$dir")
+  done
+}
+
+# Whether image code (anything not test-only) reads `$1` at build time,
+# directly or through up to $HOPS test-only files that it reads in turn.
+# Any error answers yes: the rule fails closed.
+referenced() {  # $1 path, $2 hops left (default $HOPS)
+  local left=${2:-$HOPS} out r
+  out=$(readers "$1"); [ $? = 0 ] || return 0
+  printf '%s\n' "$out" | grep -qx '?error' && return 0
+  while IFS= read -r r; do
+    [ -n "$r" ] && [ "$r" != "$1" ] || continue
+    test_only "$r" || return 0
+    [ "$left" -gt 0 ] && referenced "$r" $((left - 1)) && return 0
+  done <<< "$out"
   return 1
 }
 
