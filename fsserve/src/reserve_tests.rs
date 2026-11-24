@@ -15,7 +15,7 @@ fn home(c: &mut Client<'_>, request: Request) -> Reply {
 }
 
 /// Writes 4 KiB files under `/home/user` until growth is refused; their names.
-fn fill(c: &mut Client<'_>) -> Vec<String> {
+pub(crate) fn fill(c: &mut Client<'_>) -> Vec<String> {
     let mut made = Vec::new();
     for n in 0..10_000 {
         let open = Request::Open {
@@ -103,6 +103,10 @@ fn each_request_gets_its_tier_and_a_commit_the_least_of_its_actions() {
     );
     assert_eq!(tier(&mut c, ALICE, trash()), Spend::Half);
     assert_eq!(tier(&mut c, ALICE, truncate()), Spend::Half);
+    let sealed_remove = Request::SealedRemove { name: "x".into() };
+    assert_eq!(tier(&mut c, ALICE, sealed_remove), Spend::Half);
+    let sealed_push = Request::SealedPush { data: vec![1] };
+    assert_eq!(tier(&mut c, ALICE, sealed_push), Spend::Keep);
     assert_eq!(tier(&mut c, ALICE, Request::Sync), Spend::Keep);
     assert_eq!(tier(&mut c, ALICE, write()), Spend::Keep);
     // An action of trashes and truncates commits at half; Bob's Sync in it,

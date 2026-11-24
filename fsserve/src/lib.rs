@@ -641,6 +641,9 @@ impl<D: BlockDev> Server<D> {
         answered
     }
 
+    /// A model blob's removal gets half of the reserve, as a trash does: its
+    /// space also comes back later.
+    ///
     /// How far `request` may go into kaifs's reserved blocks, so a disk
     /// growth filled can still be emptied, and no client can drain them: all
     /// of it only for work that frees space at once and cannot be looped to
@@ -668,6 +671,12 @@ impl<D: BlockDev> Server<D> {
             // costs blocks now, so a loop of it could drain all of the
             // reserve: half, as a trash.
             Request::Trash { .. } | Request::Truncate { .. } => Spend::Half,
+            // A model blob's removal, outside any action, frees the blob once
+            // the GC pass it starts has run, and costs copy-on-write now. Each
+            // needs a sealed blob, written above the reserve, and one refused
+            // writes nothing: half, as a trash, so the GC and an emptied
+            // trash keep the rest.
+            Request::SealedRemove { .. } => Spend::Half,
             // The commit of an action, by Commit or the owner's own Sync, at
             // the least tier of its changes; a Sync outside one has nothing to
             // write and needs no reserve.
