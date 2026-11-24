@@ -6,12 +6,13 @@
 //! behind A with APP_CTL's cancel (the server is no longer `hqheld`'s pid).
 //! Holder `hqother` holds a call of its own, and call C queues behind it.
 //! `hqheld` is killed: B ends Cancelled at once, A ends ServiceDied, and C,
-//! on an endpoint the dead process never bound, is still waiting.
+//! on an endpoint the dead process never bound, is still waiting and was not
+//! woken (its cancel check, run each time it wakes, ran no more after the kill).
 
 use crate::fpu_tests::wait_exit;
 use crate::process::{self, SpawnRequest};
 use crate::{hpet, ipc, log, threads};
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use kabi::{Error, ExitReason, Limits, cap};
 
 const HELD: &str = "hqheld";
@@ -33,7 +34,14 @@ const LIMITS: Limits = Limits {
 /// A's outcome: 0 while running, then [`outcome`]'s code.
 static A_DONE: AtomicU8 = AtomicU8::new(0);
 static C_DONE: AtomicBool = AtomicBool::new(false);
-static HELD_PID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// How many times C's cancel check ran: once each time C's thread wakes.
+static C_WAKES: AtomicU64 = AtomicU64::new(0);
+/// C_WAKES just before the kill, and [`SETTLE_MS`] after it.
+static C_WAKES_AT_KILL: AtomicU64 = AtomicU64::new(0);
+static C_WAKES_AFTER: AtomicU64 = AtomicU64::new(u64::MAX);
+static HELD_PID: AtomicU64 = AtomicU64::new(0);
+/// How long after the kill C's wakes are counted again: past B's wake.
+const SETTLE_MS: u64 = 200;
 
 const SERVICE_DIED: u8 = 1;
 const OTHER_END: u8 = 2;
@@ -75,13 +83,20 @@ fn hold_other(_: usize) {
 }
 
 fn call_c(_: usize) {
-    let _ = ipc::call_from(OTHER, b"queued", CALL_MS);
+    let counted = || {
+        C_WAKES.fetch_add(1, Ordering::SeqCst);
+        false
+    };
+    let _ = ipc::call_from_unless(OTHER, b"queued", CALL_MS, counted);
     C_DONE.store(true, Ordering::SeqCst);
 }
 
 fn killer(_: usize) {
     threads::sleep_ms(KILL_AFTER_MS);
+    C_WAKES_AT_KILL.store(C_WAKES.load(Ordering::SeqCst), Ordering::SeqCst);
     let _ = process::kill(HELD_PID.load(Ordering::SeqCst), ExitReason::Killed);
+    threads::sleep_ms(SETTLE_MS);
+    C_WAKES_AFTER.store(C_WAKES.load(Ordering::SeqCst), Ordering::SeqCst);
 }
 
 pub fn check() -> Result<(), &'static str> {
@@ -93,7 +108,17 @@ pub fn check() -> Result<(), &'static str> {
     spawn("ipcq-a", call_a).map_err(|_| "ipc-queued: no thread for A")?;
     spawn("ipcq-o", hold_other).map_err(|_| "ipc-queued: no thread for the other hold")?;
     // A and the other hold are taken before B and C queue behind them.
-    threads::sleep_ms(100);
+    let mut taken = false;
+    for _ in 0..500 {
+        taken = ipc::serving_deadline(held).is_some() && ipc::serving_deadline(other).is_some();
+        if taken {
+            break;
+        }
+        threads::sleep_ms(10);
+    }
+    if !taken {
+        return Err("ipc-queued: the holders never took A and the other hold");
+    }
     spawn("ipcq-c", call_c).map_err(|_| "ipc-queued: no thread for C")?;
     spawn("ipcq-k", killer).map_err(|_| "ipc-queued: no killer thread")?;
     let gone = || ipc::server_of(HELD) != Some(held);
@@ -110,6 +135,14 @@ pub fn check() -> Result<(), &'static str> {
         }
         threads::sleep_ms(20);
     }
+    // The killer's count after the kill, before `other` lets C go.
+    for _ in 0..100 {
+        if C_WAKES_AFTER.load(Ordering::SeqCst) != u64::MAX {
+            break;
+        }
+        threads::sleep_ms(20);
+    }
+    let c_woken = C_WAKES_AFTER.load(Ordering::SeqCst) != C_WAKES_AT_KILL.load(Ordering::SeqCst);
     let _ = wait_exit(other)?;
     if !matches!(b, Err(ipc::CallError::Cancelled)) {
         return Err("ipc-queued: a call queued on a server that died did not end Cancelled");
@@ -121,7 +154,7 @@ pub fn check() -> Result<(), &'static str> {
     if A_DONE.load(Ordering::SeqCst) != SERVICE_DIED {
         return Err("ipc-queued: the call the dead server held did not end ServiceDied");
     }
-    if !c_waiting {
+    if !c_waiting || c_woken {
         return Err("ipc-queued: a call queued on another server was woken too");
     }
     log!(

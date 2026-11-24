@@ -9,21 +9,20 @@
 //!   the published model's FNV-1a64 is the hint's.
 //! - **giveup**: a one-block fill, then a run past the partition's end: the
 //!   call is Invalid, the model is no longer pending, MODEL_MAP answers
-//!   NotFound (rejected, nothing published), and the reserved runs are free
-//!   again. `fs`'s own call then finds nothing pending.
+//!   NotFound (rejected, nothing published), and each of the runs it had
+//!   reserved is free again. `fs`'s own call then finds nothing pending.
 
 use crate::block::{self, Device};
 use crate::model::{self, fill};
 use crate::{hpet, log, memory, threads};
 use core::sync::atomic::{AtomicBool, Ordering};
 use kabi::Error;
+use mm::PAGE_SIZE;
 use mm::window::{RUN_FRAMES, runs_for};
 use spin::Mutex;
 
 /// How long `store` waits for the hook's verdict.
 const VERDICT_WAIT_MS: u64 = 60_000;
-/// Frames other work may take or give back while the give-up runs.
-const FRAME_SLACK: u64 = 128;
 
 static RAN: AtomicBool = AtomicBool::new(false);
 static VERDICT: Mutex<Option<Result<(), &'static str>>> = Mutex::new(None);
@@ -92,11 +91,27 @@ fn give_up(first: u64) -> Result<(), &'static str> {
     })
     .ok_or("model-fill: no kai-data")?;
     let past_end = sectors.div_ceil(fill::BLOCK / 512) + 1;
-    let before = memory::with(|m| m.free_frames());
+    let reserved = fill::pending_runs();
+    if reserved.len() as u64 != runs_for(len) {
+        return Err("model-fill: the pending model does not hold its runs");
+    }
     if fill::fill(&[(past_end, 1)], fill::BLOCK) != Err(Error::Invalid) {
         return Err("model-fill: a run past kai-data's end was not Invalid");
     }
-    let freed = memory::with(|m| m.free_frames()).saturating_sub(before);
+    // Judged by the fill's own runs, not the free-frame count, which other work
+    // (llm, starting) moves meanwhile. A run still held has no free frame; one
+    // given back may already be partly taken again, but not all 512 frames of it.
+    let free_in = |run: u32| {
+        let first = u64::from(run);
+        memory::with(|m| {
+            (first..first + RUN_FRAMES)
+                .filter(|&frame| !m.frame_in_use(frame * PAGE_SIZE))
+                .count() as u64
+        })
+    };
+    let back: alloc::vec::Vec<u64> = reserved.iter().map(|&run| free_in(run)).collect();
+    let kept = back.iter().filter(|&&free| free == 0).count();
+    let freed: u64 = back.iter().sum();
     if fill::pending() {
         return Err("model-fill: a failed fill left the model pending");
     }
@@ -104,8 +119,11 @@ fn give_up(first: u64) -> Result<(), &'static str> {
         return Err("model-fill: a failed fill did not end in NotFound");
     }
     let runs = runs_for(len) * RUN_FRAMES;
-    if freed + FRAME_SLACK < runs {
-        log!("model-fill: {freed} frames came back of the {runs} reserved");
+    if kept != 0 {
+        log!(
+            "model-fill: {kept} of {} reserved runs are still held",
+            reserved.len()
+        );
         return Err("model-fill: a failed fill kept the reserved runs");
     }
     log!(
