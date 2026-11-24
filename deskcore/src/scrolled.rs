@@ -4,11 +4,23 @@
 //! ([`row_hashes`]); at the window's next picture [`shift`] looks for a
 //! vertical move of the content that explains the rows that changed.
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use surfabi::proto::SCALE_ONE;
 
 /// How many changed rows one shift must explain to count as a scroll: more than
 /// a caret or a hover highlight redraws, fewer than a line of text.
 pub const MIN_ROWS: usize = 12;
+
+/// `logical` px of a window's content in the buffer's px at `scale`, which is
+/// in 120ths as a window's scale is (0 until the client says: 1x).
+pub fn buffer_px(logical: usize, scale: u32) -> usize {
+    let scale = match scale {
+        0 => SCALE_ONE,
+        s => s,
+    };
+    logical * scale as usize / SCALE_ONE as usize
+}
 
 /// A hash of `width` px of each row of `px` from column `x0`, `stride` px a
 /// row: FNV-1a over the words. A row past `px` hashes what is there.
@@ -32,9 +44,15 @@ pub fn row_hashes(px: &[u32], stride: usize, x0: usize, width: usize) -> Vec<u64
 /// equal row `i + d` of `before` (content moved up by `d` when `d` is
 /// positive, down when negative). `Some((d, rows))` when `rows` reaches
 /// [`MIN_ROWS`], `None` when the picture changed in place or not at all. A
-/// row that did not change, blank ones included, explains nothing.
+/// row that did not change explains nothing, and nor does a row of `before`
+/// that is not the only one of its hash (background, a selection's fill): a
+/// row that was cleared or filled in place would seem to have come from it.
 pub fn shift(before: &[u64], after: &[u64]) -> Option<(i32, usize)> {
     let rows = before.len().min(after.len());
+    let mut seen: BTreeMap<u64, usize> = BTreeMap::new();
+    for &hash in before {
+        *seen.entry(hash).or_default() += 1;
+    }
     let mut best: Option<(i32, usize)> = None;
     for d in -((rows / 2) as i32)..=(rows / 2) as i32 {
         if d == 0 {
@@ -47,6 +65,7 @@ pub fn shift(before: &[u64], after: &[u64]) -> Option<(i32, usize)> {
                     && from >= 0
                     && (from as usize) < rows
                     && after[i] == before[from as usize]
+                    && seen[&before[from as usize]] == 1
             })
             .count();
         if explained >= MIN_ROWS && best.is_none_or(|(_, most)| explained > most) {
@@ -76,6 +95,67 @@ mod tests {
         let same_band = [9, 2, 3, 9, 9, 6, 7, 9];
         assert_eq!(row_hashes(&same_band, 4, 1, 2), a);
         assert!(row_hashes(&px, 0, 0, 2).is_empty());
+    }
+
+    #[test]
+    fn a_band_is_in_buffer_px_at_the_windows_scale() {
+        assert_eq!(buffer_px(8, 120), 8);
+        assert_eq!(buffer_px(88, 120), 88);
+        assert_eq!(buffer_px(8, 240), 16);
+        assert_eq!(buffer_px(88, 240), 176);
+        assert_eq!(buffer_px(8, 180), 12);
+        // No scale said yet is 1x. The scale is in 120ths, not a whole number.
+        assert_eq!(buffer_px(88, 0), 88);
+    }
+
+    #[test]
+    fn the_band_a_scaled_window_hashes_is_the_same_content() {
+        // The same picture at 1x and at 2x (each px doubled across): the band's
+        // rows hash the same only if the band is scaled with it.
+        let wide = |scale: u32| -> Vec<u64> {
+            let factor = scale as usize / 120;
+            let stride = 200 * factor;
+            let mut px = Vec::new();
+            for row in 0..10u32 {
+                for x in 0..200u32 {
+                    let value = if (8..96).contains(&x) {
+                        row + 1
+                    } else {
+                        0xFFFF
+                    };
+                    px.extend(core::iter::repeat_n(value, factor));
+                }
+            }
+            row_hashes(&px, stride, buffer_px(8, scale), buffer_px(88, scale))
+        };
+        let one = wide(120);
+        assert_eq!(one.len(), 10);
+        assert!(one.windows(2).all(|w| w[0] != w[1]), "a row per hash at 1x");
+        assert_eq!(one.len(), wide(240).len());
+        assert!(wide(240).windows(2).all(|w| w[0] != w[1]), "and at 2x");
+    }
+
+    #[test]
+    fn a_list_blanked_in_place_is_no_scroll() {
+        // Forty distinct rows, then blank: the list is cleared where it is.
+        let mut before = page(1000, 40);
+        before.extend(vec![42; 60]);
+        let after = vec![42; 100];
+        assert_eq!(shift(&before, &after), None);
+    }
+
+    #[test]
+    fn a_selection_that_moves_is_no_scroll() {
+        // The selection's fill, 30 rows of one hash, moves down by 30.
+        let mut before = page(1000, 100);
+        let mut after = before.clone();
+        for row in &mut before[30..60] {
+            *row = 7;
+        }
+        for row in &mut after[60..90] {
+            *row = 7;
+        }
+        assert_eq!(shift(&before, &after), None);
     }
 
     #[test]

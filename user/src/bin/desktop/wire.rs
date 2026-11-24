@@ -258,11 +258,19 @@ pub(super) fn apply_need(
                 // Not just a redraw: did the content move? A hover or a caret
                 // redraws in place and says nothing here.
                 let after = super::frame::wheel_rows(state, window).unwrap_or_default();
-                if let Some((rows, explained)) = deskcore::scrolled::shift(&before, &after) {
-                    println!(
+                match deskcore::scrolled::shift(&before, &after) {
+                    Some((rows, explained)) => println!(
                         "desktop: window {} scrolled {rows} rows after the wheel ({explained} rows moved)",
                         window.0
-                    );
+                    ),
+                    // Said, so a case that fails here can be read: no rows to
+                    // compare (a missing picture, an empty band) shows as 0.
+                    None => println!(
+                        "desktop: window {} did not scroll after the wheel ({} rows before, {} after)",
+                        window.0,
+                        before.len(),
+                        after.len()
+                    ),
                 }
             }
             false

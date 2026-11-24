@@ -248,12 +248,12 @@ fn source<'a>(pools: &'a [Pool], pid: u64, buffer: &Buffer) -> Option<Source<'a>
 pub(super) fn wheel_rows(state: &State, window: WindowId) -> Option<Vec<u64>> {
     let (_, pid, buffer, scale) = state.shown.iter().find(|(w, ..)| *w == window)?;
     let source = source(&state.pools, *pid, buffer)?;
-    let scale = (*scale).max(1) as usize;
+    // The scale is in 120ths, and the band is in px at 1x.
     Some(deskcore::scrolled::row_hashes(
         source.data,
         source.stride,
-        BAND_X * scale,
-        BAND_WIDTH * scale,
+        deskcore::scrolled::buffer_px(BAND_X, *scale),
+        deskcore::scrolled::buffer_px(BAND_WIDTH, *scale),
     ))
 }
 
