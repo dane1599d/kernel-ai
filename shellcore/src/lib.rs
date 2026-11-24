@@ -706,9 +706,6 @@ pub struct Shell {
     /// The question on the card that came from a desktop line, and where
     /// that line was typed.
     card_for_desk: Option<(u64, deskask::Asker)>,
-    /// The state files read once at start that could not be read: never
-    /// written over this run ([`Shell::read_at_start`]).
-    unread: Vec<&'static str>,
     /// What a panel line's card came to, for the panel.
     card_result: Option<(bool, String)>,
     /// The send a panel line's card allowed and the outbox holds, for the
@@ -788,6 +785,9 @@ pub struct Shell {
     /// The log text last written to `/system/log`, so an unchanged log is not
     /// written again.
     saved_log: Option<String>,
+    /// The state files read once at start that could not be read: never
+    /// written over this run ([`Shell::read_at_start`]).
+    unread: Vec<&'static str>,
     /// The ONCE of the menu answer now running, kept for the call's owner to
     /// check: the shell does not spend it (P1 task 14).
     owner_once: Option<u64>,
@@ -859,7 +859,6 @@ impl Shell {
             card: None,
             desk_asks: Vec::new(),
             card_for_desk: None,
-            unread: Vec::new(),
             card_result: None,
             card_held: None,
             card_answers: deskcard::Answers::default(),
@@ -890,6 +889,7 @@ impl Shell {
             clarified_by_model: false,
             pack_id: llmproto::pack::act_pack_id(),
             saved_log: None,
+            unread: Vec::new(),
             owner_once: None,
             steered: None,
             person_line: false,
