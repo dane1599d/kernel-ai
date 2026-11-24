@@ -108,3 +108,89 @@ fn an_agent_with_only_unknown_outcomes_is_told_so() {
     assert!(refused_as_unknown(&reply), "{reply:?}");
     assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
 }
+
+/// `memo-agent`, which may set the policy and open files in the editor
+/// (`ui_open` forwards to the editor's own row), on a host with the editor,
+/// and its route's badge.
+fn with_memo_agent() -> (Rc<FakeHost>, Shell, u64) {
+    let host = FakeHost::new();
+    host.apps
+        .borrow_mut()
+        .rows
+        .load("editor", super::apps::EDITOR)
+        .unwrap();
+    let mut shell = shell(&host);
+    let manifest = kaiagent::Manifest::parse(
+        "kai-app 1\nid memo-agent\nabi 1.0\nagent 1\nclass background\n\
+         model tokens/day=50000 kv=1024 pool=64m\nactions set_policy ui_open editor_open_file\n\
+         memory none\nnet none\n",
+    )
+    .unwrap();
+    let id = shell.roster_mut().install(manifest).unwrap();
+    (host, shell, u64::from(id.badge()))
+}
+
+/// `memo-agent`'s step `json`, which asks, allowed on its card by the
+/// person; the entry's id.
+fn allowed_step(host: &FakeHost, shell: &mut Shell, badge: u64, json: &str) -> u64 {
+    let asked = super::agentstep::step(shell, badge, json);
+    assert!(asked.starts_with("ok asked "), "{asked}");
+    let card = shell.eval_console(termcore::menu::TAKE_CARD);
+    let menu = termcore::menu::Menu::decode(&card.to_wire()).expect("the agent's card");
+    let once = host.mint(menu.id, menu.call());
+    shell.eval_console(&format!("answer {} allow once={once}", menu.id));
+    assert_eq!(shell.log.get(menu.id).unwrap().agent.as_str(), "memo-agent");
+    menu.id
+}
+
+const OPEN: &str = r#"{"name":"ui_open","arguments":{"app":"editor","arg":"ideas.txt"}}"#;
+
+#[test]
+fn an_agents_allowed_call_that_never_answered_stops_undo_of_that_agent() {
+    // The reviewer's case: the agent's live switch, then its asked step the
+    // person allows, whose call the app takes and never answers.
+    let (host, mut shell, badge) = with_memo_agent();
+    let switched = allowed_step(&host, &mut shell, badge, RR);
+    assert!(shell.log.get(switched).unwrap().live());
+    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
+    host.app_errors.borrow_mut().push_back(String::from(
+        "unanswered editor took the call and did not answer; it may have run",
+    ));
+    let opened = allowed_step(&host, &mut shell, badge, OPEN);
+    assert_eq!(shell.log.get(opened).unwrap().state, State::Unknown);
+    let reply = shell.eval("undo memo-agent");
+    assert!(
+        !reply.ok
+            && reply
+                .text
+                .contains("the outcome of editor_open_file is not known"),
+        "{reply:?}"
+    );
+    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
+    assert_eq!(host.app_requests.borrow().len(), 1, "no undo sent");
+}
+
+#[test]
+fn an_agents_allowed_call_that_succeeded_is_what_undo_of_that_agent_takes_back() {
+    // The twin: the allowed call answers, so it is the agent's newest live
+    // entry and `undo memo-agent` takes it back, not the older switch.
+    let (host, mut shell, badge) = with_memo_agent();
+    allowed_step(&host, &mut shell, badge, RR);
+    host.app_replies
+        .borrow_mut()
+        .push_back(String::from("kai-reply 1\nresult ok(\"opened\")\nundo 4\n"));
+    let opened = allowed_step(&host, &mut shell, badge, OPEN);
+    assert!(shell.log.get(opened).unwrap().live());
+    host.app_replies
+        .borrow_mut()
+        .push_back(String::from("kai-reply 1\nundone 4\nundo 5\n"));
+    let reply = shell.eval("undo memo-agent");
+    assert!(reply.ok && reply.text.starts_with("Undone: "), "{reply:?}");
+    assert_eq!(host.app_requests.borrow()[1].1, "kai-undo 1\nid 4\n");
+    assert!(!shell.log.get(opened).unwrap().live(), "the call's entry");
+    assert_eq!(
+        host.policy.get(),
+        Some(policy::ROUND_ROBIN),
+        "the switch stays"
+    );
+}
