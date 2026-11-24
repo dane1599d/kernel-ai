@@ -377,6 +377,17 @@ pub trait Host {
     /// site got the body), and `Err` only when no answer came. `maybe_sent` is false only for a failure before any byte
     /// of the request was written (no address, no connection, the TLS
     /// handshake refused); anything after that may have gone out.
+    /// Whether a send's card fits beside the open Kai pane, the history
+    /// uncovered (`desktop`'s `panel send-fits`): where a send typed at the
+    /// desk may be answered on its card. No desktop, no.
+    fn desk_send_fits(&self) -> bool {
+        false
+    }
+    /// Gives `desktop` the text of the send whose card `id` goes up now, for
+    /// the Kai pane (`deskcore::sendview`, `panel preview <id>`).
+    fn desk_preview(&self, _id: u64, _text: &str) -> Result<(), String> {
+        Err(String::from("there is no desktop here"))
+    }
     fn net_send(&self, _send: &outbox::Send) -> Result<String, outbox::SendFailed> {
         Err(outbox::SendFailed {
             why: String::from(NO_NET),

@@ -193,6 +193,15 @@ impl Host for FakeHost {
         Ok(())
     }
 
+    fn desk_send_fits(&self) -> bool {
+        self.send_fits.get()
+    }
+
+    fn desk_preview(&self, id: u64, text: &str) -> Result<(), String> {
+        self.previews.borrow_mut().push((id, String::from(text)));
+        Ok(())
+    }
+
     fn net_send(&self, send: &crate::outbox::Send) -> Result<String, crate::outbox::SendFailed> {
         let disk = self.log_disk.borrow().clone();
         self.sends.borrow_mut().push((send.clone(), disk));
