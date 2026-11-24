@@ -71,6 +71,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
             | SelfTest::DeskStandingRefused
+            | SelfTest::DeskStandingUndo
             | SelfTest::DeskPerf
             | SelfTest::DeskProfile
             | SelfTest::DeskProfileFloor
@@ -407,7 +408,7 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::nap_tests::PLAN);
     }
-    if test == SelfTest::DeskStanding {
+    if matches!(test, SelfTest::DeskStanding | SelfTest::DeskStandingUndo) {
         plan.push('\n');
         plan.push_str(crate::standing_tests::PLAN);
     }

@@ -431,3 +431,25 @@ fn the_allows_rule_node_is_kept_and_rules_remove_revokes_it() {
     assert!(shell.eval("rules_remove S1").ok);
     assert_eq!(*host.revoked.borrow(), [9]);
 }
+
+/// What `desk-standing-undo` (kernel/src/standing_tests.rs) waits for in
+/// `log actlog`: the change line of the entry that took the rule away, as the
+/// log keeps it, not the reply's words.
+#[test]
+fn the_log_keeps_the_change_an_undo_or_rules_remove_took_away() {
+    let words = NOTES.replace(' ', "_");
+    let (_host, mut shell) = shell_with_notes_rule();
+    assert!(shell.eval("undo").ok);
+    let log = shell.eval("log actlog").text;
+    let undone =
+        alloc::format!(" rules_add owner=shell res=standing_S1 before={words} after=absent ");
+    assert!(log.contains("\nU ") && log.contains(&undone), "{log}");
+    assert!(!log.contains("standing instruction S1 removed"), "{log}");
+    let (_host, mut shell) = shell_with_notes_rule();
+    assert!(shell.eval("rules_remove S1").ok);
+    let log = shell.eval("log actlog").text;
+    let removed =
+        alloc::format!(" rules_remove owner=shell res=standing_S1 before={words} after=absent ");
+    assert!(log.contains(&removed), "{log}");
+    assert!(!log.contains("Removed standing instruction S1"), "{log}");
+}

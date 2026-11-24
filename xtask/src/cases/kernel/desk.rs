@@ -117,6 +117,15 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         ],
         ..case("desk-standing-refused", "test=desk-standing-refused")
     },
+    // An allowed rule taken back by `undo`, then by `rules_remove`: its grant
+    // gone, and Notes' minimize fires nothing.
+    TestCase {
+        expect: &[
+            "desk-standing-undo: undo took the allowed rule back, its grant is gone, and a minimize fires nothing",
+            "desk-standing-undo: rules_remove ended the allowed rule, its grant is gone, and a minimize fires nothing",
+        ],
+        ..case("desk-standing-undo", "test=desk-standing-undo")
+    },
     // P3's exit case: S05-1's budgets on the real `desktop` at 1920x1080, a gate
     // under KVM, best of two (a scene with a miss is measured once more, and a
     // figure over budget in both runs fails it), each budget scaled by how many
