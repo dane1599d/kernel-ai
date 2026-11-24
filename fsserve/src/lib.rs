@@ -588,14 +588,17 @@ impl<D: BlockDev> Server<D> {
         answered
     }
 
+    /// A model blob's removal gets half of the reserve, as a trash does: its
+    /// space also comes back later.
+    ///
     /// How far `request` may go into kaifs's reserved blocks, so a disk
     /// growth filled can still be emptied, and no client can drain them: all
     /// of it only for work that frees space at once and cannot be looped to
     /// spend it (an emptied trash, a dropped update snapshot), half for a
-    /// trash, a truncate or a model blob's removal, whose space comes back
-    /// later, none for growth. An action's commit, by Commit or its owner's
-    /// Sync, gets the least of its changes'. Idle's retention and GC and
-    /// `check --repair` take all of it themselves.
+    /// trash or a truncate, whose space comes back later, none for growth. An
+    /// action's commit, by Commit or its owner's Sync, gets the least of its
+    /// changes'. Idle's retention and GC and `check --repair` take all of it
+    /// themselves.
     pub(crate) fn spends_reserve(
         &mut self,
         caller: u64,
