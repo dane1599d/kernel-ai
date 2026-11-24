@@ -592,10 +592,10 @@ impl<D: BlockDev> Server<D> {
     /// growth filled can still be emptied, and no client can drain them: all
     /// of it only for work that frees space at once and cannot be looped to
     /// spend it (an emptied trash, a dropped update snapshot), half for a
-    /// trash or a truncate, whose space comes back later, none for growth. An
-    /// action's commit, by Commit or its owner's Sync, gets the least of its
-    /// changes'. Idle's retention and GC and `check --repair` take all of it
-    /// themselves.
+    /// trash, a truncate or a model blob's removal, whose space comes back
+    /// later, none for growth. An action's commit, by Commit or its owner's
+    /// Sync, gets the least of its changes'. Idle's retention and GC and
+    /// `check --repair` take all of it themselves.
     pub(crate) fn spends_reserve(
         &mut self,
         caller: u64,
@@ -615,6 +615,12 @@ impl<D: BlockDev> Server<D> {
             // costs blocks now, so a loop of it could drain all of the
             // reserve: half, as a trash.
             Request::Trash { .. } | Request::Truncate { .. } => Spend::Half,
+            // A model blob's removal, outside any action, frees the blob once
+            // the GC pass it starts has run, and costs copy-on-write now. Each
+            // needs a sealed blob, written above the reserve, and one refused
+            // writes nothing: half, as a trash, so the GC and an emptied
+            // trash keep the rest.
+            Request::SealedRemove { .. } => Spend::Half,
             // The commit of an action, by Commit or the owner's own Sync, at
             // the least tier of its changes; a Sync outside one has nothing to
             // write and needs no reserve.
