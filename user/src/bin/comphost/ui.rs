@@ -20,6 +20,8 @@ use uikit::style::TypeStyle;
 use user::{println, sys};
 use wasmhost::desk::{Desk, Open, Show, Target, Told};
 use wasmhost::{AppEvent, LiveInstance, Update, surface};
+#[path = "ui_look.rs"]
+mod look_text; // `Ui`'s appearance: `Told::Look`, the type windows are laid out in
 #[path = "ui_scale.rs"]
 mod scale; // `Ui`'s scale; its `scaled` takes `Told::Scale` first
 
@@ -47,8 +49,12 @@ pub fn fonts() -> Fonts {
 pub struct FontMeasure(Text);
 
 impl FontMeasure {
+    /// Measures in the type the desktop's appearance asks for (`Told::Look`):
+    /// legible and sized, or the default until it says.
     pub fn new() -> Option<Self> {
-        Text::new(fonts(), look::DARK.dark).map(Self)
+        let mut text = Text::new(fonts(), look::DARK.dark)?;
+        text.set_theme(&look_text::type_theme());
+        Some(Self(text))
     }
 }
 
@@ -123,6 +129,8 @@ pub struct Ui {
     /// The desktop's theme, by name, and the colours its windows paint in.
     theme: String,
     palette: look::Palette,
+    /// The appearance text in use (`Told::Look`), empty before the first.
+    look: String,
 }
 
 impl Ui {
@@ -156,6 +164,7 @@ impl Ui {
             changes: None,
             theme: String::from(look::DARK.name),
             palette: look::DARK,
+            look: String::new(),
         })
     }
 
@@ -533,7 +542,12 @@ impl Ui {
             // whose window holds unsaved changes (below).
             if !matches!(
                 t,
-                Told::Restarted | Told::Focus(_) | Told::Blur(_) | Told::Close(_) | Told::Theme(_)
+                Told::Restarted
+                    | Told::Focus(_)
+                    | Told::Blur(_)
+                    | Told::Close(_)
+                    | Told::Theme(_)
+                    | Told::Look(_)
             ) && let Some(reply) = host.wake()?
             {
                 println!(
@@ -557,6 +571,7 @@ impl Ui {
                     self.window_focus.push((window, false));
                 }
                 Told::Theme(name) => self.set_theme(&name),
+                Told::Look(text) => self.set_look(host, &text),
                 Told::Scale => {}
                 // The person closed it: comphost hides it, and the app, not
                 // told, keeps its window and its state, as if minimized,
@@ -609,8 +624,8 @@ impl Ui {
 
     /// Paints in the desktop's theme `name` from now on: every open window
     /// again, whole, from its last frame. A theme `look` does not ship keeps
-    /// the one in use. Layout still measures with the starting type, so the
-    /// legible theme's own type sizes are not taken yet.
+    /// the one in use. Only the colours and the type it paints in: the layout's
+    /// type is the appearance's ([`Ui::set_look`], which `desktop` sends too).
     fn set_theme(&mut self, name: &str) {
         if name == self.theme {
             return;
