@@ -50,7 +50,7 @@ pub fn check() -> Result<(), &'static str> {
         })
         .map_err(|_| "shm: cannot start a holder")?;
     }
-    let result = rounds(pids);
+    let result = rounds(pids).and_then(|()| refund_rule(pids[0]));
     for name in HOLDERS {
         let _ = ipc::call(name, b"exit", 5_000);
     }
@@ -238,6 +238,41 @@ fn ask(name: &str, line: &str, want: &str) -> Result<(), &'static str> {
 /// handle not yet in a table) and while its only handle is moving between
 /// tables, and freed once neither holds. A kernel object over a frame of the
 /// test's own, so nothing else can free or reuse it meanwhile.
+/// #1155's review: a refund lands only on the pid it was charged to. A
+/// charge in a live holder's slot, refunded as another pid (the creator gone
+/// and the slot reused), leaves the slot's count; refunded as its own pid,
+/// it comes off by its pages.
+fn refund_rule(pid: u64) -> Result<(), &'static str> {
+    const PAGES: u64 = 4;
+    let slot = slot_of(pid).ok_or("shm: no slot for the holder")?;
+    let frames = || {
+        process::lock_space(slot)
+            .as_ref()
+            .map(|space| space.frames())
+    };
+    {
+        let mut space = process::lock_space(slot);
+        let space = space.as_mut().ok_or("shm: the holder has no space")?;
+        if !space.try_charge(PAGES, u64::MAX) {
+            return Err("shm: the holder could not be charged");
+        }
+    }
+    let charged = frames().ok_or("shm: the holder has no space")?;
+    // A pid never given out: NEXT_PID only counts up from the holder's.
+    shm::refund_as(u64::MAX, slot, PAGES);
+    if frames() != Some(charged) {
+        return Err("shm: a refund for another pid lowered a reused slot's count");
+    }
+    shm::refund_as(pid, slot, PAGES);
+    if frames() != Some(charged - PAGES) {
+        return Err("shm: a refund for its own pid did not come off the count");
+    }
+    log!(
+        "shm: a refund for another pid leaves a slot's count; one for its own pid comes off by its pages"
+    );
+    Ok(())
+}
+
 fn transit_and_pin() -> Result<(), &'static str> {
     let frame = memory::with(|m| m.allocate_zeroed_frame()).ok_or("shm: no frame")?;
     let result = (|| {
