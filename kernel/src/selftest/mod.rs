@@ -365,6 +365,8 @@ pub enum SelfTest {
     NetDest,
     /// P5 task 2: TCP streams on a `NetDest`.
     NetStream,
+    /// P5-S2's bar on main's driver: one bulk download from the host.
+    NetThroughput,
     /// P5 task 12's harness: xtask's HTTPS mock reached from ring 3.
     HttpsMock,
     /// P5 task 6, the roadmap's P5 exit: a download cut and resumed, across a

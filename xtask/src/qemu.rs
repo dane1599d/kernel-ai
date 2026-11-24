@@ -22,7 +22,7 @@ use keys::Typist;
 #[cfg(test)]
 use net::command_word;
 use net::{NET_DEVICE, USER_NET};
-pub use net::{forward_https, input_args, net_behind_bridge, net_without_vectors};
+pub use net::{forward_https, input_args, net_behind_bridge, net_without_vectors, netdev_from_env};
 
 /// QEMU exit status for `isa-debug-exit` value 0x10: (0x10 << 1) | 1.
 pub(crate) const QEMU_PASS: i32 = 33;
