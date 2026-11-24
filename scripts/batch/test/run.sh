@@ -227,6 +227,48 @@ check "the model PR is not merged"            '! grep -q "#2 merged" "$L" && ! g
 # off it and were never batched (96 open PRs at --limit 80, 2026-11-19).
 check "every open-PR listing asks for 1000"   'grep "pr list .*--state open" "$T/gh.log" | grep -v -- "--head" | grep -q . && ! grep "pr list .*--state open" "$T/gh.log" | grep -v -- "--head" | grep -qv -- "--limit 1000"'
 
+# 11-24: #1188's head was on main already, carried in by another PR's merge,
+# and GitHub kept it open; each loop batched it and put an empty commit on main.
+echo "== batch-ff.sh: a batch that adds nothing to main does not land"
+setup
+mkpr 8 feat/carried main docs/c.md; touch "$T/prs/8/stays-open"
+git -C "$T/work" push -q origin feat/carried:main && git -C "$T/work" fetch -q origin
+git -C "$T/work" checkout -q --detach origin/main
+m=$(git -C "$T/origin.git" rev-parse main)
+ff 8
+check "it stops, main unchanged"              'has "the batch adds nothing to main" && ! has "fast-forwarded" && [ "$(git -C "$T/origin.git" rev-parse main)" = "$m" ]'
+
+echo "== batch-auto.sh: a PR whose head is already on main is unlabelled, not batched"
+for n in 2 3 4 5 7; do : > "$T/prs/$n/labels"; done
+: > "$T/gh.log"
+bash "$B/batch-auto.sh" > /dev/null & A=$!
+for i in $(seq 1 120); do grep -q "#1 merged" "$T/state/batch-auto.log" 2>/dev/null && break; /bin/sleep 1 2>/dev/null || /usr/bin/sleep 1; done
+touch "$T/state/batch-auto.stop"; wait $A
+L="$T/state/batch-auto.log"
+check "its label goes, with a comment"        'grep -q "#8 left out: its head [0-9a-f]* is already on main; label removed" "$L" && [ ! -s "$T/prs/8/labels" ] && grep -q "pr comment 8 .*already on main" "$T/gh.log"'
+check "it is in no batch; the rest lands"     '! grep -qE "batch: (.* )?8( |$)" "$L" && grep -q "#1 merged" "$L"'
+
+echo "== batch-auto.sh: a landed PR GitHub still shows open loses its label"
+setup
+touch "$T/prs/5/stays-open"; for n in 1 2 3 4 7; do : > "$T/prs/$n/labels"; done
+bash "$B/batch-auto.sh" > /dev/null & A=$!
+for i in $(seq 1 120); do grep -q "#5 landed but" "$T/state/batch-auto.log" 2>/dev/null && break; /bin/sleep 1 2>/dev/null || /usr/bin/sleep 1; done
+touch "$T/state/batch-auto.stop"; wait $A
+check "the log names it; its label goes"      'grep -q "#5 landed but GitHub still shows it open; label removed" "$L" && [ ! -s "$T/prs/5/labels" ] && [ "$(grep -c "batch: 5$" "$L")" = 1 ]'
+
+echo "== batch-auto.sh: a PR whose change is already on main is unlabelled"
+setup
+for n in 1 2 3 4 5 7; do : > "$T/prs/$n/labels"; done
+mkpr 8 feat/twin main docs/c.md
+git -C "$T/work" checkout -q --detach origin/main
+mkdir -p "$T/work/docs"; echo feat/twin > "$T/work/docs/c.md"
+git -C "$T/work" add -A && git -C "$T/work" commit -qm twin && git -C "$T/work" push -q origin HEAD:main
+m=$(git -C "$T/origin.git" rev-parse main)
+bash "$B/batch-auto.sh" > /dev/null & A=$!
+for i in $(seq 1 120); do grep -q "#8 left out" "$T/state/batch-auto.log" 2>/dev/null && break; /bin/sleep 1 2>/dev/null || /usr/bin/sleep 1; done
+touch "$T/state/batch-auto.stop"; wait $A
+check "its label goes; main unchanged"        'grep -q "#8 left out: its batch adds nothing to main; label removed" "$L" && [ ! -s "$T/prs/8/labels" ] && [ "$(git -C "$T/origin.git" rev-parse main)" = "$m" ]'
+
 echo "== batch-auto.sh: a failed batch names its failing cases in the log"
 setup
 for n in 2 3 4 5 7; do : > "$T/prs/$n/labels"; done

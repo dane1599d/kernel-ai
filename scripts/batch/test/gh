@@ -13,7 +13,8 @@ pr() { cat "$T/prs/$1/$2" 2>/dev/null; }
 st() {
   local s
   s=$(pr $1 state)
-  if [ "$s" = OPEN ] && git -C "$T/origin.git" merge-base --is-ancestor "$(pr $1 sha)" refs/heads/main 2>/dev/null; then s=MERGED; fi
+  # $T/prs/<n>/stays-open: GitHub never marks it merged (#1188, its base a merged PR's branch).
+  if [ "$s" = OPEN ] && [ ! -f "$T/prs/$1/stays-open" ] && git -C "$T/origin.git" merge-base --is-ancestor "$(pr $1 sha)" refs/heads/main 2>/dev/null; then s=MERGED; fi
   if [ "$s" = MERGED ] && [ -f "$T/kill-on-merged" ]; then rm -f "$T/kill-on-merged"; kill -9 $(cat "$T/ffpid"); fi
   echo $s
 }

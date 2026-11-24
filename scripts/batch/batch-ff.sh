@@ -189,12 +189,17 @@ delete_heads() {  # PR numbers, index-aligned with heads[] and brs[]
 
 # Waits for GitHub to mark each PR merged, then tidies up. Safe to run twice.
 finish() {  # PR numbers
+  local s
   for p in "$@"; do
     for k in $(seq 1 12); do
       [ "$(field $p state)" = MERGED ] && break
       sleep 10
     done
-    echo "  #$p: $(field $p state)"
+    s=$(field $p state)
+    echo "  #$p: $s"
+    # Its head is on main, yet GitHub has not marked it merged (#1188: its
+    # retarget to main failed): batch-auto.sh unlabels it on this line.
+    [ "$s" = OPEN ] && echo "  #$p landed but GitHub still shows it open"
   done
   cleanup "$name" "$bpr"
   delete_heads "$@"
@@ -243,6 +248,10 @@ verify() {
 land() {  # PR numbers
   git -C "$G" fetch -q origin "$MAIN"
   [ "$(git -C "$G" rev-parse "origin/$MAIN")" = "$base" ] || stop "main moved during the batch; STOPPING"
+  # A batch with main's tree only puts an empty commit on main, and leaves its
+  # PRs open to be batched again (11-24: four empty "batch: #1188" commits).
+  [ "$(git -C "$G" rev-parse "$c^{tree}")" = "$(git -C "$G" rev-parse "$base^{tree}")" ] \
+    && stop "the batch adds nothing to main (its tree is main's); STOPPING"
   local i=0
   for p in "$@"; do
     [ "$(field $p headRefOid)" = "${heads[$i]}" ] || stop "#$p was pushed to during the batch; STOPPING"

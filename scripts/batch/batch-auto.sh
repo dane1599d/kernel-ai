@@ -36,6 +36,14 @@ eligible() {
             echo "$open" | awk '$4=="true" && $5!="true" {print $1}' | sort -n) )
   for p in $ready; do
     head=$(echo "$open" | awk -v p=$p '$1==p {print $3}')
+    # A head already on main has nothing to land, and GitHub may never mark
+    # the PR merged (11-24: #1188, carried in by another PR's merge, its base
+    # a merged PR's branch): batched, it left an empty commit on main every loop.
+    if [ -n "$head" ] && git -C "$G" merge-base --is-ancestor "$head" "origin/$MAIN" 2>/dev/null; then
+      unlabel $p "Batcher: this PR's head ${head:0:7} is already on main (carried by another PR), so there is nothing to land. Close it, or mark it merged by hand."
+      say "#$p left out: its head ${head:0:7} is already on main; label removed"
+      continue
+    fi
     ok=1
     while read -r o obr ohead olab; do
       [ "$o" = "$p" ] && continue
@@ -101,8 +109,21 @@ batch() {  # PR numbers, or --resume; a failed batch is bisected
     say "#$p left out: conflicts in $files"
   done
   for p in $(grep -oE "^  #[0-9]+: MERGED" "$out" | grep -oE "[0-9]+"); do say "#$p merged"; done
+  # Its head is on main, but with its label kept the next loop lands it again.
+  for p in $(grep -oE "^  #[0-9]+ landed but GitHub still shows it open" "$out" | grep -oE "[0-9]+"); do
+    unlabel $p "Batcher: this PR's head is on main now, but GitHub still shows the PR open, so there is nothing left to land. Close it, or mark it merged by hand."
+    say "#$p landed but GitHub still shows it open; label removed"
+  done
   grep -q "CI did not finish" "$out" || rm -f "$S/batch-timeouts"
   grep -q "fast-forwarded" "$out" && return
+  # Kept labels would have the batcher run CI on the same no-op batch every loop.
+  if grep -q "adds nothing to main" "$out"; then
+    for p in $(grep -oE "^  \+ #[0-9]+" "$out" | grep -oE "[0-9]+"); do
+      unlabel $p "Batcher: merged with main, this PR's batch changes nothing (its change is already on main), so there is nothing to land. Close it, or mark it merged by hand."
+      say "#$p left out: its batch adds nothing to main; label removed"
+    done
+    return
+  fi
   # A wait that ran out is the runner queue, not the PRs (11-10: a batch with 12
   # of 14 jobs green and none red was split at the old cap). Keep the labels and
   # try again; two in a row stop the batcher so it does not feed a full queue.
