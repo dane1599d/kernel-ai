@@ -40,7 +40,7 @@ eligible() {
     # the PR merged (11-24: #1188, carried in by another PR's merge, its base
     # a merged PR's branch): batched, it left an empty commit on main every loop.
     if [ -n "$head" ] && git -C "$G" merge-base --is-ancestor "$head" "origin/$MAIN" 2>/dev/null; then
-      unlabel $p "Batcher: this PR's head ${head:0:7} is already on main (carried by another PR), so there is nothing to land. Close it, or mark it merged by hand."
+      unlabel $p "Batcher: this PR's head ${head:0:7} is already on main, so there is nothing to land. If GitHub has not marked it merged within a few minutes, close it."
       say "#$p left out: its head ${head:0:7} is already on main; label removed"
       continue
     fi
@@ -111,12 +111,12 @@ batch() {  # PR numbers, or --resume; a failed batch is bisected
   for p in $(grep -oE "^  #[0-9]+: MERGED" "$out" | grep -oE "[0-9]+"); do say "#$p merged"; done
   # Its head is on main, but with its label kept the next loop lands it again.
   for p in $(grep -oE "^  #[0-9]+ landed but GitHub still shows it open" "$out" | grep -oE "[0-9]+"); do
-    unlabel $p "Batcher: this PR's head is on main now, but GitHub still shows the PR open, so there is nothing left to land. Close it, or mark it merged by hand."
+    unlabel $p "Batcher: this PR's head is on main now, but GitHub still shows the PR open, so there is nothing left to land. If GitHub has not marked it merged within a few minutes, close it."
     say "#$p landed but GitHub still shows it open; label removed"
   done
   grep -q "CI did not finish" "$out" || rm -f "$S/batch-timeouts"
   grep -q "fast-forwarded" "$out" && return
-  # Kept labels would have the batcher run CI on the same no-op batch every loop.
+  # Kept labels would have the batcher compose the same no-op batch every loop.
   if grep -q "adds nothing to main" "$out"; then
     for p in $(grep -oE "^  \+ #[0-9]+" "$out" | grep -oE "[0-9]+"); do
       unlabel $p "Batcher: merged with main, this PR's batch changes nothing (its change is already on main), so there is nothing to land. Close it, or mark it merged by hand."

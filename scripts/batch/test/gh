@@ -19,6 +19,8 @@ st() {
   echo $s
 }
 if [ "$1 $2" = "pr ready" ] && [ -f "$T/kill-on-ready" ]; then rm -f "$T/kill-on-ready"; kill -9 $(cat "$T/ffpid"); exit 1; fi
+# $T/on-ready runs once at `gh pr ready`, after land's head checks (a lane pushing as its PR lands).
+if [ "$1 $2" = "pr ready" ] && [ -f "$T/on-ready" ]; then mv "$T/on-ready" "$T/ready-hook"; bash "$T/ready-hook"; fi
 case "$1 $2" in
   "pr view")
     n=$3

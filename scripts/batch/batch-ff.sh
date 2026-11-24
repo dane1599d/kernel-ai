@@ -188,8 +188,8 @@ delete_heads() {  # PR numbers, index-aligned with heads[] and brs[]
 }
 
 # Waits for GitHub to mark each PR merged, then tidies up. Safe to run twice.
-finish() {  # PR numbers
-  local s
+finish() {  # PR numbers, index-aligned with heads[]
+  local s i=0
   for p in "$@"; do
     for k in $(seq 1 12); do
       [ "$(field $p state)" = MERGED ] && break
@@ -197,9 +197,12 @@ finish() {  # PR numbers
     done
     s=$(field $p state)
     echo "  #$p: $s"
-    # Its head is on main, yet GitHub has not marked it merged (#1188: its
-    # retarget to main failed): batch-auto.sh unlabels it on this line.
-    [ "$s" = OPEN ] && echo "  #$p landed but GitHub still shows it open"
+    # Its tested head is on main, yet GitHub has not marked it merged (#1188:
+    # its retarget to main failed): batch-auto.sh unlabels it on this line. A
+    # PR pushed to since is left alone, as its new commits are still to land.
+    [ "$s" = OPEN ] && [ "$(field $p headRefOid)" = "${heads[$i]}" ] \
+      && echo "  #$p landed but GitHub still shows it open"
+    i=$((i+1))
   done
   cleanup "$name" "$bpr"
   delete_heads "$@"
@@ -245,13 +248,16 @@ verify() {
   save_state green
 }
 
+# Whether the batch commit has main's tree: landing it would only put an empty
+# commit on main and leave its PRs open (11-24: four empty "batch: #1188"
+# commits, one per loop). batch-auto.sh unlabels the PRs of such a batch.
+adds_nothing() {
+  [ "$(git -C "$G" rev-parse "$c^{tree}")" = "$(git -C "$G" rev-parse "$base^{tree}")" ]
+}
+
 land() {  # PR numbers
   git -C "$G" fetch -q origin "$MAIN"
   [ "$(git -C "$G" rev-parse "origin/$MAIN")" = "$base" ] || stop "main moved during the batch; STOPPING"
-  # A batch with main's tree only puts an empty commit on main, and leaves its
-  # PRs open to be batched again (11-24: four empty "batch: #1188" commits).
-  [ "$(git -C "$G" rev-parse "$c^{tree}")" = "$(git -C "$G" rev-parse "$base^{tree}")" ] \
-    && stop "the batch adds nothing to main (its tree is main's); STOPPING"
   local i=0
   for p in "$@"; do
     [ "$(field $p headRefOid)" = "${heads[$i]}" ] || stop "#$p was pushed to during the batch; STOPPING"
@@ -261,6 +267,9 @@ land() {  # PR numbers
       || stop "#$p is no longer batch-ready; STOPPING"
     i=$((i+1))
   done
+  # compose() checks this too; here it is for a state saved before it did.
+  # After the head checks: a PR pushed to since it was a no-op keeps its label.
+  adds_nothing && stop "the batch adds nothing to main (its tree is main's); STOPPING"
   for p in "$@"; do
     pbase=$(field $p baseRefName)
     if [ "$pbase" != "$MAIN" ]; then
@@ -369,6 +378,8 @@ compose() {
   done
   [ ${#batch[@]} -gt 0 ] || { echo "  nothing to merge; STOPPING"; exit 0; }
   set -- "${batch[@]}"
+  # Before the push: a no-op batch costs no CI or fluency run.
+  adds_nothing && { echo "  the batch adds nothing to main (its tree is main's); STOPPING"; exit 0; }
 
   git -C "$G" push -q origin "$c:refs/heads/$name" || { echo "  push failed; STOPPING"; exit 0; }
   save_state pushed
