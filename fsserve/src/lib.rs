@@ -24,12 +24,25 @@ mod buffer;
 mod bulk;
 #[cfg(test)]
 mod bulk_tests;
+mod changes;
+#[cfg(test)]
+mod changes_tests;
+#[cfg(test)]
+mod clock_tests;
 mod lookup;
 #[cfg(test)]
 mod model_tests;
 pub mod models;
 #[cfg(test)]
 mod oid_tests;
+#[cfg(test)]
+mod rename_tests;
+#[cfg(test)]
+mod reserve_tests;
+#[cfg(test)]
+mod sealed_remove_tests;
+#[cfg(test)]
+mod sealed_shm_tests;
 #[cfg(test)]
 mod tests;
 mod trash;
@@ -45,6 +58,7 @@ use kabi::fs::{
     SYSTEM_SETTINGS, SYSTEM_STATE, SYSTEM_TRUST, SYSTEM_UPDATES,
 };
 use kabi::handle::Rights;
+use kaifs::allocator::Spend;
 use kaifs::ns::Listed;
 use kaifs::{BlockDev, FileType, Fs, Inode, ROOT};
 
@@ -173,11 +187,16 @@ pub struct Server<D: BlockDev> {
     system_apps: u64,
     /// This disk's epoch, in every badge but the fixed ones ([`kabi::fs`]).
     epoch: u16,
-    /// The clock at mount: kaifs's times are this plus time since boot, so they
-    /// never go back across reboots (there is no wall clock yet).
+    /// What kaifs's clock counts from: its times are this plus time since
+    /// boot. The clock at mount, or the wall time at boot once
+    /// [`Server::set_wall_clock`] gives one past it, so retention counts the
+    /// time the machine was off and the clock never goes back across reboots.
     base: u64,
     /// Writes inside an action not yet given to kaifs ([`buffer`]).
     pending: Option<buffer::Pending>,
+    /// The least of the open action's changes' claims on kaifs's reserve: what
+    /// its commit may spend ([`Server::spends_reserve`]).
+    action_spend: Spend,
     /// The record last read.
     cache: Option<buffer::Cached>,
     /// Whether a caller (a pid) still runs: a dead owner's action is aborted
@@ -188,6 +207,10 @@ pub struct Server<D: BlockDev> {
     name_of: NameOf,
     /// The model store's blob being written in the open action ([`models`]).
     sealing: Option<models::Sealing>,
+    /// What a Rename moved with it, as `fs` read it (ENDPOINT_BADGE): a `Dir`'s
+    /// badge and rights, or why the handle it moved cannot be one, for the one
+    /// call ([`Server::call_into`]).
+    into: Option<Result<(u64, Rights), Error>>,
 }
 
 /// The object a checked badge names.
@@ -242,10 +265,12 @@ impl<D: BlockDev> Server<D> {
             epoch: 0,
             base,
             pending: None,
+            action_spend: Spend::All,
             cache: None,
             alive: |_| true,
             name_of: |_, _| None,
             sealing: None,
+            into: None,
         };
         let fixed = server.prepare(&uuid)?;
         (
@@ -271,6 +296,15 @@ impl<D: BlockDev> Server<D> {
     /// every later change.
     pub fn set_alive(&mut self, alive: fn(u64) -> bool) {
         self.alive = alive;
+    }
+
+    /// The wall time at boot, ns since 1970 (`CLOCK_NOW` less the time since
+    /// boot), when the firmware gave a date. kaifs's clock then runs from it,
+    /// so an undo snapshot expires 30 days (`memory`'s one hour) after it was
+    /// made however long the machine was off between. A wall time behind the
+    /// disk's clock changes nothing: the clock never goes back.
+    pub fn set_wall_clock(&mut self, boot_epoch_ns: u64) {
+        self.base = self.base.max(boot_epoch_ns);
     }
 
     /// How `fs` learns a caller's process name. Through [`SYSTEM_APPS`] a
@@ -428,6 +462,19 @@ impl<D: BlockDev> Server<D> {
         self.call_shm(call, None)
     }
 
+    /// [`Server::call`] for a request that moved a handle in with it: `into`
+    /// is the badge and rights of a `Dir` of this server's (ENDPOINT_BADGE),
+    /// the destination of [`Request::Rename`], or the error the handle gives
+    /// when it cannot be one (another's, closed, of another kind, more than
+    /// one): such a Rename fails with it, never falling back to its own
+    /// folder. Any other request answers as if nothing moved.
+    pub fn call_into(&mut self, call: &Call, into: Result<(u64, Rights), Error>) -> Answer {
+        self.into = Some(into);
+        let answer = self.call(call);
+        self.into = None;
+        answer
+    }
+
     /// [`Server::call`] with the `Shm` the request moved in, mapped read-write:
     /// what [`Request::ReadShm`] fills and [`Request::WriteShm`] takes from.
     pub fn call_shm(&mut self, call: &Call, shm: Option<&mut [u8]>) -> Answer {
@@ -458,9 +505,24 @@ impl<D: BlockDev> Server<D> {
         }
         let now = self.base.saturating_add(now);
         let fs = self.fs();
-        if !fs.writable() || !(fs.gc_running() || fs.space_low() || fs.expiry_due(now)) {
+        // Under the reserve with freed blocks waiting: commits give them back.
+        let release = fs.reserve_waits_on_pending();
+        if !fs.writable() || !(fs.gc_running() || fs.space_low() || fs.expiry_due(now) || release) {
             return;
         }
+        // Retention, the GC and these commits free space: they may take the
+        // reserve, on a disk growth has filled.
+        let was = fs.io.alloc.spend_reserve(Spend::All);
+        self.retain_and_collect(now);
+        if release && self.fs.is_clean() {
+            let _ = self.commit();
+        }
+        self.fs.io.alloc.spend_reserve(was);
+    }
+
+    /// Retention, then a slice of the GC (see [`Server::idle`]).
+    fn retain_and_collect(&mut self, now: u64) {
+        let fs = self.fs();
         let stepped = (|| {
             if !fs.gc_running() {
                 let mut dropped = fs.expire(now)?.len();
@@ -537,15 +599,76 @@ impl<D: BlockDev> Server<D> {
         if changes && self.owner.is_none() && self.fs.oids_unsaved() && self.fs.is_clean() {
             let _ = self.commit();
         }
+        let spend = self.spends_reserve(call.caller, &request, changes);
+        let was = self.fs.io.alloc.spend_reserve(spend);
+        let answered = self.answer_change(call, &target, request, changes, shm);
+        self.fs.io.alloc.spend_reserve(was);
+        answered
+    }
+
+    /// How far `request` may go into kaifs's reserved blocks, so a disk
+    /// growth filled can still be emptied, and no client can drain them: all
+    /// of it only for work that frees space at once and cannot be looped to
+    /// spend it (an emptied trash, a dropped update snapshot), half for a
+    /// trash or a truncate, whose space comes back later, none for growth. An
+    /// action's commit, by Commit or its owner's Sync, gets the least of its
+    /// changes'. Idle's retention and GC and `check --repair` take all of it
+    /// themselves.
+    pub(crate) fn spends_reserve(
+        &mut self,
+        caller: u64,
+        request: &Request,
+        changes: bool,
+    ) -> Spend {
+        if matches!(request, Request::Begin { .. }) && self.owner.is_none() {
+            self.action_spend = Spend::All;
+        }
+        let in_its_action = self.owner == Some(caller);
+        let spend = match request {
+            // What frees space at once, and cannot be looped to drain the
+            // reserve: an emptied trash, a dropped update snapshot. (Abort
+            // allocates nothing.)
+            Request::EmptyTrash | Request::UpdateDrop { .. } | Request::Abort => Spend::All,
+            // Space that may come back only later, while its copy-on-write
+            // costs blocks now, so a loop of it could drain all of the
+            // reserve: half, as a trash.
+            Request::Trash { .. } | Request::Truncate { .. } => Spend::Half,
+            // The commit of an action, by Commit or the owner's own Sync, at
+            // the least tier of its changes; a Sync outside one has nothing to
+            // write and needs no reserve.
+            Request::Commit => self.action_spend,
+            Request::Sync if in_its_action => self.action_spend,
+            _ => Spend::Keep,
+        };
+        let commits = matches!(request, Request::Commit | Request::Abort | Request::Sync);
+        if changes && in_its_action && !commits {
+            self.action_spend = self.action_spend.min(spend);
+        }
+        spend
+    }
+
+    /// [`Server::answer`]'s change, once the request is known to reach its
+    /// target.
+    fn answer_change(
+        &mut self,
+        call: &Call,
+        target: &Target,
+        request: Request,
+        changes: bool,
+        shm: Option<&mut [u8]>,
+    ) -> Result<(Reply, Option<Mint>), Error> {
         let in_action = self.owner.is_some();
         let done = match request {
             Request::ReadShm { off, len } => self
-                .read_shm(call, &target, off, len, shm)
+                .read_shm(call, target, off, len, shm)
                 .map(|r| (r, None)),
             Request::WriteShm { off, len } => self
-                .write_shm(call, &target, off, len, shm)
+                .write_shm(call, target, off, len, shm)
                 .map(|r| (r, None)),
-            request => self.dispatch(call, &target, request),
+            Request::SealedPushShm { len } => self
+                .sealed_push_shm(call, target, len, shm)
+                .map(|r| (r, None)),
+            request => self.dispatch(call, target, request),
         };
         match done {
             // A change outside an action is durable before it is answered.
@@ -565,6 +688,26 @@ impl<D: BlockDev> Server<D> {
                 Err(e)
             }
         }
+    }
+
+    /// The folder a Rename on `source` moves into: the `Dir` whose badge and
+    /// rights the request moved in. It needs CREATE, must be a folder this
+    /// server serves in the same volume (kaifs renames within one), and is
+    /// never a read-only folder or the apps root, whose openings are held to
+    /// one folder a caller ([`Server::own_folder_only`]).
+    fn rename_into(&mut self, source: u64, badge: u64, rights: Rights) -> Result<u64, Error> {
+        if !rights.contains(Rights::CREATE) || read_only(badge) || badge == SYSTEM_APPS {
+            return Err(Error::Permission);
+        }
+        if Badge::parse(badge).volume != Badge::parse(source).volume {
+            return Err(Error::Invalid);
+        }
+        let target = self.target(badge)?;
+        if target.file {
+            return Err(Error::NotDir);
+        }
+        // `target` chose the destination's volume, the source's too.
+        Ok(target.object)
     }
 
     /// The volume and object `badge` names, checked to exist with its kind.
@@ -697,9 +840,21 @@ impl<D: BlockDev> Server<D> {
             }
             Request::Rename { from, to } => {
                 dir()?;
-                need(Rights::DELETE | Rights::CREATE)?;
+                // Into the moved `Dir` when there is one: DELETE here, CREATE
+                // there. Else in this one, which needs both.
+                let into = match self.into.take() {
+                    Some(Ok((badge, rights))) => {
+                        need(Rights::DELETE)?;
+                        self.rename_into(call.badge, badge, rights)?
+                    }
+                    Some(Err(why)) => return Err(why),
+                    None => {
+                        need(Rights::DELETE | Rights::CREATE)?;
+                        object
+                    }
+                };
                 let fs = self.fs();
-                fs.rename(object, &from, object, &to).map_err(error)?;
+                fs.rename(object, &from, into, &to).map_err(error)?;
                 Reply::Done
             }
             Request::Trash { name } => {
@@ -754,12 +909,18 @@ impl<D: BlockDev> Server<D> {
             }
             Request::Changes { since } => {
                 need(Rights::ENUMERATE)?;
-                let changed = self.fs().changes(since).map_err(error)?;
-                let more = changed.len() > MAX_ROWS as usize;
-                let rows = changed.iter().take(MAX_ROWS as usize);
-                Reply::Changes {
-                    rows: rows.map(|(ino, inode)| stat(*ino, inode)).collect(),
+                let (rows, more, _) = self.changed_since(object, since, None)?;
+                Reply::Changes { rows, more }
+            }
+            Request::ChangesSince { since, after } => {
+                need(Rights::ENUMERATE)?;
+                self.save_fallbacks()?;
+                let (rows, more, upto) = self.changed_since(object, since, after)?;
+                Reply::ChangesPage {
+                    rows,
                     more,
+                    upto,
+                    fallbacks: self.fs().fallbacks(),
                 }
             }
             Request::Sync => {
@@ -834,10 +995,13 @@ impl<D: BlockDev> Server<D> {
             Request::SealedBegin { name, len } => self.sealed_begin(call, target, &name, len)?,
             Request::SealedPush { data } => self.sealed_push(call, target, &data)?,
             Request::SealedFinish => self.sealed_finish(call, target)?,
+            Request::SealedRemove { name } => self.sealed_remove(call, target, &name)?,
             Request::ModelHint { name } => self.model_hint(call, target, name.as_deref())?,
             Request::ModelInfo { name } => self.model_info(call, target, &name)?,
             // `answer` takes these with their `Shm` (`bulk.rs`).
-            Request::ReadShm { .. } | Request::WriteShm { .. } => return Err(Error::Invalid),
+            Request::ReadShm { .. } | Request::WriteShm { .. } | Request::SealedPushShm { .. } => {
+                return Err(Error::Invalid);
+            }
         };
         Ok((reply, None))
     }
@@ -1062,13 +1226,16 @@ fn changes(request: &Request) -> bool {
         | Request::SealedBegin { .. }
         | Request::SealedPush { .. }
         | Request::SealedFinish
+        | Request::SealedRemove { .. }
         | Request::ModelHint { .. }
-        | Request::WriteShm { .. } => true,
+        | Request::WriteShm { .. }
+        | Request::SealedPushShm { .. } => true,
         Request::Stat
         | Request::List { .. }
         | Request::Read { .. }
         | Request::History
         | Request::Changes { .. }
+        | Request::ChangesSince { .. }
         | Request::Df
         | Request::Generation
         | Request::TrashList { .. }

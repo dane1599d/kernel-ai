@@ -135,6 +135,9 @@ pub struct Fake {
     storage: Storage,
     inputs: Inputs,
     txn: Txn,
+    /// Inside a call (`begin` .. `finish`): storage and effects work only then,
+    /// as wasmhost's do.
+    open: bool,
     /// The storage its lifecycle calls may read ([`Instance::view`]), if the
     /// host gave it one.
     view: Option<Storage>,
@@ -168,6 +171,7 @@ pub fn load(module: &[u8], quiet: bool) -> Result<Fake, Fault> {
         storage: Storage::new(),
         inputs: Inputs::default(),
         txn: Txn::default(),
+        open: false,
         view: None,
         schema: words[0].parse().unwrap(),
         reads: parse_list(words[1]),
@@ -275,6 +279,9 @@ impl Instance for Fake {
                 if self.bug == Bug::Injected && !self.quiet && INJECT.load(Ordering::SeqCst) {
                     return Err(trap("kadd"));
                 }
+                if !self.open {
+                    return Err(trap("storage is only for action calls"));
+                }
                 self.count += 1;
                 let label = self.label.clone();
                 self.txn
@@ -339,9 +346,11 @@ impl Instance for Fake {
         self.storage = storage.clone();
         self.inputs = inputs;
         self.txn = Txn::default();
+        self.open = true;
     }
 
     fn finish(&mut self) -> Txn {
+        self.open = false;
         core::mem::take(&mut self.txn)
     }
 

@@ -541,6 +541,9 @@ impl Host for FakeHost {
         if self.not_apps.borrow().iter().any(|a| a == app) {
             return Err(String::from("no such app"));
         }
+        if let Some(error) = self.app_errors.borrow_mut().pop_front() {
+            return Err(error);
+        }
         self.app_replies
             .borrow_mut()
             .pop_front()

@@ -61,6 +61,7 @@ pub fn check() -> Result<(), &'static str> {
     }
     result?;
     shm::collect();
+    transit_and_pin()?;
     log!("shm: SHM_CREATE, MAP and UNMAP work, and a revoke leaves holders sharing nothing");
     Ok(())
 }
@@ -231,4 +232,33 @@ fn ask(name: &str, line: &str, want: &str) -> Result<(), &'static str> {
     }
     threads::yield_now();
     Ok(())
+}
+
+/// Audit K #5, #9, #12: an object is kept while it is pinned (made, its first
+/// handle not yet in a table) and while its only handle is moving between
+/// tables, and freed once neither holds. A kernel object over a frame of the
+/// test's own, so nothing else can free or reuse it meanwhile.
+fn transit_and_pin() -> Result<(), &'static str> {
+    let frame = memory::with(|m| m.allocate_zeroed_frame()).ok_or("shm: no frame")?;
+    let result = (|| {
+        let object = shm::create_kernel_object(frame, 1).map_err(|_| "shm: no object")?;
+        shm::collect();
+        if shm::frames_of(object).is_none() {
+            return Err("shm: a new object was freed before its first handle was in");
+        }
+        let moving = handle::Moving::from(alloc::vec![Entry::new(Kind::Shm, Rights::MAP, object)]);
+        shm::settle(object);
+        shm::collect();
+        if shm::frames_of(object).is_none() {
+            return Err("shm: an object whose only handle was moving was freed");
+        }
+        drop(moving);
+        shm::collect();
+        if shm::frames_of(object).is_some() {
+            return Err("shm: an object nothing names was kept");
+        }
+        Ok(())
+    })();
+    let _ = memory::with(|m| m.free_frame(frame));
+    result
 }

@@ -139,6 +139,11 @@ pub struct Fs<D> {
     /// The highest [`Superblock::oid_mark`] seen: at mount, on any slot of the
     /// rings, and in each commit since.
     pub(crate) oid_mark: u64,
+    /// [`Superblock::fallbacks`]: this mount's count, which every commit writes.
+    pub(crate) fallbacks: u64,
+    /// The count the last commit wrote (or the mounted one): a count above it
+    /// is not durable yet, and must not be shown to a reader of changes.
+    saved_fallbacks: u64,
     /// The writer's clock for the next superblock, nanoseconds since 1970.
     pub clock: u64,
     pub(crate) volumes: Tree,
@@ -211,6 +216,10 @@ impl<D: BlockDev> Fs<D> {
             label: name,
             committed: 0,
             oid_mark: 0,
+            // 0 is what a build that keeps no count writes: a new disk starts
+            // at 1, so a mount can tell the two apart.
+            fallbacks: 1,
+            saved_fallbacks: 1,
             clock: 0,
             volumes: Tree::default(),
             vols: volumes
@@ -236,16 +245,53 @@ impl<D: BlockDev> Fs<D> {
     /// [`Fs::mount`] for a writer with deliberate faults (its reuse wait too).
     pub fn mount_with(mut dev: D, faults: Faults) -> Result<Self, Error> {
         let (sb, rules) = Self::newest(&mut dev)?;
-        // Every slot's mark, newer ones whose tables do not verify included.
-        let mark = format::read_rings(&mut dev)?
-            .iter()
-            .map(|slot| slot.oid_mark)
-            .max()
-            .unwrap_or(0);
         let loaded = Self::load(&mut dev, &sb, faults)?;
         let mut fs = Self::assemble(dev, &sb, rules, loaded, faults);
-        fs.oid_mark = fs.oid_mark.max(mark);
+        fs.read_ring_history(&sb)?;
         Ok(fs)
+    }
+
+    /// What the rings say past the mounted commit `sb`, for every mount (and
+    /// `check --repair`'s): the highest oid mark on any slot, and the fallback
+    /// count, one past the highest on any slot when this mount passed over a
+    /// newer slot of its own line of commits. A newer slot whose count is below
+    /// `sb`'s is from a line a fallback already counted. A raised count is not
+    /// durable until a commit writes it ([`Fs::fallbacks_unsaved`]).
+    pub(crate) fn read_ring_history(&mut self, sb: &Superblock) -> Result<(), Error> {
+        let slots = format::read_rings(&mut self.io.dev)?;
+        let mark = slots.iter().map(|slot| slot.oid_mark).max().unwrap_or(0);
+        let most = slots.iter().map(|slot| slot.fallbacks).max().unwrap_or(0);
+        // Gone back: a newer slot of this line was passed over; or the slot
+        // mounted is from a line a fallback already left (its count below the
+        // rings' highest); or a build that keeps no count wrote it (0), so
+        // what happened since it is unknown.
+        let fell_back = slots
+            .iter()
+            .any(|slot| slot.generation > sb.generation && slot.fallbacks >= sb.fallbacks)
+            || sb.fallbacks < most
+            || sb.fallbacks == 0;
+        self.oid_mark = self.oid_mark.max(mark);
+        self.fallbacks = self.fallbacks.max(most + u64::from(fell_back));
+        // A mount that cannot commit changes nothing on the disk, so its
+        // count cannot be shown again for other history: it counts as saved.
+        if !self.writable {
+            self.saved_fallbacks = self.fallbacks;
+        }
+        Ok(())
+    }
+
+    /// Whether the fallback count was raised (a fallback mount, a restored
+    /// snapshot) and no commit has written it yet: a reader of changes must
+    /// not see it until one has, or a later fallback could show it again.
+    pub fn fallbacks_unsaved(&self) -> bool {
+        self.fallbacks != self.saved_fallbacks
+    }
+
+    /// How many mounts of this disk have fallen back past newer commits
+    /// ([`Superblock::fallbacks`]): a reader of [`Fs::changes`] that sees it
+    /// change must read everything again, since commits it saw were undone.
+    pub fn fallbacks(&self) -> u64 {
+        self.fallbacks
     }
 
     /// The filesystem commit `sb` left, from what [`Fs::load`] read.
@@ -273,6 +319,8 @@ impl<D: BlockDev> Fs<D> {
             label: sb.label,
             committed: sb.generation,
             oid_mark: sb.oid_mark,
+            fallbacks: sb.fallbacks,
+            saved_fallbacks: sb.fallbacks,
             clock: sb.commit_time,
             volumes: loaded.volumes,
             vols: loaded.vols,
@@ -649,6 +697,21 @@ impl<D: BlockDev> Fs<D> {
         vol.live.scan_born_after(since, &mut store, visit)
     }
 
+    /// The items of the active volume's tree as the last commit wrote it,
+    /// in leaves born after generation `since`, from key `from` on, until
+    /// `visit` returns false. The committed tree, not the live one: what an
+    /// open action changed, and may yet drop, is not there.
+    pub fn scan_committed_born_after_from(
+        &mut self,
+        since: u64,
+        from: &Key,
+        visit: &mut dyn FnMut(&Key, &[u8]) -> bool,
+    ) -> Result<(), Error> {
+        let pin = self.pin();
+        let (vol, mut store) = split(&mut self.vols, &mut self.io, self.active, pin);
+        Tree::open(vol.base.0).scan_born_after_from(since, from, &mut store, visit)
+    }
+
     /// Makes `items`, raw and in key order, the active volume's whole live tree.
     /// The old tree's blocks are never read again and wait for the GC: `check
     /// --repair` rebuilds a tree it could not wholly read this way.
@@ -762,6 +825,9 @@ impl<D: BlockDev> Fs<D> {
         let vol = self.vol_mut();
         vol.live = Tree::open(snap.root);
         vol.live_changed = true;
+        // The volume went back to older state, with older `changed` stamps:
+        // as after a fallback, a reader of changes must read everything again.
+        self.fallbacks += 1;
         Ok(true)
     }
 
@@ -834,10 +900,12 @@ impl<D: BlockDev> Fs<D> {
             .map(|vol| vol.next_oid.saturating_add(OID_WINDOW))
             .fold(self.oid_mark, u64::max);
         sb.oid_mark = mark;
+        sb.fallbacks = self.fallbacks;
         sb.label = self.label;
         format::write_rings(&mut self.io.dev, &sb)?;
         self.io.dev.flush()?;
         self.committed = generation;
+        self.saved_fallbacks = self.fallbacks;
         self.oid_mark = mark;
         self.io.txn = generation + 1;
         self.io.alloc.committed(generation);

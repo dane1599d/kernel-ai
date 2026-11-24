@@ -66,6 +66,50 @@ fn an_apps_row_runs_as_a_kai_call_and_undo_puts_its_state_back() {
     assert_eq!(host.app_requests.borrow()[1].1, "kai-undo 1\nid 4\n");
 }
 
+#[test]
+fn an_app_call_taken_and_not_answered_is_an_unknown_outcome_not_nothing() {
+    // Audit K #19: the app took the call and did not answer in time. It may
+    // have added the note, so the person, the log and the model are told the
+    // outcome is not known; "Nothing changed" would invite the same call again.
+    let add = r#"{"name":"notes_add","arguments":{"text":"buy milk"}}"#;
+    let (host, mut shell) = with_notes(vec![call(add)]);
+    host.app_errors.borrow_mut().push_back(String::from(
+        "unanswered notes took the call and did not answer; it may have run",
+    ));
+    let reply = shell.eval("add a note saying buy milk");
+    assert!(!reply.ok, "{reply:?}");
+    assert!(
+        reply
+            .text
+            .contains("Outcome unknown: notes_add may have run"),
+        "{reply:?}"
+    );
+    assert!(!reply.text.contains("Nothing changed"), "{reply:?}");
+    // Sent once: an unanswered call is never sent again.
+    assert_eq!(host.app_requests.borrow().len(), 1);
+    let entry = shell.log.get(shell.log.last_id()).expect("an entry");
+    assert_eq!(entry.state, crate::actlog::State::Unknown);
+    assert!(entry.outcome.contains("may have run"), "{}", entry.outcome);
+}
+
+#[test]
+fn a_row_inside_try_is_never_bound_so_a_caught_call_is_never_sent() {
+    // #1164's second review: a `try` around an app row must not hide a call
+    // that may have run, or send it again. Today the row is not bound inside a
+    // `try` at all (the plan does not count such a site), so nothing leaves
+    // and the run says nothing was done. Were that to change, the run's
+    // `unanswered` makes it an unknown outcome whatever `ok` says, and no
+    // later app call in the run is sent (script/apps.rs, actions.rs).
+    let script = r#"{"name":"script","arguments":{"code":"try { notes_add(\"buy milk\"); } catch {}\nprint(\"carried on\");"}}"#;
+    let (host, mut shell) = with_notes(vec![call(script)]);
+    host.app_errors.borrow_mut().push_back(String::from(
+        "unanswered notes took the call and did not answer; it may have run",
+    ));
+    let reply = shell.eval("? add a note saying buy milk");
+    assert_eq!(host.app_requests.borrow().len(), 0, "{reply:?}");
+    assert!(!reply.text.contains("Done"), "{reply:?}");
+}
+
 /// Notes' four that list and change notes, as its WIT declares them.
 const MANAGE: &str = "version 2
 kai-actions 1
@@ -527,7 +571,7 @@ fn a_lasting_pkg_answer_is_asked_and_audited_once() {
     }
 }
 
-const EDITOR: &str = "version 1
+pub(super) const EDITOR: &str = "version 1
 kai-actions 1
 world app:editor/editor@1.0.0
 action editor_open_file

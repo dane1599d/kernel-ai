@@ -206,6 +206,9 @@ pub struct Roster {
     next: u32,
     /// Each approved goal's ceiling for the `goals` agent (`crate::goalgrant`).
     pub(crate) goal_grants: alloc::collections::BTreeMap<u64, Vec<alloc::string::String>>,
+    /// Each goal's approved folders under home, beside its ceiling: a goal's
+    /// step may act on a path only inside one (`crate::goalgrant`).
+    pub(crate) goal_folders: alloc::collections::BTreeMap<u64, Vec<alloc::string::String>>,
 }
 
 impl Default for Roster {
@@ -230,6 +233,7 @@ impl Roster {
             agents,
             next: Builtin::ALL.len() as u32 + 1,
             goal_grants: alloc::collections::BTreeMap::new(),
+            goal_folders: alloc::collections::BTreeMap::new(),
         }
     }
 

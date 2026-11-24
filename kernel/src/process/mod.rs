@@ -214,6 +214,12 @@ pub fn slot_of_pid(pid: u64) -> Option<usize> {
     with_table(|table| table.iter().position(|p| p.live() && p.pid == pid))
 }
 
+/// Whether `pid` runs: the kernel (0) always, any other while a live process
+/// has it (PROC_ALIVE).
+pub fn alive(pid: u64) -> bool {
+    pid == 0 || slot_of_pid(pid).is_some()
+}
+
 /// Whether the live process `pid` has printed anything yet.
 pub fn has_written(pid: u64) -> bool {
     with_table(|table| table.iter().position(|p| p.live() && p.pid == pid))
@@ -433,9 +439,9 @@ pub fn spawn(request: &SpawnRequest) -> Result<u64, kabi::Error> {
 /// exit going to its spawner (JOB_SPAWN). On a refusal `moved` comes back.
 pub fn spawn_with(
     request: &SpawnRequest,
-    moved: alloc::vec::Vec<captable::Entry>,
+    moved: impl Into<crate::handle::Moving>,
     job: bool,
-) -> Result<u64, (kabi::Error, alloc::vec::Vec<captable::Entry>)> {
+) -> Result<u64, (kabi::Error, crate::handle::Moving)> {
     spawn_in(request, moved, job, &supervise::Grants::default())
 }
 
@@ -445,10 +451,11 @@ pub fn spawn_with(
 /// routes are `request.uses`.
 pub fn spawn_in(
     request: &SpawnRequest,
-    moved: alloc::vec::Vec<captable::Entry>,
+    moved: impl Into<crate::handle::Moving>,
     job: bool,
     plan: &supervise::Grants,
-) -> Result<u64, (kabi::Error, alloc::vec::Vec<captable::Entry>)> {
+) -> Result<u64, (kabi::Error, crate::handle::Moving)> {
+    let moved = moved.into();
     let dirs = plan.dirs.as_slice();
     use kabi::Error;
     let checked = (|| {
@@ -519,6 +526,7 @@ pub fn spawn_in(
         request.uses,
         dirs,
         plan.agent,
+        &plan.pinned,
     ) {
         with_table(|table| table[slot] = Process::FREE);
         return Err((error, moved));
@@ -555,7 +563,7 @@ pub fn spawn_in(
         let Some(object) = crate::net::dest::create_metered(dest.clone(), live, meter) else {
             crate::handle::destroy(slot);
             with_table(|table| table[slot] = Process::FREE);
-            return Err((Error::NoMemory, alloc::vec::Vec::new()));
+            return Err((Error::NoMemory, crate::handle::Moving::none()));
         };
         let entry = captable::Entry::new(
             kabi::handle::Kind::NetDest,
@@ -585,7 +593,7 @@ pub fn spawn_in(
         crate::handle::destroy(slot);
         with_table(|table| table[slot] = Process::FREE);
         supervision::record_load_failure(pid, &name, request.supervisor, request.spawner);
-        return Err((Error::NoMemory, alloc::vec::Vec::new()));
+        return Err((Error::NoMemory, crate::handle::Moving::none()));
     }
     Ok(pid)
 }

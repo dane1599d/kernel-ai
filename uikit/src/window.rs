@@ -144,7 +144,12 @@ impl Window {
         {
             let len = f.value.len();
             if let Some(c) = self.st.caret.get_mut(&id) {
+                // Inside the new text, and on a character of it, not in the
+                // middle of one.
                 *c = (*c).min(len);
+                while !f.value.is_char_boundary(*c) {
+                    *c -= 1;
+                }
             }
         }
         self.dirty = true;

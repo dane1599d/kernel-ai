@@ -89,6 +89,8 @@ mod deliver;
 use deliver::deliver;
 #[path = "desktop/asks.rs"]
 mod asks;
+#[path = "desktop/preview.rs"]
+mod preview;
 use asks::{answer_ask, post, read_asks};
 #[path = "desktop/requests.rs"]
 mod requests;
@@ -143,8 +145,6 @@ struct State {
     pools: Vec<Pool>,
     /// Each window's buffer, whose client, and the scale it was drawn at.
     shown: Vec<(WindowId, u64, Buffer, u32)>,
-    /// Which clients' processes are gone (`deskcore::reap`).
-    reaper: deskcore::reap::Reaper,
     frame: Image,
     /// Which window's content was painted last at each px of `frame`, 0 for
     /// none or a window drawn at scale 1 (`deskcore::overlay`).
@@ -202,6 +202,8 @@ struct State {
     ticked_ms: u64,
     /// The ask card up now, as the kernel posted it.
     card: Option<Card>,
+    /// A send's text and its card: what the pane shows (`preview`).
+    sends: deskcore::sendview::Slot,
     /// The last ask refused as too long to show whole: never asked again.
     too_long: Option<u64>,
     /// When the ask box was last read.
@@ -259,7 +261,6 @@ fn main() -> i32 {
             clients: Vec::new(),
             pools: Vec::new(),
             shown: Vec::new(),
-            reaper: deskcore::reap::Reaper::default(),
             frame: Image::new(width, height),
             mask: vec![0; (width.max(0) * height.max(0)) as usize],
             width,
@@ -287,6 +288,7 @@ fn main() -> i32 {
             agent: deskcore::agent::Agent::default(),
             ticked_ms: 0,
             card: None,
+            sends: deskcore::sendview::Slot::default(),
             too_long: None,
             asked_ms: 0,
             known: Vec::new(),

@@ -27,9 +27,9 @@ impl Mapped {
     /// otherwise, and the request is then answered Invalid.
     pub fn of(request: &[u8], handle: Handle) -> Option<Self> {
         let len = match fsproto::decode_request(request).ok()? {
-            Request::ReadShm { len, .. } | Request::WriteShm { len, .. } => {
-                (len as usize).min(MAX_SHM_DATA)
-            }
+            Request::ReadShm { len, .. }
+            | Request::WriteShm { len, .. }
+            | Request::SealedPushShm { len } => (len as usize).min(MAX_SHM_DATA),
             _ => return None,
         };
         let is_shm = sys::handle_info(handle).is_ok_and(|i| i.kind() == Some(Kind::Shm));

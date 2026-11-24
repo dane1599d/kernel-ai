@@ -74,6 +74,9 @@ pub fn build(
     // cc bundles the files sorted by name, so the shell does too: the artifact
     // then carries this very bundle, which `shm::check` compares.
     sources.sort_by(|a, b| a.0.cmp(&b.0));
+    // Kai's app builds from the main.c its card pins, nothing beside it.
+    let names: Vec<&str> = sources.iter().map(|(file, _)| file.as_str()).collect();
+    shellcore::ccbuild::sources_ok(dir, &names)?;
     let named: Vec<(&str, &[u8])> = sources
         .iter()
         .map(|(file, bytes)| (file.as_str(), bytes.as_slice()))
