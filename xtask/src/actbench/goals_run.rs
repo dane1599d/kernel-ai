@@ -308,3 +308,17 @@ fn refused(shared: RefCell<Shared<'_>>, why: &str) -> Run {
     run.calls.push(format!("refused at approval: {why}"));
     run
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_path_the_model_writes_from_tilde_or_home_user_lies_in_home() {
+        let call = llmproto::act::parse(
+            r#"{"name":"fs_move","arguments":{"from":"~/notes.txt","to":"/home/user/old/notes.txt"}}"#,
+        )
+        .expect("a call");
+        assert_eq!(targets(&call), ["home/notes.txt", "home/old/notes.txt"]);
+    }
+}

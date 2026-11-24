@@ -100,12 +100,16 @@ fn text_arg<'a>(call: &'a Call, key: &str) -> Option<&'a str> {
     call.arguments.get(key).and_then(Value::as_str)
 }
 
+/// A path argument from the home folder: `~/`, `/home/user/` and `./` are home, so
+/// a path the model writes either way lies in the scope it names.
 pub(super) fn path_arg(call: &Call, key: &str) -> Option<String> {
-    text_arg(call, key).map(|path| {
-        path.trim_start_matches("/home/user/")
+    text_arg(call, key).map(|path| match path.trim_end_matches('/') {
+        "~" | "/home/user" => String::new(),
+        path => path
+            .trim_start_matches("~/")
+            .trim_start_matches("/home/user/")
             .trim_start_matches("./")
-            .trim_end_matches('/')
-            .to_string()
+            .to_string(),
     })
 }
 
@@ -378,6 +382,25 @@ mod tests {
 
     fn parsed(json: &str) -> Call {
         llmproto::act::parse(json).unwrap_or_else(|e| panic!("{json}: {e:?}"))
+    }
+
+    #[test]
+    fn a_path_from_tilde_or_home_user_is_a_path_from_home() {
+        for (written, home) in [
+            ("notes.txt", "notes.txt"),
+            ("~/notes.txt", "notes.txt"),
+            ("/home/user/notes.txt", "notes.txt"),
+            ("./reports/a.txt", "reports/a.txt"),
+            ("~/reports/", "reports"),
+            ("~", ""),
+            ("/home/user/", ""),
+            ("/etc/passwd", "/etc/passwd"),
+        ] {
+            let call = parsed(&format!(
+                r#"{{"name":"fs_read","arguments":{{"path":"{written}"}}}}"#
+            ));
+            assert_eq!(path_arg(&call, "path").as_deref(), Some(home), "{written}");
+        }
     }
 
     #[test]

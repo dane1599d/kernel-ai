@@ -19,10 +19,13 @@
 //!   plans it again.
 //! - **The steps** go to the shell as `agent-step goal=<id> <call>` (#1134). The
 //!   shell admits them under that goal's ceiling only and decides the tier on the
-//!   empty line: it runs what may run and puts any ask on the person's card. This
-//!   agent then polls `agent-step wait <entry>` at most once a second until `ok ran
-//!   #n`, `err not run #n` (a no) or `err unknown step #n` (a no). The person
-//!   answers once, on the card; this agent answers no question itself.
+//!   empty line: it runs what may run and puts any ask on the person's card. The
+//!   step then stays in flight (`Outcome::Later`) and this agent asks `agent-step
+//!   wait <entry>` once a turn, about once a second, until `ok ran #n`, `err not run
+//!   #n` (a no) or `err unknown step #n` (a no). Meanwhile the other goals go on,
+//!   and the person's queued pause or cancel comes through: a card left open holds
+//!   nothing else. The person answers once, on the card; this agent answers no
+//!   question itself.
 //! - **A refusal at the ceiling** (`err refused`: the shell restarted and its
 //!   grants are gone, or the goal was revoked) pauses the goal: it is not tried
 //!   again until resumed.
@@ -40,12 +43,14 @@
 
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use goalcore::reply::{self, Reply};
 use goalcore::report::Report;
 use goalcore::runner::{Event, Outcome, Parts, Plan, Planner, Runner, Steps};
-use goalcore::{AskKind, Door, Goal, Goals, Presence, State, Step, StepDone, Tier};
+use goalcore::{AskKind, Door, Goal, Goals, Presence, State, Step, Tier};
 use llmproto::act::ActRequest;
 use user::{arg, args, println, route, sys};
 
@@ -62,8 +67,6 @@ const POLL_MS: u64 = 200;
 /// A turn: the shell's queue is read and the runner turns once, about once a
 /// second (background class).
 const TURN_MS: u64 = 1_000;
-/// How often an asked step's answer is asked for: at most once a second.
-const WAIT_POLL_MS: u64 = 1_000;
 /// The routes, in the plan line's `uses=` order.
 const LLM: usize = 0;
 const SHELL: usize = 1;
@@ -93,15 +96,20 @@ fn run() -> i32 {
     loop {
         agent.take_queued();
         let now = now_ms();
-        let mut steps = ShellSteps::default();
         let mut parts = Parts {
             planner: &mut agent.planner,
             door: &InCeiling,
-            steps: &mut steps,
+            steps: &mut agent.steps,
         };
         let events = runner.turn(&mut agent.goals, now, Presence::Here, &mut parts);
+        // A card whose goal ended (a cancel) is no longer polled.
+        let goals = &agent.goals;
+        agent
+            .steps
+            .on_card
+            .retain(|goal, _| goals.get(*goal).is_some_and(|goal| !goal.state.is_final()));
         // A goal the ceiling refused waits, untried, until it is resumed.
-        for goal in steps.refused {
+        for goal in core::mem::take(&mut agent.steps.refused) {
             if let Some(goal) = agent.goals.get_mut(goal)
                 && goal.state == State::Active
             {
@@ -121,11 +129,12 @@ fn run() -> i32 {
     }
 }
 
-/// The goals, and the planner's llm jobs.
+/// The goals, the planner's llm jobs, and the steps on the person's card.
 #[derive(Default)]
 struct Agent {
     goals: Goals,
     planner: LlmPlanner,
+    steps: ShellSteps,
 }
 
 impl Agent {
@@ -370,87 +379,58 @@ fn targets(call: &llmproto::act::Call) -> Vec<String> {
         .iter()
         .filter(|arg| matches!(arg.role, agentabi::Role::Target))
         .filter_map(|arg| call.arguments.get(arg.name)?.as_str())
-        .map(|path| path.strip_prefix("/home/user/").unwrap_or(path).to_string())
+        .map(|path| {
+            path.strip_prefix("/home/user/")
+                .or_else(|| path.strip_prefix("~/"))
+                .unwrap_or(path)
+                .to_string()
+        })
         .collect()
 }
 
-/// The shell's door for this agent's steps, and the goals its ceiling refused.
+/// The shell's door for this agent's steps: the goals its ceiling refused, and
+/// each goal's step on the person's card, by the shell's entry.
 #[derive(Default)]
 struct ShellSteps {
     refused: Vec<u64>,
+    on_card: BTreeMap<u64, u64>,
 }
 
 impl Steps<String> for ShellSteps {
     fn run(&mut self, goal: u64, step: &Step<String>) -> Outcome {
-        let reply = match call_shell(&format!("agent-step goal={goal} {}", step.call)) {
+        // A step on the card is asked about, once a turn; it is not sent again.
+        let text = match self.on_card.get(&goal) {
+            Some(entry) => format!("agent-step wait {entry}"),
+            None => format!("agent-step goal={goal} {}", step.call),
+        };
+        let reply = match call_shell(&text) {
             Ok(reply) => reply,
-            Err(why) => return Outcome::Done(failed(None, why)),
-        };
-        // `ok asked <entry>: on the person's card`: the answer comes by `wait`.
-        let reply = match reply.strip_prefix("ok asked ") {
-            Some(rest) => {
-                let id = rest.split(':').next().unwrap_or("").trim().to_string();
-                match wait_for(&id) {
-                    Ok(answer) => answer,
-                    Err(why) => return Outcome::Done(failed(None, why)),
-                }
+            Err(why) => {
+                self.on_card.remove(&goal);
+                return Outcome::Done(reply::failed(None, why));
             }
-            None => reply,
         };
-        // The person's no on the card: the step did not run.
-        if let Some(why) = reply.strip_prefix("err not run ") {
-            return Outcome::Denied(why.to_string());
+        let read = reply::read(&reply);
+        if !matches!(read, Reply::Asked(_) | Reply::Waiting) {
+            self.on_card.remove(&goal);
         }
-        // Refused at the ceiling: the shell restarted (its grants are not kept) or
-        // the goal was revoked. The goal pauses; it is not tried again in a loop.
-        if reply.starts_with("err refused") {
-            self.refused.push(goal);
+        match read {
+            Reply::Asked(entry) => {
+                self.on_card.insert(goal, entry);
+                Outcome::Later
+            }
+            Reply::Waiting => Outcome::Later,
+            // The person's no on the card: the step did not run.
+            Reply::NotRun(why) => Outcome::Denied(why),
+            // Refused at the ceiling: the shell restarted (its grants are not kept)
+            // or the goal was revoked. The goal pauses; it is not tried again in a
+            // loop.
+            Reply::Refused(why) => {
+                self.refused.push(goal);
+                Outcome::Done(reply::failed(None, why))
+            }
+            Reply::Done(done) => Outcome::Done(done),
         }
-        Outcome::Done(step_done(&reply))
-    }
-}
-
-/// Polls `agent-step wait <entry>`, at most once a second, until the person
-/// answered on the card. An entry the shell does not know is a no.
-fn wait_for(id: &str) -> Result<String, String> {
-    loop {
-        let reply = call_shell(&format!("agent-step wait {id}"))?;
-        if reply.starts_with("err unknown step") {
-            return Ok(format!("err not run #{id}: no answer is kept for it"));
-        }
-        if !reply.starts_with("ok waiting") {
-            return Ok(reply);
-        }
-        sys::sleep_ms(WAIT_POLL_MS);
-    }
-}
-
-/// What the shell's reply to a step says: `ok <tier> #<entry>: …` or `ok ran
-/// #<entry>: …` ran, anything else failed; the entry is the actlog's.
-fn step_done(reply: &str) -> StepDone {
-    let (ok, rest) = match reply.split_once(' ') {
-        Some(("ok", rest)) => (true, rest),
-        Some((_, rest)) => (false, rest),
-        None => (false, reply),
-    };
-    let entry = rest
-        .split_once('#')
-        .and_then(|(_, after)| after.split(':').next()?.trim().parse::<u64>().ok());
-    match ok {
-        true => StepDone {
-            entry,
-            tokens: 0,
-            failed: None,
-        },
-        false => failed(entry, rest.to_string()),
-    }
-}
-
-fn failed(entry: Option<u64>, why: String) -> StepDone {
-    StepDone {
-        entry,
-        tokens: 0,
-        failed: Some(why),
     }
 }
 
