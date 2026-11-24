@@ -252,9 +252,18 @@ pub(super) fn apply_need(
         } => {
             state.shown.retain(|(w, ..)| *w != window);
             state.shown.push((window, pid, buffer, scale));
-            if let Some(at) = state.wheeled.iter().position(|w| *w == window) {
-                state.wheeled.remove(at);
+            if let Some(at) = state.wheeled.iter().position(|(w, _)| *w == window) {
+                let (_, before) = state.wheeled.remove(at);
                 println!("desktop: window {} drew after the wheel", window.0);
+                // Not just a redraw: did the content move? A hover or a caret
+                // redraws in place and says nothing here.
+                let after = super::frame::wheel_rows(state, window).unwrap_or_default();
+                if let Some((rows, explained)) = deskcore::scrolled::shift(&before, &after) {
+                    println!(
+                        "desktop: window {} scrolled {rows} rows after the wheel ({explained} rows moved)",
+                        window.0
+                    );
+                }
             }
             false
         }
@@ -265,7 +274,7 @@ pub(super) fn apply_need(
                 .find(|(w, ..)| *w == window)
                 .map(|(_, _, buffer, _)| buffer.pool);
             state.shown.retain(|(w, ..)| *w != window);
-            state.wheeled.retain(|w| *w != window);
+            state.wheeled.retain(|(w, _)| *w != window);
             state.agent.closed(window);
             pools::after_closed(state, at, pid, pool);
             false
