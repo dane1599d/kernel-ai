@@ -32,12 +32,19 @@ fn switched_by(agent: &str) -> (Rc<FakeHost>, Shell) {
 /// with no change of its own on the policy.
 fn unknown_of(shell: &mut Shell, agent: agentid::Name) {
     let mut entry = shell.log.get(shell.log.last_id()).unwrap().clone();
-    entry.id = shell.log.last_id() + 1;
+    // A fresh id, as the shell would give it: the undo's entry comes after.
+    entry.id = shell.take_id();
     entry.state = State::Unknown;
     entry.outcome = String::from("failed; notes_add may have run");
     entry.changes.clear();
     entry.agent = agent;
     shell.log.push(entry);
+}
+
+/// No two entries share an id (the undo's entry comes after the made-up one).
+fn ids_unique(shell: &Shell) -> bool {
+    let ids: Vec<u64> = shell.log.entries().map(|e| e.id).collect();
+    ids.windows(2).all(|w| w[0] < w[1])
 }
 
 fn refused_as_unknown(reply: &Reply) -> bool {
@@ -59,6 +66,7 @@ fn another_agents_unknown_outcome_does_not_stop_it() {
     unknown_of(&mut shell, name("mailer"));
     let reply = shell.eval("undo tidy");
     assert!(reply.ok && reply.text.starts_with("Undone: "), "{reply:?}");
+    assert!(ids_unique(&shell));
     assert_eq!(host.policy.get(), Some(policy::INTERACTIVE));
 }
 
@@ -68,6 +76,7 @@ fn the_persons_unknown_outcome_does_not_stop_it() {
     unknown_of(&mut shell, agentid::Name::kai());
     let reply = shell.eval("undo tidy");
     assert!(reply.ok && reply.text.starts_with("Undone: "), "{reply:?}");
+    assert!(ids_unique(&shell));
     assert_eq!(host.policy.get(), Some(policy::INTERACTIVE));
 }
 
