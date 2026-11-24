@@ -339,11 +339,15 @@ pub fn answerable(addr: Ipv4Addr) -> bool {
     !special(addr)
 }
 
-/// Whether the boot runs on the boot cases' test network (`online=test`).
+/// Whether the boot runs on the boot cases' test network: `online=test` on a
+/// test boot (a `test=` word), as the kernel's other test words count only
+/// there. A plain boot with the word, `xtask vbox` under VirtualBox's NAT
+/// say, where 10.0.2.2 is the host machine, gets the full rule.
 fn test_network() -> bool {
-    crate::cmdline()
-        .split_whitespace()
-        .any(|word| word == "online=test")
+    crate::test_boot()
+        && crate::cmdline()
+            .split_whitespace()
+            .any(|word| word == "online=test")
 }
 
 /// A record for `narrower`, made from `object`'s, if `object`'s covers it:
