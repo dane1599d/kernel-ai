@@ -626,6 +626,9 @@ fn an_unknown_name_inside_try_still_fails_clearly() {
         "try { print(\"a\"); } catch { set_polcy(\"rr\"); }",
         "try { let s = \"ab\"; s.no_such_method(); } catch { }",
         "try { set_policy(\"rr\", \"extra\"); } catch { }",
+        // A known name with the wrong argument types: found only by running.
+        "try { set_policy(5); } catch { }",
+        "try { let s = \"ab\"; s.sub_string(\"x\"); } catch (e) { print(e); }",
     ] {
         let refusal = checked(script)
             .err()
@@ -639,6 +642,8 @@ fn an_unknown_name_inside_try_still_fails_clearly() {
     for script in [
         "try { let s = \"ab\"; print(s.len() + 1); print(type_of(s)); } catch (e) { print(e); }",
         "try { print(cpus()); } catch { }",
+        // A row's own error is one a catch may mean to catch.
+        "try { set_policy(\"no-such-policy\"); } catch (e) { print(e); }",
     ] {
         checked(script).unwrap_or_else(|e| panic!("{e}: {script}"));
     }
