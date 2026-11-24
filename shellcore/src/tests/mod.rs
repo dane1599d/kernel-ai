@@ -17,6 +17,7 @@ const TRIAL_REPORT: &str = "init, started, a key and a click ran; 1 window";
 
 mod act;
 mod actions;
+mod agentconsent;
 mod agentstep;
 mod agentundo;
 mod apart;
