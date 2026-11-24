@@ -297,8 +297,17 @@ fn execute(options: &Options) -> Result<(), String> {
         .enumerate()
         .filter(|&(index, _)| options::in_shard(options.shard, index))
         .map(|(_, case)| case)
-        // A case that times a step boots only where it runs at speed.
-        .filter(|case| !(case.kvm_only && accel == Accel::Tcg))
+        // A case that times a step boots only where it runs at speed, and
+        // the run says it left it out.
+        .filter(|case| {
+            let skip = (accel == Accel::Tcg)
+                .then(|| cases::tcg_skip(case))
+                .flatten();
+            if let Some(line) = &skip {
+                println!("{line}");
+            }
+            skip.is_none()
+        })
         // `XTASK_CASE=name` boots only that case, which may be one booted only
         // when named (the screenshot tour).
         .chain(match env::var("XTASK_CASE") {
