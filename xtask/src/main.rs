@@ -560,6 +560,9 @@ fn execute(options: &Options) -> Result<(), String> {
             if case.bridge {
                 qemu::net_behind_bridge(&mut args);
             }
+            if case.powers_off {
+                args.push("-no-shutdown".into());
+            }
             if case.net_polled {
                 qemu::net_without_vectors(&mut args);
             }

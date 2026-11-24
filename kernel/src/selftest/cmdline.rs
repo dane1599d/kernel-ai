@@ -186,6 +186,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=efi" => Some(SelfTest::Efi),
             "test=efi-reset" => Some(SelfTest::EfiReset),
             "test=power-reboot" => Some(SelfTest::PowerReboot),
+            "test=power-off" => Some(SelfTest::PowerOff),
             "test=slot" => Some(SelfTest::Slot),
             "test=update" => Some(SelfTest::Update),
             "test=probation" => Some(SelfTest::Probation),

@@ -241,6 +241,32 @@ pub fn run_interactive(qemu: &Path, args: &[String], target_dir: &Path) -> Resul
     Ok(())
 }
 
+/// How long a power-off case waits for QEMU to report the guest's shutdown.
+const POWER_OFF_WAIT: Duration = Duration::from_secs(15);
+
+/// Whether QEMU's monitor on `port`, asked `command` again and again within
+/// `within`, answers with `want` in its text.
+fn monitor_reports(port: u16, command: &str, want: &str, within: Duration) -> bool {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    let started = Instant::now();
+    while started.elapsed() < within {
+        if let Ok(mut monitor) = TcpStream::connect(("127.0.0.1", port)) {
+            let _ = monitor.set_read_timeout(Some(Duration::from_millis(300)));
+            if writeln!(monitor, "{command}").is_ok() {
+                thread::sleep(Duration::from_millis(300));
+                let mut buf = [0u8; 4096];
+                let got = monitor.read(&mut buf).unwrap_or(0);
+                if String::from_utf8_lossy(&buf[..got]).contains(want) {
+                    return true;
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    false
+}
+
 pub struct TestRun<'a> {
     pub case: &'a TestCase,
     pub accel: Accel,
@@ -270,6 +296,7 @@ pub fn run_test(
 ) -> Result<(), String> {
     let (accel, timeout, monitor, qmp) = (run.accel, run.timeout, run.monitor, run.qmp);
     let (stages, keys_on, stops) = (run.case.keys, run.case.keys_on, run.case.stops);
+    let powers_off = run.case.powers_off;
     let forbid = run.case.forbid;
     let expect: Vec<String> = run
         .case
@@ -325,7 +352,7 @@ pub fn run_test(
             }
             missing.retain(|text| !line.contains(text.as_str()));
             unseen.retain(|text| line.trim_end_matches('\r') != text);
-            if stops && missing.is_empty() && unseen.is_empty() {
+            if (stops || powers_off) && missing.is_empty() && unseen.is_empty() {
                 let _ = seen_tx.send(());
             }
             // A named line sends the next stage, whoever printed it.
@@ -383,6 +410,7 @@ pub fn run_test(
     });
     let mut cut_seen = None;
     let mut stopped = false;
+    let mut powered_off = false;
     let status = loop {
         if let Some(status) = child
             .try_wait()
@@ -391,6 +419,11 @@ pub fn run_test(
             break status;
         }
         if seen_rx.try_recv().is_ok() {
+            // A power-off case: the guest must have turned the machine off,
+            // which under -no-shutdown leaves QEMU paused in `shutdown`.
+            if powers_off {
+                powered_off = monitor_reports(monitor, "info status", "shutdown", POWER_OFF_WAIT);
+            }
             // Every expected line is in: nothing more is waited for.
             let _ = child.kill();
             stopped = true;
@@ -446,6 +479,11 @@ pub fn run_test(
     // Before QEMU's own verdict: a forbidden line is said however the run ended.
     forbidden_verdict(forbidden)?;
     let reset = run.case.resets && status.code() == Some(0);
+    if powers_off && !powered_off {
+        return Err(String::from(
+            "FAIL: the guest did not turn the machine off (QEMU never reported a shutdown)",
+        ));
+    }
     if stopped {
         println!("xtask: every expected line seen; QEMU stopped");
     } else if status.code() != Some(QEMU_PASS) && !reset {

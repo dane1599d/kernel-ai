@@ -18,7 +18,7 @@
 //! | 100-109 | P, packages (P2) | BOOT_READ, COMP_ADD, PKG_FETCH, PKG_TIME |
 //! | 110-119 | A-core | CLOCK_NOW |
 //! | 120-129 | model lane | |
-//! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH |
+//! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH; POWER_OFF 134 (K, ADR 0007 §8) |
 //! | 140-149 | C, components | EDIT_CALL (lane E), CARD_READY |
 //! | 150-159 | V, virtual machines (P6) | |
 //! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET, PROC_ALIVE 166 |
@@ -410,6 +410,15 @@ pub const NETDEST_NARROW: u64 = 85;
 /// committed (`fs` makes each change durable before it answers). Numbered at
 /// merge, K's block (backlog item 13).
 pub const POWER_REBOOT: u64 = 86;
+/// `power_off() -> !`: turns the machine off through the firmware's
+/// ResetSystem (a shutdown), on the same rules as [`POWER_REBOOT`]: needs
+/// [`super::cap::POWER`] (Permission without it), Busy until this boot's
+/// lever has written its boot record and while `fs` holds a call. Where the
+/// firmware cannot turn it off (no runtime services, or ResetSystem returns),
+/// the console shows that it is safe to switch off and the machine halts. It
+/// does not return. ACPI's \_S5 (uACPI, S07-3) comes later, ahead of this
+/// fallback. Numbered at merge, D's block (ADR 0007 §8).
+pub const POWER_OFF: u64 = 134;
 /// `shell_interrupt() -> pid`: the person's Stop or Esc for the line the shell
 /// runs. The kernel marks the process named `shell` interrupted and wakes it. For
 /// the rest of the line, a call it makes ends Interrupted while no server has
