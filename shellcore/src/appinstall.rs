@@ -8,9 +8,12 @@
 //!   and `show uses <name>`, which lists them; and the call its `ONCE` names:
 //!   `app_install("timer", "0.0.1", "<source>")`, where `<source>` begins
 //!   `main.c`'s SHA-256. The menu's id is a new log entry's, so the `ONCE`
-//!   names this card alone. The model's one-line summary and `show code` are
-//!   in the build's Done, just before: the card holds [`MENU_TEXT`]
-//!   characters, the call included.
+//!   names this card alone. The card holds [`MENU_TEXT`] characters, the
+//!   call included. On the console, under the question and outside the
+//!   `ONCE`, a detail line says the model's one-line summary as Kai's words
+//!   ([`summary_line`]), escaped and cut to the same limit; the desk's
+//!   trusted card shows code's question alone. `show code` is in the build's
+//!   Done.
 //! - **Checking:** the ask and the Allow both refuse a build that is not the
 //!   last one, one whose `main.c` changed since it was built (stale or
 //!   edited), or one installed already, each with why. The ask refuses one
@@ -107,6 +110,42 @@ fn question(built: &Built, uses: &[&str], call: &str) -> Option<String> {
         ),
     ];
     forms.into_iter().find(|form| form.len() <= MENU_TEXT)
+}
+
+/// The label the card's summary line starts with: the words after it are
+/// the model's, not code's.
+const SAID: &str = "Kai says it: ";
+
+/// The install card's detail line: the model's one-line summary after
+/// [`SAID`], as the card shows text (printable ASCII as it is, anything else
+/// as `\u{hex}`, so nothing hides), cut whole to [`MENU_TEXT`] with `...`.
+/// Empty for an empty summary.
+pub(crate) fn summary_line(summary: &str) -> String {
+    let summary = summary.trim();
+    if summary.is_empty() {
+        return String::new();
+    }
+    let pieces: Vec<String> = summary
+        .chars()
+        .map(|ch| match ch {
+            ' '..='~' => ch.to_string(),
+            _ => format!("\\u{{{:x}}}", ch as u32),
+        })
+        .collect();
+    let whole: usize = pieces.iter().map(String::len).sum();
+    let room = match SAID.len() + whole <= MENU_TEXT {
+        true => whole,
+        false => MENU_TEXT - SAID.len() - "...".len(),
+    };
+    let mut line = String::from(SAID);
+    for piece in &pieces {
+        if line.len() + piece.len() > SAID.len() + room {
+            line.push_str("...");
+            return line;
+        }
+        line.push_str(piece);
+    }
+    line
 }
 
 impl Shell {
@@ -239,12 +278,14 @@ impl Shell {
             return Reply::err(why);
         }
         let question = question(&built, &uses(&built.artifact.imports), &call);
+        let detail = summary_line(&built.summary);
         let menu = question
             .as_deref()
             .map_or(Err(termcore::menu::Refused::Unshowable), |question| {
                 Menu::new(id, question, None, None, Origin::Added)
             })
-            .and_then(|menu| menu.with_call(&call));
+            .and_then(|menu| menu.with_call(&call))
+            .and_then(|menu| menu.with_detail(&detail));
         let (Some(question), Ok(_)) = (question, menu) else {
             return Reply::err(format!(
                 "Kai's app {name} cannot be asked about on the card: its call is too long"
@@ -283,10 +324,11 @@ impl Shell {
             net: None,
             send: None,
             power: false,
+            goal: None,
         });
         Reply::menu(
             id,
-            Menu::encode(id, Origin::Added, &question, "", "", &call),
+            Menu::encode_detail(id, Origin::Added, &question, &call, &detail),
         )
     }
 

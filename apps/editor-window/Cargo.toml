@@ -24,5 +24,6 @@ wit-bindgen = { version = "=0.63.0", default-features = false, features = ["macr
 
 [dev-dependencies]
 appabi = { path = "../../appabi" }
+kabi = { path = "../../kabi" }
 livecore = { path = "../../livecore" }
 wasmhost = { path = "../../wasmhost" }

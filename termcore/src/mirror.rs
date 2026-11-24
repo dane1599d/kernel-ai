@@ -144,7 +144,8 @@ impl Log {
             let kind = match input.filter(|&(top, end, _)| (top..end).contains(&row)) {
                 Some((top, _, prompt)) if row == top => Kind::Input { prompt },
                 Some(_) => Kind::Input { prompt: 0 },
-                None => Kind::of(cells),
+                // A row text wrapped onto is the row it carries on.
+                None => grid.kind_of(row),
             };
             let width = grid.row_width(row);
             let bytes: usize = cells[..width].iter().map(|ch| ch.len_utf8()).sum();

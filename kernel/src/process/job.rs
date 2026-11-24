@@ -144,8 +144,8 @@ fn start(slot: usize, name: &str, args: &[u8], handles: &[Handle]) -> Result<u64
         uses: &[],
     };
     spawn_with(&request, moved, true).map_err(|(error, moved)| {
-        // Refused: the handles go back to the parent.
-        handle::give(slot, moved);
+        // Refused: the handles go back to the parent, under the same values.
+        handle::give_back(slot, handles, moved);
         error
     })
 }

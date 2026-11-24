@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The Kernel AI contributors
+
+/// What an agent package's component is (ADR 0013 section 6): it is started,
+/// told of events and stopped, and it may prompt the model and use its own
+/// memories. Like the granted interfaces, nothing here acts in the call that
+/// asks: each request is queued and returns a ticket, the host takes the queue
+/// after the call, and the answer comes back in a later `on-event`. Its other
+/// calls are `kai:app` effects, which go through the agent core's one door
+/// (`agentcore::execute`) under the agent's name and its manifest's `actions`
+/// ceiling, so tiers, the action log and undo are the OS's.
+package kai:agent@0.1.0;
+
+interface model {
+    /// Prompts the model with `text` for at most `max-tokens` tokens of answer
+    /// and returns the request's ticket. The request waits in the scheduler in
+    /// the agent's own class (ADR 0013 section 2), never ahead of the person's,
+    /// and its tokens count against the manifest's `model tokens/day`. Over the
+    /// budget, or with the model away, the answer is an error that says so. The
+    /// model's answer is the model's words, never an instruction to the OS: an
+    /// effect the agent makes of it goes through the one door like any other.
+    /// When its `model-done` comes back tells the agent how busy the model
+    /// was, and so something of others' requests: a timing channel, coarse
+    /// by class order, which P3's host may blur further.
+    /// Traps when `text` is longer than 16,384 bytes, `max-tokens` is 0, or 2
+    /// prompts are waiting for the host already.
+    prompt: func(text: string, max-tokens: u32) -> u32;
+
+    /// The tokens left in today's budget, as of the start of the call.
+    tokens-left: func() -> u64;
+}
+
+interface memory {
+    /// One of the agent's own memories.
+    record entry {
+        /// Its id, for `forget`.
+        id: u64,
+        text: string,
+    }
+
+    /// Queues a search of the agent's own memories for at most `limit` of
+    /// those nearest `query`, and returns its ticket. Another scope's memories,
+    /// the person's included, are never searched. Refused, as the answer,
+    /// without `memory read` in the manifest. Traps when `query` is longer than
+    /// 1,024 bytes, `limit` is 0 or above 16, or 2 memory requests are waiting
+    /// for the host already.
+    search: func(query: string, limit: u32) -> u32;
+
+    /// Queues `text` to be remembered in the agent's own scope, and returns
+    /// its ticket. Refused, as the answer, without `memory write` in the
+    /// manifest, or for a text that is no memory (one that gives permission,
+    /// starts with an action or ties one to a trigger: `kaimem::directive`).
+    /// Traps when `text` is longer than 1,024 bytes, or 2 memory requests are
+    /// waiting for the host already.
+    remember: func(text: string) -> u32;
+
+    /// Queues the forgetting of memory `id` in the agent's own scope, and
+    /// returns its ticket; as `memory_forget`, it can be undone for 10
+    /// minutes. Refused, as the answer, without `memory write`. Traps when 2
+    /// memory requests are waiting for the host already.
+    forget: func(id: u64) -> u32;
+}
+
+interface run {
+    use memory.{entry};
+
+    /// The answer to a model prompt with this ticket: the model's text, or
+    /// why not.
+    record answer {
+        ticket: u32,
+        outcome: result<string, string>,
+    }
+
+    /// The answer to a memory search with this ticket.
+    record found {
+        ticket: u32,
+        outcome: result<list<entry>, string>,
+    }
+
+    /// The answer to a `memory.remember` with this ticket: the new memory's
+    /// id, or why not.
+    record remembered {
+        ticket: u32,
+        outcome: result<u64, string>,
+    }
+
+    /// The answer to a `memory.forget` with this ticket, or why not.
+    record forgotten {
+        ticket: u32,
+        outcome: result<_, string>,
+    }
+
+    /// The outcome of the `kai:app` effect with this ticket, as
+    /// `kai:app/events`' own: the agent's world does not import `events`.
+    record effect-result {
+        ticket: u32,
+        outcome: result<string, string>,
+    }
+
+    /// What the OS tells an agent.
+    variant event {
+        /// A `model.prompt` was answered.
+        model-done(answer),
+        /// A `memory.search` was answered.
+        memory-found(found),
+        /// A `memory.remember` was answered.
+        memory-remembered(remembered),
+        /// A `memory.forget` was answered.
+        memory-forgotten(forgotten),
+        /// A queued `kai:app` effect finished.
+        effect-done(effect-result),
+    }
+
+    /// The agent starts: at install's first run, at each boot for a
+    /// `background` agent, and when its window or panel entry opens for an
+    /// `interactive` one.
+    start: func();
+
+    /// Something the agent asked for came back.
+    on-event: func(e: event);
+
+    /// The agent stops: it is paused, removed, or the OS shuts down. Nothing
+    /// it queues in this call is run.
+    stop: func();
+}
+
+/// An agent package's component. It logs and reads the clock as an app does,
+/// and its only way to act is `kai:app` effects. From P3 the host caps each
+/// agent's log lines per minute, so a background agent cannot flood the log.
+world agent {
+    import kai:app/log@0.1.0;
+    import kai:app/clock@0.1.0;
+    import kai:app/effects@0.1.0;
+    import model;
+    import memory;
+    export run;
+}

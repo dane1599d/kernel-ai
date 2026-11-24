@@ -17,7 +17,7 @@
 //!   dropped on release. A key or click by the user in the window the agent is
 //!   acting on stops the agent ("Stopped: you took over").
 
-use crate::chrome::{self, Edges, Part};
+use crate::chrome::{self, Part};
 use crate::damage::Damage;
 use crate::geom::{Point, Rect, Size};
 use crate::trusted::Ask;
@@ -35,181 +35,9 @@ pub use bar::{BarSpot, TrayPart};
 pub use pane::PanePart;
 pub use start::TIP_MS;
 
-pub mod usage {
-    pub const TAB: u16 = 0x2B;
-    pub const SPACE: u16 = 0x2C;
-    pub const LEFT_CTRL: u16 = 0xE0;
-    pub const LEFT_SHIFT: u16 = 0xE1;
-    pub const LEFT_ALT: u16 = 0xE2;
-    pub const LEFT_GUI: u16 = 0xE3;
-    pub const RIGHT_CTRL: u16 = 0xE4;
-    pub const RIGHT_SHIFT: u16 = 0xE5;
-    pub const RIGHT_ALT: u16 = 0xE6;
-    pub const RIGHT_GUI: u16 = 0xE7;
-    pub const Y: u16 = 0x1C;
-    pub const N: u16 = 0x11;
-}
-/// The smallest content a resize leaves.
-const MIN_CONTENT: Size = Size { w: 120, h: 60 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct WindowId(pub u32);
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Window {
-    pub id: WindowId,
-    /// The connection it came from.
-    pub client: u32,
-    /// The kernel's label for the process, drawn before the title.
-    pub label: String,
-    pub title: String,
-    pub app_id: String,
-    /// The outer frame, title bar included.
-    pub frame: Rect,
-    pub minimized: bool,
-    /// The frame to go back to from maximized.
-    pub restore: Option<Rect>,
-    pub min: Size,
-    pub max: Size,
-}
-
-impl Window {
-    pub fn content(&self) -> Rect {
-        chrome::content_of(self.frame)
-    }
-
-    pub fn maximized(&self) -> bool {
-        self.restore.is_some()
-    }
-}
-
-/// Where keys go.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Focus {
-    Nothing,
-    Window(WindowId),
-    Panel,
-    /// The ask card with this log entry id.
-    Ask(u64),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Button {
-    Left,
-    Right,
-    Middle,
-}
-
-/// Input in logical px, as `desktop` turns the kernel's events into it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Input {
-    Motion(Point),
-    Button {
-        button: Button,
-        down: bool,
-    },
-    Key {
-        usage: u16,
-        down: bool,
-    },
-    /// The vertical wheel turned by detents, positive toward the person
-    /// (scroll down).
-    Wheel(i32),
-}
-
-/// What `desktop` must do after a change.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Effect {
-    /// The pointer is over `window`'s content at `at` (content-local px).
-    Pointer { window: WindowId, at: Point },
-    /// The pointer left `window`'s content.
-    Leave { window: WindowId },
-    Button {
-        window: WindowId,
-        at: Point,
-        button: Button,
-        down: bool,
-    },
-    Key {
-        window: WindowId,
-        usage: u16,
-        down: bool,
-    },
-    /// A key for the AI panel.
-    PanelKey { usage: u16, down: bool },
-    /// A press on the AI panel, at `at` on the screen: `desktop` decides
-    /// whether it was on a control there (undo, show).
-    PanelClick { at: Point },
-    /// Caps Lock was turned on or off: every client types letters by it.
-    Locks { caps: bool },
-    /// Keyboard focus moved.
-    Focus(Focus),
-    /// The taskbar's "more" item: All apps.
-    ShowApps,
-    /// Start opened (true) or closed: `desktop` gives it the keys meanwhile.
-    Start(bool),
-    /// A press inside Start at `at` on the screen: `desktop` decides what.
-    StartClick { at: Point },
-    /// A line for the panel to send as though typed: a pin's `open <name>`.
-    PanelLine(String),
-    /// The wheel over the Kai pane's history, by detents (positive scrolls
-    /// toward the newest).
-    PaneWheel(i32),
-    /// The wheel over Start's lists, by detents (positive moves down).
-    StartWheel(i32),
-    /// The wheel over `window`'s content at `at` (content-local px), by
-    /// detents (positive scrolls down): a ring event for its client.
-    Wheel {
-        window: WindowId,
-        at: Point,
-        detents: i32,
-    },
-    /// Tell the client its window's content size and state
-    /// (`toplevel.configure`).
-    Configure {
-        window: WindowId,
-        size: Size,
-        maximized: bool,
-        activated: bool,
-    },
-    /// The close control was pressed: the client decides (`toplevel.close`).
-    Close { window: WindowId },
-    /// The user answered the ask card for log entry `id`: y mints its `ONCE`.
-    Answer { id: u64, yes: bool },
-    /// The user acted in the window the agent was driving: stop the run.
-    TookOver { window: WindowId },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Grab {
-    Move {
-        window: WindowId,
-        offset: Point,
-    },
-    Resize {
-        window: WindowId,
-        edges: Edges,
-        start: Rect,
-        from: Point,
-    },
-}
-
-/// How much of a dragged window's title bar stays on screen, either side.
-const KEEP_ON_SCREEN: i32 = 64;
-
-/// What a point on the screen hits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Hit {
-    Window(WindowId, Part),
-    /// The taskbar: item `i` of the items now, or between them.
-    Taskbar(Option<usize>),
-    Tray(TrayPart),
-    /// Start, while it is open: over everything but the card.
-    Start,
-    /// The Kai pane, while it is open.
-    Pane(PanePart),
-    Desktop,
-}
+mod input;
+mod types;
+pub use types::*;
 
 pub struct Desk {
     width: i32,
@@ -246,6 +74,8 @@ pub struct Desk {
     agent: Option<WindowId>,
     /// Caps Lock: letters type the other case from Shift.
     caps: bool,
+    /// The modifiers every client was last told held ([`Effect::Modifiers`]).
+    mods_sent: u32,
     /// Num Lock: on, the keypad types digits; off, it is the arrows and
     /// navigation keys. On at start, as most PCs boot.
     num: bool,
@@ -280,6 +110,12 @@ pub struct Desk {
     /// The pointer moved onto the card's Run button after the card was
     /// drawn: a click there may run it (one parked there before may not).
     ask_entered_run: bool,
+    /// The card up now is a send's: it takes no answer until its text has
+    /// been drawn in the pane ([`Desk::needs_preview`]).
+    ask_needs_preview: bool,
+    /// When the send's text was first drawn in the pane
+    /// ([`Desk::preview_drawn`]).
+    ask_preview_ms: Option<u64>,
 }
 
 impl Desk {
@@ -312,6 +148,7 @@ impl Desk {
             down: Vec::new(),
             agent: None,
             caps: false,
+            mods_sent: 0,
             num: true,
             bar_hover: None,
             unread: false,
@@ -326,6 +163,8 @@ impl Desk {
             ask_drawn: None,
             ask_pressed_ms: 0,
             ask_entered_run: false,
+            ask_needs_preview: false,
+            ask_preview_ms: None,
         }
     }
 
@@ -334,6 +173,22 @@ impl Desk {
     /// pressed, not by when they were read.
     pub fn set_now(&mut self, now_ms: u64) {
         self.now_ms = now_ms;
+    }
+
+    /// Whether a window `client` opens now may take the keyboard focus (the
+    /// activation rule of ADR 0005 §3): only when nothing has it (the desk at
+    /// boot, after a click on it) or one of that client's own windows has it.
+    /// Any other window opens without the keys, however long the person has been
+    /// still: what the person asked for (`open notes` through the shell, a pin,
+    /// Start) is given the focus by the shell's `ui focus`, which `ui_open`
+    /// sends once the window is on the desk, so a background app cannot take the
+    /// keys meant for the pane, the Terminal or another app.
+    pub fn may_activate(&self, client: u32) -> bool {
+        match self.focus {
+            Focus::Nothing => true,
+            Focus::Window(id) => self.window(id).is_some_and(|w| w.client == client),
+            _ => false,
+        }
     }
 
     /// Where windows open: the screen above the taskbar.
@@ -494,14 +349,17 @@ impl Desk {
     /// A commit: the client drew `damage` (content-local px) at content
     /// `size`. A new size re-frames the window from its top-left corner.
     pub fn commit(&mut self, id: WindowId, size: Size, damage: &[Rect]) {
+        let area = self.layout().work_area;
         let Some(w) = self.windows.iter_mut().find(|w| w.id == id) else {
             return;
         };
         let content = w.content();
-        // Never narrower than the desk allows, whatever the client drew.
+        // Never narrower than the desk allows, nor wider than the work area (as
+        // when it opened), whatever the client drew: a layer of the window's size
+        // is allocated for every repaint.
         let size = Size {
-            w: size.w.max(MIN_CONTENT.w),
-            h: size.h.max(MIN_CONTENT.h),
+            w: size.w.clamp(MIN_CONTENT.w, area.w.max(MIN_CONTENT.w)),
+            h: size.h.clamp(MIN_CONTENT.h, area.h.max(MIN_CONTENT.h)),
         };
         if size.w != content.w || size.h != content.h {
             let old = w.frame;
@@ -561,6 +419,27 @@ impl Desk {
         self.held.retain(modifier);
     }
 
+    /// The modifiers held now, as a client's seat counts them: shift 1, ctrl 2,
+    /// alt 4, super 8.
+    fn modifier_mask(&self) -> u32 {
+        let any = |left: u16, right: u16| self.down.iter().any(|&k| k == left || k == right);
+        u32::from(any(usage::LEFT_SHIFT, usage::RIGHT_SHIFT))
+            | u32::from(any(usage::LEFT_CTRL, usage::RIGHT_CTRL)) << 1
+            | u32::from(any(usage::LEFT_ALT, usage::RIGHT_ALT)) << 2
+            | u32::from(any(usage::LEFT_GUI, usage::RIGHT_GUI)) << 3
+    }
+
+    /// Whether a modifier of `bit` is held (either side's key).
+    fn holds(&self, bit: u32) -> bool {
+        self.modifier_mask() & bit != 0
+    }
+
+    /// [`Desk::holds`], for the tests of other modules.
+    #[cfg(test)]
+    pub(crate) fn holds_for_test(&self, bit: u32) -> bool {
+        self.holds(bit)
+    }
+
     pub fn input(&mut self, input: Input) -> Vec<Effect> {
         let mut effects = Vec::new();
         // A key-down for a key already down is its repeat, never a fresh press.
@@ -571,6 +450,19 @@ impl Desk {
                 true if !self.down.contains(&code) => self.down.push(code),
                 true => {}
                 false => self.down.retain(|&k| k != code),
+            }
+            // The modifiers follow every key, whatever has the focus and even a
+            // card up (which swallows the releases the pane's shortcuts need).
+            match code {
+                usage::LEFT_CTRL | usage::RIGHT_CTRL => self.ctrl = self.holds(2),
+                usage::LEFT_ALT | usage::RIGHT_ALT => self.alt = self.holds(4),
+                usage::LEFT_SHIFT | usage::RIGHT_SHIFT => self.shift = self.holds(1),
+                _ => {}
+            }
+            let held = self.modifier_mask();
+            if held != self.mods_sent {
+                self.mods_sent = held;
+                effects.push(Effect::Modifiers(held));
             }
         }
         if self.ask.is_some() {
@@ -587,172 +479,6 @@ impl Desk {
         // A click, a key or a card may have moved what is under the pointer.
         self.rehover();
         effects
-    }
-
-    fn motion(&mut self, p: Point, effects: &mut Vec<Effect>) {
-        let p = Point {
-            x: p.x.clamp(0, self.width - 1),
-            y: p.y.clamp(0, self.height - 1),
-        };
-        self.pointer = p;
-        match self.grab {
-            Some(Grab::Move { window, offset }) => {
-                let area = self.work_area();
-                if let Some(w) = self.windows.iter_mut().find(|w| w.id == window) {
-                    let old = w.frame;
-                    // The title bar stays in the work area: never above its
-                    // top, never under the panel, and enough of it on screen
-                    // to grab it again from either side.
-                    let y = (p.y - offset.y)
-                        .min(area.bottom() - chrome::TITLE_BAR)
-                        .max(area.y);
-                    let x = (p.x - offset.x)
-                        .min(area.right() - KEEP_ON_SCREEN)
-                        .max(area.x + KEEP_ON_SCREEN - old.w);
-                    w.frame = Rect::new(x, y, old.w, old.h);
-                    w.restore = None;
-                    let new = w.frame;
-                    self.damage.add(old);
-                    self.damage.add(new);
-                }
-                return;
-            }
-            Some(Grab::Resize {
-                window,
-                edges,
-                start,
-                from,
-            }) => {
-                self.resize(
-                    window,
-                    edges,
-                    start,
-                    Point {
-                        x: p.x - from.x,
-                        y: p.y - from.y,
-                    },
-                    effects,
-                );
-                return;
-            }
-            None => {}
-        }
-        let hit = self.hit(p);
-        let over = match hit {
-            Hit::Window(id, Part::Content(at)) => Some((id, at)),
-            _ => None,
-        };
-        if let Some(old) = self.over
-            && over.is_none_or(|(id, _)| id != old)
-        {
-            effects.push(Effect::Leave { window: old });
-        }
-        self.over = over.map(|(id, _)| id);
-        if let Some((window, at)) = over {
-            effects.push(Effect::Pointer { window, at });
-        }
-    }
-
-    fn button(&mut self, button: Button, down: bool, effects: &mut Vec<Effect>) {
-        if !down {
-            if let Some(id) = self.dragged() {
-                // Let go: its shadow comes back, so its place is drawn again.
-                if let Some(frame) = self.window(id).map(|w| w.frame) {
-                    self.damage.add(frame);
-                }
-                self.grab = None;
-                return;
-            }
-            if let Some(window) = self.over
-                && let Hit::Window(id, Part::Content(at)) = self.hit(self.pointer)
-                && id == window
-            {
-                effects.push(Effect::Button {
-                    window,
-                    at,
-                    button,
-                    down,
-                });
-            }
-            return;
-        }
-        // Start takes every press while it is open: one inside is its own,
-        // one outside closes it and goes nowhere else.
-        if let Some(start) = self.start() {
-            match start.contains(self.pointer) {
-                true => effects.push(Effect::StartClick { at: self.pointer }),
-                false => self.close_start(effects),
-            }
-            return;
-        }
-        let hit = self.hit(self.pointer);
-        let Hit::Window(id, part) = hit else {
-            match hit {
-                Hit::Pane(PanePart::Close) if button == Button::Left => {
-                    self.close_pane(effects);
-                }
-                Hit::Pane(part) => {
-                    self.set_focus(Focus::Panel, effects);
-                    let clicked = matches!(part, PanePart::Status | PanePart::Send);
-                    if button == Button::Left && clicked {
-                        effects.push(Effect::PanelClick { at: self.pointer });
-                    }
-                }
-                hit @ (Hit::Taskbar(_) | Hit::Tray(_)) if button == Button::Left => {
-                    self.bar_click(hit, effects);
-                }
-                // The empty desk takes the focus from every window, as a
-                // click on the Windows desktop does: the keys go nowhere,
-                // and a terminal's key lease ends.
-                Hit::Desktop if button == Button::Left => {
-                    self.set_focus(Focus::Nothing, effects);
-                }
-                _ => {}
-            }
-            return;
-        };
-        self.raise(id);
-        self.set_focus(Focus::Window(id), effects);
-        if button != Button::Left {
-            if let Part::Content(at) = part {
-                effects.push(Effect::Button {
-                    window: id,
-                    at,
-                    button,
-                    down,
-                });
-            }
-            return;
-        }
-        let Some(frame) = self.window(id).map(|w| w.frame) else {
-            return;
-        };
-        match part {
-            Part::Content(at) => effects.push(Effect::Button {
-                window: id,
-                at,
-                button,
-                down,
-            }),
-            Part::Title => {
-                let offset = Point {
-                    x: self.pointer.x - frame.x,
-                    y: self.pointer.y - frame.y,
-                };
-                self.grab = Some(Grab::Move { window: id, offset });
-            }
-            Part::Edge(edges) => {
-                self.grab = Some(Grab::Resize {
-                    window: id,
-                    edges,
-                    start: frame,
-                    from: self.pointer,
-                });
-            }
-            Part::Close => effects.push(Effect::Close { window: id }),
-            Part::Minimize => self.minimize(id, effects),
-            Part::Maximize => self.toggle_maximize(id, effects),
-        }
     }
 
     /// Moves keyboard focus; the old and new windows' title bars repaint.

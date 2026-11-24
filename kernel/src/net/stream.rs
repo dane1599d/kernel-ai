@@ -60,6 +60,8 @@ struct Stream {
     owner: u64,
     socket: SocketHandle,
     bulk: bool,
+    /// The day's bytes of the agent `NetDest` it was connected on, if any.
+    meter: Option<super::dest::Meter>,
     /// It has been established at least once.
     connected: bool,
 }
@@ -80,8 +82,15 @@ fn index(id: u64) -> Option<usize> {
 }
 
 /// Opens a stream for `owner` to `addr`:`port`, which the caller checked
-/// against its `NetDest`; `bulk` gives it the larger buffer. Its id.
-pub fn connect(owner: u64, addr: Ipv4Addr, port: u16, bulk: bool) -> Result<u64, Error> {
+/// against its `NetDest`; `bulk` gives it the larger buffer, and `meter` is
+/// that `NetDest`'s day's bytes, if it is an agent's. Its id.
+pub fn connect(
+    owner: u64,
+    addr: Ipv4Addr,
+    port: u16,
+    bulk: bool,
+    meter: Option<super::dest::Meter>,
+) -> Result<u64, Error> {
     let mut guard = NET.lock();
     let net = guard.as_mut().ok_or(Error::Unavailable)?;
     if net.setup.status().address.is_none() {
@@ -112,6 +121,7 @@ pub fn connect(owner: u64, addr: Ipv4Addr, port: u16, bulk: bool) -> Result<u64,
         owner,
         socket,
         bulk,
+        meter,
         connected: false,
     };
     let at = match streams.open.iter().position(Option::is_none) {
@@ -200,6 +210,13 @@ fn state(socket: &tcp::Socket, connected: bool) -> u64 {
     bits
 }
 
+/// The day's bytes stream `id` of `owner` counts on, if it is an agent's.
+pub fn meter_of(owner: u64, id: u64) -> Option<super::dest::Meter> {
+    let streams = STREAMS.lock();
+    let stream = streams.open.get(index(id)?)?.as_ref()?;
+    (stream.owner == owner).then(|| stream.meter.clone())?
+}
+
 /// NET_SEND: queues up to [`MAX_CALL`] bytes of `data`; how many it took,
 /// which is 0 while the send buffer is full. Dead once the stream can no
 /// longer send.
@@ -245,6 +262,7 @@ pub fn poll(
 ) -> Result<u64, Error> {
     let deadline = hpet::nanos().saturating_add(timeout_ms.min(MAX_WAIT_MS) * 1_000_000);
     loop {
+        let ticket = super::frames_ticket();
         let bits = with(owner, id, |socket, connected| state(socket, *connected))?;
         if bits & (want | ready::FAILED) != 0 || hpet::nanos() >= deadline {
             return Ok(bits);
@@ -252,7 +270,7 @@ pub fn poll(
         if cancel() {
             return Err(Error::Interrupted);
         }
-        crate::threads::sleep_ms(POLL_GAP_MS);
+        super::wait_for_frames(ticket, POLL_GAP_MS);
     }
 }
 

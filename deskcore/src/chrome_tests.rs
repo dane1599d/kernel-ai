@@ -35,6 +35,7 @@ fn painted_in(desk: &Desk, theme: Option<&Theme>) -> Image {
         chat: &crate::chat::Chat::default(),
         start: None,
         ask: None,
+        preview: None,
         now_ms: 0,
     };
     painter.paint(

@@ -454,6 +454,11 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::app_settings_tests::APPS);
     }
+    // Notes, for the saved text size to reach an app's window.
+    if test == SelfTest::DeskAppearance {
+        plan.push('\n');
+        plan.push_str(crate::appearance_tests::NOTES);
+    }
     // The app whose routes are `desktop` and `fetch`: `with_updated` planned
     // `fetch` before the shell already.
     if test == SelfTest::NetGrant {

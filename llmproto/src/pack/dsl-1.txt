@@ -1,7 +1,5 @@
 ## Rhai (for script)
 let pct = a * 100 / b;   // integers only: never 1.5; / rounds down; fixed(4321, 3) is "4.321"
-for x in list { }  for i in 0..n { }   // no while, loop, do, fn, closures or eval
-if a > b { print("yes"); } else { print("no"); }   // braces always; end statements with ;
 "a" + b  print(value)  [1, 2]  a.len()  a[0]  #{a: 1}  m.a  m["a"]  memory().free_mib
 string: len() to_upper() to_lower() trim() contains(t) index_of(t) split(t) replace(a, b)
 array: len() push(x) pop() contains(x) index_of(x) sort() reverse() join(t)
@@ -51,3 +49,4 @@ appearance (theme, text size or motion): appearance_set
 models (list, import or switch the AI model): model_list model_fetch model_use
 apps (build or install a new app): app_build app_install
 net (web, send): net_fetch net_lookup query net_send
+goal (long tasks): goal_set goal_list goal_pause goal_resume goal_cancel

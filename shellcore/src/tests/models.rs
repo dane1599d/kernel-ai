@@ -259,6 +259,7 @@ fn a_model_inverse_reads_back_from_its_word() {
             back: None,
             from: SMALL,
         },
+        Inverse::Fetched { sha: FIXTURE },
     ] {
         let word = inverse_word(Some(inverse));
         assert_eq!(parse_inverse(&word), Some(Some(inverse)), "{word}");
@@ -378,7 +379,7 @@ fn a_typed_download_asks_once_with_its_size_and_host_and_runs_only_on_an_allow()
     // Question 6: the size and the host, before the call that names the model.
     assert!(
         reply.text.contains(
-            "Download 12.0 MiB from models.kai.test with model_fetch(\"net\", \"fixture-dl\")? It has no undo."
+            "Download 12.0 MiB from models.kai.test with model_fetch(\"net\", \"fixture-dl\")? It brings gigabytes; undo removes it."
         ),
         "{reply:?}"
     );
@@ -427,7 +428,7 @@ fn the_ai_downloads_a_named_or_the_recommended_model_after_one_ask() {
         assert_eq!(reply.confirm, Some(1), "{request}: {reply:?}");
         assert!(
             reply.text.contains(
-                "Download 12.0 MiB from models.kai.test with model_fetch(\"net\", \"fixture-dl\")? It has no undo."
+                "Download 12.0 MiB from models.kai.test with model_fetch(\"net\", \"fixture-dl\")? It brings gigabytes; undo removes it."
             ),
             "{request}: {reply:?}"
         );
@@ -470,6 +471,7 @@ fn an_added_download_says_so_and_opens_on_deny() {
         "{reply:?}"
     );
     assert!(!reply.text.contains("It has no undo"), "{reply:?}");
+    assert!(!reply.text.contains("gigabytes"), "{reply:?}");
     let disk = r#"{"name":"model_fetch","arguments":{"source":"disk","name":"fixture-dl"}}"#;
     host.calls.borrow_mut().push_back(call(disk));
     let reply = shell.eval("import fixture-dl from the attached disk");
@@ -546,4 +548,220 @@ fn a_models_line_that_is_not_right_says_what_is_and_a_variable_stays_rhai() {
     shell.eval("let models = 3");
     assert_eq!(shell.eval("models"), ok("3"));
     assert!(host.model_requests.borrow().is_empty());
+}
+
+/// What undo says once `updated` removed a fetched model.
+const UNFETCHED: &str = "Undone: the fetched model removed for good (no undo brings it back); its space frees in a moment";
+
+// The undo of `model_fetch`: `updated` removes the blob it brought, or stops
+// its download; refused while that blob runs or is on trial; no redo.
+
+/// The AI's import of the attached disk's model, allowed: logged with its undo.
+fn imported(host: &FakeHost, shell: &mut Shell) {
+    let fetch = r#"{"name":"model_fetch","arguments":{"source":"disk"}}"#;
+    host.calls.borrow_mut().push_back(call(fetch));
+    let asked = shell.eval("please import the model from the attached disk");
+    let id = asked.confirm.expect("the import asks");
+    let once = host.mint(id, "model_fetch(\"disk\")");
+    let answered = shell.eval(&format!("answer {id} allow once={once}"));
+    assert!(answered.ok, "{answered:?}");
+    let log = shell.eval("log actlog").text;
+    assert!(
+        log.contains(&format!("inv=fetched:{}", hex(&FIXTURE))),
+        "{log}"
+    );
+    host.models.borrow_mut().store.blobs.push(Stored {
+        sha256: FIXTURE,
+        length: 4096,
+    });
+}
+
+/// `undo` of a fetch, which asks first, answered yes.
+fn removed(shell: &mut Shell) -> Reply {
+    let asked = shell.eval("undo");
+    assert!(
+        asked.ok && asked.text.contains("for good? No undo brings it back. y/n"),
+        "{asked:?}"
+    );
+    shell.eval("y")
+}
+
+fn stored(host: &FakeHost, sha: [u8; 32]) -> bool {
+    host.models
+        .borrow()
+        .store
+        .blobs
+        .iter()
+        .any(|b| b.sha256 == sha)
+}
+
+#[test]
+fn undo_of_an_import_removes_the_blob_and_never_fetches_again() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    imported(&host, &mut shell);
+    assert_eq!(removed(&mut shell), ok(UNFETCHED));
+    assert_eq!(
+        host.model_requests.borrow().last(),
+        Some(&format!("models remove {}", hex(&FIXTURE)))
+    );
+    assert!(!stored(&host, FIXTURE));
+    // Its redo has no inverse: undo again never brings the gigabytes back.
+    let before = host.model_requests.borrow().len();
+    let again = shell.eval("undo");
+    assert!(
+        !again.ok && again.text.contains("Can't redo removing model"),
+        "{again:?}"
+    );
+    let after = host.model_requests.borrow()[before..].to_vec();
+    assert!(
+        !after
+            .iter()
+            .any(|r| r.starts_with("models import") || r.starts_with("models download")),
+        "{after:?}"
+    );
+}
+
+#[test]
+fn undo_is_refused_while_the_fetched_model_runs_or_is_on_trial() {
+    for (running, next, words) in [
+        (Some(FIXTURE), None, "it is the model running"),
+        (
+            Some(QWEN),
+            Some(FIXTURE),
+            "it is on trial for the next restart",
+        ),
+    ] {
+        let host = FakeHost::new();
+        let mut shell = shell(&host);
+        imported(&host, &mut shell);
+        {
+            let mut m = host.models.borrow_mut();
+            m.store.running = running;
+            m.store.next = next;
+        }
+        let refused = removed(&mut shell);
+        assert!(
+            !refused.ok && refused.text.contains(words),
+            "{words}: {refused:?}"
+        );
+        assert!(stored(&host, FIXTURE), "{words}: the blob stays");
+        // Once it is neither, the same entry undoes.
+        {
+            let mut m = host.models.borrow_mut();
+            m.store.running = Some(QWEN);
+            m.store.next = None;
+        }
+        assert_eq!(removed(&mut shell), ok(UNFETCHED));
+        assert!(!stored(&host, FIXTURE), "{words}");
+    }
+}
+
+/// A typed download of a signed model is logged with its undo, which asks
+/// `updated` to remove it: `updated` stops it if it is still downloading.
+#[test]
+fn undo_of_a_download_asks_updated_to_stop_or_remove_it() {
+    const DOWNLOAD: [u8; 32] = [0xee; 32];
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    host.models.borrow_mut().signed.push(signed(
+        "fixture-dl",
+        "Fixture download",
+        DOWNLOAD,
+        12_587_009,
+    ));
+    shell.eval("models download fixture-dl");
+    let once = host.mint(1, "model_fetch(\"net\", \"fixture-dl\")");
+    let answered = shell.eval(&format!("answer 1 allow once={once}"));
+    assert!(answered.ok, "{answered:?}");
+    let log = shell.eval("log actlog").text;
+    assert!(
+        log.contains(&format!(
+            "res=model-store before=- after=fixture-dl inv=fetched:{}",
+            hex(&DOWNLOAD)
+        )),
+        "{log}"
+    );
+    assert_eq!(removed(&mut shell), ok(UNFETCHED));
+    assert_eq!(
+        host.model_requests.borrow().last(),
+        Some(&format!("models remove {}", hex(&DOWNLOAD)))
+    );
+}
+
+/// A fetch the line asked for asks for its gigabytes, with its undo said; one
+/// the model added keeps consent's own reason (A-core, on the undo's wording).
+#[test]
+fn a_fetch_asks_for_its_gigabytes_but_an_added_one_says_why_it_was_added() {
+    let fetch = r#"{"name":"model_fetch","arguments":{"source":"disk"}}"#;
+    let host = FakeHost::new();
+    let mut lined = shell(&host);
+    host.calls.borrow_mut().push_back(call(fetch));
+    let asked = lined.eval("please import the model from the attached disk");
+    assert!(asked.text.contains("undo removes it"), "{asked:?}");
+    assert!(!asked.text.contains("no undo"), "{asked:?}");
+    let host = FakeHost::new();
+    let mut other = shell(&host);
+    host.calls.borrow_mut().push_back(call(fetch));
+    let added = other.eval("tidy up my desktop");
+    assert!(
+        added.text.contains("The request did not ask for it."),
+        "{added:?}"
+    );
+    assert!(!added.text.contains("gigabytes"), "{added:?}");
+}
+
+/// Review of #1157 (HIGH): an undo that deletes a model for good asks the
+/// person, whoever asked for it; a no keeps the model, and so does Kai's own
+/// `undo` call until the person answers.
+#[test]
+fn undo_of_a_fetch_asks_the_person_even_when_kai_asks_for_it() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    imported(&host, &mut shell);
+    let asked = shell.eval("undo");
+    assert!(
+        asked.text.contains("Remove model fixture for good?"),
+        "{asked:?}"
+    );
+    shell.eval("n");
+    assert!(stored(&host, FIXTURE), "a no keeps it");
+    host.calls
+        .borrow_mut()
+        .push_back(call(r#"{"name":"undo","arguments":{"steps":1}}"#));
+    let kai = shell.eval("undo the last thing");
+    assert!(stored(&host, FIXTURE), "Kai's undo removed it: {kai:?}");
+    assert!(
+        !host
+            .model_requests
+            .borrow()
+            .iter()
+            .any(|r| r.starts_with("models remove")),
+        "{kai:?}"
+    );
+}
+
+/// Review of #1157 (MEDIUM): after an undo removed a fetched model, a bare
+/// `undo` says it has nothing to redo, and an older entry stays as it is.
+#[test]
+fn a_second_undo_after_a_removal_does_not_reach_an_older_entry() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    host.calls.borrow_mut().push_back(call(
+        r#"{"name":"model_use","arguments":{"name":"qwen3-0.6b"}}"#,
+    ));
+    shell.eval("please switch the model to qwen3-0.6b");
+    assert_eq!(host.models.borrow().store.next, Some(SMALL));
+    imported(&host, &mut shell);
+    assert_eq!(removed(&mut shell), ok(UNFETCHED));
+    let again = shell.eval("undo");
+    assert!(
+        !again.ok && again.text.contains("Can't redo removing model fixture"),
+        "{again:?}"
+    );
+    assert_eq!(
+        host.models.borrow().store.next,
+        Some(SMALL),
+        "the switch stays"
+    );
 }

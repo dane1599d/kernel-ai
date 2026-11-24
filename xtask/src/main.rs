@@ -1,8 +1,8 @@
 //! Build and run tool for Kernel AI.
 //!
-//! cargo xtask build [--release] [--spikes]
+//! cargo xtask build [--release] [--spikes] [--out DIR]
 //! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--cpus N] [--mem SIZE] [--llm IP:PORT] [--model NAME] [--edit] [--gpu] [--model-disk PATH | --local ID [--store DIR]] [--workload A|B|C [--seed N]]
-//! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS] [--cpus N] [--mem SIZE] [--shard K/N]
+//! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS] [--cpus N] [--mem SIZE] [--shard K/N] [--prebuilt DIR --prebuilt-sha SHA]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //! (`--accel wsl` on Windows: QEMU with KVM inside WSL2; see wsl/launch.rs)
 //! cargo xtask smoke   (the live, edit and boot manifest scenarios on the host only, no QEMU)
@@ -75,6 +75,7 @@ mod models;
 mod notices;
 mod options;
 mod pkgrepo;
+mod prebuilt;
 mod qemu;
 mod query_eval;
 mod relay;
@@ -158,10 +159,13 @@ fn execute(options: &Options) -> Result<(), String> {
         boot_smoke::run(&root, &versions)?;
         return buildsvc::verify::unchanged(&root, &before);
     }
-    let kernel = build_kernel(&root, options)?;
+    // Built here, or the build job's (`--prebuilt`) when they check out.
+    let prebuilt::Built {
+        kernel,
+        programs,
+        versions,
+    } = prebuilt::obtain(&root, options)?;
     floatguard::check(&kernel)?;
-    let programs = userbuild::build_user(&root, options)?;
-    let versions = components::build_for_tests(&root)?;
     if options.task == Task::Build {
         println!("xtask: kernel built at {}", kernel.display());
         println!("xtask: {} user programs built", programs.len());
@@ -558,6 +562,9 @@ fn execute(options: &Options) -> Result<(), String> {
             }
             if case.powers_off {
                 args.push("-no-shutdown".into());
+            }
+            if case.net_polled {
+                qemu::net_without_vectors(&mut args);
             }
             if case.screen.is_some() {
                 screen::clear(&target_dir);

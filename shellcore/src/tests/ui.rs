@@ -18,7 +18,7 @@ const VIEW: &str = "windows: [w2] notes (focused)  [w1] terminal \"kai>\"\n\
                     w2: [t1] textbox \"Search\"  [b2] button \"New note\"";
 
 /// A desktop with Notes focused over the terminal.
-fn desktop(host: &FakeHost) {
+pub(super) fn desktop(host: &FakeHost) {
     *host.ui_answer.borrow_mut() = Some(Box::new(|call: &UiCall| match call {
         UiCall::Windows => Ok(String::from("w2\tnotes\tNotes\t1\nw1\tterminal\tkai>\t0")),
         UiCall::View(_) => Ok(String::from(VIEW)),
@@ -135,7 +135,8 @@ fn close_asks_and_undo_reopens_and_open_runs_and_undo_closes() {
         host.ui_calls.borrow().last(),
         Some(&UiCall::Open {
             app: "notes".into(),
-            arg: None
+            arg: None,
+            person: false
         })
     );
     let opened = shell.eval("open notes");
@@ -170,6 +171,131 @@ fn opening_an_app_already_open_only_focuses_it_and_undo_never_closes_it() {
     let calls = host.ui_calls.borrow();
     assert_eq!(calls.last(), Some(&UiCall::Refocus("w1".into())));
     assert!(!calls.iter().any(|c| matches!(c, UiCall::Close(_))));
+}
+
+/// Who drives an open decides how its window takes the keys: the person's own
+/// `open notes` (typed, or the Apps sheet's line) is theirs (`person`: `ui
+/// activate`, no outline), and a model's `ui_open` (a script's too: the same binding) is the
+/// agent's (`ui focus`, with its outline).
+#[test]
+fn the_persons_open_is_theirs_and_the_agents_is_not() {
+    let open = r#"{"name":"ui_open","arguments":{"app":"notes"}}"#;
+    let opens = |host: &FakeHost| -> Vec<bool> {
+        host.ui_calls
+            .borrow()
+            .iter()
+            .filter_map(|c| match c {
+                UiCall::Open { person, .. } => Some(*person),
+                _ => None,
+            })
+            .collect()
+    };
+    // The person's own line: no model is asked.
+    let (host, mut shell) = with_calls(vec![]);
+    host.lists_services.set(true);
+    *host.services.borrow_mut() = vec![(String::from("notes-window"), true)];
+    desktop(&host);
+    assert!(shell.eval("open notes").ok);
+    assert_eq!(opens(&host), [true]);
+    // The model's call for the same words in a longer line.
+    let (host, mut shell) = with_calls(vec![call(open)]);
+    host.lists_services.set(true);
+    *host.services.borrow_mut() = vec![(String::from("notes-window"), true)];
+    desktop(&host);
+    let reply = shell.eval("please open the notes app");
+    assert!(reply.ok, "{reply:?}");
+    assert_eq!(opens(&host), [false]);
+}
+
+/// A refused focus on a window that did open (a private one, a run the person
+/// took over) is no failure: the answer says it opened without the keys, and it
+/// is a change `undo` closes.
+const OPENED_NO_KEYS: &str = "opened w5 without the keys: stopped: you took over";
+
+#[test]
+fn an_open_whose_focus_was_refused_is_still_a_change_undo_can_close() {
+    use crate::ui::opened_text;
+    assert_eq!(opened_text("w5", Ok(())), "opened w5");
+    assert_eq!(
+        opened_text("w5", Err(String::from("stopped: you took over"))),
+        OPENED_NO_KEYS
+    );
+    let open = r#"{"name":"ui_open","arguments":{"app":"notes"}}"#;
+    let (host, mut shell) = with_calls(vec![call(open)]);
+    desktop(&host);
+    *host.ui_answer.borrow_mut() = Some(Box::new(|call: &UiCall| match call {
+        UiCall::Open { .. } => Ok(String::from(OPENED_NO_KEYS)),
+        UiCall::Close(window) => Ok(window.clone()),
+        _ => Ok(String::new()),
+    }));
+    let reply = shell.eval("please open the notes app");
+    assert_eq!(reply, ok("Done: window notes open (was closed). undo"));
+    // The window may hold work: undo asks, and then closes that window.
+    assert!(shell.eval("undo").text.ends_with("anyway? y/n"));
+    assert!(shell.eval("y").ok);
+    assert_eq!(
+        host.ui_calls.borrow().last(),
+        Some(&UiCall::Close("w5".into()))
+    );
+}
+
+/// Undo of a closed window whose reopening is refused the keys (a private one)
+/// is done, and the redo closes what it opened.
+#[test]
+fn undoing_a_close_whose_reopening_has_no_keys_is_done_and_redoable() {
+    let close = r#"{"name":"window_close","arguments":{"window":"notes"}}"#;
+    let (host, mut shell) = with_calls(vec![call(close)]);
+    desktop(&host);
+    *host.ui_answer.borrow_mut() = Some(Box::new(|call: &UiCall| match call {
+        UiCall::Windows => Ok(String::from("w2	notes	Notes	1")),
+        UiCall::Open { .. } => Ok(String::from(OPENED_NO_KEYS)),
+        UiCall::Close(window) => Ok(window.clone()),
+        _ => Ok(String::new()),
+    }));
+    assert!(shell.eval("close notes").confirm.is_some());
+    let once = host.mint(1, "window_close(\"notes\")");
+    assert!(shell.eval(&format!("answer 1 allow once={once}")).ok);
+    let undone = shell.eval("undo");
+    assert!(undone.ok, "{undone:?}");
+    assert_eq!(
+        host.ui_calls.borrow().last(),
+        Some(&UiCall::Open {
+            app: "notes".into(),
+            arg: None,
+            person: false
+        })
+    );
+    // Its redo is a close of the window it opened, which asks first.
+    let redo = shell.eval("undo");
+    assert!(redo.text.ends_with("anyway? y/n"), "{redo:?}");
+}
+
+/// The person's open that waited on consent (a call decided after a window's
+/// content was read asks) is still theirs when the answer comes.
+#[test]
+fn a_persons_open_that_waits_for_consent_still_runs_as_theirs() {
+    let (host, mut shell) = with_calls(vec![]);
+    host.lists_services.set(true);
+    *host.services.borrow_mut() = vec![(String::from("notes-window"), true)];
+    desktop(&host);
+    shell.steered = Some("ui");
+    let asked = shell.eval("open notes");
+    assert!(asked.confirm.is_some(), "{asked:?}");
+    assert!(host.ui_calls.borrow().is_empty());
+    shell.steered = None;
+    let once = host.mint(1, "ui_open(\"notes\")");
+    let done = shell.eval(&format!("answer 1 allow once={once}"));
+    assert!(done.ok, "{done:?}");
+    let opens: Vec<bool> = host
+        .ui_calls
+        .borrow()
+        .iter()
+        .filter_map(|c| match c {
+            UiCall::Open { person, .. } => Some(*person),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(opens, [true]);
 }
 
 #[test]

@@ -12,7 +12,8 @@ pub struct DisplayInfo {
     pub stride: u32,
     /// [`FORMAT_XRGB8888`].
     pub format: u32,
-    /// The screen's size in mm from its EDID, 0 when unknown.
+    /// The screen's size in mm from its EDID, 0 when unknown (always on
+    /// virtio-gpu, whose EDID size is made up).
     pub width_mm: u32,
     pub height_mm: u32,
     /// Pages in the `Shm`: `stride * height` rounded up to 4 KiB.

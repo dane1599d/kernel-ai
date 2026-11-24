@@ -260,7 +260,13 @@ fn input_for_a_window_goes_to_its_pool_with_its_text() {
         usage,
         down,
     };
-    client.apply(&[key(0xE1, true), key(0x04, true), key(0x04, false)]);
+    // As the desk sends them: the modifiers first, then the key that changed them.
+    client.apply(&[
+        Effect::Modifiers(1),
+        key(0xE1, true),
+        key(0x04, true),
+        key(0x04, false),
+    ]);
     let posts = client.take_posts();
     let typed: Vec<(u32, Kind, u16, i32, &[u8])> = posts
         .iter()
@@ -299,7 +305,13 @@ fn input_for_a_window_goes_to_its_pool_with_its_text() {
     let modifiers = Event::decode(Interface::Seat, sent[0].1, &sent[0].2);
     assert_eq!((sent[0].0, modifiers), (7, Ok(Event::Modifiers(1))));
     // Ctrl held: the key comes with no text.
-    client.apply(&[key(0xE1, false), key(0xE0, true), key(0x06, true)]);
+    client.apply(&[
+        Effect::Modifiers(0),
+        key(0xE1, false),
+        Effect::Modifiers(2),
+        key(0xE0, true),
+        key(0x06, true),
+    ]);
     let ctrl_c = client.take_posts();
     assert!(matches!(ctrl_c[2].1, Ring::Input { len: 0, .. }));
     let held: Vec<i32> = ctrl_c
@@ -698,11 +710,12 @@ fn open_window(client: &mut Client, desk: &mut Desk) -> crate::desk::WindowId {
     window
 }
 
-/// #869's review: a window a client opens takes the focus from another
-/// client's window, and that client hears its focus_out: the focus moves of
-/// a client's own requests are shared with every other client.
+/// #869's review, as the activation rule has it: a window a client opens does
+/// not take the focus from another client's window (`Desk::may_activate`); when
+/// the person's own action moves it there (the shell's `ui focus`), the client
+/// that lost it hears its focus_out.
 #[test]
-fn a_window_opened_takes_the_focus_from_another_clients_window() {
+fn a_window_given_the_focus_takes_it_from_another_clients_window() {
     let mut desk = Desk::new(1280, 800);
     let mut a = Client::new(1, "a");
     let mut b = Client::new(2, "b");
@@ -712,10 +725,16 @@ fn a_window_opened_takes_the_focus_from_another_clients_window() {
         a.take_shared()
             .contains(&Effect::Focus(Focus::Window(first)))
     );
-    open_window(&mut b, &mut desk);
-    let shared = b.take_shared();
-    assert!(!shared.is_empty(), "the new window's focus is shared");
-    a.apply(&shared);
+    let second = open_window(&mut b, &mut desk);
+    assert_eq!(
+        desk.focus(),
+        Focus::Window(first),
+        "the new window asked in vain"
+    );
+    assert!(b.take_shared().is_empty());
+    let mut moved = Vec::new();
+    desk.set_focus(Focus::Window(second), &mut moved);
+    a.apply(&moved);
     // seat.focus_out (opcode 1 on the seat, object 7).
     let sent = events(&mut a);
     assert!(
@@ -724,5 +743,15 @@ fn a_window_opened_takes_the_focus_from_another_clients_window() {
     );
 }
 
+/// Which new window takes the keyboard.
+mod focus;
+/// What a client that never commits or never reads may make `desktop` keep.
+mod limits;
+/// The modifiers every client is told.
+mod mods;
+/// Pools `desktop` lets go.
+mod pools;
 /// The wheel and the buffer scale (lane G, 2026-11-18).
 mod scale;
+/// What a client's sizes may be.
+mod sizes;

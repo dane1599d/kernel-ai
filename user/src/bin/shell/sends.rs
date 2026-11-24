@@ -45,11 +45,14 @@ pub fn now_ms() -> u64 {
 /// reported, without its countdowns, and the desktop it went to.
 pub fn give(shell: &mut Shell, system: &System, shown: &mut SendsShown, took: Taken) {
     start_of_unit();
-    // A desktop that restarted has no list: it is told again.
+    // A desktop that restarted has no list, and lost any undo clicked for
+    // a held send: every held send ends unsent, and the list is told again.
+    let pid = system.desktop_pid.get();
     if shown
         .as_ref()
-        .is_some_and(|(pid, _)| *pid != system.desktop_pid.get())
+        .is_some_and(|(was, _)| *was != pid && *was != 0)
     {
+        shell.end_held_sends_on_restart();
         *shown = None;
     }
     if took == Taken::Unanswered {

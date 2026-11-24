@@ -24,8 +24,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "appabi-spike"
-version = "0.0.0"
+name = "appabi"
+version = "0.1.0-dev"
 
 [[package]]
 name = "arbitrary"
@@ -701,7 +701,7 @@ name = "s03-1-oracle"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "appabi-spike",
+ "appabi",
  "wasmi",
  "wasmtime",
  "wit-component 0.262.0",

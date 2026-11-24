@@ -97,6 +97,9 @@ pub fn init(syscall_entry: u64) -> Result<Features, &'static str> {
     if !vector.xsave {
         return Err("cpu: no XSAVE, which ring 3's x87, SSE and AVX state needs");
     }
+    // SAFETY: reading EFER has no side effects.
+    let old_efer = unsafe { Msr::new(MSR_EFER).read() };
+    cpufeat::nx_enabled(old_efer)?;
     let old_cr4 = read_cr4();
     if old_cr4 & CR4_LA57 != 0 {
         return Err("cpu: 5-level paging is on; the kernel assumes 4 levels");
@@ -119,8 +122,7 @@ pub fn init(syscall_entry: u64) -> Result<Features, &'static str> {
     unsafe {
         core::arch::asm!("mov cr0, {}", in(reg) cr0, options(nostack, preserves_flags));
         core::arch::asm!("mov cr4, {}", in(reg) cr4, options(nostack, preserves_flags));
-        let mut efer = Msr::new(MSR_EFER);
-        efer.write(efer.read() | EFER_SCE);
+        Msr::new(MSR_EFER).write(old_efer | EFER_SCE);
         Msr::new(MSR_LSTAR).write(syscall_entry);
         // No 32-bit code segment exists, so compatibility mode is unreachable;
         // CSTAR still points at the 64-bit entry rather than at nothing.

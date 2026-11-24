@@ -107,6 +107,9 @@ pub fn call_failed(error: kabi::Error) -> SendFailed {
 /// is ended unsent (`Shell::end_unchecked_sends`).
 pub const UNCHECKED_MS: u64 = 60_000;
 /// Why: code's words, after "Not sent to <host>: ".
+/// Why every held send ends when the desktop restarts
+/// (`Shell::end_held_sends_on_restart`): code's words.
+pub const RESTART_WHY: &str = "the desktop restarted, so its undo could not be checked";
 pub const UNCHECKED_WHY: &str =
     "the desktop did not answer for a minute, so its undo could not be checked";
 

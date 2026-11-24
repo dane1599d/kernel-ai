@@ -40,7 +40,7 @@ use fsproto::{How, MAX_DATA, Reply, Request};
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, Rights};
 use kainet::chunks::{Chunks, MAX_LIST};
 use kainet::download::{self as dl, Answer, Download, DownloadError, Step};
-use kainet::http::{Fetch, HttpError, Limits, Method, TlsConnect, Url};
+use kainet::http::{Fetch, HttpError, Keep, Limits, Method, TlsConnect, Url};
 use kaituf::meta::TargetFile;
 use modelchan::fetch::{self, Job, Machine, PARTIAL_IN_STORE};
 use rustls::ClientConfig;
@@ -133,8 +133,8 @@ impl ModelPartial {
     /// The last error, with what `kaifs` said.
     fn why(&self, error: &DownloadError) -> String {
         match &self.0.why {
-            Some(why) => format!("{error:?}: {why}"),
-            None => format!("{error:?}"),
+            Some(why) => format!("{}: {why}", error.plain()),
+            None => error.plain(),
         }
     }
 }
@@ -146,11 +146,17 @@ enum Phase {
     Copying(u64),
 }
 
+/// The chunks' connections: kept between them, one a host (the resolve host
+/// and its storage host), and only while the download fetches.
+type ChunkConnect = Keep<TlsConnect<NetDial>>;
+
 /// A model download under way.
 pub struct Running {
     job: Job,
-    dest: Handle,
-    config: Arc<ClientConfig>,
+    /// The chunks' connections, kept between chunks while this download
+    /// fetches: dropped once its chunks are done, on any failed chunk, and with
+    /// the download; never another's.
+    connect: ChunkConnect,
     partial: ModelPartial,
     phase: Phase,
     started_ns: u64,
@@ -203,10 +209,17 @@ pub fn start(
             return Err(why);
         }
     };
+    let connect = Keep::new(TlsConnect {
+        config,
+        dial: NetDial {
+            dest,
+            bulk: true,
+            deadline_ns: 0,
+        },
+    });
     Ok(Running {
         job,
-        dest,
-        config,
+        connect,
         partial,
         phase: Phase::Fetching(Box::new(run)),
         started_ns: sys::time_ns(),
@@ -271,6 +284,11 @@ impl Running {
         &self.job.id
     }
 
+    /// The model it fetches.
+    pub fn sha256(&self) -> Sha256 {
+        self.job.sha256
+    }
+
     /// `ok downloading <bytes> <of>`, then `ok storing <bytes> <of>`.
     pub fn progress(&self) -> String {
         let length = self.job.length;
@@ -303,15 +321,14 @@ impl Running {
         };
         let job = &self.job;
         let url = Url::parse(&job.source.url()).map_err(|why| format!("the source: {why}"))?;
+        // Each chunk has its own deadline: a new connection is dialed under
+        // it, and every kept one waits no longer than it.
         let deadline_ns = sys::time_ns().saturating_add(CHUNK_NS);
-        let mut connect = TlsConnect {
-            config: self.config.clone(),
-            dial: NetDial {
-                dest: self.dest,
-                bulk: true,
-                deadline_ns,
-            },
-        };
+        let connect = &mut self.connect;
+        connect.inner_mut().dial.deadline_ns = deadline_ns;
+        for stream in connect.kept_mut() {
+            stream.io_mut().set_deadline(deadline_ns);
+        }
         let allow = |host: &str, port: u16| job.reaches(host, port);
         let clock = || sys::time_ns();
         let request = Fetch {
@@ -320,7 +337,7 @@ impl Running {
             clock: &clock,
         };
         let mut fetcher = |range, sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>| {
-            let got = request.run(&mut connect, Method::Get, &url, Some(range), sink)?;
+            let got = request.run(&mut *connect, Method::Get, &url, Some(range), sink)?;
             Ok(Answer::from(&got))
         };
         match run.step(&mut self.partial, &mut fetcher) {
@@ -330,6 +347,7 @@ impl Running {
             }
             Ok(Step::Done(report)) => {
                 self.report = report;
+                self.connect.drop_all();
                 self.begin_copy(store)
             }
             Err(DownloadError::Whole) => {
@@ -349,6 +367,8 @@ impl Running {
     /// or 503 says. A host the job may not reach, or a status that says the
     /// file is not there, is not tried again.
     fn retry(&mut self, error: &DownloadError) -> Result<(), String> {
+        // Nothing kept waits out the pause: the next try dials afresh.
+        self.connect.drop_all();
         self.tries += 1;
         let why = self.partial.why(error);
         let lasting = match error {
@@ -473,14 +493,13 @@ impl Running {
 
     /// How the download went, for the log and the case: the bytes fetched
     /// this run over the whole time, the check and the copy included, in
-    /// MB/s. `kainet` closes each connection, so every chunk is a TLS
-    /// connection of its own.
+    /// MB/s. The chunks' connections are kept between them, one a host.
     fn line(&self, elapsed_ns: u64) -> String {
         let kept = (self.report.kept as u64).saturating_mul(fetch::MODEL_CHUNK);
         let bytes = self.job.length.saturating_sub(kept);
         let tenths = u128::from(bytes) * 10_000 / u128::from(elapsed_ns);
         format!(
-            "updated: downloaded {} ({}), {} bytes, in {} ms: {}.{} MB/s ({} chunks fetched, {} kept, a TLS connection each)",
+            "updated: downloaded {} ({}), {} bytes, in {} ms: {}.{} MB/s ({} chunks fetched, {} kept, on kept connections)",
             self.job.id,
             &hex(&self.job.sha256)[..12],
             self.job.length,
@@ -490,6 +509,17 @@ impl Running {
             self.report.fetched,
             self.report.kept
         )
+    }
+
+    /// Stops the run for good, the undo of its `model_fetch`: an open copy's
+    /// action is aborted, and what `.partial/` holds goes too, while its
+    /// handle is still open; only then is the handle closed, once.
+    pub fn cancel(&mut self, store: Handle) {
+        if matches!(self.phase, Phase::Copying(_)) {
+            let _ = folders::ask(store, &Request::Abort);
+        }
+        self.remove_partial();
+        self.partial.close();
     }
 
     /// Drops the run: an open copy's action is aborted; what `.partial/`

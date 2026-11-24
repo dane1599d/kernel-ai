@@ -404,20 +404,35 @@ fn rust_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
-/// ADR 0005 §8's lint: the toolkit, the compositor and the apps take colours
-/// from tokens only. (The renderer `gfx2d` blends with channel masks, and the
-/// kernel console is `console` here, so neither is scanned.)
-#[test]
-fn no_colour_literal_outside_look() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+/// The places colours may only come from tokens (ADR 0005 §8): the toolkit, its
+/// painter, the compositor and its geometry, the apps and what hosts their
+/// windows. (The renderer `gfx2d` blends with channel masks, and the kernel
+/// console is `console` here, so neither is scanned.) Directories, each walked
+/// whole, then single files.
+const LINTED_DIRS: [&str; 8] = [
+    "uikit",
+    "uipaint",
+    "deskcore",
+    "deskgeom",
+    "components",
+    "apps",
+    "user/src/bin/desktop",
+    "user/src/bin/comphost",
+];
+const LINTED_FILES: [&str; 2] = ["user/src/bin/desktop.rs", "user/src/bin/comphost.rs"];
+
+/// Every colour literal under `root`'s linted places, as `path: literal`.
+fn colour_literals(root: &Path) -> Vec<String> {
     let mut files = Vec::new();
-    for dir in ["uikit", "deskcore", "components", "user/src/bin/desktop"] {
+    for dir in LINTED_DIRS {
         rust_files(&root.join(dir), &mut files);
     }
-    let one = root.join("user/src/bin/desktop.rs");
-    if one.exists() {
-        files.push(one);
-    }
+    files.extend(
+        LINTED_FILES
+            .iter()
+            .map(|f| root.join(f))
+            .filter(|f| f.exists()),
+    );
     let mut bad = Vec::new();
     for file in files {
         let text = std::fs::read_to_string(&file).unwrap_or_default();
@@ -425,7 +440,54 @@ fn no_colour_literal_outside_look() {
             bad.push(format!("{}: {lit}", file.display()));
         }
     }
+    bad
+}
+
+/// ADR 0005 §8's lint: the toolkit, the compositor and the apps take colours
+/// from tokens only.
+#[test]
+fn no_colour_literal_outside_look() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let bad = colour_literals(&root);
     assert!(bad.is_empty(), "colour literals outside look: {bad:?}");
+}
+
+/// The scan reaches every linted place: a literal planted in an app, the
+/// painter, the geometry and the comphost is reported in each.
+#[test]
+fn a_literal_planted_in_any_linted_place_is_reported() {
+    let root = std::env::temp_dir().join(format!("kai-lint-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let places = [
+        "apps/settings-ui/src/lib.rs",
+        "uipaint/src/lib.rs",
+        "deskgeom/src/lib.rs",
+        "user/src/bin/comphost/ui.rs",
+        "user/src/bin/comphost.rs",
+        "components/notes-ui/src/lib.rs",
+    ];
+    for place in places {
+        let path = root.join(place);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "const C: u32 = 0xFF9F5A1B;
+",
+        )
+        .unwrap();
+    }
+    let found: Vec<String> = colour_literals(&root)
+        .iter()
+        .map(|f| f.replace(std::path::MAIN_SEPARATOR, "/"))
+        .collect();
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(found.len(), places.len(), "{found:?}");
+    for place in places {
+        assert!(
+            found.iter().any(|f| f.contains(place)),
+            "{place}: {found:?}"
+        );
+    }
 }
 
 #[test]
