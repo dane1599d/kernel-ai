@@ -214,6 +214,12 @@ pub fn slot_of_pid(pid: u64) -> Option<usize> {
     with_table(|table| table.iter().position(|p| p.live() && p.pid == pid))
 }
 
+/// Whether `pid` runs: the kernel (0) always, any other while a live process
+/// has it (PROC_ALIVE).
+pub fn alive(pid: u64) -> bool {
+    pid == 0 || slot_of_pid(pid).is_some()
+}
+
 /// Whether the live process `pid` has printed anything yet.
 pub fn has_written(pid: u64) -> bool {
     with_table(|table| table.iter().position(|p| p.live() && p.pid == pid))

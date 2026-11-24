@@ -21,7 +21,7 @@
 //! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH |
 //! | 140-149 | C, components | EDIT_CALL (lane E), CARD_READY |
 //! | 150-159 | V, virtual machines (P6) | |
-//! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET |
+//! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET, PROC_ALIVE 166 |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
 //! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL, APP_CALL |
 //! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE, PART_PEER_NAME |
@@ -575,6 +575,15 @@ pub const QUOTA_LOWER_ONLY: u64 = 1 << 0;
 /// shows it. Permission to make the shell, the supervisor, the model service or
 /// `desktop` background; Busy while a tuning trial runs. Needs SUPERVISE.
 pub const PROC_CLASS_SET: u64 = 164;
+/// `proc_alive(pid) -> 0|1`: whether a live process has `pid` (1) or none
+/// does any more (0); pid 0, the kernel, always runs, as for
+/// [`PART_PEER_ALIVE`]. For a holder of many clients' pids (`desktop`'s
+/// windows) to learn which have ended without a table of every process:
+/// needs [`super::cap::DISPLAY`] or [`super::cap::SUPERVISE`] (which LIST
+/// already needs), Permission otherwise, so no app watches when the person's
+/// processes start and end (ADR 0001). Numbered at merge, M's block; 165 is
+/// SHM_SIZE's (#1141).
+pub const PROC_ALIVE: u64 = 166;
 
 // ---- U, 170-179 ----
 
