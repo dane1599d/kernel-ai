@@ -110,8 +110,8 @@ impl Shell {
                 "the undo took {package} out, as far as is known (pkg could not say: {pkg})"
             ),
         };
-        if let Err(not) = crate::netask::drop_package_grants(host, &package, &why) {
-            host.audit(&format!(
+        if let Err(not) = self.drop_package_grants(&package, &why) {
+            self.host.audit(&format!(
                 "{package}'s network grants were not dropped after its undo: {not}"
             ));
         }
@@ -126,8 +126,8 @@ impl Shell {
             Ok(true) => {}
             Ok(false) => {
                 let why = format!("{package} was not installed before this install");
-                if let Err(not) = crate::netask::drop_package_grants(host, package, &why) {
-                    host.audit(&format!(
+                if let Err(not) = self.drop_package_grants(package, &why) {
+                    self.host.audit(&format!(
                         "{package}'s old network grants were not dropped: {not}"
                     ));
                 }

@@ -250,3 +250,58 @@ fn settings_lists_only_the_grants_that_grant_while_the_drop_is_owed() {
         "a listing writes nothing"
     );
 }
+
+#[test]
+fn a_revoke_while_the_drop_is_owed_writes_the_dropped_view() {
+    let (host, mut shell) = restarted_unread();
+    // The owed drop's own write fails; the revoke's write, of the dropped
+    // view without maps, lands both.
+    host.net_write_fails.set(1);
+    let revoked = shell.settings(SETTINGS_APP, "net-revoke 2", true).unwrap();
+    assert!(revoked.contains("maps.weather.example"), "{revoked}");
+    let disk = host.net_disk.borrow().clone().unwrap();
+    assert!(!disk.contains("object=api.weather.example"), "{disk}");
+    assert!(!disk.contains("object=maps.weather.example"), "{disk}");
+    assert!(!shell.grant_memo.session_stale.get());
+    assert!(audited(&host, "last session's network grants were dropped"));
+    // Its undo puts back maps alone, never last session's api.
+    let undone = shell.eval_console("undo");
+    assert!(undone.ok, "{undone:?}");
+    let disk = host.net_disk.borrow().clone().unwrap();
+    assert!(disk.contains("object=maps.weather.example"), "{disk}");
+    assert!(!disk.contains("object=api.weather.example"), "{disk}");
+}
+
+#[test]
+fn an_owed_drop_whose_write_fails_twice_still_grants_nothing() {
+    let (host, mut shell) = restarted_unread();
+    host.net_write_fails.set(2);
+    for _ in 0..2 {
+        assert_eq!(
+            shell.net_connect("weather", "api.weather.example", CEILING),
+            NetConnect::Asked
+        );
+    }
+    assert!(audited(
+        &host,
+        "the session network grants were not dropped: the disk did not answer"
+    ));
+    assert!(shell.grant_memo.session_stale.get());
+    assert!(!grounds(&host, &shell, "api.weather.example"));
+    assert!(
+        host.net_disk
+            .borrow()
+            .as_deref()
+            .unwrap()
+            .contains("object=api.weather.example"),
+        "neither write landed"
+    );
+    // The disk answers: the third try lands it.
+    assert!(matches!(
+        shell.net_connect("weather", "maps.weather.example", CEILING),
+        NetConnect::Granted(_)
+    ));
+    let disk = host.net_disk.borrow().clone().unwrap();
+    assert!(!disk.contains("object=api.weather.example"), "{disk}");
+    assert!(!shell.grant_memo.session_stale.get());
+}
