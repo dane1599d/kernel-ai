@@ -333,11 +333,18 @@ impl Shell {
             (false, false, false) => (false, crate::panel::FAILED),
         };
         // A send the card allowed is held, not done: its line says so, with
-        // its undo, as the console's does (#1142's review).
-        let held = ran && self.outbox.get(id).is_some();
+        // its undo, as the console's does (#1142's review), made from the
+        // outbox's entry, never the reply's text.
+        let held = match ran {
+            true => self
+                .outbox
+                .get(id)
+                .map(|pending| crate::outbox::held_line(&pending.send.host, agentabi::HOLD_MS, id)),
+            false => None,
+        };
         let line = match (ran, held) {
-            (true, true) => String::from(reply.text.lines().next().unwrap_or("")),
-            (true, false) => self
+            (true, Some(held)) => held,
+            (true, None) => self
                 .done_line
                 .take()
                 .map(|line| crate::panel::without_undo(&line))

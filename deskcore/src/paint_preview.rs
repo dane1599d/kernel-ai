@@ -156,22 +156,26 @@ mod tests {
             let laid = painter.preview_layout(area, slot.preview().unwrap());
             let (rows, total) = (laid.rows, laid.lines.len());
             assert!(rows > 0 && total > rows, "{w}x{h}: {rows} of {total}");
-            assert_eq!(slot.drawn(rows, total), None, "{w}x{h}: the first page");
+            assert_eq!(
+                slot.drawn(rows, &laid.lines),
+                None,
+                "{w}x{h}: the first page"
+            );
             // A jump to the end: the last line, nothing between.
             let preview = slot.preview_mut().unwrap();
             preview.scroll(total as i32, total, rows);
-            assert_eq!(slot.drawn(rows, total), None, "{w}x{h}: jumped");
+            assert_eq!(slot.drawn(rows, &laid.lines), None, "{w}x{h}: jumped");
             // Back to the top, then page by page.
             slot.preview_mut()
                 .unwrap()
                 .scroll(-(total as i32), total, rows);
             let mut read = None;
             for _ in 0..total {
-                read = read.or(slot.drawn(rows, total));
+                read = read.or(slot.drawn(rows, &laid.lines));
                 let page = rows.saturating_sub(1).max(1) as i32;
                 slot.preview_mut().unwrap().scroll(page, total, rows);
             }
-            read = read.or(slot.drawn(rows, total));
+            read = read.or(slot.drawn(rows, &laid.lines));
             assert_eq!(read, Some(5), "{w}x{h}: read through");
         }
     }
