@@ -14,8 +14,8 @@ use core::cell::Cell;
 use core::sync::atomic::{AtomicBool, Ordering};
 use fsproto::{Error, How, Outcome, Reply, Request};
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER, Rights};
-use shellcore::ledger::{Ledger, Undo};
-use shellcore::{FsChange, FsRead, FsRefused};
+use shellcore::ledger::{self, CommitAnswer, Ledger, Undo};
+use shellcore::{FsChange, FsRead, FsRefused, LogFailed};
 use user::sys;
 
 const CALL_MS: u64 = 10_000;
@@ -56,7 +56,7 @@ impl Files {
     }
 
     /// Runs `f` on the ledger and keeps what it leaves.
-    fn ledger<T>(&self, f: impl FnOnce(&mut Ledger) -> T) -> T {
+    fn with_ledger<T>(&self, f: impl FnOnce(&mut Ledger) -> T) -> T {
         let mut ledger = self.ledger.get();
         let out = f(&mut ledger);
         self.ledger.set(ledger);
@@ -91,7 +91,7 @@ impl Files {
         bytes: &[u8],
     ) -> Result<Handle, String> {
         let home = self.home()?;
-        self.commit()?;
+        self.commit().map_err(|e| e.to_string())?;
         let action = self.next_action();
         expect_done(home, Request::Begin { action })?;
         for folder in folders {
@@ -226,7 +226,7 @@ impl Files {
         if !DROPPED.swap(false, Ordering::Relaxed) {
             return;
         }
-        self.ledger(Ledger::dropped_open);
+        self.with_ledger(Ledger::dropped_open);
         let _ = ask(home, Request::Abort);
         DROPPED.store(false, Ordering::Relaxed);
     }
@@ -236,11 +236,11 @@ impl Files {
     /// short) is aborted, so nothing of it commits without its log entry.
     fn save(&self, change: FsChange) -> Result<u64, String> {
         let home = self.home()?;
-        self.commit()?;
+        self.commit().map_err(|e| e.to_string())?;
         let generation = self.begin(home)?;
         if let Err(why) = make(home, change) {
             let _ = ask(home, Request::Abort);
-            self.ledger(|l| l.aborted(generation));
+            self.with_ledger(|l| l.aborted(generation));
             return Err(why);
         }
         self.changed.set(true);
@@ -257,7 +257,7 @@ impl Files {
                 return Err(unexpected(&other));
             }
         };
-        self.ledger(|l| l.begin(generation));
+        self.with_ledger(|l| l.begin(generation));
         Ok(generation)
     }
 
@@ -269,36 +269,36 @@ impl Files {
         self.ledger.get().open().is_some()
     }
 
-    /// Commits the line's action, its log line in it; an error if the commit got
-    /// another generation than its changes were told.
-    pub fn commit(&self) -> Result<(), String> {
+    /// Commits the line's action, its log line in it: [`LogFailed::NotLanded`]
+    /// when `fs` refused it, whatever the error (any failed action Commit
+    /// drops its changes in `fs`), and an error if it got another generation
+    /// than its changes were told.
+    pub fn commit(&self) -> Result<(), LogFailed> {
         if let Ok(home) = self.home() {
             self.heard_dropped(home);
         }
-        let (Some(generation), Ok(home)) = (self.ledger(Ledger::take_for_commit), self.home())
+        let (Some(generation), Ok(home)) = (self.with_ledger(Ledger::take_for_commit), self.home())
         else {
             return Ok(());
         };
-        match ask(home, Request::Commit)?.0 {
-            Reply::Committed { generation: got } if got == generation => Ok(()),
-            Reply::Committed { generation: got } => Err(format!(
-                "the files committed as {got}, not {generation}; undo may miss them"
-            )),
-            // `fs` had dropped the action: it never committed, so an undo of
-            // it restores nothing (its generation is the next action's).
-            Reply::Failed(why) if why.ends_action() => {
-                self.ledger(|l| l.commit_dropped(generation));
-                Err(unexpected(&Reply::Failed(why)))
-            }
-            other => Err(unexpected(&other)),
+        let answer = match ask(home, Request::Commit) {
+            Ok((Reply::Committed { generation }, _)) => CommitAnswer::Committed(generation),
+            Ok((failed @ Reply::Failed(_), _)) => CommitAnswer::Refused(unexpected(&failed)),
+            Ok((other, _)) => CommitAnswer::Unknown(unexpected(&other)),
+            Err(why) => CommitAnswer::Unknown(why),
+        };
+        let after = ledger::after_commit(generation, answer);
+        if let Err(LogFailed::NotLanded { txn, .. }) = &after {
+            self.with_ledger(|l| l.commit_refused(*txn));
         }
+        after
     }
 
     pub fn undo(&self, txn: u64, anyway: bool) -> Result<u64, FsRefused> {
         let home = self.home().map_err(FsRefused::Failed)?;
         self.heard_dropped(home);
         // A failed run's rollback: its own action is dropped, not restored.
-        match self.ledger(|l| l.undo(txn)) {
+        match self.with_ledger(|l| l.undo(txn)) {
             Undo::AbortOpen => {
                 let _ = ask(home, Request::Abort);
                 return Ok(txn);
@@ -307,7 +307,8 @@ impl Files {
             Undo::Restore => {}
         }
         // Another line's action still open (its log was not written) lands first.
-        self.commit().map_err(FsRefused::Failed)?;
+        self.commit()
+            .map_err(|e| FsRefused::Failed(e.to_string()))?;
         let action = self.action.get();
         self.action.set(action + 1);
         let failed = |why: String| FsRefused::Failed(why);
@@ -316,6 +317,8 @@ impl Files {
             .0
         {
             Reply::Restored { rows, generation } => {
+                // The number is a real change now, even one a lost action had.
+                self.with_ledger(|l| l.committed(generation));
                 // `fs` never restores over a later change; it leaves those.
                 let left = rows.iter().filter(|(_, o)| *o == Outcome::Left).count();
                 if rows.iter().any(|(_, o)| *o != Outcome::Left) {

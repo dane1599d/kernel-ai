@@ -215,10 +215,23 @@ impl Host for FakeHost {
         self.log_disk.borrow().clone()
     }
 
-    fn log_write(&self, text: &str) -> Result<(), String> {
+    fn log_write(&self, text: &str) -> Result<(), LogFailed> {
         if self.log_fails.get() > 0 {
             self.log_fails.set(self.log_fails.get() - 1);
-            return Err(String::from("the disk is full"));
+            return Err(LogFailed::Failed(String::from("the disk is full")));
+        }
+        // As `fs`: the open action's changes go, and its number is the next
+        // commit's.
+        if self.commit_refused.get()
+            && let Some(open) = self.open_txn.take()
+        {
+            self.commit_refused.set(false);
+            let (before, _) = self.txns.borrow_mut().remove(open);
+            *self.files.borrow_mut() = before;
+            return Err(LogFailed::NotLanded {
+                txn: open as u64 + 1,
+                why: String::from("Dropped(NoSpace)"),
+            });
         }
         *self.log_disk.borrow_mut() = Some(text.into());
         self.log_writes.set(self.log_writes.get() + 1);

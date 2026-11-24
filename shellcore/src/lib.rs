@@ -102,6 +102,7 @@ pub use engine::Exec;
 use engine::Line;
 pub use guard::placeholder_target;
 use kabi::sched::{SchedStats, TrialRequest};
+pub use ledger::LogFailed;
 use llmproto::act::{ActError, ActRequest, Call};
 use llmproto::chat::Completion;
 use llmproto::script::{Answer, AnswerError, Lang, ScriptRequest};
@@ -439,8 +440,10 @@ pub trait Host {
     fn log_read(&self) -> Option<String> {
         None
     }
-    /// Writes the whole action log to `/system/log`, after any line that changed it.
-    fn log_write(&self, _text: &str) -> Result<(), String> {
+    /// Writes the whole action log to `/system/log`, after any line that changed
+    /// it, in the same commit as the line's files: [`LogFailed::NotLanded`]
+    /// when that commit was refused.
+    fn log_write(&self, _text: &str) -> Result<(), LogFailed> {
         Ok(())
     }
     /// Restores what transaction `txn` replaced, as one new transaction: its number,
@@ -1045,7 +1048,23 @@ impl Shell {
         if self.saved_log.as_ref() == Some(&text) {
             return Ok(());
         }
-        self.host.log_write(&text)?;
+        match self.host.log_write(&text) {
+            Ok(()) => {}
+            // The line's files are not on the disk, nor the log with them:
+            // its entries lose those changes, so no undo restores what the
+            // number means by then, and the next write carries that.
+            Err(LogFailed::NotLanded { txn, why }) => {
+                for id in ledger::take_not_landed(&mut self.log, txn, &why) {
+                    let note = format!(
+                        "#{id}: its file changes did not land ({why}); nothing of them to undo"
+                    );
+                    self.host.audit(&note);
+                    self.notices.push(note);
+                }
+                return Err(format!("the files did not land: {why}"));
+            }
+            Err(LogFailed::Failed(why)) => return Err(why),
+        }
         self.saved_log = Some(text);
         Ok(())
     }

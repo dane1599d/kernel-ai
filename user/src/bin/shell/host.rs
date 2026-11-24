@@ -421,13 +421,17 @@ impl Host for System {
     /// In the same commit as the files the line changed (P2 task 12); else its
     /// own action. A log that fails to write still lets the change commit: the
     /// user was told it was done.
-    fn log_write(&self, text: &str) -> Result<(), String> {
+    fn log_write(&self, text: &str) -> Result<(), LogFailed> {
         if !self.files.is_open() {
-            return self.state.write(files::LOG, text, self.files.next_action());
+            return self
+                .state
+                .write(files::LOG, text, self.files.next_action())
+                .map_err(LogFailed::Failed);
         }
         let logged = self.state.write_in(files::LOG, text);
-        let committed = self.files.commit();
-        logged.and(committed)
+        // A Commit that did not land says so first: the log went with it.
+        self.files.commit()?;
+        logged.map_err(LogFailed::Failed)
     }
 
     fn rules_read(&self) -> Option<String> {
