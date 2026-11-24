@@ -742,8 +742,10 @@ pub const CLOCK_NOW: u64 = 110;
 
 /// `shm_info(handle) -> pages`: how many pages the `Shm` the handle names
 /// holds, so a holder can check its size before it trusts a mapping (cc's
-/// request `Shm`, which a short one would fault it in). Needs INSPECT on the
-/// handle, which SHM_CREATE's handle carries.
+/// request `Shm`, which a short one would fault it in; audit G #7's
+/// receivers). Any handle to it will do, whatever its rights: the size of an
+/// object a holder can already name tells it nothing more. BadHandle for a
+/// handle that is not an open `Shm`.
 pub const SHM_INFO: u64 = 200;
 /// `endpoint_badge(handle, out) -> 0`: the badge and rights of a `Dir` or
 /// `File` handle on the caller's own endpoint, as [`ENDPOINT_MINT`] made it,
