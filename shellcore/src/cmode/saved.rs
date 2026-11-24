@@ -61,38 +61,97 @@ pub(super) fn entries(text: &str) -> Vec<String> {
 /// defines nothing here, as C lets them repeat. `None` when there is none, or when
 /// `text` does not split (cc then says why).
 pub(super) fn redefined(text: &str) -> Option<String> {
-    let tokens = promptcore::lex::lex(text).ok()?;
-    let is_type = |name: &str| BASE_TYPES.contains(&name);
-    let items = split(text, &tokens, &is_type).ok()?;
     let mut seen: Vec<String> = Vec::new();
-    for item in &items {
-        let claimed: Vec<String> = match &item.what {
-            What::Undef(name) => {
-                let key = format!("#{name}");
-                seen.retain(|k| *k != key);
-                continue;
+    for claim in claims(text)? {
+        match claim {
+            Claim::Undef(key) => seen.retain(|k| *k != key),
+            Claim::Defines(keys) => {
+                for key in keys {
+                    if seen.contains(&key) {
+                        return Some(key);
+                    }
+                    seen.push(key);
+                }
             }
-            What::Define(name) => alloc::vec![format!("#{name}")],
-            What::Func(func) => alloc::vec![func.name.clone()],
-            What::Decl(decl) => decl
-                .declarators
-                .iter()
-                .filter(|d| d.init.is_some() && decl.storage != Storage::Extern)
-                .map(|d| d.name.clone())
-                .chain(decl.tags.iter().map(|t| format!("tag {}", t.name)))
-                .chain(decl.tags.iter().flat_map(|t| t.enumerators.clone()))
-                .chain(decl.enumerators.iter().cloned())
-                .collect(),
-            What::Include(_) | What::Stmt { .. } => continue,
-        };
-        for key in claimed {
-            if seen.contains(&key) {
-                return Some(key);
-            }
-            seen.push(key);
         }
     }
     None
+}
+
+/// Every name `text` defines, by [`redefined`]'s rule, each once: a macro
+/// as `#NAME`, a tag as `tag NAME`. None when `text` does not split.
+pub(super) fn defines(text: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for claim in claims(text).unwrap_or_default() {
+        if let Claim::Defines(keys) = claim {
+            for key in keys {
+                if !names.contains(&key) {
+                    names.push(key);
+                }
+            }
+        }
+    }
+    names
+}
+
+/// The first of `names` (as [`defines`] gives them) that `text`'s code
+/// names, outside comments, strings and the names `text` defines itself;
+/// bare, without its `#` or `tag `.
+pub(super) fn uses(text: &str, names: &[String]) -> Option<String> {
+    let own = defines(text);
+    let tokens = promptcore::lex::lex(text).ok()?;
+    tokens
+        .iter()
+        .filter(|t| t.kind == promptcore::lex::Kind::Ident)
+        .map(|t| t.text(text))
+        .find_map(|word| {
+            names
+                .iter()
+                .filter(|key| !own.contains(key))
+                .find(|key| bare(key) == word)
+                .map(|key| String::from(bare(key)))
+        })
+}
+
+/// A key as the code writes it: `#N` and `tag P` are `N` and `P`.
+fn bare(key: &str) -> &str {
+    key.strip_prefix('#')
+        .or_else(|| key.strip_prefix("tag "))
+        .unwrap_or(key)
+}
+
+/// What one split item of an entry does to the names it defines.
+enum Claim {
+    /// `#undef`: the macro may be defined again.
+    Undef(String),
+    Defines(Vec<String>),
+}
+
+/// The claims of `text`'s items in order; `None` when it does not split.
+fn claims(text: &str) -> Option<Vec<Claim>> {
+    let tokens = promptcore::lex::lex(text).ok()?;
+    let is_type = |name: &str| BASE_TYPES.contains(&name);
+    let items = split(text, &tokens, &is_type).ok()?;
+    let claims = items
+        .iter()
+        .filter_map(|item| match &item.what {
+            What::Undef(name) => Some(Claim::Undef(format!("#{name}"))),
+            What::Define(name) => Some(Claim::Defines(alloc::vec![format!("#{name}")])),
+            What::Func(func) => Some(Claim::Defines(alloc::vec![func.name.clone()])),
+            What::Decl(decl) => Some(Claim::Defines(
+                decl.declarators
+                    .iter()
+                    .filter(|d| d.init.is_some() && decl.storage != Storage::Extern)
+                    .map(|d| d.name.clone())
+                    .chain(decl.tags.iter().map(|t| format!("tag {}", t.name)))
+                    .chain(decl.tags.iter().flat_map(|t| t.enumerators.clone()))
+                    .chain(decl.enumerators.iter().cloned())
+                    .collect(),
+            )),
+            What::Include(_) | What::Stmt { .. } => None,
+        })
+        .collect();
+    Some(claims)
 }
 
 #[cfg(test)]
@@ -131,5 +190,19 @@ mod tests {
         );
         let declared = "I64 Sq(I64 x);\nextern I64 n;\nI64 Sq(I64 x) { return x; }\nI64 n = 2;";
         assert_eq!(redefined(declared), None);
+    }
+
+    #[test]
+    fn an_entry_uses_a_name_another_defines_but_not_its_own() {
+        let lib = "I64 Seven() { return 70; }\n#define N 3\nstruct P { I64 x; };";
+        assert_eq!(defines(lib), ["Seven", "#N", "tag P"]);
+        let names = defines(lib);
+        let eight = "I64 Eight() { return Seven() + 1; }";
+        assert_eq!(uses(eight, &names).as_deref(), Some("Seven"));
+        assert_eq!(uses("I64 a[N];", &names).as_deref(), Some("N"));
+        // A comment or a string is no use; a redefinition is the entry's own.
+        assert_eq!(uses("/* Seven */ U8 *s = \"Seven\";", &names), None);
+        assert_eq!(uses("I64 Seven() { return 7; }", &names), None);
+        assert_eq!(uses("I64 Nine() { return 9; }", &names), None);
     }
 }

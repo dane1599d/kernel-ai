@@ -419,6 +419,40 @@ fn a_restart_names_an_entry_that_used_a_skipped_one() {
     assert!(after.text.contains("; not restored"), "{after:?}");
 }
 
+/// A skipped entry redefined a function an earlier entry defined: a later
+/// entry that calls it replays, bound to the earlier definition, and the
+/// restart note names it; one that does not call it is not named (#1260).
+#[test]
+fn a_restart_names_an_entry_now_bound_to_an_earlier_definition() {
+    let host = FakeHost::new();
+    host.files
+        .borrow_mut()
+        .insert("c/lib.c".into(), "I64 Seven() { return 70; }\n".into());
+    let mut shell = c_shell(&host);
+    assert!(shell.eval("I64 Seven() { return 7; }").ok);
+    assert!(shell.eval("#include \"lib.c\"").ok);
+    assert!(shell.eval("I64 Eight() { return Seven() + 1; }").ok);
+    assert!(shell.eval("I64 Nine() { return 9; }").ok);
+    assert_eq!(shell.eval("Eight()").text, "= 71");
+    host.files
+        .borrow_mut()
+        .insert("c/lib.c".into(), "I64 Seven() { return 700; }\n".into());
+    start_cc(&host);
+    let after = shell.eval("Eight()");
+    assert!(
+        after.text.contains("entry 2's #include files changed"),
+        "{after:?}"
+    );
+    assert!(
+        after.text.contains(
+            "entry 3 uses Seven, which a skipped entry redefined; it now binds to the earlier definition"
+        ),
+        "{after:?}"
+    );
+    assert!(!after.text.contains("entry 4"), "{after:?}");
+    assert!(after.text.ends_with("= 8"), "{after:?}");
+}
+
 /// A :load right after cc restarted opens the session again, as an entry
 /// does, and loads (#1192's review).
 #[test]
