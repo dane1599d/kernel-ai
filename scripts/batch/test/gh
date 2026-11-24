@@ -5,11 +5,28 @@
 # always green. $T/kill-on-ready and $T/kill-on-merged kill the batch-ff.sh in
 # $T/ffpid once, at `gh pr ready` (before the fast-forward) or at the first
 # MERGED answer (after it), as a PC stop would; $T/list-fails fails the
-# open-PR listing.
+# open-PR listing. While the batch branch holds every head on a line of
+# $T/fail-with, CI fails and its log is $T/compile.log (a batch that does not
+# compile; two heads on a line are two PRs that clash only together).
 T=${STUB_T:?}
 echo "gh $*" >> "$T/gh.log"
 a="$*"
 pr() { cat "$T/prs/$1/$2" 2>/dev/null; }
+compile_fails() {
+  local b line s all
+  [ -f "$T/fail-with" ] || return 1
+  for b in $(git -C "$T/origin.git" for-each-ref --format='%(refname)' refs/heads/batch/); do
+    while read -r line; do
+      all=1
+      for s in $line; do
+        git -C "$T/origin.git" merge-base --is-ancestor "$s" "$b" 2>/dev/null || all=""
+      done
+      [ -n "$all" ] && return 0
+    done < "$T/fail-with"
+  done
+  return 1
+}
+[ "$1 $2" = "run view" ] && compile_fails && CI_RESULT=failure
 st() {
   local s
   s=$(pr $1 state)
@@ -61,7 +78,7 @@ case "$1 $2" in
     esac;;
   "run view")
     case "$a" in
-      *--log-failed*) cat "$T/failed.log" 2>/dev/null;;
+      *--log-failed*) if compile_fails; then cat "$T/compile.log"; else cat "$T/failed.log" 2>/dev/null; fi;;
       *--log*) cat "$T/fluency.log";;
       # CI_SKIP_BOOT: the boot jobs skipped, as CI skips them for a no-boot batch.
       *) for j in "Format, lint" "Boot test (kvm, shard 1)" "Boot test (kvm, shard 2)" "Boot test (kvm, shard 3)" "Boot test (tcg, shard 1)" "Boot test (tcg, shard 2)" "Boot test (tcg, shard 3)" "Boot test (tcg, shard 4)" "Observe determinism 1" "Observe determinism 2" "Observe determinism 3"; do
