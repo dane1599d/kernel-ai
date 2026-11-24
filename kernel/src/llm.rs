@@ -61,6 +61,12 @@ pub fn target() -> Option<(Ipv4Addr, u16, &'static str)> {
         .map(|config| (config.server.0, config.server.1, config.model.as_str()))
 }
 
+/// The stack of an `llm` that runs the local engine: 256 KiB, four times the
+/// 16-page default. Loading the engine came to the default's edge: with #1063,
+/// the boot cases (run 44490659326) faulted 48 bytes below it, in the
+/// tokenizer's sort. The pages come from llm's own quota, so they are added to it.
+const LOCAL_STACK_PAGES: u64 = 64;
+
 /// The plan line for the `llm` service. With a model loaded, or reserved and
 /// waiting for the model store to fill it (P2 task 10), it also gets
 /// `cap::MODEL`, `cap::THREADS`, and pages for a pool of workers (L6) and for the
@@ -74,8 +80,8 @@ pub fn plan_line() -> String {
     let model = crate::model::get().is_some() || crate::model::fill::pending();
     let mut line = match model {
         true => format!(
-            "llm caps=serve+net+model+threads netdest=llm burst_ms=10000 pages={}",
-            crate::model::holder_pages()
+            "llm caps=serve+net+model+threads netdest=llm burst_ms=10000 pages={} stack_pages={LOCAL_STACK_PAGES}",
+            crate::model::holder_pages() + LOCAL_STACK_PAGES
         ),
         false => format!(
             "llm caps=serve+net netdest=llm burst_ms=10000 pages={}",

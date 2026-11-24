@@ -53,7 +53,14 @@ impl Painter {
         fill(&mut c, local, local, self.palette.line_strong);
         fill(&mut c, local.grow(-1), local, self.palette.shell);
         self.pane_header(&mut c, &parts, scene);
-        self.chat(&mut c, parts.history, scene);
+        // A send's card up: its text in the history's place, never both.
+        let preview = scene
+            .preview
+            .filter(|p| scene.ask.is_some_and(|card| card.id == p.ask));
+        match preview {
+            Some(preview) => self.send_preview(&mut c, parts.history, preview),
+            None => self.chat(&mut c, parts.history, scene),
+        }
         let rule = Rect::new(parts.status.x + 1, parts.status.y, parts.status.w - 2, 1);
         fill(&mut c, rule, local, self.palette.line);
         let thinking = matches!(scene.panel.state(), State::Thinking { .. });

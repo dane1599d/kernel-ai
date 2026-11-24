@@ -21,7 +21,9 @@ impl MockDns {
 
     /// The kernel command-line word that points the guest here.
     pub fn cmdline(&self) -> String {
-        format!("dns=10.0.2.2:{}", self.port)
+        // The mock's fixtures and the HTTPS mock sit on QEMU's 10.0.2.0/24,
+        // which only `online=test` lets a name's answer lead to (audit K #17).
+        format!("dns=10.0.2.2:{} online=test", self.port)
     }
 }
 
@@ -73,6 +75,9 @@ mod tests {
             .unwrap();
         assert!(client.recv(&mut buf).is_err());
         assert_eq!(server.queries(), 2);
-        assert_eq!(server.cmdline(), format!("dns=10.0.2.2:{}", server.port));
+        let cmdline = server.cmdline();
+        let words: Vec<&str> = cmdline.split_whitespace().collect();
+        assert!(words.contains(&format!("dns=10.0.2.2:{}", server.port).as_str()));
+        assert!(words.contains(&"online=test"), "{cmdline}");
     }
 }

@@ -193,6 +193,15 @@ impl Host for FakeHost {
         Ok(())
     }
 
+    fn desk_send_fits(&self) -> bool {
+        self.send_fits.get()
+    }
+
+    fn desk_preview(&self, id: u64, text: &str) -> Result<(), String> {
+        self.previews.borrow_mut().push((id, String::from(text)));
+        Ok(())
+    }
+
     fn net_send(&self, send: &crate::outbox::Send) -> Result<String, crate::outbox::SendFailed> {
         let disk = self.log_disk.borrow().clone();
         self.sends.borrow_mut().push((send.clone(), disk));
@@ -348,13 +357,18 @@ impl Host for FakeHost {
     }
 
     fn fs_change(&self, change: FsChange) -> Result<u64, String> {
+        if let Some(why) = self.fs_fail.borrow_mut().take() {
+            return Err(why);
+        }
         let before = self.files.borrow().clone();
         let mut files = before.clone();
         match change {
             FsChange::Create { path, .. } if files.contains_key(path) => {
                 return Err(String::from("Exists: use fs_write"));
             }
-            FsChange::Create { path, text } | FsChange::Write { path, text } => {
+            FsChange::Create { path, text }
+            | FsChange::Write { path, text }
+            | FsChange::Save { path, text, .. } => {
                 files.insert(path.into(), text.into());
             }
             FsChange::Move { from, to } => {
@@ -541,6 +555,9 @@ impl Host for FakeHost {
         if self.not_apps.borrow().iter().any(|a| a == app) {
             return Err(String::from("no such app"));
         }
+        if let Some(error) = self.app_errors.borrow_mut().pop_front() {
+            return Err(error);
+        }
         self.app_replies
             .borrow_mut()
             .pop_front()
@@ -582,6 +599,19 @@ impl Host for FakeHost {
                         m.store.next = Some(sha);
                         format!("ok next {hex}")
                     }
+                }
+            }
+            // The undo of a model_fetch: refused while the blob runs or is on
+            // trial, as `updated` refuses it.
+            ["models", "remove", hex] => {
+                let sha = modelchan::listing::sha256(hex)?;
+                if m.store.running == Some(sha) {
+                    String::from("err it is the model running; use another first")
+                } else if m.next() == Some(sha) {
+                    String::from("err it is on trial for the next restart; undo that first")
+                } else {
+                    m.store.blobs.retain(|b| b.sha256 != sha);
+                    String::from("ok removed")
                 }
             }
             _ => String::from("err unknown request"),

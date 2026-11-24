@@ -10,11 +10,48 @@ use alloc::vec::Vec;
 use livecore::txn::{self, Effect, Storage, Txn};
 use wasmi::{Caller, Error, Extern, Memory};
 
+/// The most bytes (keys and values) one call's writes may hold: twice what
+/// a commit can ever take (`kabi::live::MAX_CHECKPOINT`), since a call may
+/// also delete keys the storage holds. Past it the call traps, so a guest
+/// cannot make its host hold more than a commit could keep.
+pub(crate) const MAX_WRITES: usize = 2 * kabi::live::MAX_CHECKPOINT;
+
 /// The call in progress.
 pub(crate) struct OpenCall {
     pub storage: Storage,
     pub txn: Txn,
     pub first_ticket: u32,
+    /// The bytes `txn.writes` holds, keys and values.
+    pub bytes: usize,
+}
+
+/// Records `key` = `value` (`None` deletes) in the call's writes, held to
+/// [`MAX_WRITES`].
+fn write(call: &mut OpenCall, key: String, value: Option<Vec<u8>>) -> Result<(), Error> {
+    let size = |key: &str, value: &Option<Vec<u8>>| key.len() + value.as_ref().map_or(0, Vec::len);
+    let added = size(&key, &value);
+    let replaced = call.txn.writes.get(&key).map_or(0, |old| size(&key, old));
+    let bytes = call.bytes - replaced + added;
+    if bytes > MAX_WRITES {
+        return Err(Error::new(alloc::format!(
+            "the call's writes pass {MAX_WRITES} bytes"
+        )));
+    }
+    call.txn.writes.insert(key, value);
+    call.bytes = bytes;
+    Ok(())
+}
+
+/// Refuses a storage or effects call made from inside the `cabi_realloc` the
+/// host itself called (`get`): a guest's realloc that calls `get` again would
+/// nest host and guest frames until comphost's stack ran out.
+fn not_in_realloc(caller: &Caller<'_, HostState>) -> Result<(), Error> {
+    match caller.data().in_realloc {
+        true => Err(Error::new(
+            "storage and effects cannot be called from inside cabi_realloc",
+        )),
+        false => Ok(()),
+    }
 }
 
 fn memory(caller: &Caller<'_, HostState>) -> Result<Memory, Error> {
@@ -61,6 +98,7 @@ pub(crate) fn get(
     key_len: i32,
     ret: i32,
 ) -> Result<(), Error> {
+    not_in_realloc(&caller)?;
     let key = key(&caller, key_ptr, key_len)?;
     // Outside an action call, a lifecycle call reads the host's view.
     let value = match caller.data_mut().call.as_mut() {
@@ -83,7 +121,10 @@ pub(crate) fn get(
                 .and_then(Extern::into_func)
                 .ok_or_else(|| Error::new("no cabi_realloc export"))?
                 .typed::<(i32, i32, i32, i32), i32>(&caller)?;
-            let at = realloc.call(&mut caller, (0, 0, 1, value.len() as i32))?;
+            caller.data_mut().in_realloc = true;
+            let at = realloc.call(&mut caller, (0, 0, 1, value.len() as i32));
+            caller.data_mut().in_realloc = false;
+            let at = at?;
             memory(&caller)?
                 .write(&mut caller, at as u32 as usize, &value)
                 .map_err(|_| Error::new("the value does not fit in memory"))?;
@@ -106,10 +147,10 @@ pub(crate) fn put(
     value_ptr: i32,
     value_len: i32,
 ) -> Result<(), Error> {
+    not_in_realloc(&caller)?;
     let key = key(&caller, key_ptr, key_len)?;
     let value = read(&caller, value_ptr, value_len, txn::MAX_VALUE)?;
-    open(&mut caller)?.txn.writes.insert(key, Some(value));
-    Ok(())
+    write(open(&mut caller)?, key, Some(value))
 }
 
 /// `storage.delete(key)`.
@@ -118,9 +159,9 @@ pub(crate) fn delete(
     key_ptr: i32,
     key_len: i32,
 ) -> Result<(), Error> {
+    not_in_realloc(&caller)?;
     let key = key(&caller, key_ptr, key_len)?;
-    open(&mut caller)?.txn.writes.insert(key, None);
-    Ok(())
+    write(open(&mut caller)?, key, None)
 }
 
 /// `effects.request(e: effect) -> u32`: the effect's ticket.
@@ -132,6 +173,7 @@ pub(crate) fn request(
     c: i32,
     d: i32,
 ) -> Result<i32, Error> {
+    not_in_realloc(&caller)?;
     let effect = match case {
         0 => Effect::Call {
             name: text(&caller, a, b, txn::MAX_EFFECT_NAME)?,

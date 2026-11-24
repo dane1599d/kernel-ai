@@ -18,8 +18,10 @@ const CALLS: &[u64] = &[
     call::APP_CALL,
 ];
 
-/// How long a suspend or resume may take: saving and restoring the app's state.
-const CTL_MS: u64 = 60_000;
+/// How long a suspend or resume may take: saving and restoring the app's
+/// state. The supervisor, one thread, waits on it, so it is held no longer
+/// than an app's call holds it (audit K #20, #21).
+const CTL_MS: u64 = 5_000;
 /// The longest an app's call may take: the supervisor waits on it, so a slow
 /// or hung app cannot hold it longer (`supervise::appcall::WAIT_MS`).
 const APP_CALL_MS: u64 = 5_000;
@@ -116,6 +118,8 @@ fn app_call(slot: usize, a: &[u64; 6]) -> Result<u64, Error> {
     let reply = ipc::call(name, &request, wait_ms).map_err(|error| match error {
         ipc::CallError::Unavailable => Error::NotFound,
         ipc::CallError::NoMemory => Error::NoMemory,
+        // The app took it: it may have run, so it is not to be sent again.
+        ipc::CallError::Unanswered | ipc::CallError::ServiceDied => Error::Dead,
         _ => Error::TimedOut,
     })?;
     let reply = &reply[..reply.len().min(usize::try_from(cap).unwrap_or(usize::MAX))];
@@ -140,12 +144,19 @@ fn app_ctl(slot: usize, ptr: u64, len: u64, verb: u64, buf: u64, cap: u64) -> Re
     if !kabi::event::valid_name(name) {
         return Err(Error::Invalid);
     }
-    ipc::server_of(name).ok_or(Error::NotFound)?;
-    let reply = ipc::call(name, request, CTL_MS).map_err(|error| match error {
-        ipc::CallError::Unavailable => Error::NotFound,
-        ipc::CallError::NoMemory => Error::NoMemory,
-        _ => Error::TimedOut,
-    })?;
+    let server = ipc::server_of(name).ok_or(Error::NotFound)?;
+    // Ends when the app's process does: a queued ctl would otherwise wait for
+    // its next instance, which only the supervisor waiting here can start.
+    let gone = || ipc::server_of(name) != Some(server);
+    let reply = ipc::call_from_unless(name, request, CTL_MS, gone)
+        .map(|(reply, _)| reply)
+        .map_err(|error| match error {
+            ipc::CallError::Unavailable => Error::NotFound,
+            ipc::CallError::NoMemory => Error::NoMemory,
+            // Taken, and not answered: the suspend or resume may have happened.
+            ipc::CallError::Unanswered | ipc::CallError::ServiceDied => Error::Dead,
+            _ => Error::TimedOut,
+        })?;
     let reply = &reply[..reply.len().min(usize::try_from(cap).unwrap_or(usize::MAX))];
     copy_to_user(slot, buf, reply)?;
     Ok(reply.len() as u64)

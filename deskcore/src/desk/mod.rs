@@ -110,6 +110,12 @@ pub struct Desk {
     /// The pointer moved onto the card's Run button after the card was
     /// drawn: a click there may run it (one parked there before may not).
     ask_entered_run: bool,
+    /// The card up now is a send's: it takes no answer until its text has
+    /// been drawn in the pane ([`Desk::needs_preview`]).
+    ask_needs_preview: bool,
+    /// When the send's text was first drawn in the pane
+    /// ([`Desk::preview_drawn`]).
+    ask_preview_ms: Option<u64>,
 }
 
 impl Desk {
@@ -157,6 +163,8 @@ impl Desk {
             ask_drawn: None,
             ask_pressed_ms: 0,
             ask_entered_run: false,
+            ask_needs_preview: false,
+            ask_preview_ms: None,
         }
     }
 

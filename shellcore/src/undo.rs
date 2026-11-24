@@ -57,6 +57,10 @@ pub enum Inverse {
     /// Keep app `app` running (`on`) or let it nap again, as it was before a
     /// Settings toggle. The shell's list does it (`Shell::revert_keep`).
     Keep { app: Name, on: bool },
+    /// Pause goal `id` again (`paused`) or resume it, as it was before a
+    /// `goal_resume` or `goal_pause` (G2). The shell queues it for `goals`
+    /// (`Shell::revert_goal`).
+    Goal { id: u64, paused: bool },
     /// Put app `app`'s state back from before its call kept as `id` (ADR 0003
     /// §4's checkpoint undo, `kai-undo 1`): the app runs its own inverse.
     App { app: Name, id: u64 },
@@ -83,6 +87,12 @@ pub enum Inverse {
         back: Option<[u8; 32]>,
         from: [u8; 32],
     },
+    /// Remove model blob `sha` from the store, which `model_fetch` brought in,
+    /// or stop its download and drop the part downloaded. `updated` refuses
+    /// while that blob runs or is on trial. Its redo is none: fetching again
+    /// brings gigabytes, so it is a fresh `model_fetch`, which asks
+    /// (`Shell::revert_entry`).
+    Fetched { sha: [u8; 32] },
     /// Withhold `row` from `app`'s effects again (`withheld`), or give it back:
     /// the undo of `grant_restore` and of `grant_revoke` (P4 task 7).
     Grant {
@@ -217,6 +227,8 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Instruction { id, made: false } => format!("standing instruction S{id}"),
         Inverse::Profile { .. } => String::from("the profile before"),
         Inverse::Keep { app, .. } => format!("{} keep-running as before", app.as_str()),
+        Inverse::Goal { id, paused: true } => format!("goal {id} paused again"),
+        Inverse::Goal { id, paused: false } => format!("goal {id} going again"),
         Inverse::App { app, .. } => format!("{} as it was", app.as_str()),
         Inverse::Appearance {
             setting, before, ..
@@ -228,6 +240,7 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Reclose { app, .. } => format!("{} closed", app.as_str()),
         Inverse::Grant { app, row, withheld } => grant_words(app, row, withheld),
         Inverse::Model { .. } => String::from("the model before, from the next restart"),
+        Inverse::Fetched { .. } => String::from("the fetched model removed"),
         Inverse::NetGrant { id, held: true } => format!("network grant #{id} taken back"),
         Inverse::NetGrant { id, held: false } => format!("network grant #{id}"),
         Inverse::Unsend { .. } => String::from("the send not sent"),
@@ -360,9 +373,11 @@ fn revert_one(
         Inverse::Instruction { .. }
         | Inverse::Profile { .. }
         | Inverse::Keep { .. }
+        | Inverse::Goal { .. }
         | Inverse::NetGrant { .. }
         | Inverse::Unsend { .. }
-        | Inverse::Model { .. } => Err(Refused::Failed(String::from(
+        | Inverse::Model { .. }
+        | Inverse::Fetched { .. } => Err(Refused::Failed(String::from(
             "it is put back by the shell's own store",
         ))),
         Inverse::Unread(_) => Err(Refused::Failed(String::from(
@@ -412,10 +427,16 @@ pub fn reverse(inverse: Inverse) -> Inverse {
         },
         Inverse::Instruction { id, made } => Inverse::Instruction { id, made: !made },
         Inverse::Keep { app, on } => Inverse::Keep { app, on: !on },
+        Inverse::Goal { id, paused } => Inverse::Goal {
+            id,
+            paused: !paused,
+        },
         Inverse::NetGrant { id, held } => Inverse::NetGrant { id, held: !held },
         // Never used: the undo of a cancel is logged with no inverse
         // (`Shell::revert_entry`), so it never sends.
         Inverse::Unsend { entry } => Inverse::Unsend { entry },
+        // Never used either: a removed model's redo is logged with no inverse.
+        Inverse::Fetched { sha } => Inverse::Fetched { sha },
         Inverse::Unread(raw) => Inverse::Unread(raw),
         Inverse::Appearance {
             setting,
@@ -481,6 +502,7 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
         Some(Inverse::Instruction { id, made }) => format!("instruction:{id}:{}", u8::from(made)),
         Some(Inverse::Profile { key }) => format!("profile:{key}"),
         Some(Inverse::Keep { app, on }) => format!("keep:{}:{}", app.as_str(), u8::from(on)),
+        Some(Inverse::Goal { id, paused }) => format!("goal:{id}:{}", u8::from(paused)),
         Some(Inverse::App { app, id }) => format!("app:{}:{id}", app.as_str()),
         Some(Inverse::Appearance {
             setting,
@@ -511,6 +533,7 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
             back.map_or_else(|| String::from("none"), |b| comp_models::hex(&b)),
             comp_models::hex(&from)
         ),
+        Some(Inverse::Fetched { sha }) => format!("fetched:{}", comp_models::hex(&sha)),
     }
 }
 
@@ -550,6 +573,10 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
         "keep" => Inverse::Keep {
             app: Name::new(parts.next()?)?,
             on: flag(parts.next())?,
+        },
+        "goal" => Inverse::Goal {
+            id: number(parts.next())?,
+            paused: flag(parts.next())?,
         },
         "app" => Inverse::App {
             app: Name::new(parts.next()?)?,
@@ -593,6 +620,9 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
                 from: sha(parts.next())?,
             }
         }
+        "fetched" => Inverse::Fetched {
+            sha: modelchan::listing::sha256(parts.next()?).ok()?,
+        },
         _ => return None,
     }))
 }

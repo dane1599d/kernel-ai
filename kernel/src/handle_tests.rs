@@ -47,10 +47,13 @@ pub fn check() -> Result<(), &'static str> {
 }
 
 /// ADR 0013 section 1: a plan line's `agent=` badge rides on its route to
-/// `llm`, and only there; a line with none has badge 0 on every route.
+/// `llm`, and only there, and that route is pinned: CALL and INSPECT, with no
+/// TRANSFER or DUPLICATE, so no process can pass the badge on. A line with
+/// none has badge 0 and the usual rights on every route.
 fn agent_route() -> Result<(), &'static str> {
     use kabi::handle::agent;
-    let badges = |grants: supervise::Grants| -> Result<(Option<u64>, Option<u64>), &'static str> {
+    type Route = Option<(u64, Rights)>;
+    let routes = |grants: supervise::Grants| -> Result<(Route, Route), &'static str> {
         let request = SpawnRequest {
             name: "hagent",
             program: "handles",
@@ -67,26 +70,32 @@ fn agent_route() -> Result<(), &'static str> {
             .map_err(|_| "handles: cannot start the agent's process")?;
         let slot = process::slot_of_pid(pid).ok_or("handles: the agent's process is gone")?;
         let found = (
-            handle::route_badge(slot, agent::SERVICE),
-            handle::route_badge(slot, "hsrv"),
+            handle::route_of(slot, agent::SERVICE),
+            handle::route_of(slot, "hsrv"),
         );
         process::kill(pid, ExitReason::Killed)
             .map_err(|_| "handles: cannot end the agent's process")?;
         wait_exit(pid)?;
         Ok(found)
     };
+    let usual = Rights::CALL | Rights::DUPLICATE | Rights::INSPECT | Rights::TRANSFER;
     let kai = supervise::Grants {
         agent: Some(agent::KAI),
+        pinned: alloc::vec![agent::SERVICE.into()],
         ..supervise::Grants::default()
     };
-    if badges(kai)? != (Some(agent::KAI), Some(0)) {
-        return Err("handles: an agent's badge is not on its route to llm alone");
+    let (llm, other) = routes(kai)?;
+    if llm != Some((agent::KAI, handle::PINNED_RIGHTS)) || other != Some((0, usual)) {
+        return Err("handles: an agent's badge is not on its pinned route to llm alone");
     }
-    if badges(supervise::Grants::default())? != (Some(0), Some(0)) {
-        return Err("handles: a line with no agent= has a badge on a route");
+    if handle::PINNED_RIGHTS.intersects(Rights::TRANSFER | Rights::DUPLICATE) {
+        return Err("handles: a pinned route could be passed on");
+    }
+    if routes(supervise::Grants::default())? != (Some((0, usual)), Some((0, usual))) {
+        return Err("handles: a line with no agent= has a badge or a pinned route");
     }
     log!(
-        "handles: an agent's route to llm carries its badge (kai {}), and no other route does",
+        "handles: an agent's route to llm carries its badge (kai {}) with CALL only, and no other route does",
         agent::KAI
     );
     Ok(())
@@ -302,7 +311,12 @@ fn ring3_grants() -> Result<(), &'static str> {
         uses: &[],
     })
     .map_err(|_| "handles: cannot start the grants check")?;
-    match wait_exit(pid)? {
+    let ended = wait_exit(pid)?;
+    // PROC_ALIVE's answer for a process that ran and has ended: gone.
+    if process::alive(pid) {
+        return Err("handles: an ended process still answered alive");
+    }
+    match ended {
         (ExitReason::Exited, 0) if grants::owns_any(pid) => {
             Err("handles: a node the ended process made is still live")
         }
@@ -361,8 +375,44 @@ fn revoke_mid_call() -> Result<(), &'static str> {
             return Err("handles: the revoke pair's checks failed");
         }
     }
+    unanswered()?;
     log!("handles: revoking a grant ended a call in flight through it");
     Ok(())
+}
+
+/// Audit K #19: a call its server took and did not answer by the deadline
+/// ends Unanswered, not TimedOut, so APP_CALL can say it may have run and the
+/// shell never sends it again. `hold` takes one call and keeps it 3 s.
+fn unanswered() -> Result<(), &'static str> {
+    const NAME: &str = "hunans";
+    let pid = process::spawn(&SpawnRequest {
+        name: NAME,
+        program: "handles",
+        args: b"mode=hold",
+        limits: Limits {
+            caps: cap::SERVE,
+            ..LIMITS
+        },
+        spawner: 0,
+        supervisor: false,
+        uses: &[],
+    })
+    .map_err(|_| "handles: cannot start the holder")?;
+    // Bound and waiting, so the call is taken at once rather than queued.
+    for _ in 0..1000 {
+        if ipc::server_of(NAME).is_some() {
+            break;
+        }
+        threads::sleep_ms(10);
+    }
+    let result = ipc::call_from(NAME, b"hold", 500);
+    if wait_exit(pid)? != (ExitReason::Exited, 0) {
+        return Err("handles: the holder failed");
+    }
+    match result {
+        Err(ipc::CallError::Unanswered) => Ok(()),
+        _ => Err("handles: a call taken and not answered did not end Unanswered"),
+    }
 }
 
 /// M2: make a request node, give 8 handles under it to 2 processes (4 each),

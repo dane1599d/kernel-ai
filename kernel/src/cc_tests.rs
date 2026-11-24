@@ -3,8 +3,9 @@
 //! shell. `cc` is planned with `start=demand`: it is not running until the
 //! first entry's call starts it. A definition, a call, a redefinition that
 //! switches its caller, `:dis`, an entry left open, then a `kai` call that
-//! goes through the one door, and its `undo`. Then S12-1's compile time over a
-//! 200-line prelude, reported only.
+//! goes through the one door, and its `undo`. Then `:save`, `:reset`,
+//! `:load` and an `#include "…"` of the saved file (ADR 0012 D4, from P2).
+//! Then S12-1's compile time over a 200-line prelude, reported only.
 
 use crate::sched_control::calls::MIN_POLICY_INTERVAL_NS;
 use crate::shell_tests::Expect::{self, Contains, Exact, StartsWith};
@@ -52,6 +53,27 @@ const UNDO: &[(&str, Expect)] = &[
     ("policy", Exact("ok scheduling policy: interactive")),
 ];
 
+/// The session saved to `/home/user/c/demo.c`, emptied, and loaded back
+/// entry by entry: Twice calls the redefined Sq again. demo.c redefines Sq,
+/// so it does not include; a file that defines each name once does.
+const FILES: &[(&str, Expect)] = &[
+    (":c", StartsWith("ok ")),
+    (":save demo", StartsWith("ok saved ")),
+    (":reset", Exact("ok the C session is empty again")),
+    (":load demo", StartsWith("ok loaded ")),
+    ("Twice(3)", Exact("ok = 8")),
+    (
+        "#include \"demo.c\"\nTwice(2)",
+        Exact("err #include \"demo.c\": it defines Sq twice; use :load"),
+    ),
+    (":reset", Exact("ok the C session is empty again")),
+    ("I64 Cube(I64 x) { return x * x * x; }", Exact("ok ")),
+    (":save cube", StartsWith("ok saved 1 entries ")),
+    (":reset", Exact("ok the C session is empty again")),
+    ("#include \"cube.c\"\nCube(2)", Exact("ok = 8")),
+    (":rhai", Exact("ok back at kai>")),
+];
+
 /// Definitions in an entry, five entries of them: a 200-line prelude.
 const PRELUDE_ENTRIES: u32 = 5;
 const PER_ENTRY: u32 = 40;
@@ -77,6 +99,8 @@ pub fn check() -> Result<(), &'static str> {
     log!(
         "c-prompt: :c, definitions, a redefinition that switched its caller, :dis, a kai call and its undo, :rhai"
     );
+    expect_lines(FILES)?;
+    log!("c-prompt: :save, :reset, :load and an #include of the saved file, and a call works");
     prelude_timing()?;
     if ipc::server_of("shell") != Some(shell) {
         return Err("c-prompt: a different shell answered by the end");

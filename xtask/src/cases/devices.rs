@@ -167,7 +167,8 @@ pub(super) const CASES: &[TestCase] = &[
         usb: &["usb-kbd"],
         expect: &[
             "devices: DEV_LIST from ring 3 lists them too",
-            "virtio-net in the kernel, running, polled, 0 interrupts",
+            // The card's receive queue raises its own vector (P5 plan 3.2).
+            "virtio-net in the kernel, running, MSI-X, ",
             "class 0c0330 xhci in the kernel, running, MSI-X, ",
         ],
         ..case("devices", "test=devices")
@@ -185,7 +186,8 @@ pub(super) const CASES: &[TestCase] = &[
             "usb: USB tablet at 16384 8192 of 32767 32767, buttons 1",
             "usb: received \"kai\" over USB",
             // ADR 0007: the controller interrupts on MSI-X; nothing polls it.
-            "slots, interrupts on MSI-X vector 0x30",
+            // Not a fixed vector: the network card may take the first.
+            "slots, interrupts on MSI-X vector 0x",
             " MSI-X interrupts, 0 stray vectors",
         ],
         ..case("usb-tablet", "test=usb")

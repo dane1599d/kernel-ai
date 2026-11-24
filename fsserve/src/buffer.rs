@@ -61,8 +61,7 @@ impl<D: BlockDev> Server<D> {
             let whole = core::mem::replace(&mut p.data, rest);
             let at = core::mem::replace(&mut p.off, cut);
             if let Err(e) = self.fs().write_at(object, at, &whole) {
-                self.drop_changes();
-                return Err(error(e));
+                return Err(self.drop_unasked(error(e)));
             }
         }
         Ok(())
@@ -80,8 +79,7 @@ impl<D: BlockDev> Server<D> {
             .and_then(|()| fs.write_at(p.object, p.off, &p.data));
         let _ = fs.set_volume(volume);
         if let Err(e) = written {
-            self.drop_changes();
-            return Err(error(e));
+            return Err(self.drop_unasked(error(e)));
         }
         Ok(())
     }

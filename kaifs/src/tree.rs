@@ -543,6 +543,22 @@ impl Tree {
             Some(root) => born_after(root, Bounds::ALL, since, store, visit),
         }
     }
+
+    /// [`Tree::scan_born_after`] from key `from` on, in key order, until
+    /// `visit` returns false: a page of changes reads about a page of the tree,
+    /// not all of it.
+    pub fn scan_born_after_from(
+        &self,
+        since: u64,
+        from: &Key,
+        store: &mut dyn Store,
+        visit: &mut dyn FnMut(&Key, &[u8]) -> bool,
+    ) -> Result<(), Error> {
+        match &self.root {
+            None => Ok(()),
+            Some(root) => born_after_from(root, Bounds::ALL, since, from, store, visit).map(|_| ()),
+        }
+    }
 }
 
 /// The keys a node may hold, as its parents route them: from `lo` on, and
@@ -620,6 +636,46 @@ fn born_after(
         }
     }
     Ok(())
+}
+
+/// [`born_after`] from `from` on; whether to go on.
+fn born_after_from(
+    child: &Child,
+    bounds: Bounds,
+    since: u64,
+    from: &Key,
+    store: &mut dyn Store,
+    visit: &mut dyn FnMut(&Key, &[u8]) -> bool,
+) -> Result<bool, Error> {
+    let owned;
+    let node = match child {
+        Child::Clean(ptr) if ptr.birth <= since => return Ok(true),
+        Child::Clean(ptr) => {
+            owned = load_within(ptr, bounds, store)?;
+            &owned
+        }
+        Child::Dirty(node) => &**node,
+    };
+    match node {
+        Node::Leaf(items) => {
+            let start = items.partition_point(|(k, _)| k < from);
+            for (key, value) in &items[start..] {
+                if !visit(key, value) {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        Node::Branch(_, children) => {
+            for i in slot(children, from)..children.len() {
+                let bounds = bounds.child(children, i);
+                if !born_after_from(&children[i].1, bounds, since, from, store, visit)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+    }
 }
 
 /// Whether to go on.
