@@ -231,6 +231,10 @@ struct FakeHost {
     /// as it was then, and what the next sends answer (else `Ok`).
     sends: RefCell<Vec<(crate::outbox::Send, Option<String>)>>,
     send_answers: RefCell<VecDeque<Result<String, crate::outbox::SendFailed>>>,
+    /// `desktop` says a send's card fits beside the pane.
+    send_fits: Cell<bool>,
+    /// Send texts given to `desktop`'s pane, by card id.
+    previews: RefCell<Vec<(u64, String)>>,
     /// Set to make the next log writes fail.
     log_fails: Cell<u32>,
 }
@@ -427,6 +431,8 @@ impl FakeHost {
             reboots: RefCell::new(Vec::new()),
             sends: RefCell::new(Vec::new()),
             send_answers: RefCell::new(VecDeque::new()),
+            send_fits: Cell::new(false),
+            previews: RefCell::new(Vec::new()),
             log_fails: Cell::new(0),
         })
     }
