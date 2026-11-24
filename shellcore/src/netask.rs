@@ -119,9 +119,10 @@ fn grant_res(app: &str, host: &str) -> String {
 }
 
 /// Checks `/system/state/netgrants` at start and drops the `session` grants:
-/// a file out of shape is audited and left as it is. The highest id the file
-/// held before the drop, for the shell's high-water mark, and whether last
-/// session's grants are gone from the file.
+/// a file out of shape or not read is audited and left as it is. The highest
+/// id the file held before the drop, for the shell's high-water mark, and
+/// whether last session's grants are gone from the file: when not, the drop
+/// is owed, and [`Shell::net_store`] makes it at the next good read.
 pub(crate) fn at_boot(host: &dyn Host) -> (u32, bool) {
     let mut grants = match read_store(host) {
         Ok(grants) => grants,
@@ -129,7 +130,7 @@ pub(crate) fn at_boot(host: &dyn Host) -> (u32, bool) {
             host.audit(&format!(
                 "{why}; no app reaches a new host until it is put right"
             ));
-            return (0, true);
+            return (0, false);
         }
     };
     let high = grants.high();
@@ -194,13 +195,43 @@ pub(crate) fn local_package(script: &str) -> Option<String> {
 }
 
 impl Shell {
+    /// The grants as the file holds them, for a decision or a change: while
+    /// the boot's drop of last session's `session` grants is owed (the file
+    /// could not be read or written then), it is made first, so none of them
+    /// grants anything; the owed drop clears once it is on disk.
+    fn net_store(&mut self) -> Result<NetGrants, String> {
+        let mut grants = read_store(self.host.as_ref())?;
+        if !self.grant_memo.session_stale.get() {
+            return Ok(grants);
+        }
+        // Their ids stay given, though the file no longer holds them.
+        self.net_high = self.net_high.max(grants.high());
+        let before = grants.clone();
+        grants.at_boot();
+        let written = match grants == before {
+            true => Ok(()),
+            false => write_store(self.host.as_ref(), &grants),
+        };
+        match written {
+            Ok(()) => {
+                self.grant_memo.session_stale.set(false);
+                self.host
+                    .audit("last session's network grants were dropped");
+            }
+            Err(why) => self.host.audit(&format!(
+                "the session network grants were not dropped: {why}"
+            )),
+        }
+        Ok(grants)
+    }
+
     /// What app `app`'s connection to `host` comes to, under `ceiling`, its
     /// package's `NetDest` in its text form. An ask waits as a card.
     pub fn net_connect(&mut self, app: &str, host: &str, ceiling: &str) -> Connect {
         let Ok(ceiling) = Dest::parse(ceiling) else {
             return Connect::Refused(format!("{app}'s package names no destination it may reach"));
         };
-        let grants = match read_store(self.host.as_ref()) {
+        let grants = match self.net_store() {
             Ok(grants) => grants,
             Err(why) => return Connect::Refused(why),
         };
@@ -253,7 +284,8 @@ impl Shell {
         while !self.net_cards.is_empty() {
             let asking = self.net_cards.remove(0);
             let (app, host) = (&asking.ask.app, &asking.ask.host);
-            let still = read_store(self.host.as_ref())
+            let still = self
+                .net_store()
                 .map(|grants| grants.decide(app, host, &asking.ceiling));
             if let Ok(Decision::Ask(_)) = still {
                 return Some(self.net_ask(asking));
@@ -444,8 +476,8 @@ impl Shell {
         asking: &NetAsking,
         answer: Answer,
     ) -> Result<(Grant, bool), String> {
+        let mut grants = self.net_store()?;
         let host = self.host.as_ref();
-        let mut grants = read_store(host)?;
         // Never an id this run gave before, though its grant is gone from the file.
         grants.number_above(self.net_high);
         let (app, name) = (&asking.ask.app, &asking.ask.host);

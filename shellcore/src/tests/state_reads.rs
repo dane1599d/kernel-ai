@@ -141,3 +141,70 @@ fn a_keep_running_list_that_could_not_be_read_at_start_is_never_written_over() {
          the keep-running list on disk could not be read at start"
     ));
 }
+
+/// Weather, installed, with `api.weather.example` allowed this session and
+/// `maps.weather.example` always; then a restart whose read of the grants
+/// fails, and the disk answering again after it.
+fn restarted_unread() -> (Rc<FakeHost>, Shell) {
+    let host = FakeHost::new();
+    host.installed
+        .borrow_mut()
+        .push(("weather".into(), "kai-actions 1".into()));
+    let mut before = shell(&host);
+    let menu = asks(&mut before, "api.weather.example");
+    assert!(allow(&host, &mut before, &menu).ok);
+    let menu = asks(&mut before, "maps.weather.example");
+    let once = host.mint(menu.id, menu.call());
+    let always = before.eval_console(&format!("answer {} always-target once={once}", menu.id));
+    assert!(always.text.contains("(always)"), "{always:?}");
+    host.read_errors.borrow_mut().push("net_grants_read");
+    let after = shell(&host);
+    host.read_errors.borrow_mut().clear();
+    (host, after)
+}
+
+fn grounds(host: &FakeHost, shell: &Shell, name: &str) -> bool {
+    use nethosts::Granted;
+    let name = nethosts::Host::parse(name).unwrap();
+    crate::appgrants::AppGrants::new(host, &shell.grant_memo).granted(&name)
+}
+
+#[test]
+fn last_sessions_grant_grants_nothing_after_a_boot_that_could_not_read_them() {
+    let (host, mut shell) = restarted_unread();
+    assert!(
+        host.net_disk
+            .borrow()
+            .as_deref()
+            .unwrap()
+            .contains("object=api.weather.example"),
+        "the boot could not drop it"
+    );
+    assert!(!grounds(&host, &shell, "api.weather.example"));
+    assert!(grounds(&host, &shell, "maps.weather.example"));
+    assert_eq!(
+        shell.net_connect("weather", "api.weather.example", CEILING),
+        NetConnect::Asked
+    );
+}
+
+#[test]
+fn the_owed_drop_lands_at_the_next_good_read_and_keeps_the_lasting_grants() {
+    let (host, mut shell) = restarted_unread();
+    assert!(matches!(
+        shell.net_connect("weather", "maps.weather.example", CEILING),
+        NetConnect::Granted(_)
+    ));
+    let disk = host.net_disk.borrow().clone().unwrap();
+    assert!(!disk.contains("object=api.weather.example"), "{disk}");
+    assert!(disk.contains("object=maps.weather.example"), "{disk}");
+    assert!(audited(&host, "last session's network grants were dropped"));
+    // Dropped once: the person's Allow now is this session's, and stays.
+    let menu = asks(&mut shell, "api.weather.example");
+    assert!(allow(&host, &mut shell, &menu).ok);
+    assert!(matches!(
+        shell.net_connect("weather", "api.weather.example", CEILING),
+        NetConnect::Granted(_)
+    ));
+    assert!(grounds(&host, &shell, "api.weather.example"));
+}
