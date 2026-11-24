@@ -347,6 +347,12 @@ fn run_arm(
         "runner": std::env::var("RUNNER_NAME").ok(),
         "context": CONTEXT, "started_unix": started, "memories": options.memories,
         "tasks_sha256": crate::sha256_hex(include_str!("tasks.rs").replace("\r\n", "\n").as_bytes()),
+        // The M8 50 are fluency's tasks, scored by fluency's judge: their own
+        // hash, so M8 results from before and after a change there (#1168's
+        // task 47) are visibly not comparable.
+        "m8_tasks_sha256": crate::sha256_hex(
+            include_str!("../fluency/tasks.rs").replace("\r\n", "\n").as_bytes()
+        ),
     });
     let mut records = Vec::new();
     let mut scored = Vec::new();
