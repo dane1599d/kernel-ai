@@ -687,6 +687,16 @@ pub fn name_of(pid: u64) -> Option<(Name, bool)> {
     })
 }
 
+/// Live process `pid`'s capability bits, from the table: PART_PEER_CAPS.
+pub fn caps_of(pid: u64) -> Option<u64> {
+    with_table(|table| {
+        table
+            .iter()
+            .find(|p| p.live() && p.pid == pid && p.state != State::Exiting)
+            .map(|p| p.limits.caps)
+    })
+}
+
 /// A thread of process slot `slot` starts: the scheduler applies its label.
 pub(super) fn thread_started(tid: Tid, slot: usize) {
     let pid = with_table(|table| table[slot].pid);
