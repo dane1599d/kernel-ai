@@ -49,7 +49,17 @@ impl Shell {
 
     /// `undo <agent>`: the newest live entry agent `agent` made, under the
     /// same checks as `undo <id>` (a later entry on what it changed asks).
+    /// Like a bare `undo`, it does not reach past an entry of that agent's
+    /// whose outcome is unknown: that call may have run.
     pub(crate) fn undo_agent(&mut self, agent: &str) -> Reply {
+        let own = self
+            .log
+            .entries()
+            .rev()
+            .filter(|e| e.agent.as_str() == agent);
+        if let Some(why) = unknown_refusal(own) {
+            return Reply::err(why);
+        }
         let entries = self.log.entries().map(|e| (e.id, &e.agent, e.live()));
         match agentid::stamp::last_live(entries, agent) {
             Some(id) => self.undo_entry(id),
@@ -60,20 +70,7 @@ impl Shell {
     /// What a bare `undo` says when the newest entry it would pass is an
     /// unknown outcome: what may have run, and that there is nothing to undo.
     fn bare_unknown_refusal(&self) -> Option<String> {
-        let entry = self
-            .log
-            .entries()
-            .rev()
-            .take_while(|e| !e.live())
-            .find(|e| e.state == crate::actlog::State::Unknown)?;
-        let row = entry
-            .outcome
-            .rsplit_once("; ")
-            .and_then(|(_, tail)| tail.strip_suffix(" may have run"))
-            .unwrap_or("a call");
-        Some(format!(
-            "the outcome of {row} is not known, so there is nothing to undo; check it"
-        ))
+        unknown_refusal(self.log.entries().rev())
     }
 
     /// Why a bare `undo` stops: since the newest live entry, an undo removed a
@@ -445,4 +442,23 @@ fn undone(said: &[String]) -> String {
         true => String::new(),
         false => format!("Undone: {}\n", said.join("; ")),
     }
+}
+
+/// What an undo says when, among `newest_first` down to the newest live one,
+/// an entry's outcome is unknown: what may have run, and that there is
+/// nothing to undo.
+fn unknown_refusal<'a>(
+    newest_first: impl Iterator<Item = &'a crate::actlog::Entry>,
+) -> Option<String> {
+    let entry = newest_first
+        .take_while(|e| !e.live())
+        .find(|e| e.state == crate::actlog::State::Unknown)?;
+    let row = entry
+        .outcome
+        .rsplit_once("; ")
+        .and_then(|(_, tail)| tail.strip_suffix(" may have run"))
+        .unwrap_or("a call");
+    Some(format!(
+        "the outcome of {row} is not known, so there is nothing to undo; check it"
+    ))
 }
