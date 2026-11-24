@@ -115,6 +115,9 @@ struct Tx {
     app_failed: Rc<RefCell<Option<String>>>,
     /// The person's own line made this run's calls (`Checked::person`).
     person: bool,
+    /// The row whose app call the app took and did not answer: it may have
+    /// run, so the run's outcome is not known (audit K #19).
+    unanswered: Rc<RefCell<Option<String>>>,
 }
 
 impl Tx {
@@ -127,6 +130,7 @@ impl Tx {
             outbox: Outbox::default(),
             app_failed: Rc::default(),
             person: false,
+            unanswered: Rc::default(),
         }
     }
 
@@ -967,6 +971,9 @@ pub struct Ran {
     /// person the app's words, and `failed` is the shell's own line in their
     /// place, the one a model turn is remembered by (#831).
     pub withheld: bool,
+    /// A row whose app call the app took and did not answer: the run may
+    /// have changed that app's state, so it did not fail cleanly.
+    pub unanswered: Option<String>,
 }
 
 /// Runs a script with the real OS, granted only the calls the plan found. Its
@@ -1027,6 +1034,7 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
         shown: line.take_shown(),
         failed,
         withheld,
+        unanswered: tx.unanswered.take(),
     }
 }
 

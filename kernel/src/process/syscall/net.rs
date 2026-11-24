@@ -116,7 +116,7 @@ fn send_metered(slot: usize, id: u64, data: &[u8]) -> Result<usize, Error> {
     }
     let sent = net::stream::send(owner(slot), id, data);
     let taken = *sent.as_ref().unwrap_or(&0) as u64;
-    net::dest::with_meter(&meter, |m| m.refund(len.saturating_sub(taken)));
+    net::dest::with_meter(&meter, |m| m.refund(len.saturating_sub(taken), today));
     sent
 }
 
@@ -311,7 +311,7 @@ fn narrow(slot: usize, raw: u64, spec_ptr: u64, spec_len: u64, rights: u64) -> R
     let text = core::str::from_utf8(&text).map_err(|_| Error::Invalid)?;
     let narrower = netdest::Dest::parse(text).map_err(|_| Error::Invalid)?;
     let live = |object| crate::handle::names(Kind::NetDest, object);
-    let object = net::dest::narrow(object, narrower, live)?;
+    let object = net::dest::narrow(object, narrower, live, owner(slot))?;
     let entry = captable::Entry::new(Kind::NetDest, rights, object);
     match crate::handle::give(slot, alloc::vec![entry]).first() {
         Some(&handle) if handle != Handle::NONE => Ok(u64::from(handle.0)),
@@ -351,14 +351,25 @@ fn resolve(
                 other => net::error_code(other),
             }
         })?;
-    let cap = usize::try_from(out_cap).unwrap_or(usize::MAX);
-    let bytes: Vec<u8> = found
+    // Only addresses a name's answer may lead to: none private, none of this
+    // machine or the link (audit K #17). An answer that leads only there is
+    // Private, so the app learns nothing about what sits at those addresses.
+    let reachable: Vec<_> = found
         .addresses
+        .iter()
+        .copied()
+        .filter(|&addr| net::dest::answerable(addr))
+        .collect();
+    if reachable.is_empty() && !found.addresses.is_empty() {
+        return Err(Error::Private);
+    }
+    let cap = usize::try_from(out_cap).unwrap_or(usize::MAX);
+    let bytes: Vec<u8> = reachable
         .iter()
         .take(cap)
         .flat_map(|ip| ip.octets())
         .collect();
     uaccess::copy_to_user(slot, out, &bytes)?;
-    net::dest::resolved(object, &found.addresses, found.ttl_s);
-    Ok(found.addresses.len() as u64)
+    net::dest::resolved(object, &reachable, found.ttl_s);
+    Ok(reachable.len() as u64)
 }

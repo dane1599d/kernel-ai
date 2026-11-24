@@ -17,6 +17,7 @@ const TRIAL_REPORT: &str = "init, started, a key and a click ran; 1 window";
 
 mod act;
 mod actions;
+mod agentconsent;
 mod agentstep;
 mod apart;
 mod appbuild;
@@ -37,6 +38,9 @@ mod effects;
 mod fake_host;
 mod files;
 mod fuzz;
+mod goalreports;
+mod goals;
+mod goalsteps;
 mod grantleaks;
 mod grantundo;
 mod guard;
@@ -62,6 +66,7 @@ mod told;
 mod transaction;
 mod tune;
 mod ui;
+mod undo_rows;
 mod waiting;
 
 /// A host whose clock moves `step_ns` on every reading.
@@ -138,6 +143,9 @@ struct FakeHost {
     app_replies: RefCell<VecDeque<String>>,
     /// Services the supervisor answers "no such app" for (the shell, llm).
     not_apps: RefCell<Vec<String>>,
+    /// Errors the next app calls answer, before any reply: as the shell's
+    /// `ask_app` gives the supervisor's `err ...` answers.
+    app_errors: RefCell<VecDeque<String>>,
     /// The saved appearance (`kai-appearance 1`).
     appearance: RefCell<Option<String>>,
     /// The trusted path's ONCE book: badge, digest, and whether it was used.
@@ -363,6 +371,7 @@ impl FakeHost {
             app_requests: RefCell::new(Vec::new()),
             app_replies: RefCell::new(VecDeque::new()),
             not_apps: RefCell::new(Vec::new()),
+            app_errors: RefCell::new(VecDeque::new()),
             appearance: RefCell::new(None),
             once: RefCell::new(Vec::new()),
             revoked: RefCell::new(Vec::new()),

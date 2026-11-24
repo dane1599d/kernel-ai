@@ -52,6 +52,9 @@ macro_rules! app {
         app!($name, $uses, $caps, "")
     };
     ($name:literal, $uses:literal, $caps:literal, $more:literal) => {
+        app!($name, $uses, $caps, $more, "")
+    };
+    ($name:literal, $uses:literal, $caps:literal, $more:literal, $last:literal) => {
         concat!(
             $name,
             " program=comphost caps=serve+component+call",
@@ -59,7 +62,9 @@ macro_rules! app {
             " uses=",
             $uses,
             $more,
-            " pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand"
+            " pages=8192 stack_pages=512 burst_ms=20000 version=1",
+            $last,
+            " start=demand"
         )
     };
 }
@@ -87,7 +92,7 @@ pub const NOTES_SAVED: &str = app!("notes-window", "desktop", "", " dir=apps");
 /// kernel grants comphost under this name alone. It is planned only with
 /// `kai-data`: it opens and saves the person's files through the shell's
 /// `files`, and a boot with no build service has no source for it to edit.
-pub const EDITOR_APP: &str = app!("editor", "desktop", "+edit");
+pub const EDITOR_APP: &str = app!("editor", "desktop", "+edit", "", " fuel_call=20000000");
 
 /// The model manager's window ([`super::MODELS_WINDOW`], started on demand). Its
 /// second route is `updated`, so it is planned after `updated` and the shell,

@@ -515,7 +515,7 @@ pub const RULES_REMOVE: Action = Action {
 pub const TYPED_ONLY: [Action; 2] = [RULES, RULES_REMOVE];
 
 /// Every OS row.
-pub const ROWS: [Action; 50] = [
+pub const ROWS: [Action; 55] = [
     CPUS,
     MEMORY,
     UPTIME_MS,
@@ -566,4 +566,9 @@ pub const ROWS: [Action; 50] = [
     crate::QUERY,
     crate::POWER_REBOOT,
     crate::NET_SEND,
+    crate::GOAL_SET,
+    crate::GOAL_LIST,
+    crate::GOAL_PAUSE,
+    crate::GOAL_RESUME,
+    crate::GOAL_CANCEL,
 ];

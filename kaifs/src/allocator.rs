@@ -69,7 +69,31 @@ pub struct Allocator {
     chain: Vec<BlockPtr>,
     deltas: u32,
     pub faults: Faults,
+    /// Free blocks held back for the work that frees space ([`RESERVE_MIN`]).
+    reserve: u64,
+    /// How far this work may take blocks from the reserve.
+    spend: Spend,
 }
+
+/// How far the work that follows may go into the reserve.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Spend {
+    /// Growth: none of it.
+    Keep,
+    /// Work that frees space only later, such as a trash (a slot folder and
+    /// its `info.cbor`, the item's blocks kept): down to half, so trashing
+    /// on a full disk never leaves the emptying nothing.
+    Half,
+    /// Work that frees space: an emptied trash, a truncate down, retention,
+    /// the GC's commit, a repair. All of it.
+    All,
+}
+
+/// The fewest free blocks held back from growth: a full disk keeps enough for
+/// the commits that free space (a trash, an emptied trash, a truncate down,
+/// retention and the GC, each needing new tree, volume-table and allocator
+/// blocks). The reserve is this or 1/200 of the data area, whichever is more.
+pub const RESERVE_MIN: u64 = 64;
 
 /// What the allocator holds, to compare a mounted state with a committed one.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -132,14 +156,42 @@ impl Allocator {
             chain: Vec::new(),
             deltas: 0,
             faults: Faults::default(),
+            reserve: RESERVE_MIN.max((area.1 - area.0) / 200),
+            spend: Spend::Keep,
         }
     }
 
-    /// A free run of `level`, recorded for this transaction's delta.
+    /// A free run of `level`, recorded for this transaction's delta. NoSpace if
+    /// it would leave fewer free blocks than the reserve, unless this work may
+    /// spend it ([`Allocator::spend_reserve`]).
     pub fn alloc(&mut self, level: u8) -> Result<Run, Error> {
         let run = self.buddy.alloc(level).ok_or(Error::NoSpace)?;
+        let floor = match self.spend {
+            Spend::Keep => self.reserve,
+            Spend::Half => self.reserve / 2,
+            Spend::All => 0,
+        };
+        if self.buddy.free_blocks() < floor {
+            self.buddy.free(run);
+            return Err(Error::NoSpace);
+        }
         self.allocs.push(run);
         Ok(run)
+    }
+
+    /// How far the work that follows may go into the reserve; what it was.
+    pub fn spend_reserve(&mut self, spend: Spend) -> Spend {
+        core::mem::replace(&mut self.spend, spend)
+    }
+
+    /// The free blocks held back from growth.
+    pub fn reserve(&self) -> u64 {
+        self.reserve
+    }
+
+    /// Whether freed runs are waiting out their two commits.
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
     }
 
     /// Frees `run` in generation `txn`: free again from `txn + 2`.

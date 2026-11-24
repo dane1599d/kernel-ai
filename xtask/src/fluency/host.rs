@@ -34,6 +34,8 @@ pub struct GateHost {
     pub answers: RefCell<Vec<Result<Answer, AnswerError>>>,
     /// What each `act` returned.
     pub calls: RefCell<Vec<Result<Call, ActError>>>,
+    /// The hosts each `net_fetch` asked for, in order.
+    pub fetched: RefCell<Vec<String>>,
     transport: Transport,
     act: Option<ActTransport>,
     /// A `cc` service for `c>` entries (spike S12-2, [`super::c`]), and its clock.
@@ -50,6 +52,7 @@ impl GateHost {
             changes: RefCell::new(Vec::new()),
             answers: RefCell::new(Vec::new()),
             calls: RefCell::new(Vec::new()),
+            fetched: RefCell::new(Vec::new()),
             transport,
             act: None,
             cc: RefCell::new(None),
@@ -72,6 +75,16 @@ impl GateHost {
 }
 
 impl shellcore::Host for GateHost {
+    /// P5's network, for the one site a task names (task 47), and every
+    /// fetch kept for the judge; any other host has none, as before.
+    fn net_fetch(&self, host: &str, _path: &str) -> Result<String, String> {
+        self.fetched.borrow_mut().push(String::from(host));
+        match host == super::tasks::EXAMPLE_HOST {
+            true => Ok(String::from(super::tasks::EXAMPLE_PAGE)),
+            false => Err(String::from(shellcore::NO_NET)),
+        }
+    }
+
     fn now_ns(&self) -> u64 {
         u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX)
     }

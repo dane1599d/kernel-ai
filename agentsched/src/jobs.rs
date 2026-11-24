@@ -116,6 +116,19 @@ pub fn parse(text: &str) -> Result<Option<Command<'_>>, String> {
     }
 }
 
+/// What llm says to an agent's request that is not an agent command.
+pub const AGENTS_USE_JOBS: &str = "err agents use agent-start";
+
+/// Whether llm serves `command` (a request's text) to the route with `badge`. The
+/// person's commands (`act` with their conversation, `remember`, `new`, the app
+/// rounds, `ask`, `script`, `tune` and the rest) are `kai`'s, and badge 0's: the
+/// services that call llm with no agent's badge (`updated`, the Monitor window).
+/// An agent's badge may send only `agent-*`, so no agent reads, plants or wipes the
+/// person's conversation or stops their app round.
+pub fn may_serve(badge: u64, command: &str) -> bool {
+    badge == NO_AGENT || badge == KAI || command.starts_with("agent-")
+}
+
 /// The name of the agent with `badge`, if it is a built-in other than `kai`.
 pub fn builtin_name(badge: u64) -> Option<&'static str> {
     BUILTIN

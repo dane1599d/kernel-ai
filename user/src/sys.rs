@@ -510,6 +510,11 @@ pub fn proc_quota_lower(pid: u64, pages: u64) -> Result<u64, Error> {
     )
 }
 
+/// Whether a live process has `pid` (PROC_ALIVE): false once it has ended.
+pub fn proc_alive(pid: u64) -> Result<bool, Error> {
+    call(call::PROC_ALIVE, [pid, 0, 0, 0, 0, 0]).map(|alive| alive == 1)
+}
+
 /// Process `pid` runs `normal` (0) or `background` (1) (PROC_CLASS_SET, needs
 /// SUPERVISE).
 pub fn proc_class_set(pid: u64, class: u64) -> Result<u64, Error> {
@@ -1498,4 +1503,16 @@ pub fn endpoint_mint(
         ],
     )
     .map(|raw| Handle(raw as u32))
+}
+
+/// The badge and rights of a `Dir` or `File` handle on this process's own
+/// endpoint (ENDPOINT_BADGE): one a client moved to it. Permission for any
+/// other handle.
+pub fn endpoint_badge(handle: Handle) -> Result<(u64, Rights), Error> {
+    let mut out = [0u64; 2];
+    call(
+        call::ENDPOINT_BADGE,
+        [u64::from(handle.0), out.as_mut_ptr() as u64, 0, 0, 0, 0],
+    )?;
+    Ok((out[0], Rights::from_bits_truncate(out[1] as u32)))
 }
