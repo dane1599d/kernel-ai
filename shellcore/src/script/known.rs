@@ -26,21 +26,32 @@ const KEYWORDS: [&str; 10] = [
     "eval",
 ];
 
-/// The first call inside a `try` that `engine` has no function for, as the
-/// error the trial run would have given had nothing caught it.
-pub(super) fn unknown_in_try(ast: &AST, engine: &Engine) -> Option<String> {
-    let known: Vec<(String, usize)> = engine.collect_fn_metadata(
+/// Every function an engine has: its name and its parameters' types.
+pub(super) type Known = Vec<(String, Vec<TypeId>)>;
+
+/// The functions `engine` has, read from its function table once for both
+/// checks.
+pub(super) fn known(engine: &Engine) -> Rc<Known> {
+    Rc::new(engine.collect_fn_metadata(
         None,
         |info| {
             Some((
                 String::from(info.metadata.name.as_str()),
-                info.metadata.num_params,
+                info.metadata.param_types.iter().copied().collect(),
             ))
         },
         true,
-    );
+    ))
+}
+
+/// The first call inside a `try` that `engine` has no function for, as the
+/// error the trial run would have given had nothing caught it.
+pub(super) fn unknown_in_try(ast: &AST, known: &Known) -> Option<String> {
     let has = |name: &str, params: usize| {
-        KEYWORDS.contains(&name) || known.iter().any(|(n, p)| n == name && *p == params)
+        KEYWORDS.contains(&name)
+            || known
+                .iter()
+                .any(|(n, types)| n == name && types.len() == params)
     };
     let mut found = None;
     ast.walk(&mut |path: &[ASTNode]| {
@@ -88,40 +99,22 @@ fn is_operator(call: &FnCallExpr) -> bool {
 /// "Function not found", wrong argument types included: a `catch` would hide
 /// it, so the run is no proof. Rhai asks the hook after any native call fails;
 /// one whose name, count and types match a function failed in that function
-/// (a stub row's own error), which a `catch` may well mean to catch.
-pub(super) fn watch(engine: &mut Engine) -> Rc<RefCell<Option<String>>> {
-    let known: Vec<(String, Vec<TypeId>)> = engine.collect_fn_metadata(
-        None,
-        |info| {
-            Some((
-                String::from(info.metadata.name.as_str()),
-                info.metadata.param_types.iter().copied().collect(),
-            ))
-        },
-        true,
-    );
+/// (a stub row's own error), which a `catch` may well mean to catch. `print`
+/// and `debug` are functions like any other here: with arguments no overload
+/// takes they were not found either.
+pub(super) fn watch(engine: &mut Engine, known: Rc<Known>) -> Rc<RefCell<Option<String>>> {
     let missed: Rc<RefCell<Option<String>>> = Rc::default();
     let seen = Rc::clone(&missed);
     #[allow(deprecated)] // volatile, not deprecated
     engine.on_missing_function(move |name, args, _, _| {
-        let takes = |types: &[TypeId]| {
-            types.len() == args.len()
-                && types
-                    .iter()
-                    .zip(args.iter())
-                    // A function that ran and failed may have taken its
-                    // arguments out, leaving `()`.
-                    .all(|(t, arg)| {
-                        *t == TypeId::of::<Dynamic>() || *t == arg.type_id() || arg.is_unit()
-                    })
-        };
         let operator = !name
             .chars()
             .next()
             .is_some_and(|c| c.is_alphabetic() || c == '_');
-        let found = KEYWORDS.contains(&name)
-            || operator
-            || known.iter().any(|(n, types)| n == name && takes(types));
+        let found = operator
+            || known
+                .iter()
+                .any(|(n, types)| n == name && takes(types, args));
         if !found && seen.borrow().is_none() {
             let types: Vec<&str> = args.iter().map(|arg| arg.type_name()).collect();
             *seen.borrow_mut() = Some(format!("Function not found: {name} ({})", types.join(", ")));
@@ -129,4 +122,25 @@ pub(super) fn watch(engine: &mut Engine) -> Rc<RefCell<Option<String>>> {
         Ok(None)
     });
     missed
+}
+
+/// Whether a function with parameters `types` takes `args`: each one of its
+/// type, or a `Dynamic` parameter. A function that ran and failed has taken its
+/// by-value arguments out, leaving `()`; the first (which a method borrows) and
+/// a string (which Rhai may lend as `&str`) can stay. So `()` matches only when
+/// every argument after the first is `()` or a string: a call given a `()`
+/// next to a number, a list or a map (a map key that is not there, as in
+/// `fixed((), 0)`) was not found. A `()` among strings only cannot be told
+/// apart, and still matches.
+fn takes(types: &[TypeId], args: &[&mut Dynamic]) -> bool {
+    let typed = |t: &TypeId, arg: &Dynamic| *t == TypeId::of::<Dynamic>() || *t == arg.type_id();
+    let taken = args
+        .iter()
+        .skip(1)
+        .all(|arg| arg.is_unit() || arg.is_string());
+    types.len() == args.len()
+        && types
+            .iter()
+            .zip(args.iter())
+            .all(|(t, arg)| typed(t, arg) || (taken && arg.is_unit()))
 }
