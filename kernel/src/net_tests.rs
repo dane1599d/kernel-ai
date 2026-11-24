@@ -627,6 +627,11 @@ pub fn stream_check(cmdline: &str) -> Result<(), &'static str> {
         return Err("net-stream: a closed stream was left open");
     }
     log!("net-stream: streams echoed through the handle, kept to its port and to 16, and closed");
+    match net::interrupts_taken() {
+        Some(taken) if taken > 0 => log!("net-stream: the card raised {taken} receive interrupts"),
+        Some(_) => log!("net-stream: receive interrupts are on, but none came"),
+        None => log!("net-stream: the card was polled, with no receive interrupts"),
+    }
     let (_, entry) = netdest(&spec)?;
     let args = alloc::format!("stream=hold port={port}");
     let request = SpawnRequest {

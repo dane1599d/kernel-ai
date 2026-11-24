@@ -117,6 +117,8 @@ impl pci::ConfigRegionAccess for EcamAccess {
 pub struct Found {
     /// The first network card; any other is left alone.
     pub net: Option<SplitTransport>,
+    /// The network card's receive vector, when MSI-X is on.
+    pub net_vector: Option<u8>,
     /// A network card was there, but its transport could not be set up.
     pub net_failed: bool,
     /// Every block device, in bus order.
@@ -140,6 +142,7 @@ pub fn probe(platform: &acpitables::Platform, cmdline: &str) -> Result<Found, &'
     let drv = devmatch::drv_value(cmdline);
     let mut found = Found {
         net: None,
+        net_vector: None,
         net_failed: false,
         disks: Vec::new(),
         gpu: None,
@@ -284,7 +287,18 @@ fn bind(
         return Some(Outcome::Failed(error::TRANSPORT));
     };
     let split = match kind {
-        DeviceType::Network | DeviceType::GPU => split_transport(access, at, transport),
+        DeviceType::Network => split_transport(access, at, transport).map(|mut split| {
+            let address = pci::PciAddress::new(0, at.bus, at.device, at.function);
+            match enable_msix(access, address, crate::net::on_interrupt) {
+                Ok(vector) => {
+                    split.route_queue(crate::net::RECEIVE_QUEUE, 0);
+                    found.net_vector = Some(vector);
+                }
+                Err(why) => log!("pci: {driver} at {at}: {why}; polled"),
+            }
+            split
+        }),
+        DeviceType::GPU => split_transport(access, at, transport),
         DeviceType::EntropySource => {
             found.rng = Some(transport);
             return Some(Outcome::Running(None));
@@ -295,7 +309,10 @@ fn bind(
         }
     };
     match (kind, split) {
-        (DeviceType::Network, Ok(transport)) => found.net = Some(transport),
+        (DeviceType::Network, Ok(transport)) => {
+            found.net = Some(transport);
+            return Some(Outcome::Running(found.net_vector));
+        }
         (_, Ok(transport)) => found.gpu = Some(transport),
         (kind, Err(message)) => {
             log!("pci: {driver} at {at}: {message}");
