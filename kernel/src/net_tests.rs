@@ -342,7 +342,43 @@ pub fn dest_check() -> Result<(), &'static str> {
     llm_grant()?;
     any_host_pinned()?;
     sweep_check()?;
+    private_answers()?;
     ttl_zero_check()
+}
+
+/// Audit K #17: an answer that leads to a private network is not kept for a
+/// connect, while QEMU's 10.0.2.0/24 is, on this `online=test` boot only.
+fn private_answers() -> Result<(), &'static str> {
+    let (object, _) = netdest(KAI_TEST)?;
+    let lan = core::net::Ipv4Addr::new(192, 168, 1, 1);
+    let carrier = core::net::Ipv4Addr::new(100, 64, 0, 1);
+    let fixture = core::net::Ipv4Addr::new(10, 0, 2, 99);
+    let other_ten = core::net::Ipv4Addr::new(10, 1, 2, 3);
+    net::dest::resolved(object, &[lan, carrier, fixture, other_ten], 300);
+    let tcp = netdest::Protocol::Tcp;
+    // Through RESOLVE_ON from ring 3: a name answering only a private address
+    // is Private, and a mixed answer gives back only its test-subnet address.
+    let (_, entry) = netdest(KAI_TEST)?;
+    netcheck("netdest-p", "host=lan.kai.test expect=private", Some(entry))?;
+    let (_, entry) = netdest(KAI_TEST)?;
+    netcheck(
+        "netdest-q",
+        "host=mixed.kai.test expect=10.0.2.97",
+        Some(entry),
+    )?;
+    let refused = [lan, carrier, other_ten].iter().all(|&addr| {
+        !net::dest::answerable(addr) && !net::dest::may_connect(object, tcp, addr, 8000)
+    });
+    if !refused
+        || !net::dest::answerable(fixture)
+        || !net::dest::may_connect(object, tcp, fixture, 8000)
+    {
+        return Err("net-dest: a private answer was kept, or the test subnet was refused");
+    }
+    log!(
+        "net-dest: private answers are refused; QEMU's test subnet is reached only with online=test"
+    );
+    Ok(())
 }
 
 /// Audit K #18: an address resolved with TTL 0 may still be connected to at
