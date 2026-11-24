@@ -21,7 +21,7 @@
 //!   the hint, so it alone can tell.
 
 use crate::{Call, Server, Target, error};
-use fsproto::{Error, MAX_DATA, Reply};
+use fsproto::{Error, MAX_DATA, MAX_SHM_DATA, Reply};
 use kabi::fs::{MODELS, MODELS_ROOT};
 use kabi::handle::Rights;
 use kabi::model::Fnv1a;
@@ -102,6 +102,32 @@ impl<D: BlockDev> Server<D> {
         if data.len() > MAX_DATA {
             return Err(Error::Invalid);
         }
+        self.push(data)
+    }
+
+    /// [`Request::SealedPushShm`]: the next `len` bytes from the start of
+    /// `shm`, copied out once first. The client can write its `Shm` while
+    /// `fs` reads it, and the bytes hashed must be the bytes kept.
+    pub(crate) fn sealed_push_shm(
+        &mut self,
+        call: &Call,
+        target: &Target,
+        len: u32,
+        shm: Option<&mut [u8]>,
+    ) -> Result<Reply, Error> {
+        self.models_only(call, target)?;
+        self.owned(call.caller)?;
+        let shm = shm.ok_or(Error::Invalid)?;
+        let len = len as usize;
+        if len > MAX_SHM_DATA || len > shm.len() {
+            return Err(Error::Invalid);
+        }
+        let data = shm[..len].to_vec();
+        self.push(&data)
+    }
+
+    /// Pushes `data`, which `fs` alone holds, into the open blob and its hashes.
+    fn push(&mut self, data: &[u8]) -> Result<Reply, Error> {
         let mut sealing = self.sealing.take().ok_or(Error::Invalid)?;
         let fs = self.fs();
         let pushed = fs

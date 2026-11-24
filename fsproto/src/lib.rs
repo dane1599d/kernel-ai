@@ -290,6 +290,17 @@ pub enum Request {
         #[n(1)]
         len: u32,
     },
+    /// [`Request::SealedPush`] with the blob's next `len` bytes in the start
+    /// of one `Shm` moved in, up to [`MAX_SHM_DATA`] and the `Shm`'s size,
+    /// else Invalid: [`Reply::Done`]. `fs` copies them out once, then hashes
+    /// and writes that copy, so what it keeps is what it hashed. An older
+    /// `fs` answers [`Error::BadRequest`], and the client pushes in messages.
+    /// Number 31: 30 is #1117's SealedRemove.
+    #[n(31)]
+    SealedPushShm {
+        #[n(0)]
+        len: u32,
+    },
     /// What a reader that keeps up (a search index) asks, a round at a time:
     /// the objects beneath this handle's folder (the whole volume on a
     /// volume's root) whose last committed change is in `(since, upto]`, in
