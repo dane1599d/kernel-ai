@@ -305,3 +305,32 @@ fn an_owed_drop_whose_write_fails_twice_still_grants_nothing() {
     assert!(!disk.contains("object=api.weather.example"), "{disk}");
     assert!(!shell.grant_memo.session_stale.get());
 }
+
+#[test]
+fn a_packages_grants_dropped_while_the_drop_is_owed_write_the_dropped_view() {
+    use kaigrants::Life;
+    let host = FakeHost::new();
+    *host.net_disk.borrow_mut() = Some(super::appgrants::file(&[
+        ("weather", "api.weather.example", Life::Session),
+        ("foo", "api.foo.example", Life::Persistent),
+        ("weather", "maps.weather.example", Life::Persistent),
+    ]));
+    host.read_errors.borrow_mut().push("net_grants_read");
+    let mut shell = shell(&host);
+    host.read_errors.borrow_mut().clear();
+    assert!(shell.grant_memo.session_stale.get());
+    // The owed drop's own write fails; the undo of foo's install drops
+    // foo's grant, and its write, of the dropped view, lands both.
+    host.net_write_fails.set(1);
+    shell.local_removed("cc build foo 0.0.3\nprovenance x");
+    let disk = host.net_disk.borrow().clone().unwrap();
+    assert!(!disk.contains("object=api.foo.example"), "{disk}");
+    assert!(!disk.contains("object=api.weather.example"), "{disk}");
+    assert!(disk.contains("object=maps.weather.example"), "{disk}");
+    assert!(!shell.grant_memo.session_stale.get());
+    assert!(audited(
+        &host,
+        "(foo on api.foo.example) dropped: the undo took foo out"
+    ));
+    assert!(audited(&host, "last session's network grants were dropped"));
+}
