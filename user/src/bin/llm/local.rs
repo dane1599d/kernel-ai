@@ -618,8 +618,11 @@ impl Local {
         self.engine.take_picking();
         // The person's request brings the installed apps' rows; an agent's is decoded
         // against the pack alone, and its `apps` never reach the person's grammar.
+        let engine = &self.engine;
         if whose == Whose::Person
-            && let Some(grammar) = self.apps.update(&request.apps)
+            && let Some(grammar) = self
+                .apps
+                .update(&request.apps, &|text| engine.text_tokens(text))
         {
             self.grammar = grammar;
         }
