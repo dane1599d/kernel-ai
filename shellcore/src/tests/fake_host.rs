@@ -289,8 +289,11 @@ impl Host for FakeHost {
         Ok(())
     }
 
-    fn withheld_read(&self) -> Option<String> {
-        self.withheld_disk.borrow().clone()
+    fn withheld_read(&self) -> Result<Option<String>, String> {
+        match self.withheld_error.borrow().clone() {
+            Some(why) => Err(why),
+            None => Ok(self.withheld_disk.borrow().clone()),
+        }
     }
 
     fn withheld_write(&self, text: &str) -> Result<(), String> {

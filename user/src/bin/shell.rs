@@ -198,7 +198,10 @@ fn give_appearance(system: &System) {
     {
         return;
     }
-    let (Some(route), Some(text)) = (desktop(), system.state.read(files::APPEARANCE)) else {
+    let (Some(route), Some(text)) = (
+        desktop(),
+        system.state.read(files::APPEARANCE).ok().flatten(),
+    ) else {
         system.appearance_due.set(false);
         return;
     };

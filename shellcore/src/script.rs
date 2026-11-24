@@ -706,7 +706,7 @@ impl Host for Stub {
     fn apps(&self) -> Option<&core::cell::RefCell<crate::apps::Apps>> {
         self.0.apps()
     }
-    fn withheld_read(&self) -> Option<String> {
+    fn withheld_read(&self) -> Result<Option<String>, String> {
         self.0.withheld_read()
     }
     // A trial withholds nothing: the file is the one copy.
