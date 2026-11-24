@@ -93,7 +93,14 @@ impl Shell {
             agentabi::Owner::App(_) => core::slice::from_ref(row),
             _ => &agentabi::ROWS,
         };
-        match self.roster.admit_in(admitted.caller(), row.name, rows) {
+        // A goal's step stays under its goal's ceiling.
+        let readmitted = match admitted.goal() {
+            Some(goal) => self
+                .roster
+                .admit_for_goal_in(admitted.caller(), goal, row.name, rows),
+            None => self.roster.admit_in(admitted.caller(), row.name, rows),
+        };
+        match readmitted {
             Ok(admission) => {
                 self.acting = Some(admission);
                 Ok(())
