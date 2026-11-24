@@ -804,3 +804,31 @@ fn an_asked_fetch_opens_on_allow_and_an_added_one_on_deny() {
         "{reply:?}"
     );
 }
+
+/// Fix check of #1186: a typed download and a download the line asked the AI
+/// for open on Allow too.
+#[test]
+fn an_asked_download_opens_on_allow_typed_or_through_kai() {
+    let host = FakeHost::new();
+    let mut typed = shell(&host);
+    let reply = typed.eval("models download fixture-dl");
+    assert!(
+        reply.text.starts_with(
+            "menu 1 asked
+"
+        ),
+        "{reply:?}"
+    );
+    let host = FakeHost::new();
+    let mut asked = shell(&host);
+    let net = r#"{"name":"model_fetch","arguments":{"source":"net","name":"fixture-dl"}}"#;
+    host.calls.borrow_mut().push_back(call(net));
+    let reply = asked.eval("download the fixture-dl model from the net");
+    assert!(
+        reply.text.starts_with(
+            "menu 1 asked
+"
+        ),
+        "{reply:?}"
+    );
+}
