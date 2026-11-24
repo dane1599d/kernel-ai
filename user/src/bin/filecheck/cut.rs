@@ -54,8 +54,10 @@ pub fn actions(home: Handle) -> Result<(), String> {
         state.commits.len()
     );
     let files = verify(dir)?;
-    mark(home, "actions.ok")?;
+    // The line before the mark: the kernel ends the case once it sees the
+    // mark, so a line printed after it could be cut off by the power-off.
     println!("filecheck: {files} files whole after the actions");
+    mark(home, "actions.ok")?;
     Ok(())
 }
 
