@@ -191,6 +191,11 @@ pub const NO_NET: &str = "the network rows need the OS network service here";
 /// and the gates' stand-ins say the same, so their answers compare equal.
 pub const NO_FILES: &str = "there are no files here (no kai-data disk)";
 
+/// What the state files read once at start are called in what is audited.
+pub(crate) const RULES: &str = "rules";
+pub(crate) const STANDING: &str = "standing instructions";
+pub(crate) const KEEP: &str = "keep-running list";
+
 /// What the shell needs from the operating system.
 pub trait Host {
     fn now_ns(&self) -> u64;
@@ -459,17 +464,19 @@ pub trait Host {
         Ok(())
     }
     /// The standing rules as `/system/state/rules` holds them (`kai-grants 1`
-    /// rule lines), read once at start; `None` when there are none (P2 task 12).
-    fn rules_read(&self) -> Option<String> {
-        None
+    /// rule lines), read once at start; `None` when there are none (P2 task 12),
+    /// and why not when it could not be read.
+    fn rules_read(&self) -> Result<Option<String>, String> {
+        Ok(None)
     }
     /// Writes the whole rules file, after a rule is added or removed.
     fn rules_write(&self, _text: &str) -> Result<(), String> {
         Ok(())
     }
-    /// The keep-running list as `/system/state/keep` holds it.
-    fn keep_read(&self) -> Option<String> {
-        None
+    /// The keep-running list as `/system/state/keep` holds it, and why not
+    /// when it could not be read.
+    fn keep_read(&self) -> Result<Option<String>, String> {
+        Ok(None)
     }
     fn keep_write(&self, _text: &str) -> Result<(), String> {
         Err(String::from("there is no /system/state here"))
@@ -497,18 +504,20 @@ pub trait Host {
         Err(String::from("grants cannot be revoked here"))
     }
     /// The apps' network grants as `/system/state/netgrants` holds them
-    /// (`kai-grants 1` host lines, P5 task 13).
-    fn net_grants_read(&self) -> Option<String> {
-        None
+    /// (`kai-grants 1` host lines, P5 task 13), and why not when it could
+    /// not be read.
+    fn net_grants_read(&self) -> Result<Option<String>, String> {
+        Ok(None)
     }
     /// Writes the whole network grants file, before a change is told.
     fn net_grants_write(&self, _text: &str) -> Result<(), String> {
         Err(String::from("network grants cannot be kept here"))
     }
     /// The standing instructions as `/system/state/standing` holds them
-    /// (`kai-standing 1`), read once at start (P3 task 11).
-    fn standing_read(&self) -> Option<String> {
-        None
+    /// (`kai-standing 1`), read once at start (P3 task 11), and why not when
+    /// it could not be read.
+    fn standing_read(&self) -> Result<Option<String>, String> {
+        Ok(None)
     }
     /// Writes the whole standing-instruction store, after one changes.
     fn standing_write(&self, _text: &str) -> Result<(), String> {
@@ -824,6 +833,9 @@ pub struct Shell {
     /// The log text last written to `/system/log`, so an unchanged log is not
     /// written again.
     saved_log: Option<String>,
+    /// The state files read once at start that could not be read: never
+    /// written over this run ([`Shell::read_at_start`]).
+    unread: Vec<&'static str>,
     /// The ONCE of the menu answer now running, kept for the call's owner to
     /// check: the shell does not spend it (P1 task 14).
     owner_once: Option<u64>,
@@ -932,6 +944,7 @@ impl Shell {
             clarified_by_model: false,
             pack_id: llmproto::pack::act_pack_id(),
             saved_log: None,
+            unread: Vec::new(),
             owner_once: None,
             steered: None,
             person_line: false,
@@ -964,7 +977,8 @@ impl Shell {
     /// The rules `/system/state/rules` holds; a file refused whole is set aside,
     /// and the shell starts with none.
     fn with_saved_rules(mut self) -> Self {
-        let Some(text) = self.host.rules_read() else {
+        let read = self.host.rules_read();
+        let Some(text) = self.read_at_start(RULES, read) else {
             return self;
         };
         match rules::Rules::restore(&text) {
@@ -976,12 +990,44 @@ impl Shell {
         self
     }
 
+    /// `what`'s file as the host read it at start: `None` with no file, or
+    /// with one that could not be read. That one is audited and never written
+    /// over this run ([`Shell::not_unread`]): a whole-file write would lose
+    /// what it held.
+    pub(crate) fn read_at_start(
+        &mut self,
+        what: &'static str,
+        read: Result<Option<String>, String>,
+    ) -> Option<String> {
+        match read {
+            Ok(text) => text,
+            Err(why) => {
+                self.host.audit(&format!(
+                    "the {what} on disk could not be read ({why}); starting with none, \
+                     and the file is not written over"
+                ));
+                self.unread.push(what);
+                None
+            }
+        }
+    }
+
+    /// Why `what`'s file may not be written: it could not be read at start.
+    pub(crate) fn not_unread(&self, what: &str) -> Result<(), String> {
+        match self.unread.contains(&what) {
+            true => Err(format!(
+                "the {what} on disk could not be read at start, so it is not written over"
+            )),
+            false => Ok(()),
+        }
+    }
+
     /// Writes the rules to `/system/state/rules`; a failure is audited, and the
     /// rules hold in memory.
     pub(crate) fn save_rules(&self) {
         let written = self
-            .rules
-            .text()
+            .not_unread(RULES)
+            .and_then(|()| self.rules.text())
             .and_then(|text| self.host.rules_write(&text));
         if let Err(why) = written {
             self.host
