@@ -94,6 +94,16 @@ fn read_only(badge: u64) -> bool {
 /// not running.
 pub type NameOf = fn(u64, &mut [u8; kabi::MAX_NAME]) -> Option<usize>;
 
+/// How `fs` learns a live caller's plan capability bits ([`Server::set_caps_of`],
+/// PART_PEER_CAPS), or `None` when the call fails: a pid not running, a kernel
+/// without the call, or any other error.
+pub type CapsOf = fn(u64) -> Option<u64>;
+
+/// The callers whose answer [`Server::is_person`] keeps: pids are never reused,
+/// so an answer stays true for the process's life, and a few cover the shell
+/// and the apps writing now.
+const PEOPLE_KEPT: usize = 16;
+
 /// The most a read-only folder's handle may use, however it was made.
 const SETTINGS_RIGHTS: Rights = Rights::READ.union(Rights::ENUMERATE).union(BASE);
 
@@ -217,6 +227,12 @@ pub struct Server<D: BlockDev> {
     /// A caller's process name, for the one folder of `/system/apps` it may
     /// open ([`Server::set_name_of`]).
     name_of: NameOf,
+    /// A caller's plan caps, for the person's share of the reserve
+    /// ([`Server::set_caps_of`]).
+    caps_of: CapsOf,
+    /// Callers already asked whether they are the person, oldest first
+    /// ([`Server::is_person`]).
+    people: Vec<(u64, bool)>,
     /// The model store's blob being written in the open action ([`models`]).
     sealing: Option<models::Sealing>,
     /// What a Rename moved with it, as `fs` read it (ENDPOINT_BADGE): a `Dir`'s
@@ -283,6 +299,8 @@ impl<D: BlockDev> Server<D> {
             cache: None,
             alive: |_| true,
             name_of: |_, _| None,
+            caps_of: |_| None,
+            people: Vec::new(),
             sealing: None,
             into: None,
         };
@@ -327,6 +345,39 @@ impl<D: BlockDev> Server<D> {
     /// the folder opens nothing.
     pub fn set_name_of(&mut self, name_of: NameOf) {
         self.name_of = name_of;
+    }
+
+    /// How `fs` learns a caller's plan capability bits (PART_PEER_CAPS). The
+    /// holder of `cap::POLICY`, which the kernel gives the shell's line alone,
+    /// is the person, and their trash and truncate may go a quarter further
+    /// into the reserve than any app's ([`Server::spends_reserve`]). Until
+    /// this is set, no caller is the person.
+    pub fn set_caps_of(&mut self, caps_of: CapsOf) {
+        self.caps_of = caps_of;
+        self.people.clear();
+    }
+
+    /// Whether `caller` is the person: it holds `cap::POLICY`. Asked of the
+    /// kernel once a caller, its answer kept for the [`PEOPLE_KEPT`] latest;
+    /// the kernel (pid 0) is not. A call that fails is not kept: that request
+    /// gets an app's tier and the next one asks again, so one passing failure
+    /// never makes the shell an app on the full disk that needs its quarter.
+    fn is_person(&mut self, caller: u64) -> bool {
+        if caller == 0 {
+            return false;
+        }
+        if let Some(&(_, person)) = self.people.iter().find(|(pid, _)| *pid == caller) {
+            return person;
+        }
+        let Some(caps) = (self.caps_of)(caller) else {
+            return false;
+        };
+        let person = caps & kabi::cap::POLICY != 0;
+        if self.people.len() == PEOPLE_KEPT {
+            self.people.remove(0);
+        }
+        self.people.push((caller, person));
+        person
     }
 
     /// `/system/apps` is every app's saved state, one folder an app, and the
@@ -648,10 +699,11 @@ impl<D: BlockDev> Server<D> {
     /// growth filled can still be emptied, and no client can drain them: all
     /// of it only for work that frees space at once and cannot be looped to
     /// spend it (an emptied trash, a dropped update snapshot), half for a
-    /// trash or a truncate, whose space comes back later, none for growth. An
-    /// action's commit, by Commit or its owner's Sync, gets the least of its
-    /// changes'. Idle's retention and GC and `check --repair` take all of it
-    /// themselves.
+    /// trash or a truncate, whose space comes back later, down to a quarter
+    /// for the person's ([`Server::is_person`]), so no app's trashing keeps
+    /// them from deleting, none for growth. An action's commit, by Commit or
+    /// its owner's Sync, gets the least of its changes'. Idle's retention and
+    /// GC and `check --repair` take all of it themselves.
     pub(crate) fn spends_reserve(
         &mut self,
         caller: u64,
@@ -669,7 +721,12 @@ impl<D: BlockDev> Server<D> {
             Request::EmptyTrash | Request::UpdateDrop { .. } | Request::Abort => Spend::All,
             // Space that may come back only later, while its copy-on-write
             // costs blocks now, so a loop of it could drain all of the
-            // reserve: half, as a trash.
+            // reserve: half, as a trash. The person has their own quarter
+            // below the apps' half, so an app that trashes until refused still
+            // leaves them room to delete.
+            Request::Trash { .. } | Request::Truncate { .. } if self.is_person(caller) => {
+                Spend::Person
+            }
             Request::Trash { .. } | Request::Truncate { .. } => Spend::Half,
             // A model blob's removal, outside any action, frees the blob once
             // the GC pass it starts has run, and costs copy-on-write now. Each
