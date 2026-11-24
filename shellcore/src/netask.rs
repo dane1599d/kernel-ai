@@ -487,6 +487,8 @@ impl Shell {
             .map_err(String::from)?
             .ok_or_else(|| String::from("declined"))?;
         write_store(host, &grants)?;
+        // `net_store`'s view went to disk whole: an owed drop landed with it.
+        self.grant_memo.session_stale.set(false);
         self.net_high = self.net_high.max(made);
         let grant = grants
             .of(app)
@@ -497,9 +499,14 @@ impl Shell {
         Ok((grant, existed))
     }
 
-    /// Settings' `net`: one line a grant, `#<id> <app> <host> <life>`.
+    /// Settings' `net`: one line a grant, `#<id> <app> <host> <life>`;
+    /// while the boot's drop is owed, without last session's `session` ones,
+    /// which grant nothing.
     pub(crate) fn net_lines(&self) -> Result<String, String> {
-        let grants = read_store(self.host.as_ref())?;
+        let mut grants = read_store(self.host.as_ref())?;
+        if self.grant_memo.session_stale.get() {
+            grants.at_boot();
+        }
         let text = grants.text()?;
         let parsed = kaigrants::parse(&text).map_err(|e| e.why.to_string())?;
         let lines: Vec<String> = parsed

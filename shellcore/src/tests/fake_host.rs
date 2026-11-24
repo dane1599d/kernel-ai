@@ -276,6 +276,10 @@ impl Host for FakeHost {
     }
 
     fn net_grants_write(&self, text: &str) -> Result<(), String> {
+        if self.net_write_fails.get() > 0 {
+            self.net_write_fails.set(self.net_write_fails.get() - 1);
+            return Err(String::from("the disk did not answer"));
+        }
         *self.net_disk.borrow_mut() = Some(text.into());
         Ok(())
     }

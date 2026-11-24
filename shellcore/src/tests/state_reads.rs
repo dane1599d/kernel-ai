@@ -208,3 +208,45 @@ fn the_owed_drop_lands_at_the_next_good_read_and_keeps_the_lasting_grants() {
     ));
     assert!(grounds(&host, &shell, "api.weather.example"));
 }
+
+#[test]
+fn an_allow_whose_write_lands_the_owed_drop_keeps_its_grant() {
+    let (host, mut shell) = restarted_unread();
+    // The owed drop cannot be written while weather asks and the card is up.
+    host.net_write_fails.set(u32::MAX);
+    let menu = asks(&mut shell, "api.weather.example");
+    // The Allow's drop write fails; the grant's write, of the dropped view
+    // and the new grant, lands both.
+    host.net_write_fails.set(1);
+    let reply = allow(&host, &mut shell, &menu);
+    assert!(reply.ok, "{reply:?}");
+    assert!(matches!(
+        shell.net_connect("weather", "api.weather.example", CEILING),
+        NetConnect::Granted(_)
+    ));
+    let disk = host.net_disk.borrow().clone().unwrap();
+    assert_eq!(
+        disk.matches("object=api.weather.example").count(),
+        1,
+        "{disk}"
+    );
+    assert!(!disk.contains("grant 1 "), "last session's is gone: {disk}");
+    assert!(disk.contains("object=maps.weather.example"), "{disk}");
+    assert!(!shell.grant_memo.session_stale.get());
+}
+
+#[test]
+fn settings_lists_only_the_grants_that_grant_while_the_drop_is_owed() {
+    let (host, mut shell) = restarted_unread();
+    let listed = shell.settings(SETTINGS_APP, "net", false).unwrap();
+    assert!(!listed.contains("api.weather.example"), "{listed}");
+    assert!(listed.contains("maps.weather.example always"), "{listed}");
+    assert!(
+        host.net_disk
+            .borrow()
+            .as_deref()
+            .unwrap()
+            .contains("object=api.weather.example"),
+        "a listing writes nothing"
+    );
+}
