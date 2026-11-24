@@ -79,30 +79,48 @@ pub fn commit(slot: usize, addr: u64, bytes: u64) -> Result<u64, Error> {
 }
 
 /// MEM_RELEASE: unmaps and frees every page of the reservation starting at
-/// `addr`, which then ends; how many pages were freed.
+/// `addr`, which then ends; how many pages were freed. It walks one page past
+/// the committed ones ([`mm::reserve::Release::walk`]), so the tables a commit
+/// cut short left there (a directory at a 1 GiB boundary with no leaf under
+/// it) go too, after the same shootdown, which therefore never covers 0 pages.
 pub fn release(slot: usize, addr: u64) -> Result<u64, Error> {
     let pages = {
         let mut guard = lock_space(slot);
         let space = guard.as_mut().ok_or(Error::Dead)?;
-        space.reservations.begin_release(addr).map_err(refused)?
+        space
+            .reservations
+            .begin_release(addr)
+            .map_err(refused)?
+            .walk
     };
     // Room for every frame before any lock: none is taken while allocating.
     // Should this fail, the pages stay mapped until the process ends, which
     // frees them.
     let mut frames = Vec::new();
     frames
-        .try_reserve_exact(pages as usize)
+        .try_reserve_exact(crate::memory::user::release_frames(pages) as usize)
         .map_err(|_| Error::NoMemory)?;
-    let cr3 = {
+    // Preemption stays off from the unmap through the shootdown: moved to
+    // another CPU between the local flush and the choice of whom to send it
+    // to, this thread would skip a CPU still holding the range (audit K #27).
+    crate::threads::preempt_disable();
+    let taken = {
         let mut guard = lock_space(slot);
-        let space = guard.as_mut().ok_or(Error::Dead)?;
-        memory::with(|m| m.take_owned_range(space, addr, pages, &mut frames));
-        space.cr3()
+        guard.as_mut().map(|space| {
+            let tables = memory::with(|m| m.take_owned_range(space, addr, pages, &mut frames));
+            (space.cr3(), tables)
+        })
     };
-    smp::tlb_shootdown_range(&[cr3], addr, pages);
+    if let Some((cr3, _)) = taken {
+        smp::tlb_shootdown_range(&[cr3], addr, pages);
+    }
+    crate::threads::preempt_enable();
+    let (_, tables) = taken.ok_or(Error::Dead)?;
     memory::with(|m| m.free_user_frames(&frames));
     if let Some(space) = lock_space(slot).as_mut() {
         space.reservations.end_release(addr);
     }
-    Ok(frames.len() as u64)
+    // The committed pages it gave back; the tables freed with them are not
+    // the reservation's.
+    Ok(frames.len() as u64 - tables)
 }

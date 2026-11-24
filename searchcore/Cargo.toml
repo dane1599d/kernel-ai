@@ -1,0 +1,19 @@
+[package]
+name = "searchcore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The `search` service's loop (ADR 0013 section 4; S3a of docs/plans/agents-os.md):
+# walk kaifs `changes(since)`, index with `semindex` in batches that each commit
+# whole, answer queries with only what the caller may read, and hold the embedding
+# model only while it is used. The OS parts (fs, the index volume, the model's
+# memory, the caller's `Dir`) are traits, so host tests drive it with fakes and
+# `user/src/bin/search` supplies the real ones. `no_std` + `alloc`.
+[lib]
+doctest = false
+
+[dependencies]
+fsproto = { path = "../fsproto" }
+semindex = { path = "../semindex" }

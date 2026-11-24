@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 agentid = { path = "../agentid" }
+goalcore = { path = "../goalcore" }
 agentabi = { path = "../agentabi" }
 appabi = { path = "../appabi" }
 bootslot = { path = "../bootslot" }
@@ -28,6 +29,7 @@ sha2 = { version = "0.11.1", default-features = false }
 rhai = { version = "=1.27.0", default-features = false, features = ["no_std", "no_float", "no_custom_syntax", "no_module", "internals"] }
 
 [dev-dependencies]
+kaiagent = { path = "../kaiagent" }
 # The `c>` tests run the real `cc` service on the host.
 ccserve = { path = "../ccserve" }
 # A test holds `script::net::MAX_URL` equal to `kainet::wire::MAX_URL`.

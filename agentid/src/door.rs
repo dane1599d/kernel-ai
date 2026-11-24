@@ -52,6 +52,8 @@ impl fmt::Display for Denied {
 pub struct Admission {
     caller: Caller,
     row: String,
+    /// The goal whose ceiling admitted it, for the `goals` agent.
+    goal: Option<u64>,
 }
 
 impl Roster {
@@ -85,6 +87,7 @@ impl Roster {
         Ok(Admission {
             caller: caller.clone(),
             row: action.name.to_string(),
+            goal: None,
         })
     }
 }
@@ -99,12 +102,29 @@ impl Roster {
 
     /// [`Roster::revalidate`] against `rows`.
     pub fn revalidate_in(&self, admission: &Admission, rows: &[Action]) -> Result<(), Denied> {
-        self.admit_in(&admission.caller, &admission.row, rows)
-            .map(|_| ())
+        match admission.goal {
+            Some(goal) => self.admit_for_goal_in(&admission.caller, goal, &admission.row, rows),
+            None => self.admit_in(&admission.caller, &admission.row, rows),
+        }
+        .map(|_| ())
     }
 }
 
 impl Admission {
+    /// An admission under goal `goal`'s ceiling (`crate::goalgrant`).
+    pub(crate) fn for_goal(caller: Caller, row: &str, goal: u64) -> Self {
+        Self {
+            caller,
+            row: row.to_string(),
+            goal: Some(goal),
+        }
+    }
+
+    /// The goal whose ceiling admitted the call, for the `goals` agent.
+    pub fn goal(&self) -> Option<u64> {
+        self.goal
+    }
+
     pub fn caller(&self) -> &Caller {
         &self.caller
     }

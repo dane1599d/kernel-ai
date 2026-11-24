@@ -24,7 +24,8 @@ unlabel() {  # $1 PR, $2 comment
 }
 
 # The labelled PRs that can land on their own: each one's commits, beyond main,
-# may only include other PRs that are in the same list.
+# may only include other PRs that are in the same list. One line each: the PR,
+# its head, and whether it is batch-first.
 eligible() {
   git -C "$G" fetch -q origin
   open=$(gh pr list --repo "$R" --state open --limit 1000 --json number,headRefName,headRefOid,labels \
@@ -44,7 +45,7 @@ eligible() {
         ok=0; break
       fi
     done <<< "$open"
-    [ $ok = 1 ] && echo $p
+    [ $ok = 1 ] && echo "$p $head $(echo "$open" | awk -v p=$p '$1==p {print $5}')"
   done | head -"$(cat "$S/batch-max" 2>/dev/null || echo $MAX)"
 }
 
@@ -79,10 +80,16 @@ groups() {  # PR numbers
   done
 }
 
-batch() {  # PR numbers, or --resume; a failed batch is bisected
+batch() {  # PR numbers, or --resume, or --noboot and PR numbers; a failed batch is bisected
   [ $# -eq 0 ] && return
   # local: the halves below recurse, and shared `out`/`h` mis-split the batch
-  local out h p files fails br
+  local out h p files fails br noboot_run=""
+  [ "$1" = --noboot ] && noboot_run=1
+  # A resumed batch is a no-boot one when its branch says so (read before
+  # batch-ff.sh clears the state), so its failure gets the full retry too.
+  if [ "$1" = --resume ] && (. "$S/current-batch" 2>/dev/null; case "$name" in batch/noboot-*) exit 0;; *) exit 1;; esac); then
+    noboot_run=1
+  fi
   out="$S/batch-auto-$(date +%m%d-%H%M%S).out"
   bash "$KAI_SCRIPTS/batch-ff.sh" "$@" > "$out" 2>&1
   for p in $(grep -oE "^  - #[0-9]+ conflicts" "$out" | grep -oE "[0-9]+"); do
@@ -118,6 +125,14 @@ batch() {  # PR numbers, or --resume; a failed batch is bisected
     local cases
     cases=$(grep "^    failed case: " "$out" | sed 's/^    failed case: xtask: //' | tr '\n' ';' | sed 's/;$//; s/;/; /g')
     [ -n "$cases" ] && say "batch of $* failed: $cases"
+    # A no-boot batch may fail only because it needed the boot jobs after all
+    # (CI's rule on the combined commit disagreed): its PRs go once more as a
+    # full batch, a lone PR too, before anything is unlabelled or split.
+    if [ -n "$noboot_run" ]; then
+      say "no-boot batch of $* failed; trying it once as a full batch"
+      batch "$@"
+      return
+    fi
     # The batch's one model PR failed the fluency gate (and nothing else
     # failed): it, and any PR stacked with it, leave the batch; the rest go
     # again without a split. The stack keeps its labels and waits on its parent.
@@ -177,6 +192,11 @@ ff_running() {
 
 # Everything runs from here, once bash has read the whole file: a pull that
 # rewrites this script cannot change the running batcher.
+# Whether a head's whole change from main is one the boot jobs cannot see.
+noboot_ok() {  # $1 head
+  (cd "$G" && bash "$KAI_SCRIPTS/noboot.sh" "origin/$MAIN" "$1" >/dev/null)
+}
+
 main() {
   echo "batch-auto: state in $S (log, stop file, batch-max), repo $R, checkout $G"
   say "batcher started (state $S)"
@@ -194,8 +214,23 @@ main() {
       sleep 30
       continue
     fi
-    list=$(eligible)
-    if [ -z "$list" ]; then sleep 300; continue; fi
+    rows=$(eligible)
+    if [ -z "$rows" ]; then sleep 300; continue; fi
+    list=$(echo "$rows" | awk '{print $1}')
+    # A no-boot batch, which needs lint alone, only when every eligible PR is
+    # one the boot jobs cannot see: with any boot PR waiting, one full batch
+    # takes them all, as a no-boot batch first would cost its landing's full
+    # run on main as well (#1108's review). A failed no-boot batch is tried
+    # once as a full batch before anything is unlabelled or split.
+    if [ "$NOBOOT" = 1 ]; then
+      nb=$(echo "$rows" | while read -r p h f; do noboot_ok "$h" && echo $p; done)
+      if [ -n "$nb" ] && [ "$(echo $nb)" = "$(echo $list)" ]; then
+        say "no-boot batch: $(echo $nb)"
+        batch --noboot $nb
+        sleep 30
+        continue
+      fi
+    fi
     say "batch: $(echo $list)"
     batch $list
     sleep 30

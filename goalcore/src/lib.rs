@@ -61,7 +61,9 @@ extern crate std;
 mod checkin;
 mod goal;
 mod goals;
+pub mod report;
 mod run;
+pub mod runner;
 mod text;
 mod valid;
 
@@ -74,7 +76,7 @@ pub use goal::{
     State, Step, StepLog, StepStatus, Tier,
 };
 pub use goals::Goals;
-pub use run::{ENDED_IN_FLIGHT, FINISHED_AFTER_END, Refusal, StepDone, Verdict};
+pub use run::{ENDED_IN_FLIGHT, FINISHED_AFTER_END, REPEATED, Refusal, StepDone, Verdict};
 pub use text::MAGIC;
 
 /// Longest text of a goal, a note or a step's note.

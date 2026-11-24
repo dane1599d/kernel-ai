@@ -27,24 +27,93 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The DCO step reads every commit of the pull request.
+          fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
+      # What this run checks: everything on main and on a merge batch
+      # (`batch/...`), and on a pull request unless it changes only docs (files
+      # under docs/ or ending in .md, none of them read by Rust code), which
+      # needs only DCO and the decision rows. Batches and main keep every gate.
+      - name: What this run checks
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          code=true
+          if [ "$EVENT" = pull_request ] && [ "${HEAD_REF#batch/}" = "$HEAD_REF" ]; then
+            changed=$(git diff --name-only "$BASE" "$HEAD")
+            if ! grep -qvE '^docs/|\.md$' <<<"$changed"; then
+              code=false
+              # A doc that Rust code reads at build time (include_str! or
+              # include_bytes!, e.g. a test over a runbook) is code: its test
+              # guards it. Matched by file name, so a doubt builds.
+              for f in $changed; do
+                name=$(basename "$f" | sed 's/[.[\*^$]/\\&/g')
+                if grep -rqE --include='*.rs' "include_(str|bytes)!\([^)]*$name\"" .; then
+                  echo "$f is read by Rust code"
+                  code=true
+                fi
+              done
+            fi
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "builds, lints and tests the code: $code"
+      # ADR 0009 D2: every commit of a pull request is signed off under DCO 1.1
+      # (CONTRIBUTING.md), unless its author is a maintainer. `Co-Authored-By:`
+      # and `Assisted-by:` trailers are not sign-offs, and AI tools never add one
+      # (D3). A step here, not a workflow of its own: one job less per push.
+      - name: DCO sign-off
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # The maintainers as the base branch lists them, so a pull request
+          # cannot add its own author; the PR's copy only before the file exists.
+          maintainers=$(git show "$BASE:MAINTAINERS" 2>/dev/null || cat MAINTAINERS)
+          emails=$(grep -oE '<[^<>]+>' <<<"$maintainers" | tr -d '<>')
+          failed=0
+          for commit in $(git rev-list --no-merges "$BASE..$HEAD"); do
+            name=$(git log -1 --format=%an "$commit")
+            email=$(git log -1 --format=%ae "$commit")
+            if grep -qxF -- "$email" <<<"$emails"; then
+              continue
+            fi
+            if git log -1 --format=%B "$commit" | grep -qxF -- "Signed-off-by: $name <$email>"; then
+              continue
+            fi
+            echo "::error::$commit by $name <$email> has no 'Signed-off-by: $name <$email>' (see CONTRIBUTING.md; use git commit -s)"
+            failed=1
+          done
+          exit "$failed"
       - name: Install pinned toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install the WebAssembly target for live components
+        if: steps.scope.outputs.code == 'true'
         run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo fmt --all --check
+      - if: steps.scope.outputs.code == 'true'
+        run: cargo fmt --all --check
       # One file per call: `bash -n a.sh b.sh` reads b.sh as a.sh's argument.
       - name: The merge batcher's scripts parse (scripts/batch)
+        if: steps.scope.outputs.code == 'true'
         run: for f in scripts/batch/*.sh; do bash -n "$f" || exit 1; done
       - name: The merge batcher lands, resumes and tidies as it should (stub gh)
+        if: steps.scope.outputs.code == 'true'
         run: bash scripts/batch/test/run.sh
       - name: Dependency licences and advisories (deny.toml, ADR 0009 D6)
+        if: steps.scope.outputs.code == 'true'
         run: |
           cargo install --locked cargo-deny --version 0.20.2
           cargo deny check licenses advisories
       - name: Every licence in the tree and graph is allowed and has its text (ADR 0009 D5)
+        if: steps.scope.outputs.code == 'true'
         run: cargo xtask licences check
       # A new decision is a file in docs/decisions/rows/, not a row of decisions.md. On a
       # pull request the check also compares decisions.md with the base's, and fails if
@@ -83,23 +152,30 @@ jobs:
       # A change to the catalog, its chunk lists, kaipkg, kaituf or pkgrepo can
       # break the committed repository; it would otherwise show only at a tag.
       - name: The committed release repository still checks out
+        if: steps.scope.outputs.code == 'true'
         run: |
           if [ -f release/pkgrepo/metadata/1.root.json ]; then
             cargo xtask release-repo check
           fi
       - name: NOTICES.txt is up to date (ADR 0009 D6)
+        if: steps.scope.outputs.code == 'true'
         run: |
           cargo install --locked cargo-about --version 0.9.2 --features cli
           cargo xtask notices --check
       # Host crates are the workspace's default-members (Cargo.toml), so a new
       # crate is linted and tested here without editing this file.
-      - run: cargo clippy --all-targets --features linetable/alloc,kaibundle/alloc -- -D warnings
-      - run: cargo clippy -p kernel --target x86_64-unknown-none --features spikes -- -D warnings
+      - if: steps.scope.outputs.code == 'true'
+        run: cargo clippy --all-targets --features linetable/alloc,kaibundle/alloc -- -D warnings
+      - if: steps.scope.outputs.code == 'true'
+        run: cargo clippy -p kernel --target x86_64-unknown-none --features spikes -- -D warnings
       - name: Clippy for the engine crates on the soft-float kernel target
+        if: steps.scope.outputs.code == 'true'
         run: cargo clippy -p gguf -p cpufeat -p quant -p bpe -p infer --target x86_64-unknown-none -- -D warnings
       - name: Clippy for the soft-float ring-3 programs
+        if: steps.scope.outputs.code == 'true'
         run: cargo clippy -p user --target x86_64-unknown-none --lib --bin supervisor --bin shell --bin crasher --bin spinner --bin hog --bin edit --bin work --bin netcheck --bin handles --bin scriptrun --bin fs --bin filecheck --bin deskdemo --bin tufbench -- -D warnings
       - name: Clippy for the hard-float ring-3 programs
+        if: steps.scope.outputs.code == 'true'
         run: |
           # appbench embeds the view guest; wasmhost's tests load Notes' window.
           cargo build -p comp-viewbench --target wasm32-unknown-unknown --profile component
@@ -115,14 +191,20 @@ jobs:
           cargo build -p comp-editor-window --target wasm32-unknown-unknown --profile component
           cargo clippy -Zjson-target-spec -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p user --target user/x86_64-kai-user.json --lib --bin llm --bin desktop --bin probe --bin vecstress --bin workers --bin comphost --bin appbench --bin term --bin cc --bin pkg --bin updated --bin httpscheck --bin fetch --bin dlcheck -- -D warnings
       # termcore and the Terminal app's model are no_std and build for wasm32 (P4 task 4; the model lane reviews).
-      - run: cargo clippy -p compsdk -p comp-notes -p comp-notes-v1 -p comp-viewbench -p termcore -p comp-terminal --target wasm32-unknown-unknown -- -D warnings
+      - if: steps.scope.outputs.code == 'true'
+        run: cargo clippy -p compsdk -p comp-notes -p comp-notes-v1 -p comp-viewbench -p termcore -p comp-terminal --target wasm32-unknown-unknown -- -D warnings
       # Alone: with comp-notes in the same run its exports would be on.
-      - run: cargo clippy -p comp-notes-window --target wasm32-unknown-unknown -- -D warnings
-      - run: cargo clippy -p comp-ui-bind -p comp-files-window -p comp-settings-window -p comp-terminal-window -p comp-monitor-window -p comp-models-window -p comp-grant-fixture -p comp-net-fixture -p comp-wait-fixture --target wasm32-unknown-unknown -- -D warnings
-      - run: cargo clippy -p comp-editor-ui -p comp-editor-window --target wasm32-unknown-unknown -- -D warnings
+      - if: steps.scope.outputs.code == 'true'
+        run: cargo clippy -p comp-notes-window --target wasm32-unknown-unknown -- -D warnings
+      - if: steps.scope.outputs.code == 'true'
+        run: cargo clippy -p comp-ui-bind -p comp-files-window -p comp-settings-window -p comp-terminal-window -p comp-monitor-window -p comp-models-window -p comp-grant-fixture -p comp-net-fixture -p comp-wait-fixture --target wasm32-unknown-unknown -- -D warnings
+      - if: steps.scope.outputs.code == 'true'
+        run: cargo clippy -p comp-editor-ui -p comp-editor-window --target wasm32-unknown-unknown -- -D warnings
       - name: Clippy for each broken notes version
+        if: steps.scope.outputs.code == 'true'
         run: for bug in bug-import bug-health bug-trap bug-spin; do cargo clippy -p comp-notes-bad --target wasm32-unknown-unknown --features $bug -- -D warnings; done
-      - run: cargo test --features linetable/alloc,kaibundle/alloc
+      - if: steps.scope.outputs.code == 'true'
+        run: cargo test --features linetable/alloc,kaibundle/alloc
 
   # QEMU for every boot job, built once per version from a pinned source tarball
   # and cached: Ubuntu 24.04's QEMU 8.2 segfaulted under TCG in vector-heavy
@@ -139,9 +221,45 @@ jobs:
   # or observe: those ran on every lane's PR and starved the merge batches of the
   # account's 20 job slots (2026-10-27). Batches and main still run everything,
   # and a PR labelled `full-ci-all` gets the whole set too, e.g. to chase a TCG hang.
+  # Whether this run may skip the boot jobs: only a `batch/noboot-...` run, and
+  # only when main's copy of scripts/batch/noboot.sh finds that nothing the
+  # change touches reaches the image or the boot runs. The answer comes from
+  # the diff, never from a name, flag or title a PR's author sets; a wrong
+  # name, an error or a rule that disagrees means `skip=false` and every boot
+  # job runs. Any other run skips this job and its `qemu` starts at once.
+  noboot:
+    name: No-boot check (scripts/batch/noboot.sh)
+    if: startsWith(github.head_ref, 'batch/noboot-')
+    runs-on: ubuntu-24.04
+    outputs:
+      skip: ${{ steps.rule.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: rule
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          skip=false
+          # main's copy of the rule, never the batch's own: a change to the rule
+          # must not judge itself (and noboot.sh sends scripts/batch/ to a full batch).
+          if git show "$BASE:scripts/batch/noboot.sh" > "$RUNNER_TEMP/noboot.sh" 2>/dev/null \
+             && bash "$RUNNER_TEMP/noboot.sh" "$BASE" "$HEAD"; then
+            skip=true
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          echo "the boot jobs are skipped: $skip"
+
   qemu:
     name: QEMU 11.0.5 (built once, cached)
+    # A no-boot batch boots nothing, when the `noboot` job above says so from
+    # its diff. `!cancelled()` lets this run when that job is skipped.
+    needs: noboot
     if: >-
+      !cancelled() &&
+      needs.noboot.outputs.skip != 'true' &&
       (github.event.action != 'labeled' || startsWith(github.event.label.name, 'full-ci')) &&
       (github.event_name != 'pull_request' ||
       startsWith(github.head_ref, 'batch/') ||
@@ -171,13 +289,64 @@ jobs:
           key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
     timeout-minutes: 40
 
+  # Builds what the boot shards boot once, not once per shard (`xtask build
+  # --out`, xtask/src/prebuilt.rs), and hands the shards its manifest's
+  # SHA-256 as a job output. Runs whenever `qemu` does. A shard boots the
+  # download only when its manifest hashes to that output and names the
+  # shard's commit and options, and every file hashes as listed; a failed
+  # build, a failed download or any mismatch and the shard builds for itself.
+  prebuild:
+    name: Build the boot artifacts once
+    needs: noboot
+    if: >-
+      !cancelled() &&
+      needs.noboot.outputs.skip != 'true' &&
+      (github.event.action != 'labeled' || startsWith(github.event.label.name, 'full-ci')) &&
+      (github.event_name != 'pull_request' ||
+      startsWith(github.head_ref, 'batch/') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci-all'))
+    runs-on: ubuntu-24.04
+    # Not a gate: the shards build for themselves when this fails.
+    continue-on-error: true
+    outputs:
+      sha: ${{ steps.build.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      # The shards' cache: this job now builds what they used to.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: qemu
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - id: build
+        name: Build the kernel, user programs and component versions (as test does)
+        run: |
+          cargo xtask build --spikes --out "$RUNNER_TEMP/prebuilt"
+          echo "sha=$(sha256sum "$RUNNER_TEMP/prebuilt/manifest.txt" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prebuilt
+          path: ${{ runner.temp }}/prebuilt
+          retention-days: 1
+          overwrite: true
+    timeout-minutes: 30
+
   # Every case boots under both KVM and TCG (KVM only on a `full-ci` PR, see
   # above); `--shard K/3` deals the cases out in turn across three runners per
   # accelerator, and shard 1 also runs the host smokes.
   boot:
     name: Boot test (${{ matrix.accel }}, shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-24.04
-    needs: qemu
+    # `prebuild` is read by its output: a shard runs past a failed build job
+    # and builds for itself.
+    needs: [qemu, prebuild]
+    # Explicit: a job's implicit success() covers its needs' needs too, and the
+    # `noboot` job above `qemu` is skipped on every run but a no-boot batch.
+    if: ${{ !cancelled() && needs.qemu.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -212,9 +381,29 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: qemu
-          save-if: ${{ github.ref == 'refs/heads/main' && matrix.accel == 'kvm' && matrix.shard == 1 }}
+          save-if: false
+      # The build service's `--frozen` builds (the edit smoke, app-editor,
+      # manifest) download nothing, and a shard that boots the build job's
+      # artifacts runs no cargo build that would fetch their crates.
+      - name: Fetch the locked crates for the build service's offline builds
+        run: cargo fetch --locked
+      # No download, or a bad one, and the test step builds as it always did.
+      - name: Download the build job's artifacts
+        if: needs.prebuild.outputs.sha != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: prebuilt
+          path: ${{ runner.temp }}/prebuilt
       - name: Boot kernel with spikes and check pass/fail
-        run: cargo xtask test --accel ${{ matrix.accel }} --timeout 300 --shard ${{ matrix.shard }}/3
+        env:
+          PREBUILT_SHA: ${{ needs.prebuild.outputs.sha }}
+        run: |
+          prebuilt=()
+          if [ -n "$PREBUILT_SHA" ] && [ -f "$RUNNER_TEMP/prebuilt/manifest.txt" ]; then
+            prebuilt=(--prebuilt "$RUNNER_TEMP/prebuilt" --prebuilt-sha "$PREBUILT_SHA")
+          fi
+          cargo xtask test --accel ${{ matrix.accel }} --timeout 300 --shard ${{ matrix.shard }}/3 "${prebuilt[@]}"
     # TCG shards run about twice as long as KVM ones: on 2026-10-28 main's slowest
     # TCG shard took 19 of its 20 minutes, and batch #340's timed out mid-case.
     # On 2026-10-30 KVM shards took 16-18 minutes with 45 cases each, and two
@@ -233,8 +422,9 @@ jobs:
   perf:
     name: Perf marks (release kernel)
     if: >-
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci')
+      !cancelled() && needs.qemu.result == 'success' &&
+      (github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci'))
     runs-on: ubuntu-24.04
     needs: qemu
     continue-on-error: true
@@ -269,12 +459,16 @@ jobs:
   # M10a-2's spike, not a gate: boots `icount-probe` twice under single-threaded
   # TCG with icount and requires the same digest; it also prints host seconds per
   # virtual second, which fixes shift and the trial's window length.
+  # Not a gate, so not on merge batches either (2026-11-19: 6-10 runner minutes
+  # and a job slot per batch, while batches queue for runners): it runs on main
+  # pushes, where a drift shows the commit that brought it, and on a PR
+  # labelled `full-ci-all`.
   icount:
     name: icount determinism probe (not a gate)
     if: >-
-      github.event_name != 'pull_request' ||
-      startsWith(github.head_ref, 'batch/') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci-all')
+      !cancelled() && needs.qemu.result == 'success' &&
+      (github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci-all'))
     runs-on: ubuntu-24.04
     needs: qemu
     continue-on-error: true
@@ -299,9 +493,10 @@ jobs:
   observe:
     name: Observe determinism (${{ matrix.runner }})
     if: >-
-      github.event_name != 'pull_request' ||
+      !cancelled() && needs.qemu.result == 'success' &&
+      (github.event_name != 'pull_request' ||
       startsWith(github.head_ref, 'batch/') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci-all')
+      contains(github.event.pull_request.labels.*.name, 'full-ci-all'))
     runs-on: ubuntu-24.04
     needs: qemu
     strategy:
@@ -335,6 +530,7 @@ jobs:
     name: Observe determinism across runners
     runs-on: ubuntu-24.04
     needs: observe
+    if: ${{ !cancelled() && needs.observe.result == 'success' }}
     steps:
       - uses: actions/download-artifact@v4
       - name: Both runners built the same summary

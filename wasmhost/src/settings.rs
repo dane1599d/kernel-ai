@@ -71,6 +71,8 @@ pub const APPEARANCE_SETTINGS: &[&str] = &[
     "token",
     "reduced_motion",
     "legible",
+    // The tray clock's offset (look's `time_zone`), from Settings' row.
+    "time_zone",
 ];
 /// The verbs of the changes; each has its own arguments ([`classify`]).
 pub const CHANGES: &[&str] = &[

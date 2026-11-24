@@ -167,7 +167,8 @@ pub(super) const CASES: &[TestCase] = &[
         usb: &["usb-kbd"],
         expect: &[
             "devices: DEV_LIST from ring 3 lists them too",
-            "virtio-net in the kernel, running, polled, 0 interrupts",
+            // The card's receive queue raises its own vector (P5 plan 3.2).
+            "virtio-net in the kernel, running, MSI-X, ",
             "class 0c0330 xhci in the kernel, running, MSI-X, ",
         ],
         ..case("devices", "test=devices")
@@ -185,7 +186,8 @@ pub(super) const CASES: &[TestCase] = &[
             "usb: USB tablet at 16384 8192 of 32767 32767, buttons 1",
             "usb: received \"kai\" over USB",
             // ADR 0007: the controller interrupts on MSI-X; nothing polls it.
-            "slots, interrupts on MSI-X vector 0x30",
+            // Not a fixed vector: the network card may take the first.
+            "slots, interrupts on MSI-X vector 0x",
             " MSI-X interrupts, 0 stray vectors",
         ],
         ..case("usb-tablet", "test=usb")
@@ -252,9 +254,10 @@ pub(super) const CASES: &[TestCase] = &[
         keys: &[crate::screen::KEYS],
         expect: &[
             "display: virtio-gpu offers ",
-            // QEMU's EDID gives the screen's size (from its 100 dpi), which
-            // DisplayInfo passes to `desktop` for its scale.
-            "display: the screen is ",
+            // QEMU's EDID gives a size (its default mode's at 100 dpi), which
+            // the kernel logs and does not pass on: DisplayInfo says 0 mm.
+            "display: the EDID says ",
+            "display: virtio-gpu size in mm is unknown (0 x 0)",
             "display: cursor moved to 300 200",
         ],
         screen: Some(crate::screen::Expect {

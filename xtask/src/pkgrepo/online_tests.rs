@@ -201,7 +201,10 @@ fn a_redirect_off_the_repository_is_never_followed() {
     mock.set_fault(ASSETS, BIG, Fault::RedirectOff);
     let mut vol = device(&repo);
     match install(&mut vol, &mock, "big") {
-        Err(Error::Store(why)) => assert!(why.contains("Refused(\"elsewhere.kai.test\")"), "{why}"),
+        Err(Error::Store(why)) => assert!(
+            why.contains("elsewhere.kai.test is not a host this may reach"),
+            "{why}"
+        ),
         other => panic!("{other:?}"),
     }
     assert!(mock.served().iter().all(|s| s.host != mock_https::OFF));
@@ -216,7 +219,7 @@ fn a_bad_certificate_or_an_expired_timestamp_lists_nothing() {
     assert!(err.starts_with("expired: timestamp"), "{err}");
     mock.set_fault(REPO, "*", Fault::Expired);
     let err = listing(&mut device(&repo), &mock, NOW).unwrap_err();
-    assert!(err.contains("Expired"), "{err}");
+    assert!(err.contains(kainet::fetch::TLS_EXPIRED), "{err}");
 }
 
 #[test]

@@ -59,6 +59,7 @@ pub(super) fn bind(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx:
                 let call = UiCall::Open {
                     app: app.into(),
                     arg: arg.map(String::from),
+                    person: tx.person,
                 };
                 let answer = h.ui(&call).map_err(fail)?;
                 // A window the user had only took focus: undo moves focus back

@@ -460,3 +460,72 @@ mod tests {
         assert!(matches!(panel.state(), State::Refused { .. }));
     }
 }
+
+/// The held send's undo, clicked, then clicked again at the same point: the
+/// panel is thinking by then, and the Stop item covers the undo's place. The
+/// second click, an Esc, and a Stop after the guard never take the queued
+/// `undo` back, so the shell still takes it (#959's send-chain audit, HIGH).
+#[cfg(test)]
+mod undo_click_tests {
+    use super::*;
+    use crate::desk::{Desk, Focus};
+    use crate::geom::Point;
+    use crate::paint::Painter;
+    use crate::paint_panel::PaneClick;
+    use crate::panel::{Request, UNDO_GUARD_MS};
+
+    #[test]
+    fn a_second_click_or_esc_never_withdraws_a_held_sends_undo() {
+        let painter = Painter::new(crate::paint_tests::FONTS).expect("the fonts parse");
+        let mut desk = Desk::new(1024, 768);
+        desk.set_focus(Focus::Panel, &mut Vec::new());
+        let row = desk.layout().pane_parts().status;
+        let mut panel = Panel::new();
+        panel.set_sends(alloc::vec![
+            WireSend {
+                entry: 12,
+                sending: false,
+                left_ms: 5_000,
+                host: "hooks.example".into(),
+            }
+            .held(0)
+        ]);
+        let y = row.y + row.h / 2;
+        let at = (row.x..row.right())
+            .map(|x| Point { x, y })
+            .find(|&p| painter.pane_click(&desk, &panel, p) == Some(PaneClick::UndoSend(12)))
+            .expect("the undo is drawn");
+        // The click, as desktop carries it out.
+        panel.send(String::from("undo 12"), 1_000);
+        // The same point again: Stop now, over the undo's place.
+        assert_eq!(painter.pane_click(&desk, &panel, at), Some(PaneClick::Stop));
+        assert!(!panel.send_item(1_000 + UNDO_GUARD_MS - 1));
+        // Past the guard, a Stop, and an Esc, leave it too.
+        assert!(!panel.send_item(1_000 + UNDO_GUARD_MS));
+        assert!(!panel.key(0x29, true, 2_000));
+        assert_eq!(panel.waiting(), 1);
+        assert_eq!(panel.take(), Some(Request::Line(String::from("undo 12"))));
+    }
+
+    /// A full queue makes room by its oldest request that is not an undo, and
+    /// with only undos waiting a new line is dropped, never an undo.
+    #[test]
+    fn a_full_queue_never_drops_an_undo() {
+        let mut panel = Panel::new();
+        panel.send(String::from("undo 7"), 0);
+        for n in 0..crate::panel::MAX_WAITING {
+            panel.send(alloc::format!("line {n}"), 0);
+        }
+        assert_eq!(panel.take(), Some(Request::Line(String::from("undo 7"))));
+        let mut only = Panel::new();
+        for n in 0..crate::panel::MAX_WAITING {
+            only.send(alloc::format!("undo {n}"), 0);
+        }
+        only.send(String::from("hello"), 0);
+        assert_eq!(only.waiting(), crate::panel::MAX_WAITING);
+        assert!(
+            core::iter::from_fn(|| only.take())
+                .all(|r| matches!(r, Request::Line(l) if l.starts_with("undo ")))
+        );
+    }
+}

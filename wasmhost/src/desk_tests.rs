@@ -94,6 +94,24 @@ fn a_window_opens_shows_new_pictures_and_closes() {
         d.told(&client.take_events(8192)),
         [Told::Theme(String::from("light"))]
     );
+    // The whole appearance is no greeting either, and replaces the theme's name
+    // when the same reply carries both.
+    let look = "kai-appearance 1
+theme = light
+text_size = 150
+legible = on
+";
+    client.look(look);
+    assert_eq!(
+        d.told(&client.take_events(8192)),
+        [Told::Look(String::from(look))]
+    );
+    client.theme("light");
+    client.look(look);
+    assert_eq!(
+        d.told(&client.take_events(8192)),
+        [Told::Look(String::from(look))]
+    );
     // Another desktop's greeting is a restart.
     let again = Client::new(8, "notes-window").take_events(8192);
     assert_eq!(d.told(&again), [Told::Restarted]);
@@ -121,10 +139,13 @@ fn a_late_modifiers_message_never_changes_the_keys_already_in_the_ring() {
         usage,
         down,
     };
+    // The desk tells every client the modifiers before the key that changed them.
     client.apply(&[
+        Effect::Modifiers(2),
         key(0xE0, true),
         key(0x05, true),
         key(0x05, false),
+        Effect::Modifiers(0),
         key(0xE0, false),
     ]);
     let ring: Vec<_> = client.take_posts().into_iter().map(|(_, e)| e).collect();

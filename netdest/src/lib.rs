@@ -31,6 +31,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+pub mod meter;
 pub mod ranges;
 pub mod shared;
 #[cfg(test)]
@@ -40,6 +41,29 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
 use core::net::Ipv4Addr;
+pub use meter::{DayMeter, NO_CLOCK, OverBudget};
+
+/// Whether a name's answer must not lead to `addr` (audit K #17): this
+/// machine, the link, nothing, everyone, a group, or a private network:
+/// 10/8, 172.16/12, 192.168/16, the carrier's 100.64/10, 0/8 and 240/4. With
+/// `test_network` (a boot with `online=test`), QEMU's user network
+/// 10.0.2.0/24, where the boot cases' mocks are, is the one exception.
+pub fn special(addr: Ipv4Addr, test_network: bool) -> bool {
+    let [a, b, c, _] = addr.octets();
+    let private = a == 10
+        || (a == 172 && (16..32).contains(&b))
+        || (a == 192 && b == 168)
+        || (a == 100 && (64..128).contains(&b))
+        || a == 0
+        || a >= 240;
+    let test_subnet = test_network && (a, b, c) == (10, 0, 2);
+    addr.is_loopback()
+        || addr.is_link_local()
+        || addr.is_unspecified()
+        || addr.is_broadcast()
+        || addr.is_multicast()
+        || (private && !test_subnet)
+}
 pub use ranges::{AddrRange, MAX_SET_SIZE, PortRange};
 pub use shared::{SHARED_SUFFIXES, is_shared};
 
@@ -329,4 +353,70 @@ fn parse_hosts(value: &str) -> Result<Vec<String>, &'static str> {
             false => Err("netdest: a host is not a name with a dot in it"),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod special_tests {
+    use super::special;
+    use core::net::Ipv4Addr;
+
+    fn ip(a: u8, b: u8, c: u8, d: u8) -> Ipv4Addr {
+        Ipv4Addr::new(a, b, c, d)
+    }
+
+    #[test]
+    fn private_ranges_and_their_edges() {
+        for test_network in [false, true] {
+            for addr in [
+                ip(10, 1, 2, 3),
+                ip(10, 255, 255, 255),
+                ip(172, 16, 0, 0),
+                ip(172, 31, 255, 255),
+                ip(192, 168, 0, 0),
+                ip(192, 168, 255, 255),
+                ip(100, 64, 0, 0),
+                ip(100, 127, 255, 255),
+                ip(0, 1, 2, 3),
+                ip(240, 0, 0, 1),
+                ip(255, 255, 255, 254),
+                ip(127, 0, 0, 1),
+                ip(169, 254, 1, 1),
+                ip(224, 0, 0, 1),
+            ] {
+                assert!(special(addr, test_network), "{addr} {test_network}");
+            }
+            for addr in [
+                ip(9, 255, 255, 255),
+                ip(11, 0, 0, 0),
+                ip(172, 15, 255, 255),
+                ip(172, 32, 0, 0),
+                ip(192, 167, 255, 255),
+                ip(192, 169, 0, 0),
+                ip(100, 63, 255, 255),
+                ip(100, 128, 0, 0),
+                ip(1, 1, 1, 1),
+                ip(8, 8, 8, 8),
+            ] {
+                assert!(!special(addr, test_network), "{addr} {test_network}");
+            }
+        }
+    }
+
+    #[test]
+    fn qemus_test_subnet_only_with_online_test() {
+        // The audit's own example: the VM host's 10.0.2.2.
+        for addr in [
+            ip(10, 0, 2, 2),
+            ip(10, 0, 2, 0),
+            ip(10, 0, 2, 255),
+            ip(10, 0, 2, 99),
+        ] {
+            assert!(special(addr, false), "{addr} without online=test");
+            assert!(!special(addr, true), "{addr} with online=test");
+        }
+        // Only that subnet, never the rest of 10/8.
+        for addr in [ip(10, 0, 1, 255), ip(10, 0, 3, 0), ip(10, 2, 2, 2)] {
+            assert!(special(addr, true), "{addr}");
+        }
+    }
 }

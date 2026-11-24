@@ -23,6 +23,9 @@ pub(super) struct Ran {
     pub(super) logged: Option<u64>,
     /// It is in cc's journal of the user's session: Kai's program is not.
     pub(super) cc: bool,
+    /// The SHA-256 of what cc ran, when its `#include "…"` files made that
+    /// other than its text: a replay of files changed since is refused.
+    pub(super) included: Option<[u8; 32]>,
 }
 
 impl Shell {
@@ -38,11 +41,11 @@ impl Shell {
         };
         self.c_expect_ok(&open.text())?;
         self.c.open = true;
-        let kept: Vec<(u64, String)> = self
+        let kept: Vec<(u64, String, Option<[u8; 32]>)> = self
             .c
             .ran
             .iter()
-            .filter_map(|r| r.defined.clone().map(|text| (r.seq, text)))
+            .filter_map(|r| r.defined.clone().map(|text| (r.seq, text, r.included)))
             .collect();
         if kept.is_empty() {
             return Ok(String::new());
@@ -50,8 +53,25 @@ impl Shell {
         // cc's journal starts again: undo cannot go back past a restart.
         self.c.ran.clear();
         let mut restored = 0;
-        for (seq, text) in kept {
-            let replay = Request::Replay { seq, entry: &text }.text();
+        let mut skipped = String::new();
+        for (seq, text, included) in kept {
+            // An entry is kept as typed: its `#include "…"` files are read
+            // again, and one that is gone or changed since is not restored,
+            // and the person is told, never given code they did not run.
+            let entry = match self.c_includes(&text) {
+                Ok(entry) => entry,
+                Err(why) => {
+                    skipped.push_str(&format!("entry {seq}'s {why}; not restored\n"));
+                    continue;
+                }
+            };
+            if included.is_some_and(|hash| Some(hash) != super::files::included(&text, &entry)) {
+                skipped.push_str(&format!(
+                    "entry {seq}'s #include files changed since it ran; not restored\n"
+                ));
+                continue;
+            }
+            let replay = Request::Replay { seq, entry: &entry }.text();
             if self.c_expect_done(&replay) {
                 restored += 1;
                 self.c.ran.push(Ran {
@@ -59,11 +79,12 @@ impl Shell {
                     defined: Some(text),
                     logged: None,
                     cc: true,
+                    included,
                 });
             }
         }
         Ok(format!(
-            "cc restarted; restored {restored} definitions; globals reset\n"
+            "cc restarted; restored {restored} definitions; globals reset\n{skipped}"
         ))
     }
 

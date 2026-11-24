@@ -347,6 +347,11 @@ impl Shell {
             Ok(found) => found,
             Err(outcome) => return outcome,
         };
+        // An agent's step: the row that runs, which `target` or `ui_open`'s
+        // forwarding may have changed, is admitted against its grants too.
+        if let Err(why) = self.readmit(row) {
+            return self.refuse(id, request, call, Why::Unknown, &why);
+        }
         let args = match arguments(row, call) {
             Ok(args) => args,
             Err(why) => return self.refuse(id, request, call, Why::Unknown, &why),
@@ -397,6 +402,10 @@ impl Shell {
             let why = crate::actions::told_why(row.name);
             self.record(id, request, &call.text(), &format!("refused: {why}"));
             return outcome(Tier::Never, Why::Added, Reply::err(why));
+        }
+        if agentabi::GOAL_ROWS.iter().any(|r| r.name == row.name) {
+            let reply = self.goal_call(id, request, row.name, &args.values, decision);
+            return outcome(decision.tier, decision.why, reply);
         }
         if agentabi::PKG_ROWS.iter().any(|r| r.name == row.name) {
             let reply = self.pkg_call(id, request, row.name, &args.values, decision);
@@ -456,12 +465,13 @@ impl Shell {
             script,
             summary: String::new(),
         };
-        let checked = match script::check_against(&answer, &self.host, &self.config, rows) {
+        let mut checked = match script::check_against(&answer, &self.host, &self.config, rows) {
             Ok(checked) => checked,
             Err(refusal) => {
                 return self.refuse(id, request, call, decision.why, &refusal.to_string());
             }
         };
+        checked.person = self.person_line;
         self.host.audit(&format!(
             "request {id}: {} is {} ({:?})",
             row.name,
@@ -484,6 +494,8 @@ impl Shell {
             .as_ref()
             .or(waiver.as_ref())
             .filter(|_| !held(row))
+            // The person's rules are for Kai's lines: an agent's step asks.
+            .filter(|_| self.agent_acting().is_none())
             .and_then(|offer| self.rules.covering(offer));
         let reply = match (decision.tier, ruled) {
             (Tier::Run, _) => {
@@ -586,6 +598,7 @@ impl Shell {
             net: None,
             send: None,
             power: false,
+            goal: None,
         });
         // The highlight starts on Allow only for a call the line plainly asked for.
         let origin = match why {
@@ -677,7 +690,7 @@ impl Shell {
 }
 
 /// Why a call asks, as its card says it.
-fn reason_of(why: Why) -> String {
+pub(crate) fn reason_of(why: Why) -> String {
     match why {
         Why::NotEnglish => String::from("the request is not in English, so it asks first"),
         Why::Added => String::from("the request did not ask for it"),
