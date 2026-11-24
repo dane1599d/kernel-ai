@@ -5,7 +5,6 @@
 //! every window out in its type, so rows grow with the text.
 
 use super::*;
-use look::appearance::{Appearance, Shipped};
 use look::theme::Theme;
 
 /// The theme the windows are painted in, the one new layouts are measured in:
@@ -18,10 +17,7 @@ static IN_USE: spin::Mutex<Option<Theme>> = spin::Mutex::new(None);
 /// desktop says. A measure from any other theme would lay windows out in a
 /// type other than the one drawn.
 pub(super) fn type_theme() -> Theme {
-    match IN_USE.lock().as_ref() {
-        Some(theme) => theme.clone(),
-        None => Theme::from_palette(&look::DARK, false),
-    }
+    uipaint::measure_theme(IN_USE.lock().as_ref())
 }
 
 impl Ui {
@@ -38,14 +34,10 @@ impl Ui {
         if text == self.look {
             return;
         }
-        let resolved = Appearance::decode(text, &Shipped).and_then(|a| {
-            let theme = a.resolve(&Shipped)?;
-            Ok((a, theme))
-        });
-        let (appearance, theme) = match resolved {
+        let (appearance, theme) = match uipaint::resolve_look(text) {
             Ok(both) => both,
             Err(why) => {
-                println!("comphost: the desktop's appearance is refused: {}", why.0);
+                println!("comphost: the desktop's appearance is refused: {why}");
                 return;
             }
         };
@@ -55,12 +47,16 @@ impl Ui {
         self.theme = theme.name.clone();
         *IN_USE.lock() = Some(theme.clone());
         if !host.suspended() {
-            let _ = serve_shown(host, |core| {
-                if let Some(measure) = measure() {
-                    core.set_measure(measure);
+            // Every loaded version, not only the one shown: in probation the
+            // standby is the one a rollback brings back, and it must lay out in
+            // the type the windows are drawn in. Nothing here calls the app.
+            host.each_instance(|instance, _, _| {
+                if let LiveInstance::V2(core) = instance {
+                    if let Some(measure) = measure() {
+                        core.set_measure(measure);
+                    }
+                    core.ui_relayout();
                 }
-                core.ui_relayout();
-                Ok(())
             });
             // The laid-out frames come in, then every window is painted whole:
             // a colour change leaves no damage in a display list of tokens.

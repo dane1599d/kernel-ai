@@ -31,6 +31,28 @@ pub const SCALE_ONE: u32 = 120;
 /// The alpha byte of an opaque pixel, built from its channel, not a colour.
 const OPAQUE: u32 = 0xFF << 24;
 
+/// The appearance `text` (`kai-appearance 1`, as `desktop` sends it) and the
+/// theme it resolves to among the shipped themes: what a client paints in. The
+/// same code as `desktop`'s own, so both end in one theme.
+pub fn resolve_look(
+    text: &str,
+) -> Result<(look::appearance::Appearance, look::theme::Theme), alloc::string::String> {
+    use look::appearance::{Appearance, Shipped};
+    let appearance = Appearance::decode(text, &Shipped).map_err(|why| why.0)?;
+    let theme = appearance.resolve(&Shipped).map_err(|why| why.0)?;
+    Ok((appearance, theme))
+}
+
+/// The theme layouts are measured in: the one the windows are painted in
+/// (`in_use`), or the default before the desktop has said. A measure from any
+/// other theme lays windows out in a type other than the one drawn.
+pub fn measure_theme(in_use: Option<&look::theme::Theme>) -> look::theme::Theme {
+    match in_use {
+        Some(theme) => theme.clone(),
+        None => look::theme::Theme::from_palette(&look::DARK, false),
+    }
+}
+
 /// `gfx2d`'s measure as `uikit`'s, in logical px.
 pub struct Measured<'a>(pub &'a Text);
 
