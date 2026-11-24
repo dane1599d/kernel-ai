@@ -31,6 +31,8 @@ mod changes_tests;
 mod clock_tests;
 #[cfg(test)]
 mod dropped_tests;
+#[cfg(test)]
+mod durable_tests;
 mod lookup;
 #[cfg(test)]
 mod model_tests;
@@ -1262,8 +1264,11 @@ impl<D: BlockDev> Server<D> {
         let before = self.fs.committed;
         match self.fs.commit() {
             Ok(generation) => Ok(generation),
+            // Landed whole despite the error only if the disk says so after
+            // a flush that worked: the slot read back may still sit in the
+            // device's volatile cache, and a cache must never vouch for it.
             Err(e) => match self.drop_changes() {
-                landed if landed > before => Ok(landed),
+                landed if landed > before && self.fs.io.dev.flush().is_ok() => Ok(landed),
                 _ => Err(error(e)),
             },
         }
