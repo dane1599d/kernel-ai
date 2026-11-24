@@ -7,7 +7,9 @@
 # MERGED answer (after it), as a PC stop would; $T/list-fails fails the
 # open-PR listing. While the batch branch holds every head on a line of
 # $T/fail-with, CI fails and its log is $T/compile.log (a batch that does not
-# compile; two heads on a line are two PRs that clash only together).
+# compile; two heads on a line are two PRs that clash only together). At the
+# Nth wait for a batch's CI, $T/on-ci-wait-N runs once (a lane acting while CI
+# runs).
 T=${STUB_T:?}
 echo "gh $*" >> "$T/gh.log"
 a="$*"
@@ -68,7 +70,10 @@ case "$1 $2" in
   "pr ready"|"pr close"|"pr comment"|"run cancel"|"run rerun") :;;
   "run list")
     case "$a" in
-      *ci.yml*) echo "123 completed";;
+      *ci.yml*)
+        n=$(( $(cat "$T/ci-waits" 2>/dev/null || echo 0) + 1 )); echo $n > "$T/ci-waits"
+        [ -f "$T/on-ci-wait-$n" ] && bash "$T/on-ci-wait-$n"
+        echo "123 completed";;
       *fluency-model*) echo "456 completed";;
       # cleanup's listing of the batch branch's unfinished runs.
       *"--limit 10"*) echo 789;;
