@@ -9,7 +9,7 @@
 # $T/fail-with, CI fails and its log is $T/compile.log (a batch that does not
 # compile; two heads on a line are two PRs that clash only together). At the
 # Nth wait for a batch's CI, $T/on-ci-wait-N runs once (a lane acting while CI
-# runs).
+# runs); at the next wait for a fluency run, $T/on-fluency-wait runs once.
 T=${STUB_T:?}
 echo "gh $*" >> "$T/gh.log"
 a="$*"
@@ -73,7 +73,10 @@ case "$1 $2" in
         n=$(( $(cat "$T/ci-waits" 2>/dev/null || echo 0) + 1 )); echo $n > "$T/ci-waits"
         [ -f "$T/on-ci-wait-$n" ] && bash "$T/on-ci-wait-$n"
         echo "123 completed";;
-      *fluency-model*) echo "456 completed";;
+      *fluency-model*)
+        # Moved aside first: a hook may leave one for the next fluency wait.
+        [ -f "$T/on-fluency-wait" ] && { mv "$T/on-fluency-wait" "$T/fluency-hook"; bash "$T/fluency-hook"; }
+        echo "456 completed";;
       *"--limit 30"*)
         [ -f "$T/others-fail" ] && exit 1
         if [ -f "$T/others" ]; then cat "$T/others"; else echo "DCO=success"; fi;;

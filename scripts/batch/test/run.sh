@@ -39,7 +39,7 @@ mkpr() {  # n branch base files...
 }
 
 setup() {
-  rm -rf "$T/origin.git" "$T/work" "$T/prs" "$T/state" "$T"/kill-* "$T/fluency-dispatches" "$T/list-fails" "$T/others" "$T/others-fail" "$T/fail-with" "$T/compile.log" "$T"/on-ci-wait-* "$T/ci-waits"
+  rm -rf "$T/origin.git" "$T/work" "$T/prs" "$T/state" "$T"/kill-* "$T/fluency-dispatches" "$T/list-fails" "$T/others" "$T/others-fail" "$T/fail-with" "$T/compile.log" "$T"/on-ci-wait-* "$T/ci-waits" "$T/on-fluency-wait"
   git init -q --bare "$T/origin.git"
   git -C "$T/origin.git" symbolic-ref HEAD refs/heads/main
   git clone -q "$T/origin.git" "$T/work" 2>/dev/null
@@ -329,9 +329,10 @@ L="$T/state/batch-auto.log"
 check "no PR leaves first; the batch is split" '! grep -q "trying it without" "$L" && grep -q "batch of 1 5 8 failed; splitting it" "$L"'
 check "the others land, the PR fails alone"   'grep -q "#1 merged" "$L" && grep -q "#5 merged" "$L" && grep -q "#8 failed alone: .*compile error: kernel/src/process/mod.rs:212:14" "$L" && [ ! -s "$T/prs/8/labels" ]'
 
-repush() {  # $1 PR, $2 N: at the Nth CI wait its lane pushes a new head, a sibling of the old one
-  local n=$1 br; br=$(cat "$T/prs/$1/branch")
-  cat > "$T/on-ci-wait-$2" <<EOF
+repush() {  # $1 PR, $2 N or "fluency": at the Nth CI wait, or the fluency wait, its lane pushes a new head, a sibling of the old one
+  local n=$1 br hook="$T/on-ci-wait-$2"; br=$(cat "$T/prs/$1/branch")
+  [ "$2" = fluency ] && hook="$T/on-fluency-wait"
+  cat >> "$hook" <<EOF
 new=\$(git -C "$T/origin.git" commit-tree "refs/heads/$br^{tree}" -p "refs/heads/$br^" -m "$br fixed")
 git -C "$T/origin.git" update-ref "refs/heads/$br" "\$new"
 echo "\$new" > "$T/prs/$n/sha"
@@ -406,6 +407,48 @@ L="$T/state/batch-auto.log"
 check "it fails alone on the old head"        'grep -q "#9 failed alone, but it was pushed to since the batch took it; label kept" "$L"'
 check "no comment, no unlabel"                'no_word_to 9'
 check "the new head lands next"               'grep -q "#9 merged" "$L"'
+
+echo "== batch-auto.sh: a model PR re-pushed during the fluency wait keeps its label"
+setup
+printf 'fluency: 40/50 first try (80%%), 42/50 after one repair (84%%)\nthe fluency gate fails\n' > "$T/fluency.log"
+repush 2 fluency
+# The lane's fix works: the fluency run after this one passes.
+printf 'fluency: 48/50 first try (96%%), 49/50 after one repair (98%%)\nthe fluency gate passes\n' > "$T/fluency-pass"
+echo "echo \"cp '$T/fluency-pass' '$T/fluency.log'\" > '$T/on-fluency-wait'" >> "$T/on-fluency-wait"
+: > "$T/gh.log"
+auto_until "#2 (merged|failed the fluency gate:|failed alone)"
+L="$T/state/batch-auto.log"
+check "it fails the gate on the old head"     'grep -q "#2 failed the fluency gate, but it was pushed to since the batch took it; label kept" "$L"'
+check "no comment, no unlabel"                'no_word_to 2'
+check "the rest lands, then the new head"     'grep -q "#1 merged" "$L" && grep -q "#2 merged" "$L"'
+
+echo "== batch-ff.sh: each rustc error is paired with its own --> line"
+setup
+cat "$T/prs/1/sha" > "$T/fail-with"
+e=$'\033'
+{ for l in "${e}[1m${e}[91merror[E0308]${e}[0m${e}[1m: mismatched types${e}[0m" \
+           "  ${e}[1m${e}[94m--> ${e}[0mkainet/src/plain.rs:10:5" \
+           "" \
+           "${e}[1m${e}[91merror[E0277]${e}[0m${e}[1m: the trait bound \`Foo: Bar\` is not" \
+           "satisfied${e}[0m" \
+           "  ${e}[1m${e}[94m--> ${e}[0mkainet/src/wrapped.rs:20:9" \
+           "" \
+           "${e}[1m${e}[91merror[E0425]${e}[0m${e}[1m: cannot find value \`x\` in this scope${e}[0m" \
+           "   ${e}[1m${e}[94m= ${e}[0m${e}[1mnote${e}[0m: a note before the span" \
+           "  ${e}[1m${e}[94m--> ${e}[0mkainet/src/noted.rs:30:1" \
+           "${e}[1m${e}[91merror[E0599]${e}[0m${e}[1m: no method named \`go\`${e}[0m" \
+           "" \
+           "  ${e}[1m${e}[94m--> ${e}[0mpast/blank.rs:1:1" \
+           "${e}[1m${e}[91merror${e}[0m: could not compile \`kainet\` (lib) due to 4 previous errors" \
+           "  ${e}[1m${e}[94m--> ${e}[0mstray/after.rs:2:2"; do
+    printf '%s\t%s\t%s\n' "Format, lint, host unit tests" "UNKNOWN STEP" "2026-11-23T04:16:08.8681079Z $l"
+  done; } > "$T/compile.log"
+ff 1
+check "the plain shape"                       'has "    compile error: kainet/src/plain.rs:10:5  error[E0308]: mismatched types"'
+check "a header that wraps"                   'has "    compile error: kainet/src/wrapped.rs:20:9  error[E0277]: the trait bound \`Foo: Bar\` is not"'
+check "a note between header and -->"         'has "    compile error: kainet/src/noted.rs:30:1  error[E0425]: cannot find value \`x\` in this scope"'
+check "a blank line ends the wait"            '! has "past/blank.rs"'
+check "could not compile pairs with nothing"  '! has "stray/after.rs" && [ "$(grep -c "compile error: " "$T/out")" = 3 ]'
 
 echo "== batch-auto.sh: a modify/delete conflict names its file"
 setup
