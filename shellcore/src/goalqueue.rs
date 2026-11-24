@@ -8,6 +8,7 @@ use crate::goalrows::GOALS_ONLY;
 use crate::{Reply, Shell};
 use alloc::format;
 use alloc::string::String;
+use goalcore::report::Report;
 
 impl Shell {
     /// `agent-step next` and `agent-step report <n> <result>`, for `goals`'s
@@ -42,7 +43,11 @@ impl Shell {
     }
 
     /// What came of taken command `<n>`: kept for `goal_list`, and its place
-    /// freed. A goal `goals` refused to add loses its ceiling.
+    /// freed. The report is read only in the shape `goalcore::report` writes
+    /// (`ok` and a status line a goal, `gone <id>`, `err <why>`), and an `err`'s
+    /// words never as a state. A goal reported in a final state (done,
+    /// failed, cancelled) or gone loses its ceiling; so does a goal `goals` did
+    /// not report added.
     fn goal_report(&mut self, rest: &str) -> Reply {
         let (n, result) = rest.split_once(' ').unwrap_or((rest, ""));
         let Ok(n) = n.trim_start_matches('#').parse::<u64>() else {
@@ -57,10 +62,25 @@ impl Shell {
             return Reply::err(format!("no taken command #{n}"));
         };
         let queued = self.goal_book.queue.remove(at);
-        let result: String = result.chars().take(goalcore::MAX_TEXT).collect();
+        let report = Report::parse(result);
+        match &report {
+            Some(Report::Ok(statuses)) => {
+                for status in statuses.iter().filter(|s| s.state.is_final()) {
+                    self.goal_ended(status.goal, status.state.word());
+                }
+            }
+            Some(Report::Gone(goal)) if *goal == queued.goal => {
+                self.goal_ended(queued.goal, "forgotten");
+            }
+            _ => {}
+        }
+        let result = one_line(result);
         self.host
             .audit(&format!("goals reports #{n} ({}): {result}", queued.goal));
-        let refused_add = queued.command.starts_with("goal-add ") && result.starts_with("err");
+        // An add `goals` did not report done, in any shape, gives its
+        // ceiling back: the safe way round.
+        let refused_add =
+            queued.command.starts_with("goal-add ") && !matches!(report, Some(Report::Ok(_)));
         if refused_add {
             self.roster.revoke_goal(queued.goal);
         }
@@ -72,4 +92,30 @@ impl Shell {
         }
         Reply::ok(format!("reported #{n}"))
     }
+
+    /// Goal `goal` takes no more steps (`word` says why): its ceiling goes.
+    fn goal_ended(&mut self, goal: u64, word: &'static str) {
+        self.roster.revoke_goal(goal);
+        if let Ok(kept) = self.goal_book.goal(goal) {
+            kept.state = word;
+        }
+    }
+}
+
+/// What goals reported, as one printable line for `goal_list` and the audit:
+/// every character but printable ASCII (a newline, a control) a space, runs of spaces one, at
+/// most `goalcore::MAX_TEXT` characters.
+fn one_line(text: &str) -> String {
+    let mut out = String::new();
+    for c in text.chars() {
+        let c = if (' '..='~').contains(&c) { c } else { ' ' };
+        if c == ' ' && (out.is_empty() || out.ends_with(' ')) {
+            continue;
+        }
+        if out.chars().count() >= goalcore::MAX_TEXT {
+            break;
+        }
+        out.push(c);
+    }
+    String::from(out.trim_end())
 }

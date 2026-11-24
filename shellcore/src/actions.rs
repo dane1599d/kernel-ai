@@ -664,6 +664,9 @@ impl Shell {
         if pending.goal.is_some() && !is_show(text) {
             return self.answer_goal(pending, text);
         }
+        if pending.goal.is_some() && is_show(text) {
+            return self.show_goal_ask(pending);
+        }
         if is_show(text) {
             let question = self.question(id, &pending.request, &pending.checked, &pending.asking);
             let shown = script::shown(id, &pending.checked);
