@@ -289,13 +289,61 @@ jobs:
           key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
     timeout-minutes: 40
 
+  # Builds what the boot shards boot once, not once per shard (`xtask build
+  # --out`, xtask/src/prebuilt.rs), and hands the shards its manifest's
+  # SHA-256 as a job output. Runs whenever `qemu` does. A shard boots the
+  # download only when its manifest hashes to that output and names the
+  # shard's commit and options, and every file hashes as listed; a failed
+  # build, a failed download or any mismatch and the shard builds for itself.
+  prebuild:
+    name: Build the boot artifacts once
+    needs: noboot
+    if: >-
+      !cancelled() &&
+      needs.noboot.outputs.skip != 'true' &&
+      (github.event.action != 'labeled' || startsWith(github.event.label.name, 'full-ci')) &&
+      (github.event_name != 'pull_request' ||
+      startsWith(github.head_ref, 'batch/') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci-all'))
+    runs-on: ubuntu-24.04
+    # Not a gate: the shards build for themselves when this fails.
+    continue-on-error: true
+    outputs:
+      sha: ${{ steps.build.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      # The shards' cache: this job now builds what they used to.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: qemu
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - id: build
+        name: Build the kernel, user programs and component versions (as test does)
+        run: |
+          cargo xtask build --spikes --out "$RUNNER_TEMP/prebuilt"
+          echo "sha=$(sha256sum "$RUNNER_TEMP/prebuilt/manifest.txt" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prebuilt
+          path: ${{ runner.temp }}/prebuilt
+          retention-days: 1
+          overwrite: true
+    timeout-minutes: 30
+
   # Every case boots under both KVM and TCG (KVM only on a `full-ci` PR, see
   # above); `--shard K/3` deals the cases out in turn across three runners per
   # accelerator, and shard 1 also runs the host smokes.
   boot:
     name: Boot test (${{ matrix.accel }}, shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-24.04
-    needs: qemu
+    # `prebuild` is read by its output: a shard runs past a failed build job
+    # and builds for itself.
+    needs: [qemu, prebuild]
     # Explicit: a job's implicit success() covers its needs' needs too, and the
     # `noboot` job above `qemu` is skipped on every run but a no-boot batch.
     if: ${{ !cancelled() && needs.qemu.result == 'success' }}
@@ -333,9 +381,29 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: qemu
-          save-if: ${{ github.ref == 'refs/heads/main' && matrix.accel == 'kvm' && matrix.shard == 1 }}
+          save-if: false
+      # The build service's `--frozen` builds (the edit smoke, app-editor,
+      # manifest) download nothing, and a shard that boots the build job's
+      # artifacts runs no cargo build that would fetch their crates.
+      - name: Fetch the locked crates for the build service's offline builds
+        run: cargo fetch --locked
+      # No download, or a bad one, and the test step builds as it always did.
+      - name: Download the build job's artifacts
+        if: needs.prebuild.outputs.sha != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: prebuilt
+          path: ${{ runner.temp }}/prebuilt
       - name: Boot kernel with spikes and check pass/fail
-        run: cargo xtask test --accel ${{ matrix.accel }} --timeout 300 --shard ${{ matrix.shard }}/3
+        env:
+          PREBUILT_SHA: ${{ needs.prebuild.outputs.sha }}
+        run: |
+          prebuilt=()
+          if [ -n "$PREBUILT_SHA" ] && [ -f "$RUNNER_TEMP/prebuilt/manifest.txt" ]; then
+            prebuilt=(--prebuilt "$RUNNER_TEMP/prebuilt" --prebuilt-sha "$PREBUILT_SHA")
+          fi
+          cargo xtask test --accel ${{ matrix.accel }} --timeout 300 --shard ${{ matrix.shard }}/3 "${prebuilt[@]}"
     # TCG shards run about twice as long as KVM ones: on 2026-10-28 main's slowest
     # TCG shard took 19 of its 20 minutes, and batch #340's timed out mid-case.
     # On 2026-10-30 KVM shards took 16-18 minutes with 45 cases each, and two
