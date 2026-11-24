@@ -94,27 +94,29 @@ pub(super) fn defines(text: &str) -> Vec<String> {
     names
 }
 
-/// The first of `names` (as [`defines`] gives them) that `text`'s code
-/// names, outside comments, strings and the names `text` defines itself;
-/// bare, without its `#` or `tag `.
-pub(super) fn uses(text: &str, names: &[String]) -> Option<String> {
+/// Each of `names` (as [`defines`] gives them, as keys) that `text`'s code
+/// names, outside comments, strings and the names `text` defines itself.
+/// It is a match on the word, so a parameter or local of that name counts.
+pub(super) fn mentions(text: &str, names: &[String]) -> Vec<String> {
     let own = defines(text);
-    let tokens = promptcore::lex::lex(text).ok()?;
-    tokens
+    let Ok(tokens) = promptcore::lex::lex(text) else {
+        return Vec::new();
+    };
+    names
         .iter()
-        .filter(|t| t.kind == promptcore::lex::Kind::Ident)
-        .map(|t| t.text(text))
-        .find_map(|word| {
-            names
+        .filter(|key| !own.contains(key))
+        .filter(|key| {
+            tokens
                 .iter()
-                .filter(|key| !own.contains(key))
-                .find(|key| bare(key) == word)
-                .map(|key| String::from(bare(key)))
+                .filter(|t| t.kind == promptcore::lex::Kind::Ident)
+                .any(|t| t.text(text) == bare(key))
         })
+        .cloned()
+        .collect()
 }
 
 /// A key as the code writes it: `#N` and `tag P` are `N` and `P`.
-fn bare(key: &str) -> &str {
+pub(super) fn bare(key: &str) -> &str {
     key.strip_prefix('#')
         .or_else(|| key.strip_prefix("tag "))
         .unwrap_or(key)
@@ -198,11 +200,11 @@ mod tests {
         assert_eq!(defines(lib), ["Seven", "#N", "tag P"]);
         let names = defines(lib);
         let eight = "I64 Eight() { return Seven() + 1; }";
-        assert_eq!(uses(eight, &names).as_deref(), Some("Seven"));
-        assert_eq!(uses("I64 a[N];", &names).as_deref(), Some("N"));
+        assert_eq!(mentions(eight, &names), ["Seven"]);
+        assert_eq!(mentions("I64 a[N] = Seven();", &names), ["Seven", "#N"]);
         // A comment or a string is no use; a redefinition is the entry's own.
-        assert_eq!(uses("/* Seven */ U8 *s = \"Seven\";", &names), None);
-        assert_eq!(uses("I64 Seven() { return 7; }", &names), None);
-        assert_eq!(uses("I64 Nine() { return 9; }", &names), None);
+        assert!(mentions("/* Seven */ U8 *s = \"Seven\";", &names).is_empty());
+        assert!(mentions("I64 Seven() { return 7; }", &names).is_empty());
+        assert!(mentions("I64 Nine() { return 9; }", &names).is_empty());
     }
 }
