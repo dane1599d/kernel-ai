@@ -265,7 +265,7 @@ pub fn undo_check() -> Result<(), &'static str> {
     terminal::shell_line_answered("undo");
     wait("the undo to take the rule's grant back", || !holds())?;
     wait("the undo in the shell's log", || {
-        logged(&[&alloc::format!("standing instruction {first} removed")])
+        logged(&["\nU ", &taken_back("rules_add", &first)])
     })?;
     minimize_fires_nothing(START)?;
     log!(
@@ -278,13 +278,21 @@ pub fn undo_check() -> Result<(), &'static str> {
     terminal::shell_line_answered(&alloc::format!("rules_remove {second}"));
     wait("rules_remove to take the rule's grant back", || !holds())?;
     wait("rules_remove in the shell's log", || {
-        logged(&[&alloc::format!("Removed standing instruction {second}")])
+        logged(&[&taken_back("rules_remove", &second)])
     })?;
     minimize_fires_nothing(MINIMIZE)?;
     log!(
         "desk-standing-undo: rules_remove ended the allowed rule, its grant is gone, and a minimize fires nothing"
     );
     Ok(())
+}
+
+/// The change an entry logs when `action` took the user's standing
+/// instruction `id` away: the log keeps the change (its words with `_` for
+/// spaces), not the reply's words.
+fn taken_back(action: &str, id: &str) -> String {
+    let words = RULE.trim_start_matches("rules_add ").replace(' ', "_");
+    alloc::format!(" {action} owner=shell res=standing_{id} before={words} after=absent ")
 }
 
 /// Whether the shell's action log holds an entry with every one of `parts`.
