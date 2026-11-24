@@ -31,11 +31,18 @@ use alloc::string::String;
 
 /// Proposals waiting for the card, every desktop line together.
 pub(crate) const MAX_WAITING: usize = 4;
+/// The places among [`MAX_WAITING`] agents' questions may take, so the
+/// person's panel and Terminal lines keep room on the card.
+pub(crate) const AGENTS_WAITING: usize = 2;
+/// What an agent's question is told when agents' places are full.
+const AGENTS_FULL: &str = "agents' questions fill their places on the card";
 /// What the line is told when its proposal waits for the card.
 pub(crate) const ON_CARD: &str = "it asks first: answer Run or Don't on the card";
 /// What it is told when it is a script, which only the console shows.
 pub(crate) const SCRIPT: &str =
     "it asks first, and its script shows only in the console: ask there";
+/// What it is told when it is a send, whose text only the console shows.
+pub(crate) const SEND: &str = "a send shows its text only in the console: ask there";
 /// What it is told when too many already wait.
 const FULL: &str = "it asks first, and other questions wait: answer those first";
 /// What it is told when its one call is too long, or not plain ASCII, for
@@ -43,7 +50,7 @@ const FULL: &str = "it asks first, and other questions wait: answer those first"
 pub(crate) const TOO_LONG: &str =
     "it asks first, and its call is too long or not plain text for the card: ask in the console";
 /// The line for a card answered Don't, or declined in its window.
-const DECLINED: &str = "Not run: you said Don't.";
+pub(crate) const DECLINED: &str = "Not run: you said Don't.";
 /// The line for a question that lapsed before the card answered it.
 const LAPSED: &str = "Not run: it waited more than two minutes for the card.";
 /// The line for a card's question answered after its two minutes: the
@@ -62,6 +69,8 @@ pub(crate) enum Asker {
     Panel,
     /// An app's window, the Terminal's: its `shell_card` effect's result.
     App(String),
+    /// An agent's step (`agentstep`): its `agent-step wait <id>`.
+    Agent(String),
 }
 
 /// A proposal from a desktop line, waiting for the card.
@@ -88,6 +97,9 @@ fn as_added(id: u64, text: &str) -> Option<String> {
 /// outcome: one call too long or not plain text for the menu asks a y/n
 /// question instead (`agentcore`'s fallback), anything else is a script.
 fn not_on_card(text: &str) -> (&'static str, &'static str) {
+    if text.starts_with(termcore::menu::SHOWN) {
+        return (SEND, "discarded: a send shows its text only in the console");
+    }
     match text.starts_with("Run ") && text.ends_with("y/n, or show") {
         true => (TOO_LONG, "discarded: the card cannot show the call"),
         false => (SCRIPT, "discarded: only the console shows a script"),
@@ -120,10 +132,31 @@ impl Shell {
             (Some(id), Some(_)) if id == pending.id => as_added(id, &reply.text),
             _ => None,
         };
+        // An agent's card says who asks and offers no Always.
+        let was_menu = menu.is_some();
+        let menu = match &asker {
+            Asker::Agent(agent) => menu.and_then(|m| crate::agentconsent::agent_menu(agent, &m)),
+            _ => menu,
+        };
         let (why, outcome) = match menu {
+            // A menu the agent's name made too long for the card.
+            None if was_menu => (
+                TOO_LONG,
+                "discarded: the agent's question is too long for the card",
+            ),
             None => not_on_card(&reply.text),
             Some(_) if self.desk_asks.len() >= MAX_WAITING => {
                 (FULL, "discarded: other questions wait")
+            }
+            // Agents take at most AGENTS_WAITING places: the person's own
+            // lines can always reach the card.
+            Some(_)
+                if matches!(asker, Asker::Agent(_)) && self.agents_waiting() >= AGENTS_WAITING =>
+            {
+                (
+                    AGENTS_FULL,
+                    "discarded: agents' questions fill their places",
+                )
             }
             Some(menu) => {
                 let id = pending.id;
@@ -146,6 +179,14 @@ impl Shell {
         );
         self.save_log();
         Err(why)
+    }
+
+    /// How many agents' questions wait for the card.
+    fn agents_waiting(&self) -> usize {
+        self.desk_asks
+            .iter()
+            .filter(|w| matches!(w.asker, Asker::Agent(_)))
+            .count()
     }
 
     /// Whether a desktop line's proposal waits for the card.
@@ -178,11 +219,17 @@ impl Shell {
         if self.desk_asks.is_empty() {
             return None;
         }
+        // The person's own lines go to the card before agents' questions.
+        let first = self
+            .desk_asks
+            .iter()
+            .position(|w| !matches!(w.asker, Asker::Agent(_)))
+            .unwrap_or(0);
         let Waiting {
             mut pending,
             menu,
             asker,
-        } = self.desk_asks.remove(0);
+        } = self.desk_asks.remove(first);
         pending.created_ns = self.host.now_ns();
         let id = pending.id;
         self.host.audit(&format!("request {id}: on the card"));
@@ -194,7 +241,7 @@ impl Shell {
     /// Lets go of waiting questions older than a question's two minutes, as
     /// the console's lapse: what they would do may no longer be meant. A
     /// window's line is told.
-    fn lapse_desk_asks(&mut self) {
+    pub(crate) fn lapse_desk_asks(&mut self) {
         let now = self.host.now_ns();
         while self
             .desk_asks
@@ -208,8 +255,12 @@ impl Shell {
                 &pending.checked.script,
                 "expired",
             );
-            if let Asker::App(app) = asker {
-                self.card_came_to(&app, pending.id, &Reply::ok(LAPSED));
+            match asker {
+                Asker::App(app) => self.card_came_to(&app, pending.id, &Reply::ok(LAPSED)),
+                Asker::Agent(agent) => {
+                    self.agent_told(agent, pending.id, false, String::from(LAPSED));
+                }
+                Asker::Panel => {}
             }
         }
     }
@@ -291,6 +342,7 @@ impl Shell {
                 };
                 self.card_came_to(&app, id, &told);
             }
+            Asker::Agent(agent) => self.agent_told(agent, id, ran, line),
         }
     }
 
@@ -346,13 +398,20 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
-    use super::{SCRIPT, TOO_LONG, as_added, declined, not_on_card};
+    use super::{SCRIPT, SEND, TOO_LONG, as_added, declined, not_on_card};
 
     #[test]
     fn a_call_too_long_for_the_menu_is_told_so_and_a_script_is_not() {
         let long = "Run notes_add(\"a very long note\")? It asks first. y/n, or show";
         assert_eq!(not_on_card(long).0, TOO_LONG);
         assert_eq!(not_on_card("script 4:\nlet x = 1;\ny/n, or show").0, SCRIPT);
+        // A send's text is shown only in the console: its own reason.
+        let send = termcore::menu::encode_shown(
+            "Kai wants to send this text to a.example:",
+            "hi",
+            "menu 5 asked\nq\n\n\nx",
+        );
+        assert_eq!(not_on_card(&send).0, SEND);
     }
 
     #[test]

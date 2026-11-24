@@ -380,6 +380,7 @@ impl Shell {
         change: Option<Change>,
     ) {
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: Form::Standing,
@@ -409,6 +410,7 @@ impl Shell {
             false => (String::from(described), String::from("absent")),
         };
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: Form::Call,

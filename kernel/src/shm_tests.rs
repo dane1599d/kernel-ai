@@ -61,6 +61,7 @@ pub fn check() -> Result<(), &'static str> {
     }
     result?;
     shm::collect();
+    transit_and_pin()?;
     log!("shm: SHM_CREATE, MAP and UNMAP work, and a revoke leaves holders sharing nothing");
     Ok(())
 }
@@ -107,6 +108,25 @@ fn rounds(pids: [u64; 2]) -> Result<(), &'static str> {
             }
         }
         let checked = round == 0 || round == ROUNDS - 1;
+        if round == 0 {
+            // SHM_INFO: a holder learns the object's size only with INSPECT,
+            // which the mapping handle it was given lacks.
+            let inspect = give(a, Entry::new(Kind::Shm, Rights::INSPECT, object))?;
+            ask(
+                HOLDERS[0],
+                &alloc::format!("info {inspect}"),
+                &alloc::format!("ok {PAGES}"),
+            )?;
+            let mapping = give(a, Entry::new(Kind::Shm, Rights::MAP | Rights::READ, object))?;
+            ask(
+                HOLDERS[0],
+                &alloc::format!("info {mapping}"),
+                "err info Permission",
+            )?;
+            log!(
+                "shm: SHM_INFO gave the object's {PAGES} pages with INSPECT and refused a handle without it"
+            );
+        }
         if checked {
             ask(HOLDERS[0], "fill 1", "ok")?;
             ask(HOLDERS[1], "count 1", &alloc::format!("ok {BYTES}"))?;
@@ -220,4 +240,33 @@ fn ask(name: &str, line: &str, want: &str) -> Result<(), &'static str> {
     }
     threads::yield_now();
     Ok(())
+}
+
+/// Audit K #5, #9, #12: an object is kept while it is pinned (made, its first
+/// handle not yet in a table) and while its only handle is moving between
+/// tables, and freed once neither holds. A kernel object over a frame of the
+/// test's own, so nothing else can free or reuse it meanwhile.
+fn transit_and_pin() -> Result<(), &'static str> {
+    let frame = memory::with(|m| m.allocate_zeroed_frame()).ok_or("shm: no frame")?;
+    let result = (|| {
+        let object = shm::create_kernel_object(frame, 1).map_err(|_| "shm: no object")?;
+        shm::collect();
+        if shm::frames_of(object).is_none() {
+            return Err("shm: a new object was freed before its first handle was in");
+        }
+        let moving = handle::Moving::from(alloc::vec![Entry::new(Kind::Shm, Rights::MAP, object)]);
+        shm::settle(object);
+        shm::collect();
+        if shm::frames_of(object).is_none() {
+            return Err("shm: an object whose only handle was moving was freed");
+        }
+        drop(moving);
+        shm::collect();
+        if shm::frames_of(object).is_some() {
+            return Err("shm: an object nothing names was kept");
+        }
+        Ok(())
+    })();
+    let _ = memory::with(|m| m.free_frame(frame));
+    result
 }

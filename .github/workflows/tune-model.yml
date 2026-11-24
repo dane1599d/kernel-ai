@@ -50,6 +50,8 @@ jobs:
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Bench — the engine's kernels and decode steps on the runner, no model
         if: inputs.mode == 'bench'
         run: |

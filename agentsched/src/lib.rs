@@ -48,6 +48,20 @@
 //! The user's request waits for the quantum in flight and the moves its slot needs.
 //! The tests check these over random workloads.
 //!
+//! **Grammar-shaped answers** ([`Shape::Grammar`]: `act`'s call and `script`'s code)
+//! are decoded under a grammar whose state the engine does not keep across a stop,
+//! so such an answer cannot be paused mid-way and carried on as a free one is. The
+//! rule (the row `2026-11-18-agentsched-grammar-preemption`): once one has decoded a
+//! token, it keeps the model until its answer ends, unless a request of a higher
+//! class waits. That request is never kept waiting past the token in flight. Any
+//! decision other than the open answer's next token ([`Decision::End`] aside)
+//! interrupts it, and the answer starts again from its prompt when it next runs. Its
+//! prompt's cache is kept wherever its state goes, so nothing is prefilled again; the
+//! tokens it decodes again are charged again, as a dropped state's are. The answer is
+//! exact: it is a function of the prompt and the sampler's state at its start, so
+//! the caller drops the partial answer and starts the sampler again from there. It
+//! never joins a batch.
+//!
 //! **The caller** carries out each [`Decision`] and calls [`Scheduler::next`] again.
 //! A [`Decision::Run`] has already counted its tokens and moved its requests on; the
 //! caller says [`Scheduler::finish`] for one the model stopped before its last
@@ -61,6 +75,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+pub mod jobs;
 mod pick;
 mod place;
 mod sched;
@@ -206,6 +221,17 @@ pub struct Now {
     pub day: u32,
 }
 
+/// What an answer is decoded under.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Shape {
+    /// Free text (or an embedding): paused at any token and carried on exactly.
+    #[default]
+    Free,
+    /// Under a grammar (`act`, `script`): it cannot be carried on after a stop, so
+    /// an interrupted answer starts again from its prompt (see the crate docs).
+    Grammar,
+}
+
 /// What an agent asks the model for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ask {
@@ -214,6 +240,7 @@ pub struct Ask {
     pub prompt_tokens: u32,
     /// Tokens at most to decode; 0 for an embedding.
     pub max_new_tokens: u32,
+    pub shape: Shape,
 }
 
 /// Why a request is refused when it is made.

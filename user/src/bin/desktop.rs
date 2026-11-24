@@ -79,6 +79,8 @@ mod keys;
 mod pane;
 #[path = "desktop/perf.rs"]
 mod perf;
+#[path = "desktop/pools.rs"]
+mod pools;
 #[path = "desktop/taskbar.rs"]
 mod taskbar;
 use keys::{input, lease};
@@ -87,6 +89,8 @@ mod deliver;
 use deliver::deliver;
 #[path = "desktop/asks.rs"]
 mod asks;
+#[path = "desktop/preview.rs"]
+mod preview;
 use asks::{answer_ask, post, read_asks};
 #[path = "desktop/requests.rs"]
 mod requests;
@@ -100,7 +104,8 @@ use frame::{arrow, draw, post_events, refresh_bar, report, wake_shell};
 #[path = "desktop/setup.rs"]
 mod setup;
 use setup::{
-    bar_text, log_bar, logs_bar, logs_first_key, starting_appearance, theme, wait_for_screen,
+    bar_text, log_bar, logs_bar, logs_first_key, pane_word, starting_appearance, theme,
+    wait_for_screen,
 };
 
 /// The fonts ADR 0005 §8 names, built in until P2's files carry them.
@@ -119,6 +124,9 @@ const CLIENT_WAIT_MS: u64 = 2;
 struct Pool {
     pid: u64,
     pool: u32,
+    /// The `Shm` the client moved here, held (with its mapping) until the pool
+    /// is released: `pools::release`.
+    handle: Handle,
     address: u64,
     size: u32,
     /// Mapped writable, so its header page's event ring takes the client's
@@ -194,6 +202,8 @@ struct State {
     ticked_ms: u64,
     /// The ask card up now, as the kernel posted it.
     card: Option<Card>,
+    /// A send's text and its card: what the pane shows (`preview`).
+    sends: deskcore::sendview::Slot,
     /// The last ask refused as too long to show whole: never asked again.
     too_long: Option<u64>,
     /// When the ask box was last read.
@@ -281,6 +291,7 @@ fn main() -> i32 {
             agent: deskcore::agent::Agent::default(),
             ticked_ms: 0,
             card: None,
+            sends: deskcore::sendview::Slot::default(),
             too_long: None,
             asked_ms: 0,
             known: Vec::new(),
@@ -303,6 +314,10 @@ fn main() -> i32 {
             );
         }
         let result = run(&mut state, &screen);
+        // The clients' pools go with this connection's state; they greet again.
+        for pool in &state.pools {
+            pools::release(pool);
+        }
         painter = state.painter;
         painted_in = state.painted_in;
         appearance = state.appearance;

@@ -400,7 +400,11 @@ pub fn send_text(send: &crate::sends::HeldSend, more: usize, now_ms: u64) -> Str
 /// suffix, whose last two labels are both short (`example.co.uk`).
 fn cuttable(host: &str) -> usize {
     let labels: Vec<&str> = host.rsplit('.').collect();
-    // An address (`10.0.2.2`) has no site's name to keep: it is never cut.
+    // An address (`10.0.2.2`, `[::1]`) or a host with a port has no site's
+    // name to keep: it is never cut.
+    if host.contains([':', '[']) {
+        return 0;
+    }
     if labels
         .iter()
         .all(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_digit()))
@@ -462,5 +466,7 @@ mod send_tests {
         assert_eq!(&au[super::cuttable(au)..], "shop.com.au");
         assert_eq!(super::cuttable("co.uk"), 0);
         assert_eq!(super::cuttable("192.168.100.200"), 0);
+        assert_eq!(super::cuttable("[2001:db8::1]"), 0);
+        assert_eq!(super::cuttable("hooks.example.org:8443"), 0);
     }
 }

@@ -41,6 +41,8 @@
 //! With `mode=async` and `mode=slow` a pair checks CALL_SUBMIT and CALL_POLL
 //! (`handles/async_call.rs`).
 //!
+//! With `mode=echo` and `mode=rtt` a pair times IPC round trips for
+//! `test=ipc-rtt` (`handles/rtt.rs`).
 //! With `mode=mem` (lane M) it serves the kernel's anonymous-memory case (see
 //! `handles/mem.rs`).
 //!
@@ -68,6 +70,8 @@ mod interrupt;
 mod mem;
 #[path = "handles/power.rs"]
 mod power;
+#[path = "handles/rtt.rs"]
+mod rtt;
 
 user::entry!(main);
 
@@ -92,6 +96,8 @@ fn main() -> i32 {
         Some("lazy") => async_call::lazy,
         Some("submit-exit") => async_call::submit_exit,
         Some("submit-hold") => async_call::submit_hold,
+        Some("echo") => rtt::echo,
+        Some("rtt") => rtt::rtt,
         _ => checks,
     };
     match run() {
@@ -148,6 +154,10 @@ fn shm() -> Result<(), &'static str> {
                     Err(error) => alloc::format!("err map {error:?}"),
                 }
             }
+            (Some("info"), Some(handle), _) => match sys::shm_info(Handle(handle as u32)) {
+                Ok(pages) => alloc::format!("ok {pages}"),
+                Err(error) => alloc::format!("err info {error:?}"),
+            },
             (Some("fill"), Some(byte), _) => match mapped {
                 Some((address, len)) => {
                     region(address, len).fill(byte as u8);
@@ -374,7 +384,51 @@ fn own_shm() -> Result<(), &'static str> {
         Error::BadHandle,
         "a closed handle",
     )?;
+    // PROC_ALIVE needs DISPLAY or SUPERVISE, which this process lacks.
+    expect(
+        sys::proc_alive(1),
+        Error::Permission,
+        "PROC_ALIVE with no right",
+    )?;
+    quota_comes_back()?;
+    at_most_sixteen()
+}
+
+/// Audit K #2: an object freed gives its pages back to the creator's quota.
+/// 24 objects of 64 pages, each made, mapped, unmapped and closed in turn,
+/// are 1,536 pages: past the 1,024 the shm case gives, so this passes only
+/// if each one freed (at the next unmap) is refunded.
+fn quota_comes_back() -> Result<(), &'static str> {
+    for _ in 0..24 {
+        let handle = sys::shm_create(64).map_err(|_| "a freed Shm's pages did not come back")?;
+        let address = sys::shm_map(handle, true).map_err(|_| "map failed")?;
+        sys::shm_unmap(address).map_err(|_| "unmap failed")?;
+        sys::handle_close(handle).map_err(|_| "close failed")?;
+    }
     Ok(())
+}
+
+/// Audit K #14: a process makes at most 16 objects at once; the 17th is Busy,
+/// and once they are closed and collected it may make more. A closed object
+/// is freed at the next collection, which an unmap runs: the first object
+/// stays mapped so its unmap at the end collects all 16.
+fn at_most_sixteen() -> Result<(), &'static str> {
+    let first = sys::shm_create(1).map_err(|_| "the first of 16 objects was refused")?;
+    // An unmap now collects what the checks before closed, so all 16 are ours.
+    let address = sys::shm_map(first, false).map_err(|_| "map failed")?;
+    sys::shm_unmap(address).map_err(|_| "unmap failed")?;
+    let address = sys::shm_map(first, false).map_err(|_| "map failed")?;
+    let mut held = [Handle(0); 15];
+    for slot in held.iter_mut() {
+        *slot = sys::shm_create(1).map_err(|_| "one of 16 objects was refused")?;
+    }
+    expect(sys::shm_create(1), Error::Busy, "a 17th object")?;
+    for handle in held.into_iter().chain([first]) {
+        sys::handle_close(handle).map_err(|_| "close failed")?;
+    }
+    sys::shm_unmap(address).map_err(|_| "unmap failed")?;
+    let again = sys::shm_create(1).map_err(|_| "objects closed were not freed")?;
+    sys::handle_close(again).map_err(|_| "close failed")
 }
 
 /// The first startup handle of `kind`.
@@ -472,6 +526,13 @@ fn grants() -> Result<(), &'static str> {
         Error::NotFound,
         "a ONCE badge never held",
     )?;
+    // Three nodes left live, one under another: the kernel revokes every one
+    // as this process ends (audit K #11: that path deadlocked on the grant
+    // tree's lock, and stopped at the first refusal).
+    let left = sys::grant_new(root, 0, "left").map_err(|_| "a node left live was refused")?;
+    sys::grant_new(root, 0, "left 2").map_err(|_| "a node left live was refused")?;
+    sys::grant_new(left, 0, "left 3").map_err(|_| "a node left live was refused")?;
+    proc_alive()?;
     Ok(())
 }
 
@@ -745,6 +806,28 @@ fn devlist() -> Result<(), &'static str> {
             })
     {
         return Err("DEV_LIST into a one-record buffer did not give the first record");
+    }
+    Ok(())
+}
+
+/// PROC_ALIVE: a running service's pid (from LIST) is alive, and so is the
+/// kernel's, 0; one never given out is not.
+fn proc_alive() -> Result<(), &'static str> {
+    let mut listing = [0u8; 1024];
+    let len = sys::list(&mut listing).map_err(|_| "LIST failed")?;
+    let text = core::str::from_utf8(&listing[..len.min(listing.len())]).unwrap_or("");
+    let pid: u64 = text
+        .lines()
+        .find_map(|line| line.split_whitespace().next()?.parse().ok())
+        .ok_or("LIST named no running process")?;
+    if sys::proc_alive(pid) != Ok(true) {
+        return Err("PROC_ALIVE said a running process had ended");
+    }
+    if sys::proc_alive(0) != Ok(true) {
+        return Err("PROC_ALIVE said the kernel, pid 0, had ended");
+    }
+    if sys::proc_alive(u64::MAX) != Ok(false) {
+        return Err("PROC_ALIVE said a pid never made was alive");
     }
     Ok(())
 }

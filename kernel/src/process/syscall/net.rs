@@ -63,7 +63,7 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
             }
             let mut data = alloc::vec![0u8; len];
             uaccess::copy_from_user(slot, a[1], &mut data)?;
-            net::stream::send(owner(slot), id, &data).map(|n| n as u64)
+            send_metered(slot, id, &data).map(|n| n as u64)
         }
         call::NET_RECV => {
             let id = stream_object(slot, a[0], Rights::READ)?;
@@ -72,6 +72,11 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
                 .min(net::stream::MAX_CALL);
             let mut data = alloc::vec![0u8; cap];
             let n = net::stream::recv(owner(slot), id, &mut data)?;
+            // Counted as it arrives: it cannot be refused once here.
+            if let Some(meter) = net::stream::meter_of(owner(slot), id) {
+                let today = net::dest::today();
+                net::dest::with_meter(&meter, |m| m.received(n as u64, today));
+            }
             uaccess::copy_to_user(slot, a[1], &data[..n])?;
             Ok(n as u64)
         }
@@ -89,6 +94,30 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
         }
         _ => Err(Error::NotFound),
     }
+}
+
+/// NET_SEND on stream `id`: on an agent's `NetDest`, the bytes are charged to
+/// its day before they leave and refused whole past its budget (Permission);
+/// what the stream did not take is given back.
+fn send_metered(slot: usize, id: u64, data: &[u8]) -> Result<usize, Error> {
+    let Some(meter) = net::stream::meter_of(owner(slot), id) else {
+        return net::stream::send(owner(slot), id, data);
+    };
+    let len = data.len() as u64;
+    let today = net::dest::today();
+    if let Err(over) = net::dest::with_meter(&meter, |m| m.try_send(len, today)) {
+        crate::log!(
+            "net: pid {} is over its day's {} bytes ({} used): send refused",
+            owner(slot),
+            over.budget,
+            over.used
+        );
+        return Err(Error::Permission);
+    }
+    let sent = net::stream::send(owner(slot), id, data);
+    let taken = *sent.as_ref().unwrap_or(&0) as u64;
+    net::dest::with_meter(&meter, |m| m.refund(len.saturating_sub(taken), today));
+    sent
 }
 
 /// Where a ring-3 exchange goes: the kernel picks the address, never the caller.
@@ -219,8 +248,20 @@ fn connect(slot: usize, raw: u64, addr: u64, port: u64, flags: u64) -> Result<u6
     if !net::dest::may_connect(object, netdest::Protocol::Tcp, addr, port) {
         return Err(Error::Permission);
     }
+    // An agent's day's bytes spent: no new stream until tomorrow.
+    let meter = net::dest::meter_of(object);
+    if let Some(meter) = &meter {
+        let today = net::dest::today();
+        if !net::dest::with_meter(meter, |m| m.has_room(today)) {
+            crate::log!(
+                "net: pid {} has spent its day's bytes: connect refused",
+                owner(slot)
+            );
+            return Err(Error::Permission);
+        }
+    }
     let bulk = flags & kabi::net::STREAM_BULK != 0;
-    let id = net::stream::connect(owner(slot), addr, port, bulk)?;
+    let id = net::stream::connect(owner(slot), addr, port, bulk, meter)?;
     let entry = captable::Entry::new(Kind::Stream, STREAM_RIGHTS, id);
     match crate::handle::give(slot, alloc::vec![entry]).first() {
         Some(&handle) if handle != Handle::NONE => Ok(u64::from(handle.0)),
@@ -270,7 +311,7 @@ fn narrow(slot: usize, raw: u64, spec_ptr: u64, spec_len: u64, rights: u64) -> R
     let text = core::str::from_utf8(&text).map_err(|_| Error::Invalid)?;
     let narrower = netdest::Dest::parse(text).map_err(|_| Error::Invalid)?;
     let live = |object| crate::handle::names(Kind::NetDest, object);
-    let object = net::dest::narrow(object, narrower, live)?;
+    let object = net::dest::narrow(object, narrower, live, owner(slot))?;
     let entry = captable::Entry::new(Kind::NetDest, rights, object);
     match crate::handle::give(slot, alloc::vec![entry]).first() {
         Some(&handle) if handle != Handle::NONE => Ok(u64::from(handle.0)),
@@ -310,14 +351,25 @@ fn resolve(
                 other => net::error_code(other),
             }
         })?;
-    let cap = usize::try_from(out_cap).unwrap_or(usize::MAX);
-    let bytes: Vec<u8> = found
+    // Only addresses a name's answer may lead to: none private, none of this
+    // machine or the link (audit K #17). An answer that leads only there is
+    // Private, so the app learns nothing about what sits at those addresses.
+    let reachable: Vec<_> = found
         .addresses
+        .iter()
+        .copied()
+        .filter(|&addr| net::dest::answerable(addr))
+        .collect();
+    if reachable.is_empty() && !found.addresses.is_empty() {
+        return Err(Error::Private);
+    }
+    let cap = usize::try_from(out_cap).unwrap_or(usize::MAX);
+    let bytes: Vec<u8> = reachable
         .iter()
         .take(cap)
         .flat_map(|ip| ip.octets())
         .collect();
     uaccess::copy_to_user(slot, out, &bytes)?;
-    net::dest::resolved(object, &found.addresses, found.ttl_s);
-    Ok(found.addresses.len() as u64)
+    net::dest::resolved(object, &reachable, found.ttl_s);
+    Ok(reachable.len() as u64)
 }

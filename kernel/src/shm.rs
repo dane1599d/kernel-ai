@@ -4,7 +4,14 @@
 //!   gives it a handle with MAP, READ, WRITE, DUPLICATE, TRANSFER and INSPECT.
 //! - SHM_MAP maps object `n` at `SHM_BASE + n * SHM_SLOT` in the caller, read-only
 //!   or read-write, never executable; SHM_UNMAP removes it. The pages are freed
-//!   once no mapping and no handle is left ([`collect`]).
+//!   once no mapping and no handle is left ([`collect`]): no handle in a table,
+//!   none moving between tables in a call or reply ([`transit`]), and the
+//!   object not pinned: one is from its making until its first handle is in a
+//!   table ([`settle`]).
+//! - The creator's quota charge goes back when the object is freed, if the
+//!   creator still runs (audit K #2). A process makes at most
+//!   [`MAX_PER_PROCESS`] objects at once, and the last free slot is the
+//!   kernel's (the screen's back buffer), so no one process takes them all.
 //! - Each mapping remembers the grant node its handle came through, and gets a
 //!   private zero page when it is made. Revoking that node ([`on_revoke`]) points
 //!   every page of the mapping at that zero page and shoots the range down on
@@ -19,7 +26,7 @@ use crate::{hpet, memory, smp, threads};
 use alloc::vec::Vec;
 use captable::Entry;
 use captable::grant::{GrantRef, Live};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use kabi::Error;
 use kabi::handle::{Handle, Kind, Rights};
 use kabi::layout::{SHM_BASE, SHM_SLOT};
@@ -30,6 +37,10 @@ use spin::Mutex;
 pub const MAX_OBJECTS: usize = 64;
 /// The most pages one object may hold: its slot.
 pub const MAX_PAGES: u64 = SHM_SLOT / PAGE_SIZE;
+/// Objects one process may have made and not yet freed (audit K #14).
+pub const MAX_PER_PROCESS: usize = 16;
+/// Free slots only [`create_kernel_object`] may take.
+const KERNEL_RESERVED: usize = 1;
 
 /// What SHM_CREATE's handle carries.
 pub fn created_rights() -> Rights {
@@ -57,6 +68,34 @@ struct Object {
     /// The kernel's own frames (the screen's back buffer): never freed here.
     kernel: bool,
     mappings: Vec<Mapping>,
+    /// Made and its first handle not yet in a table: never collected.
+    pinned: bool,
+    /// Who SHM_CREATE charged for it, to refund when it is freed.
+    charge: Option<Charge>,
+}
+
+#[derive(Clone, Copy)]
+struct Charge {
+    pid: u64,
+    slot: usize,
+    pages: u64,
+}
+
+/// Handles to each object moving between tables ([`transit`]).
+static TRANSIT: [AtomicU32; MAX_OBJECTS] = [const { AtomicU32::new(0) }; MAX_OBJECTS];
+
+/// A handle to `object` left a table to move to another (`up`), or reached
+/// it or was dropped on the way: while any is moving, the object stays.
+pub fn transit(object: u64, up: bool) {
+    let (index, _) = unpack(object);
+    let Some(count) = TRANSIT.get(index) else {
+        return;
+    };
+    if up {
+        count.fetch_add(1, Ordering::SeqCst);
+    } else {
+        let _ = count.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
+    }
 }
 
 struct Objects {
@@ -99,6 +138,13 @@ pub fn base(index: usize) -> u64 {
 /// A new object of `pages` zeroed pages; its handle object field. The caller
 /// charges a quota if it has one.
 pub fn create_object(pages: u64) -> Result<u64, Error> {
+    create_charged(pages, None, false)
+}
+
+/// [`create_object`], refunding `charge` when it is freed. Busy when the
+/// creator has [`MAX_PER_PROCESS`] already, or only the kernel's slots are free.
+/// With `pinned`, it is not collected until [`settle`].
+fn create_charged(pages: u64, charge: Option<Charge>, pinned: bool) -> Result<u64, Error> {
     if pages == 0 {
         return Err(Error::Invalid);
     }
@@ -119,6 +165,12 @@ pub fn create_object(pages: u64) -> Result<u64, Error> {
         }
     }
     let placed = with(|objects| {
+        let free = objects.objects.iter().filter(|o| o.is_none()).count();
+        let mine = |o: &Object| charge.is_some_and(|c| o.charge.is_some_and(|d| d.pid == c.pid));
+        let made = objects.objects.iter().flatten().filter(|o| mine(o)).count();
+        if free <= KERNEL_RESERVED || made >= MAX_PER_PROCESS {
+            return None;
+        }
         let index = objects.objects.iter().position(Option::is_none)?;
         let generation = objects.generations[index].wrapping_add(1).max(1);
         objects.generations[index] = generation;
@@ -127,6 +179,8 @@ pub fn create_object(pages: u64) -> Result<u64, Error> {
             frames: core::mem::take(&mut frames),
             kernel: false,
             mappings: Vec::new(),
+            pinned,
+            charge,
         });
         Some(pack(index, generation))
     });
@@ -138,7 +192,7 @@ pub fn create_object(pages: u64) -> Result<u64, Error> {
 
 /// An object over `pages` frames from `phys` that the kernel owns, such as the
 /// screen's back buffer (ADR 0005 §2): not zeroed, charged to no one, and its
-/// frames never freed when the object goes.
+/// frames never freed when the object goes. Pinned until [`settle`].
 pub fn create_kernel_object(phys: u64, pages: u64) -> Result<u64, Error> {
     if pages == 0 {
         return Err(Error::Invalid);
@@ -160,6 +214,8 @@ pub fn create_kernel_object(phys: u64, pages: u64) -> Result<u64, Error> {
             frames,
             kernel: true,
             mappings: Vec::new(),
+            pinned: true,
+            charge: None,
         });
         Some(pack(index, generation))
     })
@@ -176,16 +232,22 @@ fn free_frames(frames: &[u64]) {
 
 /// SHM_CREATE for the process in `slot`.
 pub fn create(slot: usize, pages: u64) -> Result<u64, Error> {
-    let max_pages = process::identity(slot).limits.max_pages;
-    // Checked and counted under one lock, so two threads cannot both fit. Counted
-    // until the process ends, even if the pages are freed before.
+    let me = process::identity(slot);
+    let max_pages = me.limits.max_pages;
+    // Checked and counted under one lock, so two threads cannot both fit.
+    // Counted until the object is freed ([`collect`] refunds it).
     let charged = process::lock_space(slot)
         .as_mut()
         .map(|space| space.try_charge(pages, max_pages));
     if !charged.ok_or(Error::Dead)? {
         return Err(Error::NoMemory);
     }
-    let object = match create_object(pages) {
+    let charge = Charge {
+        pid: me.pid,
+        slot,
+        pages,
+    };
+    let object = match create_charged(pages, Some(charge), true) {
         Ok(object) => object,
         Err(error) => {
             if let Some(space) = process::lock_space(slot).as_mut() {
@@ -195,7 +257,9 @@ pub fn create(slot: usize, pages: u64) -> Result<u64, Error> {
         }
     };
     let entry = Entry::new(Kind::Shm, created_rights(), object);
-    match handle::with(slot, |h| h.table.insert(entry))?.map_err(Error::from) {
+    let inserted = handle::with(slot, |h| h.table.insert(entry));
+    settle(object);
+    match inserted?.map_err(Error::from) {
         Ok(handle) => Ok(u64::from(handle.0)),
         Err(error) => {
             collect();
@@ -205,7 +269,9 @@ pub fn create(slot: usize, pages: u64) -> Result<u64, Error> {
 }
 
 /// SHM_MAP: maps the object `raw` names in `slot`'s space; returns its address.
-pub fn map(slot: usize, raw: u64, write: bool) -> Result<u64, Error> {
+/// Invalid when the object holds fewer than `min_pages` pages, so a server
+/// that will touch that many never faults on a short one (0: no check).
+pub fn map(slot: usize, raw: u64, write: bool, min_pages: u64) -> Result<u64, Error> {
     let handle = Handle(u32::try_from(raw).map_err(|_| Error::BadHandle)?);
     let mut rights = Rights::MAP | Rights::READ;
     if write {
@@ -213,7 +279,24 @@ pub fn map(slot: usize, raw: u64, write: bool) -> Result<u64, Error> {
     }
     let entry = handle::with(slot, |h| h.table.check(handle, Kind::Shm, rights, &Kernel))?
         .map_err(Error::from)?;
+    if min_pages > 0 && pages_of(&entry)? < min_pages {
+        return Err(Error::Invalid);
+    }
     map_entry(slot, &entry, write)
+}
+
+/// How many pages the object `entry` names holds.
+fn pages_of(entry: &Entry) -> Result<u64, Error> {
+    let (index, generation) = unpack(entry.object);
+    with(|objects| {
+        objects
+            .objects
+            .get(index)
+            .and_then(Option::as_ref)
+            .filter(|o| o.generation == generation)
+            .map(|o| o.frames.len() as u64)
+            .ok_or(Error::BadHandle)
+    })
 }
 
 /// Maps the object `entry` names, for a holder whose handle was already checked.
@@ -257,6 +340,27 @@ pub fn map_entry(slot: usize, entry: &Entry, write: bool) -> Result<u64, Error> 
     // A revoke that ran between the check and the mapping finds it now.
     on_revoke();
     Ok(address)
+}
+
+/// SHM_INFO: how many pages the object `raw` names in `slot`'s table holds,
+/// for a holder that must know its size before it trusts a mapping (cc's
+/// request `Shm`). Needs INSPECT on the handle.
+pub fn info(slot: usize, raw: u64) -> Result<u64, Error> {
+    let handle = Handle(u32::try_from(raw).map_err(|_| Error::BadHandle)?);
+    let entry = handle::with(slot, |h| {
+        h.table.check(handle, Kind::Shm, Rights::INSPECT, &Kernel)
+    })?
+    .map_err(Error::from)?;
+    let (index, generation) = unpack(entry.object);
+    with(|objects| {
+        objects
+            .objects
+            .get(index)
+            .and_then(Option::as_ref)
+            .filter(|o| o.generation == generation)
+            .map(|o| o.frames.len() as u64)
+            .ok_or(Error::BadHandle)
+    })
 }
 
 /// SHM_UNMAP: removes `slot`'s mapping that starts at `address`.
@@ -347,23 +451,70 @@ pub fn forget(pid: u64) {
     free_frames(&zeros);
 }
 
-/// Frees every object no mapping and no handle refers to.
+/// Frees every object no mapping and no handle refers to, and gives each
+/// one's quota charge back to its creator if it still runs.
 pub fn collect() {
     let mut freed = Vec::new();
+    let mut refunds = Vec::new();
     with(|objects| {
         for (index, place) in objects.objects.iter_mut().enumerate() {
+            // The transit count, then the tables, then whether any handle
+            // moved meanwhile, as the NetDest sweep does (`handle::moves`).
+            let before = handle::moves();
             let unused = place.as_ref().is_some_and(|object| {
-                object.mappings.is_empty() && !held(pack(index, object.generation))
+                object.mappings.is_empty()
+                    && !object.pinned
+                    && TRANSIT[index].load(Ordering::SeqCst) == 0
+                    && !held(pack(index, object.generation))
+                    && handle::moves() == before
             });
-            if unused
-                && let Some(object) = place.take()
-                && !object.kernel
+            if !unused {
+                continue;
+            }
+            let Some(object) = place.take() else {
+                continue;
+            };
+            if let Some(charge) = object.charge
+                && refunds.try_reserve(1).is_ok()
             {
+                refunds.push(charge);
+            }
+            if !object.kernel {
                 freed.extend(object.frames);
             }
         }
     });
     free_frames(&freed);
+    for charge in refunds {
+        refund(charge);
+    }
+}
+
+/// Unpins `object` once its first handle is in a table, or could not be put
+/// there: from now on [`collect`] frees it when nothing names it.
+pub fn settle(object: u64) {
+    let (index, generation) = unpack(object);
+    with(|objects| {
+        if let Some(Some(o)) = objects.objects.get_mut(index)
+            && o.generation == generation
+        {
+            o.pinned = false;
+        }
+    });
+}
+
+/// Gives `charge` back to its creator, if the process in its slot is still it.
+fn refund(charge: Charge) {
+    // The pid is checked with the space's lock held: a space is installed
+    // and taken away under that lock, so the slot cannot pass to another
+    // process between the check and the refund (#1155's review).
+    let mut space = process::lock_space(charge.slot);
+    if process::identity(charge.slot).pid != charge.pid {
+        return;
+    }
+    if let Some(space) = space.as_mut() {
+        space.refund(charge.pages);
+    }
 }
 
 /// Whether any process holds a live handle to `object`: one whose grant node, if

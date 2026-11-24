@@ -310,6 +310,11 @@ impl Clock {
         sys::time_ns().saturating_add(need) <= self.deadline
     }
 
+    /// Tokens computed and made so far, for an agent's charge.
+    fn used(&self) -> u32 {
+        u32::try_from(self.computed + self.tokens).unwrap_or(u32::MAX)
+    }
+
     fn speed(&self) -> Option<Speed> {
         let first = self.first?;
         Some(Speed {
@@ -328,14 +333,28 @@ impl Clock {
 /// evicts the other (S02-2).
 pub const SLOTS: local::act::Slots = local::act::Slots::TWO;
 
+/// Whose `act` request it is: the person's, with their conversation, or an agent's,
+/// with none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Whose {
+    Person,
+    Agent,
+}
+
 pub struct Local {
     engine: Engine<'static>,
+    /// The pack's rows alone, with no app's: what an agent's call is decoded
+    /// against, so an agent's request never changes the person's grammar.
+    base_grammar: local::act::Grammar,
     /// The tagged call's grammar over the pack's rows and the installed apps'
     /// rows, built again when the apps change.
     grammar: local::act::Grammar,
     apps: crate::apps::Apps,
     /// Conversation memory for `act`, in RAM only (P1 plan section 4).
     history: History,
+    /// The tokens last written, or tried, to the act slot's `kai-kv 1` file,
+    /// or restored from it; none before either.
+    act_written: Option<usize>,
     last: Option<Speed>,
     /// The last prefill rate measured, tokens/s, for [`Clock::room_for`].
     prefill_rate: Option<f64>,
@@ -343,6 +362,9 @@ pub struct Local {
     bytes: &'static [u8],
     /// That identity, once computed.
     model_id: Option<[u8; 32]>,
+    /// Tokens the last `complete` or script took: its prompt's computed tokens
+    /// and its answer's, what an agent's job is charged (F3 slice 2a).
+    used: u32,
 }
 
 impl Local {
@@ -360,15 +382,19 @@ impl Local {
         engine.set_clock(user::pool::cycles);
         engine.set_parallel(workers);
         let grammar = local::act::grammar().map_err(|error| format!("{error}"))?;
+        let base_grammar = local::act::grammar().map_err(|error| format!("{error}"))?;
         Ok(Self {
             engine,
+            base_grammar,
             grammar,
             apps: crate::apps::Apps::default(),
             history: History::new(),
+            act_written: None,
             last: None,
             prefill_rate: None,
             bytes,
             model_id: None,
+            used: 0,
         })
     }
 
@@ -418,6 +444,9 @@ impl Local {
                 Err(why) => println!("local: KV slot {slot} not restored ({why:?}) in {ms} ms"),
             }
             restored[i] = got.is_ok();
+            if slot == SLOTS.act && got.is_ok() {
+                self.act_written = Some(self.engine.cached_len());
+            }
         }
         (restored[0], restored[1])
     }
@@ -434,6 +463,11 @@ impl Local {
             .engine
             .save_slot(&key, &mut |bytes| writer.write(bytes));
         let ok = wrote.is_ok() && writer.finish();
+        // Tried once at this length, written or not: a disk that refused it
+        // is not asked again for the same prefix.
+        if slot == SLOTS.act {
+            self.act_written = Some(self.engine.cached_len());
+        }
         let ms = (sys::time_ns() - started) / 1_000_000;
         match ok {
             true => println!("local: KV slot {slot} saved in {ms} ms"),
@@ -469,9 +503,23 @@ impl Local {
 
     /// The model's greedy answer to `request`, for `ask`, `:why` and `:model`.
     pub fn complete(&mut self, request: &chat::Request) -> Result<Completion, String> {
+        self.complete_until(request, || false)
+    }
+
+    /// [`Self::complete`], with `stop` asked at every step: an agent's job gives
+    /// way to a request that comes (F3 slice 2a).
+    pub fn complete_until(
+        &mut self,
+        request: &chat::Request,
+        mut stop: impl FnMut() -> bool,
+    ) -> Result<Completion, String> {
         self.engine.use_slot(SLOTS.script);
         let mut clock = Clock::new(DEADLINE_MS, self.prefill_rate);
-        let done = local::complete(&mut self.engine, request, |step| clock.step(step));
+        let done = local::complete(&mut self.engine, request, |step| match stop() {
+            true => Next::Stop,
+            false => clock.step(step),
+        });
+        self.used = clock.used();
         self.last = clock.speed().or(self.last);
         self.prefill_rate = clock.rate().or(self.prefill_rate);
         let completion = done.map_err(|error| match error {
@@ -495,8 +543,10 @@ impl Local {
         self.script_until(request, || false)
     }
 
-    /// [`Self::script`], with `stop` asked at every step: an app job's round
-    /// answers the requests that come meanwhile there, and ends when it says.
+    /// [`Self::script`], with `stop` asked every [`STOP_CHECK_NS`] of compute,
+    /// not at every step: an app job's round answers the requests that come
+    /// meanwhile there, and ends when it says. Each ask may wait 1 ms for a
+    /// request, so asking at every token would cost a millisecond a token.
     pub fn script_until(
         &mut self,
         request: &ScriptRequest,
@@ -507,9 +557,17 @@ impl Local {
             request.timeout_ms.min(request.lang.service_timeout_ms()),
             self.prefill_rate,
         );
-        let mut step = |step| match stop() {
-            true => Next::Stop,
-            false => clock.step(step),
+        let mut asked = sys::time_ns();
+        let mut step = |step| {
+            let now = sys::time_ns();
+            let due = now - asked >= STOP_CHECK_NS;
+            if due {
+                asked = now;
+            }
+            match due && stop() {
+                true => Next::Stop,
+                false => clock.step(step),
+            }
         };
         let answer = match request.lang {
             script::Lang::Rhai => local::script(&mut self.engine, request, &mut step),
@@ -519,6 +577,7 @@ impl Local {
             script::Lang::App => local::app(&mut self.engine, request, &mut step),
         };
         self.prefill_rate = clock.rate().or(self.prefill_rate);
+        self.used = clock.used();
         let forced = self.engine.forced();
         self.last = clock
             .speed()
@@ -527,30 +586,65 @@ impl Local {
         answer
     }
 
+    /// Tokens the last `complete` or script took (prompt computed, answer made).
+    pub fn used(&self) -> u32 {
+        self.used
+    }
+
     /// One tagged call for the shell's `request`, within the time it gives and
     /// at most `act::SERVICE_TIMEOUT_MS`; a script's code comes from the script
     /// prompt (`llmproto::local::act::routed`).
     pub fn act(&mut self, request: &ActRequest) -> Result<Call, ActError> {
+        self.act_until(request, Whose::Person, || false)
+    }
+
+    /// [`Self::act`] for `whose` request, with `stop` asked at every step. An
+    /// agent's call is decoded with an empty conversation of its own, never the
+    /// person's (ADR 0013 section 2, F3 slice 2b): the person's turns are theirs,
+    /// and an agent neither reads them nor adds to them.
+    pub fn act_until(
+        &mut self,
+        request: &ActRequest,
+        whose: Whose,
+        mut stop: impl FnMut() -> bool,
+    ) -> Result<Call, ActError> {
+        let none = History::new();
+        let history = match whose {
+            Whose::Person => &self.history,
+            Whose::Agent => &none,
+        };
         // The pool's figures and the picks' time from here on are this request's.
         crate::workers::report();
         self.engine.take_picking();
-        if let Some(grammar) = self.apps.update(&request.apps) {
+        // The person's request brings the installed apps' rows; an agent's is decoded
+        // against the pack alone, and its `apps` never reach the person's grammar.
+        if whose == Whose::Person
+            && let Some(grammar) = self.apps.update(&request.apps)
+        {
             self.grammar = grammar;
         }
+        let grammar = match whose {
+            Whose::Person => &self.grammar,
+            Whose::Agent => &self.base_grammar,
+        };
         let clock = core::cell::RefCell::new(Clock::new(
             request.timeout_ms.min(act::SERVICE_TIMEOUT_MS),
             self.prefill_rate,
         ));
         let call = local::act::routed(
             &mut self.engine,
-            &self.grammar,
+            grammar,
             request,
-            &self.history,
+            history,
             SLOTS,
             |tokens| clock.borrow().room_for(tokens),
-            |step| clock.borrow_mut().step(step),
+            |step| match stop() {
+                true => Next::Stop,
+                false => clock.borrow_mut().step(step),
+            },
         );
         let clock = clock.into_inner();
+        self.used = clock.used();
         self.prefill_rate = clock.rate().or(self.prefill_rate);
         let forced = self.engine.forced();
         let call = match clock.interrupted {
@@ -583,6 +677,18 @@ impl Local {
             true => format!("{kept} turns, {tokens} of {budget} tokens (the older half went)"),
             false => format!("{kept} turns, {tokens} of {budget} tokens"),
         }
+    }
+
+    /// Whether the act slot's `kai-kv 1` file is to be written now, just after
+    /// its prefix was computed: only while history is empty, since history is
+    /// RAM only and the file must never hold a turn (audit, lane M item 4),
+    /// and only when the file is not this prefix already. A file from before
+    /// this rule that held turns is longer than the prefix, so it is written
+    /// again at the first idle turn with no conversation: after `new`, or the
+    /// next boot.
+    pub fn act_file_due(&mut self) -> bool {
+        self.engine.use_slot(SLOTS.act);
+        self.history.is_empty() && self.act_written != Some(self.engine.cached_len())
     }
 
     /// `new`: forgets the conversation.

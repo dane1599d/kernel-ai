@@ -74,6 +74,11 @@ pub(super) fn deliver(state: &mut State, effects: &[Effect]) {
                 false
             }
             // The wheel over the pane's history: three lines a detent.
+            // A send's card is up: its text in the pane scrolls.
+            Effect::PreviewScroll { pages, detents } => {
+                preview::scroll(state, pages, detents);
+                false
+            }
             Effect::PaneWheel(detents) => {
                 let area = paint_chat::chat_area(&state.desk);
                 if state.painter.wheel_history(&mut state.chat, area, detents) {

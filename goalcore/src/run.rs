@@ -20,6 +20,15 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// The note on a step the goal's end cut off while it ran: failed as far as the
+/// goal knows, until its late finish says how it came out.
+pub const ENDED_IN_FLIGHT: &str = "the goal ended while this step ran";
+/// The note on such a step once its late finish came.
+pub const FINISHED_AFTER_END: &str = "it finished after the goal ended";
+/// The note on a step the planner wrote again after the person said no to it:
+/// held, and the goal paused until they resume it.
+pub const REPEATED: &str = "you said no to this step before; resume the goal to let it ask again";
+
 /// What became of a proposed step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
@@ -210,19 +219,36 @@ impl Goal {
 
     /// Whether a step that costs about `est` tokens would run past a budget or the
     /// deadline at `now`.
-    fn over(&self, now: u64, est: u64) -> Option<Pause> {
+    pub(crate) fn over(&self, now: u64, est: u64) -> Option<Pause> {
+        let out_of_steps = self.steps_run >= self.budget.steps;
+        self.out_of_time(now)
+            .or(out_of_steps.then_some(Pause::Budget(Resource::Steps)))
+            .or_else(|| self.out_of_tokens(est))
+    }
+
+    /// What holds the goal back from being planned at `now`: its deadline, its wall
+    /// time or its tokens, each looked at on its own. Not its steps: a goal that
+    /// ran its last step is planned once more, so the planner can say it is met,
+    /// and a step it writes instead is held by [`Goal::over`].
+    pub(crate) fn planning_over(&self, now: u64) -> Option<Pause> {
+        self.out_of_time(now).or_else(|| self.out_of_tokens(0))
+    }
+
+    fn out_of_time(&self, now: u64) -> Option<Pause> {
         let started = self.started_ms.unwrap_or(now);
         if self.by_ms.is_some_and(|by| now >= by) {
             Some(Pause::Deadline)
         } else if now.saturating_sub(started) >= self.budget.wall_ms {
             Some(Pause::Budget(Resource::Wall))
-        } else if self.steps_run >= self.budget.steps {
-            Some(Pause::Budget(Resource::Steps))
-        } else if self.tokens_spent.saturating_add(est) > self.budget.tokens {
-            Some(Pause::Budget(Resource::Tokens))
         } else {
             None
         }
+    }
+
+    /// Whether `est` more tokens would pass the token budget.
+    fn out_of_tokens(&self, est: u64) -> Option<Pause> {
+        let over = self.tokens_spent.saturating_add(est) > self.budget.tokens;
+        over.then_some(Pause::Budget(Resource::Tokens))
     }
 
     /// Why this step has to ask, if it does. Scope first: a step that needs more
@@ -458,9 +484,14 @@ impl Goal {
 
     /// The running step ended: what it cost, the entry it made, and whether the
     /// door answered ok. It counts against the budget either way.
+    ///
+    /// A step the goal's end cut off while it ran ([`ENDED_IN_FLIGHT`]) may still
+    /// finish once, after the end: its entry, its tokens and how it came out are
+    /// kept, so `undo goals` and cancel's offer find what it did (the door made the
+    /// entry whether or not the goal was still going).
     pub fn finish_step(&mut self, done: StepDone) -> Result<(), Refusal> {
         let Some(n) = self.flight.take() else {
-            return Err(Refusal::NoStepRunning);
+            return self.finish_after_end(done);
         };
         self.tokens_spent = self.tokens_spent.saturating_add(done.tokens);
         self.steps_run += 1;
@@ -471,7 +502,12 @@ impl Goal {
             }
             Some(why) => {
                 self.failed += 1;
-                (StepStatus::Failed, Some(valid::clean(&why)))
+                // The door's words never read as the end's own mark.
+                let why = match valid::clean(&why) {
+                    why if why == ENDED_IN_FLIGHT => format!("failed: {why}"),
+                    why => why,
+                };
+                (StepStatus::Failed, Some(why))
             }
         };
         if let Some(step) = self.log.iter_mut().rev().find(|s| s.n == n) {
@@ -482,6 +518,85 @@ impl Goal {
                 step.note = note;
             }
         }
+        Ok(())
+    }
+
+    /// The late finish of the step the goal's end cut off: its last step, failed
+    /// with [`ENDED_IN_FLIGHT`] and no entry yet. Once only: the note changes, so a
+    /// second report finds no step.
+    fn finish_after_end(&mut self, done: StepDone) -> Result<(), Refusal> {
+        let ended = self.state.is_final();
+        let Some(step) = self.log.last_mut().filter(|step| {
+            ended
+                && step.status == StepStatus::Failed
+                && step.entry.is_none()
+                && step.note == ENDED_IN_FLIGHT
+        }) else {
+            return Err(Refusal::NoStepRunning);
+        };
+        step.entry = done.entry;
+        step.tokens = done.tokens;
+        match done.failed {
+            None => {
+                step.status = StepStatus::Ran;
+                step.note = String::from(FINISHED_AFTER_END);
+                self.failed -= 1;
+                self.steps_ok += 1;
+            }
+            Some(why) => {
+                step.note = valid::clean(&format!("{FINISHED_AFTER_END}, failed: {why}"));
+            }
+        }
+        self.tokens_spent = self.tokens_spent.saturating_add(done.tokens);
+        Ok(())
+    }
+
+    /// The running step was not run: the person said no on the card, where the one
+    /// door asked for it (the goals agent's one ask, after the step left goalcore as
+    /// one that runs). It is counted as asked and denied, not as run, as
+    /// [`Goal::deny`] counts a step goalcore itself held for a yes.
+    pub fn deny_running(&mut self, why: &str) -> Result<(), Refusal> {
+        let Some(n) = self.flight.take() else {
+            return Err(Refusal::NoStepRunning);
+        };
+        self.asked = self.asked.saturating_add(1);
+        self.denied = self.denied.saturating_add(1);
+        if let Some(step) = self.log.iter_mut().rev().find(|s| s.n == n) {
+            step.status = StepStatus::Denied;
+            step.note = valid::clean(why);
+        }
+        Ok(())
+    }
+
+    /// The planner wrote again a step the person said no to: it is not asked. It is
+    /// logged as held, with [`REPEATED`] as why, so the goal's own record says what
+    /// stopped it and which step, and the goal pauses as the person's own pause
+    /// does: their resume is what lets it go on. The tier is the door's, as for
+    /// any step logged.
+    pub fn hold_repeat<C>(
+        &mut self,
+        now: u64,
+        step: Step<C>,
+        door: &dyn Door<C>,
+    ) -> Result<(), Refusal> {
+        if self.state != State::Active {
+            return Err(Refusal::NotActive(self.state));
+        }
+        if self.flight.is_some() {
+            return Err(Refusal::StepInFlight);
+        }
+        if self.log.len() >= MAX_LOG {
+            return Err(Refusal::LogFull);
+        }
+        step_ok(&step)?;
+        let p = Proposal {
+            tier: door.tier(&step),
+            row: step.row,
+            targets: step.targets,
+            tokens_est: step.tokens_est,
+        };
+        self.push_log(p, now, StepStatus::Held, String::from(REPEATED));
+        self.state = State::Paused(Pause::User);
         Ok(())
     }
 
@@ -508,21 +623,22 @@ impl Goal {
         let closing = match self.waiting.take() {
             Some(Ask {
                 proposal: Some(_), ..
-            }) => Some(StepStatus::Held),
+            }) => Some((StepStatus::Held, "the goal ended")),
             // A question is no step: nothing in the log to close.
             Some(_) => None,
             // The step ran as far as anyone knows and did not finish: the log calls it
             // failed, so the counts do too (a record whose counts are not its log's is
-            // refused when it is read back).
+            // refused when it is read back). Its late finish may still come, with the
+            // entry the door made ([`Goal::finish_step`]).
             None => self.flight.take().map(|_| {
                 self.steps_run += 1;
                 self.failed += 1;
-                StepStatus::Failed
+                (StepStatus::Failed, ENDED_IN_FLIGHT)
             }),
         };
-        if let (Some(status), Some(step)) = (closing, self.last_step()) {
+        if let (Some((status, note)), Some(step)) = (closing, self.last_step()) {
             step.status = status;
-            step.note = String::from("the goal ended");
+            step.note = String::from(note);
         }
         self.flight = None;
         self.state = state;

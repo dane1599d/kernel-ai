@@ -129,6 +129,12 @@ pub struct Tcp {
 }
 
 impl Tcp {
+    /// When the next call on a kept connection must end: its own deadline,
+    /// not the one it was dialed under.
+    pub fn set_deadline(&mut self, deadline_ns: u64) {
+        self.deadline_ns = deadline_ns;
+    }
+
     fn wait(&self, want: u64) -> Result<(), &'static str> {
         self.wait_at_most(want, IO_TIMEOUT_MS)
     }
@@ -171,6 +177,12 @@ impl Transport for Tcp {
             return Ok(0);
         }
         loop {
+            // Before every read, not only when one finds nothing: a peer that
+            // keeps the buffer full would otherwise never meet the deadline
+            // (audit K #16).
+            if wait_ms(1, self.deadline_ns).is_none() {
+                return Err("the call's time ran out");
+            }
             match sys::net_recv(self.stream, &mut buf[..cap]) {
                 Ok(n) => return Ok(n),
                 Err(Error::Busy) => self.wait(STREAM_READABLE | STREAM_CLOSED)?,
@@ -198,6 +210,11 @@ impl Dial for NetDial {
         let found = match sys::resolve_on(self.dest, host, &mut addrs) {
             Ok(found) => found.min(MAX_ADDRESSES),
             Err(Error::Permission) => return Err(HttpError::Refused(host.to_string())),
+            Err(Error::Private) => {
+                return Err(HttpError::Connect(
+                    "the host's name leads to a private address",
+                ));
+            }
             Err(_) => return Err(HttpError::Connect("the host's name did not resolve")),
         };
         let flags = if self.bulk { STREAM_BULK } else { 0 };

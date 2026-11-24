@@ -3,44 +3,59 @@
 
 use super::*;
 
+/// Serves one message, then closes every handle it moved that no need kept: the
+/// kernel's table holds a handle until it is closed, a message may move up to
+/// [`kabi::handle::MAX_TRANSFER`] of them, and only a surface client's first
+/// one (a pool's `Shm`) is ever kept, by `pools`.
 pub(super) fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &RecvInfo) {
+    let kept = serve_one(state, screen, bytes, info);
+    let moved = (info.handle_count as usize).min(info.handles.len());
+    for (n, handle) in info.handles[..moved].iter().enumerate() {
+        if !(n == 0 && kept) {
+            let _ = sys::handle_close(Handle(*handle));
+        }
+    }
+}
+
+/// True when the message's first handle was kept (a pool's).
+fn serve_one(state: &mut State, screen: &Screen, bytes: &[u8], info: &RecvInfo) -> bool {
     let pid = info.caller_pid;
     if let Some(reply) = perf::request(state, screen, bytes, pid) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
-        return;
+        return false;
     }
     if let Some(reply) = panel_request(state, bytes, pid) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
-        return;
+        return false;
     }
     if let Some(reply) = appearance_request(state, bytes, pid) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
-        return;
+        return false;
     }
     if let Some(reply) = wire_request(&settings::SETTINGS, &mut state.settings, bytes, pid) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
-        return;
+        return false;
     }
     let models = &deskcore::models_wire::MODELS;
     if let Some(reply) = wire_request(models, &mut state.models, bytes, pid) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
-        return;
+        return false;
     }
     if let Some(reply) = net_request(state, bytes, pid) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
-        return;
+        return false;
     }
     if let Some(reply) = agent::request(state, bytes, pid) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
-        return;
+        return false;
     }
     if let Some(reply) = effects_request(state, bytes, pid) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
-        return;
+        return false;
     }
     if let Some(reply) = files_request(state, bytes, pid) {
         let _ = sys::reply_h(&reply, &[]);
-        return;
+        return false;
     }
     let new = !state.clients.iter().any(|c| c.pid == pid);
     if new {
@@ -56,14 +71,15 @@ pub(super) fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &Rec
         state.clients.push(client);
     }
     let Some(at) = state.clients.iter().position(|c| c.pid == pid) else {
-        return;
+        return false;
     };
     let handle = (info.handle_count > 0).then(|| Handle(info.handles[0]));
     let result = state.clients[at].handle(&mut state.desk, bytes, handle.is_some());
     match result {
         Ok(needs) => {
+            let mut kept = false;
             for need in needs {
-                apply_need(state, at, pid, need, handle);
+                kept |= apply_need(state, at, pid, need, handle);
             }
             // A window it opened or closed moved the focus: every other client
             // hears it too, so the one that lost it gets its focus_out.
@@ -77,6 +93,7 @@ pub(super) fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &Rec
             }
             let reply = state.clients[at].take_events(kabi::MAX_MESSAGE);
             let _ = sys::reply_h(&reply, &[]);
+            kept
         }
         // A client new to this desktop that names objects it never made was
         // talking to the desktop before a restart: it gets the greeting (the
@@ -96,18 +113,13 @@ pub(super) fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &Rec
             state.clients[at].scale(state.scale);
             let reply = state.clients[at].take_events(kabi::MAX_MESSAGE);
             let _ = sys::reply_h(&reply, &[]);
+            false
         }
         Err(error) => {
             println!("desktop: pid {pid} sent a bad message ({error:?}); closing its windows");
-            let mut client = state.clients.remove(at);
-            let effects = client.close_all(&mut state.desk);
-            deliver(state, &effects);
-            state.shown.retain(|(_, owner, ..)| *owner != pid);
-            for pool in state.pools.iter().filter(|p| p.pid == pid) {
-                let _ = sys::shm_unmap(pool.address);
-            }
-            state.pools.retain(|p| p.pid != pid);
+            pools::drop_client(state, at);
             let _ = sys::reply_h(b"", &[]);
+            false
         }
     }
 }
@@ -120,7 +132,9 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     if !text.starts_with("panel ") {
         return None;
     }
-    if name_of(pid) != "shell" {
+    // The shell alone: a send's text and its fit included
+    // (`deskcore::sendview::from_shell`), never an app's.
+    if !deskcore::sendview::from_shell(&name_of(pid)) {
         return Some(String::from("err only the shell talks to the panel"));
     }
     if text == panel_wire::TAKE {
@@ -195,6 +209,9 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         chat_push(state, Who::Note, note);
         return Some(String::from("ok"));
     }
+    if let Some(reply) = preview::preview_request(state, text) {
+        return Some(reply);
+    }
     if let Some(reply) = sends_request(state, text) {
         return Some(reply);
     }
@@ -218,13 +235,7 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         }
         _ => {}
     }
-    let word = match &shown {
-        deskcore::panel::State::Idle => "idle",
-        deskcore::panel::State::Thinking { .. } => "thinking",
-        deskcore::panel::State::Acting { .. } => "acting",
-        deskcore::panel::State::Done { .. } => "done",
-        deskcore::panel::State::Refused { .. } => "refused",
-    };
+    let word = pane_word(&shown);
     let text = bar_text(&shown).map(String::from);
     if state.panel.set_done(shown, entry) {
         // Its kind only: the line is the shell's result, which may name a file.

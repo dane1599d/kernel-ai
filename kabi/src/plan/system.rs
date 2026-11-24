@@ -52,6 +52,9 @@ macro_rules! app {
         app!($name, $uses, $caps, "")
     };
     ($name:literal, $uses:literal, $caps:literal, $more:literal) => {
+        app!($name, $uses, $caps, $more, "")
+    };
+    ($name:literal, $uses:literal, $caps:literal, $more:literal, $last:literal) => {
         concat!(
             $name,
             " program=comphost caps=serve+component+call",
@@ -59,7 +62,9 @@ macro_rules! app {
             " uses=",
             $uses,
             $more,
-            " pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand"
+            " pages=8192 stack_pages=512 burst_ms=20000 version=1",
+            $last,
+            " start=demand"
         )
     };
 }
@@ -87,7 +92,7 @@ pub const NOTES_SAVED: &str = app!("notes-window", "desktop", "", " dir=apps");
 /// kernel grants comphost under this name alone. It is planned only with
 /// `kai-data`: it opens and saves the person's files through the shell's
 /// `files`, and a boot with no build service has no source for it to edit.
-pub const EDITOR_APP: &str = app!("editor", "desktop", "+edit");
+pub const EDITOR_APP: &str = app!("editor", "desktop", "+edit", "", " fuel_call=20000000");
 
 /// The model manager's window ([`super::MODELS_WINDOW`], started on demand). Its
 /// second route is `updated`, so it is planned after `updated` and the shell,
@@ -166,6 +171,32 @@ mod tests {
         let (_, files) = split(super::super::SHELL_FILES);
         assert_eq!(files_desk, desk);
         assert_eq!(files_caps, files);
+    }
+
+    /// No line of the plan the OS ships names a host in the `.test` zone (RFC
+    /// 6761), as a destination or anywhere else: `kai.test` is the boot cases'
+    /// DNS and HTTPS mock, which a shipping system must never reach (P5 close,
+    /// task 15). #757 put `kai.test` in the shell's ceiling for the boot cases;
+    /// this fails until it moves to the test plans.
+    #[test]
+    fn no_shipping_plan_line_names_a_test_host() {
+        for files in [false, true] {
+            for line in plan("llm", files).lines() {
+                let hosts = line
+                    .split_whitespace()
+                    .filter_map(|word| word.strip_prefix("netdest="))
+                    .flat_map(|spec| spec.split(','))
+                    .filter_map(|field| field.strip_prefix("hosts:"))
+                    .flat_map(|hosts| hosts.split('+'));
+                for host in hosts {
+                    assert!(
+                        host != "test" && !host.ends_with(".test"),
+                        "{host} in {line}"
+                    );
+                }
+                assert!(!line.contains("kai.test"), "{line}");
+            }
+        }
     }
 
     /// With `kai-data` the system's shell has the route to `pkg` that the editor's

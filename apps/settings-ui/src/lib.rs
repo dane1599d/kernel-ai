@@ -34,6 +34,21 @@ pub const HEADING: NodeId = 4;
 pub const THEME: NodeId = 10;
 pub const LEGIBLE: NodeId = 11;
 pub const MOTION: NodeId = 12;
+pub const ZONE: NodeId = 13;
+
+/// The time zones the appearance page offers: whole hours from UTC-12 to
+/// UTC+14, the first item UTC-12 (`look::appearance`'s range).
+pub const ZONE_HOURS: core::ops::RangeInclusive<i16> = -12..=14;
+
+/// A zone as the page names it: "UTC", "UTC+2", "UTC-9:30".
+pub fn zone_label(minutes: i16) -> String {
+    let (sign, m) = (if minutes < 0 { '-' } else { '+' }, minutes.unsigned_abs());
+    match (minutes, m % 60) {
+        (0, _) => String::from("UTC"),
+        (_, 0) => format!("UTC{sign}{}", m / 60),
+        (_, rest) => format!("UTC{sign}{}:{rest:02}", m / 60),
+    }
+}
 // What apps can do.
 pub const APP_LIST: NodeId = 20;
 pub const NO_ACCESS: NodeId = 21;
@@ -194,6 +209,15 @@ fn appearance(s: &Settings, tree: &mut Vec<Entry>) {
         PAGE,
         wide(),
         toggle("Reduce motion", a.reduced_motion),
+    ));
+    tree.push(entry(
+        ZONE,
+        PAGE,
+        wide(),
+        Widget::Menu {
+            label: format!("Time zone: {}", zone_label(a.time_zone_min)),
+            items: ZONE_HOURS.map(|h| zone_label(h * 60)).collect(),
+        },
     ));
 }
 

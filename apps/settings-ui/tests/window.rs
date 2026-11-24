@@ -7,7 +7,7 @@ use comp_settings::files::Apps;
 use comp_settings::{About, Intent, NetLine, Page, RuleLine, RuleRef, Settings};
 use comp_settings_ui::{
     APP_LIST, Change, END, Entry, KEEP, LEGIBLE, NET_REVOKE, PROFILES, REMOVE, RESTORE, REVOKE,
-    SIZE, START, TABS, THEME, View, WINDOW_ON, build, clock, diff, on_ui, redraw,
+    SIZE, START, TABS, THEME, View, WINDOW_ON, ZONE, build, clock, diff, on_ui, redraw, zone_label,
 };
 use uikit::layout::FixedAdvance;
 use uikit::widget::{UiEvent, Value, Widget};
@@ -130,6 +130,40 @@ fn appearance_controls_give_appearance_set() {
     assert!(matches!(intent, Some(Intent::Appearance(ref a)) if a.legible));
     let (_, intent) = on_ui(&s, &mut view, &UiEvent::Changed(LEGIBLE, Value::On(false)));
     assert_eq!(intent, None);
+}
+
+/// The time zone's menu offers UTC-12 to UTC+14 in whole hours, names the
+/// zone set, and a choice gives the appearance with that zone; the zone set
+/// already, or past the last item, gives nothing.
+#[test]
+fn the_time_zone_menu_gives_the_zone_chosen() {
+    let mut s = settings();
+    s.appearance.time_zone_min = 330;
+    let tree = build(&s, &mut View::default());
+    let zone = tree.iter().find(|e| e.id == ZONE).expect("the zone's row");
+    let Widget::Menu { label, items } = &zone.widget else {
+        panic!("{:?}", zone.widget);
+    };
+    assert_eq!(label, "Time zone: UTC+5:30");
+    assert_eq!(items.len(), 27);
+    assert_eq!((items[0].as_str(), items[12].as_str()), ("UTC-12", "UTC"));
+    assert_eq!(items[26], "UTC+14");
+    let mut view = View::default();
+    let (_, intent) = on_ui(&s, &mut view, &UiEvent::Changed(ZONE, Value::Index(14)));
+    assert!(
+        matches!(intent, Some(Intent::Appearance(ref a)) if a.time_zone_min == 120),
+        "{intent:?}"
+    );
+    assert_eq!(
+        on_ui(&s, &mut view, &UiEvent::Changed(ZONE, Value::Index(27))).1,
+        None
+    );
+    s.appearance.time_zone_min = 120;
+    assert_eq!(
+        on_ui(&s, &mut view, &UiEvent::Changed(ZONE, Value::Index(14))).1,
+        None
+    );
+    assert_eq!(zone_label(-570), "UTC-9:30");
 }
 
 /// Which app the list highlights, if any.
@@ -503,4 +537,29 @@ fn the_network_page_lists_each_host_and_its_revoke_names_that_grant() {
     assert_eq!(intent, None);
     let (_, intent) = on_ui(&s, &mut view, &UiEvent::Pressed(NET_REVOKE));
     assert_eq!(intent, Some(Intent::RevokeNet(4)));
+}
+
+#[path = "../../../testkit/appview.rs"]
+mod appview;
+
+/// The agent's view of Settings, on each page: whole, within 300 tokens, and
+/// the committed ones (`tests/golden/view-settings-<page>.txt`).
+#[test]
+fn the_agents_view_of_every_settings_page_is_whole_and_fits_300_tokens() {
+    let s = settings();
+    for (n, page) in Page::ALL.iter().enumerate() {
+        let mut view = View::page(n);
+        view.app = Some(String::from("notes"));
+        let mut w = Window::new("Settings", SIZE.0, SIZE.1);
+        for e in build(&s, &mut view) {
+            w.put(e.id, e.parent, e.layout, e.widget.clone()).unwrap();
+        }
+        let f = w.commit(&FixedAdvance);
+        let name = format!("settings-{}", page.title().to_lowercase().replace(' ', "-"));
+        appview::check(&name, "settings", "Settings", &f);
+        appview::goldens(&name, &f);
+        if n == 0 {
+            appview::paints("settings", &f);
+        }
+    }
 }

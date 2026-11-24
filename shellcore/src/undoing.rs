@@ -37,6 +37,16 @@ impl Shell {
         self.undo_entry(id)
     }
 
+    /// `undo <agent>`: the newest live entry agent `agent` made, under the
+    /// same checks as `undo <id>` (a later entry on what it changed asks).
+    pub(crate) fn undo_agent(&mut self, agent: &str) -> Reply {
+        let entries = self.log.entries().map(|e| (e.id, &e.agent, e.live()));
+        match agentid::stamp::last_live(entries, agent) {
+            Some(id) => self.undo_entry(id),
+            None => Reply::err(format!("nothing of {agent}'s to undo")),
+        }
+    }
+
     /// `tune undo`: the newest trial the kernel kept.
     pub(crate) fn tune_undo(&mut self) -> Reply {
         match self.log.newest_live_of(Form::Tune) {
@@ -198,6 +208,10 @@ impl Shell {
                     .revert_keep(app.as_str(), on)
                     .map(|text| (text, undo::reverse(inverse)))
                     .map_err(Refused::Failed),
+                undo::Inverse::Goal { id: goal, paused } => self
+                    .revert_goal(goal, paused)
+                    .map(|text| (text, undo::reverse(inverse)))
+                    .map_err(Refused::Failed),
                 undo::Inverse::Profile { key } => self
                     .revert_profile(key)
                     .map(|(text, redo)| (text, undo::Inverse::Profile { key: redo }))
@@ -285,6 +299,7 @@ impl Shell {
         }
         self.host.audit(&format!("undo #{id}: undid #{}", entry.id));
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: Form::Undo,
@@ -319,6 +334,7 @@ impl Shell {
             }),
         };
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id: kept.id,
             t_ns: self.host.now_ns(),
             form: Form::Tune,

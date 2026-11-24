@@ -24,7 +24,9 @@ extern crate alloc;
 mod abilities;
 mod actions;
 pub mod actlog;
+mod agentconsent;
 mod agentcore;
+pub mod agentstep;
 pub mod analyse;
 pub mod apart;
 pub mod appbuild;
@@ -47,6 +49,10 @@ mod deskcard;
 pub mod door;
 mod effects;
 mod engine;
+mod goalqueue;
+mod goalrows;
+mod goalscope;
+mod goaltoggle;
 pub mod grants;
 mod guard;
 mod instructions;
@@ -65,6 +71,7 @@ mod profiles;
 mod rules;
 pub mod script;
 mod sending;
+mod sendrow;
 mod settings;
 pub use settings::{MAX_ANSWER as SETTINGS_MAX_ANSWER, SETTINGS_APP};
 mod show;
@@ -365,9 +372,9 @@ pub trait Host {
     /// A held send that is due (`outbox`): `send.body` posted to `send.path`
     /// on `send.host`, once, never retried and never redirected.
     ///
-    /// Fail-closed: `Ok` with the status line for any HTTP answer at all
-    /// (a 403 or a 500 too: the site got the body), and `Err` only when no
-    /// answer came. `maybe_sent` is false only for a failure before any byte
+    /// Fail-closed: `Ok` with the answer's status code and reason (`200 OK`,
+    /// `403 Forbidden`) for any HTTP answer at all (a 403 or a 500 too: the
+    /// site got the body), and `Err` only when no answer came. `maybe_sent` is false only for a failure before any byte
     /// of the request was written (no address, no connection, the TLS
     /// handshake refused); anything after that may have gone out.
     fn net_send(&self, _send: &outbox::Send) -> Result<String, outbox::SendFailed> {
@@ -481,10 +488,14 @@ pub trait Host {
     }
     /// Gives each process its class and quota (P3 task 12), through the
     /// supervisor's PROC_CLASS_SET and PROC_QUOTA_SET; every one's settings from
-    /// before, so `undo` can put them back.
+    /// before, so `undo` can put them back. With `cap` (a switch, #517) a
+    /// setting's `mem` is a ceiling: a quota above it is lowered, one at or
+    /// under it is left, and only a lowered one has a `mem` from before. Without
+    /// it (an undo) `mem` is set exactly.
     fn profile_apply(
         &self,
         _settings: &[kaiprofile::Setting],
+        _cap: bool,
     ) -> Result<Vec<kaiprofile::Setting>, String> {
         Err(String::from(
             "profiles are not wired to the supervisor here yet",
@@ -628,7 +639,12 @@ impl Reply {
     pub fn to_wire(&self) -> String {
         match self.confirm {
             _ if self.more => String::from("more"),
-            Some(_) if self.text.starts_with("menu ") => self.text.clone(),
+            Some(_)
+                if self.text.starts_with("menu ")
+                    || self.text.starts_with(termcore::menu::SHOWN) =>
+            {
+                self.text.clone()
+            }
             Some(id) => format!("confirm {id} {}", self.text),
             None => format!("{} {}", if self.ok { "ok" } else { "err" }, self.text),
         }
@@ -685,6 +701,9 @@ pub struct Shell {
     /// The question on the card that came from a desktop line, and where
     /// that line was typed.
     card_for_desk: Option<(u64, deskask::Asker)>,
+    /// The card's question whose agent was retired while it was up: its
+    /// answer runs nothing and says so (`agentconsent::RETIRED`).
+    retired_card: Option<u64>,
     /// What a panel line's card came to, for the panel.
     card_result: Option<(bool, String)>,
     /// The send a panel line's card allowed and the outbox holds, for the
@@ -712,6 +731,23 @@ pub struct Shell {
     /// What the agent's reading of app grants keeps between passes
     /// ([`appgrants`]).
     grant_memo: appgrants::Memo,
+    /// The agents the shell knows (ADR 0013 §1): who a badged route's step is.
+    roster: agentid::Roster,
+    /// What the card came to for agents' asked steps, until each waits for it.
+    agents_told: Vec<agentstep::Told>,
+    /// The goals the person set and the queue to `goals` (G2).
+    goal_book: goalrows::GoalBook,
+    /// The admission of the agent whose step is running: no rule of the
+    /// person's covers it (`agentconsent`).
+    acting: Option<agentid::Admission>,
+    /// The first entry id of the step `acting` is for: older entries (a
+    /// question that lapses during the step) are not its.
+    acting_from: u64,
+    /// Agents' open questions, and the admission each was asked under.
+    agent_asks: agentid::Asks,
+    agent_admissions: Vec<(u64, agentid::Admission)>,
+    /// The agent's question the person's yes was just spent on.
+    agent_spent: Option<u64>,
     /// The last script as `show` prints it.
     shown: Option<String>,
     /// What the script run by the last line printed.
@@ -766,6 +802,9 @@ pub struct Shell {
     /// The source of the data the call now running was decided after (a
     /// view's second round), for consent (ADR 0002 D6).
     steered: Option<&'static str>,
+    /// The line now running is the person's own `open <app>` (`open_line`),
+    /// made by code with no model: its calls are the person's (`Checked::person`).
+    person_line: bool,
     /// The `c>` entry now running, and its calls' values (P4 task 12).
     c_entry: Option<centry::CEntry>,
     last_value: Option<rhai::Dynamic>,
@@ -828,6 +867,7 @@ impl Shell {
             card: None,
             desk_asks: Vec::new(),
             card_for_desk: None,
+            retired_card: None,
             card_result: None,
             card_held: None,
             card_answers: deskcard::Answers::default(),
@@ -838,6 +878,14 @@ impl Shell {
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
             hosts: nethosts::Table::curated(),
+            roster: agentid::Roster::new(),
+            agents_told: Vec::new(),
+            goal_book: goalrows::GoalBook::default(),
+            acting: None,
+            acting_from: 0,
+            agent_asks: agentid::Asks::new(),
+            agent_admissions: Vec::new(),
+            agent_spent: None,
             grant_memo: appgrants::Memo::default(),
             shown: None,
             last_output: None,
@@ -858,6 +906,7 @@ impl Shell {
             saved_log: None,
             owner_once: None,
             steered: None,
+            person_line: false,
             c_entry: None,
             last_value: None,
             value_rets: Vec::new(),
@@ -918,8 +967,15 @@ impl Shell {
             self.saved_log = Some(self.log.text());
             return self;
         };
-        match actlog::parse(&text) {
-            Ok(records) => {
+        match actlog::parse_setting_aside(&text) {
+            Ok((records, aside)) => {
+                if !aside.is_empty() {
+                    let ids: Vec<String> = aside.iter().map(|id| format!("#{id}")).collect();
+                    self.host.audit(&format!(
+                        "log entries {} named no agent and were set aside",
+                        ids.join(", ")
+                    ));
+                }
                 self.log = actlog::ActLog::from_records(records);
                 self.next_id = self.log.last_id() + 1;
                 self.saved_log = Some(text);
@@ -1006,6 +1062,15 @@ impl Shell {
         }
         // Read before the answer runs: its question's age decides a lapse.
         let lapsed = answering.is_some_and(|(id, _)| self.card_lapsed(id));
+        // An agent's question takes the person's answer here, at the
+        // terminal, or not at all (`agentconsent`).
+        if let Some((id, word)) = answering
+            && !lapsed
+            && let Some(refused) = self.agent_answer(id, word, Shell::console_mark())
+        {
+            self.save_log();
+            return refused;
+        }
         let mut reply = self.eval(input);
         self.desk_answered(answering, &reply, lapsed);
         if reply.confirm.is_none() && !reply.more && !self.notices.is_empty() {
@@ -1172,6 +1237,17 @@ impl Shell {
             && which.trim().trim_start_matches('#').parse::<u64>().is_ok()
         {
             return self.undo_command(which);
+        }
+        // `undo <agent>` (ADR 0013 §1): that agent's newest live entry, for an
+        // agent the log holds an entry of; "undo that" is a line for Kai.
+        if let Some(agent) = input.strip_prefix("undo ")
+            && !self.scope.contains("undo")
+            && self
+                .log
+                .entries()
+                .any(|e| !e.agent.is_kai() && e.agent.as_str() == agent.trim())
+        {
+            return self.undo_agent(agent.trim());
         }
         if (input == "tune" || input.starts_with("tune ")) && !self.scope.contains("tune") {
             let id = self.next_id;

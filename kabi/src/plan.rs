@@ -25,30 +25,31 @@ pub mod shell_route {
 
 /// The Rhai shell: it serves the terminal, calls the llm service, the
 /// supervisor, `cc` and `updated` ([`SHELL_ROUTES`]), may switch the scheduling
-/// policy, and needs a large stack for Rhai's recursion.
-pub const SHELL: &str = "shell caps=serve+call+policy+stop+power+script uses=llm+supervisor+cc+updated+fetch+send routes=fetch+send netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000";
+/// policy, and needs a large stack for Rhai's recursion. It is the agent `kai`
+/// (ADR 0013 section 1): its route to `llm` carries `kai`'s badge.
+pub const SHELL: &str = "shell caps=serve+call+policy+stop+power+script uses=llm+supervisor+cc+updated+fetch+send routes=fetch+send netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000 agent=kai";
 /// [`SHELL`] once `fs` runs: with `files`, its `Dir` for `/home/user`, for the
 /// file rows (P2 task 11), and `state`, its `Dir` for `/system/state`, for the
 /// action log (P2 task 12).
-pub const SHELL_FILES: &str = "shell caps=serve+call+policy+stop+power+script+files+state uses=llm+supervisor+cc+updated+fetch+send routes=fetch+send netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000";
+pub const SHELL_FILES: &str = "shell caps=serve+call+policy+stop+power+script+files+state uses=llm+supervisor+cc+updated+fetch+send routes=fetch+send netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000 agent=kai";
 /// [`SHELL`] on a desktop: with a route to `desktop`, named in `routes=`, which
 /// it takes the AI panel's requests from and reports their states to (P3 task
 /// 7).
-pub const SHELL_DESK: &str = "shell caps=serve+call+policy+stop+power+script uses=llm+supervisor+cc+updated+desktop+fetch+send routes=desktop+fetch+send netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000";
+pub const SHELL_DESK: &str = "shell caps=serve+call+policy+stop+power+script uses=llm+supervisor+cc+updated+desktop+fetch+send routes=desktop+fetch+send netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000 agent=kai";
 /// [`SHELL_DESK`] with the file system too, for a case that has the desktop and
 /// a state directory in one shell (`app-settings` saves a theme and shows it in
 /// Settings): the same routes, and `files` and `state` added to the caps (a
 /// test holds the two lines together).
-pub const SHELL_DESK_FILES: &str = "shell caps=serve+call+policy+stop+power+script+files+state uses=llm+supervisor+cc+updated+desktop+fetch+send routes=desktop+fetch+send netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000";
+pub const SHELL_DESK_FILES: &str = "shell caps=serve+call+policy+stop+power+script+files+state uses=llm+supervisor+cc+updated+desktop+fetch+send routes=desktop+fetch+send netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000 agent=kai";
 /// [`SHELL_DESK_FILES`] with a route to `pkg` after the one to `desktop`, for the
 /// system's shell: the editor's Ctrl-B on a C component (`cc build`'s
 /// `local-next`, `local` and its undo) comes to the shell through `desktop`, and
 /// the shell reaches `pkg` by `routes=` as for [`SHELL_BUILD`]. Planned when `pkg`
 /// is, after it, which `system::lines` does with `kai-data`.
-pub const SHELL_DESK_BUILD: &str = "shell caps=serve+call+policy+stop+power+script+files+state uses=llm+supervisor+cc+updated+desktop+pkg+fetch+send routes=desktop+pkg+fetch+send netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000";
+pub const SHELL_DESK_BUILD: &str = "shell caps=serve+call+policy+stop+power+script+files+state uses=llm+supervisor+cc+updated+desktop+pkg+fetch+send routes=desktop+pkg+fetch+send netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000 agent=kai";
 /// [`SHELL_FILES`] with a route to `pkg`, for `cc build`'s `local-next`, `local`
 /// and its undo (P4 task 13): planned when `pkg` is, after it.
-pub const SHELL_BUILD: &str = "shell caps=serve+call+policy+stop+power+script+files+state uses=llm+supervisor+cc+updated+pkg+fetch+send routes=pkg+fetch+send netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000";
+pub const SHELL_BUILD: &str = "shell caps=serve+call+policy+stop+power+script+files+state uses=llm+supervisor+cc+updated+pkg+fetch+send routes=pkg+fetch+send netdest=proto:tcp,ports:443,hosts:any pages=4096 stack_pages=512 burst_ms=5000 agent=kai";
 /// Every shell line the kernel plans, for the checks that each starts with
 /// [`SHELL_ROUTES`] and names the routes after them in `routes=`.
 pub const SHELL_LINES: [&str; 6] = [
@@ -136,7 +137,7 @@ pub const UPDATED: &str = "updated caps=update+serve+call uses=llm \
 /// resolve host and its file storage under `cdn.hf.co`, which
 /// `modelchan::fetch::HUGGING_FACE` narrows to the names under it, and the
 /// repository's Pages host, which serves the signed chunk lists. A test boot
-/// plans its own (`kernel/src/selftest.rs`), since a line takes one `netdest=`.
+/// plans its own (`kernel/src/selftest/updated.rs`), since a line takes one `netdest=`.
 pub const UPDATED_NET: &str =
     " netdest=proto:tcp,ports:443,hosts:huggingface.co+cdn.hf.co+dane1599d.github.io";
 /// The live `notes` component, run by the shared `comphost` program, without its
@@ -185,7 +186,10 @@ pub const EDIT_BASE: &str = "edit caps=serve+publish pages=2048 burst_ms=10000";
 /// route to `desktop` for its window. The kernel gives `cap::EDIT` to the service
 /// of this name and no other, so the name is the grant of `kai:edit`, which sends
 /// the app's messages to the edit service (`EDIT_CALL`). Planned after `desktop`.
-pub const EDITOR: &str = "editor program=comphost caps=serve+component+call+edit uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1";
+/// `fuel_call=20000000`: opening a file near the editor's 60 KiB limit takes about
+/// 7.5 million fuel in one call (the default is 5 million; `editcore` reads the
+/// file in a byte loop), with room for a longer one.
+pub const EDITOR: &str = "editor program=comphost caps=serve+component+call+edit uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1 fuel_call=20000000";
 
 #[cfg(test)]
 mod tests {
