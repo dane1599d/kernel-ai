@@ -242,6 +242,26 @@ fn source<'a>(pools: &'a [Pool], pid: u64, buffer: &Buffer) -> Option<Source<'a>
     })
 }
 
+/// The hashes of the rows of a band of `window`'s picture, at the left of its
+/// content, where an app's list is: `desk-wheel-app` compares them before and
+/// after the wheel (`deskcore::scrolled`). `None` while it has no picture.
+pub(super) fn wheel_rows(state: &State, window: WindowId) -> Option<Vec<u64>> {
+    let (_, pid, buffer, scale) = state.shown.iter().find(|(w, ..)| *w == window)?;
+    let source = source(&state.pools, *pid, buffer)?;
+    // The scale is in 120ths, and the band is in px at 1x.
+    Some(deskcore::scrolled::row_hashes(
+        source.data,
+        source.stride,
+        deskcore::scrolled::buffer_px(BAND_X, *scale),
+        deskcore::scrolled::buffer_px(BAND_WIDTH, *scale),
+    ))
+}
+
+/// The band `wheel_rows` hashes, in logical px from the content's left edge:
+/// inside the left column of Notes' window, which holds the list.
+const BAND_X: usize = 8;
+const BAND_WIDTH: usize = 88;
+
 /// What `draw` fills a window's content with while the client's own pixels
 /// are to go in it: the window colour with the blue bit flipped, which no
 /// token is (`deskcore::overlay::overlay` replaces only a px of exactly this).

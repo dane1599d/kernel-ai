@@ -5,7 +5,10 @@
 //! wheel to the window's event ring ("the wheel went to window 1"); comphost
 //! hands it to `uikit`, whose list scrolls and so draws again, which reaches
 //! `desktop` as the window's next picture ("window 1 drew after the wheel"):
-//! an app that took no scroll would send none. The host checks the lines.
+//! an app that took no scroll would send none. A redraw is not a scroll, so
+//! `desktop` also compares the rows of a band of the picture before and after
+//! and logs "window 1 scrolled N rows" only when the content moved
+//! (`deskcore::scrolled`). The host checks the lines.
 
 use crate::desk_tests::{report, report_wheel};
 use crate::display::claim;

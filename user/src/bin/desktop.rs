@@ -145,9 +145,11 @@ struct State {
     pools: Vec<Pool>,
     /// Each window's buffer, whose client, and the scale it was drawn at.
     shown: Vec<(WindowId, u64, Buffer, u32)>,
-    /// Windows the wheel was last sent to and that have not drawn since: the
-    /// next picture of one is logged, which tells a boot case the app scrolled.
-    wheeled: Vec<WindowId>,
+    /// Windows the wheel was last sent to and that have not drawn since, each
+    /// with the hashes of the rows of its picture then (`frame::wheel_rows`):
+    /// the next picture of one is logged, and whether it scrolled, which tells
+    /// a boot case the app took the wheel and moved its content.
+    wheeled: Vec<(WindowId, Vec<u64>)>,
     frame: Image,
     /// Which window's content was painted last at each px of `frame`, 0 for
     /// none or a window drawn at scale 1 (`deskcore::overlay`).

@@ -43,6 +43,7 @@ pub mod panel_wire;
 pub mod reap;
 pub mod running;
 pub mod scale;
+pub mod scrolled;
 pub mod sends;
 pub mod sendview;
 pub mod server;

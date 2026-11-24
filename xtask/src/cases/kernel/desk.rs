@@ -75,12 +75,15 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
     },
     // Lane G: the wheel over an app's list scrolls it. `desktop` posts the wheel
     // to Notes' ring, and Notes' next picture (a list scrolls only if it
-    // overflows, and an unchanged window sends none) is logged after it.
+    // overflows, and an unchanged window sends none) is logged after it, with
+    // how many rows of the list's band moved: a redraw that moved nothing (a
+    // hover, a caret) logs no `scrolled` line and fails the case.
     TestCase {
         expect: &[
             "desk-wheel-app: Notes holds 30 notes",
             "desktop: the wheel went to window 1",
             "desktop: window 1 drew after the wheel",
+            "desktop: window 1 scrolled ",
             "desk-wheel-app: the wheel was turned over Notes' list",
         ],
         ..case("desk-wheel-app", "test=desk-wheel-app")
