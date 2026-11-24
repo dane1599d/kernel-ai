@@ -238,12 +238,27 @@ setup
 echo "kaifs=in_progress" > "$T/others"
 ff 1
 check "unfinished: CI did not finish"         'has "a workflow did not finish" && has "CI did not finish (another workflow); STOPPING" && ! has "#1: MERGED" && [ -s "$T/prs/1/labels" ]'
+echo "kaifs=queued" > "$T/others"
+ff 1
+check "queued: CI did not finish"             'has "a workflow did not finish" && ! has "#1: MERGED" && [ -s "$T/prs/1/labels" ]'
 rm -f "$T/others"; touch "$T/others-fail"
 ff 1
 check "unlisted: CI did not finish"           'has "the workflow listing failed" && has "CI did not finish (another workflow)" && ! has "#1: MERGED"'
 rm -f "$T/others-fail"; : > "$T/others"
 ff 1
 check "no other workflow at all: lands"       'has "  #1: MERGED"'
+
+echo "== all_checks (the label watches): only finished, passed checks are fine"
+# gh pr checks as bucket|name rows, the form all_checks asks gh for.
+ac() { ( stub_rows=$1; R=x; gh() { printf '%s' "$stub_rows"; }; . "$B/checks-lib.sh"; all_checks 1 ) }
+P='pass|Format, lint, host unit tests'
+check "all passed: ok"                        '[ "$(ac "$P"$'"'"'\nskipping|Boot test'"'"')" = ok ]'
+check "nothing listed yet: pending"           '[ "$(ac "")" = pending ]'
+check "a workflow running: pending"           '[ "$(ac "$P"$'"'"'\npending|oracle'"'"')" = pending ]'
+check "an unknown state: pending"             '[ "$(ac "$P"$'"'"'\nqueued|oracle'"'"')" = pending ]'
+check "a failure: fail"                       'case "$(ac "$P"$'"'"'\nfail|oracle'"'"')" in "fail: oracle; ") true;; *) false;; esac'
+check "cancelled, never passed: fail"         'case "$(ac "$P"$'"'"'\ncancel|oracle'"'"')" in *"never passed: oracle; ") true;; *) false;; esac'
+check "cancelled twin of a passed run: ok"    '[ "$(ac "$P"$'"'"'\ncancel|Format, lint, host unit tests'"'"')" = ok ]'
 
 echo "== a no-boot batch takes only PRs the boot jobs cannot see"
 setup
