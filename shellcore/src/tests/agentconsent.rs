@@ -529,3 +529,41 @@ fn retiring_an_agent_drops_its_question_on_the_card() {
     assert!(ran.ok, "{ran:?}");
     assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
 }
+
+/// An agent retired while its question is on the card and another agent's
+/// waits behind it: the person's yes to the stale card runs nothing and logs
+/// nothing as anyone's, and the waiting question is the card's next, which
+/// runs as its own agent's.
+#[test]
+fn retiring_the_carded_agent_brings_the_waiting_question_up_next() {
+    let (host, mut shell, badge) = with_agent();
+    let other = shell.roster_mut().install(ops_manifest()).unwrap();
+    let other = u64::from(other.badge());
+    assert!(step(&mut shell, badge, RR).starts_with("ok asked "));
+    assert!(step(&mut shell, other, RR).starts_with("ok asked "));
+    let menu = take_agents_card(&mut shell);
+    assert!(
+        menu.question().starts_with("notes-agent asks: "),
+        "{menu:?}"
+    );
+    let agent = shell.roster_mut().by_name("notes-agent").unwrap().id();
+    shell.retire_agent(agent).unwrap();
+    let logged = shell.log.entries().count();
+    let once = host.mint(menu.id, menu.call());
+    let reply = shell.eval_console(&format!("answer {} allow once={once}", menu.id));
+    assert_eq!(reply, super::ok(crate::agentconsent::RETIRED));
+    assert_eq!(host.policy.get(), None, "nothing ran");
+    assert_eq!(shell.log.entries().count(), logged, "nothing was logged");
+    let dropped = shell.log.get(menu.id).unwrap();
+    assert_ne!(dropped.state, crate::actlog::State::Done, "{dropped:?}");
+    assert_eq!(dropped.agent.as_str(), "notes-agent");
+    let next = take_agents_card(&mut shell);
+    assert_ne!(next.id, menu.id);
+    assert!(next.question().starts_with("ops-agent asks: "), "{next:?}");
+    let once = host.mint(next.id, next.call());
+    let ran = shell.eval_console(&format!("answer {} allow once={once}", next.id));
+    assert!(ran.ok, "{ran:?}");
+    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
+    let entry = shell.log.get(shell.log.last_id()).unwrap();
+    assert_eq!(entry.agent.as_str(), "ops-agent", "{entry:?}");
+}
