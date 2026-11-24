@@ -131,8 +131,9 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
     },
     // P3's exit case: S05-1's budgets on the real `desktop` at 1920x1080, a gate
     // under KVM, best of two (a scene with a miss is measured once more, and a
-    // figure over budget in both runs fails it), unless the reference work says
-    // the runner is over 3.5 times its baseline; under TCG nothing is judged.
+    // figure over budget in both runs fails it), each budget scaled by how many
+    // times its baseline the reference work took (at least 1), unless that is
+    // over 3.5; under TCG nothing is judged.
     TestCase {
         gpu: true,
         memory_mib: Some(2048),

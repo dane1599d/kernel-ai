@@ -75,14 +75,34 @@ impl<D: BlockDev> Fs<D> {
     /// (ADR 0013 §3). How many it dropped. Not committed; the blocks they
     /// alone held go to the next GC pass.
     pub fn purge(&mut self, ino: u64) -> Result<usize, Error> {
+        self.drop_holding(MEMORY, ino, |_| true)
+    }
+
+    /// Drops every undo snapshot of `volume` whose tree still holds object
+    /// `ino`: what lets a removed model blob's blocks go before its undo
+    /// snapshots' 30 days are up. Update snapshots are kept (ADR 0008's
+    /// restore needs them). How many it dropped; not committed.
+    pub fn drop_undo_holding(&mut self, volume: u64, ino: u64) -> Result<usize, Error> {
+        self.drop_holding(volume, ino, |kind| kind == SnapKind::Undo)
+    }
+
+    /// Drops the snapshots of `volume` of a kind `which` takes whose tree
+    /// holds `ino`.
+    fn drop_holding(
+        &mut self,
+        volume: u64,
+        ino: u64,
+        which: impl Fn(SnapKind) -> bool,
+    ) -> Result<usize, Error> {
         if !self.writable() {
             return Err(Error::ReadOnly);
         }
         let active = self.volume();
-        self.set_volume(MEMORY)?;
+        self.set_volume(volume)?;
         let snaps: Vec<_> = self
             .snapshots()
             .iter()
+            .filter(|(_, s)| which(s.kind))
             .map(|(id, s)| (*id, s.root))
             .collect();
         let mut dropped = 0;

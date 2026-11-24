@@ -15,7 +15,13 @@
 //!   read runs.
 //! - **Its log entry** is stamped with the agent's name (`actlog 2`).
 //! - **An ask** goes to the person's card, as a desktop line's does, and the
-//!   step waits: `agent-step wait <id>` says what it came to.
+//!   step waits: `agent-step wait <id>` says what it came to, and `err unknown
+//!   step` for an id it never asked.
+//! - **A goal's step** (the `goals` agent, G2): `agent-step goal=<id> <call>`
+//!   is admitted under that goal's ceiling (`agentid::Roster::
+//!   admit_for_goal_in`), never `goals`' own grants, and refused once the
+//!   goal ended or its ceiling was revoked; `agent-step goal=<id> end` drops
+//!   the ceiling when the goal ends.
 
 use crate::deskask::Asker;
 use crate::{Reply, Shell};
@@ -26,6 +32,8 @@ use alloc::string::{String, ToString};
 pub const STEP: &str = "agent-step ";
 /// What a card's answers to agents are kept for, every agent together.
 pub(crate) const MAX_TOLD: usize = 16;
+/// What an agent's step is told while the person's own question waits.
+pub const PERSON_ASKED: &str = "busy: a question waits for the person; step again later";
 /// What every other request from an agent's route is told.
 pub const AGENTS_ONLY_STEP: &str = "an agent may send only agent-step";
 /// What a step that carried handles is told: a step moves none.
@@ -68,14 +76,46 @@ impl Shell {
             _ => return Reply::err("that route is no agent's"),
         };
         let name = caller.name().as_str().to_string();
+        if let Some(reply) = self.goal_queue_step(&caller, text) {
+            return reply;
+        }
         if let Some(id) = text.strip_prefix("wait ") {
             return self.agent_waits(&name, id.trim());
+        }
+        let (goal, text) = match text.strip_prefix("goal=") {
+            Some(rest) => {
+                let (goal, call) = rest.split_once(' ').unwrap_or((rest, ""));
+                match goal.parse::<u64>() {
+                    Ok(goal) => (Some(goal), call.trim()),
+                    Err(_) => return Reply::err("usage: agent-step goal=<id> <call>|end"),
+                }
+            }
+            None => (None, text),
+        };
+        if let (Some(goal), "end") = (goal, text) {
+            return self.goal_end(&caller, goal);
         }
         let call = match llmproto::act::parse(text) {
             Ok(call) => call,
             Err(why) => return Reply::err(format!("not a call: {why:?}")),
         };
-        let admission = match self.roster.admit(&caller, &call.name) {
+        let admitted = match goal {
+            Some(goal) => self
+                .roster
+                .admit_for_goal_in(&caller, goal, &call.name, &agentabi::ROWS),
+            None => self.roster.admit(&caller, &call.name),
+        };
+        // A goal's step acts only inside the folders the person approved.
+        if let Some(goal) = goal
+            && let Err(why) = self.goal_paths(goal, &call)
+        {
+            self.host.audit(&format!(
+                "{name}'s step {} for goal {goal} refused: {why}",
+                call.name
+            ));
+            return Reply::err(format!("refused: {why}"));
+        }
+        let admission = match admitted {
             Ok(admission) => admission,
             Err(denied) => {
                 self.host
@@ -83,30 +123,64 @@ impl Shell {
                 return Reply::err(format!("refused: {denied}"));
             }
         };
+        // A question at the console waits for its answer: an agent's step
+        // never takes its place. Only an admitted step learns that.
+        if self.pending.is_some() || self.clarifying.is_some() {
+            self.host.audit(&format!(
+                "{name}'s step {} waits: a question is up",
+                call.name
+            ));
+            return Reply::err(PERSON_ASKED);
+        }
         let stamp = admission.stamp();
         let id = self.take_id();
-        // The empty line: an agent borrows no consent (ADR 0013 §1).
-        let outcome = self.execute(id, "", &call);
-        let since = id;
-        // Every entry from `since` on is this step's: the shell runs one
-        // request at a time on one thread, so no other line's entry can
-        // land between `take_id` and here.
-        let stamped: alloc::vec::Vec<u64> = self
-            .log
-            .entries()
-            .filter(|e| e.id >= since)
-            .map(|e| e.id)
-            .collect();
-        for entry in stamped {
-            if let Some(e) = self.log.get_mut(entry) {
-                e.agent = stamp.name().clone();
-            }
-        }
+        // The words the door gives an agent's line: none, so an agent
+        // borrows no consent (ADR 0013 §1), and no rule of the person's
+        // covers it while it runs (`agentconsent`). `acting` stays set for
+        // the whole step, so every entry it logs is the agent's.
+        let line = agentid::Line::new(text, agentid::Source::agent(caller.id()));
+        let words = admission.consent_words(&line);
+        self.acting = Some(admission);
+        self.acting_from = id;
+        // `show` and `why` stay about the person's last script.
+        let shown = self.shown.take();
+        let reply = self.agent_runs(id, words, &call, name);
+        self.shown = shown;
+        self.acting = None;
+        self.stamp_entries(id, id, stamp.name());
         self.save_log();
+        reply
+    }
+
+    /// The rest of an admitted step `id`, while `acting` holds its admission.
+    fn agent_runs(
+        &mut self,
+        id: u64,
+        words: &str,
+        call: &llmproto::act::Call,
+        name: String,
+    ) -> Reply {
+        let outcome = self.execute(id, words, call);
+        // A "which one?" is the agent's to answer, never the person's next
+        // line: the console's own clarifying was empty when the step began.
+        if self.clarifying.take().is_some() {
+            return Reply::err(format!("unclear #{id}: {}", outcome.reply.text));
+        }
         if self.pending.as_ref().is_some_and(|p| p.id == id) {
+            // The admission of the row that will run, which `call_row`
+            // re-admitted if the row changed.
+            let Some(admission) = self.acting.clone() else {
+                return Reply::err("not asked: no admission");
+            };
+            if let Err(why) = self.open_agent_ask(id, &admission) {
+                return Reply::err(format!("not asked: {why}"));
+            }
             return match self.wait_for_card(&outcome.reply, Asker::Agent(name)) {
                 Ok(_) => Reply::ok(format!("asked {id}: on the person's card")),
-                Err(why) => Reply::err(format!("not asked: {why}")),
+                Err(why) => {
+                    self.close_agent_ask(id);
+                    Reply::err(format!("not asked: {why}"))
+                }
             };
         }
         let tier = outcome.tier.name();
@@ -114,6 +188,70 @@ impl Shell {
             true => Reply::ok(format!("{tier} #{id}: {}", outcome.reply.text)),
             false => Reply::err(format!("{tier} #{id}: {}", outcome.reply.text)),
         }
+    }
+
+    /// Stamps log entry `id` and every entry from `since` on with agent
+    /// `name`. Every one of them is the step's (or its yes's run): the shell
+    /// runs one request at a time on one thread, so no other line's entry
+    /// can land between `since` being read and here. Entries between `id`
+    /// and `since`, the person's lines while a card waited, stay theirs.
+    pub(crate) fn stamp_entries(&mut self, id: u64, since: u64, name: &agentid::Name) {
+        let stamped: alloc::vec::Vec<u64> = self
+            .log
+            .entries()
+            .filter(|e| e.id == id || e.id >= since)
+            .map(|e| e.id)
+            .collect();
+        for entry in stamped {
+            if let Some(e) = self.log.get_mut(entry) {
+                e.agent = name.clone();
+            }
+        }
+    }
+
+    /// Every path argument of goal `goal`'s step `call` lies inside one of
+    /// the goal's approved folders.
+    fn goal_paths(&self, goal: u64, call: &llmproto::act::Call) -> Result<(), String> {
+        let folders = self.roster.goal_folders(goal).unwrap_or(&[]);
+        let Some(row) = self.row(&call.name) else {
+            return Ok(());
+        };
+        // A row that reaches past the folders is never a goal's, whatever a
+        // ceiling holds.
+        if crate::goalscope::reaches_past_folders(row) {
+            return Err(format!(
+                "{} reaches past the folders a goal may use",
+                row.name
+            ));
+        }
+        for arg in row
+            .args
+            .iter()
+            .filter(|arg| crate::goalscope::is_path(arg.name))
+        {
+            let Some(value) = call.arguments.get(arg.name).filter(|v| !v.is_null()) else {
+                continue;
+            };
+            let path = value.as_str().unwrap_or("");
+            if !crate::goalscope::path_inside(folders, path) {
+                return Err(format!("{path} is outside the folders this goal may use"));
+            }
+        }
+        Ok(())
+    }
+
+    /// `agent-step goal=<id> end`: goal `goal` ended, so its ceiling goes.
+    /// Only `goals` ends a goal.
+    fn goal_end(&mut self, caller: &agentid::Caller, goal: u64) -> Reply {
+        if caller.name().as_str() != "goals" {
+            return Reply::err(crate::goalrows::GOALS_ONLY);
+        }
+        let held = self.roster.revoke_goal(goal);
+        self.goal_ended_by_goals(goal);
+        self.host.audit(&format!(
+            "goals ended goal {goal}; its ceiling went: {held}"
+        ));
+        Reply::ok(format!("ended goal {goal}"))
     }
 
     /// What agent `name`'s asked step `id` came to on the card, once.
@@ -133,12 +271,22 @@ impl Shell {
                     false => Reply::err(format!("not run #{id}: {}", told.line)),
                 }
             }
-            None => Reply::ok(format!("waiting #{id}")),
+            // Still on the card, or waiting for its place there.
+            None if self.agent_asked(name, id) => Reply::ok(format!("waiting #{id}")),
+            None => Reply::err(format!("unknown step #{id}")),
         }
+    }
+
+    /// Whether agent `name` asked step `id` and it waits for an answer.
+    fn agent_asked(&self, name: &str, id: u64) -> bool {
+        self.agent_admissions
+            .iter()
+            .any(|(entry, admission)| *entry == id && admission.caller().name().as_str() == name)
     }
 
     /// The card's answer to agent `agent`'s step `id`, kept for its wait.
     pub(crate) fn agent_told(&mut self, agent: String, id: u64, ran: bool, line: String) {
+        self.close_agent_ask(id);
         if self.agents_told.len() >= MAX_TOLD {
             self.agents_told.remove(0);
         }
