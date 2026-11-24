@@ -276,13 +276,16 @@ pub enum Request {
         #[n(1)]
         len: u32,
     },
-    /// What a reader that keeps up (a search index) asks: the objects beneath
-    /// this handle's folder (the whole volume on a volume's root) whose last
-    /// committed change is after generation `since`, in `(changed, object)`
-    /// order, after `after` (the last row of the page before) when given:
-    /// [`Reply::ChangesPage`]. A change in an open action shows once it
-    /// commits, under a generation past the page's `upto`. A trashed object
-    /// lies beneath the trash, not where it was. Needs ENUMERATE. Number 32:
+    /// What a reader that keeps up (a search index) asks, a round at a time:
+    /// the objects beneath this handle's folder (the whole volume on a
+    /// volume's root) whose last committed change is in `(since, upto]`, in
+    /// object order: [`Reply::ChangesPage`]. The first page has no `after`
+    /// and sets the round's `upto`; each next page asks after
+    /// `(upto, last row's object)`. The round over (`more` false), the next
+    /// starts from `since = upto`: a change made during a round, an open
+    /// action's once it commits, has a generation past `upto`, so it comes in
+    /// the next. A trashed object lies beneath the trash, not where it was.
+    /// Needs ENUMERATE. Number 32:
     /// 30 and 31 are other open PRs' (#1117, #1121).
     #[n(32)]
     ChangesSince {
@@ -533,11 +536,11 @@ pub enum Reply {
         #[n(0)]
         len: u64,
     },
-    /// A page of [`Request::ChangesSince`]: its rows, whether more follow
-    /// (the next page asks with the last row's `(changed, object)`), the
-    /// committed generation the listing is complete up to (once `more` is
-    /// false, the `since` of the next round), and how many mounts of the disk
-    /// have fallen back past newer commits. When that count differs from the
+    /// A page of [`Request::ChangesSince`]: its rows, in object order, whether
+    /// more follow (the next page asks after `(upto, last row's object)`), the
+    /// round's `upto` (once `more` is false, the `since` of the next round),
+    /// and how often the disk's state went back (a fallback mount, a restored
+    /// update snapshot). When that count differs from the
     /// last one a reader saw, commits it read may have been undone, and it
     /// reads everything again from 0. Number 17: 16 is [`Reply::Copied`].
     #[n(17)]
