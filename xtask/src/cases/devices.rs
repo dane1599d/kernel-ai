@@ -149,14 +149,16 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("power-off", "test=power-off")
     },
-    // The path without ResetSystem (`poweroff=fallback`, a test word): the
-    // console takes the screen back and says it is safe to switch off, and
-    // every CPU halts.
+    // The path without ResetSystem (`poweroff=fallback`, a test word): every
+    // other CPU stops, the console takes the screen back (the test parks it
+    // first, as `desktop` does) and says it is safe to switch off.
     TestCase {
         stops: true,
         expect: &[
             "[hpoweroff] power: asking to turn off",
             ") asked for the computer off",
+            "power: every other CPU stopped (",
+            "power: the console has the screen back from the desktop",
             "power: it is now safe to switch off the computer",
         ],
         forbid: &["efi: turning off through ResetSystem"],
