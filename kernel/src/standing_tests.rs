@@ -290,7 +290,14 @@ pub fn undo_check() -> Result<(), &'static str> {
 /// The change an entry logs when `action` took the user's standing
 /// instruction `id` away: the log keeps the change (its words with `_` for
 /// spaces), not the reply's words.
+///
+/// This line is built by hand, and the shellcore test
+/// `the_log_keeps_the_change_an_undo_or_rules_remove_took_away`
+/// (shellcore/src/tests/standing.rs) builds the same one: a change to the
+/// log's format has to be made in both.
 fn taken_back(action: &str, id: &str) -> String {
+    // Only spaces become `_`: a rule text with `=` in it would not match the
+    // log's line, and the wait on it would time out.
     let words = RULE.trim_start_matches("rules_add ").replace(' ', "_");
     alloc::format!(" {action} owner=shell res=standing_{id} before={words} after=absent ")
 }
