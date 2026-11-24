@@ -56,6 +56,7 @@ mod goaltoggle;
 pub mod grants;
 mod guard;
 mod instructions;
+pub mod ledger;
 mod models;
 mod netask;
 pub mod netgrant;
