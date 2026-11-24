@@ -245,6 +245,8 @@ pub enum SelfTest {
     /// An allowed standing instruction taken back by `undo`, then by
     /// `rules_remove`: its grant gone, and its event fires nothing.
     DeskStandingUndo,
+    /// A send's desk card, its text read through in the Kai pane, its hold and undo.
+    DeskSends,
     /// S05-1's budgets timed on the real `desktop` (P3's exit case).
     DeskPerf,
     /// A profile applied exactly, switched by a focus change, undone (P3's exit case).

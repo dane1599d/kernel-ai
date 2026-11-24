@@ -72,6 +72,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskStanding
             | SelfTest::DeskStandingRefused
             | SelfTest::DeskStandingUndo
+            | SelfTest::DeskSends
             | SelfTest::DeskPerf
             | SelfTest::DeskProfile
             | SelfTest::DeskProfileFloor
@@ -261,7 +262,8 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskReopen
             | SelfTest::DeskStart
             | SelfTest::DeskStartEsc
-            | SelfTest::DeskStandingRefused => {
+            | SelfTest::DeskStandingRefused
+            | SelfTest::DeskSends => {
                 plan.push('\n');
                 plan.push_str(crate::agent_desk_tests::DESK);
                 kabi::plan::SHELL_DESK
