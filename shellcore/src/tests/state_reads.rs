@@ -334,3 +334,27 @@ fn a_packages_grants_dropped_while_the_drop_is_owed_write_the_dropped_view() {
     ));
     assert!(audited(&host, "last session's network grants were dropped"));
 }
+
+#[test]
+fn a_change_whose_own_write_fails_too_leaves_the_drop_owed() {
+    let (host, mut shell) = restarted_unread();
+    // The owed drop's write fails, and so does the revoke's own.
+    host.net_write_fails.set(2);
+    let why = shell
+        .settings(SETTINGS_APP, "net-revoke 2", true)
+        .unwrap_err();
+    assert!(why.contains("the disk did not answer"), "{why}");
+    assert!(
+        shell.grant_memo.session_stale.get(),
+        "the drop is still owed"
+    );
+    let disk = host.net_disk.borrow().clone().unwrap();
+    assert!(disk.contains("object=api.weather.example"), "{disk}");
+    assert!(disk.contains("object=maps.weather.example"), "{disk}");
+    // Last session's grant, still on disk, grants nothing.
+    assert!(!grounds(&host, &shell, "api.weather.example"));
+    assert_eq!(
+        shell.net_connect("weather", "api.weather.example", CEILING),
+        NetConnect::Asked
+    );
+}
