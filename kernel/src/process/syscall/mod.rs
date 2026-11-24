@@ -29,7 +29,7 @@ pub(crate) mod fs;
 
 // G-core (P3).
 mod display;
-mod standing;
+pub(crate) mod standing;
 
 // U, updates (ADR 0008).
 mod update;
