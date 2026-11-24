@@ -16,7 +16,7 @@
 //!   group that holds one, is refused whole ([`GrantRefused::SendsOrInstalls`]): a
 //!   change that reaches past the machine (`open_world` and not read-only) or that
 //!   installs, removes or switches code or a model (`INSTALL_ROWS`), or that changes
-//!   what apps may reach (`PERMISSION_ROWS`). The person can still do those with
+//!   what apps or goals may reach (`PERMISSION_ROWS`). The person can still do those with
 //!   their own line.
 //! - **It ends with the goal.** [`Roster::revoke_goal`] drops it, and a call that
 //!   waited (for a yes, in a queue) is refused when it is checked again.
@@ -45,9 +45,17 @@ pub const INSTALL_ROWS: &[&str] = &[
     "tune",
     "tune_undo",
 ];
-/// Rows that change what apps may reach (the person's site grants): never in a
-/// goal's ceiling, since a goal that could restore a grant could widen itself.
-pub const PERMISSION_ROWS: &[&str] = &["grant_revoke", "grant_restore"];
+/// Rows that change what apps or goals may reach (the person's site grants, and
+/// the goals themselves): never in a goal's ceiling, since a goal that could
+/// restore a grant, or set or resume a goal, could widen itself.
+pub const PERMISSION_ROWS: &[&str] = &[
+    "grant_revoke",
+    "grant_restore",
+    "goal_set",
+    "goal_pause",
+    "goal_resume",
+    "goal_cancel",
+];
 /// The most goals that hold a ceiling at once (goalcore keeps at most this many).
 pub const MAX_GOAL_GRANTS: usize = 16;
 
@@ -84,7 +92,7 @@ impl fmt::Display for GrantRefused {
             ),
             Self::Permissions(r) => write!(
                 f,
-                "{r}: a goal may not change what apps may reach; do that with your own line"
+                "{r}: a goal may not change what apps or goals may reach; do that with your own line"
             ),
             Self::Never(r) => write!(f, "{r}: that action never runs"),
             Self::Empty => f.write_str("a goal needs at least one action"),

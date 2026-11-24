@@ -38,6 +38,7 @@ mod effects;
 mod fake_host;
 mod files;
 mod fuzz;
+mod goals;
 mod grantleaks;
 mod grantundo;
 mod guard;
