@@ -404,6 +404,101 @@ pub fn stall_check() -> Result<(), &'static str> {
 }
 
 /// The `threads` case.
+/// Console-reader race (#1302): the key reader stores itself in the one WAITER
+/// slot, and a waker that takes the slot before the reader blocks wakes nothing
+/// (the reader is running), leaving the ring empty when `desktop` took the
+/// byte. Before the fix the reader then blocked with no slot held and nothing
+/// to wake it. `i8042::wait_with` and `wait_unless_with` run a gap between the
+/// store and the block; here the gap holds the reader while this thread plays
+/// the waker (`wake_reader`: take the slot, wake), then lets it go. A reader
+/// that looks again runs its gap a second time; one that blocked does not.
+static RACE_PASSES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static RACE_HELD: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static RACE_RELEASED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static RACE_STOP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static RACE_DONE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+const RACE_WAIT_MS: u64 = 5_000;
+
+/// The reader's gap: the first time through, tell the test the slot is held and
+/// stay running (yielding, never blocked) until it lets go.
+fn race_gap() {
+    if RACE_PASSES.fetch_add(1, Ordering::SeqCst) == 0 {
+        RACE_HELD.store(true, Ordering::SeqCst);
+        while !RACE_RELEASED.load(Ordering::SeqCst) {
+            threads::yield_now();
+        }
+    }
+}
+
+/// `plain` reads with `wait`, otherwise with `wait_unless`.
+fn race_reader(plain: usize) {
+    if plain != 0 {
+        let _ = crate::i8042::wait_with(race_gap);
+    } else {
+        let stop = || RACE_STOP.load(Ordering::SeqCst);
+        let _ = crate::i8042::wait_unless_with(&|| false, &stop, race_gap);
+    }
+    RACE_DONE.store(true, Ordering::SeqCst);
+}
+
+fn race_wait(what: &'static str, done: impl Fn() -> bool) -> Result<(), &'static str> {
+    let deadline = hpet::nanos() + RACE_WAIT_MS * 1_000_000;
+    while !done() {
+        if hpet::nanos() > deadline {
+            return Err(what);
+        }
+        threads::sleep_ms(1);
+    }
+    Ok(())
+}
+
+fn console_reader_race() -> Result<(), &'static str> {
+    use core::sync::atomic::Ordering::SeqCst;
+    for plain in [0, 1] {
+        RACE_PASSES.store(0, SeqCst);
+        RACE_HELD.store(false, SeqCst);
+        RACE_RELEASED.store(false, SeqCst);
+        RACE_STOP.store(false, SeqCst);
+        RACE_DONE.store(false, SeqCst);
+        threads::spawn("key-reader", race_reader, plain)
+            .map_err(|_| "console-race: cannot start the reader")?;
+        race_wait(
+            "console-race: the reader never stored itself in the slot",
+            || RACE_HELD.load(SeqCst),
+        )?;
+        // The waker: takes the slot, and the reader, still running, is not
+        // woken. The ring stays empty, as when `desktop` takes the byte.
+        crate::i8042::wake_reader();
+        RACE_RELEASED.store(true, SeqCst);
+        race_wait(
+            "console-race: a reader whose wake came before it blocked did not look again",
+            || RACE_PASSES.load(SeqCst) >= 2,
+        )?;
+        // Let it go: it holds the slot again, so a waker finds it.
+        match plain {
+            0 => {
+                RACE_STOP.store(true, SeqCst);
+                crate::i8042::wake_reader();
+            }
+            _ => {
+                let woken = x86_64::instructions::interrupts::without_interrupts(|| {
+                    crate::i8042::inject(&[0x1e])
+                });
+                if let Some(reader) = woken {
+                    threads::wake(reader);
+                }
+            }
+        }
+        race_wait("console-race: the reader did not end", || {
+            RACE_DONE.load(SeqCst)
+        })?;
+    }
+    log!(
+        "console-race: a key reader whose wake came before it blocked looked again, in wait and in wait_unless"
+    );
+    Ok(())
+}
+
 pub fn check() -> Result<(), &'static str> {
     let slots = threads::in_use();
     let caps = cap::SERVE | cap::THREADS;
@@ -417,6 +512,7 @@ pub fn check() -> Result<(), &'static str> {
     let lived = (ExitReason::Exited, 0);
     expect_burst("burst", "mode=burst", caps, BURST_MS, lived)?;
     serve_check()?;
+    console_reader_race()?;
     expect("futex", "mode=futex", caps, (ExitReason::Exited, 0))?;
     settle(slots)?;
     let user_frames = USER_FRAMES.load(Ordering::SeqCst);

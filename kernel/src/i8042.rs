@@ -308,6 +308,13 @@ pub fn next() -> Option<Input> {
 /// Blocks the calling thread until a byte arrives, and records how long the
 /// thread took to run after the interrupt that woke it.
 pub fn wait() -> Input {
+    wait_with(|| {})
+}
+
+/// [`wait`] with `gap` run between the reader's store in WAITER and its block:
+/// a test uses it to make the window in which a waker takes the slot before the
+/// reader blocks (#1302). `wait` passes nothing, which compiles away.
+pub(crate) fn wait_with(gap: impl Fn()) -> Input {
     loop {
         if let Some(input) = next() {
             return input;
@@ -316,6 +323,7 @@ pub fn wait() -> Input {
         // interrupt cannot both miss the waiter and have its byte go unseen; and
         // a wake that came before the block is not lost ([`slot_taken`]).
         WAITER.store(crate::threads::current(), Ordering::SeqCst);
+        gap();
         if crate::threads::block_unless(|| has_input() || slot_taken()) && has_input() {
             // After a real block the ring was empty, so the byte at TAIL is the first
             // to arrive since. A stale wake on an empty ring is not counted.
@@ -340,6 +348,16 @@ const ARMED_POLL_NS: u64 = 250_000_000;
 /// [`ARMED_POLL_NS`] at a time; otherwise it blocks until a key or a
 /// [`wake_reader`]. `stop()` runs only between waits.
 pub fn wait_unless(armed: &dyn Fn() -> bool, stop: &dyn Fn() -> bool) -> Option<Input> {
+    wait_unless_with(armed, stop, || {})
+}
+
+/// [`wait_unless`] with `gap` run between the store in WAITER and the block,
+/// as [`wait_with`] does for [`wait`].
+pub(crate) fn wait_unless_with(
+    armed: &dyn Fn() -> bool,
+    stop: &dyn Fn() -> bool,
+    gap: impl Fn(),
+) -> Option<Input> {
     loop {
         if let Some(input) = next() {
             return Some(input);
@@ -348,6 +366,7 @@ pub fn wait_unless(armed: &dyn Fn() -> bool, stop: &dyn Fn() -> bool) -> Option<
             return None;
         }
         WAITER.store(crate::threads::current(), Ordering::SeqCst);
+        gap();
         match armed() {
             true => {
                 let deadline = hpet::nanos().saturating_add(ARMED_POLL_NS);
