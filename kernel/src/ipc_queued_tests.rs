@@ -142,7 +142,9 @@ pub fn check() -> Result<(), &'static str> {
         }
         threads::sleep_ms(20);
     }
-    let c_woken = C_WAKES_AFTER.load(Ordering::SeqCst) != C_WAKES_AT_KILL.load(Ordering::SeqCst);
+    let after = C_WAKES_AFTER.load(Ordering::SeqCst);
+    let counted = after != u64::MAX;
+    let c_woken = counted && after != C_WAKES_AT_KILL.load(Ordering::SeqCst);
     let _ = wait_exit(other)?;
     if !matches!(b, Err(ipc::CallError::Cancelled)) {
         return Err("ipc-queued: a call queued on a server that died did not end Cancelled");
@@ -153,6 +155,9 @@ pub fn check() -> Result<(), &'static str> {
     }
     if A_DONE.load(Ordering::SeqCst) != SERVICE_DIED {
         return Err("ipc-queued: the call the dead server held did not end ServiceDied");
+    }
+    if !counted {
+        return Err("ipc-queued: the killer never counted C's wakes after the kill");
     }
     if !c_waiting || c_woken {
         return Err("ipc-queued: a call queued on another server was woken too");

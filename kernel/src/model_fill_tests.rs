@@ -23,6 +23,10 @@ use spin::Mutex;
 
 /// How long `store` waits for the hook's verdict.
 const VERDICT_WAIT_MS: u64 = 60_000;
+/// Frames of a run given back that other work may already have taken again
+/// by the time the case looks: a run counts as given back only with at least
+/// `RUN_FRAMES - RETAKEN` of its frames free.
+const RETAKEN: u64 = 64;
 
 static RAN: AtomicBool = AtomicBool::new(false);
 static VERDICT: Mutex<Option<Result<(), &'static str>>> = Mutex::new(None);
@@ -100,7 +104,8 @@ fn give_up(first: u64) -> Result<(), &'static str> {
     }
     // Judged by the fill's own runs, not the free-frame count, which other work
     // (llm, starting) moves meanwhile. A run still held has no free frame; one
-    // given back may already be partly taken again, but not all 512 frames of it.
+    // given back may already be partly taken again, but by no more than
+    // RETAKEN frames, so a give-up that frees only part of each run fails too.
     let free_in = |run: u32| {
         let first = u64::from(run);
         memory::with(|m| {
@@ -110,7 +115,10 @@ fn give_up(first: u64) -> Result<(), &'static str> {
         })
     };
     let back: alloc::vec::Vec<u64> = reserved.iter().map(|&run| free_in(run)).collect();
-    let kept = back.iter().filter(|&&free| free == 0).count();
+    let kept = back
+        .iter()
+        .filter(|&&free| free < RUN_FRAMES - RETAKEN)
+        .count();
     let freed: u64 = back.iter().sum();
     if fill::pending() {
         return Err("model-fill: a failed fill left the model pending");
@@ -121,7 +129,7 @@ fn give_up(first: u64) -> Result<(), &'static str> {
     let runs = runs_for(len) * RUN_FRAMES;
     if kept != 0 {
         log!(
-            "model-fill: {kept} of {} reserved runs are still held",
+            "model-fill: {kept} of {} reserved runs are still held, wholly or in part",
             reserved.len()
         );
         return Err("model-fill: a failed fill kept the reserved runs");
