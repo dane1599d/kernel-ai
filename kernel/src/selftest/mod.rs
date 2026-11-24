@@ -199,6 +199,9 @@ pub enum SelfTest {
     DeskCatalog,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
+    /// The wheel over an app's list scrolls it: Notes seeded past its list's
+    /// height, the wheel turned over it, and `desktop` sees it draw again.
+    DeskWheelApp,
     /// A closed app's window stays closed until asked, then comes back
     /// (backlog item 2).
     UiWindowShow,

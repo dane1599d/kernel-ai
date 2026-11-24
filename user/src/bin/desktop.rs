@@ -104,7 +104,7 @@ use frame::{arrow, draw, post_events, refresh_bar, report, wake_shell};
 #[path = "desktop/setup.rs"]
 mod setup;
 use setup::{
-    bar_text, log_bar, logs_bar, logs_first_key, pane_word, starting_appearance, theme,
+    bar_text, log_bar, logs_bar, logs_first_key, logs_wheel, pane_word, starting_appearance, theme,
     wait_for_screen,
 };
 
@@ -145,6 +145,9 @@ struct State {
     pools: Vec<Pool>,
     /// Each window's buffer, whose client, and the scale it was drawn at.
     shown: Vec<(WindowId, u64, Buffer, u32)>,
+    /// Windows the wheel was last sent to and that have not drawn since: the
+    /// next picture of one is logged, which tells a boot case the app scrolled.
+    wheeled: Vec<WindowId>,
     frame: Image,
     /// Which window's content was painted last at each px of `frame`, 0 for
     /// none or a window drawn at scale 1 (`deskcore::overlay`).
@@ -170,6 +173,9 @@ struct State {
     /// `desktop`. No other plan logs a key, so what a person types never reaches
     /// the serial log.
     log_first_key: bool,
+    /// The plan line asks for the wheel lines (`wheel_log=on`), a test image's only:
+    /// `desk-wheel-app` reads them; a person's wheel logs nothing.
+    log_wheel: bool,
     /// The first key has been logged since the claim: only it is, and a frame never
     /// waits on it.
     key_logged: bool,
@@ -264,6 +270,7 @@ fn main() -> i32 {
             clients: Vec::new(),
             pools: Vec::new(),
             shown: Vec::new(),
+            wheeled: Vec::new(),
             frame: Image::new(width, height),
             mask: vec![0; (width.max(0) * height.max(0)) as usize],
             width,
@@ -277,6 +284,7 @@ fn main() -> i32 {
             draws_cursor: screen.info.cursor == 0,
             drawn: false,
             log_first_key: logs_first_key(),
+            log_wheel: logs_wheel(),
             key_logged: false,
             log_bar: logs_bar(),
             panel: Panel::new(),

@@ -56,6 +56,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskCardWake
             | SelfTest::DeskCatalog
             | SelfTest::UiWindow
+            | SelfTest::DeskWheelApp
             | SelfTest::UiWindowShow
             | SelfTest::AppEditor
             | SelfTest::AppEditorFiles
@@ -376,6 +377,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::UiWindow {
         plan.push('\n');
         plan.push_str(crate::ui_tests::PLAN);
+    }
+    if test == SelfTest::DeskWheelApp {
+        plan.push('\n');
+        plan.push_str(crate::desk_wheel_app_tests::PLAN);
     }
     if test == SelfTest::UiWindowShow {
         plan.push('\n');

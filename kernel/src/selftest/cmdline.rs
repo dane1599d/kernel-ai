@@ -126,6 +126,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-card-wake" => Some(SelfTest::DeskCardWake),
             "test=desk-catalog" => Some(SelfTest::DeskCatalog),
             "test=ui-window" => Some(SelfTest::UiWindow),
+            "test=desk-wheel-app" => Some(SelfTest::DeskWheelApp),
             "test=ui-window-show" => Some(SelfTest::UiWindowShow),
             "test=app-editor" => Some(SelfTest::AppEditor),
             "test=app-editor-files" => Some(SelfTest::AppEditorFiles),

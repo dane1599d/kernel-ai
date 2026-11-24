@@ -252,6 +252,10 @@ pub(super) fn apply_need(
         } => {
             state.shown.retain(|(w, ..)| *w != window);
             state.shown.push((window, pid, buffer, scale));
+            if let Some(at) = state.wheeled.iter().position(|w| *w == window) {
+                state.wheeled.remove(at);
+                println!("desktop: window {} drew after the wheel", window.0);
+            }
             false
         }
         Need::Closed { window } => {
@@ -261,6 +265,7 @@ pub(super) fn apply_need(
                 .find(|(w, ..)| *w == window)
                 .map(|(_, _, buffer, _)| buffer.pool);
             state.shown.retain(|(w, ..)| *w != window);
+            state.wheeled.retain(|w| *w != window);
             state.agent.closed(window);
             pools::after_closed(state, at, pid, pool);
             false
