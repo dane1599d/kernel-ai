@@ -248,6 +248,12 @@ pub fn in_action(
     }
 }
 
+/// The header says what the entry says of the package: its name, version and
+/// depends (cargo's rule, as far as an `Entry` carries it).
+fn names_entry(h: &Header, entry: &Entry) -> bool {
+    h.name == entry.name && h.version == entry.version && h.depends == entry.depends
+}
+
 fn object_header(bytes: &[u8]) -> Result<Header, String> {
     let files = bundle::files(bytes)?;
     let (_, header) = files
@@ -346,11 +352,16 @@ impl Store {
     /// `.partial` (resuming what is there), then checked and renamed in.
     fn fetch(&self, cx: &mut Ctx<'_>, source: &mut dyn Source, entry: &Entry) -> Result<(), Error> {
         if present(cx.vol, &entry.sha)? {
-            // Already here, and checked when it came; but this entry's effects
+            // Already here, and checked when it came; but this entry must say
+            // what the object's header says (an entry for 1.0.1 with the 1.0.0
+            // object's hash would record the wrong version), and its effects
             // are what the card showed, so they must be the object's too.
             let object = cx.vol.read(&object_path(&entry.sha))?.unwrap_or_default();
-            let declared =
-                object_header(&object).and_then(|h| effects::check(&h, &object, &entry.effects));
+            let header = object_header(&object);
+            if !header.as_ref().is_ok_and(|h| names_entry(h, entry)) {
+                return refuse(Refused::HeaderDiffers(entry.name.clone()));
+            }
+            let declared = header.and_then(|h| effects::check(&h, &object, &entry.effects));
             return match declared {
                 Ok(()) => Ok(()),
                 Err(_) => refuse(Refused::EffectsDiffer(entry.name.clone())),
@@ -373,11 +384,7 @@ impl Store {
             Some(Refused::BadHash(entry.name.clone()))
         } else {
             match object_header(&got) {
-                Ok(h)
-                    if h.name == entry.name
-                        && h.version == entry.version
-                        && h.depends == entry.depends =>
-                {
+                Ok(h) if names_entry(&h, entry) => {
                     if effects::check(&h, &got, &entry.effects).is_err() {
                         Some(Refused::EffectsDiffer(entry.name.clone()))
                     } else {

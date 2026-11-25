@@ -228,6 +228,28 @@ fn tampered_downloads_are_refused_and_never_visible() {
     assert!(w.vol.list(store::PARTIAL).unwrap().is_empty());
 }
 
+/// An object already stored is checked against the entry that names it too: an
+/// entry for 9.9.9 carrying the 1.0.0 object's hash would record the wrong
+/// version in the generation.
+#[test]
+fn an_entry_that_names_a_stored_object_by_another_version_is_refused() {
+    let mut w = World::new();
+    w.install("camera").unwrap();
+    let (mut index, mut repo) = spoiled("camera", Tamper::None);
+    let entry = index.iter_mut().find(|e| e.name == "camera").unwrap();
+    entry.version = kaipkg::version::Version::new(9, 9, 9);
+    let store = w.store;
+    let want = [Want {
+        name: "camera",
+        range: Some(Range::parse(">=9.9.9").unwrap()),
+    }];
+    let result = store.install(&mut w.cx(), &mut repo, &index, OS, &want, false);
+    assert_eq!(refused(result), Refused::HeaderDiffers("camera".into()));
+    assert_eq!(repo.fetched, 0, "nothing was fetched: the object was there");
+    let names = w.names();
+    assert!(names.iter().any(|(n, _)| n == "camera"));
+}
+
 #[test]
 fn a_download_resumes_from_its_partial_file() {
     let mut w = World::new();

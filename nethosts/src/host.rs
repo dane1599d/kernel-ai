@@ -226,6 +226,36 @@ pub fn typed_hosts(line: &str) -> Vec<Host> {
     out
 }
 
+/// Where the line writes `host` as a host of its own, as ranges of the line's
+/// words (the list [`LineWord::all`] and the agent core's consent give): one per
+/// place, the host's own words, not an address's scheme or path. A place whose
+/// words cannot be found in the chunk is left out.
+pub(crate) fn typed_spans(line: &str, host: &Host) -> Vec<core::ops::Range<usize>> {
+    let own = host_words(host);
+    let mut spans = Vec::new();
+    let mut start = 0;
+    let mut chunks: Vec<(usize, &str)> = Vec::new();
+    for (i, c) in line.char_indices() {
+        if separator(c) {
+            chunks.push((start, &line[start..i]));
+            start = i + c.len_utf8();
+        }
+    }
+    chunks.push((start, &line[start..]));
+    for (start, chunk) in chunks.into_iter().filter(|(_, w)| !w.is_empty()) {
+        if named_by(chunk).as_ref() != Some(host) {
+            continue;
+        }
+        // The words before it, as the whole line is read, then its own.
+        let offset = split_words(&line[..start]).len();
+        let words = split_words(chunk);
+        if let Some(at) = words.windows(own.len().max(1)).position(|w| w == own) {
+            spans.push(offset + at..offset + at + own.len());
+        }
+    }
+    spans
+}
+
 /// One word of the user's line, and whether it counts. The agent core's consent
 /// reads the line in clauses and knows which words sit in one that negates
 /// ("don't use weather", "never fetch youtube.com", "without weather"): those

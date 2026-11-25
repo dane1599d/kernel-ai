@@ -154,6 +154,9 @@ fn not_holder() -> ! {
 
 /// What the image's repository and the mirror listed at this boot, as index
 /// entries, for the catalogue.
+/// Every package name the image lists, kept or refused (`kaipkg::image::names`):
+/// what a local build may not take.
+static IMAGE_NAMES: spin::Mutex<Vec<String>> = spin::Mutex::new(Vec::new());
 static KNOWN: spin::Mutex<(Vec<Index>, Vec<Index>)> = spin::Mutex::new((Vec::new(), Vec::new()));
 
 /// After its step, `pkg` answers on its endpoint with `answer`, given each
@@ -438,6 +441,7 @@ fn image(vol: &mut FsVolume<Calls>, step: Option<&str>) -> Result<String, String
     let checked = kaipkg::image::check(&mut BootRepo, kaipkg::PROVIDED)
         .map_err(|why| format!("the image's repository is refused: {why}"))?;
     KNOWN.lock().0 = checked.indexes.clone();
+    *IMAGE_NAMES.lock() = kaipkg::image::names(&checked);
     for (path, why) in &checked.refused {
         println!("pkg: the image's {path} is refused: {why}");
     }

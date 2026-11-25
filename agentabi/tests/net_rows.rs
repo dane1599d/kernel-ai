@@ -54,6 +54,21 @@ fn a_negated_clause_grounds_nothing() {
     assert_eq!(tier("never fetch example.com", &typed).0, Tier::Ask);
 }
 
+/// Through consent's own reading of the line: a host named only in the clause
+/// that says no asks, though its labels count inside another host typed later.
+#[test]
+fn a_negated_host_asks_though_its_labels_count_in_another_typed_host() {
+    let line = "never fetch example.com, fetch www.example.com instead";
+    assert_eq!(
+        tier(line, &fetch("example.com", Label::Literal)).0,
+        Tier::Ask
+    );
+    assert_eq!(
+        tier(line, &fetch("www.example.com", Label::Literal)).0,
+        Tier::Run
+    );
+}
+
 #[test]
 fn a_host_from_content_asks_even_when_typed() {
     const PLAN: &[Call] = &[Call {

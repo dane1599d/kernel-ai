@@ -225,3 +225,52 @@ fn every_way_a_host_asks_has_words() {
     }
     let _ = vec![0u8; 0];
 }
+
+/// A host named only in a clause that says no is not grounded because the same
+/// labels count in another host the line writes ("example.com" inside
+/// "www.example.com"): it asks, as it does alone.
+#[test]
+fn a_host_named_only_in_a_negated_clause_asks_though_its_labels_count_in_another_host() {
+    let table = table();
+    let line = "never fetch example.com, fetch www.example.com instead";
+    let words = marked(line, &["never", "fetch", "example", "com"]);
+    // `marked` negates by text, so mark by place: the first clause's four
+    // words, the second clause's counting.
+    let words: Vec<LineWord> = words
+        .into_iter()
+        .enumerate()
+        .map(|(i, w)| LineWord::new(&w.text, i >= 4))
+        .collect();
+    assert_eq!(
+        fetch_marked(&table, &NoGrants, line, &words, "example.com"),
+        Verdict::Ask(Ungrounded::Negated)
+    );
+    assert_eq!(
+        fetch_marked(&table, &NoGrants, line, &words, "www.example.com"),
+        Verdict::Run(Ground::Typed)
+    );
+    // Allowed before, still no: the line says not to.
+    let mut grants = Grants::new();
+    grants.allow(host("youtube.com"));
+    let line = "don't open youtube.com, open youtube.com.au";
+    let words: Vec<LineWord> = LineWord::all(line)
+        .into_iter()
+        .enumerate()
+        .map(|(i, w)| LineWord::new(&w.text, i >= 4))
+        .collect();
+    assert_eq!(
+        fetch_marked(&table, &grants, line, &words, "youtube.com"),
+        Verdict::Ask(Ungrounded::Negated)
+    );
+    // Written twice, once counting: it runs.
+    let line = "never fetch example.com, fetch example.com instead";
+    let words: Vec<LineWord> = LineWord::all(line)
+        .into_iter()
+        .enumerate()
+        .map(|(i, w)| LineWord::new(&w.text, i >= 4))
+        .collect();
+    assert_eq!(
+        fetch_marked(&table, &NoGrants, line, &words, "example.com"),
+        Verdict::Run(Ground::Typed)
+    );
+}
