@@ -357,6 +357,32 @@ fn main() -> i32 {
         if let (Some((ticket, asked)), Some(Ok(local))) = (job, &mut backends.local) {
             run_job(local, &mut jobs, ticket, &asked, &mut request);
         }
+        // What came during the round and changes only llm's state, applied now
+        // in the order it came (bug-hunt-4 H4-12).
+        let deferred = jobs.deferred();
+        let changed = !deferred.is_empty();
+        for text in deferred {
+            match text.strip_prefix("warm-lang ") {
+                Some(lang) => {
+                    let lang = match lang.trim() {
+                        "c" => Lang::C,
+                        _ => Lang::Rhai,
+                    };
+                    cold |= lang != warm_lang;
+                    warm_lang = lang;
+                }
+                None => {
+                    stale = true;
+                    if let Err(error) = handle(&mut backends, &text, &mut response) {
+                        let why = script::error_line(&error, MAX_ERROR_CHARS);
+                        println!("after the app round: {why}");
+                    }
+                }
+            }
+        }
+        if changed {
+            backends.warming = local_warmable(&backends, stale, cold);
+        }
     }
 }
 

@@ -615,7 +615,9 @@ impl Shell {
     /// `new`: llm forgets the conversation. The action log and `undo` stay: what
     /// was done can still be undone.
     fn forget(&mut self) -> Reply {
-        self.host.forget();
+        if let Err(why) = self.host.forget() {
+            return Reply::err(format!("The conversation was not cleared: {why}"));
+        }
         self.clarifying = None;
         // The panel's question goes with the conversation.
         self.panel_clarifying = None;
