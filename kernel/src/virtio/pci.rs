@@ -7,6 +7,7 @@ use super::hal::{DEVICE, KernelHal};
 use super::split::{self, SplitTransport};
 use crate::devices::{Outcome, error};
 use crate::{log, memory};
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::vec::Vec;
@@ -224,9 +225,17 @@ fn bind(
                 let name = format!("{at}");
                 match driver {
                     "nvme" => {
-                        found
-                            .nvme
-                            .push(crate::nvme::Function { name, bar, bar_len });
+                        let access = *access;
+                        found.nvme.push(crate::nvme::Function {
+                            name,
+                            bar,
+                            bar_len,
+                            bus_master_off: Box::new(move || {
+                                let mut root = PciRoot::new(access);
+                                let (_, command) = root.get_status_command(at);
+                                root.set_command(at, command - Command::BUS_MASTER);
+                            }),
+                        });
                         Some(Outcome::Running(None))
                     }
                     _ => {
