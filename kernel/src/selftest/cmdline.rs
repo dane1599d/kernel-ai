@@ -187,6 +187,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=bigmap" => Some(SelfTest::Bigmap),
             "test=icount-probe" => Some(SelfTest::IcountProbe),
             "test=reboot" => Some(SelfTest::Reboot),
+            "test=reboot-memory" => Some(SelfTest::RebootMemory),
             "test=panic-reset" => Some(SelfTest::PanicReset),
             "test=efi" => Some(SelfTest::Efi),
             "test=efi-reset" => Some(SelfTest::EfiReset),

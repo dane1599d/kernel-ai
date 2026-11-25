@@ -340,6 +340,8 @@ pub enum SelfTest {
     IcountProbe,
     /// M10a-3: kernel-owned trials on the workload revert or keep by the rules.
     Reboot,
+    /// A memory reset register written with the memory lock held (H3-2).
+    RebootMemory,
     /// A panic or failed check that resets the machine (ADR 0008 "fault").
     PanicReset,
     /// UEFI runtime variables (ADR 0008).
