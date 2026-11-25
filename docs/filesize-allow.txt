@@ -4,7 +4,6 @@
 # rewrites this list from the tree.
 1233 agentabi/src/consent.rs
 1622 agentabi/tests/tier_corpus.rs
-1008 ccserve/kai/bind/window.c
 809 deskcore/src/server.rs
 1444 fsserve/src/lib.rs
 1422 fsserve/src/tests.rs
@@ -32,5 +31,4 @@
 977 user/src/bin/pkg/main.rs
 821 user/src/bin/supervisor.rs
 1538 user/src/sys.rs
-1023 wasmhost/src/tables.rs
 1048 xtask/src/actbench/tasks.rs
