@@ -198,7 +198,7 @@ fn the_whole_text_is_shown_above_the_card_under_codes_header() {
     let shown = termcore::menu::split_shown(&wire).unwrap().unwrap();
     assert_eq!(
         shown.header,
-        "Kai wants to send this text to hooks.example:"
+        "Kai wants to send this text (312 bytes) to hooks.example:"
     );
     assert_eq!(shown.text, body, "the text whole");
     let menu = Menu::decode(shown.menu).unwrap();
@@ -284,6 +284,56 @@ fn a_bad_host_or_path_is_refused_before_a_card() {
 
 fn call_of(json: &str) -> Result<Call, ActError> {
     Ok(llmproto::act::parse(json).unwrap())
+}
+
+#[test]
+fn a_send_to_a_typed_port_other_than_443_is_refused() {
+    // Through the call door, as a line that reaches the model gives it.
+    for line in [
+        "post hello to https://hooks.example:8443/hook",
+        "send hello to hooks.example:8080",
+    ] {
+        let (host, mut shell) = with_calls(vec![]);
+        let call = send_call("hooks.example", Some("/hook"), "hello").unwrap();
+        let outcome = shell.execute(1, line, &call);
+        assert_eq!(
+            outcome.reply,
+            Reply::err("Not sent: a send goes to port 443 only"),
+            "{line}"
+        );
+        assert!(shell.pending.is_none());
+        assert!(sent(&host).is_empty());
+    }
+    // 443 typed is the port a send goes to.
+    let (_, mut shell) = with_calls(vec![]);
+    let call = send_call("hooks.example", Some("/hook"), "hello").unwrap();
+    menu_of(
+        &shell
+            .execute(1, "post hello to https://hooks.example:443/hook", &call)
+            .reply,
+    );
+}
+
+#[test]
+fn a_text_over_lines_is_shown_whole_and_sent_as_it_is() {
+    let body = "line one\nline two  \n";
+    let (host, mut shell) = with_calls(vec![send_call("hooks.example", Some("/hook"), body)]);
+    let reply = shell.eval(LINE);
+    let wire = reply.to_wire();
+    let shown = termcore::menu::split_shown(&wire).unwrap().unwrap();
+    assert_eq!(shown.text, body);
+    assert_eq!(
+        shown.header,
+        format!(
+            "Kai wants to send this text ({} bytes) to hooks.example:",
+            body.len()
+        )
+    );
+    let call = Menu::decode(shown.menu).unwrap().call().to_string();
+    let once = host.mint(1, &call);
+    assert!(shell.eval(&format!("answer 1 allow once={once}")).ok);
+    shell.drain_sends(60_000);
+    assert_eq!(sent(&host)[0].body, body, "every byte, line breaks too");
 }
 
 /// A send typed in the Kai pane, where its card and the pane fit side by

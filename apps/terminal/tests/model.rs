@@ -591,3 +591,21 @@ fn a_sends_text_shows_whole_above_its_question() {
     let bad = termcore::menu::encode_shown("h", "caf\u{e9}", &menu_wire(4));
     assert_eq!(t.reply(&bad, None), Some("answer 4 deny".to_string()));
 }
+
+#[test]
+fn a_sends_hidden_spaces_are_shown() {
+    let mut t = Terminal::new();
+    sent(&mut t, "send it");
+    let call = "net_send(\"hooks.example\", \"/\", \"2cf24dba5fb0a30e\")";
+    let question = format!("Send the text above with {call}? It waits 5 s for undo.");
+    let menu = Menu::encode(3, Origin::Asked, &question, "", "", call);
+    let wire = termcore::menu::encode_shown("h", "two  spaces ", &menu);
+    t.reply(&wire, None);
+    assert!(
+        kinds(&t)
+            .iter()
+            .any(|(_, text)| text == "two\u{b7}\u{b7}spaces\u{b7}"),
+        "{:?}",
+        kinds(&t)
+    );
+}

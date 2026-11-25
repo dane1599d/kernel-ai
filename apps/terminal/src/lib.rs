@@ -340,7 +340,9 @@ impl Terminal {
             Wire::Shown { header, text, menu } => {
                 // The text is shown whole, outside the card, before its question.
                 self.said(Kind::Notice, header);
-                self.said(Kind::Reply, text);
+                let text: alloc::vec::Vec<String> =
+                    text.lines().map(termcore::menu::visible_spaces).collect();
+                self.said(Kind::Reply, &text.join("\n"));
                 self.said(Kind::Question, menu.question());
                 self.asked(Ask {
                     id: menu.id,
