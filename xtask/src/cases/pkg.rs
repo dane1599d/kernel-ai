@@ -157,6 +157,8 @@ pub(super) const CASES: &[TestCase] = &[
             "desktop: painting in the light theme",
             "desk-appearance: the saved light theme painted the desk at once",
             "desk-appearance: the restarted desktop painted the saved light theme",
+            "comphost: laying out at text size 150% in the light theme",
+            "desk-appearance: Notes started at the saved text size",
         ],
         ..case("desk-appearance", "test=desk-appearance")
     },

@@ -54,7 +54,9 @@ pub(crate) fn close_pane(settle_ms: u64) -> Result<(), &'static str> {
     const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
     let surface = crate::display::surface().ok_or("close_pane: no display")?;
     let px = |n: usize| i32::try_from(n).map_err(|_| "close_pane: the screen is too big");
-    let desk = deskgeom::points(px(surface.width)?, px(surface.height)?);
+    let (width_mm, _) = crate::display::size_mm();
+    let (w, h) = deskgeom::scale::logical_size(px(surface.width)?, px(surface.height)?, width_mm);
+    let desk = deskgeom::points(w, h);
     crate::claim_tests::type_keys(&CTRL_SPACE);
     threads::sleep_ms(settle_ms);
     click_at(&desk, desk.pane_close());
@@ -69,7 +71,7 @@ pub(crate) fn report(dx: i32, dy: i32, buttons: u8) {
 
 /// A USB-style relative report with `buttons` held and the wheel turned by
 /// `wheel` detents (positive toward the person).
-fn report_wheel(dx: i32, dy: i32, buttons: u8, wheel: i32) {
+pub(crate) fn report_wheel(dx: i32, dy: i32, buttons: u8, wheel: i32) {
     x86_64::instructions::interrupts::without_interrupts(|| {
         pointer::push(Event {
             source: Source::UsbMouse,

@@ -1,0 +1,121 @@
+# Spike S10-2, "groups and swap" (ADR 0010 §6), on the real model, on GitHub's
+# machine instead of a PC. It downloads the pinned qwen3-4b-2507 file named in
+# xtask/models.json, checks its SHA-256 and runs
+# `cargo xtask groups --local qwen3-4b-2507` through Kernel AI's own engine.
+#
+# Both arms answer the same 120 tasks on eight stub apps through llm's own
+# `act`: `layered` (index lines, the name stop, then the app's lines, at 3,072
+# positions) and `flat` (every app's lines in full, one round, at 4,096). With
+# gate on, the job fails unless both arms answer every task with a call, layered
+# is at most 2 points under flat, and layered names the right app on at least
+# 95% of single-app tasks. The figures go to the job summary; each arm's jsonl
+# and summary.md are uploaded.
+#
+# llm samples with one fixed seed, so there is no seed input: a rerun is the
+# same run. Started by hand only (Actions tab, "S10-2 groups on the real model",
+# Run workflow), one run at a time; never on every PR.
+name: S10-2 groups on the real model
+
+on:
+  workflow_dispatch:
+    inputs:
+      arms:
+        description: "Arms, comma-separated: layered, flat (the gate needs both)"
+        default: "layered,flat"
+      limit:
+        description: "Only the first N tasks of each category (empty for all 120)"
+        default: ""
+      gate:
+        description: "Fail the job when a bar is missed (needs both arms)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # One real-model groups run at a time; a second dispatch waits, never cancels.
+  group: real-model-groups
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  MODEL_ID: qwen3-4b-2507
+
+jobs:
+  groups:
+    name: groups ${{ inputs.arms }} (qwen3-4b-2507, local engine)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show the runner's CPU count, vector features and memory
+        run: |
+          nproc
+          grep -m1 '^flags' /proc/cpuinfo | grep -o -w -E 'avx2|avx512f|avx512bw|avx512_vnni' | xargs echo
+          free -g
+      - name: Read the pinned file from the catalog
+        id: pin
+        run: |
+          jq -e --arg id "$MODEL_ID" '.models[] | select(.id == $id)' xtask/models.json > "$RUNNER_TEMP/entry.json"
+          {
+            echo "file=$(jq -r .file "$RUNNER_TEMP/entry.json")"
+            echo "sha256=$(jq -r .sha256 "$RUNNER_TEMP/entry.json")"
+            echo "url=https://huggingface.co/$(jq -r .repo "$RUNNER_TEMP/entry.json")/resolve/$(jq -r .revision "$RUNNER_TEMP/entry.json")/$(jq -r .file "$RUNNER_TEMP/entry.json")"
+          } >> "$GITHUB_OUTPUT"
+      - name: Reuse the model file from an earlier run
+        id: model-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/kai-models
+          key: model-${{ steps.pin.outputs.sha256 }}
+      - name: Download the model and check its SHA-256
+        env:
+          KAI_MODELS: ${{ runner.temp }}/kai-models
+          FILE: ${{ steps.pin.outputs.file }}
+          SHA256: ${{ steps.pin.outputs.sha256 }}
+          URL: ${{ steps.pin.outputs.url }}
+        run: |
+          mkdir -p "$KAI_MODELS"
+          if [ ! -f "$KAI_MODELS/$FILE" ]; then
+            curl -fL --retry 3 -o "$KAI_MODELS/$FILE" "$URL"
+          fi
+          echo "$SHA256  $KAI_MODELS/$FILE" | sha256sum -c -
+      - name: Keep the model for later runs, saved from main only (a branch's cache serves only that branch, and the store has a 10 GB cap)
+        if: github.ref == 'refs/heads/main' && steps.model-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/kai-models
+          key: model-${{ steps.pin.outputs.sha256 }}
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Run the arms on the local engine
+        env:
+          KAI_MODELS: ${{ runner.temp }}/kai-models
+          ARMS: ${{ inputs.arms }}
+          LIMIT: ${{ inputs.limit }}
+          GATE: ${{ inputs.gate }}
+        # Built first, so the peak memory GNU time reports is the run's own
+        # (the flat arm's 4,096 positions are the most this harness holds).
+        run: |
+          cargo build --quiet -p xtask
+          set -- --local "$MODEL_ID" --arm "$ARMS"
+          if [ -n "$LIMIT" ]; then set -- "$@" --limit "$LIMIT"; fi
+          if [ "$GATE" = true ]; then set -- "$@" --gate; fi
+          set +e
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" cargo xtask groups "$@"
+          status=$?
+          grep -E "Maximum resident|Elapsed" "$RUNNER_TEMP/time.txt" | sed 's/^/xtask: peak memory: /'
+          exit $status
+      - name: Upload the run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: groups-${{ env.MODEL_ID }}-${{ github.run_id }}
+          path: |
+            target/groups/*.jsonl
+            target/groups/summary.md
+          if-no-files-found: warn

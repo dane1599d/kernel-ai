@@ -190,10 +190,13 @@ pub struct Field {
 
 impl Field {
     /// The field's value in `data`, sign-extended when the logical range goes
-    /// below zero. None when the report is too short.
+    /// below zero. None when the report is too short. The end is worked out in
+    /// 64 bits: an offset near `u32::MAX` from a hostile descriptor must not
+    /// wrap round to a small one and read past the report.
     pub fn read(&self, data: &[u8]) -> Option<i32> {
         let size = u32::from(self.size);
-        if size == 0 || size > 32 || (self.offset + size).div_ceil(8) as usize > data.len() {
+        let end = u64::from(self.offset) + u64::from(size);
+        if size == 0 || size > 32 || end.div_ceil(8) > data.len() as u64 {
             return None;
         }
         let mut value: u64 = 0;
@@ -381,7 +384,10 @@ pub fn pointer_layout(descriptor: &[u8]) -> Option<PointerLayout> {
                 let variable = unsigned & 0x2 != 0 && unsigned & 0x1 == 0;
                 for index in 0..globals.count.min(256) {
                     let offset = offsets[slot].1;
-                    offsets[slot].1 += globals.size;
+                    // A Report Size from the device is any u32: a report whose
+                    // offsets would pass u32::MAX bits is refused, never wrapped
+                    // round to fields that seem to sit inside a short report.
+                    offsets[slot].1 = offset.checked_add(globals.size)?;
                     let take = variable
                         && in_pointer
                         && found

@@ -1,0 +1,4 @@
+[0] window "Editor"
+[1] label "notes 2: components/notes/src/lib.rs *"
+[2] multiline_text "notes 2: components/notes/src/lib.rs *" = "fn main() {\n    run(); // see src/ui.rs:7\n}"
+[3] label "ok built e1"

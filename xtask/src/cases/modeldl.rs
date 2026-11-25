@@ -81,7 +81,7 @@ pub const CASES: &[TestCase] = &[TestCase {
         // the list, the checks and the copy into the store included, with a
         // TLS connection for each 2 MiB chunk.
         "updated: downloaded fixture-dl (",
-        " MB/s (7 chunks fetched, 0 kept, a TLS connection each)",
+        " MB/s (7 chunks fetched, 0 kept, on kept connections)",
         "updated: models progress: ok downloaded fixture-dl",
         "updated: the store holds fixture-dl, as the role signs it",
         "updated: the boot record answered at once",

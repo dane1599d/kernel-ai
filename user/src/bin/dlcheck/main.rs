@@ -28,6 +28,10 @@
 //! chunks 0-15 from kaifs, is cut at 80% and resumes again, and its whole hash
 //! checks out before it is moved in.
 //!
+//! It reserves a bulk `Shm` first (`user::kaifs::bulk`), as a download
+//! should, so the partial goes to `fs` and back 1 MiB a round trip, not 7 KiB;
+//! a line says which, for the split's kaifs figures.
+//!
 //! It prints a line for each, then leaves `net-download-<boot>.ok` (or
 //! `.fail`) in its home for the kernel, and idles: the supervisor would
 //! restart a service that exited.
@@ -93,6 +97,10 @@ fn main() -> i32 {
         println!("dlcheck: FAIL no Dir handle at startup");
         idle();
     };
+    match store::bulk::reserve(fsproto::MAX_SHM_DATA) {
+        Ok(()) => println!("dlcheck: the partial moves over a 1 MiB bulk Shm"),
+        Err(e) => println!("dlcheck: no bulk Shm ({e:?}); the partial moves in 7 KiB messages"),
+    }
     let result = run(&args, home, boot);
     if let Err(why) = &result {
         println!("dlcheck: FAIL boot {boot}: {why}");

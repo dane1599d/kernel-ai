@@ -129,7 +129,8 @@ pub fn actions(rows: &[&'static agentabi::Action]) -> Vec<Action<'static>> {
 /// arguments: the pack shows only its name, so the call stops after it. A
 /// row of those that takes arguments has a second grammar of its own, used
 /// once more with its group's full lines after the request. Installed apps'
-/// rows are all index-only (`pack::apps`).
+/// rows are all index-only (`pack::apps`), except in [`grammar_flat`]'s,
+/// spike S10-2's flat arm, where every app's lines are shown in full.
 pub struct Grammar {
     first: Tagged<'static>,
     second: Vec<(&'static str, Tagged<'static>)>,
@@ -182,7 +183,37 @@ pub fn grammar() -> Result<Grammar, infer::Error> {
 /// (`pack::apps::turn`); an app left out of the turn cannot be named either.
 /// Each build leaks its actions, so llm builds one only when its apps change.
 pub fn grammar_with(groups: &[AppGroup]) -> Result<Grammar, infer::Error> {
-    let (apps_turn, left_out) = apps::turn(groups);
+    grammar_counted(groups, apps::estimate)
+}
+
+/// [`grammar_with`], with the apps turn's tokens given by `count`
+/// (`pack::apps::turn_counted`): llm passes the engine's tokenizer.
+pub fn grammar_counted(
+    groups: &[AppGroup],
+    count: impl Fn(&str) -> usize,
+) -> Result<Grammar, infer::Error> {
+    build(groups, Some(&count))
+}
+
+/// Spike S10-2's flat arm: [`grammar_with`] with every app's full lines in
+/// the apps turn (`pack::apps::flat_turn`), so an app row is written in one
+/// round. The pack's own index groups stay as they ship.
+pub fn grammar_flat(groups: &[AppGroup]) -> Result<Grammar, infer::Error> {
+    build(groups, None)
+}
+
+/// The grammars over the pack's rows and `groups`' rows, those on the index
+/// level when `count` is given (the apps turn counted with it), all in the
+/// flat apps turn (no budget, no count) when it is `None`.
+fn build(
+    groups: &[AppGroup],
+    count: Option<&dyn Fn(&str) -> usize>,
+) -> Result<Grammar, infer::Error> {
+    let apps_indexed = count.is_some();
+    let (apps_turn, left_out) = match count {
+        Some(count) => apps::turn_counted(groups, count),
+        None => apps::flat_turn(groups),
+    };
     let shown: Vec<AppGroup> = groups
         .iter()
         .filter(|group| !left_out.contains(&group.app))
@@ -190,8 +221,10 @@ pub fn grammar_with(groups: &[AppGroup]) -> Result<Grammar, infer::Error> {
         .collect();
     let mut rows = crate::pack::rows();
     rows.extend(shown.iter().flat_map(|group| group.rows.iter().copied()));
-    let index_only =
-        |name: &str| crate::pack::indexed(name).is_some() || apps::group_of(&shown, name).is_some();
+    let index_only = |name: &str| {
+        crate::pack::indexed(name).is_some()
+            || (apps_indexed && apps::group_of(&shown, name).is_some())
+    };
     let full = actions(&rows);
     let mut second = Vec::new();
     for action in full.iter().filter(|a| !a.args.is_empty()) {
@@ -313,24 +346,52 @@ pub fn act(
     history: &History,
     mut on_step: impl FnMut(Step) -> Next,
 ) -> Result<Call, ActError> {
-    let mut asked = act::request_with(
-        &within_budget(engine, request),
-        history,
-        grammar.apps_turn(),
-    );
-    let call = decode(engine, grammar.first(), &asked, &mut on_step)?;
+    let request = within_budget(engine, request);
+    let ask = |kept: &History| act::request_with(&request, kept, grammar.apps_turn());
+    // History's budget reserves the request and its answer, not a read's data
+    // or a second round's group lines: with history full, those left the
+    // answer no room (audit, lane M item 6). Such a request goes with fewer of
+    // the oldest turns; history itself keeps them.
+    let kept = fitting(history, |kept| leaves_room(engine, &ask(kept)));
+    let call = decode(engine, grammar.first(), &ask(&kept), &mut on_step)?;
     let (Some(second), Some(lines)) =
         (grammar.second(&call.name), grammar.second_lines(&call.name))
     else {
         return Ok(call);
     };
-    // A second round whose read was in the same group shows its lines already.
-    if !asked.messages.iter().any(|m| m.content == lines) {
+    let ask_second = |kept: &History| {
+        let mut asked = ask(kept);
+        // A second round whose read was in the same group shows its lines already.
+        if !asked.messages.iter().any(|m| m.content == lines) {
+            asked
+                .messages
+                .push(chat::Message::new(chat::Role::System, &lines));
+        }
         asked
-            .messages
-            .push(chat::Message::new(chat::Role::System, &lines));
+    };
+    let kept = fitting(&kept, |kept| leaves_room(engine, &ask_second(kept)));
+    decode(engine, second, &ask_second(&kept), &mut on_step)
+}
+
+/// The newest part of `history` with which a request `fits`: all of it when it
+/// does, else its oldest half goes, then half again, as `History::push` drops
+/// turns, down to none.
+fn fitting(history: &History, fits: impl Fn(&History) -> bool) -> History {
+    if fits(history) {
+        return history.clone();
     }
-    decode(engine, second, &asked, &mut on_step)
+    let mut kept = history.clone();
+    while !kept.is_empty() && !fits(&kept) {
+        kept = kept.without_oldest(kept.len().div_ceil(2));
+    }
+    kept
+}
+
+/// Whether `asked` leaves its answer [`act::ACT_MAX_TOKENS`] in the engine's
+/// context.
+fn leaves_room(engine: &Engine<'_>, asked: &chat::Request) -> bool {
+    let prompt = engine.conversation_tokens(&super::turns(asked));
+    prompt + act::ACT_MAX_TOKENS as usize <= engine.about().context
 }
 
 /// The call `asked` gets under `grammar`.
@@ -636,6 +697,32 @@ mod tests {
                 Some(seen) => assert_eq!(&answer, seen, "{} tier", tier.name()),
             }
         }
+    }
+
+    /// Audit (lane M, item 6): a request that does not fit with all of history
+    /// goes with its newest turns, halving as `History::push` does; one that
+    /// fits keeps them all; one that never fits goes with none.
+    #[test]
+    fn a_request_that_would_not_fit_goes_with_the_newest_turns() {
+        let mut history = History::new();
+        for i in 0..4 {
+            let turn = Turn {
+                line: alloc::format!("turn {i}"),
+                call: String::from("{}"),
+                result: String::new(),
+            };
+            history.push(turn, 10, act::history::HISTORY_MAX);
+        }
+        let lines = |h: &History| -> Vec<String> { h.turns().map(|t| t.line.clone()).collect() };
+        assert_eq!(fitting(&history, |_| true), history);
+        let one = fitting(&history, |kept| kept.len() <= 1);
+        assert_eq!(lines(&one), ["turn 3"]);
+        let two = fitting(&history, |kept| kept.len() <= 3);
+        assert_eq!(lines(&two), ["turn 2", "turn 3"]);
+        assert!(fitting(&history, |_| false).is_empty());
+        // History itself keeps every turn.
+        assert_eq!(history.len(), 4);
+        assert_eq!(lines(&history.without_oldest(1)).len(), 3);
     }
 
     /// History in the engine: the budget from its context and pack, turns costed

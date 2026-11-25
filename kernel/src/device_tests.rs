@@ -1,6 +1,6 @@
 //! `test=devices`: the device records (ADR 0007 section 3). The kernel's own
-//! list holds the network card running and polled and the xHCI controller
-//! running on MSI-X; then `handles mode=devlist` reads the same list from ring 3
+//! list holds the network card and the xHCI controller running, each on
+//! MSI-X; then `handles mode=devlist` reads the same list from ring 3
 //! through DEV_LIST and prints it.
 
 use crate::fpu_tests::wait_exit;
@@ -14,8 +14,8 @@ pub fn check() -> Result<(), &'static str> {
     let count = devices::list(&mut records);
     let find = |driver: &str| records[..count].iter().find(|r| r.driver() == driver);
     let net = find("virtio-net").ok_or("devices: no record for the network card")?;
-    if net.state != state::RUNNING || net.irq_mode != irq_mode::POLLED {
-        return Err("devices: the network card is not running and polled");
+    if net.state != state::RUNNING || net.irq_mode != irq_mode::MSI_X {
+        return Err("devices: the network card is not running on MSI-X");
     }
     let xhci = find("xhci").ok_or("devices: no record for the xHCI controller")?;
     if xhci.state != state::RUNNING || xhci.irq_mode != irq_mode::MSI_X {
@@ -28,7 +28,7 @@ pub fn check() -> Result<(), &'static str> {
     {
         return Err("devices: the records are not numbered in order");
     }
-    log!("devices: {count} records; virtio-net polled, xhci on MSI-X");
+    log!("devices: {count} records; virtio-net and xhci on MSI-X");
     let pid = process::spawn(&SpawnRequest {
         name: "devlist",
         program: "handles",

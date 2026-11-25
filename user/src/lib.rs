@@ -24,6 +24,12 @@ pub fn heap_bytes() -> u64 {
     HEAP.live_bytes()
 }
 
+/// Gives the heap's kept big mappings back to the system (`heap::Counting`
+/// keeps two freed ones for reuse): for a process about to sit idle.
+pub fn heap_trim() {
+    HEAP.trim();
+}
+
 /// The "KAI" ELF note: the ABI version a program was built for (ADR 0001 D10),
 /// which the loader checks before it runs the program.
 #[doc(hidden)]

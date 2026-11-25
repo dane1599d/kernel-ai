@@ -2,7 +2,8 @@
 //! and a POST of a short text body made once ([`Fetch::post`]),
 //! a body by length, by chunks or until a close_notify, at most five
 //! redirects, and limits on size and time. No cookies and no compression;
-//! one request a connection. Every redirect's host is checked with the
+//! one request a connection, but for a [`Keep`]'s GETs and HEADs to one host,
+//! which reuse it while each response is read whole. Every redirect's host is checked with the
 //! caller's `allow` before it is reached, as the caller's `NetDest` will be
 //! by the kernel (task 1): GitHub's release redirect to its assets host is
 //! followed only because the caller names that host.
@@ -52,6 +53,28 @@ pub enum HttpError {
     Cut,
 }
 
+impl HttpError {
+    /// The error in fixed words a person may read: a TLS failure as its kind
+    /// ([`crate::fetch::tls_kind`]), never rustls's own text, which can carry
+    /// the names on a certificate from a private network (audit K #17).
+    pub fn plain(&self) -> String {
+        match self {
+            HttpError::Url(why)
+            | HttpError::Connect(why)
+            | HttpError::Head(why)
+            | HttpError::Body(why) => String::from(*why),
+            HttpError::Tls(tls) => String::from(crate::fetch::tls_kind(tls)),
+            HttpError::Truncated => String::from("the answer was cut short"),
+            HttpError::TooLarge => String::from("the answer was too large"),
+            HttpError::TooManyRedirects => String::from("more than five redirects"),
+            HttpError::Refused(host) => alloc::format!("{host} is not a host this may reach"),
+            HttpError::Timeout => String::from("it timed out"),
+            HttpError::RangeIgnored => String::from("the server ignored the range"),
+            HttpError::Cut => String::from("the connection was cut; the server may have it"),
+        }
+    }
+}
+
 impl From<TlsError> for HttpError {
     fn from(error: TlsError) -> Self {
         match error {
@@ -84,6 +107,131 @@ impl<C: Side, T: Transport> Stream for Session<C, T> {
 pub trait Connect {
     type Stream: Stream;
     fn connect(&mut self, url: &Url) -> Result<Self::Stream, HttpError>;
+    /// A new connection, never one kept: for a POST, and for a GET tried
+    /// again after a kept connection failed it.
+    fn fresh(&mut self, url: &Url) -> Result<Self::Stream, HttpError> {
+        self.connect(url)
+    }
+    /// Whether requests ask the server to keep the connection ([`Keep`]).
+    fn keeps(&self) -> bool {
+        false
+    }
+    /// Whether the last [`Connect::connect`] gave a kept connection.
+    fn reused(&self) -> bool {
+        false
+    }
+    /// Takes back `stream`, whose response to a request for `url` was read
+    /// whole, to carry the next request to the same host and port.
+    fn give_back(&mut self, url: &Url, stream: Self::Stream) {
+        let _ = (url, stream);
+    }
+}
+
+/// The most connections a [`Keep`] holds: a download's hosts (a release
+/// host and its assets host, a resolve host and its storage host).
+pub const MAX_KEPT: usize = 4;
+
+/// The longest redirect body read through so its connection can be kept.
+const MAX_DRAINED: u64 = 4096;
+
+/// One caller's connections, kept between its GETs and HEADs (a download's
+/// chunks): one a host and port, at most [`MAX_KEPT`], each reused only for
+/// its own host and port through the same `inner`, which dials one
+/// `NetDest`. A connection is kept only when its response was read whole and
+/// the server did not say it closes; any error or cut drops it, and a POST
+/// never takes one ([`Connect::fresh`]). A `Keep` is its caller's alone:
+/// never shared.
+pub struct Keep<C: Connect> {
+    inner: C,
+    kept: Vec<(String, u16, C::Stream)>,
+    reused: bool,
+}
+
+impl<C: Connect> Keep<C> {
+    pub fn new(inner: C) -> Self {
+        Self {
+            inner,
+            kept: Vec::new(),
+            reused: false,
+        }
+    }
+
+    /// How many connections are kept now.
+    pub fn held(&self) -> usize {
+        self.kept.len()
+    }
+
+    /// Whether a connection is kept now.
+    pub fn holds(&self) -> bool {
+        !self.kept.is_empty()
+    }
+
+    /// Drops every kept connection.
+    pub fn drop_all(&mut self) {
+        self.kept.clear();
+    }
+
+    /// The kept connections, to set each one's next deadline.
+    pub fn kept_mut(&mut self) -> impl Iterator<Item = &mut C::Stream> {
+        self.kept.iter_mut().map(|(_, _, stream)| stream)
+    }
+
+    fn take(&mut self, url: &Url) -> Option<C::Stream> {
+        let at = self
+            .kept
+            .iter()
+            .position(|(host, port, _)| *host == url.host && *port == url.port)?;
+        Some(self.kept.remove(at).2)
+    }
+
+    pub fn inner_mut(&mut self) -> &mut C {
+        &mut self.inner
+    }
+}
+
+impl<C: Connect> Connect for Keep<C> {
+    type Stream = C::Stream;
+
+    fn connect(&mut self, url: &Url) -> Result<Self::Stream, HttpError> {
+        match self.take(url) {
+            Some(stream) => {
+                self.reused = true;
+                Ok(stream)
+            }
+            None => self.fresh(url),
+        }
+    }
+
+    fn fresh(&mut self, url: &Url) -> Result<Self::Stream, HttpError> {
+        drop(self.take(url));
+        self.reused = false;
+        match self.inner.connect(url) {
+            // The kept connections may be what the transport is short of (the
+            // OS gives a process two bulk streams): they go, and the
+            // connection is tried once more.
+            Err(HttpError::Connect(_)) if !self.kept.is_empty() => {
+                self.kept.clear();
+                self.inner.connect(url)
+            }
+            other => other,
+        }
+    }
+
+    fn keeps(&self) -> bool {
+        true
+    }
+
+    fn reused(&self) -> bool {
+        self.reused
+    }
+
+    fn give_back(&mut self, url: &Url, stream: Self::Stream) {
+        drop(self.take(url));
+        if self.kept.len() == MAX_KEPT {
+            self.kept.remove(0);
+        }
+        self.kept.push((url.host.clone(), url.port, stream));
+    }
 }
 
 /// A transport to a host and port: TCP on a `NetDest` in the OS (task 2).
@@ -233,7 +381,7 @@ impl Fetch<'_> {
             return Err(HttpError::Refused(url.host.clone()));
         }
         self.in_time()?;
-        let mut stream = connect.connect(url)?;
+        let mut stream = connect.fresh(url)?;
         self.in_time()?;
         stream
             .send(&head::post(url, body))
@@ -311,16 +459,14 @@ impl Fetch<'_> {
         }
         for followed in 0..=self.limits.max_redirects {
             self.in_time()?;
-            let mut stream = connect.connect(&url)?;
-            stream.send(&head::request(method, &url, range))?;
-            let mut buf = Vec::new();
-            let head = self.read_head(&mut stream, method, &mut buf)?;
+            let (mut stream, head, buf) = self.ask(connect, method, &url, range)?;
             if redirects(head.status) {
                 let location = head
                     .location
                     .as_deref()
                     .ok_or(HttpError::Head("a redirect with no Location"))?;
                 let next = url.join(location).map_err(HttpError::Url)?;
+                self.keep_redirect(connect, &url, &head, stream, buf);
                 if !(self.allow)(&next.host, next.port) {
                     if !within {
                         return Err(HttpError::Refused(next.host));
@@ -341,6 +487,7 @@ impl Fetch<'_> {
                 continue;
             }
             if !matches!(head.status, 200 | 206) {
+                self.keep_redirect(connect, &url, &head, stream, buf);
                 return Ok(Fetched {
                     url,
                     head,
@@ -359,6 +506,10 @@ impl Fetch<'_> {
                 _ => {}
             }
             let received = self.read_body(&mut stream, head.framing, buf, sink)?;
+            // Read whole and not closing: the connection may carry the next.
+            if connect.keeps() && !head.close && head.framing != Framing::Close {
+                connect.give_back(&url, stream);
+            }
             return Ok(Fetched {
                 url,
                 head,
@@ -368,6 +519,74 @@ impl Fetch<'_> {
             });
         }
         Err(HttpError::TooManyRedirects)
+    }
+
+    /// The connection of an answer whose body is not passed on (a redirect, a
+    /// 404), kept when that short body is read through and dropped: the next
+    /// request to `url`'s host takes it. Anything else drops it.
+    fn keep_redirect<C: Connect>(
+        &self,
+        connect: &mut C,
+        url: &Url,
+        head: &Head,
+        mut stream: C::Stream,
+        buf: Vec<u8>,
+    ) {
+        let short = match head.framing {
+            Framing::Empty => true,
+            Framing::Length(n) => n <= MAX_DRAINED,
+            Framing::Chunked | Framing::Close => false,
+        };
+        if !connect.keeps() || head.close || !short {
+            return;
+        }
+        let drained = Self {
+            limits: Limits {
+                max_body: MAX_DRAINED,
+                ..self.limits
+            },
+            allow: self.allow,
+            clock: self.clock,
+        }
+        .read_body(&mut stream, head.framing, buf, &mut |_| Ok(()));
+        if drained.is_ok() {
+            connect.give_back(url, stream);
+        }
+    }
+
+    /// Sends the request for `url` and reads its head: the stream, the head
+    /// and any body bytes that came with it. A kept connection the server
+    /// has closed meanwhile fails before a head comes; the request is then
+    /// made once more on a new connection, nothing having been passed on.
+    fn ask<C: Connect>(
+        &self,
+        connect: &mut C,
+        method: Method,
+        url: &Url,
+        range: Option<Range>,
+    ) -> Result<(C::Stream, Head, Vec<u8>), HttpError> {
+        let request = head::request_kept(method, url, range, connect.keeps());
+        let mut stream = connect.connect(url)?;
+        let reused = connect.reused();
+        let mut buf = Vec::new();
+        let first = match stream.send(&request) {
+            Ok(()) => self.read_head(&mut stream, method, &mut buf),
+            Err(error) => Err(error),
+        };
+        match first {
+            Ok(head) => Ok((stream, head, buf)),
+            Err(HttpError::Timeout) => Err(HttpError::Timeout),
+            Err(_) if reused => {
+                drop(stream);
+                self.in_time()?;
+                let mut stream = connect.fresh(url)?;
+                stream.send(&request)?;
+                let mut buf = Vec::new();
+                let head = self.read_head(&mut stream, method, &mut buf)?;
+                Ok((stream, head, buf))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn in_time(&self) -> Result<(), HttpError> {

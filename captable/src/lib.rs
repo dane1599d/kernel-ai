@@ -91,6 +91,9 @@ impl From<Error> for kabi::Error {
 struct Slot {
     generation: u32,
     entry: Option<Entry>,
+    /// Emptied by [`Table::hold`] for a move still under way: off the free
+    /// list, so nothing else is put here until it is put back or released.
+    held: bool,
 }
 
 #[derive(Debug, Default)]
@@ -139,6 +142,7 @@ impl Table {
         self.slots.extend((0..more).map(|_| Slot {
             generation: 1,
             entry: None,
+            held: false,
         }));
         // Lower indexes come out first.
         self.free
@@ -302,6 +306,49 @@ impl Table {
             self.free.push(index as u16);
         }
         Ok(entry)
+    }
+
+    /// Takes `handle`'s entry out for a move that may yet be refused, keeping
+    /// its slot: `handle` names nothing meanwhile, and no insert takes the
+    /// slot, so [`Table::put_back`] always brings the entry back under the
+    /// same value (audit K #7). [`Table::release`] ends the hold once the
+    /// move is done.
+    pub fn hold(&mut self, handle: Handle) -> Result<Entry, Error> {
+        self.get(handle)?;
+        let slot = &mut self.slots[handle.index()];
+        let entry = slot.entry.take().ok_or(Error::BadHandle)?;
+        slot.held = true;
+        Ok(entry)
+    }
+
+    /// Undoes [`Table::hold`]: `entry` goes back under `handle`, as it was.
+    /// BadHandle when `handle`'s slot is not held for it.
+    pub fn put_back(&mut self, handle: Handle, entry: Entry) -> Result<Handle, Error> {
+        let slot = self.held_slot(handle)?;
+        slot.held = false;
+        slot.entry = Some(entry);
+        Ok(handle)
+    }
+
+    /// Ends [`Table::hold`] of `handle` for a move that went through: the
+    /// slot is closed as [`Table::close`] closes it. BadHandle when it is not
+    /// held for `handle`.
+    pub fn release(&mut self, handle: Handle) -> Result<(), Error> {
+        let index = handle.index();
+        let slot = self.held_slot(handle)?;
+        slot.held = false;
+        if slot.generation < MAX_GENERATION {
+            slot.generation += 1;
+            self.free.push(index as u16);
+        }
+        Ok(())
+    }
+
+    fn held_slot(&mut self, handle: Handle) -> Result<&mut Slot, Error> {
+        self.slots
+            .get_mut(handle.index())
+            .filter(|slot| slot.held && slot.generation == handle.generation())
+            .ok_or(Error::BadHandle)
     }
 
     /// Every open handle and its entry, by index.

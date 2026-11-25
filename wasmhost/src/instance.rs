@@ -31,6 +31,9 @@ pub(crate) struct HostState {
     pub(crate) seed: u64,
     /// The action call in progress, with its storage and what it did.
     pub(crate) call: Option<crate::effects::OpenCall>,
+    /// Set while the host runs the guest's `cabi_realloc` for `storage.get`:
+    /// a storage or effects call then traps (`effects::not_in_realloc`).
+    pub(crate) in_realloc: bool,
     /// The storage lifecycle calls read (`livecore::Instance::view`).
     pub(crate) view: Option<livecore::txn::Storage>,
     /// The app's windows (`kai:ui`, lifecycle 2).
@@ -171,6 +174,7 @@ impl WasmInstance {
         log_sink: Option<LogSink>,
     ) -> Result<Self, Fault> {
         let state = HostState {
+            in_realloc: false,
             limits: StoreLimitsBuilder::new()
                 .memory_size(limits.memory_bytes)
                 .memories(1)

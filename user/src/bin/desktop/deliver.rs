@@ -74,11 +74,30 @@ pub(super) fn deliver(state: &mut State, effects: &[Effect]) {
                 false
             }
             // The wheel over the pane's history: three lines a detent.
+            // A send's card is up: its text in the pane scrolls.
+            Effect::PreviewScroll { pages, detents } => {
+                preview::scroll(state, pages, detents);
+                false
+            }
             Effect::PaneWheel(detents) => {
                 let area = paint_chat::chat_area(&state.desk);
                 if state.painter.wheel_history(&mut state.chat, area, detents) {
                     println!("desktop: the wheel moved the pane's history");
                     state.extra.push(area);
+                }
+                false
+            }
+            // The wheel over a window's content: the client has it in its
+            // ring; its next picture says it scrolled.
+            Effect::Wheel { window, .. } => {
+                if state.log_wheel {
+                    if !state.wheeled.iter().any(|(w, ..)| *w == window) {
+                        let rows = super::frame::wheel_rows(state, window).unwrap_or_default();
+                        state
+                            .wheeled
+                            .push((window, rows, super::frame::WHEEL_PICTURES));
+                    }
+                    println!("desktop: the wheel went to window {}", window.0);
                 }
                 false
             }

@@ -21,7 +21,7 @@ use termcore::line::{Line, Outcome};
 pub const MAX_LINE: usize = 400;
 /// Requests waiting for the shell, at most: an agent that stopped taking them
 /// does not make the panel grow without bound.
-const MAX_WAITING: usize = 8;
+pub(crate) const MAX_WAITING: usize = 8;
 /// Enter, on the main keys and the keypad.
 const ENTER: u16 = 0x28;
 const KEYPAD_ENTER: u16 = 0x58;
@@ -50,6 +50,17 @@ pub enum Request {
     Line(String),
     /// Esc while thinking: stop the request in flight.
     Stop,
+}
+
+/// How long after an `undo` is queued a Stop on the pane is taken as the
+/// same click again (the Stop item covers the held send's undo link).
+pub const UNDO_GUARD_MS: u64 = 500;
+
+/// Whether `line` is an `undo`, bare or of an entry: the panel never takes
+/// one back, nor lets a newer request push it out.
+fn is_undo(line: &str) -> bool {
+    let line = line.trim();
+    line == "undo" || line.starts_with("undo ")
 }
 
 pub struct Panel {
@@ -82,6 +93,10 @@ pub struct Panel {
     /// The running model's name, as the shell said it (`panel model`),
     /// cleaned at the boundary.
     model: Option<String>,
+    /// When the last `undo` line was queued ([`Panel::send`]): a Stop that
+    /// comes within [`UNDO_GUARD_MS`] of it is the same click again, over
+    /// the undo link's place, and is ignored.
+    undo_at_ms: Option<u64>,
     /// Start's Ask Kai took an Enter that is still held: its repeats and
     /// release are not this input's, so they never send the kept draft.
     enter_held: bool,
@@ -111,6 +126,7 @@ impl Panel {
             interrupt: false,
             leave: false,
             model: None,
+            undo_at_ms: None,
             enter_held: false,
         }
     }
@@ -260,6 +276,15 @@ impl Panel {
     /// Stop then), else Enter.
     pub fn send_item(&mut self, now_ms: u64) -> bool {
         match self.state {
+            // The Stop item lies where a held send's undo was drawn: a click
+            // just after the undo is the same person's second click on it.
+            State::Thinking { .. }
+                if self
+                    .undo_at_ms
+                    .is_some_and(|at| now_ms.saturating_sub(at) < UNDO_GUARD_MS) =>
+            {
+                false
+            }
             State::Thinking { .. } => self.escape(),
             _ => self.apply(Key::Enter, now_ms),
         }
@@ -284,6 +309,9 @@ impl Panel {
     /// Queues `text` for the shell as though it was typed and sent: the Apps
     /// sheet's `install <name>`.
     pub fn send(&mut self, text: String, now_ms: u64) {
+        if is_undo(&text) {
+            self.undo_at_ms = Some(now_ms);
+        }
         self.queue(Request::Line(text));
         self.state = State::Thinking { since_ms: now_ms };
     }
@@ -298,8 +326,10 @@ impl Panel {
     fn escape(&mut self) -> bool {
         if matches!(self.state, State::Thinking { .. }) {
             // A line still waiting never reaches the shell; one it took is
-            // told to stop.
+            // told to stop. An `undo` is never taken back: it may be the only
+            // thing between a held send and its post.
             match self.waiting.back() {
+                Some(Request::Line(line)) if is_undo(line) => return false,
                 Some(Request::Line(_)) => {
                     self.waiting.pop_back();
                 }
@@ -323,9 +353,21 @@ impl Panel {
         core::mem::take(&mut self.leave)
     }
 
+    /// Queues `request`; when full, the oldest that is not an `undo` makes
+    /// room, and with only undos waiting a new request other than an undo is
+    /// dropped.
     fn queue(&mut self, request: Request) {
         if self.waiting.len() == MAX_WAITING {
-            self.waiting.pop_front();
+            let undo = |r: &Request| matches!(r, Request::Line(l) if is_undo(l));
+            match self.waiting.iter().position(|r| !undo(r)) {
+                Some(at) => {
+                    self.waiting.remove(at);
+                }
+                None if undo(&request) => {
+                    self.waiting.pop_front();
+                }
+                None => return,
+            }
         }
         self.waiting.push_back(request);
     }

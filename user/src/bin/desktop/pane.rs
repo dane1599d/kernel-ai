@@ -25,6 +25,11 @@ pub fn after_panel_key(state: &mut State, before: usize) {
             _ => 0,
         };
         println!("desktop: the panel queued a request ({len} characters)");
+        // A test image's plan (`log_bar=1`): the state the Enter put it in.
+        if state.log_bar {
+            let word = super::pane_word(state.panel.state());
+            println!("desktop: the panel shows {word} from the Enter");
+        }
         super::wake_shell();
     }
     if state.panel.take_apps() {

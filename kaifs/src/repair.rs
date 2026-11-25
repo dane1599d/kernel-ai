@@ -500,6 +500,11 @@ impl<D: BlockDev> Repair<'_, D> {
 /// Applies the rules to the live tree and commits what they changed. Returns one
 /// line a change; none, and no commit, if the namespace already kept them.
 pub fn repair<D: BlockDev>(fs: &mut Fs<D>) -> Result<Vec<String>, Error> {
+    // A repair may have to run on a full disk: it spends the reserve.
+    fs.freeing(repair_with_reserve)
+}
+
+fn repair_with_reserve<D: BlockDev>(fs: &mut Fs<D>) -> Result<Vec<String>, Error> {
     if !fs.writable() {
         return Err(Error::ReadOnly);
     }

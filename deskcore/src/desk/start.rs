@@ -6,7 +6,7 @@
 //! does the focus leaving it. A tooltip shows over a taskbar item after
 //! 500 ms of hover, label first, and repaints only as it comes and goes.
 
-use super::{Desk, Effect, Focus};
+use super::{Desk, Effect, Focus, Hit, Part};
 use crate::geom::Rect;
 use alloc::vec::Vec;
 
@@ -22,8 +22,8 @@ impl Desk {
 
     /// The wheel turned by `detents` (Kai Desk PR 9): Start's lists while
     /// the pointer is on Start, else the pane's history while it is on that.
-    /// Over a window it is dropped, as before: a client's wheel needs a later
-    /// `surfabi` change.
+    /// Over a window's content it goes to that window's client as a ring
+    /// event (`Effect::Wheel`), focused or not, and moves no focus.
     pub(super) fn wheel(&mut self, detents: i32, effects: &mut Vec<Effect>) {
         if detents == 0 {
             return;
@@ -36,6 +36,14 @@ impl Desk {
         let history = self.layout().pane_parts().history;
         if self.pane().is_some() && history.contains(p) {
             effects.push(Effect::PaneWheel(detents));
+            return;
+        }
+        if let Hit::Window(window, Part::Content(at)) = self.hit(p) {
+            effects.push(Effect::Wheel {
+                window,
+                at,
+                detents,
+            });
         }
     }
 

@@ -182,7 +182,7 @@ fn still_screen() -> Result<(Vec<u64>, usize), &'static str> {
 }
 
 /// `text` sent from the panel, as a person types it there.
-fn panel_line(text: &str) {
+pub(crate) fn panel_line(text: &str) {
     type_keys(&CTRL_SPACE);
     threads::sleep_ms(SETTLE_MS);
     type_keys(&CLEAR);
@@ -303,8 +303,13 @@ fn answered_within(ms: u64) -> bool {
 /// discard the proposal the card answers. That nothing made the file before
 /// Run shows in the run itself: `fs_create` never overwrites, and the host
 /// expects the panel's bar to say it created the file.
-fn yes_on_the_card(path: &str) -> Result<(), &'static str> {
-    desk_tests::wait("founder-walk: the ask on the card", ask_box::shown)?;
+pub(crate) fn yes_on_the_card(path: &str) -> Result<(), &'static str> {
+    if let Err(why) = desk_tests::wait("founder-walk: the ask on the card", ask_box::shown) {
+        // What the kernel's terminal needed and did not have (a flake in
+        // #1055's run gave no word of which).
+        log!("{CASE}: the card did not come: {}", terminal::card_state());
+        return Err(why);
+    }
     let replies = terminal::replies_shown();
     let question = ask_box::question().unwrap_or_default();
     if !question.contains(path) {
@@ -330,7 +335,7 @@ fn yes_on_the_card(path: &str) -> Result<(), &'static str> {
 /// Checks that `path` in `fs` holds [`FILE_TEXT`]. The run is over once the
 /// card's answer is (`yes_on_the_card`), so a few reads far apart do: each is
 /// a line to the shell, and a model's round.
-fn file_made(path: &str) -> Result<(), &'static str> {
+pub(crate) fn file_made(path: &str) -> Result<(), &'static str> {
     let mut text = String::new();
     for _ in 0..FILE_READS {
         text = file_text(path)?;
@@ -400,7 +405,10 @@ fn desk() -> Result<deskgeom::Points, &'static str> {
 /// The desk's points at `surface`'s size.
 fn points_of(surface: &display::Surface) -> Result<deskgeom::Points, &'static str> {
     let px = |n: usize| i32::try_from(n).map_err(|_| "founder-walk: the screen is too big");
-    Ok(deskgeom::points(px(surface.width)?, px(surface.height)?))
+    // `desktop` lays out on the screen's logical size, as it scales it.
+    let (width_mm, _) = display::size_mm();
+    let (w, h) = deskgeom::scale::logical_size(px(surface.width)?, px(surface.height)?, width_mm);
+    Ok(deskgeom::points(w, h))
 }
 
 /// A click at `at`: the pointer pinned to deskgeom's corner, wherever it was,

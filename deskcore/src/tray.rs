@@ -91,7 +91,7 @@ pub fn damage(desk: &Desk, panel: &Panel, bar: &Bar, now_ms: u64, shown: &mut Sh
         shown.memory = used;
         rects.push(r);
     }
-    let minute = Some(bar.utc_s.map(crate::clock::minute));
+    let minute = Some(bar.utc_s.map(|s| crate::clock::minute_in(s, bar.zone_min)));
     if minute != shown.minute {
         shown.minute = minute;
         rects.push(t.clock);

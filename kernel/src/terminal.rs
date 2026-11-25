@@ -54,6 +54,9 @@ static MENU_OPEN_MS: AtomicU64 = AtomicU64::new(0);
 static LINES_CLEARED: AtomicU64 = AtomicU64::new(0);
 /// The shell said it has a card waiting (CARD_READY), not yet taken.
 static CARD_WAITING: AtomicBool = AtomicBool::new(false);
+/// The prompt can give way to a card now: it waits at an empty line with
+/// nothing else waiting ([`read_line`]). For [`card_state`].
+static CARD_PROMPT: AtomicBool = AtomicBool::new(false);
 /// Cards taken from the shell at an empty prompt, and the shell's answers to
 /// [`termcore::menu::TAKE_CARD`], for the boot case.
 static CARDS_TAKEN: AtomicU64 = AtomicU64::new(0);
@@ -149,6 +152,9 @@ enum Waiting {
     More,
     /// A call that asks: the Allow / Deny menu.
     Menu(Menu),
+    /// A send's menu, with the text shown above it: answered only on the
+    /// console, where the text is shown again first (`menu::surface`).
+    Shown(Menu, Vec<String>),
 }
 
 /// The prompt for a line that continues an open entry (ADR 0012).
@@ -190,6 +196,20 @@ pub fn cards_taken() -> (u64, u64) {
     )
 }
 
+/// Why the shell's waiting card is or is not taken, in words, for a boot
+/// case whose card did not come: each condition [`card_may_open`] and the
+/// prompt need.
+pub fn card_state() -> alloc::string::String {
+    format!(
+        "card waiting {}, prompt free {}, desktop showing {}, trusted layer reading {}, box empty {}",
+        card_armed(),
+        CARD_PROMPT.load(Ordering::Acquire),
+        claim::showing(),
+        ask_box::alive(),
+        ask_box::empty()
+    )
+}
+
 /// Whether the shell has said a card waits: an atomic, as the prompt's wait
 /// needs ([`crate::i8042::wait_unless`]). SeqCst pairs with the waiter's
 /// store before it blocks.
@@ -216,6 +236,14 @@ fn take_card() -> Option<Waiting> {
         return None;
     }
     CARDS_TAKEN.fetch_add(1, Ordering::Relaxed);
+    // A text to send is read where the person answers: the desk card shows no
+    // text above it, so a send that carries one is denied there.
+    if reply.starts_with(menu::SHOWN.as_bytes()) {
+        let wire = String::from_utf8_lossy(&reply);
+        log!("! the text to send cannot be shown on the desk card, so it was denied");
+        return menu::menu_id(&wire)
+            .and_then(|id| shell_line(&menu::answer_line(id, Answer::Deny)));
+    }
     log!("card: the shell's waiting card goes to desktop");
     show_shell_reply(&reply)
 }
@@ -239,19 +267,22 @@ pub fn run(_: usize) {
     let mut waiting: Option<Waiting> = None;
     loop {
         if let Some(Waiting::Menu(menu)) = waiting {
-            waiting = choose(&mut decoder, menu);
+            waiting = choose(&mut decoder, menu, None);
+            continue;
+        }
+        if let Some(Waiting::Shown(menu, lines)) = waiting {
+            waiting = choose(&mut decoder, menu, Some(&lines));
             continue;
         }
         let prompt = match &waiting {
             Some(Waiting::Confirm(confirm)) => confirm.prompt(),
             Some(Waiting::Apply(p)) => format!("apply {} to {}? yes/no> ", p.label, p.component),
             Some(Waiting::More) => CONTINUE_PROMPT.into(),
-            Some(Waiting::Menu(_)) | None => {
-                edit_mode::prompt().unwrap_or_else(|| match C_MODE.load(Ordering::Relaxed) {
+            Some(Waiting::Menu(_) | Waiting::Shown(..)) | None => edit_mode::prompt()
+                .unwrap_or_else(|| match C_MODE.load(Ordering::Relaxed) {
                     true => C_PROMPT.into(),
                     false => PROMPT.into(),
-                })
-            }
+                }),
         };
         let asks = matches!(waiting, Some(Waiting::Confirm(_) | Waiting::Apply(_)));
         // The question is answered on the console, and only by keys typed once
@@ -300,7 +331,7 @@ pub fn run(_: usize) {
                 waiting = shell_line(line);
                 continue;
             }
-            Some(Waiting::Menu(_)) | None => {}
+            Some(Waiting::Menu(_) | Waiting::Shown(..)) | None => {}
         }
         let editing = edit_mode::editing().is_some();
         match route(line, C_MODE.load(Ordering::Relaxed)) {
@@ -324,17 +355,21 @@ pub(crate) fn shell_line_answered(line: &str) -> bool {
     let mut decoder = Decoder::new();
     let mut waiting = shell_line(line);
     let mut asked = false;
-    while let Some(Waiting::Menu(menu)) = waiting {
+    loop {
+        waiting = match waiting {
+            Some(Waiting::Menu(menu)) => choose(&mut decoder, menu, None),
+            Some(Waiting::Shown(menu, lines)) => choose(&mut decoder, menu, Some(&lines)),
+            _ => return asked,
+        };
         asked = true;
-        waiting = choose(&mut decoder, menu);
     }
-    asked
 }
 
-/// Shows `menu` on the console, reads its answer, then sends it to the shell
-/// with what an Allow minted.
-fn choose(decoder: &mut Decoder, mut menu: Menu) -> Option<Waiting> {
-    let answer = answer(decoder, &mut menu);
+/// Shows `menu` on its surface, reads its answer, then sends it to the shell
+/// with what an Allow minted. A menu with `shown` text is asked only on the
+/// console, with the text again above it once the console has the screen.
+fn choose(decoder: &mut Decoder, mut menu: Menu, shown: Option<&[String]>) -> Option<Waiting> {
+    let answer = pick(decoder, &mut menu, shown);
     let (prompt, _) = menu.input();
     finish_line(prompt, answer.word(), "");
     // Allow mints the call's ONCE (and an "Always allow" its rule node); the
@@ -354,14 +389,49 @@ fn choose(decoder: &mut Decoder, mut menu: Menu) -> Option<Waiting> {
     }
 }
 
+/// [`choose`]'s answer to `menu`, read on its one surface. A send's menu
+/// without its text (a desk card: the text is in the Kai pane) is answered on
+/// the card or denied, never asked bare on the console, where its text would
+/// not be (#1142's review).
+pub(crate) fn pick(decoder: &mut Decoder, menu: &mut Menu, shown: Option<&[String]>) -> Answer {
+    let card_up = claim::showing() && ask_box::alive();
+    let bare_send = menu::bare_send(shown.is_some(), menu.call());
+    match (menu::surface(shown.is_some(), card_up), shown) {
+        (menu::Surface::Console, Some(lines)) => answer_on_console_after(decoder, menu, lines),
+        (menu::Surface::Console, None) if bare_send => bare_send_denied(menu),
+        (menu::Surface::Console, None) => answer_on_console(decoder, menu),
+        (menu::Surface::Card, _) => match answer_on_card(menu) {
+            Some(answer) => answer,
+            None if bare_send => bare_send_denied(menu),
+            None => answer_on_console(decoder, menu),
+        },
+    }
+}
+
+/// A send's menu with no text to show it with, off the card: denied.
+fn bare_send_denied(menu: &Menu) -> Answer {
+    log!(
+        "ask: {} is a send whose text is not on this screen, so it was denied",
+        menu.id
+    );
+    Answer::Deny
+}
+
 /// Asks `menu` on its one answering surface, which the kernel picks: `desktop`'s
 /// ask card while `desktop` shows and its trusted layer is alive, else the
 /// console (ADR 0005 §7). A card withdrawn before an answer, because `desktop`
 /// stopped showing or reading, goes to the console after.
 pub(crate) fn answer(decoder: &mut Decoder, menu: &mut Menu) -> Answer {
-    match answer_on_card(menu) {
-        Some(answer) => answer,
-        None => answer_on_console(decoder, menu),
+    let card_up = claim::showing() && ask_box::alive();
+    let bare_send = menu::bare_send(false, menu.call());
+    match menu::surface(false, card_up) {
+        menu::Surface::Card => match answer_on_card(menu) {
+            Some(answer) => answer,
+            None if bare_send => bare_send_denied(menu),
+            None => answer_on_console(decoder, menu),
+        },
+        menu::Surface::Console if bare_send => bare_send_denied(menu),
+        menu::Surface::Console => answer_on_console(decoder, menu),
     }
 }
 
@@ -372,7 +442,9 @@ fn answer_on_card(menu: &Menu) -> Option<Answer> {
     if !claim::showing() || !ask_box::alive() {
         return None;
     }
-    if !ask_box::post(menu.id, menu.call(), menu.question()) {
+    // Code's question alone: a menu's detail is the console's, never the
+    // trusted card's (ADR 0005 section 7).
+    if !ask_box::post(menu.id, menu.call(), menu.card_reason()) {
         return None;
     }
     AWAITING_ANSWER.store(true, Ordering::Release);
@@ -416,8 +488,17 @@ fn answer_on_card(menu: &Menu) -> Option<Answer> {
 /// its settle, none while a key held then is down, and no auto-repeat; Ctrl-C
 /// and Esc are Deny.
 pub(crate) fn answer_on_console(decoder: &mut Decoder, menu: &mut Menu) -> Answer {
+    answer_on_console_after(decoder, menu, &[])
+}
+
+/// [`answer_on_console`], with `shown` printed first, once the console has the
+/// screen: a send's text, above its card.
+fn answer_on_console_after(decoder: &mut Decoder, menu: &mut Menu, shown: &[String]) -> Answer {
     AWAITING_ANSWER.store(true, Ordering::Release);
     let took = claim::take_for_answer();
+    for row in shown {
+        log!("{row}");
+    }
     for row in menu.rows() {
         log!("{row}");
     }
@@ -454,13 +535,19 @@ fn now_ms() -> u64 {
 fn read_line(decoder: &mut Decoder, prompt: &str, card: bool) -> Read {
     let mut line = Line::new(MAX_LINE);
     loop {
-        let key = match card && line.text().is_empty() {
+        let free = card && line.text().is_empty();
+        CARD_PROMPT.store(free, Ordering::Release);
+        let key = match free {
             true => match decoder.read_key_unless(&card_armed, &card_may_open) {
                 Some(key) => key,
-                None => return Read::Card,
+                None => {
+                    CARD_PROMPT.store(false, Ordering::Release);
+                    return Read::Card;
+                }
             },
             false => decoder.read_key(),
         };
+        CARD_PROMPT.store(false, Ordering::Release);
         match line.apply(key) {
             Outcome::Unchanged => {}
             Outcome::Changed => console::show_input(prompt, line.text(), line.cursor()),
@@ -543,6 +630,9 @@ fn show_shell_reply(reply: &[u8]) -> Option<Waiting> {
     if reply.starts_with(b"menu ") {
         return menu_reply(reply);
     }
+    if reply.starts_with(menu::SHOWN.as_bytes()) {
+        return shown_reply(reply);
+    }
     let text = String::from_utf8_lossy(reply);
     let clean = printable(&text, kabi::MAX_MESSAGE, MAX_REPLY_LINES);
     let (kind, rest) = clean.split_once(' ').unwrap_or((clean.as_str(), ""));
@@ -573,6 +663,49 @@ fn show_shell_reply(reply: &[u8]) -> Option<Waiting> {
             tune: body.starts_with("Tune \""),
         })
     })
+}
+
+/// A `menu` with a text shown above it (a send's, P5 close): the code-written
+/// header and the whole text, wrapped, on the console outside the card, then
+/// the card. If any of it cannot be shown in full on one screen, the menu is
+/// denied, never asked blind.
+fn shown_reply(reply: &[u8]) -> Option<Waiting> {
+    let wire = core::str::from_utf8(reply).unwrap_or("");
+    let deny = |why: &str| {
+        log!("! {why}, so it was denied");
+        menu::menu_id(wire).and_then(|id| shell_line(&menu::answer_line(id, Answer::Deny)))
+    };
+    let Some(Ok(shown)) = menu::split_shown(wire) else {
+        return deny("the shell sent a text to send that cannot be shown");
+    };
+    let Ok(card) = Menu::decode(shown.menu) else {
+        return deny("the shell sent a menu that cannot be shown");
+    };
+    let (cols, rows) = crate::console::size().unwrap_or((usize::MAX, usize::MAX));
+    let width = PIECE_CHARS.min(cols.saturating_sub(2));
+    let text_rows: usize = [shown.header, shown.text]
+        .iter()
+        .flat_map(|part| part.lines())
+        .map(|line| wrap(line, width).len().max(1))
+        .sum();
+    let card_rows = card.rows().len();
+    if text_rows + card_rows + 1 >= rows || !fits_on_screen(&card.rows().join("\n")) {
+        return deny("the text to send does not fit on one screen with its question");
+    }
+    // Printed when it is asked, once the console has the screen.
+    let mut lines: Vec<String> = Vec::new();
+    for (lead, part) in [("=", shown.header), (" ", shown.text)] {
+        for line in part.lines() {
+            lines.extend(
+                wrap(line, width)
+                    .into_iter()
+                    .map(|row| format!("{lead} {row}")),
+            );
+        }
+    }
+    REPLIED_NS.store(hpet::nanos(), Ordering::Relaxed);
+    REPLIES_SHOWN.fetch_add(1, Ordering::Relaxed);
+    Some(Waiting::Shown(card, lines))
 }
 
 /// A `menu` reply: shown only if it decodes and every row is shown exactly as

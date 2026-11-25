@@ -7,6 +7,7 @@ mod apps;
 mod appshow;
 mod cc;
 mod components;
+mod desksends;
 mod devices;
 pub(crate) mod https;
 mod kernel;
@@ -17,9 +18,11 @@ mod netgrant;
 mod netrows;
 mod network;
 mod online;
+mod panestates;
 mod pkg;
 pub mod release;
 mod storage;
+mod throughput;
 mod tour;
 mod updates;
 mod walk;
@@ -76,6 +79,9 @@ pub struct TestCase {
     /// Boot with the mock LLM server on the command line (`llm=`). Without it, the
     /// case also fails if the mock gets any request while it runs.
     pub server: bool,
+    /// The case boots under KVM only: a step it times (an `undo` within a
+    /// 5 s hold) would flake under TCG's emulation.
+    pub kvm_only: bool,
     /// Guest memory in MiB when the case needs more than its disk does (`bigmap`
     /// needs RAM above 4 GiB); `--mem` still wins if larger.
     pub memory_mib: Option<u64>,
@@ -100,9 +106,17 @@ pub struct TestCase {
     /// Put the network card behind a PCIe root port, on bus 1, so the kernel
     /// reaches it only by walking the bridge.
     pub bridge: bool,
+    /// Give the network card no MSI-X vectors (`vectors=0`), so the kernel
+    /// keeps it polled.
+    pub net_polled: bool,
     /// The case passes by resetting the machine: under `-no-reboot` QEMU then
     /// exits with status 0 instead of the isa-debug-exit code.
     pub resets: bool,
+    /// The case passes only by the guest turning the machine off: QEMU runs
+    /// with `-no-shutdown`, so a shutdown pauses it, and once every expected
+    /// line is in the monitor must report `shutdown`. A reset (QEMU exits
+    /// under `-no-reboot`) or a hang fails it.
+    pub powers_off: bool,
     /// A fresh writable `kai-data` disk (ADR 0004).
     pub data: Option<crate::blklog::Data>,
     /// With `data` on a GPT disk: `kai-data`'s size in MiB, when the case
@@ -215,6 +229,14 @@ pub const fn with_case_room(model_mib: u64) -> u64 {
     model_mib - crate::disk::BASE_MEMORY_MIB + CASE_MEMORY_MIB
 }
 
+/// The line `cargo xtask test` prints for `case` when it is not booted
+/// under TCG (`kvm_only`), so a run that leaves a case out says so; `None`
+/// for a case that boots under any accelerator.
+pub(crate) fn tcg_skip(case: &TestCase) -> Option<String> {
+    case.kvm_only
+        .then(|| format!("xtask: {} skipped under TCG (kvm_only)", case.name))
+}
+
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
     TestCase {
         name,
@@ -233,6 +255,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         disk: None,
         server: true,
         memory_mib: None,
+        kvm_only: false,
         nvme: false,
         image: false,
         dns: false,
@@ -241,7 +264,9 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         screen: None,
         usb: &[],
         bridge: false,
+        net_polled: false,
         resets: false,
+        powers_off: false,
         data: None,
         data_mib: None,
         then: None,
@@ -268,7 +293,11 @@ pub(super) const KAI: &[&str] = &["k", "a", "i", "ret"];
 /// Every lane's cases, in lane order: `cargo xtask test` runs them all, and
 /// `--shard K/N` deals them out in this order. A lane edits only its own table.
 const LANES: &[&[TestCase]] = &[
-    kernel::CASES,
+    kernel::basics::CASES,
+    kernel::display::CASES,
+    kernel::apps::CASES,
+    kernel::desk::CASES,
+    kernel::memory::CASES,
     devices::CASES,
     agent::CASES,
     apps::CASES,
@@ -287,7 +316,9 @@ const LANES: &[&[TestCase]] = &[
     modeldl::CASES,
     modelsuse::CASES,
     walk::CASES,
+    panestates::CASES,
     warming::CASES,
+    desksends::CASES,
 ];
 
 /// The cases `cargo xtask test` boots.
@@ -298,15 +329,31 @@ pub fn test_cases() -> Vec<&'static TestCase> {
 /// The M5 exit test: a 10-minute spawn, exit and sleep storm.
 pub const SOAK_CASES: &[TestCase] = &[case("storm-10min", "test=storm-600")];
 
-/// Cases booted only when `XTASK_CASE` names one: the screenshot tour.
+/// Cases booted only when `XTASK_CASE` names one: the screenshot tour, and
+/// the throughput workflow's `net-throughput`.
 pub fn named_only() -> Vec<&'static TestCase> {
-    tour::CASES.iter().collect()
+    tour::CASES
+        .iter()
+        .chain(core::iter::once(&throughput::NET_THROUGHPUT))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn a_kvm_only_case_says_it_is_skipped_under_tcg() {
+        let cases = test_cases();
+        let sends = cases.iter().find(|case| case.name == "desk-sends").unwrap();
+        assert_eq!(
+            tcg_skip(sends).as_deref(),
+            Some("xtask: desk-sends skipped under TCG (kvm_only)")
+        );
+        let any = cases.iter().find(|case| !case.kvm_only).unwrap();
+        assert_eq!(tcg_skip(any), None);
+    }
 
     #[test]
     fn every_case_has_one_name_and_one_lane() {
@@ -316,7 +363,11 @@ mod tests {
         // Every lane's table is in LANES: counted from the tables themselves, so a
         // PR that adds a case need not change a shared number here.
         let tables = [
-            kernel::CASES,
+            kernel::basics::CASES,
+            kernel::display::CASES,
+            kernel::apps::CASES,
+            kernel::desk::CASES,
+            kernel::memory::CASES,
             devices::CASES,
             agent::CASES,
             apps::CASES,
@@ -335,7 +386,9 @@ mod tests {
             modeldl::CASES,
             modelsuse::CASES,
             walk::CASES,
+            panestates::CASES,
             warming::CASES,
+            desksends::CASES,
         ];
         assert_eq!(
             cases.len(),
@@ -410,7 +463,7 @@ mod tests {
     /// `updated` tried the cut again.
     #[test]
     fn every_updated_word_a_case_passes_is_one_the_kernel_hands_on() {
-        let kernel = include_str!("../../../kernel/src/selftest.rs");
+        let kernel = include_str!("../../../kernel/src/selftest/updated.rs");
         let list = kernel
             .split("const UPDATED_TEST_WORDS")
             .nth(1)

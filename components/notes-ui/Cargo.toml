@@ -14,3 +14,12 @@ doctest = false
 comp-notes = { path = "../notes", default-features = false }
 compsdk = { path = "../../compsdk" }
 uikit = { path = "../../uikit" }
+
+[dev-dependencies]
+gfx2d = { path = "../../gfx2d" }
+look = { path = "../../look" }
+sha2 = "0.11.1"
+uipaint = { path = "../../uipaint" }
+deskcore = { path = "../../deskcore" }
+surfabi = { path = "../../surfabi" }
+wasmhost = { path = "../../wasmhost" }

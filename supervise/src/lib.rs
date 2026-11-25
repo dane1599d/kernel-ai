@@ -47,6 +47,10 @@ pub struct ServiceSpec {
     /// From `agent=<name>`: the agent this line runs (ADR 0013 section 1), whose
     /// badge (`kabi::handle::agent`) the kernel puts on its route to `llm`.
     pub agent: Option<u64>,
+    /// From `net_mib=`: the MiB a day its `netdest=` may move, both ways
+    /// (P5 task 14, an agent's manifest's `bytes/day`); the kernel counts them
+    /// on the handle's record. None: not counted.
+    pub net_mib: Option<u32>,
     /// When the supervisor starts it, from `start=`.
     pub start: Start,
     /// Restart policy; the plan may change `max_backoff_ms` and `max_restarts`.
@@ -372,6 +376,14 @@ pub struct Grants {
     pub llm_dest: bool,
     /// The badge on its route to `llm`, from `agent=`.
     pub agent: Option<u64>,
+    /// The MiB a day its `netdest=` may move, from `net_mib=`.
+    pub net_mib: Option<u32>,
+    /// The routes of [`Grants::uses`] the process may call through but never
+    /// pass on (CALL only, no TRANSFER or DUPLICATE): an agent's routes to
+    /// `llm` and the shell, whose badge is its identity, and a route to `fetch`'s send role,
+    /// which posts. A copy given to another process would carry the badge or
+    /// the send with it.
+    pub pinned: Vec<String>,
 }
 
 /// Names nothing may stop: the shell, the supervisor and the model service (as
@@ -629,13 +641,24 @@ impl Plan {
                 service.program
             ));
         }
+        let pinned = service
+            .uses
+            .iter()
+            .filter(|used| {
+                (service.agent.is_some() && kabi::handle::agent::BADGED.contains(&used.as_str()))
+                    || sends(&self.services, used)
+            })
+            .cloned()
+            .collect();
         Ok(Grants {
+            pinned,
             uses: service.uses.clone(),
             dirs: service.dirs.clone(),
             boot: service.boot,
             netdest: service.netdest.clone(),
             llm_dest: service.llm_dest,
             agent: service.agent,
+            net_mib: service.net_mib,
         })
     }
 }
@@ -679,7 +702,10 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     let mut boot: Option<BootFiles> = None;
     let mut netdest: Option<netdest::Dest> = None;
     let mut llm_dest = false;
-    let mut agent: Option<u64> = None;
+    // The agent= word, checked once the line's program is final: a later
+    // program= must not swap the binary its badge goes to.
+    let mut agent_word: Option<&str> = None;
+    let mut net_mib: Option<u32> = None;
     let mut netdest_word = None;
     let mut start: Option<Start> = None;
     let mut unsupervised = false;
@@ -740,10 +766,23 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
                 netdest = Some(dest);
             }
             Some(("agent", value)) => {
-                if agent.is_some() {
+                if agent_word.is_some() {
                     return Err(format!("{name}: agent= given twice"));
                 }
-                agent = Some(agent_badge(name, program, value)?);
+                agent_word = Some(value);
+            }
+            Some(("net_mib", value)) => {
+                if net_mib.is_some() {
+                    return Err(format!("{name}: net_mib= given twice"));
+                }
+                let mib = value
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|mib| (1..=MAX_NET_MIB).contains(mib))
+                    .ok_or_else(|| {
+                        format!("{name}: net_mib={value} is not 1 to {MAX_NET_MIB} MiB a day")
+                    })?;
+                net_mib = Some(mib);
             }
             Some(("start", value)) => {
                 if start.is_some() {
@@ -784,7 +823,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
             || boot.is_some()
             || netdest.is_some()
             || llm_dest
-            || agent.is_some())
+            || agent_word.is_some())
     {
         return Err(format!(
             "{name}: an unsupervised process takes no caps=, uses=, dir=, bootfiles=, netdest= or agent="
@@ -792,6 +831,12 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     }
     // An agent's badge rides on its route to `llm`: a line with none has
     // nowhere to carry it.
+    let agent = agent_word
+        .map(|value| agent_badge(name, program, value))
+        .transpose()?;
+    if agent.is_none() && uses.iter().any(|used| used == AGENTS_CALL) {
+        return Err(format!("{name}: no route may go to {AGENTS_CALL}"));
+    }
     if agent.is_some() && !uses.iter().any(|used| used == kabi::handle::agent::SERVICE) {
         return Err(format!(
             "{name}: agent= needs a route to {} in uses=",
@@ -800,6 +845,11 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     }
     if let Some(dest) = &netdest {
         any_host_line(name, program, dest)?;
+    }
+    // The bytes a day are counted on the line's own destination: with none,
+    // there is nothing to count them on.
+    if net_mib.is_some() && netdest.is_none() {
+        return Err(format!("{name}: net_mib= needs a netdest="));
     }
     if llm_dest {
         llm_dest_line(name, program, limits.caps)?;
@@ -830,6 +880,13 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
             "{name}: only the shell may use {sender}, which sends"
         ));
     }
+    // POLICY is the person's: the scheduler's controls need it, and `fs` gives
+    // its holder the person's share of the space reserve (PART_PEER_CAPS). Only
+    // the shell's line holds it, named `shell` and running `shell`, so no
+    // other line, a package's app included, can pass for the person.
+    if limits.caps & cap::POLICY != 0 && !(name == "shell" && program == "shell") {
+        return Err(format!("{name}: only the shell may hold policy"));
+    }
     let spec = ServiceSpec {
         name: name.to_string(),
         program: program.to_string(),
@@ -841,6 +898,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
         netdest,
         llm_dest,
         agent,
+        net_mib,
         start,
         policy,
         unsupervised,
@@ -933,6 +991,10 @@ fn llm_dest_line(name: &str, program: &str, caps: u64) -> Result<(), String> {
     Ok(())
 }
 
+/// The most MiB a day `net_mib=` may give: an agent manifest's most
+/// (`kaiagent::MAX_NET_MIB_PER_DAY`, which a test holds this to).
+pub const MAX_NET_MIB: u32 = 512;
+
 /// The one program told its line's `netdest=` as an argument.
 pub const NETDEST_ARG_PROGRAM: &str = "comphost";
 
@@ -982,15 +1044,22 @@ fn folders(service: &str, value: &str) -> Result<Vec<Folder>, String> {
 }
 
 /// Services nobody may call: the shell takes only the terminal's lines, and the
-/// edit service only the kernel's (ADR 0001 D3).
+/// edit service only the kernel's (ADR 0001 D3). An agent's line is the one
+/// exception for the shell ([`AGENTS_CALL`]).
 pub const UNCALLABLE: &[&str] = &["shell", "edit"];
 
+/// The uncallable service an `agent=` line may route to: its route carries the
+/// agent's badge and is pinned, and the shell admits an agent's step by that
+/// badge alone (ADR 0013 section 5).
+pub const AGENTS_CALL: &str = "shell";
+
 /// The routes in `uses=A+B`: each a service listed before this one, so routes
-/// form no cycle, never itself, `shell` or `edit`, and each once.
+/// form no cycle, never itself or `edit`, `shell` only from an agent's line
+/// (checked once the line is read), and each once.
 fn routes(service: &str, value: &str, earlier: &[ServiceSpec]) -> Result<Vec<String>, String> {
     let mut uses: Vec<String> = Vec::new();
     for target in value.split('+') {
-        if UNCALLABLE.contains(&target) || target == service {
+        if (UNCALLABLE.contains(&target) && target != AGENTS_CALL) || target == service {
             return Err(format!("{service}: no route may go to {target}"));
         }
         if target != SUPERVISOR && !earlier.iter().any(|s| s.name == target) {
@@ -1045,6 +1114,40 @@ fn caps(service: &str, value: &str) -> Result<u64, String> {
         "power" => Ok(bits | cap::POWER),
         other => Err(format!("{service}: unknown capability {other:?}")),
     })
+}
+
+/// What a service's exit leads to before its restart policy is asked: the
+/// supervisor's own reasons for an exit, which neither restart it nor count
+/// as a failure, come first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ending {
+    /// pkg withdrew it: it waits for a version.
+    Withdrawn,
+    /// An undo of a start that found it waiting on demand ended it: it waits
+    /// on demand again, with no restart and none counted (#1181's review).
+    BackOnDemand,
+    /// A restart was asked for: it starts again at once.
+    RestartOnRequest,
+    /// It was stopped: it stays down.
+    Stopped,
+    /// None of those: its restart policy decides ([`Record::on_exit`]).
+    Policy,
+}
+
+/// [`Ending`] for an exit, from the supervisor's flags on the service.
+pub fn ending(
+    withdrawn: bool,
+    back_on_demand: bool,
+    restart_on_exit: bool,
+    stopped: bool,
+) -> Ending {
+    match (withdrawn, back_on_demand, restart_on_exit, stopped) {
+        (true, ..) => Ending::Withdrawn,
+        (_, true, ..) => Ending::BackOnDemand,
+        (_, _, true, _) => Ending::RestartOnRequest,
+        (_, _, _, true) => Ending::Stopped,
+        _ => Ending::Policy,
+    }
 }
 
 /// When to restart a service that ended, or whether to stop trying.
@@ -1204,6 +1307,8 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
 
 #[cfg(test)]
 mod agent_tests;
+#[cfg(test)]
+mod net_mib_tests;
 #[cfg(test)]
 mod startup_tests;
 #[cfg(test)]

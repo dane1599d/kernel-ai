@@ -337,6 +337,16 @@ impl Terminal {
                 self.said(Kind::Question, text);
                 self.asked(Ask { id, menu: false });
             }
+            Wire::Shown { header, text, menu } => {
+                // The text is shown whole, outside the card, before its question.
+                self.said(Kind::Notice, header);
+                self.said(Kind::Reply, text);
+                self.said(Kind::Question, menu.question());
+                self.asked(Ask {
+                    id: menu.id,
+                    menu: true,
+                });
+            }
             Wire::Menu(menu) => {
                 self.said(Kind::Question, menu.question());
                 self.asked(Ask {

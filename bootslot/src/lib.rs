@@ -99,6 +99,14 @@ pub struct Record {
     pub min_epoch: u32,
     pub boot_seq: u32,
     pub last_fault: Fault,
+    /// The armed trial slot came *up* this boot and spent its try there, so a
+    /// fault after it spends none in R. In byte 51, which records before it
+    /// left zero and the CRC covers: an older decoder reads the record the same
+    /// and an older encoder writes it clear, which only spends the try in R.
+    /// The kernel never runs [`boot`] (the firmware picks the slot), so a mark
+    /// an earlier boot left can spare one more try in R, once: R clears it
+    /// whenever it reads it, so it never loops.
+    pub came_up: bool,
 }
 
 /// The firmware-held state the events change: the record and the one-shot.
@@ -126,10 +134,22 @@ impl Record {
         &mut self.slots[slot as usize]
     }
 
-    /// The committed system slot other than `slot`, if it is bootable.
+    /// Whether `slot` holds a release below the floor a commit raised (ADR 0008
+    /// §7: "a slot below min_release_seq or min_epoch is refused"). R never
+    /// is. The record keeps no epoch for each slot: a release's epoch never
+    /// falls as its `release_seq` rises, so a slot below the epoch floor is
+    /// below this one too.
+    pub fn below_floor(&self, slot: Slot) -> bool {
+        slot != Slot::R && self.slot(slot).release_seq < self.min_release_seq
+    }
+
+    /// The committed system slot other than `slot`, if it is bootable and not
+    /// below the floors.
     fn other_successful(&self, slot: Slot) -> Option<Slot> {
         slot.other().filter(|other| {
-            self.slot(*other).successful && self.slot(*other).reason == Reason::None
+            self.slot(*other).successful
+                && self.slot(*other).reason == Reason::None
+                && !self.below_floor(*other)
         })
     }
 
@@ -156,6 +176,7 @@ impl Record {
         out[47] = self.last_fault.slot;
         out[48] = self.last_fault.kind;
         out[49..51].copy_from_slice(&self.last_fault.code.to_le_bytes());
+        out[51] = u8::from(self.came_up);
         let crc = crc32(&out[..60]);
         out[60..].copy_from_slice(&crc.to_le_bytes());
         out
@@ -204,7 +225,48 @@ impl Record {
             kind: bytes[48],
             code: u16::from_le_bytes([bytes[49], bytes[50]]),
         };
+        record.came_up = bytes[51] & 1 != 0;
         Some(record)
+    }
+}
+
+/// A `KaiBootState` that is there but does not decode: a bad magic, CRC or
+/// field, or a VERSION this code does not know. Not the same as no record: R
+/// stays up and writes nothing (ADR 0008), so the floors and commits it held
+/// are never rebuilt from nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Undecodable;
+
+/// The record the firmware gave: `found` is the variable's bytes, `None` when
+/// it has no `KaiBootState`. `Ok(None)` only when there is none.
+pub fn read(found: Option<&[u8]>) -> Result<Option<Record>, Undecodable> {
+    match found {
+        None => Ok(None),
+        Some(bytes) => Record::decode(bytes).map(Some).ok_or(Undecodable),
+    }
+}
+
+/// What a boot of `slot` does with the record it read (the kernel's lever).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Start {
+    /// R with a record: [`r_boots`].
+    RBoots(Record),
+    /// R with none: [`install`].
+    Install,
+    /// A system slot with its record: *up*, then probation.
+    Slot(Record),
+    /// A system slot with no record (NVRAM lost it, the one-shot survived):
+    /// nothing is written, so R, booting next, still installs. *Up* on an
+    /// empty record would write one with no floors, armed nowhere.
+    NoRecord,
+}
+
+pub fn start(slot: Slot, record: Option<Record>) -> Start {
+    match (slot, record) {
+        (Slot::R, Some(record)) => Start::RBoots(record),
+        (Slot::R, None) => Start::Install,
+        (_, Some(record)) => Start::Slot(record),
+        (_, None) => Start::NoRecord,
     }
 }
 
@@ -213,6 +275,11 @@ impl Record {
 pub fn boot(nv: &mut Nv) -> Slot {
     let slot = nv.one_shot.take().unwrap_or(Slot::R);
     nv.record.boot_seq = nv.record.boot_seq.wrapping_add(1);
+    // A system slot's boot starts again: it has not come up yet. R keeps the
+    // mark, which it reads for the boot that ended there.
+    if slot != Slot::R {
+        nv.record.came_up = false;
+    }
     slot
 }
 
@@ -220,6 +287,37 @@ pub fn boot(nv: &mut Nv) -> Slot {
 fn arm(nv: &mut Nv, slot: Slot) {
     nv.one_shot = Some(slot);
     nv.record.armed = Some(slot);
+}
+
+/// Whether R, arming `next` from a record that had `armed`, writes the
+/// one-shot before the record. Only when it arms the same slot again: a cut
+/// between the writes then boots that slot with its try or failure count
+/// spared. When it arms another (or a fresh install), the record goes first,
+/// so a slot it retired stays retired whatever boots next.
+pub fn one_shot_first(armed: Option<Slot>, next: Slot) -> bool {
+    armed == Some(next)
+}
+
+/// R's two writes when it arms `next` from a record that had `armed`, in the
+/// order [`one_shot_first`] gives: `one_shot` stores the one-shot, `record`
+/// the record. With the one-shot first, the record is stored even when the
+/// one-shot fails, so each pass through R still counts and a store that
+/// refuses every one-shot ends in R staying up, not in a reset loop. The
+/// first error, if any.
+pub fn arm_writes<E>(
+    armed: Option<Slot>,
+    next: Slot,
+    one_shot: impl FnOnce() -> Result<(), E>,
+    record: impl FnOnce() -> Result<(), E>,
+) -> Result<(), E> {
+    if one_shot_first(armed, next) {
+        let stored = one_shot();
+        record()?;
+        stored
+    } else {
+        record()?;
+        one_shot()
+    }
 }
 
 /// *stage*, before writing `slot`: it never boots until [`stage_end`].
@@ -266,6 +364,8 @@ pub fn up(nv: &mut Nv, slot: Slot) {
         if state.tries > 0 {
             arm(nv, slot);
         }
+        // This boot spent its try here: a fault from now on spends none in R.
+        nv.record.came_up = true;
     }
 }
 
@@ -286,6 +386,19 @@ pub fn commit(nv: &mut Nv, slot: Slot, epoch: u32) {
     let release_seq = state.release_seq;
     nv.record.min_release_seq = nv.record.min_release_seq.max(release_seq);
     nv.record.min_epoch = nv.record.min_epoch.max(epoch);
+    // The other slot, if it now holds a release below the floors, never boots
+    // again (ADR 0008 §7). One being written keeps its own state.
+    if let Some(other) = slot.other()
+        && nv.record.below_floor(other)
+        && nv.record.slot(other).reason == Reason::None
+    {
+        let old = nv.record.slot_mut(other);
+        old.successful = false;
+        old.tries = 0;
+        old.priority = 0;
+        old.reason = Reason::Unbootable;
+    }
+    nv.record.came_up = false;
     arm(nv, slot);
 }
 
@@ -326,7 +439,9 @@ pub fn r_boots(nv: &mut Nv) -> InR {
         return InR::Stay;
     };
     let state = *nv.record.slot(slot);
-    let next = if state.reason != Reason::None {
+    // Read once: the boot that ended here came up, or it did not.
+    let came_up = core::mem::take(&mut nv.record.came_up);
+    let next = if state.reason != Reason::None || nv.record.below_floor(slot) {
         nv.record.other_successful(slot)
     } else if state.successful {
         let failures = state.failures.saturating_add(1);
@@ -339,7 +454,10 @@ pub fn r_boots(nv: &mut Nv) -> InR {
             }
             _ => nv.record.other_successful(slot),
         }
-    } else if state.tries > 1 {
+    } else if came_up && state.tries > 0 {
+        // It came up and spent its try at *up*: the fault after spends none.
+        Some(slot)
+    } else if !came_up && state.tries > 1 {
         // A boot that never came up spends a try too, or a slot that fails
         // before *up* would loop through R for ever.
         nv.record.slot_mut(slot).tries = state.tries - 1;
@@ -408,10 +526,13 @@ pub fn trial(record: &Record, slot: Slot, release_seq: u32, running: Slot) -> Tr
 }
 
 /// Whether booting `slot` keeps the rule: R, a committed slot, or a trial slot
-/// with tries left.
+/// with tries left, never one below the floors.
 pub fn may_boot(record: &Record, slot: Slot) -> bool {
     let state = record.slot(slot);
-    slot == Slot::R || (state.reason == Reason::None && (state.successful || state.tries > 0))
+    slot == Slot::R
+        || (state.reason == Reason::None
+            && (state.successful || state.tries > 0)
+            && !record.below_floor(slot))
 }
 
 /// The IEEE CRC-32 that GPT uses (as xtask/src/image/gpt.rs).

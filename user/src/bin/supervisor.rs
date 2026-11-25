@@ -57,9 +57,12 @@ struct Service {
     /// Ended by pkg's `withdraw`: when it is gone it waits for a version, with
     /// no restart counted and none scheduled.
     withdrawn: bool,
+    /// Ended by the undo of a start that found it waiting on demand: when it
+    /// is gone it waits on demand again, with no restart and none counted.
+    back_on_demand: bool,
     /// The shell's log entry whose `start` is the latest change to it, for its
     /// undo; cleared by any stop or restart.
-    started_by: Option<u64>,
+    started_by: Option<StartedBy>,
     /// A `start=pkg` service's package version, from the store holder's `run`;
     /// until then it stays down.
     version: Option<String>,
@@ -119,6 +122,7 @@ fn main() -> i32 {
                 start_at_ms: None,
                 restart_on_exit: false,
                 withdrawn: false,
+                back_on_demand: false,
                 started_by: None,
                 version: None,
             }
@@ -218,6 +222,18 @@ fn serve(services: &mut [Service], classes: &mut Vec<(u64, u64)>) {
     }
 }
 
+/// Who started a service with a log entry's id, and what the start changed,
+/// so its undo puts back that and nothing more (audit K #28).
+#[derive(Clone, Copy)]
+struct StartedBy {
+    id: u64,
+    caller: u64,
+    /// It was stopped or given up before: the undo stops it again. Otherwise
+    /// it was only waiting on demand, and the undo ends the instance and
+    /// leaves it on demand.
+    was_held: bool,
+}
+
 fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     let records: Vec<Record> = services.iter().map(|s| s.record.clone()).collect();
     if text.trim() == supervise::SERVICES {
@@ -267,16 +283,36 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     if let Request::Suspend(_) | Request::Resume(_) = request {
         return app_ctl(&name, matches!(request, Request::Resume(_)));
     }
-    if let Proof::Undo(id) = proof
-        && service.started_by != Some(id)
-    {
-        return String::from("err not that entry's start");
-    }
+    // An undo answers only the start it names, from the caller that made it.
+    let undoing = match proof {
+        Proof::Undo(id) => match service.started_by {
+            Some(start) if start.id == id && start.caller == caller => Some(start),
+            _ => return String::from("err not that entry's start"),
+        },
+        _ => None,
+    };
+    let was_held = service.record.stopped || service.record.gave_up;
     service.started_by = match (request, proof) {
-        (Request::Start(_), Proof::Entry(id)) => Some(id),
+        (Request::Start(_), Proof::Entry(id)) => Some(StartedBy {
+            id,
+            caller,
+            was_held,
+        }),
         _ => None,
     };
     match request {
+        // The start found it waiting on demand: its undo ends the instance
+        // the start made and leaves it on demand, never stopped.
+        Request::Stop(_) if undoing.is_some_and(|start| !start.was_held) => {
+            service.start_at_ms = None;
+            service.back_on_demand = service.pid.is_some();
+            if let Some(pid) = service.pid
+                && let Err(error) = sys::kill(pid)
+            {
+                println!("cannot end {name} (pid {pid}): {error:?}");
+            }
+            println!("{name} back on demand, its start undone");
+        }
         Request::Stop(_) => {
             service.record.stopped = true;
             service.start_at_ms = None;
@@ -364,8 +400,9 @@ fn keep(services: &mut [Service], records: &[Record], name: &str, on: bool, call
     };
     let reply = send_ctl(name, verb);
     // A running app that did not take it: the record goes back, so the shell's
-    // refusal and the supervisor agree.
-    if !reply.starts_with("ok") {
+    // refusal and the supervisor agree. One that took it and did not answer
+    // may have applied it, so the record stays as asked.
+    if !reply.starts_with("ok") && !reply.starts_with(supervise::appcall::UNANSWERED) {
         services[index].record.keep = was;
         save(services);
     }
@@ -395,6 +432,11 @@ fn send_ctl(name: &str, verb: sys::AppCtl) -> String {
             println!("{name} {}: {text}", verb.word());
             text
         }
+        Err(kabi::Error::Dead) => format!(
+            "{} {name} took the {} and did not answer; it may have taken effect",
+            supervise::appcall::UNANSWERED,
+            verb.word()
+        ),
         Err(error) => format!("err cannot reach {name}: {error:?}"),
     }
 }
@@ -449,6 +491,13 @@ fn app_call(services: &mut [Service], app: &str, request: &str, caller: u64) -> 
                 supervise::appcall::TIMEOUT
             )
         }
+        Err(kabi::Error::Dead) => {
+            println!("{app} took a call and did not answer it");
+            format!(
+                "{} {app} took the call and did not answer; it may have run",
+                supervise::appcall::UNANSWERED
+            )
+        }
         Err(error) => format!("err cannot reach {app}: {error:?}"),
     }
 }
@@ -471,9 +520,11 @@ fn retry(app: &str, request: &str, reply: &mut [u8], deadline: u64) -> Result<us
     }
 }
 
-/// `profile <pid> <class> <pages|->`, from the shell only: the class, then the
-/// quota; what the process had before. A quota the kernel refuses puts the
-/// class back, so a refused request changes nothing.
+/// `profile <pid> <class> <pages|-> [cap]`, from the shell only: the class, then
+/// the quota; what the process had before. With `cap` the quota is only ever
+/// lowered (#517), and one left as it was answers `-`, so undo leaves it too. A
+/// quota the kernel refuses puts the class back, so a refused request changes
+/// nothing.
 fn set_profile(
     services: &[Service],
     classes: &mut Vec<(u64, u64)>,
@@ -497,7 +548,8 @@ fn set_profile(
     }
     let pages_before = match set.pages {
         None => None,
-        Some(pages) => match sys::proc_quota_set(set.pid, pages) {
+        Some(pages) => match quota(set.pid, pages, set.cap) {
+            Ok(old) if set.cap && old <= pages => None,
             Ok(old) => Some(old),
             Err(error) => {
                 let _ = sys::proc_class_set(set.pid, class_before);
@@ -512,7 +564,16 @@ fn set_profile(
         pid: set.pid,
         class: class_before,
         pages: pages_before,
+        cap: false,
     })
+}
+
+/// The quota set, or with `cap` only lowered; the old one.
+fn quota(pid: u64, pages: u64, cap: bool) -> Result<u64, kabi::Error> {
+    match cap {
+        true => sys::proc_quota_lower(pid, pages),
+        false => sys::proc_quota_set(pid, pages),
+    }
 }
 
 /// A `ONCE` or a rule, checked through the kernel; any other proof needs no call.
@@ -699,24 +760,40 @@ fn on_exit(services: &mut [Service], exit: &ExitRecord) {
     let now = now_ms();
     let reason = ExitReason::from_raw(exit.reason).map_or("ended", ExitReason::name);
     let name = &service.spec.name;
-    if service.withdrawn {
-        service.withdrawn = false;
-        println!("{name} {reason}; withdrawn, so not restarted: it waits for pkg");
-        service.start_at_ms = None;
-        save(services);
-        return;
-    }
-    if service.restart_on_exit {
-        service.restart_on_exit = false;
-        println!("{name} {reason}; restarting on request");
-        service.start_at_ms = Some(now);
-        save(services);
-        return;
-    }
-    if service.record.stopped {
-        println!("{name} {reason}; stopped, so not restarted");
-        save(services);
-        return;
+    let why = supervise::ending(
+        service.withdrawn,
+        service.back_on_demand,
+        service.restart_on_exit,
+        service.record.stopped,
+    );
+    service.withdrawn = false;
+    service.back_on_demand = false;
+    match why {
+        supervise::Ending::Withdrawn => {
+            println!("{name} {reason}; withdrawn, so not restarted: it waits for pkg");
+            service.start_at_ms = None;
+            save(services);
+            return;
+        }
+        supervise::Ending::BackOnDemand => {
+            println!("{name} {reason}; its start undone, it waits on demand again");
+            service.start_at_ms = None;
+            save(services);
+            return;
+        }
+        supervise::Ending::RestartOnRequest => {
+            service.restart_on_exit = false;
+            println!("{name} {reason}; restarting on request");
+            service.start_at_ms = Some(now);
+            save(services);
+            return;
+        }
+        supervise::Ending::Stopped => {
+            println!("{name} {reason}; stopped, so not restarted");
+            save(services);
+            return;
+        }
+        supervise::Ending::Policy => {}
     }
     match service.record.on_exit(
         &service.spec.policy,

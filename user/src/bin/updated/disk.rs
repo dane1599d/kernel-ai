@@ -272,8 +272,10 @@ pub fn update(handle: Handle, restart_now: bool) -> Result<Staged, String> {
     }
     // Before the new slot's first boot: if it fails before it commits, the old
     // slot boots on this snapshot of `system` (ADR 0008 §10). `home` is never in it.
+    let mut snapshot = None;
     if let Some(updates) = dirs.updates {
         let id = folders::update_snapshot(updates)?;
+        snapshot = Some(id);
         println!("updated: took update snapshot {id} of the system volume");
         let pending = bootslot::pending::Pending {
             snapshot: id,
@@ -288,10 +290,23 @@ pub fn update(handle: Handle, restart_now: bool) -> Result<Staged, String> {
         println!("updated: restarting into {other:?}");
     }
     let staged = set(handle, &nv, restart_now);
-    if staged.is_err() {
-        // The slot stays Updating and never boots: nothing to restore later.
-        if let Some(updates) = dirs.updates {
+    if staged.is_err()
+        && let Some(updates) = dirs.updates
+    {
+        // BOOTREC_SET writes the record before the one-shot, so a failure may
+        // have left the record staging the slot. Only while it is still
+        // Updating, so it never boots, is the restore point given up.
+        let updating =
+            record(handle).is_ok_and(|now| now.slot(other).reason == bootslot::Reason::Updating);
+        if updating {
             let _ = folders::write(updates, restore::PENDING, b"");
+            if let Some(id) = snapshot {
+                restore::drop_snapshot(updates, id);
+            }
+        } else {
+            println!(
+                "updated: the record stages {other:?} though BOOTREC_SET failed; the restore point stays"
+            );
         }
     }
     staged.map(|()| Staged {

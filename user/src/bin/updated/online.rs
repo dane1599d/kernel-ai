@@ -36,7 +36,7 @@ use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP};
 use kabi::update::{MAX_IO, SECTOR};
 use kainet::chunks::{CHUNK, MAX_LIST};
 use kainet::download::Report;
-use kainet::http::{TlsConnect, Url};
+use kainet::http::{Keep, TlsConnect, Url};
 use kaipkg::online::{Hosts, Online};
 use updatenet::net::Over;
 use updatenet::plan::{self, Job, Machine};
@@ -266,8 +266,9 @@ fn machine(record: &Record, running: Slot, into: Option<Slot>, room: u64) -> Mac
 
 /// How fast the image came, for the case to print: the bytes fetched this run (a
 /// resumed run kept the first chunks), over the whole stage (the chunks, their
-/// checks, the writes and the read-back), in MB/s to one place. `kainet` sends
-/// `Connection: close`, so each 2 MiB chunk is a TLS connection of its own.
+/// checks, the writes and the read-back), in MB/s to one place. The chunks'
+/// connections are kept between them (`kainet::http::Keep`, one a host), so
+/// the split's count says how many TLS connections they took.
 fn speed_line(job: &Job, report: &Report, elapsed_ns: u64) -> String {
     let kept = (report.kept as u64).saturating_mul(CHUNK);
     let bytes = job.release.length.saturating_sub(kept);
@@ -275,7 +276,7 @@ fn speed_line(job: &Job, report: &Report, elapsed_ns: u64) -> String {
     // bytes / (ns / 1e9) / 1e6 = bytes * 1000 / ns, in tenths.
     let tenths = u128::from(bytes) * 10_000 / u128::from(elapsed_ns);
     format!(
-        "updated: downloaded {bytes} bytes in {} ms: {}.{} MB/s ({} chunks of up to 2 MiB, a TLS connection for each)",
+        "updated: downloaded {bytes} bytes in {} ms: {}.{} MB/s ({} chunks of up to 2 MiB, on kept connections)",
         elapsed_ns / 1_000_000,
         tenths / 10,
         tenths % 10,
@@ -316,25 +317,29 @@ pub fn update(handle: Handle, restart_now: bool, args: &str) -> Result<Staged, S
     let hosts = Hosts::mock();
     // Where the time goes, summed over the stage (`split.rs`).
     let split = Split::default();
-    let online = |hosts: &Hosts| {
+    let online = |hosts: &Hosts, bulk: bool| {
         // The image is a download: bulk streams have the larger receive buffer.
+        // A process gets two, and the download keeps both (the releases host's
+        // and the assets host's): the metadata asked again goes on plain ones.
         // No deadline of the dial's own: `Online` ends each request at `REQUEST_NS`.
         let dial = NetDial {
             dest,
-            bulk: true,
+            bulk,
             deadline_ns: u64::MAX,
         };
-        let connect = Timed {
+        // The chunks' connections are kept, one a host (the releases host and
+        // its assets host): a chunk no longer pays two TLS handshakes.
+        let connect = Keep::new(Timed {
             inner: TlsConnect {
                 config: config.clone(),
                 dial,
             },
             split: &split,
-        };
+        });
         Online::new(hosts.clone(), connect, &clock, REQUEST_NS)
     };
 
-    let mut repository = online(&hosts);
+    let mut repository = online(&hosts, true);
     let (image, list) = plan::refresh(&mut repository, &mut cache, now)
         .map_err(|why| format!("refused: {}", why.why()))?;
     let release = plan::release_of(&image).map_err(|why| format!("refused: {}", why.why()))?;
@@ -379,7 +384,7 @@ pub fn update(handle: Handle, restart_now: bool, args: &str) -> Result<Staged, S
     };
     // The metadata again, from a connection of its own, once the image has
     // checked out: a long download can span a newer release.
-    let mut recheck = || plan::refresh(&mut online(&hosts), &mut cache, now);
+    let mut recheck = || plan::refresh(&mut online(&hosts, false), &mut cache, now);
     let started = sys::time_ns();
     // A stop that is the network's (a cut, a timeout, a busy server) is not the end:
     // the checked chunks are kept, and another call resumes at the first unchecked.

@@ -132,7 +132,13 @@ pub fn attempt_on(task: &Task, host: GateHost) -> Outcome {
         .find_map(|answer| answer.as_ref().ok())
         .map(|answer| answer.script.clone());
     if let Some(output) = shell.last_output() {
-        let failure = judge(task, proposal.ok, output, &host.changes.borrow());
+        let failure = judge(
+            task,
+            proposal.ok,
+            output,
+            &host.changes.borrow(),
+            &host.fetched.borrow(),
+        );
         return Outcome {
             rounds,
             script,
@@ -160,7 +166,13 @@ pub fn attempt_on(task: &Task, host: GateHost) -> Outcome {
     let reply = shell.eval(&format!("answer {id} yes"));
     // The script's own output, without the shell's line saying what changed.
     let output = shell.last_output().unwrap_or(&reply.text).to_string();
-    let failure = judge(task, reply.ok, &output, &host.changes.borrow());
+    let failure = judge(
+        task,
+        reply.ok,
+        &output,
+        &host.changes.borrow(),
+        &host.fetched.borrow(),
+    );
     Outcome {
         rounds,
         script,
