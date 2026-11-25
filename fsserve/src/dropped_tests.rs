@@ -382,3 +382,46 @@ fn the_owners_read_that_drops_its_action_is_answered_dropped() {
     assert!(matches!(&read, Reply::Failed(e) if e.ends_action()));
     assert_eq!(c.server.owner, None);
 }
+
+/// H3-11: `fs` restarts while Alice's action is open. A caller older than the
+/// new `fs` is told, on its first change, that any action it had is gone, and
+/// that change lands nothing: nothing she meant for the action commits on its
+/// own. Once told, her changes land; a newer caller and the kernel never are.
+#[test]
+fn a_restart_tells_an_older_callers_first_change_its_action_is_gone() {
+    let mut disk = MemDisk::new(2 * 1024);
+    let doc = {
+        let (mut c, _) = Client::start(&mut disk);
+        let doc = create(&mut c, "doc").expect("a file");
+        let begin = Request::Begin { action: 1 };
+        assert_eq!(home(&mut c, ALICE, begin).0, Reply::Done);
+        assert_eq!(write(&mut c, &doc, 0, 3), Reply::Done);
+        doc
+    };
+    // The first `fs` is gone with her action open; this one started after her.
+    let (mut c, _) = Client::start(&mut disk);
+    c.server.set_own_pid(100);
+    let before = c.server.generation();
+    let dropped = Reply::Failed(Error::Dropped(DropCause::Io));
+    assert_eq!(write(&mut c, &doc, 3, 3), dropped);
+    assert_eq!(c.server.generation(), before, "the refused write committed");
+    assert_eq!(write(&mut c, &doc, 0, 3), Reply::Done);
+    // An older caller's Commit is its action's end; its Begin is a fresh start.
+    assert_eq!(home(&mut c, CAROL, Request::Commit).0, dropped);
+    let begin = Request::Begin { action: 2 };
+    assert_eq!(home(&mut c, BOB, begin).0, Reply::Done);
+    let committed = home(&mut c, BOB, Request::Commit).0;
+    assert!(
+        matches!(committed, Reply::Committed { .. }),
+        "{committed:?}"
+    );
+    for caller in [0, 200] {
+        let open = Request::Open {
+            path: format!("new{caller}"),
+            rights: DIR_RIGHTS.bits(),
+            how: How::CreateFile,
+        };
+        let opened = home(&mut c, caller, open).0;
+        assert!(matches!(opened, Reply::Opened(..)), "{caller}: {opened:?}");
+    }
+}

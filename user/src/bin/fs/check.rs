@@ -42,6 +42,7 @@ fn checks(part: Handle) -> Result<String, String> {
     refusals(part, n)?;
     narrowed(part)?;
     peer_caps(part)?;
+    own_pid(part)?;
     Ok(format!("ok sectors={n} first={first}"))
 }
 
@@ -106,4 +107,17 @@ fn peer_caps(part: Handle) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// PART_SELF through `user::sys`: the pid it gives is a live process named
+/// `fs`, this one.
+fn own_pid(part: Handle) -> Result<(), String> {
+    let pid = sys::part_self(part).map_err(|e| format!("PART_SELF: {e:?}"))?;
+    let mut name = [0u8; kabi::MAX_NAME];
+    let len = sys::part_peer_name(part, pid, &mut name)
+        .map_err(|e| format!("PART_PEER_NAME of PART_SELF's pid {pid}: {e:?}"))?;
+    match &name[..len] {
+        b"fs" => Ok(()),
+        other => Err(format!("PART_SELF gave pid {pid}, named {other:?}")),
+    }
 }

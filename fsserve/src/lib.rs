@@ -51,7 +51,7 @@ mod sealed_shm_tests;
 mod tests;
 mod trash;
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
 use fsproto::{
@@ -213,6 +213,11 @@ pub struct Server<D: BlockDev> {
     /// changes are refused ([`Error::Dropped`]) until it sends Abort or Begin
     /// itself. A commit or a drop of anyone else's leaves the marks alone.
     dropped: BTreeMap<u64, DropCause>,
+    /// This `fs`'s own pid ([`Server::set_own_pid`]); 0 until set.
+    own_pid: u64,
+    /// The callers older than this `fs` that have sent it a change
+    /// ([`Server::predates`]).
+    told: BTreeSet<u64>,
     /// The caller of the request being answered: a drop on its own request
     /// is one it hears.
     asking: u64,
@@ -294,6 +299,8 @@ impl<D: BlockDev> Server<D> {
             base,
             pending: None,
             dropped: BTreeMap::new(),
+            own_pid: 0,
+            told: BTreeSet::new(),
             asking: 0,
             action_spend: Spend::All,
             cache: None,
@@ -328,6 +335,24 @@ impl<D: BlockDev> Server<D> {
     /// every later change.
     pub fn set_alive(&mut self, alive: fn(u64) -> bool) {
         self.alive = alive;
+    }
+
+    /// This `fs`'s own pid (PART_SELF). Pids only count up, so a caller below
+    /// it ran before this `fs` started, and may have had an action open in
+    /// the one before, which a restart dropped with everything in it: its
+    /// first change here, unless a Begin or an Abort, is answered
+    /// [`Error::Dropped`] and lands nothing, so a change it meant for that
+    /// action never commits on its own outside any (H3-11). Only the first:
+    /// a client that never begins an action is refused once, not until it
+    /// aborts. Until this is set, no caller is refused this way.
+    pub fn set_own_pid(&mut self, pid: u64) {
+        self.own_pid = pid;
+    }
+
+    /// Whether `caller` ran before this `fs` started and this is its first
+    /// change here; the kernel (0) never counts.
+    fn predates(&mut self, caller: u64) -> bool {
+        caller != 0 && caller < self.own_pid && self.told.insert(caller)
     }
 
     /// The wall time at boot, ns since 1970 (`CLOCK_NOW` less the time since
@@ -641,6 +666,12 @@ impl<D: BlockDev> Server<D> {
             self.own_folder_only(call.caller, &request)?;
         }
         let changes = changes(&request);
+        // A restarted `fs` tells each older caller, on its first change, that
+        // any action it had open is gone (H3-11).
+        let fresh = matches!(request, Request::Begin { .. } | Request::Abort);
+        if changes && self.predates(call.caller) && !fresh {
+            return Err(Error::Dropped(DropCause::Io));
+        }
         if let Some(&cause) = self.dropped.get(&call.caller).filter(|_| changes) {
             match request {
                 // It knows now: an Abort is its acknowledgement, a Begin its
