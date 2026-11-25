@@ -521,13 +521,12 @@ fn committed(open: &mut Open, done: Done, prepared: Prepared, compile_us: u64, r
         // before it as following it. A name the reader never heard of is
         // taken as unknown.
         if def.kind == Kind::Func && done.retyped.contains(&def.name) {
-            let mut both = reply.clone();
-            let kept = both.push_leaving(&record, END_ROOM).is_ok()
-                && both
-                    .push_leaving(&Record::Retyped(&def.name), END_ROOM)
-                    .is_ok();
-            if kept {
-                *reply = both;
+            let name = Record::Retyped(&def.name);
+            // The pair does not fit: the `retyped` alone, which cannot be
+            // taken for a def in place, still tells the reader the entry
+            // defined something, so it is replayed after a restart.
+            if reply.push_pair(&record, &name, END_ROOM).is_err() {
+                let _ = reply.push_leaving(&name, END_ROOM);
             }
             continue;
         }
