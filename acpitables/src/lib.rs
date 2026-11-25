@@ -82,6 +82,9 @@ pub struct Platform {
     pub reset: Option<fadt::Reset>,
     /// The FADT says the machine has no 8042 keyboard controller.
     pub no_8042: bool,
+    /// Damaged optional tables (FADT, MCFG) left out, as if absent, with why; at
+    /// most [`MAX_IGNORED`]. ACPICA too only warns about them.
+    pub ignored: Vec<(&'static str, Error)>,
 }
 
 /// How an ISA IRQ reaches the I/O APIC.
@@ -124,6 +127,9 @@ const SDT_HEADER_LEN: usize = 36;
 /// The longest table read. The MADT of a machine with a thousand CPUs is under
 /// 20 KiB; a table's length is a u32, so firmware could otherwise claim 4 GiB.
 pub const MAX_TABLE_LEN: usize = 1 << 20;
+
+/// The most damaged tables [`Platform::ignored`] lists.
+pub const MAX_IGNORED: usize = 8;
 
 /// The MADT's header, local APIC address and flags, before its entries.
 const MADT_ENTRIES: usize = SDT_HEADER_LEN + 8;
@@ -171,8 +177,15 @@ pub fn parse(mem: &impl PhysMem, rsdp: u64) -> Result<Platform, Error> {
                     platform.hpet = Some(u64_at(hpet, 44));
                 }
             }
-            b"MCFG" => parse_mcfg(table(mem, address)?, &mut platform),
-            b"FACP" => fadt::apply(table(mem, address)?, &mut platform),
+            // Optional tables: a damaged one is left out, not fatal.
+            b"MCFG" => match table(mem, address) {
+                Ok(bytes) => parse_mcfg(bytes, &mut platform),
+                Err(error) => ignore(&mut platform, "MCFG", error),
+            },
+            b"FACP" => match table(mem, address) {
+                Ok(bytes) => fadt::apply(bytes, &mut platform),
+                Err(error) => ignore(&mut platform, "FACP", error),
+            },
             _ => {}
         }
     }
@@ -198,6 +211,13 @@ fn table(mem: &impl PhysMem, address: u64) -> Result<&[u8], Error> {
         Ok(bytes)
     } else {
         Err(Error::BadChecksum("system description table"))
+    }
+}
+
+/// Notes that the optional table `signature` was left out, and why.
+fn ignore(platform: &mut Platform, signature: &'static str, error: Error) {
+    if platform.ignored.len() < MAX_IGNORED {
+        platform.ignored.push((signature, error));
     }
 }
 
