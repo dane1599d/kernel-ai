@@ -422,7 +422,7 @@ fn execute(options: &Options) -> Result<(), String> {
                 case.name,
                 buildsvc::redact(&cmdline)
             );
-            let record = image::slots::slot_record(&root, SLOT_RELEASE_SEQ);
+            let record = image::slots::slot_record(&root, SLOT_RELEASE_SEQ)?;
             if case.slots {
                 modules.push(esp::Module {
                     // `kernel/src/slots.rs` finds it by this path.
@@ -829,7 +829,7 @@ fn update_image(
     efi: &Path,
 ) -> Result<(Vec<u8>, u32), String> {
     let release = SLOT_RELEASE_SEQ + 1;
-    let record = image::slots::slot_record(root, release);
+    let record = image::slots::slot_record(root, release)?;
     let mut files: Vec<&esp::Module> = modules.iter().filter(|m| m.path != "kai.slot").collect();
     let slot_file = esp::Module {
         path: "kai.slot".into(),
