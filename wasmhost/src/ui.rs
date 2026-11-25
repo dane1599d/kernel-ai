@@ -271,6 +271,9 @@ pub(crate) fn run_in(
     if name == "open" {
         let title = str_of(args.first())?;
         let (w, h) = (u16_of(args.get(1))?, u16_of(args.get(2))?);
+        if w.max(h) > crate::desk::MAX_WINDOW_PX {
+            return Ok(Err(UiError::TooBig));
+        }
         return Ok(host.ui.open(&title, w, h).map(Some));
     }
     let window = u32_of(args.first())?;
