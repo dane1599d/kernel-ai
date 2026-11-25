@@ -18,10 +18,11 @@
 //!    gone now comes back only if the action itself removed it: the volume's tree
 //!    as the action's commit left it (live, or in a later snapshot) must lack it,
 //!    and no later action may name it. One destroyed later (an emptied trash) is
-//!    left, and so is one whose removal no tree dates, unless it lay in the
-//!    trash: only the trash's own changes remove that, and it comes back only
-//!    into the trash, so an undo of a restore from the trash puts the item back
-//!    in its folder there even after a change outside any action.
+//!    left, and so is one whose removal no tree dates: a change outside any
+//!    action leaves no record, so a later removal for good cannot be told from
+//!    the action's own. That holds for the trash's folders too: an undo of a
+//!    restore from the trash, after such a change, leaves the item's trash
+//!    folder gone, so the item goes to the root, or a scoped restore is refused.
 //!
 //! Each object's outcome comes back, so the caller can say what happened.
 
@@ -33,7 +34,6 @@ use crate::items::{
     Entry, FileType, Inode, K_DATA, K_DIRENT, K_INODE, K_XATTR, MAX_NAME, ROOT, decode_names,
     valid_name,
 };
-use crate::trash::TRASH;
 use crate::tree::Key;
 use alloc::collections::BTreeSet;
 use alloc::format;
@@ -333,25 +333,6 @@ impl<D: BlockDev> Fs<D> {
         Ok(Outcome::Beside { ino: copy, name })
     }
 
-    /// Whether `ino` is the trash or lies beneath it in `view`.
-    fn in_trash(&mut self, view: View, ino: u64) -> Result<bool, Error> {
-        let mut seen = BTreeSet::new();
-        let mut at = ino;
-        loop {
-            if at == ROOT || !seen.insert(at) {
-                return Ok(false);
-            }
-            let Some(inode) = self.inode_in(view, at)? else {
-                return Ok(false);
-            };
-            if inode.parent == ROOT {
-                let name = self.name_in(view, ROOT, at)?;
-                return Ok(name.is_some_and(|e| e.name == TRASH));
-            }
-            at = inode.parent;
-        }
-    }
-
     /// The active volume's tree as commit `txn` left it, if one is still at
     /// hand: the last commit's, or a snapshot's taken before anything else
     /// changed the volume. A root written by commit `txn` is born in it, and
@@ -402,10 +383,7 @@ impl<D: BlockDev> Fs<D> {
                 (Some(o), None) => {
                     let removed = match after {
                         Some(tree) => self.inode_in(View::Tree(tree), ino)?.is_none(),
-                        // What lay in the trash goes only by the trash's own
-                        // changes, and comes back only into it: the folders
-                        // of an item the action took out of the trash.
-                        None => self.in_trash(then, ino)?,
+                        None => false,
                     };
                     match removed && !later.contains(&ino) {
                         true => were.push((self.depth_in(then, ino)?, ino, o)),

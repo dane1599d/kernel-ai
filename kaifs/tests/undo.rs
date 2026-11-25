@@ -452,12 +452,12 @@ fn a_removal_no_tree_dates_is_left() {
     checked(&mut fs);
 }
 
-/// An undo of a restore from the trash puts the item back in its folder there,
-/// even after a change outside any action (a download's last Rename) has left
-/// no tree that dates the folder's removal: what lay in the trash goes only by
-/// the trash's own changes, and comes back only into it (#1365's review).
+/// An item a restore from the trash took out, then trashed again and emptied
+/// outside any action, stays gone when that restore is undone: no tree dates
+/// the trash folder's removal, so nothing destroyed later comes back (bug hunt
+/// 2, H2-2; #1365's review).
 #[test]
-fn an_undo_of_a_restore_from_the_trash_puts_the_item_back_in_it() {
+fn an_undo_of_a_restore_from_the_trash_leaves_what_was_emptied_since() {
     let mut fs = fresh();
     fs.set_volume(HOME).unwrap();
     let user = mkdir(&mut fs, "/user");
@@ -478,16 +478,15 @@ fn an_undo_of_a_restore_from_the_trash_puts_the_item_back_in_it() {
         let trash = fs.resolve(trash).unwrap();
         fs.remove(trash, txn).unwrap();
     });
-    assert_eq!(fs.resolve(&folder), Err(Error::NotFound));
-    write(&mut fs, "/user/download.bin", b"d");
+    // Trashed again and emptied, outside any action: gone for good.
+    fs.trash(user, "notes.txt").unwrap();
+    fs.empty_trash().unwrap();
     fs.commit().unwrap();
     let (out, _) = undo(&mut fs, t1);
-    assert!(out.contains(&(f, Outcome::Back)), "{out:?}");
+    assert!(out.contains(&(f, Outcome::Left)), "{out:?}");
     assert_eq!(fs.resolve("/user/notes.txt"), Err(Error::NotFound));
-    let items = fs.trash_list().unwrap();
-    assert_eq!(items.len(), 1, "{out:?}");
-    assert_eq!(items[0].ino, f);
-    assert_eq!(read(&mut fs, "/user/download.bin").unwrap(), b"d");
+    assert!(fs.trash_list().unwrap().is_empty(), "{out:?}");
+    assert!(fs.stat(f).is_err(), "{out:?}");
     checked(&mut fs);
 }
 
