@@ -56,6 +56,8 @@ mod goaltoggle;
 pub mod grants;
 mod guard;
 mod instructions;
+mod landing;
+pub mod ledger;
 mod models;
 mod netask;
 pub mod netgrant;
@@ -101,6 +103,7 @@ pub use engine::Exec;
 use engine::Line;
 pub use guard::placeholder_target;
 use kabi::sched::{SchedStats, TrialRequest};
+pub use ledger::LogFailed;
 use llmproto::act::{ActError, ActRequest, Call};
 use llmproto::chat::Completion;
 use llmproto::script::{Answer, AnswerError, Lang, ScriptRequest};
@@ -443,8 +446,10 @@ pub trait Host {
     fn log_read(&self) -> Option<String> {
         None
     }
-    /// Writes the whole action log to `/system/log`, after any line that changed it.
-    fn log_write(&self, _text: &str) -> Result<(), String> {
+    /// Writes the whole action log to `/system/log`, after any line that changed
+    /// it, in the same commit as the line's files: [`LogFailed::NotLanded`]
+    /// when that commit was refused.
+    fn log_write(&self, _text: &str) -> Result<(), LogFailed> {
         Ok(())
     }
     /// Restores what transaction `txn` replaced, as one new transaction: its number,
@@ -729,6 +734,8 @@ pub struct Shell {
     app_job: Option<appjob::Job>,
     /// What builds in the background came to, not yet shown.
     notices: Vec<String>,
+    /// File changes that did not land, as the line's reply says them.
+    landing: landing::Landing,
     /// The app whose install card waits to open by itself, once a build in
     /// the background built it ([`Shell::take_card`]).
     card: Option<String>,
@@ -904,6 +911,7 @@ impl Shell {
             app_written: Vec::new(),
             app_job: None,
             notices: Vec::new(),
+            landing: landing::Landing::default(),
             card: None,
             desk_asks: Vec::new(),
             card_for_desk: None,
@@ -1090,7 +1098,12 @@ impl Shell {
         if self.saved_log.as_ref() == Some(&text) {
             return Ok(());
         }
-        self.host.log_write(&text)?;
+        match self.host.log_write(&text) {
+            Ok(()) => {}
+            // The line's files are not on the disk, nor the log with them.
+            Err(LogFailed::NotLanded { txn, why }) => return Err(self.not_landed(txn, &why)),
+            Err(LogFailed::Failed(why)) => return Err(why),
+        }
         self.saved_log = Some(text);
         Ok(())
     }
@@ -1106,9 +1119,10 @@ impl Shell {
         if let Some(reply) = self.status_line(input) {
             return reply;
         }
+        self.landing_begins();
         let reply = self.eval_line(input);
         self.save_log();
-        reply
+        self.say_not_landed(reply)
     }
 
     /// [`Shell::eval`] for the terminal's own line: a build's notice goes

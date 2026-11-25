@@ -46,7 +46,7 @@ use llmproto::tune::{self, TuneRequest};
 use sends::{Taken, now_ms};
 use shellcore::targets::Service;
 use shellcore::waiting::Took;
-use shellcore::{DEFAULT_CONFIG, Host, PanelResult, Proof, SCRIPT_ROUND_MS, Shell};
+use shellcore::{DEFAULT_CONFIG, Host, LogFailed, PanelResult, Proof, SCRIPT_ROUND_MS, Shell};
 use user::{arg, args, logln, println, sys};
 
 user::entry!(main);

@@ -332,6 +332,8 @@ impl Shell {
             (false, false, true) => (true, ""),
             (false, false, false) => (false, crate::panel::FAILED),
         };
+        // It ran, but its file changes did not land: that, never "Done".
+        let not_landed = self.take_not_landed_line().filter(|_| !lapsed && !declined);
         // A send the card allowed is held, not done: its line says so, with
         // its undo, as the console's does (#1142's review), made from the
         // outbox's entry, never the reply's text.
@@ -349,7 +351,7 @@ impl Shell {
                 .take()
                 .map(|line| crate::panel::without_undo(&line))
                 .unwrap_or_else(|| String::from("Done.")),
-            (false, _) => String::from(line),
+            (false, _) => not_landed.unwrap_or_else(|| String::from(line)),
         };
         // Don't and a lapse are no failure: only a run that failed is an
         // error row.

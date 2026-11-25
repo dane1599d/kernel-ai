@@ -55,6 +55,7 @@ mod more;
 mod netask;
 mod netgrant;
 mod netrows;
+mod notlanded;
 mod outbox;
 mod packages;
 mod panel;
@@ -249,6 +250,8 @@ struct FakeHost {
     previews: RefCell<Vec<(u64, String)>>,
     /// Set to make the next log writes fail.
     log_fails: Cell<u32>,
+    /// The next log write's Commit of the open action is refused.
+    commit_refused: Cell<bool>,
 }
 
 /// What standing instructions asked the desktop and the owners for.
@@ -463,6 +466,7 @@ impl FakeHost {
             send_fits: Cell::new(false),
             previews: RefCell::new(Vec::new()),
             log_fails: Cell::new(0),
+            commit_refused: Cell::new(false),
         })
     }
 }
