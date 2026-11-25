@@ -25,7 +25,9 @@ for m in aot aot-scalar pulley; do
 done
 # Runs "$@" with its stdout to $OUT/one.txt; prints its peak RSS in MiB.
 timed() {
-  if /usr/bin/time -v true >/dev/null 2>&1; then
+  if [ ! -x /usr/bin/time ]; then
+    "$@" > "$OUT/one.txt"; echo 0
+  elif /usr/bin/time -v true >/dev/null 2>&1; then
     /usr/bin/time -v "$@" > "$OUT/one.txt" 2> "$OUT/time.txt"
     awk '/Maximum resident/ {print int($6/1024)}' "$OUT/time.txt"
   else
