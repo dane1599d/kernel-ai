@@ -1,0 +1,12 @@
+[package]
+name = "spike-wasmtime-nostd-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Makes `spikes/s14-2/hello.cwasm` (throwaway; `cargo run -p spike-wasmtime-nostd-host`).
+[dependencies]
+spike-wasmtime-nostd = { path = "../s14-2" }
+wasmtime = { version = "51.0.0", default-features = false, features = ["cranelift", "std", "runtime", "pulley"] }
+wat = "1.262.0"

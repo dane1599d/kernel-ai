@@ -182,6 +182,7 @@ mod version;
 mod virtio;
 mod wait_reads_tests;
 mod wake_tests;
+mod wasmtime_nostd_tests;
 mod workload;
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -481,6 +482,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
+        SelfTest::WasmtimeNostd => run_case(wasmtime_nostd_tests::check),
         SelfTest::AppBench => run_case(appbench_tests::check),
         SelfTest::TufBench => run_case(tufbench_tests::check),
         SelfTest::Handles => run_case(handle_tests::check),

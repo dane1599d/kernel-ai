@@ -1,6 +1,6 @@
 //! Builds the ring-3 programs in the `user` crate, each for the target it ships on:
 //! most soft-float like the kernel, and the ones that use x87, SSE or AVX for the
-//! hard-float `user/x86_64-kai-user.json`.
+//! hard-float `user/x86_64-kai-none.json`.
 
 use crate::KERNEL_TARGET;
 use crate::options::Options;
@@ -48,13 +48,14 @@ const USER_FLOAT_PROGRAMS: &[&str] = &[
     "httpscheck",
     "fetch",
     "dlcheck",
+    "wasmtimespike",
 ];
 /// The view guest `appbench` embeds, built first.
 const APPBENCH_GUEST: &str = "comp-viewbench";
 /// The hard-float ring-3 target and the directory cargo builds it into. A JSON target
 /// has no prebuilt core or alloc, so they are built from rust-src.
-const USER_FLOAT_TARGET: &str = "user/x86_64-kai-user.json";
-const USER_FLOAT_DIR: &str = "x86_64-kai-user";
+const USER_FLOAT_TARGET: &str = "user/x86_64-kai-none.json";
+const USER_FLOAT_DIR: &str = "x86_64-kai-none";
 const BUILD_STD: &[&str] = &[
     "-Zjson-target-spec",
     "-Zbuild-std=core,alloc",

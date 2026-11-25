@@ -60,6 +60,8 @@ termcore = { path = "../termcore" }
 spin = "0.12.3"
 talc = "5.1.1"
 wasmhost = { path = "../wasmhost" }
+# S14-2 (spike/wasmtime-nostd only).
+spike-wasmtime-nostd = { path = "../spikes/s14-2" }
 uikit = { path = "../uikit" }
 uipaint = { path = "../uipaint" }
 

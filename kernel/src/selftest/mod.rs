@@ -307,6 +307,8 @@ pub enum SelfTest {
     Fpu,
     /// L2: the isolation probe; ops 0-2 complete and every other op is stopped.
     Probe,
+    /// S14-2 (spike): Wasmtime's `no_std` runtime in ring 3 runs a Pulley module.
+    WasmtimeNostd,
     /// P1: handle tables, startup handles and need() on handles.
     Handles,
     /// IPC round trips timed: 0 B, 1 KiB and 7 KiB, kernel to ring 3 and ring 3
