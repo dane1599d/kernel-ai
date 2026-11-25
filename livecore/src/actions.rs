@@ -49,6 +49,13 @@ const MAX_DEPTH: usize = 8;
 /// is used, so without a bound each line could double the one before
 /// (bug hunt 2, H2-10).
 const MAX_NODES: usize = 4096;
+/// The most type nodes a whole section's actions may spell out together:
+/// [`MAX_NODES`] bounds one action, and a section holds [`MAX_ACTIONS`].
+const MAX_SECTION_NODES: usize = 16_384;
+/// The longest name in a `type` or `sig` line (a type's, a field's, a
+/// case's or a parameter's): with the node budgets, it bounds the bytes the
+/// names a section copies can take.
+const MAX_IDENT: usize = 64;
 /// The most names a `flags` type has: the canonical ABI's limit.
 const MAX_FLAGS: usize = 32;
 
@@ -175,6 +182,7 @@ pub fn parse(text: &str) -> Result<Actions, String> {
         }
     }
     let mut rows: Vec<ActionRow> = Vec::new();
+    let mut section_nodes = 0;
     while let Some(line) = lines.next() {
         if line.len() > MAX_LINE {
             return Err("a line is too long".into());
@@ -187,7 +195,7 @@ pub fn parse(text: &str) -> Result<Actions, String> {
         if rows.len() == MAX_ACTIONS {
             return Err(format!("more than {MAX_ACTIONS} actions"));
         }
-        rows.push(action(name, &mut lines)?);
+        rows.push(action(name, &mut lines, &mut section_nodes)?);
     }
     Ok(Actions {
         world,
@@ -220,6 +228,7 @@ fn valid_name(name: &str) -> Result<(), String> {
 fn action<'a>(
     name: &str,
     lines: &mut core::iter::Peekable<impl Iterator<Item = &'a str>>,
+    section_nodes: &mut usize,
 ) -> Result<ActionRow, String> {
     let export = field(lines.next(), "export")?.to_string();
     let doc = field(lines.next(), "doc")?.to_string();
@@ -245,6 +254,14 @@ fn action<'a>(
     long(line)?;
     let (params, func) =
         sig(line, &export, &types, &mut nodes).map_err(|why| format!("{name}: {why}"))?;
+    // One action is bounded by MAX_NODES as it is read; the section's
+    // actions together by this.
+    *section_nodes = section_nodes.saturating_add(nodes);
+    if *section_nodes > MAX_SECTION_NODES {
+        return Err(format!(
+            "{name}: the section's types are over {MAX_SECTION_NODES} nodes"
+        ));
+    }
     let mut args = Vec::with_capacity(params.len());
     for (param, ty) in params.iter().zip(&func.params) {
         let arg = arg_line(field(lines.next(), "arg")?)?;
@@ -507,13 +524,19 @@ struct Wit<'a> {
     nodes: &'a mut usize,
 }
 
-/// The nodes `ty` is, itself and everything in it.
+/// The nodes `ty` is, itself and everything in it, counted as `type_line`
+/// charges them as it builds them: each record field and each variant case
+/// is a node of its own, with or without a payload, since a copy of the
+/// type copies each one's name and slot.
 fn size(ty: &Ty) -> usize {
     1 + match ty {
         Ty::List(t) | Ty::Option(t) => size(t),
-        Ty::Record(fields) => fields.iter().map(|(_, t)| size(t)).sum(),
+        Ty::Record(fields) => fields.iter().map(|(_, t)| 1 + size(t)).sum(),
         Ty::Tuple(items) => items.iter().map(size).sum(),
-        Ty::Variant(cases) => cases.iter().flat_map(|(_, t)| t).map(size).sum(),
+        Ty::Variant(cases) => cases
+            .iter()
+            .map(|(_, t)| 1 + t.as_ref().map_or(0, size))
+            .sum(),
         Ty::Result(ok, err) => ok.iter().chain(err).map(|t| size(t)).sum(),
         Ty::Enum(names) | Ty::Flags(names) => names.len(),
         _ => 0,
@@ -571,6 +594,9 @@ impl Wit<'_> {
             .unwrap_or(rest.len());
         if len == 0 || !rest.starts_with(|c: char| c.is_ascii_alphabetic()) {
             return Err(format!("expected a name in {:?}", self.text));
+        }
+        if len > MAX_IDENT {
+            return Err(format!("a name is over {MAX_IDENT} bytes"));
         }
         self.at += len;
         Ok(rest[..len].to_string())
@@ -812,5 +838,78 @@ effects fs_list fs_read
         let flags = format!("type order = flags {{ {} }}", names.join(", "));
         let text = NOTES.replace("type order = enum { newest, oldest }", &flags);
         assert!(parse(&text).unwrap_err().contains("flags"));
+    }
+
+    /// Two-letter names, `aa` on, `count` of them.
+    fn names(count: usize) -> Vec<String> {
+        (0..count)
+            .map(|i| {
+                let letter = |n: usize| char::from(b'a' + (n % 26) as u8);
+                format!("{}{}", letter(i / 26), letter(i))
+            })
+            .collect()
+    }
+
+    /// A variant's cases with no payload are each copied where it is used, so
+    /// each counts: 160 of them in a 95-field record, used 35 times by the
+    /// sig, were about 530,000 cases from about 1.2 KB, under a budget that
+    /// counted the variant as one node (#1360's review).
+    #[test]
+    fn a_variants_cases_count_where_it_is_used() {
+        let cases = names(160).join(",");
+        let variant = format!("type v=variant{{{cases}}}");
+        let fields: Vec<String> = names(95).iter().map(|n| format!("{n}:v")).collect();
+        let record = format!("type t1=record{{{}}}", fields.join(","));
+        assert!(variant.len() <= MAX_LINE && record.len() <= MAX_LINE);
+        let uses = alloc::vec!["t1"; 35].join(",");
+        let text = NOTES
+            .replace(
+                "type hit = record { id: u32, words: u32 }",
+                &format!("{variant}\n{record}"),
+            )
+            .replace("-> list<hit>", &format!("-> tuple<{uses}>"));
+        let err = parse(&text).unwrap_err();
+        assert!(err.contains("nodes"), "{err}");
+        // One use of a small variant is well within the budget.
+        let text = NOTES
+            .replace(
+                "type hit = record { id: u32, words: u32 }",
+                "type v=variant{aa,ab(u8)}",
+            )
+            .replace("-> list<hit>", "-> tuple<v,v>");
+        assert!(parse(&text).is_ok());
+    }
+
+    /// A name past [`MAX_IDENT`] bytes is refused: each use copies it.
+    #[test]
+    fn a_name_past_the_longest_is_refused() {
+        let long = "a".repeat(MAX_IDENT + 1);
+        let text = NOTES.replace("{ id: u32,", &format!("{{ {long}: u32,"));
+        assert!(parse(&text).unwrap_err().contains("name"));
+        let most = "a".repeat(MAX_IDENT);
+        let text = NOTES.replace("{ id: u32,", &format!("{{ {most}: u32,"));
+        assert!(parse(&text).is_ok());
+    }
+
+    /// The section's actions together stay under [`MAX_SECTION_NODES`]: each
+    /// within [`MAX_NODES`] alone, many add up.
+    #[test]
+    fn a_section_whose_actions_add_up_past_the_budget_is_refused() {
+        let enum_line = format!("type e = enum {{ {} }}", names(100).join(", "));
+        let uses = alloc::vec!["e"; 30].join(",");
+        let section = |count: usize| {
+            let mut text = String::from("kai-actions 1\nworld app:notes/notes@1.0.0\n");
+            for i in 0..count {
+                text.push_str(&format!(
+                    "action big_{i}\nexport app:notes/actions@1.0.0#big{i}\ndoc Big.\n\
+                     {enum_line}\nsig func() -> tuple<{uses}>\ninverse none\nend\n"
+                ));
+            }
+            text
+        };
+        // About 3,130 nodes each: five fit, six do not.
+        assert!(parse(&section(5)).is_ok(), "{:?}", parse(&section(5)).err());
+        let err = parse(&section(6)).unwrap_err();
+        assert!(err.contains("section"), "{err}");
     }
 }
