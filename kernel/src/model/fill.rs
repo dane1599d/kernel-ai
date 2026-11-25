@@ -63,6 +63,15 @@ pub fn pending() -> bool {
     PENDING.lock().is_some() || FINISHING.load(Ordering::SeqCst)
 }
 
+/// The first frame of each run reserved for the pending model, in order; none
+/// once it was published or refused (`model-fill`'s give-up case checks them).
+pub fn pending_runs() -> Vec<u32> {
+    PENDING
+        .lock()
+        .as_ref()
+        .map_or_else(Vec::new, |pending| pending.runs.clone())
+}
+
 /// The `kai-modelhint 1` record on `kai-data`, if the disk has one that verifies.
 pub fn hint() -> Option<Hint> {
     block::with_partition(diskmap::KAI_DATA_TYPE, |disk: &mut dyn Device| {

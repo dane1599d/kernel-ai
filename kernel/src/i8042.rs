@@ -58,7 +58,8 @@ static TAIL: AtomicUsize = AtomicUsize::new(0);
 static DISCARD_TO: AtomicUsize = AtomicUsize::new(0);
 /// Bumped by each [`discard_queued`], so the decoder starts afresh.
 static EPOCH: AtomicU64 = AtomicU64::new(0);
-/// Thread blocked in [`wait`], or `NO_WAITER`.
+/// Thread waiting in [`wait`] or [`wait_unless`], or `NO_WAITER` once a waker
+/// took it ([`take_waiter`]).
 static WAITER: AtomicUsize = AtomicUsize::new(NO_WAITER);
 const NO_WAITER: usize = usize::MAX;
 /// Wake-latency statistics: measured wake-ups and the worst one.
@@ -237,6 +238,18 @@ fn take_waiter() -> Option<usize> {
     }
 }
 
+/// Whether a waker took the slot ([`take_waiter`]) since the reader stored
+/// itself there: the reader looks again instead of waiting. The wake may have
+/// come before the reader blocked, when `threads::wake` does nothing (the
+/// reader was still running, or preempted), and a byte `desktop` took leaves
+/// nothing in the ring to see: a reader that blocked then held no slot, so no
+/// later key or card could wake it (founder-walk in #1292's batch,
+/// app-settings in #1298). Checked under the core lock that `wake` takes, so a
+/// waker that takes the slot after the check finds the reader blocked.
+fn slot_taken() -> bool {
+    WAITER.load(Ordering::SeqCst) == NO_WAITER
+}
+
 /// Queues keyboard bytes that came another way (a USB keyboard's keys as set 1
 /// scancodes), as if the keyboard port had sent them. Must run on the CPU that
 /// takes IRQ1, with interrupts off, so it never races [`on_interrupt`]: the
@@ -300,9 +313,10 @@ pub fn wait() -> Input {
             return input;
         }
         // SeqCst orders this store before the ring check inside block_unless, so the
-        // interrupt cannot both miss the waiter and have its byte go unseen.
+        // interrupt cannot both miss the waiter and have its byte go unseen; and
+        // a wake that came before the block is not lost ([`slot_taken`]).
         WAITER.store(crate::threads::current(), Ordering::SeqCst);
-        if crate::threads::block_unless(has_input) && has_input() {
+        if crate::threads::block_unless(|| has_input() || slot_taken()) && has_input() {
             // After a real block the ring was empty, so the byte at TAIL is the first
             // to arrive since. A stale wake on an empty ring is not counted.
             let tail = TAIL.load(Ordering::Relaxed);
@@ -337,10 +351,10 @@ pub fn wait_unless(armed: &dyn Fn() -> bool, stop: &dyn Fn() -> bool) -> Option<
         match armed() {
             true => {
                 let deadline = hpet::nanos().saturating_add(ARMED_POLL_NS);
-                crate::threads::sleep_until_unless(deadline, has_input);
+                crate::threads::sleep_until_unless(deadline, || has_input() || slot_taken());
             }
             false => {
-                crate::threads::block_unless(|| has_input() || armed());
+                crate::threads::block_unless(|| has_input() || armed() || slot_taken());
             }
         }
     }

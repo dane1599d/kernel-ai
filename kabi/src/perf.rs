@@ -379,6 +379,26 @@ mod tests {
         assert_eq!(misses_scaled(garbled, 40_000_000), ["(b) drag flush"]);
     }
 
+    /// `desk-perf-1440`'s (g) on #1280's runs (2560x1440, budget 14.40 ms): 15.36
+    /// and 15.50 ms at 1.34 times the baseline (the first two runs) and 15.10 and
+    /// 15.13 ms at 1.33 times (the last two) failed the bare budget; scaled they
+    /// pass (19.2 ms), and half as much again still fails.
+    #[test]
+    fn the_1440_composite_with_start_and_the_pane_is_judged_scaled() {
+        let g = |value: &str| {
+            alloc::format!(
+                "OVER BUDGET (g) full composite with Start and the pane open at 2560x1440 {value} ms (budget p99 14.40 ms)"
+            )
+        };
+        assert!(misses_scaled(&g("15.36"), 21_493_210).is_empty());
+        assert!(misses_scaled(&g("15.50"), 21_493_210).is_empty());
+        assert!(misses_scaled(&g("15.10"), 21_318_740).is_empty());
+        assert!(misses_scaled(&g("15.13"), 21_318_740).is_empty());
+        assert_eq!(misses_scaled(&g("22.00"), 21_318_740).len(), 1);
+        // On a runner at the baseline the bare budget holds.
+        assert_eq!(misses_scaled(&g("15.10"), REFERENCE_BASELINE_NS).len(), 1);
+    }
+
     #[test]
     fn slowness_is_told_in_tenths_of_the_baseline() {
         assert_eq!(times_baseline(REFERENCE_BASELINE_NS), "1.0");

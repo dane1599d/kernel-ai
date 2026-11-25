@@ -540,10 +540,16 @@ pub fn shm_map_least(handle: Handle, write: bool, pages: u64) -> Result<u64, Err
     )
 }
 
-/// SHM_INFO: how many pages the `Shm` `handle` names holds. Needs INSPECT on
-/// the handle.
+/// SHM_INFO: how many pages the `Shm` `handle` names holds, whatever the
+/// handle's rights; BadHandle for a handle that is not an open `Shm`.
 pub fn shm_info(handle: Handle) -> Result<u64, Error> {
     call(call::SHM_INFO, [u64::from(handle.0), 0, 0, 0, 0, 0])
+}
+
+/// The bytes of the `Shm` that `handle` names: what a mapping of it may read
+/// ([`shm_info`]'s pages, in bytes).
+pub fn shm_size(handle: Handle) -> Result<u64, Error> {
+    shm_info(handle).map(|pages| pages * kabi::heap::PAGE)
 }
 
 /// Takes the screen (`desktop` only): its back buffer's `Shm`, and its shape.
@@ -635,6 +641,14 @@ pub fn entropy(buf: &mut [u8]) -> Result<usize, Error> {
         [buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0, 0],
     )
     .map(|n| n as usize)
+}
+
+/// POWER_OFF: turns the machine off; returns only with why not.
+pub fn power_off() -> Error {
+    match call(call::POWER_OFF, [0; 6]) {
+        Ok(_) => Error::Invalid,
+        Err(error) => error,
+    }
 }
 
 /// Restarts the machine (POWER_REBOOT). Returns only with why it did not:
@@ -1465,6 +1479,12 @@ pub fn part_peer_name(handle: Handle, pid: u64, out: &mut [u8]) -> Result<usize,
         ],
     )
     .map(|n| n as usize)
+}
+
+/// Live process `pid`'s capability bits (PART_PEER_CAPS), for `fs`, which holds
+/// the `Partition` handle `handle`.
+pub fn part_peer_caps(handle: Handle, pid: u64) -> Result<u64, Error> {
+    call(call::PART_PEER_CAPS, [u64::from(handle.0), pid, 0, 0, 0, 0])
 }
 
 /// Hands the kernel the model store's model, `extents` (first block, blocks) of

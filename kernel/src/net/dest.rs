@@ -46,7 +46,7 @@ const _: () = assert!(MAX_RECORDS == 1 << SLOT_BITS);
 pub const MAX_NARROWED: usize = 16;
 /// Slots only a plan line's own record ([`create`], no owner) may take, so a
 /// spawn never fails because the narrowings filled the table.
-const PLAN_RESERVED: usize = 8;
+pub const PLAN_RESERVED: usize = 8;
 /// The least a resolved address counts for the connect check, whatever
 /// its TTL: a TTL of 0 (dnsmasq's for local names) or shorter than a dial's
 /// wait would otherwise expire before the connect (audit K #18). The DNS
@@ -228,6 +228,12 @@ fn create_for(
         });
         Some(id(at, generation))
     })
+}
+
+/// Free slots now, the table's room to grow counted in (the boot case's view
+/// of [`room`]).
+pub fn free_slots() -> usize {
+    with(|records| room(records))
 }
 
 /// Free slots, the table's room to grow counted in.

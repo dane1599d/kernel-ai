@@ -30,6 +30,12 @@ impl Shell {
             {
                 return Reply::err(why);
             }
+            // An unknown outcome since the newest live entry: it has no undo,
+            // and `undo` must not reach past it to something older the person
+            // did not mean (#1164's review).
+            if let Some(why) = self.bare_unknown_refusal() {
+                return Reply::err(why);
+            }
             return match self.log.newest_live() {
                 Some(id) => self.revert_entry(id, false),
                 None => Reply::err("nothing to undo"),
@@ -43,12 +49,28 @@ impl Shell {
 
     /// `undo <agent>`: the newest live entry agent `agent` made, under the
     /// same checks as `undo <id>` (a later entry on what it changed asks).
+    /// Like a bare `undo`, it does not reach past an entry of that agent's
+    /// whose outcome is unknown: that call may have run.
     pub(crate) fn undo_agent(&mut self, agent: &str) -> Reply {
+        let own = self
+            .log
+            .entries()
+            .rev()
+            .filter(|e| e.agent.as_str() == agent);
+        if let Some(why) = unknown_refusal(own) {
+            return Reply::err(why);
+        }
         let entries = self.log.entries().map(|e| (e.id, &e.agent, e.live()));
         match agentid::stamp::last_live(entries, agent) {
             Some(id) => self.undo_entry(id),
             None => Reply::err(format!("nothing of {agent}'s to undo")),
         }
+    }
+
+    /// What a bare `undo` says when the newest entry it would pass is an
+    /// unknown outcome: what may have run, and that there is nothing to undo.
+    fn bare_unknown_refusal(&self) -> Option<String> {
+        unknown_refusal(self.log.entries().rev())
     }
 
     /// Why a bare `undo` stops: since the newest live entry, an undo removed a
@@ -87,7 +109,7 @@ impl Shell {
     /// Entry `id`, if it is live and nothing later changed what it changed.
     fn undo_entry(&mut self, id: u64) -> Reply {
         match self.log.get(id) {
-            Some(entry) if entry.live() => {}
+            Some(entry) if entry.undoable_by_id() => {}
             Some(entry) => {
                 return Reply::err(
                     self.send_refusal(entry)
@@ -139,8 +161,8 @@ impl Shell {
                 "the undo took {package} out, as far as is known (pkg could not say: {pkg})"
             ),
         };
-        if let Err(not) = crate::netask::drop_package_grants(host, &package, &why) {
-            host.audit(&format!(
+        if let Err(not) = self.drop_package_grants(&package, &why) {
+            self.host.audit(&format!(
                 "{package}'s network grants were not dropped after its undo: {not}"
             ));
         }
@@ -155,8 +177,8 @@ impl Shell {
             Ok(true) => {}
             Ok(false) => {
                 let why = format!("{package} was not installed before this install");
-                if let Err(not) = crate::netask::drop_package_grants(host, package, &why) {
-                    host.audit(&format!(
+                if let Err(not) = self.drop_package_grants(package, &why) {
+                    self.host.audit(&format!(
                         "{package}'s old network grants were not dropped: {not}"
                     ));
                 }
@@ -424,4 +446,23 @@ fn undone(said: &[String]) -> String {
         true => String::new(),
         false => format!("Undone: {}\n", said.join("; ")),
     }
+}
+
+/// What an undo says when, among `newest_first` down to the newest live one,
+/// an entry's outcome is unknown: what may have run, and that there is
+/// nothing to undo.
+fn unknown_refusal<'a>(
+    newest_first: impl Iterator<Item = &'a crate::actlog::Entry>,
+) -> Option<String> {
+    let entry = newest_first
+        .take_while(|e| !e.live())
+        .find(|e| e.state == crate::actlog::State::Unknown)?;
+    let row = entry
+        .outcome
+        .rsplit_once("; ")
+        .and_then(|(_, tail)| tail.strip_suffix(" may have run"))
+        .unwrap_or("a call");
+    Some(format!(
+        "the outcome of {row} is not known, so there is nothing to undo; check it"
+    ))
 }

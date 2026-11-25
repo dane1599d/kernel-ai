@@ -19,6 +19,7 @@ mod act;
 mod actions;
 mod agentconsent;
 mod agentstep;
+mod agentundo;
 mod apart;
 mod appbuild;
 mod appcard;
@@ -63,6 +64,7 @@ mod scripts;
 mod sendrow;
 mod settings;
 mod standing;
+mod state_reads;
 mod told;
 mod transaction;
 mod tune;
@@ -213,6 +215,13 @@ struct FakeHost {
     /// `/system/state/rules`.
     rules_disk: RefCell<Option<String>>,
     pub withheld_disk: RefCell<Option<String>>,
+    /// Why the withheld file cannot be read, when a test says it cannot.
+    pub withheld_error: RefCell<Option<String>>,
+    /// The state reads (`rules_read`, `standing_read`, `keep_read`,
+    /// `net_grants_read`) that fail now, as a disk error would.
+    pub read_errors: RefCell<Vec<&'static str>>,
+    /// How many of the next network grants writes fail, as a disk error would.
+    pub net_write_fails: Cell<u32>,
     pub net_disk: RefCell<Option<String>>,
     /// `/system/state/standing`, and the event source and owners standing
     /// instructions run through, when `triggers_on` is set.
@@ -290,6 +299,19 @@ type Apart = alloc::boxed::Box<dyn Fn(&str) -> Result<String, String>>;
 type UiAnswer = alloc::boxed::Box<dyn Fn(&crate::ui::UiCall) -> Result<String, String>>;
 
 impl FakeHost {
+    /// State read `read` of `disk`: the error a failed disk read gives while
+    /// `read` is in [`FakeHost::read_errors`].
+    fn state_read(
+        &self,
+        read: &str,
+        disk: &RefCell<Option<String>>,
+    ) -> Result<Option<String>, String> {
+        match self.read_errors.borrow().contains(&read) {
+            true => Err(String::from("the disk did not answer")),
+            false => Ok(disk.borrow().clone()),
+        }
+    }
+
     /// The supervisor's side: `err already ...` when nothing changes.
     fn set_running(&self, name: &str, running: bool) -> Result<(), String> {
         let mut services = self.services.borrow_mut();
@@ -423,6 +445,9 @@ impl FakeHost {
             log_writes: Cell::new(0),
             rules_disk: RefCell::new(None),
             withheld_disk: RefCell::new(None),
+            withheld_error: RefCell::new(None),
+            read_errors: RefCell::new(Vec::new()),
+            net_write_fails: Cell::new(0),
             net_disk: RefCell::new(None),
             standing_disk: RefCell::new(None),
             triggers_on: Cell::new(false),

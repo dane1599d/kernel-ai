@@ -390,3 +390,331 @@ fn a_restart_tells_of_an_include_changed_since() {
     assert!(after.text.ends_with("= 9"), "{after:?}");
     assert!(!shell.eval("Seven()").ok, "the changed file never ran");
 }
+
+/// An entry that used what a skipped entry defined is named too, not
+/// dropped without a word (#1192's review).
+#[test]
+fn a_restart_names_an_entry_that_used_a_skipped_one() {
+    let host = FakeHost::new();
+    host.files
+        .borrow_mut()
+        .insert("c/lib.c".into(), "I64 Seven() { return 7; }\n".into());
+    let mut shell = c_shell(&host);
+    assert!(
+        shell
+            .eval("#include \"lib.c\"\nI64 Eight() { return Seven() + 1; }")
+            .ok
+    );
+    assert!(shell.eval("I64 Ten() { return Eight() + 2; }").ok);
+    host.files
+        .borrow_mut()
+        .insert("c/lib.c".into(), "I64 Seven() { return 70; }\n".into());
+    start_cc(&host);
+    let after = shell.eval("1");
+    assert!(
+        after.text.contains("entry 1's #include files changed"),
+        "{after:?}"
+    );
+    assert!(after.text.contains("entry 2 did not replay: "), "{after:?}");
+    assert!(after.text.contains("; not restored"), "{after:?}");
+}
+
+/// A skipped entry redefined a function an earlier entry defined: a later
+/// entry that calls it replays, bound to the earlier definition, and the
+/// restart note names it; one that does not call it is not named (#1260).
+#[test]
+fn a_restart_names_an_entry_now_bound_to_an_earlier_definition() {
+    let host = FakeHost::new();
+    host.files
+        .borrow_mut()
+        .insert("c/lib.c".into(), "I64 Seven() { return 70; }\n".into());
+    let mut shell = c_shell(&host);
+    assert!(shell.eval("I64 Seven() { return 7; }").ok);
+    assert!(shell.eval("#include \"lib.c\"").ok);
+    assert!(shell.eval("I64 Eight() { return Seven() + 1; }").ok);
+    assert!(shell.eval("I64 Nine() { return 9; }").ok);
+    assert_eq!(shell.eval("Eight()").text, "= 71");
+    host.files
+        .borrow_mut()
+        .insert("c/lib.c".into(), "I64 Seven() { return 700; }\n".into());
+    start_cc(&host);
+    let after = shell.eval("Eight()");
+    assert!(
+        after.text.contains("entry 2's #include files changed"),
+        "{after:?}"
+    );
+    assert!(
+        after.text.contains(
+            "entry 3 mentions Seven, which a skipped entry redefined; if it means that one, it now uses the earlier definition"
+        ),
+        "{after:?}"
+    );
+    assert!(!after.text.contains("entry 4"), "{after:?}");
+    assert!(after.text.ends_with("= 8"), "{after:?}");
+}
+
+/// A :load right after cc restarted opens the session again, as an entry
+/// does, and loads (#1192's review).
+#[test]
+fn a_load_after_a_restart_opens_the_session_again() {
+    let host = FakeHost::new();
+    host.files
+        .borrow_mut()
+        .insert("c/lib.c".into(), "I64 One() { return 1; }\n".into());
+    let mut shell = c_shell(&host);
+    assert!(shell.eval("I64 Two() { return 2; }").ok);
+    start_cc(&host);
+    let loaded = shell.eval(":load lib");
+    assert!(loaded.ok, "{loaded:?}");
+    assert!(
+        loaded
+            .text
+            .starts_with("cc restarted; restored 1 definitions"),
+        "{loaded:?}"
+    );
+    assert_eq!(shell.eval("One() + Two()").text, "= 3");
+}
+
+/// :defs after cc restarted shows the restart's note first.
+#[test]
+fn defs_after_a_restart_shows_the_note() {
+    let host = FakeHost::new();
+    let mut shell = c_shell(&host);
+    assert!(shell.eval("I64 Two() { return 2; }").ok);
+    *host.cc.borrow_mut() = None;
+    assert!(!shell.eval("Two()").ok);
+    start_cc(&host);
+    let defs = shell.eval(":defs");
+    assert!(
+        defs.text
+            .starts_with("cc restarted; restored 1 definitions"),
+        "{defs:?}"
+    );
+    assert!(defs.text.contains("Two"), "{defs:?}");
+}
+
+/// cc's reply as the wire writes it: one error record.
+fn cc_error(text: &[u8]) -> Vec<u8> {
+    let mut reply = promptcore::wire::Reply::new(kabi::MAX_MESSAGE);
+    reply
+        .push(&promptcore::wire::Record::Err { line: 0, text })
+        .unwrap();
+    reply.into_bytes()
+}
+
+/// A load whose reply does not parse fails, and the session stays as it
+/// was: cc did not restart, so nothing resets (#1216's review).
+#[test]
+fn an_unparsable_load_reply_keeps_the_session() {
+    let host = FakeHost::new();
+    host.files
+        .borrow_mut()
+        .insert("c/lib.c".into(), "I64 One() { return 1; }\n".into());
+    let mut shell = c_shell(&host);
+    assert!(shell.eval("I64 total = 42;").ok);
+    host.cc_script.borrow_mut().push_back(b"garbage".to_vec());
+    let loaded = shell.eval(":load lib");
+    assert!(
+        !loaded.ok && loaded.text.contains("did not parse"),
+        "{loaded:?}"
+    );
+    let after = shell.eval("total");
+    assert_eq!(after.text, "= 42", "no restart, no reset: {after:?}");
+    assert!(shell.eval("undo").text.starts_with("undid entry 1"));
+}
+
+/// cc restarted before a load whose second entry fails: the take-back
+/// removes only what the load added, the person's entries stay, and the
+/// restart's note is in the reply (#1216's review).
+#[test]
+fn a_restart_mid_load_takes_back_only_the_loads_entries() {
+    let host = FakeHost::new();
+    host.files.borrow_mut().insert(
+        "c/half.c".into(),
+        "//- entry\nI64 Good() { return 1; }\n//- entry\nI64 Bad() { return nope; }\n".into(),
+    );
+    let mut shell = c_shell(&host);
+    assert!(shell.eval("I64 Keep() { return 5; }").ok);
+    // The first load request finds no session, as after a restart.
+    host.cc_script
+        .borrow_mut()
+        .push_back(cc_error(b"no session is open"));
+    let loaded = shell.eval(":load half");
+    assert!(!loaded.ok, "{loaded:?}");
+    assert!(
+        loaded
+            .text
+            .starts_with("cc restarted; restored 1 definitions"),
+        "{loaded:?}"
+    );
+    assert!(loaded.text.contains("(entry 2)"), "{loaded:?}");
+    assert_eq!(shell.eval("Keep()").text, "= 5", "the person's entry stays");
+    assert!(!shell.eval("Good()").ok, "the load's entry was taken back");
+}
+
+/// Runs `entries` at `c>` with c/lib.c as `lib`, then `after` replaces the
+/// file (`None` deletes it), cc restarts, and the restart's note comes back.
+fn restart_note(lib: &str, entries: &[&str], after: Option<&str>) -> String {
+    let host = FakeHost::new();
+    host.files.borrow_mut().insert("c/lib.c".into(), lib.into());
+    let mut shell = c_shell(&host);
+    for entry in entries {
+        assert!(shell.eval(entry).ok, "{entry}");
+    }
+    match after {
+        Some(text) => host
+            .files
+            .borrow_mut()
+            .insert("c/lib.c".into(), text.into()),
+        None => host.files.borrow_mut().remove("c/lib.c"),
+    };
+    start_cc(&host);
+    shell.eval("1").text
+}
+
+const SEVEN: &str = "I64 Seven() { return 70; }\n";
+const SEVEN_EDITED: &str = "I64 Seven() { return 700; }\n";
+const INCLUDE: &str = "#include \"lib.c\"";
+const LIVE: &str =
+    "which a skipped entry redefined; if it means that one, it now uses the earlier definition";
+
+/// No restored entry defines the name any more: the note says that, and
+/// never that the entry binds to an earlier definition (#1266's review).
+#[test]
+fn a_restart_says_so_when_no_definition_of_the_name_is_left() {
+    let note = restart_note(SEVEN, &[INCLUDE, "I64 y = Seven();"], Some(SEVEN_EDITED));
+    assert!(
+        note.contains(
+            "entry 2 mentions Seven, which a skipped entry defined and no restored entry defines now\n"
+        ),
+        "{note}"
+    );
+    assert!(!note.contains("earlier definition"), "{note}");
+}
+
+/// The skipped entry's names are what ran, not today's file: with the file
+/// deleted the earlier definition is still named (#1266's review).
+#[test]
+fn a_restart_names_a_caller_when_the_included_file_is_gone() {
+    let entries = [
+        "I64 Seven() { return 7; }",
+        INCLUDE,
+        "I64 Eight() { return Seven() + 1; }",
+    ];
+    let note = restart_note(SEVEN, &entries, None);
+    assert!(note.contains("entry 2's "), "{note}");
+    assert!(
+        note.contains(&format!("entry 3 mentions Seven, {LIVE}\n")),
+        "{note}"
+    );
+}
+
+/// An entry that did not replay still defined its names when it ran
+/// (#1266's review).
+#[test]
+fn a_restart_names_a_caller_of_what_an_entry_that_did_not_replay_defined() {
+    let lib = "I64 Nine() { return 9; }\n";
+    let entries = [
+        "I64 Seven() { return 7; }",
+        INCLUDE,
+        "I64 Seven() { return Nine() + 1; }",
+        "I64 Eight() { return Seven() + 1; }",
+    ];
+    let note = restart_note(lib, &entries, Some("I64 Nine() { return 90; }\n"));
+    assert!(note.contains("entry 3 did not replay: "), "{note}");
+    assert!(
+        note.contains(&format!("entry 4 mentions Seven, {LIVE}\n")),
+        "{note}"
+    );
+}
+
+/// Calls go through slots: a caller defined before the skipped
+/// redefinition changes too, and is named (#1266's review).
+#[test]
+fn a_restart_names_a_caller_defined_before_the_skipped_entry() {
+    let entries = [
+        "I64 Seven() { return 7; }",
+        "I64 Eight() { return Seven() + 1; }",
+        INCLUDE,
+    ];
+    let note = restart_note(SEVEN, &entries, Some(SEVEN_EDITED));
+    assert!(
+        note.contains(&format!("entry 2 mentions Seven, {LIVE}\n")),
+        "{note}"
+    );
+}
+
+/// A restored entry defines the name again after the skipped one: callers
+/// before and after it end up on that definition, as they ran, and none is
+/// named (#1266's review).
+#[test]
+fn a_restart_names_nobody_when_a_restored_entry_defines_the_name_again() {
+    let entries = [
+        "I64 Seven() { return 7; }",
+        INCLUDE,
+        "I64 Eight() { return Seven() + 1; }",
+        "I64 Seven() { return 5; }",
+        "I64 Nine() { return Seven() + 2; }",
+    ];
+    let note = restart_note(SEVEN, &entries, Some(SEVEN_EDITED));
+    assert!(note.contains("entry 2's #include files changed"), "{note}");
+    assert!(!note.contains("mentions"), "{note}");
+}
+
+/// A global redefined by a skipped entry gets a new address; a caller
+/// defined before it never followed it, so none is named, one after is
+/// (#1266's second review).
+#[test]
+fn a_restart_names_a_caller_of_a_skipped_global_only_after_it() {
+    let entries = ["I64 n = 3;", "I64 Get() { return n; }", INCLUDE];
+    let note = restart_note("I64 n = 9;\n", &entries, Some("I64 n = 8;\n"));
+    assert!(note.contains("entry 3's "), "{note}");
+    assert!(!note.contains("mentions"), "{note}");
+    let entries = ["I64 n = 3;", INCLUDE, "I64 Get() { return n; }"];
+    let note = restart_note("I64 n = 9;\n", &entries, Some("I64 n = 8;\n"));
+    assert!(
+        note.contains(&format!("entry 3 mentions n, {LIVE}\n")),
+        "{note}"
+    );
+}
+
+/// A function redefined with another type gets a new slot: a caller before
+/// it keeps the old body, before and after the restart, so none is named.
+#[test]
+fn a_restart_names_no_caller_before_a_skipped_retyped_function() {
+    let entries = ["I64 f() { return 1; }", "I64 g() { return f(); }", INCLUDE];
+    let (lib, edited) = ("F64 f() { return 2.0; }\n", "F64 f() { return 3.0; }\n");
+    let note = restart_note(lib, &entries, Some(edited));
+    assert!(note.contains("entry 3's "), "{note}");
+    assert!(!note.contains("mentions"), "{note}");
+}
+
+/// A parameter that shares the skipped name is a word match only: the note
+/// says what is known, that no restored entry defines the name.
+#[test]
+fn a_restart_does_not_claim_a_binding_for_a_parameter_of_the_same_name() {
+    let entries = [INCLUDE, "I64 Add(I64 Seven) { return Seven + 1; }"];
+    let note = restart_note(SEVEN, &entries, Some(SEVEN_EDITED));
+    assert!(
+        note.contains(
+            "entry 2 mentions Seven, which a skipped entry defined and no restored entry defines now\n"
+        ),
+        "{note}"
+    );
+    assert!(!note.contains("uses the earlier"), "{note}");
+}
+
+/// An include whose file is unchanged restores whole, and nothing is said.
+#[test]
+fn a_restart_with_the_include_unchanged_has_no_note() {
+    let entries = [INCLUDE, "I64 Eight() { return Seven() + 1; }"];
+    let note = restart_note(SEVEN, &entries, Some(SEVEN));
+    assert!(
+        note.starts_with("cc restarted; restored 2 definitions"),
+        "{note}"
+    );
+    assert!(
+        !note.contains("mentions") && !note.contains("not restored"),
+        "{note}"
+    );
+}

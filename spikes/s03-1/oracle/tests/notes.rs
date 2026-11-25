@@ -6,7 +6,7 @@
 //! - Strings: 1 KiB in and 1 KiB out through `appabi` at most 1.5x the time
 //!   `kai_handle` takes, both on wasmi in this harness.
 
-use appabi_spike::{Core, Func, Ty, Val};
+use appabi::{Core, Func, Ty, Val};
 use s03_1_oracle::{WasmiGuest, build_guest};
 use std::time::{Duration, Instant};
 
@@ -42,7 +42,7 @@ fn kai_handle(g: &mut WasmiGuest, request: &str) -> String {
         [Core::I32(at)] => at as u32,
         _ => panic!("kai_alloc"),
     };
-    appabi_spike::Guest::write(g, at, request.as_bytes()).unwrap();
+    appabi::Guest::write(g, at, request.as_bytes()).unwrap();
     let packed = match g
         .call_core("kai_handle", &[Core::I32(at as i32), Core::I32(len)])
         .unwrap()[..]
@@ -50,7 +50,7 @@ fn kai_handle(g: &mut WasmiGuest, request: &str) -> String {
         [Core::I64(p)] => p as u64,
         _ => panic!("kai_handle"),
     };
-    let bytes = appabi_spike::Guest::read(g, (packed >> 32) as u32, packed as u32).unwrap();
+    let bytes = appabi::Guest::read(g, (packed >> 32) as u32, packed as u32).unwrap();
     String::from_utf8(bytes).unwrap()
 }
 

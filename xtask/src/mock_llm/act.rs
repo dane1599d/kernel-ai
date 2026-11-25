@@ -80,6 +80,9 @@ pub(super) fn act(request: &Value) -> String {
         return "I would write a script for that.".to_string();
     };
     let line = requested(last).unwrap_or_default();
+    if let Some(call) = super::sends::call(&line) {
+        return call;
+    }
     // A history turn's request is a message of its own that starts `Request: `.
     let before = earlier
         .iter()

@@ -41,6 +41,7 @@ fn checks(part: Handle) -> Result<String, String> {
     }
     refusals(part, n)?;
     narrowed(part)?;
+    peer_caps(part)?;
     Ok(format!("ok sectors={n} first={first}"))
 }
 
@@ -89,6 +90,20 @@ fn narrowed(part: Handle) -> Result<(), String> {
     let got = sys::part_read(reader, 0, &mut sector);
     if got != Err(Error::BadHandle) {
         return Err(format!("a read through a closed handle gave {got:?}"));
+    }
+    Ok(())
+}
+
+/// PART_PEER_CAPS through `user::sys`, the call `fs` makes for the person's
+/// share of the reserve: no process has pid 0 (the kernel, which asks for
+/// `check`) or `u64::MAX`, so both are NotFound. The kernel's half checks the
+/// answers for live processes.
+fn peer_caps(part: Handle) -> Result<(), String> {
+    for pid in [0, u64::MAX] {
+        match sys::part_peer_caps(part, pid) {
+            Err(Error::NotFound) => {}
+            other => return Err(format!("PART_PEER_CAPS for pid {pid:#x} gave {other:?}")),
+        }
     }
     Ok(())
 }

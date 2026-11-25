@@ -155,7 +155,7 @@ pub(super) const CASES: &[TestCase] = &[
     // than holding every later change at Busy (PART_PEER_ALIVE).
     TestCase {
         expect: &[
-            "filecheck: holding an action with half.txt in it",
+            "filecheck: holding an action; half.txt goes in it",
             "files: a client killed mid-action leaves nothing, and the next Begin goes through",
         ],
         server: false,
@@ -259,5 +259,31 @@ pub(super) const CASES: &[TestCase] = &[
         store: Some(Fixture::Gguf),
         store_bad_fnv: true,
         ..case("model-store-bad", "test=model-store bad")
+    },
+    // #1163's review: before fs's first MODEL_FILL, a one-block fill and a
+    // call at a wrong offset (refused, still pending); fs's call at offset 0
+    // then starts over and the model publishes with the hint's FNV-1a64.
+    TestCase {
+        expect: &[
+            "model-fill: a fill at a wrong offset is refused, and the model is still pending",
+            "model-store: fs filled 2101245 bytes from /system/models",
+            "model-store: fs's fill at offset 0 started the partial fill over, with a fresh hash",
+        ],
+        server: false,
+        data: Some(VIRTIO),
+        store: Some(Fixture::Gguf),
+        ..case("model-fill-restart", "test=model-store fill=restart")
+    },
+    // The same, then a run past kai-data's end: the fill gives up, the runs
+    // are freed and MODEL_MAP answers NotFound.
+    TestCase {
+        expect: &[
+            "model: MODEL_FILL failed (Invalid); the boot runs without the model",
+            "model-fill: a failed fill gives up: not pending, MODEL_MAP NotFound, ",
+        ],
+        server: false,
+        data: Some(VIRTIO),
+        store: Some(Fixture::Gguf),
+        ..case("model-fill-giveup", "test=model-store fill=giveup")
     },
 ];

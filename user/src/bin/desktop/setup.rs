@@ -43,6 +43,12 @@ pub(super) fn logs_first_key() -> bool {
     user::arg(&args, "key_log") == Some("on")
 }
 
+/// Whether the plan line has `wheel_log=on`: the wheel's two lines are logged.
+pub(super) fn logs_wheel() -> bool {
+    let args = user::args();
+    user::arg(&args, "wheel_log") == Some("on")
+}
+
 /// The appearance the plan line's arguments set, one `appearance_set` setting
 /// each; one that is refused is left out, and said.
 pub(super) fn starting_appearance() -> Appearance {

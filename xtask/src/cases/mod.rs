@@ -7,6 +7,7 @@ mod apps;
 mod appshow;
 mod cc;
 mod components;
+mod desksends;
 mod devices;
 pub(crate) mod https;
 mod kernel;
@@ -21,6 +22,7 @@ mod panestates;
 mod pkg;
 pub mod release;
 mod storage;
+mod throughput;
 mod tour;
 mod updates;
 mod walk;
@@ -77,6 +79,9 @@ pub struct TestCase {
     /// Boot with the mock LLM server on the command line (`llm=`). Without it, the
     /// case also fails if the mock gets any request while it runs.
     pub server: bool,
+    /// The case boots under KVM only: a step it times (an `undo` within a
+    /// 5 s hold) would flake under TCG's emulation.
+    pub kvm_only: bool,
     /// Guest memory in MiB when the case needs more than its disk does (`bigmap`
     /// needs RAM above 4 GiB); `--mem` still wins if larger.
     pub memory_mib: Option<u64>,
@@ -107,6 +112,11 @@ pub struct TestCase {
     /// The case passes by resetting the machine: under `-no-reboot` QEMU then
     /// exits with status 0 instead of the isa-debug-exit code.
     pub resets: bool,
+    /// The case passes only by the guest turning the machine off: QEMU runs
+    /// with `-no-shutdown`, so a shutdown pauses it, and once every expected
+    /// line is in the monitor must report `shutdown`. A reset (QEMU exits
+    /// under `-no-reboot`) or a hang fails it.
+    pub powers_off: bool,
     /// A fresh writable `kai-data` disk (ADR 0004).
     pub data: Option<crate::blklog::Data>,
     /// With `data` on a GPT disk: `kai-data`'s size in MiB, when the case
@@ -219,6 +229,14 @@ pub const fn with_case_room(model_mib: u64) -> u64 {
     model_mib - crate::disk::BASE_MEMORY_MIB + CASE_MEMORY_MIB
 }
 
+/// The line `cargo xtask test` prints for `case` when it is not booted
+/// under TCG (`kvm_only`), so a run that leaves a case out says so; `None`
+/// for a case that boots under any accelerator.
+pub(crate) fn tcg_skip(case: &TestCase) -> Option<String> {
+    case.kvm_only
+        .then(|| format!("xtask: {} skipped under TCG (kvm_only)", case.name))
+}
+
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
     TestCase {
         name,
@@ -237,6 +255,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         disk: None,
         server: true,
         memory_mib: None,
+        kvm_only: false,
         nvme: false,
         image: false,
         dns: false,
@@ -247,6 +266,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         bridge: false,
         net_polled: false,
         resets: false,
+        powers_off: false,
         data: None,
         data_mib: None,
         then: None,
@@ -298,6 +318,7 @@ const LANES: &[&[TestCase]] = &[
     walk::CASES,
     panestates::CASES,
     warming::CASES,
+    desksends::CASES,
 ];
 
 /// The cases `cargo xtask test` boots.
@@ -308,15 +329,31 @@ pub fn test_cases() -> Vec<&'static TestCase> {
 /// The M5 exit test: a 10-minute spawn, exit and sleep storm.
 pub const SOAK_CASES: &[TestCase] = &[case("storm-10min", "test=storm-600")];
 
-/// Cases booted only when `XTASK_CASE` names one: the screenshot tour.
+/// Cases booted only when `XTASK_CASE` names one: the screenshot tour, and
+/// the throughput workflow's `net-throughput`.
 pub fn named_only() -> Vec<&'static TestCase> {
-    tour::CASES.iter().collect()
+    tour::CASES
+        .iter()
+        .chain(core::iter::once(&throughput::NET_THROUGHPUT))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn a_kvm_only_case_says_it_is_skipped_under_tcg() {
+        let cases = test_cases();
+        let sends = cases.iter().find(|case| case.name == "desk-sends").unwrap();
+        assert_eq!(
+            tcg_skip(sends).as_deref(),
+            Some("xtask: desk-sends skipped under TCG (kvm_only)")
+        );
+        let any = cases.iter().find(|case| !case.kvm_only).unwrap();
+        assert_eq!(tcg_skip(any), None);
+    }
 
     #[test]
     fn every_case_has_one_name_and_one_lane() {
@@ -351,6 +388,7 @@ mod tests {
             walk::CASES,
             panestates::CASES,
             warming::CASES,
+            desksends::CASES,
         ];
         assert_eq!(
             cases.len(),

@@ -20,7 +20,7 @@
 //!   own. A kept function's calls are then decided against the user's later
 //!   entry, as typed code's are, so a change with a literal argument asks.
 
-use super::{MAX_CALLS, ModelRun, Ran, resume};
+use super::{MAX_CALLS, ModelRun, Ran, resume, saved};
 use crate::{Reply, SCRIPT_ROUND_MS, Shell};
 use agentabi::{ArgType, RetType};
 use alloc::format;
@@ -50,6 +50,8 @@ impl Shell {
         if request.is_empty() {
             return Reply::err("? asks Kai for a C program: ? <what it should do>");
         }
+        self.c.names = None;
+        self.c.rebinds.clear();
         let calls: Vec<&str> = agentabi::SCRIPT_API.iter().map(|row| row.name).collect();
         let mut repair: Option<(String, String)> = None;
         for round in 0..=MAX_REPAIRS {
@@ -241,6 +243,8 @@ impl Shell {
             logged: None,
             cc: true,
             included: None,
+            names: saved::defines(&kept.program),
+            rebinds: Vec::new(),
         });
         Reply::ok(format!(
             "{restored}kept {}:\n{}",

@@ -333,13 +333,23 @@ impl CoreInstance {
         self.store.data_mut().ui.measure = Some(measure);
     }
 
-    /// Lays every window out again, whole, with the measure now set (the type
-    /// changed), and keeps the frames for comphost.
+    /// Lays every window out again with the measure now set (the type changed),
+    /// paints each whole (its frame's damage is the whole window: the same box
+    /// holds text in another size) and keeps the frames for comphost.
     pub fn ui_relayout(&mut self) {
         let host = &mut self.store.data_mut().ui;
         let windows: Vec<u32> = host.ui.ids().collect();
         for window in windows {
-            let _ = host.commit(window);
+            if let Ok(w) = host.ui.window(window) {
+                w.repaint_all();
+            }
+            // Cannot fail for an id the windows list just gave, but a later
+            // error is a note comphost logs, never lost.
+            if let Err(why) = host.commit(window) {
+                host.notes.push(format!(
+                    "window {window} could not be laid out again: {why:?}"
+                ));
+            }
         }
     }
 

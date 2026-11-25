@@ -527,7 +527,10 @@ impl Shell {
             self.keep.push(name.to_string());
         }
         let text = keep_text(&self.saved_keep());
-        if let Err(why) = self.host.keep_write(&text) {
+        let written = self
+            .not_unread(crate::KEEP)
+            .and_then(|()| self.host.keep_write(&text));
+        if let Err(why) = written {
             self.host
                 .audit(&format!("the keep-running list was not saved: {why}"));
         }
@@ -543,7 +546,8 @@ impl Shell {
     /// The keep-running list `/system/state/keep` holds, each told to the
     /// supervisor again; a list out of shape is set aside whole.
     pub(crate) fn with_saved_keep(mut self) -> Self {
-        let Some(text) = self.host.keep_read() else {
+        let read = self.host.keep_read();
+        let Some(text) = self.read_at_start(crate::KEEP, read) else {
             return self;
         };
         let Some(apps) = parse_keep(&text) else {
@@ -555,6 +559,8 @@ impl Shell {
         for app in apps {
             match self.host.keep_running(&app, true) {
                 Ok(()) => self.keep.push(app),
+                // Taken and not answered: the supervisor keeps it as asked.
+                Err(why) if kabi::live::app_call_unanswered(&why) => self.keep_unanswered(app),
                 // An app the supervisor started may not serve yet: try again.
                 Err(why) if not_serving_yet(&why) => self.keep_waiting.wait(app, now),
                 Err(why) => self
@@ -563,6 +569,15 @@ impl Shell {
             }
         }
         self
+    }
+
+    /// A saved kept app whose switch the app took without answering: kept, as
+    /// the supervisor keeps it, and audited (#1164's review).
+    fn keep_unanswered(&mut self, app: String) {
+        self.host.audit(&format!(
+            "{app} took keep-running without answering; it may have taken effect"
+        ));
+        self.keep.push(app);
     }
 
     /// Tries the saved kept apps the supervisor could not reach at boot again,
@@ -577,6 +592,7 @@ impl Shell {
         for app in waiting {
             match self.host.keep_running(&app, true) {
                 Ok(()) => self.keep.push(app),
+                Err(why) if kabi::live::app_call_unanswered(&why) => self.keep_unanswered(app),
                 Err(why) if not_serving_yet(&why) && now < self.keep_waiting.until_ns => {
                     still.push(app)
                 }

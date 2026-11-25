@@ -2,7 +2,7 @@
 # workspace, so Wasmtime never enters the main Cargo.lock or CI's usual jobs.
 [workspace]
 resolver = "3"
-members = ["appabi", "oracle"]
+members = ["oracle"]
 exclude = ["guest"]
 
 [workspace.package]

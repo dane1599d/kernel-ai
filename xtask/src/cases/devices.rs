@@ -133,6 +133,37 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("power-reboot", "test=power-reboot")
     },
+    // ADR 0007 section 8: POWER_OFF from ring 3, refused without `cap::POWER`,
+    // the machine off through ResetSystem with it. Under -no-shutdown the
+    // guest's shutdown pauses QEMU and the monitor must report `shutdown`:
+    // a reset or a triple fault fails it.
+    TestCase {
+        powers_off: true,
+        expect: &[
+            "[hnopoweroff] power: POWER_OFF was refused without a Power handle",
+            "power: POWER_OFF without the power capability was refused",
+            "[hpoweroff] power: asking to turn off",
+            "power: hpoweroff (pid ",
+            ") asked for the computer off",
+            "efi: turning off through ResetSystem",
+        ],
+        ..case("power-off", "test=power-off")
+    },
+    // The path without ResetSystem (`poweroff=fallback`, a test word): every
+    // other CPU stops, the console takes the screen back (the test parks it
+    // first, as `desktop` does) and says it is safe to switch off.
+    TestCase {
+        stops: true,
+        expect: &[
+            "[hpoweroff] power: asking to turn off",
+            ") asked for the computer off",
+            "power: every other CPU stopped (",
+            "power: the console has the screen back from the desktop",
+            "power: it is now safe to switch off the computer",
+        ],
+        forbid: &["efi: turning off through ResetSystem"],
+        ..case("power-off-fallback", "test=power-off poweroff=fallback")
+    },
     // ADR 0007 section 3: a record per bound device, read by DEV_LIST from ring 3.
     TestCase {
         usb: &["usb-kbd"],

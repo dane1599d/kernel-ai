@@ -11,6 +11,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::Cell;
+use core::sync::atomic::{AtomicBool, Ordering};
 use fsproto::{Error, How, Outcome, Reply, Request};
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER, Rights};
 use shellcore::{FsChange, FsRead, FsRefused};
@@ -194,19 +195,35 @@ impl Files {
             return self.save(change);
         }
         let home = self.home()?;
+        self.heard_dropped(home);
         let generation = match self.open.get() {
             Some(generation) => generation,
             None => self.begin(home)?,
         };
-        make(home, change).inspect_err(|why| {
-            // A refused change leaves the action open; a failed disk drops it.
-            if why.contains("Io") {
-                self.open.set(None);
-                self.dropped.set(Some(generation));
-            }
-        })?;
+        // A refused change leaves the action open; one `fs` dropped (its
+        // writes found no room, or the disk failed) ends it: the next change
+        // begins a new one, never writing on outside any.
+        let made = make(home, change);
+        self.heard_dropped(home);
+        made?;
         self.changed.set(true);
         Ok(generation)
+    }
+
+    /// Forgets the line's action if any request since was answered
+    /// [`Error::Dropped`] (a change, a read that wrote out its pending run, a
+    /// state write: all are this shell's, its one caller), and acknowledges
+    /// it with Abort, so a mark another caller's drop left is cleared and the
+    /// next standalone change (an undo) is not refused.
+    fn heard_dropped(&self, home: Handle) {
+        if !DROPPED.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        if let Some(generation) = self.open.take() {
+            self.dropped.set(Some(generation));
+        }
+        let _ = ask(home, Request::Abort);
+        DROPPED.store(false, Ordering::Relaxed);
     }
 
     /// `:save`'s change in an action of its own: one left open commits
@@ -243,12 +260,18 @@ impl Files {
 
     /// Whether a line's changes wait for their log line.
     pub fn is_open(&self) -> bool {
+        if let Ok(home) = self.home() {
+            self.heard_dropped(home);
+        }
         self.open.get().is_some()
     }
 
     /// Commits the line's action, its log line in it; an error if the commit got
     /// another generation than its changes were told.
     pub fn commit(&self) -> Result<(), String> {
+        if let Ok(home) = self.home() {
+            self.heard_dropped(home);
+        }
         let (Some(generation), Ok(home)) = (self.open.take(), self.home()) else {
             return Ok(());
         };
@@ -263,6 +286,7 @@ impl Files {
 
     pub fn undo(&self, txn: u64, anyway: bool) -> Result<u64, FsRefused> {
         let home = self.home().map_err(FsRefused::Failed)?;
+        self.heard_dropped(home);
         // A failed run's rollback: its own action is dropped, not restored.
         if self.open.get() == Some(txn) {
             let _ = ask(home, Request::Abort);
@@ -448,13 +472,26 @@ const _: () = {
 };
 
 impl State {
-    /// File `name` as `/system/state` holds it; `None` with no such file or no
-    /// handle.
-    pub fn read(&self, name: &str) -> Option<String> {
-        let file = open(self.dir?, name, How::Existing, Rights::READ).ok()?;
+    /// File `name` as `/system/state` holds it; `None` only with no such file
+    /// or no handle (nothing was ever written there), and why not for any other
+    /// failure: a full disk or an fs error is no proof the file is absent.
+    pub fn read(&self, name: &str) -> Result<Option<String>, String> {
+        let Some(dir) = self.dir else {
+            return Ok(None);
+        };
+        let request = Request::Open {
+            path: name.to_string(),
+            rights: Rights::READ.bits(),
+            how: How::Existing,
+        };
+        let file = match ask(dir, request)? {
+            (Reply::Opened(..), Some(handle)) => handle,
+            (Reply::Failed(Error::NotFound), _) => return Ok(None),
+            (other, _) => return Err(format!("{name}: {}", unexpected(&other))),
+        };
         let text = read_all(file);
         close(file);
-        text.ok()
+        text.map(Some)
     }
 
     /// Writes the whole of file `name` into the action now open, the one that
@@ -493,6 +530,11 @@ impl State {
     }
 }
 
+/// Set when an answer was [`Error::Dropped`]: the shell's open action, if
+/// any, is gone ([`Files::heard_dropped`]). The shell is one caller with one
+/// action, so whichever handle the answer came on, it is that action's.
+static DROPPED: AtomicBool = AtomicBool::new(false);
+
 /// One request on `on`; the reply and the handle it moved, if any.
 pub(crate) fn ask(on: Handle, request: Request) -> Result<(Reply, Option<Handle>), String> {
     let bytes = fsproto::encode_request(&request);
@@ -502,6 +544,9 @@ pub(crate) fn ask(on: Handle, request: Request) -> Result<(Reply, Option<Handle>
         .map_err(|e| format!("the fs service did not answer ({e:?})"))?;
     let reply = fsproto::decode_reply(&reply[..len.min(reply.len())])
         .map_err(|_| String::from("the fs service's answer was malformed"))?;
+    if matches!(&reply, Reply::Failed(e) if e.ends_action()) {
+        DROPPED.store(true, Ordering::Relaxed);
+    }
     Ok((reply, (came > 0).then_some(moved[0])))
 }
 
