@@ -247,6 +247,8 @@ fn main() -> i32 {
     let mut painted_in = Appearance::default();
     let mut theme_name = Appearance::default().theme.clone();
     let mut look_text = Appearance::default().encode();
+    // The Kai pane and the apps' queues outlive a lost screen (H3-25).
+    let mut kept = deskcore::kept::Kept::default();
     loop {
         let Some(screen) = claim(painter.palette()) else {
             if !wait_for_screen() {
@@ -269,6 +271,7 @@ fn main() -> i32 {
         let scale = deskcore::scale::for_screen(screen.info.width, width_mm);
         let width = deskcore::upscale::logical(screen.info.width as i32, scale);
         let height = deskcore::upscale::logical(screen.info.height as i32, scale);
+        let carried = kept.for_claim();
         let mut state = State {
             desk: Desk::new(width, height),
             clients: Vec::new(),
@@ -291,15 +294,15 @@ fn main() -> i32 {
             log_wheel: logs_wheel(),
             key_logged: false,
             log_bar: logs_bar(),
-            panel: Panel::new(),
-            chat: Chat::default(),
+            panel: carried.panel,
+            chat: carried.chat,
             start: None,
-            effects: effects::Queue::default(),
-            running: deskcore::running::Running::default(),
-            files: deskcore::files::Files::default(),
-            settings: settings::Queue::default(),
-            net: deskcore::net_wire::Queue::default(),
-            models: settings::Queue::default(),
+            effects: carried.effects,
+            running: carried.running,
+            files: carried.files,
+            settings: carried.settings,
+            net: carried.net,
+            models: carried.models,
             agent: deskcore::agent::Agent::default(),
             ticked_ms: 0,
             card: None,
@@ -335,6 +338,16 @@ fn main() -> i32 {
         appearance = state.appearance;
         theme_name = state.theme_name;
         look_text = state.look_text;
+        kept = deskcore::kept::Kept {
+            panel: state.panel,
+            chat: state.chat,
+            effects: state.effects,
+            running: state.running,
+            files: state.files,
+            settings: state.settings,
+            net: state.net,
+            models: state.models,
+        };
         let Some(back) = result else {
             return 1;
         };
@@ -344,6 +357,11 @@ fn main() -> i32 {
             return 1;
         }
         println!("desktop: the screen is back");
+        // The draft's length, never its text: the line is the person's.
+        println!(
+            "desktop: the Kai pane came back with a {}-character line",
+            kept.panel.text().chars().count()
+        );
     }
 }
 
