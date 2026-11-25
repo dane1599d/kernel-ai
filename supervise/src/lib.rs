@@ -1144,8 +1144,11 @@ pub fn ending(
     match (withdrawn, back_on_demand, restart_on_exit, stopped) {
         (true, ..) => Ending::Withdrawn,
         (_, true, ..) => Ending::BackOnDemand,
-        (_, _, true, _) => Ending::RestartOnRequest,
+        // A stop wins over a restart asked for: a service whose record says
+        // stopped never starts again by itself (H2-14). The supervisor also
+        // clears the restart flag on a stop, so the later request wins.
         (_, _, _, true) => Ending::Stopped,
+        (_, _, true, _) => Ending::RestartOnRequest,
         _ => Ending::Policy,
     }
 }

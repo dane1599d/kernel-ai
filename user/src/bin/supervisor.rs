@@ -306,6 +306,8 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
         Request::Stop(_) if undoing.is_some_and(|start| !start.was_held) => {
             service.start_at_ms = None;
             service.back_on_demand = service.pid.is_some();
+            // The latest request wins: a restart asked for before is dropped.
+            service.restart_on_exit = false;
             if let Some(pid) = service.pid
                 && let Err(error) = sys::kill(pid)
             {
@@ -316,6 +318,8 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
         Request::Stop(_) => {
             service.record.stopped = true;
             service.start_at_ms = None;
+            // The latest request wins: a restart asked for before is dropped.
+            service.restart_on_exit = false;
             if let Some(pid) = service.pid
                 && let Err(error) = sys::kill(pid)
             {
@@ -331,16 +335,21 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
         }
         Request::Suspend(_) | Request::Resume(_) => {}
         Request::Restart(_) => {
+            // The flags change only once the kill is sent: a refused one
+            // leaves the service as it was.
+            if let Some(pid) = service.pid
+                && let Err(error) = sys::kill(pid)
+            {
+                println!("cannot restart {name} (pid {pid}): {error:?}");
+                return format!("err cannot stop it: {error:?}");
+            }
             service.record.stopped = false;
             service.record.gave_up = false;
             match service.pid {
-                Some(pid) => {
+                // The latest request wins over an undo's stop before it.
+                Some(_) => {
                     service.restart_on_exit = true;
-                    if let Err(error) = sys::kill(pid) {
-                        service.restart_on_exit = false;
-                        println!("cannot restart {name} (pid {pid}): {error:?}");
-                        return format!("err cannot stop it: {error:?}");
-                    }
+                    service.back_on_demand = false;
                 }
                 None => service.start_at_ms = Some(now_ms()),
             }
@@ -766,8 +775,10 @@ fn on_exit(services: &mut [Service], exit: &ExitRecord) {
         service.restart_on_exit,
         service.record.stopped,
     );
+    // Each flag is for this exit only: none is left for the next instance's.
     service.withdrawn = false;
     service.back_on_demand = false;
+    service.restart_on_exit = false;
     match why {
         supervise::Ending::Withdrawn => {
             println!("{name} {reason}; withdrawn, so not restarted: it waits for pkg");
@@ -782,7 +793,6 @@ fn on_exit(services: &mut [Service], exit: &ExitRecord) {
             return;
         }
         supervise::Ending::RestartOnRequest => {
-            service.restart_on_exit = false;
             println!("{name} {reason}; restarting on request");
             service.start_at_ms = Some(now);
             save(services);
