@@ -126,6 +126,7 @@ mod net;
 mod net_commands;
 mod net_download_tests;
 mod net_grant_tests;
+mod net_hold_tests;
 mod net_pf_tests;
 mod net_tests;
 mod net_throughput_tests;

@@ -55,6 +55,9 @@ pub enum ActCase {
     /// `net-pf-query` (P5 task 11): a quarantined read of that page, whose
     /// answer obeys the page and is only shown.
     NetPfQuery,
+    /// `net-hold` (P5 close): a send the person allows waits 5 s with undo,
+    /// then goes once; one undone in its hold never goes.
+    NetHold,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
