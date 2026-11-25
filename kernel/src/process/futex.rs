@@ -33,6 +33,7 @@ static WOKEN: [AtomicBool; MAX_THREADS] = [const { AtomicBool::new(false) }; MAX
 const MAX_WAIT_MS: u64 = 3_600_000;
 
 fn with_waiting<R>(f: impl FnOnce(&mut [Option<(u64, u64)>; MAX_THREADS]) -> R) -> R {
+    threads::ready::not_in_ready(&"the futex table");
     threads::preempt_disable();
     let result = f(&mut WAITING.lock());
     threads::preempt_enable();
