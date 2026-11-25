@@ -194,3 +194,38 @@ fn a_file_change_that_did_not_land_while_the_entry_waited_stays_out_of_it() {
     );
     assert!(entry.outcome.contains("did not land"), "{}", entry.outcome);
 }
+
+/// #1370's review: an entry whose outcome was clipped to the longest text a
+/// log record carries, and whose file commit `fs` then refused, still reads
+/// back at the next start. The note that its files did not land is kept
+/// whole, the outcome before it giving way.
+#[test]
+fn a_clipped_entry_whose_files_did_not_land_still_reads_back() {
+    use crate::actlog::MAX_TEXT;
+    let host = FakeHost::new();
+    host.one_action.set(true);
+    let mut shell = shell(&host);
+    shell.entry_begin(&format!(
+        "{C_RR} fs_create(\"a.txt\", \"one\"); for (;;) cpus(&n);"
+    ));
+    shell.entry_call(&call(RR));
+    let create = call(r#"{"name":"fs_create","arguments":{"path":"a.txt","text":"one"}}"#);
+    shell.entry_call(&create);
+    // Each call's outcome is at least `ran`: so many pass the longest text.
+    let cpus = call(r#"{"name":"cpus","arguments":{}}"#);
+    for _ in 0..MAX_TEXT / "ran; ".len() {
+        shell.entry_call(&cpus);
+    }
+    host.commit_refused.set(true);
+    let id = shell.entry_end(true).expect("the entry changed the policy");
+    let outcome = &shell.log.get(id).unwrap().outcome;
+    assert!(outcome.len() <= MAX_TEXT, "{} bytes", outcome.len());
+    let note = " ...; its file changes did not land: Dropped(NoSpace)";
+    let tail = outcome.get(outcome.len().saturating_sub(80)..);
+    assert!(outcome.ends_with(note), "{tail:?}");
+    // The next line writes the log, and a shell on the same disk reads it.
+    shell.eval("1 + 1");
+    let after = super::shell(&host);
+    let read = after.log.get(id).expect("the log was read back");
+    assert_eq!(read.changes.len(), 1, "the policy alone: {read:?}");
+}

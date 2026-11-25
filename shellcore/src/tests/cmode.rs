@@ -338,8 +338,8 @@ fn a_panel_line_runs_at_kai_and_leaves_c_alone() {
 }
 
 /// While a C entry waits on its question a panel line is refused, since the
-/// entry's log entry takes in what is logged after it began; the terminal's
-/// answer still finishes the entry.
+/// shell is still the entry's and the line would be decided as one of its
+/// calls; the terminal's answer still finishes the entry.
 #[test]
 fn the_terminals_answer_finishes_a_c_entry_after_a_panel_line() {
     let host = FakeHost::new();

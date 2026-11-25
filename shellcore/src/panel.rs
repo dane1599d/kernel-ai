@@ -15,8 +15,9 @@
 //!   AI's, apart from the system's look (the founder, 2026-11-14);
 //! - C is the terminal's (P4 task 12): a panel line runs at `kai>` even when
 //!   the terminal is at `c>`, and `:c` and `:rhai` are refused. While a C
-//!   entry waits on its question, a panel line is refused: the entry's log
-//!   entry takes in what is logged after it began.
+//!   entry waits on its question, a panel line is refused: the shell is still
+//!   the entry's, so the line would be decided as one of its calls, and its
+//!   `undo` could put back the entry's calls so far.
 
 use crate::{Reply, Shell};
 use alloc::string::String;

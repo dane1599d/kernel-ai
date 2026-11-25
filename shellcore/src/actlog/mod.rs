@@ -25,6 +25,12 @@ pub const KEEP: usize = 64;
 /// Longest request shown in `log`'s list.
 const REQUEST_CHARS: usize = 60;
 
+/// `text` as one log record carries it: a longer one would make the whole
+/// log on disk unreadable at the next start ([`MAX_TEXT`]).
+pub fn clip(text: &str) -> String {
+    crate::show::truncate(text, MAX_TEXT - " ...".len())
+}
+
 /// What made an entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Form {
