@@ -23,6 +23,7 @@ pub mod desk;
 pub mod effects;
 pub mod files;
 pub mod geom;
+pub mod kept;
 pub mod keymap;
 pub mod lease;
 pub mod models_wire;
