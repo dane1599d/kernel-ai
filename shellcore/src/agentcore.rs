@@ -913,8 +913,15 @@ pub(crate) fn arguments(row: &'static Action, call: &Call) -> Result<Arguments, 
             }
             return Err(format!("{} needs its {} argument", row.name, arg.name));
         };
-        let (text, rhai) = literal(&arg.ty, value)
-            .ok_or_else(|| format!("{} is not a valid {}", value, arg.name))?;
+        // A send's text may run over lines: the card shows it whole above the
+        // menu, and only its digest is in the call.
+        let send_text =
+            arg.role == Role::Payload && agentabi::SEND_ROWS.iter().any(|r| r.name == row.name);
+        let made = match send_text {
+            true => lines_literal(&arg.ty, value),
+            false => literal(&arg.ty, value),
+        };
+        let (text, rhai) = made.ok_or_else(|| format!("{} is not a valid {}", value, arg.name))?;
         args.values.push((arg.name, text));
         args.rhai.push(rhai);
     }
@@ -938,6 +945,22 @@ fn literal(ty: &ArgType, value: &Value) -> Option<(String, String)> {
         (ArgType::Path | ArgType::Host, Value::String(s)) => Some((s.clone(), quote(s)?)),
         _ => None,
     }
+}
+
+/// A text argument that may run over lines (a send's): every control
+/// character but the line break is refused, and the literal escapes it.
+fn lines_literal(ty: &ArgType, value: &Value) -> Option<(String, String)> {
+    let (ArgType::Text { max }, Value::String(s)) = (ty, value) else {
+        return None;
+    };
+    if s.chars().count() > usize::from(*max) || s.chars().any(|c| c.is_control() && c != '\n') {
+        return None;
+    }
+    let escaped = s
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n");
+    Some((s.clone(), format!("\"{escaped}\"")))
 }
 
 /// A Rhai string literal for plain one-line text, quoted as the canonical call
