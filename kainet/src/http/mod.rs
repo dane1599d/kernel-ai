@@ -7,8 +7,16 @@
 //! caller's `allow` before it is reached, as the caller's `NetDest` will be
 //! by the kernel (task 1): GitHub's release redirect to its assets host is
 //! followed only because the caller names that host.
+//!
+//! The browser's exchanges (plan P6 F-4) are [`Fetch::exchange`]
+//! ([`exchange`]): any method, the caller's headers, request and response
+//! bodies of any size streamed, every response header, gzip and brotli, and
+//! kept connections, one exchange at a time. What is above is unchanged by
+//! it.
 
 mod body;
+pub mod coding;
+pub mod exchange;
 pub mod head;
 pub mod url;
 
@@ -16,7 +24,8 @@ use crate::tls::{Session, Side, TlsError, Transport};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-pub use head::{ContentRange, Framing, Head, Method, Range};
+pub use exchange::{Answer, Body, Request, Verb};
+pub use head::{Coding, ContentRange, Framing, Head, Method, Range};
 use rustls::ClientConfig;
 use rustls::client::UnbufferedClientConnection;
 use rustls::pki_types::ServerName;

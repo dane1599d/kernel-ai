@@ -40,6 +40,33 @@ fn the_http_harness_returns_for_mutated_responses() {
     }
 }
 
+/// The same harness over coded bodies, and the coded streams on their own,
+/// so the gzip and brotli decoders see broken streams of every kind.
+#[test]
+fn the_http_harness_returns_for_mutated_coded_bodies() {
+    use std::io::Write;
+    let text = b"<html><body>a page, a page, a page, a page of text</body></html>".repeat(40);
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    gzip.write_all(&text).unwrap();
+    let gzip = gzip.finish().unwrap();
+    let mut brotli = Vec::new();
+    {
+        let mut coder = brotli::CompressorWriter::new(&mut brotli, 4096, 5, 22);
+        coder.write_all(&text).unwrap();
+    }
+    for (name, coded) in [("gzip", gzip), ("br", brotli)] {
+        let mut sample = format!(
+            "HTTP/1.1 200 OK\r\nContent-Encoding: {name}\r\nContent-Length: {}\r\n\r\n",
+            coded.len()
+        )
+        .into_bytes();
+        sample.extend_from_slice(&coded);
+        hostile::fuzz(&sample, 0x4_77b1, CASES, harness::http_response);
+        hostile::fuzz(&coded, 0x4_77b2, CASES, harness::http_response);
+        hostile::truncations(&coded, |_, bytes| harness::http_response(bytes));
+    }
+}
+
 #[test]
 fn the_list_and_url_harnesses_return_for_mutated_input() {
     let list = Chunks::of(&[7u8; 200_000], 64 * 1024).render();
