@@ -347,3 +347,14 @@ fn a_failed_answer_is_asked_again() {
     );
     assert_eq!(c.server.people, [(ALICE, true)]);
 }
+
+/// A shared-memory push of a model blob is growth, as a message's push is: it
+/// gets only what is above the reserve.
+#[test]
+fn a_shared_memory_push_keeps_the_reserve() {
+    let mut disk = MemDisk::new(2 * 1024);
+    let (mut c, _) = Client::start(&mut disk);
+    let push = Request::SealedPushShm { len: 4096 };
+    let tier = c.server.spends_reserve(ALICE, &push, changes(&push));
+    assert_eq!(tier, Spend::Keep);
+}

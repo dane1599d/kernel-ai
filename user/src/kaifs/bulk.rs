@@ -1,4 +1,4 @@
-//! Bulk reads and writes (`kai-fs 1`'s ReadShm and WriteShm): a process that
+//! Bulk reads and writes (`kai-fs 1`'s ReadShm, WriteShm and SealedPushShm): a process that
 //! calls [`reserve`] gets one `Shm` of up to [`fsproto::MAX_SHM_DATA`],
 //! kept for its life, and a duplicate of it moves with each request. One is
 //! made once, not per call, since SHM_CREATE counts its pages against the

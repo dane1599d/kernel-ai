@@ -122,6 +122,10 @@ impl<D: BlockDev> Server<D> {
         if len > MAX_SHM_DATA || len > shm.len() {
             return Err(Error::Invalid);
         }
+        // The one copy: `push` takes the bytes by slice and never sees `shm`
+        // again, so the bytes hashed are the bytes kept. Reading `shm` a second
+        // time (to hash, say, then to write) would let the client change them
+        // between. A test cannot catch that: it needs a writer racing `fs`.
         let data = shm[..len].to_vec();
         self.push(&data)
     }
