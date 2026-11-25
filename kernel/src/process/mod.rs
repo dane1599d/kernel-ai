@@ -16,7 +16,10 @@
 //!
 //! Lock rules: the TABLE lock is held with preemption off and never across `wake`,
 //! a context switch or `memory::with`. A slot's SPACE lock is only taken by the
-//! process's own threads, with preemption on, before TABLE and MEMORY.
+//! process's own threads, with preemption on, before TABLE, MEMORY and the futex
+//! table's WAITING lock: FUTEX_WAIT reads and registers its word under SPACE, which
+//! MEM_RELEASE and SHM_UNMAP hold to unmap a page, so it never reads a freed frame
+//! (`futex.rs`).
 
 pub mod async_call;
 pub mod burst;
