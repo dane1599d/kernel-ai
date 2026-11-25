@@ -26,7 +26,7 @@
 
 use crate::{hpet, i8042, threads};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
-use kabi::input::{InputEvent, KeyRoute, Kind, Set1, TAP};
+use kabi::input::{INPUT_LOST, InputEvent, KeyRoute, Kind, Set1, TAP};
 use spin::Mutex;
 use termcore::mouse::{Button, Buttons, Decoder};
 
@@ -46,14 +46,77 @@ struct Queue {
     head: usize,
     len: usize,
     dropped: u64,
+    /// Events were dropped since `desktop` last read: its next read starts
+    /// with [`INPUT_LOST`], as a release may be among them.
+    lost: bool,
 }
 
-static QUEUE_LOCK: Mutex<Queue> = Mutex::new(Queue {
-    events: [None; QUEUE],
-    head: 0,
-    len: 0,
-    dropped: 0,
-});
+impl Queue {
+    const fn new() -> Self {
+        Self {
+            events: [None; QUEUE],
+            head: 0,
+            len: 0,
+            dropped: 0,
+            lost: false,
+        }
+    }
+
+    /// Queues `event`, dropping the oldest when the queue is full.
+    fn push(&mut self, event: InputEvent) {
+        if self.len == QUEUE {
+            self.head = (self.head + 1) % QUEUE;
+            self.len -= 1;
+            self.dropped += 1;
+            self.lost = true;
+        }
+        let at = (self.head + self.len) % QUEUE;
+        self.events[at] = Some(event);
+        self.len += 1;
+    }
+
+    /// Takes up to `out.len()` events, oldest first: after a drop, a
+    /// [`Kind::Screen`] event of value [`INPUT_LOST`], at `now_ns`, first.
+    fn take(&mut self, out: &mut [InputEvent], now_ns: u64) -> usize {
+        let mut taken = 0;
+        if self.lost && !out.is_empty() {
+            out[0] = InputEvent {
+                time_ns: now_ns,
+                kind: Kind::Screen,
+                code: 0,
+                value: INPUT_LOST,
+            };
+            self.lost = false;
+            taken = 1;
+        }
+        let n = self.len.min(out.len() - taken);
+        for slot in out[taken..].iter_mut().take(n) {
+            let at = self.head;
+            *slot = self.events[at].take().unwrap_or(InputEvent {
+                time_ns: 0,
+                kind: Kind::Screen,
+                code: 0,
+                value: 0,
+            });
+            self.head = (self.head + 1) % QUEUE;
+            self.len -= 1;
+        }
+        taken + n
+    }
+
+    fn has_events(&self) -> bool {
+        self.len > 0 || self.lost
+    }
+
+    fn clear(&mut self) {
+        self.head = 0;
+        self.len = 0;
+        self.events = [None; QUEUE];
+        self.lost = false;
+    }
+}
+
+static QUEUE_LOCK: Mutex<Queue> = Mutex::new(Queue::new());
 static WAITER: AtomicUsize = AtomicUsize::new(NO_WAITER);
 /// Threads to wake once the interrupt that queued their work has ended
 /// ([`wake_pending`]): the reader, and the display switch.
@@ -331,17 +394,7 @@ fn push(kind: Kind, code: u16, value: i32) {
         code,
         value,
     };
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        let mut queue = QUEUE_LOCK.lock();
-        if queue.len == QUEUE {
-            queue.head = (queue.head + 1) % QUEUE;
-            queue.len -= 1;
-            queue.dropped += 1;
-        }
-        let at = (queue.head + queue.len) % QUEUE;
-        queue.events[at] = Some(event);
-        queue.len += 1;
-    });
+    x86_64::instructions::interrupts::without_interrupts(|| QUEUE_LOCK.lock().push(event));
     match WAITER.swap(NO_WAITER, Ordering::AcqRel) {
         NO_WAITER => {}
         tid => PENDING[0].store(tid, Ordering::Release),
@@ -349,7 +402,7 @@ fn push(kind: Kind, code: u16, value: i32) {
 }
 
 fn has_events() -> bool {
-    x86_64::instructions::interrupts::without_interrupts(|| QUEUE_LOCK.lock().len > 0)
+    x86_64::instructions::interrupts::without_interrupts(|| QUEUE_LOCK.lock().has_events())
 }
 
 /// Whether events wait in the queue, unread by `desktop`.
@@ -361,21 +414,9 @@ pub fn pending() -> bool {
 pub fn read(out: &mut [InputEvent], timeout_ms: u64) -> usize {
     let deadline = hpet::nanos().saturating_add(timeout_ms.saturating_mul(1_000_000));
     loop {
+        let now = hpet::nanos();
         let taken = x86_64::instructions::interrupts::without_interrupts(|| {
-            let mut queue = QUEUE_LOCK.lock();
-            let n = queue.len.min(out.len());
-            for slot in out.iter_mut().take(n) {
-                let at = queue.head;
-                *slot = queue.events[at].take().unwrap_or(InputEvent {
-                    time_ns: 0,
-                    kind: Kind::Screen,
-                    code: 0,
-                    value: 0,
-                });
-                queue.head = (queue.head + 1) % QUEUE;
-                queue.len -= 1;
-            }
-            n
+            QUEUE_LOCK.lock().take(out, now)
         });
         if taken > 0 || out.is_empty() || hpet::nanos() >= deadline {
             return taken;
@@ -403,12 +444,48 @@ pub fn dropped() -> u64 {
 }
 
 /// Clears the queue, when the screen changes hands, so `desktop` never acts on
-/// keys typed for the console.
+/// keys typed for the console. A drop before it is no news: `desktop` builds
+/// its desk again for the next claim.
 pub fn clear() {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        let mut queue = QUEUE_LOCK.lock();
-        queue.head = 0;
-        queue.len = 0;
-        queue.events = [None; QUEUE];
-    });
+    x86_64::instructions::interrupts::without_interrupts(|| QUEUE_LOCK.lock().clear());
+}
+
+/// The queue's overflow, on a queue of its own (`display-claim`): the first
+/// read after events were dropped starts with [`INPUT_LOST`], once, and then
+/// the newest [`QUEUE`] events in order. A boot cannot make `desktop` fall
+/// that far behind on purpose, so the queue is checked apart from it.
+pub fn lost_check() -> Result<(), &'static str> {
+    let key = |n: usize| InputEvent {
+        time_ns: n as u64,
+        kind: Kind::Key,
+        code: n as u16,
+        value: 1,
+    };
+    let mut queue = alloc::boxed::Box::new(Queue::new());
+    for n in 0..QUEUE + 3 {
+        queue.push(key(n));
+    }
+    if queue.dropped != 3 || !queue.has_events() {
+        return Err("input: a full queue did not drop its oldest three");
+    }
+    let mut out = [key(0); 8];
+    if queue.take(&mut out, 99) != 8
+        || out[0].kind != Kind::Screen
+        || out[0].value != INPUT_LOST
+        || out[1..].iter().map(|e| usize::from(e.code)).ne(3..10)
+    {
+        return Err("input: the read after a drop did not start with INPUT_LOST");
+    }
+    // Once only: the next read is events.
+    if queue.take(&mut out, 100) != 8 || out[0] != key(10) {
+        return Err("input: INPUT_LOST came twice for one drop");
+    }
+    // A clear forgets the drop.
+    queue.push(key(0));
+    queue.lost = true;
+    queue.clear();
+    if queue.has_events() || queue.take(&mut out, 101) != 0 {
+        return Err("input: a clear kept a drop");
+    }
+    Ok(())
 }
