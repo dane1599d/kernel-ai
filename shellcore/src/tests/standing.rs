@@ -453,3 +453,30 @@ fn the_log_keeps_the_change_an_undo_or_rules_remove_took_away() {
     assert!(log.contains(&removed), "{log}");
     assert!(!log.contains("Removed standing instruction S1"), "{log}");
 }
+
+/// #1344's review: an Allow whose instruction is then refused (the store
+/// filled while its card waited) revokes the node the kernel minted for it.
+#[test]
+fn an_allow_whose_instruction_is_refused_revokes_its_node() {
+    let host = super::FakeHost::new();
+    host.triggers_on.set(true);
+    let mut shell = super::shell(&host);
+    shell.eval(&alloc::format!("rules_add {NOTES}"));
+    for n in 0..crate::standing::MAX_RULES {
+        let app = alloc::format!("app{n}");
+        shell
+            .standing
+            .create(
+                Origin::Line,
+                when(Kind::Minimize, &app),
+                "app_suspend",
+                &app,
+                None,
+            )
+            .unwrap();
+    }
+    let once = host.mint(1, &alloc::format!("rules_add(\"{NOTES}\")"));
+    let reply = shell.eval(&alloc::format!("answer 1 allow once={once} rule=9"));
+    assert!(!reply.ok, "{reply:?}");
+    assert_eq!(*host.revoked.borrow(), [9]);
+}

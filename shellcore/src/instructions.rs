@@ -98,7 +98,17 @@ impl Shell {
         );
         let rule = match made {
             Ok(rule) => rule,
-            Err(refused) => return Reply::err(refusal(&refused)),
+            Err(refused) => {
+                // The node the kernel minted for it would hold a rule slot
+                // until a reboot.
+                if let Ok(Some(grant)) = allowed
+                    && let Err(why) = self.host.revoke_rule(grant)
+                {
+                    self.host
+                        .audit(&format!("an unkept rule's node was not revoked: {why}"));
+                }
+                return Reply::err(refusal(&refused));
+            }
         };
         if let Ok(Some(grant)) = allowed {
             self.standing.set_grant(rule, grant);
@@ -436,11 +446,14 @@ impl Shell {
     /// `rules`: the standing rules, then the standing instructions.
     pub(crate) fn list_rules(&self) -> String {
         let instructions = self.standing.rules();
-        let rules = self.rules.list();
+        let rules = match &self.rules_refused {
+            Some(note) => format!("{note}\n{}", self.rules.list()),
+            None => self.rules.list(),
+        };
         if instructions.is_empty() {
             return rules;
         }
-        let mut text = match self.rules.is_empty() {
+        let mut text = match self.rules.is_empty() && self.rules_refused.is_none() {
             true => String::new(),
             false => rules + "\n",
         };

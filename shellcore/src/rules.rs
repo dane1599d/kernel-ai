@@ -8,7 +8,10 @@
 //!
 //! Since P2 they are kept in `/system/state/rules` as `kai-grants 1` rule lines
 //! (ADR 0001 D8), until `powerbox` owns `/system/grants`. The file is read as
-//! hostile and refused whole on any bad line. A rule read back is a record with
+//! hostile and refused whole on any line out of shape or any grant; a rule
+//! naming an action the registry lacks is set aside alone. Only an action in
+//! the registry with a target the file can hold is ever written, so every
+//! rule written reads back. A rule read back is a record with
 //! no grant node: only the trusted path makes one, on the keystroke. So until
 //! "Always allow" is chosen again, it waives no ask whose owner checks the rule
 //! itself (the stops), and the shell's own asks only.
@@ -127,6 +130,10 @@ impl Rules {
         grant: Option<u32>,
         (prompt, made_ns): (u64, u64),
     ) -> Result<u64, &'static str> {
+        // A rule `restore` could not read back is never written (#10).
+        if !agentabi::ROWS.iter().any(|row| row.name == offer.action) {
+            return Err("a rule cannot be kept for that action");
+        }
         let target = match (for_target, &offer.target, offer.kind) {
             (true, Some(target), _) if !keepable_target(target) => {
                 return Err("a rule cannot be kept for that target");
@@ -230,6 +237,11 @@ impl Rules {
                     }
             })
             .map(|rule| rule.id)
+    }
+
+    /// The node rule `id` holds, if any.
+    pub fn grant_of(&self, id: u64) -> Option<u32> {
+        self.list.iter().find(|r| r.id == id).and_then(|r| r.grant)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -440,5 +452,33 @@ rule 3 action=set_policy target=- from=prompt:5 made=2026-11-02T10:22:00Z
             assert!(!keepable_target(target), "{target:?}");
         }
         assert!(keepable_target("build-3"));
+    }
+
+    /// #1344's review: a rule `restore` could not read back is never written.
+    #[test]
+    fn a_rule_for_an_action_the_registry_lacks_is_never_written() {
+        let mut rules = Rules::default();
+        let app = Offer {
+            action: "notes_clear",
+            target: None,
+            kind: true,
+        };
+        assert!(rules.add(&app, false, None, (1, 0)).is_err());
+        assert!(rules.is_empty());
+    }
+
+    /// The same rule chosen again keeps its first node: `grant_of` is how the
+    /// caller tells the new one was not kept, and revokes it.
+    #[test]
+    fn a_rule_chosen_again_keeps_its_first_node() {
+        let mut rules = Rules::default();
+        let policy = Offer {
+            action: "set_policy",
+            target: None,
+            kind: true,
+        };
+        assert_eq!(rules.add(&policy, false, Some(5), (1, 0)), Ok(1));
+        assert_eq!(rules.add(&policy, false, Some(6), (2, 0)), Ok(1));
+        assert_eq!(rules.grant_of(1), Some(5));
     }
 }

@@ -478,6 +478,12 @@ pub trait Host {
     fn rules_write(&self, _text: &str) -> Result<(), String> {
         Ok(())
     }
+    /// Keeps a rules file refused at boot beside it, as
+    /// `/system/state/rules-refused`, so the rules file can be written again
+    /// without losing what it held.
+    fn rules_set_aside(&self, _text: &str) -> Result<(), String> {
+        Err(String::from("there is nowhere to set it aside here"))
+    }
     /// The keep-running list as `/system/state/keep` holds it, and why not
     /// when it could not be read.
     fn keep_read(&self) -> Result<Option<String>, String> {
@@ -843,6 +849,10 @@ pub struct Shell {
     /// The state files read once at start that could not be read: never
     /// written over this run ([`Shell::read_at_start`]).
     unread: Vec<&'static str>,
+    /// What `rules` says first about a rules file refused at boot.
+    rules_refused: Option<String>,
+    /// Why the rule a menu answer just added was not saved.
+    rule_unsaved: Option<String>,
     /// The ONCE of the menu answer now running, kept for the call's owner to
     /// check: the shell does not spend it (P1 task 14).
     owner_once: Option<u64>,
@@ -953,6 +963,8 @@ impl Shell {
             pack_id: llmproto::pack::act_pack_id(),
             saved_log: None,
             unread: Vec::new(),
+            rules_refused: None,
+            rule_unsaved: None,
             owner_once: None,
             steered: None,
             person_line: false,
@@ -982,10 +994,11 @@ impl Shell {
 
     /// The log `/system/log` holds, so `undo` works across a reboot; a text that
     /// is not `actlog 1` is set aside, and the log starts again.
-    /// The rules `/system/state/rules` holds. A file refused whole is set
-    /// aside: the shell starts with none and never writes over it this run, so
-    /// the next rule change cannot make the loss permanent (#10). A rule whose
-    /// action is not in the registry is set aside alone, and audited.
+    /// The rules `/system/state/rules` holds. A file refused whole is kept as
+    /// `/system/state/rules-refused` and the shell starts with none; rules then
+    /// save as before, and `rules` says so. If it cannot be kept, it is never
+    /// written over this run. A rule whose action is not in the registry is
+    /// set aside alone, and audited.
     fn with_saved_rules(mut self) -> Self {
         let read = self.host.rules_read();
         let Some(text) = self.read_at_start(RULES, read) else {
@@ -999,13 +1012,31 @@ impl Shell {
                         .audit(&format!("a rule on disk was set aside: {why}"));
                 }
             }
-            Err(why) => {
-                self.host.audit(&format!(
-                    "the rules on disk were refused ({why}); starting with none, \
-                     and the file is not written over"
-                ));
-                self.unread.push(RULES);
-            }
+            // Kept aside once, so rules save again on this boot and every
+            // later one; where it cannot be kept, it is never written over.
+            Err(why) => match self.host.rules_set_aside(&text) {
+                Ok(()) => {
+                    self.host.audit(&format!(
+                        "the rules on disk were refused ({why}); starting with none, \
+                         and the file is kept as /system/state/rules-refused"
+                    ));
+                    self.rules_refused = Some(String::from(
+                        "The rules file could not be read back at start, so no rules were \
+                         loaded; it is kept as /system/state/rules-refused.",
+                    ));
+                }
+                Err(aside) => {
+                    self.host.audit(&format!(
+                        "the rules on disk were refused ({why}); starting with none, \
+                         and the file is not written over (it could not be set aside: {aside})"
+                    ));
+                    self.rules_refused = Some(String::from(
+                        "The rules file could not be read back at start, so no rules were \
+                         loaded, and rules are not saved this boot.",
+                    ));
+                    self.unread.push(RULES);
+                }
+            },
         }
         self
     }

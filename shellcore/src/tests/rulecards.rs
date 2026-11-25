@@ -70,12 +70,18 @@ fn a_removal_the_disk_did_not_take_says_it_holds_for_this_boot_only() {
     shell.eval("stop build-3");
     let once = host.mint(1, "process_stop(\"build-3\")");
     let added = shell.eval(&format!("answer 1 always-kind once={once}"));
-    assert!(added.text.contains("Rule #1 added"), "{added:?}");
+    // #1344's review: the add says it was not saved, too.
+    assert!(
+        added
+            .text
+            .contains("Rule #1 added for this boot only: the rules were not saved"),
+        "{added:?}"
+    );
     let removed = shell.eval("rules_remove 1");
     assert!(!removed.ok, "{removed:?}");
     assert!(!removed.text.contains("it asks again"), "{removed:?}");
     assert!(
-        removed.text.contains("comes back after a restart"),
+        removed.text.contains("may come back after a restart"),
         "{removed:?}"
     );
 }
@@ -107,17 +113,73 @@ rule 2 action=notes_clear target=- from=prompt:4 made=2026-11-02T10:21:00Z
     ));
 }
 
-/// #10: a rules file refused whole was written over at the next rule change,
-/// which made the loss permanent.
+const BAD_RULES: &str = "kai-grants 1\nrule 1 action=set_policy target=a target=b from=prompt:3 made=2026-11-02T10:20:00Z\n";
+
+/// #1344's review: a rules file refused whole is kept aside once, so rules
+/// save again on this boot and the next, and `rules` says where it went.
 #[test]
-fn a_rules_file_refused_whole_is_not_written_over() {
-    let bad = "kai-grants 1\nrule 1 action=set_policy target=a target=b from=prompt:3 made=2026-11-02T10:20:00Z\n";
-    let (host, mut shell) = booted(bad, vec![call(STOP_BUILD3)]);
+fn a_rules_file_refused_whole_is_kept_aside_and_rules_save_again() {
+    let (host, mut shell) = booted(BAD_RULES, vec![call(STOP_BUILD3)]);
+    assert_eq!(host.rules_aside.borrow().as_deref(), Some(BAD_RULES));
+    let listed = shell.eval("rules");
+    assert!(
+        listed
+            .text
+            .starts_with("The rules file could not be read back at start")
+            && listed.text.contains("/system/state/rules-refused"),
+        "{listed:?}"
+    );
+    host.procs.borrow_mut().push(String::from("build-3"));
+    shell.eval("stop build-3");
+    let once = host.mint(1, "process_stop(\"build-3\")");
+    let added = shell.eval(&format!("answer 1 always-kind once={once}"));
+    assert!(
+        added.text.contains("Rule #1 added; `rules` lists it."),
+        "{added:?}"
+    );
+    let saved = host.rules_disk.borrow().clone().unwrap();
+    assert!(saved.contains("action=process_stop"), "{saved}");
+    // The next boot reads the new file, and keeps the old one aside.
+    let mut again = shell_again(&host);
+    assert!(again.eval("rules").text.starts_with("#1 process_stop"));
+    assert_eq!(host.rules_aside.borrow().as_deref(), Some(BAD_RULES));
+}
+
+/// #10: where a refused file cannot be kept aside, it is never written over,
+/// as a lost write there would make the loss permanent.
+#[test]
+fn a_rules_file_refused_whole_that_cannot_be_kept_aside_is_not_written_over() {
+    let host = FakeHost::new();
+    *host.rules_disk.borrow_mut() = Some(String::from(BAD_RULES));
+    host.rules_aside_fails.set(true);
+    host.calls.borrow_mut().push_back(call(STOP_BUILD3));
+    let mut shell = shell(&host);
+    assert!(
+        shell
+            .eval("rules")
+            .text
+            .contains("rules are not saved this boot")
+    );
     host.procs.borrow_mut().push(String::from("build-3"));
     shell.eval("stop build-3");
     let once = host.mint(1, "process_stop(\"build-3\")");
     shell.eval(&format!("answer 1 always-kind once={once}"));
-    assert_eq!(host.rules_disk.borrow().as_deref(), Some(bad));
+    assert_eq!(host.rules_disk.borrow().as_deref(), Some(BAD_RULES));
+}
+
+/// A second shell on the same host, as after a restart.
+fn shell_again(host: &Rc<FakeHost>) -> Shell {
+    shell(host)
+}
+
+/// #1344's review: an "Always allow" answering a question that no longer
+/// waits keeps no rule, so its node goes.
+#[test]
+fn an_always_for_a_question_no_longer_waiting_revokes_its_node() {
+    let (host, mut shell) = with_calls(vec![]);
+    let answered = shell.eval("answer 4 always-kind once=1 rule=5");
+    assert_eq!(answered, Reply::err("nothing to confirm"));
+    assert_eq!(*host.revoked.borrow(), [5]);
 }
 
 /// #11: an "Always allow" the shell then refused left the node the trusted

@@ -620,7 +620,14 @@ impl Shell {
         }
         match &self.pending {
             Some(pending) if Some(pending.id) == id => self.answer_pending(text),
-            _ => Reply::err("nothing to confirm"),
+            _ => {
+                // An "Always allow" for a question no longer waiting keeps no
+                // rule: its node goes.
+                if let Some((_, granted)) = read_answer(text.trim()) {
+                    self.revoke_unkept(granted.rule);
+                }
+                Reply::err("nothing to confirm")
+            }
         }
     }
 
@@ -725,12 +732,17 @@ impl Shell {
                 .host
                 .audit(&format!("script {id} confirmed, {rule}; running it")),
         }
-        let lead = match consent.strip_prefix("rule:") {
-            Some(rule) => format!(
+        let lead = match (consent.strip_prefix("rule:"), self.rule_unsaved.take()) {
+            (Some(rule), None) => format!(
                 "Rule #{rule} added; `rules` lists it.
 "
             ),
-            None => String::new(),
+            (Some(rule), Some(why)) => format!(
+                "Rule #{rule} added for this boot only: the rules were not saved ({why}); \
+                 `rules` lists it.
+"
+            ),
+            (None, _) => String::new(),
         };
         let how = How {
             consent,
@@ -794,10 +806,15 @@ impl Shell {
         let made = (pending.id, self.host.now_ns());
         match self.rules.add(offer, always, granted.rule, made) {
             Ok(rule) => {
+                // The same rule held already, with its own node: the new one
+                // is not kept.
+                if granted.rule.is_some() && self.rules.grant_of(rule) != granted.rule {
+                    self.revoke_unkept(granted.rule);
+                }
                 self.host
                     .audit(&format!("rule #{rule} added from menu {}", pending.id));
-                // A failure is audited; the rule holds for this boot.
-                let _ = self.save_rules();
+                // The rule holds for this boot either way; the reply says so.
+                self.rule_unsaved = self.save_rules().err();
                 Ok(format!("rule:{rule}"))
             }
             Err(why) => {
@@ -838,7 +855,7 @@ impl Shell {
                     // Never "it asks again" when the disk still holds it (#9).
                     Err(why) => Reply::err(format!(
                         "Removed rule #{id} ({}) for this boot only: the rules were not \
-                         saved ({why}), so it comes back after a restart",
+                         saved ({why}), so it may come back after a restart",
                         rule.action
                     )),
                 }
