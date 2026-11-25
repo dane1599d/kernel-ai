@@ -4,6 +4,8 @@
 
 mod enumerate;
 mod poll;
+#[cfg(test)]
+mod tests;
 
 use crate::hal::{Dma, Hal};
 use crate::hid::{self, PointerLayout};
@@ -87,15 +89,25 @@ struct Endpoint {
 }
 
 /// An endpoint that halted on a transfer error is reset, then pointed past its
-/// abandoned transfer, then armed again. Each step waits for its command's
-/// completion in a later poll, so the poll never blocks.
+/// abandoned transfer, then has its halt cleared on the device, then is armed
+/// again. One that halted on a transaction error is reset keeping its transfer
+/// state, then rung to retry the transfer. Each step waits for its command's or
+/// request's completion in a later poll, so the poll never blocks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Recovery {
     Idle,
     /// Reset Endpoint was queued; the command TRB's address.
     Resetting(u64),
+    /// Reset Endpoint keeping the transfer state was queued.
+    Retrying(u64),
     /// Set TR Dequeue Pointer was queued.
     Moving(u64),
+    /// CLEAR_FEATURE(ENDPOINT_HALT) was queued on the device's EP0: its setup
+    /// and status TRBs' addresses.
+    Clearing {
+        setup: u64,
+        status: u64,
+    },
 }
 
 /// The memory one device's slot uses for as long as the controller runs.
