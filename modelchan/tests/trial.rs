@@ -569,11 +569,12 @@ fn a_candidate_that_hung_a_boot_is_not_tried_again_whatever_updated_got_to() {
 
 /// HIGH 1, scenario B: a boot maps the pending candidate, and the first start
 /// of `updated` ends before it marks it. A start again finds it pending,
-/// points the hint at the way back before it waits on `llm` (the delta review
-/// of #1349), and checks what `llm` runs: another model means the record was
-/// written this boot for the next restart, and the hint goes back on its
-/// candidate; the candidate, loaded or not, is this boot's trial, marked and
-/// judged this boot.
+/// points the hint at the way back and marks it before it waits on `llm`
+/// (the delta review of #1349, and its MEDIUM follow-up), and checks what
+/// `llm` runs: another model means the record was written this boot for the
+/// next restart, so it is pending again and the hint goes back on its
+/// candidate; the candidate, loaded or not, is this boot's trial, judged
+/// this boot.
 #[test]
 fn a_pending_trial_a_first_start_left_unmarked_is_judged_once_llm_says_it_runs() {
     let record = pending(NEW, Some(OLD));
@@ -584,9 +585,17 @@ fn a_pending_trial_a_first_start_left_unmarked_is_judged_once_llm_says_it_runs()
     let found = at_boot(disk.record.as_ref(), true);
     assert_eq!(found, AtBoot::Check(record.clone()));
     let begun = start(&found, 0);
-    assert_eq!(begun.writes, vec![Write::Hint(Some(OLD))]);
+    let marked = Trial {
+        state: State::Attempted,
+        ..record.clone()
+    };
+    assert_eq!(
+        begun.writes,
+        vec![Write::Hint(Some(OLD)), Write::Record(marked.clone())]
+    );
     let checking = begun.probation.expect("a check");
     assert!(checking.checking);
+    assert_eq!(checking.trial, marked);
     let disk = disk.all(&begun.writes);
     // llm is still loading: nothing more is written yet.
     let waiting = look(
@@ -651,19 +660,32 @@ fn a_pending_trial_a_first_start_left_unmarked_is_judged_once_llm_says_it_runs()
             "{health:?}"
         );
     }
-    // A switch while it checks replaces the record: the check stops there,
-    // writing nothing, and the switch's hint stands.
-    let used = switch(None, disk.record.as_ref(), OTHER, fnv_of(OTHER));
-    let replaced = disk.all(&used.writes());
-    let stopped = look(&checking, replaced.record.as_ref(), runs(NEW), 5_000, LIMIT);
+    // A switch waits while it checks: the record is marked.
+    assert!(checking.holds_switches());
+    assert_eq!(
+        switch(None, disk.record.as_ref(), OTHER, fnv_of(OTHER)),
+        Switch::OnTrial
+    );
+    // A check whose mark failed has the pending record still: a switch
+    // replaces it, and the check stops there, writing nothing, and the
+    // switch's hint stands.
+    let unmarked = begun.retry.expect("a retry");
+    assert!(!unmarked.holds_switches());
+    let used = switch(None, Some(&record), OTHER, fnv_of(OTHER));
+    let replaced = Disk {
+        hint: Some(OLD),
+        record: Some(record.clone()),
+    }
+    .all(&used.writes());
+    let stopped = look(&unmarked, replaced.record.as_ref(), runs(NEW), 5_000, LIMIT);
     assert!(stopped.writes.is_empty() && stopped.after.is_none());
     assert_eq!(replaced.hint, Some(OTHER));
 }
 
 /// The delta review of #1349, HIGH 1: a check waits on `llm` while it loads
 /// the candidate, and the candidate hangs the boot. The next boot maps the
-/// way back, and its first start marks the candidate and rolls it back: it
-/// is not tried again.
+/// way back, and its first start finds the check's mark and rolls the
+/// candidate back at once: it is not tried again.
 #[test]
 fn a_candidate_that_hangs_a_boot_while_a_check_waits_is_not_tried_again() {
     let record = pending(NEW, Some(OLD));
@@ -682,24 +704,25 @@ fn a_candidate_that_hangs_a_boot_while_a_check_waits_is_not_tried_again() {
         LIMIT,
     );
     let disk = disk.all(&waiting.writes);
-    // The boot hangs here: the next one maps the way back.
+    // The boot hangs here: the next one maps the way back, with the mark.
     assert_eq!(
         disk,
         Disk {
             hint: Some(OLD),
-            record: Some(record.clone()),
+            record: Some(Trial {
+                state: State::Attempted,
+                ..record.clone()
+            }),
         }
     );
     let first = start(&at_boot(disk.record.as_ref(), false), 0);
-    let disk = disk.all(&first.writes);
-    let judging = first.probation.expect("a probation");
-    let seen = look(&judging, disk.record.as_ref(), runs(OLD), 5_000, LIMIT);
+    assert_eq!(first.probation, None);
     assert_eq!(
-        disk.all(&seen.writes),
+        disk.all(&first.writes),
         Disk {
             hint: Some(OLD),
             record: Some(Trial {
-                state: State::RolledBack("another model started in its place".into()),
+                state: State::RolledBack(HUNG.into()),
                 ..record
             }),
         }
@@ -785,9 +808,9 @@ fn every_plan_writes_in_an_order_a_cut_leaves_safe() {
     let judging = start(&AtBoot::Try(attempted.clone()), 0)
         .probation
         .expect("a probation");
-    let checking = start(&AtBoot::Check(p.clone()), 0)
-        .probation
-        .expect("a check");
+    let checks = start(&AtBoot::Check(p.clone()), 0);
+    let checking = checks.probation.expect("a check");
+    let unmarked = checks.retry.expect("a check whose mark failed");
     let with = |hint, record: &Trial| Disk {
         hint: Some(hint),
         record: Some(record.clone()),
@@ -831,7 +854,7 @@ fn every_plan_writes_in_an_order_a_cut_leaves_safe() {
             "start again, pending",
             with(NEW, &p),
             start(&at_boot(Some(&p), true), 0).writes,
-            vec![Write::Hint(Some(OLD))],
+            vec![Write::Hint(Some(OLD)), Write::Record(attempted.clone())],
             None,
         ),
         // From the hint still on the candidate, as when the check's first
@@ -839,14 +862,21 @@ fn every_plan_writes_in_an_order_a_cut_leaves_safe() {
         (
             "check marks",
             with(NEW, &p),
-            look(&checking, Some(&p), runs(NEW), 5_000, LIMIT).writes,
+            look(&unmarked, Some(&p), runs(NEW), 5_000, LIMIT).writes,
             vec![Write::Hint(Some(OLD)), Write::Record(attempted.clone())],
             None,
         ),
         (
             "check leaves",
+            with(OLD, &attempted),
+            look(&checking, Some(&attempted), runs(OTHER), 5_000, LIMIT).writes,
+            vec![Write::Record(p.clone()), Write::Hint(Some(NEW))],
+            None,
+        ),
+        (
+            "check leaves, unmarked",
             with(OLD, &p),
-            look(&checking, Some(&p), runs(OTHER), 5_000, LIMIT).writes,
+            look(&unmarked, Some(&p), runs(OTHER), 5_000, LIMIT).writes,
             vec![Write::Hint(Some(NEW))],
             None,
         ),
@@ -903,9 +933,10 @@ fn every_plan_writes_in_an_order_a_cut_leaves_safe() {
     assert!(with(NEW, &attempted).runs_untried(None));
 }
 
-/// LOW 7: a switch waits for a probation that judges an attempted trial
-/// (`updated` answers it `ON_TRIAL` before it reads anything), not for a
-/// check of a pending one, which a switch ends.
+/// LOW 7: a switch waits for a probation whose record is attempted
+/// (`updated` answers it `ON_TRIAL` before it reads anything): one that
+/// judges, or a check, which marks the record. Not for a check whose mark
+/// failed, whose record is still pending, which a switch ends.
 #[test]
 fn a_switch_waits_for_a_probation_that_judges_and_not_for_a_check() {
     let p = pending(NEW, Some(OLD));
@@ -918,8 +949,10 @@ fn a_switch_waits_for_a_probation_that_judges_and_not_for_a_check() {
     assert!(first.probation.expect("judged").holds_switches());
     assert!(!first.retry.expect("checked").holds_switches());
     assert!(probation(AtBoot::Resume(attempted.clone())).holds_switches());
-    let checking: Probation = probation(AtBoot::Check(p.clone()));
-    assert!(!checking.holds_switches());
+    let checks = start(&AtBoot::Check(p.clone()), 0);
+    let checking: Probation = checks.probation.expect("a check");
+    assert!(checking.holds_switches());
+    assert!(!checks.retry.expect("unmarked").holds_switches());
     // A record changed under a probation that judges: no verdict, no write.
     let judging = probation(AtBoot::Try(attempted.clone()));
     let replaced = pending(OTHER, Some(OLD));
@@ -988,4 +1021,141 @@ fn the_list_shows_the_next_restarts_model_only_where_it_knows() {
     assert_eq!(next(Some(&rolled), Some(Some(OLD))), None);
     assert_eq!(next(Some(&rolled), None), None);
     assert_eq!(next(None, Some(Some(OLD))), None);
+}
+
+/// The review of #1349, MEDIUM: the first start of `updated` ends early in
+/// two boots in a row, with a hang between them. Boot 1 maps the candidate;
+/// its first start ends before it marks it; a start again checks it, which
+/// points the hint at the way back, and the candidate hangs the boot. Boot 2
+/// maps the way back; its first start ends early again; a start again finds
+/// the check's mark with the way back running, and rolls back. Boot 3 maps
+/// the way back, not the candidate. Before the mark, boot 2's start again
+/// found the record pending, took it for one written for the next restart,
+/// and pointed the hint at the candidate again.
+#[test]
+fn two_early_ends_around_a_hang_do_not_try_the_candidate_again() {
+    let record = pending(NEW, Some(OLD));
+    // OLD ran; a switch to NEW left the hint on it for boot 1.
+    let disk = Disk {
+        hint: Some(NEW),
+        record: Some(record.clone()),
+    };
+    // Boot 1: the first start ends before at_boot; a start again checks.
+    let begun = start(&at_boot(disk.record.as_ref(), true), 0);
+    let checking = begun.probation.clone().expect("a check");
+    let disk = disk.all(&begun.writes);
+    let waiting = look(
+        &checking,
+        disk.record.as_ref(),
+        Health::NotYet,
+        5_000,
+        LIMIT,
+    );
+    let disk = disk.all(&waiting.writes);
+    // NEW hangs boot 1 here. Boot 2 maps what the hint names.
+    assert_eq!(disk.hint, Some(OLD));
+    // Boot 2: the first start ends early again; a start again finds the mark.
+    let found = at_boot(disk.record.as_ref(), true);
+    assert!(matches!(found, AtBoot::Resume(_)), "{found:?}");
+    let again = start(&found, 1_000);
+    let disk = disk.all(&again.writes);
+    let judging = again.probation.expect("a resumed probation");
+    let seen = look(&judging, disk.record.as_ref(), runs(OLD), 7_000, LIMIT);
+    assert_eq!(seen.after, None);
+    let disk = disk.all(&seen.writes);
+    // Boot 3 maps the way back, and nothing is left to try.
+    assert_eq!(
+        disk,
+        Disk {
+            hint: Some(OLD),
+            record: Some(Trial {
+                state: State::RolledBack("another model started in its place".into()),
+                ..record
+            }),
+        }
+    );
+    assert_eq!(at_boot(disk.record.as_ref(), false), AtBoot::Nothing);
+    assert_eq!(at_boot(disk.record.as_ref(), true), AtBoot::Nothing);
+}
+
+/// The cost of the mark, in the decision row's gaps: a switch made this boot
+/// (another model runs, the record pending for the next restart), then a
+/// start again of `updated` that ends between the check's mark and its
+/// leave. The next start again finds the mark with that other model running
+/// and rolls the switch back: lost, never a model run untried.
+#[test]
+fn a_start_cut_between_the_mark_and_its_leave_loses_that_boots_switch() {
+    let record = pending(NEW, Some(OLD));
+    let disk = Disk {
+        hint: Some(NEW),
+        record: Some(record.clone()),
+    };
+    let begun = start(&at_boot(disk.record.as_ref(), true), 0);
+    // The start ends here, marked, before llm says OLD runs.
+    let disk = disk.all(&begun.writes);
+    let found = at_boot(disk.record.as_ref(), true);
+    let again = start(&found, 1_000);
+    let disk = disk.all(&again.writes);
+    let seen = look(
+        &again.probation.expect("a resumed probation"),
+        disk.record.as_ref(),
+        runs(OLD),
+        7_000,
+        LIMIT,
+    );
+    let disk = disk.all(&seen.writes);
+    assert_eq!(disk.hint, Some(OLD));
+    assert!(
+        matches!(&disk.record, Some(t) if matches!(t.state, State::RolledBack(_))),
+        "{disk:?}"
+    );
+}
+
+/// The check's mark is the record's `attempted`, which `kai-modeltrial 1`
+/// had from the start: it adds no line, so a build before it (whose parser
+/// refuses an extra line or an unknown state) reads the marked record. It
+/// reads it the safe way: its first start rolls it back at once, and a start
+/// again judges it by what `llm` runs.
+#[test]
+fn a_checked_record_is_one_an_older_build_reads() {
+    let record = pending(NEW, Some(OLD));
+    let marked = start(&AtBoot::Check(record.clone()), 0)
+        .probation
+        .expect("a check")
+        .trial;
+    let text = format!(
+        "kai-modeltrial 1\ncandidate {}\nfnv 2222222222222222\nprevious {}\nstate attempted\n",
+        "22".repeat(32),
+        "11".repeat(32)
+    );
+    assert_eq!(marked.encode(), text);
+    assert_eq!(Trial::parse(&text), Ok(marked));
+    // The parser stays as strict as before: a new line would be refused.
+    assert!(Trial::parse(&format!("{text}checked yes\n")).is_err());
+}
+
+/// A pending record as a build before the mark wrote it reads the same, and
+/// a start again checks it and marks it.
+#[test]
+fn a_pending_record_an_older_build_wrote_is_checked_and_marked() {
+    let text = format!(
+        "kai-modeltrial 1\ncandidate {}\nfnv 2222222222222222\nprevious {}\nstate pending\n",
+        "22".repeat(32),
+        "11".repeat(32)
+    );
+    let record = Trial::parse(&text).expect("an older build's record");
+    assert_eq!(record, pending(NEW, Some(OLD)));
+    let found = at_boot(Some(&record), true);
+    assert_eq!(found, AtBoot::Check(record.clone()));
+    let writes = start(&found, 0).writes;
+    assert_eq!(
+        writes,
+        vec![
+            Write::Hint(Some(OLD)),
+            Write::Record(Trial {
+                state: State::Attempted,
+                ..record
+            })
+        ]
+    );
 }
