@@ -14,6 +14,8 @@ pub mod hpet_counter;
 use alloc::vec::Vec;
 
 /// Reads physical memory. The kernel maps pages on demand; tests use a fake.
+/// Tables may name any 64-bit address: `read` returns `None`, never panics, for
+/// a range it cannot map (past 2^64 or past the CPU's physical address width).
 pub trait PhysMem {
     fn read(&self, phys: u64, len: usize) -> Option<&[u8]>;
 }
