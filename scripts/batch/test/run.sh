@@ -368,6 +368,74 @@ check "the model PR is not merged"            '! grep -q "#2 merged" "$L" && ! g
 # off it and were never batched (96 open PRs at --limit 80, 2026-11-19).
 check "every open-PR listing asks for 1000"   'grep "pr list .*--state open" "$T/gh.log" | grep -v -- "--head" | grep -q . && ! grep "pr list .*--state open" "$T/gh.log" | grep -v -- "--head" | grep -qv -- "--limit 1000"'
 
+# 11-24: #1188's head was on main already, carried in by another PR's merge,
+# and GitHub kept it open; each loop batched it and put an empty commit on main.
+carried() {  # #8, its head already on main, open
+  mkpr 8 feat/carried main docs/c.md; touch "$T/prs/8/stays-open"
+  git -C "$T/work" push -q origin feat/carried:main && git -C "$T/work" fetch -q origin
+  git -C "$T/work" checkout -q --detach origin/main
+  m=$(git -C "$T/origin.git" rev-parse main)
+}
+twin() {  # #8, its change already on main by another commit, its head not
+  for n in 1 2 3 4 5 7; do : > "$T/prs/$n/labels"; done
+  mkpr 8 feat/twin main docs/c.md
+  git -C "$T/work" checkout -q --detach origin/main
+  mkdir -p "$T/work/docs"; echo feat/twin > "$T/work/docs/c.md"
+  git -C "$T/work" add -A && git -C "$T/work" commit -qm twin && git -C "$T/work" push -q origin HEAD:main
+  m=$(git -C "$T/origin.git" rev-parse main)
+}
+auto_wait() {  # runs batch-auto.sh until its log has $1, then stops it
+  : > "$T/gh.log"
+  bash "$B/batch-auto.sh" > /dev/null & A=$!
+  for i in $(seq 1 120); do grep -q "$1" "$T/state/batch-auto.log" 2>/dev/null && break; /bin/sleep 1 2>/dev/null || /usr/bin/sleep 1; done
+  touch "$T/state/batch-auto.stop"; wait $A
+  L="$T/state/batch-auto.log"
+}
+
+echo "== batch-ff.sh: a batch that adds nothing to main stops before its CI"
+setup; carried
+: > "$T/gh.log"; ff 8
+check "it stops, main unchanged, no CI"       'has "the batch adds nothing to main" && ! has "waiting for CI" && ! grep -q "pr create" "$T/gh.log" && [ "$(git -C "$T/origin.git" rev-parse main)" = "$m" ]'
+
+echo "== batch-auto.sh: a PR whose head is already on main is unlabelled, not batched"
+setup; carried
+for n in 2 3 4 5 7; do : > "$T/prs/$n/labels"; done
+auto_wait "#1 merged"
+check "its label goes, with a comment"        'grep -q "#8 left out: its head [0-9a-f]* is already on main; label removed" "$L" && [ ! -s "$T/prs/8/labels" ] && grep -q "pr comment 8 .*already on main" "$T/gh.log"'
+check "it is in no batch; the rest lands"     '! grep -qE "batch: (.* )?8( |$)" "$L" && grep -q "#1 merged" "$L"'
+
+echo "== batch-auto.sh: a landed PR GitHub still shows open loses its label, unless pushed to as it landed"
+setup
+touch "$T/prs/5/stays-open"; for n in 1 2 3 4 7; do : > "$T/prs/$n/labels"; done
+# The lane pushes to #5 after land checked its head, once: the first landing
+# keeps the label, and the second lands the new commit and removes it.
+cat > "$T/on-ready" <<EOF
+git -C "$T/work" checkout -q feat/d && echo more >> "$T/work/d.txt" && git -C "$T/work" commit -qam more \
+  && git -C "$T/work" push -q origin feat/d && git -C "$T/work" rev-parse HEAD > "$T/moved-head"
+EOF
+auto_wait "#5 landed but"; rm -f "$T/on-ready"
+check "pushed to: label kept, the commit lands" '[ "$(grep -c "batch: 5$" "$L")" = 2 ] && git -C "$T/origin.git" merge-base --is-ancestor "$(cat "$T/moved-head")" main'
+check "then its label goes, with a comment"   '[ "$(grep -c "#5 landed but GitHub still shows it open; label removed" "$L")" = 1 ] && [ ! -s "$T/prs/5/labels" ] && grep -q "pr comment 5 .*within a few minutes" "$T/gh.log"'
+
+echo "== batch-auto.sh: a PR whose change is already on main is unlabelled, with no CI run"
+setup; twin
+auto_wait "#8 left out"
+check "its label goes, with a comment"        'grep -q "#8 left out: its batch adds nothing to main; label removed" "$L" && [ ! -s "$T/prs/8/labels" ] && grep -q "pr comment 8 .*already on main" "$T/gh.log"'
+check "no batch PR or CI; main unchanged"     '! grep -q "pr create" "$T/gh.log" && [ "$(git -C "$T/origin.git" rev-parse main)" = "$m" ]'
+
+echo "== batch-auto.sh: a no-op batch resumed after its PR was pushed to keeps the label"
+setup; twin
+# A green state saved while #8 added nothing (before compose() checked for it).
+b=$m; h=$(cat "$T/prs/8/sha")
+c=$(git -C "$T/work" commit-tree "$b^{tree}" -p "$b" -p "$h" -m "batch: #8 (feat/twin)")
+mkdir -p "$T/state"
+printf 'phase=green\nname=batch/1124-0000\nbase=%s\nc=%s\nbpr=999\nprs=8\nheads_s=%s\nbrs_s=feat/twin\n' "$b" "$c" "$h" > "$T/state/current-batch"
+git -C "$T/work" checkout -q feat/twin && echo y > "$T/work/docs/d.md" && git -C "$T/work" add -A && git -C "$T/work" commit -qm more
+git -C "$T/work" push -q origin feat/twin; nh=$(git -C "$T/work" rev-parse HEAD); git -C "$T/work" checkout -q --detach origin/main
+auto_wait "#8 merged"
+check "the resume stops on the moved head"    'grep -q "batch stopped: #8 was pushed to during the batch" "$L" && ! grep -q "adds nothing" "$L"'
+check "the label stays; the new commit lands" 'grep -q "#8 merged" "$L" && git -C "$T/origin.git" merge-base --is-ancestor "$nh" main'
+
 echo "== batch-auto.sh: a failed batch names its failing cases in the log"
 setup
 for n in 2 3 4 5 7; do : > "$T/prs/$n/labels"; done

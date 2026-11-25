@@ -32,11 +32,14 @@ compile_fails() {
 st() {
   local s
   s=$(pr $1 state)
-  if [ "$s" = OPEN ] && git -C "$T/origin.git" merge-base --is-ancestor "$(pr $1 sha)" refs/heads/main 2>/dev/null; then s=MERGED; fi
+  # $T/prs/<n>/stays-open: GitHub never marks it merged (#1188, its base a merged PR's branch).
+  if [ "$s" = OPEN ] && [ ! -f "$T/prs/$1/stays-open" ] && git -C "$T/origin.git" merge-base --is-ancestor "$(pr $1 sha)" refs/heads/main 2>/dev/null; then s=MERGED; fi
   if [ "$s" = MERGED ] && [ -f "$T/kill-on-merged" ]; then rm -f "$T/kill-on-merged"; kill -9 $(cat "$T/ffpid"); fi
   echo $s
 }
 if [ "$1 $2" = "pr ready" ] && [ -f "$T/kill-on-ready" ]; then rm -f "$T/kill-on-ready"; kill -9 $(cat "$T/ffpid"); exit 1; fi
+# $T/on-ready runs once at `gh pr ready`, after land's head checks (a lane pushing as its PR lands).
+if [ "$1 $2" = "pr ready" ] && [ -f "$T/on-ready" ]; then mv "$T/on-ready" "$T/ready-hook"; bash "$T/ready-hook"; fi
 case "$1 $2" in
   "pr view")
     n=$3
