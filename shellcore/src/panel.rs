@@ -196,7 +196,7 @@ impl Shell {
             return refused(OPEN);
         }
         // Its file changes did not land: never "Done".
-        if let Some(note) = self.line_not_landed.take() {
+        if let Some(note) = self.take_not_landed_line() {
             return PanelResult::Refused(note);
         }
         if self.clarifying.is_some() {

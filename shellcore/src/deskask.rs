@@ -333,7 +333,7 @@ impl Shell {
             (false, false, false) => (false, crate::panel::FAILED),
         };
         // It ran, but its file changes did not land: that, never "Done".
-        let not_landed = self.line_not_landed.take().filter(|_| !lapsed && !declined);
+        let not_landed = self.take_not_landed_line().filter(|_| !lapsed && !declined);
         // A send the card allowed is held, not done: its line says so, with
         // its undo, as the console's does (#1142's review), made from the
         // outbox's entry, never the reply's text.

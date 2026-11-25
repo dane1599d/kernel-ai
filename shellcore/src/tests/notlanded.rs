@@ -85,3 +85,33 @@ fn a_redo_after_a_line_that_did_not_land_restores() {
     let files: Vec<_> = host.files.borrow().values().cloned().collect();
     assert_eq!(files, ["zero"]);
 }
+
+#[test]
+fn a_line_that_did_not_land_keeps_its_output() {
+    let code = r#"{"name":"script","arguments":{"code":"print(\"hello there\");\nfs_write(\"a.txt\", \"one\");"}}"#;
+    let (host, mut shell) =
+        super::act::with_calls(alloc::vec![Ok(llmproto::act::parse(code).unwrap())]);
+    host.one_action.set(true);
+    host.commit_refused.set(true);
+    let lost = shell.eval_console("say hello and write a.txt");
+    assert!(lost.text.contains("hello there"), "{}", lost.text);
+    assert!(lost.text.contains("did not land"), "{}", lost.text);
+    assert!(!lost.text.contains("Done"), "{}", lost.text);
+}
+
+/// The shell's own rollback is no loss (M1 on 0e4340d6): the failed run's
+/// entry is written to the log on disk, and nothing says `fs` dropped it.
+/// The FakeHost aborts without the shell's `Ledger`; the check of the
+/// ledger itself is `ledger::tests::a_rolled_back_action_is_no_loss_and_its_log_is_written`.
+#[test]
+fn a_rolled_back_line_is_logged_and_not_called_lost() {
+    let throws = r#"{"name":"script","arguments":{"code":"fs_create(\"a.txt\", \"1\");\nfs_create(\"a.txt\", \"2\");"}}"#;
+    let (host, mut shell) =
+        super::act::with_calls(alloc::vec![Ok(llmproto::act::parse(throws).unwrap())]);
+    host.one_action.set(true);
+    let reply = shell.eval_console("create a.txt twice");
+    assert!(reply.text.starts_with("Nothing changed"), "{}", reply.text);
+    assert!(!reply.text.contains("did not land"), "{}", reply.text);
+    let disk = host.log_disk.borrow().clone().unwrap_or_default();
+    assert!(disk.contains("nothing changed"), "{disk}");
+}

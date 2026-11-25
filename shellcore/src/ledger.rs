@@ -9,8 +9,9 @@
 //! leaves its number to the next commit, whoever makes it.
 //!
 //! So the log's entries carry it past that. Whatever ends the line's action
-//! without committing it (a Commit `fs` refuses, a write-back `fs` drops on
-//! any request, the log's own write included, or the shell's abort), the
+//! without committing it (a Commit `fs` refuses, or a write-back `fs` drops
+//! on any request, the log's own write included; never the shell's own
+//! abort, which logs no file change), the
 //! ledger keeps that number as not landed until the line's log is written
 //! ([`Ledger::landed`]). That write is then [`LogFailed::NotLanded`], and the
 //! shell takes the action's file changes out of its entries
@@ -79,9 +80,12 @@ impl Ledger {
     }
 
     /// The shell aborted its open action itself.
+    /// Not a loss to say: the shell put the action back itself (a failed
+    /// run's rollback, whose entry names no file change), and the log is
+    /// still written. Only an undo of it restores nothing.
     pub fn aborted(&mut self, generation: u64) {
         self.open = None;
-        self.lose(generation);
+        self.lost = Some(generation);
     }
 
     /// `fs` committed something as `generation` (an undo's restore): that
@@ -175,20 +179,23 @@ pub fn after_commit(generation: u64, answer: CommitAnswer) -> Result<(), LogFail
 }
 
 /// Takes `txn`'s file changes out of the log's entries, which say so in
-/// their outcome; the ids of those entries. `txn` never committed, so no
-/// entry it names landed: the next commit gets its number.
-pub fn take_not_landed(log: &mut ActLog, txn: u64, why: &str) -> Vec<u64> {
+/// their outcome: each such entry's id, with what each change it lost said
+/// (its [`Change::what`]). `txn` never committed, so no entry it names
+/// landed: the next commit gets its number.
+pub fn take_not_landed(log: &mut ActLog, txn: u64, why: &str) -> Vec<(u64, Vec<String>)> {
     let lost = |c: &Change| c.inverse == Some(Inverse::Fs { txn });
-    let mut ids = Vec::new();
+    let mut taken = Vec::new();
     for entry in log.entries_mut() {
         if !entry.changes.iter().any(lost) {
             continue;
         }
+        let whats = entry.changes.iter().filter(|c| lost(c)).map(Change::what);
+        let whats = whats.collect();
         entry.changes.retain(|c| !lost(c));
         entry.outcome = format!("{}; its file changes did not land: {why}", entry.outcome);
-        ids.push(entry.id);
+        taken.push((entry.id, whats));
     }
-    ids
+    taken
 }
 
 #[cfg(test)]
@@ -314,6 +321,18 @@ mod tests {
         let generation = ledger.take_for_commit().unwrap();
         ledger.committed(generation);
         assert_eq!(ledger.landed(Ok(())), Ok(()));
+    }
+
+    #[test]
+    fn a_rolled_back_action_is_no_loss_and_its_log_is_written() {
+        // A run wrote a file, then failed: the shell aborts its action.
+        let mut ledger = Ledger::default();
+        ledger.begin(7);
+        assert_eq!(ledger.undo(7), Undo::AbortOpen);
+        assert_eq!(ledger.take_for_commit(), None);
+        assert_eq!(ledger.landed(Ok(())), Ok(()));
+        // An undo of it still restores nothing.
+        assert_eq!(ledger.undo(7), Undo::Nothing);
     }
 
     #[test]

@@ -56,6 +56,7 @@ mod goaltoggle;
 pub mod grants;
 mod guard;
 mod instructions;
+mod landing;
 pub mod ledger;
 mod models;
 mod netask;
@@ -724,12 +725,8 @@ pub struct Shell {
     app_job: Option<appjob::Job>,
     /// What builds in the background came to, not yet shown.
     notices: Vec<String>,
-    /// What the last log write said of entries whose file changes did not
-    /// land, not yet shown: the line's reply says it ([`Shell::eval`]).
-    not_landed: Vec<String>,
-    /// The last line's file changes did not land: this, never its "Done",
-    /// is its result, on the terminal, the panel, the desk and an app.
-    line_not_landed: Option<String>,
+    /// File changes that did not land, as the line's reply says them.
+    landing: landing::Landing,
     /// The app whose install card waits to open by itself, once a build in
     /// the background built it ([`Shell::take_card`]).
     card: Option<String>,
@@ -902,8 +899,7 @@ impl Shell {
             app_written: Vec::new(),
             app_job: None,
             notices: Vec::new(),
-            not_landed: Vec::new(),
-            line_not_landed: None,
+            landing: landing::Landing::default(),
             card: None,
             desk_asks: Vec::new(),
             card_for_desk: None,
@@ -1058,19 +1054,8 @@ impl Shell {
         }
         match self.host.log_write(&text) {
             Ok(()) => {}
-            // The line's files are not on the disk, nor the log with them:
-            // its entries lose those changes, so no undo restores what the
-            // number means by then, and the next write carries that.
-            Err(LogFailed::NotLanded { txn, why }) => {
-                for id in ledger::take_not_landed(&mut self.log, txn, &why) {
-                    let note = format!(
-                        "#{id}: its file changes did not land ({why}); nothing of them to undo"
-                    );
-                    self.host.audit(&note);
-                    self.not_landed.push(note);
-                }
-                return Err(format!("the files did not land: {why}"));
-            }
+            // The line's files are not on the disk, nor the log with them.
+            Err(LogFailed::NotLanded { txn, why }) => return Err(self.not_landed(txn, &why)),
             Err(LogFailed::Failed(why)) => return Err(why),
         }
         self.saved_log = Some(text);
@@ -1084,33 +1069,14 @@ impl Shell {
     }
 
     /// Runs one line and returns what to show; the log goes to disk after it.
-    /// A line whose file changes did not land with it says that instead of
-    /// what it ran to ("Done: … undo"): there is nothing of them to undo.
     pub fn eval(&mut self, input: &str) -> Reply {
         if let Some(reply) = self.status_line(input) {
             return reply;
         }
-        // Another write's loss (a send's) is a notice, not this line's.
-        let earlier = core::mem::take(&mut self.not_landed);
-        self.notices.extend(earlier);
-        self.line_not_landed = None;
-        let mut reply = self.eval_line(input);
+        self.landing_begins();
+        let reply = self.eval_line(input);
         self.save_log();
-        let lost = core::mem::take(&mut self.not_landed);
-        if !lost.is_empty() {
-            let note = lost.join("\n");
-            self.done_line = None;
-            reply = match reply.confirm {
-                // Its question still waits; the loss is said first.
-                Some(_) => Reply {
-                    text: format!("{note}\n{}", reply.text),
-                    ..reply
-                },
-                None => Reply::err(note.clone()),
-            };
-            self.line_not_landed = Some(note);
-        }
-        reply
+        self.say_not_landed(reply)
     }
 
     /// [`Shell::eval`] for the terminal's own line: a build's notice goes
