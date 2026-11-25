@@ -697,13 +697,22 @@ fn a_restore_puts_nothing_in_the_volume_root() {
     assert_eq!(trashed.0, Reply::Done);
     let emptied = c.call(ALICE, pkg, DIR_RIGHTS, Request::EmptyTrash).0;
     assert_eq!(emptied, Reply::Emptied { count: 1 });
-    // Bringing `planted` back would put it in the volume's root.
+    // `planted` went for good after the action, so the restore leaves it
+    // (bug hunt 2, H2-2), and nothing lands in the volume's root. Bringing
+    // back what the action itself removed into a folder gone since would put
+    // it there, and is refused (kaifs's `a_scoped_restore_refuses_the_root`).
     let restore = Request::Restore {
         txn: generation,
         action: 8,
     };
-    let reply = c.call(ALICE, pkg, DIR_RIGHTS, restore);
-    assert_eq!(failed(reply), Error::Permission);
+    let reply = c.call(ALICE, pkg, DIR_RIGHTS, restore).0;
+    let Reply::Restored { rows, .. } = reply else {
+        panic!("{reply:?}");
+    };
+    assert!(
+        !rows.is_empty() && rows.iter().all(|(_, o)| *o == Outcome::Left),
+        "{rows:?}"
+    );
     let at_root = c.server.fs().lookup(ROOT, "planted").unwrap();
     assert!(at_root.is_none(), "{at_root:?}");
 }

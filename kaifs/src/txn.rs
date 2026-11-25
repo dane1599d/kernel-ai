@@ -45,6 +45,12 @@ impl<D: BlockDev> Fs<D> {
         self.undo_scan(undo_key(self.active, 0, 0), None)
     }
 
+    /// The active volume's UNDO records of actions committed after `txn`,
+    /// oldest first: those before it are never read.
+    pub fn undo_records_after(&mut self, txn: u64) -> Result<Vec<Undo>, Error> {
+        self.undo_scan(undo_key(self.active, txn.saturating_add(1), 0), None)
+    }
+
     /// The active volume's UNDO records as stored, undecoded: each action's
     /// parts with their numbers. For repair, which drops the ones that do not
     /// hold.
