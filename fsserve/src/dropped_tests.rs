@@ -423,3 +423,28 @@ fn a_write_past_the_largest_file_in_an_action_is_refused_at_once() {
         assert_eq!(data, Reply::Data(vec![7; 2]), "{off}");
     }
 }
+
+/// The edge of the check above: a Write whose last byte is the largest file's
+/// last byte fits, inside an action as outside one, and commits.
+#[test]
+fn a_write_ending_at_the_largest_file_is_done() {
+    let off = kaifs::items::MAX_FILE - 1;
+    for in_action in [false, true] {
+        let mut disk = MemDisk::new(2 * 1024);
+        let (mut c, _) = Client::start(&mut disk);
+        let doc = create(&mut c, "doc").expect("a file");
+        if in_action {
+            let begin = Request::Begin { action: 1 };
+            assert_eq!(home(&mut c, ALICE, begin).0, Reply::Done);
+        }
+        assert_eq!(write(&mut c, &doc, off, 1), Reply::Done, "{in_action}");
+        let end = match in_action {
+            true => home(&mut c, ALICE, Request::Commit).0,
+            false => home(&mut c, ALICE, Request::Sync).0,
+        };
+        assert!(!matches!(end, Reply::Failed(_)), "{in_action}: {end:?}");
+        let read = Request::Read { off, len: 16 };
+        let data = c.call(ALICE, doc.badge, doc.rights, read).0;
+        assert_eq!(data, Reply::Data(vec![7]), "{in_action}");
+    }
+}
