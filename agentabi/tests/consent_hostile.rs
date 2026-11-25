@@ -300,6 +300,63 @@ fn a_negated_cue_never_runs_the_change() {
     }
 }
 
+fn trash_thesis() -> [Call<'static>; 1] {
+    [Call {
+        name: "fs_trash",
+        args: &[(
+            "path",
+            Value {
+                text: "/home/user/thesis.txt",
+                label: Label::Literal,
+            },
+        )],
+        control: Label::Literal,
+    }]
+}
+
+/// bug-hunt-6 H6-1: the negations a grant already hears turn a change's cue
+/// off too: any `n't` or auxiliary `nt`, "cannot", "stop" before an -ing word,
+/// and a clause of only negation before the cue's ("never, ever ...").
+#[test]
+fn every_negation_a_grant_hears_turns_a_change_off() {
+    for line in [
+        "I didn't ask for round robin",
+        "you shouldn't switch to round robin",
+        "you can't switch to round robin",
+        "you cannot switch to round robin",
+        "stop switching to round robin",
+        "quit switching to round robin",
+        "never, ever switch to round robin",
+        "don't, under any circumstances, switch to round robin",
+        "didnt switch to round robin",
+        "Never, ever. Switch to round robin? No",
+    ] {
+        let decision = decide(line, &switch(), &ROWS)[0];
+        assert_ne!(decision.tier, Tier::Run, "{line:?} ran the switch");
+    }
+    for line in [
+        "you shouldn't trash thesis.txt",
+        "Never, ever trash thesis.txt",
+        "Don't, under any circumstances, trash thesis.txt",
+    ] {
+        let decision = decide(line, &trash_thesis(), &ROWS)[0];
+        assert_ne!(decision.tier, Tier::Run, "{line:?} trashed thesis.txt");
+    }
+    // The same changes asked for plainly still run; a bare "no," still ends at
+    // its comma, and a negation still ends at its clause.
+    for line in [
+        "switch to round robin",
+        "no, switch to round robin",
+        "don't wait, switch to round robin",
+        "I can't find it, switch to round robin",
+    ] {
+        let decision = decide(line, &switch(), &ROWS)[0];
+        assert_eq!(decision.tier, Tier::Run, "{line:?}: {decision:?}");
+    }
+    let decision = decide("trash thesis.txt", &trash_thesis(), &ROWS)[0];
+    assert_eq!(decision.tier, Tier::Run, "{decision:?}");
+}
+
 #[test]
 fn a_cue_in_lookalike_letters_is_not_a_cue() {
     // Cyrillic і, о and а, and full-width letters: they look like the cue but
