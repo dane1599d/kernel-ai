@@ -50,7 +50,9 @@ pub fn check() -> Result<(), &'static str> {
         })
         .map_err(|_| "shm: cannot start a holder")?;
     }
-    let result = rounds(pids).and_then(|()| refund_rule(pids[0]));
+    let result = rounds(pids)
+        .and_then(|()| refund_rule(pids[0]))
+        .and_then(|()| failed_map_shoots_down(pids[0]));
     for name in HOLDERS {
         let _ = ipc::call(name, b"exit", 5_000);
     }
@@ -266,6 +268,64 @@ fn refund_rule(pid: u64) -> Result<(), &'static str> {
     log!(
         "shm: a refund for another pid leaves a slot's count; one for its own pid comes off by its pages"
     );
+    Ok(())
+}
+
+/// Bug hunt 3 H3-6: an SHM_MAP that fails partway shoots down the pages it took
+/// back. A page planted where the object's second page goes makes the map fail
+/// after its first; the object is a kernel one over the test's own frames.
+fn failed_map_shoots_down(pid: u64) -> Result<(), &'static str> {
+    let slot = slot_of(pid).ok_or("shm: no slot for the holder")?;
+    let phys = memory::with(|m| m.allocate_contiguous(3)).ok_or("shm: no frames")?;
+    let Ok(object) = shm::create_kernel_object(phys, 2) else {
+        let _ = memory::with(|m| m.free_contiguous(phys, 3));
+        return Err("shm: no object");
+    };
+    let base = shm::base((object & 0xFFFF_FFFF) as usize);
+    let blocker = base + PAGE_SIZE;
+    let planted = match process::lock_space(slot).as_mut() {
+        Some(space) => {
+            let frame = phys + 2 * PAGE_SIZE;
+            memory::with(|m| m.map_shared_page(space, blocker, frame, false)).is_ok()
+        }
+        None => false,
+    };
+    let result = (|| {
+        if !planted {
+            return Err("shm: cannot plant a page in the object's way");
+        }
+        smp::watch_shootdowns(base);
+        let entry = Entry::new(Kind::Shm, Rights::MAP | Rights::READ, object);
+        let mapped = shm::map_entry(slot, &entry, false);
+        let shot = smp::watched_shootdowns();
+        smp::watch_shootdowns(0);
+        match mapped {
+            Err(kabi::Error::NoMemory) => {}
+            Ok(_) => {
+                let _ = shm::unmap(slot, base);
+                return Err("shm: a map over a planted page succeeded");
+            }
+            Err(_) => return Err("shm: the map failed for another reason"),
+        }
+        if shot == 0 {
+            return Err("shm: a failed SHM_MAP took its pages back with no TLB shootdown");
+        }
+        Ok(())
+    })();
+    if planted {
+        let cr3 = process::with_space(slot, |space| {
+            let _ = memory::with(|m| m.set_shared_page(space, blocker, None));
+            space.cr3()
+        });
+        if let Some(cr3) = cr3 {
+            smp::tlb_shootdown_range(&[cr3], blocker, 1);
+        }
+    }
+    shm::settle(object);
+    shm::collect();
+    let _ = memory::with(|m| m.free_contiguous(phys, 3));
+    result?;
+    log!("shm: a failed SHM_MAP took back the pages it had mapped and shot them down");
     Ok(())
 }
 
