@@ -67,6 +67,53 @@ fn a_redefinition_switches_callers_and_stored_pointers() {
     assert_eq!(cc.value("Sq(3)"), "i64 103");
 }
 
+/// A reply too large to hold every record: each function that changed type
+/// keeps its `def` and its `retyped` together or neither. A `def` whose
+/// `retyped` was left out would read as redefined in place, and a caller
+/// before it as following it.
+#[test]
+fn a_retyped_function_keeps_its_def_and_its_retyped_together_or_neither() {
+    // Long names: an entry is at most 4 KiB, and a reply 8 KiB.
+    const N: usize = 50;
+    let mut cc = Cc::open();
+    let entry = |ty: &str, body: &str| {
+        (0..N)
+            .map(|i| format!("{ty} Fn{i:02}_{:_<55}(){{return {body};}}\n", ""))
+            .collect::<String>()
+    };
+    cc.ok(&entry("I64", "1"));
+    let reply = cc.ok(&entry("F64", "1.5"));
+    let defs: Vec<&str> = reply
+        .iter()
+        .filter_map(|r| r.strip_prefix("def fn "))
+        .map(|r| r.split(' ').next().unwrap())
+        .collect();
+    // Each def that went in is followed at once by its own retyped, and no
+    // retyped stands alone.
+    for (at, record) in reply.iter().enumerate() {
+        if let Some(def) = record.strip_prefix("def fn ") {
+            let name = def.split(' ').next().unwrap();
+            assert_eq!(
+                reply.get(at + 1).map(String::as_str),
+                Some(format!("retyped {name}").as_str()),
+                "{name}"
+            );
+        }
+        if let Some(name) = record.strip_prefix("retyped ") {
+            assert!(
+                reply[at - 1].starts_with(&format!("def fn {name} ")),
+                "{name}"
+            );
+        }
+    }
+    assert_eq!(
+        reply.iter().filter(|r| r.starts_with("retyped ")).count(),
+        defs.len()
+    );
+    // The room did run out: some are left out, and some went in.
+    assert!(!defs.is_empty() && defs.len() < N, "{} of {N}", defs.len());
+}
+
 #[test]
 fn undo_reverts_slots_and_names() {
     let mut cc = Cc::open();

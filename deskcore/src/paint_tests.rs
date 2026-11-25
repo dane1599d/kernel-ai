@@ -19,6 +19,7 @@ pub(crate) const BAR: Bar = Bar {
     model: true,
     mem_used_mib: 412,
     utc_s: None,
+    zone_min: 0,
 };
 
 fn paint(name: &str, desk: &Desk, w: i32, h: i32) -> String {
@@ -47,6 +48,7 @@ fn paint_in(
         chat: &crate::chat::Chat::default(),
         start: None,
         ask: None,
+        preview: None,
         now_ms: 4_200,
     };
     painter.paint(
@@ -85,7 +87,7 @@ fn two_windows_paint() {
     paint("two", &desk, 1280, 800);
 }
 
-/// `desk-boot`'s golden (xtask/src/cases/kernel.rs): the empty desk at
+/// `desk-boot`'s golden (xtask/src/cases/kernel/desk.rs): the empty desk at
 /// 1280x800 with the cursor in the middle, as `desktop` first draws it on GOP,
 /// its RGB bytes hashed with the tray blanked. The boot's screendump
 /// must hash the same.
@@ -113,6 +115,7 @@ fn the_boot_desk_matches_desk_boot_s_golden() {
         chat: &crate::chat::Chat::default(),
         start: None,
         ask: None,
+        preview: None,
         now_ms: 0,
     };
     painter.paint(&mut canvas, all, &scene, &mut |_, _, _| false);
@@ -160,6 +163,7 @@ fn an_ask_card_paints_above_a_window() {
         chat: &crate::chat::Chat::default(),
         start: None,
         ask: Some(&card),
+        preview: None,
         now_ms: 3_000,
     };
     painter.paint(

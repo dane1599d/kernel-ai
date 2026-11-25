@@ -9,7 +9,10 @@
 //! the estimate undercounts them. It also counts S05-2's agent views (ADR 0005):
 //! each P4 app's mock window as `ui_view` shows it, which fails past
 //! `deskcore::view::MAX_TOKENS` or when the view's estimate undercounts it.
-//! The `c-app-1` card is held to the same alarm on its own.
+//! The `c-app-1` card is held to the same alarm on its own. For the trims the
+//! agent rows need (plan agents-os §4, T0), it also counts each line of the
+//! pack's sections on its own (an example's request and answer together),
+//! largest first, with the headroom left under the alarm: measurement only.
 //! The token-count workflow runs it on GitHub's runner.
 
 use bpe::Tokenizer;
@@ -48,7 +51,31 @@ pub fn main(args: &[String]) -> Result<(), String> {
     print!("{}", views(&tok));
     check_budget(&tok)?;
     check_app_card(&tok)?;
+    check_apps_turn(&tok)?;
     check_views(&tok)
+}
+
+/// The shipped apps' turn (P4 task 15) as llm builds it, counted with the
+/// model's tokenizer (`pack::apps::turn_counted`): it must leave out no app the
+/// host's estimate keeps, or the act prompt would change in the guest only.
+fn check_apps_turn(tok: &Tokenizer) -> Result<(), String> {
+    use llmproto::pack::apps::{self, APPS_BUDGET};
+    let groups = crate::actbench::apps::shipped()?;
+    let (turn, real_out) = apps::turn_counted(&groups, |text| count(tok, text));
+    let (_, estimated_out) = apps::turn(&groups);
+    println!(
+        "\n- The shipped apps turn: {} real tokens of {APPS_BUDGET}; left out: {}",
+        count(tok, &turn),
+        estimated_out.join(" ")
+    );
+    match real_out == estimated_out {
+        true => Ok(()),
+        false => Err(format!(
+            "the shipped apps turn leaves out {real_out:?} by real tokens and \
+             {estimated_out:?} by estimate: llm counts real tokens, so the guest's \
+             act prompt would differ"
+        )),
+    }
 }
 
 /// S05-2's views: each P4 app's mock window, with the other apps' windows in
@@ -72,6 +99,58 @@ fn mock_views() -> Vec<(&'static str, String)> {
         .collect()
 }
 
+/// S05-2's views of each shipped app's real window, as each `-ui` crate's host
+/// test commits them (`tests/golden/view-*.txt`, made by `testkit/appview.rs`:
+/// the window's real frame, `wasmhost::surface::tree_update`, then
+/// `deskcore::view::project`), so the real tokenizer counts what the agent is
+/// shown and not only the mock trees.
+fn real_views() -> Vec<(&'static str, &'static str)> {
+    macro_rules! golden {
+        ($name:literal, $path:literal) => {
+            ($name, include_str!(concat!("../../", $path)).trim_end())
+        };
+    }
+    vec![
+        golden!("notes", "components/notes-ui/tests/golden/view-notes.txt"),
+        golden!("files", "apps/files-ui/tests/golden/view-files.txt"),
+        golden!("monitor", "apps/monitor-ui/tests/golden/view-monitor.txt"),
+        golden!("models", "apps/models-ui/tests/golden/view-models.txt"),
+        golden!(
+            "terminal",
+            "apps/terminal-ui/tests/golden/view-terminal.txt"
+        ),
+        golden!("editor", "apps/editor-ui/tests/golden/view-editor.txt"),
+        golden!(
+            "settings, About",
+            "apps/settings-ui/tests/golden/view-settings-about.txt"
+        ),
+        golden!(
+            "settings, Appearance",
+            "apps/settings-ui/tests/golden/view-settings-appearance.txt"
+        ),
+        golden!(
+            "settings, Keep running",
+            "apps/settings-ui/tests/golden/view-settings-keep-running.txt"
+        ),
+        golden!(
+            "settings, Network",
+            "apps/settings-ui/tests/golden/view-settings-network.txt"
+        ),
+        golden!(
+            "settings, Rules and profiles",
+            "apps/settings-ui/tests/golden/view-settings-rules-and-profiles.txt"
+        ),
+        golden!(
+            "settings, Updates",
+            "apps/settings-ui/tests/golden/view-settings-updates.txt"
+        ),
+        golden!(
+            "settings, What apps can do",
+            "apps/settings-ui/tests/golden/view-settings-what-apps-can-do.txt"
+        ),
+    ]
+}
+
 /// S05-2's table (ADR 0005, "Spikes that settle it").
 fn views(tok: &Tokenizer) -> String {
     use deskcore::view::{MAX_TOKENS, estimate_tokens};
@@ -83,6 +162,16 @@ fn views(tok: &Tokenizer) -> String {
             tok,
             &format!("`{app}` (estimated {})", estimate_tokens(&text)),
             &text,
+        );
+    }
+    for (app, text) in real_views() {
+        table.part(
+            tok,
+            &format!(
+                "`{app}`, the real window (estimated {})",
+                estimate_tokens(text)
+            ),
+            text,
         );
     }
     table.text
@@ -102,6 +191,25 @@ fn check_views(tok: &Tokenizer) -> Result<(), String> {
             return Err(format!(
                 "S05-2: {app}'s view estimate ({}) undercounts the real {real} tokens",
                 estimate_tokens(&text)
+            ));
+        }
+    }
+    for (app, text) in real_views() {
+        let real = count(tok, text);
+        if real > MAX_TOKENS {
+            return Err(format!(
+                "S05-2: the real {app} window's view takes {real} tokens, over {MAX_TOKENS}:                  shorten the projection before its format freezes"
+            ));
+        }
+        if estimate_tokens(text) < real {
+            return Err(format!(
+                "S05-2: the real {app} window's view estimate ({}) undercounts the real {real} tokens",
+                estimate_tokens(text)
+            ));
+        }
+        if text.contains(" more") {
+            return Err(format!(
+                "S05-2: the real {app} window's view is cut: {text}"
             ));
         }
     }
@@ -298,6 +406,7 @@ pub fn report(tok: &Tokenizer, chat: &Chat) -> String {
     let pack = count(tok, &dsl1);
     dsl.row("**whole pack**", dsl1.len(), pack);
     out.push_str(&dsl.text);
+    out.push_str(&trim_table(tok, &dsl1));
     let longest = dsl1.lines().map(|line| (count(tok, line), line)).max();
     if let Some((tokens, line)) = longest {
         let _ = writeln!(
@@ -326,12 +435,74 @@ pub fn report(tok: &Tokenizer, chat: &Chat) -> String {
             / (m8.tok_bytes.0 + dsl.tok_bytes.0).max(1) as f64,
         dsl1.len() as f64 / pack.max(1) as f64,
     );
+    let used = pack + count(tok, MODE_ACT);
+    let _ = writeln!(
+        out,
+        "- Headroom under the alarm: {PACK_ALARM} − {used} = **{}** tokens (under `PACK_BUDGET` {PACK_BUDGET}: {}).",
+        PACK_ALARM as i64 - used as i64,
+        PACK_BUDGET as i64 - used as i64,
+    );
     out
+}
+
+/// Each line of the pack's sections as a trim would take it, with its section's
+/// heading: an example's request and its answer are one item, and a heading is
+/// none. Every other non-empty line is one item, in the pack's order.
+fn trim_items(pack: &str) -> Vec<(&str, String)> {
+    let mut items = Vec::new();
+    for (heading, text) in sections(pack) {
+        let mut lines = text.lines().skip(1).filter(|line| !line.is_empty());
+        while let Some(line) = lines.next() {
+            let item = match (heading == "## Examples", line.starts_with("> ")) {
+                (true, true) => format!("{line}\n{}", lines.next().unwrap_or("")),
+                _ => line.to_string(),
+            };
+            items.push((heading, item));
+        }
+    }
+    items
+}
+
+/// The trims' table: every item of [`trim_items`] with its real tokens, the
+/// largest first (plan agents-os §4, T0).
+fn trim_table(tok: &Tokenizer, pack: &str) -> String {
+    let mut counted: Vec<(usize, &str, String)> = trim_items(pack)
+        .into_iter()
+        .map(|(heading, item)| (count(tok, &item), heading, item))
+        .collect();
+    counted.sort_by_key(|item| core::cmp::Reverse(item.0));
+    let mut table = Table::new(
+        "`dsl-1` pack lines, largest first (for trims; an example counts its request and answer)",
+    );
+    for (tokens, heading, item) in counted {
+        let shown: String = item.replace('\n', " / ").chars().take(60).collect();
+        let shown = shown.replace('|', "\\|").replace('`', "'");
+        table.row(
+            &format!("{} `{shown}`", heading.trim_start_matches("## ")),
+            item.len(),
+            tokens,
+        );
+    }
+    table.text
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The committed real views are whole, within the budget by the host's
+    /// estimate, and start with the window list, as `ui_view` answers.
+    #[test]
+    fn the_real_app_views_are_whole_and_within_the_estimate() {
+        use deskcore::view::{MAX_TOKENS, estimate_tokens};
+        let views = real_views();
+        assert_eq!(views.len(), 13);
+        for (app, text) in views {
+            assert!(estimate_tokens(text) <= MAX_TOKENS, "{app}: {text}");
+            assert!(!text.contains(" more"), "{app} is cut: {text}");
+            assert!(text.starts_with("windows: [w1]"), "{app}: {text}");
+        }
+    }
 
     #[test]
     fn the_pack_is_printable_ascii_in_lines_of_at_most_120() {
@@ -355,6 +526,36 @@ mod tests {
         assert!(index.starts_with("## index"), "{index}");
         let joined: String = sections(&text).iter().map(|(_, t)| *t).collect();
         assert_eq!(joined, text);
+    }
+
+    /// Every line of the pack is in exactly one trim item, in order, and an
+    /// example's request goes with its answer.
+    #[test]
+    fn the_trim_items_cover_every_line_of_the_pack_once() {
+        let text = pack::render(Format::Dsl1);
+        let items = trim_items(&text);
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with("## "))
+            .collect();
+        let rejoined: Vec<String> = items
+            .iter()
+            .flat_map(|(_, item)| item.split('\n').map(str::to_string).collect::<Vec<_>>())
+            .collect();
+        assert_eq!(rejoined, lines);
+        let examples: Vec<&String> = items
+            .iter()
+            .filter(|(heading, _)| *heading == "## Examples")
+            .map(|(_, item)| item)
+            .collect();
+        assert!(!examples.is_empty());
+        for example in examples {
+            let (request, answer) = example.split_once('\n').expect("a request and its answer");
+            assert!(
+                request.starts_with("> ") && answer.starts_with('{'),
+                "{example}"
+            );
+        }
     }
 
     /// Every OS function a script may call has a row in the pack.

@@ -82,10 +82,10 @@ pub fn listed(desk: &Desk) -> Vec<Listed> {
         .rev()
         .map(|w| Listed {
             id: w.id,
-            app: match w.app_id.is_empty() {
-                true => w.label.clone(),
-                false => w.app_id.clone(),
-            },
+            // The kernel's label for the process, never the name the client
+            // gave itself (`toplevel.set_app_id`): a window cannot pose as an
+            // app to the agent, the shell's `ui_open` or a card that names one.
+            app: w.label.clone(),
             title: w.title.clone(),
             focused: focused == Some(w.id),
         })

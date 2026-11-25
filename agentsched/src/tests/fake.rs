@@ -2,6 +2,7 @@
 
 use crate::{
     Agent, AgentId, Ask, Class, Config, Decision, Kind, Now, Place, Refusal, RequestId, Scheduler,
+    Shape,
 };
 use kaiagent::Budgets;
 use std::vec::Vec;
@@ -92,12 +93,23 @@ impl Engine {
     }
 
     pub fn ask(&mut self, agent: AgentId, prompt: u32, max_new: u32) -> Result<RequestId, Refusal> {
+        self.ask_shaped(agent, prompt, max_new, Shape::Free)
+    }
+
+    pub fn ask_shaped(
+        &mut self,
+        agent: AgentId,
+        prompt: u32,
+        max_new: u32,
+        shape: Shape,
+    ) -> Result<RequestId, Refusal> {
         let now = self.now();
         self.sched.submit(
             Ask {
                 agent,
                 prompt_tokens: prompt,
                 max_new_tokens: max_new,
+                shape,
             },
             now,
         )

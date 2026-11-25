@@ -209,6 +209,17 @@ pub fn mark_wrote(slot: usize) {
     WROTE[slot].store(true, Ordering::Relaxed);
 }
 
+/// The slot of the live process `pid`.
+pub fn slot_of_pid(pid: u64) -> Option<usize> {
+    with_table(|table| table.iter().position(|p| p.live() && p.pid == pid))
+}
+
+/// Whether `pid` runs: the kernel (0) always, any other while a live process
+/// has it (PROC_ALIVE).
+pub fn alive(pid: u64) -> bool {
+    pid == 0 || slot_of_pid(pid).is_some()
+}
+
 /// Whether the live process `pid` has printed anything yet.
 pub fn has_written(pid: u64) -> bool {
     with_table(|table| table.iter().position(|p| p.live() && p.pid == pid))
@@ -428,9 +439,9 @@ pub fn spawn(request: &SpawnRequest) -> Result<u64, kabi::Error> {
 /// exit going to its spawner (JOB_SPAWN). On a refusal `moved` comes back.
 pub fn spawn_with(
     request: &SpawnRequest,
-    moved: alloc::vec::Vec<captable::Entry>,
+    moved: impl Into<crate::handle::Moving>,
     job: bool,
-) -> Result<u64, (kabi::Error, alloc::vec::Vec<captable::Entry>)> {
+) -> Result<u64, (kabi::Error, crate::handle::Moving)> {
     spawn_in(request, moved, job, &supervise::Grants::default())
 }
 
@@ -440,10 +451,11 @@ pub fn spawn_with(
 /// routes are `request.uses`.
 pub fn spawn_in(
     request: &SpawnRequest,
-    moved: alloc::vec::Vec<captable::Entry>,
+    moved: impl Into<crate::handle::Moving>,
     job: bool,
     plan: &supervise::Grants,
-) -> Result<u64, (kabi::Error, alloc::vec::Vec<captable::Entry>)> {
+) -> Result<u64, (kabi::Error, crate::handle::Moving)> {
+    let moved = moved.into();
     let dirs = plan.dirs.as_slice();
     use kabi::Error;
     let checked = (|| {
@@ -507,9 +519,15 @@ pub fn spawn_in(
         Err(error) => return Err((error, moved)),
     };
     // Its startup handles and what was moved to it, before it can run (ADR 0001 D3).
-    if let Err(error) =
-        crate::handle::create_with(slot, request.limits.caps, pid, request.uses, dirs)
-    {
+    if let Err(error) = crate::handle::create_with(
+        slot,
+        request.limits.caps,
+        pid,
+        request.uses,
+        dirs,
+        plan.agent,
+        &plan.pinned,
+    ) {
         with_table(|table| table[slot] = Process::FREE);
         return Err((error, moved));
     }
@@ -535,15 +553,26 @@ pub fn spawn_in(
         supervision::record_load_failure(pid, &name, request.supervisor, request.spawner);
         return Err((Error::Invalid, moved));
     }
-    crate::handle::give_at_start(slot, moved);
+    // Where the moved handles start in STARTUP, and whether all went in: a
+    // refusal from here on takes them back out for the spawner.
+    let moved_at = crate::handle::startup_len(slot);
+    let moved_len = moved.len();
+    let moved_in = crate::handle::give_at_start(slot, moved);
+    let take_back = || match moved_in {
+        true => crate::handle::take_at_start(slot, moved_at, moved_len),
+        false => crate::handle::Moving::none(),
+    };
     // A plan line's `netdest=`: a record of its own, made only now, so a
     // refused spawn never hands it to the spawner with what it moved.
     if let Some(dest) = &plan.netdest {
         let live = |object| crate::handle::names(kabi::handle::Kind::NetDest, object);
-        let Some(object) = crate::net::dest::create(dest.clone(), live) else {
+        // An agent's line: its day's bytes, `net_mib=` (P5 task 14).
+        let meter = plan.net_mib.map(crate::net::dest::meter);
+        let Some(object) = crate::net::dest::create_metered(dest.clone(), live, meter) else {
+            let moved = take_back();
             crate::handle::destroy(slot);
             with_table(|table| table[slot] = Process::FREE);
-            return Err((Error::NoMemory, alloc::vec::Vec::new()));
+            return Err((Error::NoMemory, moved));
         };
         let entry = captable::Entry::new(
             kabi::handle::Kind::NetDest,
@@ -570,10 +599,11 @@ pub fn spawn_in(
         }
     }
     if threads::spawn("user", process_main, slot).is_err() {
+        let moved = take_back();
         crate::handle::destroy(slot);
         with_table(|table| table[slot] = Process::FREE);
         supervision::record_load_failure(pid, &name, request.supervisor, request.spawner);
-        return Err((Error::NoMemory, alloc::vec::Vec::new()));
+        return Err((Error::NoMemory, moved));
     }
     Ok(pid)
 }
@@ -664,6 +694,16 @@ pub fn name_of(pid: u64) -> Option<(Name, bool)> {
             .iter()
             .find(|p| p.live() && p.pid == pid && p.state != State::Exiting)
             .map(|p| (p.name, p.supervisor))
+    })
+}
+
+/// Live process `pid`'s capability bits, from the table: PART_PEER_CAPS.
+pub fn caps_of(pid: u64) -> Option<u64> {
+    with_table(|table| {
+        table
+            .iter()
+            .find(|p| p.live() && p.pid == pid && p.state != State::Exiting)
+            .map(|p| p.limits.caps)
     })
 }
 

@@ -36,9 +36,10 @@ fn allowed(line: &str) -> Result<String, &'static str> {
         log!("net-hold: {line:?} answered {reply:?}");
         return Err("net-hold: a send did not show its text above the menu");
     };
-    if !shown
-        .header
-        .starts_with("Kai wants to send this text to updates.kai.test")
+    // Either wording: "... this text to HOST:", or (#1062) "... this text (N
+    // bytes) to HOST:".
+    if !(shown.header.starts_with("Kai wants to send this text")
+        && shown.header.ends_with(" to updates.kai.test:"))
     {
         return Err("net-hold: the text to send was not shown under code's header");
     }

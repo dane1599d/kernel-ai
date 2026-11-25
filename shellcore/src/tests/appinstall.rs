@@ -84,6 +84,8 @@ fn install_timer_asks_on_the_card_and_an_allow_installs_it_with_its_undo() {
         menu.question(),
         format!("Install Kai's app, 9 KiB, using app/log, ui/view, with {call}?")
     );
+    // What it is, in the model's words and labelled so, outside the ONCE.
+    assert_eq!(menu.detail(), "Kai says it: A countdown timer.");
     assert_eq!(locals(&host), 0, "nothing installs before the Allow");
     host.pkg_answers
         .borrow_mut()
@@ -313,4 +315,27 @@ fn an_artifact_the_host_no_longer_holds_is_not_asked_about() {
         "{other:?}"
     );
     assert_eq!(locals(&host), 0);
+}
+
+/// The card's summary line shows the model's words escaped as the card shows
+/// text and cut whole to the menu's limit, so it always shows (#1017's
+/// follow-up list, item 1).
+#[test]
+fn the_summary_line_is_escaped_and_fits_the_menu() {
+    use crate::appinstall::{MENU_TEXT, summary_line};
+    assert_eq!(summary_line("  "), "");
+    assert_eq!(
+        summary_line("A t\u{456}mer\nthat rings."),
+        "Kai says it: A t\\u{456}mer\\u{a}that rings."
+    );
+    let long = summary_line(&"\u{e9}".repeat(200));
+    assert!(long.len() <= MENU_TEXT, "{}", long.len());
+    assert!(long.ends_with("..."), "{long}");
+    // Never an escape cut in half.
+    assert!(long.trim_end_matches("...").ends_with('}'), "{long}");
+    assert!(
+        termcore::menu::Menu::new(1, "q", None, None, termcore::menu::Origin::Added)
+            .and_then(|m| m.with_detail(&long))
+            .is_ok()
+    );
 }

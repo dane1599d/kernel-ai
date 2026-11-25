@@ -11,6 +11,7 @@ extern crate alloc;
 
 mod check;
 mod dev;
+mod shm;
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -20,7 +21,7 @@ use kabi::part::stub;
 use kabi::{Error, MAX_MESSAGE};
 use user::{println, sys};
 
-/// The `Partition` handle, for [`alive`].
+/// The `Partition` handle, for [`alive`], [`name_of`] and [`caps_of`].
 static PARTITION: AtomicU32 = AtomicU32::new(0);
 
 /// Whether a caller still runs: only a definite NotFound counts as dead.
@@ -35,6 +36,15 @@ fn alive(pid: u64) -> bool {
 fn name_of(pid: u64, out: &mut [u8; kabi::MAX_NAME]) -> Option<usize> {
     let part = Handle(PARTITION.load(Ordering::Relaxed));
     sys::part_peer_name(part, pid, out).ok()
+}
+
+/// A caller's plan capability bits, from the kernel's table (PART_PEER_CAPS):
+/// `fs` gives the holder of `cap::POLICY`, the shell alone, the person's
+/// quarter of the space reserve (`Server::set_caps_of`). Any error, a pid gone
+/// or a kernel without the call, counts as no caps.
+fn caps_of(pid: u64) -> Option<u64> {
+    let part = Handle(PARTITION.load(Ordering::Relaxed));
+    sys::part_peer_caps(part, pid).ok()
 }
 
 user::entry!(main);
@@ -87,6 +97,13 @@ fn main() -> i32 {
     PARTITION.store(part.0, Ordering::Relaxed);
     server.set_alive(alive);
     server.set_name_of(name_of);
+    server.set_caps_of(caps_of);
+    // Retention counts real time when the firmware gave a date; without one,
+    // kaifs's clock counts only the time `fs` has run.
+    if let Ok(seconds) = sys::clock_now() {
+        let wall = seconds.saturating_mul(1_000_000_000);
+        server.set_wall_clock(wall.saturating_sub(sys::time_ns()));
+    }
     fill_model(&mut server, part);
     let mut bench = Bench::default();
     let mut request = alloc::vec![0u8; MAX_MESSAGE];
@@ -100,26 +117,51 @@ fn main() -> i32 {
             }
             Err(_) => continue,
         };
-        // `kai-fs 1` takes no handles yet; any a request carried are dropped.
-        for &raw in &from.handles[..(from.handle_count as usize).min(from.handles.len())] {
+        let moved = &from.handles[..(from.handle_count as usize).min(from.handles.len())];
+        let request = &request[..len];
+        // A bulk request's one `Shm`, mapped for it; or a Rename's one `Dir`
+        // of this server's, read by its badge (ENDPOINT_BADGE). Every handle
+        // a request carried is dropped once it is answered.
+        let mut mapped = match moved {
+            [raw] if from.badge != 0 => shm::Mapped::of(request, Handle(*raw)),
+            _ => None,
+        };
+        // A handle that cannot be a destination is the Rename's error, never
+        // a rename within its own folder.
+        let into = match moved {
+            [] => None,
+            [_] if mapped.is_some() => None,
+            [raw] => Some(sys::endpoint_badge(Handle(*raw)).map_err(|e| match e {
+                Error::Permission => fsproto::Error::Permission,
+                _ => fsproto::Error::Invalid,
+            })),
+            _ => Some(Err(fsproto::Error::Invalid)),
+        };
+        let answer = (from.badge != 0).then(|| {
+            let call = Call {
+                caller: from.caller_pid,
+                badge: from.badge,
+                rights: Rights::from_bits_truncate(from.rights),
+                request,
+                now: sys::time_ns(),
+            };
+            match into {
+                Some(into) => server.call_into(&call, into),
+                None => server.call_shm(&call, mapped.as_mut().map(shm::Mapped::bytes)),
+            }
+        });
+        drop(mapped);
+        for &raw in moved {
             let _ = sys::handle_close(Handle(raw));
         }
-        let request = &request[..len];
-        if from.badge == 0 {
+        let Some(answer) = answer else {
             let reply = match from.caller_pid {
                 0 => bench.answer(&mut server, part, request),
                 _ => b"err plain routes to fs are the kernel's".to_vec(),
             };
             let _ = sys::reply_h(&reply, &[]);
             continue;
-        }
-        let answer = server.call(&Call {
-            caller: from.caller_pid,
-            badge: from.badge,
-            rights: Rights::from_bits_truncate(from.rights),
-            request,
-            now: sys::time_ns(),
-        });
+        };
         // The kernel, as a test's client, takes no handles: it names objects by
         // their badges.
         let mint = answer.mint.filter(|_| from.caller_pid != 0);

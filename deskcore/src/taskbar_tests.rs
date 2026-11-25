@@ -90,6 +90,7 @@ fn paint_in(
         chat,
         start: None,
         ask: None,
+        preview: None,
         now_ms: 0,
     };
     painter.paint(&mut canvas, Rect::new(0, 0, w, h), &scene, content);
@@ -374,15 +375,34 @@ const NEW_YEARS_EVE: u64 = 1_798_761_599;
 #[test]
 fn the_clock_rolls_over_inside_its_five_tiles() {
     assert_eq!(crate::clock::date(NEW_YEARS_EVE), "31 Dec UTC");
+    rolls_over_inside_its_tiles(0, NEW_YEARS_EVE);
+}
+
+/// The same in a fixed offset: the wall's midnight, not UTC's, is the one that
+/// rolls the date, and the longer date line ("UTC+5:45") still fits the slot.
+#[test]
+fn a_fixed_offset_rolls_over_at_its_own_midnight() {
+    for zone in [120i16, 345, -570, -720, 840] {
+        let midnight = (NEW_YEARS_EVE + 1).saturating_add_signed(-i64::from(zone) * 60);
+        assert_eq!(crate::clock::time_in(midnight - 1, zone), "23:59");
+        assert_eq!(crate::clock::time_in(midnight, zone), "00:00");
+        rolls_over_inside_its_tiles(zone, midnight - 1);
+    }
+}
+
+/// Painting the second `last` and the one after it, in the zone: only the clock
+/// slot differs, in at most 5 tiles of any row.
+fn rolls_over_inside_its_tiles(zone: i16, last: u64) {
     for (w, h) in SIZES {
         let desk = Desk::new(w, h);
         let panel = Panel::new();
         let at = |s| Bar {
             utc_s: Some(s),
+            zone_min: zone,
             ..BAR
         };
-        let before = paint(&desk, &at(NEW_YEARS_EVE), &panel, &Chat::default());
-        let after = paint(&desk, &at(NEW_YEARS_EVE + 1), &panel, &Chat::default());
+        let before = paint(&desk, &at(last), &panel, &Chat::default());
+        let after = paint(&desk, &at(last + 1), &panel, &Chat::default());
         let slot = desk.layout().tray.clock;
         let mut tiles_in_row = [0u32; 2];
         for y in 0..h {
@@ -407,6 +427,43 @@ fn the_clock_rolls_over_inside_its_five_tiles() {
             tiles_in_row[usize::from(tiles.is_empty())] += 1;
         }
         assert!(tiles_in_row[0] > 0, "{w}x{h}: nothing rolled over");
+    }
+}
+
+/// Changing the zone repaints the clock slot and nothing else, and the slot
+/// reads the zone's time, not UTC's.
+#[test]
+fn the_zone_changes_the_clock_slot_alone() {
+    use crate::tray::{Shown, damage};
+    for (w, h) in SIZES {
+        let desk = Desk::new(w, h);
+        let panel = Panel::new();
+        let at = |zone_min| Bar {
+            utc_s: Some(NEW_YEARS_EVE - 7_200),
+            zone_min,
+            ..BAR
+        };
+        let utc = paint(&desk, &at(0), &panel, &Chat::default());
+        let east = paint(&desk, &at(120), &panel, &Chat::default());
+        let slot = desk.layout().tray.clock;
+        let differs = (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let i = (y * w + x) as usize;
+                utc.px[i] & RGB != east.px[i] & RGB
+            })
+            .collect::<Vec<_>>();
+        assert!(!differs.is_empty(), "{w}x{h}: the zone drew nothing");
+        assert!(
+            differs.iter().all(|&(x, y)| slot.contains(Point { x, y })),
+            "{w}x{h}: the zone reached outside the clock"
+        );
+        // The tray repaints the clock, and only it, when the zone alone changes.
+        let mut shown = Shown::default();
+        damage(&desk, &panel, &at(0), 0, &mut shown);
+        assert_eq!(damage(&desk, &panel, &at(0), 0, &mut shown), []);
+        let rects = damage(&desk, &panel, &at(120), 0, &mut shown);
+        assert_eq!(rects, [desk.layout().tray.clock], "{w}x{h}");
     }
 }
 

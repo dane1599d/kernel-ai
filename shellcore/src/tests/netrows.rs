@@ -417,3 +417,23 @@ fn the_fixed_line_is_cut_to_the_result_limit_on_a_character() {
     assert!(remembered.len() <= 300, "{}", remembered.len());
     assert!(remembered.starts_with(&format!("{SHOWED_PAGE}. Done: é")));
 }
+
+/// `query` refuses two answers that do not differ by itself, after Rhai took
+/// its list and lent its question: inside a `try`, that is a refusal the
+/// script's `catch` may mean to catch, not a function that is not there.
+#[test]
+fn a_query_refusing_inside_try_passes_the_check() {
+    let code = format!(
+        "let t = fs_read(\"{NOTE}\");\ntry {{ show(query(t, \"which?\", [\"a\", \"a\"])); }} catch (e) {{ print(e); }}"
+    );
+    let host: Rc<dyn Host> = FakeHost::new();
+    crate::script::check(
+        &Answer {
+            summary: String::from("Asks which."),
+            script: code.clone(),
+        },
+        &host,
+        &DEFAULT_CONFIG,
+    )
+    .unwrap_or_else(|e| panic!("{e}: {code}"));
+}

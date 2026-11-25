@@ -417,3 +417,199 @@ fn a_window_with_only_buttons_focuses_nothing() {
     w.input(Input::FocusIn, &M);
     assert_eq!(w.focus_node(), None);
 }
+
+/// A list of `n` rows in a window 120 px tall, ids 10.. for its rows.
+fn list(n: u32) -> Window {
+    let mut w = Window::new("l", 200, 120);
+    w.put(
+        1,
+        ROOT,
+        Layout::FILL,
+        Widget::ItemList {
+            label: s("Notes"),
+            selected: None,
+        },
+    )
+    .unwrap();
+    for i in 0..n {
+        w.put(10 + i, 1, Layout::FIT, label(&format!("row {i}")))
+            .unwrap();
+    }
+    w
+}
+
+fn wheel(w: &mut Window, at: Point, dy: i32) {
+    w.input(Input::Wheel { at, dy }, &M);
+}
+
+fn bounds(w: &mut Window, id: u32) -> Rect {
+    w.commit(&M)
+        .a11y
+        .iter()
+        .find(|n| n.id == id)
+        .unwrap()
+        .bounds
+}
+
+#[test]
+fn the_wheel_scrolls_a_list_longer_than_its_box_and_stops_at_its_ends() {
+    let mut w = list(20);
+    // The third row, which a step moves up and does not take out of the box.
+    let first = bounds(&mut w, 12);
+    wheel(&mut w, Point::new(20, 20), 1);
+    let moved = bounds(&mut w, 12);
+    assert_eq!(moved.y, first.y - uikit::style::metric::WHEEL_STEP);
+    // Up from the top does nothing; far down stops with the last row inside.
+    wheel(&mut w, Point::new(20, 20), -5);
+    assert_eq!(bounds(&mut w, 12), first);
+    wheel(&mut w, Point::new(20, 20), 100);
+    let last = bounds(&mut w, 29);
+    assert!(last.bottom() < 120, "{last:?}");
+    assert!(last.bottom() >= 120 - 3, "{last:?}");
+    wheel(&mut w, Point::new(20, 20), 1);
+    assert_eq!(bounds(&mut w, 29), last);
+}
+
+#[test]
+fn a_short_list_does_not_move_and_a_click_hits_the_row_under_it_once_scrolled() {
+    let mut w = list(2);
+    let before = bounds(&mut w, 11);
+    wheel(&mut w, Point::new(20, 20), 3);
+    assert_eq!(bounds(&mut w, 11), before);
+    let mut w = list(20);
+    wheel(&mut w, Point::new(20, 20), 2);
+    let row = bounds(&mut w, 15);
+    let at = Point::new(row.x + 4, row.y + row.h / 2);
+    let heard = click(&mut w, at);
+    assert!(
+        heard.contains(&UiEvent::Changed(1, Value::Index(5))),
+        "{heard:?}"
+    );
+}
+
+#[test]
+fn the_keys_keep_the_selected_row_in_view_of_a_list() {
+    let mut w = list(20);
+    w.act(1, Action::Focus, None, &M).unwrap();
+    for _ in 0..12 {
+        w.input(key(Key::Down), &M);
+    }
+    // Twelve Downs from nothing selected: the twelfth row.
+    let row = bounds(&mut w, 21);
+    assert!(row.y >= 1 && row.bottom() <= 119, "{row:?}");
+    let first = bounds(&mut w, 10);
+    assert!(first.is_empty() || first.y < 0, "{first:?}");
+}
+
+fn field(w: &mut Window, value: &str) {
+    let f = uikit::widget::TextField {
+        label: s("Name"),
+        value: s(value),
+        placeholder: String::new(),
+        max_len: 4000,
+    };
+    w.put(2, ROOT, Layout::FIT, Widget::TextLine(f)).unwrap();
+}
+
+/// A caret kept as a byte offset must not stay inside a multi-byte character
+/// when the app puts a new value under it: the next key used to slice there and
+/// panic the host.
+#[test]
+fn a_put_that_leaves_the_caret_inside_a_character_does_not_break_the_next_key() {
+    let mut w = Window::new("t", 200, 100);
+    field(&mut w, "");
+    w.commit(&M);
+    w.act(2, Action::Focus, None, &M).unwrap();
+    w.input(typed("a"), &M);
+    w.input(typed("b"), &M);
+    // The caret is at byte 2; the app answers with a value where byte 2 is inside "é".
+    for value in ["né", "你好", "✓ sent", ""] {
+        field(&mut w, value);
+        w.commit(&M);
+        w.input(typed("x"), &M);
+        w.input(key(Key::Left), &M);
+        w.input(key(Key::Backspace), &M);
+        w.input(key(Key::Delete), &M);
+        w.input(key(Key::End), &M);
+        // Back to the byte-2 caret for the next value.
+        w.input(key(Key::Home), &M);
+        w.input(key(Key::Right), &M);
+        w.input(key(Key::Right), &M);
+    }
+}
+
+/// Typed text counts in the window's byte total, so removing the field later
+/// takes off what it weighs and no more: the total never wraps, and a put after
+/// it is not refused as too big.
+#[test]
+fn typing_then_removing_a_field_leaves_the_window_able_to_take_more() {
+    let mut w = Window::new("t", 400, 200);
+    w.put(1, ROOT, Layout::FILL, Widget::Stack { axis: Axis::Column })
+        .unwrap();
+    let f = uikit::widget::TextField {
+        label: s("Line"),
+        value: String::new(),
+        placeholder: String::new(),
+        max_len: 4000,
+    };
+    w.put(2, 1, Layout::FIT, Widget::TextLine(f)).unwrap();
+    w.commit(&M);
+    w.act(2, Action::Focus, None, &M).unwrap();
+    for _ in 0..2000 {
+        w.input(typed("x"), &M);
+    }
+    w.remove(2).unwrap();
+    // The count is back where an empty window has it; one more put fits.
+    w.put(3, 1, Layout::FIT, label("Ready")).unwrap();
+    w.commit(&M);
+    // And the same after a replace and a second removal.
+    let f = uikit::widget::TextField {
+        label: s("Line"),
+        value: s("again"),
+        placeholder: String::new(),
+        max_len: 4000,
+    };
+    w.put(2, 1, Layout::FIT, Widget::TextLine(f)).unwrap();
+    w.remove(2).unwrap();
+    w.remove(3).unwrap();
+    w.put(4, 1, Layout::FIT, label("Next")).unwrap();
+}
+
+/// Values the host accepts that would make `clamp` panic on a person's key or
+/// click: tabs with no labels, a slider whose min is over its max.
+#[test]
+fn a_key_or_click_on_empty_tabs_or_an_inverted_slider_does_nothing_harmful() {
+    let mut w = Window::new("t", 300, 120);
+    w.put(1, ROOT, Layout::FILL, Widget::Stack { axis: Axis::Column })
+        .unwrap();
+    w.put(
+        2,
+        1,
+        Layout::FIT,
+        Widget::Tabs {
+            labels: Vec::new(),
+            selected: 0,
+        },
+    )
+    .unwrap();
+    w.put(
+        3,
+        1,
+        Layout::FIT,
+        Widget::Slider {
+            label: s("Size"),
+            min: 10,
+            max: 0,
+            step: 1,
+            value: 5,
+        },
+    )
+    .unwrap();
+    w.commit(&M);
+    w.act(2, Action::Focus, None, &M).unwrap();
+    w.input(key(Key::Left), &M);
+    w.input(key(Key::Right), &M);
+    let at = centre(&mut w, 3);
+    click(&mut w, at);
+    w.input(Input::PointerMove(Point::new(at.x + 5, at.y)), &M);
+}

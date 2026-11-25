@@ -161,23 +161,34 @@ fn ops_of(
         Widget::Code(v) => ops.extend(crate::code::ops(m, v, r, focused)),
         Widget::ItemList { selected, .. } => {
             ops.push(frame(r, Token::LineStrong));
+            // The scroll bar of a list longer than its box.
+            let view = r.h - 2;
+            if let Some(p) = places.get(&id).filter(|p| p.extent > view && view > 0) {
+                let off = st
+                    .scroll
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(0)
+                    .clamp(0, p.extent - view);
+                let len = (view * view / p.extent).max(16).min(view);
+                let pos = off * (view - len) / (p.extent - view);
+                let thumb = Rect::new(r.right() - 1 - SCROLLBAR_W, r.y + 1 + pos, SCROLLBAR_W, len);
+                ops.push(fill(thumb, Token::LineStrong, SCROLLBAR_W / 2));
+            }
             let item = selected
                 .and_then(|s| node.children.get(s as usize))
                 .and_then(|c| places.get(c));
             // The selected row is marked the list's whole width, past the
             // item's own padding.
+            // A row scrolled out of the list has no mark in it.
             if let Some(p) = item {
                 let inner = r.inset(1);
-                ops.push(fill(
-                    Rect::new(inner.x, p.rect.y, inner.w, p.rect.h),
-                    Token::Raised,
-                    0,
-                ));
-                ops.push(fill(
-                    Rect::new(inner.x, p.rect.y, 2, p.rect.h),
-                    Token::Accent,
-                    0,
-                ));
+                let mark = |w: i32, token| {
+                    let m = Rect::new(inner.x, p.rect.y, w, p.rect.h).intersect(&inner);
+                    (m.w > 0 && m.h > 0).then(|| fill(m, token, 0))
+                };
+                ops.extend(mark(inner.w, Token::Raised));
+                ops.extend(mark(2, Token::Accent));
             }
         }
         Widget::Table {

@@ -208,7 +208,9 @@ const FS_TRASH: &[(&str, Expect)] = &[
     ),
 ];
 /// `profile-switch` (P3 task 12): a profile switch reaches the kernel through
-/// the supervisor, and `undo` puts every quota back.
+/// the supervisor, and `undo` puts every quota back. A profile's `mem` is a
+/// ceiling (#517): `quiet` lowers spin-a, which starts above 64 MiB, and leaves
+/// spin-b at its default rather than raising it.
 const PROFILE_GAMING: &[(&str, Expect)] = &[(
     "profile gaming",
     Exact("ok Done: profile gaming (was default). undo"),
@@ -230,8 +232,18 @@ fn proc_of(name: &str) -> Option<(u64, u64)> {
     })
 }
 
+/// spin-a's quota before the switches: above `quiet`'s 64 MiB.
+const SPIN_A_PAGES: u64 = kaiprofile::QUIET_PAGES + 4096;
+
 fn profile_switch() -> Result<(), &'static str> {
-    let (spin, quota) = proc_of("spin-a").ok_or("profile-switch: spin-a is not running")?;
+    let (spin, _) = proc_of("spin-a").ok_or("profile-switch: spin-a is not running")?;
+    crate::process::profile::quota_set(spin, SPIN_A_PAGES)
+        .map_err(|_| "profile-switch: cannot raise spin-a above 64 MiB")?;
+    let quota = SPIN_A_PAGES;
+    let (_, spin_b_quota) = proc_of("spin-b").ok_or("profile-switch: spin-b is not running")?;
+    if spin_b_quota >= kaiprofile::QUIET_PAGES {
+        return Err("profile-switch: spin-b does not start under 64 MiB");
+    }
     let (shell, shell_quota) = proc_of("shell").ok_or("profile-switch: no shell")?;
     // Nothing has focus here, so gaming sends every app to the back.
     expect_lines(PROFILE_GAMING)?;
@@ -245,6 +257,9 @@ fn profile_switch() -> Result<(), &'static str> {
     if proc_of("spin-a").map(|(_, q)| q) != Some(kaiprofile::QUIET_PAGES) {
         return Err("profile-switch: quiet did not lower spin-a's quota");
     }
+    if proc_of("spin-b").map(|(_, q)| q) != Some(spin_b_quota) {
+        return Err("profile-switch: quiet raised spin-b's quota");
+    }
     if proc_of("shell").map(|(_, q)| q) != Some(shell_quota) {
         return Err("profile-switch: quiet changed the shell's quota");
     }
@@ -252,11 +267,14 @@ fn profile_switch() -> Result<(), &'static str> {
     if proc_of("spin-a").map(|(_, q)| q) != Some(quota) {
         return Err("profile-switch: undo did not put spin-a's quota back");
     }
+    if proc_of("spin-b").map(|(_, q)| q) != Some(spin_b_quota) {
+        return Err("profile-switch: undo changed spin-b's quota");
+    }
     if !crate::sched_control::is_background(spin) {
         return Err("profile-switch: undo of quiet left gaming's class off");
     }
     log!(
-        "profile-switch: gaming sent the apps back, quiet lowered a quota, undo put it back, and the shell kept its own"
+        "profile-switch: gaming sent the apps back, quiet lowered a quota and raised none, undo put it back, and the shell kept its own"
     );
     Ok(())
 }

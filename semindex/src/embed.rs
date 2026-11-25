@@ -1,8 +1,9 @@
 //! The vector slot (ADR 0013 section 4): S13-3's embedder, Qwen3-Embedding-0.6B
-//! run by our engine, is one [`Embedder`]; until it passes, an index has no
-//! vectors and search is by keyword and time. An index names the embedder its
-//! vectors came from ([`EmbedderId`], in its header), and one opened with
-//! another is rebuilt, never read, since their vectors do not compare.
+//! run by our engine, is one [`Embedder`] ([`crate::qwen`]); without one, an
+//! index has no vectors and search is by keyword and time. An index names the
+//! embedder its vectors came from ([`EmbedderId`], in its header), and one
+//! opened with another is rebuilt, never read, since their vectors do not
+//! compare.
 
 use alloc::string::String;
 use alloc::vec::Vec;

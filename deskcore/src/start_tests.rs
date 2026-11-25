@@ -55,6 +55,7 @@ fn paint(desk: &Desk, start: Option<&Start>, card: Option<&Card>) -> Image {
         chat: &chat,
         start,
         ask: card,
+        preview: None,
         now_ms: 3_000,
     };
     painter.paint(
@@ -542,6 +543,7 @@ fn paint_in(desk: &Desk, start: Option<&Start>, th: &look::theme::Theme) -> Imag
         chat: &chat,
         start,
         ask: None,
+        preview: None,
         now_ms: 0,
     };
     painter.paint(

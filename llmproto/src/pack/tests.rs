@@ -218,6 +218,29 @@ fn the_apps_turn_names_each_apps_rows_on_one_line() {
 }
 
 #[test]
+fn the_flat_apps_turn_shows_every_apps_full_lines() {
+    let empty = apps::AppGroup {
+        app: "empty".into(),
+        rows: std::vec![],
+    };
+    let (turn, left_out) = apps::flat_turn(&[notes(), empty.clone()]);
+    assert_eq!(
+        turn,
+        std::format!(
+            "{}\n{}",
+            apps::FLAT_HEADING,
+            apps::group_text(&notes()).trim_end()
+        )
+    );
+    assert_eq!(left_out, ["empty"]);
+    assert_eq!(apps::flat_turn(&[]), (String::new(), std::vec![]));
+    assert_eq!(
+        apps::flat_turn(&[empty]),
+        (String::new(), std::vec!["empty".into()])
+    );
+}
+
+#[test]
 fn apps_past_the_budget_are_left_out_and_the_rest_fit_it() {
     let names: std::vec::Vec<&'static str> = (0..40)
         .map(|i| &*std::boxed::Box::leak(std::format!("app{i}_do_something_long").into_boxed_str()))
@@ -264,4 +287,42 @@ fn the_apps_wire_reads_back_whole_entries_only() {
     ] {
         assert_eq!(apps::entries(bad), None, "{bad}");
     }
+}
+
+/// Audit (lane M, item 2): row names an app chooses, all digits and lone
+/// letters, cost a token a character, three times the bytes estimate. The
+/// apps turn counts them so, and leaves such an app out instead of taking
+/// about 800 tokens; an app with plain names still fits beside it.
+#[test]
+fn an_app_whose_row_names_are_digits_is_counted_by_its_digits() {
+    let name = "ab_1c2d3e4f5g6h7i8j9k0l1m";
+    assert!(apps::estimate(name) >= 20, "{}", apps::estimate(name));
+    assert!(
+        estimate_tokens(name) < 10,
+        "the bytes estimate undercounts it"
+    );
+    let leaked: &'static str =
+        std::boxed::Box::leak(std::string::String::from(name).into_boxed_str());
+    let digits = apps::AppGroup {
+        app: "ab".into(),
+        rows: std::vec![app_row(leaked, "cpus"); 32],
+    };
+    let (turn, left_out) = apps::turn(&[digits, notes()]);
+    assert_eq!(left_out, ["ab"]);
+    assert!(turn.contains("\nnotes: notes_add notes_count"), "{turn}");
+    assert!(apps::estimate(&turn) <= apps::APPS_BUDGET);
+}
+
+/// llm counts with the model's tokenizer: what it says decides, even where an
+/// estimate would let the line in.
+#[test]
+fn the_apps_turn_keeps_to_the_count_it_is_given() {
+    let (turn, left_out) = apps::turn(&[notes()]);
+    assert!(left_out.is_empty(), "{turn}");
+    let strict = |text: &str| 4 * text.len();
+    let (turn, left_out) = apps::turn_counted(&[notes()], strict);
+    assert_eq!(
+        (turn.as_str(), left_out),
+        ("", std::vec![String::from("notes")])
+    );
 }

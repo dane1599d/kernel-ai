@@ -69,7 +69,39 @@ pub struct Allocator {
     chain: Vec<BlockPtr>,
     deltas: u32,
     pub faults: Faults,
+    /// Free blocks held back for the work that frees space ([`RESERVE_MIN`]).
+    reserve: u64,
+    /// How far this work may take blocks from the reserve.
+    spend: Spend,
 }
+
+/// How far the work that follows may go into the reserve.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Spend {
+    /// Growth: none of it.
+    Keep,
+    /// Work that frees space only later, a trash (a slot folder and its
+    /// `info.cbor`, the item's blocks kept) or a truncate (copy-on-write of
+    /// the tree and the extent), from any app: down to half, so trashing on a
+    /// full disk never leaves the emptying nothing.
+    Half,
+    /// The same work asked by the person (`fs` knows them by `cap::POLICY`,
+    /// a kernel fact): down to a quarter. The quarter below the apps' half is
+    /// the person's own, so no app's trashing can keep them from deleting, and
+    /// the last quarter still waits for the emptying.
+    Person,
+    /// Work that frees space at once and cannot be looped to spend it: an
+    /// emptied trash, a dropped update snapshot, retention, the GC's commit, a
+    /// repair. All of it.
+    All,
+}
+
+/// The fewest free blocks held back from growth: a full disk keeps enough for
+/// the commits that free space (an emptied trash, retention and the GC, each
+/// needing new tree, volume-table and allocator blocks), and for trashes and
+/// truncates down to their tier ([`Spend`]). The reserve is this or 1/200 of
+/// the data area, whichever is more.
+pub const RESERVE_MIN: u64 = 64;
 
 /// What the allocator holds, to compare a mounted state with a committed one.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -132,14 +164,43 @@ impl Allocator {
             chain: Vec::new(),
             deltas: 0,
             faults: Faults::default(),
+            reserve: RESERVE_MIN.max((area.1 - area.0) / 200),
+            spend: Spend::Keep,
         }
     }
 
-    /// A free run of `level`, recorded for this transaction's delta.
+    /// A free run of `level`, recorded for this transaction's delta. NoSpace if
+    /// it would leave fewer free blocks than the reserve, unless this work may
+    /// spend it ([`Allocator::spend_reserve`]).
     pub fn alloc(&mut self, level: u8) -> Result<Run, Error> {
         let run = self.buddy.alloc(level).ok_or(Error::NoSpace)?;
+        let floor = match self.spend {
+            Spend::Keep => self.reserve,
+            Spend::Half => self.reserve / 2,
+            Spend::Person => self.reserve / 4,
+            Spend::All => 0,
+        };
+        if self.buddy.free_blocks() < floor {
+            self.buddy.free(run);
+            return Err(Error::NoSpace);
+        }
         self.allocs.push(run);
         Ok(run)
+    }
+
+    /// How far the work that follows may go into the reserve; what it was.
+    pub fn spend_reserve(&mut self, spend: Spend) -> Spend {
+        core::mem::replace(&mut self.spend, spend)
+    }
+
+    /// The free blocks held back from growth.
+    pub fn reserve(&self) -> u64 {
+        self.reserve
+    }
+
+    /// Whether freed runs are waiting out their two commits.
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
     }
 
     /// Frees `run` in generation `txn`: free again from `txn + 2`.

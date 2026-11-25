@@ -92,6 +92,27 @@ fn a_profile_set_by_click_is_logged_as_the_click_and_undoes() {
     assert!(profiles.lines().any(|l| l == "* default"), "{profiles}");
 }
 
+/// The Settings app's time zone: saved as the file writes it, said by look,
+/// and undone back to the zone before (#1017's row).
+#[test]
+fn a_time_zone_by_click_saves_and_undoes() {
+    let host = host();
+    let mut shell = shell(&host);
+    let zone = |host: &FakeHost| crate::appearance::current(host).time_zone_min;
+    let words = shell
+        .settings(SETTINGS_APP, "appearance-set time_zone +02:00", true)
+        .unwrap();
+    assert!(words.contains("+02:00"), "{words}");
+    assert_eq!(zone(&host), 120);
+    assert!(
+        shell
+            .settings(SETTINGS_APP, "appearance-set time_zone +15:00", true)
+            .is_err()
+    );
+    assert!(shell.eval("undo").text.starts_with("Undone: "));
+    assert_eq!(zone(&host), 0);
+}
+
 #[test]
 fn appearance_set_by_click_saves_the_setting_is_logged_as_the_click_and_undoes() {
     let host = host();
@@ -463,5 +484,64 @@ fn an_odd_name_in_a_grant_change_changes_and_logs_nothing() {
     assert_eq!(
         host.withheld_disk.borrow().as_deref(),
         Some("kai-withheld 1\nfiles fs_list\n")
+    );
+}
+
+#[test]
+fn an_unanswered_keep_running_switch_counts_as_made_on_both_sides() {
+    // The app took the switch and did not answer: the supervisor keeps its
+    // record as asked, so the list does too, and the later "off" is sent.
+    let host = host();
+    let mut shell = shell(&host);
+    *host.keep_refusal.borrow_mut() = Some(String::from(
+        "unanswered notes took the keep-running on and did not answer; it may have taken effect",
+    ));
+    let on = shell.settings(SETTINGS_APP, "keep-running on notes", true);
+    assert!(
+        on.as_deref().is_ok_and(
+            |t| t.starts_with("notes keep-running on;") && t.contains("may have taken effect")
+        ),
+        "{on:?}"
+    );
+    assert_eq!(
+        host.keep_file.borrow().as_deref(),
+        Some("kai-keep 1\nnotes\n")
+    );
+    *host.keep_refusal.borrow_mut() = None;
+    assert_eq!(
+        shell.settings(SETTINGS_APP, "keep-running off notes", true),
+        Ok(String::from("notes keep-running off"))
+    );
+    assert_eq!(*host.kept.borrow(), [(String::from("notes"), false)]);
+}
+
+#[test]
+fn a_saved_kept_app_that_takes_the_switch_unanswered_stays_kept() {
+    // At boot, and on a retry: the switch is made on the supervisor's side,
+    // so the shell's list keeps the app and a later "off" is still sent.
+    let unanswered =
+        "unanswered notes took the keep-running on and did not answer; it may have taken effect";
+    let host = host_with_keep("kai-keep 1\nnotes\n");
+    *host.keep_refusal.borrow_mut() = Some(String::from(unanswered));
+    let mut booted = shell(&host);
+    *host.keep_refusal.borrow_mut() = None;
+    assert_eq!(
+        booted.settings(
+            crate::settings::SETTINGS_APP,
+            "keep-running off notes",
+            true
+        ),
+        Ok(String::from("notes keep-running off"))
+    );
+    let retried = host_with_keep("kai-keep 1\nnotes\n");
+    retried.keep_fails.set(1);
+    let mut later = shell(&retried);
+    *retried.keep_refusal.borrow_mut() = Some(String::from(unanswered));
+    retried.clock.set(retried.clock.get() + 1_000_000_000);
+    later.retry_keep();
+    *retried.keep_refusal.borrow_mut() = None;
+    assert_eq!(
+        later.settings(crate::settings::SETTINGS_APP, "keep-running on notes", true),
+        Ok(String::from("notes keep-running is on already"))
     );
 }

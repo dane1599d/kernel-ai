@@ -137,6 +137,9 @@ pub struct Gpu {
     cursor_queue: VirtQueue<KernelHal, QUEUE_SIZE>,
     commands: Frames,
     edid: bool,
+    /// The screen's size in mm from the EDID [`Gpu::edid_modes`] read, if it
+    /// gave one.
+    size_mm: Option<Mode>,
     mode: Mode,
     screen: Option<Frames>,
     cursor: Option<Frames>,
@@ -173,6 +176,7 @@ impl Gpu {
             cursor_queue,
             commands,
             edid: features & FEATURE_EDID != 0,
+            size_mm: None,
             mode: (0, 0),
             screen: None,
             cursor: None,
@@ -214,7 +218,14 @@ impl Gpu {
         Ok((enabled != 0 && width > 0 && height > 0).then_some((width, height)))
     }
 
-    /// The modes scanout 0's EDID lists; empty without the EDID feature.
+    /// The screen's size in mm from scanout 0's EDID, once [`Gpu::edid_modes`]
+    /// has read it; None without one.
+    pub fn size_mm(&self) -> Option<Mode> {
+        self.size_mm
+    }
+
+    /// The modes scanout 0's EDID lists; empty without the EDID feature. Keeps
+    /// the screen's size in mm it gives, for [`Gpu::size_mm`].
     pub fn edid_modes(&mut self) -> Result<alloc::vec::Vec<Mode>, &'static str> {
         if !self.edid {
             return Ok(alloc::vec::Vec::new());
@@ -228,7 +239,9 @@ impl Gpu {
         }
         let answer = self.commands.bytes(RESPONSE_AT, EDID_RESPONSE);
         let size = (word(answer, 24) as usize).min(1024);
-        Ok(gfxcore::edid::modes(&answer[32..32 + size]))
+        let edid = &answer[32..32 + size];
+        self.size_mm = gfxcore::edid::size_mm(edid);
+        Ok(gfxcore::edid::modes(edid))
     }
 
     /// Creates a host resource of `width` by `height` backed by `frames`.
