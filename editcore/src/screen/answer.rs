@@ -191,6 +191,12 @@ impl Screen {
             self.fail_window(from, to, "the service sent no lines");
         }
         self.take_view(&view);
+        // The cursor's line may be one that just came: a move onto it kept the
+        // column it came from (`follow` clamps only a line the screen holds),
+        // and an edit past the end of a shorter line would panic.
+        if let Some(len) = self.line_len(self.line) {
+            self.col = self.col.min(len);
+        }
     }
 
     /// Lines that cannot be had show as empty and read-only, so the screen does

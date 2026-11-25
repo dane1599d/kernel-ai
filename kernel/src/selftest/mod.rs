@@ -55,6 +55,9 @@ pub enum ActCase {
     /// `net-pf-query` (P5 task 11): a quarantined read of that page, whose
     /// answer obeys the page and is only shown.
     NetPfQuery,
+    /// `net-hold` (P5 close): a send the person allows waits 5 s with undo,
+    /// then goes once; one undone in its hold never goes.
+    NetHold,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -331,6 +334,8 @@ pub enum SelfTest {
     IcountProbe,
     /// M10a-3: kernel-owned trials on the workload revert or keep by the rules.
     Reboot,
+    /// A memory reset register written with the memory lock held (H3-2).
+    RebootMemory,
     /// A panic or failed check that resets the machine (ADR 0008 "fault").
     PanicReset,
     /// UEFI runtime variables (ADR 0008).

@@ -42,8 +42,10 @@ struct Counting;
 /// Runs `f`, which takes talc's lock, with preemption off: talc's lock is a
 /// plain spinlock, and a thread switched out while it held it left every other
 /// CPU that wanted memory spinning, some of them with preemption off, so the
-/// holder could never run again (the `tune-revert` hang, 2026-10-27).
+/// holder could never run again (the `tune-revert` hang, 2026-10-27). So a
+/// `ready()` never allocates (`threads::ready`).
 fn unpreempted<R>(f: impl FnOnce() -> R) -> R {
+    crate::threads::ready::not_in_ready(&"the heap");
     crate::threads::preempt_disable();
     let result = f();
     crate::threads::preempt_enable();

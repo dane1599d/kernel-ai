@@ -183,7 +183,7 @@ fn no_commit_makes_a_half_blob_durable() {
         data: bytes[..7000].to_vec(),
     };
     assert_eq!(store(&mut c, ALICE, push), Reply::Done);
-    // Sync commits too, so it is refused as Commit is.
+    // Neither Sync (never in its own action) nor Commit keeps it unfinished.
     assert_eq!(fail(store(&mut c, ALICE, Request::Sync)), Error::Invalid);
     assert_eq!(fail(store(&mut c, ALICE, Request::Commit)), Error::Invalid);
     assert_eq!(store(&mut c, ALICE, Request::Abort), Reply::Done);
@@ -296,4 +296,53 @@ fn the_hint_names_only_a_sealed_blob_and_is_written_outside_an_action() {
         models.contains(&name) && models.contains(&plain),
         "{models:?}"
     );
+}
+
+/// A Write into a sealed blob inside an action is refused at once, as it is
+/// outside one, and the action stays open: nothing is left to fail the next
+/// request that writes the run out.
+#[test]
+fn a_write_into_a_sealed_blob_in_an_action_is_refused_at_once() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let bytes = model(20_000);
+    let name = name_of(&bytes);
+    assert_eq!(import(&mut c, &name, &bytes), Reply::Done);
+    let committed = store(&mut c, ALICE, Request::Commit);
+    assert!(
+        matches!(committed, Reply::Committed { .. }),
+        "{committed:?}"
+    );
+    let open = Request::Open {
+        path: name.clone(),
+        rights: DIR_RIGHTS.bits(),
+        how: How::Existing,
+    };
+    let (opened, blob) = c.call(ALICE, MODELS_ROOT, DIR_RIGHTS, open);
+    assert!(matches!(opened, Reply::Opened(..)), "{opened:?}");
+    let blob = blob.expect("a handle");
+    let write = |c: &mut Client<'_>| {
+        let request = Request::Write {
+            off: 0,
+            data: alloc::vec![1],
+        };
+        c.call(ALICE, blob.badge, blob.rights, request).0
+    };
+    assert_eq!(fail(write(&mut c)), Error::Invalid);
+    assert_eq!(
+        store(&mut c, ALICE, Request::Begin { action: 2 }),
+        Reply::Done
+    );
+    assert_eq!(fail(write(&mut c)), Error::Invalid);
+    let stat = c.call(BOB, HOME_USER, DIR_RIGHTS, Request::Stat).0;
+    assert!(matches!(stat, Reply::Stat(_)), "{stat:?}");
+    let committed = store(&mut c, ALICE, Request::Commit);
+    assert!(
+        matches!(committed, Reply::Committed { .. }),
+        "{committed:?}"
+    );
+    let fs = &mut c.server.fs;
+    fs.set_volume(MODELS.into()).unwrap();
+    let ino = fs.lookup(ROOT, &name).unwrap().unwrap().ino;
+    assert_eq!(fs.read_file(ino).unwrap(), bytes);
 }

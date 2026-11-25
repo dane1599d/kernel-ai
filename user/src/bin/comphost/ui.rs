@@ -834,6 +834,12 @@ fn release(pool: &Pool) {
 /// and effects) is committed with its checkpoint, like an action call's. The
 /// effects it queued come back for whoever runs them; a version that faulted
 /// was reloaded, and gives nothing.
+///
+/// An [`Exit`] (four faults within a minute, a rollback or reload that could
+/// not be done, an event the kernel refused) ends comphost here, as one from
+/// [`Host::handle`] ends it in `main`: the host is left between modes and must
+/// not be called again, and the supervisor starts it over from the kernel's
+/// checkpoint.
 pub(crate) fn serve_shown<E: Env<Instance = LiveInstance>>(
     host: &mut Host<E>,
     f: impl FnOnce(&mut wasmhost::CoreInstance) -> Result<(), Fault>,
@@ -846,7 +852,7 @@ pub(crate) fn serve_shown<E: Env<Instance = LiveInstance>>(
         Ok(done) => done.map(|((), performed)| performed),
         Err(exit) => {
             println!("comphost: {}", exit.why);
-            None
+            sys::exit(exit.code)
         }
     }
 }

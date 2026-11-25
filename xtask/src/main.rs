@@ -634,6 +634,10 @@ fn execute(options: &Options) -> Result<(), String> {
                     Some(expect) => screen::check(&target_dir, expect),
                     None => Ok(()),
                 })
+                .and_then(|()| match &https_mock {
+                    Some(mock) => cases::check_posts(case.posts, &mock.served()),
+                    None => Ok(()),
+                })
                 .and_then(|()| match mock.requests() - requests {
                     sent if !case.server && sent > 0 => Err(format!(
                         "FAIL: booted without a server, yet the mock LLM got {sent} requests"

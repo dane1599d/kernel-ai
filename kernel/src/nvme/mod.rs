@@ -188,7 +188,14 @@ fn start(function: &Function) -> Result<(), &'static str> {
     let mut found = Vec::new();
     for nsid in namespaces {
         let ns = controller.identify_namespace(nsid)?;
-        if ns.block_bytes as u64 != SECTOR {
+        if ns.metadata_bytes != 0 {
+            log!(
+                "nvme: namespace {nsid} carries {} bytes of metadata a block; only plain 512-byte blocks are read",
+                ns.metadata_bytes
+            );
+            continue;
+        }
+        if !ns.is_plain(SECTOR as u32) {
             log!(
                 "nvme: namespace {nsid} has {}-byte blocks; only 512 are read",
                 ns.block_bytes

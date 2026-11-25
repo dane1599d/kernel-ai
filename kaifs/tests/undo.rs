@@ -375,6 +375,143 @@ fn a_removed_folder_comes_back_with_its_files() {
     assert_eq!(read(&mut fs, "/photos/two.jpg").unwrap(), [2; 300]);
 }
 
+/// An object the action changed and a later change destroyed (an emptied
+/// trash, which has no undo) stays gone: a restore of the action leaves it,
+/// whether the emptying was an action or a change outside one (bug hunt 2,
+/// H2-2).
+#[test]
+fn a_restore_leaves_what_a_later_change_destroyed() {
+    for in_action in [true, false] {
+        let mut fs = fresh();
+        fs.set_volume(HOME).unwrap();
+        let user = mkdir(&mut fs, "/user");
+        let f = write(&mut fs, "/user/notes.txt", b"v1");
+        fs.commit().unwrap();
+        let t1 = action(&mut fs, 1, |fs| fs.write_file(f, b"v2").unwrap());
+        let destroy = |fs: &mut Fs<MemDisk>| {
+            fs.trash(user, "notes.txt").unwrap();
+            fs.empty_trash().unwrap();
+        };
+        match in_action {
+            true => {
+                action(&mut fs, 2, destroy);
+            }
+            false => {
+                destroy(&mut fs);
+                fs.commit().unwrap();
+            }
+        }
+        let (out, _) = undo(&mut fs, t1);
+        assert!(out.contains(&(f, Outcome::Left)), "{in_action}: {out:?}");
+        assert!(out.iter().all(|(_, o)| *o == Outcome::Left), "{out:?}");
+        assert_eq!(fs.resolve("/user/notes.txt"), Err(Error::NotFound));
+        assert!(fs.trash_list().unwrap().is_empty());
+        checked(&mut fs);
+    }
+}
+
+/// A remove brings a file back after later actions, as the tree its commit
+/// left still shows it removed it; once that file is restored and removed
+/// again by a later action, restoring the first action again leaves it.
+#[test]
+fn a_restore_brings_back_what_the_action_removed_and_only_that() {
+    let mut fs = fresh();
+    fs.set_volume(HOME).unwrap();
+    let f = write(&mut fs, "/a.txt", b"a");
+    fs.commit().unwrap();
+    let t1 = action(&mut fs, 1, |fs| fs.remove(ROOT, "a.txt").unwrap());
+    action(&mut fs, 2, |fs| {
+        write(fs, "/b.txt", b"b");
+    });
+    let (out, _) = undo(&mut fs, t1);
+    assert!(out.contains(&(f, Outcome::Back)), "{out:?}");
+    assert_eq!(read(&mut fs, "/a.txt").unwrap(), b"a");
+    action(&mut fs, 3, |fs| fs.remove(ROOT, "a.txt").unwrap());
+    let (out, _) = undo(&mut fs, t1);
+    assert!(out.contains(&(f, Outcome::Left)), "{out:?}");
+    assert_eq!(fs.resolve("/a.txt"), Err(Error::NotFound));
+    checked(&mut fs);
+}
+
+/// A change outside any action leaves no record of what it removed, so once
+/// one has landed in the volume, the tree the action's commit left is gone
+/// and a removal can no longer be dated: the object is left rather than
+/// brought back over what may have been a later removal for good.
+#[test]
+fn a_removal_no_tree_dates_is_left() {
+    let mut fs = fresh();
+    fs.set_volume(HOME).unwrap();
+    let f = write(&mut fs, "/a.txt", b"a");
+    fs.commit().unwrap();
+    let t1 = action(&mut fs, 1, |fs| fs.remove(ROOT, "a.txt").unwrap());
+    write(&mut fs, "/b.txt", b"b");
+    fs.commit().unwrap();
+    let (out, _) = undo(&mut fs, t1);
+    assert!(out.contains(&(f, Outcome::Left)), "{out:?}");
+    assert_eq!(fs.resolve("/a.txt"), Err(Error::NotFound));
+    checked(&mut fs);
+}
+
+/// An item a restore from the trash took out, then trashed again and emptied
+/// outside any action, stays gone when that restore is undone: no tree dates
+/// the trash folder's removal, so nothing destroyed later comes back (bug hunt
+/// 2, H2-2; #1365's review).
+#[test]
+fn an_undo_of_a_restore_from_the_trash_leaves_what_was_emptied_since() {
+    let mut fs = fresh();
+    fs.set_volume(HOME).unwrap();
+    let user = mkdir(&mut fs, "/user");
+    let f = write(&mut fs, "/user/notes.txt", b"v1");
+    let held = fs.trash(user, "notes.txt").unwrap();
+    fs.commit().unwrap();
+    let folder = fs.path(None, held.folder).unwrap().unwrap();
+    // The restore from the trash, as `fs` makes it: the item out, its folder
+    // and the transaction's folder gone.
+    let t1 = action(&mut fs, 1, |fs| {
+        fs.rename(held.folder, &held.name, user, "notes.txt")
+            .unwrap();
+        fs.remove(held.folder, kaifs::trash::INFO).unwrap();
+        let (slots, n) = split(&folder);
+        let (trash, txn) = split(slots);
+        let slots = fs.resolve(slots).unwrap();
+        fs.remove(slots, n).unwrap();
+        let trash = fs.resolve(trash).unwrap();
+        fs.remove(trash, txn).unwrap();
+    });
+    // Trashed again and emptied, outside any action: gone for good.
+    fs.trash(user, "notes.txt").unwrap();
+    fs.empty_trash().unwrap();
+    fs.commit().unwrap();
+    let (out, _) = undo(&mut fs, t1);
+    assert!(out.contains(&(f, Outcome::Left)), "{out:?}");
+    assert_eq!(fs.resolve("/user/notes.txt"), Err(Error::NotFound));
+    assert!(fs.trash_list().unwrap().is_empty(), "{out:?}");
+    assert!(fs.stat(f).is_err(), "{out:?}");
+    checked(&mut fs);
+}
+
+/// A scoped restore that would bring back what the action removed into the
+/// volume's root, its folder gone since, is refused.
+#[test]
+fn a_scoped_restore_refuses_the_root() {
+    let mut fs = fresh();
+    fs.set_volume(HOME).unwrap();
+    let pkg = mkdir(&mut fs, "/pkg");
+    let x = mkdir(&mut fs, "/pkg/x");
+    write(&mut fs, "/pkg/x/planted", b"v1");
+    fs.commit().unwrap();
+    let t1 = action(&mut fs, 1, |fs| fs.remove(x, "planted").unwrap());
+    action(&mut fs, 2, |fs| fs.remove(pkg, "x").unwrap());
+    fs.begin(3).unwrap();
+    assert_eq!(fs.restore_within(t1, pkg).unwrap(), None);
+    fs.abort().unwrap();
+    // Unscoped, it lands in the root.
+    let (out, _) = undo(&mut fs, t1);
+    assert!(out.contains(&(x, Outcome::Left)), "{out:?}");
+    assert_eq!(read(&mut fs, "/planted").unwrap(), b"v1");
+    checked(&mut fs);
+}
+
 /// What a reader sees of every live object of the active volume, by inode: the
 /// folder and name it has, its data, and its attributes.
 type Seen = BTreeMap<u64, ((u64, String), Option<Vec<u8>>, Vec<(String, Vec<u8>)>)>;

@@ -88,6 +88,11 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &["power: rebooting through the 8042 reset line"],
         ..case("reboot-8042", "test=reboot reboot=8042")
     },
+    // Bug hunt 3 H3-2: a memory-space reset register is written without the memory lock.
+    TestCase {
+        expect: &["power: a memory reset register was written with the memory lock held"],
+        ..case("reboot-memory", "test=reboot-memory")
+    },
     // ADR 0008 "fault": a panic or a failed check resets the machine instead of
     // halting (`panic=reset` asks for that in test mode).
     TestCase {

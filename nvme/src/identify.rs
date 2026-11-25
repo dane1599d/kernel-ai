@@ -94,11 +94,22 @@ pub struct Namespace {
     pub blocks: u64,
     /// Bytes in a logical block of the format in use.
     pub block_bytes: u32,
+    /// Bytes of metadata a block carries in the format in use (MS), separate or
+    /// extended (FLBAS bit 4). The driver sends no metadata pointer and its
+    /// PRPs cover `block_bytes` a block, so a namespace with any is not one it
+    /// can read or write.
+    pub metadata_bytes: u16,
     /// The namespace is write-protected (NSATTR bit 0).
     pub write_protected: bool,
 }
 
 impl Namespace {
+    /// Whether the namespace is plain `sector`-byte blocks with no metadata: the
+    /// only kind the driver's commands describe correctly.
+    pub fn is_plain(&self, sector: u32) -> bool {
+        self.block_bytes == sector && self.metadata_bytes == 0
+    }
+
     pub fn parse(page: &[u8]) -> Result<Self, IdentifyError> {
         if page.len() < IDENTIFY_BYTES {
             return Err(IdentifyError::Short);
@@ -118,6 +129,7 @@ impl Namespace {
         Ok(Self {
             blocks: u64_at(page, 0),
             block_bytes: 1 << lbads,
+            metadata_bytes: (lbaf & 0xFFFF) as u16,
             write_protected: page[99] & 1 == 1,
         })
     }
@@ -187,6 +199,28 @@ mod tests {
         assert!(ns.write_protected);
         id[26] = 2;
         assert_eq!(Namespace::parse(&id), Err(IdentifyError::NoFormat));
+    }
+
+    #[test]
+    fn a_namespace_with_metadata_is_not_a_plain_512_byte_disk() {
+        let mut id = page();
+        id[0..8].copy_from_slice(&100u64.to_le_bytes());
+        id[25] = 0;
+        id[26] = 0;
+        id[128..132].copy_from_slice(&(9u32 << 16).to_le_bytes());
+        let plain = Namespace::parse(&id).unwrap();
+        assert_eq!(plain.metadata_bytes, 0);
+        assert!(plain.is_plain(512));
+        assert!(!plain.is_plain(4096));
+        // 512 bytes of data and 8 of metadata, separate then extended (FLBAS
+        // bit 4): neither is something the driver's PRPs describe.
+        id[128..132].copy_from_slice(&((9u32 << 16) | 8).to_le_bytes());
+        for flbas in [0, 0x10] {
+            id[26] = flbas;
+            let ns = Namespace::parse(&id).unwrap();
+            assert_eq!((ns.block_bytes, ns.metadata_bytes), (512, 8));
+            assert!(!ns.is_plain(512), "flbas {flbas:#x}");
+        }
     }
 
     #[test]
