@@ -9,13 +9,18 @@ use crate::local::LocalEnv;
 use crate::saved::{self, Record};
 use crate::settings::Settings;
 use alloc::boxed::Box;
+use alloc::rc::Rc;
+use alloc::string::String;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 use kabi::Error;
+use kabi::live::kind;
 
-/// The kernel's env, with comphost's disk read in on restore.
+/// The kernel's env, with comphost's disk: read in on restore, and written
+/// with each checkpoint the kernel took, as comphost's `SysEnv::report` does.
 struct WithDisk {
     inner: LocalEnv<Fake>,
-    disk: Option<Record>,
+    disk: Rc<RefCell<Option<Record>>>,
 }
 
 impl Env for WithDisk {
@@ -26,12 +31,22 @@ impl Env for WithDisk {
     }
 
     fn report(&mut self, report: &Report<'_>) -> Result<(), Error> {
-        self.inner.report(report)
+        self.inner.report(report)?;
+        if report.kind == kind::CHECKPOINT {
+            let mut disk = self.disk.borrow_mut();
+            let generation = disk.as_ref().map_or(0, |record| record.generation + 1);
+            *disk = Some(Record {
+                generation,
+                schema: report.schema as u32,
+                checkpoint: report.blob.to_vec(),
+            });
+        }
+        Ok(())
     }
 
     fn restore(&mut self) -> Result<Restored, Error> {
         let mut restored = self.inner.restore()?;
-        saved::merge(&mut restored, self.disk.take());
+        saved::merge(&mut restored, self.disk.borrow().clone());
         Ok(restored)
     }
 
@@ -59,11 +74,20 @@ fn saved_of(kernel: &crate::local::Kernel) -> Record {
 }
 
 fn boot(kernel: &crate::local::Kernel, disk: Option<Record>) -> Host<WithDisk> {
+    boot_on(kernel, Rc::new(RefCell::new(disk)))
+}
+
+/// [`boot`] on a disk the test holds too.
+fn boot_on(kernel: &crate::local::Kernel, disk: Rc<RefCell<Option<Record>>>) -> Host<WithDisk> {
     let env = WithDisk {
         inner: kernel.env(20, Box::new(fake::load)),
         disk,
     };
     Host::start(env, "counter", Settings::parse(SETTINGS).unwrap()).unwrap()
+}
+
+fn say(host: &mut Host<WithDisk>, request: &str) -> String {
+    String::from_utf8(host.handle(0, request.as_bytes()).unwrap()).unwrap()
 }
 
 #[test]
@@ -121,4 +145,31 @@ fn a_saved_state_the_version_refuses_disables_it_instead_of_starting_empty() {
     let mut host = boot(&k, Some(bad));
     let status = alloc::string::String::from_utf8(host.handle(0, b"ctl status").unwrap()).unwrap();
     assert!(status.contains("disabled"), "{status}");
+}
+
+/// `ctl reset` writes the fresh state over the refused one on disk before it
+/// answers, so the next boot starts from it instead of disabling the app
+/// again. Until the reset, the refused state is never written over.
+#[test]
+fn a_reset_replaces_the_refused_saved_state_so_the_next_boot_is_not_disabled() {
+    let disk = Rc::new(RefCell::new(Some(Record {
+        generation: 1,
+        schema: 99,
+        checkpoint: alloc::vec![0x82, 0x18, 99, 1],
+    })));
+    let before = kernel(&[V1]);
+    let mut host = boot_on(&before, disk.clone());
+    assert!(say(&mut host, "ctl status").contains("disabled"));
+    assert_eq!(disk.borrow().as_ref().map(|r| r.schema), Some(99), "kept");
+    assert!(say(&mut host, "ctl reset").starts_with("ok counter started fresh"));
+    assert_eq!(
+        disk.borrow().as_ref().map(|r| (r.generation, r.schema)),
+        Some((2, 1))
+    );
+    // The reboot: a new kernel with an empty ledger, and the same disk.
+    let after = kernel(&[V1]);
+    let mut host = boot_on(&after, disk);
+    let status = say(&mut host, "ctl status");
+    assert!(!status.contains("disabled"), "{status}");
+    assert_eq!(say(&mut host, "get"), "ok 0 schema 1");
 }
