@@ -42,6 +42,12 @@ impl Live for Kernel {
     }
 }
 
+/// The tree, locked. Held with interrupts on, so never by a `ready()`.
+fn lock_tree() -> spin::MutexGuard<'static, Tree> {
+    crate::threads::ready::not_in_ready(&"the grant tree");
+    TREE.lock()
+}
+
 fn tree_error(error: grant::Error) -> kabi::Error {
     match error {
         grant::Error::Revoked => kabi::Error::Revoked,
@@ -52,7 +58,7 @@ fn tree_error(error: grant::Error) -> kabi::Error {
 
 /// The root `node` (`grant::KERNEL`, `SYSTEM` or `USER`).
 pub fn root(node: u16) -> GrantRef {
-    TREE.lock().root(node)
+    lock_tree().root(node)
 }
 
 /// A new node under `parent`, made by `owner` (0 for the kernel).
@@ -62,7 +68,7 @@ pub fn create(
     life: Life,
     label: &[u8],
 ) -> Result<GrantRef, kabi::Error> {
-    TREE.lock()
+    lock_tree()
         .create(parent, owner, life, label, 0)
         .map_err(tree_error)
 }
@@ -93,7 +99,7 @@ pub fn new_request(n: u64) -> Result<GrantRef, kabi::Error> {
 pub fn revoke(node: GrantRef) -> Result<usize, kabi::Error> {
     let mut freed = [0u16; NODES];
     let count = {
-        let mut tree = TREE.lock();
+        let mut tree = lock_tree();
         let count = tree.revoke(node, &mut freed).map_err(tree_error)?;
         for &index in &freed[..count] {
             let index = usize::from(index);
@@ -124,7 +130,7 @@ pub fn revoke_owned(pid: u64) {
     // `revoke` takes it again (it is not reentrant: audit K #11); whatever a
     // revoke answers, the rest still go (`revoke_each`, host-tested).
     captable::grant::revoke_each(
-        || TREE.lock().owned_by(pid),
+        || lock_tree().owned_by(pid),
         |node| {
             let _ = revoke(node);
         },
@@ -133,7 +139,7 @@ pub fn revoke_owned(pid: u64) {
 
 /// Whether the process `pid` still owns a live node: none once it has ended.
 pub fn owns_any(pid: u64) -> bool {
-    TREE.lock().owned_by(pid).is_some()
+    lock_tree().owned_by(pid).is_some()
 }
 
 /// Records that the calling thread waits on a call through a route given under
@@ -242,5 +248,5 @@ pub fn insert(slot: usize, entry: Entry) -> Result<Handle, kabi::Error> {
 
 /// Nodes in use, the roots included.
 pub fn nodes() -> usize {
-    TREE.lock().len()
+    lock_tree().len()
 }

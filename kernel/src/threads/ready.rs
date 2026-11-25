@@ -13,10 +13,15 @@
 //! APP_CTL's `gone` took the IPC lock this way, and JOB_WAIT and JOB_TAKE their
 //! tables.
 //!
-//! Debug builds check it: [`run`] marks this CPU while `ready()` runs, and each
-//! helper that takes a lock with interrupts on calls [`not_in_ready`], which
-//! counts a lock taken there. A boot case fails when any was ([`ready_locks`]).
-//! Release builds check nothing.
+//! Debug builds check it: [`run`] marks this CPU while `ready()` runs, and the
+//! helpers that take such a lock call [`not_in_ready`], which counts a lock
+//! taken there. A boot case fails when any was ([`ready_locks`]). The marked
+//! helpers: the heap, `memory::with`, the process, futex and job tables, an
+//! address space, a handle table, the grant tree, the IPC lock, the shared
+//! objects (`shm`), components, the supervisor's exit queue, the edit session,
+//! the build job and its last reply, the scheduling control, and a network
+//! stream's `with`. A lock taken by a bare `.lock()` outside such a helper is
+//! not checked. Release builds check nothing.
 
 #[cfg(debug_assertions)]
 use crate::percpu::{self, MAX_CPUS};
@@ -52,7 +57,7 @@ pub(super) fn run(cpu: usize, ready: &impl Fn() -> bool) -> bool {
     }
 }
 
-/// Called by each helper that takes `lock` with interrupts on: in a debug build,
+/// Called by a helper that takes `lock`, a lock held with interrupts on: in a debug build,
 /// counts it when the caller is a `ready()`.
 #[inline]
 pub fn not_in_ready(lock: &'static &'static str) {

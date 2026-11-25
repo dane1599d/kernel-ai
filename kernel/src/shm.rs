@@ -115,6 +115,7 @@ static OBJECTS: Mutex<Objects> = Mutex::new(Objects {
 });
 
 fn with<R>(f: impl FnOnce(&mut Objects) -> R) -> R {
+    crate::threads::ready::not_in_ready(&"the shared objects");
     threads::preempt_disable();
     let result = f(&mut OBJECTS.lock());
     threads::preempt_enable();

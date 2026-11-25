@@ -99,6 +99,7 @@ pub fn phys_end() -> u64 {
 /// waiting for a TLB shootdown that a CPU spinning here with interrupts off would
 /// never acknowledge.
 pub fn with<R>(f: impl FnOnce(&mut Memory) -> R) -> R {
+    crate::threads::ready::not_in_ready(&"the memory manager");
     debug_assert!(
         !crate::threads::running() || x86_64::instructions::interrupts::are_enabled(),
         "memory::with called with interrupts off"

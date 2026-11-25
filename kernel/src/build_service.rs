@@ -100,6 +100,7 @@ pub fn builds() -> u64 {
 }
 
 fn with_last<R>(f: impl FnOnce(&mut Option<Vec<u8>>) -> R) -> R {
+    crate::threads::ready::not_in_ready(&"the last build reply");
     threads::preempt_disable();
     let result = f(&mut LAST_BUILD.lock());
     threads::preempt_enable();

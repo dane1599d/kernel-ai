@@ -167,6 +167,7 @@ fn with<R>(
     id: u64,
     f: impl FnOnce(&mut tcp::Socket, &mut bool) -> R,
 ) -> Result<R, Error> {
+    crate::threads::ready::not_in_ready(&"the network");
     let mut guard = NET.lock();
     let net = guard.as_mut().ok_or(Error::Unavailable)?;
     net.poll();
