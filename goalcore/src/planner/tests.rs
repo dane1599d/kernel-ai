@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::runner::{Outcome, Parts, Runner, Steps};
-use crate::{Budget, Door, Goals, Presence, Scope, Spec, State, Step, StepDone, Tier};
+use crate::{
+    Budget, Door, Goals, Pause, Presence, Resource, Scope, Spec, State, Step, StepDone, Tier,
+};
 use alloc::collections::VecDeque;
 use alloc::vec;
 
@@ -113,9 +115,17 @@ fn a_take_waits_plans_afresh_or_answers() {
     assert_eq!(taken(Ok("pending")), Taken::Wait);
     assert_eq!(taken(Ok("busy Kai is writing an app")), Taken::Wait);
     assert_eq!(taken(Ok("ended unknown ticket")), Taken::Replan);
-    for answer in ["ok ok say", "err malformed act request", "ended timeout"] {
-        assert_eq!(taken(Ok(answer)), Taken::Answer(answer));
+    for text in ["ok ok say", "err malformed act request", "ended timeout"] {
+        assert_eq!(taken(Ok(text)), Taken::Answer { text, used: 0 });
     }
+    let used = taken(Ok("used 3000 ok ok say"));
+    assert_eq!(
+        used,
+        Taken::Answer {
+            text: "ok ok say",
+            used: 3000
+        }
+    );
 }
 
 /// bug-hunt-4 H4-13: llm that cannot answer now fails no goal. Before, a take
@@ -198,4 +208,21 @@ fn a_stop_llm_did_not_take_is_asked_again() {
     planner.drop_ended(&goals);
     planner.drop_ended(&goals);
     assert_eq!(planner.llm.asked[1..], ["agent-stop 7"; 3]);
+}
+
+/// bug-hunt-4 H4-15: what each plan used is charged to the goal, so the token
+/// budget on the person's card pauses it. Before, every plan was charged 0.
+#[test]
+fn what_planning_used_pauses_the_goal_at_its_tokens() {
+    let mut goals = Goals::new();
+    let id = approved(&mut goals, 5_000);
+    let later = Ok("used 3000 ok later");
+    let mut planner = scripted(&[Ok("ok 7"), later, Ok("ok 8"), later]);
+    let states = turns(&mut goals, id, &mut planner, 4);
+    let tokens = State::Paused(Pause::Budget(Resource::Tokens));
+    assert_eq!(
+        states,
+        [State::Active, State::Active, State::Active, tokens]
+    );
+    assert_eq!(goals.get(id).unwrap().tokens_spent, 6_000);
 }
