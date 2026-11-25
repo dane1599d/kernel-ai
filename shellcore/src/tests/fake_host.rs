@@ -293,12 +293,16 @@ impl Host for FakeHost {
         Ok(())
     }
 
-    fn rules_set_aside(&self, text: &str) -> Result<(), String> {
+    fn rules_set_aside(&self, text: &str) -> Result<String, String> {
         if self.rules_aside_fails.get() {
             return Err(String::from("the disk did not answer"));
         }
-        *self.rules_aside.borrow_mut() = Some(text.into());
-        Ok(())
+        // As the shell bin does: an earlier one kept is never written over.
+        let kept = match self.rules_aside.replace(Some(text.into())) {
+            None => String::from("rules-refused"),
+            Some(_) => String::from("rules-refused.2"),
+        };
+        Ok(kept)
     }
 
     fn net_grants_read(&self) -> Result<Option<String>, String> {

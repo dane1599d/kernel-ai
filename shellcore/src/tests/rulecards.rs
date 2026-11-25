@@ -145,6 +145,22 @@ fn a_rules_file_refused_whole_is_kept_aside_and_rules_save_again() {
     assert_eq!(host.rules_aside.borrow().as_deref(), Some(BAD_RULES));
 }
 
+/// #1354's review: a rules file refused on a later boot is kept beside the
+/// one kept before, never over it, and `rules` names where this one went.
+#[test]
+fn a_second_refused_rules_file_is_kept_beside_the_first() {
+    let (host, _shell) = booted(BAD_RULES, vec![]);
+    let second = BAD_RULES.replace("rule 1", "rule 2");
+    *host.rules_disk.borrow_mut() = Some(second.clone());
+    let mut again = shell_again(&host);
+    let listed = again.eval("rules");
+    assert!(
+        listed.text.contains("/system/state/rules-refused.2"),
+        "{listed:?}"
+    );
+    assert_eq!(host.rules_aside.borrow().as_deref(), Some(second.as_str()));
+}
+
 /// #10: where a refused file cannot be kept aside, it is never written over,
 /// as a lost write there would make the loss permanent.
 #[test]

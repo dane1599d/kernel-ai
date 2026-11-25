@@ -469,6 +469,9 @@ pub const RULES: &str = "rules";
 /// A rules file the shell refused at start, kept beside it so the rules can
 /// be written again without losing what it held.
 pub const RULES_REFUSED: &str = "rules-refused";
+/// How many refused rules files are kept: `rules-refused`, then
+/// `rules-refused.2` and on, each refused on a boot of its own.
+pub const RULES_REFUSED_KEPT: u32 = 8;
 /// The standing instructions' store (`kai-standing 1`, P3 task 11).
 pub const STANDING: &str = "standing";
 /// The apps kept running, never napped (`kai-keep 1`, P4).

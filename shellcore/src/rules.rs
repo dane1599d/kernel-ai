@@ -244,6 +244,11 @@ impl Rules {
         self.list.iter().find(|r| r.id == id).and_then(|r| r.grant)
     }
 
+    /// Whether a rule holds node `handle`.
+    pub fn holds_grant(&self, handle: u32) -> bool {
+        self.list.iter().any(|r| r.grant == Some(handle))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.list.is_empty()
     }

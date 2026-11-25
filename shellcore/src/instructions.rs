@@ -65,6 +65,12 @@ impl Shell {
         let Some(draft) = pending.standing.clone() else {
             return Reply::err("nothing to confirm");
         };
+        // The node the kernel minted with an Allow: it goes if no instruction
+        // is made, whatever the reason.
+        let minted = match read_answer(text.trim()) {
+            Some((answer, granted)) if answer != termcore::menu::Answer::Deny => granted.rule,
+            _ => None,
+        };
         let allowed = match (read_answer(text.trim()), &pending.menu) {
             (Some((answer, granted)), Some(call)) if answer != termcore::menu::Answer::Deny => {
                 granted
@@ -81,6 +87,9 @@ impl Shell {
             _ => Err(String::new()),
         };
         if let Err(why) = allowed {
+            // An Allow whose ONCE failed or was missing still had its node
+            // minted, which would hold a rule slot until a reboot.
+            self.revoke_unkept(minted);
             self.record(id, &pending.request, &pending.checked.script, "declined");
             let why = match why.is_empty() {
                 true => why,
@@ -101,12 +110,7 @@ impl Shell {
             Err(refused) => {
                 // The node the kernel minted for it would hold a rule slot
                 // until a reboot.
-                if let Ok(Some(grant)) = allowed
-                    && let Err(why) = self.host.revoke_rule(grant)
-                {
-                    self.host
-                        .audit(&format!("an unkept rule's node was not revoked: {why}"));
-                }
+                self.revoke_unkept(minted);
                 return Reply::err(refusal(&refused));
             }
         };
