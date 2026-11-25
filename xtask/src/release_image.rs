@@ -80,7 +80,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
     // Nothing that exists to be driven by a boot case ships.
     components::check_no_test_only(&modules)?;
     let release_seq = release_seq(&root)?;
-    let record = image::slots::slot_record(&root, release_seq);
+    let record = image::slots::slot_record(&root, release_seq)?;
     // R's install and the commit read the slot's own `kai-slot 1` (`kernel/src/slots.rs`).
     modules.push(esp::Module {
         path: "kai.slot".into(),
