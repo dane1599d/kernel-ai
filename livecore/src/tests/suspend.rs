@@ -105,3 +105,20 @@ fn a_show_reloads_the_app_with_its_state_and_resumes_a_suspended_one() {
     assert!(!host.suspended());
     assert_eq!(call(&mut host, "get"), "ok 2 schema 1");
 }
+
+/// The instance a show leaves serving logs, as any serving version does:
+/// only a rehearsal's copy and a standby are quiet.
+#[test]
+fn a_show_reloads_the_serving_version_not_quiet() {
+    let kernel = kernel(&[V1]);
+    let mut host = host(&kernel);
+    call(&mut host, "add");
+    host.reshow().unwrap();
+    let mut serving = 0;
+    host.each_instance(|instance, _, shown| {
+        assert!(shown);
+        assert!(!instance.quiet, "a reshown serving version must log");
+        serving += 1;
+    });
+    assert_eq!(serving, 1);
+}
