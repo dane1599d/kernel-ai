@@ -27,6 +27,7 @@ const CALLS: &[u64] = &[
     call::ENDPOINT_BADGE,
     call::PART_PEER_ALIVE,
     call::PART_PEER_NAME,
+    call::PART_PEER_CAPS,
     call::MODEL_FILL,
 ];
 
@@ -39,6 +40,7 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
         call::PART_FLUSH => flush(slot, a[0]),
         call::PART_PEER_ALIVE => peer_alive(slot, a[0], a[1]),
         call::PART_PEER_NAME => peer_name(slot, a[0], a[1], a[2], a[3]),
+        call::PART_PEER_CAPS => peer_caps(slot, a[0], a[1]),
         call::MODEL_FILL => model_fill(slot, a[0], a[1], a[2], a[3]),
         call::ENDPOINT_BADGE => endpoint_badge(slot, a[0], a[1]),
         _ => mint(slot, a[0], a[1], a[2], a[3]),
@@ -210,6 +212,14 @@ fn peer_name(slot: usize, raw: u64, pid: u64, ptr: u64, cap: u64) -> Result<u64,
     Ok(len as u64)
 }
 
+/// PART_PEER_CAPS: live process `pid`'s capability bits from the table, under
+/// its lock, for `fs` alone (a `Partition` handle). Pid 0, the kernel, has
+/// none: NotFound, as for a process that is not running.
+pub(crate) fn peer_caps(slot: usize, raw: u64, pid: u64) -> Result<u64, Error> {
+    partition(slot, raw, Rights::empty())?;
+    crate::process::caps_of(pid).ok_or(Error::NotFound)
+}
+
 /// MODEL_FILL: the model store's model, from `kai-data` block runs the caller
 /// names, into the runs reserved at boot ([`crate::model::fill`]).
 fn model_fill(slot: usize, raw: u64, ptr: u64, count: u64, offset: u64) -> Result<u64, Error> {
@@ -235,6 +245,8 @@ fn model_fill(slot: usize, raw: u64, ptr: u64, count: u64, offset: u64) -> Resul
             )
         })
         .collect();
+    // `test=model-store fill=...`: the restart and give-up cases run first.
+    crate::model_fill_tests::before_fill(&extents, offset);
     crate::model::fill::fill(&extents, offset)
 }
 

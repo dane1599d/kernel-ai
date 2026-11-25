@@ -102,6 +102,7 @@ fn echo(
     let mut sent = false;
     let give_up = started + INTERVAL_MS * 1_000_000;
     loop {
+        let ticket = super::frames_ticket();
         {
             let mut guard = NET.lock();
             let net = guard.as_mut().ok_or("net: no network card")?;
@@ -137,6 +138,6 @@ fn echo(
         if cancel() || hpet::nanos() > give_up {
             return Ok(Outcome::Lost);
         }
-        threads::sleep_ms(POLL_MS);
+        super::wait_for_frames(ticket, POLL_MS);
     }
 }

@@ -117,8 +117,9 @@ impl<D: BlockDev> Fs<D> {
     }
 
     /// Runs `f` with the allocator's reserve open: for the work that frees
-    /// space (a trash, an emptied trash, a truncate down, retention, the GC's
-    /// commit, a repair), which must work on a disk growth has filled.
+    /// space at once (an emptied trash, retention, the GC's commit, a repair),
+    /// which must work on a disk growth has filled. Never a trash or a
+    /// truncate, which a loop could use to drain it ([`Spend`](crate::allocator::Spend)).
     pub fn freeing<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         let was = self.io.alloc.spend_reserve(crate::allocator::Spend::All);
         let out = f(self);

@@ -80,19 +80,27 @@ pub struct Allocator {
 pub enum Spend {
     /// Growth: none of it.
     Keep,
-    /// Work that frees space only later, such as a trash (a slot folder and
-    /// its `info.cbor`, the item's blocks kept): down to half, so trashing
-    /// on a full disk never leaves the emptying nothing.
+    /// Work that frees space only later, a trash (a slot folder and its
+    /// `info.cbor`, the item's blocks kept) or a truncate (copy-on-write of
+    /// the tree and the extent), from any app: down to half, so trashing on a
+    /// full disk never leaves the emptying nothing.
     Half,
-    /// Work that frees space: an emptied trash, a truncate down, retention,
-    /// the GC's commit, a repair. All of it.
+    /// The same work asked by the person (`fs` knows them by `cap::POLICY`,
+    /// a kernel fact): down to a quarter. The quarter below the apps' half is
+    /// the person's own, so no app's trashing can keep them from deleting, and
+    /// the last quarter still waits for the emptying.
+    Person,
+    /// Work that frees space at once and cannot be looped to spend it: an
+    /// emptied trash, a dropped update snapshot, retention, the GC's commit, a
+    /// repair. All of it.
     All,
 }
 
 /// The fewest free blocks held back from growth: a full disk keeps enough for
-/// the commits that free space (a trash, an emptied trash, a truncate down,
-/// retention and the GC, each needing new tree, volume-table and allocator
-/// blocks). The reserve is this or 1/200 of the data area, whichever is more.
+/// the commits that free space (an emptied trash, retention and the GC, each
+/// needing new tree, volume-table and allocator blocks), and for trashes and
+/// truncates down to their tier ([`Spend`]). The reserve is this or 1/200 of
+/// the data area, whichever is more.
 pub const RESERVE_MIN: u64 = 64;
 
 /// What the allocator holds, to compare a mounted state with a committed one.
@@ -169,6 +177,7 @@ impl Allocator {
         let floor = match self.spend {
             Spend::Keep => self.reserve,
             Spend::Half => self.reserve / 2,
+            Spend::Person => self.reserve / 4,
             Spend::All => 0,
         };
         if self.buddy.free_blocks() < floor {

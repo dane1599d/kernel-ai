@@ -73,6 +73,21 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         ],
         ..case("ui-window", "test=ui-window")
     },
+    // Lane G: the wheel over an app's list scrolls it. `desktop` posts the wheel
+    // to Notes' ring, and Notes' next picture (a list scrolls only if it
+    // overflows, and an unchanged window sends none) is logged after it, with
+    // how many rows of the list's band moved: a redraw that moved nothing (a
+    // hover, a caret) logs no `scrolled` line and fails the case.
+    TestCase {
+        expect: &[
+            "desk-wheel-app: Notes holds 30 notes",
+            "desktop: the wheel went to window 1",
+            "desktop: window 1 drew after the wheel",
+            "desktop: window 1 scrolled ",
+            "desk-wheel-app: the wheel was turned over Notes' list",
+        ],
+        ..case("desk-wheel-app", "test=desk-wheel-app")
+    },
     // P3 task 12b: an unused app naps, and a click wakes it with its state.
     TestCase {
         expect: &[
@@ -117,6 +132,15 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         ],
         ..case("desk-standing-refused", "test=desk-standing-refused")
     },
+    // An allowed rule taken back by `undo`, then by `rules_remove`: its grant
+    // gone, and Notes' minimize fires nothing.
+    TestCase {
+        expect: &[
+            "desk-standing-undo: undo took the allowed rule back, its grant is gone, and a minimize fires nothing",
+            "desk-standing-undo: rules_remove ended the allowed rule, its grant is gone, and a minimize fires nothing",
+        ],
+        ..case("desk-standing-undo", "test=desk-standing-undo")
+    },
     // P3's exit case: S05-1's budgets on the real `desktop` at 1920x1080, a gate
     // under KVM, best of two (a scene with a miss is measured once more, and a
     // figure over budget in both runs fails it), each budget scaled by how many
@@ -138,6 +162,25 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
             "desk-perf: the figures are in",
         ],
         ..case("desk-perf", "test=desk-perf display=1920x1080")
+    },
+    // The same scenes at 2560x1440 (1.25x: the desk is composed at 2048x1152 and
+    // resampled), judged against 1.8 times S05-1's budgets (the plan's section 5).
+    TestCase {
+        gpu: true,
+        memory_mib: Some(2048),
+        min_timeout: Some(std::time::Duration::from_secs(1_200)),
+        expect: &[
+            "desk-perf: reference p50 ",
+            "desk-perf: (a) full composite at 2560x1440: ",
+            "desk-perf: (b) drag render: ",
+            "desk-perf: (b) drag flush: ",
+            "desk-perf: (c) text page ",
+            "desk-perf: (e) key to flush: ",
+            "desk-perf: (f) drag under load, render+flush: ",
+            "desk-perf: (g) full composite with Start and the pane open at 2560x1440: ",
+            "desk-perf: the figures are in",
+        ],
+        ..case("desk-perf-1440", "test=desk-perf display=2560x1440")
     },
     // P3's exit case: a profile applied exactly, switched by a real focus change
     // through the user's rule, and undone.

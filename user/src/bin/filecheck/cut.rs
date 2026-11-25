@@ -55,7 +55,8 @@ pub fn actions(home: Handle) -> Result<(), String> {
     );
     let files = verify(dir)?;
     // The line before the mark: the kernel ends the case once it sees the
-    // mark, so a line printed after it could be cut off by the power-off.
+    // mark, so a line printed after it could be cut off by the power-off
+    // (#1203's full-ci run).
     println!("filecheck: {files} files whole after the actions");
     mark(home, "actions.ok")?;
     Ok(())

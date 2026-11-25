@@ -40,8 +40,9 @@ enum Face {
 }
 
 /// The features mono shapes with off: those that join characters into one
-/// glyph, so every character stays its own.
-const MONO_OFF: [&[u8; 4]; 3] = [b"calt", b"liga", b"clig"];
+/// glyph or pick a glyph by its neighbours (`ccmp` made '`' after a capital
+/// another glyph), so every character stays its own, the cell path's.
+const MONO_OFF: [&[u8; 4]; 5] = [b"calt", b"liga", b"clig", b"ccmp", b"locl"];
 
 fn face_of(family: Family) -> Face {
     match family {

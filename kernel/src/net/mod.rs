@@ -1,10 +1,12 @@
-//! Networking: a polled virtio-net card under smoltcp, set up by DHCP (or a static
+//! Networking: a virtio-net card under smoltcp, set up by DHCP (or a static
 //! address, see `setup`), with a DNS resolver (`resolve`), ICMP echo (`ping`), and
 //! a one-request-per-connection HTTP exchange used by the LLM client.
 //!
 //! Every user of the interface polls it through [`Net::poll`], which also hands
 //! the DHCP client's news to `setup`, so a lease is never missed whoever polled.
-//! Between those, the `net` thread polls it on its own.
+//! Between those, the `net` thread polls it on its own. With MSI-X, received
+//! frames wake that thread and every waiter (`wake`); without it, waiters poll
+//! at fixed gaps.
 
 pub mod dest;
 mod device;
@@ -13,6 +15,9 @@ pub mod resolve;
 pub mod setup;
 pub mod stream;
 mod virtio_net;
+mod wake;
+
+pub use wake::on_interrupt;
 
 use crate::virtio::hal::KernelHal;
 use crate::virtio::split::SplitTransport;
@@ -32,6 +37,8 @@ const RX_BUFFER: usize = 64 * 1024;
 const TX_BUFFER: usize = 16 * 1024;
 /// Longest wait between polls: without interrupts this bounds how late a frame is seen.
 const MAX_POLL_GAP_MS: u64 = 2;
+/// The receive queue, the one given an interrupt.
+pub const RECEIVE_QUEUE: u16 = 0;
 const FIRST_EPHEMERAL_PORT: u16 = 49152;
 /// Receive and transmit queue depth: a power of two, at most QEMU's 256. A deep
 /// receive queue, refilled in batches, lets the host deliver frames without a
@@ -75,7 +82,13 @@ fn now() -> Instant {
 /// its address the way the command line said (see [`setup::configure`]).
 pub fn init(transport: SplitTransport) -> Result<(), &'static str> {
     let mut nic = Nic::new(transport).map_err(|_| "net: virtio-net setup failed")?;
-    nic.disable_interrupts();
+    let interrupts = nic.transport().routed();
+    if interrupts {
+        nic.receive_interrupts();
+        wake::enable();
+    } else {
+        nic.disable_interrupts();
+    }
     let mut device = NicDevice::new(nic);
     let mac = device.mac();
     let mut config = Config::new(HardwareAddress::Ethernet(EthernetAddress(mac)));
@@ -92,13 +105,18 @@ pub fn init(transport: SplitTransport) -> Result<(), &'static str> {
     let mut sockets = SocketSet::new(Vec::<SocketStorage<'static>>::new());
     let setup = setup::Setup::start(&mut iface, &mut sockets, hpet::nanos())?;
     log!(
-        "net: card up, MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}; {}",
+        "net: card up, MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, {}; {}",
         mac[0],
         mac[1],
         mac[2],
         mac[3],
         mac[4],
         mac[5],
+        if interrupts {
+            "receive interrupts"
+        } else {
+            "polled"
+        },
         setup.describe_start()
     );
     *NET.lock() = Some(Net {
@@ -182,6 +200,7 @@ pub fn exchange(
     let mut connected = false;
     let mut chunk = [0u8; 2048];
     let result = loop {
+        let ticket = wake::ticket();
         let mut guard = NET.lock();
         let net = guard.as_mut().ok_or("net: no network card")?;
         net.poll();
@@ -192,8 +211,11 @@ pub fn exchange(
         ) {
             connected = true;
         }
+        let mut queued = false;
         if socket.can_send() && sent < request.len() {
-            sent += socket.send_slice(&request[sent..]).unwrap_or(0);
+            let taken = socket.send_slice(&request[sent..]).unwrap_or(0);
+            sent += taken;
+            queued = taken > 0;
         }
         let mut failed = None;
         while socket.can_recv() && response.len() < max_response {
@@ -228,8 +250,13 @@ pub fn exchange(
         if hpet::nanos() > deadline {
             break Err("net: request timed out");
         }
+        if queued {
+            // What was just queued leaves now: the wait below may be the
+            // whole fallback when nothing comes back first.
+            net.poll();
+        }
         drop(guard);
-        threads::sleep_ms(MAX_POLL_GAP_MS);
+        wake::wait(ticket, MAX_POLL_GAP_MS);
     };
     // Close politely if the exchange finished, abort otherwise, and flush that out.
     if let Some(net) = NET.lock().as_mut() {
@@ -263,6 +290,21 @@ pub fn error_code(error: &str) -> kabi::Error {
 pub fn parse_endpoint(text: &str) -> Option<(Ipv4Addr, u16)> {
     let (host, port) = text.rsplit_once(':')?;
     Some((host.parse().ok()?, port.parse().ok().filter(|&p| p > 0)?))
+}
+
+/// Receive interrupts taken so far; None when the card is polled.
+pub fn interrupts_taken() -> Option<u64> {
+    wake::is_on().then(wake::taken)
+}
+
+/// Sleeps until frames may have come for a waiter holding `ticket`, or
+/// `gap_ms` when the card is polled.
+pub(crate) fn wait_for_frames(ticket: wake::Ticket, gap_ms: u64) {
+    wake::wait(ticket, gap_ms);
+}
+
+pub(crate) fn frames_ticket() -> wake::Ticket {
+    wake::ticket()
 }
 
 /// The network's current setup, for `:net` and the tests.

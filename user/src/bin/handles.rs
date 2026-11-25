@@ -89,6 +89,7 @@ fn main() -> i32 {
         Some("mem") => mem::mem,
         Some("idle") => idle,
         Some("reboot") => power::reboot,
+        Some("poweroff") => power::power_off,
         Some("stop") => interrupt::stop,
         Some("slow") => async_call::slow,
         Some("quick") => async_call::quick,
@@ -358,10 +359,54 @@ fn region(address: u64, len: usize) -> &'static mut [u8] {
     unsafe { core::slice::from_raw_parts_mut(address as *mut u8, len) }
 }
 
+/// SHM_INFO on the 4-page `handle` (as bytes, `sys::shm_size`): also through
+/// a duplicate with no rights at all, INSPECT included; BadHandle for a handle
+/// of another kind, and for a closed one.
+fn shm_size_rules(handle: Handle) -> Result<(), &'static str> {
+    if sys::shm_size(handle) != Ok(4 * 4096) {
+        return Err("SHM_INFO did not give the object's 4 pages");
+    }
+    let bare = sys::handle_dup(handle, Rights::empty()).map_err(|_| "a rightless dup failed")?;
+    if sys::shm_size(bare) != Ok(4 * 4096) {
+        return Err("SHM_INFO refused a handle with no rights");
+    }
+    expect(
+        sys::shm_map(bare, false),
+        Error::Permission,
+        "a map without MAP",
+    )?;
+    sys::handle_close(bare).map_err(|_| "close failed")?;
+    expect(
+        sys::shm_size(bare),
+        Error::BadHandle,
+        "SHM_INFO of a closed dup",
+    )?;
+    let mut list = [HandleInfo::default(); 16];
+    let count = sys::startup(&mut list)
+        .map_err(|_| "no STARTUP")?
+        .min(list.len());
+    let other = list[..count]
+        .iter()
+        .find(|info| info.kind().is_some_and(|k| k != Kind::Shm))
+        .map(|info| Handle(info.handle))
+        .ok_or("no startup handle of another kind")?;
+    expect(
+        sys::shm_size(other),
+        Error::BadHandle,
+        "SHM_INFO of another kind",
+    )?;
+    expect(
+        sys::shm_size(Handle(u32::MAX)),
+        Error::BadHandle,
+        "SHM_INFO of a handle never made",
+    )
+}
+
 /// SHM_CREATE from ring 3: 4 pages, mapped twice is Busy, filled and read back,
 /// unmapped; then a map of a closed handle fails.
 fn own_shm() -> Result<(), &'static str> {
     let handle = sys::shm_create(4).map_err(|_| "create failed")?;
+    shm_size_rules(handle)?;
     let address = sys::shm_map(handle, true).map_err(|_| "map failed")?;
     expect(
         sys::shm_map(handle, false),
@@ -383,6 +428,11 @@ fn own_shm() -> Result<(), &'static str> {
         sys::shm_map(handle, true),
         Error::BadHandle,
         "a closed handle",
+    )?;
+    expect(
+        sys::shm_size(handle),
+        Error::BadHandle,
+        "SHM_INFO of a closed handle",
     )?;
     // PROC_ALIVE needs DISPLAY or SUPERVISE, which this process lacks.
     expect(

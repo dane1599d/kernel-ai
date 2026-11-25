@@ -109,6 +109,28 @@ pub fn halt_others() {
     }
 }
 
+/// CPUs that took the halt IPI and stopped, for [`others_halted`].
+static HALTED: AtomicUsize = AtomicUsize::new(0);
+
+/// The halt IPI: counts this CPU as stopped, then stops it with interrupts off.
+pub fn on_halt_ipi() -> ! {
+    HALTED.fetch_add(1, Ordering::AcqRel);
+    crate::halt_forever()
+}
+
+/// After [`halt_others`]: how many of the other CPUs have stopped, waiting up
+/// to `within_ns` for all of them; and how many others there are.
+pub fn others_halted(within_ns: u64) -> (usize, usize) {
+    let others = online().saturating_sub(1);
+    let started = hpet::nanos();
+    while HALTED.load(Ordering::Acquire) < others
+        && hpet::nanos().saturating_sub(started) < within_ns
+    {
+        core::hint::spin_loop();
+    }
+    (HALTED.load(Ordering::Acquire).min(others), others)
+}
+
 static SHOOTDOWN: Mutex<()> = Mutex::new(());
 static SHOOTDOWN_ADDRESS: AtomicU64 = AtomicU64::new(0);
 static SHOOTDOWN_PAGES: AtomicU64 = AtomicU64::new(1);

@@ -6,7 +6,7 @@
 #      At most one PR that changes what the model sees (MODEL_PATHS) goes in a
 #      batch; a second one is left out, keeps its label, and goes in the next.
 #   2. Opens a draft "batch CI" PR for that branch so ci.yml runs once on the
-#      combination, and requires lint, the 6 boot shards and the 3 observe jobs
+#      combination, and requires lint, the 7 boot shards (3 KVM, 4 TCG) and the 3 observe jobs
 #      green.
 #   3. If a PR touches what the model sees, runs the fluency gate on the batch
 #      head and requires it to pass at >= FLUENCY_MIN% after repair.
@@ -19,9 +19,11 @@
 # A failed batch merges nothing: fall back to merge-chain.sh, one at a time.
 #
 # No-boot: `batch-ff.sh --noboot <PRs>` takes only PRs that noboot.sh finds
-# change nothing the boot jobs see, on a `batch/noboot-...` branch. ci.yml runs
-# no boot job for it, and its lint job fails it if noboot.sh disagrees; it lands
-# on lint and the other workflows alone (2026-11-19, to spend fewer runners).
+# change nothing the boot jobs see, on a `batch/noboot-...` branch. ci.yml's
+# `noboot` job runs main's copy of noboot.sh on the batch's diff and skips the
+# boot jobs only when it agrees; otherwise they all run, and the batch lands on
+# them as a full one would. Agreed, it lands on lint and the other workflows
+# alone (2026-11-19, to spend fewer runners).
 #
 # Resume: from the push of the batch branch on, the batch is recorded in
 # $S/current-batch. If the PC stops, `batch-ff.sh --resume` (batch-auto.sh runs
@@ -55,13 +57,14 @@ gates_green() {  # $1 run id
     sleep 30
   done
   echo "$g" | sed 's/^/    /'
-  # A no-boot batch runs lint alone (ci.yml skips the boot jobs for it, after
-  # its lint job checked that nothing it changes reaches them).
+  # A no-boot batch needs lint, and every boot job that ran green: ci.yml skips
+  # them only when its `noboot` job finds that nothing the batch changes
+  # reaches them; if it disagrees they run, and must pass.
   if [ -n "$noboot" ]; then
     echo "$g" | grep -q "^Format, lint[^=]*=success$" && ! echo "$g" | grep -qvE "=(success|skipped)$"
     return
   fi
-  [ "$(echo "$g" | grep -c "=")" -ge 10 ] && [ "$(echo "$g" | grep -vc "=success$")" = 0 ]
+  [ "$(echo "$g" | grep -c "=")" -ge 11 ] && [ "$(echo "$g" | grep -vc "=success$")" = 0 ]
 }
 
 # Observe determinism flips on plain main about 1 boot in 5 (lane K, 2026-10-27),
@@ -79,12 +82,13 @@ observe_only() {  # $1 run id
 # #256 merged on 2026-10-27 with pkgrepo red, since only ci.yml was checked.
 # Returns 1 when one failed, and 2 when one is still queued or running after
 # the wait, or the listing itself failed: a no-boot batch gets here after lint
-# alone, so an unfinished gate must not read as green (#1108's review).
+# alone, so an unfinished gate must not read as green (#1108's review). gh gives
+# a queued or running run an empty conclusion, so its status is shown then.
 others_ok() {  # $1 branch, $2 sha
   local listed="" done_re="=(success|skipped|neutral|failure|cancelled|timed_out|action_required)$"
   for i in $(seq 1 60); do
     if o=$(gh run list --repo "$R" --branch "$1" --limit 30 --json headSha,workflowName,status,conclusion \
-        --jq ".[] | select(.headSha==\"$2\" and .workflowName!=\"CI\" and (.workflowName|test(\"Fluency\")|not)) | .workflowName+\"=\"+(.conclusion//.status)"); then
+        --jq ".[] | select(.headSha==\"$2\" and .workflowName!=\"CI\" and (.workflowName|test(\"Fluency\")|not)) | .workflowName+\"=\"+(if (.conclusion // \"\") == \"\" then .status else .conclusion end)"); then
       listed=1
       { [ -z "$o" ] || ! echo "$o" | grep -qvE "$done_re"; } && break
     else
@@ -211,6 +215,26 @@ failed_cases() {  # $1 run id
     | sort -u | head -20 | sed 's/^/    failed case: /'
 }
 
+# The rustc errors in a run's failed jobs, one line each: the `--> file:line`
+# an error points at, then the error. batch-auto.sh takes the PRs that touch
+# those files out of the batch first, before halving it (11-23: two semantic
+# clashes in kainet, E0592 and E0609, cost hours of bisecting).
+compile_errors() {  # $1 run id
+  # Each log line is "job<TAB>step<TAB>time text", the text in ANSI colour.
+  # `cut` and a literal escape, not `\t` and `\x1b`, which only GNU sed reads:
+  # macOS sed would print nothing and the batch would just be halved.
+  # rustc prints an error's `-->` on the line right after it, so any other line
+  # ends the wait: a stray `-->` after "error: could not compile" is not paired.
+  local esc=$'\033'
+  gh run view "$1" --repo "$R" --log-failed 2>/dev/null | cut -f3- \
+    | sed -E "s/${esc}\[[0-9;]*m//g; s/^[0-9]{4}-[0-9-]+T[0-9:.]+Z //" \
+    | awk '/^error(\[E[0-9]+\])?: / { msg = $0; want = 1; next }
+           want && /^ *--> / { sub(/^ *--> /, ""); print $0 "  " msg; want = 0; next }
+           { want = 0 }' \
+    | sed -E 's#^/home/runner/work/[^/]+/[^/]+/##' \
+    | sort -u | head -20 | sed 's/^/    compile error: /'
+}
+
 verify() {
   echo "  batch PR #$bpr, head ${c:0:7}, waiting for CI"
   id=$(wait_ci "$name" "$c") || stop "CI did not finish; STOPPING"
@@ -227,7 +251,7 @@ verify() {
       echo "  re-run $id"
     fi
   fi
-  gates_green "$id" || { failed_cases "$id"; stop "batch NOT green; STOPPING (fall back to merge-chain.sh)"; }
+  gates_green "$id" || { failed_cases "$id"; compile_errors "$id"; stop "batch NOT green; STOPPING (fall back to merge-chain.sh)"; }
   others_ok "$name" "$c"; rc=$?
   [ $rc = 2 ] && stop "CI did not finish (another workflow); STOPPING"
   [ $rc = 0 ] || stop "batch NOT green: another workflow failed; STOPPING"
@@ -266,7 +290,8 @@ land() {  # PR numbers
 }
 
 # Picks up the batch in $STATE after a stop. Prints the batch's PRs as "+ #N"
-# lines, as a fresh run does, so batch-auto.sh reads the outcome the same way.
+# lines with their heads, as a fresh run does, so batch-auto.sh reads the
+# outcome the same way.
 resume() {
   name=""; bpr=""
   [ -f "$STATE" ] || { echo "  no batch to resume; nothing to merge; STOPPING"; exit 0; }
@@ -279,7 +304,7 @@ resume() {
   read -ra batch <<< "$prs"; read -ra heads <<< "$heads_s"; read -ra brs <<< "$brs_s"
   echo "== resuming batch $name ($phase) on main ${base:0:7}: ${batch[*]}"
   local i=0
-  for p in "${batch[@]}"; do echo "  + #$p (${brs[$i]})"; i=$((i+1)); done
+  for p in "${batch[@]}"; do echo "  + #$p (${brs[$i]}) at ${heads[$i]}"; i=$((i+1)); done
   [ ${#batch[@]} -gt 0 ] && [ ${#heads[@]} = ${#batch[@]} ] || stop "the resume state is damaged; STOPPING"
   set -- "${batch[@]}"
   git -C "$G" fetch -q origin "$MAIN"
@@ -356,10 +381,20 @@ compose() {
     batch+=("$p")
     heads+=("$head")
     brs+=("$br")
-    echo "  + #$p ($br)"
+    # The head goes in the line: batch-auto.sh keeps the label of a PR that
+    # fails alone if the lane pushed to it since.
+    echo "  + #$p ($br) at $head"
   done
   [ ${#batch[@]} -gt 0 ] || { echo "  nothing to merge; STOPPING"; exit 0; }
   set -- "${batch[@]}"
+  # Each PR was judged on its own tree; the combined commit is what CI judges.
+  # One that needs the boot jobs (main gained an include_str! of a PR's doc
+  # since it branched) goes as a full batch rather than failing CI's check.
+  if [ -n "$noboot" ] && ! (cd "$G" && bash "$KAI_SCRIPTS/noboot.sh" "$base" "$c" >/dev/null); then
+    echo "  the combined commit needs the boot jobs: running as a full batch"
+    noboot=""
+    name="batch/$(date +%m%d-%H%M)"
+  fi
 
   git -C "$G" push -q origin "$c:refs/heads/$name" || { echo "  push failed; STOPPING"; exit 0; }
   save_state pushed
@@ -377,6 +412,16 @@ compose() {
   done
   [ -n "$bpr" ] || stop "batch PR could not be created; STOPPING"
   save_state pushed
+  # The fluency gate starts with CI, not after it (27 minutes saved on the
+  # 12-PR batch of 11-19), and is read after the gates as before. It runs on
+  # this batch's own branch, so a stop's cleanup cancels it with CI's runs;
+  # a lane's runs are never touched. If the dispatch fails, fluency_ok
+  # dispatches it after the gates, as it used to.
+  if [ -n "$model" ] && gh workflow run fluency-model.yml --repo "$R" --ref "$name" >/dev/null; then
+    fluency=dispatched; save_state pushed
+    # Not "changes what the model sees (...)": batch-auto counts that line.
+    echo "  fluency gate dispatched with CI, for$model"
+  fi
 }
 
 # Everything runs from here, once bash has read the whole file: a pull that

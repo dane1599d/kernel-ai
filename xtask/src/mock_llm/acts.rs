@@ -234,6 +234,10 @@ pub(super) const ACTS: &[(&str, &str)] = &[
         r#"{"name":"appearance_set","arguments":{"setting":"theme","value":"light"}}"#,
     ),
     (
+        "set the text size to 150",
+        r#"{"name":"appearance_set","arguments":{"setting":"text_size","value":"150"}}"#,
+    ),
+    (
         "search notes for milk",
         r#"{"name":"ui_view","arguments":{"window":"notes"}}"#,
     ),

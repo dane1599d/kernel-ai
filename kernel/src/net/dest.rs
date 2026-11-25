@@ -46,7 +46,7 @@ const _: () = assert!(MAX_RECORDS == 1 << SLOT_BITS);
 pub const MAX_NARROWED: usize = 16;
 /// Slots only a plan line's own record ([`create`], no owner) may take, so a
 /// spawn never fails because the narrowings filled the table.
-const PLAN_RESERVED: usize = 8;
+pub const PLAN_RESERVED: usize = 8;
 /// The least a resolved address counts for the connect check, whatever
 /// its TTL: a TTL of 0 (dnsmasq's for local names) or shorter than a dial's
 /// wait would otherwise expire before the connect (audit K #18). The DNS
@@ -230,6 +230,12 @@ fn create_for(
     })
 }
 
+/// Free slots now, the table's room to grow counted in (the boot case's view
+/// of [`room`]).
+pub fn free_slots() -> usize {
+    with(|records| room(records))
+}
+
 /// Free slots, the table's room to grow counted in.
 fn room(records: &[Option<Record>]) -> usize {
     records.iter().filter(|r| r.is_none()).count() + (MAX_RECORDS - records.len())
@@ -339,11 +345,15 @@ pub fn answerable(addr: Ipv4Addr) -> bool {
     !special(addr)
 }
 
-/// Whether the boot runs on the boot cases' test network (`online=test`).
+/// Whether the boot runs on the boot cases' test network: `online=test` on a
+/// test boot (a `test=` word), as the kernel's other test words count only
+/// there. A plain boot with the word, `xtask vbox` under VirtualBox's NAT
+/// say, where 10.0.2.2 is the host machine, gets the full rule.
 fn test_network() -> bool {
-    crate::cmdline()
-        .split_whitespace()
-        .any(|word| word == "online=test")
+    crate::test_boot()
+        && crate::cmdline()
+            .split_whitespace()
+            .any(|word| word == "online=test")
 }
 
 /// A record for `narrower`, made from `object`'s, if `object`'s covers it:

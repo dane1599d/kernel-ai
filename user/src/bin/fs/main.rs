@@ -21,7 +21,7 @@ use kabi::part::stub;
 use kabi::{Error, MAX_MESSAGE};
 use user::{println, sys};
 
-/// The `Partition` handle, for [`alive`].
+/// The `Partition` handle, for [`alive`], [`name_of`] and [`caps_of`].
 static PARTITION: AtomicU32 = AtomicU32::new(0);
 
 /// Whether a caller still runs: only a definite NotFound counts as dead.
@@ -36,6 +36,15 @@ fn alive(pid: u64) -> bool {
 fn name_of(pid: u64, out: &mut [u8; kabi::MAX_NAME]) -> Option<usize> {
     let part = Handle(PARTITION.load(Ordering::Relaxed));
     sys::part_peer_name(part, pid, out).ok()
+}
+
+/// A caller's plan capability bits, from the kernel's table (PART_PEER_CAPS):
+/// `fs` gives the holder of `cap::POLICY`, the shell alone, the person's
+/// quarter of the space reserve (`Server::set_caps_of`). Any error, a pid gone
+/// or a kernel without the call, counts as no caps.
+fn caps_of(pid: u64) -> Option<u64> {
+    let part = Handle(PARTITION.load(Ordering::Relaxed));
+    sys::part_peer_caps(part, pid).ok()
 }
 
 user::entry!(main);
@@ -88,6 +97,7 @@ fn main() -> i32 {
     PARTITION.store(part.0, Ordering::Relaxed);
     server.set_alive(alive);
     server.set_name_of(name_of);
+    server.set_caps_of(caps_of);
     // Retention counts real time when the firmware gave a date; without one,
     // kaifs's clock counts only the time `fs` has run.
     if let Ok(seconds) = sys::clock_now() {

@@ -389,6 +389,12 @@ pub enum Event<'a> {
     /// at 120). A client answers with `surface.set_buffer_scale` and buffers
     /// at that scale. Not a greeting either.
     Scale(u32),
+    /// The desktop's whole appearance, as the `kai-appearance 1` text it is
+    /// saved in (theme, colours over it, text size, legible type), after
+    /// [`Event::Theme`] at connect and after each change: a client that knows
+    /// it resolves the same theme the desktop paints in and lays its windows out
+    /// in its type. One that does not leaves it. Not a greeting either.
+    Look(&'a str),
     // buffer
     Release,
     // surface
@@ -445,6 +451,7 @@ impl<'a> Event<'a> {
             },
             (I::Registry, 1) => Event::Theme(r.string()?),
             (I::Registry, 2) => Event::Scale(r.uint()?),
+            (I::Registry, 3) => Event::Look(r.string()?),
             (I::Buffer, 0) => Event::Release,
             (I::Surface, 0) => Event::PreferredScale(r.uint()?),
             (I::Surface, 1) => Event::Enter,
@@ -502,6 +509,7 @@ impl<'a> Event<'a> {
             } => w(0).uint(name).string(interface).uint(version),
             Event::Theme(name) => w(1).string(name),
             Event::Scale(scale) => w(2).uint(scale),
+            Event::Look(text) => w(3).string(text),
             Event::Release => w(0),
             Event::PreferredScale(scale) => w(0).uint(scale),
             Event::Enter => w(1),

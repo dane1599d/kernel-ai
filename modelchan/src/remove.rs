@@ -24,6 +24,9 @@ pub struct Holds {
     pub importing: Option<Sha256>,
     /// The model a download is fetching.
     pub downloading: Option<Sha256>,
+    /// An import or a download holds `fs`'s one action, inside which a blob
+    /// cannot be removed.
+    pub busy: bool,
 }
 
 /// What a remove does.
@@ -75,8 +78,11 @@ pub fn decide(sha256: &Sha256, holds: &Holds) -> Result<Remove, String> {
             "it is still being imported; ask again once the import ends",
         ));
     }
-    match is(holds.downloading) {
-        true => Ok(Remove::Download),
-        false => Ok(Remove::Blob),
+    match (is(holds.downloading), holds.busy) {
+        (true, _) => Ok(Remove::Download),
+        (false, true) => Err(String::from(
+            "a download or import is running; try again when it finishes",
+        )),
+        (false, false) => Ok(Remove::Blob),
     }
 }

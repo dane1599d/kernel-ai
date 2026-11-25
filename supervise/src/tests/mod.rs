@@ -515,3 +515,27 @@ hog 2 1 0 1 7 99 5",
         (true, false, 7, vec![5])
     );
 }
+
+/// POLICY is the person's: a line that asks for it is refused unless it is
+/// named `shell` and runs `shell`, so neither an app nor a renamed shell can
+/// pass for the person.
+#[test]
+fn only_the_shell_may_hold_policy() {
+    for bad in [
+        "a caps=policy",
+        "a caps=serve+call+policy",
+        "shell program=notes caps=policy",
+        "kai program=shell caps=policy",
+    ] {
+        let plan = parse_plan(bad);
+        assert!(plan.services.is_empty(), "{bad}");
+        assert!(
+            plan.errors[0].contains("only the shell may hold policy"),
+            "{bad}: {:?}",
+            plan.errors
+        );
+    }
+    let plan = parse_plan("shell caps=serve+policy");
+    assert_eq!(plan.services.len(), 1, "{:?}", plan.errors);
+    assert_ne!(plan.services[0].limits.caps & cap::POLICY, 0);
+}

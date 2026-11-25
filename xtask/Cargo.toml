@@ -7,6 +7,9 @@ publish = false
 
 [dependencies]
 agentabi = { path = "../agentabi" }
+# actbench's goals arm runs the goals agent's own loop and door (row G1's gate).
+agentid = { path = "../agentid" }
+goalcore = { path = "../goalcore" }
 bpe = { path = "../bpe" }
 # Spike S12-2: the real `cc` service runs the model's C (fluency/c.rs).
 ccserve = { path = "../ccserve" }

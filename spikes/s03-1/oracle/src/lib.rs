@@ -2,7 +2,7 @@
 //! spike `appabi`, the same bytes wrapped by wit-component on Wasmtime 50, and a
 //! generator of calls. The measures are the tests in `tests/`.
 
-use appabi_spike::{Core, Func, Guest, Trap, Ty, Val};
+use appabi::{Core, Func, Guest, Trap, Ty, Val};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use wit_parser::{Handle, Resolve, Type, TypeDefKind};
@@ -203,7 +203,7 @@ impl WasmiGuest {
 
     /// Calls `func`, then runs the destructors of handles the guest dropped.
     pub fn invoke(&mut self, func: &Func, args: &[Val]) -> Result<Option<Val>, Trap> {
-        let result = appabi_spike::call(self, func, args);
+        let result = appabi::call(self, func, args);
         for rep in std::mem::take(&mut self.store.data_mut().dropped) {
             let dtor = format!("{INTERFACE}#[dtor]counter");
             self.call(&dtor, &[Core::I32(rep as i32)])?;

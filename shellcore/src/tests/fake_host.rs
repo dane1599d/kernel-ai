@@ -193,6 +193,15 @@ impl Host for FakeHost {
         Ok(())
     }
 
+    fn desk_send_fits(&self) -> bool {
+        self.send_fits.get()
+    }
+
+    fn desk_preview(&self, id: u64, text: &str) -> Result<(), String> {
+        self.previews.borrow_mut().push((id, String::from(text)));
+        Ok(())
+    }
+
     fn net_send(&self, send: &crate::outbox::Send) -> Result<String, crate::outbox::SendFailed> {
         let disk = self.log_disk.borrow().clone();
         self.sends.borrow_mut().push((send.clone(), disk));
@@ -217,8 +226,8 @@ impl Host for FakeHost {
         Ok(())
     }
 
-    fn standing_read(&self) -> Option<String> {
-        self.standing_disk.borrow().clone()
+    fn standing_read(&self) -> Result<Option<String>, String> {
+        self.state_read("standing_read", &self.standing_disk)
     }
 
     fn standing_write(&self, text: &str) -> Result<(), String> {
@@ -262,8 +271,8 @@ impl Host for FakeHost {
         }
     }
 
-    fn rules_read(&self) -> Option<String> {
-        self.rules_disk.borrow().clone()
+    fn rules_read(&self) -> Result<Option<String>, String> {
+        self.state_read("rules_read", &self.rules_disk)
     }
 
     fn rules_write(&self, text: &str) -> Result<(), String> {
@@ -271,17 +280,24 @@ impl Host for FakeHost {
         Ok(())
     }
 
-    fn net_grants_read(&self) -> Option<String> {
-        self.net_disk.borrow().clone()
+    fn net_grants_read(&self) -> Result<Option<String>, String> {
+        self.state_read("net_grants_read", &self.net_disk)
     }
 
     fn net_grants_write(&self, text: &str) -> Result<(), String> {
+        if self.net_write_fails.get() > 0 {
+            self.net_write_fails.set(self.net_write_fails.get() - 1);
+            return Err(String::from("the disk did not answer"));
+        }
         *self.net_disk.borrow_mut() = Some(text.into());
         Ok(())
     }
 
-    fn withheld_read(&self) -> Option<String> {
-        self.withheld_disk.borrow().clone()
+    fn withheld_read(&self) -> Result<Option<String>, String> {
+        match self.withheld_error.borrow().clone() {
+            Some(why) => Err(why),
+            None => Ok(self.withheld_disk.borrow().clone()),
+        }
     }
 
     fn withheld_write(&self, text: &str) -> Result<(), String> {
@@ -348,13 +364,18 @@ impl Host for FakeHost {
     }
 
     fn fs_change(&self, change: FsChange) -> Result<u64, String> {
+        if let Some(why) = self.fs_fail.borrow_mut().take() {
+            return Err(why);
+        }
         let before = self.files.borrow().clone();
         let mut files = before.clone();
         match change {
             FsChange::Create { path, .. } if files.contains_key(path) => {
                 return Err(String::from("Exists: use fs_write"));
             }
-            FsChange::Create { path, text } | FsChange::Write { path, text } => {
+            FsChange::Create { path, text }
+            | FsChange::Write { path, text }
+            | FsChange::Save { path, text, .. } => {
                 files.insert(path.into(), text.into());
             }
             FsChange::Move { from, to } => {
@@ -500,8 +521,8 @@ impl Host for FakeHost {
         Some(child(request))
     }
 
-    fn keep_read(&self) -> Option<String> {
-        self.keep_file.borrow().clone()
+    fn keep_read(&self) -> Result<Option<String>, String> {
+        self.state_read("keep_read", &self.keep_file)
     }
 
     fn keep_write(&self, text: &str) -> Result<(), String> {
@@ -585,6 +606,19 @@ impl Host for FakeHost {
                         m.store.next = Some(sha);
                         format!("ok next {hex}")
                     }
+                }
+            }
+            // The undo of a model_fetch: refused while the blob runs or is on
+            // trial, as `updated` refuses it.
+            ["models", "remove", hex] => {
+                let sha = modelchan::listing::sha256(hex)?;
+                if m.store.running == Some(sha) {
+                    String::from("err it is the model running; use another first")
+                } else if m.next() == Some(sha) {
+                    String::from("err it is on trial for the next restart; undo that first")
+                } else {
+                    m.store.blobs.retain(|b| b.sha256 != sha);
+                    String::from("ok removed")
                 }
             }
             _ => String::from("err unknown request"),

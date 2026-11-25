@@ -36,6 +36,7 @@ pub mod plan;
 pub mod policy;
 pub mod probe;
 mod process;
+pub mod ring;
 pub mod sched;
 pub mod thread;
 pub mod update;

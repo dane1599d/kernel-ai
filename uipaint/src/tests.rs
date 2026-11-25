@@ -10,6 +10,7 @@ use gfx2d::text::{Fonts, Text};
 use gfx2d::{Image, Rect};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use uikit::layout::Measure;
 use uikit::list::Op;
 use uikit::widget::{Axis, Insets, Layout, ROOT, Size, TextField, Widget};
 use uikit::{Frame, Window};
@@ -81,6 +82,54 @@ fn render(scale: u32, palette: &look::Palette) -> (Image, Frame) {
     let all = img.bounds();
     p.paint(&mut img.canvas(), &f.list, all);
     (img, f)
+}
+
+/// The theme the desktop paints in for saved `settings` lines (`kai-appearance
+/// 1`'s `setting = value`), resolved as comphost does from `Told::Look`.
+fn appearance(settings: &str) -> look::theme::Theme {
+    use look::appearance::{Appearance, Shipped};
+    let text = format!(
+        "kai-appearance 1
+{settings}
+"
+    );
+    Appearance::decode(&text, &Shipped)
+        .and_then(|a| a.resolve(&Shipped))
+        .unwrap()
+}
+
+/// [`render`] in `theme`: its colours, and the window laid out and drawn in its
+/// type (text size and legible), as comphost does once the desktop says it.
+fn render_in(theme: &look::theme::Theme, scale: u32) -> (Image, Frame) {
+    let palette = theme.palette();
+    let mut t = text(palette.dark);
+    t.set_theme(theme);
+    let f = frame(&t);
+    let s = Scale::of(scale);
+    let size = s.rect(uikit::geom::Rect::new(0, 0, f.size.0, f.size.1));
+    let mut img = Image::new(size.w, size.h);
+    let mut p = Painter {
+        palette: &palette,
+        text: &mut t,
+        scale: s,
+    };
+    let all = img.bounds();
+    p.paint(&mut img.canvas(), &f.list, all);
+    (img, f)
+}
+
+/// The top of the last line of text in a frame: where the layout has got to.
+fn last_text_y(f: &Frame) -> i32 {
+    f.list
+        .groups
+        .iter()
+        .flat_map(|g| &g.ops)
+        .filter_map(|op| match op {
+            Op::Text { y, .. } => Some(*y),
+            _ => None,
+        })
+        .max()
+        .unwrap()
 }
 
 fn golden(name: &str, img: &Image) {
@@ -233,4 +282,147 @@ fn an_icon_draws_its_kai_glyph_and_an_unknown_name_its_frame() {
     assert_eq!(at(&img, 40, 10), ink);
     assert_eq!(at(&img, 55, 25), ink);
     assert_eq!(at(&img, 47, 17), window);
+}
+
+/// Text size and legible type reach the layout, not only the paint: at 150% the
+/// window's rows are taller and each line is lower, and the type the layout
+/// measured is the one drawn.
+#[test]
+fn a_window_laid_out_at_150_percent_has_taller_rows() {
+    let plain = appearance("theme = dark");
+    let big = appearance(
+        "theme = dark
+text_size = 150
+legible = on",
+    );
+    let (_, f100) = render_in(&plain, 120);
+    let (_, f150) = render_in(&big, 120);
+    assert!(
+        last_text_y(&f150) > last_text_y(&f100) + 12,
+        "{} against {}",
+        last_text_y(&f150),
+        last_text_y(&f100)
+    );
+    // The measure agrees with the paint: a line is wider at 150%.
+    let mut a = text(true);
+    a.set_theme(&plain);
+    let mut b = text(true);
+    b.set_theme(&big);
+    let style = uikit::style::TypeStyle::Heading;
+    let (wa, ha) = Measured(&a).measure(style, "Groceries");
+    let (wb, hb) = Measured(&b).measure(style, "Groceries");
+    assert!(wb > wa * 1.4 && hb > ha * 1.4, "{wa}x{ha} {wb}x{hb}");
+}
+
+#[test]
+fn a_window_at_150_percent_legible_matches_its_golden() {
+    let theme = appearance(
+        "theme = dark
+text_size = 150
+legible = on",
+    );
+    golden("dark-150-legible-1x", &render_in(&theme, 120).0);
+}
+
+/// A colour the person chose over the theme changes the pixels of an app's
+/// window, and nothing else of the paint.
+#[test]
+fn a_token_override_changes_an_app_windows_pixels() {
+    let plain = appearance("theme = dark");
+    // A legible colour that is not the theme's text, written as the override's hex.
+    let chosen = look::DARK.ask & 0xFF_FFFF;
+    let tinted = appearance(&format!(
+        "theme = dark
+token = text #{chosen:06X}"
+    ));
+    assert_ne!(
+        plain.colour(look::Token::Text),
+        tinted.colour(look::Token::Text)
+    );
+    let (a, fa) = render_in(&plain, 120);
+    let (b, fb) = render_in(&tinted, 120);
+    // The same layout: only the colours moved.
+    assert_eq!(fa.list, fb.list);
+    assert_ne!(a.px, b.px, "the text's pixels take the colour chosen");
+    assert_eq!(at(&a, 0, 0), at(&b, 0, 0), "the background is the theme's");
+}
+
+/// What the layout measures is what the paint draws, in every shipped theme and
+/// with text size and legible type on: the row of a line is the line of the
+/// style the painter uses. The legible theme's styles are one px larger than the
+/// default's, so a measure built from another theme comes out short.
+#[test]
+fn measured_rows_are_the_painted_rows_in_the_legible_theme_and_the_rest() {
+    use uikit::style::TypeStyle as S;
+    const STYLES: [S; 7] = [
+        S::Small,
+        S::Body,
+        S::Label,
+        S::Heading,
+        S::Display,
+        S::Mono,
+        S::MonoTitle,
+    ];
+    let others = [
+        "theme = dark",
+        "theme = light",
+        "theme = high-contrast",
+        "theme = dark
+text_size = 150
+legible = on",
+    ];
+    let legible = appearance("theme = legible");
+    let default = appearance("theme = dark");
+    for theme in others
+        .iter()
+        .map(|s| appearance(s))
+        .chain([legible.clone()])
+    {
+        let mut t = text(theme.palette().dark);
+        t.set_theme(&theme);
+        for style in STYLES {
+            let drawn = t.style(crate::look_style(style)).line;
+            let (_, measured) = Measured(&t).measure(style, "x");
+            assert_eq!(measured, drawn, "{} {style:?}", theme.name);
+        }
+    }
+    // Why it matters: the default's measure is shorter than the legible theme's
+    // paint for every style.
+    let mut wrong = text(true);
+    wrong.set_theme(&default);
+    let mut right = text(false);
+    right.set_theme(&legible);
+    let body = uikit::style::TypeStyle::Body;
+    assert!(Measured(&wrong).measure(body, "x").1 < Measured(&right).measure(body, "x").1);
+}
+
+/// What comphost keeps and measures with: the appearance text `desktop` sends,
+/// resolved once (`resolve_look`) and stored, is the theme `measure_theme`
+/// hands every new measure, so layout and paint agree for `theme = legible`
+/// with the legible switch off, which the default theme's measure does not.
+#[test]
+fn the_stored_theme_is_what_new_measures_are_built_from() {
+    let (appearance, painted) = crate::resolve_look(
+        "kai-appearance 1
+theme = legible
+legible = off
+",
+    )
+    .unwrap();
+    assert!(
+        !appearance.legible,
+        "the switch is off: the theme is legible"
+    );
+    let stored = Some(painted.clone());
+    let mut paint = text(false);
+    paint.set_theme(&painted);
+    let mut measure = text(true);
+    measure.set_theme(&crate::measure_theme(stored.as_ref()));
+    let mut default = text(true);
+    default.set_theme(&crate::measure_theme(None));
+    let body = uikit::style::TypeStyle::Body;
+    let drawn = paint.style(crate::look_style(body)).line;
+    assert_eq!(Measured(&measure).measure(body, "x").1, drawn);
+    assert!(Measured(&default).measure(body, "x").1 < drawn);
+    assert!(crate::resolve_look("not an appearance").is_err());
 }

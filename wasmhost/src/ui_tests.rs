@@ -498,3 +498,62 @@ fn typed_text_shows_though_the_app_does_not_commit() {
     let updates = g.take_ui();
     assert!(updates.len() <= 1, "{updates:?}");
 }
+
+/// A measure of fixed, large boxes: every line is 40 high and 20 wide a char.
+struct Tall;
+
+impl uikit::layout::Measure for Tall {
+    fn measure(&self, _: uikit::style::TypeStyle, text: &str) -> (f32, f32) {
+        (text.len() as f32 * 20.0, 40.0)
+    }
+}
+
+/// A type change (`set_measure`, then `ui_relayout`) lays the windows already
+/// open out again: the next frame holds the larger line and wider text, and the
+/// whole window is damaged (a button is a fixed 28 px at any type, so a label,
+/// whose box is its text's, shows the change).
+#[test]
+fn a_new_measure_lays_open_windows_out_again_and_paints_them_whole() {
+    let mut g = guest();
+    let w = open(&mut g, "Notes");
+    let label = Val::Variant(
+        1,
+        Some(Box::new(Val::Record(vec![
+            Val::String("Groceries".into()),
+            Val::Enum(1),
+            Val::Enum(0),
+        ]))),
+    );
+    assert_eq!(put(&mut g, w, 1, label), Ok((0, 0)));
+    commit(&mut g, w);
+    let frame = |g: &mut crate::CoreInstance| match g.take_ui().pop() {
+        Some(Update::Frame { frame, .. }) => frame,
+        other => panic!("{other:?}"),
+    };
+    let before = frame(&mut g)
+        .a11y
+        .iter()
+        .find(|n| n.id == 1)
+        .unwrap()
+        .bounds;
+    // Nothing is queued until the type changes.
+    g.set_measure(Box::new(Tall));
+    assert!(g.take_ui().is_empty(), "a measure alone shows nothing");
+    g.ui_relayout();
+    let after_frame = frame(&mut g);
+    let after = after_frame.a11y.iter().find(|n| n.id == 1).unwrap().bounds;
+    assert!(
+        after.h >= 40,
+        "the line is the new measure's: {before:?} then {after:?}"
+    );
+    assert!(
+        after.h > before.h && after.w > before.w,
+        "{before:?} then {after:?}"
+    );
+    assert_eq!(after_frame.damage, [uikit::geom::Rect::new(0, 0, 200, 100)]);
+    // The same measure again changes nothing in the layout, and is painted whole.
+    g.ui_relayout();
+    let again = frame(&mut g);
+    assert_eq!(again.a11y.iter().find(|n| n.id == 1).unwrap().bounds, after);
+    assert_eq!(again.damage, [uikit::geom::Rect::new(0, 0, 200, 100)]);
+}

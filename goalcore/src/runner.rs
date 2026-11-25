@@ -47,6 +47,11 @@ pub enum Outcome {
     Done(StepDone),
     /// The person said no where the door asked (the card), with why: not run.
     Denied(String),
+    /// Not answered yet: the step waits on the person's card. It stays in flight,
+    /// and the steps are asked about it again next turn (a poll, not a second
+    /// send), so a card the person leaves open holds no other goal, and their
+    /// pause or cancel still comes through.
+    Later,
 }
 
 /// Runs a step the door let run, and says what came of it.
@@ -191,9 +196,11 @@ impl<C: Clone + PartialEq> Runner<C> {
                 continue;
             };
             match (goal.flight, goal.state) {
+                // A step still on the card is polled and the next is looked at.
                 (Some(n), State::Active) => {
-                    self.run(goal, n, step, parts.steps, events);
-                    return true;
+                    if self.run(goal, n, step, parts.steps, events) {
+                        return true;
+                    }
                 }
                 // The person said no where goalcore asked (`Goal::deny`): the step
                 // that waited is the last one logged.
@@ -206,7 +213,8 @@ impl<C: Clone + PartialEq> Runner<C> {
 
     /// Runs step `n` of `goal`, in flight, and records what came of it: the entry is
     /// kept whatever came of the step (#980's rule), and a no on the card is
-    /// remembered.
+    /// remembered. Whether it came to an end: a step not answered yet is kept, in
+    /// flight, and asked about again next turn.
     fn run(
         &mut self,
         goal: &mut Goal,
@@ -214,8 +222,12 @@ impl<C: Clone + PartialEq> Runner<C> {
         step: Step<C>,
         steps: &mut dyn Steps<C>,
         events: &mut Vec<Event>,
-    ) {
+    ) -> bool {
         match steps.run(goal.id, &step) {
+            Outcome::Later => {
+                self.asked.insert(goal.id, step);
+                return false;
+            }
             Outcome::Done(done) => {
                 let entry = done.entry;
                 let _ = goal.finish_step(done);
@@ -235,6 +247,7 @@ impl<C: Clone + PartialEq> Runner<C> {
                 }
             }
         }
+        true
     }
 
     fn remember_no(&mut self, goal: u64, step: Step<C>) {
@@ -397,8 +410,7 @@ impl<C: Clone + PartialEq> Runner<C> {
         match proposed {
             Ok(Verdict::Run) => {
                 let n = goal.flight.unwrap_or(0);
-                self.run(goal, n, step, parts.steps, events);
-                true
+                self.run(goal, n, step, parts.steps, events)
             }
             Ok(Verdict::Ask(_)) => {
                 self.asked.insert(id, step);

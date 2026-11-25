@@ -341,6 +341,7 @@ pub fn dest_check() -> Result<(), &'static str> {
     );
     llm_grant()?;
     any_host_pinned()?;
+    moves_check()?;
     narrowing_bound()?;
     narrowing_sweeps_before_the_reserve()?;
     sweep_check()?;
@@ -430,11 +431,19 @@ fn narrowing_bound() -> Result<(), &'static str> {
 
 /// #1181's review: a narrowing that would dip into the slots kept for plan
 /// lines sweeps first. The table is left with fewer free slots than the
-/// reserve, all its records dead but for the ones a plan-line make kept as
-/// named; the narrowing must sweep them and succeed.
+/// reserve, every record in it named except six of this case's own; the
+/// narrowing must sweep the dead ones and succeed.
+///
+/// Records other checks left (`narrowing_bound`'s, a dozen and more) are not
+/// this case's: the plan-line make below names them (`!made.contains`), so
+/// its sweep keeps them and the six are all it frees. Left unnamed they were
+/// dropped too, which gave the table more free slots than the reserve, and the
+/// narrowing then succeeded with no sweep of its own: a `create_for` that
+/// swept only a full table passed this case.
 fn narrowing_sweeps_before_the_reserve() -> Result<(), &'static str> {
     const GRACE_MS: u64 = 1_100;
     const ONE: u64 = u64::MAX - 9;
+    const LEFT_FREE: usize = 6;
     let spec = netdest::Dest::parse(KAI_TEST).map_err(|_| "net: a bad test destination")?;
     let live = |object| crate::handle::names(kabi::handle::Kind::NetDest, object);
     let mut made = alloc::vec::Vec::new();
@@ -444,19 +453,55 @@ fn narrowing_sweeps_before_the_reserve() -> Result<(), &'static str> {
             None => break,
         }
     }
+    if made.len() <= LEFT_FREE {
+        return Err("net-dest: the table could not be filled for the reserve case");
+    }
     crate::threads::sleep_ms(GRACE_MS);
-    // One more plan-line record, whose sweep keeps all but the last six as
-    // named: the table then has a handful of free slots, under the reserve.
-    let keep = made.len().saturating_sub(6);
+    // One more plan-line record. Its sweep keeps every record but the last
+    // six this case made: the table then has LEFT_FREE - 1 free slots, under
+    // the reserve.
+    let keep = made.len() - LEFT_FREE;
     let kept = &made[..keep];
-    let parent = net::dest::create(spec, |object| kept.contains(&object) || live(object))
-        .ok_or("net-dest: no room after a partial sweep")?;
+    let named = |object| kept.contains(&object) || !made.contains(&object) || live(object);
+    let parent = net::dest::create(spec, named).ok_or("net-dest: no room after a partial sweep")?;
+    if net::dest::free_slots() > net::dest::PLAN_RESERVED {
+        return Err("net-dest: the reserve case's table was not short of the reserve");
+    }
     let exact = netdest::Dest::parse("proto:tcp,ports:8000,hosts:kai.test,match:exact")
         .map_err(|_| "net: a bad test destination")?;
     net::dest::narrow(parent, exact, live, ONE)
         .map_err(|_| "net-dest: a narrowing short of the reserve did not sweep first")?;
     log!("net-dest: a narrowing short of the plan lines' reserve swept the dead records first");
     Ok(())
+}
+
+/// #1150's review: a `Moving` with no `NetDest` entry leaves `moves()` where
+/// it was (every IPC call makes one, and a counter moving on for those would
+/// keep a sweep from ever dropping a record); one with a `NetDest` moves it on
+/// as it starts and as it ends. Another CPU's move may land between the reads,
+/// so a few tries, one of which must see exactly that.
+fn moves_check() -> Result<(), &'static str> {
+    const TRIES: usize = 8;
+    let entry = |kind| captable::Entry::new(kind, crate::handle::NETDEST_RIGHTS, net::dest::FIRST);
+    for _ in 0..TRIES {
+        let before = crate::handle::moves();
+        drop(crate::handle::Moving::from(alloc::vec![entry(
+            kabi::handle::Kind::Sched
+        )]));
+        drop(crate::handle::Moving::none());
+        let plain = crate::handle::moves();
+        let moving = crate::handle::Moving::from(alloc::vec![entry(kabi::handle::Kind::NetDest)]);
+        let started = crate::handle::moves();
+        drop(moving);
+        let ended = crate::handle::moves();
+        if (plain, started, ended) == (before, before + 1, before + 2) {
+            log!(
+                "net-dest: a move with no NetDest leaves moves() as it was; one with a NetDest moves it on as it starts and ends"
+            );
+            return Ok(());
+        }
+    }
+    Err("net-dest: moves() did not count exactly the NetDest moves")
 }
 
 /// Audit K #1: fills the record table with records no handle names, waits
@@ -627,6 +672,11 @@ pub fn stream_check(cmdline: &str) -> Result<(), &'static str> {
         return Err("net-stream: a closed stream was left open");
     }
     log!("net-stream: streams echoed through the handle, kept to its port and to 16, and closed");
+    match net::interrupts_taken() {
+        Some(taken) if taken > 0 => log!("net-stream: the card raised {taken} receive interrupts"),
+        Some(_) => log!("net-stream: receive interrupts are on, but none came"),
+        None => log!("net-stream: the card was polled, with no receive interrupts"),
+    }
     let (_, entry) = netdest(&spec)?;
     let args = alloc::format!("stream=hold port={port}");
     let request = SpawnRequest {
