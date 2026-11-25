@@ -6,7 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-appabi-spike = { path = "../appabi" }
+appabi = { path = "../../../appabi" }
 wasmi = { version = "=2.0.0", default-features = false, features = ["std", "validate", "portable-dispatch"] }
 wasmtime = { version = "=50.0.0", default-features = false, features = ["runtime", "component-model", "cranelift"] }
 wit-component = "=0.262.0"

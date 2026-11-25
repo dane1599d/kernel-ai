@@ -296,12 +296,23 @@ pub mod netdest {
 }
 
 /// Agents' badges (ADR 0013 section 1): the kernel puts the badge a plan line's
-/// `agent=` names on that line's route to [`agent::SERVICE`], and the service
-/// keys its queues, quotas and KV slots on it. No agent can forge it: a route's
-/// badge is the kernel's. 0, every other route's, is no agent.
+/// `agent=` names on that line's routes to [`agent::BADGED`]: `llm` keys its
+/// queues, quotas and KV slots on it, and the shell admits an agent's step by
+/// it alone, never by a pid or what the message says. No agent can forge it: a
+/// route's badge is the kernel's. 0, every other route's, is no agent.
 pub mod agent {
-    /// The service whose route carries an agent's badge.
+    /// The service every agent's line must route to, which carries its badge.
     pub const SERVICE: &str = "llm";
+    /// The services whose routes carry an agent's badge.
+    pub const BADGED: [&str; 2] = [SERVICE, "shell"];
+
+    /// The badge on a route to `service` of a line whose `agent=` is `agent`.
+    pub fn badge(service: &str, agent: Option<u64>) -> u64 {
+        match BADGED.contains(&service) {
+            true => agent.unwrap_or(0),
+            false => 0,
+        }
+    }
     /// The shell, which is the person.
     pub const KAI: u64 = 1;
     /// Runs goals.

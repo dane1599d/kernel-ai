@@ -31,6 +31,7 @@ impl Window {
             (_, v) => v,
         };
         let kids = self.tree.get(id).map_or(0, |n| n.children.len());
+        let before = self.tree.get(id).map_or(0, |n| n.widget.weight());
         let w = self.tree.widget_mut(id).ok_or(ActError::NoNode)?;
         let changed = match (w, &value) {
             (Widget::TextLine(f) | Widget::TextArea(f), Value::Text(t)) => {
@@ -80,6 +81,10 @@ impl Window {
             }
             _ => return Err(ActError::BadValue),
         };
+        // Typed text changes the field's weight: the window's count follows it,
+        // or removing the field later takes off more than was ever added.
+        let after = self.tree.get(id).map_or(0, |n| n.widget.weight());
+        self.tree.reweigh(before, after);
         if !changed {
             return Ok(None);
         }

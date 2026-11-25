@@ -66,6 +66,9 @@ pub enum State {
     Nothing,
     /// A later undo put its changes back.
     Undone,
+    /// It failed after an app took a call and did not answer: that call may
+    /// have run, so it is neither done nor nothing (audit K #19).
+    Unknown,
 }
 
 impl State {
@@ -75,6 +78,7 @@ impl State {
             Self::Asked => "asked",
             Self::Nothing => "nothing",
             Self::Undone => "undone",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -154,8 +158,19 @@ impl Entry {
     /// Whether `undo` may revert it: it ran, made changes, and every one has an
     /// inverse this shell can read.
     pub fn live(&self) -> bool {
-        self.state == State::Done
-            && !self.changes.is_empty()
+        self.state == State::Done && self.changes_undoable()
+    }
+
+    /// Whether `undo <id>` may put its known changes back: a live entry, or an
+    /// unknown outcome whose changes that are known all have an inverse. A
+    /// bare `undo` never picks the second (#1200's review): the call whose
+    /// outcome is unknown is not among them.
+    pub fn undoable_by_id(&self) -> bool {
+        matches!(self.state, State::Done | State::Unknown) && self.changes_undoable()
+    }
+
+    fn changes_undoable(&self) -> bool {
+        !self.changes.is_empty()
             && self
                 .changes
                 .iter()

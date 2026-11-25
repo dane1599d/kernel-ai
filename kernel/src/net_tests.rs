@@ -237,8 +237,12 @@ fn netcheck_with(
         supervisor: false,
         uses: &[],
     };
-    let pid = process::spawn_with(&request, dest.into_iter().collect(), false)
-        .map_err(|_| "net: cannot start netcheck")?;
+    let pid = process::spawn_with(
+        &request,
+        dest.into_iter().collect::<alloc::vec::Vec<_>>(),
+        false,
+    )
+    .map_err(|_| "net: cannot start netcheck")?;
     match wait_exit(pid)? {
         (ExitReason::Exited, 0) => Ok(()),
         _ => Err("net: netcheck did not get what it expected"),
@@ -336,7 +340,229 @@ pub fn dest_check() -> Result<(), &'static str> {
         "net-dest: HTTP to the LLM needs the LLM's own handle, which NET alone does not give: a NET holder with another NetDest was refused"
     );
     llm_grant()?;
-    any_host_pinned()
+    any_host_pinned()?;
+    moves_check()?;
+    narrowing_bound()?;
+    narrowing_sweeps_before_the_reserve()?;
+    sweep_check()?;
+    private_answers()?;
+    ttl_zero_check()
+}
+
+/// Audit K #17: an answer that leads to a private network is not kept for a
+/// connect, while QEMU's 10.0.2.0/24 is, on this `online=test` boot only.
+fn private_answers() -> Result<(), &'static str> {
+    let (object, _) = netdest(KAI_TEST)?;
+    let lan = core::net::Ipv4Addr::new(192, 168, 1, 1);
+    let carrier = core::net::Ipv4Addr::new(100, 64, 0, 1);
+    let fixture = core::net::Ipv4Addr::new(10, 0, 2, 99);
+    let other_ten = core::net::Ipv4Addr::new(10, 1, 2, 3);
+    net::dest::resolved(object, &[lan, carrier, fixture, other_ten], 300);
+    let tcp = netdest::Protocol::Tcp;
+    // Through RESOLVE_ON from ring 3: a name answering only a private address
+    // is Private, and a mixed answer gives back only its test-subnet address.
+    let (_, entry) = netdest(KAI_TEST)?;
+    netcheck("netdest-p", "host=lan.kai.test expect=private", Some(entry))?;
+    let (_, entry) = netdest(KAI_TEST)?;
+    netcheck(
+        "netdest-q",
+        "host=mixed.kai.test expect=10.0.2.97",
+        Some(entry),
+    )?;
+    let refused = [lan, carrier, other_ten].iter().all(|&addr| {
+        !net::dest::answerable(addr) && !net::dest::may_connect(object, tcp, addr, 8000)
+    });
+    if !refused
+        || !net::dest::answerable(fixture)
+        || !net::dest::may_connect(object, tcp, fixture, 8000)
+    {
+        return Err("net-dest: a private answer was kept, or the test subnet was refused");
+    }
+    log!(
+        "net-dest: private answers are refused; QEMU's test subnet is reached only with online=test"
+    );
+    Ok(())
+}
+
+/// Audit K #18: an address resolved with TTL 0 may still be connected to at
+/// once (it counts for at least a minute), on the record's port only.
+fn ttl_zero_check() -> Result<(), &'static str> {
+    let (object, _) = netdest(KAI_TEST)?;
+    let addr = core::net::Ipv4Addr::new(10, 0, 2, 99);
+    net::dest::resolved(object, &[addr], 0);
+    let tcp = netdest::Protocol::Tcp;
+    if !net::dest::may_connect(object, tcp, addr, 8000)
+        || net::dest::may_connect(object, tcp, addr, 8001)
+    {
+        return Err("net-dest: a TTL-0 answer could not be connected to, or reached another port");
+    }
+    log!(
+        "net-dest: an address resolved with TTL 0 can be connected to at once, on the record's port"
+    );
+    Ok(())
+}
+
+/// Audit K #26: one process holds at most `MAX_NARROWED` records it made by
+/// narrowing; past them its narrowing is NoMemory, and another's still works.
+fn narrowing_bound() -> Result<(), &'static str> {
+    const ONE: u64 = u64::MAX - 7;
+    const OTHER: u64 = u64::MAX - 8;
+    let (object, _) = netdest(KAI_TEST)?;
+    let exact = || {
+        netdest::Dest::parse("proto:tcp,ports:8000,hosts:kai.test,match:exact")
+            .map_err(|_| "net: a bad test destination")
+    };
+    // Every one still named, as by handles it keeps.
+    let named = |_| true;
+    for _ in 0..net::dest::MAX_NARROWED {
+        net::dest::narrow(object, exact()?, named, ONE)
+            .map_err(|_| "net-dest: a narrowing within the bound was refused")?;
+    }
+    if net::dest::narrow(object, exact()?, named, ONE) != Err(kabi::Error::NoMemory) {
+        return Err("net-dest: one process narrowed past its bound");
+    }
+    net::dest::narrow(object, exact()?, named, OTHER)
+        .map_err(|_| "net-dest: another process's narrowing was refused")?;
+    log!(
+        "net-dest: one process holds at most 16 narrowed records; another's narrowing still works"
+    );
+    Ok(())
+}
+
+/// #1181's review: a narrowing that would dip into the slots kept for plan
+/// lines sweeps first. The table is left with fewer free slots than the
+/// reserve, every record in it named except six of this case's own; the
+/// narrowing must sweep the dead ones and succeed.
+///
+/// Records other checks left (`narrowing_bound`'s, a dozen and more) are not
+/// this case's: the plan-line make below names them (`!made.contains`), so
+/// its sweep keeps them and the six are all it frees. Left unnamed they were
+/// dropped too, which gave the table more free slots than the reserve, and the
+/// narrowing then succeeded with no sweep of its own: a `create_for` that
+/// swept only a full table passed this case.
+fn narrowing_sweeps_before_the_reserve() -> Result<(), &'static str> {
+    const GRACE_MS: u64 = 1_100;
+    const ONE: u64 = u64::MAX - 9;
+    const LEFT_FREE: usize = 6;
+    let spec = netdest::Dest::parse(KAI_TEST).map_err(|_| "net: a bad test destination")?;
+    let live = |object| crate::handle::names(kabi::handle::Kind::NetDest, object);
+    let mut made = alloc::vec::Vec::new();
+    while made.len() < 300 {
+        match net::dest::create(spec.clone(), live) {
+            Some(object) => made.push(object),
+            None => break,
+        }
+    }
+    if made.len() <= LEFT_FREE {
+        return Err("net-dest: the table could not be filled for the reserve case");
+    }
+    crate::threads::sleep_ms(GRACE_MS);
+    // One more plan-line record. Its sweep keeps every record but the last
+    // six this case made: the table then has LEFT_FREE - 1 free slots, under
+    // the reserve.
+    let keep = made.len() - LEFT_FREE;
+    let kept = &made[..keep];
+    let named = |object| kept.contains(&object) || !made.contains(&object) || live(object);
+    let parent = net::dest::create(spec, named).ok_or("net-dest: no room after a partial sweep")?;
+    if net::dest::free_slots() > net::dest::PLAN_RESERVED {
+        return Err("net-dest: the reserve case's table was not short of the reserve");
+    }
+    let exact = netdest::Dest::parse("proto:tcp,ports:8000,hosts:kai.test,match:exact")
+        .map_err(|_| "net: a bad test destination")?;
+    net::dest::narrow(parent, exact, live, ONE)
+        .map_err(|_| "net-dest: a narrowing short of the reserve did not sweep first")?;
+    log!("net-dest: a narrowing short of the plan lines' reserve swept the dead records first");
+    Ok(())
+}
+
+/// #1150's review: a `Moving` with no `NetDest` entry leaves `moves()` where
+/// it was (every IPC call makes one, and a counter moving on for those would
+/// keep a sweep from ever dropping a record); one with a `NetDest` moves it on
+/// as it starts and as it ends. Another CPU's move may land between the reads,
+/// so a few tries, one of which must see exactly that.
+fn moves_check() -> Result<(), &'static str> {
+    const TRIES: usize = 8;
+    let entry = |kind| captable::Entry::new(kind, crate::handle::NETDEST_RIGHTS, net::dest::FIRST);
+    for _ in 0..TRIES {
+        let before = crate::handle::moves();
+        drop(crate::handle::Moving::from(alloc::vec![entry(
+            kabi::handle::Kind::Sched
+        )]));
+        drop(crate::handle::Moving::none());
+        let plain = crate::handle::moves();
+        let moving = crate::handle::Moving::from(alloc::vec![entry(kabi::handle::Kind::NetDest)]);
+        let started = crate::handle::moves();
+        drop(moving);
+        let ended = crate::handle::moves();
+        if (plain, started, ended) == (before, before + 1, before + 2) {
+            log!(
+                "net-dest: a move with no NetDest leaves moves() as it was; one with a NetDest moves it on as it starts and ends"
+            );
+            return Ok(());
+        }
+    }
+    Err("net-dest: moves() did not count exactly the NetDest moves")
+}
+
+/// Audit K #1: fills the record table with records no handle names, waits
+/// out a new record's grace, and makes one more, so the sweep runs. Every
+/// filler's id then names nothing, even where its slot holds the new record
+/// (the slot's generation moved on), and a record whose only handle is moving
+/// between tables stays.
+fn sweep_check() -> Result<(), &'static str> {
+    const GRACE_MS: u64 = 1_100;
+    let spec = netdest::Dest::parse(KAI_TEST).map_err(|_| "net: a bad test destination")?;
+    let live = |object| crate::handle::names(kabi::handle::Kind::NetDest, object);
+    let kept = net::dest::create(spec.clone(), live).ok_or("net-dest: no room for a record")?;
+    let moving = crate::handle::Moving::from(alloc::vec![captable::Entry::new(
+        kabi::handle::Kind::NetDest,
+        crate::handle::NETDEST_RIGHTS,
+        kept,
+    )]);
+    let mut fillers = alloc::vec::Vec::new();
+    while fillers.len() < 300 {
+        match net::dest::create(spec.clone(), live) {
+            Some(object) => fillers.push(object),
+            None => break,
+        }
+    }
+    crate::threads::sleep_ms(GRACE_MS);
+    // A handle to the first filler moves while the sweep looks at it: its
+    // table check makes and drops a `Moving` for it, as a take and a give on
+    // another CPU would between the transit count and the tables. That filler
+    // must stay; the others go.
+    let raced = *fillers.first().ok_or("net-dest: no filler record")?;
+    let racing = |object| {
+        if object == raced {
+            drop(crate::handle::Moving::from(alloc::vec![
+                captable::Entry::new(
+                    kabi::handle::Kind::NetDest,
+                    crate::handle::NETDEST_RIGHTS,
+                    raced,
+                )
+            ]));
+        }
+        live(object)
+    };
+    let fresh = net::dest::create(spec, racing).ok_or("net-dest: the sweep freed no record")?;
+    if net::dest::dest(raced).is_none() {
+        return Err("net-dest: a record whose handle moved while the sweep looked was dropped");
+    }
+    if fillers[1..]
+        .iter()
+        .any(|&f| f == fresh || net::dest::dest(f).is_some())
+    {
+        return Err("net-dest: a swept record's id still named a record");
+    }
+    if net::dest::dest(kept).is_none() {
+        return Err("net-dest: a record whose handle was moving was swept");
+    }
+    drop(moving);
+    log!(
+        "net-dest: a full table swept {} records no handle named; their ids name nothing after, and one whose handle was moving stayed",
+        fillers.len() - 1
+    );
+    Ok(())
 }
 
 /// A plan line's `netdest=llm` grant, through `spawn_in` as the supervisor
@@ -392,7 +618,7 @@ fn any_host_pinned() -> Result<(), &'static str> {
     let exact = netdest::Dest::parse("proto:tcp,ports:443,hosts:kai.test,match:exact")
         .map_err(|_| "net: a bad test destination")?;
     let live = |object| crate::handle::names(kabi::handle::Kind::NetDest, object);
-    let narrowed = net::dest::narrow(object, exact, live)
+    let narrowed = net::dest::narrow(object, exact, live, 0)
         .map_err(|_| "net-dest: the ceiling did not narrow to one exact host")?;
     let one = captable::Entry::new(
         kabi::handle::Kind::NetDest,
@@ -406,7 +632,10 @@ fn any_host_pinned() -> Result<(), &'static str> {
     let moved = |handle| crate::handle::take_for(slot, &[handle], kabi::cap::NET);
     let (whole, part) = match given.as_slice() {
         [whole, part] => (moved(*whole), moved(*part)),
-        _ => (Ok(alloc::vec::Vec::new()), Err(kabi::Error::NoMemory)),
+        _ => (
+            Ok(crate::handle::Moving::none()),
+            Err(kabi::Error::NoMemory),
+        ),
     };
     crate::handle::destroy(slot);
     match (whole, part) {
@@ -443,6 +672,11 @@ pub fn stream_check(cmdline: &str) -> Result<(), &'static str> {
         return Err("net-stream: a closed stream was left open");
     }
     log!("net-stream: streams echoed through the handle, kept to its port and to 16, and closed");
+    match net::interrupts_taken() {
+        Some(taken) if taken > 0 => log!("net-stream: the card raised {taken} receive interrupts"),
+        Some(_) => log!("net-stream: receive interrupts are on, but none came"),
+        None => log!("net-stream: the card was polled, with no receive interrupts"),
+    }
     let (_, entry) = netdest(&spec)?;
     let args = alloc::format!("stream=hold port={port}");
     let request = SpawnRequest {

@@ -18,7 +18,7 @@ const VIEW: &str = "windows: [w2] notes (focused)  [w1] terminal \"kai>\"\n\
                     w2: [t1] textbox \"Search\"  [b2] button \"New note\"";
 
 /// A desktop with Notes focused over the terminal.
-fn desktop(host: &FakeHost) {
+pub(super) fn desktop(host: &FakeHost) {
     *host.ui_answer.borrow_mut() = Some(Box::new(|call: &UiCall| match call {
         UiCall::Windows => Ok(String::from("w2\tnotes\tNotes\t1\nw1\tterminal\tkai>\t0")),
         UiCall::View(_) => Ok(String::from(VIEW)),

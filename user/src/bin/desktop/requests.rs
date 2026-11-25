@@ -62,6 +62,7 @@ fn serve_one(state: &mut State, screen: &Screen, bytes: &[u8], info: &RecvInfo) 
         let label = name_of(pid);
         let mut client = Client::new(pid, &label);
         client.theme(&state.theme_name);
+        client.look(&state.look_text);
         client.scale(state.scale);
         // Caps Lock as it is now: a client started with it on types by it.
         client.apply(&[Effect::Locks {
@@ -108,6 +109,7 @@ fn serve_one(state: &mut State, screen: &Screen, bytes: &[u8], info: &RecvInfo) 
             let label = state.clients[at].label.clone();
             state.clients[at] = Client::new(pid, &label);
             state.clients[at].theme(&state.theme_name);
+            state.clients[at].look(&state.look_text);
             state.clients[at].scale(state.scale);
             let reply = state.clients[at].take_events(kabi::MAX_MESSAGE);
             let _ = sys::reply_h(&reply, &[]);
@@ -130,7 +132,9 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     if !text.starts_with("panel ") {
         return None;
     }
-    if name_of(pid) != "shell" {
+    // The shell alone: a send's text and its fit included
+    // (`deskcore::sendview::from_shell`), never an app's.
+    if !deskcore::sendview::from_shell(&name_of(pid)) {
         return Some(String::from("err only the shell talks to the panel"));
     }
     if text == panel_wire::TAKE {
@@ -204,6 +208,9 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     if let Some(note) = panel_wire::parse_note(text) {
         chat_push(state, Who::Note, note);
         return Some(String::from("ok"));
+    }
+    if let Some(reply) = preview::preview_request(state, text) {
+        return Some(reply);
     }
     if let Some(reply) = sends_request(state, text) {
         return Some(reply);
