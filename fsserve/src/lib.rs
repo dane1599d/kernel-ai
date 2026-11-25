@@ -1266,14 +1266,12 @@ impl<D: BlockDev> Server<D> {
         };
         let _ = self.fs.set_volume(volume);
         match done {
-            Ok((rows, generation)) => Ok(Reply::Restored {
-                rows: rows
-                    .into_iter()
-                    .take(MAX_ROWS as usize)
-                    .map(|(ino, o)| (ino, outcome(o)))
-                    .collect(),
+            // Committed before it answers: the answer must fit one message
+            // whatever the names, or the caller hears a failure (H3-7).
+            Ok((rows, generation)) => Ok(fsproto::restored(
+                rows.into_iter().map(|(ino, o)| (ino, outcome(o))).collect(),
                 generation,
-            }),
+            )),
             Err(e) => Err(e),
         }
     }

@@ -171,7 +171,14 @@ fn main() -> i32 {
         });
         match minted {
             None => {
-                let _ = sys::reply_h(&answer.reply, &[]);
+                // No reply is built past one message (H3-7); one that were
+                // would reach its caller as if fs never answered.
+                if let Err(Error::TooBig) = sys::reply_h(&answer.reply, &[]) {
+                    println!(
+                        "fs: a {}-byte reply was too big to send",
+                        answer.reply.len()
+                    );
+                }
             }
             Some(Ok(handle)) => {
                 // A reply that fails left the handle here: close it.
