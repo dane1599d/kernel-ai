@@ -716,8 +716,9 @@ pub const PART_PEER_NAME: u64 = 191;
 /// `flags`: [`super::net::STREAM_BULK`]. Permission where the destination
 /// does not allow it; Busy past [`super::net::STREAMS_PER_PROCESS`],
 /// [`super::net::STREAMS_MAX`], or 4 bulk streams in all or 2 of one
-/// process's; Unavailable with no address yet. Closing the handle closes the
-/// stream. Numbered at merge (P5 task 2).
+/// process's, closed streams still closing counted; Unavailable with no
+/// address yet. Closing the handle closes the stream. Numbered at merge (P5
+/// task 2).
 pub const NET_CONNECT: u64 = 192;
 /// `net_send(stream, ptr, len) -> sent`: queues up to `len` bytes, at most
 /// [`super::net::STREAM_MAX_CALL`] (TooBig over it); 0 while the send buffer
@@ -733,7 +734,9 @@ pub const NET_RECV: u64 = 194;
 /// kill.
 pub const NET_POLL: u64 = 195;
 /// `net_close(stream) -> 0`: closes the stream and its handle; what was sent
-/// still goes out. A process that ends has its streams aborted.
+/// still goes out, within [`super::net::STREAM_CLOSE_MS`], and the stream
+/// counts against the limits until its close is done. A process that ends
+/// has its open streams aborted.
 pub const NET_CLOSE: u64 = 196;
 /// `net_time() -> seconds since 1970 UTC`: the date a TLS client checks
 /// certificates against, Limine's date at boot plus the time since, as
