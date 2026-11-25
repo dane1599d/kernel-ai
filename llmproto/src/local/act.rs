@@ -191,7 +191,28 @@ pub fn grammar_counted(
     groups: &[AppGroup],
     count: impl Fn(&str) -> usize,
 ) -> Result<Grammar, infer::Error> {
-    let (apps_turn, left_out) = apps::turn_counted(groups, count);
+    build(groups, Some(&count))
+}
+
+/// Spike S10-2's flat arm: [`grammar_with`] with every app's full lines in
+/// the apps turn (`pack::apps::flat_turn`), so an app row is written in one
+/// round. The pack's own index groups stay as they ship.
+pub fn grammar_flat(groups: &[AppGroup]) -> Result<Grammar, infer::Error> {
+    build(groups, None)
+}
+
+/// The grammars over the pack's rows and `groups`' rows, those on the index
+/// level when `count` is given (the apps turn counted with it), all in the
+/// flat apps turn (no budget, no count) when it is `None`.
+fn build(
+    groups: &[AppGroup],
+    count: Option<&dyn Fn(&str) -> usize>,
+) -> Result<Grammar, infer::Error> {
+    let apps_indexed = count.is_some();
+    let (apps_turn, left_out) = match count {
+        Some(count) => apps::turn_counted(groups, count),
+        None => apps::flat_turn(groups),
+    };
     let shown: Vec<AppGroup> = groups
         .iter()
         .filter(|group| !left_out.contains(&group.app))
@@ -199,8 +220,10 @@ pub fn grammar_counted(
         .collect();
     let mut rows = crate::pack::rows();
     rows.extend(shown.iter().flat_map(|group| group.rows.iter().copied()));
-    let index_only =
-        |name: &str| crate::pack::indexed(name).is_some() || apps::group_of(&shown, name).is_some();
+    let index_only = |name: &str| {
+        crate::pack::indexed(name).is_some()
+            || (apps_indexed && apps::group_of(&shown, name).is_some())
+    };
     let full = actions(&rows);
     let mut second = Vec::new();
     for action in full.iter().filter(|a| !a.args.is_empty()) {
