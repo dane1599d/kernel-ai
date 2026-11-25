@@ -60,6 +60,7 @@ mod console;
 mod cpu;
 mod default_tests;
 mod demand_tests;
+mod desk_many_tests;
 mod desk_perf_tests;
 mod desk_profile_tests;
 mod desk_sends_tests;
@@ -456,6 +457,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskNap => run_case(nap_tests::check),
         SelfTest::DeskNapBusy => run_case(nap_busy_tests::check),
         SelfTest::KeepRunning { reread } => run_case(|| keep_tests::check(reread)),
+        SelfTest::DeskMany => run_case(desk_many_tests::check),
         SelfTest::DeskAppearance => run_case(appearance_tests::check),
         SelfTest::DeskCard => run_case(card_tests::check),
         SelfTest::DeskStanding => run_case(standing_tests::check),
