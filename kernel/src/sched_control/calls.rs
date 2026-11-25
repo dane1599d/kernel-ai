@@ -3,9 +3,9 @@
 //! three; everything else from ring 3 is checked here before it is used.
 
 use super::trial::{self, Candidate, Request};
-use super::{installed, labelable, spec_of};
+use super::{labelable, spec_of, with};
 use crate::process::{self, uaccess};
-use crate::{hpet, quiet, threads};
+use crate::{hpet, quiet, smp, threads};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use kabi::Error;
@@ -15,8 +15,10 @@ use sched::spec::{PolicyKind, PolicySpec};
 /// Fastest policy switches may follow each other.
 pub const MIN_POLICY_INTERVAL_NS: u64 = 100_000_000;
 
-/// POLICY: a person's switch, unless it is already installed or the last one was
-/// too recent (a loop of switches would disturb every CPU).
+/// POLICY: a person's switch, which ends any trial and clears a watchdog
+/// ejection, unless `spec` already runs as installed on every CPU with neither
+/// (nothing to do), or the last switch was too recent (a loop of switches would
+/// disturb every CPU).
 pub fn policy(id: u64, preset: u64) -> Result<u64, Error> {
     static LAST_SWITCH_NS: AtomicU64 = AtomicU64::new(0);
     let preset = match id {
@@ -25,7 +27,10 @@ pub fn policy(id: u64, preset: u64) -> Result<u64, Error> {
     };
     let spec = spec_of(id, preset).ok_or(Error::Invalid)?;
     let name = spec.policy.name();
-    if installed().0 == spec && threads::installed_policy_everywhere(name) {
+    // During a trial the installed spec is still the baseline, and an ejected
+    // CPU still names its installed policy: neither is "already installed".
+    let unchanged = with(|control| control.installed == spec && !trial::running(control));
+    if unchanged && running_everywhere(name) {
         return Ok(0);
     }
     let now = hpet::nanos();
@@ -41,6 +46,16 @@ pub fn policy(id: u64, preset: u64) -> Result<u64, Error> {
         spec.label()
     );
     Ok(0)
+}
+
+/// Every CPU runs the policy `name` as installed: no trial's candidate in, no
+/// watchdog fallback.
+fn running_everywhere(name: &str) -> bool {
+    (0..smp::online()).all(|cpu| {
+        threads::with_core(cpu, |core, _| {
+            !core.on_fallback() && !core.in_trial() && core.installed_policy_name() == name
+        }) == Some(true)
+    })
 }
 
 /// SCHED_STATS: copies the numbers out, returning how many threads they cover.
