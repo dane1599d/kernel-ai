@@ -718,3 +718,52 @@ fn a_restart_with_the_include_unchanged_has_no_note() {
         "{note}"
     );
 }
+
+/// A macro is bound where its caller is, never rebound by a later definition:
+/// a skipped include redefined it, so a caller after that include is named, by
+/// the nearest definer before it, and one before the include is not
+/// (the nearest-earlier-definer rule, as sessions ran).
+#[test]
+fn a_restart_names_a_caller_of_a_skipped_macro_only_after_it() {
+    let (lib, edited) = ("#define K 70\n", "#define K 700\n");
+    let entries = ["#define K 7", INCLUDE, "I64 Get() { return K + 1; }"];
+    let note = restart_note(lib, &entries, Some(edited));
+    assert!(note.contains("entry 2's #include files changed"), "{note}");
+    assert!(
+        note.contains(&format!("entry 3 mentions K, {LIVE}\n")),
+        "{note}"
+    );
+    let entries = ["#define K 7", "I64 Get() { return K + 1; }", INCLUDE];
+    let note = restart_note(lib, &entries, Some(edited));
+    assert!(note.contains("entry 3's #include files changed"), "{note}");
+    assert!(!note.contains("mentions"), "{note}");
+}
+
+/// The same for a tag: a caller after the skipped include that redefined it is
+/// named, one before is not.
+#[test]
+fn a_restart_names_a_caller_of_a_skipped_tag_only_after_it() {
+    let (lib, edited) = (
+        "struct P { I64 x; I64 y; };\n",
+        "struct P { I64 x; I64 y; I64 z; };\n",
+    );
+    let entries = [
+        "struct P { I64 x; };",
+        INCLUDE,
+        "I64 Size() { return sizeof(struct P); }",
+    ];
+    let note = restart_note(lib, &entries, Some(edited));
+    assert!(note.contains("entry 2's #include files changed"), "{note}");
+    assert!(
+        note.contains(&format!("entry 3 mentions P, {LIVE}\n")),
+        "{note}"
+    );
+    let entries = [
+        "struct P { I64 x; };",
+        "I64 Size() { return sizeof(struct P); }",
+        INCLUDE,
+    ];
+    let note = restart_note(lib, &entries, Some(edited));
+    assert!(note.contains("entry 3's #include files changed"), "{note}");
+    assert!(!note.contains("mentions"), "{note}");
+}
