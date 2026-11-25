@@ -254,6 +254,12 @@ fn run_case(check: impl FnOnce() -> Result<(), &'static str>) -> ! {
     if let Err(message) = check() {
         fail(message);
     }
+    // Debug builds count each lock a `ready()` took that is held elsewhere
+    // with interrupts on: one could have frozen two CPUs.
+    if let Some((count, lock)) = threads::ready::ready_locks() {
+        log!("threads: a ready() took {lock}, {count} such locks in all");
+        fail("a ready() took a lock that is held with interrupts on");
+    }
     test_exit(ExitCode::Success)
 }
 

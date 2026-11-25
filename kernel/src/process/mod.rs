@@ -232,6 +232,7 @@ pub fn has_written(pid: u64) -> bool {
 /// for the table while another holds it waiting for the heap can freeze them all
 /// (the `tune-revert` hang, 2026-10-27).
 pub fn with_table<R>(f: impl FnOnce(&mut [Process; MAX_PROCESSES]) -> R) -> R {
+    threads::ready::not_in_ready(&"the process table");
     threads::preempt_disable();
     let result = f(&mut TABLE.lock());
     threads::preempt_enable();

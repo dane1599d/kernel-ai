@@ -46,6 +46,7 @@ static HANDLES: [Mutex<Option<Handles>>; MAX_PROCESSES] =
 /// interrupts off (`shm::collect`, the NetDest sweep) never spin on a lock
 /// whose holder cannot run (audit K #8, #10). Nothing that sleeps runs under it.
 pub(crate) fn lock(slot: usize) -> Locked<'static> {
+    crate::threads::ready::not_in_ready(&"a handle table");
     crate::threads::preempt_disable();
     Locked {
         guard: ManuallyDrop::new(HANDLES[slot].lock()),
