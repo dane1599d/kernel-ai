@@ -312,6 +312,40 @@ pub const TAP: i32 = 3;
 /// it is a key pressed, so Super held with it is not a tap.
 pub const UNMAPPED: u8 = 0x54;
 
+/// Who gets the keys: the console (the screen is its, or a lease lends them)
+/// or `desktop`. Changed only at a sequence boundary ([`Set1::at_boundary`]).
+/// Whenever it changes, either way, the side that loses the keys never sees
+/// the releases of keys it saw go down, and the side that gets them never saw
+/// those go down: so the console's ring is emptied and its key decoder starts
+/// afresh (`kernel/src/input`), or a Ctrl held across Ctrl+Alt+F12 stays held
+/// in the console for good (bug hunt 2, H2-13).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Hands {
+    console: bool,
+}
+
+impl Hands {
+    /// The console holds the screen at boot, and its keys.
+    pub const fn new() -> Self {
+        Self { console: true }
+    }
+
+    /// At a sequence boundary: `desktop` holds the screen (`taking`), and a
+    /// lease lends the keys to the console (`leased`, which counts only while
+    /// `desktop` holds the screen). True if the keys changed hands.
+    pub fn settle(&mut self, taking: bool, leased: bool) -> bool {
+        let console = !taking || leased;
+        let changed = console != self.console;
+        self.console = console;
+        changed
+    }
+
+    /// Whether keys go to the console now.
+    pub fn console(&self) -> bool {
+        self.console
+    }
+}
+
 /// Where a key goes ([`Set1::route`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyRoute {
@@ -334,6 +368,36 @@ pub enum KeyRoute {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// H2-13: each way the keys move, the console's decoder starts afresh,
+    /// and only then.
+    #[test]
+    fn the_keys_change_hands_each_way_the_screen_or_a_lease_moves() {
+        let mut hands = Hands::new();
+        assert!(hands.console());
+        // The console holds the screen: no change while it does.
+        assert!(!hands.settle(false, false));
+        // desktop claims the screen (Ctrl+Alt+F12, or its first claim).
+        assert!(hands.settle(true, false));
+        assert!(!hands.console());
+        assert!(!hands.settle(true, false));
+        // A lease lends the keys to the console, and ends.
+        assert!(hands.settle(true, true));
+        assert!(hands.console());
+        assert!(!hands.settle(true, true));
+        assert!(hands.settle(true, false));
+        // Ctrl+Alt+F12 back to the console, then to desktop again.
+        assert!(hands.settle(false, false));
+        assert!(hands.console());
+        assert!(hands.settle(true, false));
+        // The screen back to the console under a lease: the keys were the
+        // console's already, so nothing changes hands.
+        assert!(hands.settle(true, true));
+        assert!(!hands.settle(false, false));
+        // A lease flag left on while the console holds the screen counts for
+        // nothing.
+        assert!(!hands.settle(false, true));
+    }
 
     fn feed(bytes: &[u8]) -> alloc::vec::Vec<(u16, bool)> {
         let mut set1 = Set1::new();
