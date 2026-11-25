@@ -480,3 +480,46 @@ fn an_allow_whose_instruction_is_refused_revokes_its_node() {
     assert!(!reply.ok, "{reply:?}");
     assert_eq!(*host.revoked.borrow(), [9]);
 }
+
+/// #1354's review: an Allow whose ONCE fails or is missing makes no
+/// instruction, and the node the kernel minted with it is revoked.
+#[test]
+fn an_allow_whose_once_fails_or_is_missing_revokes_its_node() {
+    for once in [" once=424242", ""] {
+        let host = super::FakeHost::new();
+        host.triggers_on.set(true);
+        let mut shell = super::shell(&host);
+        shell.eval(&alloc::format!("rules_add {NOTES}"));
+        let reply = shell.eval(&alloc::format!("answer 1 allow{once} rule=9"));
+        assert!(
+            reply.text.starts_with("No standing instruction made"),
+            "{reply:?}"
+        );
+        assert!(shell.standing.rules().is_empty());
+        assert_eq!(*host.revoked.borrow(), [9], "once={once:?}");
+    }
+}
+
+/// #1354's review: an answer for a question no longer waiting revokes only a
+/// node no kept instruction holds: the handle it names may be any.
+#[test]
+fn a_stale_answer_never_revokes_a_kept_instructions_node() {
+    let host = super::FakeHost::new();
+    host.triggers_on.set(true);
+    let mut shell = super::shell(&host);
+    shell.eval(&alloc::format!("rules_add {NOTES}"));
+    let once = host.mint(1, &alloc::format!("rules_add(\"{NOTES}\")"));
+    assert!(
+        shell
+            .eval(&alloc::format!("answer 1 allow once={once} rule=9"))
+            .ok
+    );
+    let stale = shell.eval("answer 4 always-kind once=1 rule=9");
+    assert_eq!(stale, crate::Reply::err("nothing to confirm"));
+    assert!(
+        host.revoked.borrow().is_empty(),
+        "{:?}",
+        host.revoked.borrow()
+    );
+    assert_eq!(shell.standing.rules()[0].grant, Some(9));
+}

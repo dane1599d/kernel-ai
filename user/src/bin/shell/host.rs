@@ -520,13 +520,27 @@ impl Host for System {
     }
 
     /// As the rules are written: with the line's files, if it changed any.
-    fn rules_set_aside(&self, text: &str) -> Result<(), String> {
-        match self.files.is_open() {
-            true => self.state.write_in(files::RULES_REFUSED, text),
-            false => self
-                .state
-                .write(files::RULES_REFUSED, text, self.files.next_action()),
+    /// Under the first name not yet taken, so a file refused on an earlier
+    /// boot is never written over.
+    fn rules_set_aside(&self, text: &str) -> Result<String, String> {
+        for n in 1..=files::RULES_REFUSED_KEPT {
+            let name = match n {
+                1 => String::from(files::RULES_REFUSED),
+                n => format!("{}.{n}", files::RULES_REFUSED),
+            };
+            if self.state.read(&name)?.is_some() {
+                continue;
+            }
+            match self.files.is_open() {
+                true => self.state.write_in(&name, text),
+                false => self.state.write(&name, text, self.files.next_action()),
+            }?;
+            return Ok(name);
         }
+        Err(format!(
+            "{} refused rules files are kept already",
+            files::RULES_REFUSED_KEPT
+        ))
     }
 
     fn net_grants_read(&self) -> Result<Option<String>, String> {

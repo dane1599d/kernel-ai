@@ -480,8 +480,10 @@ pub trait Host {
     }
     /// Keeps a rules file refused at boot beside it, as
     /// `/system/state/rules-refused`, so the rules file can be written again
-    /// without losing what it held.
-    fn rules_set_aside(&self, _text: &str) -> Result<(), String> {
+    /// without losing what it held: the name it is kept under. A file refused
+    /// on a later boot is kept under a name of its own (`rules-refused.2`, ...),
+    /// never over an earlier one; once every name is taken it is not kept.
+    fn rules_set_aside(&self, _text: &str) -> Result<String, String> {
         Err(String::from("there is nowhere to set it aside here"))
     }
     /// The keep-running list as `/system/state/keep` holds it, and why not
@@ -995,7 +997,8 @@ impl Shell {
     /// The log `/system/log` holds, so `undo` works across a reboot; a text that
     /// is not `actlog 1` is set aside, and the log starts again.
     /// The rules `/system/state/rules` holds. A file refused whole is kept as
-    /// `/system/state/rules-refused` and the shell starts with none; rules then
+    /// `/system/state/rules-refused`, or beside an earlier one kept there
+    /// (`rules-refused.2`, ...), and the shell starts with none; rules then
     /// save as before, and `rules` says so. If it cannot be kept, it is never
     /// written over this run. A rule whose action is not in the registry is
     /// set aside alone, and audited.
@@ -1015,14 +1018,14 @@ impl Shell {
             // Kept aside once, so rules save again on this boot and every
             // later one; where it cannot be kept, it is never written over.
             Err(why) => match self.host.rules_set_aside(&text) {
-                Ok(()) => {
+                Ok(kept) => {
                     self.host.audit(&format!(
                         "the rules on disk were refused ({why}); starting with none, \
-                         and the file is kept as /system/state/rules-refused"
+                         and the file is kept as /system/state/{kept}"
                     ));
-                    self.rules_refused = Some(String::from(
+                    self.rules_refused = Some(format!(
                         "The rules file could not be read back at start, so no rules were \
-                         loaded; it is kept as /system/state/rules-refused.",
+                         loaded; it is kept as /system/state/{kept}."
                     ));
                 }
                 Err(aside) => {

@@ -622,7 +622,7 @@ impl Shell {
             Some(pending) if Some(pending.id) == id => self.answer_pending(text),
             _ => {
                 // An "Always allow" for a question no longer waiting keeps no
-                // rule: its node goes.
+                // rule: its node goes, but never one a kept rule holds.
                 if let Some((_, granted)) = read_answer(text.trim()) {
                     self.revoke_unkept(granted.rule);
                 }
@@ -827,11 +827,26 @@ impl Shell {
     /// Revokes the rule node the trusted path minted for an "Always allow"
     /// answer the shell did not keep: no rule holds its handle, so nothing
     /// else would, and it would hold a kernel rule slot until a reboot (#11).
-    fn revoke_unkept(&self, rule: Option<u32>) {
+    ///
+    /// A handle a kept rule or standing instruction holds is never revoked
+    /// here: an answer line can name any handle, and only one this answer was
+    /// given is unkept.
+    pub(crate) fn revoke_unkept(&self, rule: Option<u32>) {
+        let rule = rule.filter(|&h| !self.grant_kept(h));
         if let Some(Err(why)) = rule.map(|h| self.host.revoke_rule(h)) {
             self.host
                 .audit(&format!("an unkept rule's node was not revoked: {why}"));
         }
+    }
+
+    /// Whether a kept rule or standing instruction holds node `handle`.
+    fn grant_kept(&self, handle: u32) -> bool {
+        self.rules.holds_grant(handle)
+            || self
+                .standing
+                .rules()
+                .iter()
+                .any(|r| r.grant == Some(handle))
     }
 
     /// `rules_remove <n>`: the rule goes at once; what ran under it stays.
