@@ -768,3 +768,48 @@ fn a_call_that_writes_past_what_a_commit_could_keep_traps() {
         .sum();
     assert!(held <= crate::effects::MAX_WRITES, "{held}");
 }
+
+/// `probe#hoard` puts 16 KiB under `k` again and again, and `probe#reread`
+/// gets it again and again (its `cabi_realloc` hands back the same bytes at
+/// 4096 each time); both count their storage calls at 8.
+const HOARD: &str = r#"
+  (import "kai:app/storage@0.1.0" "get" (func $get (param i32 i32 i32)))
+  (import "kai:app/storage@0.1.0" "put" (func $put (param i32 i32 i32 i32)))
+  (data (i32.const 200) "k")
+  (func $tick
+    (i32.store (i32.const 8) (i32.add (i32.load (i32.const 8)) (i32.const 1))))
+  (func (export "probe#hoard")
+    (loop $again
+      (call $tick)
+      (call $put (i32.const 200) (i32.const 1) (i32.const 32768) (i32.const 16384))
+      (br $again)))
+  (func (export "probe#reread")
+    (loop $again
+      (call $tick)
+      (call $get (i32.const 200) (i32.const 1) (i32.const 1000))
+      (br $again)))
+"#;
+
+/// A loop over storage calls ends out of fuel after a couple of hundred: each
+/// copies 16 KiB, 1,024 fuel. While the host's work cost nothing, the loop
+/// made a call for every 15 fuel or so (bug-hunt-4 H4-2).
+#[test]
+fn a_loop_of_storage_calls_runs_out_of_fuel_after_a_few_hundred() {
+    use livecore::txn::{Inputs, Storage};
+    let limits = Limits {
+        fuel_call: 200_000,
+        ..LIMITS
+    };
+    let wasm = lifecycle2_with(HOARD, "(global.set $top (i32.const 4096))");
+    let mut storage = Storage::new();
+    storage.insert(String::from("k"), alloc::vec![0u8; 16 * 1024]);
+    for export in ["probe#hoard", "probe#reread"] {
+        let mut v = load_core(&wasm, limits, None).unwrap();
+        v.begin(&storage, Inputs::default());
+        let fault = v.call(&probe(export, None), &[]).unwrap_err();
+        assert_eq!(fault.reason, Reason::Fuel, "{export}: {fault:?}");
+        let b = appabi::Guest::read(&mut v, 8, 4).unwrap();
+        let calls = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+        assert!((1..=256).contains(&calls), "{export}: {calls} calls");
+    }
+}
