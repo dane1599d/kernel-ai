@@ -234,10 +234,14 @@ pub(super) fn apply_need(
         Need::MapPool { pool, size } => {
             let Some(handle) = handle else { return false };
             // Writable when the client allowed it, for its input ring; read-only
-            // otherwise, as before.
-            let mapped = sys::shm_map(handle, true)
+            // otherwise, as before. Only an `Shm` that holds every page of the
+            // size the client stated: its buffers are read up to that size.
+            let pages = deskcore::server::pool_pages(size);
+            let mapped = sys::shm_map_least(handle, true, pages)
                 .map(|address| (address, true))
-                .or_else(|_| sys::shm_map(handle, false).map(|address| (address, false)));
+                .or_else(|_| {
+                    sys::shm_map_least(handle, false, pages).map(|address| (address, false))
+                });
             match mapped {
                 Ok((address, writable)) => {
                     state.pools.push(Pool {
@@ -251,7 +255,9 @@ pub(super) fn apply_need(
                     state.clients[at].pool_mapped(pool);
                     return true;
                 }
-                Err(error) => println!("desktop: cannot map pid {pid}'s pool: {error:?}"),
+                Err(error) => println!(
+                    "desktop: cannot map pid {pid}'s pool of {size} bytes ({pages} pages): {error:?}"
+                ),
             }
             false
         }

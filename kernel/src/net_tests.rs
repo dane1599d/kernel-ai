@@ -655,6 +655,9 @@ fn any_host_pinned() -> Result<(), &'static str> {
 ///   TooBig; a port the handle does not name is refused; the 17th stream of a
 ///   process is Busy; each closes, and none is left open.
 /// - A process killed while it holds three streams leaves none open.
+/// - Revoking the grant a `NetDest` was given under stops its streams, its
+///   narrowing and itself ([`revoke_check`]).
+/// - A refused HANDLE_REPLACE on a stream closes the stream ([`replace_check`]).
 pub fn stream_check(cmdline: &str) -> Result<(), &'static str> {
     let (server, port) = cmdline
         .split_whitespace()
@@ -690,15 +693,7 @@ pub fn stream_check(cmdline: &str) -> Result<(), &'static str> {
     };
     let pid = process::spawn_with(&request, alloc::vec![entry], false)
         .map_err(|_| "net-stream: cannot start netcheck")?;
-    let mut held = false;
-    for _ in 0..SETUP_WAIT_MS / 10 {
-        if net::stream::count(pid).0 == 3 {
-            held = true;
-            break;
-        }
-        threads::sleep_ms(10);
-    }
-    if !held {
+    if !comes_to_hold(pid, 3) {
         return Err("net-stream: netcheck never held 3 streams");
     }
     process::kill(pid, ExitReason::Killed).map_err(|_| "net-stream: cannot kill netcheck")?;
@@ -707,5 +702,92 @@ pub fn stream_check(cmdline: &str) -> Result<(), &'static str> {
         return Err("net-stream: a killed process's streams stayed open");
     }
     log!("net-stream: a process killed with 3 streams open left none");
+    revoke_check(&spec, port)?;
+    replace_check(&spec, port)
+}
+
+/// Whether the process `pid` comes to hold `n` open streams within
+/// [`SETUP_WAIT_MS`].
+fn comes_to_hold(pid: u64, n: usize) -> bool {
+    for _ in 0..SETUP_WAIT_MS / 10 {
+        if net::stream::count(pid).0 == n {
+            return true;
+        }
+        threads::sleep_ms(10);
+    }
+    false
+}
+
+/// Bug hunt 2's H2-18: `netcheck` (`stream=revoke`) holds a `NetDest` given
+/// under a grant node, a narrowing of it, and 3 streams on the two. Revoking
+/// the node aborts the streams at once, before `netcheck` looks; from then on
+/// a poll waiting on one, every use of them, of the `NetDest` and of the
+/// narrowing answers Revoked, and the streams' handles still close.
+fn revoke_check(spec: &str, port: u16) -> Result<(), &'static str> {
+    use crate::handle::grant as grants;
+    use captable::grant::{Life, SYSTEM};
+    let node = grants::create(grants::root(SYSTEM), 0, Life::Request, b"net-stream")
+        .map_err(|_| "net-stream: cannot make a grant node")?;
+    let (_, entry) = netdest(spec)?;
+    let entry = captable::Entry {
+        grant: Some(node),
+        ..entry
+    };
+    let args = alloc::format!("stream=revoke port={port}");
+    let request = SpawnRequest {
+        name: "netstream-c",
+        program: "netcheck",
+        args: args.as_bytes(),
+        limits: NETCHECK_LIMITS,
+        spawner: 0,
+        supervisor: false,
+        uses: &[],
+    };
+    let Ok(pid) = process::spawn_with(&request, alloc::vec![entry], false) else {
+        let _ = grants::revoke(node);
+        return Err("net-stream: cannot start netcheck");
+    };
+    // The third stream opens once the first two have echoed.
+    let held = comes_to_hold(pid, 3);
+    let revoked = grants::revoke(node);
+    // Nothing `netcheck` does can open one meanwhile: every connect on the
+    // NetDest or its narrowing now answers Revoked.
+    let open = net::stream::count(pid).0;
+    if !held || revoked.is_err() {
+        let _ = process::kill(pid, ExitReason::Killed);
+        let _ = wait_exit(pid);
+        return Err("net-stream: netcheck never held 3 streams on its granted NetDest");
+    }
+    let exit = wait_exit(pid)?;
+    if open != 0 {
+        return Err("net-stream: a revoke left the streams on its grant open");
+    }
+    if exit != (ExitReason::Exited, 0) {
+        return Err(
+            "net-stream: a revoked NetDest, its narrowing or a stream on them still worked",
+        );
+    }
+    if net::stream::count(pid) != (0, 0) || net::stream::revoked_places(pid) != 0 {
+        return Err("net-stream: a revoked stream outlived its process");
+    }
+    log!(
+        "net-stream: a revoke aborted the 3 streams on a granted NetDest and its narrowing at once; each use after answered Revoked"
+    );
+    Ok(())
+}
+
+/// Bug hunt 2's H2-17: a refused HANDLE_REPLACE closes a stream's handle, and
+/// with it the stream, as HANDLE_CLOSE does: `netcheck` (`stream=replace`)
+/// opens 17 in turn, each refused, and never meets the limit of 16.
+fn replace_check(spec: &str, port: u16) -> Result<(), &'static str> {
+    let (_, entry) = netdest(spec)?;
+    netcheck(
+        "netstream-d",
+        &alloc::format!("stream=replace port={port}"),
+        Some(entry),
+    )?;
+    log!(
+        "net-stream: a refused HANDLE_REPLACE closed the stream with its handle: 17 in a row never met the limit of 16"
+    );
     Ok(())
 }

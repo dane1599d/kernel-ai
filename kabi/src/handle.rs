@@ -16,6 +16,13 @@ use bitflags::bitflags;
 /// kernel; apps reach the OS through WIT, never raw calls; and no outside
 /// package exists before v1.0. Any later change to an existing call's meaning
 /// bumps the major.
+///
+/// Recorded beside it, with no bump: a new refusal that only makes a call keep
+/// a meaning already written. Audit K #17's on RESOLVE_ON was one. Within 1.5,
+/// GRANT_DUP refuses with Permission to give a handle that is under a grant
+/// node again under a node outside it, so GRANT_REVOKE of the source's
+/// node still reaches the copy (bug hunt 2's H2-18; decision row
+/// `2026-11-25-grant-revoke-reaches-derived-handles`). No in-tree caller did so.
 pub const ABI: (u32, u32) = (1, 6);
 
 /// The name of the ELF note that carries [`ABI`], and its type.

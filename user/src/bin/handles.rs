@@ -22,7 +22,8 @@
 //!
 //! With `mode=grants` (task 13), started with SUPERVISE and POLICY, it makes a
 //! grant node under `system`, gives a handle under it, revokes it, and checks
-//! that the handle and the node's own handle answer Revoked from then on. With
+//! that the handle and the node's own handle answer Revoked from then on; a
+//! copy of that handle goes under a node below it, never beside it. With
 //! `mode=hold` and `mode=revoke` a pair checks that revoking a grant ends a call
 //! in flight through a route given under it: the server holds the call, the
 //! kernel revokes the client's node, and the client's CALL_H fails with Revoked
@@ -550,6 +551,25 @@ fn grants() -> Result<(), &'static str> {
         sys::grant_dup(sched, Rights::MAP, node),
         Error::Invalid,
         "a widening grant_dup",
+    )?;
+    // A handle given under `node` goes again only under it or below it, so
+    // revoking `node` still reaches the copy (bug hunt 2's H2-18).
+    let other = sys::grant_new(root, 0, "other").map_err(|_| "grant_new failed")?;
+    expect(
+        sys::grant_dup(given, Rights::READ, other),
+        Error::Permission,
+        "a grant_dup out from under the handle's node",
+    )?;
+    let below = sys::grant_new(node, 0, "below").map_err(|_| "grant_new below failed")?;
+    let under = sys::grant_dup(given, Rights::READ, below)
+        .map_err(|_| "a grant_dup below the handle's node failed")?;
+    if sys::grant_revoke(below) != Ok(1) || sys::grant_revoke(other) != Ok(1) {
+        return Err("revoking the nodes beside and below did not revoke one each");
+    }
+    expect(
+        sys::handle_dup(under, Rights::READ),
+        Error::Revoked,
+        "the handle given below the node",
     )?;
     if sys::grant_revoke(node) != Ok(1) {
         return Err("grant_revoke did not revoke exactly its node");

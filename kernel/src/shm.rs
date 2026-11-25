@@ -115,6 +115,7 @@ static OBJECTS: Mutex<Objects> = Mutex::new(Objects {
 });
 
 fn with<R>(f: impl FnOnce(&mut Objects) -> R) -> R {
+    crate::threads::ready::not_in_ready(&"the shared objects");
     threads::preempt_disable();
     let result = f(&mut OBJECTS.lock());
     threads::preempt_enable();
@@ -314,20 +315,34 @@ pub fn map_entry(slot: usize, entry: &Entry, write: bool) -> Result<u64, Error> 
             return Err(Error::Busy);
         }
         let address = base(index);
-        let mut space = process::lock_space(slot);
-        let space = space.as_mut().ok_or(Error::Dead)?;
-        let zero = memory::with(|m| {
-            let zero = m.allocate_zeroed_frame().ok_or(Error::NoMemory)?;
-            for (n, &frame) in object.frames.iter().enumerate() {
-                let page = address + n as u64 * PAGE_SIZE;
-                if m.map_shared_page(space, page, frame, write).is_err() {
-                    let _ = m.set_shared_range(space, address, n as u64, None);
-                    let _ = m.free_frame(zero);
-                    return Err(Error::NoMemory);
+        let (mapped, cr3) = {
+            let mut space = process::lock_space(slot);
+            let space = space.as_mut().ok_or(Error::Dead)?;
+            let mapped = memory::with(|m| -> Result<Result<u64, u64>, Error> {
+                let zero = m.allocate_zeroed_frame().ok_or(Error::NoMemory)?;
+                for (n, &frame) in object.frames.iter().enumerate() {
+                    let page = address + n as u64 * PAGE_SIZE;
+                    if m.map_shared_page(space, page, frame, write).is_err() {
+                        let _ = m.set_shared_range(space, address, n as u64, None);
+                        let _ = m.free_frame(zero);
+                        return Ok(Err(n as u64));
+                    }
                 }
+                Ok(Ok(zero))
+            })?;
+            (mapped, space.cr3())
+        };
+        let zero = match mapped {
+            Ok(zero) => zero,
+            // Those pages were present: shoot them down as unmap does, with no
+            // lock but OBJECTS held, before the object's frames can be freed.
+            Err(pages) => {
+                if pages > 0 {
+                    smp::tlb_shootdown_range(&[cr3], address, pages);
+                }
+                return Err(Error::NoMemory);
             }
-            Ok(zero)
-        })?;
+        };
         object.mappings.push(Mapping {
             pid,
             slot,

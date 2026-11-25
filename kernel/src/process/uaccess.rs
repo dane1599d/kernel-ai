@@ -1,9 +1,10 @@
 //! Copying between the kernel and a process's memory. The kernel never dereferences
 //! a user pointer: each page is looked up in the process's own page tables (it must
 //! be a user page, and writable for writes) and copied through the direct map. Only
-//! the process's own threads call these, inside their own system calls, and a
-//! process's pages are never unmapped while any of its threads lives, so they cannot
-//! go away while a copy runs.
+//! the process's own threads call these, inside their own system calls. A page can
+//! be unmapped while the process lives (MEM_RELEASE, SHM_UNMAP), but only under its
+//! space lock, and its frame is freed only after: so each access here holds that
+//! lock from the lookup through the copy, and a frame is never touched after it.
 
 use super::with_space;
 use crate::memory;
@@ -63,10 +64,12 @@ fn each_page(
     .unwrap_or(Err(Error::Fault))
 }
 
-/// The physical address of user address `addr` in the process, which must be
-/// mapped for ring 3; Fault otherwise. The page stays the process's until its last
-/// thread is gone, as pages are never unmapped while it lives.
-pub fn phys_of(slot: usize, addr: u64) -> Result<u64, Error> {
+/// Runs `f` with the physical address of user address `addr` in the process,
+/// which must be mapped for ring 3 (Fault otherwise), while the process's space
+/// stays locked: MEM_RELEASE and SHM_UNMAP unmap a page only under that lock and
+/// free its frame after, so the frame is the process's for as long as `f` runs,
+/// and no longer. `f` runs with preemption off and must not take SPACES or sleep.
+pub fn with_phys<R>(slot: usize, addr: u64, f: impl FnOnce(u64) -> R) -> Result<R, Error> {
     if !(MIN_USER_ADDRESS..USER_END).contains(&addr) {
         return Err(Error::Fault);
     }
@@ -74,7 +77,7 @@ pub fn phys_of(slot: usize, addr: u64) -> Result<u64, Error> {
     with_space(slot, |space| {
         memory::with(|m| m.translate_user(space, addr))
             .filter(|(_, flags)| flags.contains(needed))
-            .map(|(phys, _)| phys)
+            .map(|(phys, _)| f(phys))
     })
     .flatten()
     .ok_or(Error::Fault)

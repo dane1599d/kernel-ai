@@ -7,6 +7,7 @@ use super::hal::{DEVICE, KernelHal};
 use super::split::{self, SplitTransport};
 use crate::devices::{Outcome, error};
 use crate::{log, memory};
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::vec::Vec;
@@ -53,7 +54,7 @@ impl EcamAccess {
         let bus_base = match mapped.get(&(self.segment, bus)) {
             Some(&base) => base,
             None => {
-                let phys = self.base + (u64::from(bus) << 20);
+                let phys = self.base.checked_add(u64::from(bus) << 20)?;
                 let base = memory::map_physical(phys, 1 << 20, DEVICE).ok()?;
                 mapped.insert((self.segment, bus), base);
                 base
@@ -224,9 +225,17 @@ fn bind(
                 let name = format!("{at}");
                 match driver {
                     "nvme" => {
-                        found
-                            .nvme
-                            .push(crate::nvme::Function { name, bar, bar_len });
+                        let access = *access;
+                        found.nvme.push(crate::nvme::Function {
+                            name,
+                            bar,
+                            bar_len,
+                            bus_master_off: Box::new(move || {
+                                let mut root = PciRoot::new(access);
+                                let (_, command) = root.get_status_command(at);
+                                root.set_command(at, command - Command::BUS_MASTER);
+                            }),
+                        });
                         Some(Outcome::Running(None))
                     }
                     _ => {

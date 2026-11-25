@@ -16,6 +16,7 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
             "shm: M6: revoke a 256-page Shm",
             // #1155's review: a refund lands only on the pid it was charged to.
             "shm: a refund for another pid leaves a slot's count; one for its own pid comes off by its pages",
+            "shm: a failed SHM_MAP took back the pages it had mapped and shot them down",
             "shm: SHM_CREATE, MAP and UNMAP work, and a revoke leaves holders sharing nothing",
         ],
         ..case("shm", "test=shm")
