@@ -48,6 +48,10 @@ pub struct Controller {
     next_cid: u16,
     /// The page Identify writes into.
     scratch: Page,
+    /// A command timed out: it may still be outstanding, so the device was
+    /// disabled and nothing more is submitted. The staging buffers its DMA
+    /// named are never reused while it could move data.
+    failed: bool,
 }
 
 impl Controller {
@@ -94,6 +98,7 @@ impl Controller {
             io: None,
             next_cid: 0,
             scratch: Page::new()?,
+            failed: false,
         };
         controller.reset(u32::from(entries))?;
         Ok(controller)
@@ -150,6 +155,9 @@ impl Controller {
     /// Submits `command` on the admin queue (`io` false) or the I/O queue, and
     /// waits for its completion.
     fn run(&mut self, io: bool, command: Command) -> Result<Completion, &'static str> {
+        if self.failed {
+            return Err("nvme: the controller was disabled after a command timed out");
+        }
         let regs = self.regs;
         let caps = self.caps;
         let pair = match io {
@@ -198,10 +206,20 @@ impl Controller {
                 return Ok(done);
             }
             if hpet::nanos() > deadline {
-                return Err("nvme: a command timed out");
+                break;
             }
             core::hint::spin_loop();
         }
+        // The command may still be outstanding, and its PRPs name the disk's
+        // staging pages, which the next request would fill or read. Disabling
+        // the controller (CC.EN = 0) aborts what it holds; after that nothing
+        // is submitted, so every later read, write and flush fails instead.
+        self.failed = true;
+        let cc = self.read32(regs::CC);
+        self.write32(regs::CC, cc & !regs::CC_ENABLE);
+        let _ = self.wait_ready(false);
+        crate::log!("nvme: a command timed out; the controller is disabled");
+        Err("nvme: a command timed out")
     }
 
     /// Identify with `cns` for `nsid`; the page stays in `scratch`.

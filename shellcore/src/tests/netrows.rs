@@ -437,3 +437,13 @@ fn a_query_refusing_inside_try_passes_the_check() {
     )
     .unwrap_or_else(|e| panic!("{e}: {code}"));
 }
+
+/// #12: `show` lists a network read as a read, never "uses no OS functions".
+#[test]
+fn show_lists_a_fetch_as_a_read() {
+    let (_host, mut shell) = with_calls(vec![fetch("example.com")]);
+    assert!(shell.eval("fetch example.com").ok);
+    let shown = shell.eval("show").text;
+    assert!(shown.contains("reads net_fetch"), "{shown}");
+    assert!(!shown.contains("uses no OS functions"), "{shown}");
+}

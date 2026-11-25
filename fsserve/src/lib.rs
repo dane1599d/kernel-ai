@@ -701,9 +701,9 @@ impl<D: BlockDev> Server<D> {
     /// spend it (an emptied trash, a dropped update snapshot), half for a
     /// trash or a truncate, whose space comes back later, down to a quarter
     /// for the person's ([`Server::is_person`]), so no app's trashing keeps
-    /// them from deleting, none for growth. An action's commit, by Commit or
-    /// its owner's Sync, gets the least of its changes'. Idle's retention and
-    /// GC and `check --repair` take all of it themselves.
+    /// them from deleting, none for growth. An action's Commit gets the least
+    /// of its changes'. Idle's retention and GC and `check --repair` take all
+    /// of it themselves.
     pub(crate) fn spends_reserve(
         &mut self,
         caller: u64,
@@ -734,13 +734,13 @@ impl<D: BlockDev> Server<D> {
             // writes nothing: half, as a trash, so the GC and an emptied
             // trash keep the rest.
             Request::SealedRemove { .. } => Spend::Half,
-            // The commit of an action, by Commit or the owner's own Sync, at
-            // the least tier of its changes; a Sync outside one has nothing to
-            // write and needs no reserve.
+            // The commit of an action, at the least tier of its changes. A
+            // Sync has none of an action's to write (its owner's is refused)
+            // and needs no reserve.
             Request::Commit => self.action_spend,
-            Request::Sync if in_its_action => self.action_spend,
             _ => Spend::Keep,
         };
+        // None of these is one of the action's changes.
         let commits = matches!(request, Request::Commit | Request::Abort | Request::Sync);
         if changes && in_its_action && !commits {
             self.action_spend = self.action_spend.min(spend);
@@ -1029,6 +1029,12 @@ impl<D: BlockDev> Server<D> {
                 }
             }
             Request::Sync => {
+                // In the caller's own action it would commit that action half
+                // done and leave `fs` holding the action's lock with no kaifs
+                // action under it: only Commit ends an action.
+                if self.owner == Some(call.caller) {
+                    return Err(Error::Invalid);
+                }
                 let generation = self.commit()?;
                 Reply::Committed { generation }
             }

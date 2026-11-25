@@ -13,6 +13,7 @@ pub(crate) struct SpaceGuard {
 
 /// Locks process `slot`'s address space; see [`SpaceGuard`].
 pub(crate) fn lock_space(slot: usize) -> SpaceGuard {
+    crate::threads::ready::not_in_ready(&"an address space");
     crate::threads::preempt_disable();
     SpaceGuard {
         guard: Some(super::SPACES[slot].lock()),

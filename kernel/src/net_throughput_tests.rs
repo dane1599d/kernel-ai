@@ -38,7 +38,7 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
     if !up {
         return Err("net-throughput: the network was not set up in time");
     }
-    let id = stream::connect(OWNER, server, port, true, None)
+    let id = stream::connect(OWNER, server, port, true, None, None)
         .map_err(|_| "net-throughput: cannot connect to the blob server")?;
     let result = download(id);
     let _ = stream::close(OWNER, id);

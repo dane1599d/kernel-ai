@@ -602,7 +602,7 @@ impl Shell {
     /// entry whose inverse gives the row back (a withhold undone, or an undo of
     /// a restore undone) is the person's, never Kai's.
     pub(crate) fn kai_undo_refusal(&self) -> Option<String> {
-        let entry = self.log.get(self.log.newest_live()?)?;
+        let entry = self.log.get(self.log.undo_target()?)?;
         let widens = |inverse: &Option<Inverse>| match inverse {
             Some(Inverse::NetGrant { held: false, .. }) => Some("a network grant"),
             Some(Inverse::Grant {
