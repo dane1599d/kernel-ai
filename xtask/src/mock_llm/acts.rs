@@ -73,8 +73,8 @@ pub(super) const ACTS: &[(&str, &str)] = &[
         r#"{"name":"net_send","arguments":{"host":"updates.kai.test","path":"/hook","text":"bye"}}"#,
     ),
     (
-        "send hello to my webhook",
-        r#"{"name":"net_send","arguments":{"host":"updates.kai.test","path":"/hook","text":"hello"}}"#,
+        "send hi to my webhook",
+        r#"{"name":"net_send","arguments":{"host":"updates.kai.test","path":"/hook","text":"hi"}}"#,
     ),
     // `net-pf-page`: a fetch from the host the line typed, shown as it came.
     (

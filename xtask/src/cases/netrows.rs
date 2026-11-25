@@ -2,7 +2,16 @@
 //! agent sends out.
 
 use super::{Https, TestCase, case};
+use crate::blklog::Data;
 use crate::mock_https::{Content, REPO};
+
+/// A fresh `kai-data` disk, for the shell's `/system/state`: a send's `sending`
+/// line must reach the log before it goes (#989's fail-closed rule).
+const DATA: Data = Data {
+    nvme: false,
+    log: None,
+    gpt: true,
+};
 
 /// The path the mock takes POSTs on, for `net-hold`.
 const HOOK: &str = "/hook";
@@ -62,8 +71,11 @@ pub(super) const CASES: &[TestCase] = &[
     // undo and goes once; undone in its hold, it never goes; to a site the line
     // does not name, refused. Needs the shell's real `net_send` (lane C's PR
     // 4a). The mock must see exactly one POST: `hello`, never `bye`.
+    // `kvm_only`: its `undo` within the 5 s hold would flake under TCG.
     TestCase {
         dns: true,
+        data: Some(DATA),
+        kvm_only: true,
         https: Some(Https {
             content: hook,
             faults: &[],

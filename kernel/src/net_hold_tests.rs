@@ -16,12 +16,14 @@ const LINE_TIMEOUT_MS: u64 = 30_000;
 const PAST_HOLD_MS: u64 = 12_000;
 /// Within a send's hold: `undo` still cancels it.
 const WITHIN_HOLD_MS: u64 = 1_000;
+/// Well into a send's hold, still short of its 5 s: it must still be held.
+const STILL_HELD_MS: u64 = 3_000;
 
 /// The line whose send goes, and the one whose send is undone.
 const SENT: &str = "send hello to updates.kai.test/hook";
 const UNDONE: &str = "send bye to updates.kai.test/hook";
 /// A line that names no site: the mock's send to the mock host is refused.
-const UNNAMED: &str = "send hello to my webhook";
+const UNNAMED: &str = "send hi to my webhook";
 
 fn reply_to(line: &str) -> Result<String, &'static str> {
     let reply =
@@ -79,6 +81,10 @@ pub fn check() -> Result<(), &'static str> {
     if !held.contains("undo") {
         log!("net-hold: the Allow answered {held:?}");
         return Err("net-hold: an allowed send was not held with its undo");
+    }
+    threads::sleep_ms(STILL_HELD_MS);
+    if last_send_after()? != "held" {
+        return Err("net-hold: an allowed send was not still held 3 s in");
     }
     threads::sleep_ms(PAST_HOLD_MS);
     if last_send_after()? != "sent" {
