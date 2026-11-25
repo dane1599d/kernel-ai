@@ -96,6 +96,9 @@ pub(super) const CASES: &[TestCase] = &[
             "[netstream-a] after closing them, by NET_CLOSE or by the handle, 16 more opened",
             "[netstream-a] a third bulk stream of one process was Busy",
             "net-stream: streams echoed through the handle, kept to its port and to 16, and closed",
+            // Bug hunt #13: a closed stream holds its slot only until its
+            // close is done, or its deadline.
+            "net-stream: no closed stream outlasted its close deadline",
             // QEMU's virtio-net has MSI-X: frames wake the net thread (P5 plan 3.2).
             "net-stream: the card raised ",
             // Not "[netstream-b] holding 3 streams": the kernel kills b once
@@ -115,6 +118,7 @@ pub(super) const CASES: &[TestCase] = &[
             "net: card up, MAC ",
             ", polled; ",
             "net-stream: streams echoed through the handle, kept to its port and to 16, and closed",
+            "net-stream: no closed stream outlasted its close deadline",
             "net-stream: the card was polled, with no receive interrupts",
             "net-stream: a process killed with 3 streams open left none",
         ],

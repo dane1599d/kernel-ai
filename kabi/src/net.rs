@@ -20,9 +20,15 @@ pub const STREAM_BULK: u64 = 1 << 0;
 /// The most bytes one [`super::call::NET_SEND`] takes or one
 /// [`super::call::NET_RECV`] gives.
 pub const STREAM_MAX_CALL: usize = 8 * 1024;
-/// Streams one process may hold open, and in all.
+/// Streams one process may hold, and in all. A closed stream still counts
+/// until its close is done, at most [`STREAM_CLOSE_MS`] after
+/// [`super::call::NET_CLOSE`]: it keeps its buffers until then.
 pub const STREAMS_PER_PROCESS: usize = 16;
-pub const STREAMS_MAX: usize = 64;
+pub const STREAMS_MAX: usize = 32;
+/// The longest a closed stream may take to close: what it sent and its FIN
+/// go out, and the peer's FIN comes back, within this, or the kernel resets
+/// it.
+pub const STREAM_CLOSE_MS: u64 = 5_000;
 
 /// What [`super::call::NET_POLL`] reports and waits for.
 pub const STREAM_CONNECTED: u64 = 1 << 0;

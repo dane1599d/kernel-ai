@@ -1,8 +1,9 @@
 //! The network setup's logic without a network card, tested on the host: the
 //! command line's address settings (`config`) and putting one on the interface
 //! (`address`), DNS queries and replies (`dns`), the resolver's TTL cache
-//! (`cache`), ping statistics (`ping`), and the test DNS zone (`fixture`). The
-//! kernel owns the card, the smoltcp interface and the clock, and drives these.
+//! (`cache`), ping statistics (`ping`), the stream table's limits and close
+//! deadline (`streams`), and the test DNS zone (`fixture`). The kernel owns the
+//! card, the smoltcp interface and the clock, and drives these.
 
 #![no_std]
 
@@ -16,6 +17,7 @@ pub mod config;
 pub mod dns;
 pub mod fixture;
 pub mod ping;
+pub mod streams;
 
 use alloc::format;
 use alloc::string::String;

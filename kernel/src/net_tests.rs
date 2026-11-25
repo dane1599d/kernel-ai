@@ -653,7 +653,8 @@ fn any_host_pinned() -> Result<(), &'static str> {
 /// echo server (`echo=`), from `netcheck`'s stream modes.
 /// - A stream and a bulk one echo 8 KiB and a line; a send over 8 KiB is
 ///   TooBig; a port the handle does not name is refused; the 17th stream of a
-///   process is Busy; each closes, and none is left open.
+///   process is Busy, closed ones still closing counted; each closes, none is
+///   left open, and none is still closing past [`net::stream::CLOSE_DEADLINE_MS`].
 /// - A process killed while it holds three streams leaves none open.
 pub fn stream_check(cmdline: &str) -> Result<(), &'static str> {
     let (server, port) = cmdline
@@ -672,6 +673,23 @@ pub fn stream_check(cmdline: &str) -> Result<(), &'static str> {
         return Err("net-stream: a closed stream was left open");
     }
     log!("net-stream: streams echoed through the handle, kept to its port and to 16, and closed");
+    // A closed stream keeps its slot until its close is done, or is aborted at
+    // its deadline (bug hunt #13): none may outlast that, and a second for the
+    // reset to go out.
+    let started = hpet::nanos();
+    let bound_ns = (net::stream::CLOSE_DEADLINE_MS + 1_000) * 1_000_000;
+    let closing = net::stream::closing();
+    while net::stream::closing() != 0 {
+        if hpet::nanos().saturating_sub(started) > bound_ns {
+            return Err("net-stream: a closed stream outlasted its close deadline");
+        }
+        threads::sleep_ms(10);
+    }
+    log!(
+        "net-stream: no closed stream outlasted its close deadline: {closing} still closing were gone in {} ms, the deadline {} ms",
+        hpet::nanos().saturating_sub(started) / 1_000_000,
+        net::stream::CLOSE_DEADLINE_MS
+    );
     match net::interrupts_taken() {
         Some(taken) if taken > 0 => log!("net-stream: the card raised {taken} receive interrupts"),
         Some(_) => log!("net-stream: receive interrupts are on, but none came"),

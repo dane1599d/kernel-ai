@@ -21,7 +21,8 @@
 //! `port=P` the echo server's port on 10.0.2.2:
 //! - `stream=echo`: a stream and a bulk one each echo 8 KiB and a short line;
 //!   9 KiB in one send is TooBig; port P+1, outside the handle, is refused; the
-//!   17th stream is Busy; each closes.
+//!   17th stream is Busy; each closes, and counts against the 16 until its
+//!   close is done.
 //! - `stream=hold`: holds 3 connected streams and waits to be killed.
 
 #![no_std]
@@ -231,6 +232,22 @@ fn open(dest: Handle, port: u16, flags: u64) -> Result<Handle, String> {
     }
 }
 
+/// A connect that waits out Busy while this process's closed streams finish
+/// closing: each counts against its 16 until then, at most
+/// [`kabi::net::STREAM_CLOSE_MS`].
+fn connect_after_closes(dest: Handle, port: u16, flags: u64) -> Result<Handle, Error> {
+    let mut tries = (kabi::net::STREAM_CLOSE_MS + 1_000) / 10;
+    loop {
+        match sys::net_connect(dest, SERVER, port, flags) {
+            Err(Error::Busy) if tries > 0 => {
+                tries -= 1;
+                sys::sleep_ms(10);
+            }
+            other => return other,
+        }
+    }
+}
+
 /// Sends all of `data` and reads the same number of bytes back.
 fn echo(stream: Handle, data: &[u8]) -> Result<alloc::vec::Vec<u8>, String> {
     let mut sent = 0;
@@ -307,7 +324,7 @@ fn stream_echo(dest: Handle, port: u16) -> Result<(), String> {
     let mut again = alloc::vec::Vec::new();
     for _ in 0..kabi::net::STREAMS_PER_PROCESS {
         again.push(
-            sys::net_connect(dest, SERVER, port, 0)
+            connect_after_closes(dest, port, 0)
                 .map_err(|e| format!("reopening stream {}: {e:?}", again.len() + 1))?,
         );
     }
@@ -315,9 +332,12 @@ fn stream_echo(dest: Handle, port: u16) -> Result<(), String> {
     for stream in again {
         sys::handle_close(stream).map_err(|e| format!("handle close: {e:?}"))?;
     }
-    let bulks: alloc::vec::Vec<_> = (0..3)
-        .map(|_| sys::net_connect(dest, SERVER, port, kabi::net::STREAM_BULK))
-        .collect();
+    let bulk = kabi::net::STREAM_BULK;
+    let bulks = [
+        connect_after_closes(dest, port, bulk),
+        connect_after_closes(dest, port, bulk),
+        sys::net_connect(dest, SERVER, port, bulk),
+    ];
     match bulks.as_slice() {
         [Ok(_), Ok(_), Err(Error::Busy)] => println!("a third bulk stream of one process was Busy"),
         other => return Err(format!("three bulk streams gave {other:?}")),
