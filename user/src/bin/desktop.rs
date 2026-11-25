@@ -149,8 +149,8 @@ struct State {
     /// each with the hashes of the rows of its picture then
     /// (`frame::wheel_rows`) and how many more pictures to check
     /// (`WHEEL_PICTURES` at first): the first picture of one is logged, and
-    /// whether any of them scrolled, which tells a boot case the app took the
-    /// wheel and moved its content.
+    /// each that scrolled or did not, a line apiece, which tells a boot case
+    /// the app took the wheel and moved its content.
     wheeled: Vec<(WindowId, Vec<u64>, usize)>,
     frame: Image,
     /// Which window's content was painted last at each px of `frame`, 0 for
