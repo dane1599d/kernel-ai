@@ -14,7 +14,11 @@
 //! 3. An object the action changed or removed, and nothing changed since, gets
 //!    its version from before the action back, shallowest first: its data and
 //!    attributes, and its place. If its old folder is gone it goes in the root; if
-//!    its old name is taken there it lands beside as `name (restored)`.
+//!    its old name is taken there it lands beside as `name (restored)`. An object
+//!    gone now comes back only if the action itself removed it: the volume's tree
+//!    as the action's commit left it (live, or in a later snapshot) must lack it,
+//!    and no later action may name it. One destroyed later (an emptied trash) is
+//!    left, and so is one whose removal no tree dates.
 //!
 //! Each object's outcome comes back, so the caller can say what happened.
 
@@ -325,6 +329,16 @@ impl<D: BlockDev> Fs<D> {
         Ok(Outcome::Beside { ino: copy, name })
     }
 
+    /// The active volume's tree as commit `txn` left it, if one is still at
+    /// hand: the last commit's, or a snapshot's taken before anything else
+    /// changed the volume. A root written by commit `txn` is born in it, and
+    /// any later change to the tree writes a new root.
+    fn tree_after(&self, txn: u64) -> Option<BlockPtr> {
+        core::iter::once(self.vol().base.0)
+            .chain(self.snapshots().values().map(|s| s.root))
+            .find(|root| !root.is_null() && root.birth == txn)
+    }
+
     /// Restores what the action committed as `txn` changed in the active volume,
     /// by the rules above. Returns each object's outcome.
     pub fn restore(&mut self, txn: u64) -> Result<Vec<(u64, Outcome)>, Error> {
@@ -335,6 +349,13 @@ impl<D: BlockDev> Fs<D> {
             .get(&undo.snapshot)
             .ok_or(Error::NotFound)?;
         let (root, then) = (snap.root, View::Tree(snap.root));
+        let after = self.tree_after(txn);
+        let later: BTreeSet<u64> = self
+            .undo_records()?
+            .into_iter()
+            .filter(|u| u.txn > txn)
+            .flat_map(|u| u.objects)
+            .collect();
         let mut out = Vec::new();
         let mut made = Vec::new();
         let mut were = Vec::new();
@@ -350,7 +371,22 @@ impl<D: BlockDev> Fs<D> {
                     out.push((ino, outcome));
                 }
                 (None, Some(l)) => made.push((self.depth_in(View::Live, ino)?, ino, l.kind)),
-                (Some(o), _) => were.push((self.depth_in(then, ino)?, ino, o)),
+                (Some(o), Some(_)) => were.push((self.depth_in(then, ino)?, ino, o)),
+                // Gone now: back only if the action itself removed it, as the
+                // tree its commit left shows, and no later action touched it.
+                // One a later change destroyed (an emptied trash) is a change
+                // after the action, and so is left; so is one whose removal no
+                // tree dates, as a change outside any action can leave it.
+                (Some(o), None) => {
+                    let removed = match after {
+                        Some(tree) => self.inode_in(View::Tree(tree), ino)?.is_none(),
+                        None => false,
+                    };
+                    match removed && !later.contains(&ino) {
+                        true => were.push((self.depth_in(then, ino)?, ino, o)),
+                        false => out.push((ino, Outcome::Left)),
+                    }
+                }
                 (None, None) => {}
             }
         }
