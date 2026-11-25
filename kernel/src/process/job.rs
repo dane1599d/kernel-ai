@@ -316,9 +316,13 @@ pub fn pool(slot: usize, raw: u64, n: u64) -> Result<u64, Error> {
             state: PoolState::Idle,
         };
         // One that ended before it was pooled (its load ran out of frames, or
-        // it was stopped): said, rather than started again and again.
+        // it was stopped) is not started again and again: the pool answers
+        // what it holds, and a claim with none idle starts one then
+        // (`claim_new`). Not an error: the shell gives up its pool for good on
+        // one (`shellcore`'s `apart`).
         if !record(pooled) {
-            return Err(Error::Dead);
+            let held = POOL.locked(|pool| pool.iter().filter(|p| p.parent == parent).count());
+            return Ok(held as u64);
         }
     }
 }
