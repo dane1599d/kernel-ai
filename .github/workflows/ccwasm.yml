@@ -41,6 +41,8 @@ jobs:
       - name: Install pinned toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: llvm-ar for wcc's libc
         run: |
           sudo apt-get update

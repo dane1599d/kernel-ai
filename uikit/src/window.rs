@@ -131,6 +131,13 @@ impl Window {
         self.full = true;
     }
 
+    /// The whole window is painted at the next commit, whatever the display
+    /// list diff says: the type changed, so text drawn in the same box differs.
+    pub fn repaint_all(&mut self) {
+        self.dirty = true;
+        self.full = true;
+    }
+
     pub fn put(
         &mut self,
         id: NodeId,
@@ -144,7 +151,12 @@ impl Window {
         {
             let len = f.value.len();
             if let Some(c) = self.st.caret.get_mut(&id) {
+                // Inside the new text, and on a character of it, not in the
+                // middle of one.
                 *c = (*c).min(len);
+                while !f.value.is_char_boundary(*c) {
+                    *c -= 1;
+                }
             }
         }
         self.dirty = true;

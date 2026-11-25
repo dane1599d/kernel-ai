@@ -132,8 +132,9 @@ pub fn spawn(slot: usize, raw: u64, request_ptr: u64) -> Result<u64, Error> {
 /// `handles` out of `slot`'s table into it; its pid.
 fn start(slot: usize, name: &str, args: &[u8], handles: &[Handle]) -> Result<u64, Error> {
     let parent = identity(slot);
-    // Nothing the parent may not hold itself moves in.
-    let moved = handle::take_for(slot, handles, parent.limits.caps)?;
+    // Nothing the parent may not hold itself moves in. Their slots stay held
+    // until the spawn's answer, so a refusal gives them back as they were.
+    let moved = handle::take_held(slot, handles, parent.limits.caps)?;
     let request = SpawnRequest {
         name,
         program: PROGRAM,
@@ -143,11 +144,17 @@ fn start(slot: usize, name: &str, args: &[u8], handles: &[Handle]) -> Result<u64
         supervisor: false,
         uses: &[],
     };
-    spawn_with(&request, moved, true).map_err(|(error, moved)| {
-        // Refused: the handles go back to the parent.
-        handle::give(slot, moved);
-        error
-    })
+    match spawn_with(&request, moved, true) {
+        Ok(pid) => {
+            handle::release(slot, handles);
+            Ok(pid)
+        }
+        Err((error, moved)) => {
+            // Refused: the handles go back to the parent, under the same values.
+            handle::give_back(slot, handles, moved);
+            Err(error)
+        }
+    }
 }
 
 /// JOB_WAIT: the next exit of one of the caller's job children, written to `out`;

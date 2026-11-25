@@ -13,7 +13,7 @@ struct kai_memory { I64 free_mib; I64 total_mib; I64 heap_kib; };
 __KAI_IMPORT("memory") I64 memory(struct kai_memory *out);
 /* milliseconds since boot (1000 ms is 1 s) */
 __KAI_IMPORT("uptime_ms") I64 uptime_ms(I64 *out);
-/* running processes */
+/* the running services */
 struct kai_processes_item { I64 pid; char name[65]; I64 mib; I64 cpu_ms; };
 __KAI_IMPORT("processes") I64 processes(struct kai_processes_item *out, I64 cap);
 /* scheduler counters since boot */

@@ -501,6 +501,20 @@ pub fn proc_quota_set(pid: u64, pages: u64) -> Result<u64, Error> {
     call(call::PROC_QUOTA_SET, [pid, pages, 0, 0, 0, 0])
 }
 
+/// Process `pid`'s page quota is lowered to `pages`, and left as it is when it
+/// is at or under it; the old one (PROC_QUOTA_SET's QUOTA_LOWER_ONLY, #517).
+pub fn proc_quota_lower(pid: u64, pages: u64) -> Result<u64, Error> {
+    call(
+        call::PROC_QUOTA_SET,
+        [pid, pages, call::QUOTA_LOWER_ONLY, 0, 0, 0],
+    )
+}
+
+/// Whether a live process has `pid` (PROC_ALIVE): false once it has ended.
+pub fn proc_alive(pid: u64) -> Result<bool, Error> {
+    call(call::PROC_ALIVE, [pid, 0, 0, 0, 0, 0]).map(|alive| alive == 1)
+}
+
 /// Process `pid` runs `normal` (0) or `background` (1) (PROC_CLASS_SET, needs
 /// SUPERVISE).
 pub fn proc_class_set(pid: u64, class: u64) -> Result<u64, Error> {
@@ -514,10 +528,28 @@ pub fn shm_create(pages: u64) -> Result<Handle, Error> {
 
 /// Maps the `Shm` that `handle` names, read-write if `write`; its address.
 pub fn shm_map(handle: Handle, write: bool) -> Result<u64, Error> {
+    shm_map_least(handle, write, 0)
+}
+
+/// [`shm_map`], Invalid when the `Shm` holds fewer than `pages` pages: for a
+/// server about to touch that many of a client's.
+pub fn shm_map_least(handle: Handle, write: bool, pages: u64) -> Result<u64, Error> {
     call(
         call::SHM_MAP,
-        [u64::from(handle.0), u64::from(write), 0, 0, 0, 0],
+        [u64::from(handle.0), u64::from(write), pages, 0, 0, 0],
     )
+}
+
+/// SHM_INFO: how many pages the `Shm` `handle` names holds, whatever the
+/// handle's rights; BadHandle for a handle that is not an open `Shm`.
+pub fn shm_info(handle: Handle) -> Result<u64, Error> {
+    call(call::SHM_INFO, [u64::from(handle.0), 0, 0, 0, 0, 0])
+}
+
+/// The bytes of the `Shm` that `handle` names: what a mapping of it may read
+/// ([`shm_info`]'s pages, in bytes).
+pub fn shm_size(handle: Handle) -> Result<u64, Error> {
+    shm_info(handle).map(|pages| pages * kabi::heap::PAGE)
 }
 
 /// Takes the screen (`desktop` only): its back buffer's `Shm`, and its shape.
@@ -609,6 +641,14 @@ pub fn entropy(buf: &mut [u8]) -> Result<usize, Error> {
         [buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0, 0],
     )
     .map(|n| n as usize)
+}
+
+/// POWER_OFF: turns the machine off; returns only with why not.
+pub fn power_off() -> Error {
+    match call(call::POWER_OFF, [0; 6]) {
+        Ok(_) => Error::Invalid,
+        Err(error) => error,
+    }
 }
 
 /// Restarts the machine (POWER_REBOOT). Returns only with why it did not:
@@ -1441,6 +1481,12 @@ pub fn part_peer_name(handle: Handle, pid: u64, out: &mut [u8]) -> Result<usize,
     .map(|n| n as usize)
 }
 
+/// Live process `pid`'s capability bits (PART_PEER_CAPS), for `fs`, which holds
+/// the `Partition` handle `handle`.
+pub fn part_peer_caps(handle: Handle, pid: u64) -> Result<u64, Error> {
+    call(call::PART_PEER_CAPS, [u64::from(handle.0), pid, 0, 0, 0, 0])
+}
+
 /// Hands the kernel the model store's model, `extents` (first block, blocks) of
 /// the partition from byte `offset` of the file (P2 task 10); the bytes filled.
 pub fn model_fill(partition: Handle, extents: &[(u64, u64)], offset: u64) -> Result<u64, Error> {
@@ -1477,4 +1523,16 @@ pub fn endpoint_mint(
         ],
     )
     .map(|raw| Handle(raw as u32))
+}
+
+/// The badge and rights of a `Dir` or `File` handle on this process's own
+/// endpoint (ENDPOINT_BADGE): one a client moved to it. Permission for any
+/// other handle.
+pub fn endpoint_badge(handle: Handle) -> Result<(u64, Rights), Error> {
+    let mut out = [0u64; 2];
+    call(
+        call::ENDPOINT_BADGE,
+        [u64::from(handle.0), out.as_mut_ptr() as u64, 0, 0, 0, 0],
+    )?;
+    Ok((out[0], Rights::from_bits_truncate(out[1] as u32)))
 }

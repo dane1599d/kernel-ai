@@ -49,6 +49,8 @@ impl Desk {
         self.ask_drawn = None;
         self.ask_pressed_ms = 0;
         self.ask_entered_run = false;
+        self.ask_needs_preview = false;
+        self.ask_preview_ms = None;
         self.held = self.down.clone();
         self.grab = None;
         self.damage
@@ -77,6 +79,58 @@ impl Desk {
         self.ask_open_ms = at_ms
             .max(self.ask_pressed_ms)
             .saturating_add(termcore::menu::SETTLE_MS);
+    }
+
+    /// The card up now is a send's (ADR 0005 §7, "Amended 2026-11-19"): it
+    /// takes no `y` and no Run click until its whole text has been on the
+    /// screen in the pane ([`Desk::preview_drawn`]); Don't and `n` decline
+    /// as ever. A closed pane opens for it; while the text shows, PageUp,
+    /// PageDown and the wheel scroll it ([`Effect::PreviewScroll`]).
+    pub fn needs_preview(&mut self) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        if self.ask.is_none() || self.ask_needs_preview {
+            return effects;
+        }
+        self.ask_needs_preview = true;
+        self.show_pane(true, &mut effects);
+        effects
+    }
+
+    /// The send's whole text for card `id` has been on the screen, the last
+    /// of it at `at_ms`: Allow may follow, after the card's quiet time from
+    /// then, so a `y` already on its way does not take it.
+    pub fn preview_drawn(&mut self, id: u64, at_ms: u64) {
+        let ours = self.ask.is_some_and(|(ask, _)| ask.id == id);
+        if !ours || !self.ask_needs_preview || self.ask_preview_ms.is_some() {
+            return;
+        }
+        self.ask_preview_ms = Some(at_ms);
+        self.ask_open_ms = self
+            .ask_open_ms
+            .max(at_ms.saturating_add(termcore::menu::SETTLE_MS));
+    }
+
+    /// Whether a card `lines` tall leaves the open pane's history rectangle
+    /// uncovered, side by side: where a send's card may be offered on the
+    /// desk at all (ADR 0005 §7, "Amended 2026-11-19"), from the layout's
+    /// geometry, not a list of sizes.
+    pub fn card_beside_pane(&self, lines: i32) -> bool {
+        let card = trusted::card(
+            self.width,
+            self.height,
+            &Ask {
+                id: 0,
+                lines,
+                armed: false,
+            },
+        );
+        let history = self.layout().pane_parts().history;
+        !history.is_empty() && card.intersect(&history).is_none()
+    }
+
+    /// Whether the card up now waits for its send's text to be drawn.
+    pub fn awaits_preview(&self) -> bool {
+        self.ask.is_some() && self.ask_needs_preview && self.ask_preview_ms.is_none()
     }
 
     /// A key or button pressed at `now_ms` while the card is up: before the
@@ -171,8 +225,14 @@ impl Desk {
                 }
                 None
             }
-            // The card scrolls nothing, and nothing under it scrolls.
-            Input::Wheel(_) => None,
+            // The card scrolls nothing, and nothing under it scrolls, but a
+            // send's text in the pane does: it must be read through.
+            Input::Wheel(detents) => {
+                if self.ask_needs_preview {
+                    effects.push(Effect::PreviewScroll { pages: 0, detents });
+                }
+                None
+            }
             Input::Key {
                 usage: code,
                 down: false,
@@ -184,9 +244,16 @@ impl Desk {
                 usage: code,
                 down: true,
             } => {
+                // PageUp and PageDown scroll a send's text, card or no.
+                if self.ask_needs_preview && matches!(code, usage::PAGE_UP | usage::PAGE_DOWN) {
+                    let pages = if code == usage::PAGE_UP { -1 } else { 1 };
+                    effects.push(Effect::PreviewScroll { pages, detents: 0 });
+                }
                 let open = self.pressed();
                 match code {
                     _ if !open || repeat || self.held.contains(&code) => None,
+                    // Not before the whole text has been on the screen.
+                    usage::Y if self.awaits_preview() => None,
                     usage::Y if ask.armed => Some(true),
                     usage::Y => {
                         self.arm();
@@ -206,7 +273,8 @@ impl Desk {
                 let (yes, no) = trusted::buttons(trusted::card(self.width, self.height, &ask));
                 // Run only for a pointer brought there after the card was
                 // drawn: one parked where Run appeared clicks nothing.
-                let answer = if yes.contains(self.pointer) && self.ask_entered_run {
+                let allow = !self.awaits_preview();
+                let answer = if allow && yes.contains(self.pointer) && self.ask_entered_run {
                     Some(true)
                 } else if no.contains(self.pointer) {
                     Some(false)

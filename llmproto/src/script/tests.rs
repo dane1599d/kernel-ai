@@ -316,3 +316,17 @@ fn an_app_round_gets_minutes_and_scripts_keep_their_limit() {
     // A full c-app-1 answer takes minutes; it runs as a job between requests.
     assert_eq!(Lang::App.service_timeout_ms(), APP_SERVICE_TIMEOUT_MS);
 }
+
+/// Audit (lane M, item 7): a model's answer in words travels whole on llm's
+/// error line; other errors are still cut to llm's error length, on one line.
+#[test]
+fn an_answer_in_words_is_never_cut_on_the_error_line() {
+    let summary = "word ".repeat(REPLY_MAX_CHARS / 5);
+    let summary = summary.trim_end();
+    let text = encode_error(&AnswerError::NoScript(summary.into()));
+    let line = error_line(&text, 160);
+    assert_eq!(decode_error(&line), AnswerError::NoScript(summary.into()));
+    let long = alloc::format!("server {}", "x".repeat(400));
+    assert_eq!(error_line(&long, 160).chars().count(), 160);
+    assert_eq!(error_line("server one\ntwo", 160), "server one");
+}

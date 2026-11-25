@@ -63,6 +63,15 @@ pub fn pending() -> bool {
     PENDING.lock().is_some() || FINISHING.load(Ordering::SeqCst)
 }
 
+/// The first frame of each run reserved for the pending model, in order; none
+/// once it was published or refused (`model-fill`'s give-up case checks them).
+pub fn pending_runs() -> Vec<u32> {
+    PENDING
+        .lock()
+        .as_ref()
+        .map_or_else(Vec::new, |pending| pending.runs.clone())
+}
+
 /// The `kai-modelhint 1` record on `kai-data`, if the disk has one that verifies.
 pub fn hint() -> Option<Hint> {
     block::with_partition(diskmap::KAI_DATA_TYPE, |disk: &mut dyn Device| {
@@ -138,10 +147,47 @@ pub fn fill(extents: &[(u64, u64)], offset: u64) -> Result<u64, Error> {
         return Ok(0);
     }
     if offset != pending.filled {
-        return Err(Error::Invalid);
+        if offset != 0 {
+            return Err(Error::Invalid);
+        }
+        // `fs` started over (it was restarted between two calls): so does
+        // the fill, rather than wait for an offset no new `fs` sends.
+        pending.filled = 0;
+        pending.fnv = Fnv1a::new();
     }
-    let hhdm = memory::hhdm();
     let len = pending.hint.len;
+    if let Err(error) = copy_extents(pending, extents) {
+        // Any failure past here ends the wait without a model, as no file
+        // does: MODEL_MAP answers NotFound and llm stops waiting, and the
+        // runs go back (audit K #13).
+        let given_up = guard.take().expect("pending");
+        drop(guard);
+        free_runs(&given_up.runs);
+        log!("model: MODEL_FILL failed ({error:?}); the boot runs without the model");
+        super::reject(format!(
+            "the model could not be read from the store ({error:?})"
+        ));
+        return Err(error);
+    }
+    let filled = pending.filled;
+    if filled == len {
+        let done = guard.take().expect("pending");
+        FINISHING.store(true, Ordering::SeqCst);
+        drop(guard);
+        *FILLED.lock() = Some(done);
+        if threads::spawn("model-finish", finishing, 0).is_err() {
+            // No thread: finish here, as well as this stack allows.
+            finishing(0);
+        }
+    }
+    Ok(filled)
+}
+
+/// Copies the file's bytes out of the `kai-data` block runs `extents` into
+/// `pending`'s reserved runs, from where it stopped.
+fn copy_extents(pending: &mut Pending, extents: &[(u64, u64)]) -> Result<(), Error> {
+    let len = pending.hint.len;
+    let hhdm = memory::hhdm();
     for &(first, blocks) in extents {
         let sector = first.checked_mul(BLOCK / 512).ok_or(Error::Invalid)?;
         let sectors = blocks.checked_mul(BLOCK / 512).ok_or(Error::Invalid)?;
@@ -181,18 +227,7 @@ pub fn fill(extents: &[(u64, u64)], offset: u64) -> Result<u64, Error> {
         });
         copied.ok_or(Error::NotFound)??;
     }
-    let filled = pending.filled;
-    if filled == len {
-        let done = guard.take().expect("pending");
-        FINISHING.store(true, Ordering::SeqCst);
-        drop(guard);
-        *FILLED.lock() = Some(done);
-        if threads::spawn("model-finish", finishing, 0).is_err() {
-            // No thread: finish here, as well as this stack allows.
-            finishing(0);
-        }
-    }
-    Ok(filled)
+    Ok(())
 }
 
 /// The `model-finish` thread: checks and publishes the filled model.

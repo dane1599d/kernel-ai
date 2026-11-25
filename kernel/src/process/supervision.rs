@@ -49,6 +49,9 @@ pub const TERM: &str = "term";
 pub const UPDATED: &str = "updated";
 /// The one service that may hold `cap::SCRIPT`.
 pub const SCRIPTER: &str = "shell";
+/// The one service, and program, that may hold `cap::POLICY`: `fs` takes it as
+/// the person's mark (`PART_PEER_CAPS`), so no other line may pass for them.
+pub const POLICY_HOLDER: &str = "shell";
 /// The one service, and program, that may hold `cap::PUBLISH`.
 pub const PUBLISHER: &str = "edit";
 /// The one service, and program, that may hold `cap::PARTITION`.
@@ -61,6 +64,12 @@ pub const POWER_HOLDER: &str = "shell";
 /// restarting the machine is the shell's alone.
 pub fn power_allowed(name: &str, program: &str, caps: u64) -> bool {
     caps & cap::POWER == 0 || (name == POWER_HOLDER && program == POWER_HOLDER)
+}
+/// Whether the service `name` running `program` may have `caps`' POLICY bit:
+/// the scheduler's controls and the person's share of the disk reserve are the
+/// shell's, since `fs` reads POLICY as the person (`PART_PEER_CAPS`).
+pub fn policy_allowed(name: &str, program: &str, caps: u64) -> bool {
+    caps & cap::POLICY == 0 || (name == POLICY_HOLDER && program == POLICY_HOLDER)
 }
 /// Whether the service `name` running `program` may have the storage bits in
 /// `caps`: the `kai-data` partition is the file system service's alone (ADR
@@ -329,6 +338,9 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     }
     // Starting `scriptrun` is for the agent core (ADR 0001 D6).
     if request.limits.caps & cap::SCRIPT != 0 && name != SCRIPTER {
+        return Err(Error::Permission);
+    }
+    if !policy_allowed(name, program, request.limits.caps) {
         return Err(Error::Permission);
     }
     // Uploading versions and reaching the build service are for the edit service.

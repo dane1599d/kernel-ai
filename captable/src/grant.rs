@@ -288,6 +288,20 @@ impl Tree {
     }
 }
 
+/// Revokes, through `revoke`, each node `owned` names, asked afresh every
+/// pass, until it names none: whatever a revoke answers, the rest still go (one
+/// revoked meanwhile with its parent answers Revoked; #1160's review). At most
+/// [`NODES`] passes, so a node that will not go cannot loop. `owned` is its own
+/// call, so a lock it takes on the tree is gone before `revoke` runs.
+pub fn revoke_each(mut owned: impl FnMut() -> Option<GrantRef>, mut revoke: impl FnMut(GrantRef)) {
+    for _ in 0..NODES {
+        let Some(node) = owned() else {
+            break;
+        };
+        revoke(node);
+    }
+}
+
 impl Live for Tree {
     fn alive(&self, grant: GrantRef) -> bool {
         Tree::alive(self, grant)

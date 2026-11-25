@@ -381,6 +381,11 @@ fn the_view_guest_rebuilds_300_nodes() {
 /// 3 bytes "abc" (or none for schema 9); `migrate` fails with `bad-state` on empty
 /// state; `health` returns the clock's seed.
 fn lifecycle2(extra_imports: &str) -> Vec<u8> {
+    lifecycle2_with(extra_imports, "")
+}
+
+/// [`lifecycle2`] whose `cabi_realloc` first runs `realloc_first`.
+fn lifecycle2_with(extra_imports: &str, realloc_first: &str) -> Vec<u8> {
     let text = std::format!(
         r#"(module
   (import "kai:app/log@0.1.0" "write" (func $log (param i32 i32)))
@@ -392,6 +397,7 @@ fn lifecycle2(extra_imports: &str) -> Vec<u8> {
   (global $top (mut i32) (i32.const 4096))
   (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
     (local $at i32)
+    {realloc_first}
     global.get $top
     local.set $at
     global.get $top
@@ -691,4 +697,64 @@ args {}
         )
         .is_err()
     );
+}
+
+/// Audit item 3: a guest whose `cabi_realloc` calls `storage.get` again traps
+/// at the second `get`, instead of nesting host and guest frames until
+/// comphost's stack runs out.
+#[test]
+fn a_realloc_that_calls_storage_get_again_traps() {
+    use livecore::txn::{Inputs, Storage};
+    let module = lifecycle2_with(
+        STORAGE_PROBE,
+        "(call $get (i32.const 200) (i32.const 1) (i32.const 1000))",
+    );
+    let mut v = load_core(&module, LIMITS, None).unwrap();
+    let mut storage = Storage::new();
+    storage.insert(String::from("k"), b"w".to_vec());
+    let inputs = Inputs {
+        now_ms: 5,
+        seed: 6,
+        first_ticket: 1,
+    };
+    v.begin(&storage, inputs);
+    let read = probe("probe#read", Some(appabi::Ty::U32));
+    assert_eq!(reason(v.call(&read, &[])), Reason::Host);
+    v.finish();
+}
+
+/// Audit item 22: one call's writes are held to `effects::MAX_WRITES`; a
+/// guest that puts new keys in a loop traps instead of growing its host.
+#[test]
+fn a_call_that_writes_past_what_a_commit_could_keep_traps() {
+    use livecore::txn::{Inputs, Storage};
+    const FLOOD: &str = r#"
+  (import "kai:app/storage@0.1.0" "put" (func $put (param i32 i32 i32 i32)))
+  (data (i32.const 200) "k")
+  (func (export "probe#flood")
+    (local $n i32)
+    (loop $again
+      (i32.store8 (i32.const 201) (i32.add (i32.const 97) (local.get $n)))
+      (call $put (i32.const 200) (i32.const 2) (i32.const 1024) (i32.const 16384))
+      (local.set $n (i32.add (local.get $n) (i32.const 1)))
+      (br $again)))
+"#;
+    let mut v = load_core(&lifecycle2(FLOOD), LIMITS, None).unwrap();
+    let inputs = Inputs {
+        now_ms: 5,
+        seed: 6,
+        first_ticket: 1,
+    };
+    v.begin(&Storage::new(), inputs);
+    assert_eq!(
+        reason(v.call(&probe("probe#flood", None), &[])),
+        Reason::Host
+    );
+    let txn = v.finish();
+    let held: usize = txn
+        .writes
+        .iter()
+        .map(|(k, v)| k.len() + v.as_ref().map_or(0, Vec::len))
+        .sum();
+    assert!(held <= crate::effects::MAX_WRITES, "{held}");
 }

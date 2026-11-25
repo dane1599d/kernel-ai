@@ -1,0 +1,2 @@
+windows: [w1] editor (focused)  [w2] terminal "kai>"
+w1: text "notes 2: components/notes/src/li..."  [t1] textarea "notes 2: components/notes/src/li..." = "fn main() {\n    run(); // see src/ui.rs:7\n}"  text "ok built e1"

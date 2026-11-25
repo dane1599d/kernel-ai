@@ -9,6 +9,13 @@
 //! version whose reply is sent, so an effect is performed once whichever version
 //! answers. Different writes or effects count as a regression, as replies do.
 //!
+//! Window input and events go to the candidate alone, whose window is shown,
+//! as one call each (`Host::serve_with`): its writes commit into the storage
+//! with the standby's own checkpoint, so the state the kernel keeps is still
+//! the standby's and a rollback loses nothing the person did, and its effects
+//! go out. A fault in the standby's export there is the standby's, handled as
+//! [`standby_failed`] handles a request's.
+//!
 //! The candidate is committed when it has served `probation_calls` requests, spent
 //! `probation_ms` on probation, and passes a last health check. With probation_ms
 //! set, a candidate that sees no requests is also committed after four times that
@@ -101,7 +108,7 @@ fn run_standby<E: Env>(
 /// before the request, so the old version is reloaded from that and the candidate
 /// is not given the request: both stay in step with what the kernel holds, and no
 /// write can be acknowledged that a rollback would lose.
-fn standby_failed<E: Env>(
+pub(crate) fn standby_failed<E: Env>(
     core: &mut Core<E>,
     mut probation: Probation<E::Instance>,
     fault: &Fault,

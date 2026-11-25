@@ -395,3 +395,73 @@ fn a_session_cut_without_close_notify_is_truncated() {
     assert_eq!(fetch(&pki, port), (50_000, Err(TlsError::Truncated)));
     served.join().unwrap();
 }
+
+/// The server's end of [`Session`]'s transport, in memory: what the client
+/// sends goes to the server, and once the handshake is done the server's next
+/// write is handed over `trickle` bytes at a time.
+struct Stream {
+    server: Server,
+    pending: Vec<u8>,
+    trickle: usize,
+}
+
+impl Transport for Stream {
+    fn send(&mut self, bytes: &[u8]) -> Result<(), &'static str> {
+        carry(bytes.to_vec(), &mut |b| self.server.feed(b));
+        let _ = self.server.advance(None);
+        self.pending.extend(self.server.take_outgoing());
+        Ok(())
+    }
+
+    fn recv(&mut self, buf: &mut [u8]) -> Result<usize, &'static str> {
+        let n = self.pending.len().min(buf.len()).min(self.trickle);
+        buf[..n].copy_from_slice(&self.pending[..n]);
+        self.pending.drain(..n);
+        Ok(n)
+    }
+}
+
+/// A session past its handshake whose server has written one 16 KiB record,
+/// handed over 64 bytes at a time.
+fn trickling(pki: &Pki) -> Session<UnbufferedClientConnection, Stream> {
+    let mut roots = RootCertStore::empty();
+    roots
+        .add(CertificateDer::from(pki.ca.der().to_vec()))
+        .unwrap();
+    let config = ClientConfig::builder_with_details(ours(), Arc::new(At(NOW)))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let name = ServerName::try_from(NAME.to_string()).unwrap();
+    let conn = UnbufferedClientConnection::new(Arc::new(config), name).unwrap();
+    let stream = Stream {
+        server: server(pki),
+        pending: Vec::new(),
+        trickle: usize::MAX,
+    };
+    let mut session = Session::new(conn, stream);
+    session.handshake().unwrap();
+    let io = session.io_mut();
+    assert_eq!(
+        io.server.advance(Some(&[0x5A; 16 * 1024])),
+        Ok(Progress::Wrote)
+    );
+    io.pending.extend(io.server.take_outgoing());
+    io.trickle = 64;
+    session
+}
+
+#[test]
+fn a_read_gives_up_after_its_limit_of_bytes_with_no_plaintext() {
+    // rustls sends no empty record, so the limit is set under one record's
+    // size: the read must stop there, though the record would end in data.
+    let pki = pki(KeyKind::P256, &[NAME], VALID);
+    let mut out = [0u8; 64];
+    let mut stalled = trickling(&pki).with_empty_limit(4096);
+    assert_eq!(stalled.read(&mut out), Err(TlsError::Stalled));
+    // With the shipped limit, the same record read 64 bytes at a time is data.
+    let mut whole = trickling(&pki);
+    assert_eq!(whole.read(&mut out), Ok(64));
+    assert_eq!(out, [0x5A; 64]);
+}

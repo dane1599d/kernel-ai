@@ -2,7 +2,7 @@
 
 use crate::{
     Agent, AgentId, Ask, BLOCK_TOKENS, Class, Config, Decision, End, KV_BYTES_PER_POSITION, Kind,
-    MAX_QUEUED, Now, Place, Quantum, REQUEST_MS, Refusal, RequestId,
+    MAX_QUEUED, Now, Place, Quantum, REQUEST_MS, Refusal, RequestId, Shape,
 };
 use alloc::collections::BTreeMap;
 use alloc::vec;
@@ -24,6 +24,7 @@ pub(crate) struct Req {
     pub(crate) prompt: u32,
     pub(crate) made: u32,
     pub(crate) max_new: u32,
+    pub(crate) shape: Shape,
     /// KV positions its state holds: all of `prompt + made` when it can decode.
     pub(crate) prefilled: u32,
     pub(crate) arrived_ms: u64,
@@ -65,6 +66,9 @@ pub(crate) enum Pick {
     Foreground,
     Aged,
     Fair,
+    /// The next token of an open grammar answer: its agent pays what its visit has
+    /// left, and no more.
+    Continue,
 }
 
 /// Where each class's deficit round robin visit stands.
@@ -86,6 +90,9 @@ pub struct Scheduler {
     /// When the last call was made and what it ran, to count running time.
     last_call: Option<(u64, Vec<RequestId>)>,
     pub(crate) visits: [Visit; 4],
+    /// The grammar answer under way: it has decoded and not ended, and keeps the
+    /// model while nothing of a higher class waits.
+    pub(crate) open: Option<RequestId>,
 }
 
 impl Scheduler {
@@ -102,6 +109,7 @@ impl Scheduler {
             day: None,
             last_call: None,
             visits: [Visit::default(); 4],
+            open: None,
         }
     }
 
@@ -202,6 +210,7 @@ impl Scheduler {
                 prompt: ask.prompt_tokens,
                 made: 0,
                 max_new: ask.max_new_tokens,
+                shape: ask.shape,
                 prefilled: 0,
                 arrived_ms: now.ms,
                 waiting_since_ms: now.ms,
@@ -213,6 +222,24 @@ impl Scheduler {
         Ok(id)
     }
 
+    /// Counts `tokens` against `agent`'s day for work the caller ran whole, outside
+    /// [`Scheduler::next`]'s quanta (llm's slice 2a runs an agent's request as one
+    /// call): never past the day's budget, which is then spent.
+    pub fn charge_whole(&mut self, agent: AgentId, tokens: u32, now: Now) {
+        self.roll_day(now.day);
+        if let Some(state) = self.agents.get_mut(&agent) {
+            let room = state.agent.budgets.map_or(u32::MAX, |b| {
+                b.tokens_per_day.saturating_sub(state.used_today)
+            });
+            state.used_today += tokens.min(room);
+        }
+    }
+
+    /// The class `agent` runs in, if it is known.
+    pub fn class_of(&self, agent: AgentId) -> Option<Class> {
+        self.agents.get(&agent).map(|a| a.agent.class)
+    }
+
     /// `request` is over before its last token (the model stopped, or the agent
     /// cancelled it): its slot, snapshot and place in the queue are free.
     pub fn finish(&mut self, request: RequestId) {
@@ -222,12 +249,34 @@ impl Scheduler {
     /// The next thing to do. Each call is a safe point: apply what it says, then ask
     /// again.
     pub fn next(&mut self, now: Now) -> Decision {
+        let open = self.open.take();
+        let decision = self.decide(now, open);
+        if let Some(open) = open {
+            let goes_on = match &decision {
+                // An end is no model step: the open answer goes on, unless it is the one
+                // that ended.
+                Decision::End { request, .. } => {
+                    self.open = (*request != open).then_some(open);
+                    true
+                }
+                Decision::Run(quanta) => quanta.len() == 1 && quanta[0].request == open,
+                Decision::Idle | Decision::Move { .. } => false,
+            };
+            if !goes_on && let Some(req) = self.reqs.get_mut(&open) {
+                // Interrupted: the answer starts again from its prompt.
+                req.made = 0;
+            }
+        }
+        decision
+    }
+
+    fn decide(&mut self, now: Now, open: Option<RequestId>) -> Decision {
         self.roll_day(now.day);
         self.count_running(now.ms);
         if let Some(end) = self.expired() {
             return end;
         }
-        let Some((lead, pick)) = self.lead(now.ms) else {
+        let Some((lead, pick)) = self.lead(now.ms, open) else {
             self.last_call = Some((now.ms, Vec::new()));
             return Decision::Idle;
         };
@@ -289,14 +338,14 @@ impl Scheduler {
     /// Runs `lead`'s next quantum, with the sequences that decode beside it.
     fn run(&mut self, lead: RequestId, pick: Pick, now_ms: u64) -> Decision {
         let mut batch = vec![lead];
-        if self.reqs[&lead].decoding() {
+        if self.reqs[&lead].decoding() && self.reqs[&lead].shape == Shape::Free {
             batch.extend(self.companions(lead));
         }
         let mut quanta = Vec::with_capacity(batch.len());
         for id in &batch {
             // Only the lead of a fair pick pays its deficit: a batch rides along free.
-            let pays = pick == Pick::Fair && *id == lead;
-            let (kind, tokens, last) = self.charge(*id, pays, now_ms);
+            let pays = *id == lead;
+            let (kind, tokens, last) = self.charge(*id, pick, pays, now_ms);
             let agent = self.reqs.get(id).map_or(AgentId(0), |r| r.agent);
             quanta.push(Quantum {
                 request: *id,
@@ -309,13 +358,21 @@ impl Scheduler {
         for quantum in quanta.iter().filter(|q| q.last) {
             self.remove(quantum.request);
         }
+        let lead_q = &quanta[0];
+        let shaped = self
+            .reqs
+            .get(&lead)
+            .is_some_and(|r| r.shape == Shape::Grammar);
+        if shaped && lead_q.kind == Kind::Decode && !lead_q.last {
+            self.open = Some(lead);
+        }
         self.last_call = Some((now_ms, batch));
         Decision::Run(quanta)
     }
 
     /// One quantum for `id`: its agent pays the tokens, and the request moves on.
     /// What it was, how many tokens, and whether it is the request's last.
-    fn charge(&mut self, id: RequestId, pays: bool, now_ms: u64) -> (Kind, u32, bool) {
+    fn charge(&mut self, id: RequestId, pick: Pick, pays: bool, now_ms: u64) -> (Kind, u32, bool) {
         let req = &self.reqs[&id];
         let (kind, nominal) = (
             match req.decoding() {
@@ -334,10 +391,17 @@ impl Scheduler {
         });
         let tokens = nominal.min(room);
         state.used_today += tokens;
-        if pays {
-            state.deficit -= i64::from(tokens);
+        match pick {
+            Pick::Fair if pays => state.deficit -= i64::from(tokens),
+            Pick::Continue => state.deficit = (state.deficit - i64::from(tokens)).max(0),
+            _ => {}
         }
         let req = self.reqs.get_mut(&id).expect("just read");
+        // An answer's first token runs on the prompt: a grammar answer started again
+        // parts its cache there, past what its earlier try decoded.
+        if kind == Kind::Decode && req.made == 0 {
+            req.prefilled = req.prompt;
+        }
         req.waiting_since_ms = now_ms;
         req.last_run_ms = now_ms;
         req.prefilled += tokens;
@@ -354,6 +418,9 @@ impl Scheduler {
         let Some(req) = self.reqs.remove(&request) else {
             return;
         };
+        if self.open == Some(request) {
+            self.open = None;
+        }
         if !self
             .reqs
             .values()

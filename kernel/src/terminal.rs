@@ -54,6 +54,9 @@ static MENU_OPEN_MS: AtomicU64 = AtomicU64::new(0);
 static LINES_CLEARED: AtomicU64 = AtomicU64::new(0);
 /// The shell said it has a card waiting (CARD_READY), not yet taken.
 static CARD_WAITING: AtomicBool = AtomicBool::new(false);
+/// The prompt can give way to a card now: it waits at an empty line with
+/// nothing else waiting ([`read_line`]). For [`card_state`].
+static CARD_PROMPT: AtomicBool = AtomicBool::new(false);
 /// Cards taken from the shell at an empty prompt, and the shell's answers to
 /// [`termcore::menu::TAKE_CARD`], for the boot case.
 static CARDS_TAKEN: AtomicU64 = AtomicU64::new(0);
@@ -190,6 +193,20 @@ pub fn cards_taken() -> (u64, u64) {
     (
         CARDS_TAKEN.load(Ordering::Relaxed),
         CARD_ASKS.load(Ordering::Relaxed),
+    )
+}
+
+/// Why the shell's waiting card is or is not taken, in words, for a boot
+/// case whose card did not come: each condition [`card_may_open`] and the
+/// prompt need.
+pub fn card_state() -> alloc::string::String {
+    format!(
+        "card waiting {}, prompt free {}, desktop showing {}, trusted layer reading {}, box empty {}",
+        card_armed(),
+        CARD_PROMPT.load(Ordering::Acquire),
+        claim::showing(),
+        ask_box::alive(),
+        ask_box::empty()
     )
 }
 
@@ -352,15 +369,7 @@ pub(crate) fn shell_line_answered(line: &str) -> bool {
 /// with what an Allow minted. A menu with `shown` text is asked only on the
 /// console, with the text again above it once the console has the screen.
 fn choose(decoder: &mut Decoder, mut menu: Menu, shown: Option<&[String]>) -> Option<Waiting> {
-    let card_up = claim::showing() && ask_box::alive();
-    let answer = match (menu::surface(shown.is_some(), card_up), shown) {
-        (menu::Surface::Console, Some(lines)) => answer_on_console_after(decoder, &mut menu, lines),
-        (menu::Surface::Console, None) => answer_on_console(decoder, &mut menu),
-        (menu::Surface::Card, _) => match answer_on_card(&menu) {
-            Some(answer) => answer,
-            None => answer_on_console(decoder, &mut menu),
-        },
-    };
+    let answer = pick(decoder, &mut menu, shown);
     let (prompt, _) = menu.input();
     finish_line(prompt, answer.word(), "");
     // Allow mints the call's ONCE (and an "Always allow" its rule node); the
@@ -380,17 +389,48 @@ fn choose(decoder: &mut Decoder, mut menu: Menu, shown: Option<&[String]>) -> Op
     }
 }
 
+/// [`choose`]'s answer to `menu`, read on its one surface. A send's menu
+/// without its text (a desk card: the text is in the Kai pane) is answered on
+/// the card or denied, never asked bare on the console, where its text would
+/// not be (#1142's review).
+pub(crate) fn pick(decoder: &mut Decoder, menu: &mut Menu, shown: Option<&[String]>) -> Answer {
+    let card_up = claim::showing() && ask_box::alive();
+    let bare_send = menu::bare_send(shown.is_some(), menu.call());
+    match (menu::surface(shown.is_some(), card_up), shown) {
+        (menu::Surface::Console, Some(lines)) => answer_on_console_after(decoder, menu, lines),
+        (menu::Surface::Console, None) if bare_send => bare_send_denied(menu),
+        (menu::Surface::Console, None) => answer_on_console(decoder, menu),
+        (menu::Surface::Card, _) => match answer_on_card(menu) {
+            Some(answer) => answer,
+            None if bare_send => bare_send_denied(menu),
+            None => answer_on_console(decoder, menu),
+        },
+    }
+}
+
+/// A send's menu with no text to show it with, off the card: denied.
+fn bare_send_denied(menu: &Menu) -> Answer {
+    log!(
+        "ask: {} is a send whose text is not on this screen, so it was denied",
+        menu.id
+    );
+    Answer::Deny
+}
+
 /// Asks `menu` on its one answering surface, which the kernel picks: `desktop`'s
 /// ask card while `desktop` shows and its trusted layer is alive, else the
 /// console (ADR 0005 §7). A card withdrawn before an answer, because `desktop`
 /// stopped showing or reading, goes to the console after.
 pub(crate) fn answer(decoder: &mut Decoder, menu: &mut Menu) -> Answer {
     let card_up = claim::showing() && ask_box::alive();
+    let bare_send = menu::bare_send(false, menu.call());
     match menu::surface(false, card_up) {
         menu::Surface::Card => match answer_on_card(menu) {
             Some(answer) => answer,
+            None if bare_send => bare_send_denied(menu),
             None => answer_on_console(decoder, menu),
         },
+        menu::Surface::Console if bare_send => bare_send_denied(menu),
         menu::Surface::Console => answer_on_console(decoder, menu),
     }
 }
@@ -402,7 +442,9 @@ fn answer_on_card(menu: &Menu) -> Option<Answer> {
     if !claim::showing() || !ask_box::alive() {
         return None;
     }
-    if !ask_box::post(menu.id, menu.call(), menu.question()) {
+    // Code's question alone: a menu's detail is the console's, never the
+    // trusted card's (ADR 0005 section 7).
+    if !ask_box::post(menu.id, menu.call(), menu.card_reason()) {
         return None;
     }
     AWAITING_ANSWER.store(true, Ordering::Release);
@@ -493,13 +535,19 @@ fn now_ms() -> u64 {
 fn read_line(decoder: &mut Decoder, prompt: &str, card: bool) -> Read {
     let mut line = Line::new(MAX_LINE);
     loop {
-        let key = match card && line.text().is_empty() {
+        let free = card && line.text().is_empty();
+        CARD_PROMPT.store(free, Ordering::Release);
+        let key = match free {
             true => match decoder.read_key_unless(&card_armed, &card_may_open) {
                 Some(key) => key,
-                None => return Read::Card,
+                None => {
+                    CARD_PROMPT.store(false, Ordering::Release);
+                    return Read::Card;
+                }
             },
             false => decoder.read_key(),
         };
+        CARD_PROMPT.store(false, Ordering::Release);
         match line.apply(key) {
             Outcome::Unchanged => {}
             Outcome::Changed => console::show_input(prompt, line.text(), line.cursor()),

@@ -28,7 +28,9 @@ impl Shell {
         ms: u32,
     ) -> Reply {
         let host = send.host.clone();
-        if !outbox::is_host(&host) {
+        // The transport's own rule (`netdest::normalize`): a name alone, no
+        // port and no address, so nothing held is refused when it falls due.
+        if !outbox::is_host(&host) || netdest::normalize(&host).is_none() {
             let why = "that is not a host name";
             self.record(id, request, call, &format!("refused: {why}"));
             return Reply::err(format!("Not sent: {why}"));
@@ -40,6 +42,7 @@ impl Shell {
         }
         let line = outbox::held_line(&host, ms, id);
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: Form::Call,
@@ -115,9 +118,9 @@ impl Shell {
                 Stage::Sent,
                 String::from(answer.lines().next().unwrap_or("")),
             ),
-            Err(failed) if failed.maybe_sent || self.host.interrupted() => {
-                (Stage::Unknown, failed.why)
-            }
+            // A Stop ends a call only while no server has taken it, so a
+            // send it withdrew says not sent (`maybe_sent` false).
+            Err(failed) if failed.maybe_sent => (Stage::Unknown, failed.why),
             Err(failed) => (Stage::Failed, failed.why),
         };
         self.end_send(entry, stage, &why);
@@ -196,7 +199,7 @@ impl Shell {
     /// not held any more (or the undo of one); `None` for any other entry.
     pub(crate) fn send_refusal(&self, entry: &Entry) -> Option<String> {
         let change = entry.changes.iter().find(|c| c.action == outbox::ACTION)?;
-        if change.inverse.is_some() {
+        if change.inverse.is_some_and(|i| i.is_read()) {
             return None;
         }
         if entry.of.is_some() {
@@ -227,6 +230,25 @@ impl Shell {
             e.state = State::Nothing;
         }
         true
+    }
+
+    /// Every held send more than [`outbox::UNCHECKED_MS`] past due at
+    /// `now_ms`, ended unsent: the OS loop calls it while the desktop does
+    /// not answer its take of the panel's requests, where an undo for it may
+    /// be waiting, so it never goes unchecked and never posts late.
+    pub fn end_unchecked_sends(&mut self, now_ms: u64) {
+        for entry in self.outbox.overdue(now_ms, outbox::UNCHECKED_MS) {
+            self.end_send(entry, Stage::Unsent, outbox::UNCHECKED_WHY);
+        }
+    }
+
+    /// Every held send, ended unsent: the desktop restarted, and the undo
+    /// clicks it held for them are gone with it, so none goes unchecked.
+    pub fn end_held_sends_on_restart(&mut self) {
+        // Every held one: none is due later than the end of time.
+        for entry in self.outbox.overdue(u64::MAX, 0) {
+            self.end_send(entry, Stage::Unsent, outbox::RESTART_WHY);
+        }
     }
 
     /// Ends entry `entry`'s send at `stage`: out of the outbox, logged, and

@@ -24,7 +24,9 @@ extern crate alloc;
 mod abilities;
 mod actions;
 pub mod actlog;
+mod agentconsent;
 mod agentcore;
+pub mod agentstep;
 pub mod analyse;
 pub mod apart;
 pub mod appbuild;
@@ -47,9 +49,15 @@ mod deskcard;
 pub mod door;
 mod effects;
 mod engine;
+mod goalqueue;
+mod goalrows;
+mod goalscope;
+mod goaltoggle;
 pub mod grants;
 mod guard;
 mod instructions;
+mod landing;
+pub mod ledger;
 mod models;
 mod netask;
 pub mod netgrant;
@@ -95,6 +103,7 @@ pub use engine::Exec;
 use engine::Line;
 pub use guard::placeholder_target;
 use kabi::sched::{SchedStats, TrialRequest};
+pub use ledger::LogFailed;
 use llmproto::act::{ActError, ActRequest, Call};
 use llmproto::chat::Completion;
 use llmproto::script::{Answer, AnswerError, Lang, ScriptRequest};
@@ -139,9 +148,25 @@ pub enum FsRead<'a> {
 /// A change the `fs` server makes as one transaction, which `undo` restores.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FsChange<'a> {
-    Create { path: &'a str, text: &'a str },
-    Write { path: &'a str, text: &'a str },
-    Move { from: &'a str, to: &'a str },
+    Create {
+        path: &'a str,
+        text: &'a str,
+    },
+    Write {
+        path: &'a str,
+        text: &'a str,
+    },
+    /// `:save`'s file at `c>` (ADR 0012 D4): `path` made or replaced, its
+    /// folder `folder` (one beneath `/home/user`) made first when missing.
+    Save {
+        folder: &'a str,
+        path: &'a str,
+        text: &'a str,
+    },
+    Move {
+        from: &'a str,
+        to: &'a str,
+    },
     Trash(&'a str),
     Restore(&'a str),
     EmptyTrash,
@@ -168,6 +193,11 @@ pub const NO_NET: &str = "the network rows need the OS network service here";
 /// What a host with no `kai-data` disk answers a file row: the guest's shell
 /// and the gates' stand-ins say the same, so their answers compare equal.
 pub const NO_FILES: &str = "there are no files here (no kai-data disk)";
+
+/// What the state files read once at start are called in what is audited.
+pub(crate) const RULES: &str = "rules";
+pub(crate) const STANDING: &str = "standing instructions";
+pub(crate) const KEEP: &str = "keep-running list";
 
 /// What the shell needs from the operating system.
 pub trait Host {
@@ -371,6 +401,17 @@ pub trait Host {
     /// site got the body), and `Err` only when no answer came. `maybe_sent` is false only for a failure before any byte
     /// of the request was written (no address, no connection, the TLS
     /// handshake refused); anything after that may have gone out.
+    /// Whether a send's card fits beside the open Kai pane, the history
+    /// uncovered (`desktop`'s `panel send-fits`): where a send typed at the
+    /// desk may be answered on its card. No desktop, no.
+    fn desk_send_fits(&self) -> bool {
+        false
+    }
+    /// Gives `desktop` the text of the send whose card `id` goes up now, for
+    /// the Kai pane (`deskcore::sendview`, `panel preview <id>`).
+    fn desk_preview(&self, _id: u64, _text: &str) -> Result<(), String> {
+        Err(String::from("there is no desktop here"))
+    }
     fn net_send(&self, _send: &outbox::Send) -> Result<String, outbox::SendFailed> {
         Err(outbox::SendFailed {
             why: String::from(NO_NET),
@@ -405,8 +446,10 @@ pub trait Host {
     fn log_read(&self) -> Option<String> {
         None
     }
-    /// Writes the whole action log to `/system/log`, after any line that changed it.
-    fn log_write(&self, _text: &str) -> Result<(), String> {
+    /// Writes the whole action log to `/system/log`, after any line that changed
+    /// it, in the same commit as the line's files: [`LogFailed::NotLanded`]
+    /// when that commit was refused.
+    fn log_write(&self, _text: &str) -> Result<(), LogFailed> {
         Ok(())
     }
     /// Restores what transaction `txn` replaced, as one new transaction: its number,
@@ -426,17 +469,19 @@ pub trait Host {
         Ok(())
     }
     /// The standing rules as `/system/state/rules` holds them (`kai-grants 1`
-    /// rule lines), read once at start; `None` when there are none (P2 task 12).
-    fn rules_read(&self) -> Option<String> {
-        None
+    /// rule lines), read once at start; `None` when there are none (P2 task 12),
+    /// and why not when it could not be read.
+    fn rules_read(&self) -> Result<Option<String>, String> {
+        Ok(None)
     }
     /// Writes the whole rules file, after a rule is added or removed.
     fn rules_write(&self, _text: &str) -> Result<(), String> {
         Ok(())
     }
-    /// The keep-running list as `/system/state/keep` holds it.
-    fn keep_read(&self) -> Option<String> {
-        None
+    /// The keep-running list as `/system/state/keep` holds it, and why not
+    /// when it could not be read.
+    fn keep_read(&self) -> Result<Option<String>, String> {
+        Ok(None)
     }
     fn keep_write(&self, _text: &str) -> Result<(), String> {
         Err(String::from("there is no /system/state here"))
@@ -454,27 +499,30 @@ pub trait Host {
         Err(String::from("there is no /system/state here"))
     }
     /// The rows taken back from apps' effects, as `/system/state/withheld`
-    /// holds them (`kai-withheld 1`, P4 task 7).
-    fn withheld_read(&self) -> Option<String> {
-        None
+    /// holds them (`kai-withheld 1`, P4 task 7): `None` with no file, and
+    /// why not when it could not be read.
+    fn withheld_read(&self) -> Result<Option<String>, String> {
+        Ok(None)
     }
     /// Writes the whole withheld file, before a change takes effect.
     fn withheld_write(&self, _text: &str) -> Result<(), String> {
         Err(String::from("grants cannot be revoked here"))
     }
     /// The apps' network grants as `/system/state/netgrants` holds them
-    /// (`kai-grants 1` host lines, P5 task 13).
-    fn net_grants_read(&self) -> Option<String> {
-        None
+    /// (`kai-grants 1` host lines, P5 task 13), and why not when it could
+    /// not be read.
+    fn net_grants_read(&self) -> Result<Option<String>, String> {
+        Ok(None)
     }
     /// Writes the whole network grants file, before a change is told.
     fn net_grants_write(&self, _text: &str) -> Result<(), String> {
         Err(String::from("network grants cannot be kept here"))
     }
     /// The standing instructions as `/system/state/standing` holds them
-    /// (`kai-standing 1`), read once at start (P3 task 11).
-    fn standing_read(&self) -> Option<String> {
-        None
+    /// (`kai-standing 1`), read once at start (P3 task 11), and why not when
+    /// it could not be read.
+    fn standing_read(&self) -> Result<Option<String>, String> {
+        Ok(None)
     }
     /// Writes the whole standing-instruction store, after one changes.
     fn standing_write(&self, _text: &str) -> Result<(), String> {
@@ -482,10 +530,14 @@ pub trait Host {
     }
     /// Gives each process its class and quota (P3 task 12), through the
     /// supervisor's PROC_CLASS_SET and PROC_QUOTA_SET; every one's settings from
-    /// before, so `undo` can put them back.
+    /// before, so `undo` can put them back. With `cap` (a switch, #517) a
+    /// setting's `mem` is a ceiling: a quota above it is lowered, one at or
+    /// under it is left, and only a lowered one has a `mem` from before. Without
+    /// it (an undo) `mem` is set exactly.
     fn profile_apply(
         &self,
         _settings: &[kaiprofile::Setting],
+        _cap: bool,
     ) -> Result<Vec<kaiprofile::Setting>, String> {
         Err(String::from(
             "profiles are not wired to the supervisor here yet",
@@ -682,6 +734,8 @@ pub struct Shell {
     app_job: Option<appjob::Job>,
     /// What builds in the background came to, not yet shown.
     notices: Vec<String>,
+    /// File changes that did not land, as the line's reply says them.
+    landing: landing::Landing,
     /// The app whose install card waits to open by itself, once a build in
     /// the background built it ([`Shell::take_card`]).
     card: Option<String>,
@@ -691,6 +745,9 @@ pub struct Shell {
     /// The question on the card that came from a desktop line, and where
     /// that line was typed.
     card_for_desk: Option<(u64, deskask::Asker)>,
+    /// The card's question whose agent was retired while it was up: its
+    /// answer runs nothing and says so (`agentconsent::RETIRED`).
+    retired_card: Option<u64>,
     /// What a panel line's card came to, for the panel.
     card_result: Option<(bool, String)>,
     /// The send a panel line's card allowed and the outbox holds, for the
@@ -718,6 +775,23 @@ pub struct Shell {
     /// What the agent's reading of app grants keeps between passes
     /// ([`appgrants`]).
     grant_memo: appgrants::Memo,
+    /// The agents the shell knows (ADR 0013 §1): who a badged route's step is.
+    roster: agentid::Roster,
+    /// What the card came to for agents' asked steps, until each waits for it.
+    agents_told: Vec<agentstep::Told>,
+    /// The goals the person set and the queue to `goals` (G2).
+    goal_book: goalrows::GoalBook,
+    /// The admission of the agent whose step is running: no rule of the
+    /// person's covers it (`agentconsent`).
+    acting: Option<agentid::Admission>,
+    /// The first entry id of the step `acting` is for: older entries (a
+    /// question that lapses during the step) are not its.
+    acting_from: u64,
+    /// Agents' open questions, and the admission each was asked under.
+    agent_asks: agentid::Asks,
+    agent_admissions: Vec<(u64, agentid::Admission)>,
+    /// The agent's question the person's yes was just spent on.
+    agent_spent: Option<u64>,
     /// The last script as `show` prints it.
     shown: Option<String>,
     /// What the script run by the last line printed.
@@ -766,12 +840,18 @@ pub struct Shell {
     /// The log text last written to `/system/log`, so an unchanged log is not
     /// written again.
     saved_log: Option<String>,
+    /// The state files read once at start that could not be read: never
+    /// written over this run ([`Shell::read_at_start`]).
+    unread: Vec<&'static str>,
     /// The ONCE of the menu answer now running, kept for the call's owner to
     /// check: the shell does not spend it (P1 task 14).
     owner_once: Option<u64>,
     /// The source of the data the call now running was decided after (a
     /// view's second round), for consent (ADR 0002 D6).
     steered: Option<&'static str>,
+    /// The line now running is the person's own `open <app>` (`open_line`),
+    /// made by code with no model: its calls are the person's (`Checked::person`).
+    person_line: bool,
     /// The `c>` entry now running, and its calls' values (P4 task 12).
     c_entry: Option<centry::CEntry>,
     last_value: Option<rhai::Dynamic>,
@@ -831,9 +911,11 @@ impl Shell {
             app_written: Vec::new(),
             app_job: None,
             notices: Vec::new(),
+            landing: landing::Landing::default(),
             card: None,
             desk_asks: Vec::new(),
             card_for_desk: None,
+            retired_card: None,
             card_result: None,
             card_held: None,
             card_answers: deskcard::Answers::default(),
@@ -844,6 +926,14 @@ impl Shell {
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
             hosts: nethosts::Table::curated(),
+            roster: agentid::Roster::new(),
+            agents_told: Vec::new(),
+            goal_book: goalrows::GoalBook::default(),
+            acting: None,
+            acting_from: 0,
+            agent_asks: agentid::Asks::new(),
+            agent_admissions: Vec::new(),
+            agent_spent: None,
             grant_memo: appgrants::Memo::default(),
             shown: None,
             last_output: None,
@@ -862,8 +952,10 @@ impl Shell {
             clarified_by_model: false,
             pack_id: llmproto::pack::act_pack_id(),
             saved_log: None,
+            unread: Vec::new(),
             owner_once: None,
             steered: None,
+            person_line: false,
             c_entry: None,
             last_value: None,
             value_rets: Vec::new(),
@@ -893,7 +985,8 @@ impl Shell {
     /// The rules `/system/state/rules` holds; a file refused whole is set aside,
     /// and the shell starts with none.
     fn with_saved_rules(mut self) -> Self {
-        let Some(text) = self.host.rules_read() else {
+        let read = self.host.rules_read();
+        let Some(text) = self.read_at_start(RULES, read) else {
             return self;
         };
         match rules::Rules::restore(&text) {
@@ -905,12 +998,44 @@ impl Shell {
         self
     }
 
+    /// `what`'s file as the host read it at start: `None` with no file, or
+    /// with one that could not be read. That one is audited and never written
+    /// over this run ([`Shell::not_unread`]): a whole-file write would lose
+    /// what it held.
+    pub(crate) fn read_at_start(
+        &mut self,
+        what: &'static str,
+        read: Result<Option<String>, String>,
+    ) -> Option<String> {
+        match read {
+            Ok(text) => text,
+            Err(why) => {
+                self.host.audit(&format!(
+                    "the {what} on disk could not be read ({why}); starting with none, \
+                     and the file is not written over"
+                ));
+                self.unread.push(what);
+                None
+            }
+        }
+    }
+
+    /// Why `what`'s file may not be written: it could not be read at start.
+    pub(crate) fn not_unread(&self, what: &str) -> Result<(), String> {
+        match self.unread.contains(&what) {
+            true => Err(format!(
+                "the {what} on disk could not be read at start, so it is not written over"
+            )),
+            false => Ok(()),
+        }
+    }
+
     /// Writes the rules to `/system/state/rules`; a failure is audited, and the
     /// rules hold in memory.
     pub(crate) fn save_rules(&self) {
         let written = self
-            .rules
-            .text()
+            .not_unread(RULES)
+            .and_then(|()| self.rules.text())
             .and_then(|text| self.host.rules_write(&text));
         if let Err(why) = written {
             self.host
@@ -924,8 +1049,15 @@ impl Shell {
             self.saved_log = Some(self.log.text());
             return self;
         };
-        match actlog::parse(&text) {
-            Ok(records) => {
+        match actlog::parse_setting_aside(&text) {
+            Ok((records, aside)) => {
+                if !aside.is_empty() {
+                    let ids: Vec<String> = aside.iter().map(|id| format!("#{id}")).collect();
+                    self.host.audit(&format!(
+                        "log entries {} named no agent and were set aside",
+                        ids.join(", ")
+                    ));
+                }
                 self.log = actlog::ActLog::from_records(records);
                 self.next_id = self.log.last_id() + 1;
                 self.saved_log = Some(text);
@@ -966,7 +1098,12 @@ impl Shell {
         if self.saved_log.as_ref() == Some(&text) {
             return Ok(());
         }
-        self.host.log_write(&text)?;
+        match self.host.log_write(&text) {
+            Ok(()) => {}
+            // The line's files are not on the disk, nor the log with them.
+            Err(LogFailed::NotLanded { txn, why }) => return Err(self.not_landed(txn, &why)),
+            Err(LogFailed::Failed(why)) => return Err(why),
+        }
         self.saved_log = Some(text);
         Ok(())
     }
@@ -982,9 +1119,10 @@ impl Shell {
         if let Some(reply) = self.status_line(input) {
             return reply;
         }
+        self.landing_begins();
         let reply = self.eval_line(input);
         self.save_log();
-        reply
+        self.say_not_landed(reply)
     }
 
     /// [`Shell::eval`] for the terminal's own line: a build's notice goes
@@ -1012,6 +1150,15 @@ impl Shell {
         }
         // Read before the answer runs: its question's age decides a lapse.
         let lapsed = answering.is_some_and(|(id, _)| self.card_lapsed(id));
+        // An agent's question takes the person's answer here, at the
+        // terminal, or not at all (`agentconsent`).
+        if let Some((id, word)) = answering
+            && !lapsed
+            && let Some(refused) = self.agent_answer(id, word, Shell::console_mark())
+        {
+            self.save_log();
+            return refused;
+        }
         let mut reply = self.eval(input);
         self.desk_answered(answering, &reply, lapsed);
         if reply.confirm.is_none() && !reply.more && !self.notices.is_empty() {
@@ -1178,6 +1325,17 @@ impl Shell {
             && which.trim().trim_start_matches('#').parse::<u64>().is_ok()
         {
             return self.undo_command(which);
+        }
+        // `undo <agent>` (ADR 0013 §1): that agent's newest live entry, for an
+        // agent the log holds an entry of; "undo that" is a line for Kai.
+        if let Some(agent) = input.strip_prefix("undo ")
+            && !self.scope.contains("undo")
+            && self
+                .log
+                .entries()
+                .any(|e| !e.agent.is_kai() && e.agent.as_str() == agent.trim())
+        {
+            return self.undo_agent(agent.trim());
         }
         if (input == "tune" || input.starts_with("tune ")) && !self.scope.contains("tune") {
             let id = self.next_id;

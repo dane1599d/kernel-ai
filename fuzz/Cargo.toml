@@ -9,7 +9,10 @@ publish = false
 # §6), and for P3's parsers of an app's bytes (plan p3-desktop §1 and §6):
 # surfabi's message stream, header page and tree records, and look's
 # `kai-theme 1`, whose bodies are surfabi_harness.rs and look_harness.rs, run by
-# those crates' hostile tests too. Outside the workspace: libfuzzer-sys builds libFuzzer's C++, so these
+# those crates' hostile tests too; and `desktop`'s readers of other processes'
+# bytes (plan p3-desktop §9, P8), deskcore's: the client calls through the desk
+# and the shell's and apps' text wires, in desk_harness.rs, run by
+# deskcore/tests/hostile.rs too. Outside the workspace: libfuzzer-sys builds libFuzzer's C++, so these
 # run only in .github/workflows/fuzz.yml on a GitHub runner, never on a
 # developer's PC. Their bodies are ../fuzz/harness.rs, which kainet's host
 # tests also run (kainet/tests/fuzz_harness.rs).
@@ -27,6 +30,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4.13"
 kainet = { path = "../kainet", features = ["testca"] }
 surfabi = { path = "../surfabi" }
+deskcore = { path = "../deskcore" }
 look = { path = "../look" }
 rustls = { version = "=0.23.46", default-features = false }
 getrandom = "0.3"
@@ -100,6 +104,34 @@ bench = false
 [[bin]]
 name = "kai_theme"
 path = "fuzz_targets/kai_theme.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "desk_server"
+path = "fuzz_targets/desk_server.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "desk_queues"
+path = "fuzz_targets/desk_queues.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "desk_parsers"
+path = "fuzz_targets/desk_parsers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "desk_agent"
+path = "fuzz_targets/desk_agent.rs"
 test = false
 doc = false
 bench = false

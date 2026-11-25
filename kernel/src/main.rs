@@ -61,8 +61,10 @@ mod default_tests;
 mod demand_tests;
 mod desk_perf_tests;
 mod desk_profile_tests;
+mod desk_sends_tests;
 mod desk_tests;
 mod desk_tour_tests;
+mod desk_wheel_app_tests;
 mod devhost;
 mod device_tests;
 mod devices;
@@ -94,6 +96,8 @@ mod idt;
 mod input;
 mod interrupt_tests;
 mod ipc;
+mod ipc_queued_tests;
+mod ipc_rtt_tests;
 mod irq;
 mod keep_tests;
 mod keyboard;
@@ -112,6 +116,7 @@ mod mem_tests;
 mod memory;
 mod metrics;
 mod model;
+mod model_fill_tests;
 mod model_import_tests;
 mod model_tests;
 mod models_window_tests;
@@ -123,7 +128,9 @@ mod net_download_tests;
 mod net_grant_tests;
 mod net_pf_tests;
 mod net_tests;
+mod net_throughput_tests;
 mod nvme;
+mod pane_states_tests;
 mod part_tests;
 mod percpu;
 mod pkg_tests;
@@ -427,6 +434,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskCardWake => run_case(card_wake_tests::check),
         SelfTest::DeskCatalog => run_case(catalog_tests::check),
         SelfTest::UiWindow => run_case(ui_tests::check),
+        SelfTest::DeskWheelApp => run_case(desk_wheel_app_tests::check),
         SelfTest::UiWindowShow => run_case(show_tests::check),
         SelfTest::AppEditor => run_case(app_editor_tests::check),
         SelfTest::AppEditorFiles => run_case(app_editor_files_tests::check),
@@ -441,7 +449,9 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskAppearance => run_case(appearance_tests::check),
         SelfTest::DeskCard => run_case(card_tests::check),
         SelfTest::DeskStanding => run_case(standing_tests::check),
+        SelfTest::DeskStandingUndo => run_case(standing_tests::undo_check),
         SelfTest::DeskStandingRefused => run_case(standing_tests::refused_check),
+        SelfTest::DeskSends => run_case(desk_sends_tests::check),
         SelfTest::DeskPerf => run_case(desk_perf_tests::check),
         SelfTest::DeskProfile => run_case(desk_profile_tests::check),
         SelfTest::DeskProfileFloor => run_case(profile_floor_tests::check),
@@ -455,6 +465,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::AppSettings => run_case(app_settings_tests::check),
         SelfTest::DeskTour => run_case(desk_tour_tests::check),
         SelfTest::FounderWalk => run_case(founder_walk_tests::check),
+        SelfTest::PaneStates => run_case(pane_states_tests::check),
         SelfTest::DeskTakeover => run_case(agent_desk_tests::takeover_check),
         SelfTest::DeskReopen => run_case(agent_desk_tests::reopen_check),
         SelfTest::DeskStart => run_case(start_tests::check),
@@ -465,6 +476,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::AppBench => run_case(appbench_tests::check),
         SelfTest::TufBench => run_case(tufbench_tests::check),
         SelfTest::Handles => run_case(handle_tests::check),
+        SelfTest::IpcRtt => run_case(ipc_rtt_tests::check),
         SelfTest::ShellInterrupt => run_case(interrupt_tests::check),
         SelfTest::AsyncCall => run_case(async_tests::check),
         SelfTest::Threads => run_case(thread_tests::check),
@@ -486,6 +498,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Efi => run_case(efi_tests::check),
         SelfTest::EfiReset => efi::reset(),
         SelfTest::PowerReboot => run_case(efi_tests::power_check),
+        SelfTest::PowerOff => run_case(efi_tests::power_off_check),
         SelfTest::Devices => run_case(device_tests::check),
         SelfTest::TuneRevert => run_case(tune_tests::revert_check),
         SelfTest::TuneStall => run_case(tune_stall_tests::check),
@@ -498,6 +511,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetStatic => run_case(net_tests::static_check),
         SelfTest::NetDest => run_case(net_tests::dest_check),
         SelfTest::NetStream => run_case(|| net_tests::stream_check(cmdline())),
+        SelfTest::NetThroughput => run_case(|| net_throughput_tests::check(cmdline())),
         SelfTest::HttpsMock => run_case(https_tests::check),
         SelfTest::NetDownload { again, .. } => run_case(|| net_download_tests::check(again)),
         SelfTest::FetchService => run_case(https_tests::fetch_check),

@@ -63,6 +63,8 @@ pub(crate) struct Pending {
     pub send: Option<crate::outbox::Send>,
     /// For a restart line, true: the restart waits on the answer.
     pub power: bool,
+    /// For a goal row, what waits on the answer.
+    pub goal: Option<crate::goalrows::Waiting>,
 }
 
 /// `y`, `n`, `yes` or `no`, any case.
@@ -257,6 +259,7 @@ impl Shell {
             net: None,
             send: None,
             power: false,
+            goal: None,
         });
         Reply {
             ok: true,
@@ -374,10 +377,28 @@ impl Shell {
             };
             said = Some(text.clone());
         }
-        let state = match ran.ok {
-            true => State::Done,
-            false => State::Nothing,
+        // Whatever `ran.ok` says: a script that caught the error still sent a
+        // call that may have run.
+        let state = match (ran.ok, ran.unanswered.as_deref()) {
+            (_, Some(row)) => {
+                // An app took a call and did not answer: it may have run, so
+                // the person and the model are told so (#1164's review).
+                if !text.is_empty() && !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                let line = format!("Outcome unknown: {row} may have run");
+                text.push_str(&line);
+                said = Some(line);
+                State::Unknown
+            }
+            (true, None) => State::Done,
+            (false, None) => State::Nothing,
         };
+        let unknown = ran
+            .unanswered
+            .as_deref()
+            .map(|row| format!("{outcome}; {row} may have run"));
+        let outcome = unknown.as_deref().unwrap_or(outcome);
         self.log_entry(id, request, checked, how, state, outcome, ran.done);
         self.run_app_effects();
         self.showed = Showed {
@@ -429,6 +450,27 @@ impl Shell {
             .as_deref()
             .and_then(|why| why.lines().rev().find(|l| !l.trim().is_empty()))
             .unwrap_or("it failed");
+        if left.is_empty()
+            && let Some(row) = ran.unanswered.as_deref()
+        {
+            // An app took a call and did not answer: it may have run, so the
+            // person and the model are told the outcome is not known, never
+            // that nothing changed (#1164's review).
+            let what = format!("Outcome unknown: {row} may have run");
+            self.host
+                .audit(&format!("script {id} failed; {row} may have run"));
+            self.log_entry(
+                id,
+                request,
+                checked,
+                how,
+                State::Unknown,
+                &format!("failed; {row} may have run"),
+                Vec::new(),
+            );
+            let text = format!("{}\n{what}", ran.text.trim_end());
+            return (Reply::err(text), format!("{what}: {failed}"));
+        }
         if left.is_empty() {
             self.host.audit(&format!("script {id} failed; rolled back"));
             self.log_entry(
@@ -457,6 +499,29 @@ impl Shell {
             "Changed before the error, and could not be put back: {}. undo",
             what.join("; ")
         );
+        // An app call that went unanswered makes the whole outcome unknown,
+        // whatever could or could not be put back (#1200's review): logged
+        // Unknown, so a bare undo stops here too.
+        if let Some(row) = ran.unanswered.as_deref() {
+            // The changes that are known can still be put back by number; the
+            // call whose outcome is unknown cannot, and the reply says which.
+            let undoable = left.iter().all(|c| c.inverse.is_some_and(|i| i.is_read()));
+            let kept = match undoable {
+                true => format!(
+                    "Changed before the error, and could not be put back: {}. `undo {id}` puts those back",
+                    what.join("; ")
+                ),
+                false => format!(
+                    "Changed before the error, and could not be put back: {}",
+                    what.join("; ")
+                ),
+            };
+            let what = format!("Outcome unknown: {row} may have run, which no undo reaches");
+            let outcome = format!("failed; {row} may have run");
+            self.log_entry(id, request, checked, how, State::Unknown, &outcome, left);
+            let reply = Reply::err(format!("{}\n{kept}\n{what}", ran.text.trim_end()));
+            return (reply, format!("{what}. {kept}"));
+        }
         self.log_entry(id, request, checked, how, State::Done, "failed", left);
         let reply = Reply::err(format!("{}\n{kept}", ran.text.trim_end()));
         (reply, kept)
@@ -476,6 +541,7 @@ impl Shell {
     ) {
         self.host.audit(&format!("script {id} {outcome}"));
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: how.form,
@@ -499,6 +565,7 @@ impl Shell {
             false => Form::Script,
         };
         self.log.push(Entry {
+            agent: self.entry_agent(id),
             id,
             t_ns: self.host.now_ns(),
             form,
@@ -548,6 +615,9 @@ impl Shell {
             self.log_kept_trial();
             return reply;
         }
+        if let Some(reply) = self.retired_card_answer(id) {
+            return reply;
+        }
         match &self.pending {
             Some(pending) if Some(pending.id) == id => self.answer_pending(text),
             _ => Reply::err("nothing to confirm"),
@@ -560,6 +630,30 @@ impl Shell {
         let Some(pending) = self.pending.take() else {
             return Reply::err("nothing to confirm");
         };
+        let id = pending.id;
+        // An agent's question runs only on the person's yes at its card
+        // (`agentconsent`).
+        let expired = self.host.now_ns().saturating_sub(pending.created_ns) > CONFIRM_EXPIRY_NS;
+        if self.card_is_agents(id) && !is_show(text) && !expired {
+            self.pending = Some(pending);
+            let agent = match self.agent_yes_spent(id) {
+                Ok(agent) => agent,
+                Err(refused) => return refused,
+            };
+            let Some(back) = self.pending.take() else {
+                return Reply::err("nothing to confirm");
+            };
+            // What the yes runs is the agent's: its entries say so.
+            let since = self.next_id;
+            let reply = self.answer_pending_checked(back, text);
+            self.stamp_entries(id, since, &agent);
+            return reply;
+        }
+        self.answer_pending_checked(pending, text)
+    }
+
+    /// [`Shell::answer_pending`] once the answer may go to `pending`.
+    fn answer_pending_checked(&mut self, pending: Pending, text: &str) -> Reply {
         let id = pending.id;
         if self.host.now_ns().saturating_sub(pending.created_ns) > CONFIRM_EXPIRY_NS {
             self.record(id, &pending.request, &pending.checked.script, "expired");
@@ -592,6 +686,12 @@ impl Shell {
         }
         if pending.power && !is_show(text) {
             return self.answer_power(pending, text);
+        }
+        if pending.goal.is_some() && !is_show(text) {
+            return self.answer_goal(pending, text);
+        }
+        if pending.goal.is_some() && is_show(text) {
+            return self.show_goal_ask(pending);
         }
         if is_show(text) {
             let question = self.question(id, &pending.request, &pending.checked, &pending.asking);
@@ -728,9 +828,13 @@ impl Shell {
 
     /// `show` or `why`: the last script in full, with why it ran or asked.
     pub(crate) fn show_last(&self) -> Reply {
-        match &self.shown {
-            Some(text) => Reply::ok(text.clone()),
-            None => Reply::err("no script yet"),
+        let Some(text) = &self.shown else {
+            return Reply::err("no script yet");
+        };
+        // `why` names the agent whose entry the newest one is (ADR 0013 §1).
+        match self.log.entries().last().map(|e| &e.agent) {
+            Some(agent) if !agent.is_kai() => Reply::ok(format!("{text}\nby {}", agent.as_str())),
+            _ => Reply::ok(text.clone()),
         }
     }
 }
