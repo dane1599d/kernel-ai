@@ -129,6 +129,35 @@ pub fn may_serve(badge: u64, command: &str) -> bool {
     badge == NO_AGENT || badge == KAI || command.starts_with("agent-")
 }
 
+/// What llm does with a request that comes while an agent's job runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WhileJob {
+    /// Answered at once; the job goes on.
+    Answer,
+    /// The job stops, starts again from its prompt later, and the request is
+    /// answered as any other.
+    Stop,
+}
+
+/// What a request `text` on the route with `badge` does to agent job `running`,
+/// which `owner`'s badge started (ADR 0013 section 2). Only the person's own
+/// requests, and `agent-stop` of the running job by its own agent, stop it.
+/// An agent's polls (`agent-take`, the 1 s planner turn), its other commands,
+/// `warm` and `health` (the Monitor's, every second) are answered without
+/// stopping it, as are requests an agent may not send: else each poll restarted
+/// the job from its prompt and it never finished (bug hunt #19).
+pub fn while_job(badge: u64, text: &str, running: u64, owner: u64) -> WhileJob {
+    let command = text.split([' ', '\n']).next().unwrap_or("");
+    if !may_serve(badge, text) || matches!(command, "warm" | "health") {
+        return WhileJob::Answer;
+    }
+    match parse(text) {
+        Ok(Some(Command::Stop(ticket))) if ticket == running && badge == owner => WhileJob::Stop,
+        Ok(Some(_)) | Err(_) => WhileJob::Answer,
+        Ok(None) => WhileJob::Stop,
+    }
+}
+
 /// The name of the agent with `badge`, if it is a built-in other than `kai`.
 pub fn builtin_name(badge: u64) -> Option<&'static str> {
     BUILTIN

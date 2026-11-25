@@ -391,7 +391,11 @@ fn an_int_range_as_wide_as_i64_masks_digits_past_it() {
     let g = Tagged::new(&acts).unwrap();
     let state = takes(&g, &format!("{WIDE_START}999999999999999999")).unwrap();
     for b in b'0'..=b'9' {
-        assert!(matches!(g.step(state, b), Err(Stop::Masked)), "{}", b as char);
+        assert!(
+            matches!(g.step(state, b), Err(Stop::Masked)),
+            "{}",
+            b as char
+        );
     }
     let mut out = Vec::new();
     g.forced(&state, &mut out);
