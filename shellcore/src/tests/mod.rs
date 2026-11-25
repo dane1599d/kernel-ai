@@ -252,6 +252,9 @@ struct FakeHost {
     log_fails: Cell<u32>,
     /// The next log write's Commit of the open action is refused.
     commit_refused: Cell<bool>,
+    /// The shell's own ledger of its open action, as `Files` keeps it, so a
+    /// rollback or a drop reaches `log_write` as it does there.
+    ledger: Cell<crate::ledger::Ledger>,
 }
 
 /// What standing instructions asked the desktop and the owners for.
@@ -467,6 +470,7 @@ impl FakeHost {
             previews: RefCell::new(Vec::new()),
             log_fails: Cell::new(0),
             commit_refused: Cell::new(false),
+            ledger: Cell::default(),
         })
     }
 }

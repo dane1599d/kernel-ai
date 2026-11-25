@@ -345,6 +345,19 @@ mod tests {
     }
 
     #[test]
+    fn a_drop_then_the_same_number_again_then_an_abort_still_did_not_land() {
+        let mut ledger = Ledger::default();
+        ledger.begin(7);
+        ledger.dropped_open();
+        ledger.begin(7);
+        assert_eq!(ledger.undo(7), Undo::AbortOpen);
+        assert!(matches!(
+            ledger.landed(Ok(())),
+            Err(LogFailed::NotLanded { txn: 7, .. })
+        ));
+    }
+
+    #[test]
     fn a_new_action_forgets_the_last_loss() {
         let mut ledger = Ledger::default();
         ledger.begin(5);
