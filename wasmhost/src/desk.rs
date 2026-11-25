@@ -351,6 +351,33 @@ impl Desk {
         self.next_id = REGISTRY + 1;
     }
 
+    /// Whether comphost must call `desktop` before it opens a window: no
+    /// greeting has come, or nothing of this connection is open there, so
+    /// comphost, which polls only while a window is open, would not have
+    /// heard that `desktop` forgot the connection meanwhile (the console
+    /// took the screen, it restarted, or `reap` dropped a hidden app's
+    /// unread events).
+    pub fn ask_before_open(&self) -> bool {
+        !self.greeted || self.windows.is_empty()
+    }
+
+    /// The events in the reply to that call. A new desktop's greeting is
+    /// acted on here, not told: nothing of this connection is open there, so
+    /// this side starts again and the next window opens once, on the
+    /// connection `desktop` has now. Left to the open's own reply, it made
+    /// comphost reopen the window it had just opened, as a second one that
+    /// could never close (H3-26). True in the second place when it started
+    /// again.
+    pub fn told_before_open(&mut self, reply: &[u8]) -> (Vec<Told>, bool) {
+        let mut told = self.told(reply);
+        let anew = told.contains(&Told::Restarted);
+        if anew {
+            told.retain(|t| *t != Told::Restarted);
+            self.reset();
+        }
+        (told, anew)
+    }
+
     /// What one reply's events ask for. Events for objects this connection no
     /// longer has are dropped.
     pub fn told(&mut self, mut reply: &[u8]) -> Vec<Told> {

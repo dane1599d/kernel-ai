@@ -679,14 +679,18 @@ impl Ui {
         shown
     }
 
+    /// A new `desktop` greeted this connection: what was open on the old one
+    /// is gone. This side starts again even with no frames to show, so a
+    /// greeting a poll took while every window was hidden still resets the
+    /// seat and the ids before the next open (H3-26).
     fn reopen(&mut self) {
-        if self.frames.is_empty() {
-            return;
-        }
         for pool in core::mem::take(&mut self.pools) {
             release(&pool);
         }
         self.desk.reset();
+        if self.frames.is_empty() {
+            return;
+        }
         for (app, frame) in core::mem::take(&mut self.frames) {
             self.show(app, frame);
         }

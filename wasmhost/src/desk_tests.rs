@@ -372,3 +372,50 @@ fn a_client_told_the_scale_draws_at_it_and_the_desk_sizes_the_window_in_logical_
     assert!(d.told(&client.take_events(8192)).is_empty());
     assert_eq!(d.scale(), 120);
 }
+
+/// H3-26: `desktop` forgot the connection while nothing of the app's was on
+/// the desk, and comphost, which polls only while a window is open, never
+/// heard. It asks before it opens: the greeting comes then, this side starts
+/// again, and the window opens once.
+#[test]
+fn a_show_after_desktop_forgot_the_connection_opens_one_window() {
+    let mut screen = Screen::new(1280, 800);
+    let mut client = Client::new(7, "notes-window");
+    let mut d = Desk::new();
+    assert!(d.ask_before_open(), "no greeting yet");
+    assert_eq!(
+        d.told_before_open(&client.take_events(8192)),
+        (Vec::new(), false)
+    );
+    let Err(open) = d.frame(1, &frame("Notes", 320, 200, "Go")) else {
+        panic!("a first frame opens a window");
+    };
+    let needs = serve(&mut client, &mut screen, &open.calls, true);
+    let Some(Need::MapPool { pool, .. }) = needs.first().copied() else {
+        panic!("{needs:?}");
+    };
+    client.pool_mapped(pool);
+    assert!(!d.ask_before_open(), "a window is open, so comphost polls");
+    // The person closes it: comphost hides it and stops polling.
+    serve(&mut client, &mut screen, &[d.closed(1)], false);
+    assert!(d.ask_before_open());
+    // `desktop` forgets the connection: a new desk, a new client for the pid.
+    let mut screen = Screen::new(1280, 800);
+    let mut client = Client::new(7, "notes-window");
+    // The show's empty call first: its reply is the new greeting.
+    serve(&mut client, &mut screen, &[Vec::new()], false);
+    let (told, anew) = d.told_before_open(&client.take_events(8192));
+    assert!(anew && !told.contains(&Told::Restarted), "{told:?}");
+    let Err(open) = d.frame(1, &frame("Notes", 320, 200, "Go")) else {
+        panic!("the show opens the window again");
+    };
+    let needs = serve(&mut client, &mut screen, &open.calls, true);
+    let Some(Need::MapPool { pool, .. }) = needs.first().copied() else {
+        panic!("{needs:?}");
+    };
+    client.pool_mapped(pool);
+    // The open's reply is no greeting: nothing reopens the window.
+    assert!(!d.told(&client.take_events(8192)).contains(&Told::Restarted));
+    assert_eq!(client.windows().count(), 1);
+    assert_eq!(screen.windows().len(), 1);
+}
