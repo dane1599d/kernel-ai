@@ -139,6 +139,7 @@ mod platform;
 mod pointer;
 mod port;
 mod power;
+mod power_tests;
 mod process;
 mod profile_floor_tests;
 mod profile_tests;
@@ -488,6 +489,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Bigmap => run_case(bigmap_tests::check),
         SelfTest::IcountProbe => run_case(|| icount_tests::check(cmdline())),
         SelfTest::Reboot => power::reboot(),
+        SelfTest::RebootMemory => run_case(power_tests::check),
         // A fault resets the machine; with `panic=reset` even in test mode.
         SelfTest::PanicReset => {
             if cmdline().split_whitespace().any(|word| word == "what=fail") {
@@ -575,6 +577,8 @@ fn init_devices() -> &'static acpitables::Platform {
         fail("Limine did not provide the ACPI RSDP");
     };
     let result = platform::init(rsdp, hhdm).and_then(|platform| {
+        // First, so any later failure's reboot finds the register mapped.
+        power::init(platform);
         let apic_id = apic::init_local(platform)?;
         smp::set_boot_lapic(u32::from(apic_id));
         let hpet = platform
