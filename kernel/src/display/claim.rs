@@ -186,7 +186,15 @@ pub fn claim(slot: usize, info: &mut DisplayInfo) -> Result<u64, Error> {
     }
     let (phys, pages) = frames(&surface)?;
     let object = shm::create_kernel_object(phys, pages)?;
-    let grant = grants::create(grants::root(SYSTEM), 0, Life::Session, b"display")?;
+    let grant = match grants::create(grants::root(SYSTEM), 0, Life::Session, b"display") {
+        Ok(grant) => grant,
+        Err(error) => {
+            // The back buffer's object goes too: pinned, it would stay for good.
+            shm::settle(object);
+            shm::collect();
+            return Err(error);
+        }
+    };
     let entry = Entry {
         grant: Some(grant),
         ..Entry::new(
@@ -195,7 +203,9 @@ pub fn claim(slot: usize, info: &mut DisplayInfo) -> Result<u64, Error> {
             object,
         )
     };
-    let handle = match grants::insert(slot, entry) {
+    let inserted = grants::insert(slot, entry);
+    shm::settle(object);
+    let handle = match inserted {
         Ok(handle) => handle,
         Err(error) => {
             let _ = grants::revoke(grant);

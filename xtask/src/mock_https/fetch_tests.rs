@@ -140,7 +140,7 @@ fn a_body_over_the_cap_and_a_bad_certificate_are_named() {
     mock.set_fault(MODELS, "*", Fault::Expired);
     let got = serve(&mock, &grant, &get(&format!("https://{MODELS}{MODEL}")));
     assert!(
-        matches!(&got, Err(Error::Tls(why)) if why.contains("Expired")),
+        matches!(&got, Err(Error::Tls(why)) if why == kainet::fetch::TLS_EXPIRED),
         "{got:?}"
     );
     assert!(matches!(

@@ -15,23 +15,27 @@ extern crate alloc;
 pub mod consent;
 mod desk;
 mod files;
+mod goals;
 mod grants;
 mod look;
 mod names;
 mod net;
 mod power;
 mod rows;
+mod send;
 mod show;
 mod ui;
 
 pub use desk::*;
 pub use files::*;
+pub use goals::*;
 pub use grants::*;
 pub use look::*;
 pub use names::{RESERVED_GROUPS, is_reserved, takes_os_name};
 pub use net::*;
 pub use power::*;
 pub use rows::*;
+pub use send::*;
 pub use show::{Signature, Type};
 pub use ui::*;
 

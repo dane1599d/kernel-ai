@@ -44,6 +44,18 @@ fn floored(name: &str) -> bool {
 /// PROC_QUOTA_SET: process `pid`'s page quota becomes `pages`; the old one.
 /// Pages it holds past a lower quota stay: its next allocation fails instead.
 pub fn quota_set(pid: u64, pages: u64) -> Result<u64, Error> {
+    quota_set_with(pid, pages, 0)
+}
+
+/// [`quota_set`] with PROC_QUOTA_SET's flags: with
+/// [`kabi::call::QUOTA_LOWER_ONLY`], `pages` is a ceiling, and a quota at or
+/// under it is left as it is (#517: a profile's `mem` never raises one).
+pub fn quota_set_with(pid: u64, pages: u64, flags: u64) -> Result<u64, Error> {
+    let lower_only = match flags {
+        0 => false,
+        kabi::call::QUOTA_LOWER_ONLY => true,
+        _ => return Err(Error::Invalid),
+    };
     if pages < MIN_PAGES {
         return Err(Error::Invalid);
     }
@@ -53,6 +65,9 @@ pub fn quota_set(pid: u64, pages: u64) -> Result<u64, Error> {
             .position(|p| p.live() && p.pid == pid && pid != 0)
             .ok_or(Error::NotFound)?;
         let old = table[at].limits.max_pages;
+        if lower_only && pages >= old {
+            return Ok(old);
+        }
         if floored(table[at].name.as_str()) && pages < old {
             return Err(Error::Permission);
         }

@@ -43,6 +43,7 @@ pub(crate) fn value_of(appearance: &Appearance, setting: &str) -> String {
         "text_size" => appearance.text_size.to_string(),
         "reduced_motion" => on(appearance.reduced_motion),
         "legible" => on(appearance.legible),
+        "time_zone" => look::appearance::zone_text(appearance.time_zone_min),
         // A colour token's value names the token; its old colour is in the
         // saved text, which `undo` cannot hold, so it only clears it.
         _ => String::new(),

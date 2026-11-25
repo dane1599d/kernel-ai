@@ -189,12 +189,14 @@ v0.1 is tagged when all of these hold, and not before:
 - P1, P2 and P3 are closed, and M10a's exit test passes (it does: mix C, #797, after mix A stopped showing a gain).
 - A/B slots with rollback and offline updates from an update disk work (lane U, from P2).
 - The built-ins are signed packages; `install` reaches the image and a local mirror.
-- ADR 0009's D1-D8 are in place: the licence you chose, `NOTICES.txt` byte-identical in the image and the release, the source tarball rebuilding offline, the DCO job, both names cleared ("Kernel AI" and "Kai").
-- The release is a TUF target signed by your root, in `kernel-ai-updates`.
+- ADR 0009's D1-D8 are in place: the licence you chose, `NOTICES.txt` byte-identical in the image and the release, the source tarball rebuilding offline, the DCO job, both names kept ("Kernel AI" and "Kai"; counsel's clearance search is waived for v0.1.0, D8's amendment of 2026-11-18).
+- The release is signed by your root: for v0.1.0, with the interim key files on your Mac (`root-ceremony.md`, "Interim: key files"); the YubiKeys come later as root v2.
 - `release/seq` is bumped in the release PR, above the last release's: `release.yml`'s `seq` job refuses a tag otherwise (ADR 0008 §2, decided 2026-10-27).
 - Fluency at least 47/50 and actbench pass on the tag's model input.
 
-Where each item stands on 2026-11-04 (task 19). "Done" is on main; "missing" names the PR or the work still to come; "yours" waits on the founder.
+**Scope (the founder, 2026-11-18):** v0.1 stays as cut on `release/v0.1` (main at af39da0a plus the v0.1 fixes), with the interim release signing and the founder's rc.1 VirtualBox fixes ported in. Kai Desk and the internet pieces of P5 ship in v0.2, not v0.1. `v0.1.0-rc.1` was tagged at 5aee75f8 and published on 2026-11-14.
+
+Where each item stands on 2026-11-18 (first written 2026-11-04, task 19). "Done" is on `release/v0.1`; "missing" names the PR or the work still to come; "yours" waits on the founder.
 
 | Item | Status | Where, and what is left |
 |---|---|---|
@@ -202,13 +204,13 @@ Where each item stands on 2026-11-04 (task 19). "Done" is on main; "missing" nam
 | P1, P2 and P3 closed; M10a's exit test | Done | P1 is closed (decisions, 2026-10-27) and M10a passes on mix C (#797: three runs on one recording, identical results, editor p99 0.50-0.67x, every background job at 92.7% or more; the founder held the tag for it on 2026-11-10). P2 closed on 2026-11-04 with its kaifs throughput miss (25-26 MB/s against S04-2's 50 MB/s) accepted for v0.1 by you; the speed work comes after v0.1 (decisions, 2026-11-04). P3 is done: its exit cases are all on main (section 10 of `p3-desktop.md`, #436) |
 | A/B slots, rollback, offline updates | Done | Lane U, P2: `slot-ab`, `slot-probation`, `update-disk`, `update-tampered` and `update-rollback` |
 | Built-ins as signed packages; `install` from the image and a mirror | Done | `pkg-image` and `pkg-image-tampered` (task 1), `pkg-install` and its five tamper cases (task 2), `desk-catalog` (task 3) |
-| ADR 0009 D1-D8 | Missing | Done: MPL-2.0 with the DCO (founder, 2026-10-27), `NOTICES.txt` byte-identical in the image and the release, the offline source rebuild (S09-1), the `dco` job (task 16). The names are kept: "Kernel AI" with this plan's approval on 2026-10-27, and "Kai" on 2026-11-07 (#745), when the founder accepted the risk of the registered KAI marks for AI assistants that a first-pass trademark check found on 2026-11-06 (it found no exact "Kernel AI" mark). Yours: counsel's clearance search (ADR 0009 D8, question 4) |
-| The release a TUF target signed by your root, in `kernel-ai-updates` | Yours | Task 18: the root ceremony on your three YubiKeys (`docs/release/root-ceremony.md`). It also closes `release-dry`'s gap: the VM's update disk carries xtask's own slot image, not the assembled release image's. And it signs the release's `models` role (the `models.json` catalogue), which the image does not carry yet, so it gates rc.1: without it a release imports no model |
-| `release/seq` above the last release's | Yours | `release/seq` is 1 and no release exists yet, so `v0.1.0-rc.1` may ship with 1; every later tag's PR bumps it, and the `seq` job refuses a tag that does not |
-| Fluency at least 47/50 and actbench on the tag's input | Missing | Fluency 48/50 on task 14's input (run 41647096587). Both re-run on the tag's commit, with task 15's per-app actbench tasks |
+| ADR 0009 D1-D8 | Missing | Done: MPL-2.0 with the DCO (founder, 2026-10-27), `NOTICES.txt` byte-identical in the image and the release, the offline source rebuild (S09-1), the `dco` job (task 16). The names are kept: "Kernel AI" with this plan's approval on 2026-10-27, and "Kai" on 2026-11-07 (#745), when the founder accepted the risk of the registered KAI marks for AI assistants that a first-pass trademark check found on 2026-11-06 (it found no exact "Kernel AI" mark). Counsel's clearance search is waived for v0.1.0 (the founder, 2026-11-18; D8's amendment). It comes before any filing |
+| The release signed by your root | Yours | For v0.1.0, the interim key files (#863, #889, #902 on main; ported to `release/v0.1`): your key setup on the Mac (`docs/release/root-ceremony.md`, "Interim: key files"), then two signing rounds in the rc.2 release PR, which sign the `models` role and the built-in apps' packages. The YubiKey root ceremony and `kernel-ai-updates` come later, as root v2 |
+| `release/seq` above the last release's | Missing | `v0.1.0-rc.1` shipped with 1. The rc.2 release PR bumps it to 2, and the final's above that; the `seq` job refuses a tag that does not |
+| Fluency at least 47/50 and actbench on the tag's input | Missing | Fluency 48/50 on task 14's input (run 41647096587). Both re-run on `release/v0.1` once the ports land (lane R), with task 15's per-app actbench tasks |
 | The release image tried by hand | Done in CI | Not a checklist line above, but the README's "try it" depends on it. On main: the release image carries its own `kai-data` as partition 5 (#603), and a person types `models import` (#608). `release.yml`'s `release-boot` job (#614) boots the release's bytes plus a test-root `models` role naming qwen3-0.6b, with no second disk, follows the first start's recovery install and restart, and imports it; it passed on #614's Release run. **Task 18 gates rc.1 here too**: the shipping image has no `models` role until your founder-signed one, so a real release cannot import a model until then (decisions, 2026-11-03). Nobody has booted a release asset outside CI |
 
-**Left for the tag:** the founder's three items, which are counsel's clearance search for the names (ADR 0009 D8, question 4; both names are kept, "Kai" since 2026-11-07, #745), task 18's root ceremony (which gates rc.1) and `release/seq` in the release PR. Then fluency and actbench re-run on the tag's commit.
+**Left for rc.2 and the tag:** the founder's key setup (interim key files), then the rc.2 release PR (`release/keys/*.pub`, two signing rounds, `release/seq` 2), and fluency and actbench re-run on `release/v0.1`. Counsel's clearance search is waived for v0.1.0 (D8's amendment, 2026-11-18).
 
 ### 3.6 What v0.1 does not wait for
 
@@ -321,6 +323,6 @@ Section 1's exit cases against `main` on 2026-11-04. "On main" means the case is
 | `desk-catalog` | On main | Enter on `extra` installs it with a typed `install`'s consent; its summary, written as an instruction, is shown as text |
 | `c-prompt` | On main | `:c`, definitions, a redefinition that switches its caller, `:dis`, a `kai` call and its `undo`, `:rhai` |
 | `c-build` | On main | `cc build hello` installs from `local` and runs; `undo` goes back a generation, and the next build is 0.0.2 |
-| `release-dry` | Done, with a gap | Run 40627897825. The update disk carries xtask's own slot image; task 18 closes it |
+| `release-dry` | Done, with a gap | Run 40627897825. The update disk carries xtask's own slot image; the signed release repository (interim key files) closes it |
 
-**Gaps to close before the tag:** none among the exit cases. Section 3.5 lists what is left: the founder's three items, and fluency and actbench on the tag's commit.
+**Gaps to close before the tag:** none among the exit cases. They run again on `release/v0.1` under KVM and TCG before rc.2 (lane R, 2026-11-18). Section 3.5 lists what is left: the founder's key setup and the rc.2 release PR, then fluency and actbench on `release/v0.1`.

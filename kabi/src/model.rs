@@ -143,6 +143,48 @@ pub const KV_REGION_BYTES: u64 = 320 << 20;
 pub const KV_IO_BYTES: u64 = 512 << 10;
 /// What offsets and lengths come in.
 pub const KV_SECTOR: u64 = 512;
+/// The spill region (ADR 0013 section 2, agents OS plan F4): preempted agents'
+/// `kai-kv 1` files, after the [`KV_REGIONS`] slot regions, to the partition's
+/// end. A partition with no room past the slots has none, and its slot regions
+/// work as before.
+pub const KV_SPILL_REGION: u64 = KV_REGIONS;
+
+/// The spill region's bytes on a `kai-cache` partition of `partition` bytes:
+/// whole sectors past the slot regions, 0 when there are none.
+pub const fn kv_spill_bytes(partition: u64) -> u64 {
+    let rest = partition.saturating_sub(KV_REGIONS * KV_REGION_BYTES);
+    rest - rest % KV_SECTOR
+}
+
+/// Where `len` bytes at byte `offset` of KV region `region` start on a
+/// `kai-cache` partition of `partition` bytes, if a MODEL_KV_LOAD or
+/// MODEL_KV_SAVE may move them: whole sectors, at most [`KV_IO_BYTES`], and
+/// inside the region. A slot region needs a partition that holds every slot
+/// region; the spill region is checked against its own end alone, so a
+/// partition too small for it keeps its slots.
+pub const fn kv_extent(region: u64, offset: u64, len: u64, partition: u64) -> Option<u64> {
+    if len == 0
+        || len > KV_IO_BYTES
+        || !offset.is_multiple_of(KV_SECTOR)
+        || !len.is_multiple_of(KV_SECTOR)
+    {
+        return None;
+    }
+    let (base, size) = if region < KV_REGIONS {
+        if partition < KV_REGIONS * KV_REGION_BYTES {
+            return None;
+        }
+        (region * KV_REGION_BYTES, KV_REGION_BYTES)
+    } else if region == KV_SPILL_REGION {
+        (KV_REGIONS * KV_REGION_BYTES, kv_spill_bytes(partition))
+    } else {
+        return None;
+    };
+    match offset.checked_add(len) {
+        Some(end) if end <= size => Some(base + offset),
+        _ => None,
+    }
+}
 
 /// The one service, and program, that may map the model.
 pub const HOLDER: &str = "llm";
@@ -312,6 +354,41 @@ mod tests {
         assert_eq!(host, guest);
         assert_eq!(super::shape("ok interactive"), "ok interactive");
         assert_ne!(super::shape("ok 1"), super::shape("ok x"));
+    }
+
+    /// F4's spill region: past the slot regions, checked on its own end, so a
+    /// partition too small for it keeps its slot regions as they were.
+    #[test]
+    fn the_spill_region_is_past_the_slots_and_bounded_on_its_own() {
+        use super::{KV_IO_BYTES, KV_REGION_BYTES, KV_SPILL_REGION, kv_extent, kv_spill_bytes};
+        const MIB: u64 = 1 << 20;
+        let slots = 2 * KV_REGION_BYTES;
+        let io = KV_IO_BYTES;
+        // Exactly the slot regions: both slots work, the spill region has no room.
+        assert_eq!(kv_spill_bytes(slots), 0);
+        assert_eq!(kv_extent(0, 0, io, slots), Some(0));
+        let last = KV_REGION_BYTES - io;
+        assert_eq!(kv_extent(1, last, io, slots), Some(KV_REGION_BYTES + last));
+        assert_eq!(kv_extent(KV_SPILL_REGION, 0, io, slots), None);
+        // Smaller than the slots: nothing, as before.
+        assert_eq!(kv_extent(0, 0, io, slots - 512), None);
+        // The default 1 GiB disk: 384 MiB of spill after the slots.
+        let gib = 1024 * MIB;
+        assert_eq!(kv_spill_bytes(gib), 384 * MIB);
+        assert_eq!(kv_extent(KV_SPILL_REGION, 0, io, gib), Some(slots));
+        assert_eq!(
+            kv_extent(KV_SPILL_REGION, 384 * MIB - io, io, gib),
+            Some(gib - io)
+        );
+        assert_eq!(kv_extent(KV_SPILL_REGION, 384 * MIB, 512, gib), None);
+        // A partition that ends partway into a sector rounds its spill down.
+        assert_eq!(kv_spill_bytes(slots + 1000), 512);
+        // No region past the spill one; no part-sector, empty or oversized call.
+        assert_eq!(kv_extent(KV_SPILL_REGION + 1, 0, 512, gib), None);
+        assert_eq!(kv_extent(0, 1, 512, gib), None);
+        assert_eq!(kv_extent(0, 0, 0, gib), None);
+        assert_eq!(kv_extent(0, 0, io + 512, gib), None);
+        assert_eq!(kv_extent(0, u64::MAX - 511, 512, gib), None);
     }
 
     #[test]

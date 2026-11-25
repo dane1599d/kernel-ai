@@ -28,6 +28,8 @@ pub struct Request {
     pub range: Option<Range>,
     /// A POST's body length: its `Content-Length`, or 0 with none.
     pub content_length: usize,
+    /// Whether it asked to keep the connection (`Connection: keep-alive`).
+    pub keep_alive: bool,
 }
 
 /// The request in `head`, which ends with its blank line, or the status that
@@ -56,6 +58,7 @@ pub fn parse(head: &[u8]) -> Result<Request, u16> {
     let mut host = None;
     let mut range = None;
     let mut length = None;
+    let mut keep_alive = false;
     for (count, line) in lines.enumerate() {
         if count >= MAX_HEADERS {
             return Err(431);
@@ -85,6 +88,10 @@ pub fn parse(head: &[u8]) -> Result<Request, u16> {
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
             // A body in chunks is not taken: a POST says its length.
             return Err(400);
+        } else if name.eq_ignore_ascii_case("connection") {
+            keep_alive = value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("keep-alive"));
         }
     }
     let content_length = length.unwrap_or(0);
@@ -100,6 +107,7 @@ pub fn parse(head: &[u8]) -> Result<Request, u16> {
         host: host.ok_or(400u16)?,
         range,
         content_length,
+        keep_alive,
     })
 }
 
@@ -188,8 +196,19 @@ fn reason(status: u16) -> &'static str {
 
 /// A response head: the status, `headers`, and a body of `length` bytes.
 pub fn head(status: u16, headers: &[(&'static str, String)], length: usize) -> Vec<u8> {
+    head_kept(status, headers, length, false)
+}
+
+/// [`head`], saying the connection stays open for the next request when `keep`.
+pub fn head_kept(
+    status: u16,
+    headers: &[(&'static str, String)],
+    length: usize,
+    keep: bool,
+) -> Vec<u8> {
+    let connection = if keep { "keep-alive" } else { "close" };
     let mut out = format!(
-        "HTTP/1.1 {status} {}\r\nContent-Length: {length}\r\nConnection: close\r\n",
+        "HTTP/1.1 {status} {}\r\nContent-Length: {length}\r\nConnection: {connection}\r\n",
         reason(status)
     );
     for (name, value) in headers {
@@ -223,8 +242,11 @@ mod tests {
                     last: Some(5)
                 }),
                 content_length: 0,
+                keep_alive: false,
             })
         );
+        let kept = request("GET / HTTP/1.1\r\nHost: x.test\r\nConnection: keep-alive\r\n\r\n");
+        assert!(kept.unwrap().keep_alive);
         let post =
             request("POST /hook HTTP/1.1\r\nHost: hooks.kai.test\r\nContent-Length: 5\r\n\r\n")
                 .unwrap();

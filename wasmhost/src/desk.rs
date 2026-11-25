@@ -10,7 +10,7 @@ use crate::surface;
 use alloc::string::String;
 use alloc::vec::Vec;
 use surfabi::header::PAGE;
-use surfabi::proto::{Event, Interface, REGISTRY, Request};
+use surfabi::proto::{Event, Interface, REGISTRY, Request, SCALE_MAX, SCALE_ONE};
 use surfabi::{Format, Rect, wire};
 use uikit::Frame;
 
@@ -51,6 +51,10 @@ pub struct Show {
 /// What `desktop`'s events ask of comphost.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Told {
+    /// The desktop's whole appearance (`kai-appearance 1` text): the theme
+    /// with its colour overrides, text size and legible type. Replaces the
+    /// `Theme` the same reply carries.
+    Look(String),
     /// The user asked to close the app's `window`.
     Close(u32),
     /// The agent asked a node of `window` to act.
@@ -72,6 +76,9 @@ pub enum Told {
     /// after each change. The app's windows paint in it; a name the app does
     /// not know leaves them as they are.
     Theme(String),
+    /// The scale `desktop` prefers changed (`registry.scale`) while windows
+    /// were open and no new `desktop` came: every window is drawn again at it.
+    Scale,
 }
 
 struct Window {
@@ -82,8 +89,11 @@ struct Window {
     toplevel: u32,
     a11y: u32,
     buffers: [u32; BUFFERS as usize],
+    /// The window's size in logical px; its buffers are this at `scale`.
     width: u32,
     height: u32,
+    /// The scale its buffers are drawn at, in 120ths.
+    scale: u32,
     /// The buffer the last commit showed.
     front: usize,
     /// The declared actions `desktop` was last told its nodes run, by wire id.
@@ -94,17 +104,33 @@ struct Window {
     agent_private: bool,
 }
 
+/// `logical` px at `scale` in buffer px, rounded to the nearest as
+/// `uipaint::Scale` rounds an edge at 0.
+fn buffer_px(logical: u32, scale: u32) -> u32 {
+    (logical * scale + SCALE_ONE / 2) / SCALE_ONE
+}
+
 impl Window {
+    /// The buffers' size in px.
+    fn buffer_size(&self) -> (u32, u32) {
+        (
+            buffer_px(self.width, self.scale),
+            buffer_px(self.height, self.scale),
+        )
+    }
+
     fn buffer_bytes(&self) -> u32 {
-        self.width * self.height * 4
+        let (w, h) = self.buffer_size();
+        w * h * 4
     }
 
     fn target(&self, n: usize) -> Target {
+        let (width, height) = self.buffer_size();
         Target {
             offset: PAGE as u32 + n as u32 * self.buffer_bytes(),
-            width: self.width,
-            height: self.height,
-            stride: self.width * 4,
+            width,
+            height,
+            stride: width * 4,
         }
     }
 }
@@ -118,6 +144,9 @@ pub struct Desk {
     greeted: bool,
     /// `seat.modifiers`, for the windows' input.
     pub seat_state: surface::Seat,
+    /// The scale `desktop` prefers, in 120ths, as `registry.scale` last said
+    /// (1x until it does): new windows draw at it.
+    scale: u32,
 }
 
 impl Default for Desk {
@@ -141,7 +170,19 @@ impl Desk {
             windows: Vec::new(),
             greeted: false,
             seat_state: surface::Seat::default(),
+            scale: SCALE_ONE,
         }
+    }
+
+    /// The scale windows draw at, in 120ths.
+    pub fn scale(&self) -> u32 {
+        self.scale
+    }
+
+    /// Whether `desktop`'s greeting has come: until it has, the scale is not
+    /// known.
+    pub fn greeted(&self) -> bool {
+        self.greeted
     }
 
     fn id(&mut self) -> u32 {
@@ -162,11 +203,12 @@ impl Desk {
     /// The first picture of the app's window `app`, or a new picture of it.
     pub fn frame(&mut self, app: u32, frame: &Frame) -> Result<Show, Open> {
         let (w, h) = (frame.size.0.max(1) as u32, frame.size.1.max(1) as u32);
-        let damage = surface::damage(frame, surface::SCALE_ONE);
+        let scale = self.scale;
+        let damage = surface::damage(frame, self.scale);
         let tree = surface::tree_update(frame).encode();
         if let Some(win) = self
             .window(app)
-            .filter(|win| (win.width, win.height) == (w, h))
+            .filter(|win| (win.width, win.height, win.scale) == (w, h, scale))
         {
             let back = 1 - win.front;
             win.front = back;
@@ -210,6 +252,7 @@ impl Desk {
             buffers: [self.id(), self.id()],
             width: w,
             height: h,
+            scale,
             front: 0,
             bound: Vec::new(),
             unsaved: false,
@@ -232,8 +275,8 @@ impl Desk {
             let made = Request::PoolBuffer {
                 id: buffer,
                 offset: t.offset,
-                width: w,
-                height: h,
+                width: t.width,
+                height: t.height,
                 stride: t.stride,
                 format: Format::Xrgb8888,
             };
@@ -257,7 +300,17 @@ impl Desk {
                 buffer: win.buffers[0],
             },
         );
-        let all = Rect { x: 0, y: 0, w, h };
+        let (bw, bh) = win.buffer_size();
+        let all = Rect {
+            x: 0,
+            y: 0,
+            w: bw,
+            h: bh,
+        };
+        // Before the first buffer: it is drawn at the desktop's scale.
+        if scale != SCALE_ONE {
+            encode(&mut requests, win.surface, Request::SetBufferScale(scale));
+        }
         encode(&mut requests, win.surface, Request::DamageBuffer(all));
         encode(&mut requests, win.surface, Request::Commit);
         let mut win = win;
@@ -303,15 +356,20 @@ impl Desk {
     pub fn told(&mut self, mut reply: &[u8]) -> Vec<Told> {
         let mut out = Vec::new();
         let mut greeting = false;
+        let (mut restarted, was) = (false, self.scale);
         while let Ok((header, args, next)) = wire::split(reply) {
             reply = next;
             // Only `Global` (opcode 0) is a greeting; the registry's other
             // events (the theme) are no new desktop.
             if header.object == REGISTRY && header.opcode != 0 {
-                if let Ok(Event::Theme(name)) =
-                    Event::decode(Interface::Registry, header.opcode, args)
-                {
-                    out.push(Told::Theme(String::from(name)));
+                match Event::decode(Interface::Registry, header.opcode, args) {
+                    Ok(Event::Theme(name)) => out.push(Told::Theme(String::from(name))),
+                    Ok(Event::Look(text)) => out.push(Told::Look(String::from(text))),
+                    // A scale no surface may ask for is not one to draw at.
+                    Ok(Event::Scale(scale)) if (SCALE_ONE..=SCALE_MAX).contains(&scale) => {
+                        self.scale = scale;
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -322,6 +380,9 @@ impl Desk {
                     greeting = true;
                     if self.greeted {
                         out.push(Told::Restarted);
+                        // A new desktop says its own scale, or none at 1x.
+                        self.scale = SCALE_ONE;
+                        restarted = true;
                     }
                     self.greeted = true;
                 }
@@ -366,6 +427,13 @@ impl Desk {
                     value: String::from(value),
                 });
             }
+        }
+        if self.scale != was && !restarted && !self.windows.is_empty() {
+            out.push(Told::Scale);
+        }
+        // The whole appearance says more than the theme's name beside it.
+        if out.iter().any(|t| matches!(t, Told::Look(_))) {
+            out.retain(|t| !matches!(t, Told::Theme(_)));
         }
         out
     }

@@ -28,7 +28,16 @@ pub enum TlsError {
     Truncated,
     /// The peer sent more than [`MAX_INCOMING`] without a whole record.
     TooLarge,
+    /// The peer sent [`MAX_EMPTY_BYTES`] of records carrying no data to one
+    /// read: empty or padding-only records, which TLS allows any number of.
+    Stalled,
 }
+
+/// Record bytes one [`Session::read`] takes in with no plaintext before it
+/// gives up ([`TlsError::Stalled`]): otherwise a server streaming empty
+/// records would hold the read, and its caller's deadline, for as long as it
+/// kept sending (audit K #16). A whole record of data is at most 16 KiB.
+pub const MAX_EMPTY_BYTES: usize = 256 * 1024;
 
 impl From<rustls::Error> for TlsError {
     fn from(error: rustls::Error) -> Self {
@@ -322,22 +331,39 @@ pub struct Session<C, T> {
     tls: Tls<C>,
     io: T,
     buf: Vec<u8>,
+    /// [`MAX_EMPTY_BYTES`], unless a test set a smaller one.
+    empty_limit: usize,
 }
 
 /// What a session reads from the transport at a time.
 const RECV_CHUNK: usize = 16 * 1024;
 
 impl<C: Side, T: Transport> Session<C, T> {
+    /// The transport under the session, to change how long it waits (a kept
+    /// connection's next call has a deadline of its own).
+    pub fn io_mut(&mut self) -> &mut T {
+        &mut self.io
+    }
+
     pub fn new(conn: C, io: T) -> Self {
         Self {
             tls: Tls::new(conn),
             io,
             buf: alloc::vec![0u8; RECV_CHUNK],
+            empty_limit: MAX_EMPTY_BYTES,
         }
     }
 
     pub fn tls(&self) -> &Tls<C> {
         &self.tls
+    }
+
+    /// Gives up a read after `bytes` taken in with no plaintext, in place of
+    /// [`MAX_EMPTY_BYTES`]: for a test, which cannot make rustls send empty
+    /// records, to reach the limit with a real record fed a little at a time.
+    pub fn with_empty_limit(mut self, bytes: usize) -> Self {
+        self.empty_limit = bytes;
+        self
     }
 
     /// Runs the handshake to its end.
@@ -346,7 +372,9 @@ impl<C: Side, T: Transport> Session<C, T> {
             let progress = self.advance(None)?;
             match progress {
                 Progress::Ready | Progress::Wrote => return Ok(()),
-                Progress::NeedInput => self.fill()?,
+                Progress::NeedInput => {
+                    self.fill()?;
+                }
                 Progress::Closed => return Err(TlsError::Truncated),
             }
         }
@@ -359,7 +387,9 @@ impl<C: Side, T: Transport> Session<C, T> {
             match progress {
                 Progress::Wrote => return Ok(()),
                 Progress::Ready => {}
-                Progress::NeedInput => self.fill()?,
+                Progress::NeedInput => {
+                    self.fill()?;
+                }
                 Progress::Closed => return Err(TlsError::Truncated),
             }
         }
@@ -368,6 +398,7 @@ impl<C: Side, T: Transport> Session<C, T> {
     /// Reads decrypted data into `out`: how much, or 0 once the peer closed
     /// with a close_notify.
     pub fn read(&mut self, out: &mut [u8]) -> Result<usize, TlsError> {
+        let mut empty = 0usize;
         loop {
             let ready = self.tls.plain();
             if !ready.is_empty() {
@@ -382,7 +413,10 @@ impl<C: Side, T: Transport> Session<C, T> {
                 Progress::Closed => {}
                 Progress::Ready | Progress::Wrote | Progress::NeedInput => {
                     if self.tls.plain().is_empty() {
-                        self.fill()?;
+                        if empty >= self.empty_limit {
+                            return Err(TlsError::Stalled);
+                        }
+                        empty += self.fill()?;
                     }
                 }
             }
@@ -413,7 +447,8 @@ impl<C: Side, T: Transport> Session<C, T> {
         Ok(())
     }
 
-    fn fill(&mut self) -> Result<(), TlsError> {
+    /// Takes in what the transport has: how many bytes.
+    fn fill(&mut self) -> Result<usize, TlsError> {
         let room = self.tls.room().min(self.buf.len());
         if room == 0 {
             return Err(TlsError::TooLarge);
@@ -426,6 +461,6 @@ impl<C: Side, T: Transport> Session<C, T> {
             return Err(TlsError::Truncated);
         }
         self.tls.feed(&self.buf[..n]);
-        Ok(())
+        Ok(n)
     }
 }

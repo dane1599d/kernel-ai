@@ -380,6 +380,7 @@ impl Shell {
         change: Option<Change>,
     ) {
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: Form::Standing,
@@ -409,6 +410,7 @@ impl Shell {
             false => (String::from(described), String::from("absent")),
         };
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: Form::Call,
@@ -454,7 +456,8 @@ impl Shell {
     /// The instructions `/system/state/standing` holds; a store refused whole
     /// is set aside, and the shell starts with none.
     pub(crate) fn with_saved_standing(mut self) -> Self {
-        let Some(text) = self.host.standing_read() else {
+        let read = self.host.standing_read();
+        let Some(text) = self.read_at_start(crate::STANDING, read) else {
             return self;
         };
         match Standing::parse(&text) {
@@ -472,7 +475,10 @@ impl Shell {
     }
 
     fn save_standing(&self) {
-        if let Err(why) = self.host.standing_write(&self.standing.text()) {
+        let written = self
+            .not_unread(crate::STANDING)
+            .and_then(|()| self.host.standing_write(&self.standing.text()));
+        if let Err(why) = written {
             self.host.audit(&format!(
                 "the standing instructions were not written: {why}"
             ));

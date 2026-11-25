@@ -383,20 +383,23 @@ fn a_cut_after_the_body_went_may_have_sent_it() {
     assert_eq!(sent(&host), 1, "it was tried again");
 }
 
-/// The person's Stop cut the wait for the answer: the POST may have gone,
-/// so it is never logged as not sent.
+/// A Stop ends a call only while no server has taken it: a send it withdrew
+/// says not sent, as the host's `maybe_sent` does; one cut after it went out
+/// may have been sent (#975 review).
 #[test]
-fn a_stop_during_the_send_may_have_sent_it() {
-    let host = FakeHost::new();
-    let mut shell = shell(&host);
-    host.send_answers.borrow_mut().push_back(Err(SendFailed {
-        why: String::from("stopped"),
-        maybe_sent: false,
-    }));
-    let id = hold(&host, &mut shell, "a.example", 0);
-    host.stopped.set(true);
-    shell.drain_sends(5_000);
-    assert_eq!(after_of(&shell, id), "unknown");
+fn a_stop_is_taken_at_the_hosts_word() {
+    for (maybe_sent, after) in [(false, "failed"), (true, "unknown")] {
+        let host = FakeHost::new();
+        let mut shell = shell(&host);
+        host.send_answers.borrow_mut().push_back(Err(SendFailed {
+            why: String::from("stopped"),
+            maybe_sent,
+        }));
+        let id = hold(&host, &mut shell, "a.example", 0);
+        host.stopped.set(true);
+        shell.drain_sends(5_000);
+        assert_eq!(after_of(&shell, id), after);
+    }
 }
 
 #[test]
@@ -614,7 +617,117 @@ fn a_failed_call_is_not_sent_only_when_nothing_took_it() {
     ] {
         assert!(!call_failed(error).maybe_sent, "{error:?}");
     }
-    for error in [E::TimedOut, E::Dead, E::Busy, E::Network, E::Woken] {
+    for error in [
+        E::TimedOut,
+        E::Dead,
+        E::Busy,
+        E::Network,
+        E::Woken,
+        E::Fault,
+    ] {
         assert!(call_failed(error).maybe_sent, "{error:?}");
     }
+}
+
+/// A host the transport would refuse when due (a port, an address) is
+/// refused as it is held, so nobody waits out a countdown for nothing.
+#[test]
+fn a_host_the_transport_refuses_is_refused_at_hold_time() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    for to in ["hooks.example:8443", "[::1]", "10.0.2.2"] {
+        let id = shell.next_id;
+        shell.next_id += 1;
+        let reply = shell.hold_send(id, "send it", "net_send()", send(to), HOLD_MS);
+        assert_eq!(reply.text, "Not sent: that is not a host name", "{to}");
+        assert!(!reply.ok);
+    }
+    assert!(shell.held_sends(0).is_empty());
+}
+
+/// A send the desktop never let anyone check for an undo is ended unsent a
+/// minute past due, with code's words, and never goes (#975 review).
+#[test]
+fn a_send_left_unchecked_for_a_minute_is_ended_unsent() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let id = hold(&host, &mut shell, "a.example", 0);
+    let due = u64::from(HOLD_MS);
+    shell.end_unchecked_sends(due + crate::outbox::UNCHECKED_MS - 1);
+    assert_eq!(shell.held_sends(0).len(), 1);
+    shell.end_unchecked_sends(due + crate::outbox::UNCHECKED_MS);
+    assert_eq!(after_of(&shell, id), "unsent");
+    let ended = shell.take_sends_ended();
+    assert_eq!(
+        ended[0].line,
+        format!("Not sent to a.example: {}", crate::outbox::UNCHECKED_WHY)
+    );
+    shell.drain_sends(u64::MAX / 2);
+    assert_eq!(sent(&host), 0);
+}
+
+/// Every inverse this shell writes fits [`crate::undo::MAX_RAW`], so an older
+/// shell keeps each one word for word.
+#[test]
+fn the_longest_inverse_fits_the_raw_word() {
+    use crate::undo::{Inverse, MAX_RAW, Name, inverse_word};
+    let name = Name::new(&"n".repeat(kabi::MAX_NAME)).unwrap();
+    let longest = [
+        Inverse::Model {
+            back: Some([0xff; 32]),
+            from: [0xff; 32],
+        },
+        Inverse::Appearance {
+            setting: name,
+            before: name,
+            after: name,
+        },
+        Inverse::Fired {
+            rule: u64::MAX,
+            action: name,
+            app: name,
+            undo: true,
+        },
+        Inverse::Spec {
+            policy: u64::MAX,
+            preset: u64::MAX,
+            after: (u64::MAX, u64::MAX),
+        },
+    ];
+    for inverse in longest {
+        let word = inverse_word(Some(inverse));
+        assert!(word.len() <= MAX_RAW, "{word} is {} bytes", word.len());
+        assert_eq!(
+            crate::undo::Raw::new(&word).map(|raw| String::from(raw.as_str())),
+            Some(word)
+        );
+    }
+}
+
+/// A desktop restart ends every held send unsent, in code's words, and the
+/// one already sending goes on (the send-chain audit's MEDIUM).
+#[test]
+fn a_desktop_restart_ends_every_held_send_unsent() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let going = hold(&host, &mut shell, "a.example", 0);
+    let held = hold(&host, &mut shell, "b.example", 4_000);
+    assert_eq!(shell.start_due_send(5_000), Some(going));
+    shell.end_held_sends_on_restart();
+    assert_eq!(after_of(&shell, held), "unsent");
+    assert_eq!(after_of(&shell, going), "sending");
+    let ended = shell.take_sends_ended();
+    assert_eq!(
+        ended[0].line,
+        format!("Not sent to b.example: {}", crate::outbox::RESTART_WHY)
+    );
+    shell.run_send(going);
+    shell.drain_sends(u64::MAX / 2);
+    let hosts: Vec<String> = host
+        .sends
+        .borrow()
+        .iter()
+        .map(|s| s.0.host.clone())
+        .collect();
+    assert_eq!(hosts, ["a.example"]);
 }

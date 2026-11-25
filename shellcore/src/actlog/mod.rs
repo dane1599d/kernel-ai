@@ -10,7 +10,7 @@
 
 mod text;
 
-pub use text::{ParseError, parse};
+pub use text::{ParseError, parse, parse_setting_aside};
 
 use crate::tiers::Tier;
 use crate::undo::Inverse;
@@ -66,6 +66,9 @@ pub enum State {
     Nothing,
     /// A later undo put its changes back.
     Undone,
+    /// It failed after an app took a call and did not answer: that call may
+    /// have run, so it is neither done nor nothing (audit K #19).
+    Unknown,
 }
 
 impl State {
@@ -75,6 +78,7 @@ impl State {
             Self::Asked => "asked",
             Self::Nothing => "nothing",
             Self::Undone => "undone",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -136,14 +140,37 @@ pub struct Entry {
     /// What became of it, in code's words: `ran`, `refused: …`.
     pub outcome: String,
     pub changes: Vec<Change>,
+    /// Whose entry it is (ADR 0013 §1, `actlog 2`): `kai`, the person's shell,
+    /// unless an agent's [`agentid::Stamp`] made it.
+    pub agent: agentid::Name,
 }
 
 impl Entry {
+    /// The entry as agent `stamp` made it: the name comes from the caller the
+    /// kernel's badge named, never from the request.
+    pub fn stamped(self, stamp: &agentid::Stamp) -> Self {
+        Self {
+            agent: stamp.name().clone(),
+            ..self
+        }
+    }
+
     /// Whether `undo` may revert it: it ran, made changes, and every one has an
     /// inverse this shell can read.
     pub fn live(&self) -> bool {
-        self.state == State::Done
-            && !self.changes.is_empty()
+        self.state == State::Done && self.changes_undoable()
+    }
+
+    /// Whether `undo <id>` may put its known changes back: a live entry, or an
+    /// unknown outcome whose changes that are known all have an inverse. A
+    /// bare `undo` never picks the second (#1200's review): the call whose
+    /// outcome is unknown is not among them.
+    pub fn undoable_by_id(&self) -> bool {
+        matches!(self.state, State::Done | State::Unknown) && self.changes_undoable()
+    }
+
+    fn changes_undoable(&self) -> bool {
+        !self.changes.is_empty()
             && self
                 .changes
                 .iter()
@@ -292,7 +319,12 @@ impl ActLog {
                 Some(of) => format!("undo of #{of}"),
                 None => crate::show::truncate(&entry.request, REQUEST_CHARS),
             };
-            let _ = writeln!(text, "#{} {request}: {}", entry.id, entry.outcome);
+            // An agent's entry names it; the person's own stay as they were.
+            let by = match entry.agent.is_kai() {
+                true => String::new(),
+                false => format!("[{}] ", entry.agent.as_str()),
+            };
+            let _ = writeln!(text, "#{} {by}{request}: {}", entry.id, entry.outcome);
         }
         match text.is_empty() {
             true => String::from("nothing logged yet"),
@@ -307,7 +339,7 @@ impl ActLog {
             .map(|e| format!("script {}:\n{}", e.id, e.script))
     }
 
-    /// The log as `actlog 1` text.
+    /// The log as `actlog 1` text, or `actlog 2` once an entry is an agent's.
     pub fn text(&self) -> String {
         text::write(self.records.iter())
     }

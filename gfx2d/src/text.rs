@@ -13,7 +13,7 @@ use crate::canvas::{Canvas, Rect, blend_row};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use harfrust::{Buffer, ShaperFont};
+use harfrust::{Buffer, Feature, ShaperFont, Tag};
 use look::theme::Theme;
 use look::{Family, Type, TypeStyle};
 use skrifa::instance::{LocationRef, Size};
@@ -38,6 +38,11 @@ enum Face {
     Sans,
     Mono,
 }
+
+/// The features mono shapes with off: those that join characters into one
+/// glyph or pick a glyph by its neighbours (`ccmp` made '`' after a capital
+/// another glyph), so every character stays its own, the cell path's.
+const MONO_OFF: [&[u8; 4]; 5] = [b"calt", b"liga", b"clig", b"ccmp", b"locl"];
 
 fn face_of(family: Family) -> Face {
     match family {
@@ -226,13 +231,35 @@ impl Text {
         buffer.guess_segment_properties();
         let mut out = Vec::new();
         let mut x = 0.0;
-        if harfrust::shape(&face.shaper, &mut buffer, harfrust::ShapeOptions::new()).is_ok() {
+        // Mono never joins characters, here as on the cell path: with a
+        // non-ASCII character in the run, JetBrains Mono's ligatures would
+        // draw `!=` or `->` as one glyph (#1133's re-check).
+        let unjoined: Vec<Feature> = match run.face {
+            Face::Mono => MONO_OFF
+                .iter()
+                .map(|tag| Feature::new(Tag::new(tag), 0, ..))
+                .collect(),
+            Face::Sans => Vec::new(),
+        };
+        let options = harfrust::ShapeOptions::new().features(&unjoined);
+        if harfrust::shape(&face.shaper, &mut buffer, options).is_ok() {
             for (info, pos) in buffer.glyph_infos().iter().zip(buffer.glyph_positions()) {
                 out.push((info.glyph_id, x + pos.x_offset as f32 * scale));
                 x += pos.x_advance as f32 * scale;
             }
         }
         (out, x)
+    }
+
+    /// `text`'s glyphs in `style`, in order: what is drawn for it, so a
+    /// caller can check two texts never draw the same.
+    pub fn glyphs(&self, style: TypeStyle, text: &str) -> Vec<u32> {
+        let (run, _) = self.run(style, 1.0);
+        self.shape(run, text)
+            .0
+            .into_iter()
+            .map(|(glyph, _)| glyph)
+            .collect()
     }
 
     /// `text`'s advance and line height in logical px, for layout (uikit's

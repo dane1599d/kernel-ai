@@ -228,6 +228,39 @@ pub const APP_WHOLE: &[&str] = &["kai-actions 1", SHOW];
 /// one starting with one of [`APP_HEADERS`]. The kernel and the supervisor's
 /// check (`supervise::appcall`) both use it, so a request the supervisor
 /// sends is never refused below it.
+/// What follows `err ` in the supervisor's answer to an `app-call` the app
+/// never took in time: it never ran, so it may be sent once more.
+pub const APP_TIMEOUT: &str = "timeout";
+/// What follows `err ` when the app took the call and did not answer, or
+/// died with it: it may have run, so it is never sent again on its own, and
+/// what it did is not known (audit K #19).
+pub const APP_UNANSWERED: &str = "unanswered";
+
+/// Whether an `app-call` that failed with `why` (the supervisor's answer
+/// after `err `) may be sent once more: only when the app never took it.
+pub fn app_call_may_retry(why: &str) -> bool {
+    why.starts_with(APP_TIMEOUT)
+}
+
+/// The shell's words for an `app-call` whose request to the supervisor itself
+/// failed with `error`. The supervisor may have passed it on before the wait
+/// ran out (TimedOut) or before it died holding it (Dead): that one is
+/// [`APP_UNANSWERED`], never sent again; any other never left.
+pub fn app_call_hop(error: crate::Error) -> alloc::string::String {
+    use crate::Error;
+    match error {
+        Error::TimedOut | Error::Dead => alloc::format!(
+            "{APP_UNANSWERED} the supervisor did not answer ({error:?}); the call may have run"
+        ),
+        _ => alloc::format!("the supervisor did not answer ({error:?})"),
+    }
+}
+
+/// Whether an `app-call` that failed with `why` may have run all the same.
+pub fn app_call_unanswered(why: &str) -> bool {
+    why.starts_with(APP_UNANSWERED)
+}
+
 pub fn app_request(request: &[u8]) -> bool {
     let whole = request.strip_suffix(b"\n").unwrap_or(request);
     APP_WHOLE.iter().any(|w| w.as_bytes() == whole)

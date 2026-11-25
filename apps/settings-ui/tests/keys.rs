@@ -129,8 +129,9 @@ fn the_restart_window_is_set_from_its_page_by_keys() {
 
 /// The two key sequences the `app-settings` boot case sends, one after the
 /// other in the same window: the theme, then back round to the tabs for the
-/// restart window. QEMU names them `tab tab ret` and `tab tab tab right right
-/// right right tab spc`.
+/// restart window. QEMU names them `tab tab ret` and `tab tab tab tab right
+/// right right right tab spc`: Theme, Legible, Reduce motion and the time zone
+/// are the Appearance page's four stops.
 #[test]
 fn the_boot_cases_two_key_sequences_in_one_session() {
     let mut w = Keyed::new(settings());
@@ -141,7 +142,7 @@ fn the_boot_cases_two_key_sequences_in_one_session() {
     // The model has not taken the theme (the OS has not answered), so the
     // window is still on Appearance, with the Theme button focused.
     assert_eq!(w.view.page, 0);
-    for key in [Key::Tab, Key::Tab, Key::Tab] {
+    for key in [Key::Tab, Key::Tab, Key::Tab, Key::Tab] {
         sent.extend(w.key(key));
     }
     for key in [Key::Right, Key::Right, Key::Right, Key::Right] {
@@ -225,8 +226,8 @@ fn down_in_the_list_moves_to_the_next_app_and_its_rows() {
 /// OS's answers applied between: the removal of the rule the case added, the
 /// revoke and the restore of the fixture's row, then the theme, then the restart
 /// window. QEMU names them `tab right right tab ret`, `tab left tab tab ret`,
-/// `tab tab tab ret`, `tab left tab ret` and `tab tab tab right right right right
-/// tab spc`.
+/// `tab tab tab ret`, `tab left tab ret` and `tab tab tab tab right right right
+/// right tab spc`.
 #[test]
 fn the_boot_cases_whole_session_in_settings_window() {
     let access = comp_settings::access::parse("fixture-window\tfs_list\tallowed\n").unwrap();
@@ -267,10 +268,12 @@ fn the_boot_cases_whole_session_in_settings_window() {
     let theme = one(run(&mut w, &[Key::Tab, Key::Left, Key::Tab, Key::Enter]));
     assert!(matches!(theme, Intent::Appearance(_)), "{theme:?}");
     assert_eq!(w.view.page, 0);
-    // Round to the page tabs, the Updates page and its switch.
+    // Round to the page tabs, past the time zone, the Updates page and its
+    // switch.
     let window = one(run(
         &mut w,
         &[
+            Key::Tab,
             Key::Tab,
             Key::Tab,
             Key::Tab,

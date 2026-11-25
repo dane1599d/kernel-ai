@@ -558,3 +558,36 @@ fn saved_text_loses_characters_that_hide_or_reorder() {
     assert_eq!(t.spans()[0].prompt, "kai> ");
     assert_eq!(t.spans()[0].text, "abc");
 }
+
+#[test]
+fn a_sends_text_shows_whole_above_its_question() {
+    let mut t = Terminal::new();
+    sent(&mut t, "send hello to hooks.example");
+    let call = "net_send(\"hooks.example\", \"/\", \"2cf24dba5fb0a30e\")";
+    let question = format!("Send the text above with {call}? It waits 5 s for undo.");
+    let menu = Menu::encode(3, Origin::Asked, &question, "", "", call);
+    let wire = termcore::menu::encode_shown(
+        "Kai wants to send this text to hooks.example:",
+        "hello there",
+        &menu,
+    );
+    assert_eq!(t.reply(&wire, None), None);
+    let tail = kinds(&t);
+    // Then the card's own notice.
+    assert_eq!(
+        tail[tail.len() - 4..tail.len() - 1],
+        [
+            (
+                Kind::Notice,
+                "Kai wants to send this text to hooks.example:".to_string()
+            ),
+            (Kind::Reply, "hello there".to_string()),
+            (Kind::Question, question),
+        ]
+    );
+    // A block it cannot show as sent is denied, never asked.
+    let mut t = Terminal::new();
+    sent(&mut t, "send it");
+    let bad = termcore::menu::encode_shown("h", "caf\u{e9}", &menu_wire(4));
+    assert_eq!(t.reply(&bad, None), Some("answer 4 deny".to_string()));
+}
