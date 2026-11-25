@@ -16,7 +16,7 @@ use netcore::config::{FALLBACK, FALLBACK_DNS, Mode, NetConfig, Static};
 use smoltcp::iface::{Interface, SocketHandle, SocketSet};
 use smoltcp::socket::dhcpv4::{self, Event};
 use smoltcp::time::Duration;
-use smoltcp::wire::{DhcpPacket, DhcpRepr, IpAddress, IpCidr};
+use smoltcp::wire::{DhcpPacket, DhcpRepr};
 use spin::Once;
 
 /// How often the interface is polled while it has no address.
@@ -253,6 +253,13 @@ impl Setup {
 
     fn take_lease(&mut self, iface: &mut Interface, lease: Lease, now_ns: u64) {
         let was = self.status.source;
+        // smoltcp reports every renewal, changed or not (it keeps each packet
+        // for the lease time); one that changes nothing is only a renewal.
+        let renewal = matches!(was, Source::Dhcp { server, lease_s, .. }
+            if server == lease.server && lease_s == lease.lease_s)
+            && self.status.address == Some(lease.address)
+            && self.status.gateway == lease.router
+            && self.status.dns == lease.dns;
         let setting = Static {
             address: lease.address.0,
             prefix: lease.address.1,
@@ -268,7 +275,9 @@ impl Setup {
             return;
         }
         self.fallback_at_ns = None;
-        self.status.leases += 1;
+        if !renewal {
+            self.status.leases += 1;
+        }
         let lease_text = lease
             .lease_s
             .map_or_else(|| String::from("endless"), |s| netcore::duration(s.into()));
@@ -281,6 +290,7 @@ impl Setup {
             lease.server,
             match was {
                 Source::Fallback => "; leaving the fallback",
+                Source::Dhcp { .. } if renewal => "; renewed",
                 Source::Dhcp { .. } => "; the lease changed",
                 _ => "",
             }
@@ -310,20 +320,10 @@ impl Setup {
         dns: [Option<Ipv4Addr>; MAX_DNS],
         source: Source,
     ) -> Result<(), &'static str> {
-        let cidr = IpCidr::new(IpAddress::Ipv4(setting.address), setting.prefix);
-        let mut pushed = Ok(());
-        iface.update_ip_addrs(|addresses| {
-            addresses.clear();
-            pushed = addresses.push(cidr).map_err(|_| "net: address table full");
-        });
-        pushed?;
-        iface.routes_mut().remove_default_ipv4_route();
-        if let Some(gateway) = setting.gateway {
-            iface
-                .routes_mut()
-                .add_default_ipv4_route(gateway)
-                .map_err(|_| "net: route table full")?;
-        }
+        // A renewal that brings the same address must not touch it: that would
+        // empty the ARP cache while smoltcp still holds off asking again (see
+        // `netcore::address`).
+        netcore::address::put(iface, setting)?;
         if self.status.address != Some((setting.address, setting.prefix)) || self.status.dns != dns
         {
             resolve::forget();
