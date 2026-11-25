@@ -18,6 +18,7 @@
 use crate::log;
 use crate::memory;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use limine::request::{EfiMemmapRequest, EfiRequest};
 use spin::{Mutex, Once};
 use x86_64::instructions::interrupts;
@@ -104,6 +105,13 @@ struct Services {
 static SERVICES: Once<Services> = Once::new();
 /// One firmware call at a time.
 static CALL: Mutex<()> = Mutex::new(());
+/// The CPU inside the firmware, plus one; 0 when none is (bug hunt 4, H4-11).
+/// The fault path reads it to tell a fault taken inside a firmware call, whose
+/// CALL guard never drops ([`after_fault`]).
+static CALLER: AtomicUsize = AtomicUsize::new(0);
+/// How long the fault path waits for a firmware call on another CPU to end.
+/// Our calls took at most 24.7 ms on OVMF (decisions.md, the A/B/R row).
+const AFTER_FAULT_WAIT_NS: u64 = 100_000_000;
 
 /// One runtime region from the firmware's memory map.
 struct Region {
@@ -255,9 +263,83 @@ fn set_virtual_address_map(
 fn call<R>(f: impl FnOnce(&Services) -> R) -> Result<R, Error> {
     let services = SERVICES.get().ok_or(Error::Unavailable)?;
     Ok(interrupts::without_interrupts(|| {
-        let _one = CALL.lock();
-        crate::fpu::around_firmware(|| f(services))
+        // CALLER is cleared after the guard drops: a fault between the two
+        // leaves a skipped record, not a hang ([`after_fault`]).
+        let me = me();
+        let result = {
+            let _one = CALL.lock();
+            CALLER.store(me, Ordering::SeqCst);
+            crate::fpu::around_firmware(|| f(services))
+        };
+        let _ = CALLER.compare_exchange(me, 0, Ordering::SeqCst, Ordering::SeqCst);
+        result
     }))
+}
+
+/// This CPU's mark in CALLER.
+fn me() -> usize {
+    crate::percpu::index() + 1
+}
+
+/// Runs `f` (a call into the firmware) with this CPU marked in CALLER. The mark
+/// is cleared only if it is still this CPU's, so a CPU that marks itself after
+/// this one keeps its mark.
+fn in_firmware<R>(f: impl FnOnce() -> R) -> R {
+    let me = me();
+    CALLER.store(me, Ordering::SeqCst);
+    let result = crate::fpu::around_firmware(f);
+    let _ = CALLER.compare_exchange(me, 0, Ordering::SeqCst, Ordering::SeqCst);
+    result
+}
+
+/// Why the fault path must not enter the firmware ([`after_fault`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Busy {
+    /// The fault came inside a firmware call on this CPU (runtime code that
+    /// faulted, an NMI, a machine check). Its CALL guard never drops, and
+    /// UEFI forbids entering the variable services again.
+    InCall,
+    /// CALL stayed held for [`AFTER_FAULT_WAIT_NS`]: a CPU halted inside a
+    /// firmware call (it faulted there while another CPU reported), or this
+    /// CPU faulted between taking CALL and marking itself.
+    Held,
+}
+
+/// For the fault path, with interrupts off: whether the firmware may be
+/// entered to record the fault. Waits a bounded time for a call on another CPU
+/// to end, so the fault path never spins on CALL for ever.
+pub fn after_fault() -> Result<(), Busy> {
+    if CALLER.load(Ordering::SeqCst) == me() {
+        return Err(Busy::InCall);
+    }
+    let start = crate::hpet::nanos();
+    while CALL.is_locked() {
+        if crate::hpet::nanos().wrapping_sub(start) > AFTER_FAULT_WAIT_NS {
+            return Err(Busy::Held);
+        }
+        core::hint::spin_loop();
+    }
+    Ok(())
+}
+
+/// `slot-do=efi-fault` on a `test=slot` boot (bug hunt 4, H4-11): a page fault
+/// inside a firmware call, as runtime code touching memory the firmware gave
+/// back takes. The fault path never returns here.
+pub fn fault_in_call() -> ! {
+    let called = call(|_| {
+        // SAFETY: deliberately faults on an unmapped lower-half address.
+        unsafe {
+            core::arch::asm!(
+                "mov {tmp}, [{addr}]",
+                addr = in(reg) crate::faults::PAGE_FAULT_TARGET,
+                tmp = out(reg) _,
+            );
+        }
+    });
+    match called {
+        Err(_) => crate::fail("efi: no runtime services to fault inside"),
+        Ok(()) => crate::fail("efi: the read inside a firmware call did not fault"),
+    }
 }
 
 /// `name` as NUL-terminated UTF-16; ASCII only.
@@ -340,7 +422,7 @@ pub fn power_off_after_calls() -> ! {
     core::mem::forget(CALL.lock());
     if let Some(services) = SERVICES.get().filter(|_| !power_off_fallback()) {
         log!("efi: turning off through ResetSystem");
-        crate::fpu::around_firmware(|| (services.reset)(RESET_SHUTDOWN, 0, 0, core::ptr::null()));
+        in_firmware(|| (services.reset)(RESET_SHUTDOWN, 0, 0, core::ptr::null()));
         log!("efi: ResetSystem returned from a shutdown");
     }
     crate::power::safe_to_switch_off()
@@ -350,7 +432,7 @@ pub fn power_off_after_calls() -> ! {
 fn reset_now() -> ! {
     if let Some(services) = SERVICES.get() {
         log!("efi: resetting through ResetSystem");
-        crate::fpu::around_firmware(|| (services.reset)(0, 0, 0, core::ptr::null()));
+        in_firmware(|| (services.reset)(0, 0, 0, core::ptr::null()));
         log!("efi: ResetSystem returned; resetting another way");
     }
     crate::power::reboot()
