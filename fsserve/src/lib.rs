@@ -219,6 +219,10 @@ pub struct Server<D: BlockDev> {
     /// The least of the open action's changes' claims on kaifs's reserve: what
     /// its commit may spend ([`Server::spends_reserve`]).
     action_spend: Spend,
+    /// The generation on disk when the last GC pass ended with nothing
+    /// dropped and nothing freed: until a commit moves it, low space alone
+    /// starts no other pass ([`Server::idle`]).
+    quiet: Option<u64>,
     /// The record last read.
     cache: Option<buffer::Cached>,
     /// Whether a caller (a pid) still runs: a dead owner's action is aborted
@@ -296,6 +300,7 @@ impl<D: BlockDev> Server<D> {
             dropped: BTreeMap::new(),
             asking: 0,
             action_spend: Spend::All,
+            quiet: None,
             cache: None,
             alive: |_| true,
             name_of: |_, _| None,
@@ -569,10 +574,14 @@ impl<D: BlockDev> Server<D> {
             return;
         }
         let now = self.base.saturating_add(now);
+        // A pass that found nothing to free runs again for low space only once
+        // a commit has changed the disk (H3-9): on a disk that stays under a
+        // tenth free, every tick would mark everything and commit, forever.
+        let low = self.fs.space_low() && self.quiet != Some(self.fs.committed);
         let fs = self.fs();
         // Under the reserve with freed blocks waiting: commits give them back.
         let release = fs.reserve_waits_on_pending();
-        if !fs.writable() || !(fs.gc_running() || fs.space_low() || fs.expiry_due(now) || release) {
+        if !fs.writable() || !(fs.gc_running() || low || fs.expiry_due(now) || release) {
             return;
         }
         // Retention, the GC and these commits free space: they may take the
@@ -585,12 +594,16 @@ impl<D: BlockDev> Server<D> {
         self.fs.io.alloc.spend_reserve(was);
     }
 
-    /// Retention, then a slice of the GC (see [`Server::idle`]).
+    /// Retention, then a slice of the GC (see [`Server::idle`]). A pass that
+    /// ends with nothing dropped and nothing freed commits only to give back
+    /// blocks still waiting out their two commits, and leaves the disk
+    /// [`Server::quiet`] until the next commit.
     fn retain_and_collect(&mut self, now: u64) {
         let fs = self.fs();
+        let mut dropped = 0;
         let stepped = (|| {
             if !fs.gc_running() {
-                let mut dropped = fs.expire(now)?.len();
+                dropped = fs.expire(now)?.len();
                 for _ in 1..DROP_PER_PASS {
                     match fs.expire(now)?.len() {
                         0 => break,
@@ -603,13 +616,21 @@ impl<D: BlockDev> Server<D> {
                 fs.gc_start()?;
             }
             let budget = if fs.space_low() { u64::MAX } else { GC_BUDGET };
-            fs.gc_step(budget).map(|step| step.done)
+            fs.gc_step(budget)
         })();
         match stepped {
-            Ok(true) => {
-                let _ = self.commit();
+            Ok(step) if step.done => {
+                let idle = dropped == 0 && step.freed_blocks == 0;
+                let waiting = self.fs.io.alloc.has_pending() || !self.fs.is_clean();
+                if !idle || waiting {
+                    let _ = self.commit();
+                }
+                // Quiet only when this pass committed nothing: a commit (an
+                // allocator condense, a moved oid counter) can free blocks of
+                // its own, and the next pass gives them back.
+                self.quiet = (idle && !waiting).then_some(self.fs.committed);
             }
-            Ok(false) => {}
+            Ok(_) => {}
             Err(_) => {
                 self.drop_changes();
             }

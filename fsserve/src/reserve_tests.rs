@@ -358,3 +358,40 @@ fn a_shared_memory_push_keeps_the_reserve() {
     let tier = c.server.spends_reserve(ALICE, &push, changes(&push));
     assert_eq!(tier, Spend::Keep);
 }
+
+/// H3-9: a disk that stays under a tenth free with nothing to free does not
+/// run a whole GC pass and an empty commit on every idle tick; a client's
+/// commit arms the next pass, which still gives space back.
+#[test]
+fn a_full_disk_with_nothing_to_free_goes_quiet() {
+    let mut disk = MemDisk::new(2 * 1024);
+    let (mut c, _) = Client::start(&mut disk);
+    let made = fill(&mut c);
+    assert!(c.server.fs().space_low());
+    // What the fill freed waits out its two commits first.
+    for tick in 0..4u64 {
+        c.server.idle(1_000_000 + tick);
+    }
+    let (generation, space) = (c.server.generation(), c.server.fs().space());
+    for tick in 0..100u64 {
+        c.server.idle(2_000_000 + tick * 100_000_000);
+    }
+    let commits = c.server.generation() - generation;
+    assert!(commits <= 1, "{commits} commits in 100 quiet ticks");
+    assert_eq!(c.server.fs().space(), space);
+    // A change arms the pass again: what an emptied trash frees comes back.
+    let trash = Request::Trash {
+        name: made[0].clone(),
+    };
+    assert_eq!(home(&mut c, trash), Reply::Done);
+    let emptied = home(&mut c, Request::EmptyTrash);
+    assert!(matches!(emptied, Reply::Emptied { .. }), "{emptied:?}");
+    // Its freed block waits out two commits: the quiet disk must not keep it.
+    assert!(c.server.fs.io.alloc.has_pending());
+    let emptied_at = c.server.generation();
+    for tick in 0..4u64 {
+        c.server.idle(20_000_000_000 + tick);
+    }
+    assert!(c.server.generation() > emptied_at);
+    assert!(!c.server.fs.io.alloc.has_pending());
+}
