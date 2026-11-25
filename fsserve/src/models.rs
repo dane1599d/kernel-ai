@@ -14,9 +14,14 @@
 //!   [`FNV_ATTR`]: nothing the caller says about the bytes is taken on trust.
 //! - [`Request::ModelHint`] writes the hint, in `kai-data`'s first block, which
 //!   kaifs leaves outside the filesystem, for a sealed blob of the store only.
+//! - [`Request::SealedRemove`] removes a blob outside any action, with the
+//!   store's undo snapshots that hold it, in one commit, and a GC pass starts
+//!   to free its blocks (reusable two commits after it ends). The blob the
+//!   hint names, the model the next boot maps, is refused: `fs` alone reads
+//!   the hint, so it alone can tell.
 
 use crate::{Call, Server, Target, error};
-use fsproto::{Error, MAX_DATA, Reply};
+use fsproto::{Error, MAX_DATA, MAX_SHM_DATA, Reply};
 use kabi::fs::{MODELS, MODELS_ROOT};
 use kabi::handle::Rights;
 use kabi::model::Fnv1a;
@@ -97,6 +102,36 @@ impl<D: BlockDev> Server<D> {
         if data.len() > MAX_DATA {
             return Err(Error::Invalid);
         }
+        self.push(data)
+    }
+
+    /// [`Request::SealedPushShm`]: the next `len` bytes from the start of
+    /// `shm`, copied out once first. The client can write its `Shm` while
+    /// `fs` reads it, and the bytes hashed must be the bytes kept.
+    pub(crate) fn sealed_push_shm(
+        &mut self,
+        call: &Call,
+        target: &Target,
+        len: u32,
+        shm: Option<&mut [u8]>,
+    ) -> Result<Reply, Error> {
+        self.models_only(call, target)?;
+        self.owned(call.caller)?;
+        let shm = shm.ok_or(Error::Invalid)?;
+        let len = len as usize;
+        if len > MAX_SHM_DATA || len > shm.len() {
+            return Err(Error::Invalid);
+        }
+        // The one copy: `push` takes the bytes by slice and never sees `shm`
+        // again, so the bytes hashed are the bytes kept. Reading `shm` a second
+        // time (to hash, say, then to write) would let the client change them
+        // between. A test cannot catch that: it needs a writer racing `fs`.
+        let data = shm[..len].to_vec();
+        self.push(&data)
+    }
+
+    /// Pushes `data`, which `fs` alone holds, into the open blob and its hashes.
+    fn push(&mut self, data: &[u8]) -> Result<Reply, Error> {
         let mut sealing = self.sealing.take().ok_or(Error::Invalid)?;
         let fs = self.fs();
         let pushed = fs
@@ -129,6 +164,56 @@ impl<D: BlockDev> Server<D> {
             Ok(()) => Ok(Reply::Done),
             Err(e) => Err(self.failed(error(e))),
         }
+    }
+
+    /// Removes sealed blob `name` (see the module doc).
+    pub(crate) fn sealed_remove(
+        &mut self,
+        call: &Call,
+        target: &Target,
+        name: &str,
+    ) -> Result<Reply, Error> {
+        self.models_only(call, target)?;
+        match self.owner {
+            Some(owner) if owner == call.caller => return Err(Error::Invalid),
+            Some(_) => return Err(Error::Busy),
+            None => {}
+        }
+        let named = blob_sha(name).ok_or(Error::Invalid)?;
+        let fs = self.fs();
+        fs.set_volume(MODELS.into()).map_err(error)?;
+        let entry = fs
+            .lookup(ROOT, name)
+            .map_err(error)?
+            .ok_or(Error::NotFound)?;
+        if !fs.is_sealed(entry.ino).map_err(error)? {
+            return Err(Error::Invalid);
+        }
+        if self.hint_names(&named)? {
+            return Err(Error::Permission);
+        }
+        // A failure here is dropped whole by `answer`: a change outside an
+        // action leaves nothing half done.
+        let fs = self.fs();
+        fs.remove(ROOT, name).map_err(error)?;
+        fs.drop_undo_holding(MODELS.into(), entry.ino)
+            .map_err(error)?;
+        // Committed here, not by `answer`, so the GC pass can start after it.
+        self.commit()?;
+        let fs = self.fs();
+        if !fs.gc_running() {
+            // The blocks are free at the pass's end; a pass that cannot start
+            // now leaves them to the next one.
+            let _ = fs.gc_start();
+        }
+        Ok(Reply::Done)
+    }
+
+    /// Whether `kai-modelhint 1` names the blob with SHA-256 `sha256`.
+    fn hint_names(&mut self, sha256: &[u8; 32]) -> Result<bool, Error> {
+        let mut block = [0u8; BLOCK];
+        self.fs.io.dev.read(0, &mut block).map_err(|_| Error::Io)?;
+        Ok(Hint::decode(&block).is_some_and(|hint| hint.sha256 == *sha256))
     }
 
     /// A blob that failed after its writer was taken aborts the whole action,

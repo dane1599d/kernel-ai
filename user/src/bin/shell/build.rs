@@ -74,6 +74,9 @@ pub fn build(
     // cc bundles the files sorted by name, so the shell does too: the artifact
     // then carries this very bundle, which `shm::check` compares.
     sources.sort_by(|a, b| a.0.cmp(&b.0));
+    // Kai's app builds from the main.c its card pins, nothing beside it.
+    let names: Vec<&str> = sources.iter().map(|(file, _)| file.as_str()).collect();
+    shellcore::ccbuild::sources_ok(dir, &names)?;
     let named: Vec<(&str, &[u8])> = sources
         .iter()
         .map(|(file, bytes)| (file.as_str(), bytes.as_slice()))
@@ -236,8 +239,7 @@ fn ask_cc(
     with_shm(shm, |bytes| {
         shm::put(bytes, bundle).map_err(String::from)?;
         // cc maps and writes it, and reads its size (SHM_INFO), and nothing more.
-        let rights =
-            Rights::MAP | Rights::READ | Rights::WRITE | Rights::INSPECT | Rights::TRANSFER;
+        let rights = Rights::MAP | Rights::READ | Rights::WRITE | Rights::TRANSFER;
         let copy =
             sys::handle_dup(shm, rights).map_err(|e| format!("{INTERNAL}the Shm ({e:?})"))?;
         let request = promptcore::wire::Request::Build {
@@ -274,7 +276,7 @@ pub fn trial(cc: Handle, name: &str) -> Result<String, String> {
         return Err(format!("{INTERNAL}no build left an artifact to try"));
     };
     // cc maps and reads it, and reads its size (SHM_INFO), and nothing more.
-    let rights = Rights::MAP | Rights::READ | Rights::INSPECT | Rights::TRANSFER;
+    let rights = Rights::MAP | Rights::READ | Rights::TRANSFER;
     let copy = sys::handle_dup(shm, rights).map_err(|e| format!("{INTERNAL}the Shm ({e:?})"))?;
     let request = promptcore::wire::Request::Trial { component: name }.text();
     let mut reply = vec![0u8; kabi::MAX_MESSAGE];

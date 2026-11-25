@@ -55,6 +55,8 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
             "handles: request nodes revoke what was given under them; ONCE works once, as shown",
             "[hgrant] handles: every check passed",
             "[hrev] handles: a revoke ended a call in flight after ",
+            "ipc-queued: a call queued on a server that died ended Cancelled in ",
+            "handles: a refused move's handle came back under its value with its rights, an insert meanwhile notwithstanding",
             "handles: revoking a grant ended a call in flight through it",
             "handles: M1: bit check ",
             "handles: M2: request node, 8 handles to 2 processes, revoke: ",
@@ -115,7 +117,12 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         ..case("icount-probe", "test=icount-probe")
     },
     // L6: worker threads in one address space.
-    case("threads", "test=threads"),
+    TestCase {
+        expect: &[
+            "console-race: a key reader whose wake came before it blocked looked again, in wait and in wait_unless",
+        ],
+        ..case("threads", "test=threads")
+    },
     case("threads-kill", "test=threads-kill"),
     TestCase {
         expect: &[

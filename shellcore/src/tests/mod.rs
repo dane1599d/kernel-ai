@@ -17,7 +17,9 @@ const TRIAL_REPORT: &str = "init, started, a key and a click ran; 1 window";
 
 mod act;
 mod actions;
+mod agentconsent;
 mod agentstep;
+mod agentundo;
 mod apart;
 mod appbuild;
 mod appcard;
@@ -30,6 +32,7 @@ mod ccbuild;
 mod centry;
 mod cmode;
 mod cprogram;
+mod csave;
 mod deskcard;
 mod door;
 mod door_build;
@@ -37,6 +40,9 @@ mod effects;
 mod fake_host;
 mod files;
 mod fuzz;
+mod goalreports;
+mod goals;
+mod goalsteps;
 mod grantleaks;
 mod grantundo;
 mod guard;
@@ -49,6 +55,7 @@ mod more;
 mod netask;
 mod netgrant;
 mod netrows;
+mod notlanded;
 mod outbox;
 mod packages;
 mod panel;
@@ -58,10 +65,12 @@ mod scripts;
 mod sendrow;
 mod settings;
 mod standing;
+mod state_reads;
 mod told;
 mod transaction;
 mod tune;
 mod ui;
+mod undo_rows;
 mod waiting;
 
 /// A host whose clock moves `step_ns` on every reading.
@@ -138,6 +147,9 @@ struct FakeHost {
     app_replies: RefCell<VecDeque<String>>,
     /// Services the supervisor answers "no such app" for (the shell, llm).
     not_apps: RefCell<Vec<String>>,
+    /// Errors the next app calls answer, before any reply: as the shell's
+    /// `ask_app` gives the supervisor's `err ...` answers.
+    app_errors: RefCell<VecDeque<String>>,
     /// The saved appearance (`kai-appearance 1`).
     appearance: RefCell<Option<String>>,
     /// The trusted path's ONCE book: badge, digest, and whether it was used.
@@ -191,6 +203,8 @@ struct FakeHost {
     pub app_sources: RefCell<Vec<(String, String)>>,
     /// The `fs` server's files, and each transaction's files before and after.
     files: RefCell<std::collections::BTreeMap<String, String>>,
+    /// The next change fails with this, as a refused or cut-short one does.
+    fs_fail: RefCell<Option<String>>,
     txns: RefCell<Vec<(Files, Files)>>,
     /// As the shell does on `fs`: a line's changes are one transaction, left open
     /// until the log write commits it; the open one's index.
@@ -202,6 +216,13 @@ struct FakeHost {
     /// `/system/state/rules`.
     rules_disk: RefCell<Option<String>>,
     pub withheld_disk: RefCell<Option<String>>,
+    /// Why the withheld file cannot be read, when a test says it cannot.
+    pub withheld_error: RefCell<Option<String>>,
+    /// The state reads (`rules_read`, `standing_read`, `keep_read`,
+    /// `net_grants_read`) that fail now, as a disk error would.
+    pub read_errors: RefCell<Vec<&'static str>>,
+    /// How many of the next network grants writes fail, as a disk error would.
+    pub net_write_fails: Cell<u32>,
     pub net_disk: RefCell<Option<String>>,
     /// `/system/state/standing`, and the event source and owners standing
     /// instructions run through, when `triggers_on` is set.
@@ -223,8 +244,14 @@ struct FakeHost {
     /// as it was then, and what the next sends answer (else `Ok`).
     sends: RefCell<Vec<(crate::outbox::Send, Option<String>)>>,
     send_answers: RefCell<VecDeque<Result<String, crate::outbox::SendFailed>>>,
+    /// `desktop` says a send's card fits beside the pane.
+    send_fits: Cell<bool>,
+    /// Send texts given to `desktop`'s pane, by card id.
+    previews: RefCell<Vec<(u64, String)>>,
     /// Set to make the next log writes fail.
     log_fails: Cell<u32>,
+    /// The next log write's Commit of the open action is refused.
+    commit_refused: Cell<bool>,
 }
 
 /// What standing instructions asked the desktop and the owners for.
@@ -275,6 +302,19 @@ type Apart = alloc::boxed::Box<dyn Fn(&str) -> Result<String, String>>;
 type UiAnswer = alloc::boxed::Box<dyn Fn(&crate::ui::UiCall) -> Result<String, String>>;
 
 impl FakeHost {
+    /// State read `read` of `disk`: the error a failed disk read gives while
+    /// `read` is in [`FakeHost::read_errors`].
+    fn state_read(
+        &self,
+        read: &str,
+        disk: &RefCell<Option<String>>,
+    ) -> Result<Option<String>, String> {
+        match self.read_errors.borrow().contains(&read) {
+            true => Err(String::from("the disk did not answer")),
+            false => Ok(disk.borrow().clone()),
+        }
+    }
+
     /// The supervisor's side: `err already ...` when nothing changes.
     fn set_running(&self, name: &str, running: bool) -> Result<(), String> {
         let mut services = self.services.borrow_mut();
@@ -363,6 +403,7 @@ impl FakeHost {
             app_requests: RefCell::new(Vec::new()),
             app_replies: RefCell::new(VecDeque::new()),
             not_apps: RefCell::new(Vec::new()),
+            app_errors: RefCell::new(VecDeque::new()),
             appearance: RefCell::new(None),
             once: RefCell::new(Vec::new()),
             revoked: RefCell::new(Vec::new()),
@@ -399,6 +440,7 @@ impl FakeHost {
             warms: RefCell::new(Vec::new()),
             app_sources: RefCell::new(Vec::new()),
             files: RefCell::new(Files::new()),
+            fs_fail: RefCell::new(None),
             txns: RefCell::new(Vec::new()),
             one_action: Cell::new(false),
             open_txn: Cell::new(None),
@@ -406,6 +448,9 @@ impl FakeHost {
             log_writes: Cell::new(0),
             rules_disk: RefCell::new(None),
             withheld_disk: RefCell::new(None),
+            withheld_error: RefCell::new(None),
+            read_errors: RefCell::new(Vec::new()),
+            net_write_fails: Cell::new(0),
             net_disk: RefCell::new(None),
             standing_disk: RefCell::new(None),
             triggers_on: Cell::new(false),
@@ -418,7 +463,10 @@ impl FakeHost {
             reboots: RefCell::new(Vec::new()),
             sends: RefCell::new(Vec::new()),
             send_answers: RefCell::new(VecDeque::new()),
+            send_fits: Cell::new(false),
+            previews: RefCell::new(Vec::new()),
             log_fails: Cell::new(0),
+            commit_refused: Cell::new(false),
         })
     }
 }

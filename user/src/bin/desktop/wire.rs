@@ -252,6 +252,33 @@ pub(super) fn apply_need(
         } => {
             state.shown.retain(|(w, ..)| *w != window);
             state.shown.push((window, pid, buffer, scale));
+            if let Some(at) = state.wheeled.iter().position(|(w, ..)| *w == window) {
+                let (_, before, left) = state.wheeled.remove(at);
+                if left == super::frame::WHEEL_PICTURES {
+                    println!("desktop: window {} drew after the wheel", window.0);
+                }
+                // Not just a redraw: did the content move? A hover or a caret
+                // redraws in place and says nothing here. A late redraw counts:
+                // each of the next pictures is compared with the one before the
+                // wheel, until one scrolled or `WHEEL_PICTURES` have not.
+                let after = super::frame::wheel_rows(state, window).unwrap_or_default();
+                match deskcore::scrolled::shift(&before, &after) {
+                    Some((rows, explained)) => println!(
+                        "desktop: window {} scrolled {rows} rows after the wheel ({explained} rows moved)",
+                        window.0
+                    ),
+                    None if left > 1 => state.wheeled.push((window, before, left - 1)),
+                    // Said, so a case that fails here can be read. No picture
+                    // shows as 0 rows; a band with no px in it (past the
+                    // picture's width) as every row, all with the one hash.
+                    None => println!(
+                        "desktop: window {} did not scroll after the wheel ({} rows before, {} after)",
+                        window.0,
+                        before.len(),
+                        after.len()
+                    ),
+                }
+            }
             false
         }
         Need::Closed { window } => {
@@ -261,6 +288,7 @@ pub(super) fn apply_need(
                 .find(|(w, ..)| *w == window)
                 .map(|(_, _, buffer, _)| buffer.pool);
             state.shown.retain(|(w, ..)| *w != window);
+            state.wheeled.retain(|(w, ..)| *w != window);
             state.agent.closed(window);
             pools::after_closed(state, at, pid, pool);
             false

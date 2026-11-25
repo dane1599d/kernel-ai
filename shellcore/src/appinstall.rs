@@ -324,6 +324,7 @@ impl Shell {
             net: None,
             send: None,
             power: false,
+            goal: None,
         });
         Reply::menu(
             id,

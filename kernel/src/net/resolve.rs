@@ -3,7 +3,7 @@
 //! turn, twice, within the caller's time.
 
 use super::{NET, next_port, wait_for_address};
-use crate::{hpet, threads};
+use crate::hpet;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
@@ -170,6 +170,7 @@ fn ask_one(
     let mut sent = false;
     let mut reply = [0u8; PACKET_BYTES];
     loop {
+        let ticket = super::frames_ticket();
         {
             let mut guard = NET.lock();
             let Some(net) = guard.as_mut() else {
@@ -195,6 +196,6 @@ fn ask_one(
         if cancel() || hpet::nanos() > give_up {
             return Err(None);
         }
-        threads::sleep_ms(POLL_MS);
+        super::wait_for_frames(ticket, POLL_MS);
     }
 }

@@ -47,6 +47,18 @@ pub enum DownloadError {
     Store(&'static str),
 }
 
+impl DownloadError {
+    /// The error in fixed words a person may read, never a TLS library's own
+    /// text ([`HttpError::plain`]).
+    pub fn plain(&self) -> alloc::string::String {
+        use alloc::format;
+        match self {
+            DownloadError::Fetch(error) => error.plain(),
+            other => format!("{other:?}"),
+        }
+    }
+}
+
 /// Where a download's bytes go: a partial target and its checkpoint.
 pub trait Partial {
     /// How many chunks the last run checked and wrote, as recorded.

@@ -218,6 +218,16 @@ impl<E: Effects> Service<E> {
                 host,
                 reply,
             ),
+            Request::Load { seq, entry } => eval(
+                &self.compiler,
+                effects,
+                open,
+                seq,
+                entry,
+                Mode::Load,
+                host,
+                reply,
+            ),
             Request::Resume { id, ok, result } => {
                 resume(effects, open, id, ok, result, host, reply)
             }
@@ -506,10 +516,33 @@ fn committed(open: &mut Open, done: Done, prepared: Prepared, compile_us: u64, r
             name: &def.name,
         };
         // Definitions past the reply's room are still made; `:defs` lists them.
+        // A function whose type changed goes in with its `retyped` or not at
+        // all: a `def` alone reads as redefined in place, and every caller
+        // before it as following it. A name the reader never heard of is
+        // taken as unknown.
+        if def.kind == Kind::Func && done.retyped.contains(&def.name) {
+            let mut both = reply.clone();
+            let kept = both.push_leaving(&record, END_ROOM).is_ok()
+                && both
+                    .push_leaving(&Record::Retyped(&def.name), END_ROOM)
+                    .is_ok();
+            if kept {
+                *reply = both;
+            }
+            continue;
+        }
         let _ = reply.push_leaving(&record, END_ROOM);
     }
+    // A retyped name no definition above carries: with nothing before it to
+    // be taken for a def in place.
     for name in &done.retyped {
-        let _ = reply.push_leaving(&Record::Retyped(name), END_ROOM);
+        if !prepared
+            .defs
+            .iter()
+            .any(|d| d.kind == Kind::Func && &d.name == name)
+        {
+            let _ = reply.push_leaving(&Record::Retyped(name), END_ROOM);
+        }
     }
     if let Some((ty, text)) = &done.value {
         let _ = reply.push_leaving(&Record::Value { ty: *ty, text }, END_ROOM);

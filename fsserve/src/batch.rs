@@ -70,12 +70,18 @@ impl<D: RunDev> Batched<D> {
         &mut self.dev
     }
 
-    /// Puts the gathered writes on the disk.
+    /// Puts the gathered writes on the disk. A run the disk refuses is lost,
+    /// and so is the read-ahead, which may hold its blocks: the error says
+    /// so, and the cache above forgets everything (kaifs's `Cached`).
     fn drain(&mut self) -> Result<(), IoError> {
-        match self.pending.take() {
+        let drained = match self.pending.take() {
             Some(run) => self.dev.write_run(run.at, &run.bytes),
             None => Ok(()),
+        };
+        if drained.is_err() {
+            self.ahead = None;
         }
+        drained
     }
 }
 

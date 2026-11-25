@@ -69,6 +69,7 @@ type RhaiResult<T> = Result<T, Box<EvalAltResult>>;
 
 mod apps;
 mod grants;
+mod known;
 mod look;
 mod net;
 mod windows;
@@ -115,6 +116,9 @@ struct Tx {
     app_failed: Rc<RefCell<Option<String>>>,
     /// The person's own line made this run's calls (`Checked::person`).
     person: bool,
+    /// The row whose app call the app took and did not answer: it may have
+    /// run, so the run's outcome is not known (audit K #19).
+    unanswered: Rc<RefCell<Option<String>>>,
 }
 
 impl Tx {
@@ -127,6 +131,7 @@ impl Tx {
             outbox: Outbox::default(),
             app_failed: Rc::default(),
             person: false,
+            unanswered: Rc::default(),
         }
     }
 
@@ -701,7 +706,7 @@ impl Host for Stub {
     fn apps(&self) -> Option<&core::cell::RefCell<crate::apps::Apps>> {
         self.0.apps()
     }
-    fn withheld_read(&self) -> Option<String> {
+    fn withheld_read(&self) -> Result<Option<String>, String> {
         self.0.withheld_read()
     }
     // A trial withholds nothing: the file is the one copy.
@@ -823,14 +828,34 @@ pub(crate) fn check_against(
     let plan = Rc::new(analyse::analyse(&ast, rows));
     let (reads, changes) = split(&plan, rows);
     let granted = plan.names();
-    let trial = strict(&line, config, &granted, &Tx::new(&stub, &plan));
+    let mut trial = strict(&line, config, &granted, &Tx::new(&stub, &plan));
+    let functions = known::known(&trial);
+    let missed = known::watch(&mut trial, Rc::clone(&functions));
+    if let Some(error) = known::unknown_in_try(&ast, &functions) {
+        return Err(refuse(format!("the script failed a trial run: {error}")));
+    }
     line.begin(stub.as_ref(), config);
     let note = match engine::eval(&trial, &mut Scope::new(), &ast, config.exec) {
-        Ok(_) => None,
         Err(_) if line.stopped.get() == Some(Stop::Interrupted) => {
             return Err(Refusal::Interrupted);
         }
+        // A call no function takes, though the script's own `catch` caught it.
+        // This arm stays Ok-only: an uncaught error keeps the engine's own
+        // words, line and position, and `known::takes` may record a miss for a
+        // call that failed by itself (it cannot always tell), which only an
+        // uncaught error shows rightly. The two depend on each other.
+        Ok(_) if missed.borrow().is_some() => {
+            let error = missed.take().unwrap_or_default();
+            return Err(refuse(format!("the script failed a trial run: {error}")));
+        }
+        Ok(_) => None,
         Err(error) => match stand_in_note(&error) {
+            // A stand-in's arithmetic stopped the trial after a `catch` hid a
+            // call no function takes: the miss is what refuses it.
+            Some(_) if missed.borrow().is_some() => {
+                let error = missed.take().unwrap_or_default();
+                return Err(refuse(format!("the script failed a trial run: {error}")));
+            }
             Some(note) => Some(note),
             None => {
                 return Err(refuse(format!(
@@ -967,6 +992,9 @@ pub struct Ran {
     /// person the app's words, and `failed` is the shell's own line in their
     /// place, the one a model turn is remembered by (#831).
     pub withheld: bool,
+    /// A row whose app call the app took and did not answer: the run may
+    /// have changed that app's state, so it did not fail cleanly.
+    pub unanswered: Option<String>,
 }
 
 /// Runs a script with the real OS, granted only the calls the plan found. Its
@@ -1027,6 +1055,7 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
         shown: line.take_shown(),
         failed,
         withheld,
+        unanswered: tx.unanswered.take(),
     }
 }
 
