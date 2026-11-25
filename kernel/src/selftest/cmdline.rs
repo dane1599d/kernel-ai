@@ -29,6 +29,8 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=shell" => Some(SelfTest::Shell),
             "test=c-prompt" => Some(SelfTest::CPrompt),
             "test=c-build" => Some(SelfTest::CBuild),
+            "test=app-build" => Some(SelfTest::AppBuild { deny: false }),
+            "test=app-build-deny" => Some(SelfTest::AppBuild { deny: true }),
             "test=scripts" => Some(SelfTest::Scripts),
             "test=act-plain" => Some(SelfTest::Act(ActCase::Plain)),
             "test=act-run" => Some(SelfTest::Act(ActCase::Run)),

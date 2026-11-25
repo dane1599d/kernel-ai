@@ -2,8 +2,8 @@
 //! cannot make IPC calls, so `app_build` starts a round and comes back for it:
 //!
 //! - `app-start <script request, lang app>`: `ok <ticket>` at once, `busy
-//!   <why>` while another job runs, or `inline` where rounds are not jobs (a
-//!   server backend, or no model), so the shell sends the `app` request itself;
+//!   <why>` while another job runs, or `inline` where rounds are not jobs (no
+//!   model, local or on a server), so the shell sends the `app` request itself;
 //! - `app-take <ticket>`: `pending`, the round's answer as a `script` reply
 //!   (`ok <answer>` or `err <kind> <why>`), or `ended <why>` for a job that is
 //!   gone: stopped, finished and taken, or a ticket of another run of llm;
@@ -12,8 +12,9 @@
 //!
 //! The local engine writes the app between requests: each step it looks for
 //! one, and [`Jobs::while_running`] answers it. A job is never pending
-//! forever: its round is bounded by the request's time limit. This is the
-//! state; llm's service loop runs the engine.
+//! forever: its round is bounded by the request's time limit. A server's
+//! round runs once `ok <ticket>` is sent, and llm answers nothing until the
+//! server has. This is the state; llm's service loop runs the engine.
 
 use crate::act::{self, ActError};
 use crate::health::{State as Health, Status};
