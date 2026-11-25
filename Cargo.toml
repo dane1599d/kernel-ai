@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 # libFuzzer targets, built only by .github/workflows/fuzz.yml (fuzz/Cargo.toml).
-exclude = ["fuzz"]
+exclude = ["fuzz", "spikes/s14-3"]
 members = [
     "acpitables",
     "agentabi",

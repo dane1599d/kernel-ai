@@ -1,0 +1,180 @@
+name: Spike S14-3 js-engines
+
+# Spike S14-3 (P6 groundwork G2): Boa 0.22 and rquickjs 0.14 (QuickJS-NG)
+# built for wasm32-wasip2 and run on Wasmtime ahead of time. test262 pass
+# rate, four Octane tests, start time, memory and size, with a native build
+# of each runner beside them. Runs on the spike branch only and is never
+# merged; the figures are in each job's log, the summary job's page and its
+# artifact. StarlingMonkey is left out (MPL-2.0).
+
+on:
+  push:
+    branches: [spike/js-engines]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  WASMTIME: v51.0.0
+  TEST262: 4db99ac4dc8924279ae07ed3246385924e878519
+  OCTANE: 570ad1ccfe86e3eecba0636c8f932ac08edec517
+  # 2 GiB of linear memory, a 16 MiB Wasm stack on a 64 MiB host stack.
+  RUN_FLAGS: -W max-memory-size=2147483648 -W max-wasm-stack=16777216
+
+jobs:
+  build:
+    name: build (${{ matrix.engine }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [boa, qjs]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain, wasm32-wasip2 and Wasmtime
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add wasm32-wasip2
+          curl -sSfL "https://github.com/bytecodealliance/wasmtime/releases/download/$WASMTIME/wasmtime-$WASMTIME-x86_64-linux.tar.xz" | tar -xJ
+          echo "$PWD/wasmtime-$WASMTIME-x86_64-linux" >> "$GITHUB_PATH"
+      - name: Build for wasm32-wasip2 and natively
+        working-directory: spikes/s14-3
+        run: |
+          cargo build --release -p s14-3-${{ matrix.engine }} --target wasm32-wasip2
+          cargo build --release -p s14-3-${{ matrix.engine }}
+      - name: Compile ahead of time, and the sizes
+        run: |
+          set -eu
+          mkdir out
+          cp spikes/s14-3/target/wasm32-wasip2/release/${{ matrix.engine }}-run.wasm out/
+          cp spikes/s14-3/target/release/${{ matrix.engine }}-run out/${{ matrix.engine }}-native
+          wasmtime --version
+          wasmtime compile -o out/${{ matrix.engine }}-run.cwasm out/${{ matrix.engine }}-run.wasm
+          wasm=$(stat -c %s out/${{ matrix.engine }}-run.wasm)
+          gz=$(gzip -9c out/${{ matrix.engine }}-run.wasm | wc -c)
+          cwasm=$(stat -c %s out/${{ matrix.engine }}-run.cwasm)
+          native=$(stat -c %s out/${{ matrix.engine }}-native)
+          printf '%s\t%s\t%s\t%s\t%s\n' ${{ matrix.engine }} "$wasm" "$gz" "$cwasm" "$native" | tee out/size.tsv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.engine }}
+          path: out/
+
+  test262:
+    name: test262 (${{ matrix.engine }}, ${{ matrix.shard }}/4)
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [boa, qjs]
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-${{ matrix.engine }}
+          path: out
+      - name: Wasmtime, PyYAML and test262
+        run: |
+          curl -sSfL "https://github.com/bytecodealliance/wasmtime/releases/download/$WASMTIME/wasmtime-$WASMTIME-x86_64-linux.tar.xz" | tar -xJ
+          echo "$PWD/wasmtime-$WASMTIME-x86_64-linux" >> "$GITHUB_PATH"
+          python3 -c 'import yaml' || pip install pyyaml
+          git init -q test262 && cd test262
+          git remote add origin https://github.com/tc39/test262
+          git fetch -q --depth 1 origin "$TEST262" && git checkout -q FETCH_HEAD
+      - name: Run (four at once)
+        run: |
+          set -eu
+          ulimit -s 65536
+          mkdir -p res
+          for sub in 0 1 2 3; do
+            k=$(( ${{ matrix.shard }} * 4 + sub ))
+            python3 spikes/s14-3/drive.py manifest test262 "res/m$k.tsv" --shard "$k" --of 16
+            python3 spikes/s14-3/drive.py run "res/r$k.tsv" "res/m$k.tsv" -- \
+              wasmtime run --allow-precompiled $RUN_FLAGS --dir test262::/t262 --dir res::/res \
+              out/${{ matrix.engine }}-run.cwasm t262 /t262 "/res/m$k.tsv" > "res/log$k.txt" 2>&1 &
+          done
+          wait
+          cat res/log*.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: t262-${{ matrix.engine }}-${{ matrix.shard }}
+          path: res/r*.tsv
+
+  perf:
+    name: Octane and start (${{ matrix.engine }})
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [boa, qjs]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-${{ matrix.engine }}
+          path: out
+      - name: Wasmtime and Octane
+        run: |
+          curl -sSfL "https://github.com/bytecodealliance/wasmtime/releases/download/$WASMTIME/wasmtime-$WASMTIME-x86_64-linux.tar.xz" | tar -xJ
+          echo "$PWD/wasmtime-$WASMTIME-x86_64-linux" >> "$GITHUB_PATH"
+          git init -q octane && cd octane
+          git remote add origin https://github.com/chromium/octane
+          git fetch -q --depth 1 origin "$OCTANE" && git checkout -q FETCH_HEAD
+          chmod +x ../out/*-native
+      - name: Start time, wasm AOT and native
+        run: |
+          set -eu
+          ulimit -s 65536
+          e=${{ matrix.engine }}
+          python3 spikes/s14-3/drive.py start start.tsv "$e-wasm" -- wasmtime run --allow-precompiled $RUN_FLAGS "out/$e-run.cwasm"
+          python3 spikes/s14-3/drive.py start start.tsv "$e-native" -- "out/$e-native"
+      - name: Octane, wasm AOT and native
+        run: |
+          set -eu
+          ulimit -s 65536
+          e=${{ matrix.engine }}
+          python3 spikes/s14-3/drive.py octane octane octane.tsv "$e-wasm" -- wasmtime run --allow-precompiled $RUN_FLAGS --dir octane::octane "out/$e-run.cwasm" bench
+          python3 spikes/s14-3/drive.py octane octane octane.tsv "$e-native" -- "out/$e-native" bench
+      - uses: actions/upload-artifact@v4
+        with:
+          name: perf-${{ matrix.engine }}
+          path: |
+            start.tsv
+            octane.tsv
+
+  summary:
+    needs: [build, test262, perf]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: all
+      - name: Summarize
+        run: |
+          set -u
+          {
+            echo "## Size (bytes): engine, wasm, wasm gzip -9, cwasm, native"
+            echo '```'; cat all/build-*/size.tsv; echo '```'
+            echo "## Start: label, wall ms (median of 20), in-guest init ms, guest memory KiB, peak RSS KiB"
+            echo '```'; cat all/perf-*/start.tsv; echo '```'
+            echo "## Octane: label, test, score (median of 3), guest memory KiB, peak RSS KiB"
+            echo '```'; cat all/perf-*/octane.tsv; echo '```'
+            for e in boa qjs; do
+              echo "## test262 $e (test/built-ins, language, annexB; a test passes when every mode it runs in passes)"
+              echo '```'
+              python3 spikes/s14-3/drive.py summarize "sum-$e.txt" all/t262-$e-*/r*.tsv > /dev/null && cat "sum-$e.txt"
+              echo '```'
+            done
+          } | tee summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: summary
+          path: summary.md

@@ -1,0 +1,11 @@
+# Spike S14-3 js-engines: its own workspace, never part of the main one.
+[workspace]
+resolver = "3"
+members = ["boa", "qjs"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

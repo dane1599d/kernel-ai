@@ -1,0 +1,12 @@
+[package]
+name = "s14-3-qjs"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "qjs-run"
+path = "src/main.rs"
+
+[dependencies]
+rquickjs = { version = "=0.14.0", features = ["loader"] }
