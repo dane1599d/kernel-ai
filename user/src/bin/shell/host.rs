@@ -409,9 +409,12 @@ impl Host for System {
     }
 
     fn revoke_rule(&self, handle: u32) -> Result<(), String> {
-        sys::grant_revoke(kabi::handle::Handle(handle))
-            .map(|_| ())
-            .map_err(|error| format!("{error:?}"))
+        let handle = kabi::handle::Handle(handle);
+        let revoked = sys::grant_revoke(handle);
+        // Its node gone, the handle can do nothing: closed, so a removed rule
+        // keeps no table entry while the shell runs (bug hunt 3, H3-30).
+        let _ = sys::handle_close(handle);
+        revoked.map(|_| ()).map_err(|error| format!("{error:?}"))
     }
 
     fn log_read(&self) -> Option<String> {

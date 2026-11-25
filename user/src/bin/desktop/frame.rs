@@ -227,7 +227,8 @@ fn source<'a>(pools: &'a [Pool], pid: u64, buffer: &Buffer) -> Option<Source<'a>
     if end > pool.size as usize {
         return None;
     }
-    // SAFETY: the pool is mapped read-only at `address` for `size` bytes, and the
+    // SAFETY: the pool is mapped at `address` for `size` bytes (`MapPool` maps
+    // only an `Shm` that holds every page of it), and the
     // buffer lies inside it (checked above and at `pool.buffer`). The client may
     // write it while it is read: the frame may tear, nothing worse.
     let data = unsafe {

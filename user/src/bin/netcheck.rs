@@ -23,6 +23,15 @@
 //!   9 KiB in one send is TooBig; port P+1, outside the handle, is refused; the
 //!   17th stream is Busy; each closes.
 //! - `stream=hold`: holds 3 connected streams and waits to be killed.
+//! - `stream=revoke`: its `NetDest` was given under a grant node. It narrows
+//!   it, echoes a line on a stream on each, then opens a third: 3 open is
+//!   the kernel's sign to revoke the node. A poll waiting across the revoke,
+//!   and from then on every use of the streams, the `NetDest` and the
+//!   narrowing, answers Revoked; closing the streams still works (bug hunt
+//!   2's H2-18).
+//! - `stream=replace`: 17 streams in turn, each refused a HANDLE_REPLACE (a
+//!   wider one, or a word with an undefined bit), which closes the handle
+//!   and so the stream: the 17th connect is not Busy (bug hunt 2's H2-17).
 
 #![no_std]
 #![no_main]
@@ -151,6 +160,8 @@ fn main() -> i32 {
         let result = match mode {
             "echo" => stream_echo(dest, port),
             "hold" => stream_hold(dest, port),
+            "revoke" => stream_revoke(dest, port),
+            "replace" => stream_replace(dest, port),
             _ => Err(format!("no stream mode {mode}")),
         };
         return match result {
@@ -218,6 +229,8 @@ fn main() -> i32 {
 
 const SERVER: [u8; 4] = [10, 0, 2, 2];
 const WAIT_MS: u64 = 10_000;
+/// `stream=revoke`'s wait for the kernel's revoke: NET_POLL's longest.
+const REVOKE_WAIT_MS: u64 = 60_000;
 
 /// A stream to the echo server, connected.
 fn open(dest: Handle, port: u16, flags: u64) -> Result<Handle, String> {
@@ -334,4 +347,112 @@ fn stream_hold(dest: Handle, port: u16) -> Result<(), String> {
     loop {
         sys::sleep_ms(1_000);
     }
+}
+
+/// `stream=revoke`: see the module's comment. `dest` was given under a grant
+/// node the kernel revokes once this holds 3 streams.
+fn stream_revoke(dest: Handle, port: u16) -> Result<(), String> {
+    let spec = format!("proto:tcp,addrs:10.0.2.2,ports:{port}");
+    let rights = (Rights::CONNECT | Rights::RESOLVE | Rights::DUPLICATE | Rights::INSPECT).bits();
+    let narrowed =
+        sys::netdest_narrow(dest, &spec, rights).map_err(|e| format!("narrowing: {e:?}"))?;
+    let first = open(dest, port, 0)?;
+    let second = open(narrowed, port, 0)?;
+    let line = b"before the revoke\n";
+    for stream in [first, second] {
+        if echo(stream, line)? != line {
+            return Err(String::from(
+                "a stream echoed other bytes before the revoke",
+            ));
+        }
+    }
+    // The third makes 3 open: the kernel revokes the node then.
+    let third =
+        sys::net_connect(dest, SERVER, port, 0).map_err(|e| format!("the third stream: {e:?}"))?;
+    // Nothing comes unasked: only the revoke ends this wait.
+    match sys::net_poll(first, kabi::net::STREAM_READABLE, REVOKE_WAIT_MS) {
+        Err(Error::Revoked) => {}
+        other => return Err(format!("a poll across the revoke gave {other:?}")),
+    }
+    let mut buf = [0u8; 16];
+    let mut addresses = [[0u8; 4]; 1];
+    let uses = [
+        ("a send on the stream", sys::net_send(first, line).map(drop)),
+        (
+            "a receive on the narrowing's stream",
+            sys::net_recv(second, &mut buf).map(drop),
+        ),
+        (
+            "a poll on the third stream",
+            sys::net_poll(third, kabi::net::STREAM_CONNECTED, 0).map(drop),
+        ),
+        (
+            "a connect on the NetDest",
+            sys::net_connect(dest, SERVER, port, 0).map(drop),
+        ),
+        (
+            "a connect on its narrowing",
+            sys::net_connect(narrowed, SERVER, port, 0).map(drop),
+        ),
+        (
+            "a narrowing of the NetDest",
+            sys::netdest_narrow(dest, &spec, rights).map(drop),
+        ),
+        (
+            "a narrowing of the narrowing",
+            sys::netdest_narrow(narrowed, &spec, rights).map(drop),
+        ),
+        (
+            "a resolve on the narrowing",
+            sys::resolve_on(narrowed, "kai.test", &mut addresses).map(drop),
+        ),
+        (
+            "a duplicate of the narrowing",
+            sys::handle_dup(narrowed, Rights::CONNECT).map(drop),
+        ),
+    ];
+    for (what, result) in uses {
+        if result != Err(Error::Revoked) {
+            return Err(format!("{what} after the revoke gave {result:?}"));
+        }
+    }
+    // A revoked stream's handle still closes, either way.
+    sys::net_close(first).map_err(|e| format!("closing the first stream: {e:?}"))?;
+    sys::handle_close(second).map_err(|e| format!("closing the second stream: {e:?}"))?;
+    sys::net_close(third).map_err(|e| format!("closing the third stream: {e:?}"))?;
+    if sys::handle_info(first).map(drop) != Err(Error::BadHandle) {
+        return Err(String::from("a closed revoked stream's handle stayed open"));
+    }
+    println!(
+        "after the revoke, a waiting poll, the streams, the NetDest and its narrowing each answered Revoked, and the streams closed"
+    );
+    Ok(())
+}
+
+/// `stream=replace`: see the module's comment.
+fn stream_replace(dest: Handle, port: u16) -> Result<(), String> {
+    let undefined = Rights::from_bits_retain(1 << 31);
+    for n in 1..=kabi::net::STREAMS_PER_PROCESS + 1 {
+        let stream = sys::net_connect(dest, SERVER, port, 0)
+            .map_err(|e| format!("stream {n} after {} refused replaces: {e:?}", n - 1))?;
+        let asked = match n % 2 {
+            0 => undefined,
+            _ => Rights::READ | Rights::DUPLICATE,
+        };
+        match sys::handle_replace(stream, asked) {
+            Err(Error::Invalid) => {}
+            other => {
+                return Err(format!(
+                    "replacing stream {n} with {asked:?} gave {other:?}"
+                ));
+            }
+        }
+        if sys::handle_info(stream).map(drop) != Err(Error::BadHandle) {
+            return Err(format!("a refused replace left stream {n}'s handle open"));
+        }
+    }
+    println!(
+        "17 streams were each refused a HANDLE_REPLACE, wider or with an undefined bit, which closed them: none was Busy"
+    );
+    Ok(())
 }

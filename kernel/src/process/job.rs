@@ -16,10 +16,11 @@ use super::{ExitReason, Limits, MAX_ARGS, Process, SpawnRequest, identity, kill,
 use crate::handle::{self, grant::Kernel};
 use crate::{hpet, threads};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use kabi::handle::{Handle, Kind, Rights};
 use kabi::{Error, ExitRecord, JobSpawn};
 use sched::Tid;
-use spin::Mutex;
+use table::Table;
 
 /// A `Job` object: the one program its CREATE starts.
 pub const SCRIPTRUN: u64 = 1;
@@ -56,20 +57,56 @@ enum PoolState {
     Running,
 }
 
-static POOL: Mutex<Vec<Pooled>> = Mutex::new(Vec::new());
+static POOL: Table<Vec<Pooled>> = Table::new(Vec::new());
 /// Pooled children blocked in JOB_TAKE, as (pid, thread).
-static TAKERS: Mutex<Vec<(u64, Tid)>> = Mutex::new(Vec::new());
+static TAKERS: Table<Vec<(u64, Tid)>> = Table::new(Vec::new());
 
 /// Exit records waiting for their parent's JOB_WAIT, as (parent pid, record).
-static EXITS: Mutex<Vec<(u64, ExitRecord)>> = Mutex::new(Vec::new());
+static EXITS: Table<Vec<(u64, ExitRecord)>> = Table::new(Vec::new());
 /// Parents blocked in JOB_WAIT, as (parent pid, thread).
-static WAITERS: Mutex<Vec<(u64, Tid)>> = Mutex::new(Vec::new());
+static WAITERS: Table<Vec<(u64, Tid)>> = Table::new(Vec::new());
 
-fn locked<T, R>(lock: &Mutex<T>, f: impl FnOnce(&mut T) -> R) -> R {
-    threads::preempt_disable();
-    let result = f(&mut lock.lock());
-    threads::preempt_enable();
-    result
+/// Bumped after each record [`EXITS`] gets, and after each claim [`POOL`]
+/// records: a JOB_WAIT or JOB_TAKE asleep checks these in its `ready()`, which
+/// may not take a table's lock (`threads::ready`), and looks under the lock
+/// once it wakes.
+static EXITS_ADDED: AtomicU64 = AtomicU64::new(0);
+static CLAIMS_MADE: AtomicU64 = AtomicU64::new(0);
+
+/// The tables, locked only through [`Table::locked`]: with preemption off, and
+/// never in a `ready()`, where taking one could freeze two CPUs.
+mod table {
+    use crate::threads;
+    use spin::Mutex;
+
+    pub(super) struct Table<T>(Mutex<T>);
+
+    impl<T> Table<T> {
+        pub(super) const fn new(value: T) -> Self {
+            Self(Mutex::new(value))
+        }
+
+        pub(super) fn locked<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+            threads::ready::not_in_ready(&"a job table");
+            threads::preempt_disable();
+            let result = f(&mut self.0.lock());
+            threads::preempt_enable();
+            result
+        }
+    }
+}
+
+/// Wakes the threads `waiting` names for `pid`.
+fn wake_for(waiting: &Table<Vec<(u64, Tid)>>, pid: u64) {
+    let woken: Vec<Tid> = waiting.locked(|list| {
+        list.iter()
+            .filter(|(p, _)| *p == pid)
+            .map(|&(_, tid)| tid)
+            .collect()
+    });
+    for tid in woken {
+        x86_64::instructions::interrupts::without_interrupts(|| threads::wake(tid));
+    }
 }
 
 /// The Job `raw` names in `slot`'s table, if it carries `right` and starts
@@ -165,7 +202,9 @@ pub fn wait(slot: usize, raw: u64, out: u64, timeout_ms: u64) -> Result<u64, Err
     let tid = threads::current_tid();
     let deadline = hpet::nanos().saturating_add(timeout_ms.min(MAX_WAIT_MS) * 1_000_000);
     loop {
-        let record = locked(&EXITS, |exits| {
+        // Read before the look below: a record added after it bumps this.
+        let seen = EXITS_ADDED.load(Ordering::SeqCst);
+        let record = EXITS.locked(|exits| {
             let at = exits.iter().position(|(parent, _)| *parent == me)?;
             Some(exits.remove(at).1)
         });
@@ -186,18 +225,18 @@ pub fn wait(slot: usize, raw: u64, out: u64, timeout_ms: u64) -> Result<u64, Err
         if hpet::nanos() >= deadline {
             return Ok(0);
         }
-        locked(&WAITERS, |waiters| waiters.push((me, tid)));
+        WAITERS.locked(|waiters| waiters.push((me, tid)));
         threads::sleep_until_unless(deadline, || {
-            super::killed(slot) || EXITS.lock().iter().any(|(parent, _)| *parent == me)
+            super::killed(slot) || EXITS_ADDED.load(Ordering::SeqCst) != seen
         });
-        locked(&WAITERS, |waiters| waiters.retain(|&(_, t)| t != tid));
+        WAITERS.locked(|waiters| waiters.retain(|&(_, t)| t != tid));
     }
 }
 
 /// A job child ended: it leaves the pool, and its record waits for its parent,
 /// which is woken.
 pub(super) fn on_exit(process: &Process, reason: ExitReason, detail: u64) {
-    locked(&POOL, |pool| pool.retain(|p| p.pid != process.pid));
+    POOL.locked(|pool| pool.retain(|p| p.pid != process.pid));
     report(process.spawner, process, reason, detail);
 }
 
@@ -215,17 +254,9 @@ fn report(parent: u64, child: &Process, reason: ExitReason, detail: u64) {
     if !alive {
         return;
     }
-    locked(&EXITS, |exits| exits.push((parent, record)));
-    let woken: Vec<Tid> = locked(&WAITERS, |waiters| {
-        waiters
-            .iter()
-            .filter(|(p, _)| *p == parent)
-            .map(|&(_, tid)| tid)
-            .collect()
-    });
-    for tid in woken {
-        x86_64::instructions::interrupts::without_interrupts(|| threads::wake(tid));
-    }
+    EXITS.locked(|exits| exits.push((parent, record)));
+    EXITS_ADDED.fetch_add(1, Ordering::SeqCst);
+    wake_for(&WAITERS, parent);
 }
 
 /// The process `pid` ended: its job children are killed and their records dropped.
@@ -242,7 +273,7 @@ pub(super) fn on_parent_exit(pid: u64) {
     for &child in &children[..count] {
         let _ = kill(child, ExitReason::Killed);
     }
-    locked(&EXITS, |exits| exits.retain(|(parent, _)| *parent != pid));
+    EXITS.locked(|exits| exits.retain(|(parent, _)| *parent != pid));
 }
 
 /// JOB_POOL: keeps up to `n` (at most [`MAX_POOL`]) idle `scriptrun` children
@@ -252,9 +283,7 @@ pub fn pool(slot: usize, raw: u64, n: u64) -> Result<u64, Error> {
     let parent = identity(slot).pid;
     let want = usize::try_from(n).unwrap_or(MAX_POOL).min(MAX_POOL);
     loop {
-        let held = locked(&POOL, |pool| {
-            pool.iter().filter(|p| p.parent == parent).count()
-        });
+        let held = POOL.locked(|pool| pool.iter().filter(|p| p.parent == parent).count());
         if held >= want {
             return Ok(held as u64);
         }
@@ -264,7 +293,7 @@ pub fn pool(slot: usize, raw: u64, n: u64) -> Result<u64, Error> {
             .find(|name| super::named(name).is_empty())
             .ok_or(Error::Busy)?;
         let pid = start(slot, &name, b"mode=pooled", &[])?;
-        locked(&POOL, |pool| {
+        POOL.locked(|pool| {
             pool.push(Pooled {
                 pid,
                 parent,
@@ -280,7 +309,7 @@ pub fn claim(slot: usize, raw: u64, request_ptr: u64) -> Result<u64, Error> {
     job(slot, raw, Rights::CREATE)?;
     let request = read_request(slot, request_ptr)?;
     let parent = identity(slot);
-    let idle = locked(&POOL, |pool| {
+    let idle = POOL.locked(|pool| {
         pool.iter()
             .find(|p| p.parent == parent.pid && matches!(p.state, PoolState::Idle))
             .map(|p| p.pid)
@@ -296,30 +325,20 @@ pub fn claim(slot: usize, raw: u64, request_ptr: u64) -> Result<u64, Error> {
         .ok_or(Error::Dead)?;
     let moved = handle::take_for(slot, &request.handles, parent.limits.caps)?;
     handle::give_at_start(child, moved);
-    locked(&POOL, |pool| {
+    POOL.locked(|pool| {
         if let Some(p) = pool.iter_mut().find(|p| p.pid == pid) {
             p.state = PoolState::Claimed(args);
         }
     });
-    let woken: Vec<Tid> = locked(&TAKERS, |takers| {
-        takers
-            .iter()
-            .filter(|(p, _)| *p == pid)
-            .map(|&(_, tid)| tid)
-            .collect()
-    });
-    for tid in woken {
-        x86_64::instructions::interrupts::without_interrupts(|| threads::wake(tid));
-    }
+    CLAIMS_MADE.fetch_add(1, Ordering::SeqCst);
+    wake_for(&TAKERS, pid);
     Ok(pid)
 }
 
 /// No idle child: a new pooled one, started with the claim's handles and its
 /// arguments waiting, while the pool has room; else a one-off `scriptrun`.
 fn claim_new(slot: usize, parent: u64, request: &Request) -> Result<u64, Error> {
-    let held = locked(&POOL, |pool| {
-        pool.iter().filter(|p| p.parent == parent).count()
-    });
+    let held = POOL.locked(|pool| pool.iter().filter(|p| p.parent == parent).count());
     let name = (1..=MAX_POOL)
         .map(|k| alloc::format!("{PROGRAM}-{k}"))
         .find(|name| super::named(name).is_empty())
@@ -337,13 +356,17 @@ fn claim_new(slot: usize, parent: u64, request: &Request) -> Result<u64, Error> 
         .map_err(|_| Error::NoMemory)?;
     args.extend_from_slice(&request.args[..request.len]);
     let pid = start(slot, &name, b"mode=pooled", &request.handles)?;
-    locked(&POOL, |pool| {
+    POOL.locked(|pool| {
         pool.push(Pooled {
             pid,
             parent,
             state: PoolState::Claimed(args),
         })
     });
+    // The child may already wait in JOB_TAKE, not in the pool yet: woken, it
+    // finds its claim rather than sleeping out its wait.
+    CLAIMS_MADE.fetch_add(1, Ordering::SeqCst);
+    wake_for(&TAKERS, pid);
     Ok(pid)
 }
 
@@ -373,12 +396,10 @@ pub fn take(slot: usize, buf: u64, cap: u64) -> Result<u64, Error> {
     }
     let tid = threads::current_tid();
     let deadline = hpet::nanos().saturating_add(MAX_TAKE_MS * 1_000_000);
-    let claimed = |pool: &Vec<Pooled>| {
-        pool.iter()
-            .any(|p| p.pid == me.pid && matches!(p.state, PoolState::Claimed(..)))
-    };
     loop {
-        let args = locked(&POOL, |pool| {
+        // Read before the look below: a claim made after it bumps this.
+        let seen = CLAIMS_MADE.load(Ordering::SeqCst);
+        let args = POOL.locked(|pool| {
             let p = pool.iter_mut().find(|p| p.pid == me.pid)?;
             match core::mem::replace(&mut p.state, PoolState::Running) {
                 PoolState::Claimed(args) => Some(args),
@@ -401,9 +422,11 @@ pub fn take(slot: usize, buf: u64, cap: u64) -> Result<u64, Error> {
         if hpet::nanos() >= deadline {
             return Err(Error::TimedOut);
         }
-        locked(&TAKERS, |takers| takers.push((me.pid, tid)));
-        threads::sleep_until_unless(deadline, || super::killed(slot) || claimed(&POOL.lock()));
-        locked(&TAKERS, |takers| takers.retain(|&(_, t)| t != tid));
+        TAKERS.locked(|takers| takers.push((me.pid, tid)));
+        threads::sleep_until_unless(deadline, || {
+            super::killed(slot) || CLAIMS_MADE.load(Ordering::SeqCst) != seen
+        });
+        TAKERS.locked(|takers| takers.retain(|&(_, t)| t != tid));
     }
 }
 
@@ -411,7 +434,7 @@ pub fn take(slot: usize, buf: u64, cap: u64) -> Result<u64, Error> {
 /// Exited, detail `code`), closes every handle it holds, and goes back to idle.
 pub fn done(slot: usize, code: u64) -> Result<u64, Error> {
     let me = identity(slot);
-    let was_running = locked(&POOL, |pool| {
+    let was_running = POOL.locked(|pool| {
         let p = pool.iter_mut().find(|p| p.pid == me.pid)?;
         let running = matches!(p.state, PoolState::Running);
         if running {

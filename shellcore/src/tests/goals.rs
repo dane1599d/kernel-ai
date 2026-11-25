@@ -449,3 +449,39 @@ fn goal_ids_are_never_used_twice_after_a_shell_restart() {
     let set = shell.eval(&format!("answer {id} allow once={once}"));
     assert!(set.text.starts_with("Goal 2 set"), "{set:?}");
 }
+
+/// #16: a `by` that fits a u64 but not one added to now is refused, never
+/// an overflow (an abort in a debug build).
+#[test]
+fn a_deadline_too_far_off_to_add_to_now_is_refused() {
+    let host = FakeHost::new();
+    host.clock.set(60_000_000_000);
+    let mut shell = shell(&host);
+    host.calls.borrow_mut().push_back(call(
+        r#"{"name":"goal_set","arguments":{"text":"tidy notes/q3","steps":3,"tokens":100,"wall":"1h","by":"307445734561825m"}}"#,
+    ));
+    let reply = shell.eval("keep tidying the files in notes/q3 until much later");
+    assert!(
+        !reply.ok && reply.text.contains("90m, 2h or 1d"),
+        "{reply:?}"
+    );
+    assert!(shell.pending.is_none());
+}
+
+/// #18: a goal step's path the folder check calls inside is inside where
+/// the fs rows act too: `~/` is home for both.
+#[test]
+fn a_path_inside_a_goals_folders_is_inside_them_where_the_files_are() {
+    let folders = [String::from("notes")];
+    for path in ["~/notes/x", "~/notes", "/home/user/notes/x", "notes/x", "~"] {
+        if !crate::goalscope::path_inside(&folders, path) {
+            continue;
+        }
+        let at = crate::script::home_path(path);
+        assert!(
+            at.is_some_and(|at| at == "notes" || at.starts_with("notes/")),
+            "{path} passes the check but is {at:?} to the fs rows"
+        );
+    }
+    assert_eq!(crate::script::home_path("~"), Some(""));
+}

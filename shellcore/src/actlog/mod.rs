@@ -291,6 +291,19 @@ impl ActLog {
         self.entries().rev().find(|e| e.live()).map(|e| e.id)
     }
 
+    /// The entry a bare `undo` reverts: the newest live entry, unless that
+    /// is the undo of an entry an earlier `undo` stopped partway (still live,
+    /// with changes left). Then that entry, so `undo` goes on with it rather
+    /// than redoing what was just put back (bug-hunt-3 H3-22).
+    pub fn undo_target(&self) -> Option<u64> {
+        let newest = self.newest_live()?;
+        let partway = self
+            .get(newest)
+            .and_then(|e| e.of)
+            .filter(|&of| self.get(of).is_some_and(Entry::live));
+        Some(partway.unwrap_or(newest))
+    }
+
     /// The newest live entry of `form`.
     pub fn newest_live_of(&self, form: Form) -> Option<u64> {
         self.entries()

@@ -194,7 +194,11 @@ impl Shell {
         let number = |arg: &str| value(values, arg).and_then(|v| v.parse::<u64>().ok());
         let now = self.host.now_ns() / 1_000_000;
         let by_ms = match value(values, "by") {
-            Some(by) => Some(now + crate::goalscope::duration_ms(by)?),
+            // Checked: a duration that fits a u64 may not fit one added to now.
+            Some(by) => Some(
+                now.checked_add(crate::goalscope::duration_ms(by)?)
+                    .ok_or_else(|| format!("{by:?}: write a time as 90m, 2h or 1d"))?,
+            ),
             None => None,
         };
         let budget = goalcore::Budget {

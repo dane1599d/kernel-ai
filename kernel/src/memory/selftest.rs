@@ -27,7 +27,24 @@ pub fn run() -> Result<(), &'static str> {
     map_unmap_protect()?;
     heap_stress()?;
     clock_on_real_accessed_bits()?;
+    physical_window_refuses_garbage()?;
     log!("self-test: memory checks passed");
+    Ok(())
+}
+
+/// Bug hunt 3 H3-3: garbage firmware addresses are refused, not mapped. (Whether
+/// the device window stays put is not checked: another CPU may map through it
+/// meanwhile.)
+fn physical_window_refuses_garbage() -> Result<(), &'static str> {
+    let limit = super::PHYS_LIMIT.load(core::sync::atomic::Ordering::Relaxed);
+    let wraps = [(u64::MAX - 3, 4), (u64::MAX, 4)];
+    let past = [(1 << 52, 4), (limit, 1), (limit - 4, 8)];
+    for (phys, len) in wraps.into_iter().chain(past) {
+        if super::map_physical(phys, len, READ_ONLY).is_ok() {
+            return Err("map_physical took an address the CPU cannot map");
+        }
+    }
+    log!("self-test: map_physical refused addresses past MAXPHYADDR and past 2^64");
     Ok(())
 }
 

@@ -126,6 +126,7 @@ mod net;
 mod net_commands;
 mod net_download_tests;
 mod net_grant_tests;
+mod net_hold_tests;
 mod net_pf_tests;
 mod net_tests;
 mod net_throughput_tests;
@@ -139,6 +140,7 @@ mod platform;
 mod pointer;
 mod port;
 mod power;
+mod power_tests;
 mod process;
 mod profile_floor_tests;
 mod profile_tests;
@@ -252,6 +254,12 @@ fn test_boot() -> bool {
 fn run_case(check: impl FnOnce() -> Result<(), &'static str>) -> ! {
     if let Err(message) = check() {
         fail(message);
+    }
+    // Debug builds count each lock a `ready()` took that is held elsewhere
+    // with interrupts on: one could have frozen two CPUs.
+    if let Some((count, lock)) = threads::ready::ready_locks() {
+        log!("threads: a ready() took {lock}, {count} such locks in all");
+        fail("a ready() took a lock that is held with interrupts on");
     }
     test_exit(ExitCode::Success)
 }
@@ -488,6 +496,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Bigmap => run_case(bigmap_tests::check),
         SelfTest::IcountProbe => run_case(|| icount_tests::check(cmdline())),
         SelfTest::Reboot => power::reboot(),
+        SelfTest::RebootMemory => run_case(power_tests::check),
         // A fault resets the machine; with `panic=reset` even in test mode.
         SelfTest::PanicReset => {
             if cmdline().split_whitespace().any(|word| word == "what=fail") {
@@ -575,6 +584,8 @@ fn init_devices() -> &'static acpitables::Platform {
         fail("Limine did not provide the ACPI RSDP");
     };
     let result = platform::init(rsdp, hhdm).and_then(|platform| {
+        // First, so any later failure's reboot finds the register mapped.
+        power::init(platform);
         let apic_id = apic::init_local(platform)?;
         smp::set_boot_lapic(u32::from(apic_id));
         let hpet = platform

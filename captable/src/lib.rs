@@ -75,6 +75,14 @@ pub enum Error {
     Revoked,
 }
 
+/// A refused [`Table::replace_raw`]: why, and the entry it closed anyway
+/// (`None` when the handle named nothing, so nothing was closed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Refused {
+    pub error: Error,
+    pub closed: Option<Entry>,
+}
+
 impl From<Error> for kabi::Error {
     fn from(error: Error) -> kabi::Error {
         match error {
@@ -246,7 +254,9 @@ impl Table {
 
     /// [`Table::dup`], under the grant node `grant` instead, so revoking it
     /// revokes the new handle (ADR 0001 D5, D6). The caller checks that it may
-    /// give handles under `grant`.
+    /// give handles under `grant`, and that `grant` is the source's own node or
+    /// below it ([`grant::Tree::may_give_under`]), so revoking that node still
+    /// revokes the copy.
     pub fn dup_under(
         &mut self,
         handle: Handle,
@@ -285,14 +295,36 @@ impl Table {
         rights: Rights,
         live: &dyn Live,
     ) -> Result<Handle, Error> {
-        let entry = self.close(handle)?;
+        self.replace_raw(handle, Some(rights), live)
+            .map_err(|refused| refused.error)
+    }
+
+    /// [`Table::replace`] for a rights word as a call gave it: `None` when it
+    /// has a bit no right has. The old handle is closed either way, and a
+    /// refusal hands back the entry it closed, so the caller lets go of what
+    /// it named as a close would: a `Stream`'s socket (bug hunt 2's H2-17).
+    pub fn replace_raw(
+        &mut self,
+        handle: Handle,
+        rights: Option<Rights>,
+        live: &dyn Live,
+    ) -> Result<Handle, Refused> {
+        let entry = self.close(handle).map_err(|error| Refused {
+            error,
+            closed: None,
+        })?;
+        let refuse = |error| Refused {
+            error,
+            closed: Some(entry),
+        };
+        let rights = rights.ok_or_else(|| refuse(Error::Invalid))?;
         if entry.grant.is_some_and(|grant| !live.alive(grant)) {
-            return Err(Error::Revoked);
+            return Err(refuse(Error::Revoked));
         }
         if !entry.rights.contains(rights) {
-            return Err(Error::Invalid);
+            return Err(refuse(Error::Invalid));
         }
-        self.insert(Entry { rights, ..entry })
+        self.insert(Entry { rights, ..entry }).map_err(refuse)
     }
 
     /// Closes `handle`; its entry, as it was.

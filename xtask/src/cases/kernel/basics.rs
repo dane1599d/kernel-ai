@@ -58,6 +58,7 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
             "ipc-queued: a call queued on a server that died ended Cancelled in ",
             "handles: a refused move's handle came back under its value with its rights, an insert meanwhile notwithstanding",
             "handles: revoking a grant ended a call in flight through it",
+            "handles: Allows left no ONCE handle or request behind, and a rule node went with its shell",
             "handles: M1: bit check ",
             "handles: M2: request node, 8 handles to 2 processes, revoke: ",
         ],

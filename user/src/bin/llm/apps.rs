@@ -49,11 +49,23 @@ impl Apps {
                 println!("llm: {why}");
                 continue;
             }
+            let rows = self.rows.rows_of(app);
+            // One app's rows the decoder cannot steer leave that app out, not
+            // every app (audit, lane M items 3 and 5).
+            if !local::act::decodable(&rows) {
+                println!(
+                    "llm: {app}'s rows have an argument the model cannot be held to; left out"
+                );
+                continue;
+            }
             groups.push(AppGroup {
                 app: String::from(*app),
-                rows: self.rows.rows_of(app),
+                rows,
             });
         }
+        // These apps are tried once: a failure is not built, and leaked, again
+        // on every request.
+        self.key = key;
         let grammar = match local::act::grammar_counted(&groups, count) {
             Ok(grammar) => grammar,
             Err(error) => {
@@ -68,7 +80,6 @@ impl Apps {
                 left_out.join(" ")
             );
         }
-        self.key = key;
         println!("llm: {} apps in the act prompt", grammar.apps().len());
         Some(grammar)
     }

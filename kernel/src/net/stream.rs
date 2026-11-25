@@ -12,12 +12,20 @@
 //!   into [`BULK_RX_BUFFER`]; smoltcp offers the peer a window scaled to fit.
 //! - **A process that ends** has every stream it held aborted ([`on_exit`]). A
 //!   closed stream lingers only until its close is done ([`reap`]).
+//! - **A revoked grant** (bug hunt 2's H2-18): a stream connected on a
+//!   `NetDest` given under a grant node is under that node too. Revoking it
+//!   aborts the stream at once ([`on_revoke`]): the peer gets a reset, the
+//!   buffers are freed, and nothing more leaves or arrives. Its handle stays
+//!   until closed and answers Revoked to every use; a NET_POLL waiting on it
+//!   returns Revoked at its next look. It no longer counts against the limits.
 //!
 //! Locks: `NET`, then `STREAMS`, never the other way.
 
 use super::{NET, Net, next_port};
+use crate::handle::grant::Kernel;
 use crate::hpet;
 use alloc::vec::Vec;
+use captable::grant::{GrantRef, Live};
 use core::net::Ipv4Addr;
 use kabi::Error;
 use smoltcp::iface::SocketHandle;
@@ -58,12 +66,29 @@ pub mod ready {
 
 struct Stream {
     owner: u64,
-    socket: SocketHandle,
+    /// `None` once its grant was revoked ([`on_revoke`]): the socket is
+    /// aborted and gone, and the place waits for the handle to close, so its
+    /// id never names a later stream meanwhile.
+    socket: Option<SocketHandle>,
     bulk: bool,
     /// The day's bytes of the agent `NetDest` it was connected on, if any.
     meter: Option<super::dest::Meter>,
     /// It has been established at least once.
     connected: bool,
+    /// The grant node the `NetDest` it was connected on was given under.
+    grant: Option<GrantRef>,
+}
+
+impl Stream {
+    /// It has a socket: it counts against the limits.
+    fn open(&self) -> bool {
+        self.socket.is_some()
+    }
+
+    /// It has a socket and its grant node was revoked: [`on_revoke`] aborts it.
+    fn revoked(&self) -> bool {
+        self.open() && self.grant.is_some_and(|grant| !Kernel.alive(grant))
+    }
 }
 
 struct Streams {
@@ -83,13 +108,15 @@ fn index(id: u64) -> Option<usize> {
 
 /// Opens a stream for `owner` to `addr`:`port`, which the caller checked
 /// against its `NetDest`; `bulk` gives it the larger buffer, and `meter` is
-/// that `NetDest`'s day's bytes, if it is an agent's. Its id.
+/// that `NetDest`'s day's bytes, if it is an agent's. `grant` is the node
+/// that `NetDest` was given under: Revoked if it is gone. Its id.
 pub fn connect(
     owner: u64,
     addr: Ipv4Addr,
     port: u16,
     bulk: bool,
     meter: Option<super::dest::Meter>,
+    grant: Option<GrantRef>,
 ) -> Result<u64, Error> {
     let mut guard = NET.lock();
     let net = guard.as_mut().ok_or(Error::Unavailable)?;
@@ -97,8 +124,13 @@ pub fn connect(
         return Err(Error::Unavailable);
     }
     let mut streams = STREAMS.lock();
-    let live = streams.open.iter().flatten();
-    let (mine, bulks, my_bulks) = live.fold((0, 0, 0), |(m, b, mb), s| {
+    // Under this lock, which [`on_revoke`] takes only after the generations
+    // moved on: a revoke is either seen here or finds the stream there.
+    if grant.is_some_and(|grant| !Kernel.alive(grant)) {
+        return Err(Error::Revoked);
+    }
+    let live = streams.open.iter().flatten().filter(|s| s.open());
+    let (mine, bulks, my_bulks) = live.clone().fold((0, 0, 0), |(m, b, mb), s| {
         let own = s.owner == owner;
         (
             m + usize::from(own),
@@ -106,7 +138,7 @@ pub fn connect(
             mb + usize::from(own && s.bulk),
         )
     });
-    let total = streams.open.iter().flatten().count();
+    let total = live.count();
     let bulk_full = bulks >= MAX_BULK || my_bulks >= MAX_BULK_PER_PROCESS;
     if mine >= MAX_PER_PROCESS || total >= MAX_STREAMS || (bulk && bulk_full) {
         return Err(Error::Busy);
@@ -119,10 +151,11 @@ pub fn connect(
     let socket = start(net, socket, addr, port)?;
     let stream = Stream {
         owner,
-        socket,
+        socket: Some(socket),
         bulk,
         meter,
         connected: false,
+        grant,
     };
     let at = match streams.open.iter().position(Option::is_none) {
         Some(at) => at,
@@ -161,7 +194,8 @@ fn start(
     Ok(net.sockets.add(socket))
 }
 
-/// Runs `f` on `owner`'s stream `id` with the interface just polled.
+/// Runs `f` on `owner`'s stream `id` with the interface just polled; Revoked
+/// once its grant was ([`on_revoke`]).
 fn with<R>(
     owner: u64,
     id: u64,
@@ -175,7 +209,8 @@ fn with<R>(
         .and_then(|at| streams.open.get_mut(at)?.as_mut())
         .filter(|s| s.owner == owner)
         .ok_or(Error::BadHandle)?;
-    let socket = net.sockets.get_mut::<tcp::Socket>(stream.socket);
+    let socket = stream.socket.ok_or(Error::Revoked)?;
+    let socket = net.sockets.get_mut::<tcp::Socket>(socket);
     if matches!(
         socket.state(),
         tcp::State::Established | tcp::State::CloseWait
@@ -275,7 +310,7 @@ pub fn poll(
 }
 
 /// NET_CLOSE: closes `owner`'s stream `id`. What it sent still goes out; the
-/// socket stays until its close is done.
+/// socket stays until its close is done. A revoked stream's place is freed.
 pub fn close(owner: u64, id: u64) -> Result<(), Error> {
     let mut guard = NET.lock();
     let net = guard.as_mut().ok_or(Error::Unavailable)?;
@@ -291,16 +326,27 @@ pub fn close(owner: u64, id: u64) -> Result<(), Error> {
     let Some(stream) = streams.open[at].take() else {
         return Err(Error::BadHandle);
     };
-    net.sockets.get_mut::<tcp::Socket>(stream.socket).close();
-    if streams.closing.len() == MAX_CLOSING {
-        let oldest = streams.closing.remove(0);
-        net.sockets.get_mut::<tcp::Socket>(oldest).abort();
-        net.sockets.remove(oldest);
-    }
-    streams.closing.push(stream.socket);
+    // A revoked stream's socket went at the revoke.
+    let Some(socket) = stream.socket else {
+        return Ok(());
+    };
+    net.sockets.get_mut::<tcp::Socket>(socket).close();
+    linger(net, &mut streams.closing, socket);
     drop(streams);
     net.poll();
     Ok(())
+}
+
+/// Keeps closed `socket` until [`reap`] finds its close done (its FIN goes
+/// out at the next poll); past [`MAX_CLOSING`] the oldest is aborted and
+/// dropped.
+fn linger(net: &mut Net, closing: &mut Vec<SocketHandle>, socket: SocketHandle) {
+    if closing.len() == MAX_CLOSING {
+        let oldest = closing.remove(0);
+        net.sockets.get_mut::<tcp::Socket>(oldest).abort();
+        net.sockets.remove(oldest);
+    }
+    closing.push(socket);
 }
 
 /// Every stream `pid` held is aborted and gone: a process that ends keeps
@@ -314,13 +360,53 @@ pub fn on_exit(pid: u64) {
     for slot in streams.open.iter_mut() {
         if slot.as_ref().is_some_and(|s| s.owner == pid)
             && let Some(stream) = slot.take()
+            && let Some(socket) = stream.socket
         {
-            net.sockets.get_mut::<tcp::Socket>(stream.socket).abort();
-            net.sockets.remove(stream.socket);
+            net.sockets.get_mut::<tcp::Socket>(socket).abort();
+            net.sockets.remove(socket);
         }
     }
     drop(streams);
     net.poll();
+}
+
+/// After a grant node was revoked (`handle::grant::revoke`): every stream
+/// connected on a `NetDest` given under a dead node is aborted, so the peer
+/// gets a reset, its buffers go, and nothing more leaves or arrives. Its place
+/// stays, socket-less, until its handle closes, and every use answers Revoked.
+pub fn on_revoke() {
+    // Most revokes end a request that held no stream: no need for NET then.
+    // A stream connected after this look sees the revoke itself (`connect`).
+    if !STREAMS.lock().open.iter().flatten().any(Stream::revoked) {
+        return;
+    }
+    let mut guard = NET.lock();
+    let Some(net) = guard.as_mut() else {
+        return;
+    };
+    // Not through `linger`: past its 32 a revoke reaching more streams would
+    // drop some before their reset went, and cut others' closes short. Only
+    // streams with a socket are aborted, and those are never more than the
+    // limit.
+    let mut aborted = [None; MAX_STREAMS];
+    let mut streams = STREAMS.lock();
+    let revoked = streams
+        .open
+        .iter_mut()
+        .flatten()
+        .filter(|stream| stream.revoked());
+    for (place, stream) in aborted.iter_mut().zip(revoked) {
+        if let Some(socket) = stream.socket.take() {
+            net.sockets.get_mut::<tcp::Socket>(socket).abort();
+            *place = Some(socket);
+        }
+    }
+    drop(streams);
+    // One poll sends each aborted socket's reset; then the sockets go.
+    net.poll();
+    for socket in aborted.into_iter().flatten() {
+        net.sockets.remove(socket);
+    }
 }
 
 /// Removes the closed streams whose close is done; called after each poll.
@@ -338,10 +424,21 @@ pub(super) fn reap(net: &mut Net) {
     });
 }
 
-/// Streams open now: `owner`'s, and in all.
+/// Streams open now, with a socket: `owner`'s, and in all.
 pub fn count(owner: u64) -> (usize, usize) {
     let streams = STREAMS.lock();
-    let open = streams.open.iter().flatten();
+    let open = streams.open.iter().flatten().filter(|s| s.open());
     let mine = open.clone().filter(|s| s.owner == owner).count();
     (mine, open.count())
+}
+
+/// Places of `owner`'s revoked streams whose handles are not closed yet.
+pub fn revoked_places(owner: u64) -> usize {
+    let streams = STREAMS.lock();
+    streams
+        .open
+        .iter()
+        .flatten()
+        .filter(|s| s.owner == owner && !s.open())
+        .count()
 }

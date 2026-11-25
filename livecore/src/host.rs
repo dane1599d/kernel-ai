@@ -588,7 +588,9 @@ impl<E: Env> Host<E> {
                 (mode, Ok(_)) => (mode, format!("ok shown {name}")),
                 (mode, Err(why)) => (mode, why),
             },
-            Mode::Serving(mut version) => match self.core.reload(&version, true) {
+            // Not quiet: the new instance is the one that serves on, and logs
+            // as the serving version does.
+            Mode::Serving(mut version) => match self.core.reload(&version, false) {
                 Ok(instance) => {
                     version.instance = instance;
                     self.core

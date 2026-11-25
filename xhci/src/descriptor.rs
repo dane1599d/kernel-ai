@@ -7,10 +7,13 @@ use crate::Error;
 /// An 8-byte SETUP packet.
 pub type Request = [u8; 8];
 
+const CLEAR_FEATURE: u8 = 1;
 const GET_DESCRIPTOR: u8 = 6;
 const SET_CONFIGURATION: u8 = 9;
 const SET_IDLE: u8 = 0x0A;
 const SET_PROTOCOL: u8 = 0x0B;
+/// The feature selector CLEAR_FEATURE takes for an endpoint's halt.
+const ENDPOINT_HALT: u16 = 0;
 
 pub const DEVICE: u8 = 1;
 pub const CONFIGURATION: u8 = 2;
@@ -71,6 +74,12 @@ pub fn set_protocol(interface: u8, boot: bool) -> Request {
 /// SET_IDLE with duration 0: report only on change, for every report.
 pub fn set_idle(interface: u8) -> Request {
     request(0x21, SET_IDLE, 0, u16::from(interface), 0)
+}
+
+/// CLEAR_FEATURE(ENDPOINT_HALT) on endpoint `address`: ends a stall on the
+/// device and resets the endpoint's data toggle to DATA0 (USB 2.0 9.4.1, 9.4.5).
+pub fn clear_endpoint_halt(address: u8) -> Request {
+    request(0x02, CLEAR_FEATURE, ENDPOINT_HALT, u16::from(address), 0)
 }
 
 /// Whether a request moves data from the device.
@@ -253,6 +262,8 @@ mod tests {
         assert_eq!(set_idle(0), [0x21, 0x0A, 0, 0, 0, 0, 0, 0]);
         assert!(reads(&get_descriptor(DEVICE, 0, 8)));
         assert!(!reads(&set_idle(0)));
+        assert_eq!(clear_endpoint_halt(0x81), [0x02, 1, 0, 0, 0x81, 0, 0, 0]);
+        assert!(!reads(&clear_endpoint_halt(0x81)));
         assert_eq!(length(&get_descriptor(CONFIGURATION, 0, 0x122)), 0x122);
     }
 
