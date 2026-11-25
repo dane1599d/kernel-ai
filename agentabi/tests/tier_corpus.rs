@@ -281,12 +281,19 @@ const PERMS: &[(&str, &str)] = &[
     ("rules", "grants.read"),
     ("browser_open", "net.connect"),
     ("net_fetch", "net.connect"),
+    ("net_send", "net.send"),
     ("net_lookup", "net.connect"),
     // A question to the local model about read data: it reads, sends nothing.
     ("query", "model.read"),
     ("email_send", "net.send"),
     ("power_reboot", "power"),
     ("power_off", "power"),
+    // A goal's own grants are set by `goal_set`'s one yes (`agentid::grant_goal`).
+    ("goal_set", "goals"),
+    ("goal_list", "goals"),
+    ("goal_pause", "goals"),
+    ("goal_resume", "goals"),
+    ("goal_cancel", "goals"),
     ("disk_format", "disk.admin"),
 ];
 

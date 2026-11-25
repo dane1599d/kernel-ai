@@ -29,7 +29,7 @@ pub(crate) mod fs;
 
 // G-core (P3).
 mod display;
-mod standing;
+pub(crate) mod standing;
 
 // U, updates (ADR 0008).
 mod update;
@@ -134,7 +134,7 @@ pub(super) fn call_error(slot: usize, error: ipc::CallError) -> Error {
         ipc::CallError::Cancelled if super::interrupt_pending(slot) => Error::Interrupted,
         ipc::CallError::Cancelled | ipc::CallError::ServiceDied => Error::Dead,
         ipc::CallError::Unavailable => Error::Unavailable,
-        ipc::CallError::TimedOut => Error::TimedOut,
+        ipc::CallError::TimedOut | ipc::CallError::Unanswered => Error::TimedOut,
         ipc::CallError::Busy => Error::Busy,
         ipc::CallError::NoMemory => Error::NoMemory,
         ipc::CallError::TooBig => Error::TooBig,

@@ -17,5 +17,6 @@ doctest = false
 kaiagent = { path = "../kaiagent" }
 
 [dev-dependencies]
+agentid = { path = "../agentid" }
 infer = { path = "../infer" }
 quant = { path = "../quant" }

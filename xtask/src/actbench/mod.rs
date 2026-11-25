@@ -31,11 +31,13 @@
 //! all the runner's CPUs (the same bits as one). Every run is written to
 //! `target/actbench/<unix time>-<arm>-s<seed>.jsonl`, headed by `pack_id`.
 
-mod apps;
+pub(crate) mod apps;
+mod arm;
 mod consent;
 mod founder;
 mod goal_tasks;
 mod goals;
+mod goals_run;
 mod grammar;
 mod m8;
 mod os;
@@ -49,12 +51,12 @@ mod view;
 use crate::fluency::host::GateHost;
 use crate::fluency::local::Shared;
 use crate::fluency::tasks::TASKS as M8_TASKS;
+use arm::{Arm, Kind};
 use grammar::Tagged;
 use infer::Next;
 use infer::Sampler;
 use infer::chat::{Budget, Ending, Engine, Role, Turn};
 use quant::{Parallel, Tier};
-use render::Format;
 use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::fs;
@@ -86,195 +88,6 @@ impl Parallel for Threads {
         });
     }
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
-    Tagged(Format),
-    /// Today's script path; `no_think` false is arm A0.
-    M8,
-    /// The OS rows' calls on llm's own `act` path ([`os`]).
-    Os,
-    /// View-then-act on llm's own `act` path ([`view`]).
-    View,
-    /// The shipped apps' rows on llm's own `act` path ([`os::APP_TASKS`]).
-    Apps,
-    /// The 190 tasks on the shipped pack, report only ([`shipped`]).
-    Shipped,
-    /// Spike S13-5's multi-step goals on llm's own `act` path ([`goals`]).
-    Goals,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Arm {
-    kind: Kind,
-    rows: usize,
-    no_think: bool,
-    /// `+rules`: the M8 prompt's Rhai rules as the card.
-    rules: bool,
-    /// `+m8script`: a `script` call's code comes from today's script prompt
-    /// and envelope (the plan's fallback for M8-style requests).
-    m8script: bool,
-    /// `act`: what ships. The 190 tasks as `dsl-1+m8script` with the shipping
-    /// decoder and consent; the M8 50 through the shell's one door, with llm's
-    /// own `act` path (`llmproto::local::act::routed`) on the OS pack.
-    ship: bool,
-    /// `+index`: rows no task needs (the 80-row scale's distractors) are
-    /// named on index lines only, and close with no arguments (ADR 0010 §6).
-    index: bool,
-}
-
-impl Arm {
-    fn parse(text: &str) -> Result<Self, String> {
-        match text {
-            "m8" => {
-                return Ok(Self {
-                    kind: Kind::M8,
-                    rows: 40,
-                    no_think: true,
-                    rules: false,
-                    m8script: false,
-                    ship: false,
-                    index: false,
-                });
-            }
-            "act" => {
-                return Ok(Self {
-                    kind: Kind::Tagged(Format::Dsl1),
-                    rows: 40,
-                    no_think: false,
-                    rules: false,
-                    m8script: true,
-                    ship: true,
-                    index: false,
-                });
-            }
-            "shipped" => {
-                return Ok(Self {
-                    kind: Kind::Shipped,
-                    rows: 0,
-                    no_think: false,
-                    rules: false,
-                    m8script: false,
-                    ship: true,
-                    index: false,
-                });
-            }
-            "os" => {
-                return Ok(Self {
-                    kind: Kind::Os,
-                    rows: 0,
-                    no_think: false,
-                    rules: false,
-                    m8script: false,
-                    ship: true,
-                    index: false,
-                });
-            }
-            "apps" => {
-                return Ok(Self {
-                    kind: Kind::Apps,
-                    rows: 0,
-                    no_think: false,
-                    rules: false,
-                    m8script: false,
-                    ship: true,
-                    index: false,
-                });
-            }
-            "goals" => {
-                return Ok(Self {
-                    kind: Kind::Goals,
-                    rows: 0,
-                    no_think: false,
-                    rules: false,
-                    m8script: false,
-                    ship: true,
-                    index: false,
-                });
-            }
-            "view" => {
-                return Ok(Self {
-                    kind: Kind::View,
-                    rows: 0,
-                    no_think: false,
-                    rules: false,
-                    m8script: false,
-                    ship: true,
-                    index: false,
-                });
-            }
-            "m8-a0" => {
-                return Ok(Self {
-                    kind: Kind::M8,
-                    rows: 40,
-                    no_think: false,
-                    rules: false,
-                    m8script: false,
-                    ship: false,
-                    index: false,
-                });
-            }
-            _ => {}
-        }
-        let (text, rows) = match text.split_once('@') {
-            Some((arm, "80")) => (arm, 80),
-            Some((arm, "40")) => (arm, 40),
-            Some(_) => return Err(format!("{text}: the scale is @40 or @80")),
-            None => (text, 40),
-        };
-        let (text, no_think) = match text.strip_suffix(":no-think") {
-            Some(arm) => (arm, true),
-            None => (text, false),
-        };
-        let (mut text, mut rules, mut m8script, mut index) = (text, false, false, false);
-        loop {
-            if let Some(arm) = text.strip_suffix("+rules") {
-                (text, rules) = (arm, true);
-            } else if let Some(arm) = text.strip_suffix("+m8script") {
-                (text, m8script) = (arm, true);
-            } else if let Some(arm) = text.strip_suffix("+index") {
-                (text, index) = (arm, true);
-            } else {
-                break;
-            }
-        }
-        let format = Format::parse(text).ok_or(format!(
-            "unknown arm {text}: dsl-1, hermes-1, prose-1, m8 or m8-a0"
-        ))?;
-        Ok(Self {
-            kind: Kind::Tagged(format),
-            rows,
-            no_think,
-            rules,
-            m8script,
-            ship: false,
-            index,
-        })
-    }
-
-    fn label(&self) -> String {
-        match self.kind {
-            Kind::M8 if self.no_think => "m8".into(),
-            Kind::M8 => "m8-a0".into(),
-            Kind::Os => "os".into(),
-            Kind::Shipped => "shipped".into(),
-            Kind::View => "view".into(),
-            Kind::Goals => "goals".into(),
-            Kind::Apps => "apps".into(),
-            Kind::Tagged(_) if self.ship => "act".into(),
-            Kind::Tagged(format) => format!(
-                "{}{}{}{}{}@{}",
-                format.name(),
-                if self.rules { "+rules" } else { "" },
-                if self.m8script { "+m8script" } else { "" },
-                if self.index { "+index" } else { "" },
-                if self.no_think { ":no-think" } else { "" },
-                self.rows
-            ),
-        }
-    }
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct Options {
     id: String,
@@ -345,21 +158,26 @@ fn parse(args: &[String]) -> Result<Options, String> {
 
 /// The engine and what the report says about its model.
 pub(crate) struct Loaded {
-    engine: Shared,
+    pub(crate) engine: Shared,
     tokenizer: bpe::Tokenizer,
     tokenizer_sha256: String,
-    line: String,
+    pub(crate) line: String,
 }
 
 /// The engine for model `bytes` at [`CONTEXT`] positions on every CPU.
 fn load(bytes: &'static [u8], name: &str) -> Result<Loaded, String> {
+    load_at(bytes, name, CONTEXT)
+}
+
+/// [`load`] at `context` positions (spike S10-2's arms differ in it).
+pub(crate) fn load_at(bytes: &'static [u8], name: &str, context: usize) -> Result<Loaded, String> {
     let started = Instant::now();
     let budget = Budget {
         kv_bytes: 1 << 30,
         other_bytes: kabi::model::ENGINE_OTHER_BYTES as usize * 2,
     };
     let mut engine =
-        Engine::load(bytes, Tier::best(), CONTEXT, budget).map_err(|e| e.to_string())?;
+        Engine::load(bytes, Tier::best(), context, budget).map_err(|e| e.to_string())?;
     let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
     let threads: &'static Threads = Box::leak(Box::new(Threads(workers)));
     engine.set_parallel(threads);
@@ -535,6 +353,12 @@ fn run_arm(
         "runner": std::env::var("RUNNER_NAME").ok(),
         "context": CONTEXT, "started_unix": started, "memories": options.memories,
         "tasks_sha256": crate::sha256_hex(include_str!("tasks.rs").replace("\r\n", "\n").as_bytes()),
+        // The M8 50 are fluency's tasks, scored by fluency's judge: their own
+        // hash, so M8 results from before and after a change there (#1168's
+        // task 47) are visibly not comparable.
+        "m8_tasks_sha256": crate::sha256_hex(
+            include_str!("../fluency/tasks.rs").replace("\r\n", "\n").as_bytes()
+        ),
     });
     let mut records = Vec::new();
     let mut scored = Vec::new();
@@ -865,103 +689,4 @@ fn rescore(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use infer::json::Constraint;
-
-    fn args(text: &str) -> Vec<String> {
-        text.split(' ').map(String::from).collect()
-    }
-
-    #[test]
-    fn arms_and_seeds_parse() {
-        let o = parse(&args(
-            "--local q --arm dsl-1,hermes-1@80,dsl-1:no-think,m8-a0 --seed 42",
-        ))
-        .unwrap();
-        assert_eq!(
-            o.arms.iter().map(Arm::label).collect::<Vec<_>>(),
-            ["dsl-1@40", "hermes-1@80", "dsl-1:no-think@40", "m8-a0"]
-        );
-        assert_eq!(o.seeds, [42]);
-        assert!(parse(&args("--arm dsl-1")).is_err());
-        assert!(parse(&args("--local q --arm dsl-2")).is_err());
-        assert!(parse(&args("--local q --arm dsl-1@60")).is_err());
-        assert_eq!(parse(&args("--local q")).unwrap().seeds, SEEDS);
-        let o = parse(&args(
-            "--local q --arm dsl-1+rules,dsl-1+m8script@80 --only-m8",
-        ))
-        .unwrap();
-        let labels: Vec<String> = o.arms.iter().map(Arm::label).collect();
-        assert_eq!(labels, ["dsl-1+rules@40", "dsl-1+m8script@80"]);
-        assert!(o.only_m8 && o.arms[0].rules && o.arms[1].m8script);
-    }
-
-    #[test]
-    fn the_layout_is_pack_mode_history_then_state_and_request() {
-        let task = TASKS.iter().find(|t| !t.history.is_empty()).unwrap();
-        let turns = task_turns("PACK", task, false);
-        assert_eq!(turns[0], (Role::System, "PACK".into()));
-        assert_eq!(turns[1].1, render::MODE_ACT);
-        assert_eq!(turns.len(), 2 + 3 * task.history.len() + 1);
-        assert_eq!(
-            user_text("focused=x", "stop this", true),
-            "State: focused=x\nRequest: stop this\n/no_think"
-        );
-        assert_eq!(chosen(Some(1)).len(), Cat::ALL.len());
-    }
-
-    /// The whole loop on the generated local-script model: every task decodes
-    /// to a call the grammar closes, the M8 tasks go through the shell, and the
-    /// answers are the same at a second run (seeded) and on one worker.
-    #[test]
-    fn the_harness_runs_end_to_end_on_the_fixture_model() {
-        // A vocabulary trained on the pack too, so it fits the fixture's context.
-        let text = [
-            crate::local_script::prompts(),
-            render::pack(Format::Dsl1, &registry::rows(40)),
-            render::MODE_ACT.to_string(),
-            llmproto::pack::render(llmproto::pack::Format::Dsl1),
-        ]
-        .join("\n");
-        let bytes = infer::fixture::local_script(&text);
-        let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let loaded = load(bytes, "fixture").unwrap();
-        let rows = registry::rows(40);
-        let grammar = grammar::tagged(&rows);
-        let pack = render::pack(Format::Dsl1, &rows);
-        let task = &TASKS[0];
-        let turns = task_turns(&pack, task, false);
-        let first = decode(&mut loaded.engine.borrow_mut(), &grammar, &turns, 42).unwrap();
-        let again = decode(&mut loaded.engine.borrow_mut(), &grammar, &turns, 42).unwrap();
-        assert_eq!(first.text, again.text);
-        assert!(again.cached > 0);
-        if first.ending == Ending::EndToken {
-            let call = first.call.expect("a closed answer parses");
-            assert!(
-                grammar.is_done(
-                    &grammar
-                        .advance(grammar.start(), first.text.as_bytes())
-                        .unwrap()
-                )
-            );
-            assert!(call["arguments"].is_object());
-        }
-        let dir = std::env::temp_dir().join(format!("actbench-test-{}", std::process::id()));
-        let options = parse(&args("--local fixture --limit 1 --seed 42")).unwrap();
-        run_arm(&loaded, Arm::parse("dsl-1").unwrap(), 42, &options, &dir).unwrap();
-        run_arm(&loaded, Arm::parse("m8-a0").unwrap(), 42, &options, &dir).unwrap();
-        // What ships: the M8 task through the shell's one door, on the OS pack.
-        let (_, rows) = run_arm(&loaded, Arm::parse("act").unwrap(), 42, &options, &dir).unwrap();
-        assert!(
-            rows.contains("### act seed 42") && rows.contains("OS pack_id `"),
-            "{rows}"
-        );
-        assert!(rows.contains("| exact single calls (>= 57/60) |"), "{rows}");
-        let files = fs::read_dir(dir.join("actbench")).unwrap().count();
-        assert_eq!(files, 3);
-        write_summary(&rows, &dir).unwrap();
-        assert!(dir.join("actbench").join("summary.md").exists());
-        let _ = fs::remove_dir_all(&dir);
-    }
-}
+mod tests;

@@ -1,0 +1,7 @@
+[0] window "Settings"
+[1] group ""
+[2] tab_list "" = "Keep running"
+[3] group ""
+[4] label "Keep running"
+[9000] switch "Keep files running" = "off"
+[9001] switch "Keep notes running" = "on"

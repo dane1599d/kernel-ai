@@ -11,10 +11,16 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::Cell;
+use core::sync::atomic::{AtomicBool, Ordering};
 use fsproto::{Error, How, Outcome, Reply, Request};
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER, Rights};
-use shellcore::{FsChange, FsRead, FsRefused};
+use shellcore::ledger::{self, CommitAnswer, Ledger, Undo};
+use shellcore::{FsChange, FsRead, FsRefused, LogFailed};
 use user::sys;
+
+#[path = "files/find.rs"]
+mod find;
+use find::find;
 
 const CALL_MS: u64 = 10_000;
 /// The most of a file `fs_read` hands a script: a few messages' worth.
@@ -27,11 +33,10 @@ pub struct Files {
     home: Option<Handle>,
     /// The next action number `Begin` gets.
     action: Cell<u64>,
-    /// The generation of the line's open action, until the log commits it.
-    open: Cell<Option<u64>>,
-    /// An open action dropped by a failed run's rollback or by `fs`: its
-    /// generation, which is nothing to restore.
-    dropped: Cell<Option<u64>>,
+    /// The generation of the line's open action, until the log commits it,
+    /// and of the last one dropped (by a failed run's rollback, by `fs`, or
+    /// as a refused Commit): nothing to restore.
+    ledger: Cell<Ledger>,
     /// Files changed (a change, an undo's restore or a whole-file write) since
     /// [`Files::take_changed`]: the apps that list them are told.
     changed: Cell<bool>,
@@ -45,14 +50,21 @@ impl Files {
         let files = Self {
             home: dirs.first().copied(),
             action: Cell::new(1),
-            open: Cell::new(None),
-            dropped: Cell::new(None),
+            ledger: Cell::new(Ledger::default()),
             changed: Cell::new(false),
         };
         let state = State {
             dir: dirs.get(1).copied(),
         };
         (files, state)
+    }
+
+    /// Runs `f` on the ledger and keeps what it leaves.
+    fn with_ledger<T>(&self, f: impl FnOnce(&mut Ledger) -> T) -> T {
+        let mut ledger = self.ledger.get();
+        let out = f(&mut ledger);
+        self.ledger.set(ledger);
+        out
     }
 
     fn home(&self) -> Result<Handle, String> {
@@ -83,7 +95,7 @@ impl Files {
         bytes: &[u8],
     ) -> Result<Handle, String> {
         let home = self.home()?;
-        self.commit()?;
+        self.commit().map_err(|e| e.to_string())?;
         let action = self.next_action();
         expect_done(home, Request::Begin { action })?;
         for folder in folders {
@@ -190,18 +202,51 @@ impl Files {
     /// One change in the line's action, opened by its first change; the action's
     /// generation, the transaction `undo` restores.
     pub fn change(&self, change: FsChange) -> Result<u64, String> {
+        if matches!(change, FsChange::Save { .. }) {
+            return self.save(change);
+        }
         let home = self.home()?;
-        let generation = match self.open.get() {
+        self.heard_dropped(home);
+        let generation = match self.ledger.get().open() {
             Some(generation) => generation,
             None => self.begin(home)?,
         };
-        make(home, change).inspect_err(|why| {
-            // A refused change leaves the action open; a failed disk drops it.
-            if why.contains("Io") {
-                self.open.set(None);
-                self.dropped.set(Some(generation));
-            }
-        })?;
+        // A refused change leaves the action open; one `fs` dropped (its
+        // writes found no room, or the disk failed) ends it: the next change
+        // begins a new one, never writing on outside any.
+        let made = make(home, change);
+        self.heard_dropped(home);
+        made?;
+        self.changed.set(true);
+        Ok(generation)
+    }
+
+    /// Forgets the line's action if any request since was answered
+    /// [`Error::Dropped`] (a change, a read that wrote out its pending run, a
+    /// state write: all are this shell's, its one caller), and acknowledges
+    /// it with Abort, so a mark another caller's drop left is cleared and the
+    /// next standalone change (an undo) is not refused.
+    fn heard_dropped(&self, home: Handle) {
+        if !DROPPED.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        self.with_ledger(Ledger::dropped_open);
+        let _ = ask(home, Request::Abort);
+        DROPPED.store(false, Ordering::Relaxed);
+    }
+
+    /// `:save`'s change in an action of its own: one left open commits
+    /// first, and a save that fails part way (its folder made, its file cut
+    /// short) is aborted, so nothing of it commits without its log entry.
+    fn save(&self, change: FsChange) -> Result<u64, String> {
+        let home = self.home()?;
+        self.commit().map_err(|e| e.to_string())?;
+        let generation = self.begin(home)?;
+        if let Err(why) = make(home, change) {
+            let _ = ask(home, Request::Abort);
+            self.with_ledger(|l| l.aborted(generation));
+            return Err(why);
+        }
         self.changed.set(true);
         Ok(generation)
     }
@@ -216,45 +261,70 @@ impl Files {
                 return Err(unexpected(&other));
             }
         };
-        self.open.set(Some(generation));
-        self.dropped.set(None);
+        self.with_ledger(|l| l.begin(generation));
         Ok(generation)
     }
 
     /// Whether a line's changes wait for their log line.
     pub fn is_open(&self) -> bool {
-        self.open.get().is_some()
+        if let Ok(home) = self.home() {
+            self.heard_dropped(home);
+        }
+        self.ledger.get().open().is_some()
     }
 
-    /// Commits the line's action, its log line in it; an error if the commit got
-    /// another generation than its changes were told.
-    pub fn commit(&self) -> Result<(), String> {
-        let (Some(generation), Ok(home)) = (self.open.take(), self.home()) else {
+    /// Commits the line's action, its log line in it: [`LogFailed::NotLanded`]
+    /// when `fs` refused it, whatever the error (any failed action Commit
+    /// drops its changes in `fs`), and an error if it got another generation
+    /// than its changes were told.
+    pub fn commit(&self) -> Result<(), LogFailed> {
+        if let Ok(home) = self.home() {
+            self.heard_dropped(home);
+        }
+        let (Some(generation), Ok(home)) = (self.with_ledger(Ledger::take_for_commit), self.home())
+        else {
             return Ok(());
         };
-        match ask(home, Request::Commit)?.0 {
-            Reply::Committed { generation: got } if got == generation => Ok(()),
-            Reply::Committed { generation: got } => Err(format!(
-                "the files committed as {got}, not {generation}; undo may miss them"
-            )),
-            other => Err(unexpected(&other)),
+        let answer = match ask(home, Request::Commit) {
+            Ok((Reply::Committed { generation }, _)) => CommitAnswer::Committed(generation),
+            Ok((failed @ Reply::Failed(_), _)) => CommitAnswer::Refused(unexpected(&failed)),
+            Ok((other, _)) => CommitAnswer::Unknown(unexpected(&other)),
+            Err(why) => CommitAnswer::Unknown(why),
+        };
+        let after = ledger::after_commit(generation, answer);
+        match &after {
+            Ok(()) => self.with_ledger(|l| l.committed(generation)),
+            Err(LogFailed::NotLanded { txn, .. }) => self.with_ledger(|l| l.commit_refused(*txn)),
+            Err(LogFailed::Failed(_)) => {}
         }
+        after
+    }
+
+    /// Commits the line's action, if one is open, for its log write:
+    /// [`LogFailed::NotLanded`] for an action the line lost on any request
+    /// since its last log write (a Commit refused, a held write `fs` dropped
+    /// on the log's own write before the Commit, an abort), not only the one
+    /// just refused.
+    pub fn land(&self) -> Result<(), LogFailed> {
+        let committed = self.commit();
+        self.with_ledger(|l| l.landed(committed))
     }
 
     pub fn undo(&self, txn: u64, anyway: bool) -> Result<u64, FsRefused> {
         let home = self.home().map_err(FsRefused::Failed)?;
+        self.heard_dropped(home);
         // A failed run's rollback: its own action is dropped, not restored.
-        if self.open.get() == Some(txn) {
-            let _ = ask(home, Request::Abort);
-            self.open.set(None);
-            self.dropped.set(Some(txn));
-            return Ok(txn);
-        }
-        if self.dropped.get() == Some(txn) {
-            return Ok(txn);
+        match self.with_ledger(|l| l.undo(txn)) {
+            Undo::AbortOpen => {
+                let _ = ask(home, Request::Abort);
+                return Ok(txn);
+            }
+            Undo::Nothing => return Ok(txn),
+            Undo::Restore => {}
         }
         // Another line's action still open (its log was not written) lands first.
-        self.commit().map_err(FsRefused::Failed)?;
+        self.commit()
+            .map_err(|e| FsRefused::Failed(e.to_string()))?;
         let action = self.action.get();
         self.action.set(action + 1);
         let failed = |why: String| FsRefused::Failed(why);
@@ -263,6 +333,8 @@ impl Files {
             .0
         {
             Reply::Restored { rows, generation } => {
+                // The number is a real change now, even one a lost action had.
+                self.with_ledger(|l| l.committed(generation));
                 // `fs` never restores over a later change; it leaves those.
                 let left = rows.iter().filter(|(_, o)| *o == Outcome::Left).count();
                 if rows.iter().any(|(_, o)| *o != Outcome::Left) {
@@ -287,6 +359,19 @@ impl Files {
 /// The change itself, inside the open action.
 fn make(home: Handle, change: FsChange) -> Result<(), String> {
     match change {
+        FsChange::Save { folder, path, text } => {
+            let dir = open(home, folder, How::Existing, Rights::ENUMERATE)
+                .or_else(|_| open(home, folder, How::Mkdir, Rights::ENUMERATE))
+                .map_err(|why| format!("/home/user/{folder}/ cannot be made: {why}"))?;
+            close(dir);
+            let rights = Rights::READ | Rights::WRITE;
+            let file = open(home, path, How::Existing, rights)
+                .or_else(|_| open(home, path, How::CreateFile, rights))?;
+            let wrote = expect_done(file, Request::Truncate { size: 0 })
+                .and_then(|()| write_all(file, text.as_bytes()));
+            close(file);
+            wrote
+        }
         FsChange::Create { path, text } => {
             let file = open(home, path, How::CreateFile, Rights::WRITE).map_err(|why| match why
                 .contains("Exists")
@@ -415,13 +500,26 @@ const _: () = {
 };
 
 impl State {
-    /// File `name` as `/system/state` holds it; `None` with no such file or no
-    /// handle.
-    pub fn read(&self, name: &str) -> Option<String> {
-        let file = open(self.dir?, name, How::Existing, Rights::READ).ok()?;
+    /// File `name` as `/system/state` holds it; `None` only with no such file
+    /// or no handle (nothing was ever written there), and why not for any other
+    /// failure: a full disk or an fs error is no proof the file is absent.
+    pub fn read(&self, name: &str) -> Result<Option<String>, String> {
+        let Some(dir) = self.dir else {
+            return Ok(None);
+        };
+        let request = Request::Open {
+            path: name.to_string(),
+            rights: Rights::READ.bits(),
+            how: How::Existing,
+        };
+        let file = match ask(dir, request)? {
+            (Reply::Opened(..), Some(handle)) => handle,
+            (Reply::Failed(Error::NotFound), _) => return Ok(None),
+            (other, _) => return Err(format!("{name}: {}", unexpected(&other))),
+        };
         let text = read_all(file);
         close(file);
-        text.ok()
+        text.map(Some)
     }
 
     /// Writes the whole of file `name` into the action now open, the one that
@@ -460,6 +558,11 @@ impl State {
     }
 }
 
+/// Set when an answer was [`Error::Dropped`]: the shell's open action, if
+/// any, is gone ([`Files::heard_dropped`]). The shell is one caller with one
+/// action, so whichever handle the answer came on, it is that action's.
+static DROPPED: AtomicBool = AtomicBool::new(false);
+
 /// One request on `on`; the reply and the handle it moved, if any.
 pub(crate) fn ask(on: Handle, request: Request) -> Result<(Reply, Option<Handle>), String> {
     let bytes = fsproto::encode_request(&request);
@@ -469,6 +572,9 @@ pub(crate) fn ask(on: Handle, request: Request) -> Result<(Reply, Option<Handle>
         .map_err(|e| format!("the fs service did not answer ({e:?})"))?;
     let reply = fsproto::decode_reply(&reply[..len.min(reply.len())])
         .map_err(|_| String::from("the fs service's answer was malformed"))?;
+    if matches!(&reply, Reply::Failed(e) if e.ends_action()) {
+        DROPPED.store(true, Ordering::Relaxed);
+    }
     Ok((reply, (came > 0).then_some(moved[0])))
 }
 
@@ -512,80 +618,6 @@ fn in_dir<T>(
 
 pub(crate) fn close(handle: Handle) {
     let _ = sys::handle_close(handle);
-}
-
-/// The most folders `fs_find` looks in, and the most paths it gives back.
-const FIND_DIRS: usize = 64;
-const FIND_MAX: usize = 40;
-
-/// `fs_find`: paths under home whose last part holds `word`, case aside,
-/// looking in home and the folders below it, breadth first, within
-/// [`FIND_DIRS`] folders and [`FIND_MAX`] paths. A folder it may not read is
-/// skipped, not the whole search; last lines say when more matched than it
-/// gives, when it left folders or names unvisited, and how many it skipped
-/// (#899's review), so a short list is never taken as all there is.
-fn find(home: Handle, word: &str) -> Result<Vec<String>, String> {
-    let word = word.trim().to_lowercase();
-    if word.is_empty() {
-        return Err(String::from("say what the name holds"));
-    }
-    let mut dirs = alloc::collections::VecDeque::from([String::new()]);
-    let (mut seen, mut skipped, mut found) = (0, 0, Vec::new());
-    // More matched than FIND_MAX; folders left unvisited (FIND_DIRS, or a
-    // folder longer than LIST_MAX names).
-    let (mut more_matched, mut cut) = (false, false);
-    while let Some(dir) = dirs.pop_front() {
-        seen += 1;
-        let names = match in_dir(home, &dir, Rights::READ | Rights::ENUMERATE, list_cut) {
-            Ok((names, long)) => {
-                cut |= long;
-                names
-            }
-            // Home itself unreadable is the search failing.
-            Err(why) if dir.is_empty() => return Err(why),
-            Err(_) => {
-                skipped += 1;
-                continue;
-            }
-        };
-        for name in names {
-            let (bare, folder) = match name.strip_suffix('/') {
-                Some(bare) => (bare, true),
-                None => (name.as_str(), false),
-            };
-            let path = match dir.is_empty() {
-                true => String::from(bare),
-                false => format!("{dir}/{bare}"),
-            };
-            if bare.to_lowercase().contains(&word) {
-                match found.len() < FIND_MAX {
-                    true => found.push(format!(
-                        "/home/user/{path}{}",
-                        if folder { "/" } else { "" }
-                    )),
-                    false => more_matched = true,
-                }
-            }
-            if folder {
-                match seen + dirs.len() < FIND_DIRS {
-                    true => dirs.push_back(path),
-                    false => cut = true,
-                }
-            }
-        }
-    }
-    if more_matched {
-        found.push(format!("(the first {FIND_MAX} matches; more match)"));
-    }
-    if cut {
-        found.push(format!(
-            "(stopped early after {seen} folders: more may match)"
-        ));
-    }
-    if skipped > 0 {
-        found.push(format!("({skipped} folders could not be read)"));
-    }
-    Ok(found)
 }
 
 pub(crate) fn list(dir: Handle) -> Result<Vec<String>, String> {

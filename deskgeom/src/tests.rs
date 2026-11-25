@@ -305,3 +305,16 @@ fn a_tooltip_stays_on_the_screen() {
         }
     }
 }
+
+/// The logical size a desk lays out on: the screen's over its scale, by the
+/// width alone when no size is known.
+#[test]
+fn the_logical_size_is_the_screens_over_its_scale() {
+    use crate::scale::logical_size;
+    assert_eq!(logical_size(1280, 800, 0), (1280, 800));
+    assert_eq!(logical_size(1024, 768, 0), (1024, 768));
+    assert_eq!(logical_size(1920, 1080, 0), (1920, 1080));
+    assert_eq!(logical_size(2560, 1440, 0), (2048, 1152));
+    assert_eq!(logical_size(3840, 2160, 0), (1920, 1080));
+    assert_eq!(logical_size(0, 0, 0), (1, 1));
+}

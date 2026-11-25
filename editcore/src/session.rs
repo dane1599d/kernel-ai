@@ -77,6 +77,22 @@ impl File {
         })
     }
 
+    /// Whether the file's bytes are exactly `bytes`, compared line by line with
+    /// nothing copied: a whole file's copy costs a guest call far more than the
+    /// compare does, and a window asks every frame.
+    fn is(&self, bytes: &[u8]) -> bool {
+        let mut at = 0;
+        for line in &self.lines {
+            for part in [line.text.as_bytes(), line.ending.bytes()] {
+                match bytes.get(at..at + part.len()) {
+                    Some(same) if same == part => at += part.len(),
+                    _ => return false,
+                }
+            }
+        }
+        at == bytes.len()
+    }
+
     pub fn bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         for line in &self.lines {
@@ -159,11 +175,29 @@ pub struct Session {
     undo: Vec<Snapshot>,
     /// The upload built from exactly this text; any edit clears it.
     pub built: Option<String>,
+    /// What [`Session::changed`] and [`Session::file_changed`] last found, kept
+    /// until the text changes: a window asks every frame, and each answer reads
+    /// the whole file, which in a guest costs far more than the call may spend.
+    compared: core::cell::RefCell<Option<Compared>>,
+}
+
+/// The files against the bundle as opened: whether any differs, and each.
+#[derive(Clone, Debug)]
+struct Compared {
+    changed: bool,
+    files: Vec<bool>,
 }
 
 impl Session {
     /// Opens the source bundle of `component` version `label`.
     pub fn open(component: &str, label: &str, bundle: &[u8]) -> Result<Self, String> {
+        Self::open_owned(component, label, bundle.to_vec())
+    }
+
+    /// [`Session::open`] of a bundle the caller made and gives up: it is kept as
+    /// the version opened, without a copy of a file that may be 60 KiB.
+    pub fn open_owned(component: &str, label: &str, owned: Vec<u8>) -> Result<Self, String> {
+        let bundle = owned.as_slice();
         if bundle.len() > MAX_BUNDLE {
             return Err(format!("the source is over {} KiB", MAX_BUNDLE / 1024));
         }
@@ -182,12 +216,13 @@ impl Session {
         Ok(Self {
             component: component.to_string(),
             label: label.to_string(),
-            original: bundle.to_vec(),
+            original: owned,
             files,
             current,
             line: 1,
             undo: Vec::new(),
             built: None,
+            compared: core::cell::RefCell::new(None),
         })
     }
 
@@ -230,16 +265,48 @@ impl Session {
         artifact::bundle(&parts)
     }
 
+    /// Whether the files differ from the bundle as opened: the same paths in the
+    /// same order, each with the bytes it had, checked without building the
+    /// bundle again (see [`File::is`]).
     pub fn changed(&self) -> bool {
-        self.to_bundle() != self.original
+        self.compared(|c| c.changed)
     }
 
     /// Whether file `index` differs from the opened version.
     pub fn file_changed(&self, index: usize) -> bool {
-        let original = artifact::source_files(&self.original).unwrap_or_default();
-        original
-            .get(index)
-            .is_none_or(|(_, bytes)| *bytes != self.files[index].bytes())
+        self.compared(|c| c.files.get(index).copied().unwrap_or(true))
+    }
+
+    /// `read` of the comparison with the bundle as opened, made once per text.
+    fn compared<R>(&self, read: impl FnOnce(&Compared) -> R) -> R {
+        let mut kept = self.compared.borrow_mut();
+        let found = kept.get_or_insert_with(|| {
+            let Ok(original) = artifact::source_files(&self.original) else {
+                return Compared {
+                    changed: true,
+                    files: alloc::vec![true; self.files.len()],
+                };
+            };
+            let files: Vec<bool> = self
+                .files
+                .iter()
+                .enumerate()
+                .map(|(i, file)| original.get(i).is_none_or(|(_, bytes)| !file.is(bytes)))
+                .collect();
+            let changed = original.len() != self.files.len()
+                || original
+                    .iter()
+                    .zip(&self.files)
+                    .any(|((path, _), file)| *path != file.path)
+                || files.iter().any(|&f| f);
+            Compared { changed, files }
+        });
+        read(found)
+    }
+
+    /// The text changed: what was compared with the opened version is stale.
+    fn touched(&mut self) {
+        *self.compared.get_mut() = None;
     }
 
     /// The file named `name`: its path, or a suffix of it after a `/` that only
@@ -327,6 +394,7 @@ impl Session {
         self.undo.push(snapshot);
         self.line = change(&mut self.files[self.current]);
         self.built = None;
+        self.touched();
     }
 
     /// Replaces the one occurrence of `old` in the current file, or in line `n`.
@@ -482,6 +550,7 @@ impl Session {
         self.current = snapshot.file;
         self.line = snapshot.line;
         self.built = None;
+        self.touched();
         true
     }
 
@@ -510,6 +579,7 @@ impl Session {
     pub fn keep(&mut self) {
         self.original = self.to_bundle();
         self.undo.clear();
+        self.touched();
     }
 
     /// Back to the version as opened.

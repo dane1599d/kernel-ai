@@ -3,7 +3,9 @@
 # handshake, HTTP responses with their bodies, kai-chunks 1 lists, URLs, and
 # the fetch service's request lines and answers (kainet::wire); and P3's
 # parsers of an app's bytes (plan p3-desktop §1 and §6's fuzz gate): surfabi's
-# message stream, header page and tree records, and look's `kai-theme 1`.
+# message stream, header page and tree records, and look's `kai-theme 1`; and
+# `desktop`'s readers of other processes' bytes (plan p3-desktop section 9):
+# deskcore's client calls, queues, wire parsers and agent requests.
 # The targets are fuzz/fuzz_targets/*.rs, outside the workspace; their bodies
 # are fuzz/harness.rs, fuzz/surfabi_harness.rs and fuzz/look_harness.rs, which
 # the crates' host tests also run, and the P3 targets' corpora are seeded with
@@ -18,15 +20,17 @@ on:
     - cron: "17 3 * * 1"
   workflow_dispatch:
     inputs:
-      target:
-        description: The target, or all of them
-        type: choice
+      # One run takes any list, so a new set of targets costs one job, not one
+      # job per target (four dispatches queued at once on 2026-11-18).
+      targets:
+        description: "Targets (fuzz/fuzz_targets/*.rs), comma- or space-separated, or all"
+        type: string
         default: all
-        options: [all, tls_client, tls_records, http_response, kai_chunks, url, fetch_wire, surfabi_stream, header_page, tree_records, kai_theme]
+      # On demand a smoke run; the weekly run keeps 300 s.
       seconds:
         description: Seconds for each target
         type: number
-        default: 300
+        default: 60
 
 permissions:
   contents: read
@@ -36,7 +40,7 @@ env:
 
 jobs:
   fuzz:
-    name: libFuzzer (${{ inputs.target || 'all' }}, ${{ inputs.seconds || 300 }} s each)
+    name: libFuzzer (${{ inputs.targets || 'all' }}, ${{ inputs.seconds || 300 }} s each)
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -46,24 +50,29 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: fuzz
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --version 0.13.2 --locked
       # The P3 targets start from their hostile tests' samples.
       - name: Seed the P3 corpora
         env:
           FUZZ_SEED_DIR: ${{ github.workspace }}/fuzz/corpus
-        run: cargo test -p surfabi -p look --test hostile write_fuzz_seeds -- --ignored
+        run: cargo test -p surfabi -p look -p deskcore --test hostile write_fuzz_seeds -- --ignored
       - name: Fuzz
         env:
           # A scheduled run has no inputs: every target, 300 s each.
-          TARGET: ${{ inputs.target || 'all' }}
+          TARGETS: ${{ inputs.targets || 'all' }}
           SECONDS_EACH: ${{ inputs.seconds || 300 }}
         run: |
           set -o pipefail
-          targets="$TARGET"
-          if [ "$targets" = all ]; then
-            targets="tls_client tls_records http_response kai_chunks url fetch_wire surfabi_stream header_page tree_records kai_theme"
+          targets=$(echo "$TARGETS" | tr ',' ' ')
+          # `all` is every target file, so a new one joins the weekly run.
+          if [ "$(echo $targets)" = all ]; then
+            targets=$(ls fuzz/fuzz_targets/*.rs | xargs -n1 basename | sed 's/\.rs$//' | xargs)
           fi
+          for t in $targets; do
+            [ -f "fuzz/fuzz_targets/$t.rs" ] || { echo "::error::no fuzz target $t (fuzz/fuzz_targets/$t.rs)"; exit 1; }
+          done
           for t in $targets; do
             echo "::group::$t"
             cargo fuzz run --fuzz-dir fuzz "$t" -- -max_total_time="$SECONDS_EACH" -rss_limit_mb=2048 \

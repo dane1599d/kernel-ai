@@ -292,6 +292,12 @@ impl<'a> Engine<'a> {
         self.slot = slot;
     }
 
+    /// How many tokens the slot in use holds computed: after
+    /// [`Engine::restore_slot`], the file's.
+    pub fn cached_len(&self) -> usize {
+        self.cached.len()
+    }
+
     /// Writes the slot in use as a `kai-kv 1` file ([`crate::segments`]) to
     /// `out`, in order: its computed positions and the tokens behind them.
     pub fn save_slot(
@@ -323,6 +329,12 @@ impl<'a> Engine<'a> {
             .take_while(|(a, b)| a == b)
             .count();
         Ok(shared.min(prompt.len() - 1))
+    }
+
+    /// The length of the `kai-kv 1` file [`Engine::save_slot`] writes for the
+    /// slot in use now, so a spill region can be given room for it first.
+    pub fn slot_file_bytes(&self) -> usize {
+        crate::segments::file_bytes(&self.kv, self.cached.len().min(self.kv.len()))
     }
 
     /// Copies the slot in use, its computed positions and the tokens behind them,

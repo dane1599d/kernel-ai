@@ -158,8 +158,9 @@ pub fn check() -> Result<(), &'static str> {
     // first app) and the next key in the fixture is refused; after `undo` the one
     // after runs, and after `undo` again `tab tab tab ret` restores it and the
     // one after that runs;
-    // `tab left tab ret` presses the Theme button; and `tab tab tab right right
-    // right right tab spc` goes round to the Updates page and its switch, which
+    // `tab left tab ret` presses the Theme button; and `tab tab tab tab right
+    // right right right tab spc` goes round, past the time zone, to the Updates
+    // page and its switch, which
     // turns the restart window on. Each change is read back from the shell
     // (`apps/settings-ui/tests/keys.rs` pins the sequences).
     const SETTLE_MS: u64 = 2 * KEYS_MS;

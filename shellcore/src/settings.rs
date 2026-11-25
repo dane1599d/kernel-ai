@@ -250,6 +250,7 @@ impl Shell {
         let id = self.next_id;
         self.next_id += 1;
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: Form::Call,
@@ -290,6 +291,7 @@ impl Shell {
         let id = self.next_id;
         self.next_id += 1;
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: Form::Call,
@@ -324,11 +326,12 @@ impl Shell {
         if was == on {
             return Ok(format!("{name} keep-running is {} already", word(on)));
         }
-        self.set_keep(name, on)?;
+        let note = self.set_keep(name, on)?;
         let app = Name::new(name).ok_or_else(|| String::from("not an app name"))?;
         let id = self.next_id;
         self.next_id += 1;
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: Form::Call,
@@ -350,7 +353,7 @@ impl Shell {
             }],
         });
         self.save_log();
-        Ok(format!("{name} keep-running {}", word(on)))
+        Ok(format!("{name} keep-running {}{note}", word(on)))
     }
 
     /// `grants` alone: the apps whose packages declare effect rows, one a line,
@@ -432,6 +435,7 @@ impl Shell {
         let id = self.next_id;
         self.next_id += 1;
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: Form::Call,
@@ -501,35 +505,49 @@ impl Shell {
     }
 
     /// Tells the supervisor and saves the list: `name` kept running or not.
-    pub(crate) fn set_keep(&mut self, name: &str, on: bool) -> Result<(), String> {
+    /// What to add to the answer: nothing, or that the app took the switch
+    /// without answering, so it may have taken effect. The supervisor then
+    /// keeps its record as asked, and so does this list, so the two agree and
+    /// a later switch is still sent (#1164's second review).
+    pub(crate) fn set_keep(&mut self, name: &str, on: bool) -> Result<&'static str, String> {
         let saved = self.saved_keep();
         if on && !saved.iter().any(|app| app == name) && saved.len() >= MAX_KEPT {
             return Err(format!("at most {MAX_KEPT} apps are kept running"));
         }
-        self.host.keep_running(name, on)?;
+        let note = match self.host.keep_running(name, on) {
+            Ok(()) => "",
+            Err(why) if kabi::live::app_call_unanswered(&why) => {
+                "; the app took it without answering, so it may have taken effect"
+            }
+            Err(why) => return Err(why),
+        };
         self.keep_waiting.forget(name);
         self.keep.retain(|app| app != name);
         if on {
             self.keep.push(name.to_string());
         }
         let text = keep_text(&self.saved_keep());
-        if let Err(why) = self.host.keep_write(&text) {
+        let written = self
+            .not_unread(crate::KEEP)
+            .and_then(|()| self.host.keep_write(&text));
+        if let Err(why) = written {
             self.host
                 .audit(&format!("the keep-running list was not saved: {why}"));
         }
-        Ok(())
+        Ok(note)
     }
 
     /// `undo` of a keep-running change: puts `on` back; its text.
     pub(crate) fn revert_keep(&mut self, name: &str, on: bool) -> Result<String, String> {
-        self.set_keep(name, on)?;
-        Ok(format!("{name} keep-running {} again", word(on)))
+        let note = self.set_keep(name, on)?;
+        Ok(format!("{name} keep-running {} again{note}", word(on)))
     }
 
     /// The keep-running list `/system/state/keep` holds, each told to the
     /// supervisor again; a list out of shape is set aside whole.
     pub(crate) fn with_saved_keep(mut self) -> Self {
-        let Some(text) = self.host.keep_read() else {
+        let read = self.host.keep_read();
+        let Some(text) = self.read_at_start(crate::KEEP, read) else {
             return self;
         };
         let Some(apps) = parse_keep(&text) else {
@@ -541,6 +559,8 @@ impl Shell {
         for app in apps {
             match self.host.keep_running(&app, true) {
                 Ok(()) => self.keep.push(app),
+                // Taken and not answered: the supervisor keeps it as asked.
+                Err(why) if kabi::live::app_call_unanswered(&why) => self.keep_unanswered(app),
                 // An app the supervisor started may not serve yet: try again.
                 Err(why) if not_serving_yet(&why) => self.keep_waiting.wait(app, now),
                 Err(why) => self
@@ -549,6 +569,15 @@ impl Shell {
             }
         }
         self
+    }
+
+    /// A saved kept app whose switch the app took without answering: kept, as
+    /// the supervisor keeps it, and audited (#1164's review).
+    fn keep_unanswered(&mut self, app: String) {
+        self.host.audit(&format!(
+            "{app} took keep-running without answering; it may have taken effect"
+        ));
+        self.keep.push(app);
     }
 
     /// Tries the saved kept apps the supervisor could not reach at boot again,
@@ -563,6 +592,7 @@ impl Shell {
         for app in waiting {
             match self.host.keep_running(&app, true) {
                 Ok(()) => self.keep.push(app),
+                Err(why) if kabi::live::app_call_unanswered(&why) => self.keep_unanswered(app),
                 Err(why) if not_serving_yet(&why) && now < self.keep_waiting.until_ns => {
                     still.push(app)
                 }

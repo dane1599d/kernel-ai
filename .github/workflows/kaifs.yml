@@ -39,6 +39,8 @@ jobs:
       - name: Install pinned toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy -p kaifs --all-targets -- -D warnings
       - name: Clippy for the soft-float target fs ships on, without std
         run: cargo clippy -p kaifs --target x86_64-unknown-none --no-default-features -- -D warnings

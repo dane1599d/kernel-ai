@@ -34,25 +34,32 @@ pub struct Range {
 /// What the client sends: no cookies, no compression, one request a
 /// connection. A [`Method::Post`] here has an empty body; [`post`] gives it one.
 pub fn request(method: Method, url: &Url, range: Option<Range>) -> Vec<u8> {
-    write(method, url, range, &[])
+    write(method, url, range, &[], false)
+}
+
+/// [`request`], asking the server to keep the connection open for the next
+/// request when `keep` (a [`super::Keep`]'s GET or HEAD; never a POST).
+pub fn request_kept(method: Method, url: &Url, range: Option<Range>, keep: bool) -> Vec<u8> {
+    write(method, url, range, &[], keep && method != Method::Post)
 }
 
 /// A POST of `body` to `url`: its head, with the body's length and
 /// [`POST_TYPE`], then the body.
 pub fn post(url: &Url, body: &[u8]) -> Vec<u8> {
-    write(Method::Post, url, None, body)
+    write(Method::Post, url, None, body, false)
 }
 
-fn write(method: Method, url: &Url, range: Option<Range>, body: &[u8]) -> Vec<u8> {
+fn write(method: Method, url: &Url, range: Option<Range>, body: &[u8], keep: bool) -> Vec<u8> {
     let verb = match method {
         Method::Get => "GET",
         Method::Head => "HEAD",
         Method::Post => "POST",
     };
     let mut head = format!(
-        "{verb} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: kai\r\nAccept-Encoding: identity\r\nConnection: close\r\n",
+        "{verb} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: kai\r\nAccept-Encoding: identity\r\nConnection: {}\r\n",
         url.path,
-        url.authority()
+        url.authority(),
+        if keep { "keep-alive" } else { "close" }
     );
     if let Some(Range { first, last }) = range {
         match last {
@@ -107,6 +114,9 @@ pub struct Head {
     /// The status line's reason phrase ("OK"), when it is at most
     /// [`MAX_REASON`] printable ASCII bytes; otherwise none.
     pub reason: Option<String>,
+    /// Whether the server closes the connection after this response: it said
+    /// `Connection: close`. Such a connection is never kept.
+    pub close: bool,
 }
 
 /// The longest `Content-Type` kept.
@@ -154,6 +164,7 @@ pub fn status_line(bytes: &[u8]) -> Option<Head> {
         retry_after: None,
         content_type: None,
         reason: reason(phrase),
+        close: true,
     })
 }
 
@@ -178,6 +189,7 @@ pub fn parse(bytes: &[u8], method: Method) -> Result<Option<(Head, usize)>, Http
     let mut content_range = None;
     let mut retry_after = None;
     let mut content_type = None;
+    let mut close = false;
     for header in response.headers.iter() {
         let value = core::str::from_utf8(header.value)
             .map_err(|_| HttpError::Head("a header is not text"))?
@@ -207,6 +219,12 @@ pub fn parse(bytes: &[u8], method: Method) -> Result<Option<(Head, usize)>, Http
             content_range = Some(parse_content_range(value)?);
         } else if name.eq_ignore_ascii_case("retry-after") {
             retry_after = number(value).and_then(|n| u32::try_from(n).ok());
+        } else if name.eq_ignore_ascii_case("connection") {
+            close |= value.split(',').any(|token| {
+                token
+                    .trim_matches([' ', '\t'])
+                    .eq_ignore_ascii_case("close")
+            });
         } else if name.eq_ignore_ascii_case("content-type") {
             let printable = value.bytes().all(|b| b == b' ' || b.is_ascii_graphic());
             content_type =
@@ -231,6 +249,7 @@ pub fn parse(bytes: &[u8], method: Method) -> Result<Option<(Head, usize)>, Http
         retry_after,
         content_type,
         reason: response.reason.and_then(reason),
+        close,
     };
     Ok(Some((head, used)))
 }

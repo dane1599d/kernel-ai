@@ -52,6 +52,15 @@ pub use crate::io::{
 };
 pub use crate::vol::{FIRST_OID, HOME, MODELS, SYSTEM, Snap, VOLUMES};
 
+/// The most object ids a volume hands out past the counter its last commit
+/// wrote. An id handed out and never committed (its action aborted, its
+/// commit failed, or `fs` stopped) is never handed out again: an abort keeps
+/// the counter, and a server skips a whole window at mount
+/// ([`Fs::skip_unsaved_oids`]), past anything the run before could have
+/// handed out. A `fs` handle names an object by its id, so a reissued id
+/// would let a handle minted for a dropped object open another one.
+pub const OID_WINDOW: u64 = 1 << 20;
+
 /// The volume [`Fs::format`] makes, and every call acts on until
 /// [`Fs::set_volume`]: `system`.
 pub const VOLUME: u64 = SYSTEM;
@@ -72,7 +81,7 @@ pub struct Vol {
 }
 
 impl Vol {
-    fn new(name: &str) -> Self {
+    pub(crate) fn new(name: &str) -> Self {
         Vol {
             name: name.to_string(),
             live: Tree::default(),
@@ -127,6 +136,14 @@ pub struct Fs<D> {
     label: [u8; 64],
     /// The last commit's generation.
     pub committed: u64,
+    /// The highest [`Superblock::oid_mark`] seen: at mount, on any slot of the
+    /// rings, and in each commit since.
+    pub(crate) oid_mark: u64,
+    /// [`Superblock::fallbacks`]: this mount's count, which every commit writes.
+    pub(crate) fallbacks: u64,
+    /// The count the last commit wrote (or the mounted one): a count above it
+    /// is not durable yet, and must not be shown to a reader of changes.
+    saved_fallbacks: u64,
     /// The writer's clock for the next superblock, nanoseconds since 1970.
     pub clock: u64,
     pub(crate) volumes: Tree,
@@ -170,10 +187,6 @@ impl<D: BlockDev> Fs<D> {
         faults: Faults,
         volumes: &[(u64, &str)],
     ) -> Result<Self, Error> {
-        // Before anything is written: no volume is made with a name ADR 0013 reserves.
-        for (_, name) in volumes {
-            crate::vol::check_new_volume(name)?;
-        }
         let info = dev.info();
         if info.blocks < format::MIN_BLOCKS {
             return Err(Error::NoSpace);
@@ -202,6 +215,11 @@ impl<D: BlockDev> Fs<D> {
             block_count: info.blocks,
             label: name,
             committed: 0,
+            oid_mark: 0,
+            // 0 is what a build that keeps no count writes: a new disk starts
+            // at 1, so a mount can tell the two apart.
+            fallbacks: 1,
+            saved_fallbacks: 1,
             clock: 0,
             volumes: Tree::default(),
             vols: volumes
@@ -228,7 +246,52 @@ impl<D: BlockDev> Fs<D> {
     pub fn mount_with(mut dev: D, faults: Faults) -> Result<Self, Error> {
         let (sb, rules) = Self::newest(&mut dev)?;
         let loaded = Self::load(&mut dev, &sb, faults)?;
-        Ok(Self::assemble(dev, &sb, rules, loaded, faults))
+        let mut fs = Self::assemble(dev, &sb, rules, loaded, faults);
+        fs.read_ring_history(&sb)?;
+        Ok(fs)
+    }
+
+    /// What the rings say past the mounted commit `sb`, for every mount (and
+    /// `check --repair`'s): the highest oid mark on any slot, and the fallback
+    /// count, one past the highest on any slot when this mount passed over a
+    /// newer slot of its own line of commits. A newer slot whose count is below
+    /// `sb`'s is from a line a fallback already counted. A raised count is not
+    /// durable until a commit writes it ([`Fs::fallbacks_unsaved`]).
+    pub(crate) fn read_ring_history(&mut self, sb: &Superblock) -> Result<(), Error> {
+        let slots = format::read_rings(&mut self.io.dev)?;
+        let mark = slots.iter().map(|slot| slot.oid_mark).max().unwrap_or(0);
+        let most = slots.iter().map(|slot| slot.fallbacks).max().unwrap_or(0);
+        // Gone back: a newer slot of this line was passed over; or the slot
+        // mounted is from a line a fallback already left (its count below the
+        // rings' highest); or a build that keeps no count wrote it (0), so
+        // what happened since it is unknown.
+        let fell_back = slots
+            .iter()
+            .any(|slot| slot.generation > sb.generation && slot.fallbacks >= sb.fallbacks)
+            || sb.fallbacks < most
+            || sb.fallbacks == 0;
+        self.oid_mark = self.oid_mark.max(mark);
+        self.fallbacks = self.fallbacks.max(most + u64::from(fell_back));
+        // A mount that cannot commit changes nothing on the disk, so its
+        // count cannot be shown again for other history: it counts as saved.
+        if !self.writable {
+            self.saved_fallbacks = self.fallbacks;
+        }
+        Ok(())
+    }
+
+    /// Whether the fallback count was raised (a fallback mount, a restored
+    /// snapshot) and no commit has written it yet: a reader of changes must
+    /// not see it until one has, or a later fallback could show it again.
+    pub fn fallbacks_unsaved(&self) -> bool {
+        self.fallbacks != self.saved_fallbacks
+    }
+
+    /// How many mounts of this disk have fallen back past newer commits
+    /// ([`Superblock::fallbacks`]): a reader of [`Fs::changes`] that sees it
+    /// change must read everything again, since commits it saw were undone.
+    pub fn fallbacks(&self) -> u64 {
+        self.fallbacks
     }
 
     /// The filesystem commit `sb` left, from what [`Fs::load`] read.
@@ -255,6 +318,9 @@ impl<D: BlockDev> Fs<D> {
             block_count: sb.block_count,
             label: sb.label,
             committed: sb.generation,
+            oid_mark: sb.oid_mark,
+            fallbacks: sb.fallbacks,
+            saved_fallbacks: sb.fallbacks,
             clock: sb.commit_time,
             volumes: loaded.volumes,
             vols: loaded.vols,
@@ -466,20 +532,52 @@ impl<D: BlockDev> Fs<D> {
     }
 
     /// Hands out a new object id in the active volume; none is ever handed out
-    /// twice.
+    /// twice, across an abort or (with [`Fs::skip_unsaved_oids`]) a restart.
+    /// NoSpace once [`OID_WINDOW`] ids are out past the last committed counter:
+    /// a commit makes room.
     pub fn alloc_oid(&mut self) -> Result<u64, Error> {
         let vol = self.vol_mut();
         let oid = vol.next_oid;
+        if oid >= vol.base.1.saturating_add(OID_WINDOW) {
+            return Err(Error::NoSpace);
+        }
         vol.next_oid = oid.checked_add(1).ok_or(Error::NoSpace)?;
         vol.live_changed = true;
         Ok(oid)
     }
 
+    /// Moves every volume's counter past any id a run before this mount could
+    /// have handed out and never committed: one [`OID_WINDOW`] past the
+    /// mounted commit's counter, and past the highest
+    /// [`format::Superblock::oid_mark`] on the rings, which a mount that fell
+    /// back past newer commits (once or many times) still reads from their
+    /// superblocks. Reads nothing. For a server, once at mount. Ids stay
+    /// refused (the window) until a commit writes the new counters, so a disk
+    /// that cannot commit yet still mounts and serves.
+    pub fn skip_unsaved_oids(&mut self) {
+        let mark = self.oid_mark;
+        for vol in self.vols.values_mut() {
+            let past = vol.base.1.saturating_add(OID_WINDOW).max(mark);
+            vol.next_oid = vol.next_oid.max(past);
+        }
+    }
+
+    /// Whether a volume's counter has moved past what the last commit wrote
+    /// (an abort or [`Fs::skip_unsaved_oids`]): a commit then saves it, and
+    /// until one does, a skip's ids stay refused.
+    pub fn oids_unsaved(&self) -> bool {
+        self.vols.values().any(|vol| vol.next_oid != vol.base.1)
+    }
+
     /// Raises the counter past `oid`: `check --repair` found an object above it.
+    /// The window counts from it too, so the repair can still make
+    /// `/lost+found`: the disk already holds `oid`, and a repair is offline,
+    /// so no handle names an id it hands out before its commit.
     pub(crate) fn bump_oid(&mut self, oid: u64) {
         let vol = self.vol_mut();
         if oid >= vol.next_oid {
             vol.next_oid = oid.saturating_add(1);
+            vol.base.1 = vol.base.1.max(oid);
             vol.live_changed = true;
         }
     }
@@ -599,6 +697,21 @@ impl<D: BlockDev> Fs<D> {
         vol.live.scan_born_after(since, &mut store, visit)
     }
 
+    /// The items of the active volume's tree as the last commit wrote it,
+    /// in leaves born after generation `since`, from key `from` on, until
+    /// `visit` returns false. The committed tree, not the live one: what an
+    /// open action changed, and may yet drop, is not there.
+    pub fn scan_committed_born_after_from(
+        &mut self,
+        since: u64,
+        from: &Key,
+        visit: &mut dyn FnMut(&Key, &[u8]) -> bool,
+    ) -> Result<(), Error> {
+        let pin = self.pin();
+        let (vol, mut store) = split(&mut self.vols, &mut self.io, self.active, pin);
+        Tree::open(vol.base.0).scan_born_after_from(since, from, &mut store, visit)
+    }
+
     /// Makes `items`, raw and in key order, the active volume's whole live tree.
     /// The old tree's blocks are never read again and wait for the GC: `check
     /// --repair` rebuilds a tree it could not wholly read this way.
@@ -712,6 +825,9 @@ impl<D: BlockDev> Fs<D> {
         let vol = self.vol_mut();
         vol.live = Tree::open(snap.root);
         vol.live_changed = true;
+        // The volume went back to older state, with older `changed` stamps:
+        // as after a fallback, a reader of changes must read everything again.
+        self.fallbacks += 1;
         Ok(true)
     }
 
@@ -735,7 +851,9 @@ impl<D: BlockDev> Fs<D> {
         }
         let mut written = Vec::new();
         for (&id, vol) in self.vols.iter_mut() {
-            if !vol.live_changed {
+            // A counter an abort or a skip moved is written even when the tree
+            // did not change, so the window counts from it.
+            if !vol.live_changed && vol.next_oid == vol.base.1 {
                 continue;
             }
             let newest = vol.newest();
@@ -774,10 +892,21 @@ impl<D: BlockDev> Fs<D> {
         sb.volumes = volumes;
         sb.alloc = head;
         sb.commit_time = self.clock;
+        // Past every id that can go out before the next commit: each volume's
+        // window from the counter this one writes.
+        let mark = self
+            .vols
+            .values()
+            .map(|vol| vol.next_oid.saturating_add(OID_WINDOW))
+            .fold(self.oid_mark, u64::max);
+        sb.oid_mark = mark;
+        sb.fallbacks = self.fallbacks;
         sb.label = self.label;
         format::write_rings(&mut self.io.dev, &sb)?;
         self.io.dev.flush()?;
         self.committed = generation;
+        self.saved_fallbacks = self.fallbacks;
+        self.oid_mark = mark;
         self.io.txn = generation + 1;
         self.io.alloc.committed(generation);
         for (id, root) in written {

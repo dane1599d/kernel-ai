@@ -12,7 +12,7 @@
 //!
 //! `cargo test --release -p kaifs --test alloc -- --nocapture`
 
-use kaifs::allocator::{Allocator, Faults, State};
+use kaifs::allocator::{Allocator, Faults, Spend, State};
 use kaifs::buddy::Run;
 use kaifs::crash::{Options, Oracle, Recording, Rng, Tally, enumerate};
 use kaifs::format::{self, Superblock};
@@ -40,6 +40,10 @@ impl Toy {
         format::clear_rings(&mut dev, BLOCKS).unwrap();
         let mut alloc = Allocator::new(format::data_area(BLOCKS));
         alloc.faults = faults;
+        // The gate is the chain's, not the reserve's (`tests/reserve.rs`): the
+        // toy allocates until the buddy is empty, and its chain still needs
+        // blocks to commit, as the work that frees space may take them.
+        alloc.spend_reserve(Spend::All);
         let mut toy = Toy {
             dev,
             alloc,
