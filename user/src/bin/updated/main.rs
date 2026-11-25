@@ -104,8 +104,8 @@ fn main() -> i32 {
     }
     // The model channel: a trial the last boot left is settled before anything
     // waits on `llm` (`models.rs`). The plan line's one route is to `llm`. A
-    // start again within the boot (the supervisor's `restart=N`, N > 0) finds
-    // this boot's own trial, and goes on judging it.
+    // start again within the boot (the supervisor's `restart=N`, N > 0)
+    // judges a trial it finds by what `llm` says this boot runs.
     let folders = folders::Folders::from_startup().ok();
     let test = args.split_whitespace().any(|w| w == "fetch=test");
     let (hosts, lists) = (offers::hosts(test), download::lists(test));

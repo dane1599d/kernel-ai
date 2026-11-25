@@ -182,6 +182,21 @@ fn which_model_runs_is_asked_again_when_llm_cannot_say() {
     assert_eq!(runs(health(&no_model)), Ok(None));
     let remote = "ok HTTP 200 in 3 ms; status state=remote tps10=0";
     assert_eq!(runs(health(remote)), Ok(None));
+    // A server alone whose health fails, as `llm` serves it: no local model,
+    // so a switch and a remove go on (the review of #1349, MEDIUM 2).
+    use llmproto::health::{State, Status, reply};
+    let status = Status {
+        state: State::Remote,
+        tps10: 0,
+    };
+    let down = reply(
+        Some(Err(String::from("network: refused"))),
+        None,
+        status,
+        160,
+    );
+    let down = format!("err {}", down.expect_err("an error"));
+    assert_eq!(runs(health(&down)), Ok(None), "{down}");
     // While it writes an app its health names no model, and while it loads
     // the model it does not answer in time: neither is "no model", so a
     // switch is not given none to go back to.
