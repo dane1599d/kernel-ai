@@ -501,11 +501,7 @@ fn a_restart_heard_with_every_window_hidden_binds_the_seat_again() {
         panic!("the show opens the window again");
     };
     let needs = serve(&mut client, &mut screen, &open.calls, true);
-    let [
-        Need::MapPool { pool, .. },
-        Need::Show { window, .. },
-    ] = needs[..]
-    else {
+    let [Need::MapPool { pool, .. }, Need::Show { window, .. }] = needs[..] else {
         panic!("{needs:?}");
     };
     client.pool_mapped(pool);
