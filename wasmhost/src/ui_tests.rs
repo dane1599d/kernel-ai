@@ -557,3 +557,21 @@ fn a_new_measure_lays_open_windows_out_again_and_paints_them_whole() {
     assert_eq!(again.a11y.iter().find(|n| n.id == 1).unwrap().bounds, after);
     assert_eq!(again.damage, [uikit::geom::Rect::new(0, 0, 200, 100)]);
 }
+
+/// `view.open` refuses a size past the most a window may be (bug hunt 2,
+/// H2-11); the most itself opens.
+#[test]
+fn a_window_past_the_largest_size_is_too_big() {
+    use uikit::widget::UiError;
+    let mut host = crate::ui::UiHost::default();
+    let most = crate::desk::MAX_WINDOW_PX;
+    let open = |w, h| [Val::String("x".into()), Val::U16(w), Val::U16(h)];
+    for (w, h) in [(65535, 65535), (most + 1, 10), (10, most + 1)] {
+        let done = crate::ui::run(&mut host, "open", &open(w, h));
+        assert_eq!(done, Ok(Err(UiError::TooBig)), "{w}x{h}");
+    }
+    assert_eq!(
+        crate::ui::run(&mut host, "open", &open(most, most)),
+        Ok(Ok(Some(1)))
+    );
+}
