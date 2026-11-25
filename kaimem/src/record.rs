@@ -73,15 +73,14 @@ pub struct Memory {
     pub text: String,
 }
 
-/// Characters that change how text shows without showing themselves: the
-/// bidi controls and the zero-width ones (C on #650), and every other one the
-/// directive check reads as nothing (`directive::fold_char`): the soft hyphen,
-/// the grapheme joiner, the Arabic letter mark, Khmer and Mongolian
-/// ignorables, the format characters, variation selectors and the tag
-/// characters. Those could spell text the screen and the check skip and the
-/// model reads (bug hunt H2-5). The line and paragraph separators break the
-/// one line. So a question cannot show text other than what is kept.
-fn invisible(c: char) -> bool {
+/// Characters that show as nothing: the bidi controls and the zero-width ones
+/// (C on #650), the soft hyphen, the grapheme joiner, the Arabic letter mark,
+/// Khmer and Mongolian ignorables, the format characters, variation selectors
+/// and the tag characters. The directive check reads them as nothing
+/// (`directive::fold_char` calls this), and a memory holds one only where it
+/// is part of what shows ([`hidden_problem`]): anywhere else it could spell
+/// text the screen and the check skip and the model reads (bug hunt H2-5).
+pub(crate) fn shown_as_nothing(c: char) -> bool {
     matches!(
         c,
         '\u{00AD}'
@@ -91,13 +90,142 @@ fn invisible(c: char) -> bool {
             | '\u{17B5}'
             | '\u{180B}'..='\u{180F}'
             | '\u{200B}'..='\u{200F}'
-            | '\u{2028}'
-            | '\u{2029}'
             | '\u{202A}'..='\u{202E}'
             | '\u{2060}'..='\u{206F}'
             | '\u{FE00}'..='\u{FE0F}'
             | '\u{FEFF}'
             | '\u{E0000}'..='\u{E0FFF}'
+    )
+}
+
+/// A pictograph an emoji presentation selector or a joiner can go with: the
+/// blocks emoji come from, a little wider than Unicode's Extended_Pictographic
+/// (the symbols, arrows, dingbats and emoji blocks, and the few marks such as
+/// `©` and `™`). Each shows, so text built of them shows as what it is.
+fn pictograph(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00A9}'
+            | '\u{00AE}'
+            | '\u{203C}'
+            | '\u{2049}'
+            | '\u{2122}'
+            | '\u{2139}'
+            | '\u{2190}'..='\u{21FF}'
+            | '\u{2300}'..='\u{23FF}'
+            | '\u{24C2}'
+            | '\u{25A0}'..='\u{25FF}'
+            | '\u{2600}'..='\u{27BF}'
+            | '\u{2900}'..='\u{297F}'
+            | '\u{2B00}'..='\u{2BFF}'
+            | '\u{3030}'
+            | '\u{303D}'
+            | '\u{3297}'
+            | '\u{3299}'
+            | '\u{1F000}'..='\u{1FAFF}'
+    )
+}
+
+/// The flags spelt with tag characters that Unicode recommends: England,
+/// Scotland and Wales. Only these: a tag character reads as an ASCII letter
+/// to a model, so any other run of them could carry words the screen hides.
+const TAG_FLAGS: [&str; 3] = ["gbeng", "gbsct", "gbwls"];
+
+/// Whether the character that shows as nothing at `chars[at]` is part of what
+/// shows: an emoji or text presentation selector (U+FE0E, U+FE0F) right after
+/// a pictograph, or after `#`, `*` or a digit that a keycap (U+20E3) follows;
+/// another variation selector (U+FE00 to U+FE0D) right after a CJK ideograph
+/// or a mathematical operator, whose standardized variants use them; an
+/// ideographic one (U+E0100 to U+E01EF) right after a CJK ideograph; a
+/// Mongolian free variation selector right after a Mongolian letter; a
+/// zero-width joiner between two pictographs (`❤️‍🔥`, a family); and the tag
+/// characters of a [`TAG_FLAGS`] flag after its black flag (U+1F3F4).
+fn part_of_what_shows(chars: &[char], at: usize) -> bool {
+    let before = at.checked_sub(1).map(|i| chars[i]);
+    let after = chars.get(at + 1).copied();
+    match chars[at] {
+        '\u{FE0E}' | '\u{FE0F}' => match before {
+            Some(b) if pictograph(b) => true,
+            Some('#' | '*' | '0'..='9') => after == Some('\u{20E3}'),
+            _ => false,
+        },
+        '\u{FE00}'..='\u{FE0D}' => before.is_some_and(|b| cjk(b) || math(b)),
+        // Ideographic variation selectors: a CJK ideograph's form, in names.
+        '\u{E0100}'..='\u{E01EF}' => before.is_some_and(cjk),
+        '\u{180B}'..='\u{180D}' | '\u{180F}' => {
+            before.is_some_and(|b| matches!(b, '\u{1820}'..='\u{1878}' | '\u{1880}'..='\u{18AA}'))
+        }
+        '\u{200D}' => {
+            let joined = |c: Option<char>| c.is_some_and(pictograph);
+            let before = match before {
+                Some('\u{FE0F}') => at.checked_sub(2).map(|i| chars[i]),
+                other => other,
+            };
+            joined(before) && joined(after)
+        }
+        '\u{E0020}'..='\u{E007F}' => in_tag_flag(chars, at),
+        _ => false,
+    }
+}
+
+/// A CJK ideograph, which standardized and ideographic variation selectors
+/// pick a form of.
+fn cjk(c: char) -> bool {
+    matches!(
+        c,
+        '\u{3400}'..='\u{4DBF}'
+            | '\u{4E00}'..='\u{9FFF}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{20000}'..='\u{3FFFF}'
+    )
+}
+
+/// A mathematical operator, which standardized variation selectors pick a
+/// form of.
+fn math(c: char) -> bool {
+    matches!(c, '\u{2200}'..='\u{22FF}' | '\u{2A00}'..='\u{2AFF}')
+}
+
+/// Whether `chars[at]`, a tag character, is in a [`TAG_FLAGS`] flag: U+1F3F4,
+/// its tag letters, then the cancel tag U+E007F.
+fn in_tag_flag(chars: &[char], at: usize) -> bool {
+    let tag = |c: char| ('\u{E0020}'..='\u{E007E}').contains(&c);
+    let mut first = at;
+    while first > 0 && tag(chars[first - 1]) {
+        first -= 1;
+    }
+    // The run of tag letters ends at the cancel tag: `at` itself, or after it.
+    let end = match chars[at] {
+        '\u{E007F}' => at,
+        _ => {
+            let mut end = at;
+            while end < chars.len() && tag(chars[end]) {
+                end += 1;
+            }
+            if chars.get(end) != Some(&'\u{E007F}') {
+                return false;
+            }
+            end
+        }
+    };
+    if first == end || first == 0 || chars[first - 1] != '\u{1F3F4}' {
+        return false;
+    }
+    let letters: String = chars[first..end]
+        .iter()
+        .filter_map(|c| char::from_u32(*c as u32 - 0xE0000))
+        .collect();
+    TAG_FLAGS.contains(&letters.as_str())
+}
+
+/// Why `text` holds a character that shows as nothing where it is not part of
+/// what shows ([`part_of_what_shows`]), or `None`.
+fn hidden_problem(text: &str) -> Option<&'static str> {
+    let chars: Vec<char> = text.chars().collect();
+    let hides =
+        (0..chars.len()).any(|at| shown_as_nothing(chars[at]) && !part_of_what_shows(&chars, at));
+    hides.then_some(
+        "a memory cannot hold characters that do not show, but for those inside an emoji",
     )
 }
 
@@ -112,8 +240,15 @@ pub fn text_problem(text: &str) -> Option<&'static str> {
     if text.len() > MAX_TEXT {
         return Some("a memory is at most 200 bytes");
     }
-    if text.chars().any(|c| c.is_control() || invisible(c)) {
+    // The line and paragraph separators break the one line, as a newline does.
+    if text
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+    {
         return Some("a memory is one line of printable text");
+    }
+    if let Some(why) = hidden_problem(text) {
+        return Some(why);
     }
     // The file finds its records by this start, so a text that had it would read
     // back as a record of its own.
