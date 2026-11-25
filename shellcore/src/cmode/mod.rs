@@ -20,11 +20,14 @@
 //!   content read that asked labels the rest of the entry as one that ran
 //!   at once does (ADR 0002 D6).
 //! - `undo`, `:dis`, `:defs`, `:reset` and a restarted cc: `session.rs`.
+//! - `:save <name>` and `:load <name>`: `files.rs`.
 //! - `? <request>` and `:keep`, Kai's own C programs: `program.rs`.
 
 pub(crate) mod program;
 
 pub use program::MAX_REPAIRS as C_REPAIRS;
+mod files;
+mod saved;
 mod session;
 
 use crate::{CANCEL_ENTRY, Reply, Shell};
@@ -80,6 +83,12 @@ pub(crate) struct CMode {
     model: Option<ModelRun>,
     /// Kai's last program that defined something, for `:keep`.
     kept: Option<program::Kept>,
+    /// The running entry's [`session::Ran::included`].
+    included: Option<[u8; 32]>,
+    /// The names the running entry's text, files included, defines.
+    names: Option<Vec<String>>,
+    /// The running entry's [`session::Ran::rebinds`].
+    rebinds: Vec<String>,
 }
 
 /// What the shell says on `:c`.
@@ -144,10 +153,12 @@ impl Shell {
             ":defs" => self.c_command(&Request::Defs),
             ":reset" => self.c_reset(),
             ":keep" => self.c_keep(),
+            _ if line.starts_with(":save ") => self.c_save(line[6..].trim()),
+            _ if line.starts_with(":load ") => self.c_load(line[6..].trim()),
             _ => match line.strip_prefix(":dis ") {
                 Some(name) => self.c_command(&Request::Dis(name.trim())),
                 None if line.starts_with(':') => Reply::err(
-                    "at c> the commands are ? <request>, :keep, :dis f, :defs, :reset, undo and :rhai",
+                    "at c> the commands are ? <request>, :keep, :dis f, :defs, :save name, :load name, :reset, undo and :rhai",
                 ),
                 None => match line.strip_prefix('?') {
                     Some(request) => self.c_program(request.trim()),
@@ -178,6 +189,25 @@ impl Shell {
             self.c.partial = Some(text.to_string());
             return Reply::more();
         }
+        // `#include "…"` lines at its top: the shell reads them (`files.rs`).
+        let expanded = match self.c_includes(text) {
+            Ok(expanded) => expanded,
+            Err(why) => return Reply::err(why),
+        };
+        if expanded.len() > promptcore::MAX_ENTRY {
+            return Reply::err(format!(
+                "dropped: with its #include files the entry is over {} KiB",
+                promptcore::MAX_ENTRY / 1024
+            ));
+        }
+        // The request, its consent and its log entry are what the person
+        // typed: a call in an included file was not asked for by them, so it
+        // counts as added and asks (ADR 0002). Only cc gets the files' text.
+        let typed = text;
+        self.c.included = files::included(typed, &expanded);
+        self.c.names = Some(saved::defines(&expanded));
+        self.c.rebinds.clear();
+        let text = expanded.as_str();
         let mut restored = match self.c_ensure_open() {
             Ok(note) => note,
             Err(why) => return Reply::err(why),
@@ -185,7 +215,7 @@ impl Shell {
         self.c.seq += 1;
         self.c.calls = 0;
         let seq = self.c.seq;
-        self.entry_begin(text);
+        self.entry_begin(typed);
         let request = Request::Eval { seq, entry: text }.text();
         let mut reply = self.host.cc(request.as_bytes());
         // A cc the supervisor restarted between entries has no session: open
@@ -199,7 +229,7 @@ impl Shell {
             reply = self.host.cc(request.as_bytes());
         }
         match reply {
-            Ok(reply) => self.c_drive(seq, text, reply, restored),
+            Ok(reply) => self.c_drive(seq, typed, reply, restored),
             Err(why) => {
                 self.c.open = false;
                 self.c_failed(&restored, &format!("cc did not answer: {why}"))
@@ -217,6 +247,7 @@ impl Shell {
             let mut defined = false;
             let mut value = String::new();
             let mut next = None;
+            self.c.rebinds.extend(session::rebound(&records));
             for record in &records {
                 match *record {
                     Record::Out(bytes) => shown.push_str(&String::from_utf8_lossy(bytes)),
@@ -243,11 +274,15 @@ impl Shell {
                         // reverts its log entry only, and `:keep` its definitions.
                         let model = self.c.model.is_some();
                         let defined = (defined && !model).then(|| text.to_string());
+                        let included = self.c.included.take();
                         self.c.ran.push(Ran {
                             seq,
                             defined,
                             logged,
                             cc: !model,
+                            included,
+                            names: self.c.names.take().unwrap_or_default(),
+                            rebinds: core::mem::take(&mut self.c.rebinds),
                         });
                         self.c_model_end(true);
                         if !value.is_empty() && !shown.is_empty() && !shown.ends_with('\n') {

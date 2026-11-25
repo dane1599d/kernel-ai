@@ -64,6 +64,7 @@ check "the first model PR goes in"            'has "  + #2 (feat/m1)"'
 check "a second model PR waits"               'has "  - #3 changes what the model sees, and so does #2"'
 check "its stacked child waits with it"       'has "  - #4 is stacked on a left-out PR"'
 check "the fluency gate ran once"             '[ "$(wc -l < "$T/fluency-dispatches")" = 1 ]'
+check "dispatched with CI, before it is read" 'awk "/workflow run fluency-model/ && !w {w=NR} /run list .*--workflow ci.yml/ && !c {c=NR} END {exit !(w && c && w < c)}" "$T/gh.log"'
 check "main holds the tested batch"           'has "main fast-forwarded to the tested batch"'
 check "landed heads are deleted"              'gone feat/a && gone feat/m1'
 check "the base of an open PR is kept"        'has "kept feat/d (an open PR" && ! gone feat/d'
@@ -78,6 +79,12 @@ check "the resume lands both"                 'has "  #3: MERGED" && has "  #4: 
 check "the resume did not re-run fluency"     '[ "$(wc -l < "$T/fluency-dispatches")" = 2 ]'
 check "the resume deletes the heads"          'gone feat/m2 && gone feat/c'
 check "the state is cleared"                  '[ ! -f "$T/state/current-batch" ]'
+
+echo "== a model batch whose CI fails: its fluency run is cancelled with it"
+setup
+: > "$T/gh.log"
+CI_RESULT=failure ff 2
+check "dispatched, then the batch's runs cancelled" 'grep -q "workflow run fluency-model.yml --repo .* --ref batch/" "$T/gh.log" && has "batch NOT green" && grep -q "run cancel 789" "$T/gh.log" && ! has "#2: MERGED"'
 
 echo "== a stop just after the fast-forward, then --resume"
 setup
@@ -125,6 +132,36 @@ printf 'phase=pushed\nname=\nbase=x\nc=y\nbpr=\nprs=1\nheads_s=x\nbrs_s=feat/a\n
 check "no batch branch: stopped"              'has "names no batch branch; STOPPING" && [ ! -f "$T/state/current-batch" ]'
 check "and no run was listed or cancelled"    '! grep -q "run " "$T/gh.log"'
 
+echo "== ci.yml: every job after another guards it explicitly"
+# A job's implicit success() covers its needs' needs too (actions/runner#491):
+# with `noboot` skipped on every run but a no-boot batch, a boot job without an
+# explicit guard would be skipped, and the batcher would read every batch as
+# red. So every job with `needs:` says `!cancelled()`, and checks each need it
+# relies on by `needs.<job>.result == 'success'` (all but `noboot`, which
+# `qemu` reads by its output and runs past when it is skipped, and `prebuild`,
+# whose output the boot shards read and which they run past when it fails).
+CI="$B/../../.github/workflows/ci.yml"
+guards=$(awk '
+  /^  [a-z][a-z0-9_-]*:$/ { if (job != "") print job "|" needs "|" cond; job = substr($1, 1, length($1) - 1); needs = ""; cond = ""; inif = 0; next }
+  /^[a-z]/ { if (job != "") print job "|" needs "|" cond; job = ""; next }
+  job == "" { next }
+  /^    needs: / { needs = $0; sub(/^    needs: */, "", needs); gsub(/[][ ]/, "", needs); inif = 0; next }
+  /^    if: / { cond = $0; inif = ($0 ~ /: >-$/); next }
+  /^    [a-z]/ { inif = 0; next }
+  inif && /^      / { cond = cond " " $0; next }
+  END { if (job != "") print job "|" needs "|" cond }' "$CI")
+bad_guard=""
+while IFS='|' read -r job needs cond; do
+  [ -n "$needs" ] || continue
+  case "$cond" in *'!cancelled()'*) ;; *) bad_guard="$bad_guard $job(!cancelled)";; esac
+  for n in $(echo "$needs" | tr ',' ' '); do
+    case "$n" in noboot|prebuild) continue;; esac
+    case "$cond" in *"needs.$n.result == 'success'"*) ;; *) bad_guard="$bad_guard $job(needs.$n)";; esac
+  done
+done <<< "$guards"
+check "jobs with needs are listed"            'echo "$guards" | grep -q "^boot|qemu,prebuild|" && echo "$guards" | grep -q "^observe-compare|observe|"'
+check "each guards its needs explicitly"      '[ -z "$bad_guard" ] || { echo "  missing:$bad_guard"; false; }'
+
 echo "== noboot.sh: every arm of the rule"
 # A repo of its own: each case is one commit on a branch from `base`, judged
 # by noboot.sh as CI judges a batch (exit 0 no-boot, 1 needs boot, 2 unreadable).
@@ -133,6 +170,20 @@ rm -rf "$RT"; git init -q "$RT"
 mkdir -p "$RT/crate/src" "$RT/apps/x/src" "$RT/kernel/src" "$RT/docs"
 for f in crate/Cargo.toml apps/x/Cargo.toml kernel/Cargo.toml Cargo.lock kernel/src/a.rs docs/inc.md; do echo x > "$RT/$f"; done
 printf 'const D: &str = include_str!("../../docs/inc.md");\n' > "$RT/crate/src/lib.rs"
+# Image code reading files the path arms would allow: a doc through
+# concat!(env!(...)) over several lines, a test fixture, a testkit helper.
+printf 'const C: &[u8] = include_bytes!(concat!(\n    env!("CARGO_MANIFEST_DIR"),\n    "/../docs/cc.md"\n));\n' > "$RT/kernel/src/c.rs"
+printf 'const F: &[u8] = include_bytes!("../../crate/tests/fixture.bin");\n' > "$RT/kernel/src/f.rs"
+printf '#[path = "../../testkit/used.rs"]\nmod used;\n' > "$RT/kernel/src/k.rs"
+# A test reaching another test file: not image code.
+mkdir -p "$RT/crate/tests"; printf '#[path = "b.rs"]\nmod b;\n' > "$RT/crate/tests/a.rs"
+# include! itself; a #[path]ed mod.rs, whose module tree comes with it; a
+# testkit file image code reaches that reads a test fixture in turn.
+printf 'include!("../../docs/gen.md");\n' > "$RT/kernel/src/i.rs"
+printf '#[path = "../../testkit/tree/mod.rs"]\nmod tree;\n' > "$RT/kernel/src/m.rs"
+mkdir -p "$RT/testkit/tree"; printf 'mod leaf;\n' > "$RT/testkit/tree/mod.rs"; echo x > "$RT/testkit/tree/leaf.rs"
+printf '#[path = "../../testkit/hop.rs"]\nmod hop;\n' > "$RT/kernel/src/h.rs"
+printf 'const X: &str = include_str!("../crate/tests/data.txt");\n' > "$RT/testkit/hop.rs"
 git -C "$RT" add -A && git -C "$RT" commit -qm base && git -C "$RT" branch -q base
 rule() {  # $1 expected exit, $2 description, then paths to write
   local want=$1 what=$2 got; shift 2
@@ -145,6 +196,13 @@ rule() {  # $1 expected exit, $2 description, then paths to write
 rule 0 "a doc under docs/"                    docs/plan.md
 rule 0 "a .md at the root"                    README.md
 rule 1 "a doc a .rs include_str!s"            docs/inc.md
+rule 1 "a doc read through concat!(env!(..))" docs/cc.md
+rule 1 "a tests/ fixture image code includes" crate/tests/fixture.bin
+rule 1 "a testkit/ file image code #[path]s"  testkit/used.rs
+rule 0 "a tests/ file only a test reaches"    crate/tests/b.rs
+rule 1 "a doc image code include!s"           docs/gen.md
+rule 1 "a file in a #[path]ed mod.rs's tree"  testkit/tree/leaf.rs
+rule 1 "a fixture a testkit helper reads"     crate/tests/data.txt
 rule 1 "a .md under a component's src/"       apps/x/src/notes.md
 rule 0 "a crate's tests/ beside Cargo.toml"   crate/tests/t.rs
 rule 1 "a tests/ with no Cargo.toml beside"   loose/tests/t.rs
@@ -169,18 +227,38 @@ git -C "$RT" checkout -q -b child && echo z > "$RT/docs/child.md" && git -C "$RT
 check "a docs PR stacked on a kernel PR (exit 1)" '[ "$got" = 1 ]'
 (cd "$RT" && bash "$B/noboot.sh" base no-such-rev > /dev/null 2>&1); got=$?
 check "unreadable revisions (exit 2)"          '[ "$got" = 2 ]'
+# A git whose grep fails: the reference check must answer "read" (fail closed).
+printf '#!/bin/sh\n[ "$1" = grep ] && exit 2\nexec git "$@"\n' > "$T/failgit"; chmod +x "$T/failgit"
+git -C "$RT" checkout -q -B case base && echo y >> "$RT/docs/plan.md" && git -C "$RT" add -A && git -C "$RT" commit -qm case
+(cd "$RT" && NOBOOT_GIT="$T/failgit" bash "$B/noboot.sh" base case > /dev/null); got=$?
+check "a grep error fails closed (exit 1)"     '[ "$got" = 1 ]'
 
 echo "== another workflow still running, or unlisted, is not green"
 setup
 echo "kaifs=in_progress" > "$T/others"
 ff 1
 check "unfinished: CI did not finish"         'has "a workflow did not finish" && has "CI did not finish (another workflow); STOPPING" && ! has "#1: MERGED" && [ -s "$T/prs/1/labels" ]'
+echo "kaifs=queued" > "$T/others"
+ff 1
+check "queued: CI did not finish"             'has "a workflow did not finish" && ! has "#1: MERGED" && [ -s "$T/prs/1/labels" ]'
 rm -f "$T/others"; touch "$T/others-fail"
 ff 1
 check "unlisted: CI did not finish"           'has "the workflow listing failed" && has "CI did not finish (another workflow)" && ! has "#1: MERGED"'
 rm -f "$T/others-fail"; : > "$T/others"
 ff 1
 check "no other workflow at all: lands"       'has "  #1: MERGED"'
+
+echo "== all_checks (the label watches): only finished, passed checks are fine"
+# gh pr checks as bucket|name rows, the form all_checks asks gh for.
+ac() { ( stub_rows=$1; R=x; gh() { printf '%s' "$stub_rows"; }; . "$B/checks-lib.sh"; all_checks 1 ) }
+P='pass|Format, lint, host unit tests'
+check "all passed: ok"                        '[ "$(ac "$P"$'"'"'\nskipping|Boot test'"'"')" = ok ]'
+check "nothing listed yet: pending"           '[ "$(ac "")" = pending ]'
+check "a workflow running: pending"           '[ "$(ac "$P"$'"'"'\npending|oracle'"'"')" = pending ]'
+check "an unknown state: pending"             '[ "$(ac "$P"$'"'"'\nqueued|oracle'"'"')" = pending ]'
+check "a failure: fail"                       'case "$(ac "$P"$'"'"'\nfail|oracle'"'"')" in "fail: oracle; ") true;; *) false;; esac'
+check "cancelled, never passed: fail"         'case "$(ac "$P"$'"'"'\ncancel|oracle'"'"')" in *"never passed: oracle; ") true;; *) false;; esac'
+check "cancelled twin of a passed run: ok"    '[ "$(ac "$P"$'"'"'\ncancel|Format, lint, host unit tests'"'"')" = ok ]'
 
 echo "== a no-boot batch takes only PRs the boot jobs cannot see"
 setup
@@ -192,18 +270,81 @@ bash "$B/batch-ff.sh" --noboot 1 8 9 > "$T/out" 2>&1
 check "a boot PR is left out, label kept"     'has "#1 changes what the boot jobs check; left out of a no-boot batch" && [ -s "$T/prs/1/labels" ]'
 check "the others land on a noboot branch"    'has "  #8: MERGED" && has "  #9: MERGED" && grep -q "pr create .*--head batch/noboot-" "$T/gh.log"'
 
-echo "== batch-auto.sh: no-boot PRs go first, then a full batch"
+# batch-auto.sh until $1 shows in its log, then stopped; extra env before it.
+auto_until() {  # $1 text to wait for
+  bash "$B/batch-auto.sh" > /dev/null & A=$!
+  for i in $(seq 1 120); do grep -q "$1" "$T/state/batch-auto.log" 2>/dev/null && break; /bin/sleep 1 2>/dev/null || /usr/bin/sleep 1; done
+  touch "$T/state/batch-auto.stop"; wait $A
+  L="$T/state/batch-auto.log"
+}
+nb_setup() {  # PRs 8 (a doc) and 9 (a script) beside the usual ones; labels on $@ only
+  setup
+  mkpr 8 feat/doc main docs/x.md
+  mkpr 9 feat/tool main scripts/y.sh
+  git -C "$T/work" checkout -q --detach origin/main
+  for n in 1 2 3 4 5 7 8 9; do case " $* " in *" $n "*) ;; *) : > "$T/prs/$n/labels";; esac; done
+}
+
+echo "== batch-auto.sh: only no-boot PRs eligible: a no-boot batch"
+nb_setup 8 9
+: > "$T/gh.log"
+auto_until "#9 merged"
+check "a no-boot batch of 8 and 9"            'grep -q "no-boot batch: 8 9" "$L" && grep -q "#8 merged" "$L" && grep -q "pr create .*--head batch/noboot-" "$T/gh.log"'
+
+echo "== batch-auto.sh: a boot PR waiting too: one full batch for all"
+nb_setup 1 8 9
+: > "$T/gh.log"
+auto_until "#1 merged"
+check "no no-boot batch while a boot PR waits" '! grep -q "no-boot batch" "$L" && grep -q "batch: 1 8 9$" "$L" && grep -q "#8 merged" "$L"'
+check "and its branch is a full one"          '! grep -q -- "--head batch/noboot-" "$T/gh.log"'
+
+echo "== batch-auto.sh: a batch-first boot PR goes in a full batch, first"
+nb_setup 1 8 9
+printf 'batch-ready\nbatch-first\n' > "$T/prs/1/labels"
+: > "$T/gh.log"
+auto_until "#1 merged"
+check "batch-first boot PR: one full batch"   '! grep -q "no-boot batch" "$L" && grep -q "batch: 1 8 9$" "$L" && ! grep -q -- "--head batch/noboot-" "$T/gh.log"'
+
+echo "== batch-auto.sh: KAI_BATCH_NOBOOT=0 turns the lane off"
+nb_setup 8 9
+KAI_BATCH_NOBOOT=0 auto_until "#9 merged"
+check "off: a full batch even of no-boot PRs" '! grep -q "no-boot batch" "$L" && grep -q "batch: 8 9$" "$L"'
+
+echo "== batch-auto.sh: a failed no-boot batch is tried once as a full batch"
+nb_setup 8
+CI_RESULT=failure auto_until "failed alone"
+check "a lone PR gets its full batch first"   'grep -q "no-boot batch of 8 failed; trying it once as a full batch" "$L" && grep -q "#8 failed alone" "$L"'
+
+echo "== batch-auto.sh: a resumed no-boot batch that fails is tried once as a full batch"
+nb_setup 8
+touch "$T/kill-on-ready"; ff --noboot 8
+sed -i 's/^phase=.*/phase=pushed/' "$T/state/current-batch"
+CI_RESULT=failure auto_until "failed alone"
+check "the resume's failure gets its full batch" 'grep -q "resuming the unfinished batch: 8" "$L" && grep -q "no-boot batch of 8 failed; trying it once as a full batch" "$L" && grep -q "#8 failed alone" "$L"'
+
+echo "== batch-ff.sh: a no-boot batch whose combined commit needs boot goes full"
 setup
 mkpr 8 feat/doc main docs/x.md
-mkpr 9 feat/tool main scripts/y.sh
 git -C "$T/work" checkout -q --detach origin/main
-for n in 2 3 4 5 7; do : > "$T/prs/$n/labels"; done
-bash "$B/batch-auto.sh" > /dev/null & A=$!
-for i in $(seq 1 120); do grep -q "#1 merged" "$T/state/batch-auto.log" 2>/dev/null && break; /bin/sleep 1 2>/dev/null || /usr/bin/sleep 1; done
-touch "$T/state/batch-auto.stop"; wait $A
-L="$T/state/batch-auto.log"
-check "the no-boot PRs batch first"           'grep -q "no-boot batch: 8 9" "$L" && grep -q "#8 merged" "$L"'
-check "then the boot PR in a full batch"      'grep -q "batch: 1$" "$L" && grep -q "#1 merged" "$L"'
+mkdir -p "$T/work/kernel/src"; printf 'const D: &str = include_str!("../../docs/x.md");\n' > "$T/work/kernel/src/inc.rs"
+git -C "$T/work" add -A && git -C "$T/work" commit -qm "main reads docs/x.md" && git -C "$T/work" push -q origin HEAD:main
+: > "$T/gh.log"; ff --noboot 8
+check "the combined commit runs as a full batch" 'has "the combined commit needs the boot jobs: running as a full batch" && ! grep -q -- "--head batch/noboot-" "$T/gh.log" && has "  #8: MERGED"'
+
+echo "== batch-ff.sh: a resumed no-boot batch keeps its gate"
+nb_setup 8 9
+export CI_SKIP_BOOT=1
+touch "$T/kill-on-ready"; ff --noboot 8 9
+check "the state says no-boot"                'grep -q "^noboot=1" "$T/state/current-batch" && grep -q "^name=batch/noboot-" "$T/state/current-batch"'
+# With the flag wiped, only the branch name can give the lint-only gate, and
+# the full gate would refuse the skipped boot jobs.
+sed -i 's/^phase=.*/phase=pushed/; s/^noboot=.*/noboot=/' "$T/state/current-batch"
+ff --resume
+check "the branch name decides it: it lands"  'has "  #8: MERGED" && has "  #9: MERGED"'
+nb_setup 1
+ff 1
+check "a full batch refuses skipped boot jobs" 'has "batch NOT green" && ! has "#1: MERGED"'
+unset CI_SKIP_BOOT
 
 echo "== batch-auto.sh resumes an unfinished batch first"
 setup

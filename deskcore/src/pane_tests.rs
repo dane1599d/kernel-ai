@@ -36,6 +36,7 @@ fn paint(desk: &Desk, panel: &Panel, chat: &Chat, card: Option<&Card>) -> Image 
         chat,
         start: None,
         ask: card,
+        preview: None,
         now_ms: 3_000,
     };
     let all = Rect::new(0, 0, w, h);

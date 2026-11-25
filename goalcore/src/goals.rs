@@ -64,6 +64,30 @@ impl Goals {
         }
     }
 
+    /// A goal the shell made and the person approved, kept under the shell's own
+    /// id (the `goals` agent's `goal-add`): the id its grant ceiling and its steps
+    /// name. Refused if the id is kept already, the set is full, or it would be one
+    /// active goal too many. The goal comes from a `kai-goals 1` record, which
+    /// [`Goals::parse`] checked.
+    pub fn adopt(&mut self, goal: Goal) -> Result<(), Refusal> {
+        if self.get(goal.id).is_some() {
+            return Err(Refusal::BadSpec(alloc::format!(
+                "goal {} is kept already",
+                goal.id
+            )));
+        }
+        if self.list.len() >= MAX_GOALS {
+            return Err(Refusal::TooManyGoals);
+        }
+        if goal.state.is_live() {
+            self.room(goal.id)?;
+        }
+        self.next_id = self.next_id.max(goal.id.saturating_add(1));
+        let at = self.list.partition_point(|kept| kept.id < goal.id);
+        self.list.insert(at, goal);
+        Ok(())
+    }
+
     /// `goal_set`: a goal made from `spec`, waiting for the person's yes to what
     /// [`Spec::approval`] shows. It takes no step until [`Goals::approve`].
     pub fn set(&mut self, spec: Spec, now: u64) -> Result<u64, Refusal> {

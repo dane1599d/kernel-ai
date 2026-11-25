@@ -127,8 +127,8 @@ fn answer(
     if !is_shm {
         return refusal("a request brings an Shm, not another kind");
     }
-    // The slice below is `shm::BYTES` long: a shorter Shm, or one whose size
-    // cc may not read (SHM_INFO needs INSPECT), is refused before the map.
+    // The slice below is `shm::BYTES` long: a shorter Shm is refused before
+    // the map (SHM_INFO, which any handle to it may ask).
     match sys::shm_info(shm) {
         Ok(pages) if shm::holds_bytes(pages) => {}
         Ok(pages) => {

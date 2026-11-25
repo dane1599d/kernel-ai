@@ -45,11 +45,17 @@ fn a_result_survives_the_wire_and_its_text_cannot_forge_a_change() {
         shown: Vec::new(),
         failed: None,
         withheld: false,
+        unanswered: Some(String::from("notes_add")),
     };
     let decoded = apart::decode(&apart::encode(&ran)).unwrap();
     assert_eq!(
-        (decoded.ok, &decoded.text, &decoded.done),
-        (ran.ok, &ran.text, &ran.done)
+        (
+            decoded.ok,
+            &decoded.text,
+            &decoded.done,
+            &decoded.unanswered
+        ),
+        (ran.ok, &ran.text, &ran.done, &ran.unanswered)
     );
     for bad in [
         "",
@@ -208,4 +214,110 @@ fn set_policy_is_the_one_change_a_killed_child_can_leave() {
         .map(|row| row.name)
         .collect();
     assert_eq!(changing, ["set_policy"]);
+}
+
+#[test]
+fn a_run_that_succeeded_after_an_unanswered_call_is_an_unknown_outcome_and_has_no_undo() {
+    // The child says the run went on (ok=1) after a row's call went
+    // unanswered, as a caught error would: the shell logs Unknown, says the
+    // outcome is unknown, never Done, and a bare `undo` stops there rather
+    // than reaching an older entry (#1164's review).
+    let (host, mut shell) = with_answers(vec![answer("set_policy(\"rr\");")]);
+    child_of(&host);
+    assert!(shell.eval("? use round robin").ok);
+    *host.apart.borrow_mut() = Some(alloc::boxed::Box::new(|_: &str| {
+        Ok(String::from(
+            "ran 1 ok=1 0 10 unanswered=notes_add\ncarried on\n",
+        ))
+    }));
+    host.answers
+        .borrow_mut()
+        .push_back(answer("print(cpus());"));
+    let reply = shell.eval("? how many cpus");
+    assert!(
+        reply
+            .text
+            .contains("Outcome unknown: notes_add may have run"),
+        "{reply:?}"
+    );
+    assert!(!reply.text.contains("Done"), "{reply:?}");
+    let entry = shell.log.get(shell.log.last_id()).expect("an entry");
+    assert_eq!(entry.state, crate::actlog::State::Unknown);
+    let undo = shell.eval("undo");
+    assert!(!undo.ok, "{undo:?}");
+    assert!(
+        undo.text.contains("the outcome of notes_add is not known"),
+        "{undo:?}"
+    );
+    assert_ne!(
+        host.policy.get(),
+        Some(policy::INTERACTIVE),
+        "the older entry was not undone"
+    );
+}
+
+#[test]
+fn a_partial_rollback_after_an_unanswered_call_is_still_an_unknown_outcome() {
+    // The run failed, one change could not be put back (no inverse), and a
+    // row's call went unanswered: the outcome is unknown whatever else
+    // happened, and a bare undo stops there (#1200's review).
+    let ran = Ran {
+        ok: false,
+        text: String::from("it failed"),
+        done: vec![Done {
+            action: "set_policy".into(),
+            owner: "kernel".into(),
+            res: "policy".into(),
+            before: "interactive".into(),
+            after: "round-robin".into(),
+            inverse: None,
+        }],
+        value: None,
+        shown: Vec::new(),
+        failed: None,
+        withheld: false,
+        unanswered: Some(String::from("notes_add")),
+    };
+    let wire = apart::encode(&ran);
+    let (host, mut shell) = with_answers(vec![answer("print(cpus());")]);
+    *host.apart.borrow_mut() = Some(alloc::boxed::Box::new(move |_: &str| Ok(wire.clone())));
+    let reply = shell.eval("? how many cpus");
+    assert!(!reply.ok, "{reply:?}");
+    assert!(
+        reply
+            .text
+            .contains("Outcome unknown: notes_add may have run"),
+        "{reply:?}"
+    );
+    let entry = shell.log.get(shell.log.last_id()).expect("an entry");
+    assert_eq!(entry.state, crate::actlog::State::Unknown);
+    let undo = shell.eval("undo");
+    assert!(
+        undo.text.contains("the outcome of notes_add is not known"),
+        "{undo:?}"
+    );
+}
+
+#[test]
+fn an_unknown_outcomes_known_changes_are_undone_by_number_never_by_a_bare_undo() {
+    // #1200's review: an entry logged Unknown keeps the changes that are
+    // known; a bare undo stops at it, and `undo <id>` puts those back.
+    let (host, mut shell) = with_answers(vec![answer("set_policy(\"rr\");")]);
+    child_of(&host);
+    assert!(shell.eval("? use round robin").ok);
+    let first = shell.log.last_id();
+    let mut unknown = shell.log.get(first).expect("the run's entry").clone();
+    unknown.id = first + 1;
+    unknown.state = crate::actlog::State::Unknown;
+    unknown.outcome = String::from("failed; notes_add may have run");
+    shell.log.push(unknown);
+    let bare = shell.eval("undo");
+    assert!(
+        bare.text.contains("the outcome of notes_add is not known"),
+        "{bare:?}"
+    );
+    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
+    let by_id = shell.eval(&format!("undo {}", first + 1));
+    assert!(by_id.ok, "{by_id:?}");
+    assert_eq!(host.policy.get(), Some(policy::INTERACTIVE));
 }

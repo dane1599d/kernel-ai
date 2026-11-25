@@ -57,9 +57,24 @@ fn write(out: &mut String, value: &Val, ty: &Ty) -> Result<(), String> {
             }
             out.push('"');
         }
+        // Straight from the bytes, never a value a byte, and refused once the
+        // text passes what a reply can carry: a large `list<u8>` result is the
+        // version's fault, not its host's memory gone.
         (Val::Bytes(bytes), Ty::List(item)) if **item == Ty::U8 => {
-            let items: Vec<Val> = bytes.iter().map(|b| Val::U8(*b)).collect();
-            write(out, &Val::List(items), ty)?;
+            out.push('[');
+            for (i, b) in bytes.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                push(out, b);
+                if out.len() > MAX_TEXT {
+                    return Err(format!(
+                        "a list of {} bytes is too long to print",
+                        bytes.len()
+                    ));
+                }
+            }
+            out.push(']');
         }
         (Val::List(items), Ty::List(item)) => {
             out.push('[');
@@ -582,5 +597,22 @@ mod tests {
             ty = Ty::List(Box::new(ty));
         }
         assert!(parse(&deep, &ty).is_err());
+    }
+}
+
+#[cfg(test)]
+mod bytes_tests {
+    use super::*;
+
+    #[test]
+    fn bytes_print_as_a_list_and_a_huge_one_is_refused() {
+        let ty = Ty::List(Box::new(Ty::U8));
+        assert_eq!(
+            print(&Val::Bytes(alloc::vec![1, 2, 255]), &ty).as_deref(),
+            Ok("[1, 2, 255]")
+        );
+        assert_eq!(print(&Val::Bytes(Vec::new()), &ty).as_deref(), Ok("[]"));
+        let huge = Val::Bytes(alloc::vec![200; MAX_TEXT]);
+        assert!(print(&huge, &ty).is_err());
     }
 }

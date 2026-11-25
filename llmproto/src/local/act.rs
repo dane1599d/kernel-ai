@@ -182,7 +182,16 @@ pub fn grammar() -> Result<Grammar, infer::Error> {
 /// (`pack::apps::turn`); an app left out of the turn cannot be named either.
 /// Each build leaks its actions, so llm builds one only when its apps change.
 pub fn grammar_with(groups: &[AppGroup]) -> Result<Grammar, infer::Error> {
-    let (apps_turn, left_out) = apps::turn(groups);
+    grammar_counted(groups, apps::estimate)
+}
+
+/// [`grammar_with`], with the apps turn's tokens given by `count`
+/// (`pack::apps::turn_counted`): llm passes the engine's tokenizer.
+pub fn grammar_counted(
+    groups: &[AppGroup],
+    count: impl Fn(&str) -> usize,
+) -> Result<Grammar, infer::Error> {
+    let (apps_turn, left_out) = apps::turn_counted(groups, count);
     let shown: Vec<AppGroup> = groups
         .iter()
         .filter(|group| !left_out.contains(&group.app))
