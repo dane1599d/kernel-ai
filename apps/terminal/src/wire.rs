@@ -17,6 +17,13 @@ pub enum Wire<'a> {
     },
     /// A call waits on the Allow / Deny menu.
     Menu(Menu),
+    /// A send waits on the menu, with the text it would send shown above it
+    /// under a header code wrote (`termcore::menu::SHOWN`).
+    Shown {
+        header: &'a str,
+        text: &'a str,
+        menu: Menu,
+    },
     /// A `menu` that does not decode or cannot be shown exactly: its id, if it
     /// reads, so the call can be denied.
     BadMenu(Option<u64>),
@@ -26,6 +33,16 @@ pub enum Wire<'a> {
 pub fn parse(wire: &str) -> Wire<'_> {
     if wire == "more" {
         return Wire::More;
+    }
+    if let Some(shown) = termcore::menu::split_shown(wire) {
+        return match shown.map(|s| (s, Menu::decode(s.menu))) {
+            Ok((s, Ok(menu))) => Wire::Shown {
+                header: s.header,
+                text: s.text,
+                menu,
+            },
+            _ => Wire::BadMenu(termcore::menu::menu_id(wire)),
+        };
     }
     if let Some(rest) = wire.strip_prefix("menu ") {
         return match Menu::decode(wire) {
@@ -86,5 +103,22 @@ mod tests {
         for wire in ["", "okay", "confirm", "confirm x text", "confirm 3", "OK 1"] {
             assert_eq!(parse(wire), Wire::Malformed, "{wire:?}");
         }
+    }
+
+    #[test]
+    fn a_send_reads_with_its_text_or_names_its_id() {
+        let call = "net_send(\"a.example\", \"/\", \"2cf24dba5fb0a30e\")";
+        let question = alloc::format!("Send the text above with {call}?");
+        let menu = Menu::encode(6, Origin::Asked, &question, "", "", call);
+        let wire = termcore::menu::encode_shown(
+            "Kai wants to send this text to a.example:",
+            "hello",
+            &menu,
+        );
+        assert!(
+            matches!(parse(&wire), Wire::Shown { text: "hello", ref menu, .. } if menu.id == 6)
+        );
+        let bad = termcore::menu::encode_shown("h", "caf\u{e9}", &menu);
+        assert_eq!(parse(&bad), Wire::BadMenu(Some(6)));
     }
 }

@@ -137,7 +137,7 @@ pub const UPDATED: &str = "updated caps=update+serve+call uses=llm \
 /// resolve host and its file storage under `cdn.hf.co`, which
 /// `modelchan::fetch::HUGGING_FACE` narrows to the names under it, and the
 /// repository's Pages host, which serves the signed chunk lists. A test boot
-/// plans its own (`kernel/src/selftest.rs`), since a line takes one `netdest=`.
+/// plans its own (`kernel/src/selftest/updated.rs`), since a line takes one `netdest=`.
 pub const UPDATED_NET: &str =
     " netdest=proto:tcp,ports:443,hosts:huggingface.co+cdn.hf.co+dane1599d.github.io";
 /// The live `notes` component, run by the shared `comphost` program, without its
@@ -186,7 +186,10 @@ pub const EDIT_BASE: &str = "edit caps=serve+publish pages=2048 burst_ms=10000";
 /// route to `desktop` for its window. The kernel gives `cap::EDIT` to the service
 /// of this name and no other, so the name is the grant of `kai:edit`, which sends
 /// the app's messages to the edit service (`EDIT_CALL`). Planned after `desktop`.
-pub const EDITOR: &str = "editor program=comphost caps=serve+component+call+edit uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1";
+/// `fuel_call=20000000`: opening a file near the editor's 60 KiB limit takes about
+/// 7.5 million fuel in one call (the default is 5 million; `editcore` reads the
+/// file in a byte loop), with room for a longer one.
+pub const EDITOR: &str = "editor program=comphost caps=serve+component+call+edit uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1 fuel_call=20000000";
 
 #[cfg(test)]
 mod tests {
@@ -201,6 +204,65 @@ mod tests {
 
     /// The routes after the prefix are checked by name in `supervise`
     /// (`every_shell_lines_routes_are_named_in_order`).
+    /// `cap::POLICY` is the person's: the scheduler's controls need it, and
+    /// `fs` gives its holder the person's share of the space reserve
+    /// (`PART_PEER_CAPS`). Every line the system and its apps plan, test lines
+    /// included, carries it only if it is the shell's (named and running
+    /// `shell`); `supervise` refuses it on any other line, a package's too.
+    #[test]
+    fn only_the_shells_line_carries_policy() {
+        use alloc::string::String;
+        let mut lines: Vec<String> = Vec::new();
+        for files in [false, true] {
+            lines.extend(super::system::plan("llm", files).lines().map(String::from));
+            lines.extend(super::system::lines(files).into_iter().map(String::from));
+        }
+        lines.extend(SHELL_LINES.map(String::from));
+        lines.extend(super::system::APPS.map(String::from));
+        lines.extend(
+            [
+                CC,
+                FETCH,
+                SEND,
+                FS,
+                UPDATED,
+                FILES_WINDOW,
+                MONITOR_WINDOW,
+                MODELS_WINDOW,
+                NOTES_TEST,
+                NOTES_EDIT_TEST,
+                EDIT_BASE,
+                EDITOR,
+                super::system::DESKTOP,
+                super::system::DESKTOP_PKG,
+                super::system::PKG,
+                super::system::NOTES_SAVED,
+                super::system::EDITOR_APP,
+                super::system::MODELS_APP,
+            ]
+            .map(String::from),
+        );
+        lines.push(notes("2", Some("1")));
+        let mut shells = 0;
+        for line in &lines {
+            let mut words = line.split_whitespace();
+            let name = words.next().unwrap_or_default();
+            let program = line
+                .split_whitespace()
+                .find_map(|w| w.strip_prefix("program="))
+                .unwrap_or(name);
+            let policy = line
+                .split_whitespace()
+                .filter_map(|w| w.strip_prefix("caps="))
+                .flat_map(|caps| caps.split('+'))
+                .any(|cap| cap == "policy");
+            let shell = name == "shell" && program == "shell";
+            assert_eq!(policy, shell, "{line}");
+            shells += usize::from(shell);
+        }
+        assert!(shells >= SHELL_LINES.len(), "the walk missed shell lines");
+    }
+
     #[test]
     fn each_shell_line_starts_with_the_shells_fixed_routes() {
         let named = [

@@ -1,7 +1,7 @@
 //! `desktop`, the compositor (ADR 0005 §1, P3 task 6): it claims the screen,
 //! serves `kai-surface 1` to its clients, and draws their windows with
-//! `deskcore`'s rules, painted by `deskcore::paint` on `gfx2d` in Ember
-//! Workbench's tokens and type.
+//! `deskcore`'s rules, painted by `deskcore::paint` on `gfx2d` in the theme's
+//! tokens and type.
 //!
 //! - A client calls the `desktop` service with a run of `surfabi` messages; the
 //!   reply carries the events waiting for it. `pool.create` brings its `Shm`,
@@ -79,6 +79,8 @@ mod keys;
 mod pane;
 #[path = "desktop/perf.rs"]
 mod perf;
+#[path = "desktop/pools.rs"]
+mod pools;
 #[path = "desktop/taskbar.rs"]
 mod taskbar;
 use keys::{input, lease};
@@ -87,6 +89,8 @@ mod deliver;
 use deliver::deliver;
 #[path = "desktop/asks.rs"]
 mod asks;
+#[path = "desktop/preview.rs"]
+mod preview;
 use asks::{answer_ask, post, read_asks};
 #[path = "desktop/requests.rs"]
 mod requests;
@@ -100,7 +104,8 @@ use frame::{arrow, draw, post_events, refresh_bar, report, wake_shell};
 #[path = "desktop/setup.rs"]
 mod setup;
 use setup::{
-    bar_text, log_bar, logs_bar, logs_first_key, starting_appearance, theme, wait_for_screen,
+    bar_text, log_bar, logs_bar, logs_first_key, logs_wheel, pane_word, starting_appearance, theme,
+    wait_for_screen,
 };
 
 /// The fonts ADR 0005 §8 names, built in until P2's files carry them.
@@ -119,6 +124,9 @@ const CLIENT_WAIT_MS: u64 = 2;
 struct Pool {
     pid: u64,
     pool: u32,
+    /// The `Shm` the client moved here, held (with its mapping) until the pool
+    /// is released: `pools::release`.
+    handle: Handle,
     address: u64,
     size: u32,
     /// Mapped writable, so its header page's event ring takes the client's
@@ -135,10 +143,25 @@ struct State {
     desk: Desk,
     clients: Vec<Client>,
     pools: Vec<Pool>,
-    shown: Vec<(WindowId, u64, Buffer)>,
+    /// Each window's buffer, whose client, and the scale it was drawn at.
+    shown: Vec<(WindowId, u64, Buffer, u32)>,
+    /// Windows the wheel was last sent to and that have not scrolled since,
+    /// each with the hashes of the rows of its picture then
+    /// (`frame::wheel_rows`) and how many more pictures to check
+    /// (`WHEEL_PICTURES` at first): the first picture of one is logged, and
+    /// whether any of them scrolled, which tells a boot case the app took the
+    /// wheel and moved its content.
+    wheeled: Vec<(WindowId, Vec<u64>, usize)>,
+
     frame: Image,
+    /// Which window's content was painted last at each px of `frame`, 0 for
+    /// none or a window drawn at scale 1 (`deskcore::overlay`).
+    mask: Vec<u32>,
+    /// The desk's size in logical px: the screen's over `scale`.
     width: i32,
     height: i32,
+    /// The scale in 120ths (`deskcore::scale`): 120 draws the frame as it is.
+    scale: u32,
     painter: Painter,
     bar: Bar,
     bar_at: u64,
@@ -155,6 +178,9 @@ struct State {
     /// `desktop`. No other plan logs a key, so what a person types never reaches
     /// the serial log.
     log_first_key: bool,
+    /// The plan line asks for the wheel lines (`wheel_log=on`), a test image's only:
+    /// `desk-wheel-app` reads them; a person's wheel logs nothing.
+    log_wheel: bool,
     /// The first key has been logged since the claim: only it is, and a frame never
     /// waits on it.
     key_logged: bool,
@@ -187,6 +213,8 @@ struct State {
     ticked_ms: u64,
     /// The ask card up now, as the kernel posted it.
     card: Option<Card>,
+    /// A send's text and its card: what the pane shows (`preview`).
+    sends: deskcore::sendview::Slot,
     /// The last ask refused as too long to show whole: never asked again.
     too_long: Option<u64>,
     /// When the ask box was last read.
@@ -207,6 +235,8 @@ struct State {
     perf: Option<perf::Perf>,
     /// The theme's name, as clients are told it (`surfabi`'s `Theme`).
     theme_name: String,
+    /// The appearance clients are told (`surfabi`'s `Look`): what is painted.
+    look_text: String,
 }
 
 fn main() -> i32 {
@@ -217,6 +247,7 @@ fn main() -> i32 {
     let mut appearance = starting_appearance();
     let mut painted_in = Appearance::default();
     let mut theme_name = Appearance::default().theme.clone();
+    let mut look_text = Appearance::default().encode();
     loop {
         let Some(screen) = claim(painter.palette()) else {
             if !wait_for_screen() {
@@ -224,16 +255,32 @@ fn main() -> i32 {
             }
             continue;
         };
-        let width = screen.info.width as i32;
-        let height = screen.info.height as i32;
+        // The desk works in logical px: the screen's size over the scale
+        // (ADR 0005 §9); `frame::present` is the one place they become
+        // physical.
+        // The screen's size in mm is the EDID's, which only a virtio-gpu gives,
+        // and QEMU's says the size of its default mode, not of the screen the
+        // case asked for (1920x1080 read as 1.5x). So it is taken only when the
+        // plan line says `edid=on`; otherwise the width alone picks the scale.
+        let args = user::args();
+        let width_mm = match user::arg(&args, "edid") {
+            Some("on") => screen.info.width_mm,
+            _ => 0,
+        };
+        let scale = deskcore::scale::for_screen(screen.info.width, width_mm);
+        let width = deskcore::upscale::logical(screen.info.width as i32, scale);
+        let height = deskcore::upscale::logical(screen.info.height as i32, scale);
         let mut state = State {
             desk: Desk::new(width, height),
             clients: Vec::new(),
             pools: Vec::new(),
             shown: Vec::new(),
+            wheeled: Vec::new(),
             frame: Image::new(width, height),
+            mask: vec![0; (width.max(0) * height.max(0)) as usize],
             width,
             height,
+            scale,
             painter,
             bar: Bar::default(),
             bar_at: 0,
@@ -242,6 +289,7 @@ fn main() -> i32 {
             draws_cursor: screen.info.cursor == 0,
             drawn: false,
             log_first_key: logs_first_key(),
+            log_wheel: logs_wheel(),
             key_logged: false,
             log_bar: logs_bar(),
             panel: Panel::new(),
@@ -256,6 +304,7 @@ fn main() -> i32 {
             agent: deskcore::agent::Agent::default(),
             ticked_ms: 0,
             card: None,
+            sends: deskcore::sendview::Slot::default(),
             too_long: None,
             asked_ms: 0,
             known: Vec::new(),
@@ -266,15 +315,27 @@ fn main() -> i32 {
             painted_in,
             perf: perf::from_args(),
             theme_name: theme_name.clone(),
+            look_text: look_text.clone(),
         };
         // The taskbar's pins: the image's own apps, until `pkg` lists more.
         state.desk.set_installed(apps::built_in_names());
         println!("desktop: claimed {width}x{height}");
+        if scale != deskcore::scale::ONE {
+            println!(
+                "desktop: scale {scale}/120 on {}x{} px",
+                screen.info.width, screen.info.height
+            );
+        }
         let result = run(&mut state, &screen);
+        // The clients' pools go with this connection's state; they greet again.
+        for pool in &state.pools {
+            pools::release(pool);
+        }
         painter = state.painter;
         painted_in = state.painted_in;
         appearance = state.appearance;
         theme_name = state.theme_name;
+        look_text = state.look_text;
         let Some(back) = result else {
             return 1;
         };

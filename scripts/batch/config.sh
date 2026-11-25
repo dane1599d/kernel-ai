@@ -9,7 +9,7 @@
 #   KAI_MAIN                   the branch batches land on         main
 #   KAI_BATCH_STATE            log, stop file, batch-max, resume  <git common dir>/kai-batch
 #                              state, CI outputs
-#   KAI_BATCH_MAX              PRs per batch when                 10
+#   KAI_BATCH_MAX              PRs per batch when                 15
 #                              $KAI_BATCH_STATE/batch-max is absent (the file is re-read
 #                              before every batch, so the cap changes without a restart)
 #   KAI_BATCH_DELETE_BRANCHES  1: delete each landed PR's head    1
@@ -18,6 +18,8 @@
 #   KAI_FLUENCY_MIN            fluency gate after one repair, %   90
 #   KAI_MODEL_PATHS            paths that change what the model   see below
 #                              sees: such a PR needs the fluency gate, one per batch
+#   KAI_BATCH_NOBOOT           1: PRs that change nothing the     1
+#                              boot jobs see (noboot.sh) land first in a lint-only batch
 KAI_SCRIPTS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 R=${KAI_REPO:-dane1599d/kernel-ai}
 G=${KAI_GIT_DIR:-$(git -C "$KAI_SCRIPTS" rev-parse --show-toplevel 2>/dev/null)}
@@ -25,7 +27,11 @@ G=${KAI_GIT_DIR:-$(git -C "$KAI_SCRIPTS" rev-parse --show-toplevel 2>/dev/null)}
 MAIN=${KAI_MAIN:-main}
 S=${KAI_BATCH_STATE:-$(git -C "$G" rev-parse --path-format=absolute --git-common-dir)/kai-batch}
 mkdir -p "$S" || { echo "config.sh: cannot create $S" >&2; exit 2; }
-MAX=${KAI_BATCH_MAX:-10}
+# 15 PRs a batch: their TCG boot shards fit the 75-minute limit (ci.yml, #1080;
+# 10 PRs took a shard 39-50 minutes under the old 50). Lower it with the
+# batch-max file if the shards near the limit again.
+MAX=${KAI_BATCH_MAX:-15}
 DELETE_BRANCHES=${KAI_BATCH_DELETE_BRANCHES:-1}
 FLUENCY_MIN=${KAI_FLUENCY_MIN:-90}
 MODEL_PATHS=${KAI_MODEL_PATHS:-'^(llmproto/|infer/src/|quant/|gguf/|user/src/bin/llm|user/src/pool\.rs|agentabi/|shellcore/src/(agentcore|state)\.rs)'}
+NOBOOT=${KAI_BATCH_NOBOOT:-1}

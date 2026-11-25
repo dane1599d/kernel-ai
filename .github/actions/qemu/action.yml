@@ -2,21 +2,34 @@ name: QEMU for CI
 description: >-
   QEMU built by ci.yml's `qemu` job from a pinned, SHA-256-checked source
   tarball (Ubuntu 24.04's 8.2 crashed under TCG), restored from the cache, with
-  OVMF and QEMU's runtime libraries from apt, and on PATH. Bump `version` here
-  with the version and SHA-256 in ci.yml's `qemu` job and in release.yml.
+  OVMF and QEMU's runtime libraries from apt, and on PATH. When the cache misses
+  (GitHub evicts entries once the store passes its 10 GB cap, even between the
+  `qemu` job's save and this restore), it builds QEMU here instead of failing.
+  Bump `version` and `sha256` here with the version and SHA-256 in ci.yml's
+  `qemu` job and in release.yml.
 inputs:
   version:
     description: The QEMU release.
     default: "11.0.5"
+  sha256:
+    description: The SHA-256 of the release's source tarball.
+    default: 38a1a09f349660cb0e20b8fe5f224d6a53ec4235eb36f2e33a31e21bb6138147
 runs:
   using: composite
   steps:
     - name: Restore QEMU ${{ inputs.version }}
+      id: restore
       uses: actions/cache/restore@v4
       with:
         path: ~/qemu
         key: qemu-${{ inputs.version }}-ubuntu-24.04-v1
-        fail-on-cache-miss: true
+    - name: Build QEMU ${{ inputs.version }} (the cache missed)
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        QEMU_VERSION: ${{ inputs.version }}
+        QEMU_SHA256: ${{ inputs.sha256 }}
+      run: bash "$GITHUB_ACTION_PATH/build.sh"
     - name: OVMF and QEMU's runtime libraries
       shell: bash
       run: |

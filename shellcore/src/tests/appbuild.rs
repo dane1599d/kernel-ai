@@ -334,6 +334,7 @@ fn a_source_line_in_another_entry_does_not_make_a_main_c_kai_s() {
         crate::appbuild::sha256(mine)
     );
     shell.log.push(crate::actlog::Entry {
+        agent: agentid::Name::kai(),
         id: 90,
         t_ns: 0,
         form: crate::actlog::Form::Call,
@@ -446,5 +447,26 @@ fn a_change_to_an_app_kai_wrote_sends_its_main_c_and_builds_the_next_version() {
             .borrow()
             .iter()
             .any(|s| s.starts_with("local "))
+    );
+}
+
+/// #1172's review: a `.c` or `.h` file beside main.c in the app's folder is
+/// refused once, before any model round, with what to do.
+#[test]
+fn a_foreign_source_in_the_apps_folder_is_refused_before_any_round() {
+    let (host, mut shell) = asked(vec![app(SOURCE)]);
+    host.files
+        .borrow_mut()
+        .insert(String::from("apps/timer/extra.c"), String::from("int x;"));
+    let reply = shell.eval("make me a countdown timer app");
+    assert!(
+        !reply.ok
+            && reply.text.contains(crate::ccbuild::NOT_KAIS)
+            && reply.text.contains("give the app another name"),
+        "{reply:?}"
+    );
+    assert!(
+        host.script_requests.borrow().is_empty(),
+        "no model round spent"
     );
 }

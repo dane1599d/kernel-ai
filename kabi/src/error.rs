@@ -34,10 +34,14 @@ pub enum Error {
     /// The CPU gives no random numbers (neither RDSEED nor RDRAND), so ENTROPY
     /// has none to give. Old programs read it as `Invalid`.
     NoEntropy = 16,
+    /// A name's whole answer leads to addresses no app may reach (a private
+    /// network, this machine, the link): RESOLVE_ON's, apart from a lookup
+    /// that failed (Network). Old programs read it as `Network`.
+    Private = 17,
 }
 
 impl Error {
-    pub const ALL: [Error; 16] = [
+    pub const ALL: [Error; 17] = [
         Error::Permission,
         Error::Fault,
         Error::Invalid,
@@ -54,6 +58,7 @@ impl Error {
         Error::Revoked,
         Error::Woken,
         Error::NoEntropy,
+        Error::Private,
     ];
 
     /// The value placed in RAX.

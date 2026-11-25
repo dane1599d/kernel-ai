@@ -5,7 +5,7 @@
 //!
 //! After the first build, the case reads the artifact the shell wrote,
 //! `/home/user/c/hello.kai`, into an `Shm` of its own, and moves `cc` a handle
-//! to it with the rights the shell's trial moves: MAP, READ and TRANSFER.
+//! to it with the rights the shell's trial moves: MAP, READ, INSPECT and TRANSFER.
 //! - `trial hello` passes: cc maps a trial's `Shm` read-only.
 //! - `build hello 0.0.9` through the same handle is refused as no fault of the
 //!   program's (`internal: `): a build's `Shm` is mapped read-write, which the
@@ -29,7 +29,8 @@ const CC: &str = "cc";
 /// The `Shm`'s pages, as `ccserve::build::shm` sizes it: the artifact's length
 /// as a u64, then the artifact.
 const PAGES: u64 = (MAX_ARTIFACT as u64 + 8).div_ceil(PAGE_SIZE);
-/// What the shell's trial moves to cc (`shell/build.rs`): no WRITE.
+/// What the shell's trial moves to cc (`shell/build.rs`): no WRITE. cc's size
+/// check (SHM_INFO) needs no right of its own.
 const TRIAL_RIGHTS: Rights = Rights::MAP.union(Rights::READ).union(Rights::TRANSFER);
 /// The shell's wait for a trial (`shellcore::appbuild::CC_TRIAL_WAIT_MS`).
 const CALL_MS: u64 = 90_000;
@@ -136,7 +137,7 @@ fn ask_cc(request: &str, object: u64) -> Result<Vec<u8>, &'static str> {
     let extra = ipc::Extra {
         badge: 0,
         rights: 0,
-        handles: vec![Entry::new(Kind::Shm, TRIAL_RIGHTS, object)],
+        handles: vec![Entry::new(Kind::Shm, TRIAL_RIGHTS, object)].into(),
     };
     let deadline = hpet::nanos() + CALL_MS * 1_000_000;
     match ipc::call_with(CC, request.as_bytes(), 0, deadline, || false, extra) {

@@ -16,9 +16,24 @@ use alloc::vec::Vec;
 use surfabi::Format;
 use surfabi::header::Event as RingEvent;
 use surfabi::input::{InputEvent, Kind};
-use surfabi::proto::{Event, GLOBALS, Objects, REGISTRY, Request};
+use surfabi::proto::{Event, GLOBALS, Objects, REGISTRY, Request, SCALE_ONE};
 use surfabi::tree::{self, Tree};
 use surfabi::wire::{self, Error};
+
+/// The most encoded events a client may have waiting: 256 KiB, a few thousand
+/// messages, far more than one round of a client that reads them.
+pub const MAX_EVENT_BYTES: usize = 256 * 1024;
+
+/// The largest coordinate or size of a damage rectangle kept, in px: far past any
+/// buffer, and small enough that no sum of two overflows.
+const MAX_DAMAGE_PX: u32 = 1 << 20;
+
+/// The most px a buffer may have on a side: 16K, past any screen and any window
+/// the desk keeps.
+pub const MAX_BUFFER_PX: u32 = 16_384;
+
+/// The most detents one wheel event carries to a client.
+pub const MAX_DETENTS: i32 = 120;
 
 /// A buffer in one of the client's pools.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +68,34 @@ struct Surface {
     unsaved: bool,
     /// Whether it is kept from the agent (`toplevel.set_agent_private`).
     agent_private: bool,
+    /// The scale its buffers are drawn at (`surface.set_buffer_scale`), in
+    /// 120ths; 0 until it says, which is [`SCALE_ONE`].
+    scale: u32,
+}
+
+impl Surface {
+    fn buffer_scale(&self) -> u32 {
+        match self.scale {
+            0 => SCALE_ONE,
+            s => s,
+        }
+    }
+}
+
+/// `buffer` px at `scale` in logical px, rounded to the nearest, as a
+/// client rounds its logical size up to a buffer's.
+fn logical(buffer: i32, scale: u32) -> i32 {
+    ((i64::from(buffer) * i64::from(SCALE_ONE) + i64::from(scale) / 2) / i64::from(scale)) as i32
+}
+
+/// A rectangle of buffer px at `scale` as the logical one it lies in: grown
+/// outward to whole logical px.
+fn logical_damage(r: Rect, scale: u32) -> Rect {
+    let (s, one) = (i64::from(scale), i64::from(SCALE_ONE));
+    let lo = |v: i32| (i64::from(v) * one).div_euclid(s) as i32;
+    let hi = |v: i32| ((i64::from(v) * one + s - 1).div_euclid(s)) as i32;
+    let (x, y) = (lo(r.x), lo(r.y));
+    Rect::new(x, y, hi(r.right()) - x, hi(r.bottom()) - y)
 }
 
 /// What `desktop` must do for a request beyond the desk itself.
@@ -61,8 +104,12 @@ pub enum Need {
     /// Map the `Shm` the call brought (its first handle) as pool `pool`, of
     /// `size` bytes.
     MapPool { pool: u32, size: u32 },
-    /// `window` shows `buffer` from now on.
-    Show { window: WindowId, buffer: Buffer },
+    /// `window` shows `buffer` from now on, drawn at `scale` (120ths).
+    Show {
+        window: WindowId,
+        buffer: Buffer,
+        scale: u32,
+    },
     /// `window` is gone: forget its buffer.
     Closed { window: WindowId },
 }
@@ -137,16 +184,42 @@ impl Client {
         client
     }
 
+    /// Tells the client the scale the desktop prefers it to draw at, in
+    /// 120ths: at connect, and only when it is not 1x, so a desktop at 1x
+    /// sends the bytes it always did.
+    pub fn scale(&mut self, scale: u32) {
+        if scale != SCALE_ONE {
+            self.send(REGISTRY, Event::Scale(scale));
+        }
+    }
+
     /// Tells the client the desktop's theme, by name: at connect and after a
     /// change (`surfabi`'s `Theme`).
     pub fn theme(&mut self, name: &str) {
         self.send(REGISTRY, Event::Theme(name));
     }
 
+    /// Tells the client the desktop's whole appearance (`kai-appearance 1`
+    /// text), so it paints and lays out as the desktop does (`surfabi`'s `Look`).
+    pub fn look(&mut self, appearance: &str) {
+        self.send(REGISTRY, Event::Look(appearance));
+    }
+
     fn send(&mut self, object: u32, event: Event) {
+        // Past the cap nothing more is kept: the connection is to be dropped
+        // ([`Client::too_far_behind`]), so no queue grows without end.
+        if self.events.len() > MAX_EVENT_BYTES {
+            return;
+        }
         if let Ok(bytes) = event.encode(object) {
             self.events.extend_from_slice(&bytes);
         }
+    }
+
+    /// Whether the client lets its events pile past [`MAX_EVENT_BYTES`]: it
+    /// never answers, or answers slower than the desk speaks. `desktop` drops it.
+    pub fn too_far_behind(&self) -> bool {
+        self.events.len() > MAX_EVENT_BYTES
     }
 
     /// The events waiting for the client, as many whole messages as fit in
@@ -171,6 +244,18 @@ impl Client {
         if let Some(p) = self.pools.iter_mut().find(|p| p.0 == pool) {
             p.2 = true;
         }
+    }
+
+    /// Whether any buffer of the client is in pool `pool`.
+    pub fn pool_in_use(&self, pool: u32) -> bool {
+        self.buffers.iter().any(|b| b.1.pool == pool)
+    }
+
+    /// `desktop` let pool `pool` go: it is no pool of the client's any more, and
+    /// a buffer made on it, or a commit of one, is refused.
+    pub fn pool_gone(&mut self, pool: u32) {
+        self.pools.retain(|p| p.0 != pool);
+        self.buffers.retain(|b| b.1.pool != pool);
     }
 
     pub fn buffer(&self, id: u32) -> Option<Buffer> {
@@ -199,10 +284,7 @@ impl Client {
                 window,
                 usage,
                 down,
-            } => {
-                self.modifier(usage, down);
-                (window, Kind::Key, usage, i32::from(down), None)
-            }
+            } => (window, Kind::Key, usage, i32::from(down), None),
             Effect::Button {
                 window,
                 at,
@@ -217,6 +299,19 @@ impl Client {
                 (window, Kind::Button, code, i32::from(down), Some(at))
             }
             Effect::Pointer { window, at } => (window, Kind::Abs, 0, 0, Some(at)),
+            // The vertical wheel: code 0, detents positive down, as many as
+            // the person turned it by, within what a client can take in.
+            Effect::Wheel {
+                window,
+                at,
+                detents,
+            } => (
+                window,
+                Kind::Wheel,
+                0,
+                detents.clamp(-MAX_DETENTS, MAX_DETENTS),
+                Some(at),
+            ),
             _ => return,
         };
         let Some(pool) = self.pool_of(window) else {
@@ -253,20 +348,9 @@ impl Client {
         self.posts.push((pool, event));
     }
 
-    /// Shift, Ctrl, Alt and Super, held or let go: the seat hears the new set.
-    fn modifier(&mut self, usage: u16, down: bool) {
-        let bit = match usage {
-            0xE1 | 0xE5 => 1,
-            0xE0 | 0xE4 => 2,
-            0xE2 | 0xE6 => 4,
-            0xE3 | 0xE7 => 8,
-            _ => return,
-        };
-        let mods = if down {
-            self.mods | bit
-        } else {
-            self.mods & !bit
-        };
+    /// The modifiers the desk says are held (shift 1, ctrl 2, alt 4, super 8),
+    /// whatever had the focus when they changed: the seat hears the new set.
+    fn modifiers(&mut self, mods: u32) {
         if mods == self.mods {
             return;
         }
@@ -323,6 +407,13 @@ impl Client {
                         .find(|p| p.0 == header.object)
                         .ok_or(Error::BadArg)?;
                     let end = u64::from(offset) + u64::from(stride) * u64::from(height);
+                    // A buffer has px, and no more per side than any screen: past that the
+                    // layer a window's repaint allocates, or its row arithmetic, is no
+                    // longer the client's to size.
+                    let sides = 1..=MAX_BUFFER_PX;
+                    if !sides.contains(&width) || !sides.contains(&height) {
+                        return Err(Error::BadArg);
+                    }
                     if offset < surfabi::header::PAGE as u32 || end > u64::from(pool.1) {
                         return Err(Error::BadArg);
                     }
@@ -368,9 +459,23 @@ impl Client {
                     }
                 }
                 Request::Attach { buffer } => self.surface(header.object)?.attached = Some(buffer),
+                Request::SetBufferScale(scale) => self.surface(header.object)?.scale = scale,
                 Request::DamageBuffer(r) => {
-                    let rect = Rect::new(r.x as i32, r.y as i32, r.w as i32, r.h as i32);
-                    self.surface(header.object)?.damage.push(rect);
+                    // Whatever the client wrote: kept to what no sum of it can
+                    // overflow (a damage past the buffer is cut where it is used).
+                    let at = |v: u32| v.min(MAX_DAMAGE_PX) as i32;
+                    let rect = Rect::new(at(r.x), at(r.y), at(r.w), at(r.h));
+                    let surface = self.surface(header.object)?;
+                    surface.damage.push(rect);
+                    // A client that never commits cannot grow the list: past
+                    // what a header page holds it is one rectangle, the bounding box.
+                    if surface.damage.len() > surfabi::header::MAX_DAMAGE {
+                        let all = surface
+                            .damage
+                            .iter()
+                            .fold(Rect::new(0, 0, 0, 0), |all, r| all.union(r));
+                        surface.damage = alloc::vec![all];
+                    }
                 }
                 Request::Commit => {
                     if let Some(need) = self.commit(desk, header.object)? {
@@ -527,27 +632,37 @@ impl Client {
         if !self.pools.iter().any(|p| p.0 == buffer.pool) {
             return Err(Error::BadArg);
         }
-        let size = Size {
-            w: buffer.width as i32,
-            h: buffer.height as i32,
-        };
         let surface = self
             .surfaces
             .iter_mut()
             .find(|s| s.id == id)
             .ok_or(Error::UnknownObject)?;
-        let damage = core::mem::take(&mut surface.damage);
+        // The window's size is the buffer's in logical px: at a buffer scale
+        // above 1x, fewer of them than the buffer has.
+        let scale = surface.buffer_scale();
+        let size = Size {
+            w: logical(buffer.width as i32, scale).max(1),
+            h: logical(buffer.height as i32, scale).max(1),
+        };
+        let damage: Vec<Rect> = core::mem::take(&mut surface.damage)
+            .into_iter()
+            .map(|r| match scale {
+                SCALE_ONE => r,
+                s => logical_damage(r, s),
+            })
+            .collect();
         let window = match surface.window {
             Some(window) => {
                 desk.commit(window, size, &damage);
                 window
             }
             None => {
-                // A window a client opens itself takes focus only through the
-                // activation rule; for now every client's first window is the
-                // user's (they started it).
+                // A window takes the keyboard only by the activation rule
+                // (`Desk::may_activate`): not while the person is acting
+                // elsewhere, so a background app cannot take their keys.
+                let active = desk.may_activate(self.pid as u32);
                 let (window, effects) =
-                    desk.open(self.pid as u32, &label, &surface.title, size, true);
+                    desk.open(self.pid as u32, &label, &surface.title, size, active);
                 desk.set_app_id(window, &surface.app_id.clone());
                 surface.window = Some(window);
                 self.apply(&effects);
@@ -555,7 +670,11 @@ impl Client {
                 window
             }
         };
-        Ok(Some(Need::Show { window, buffer }))
+        Ok(Some(Need::Show {
+            window,
+            buffer,
+            scale,
+        }))
     }
 
     /// Turns the desk's effects that concern this client into events.
@@ -564,6 +683,9 @@ impl Client {
             self.input(effect);
             if let Effect::Locks { caps } = *effect {
                 self.caps = caps;
+            }
+            if let Effect::Modifiers(mods) = *effect {
+                self.modifiers(mods);
             }
             match *effect {
                 Effect::Configure {

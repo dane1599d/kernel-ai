@@ -4,6 +4,7 @@
 
 mod chunk;
 mod format;
+mod qwen;
 mod scope;
 mod search;
 mod units;

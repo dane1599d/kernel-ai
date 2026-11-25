@@ -1,0 +1,2 @@
+windows: [w1] settings (focused)  [w2] terminal "kai>"
+w1: [a1] tabs 0 items  text "About"  text "Kernel AI 0.1.0-dev (commit abc)"  text "Licence: MPL-2.0"  text "Source: https://github.com/dane1..."  text "54 crates; see NOTICES.txt"

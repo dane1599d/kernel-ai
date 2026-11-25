@@ -195,6 +195,10 @@ impl Shell {
         if reply.more {
             return refused(OPEN);
         }
+        // Its file changes did not land: never "Done".
+        if let Some(note) = self.take_not_landed_line() {
+            return PanelResult::Refused(note);
+        }
         if self.clarifying.is_some() {
             // The question is in the history: the model's as Kai's words,
             // code's as a note. The bar's line is fixed, and the next panel
