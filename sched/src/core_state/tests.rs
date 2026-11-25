@@ -277,6 +277,46 @@ fn threads_migrate_between_cores_and_load_follows() {
 }
 
 #[test]
+fn an_asleep_thread_moves_to_another_core_without_a_wake_here() {
+    let mut a = Core::new(Box::new(Interactive::new()), 0, WATCHDOG, 0);
+    let mut b = Core::new(Box::new(Interactive::new()), 1, WATCHDOG, 0);
+    a.adopt(3, "hog", EnqueueReason::New, 0);
+    a.adopt(4, "server", EnqueueReason::New, 0);
+    assert_eq!(a.preempt(0), Some(3));
+    assert_eq!(a.preempt(MS), Some(4));
+    // The server blocks waiting for a request; the hog runs.
+    assert_eq!(a.block_current(MS), 3);
+    // Neither the running thread nor a runnable one is taken.
+    assert_eq!(a.detach_asleep(3), None);
+    assert_eq!(a.state(3), State::Running);
+    let load = a.load();
+    assert_eq!(a.detach_asleep(4), Some("server"));
+    assert_eq!(a.state(4), State::Free);
+    assert_eq!(
+        a.load(),
+        load,
+        "an asleep thread was never part of the load"
+    );
+    // No wake was counted here, so nothing is left pending for it.
+    assert_eq!(a.preempt_if_pending(2 * MS), None);
+    assert_eq!(a.current(), 3);
+    // The other core takes it as woken, and runs it.
+    b.adopt(4, "server", EnqueueReason::Woken, 2 * MS);
+    assert_eq!(b.load(), 1);
+    assert_eq!(b.preempt_if_pending(2 * MS), Some(4));
+    // A sleeping thread moves the same way, and once gone it is not asleep here.
+    let mut c = Core::new(Box::new(Interactive::new()), 0, WATCHDOG, 0);
+    c.adopt(5, "sleeper", EnqueueReason::New, 0);
+    assert_eq!(c.preempt(0), Some(5));
+    c.sleep_current(10 * MS, MS);
+    assert_eq!(c.detach_asleep(5), Some("sleeper"));
+    assert_eq!(c.detach_asleep(5), None);
+    // Its due time no longer wakes anything here.
+    assert_eq!(c.tick(20 * MS), None);
+    assert_eq!(c.state(5), State::Free);
+}
+
+#[test]
 fn remote_wake_reports_preemption_without_switching() {
     let mut core = Core::new(Box::new(Interactive::new()), 0, WATCHDOG, 0);
     core.adopt(3, "hog", EnqueueReason::New, 0);

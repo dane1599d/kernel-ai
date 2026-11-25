@@ -140,10 +140,13 @@ pub fn check() -> Result<(), &'static str> {
     let timed = from_kernel();
     ipc::legs::on(false);
     timed?;
-    log!(
-        "ipc-rtt: {} of the kernel's calls pulled the echo server onto the caller's CPU",
-        threads::handoffs() - handoffs
-    );
+    let moved = threads::handoffs() - handoffs;
+    log!("ipc-rtt: {moved} of the kernel's calls pulled the echo server onto the caller's CPU");
+    // With more than one CPU the server starts on another, and the first
+    // blocking call brings it to the caller's (the fast path, #1003).
+    if crate::smp::online() > 1 && moved == 0 {
+        return Err("ipc-rtt: no call brought the echo server to the caller's CPU");
+    }
     from_ring3()?;
     log!("ipc-rtt: the echo server answered each size from the kernel and from ring 3");
     Ok(())

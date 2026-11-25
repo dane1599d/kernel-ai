@@ -103,6 +103,18 @@ impl Shell {
         self.landing.line.is_some()
     }
 
+    /// A change saved outside a line (the editor's): `Err` with what the log
+    /// write said when its file changes did not land, so it is never told
+    /// it saved. Run [`Shell::landing_begins`] before the change.
+    pub(crate) fn landed(&mut self) -> Result<(), String> {
+        let notes = take(&mut self.landing.notes);
+        self.landing.lost.clear();
+        match notes.is_empty() {
+            true => Ok(()),
+            false => Err(notes.join("; ")),
+        }
+    }
+
     /// The last line's result when its file changes did not land, once.
     pub(crate) fn take_not_landed_line(&mut self) -> Option<String> {
         self.landing.line.take()

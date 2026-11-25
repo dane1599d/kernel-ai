@@ -80,7 +80,8 @@ impl Shell {
 
     /// The editor's save: `bytes` as the whole text of `path`, made when `create`
     /// (it must not exist) and replaced otherwise. One logged action; `undo`
-    /// puts the file back exactly as it was.
+    /// puts the file back exactly as it was. A save `fs` did not commit is an
+    /// error, its entry says so, and nothing of it is undone.
     pub fn door_write(
         &mut self,
         app: &str,
@@ -108,6 +109,7 @@ impl Shell {
                 "written",
             ),
         };
+        self.landing_begins();
         let txn = self
             .host
             .fs_change(change)
@@ -138,9 +140,10 @@ impl Shell {
             alloc::vec![done],
         );
         // The log line is written into the open action, so the change and its
-        // line land in one commit.
+        // line land in one commit: one `fs` did not commit is no save.
         self.save_log();
-        Ok(())
+        self.landed()
+            .map_err(|note| format!("{path} was not saved: {note}"))
     }
 }
 
