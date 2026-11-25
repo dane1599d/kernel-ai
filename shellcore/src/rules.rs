@@ -71,6 +71,17 @@ impl Rule {
     }
 }
 
+/// Whether `target` reads back as a `kai-grants 1` rule's target: one value of
+/// ASCII graphic bytes with no `=`, not `-` (which reads back as none), and
+/// short enough for its line. A rule on any other target could never be
+/// saved, and while it was held no rules save would land (#9, #15).
+pub fn keepable_target(target: &str) -> bool {
+    !target.is_empty()
+        && target != "-"
+        && target.len() <= kaigrants::MAX_LINE / 2
+        && target.bytes().all(|b| b.is_ascii_graphic() && b != b'=')
+}
+
 /// What a menu may offer for one ask: the action's rule, the target's, or both.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Offer {
@@ -117,6 +128,9 @@ impl Rules {
         (prompt, made_ns): (u64, u64),
     ) -> Result<u64, &'static str> {
         let target = match (for_target, &offer.target, offer.kind) {
+            (true, Some(target), _) if !keepable_target(target) => {
+                return Err("a rule cannot be kept for that target");
+            }
             (true, Some(target), _) => Some(target.clone()),
             (false, _, true) => None,
             _ => return Err("that rule was not offered"),
@@ -162,9 +176,11 @@ impl Rules {
     }
 
     /// The rules a `/system/state/rules` text holds, refused whole if any line is
-    /// out of shape, names an action the registry does not have, or is a grant:
-    /// grants are never reloaded from the shell's own files.
-    pub fn restore(text: &str) -> Result<Self, String> {
+    /// out of shape or is a grant: grants are never reloaded from the shell's
+    /// own files. A rule naming an action the registry does not have (an app's
+    /// row, its app gone or not yet loaded) is set aside alone, and named in
+    /// the second value, so one such rule never costs the rest (#10).
+    pub fn restore(text: &str) -> Result<(Self, Vec<String>), String> {
         let read = kaigrants::parse(text).map_err(|e| format!("line {}: {}", e.line, e.why))?;
         if !read.grants.is_empty() {
             return Err(String::from(
@@ -175,13 +191,18 @@ impl Rules {
             return Err(String::from("it holds too many rules"));
         }
         let mut rules = Self::default();
+        let mut set_aside = Vec::new();
         for rule in read.rules {
-            let action = agentabi::ROWS
+            // Its number stays used, so a new rule never takes it.
+            rules.next = rules.next.max(u64::from(rule.id));
+            let Some(action) = agentabi::ROWS
                 .iter()
                 .find(|row| row.name == rule.action)
                 .map(|row| row.name)
-                .ok_or_else(|| format!("rule {} names no action: {}", rule.id, rule.action))?;
-            rules.next = rules.next.max(u64::from(rule.id));
+            else {
+                set_aside.push(format!("rule {} names no action: {}", rule.id, rule.action));
+                continue;
+            };
             rules.list.push(Rule {
                 id: u64::from(rule.id),
                 action,
@@ -192,7 +213,7 @@ impl Rules {
                 restored: true,
             });
         }
-        Ok(rules)
+        Ok((rules, set_aside))
     }
 
     /// The rule that waives `offer`'s ask, if there is one: one for its target, or
@@ -328,7 +349,8 @@ rule 1 action=service_stop target=build-3 from=prompt:212 made=2026-10-21T21:40:
 rule 2 action=set_policy target=- from=prompt:213 made=1970-01-01T00:00:00Z
 "
         );
-        let mut back = Rules::restore(&text).unwrap();
+        let (mut back, set_aside) = Rules::restore(&text).unwrap();
+        assert!(set_aside.is_empty());
         assert!(back.list.iter().all(|r| r.restored && r.grant.is_none()));
         // A stop's owner checks the node, which a rule read back lacks.
         assert_eq!(back.covering(&build), None);
@@ -344,7 +366,7 @@ rule 2 action=set_policy target=- from=prompt:213 made=1970-01-01T00:00:00Z
     }
 
     #[test]
-    fn a_rules_file_with_a_grant_or_an_unknown_action_is_refused_whole() {
+    fn a_rules_file_with_a_grant_or_a_bad_line_is_refused_whole() {
         let rule = "rule 1 action=set_policy target=- from=prompt:3 made=2026-11-02T10:20:00Z
 ";
         assert!(
@@ -364,15 +386,59 @@ rule 2 action=set_policy target=- from=prompt:213 made=1970-01-01T00:00:00Z
             format!(
                 "kai-grants 1
 {}",
-                rule.replace("set_policy", "format_disk")
-            ),
-            format!(
-                "kai-grants 1
-{}",
                 rule.replace("target=-", "target=a target=b")
             ),
         ] {
             assert!(Rules::restore(&bad).is_err(), "{bad}");
         }
+    }
+
+    /// #10: an "Always allow" rule for an installed app's row named an action
+    /// the registry does not hold at boot, and the whole file was refused, so
+    /// every other rule went with it.
+    #[test]
+    fn a_rule_for_an_action_the_registry_lacks_is_set_aside_alone() {
+        let text = "kai-grants 1
+rule 1 action=process_stop target=- from=prompt:3 made=2026-11-02T10:20:00Z
+rule 2 action=notes_clear target=- from=prompt:4 made=2026-11-02T10:21:00Z
+rule 3 action=set_policy target=- from=prompt:5 made=2026-11-02T10:22:00Z
+";
+        let (mut rules, set_aside) = Rules::restore(text).unwrap();
+        assert_eq!(set_aside, ["rule 2 names no action: notes_clear"]);
+        assert!(rules.list().contains("#1 process_stop"), "{}", rules.list());
+        assert!(rules.list().contains("#3 set_policy"), "{}", rules.list());
+        assert!(!rules.list().contains("notes_clear"));
+        // Its number is not given to a new rule.
+        let offer = Offer {
+            action: "service_stop",
+            target: None,
+            kind: true,
+        };
+        assert_eq!(rules.add(&offer, false, None, (6, 0)), Ok(4));
+    }
+
+    /// #9, #15: a target with a space, an `=`, or that is `-` does not read
+    /// back as a rule's target. Such a rule is refused, so the rules always
+    /// save.
+    #[test]
+    fn a_rule_on_a_target_kai_grants_cannot_hold_is_refused() {
+        for target in ["text editor", "a=b", "-", ""] {
+            let mut rules = Rules::default();
+            let kind = Offer {
+                action: "set_policy",
+                target: None,
+                kind: true,
+            };
+            rules.add(&kind, false, None, (1, 0)).unwrap();
+            let odd = Offer {
+                action: "window_close",
+                target: Some(String::from(target)),
+                kind: true,
+            };
+            assert!(rules.add(&odd, true, None, (2, 0)).is_err(), "{target:?}");
+            assert!(rules.text().is_ok(), "{target:?}");
+            assert!(!keepable_target(target), "{target:?}");
+        }
+        assert!(keepable_target("build-3"));
     }
 }

@@ -61,6 +61,7 @@ mod packages;
 mod panel;
 mod power;
 mod profiles;
+mod rulecards;
 mod scripts;
 mod sendrow;
 mod settings;

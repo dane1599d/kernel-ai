@@ -83,7 +83,7 @@ fn rules_that_could_not_be_read_at_start_are_never_written_over() {
         "the rules on disk could not be read (the disk did not answer); starting with none"
     ));
     // Every rule change saves through here.
-    shell.save_rules();
+    assert!(shell.save_rules().is_err());
     assert_eq!(host.rules_disk.borrow().as_deref(), Some(saved));
     assert!(audited(
         &host,
