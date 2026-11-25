@@ -293,6 +293,14 @@ impl Host for FakeHost {
         Ok(())
     }
 
+    fn rules_set_aside(&self, text: &str) -> Result<(), String> {
+        if self.rules_aside_fails.get() {
+            return Err(String::from("the disk did not answer"));
+        }
+        *self.rules_aside.borrow_mut() = Some(text.into());
+        Ok(())
+    }
+
     fn net_grants_read(&self) -> Result<Option<String>, String> {
         self.state_read("net_grants_read", &self.net_disk)
     }

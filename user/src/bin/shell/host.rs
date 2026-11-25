@@ -519,6 +519,16 @@ impl Host for System {
         }
     }
 
+    /// As the rules are written: with the line's files, if it changed any.
+    fn rules_set_aside(&self, text: &str) -> Result<(), String> {
+        match self.files.is_open() {
+            true => self.state.write_in(files::RULES_REFUSED, text),
+            false => self
+                .state
+                .write(files::RULES_REFUSED, text, self.files.next_action()),
+        }
+    }
+
     fn net_grants_read(&self) -> Result<Option<String>, String> {
         self.state.read(files::NETGRANTS)
     }
