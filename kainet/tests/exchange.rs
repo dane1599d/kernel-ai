@@ -1,231 +1,14 @@
 //! `Fetch::exchange` (plan P6 F-4, the host half) against scripted servers:
 //! request methods, headers and bodies of any size; every response header;
-//! bodies streamed past 64 KiB; gzip and brotli undone in any pieces; kept
-//! connections; and hostile heads, headers and codings refused.
+//! bodies streamed past 64 KiB; kept connections; and hostile heads and
+//! headers refused. The codings are `tests/exchange_coding.rs`.
+
+#[path = "exchange/kit.rs"]
+mod kit;
 
 use kainet::http::exchange::{self, MAX_REQUEST_HEADERS};
-use kainet::http::{
-    Answer, Body, Coding, Connect, Fetch, Framing, HttpError, Keep, Limits, Request, Stream, Url,
-    Verb,
-};
-use std::cell::RefCell;
-use std::collections::VecDeque;
-use std::io::Write;
-use std::rc::Rc;
-
-/// What each connection was sent, by connection number.
-type Sent = Rc<RefCell<Vec<Vec<u8>>>>;
-
-/// One connection: each reply is read once the request before it was sent,
-/// `step` bytes at a time, and once they run out it ends cleanly (or, with
-/// `cut`, fails), as a server closing an idle connection does.
-struct Conn {
-    id: usize,
-    replies: VecDeque<Vec<u8>>,
-    out: Vec<u8>,
-    at: usize,
-    step: usize,
-    cut: bool,
-    sent: Sent,
-}
-
-impl Stream for Conn {
-    fn send(&mut self, bytes: &[u8]) -> Result<(), HttpError> {
-        self.sent.borrow_mut()[self.id].extend_from_slice(bytes);
-        Ok(())
-    }
-
-    fn recv(&mut self, buf: &mut [u8]) -> Result<usize, HttpError> {
-        if self.at == self.out.len() {
-            match self.replies.pop_front() {
-                Some(next) => (self.out, self.at) = (next, 0),
-                None if self.cut => return Err(HttpError::Truncated),
-                None => return Ok(0),
-            }
-        }
-        let n = buf.len().min(self.step).min(self.out.len() - self.at);
-        buf[..n].copy_from_slice(&self.out[self.at..self.at + n]);
-        self.at += n;
-        Ok(n)
-    }
-}
-
-/// Each new connection takes the next script: its replies in turn.
-struct Server {
-    scripts: VecDeque<Vec<Vec<u8>>>,
-    step: usize,
-    cut: bool,
-    sent: Sent,
-}
-
-impl Server {
-    fn new(scripts: &[&[&[u8]]]) -> Self {
-        Self {
-            scripts: scripts
-                .iter()
-                .map(|s| s.iter().map(|r| r.to_vec()).collect())
-                .collect(),
-            step: usize::MAX,
-            cut: false,
-            sent: Sent::default(),
-        }
-    }
-
-    fn owned(scripts: Vec<Vec<Vec<u8>>>) -> Self {
-        Self {
-            scripts: scripts.into(),
-            step: usize::MAX,
-            cut: false,
-            sent: Sent::default(),
-        }
-    }
-
-    fn stepped(mut self, step: usize) -> Self {
-        self.step = step;
-        self
-    }
-
-    /// What each connection was sent, as text.
-    fn sent(&self) -> Vec<String> {
-        self.sent
-            .borrow()
-            .iter()
-            .map(|s| String::from_utf8_lossy(s).into_owned())
-            .collect()
-    }
-}
-
-impl Connect for Server {
-    type Stream = Conn;
-
-    fn connect(&mut self, _: &Url) -> Result<Conn, HttpError> {
-        let replies = self
-            .scripts
-            .pop_front()
-            .ok_or(HttpError::Connect("no more connections"))?;
-        let mut sent = self.sent.borrow_mut();
-        sent.push(Vec::new());
-        Ok(Conn {
-            id: sent.len() - 1,
-            replies: replies.into(),
-            out: Vec::new(),
-            at: 0,
-            step: self.step,
-            cut: self.cut,
-            sent: Rc::clone(&self.sent),
-        })
-    }
-}
-
-fn anyone(_: &str, _: u16) -> bool {
-    true
-}
-
-fn zero() -> u64 {
-    0
-}
-
-fn url(text: &str) -> Url {
-    Url::parse(text).unwrap()
-}
-
-/// A request for `verb` on `at` with no headers and no body, decoding.
-fn ask<'a>(verb: Verb, at: &'a Url) -> Request<'a> {
-    Request {
-        verb,
-        url: at,
-        headers: &[],
-        body: Body::Empty,
-        decode: true,
-    }
-}
-
-/// `request` exchanged with `connect` under `max_body`: the answer and the
-/// body that reached the sink.
-fn run(
-    connect: &mut impl Connect,
-    request: Request<'_>,
-    max_body: u64,
-) -> (Result<Answer, HttpError>, Vec<u8>) {
-    let fetch = Fetch {
-        limits: Limits::new(max_body, u64::MAX),
-        allow: &anyone,
-        clock: &zero,
-    };
-    let mut body = Vec::new();
-    let answer = fetch.exchange(connect, request, &mut |bytes| {
-        body.extend_from_slice(bytes);
-        Ok(())
-    });
-    (answer, body)
-}
-
-/// A response of `status` with `headers` and `body` by length.
-fn reply(status: &str, headers: &[&str], body: &[u8]) -> Vec<u8> {
-    let mut head = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\n", body.len());
-    for header in headers {
-        head.push_str(header);
-        head.push_str("\r\n");
-    }
-    head.push_str("\r\n");
-    let mut bytes = head.into_bytes();
-    bytes.extend_from_slice(body);
-    bytes
-}
-
-/// `body` in chunks of `size` bytes.
-fn chunked(status: &str, headers: &[&str], body: &[u8], size: usize) -> Vec<u8> {
-    let mut out = format!("HTTP/1.1 {status}\r\nTransfer-Encoding: chunked\r\n");
-    for header in headers {
-        out.push_str(header);
-        out.push_str("\r\n");
-    }
-    out.push_str("\r\n");
-    let mut bytes = out.into_bytes();
-    for piece in body.chunks(size) {
-        bytes.extend_from_slice(format!("{:x}\r\n", piece.len()).as_bytes());
-        bytes.extend_from_slice(piece);
-        bytes.extend_from_slice(b"\r\n");
-    }
-    bytes.extend_from_slice(b"0\r\n\r\n");
-    bytes
-}
-
-/// Bytes that do not repeat soon, so codings cannot shrink them much.
-fn noise(len: usize, seed: u32) -> Vec<u8> {
-    let mut x = seed.wrapping_mul(2_654_435_761).max(1);
-    (0..len)
-        .map(|_| {
-            x ^= x << 13;
-            x ^= x >> 17;
-            x ^= x << 5;
-            x as u8
-        })
-        .collect()
-}
-
-/// Text that codes well: a page's worth of repeated words.
-fn page(len: usize) -> Vec<u8> {
-    let words = b"the quick brown fox jumps over the lazy dog; ";
-    words.iter().cycle().take(len).copied().collect()
-}
-
-fn gzip(body: &[u8]) -> Vec<u8> {
-    let mut coder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    coder.write_all(body).unwrap();
-    coder.finish().unwrap()
-}
-
-fn brotli(body: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    {
-        let mut coder = brotli::CompressorWriter::new(&mut out, 4096, 5, 22);
-        coder.write_all(body).unwrap();
-    }
-    out
-}
-
-const MIB: usize = 1 << 20;
+use kainet::http::{Body, Coding, Fetch, Framing, HttpError, Keep, Limits, Request, Url, Verb};
+use kit::*;
 
 #[test]
 fn every_verb_sends_its_line_the_clients_headers_then_the_callers() {
@@ -493,164 +276,6 @@ fn every_header_and_a_body_of_megabytes_come_back_in_any_pieces() {
     assert!(got == small);
 }
 
-/// gzip, with a name, a comment, an extra field and a header CRC, and brotli,
-/// are undone in any pieces; what reaches the sink is the page.
-#[test]
-fn gzip_and_brotli_bodies_are_decoded_in_any_pieces() {
-    let at = url("https://a.test/page");
-    let text = page(MIB + 5);
-    let mut fancy = gzip_with_fields(&text);
-    let plain = gzip(&text);
-    let br = brotli(&text);
-    for (coding, coded, name) in [
-        (Coding::Gzip, plain.clone(), "gzip"),
-        (Coding::Gzip, plain, "x-gzip"),
-        (Coding::Gzip, std::mem::take(&mut fancy), "GZIP"),
-        (Coding::Brotli, br, "br"),
-    ] {
-        assert!(coded.len() < text.len() / 10, "{name} codes the page");
-        let header = format!("Content-Encoding: {name}");
-        for step in [1 << 20, 1000, 7] {
-            for wire in [
-                reply("200 OK", &[&header], &coded),
-                chunked("200 OK", &[&header], &coded, 333),
-            ] {
-                let mut server = Server::owned(vec![vec![wire]]).stepped(step);
-                let (answer, got) = run(&mut server, ask(Verb::Get, &at), 2 * MIB as u64);
-                let answer = answer.unwrap_or_else(|e| panic!("{name} step {step}: {e:?}"));
-                assert_eq!(answer.coding, coding);
-                assert_eq!(answer.received, text.len() as u64);
-                assert_eq!(answer.wire, coded.len() as u64);
-                assert!(got == text, "{name} step {step}");
-            }
-        }
-    }
-    // Asked for and identity, or no coding: passed as it is.
-    let mut server = Server::new(&[&[
-        b"HTTP/1.1 200 OK\r\nContent-Encoding: identity\r\nContent-Length: 2\r\n\r\nhi",
-    ]]);
-    assert_eq!(run(&mut server, ask(Verb::Get, &at), 10).1, b"hi");
-    // An empty coded body is empty, as browsers take it.
-    let mut server = Server::new(&[&[
-        b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 0\r\n\r\n",
-    ]]);
-    let (answer, got) = run(&mut server, ask(Verb::Get, &at), 10);
-    assert_eq!((answer.unwrap().received, got.len()), (0, 0));
-}
-
-/// A gzip member with every optional header field and a header CRC.
-fn gzip_with_fields(body: &[u8]) -> Vec<u8> {
-    let plain = gzip(body);
-    // FHCRC | FEXTRA | FNAME | FCOMMENT, the fixed bytes otherwise flate2's.
-    let mut header = plain[..10].to_vec();
-    header[3] = 0x02 | 0x04 | 0x08 | 0x10;
-    header.extend_from_slice(&5u16.to_le_bytes());
-    header.extend_from_slice(b"KA\x01\x00z");
-    header.extend_from_slice(b"page.html\0");
-    header.extend_from_slice(b"a comment\0");
-    let crc = crc32(&header) as u16;
-    header.extend_from_slice(&crc.to_le_bytes());
-    header.extend_from_slice(&plain[10..]);
-    header
-}
-
-fn crc32(bytes: &[u8]) -> u32 {
-    let mut gz = flate2::Crc::new();
-    gz.update(bytes);
-    gz.sum()
-}
-
-/// A small coded body that decodes without end stops at the limit on decoded
-/// bytes, holding no more than its buffers; broken codings are refused.
-#[test]
-fn hostile_codings_are_refused_and_a_bomb_stops_at_the_limit() {
-    let at = url("https://a.test/bomb");
-    let zeros = vec![0u8; 16 * MIB];
-    for (name, coded) in [("gzip", gzip(&zeros)), ("br", brotli(&zeros))] {
-        assert!(
-            coded.len() < 200 * 1024,
-            "{name} is a bomb: {}",
-            coded.len()
-        );
-        let header = format!("Content-Encoding: {name}");
-        let mut server = Server::owned(vec![vec![reply("200 OK", &[&header], &coded)]]);
-        let mut passed = 0u64;
-        let fetch = Fetch {
-            limits: Limits::new(MIB as u64, u64::MAX),
-            allow: &anyone,
-            clock: &zero,
-        };
-        let got = fetch.exchange(&mut server, ask(Verb::Get, &at), &mut |bytes| {
-            passed += bytes.len() as u64;
-            Ok(())
-        });
-        assert_eq!(got, Err(HttpError::TooLarge), "{name}");
-        assert!(passed <= MIB as u64, "{name}: {passed}");
-    }
-    let text = page(100_000);
-    let good = gzip(&text);
-    let mut bad_crc = good.clone();
-    let n = bad_crc.len();
-    bad_crc[n - 8] ^= 1;
-    let mut bad_size = good.clone();
-    bad_size[n - 1] ^= 1;
-    let mut bad_deflate = good.clone();
-    bad_deflate[12] ^= 0xFF;
-    let mut reserved = good.clone();
-    reserved[3] = 0x20;
-    let mut not_deflate = good.clone();
-    not_deflate[2] = 7;
-    let mut bad_header_crc = gzip_with_fields(&text);
-    let crc_at = 10 + 2 + 5 + 10 + 10;
-    bad_header_crc[crc_at] ^= 1;
-    let mut trailing = good.clone();
-    trailing.extend_from_slice(&good);
-    let mut endless_name = good[..10].to_vec();
-    endless_name[3] = 0x08;
-    endless_name.extend(std::iter::repeat_n(b'n', 5000));
-    let br = brotli(&text);
-    let mut br_trailing = br.clone();
-    br_trailing.extend_from_slice(b"more");
-    for (name, coding, body) in [
-        ("a bad CRC", "gzip", bad_crc),
-        ("a bad size", "gzip", bad_size),
-        ("broken deflate", "gzip", bad_deflate),
-        ("a reserved flag", "gzip", reserved),
-        ("a method not deflate", "gzip", not_deflate),
-        ("a bad header CRC", "gzip", bad_header_crc),
-        ("a second member", "gzip", trailing),
-        ("a name without end", "gzip", endless_name),
-        ("cut short", "gzip", good[..good.len() - 3].to_vec()),
-        ("not gzip", "gzip", text[..100].to_vec()),
-        ("not brotli", "br", text[..100].to_vec()),
-        ("brotli cut short", "br", br[..br.len() / 2].to_vec()),
-        ("bytes after brotli", "br", br_trailing),
-    ] {
-        let header = format!("Content-Encoding: {coding}");
-        let mut server = Server::owned(vec![vec![reply("200 OK", &[&header], &body)]]);
-        let got = run(&mut server, ask(Verb::Get, &at), 4 * MIB as u64).0;
-        assert!(matches!(got, Err(HttpError::Body(_))), "{name}: {got:?}");
-    }
-    // Codings it did not ask for, more than one, or ones it does not know.
-    for (decode, header) in [
-        (false, "Content-Encoding: gzip"),
-        (false, "Content-Encoding: br"),
-        (true, "Content-Encoding: deflate"),
-        (true, "Content-Encoding: compress"),
-        (true, "Content-Encoding: zstd"),
-        (true, "Content-Encoding: gzip, br"),
-        (true, "Content-Encoding: gzip\r\nContent-Encoding: gzip"),
-    ] {
-        let mut server = Server::owned(vec![vec![reply("200 OK", &[header], &good)]]);
-        let request = Request {
-            decode,
-            ..ask(Verb::Get, &at)
-        };
-        let got = run(&mut server, request, MIB as u64).0;
-        assert!(matches!(got, Err(HttpError::Head(_))), "{header}: {got:?}");
-    }
-}
-
 /// Hostile heads are refused as `Fetch::run` refuses them, and a head or a
 /// body on the wire over its limit is too large.
 #[test]
@@ -841,4 +466,95 @@ fn refused_hosts_and_the_deadline_stop_an_exchange() {
     };
     let got = fetch.exchange(&mut server, ask(Verb::Get, &at), &mut |_| Ok(()));
     assert_eq!(got, Err(HttpError::Timeout));
+}
+
+/// A connection whose answer has bytes past its framing (past its length,
+/// after a HEAD, 204 or 304 head, after the last chunk) is out of step: the
+/// answer stands, but the connection is dropped, never kept.
+#[test]
+fn a_connection_with_bytes_past_the_framing_is_not_kept() {
+    let at = url("https://a.test/");
+    let mut past_length = reply("200 OK", &[], b"ok");
+    past_length.extend_from_slice(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nfake");
+    let mut past_chunks = chunked("200 OK", &[], b"ok", 1);
+    past_chunks.extend_from_slice(b"junk");
+    for (verb, wire, body) in [
+        (Verb::Get, past_length, &b"ok"[..]),
+        (Verb::Get, past_chunks, b"ok"),
+        (
+            Verb::Head,
+            b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nstray".to_vec(),
+            b"",
+        ),
+        (
+            Verb::Get,
+            b"HTTP/1.1 204 No Content\r\n\r\nstray".to_vec(),
+            b"",
+        ),
+        (
+            Verb::Get,
+            b"HTTP/1.1 304 Not Modified\r\n\r\nstray".to_vec(),
+            b"",
+        ),
+    ] {
+        let mut keep = Keep::new(Server::owned(vec![vec![wire]]));
+        let (answer, got) = run(&mut keep, ask(verb, &at), 100);
+        assert!(answer.is_ok(), "{answer:?}");
+        assert_eq!(got, body);
+        assert_eq!(keep.held(), 0, "{verb:?}: {body:?}");
+    }
+    // In step, each is kept.
+    for (verb, wire) in [
+        (Verb::Get, reply("200 OK", &[], b"ok")),
+        (Verb::Get, chunked("200 OK", &[], b"ok", 1)),
+        (
+            Verb::Head,
+            b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\n".to_vec(),
+        ),
+        (Verb::Get, b"HTTP/1.1 204 No Content\r\n\r\n".to_vec()),
+    ] {
+        let mut keep = Keep::new(Server::owned(vec![vec![wire]]));
+        assert!(run(&mut keep, ask(verb, &at), 100).0.is_ok());
+        assert_eq!(keep.held(), 1, "{verb:?}");
+    }
+}
+
+/// A `Url` built by hand with a byte that is not visible ASCII in its path
+/// or host is refused before anything is sent: the request line and `Host`
+/// stay one line each.
+#[test]
+fn a_path_or_host_that_is_not_visible_ascii_is_refused() {
+    let good = url("https://a.test/p");
+    for (host, path) in [
+        ("a.test", "/a b"),
+        ("a.test", "/a\r\nX-Injected: 1"),
+        ("a.test", "/a\tb"),
+        ("a.test", "/caf\u{e9}"),
+        ("a.test", "/\u{7f}"),
+        ("a.test", ""),
+        ("a.test\r\nX-Injected: 1", "/"),
+        ("a test", "/"),
+        ("a.test\0", "/"),
+        ("", "/"),
+    ] {
+        let at = Url {
+            host: host.into(),
+            path: path.into(),
+            ..good.clone()
+        };
+        assert!(
+            matches!(
+                exchange::request_head(&ask(Verb::Get, &at), false),
+                Err(HttpError::Url(_))
+            ),
+            "{host:?} {path:?}"
+        );
+        let mut server = Server::new(&[&[b"HTTP/1.1 200 OK\r\n\r\n"]]);
+        assert!(matches!(
+            run(&mut server, ask(Verb::Get, &at), 100).0,
+            Err(HttpError::Url(_))
+        ));
+        assert!(server.sent().is_empty());
+    }
+    assert!(exchange::request_head(&ask(Verb::Get, &good), false).is_ok());
 }

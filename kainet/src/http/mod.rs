@@ -649,6 +649,21 @@ impl Fetch<'_> {
         first: Vec<u8>,
         sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
     ) -> Result<u64, HttpError> {
+        self.read_framed(stream, framing, first, sink)
+            .map(|(received, _)| received)
+    }
+
+    /// [`Fetch::read_body`], and whether any byte came past the body's
+    /// framing: past its length, after a bodiless head, or after the last
+    /// chunk. Such a connection is out of step, so is never kept
+    /// ([`Fetch::exchange`]).
+    fn read_framed(
+        &self,
+        stream: &mut impl Stream,
+        framing: Framing,
+        first: Vec<u8>,
+        sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
+    ) -> Result<(u64, bool), HttpError> {
         let max = self.limits.max_body;
         let mut received = 0u64;
         let mut pass = |bytes: &[u8], received: &mut u64| -> Result<(), HttpError> {
@@ -660,7 +675,7 @@ impl Fetch<'_> {
         };
         let mut chunk = alloc::vec![0u8; 16 * 1024];
         match framing {
-            Framing::Empty => Ok(0),
+            Framing::Empty => Ok((0, !first.is_empty())),
             Framing::Length(length) => {
                 if length > max {
                     return Err(HttpError::TooLarge);
@@ -680,15 +695,15 @@ impl Fetch<'_> {
                     }
                     pass(&chunk[..n], &mut received)?;
                 }
-                Ok(received)
+                Ok((received, first.len() > take))
             }
             Framing::Chunked => {
                 let mut chunked = body::Chunked::new();
                 let mut input = first;
                 loop {
-                    chunked.feed(&input, &mut |data| pass(data, &mut received))?;
+                    let used = chunked.feed(&input, &mut |data| pass(data, &mut received))?;
                     if chunked.done() {
-                        return Ok(received);
+                        return Ok((received, used < input.len()));
                     }
                     self.in_time()?;
                     let n = stream.recv(&mut chunk)?;
@@ -703,7 +718,7 @@ impl Fetch<'_> {
                 loop {
                     self.in_time()?;
                     match stream.recv(&mut chunk)? {
-                        0 => return Ok(received),
+                        0 => return Ok((received, false)),
                         n => pass(&chunk[..n], &mut received)?,
                     }
                 }

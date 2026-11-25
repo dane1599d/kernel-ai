@@ -15,7 +15,9 @@
 //!   a new one if that kept connection fails before any head comes.
 //! - **Kept connections:** any exchange whose response was read whole, from a
 //!   server that did not say it closes, gives its connection back to a
-//!   [`super::Keep`].
+//!   [`super::Keep`], but only when no byte came past the body's framing
+//!   (past its length, after a bodiless head, after the last chunk): such a
+//!   connection is out of step, so it is dropped.
 //! - **Limits:** [`Limits::max_head`] bounds the response head;
 //!   [`Limits::max_body`] bounds both the body's bytes on the wire and its
 //!   decoded bytes; the deadline is checked between every read and write.
@@ -193,6 +195,14 @@ pub fn request_head(request: &Request<'_>, keep: bool) -> Result<Vec<u8>, HttpEr
         return Err(HttpError::Url("a GET or HEAD carries no body"));
     }
     let url = request.url;
+    // `Url::parse` takes only such URLs, but a `Url`'s fields are its
+    // caller's: the request line and `Host` must stay one line each.
+    let visible = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_graphic());
+    if !visible(&url.path) || !visible(&url.host) {
+        return Err(HttpError::Url(
+            "a request's path or host is not visible ASCII",
+        ));
+    }
     let mut head = format!(
         "{} {} HTTP/1.1\r\nHost: {}\r\n",
         request.verb.name(),
@@ -285,11 +295,12 @@ impl Fetch<'_> {
             coding,
         } = full;
         let mut decoder = Decoder::new(coding, self.limits.max_body);
-        let wire = self.read_body(&mut stream, head.framing, buf, &mut |bytes| {
+        let (wire, over) = self.read_framed(&mut stream, head.framing, buf, &mut |bytes| {
             decoder.feed(bytes, sink)
         })?;
         decoder.finish(wire)?;
-        if connect.keeps() && !head.close && head.framing != Framing::Close {
+        // Kept only in step: nothing came past the body's framing.
+        if connect.keeps() && !head.close && head.framing != Framing::Close && !over {
             connect.give_back(url, stream);
         }
         let location = match super::redirects(head.status) {
