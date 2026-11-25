@@ -116,9 +116,8 @@ fn ask(
             )
         };
         let mut socket = udp::Socket::new(buffer(), buffer());
-        socket
-            .bind(next_port())
-            .map_err(|_| "dns: cannot open a socket")?;
+        let port = next_port(&net.sockets).ok_or("dns: cannot open a socket")?;
+        socket.bind(port).map_err(|_| "dns: cannot open a socket")?;
         net.sockets.add(socket)
     };
     let mut result = Err("dns: timed out");
