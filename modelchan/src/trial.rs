@@ -299,8 +299,10 @@ pub enum AtBoot {
     Resume(Trial),
     /// `updated` started again within the boot and found it pending: written
     /// this boot for the next restart, or mapped by this boot while its first
-    /// start ended before it marked it. Nothing is written until `llm` says
-    /// which ([`check`]).
+    /// start ended before it marked it. The hint goes on `previous` before it
+    /// waits on `llm`, as for a mark, so a hang while `llm` loads the
+    /// candidate boots `previous`; then `llm` says which ([`check`]), and
+    /// another model running points the hint at the candidate again.
     Check(Trial),
 }
 
@@ -346,6 +348,7 @@ pub struct Probation {
     pub started: u64,
     /// `trial` is pending, found by a start again ([`AtBoot::Check`]):
     /// whether this boot runs its candidate is not known until `llm` says.
+    /// The hint is on `previous` meanwhile.
     pub checking: bool,
 }
 
@@ -387,9 +390,10 @@ pub struct Start {
 }
 
 /// The writes and probation for `found`, at `now_ms`. Every start that judges
-/// a trial first points the hint at its way back, so a boot after one that
-/// hung maps that, whatever any start of `updated` got as far as; a keep
-/// points it at the candidate again ([`look`]).
+/// or checks a trial first points the hint at its way back, so a boot after
+/// one that hung maps that, whatever any start of `updated` got as far as; a
+/// keep, or a check that finds another model running, points it at the
+/// candidate again ([`look`]).
 pub fn start(found: &AtBoot, now_ms: u64) -> Start {
     let none = Start {
         writes: Vec::new(),
@@ -420,9 +424,11 @@ pub fn start(found: &AtBoot, now_ms: u64) -> Start {
             retry: Some(Probation::judging(attempted.clone(), now_ms)),
         },
         AtBoot::Check(pending) => Start {
-            writes: Vec::new(),
+            writes: vec![Write::Hint(pending.previous)],
             probation: Some(Probation::checking(pending.clone(), now_ms)),
-            retry: None,
+            // A mark writes the hint again before the record, and a leave
+            // writes the candidate's.
+            retry: Some(Probation::checking(pending.clone(), now_ms)),
         },
         AtBoot::RollBack(back) => Start {
             writes: vec![Write::Hint(back.previous), Write::Record(back.clone())],
@@ -436,29 +442,38 @@ pub fn start(found: &AtBoot, now_ms: u64) -> Start {
 pub enum Checked {
     /// `llm` has not said yet.
     Wait,
-    /// This boot maps its candidate: mark it and judge it.
+    /// Mark it and judge it this boot.
     Judge,
-    /// It is not this boot's to judge; the next boot tries it, and its first
-    /// start marks it.
-    Leave(&'static str),
+    /// Another model runs: it was written this boot for the next restart.
+    /// Point the hint at its candidate again; the next boot tries it, and
+    /// that boot's first start marks it.
+    Leave,
 }
 
 /// A pending trial a start again found ([`AtBoot::Check`]), by what `llm`
-/// says this boot runs, after `waited_ms` of `limit_ms`: its candidate,
-/// loaded or not, is this boot's trial; another model, or none, means it was
-/// written this boot for the next restart.
+/// says this boot runs, after `waited_ms` of `limit_ms`. Only another model,
+/// loaded or not, shows that this boot did not map the candidate, so only
+/// that leaves it for the next restart. The candidate, loaded or not, is this
+/// boot's trial. So is no model, or none that `llm` can name: a candidate the
+/// kernel could not map leaves `llm` with none, and is rolled back this boot
+/// rather than the next (the review of #1349). And so is no answer within
+/// the limit: a candidate that does not load in it is rolled back, as a
+/// first start's trial is. Either way, a switch written this boot on a
+/// machine that runs no model, or while `llm` stays silent, is lost to an
+/// `updated` that starts again in that boot: the safe direction.
 pub fn check(pending: &Trial, health: Health<'_>, waited_ms: u64, limit_ms: u64) -> Checked {
-    let names_it =
-        |text: &str| crate::listing::loaded(text).is_some_and(|(_, fnv)| fnv == pending.fnv);
+    let another = |fnv: u64| fnv != pending.fnv;
     match health {
-        Health::Ready { fnv } if fnv == pending.fnv => Checked::Judge,
-        Health::Failed(text) if names_it(text) => Checked::Judge,
-        Health::Ready { .. } | Health::Failed(_) => Checked::Leave("this boot runs another model"),
-        Health::NoModel => Checked::Leave("this boot runs no model"),
-        Health::NotYet if waited_ms >= limit_ms => {
-            Checked::Leave("llm did not say which model this boot runs")
+        Health::Ready { fnv } if another(fnv) => Checked::Leave,
+        Health::Failed(text)
+            if crate::listing::loaded(text).is_some_and(|(_, fnv)| another(fnv)) =>
+        {
+            Checked::Leave
         }
-        Health::NotYet => Checked::Wait,
+        Health::NotYet if waited_ms < limit_ms => Checked::Wait,
+        Health::Ready { .. } | Health::Failed(_) | Health::NoModel | Health::NotYet => {
+            Checked::Judge
+        }
     }
 }
 
@@ -476,9 +491,11 @@ pub struct Look {
 /// `probation`'s look at what `llm` says, `health`, at `now_ms`, with
 /// `record` the trial record as it stands. A record that is no longer the
 /// one it judges was written since: it and the hint are left as they are
-/// ([`verdict`]). A check that finds the candidate running marks it, and the
-/// next look judges it; a keep points the hint at the candidate, then writes
-/// it kept; a rollback points it at the way back, then writes why.
+/// ([`verdict`]). A check that judges marks the trial (the hint on the way
+/// back, then the record), and the next look judges it; one that leaves it
+/// points the hint at its candidate again. A keep points the hint at the
+/// candidate, then writes it kept; a rollback points it at the way back,
+/// then writes why.
 pub fn look(
     probation: &Probation,
     record: Option<&Trial>,
@@ -504,7 +521,13 @@ pub fn look(
         }
         return match check(trial, health, waited, limit_ms) {
             Checked::Wait => wait,
-            Checked::Leave(why) => stop(&format!("waits for the next restart: {why}")),
+            Checked::Leave => Look {
+                writes: vec![Write::Hint(Some(trial.candidate))],
+                after: None,
+                said: Some(String::from(
+                    "waits for the next restart: this boot runs another model",
+                )),
+            },
             Checked::Judge => {
                 let attempted = Trial {
                     state: State::Attempted,
@@ -516,7 +539,7 @@ pub fn look(
                         Write::Record(attempted.clone()),
                     ],
                     after: Some(Probation::judging(attempted, probation.started)),
-                    said: Some(String::from("is on trial: this boot runs it")),
+                    said: Some(String::from("is on trial in this boot")),
                 }
             }
         };

@@ -488,17 +488,22 @@ impl Disk {
         self.made(writes, writes.len())
     }
 
-    /// Whether the model the next boot maps would run with no trial: the
-    /// record neither settles on it, nor tries it, nor goes back to it.
-    fn runs_untried(&self) -> bool {
+    /// Whether the next boot would run a model with no trial (the record
+    /// neither settles on the hint's model, nor tries it, nor goes back to
+    /// it), or map a candidate a boot already tried: an attempted record
+    /// with the hint still on its candidate, unless `llm` said the candidate
+    /// `loaded` (the cut inside a keep).
+    fn runs_untried(&self, loaded: Option<[u8; 32]>) -> bool {
         let Some(t) = &self.record else {
             return false;
         };
         match &t.state {
             State::Kept => self.hint != Some(t.candidate),
             State::RolledBack(_) => self.hint != t.previous,
-            State::Pending | State::Attempted => {
-                self.hint != Some(t.candidate) && self.hint != t.previous
+            State::Pending => self.hint != Some(t.candidate) && self.hint != t.previous,
+            State::Attempted => {
+                let kept_loaded = self.hint == Some(t.candidate) && loaded == Some(t.candidate);
+                self.hint != t.previous && !kept_loaded
             }
         }
     }
@@ -563,11 +568,12 @@ fn a_candidate_that_hung_a_boot_is_not_tried_again_whatever_updated_got_to() {
 }
 
 /// HIGH 1, scenario B: a boot maps the pending candidate, and the first start
-/// of `updated` ends before it marks it. A start again finds it pending and
-/// checks what `llm` runs: the candidate means it is this boot's trial,
-/// marked (the hint on the way back) and judged this boot; another model, or
-/// none, means it was written this boot for the next restart, and it is left
-/// for that boot, whose first start marks it.
+/// of `updated` ends before it marks it. A start again finds it pending,
+/// points the hint at the way back before it waits on `llm` (the delta review
+/// of #1349), and checks what `llm` runs: another model means the record was
+/// written this boot for the next restart, and the hint goes back on its
+/// candidate; the candidate, loaded or not, is this boot's trial, marked and
+/// judged this boot.
 #[test]
 fn a_pending_trial_a_first_start_left_unmarked_is_judged_once_llm_says_it_runs() {
     let record = pending(NEW, Some(OLD));
@@ -578,10 +584,11 @@ fn a_pending_trial_a_first_start_left_unmarked_is_judged_once_llm_says_it_runs()
     let found = at_boot(disk.record.as_ref(), true);
     assert_eq!(found, AtBoot::Check(record.clone()));
     let begun = start(&found, 0);
-    assert!(begun.writes.is_empty());
+    assert_eq!(begun.writes, vec![Write::Hint(Some(OLD))]);
     let checking = begun.probation.expect("a check");
     assert!(checking.checking);
-    // llm is still loading: nothing is written yet.
+    let disk = disk.all(&begun.writes);
+    // llm is still loading: nothing more is written yet.
     let waiting = look(
         &checking,
         disk.record.as_ref(),
@@ -627,31 +634,120 @@ fn a_pending_trial_a_first_start_left_unmarked_is_judged_once_llm_says_it_runs()
         "{state:?}"
     );
 
-    // This boot runs OLD, or no model, or a model it could not map: the
-    // record was written this boot for the next restart, and stays.
-    let unmapped = "err the model cannot run: x; status state=failed tps10=0";
-    for health in [
-        runs(OLD),
-        Health::NoModel,
-        health_of(unmapped, Some("failed")),
-    ] {
+    // This boot runs another model, loaded or not: the record was written
+    // this boot for the next restart. The hint goes back on its candidate,
+    // and the record stays.
+    let other = "ok model 9 bytes fnv1a64 1111111111111111; the model cannot run: x; status state=failed tps10=0";
+    for health in [runs(OLD), health_of(other, Some("failed"))] {
+        assert_eq!(check(&record, health, 0, LIMIT), Checked::Leave);
         let left = look(&checking, disk.record.as_ref(), health, 5_000, LIMIT);
-        assert!(left.writes.is_empty() && left.after.is_none(), "{health:?}");
+        assert_eq!(left.after, None, "{health:?}");
+        assert_eq!(
+            disk.all(&left.writes),
+            Disk {
+                hint: Some(NEW),
+                record: Some(record.clone()),
+            },
+            "{health:?}"
+        );
     }
-    // llm never said: left for the next boot.
-    let left = look(
-        &checking,
-        disk.record.as_ref(),
-        Health::NotYet,
-        LIMIT,
-        LIMIT,
-    );
-    assert!(left.writes.is_empty() && left.after.is_none());
-    // A switch while it checks replaces the record: the check stops there.
+    // A switch while it checks replaces the record: the check stops there,
+    // writing nothing, and the switch's hint stands.
     let used = switch(None, disk.record.as_ref(), OTHER, fnv_of(OTHER));
     let replaced = disk.all(&used.writes());
     let stopped = look(&checking, replaced.record.as_ref(), runs(NEW), 5_000, LIMIT);
     assert!(stopped.writes.is_empty() && stopped.after.is_none());
+    assert_eq!(replaced.hint, Some(OTHER));
+}
+
+/// The delta review of #1349, HIGH 1: a check waits on `llm` while it loads
+/// the candidate, and the candidate hangs the boot. The next boot maps the
+/// way back, and its first start marks the candidate and rolls it back: it
+/// is not tried again.
+#[test]
+fn a_candidate_that_hangs_a_boot_while_a_check_waits_is_not_tried_again() {
+    let record = pending(NEW, Some(OLD));
+    let disk = Disk {
+        hint: Some(NEW),
+        record: Some(record.clone()),
+    };
+    let begun = start(&at_boot(disk.record.as_ref(), true), 0);
+    let checking = begun.probation.clone().expect("a check");
+    let disk = disk.all(&begun.writes);
+    let waiting = look(
+        &checking,
+        disk.record.as_ref(),
+        Health::NotYet,
+        5_000,
+        LIMIT,
+    );
+    let disk = disk.all(&waiting.writes);
+    // The boot hangs here: the next one maps the way back.
+    assert_eq!(
+        disk,
+        Disk {
+            hint: Some(OLD),
+            record: Some(record.clone()),
+        }
+    );
+    let first = start(&at_boot(disk.record.as_ref(), false), 0);
+    let disk = disk.all(&first.writes);
+    let judging = first.probation.expect("a probation");
+    let seen = look(&judging, disk.record.as_ref(), runs(OLD), 5_000, LIMIT);
+    assert_eq!(
+        disk.all(&seen.writes),
+        Disk {
+            hint: Some(OLD),
+            record: Some(Trial {
+                state: State::RolledBack("another model started in its place".into()),
+                ..record
+            }),
+        }
+    );
+}
+
+/// The delta review of #1349, MEDIUM 2: in the same case, a candidate the
+/// kernel could not map leaves `llm` with no model it can name, and `llm`
+/// silent for the whole limit may be loading it: the check judges it, and it
+/// is rolled back this boot, not the next.
+#[test]
+fn a_candidate_the_boot_could_not_map_or_load_rolls_back_this_boot() {
+    let record = pending(NEW, Some(OLD));
+    let disk = Disk {
+        hint: Some(NEW),
+        record: Some(record.clone()),
+    };
+    let begun = start(&at_boot(disk.record.as_ref(), true), 0);
+    let checking = begun.probation.clone().expect("a check");
+    let disk = disk.all(&begun.writes);
+    let unmapped = "err the model cannot run: x; status state=failed tps10=0";
+    let cases = [
+        (Health::NoModel, 5_000, "no model started"),
+        (
+            health_of(unmapped, Some("failed")),
+            5_000,
+            "it did not load: ",
+        ),
+        (Health::NotYet, LIMIT, "it did not load within 300 s"),
+    ];
+    for (health, at, why) in cases {
+        assert_eq!(check(&record, health, at, LIMIT), Checked::Judge);
+        let marked = look(&checking, disk.record.as_ref(), health, at, LIMIT);
+        let disk1 = disk.all(&marked.writes);
+        let judging = marked.after.expect("judged at the next look");
+        let back = look(&judging, disk1.record.as_ref(), health, at + 5_000, LIMIT);
+        let disk2 = disk1.all(&back.writes);
+        assert_eq!(disk2.hint, Some(OLD), "{health:?}");
+        let state = disk2.record.map(|t| t.state);
+        assert!(
+            matches!(&state, Some(State::RolledBack(w)) if w.starts_with(why)),
+            "{state:?}"
+        );
+    }
+    assert_eq!(
+        check(&record, Health::NotYet, LIMIT - 1, LIMIT),
+        Checked::Wait
+    );
 }
 
 /// A first start whose marks fail checks the pending record instead, and its
@@ -689,6 +785,9 @@ fn every_plan_writes_in_an_order_a_cut_leaves_safe() {
     let judging = start(&AtBoot::Try(attempted.clone()), 0)
         .probation
         .expect("a probation");
+    let checking = start(&AtBoot::Check(p.clone()), 0)
+        .probation
+        .expect("a check");
     let with = |hint, record: &Trial| Disk {
         hint: Some(hint),
         record: Some(record.clone()),
@@ -697,30 +796,59 @@ fn every_plan_writes_in_an_order_a_cut_leaves_safe() {
         state: State::RolledBack(why.into()),
         ..p.clone()
     };
+    // Each plan: the disk before it, its writes, the writes it must make,
+    // and the candidate `llm` said loaded when it is made.
     let plans = [
         (
             "switch",
             with(OLD, &settled(OLD)),
             switch(None, Some(&settled(OLD)), NEW, fnv_of(NEW)).writes(),
             vec![Write::Record(p.clone()), Write::Hint(Some(NEW))],
+            None,
         ),
         (
             "cancel",
             with(NEW, &p),
             switch(None, Some(&p), OLD, fnv_of(OLD)).writes(),
             vec![Write::Hint(Some(OLD)), Write::Record(settled(OLD))],
+            None,
         ),
         (
             "first start",
             with(NEW, &p),
             start(&at_boot(Some(&p), false), 0).writes,
             vec![Write::Hint(Some(OLD)), Write::Record(attempted.clone())],
+            None,
         ),
         (
-            "start again",
-            with(NEW, &attempted),
+            "start again, attempted",
+            with(OLD, &attempted),
             start(&at_boot(Some(&attempted), true), 0).writes,
             vec![Write::Hint(Some(OLD))],
+            None,
+        ),
+        (
+            "start again, pending",
+            with(NEW, &p),
+            start(&at_boot(Some(&p), true), 0).writes,
+            vec![Write::Hint(Some(OLD))],
+            None,
+        ),
+        // From the hint still on the candidate, as when the check's first
+        // write failed: a record written first would be caught.
+        (
+            "check marks",
+            with(NEW, &p),
+            look(&checking, Some(&p), runs(NEW), 5_000, LIMIT).writes,
+            vec![Write::Hint(Some(OLD)), Write::Record(attempted.clone())],
+            None,
+        ),
+        (
+            "check leaves",
+            with(OLD, &p),
+            look(&checking, Some(&p), runs(OTHER), 5_000, LIMIT).writes,
+            vec![Write::Hint(Some(NEW))],
+            None,
         ),
         (
             "keep",
@@ -733,6 +861,7 @@ fn every_plan_writes_in_an_order_a_cut_leaves_safe() {
                     ..p.clone()
                 }),
             ],
+            Some(NEW),
         ),
         (
             "rollback",
@@ -742,36 +871,36 @@ fn every_plan_writes_in_an_order_a_cut_leaves_safe() {
                 Write::Hint(Some(OLD)),
                 Write::Record(rolled("no model started")),
             ],
+            None,
         ),
         (
             "rollback at boot",
             with(OLD, &attempted),
             start(&at_boot(Some(&attempted), false), 0).writes,
             vec![Write::Hint(Some(OLD)), Write::Record(rolled(HUNG))],
+            None,
         ),
     ];
-    for (name, before, writes, want) in plans {
+    for (name, before, writes, want, loaded) in plans {
         assert_eq!(writes, want, "{name}");
         for n in 0..=writes.len() {
             assert!(
-                !before.made(&writes, n).runs_untried(),
+                !before.made(&writes, n).runs_untried(loaded),
                 "{name} cut after {n}"
             );
         }
     }
-    // The other order would not be: a settled record with the hint still on
-    // the cancelled candidate, a kept one with it still on the way back.
-    assert!(with(NEW, &settled(OLD)).runs_untried());
-    assert!(
-        with(
-            OLD,
-            &Trial {
-                state: State::Kept,
-                ..p.clone()
-            }
-        )
-        .runs_untried()
-    );
+    // The other orders would not be: a settled record with the hint still on
+    // the cancelled candidate, a kept one with it still on the way back, and
+    // a mark with it still on the candidate (also the record a mark before
+    // #1349 left, the upgrade corner in the decision row).
+    assert!(with(NEW, &settled(OLD)).runs_untried(None));
+    let kept = Trial {
+        state: State::Kept,
+        ..p.clone()
+    };
+    assert!(with(OLD, &kept).runs_untried(Some(NEW)));
+    assert!(with(NEW, &attempted).runs_untried(None));
 }
 
 /// LOW 7: a switch waits for a probation that judges an attempted trial
