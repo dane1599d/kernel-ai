@@ -13,6 +13,10 @@
 //!   `pkg/store` leave those names out and listings of `pkg/store/.partial` give
 //!   them back, so the store sees ADR 0011 §5's layout.
 //! - Removing moves the file to the volume's trash, `kai-fs 1`'s only delete.
+//! - A transport with a bulk `Shm` ([`Transport::bulk`]) moves a file's bytes
+//!   up to the `Shm`'s length a round trip (ReadShm, WriteShm); without one, or
+//!   with an `fs` that predates them, it goes a message at a time. The round
+//!   trip, not `fs`, is what a 7 KiB message costs (#1101).
 
 use crate::store::{OBJECTS, PARTIAL, Volume};
 use alloc::format;
@@ -33,6 +37,50 @@ pub trait Transport {
     fn close(&mut self, handle: Self::Handle);
     /// Waits `ms` before a request `fs` answered Busy is asked again.
     fn wait_ms(&mut self, ms: u64);
+    /// The bulk `Shm`, if this transport has one: none by default.
+    fn bulk(&mut self) -> Option<&mut dyn Bulk<Self::Handle>> {
+        None
+    }
+}
+
+/// A bulk `Shm` and the requests that move it (`kai-fs 1`'s ReadShm and
+/// WriteShm).
+pub trait Bulk<H> {
+    /// The `Shm`'s bytes: what a WriteShm sends from its start and a ReadShm
+    /// fills from it.
+    fn bytes(&mut self) -> &mut [u8];
+    /// `request`, a ReadShm or WriteShm, on `on` with the `Shm` moved along.
+    fn call(&mut self, on: H, request: Request) -> Result<Reply, String>;
+    /// Whether the `Shm` may still be sent: false for good once a call failed
+    /// after it moved (a timeout, `fs` gone), since that request may still be
+    /// running in `fs` and could yet read or fill it. [`FsVolume`] then goes a
+    /// message at a time.
+    fn usable(&self) -> bool {
+        true
+    }
+}
+
+/// The transport's bulk `Shm`, if it has one it may still send.
+fn usable<T: Transport>(transport: &mut T) -> Option<&mut dyn Bulk<T::Handle>> {
+    transport.bulk().filter(|bulk| bulk.usable())
+}
+
+/// A reply, alone or with the handle it moved: what [`FsVolume::ask`]'s
+/// retry looks at.
+trait AsReply {
+    fn reply(&self) -> &Reply;
+}
+
+impl AsReply for Reply {
+    fn reply(&self) -> &Reply {
+        self
+    }
+}
+
+impl<H> AsReply for (Reply, Option<H>) {
+    fn reply(&self) -> &Reply {
+        &self.0
+    }
 }
 
 /// How long to wait between asks while another caller's action holds `fs`.
@@ -93,6 +141,16 @@ impl<T: Transport> FsVolume<T> {
         on: T::Handle,
         request: Request,
     ) -> Result<(Reply, Option<T::Handle>), String> {
+        self.retried(request, |transport, request| transport.call(on, request))
+    }
+
+    /// `request` sent by `send`, and sent again while `fs` answers it Busy, as
+    /// [`FsVolume::ask`] says.
+    fn retried<R: AsReply>(
+        &mut self,
+        request: Request,
+        mut send: impl FnMut(&mut T, Request) -> Result<R, String>,
+    ) -> Result<R, String> {
         // The request's name only: its fields may be a file's bytes, such as
         // the device key's seed.
         let what = format!("{request:?}");
@@ -103,16 +161,27 @@ impl<T: Transport> FsVolume<T> {
         );
         let mut tries = 0;
         loop {
-            let answer = self
-                .transport
-                .call(on, request.clone())
-                .map_err(|e| format!("{what}: {e}"))?;
-            if !matches!(answer.0, Reply::Failed(Error::Busy)) || tries == BUSY_TRIES {
+            let answer =
+                send(&mut self.transport, request.clone()).map_err(|e| format!("{what}: {e}"))?;
+            if !matches!(answer.reply(), Reply::Failed(Error::Busy)) || tries == BUSY_TRIES {
                 return Ok(answer);
             }
             tries += 1;
             self.transport.wait_ms(BUSY_WAIT_MS);
         }
+    }
+
+    /// `request` on `file` through the bulk `Shm`, sent again on Busy.
+    fn ask_bulk(&mut self, file: T::Handle, request: Request) -> Result<Reply, String> {
+        self.retried(request, |transport, request| match usable(transport) {
+            Some(bulk) => bulk.call(file, request),
+            None => Err("no bulk Shm".into()),
+        })
+    }
+
+    /// The bulk `Shm`'s length, 0 without one.
+    fn bulk_len(&mut self) -> usize {
+        usable(&mut self.transport).map_or(0, |b| b.bytes().len())
     }
 
     /// `request` on `on`, which must answer Done.
@@ -177,6 +246,9 @@ impl<T: Transport> FsVolume<T> {
             return Err(format!("the file is {size} bytes, over {max}"));
         }
         let mut out = Vec::with_capacity(size as usize);
+        if size > fsproto::MAX_DATA as u64 {
+            self.read_bulk(file, size, &mut out)?;
+        }
         while (out.len() as u64) < size {
             let want = (size - out.len() as u64).min(fsproto::MAX_DATA as u64) as u32;
             let request = Request::Read {
@@ -191,6 +263,28 @@ impl<T: Transport> FsVolume<T> {
         Ok(out)
     }
 
+    /// Reads `file` into `out`, up to `size` bytes, through the bulk `Shm` if
+    /// there is one and `fs` takes ReadShm; the rest goes a message at a time.
+    fn read_bulk(&mut self, file: T::Handle, size: u64, out: &mut Vec<u8>) -> Result<(), String> {
+        let piece = self.bulk_len() as u64;
+        while piece > 0 && (out.len() as u64) < size {
+            let len = (size - out.len() as u64).min(piece) as u32;
+            let request = Request::ReadShm {
+                off: out.len() as u64,
+                len,
+            };
+            match self.ask_bulk(file, request)? {
+                Reply::Failed(Error::BadRequest) if out.is_empty() => return Ok(()),
+                Reply::Copied { len: got } if got > 0 && got <= u64::from(len) => {
+                    let bulk = self.transport.bulk().ok_or("no bulk Shm")?;
+                    out.extend_from_slice(&bulk.bytes()[..got as usize]);
+                }
+                other => return Err(format!("a bulk read gave {other:?}")),
+            }
+        }
+        Ok(())
+    }
+
     fn size(&mut self, file: T::Handle) -> Result<u64, String> {
         match self.ask(file, Request::Stat)? {
             (Reply::Stat(stat), _) => Ok(stat.size),
@@ -198,8 +292,12 @@ impl<T: Transport> FsVolume<T> {
         }
     }
 
-    /// `bytes` into `file` from `off`, in `kai-fs 1`'s pieces.
+    /// `bytes` into `file` from `off`: through the bulk `Shm` if there is one
+    /// and `fs` takes WriteShm, else in `kai-fs 1`'s message pieces.
     fn put(&mut self, file: T::Handle, mut off: u64, bytes: &[u8]) -> Result<(), String> {
+        if bytes.len() > fsproto::MAX_DATA && self.put_bulk(file, off, bytes)? {
+            return Ok(());
+        }
         for piece in bytes.chunks(fsproto::MAX_DATA) {
             let request = Request::Write {
                 off,
@@ -209,6 +307,29 @@ impl<T: Transport> FsVolume<T> {
             off += piece.len() as u64;
         }
         Ok(())
+    }
+
+    /// [`FsVolume::put`] through the bulk `Shm`: `false`, with nothing
+    /// written, when there is none or `fs` predates WriteShm.
+    fn put_bulk(&mut self, file: T::Handle, off: u64, bytes: &[u8]) -> Result<bool, String> {
+        let size = self.bulk_len();
+        if size == 0 {
+            return Ok(false);
+        }
+        for (i, piece) in bytes.chunks(size).enumerate() {
+            let bulk = self.transport.bulk().ok_or("no bulk Shm")?;
+            bulk.bytes()[..piece.len()].copy_from_slice(piece);
+            let request = Request::WriteShm {
+                off: off + (i * size) as u64,
+                len: piece.len() as u32,
+            };
+            match self.ask_bulk(file, request)? {
+                Reply::Done => {}
+                Reply::Failed(Error::BadRequest) if i == 0 => return Ok(false),
+                other => return Err(format!("a bulk write gave {other:?}")),
+            }
+        }
+        Ok(true)
     }
 
     /// The names in folder `dir` beneath the root, as `kai-fs 1` lists them.

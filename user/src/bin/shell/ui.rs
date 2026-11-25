@@ -26,7 +26,7 @@ const WINDOW_POLL_MS: u64 = 250;
 pub fn call(call: &UiCall) -> Result<String, String> {
     let route = desktop().ok_or_else(|| String::from("there is no desktop here"))?;
     let request = match call {
-        UiCall::Open { app, arg } => return open(route, app, arg.as_deref()),
+        UiCall::Open { app, arg, person } => return open(route, app, arg.as_deref(), *person),
         UiCall::Windows => Request::Windows,
         UiCall::View(w) => Request::View(w.clone()),
         UiCall::Focus(w) => Request::Focus(w.clone()),
@@ -67,8 +67,17 @@ pub fn call(call: &UiCall) -> Result<String, String> {
 
 /// `ui_open`: `focused w3 w1` when the app has a window already (it takes
 /// focus, from `w1`), or `opened w5` once the app, started if it was not
-/// running, shows its window.
-fn open(route: kabi::handle::Handle, app: &str, arg: Option<&str>) -> Result<String, String> {
+/// running, shows its window. Who drives decides how it takes the keys: the
+/// person's own open (`person`) is `ui activate`, as a click would, for a new
+/// window or an old one, a private one too, with no outline and no takeover;
+/// any other open is the agent's `ui focus`, which puts its outline on the
+/// window, is refused for a private window and after a takeover.
+fn open(
+    route: kabi::handle::Handle,
+    app: &str,
+    arg: Option<&str>,
+    person: bool,
+) -> Result<String, String> {
     let app = rows::app_name(app)?;
     if arg.is_some_and(|arg| !arg.is_empty()) {
         return Err(format!(
@@ -81,7 +90,7 @@ fn open(route: kabi::handle::Handle, app: &str, arg: Option<&str>) -> Result<Str
             .map(|w| w.id.clone())
     };
     if let Some(id) = mine(&windows(route)?) {
-        let before = call(&UiCall::Focus(id.clone()))?;
+        let before = take_keys(route, &id, person)?;
         return Ok(format!("focused {id} {before}"));
     }
     // An app's window is its `<app>-window` service, when the plan has one.
@@ -108,7 +117,15 @@ fn open(route: kabi::handle::Handle, app: &str, arg: Option<&str>) -> Result<Str
             if asked_to_show {
                 user::println!("ui_open: {app} is on the desk as {id} after a show");
             }
-            return Ok(format!("opened {id}"));
+            // A new window takes no keys of itself (`Desk::may_activate`), so a
+            // background app cannot; the one who asked for it gives them. A
+            // refused focus (a private window, a takeover) is no failure: the
+            // window is open, so the answer says so, and `undo` can close it.
+            let keys = take_keys(route, &id, person).map(|_| ());
+            if let Err(why) = &keys {
+                user::println!("ui_open: {id} opened but did not take the keys: {why}");
+            }
+            return Ok(rows::opened_text(&id, keys));
         }
         // Running with its window closed: asked once, it shows it again
         // (backlog item 2). A new start shows its own window well before.
@@ -127,6 +144,20 @@ fn open(route: kabi::handle::Handle, app: &str, arg: Option<&str>) -> Result<Str
         waited += WINDOW_POLL_MS;
     }
     Err(format!("{app} started but showed no window"))
+}
+
+/// Gives window `id` the keys for an open and answers where the focus was: for
+/// the person's own open, `ui activate` (as a click would); for the agent's,
+/// `ui focus` (its outline, never a private window or a stopped run).
+fn take_keys(route: kabi::handle::Handle, id: &str, person: bool) -> Result<String, String> {
+    let answer = ask_desktop(route, &Request::open(id, person).encode())?;
+    match answer.strip_prefix("err ") {
+        Some(why) => Err(why.to_string()),
+        None => Ok(answer
+            .strip_prefix("ok")
+            .map_or(answer.as_str(), str::trim_start)
+            .to_string()),
+    }
 }
 
 fn windows(route: kabi::handle::Handle) -> Result<alloc::vec::Vec<Window>, String> {

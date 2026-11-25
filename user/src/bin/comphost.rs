@@ -582,7 +582,11 @@ fn deadline(ms: u64) -> u64 {
 /// The nap's log lines.
 fn log_nap(name: &str, napped: Option<Napped>) {
     match napped {
-        Some(Napped::Napped) => println!("comphost: {name} napped, unused"),
+        Some(Napped::Napped) => {
+            // What the heap kept for reuse goes back too: the app draws nothing now.
+            user::heap_trim();
+            println!("comphost: {name} napped, unused");
+        }
         Some(Napped::Woke(reply)) => println!(
             "comphost: woke from its nap: {}",
             alloc::string::String::from_utf8_lossy(&reply)

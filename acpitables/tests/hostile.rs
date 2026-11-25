@@ -1,6 +1,6 @@
 //! Hostile firmware tables: cut memory, every field set to an extreme value, and
 //! thousands of mutated tables whose checksums are fixed up again, so the
-//! mutations reach the MADT, HPET and MCFG readers. Parsing returns a platform
+//! mutations reach the MADT, HPET, MCFG and FADT readers. Parsing returns a platform
 //! or an error; it never panics, never reads past what memory returned, and
 //! allocates no more than a small multiple of the tables.
 
@@ -16,8 +16,14 @@ const ALLOC_FLOOR: usize = 4096;
 
 /// Where the fake machine keeps its tables.
 const XSDT_AT: usize = 0x100;
-const TABLES_AT: [usize; 3] = [0x1000, 0x2000, 0x3000];
-const MEM_LEN: usize = 0x4000;
+const TABLES_AT: [usize; 4] = [0x1000, 0x2000, 0x3000, 0x4000];
+const MEM_LEN: usize = 0x5000;
+/// FADT offsets (ACPI 6.5 table 5.9): IAPC_BOOT_ARCH, flags, the reset
+/// register and its value.
+const FADT_ARCH: usize = 109;
+const FADT_FLAGS: usize = 112;
+const FADT_RESET: usize = 116;
+const FADT_RESET_VALUE: usize = 128;
 
 /// Fake physical memory from address 0, which may hand back fewer bytes than
 /// asked for, as a buggy mapper might.
@@ -97,12 +103,28 @@ fn mcfg() -> Vec<u8> {
     sdt(b"MCFG", &b)
 }
 
-/// RSDP v2 at 0 and an XSDT pointing at three tables, each table's checksum
+/// QEMU q35's FADT, as far as it is read: revision 5, an 8042, and the reset
+/// register at I/O port 0xCF9 taking 0x0F.
+fn fadt() -> Vec<u8> {
+    let mut b = vec![0u8; 276 - SDT_HEADER_LEN];
+    let body = |at: usize| at - SDT_HEADER_LEN;
+    b[body(FADT_ARCH)..body(FADT_ARCH) + 2].copy_from_slice(&2u16.to_le_bytes());
+    b[body(FADT_FLAGS)..body(FADT_FLAGS) + 4].copy_from_slice(&(1u32 << 10).to_le_bytes());
+    b[body(FADT_RESET)] = 1;
+    b[body(FADT_RESET) + 1] = 8;
+    b[body(FADT_RESET) + 4..body(FADT_RESET) + 12].copy_from_slice(&0xCF9u64.to_le_bytes());
+    b[body(FADT_RESET_VALUE)] = 0x0F;
+    let mut t = sdt(b"FACP", &b);
+    t[8] = 5;
+    t
+}
+
+/// RSDP v2 at 0 and an XSDT pointing at the tables, each table's checksum
 /// fixed over the length its own header claims.
-fn machine(tables: &[Vec<u8>; 3]) -> Vec<u8> {
+fn machine(tables: &[Vec<u8>]) -> Vec<u8> {
     let mut mem = vec![0u8; MEM_LEN];
     let mut pointers = Vec::new();
-    for at in TABLES_AT {
+    for &at in &TABLES_AT[..tables.len()] {
         pointers.extend_from_slice(&(at as u64).to_le_bytes());
     }
     let xsdt = sdt(b"XSDT", &pointers);
@@ -285,4 +307,53 @@ fn root_tables_pointing_anywhere() {
     fix_checksum(&mut mem, XSDT_AT, 43, 9);
     fix_checksum(&mut mem, 0, 20, 8);
     assert_eq!(check(&flat(mem)).map(|p| p.cpus), Ok(vec![0, 1]));
+}
+
+fn with_fadt(fadt: Vec<u8>) -> Vec<u8> {
+    let [madt, hpet, mcfg] = tables();
+    machine(&[madt, hpet, mcfg, fadt])
+}
+
+#[test]
+fn the_fadt_sample_parses() {
+    let platform = check(&flat(with_fadt(fadt()))).unwrap();
+    let reset = platform.reset.expect("q35's reset register");
+    assert_eq!((reset.register.address, reset.value), (0xCF9, 0x0F));
+    assert!(!platform.no_8042);
+}
+
+#[test]
+fn every_cut_of_the_fadt_with_its_length_and_checksum_fixed() {
+    let sample = fadt();
+    hostile::truncations(&sample, |cut, prefix| {
+        let mut table = prefix.to_vec();
+        if table.len() >= 8 {
+            table[4..8].copy_from_slice(&(cut as u32).to_le_bytes());
+        }
+        let _ = check(&flat(with_fadt(table)));
+    });
+}
+
+#[test]
+fn every_field_of_the_fadt_with_a_good_checksum() {
+    let sample = fadt();
+    hostile::sweep_fields(&sample, 0..sample.len(), |_, table| {
+        let _ = check(&flat(with_fadt(table.to_vec())));
+    });
+}
+
+#[test]
+fn mutated_fadts_with_good_checksums() {
+    let sample = fadt();
+    let mut rng = XorShift::new(0xFAD7_0007);
+    let mut parsed = 0;
+    for _ in 0..4000 {
+        let table = hostile::mutate(&mut rng, &sample);
+        if let Ok(platform) = check(&flat(with_fadt(table))) {
+            parsed += 1;
+            // A reset register is kept only with an address.
+            assert!(platform.reset.is_none_or(|r| r.register.address != 0));
+        }
+    }
+    assert!(parsed > 1000, "{parsed} of 4000 parsed");
 }

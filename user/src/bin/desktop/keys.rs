@@ -43,7 +43,8 @@ pub(super) fn lease(state: &mut State) {
     }
 }
 
-/// One kernel input event, in logical px at scale 1.
+/// One kernel input event, as logical px (a motion count is one logical px,
+/// and an absolute position spans the logical screen).
 pub(super) fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
     let p = state.desk.pointer();
     let input = match event.kind {
@@ -133,7 +134,8 @@ fn apply_input(state: &mut State, screen: &Screen, event: &InputEvent, input: In
             state.extra.push(paint::cursor_box(before));
             state.extra.push(paint::cursor_box(at));
         } else if screen.info.cursor != 0 {
-            let _ = sys::display_cursor_move(at.x as u32, at.y as u32);
+            let physical = |v: i32| deskcore::scale::to_physical(v, state.scale).max(0) as u32;
+            let _ = sys::display_cursor_move(physical(at.x), physical(at.y));
         }
     }
     deliver(state, &effects);

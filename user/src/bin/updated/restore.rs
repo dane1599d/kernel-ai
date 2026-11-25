@@ -117,7 +117,7 @@ fn restore(updates: Handle, pending: Pending) -> Result<Outcome, String> {
 
 /// Drops update snapshot `id` once `pending` no longer names it. A failure
 /// only leaves its blocks pinned, so it is reported and the start goes on.
-fn drop_snapshot(updates: Handle, id: u64) {
+pub(crate) fn drop_snapshot(updates: Handle, id: u64) {
     match folders::update_drop(updates, id) {
         Ok(()) => println!("updated: update snapshot {id} is dropped"),
         Err(why) => println!("updated: update snapshot {id} stays: {why}"),

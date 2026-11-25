@@ -11,17 +11,21 @@ enum Event {
     Fault,
     /// Power lost, or a hang the watchdog resets: nothing written.
     Lost,
+    /// In R, power lost between its two writes: only the first
+    /// ([`one_shot_first`]) is stored; elsewhere, as [`Event::Lost`].
+    RCut,
     /// From a committed slot: stage the other one and restart into it.
     Update,
     Rollback,
     Recovery,
 }
 
-const EVENTS: [Event; 7] = [
+const EVENTS: [Event; 8] = [
     Event::Up,
     Event::UpCommit,
     Event::Fault,
     Event::Lost,
+    Event::RCut,
     Event::Update,
     Event::Rollback,
     Event::Recovery,
@@ -39,7 +43,16 @@ fn installed() -> Nv {
 fn step(nv: &mut Nv, event: Event) -> Slot {
     let slot = boot(nv);
     if slot == Slot::R {
-        r_boots(nv);
+        let read = *nv;
+        if let InR::Arm(next) = r_boots(nv)
+            && matches!(event, Event::RCut)
+        {
+            if one_shot_first(read.record.armed, next) {
+                nv.record = read.record;
+            } else {
+                nv.one_shot = read.one_shot;
+            }
+        }
     }
     match event {
         Event::Up => up(nv, slot),
@@ -48,7 +61,7 @@ fn step(nv: &mut Nv, event: Event) -> Slot {
             commit(nv, slot, 1);
         }
         Event::Fault => fault(nv, slot, 1, 0),
-        Event::Lost => {}
+        Event::Lost | Event::RCut => {}
         Event::Update => {
             if let Some(other) = slot.other().filter(|_| nv.record.slot(slot).successful) {
                 stage_begin(nv, other);
@@ -92,8 +105,9 @@ fn explore(nv: Nv, depth: usize, path: &mut [Event; 8], len: usize) -> u64 {
 fn every_sequence_of_eight_events_boots_r_or_a_bootable_slot() {
     let mut path = [Event::Lost; 8];
     let runs = explore(installed(), 8, &mut path, 0);
-    // 1 + 7 + 7^2 + ... + 7^8 states visited.
-    assert_eq!(runs, (0..=8).map(|n| 7u64.pow(n)).sum::<u64>());
+    // 1 + 8 + 8^2 + ... + 8^8 states visited.
+    let events = EVENTS.len() as u64;
+    assert_eq!(runs, (0..=8).map(|n| events.pow(n)).sum::<u64>());
     // And from an empty machine: R only.
     explore(Nv::default(), 8, &mut path, 0);
 }
@@ -122,19 +136,105 @@ fn a_trial_slot_that_never_comes_up_goes_back_to_the_committed_one() {
 }
 
 #[test]
-fn a_committed_slot_gets_safe_mode_then_the_other_slot() {
+fn a_committed_slot_gets_safe_mode_then_r_when_the_other_is_below_the_floor() {
     let mut nv = installed();
     step(&mut nv, Event::Update);
     step(&mut nv, Event::UpCommit);
     assert!(nv.record.slot(Slot::B).successful);
+    // B's commit of release 2 left A's release 1 below the floor.
+    assert_eq!(nv.record.min_release_seq, 2);
+    assert_eq!(nv.record.slot(Slot::A).reason, Reason::Unbootable);
     // B now fails every boot before coming up.
     let mut landed = alloc_free_vec();
     for _ in 0..8 {
         landed.push(step(&mut nv, Event::Lost));
     }
-    // R counted B's failures: 1 re-arms, 2 re-arms in safe mode, 3 moves to A.
-    assert!(landed.contains(&Slot::A), "{landed:?}");
+    // R counted B's failures: 1 re-arms, 2 re-arms in safe mode, 3 would move
+    // to A, which is below the floor: R stays up (ADR 0008 §7).
+    assert!(!landed.contains(&Slot::A), "{landed:?}");
     assert_eq!(nv.record.slot(Slot::B).failures, MAX_FAILURES);
+    assert_eq!(nv.record.armed, None);
+}
+
+/// No install or update leaves two slots committed at one release, so this
+/// state is built by hand: it holds that the floor rule alone would not stop
+/// such a fall-back, not that a machine ever takes one.
+#[test]
+fn a_committed_slot_falls_back_to_another_of_the_same_release() {
+    let mut nv = installed();
+    // B holds the same release, committed too: at the floor, not below it.
+    stage_end(&mut nv, Slot::B, 1);
+    commit(&mut nv, Slot::B, 1);
+    restart_into(&mut nv, Slot::A);
+    commit(&mut nv, Slot::A, 1);
+    assert!(nv.record.slot(Slot::B).successful);
+    let mut landed = alloc_free_vec();
+    for _ in 0..8 {
+        landed.push(step(&mut nv, Event::Lost));
+    }
+    assert!(landed.contains(&Slot::B), "{landed:?}");
+}
+
+#[test]
+fn no_slot_below_the_floors_boots_whatever_the_record_says() {
+    let mut nv = installed();
+    // A record as older code left it: B committed at release 1, the floor at 2.
+    stage_end(&mut nv, Slot::B, 1);
+    nv.record.slot_mut(Slot::B).successful = true;
+    nv.record.slot_mut(Slot::A).release_seq = 2;
+    nv.record.min_release_seq = 2;
+    assert!(!may_boot(&nv.record, Slot::B));
+    assert!(may_boot(&nv.record, Slot::A));
+    assert!(may_boot(&nv.record, Slot::R));
+    // Neither a rollback nor R moves to it.
+    assert!(!rollback(&mut nv, Slot::A));
+    nv.record.armed = Some(Slot::B);
+    assert_eq!(r_boots(&mut nv), InR::Arm(Slot::A));
+    // A slot being written is left as it is by a commit.
+    let mut nv = installed();
+    stage_begin(&mut nv, Slot::B);
+    nv.record.slot_mut(Slot::A).release_seq = 5;
+    commit(&mut nv, Slot::A, 1);
+    assert_eq!(nv.record.slot(Slot::B).reason, Reason::Updating);
+}
+
+#[test]
+fn a_trial_that_faults_after_coming_up_gets_all_its_tries() {
+    let mut nv = installed();
+    step(&mut nv, Event::Update);
+    // B comes up and then faults, every boot.
+    let mut boots_of_b = 0;
+    for _ in 0..4 * usize::from(TRIES) {
+        match boot(&mut nv) {
+            Slot::B => {
+                boots_of_b += 1;
+                up(&mut nv, Slot::B);
+                fault(&mut nv, Slot::B, 1, 0);
+            }
+            Slot::R => {
+                r_boots(&mut nv);
+            }
+            Slot::A => break,
+        }
+    }
+    assert_eq!(boots_of_b, usize::from(TRIES), "one try each boot, not two");
+    assert_eq!(nv.record.slot(Slot::B).reason, Reason::Unbootable);
+}
+
+#[test]
+fn came_up_round_trips_in_a_byte_older_records_leave_clear() {
+    let mut record = installed().record;
+    record.came_up = true;
+    let bytes = record.encode();
+    assert_eq!(bytes[51], 1);
+    assert_eq!(Record::decode(&bytes), Some(record));
+    // A record written before it was kept reads as not come up.
+    record.came_up = false;
+    assert_eq!(record.encode()[51], 0);
+    assert_eq!(
+        Record::decode(&record.encode()).map(|r| r.came_up),
+        Some(false)
+    );
 }
 
 /// A tiny fixed-size list, since the crate has no allocator.
@@ -312,4 +412,153 @@ fn an_nvram_reinstall_never_reads_as_a_failed_update() {
     let mut nv = staged();
     install(&mut nv, 2);
     assert_eq!(trial(&nv.record, Slot::B, 2, Slot::A), Trial::Waiting);
+}
+
+/// `bytes` with `at` set to `value` and the CRC made good again, so only the
+/// field is wrong.
+fn with_byte(mut bytes: [u8; BYTES], at: usize, value: u8) -> [u8; BYTES] {
+    bytes[at] = value;
+    let crc = crc32(&bytes[..60]);
+    bytes[60..].copy_from_slice(&crc.to_le_bytes());
+    bytes
+}
+
+#[test]
+fn a_record_that_does_not_decode_is_not_a_missing_one() {
+    let good = installed().record.encode();
+    assert_eq!(read(None), Ok(None));
+    assert_eq!(read(Some(&good)), Ok(Some(installed().record)));
+    let mut bad_crc = good;
+    bad_crc[60] ^= 1;
+    for (why, bytes) in [
+        ("a bad CRC", bad_crc),
+        ("VERSION 1.1", with_byte(good, 5, 1)),
+        ("VERSION 2.0", with_byte(good, 4, 2)),
+        ("a bad reason", with_byte(good, 6 + 3, 3)),
+        ("a bad armed slot", with_byte(good, 33, 7)),
+    ] {
+        assert_eq!(read(Some(&bytes)), Err(Undecodable), "{why}");
+    }
+    assert_eq!(read(Some(&good[..63])), Err(Undecodable), "too short");
+}
+
+#[test]
+fn a_system_slot_with_no_record_writes_none_so_r_installs_next() {
+    assert_eq!(start(Slot::A, None), Start::NoRecord);
+    assert_eq!(start(Slot::B, None), Start::NoRecord);
+    // Nothing written: the next boot, R, still finds none and installs.
+    assert_eq!(start(Slot::R, None), Start::Install);
+    let record = installed().record;
+    assert_eq!(start(Slot::R, Some(record)), Start::RBoots(record));
+    assert_eq!(start(Slot::A, Some(record)), Start::Slot(record));
+    // Why it must not come up: *up* on an empty record changes it, and the
+    // kernel would write a record with no floors, armed nowhere.
+    let mut empty = Nv::default();
+    up(&mut empty, Slot::A);
+    assert_ne!(empty.record, Record::default());
+}
+
+#[test]
+fn a_cut_between_rs_writes_spares_a_try_and_never_unretires_a_trial() {
+    let mut nv = installed();
+    step(&mut nv, Event::Update);
+    let seq = nv.record.slot(Slot::B).release_seq;
+    // B never comes up. Each R boot is tried with a cut first.
+    let mut spared = false;
+    for _ in 0..16 {
+        let mut cut = nv;
+        step(&mut cut, Event::RCut);
+        let mut whole = nv;
+        step(&mut whole, Event::Lost);
+        if whole.record.slot(Slot::B).reason == Reason::Unbootable {
+            // R retires B and arms A: the record goes first, so the cut keeps
+            // the verdict, and the update reads as failed.
+            assert_eq!(cut.record.slot(Slot::B).reason, Reason::Unbootable);
+            assert_eq!(trial(&cut.record, Slot::B, seq, Slot::A), Trial::Failed);
+            assert!(spared, "a re-arm of B came first");
+            return;
+        }
+        if whole.record.slot(Slot::B).tries < nv.record.slot(Slot::B).tries {
+            // R re-arms B: the one-shot goes first, so the cut spares the try.
+            assert_eq!(cut.one_shot, Some(Slot::B));
+            assert_eq!(cut.record.slot(Slot::B), nv.record.slot(Slot::B));
+            spared = true;
+        }
+        nv = whole;
+    }
+    panic!("R never retired B");
+}
+
+#[test]
+fn r_writes_the_one_shot_first_only_to_arm_the_same_slot_again() {
+    assert!(one_shot_first(Some(Slot::B), Slot::B));
+    assert!(!one_shot_first(Some(Slot::B), Slot::A));
+    assert!(
+        !one_shot_first(None, Slot::A),
+        "a fresh install: record first"
+    );
+}
+
+#[test]
+fn r_stores_the_record_even_when_the_one_shot_write_fails() {
+    use core::cell::Cell;
+    for (armed, next, one_shot_first) in [
+        (Some(Slot::B), Slot::B, true),
+        (Some(Slot::B), Slot::A, false),
+        (None, Slot::A, false),
+    ] {
+        // Which write ran, in order: 1 the one-shot, 2 the record.
+        let order = Cell::new(0u32);
+        let got = arm_writes(
+            armed,
+            next,
+            || {
+                order.set(order.get() * 10 + 1);
+                Err("refused")
+            },
+            || {
+                order.set(order.get() * 10 + 2);
+                Ok(())
+            },
+        );
+        assert_eq!(got, Err("refused"));
+        let want = if one_shot_first { 12 } else { 21 };
+        assert_eq!(order.get(), want, "armed {armed:?}, next {next:?}");
+    }
+}
+
+/// From `nv`, every boot lands in R because no one-shot is ever stored, while
+/// each R's record is (the store refuses one-shots only): how many boots
+/// until R stays up.
+fn boots_until_r_stays_up_with_no_one_shot_stored(mut nv: Nv) -> Option<usize> {
+    for boots in 1..=32 {
+        nv.one_shot = None;
+        assert_eq!(boot(&mut nv), Slot::R, "no one-shot is ever stored");
+        let decision = r_boots(&mut nv);
+        // arm_writes: the one-shot write failed, the record was stored.
+        nv.one_shot = None;
+        if decision == InR::Stay {
+            return Some(boots);
+        }
+    }
+    None
+}
+
+#[test]
+fn a_store_that_refuses_every_one_shot_ends_in_r_staying_up() {
+    // A trial: B staged by an update, armed, and lost on its one boot.
+    let mut trial = installed();
+    step(&mut trial, Event::Update);
+    step(&mut trial, Event::Lost);
+    assert!(!trial.record.slot(Slot::B).successful);
+    let boots = boots_until_r_stays_up_with_no_one_shot_stored(trial);
+    assert!(boots.is_some(), "R reset for ever from a trial");
+    // A committed slot armed.
+    let boots = boots_until_r_stays_up_with_no_one_shot_stored(installed());
+    assert!(boots.is_some(), "R reset for ever from a committed slot");
+    // A fresh install's trials.
+    let mut fresh = Nv::default();
+    install(&mut fresh, 1);
+    let boots = boots_until_r_stays_up_with_no_one_shot_stored(fresh);
+    assert!(boots.is_some(), "R reset for ever from an install");
 }

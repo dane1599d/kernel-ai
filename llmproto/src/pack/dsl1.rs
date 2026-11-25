@@ -12,11 +12,13 @@ use core::fmt::Write;
 /// Named types, so a row says `Policy` instead of spelling its words again.
 const NAMED: &[(&str, &[&str])] = &[("Policy", agentabi::POLICIES)];
 
+/// What a script can compute, so a request goes to `script` when it can. The
+/// code itself is written by the script prompt (`script::request_with`), whose
+/// rules carry Rhai's syntax; its loop and `if` lines left this card for the
+/// agent rows' tokens (agents OS plan section 4).
 const RHAI: &str = "\
 ## Rhai (for script)
 let pct = a * 100 / b;   // integers only: never 1.5; / rounds down; fixed(4321, 3) is \"4.321\"
-for x in list { }  for i in 0..n { }   // no while, loop, do, fn, closures or eval
-if a > b { print(\"yes\"); } else { print(\"no\"); }   // braces always; end statements with ;
 \"a\" + b  print(value)  [1, 2]  a.len()  a[0]  #{a: 1}  m.a  m[\"a\"]  memory().free_mib
 string: len() to_upper() to_lower() trim() contains(t) index_of(t) split(t) replace(a, b)
 array: len() push(x) pop() contains(x) index_of(x) sort() reverse() join(t)

@@ -69,9 +69,24 @@ pub enum Request {
         action: u32,
     },
     Agent(Option<String>),
+    /// The person's own launch gets the keys (`ui activate w3`): the shell sends
+    /// it once a window the person asked for is on the desk. Not the agent's: no
+    /// outline, no takeover, and a window kept from the agent takes it too.
+    Activate(String),
 }
 
 impl Request {
+    /// What gives window `id` the keys for an open: the person's own open
+    /// (`person`) is `Activate`, as a click would; any other, the agent's, is
+    /// `Focus`, with its outline, refused for a private window and after a
+    /// takeover.
+    pub fn open(id: &str, person: bool) -> Self {
+        match person {
+            true => Self::Activate(id.into()),
+            false => Self::Focus(id.into()),
+        }
+    }
+
     pub fn encode(&self) -> String {
         match self {
             Self::Windows => "ui windows".into(),
@@ -90,6 +105,7 @@ impl Request {
                 node,
                 action,
             } => format!("ui check {window} {node} {action}"),
+            Self::Activate(w) => format!("ui activate {w}"),
             Self::Agent(Some(w)) => format!("ui agent {w}"),
             Self::Agent(None) => "ui agent none".into(),
         }
@@ -106,6 +122,7 @@ impl Request {
             "focus" if word(arg) => Self::Focus(arg.into()),
             "refocus" if word(arg) => Self::Refocus(arg.into()),
             "close" if word(arg) => Self::Close(arg.into()),
+            "activate" if word(arg) => Self::Activate(arg.into()),
             "agent" if arg == "none" => Self::Agent(None),
             "agent" if word(arg) => Self::Agent(Some(arg.into())),
             "check" => {
@@ -264,6 +281,15 @@ impl Agent {
                 desk.set_agent(Some(window));
                 Ok(format!("ok {before}"))
             }
+            // The person's own launch: focus and raise, as a click would. Never the
+            // agent's outline or a takeover, and a private window takes it too.
+            // Answers where the focus was, as `Focus` does, for an undo.
+            Request::Activate(name) => {
+                let window = find(desk, &name)?;
+                let before = focus_name(desk.focus());
+                desk.activate(window, effects);
+                Ok(format!("ok {before}"))
+            }
             Request::Refocus(before) => {
                 match before.as_str() {
                     "panel" => desk.set_focus(Focus::Panel, effects),
@@ -367,9 +393,10 @@ impl Agent {
     }
 }
 
-/// `w3` by its id, or an app's frontmost window by the app's name, by the
-/// package a `<pkg>-window` app shows (`notes` for `notes-window`), or by the
-/// title, when no app has that name, case aside.
+/// `w3` by its id, or an app's frontmost window by the process's name (the
+/// kernel's label) or by the package a `<pkg>-window` app shows (`notes` for
+/// `notes-window`), case aside. Never by the title or an app id the client chose:
+/// a window named by what it says of itself could stand in for another app.
 pub fn find_window(desk: &Desk, name: &str) -> Option<WindowId> {
     let listed = view::listed(desk);
     if let Some(id) = view::parse_window(name) {
@@ -384,9 +411,7 @@ pub fn find_window(desk: &Desk, name: &str) -> Option<WindowId> {
     fn package(l: &Listed) -> &str {
         l.app.strip_suffix("-window").unwrap_or_default()
     }
-    by(|l| &l.app)
-        .or_else(|| by(package))
-        .or_else(|| by(|l| &l.title))
+    by(|l| &l.app).or_else(|| by(package))
 }
 
 /// `ui windows`' answer: one line a window, its fields without tabs or breaks.

@@ -1,0 +1,2 @@
+windows: [w1] terminal (focused)  [w2] terminal "kai>"
+w1: text "Kernel AI terminal. Talk to the ..."  text "kai>"  text "ls"  text "= docs/  notes.txt  photo.png"  text "kai>"  text "open notes"  text "by the AI"  text "= opened Notes"  [t1] textbox "kai>"  text "Ready · 5 rows"  [b2] button "Clear"

@@ -340,9 +340,9 @@ mod tests {
         fs.abort().unwrap();
         assert_eq!(fs.push_sealed(&mut writer, &[1; 2000]), Err(stale));
         assert_eq!(fs.finish_sealed(writer), Err(stale));
-        let reused = fs.create(ROOT, "plain").unwrap();
+        let plain = fs.create(ROOT, "plain").unwrap();
         fs.commit().unwrap();
-        assert!(!fs.is_sealed(reused).unwrap());
+        assert!(!fs.is_sealed(plain).unwrap());
         // Committed mid-stream, which `fs` never does: the rest is refused.
         let mut writer = fs.begin_sealed(ROOT, "b.gguf", 3 * SEALED_CHUNK).unwrap();
         fs.push_sealed(&mut writer, &vec![2; SEALED_CHUNK as usize])

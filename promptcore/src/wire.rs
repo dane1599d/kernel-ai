@@ -83,6 +83,12 @@ pub enum Request<'a> {
         seq: u64,
         entry: &'a str,
     },
+    /// A saved entry's definitions and their initializers, no statement:
+    /// `:load` (D4).
+    Load {
+        seq: u64,
+        entry: &'a str,
+    },
     /// The answer to `need <id>`.
     Resume {
         id: u64,
@@ -134,6 +140,10 @@ impl<'a> Request<'a> {
                 seq: number(seq)?,
                 entry: entry_text(entry)?,
             },
+            (["load", seq], Some(entry)) => Request::Load {
+                seq: number(seq)?,
+                entry: entry_text(entry)?,
+            },
             (["resume", id, status], Some(result)) => Request::Resume {
                 id: number(id)?,
                 ok: match *status {
@@ -172,6 +182,7 @@ impl<'a> Request<'a> {
             }
             Request::Eval { seq, entry } => format!("eval {seq}\n{entry}"),
             Request::Replay { seq, entry } => format!("replay {seq}\n{entry}"),
+            Request::Load { seq, entry } => format!("load {seq}\n{entry}"),
             Request::Resume { id, ok, result } => {
                 let status = if *ok { "ok" } else { "err" };
                 format!("resume {id} {status}\n{result}")

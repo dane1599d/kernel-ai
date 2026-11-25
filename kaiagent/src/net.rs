@@ -15,7 +15,9 @@
 //! - Host names, never literal addresses: what an agent reaches is what a
 //!   person can read in the install ask, and connect follows resolve.
 //! - At least one host, each a name of two labels or more, so no suffix is a
-//!   whole top-level domain (`com`).
+//!   whole top-level domain (`com`), and none a shared suffix (`github.io`,
+//!   `co.uk`: `netdest::SHARED_SUFFIXES`, the list app grants refuse too), since
+//!   a host under one is anyone's ([`Refusal::SharedHost`]).
 
 use crate::Refusal;
 use crate::budgets::NetBudget;
@@ -61,6 +63,9 @@ pub fn parse(value: &str) -> Result<(Option<Dest>, NetBudget), Refusal> {
     }
     if dest.hosts.iter().any(|host| !host.contains('.')) {
         return Err(refuse("a host is a name of two labels or more"));
+    }
+    if let Some(host) = dest.hosts.iter().find(|host| netdest::is_shared(host)) {
+        return Err(Refusal::SharedHost(host.to_string()));
     }
     // What is written is the destination's canonical text, which can be up to 21 bytes
     // longer than a compact one was (`proto:tcp,addrs:none,` is left out of a short

@@ -171,3 +171,29 @@ fn a_standing_instruction_switches_on_focus_and_back_on_close() {
         "{actlog}"
     );
 }
+
+/// #517: a profile's `mem` is a ceiling. `quiet` lowers a quota above 64 MiB and
+/// leaves one under it, where it once raised every app to 64 MiB; `undo` puts
+/// back exactly the one it lowered.
+#[test]
+fn quiet_lowers_a_quota_above_its_ceiling_and_never_raises_one() {
+    let host = host();
+    let big = kaiprofile::QUIET_PAGES * 2;
+    host.profile_state
+        .borrow_mut()
+        .insert(String::from("build-1"), (Class::Normal, big));
+    let mut shell = shell(&host);
+    assert_eq!(
+        shell.eval("profile quiet"),
+        ok("Done: profile quiet (was default). undo")
+    );
+    assert_eq!(state(&host, "build-1").1, kaiprofile::QUIET_PAGES);
+    assert_eq!(state(&host, "notes").1, 4096);
+    assert_eq!(state(&host, "game").1, 4096);
+    assert_eq!(shell.eval("undo"), ok("Undone: profile back to default"));
+    assert_eq!(state(&host, "build-1").1, big);
+    assert_eq!(state(&host, "notes").1, 4096);
+    // `undo` again redoes the switch: the same quota is lowered again.
+    assert_eq!(shell.eval("undo"), ok("Undone: profile back to quiet"));
+    assert_eq!(state(&host, "build-1").1, kaiprofile::QUIET_PAGES);
+}

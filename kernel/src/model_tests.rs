@@ -99,6 +99,13 @@ pub fn store(cmdline: &str, bad: bool) -> Result<(), &'static str> {
     if bad {
         return refused();
     }
+    let case = crate::model_fill_tests::case();
+    if case.is_some() {
+        crate::model_fill_tests::verdict()?;
+    }
+    if case == Some(crate::model_fill_tests::Case::GiveUp) {
+        return Ok(());
+    }
     let attached = Attached::from_cmdline(cmdline);
     let (Some(len), Some(fnv)) = (attached.len, attached.fnv) else {
         return Err("model-store: the command line has no model_len= and model_fnv=");
@@ -138,6 +145,9 @@ pub fn store(cmdline: &str, bad: bool) -> Result<(), &'static str> {
         threads::sleep_ms(200);
     }
     log!("model-store: llm waited for the fill and maps the store's model");
+    if case == Some(crate::model_fill_tests::Case::Restart) {
+        log!("model-store: fs's fill at offset 0 started the partial fill over, with a fresh hash");
+    }
     Ok(())
 }
 

@@ -710,3 +710,44 @@ fn a_tree_stays_within_its_node_cap() {
         Err(TreeError::TooBig)
     );
 }
+
+/// The axis event is a ring input of kind `Wheel`: any detent count, either
+/// axis code and any place round-trips through the ring and its bytes, and a
+/// full ring drops it like any other.
+#[test]
+fn a_wheel_event_round_trips_through_the_ring() {
+    let mut page = header::new_page(4096);
+    let wheel = |code: u16, value: i32| Event::Input {
+        event: InputEvent {
+            time_ns: 7,
+            kind: Kind::Wheel,
+            code,
+            value,
+        },
+        x: -3 << 8,
+        y: 9 << 8,
+        text: [0; 4],
+        len: 0,
+    };
+    let sent = [
+        wheel(0, 1),
+        wheel(0, -1),
+        wheel(0, i32::MAX),
+        wheel(0, i32::MIN),
+        wheel(1, 5),
+        wheel(u16::MAX, 0),
+    ];
+    for event in sent {
+        assert!(header::post(&mut page, &event));
+        assert_eq!(Event::decode(&event.encode()), Some(event));
+    }
+    for event in sent {
+        assert_eq!(header::take(&mut page), Ok(Some(event)));
+    }
+    assert_eq!(header::take(&mut page), Ok(None));
+    for _ in 0..header::RING {
+        assert!(header::post(&mut page, &sent[0]));
+    }
+    assert!(!header::post(&mut page, &sent[0]));
+    assert_eq!(header::dropped(&page), 1);
+}

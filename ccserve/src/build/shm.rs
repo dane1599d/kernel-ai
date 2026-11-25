@@ -87,6 +87,14 @@ pub const PAGES: usize = (MAX_ARTIFACT + 8).div_ceil(4096);
 /// The `Shm`'s bytes.
 pub const BYTES: usize = PAGES * 4096;
 
+/// Whether an `Shm` of `pages` pages (SHM_INFO's answer) holds [`BYTES`]: cc
+/// refuses a shorter one before it lays a [`BYTES`]-long slice over it.
+pub fn holds_bytes(pages: u64) -> bool {
+    pages
+        .checked_mul(4096)
+        .is_some_and(|bytes| bytes >= BYTES as u64)
+}
+
 /// Writes `bytes`, with their length, at the start of `shm`.
 pub fn put(shm: &mut [u8], bytes: &[u8]) -> Result<(), &'static str> {
     let end = bytes.len().checked_add(8).ok_or("too long")?;
@@ -117,6 +125,16 @@ pub fn take(shm: &[u8], max: usize) -> Result<&[u8], &'static str> {
 mod tests {
     use super::*;
     use alloc::vec;
+
+    #[test]
+    fn only_an_shm_of_every_page_holds_the_bytes() {
+        assert!(holds_bytes(PAGES as u64));
+        assert!(holds_bytes(PAGES as u64 + 1));
+        assert!(!holds_bytes(PAGES as u64 - 1));
+        assert!(!holds_bytes(0));
+        // A count no Shm can have (its bytes overflow) is refused, not wrapped.
+        assert!(!holds_bytes(u64::MAX));
+    }
 
     #[test]
     fn bytes_round_trip_and_bad_lengths_are_refused() {

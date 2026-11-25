@@ -10,12 +10,21 @@
 //! request, a pool of snapshots keyed by request, a prefill quantum as `reply`
 //! stopped after a block, and a decode quantum as one token (`reply` for the first,
 //! `continue_reply` after it).
+//!
+//! A grammar-shaped answer (`act`, `script`) cannot be carried on after a stop, so the
+//! rig runs it as the wiring will: one `reply` under the shape, which asks the
+//! scheduler after each token whether the next is still this answer's. Any other
+//! decision stops the call, the partial answer is dropped, and the answer starts
+//! again from its prompt when it next runs (the row
+//! `2026-11-18-agentsched-grammar-preemption`).
 
 use agentsched::{
     Agent, AgentId, Ask, Class, Config, Decision, Kind, Now, Place, Quantum, RequestId, Scheduler,
+    Shape,
 };
-use infer::chat::{Budget, Engine, Role, Step, Turn};
+use infer::chat::{Budget, Ending, Engine, Role, Step, Turn};
 use infer::fixture::{self, Spec};
+use infer::json::{Field, Shape as Grammar};
 use infer::segments::{Key, Snapshot, spill_pack_id};
 use infer::{Next, Sampler};
 use quant::Tier;
@@ -29,6 +38,23 @@ const MAX_NEW: usize = 12;
 const BUDGET: Budget = Budget {
     kv_bytes: 64 << 20,
     other_bytes: 64 << 20,
+};
+/// Tokens a grammar answer asks for unless a test sets it: room for its object to
+/// close.
+const GRAMMAR_NEW: usize = 48;
+/// A grammar answer: an object with one short string, as `script`'s is.
+const CODE: [Field; 1] = [Field {
+    name: "code",
+    max_chars: 24,
+    max_lines: 1,
+    max_line_chars: 24,
+    trim_start: false,
+    hard: false,
+}];
+const SHAPE: Grammar<'static> = Grammar {
+    fields: &CODE,
+    choices: &[],
+    jump_forward: false,
 };
 
 /// A request the rig runs: who asked what, and where its state is.
@@ -45,6 +71,17 @@ struct Job {
     /// The quanta it has been given, in order.
     kinds: Vec<Kind>,
     sampler: Sampler,
+    /// Under [`SHAPE`]: its answer is one `reply` call.
+    shaped: bool,
+}
+
+/// A request that arrives while a grammar answer is under way: when that answer has
+/// this many tokens, this agent asks this.
+struct Arrival {
+    at: usize,
+    agent: u32,
+    user: String,
+    prompt: u32,
 }
 
 struct Rig<'a> {
@@ -60,6 +97,15 @@ struct Rig<'a> {
     /// Moves made: out of a slot into the pool, and back.
     saved: usize,
     restored: usize,
+    /// A decision a grammar answer's call got and stopped for: carried out next.
+    stash: Option<Decision>,
+    arrival: Option<Arrival>,
+    /// The request that arrived, once it has.
+    arrived: Option<RequestId>,
+    /// Grammar answers stopped part way, to start again.
+    restarts: usize,
+    /// Tokens a grammar answer asks for.
+    grammar_new: usize,
 }
 
 impl<'a> Rig<'a> {
@@ -85,6 +131,11 @@ impl<'a> Rig<'a> {
             finished: Vec::new(),
             saved: 0,
             restored: 0,
+            stash: None,
+            arrival: None,
+            arrived: None,
+            restarts: 0,
+            grammar_new: GRAMMAR_NEW,
         }
     }
 
@@ -100,31 +151,115 @@ impl<'a> Rig<'a> {
     }
 
     fn submit(&mut self, agent: u32, user: &str) -> RequestId {
-        let prompt = self
-            .engine
-            .conversation_tokens(&[Turn::new(Role::User, user)]);
-        let ask = Ask {
-            agent: AgentId(agent),
-            prompt_tokens: prompt as u32,
-            max_new_tokens: MAX_NEW as u32,
-        };
+        self.submit_as(agent, user, false)
+    }
+
+    fn submit_as(&mut self, agent: u32, user: &str, shaped: bool) -> RequestId {
+        let prompt = self.prompt_tokens(user);
+        let ask = ask(agent, prompt, shaped.then_some(self.grammar_new));
         let id = self.sched.submit(ask, self.now).unwrap();
-        let job = Job {
+        self.jobs.insert(id, job(agent, user, shaped));
+        id
+    }
+
+    fn prompt_tokens(&self, user: &str) -> u32 {
+        self.engine
+            .conversation_tokens(&[Turn::new(Role::User, user)]) as u32
+    }
+
+    /// `agent` asks `user` (a free answer) once a grammar answer has `at` tokens.
+    fn arrive(&mut self, at: usize, agent: u32, user: &str) {
+        let prompt = self.prompt_tokens(user);
+        self.arrival = Some(Arrival {
+            at,
             agent,
             user: user.to_string(),
-            slot: None,
-            snapshot: Snapshot::new(),
-            pending: None,
-            tokens: Vec::new(),
-            kinds: Vec::new(),
-            sampler: Sampler::greedy(),
-        };
-        self.jobs.insert(id, job);
-        id
+            prompt,
+        });
+    }
+
+    /// A grammar answer, from its first token, as one `reply` under the shape: after
+    /// each token it asks the scheduler for the next decision, and goes on only while
+    /// that is this answer's next token. `last` is whether the first quantum already
+    /// was the answer's last.
+    fn grammar_answer(&mut self, request: RequestId, last: bool) {
+        let Rig {
+            engine,
+            sched,
+            now,
+            jobs,
+            arrival,
+            grammar_new,
+            ..
+        } = self;
+        let job = jobs.get_mut(&request).unwrap();
+        engine.use_slot(job.slot.expect("a quantum runs in a resident request"));
+        // From its prompt: whatever an earlier try decoded is not this answer's.
+        job.tokens.clear();
+        job.sampler = Sampler::greedy();
+        let turns = [Turn::new(Role::User, &job.user)];
+        let mut tokens = Vec::new();
+        let (mut done, mut stopped, mut came) = (last, None, None);
+        let reply = engine
+            .reply(
+                &turns,
+                *grammar_new,
+                &mut job.sampler,
+                Some(&SHAPE),
+                |step| {
+                    let Step::Token(token) = step else {
+                        return Next::Continue;
+                    };
+                    tokens.push(token);
+                    now.ms += 10;
+                    if done {
+                        return Next::Stop;
+                    }
+                    if let Some(a) = arrival.take_if(|a| tokens.len() >= a.at) {
+                        let id = sched.submit(ask(a.agent, a.prompt, None), *now).unwrap();
+                        came = Some((id, a.agent, a.user));
+                    }
+                    match sched.next(*now) {
+                        Decision::Run(q) if q.len() == 1 && q[0].request == request => {
+                            done = q[0].last;
+                            Next::Continue
+                        }
+                        other => {
+                            stopped = Some(other);
+                            Next::Stop
+                        }
+                    }
+                },
+            )
+            .unwrap();
+        if let Some((id, agent, user)) = came {
+            self.jobs.insert(id, crate::job(agent, &user, false));
+            self.arrived = Some(id);
+        }
+        let complete = matches!(reply.ending, Ending::EndToken | Ending::MaxTokens);
+        let job = self.jobs.get_mut(&request).unwrap();
+        if complete || stopped.is_none() {
+            // The answer is whole: the object closed, or it made every token it could.
+            job.tokens = tokens;
+            if !done {
+                self.sched.finish(request);
+            }
+            self.finished.push(request);
+            self.free.extend(job.slot.take());
+        } else {
+            // Interrupted: the scheduler starts it again from its prompt.
+            self.restarts += 1;
+        }
+        self.stash = stopped;
     }
 
     /// Carries out a move the scheduler asked for.
     fn moved(&mut self, request: RequestId, from: Place, to: Place) {
+        // A grammar answer that closed with the token that stopped its call: it is done,
+        // and its slot is free already.
+        if self.finished.contains(&request) {
+            return;
+        }
         let agent = self.jobs[&request].agent;
         let key = self.key(request, agent);
         match (from, to) {
@@ -157,6 +292,11 @@ impl<'a> Rig<'a> {
 
     /// Runs one quantum in the request's slot.
     fn run(&mut self, q: Quantum) {
+        if q.kind == Kind::Decode && self.jobs[&q.request].shaped {
+            self.jobs.get_mut(&q.request).unwrap().kinds.push(q.kind);
+            self.now.ms += 10;
+            return self.grammar_answer(q.request, q.last);
+        }
         let job = self.jobs.get_mut(&q.request).unwrap();
         let slot = job.slot.expect("a quantum runs in a resident request");
         self.engine.use_slot(slot);
@@ -223,7 +363,11 @@ impl<'a> Rig<'a> {
 
     /// One decision of the scheduler, carried out; false when nothing waits.
     fn step(&mut self) -> bool {
-        match self.sched.next(self.now) {
+        let decision = match self.stash.take() {
+            Some(decision) => decision,
+            None => self.sched.next(self.now),
+        };
+        match decision {
             Decision::Idle => false,
             Decision::End { request, why, .. } => panic!("{request:?} ended: {why:?}"),
             Decision::Move { request, from, to } => {
@@ -256,16 +400,47 @@ impl<'a> Rig<'a> {
     }
 }
 
+/// `agent`'s ask: a free answer, or a grammar answer of at most `grammar` tokens.
+fn ask(agent: u32, prompt: u32, grammar: Option<usize>) -> Ask {
+    Ask {
+        agent: AgentId(agent),
+        prompt_tokens: prompt,
+        max_new_tokens: grammar.unwrap_or(MAX_NEW) as u32,
+        shape: match grammar {
+            Some(_) => Shape::Grammar,
+            None => Shape::Free,
+        },
+    }
+}
+
+fn job(agent: u32, user: &str, shaped: bool) -> Job {
+    Job {
+        agent,
+        user: user.to_string(),
+        slot: None,
+        snapshot: Snapshot::new(),
+        pending: None,
+        tokens: Vec::new(),
+        kinds: Vec::new(),
+        sampler: Sampler::greedy(),
+        shaped,
+    }
+}
+
 /// What an agent's answer is when it has the model to itself.
-fn alone(bytes: &[u8], tier: Tier, user: &str) -> Vec<u32> {
+fn alone(bytes: &[u8], tier: Tier, user: &str, grammar: Option<usize>) -> Vec<u32> {
     let mut engine = Engine::load(bytes, tier, 256, BUDGET).unwrap();
     let mut tokens = Vec::new();
+    let (max_new, shape) = match grammar {
+        Some(max_new) => (max_new, Some(&SHAPE)),
+        None => (MAX_NEW, None),
+    };
     engine
         .reply(
             &[Turn::new(Role::User, user)],
-            MAX_NEW,
+            max_new,
             &mut Sampler::greedy(),
-            None,
+            shape,
             |step| {
                 if let Step::Token(token) = step {
                     tokens.push(token);
@@ -284,7 +459,12 @@ fn text(words: &str, times: usize) -> String {
 
 fn check_exact(rig: &Rig<'_>, bytes: &[u8]) {
     for (request, job) in &rig.jobs {
-        let want = alone(bytes, rig.tier, &job.user);
+        let want = alone(
+            bytes,
+            rig.tier,
+            &job.user,
+            job.shaped.then_some(rig.grammar_new),
+        );
         assert!(
             want.len() >= 3,
             "{request:?}: an answer of {} tokens",
@@ -364,4 +544,62 @@ fn two_agents_sharing_one_slot_swap_state_through_the_pool_and_stay_exact() {
     check_exact(&rig, &bytes);
     assert!(rig.saved >= 1, "the agents took turns in one slot");
     assert_eq!(rig.saved, rig.restored);
+}
+
+/// The row `2026-11-18-agentsched-grammar-preemption`: the person's request arrives
+/// while a background agent's grammar answer is part way. It goes first, the answer
+/// starts again from its prompt, and every answer is exact.
+#[test]
+fn a_background_grammar_answer_the_person_interrupts_starts_again_and_is_exact() {
+    let bytes = fixture::build(&Spec::tiny());
+    for tier in Tier::all() {
+        let prompt = text("the quick brown fox jumps over the lazy dog", 2);
+        // Asked for exactly as many tokens as its answer takes, so an answer started
+        // again on fewer would be cut short and differ.
+        let whole = alone(&bytes, tier, &prompt, Some(GRAMMAR_NEW)).len();
+        for slots in [2, 1] {
+            let mut rig = Rig::new(&bytes, tier, slots);
+            rig.grammar_new = whole;
+            let g = rig.submit_as(BOT_A, &prompt, true);
+            rig.arrive(4, USER, &text("how many cpus are there", 2));
+            rig.run_to_idle();
+            let user = rig.arrived.expect("the person's request arrived");
+            check_exact(&rig, &bytes);
+            let name = tier.name();
+            assert!(rig.jobs[&g].tokens.len() > 4, "{name}: a longer answer");
+            assert!(
+                rig.position(user) < rig.position(g),
+                "{name}, {slots} slots"
+            );
+            assert!(rig.restarts >= 1, "{name}: the answer was interrupted");
+            // With one slot the answer's state left its slot for the pool and came back.
+            if slots == 1 {
+                assert!(rig.saved >= 1 && rig.restored >= 1, "{name}");
+            }
+        }
+    }
+}
+
+/// An agent of the same class arriving mid-answer waits for the answer to end: it is
+/// never interrupted, and both are exact.
+#[test]
+fn a_grammar_answer_is_not_interrupted_by_its_own_class() {
+    let bytes = fixture::build(&Spec::tiny());
+    let tier = Tier::best();
+    let mut rig = Rig::new(&bytes, tier, 2);
+    let g = rig.submit_as(
+        BOT_A,
+        &text("the quick brown fox jumps over the lazy dog", 2),
+        true,
+    );
+    rig.arrive(
+        3,
+        BOT_B,
+        &text("pack my box with five dozen liquor jugs", 2),
+    );
+    rig.run_to_idle();
+    let other = rig.arrived.expect("it arrived");
+    check_exact(&rig, &bytes);
+    assert_eq!(rig.restarts, 0);
+    assert!(rig.position(g) < rig.position(other));
 }

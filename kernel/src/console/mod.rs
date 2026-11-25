@@ -358,7 +358,8 @@ impl Console {
         let kind = match live {
             Some((top, _, prompt)) if row == top => Kind::Input { prompt },
             Some(_) => Kind::Input { prompt: 0 },
-            None => Kind::of(cells),
+            // A row text wrapped onto is styled as the row it carries on.
+            None => self.grid.kind_of(row),
         };
         let look = theme::look(kind);
         let was = self.painted[row];

@@ -1,0 +1,2 @@
+windows: [w1] settings (focused)  [w2] terminal "kai>"
+w1: [a1] tabs 0 items  text "Rules and profiles"  text "Standing rules"  text "Always stop build-3 when asked"  [b2] button "Remove"  text "When a build finishes, tell me"  [b3] button "Remove"  [l4] list "Profiles" 2 items  text "normal"  text "focus"

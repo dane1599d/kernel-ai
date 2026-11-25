@@ -51,6 +51,7 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
+pub mod agentvol;
 pub mod allocator;
 pub mod buddy;
 pub mod cache;

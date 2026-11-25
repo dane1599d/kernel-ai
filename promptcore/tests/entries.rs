@@ -323,7 +323,7 @@ fn macros_and_includes() {
     for (entry, what) in [
         (
             "#include \"x.h\"",
-            "only #include <…> works at c>; files come with :load",
+            "#include \"…\" works only at the top of an entry typed at c>, one file deep; :load replays a saved file",
         ),
         (
             "#if 1\nx;\n#endif",

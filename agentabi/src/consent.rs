@@ -20,6 +20,8 @@ use alloc::vec::Vec;
 
 #[path = "consent_grant.rs"]
 pub mod consent_grant;
+#[path = "consent_send.rs"]
+mod consent_send;
 use nethosts::{Bytes, Ground, Grounding, LineWord, NoGrants, Origin, Table, Verdict};
 
 /// Where a value came from (ADR 0002 D6). Ordered: the least trusted is greatest.
@@ -90,6 +92,11 @@ pub enum Why {
     /// More than one read from hosts only a grant grounds in one plan, or one
     /// in a loop.
     GrantMany,
+    /// A send to a site the line does not name: refused, never asked.
+    SendHost,
+    /// A send on a line that does not ask for one (a question, a describe
+    /// line, a negated cue): refused, never asked.
+    SendUnasked,
     /// The line is not English, so it gives no consent for changes in v0.1.
     NotEnglish,
     /// A value no call may take, or a row that never runs.
@@ -255,6 +262,20 @@ fn decide_one(
     if row.min_tier == Tier::Never || has_never_value(row, call) {
         return Decision::new(Tier::Never, Why::NeverValue);
     }
+    // A send goes only to a site the line names (typed, or a word of the host
+    // table): never one only an app's grant grounds, nor one read content
+    // gave. No answer on a card can widen that (P5 close, ADR 0002 D3).
+    let sends_to_host = matches!(row.inverse, Inverse::Hold { .. })
+        && row.args.iter().any(|arg| matches!(arg.ty, ArgType::Host));
+    if sends_to_host && !send_destination(words, hosts, row, call) {
+        return Decision::new(Tier::Never, Why::SendHost);
+    }
+    // A send only for a line that asks for one: a cue of the row, un-negated,
+    // in a clause that asks for no telling. A question or a describe line
+    // never reaches a card, whatever a view said (ADR 0002 D3, #723).
+    if matches!(row.inverse, Inverse::Hold { .. }) && !consent_send::asked(words) {
+        return Decision::new(Tier::Never, Why::SendUnasked);
+    }
     if let Some(source) = steered(row, call) {
         return Decision::new(Tier::Ask, Why::Steered(source));
     }
@@ -356,6 +377,14 @@ fn value_of<'a>(call: &Call<'a>, name: &str) -> Option<Value<'a>> {
         .iter()
         .find(|(key, _)| *key == name)
         .map(|(_, value)| *value)
+}
+
+/// Whether `line` names `row` by one of its cues, as consent reads a line:
+/// `Some(false)` named, `Some(true)` named but negated or switched off ("never
+/// move"), `None` not named. A question's or a tell clause's cue counts. For a
+/// goal's scope (G2), which takes the person's words, never a model's.
+pub fn named_in(line: &str, row: &Action) -> Option<bool> {
+    cued_in(&words(line), row, true)
 }
 
 /// Whether a cue of `row` starts a word of the line: `Some(false)` if some do and
@@ -477,6 +506,28 @@ fn line_names_destination(words: &[Word], hosts: &Hosts, row: &Action, call: &Ca
             call,
             |verdict| matches!(verdict, Verdict::Run(ground) if ground.names_destination()),
         )
+}
+
+/// A send's destination (ADR 0002 D3, P5 close): every host is one the line
+/// types; or, when the line types no host at all, a word of the host table
+/// that follows "to" or "on" ("post it to wikipedia"). A table word never
+/// stands in for a host the line typed.
+fn send_destination(words: &[Word], hosts: &Hosts, row: &Action, call: &Call) -> bool {
+    let typed_any = !nethosts::typed_hosts(hosts.line).is_empty();
+    let after_to = |word: &str| {
+        words.iter().enumerate().any(|(at, w)| {
+            w.text == word
+                && at > 0
+                && matches!(words[at - 1].text.as_str(), "to" | "on")
+                && !negated(words, at)
+        })
+    };
+    row.args.iter().any(|arg| matches!(arg.ty, ArgType::Host))
+        && every_host(words, hosts, row, call, |verdict| match verdict {
+            Verdict::Run(Ground::Typed) => true,
+            Verdict::Run(Ground::Table(word)) => !typed_any && after_to(word),
+            _ => false,
+        })
 }
 
 /// Whether `accept` takes the grounding verdict of every host argument of
@@ -671,7 +722,8 @@ fn words(text: &str) -> Vec<Word> {
         let word = rest[..end].trim_matches('\'').to_lowercase();
         rest = &rest[end..];
         let gap = rest.find(is_word).unwrap_or(rest.len());
-        if !word.is_empty() {
+        let had_word = !word.is_empty();
+        if had_word {
             if CLAUSE_WORDS.contains(&word.as_str()) {
                 clause += 1;
             }
@@ -686,13 +738,16 @@ fn words(text: &str) -> Vec<Word> {
         if rest[..gap].contains('?') {
             asked.push(clause);
         }
-        if rest[..gap].contains([',', ';', '.', '!', '?', ':']) {
+        // A dot between two word characters is inside a word, a host's or a
+        // number's ("hooks.example", "1.5"): it ends no clause or sentence.
+        let inside = had_word && &rest[..gap] == "." && gap < rest.len();
+        if !inside && rest[..gap].contains([',', ';', '.', '!', '?', ':']) {
             clause += 1;
         }
         if rest[..gap].contains('?') {
             asked_sentences.push(sentence);
         }
-        if rest[..gap].contains([';', '.', '!', '?']) {
+        if !inside && rest[..gap].contains([';', '.', '!', '?']) {
             sentence += 1;
         }
         rest = &rest[gap..];

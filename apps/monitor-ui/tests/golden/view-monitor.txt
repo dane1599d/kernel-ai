@@ -1,0 +1,2 @@
+windows: [w1] monitor "System Monitor" (focused)  [w2] terminal "kai>"
+w1: text "CPUs: 4"  text "Up 12m 36s"  progress "Memory: 2596 of 4096 MiB used" = "63%"  [b1] button "CPU high-low"  [b2] button "Memory"  [b3] button "Name"  [b4] button "PID"  [l5] table "Processes" 0 items  text "Model: ready, 12.5 tokens/s"  text "Pick a process; to stop it, ask ..."  text "4 processes"

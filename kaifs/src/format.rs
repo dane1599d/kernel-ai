@@ -194,6 +194,13 @@ struct RawSuper {
 }
 
 const _: () = assert!(size_of::<RawSuper>() == 408);
+/// Where [`Superblock::oid_mark`] sits: the first bytes after the fields,
+/// which every superblock before it wrote as zeros under its checksum. So an
+/// older disk reads a mark of 0 (none), and an older build reads past it.
+const OID_MARK_AT: usize = size_of::<RawSuper>();
+/// Where [`Superblock::fallbacks`] sits: after the mark, zeros before it too.
+const FALLBACKS_AT: usize = OID_MARK_AT + 8;
+
 /// The superblock's own checksum sits in its last 32 bytes, over everything before.
 const SUPER_CSUM_AT: usize = BLOCK - 32;
 
@@ -221,6 +228,16 @@ pub struct Superblock {
     pub commit_time: u64,
     /// A name for people, NUL-padded UTF-8.
     pub label: [u8; 64],
+    /// No volume hands out an object id at or past this before the next commit
+    /// writes a higher one; never lower than any earlier commit's, so a mount
+    /// that falls back past newer commits (their tables unreadable, their
+    /// superblocks not) still skips past every id they handed out. 0 on a
+    /// disk written before it.
+    pub oid_mark: u64,
+    /// How many mounts have fallen back past newer commits, carried by every
+    /// commit: a change in it tells a reader of `changes` that commits it may
+    /// have seen were undone. 0 on a disk written before it.
+    pub fallbacks: u64,
 }
 
 /// Why a slot holds no superblock this build can use.
@@ -253,6 +270,8 @@ impl Superblock {
             keys: BlockPtr::NULL,
             commit_time: 0,
             label: [0; 64],
+            oid_mark: 0,
+            fallbacks: 0,
         }
     }
 
@@ -283,6 +302,8 @@ impl Superblock {
         };
         let mut block = [0; BLOCK];
         block[..size_of::<RawSuper>()].copy_from_slice(raw.as_bytes());
+        block[OID_MARK_AT..OID_MARK_AT + 8].copy_from_slice(&self.oid_mark.to_le_bytes());
+        block[FALLBACKS_AT..FALLBACKS_AT + 8].copy_from_slice(&self.fallbacks.to_le_bytes());
         let csum = self.csum_kind.sum(&block[..SUPER_CSUM_AT]);
         block[SUPER_CSUM_AT..].copy_from_slice(&csum);
         block
@@ -340,6 +361,16 @@ impl Superblock {
             keys,
             commit_time: raw.commit_time.get(),
             label: raw.label,
+            oid_mark: u64::from_le_bytes(
+                block[OID_MARK_AT..OID_MARK_AT + 8]
+                    .try_into()
+                    .expect("eight bytes"),
+            ),
+            fallbacks: u64::from_le_bytes(
+                block[FALLBACKS_AT..FALLBACKS_AT + 8]
+                    .try_into()
+                    .expect("eight bytes"),
+            ),
         })
     }
 

@@ -108,7 +108,7 @@ fn state_holder() -> Result<(), &'static str> {
 /// ENDPOINT_MINT and REPLY_H's ceiling, on `filecheck`'s table (it idles once
 /// its step is done): what ring 3 cannot reach to try.
 fn minting() -> Result<(), &'static str> {
-    use crate::process::syscall::fs::mint;
+    use crate::process::syscall::fs::{badge_of, mint};
     let pid = process::named(CLIENT).first().map(|&(pid, _)| pid);
     let fs = process::named(SERVICE).first().map(|&(pid, _)| pid);
     let (Some(pid), Some(fs)) = (pid, fs) else {
@@ -185,10 +185,43 @@ fn minting() -> Result<(), &'static str> {
     {
         return Err("files: a minted handle is not what was asked");
     }
+    // ENDPOINT_BADGE reads a handle on its own endpoint back as minted, and
+    // nothing else: a handle on another's endpoint (as one moved to it would
+    // be), a handle of another kind, or one that is closed.
+    if badge_of(slot, minted) != Ok((0xb0b, Rights::READ)) {
+        return Err("files: ENDPOINT_BADGE did not read back the minted handle");
+    }
+    let fs_route = handle::route_id(SERVICE).map_err(|_| "files: no route id")?;
+    let theirs = {
+        let mut entry = Entry::new(Kind::File, Rights::READ, fs_route);
+        entry.badge = 0xfee;
+        handle::with(slot, |h| h.table.insert(entry))
+            .ok()
+            .and_then(Result::ok)
+            .map(|h| u64::from(h.0))
+            .ok_or("files: a test handle cannot be put in filecheck's table")?
+    };
+    let closed = put(Kind::Dir, Rights::READ, route)?;
+    let _ = handle::with(slot, |t| t.table.close(Handle(closed as u32)));
+    for (what, got, want) in [
+        (
+            "another's endpoint",
+            badge_of(slot, theirs),
+            Error::Permission,
+        ),
+        ("an Endpoint", badge_of(slot, own), Error::Permission),
+        ("a closed handle", badge_of(slot, closed), Error::BadHandle),
+    ] {
+        if got != Err(want) {
+            log!("files: ENDPOINT_BADGE with {what} gave {got:?}, wanted {want:?}");
+            return Err("files: ENDPOINT_BADGE gave what it must refuse");
+        }
+    }
+    let _ = handle::with(slot, |t| t.table.close(Handle(theirs as u32)));
     // REPLY_H moves a Dir only to a process with FILES.
     let moving = put(Kind::Dir, Rights::READ | Rights::TRANSFER, 1)?;
     let moving = Handle(moving as u32);
-    if handle::take_for(slot, &[moving], cap::SERVE | cap::CALL) != Err(Error::Permission) {
+    if handle::take_for(slot, &[moving], cap::SERVE | cap::CALL).err() != Some(Error::Permission) {
         return Err("files: a Dir would move to a process without FILES");
     }
     handle::take_for(slot, &[moving], cap::FILES)
@@ -332,7 +365,7 @@ pub(crate) fn ask(badge: u64, request: Request) -> Result<Reply, &'static str> {
     let extra = ipc::Extra {
         badge,
         rights: RIGHTS.bits(),
-        handles: Vec::new(),
+        handles: crate::handle::Moving::none(),
     };
     let (reply, _, _) = ipc::call_with(SERVICE, &bytes, 0, deadline, || false, extra)
         .map_err(|_| "files: a call to fs failed")?;

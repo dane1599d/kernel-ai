@@ -141,6 +141,47 @@ fn a_user_who_withheld_the_row_from_the_editor_is_obeyed() {
 }
 
 #[test]
+fn a_withheld_file_that_cannot_be_read_refuses_every_row() {
+    // `withheld: Io` and `withheld: NoSpace` are what the shell's State::read
+    // answers for those fs errors: neither is proof that nothing is withheld.
+    for error in ["withheld: Io", "withheld: NoSpace"] {
+        let (host, mut shell) = setup();
+        *host.withheld_disk.borrow_mut() = Some(
+            "kai-withheld 1
+editor fs_write
+"
+            .into(),
+        );
+        *host.withheld_error.borrow_mut() = Some(error.into());
+        assert!(
+            shell.door_write(DOOR_APP, PATH, b"x", false, true).is_err(),
+            "{error}"
+        );
+        assert_eq!(
+            host.files.borrow()["todo.txt"],
+            "old text
+",
+            "{error}"
+        );
+        // Not only the withheld row: the file cannot say which one it was.
+        assert!(shell.door_read(DOOR_APP, PATH).is_err(), "{error}");
+        let audit = host.audit.borrow();
+        assert!(
+            audit
+                .iter()
+                .any(|line| line.contains("could not be read") && line.contains(error)),
+            "{error}: {audit:?}"
+        );
+        drop(audit);
+        // Nor can a regrant overwrite a file it could not read.
+        assert!(crate::grants::set(host.as_ref(), DOOR_APP, "fs_write", false).is_err());
+        // Once it reads again, only the withheld row is refused.
+        *host.withheld_error.borrow_mut() = None;
+        assert!(shell.door_read(DOOR_APP, PATH).is_ok(), "{error}");
+    }
+}
+
+#[test]
 fn no_script_can_reach_the_door() {
     // The model's script, the panel's and `shell_line` run through the checker,
     // and the door is no function in any of them: a call to one is unknown.

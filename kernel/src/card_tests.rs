@@ -5,9 +5,14 @@
 //!   the screen stays `desktop`'s. Once it settled, one `y` only arms it, and
 //!   a second answers it Allow.
 //! - A letter and Enter do not answer a card; `n` then answers it Deny.
+//! - A send's menu with no text beside it (#1142), asked by `answer` and by
+//!   `choose`'s `pick`, its card withdrawn by Ctrl+Alt+F12: denied, and the
+//!   console never takes a key for it.
 //! - With a card up, `desktop` is killed: the kernel takes the ask back and
 //!   asks it on the console, where `n`, typed once its menu takes keys,
 //!   answers it.
+//! - With no card up, the same send's menu is denied by both without a key
+//!   read; another menu by `pick` is still asked on the console.
 
 use crate::display::claim;
 use crate::keyboard::Decoder;
@@ -37,17 +42,74 @@ fn code(answer: Answer) -> u8 {
 /// The question the shell asks for it: a menu's question shows its call.
 const QUESTION: &str = "Run process_stop(\"build-3\")? It stops a process.";
 
-/// Asks for `process_stop("build-3")`, as the terminal does.
-fn asker(_: usize) {
+/// A send's call, and its question: a desk card's, its text not beside it.
+const SEND_CALL: &str = "net_send(\"hooks.example\", \"/hook\", \"0123456789abcdef\")";
+const SEND_QUESTION: &str =
+    "Run net_send(\"hooks.example\", \"/hook\", \"0123456789abcdef\")? It sends text.";
+
+/// The asks: `process_stop("build-3")` by `answer`, as the terminal does, a
+/// send by `answer`, a send by `pick` with no text shown, and
+/// `process_stop` by `pick`.
+const STOP: usize = 0;
+const SEND: usize = 1;
+const SEND_PICKED: usize = 2;
+const STOP_PICKED: usize = 3;
+
+fn asker(kind: usize) {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let mut decoder = Decoder::new();
-    let answer = match Menu::new(id, QUESTION, None, None, Origin::Asked)
-        .and_then(|menu| menu.with_call("process_stop(\"build-3\")"))
+    let (question, call) = match kind {
+        SEND | SEND_PICKED => (SEND_QUESTION, SEND_CALL),
+        _ => (QUESTION, "process_stop(\"build-3\")"),
+    };
+    let answer = match Menu::new(id, question, None, None, Origin::Asked)
+        .and_then(|menu| menu.with_call(call))
     {
+        Ok(mut menu) if kind == SEND_PICKED || kind == STOP_PICKED => {
+            code(terminal::pick(&mut decoder, &mut menu, None))
+        }
         Ok(mut menu) => code(terminal::answer(&mut decoder, &mut menu)),
         Err(_) => 9,
     };
     ANSWER.store(answer, Ordering::Release);
+}
+
+/// A send's ask is answered Deny with no key typed, and the console's menu
+/// never took keys for it.
+fn denied_unread(what: &'static str) -> Result<(), &'static str> {
+    let mut read = false;
+    wait("the send's answer", || {
+        read |= terminal::menu_takes_keys();
+        ANSWER.load(Ordering::Acquire) != 0
+    })?;
+    if read || ANSWER.load(Ordering::Acquire) != code(Answer::Deny) {
+        log!("desk-card: {what}: not denied, or the console read keys for it");
+        return Err("desk-card: a send without its text was not denied unread");
+    }
+    Ok(())
+}
+
+/// A send's ask on the card, withdrawn by Ctrl+Alt+F12 before an answer:
+/// denied unread; a second Ctrl+Alt+F12 gives `desktop` the screen back.
+fn send_withdrawn(kind: usize, what: &'static str) -> Result<(), &'static str> {
+    ask_on_card(kind)?;
+    crate::claim_tests::type_keys(&crate::claim_tests::CTRL_ALT_F12);
+    denied_unread(what)?;
+    crate::claim_tests::type_keys(&crate::claim_tests::CTRL_ALT_F12);
+    wait("desktop back on the screen", || {
+        claim::showing() && ask_box::alive()
+    })?;
+    log!("desk-card: {what}: a send's card withdrawn was denied, no key read");
+    Ok(())
+}
+
+/// With no card up, a send's ask is denied unread by `kind`.
+fn send_with_no_card(kind: usize, what: &'static str) -> Result<(), &'static str> {
+    ANSWER.store(0, Ordering::Release);
+    threads::spawn("asker", asker, kind)?;
+    denied_unread(what)?;
+    log!("desk-card: {what}: a send with no card up was denied, no key read");
+    Ok(())
 }
 
 fn wait(what: &'static str, mut done: impl FnMut() -> bool) -> Result<(), &'static str> {
@@ -61,10 +123,10 @@ fn wait(what: &'static str, mut done: impl FnMut() -> bool) -> Result<(), &'stat
     Err(what)
 }
 
-/// Starts an ask and waits until the card shows it.
-fn ask_on_card() -> Result<(), &'static str> {
+/// Starts an ask of `kind` and waits until the card shows it.
+fn ask_on_card(kind: usize) -> Result<(), &'static str> {
     ANSWER.store(0, Ordering::Release);
-    threads::spawn("asker", asker, 0)?;
+    threads::spawn("asker", asker, kind)?;
     wait("the ask on the card", ask_box::shown)?;
     threads::sleep_ms(KEY_MS);
     Ok(())
@@ -82,7 +144,7 @@ pub fn check() -> Result<(), &'static str> {
     // deskdemo's windows open with its first call.
     threads::sleep_ms(2_000);
     // Y, twice once the card settled: the first arms it, the second runs it.
-    ask_on_card()?;
+    ask_on_card(STOP)?;
     threads::sleep_ms(SETTLE_MS);
     crate::claim_tests::type_keys(&[0x15, 0x95]);
     threads::sleep_ms(KEY_MS);
@@ -95,7 +157,7 @@ pub fn check() -> Result<(), &'static str> {
     }
     log!("desk-card: an ask went to desktop's card, and y on it allowed");
     // A, Enter, then N.
-    ask_on_card()?;
+    ask_on_card(STOP)?;
     threads::sleep_ms(SETTLE_MS);
     crate::claim_tests::type_keys(&[0x1E, 0x9E, 0x1C, 0x9C]);
     threads::sleep_ms(KEY_MS);
@@ -107,8 +169,11 @@ pub fn check() -> Result<(), &'static str> {
         return Err("desk-card: n on the card did not deny");
     }
     log!("desk-card: a letter and Enter did not answer the card, and n denied");
+    // A send's card withdrawn, by answer and by pick.
+    send_withdrawn(SEND, "answer")?;
+    send_withdrawn(SEND_PICKED, "pick")?;
     // desktop killed with a card up.
-    ask_on_card()?;
+    ask_on_card(STOP)?;
     let &(pid, _) = process::named("desktop")
         .first()
         .ok_or("desk-card: desktop is gone")?;
@@ -123,5 +188,16 @@ pub fn check() -> Result<(), &'static str> {
         return Err("desk-card: the ask did not come back to the console");
     }
     log!("desk-card: with desktop killed, the ask came back and the console answered it");
+    // No card up: a send is denied unread; another menu is the console's.
+    send_with_no_card(SEND, "answer")?;
+    send_with_no_card(SEND_PICKED, "pick")?;
+    ANSWER.store(0, Ordering::Release);
+    threads::spawn("asker", asker, STOP_PICKED)?;
+    wait("pick's ask on the console", terminal::menu_takes_keys)?;
+    crate::claim_tests::type_keys(&[0x31, 0xB1]);
+    if answered()? != code(Answer::Deny) {
+        return Err("desk-card: pick did not ask another menu on the console");
+    }
+    log!("desk-card: with no card up, pick asked another menu on the console");
     Ok(())
 }
