@@ -5,11 +5,34 @@
 
 use crate::{cmdline, hpet, log, memory, platform, port};
 use acpitables::fadt::{Reset, Space};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 /// How long one way gets to reset the machine before the next is tried.
 const SETTLE_NS: u64 = 100_000_000;
 /// How long the other CPUs get to stop before it is said safe to switch off.
 const HALT_WAIT_NS: u64 = 100_000_000;
+
+/// The memory-space reset register mapped at boot: its physical address (0:
+/// none) and where. A reboot runs with interrupts off and may not map.
+static RESET_PHYS: AtomicU64 = AtomicU64::new(0);
+static RESET_VIRT: AtomicU64 = AtomicU64::new(0);
+
+/// Maps the FADT's reset register if it is in memory space; once, at boot.
+pub fn init(platform: &acpitables::Platform) {
+    let Some(reset) = platform.reset.filter(|r| r.register.space == Space::Memory) else {
+        return;
+    };
+    if let Err(message) = map_reset(reset) {
+        log!("power: cannot map the reset register ({message}); a reboot skips it");
+    }
+}
+
+pub(crate) fn map_reset(reset: Reset) -> Result<(), &'static str> {
+    let virt = memory::map_physical(reset.register.address, 1, crate::virtio::hal::DEVICE)?;
+    RESET_VIRT.store(virt, Ordering::Relaxed);
+    RESET_PHYS.store(reset.register.address, Ordering::Release);
+    Ok(())
+}
 
 /// Where the machine cannot be turned off: shows that it is safe to switch
 /// off, on the console's screen again if `desktop` held it, and halts this
@@ -80,15 +103,19 @@ fn describe(reset: Reset) -> alloc::string::String {
     )
 }
 
-fn write_reset(reset: Reset) {
+/// Writes the reset value. Takes no lock: memory space only where `init` mapped.
+pub(crate) fn write_reset(reset: Reset) {
     let address = reset.register.address;
     match reset.register.space {
         // SAFETY: the firmware names this port as the machine's reset register.
         Space::Io => unsafe { port::outb(address as u16, reset.value) },
         Space::Memory => {
-            if let Ok(virt) = memory::map_physical(address, 1, crate::virtio::hal::DEVICE) {
+            let mapped = RESET_PHYS.load(Ordering::Acquire) == address;
+            let virt = RESET_VIRT.load(Ordering::Relaxed);
+            // RESET_PHYS is 0 when nothing was mapped: a register at 0 is not it.
+            if mapped && virt != 0 {
                 // SAFETY: the firmware names this byte as the reset register,
-                // mapped uncached just now.
+                // mapped uncached at boot by `map_reset`.
                 unsafe { (virt as *mut u8).write_volatile(reset.value) };
             }
         }
