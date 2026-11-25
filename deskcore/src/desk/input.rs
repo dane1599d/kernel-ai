@@ -97,6 +97,11 @@ impl Desk {
             // its content; once the last button is up the pointer is over
             // what it is over again.
             if let Some((window, held)) = self.pressed {
+                // A button whose press went elsewhere: its release is not
+                // the window's either.
+                if held & bit(button) == 0 {
+                    return;
+                }
                 let held = held & !bit(button);
                 if let Some(at) = self.content_at(window, self.pointer) {
                     effects.push(Effect::Button {
@@ -124,6 +129,14 @@ impl Desk {
                 });
             }
             return;
+        }
+        // A press of a button already held: its release was lost (to a card,
+        // or never sent). The window hears it let go, and this press starts
+        // over from what is under the pointer.
+        if let Some((_, held)) = self.pressed
+            && held & bit(button) != 0
+        {
+            self.cancel_press(effects);
         }
         // Another button while one is held in a window: that window's too.
         if let Some((window, held)) = self.pressed
@@ -218,6 +231,28 @@ impl Desk {
             Part::Close => effects.push(Effect::Close { window: id }),
             Part::Minimize => self.minimize(id, effects),
             Part::Maximize => self.toggle_maximize(id, effects),
+        }
+    }
+
+    /// Ends a press held in a window: it hears each held button let go
+    /// just outside its content, at (-1, -1), so it drops the press without
+    /// taking it for a click on what is under the pointer.
+    pub(super) fn cancel_press(&mut self, effects: &mut Vec<Effect>) {
+        let Some((window, held)) = self.pressed.take() else {
+            return;
+        };
+        if self.window(window).is_none() {
+            return;
+        }
+        for button in [Button::Left, Button::Right, Button::Middle] {
+            if held & bit(button) != 0 {
+                effects.push(Effect::Button {
+                    window,
+                    at: Point { x: -1, y: -1 },
+                    button,
+                    down: false,
+                });
+            }
         }
     }
 

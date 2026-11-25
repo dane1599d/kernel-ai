@@ -448,6 +448,97 @@ fn a_press_in_content_hears_its_release_outside_it() {
     assert_eq!(desk.input(at((off.0, off.1 + 1))), []);
 }
 
+/// A card that comes up during a press ends it: the window hears the button
+/// let go outside its content, and after the card a click elsewhere is not
+/// the window's (#1343's review).
+#[test]
+fn a_card_during_a_press_ends_the_press() {
+    let (mut desk, ids) = desk_with(1);
+    let window = ids[0];
+    let c = desk.window(window).unwrap().content();
+    desk.input(at((c.x + 3, c.y + 4)));
+    desk.input(Input::Button {
+        button: Button::Left,
+        down: true,
+    });
+    assert!(desk.show_ask(5, 1).contains(&Effect::Button {
+        window,
+        at: Point { x: -1, y: -1 },
+        button: Button::Left,
+        down: false,
+    }));
+    // The release goes to the card; then the card is withdrawn.
+    desk.input(Input::Button {
+        button: Button::Left,
+        down: false,
+    });
+    desk.hide_ask(5);
+    let elsewhere = (c.right() + 50, c.bottom() + 50);
+    let effects = click(&mut desk, elsewhere);
+    assert!(
+        !effects.iter().any(|e| matches!(
+            e,
+            Effect::Button { window: w, .. } | Effect::Pointer { window: w, .. } if *w == window
+        )),
+        "{effects:?}"
+    );
+}
+
+/// A button pressed outside the window, released while another is held in
+/// it: the window never had that press, so it gets no release.
+#[test]
+fn a_window_hears_only_the_releases_of_its_presses() {
+    let (mut desk, ids) = desk_with(1);
+    let window = ids[0];
+    let c = desk.window(window).unwrap().content();
+    let button = |button, down| Input::Button { button, down };
+    desk.input(at((c.right() + 50, c.bottom() + 50)));
+    desk.input(button(Button::Right, true));
+    desk.input(at((c.x + 3, c.y + 4)));
+    desk.input(button(Button::Left, true));
+    assert_eq!(desk.input(button(Button::Right, false)), []);
+    assert!(
+        desk.input(button(Button::Left, false))
+            .contains(&Effect::Button {
+                window,
+                at: Point { x: 3, y: 4 },
+                button: Button::Left,
+                down: false,
+            })
+    );
+}
+
+/// A press of a button already held means its release was lost: the window
+/// hears it let go, and the new press starts over.
+#[test]
+fn a_press_of_a_held_button_starts_over() {
+    let (mut desk, ids) = desk_with(1);
+    let window = ids[0];
+    let c = desk.window(window).unwrap().content();
+    let left = |down| Input::Button {
+        button: Button::Left,
+        down,
+    };
+    desk.input(at((c.x + 3, c.y + 4)));
+    desk.input(left(true));
+    let effects = desk.input(left(true));
+    assert_eq!(
+        effects.first(),
+        Some(&Effect::Button {
+            window,
+            at: Point { x: -1, y: -1 },
+            button: Button::Left,
+            down: false,
+        })
+    );
+    assert!(effects.contains(&Effect::Button {
+        window,
+        at: Point { x: 3, y: 4 },
+        button: Button::Left,
+        down: true,
+    }));
+}
+
 /// A window closed while a button is held in it holds nothing after.
 #[test]
 fn a_press_ends_with_its_window() {
