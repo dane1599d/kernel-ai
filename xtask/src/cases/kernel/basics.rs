@@ -117,7 +117,12 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         ..case("icount-probe", "test=icount-probe")
     },
     // L6: worker threads in one address space.
-    case("threads", "test=threads"),
+    TestCase {
+        expect: &[
+            "console-race: a key reader whose wake came before it blocked looked again, in wait and in wait_unless",
+        ],
+        ..case("threads", "test=threads")
+    },
     case("threads-kill", "test=threads-kill"),
     TestCase {
         expect: &[
