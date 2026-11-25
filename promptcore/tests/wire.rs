@@ -228,3 +228,30 @@ fn a_full_reply_keeps_a_record_for_its_end() {
     let bytes = reply.into_bytes();
     assert_eq!(parse_reply(&bytes).unwrap().len(), max);
 }
+
+#[test]
+fn a_pair_goes_in_whole_or_not_at_all() {
+    // As two pushes would, without a copy of the reply to undo the first.
+    let (def, retyped) = (Record::Out(b"abcd"), Record::Out(b"efgh"));
+    let mut reply = Reply::new(40);
+    reply.push_pair(&def, &retyped, 0).unwrap();
+    assert_eq!(reply.room(), 40 - 2 * 10);
+    // The second would fit, the first with it would not.
+    assert!(reply.push_pair(&def, &retyped, 1).is_err());
+    assert_eq!(
+        reply.room(),
+        20,
+        "a refused pair leaves the reply as it was"
+    );
+    reply.push_pair(&def, &retyped, 0).unwrap();
+    assert_eq!(reply.room(), 0);
+    assert_eq!(
+        reply.into_bytes(),
+        b"out 4\nabcdout 4\nefghout 4\nabcdout 4\nefgh"
+    );
+    // A terminal record cannot lead; one that ends the reply can follow.
+    let mut reply = Reply::new(100);
+    assert!(reply.push_pair(&Record::Ok, &def, 0).is_err());
+    reply.push_pair(&def, &Record::Ok, 0).unwrap();
+    assert!(reply.push(&def).is_err());
+}
