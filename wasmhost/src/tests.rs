@@ -308,6 +308,16 @@ fn a_canonical_module_with_imports_is_refused_for_now() {
     assert_eq!(reason(load_core(&wasm, LIMITS, None)), Reason::Link);
 }
 
+/// An artifact whose import section claims 2^32 - 1 imports is a compile
+/// fault, not an abort while its memory is moved (bug-hunt-4 H4-3).
+#[test]
+fn an_impossible_import_count_is_a_compile_fault() {
+    let mut wasm = b"\0asm\x01\0\0\0".to_vec();
+    wasm.extend_from_slice(&[2, 5, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F]);
+    wasm.extend_from_slice(&[5, 3, 1, 0, 1]);
+    assert_eq!(reason(load_core(&wasm, LIMITS, None)), Reason::Compile);
+}
+
 /// The view guest `appbench` runs (components/fixtures/viewbench), when it has been
 /// built for wasm32: 300 nodes come back, lifted by `appabi`.
 #[test]
