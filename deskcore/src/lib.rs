@@ -25,6 +25,7 @@ pub mod files;
 pub mod geom;
 pub mod kept;
 pub mod keymap;
+pub mod keymaps;
 pub mod lease;
 pub mod models_wire;
 mod monogram;
