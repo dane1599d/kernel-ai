@@ -18,7 +18,10 @@
 //!    gone now comes back only if the action itself removed it: the volume's tree
 //!    as the action's commit left it (live, or in a later snapshot) must lack it,
 //!    and no later action may name it. One destroyed later (an emptied trash) is
-//!    left, and so is one whose removal no tree dates.
+//!    left, and so is one whose removal no tree dates, unless it lay in the
+//!    trash: only the trash's own changes remove that, and it comes back only
+//!    into the trash, so an undo of a restore from the trash puts the item back
+//!    in its folder there even after a change outside any action.
 //!
 //! Each object's outcome comes back, so the caller can say what happened.
 
@@ -30,6 +33,7 @@ use crate::items::{
     Entry, FileType, Inode, K_DATA, K_DIRENT, K_INODE, K_XATTR, MAX_NAME, ROOT, decode_names,
     valid_name,
 };
+use crate::trash::TRASH;
 use crate::tree::Key;
 use alloc::collections::BTreeSet;
 use alloc::format;
@@ -329,6 +333,25 @@ impl<D: BlockDev> Fs<D> {
         Ok(Outcome::Beside { ino: copy, name })
     }
 
+    /// Whether `ino` is the trash or lies beneath it in `view`.
+    fn in_trash(&mut self, view: View, ino: u64) -> Result<bool, Error> {
+        let mut seen = BTreeSet::new();
+        let mut at = ino;
+        loop {
+            if at == ROOT || !seen.insert(at) {
+                return Ok(false);
+            }
+            let Some(inode) = self.inode_in(view, at)? else {
+                return Ok(false);
+            };
+            if inode.parent == ROOT {
+                let name = self.name_in(view, ROOT, at)?;
+                return Ok(name.is_some_and(|e| e.name == TRASH));
+            }
+            at = inode.parent;
+        }
+    }
+
     /// The active volume's tree as commit `txn` left it, if one is still at
     /// hand: the last commit's, or a snapshot's taken before anything else
     /// changed the volume. A root written by commit `txn` is born in it, and
@@ -351,9 +374,8 @@ impl<D: BlockDev> Fs<D> {
         let (root, then) = (snap.root, View::Tree(snap.root));
         let after = self.tree_after(txn);
         let later: BTreeSet<u64> = self
-            .undo_records()?
+            .undo_records_after(txn)?
             .into_iter()
-            .filter(|u| u.txn > txn)
             .flat_map(|u| u.objects)
             .collect();
         let mut out = Vec::new();
@@ -380,7 +402,10 @@ impl<D: BlockDev> Fs<D> {
                 (Some(o), None) => {
                     let removed = match after {
                         Some(tree) => self.inode_in(View::Tree(tree), ino)?.is_none(),
-                        None => false,
+                        // What lay in the trash goes only by the trash's own
+                        // changes, and comes back only into it: the folders
+                        // of an item the action took out of the trash.
+                        None => self.in_trash(then, ino)?,
                     };
                     match removed && !later.contains(&ino) {
                         true => were.push((self.depth_in(then, ino)?, ino, o)),
@@ -512,5 +537,46 @@ impl<D: BlockDev> Fs<D> {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::fs::HOME;
+    use crate::io::Meta;
+    use crate::items::ROOT;
+    use crate::vol::undo_key;
+    use crate::{Fs, MemDisk};
+    use alloc::format;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    /// A restore reads only the UNDO records after its action's, so an earlier
+    /// one that does not decode leaves it alone (#1365's review).
+    #[test]
+    fn a_restore_reads_no_undo_record_before_its_own() {
+        let mut fs = Fs::mkfs(MemDisk::new(4096), [3; 16], "restore").unwrap();
+        fs.set_volume(HOME).unwrap();
+        for i in 0..3u64 {
+            fs.begin(i + 1).unwrap();
+            let f = fs.create(ROOT, &format!("file {i}")).unwrap();
+            fs.write_file(f, &[i as u8; 300]).unwrap();
+            fs.commit().unwrap();
+        }
+        let txns: Vec<u64> = fs.undo_records().unwrap().iter().map(|u| u.txn).collect();
+        fs.volumes
+            .insert(
+                undo_key(HOME, txns[0], 0),
+                vec![0xEE; 40],
+                &mut Meta(&mut fs.io),
+            )
+            .unwrap();
+        fs.commit().unwrap();
+        assert!(fs.undo_records().is_err());
+        fs.begin(9).unwrap();
+        let restored = fs.restore(txns[2]);
+        assert!(restored.is_ok(), "{restored:?}");
+        fs.commit().unwrap();
+        assert!(fs.lookup(ROOT, "file 2").unwrap().is_none());
     }
 }

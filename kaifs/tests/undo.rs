@@ -452,6 +452,45 @@ fn a_removal_no_tree_dates_is_left() {
     checked(&mut fs);
 }
 
+/// An undo of a restore from the trash puts the item back in its folder there,
+/// even after a change outside any action (a download's last Rename) has left
+/// no tree that dates the folder's removal: what lay in the trash goes only by
+/// the trash's own changes, and comes back only into it (#1365's review).
+#[test]
+fn an_undo_of_a_restore_from_the_trash_puts_the_item_back_in_it() {
+    let mut fs = fresh();
+    fs.set_volume(HOME).unwrap();
+    let user = mkdir(&mut fs, "/user");
+    let f = write(&mut fs, "/user/notes.txt", b"v1");
+    let held = fs.trash(user, "notes.txt").unwrap();
+    fs.commit().unwrap();
+    let folder = fs.path(None, held.folder).unwrap().unwrap();
+    // The restore from the trash, as `fs` makes it: the item out, its folder
+    // and the transaction's folder gone.
+    let t1 = action(&mut fs, 1, |fs| {
+        fs.rename(held.folder, &held.name, user, "notes.txt")
+            .unwrap();
+        fs.remove(held.folder, kaifs::trash::INFO).unwrap();
+        let (slots, n) = split(&folder);
+        let (trash, txn) = split(slots);
+        let slots = fs.resolve(slots).unwrap();
+        fs.remove(slots, n).unwrap();
+        let trash = fs.resolve(trash).unwrap();
+        fs.remove(trash, txn).unwrap();
+    });
+    assert_eq!(fs.resolve(&folder), Err(Error::NotFound));
+    write(&mut fs, "/user/download.bin", b"d");
+    fs.commit().unwrap();
+    let (out, _) = undo(&mut fs, t1);
+    assert!(out.contains(&(f, Outcome::Back)), "{out:?}");
+    assert_eq!(fs.resolve("/user/notes.txt"), Err(Error::NotFound));
+    let items = fs.trash_list().unwrap();
+    assert_eq!(items.len(), 1, "{out:?}");
+    assert_eq!(items[0].ino, f);
+    assert_eq!(read(&mut fs, "/user/download.bin").unwrap(), b"d");
+    checked(&mut fs);
+}
+
 /// A scoped restore that would bring back what the action removed into the
 /// volume's root, its folder gone since, is refused.
 #[test]
