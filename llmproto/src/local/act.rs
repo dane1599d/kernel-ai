@@ -202,6 +202,15 @@ pub fn grammar_flat(groups: &[AppGroup]) -> Result<Grammar, infer::Error> {
     build(groups, None)
 }
 
+/// Spike S10-2's described arm: [`grammar_with`]'s grammars, on the index
+/// level, with the apps turn's index rows each followed by a short
+/// description from its doc (`pack::apps::described_turn`, the same budget
+/// by `apps::estimate`). What ships is [`grammar_with`].
+pub fn grammar_described(groups: &[AppGroup]) -> Result<Grammar, infer::Error> {
+    let turn = apps::described_turn(groups, apps::estimate);
+    build_from(groups, true, turn.text, &turn.left_out)
+}
+
 /// The grammars over the pack's rows and `groups`' rows, those on the index
 /// level when `count` is given (the apps turn counted with it), all in the
 /// flat apps turn (no budget, no count) when it is `None`.
@@ -209,11 +218,21 @@ fn build(
     groups: &[AppGroup],
     count: Option<&dyn Fn(&str) -> usize>,
 ) -> Result<Grammar, infer::Error> {
-    let apps_indexed = count.is_some();
     let (apps_turn, left_out) = match count {
         Some(count) => apps::turn_counted(groups, count),
         None => apps::flat_turn(groups),
     };
+    build_from(groups, count.is_some(), apps_turn, &left_out)
+}
+
+/// [`build`] for an apps turn already made: `groups` less `left_out`, their
+/// rows on the index level when `apps_indexed`.
+fn build_from(
+    groups: &[AppGroup],
+    apps_indexed: bool,
+    apps_turn: String,
+    left_out: &[String],
+) -> Result<Grammar, infer::Error> {
     let shown: Vec<AppGroup> = groups
         .iter()
         .filter(|group| !left_out.contains(&group.app))
