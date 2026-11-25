@@ -134,7 +134,7 @@ impl Refusal {
     }
 }
 
-fn held_note(pause: Pause) -> String {
+pub(crate) fn held_note(pause: Pause) -> String {
     match pause {
         Pause::Deadline => String::from("the deadline passed"),
         Pause::Budget(resource) => format!("the {} budget is used up", resource.word()),
@@ -234,7 +234,7 @@ impl Goal {
         self.out_of_time(now).or_else(|| self.out_of_tokens(0))
     }
 
-    fn out_of_time(&self, now: u64) -> Option<Pause> {
+    pub(crate) fn out_of_time(&self, now: u64) -> Option<Pause> {
         let started = self.started_ms.unwrap_or(now);
         if self.by_ms.is_some_and(|by| now >= by) {
             Some(Pause::Deadline)
@@ -592,6 +592,21 @@ impl Goal {
         if let Some(step) = self.log.iter_mut().rev().find(|s| s.n == n) {
             step.status = StepStatus::Denied;
             step.note = valid::clean(why);
+        }
+        Ok(())
+    }
+
+    /// The step in flight never reached the door: the shell would not take it
+    /// yet (a question waited for the person) and the goal then stopped, or its
+    /// time ran out, before it was sent again. It is logged as held with `note`
+    /// and counts as neither run nor failed.
+    pub fn unsend(&mut self, note: &str) -> Result<(), Refusal> {
+        let Some(n) = self.flight.take() else {
+            return Err(Refusal::NoStepRunning);
+        };
+        if let Some(step) = self.log.iter_mut().rev().find(|s| s.n == n) {
+            step.status = StepStatus::Held;
+            step.note = valid::clean(note);
         }
         Ok(())
     }
