@@ -3,6 +3,7 @@
 //! the later action that gets the same number, and the person is told.
 
 use super::*;
+use crate::PanelResult;
 use alloc::vec::Vec;
 
 fn write(path: &str, text: &str) -> Result<llmproto::act::Call, llmproto::act::ActError> {
@@ -36,6 +37,36 @@ fn an_undo_of_a_line_that_did_not_land_leaves_the_next_lines_files() {
     assert!(disk.contains("did not land"), "{disk}");
 }
 
+#[test]
+fn a_line_that_did_not_land_never_says_done() {
+    let (host, mut shell) = super::act::with_calls(alloc::vec![write("a.txt", "one")]);
+    host.one_action.set(true);
+    host.commit_refused.set(true);
+    let lost = shell.eval_console("write a.txt");
+    assert!(!lost.ok, "{}", lost.text);
+    assert!(lost.text.contains("did not land"), "{}", lost.text);
+    assert!(!lost.text.contains("Done"), "{}", lost.text);
+    // Said once, in the reply: the next line does not carry it.
+    host.commit_refused.set(false);
+    let next = shell.eval_console("1 + 1");
+    assert!(!next.text.contains("did not land"), "{}", next.text);
+}
+
+#[test]
+fn a_panel_line_that_did_not_land_never_says_done() {
+    let (host, mut shell) = super::act::with_calls(alloc::vec![write("a.txt", "one")]);
+    host.one_action.set(true);
+    host.commit_refused.set(true);
+    match shell.eval_panel("write a.txt") {
+        PanelResult::Refused(why) => assert!(why.contains("did not land"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// shellcore's side of M1: the entry an undo leaves keeps its redo. The
+/// FakeHost answers undo itself, without the shell's `Ledger`, so this
+/// passes on 6995e213 too; the check that fails there is
+/// `ledger::tests::a_refused_commit_restores_nothing_until_its_number_commits_again`.
 #[test]
 fn a_redo_after_a_line_that_did_not_land_restores() {
     let (host, mut shell) =

@@ -288,10 +288,22 @@ impl Files {
             Err(why) => CommitAnswer::Unknown(why),
         };
         let after = ledger::after_commit(generation, answer);
-        if let Err(LogFailed::NotLanded { txn, .. }) = &after {
-            self.with_ledger(|l| l.commit_refused(*txn));
+        match &after {
+            Ok(()) => self.with_ledger(|l| l.committed(generation)),
+            Err(LogFailed::NotLanded { txn, .. }) => self.with_ledger(|l| l.commit_refused(*txn)),
+            Err(LogFailed::Failed(_)) => {}
         }
         after
+    }
+
+    /// Commits the line's action, if one is open, for its log write:
+    /// [`LogFailed::NotLanded`] for an action the line lost on any request
+    /// since its last log write (a Commit refused, a held write `fs` dropped
+    /// on the log's own write before the Commit, an abort), not only the one
+    /// just refused.
+    pub fn land(&self) -> Result<(), LogFailed> {
+        let committed = self.commit();
+        self.with_ledger(|l| l.landed(committed))
     }
 
     pub fn undo(&self, txn: u64, anyway: bool) -> Result<u64, FsRefused> {

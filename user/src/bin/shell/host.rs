@@ -420,17 +420,23 @@ impl Host for System {
 
     /// In the same commit as the files the line changed (P2 task 12); else its
     /// own action. A log that fails to write still lets the change commit: the
-    /// user was told it was done.
+    /// user was told it was done. A line whose action `fs` ended without
+    /// committing it, on whatever request, says so first
+    /// ([`files::Files::land`]): the log went with it, or names it.
     fn log_write(&self, text: &str) -> Result<(), LogFailed> {
         if !self.files.is_open() {
+            // Lost earlier in the line: this log would name its number,
+            // which this very write would commit as.
+            self.files.land()?;
             return self
                 .state
                 .write(files::LOG, text, self.files.next_action())
                 .map_err(LogFailed::Failed);
         }
+        // `fs` may save a held write here and drop the action, before the
+        // Commit: `land` hears that too.
         let logged = self.state.write_in(files::LOG, text);
-        // A Commit that did not land says so first: the log went with it.
-        self.files.commit()?;
+        self.files.land()?;
         logged.map_err(LogFailed::Failed)
     }
 

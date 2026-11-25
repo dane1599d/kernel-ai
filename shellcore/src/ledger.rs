@@ -8,9 +8,12 @@
 //! only until the number commits again: an action that never committed
 //! leaves its number to the next commit, whoever makes it.
 //!
-//! So the log's entries carry it past that: a Commit at the end of a line
-//! that `fs` refuses ([`after_commit`]) is [`LogFailed::NotLanded`], and the
-//! shell takes that action's file changes out of its entries
+//! So the log's entries carry it past that. Whatever ends the line's action
+//! without committing it (a Commit `fs` refuses, a write-back `fs` drops on
+//! any request, the log's own write included, or the shell's abort), the
+//! ledger keeps that number as not landed until the line's log is written
+//! ([`Ledger::landed`]). That write is then [`LogFailed::NotLanded`], and the
+//! shell takes the action's file changes out of its entries
 //! ([`take_not_landed`]): nothing of them is undone later, whatever the
 //! number has come to mean by then.
 
@@ -32,11 +35,13 @@ pub enum Undo {
     Restore,
 }
 
-/// The open action's generation and the last lost one's.
+/// The open action's generation, the last lost one's, and the one the line
+/// lost that its log has not yet said so.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Ledger {
     open: Option<u64>,
     lost: Option<u64>,
+    unlanded: Option<u64>,
 }
 
 impl Ledger {
@@ -54,8 +59,13 @@ impl Ledger {
     /// `fs` dropped the open action, if there is one.
     pub fn dropped_open(&mut self) {
         if let Some(generation) = self.open.take() {
-            self.lost = Some(generation);
+            self.lose(generation);
         }
+    }
+
+    fn lose(&mut self, generation: u64) {
+        self.lost = Some(generation);
+        self.unlanded = Some(generation);
     }
 
     /// The open action leaves for its Commit: its generation, if any.
@@ -65,13 +75,13 @@ impl Ledger {
 
     /// The Commit of `generation` was refused: it never committed.
     pub fn commit_refused(&mut self, generation: u64) {
-        self.lost = Some(generation);
+        self.lose(generation);
     }
 
     /// The shell aborted its open action itself.
     pub fn aborted(&mut self, generation: u64) {
         self.open = None;
-        self.lost = Some(generation);
+        self.lose(generation);
     }
 
     /// `fs` committed something as `generation` (an undo's restore): that
@@ -79,6 +89,28 @@ impl Ledger {
     pub fn committed(&mut self, generation: u64) {
         if self.lost == Some(generation) {
             self.lost = None;
+        }
+        if self.unlanded == Some(generation) {
+            self.unlanded = None;
+        }
+    }
+
+    /// What the line's log write comes to, given how the line's last Commit
+    /// went (`commit`: `Ok` when nothing was open): [`LogFailed::NotLanded`]
+    /// for an action the line lost on any request since its last log write,
+    /// even one that never reached its Commit, and the loss is then said.
+    pub fn landed(&mut self, commit: Result<(), LogFailed>) -> Result<(), LogFailed> {
+        let Some(txn) = self.unlanded.take() else {
+            return commit;
+        };
+        match commit {
+            Err(LogFailed::NotLanded { txn: refused, why }) if refused == txn => {
+                Err(LogFailed::NotLanded { txn, why })
+            }
+            _ => Err(LogFailed::NotLanded {
+                txn,
+                why: String::from("fs dropped the action before its Commit"),
+            }),
         }
     }
 
@@ -223,6 +255,74 @@ mod tests {
         // An undo's restore commits as 7: its redo is a real change.
         ledger.committed(7);
         assert_eq!(ledger.undo(7), Undo::Restore);
+    }
+
+    #[test]
+    fn an_action_dropped_at_the_log_write_did_not_land() {
+        // fs saves a held write on the log's write, finds no room and drops
+        // the action: the Commit is never reached.
+        let mut ledger = Ledger::default();
+        ledger.begin(7);
+        ledger.dropped_open();
+        assert_eq!(ledger.take_for_commit(), None);
+        assert!(matches!(
+            ledger.landed(Ok(())),
+            Err(LogFailed::NotLanded { txn: 7, .. })
+        ));
+        // Said once: the next line's log write is its own.
+        assert_eq!(ledger.landed(Ok(())), Ok(()));
+    }
+
+    #[test]
+    fn an_action_dropped_earlier_in_the_line_did_not_land_though_another_began() {
+        let mut ledger = Ledger::default();
+        ledger.begin(7);
+        ledger.dropped_open();
+        // The line's next change begins again, as the same number.
+        ledger.begin(7);
+        ledger.dropped_open();
+        assert!(matches!(
+            ledger.landed(Ok(())),
+            Err(LogFailed::NotLanded { txn: 7, .. })
+        ));
+    }
+
+    #[test]
+    fn a_refused_commit_did_not_land_with_its_own_reason() {
+        let mut ledger = Ledger::default();
+        ledger.begin(7);
+        let generation = ledger.take_for_commit().unwrap();
+        let refused = after_commit(generation, CommitAnswer::Refused("NoSpace".into()));
+        ledger.commit_refused(generation);
+        assert_eq!(
+            ledger.landed(refused),
+            Err(LogFailed::NotLanded {
+                txn: 7,
+                why: "NoSpace".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_lost_number_that_commits_again_in_the_line_landed() {
+        // A drop, then the line's next action commits as the same number:
+        // that number's changes are on the disk.
+        let mut ledger = Ledger::default();
+        ledger.begin(7);
+        ledger.dropped_open();
+        ledger.begin(7);
+        let generation = ledger.take_for_commit().unwrap();
+        ledger.committed(generation);
+        assert_eq!(ledger.landed(Ok(())), Ok(()));
+    }
+
+    #[test]
+    fn a_committed_line_landed() {
+        let mut ledger = Ledger::default();
+        ledger.begin(7);
+        let generation = ledger.take_for_commit().unwrap();
+        ledger.committed(generation);
+        assert_eq!(ledger.landed(Ok(())), Ok(()));
     }
 
     #[test]
