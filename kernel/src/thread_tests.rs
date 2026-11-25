@@ -403,7 +403,6 @@ pub fn stall_check() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The `threads` case.
 /// Console-reader race (#1302): the key reader stores itself in the one WAITER
 /// slot, and a waker that takes the slot before the reader blocks wakes nothing
 /// (the reader is running), leaving the ring empty when `desktop` took the
@@ -481,12 +480,13 @@ fn console_reader_race() -> Result<(), &'static str> {
                 crate::i8042::wake_reader();
             }
             _ => {
-                let woken = x86_64::instructions::interrupts::without_interrupts(|| {
-                    crate::i8042::inject(&[0x1e])
+                // `threads::wake` needs interrupts off: it takes a lock the timer
+                // IRQ also takes.
+                x86_64::instructions::interrupts::without_interrupts(|| {
+                    if let Some(reader) = crate::i8042::inject(&[0x1e]) {
+                        threads::wake(reader);
+                    }
                 });
-                if let Some(reader) = woken {
-                    threads::wake(reader);
-                }
             }
         }
         race_wait("console-race: the reader did not end", || {
@@ -499,6 +499,7 @@ fn console_reader_race() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// The `threads` case.
 pub fn check() -> Result<(), &'static str> {
     let slots = threads::in_use();
     let caps = cap::SERVE | cap::THREADS;
