@@ -25,7 +25,10 @@
 //!   #n` (a no) or `err unknown step #n` (a no). Meanwhile the other goals go on,
 //!   and the person's queued pause or cancel comes through: a card left open holds
 //!   nothing else. The person answers once, on the card; this agent answers no
-//!   question itself.
+//!   question itself. A step the shell was too busy to take (`err busy`, a
+//!   question up at the console) never reached the door: it is sent again after
+//!   a wait that doubles up to a minute, not past the goal's deadline or wall
+//!   time, and a cancel meanwhile logs it as held, not as run.
 //! - **A refusal at the ceiling** (`err refused`: the shell restarted and its
 //!   grants are gone, or the goal was revoked) pauses the goal: it is not tried
 //!   again until resumed.
@@ -92,7 +95,6 @@ fn main() -> i32 {
 fn run() -> i32 {
     println!("up; goals agent");
     let mut agent = Agent::default();
-    let mut runner = Runner::new();
     loop {
         agent.take_queued();
         let now = now_ms();
@@ -101,7 +103,9 @@ fn run() -> i32 {
             door: &InCeiling,
             steps: &mut agent.steps,
         };
-        let events = runner.turn(&mut agent.goals, now, Presence::Here, &mut parts);
+        let events = agent
+            .runner
+            .turn(&mut agent.goals, now, Presence::Here, &mut parts);
         // A card whose goal ended (a cancel) is no longer polled.
         let goals = &agent.goals;
         agent
@@ -135,6 +139,7 @@ struct Agent {
     goals: Goals,
     planner: LlmPlanner,
     steps: ShellSteps,
+    runner: Runner<String>,
 }
 
 impl Agent {
@@ -178,6 +183,11 @@ impl Agent {
             ("goal-resume", Ok(id)) => self.with(id, |goals| goals.resume(id).ok()),
             ("goal-cancel", Ok(id)) => {
                 self.planner.forget(id);
+                // A step the shell was too busy to take never ran: it is not
+                // counted as run and failed by the end.
+                if let Some(goal) = self.goals.get_mut(id) {
+                    self.runner.withdraw_unsent(goal);
+                }
                 self.with(id, |goals| goals.get_mut(id)?.cancel(now).ok())
             }
             ("goal-pause" | "goal-resume" | "goal-cancel", Err(_)) => {
@@ -423,9 +433,9 @@ impl Steps<String> for ShellSteps {
                 Outcome::Done(reply::failed(None, why))
             }
             // A question is up at the console: the step did not reach the
-            // door. It stays in flight and is sent again next turn, billed as
-            // nothing (H2-9).
-            Reply::Busy(_) => Outcome::Later,
+            // door. It stays in flight, billed as nothing (H2-9), and is sent
+            // again after a wait that grows, not every turn.
+            Reply::Busy(_) => Outcome::Busy,
             Reply::Done(done) => Outcome::Done(done),
         }
     }

@@ -52,6 +52,11 @@ pub enum Outcome {
     /// send), so a card the person leaves open holds no other goal, and their
     /// pause or cancel still comes through.
     Later,
+    /// The shell would not take the step yet (a question waits for the person):
+    /// it never reached the door. It stays in flight, unsent, and is sent again
+    /// after a wait that doubles each time ([`BUSY_FIRST_MS`] to
+    /// [`BUSY_MAX_MS`]), once the goal's deadline and wall time still allow it.
+    Busy,
 }
 
 /// Runs a step the door let run, and says what came of it.
@@ -112,6 +117,13 @@ pub struct Parts<'a, C> {
 /// Steps in a row that cannot be logged before the goal fails: a planner that
 /// keeps writing them would replan and charge forever.
 pub const MAX_BAD_STEPS: u32 = 3;
+/// The first wait before a step the shell was too busy to take is sent again,
+/// and the longest: each busy answer doubles it, so a question the person
+/// leaves up is not asked over once a turn.
+pub const BUSY_FIRST_MS: u64 = 2_000;
+pub const BUSY_MAX_MS: u64 = 60_000;
+/// Why a step that never reached the door was not run, when its goal ended.
+pub const UNSENT_ENDED: &str = "the goal ended before the step was sent";
 /// Why a step in flight with no record of its call was closed.
 pub const RESTARTED: &str = "the agent restarted; the step was not run";
 
@@ -131,6 +143,16 @@ pub struct Runner<C> {
     asked: BTreeMap<u64, Step<C>>,
     bad: BTreeMap<u64, u32>,
     denied: BTreeMap<u64, Vec<Step<C>>>,
+    /// The steps in flight the shell was too busy to take ([`Outcome::Busy`]):
+    /// when each may be sent again, and how long the last wait was.
+    unsent: BTreeMap<u64, Unsent>,
+}
+
+/// A step the shell has not taken yet, and when it is sent again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Unsent {
+    at: u64,
+    wait: u64,
 }
 
 impl<C> Default for Runner<C> {
@@ -139,6 +161,7 @@ impl<C> Default for Runner<C> {
             asked: BTreeMap::new(),
             bad: BTreeMap::new(),
             denied: BTreeMap::new(),
+            unsent: BTreeMap::new(),
         }
     }
 }
@@ -163,8 +186,10 @@ impl<C: Clone + PartialEq> Runner<C> {
         // A goal that ended or was forgotten has nothing left to ask.
         self.denied
             .retain(|id, _| goals.get(*id).is_some_and(|goal| !goal.state.is_final()));
+        self.unsent
+            .retain(|id, _| goals.get(*id).is_some_and(|goal| goal.flight.is_some()));
         self.close_strays(goals, &mut events);
-        if !self.run_answered(goals, parts, &mut events) {
+        if !self.run_answered(goals, now, parts, &mut events) {
             self.plan_one(goals, now, person, parts, &mut events);
         }
         for (goal, check) in goals.tick(now) {
@@ -178,6 +203,7 @@ impl<C: Clone + PartialEq> Runner<C> {
     fn run_answered(
         &mut self,
         goals: &mut Goals,
+        now: u64,
         parts: &mut Parts<'_, C>,
         events: &mut Vec<Event>,
     ) -> bool {
@@ -192,13 +218,28 @@ impl<C: Clone + PartialEq> Runner<C> {
             if matches!(goal.state, State::Waiting | State::Paused(_)) {
                 continue;
             }
+            // A step the shell was too busy to take waits its turn, and is
+            // never sent past the goal's deadline or wall time.
+            if let Some(unsent) = self.unsent.get(&id).copied() {
+                if now < unsent.at {
+                    continue;
+                }
+                if let Some(pause) = goal.out_of_time(now) {
+                    self.asked.remove(&id);
+                    self.unsent.remove(&id);
+                    if goal.unsend(&crate::run::held_note(pause)).is_ok() {
+                        hold(goal, pause, events);
+                    }
+                    continue;
+                }
+            }
             let Some(step) = self.asked.remove(&id) else {
                 continue;
             };
             match (goal.flight, goal.state) {
                 // A step still on the card is polled and the next is looked at.
                 (Some(n), State::Active) => {
-                    if self.run(goal, n, step, parts.steps, events) {
+                    if self.run(goal, now, n, step, parts.steps, events) {
                         return true;
                     }
                 }
@@ -218,13 +259,28 @@ impl<C: Clone + PartialEq> Runner<C> {
     fn run(
         &mut self,
         goal: &mut Goal,
+        now: u64,
         n: u32,
         step: Step<C>,
         steps: &mut dyn Steps<C>,
         events: &mut Vec<Event>,
     ) -> bool {
-        match steps.run(goal.id, &step) {
+        let outcome = steps.run(goal.id, &step);
+        if outcome != Outcome::Busy {
+            self.unsent.remove(&goal.id);
+        }
+        match outcome {
             Outcome::Later => {
+                self.asked.insert(goal.id, step);
+                return false;
+            }
+            Outcome::Busy => {
+                let wait = match self.unsent.get(&goal.id) {
+                    Some(last) => last.wait.saturating_mul(2).min(BUSY_MAX_MS),
+                    None => BUSY_FIRST_MS,
+                };
+                let at = now.saturating_add(wait);
+                self.unsent.insert(goal.id, Unsent { at, wait });
                 self.asked.insert(goal.id, step);
                 return false;
             }
@@ -248,6 +304,17 @@ impl<C: Clone + PartialEq> Runner<C> {
             }
         }
         true
+    }
+
+    /// Before the person's cancel of `goal`: a step in flight that never reached
+    /// the door ([`Outcome::Busy`]) is taken back as held, so the goal's end
+    /// does not count it as run and failed. Whether there was one.
+    pub fn withdraw_unsent(&mut self, goal: &mut Goal) -> bool {
+        if self.unsent.remove(&goal.id).is_none() {
+            return false;
+        }
+        self.asked.remove(&goal.id);
+        goal.unsend(UNSENT_ENDED).is_ok()
     }
 
     fn remember_no(&mut self, goal: u64, step: Step<C>) {
@@ -410,7 +477,7 @@ impl<C: Clone + PartialEq> Runner<C> {
         match proposed {
             Ok(Verdict::Run) => {
                 let n = goal.flight.unwrap_or(0);
-                self.run(goal, n, step, parts.steps, events)
+                self.run(goal, now, n, step, parts.steps, events)
             }
             Ok(Verdict::Ask(_)) => {
                 self.asked.insert(id, step);
