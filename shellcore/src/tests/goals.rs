@@ -435,3 +435,17 @@ fn goal_ids_are_never_used_twice_after_a_restart() {
     let set = shell.eval(&format!("answer {id} allow once={once}"));
     assert!(set.text.starts_with("Goal 2 set"), "{set:?}");
 }
+
+/// bug-hunt-3 H3-24: a shell started again reads its goals from the log on
+/// disk, `goal_1` for `goal 1`, and never gives goal id 1 again.
+#[test]
+fn goal_ids_are_never_used_twice_after_a_shell_restart() {
+    let (host, _first) = with_goal();
+    let mut shell = shell(&host);
+    host.calls.borrow_mut().push_back(call(SET));
+    let asked = shell.eval("keep tidying the files in notes/q3");
+    let id = asked.confirm.expect("asked");
+    let once = host.mint(id, &format!("goal_set({id})"));
+    let set = shell.eval(&format!("answer {id} allow once={once}"));
+    assert!(set.text.starts_with("Goal 2 set"), "{set:?}");
+}

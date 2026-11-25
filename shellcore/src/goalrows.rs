@@ -415,7 +415,11 @@ asked first: a goal row always asks",
             .entries()
             .flat_map(|entry| entry.changes.iter())
             .filter(|change| change.action == "goal_set")
-            .filter_map(|change| change.res.strip_prefix("goal ")?.parse::<u64>().ok())
+            .filter_map(|change| {
+                // Read back from disk, `goal 1` is `goal_1` (bug-hunt-3 H3-24).
+                let n = change.res.strip_prefix("goal")?.strip_prefix([' ', '_'])?;
+                n.parse::<u64>().ok()
+            })
             .max()
             .unwrap_or(0)
     }
