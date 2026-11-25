@@ -9,8 +9,8 @@ publish = false
 test = false
 
 # S14-2 (throwaway, spike/wasmtime-nostd, never merged): Wasmtime's runtime
-# alone, no_std, no compiler. It loads a `.cwasm` made ahead of time, for
-# Pulley (the interpreter) in this first step: native code needs a call that
-# maps memory read-execute, which the kernel does not have.
+# alone, no_std, no compiler. It loads a `.cwasm` made ahead of time, after
+# checking its signature.
 [dependencies]
 wasmtime = { version = "51.0.0", default-features = false, features = ["runtime", "pulley"] }
+ed25519-compact = { version = "2.6.0", default-features = false, features = ["opt_size"] }

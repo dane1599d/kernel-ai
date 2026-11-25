@@ -490,6 +490,12 @@ pub fn mem_commit(addr: u64, bytes: u64) -> Result<u64, Error> {
     call(call::MEM_COMMIT, [addr, bytes, 0, 0, 0, 0])
 }
 
+/// Makes the committed pages of `[addr, addr + bytes)` read-execute (MEM_EXEC,
+/// S14-2 spike); how many it changed.
+pub fn mem_exec(addr: u64, bytes: u64) -> Result<u64, Error> {
+    call(call::MEM_EXEC, [addr, bytes, 0, 0, 0, 0])
+}
+
 /// Gives the reservation at `addr` back; how many pages it freed (MEM_RELEASE).
 pub fn mem_release(addr: u64) -> Result<u64, Error> {
     call(call::MEM_RELEASE, [addr, 0, 0, 0, 0, 0])

@@ -5,8 +5,11 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# Makes `spikes/s14-2/hello.cwasm` (throwaway; `cargo run -p spike-wasmtime-nostd-host`).
+# Makes `spikes/s14-2/{native,pulley}.cwasm`, their `.sig` files and `public.key`
+# (throwaway: `cargo run -p spike-wasmtime-nostd-host`). The signing key is a
+# fixed test seed, so the files are the same on every run.
 [dependencies]
 spike-wasmtime-nostd = { path = "../s14-2" }
-wasmtime = { version = "51.0.0", default-features = false, features = ["cranelift", "std", "runtime", "pulley"] }
+wasmtime = { version = "51.0.0", default-features = false, features = ["cranelift", "all-arch", "std", "runtime", "pulley"] }
 wat = "1.262.0"
+ed25519-compact = { version = "2.6.0", default-features = false }

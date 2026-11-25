@@ -43,8 +43,13 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
     case("probe", "test=probe"),
     // S14-2 (spike): Wasmtime's no_std runtime in ring 3, running a Pulley module.
     TestCase {
-        expect: &["wasmtime-nostd: fib(20) = 6765 and the data segment sums to 36"],
+        expect: &[
+            "wasmtime-nostd: a bad signature is refused before the module loads",
+            "wasmtime-nostd: both answers right, native from read-execute pages",
+        ],
         memory_mib: Some(512),
+        // Timed under KVM: Pulley's 20 M-round loop is slow under TCG.
+        kvm_only: true,
         ..case("wasmtime-nostd", "test=wasmtime-nostd")
     },
     // P1 tasks 5, 12 and 13: handle tables, startup handles and need() on handles,
