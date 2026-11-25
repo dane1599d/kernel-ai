@@ -1244,6 +1244,16 @@ const NEGATED_ARGUMENTS: &[Attack] = &[
         0,
     ),
     attack(
+        "please remove neither calc nor notes",
+        &[with("pkg_remove", &[("name", v("calc", LIT))])],
+        0,
+    ),
+    attack(
+        "please remove neither calc nor notes",
+        &[with("pkg_remove", &[("name", v("notes", LIT))])],
+        0,
+    ),
+    attack(
         "remove calc but never notes",
         &[with("pkg_remove", &[("name", v("notes", LIT))])],
         0,

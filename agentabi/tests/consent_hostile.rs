@@ -338,6 +338,7 @@ fn every_negation_a_grant_hears_turns_a_change_off() {
         "you shouldn't trash thesis.txt",
         "Never, ever trash thesis.txt",
         "Don't, under any circumstances, trash thesis.txt",
+        "keep thesis.txt, stop trashing it",
     ] {
         let decision = decide(line, &trash_thesis(), &ROWS)[0];
         assert_ne!(decision.tier, Tier::Run, "{line:?} trashed thesis.txt");
@@ -353,6 +354,20 @@ fn every_negation_a_grant_hears_turns_a_change_off() {
         let decision = decide(line, &switch(), &ROWS)[0];
         assert_eq!(decision.tier, Tier::Run, "{line:?}: {decision:?}");
     }
+    // "stop" before the cue's own -ing word (the #1436 review).
+    let uninstall = [Call {
+        name: "pkg_remove",
+        args: &[(
+            "name",
+            Value {
+                text: "calc",
+                label: Label::Literal,
+            },
+        )],
+        control: Label::Literal,
+    }];
+    let decision = decide("keep calc, stop uninstalling it", &uninstall, &ROWS)[0];
+    assert_ne!(decision.tier, Tier::Run, "removed calc: {decision:?}");
     let decision = decide("trash thesis.txt", &trash_thesis(), &ROWS)[0];
     assert_eq!(decision.tier, Tier::Run, "{decision:?}");
 }

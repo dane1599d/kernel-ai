@@ -125,7 +125,7 @@ pub const HOSTS: &[(&str, &str)] = nethosts::CURATED;
 
 /// Words that turn off every cue after them in their clause.
 const NEGATIONS: &[&str] = &[
-    "dont", "don't", "not", "never", "no", "without", "disable", "avoid",
+    "dont", "don't", "not", "never", "no", "without", "disable", "avoid", "neither", "nor",
 ];
 /// Words that turn a cue off wherever they stand in its clause: "turn round
 /// robin off" asks for no switch. A row whose own cues say "off" is not
@@ -452,7 +452,9 @@ fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
 fn negated(words: &[Word], at: usize) -> bool {
     let clause = words[at].clause;
     let before = &words[..at];
-    let negates = |i: usize| negation_at(before, i);
+    // All the words, not only those before: "stop" before the cue's own -ing
+    // word ("stop trashing it") is read with the word after it.
+    let negates = |i: usize| negation_at(words, i);
     if before
         .iter()
         .enumerate()
