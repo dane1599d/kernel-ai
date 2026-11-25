@@ -109,6 +109,12 @@ pub fn entry(slot: usize, handle: kabi::handle::Handle) -> Result<Entry, kabi::E
     with(slot, |h| h.table.get(handle).copied())?.map_err(kabi::Error::from)
 }
 
+/// [`entry`] for a call that uses the handle: Revoked once the grant node it
+/// was given under is.
+pub fn live_entry(slot: usize, handle: kabi::handle::Handle) -> Result<Entry, kabi::Error> {
+    with(slot, |h| h.table.live(handle, &grant::Kernel))?.map_err(kabi::Error::from)
+}
+
 /// Services routes can name: the id of a route's service is its index here, plus 1.
 const MAX_ROUTE_NAMES: usize = 32;
 static ROUTE_NAMES: Mutex<[Option<Name>; MAX_ROUTE_NAMES]> =
