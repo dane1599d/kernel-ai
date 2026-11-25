@@ -152,7 +152,6 @@ struct State {
     /// whether any of them scrolled, which tells a boot case the app took the
     /// wheel and moved its content.
     wheeled: Vec<(WindowId, Vec<u64>, usize)>,
-
     frame: Image,
     /// Which window's content was painted last at each px of `frame`, 0 for
     /// none or a window drawn at scale 1 (`deskcore::overlay`).

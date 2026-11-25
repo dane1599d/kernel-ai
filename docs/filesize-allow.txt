@@ -9,7 +9,7 @@
 1422 fsserve/src/tests.rs
 1263 goalcore/src/tests.rs
 897 infer/src/chat.rs
-811 kabi/src/call.rs
+812 kabi/src/call.rs
 819 kaiagent/src/tests.rs
 963 kaifs/src/fs.rs
 1006 kaifs/tests/namespace.rs

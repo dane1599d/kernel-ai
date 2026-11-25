@@ -267,16 +267,24 @@ pub(super) fn apply_need(
                         "desktop: window {} scrolled {rows} rows after the wheel ({explained} rows moved)",
                         window.0
                     ),
-                    None if left > 1 => state.wheeled.push((window, before, left - 1)),
-                    // Said, so a case that fails here can be read. No picture
-                    // shows as 0 rows; a band with no px in it (past the
-                    // picture's width) as every row, all with the one hash.
-                    None => println!(
-                        "desktop: window {} did not scroll after the wheel ({} rows before, {} after)",
-                        window.0,
-                        before.len(),
-                        after.len()
-                    ),
+                    // Each miss is said, so a case that fails here can be read:
+                    // one redraw that did not scroll leaves its line even when
+                    // a later picture does. No picture shows as 0 rows; a band
+                    // with no px in it (past the picture's width) as every
+                    // row, all with the one hash.
+                    None => {
+                        let seen = super::frame::WHEEL_PICTURES - left + 1;
+                        println!(
+                            "desktop: window {} did not scroll after the wheel (picture {seen} of {}; {} rows before, {} after)",
+                            window.0,
+                            super::frame::WHEEL_PICTURES,
+                            before.len(),
+                            after.len()
+                        );
+                        if left > 1 {
+                            state.wheeled.push((window, before, left - 1));
+                        }
+                    }
                 }
             }
             false

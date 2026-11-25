@@ -19,7 +19,10 @@ LOG="$S/batch-auto.log"
 say() { echo "$(date -u '+%m-%d %H:%M') $*" >> "$LOG"; }
 
 unlabel() {  # $1 PR, $2 comment
-  gh pr edit "$1" --repo "$R" --remove-label batch-ready >/dev/null 2>&1
+  # A label that stays on would be batched again, with a comment that says it
+  # was removed: no comment, and the log says so.
+  gh pr edit "$1" --repo "$R" --remove-label batch-ready >/dev/null 2>&1 \
+    || { say "#$1: removing batch-ready failed; no comment posted"; return 1; }
   gh pr comment "$1" --repo "$R" --body "$2" >/dev/null 2>&1
 }
 

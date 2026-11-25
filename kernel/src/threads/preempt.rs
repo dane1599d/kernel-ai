@@ -33,32 +33,30 @@ pub fn wake(tid: Tid) {
 /// server). A wake across CPUs is a reschedule interrupt to a CPU that is often
 /// halted, and under KVM each cost about 110-140 us of a call's round trip
 /// (`test=ipc-rtt`'s legs, #1000); on this CPU the caller's wait switches
-/// straight to it, and its reply wakes the caller here too. The move follows
-/// load balancing's rule: never a pinned thread, nor one whose registers are
-/// not saved yet (`ON_CPU`). Otherwise, and when it already runs here, a plain
+/// straight to it, and its reply wakes the caller here too. Only when this CPU
+/// has nothing else to run (its load is the caller alone): a busy CPU would
+/// make the server wait behind its work. The move follows load balancing's
+/// rule, checked under the owner's lock: never a pinned thread, nor one whose
+/// registers are not saved yet (`ON_CPU`); and it counts no wake on the owner
+/// (`Core::detach_asleep`). Otherwise, and when it already runs here, a plain
 /// [`wake`]. Interrupts must be off.
 pub fn wake_here(tid: Tid) {
     let me = percpu::index();
     let owner = OWNER[tid].load(Ordering::Acquire);
-    if owner == me || PINNED[tid].load(Ordering::Relaxed) {
+    if owner == me || LOAD[me].load(Ordering::Relaxed) > 1 {
         wake(tid);
         return;
     }
     let now = hpet::nanos();
     let moved = CORES[owner].lock().as_mut().and_then(|core| {
-        let asleep = matches!(
-            core.state(tid),
-            sched::State::Blocked | sched::State::Sleeping { .. }
-        );
-        if !asleep || ON_CPU[tid].load(Ordering::Acquire) {
+        if PINNED[tid].load(Ordering::Relaxed) || ON_CPU[tid].load(Ordering::Acquire) {
             return None;
         }
-        core.wake(tid, now);
-        let moved = core.detach_runnable(|other| other != tid);
+        let name = core.detach_asleep(tid)?;
         LOAD[owner].store(core.load(), Ordering::Relaxed);
-        moved
+        Some(name)
     });
-    let Some((tid, name)) = moved else {
+    let Some(name) = moved else {
         wake(tid);
         return;
     };

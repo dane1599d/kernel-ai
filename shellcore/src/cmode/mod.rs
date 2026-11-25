@@ -257,9 +257,14 @@ impl Shell {
                             run.names.push(name.to_string());
                         }
                     }
-                    Record::Retyped(name) => shown.push_str(&format!(
-                        "{name} changed type; code that already called it keeps the old one\n"
-                    )),
+                    // A function's `def` may have been left out for room; its
+                    // `retyped` still says the entry defined something.
+                    Record::Retyped(name) => {
+                        defined = true;
+                        shown.push_str(&format!(
+                            "{name} changed type; code that already called it keeps the old one\n"
+                        ));
+                    }
                     Record::Value { ty, text } => {
                         let text = String::from_utf8_lossy(text);
                         value = match ty {
