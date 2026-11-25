@@ -23,6 +23,18 @@ unlabel() {  # $1 PR, $2 comment
   gh pr comment "$1" --repo "$R" --body "$2" >/dev/null 2>&1
 }
 
+# Whether PR $1's head is no longer the one the batch in batch-ff.sh output $2
+# tested: a lane may push a fix while CI or the fluency gate runs, and
+# batch-ff.sh stops on red before it checks the heads. Such a PR keeps its
+# label and the next batch tries the new head. A head that cannot be read
+# counts as not moved, so the PR is unlabelled as before.
+moved() {  # $1 PR, $2 batch-ff.sh output
+  local tested now
+  tested=$(grep -oE "^  \+ #$1 \(.*\) at [0-9a-f]{40}$" "$2" | grep -oE "[0-9a-f]{40}$")
+  now=$(gh pr view $1 --repo "$R" --json headRefOid --jq .headRefOid)
+  [ -n "$tested" ] && [ -n "$now" ] && [ "$now" != "$tested" ]
+}
+
 # The file each `git merge-tree` CONFLICT line names: a content conflict's
 # "Merge conflict in F", and the first path of any other kind, such as a
 # modify/delete's "F deleted in X and modified in Y" (#1199 on 11-23 listed
@@ -202,8 +214,12 @@ batch() {  # PR numbers, or --resume, or --noboot and PR numbers; a failed batch
     if ! grep -q "NOT green" "$out" && [ ${#model_prs[@]} -eq 1 ] && [ $# -gt 1 ]; then
       local m=${model_prs[0]} g rest=()
       fails=$(grep -E "fluency run" "$out" | sed 's/^ *//' | tr '\n' ' ')
-      unlabel $m "Batcher: this PR was its merge batch's only change to what the model sees, and the fluency gate failed: $fails. Fix it, push once, and add \`batch-ready\` again."
-      say "#$m failed the fluency gate: $fails"
+      if moved $m "$out"; then
+        say "#$m failed the fluency gate, but it was pushed to since the batch took it; label kept"
+      else
+        unlabel $m "Batcher: this PR was its merge batch's only change to what the model sees, and the fluency gate failed: $fails. Fix it, push once, and add \`batch-ready\` again."
+        say "#$m failed the fluency gate: $fails"
+      fi
       while read -r g; do
         case " $g " in *" $m "*) ;; *) rest+=($g);; esac
       done < <(groups "$@")
@@ -211,13 +227,7 @@ batch() {  # PR numbers, or --resume, or --noboot and PR numbers; a failed batch
       return
     fi
     if [ $# -eq 1 ]; then
-      # A lane may have pushed a fix while CI ran (batch-ff.sh stops on red
-      # before it checks the heads): keep the label of a PR whose head is no
-      # longer the one tested; the next batch tries the new head.
-      local tested now
-      tested=$(grep -oE "^  \+ #$1 \(.*\) at [0-9a-f]{40}$" "$out" | grep -oE "[0-9a-f]{40}$")
-      now=$(gh pr view $1 --repo "$R" --json headRefOid --jq .headRefOid)
-      if [ -n "$tested" ] && [ -n "$now" ] && [ "$now" != "$tested" ]; then
+      if moved $1 "$out"; then
         say "#$1 failed alone, but it was pushed to since the batch took it; label kept"
         return
       fi
