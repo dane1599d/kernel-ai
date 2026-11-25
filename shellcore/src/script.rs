@@ -271,6 +271,9 @@ fn split(plan: &Plan, rows: &'static [agentabi::Action]) -> (Vec<&'static str>, 
             .chain(apps.clone())
             .chain(&agentabi::UI_ROWS)
             .chain(&agentabi::GRANT_ROWS)
+            // A network read is a read: `show` lists it (SEND_ROWS are in no
+            // script's rows, and a tagged send has its own account).
+            .chain(&agentabi::NET_ROWS)
             .filter(|f| f.effect() == effect && names.contains(&f.name))
             .map(|f| f.name)
             .collect()
