@@ -16,6 +16,7 @@ fn a_model_nothing_holds_leaves_the_store() {
         previous: Some(B),
         importing: Some(B),
         downloading: Some(B),
+        busy: false,
     };
     assert_eq!(decide(&A, &others), Ok(Remove::Blob));
 }
@@ -55,6 +56,27 @@ fn a_model_running_on_trial_or_being_imported_stays() {
         let why = decide(&A, &holds).unwrap_err();
         assert!(why.contains(words), "{why}");
     }
+}
+
+/// Fix check of #1161: a blob is not removed while an import or a download
+/// of another model holds the store; the download of this one still stops.
+#[test]
+fn a_busy_store_refuses_a_blob_but_stops_its_own_download() {
+    let busy = Holds {
+        busy: true,
+        ..Holds::default()
+    };
+    assert!(
+        decide(&A, &busy)
+            .unwrap_err()
+            .contains("try again when it finishes")
+    );
+    let downloading = Holds {
+        downloading: Some(A),
+        busy: true,
+        ..Holds::default()
+    };
+    assert_eq!(decide(&A, &downloading), Ok(Remove::Download));
 }
 
 #[test]

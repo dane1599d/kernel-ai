@@ -57,6 +57,25 @@ impl Host for System {
         net::send(send)
     }
 
+    fn desk_send_fits(&self) -> bool {
+        let Some(route) = desktop() else {
+            return false;
+        };
+        matches!(
+            ask_desktop(route, deskcore::sendview::FITS).as_deref(),
+            Ok("yes")
+        )
+    }
+
+    fn desk_preview(&self, id: u64, text: &str) -> Result<(), String> {
+        let route = desktop().ok_or_else(|| String::from("there is no desktop"))?;
+        let request = deskcore::sendview::encode_preview(id, text);
+        match report_to_desktop(route, &request)? {
+            answer if answer == "ok" => Ok(()),
+            answer => Err(answer),
+        }
+    }
+
     fn cc_build(
         &self,
         dir: &str,
@@ -396,7 +415,7 @@ impl Host for System {
     }
 
     fn log_read(&self) -> Option<String> {
-        self.state.read(files::LOG)
+        self.state.read(files::LOG).ok().flatten()
     }
 
     /// In the same commit as the files the line changed (P2 task 12); else its
@@ -411,15 +430,15 @@ impl Host for System {
         logged.and(committed)
     }
 
-    fn rules_read(&self) -> Option<String> {
+    fn rules_read(&self) -> Result<Option<String>, String> {
         self.state.read(files::RULES)
     }
 
-    fn standing_read(&self) -> Option<String> {
+    fn standing_read(&self) -> Result<Option<String>, String> {
         self.state.read(files::STANDING)
     }
 
-    fn keep_read(&self) -> Option<String> {
+    fn keep_read(&self) -> Result<Option<String>, String> {
         self.state.read(files::KEEP)
     }
 
@@ -433,7 +452,7 @@ impl Host for System {
     }
 
     fn restart_read(&self) -> Option<String> {
-        self.state.read(files::RESTART)
+        self.state.read(files::RESTART).ok().flatten()
     }
 
     /// As the keep-running list is: with the line's files, if it changed any.
@@ -452,7 +471,7 @@ impl Host for System {
     }
 
     fn appearance_read(&self) -> Option<String> {
-        self.state.read(files::APPEARANCE)
+        self.state.read(files::APPEARANCE).ok().flatten()
     }
 
     /// Saved with the line's files, as the rules are; then `desktop` paints in
@@ -490,7 +509,7 @@ impl Host for System {
         }
     }
 
-    fn net_grants_read(&self) -> Option<String> {
+    fn net_grants_read(&self) -> Result<Option<String>, String> {
         self.state.read(files::NETGRANTS)
     }
 
@@ -504,7 +523,7 @@ impl Host for System {
         }
     }
 
-    fn withheld_read(&self) -> Option<String> {
+    fn withheld_read(&self) -> Result<Option<String>, String> {
         self.state.read(files::WITHHELD)
     }
 

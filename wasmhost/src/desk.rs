@@ -51,6 +51,10 @@ pub struct Show {
 /// What `desktop`'s events ask of comphost.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Told {
+    /// The desktop's whole appearance (`kai-appearance 1` text): the theme
+    /// with its colour overrides, text size and legible type. Replaces the
+    /// `Theme` the same reply carries.
+    Look(String),
     /// The user asked to close the app's `window`.
     Close(u32),
     /// The agent asked a node of `window` to act.
@@ -360,6 +364,7 @@ impl Desk {
             if header.object == REGISTRY && header.opcode != 0 {
                 match Event::decode(Interface::Registry, header.opcode, args) {
                     Ok(Event::Theme(name)) => out.push(Told::Theme(String::from(name))),
+                    Ok(Event::Look(text)) => out.push(Told::Look(String::from(text))),
                     // A scale no surface may ask for is not one to draw at.
                     Ok(Event::Scale(scale)) if (SCALE_ONE..=SCALE_MAX).contains(&scale) => {
                         self.scale = scale;
@@ -425,6 +430,10 @@ impl Desk {
         }
         if self.scale != was && !restarted && !self.windows.is_empty() {
             out.push(Told::Scale);
+        }
+        // The whole appearance says more than the theme's name beside it.
+        if out.iter().any(|t| matches!(t, Told::Look(_))) {
+            out.retain(|t| !matches!(t, Told::Theme(_)));
         }
         out
     }

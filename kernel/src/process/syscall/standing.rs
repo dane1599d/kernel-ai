@@ -127,6 +127,17 @@ fn app_call(slot: usize, a: &[u64; 6]) -> Result<u64, Error> {
     Ok(reply.len() as u64)
 }
 
+/// What APP_CTL answers for a ctl call that failed (`ipc_queued_tests`).
+pub(crate) fn ctl_error(error: ipc::CallError) -> Error {
+    match error {
+        ipc::CallError::Unavailable => Error::NotFound,
+        ipc::CallError::NoMemory => Error::NoMemory,
+        // Taken, and not answered: the suspend or resume may have happened.
+        ipc::CallError::Unanswered | ipc::CallError::ServiceDied => Error::Dead,
+        _ => Error::TimedOut,
+    }
+}
+
 /// APP_CTL: `ctl suspend`, `ctl resume` or `ctl keep-running on|off` to app
 /// `name`, as the kernel.
 fn app_ctl(slot: usize, ptr: u64, len: u64, verb: u64, buf: u64, cap: u64) -> Result<u64, Error> {
@@ -150,13 +161,7 @@ fn app_ctl(slot: usize, ptr: u64, len: u64, verb: u64, buf: u64, cap: u64) -> Re
     let gone = || ipc::server_of(name) != Some(server);
     let reply = ipc::call_from_unless(name, request, CTL_MS, gone)
         .map(|(reply, _)| reply)
-        .map_err(|error| match error {
-            ipc::CallError::Unavailable => Error::NotFound,
-            ipc::CallError::NoMemory => Error::NoMemory,
-            // Taken, and not answered: the suspend or resume may have happened.
-            ipc::CallError::Unanswered | ipc::CallError::ServiceDied => Error::Dead,
-            _ => Error::TimedOut,
-        })?;
+        .map_err(ctl_error)?;
     let reply = &reply[..reply.len().min(usize::try_from(cap).unwrap_or(usize::MAX))];
     copy_to_user(slot, buf, reply)?;
     Ok(reply.len() as u64)

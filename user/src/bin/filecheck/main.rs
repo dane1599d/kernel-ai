@@ -79,13 +79,15 @@ fn hold(home: Handle) -> Result<(), String> {
     }
     mark(home, "held")?;
     expect(home, Request::Begin { action: 1 }, Reply::Done)?;
+    // The line before half.txt: the kernel kills this process as soon as
+    // half.txt shows, so a line printed after it could be cut off.
+    println!("filecheck: holding an action; half.txt goes in it");
     let half = open(home, "half.txt", How::CreateFile, file_rights())?;
     let request = Request::Write {
         off: 0,
         data: b"half done".to_vec(),
     };
     expect(half, request, Reply::Done)?;
-    println!("filecheck: holding an action with half.txt in it");
     idle()
 }
 

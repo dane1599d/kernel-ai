@@ -29,6 +29,10 @@ mod changes;
 mod changes_tests;
 #[cfg(test)]
 mod clock_tests;
+#[cfg(test)]
+mod dropped_tests;
+#[cfg(test)]
+mod durable_tests;
 mod lookup;
 #[cfg(test)]
 mod model_tests;
@@ -47,11 +51,12 @@ mod sealed_shm_tests;
 mod tests;
 mod trash;
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use fsproto::{
-    Cursor, Error, How, Kind, Listing, MAX_DATA, MAX_LIST, MAX_ROWS, MAX_SHM_DATA, Outcome, Reply,
-    Request, Stat, Version,
+    Cursor, DropCause, Error, How, Kind, Listing, MAX_DATA, MAX_LIST, MAX_ROWS, MAX_SHM_DATA,
+    Outcome, Reply, Request, Stat, Version,
 };
 use kabi::fs::{
     Badge, HOME, HOME_USER, MODELS, MODELS_ROOT, SYSTEM, SYSTEM_APPS, SYSTEM_PKG, SYSTEM_RESTART,
@@ -88,6 +93,16 @@ fn read_only(badge: u64) -> bool {
 /// the name into the buffer and gives its length, or `None` for a pid that is
 /// not running.
 pub type NameOf = fn(u64, &mut [u8; kabi::MAX_NAME]) -> Option<usize>;
+
+/// How `fs` learns a live caller's plan capability bits ([`Server::set_caps_of`],
+/// PART_PEER_CAPS), or `None` when the call fails: a pid not running, a kernel
+/// without the call, or any other error.
+pub type CapsOf = fn(u64) -> Option<u64>;
+
+/// The callers whose answer [`Server::is_person`] keeps: pids are never reused,
+/// so an answer stays true for the process's life, and a few cover the shell
+/// and the apps writing now.
+const PEOPLE_KEPT: usize = 16;
 
 /// The most a read-only folder's handle may use, however it was made.
 const SETTINGS_RIGHTS: Rights = Rights::READ.union(Rights::ENUMERATE).union(BASE);
@@ -194,6 +209,13 @@ pub struct Server<D: BlockDev> {
     base: u64,
     /// Writes inside an action not yet given to kaifs ([`buffer`]).
     pending: Option<buffer::Pending>,
+    /// The callers whose action was dropped without their asking: each one's
+    /// changes are refused ([`Error::Dropped`]) until it sends Abort or Begin
+    /// itself. A commit or a drop of anyone else's leaves the marks alone.
+    dropped: BTreeMap<u64, DropCause>,
+    /// The caller of the request being answered: a drop on its own request
+    /// is one it hears.
+    asking: u64,
     /// The least of the open action's changes' claims on kaifs's reserve: what
     /// its commit may spend ([`Server::spends_reserve`]).
     action_spend: Spend,
@@ -205,6 +227,12 @@ pub struct Server<D: BlockDev> {
     /// A caller's process name, for the one folder of `/system/apps` it may
     /// open ([`Server::set_name_of`]).
     name_of: NameOf,
+    /// A caller's plan caps, for the person's share of the reserve
+    /// ([`Server::set_caps_of`]).
+    caps_of: CapsOf,
+    /// Callers already asked whether they are the person, oldest first
+    /// ([`Server::is_person`]).
+    people: Vec<(u64, bool)>,
     /// The model store's blob being written in the open action ([`models`]).
     sealing: Option<models::Sealing>,
     /// What a Rename moved with it, as `fs` read it (ENDPOINT_BADGE): a `Dir`'s
@@ -265,10 +293,14 @@ impl<D: BlockDev> Server<D> {
             epoch: 0,
             base,
             pending: None,
+            dropped: BTreeMap::new(),
+            asking: 0,
             action_spend: Spend::All,
             cache: None,
             alive: |_| true,
             name_of: |_, _| None,
+            caps_of: |_| None,
+            people: Vec::new(),
             sealing: None,
             into: None,
         };
@@ -313,6 +345,39 @@ impl<D: BlockDev> Server<D> {
     /// the folder opens nothing.
     pub fn set_name_of(&mut self, name_of: NameOf) {
         self.name_of = name_of;
+    }
+
+    /// How `fs` learns a caller's plan capability bits (PART_PEER_CAPS). The
+    /// holder of `cap::POLICY`, which the kernel gives the shell's line alone,
+    /// is the person, and their trash and truncate may go a quarter further
+    /// into the reserve than any app's ([`Server::spends_reserve`]). Until
+    /// this is set, no caller is the person.
+    pub fn set_caps_of(&mut self, caps_of: CapsOf) {
+        self.caps_of = caps_of;
+        self.people.clear();
+    }
+
+    /// Whether `caller` is the person: it holds `cap::POLICY`. Asked of the
+    /// kernel once a caller, its answer kept for the [`PEOPLE_KEPT`] latest;
+    /// the kernel (pid 0) is not. A call that fails is not kept: that request
+    /// gets an app's tier and the next one asks again, so one passing failure
+    /// never makes the shell an app on the full disk that needs its quarter.
+    fn is_person(&mut self, caller: u64) -> bool {
+        if caller == 0 {
+            return false;
+        }
+        if let Some(&(_, person)) = self.people.iter().find(|(pid, _)| *pid == caller) {
+            return person;
+        }
+        let Some(caps) = (self.caps_of)(caller) else {
+            return false;
+        };
+        let person = caps & kabi::cap::POLICY != 0;
+        if self.people.len() == PEOPLE_KEPT {
+            self.people.remove(0);
+        }
+        self.people.push((caller, person));
+        person
     }
 
     /// `/system/apps` is every app's saved state, one folder an app, and the
@@ -556,6 +621,7 @@ impl<D: BlockDev> Server<D> {
         call: &Call,
         shm: Option<&mut [u8]>,
     ) -> Result<(Reply, Option<Mint>), Error> {
+        self.asking = call.caller;
         // `/system/settings` and `/system/state/restart` are read only through
         // their fixed badges, whatever rights the handle carries: nothing they
         // open gets more than READ and ENUMERATE either.
@@ -575,6 +641,26 @@ impl<D: BlockDev> Server<D> {
             self.own_folder_only(call.caller, &request)?;
         }
         let changes = changes(&request);
+        if let Some(&cause) = self.dropped.get(&call.caller).filter(|_| changes) {
+            match request {
+                // It knows now: an Abort is its acknowledgement, a Begin its
+                // next action.
+                Request::Abort => {
+                    self.dropped.remove(&call.caller);
+                    return Ok((Reply::Done, None));
+                }
+                Request::Begin { .. } => {
+                    self.dropped.remove(&call.caller);
+                }
+                // Its Commit is told the action is gone, which it hears: its
+                // next standalone change, such as an undo, goes through.
+                Request::Commit => {
+                    self.dropped.remove(&call.caller);
+                    return Err(Error::Dropped(cause));
+                }
+                _ => return Err(Error::Dropped(cause)),
+            }
+        }
         if changes && read_only(call.badge) {
             return Err(Error::Permission);
         }
@@ -606,14 +692,18 @@ impl<D: BlockDev> Server<D> {
         answered
     }
 
+    /// A model blob's removal gets half of the reserve, as a trash does: its
+    /// space also comes back later.
+    ///
     /// How far `request` may go into kaifs's reserved blocks, so a disk
     /// growth filled can still be emptied, and no client can drain them: all
     /// of it only for work that frees space at once and cannot be looped to
     /// spend it (an emptied trash, a dropped update snapshot), half for a
-    /// trash or a truncate, whose space comes back later, none for growth. An
-    /// action's commit, by Commit or its owner's Sync, gets the least of its
-    /// changes'. Idle's retention and GC and `check --repair` take all of it
-    /// themselves.
+    /// trash or a truncate, whose space comes back later, down to a quarter
+    /// for the person's ([`Server::is_person`]), so no app's trashing keeps
+    /// them from deleting, none for growth. An action's commit, by Commit or
+    /// its owner's Sync, gets the least of its changes'. Idle's retention and
+    /// GC and `check --repair` take all of it themselves.
     pub(crate) fn spends_reserve(
         &mut self,
         caller: u64,
@@ -631,8 +721,19 @@ impl<D: BlockDev> Server<D> {
             Request::EmptyTrash | Request::UpdateDrop { .. } | Request::Abort => Spend::All,
             // Space that may come back only later, while its copy-on-write
             // costs blocks now, so a loop of it could drain all of the
-            // reserve: half, as a trash.
+            // reserve: half, as a trash. The person has their own quarter
+            // below the apps' half, so an app that trashes until refused still
+            // leaves them room to delete.
+            Request::Trash { .. } | Request::Truncate { .. } if self.is_person(caller) => {
+                Spend::Person
+            }
             Request::Trash { .. } | Request::Truncate { .. } => Spend::Half,
+            // A model blob's removal, outside any action, frees the blob once
+            // the GC pass it starts has run, and costs copy-on-write now. Each
+            // needs a sealed blob, written above the reserve, and one refused
+            // writes nothing: half, as a trash, so the GC and an emptied
+            // trash keep the rest.
+            Request::SealedRemove { .. } => Spend::Half,
             // The commit of an action, by Commit or the owner's own Sync, at
             // the least tier of its changes; a Sync outside one has nothing to
             // write and needs no reserve.
@@ -681,9 +782,13 @@ impl<D: BlockDev> Server<D> {
             Ok(done) => Ok(done),
             Err(e) => {
                 // A failed change leaves nothing half done: outside an action
-                // there is nothing else pending, inside one the disk failed.
-                if changes && (!in_action || e == Error::Io) {
+                // there is nothing else pending, inside one the disk failed,
+                // and its owner (the caller) is told its action is gone.
+                if changes && !in_action {
                     self.drop_changes();
+                } else if changes && e == Error::Io {
+                    self.drop_changes();
+                    return Err(Error::Dropped(DropCause::Io));
                 }
                 Err(e)
             }
@@ -1173,6 +1278,34 @@ impl<D: BlockDev> Server<D> {
         }
     }
 
+    /// [`Server::drop_changes`] for an action whose pending run failed to
+    /// write out (`failed` says why); the error to answer. On another caller's
+    /// request the owner hears nothing, so its changes are refused
+    /// ([`Error::Dropped`]) until it sends Abort or Begin, and the caller gets
+    /// `failed`. On the owner's own request (its Write, its Commit) that answer
+    /// is [`Error::Dropped`], not why the run failed, so it knows its action
+    /// is gone and cannot write on as if inside it; it is not marked, so its
+    /// next standalone change, such as an undo, goes through. Callers that
+    /// have died since are forgotten first, so the marks stay few.
+    pub(crate) fn drop_unasked(&mut self, failed: Error) -> Error {
+        let owner = self.owner;
+        self.drop_changes();
+        let alive = self.alive;
+        self.dropped.retain(|&caller, _| alive(caller));
+        let cause = match failed {
+            Error::NoSpace => DropCause::NoSpace,
+            _ => DropCause::Io,
+        };
+        match owner {
+            Some(owner) if owner == self.asking => Error::Dropped(cause),
+            Some(owner) => {
+                self.dropped.insert(owner, cause);
+                failed
+            }
+            None => failed,
+        }
+    }
+
     /// Drops everything since the last commit, an open action with it; the
     /// generation now on the disk. That is the last commit, or one an error
     /// interrupted after it had landed whole ([`Fs::abort`]).
@@ -1197,8 +1330,11 @@ impl<D: BlockDev> Server<D> {
         let before = self.fs.committed;
         match self.fs.commit() {
             Ok(generation) => Ok(generation),
+            // Landed whole despite the error only if the disk says so after
+            // a flush that worked: the slot read back may still sit in the
+            // device's volatile cache, and a cache must never vouch for it.
             Err(e) => match self.drop_changes() {
-                landed if landed > before => Ok(landed),
+                landed if landed > before && self.fs.io.dev.flush().is_ok() => Ok(landed),
                 _ => Err(error(e)),
             },
         }

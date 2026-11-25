@@ -1,7 +1,7 @@
 //! Cases booted only when named (`XTASK_CASE`), never in `cargo xtask test`'s
-//! shards: `desk-tour`, `desk-tour-1024` and `desk-tour-1080` take a
+//! shards: `desk-tour`, `desk-tour-1024`, `desk-tour-1080` and `desk-tour-1440` take a
 //! screenshot of each step of the desktop tour
-//! (`kernel/src/desk_tour_tests.rs`) at 1280x800, 1024x768 and 1920x1080,
+//! (`kernel/src/desk_tour_tests.rs`) at 1280x800, 1024x768, 1920x1080 and 2560x1440,
 //! for `.github/workflows/screenshots.yml`.
 
 use super::{TestCase, case};
@@ -36,11 +36,15 @@ macro_rules! keys {
 /// The tour at `size` on virtio-gpu, which takes `display=`.
 macro_rules! tour {
     ($name:literal, $w:literal, $size:literal) => {
+        tour!($name, $w, $size, $size)
+    };
+    // `desktop` says the size it lays out on: the screen's over its scale.
+    ($name:literal, $w:literal, $size:literal, $logical:literal) => {
         TestCase {
             gpu: true,
             keys: keys!($w),
             expect: &[
-                concat!("desktop: drew the desk at ", $size),
+                concat!("desktop: drew the desk at ", $logical),
                 "desk-tour: the tour is done",
             ],
             // Files and the saved theme live on `kai-data`.
@@ -60,6 +64,8 @@ pub const CASES: &[TestCase] = &[
     tour!("desk-tour", "1280", "1280x800"),
     tour!("desk-tour-1024", "1024", "1024x768"),
     tour!("desk-tour-1080", "1920", "1920x1080"),
+    // 2560x1440 at 1.25: 2048x1152 logical px, resampled onto the screen.
+    tour!("desk-tour-1440", "2560", "2560x1440", "2048x1152"),
 ];
 
 #[cfg(test)]
@@ -87,7 +93,7 @@ mod tests {
 
     #[test]
     fn each_step_has_one_screendump_named_for_it_at_each_size() {
-        for (case, width) in CASES.iter().zip(["1280", "1024", "1920"]) {
+        for (case, width) in CASES.iter().zip(["1280", "1024", "1920", "2560"]) {
             assert_eq!(case.keys.len(), STEPS.len(), "{}", case.name);
             for (stage, step) in case.keys.iter().zip(STEPS) {
                 let want = format!("!screendump tour-{width}-{step}.ppm");

@@ -148,3 +148,16 @@ fn only_an_app_call_never_taken_is_sent_again() {
         "timeout notes-window did not answer in time"
     ));
 }
+
+#[test]
+fn a_failed_hop_to_the_supervisor_is_unanswered_only_when_it_may_have_gone_on() {
+    for error in [crate::Error::TimedOut, crate::Error::Dead] {
+        let why = app_call_hop(error);
+        assert!(app_call_unanswered(&why), "{why}");
+        assert!(!app_call_may_retry(&why), "{why}");
+    }
+    for error in [crate::Error::Unavailable, crate::Error::Permission] {
+        let why = app_call_hop(error);
+        assert!(!app_call_unanswered(&why), "{why}");
+    }
+}

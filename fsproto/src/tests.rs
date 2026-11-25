@@ -202,3 +202,25 @@ fn the_bulk_requests_keep_their_numbers() {
     let copied = encode_reply(&Reply::Copied { len: 3 });
     assert_eq!(copied, [0x82, 0x01, 0x82, 0x10, 0x81, 0x03]);
 }
+
+#[test]
+fn only_a_dropped_action_ends_one_and_a_refusal_or_failure_does_not() {
+    use crate::{DropCause, Error};
+    for e in [
+        Error::Dropped(DropCause::NoSpace),
+        Error::Dropped(DropCause::Io),
+    ] {
+        assert!(e.ends_action(), "{e:?}");
+    }
+    // fs answers an in-action Io as Dropped(Io); a bare Io is a read's or a
+    // change's outside any action, which leaves an open one where it was.
+    for e in [
+        Error::Io,
+        Error::NoSpace,
+        Error::Permission,
+        Error::Exists,
+        Error::Busy,
+    ] {
+        assert!(!e.ends_action(), "{e:?}");
+    }
+}

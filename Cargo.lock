@@ -2773,6 +2773,7 @@ dependencies = [
 name = "user"
 version = "0.1.0-dev"
 dependencies = [
+ "agentabi",
  "agentsched",
  "appabi",
  "bootslot",
@@ -2786,6 +2787,7 @@ dependencies = [
  "fsproto",
  "fsserve",
  "gfx2d",
+ "goalcore",
  "infer",
  "kabi",
  "kaibundle",
@@ -3279,6 +3281,7 @@ version = "0.1.0-dev"
 dependencies = [
  "addr2line",
  "agentabi",
+ "agentid",
  "bootslot",
  "bpe",
  "ccserve",
@@ -3292,6 +3295,7 @@ dependencies = [
  "getrandom 0.2.17",
  "gfxcore",
  "gguf",
+ "goalcore",
  "infer",
  "kabi",
  "kaibundle",

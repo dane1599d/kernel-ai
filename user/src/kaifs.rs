@@ -192,7 +192,17 @@ impl Kaifs {
         format!("{}.mark", self.name)
     }
 
+    /// A failed store request ends the open action: `fs` may have dropped it
+    /// ([`Error::Dropped`], which a read that writes out the pending run can
+    /// answer too), and a retry that wrote on with `open` still set would land
+    /// outside any action. Aborting is always safe, since the mark names only
+    /// what was committed: the resume fetches the rest again. A short read is
+    /// no failure of the store and leaves it.
     fn failed(&mut self, why: String, what: &'static str) -> DownloadError {
+        if self.open && what != SHORT_READ {
+            let _ = ask(self.dir, Request::Abort);
+            self.open = false;
+        }
         self.why = Some(why);
         DownloadError::Store(what)
     }

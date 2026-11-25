@@ -104,7 +104,7 @@ use frame::{arrow, draw, post_events, refresh_bar, report, wake_shell};
 #[path = "desktop/setup.rs"]
 mod setup;
 use setup::{
-    bar_text, log_bar, logs_bar, logs_first_key, pane_word, starting_appearance, theme,
+    bar_text, log_bar, logs_bar, logs_first_key, logs_wheel, pane_word, starting_appearance, theme,
     wait_for_screen,
 };
 
@@ -145,6 +145,11 @@ struct State {
     pools: Vec<Pool>,
     /// Each window's buffer, whose client, and the scale it was drawn at.
     shown: Vec<(WindowId, u64, Buffer, u32)>,
+    /// Windows the wheel was last sent to and that have not drawn since, each
+    /// with the hashes of the rows of its picture then (`frame::wheel_rows`):
+    /// the next picture of one is logged, and whether it scrolled, which tells
+    /// a boot case the app took the wheel and moved its content.
+    wheeled: Vec<(WindowId, Vec<u64>)>,
     frame: Image,
     /// Which window's content was painted last at each px of `frame`, 0 for
     /// none or a window drawn at scale 1 (`deskcore::overlay`).
@@ -170,6 +175,9 @@ struct State {
     /// `desktop`. No other plan logs a key, so what a person types never reaches
     /// the serial log.
     log_first_key: bool,
+    /// The plan line asks for the wheel lines (`wheel_log=on`), a test image's only:
+    /// `desk-wheel-app` reads them; a person's wheel logs nothing.
+    log_wheel: bool,
     /// The first key has been logged since the claim: only it is, and a frame never
     /// waits on it.
     key_logged: bool,
@@ -224,6 +232,8 @@ struct State {
     perf: Option<perf::Perf>,
     /// The theme's name, as clients are told it (`surfabi`'s `Theme`).
     theme_name: String,
+    /// The appearance clients are told (`surfabi`'s `Look`): what is painted.
+    look_text: String,
 }
 
 fn main() -> i32 {
@@ -234,6 +244,7 @@ fn main() -> i32 {
     let mut appearance = starting_appearance();
     let mut painted_in = Appearance::default();
     let mut theme_name = Appearance::default().theme.clone();
+    let mut look_text = Appearance::default().encode();
     loop {
         let Some(screen) = claim(painter.palette()) else {
             if !wait_for_screen() {
@@ -261,6 +272,7 @@ fn main() -> i32 {
             clients: Vec::new(),
             pools: Vec::new(),
             shown: Vec::new(),
+            wheeled: Vec::new(),
             frame: Image::new(width, height),
             mask: vec![0; (width.max(0) * height.max(0)) as usize],
             width,
@@ -274,6 +286,7 @@ fn main() -> i32 {
             draws_cursor: screen.info.cursor == 0,
             drawn: false,
             log_first_key: logs_first_key(),
+            log_wheel: logs_wheel(),
             key_logged: false,
             log_bar: logs_bar(),
             panel: Panel::new(),
@@ -299,6 +312,7 @@ fn main() -> i32 {
             painted_in,
             perf: perf::from_args(),
             theme_name: theme_name.clone(),
+            look_text: look_text.clone(),
         };
         // The taskbar's pins: the image's own apps, until `pkg` lists more.
         state.desk.set_installed(apps::built_in_names());
@@ -318,6 +332,7 @@ fn main() -> i32 {
         painted_in = state.painted_in;
         appearance = state.appearance;
         theme_name = state.theme_name;
+        look_text = state.look_text;
         let Some(back) = result else {
             return 1;
         };

@@ -51,7 +51,7 @@ pub fn from_shell(caller: &str) -> bool {
 /// Whether `call` names the send row: its card is a send's, whatever else
 /// it says. A send's card takes no Allow without its text read through.
 pub fn names_send(call: &str) -> bool {
-    call.starts_with(ACTION) && call[ACTION.len()..].starts_with('(')
+    termcore::menu::names_send(call)
 }
 
 /// What a send's call on the card says: where it goes, and which text.
@@ -117,6 +117,9 @@ pub struct SendPreview {
     /// Which of the laid-out lines have been on the screen, each one: the
     /// whole text is read only when every line has been, not only the last.
     pub seen: Vec<bool>,
+    /// The laid-out lines `seen` counts: another layout, even one of as
+    /// many lines, starts the count again.
+    pub layout: Vec<String>,
 }
 
 impl SendPreview {
@@ -135,6 +138,7 @@ impl SendPreview {
             text: String::from(text),
             scrolled: 0,
             seen: Vec::new(),
+            layout: Vec::new(),
         })
     }
 
@@ -197,13 +201,16 @@ impl SendPreview {
         moved
     }
 
-    /// The text's lines from its scroll, `rows` of `total`, are on the
-    /// screen now: whether every one of its lines has been, each in turn,
-    /// not only its last (a jump to the end reads nothing in between). A
-    /// new layout (another width) starts the count again.
-    pub fn on_screen(&mut self, rows: usize, total: usize) -> bool {
-        if self.seen.len() != total {
+    /// The text laid out as `lines`, `rows` of them from its scroll, is on
+    /// the screen now: whether every one of its lines has been, each in
+    /// turn, not only its last (a jump to the end reads nothing in between).
+    /// A new layout (another width or size), even of as many lines, starts
+    /// the count again (#1142's re-check).
+    pub fn on_screen(&mut self, rows: usize, lines: &[String]) -> bool {
+        let total = lines.len();
+        if self.layout != lines {
             self.seen = alloc::vec![false; total];
+            self.layout = lines.to_vec();
         }
         let end = (self.scrolled + rows).min(total);
         for seen in &mut self.seen[self.scrolled.min(end)..end] {
@@ -299,15 +306,15 @@ impl Slot {
         self.preview.as_mut()
     }
 
-    /// A frame showed `rows` of the text's `total` lines from its scroll:
-    /// the card's ask once the whole text has now been read through, the
-    /// first time only.
-    pub fn drawn(&mut self, rows: usize, total: usize) -> Option<u64> {
+    /// A frame showed `rows` of the text's laid-out `lines` from its
+    /// scroll: the card's ask once the whole text has now been read through,
+    /// the first time only.
+    pub fn drawn(&mut self, rows: usize, lines: &[String]) -> Option<u64> {
         if !self.unread {
             return None;
         }
         let preview = self.preview.as_mut()?;
-        if !preview.on_screen(rows, total) {
+        if !preview.on_screen(rows, lines) {
             return None;
         }
         self.unread = false;

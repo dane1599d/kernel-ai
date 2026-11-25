@@ -3,7 +3,11 @@
 
     throughput_floor.py LOG CASE FLOOR REGEX
 
-REGEX is matched against each line of LOG, a `cargo xtask test` console log.
+LOG is a `cargo xtask test` console log, or several joined by commas: the
+same case booted more than once, whose median is floored, so one slow boot
+on a noisy runner does not fail it while a slow driver still does.
+
+REGEX is matched against each line of each LOG.
 Each named group in it is one direction (`write`, `read`, `down`) and holds a
 figure in MB/s. Every figure from the line that matches last goes to the job
 summary ($GITHUB_STEP_SUMMARY, when it is set) as a table row. The script fails
@@ -13,6 +17,7 @@ stops printing its figures fails rather than passing quietly.
 
 import os
 import re
+import statistics
 import sys
 
 
@@ -65,10 +70,18 @@ def main(argv: list[str]) -> int:
     if not pattern.groupindex:
         print("throughput_floor: the pattern names no direction", file=sys.stderr)
         return 2
-    measured = figures(log_path, pattern)
-    if measured is None:
-        write_summary(f"### {case}: no figures in the log; the floor cannot pass\n")
+    runs = [figures(path, pattern) for path in log_path.split(",")]
+    if any(run is None for run in runs):
+        write_summary(f"### {case}: a log has no figures; the floor cannot pass\n")
         return 1
+    if len(runs) > 1:
+        boots = "; ".join(
+            ", ".join(f"{name} {mbs:g}" for name, mbs in run.items()) for run in runs
+        )
+        write_summary(f"{case}: {len(runs)} boots: {boots}; the median is floored\n")
+    measured = {
+        name: statistics.median(run[name] for run in runs) for name in runs[0]
+    }
     write_summary(summary(case, floor, measured))
     under = [name for name, mbs in measured.items() if mbs < floor]
     if under:

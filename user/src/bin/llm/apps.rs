@@ -20,8 +20,13 @@ pub struct Apps {
 
 impl Apps {
     /// A new grammar for `wire` (an `act` request's `apps`), or `None` when
-    /// its apps are those of the grammar in use.
-    pub fn update(&mut self, wire: &str) -> Option<local::act::Grammar> {
+    /// its apps are those of the grammar in use. `count` is the model's
+    /// tokenizer: the apps turn is held to its budget in real tokens.
+    pub fn update(
+        &mut self,
+        wire: &str,
+        count: &dyn Fn(&str) -> usize,
+    ) -> Option<local::act::Grammar> {
         let Some(entries) = apps::entries(wire) else {
             println!("llm: the request's apps are malformed; keeping the last");
             return None;
@@ -49,14 +54,14 @@ impl Apps {
                 rows: self.rows.rows_of(app),
             });
         }
-        let grammar = match local::act::grammar_with(&groups) {
+        let grammar = match local::act::grammar_counted(&groups, count) {
             Ok(grammar) => grammar,
             Err(error) => {
                 println!("llm: the apps' rows do not decode ({error}); keeping the last");
                 return None;
             }
         };
-        let (_, left_out) = apps::turn(&groups);
+        let (_, left_out) = apps::turn_counted(&groups, count);
         if !left_out.is_empty() {
             println!(
                 "llm: past the apps budget, left out: {}",

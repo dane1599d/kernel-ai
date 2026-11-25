@@ -69,6 +69,8 @@ pub(super) const CASES: &[TestCase] = &[
             "net-dest: netdest=llm gave the LLM's handle, CONNECT only, within NET, and nothing without it",
             "[netdest-h] hosts:any narrowed to one exact host, not to a suffix or hosts:any again",
             "net-dest: hosts:any stays where it was made: no narrowing makes another and it never moves, while its one-host narrowing does",
+            // #1150's review: only NetDest moves move the sweep's counter on.
+            "net-dest: a move with no NetDest leaves moves() as it was; one with a NetDest moves it on as it starts and ends",
             "net-dest: one process holds at most 16 narrowed records; another's narrowing still works",
             "net-dest: a narrowing short of the plan lines' reserve swept the dead records first",
             // Audit K #1: record ids carry a generation; handles in transit count.
@@ -94,11 +96,28 @@ pub(super) const CASES: &[TestCase] = &[
             "[netstream-a] after closing them, by NET_CLOSE or by the handle, 16 more opened",
             "[netstream-a] a third bulk stream of one process was Busy",
             "net-stream: streams echoed through the handle, kept to its port and to 16, and closed",
+            // QEMU's virtio-net has MSI-X: frames wake the net thread (P5 plan 3.2).
+            "net-stream: the card raised ",
             // Not "[netstream-b] holding 3 streams": the kernel kills b once
             // its own count shows 3 open, which can be before b's line reaches
             // the console (run 41942359956). That count is the proof b held them.
             "net-stream: a process killed with 3 streams open left none",
         ],
         ..case("net-stream", "test=net-stream")
+    },
+    // The same streams with no MSI-X on the card (`vectors=0`): the kernel
+    // keeps it polled at the old gaps, and everything still flows.
+    TestCase {
+        echo: true,
+        server: false,
+        net_polled: true,
+        expect: &[
+            "net: card up, MAC ",
+            ", polled; ",
+            "net-stream: streams echoed through the handle, kept to its port and to 16, and closed",
+            "net-stream: the card was polled, with no receive interrupts",
+            "net-stream: a process killed with 3 streams open left none",
+        ],
+        ..case("net-stream-polled", "test=net-stream")
     },
 ];

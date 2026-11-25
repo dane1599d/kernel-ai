@@ -6,7 +6,7 @@
 //! starts again.
 
 use super::{NET, resolve};
-use crate::{log, threads};
+use crate::log;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
@@ -345,6 +345,7 @@ fn via(gateway: Option<Ipv4Addr>) -> String {
 /// and ARP is answered when nobody is exchanging data.
 pub fn run(_: usize) {
     loop {
+        super::wake::net_thread_polling();
         let gap = {
             let mut guard = NET.lock();
             let Some(net) = guard.as_mut() else {
@@ -353,6 +354,7 @@ pub fn run(_: usize) {
             net.poll();
             net.setup.poll_gap_ms()
         };
-        threads::sleep_ms(gap);
+        super::wake::net_thread_polled();
+        super::wake::net_thread_sleep(gap);
     }
 }

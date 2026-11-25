@@ -217,3 +217,53 @@ fn the_blob_the_hint_names_is_refused_and_nothing_changes() {
     let info = Request::ModelInfo { name: booted };
     assert!(matches!(store(&mut c, ALICE, info), Reply::Model { .. }));
 }
+
+/// A disk filled until only the reserve is left: removing a model may spend
+/// half of it (with none, it was refused NoSpace), so a model can always be
+/// taken out to make room, and its blocks come back once the GC pass it
+/// starts has run. A removal refused spends nothing.
+#[test]
+fn a_model_is_removed_on_a_disk_filled_to_the_reserve() {
+    let mut disk = MemDisk::new(2 * 1024);
+    let (mut c, _) = Client::start(&mut disk);
+    let blob = model(1 << 20, 7);
+    let name = import(&mut c, &blob);
+    let made = crate::reserve_tests::fill(&mut c);
+    assert!(made.len() > 100, "{} files", made.len());
+    let (filled, _) = c.server.fs().space();
+    let missing = name_of(b"never imported");
+    assert_eq!(
+        remove(&mut c, ALICE, &missing),
+        Reply::Failed(Error::NotFound)
+    );
+    let (refused, _) = c.server.fs().space();
+    // Its only write is the commit any change outside an action makes first,
+    // which may give back blocks waiting to be freed.
+    assert!(
+        refused >= filled,
+        "{filled} free, {refused} after a refused removal"
+    );
+    // Then the blocks above the reserve that are too few for one more file,
+    // taken one at a time as growth would, so the reserve is all that is left.
+    let reserve = c.server.fs().io.alloc.reserve();
+    while c.server.fs().io.alloc.alloc(0).is_ok() {}
+    let (full, _) = c.server.fs().space();
+    assert_eq!(full, reserve);
+
+    assert_eq!(remove(&mut c, ALICE, &name), Reply::Done);
+    let (spent, _) = c.server.fs().space();
+    assert!(spent >= reserve / 2, "{spent} free, the reserve {reserve}");
+    collect(&mut c);
+    for _ in 0..2 {
+        let sync = c.call(ALICE, HOME_USER, DIR_RIGHTS, Request::Sync).0;
+        assert!(matches!(sync, Reply::Committed { .. }), "{sync:?}");
+    }
+    let (freed, _) = c.server.fs().space();
+    let blob_blocks = blob.len().div_ceil(kaifs::BLOCK) as u64;
+    assert!(
+        freed >= full + blob_blocks / 2,
+        "{full} free full, {freed} after, the blob was {blob_blocks}"
+    );
+    let info = Request::ModelInfo { name };
+    assert_eq!(store(&mut c, ALICE, info), Reply::Failed(Error::Invalid));
+}

@@ -600,9 +600,11 @@ impl Shell {
             power: false,
             goal: None,
         });
-        // The highlight starts on Allow only for a call the line plainly asked for.
+        // The highlight starts on Allow only for a call the line plainly asked
+        // for: one with no undo, an ungrounded fetch, or one the line asked for
+        // that asks anyway (a model fetch, for the gigabytes it brings).
         let origin = match why {
-            Why::NoUndo | Why::Ungrounded => Origin::Asked,
+            Why::NoUndo | Why::Ungrounded | Why::Asked => Origin::Asked,
             _ => Origin::Added,
         };
         let (kind, target) = offer.map(|o| o.labels()).unwrap_or_default();

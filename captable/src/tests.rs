@@ -469,31 +469,122 @@ fn m4_no_attack_succeeds() {
 }
 
 #[test]
-fn a_closed_handle_restored_comes_back_under_its_own_value() {
+fn a_held_handle_put_back_comes_back_under_its_own_value() {
     let mut table = Table::new().unwrap();
     let a = table.insert(sched(Rights::READ)).unwrap();
     let b = table.insert(sched(Rights::SET_POLICY)).unwrap();
-    let (ea, eb) = (table.close(a).unwrap(), table.close(b).unwrap());
-    assert_eq!(table.restore(b, eb), Ok(b));
-    assert_eq!(table.restore(a, ea), Ok(a));
+    let (ea, eb) = (table.hold(a).unwrap(), table.hold(b).unwrap());
+    // Held, they name nothing.
+    assert_eq!(table.get(a), Err(Error::BadHandle));
+    assert_eq!(table.close(b), Err(Error::BadHandle));
+    assert_eq!(table.put_back(b, eb), Ok(b));
+    assert_eq!(table.put_back(a, ea), Ok(a));
     assert_eq!(table.get(a).unwrap().rights, Rights::READ);
     assert_eq!(table.get(b).unwrap().rights, Rights::SET_POLICY);
-    // Neither slot is handed out again while restored.
-    let c = table.insert(sched(Rights::READ)).unwrap();
-    assert!(c.index() != a.index() && c.index() != b.index());
+    assert_eq!(table.put_back(a, ea), Err(Error::BadHandle));
+}
+
+/// #1162 review: close and insert are last-in first-out, so an insert right
+/// after a close took the very slot a refused move wanted back. A held slot is
+/// never handed out: the insert between the hold and the put-back lands
+/// elsewhere, and the moved entry still comes back under its value.
+#[test]
+fn an_insert_while_held_never_takes_the_held_slot() {
+    let mut table = Table::new().unwrap();
+    let a = table.insert(sched(Rights::READ)).unwrap();
+    let entry = table.hold(a).unwrap();
+    let between = table.insert(sched(Rights::MAP)).unwrap();
+    assert_ne!(between.index(), a.index());
+    assert_eq!(table.put_back(a, entry), Ok(a));
+    assert_eq!(table.get(a).unwrap().rights, Rights::READ);
+    assert_eq!(table.get(between).unwrap().rights, Rights::MAP);
 }
 
 #[test]
-fn a_restore_after_the_slot_was_reused_inserts_anew() {
+fn a_released_hold_closes_the_slot() {
     let mut table = Table::new().unwrap();
     let a = table.insert(sched(Rights::READ)).unwrap();
-    let entry = table.close(a).unwrap();
-    // The slot is taken again before the restore.
+    let entry = table.hold(a).unwrap();
+    assert_eq!(table.release(a), Ok(()));
+    // Released: the value is stale, the slot is free again, and the entry
+    // can no longer come back.
+    assert_eq!(table.put_back(a, entry), Err(Error::BadHandle));
+    assert_eq!(table.release(a), Err(Error::BadHandle));
     let reused = table.insert(sched(Rights::MAP)).unwrap();
     assert_eq!(reused.index(), a.index());
-    let back = table.restore(a, entry).unwrap();
-    assert_ne!(back, a);
-    assert_eq!(table.get(reused).unwrap().rights, Rights::MAP);
-    assert_eq!(table.get(back).unwrap().rights, Rights::READ);
+    assert_ne!(reused, a);
     assert_eq!(table.get(a), Err(Error::BadHandle));
+}
+
+/// The retired-slot branch (#1162 review LOW): a slot at MAX_GENERATION
+/// that is held can be put back, and once released it stays off the free list.
+#[test]
+fn a_retired_slot_held_and_released_is_never_reused() {
+    let mut table = Table::new().unwrap();
+    let mut a = table.insert(sched(Rights::READ)).unwrap();
+    while a.generation() < MAX_GENERATION {
+        table.close(a).unwrap();
+        a = table.insert(sched(Rights::READ)).unwrap();
+    }
+    let entry = table.hold(a).unwrap();
+    assert_eq!(table.put_back(a, entry), Ok(a));
+    table.hold(a).unwrap();
+    assert_eq!(table.release(a), Ok(()));
+    let free = table.capacity() - table.len();
+    for _ in 0..free {
+        let next = table.insert(sched(Rights::MAP)).unwrap();
+        assert_ne!(next.index(), a.index());
+    }
+}
+
+/// #1160's review: an exited process's nodes all go even when one of them is
+/// revoked with its parent mid-walk. P owns A (under Q's node X) and B; the
+/// first revoke finds X revoked first, so A answers Revoked, and B must
+/// still go.
+#[test]
+fn every_owned_node_goes_when_one_is_revoked_mid_walk() {
+    use crate::grant::{Life, NODES, Tree, USER, revoke_each};
+    use core::cell::RefCell;
+    const P: u64 = 7;
+    const Q: u64 = 8;
+    let tree = RefCell::new(std::boxed::Box::new(Tree::new()));
+    let (x, a, b) = {
+        let mut t = tree.borrow_mut();
+        let user = t.root(USER);
+        let x = t.create(user, Q, Life::Session, b"x", 0).unwrap();
+        let a = t.create(x, P, Life::Session, b"a", 0).unwrap();
+        let b = t.create(user, P, Life::Session, b"b", 0).unwrap();
+        (x, a, b)
+    };
+    let mut answers = std::vec::Vec::new();
+    revoke_each(
+        || tree.borrow().owned_by(P),
+        |node| {
+            let mut t = tree.borrow_mut();
+            if node == a {
+                // Another holder revokes A's parent between the look and the revoke.
+                t.revoke(x, &mut [0; NODES]).unwrap();
+            }
+            answers.push((node, t.revoke(node, &mut [0; NODES]).map(|_| ())));
+        },
+    );
+    assert_eq!(
+        answers,
+        [(a, Err(crate::grant::Error::Revoked)), (b, Ok(()))]
+    );
+    assert_eq!(tree.borrow().owned_by(P), None);
+    assert!(!tree.borrow().alive(b));
+}
+
+/// A node that will not go is tried once a pass, at most NODES passes.
+#[test]
+fn a_node_that_will_not_go_stops_the_walk_after_nodes_passes() {
+    use crate::grant::{GrantRef, NODES, revoke_each};
+    let stuck = GrantRef {
+        node: 9,
+        generation: 1,
+    };
+    let mut tries = 0;
+    revoke_each(|| Some(stuck), |_| tries += 1);
+    assert_eq!(tries, NODES);
 }

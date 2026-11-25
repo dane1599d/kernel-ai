@@ -109,7 +109,16 @@ fn every_script_from_the_shape_parses_or_is_refused_for_a_limit() {
 #[test]
 fn scripts_are_the_same_every_time_and_on_every_tier() {
     let bytes = &models()[0];
-    let request = &requests()[0];
+    // The first request the generated model answers with a script: which one
+    // that is moves with the prompt's text, which the model is made from.
+    let requests = requests();
+    let request = requests
+        .iter()
+        .find(|request| {
+            let mut engine = Engine::load(bytes, Tier::best(), 4096, ROOMY).unwrap();
+            script(&mut engine, request, |_| Next::Continue).is_ok()
+        })
+        .expect("a request the generated model answers with a script");
     let answers: Vec<_> = Tier::all()
         .flat_map(|tier| {
             let mut engine = Engine::load(bytes, tier, 4096, ROOMY).unwrap();

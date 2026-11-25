@@ -242,6 +242,20 @@ pub fn app_call_may_retry(why: &str) -> bool {
     why.starts_with(APP_TIMEOUT)
 }
 
+/// The shell's words for an `app-call` whose request to the supervisor itself
+/// failed with `error`. The supervisor may have passed it on before the wait
+/// ran out (TimedOut) or before it died holding it (Dead): that one is
+/// [`APP_UNANSWERED`], never sent again; any other never left.
+pub fn app_call_hop(error: crate::Error) -> alloc::string::String {
+    use crate::Error;
+    match error {
+        Error::TimedOut | Error::Dead => alloc::format!(
+            "{APP_UNANSWERED} the supervisor did not answer ({error:?}); the call may have run"
+        ),
+        _ => alloc::format!("the supervisor did not answer ({error:?})"),
+    }
+}
+
 /// Whether an `app-call` that failed with `why` may have run all the same.
 pub fn app_call_unanswered(why: &str) -> bool {
     why.starts_with(APP_UNANSWERED)
