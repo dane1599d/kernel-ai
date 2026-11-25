@@ -13,6 +13,7 @@ use alloc::string::String;
 use alloc::vec;
 use core::net::Ipv4Addr;
 use netcore::config::{FALLBACK, FALLBACK_DNS, Mode, NetConfig, Static};
+use netcore::lease::{Kind as LeaseKind, Lease, MAX_DNS, Was as LeaseWas};
 use smoltcp::iface::{Interface, SocketHandle, SocketSet};
 use smoltcp::socket::dhcpv4::{self, Event};
 use smoltcp::time::Duration;
@@ -26,7 +27,6 @@ pub const UNCONFIGURED_POLL_MS: u64 = 10;
 const IDLE_POLL_MS: u64 = 100;
 /// Each DHCP packet received is copied here for its lease time.
 const DHCP_PACKET_BUFFER: usize = 1500;
-const MAX_DNS: usize = 3;
 
 static CONFIG: Once<NetConfig> = Once::new();
 
@@ -96,38 +96,28 @@ impl Status {
     }
 }
 
-/// What a DHCP lease says.
-struct Lease {
-    address: (Ipv4Addr, u8),
-    router: Option<Ipv4Addr>,
-    dns: [Option<Ipv4Addr>; MAX_DNS],
-    server: Ipv4Addr,
-    lease_s: Option<u32>,
-}
-
-impl Lease {
-    fn from(config: &dhcpv4::Config<'_>, cap_s: Option<u32>) -> Self {
-        let mut dns = [None; MAX_DNS];
-        for (slot, server) in dns.iter_mut().zip(config.dns_servers.iter()) {
-            *slot = Some(*server);
-        }
-        let granted = config
-            .packet
-            .as_ref()
-            .and_then(|packet: &DhcpPacket<&[u8]>| DhcpRepr::parse(packet).ok())
-            .and_then(|repr| repr.lease_duration);
-        let lease_s = match (granted, cap_s) {
-            (Some(granted), Some(cap)) => Some(granted.min(cap)),
-            (granted, None) => granted,
-            (None, cap) => cap,
-        };
-        Self {
-            address: (config.address.address(), config.address.prefix_len()),
-            router: config.router,
-            dns,
-            server: config.server.address,
-            lease_s,
-        }
+/// The lease smoltcp's client reports, its time capped by `cap_s`.
+fn lease_of(config: &dhcpv4::Config<'_>, cap_s: Option<u32>) -> Lease {
+    let mut dns = [None; MAX_DNS];
+    for (slot, server) in dns.iter_mut().zip(config.dns_servers.iter()) {
+        *slot = Some(*server);
+    }
+    let granted = config
+        .packet
+        .as_ref()
+        .and_then(|packet: &DhcpPacket<&[u8]>| DhcpRepr::parse(packet).ok())
+        .and_then(|repr| repr.lease_duration);
+    let lease_s = match (granted, cap_s) {
+        (Some(granted), Some(cap)) => Some(granted.min(cap)),
+        (granted, None) => granted,
+        (None, cap) => cap,
+    };
+    Lease {
+        address: (config.address.address(), config.address.prefix_len()),
+        router: config.router,
+        dns,
+        server: config.server.address,
+        lease_s,
     }
 }
 
@@ -220,7 +210,7 @@ impl Setup {
             let cap = config().dhcp_max_lease_s;
             let news = match sockets.get_mut::<dhcpv4::Socket>(handle).poll() {
                 None => None,
-                Some(Event::Configured(config)) => Some(Some(Lease::from(&config, cap))),
+                Some(Event::Configured(config)) => Some(Some(lease_of(&config, cap))),
                 Some(Event::Deconfigured) => Some(None),
             };
             match news {
@@ -253,13 +243,20 @@ impl Setup {
 
     fn take_lease(&mut self, iface: &mut Interface, lease: Lease, now_ns: u64) {
         let was = self.status.source;
-        // smoltcp reports every renewal, changed or not (it keeps each packet
-        // for the lease time); one that changes nothing is only a renewal.
-        let renewal = matches!(was, Source::Dhcp { server, lease_s, .. }
-            if server == lease.server && lease_s == lease.lease_s)
-            && self.status.address == Some(lease.address)
-            && self.status.gateway == lease.router
-            && self.status.dns == lease.dns;
+        let held = match was {
+            Source::Fallback => LeaseWas::Fallback,
+            Source::Dhcp {
+                server, lease_s, ..
+            } => LeaseWas::Lease(Lease {
+                server,
+                lease_s,
+                address: self.status.address.unwrap_or((Ipv4Addr::UNSPECIFIED, 0)),
+                router: self.status.gateway,
+                dns: self.status.dns,
+            }),
+            _ => LeaseWas::Else,
+        };
+        let kind = LeaseKind::of(held, &lease);
         let setting = Static {
             address: lease.address.0,
             prefix: lease.address.1,
@@ -275,7 +272,7 @@ impl Setup {
             return;
         }
         self.fallback_at_ns = None;
-        if !renewal {
+        if kind.counts() {
             self.status.leases += 1;
         }
         let lease_text = lease
@@ -288,12 +285,7 @@ impl Setup {
             setting.prefix,
             via(setting.gateway),
             lease.server,
-            match was {
-                Source::Fallback => "; leaving the fallback",
-                Source::Dhcp { .. } if renewal => "; renewed",
-                Source::Dhcp { .. } => "; the lease changed",
-                _ => "",
-            }
+            kind.note()
         );
     }
 

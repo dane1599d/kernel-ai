@@ -53,7 +53,7 @@ impl EcamAccess {
         let bus_base = match mapped.get(&(self.segment, bus)) {
             Some(&base) => base,
             None => {
-                let phys = self.base + (u64::from(bus) << 20);
+                let phys = self.base.checked_add(u64::from(bus) << 20)?;
                 let base = memory::map_physical(phys, 1 << 20, DEVICE).ok()?;
                 mapped.insert((self.segment, bus), base);
                 base

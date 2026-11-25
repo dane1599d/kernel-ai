@@ -10,7 +10,6 @@
 //! in `desktop` and never reaches the shell. What the sheet asks for comes back
 //! as a line, [`Panel::send`], so it goes the way a typed one does.
 
-use crate::desk::usage;
 use crate::keymap;
 use alloc::collections::VecDeque;
 use alloc::string::String;
@@ -67,8 +66,8 @@ pub struct Panel {
     line: Line,
     pub(crate) state: State,
     focused: bool,
-    shift: u8,
-    ctrl: u8,
+    /// Shift and Ctrl, as held.
+    held: keymap::Held,
     /// Caps Lock, as the desk says ([`Panel::set_caps`]).
     caps: bool,
     /// The log entry the done line's undo takes back ([`Panel::set_done`]).
@@ -114,8 +113,7 @@ impl Panel {
             line: Line::new(MAX_LINE),
             state: State::Idle,
             focused: false,
-            shift: 0,
-            ctrl: 0,
+            held: keymap::Held::default(),
             caps: false,
             entry: None,
             sends: alloc::vec::Vec::new(),
@@ -152,8 +150,7 @@ impl Panel {
     /// Focus came to the panel or left it. Modifiers held then are forgotten:
     /// their releases may go elsewhere.
     pub fn set_focus(&mut self, focused: bool) -> bool {
-        self.shift = 0;
-        self.ctrl = 0;
+        self.held = keymap::Held::default();
         // The focus coming back (Ask Kai's own move to the pane) keeps it.
         if !focused {
             self.enter_held = false;
@@ -218,21 +215,12 @@ impl Panel {
     /// A key while the panel has focus, at `now_ms`; true when the panel
     /// changed and needs drawing.
     pub fn key(&mut self, code: u16, down: bool, now_ms: u64) -> bool {
-        let held = |count: &mut u8| {
-            *count = match down {
-                true => count.saturating_add(1),
-                false => count.saturating_sub(1),
-            }
-        };
+        // A held key's repeats are more downs than ups: a count of them
+        // would stay held after the release (#23 of the bug hunt).
+        if self.held.key(code, down) {
+            return false;
+        }
         match code {
-            usage::LEFT_SHIFT | usage::RIGHT_SHIFT => {
-                held(&mut self.shift);
-                return false;
-            }
-            usage::LEFT_CTRL | usage::RIGHT_CTRL => {
-                held(&mut self.ctrl);
-                return false;
-            }
             ENTER | KEYPAD_ENTER if self.enter_held => {
                 self.enter_held = down;
                 return false;
@@ -242,7 +230,7 @@ impl Panel {
             _ if !down => return false,
             _ => {}
         }
-        let Some(key) = keymap::key_of(code, self.shift > 0, self.ctrl > 0, self.caps) else {
+        let Some(key) = keymap::key_of(code, self.held.shift(), self.held.ctrl(), self.caps) else {
             return false;
         };
         if key == Key::Esc {
@@ -396,6 +384,7 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::desk::usage;
 
     /// Presses and releases each usage.
     fn tap(panel: &mut Panel, codes: &[u16]) {
@@ -418,6 +407,24 @@ mod tests {
         assert_eq!(panel.take(), None);
         assert_eq!(panel.text(), "");
         assert_eq!(panel.state(), &State::Thinking { since_ms: 1_000 });
+    }
+
+    /// A Shift or Ctrl held past the keyboard's typematic delay repeats its
+    /// make: its one release still lets it go (#23 of the bug hunt).
+    #[test]
+    fn a_repeating_shift_or_ctrl_is_let_go_by_its_release() {
+        let mut panel = Panel::new();
+        panel.set_focus(true);
+        for _ in 0..3 {
+            panel.key(usage::LEFT_SHIFT, true, 0);
+        }
+        panel.key(usage::LEFT_SHIFT, false, 0);
+        for _ in 0..2 {
+            panel.key(usage::LEFT_CTRL, true, 0);
+        }
+        panel.key(usage::LEFT_CTRL, false, 0);
+        tap(&mut panel, &[0x04, 0x28]);
+        assert_eq!(panel.take(), Some(Request::Line("a".into())));
     }
 
     /// Esc on a line the shell took asks `desktop` to interrupt it, once;

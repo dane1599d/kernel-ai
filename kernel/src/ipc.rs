@@ -154,6 +154,7 @@ pub mod legs {
 }
 
 fn with_ipc<R>(f: impl FnOnce(&mut Ipc) -> R) -> R {
+    threads::ready::not_in_ready(&"the IPC lock");
     threads::preempt_disable();
     let result = f(&mut IPC.lock());
     threads::preempt_enable();
@@ -195,8 +196,35 @@ fn find(ipc: &Ipc, name: &str) -> Option<usize> {
 
 /// The pid serving `name`, if any.
 pub fn server_of(name: &str) -> Option<u64> {
-    let pid = with_ipc(|ipc| find(ipc, name).map(|e| BOUND[e].load(Ordering::SeqCst)));
-    pid.filter(|&pid| pid != 0)
+    served(name).map(Served::pid)
+}
+
+/// The process serving `name` now, if any, looked up once under the lock, for a
+/// cancel that ends when it does ([`Served::gone`]).
+pub fn served(name: &str) -> Option<Served> {
+    let endpoint = with_ipc(|ipc| find(ipc, name))?;
+    let pid = BOUND[endpoint].load(Ordering::SeqCst);
+    (pid != 0).then_some(Served { endpoint, pid })
+}
+
+/// An endpoint and the pid [`served`] found serving it.
+#[derive(Clone, Copy)]
+pub struct Served {
+    endpoint: usize,
+    pid: u64,
+}
+
+impl Served {
+    pub fn pid(self) -> u64 {
+        self.pid
+    }
+
+    /// Whether that process no longer serves the endpoint: it ended, or another
+    /// took its place. Lock-free, for a call's `cancel` ([`call_with_stop`]). An
+    /// endpoint is never freed, so it keeps its name.
+    pub fn gone(self) -> bool {
+        BOUND[self.endpoint].load(Ordering::SeqCst) != self.pid
+    }
 }
 
 /// For a server waiting in another call (the supervisor in `wait_child`): binds
@@ -467,7 +495,8 @@ pub(crate) fn finish_with(pending: Pending) -> Result<(Vec<u8>, u64, Moving), Ca
 }
 
 /// Sends `request` to `name` on behalf of `caller_pid` and waits for the reply until
-/// `deadline_ns`, or until `cancel()` (checked whenever the caller wakes).
+/// `deadline_ns`, or until `cancel()` (checked whenever the caller wakes, and in its
+/// sleep's `ready()`, so lock-free: [`call_with_stop`]).
 pub fn call_as(
     name: &str,
     request: &[u8],
@@ -523,6 +552,10 @@ pub fn call_with(
 /// to its deadline: the server may already be changing something (an `fs`
 /// write, an edit), and its reply carries what the caller must record to undo
 /// it. `cancel()` (a kill, a revoke) still ends the call at once.
+///
+/// `cancel()` and `stop()` are checked in the caller's sleep's `ready()`, so they
+/// take no lock that is held with interrupts on, and do not allocate
+/// (`threads::ready`): [`server_of`] takes the IPC lock, [`Served::gone`] none.
 pub fn call_with_stop(
     name: &str,
     request: &[u8],
