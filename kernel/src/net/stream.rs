@@ -337,9 +337,9 @@ pub fn close(owner: u64, id: u64) -> Result<(), Error> {
     Ok(())
 }
 
-/// Keeps closed `socket` until [`reap`] finds its close done (a close's FIN
-/// or an abort's reset goes out at the next poll); past [`MAX_CLOSING`] the
-/// oldest is aborted and dropped.
+/// Keeps closed `socket` until [`reap`] finds its close done (its FIN goes
+/// out at the next poll); past [`MAX_CLOSING`] the oldest is aborted and
+/// dropped.
 fn linger(net: &mut Net, closing: &mut Vec<SocketHandle>, socket: SocketHandle) {
     if closing.len() == MAX_CLOSING {
         let oldest = closing.remove(0);
@@ -384,18 +384,29 @@ pub fn on_revoke() {
     let Some(net) = guard.as_mut() else {
         return;
     };
+    // Not through `linger`: past its 32 a revoke reaching more streams would
+    // drop some before their reset went, and cut others' closes short. Only
+    // streams with a socket are aborted, and those are never more than the
+    // limit.
+    let mut aborted = [None; MAX_STREAMS];
     let mut streams = STREAMS.lock();
-    let Streams { open, closing } = &mut *streams;
-    for stream in open.iter_mut().flatten() {
-        if stream.revoked()
-            && let Some(socket) = stream.socket.take()
-        {
+    let revoked = streams
+        .open
+        .iter_mut()
+        .flatten()
+        .filter(|stream| stream.revoked());
+    for (place, stream) in aborted.iter_mut().zip(revoked) {
+        if let Some(socket) = stream.socket.take() {
             net.sockets.get_mut::<tcp::Socket>(socket).abort();
-            linger(net, closing, socket);
+            *place = Some(socket);
         }
     }
     drop(streams);
+    // One poll sends each aborted socket's reset; then the sockets go.
     net.poll();
+    for socket in aborted.into_iter().flatten() {
+        net.sockets.remove(socket);
+    }
 }
 
 /// Removes the closed streams whose close is done; called after each poll.
