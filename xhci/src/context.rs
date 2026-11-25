@@ -31,6 +31,11 @@ pub fn dci(endpoint_address: u8) -> u8 {
     }
 }
 
+/// The address of the endpoint at a non-control `dci`: [`dci`] undone.
+pub fn endpoint_address(dci: u8) -> u8 {
+    (dci >> 1) | ((dci & 1) << 7)
+}
+
 /// The input control context: which contexts the command adds (bit `dci`;
 /// bit 0 is the slot).
 pub fn input_control(add: u32) -> Dwords {
@@ -137,6 +142,9 @@ mod tests {
         assert_eq!(dci(0x01), 2);
         assert_eq!(dci(0x82), 5);
         assert_eq!(dci(0x8F), 31);
+        for address in [0x01, 0x81, 0x82, 0x0F, 0x8F] {
+            assert_eq!(endpoint_address(dci(address)), address);
+        }
     }
 
     #[test]
