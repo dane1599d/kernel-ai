@@ -278,12 +278,14 @@ pub(super) fn bind_file(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>
 }
 
 /// `path` as the `fs` client takes it, relative to `/home/user`: a relative path
-/// starts there, `/home/user/…` is the same, and any other absolute path
+/// starts there, `/home/user/…` and `~/…` are the same, and any other absolute path
 /// (`/system/log`) or a `..` is `None`. The AI's file rows reach only the user's
 /// files, never `/system` (P2 plan §4.3); `fs`'s lookup refuses `..` too.
 pub(crate) fn home_path(path: &str) -> Option<&str> {
     let rest = match path.strip_prefix('/') {
-        None => path,
+        // `~` is home, as a goal's folder check reads it (`goalscope::folder`).
+        None if path == "~" => "",
+        None => path.strip_prefix("~/").unwrap_or(path),
         Some(_) if path == "/home/user" => "",
         Some(_) => path.strip_prefix("/home/user/")?,
     };
