@@ -7,7 +7,10 @@
 //! hint back at the model before and records why for the model manager. A boot
 //! that finds a trial already `attempted` and never decided rolls it back at
 //! once: the candidate hung that boot before `updated` could judge it, so it is
-//! not tried again (K, 2026-10-30).
+//! not tried again (K, 2026-10-30). `updated` started again within a boot
+//! knows the mark is this boot's own, and goes on judging. While a boot judges
+//! a trial, no switch is made ([`Switch::OnTrial`]), and the verdict is
+//! written only over that trial's record ([`verdict`]).
 //!
 //! The record is text, one field a line:
 //!
@@ -160,6 +163,19 @@ fn sha(text: &str) -> Option<Sha256> {
     Some(out)
 }
 
+/// What `updated` answers a switch, an import or a download with while a boot
+/// judges a model on trial.
+pub const ON_TRIAL: &str = "a model is on trial; ask again once it is kept or rolled back";
+
+/// How long `updated` waits for `llm`'s `health` when it must know what `llm`
+/// runs: the probation's look, and the model a switch or a remove is held to.
+/// Longer than `llm`'s own wait on an LLM server's health
+/// (`llmproto::health::SERVER_HEALTH_MS`), after which it still reports the
+/// local model, so a slow or unreachable server does not hide a candidate
+/// that loaded; and short enough that the shell's 10 s call to `updated`
+/// holds one such wait and the requests after it.
+pub const HEALTH_WAIT_MS: u64 = 6_000;
+
 /// What `model_use` of `to` does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Switch {
@@ -167,28 +183,45 @@ pub enum Switch {
     Nothing,
     /// Write this record, then point the hint at its candidate.
     Try(Trial),
-    /// Point the hint back at the running model and drop the pending trial:
-    /// `undo` of a switch not yet tried.
+    /// Point the hint back at `to`, the pending trial's way back, and drop the
+    /// trial: `undo` of a switch not yet tried.
     Cancel,
+    /// A boot is judging the trial: [`ON_TRIAL`], and nothing changes. Its
+    /// verdict is written over its record and moves the hint, so a switch
+    /// now would be lost or would boot untried (bug hunt 1, #25).
+    OnTrial,
 }
 
 /// `model_use` of the stored model `to`, whose FNV-1a64 is `fnv`, with
-/// `running` the model this boot runs and `record` the last trial, if any. An
-/// attempted trial is still undecided, so it is replaced or cancelled as a
-/// pending one is.
+/// `record` the last trial, if any, and `running` the model this boot runs,
+/// which counts only with no record. The way back a new trial records is the
+/// model the next restart maps without it, which the record names: a pending
+/// trial's way back (replaced, it keeps it; switched to, it is cancelled),
+/// a kept candidate, or the model a rollback put the hint back on, even while
+/// this boot still runs the candidate. Never while a boot judges a trial.
 pub fn switch(running: Option<Sha256>, record: Option<&Trial>, to: Sha256, fnv: u64) -> Switch {
-    let undecided = |t: &&Trial| matches!(t.state, State::Pending | State::Attempted);
-    let pending = record.filter(undecided);
-    match pending {
-        Some(t) if t.candidate == to => Switch::Nothing,
-        Some(_) if running == Some(to) => Switch::Cancel,
-        _ if running == Some(to) => Switch::Nothing,
-        _ => Switch::Try(Trial {
+    let try_it = |previous: Option<Sha256>| {
+        Switch::Try(Trial {
             candidate: to,
             fnv,
-            previous: running,
+            previous,
             state: State::Pending,
-        }),
+        })
+    };
+    let Some(t) = record else {
+        return match running == Some(to) {
+            true => Switch::Nothing,
+            false => try_it(running),
+        };
+    };
+    match &t.state {
+        State::Attempted => Switch::OnTrial,
+        State::Pending | State::Kept if t.candidate == to => Switch::Nothing,
+        State::Pending if t.previous == Some(to) => Switch::Cancel,
+        State::Pending => try_it(t.previous),
+        State::Kept => try_it(Some(t.candidate)),
+        State::RolledBack(_) if t.previous == Some(to) => Switch::Nothing,
+        State::RolledBack(_) => try_it(t.previous),
     }
 }
 
@@ -205,21 +238,47 @@ pub enum AtBoot {
     /// A boot tried it and never decided: point the hint back at `previous`
     /// and write this record, without trying it again.
     RollBack(Trial),
+    /// `updated` started again within the boot and found it attempted: point
+    /// the hint back at `previous` for now, as a rollback would, so the next
+    /// boot cannot hang on it, and keep the record as it is; then wait on
+    /// `llm` and [`decide`] again, and on [`Decision::Keep`] point the hint at
+    /// the candidate again before writing it kept.
+    Resume(Trial),
 }
 
-/// The first step of a boot with `record` the last trial.
-pub fn at_boot(record: Option<&Trial>) -> AtBoot {
+/// The first step of a start of `updated` with `record` the last trial, and
+/// `again` whether it started before this boot ([`started_again`]). Its first
+/// start marks a pending trial attempted and rolls one already attempted back
+/// at once, since only a boot that hung leaves one (K's condition). A start
+/// again finds this boot's own marks: an attempted trial is this boot's, which
+/// it goes on judging rather than take it for a hang (bug hunt 1, #27), with
+/// the hint on the way back meanwhile ([`AtBoot::Resume`]), so even a first
+/// start that ended before it settled a hung boot's trial never leaves the
+/// hint on that candidate; a pending one was written this boot for the next
+/// restart, which this boot does not judge.
+pub fn at_boot(record: Option<&Trial>, again: bool) -> AtBoot {
     match record {
-        Some(t) if t.state == State::Pending => AtBoot::Try(Trial {
+        Some(t) if t.state == State::Pending && !again => AtBoot::Try(Trial {
             state: State::Attempted,
             ..t.clone()
         }),
+        Some(t) if t.state == State::Attempted && again => AtBoot::Resume(t.clone()),
         Some(t) if t.state == State::Attempted => AtBoot::RollBack(Trial {
             state: State::RolledBack(HUNG.into()),
             ..t.clone()
         }),
         _ => AtBoot::Nothing,
     }
+}
+
+/// Whether `updated`'s arguments say it started before this boot: the
+/// supervisor's `restart=N` counts its restarts of it since the boot began,
+/// those after an exit and those asked for (`supervise::Record::restarts`).
+/// Its records are the kernel's, in memory, so N starts at 0 in every boot.
+pub fn started_again(args: &str) -> bool {
+    args.split_whitespace()
+        .filter_map(|word| word.strip_prefix("restart="))
+        .any(|n| n.parse::<u64>().is_ok_and(|n| n > 0))
 }
 
 /// What `llm` says of its model, as `updated` reads its `health` reply.
@@ -260,5 +319,35 @@ pub fn decide(fnv: u64, health: Health<'_>, waited_ms: u64, limit_ms: u64) -> De
             Decision::RollBack(format!("it did not load within {} s", limit_ms / 1000))
         }
         Health::NotYet => Decision::Wait,
+    }
+}
+
+/// The record the verdict on the trial `judged` writes, `state` now: only
+/// while `record`, as it stands, is still that trial attempted. Anything else
+/// (replaced, cancelled, decided) was written since, and it and the hint are
+/// left as they are.
+pub fn verdict(record: Option<&Trial>, judged: &Trial, state: State) -> Option<Trial> {
+    let ours = judged.state == State::Attempted && record == Some(judged);
+    ours.then(|| Trial {
+        state,
+        ..judged.clone()
+    })
+}
+
+/// `llm`'s `health` reply `text` as the probation reads it, with `state` its
+/// state word: `llmproto::health::state_of`'s, as `State::word` writes it
+/// (`none` for the error `llm` gives with no model and no server). The bin
+/// reads it; this crate does not link `llmproto`. No state is no answer yet:
+/// an error from the server alone, or words without the status.
+pub fn health_of<'a>(text: &'a str, state: Option<&str>) -> Health<'a> {
+    match state {
+        Some("ready" | "warming") => match crate::listing::loaded(text) {
+            Some((_, fnv)) => Health::Ready { fnv },
+            None => Health::Failed("its health names no model"),
+        },
+        Some("failed") => Health::Failed(text),
+        Some("none" | "remote") => Health::NoModel,
+        // `waiting` and `busy`: still mapping, loading or answering.
+        _ => Health::NotYet,
     }
 }

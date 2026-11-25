@@ -1,7 +1,8 @@
 //! `kai-modeltrial 1` and the probation a switched model is on.
 
 use modelchan::trial::{
-    AtBoot, Decision, HUNG, Health, MAX_WHY, State, Switch, Trial, at_boot, decide, switch,
+    AtBoot, Decision, HEALTH_WAIT_MS, HUNG, Health, MAX_WHY, State, Switch, Trial, at_boot, decide,
+    health_of, started_again, switch, verdict,
 };
 
 const OLD: [u8; 32] = [0x11; 32];
@@ -184,10 +185,13 @@ fn a_boot_marks_a_trial_attempted_and_one_never_decided_rolls_back() {
         state: State::Attempted,
         ..record.clone()
     };
-    assert_eq!(at_boot(Some(&record)), AtBoot::Try(attempted.clone()));
+    assert_eq!(
+        at_boot(Some(&record), false),
+        AtBoot::Try(attempted.clone())
+    );
     // That boot hung before it decided: the next one does not try again.
     assert_eq!(
-        at_boot(Some(&attempted)),
+        at_boot(Some(&attempted), false),
         AtBoot::RollBack(Trial {
             state: State::RolledBack(HUNG.into()),
             ..record.clone()
@@ -204,24 +208,241 @@ fn a_boot_marks_a_trial_attempted_and_one_never_decided_rolls_back() {
         },
     ];
     for t in &decided {
-        assert_eq!(at_boot(Some(t)), AtBoot::Nothing);
+        for again in [false, true] {
+            assert_eq!(at_boot(Some(t), again), AtBoot::Nothing);
+        }
     }
-    assert_eq!(at_boot(None), AtBoot::Nothing);
-    // An attempted trial is undecided: replaced or cancelled as a pending one is.
+    assert_eq!(at_boot(None, false), AtBoot::Nothing);
+    assert_eq!(at_boot(None, true), AtBoot::Nothing);
+}
+
+/// Bug hunt 1, #25: a switch while a boot judges a trial wrote a new pending
+/// record, which the probation's verdict on the old candidate then wrote over.
+#[test]
+fn no_switch_while_a_boot_judges_the_trial_and_its_verdict_writes_only_over_it() {
+    let attempted = Trial {
+        state: State::Attempted,
+        ..pending(NEW, Some(OLD))
+    };
+    // Whatever runs (llm is loading the candidate and does not say), and
+    // whichever model it names: refused, the record as it is.
+    for running in [None, Some(OLD), Some(NEW), Some(OTHER)] {
+        for to in [OLD, NEW, OTHER] {
+            assert_eq!(
+                switch(running, Some(&attempted), to, fnv_of(to)),
+                Switch::OnTrial,
+                "{running:?} to {to:?}"
+            );
+        }
+    }
+    // The verdict on the judged trial, over that trial.
+    let kept = Trial {
+        state: State::Kept,
+        ..attempted.clone()
+    };
     assert_eq!(
-        switch(Some(OLD), Some(&attempted), NEW, fnv_of(NEW)),
-        Switch::Nothing
+        verdict(Some(&attempted), &attempted, State::Kept),
+        Some(kept.clone())
+    );
+    let why = State::RolledBack("no model started".into());
+    assert_eq!(
+        verdict(Some(&attempted), &attempted, why.clone()),
+        Some(Trial {
+            state: why.clone(),
+            ..attempted.clone()
+        })
+    );
+    // A record since replaced, cancelled or decided keeps what it says, and
+    // so does the hint: nothing is written.
+    let replaced = pending(OTHER, None);
+    let other_attempt = Trial {
+        state: State::Attempted,
+        ..pending(OTHER, Some(OLD))
+    };
+    for record in [Some(&replaced), Some(&other_attempt), Some(&kept), None] {
+        assert_eq!(verdict(record, &attempted, State::Kept), None, "{record:?}");
+        assert_eq!(verdict(record, &attempted, why.clone()), None, "{record:?}");
+    }
+}
+
+/// Bug hunt 1, #26 and #27's second check: the way back a new trial records
+/// is the model the next restart maps without it, as the record says, not a
+/// candidate `llm` still runs after its rollback, nor none because `llm` did
+/// not say.
+#[test]
+fn a_new_trial_goes_back_to_the_model_the_hint_names() {
+    // NEW was rolled back to OLD: the hint names OLD again, though this boot
+    // may still run NEW (it hung the boot before, and loaded this time) or
+    // run nothing.
+    let rolled = Trial {
+        state: State::RolledBack(HUNG.into()),
+        ..pending(NEW, Some(OLD))
+    };
+    for running in [Some(NEW), None] {
+        assert_eq!(
+            switch(running, Some(&rolled), OTHER, fnv_of(OTHER)),
+            Switch::Try(pending(OTHER, Some(OLD))),
+            "{running:?}"
+        );
+        // The model the hint names: nothing to do.
+        assert_eq!(
+            switch(running, Some(&rolled), OLD, fnv_of(OLD)),
+            Switch::Nothing,
+            "{running:?}"
+        );
+        // The rolled-back candidate again, asked for: a trial, not "already".
+        assert_eq!(
+            switch(running, Some(&rolled), NEW, fnv_of(NEW)),
+            Switch::Try(pending(NEW, Some(OLD))),
+            "{running:?}"
+        );
+    }
+    // A kept candidate is what the hint names.
+    let kept = Trial {
+        state: State::Kept,
+        ..pending(NEW, Some(OLD))
+    };
+    assert_eq!(
+        switch(None, Some(&kept), OTHER, fnv_of(OTHER)),
+        Switch::Try(pending(OTHER, Some(NEW)))
+    );
+    // A pending trial replaced keeps its way back, and switching to that way
+    // back cancels it.
+    let record = pending(NEW, Some(OLD));
+    assert_eq!(
+        switch(None, Some(&record), OTHER, fnv_of(OTHER)),
+        Switch::Try(pending(OTHER, Some(OLD)))
     );
     assert_eq!(
-        switch(Some(NEW), Some(&attempted), OLD, fnv_of(OLD)),
-        Switch::Try(pending(OLD, Some(NEW)))
-    );
-    assert_eq!(
-        switch(Some(OLD), Some(&attempted), OLD, fnv_of(OLD)),
+        switch(None, Some(&record), OLD, fnv_of(OLD)),
         Switch::Cancel
     );
+}
+
+/// Bug hunt 1, #27: `updated` started again within a boot (the supervisor's
+/// restart, or one the user asked for) took this boot's own attempt for a
+/// boot that hung, and rolled back a candidate that was loading.
+#[test]
+fn a_start_again_within_the_boot_resumes_the_probation() {
+    let record = pending(NEW, Some(OLD));
+    let attempted = Trial {
+        state: State::Attempted,
+        ..record.clone()
+    };
     assert_eq!(
-        switch(Some(OLD), Some(&attempted), OTHER, fnv_of(OTHER)),
-        Switch::Try(pending(OTHER, Some(OLD)))
+        at_boot(Some(&attempted), true),
+        AtBoot::Resume(attempted.clone())
+    );
+    // A pending trial found by a start again was written this boot, for the
+    // next restart: this boot does not judge it.
+    assert_eq!(at_boot(Some(&record), true), AtBoot::Nothing);
+    // The first start of a boot keeps K's rule.
+    assert_eq!(
+        at_boot(Some(&attempted), false),
+        AtBoot::RollBack(Trial {
+            state: State::RolledBack(HUNG.into()),
+            ..record
+        })
+    );
+    // The supervisor's `restart=N`, N its restarts of `updated` this boot.
+    for (args, again) in [
+        ("restart=1 serve", true),
+        ("restart=12 step=probation", true),
+        ("restart=0 serve", false),
+        ("serve", false),
+        ("", false),
+        ("restart=x serve", false),
+        ("norestart=3", false),
+    ] {
+        assert_eq!(started_again(args), again, "{args}");
+    }
+}
+
+/// `llm`'s reply to `health` as the service writes it: `ok ` or `err `, and
+/// an error line cut to 160 characters, as `llm` cuts it.
+fn served(reply: Result<String, String>) -> String {
+    match reply {
+        Ok(text) => format!("ok {text}"),
+        Err(why) => format!("err {}", llmproto::script::error_line(&why, 160)),
+    }
+}
+
+fn judged(reply: &str) -> Health<'_> {
+    let state = llmproto::health::state_of(reply).map(llmproto::health::State::word);
+    health_of(reply, state)
+}
+
+/// Bug hunt 1, #28: with an LLM server named, a server whose health fails
+/// hid the local model's state, so every trial rolled back after 300 s.
+#[test]
+fn a_failing_server_does_not_hide_the_local_model_on_trial() {
+    use llmproto::health::{SERVER_HEALTH_MS, State as Llm, Status, reply};
+    const FNV: u64 = 0xff;
+    let model = String::from("model 2497281120 bytes fnv1a64 00000000000000ff");
+    let engine = "local model Qwen3-4B-Instruct-2507-Q4_K_M (fast tier, 4 workers, context 4096, no answer yet)";
+    let status = |state| Status { state, tps10: 0 };
+    let limit = 300_000;
+    for error in [
+        String::from("network: ConnectionRefused"),
+        format!("network: {}", "the server said something long ".repeat(10)),
+    ] {
+        let up = served(reply(
+            Some(Err(error.clone())),
+            Some(format!("{model}; {engine}")),
+            status(Llm::Ready),
+            160,
+        ));
+        assert!(up.starts_with("err "), "{up}");
+        assert_eq!(judged(&up), Health::Ready { fnv: FNV }, "{up}");
+        assert_eq!(decide(FNV, judged(&up), limit, limit), Decision::Keep);
+        // The engine that cannot run is a failure, not a model that loaded.
+        let cannot = served(reply(
+            Some(Err(error)),
+            Some(format!("{model}; the model cannot run: no tensors")),
+            status(Llm::Failed),
+            160,
+        ));
+        assert!(
+            matches!(judged(&cannot), Health::Failed(_)),
+            "{cannot}: {:?}",
+            judged(&cannot)
+        );
+    }
+    // The server's health answered: as before.
+    let both = served(reply(
+        Some(Ok(String::from("HTTP 200 in 4 ms"))),
+        Some(format!("{model}; {engine}")),
+        status(Llm::Ready),
+        160,
+    ));
+    assert_eq!(judged(&both), Health::Ready { fnv: FNV });
+    // No model and no server is final: no model started, at once.
+    let none = served(reply(None, None, status(Llm::NoModel), 160));
+    assert_eq!(judged(&none), Health::NoModel, "{none}");
+    // A server that does not answer at all: the probation's call outlasts
+    // `llm`'s own wait on it, so it hears the local model's state.
+    const { assert!(HEALTH_WAIT_MS > SERVER_HEALTH_MS) };
+}
+
+/// Every state `llm` reports is read: one that cannot change this boot
+/// decides, the others wait.
+#[test]
+fn every_llm_state_is_read() {
+    use llmproto::health::State as Llm;
+    let text = "ok model 12 bytes fnv1a64 00000000000000ff; x; status state=ready tps10=0";
+    for state in Llm::ALL {
+        let health = health_of(text, Some(state.word()));
+        let want = match state {
+            Llm::Ready | Llm::Warming => Health::Ready { fnv: 0xff },
+            Llm::Failed => Health::Failed(text),
+            Llm::NoModel | Llm::Remote => Health::NoModel,
+            Llm::Waiting | Llm::Busy => Health::NotYet,
+        };
+        assert_eq!(health, want, "{state:?}");
+    }
+    assert_eq!(health_of(text, None), Health::NotYet);
+    assert_eq!(
+        health_of("ok x; status state=ready tps10=0", Some("ready")),
+        Health::Failed("its health names no model")
     );
 }
