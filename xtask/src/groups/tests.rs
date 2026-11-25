@@ -171,6 +171,10 @@ fn options_name_the_arms_and_the_gate_needs_both() {
         [Arm::Layered, Arm::Flat]
     );
     assert!(parse(&args("--local m --arm flat --gate")).is_err());
+    assert!(parse(&args("--local m --arm layered,described --gate")).is_err());
+    let options = parse(&args("--local m --arm flat,described --gate")).unwrap();
+    assert_eq!(options.arms, [Arm::Flat, Arm::Described]);
+    assert_eq!(Arm::Described.context(), Arm::Layered.context());
     assert!(parse(&args("--local m --arm wide")).is_err());
     assert!(parse(&args("--arm flat")).is_err());
     assert_eq!(chosen(Some(2)).len(), 6);
@@ -184,10 +188,10 @@ fn the_gate_allows_two_points_and_needs_95_percent_right() {
         right: (right, 100),
         ..Tally::default()
     };
-    assert!(verdict(&tally(88, 95), &tally(90, 100)).0);
-    assert!(!verdict(&tally(87, 95), &tally(90, 100)).0);
-    assert!(!verdict(&tally(95, 94), &tally(90, 100)).0);
-    let (_, text) = verdict(&tally(87, 95), &tally(90, 100));
+    assert!(verdict(Arm::Layered, &tally(88, 95), &tally(90, 100)).0);
+    assert!(!verdict(Arm::Layered, &tally(87, 95), &tally(90, 100)).0);
+    assert!(!verdict(Arm::Layered, &tally(95, 94), &tally(90, 100)).0);
+    let (_, text) = verdict(Arm::Layered, &tally(87, 95), &tally(90, 100));
     assert!(
         text.contains("| -3.0 points |") && text.contains("FAIL"),
         "{text}"
@@ -204,16 +208,16 @@ fn the_gate_fails_when_an_arm_did_not_answer_every_task() {
         ..Tally::default()
     };
     // A flat arm whose every decode erred scores 0: nothing was compared.
-    let (passes, text) = verdict(&tally(90, 0, 0), &tally(0, 100, 0));
+    let (passes, text) = verdict(Arm::Layered, &tally(90, 0, 0), &tally(0, 100, 0));
     assert!(!passes);
     assert!(
         text.contains("| flat: tasks with no call | 100 (0 context full) | 0 | FAIL |"),
         "{text}"
     );
-    assert!(!verdict(&tally(90, 0, 0), &tally(90, 1, 1)).0);
-    assert!(!verdict(&tally(90, 1, 0), &tally(90, 0, 0)).0);
-    assert!(!verdict(&tally(90, 0, 1), &tally(90, 0, 0)).0);
-    assert!(verdict(&tally(90, 0, 0), &tally(90, 0, 0)).0);
+    assert!(!verdict(Arm::Layered, &tally(90, 0, 0), &tally(90, 1, 1)).0);
+    assert!(!verdict(Arm::Layered, &tally(90, 1, 0), &tally(90, 0, 0)).0);
+    assert!(!verdict(Arm::Layered, &tally(90, 0, 1), &tally(90, 0, 0)).0);
+    assert!(verdict(Arm::Layered, &tally(90, 0, 0), &tally(90, 0, 0)).0);
 }
 
 #[test]
@@ -228,7 +232,7 @@ fn both_arms_run_end_to_end_on_the_fixture_model() {
     let bytes: &'static [u8] = Box::leak(infer::fixture::local_script(&text).into_boxed_slice());
     let dir = std::env::temp_dir().join(format!("groups-test-{}", std::process::id()));
     let tasks = chosen(Some(1));
-    for arm in [Arm::Layered, Arm::Flat] {
+    for arm in [Arm::Layered, Arm::Flat, Arm::Described] {
         let loaded = actbench::load_at(bytes, "fixture", arm.context()).unwrap();
         let tally = run_arm(&loaded, arm, &groups, &tasks, &dir).unwrap();
         assert_eq!(tally.passed().1, 3);
@@ -259,4 +263,52 @@ fn both_arms_run_end_to_end_on_the_fixture_model() {
     write_summary("## groups\n", &dir).unwrap();
     assert!(dir.join("groups").join("summary.md").exists());
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// The apps turn llm ships for the stub apps, byte for byte: the described
+/// arm is additive and changes neither it nor the pack's id.
+const SHIPPED_TURN: &str = "## apps (call one and its arguments are shown next)
+todo: todo_add todo_done todo_list
+shopping: shopping_add shopping_remove shopping_list
+timer: timer_start timer_cancel timer_left
+alarm: alarm_set alarm_clear alarm_list
+weather: weather_now weather_week
+music: music_play music_pause music_skip music_volume
+contacts: contacts_find contacts_add
+calendar: calendar_add calendar_day";
+
+#[test]
+fn the_described_arm_leaves_the_shipped_turn_and_pack_id_as_they_are() {
+    let groups = stubs::groups().unwrap();
+    assert_eq!(apps::turn(&groups).0, SHIPPED_TURN);
+    let layered = Arm::Layered.grammar(&groups).unwrap();
+    assert_eq!(layered.apps_turn(), SHIPPED_TURN);
+    assert_eq!(llmproto::pack::act_pack_id(), 0xeb0851fe2073adcd);
+    let described = Arm::Described.grammar(&groups).unwrap();
+    let turn = described.apps_turn();
+    let made = apps::described_turn(&groups, apps::estimate);
+    assert_eq!(turn, made.text);
+    assert!(
+        made.left_out.is_empty() && made.plain.is_empty(),
+        "{made:?}"
+    );
+    assert!(made.words >= 3, "{made:?}");
+    assert!(turn.starts_with(apps::APPS_HEADING), "{turn}");
+    for group in &groups {
+        assert!(turn.contains(&format!("\n{}: ", group.app)), "{turn}");
+        for row in &group.rows {
+            assert!(turn.contains(&format!("{} (", row.name)), "{turn}");
+        }
+    }
+    assert!(
+        apps::estimate(turn) <= apps::APPS_BUDGET,
+        "{}",
+        apps::estimate(turn)
+    );
+    // The same apps, rows and index level as layered: only the turn differs.
+    let names = |g: &Grammar| g.apps().iter().map(|a| a.app.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&described), names(&layered));
+    let named = br#"{"name":"calendar_day","arguments":{}}"#;
+    let g = described.first();
+    assert!(g.is_done(&g.advance(g.start(), named).unwrap()));
 }
