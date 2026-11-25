@@ -34,6 +34,10 @@ const ATTR_ARCHIVE: u8 = 0x20;
 const ATTR_LFN: u8 = 0x0F;
 /// UCS-2 characters one long-name entry holds.
 const LFN_CHARS: usize = 13;
+/// The largest volume this writer makes: 8 GiB, the top of the 4 KiB row.
+const MAX_SECTORS: u32 = 16_777_216;
+/// Sectors in one MiB.
+const MIB_SECTORS: u32 = (1 << 20) / SECTOR;
 
 /// The volume's geometry for `sectors` sectors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,7 +54,7 @@ impl Geometry {
         let sectors_per_cluster = match sectors {
             0..=66_600 => return Err(format!("{sectors} sectors is too small for FAT32")),
             66_601..=532_480 => 1,
-            532_481..=16_777_216 => 8,
+            532_481..=MAX_SECTORS => 8,
             _ => return Err(format!("{sectors} sectors is too large for this writer")),
         };
         // From the FAT specification: the FAT size that covers the data area.
@@ -193,6 +197,32 @@ fn dir_bytes(children: &[Node], root: bool) -> usize {
         })
         .sum();
     32 * (names + if root { 0 } else { 2 })
+}
+
+/// Clusters `nodes` take with `cluster_bytes`-byte clusters, laid out as
+/// [`volume`] lays them: a run for the directory that holds them (the root
+/// when `root`), one for each file that is not empty, and each directory's own.
+fn clusters_for(nodes: &[Node], root: bool, cluster_bytes: usize) -> u64 {
+    let own = dir_bytes(nodes, root).div_ceil(cluster_bytes).max(1) as u64;
+    let inside: u64 = nodes
+        .iter()
+        .map(|node| match node {
+            Node::File { bytes, .. } => bytes.len().div_ceil(cluster_bytes) as u64,
+            Node::Dir { children, .. } => clusters_for(children, false, cluster_bytes),
+        })
+        .sum();
+    own + inside
+}
+
+/// The sectors of the smallest volume, in whole MiB, that holds `root`'s
+/// children: an image at its content's size, with no room to spare beyond the
+/// last MiB, and never below FAT32's floor of 65,525 clusters.
+pub fn fitting_sectors(root: &[Node]) -> Result<u32, String> {
+    (1..=MAX_SECTORS / MIB_SECTORS)
+        .filter_map(|mib| Geometry::for_sectors(mib * MIB_SECTORS).ok())
+        .find(|g| clusters_for(root, true, g.cluster_bytes()) <= u64::from(g.clusters()))
+        .map(|g| g.sectors)
+        .ok_or_else(|| "the files do not fit any FAT32 volume this writer makes".into())
 }
 
 /// The writer's state: the volume bytes and the next free cluster.
