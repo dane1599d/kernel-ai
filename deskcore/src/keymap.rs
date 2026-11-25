@@ -115,9 +115,63 @@ pub fn key_of(usage: u16, shift: bool, ctrl: bool, caps: bool) -> Option<Key> {
     Some(named)
 }
 
+/// Which Shift and Ctrl keys are held, a bit for each side's key: a key-down
+/// sets its bit and a key-up clears it, so a held key's typematic repeats
+/// (more downs than ups) cannot leave it held after its release.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Held(u8);
+
+impl Held {
+    /// `usage` going `down` or up: true when it is a Shift or Ctrl key, which
+    /// this took, and false for any other key.
+    pub fn key(&mut self, usage: u16, down: bool) -> bool {
+        use crate::desk::usage as u;
+        let bit = match usage {
+            u::LEFT_SHIFT => 1,
+            u::RIGHT_SHIFT => 2,
+            u::LEFT_CTRL => 4,
+            u::RIGHT_CTRL => 8,
+            _ => return false,
+        };
+        match down {
+            true => self.0 |= bit,
+            false => self.0 &= !bit,
+        }
+        true
+    }
+
+    pub fn shift(self) -> bool {
+        self.0 & 3 != 0
+    }
+
+    pub fn ctrl(self) -> bool {
+        self.0 & 12 != 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_held_modifiers_repeats_end_with_its_one_release() {
+        use crate::desk::usage as u;
+        let mut held = Held::default();
+        for _ in 0..3 {
+            assert!(held.key(u::LEFT_SHIFT, true));
+        }
+        assert!(held.shift());
+        held.key(u::LEFT_SHIFT, false);
+        assert!(!held.shift(), "three makes and one break: not held");
+        // Each side is its own key: the other still holds.
+        held.key(u::LEFT_CTRL, true);
+        held.key(u::RIGHT_CTRL, true);
+        held.key(u::LEFT_CTRL, false);
+        assert!(held.ctrl());
+        held.key(u::RIGHT_CTRL, false);
+        assert!(!held.ctrl());
+        assert!(!held.key(0x04, true), "a letter is not taken");
+    }
 
     #[test]
     fn letters_digits_and_symbols_type_their_us_characters() {
