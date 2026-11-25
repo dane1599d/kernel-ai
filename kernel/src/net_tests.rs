@@ -4,9 +4,10 @@
 //!
 //! - `test=net-setup`: DHCP gives 10.0.2.15/24 via 10.0.2.2 with DNS 10.0.2.3; the
 //!   gateway answers pings; names resolve, CNAMEs too, from the cache within their
-//!   TTL and from the server after it; NXDOMAIN and silence fail the right way;
-//!   ring 3 resolves through RESOLVE_ON on a `NetDest` handle and is refused
-//!   without one; and the lease, capped at 4 s, is renewed rather than lost.
+//!   TTL and from the server after it, and a reply slower than one try still
+//!   counts; NXDOMAIN and silence fail the right way; ring 3 resolves through
+//!   RESOLVE_ON on a `NetDest` handle and is refused without one; and the lease,
+//!   capped at 4 s, is renewed rather than lost.
 //! - `test=net-fallback`: with DHCP sent to a port nobody serves, the fallback
 //!   address comes after `dhcp_wait_ms` and the gateway answers on it.
 //! - `test=net-static`: `ip=static` is used at once, with no DHCP.
@@ -172,6 +173,16 @@ fn resolve_checks() -> Result<(), &'static str> {
         return Err("net-setup: short.kai.test was still cached after its 1 s TTL");
     }
     log!("net-setup: short.kai.test was asked again once its 1 s TTL ran out");
+    // Only the first query is answered, 2.5 s late: after the second try's own
+    // second. Its reply must still count, with no third query sent.
+    let slow_address = Ipv4Addr::from(fixture::SLOW_ADDRESS);
+    let (before, _) = resolve::counts();
+    let slow = lookup(fixture::SLOW);
+    let (after, _) = resolve::counts();
+    if !slow.is_ok_and(|found| found.addresses == [slow_address]) || after != before + 2 {
+        return Err("net-setup: slow.kai.test, answered once 2.5 s late, did not resolve");
+    }
+    log!("net-setup: slow.kai.test, answered once 2.5 s late, still resolved to 10.0.2.96");
     match lookup(fixture::MISSING) {
         Err("dns: no such host") => log!("net-setup: missing.kai.test: no such host"),
         _ => return Err("net-setup: missing.kai.test did not fail with no such host"),

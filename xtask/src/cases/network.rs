@@ -12,6 +12,7 @@ pub(super) const CASES: &[TestCase] = &[
             "net: DHCP lease 10.0.2.15/24 via 10.0.2.2 from 10.0.2.2, DNS 10.0.2.3, lease 4s",
             "net-setup: 3 of 3 pings to the gateway answered",
             "net-setup: kai.test resolved to 10.0.2.99 (TTL 300 s), then from the cache",
+            "net-setup: slow.kai.test, answered once 2.5 s late, still resolved to 10.0.2.96",
             "net-setup: silent.kai.test timed out after 1500 ms as asked",
             "[netcheck] resolved kai.test to 10.0.2.99",
             "[netcheck-nocap] resolve kai.test refused: not under this handle's hosts",
