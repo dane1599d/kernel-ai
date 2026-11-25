@@ -1,0 +1,14 @@
+[package]
+name = "s14-engine"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = ["floats"] }
+blitz-html = { version = "=0.3.0-beta.4", default-features = false }
+blitz-paint = { version = "=0.3.0-beta.4", default-features = false }
+blitz-traits = { version = "=0.3.0-beta.4", default-features = false }
+anyrender = "0.14"
+anyrender_vello_cpu = { version = "0.18", default-features = false }

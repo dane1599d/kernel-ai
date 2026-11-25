@@ -1,0 +1,13 @@
+# Spike S14-1 `engine-in-wasm` (ADR 0014, in PR #1268). Its own workspace, so
+# Blitz, Stylo (MPL-2.0, allowed on spike branches only: ADR 0009 D4) and
+# Wasmtime never enter the main Cargo.lock. This branch is never merged.
+[workspace]
+resolver = "3"
+members = ["engine", "runner"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[profile.release]
+debug = false

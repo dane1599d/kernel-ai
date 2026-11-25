@@ -1,0 +1,13 @@
+[package]
+name = "s14-runner"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+wasmtime = { version = "=51.0.0", default-features = false, features = ["cranelift", "pulley", "component-model", "runtime", "std", "parallel-compilation"] }
+wasmtime-wasi = { version = "=51.0.0", default-features = false, features = ["p1"] }
+wasmi = "=2.0.3"
+wasmi_wasi = "=2.0.3"
+libc = "0.2"

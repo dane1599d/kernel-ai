@@ -1,0 +1,67 @@
+# Spike S14-1 `engine-in-wasm` (ADR 0014, PR #1268). On `spike/engine-in-wasm`
+# only, never merged: Blitz built natively and for wasm32-wasip1/wasip2, ten
+# fixture pages timed natively, on Wasmtime 51 ahead of time (Cranelift), on
+# Pulley and on wasmi 2.0.3. The report goes to the job summary and, with the
+# raw lines, to a 30-day artifact; nothing is committed.
+name: S14-1 engine-in-wasm
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Renders per process
+        default: "5"
+  push:
+    branches: [spike/engine-in-wasm]
+    paths:
+      - "spikes/s14-1/**"
+      - ".github/workflows/s14-1-engine.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: s14-1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    name: Measure the engine natively and in wasm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: spikes/s14-1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain and the WASI targets
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add wasm32-wasip1 wasm32-wasip2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/s14-1
+      - name: Build natively, the runner, and both WASI targets
+        run: |
+          cargo build --release -p s14-engine -p s14-runner
+          cargo build --release -p s14-engine --target wasm32-wasip2
+          cargo build --release -p s14-engine --target wasm32-wasip1
+          ls -l target/wasm32-wasip1/release/s14-engine.wasm target/wasm32-wasip2/release/s14-engine.wasm
+      - name: CPU
+        run: lscpu | sed -n '1,20p'
+      - name: Measure
+        env:
+          RUNS: ${{ inputs.runs || '5' }}
+          OUT: out
+        run: ./measure.sh
+      - name: Report to the job summary
+        if: always()
+        run: cat out/report.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s14-1-results
+          path: |
+            spikes/s14-1/out/report.md
+            spikes/s14-1/out/raw.txt
+          retention-days: 30
