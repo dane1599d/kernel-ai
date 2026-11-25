@@ -181,6 +181,11 @@ impl Canvas<'_> {
     pub fn fill(&mut self, r: Rect, color: u32) {
         self.check();
         let r = r.intersect(&self.bounds());
+        // Out of bounds `intersect` keeps x past the right edge with no width:
+        // on the last row, `row` would slice past the pixels.
+        if r.is_empty() {
+            return;
+        }
         for y in r.y..r.bottom() {
             self.row(y, r.x, r.right()).fill(color);
         }
@@ -189,6 +194,10 @@ impl Canvas<'_> {
     /// `color` at coverage `a` over `r`.
     pub fn fill_alpha(&mut self, r: Rect, color: u32, a: u32) {
         let r = r.intersect(&self.bounds());
+        // As in `fill`: an empty rect may lie past the pixels.
+        if r.is_empty() {
+            return;
+        }
         for y in r.y..r.bottom() {
             for p in self.row(y, r.x, r.right()) {
                 *p = tint(color, a, *p);

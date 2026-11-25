@@ -6,9 +6,11 @@ use crate::{Measured, Painter, Scale};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::cell::Cell;
 use gfx2d::text::{Fonts, Text};
 use gfx2d::{Image, Rect};
 use sha2::{Digest, Sha256};
+use std::alloc::{GlobalAlloc, Layout as AllocLayout, System};
 use std::path::PathBuf;
 use uikit::layout::Measure;
 use uikit::list::Op;
@@ -20,6 +22,46 @@ const MONO: &[u8] = include_bytes!("../../assets/fonts/JetBrainsMono-Variable.tt
 
 /// A colour of no theme, written by its channels (the lint takes no literals).
 const TEAL: u32 = crate::OPAQUE | (0x12 << 16) | (0x34 << 8) | 0x56;
+
+std::thread_local! {
+    static NOTING: Cell<bool> = const { Cell::new(false) };
+    static LARGEST: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The system allocator, noting the largest block a test thread asks for while
+/// [`largest_alloc`] watches it.
+struct Noting;
+
+// SAFETY: every call is forwarded unchanged to the system allocator; noting
+// touches only const-initialized thread-locals, which never allocate.
+unsafe impl GlobalAlloc for Noting {
+    unsafe fn alloc(&self, layout: AllocLayout) -> *mut u8 {
+        let _ = NOTING.try_with(|on| {
+            if on.get() {
+                let _ = LARGEST.try_with(|most| most.set(most.get().max(layout.size())));
+            }
+        });
+        // SAFETY: the caller's contract for `layout` is passed through.
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: AllocLayout) {
+        // SAFETY: `ptr` came from `System.alloc` with this `layout`.
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: Noting = Noting;
+
+/// The largest single allocation `f` made on this thread, in bytes.
+fn largest_alloc(f: impl FnOnce()) -> usize {
+    LARGEST.with(|most| most.set(0));
+    NOTING.with(|on| on.set(true));
+    f();
+    NOTING.with(|on| on.set(false));
+    LARGEST.with(Cell::get)
+}
 
 fn text(dark: bool) -> Text {
     Text::new(
@@ -425,4 +467,259 @@ legible = off
     assert_eq!(Measured(&measure).measure(body, "x").1, drawn);
     assert!(Measured(&default).measure(body, "x").1 < drawn);
     assert!(crate::resolve_look("not an appearance").is_err());
+}
+
+/// A fill or stroke with no room, or less than none (a squeezed widget's frame
+/// or box), draws nothing at any scale, and does not panic.
+#[test]
+fn a_fill_or_stroke_with_no_room_draws_nothing() {
+    use uikit::geom::Rect as Logical;
+    use uikit::list::{DisplayList, Group};
+    use uikit::style::Token;
+    let palette = &look::DARK;
+    let window = palette.window | crate::OPAQUE;
+    let mut t = text(true);
+    let all = Logical::new(0, 0, 100, 100);
+    for scale in [120, 180, 240] {
+        for (w, h) in [(0, 32), (32, 0), (-2, 20), (20, -2), (-40, -40), (0, 0)] {
+            let rect = Logical::new(10, 10, w, h);
+            let ops = alloc::vec![
+                Op::Fill {
+                    rect,
+                    token: Token::Raised,
+                    radius: 4,
+                },
+                Op::Fill {
+                    rect,
+                    token: Token::Raised,
+                    radius: 0,
+                },
+                Op::Stroke {
+                    rect,
+                    token: Token::LineStrong,
+                    width: 1,
+                    radius: 4,
+                },
+                Op::Stroke {
+                    rect,
+                    token: Token::Focus,
+                    width: 2,
+                    radius: 7,
+                },
+            ];
+            let list = DisplayList {
+                groups: alloc::vec![Group {
+                    node: 1,
+                    clip: all,
+                    bounds: all,
+                    ops,
+                }],
+            };
+            let mut img = Image::new(240, 240);
+            let mut p = Painter {
+                palette,
+                text: &mut t,
+                scale: Scale::of(scale),
+            };
+            let bounds = img.bounds();
+            p.paint(&mut img.canvas(), &list, bounds);
+            assert!(img.px.iter().all(|&px| px == window), "{w}x{h} at {scale}");
+        }
+    }
+}
+
+/// A window whose widgets have no room, or less than none, paints at every
+/// scale: a button 0 px wide, a list given 0 px, a labelled field shorter than
+/// its label (and focused, so its ring too), a code view 0 px wide with a
+/// selected row. What does not fit is not drawn.
+#[test]
+fn a_squeezed_window_paints_at_every_scale() {
+    let palette = &look::DARK;
+    let mut t = text(true);
+    let mut w = Window::new("Squeezed", 320, 200);
+    let sized = |width, height| Layout {
+        width,
+        height,
+        ..Layout::FIT
+    };
+    let button = Widget::Button {
+        text: "Go".into(),
+        action: None,
+    };
+    w.put(1, ROOT, sized(Size::Fixed(0), Size::Fit), button)
+        .unwrap();
+    let list = Widget::ItemList {
+        label: "Items".into(),
+        selected: None,
+    };
+    w.put(2, ROOT, sized(Size::Fill(1), Size::Fixed(0)), list)
+        .unwrap();
+    let field = TextField {
+        label: "Note".into(),
+        value: "milk".into(),
+        placeholder: String::new(),
+        max_len: 200,
+    };
+    let short = sized(Size::Fill(1), Size::Fixed(10));
+    w.put(3, ROOT, short, Widget::TextLine(field)).unwrap();
+    let code = uikit::widget::CodeView {
+        label: "Code".into(),
+        gutter_width: 0,
+        rows: alloc::vec![uikit::widget::CodeRow {
+            text: "x".into(),
+            gutter: String::new(),
+            spans: Vec::new(),
+        }],
+        cursor: None,
+        selected: Some(0),
+    };
+    let narrow = sized(Size::Fixed(0), Size::Fixed(40));
+    w.put(4, ROOT, narrow, Widget::Code(code)).unwrap();
+    w.focus(3).unwrap();
+    let f = w.commit(&Measured(&t));
+    for scale in [120, 180, 240] {
+        let s = Scale::of(scale);
+        let size = s.rect(uikit::geom::Rect::new(0, 0, f.size.0, f.size.1));
+        let mut img = Image::new(size.w, size.h);
+        let mut p = Painter {
+            palette,
+            text: &mut t,
+            scale: s,
+        };
+        let all = img.bounds();
+        p.paint(&mut img.canvas(), &f.list, all);
+    }
+}
+
+/// A rect far taller than the window, as a scroll view's list can be, costs
+/// only the rows that show: no allocation by its height, fill or stroke, and
+/// the rows shown are still drawn.
+#[test]
+fn a_tall_rect_costs_only_the_rows_that_show() {
+    use uikit::geom::Rect as Logical;
+    use uikit::list::{DisplayList, Group};
+    use uikit::style::Token;
+    let palette = &look::DARK;
+    let mut t = text(true);
+    let all = Logical::new(0, 0, 100, 100);
+    // A million rows: the old per-row table was 8 MB for each pass over them.
+    let tall = Logical::new(0, -500_000, 100, 1_000_000);
+    let ops = alloc::vec![
+        Op::Fill {
+            rect: tall,
+            token: Token::Raised,
+            radius: 4,
+        },
+        Op::Stroke {
+            rect: tall,
+            token: Token::LineStrong,
+            width: 1,
+            radius: 4,
+        },
+    ];
+    let list = DisplayList {
+        groups: alloc::vec![Group {
+            node: 1,
+            clip: all,
+            bounds: all,
+            ops,
+        }],
+    };
+    let mut img = Image::new(100, 100);
+    let bounds = img.bounds();
+    let mut p = Painter {
+        palette,
+        text: &mut t,
+        scale: Scale::of(120),
+    };
+    let most = largest_alloc(|| p.paint(&mut img.canvas(), &list, bounds));
+    assert!(most < 64 * 1024, "{most} bytes in one allocation");
+    let colour = |token| palette.get(crate::look_token(token)) | crate::OPAQUE;
+    assert_eq!(at(&img, 0, 50), colour(Token::LineStrong));
+    assert_eq!(at(&img, 99, 50), colour(Token::LineStrong));
+    assert_eq!(at(&img, 50, 50), colour(Token::Raised));
+}
+
+/// The same through layout, as comphost paints it: a list millions of px tall
+/// in a scroll view, built from rows an app padded to the u16 limit.
+#[test]
+fn a_list_millions_of_px_tall_in_a_scroll_view_paints_in_little_memory() {
+    let palette = &look::DARK;
+    let mut t = text(true);
+    let mut w = Window::new("Tall", 300, 300);
+    w.put(1, ROOT, Layout::FILL, Widget::Scroll { axis: Axis::Column })
+        .unwrap();
+    let list = Widget::ItemList {
+        label: "Rows".into(),
+        selected: None,
+    };
+    w.put(2, 1, Layout::FILL, list).unwrap();
+    let tall = Layout {
+        padding: Insets {
+            top: u16::MAX,
+            bottom: u16::MAX,
+            ..Insets::default()
+        },
+        ..Layout::FIT
+    };
+    for i in 0..20 {
+        w.put(10 + i, 2, tall, Widget::Stack { axis: Axis::Column })
+            .unwrap();
+    }
+    let f = w.commit(&Measured(&t));
+    let mut img = Image::new(300, 300);
+    let bounds = img.bounds();
+    let mut p = Painter {
+        palette,
+        text: &mut t,
+        scale: Scale::of(120),
+    };
+    let most = largest_alloc(|| p.paint(&mut img.canvas(), &f.list, bounds));
+    assert!(most < 64 * 1024, "{most} bytes in one allocation");
+}
+
+/// A fill or stroke straddling the right edge of a canvas smaller than its
+/// clip: on the bottom row its right corner pixel lies past the pixels with
+/// no width, and `Canvas::fill` and `fill_alpha` must not slice there.
+#[test]
+fn a_rect_straddling_the_right_edge_paints_on_the_bottom_row() {
+    use uikit::geom::Rect as Logical;
+    use uikit::list::{DisplayList, Group};
+    use uikit::style::Token;
+    let palette = &look::DARK;
+    let window = palette.window | crate::OPAQUE;
+    let mut t = text(true);
+    let all = Logical::new(0, 0, 100, 100);
+    let rect = Logical::new(90, 70, 40, 30);
+    let ops = alloc::vec![
+        Op::Fill {
+            rect,
+            token: Token::Raised,
+            radius: 4,
+        },
+        Op::Stroke {
+            rect,
+            token: Token::LineStrong,
+            width: 1,
+            radius: 4,
+        },
+    ];
+    let list = DisplayList {
+        groups: alloc::vec![Group {
+            node: 1,
+            clip: all,
+            bounds: all,
+            ops,
+        }],
+    };
+    let mut img = Image::new(100, 100);
+    let bounds = img.bounds();
+    let mut p = Painter {
+        palette,
+        text: &mut t,
+        scale: Scale::of(120),
+    };
+    p.paint(&mut img.canvas(), &list, bounds);
+    // At 1.2x the rect starts at x 108, right of the 100 px canvas.
+    assert!(img.px.iter().all(|&px| px == window));
 }
