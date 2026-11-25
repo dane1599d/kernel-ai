@@ -1700,6 +1700,7 @@ dependencies = [
  "comp-models",
  "fsproto",
  "kabi",
+ "llmproto",
  "sha2 0.11.1",
 ]
 
