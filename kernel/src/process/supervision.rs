@@ -586,6 +586,7 @@ pub fn list(slot: usize, ptr: u64, cap: u64) -> Result<u64, Error> {
 
 /// Starts supervision: the init thread, which starts the supervisor with `plan`.
 pub fn start(plan: String) -> Result<(), &'static str> {
+    let plan = size_fs(plan);
     log!("supervision: plan:");
     for line in plan.lines() {
         log!("  {}", redacted(line));
@@ -595,6 +596,24 @@ pub fn start(plan: String) -> Result<(), &'static str> {
     start_unsupervised();
     threads::spawn("init", init_thread, 0)?;
     Ok(())
+}
+
+/// `plan` with fs's block cache sized from the admission budget (#1036):
+/// `supervise::budget::size_fs`, the largest of 64, 32 or 16 MiB that leaves
+/// the room `log_room` wants and the plan's largest demand service.
+fn size_fs(plan: String) -> String {
+    use supervise::budget::size_fs;
+    let budget = super::page_budget();
+    let (sized, chosen) = size_fs(&plan, SUPERVISOR_LIMITS.max_pages, budget);
+    if let Some(fs) = chosen {
+        log!(
+            "supervision: fs's block cache is {} MiB (a quota of {} MiB), leaving {} MiB of the admission budget beside the boot services",
+            fs.cache_mib,
+            fs.pages / supervise::budget::PAGES_PER_MIB,
+            fs.room_mib
+        );
+    }
+    sized
 }
 
 /// Logs what the plan's boot services commit to the admission budget, and

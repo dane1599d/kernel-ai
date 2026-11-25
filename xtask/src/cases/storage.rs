@@ -84,10 +84,13 @@ pub(super) const CASES: &[TestCase] = &[
         ..case("blk-write-nvme", "test=blk-write")
     },
     // P2 task 3: `fs` alone holds a Partition, for kai-data only; S04-2 re-run on
-    // the real calls.
+    // the real calls. Its plan is `fs` alone, so on the cases' 1 GiB the kernel
+    // gives fs's block cache ADR 0004's 64 MiB, and fs takes it (#1036).
     TestCase {
         expect: &[
+            "supervision: fs's block cache is 64 MiB (a quota of 80 MiB), leaving ",
             "fs: up; kai-data has ",
+            "; a 64 MiB block cache",
             "part: fs alone holds a Partition, for kai-data only, and its checks pass",
             "part: S04-2 on the real calls: ",
         ],
